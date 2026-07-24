@@ -135,10 +135,10 @@ non-signaled, non-dynamic mechanism class gate E13 permits.
 
 ## Parity guards on the connect path
 
-`contextual_check_block()` is wired into the connect path (it previously had
-zero production callers, which left only context-free structural checks + the
-staged proof gate — the root cause behind 4 of the 5 divergences below). All
-5 are closed:
+`contextual_check_block()` must stay wired into the connect path: context-free
+structural checks plus the staged proof gate alone miss the per-tx contextual
+rules, which is the root cause behind 4 of the 5 divergences below. All 5 are
+closed:
 
 | # | Divergence | Landed at |
 |---|---|---|
@@ -190,8 +190,8 @@ Outside PRs land on the public mirror `ZclassiC23/zclassic`. Treat each as
 1. **Thank the contributor and credit them** — keep them in the history.
 2. **Triage consensus impact** against the bar above. A consensus-breaking
    change — even framed as opt-in / miner-signaled / "sidegrade" / "needs 51%"
-   (the 2026-06-10 PR #6 Equihash-200,9 case is canonical) — is a **no-merge**,
-   no matter how well-engineered.
+   (PR #6's Equihash-200,9 case is canonical) — is a **no-merge**, no matter
+   how well-engineered.
 3. **Mine the good idea and build it better ourselves**, with attribution,
    *before* their proposed solution ever touches a consensus path.
 4. **Close politely** with an honest, kind reason (strict bit-for-bit parity

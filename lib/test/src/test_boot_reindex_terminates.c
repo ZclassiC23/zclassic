@@ -1,12 +1,13 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Unit test for the boot crash-only reindex TERMINATION fix
- * (recovery-selfheal-redteam-2026-06-21). The bug: on a genuinely-corrupt
- * blocks/ at a STABLE tip, the bounded reindex budget never TERMINATED — at
- * BOOT_AUTO_REINDEX_MAX+1 the exhausted handler DELETED the only durable record
- * (boot_auto_reindex_clear) and paged. The next restart found NO sentinel,
- * re-detected the same damage, and wrote a FRESH count=1, re-arming the budget
- * from scratch → an UNBOUNDED reindex loop throttled only by systemd backoff.
+ * Unit test for the boot crash-only reindex TERMINATION invariant.
+ * The failure shape this guards against: on a genuinely-corrupt
+ * blocks/ at a STABLE tip, an unbounded reindex budget never TERMINATES — if
+ * at BOOT_AUTO_REINDEX_MAX+1 the exhausted handler DELETES the only durable
+ * record (boot_auto_reindex_clear) and pages, the next restart finds NO
+ * sentinel, re-detects the same damage, and writes a FRESH count=1, re-arming
+ * the budget from scratch → an UNBOUNDED reindex loop throttled only by
+ * systemd backoff.
  *
  * The fix: at exhaustion the sentinel is REWRITTEN as a TERMINAL marker
  * (count = -1) rather than deleted; boot_auto_reindex_pending() / the crash-only

@@ -143,10 +143,10 @@ int test_self_heal_supervisor(void)
     self_heal_test_reset();
 
     /* ── a slow remedy does NOT freeze the root sweep heartbeat ───────────
-     * Regression guard for the 2026-07-19 live incident: the condition engine
-     * ran INLINE on the supervisor sweep thread, so a >30s remedy pass froze
-     * supervisor_sweep_heartbeat() and the backstop declared a FATAL freeze.
-     * The engine now runs on the dedicated `zcl_self_heal` runner thread; a
+     * Regression guard: the condition engine must never run INLINE on the
+     * supervisor sweep thread, where a >30s remedy pass freezes
+     * supervisor_sweep_heartbeat() and the backstop declares a FATAL freeze.
+     * The engine runs on the dedicated `zcl_self_heal` runner thread; a
      * slow remedy must therefore leave the root sweep beating freely. */
     supervisor_reset_for_testing();
     blocker_reset_for_testing();

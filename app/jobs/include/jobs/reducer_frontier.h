@@ -142,9 +142,8 @@ void reducer_frontier_provable_tip_reset(void);
  * cold-import datadir whose ONLY anchor row was the seed's then starves
  * reducer_trusted_anchor back to the compiled checkpoint, the frontier
  * walk reads the legitimately log-less import region as an 88k hole, and
- * the I4.3 sweep HOLD-wedges an otherwise healthy at-tip node (copy-proven
- * 2026-06-12, run 3). A trust DECLARATION must not live in a row the
- * pipeline consumes. */
+ * the I4.3 sweep HOLD-wedges an otherwise healthy at-tip node. A trust
+ * DECLARATION must not live in a row the pipeline consumes. */
 #define REDUCER_TRUSTED_BASE_HEIGHT_KEY "reducer_trusted_base_height"
 #define REDUCER_TRUSTED_BASE_HASH_KEY   "reducer_trusted_base_hash"
 
@@ -236,7 +235,7 @@ bool reducer_frontier_log_frontier_above(
  * Return stage `name`'s cursor value DERIVED from its own success-checked
  * *_log's contiguous ok=1 prefix (the same per-stage frontier compute_hstar
  * MIN-folds), expressed in `name`'s native cursor frame so it is a drop-in for
- * the raw stage_cursor read the eight Job stages used to do:
+ * the raw stage_cursor read the eight Job stages otherwise perform:
  *   - upstream stage (validate_headers, script_validate, body_persist,
  *     proof_validate, utxo_apply): value = contiguous-ok=1-prefix HEIGHT + 1
  *     (the "next height to process" frame).
@@ -298,7 +297,7 @@ bool reducer_frontier_log_hash_at(
  * is "log-unknown": the log cannot refute it, only fail to vouch for it.
  * The Invariant A clamp uses this to fail OPEN (index authority only) for
  * candidates beneath the window instead of clamping an 86K-block rollback
- * to the compiled anchor (the 2026-06-11 copy-prove regression).
+ * to the compiled anchor.
  *
  * *found=false when the table is empty — success, not an error. Returns
  * false only on a real DB read error. Acquires progress_store_tx_lock()
@@ -311,7 +310,7 @@ bool reducer_frontier_log_coverage_floor(
 );
 
 /* Derive the coins-best fact from progress.kv's own co-committed state.
- * THE derivation (wave 2 of docs/work/canonical-frontier-derived-state-plan.md
+ * THE derivation (docs/work/canonical-frontier-derived-state-plan.md
  * step 6): the answer is computed from coins_applied_height — co-committed in
  * the SAME BEGIN IMMEDIATE as every coin mutation + utxo_apply cursor move
  * (storage/coins_kv.h) — never from the separately-written node_state
@@ -325,7 +324,7 @@ bool reducer_frontier_log_coverage_floor(
  *      LOOKAHEAD hash(h); an anchor seed row at h carries the block's own
  *      hash(h). (The raw row AT h carries hash(h+1) for finalized rows —
  *      reading it as "hash at h" is the inconsistent authority-pair shape
- *      the 2026-06-11 splice forensic banned.)
+ *      this API refuses to produce.)
  *   2. validate_headers_log.hash at that height (own-hash by construction) —
  *      covers the <=1-block pipeline window where utxo_apply leads
  *      tip_finalize (Invariant B bound); the Invariant A trust root.
@@ -367,12 +366,12 @@ bool reducer_frontier_derive_coins_best_now(
  * When stage_repair_read_active_block_checked (reducer_frontier_replay.c)
  * cannot read the canonical body for a HAVE_DATA height — the on-disk bytes
  * are torn/truncated (the pread failed) or read fine but hash to the WRONG
- * block — the read used to only DEFER, wedging every downstream stage forever
- * (live: "read_active_block_checked: disk read failed h=3143721 (nFile=49
+ * block — a read that only DEFERs wedges every downstream stage forever
+ * (e.g. "read_active_block_checked: disk read failed h=3143721 (nFile=49
  * pos=129998574) — repair defers", plus a repeating downstream
  * "prevout_unresolved").
  *
- * The repair now records the failing height here — an event-driven note, NO
+ * The repair records the failing height here — an event-driven note, NO
  * new scan pass. It deliberately does NOT clear BLOCK_HAVE_DATA from inside the
  * progress-locked replay (that would be a side-channel write racing the
  * reducer's single writer). Instead the have_data_unreadable Condition consumes

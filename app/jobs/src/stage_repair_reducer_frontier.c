@@ -250,11 +250,10 @@ static bool reconcile_block_index_flags(
 
 /* ── tip_finalize rewind-churn refusal (defence-in-depth under the
  * coins-frontier clamp above) ────────────────────────────────────────────
- * Observed live 2026-07-16: the reconcile APPLY pass rewound tip_finalize
- * 3183332->3183331 six-plus times in a row via the clamp below — each
- * rewind "succeeded" (the write landed, apply reported repaired=true), but
- * H* never moved and something upstream kept re-advancing the cursor back
- * to 3183332 between passes. That reads as progress every tick but is a
+ * A repeated rewind-to-the-same-height pass can read as progress every
+ * tick (the write lands, apply reports repaired=true) while H* never moves
+ * and something upstream keeps re-advancing the cursor back to the same
+ * height between passes. That shape is a
  * livelock: the reconcile keeps re-clamping the SAME height forever
  * instead of a named blocker ever surfacing.
  *
@@ -549,9 +548,9 @@ static bool reducer_frontier_reconcile_light_impl(
      * rowless holes, so every repair below sees a consistent world. The
      * purge itself clamps the script_validate / proof_validate cursors to
      * the lowest height it made rowless, in the same transaction as the
-     * deletes (2026-07-02, height 3166989: deletes without the clamp
-     * stranded the hole — the refill scan keys on the body_persist_log
-     * anchor row the purge also deleted, so it read no hole). */
+     * deletes: deletes without the clamp
+     * strand the hole — the refill scan keys on the body_persist_log
+     * anchor row the purge also deletes, so it reads no hole. */
     if (!stage_reducer_frontier_purge_noncanonical(db, ms, apply, &local))
         return false;
     if (local.noncanonical_purged > 0) {

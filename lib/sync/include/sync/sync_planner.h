@@ -188,9 +188,9 @@ void syncsvc_plan_header_processing(struct sync_header_processing_plan *plan,
                                     size_t max_collect);
 /* `band_fill_in_progress` (from syncsvc_header_band_continue) vetoes the
  * restart unconditionally: a below-tip batch that extends the trust-rooted
- * frontier toward an installed-above-frontier island is PROGRESS — the
- * restart-from-tip policy was what kept the 2026-06-11 band hole
- * (3,140,573..3,143,301) permanently unrequested. */
+ * frontier toward an installed-above-frontier island is PROGRESS — a
+ * restart-from-tip policy applied here would keep that band hole
+ * permanently unrequested. */
 bool syncsvc_should_restart_headers_from_tip(size_t accepted,
                                              const struct block_index *last_header,
                                              int our_height,

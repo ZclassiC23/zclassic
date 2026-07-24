@@ -1,13 +1,14 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_cli_argv_strict — proves the SAFETY FOOTGUN fix (2026-07-23 live
- * incident): an agent invoked `zclassic23 --rpcport=39071 status` (a
- * double-dash typo of `-rpcport=`, no `-datadir=`). is_cli_mode() bailed
+ * test_cli_argv_strict — proves the SAFETY FOOTGUN fix: `zclassic23
+ * --rpcport=39071 status` (a
+ * double-dash typo of `-rpcport=`, no `-datadir=`) must not have
+ * is_cli_mode() bail
  * out at the unrecognized `--rpcport=39071` token before ever reaching
- * `status`, so the WHOLE invocation fell through main()'s dispatch chain
+ * `status` — that shape falls through main()'s dispatch chain
  * into a full node boot against the DEFAULT datadir — the protected live
- * node's directory — running a ~97s read-only integrity check before its
- * shutdown watchdog killed it. Read-only that time; one flag-typo away
+ * node's directory — running a read-only integrity check before its
+ * shutdown watchdog kills it. Read-only that time; one flag-typo away
  * from a second process contending the live datadir.
  *
  * This group proves, against the REAL built binary (the way an operator or

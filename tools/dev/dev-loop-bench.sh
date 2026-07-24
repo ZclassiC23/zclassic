@@ -12,6 +12,8 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${ZCL_DEV_BENCH_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+# shellcheck source=tools/dev/dev_lib.sh
+. "$SCRIPT_DIR/dev_lib.sh"  # is_uint, is_true (fail() below satisfies is_true's contract)
 OUTPUT="${ZCL_DEV_BENCH_OUTPUT:-$ROOT/.cache/zcl-dev-loop/bench-latest.json}"
 ITERATIONS="${ZCL_DEV_BENCH_ITERATIONS:-5}"
 WARMUP="${ZCL_DEV_BENCH_WARMUP:-1}"
@@ -67,20 +69,6 @@ usage()
         '' \
         'Other controls: ZCL_DEV_BENCH_ITERATIONS, ZCL_DEV_BENCH_WARMUP,' \
         'ZCL_DEV_BENCH_OUTPUT, and ZCL_DEV_BENCH_CMD_<case> overrides.'
-}
-
-is_uint()
-{
-    [[ "${1:-}" =~ ^[0-9]+$ ]]
-}
-
-is_true()
-{
-    case "${1:-}" in
-        1|true|yes|on) return 0 ;;
-        0|false|no|off|"") return 1 ;;
-        *) fail "expected boolean value, got: $1" ;;
-    esac
 }
 
 json_escape()

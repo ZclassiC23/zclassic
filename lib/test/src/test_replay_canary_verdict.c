@@ -859,9 +859,9 @@ static int test_blocked_on_identity_capture_failure(void)
  * These four checks pin shell-level invariants that the fixture harness
  * above cannot reach without spawning a real mainnet node (explicitly out
  * of scope for this hermetic suite — see the file header). Each guards a
- * concrete, previously-live defect:
+ * concrete defect class:
  *
- *   1. The "UC: unbound variable" crash (observed live 2026-07-17/19,
+ *   1. The "UC: unbound variable" crash (visible via
  *      `journalctl -u zclassic23-replay-canary-nightly`): run_live's
  *      budget-timeout branch populated SD/DIAG/TX/ZD but not UC, so
  *      evaluate_verdict's leading "every blob present" gate died on an
@@ -877,8 +877,8 @@ static int test_blocked_on_identity_capture_failure(void)
  *   3. The genesis track's ONLY real peer must be dialed via -connect=
  *      (which sets g_connect_only and disables DNS-seed/addrman outbound
  *      discovery), never -addnode= (which only adds a candidate and
- *      leaves discovery live) — the isolation-invariant violation
- *      confirmed live 2026-07-19 (a weekly run reached four public IPs).
+ *      leaves discovery live) — violating the isolation invariant lets
+ *      a run reach public IPs outside the isolated fixture network.
  *   4. isolated_mainnet_env.sh's iso_die (not directly test-mapped in
  *      agent_impact_rules.def — nearest mapped test is this file) must
  *      still route a fatal isolation-setup problem through blocked() when

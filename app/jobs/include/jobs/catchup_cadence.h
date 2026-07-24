@@ -39,9 +39,9 @@
  * of per 100); correctness is unchanged and a crash resumes idempotently
  * from the last durable cursor, same as always. The bounded risk is one
  * run_due_ticks() pass taking longer wall-clock while active. The 2000-block
- * value is measured rather than projected: on the 2026-07-23 frozen C3
- * corpus it processed 36,810 blocks in the same 360-second budget where the
- * 500-block value processed 29,000 (+26.9%), with the slowest observed
+ * value is measured rather than projected: over a fixed 360-second budget on
+ * a frozen corpus it processed 36,810 blocks vs. 29,000 for the 500-block
+ * value (+26.9%), with the slowest observed
  * utxo_apply subphase taking 8.485s. Fan-out stages remain at their normal
  * batch (stage_effective_batch) so this wider window applies only to stages
  * whose step_once performs one block of work.

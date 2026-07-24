@@ -2,16 +2,14 @@
  *
  * Block Index Integrity — load-time verification of block_index.bin.
  *
- * Background
- * ----------
- * On 2026-04-10 the node lost 1.3M UTXOs because `block_index.bin`
- * silently disagreed with the SQLite `blocks` table. A stale h=60
- * entry in the flat file made boot code believe the chain tip was
- * 60 while SQLite held real data at h=3,073,476. Boot code then
- * trusted the flat file and asked the recovery path to "fix" the
- * divergence by dropping UTXO rows above the (wrong) tip.
+ * Invariant
+ * ---------
+ * `block_index.bin` must never silently disagree with the SQLite `blocks`
+ * table: a stale flat-file tip entry, trusted by boot code, drives the
+ * recovery path to "fix" the divergence by dropping real UTXO rows above the
+ * (wrong) tip.
  *
- * The fix is belt-and-braces: a write-time sidecar that commits to
+ * The safeguard is belt-and-braces: a write-time sidecar that commits to
  * the bytes of `block_index.bin` plus a load-time cross-check
  * against SQLite so boot can refuse to proceed on any mismatch
  * instead of acting on a stale view.
@@ -164,9 +162,9 @@ struct zcl_result bii_write_sidecar(const char *datadir);
 /* Sidecar write from a caller-supplied size + SHA3 — no body rehash.
  * save_block_index_flat streams the hash while writing the body, so
  * the sidecar lands milliseconds after the rename instead of after a
- * multi-second 500 MB rehash (a shutdown killed in that window left a
- * fresh body under a stale sidecar and the next boot quarantined a
- * good file — live 2026-06-12).
+ * multi-second 500 MB rehash (a shutdown killed in that window leaves a
+ * fresh body under a stale sidecar and the next boot quarantines a
+ * good file).
  *
  * RETAINED for the legacy two-file format only — kept so the
  * make-lint atomic-save contract and historical callers still link.

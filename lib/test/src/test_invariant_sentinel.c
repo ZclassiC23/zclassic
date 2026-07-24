@@ -283,8 +283,8 @@ int test_invariant_sentinel(void)
      * The `utxos` table is a rebuildable projection of the coins_kv authority
      * and the checkpoint is a frozen out-of-band cache, so a mismatch is a
      * benign skew, not chain corruption: it must NEVER raise a chain_linkage
-     * HOLD (decoupled — the 2026-06-29 live 3164076 wedge was that HOLD rolling
-     * back a PoW-proven tip_finalize), needs 2 CONSECUTIVE candidate verdicts to
+     * HOLD (decoupled — that HOLD rolling
+     * back a PoW-proven tip_finalize is itself a wedge), needs 2 CONSECUTIVE candidate verdicts to
      * fire (swallow the mirror-rebuild torn-scan race), and self-clears on a
      * growth resync or via the auto-terminating owner. ───────────────────── */
     {

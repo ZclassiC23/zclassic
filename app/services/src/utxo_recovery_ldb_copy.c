@@ -2,10 +2,9 @@
  *
  * A plain cp of a LevelDB under active write tears — MANIFEST, SSTs
  * and the .log are copied at different instants, and leveldb_open on
- * the copy "succeeds" with holes (2026-06-09 trackb: the imported
- * UTXO set silently lacked a coin created 77 blocks below the anchor;
- * its first spend wedged the reducer with prevout_unresolved at
- * h=3142118). The copy here is provably point-in-time: signature the
+ * the copy "succeeds" with holes: an imported UTXO set can silently lack a
+ * coin created below the anchor, whose first spend wedges the reducer
+ * with prevout_unresolved. The copy here is provably point-in-time: signature the
  * source dir before and after the copy and retry until nothing
  * changed mid-copy. zclassicd flushes its chainstate at block cadence
  * (~minutes), so a clean window is the common case.

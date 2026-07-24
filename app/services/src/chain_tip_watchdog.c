@@ -218,11 +218,11 @@ static bool wd_decide_restart(int64_t h, int64_t age_s, bool do_shutdown,
         /* A power-cycle cannot help here: either restarting already failed
          * CHAIN_TIP_WD_MAX_RESTARTS times, OR the stall is a DETERMINISTIC
          * on-disk condition (byte-identical every boot — the class EVERY wedge
-         * produces). Previously this LATCHED g_operator_needed=true and emitted
+         * produces). Latching g_operator_needed=true here and emitting
          * a TERMINAL EV_OPERATOR_NEEDED ("staying up degraded for manual
-         * intervention") — a human dead-end, violating sticky invariant S2.
+         * intervention") would be a human dead-end, violating sticky invariant S2.
          *
-         * NEW (sticky-node-plan #1): hand the wedge to the top-level
+         * Instead: hand the wedge to the top-level
          * always-terminating remedy escalator instead of dead-ending. The
          * escalator drives an ORDERED ladder (retry -> targeted re-derive ->
          * resnapshot -> reindex -> self-mint refold -> widen peers ->

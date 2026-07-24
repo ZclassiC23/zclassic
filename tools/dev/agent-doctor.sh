@@ -7,16 +7,14 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO"
+# shellcheck source=tools/dev/dev_lib.sh
+. "$REPO/tools/dev/dev_lib.sh"  # json_escape
 
 MODE="${1:-text}"
 SCHEMA="zcl.agent_doctor.v1"
 SRC_BIN="${ZCL_AGENT_SRC_BIN:-build/bin/zclassic23-dev}"
 DEV_STATUS_CMD="${ZCL_AGENT_DEV_STATUS_CMD:-tools/dev/agent-dev-status.sh --json}"
 FAST_PLAN_CMD="${ZCL_AGENT_FAST_PLAN_CMD:-tools/agent_fast_ci.sh plan-json}"
-
-json_escape() {
-    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
-}
 
 json_string_field() {
     local json="$1" key="$2"

@@ -819,41 +819,28 @@ default LLM context contains only the selected branch.
 
 ## 21. Current prototype and gaps
 
-The current worktree contains an early native `dev` tree, compact planning,
-native inotify watcher, public App ABI skeleton, social manifest, and an
-in-process deterministic social scenario. These prove the shape of the
-interface; they do not yet satisfy the full plan.
+The registry engine (`lib/kernel/{include/kernel/command_registry.h,src/command_registry.c}`),
+the composition-root catalog (`config/src/command_catalog.c`), and the
+`root`/`core`/`apps`/`ops`/`dev` `.def` definitions under `config/commands/`
+are wired end to end — this superseded an earlier dev-only prototype
+described in older revisions of this section. Typed effect/authority/
+availability/schema/execution-mode metadata, the common result envelope, the
+stable exit-code policy, and ranked search are all live. Do not re-propose any
+of that; verify current per-leaf `ready`/`planned`/`compat` status with
+`zclassic23 discover describe <path>` or [`docs/API_REFERENCE.md`](./API_REFERENCE.md)
+rather than trusting a hand-maintained gap list here, which goes stale the
+moment a leaf ships.
 
-Known gaps before calling the interface production-ready:
-
-- a transport-neutral registry engine now exists at
-  `lib/kernel/{include/kernel/command_registry.h,src/command_registry.c}` and
-  the first declarative `root`, `apps`, and `dev` definitions exist under
-  `config/commands/`, but the composition-root catalog, Core/Ops definitions,
-  generated bindings, and native adapter are not wired yet;
-- until that wiring lands, the executable command registry remains the older
-  dev-specific prototype rather than the split global registry in this spec;
-- prototype menu metadata still uses loose strings rather than typed effect,
-  authority, availability, capability, schema, and execution-mode fields;
-- prototype results and errors do not yet use the common envelope or stable
-  exit-code policy;
-- search is an unranked substring match without registry tags, synonyms, or
-  match reasons;
-- the Social menu is currently hardcoded instead of derived from `app.def`;
-- `loop ensure/wait/events`, resumable streams, durable heartbeat cursors, and
-  native jobs are not yet implemented;
-- some advertised prototype leaves are descriptions only and must be marked
-  `planned` until their handlers exist;
-- some native dev execution still invokes fixed Make compatibility targets;
-- transactional activation/status still has shell-backed compatibility paths;
-- App generation loading is not yet wired to the public App ABI;
-- `ready` versus `planned` metadata is not yet emitted by every menu node;
-- runtime generation publication is Phase-0 contained: `dev.change.apply`,
-  publication watcher modes, generation-relinking revert,
-  and direct Make/script activation entry points refuse. Proof-only watcher,
-  build, simulation, `.so` construction, and hot-swap probe paths remain —
-  plus the live gated leaf hot-swap (`dev.hotswap.apply` /
-  `make hotswap-apply`) on the armed dev lane.
+Genuinely still open, cross-checked against the live `planned` rows: native
+job/stream infrastructure (`dev.loop.events`, `core.chain.wait.*`,
+`ops.jobs.list`), the confirmation/plan-commit handshake for owner-gated
+mutations (`core.wallet.transaction.send`, `core.consensus.block.invalidate`,
+and siblings), and wiring App generation loading to the public App ABI
+(`dev.app.publish`, `dev.app.inspect`). Runtime generation publication stays
+Phase-0 contained: `dev.change.apply`, publication watcher modes, and
+generation-relinking revert refuse before mutation; the live runtime path is
+the gated single-leaf hot-swap (`dev.hotswap.apply` / `make hotswap-apply`)
+on the armed dev lane.
 
 ## 22. Migration inventory baseline
 
@@ -1010,11 +997,12 @@ field=`, the no-arg entry point, unrecognized commands in `src/main.c`).
 ## 25. Auth auto-discovery + connection error taxonomy (E4)
 
 `-datadir=` and `-rpcport=` each default independently (`~/.zclassic-c23`
-and `18232`), which used to make `-rpcport=<N>` alone ambiguous: the CLI
-kept reading the cookie from the *default* datadir and sending it to
-whatever is actually listening on `<N>` — either nothing (`Cannot connect`)
-or a different node (an indistinguishable `Error: Unauthorized`), with no
-way for a script to tell those two outages apart.
+and `18232`). Passing `-rpcport=<N>` alone without cookie auto-discovery is
+ambiguous: the CLI would read the cookie from the *default* datadir and
+send it to whatever is actually listening on `<N>` — either nothing
+(`Cannot connect`) or a different node (an indistinguishable
+`Error: Unauthorized`), with no way for a script to tell those two outages
+apart.
 
 **Cookie auto-discovery.** Every node records its bound RPC port next to
 its cookie at `<datadir>/.rpcport` (`rpc_http_start`,
@@ -1033,9 +1021,9 @@ An explicit `-datadir=` always wins — auto-discovery only runs when the
 operator did not name one.
 
 **Connection error taxonomy.** The raw-RPC CLI path (`dumpstate`,
-`getblockcount`, any pass-through method) now distinguishes three failure
-shapes that used to collapse into the same generic message, each on its own
-`error=<ID> detail=... try=...` line (§ above) and its own exit code:
+`getblockcount`, any pass-through method) distinguishes three failure
+shapes, each on its own `error=<ID> detail=... try=...` line (§ above) and
+its own exit code, rather than one generic message:
 
 | Shape | error ID | exit | Meaning / remedy |
 |---|---|---:|---|

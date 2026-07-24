@@ -20,9 +20,9 @@
  *
  * Per-seed provenance:
  *   - 205.209.104.118, 140.174.189.3: pre-existing seeds (operator of the
- *     latter is unknown to this project). Owner decision 2026-07-24: KEEP
+ *     latter is unknown to this project). Owner decision: KEEP
  *     both under the trust note above — "best with what we have."
- *   - 74.50.74.102: this project's own host, added 2026-07-24 after a
+ *   - 74.50.74.102: this project's own host, added after a
  *     LOCAL reachability probe: confirmed bound on a local interface
  *     (`ip addr`) and a real file_service fs_handshake nonce exchange
  *     answered on FS_PORT from this host. A local probe proves bind +

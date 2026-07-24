@@ -307,8 +307,8 @@ static int reducer_drain_all_stages(int max_steps_per_stage,
  * the moment a round advances SOME stage but NOT the utxo_apply frontier (the
  * fold's real forward-progress metric). Without it, a fold walled at a low
  * height keeps `adv > 0` every round while header_admit/validate_headers grind
- * the whole upstream backlog toward the mint ceiling inside ONE call — the
- * silent multi-hour kick of the 2026-07-13 mint livelock. A healthy fold
+ * the whole upstream backlog toward the mint ceiling inside ONE call — a
+ * silent multi-hour mint livelock. A healthy fold
  * advances the frontier every round (the stages run in pipeline order within a
  * round), so this fires only when the frontier is genuinely walled. */
 static int reducer_drain_core(int64_t budget_us, int hard_cap,

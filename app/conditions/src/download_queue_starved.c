@@ -34,15 +34,12 @@ static _Atomic uint64_t g_last_witness_queued;
 static _Atomic int g_test_remedy_calls;
 #endif
 
-/* Pending work is LIVE state only: a queued or in-flight block. The former
- * third arm (`requested > received + timed_out`) was cumulative-counter
- * arithmetic: when the settle bookkeeping is perfect that difference IS the
- * in-flight count (redundant with the second arm), and when any settle path
- * leaks (disconnect-requeue and backpressure-drain both did) the residue is
- * permanent — at tip, queued==0 and inflight==0 forever satisfied it, so the
- * condition re-detected every cycle and paged the operator with nothing
- * wrong (live latch 2026-07-09, stable phantom deficit of 2). Counter drift
- * is now a watched diagnostic (dl_diagnostics.accounting_drift), not a
+/* Pending work is LIVE state only: a queued or in-flight block. A cumulative
+ * counter arm (`requested > received + timed_out`) is unsafe here: any settle
+ * path leak (disconnect-requeue, backpressure-drain) leaves a permanent
+ * residue that re-satisfies the condition every cycle even at tip with
+ * queued==0 and inflight==0, paging the operator with nothing wrong. Counter
+ * drift is a watched diagnostic (dl_diagnostics.accounting_drift), not a
  * detect input. */
 static bool download_work_pending(uint64_t inflight, uint64_t queued)
 {

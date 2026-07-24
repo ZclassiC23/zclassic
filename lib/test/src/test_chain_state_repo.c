@@ -1435,16 +1435,15 @@ static int t_singleton_init_wires_fixture(void)
     return failures;
 }
 
-/* live-outage regression — pre-patch, update_tip was `static
- * void` and silently discarded the bool return from
- * process_block_commit_tip. When the tip publisher refused a commit (any of
+/* Regression guard: an update_tip declared `static
+ * void` silently discards the bool return from
+ * process_block_commit_tip. When the tip publisher refuses a commit (any of
  * CSR_REJECTED_COINS_MISMATCH / _TIP_NOT_IN_INDEX / _STALE_INDEX /
- * ...), connect_tip still returned true, active_chain_tip kept
- * pointing at the old block, and every inbound block re-emitted
- * EV_BLOCK_CONNECTED for the same height. This is exactly the
- * 2026-04-18 outage pattern: 43+ `val.block_connected h=3081601`
- * events per second until the download queue buffered the node to
- * 6 GB RSS and SIGABRT.
+ * ...), connect_tip must not still return true with active_chain_tip
+ * pointing at the old block — that shape re-emits
+ * EV_BLOCK_CONNECTED for the same height dozens of times per second
+ * until the download queue buffers the node to
+ * GB-scale RSS and SIGABRT.
  *
  * The regression wires the csr singleton behind the test publisher,
  * hands update_tip a block_index NOT in the map (so the publisher will

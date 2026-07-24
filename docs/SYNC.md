@@ -133,21 +133,18 @@ The robust path for a known-good datadir is to copy one onto the target lane.
 
 ### Consolidated daily-driver loader (assisted legacy bootstrap)
 
-The historical deployed path is `-load-snapshot-at-own-height`: it loads a
-digest-verified borrowed UTXO snapshot above coins-best and folds forward. It
-previously reached tip from the h=3,156,809 artifact (count 1,344,918), but
-canonical is now wedged below tip on incomplete shielded history (verify the
-live H* via `zclassic23 status` / `zclassic23 dumpstate reducer_frontier`; `docs/HANDOFF.md`
-holds current state). The
-snapshot's `anchor_block_hash` must
-byte-equal this node's in-binary PoW header at the seed height or boot FATALs —
-a wrong-chain or missing anchor still fails closed (`config/src/boot_refold_staged.c`,
+The deployed path is `-load-snapshot-at-own-height`: it loads a
+digest-verified borrowed UTXO snapshot above coins-best and folds forward.
+Verify current sync state with `zclassic23 status` /
+`zclassic23 dumpstate reducer_frontier`; `docs/HANDOFF.md` holds current
+state, never this doc. The snapshot's `anchor_block_hash` must byte-equal
+this node's in-binary PoW header at the seed height or boot FATALs — a
+wrong-chain or missing anchor fails closed (`config/src/boot_refold_staged.c`,
 the load-snapshot-at-own-height path; the anchor-hash cross-check is at ~line
 585). When the seed height is above the coins-best active-chain window, the
 loader extends that window forward to the PoW-proven header tip
 (`active_chain_extend_window`, line 568) instead of FATAL-ing "Run
---importblockindex" — the fix in commit `ab512d577` that repaired the older
-transparent-loader wedge. The artifact is **release-assisted borrowed state**:
+--importblockindex". The artifact is **release-assisted borrowed state**:
 its payload digest authenticates bytes and the header match verifies chain
 location, but neither proves the UTXO/Sapling/Sprout/nullifier contents because
 ZClassic headers commit no such roots. The **fold-from-checkpoint** path

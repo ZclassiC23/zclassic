@@ -19,9 +19,8 @@
  *   total_wait_us delta), so a deliberately-throttled IBD lane is never
  *   confused with a genuine slowdown — stays below env
  *   ZCL_SYNC_RATE_FLOOR_BPS (default SYNC_RATE_DEFAULT_FLOOR_BPS, chosen well
- *   below the measured historical worst-case legitimate fold rate — see
- *   reference_refold_bottleneck_measured_2026-06-24 ~50 blk/s pprev-walk
- *   ceiling) for SYNC_RATE_CONSECUTIVE_TICKS consecutive samples, WHILE at
+ *   below the measured worst-case legitimate fold rate (~50 blk/s
+ *   pprev-walk ceiling) for SYNC_RATE_CONSECUTIVE_TICKS consecutive samples, WHILE at
  *   least one peer is connected AND there is pending work (network_tip —
  *   connman_max_peer_height — is strictly above log_head —
  *   tip_finalize_stage_cursor()). A window too short to measure meaningfully

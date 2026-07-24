@@ -614,8 +614,8 @@ static int t_height_repair_single(void)
     block_map_insert(&ms.map_block_index, &hash, &genesis);
 
     /* A parentless NON-genesis entry must keep its stored height: it is
-     * a detached root, not genesis (positional genesis tests relabeled
-     * the whole index by -2 on 2026-06-10). */
+     * a detached root, not genesis (a positional-only genesis test can
+     * otherwise relabel the whole index by an offset). */
     struct block_index stray;
     struct uint256 stray_hash;
     memset(&stray, 0, sizeof(stray));
@@ -639,11 +639,11 @@ static int t_height_repair_single(void)
 }
 
 /* ── 15b. Detached-root subtree is never re-anchored ─────────────
- * The 2026-06-10 live incident: an early header's pprev link was lost,
- * the old repair stamped that detached root to height 0 and forward
- * propagation relabeled all 3.14M descendants by -2 — internally
- * consistent, so every later pass reported "correct", every new network
- * block failed bad-cb-height, and the tip froze. The repair must leave
+ * If an early header's pprev link is lost, stamping that detached root to
+ * height 0 and forward-propagating relabels every descendant by an
+ * offset — internally consistent, so every later pass reports "correct",
+ * every new network block fails bad-cb-height, and the tip freezes. The
+ * repair must leave
  * the (canonical) descendant labels alone until pprev repair relinks
  * the root, after which a re-run heals the root's own label. */
 

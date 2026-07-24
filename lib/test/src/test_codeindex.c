@@ -1051,8 +1051,8 @@ int test_codeindex(void)
         size_t sn = 0;
         const char *const *shapes = ci_app_shapes(&sn);
         /* Seven physical app/ shape folders. Event (the eighth conceptual
-         * shape, FRAMEWORK.md §3 row 7) has no app/ folder — deleted
-         * 2026-07-17, owned by lib/event/ + lib/storage/event_log.c. */
+         * shape, FRAMEWORK.md §3 row 7) has no app/ folder — it is
+         * owned by lib/event/ + lib/storage/event_log.c. */
         const char *expect[] = { "conditions", "controllers", "jobs",
                                  "models", "services", "supervisors", "views" };
         bool shapes_ok = (sn == 7);

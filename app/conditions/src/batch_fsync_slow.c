@@ -5,9 +5,9 @@
  * SYMPTOM: the reducer drive's batched pre-commit durability flush
  *   (reducer_batched_durability_precommit, app/services/src/reducer_body_fsync.c
  *   — fdatasyncs deferred block bodies + flushes the event_log ONCE per stage
- *   batch COMMIT, and can VETO the commit on failure) used to be UNTIMED at
- *   the call site, so a genuine IO stall inside it (ext4 jbd2 journal-commit
- *   wait, a slow/contended disk) was invisible and looked like "the fold is
+ *   batch COMMIT, and can VETO the commit on failure) is timed at
+ *   the call site so a genuine IO stall inside it (ext4 jbd2 journal-commit
+ *   wait, a slow/contended disk) is never invisible behind "the fold is
  *   slow" with no attributable cause. This Condition watches the EWMA of
  *   that flush's own wall-clock duration (alpha = 1/16, the same integer-EWMA
  *   shape as lib/util/src/stage.c's step_us_ewma) against a GENEROUS

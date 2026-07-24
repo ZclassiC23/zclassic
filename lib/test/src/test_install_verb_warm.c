@@ -5,10 +5,10 @@
  * The terminal install verb runs BEFORE tip_finalize_stage_init, so the
  * runtime authority pair (tip_finalize_observe) and the provable-tip cache
  * (reducer_frontier) are still unpublished when the chain-binding evidence
- * gate (chain_frontier_snapshot_collect) reads them — every install target,
- * copy or live, refused "selected frontier changed or is not durable"
- * regardless of its durable state (the 2026-07-17 copy-install wall). The
- * verb now warms both caches from the DURABLE store via
+ * gate (chain_frontier_snapshot_collect) reads them — without a warm, every
+ * install target, copy or live, refuses "selected frontier changed or is
+ * not durable" regardless of its durable state. The
+ * verb warms both caches from the DURABLE store via
  * tip_finalize_stage_warm_authority_caches. These cases prove:
  *
  *   1. on a coherent durable image the warm publishes exactly the durable
@@ -495,7 +495,7 @@ static int case_post_install_invalidation(void)
     struct node_db ndb;
     IVW_CHECK("invalidate: node_db open", node_db_open(&ndb, ndb_path));
 
-    /* Seed a STALE sapling tree pair at an OLD tip (the 2026-07-19 residue). */
+    /* Seed a STALE sapling tree pair at an OLD tip (a post-install residue shape). */
     uint8_t stale_blob[64];
     memset(stale_blob, 0xAB, sizeof(stale_blob));
     IVW_CHECK("invalidate: seed stale sapling_tree",

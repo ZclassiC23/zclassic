@@ -1,14 +1,14 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Supervision for the REST /api cache-refresh detached thread — split out
- * of api_controller.c (E1 file-size ceiling: these Round-5 liveness-tree
+ * of api_controller.c (E1 file-size ceiling: the liveness-tree
  * additions pushed api_controller.c past its 800-line ceiling). See
  * api_controller.c's api_cache_refresh_thread / ensure_cache_thread for the
  * supervised loop and its lifecycle; this file owns only the liveness
  * contract.
  *
- * Previously api_cache_refresh_thread was an unsupervised
- * `while (running) { ...; sleep(10); }` loop: a DB-lock hang inside any
+ * An unsupervised
+ * `while (running) { ...; sleep(10); }` loop is unsafe here: a DB-lock hang inside any
  * compute_* call freezes the REST /api cache forever with no liveness
  * signal anywhere. Self-driven contract (mirrors disk_monitor.c): the
  * thread ticks its own heartbeat once per outer-loop pass (~10s cadence);

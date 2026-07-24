@@ -10,7 +10,7 @@ int test_sapling(void)
 {
     int failures = 0;
 
-    /* ── Fail-closed guards (2026-04-17 crypto hardening) ──
+    /* ── Fail-closed guards ──
      * These must run BEFORE the real sapling_init_params call below, so
      * that sapling_spend_vk / sapling_output_vk are still NULL and so
      * that params_loaded is still false. */

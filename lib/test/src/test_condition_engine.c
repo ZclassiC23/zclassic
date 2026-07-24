@@ -266,8 +266,8 @@ int test_condition_engine(void)
     };
 
     {
-        /* live 2026-07-09 regression: download_queue_starved (COND_WARN) sat
-         * "unresolved" (operator_needed_emitted latched) for 8+ hours on a
+        /* download_queue_starved (COND_WARN) can sit
+         * "unresolved" (operator_needed_emitted latched) for hours on a
          * healthy, tip-synced node. It must count toward the plain unresolved
          * total (unchanged behavior for health_controller / event_agent_summary
          * reporting) but NOT toward the CRITICAL-scoped count sticky_escalator
@@ -356,11 +356,11 @@ int test_condition_engine(void)
         CE_CHECK("witnessed clear after unwitnessed attempt resolves", ok);
     }
 
-    /* P0 LIMBO REGRESSION (live 2026-07-02, H*=3166988): an ACTIVE episode
-     * whose detect() flapped false while witness() stayed false froze — no
-     * remedy retry, no attempts accrual, no operator page for 3h
-     * (reducer_frontier_reconcile_light attempts stuck 1/5 while the
-     * script_validate_log hole at 3166989 persisted). detect() gates episode
+    /* P0 LIMBO REGRESSION: an ACTIVE episode
+     * whose detect() flaps false while witness() stays false must not freeze
+     * with no remedy retry, no attempts accrual, no operator page
+     * (e.g. reducer_frontier_reconcile_light attempts stuck 1/5 while a
+     * script_validate_log hole persists). detect() gates episode
      * START only; while active the remedy cadence must continue and the
      * episode may end ONLY via witness-clear. */
     static struct condition c_limbo = {
@@ -554,8 +554,7 @@ int test_condition_engine(void)
         CE_CHECK("register_all exposes current self-heal set", ok);
     }
 
-    /* P0 REGRESSION (live 2026-07-13, 27h page loop, fixed main 1d317f4f6 /
-     * 62a7a0004): a COND_CRITICAL condition with cooldown_secs > 0 must
+    /* P0 REGRESSION: a COND_CRITICAL condition with cooldown_secs > 0 must
      * re-arm the remedy after max_attempts is reached instead of latching
      * permanently — the exact shape sync_violation_lag/tip_wedged_resnapshot
      * now use. Mirrors max_attempts=1 (the real bug's config): a single

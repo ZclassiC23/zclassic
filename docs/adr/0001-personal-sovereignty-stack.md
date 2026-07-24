@@ -31,7 +31,7 @@ Concretely:
 
 **Negative / Risk:**
 
-- The live wedge persists until Wave S lands (estimated 2–4 weeks). Operator must accept the legacy `zclassicd` carrying tip-following duty in the interim.
+- The live wedge persists until Wave S lands. Operator must accept the legacy `zclassicd` carrying tip-following duty in the interim.
 - Build-forward churns more LOC than delete-then-rebuild, so the working tree gets temporarily larger before it gets smaller.
 - Discipline required: any future session proposing "we should just delete X" against bedrock-listed modules must justify it against this ADR.
 

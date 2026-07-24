@@ -2,11 +2,11 @@
  *
  * End-to-end regression for the FRESH-DATADIR SNAPSHOT BOOT seed path.
  *
- * Historical defect (2026-06-17 class): a snapshot import stopped at writing
- * `coins_best_block` and did NOT seed the state the reducer folds over
+ * Defect class this guards against: a snapshot import that stops at writing
+ * `coins_best_block` without seeding the state the reducer folds over
  * (coins_kv, coins_applied_height, the trusted stage cursors, utxo_sha3). The
- * node then LOOKED synced (a best-block hash on disk) but H* never climbed off
- * the compiled anchor and it never reached at_tip. The cure routes both the
+ * node then LOOKS synced (a best-block hash on disk) but H* never climbs off
+ * the compiled anchor and it never reaches at_tip. The cure routes both the
  * full reindex AND the snapshot import through ONE derivation
  * (reindex_epilogue_derive_imported_snapshot); test_reindex_epilogue.c proves
  * that derivation in isolation.

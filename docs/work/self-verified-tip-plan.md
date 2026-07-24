@@ -67,21 +67,20 @@ names as "a second write path," "authoritative chain state in RAM," or a
 
 ---
 
-## Landed
+## Current baseline
 
-- **Bootable copy** — DONE (`9fef4f683`). The sapling-tree rebuild resolves
-  its endpoint from coins-applied state
+- The sapling-tree rebuild resolves its endpoint from coins-applied state
   (`app/controllers/src/sync_controller_sapling_tree.c:46-71`: caps
   `chain_tip` to `coins_best = coins_applied_height − 1`), so a copy boots
   without the pre-fold sapling FATAL. Minting (`-mint-anchor`,
-  `config/src/boot_mint_anchor.c:62`) is also landed — see
+  `config/src/boot_mint_anchor.c:62`) is also live — see
   [`refold-fold-rate-bottlenecks.md`](./refold-fold-rate-bottlenecks.md).
-- **Stop trusting bad index cards** — SHIPPED. A transient `internal_error`
-  is retriable, not terminal, on both the script-validate and proof-validate
-  paths: the heal deletes the stale `script_validate_log`/`proof_validate_log`
-  rows in the same transaction, rewinds downstream cursors, and leaves
-  genuine invalid verdicts terminal. Guarded by
-  `make t ONLY=reducer_frontier_reconcile_light` and `test_stage_repair`.
+- A transient `internal_error` is retriable, not terminal, on both the
+  script-validate and proof-validate paths: the heal deletes the stale
+  `script_validate_log`/`proof_validate_log` rows in the same transaction,
+  rewinds downstream cursors, and leaves genuine invalid verdicts terminal.
+  Guarded by `make t ONLY=reducer_frontier_reconcile_light` and
+  `test_stage_repair`.
 
 ---
 
@@ -119,9 +118,8 @@ names as "a second write path," "authoritative chain state in RAM," or a
      re-grep both before editing).
   3. **Delete the borrow** — remove the `coins_kv` seed copy
      (`utxo_recovery_restore.c:369`) and the ~9k-LOC carve in dependency
-     order per the removed `archive/architecture-deletion-plan.md`
-     (recover with
-     `git log --follow -- docs/work/archive/architecture-deletion-plan.md`).
+     order (see [`ladder-carve-audit.md`](./ladder-carve-audit.md) for the
+     per-file consumer graph and phasing).
 - **9-caller caution:** `tip_finalize_stage_seed_anchor` has 9 production
   callers. KEEP the consensus-critical ones
   (`app/services/src/reducer_ingest_service.c` live fold; the from-anchor

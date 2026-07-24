@@ -90,8 +90,8 @@ static void forget_explicit_seed(struct app_context *ctx, char *fail_marker)
 
 /* A sovereign consensus bundle is installed in this datadir (marker present),
  * yet a borrowed starter-pack seed file is still lying in the datadir root.
- * Auto-loading it would flip the installed state back to the borrowed seed —
- * the 2026-07-19 seam. Move it out of the auto-load search path into
+ * Auto-loading it would flip the installed state back to the borrowed seed.
+ * Move it out of the auto-load search path into
  * <datadir>/quarantine-borrowed-seed/ so it is never reselected, and let boot
  * continue on the installed state. Benign auto-remedy: never a blocker, and a
  * failed move only falls through to leaving the seed untouched (the marker

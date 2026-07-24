@@ -90,8 +90,8 @@ static bool ph_write_header(struct byte_stream *s,
 
 static struct net_manager g_ph_nm;
 
-/* Case 5 authority shims: replay the EXACT inconsistent authority pair the
- * 2026-06-11 forensic found at the finalize frontier — height = tip-1 while
+/* Case 5 authority shims: replay the EXACT inconsistent authority pair
+ * found at the finalize frontier — height = tip-1 while
  * the hash resolves to the tip block itself. */
 static int64_t g_ph_auth_height = -1;
 static uint8_t g_ph_auth_hash[32];
@@ -269,10 +269,10 @@ int test_process_headers_adversarial(void)
         }
     }
 
-    /* ── 5. tip-header re-delivery must NOT relabel heights (the 2026-06-11
-     *       height-splice regression). Re-use h1/h2 from case 3 (accepted at
+    /* ── 5. tip-header re-delivery must NOT relabel heights (the
+     *       height-splice regression class). Re-use h1/h2 from case 3 (accepted at
      *       h=1,2). Serve h2 as the window tip and register an authority
-     *       publishing the INCONSISTENT pair the forensic captured at the
+     *       publishing the INCONSISTENT pair captured at the
      *       finalize frontier (height = tip-1, hash = tip). The deleted
      *       label-trust install in accept_block_header would re-height the
      *       tip 2->1 and rewrite its parent 1->0, cascading a -1 splice over

@@ -5,7 +5,7 @@
  * app/services/src/block_index_loader_rebuild.c:
  * block_index_loader_seed_stages_from_cold_import.
  *
- * THE TEAR (live, 2026-06-13): a faithful-looking cold-import trusted base
+ * THE TEAR: a faithful-looking cold-import trusted base
  * at seed height H whose count token MATCHES the live (torn) count, but
  * whose coin set is MISSING a canonical coinbase below H. The active chain
  * spends that coin at H, so forward validation has already recorded a
@@ -21,11 +21,11 @@
  *          anchor is written, and H* stays pinned at the compiled anchor.
  *          The genuine-tear cases also seed coin_backfill's durable refusal
  *          marker ('coin_backfill.refused.<h>.<hash>'), which the DURABILITY
- *          GUARD (2026-06-13) requires before firing.
+ *          GUARD requires before firing.
  *   CLEAN: an identical fixture with NO ok=0 hole below H — the gate is a
  *          strict no-op: no blocker, no event (zero false-reject).
  *
- * DURABILITY GUARD (Cases 5 & 6, 2026-06-13) — the verdict fires ONLY on a
+ * DURABILITY GUARD (Cases 5 & 6) — the verdict fires ONLY on a
  * genuinely-unrecoverable tear, never on a transient/in-flight ok=0 row:
  *   Case 5 (internal_error): an in-window durable ok=0 row with
  *          status='internal_error' (script_validate's TRANSIENT, resurrectable
@@ -441,7 +441,7 @@ int test_seed_torn_import_gate(void)
 
     /* ── Case 3: TORN, FORWARD-REGION (the LIVE/fixture wedge shape). ──
      *
-     * THE DECISIVE shape the seed-range-only gate MISSES. Live 2026-06-13:
+     * THE DECISIVE shape the seed-range-only gate MISSES. Example:
      * seed anchor H=3,145,457; the durable ok=0 prevout_unresolved row is at
      * h=3,145,595 == coins_applied_height — 138 blocks ABOVE H, in the
      * FORWARD-APPLIED region. And because the active tip (h=3,145,594) is

@@ -7,13 +7,12 @@ state instead of preserving bad local artifacts, and let real-chain canaries
 answer consensus questions quickly. The hard line remains: never prove a repair
 by mutating the live serving datadir first.
 
-The C diff that fixes a problem is usually small (the reducer un-wedge was ~40
-lines; the service_state driver ~180) — the **information algorithm** is the
-work: turning a vague live symptom into the one correct small change, with
-confidence, without expensive wrong turns. Each stage below makes one historical
-failure class structurally impossible: the bodies-vs-coins misdiagnosis (a
-design cycle on the wrong cause), and the 3,130,701 → 47,279 chain reset (a fix
-that deleted tip_finalize_log rows, shipped without a reset-safe test).
+The C diff that fixes a problem is usually small — the **information
+algorithm** is the work: turning a vague live symptom into the one correct
+small change, with confidence, without expensive wrong turns. Each stage below
+makes one failure class structurally impossible: misdiagnosing a coins-lag
+symptom as a body gap, and shipping a chain-reset fix that deletes
+`tip_finalize_log` rows without a reset-safe test.
 
 ## The stages (scale down for trivial changes — don't 9-agent a 3-line edit)
 

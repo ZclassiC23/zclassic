@@ -62,10 +62,9 @@ bool tip_finalize_stage_block_hash_at(struct sqlite3 *db, int height,
 /* Resolve the durable served-tip (height, own-hash) pair from the persisted
  * tip_finalize cursor, SELF-CONSISTENTLY across both log conventions. The
  * naive `tip = cursor-1` + finalized_tip_at(tip) read pairs cursor-1 with a
- * finalized row's LOOKAHEAD hash — i.e. (H-1, hash(H)), exactly the
- * poisoned authority pair of the 2026-06-11 splice forensic, manufactured
- * in the crash window between a finalize advance and the next trusted-tip
- * anchor. This resolver tries the block's OWN hash at `cursor` first (the
+ * finalized row's LOOKAHEAD hash — i.e. (H-1, hash(H)), a poisoned
+ * authority pair that can be manufactured in the crash window between a
+ * finalize advance and the next trusted-tip anchor. This resolver tries the block's OWN hash at `cursor` first (the
  * anchor-at-cursor steady state), then `cursor-1` (the legacy +1 lattice),
  * via the convention-aware block_hash_at — the returned height ALWAYS owns
  * the returned hash. Returns false when no witness row resolves (callers

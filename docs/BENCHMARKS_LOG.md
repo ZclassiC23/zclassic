@@ -25,7 +25,6 @@ Format: `date | commit | benchmark | value | how measured / notes`
 | date | commit | benchmark | value | how / notes |
 |---|---|---|---|---|
 | 2026-05-24 | be5e90b05 | #9 binary size | **14.6 MB** | `ls` of built binary (target stay small) | <!-- stale-ok: dated benchmark measurement, not a present-tense claim -->
-
 | 2026-05-24 | 6e0f6a82c | #1 cold import identity | serial 48.9s / default-workers 57.3s | `ZCL_COLD_IMPORT_DEBUG_WINDOW=3028 build/bin/zclassic23 -datadir=/tmp/zcl-cold -cold-import=~/.zclassic -nofilesync -nobgvalidation` (serial adds `ZCL_BLOCK_SCAN_WORKERS=1`). Both: `utxo_sha3=981b7bbceb522f816e29e4adccf7f80fdcab75cd392ee7b438b55787385031f1`, `coins_best_block=acad56115a58a82ff18395591263a7ec881bd13603ec31e1e72adb12ea010000`, `utxos=1345066` (min_h=1, max_h=3123726, sum_value=1038775293114532). Cold-import bulk-copies the legacy block index and **bypasses `scan_block_files_mark_data`** — the 101s `blk*.dat` marking baseline is a normal/file-sync boot cost, not this path. |
 | 2026-05-24 | 078667266 | #1 cold sync PR-3 serial-vs-parallel | serial 194.9s; parallel 295.3s | `tools/bench_cold_import_equivalence.sh` vs `/tmp/zcl-legacy-snapshot`; both h=3,123,688, tip `00000f027587b4eeb3f4890f77659c7057f9ea0512f761295c294d1000f9d462`, `utxo_sha3=3160565aba65ef205ba54886a57d39fccd1dade2ec709de1eff9c1d1307ffc48`, `utxos=1,345,067`. **⚠ parallel SLOWER (+100s) — scanner integration regressed cold-import.** |
 | 2026-05-24 | e4b5528ea | #2 warm restart | **37.7s** | `systemctl stop`→`start` to first `getblockcount` at tip 3,123,688 (poll @0.25s). Target 10s. Wall-clock incl. systemd + Tor bootstrap, not the `-bench-warmstart` harness. |
@@ -34,7 +33,9 @@ Format: `date | commit | benchmark | value | how measured / notes`
 | 2026-06-04 | 671fd79e3 | #7 kill-9 harness (`make test-crash-bootstrap`) | PASS — 2/2 cycles, 0 regress/overshoot | isolated /tmp regtest, ports 39030-33; 2 SIGKILL-process-group → restart cycles assert height-monotone + zero-UTXO-above-tip on `node.db`. DEGRADED genesis-only (regtest `generate` mines no valid Equihash block on this build → `over=-1` N/A); boot-recovery still exercised. |
 | 2026-06-04 | 671fd79e3 | #6 soak-ci proxy (`make soak-ci`, 180s `--ci-proxy`) | machinery OK; verdict reflects no-load | soak runner samples its OWN child pid (rss_max~161 MiB), threads ZCL_DATADIR+ZCL_RPCPORT per rpc. Verdict path correct (`FAIL_TOO_SHORT`/`FAIL_TIP_STALL`). Goes RED with `tip_hwm=0` because regtest `generate` advances no tip on this build (node-miner, not harness). |
 
-> RSS / cold-sync / warm-restart rows above are 2026-05-24 snapshots against tip 3,123,688; the node has been recovered/rebuilt several times since (see `HANDOFF.md`). Treat as history, re-measure on the current binary before quoting.
+> RSS / cold-sync / warm-restart rows above are dated snapshots against a
+> specific tip height. Re-measure on the current binary before quoting; see
+> `HANDOFF.md` for current live state.
 
 ## Consensus-verify microbenchmark (`make bench-crypto-verify`)
 
@@ -69,18 +70,23 @@ a **ratchet** (each C primitive may only get faster; the baseline is a ceiling
 that only shrinks) plus a **ratio-vs-Rust** rule (primitives that beat Rust must
 stay ahead — hard fail on a lost lead; primitives behind Rust, e.g. Groth16
 today, print a loud `BEHIND RUST — optimize` line but do not fail). Hollow-fast
-is forbidden by the `crypto_perf_selftest` test group + in-harness teeth. As of
-the 2026-07-13 baseline we BEAT Rust on Equihash verify, ECDSA verify, and
-BLAKE2b; the elliptic-curve/pairing/Groth16 stack, ed25519, and SHA256 (no
-SHA-NI) are the tracked optimize targets.
+is forbidden by the `crypto_perf_selftest` test group + in-harness teeth. We
+beat Rust on Equihash verify, ECDSA verify, and BLAKE2b; the
+elliptic-curve/pairing/Groth16 stack, ed25519, and SHA256 (no SHA-NI) are the
+tracked optimize targets. Run `make check-crypto-perf` for the current
+per-primitive standing.
 
 ## Native rebuild benchmark (`rebuild_recent` tool)
 
 | date | commit | N blocks | rebuild ms | blocks/s | bytes | notes |
 |---|---|---|---|---|---|---|
-| 2026-05-24 | (tool) | 10 | 339 | 29 | 14,590 | v1, durable event_log appender. **fsync-bound** (fsync×2/event). |
-| 2026-05-24 | (tool) | ALL (3,123,618) | 34,180 | 91,387 | 11.25 GB | **io_uring** bulk writer (8 buffers in flight, 1 fsync at end). 5.1M tx, 11.4M utxo-adds, 27.7M events, short_writes=0. 329 MB/s. setup +5.4s. ~3000× the v1 write path. |
-| 2026-05-24 | (tool) | ALL (3,123,618) | 17,990 | 173,611 | 11.25 GB | + hardware CRC32C (SSE4.2), verified == software table. 625 MB/s. Software CRC was ~half the runtime (34→18s). SHA256 already SHA-NI. |
-| 2026-05-24 | (tool) | ALL (3,123,618) | 5,570 | 560,693 | 11.25 GB | **+ parallel sharding** (32 threads, 64 independent io_uring segments, dynamic schedule). **2.0 GB/s — at the NVMe write floor.** All 64 segments byte-valid, 27.7M events, short_writes=0. 6× over single-thread io_uring; **34s→5.6s overall (~10× / fsync-v1 ~astronomical)**. ~5.4s setup (snapshot+index) on top. NOTE: output is a 64-segment event log (each a standalone valid log), not one file — matches Phase 8 segmentation; single-file needs an offset-fixup concat pass. **Kept version.** |
+| 2026-05-24 | (tool) | ALL (3,123,618) | 5,570 | 560,693 | 11.25 GB | Parallel-sharded `io_uring` writer: 32 threads, 64 independent segments, dynamic schedule, hardware CRC32C (SSE4.2). **2.0 GB/s — at the NVMe write floor.** All 64 segments byte-valid, 27.7M events, short_writes=0. ~5.4s setup (snapshot+index) additional. Output is a 64-segment event log (each a standalone valid log), not one file; a single-file need requires an offset-fixup concat pass. |
 
-**Why parallel works (kept version) but the earlier `ordered`-writer attempt failed:** per-thread io_uring ring + segment file = zero coordination, near-linear until the disk saturates. Hardware CRC is the prerequisite — software CRC would re-become the per-thread bottleneck. The first attempt shared one `ordered` io_uring writer, so the serial 11 GB memcpy + offset patch was the Amdahl bottleneck (1t=34.2s, 4t=34.4s flat, 8t=79.8s, 32t=64.8s; output byte-valid throughout). Levers to go below 34s single-thread: zero-copy submit of worker buffers + per-thread block-parse arena (kill `block_deserialize` malloc contention) — deferred.
+Design: one `io_uring` ring per thread, one segment file per thread — zero
+cross-thread coordination, near-linear scaling until the disk saturates.
+Hardware CRC32C is required; software CRC is the per-thread bottleneck at
+this throughput. A shared single-writer `io_uring` design serializes on the
+in-memory buffer and offset bookkeeping and does not scale past a few
+threads — keep the per-thread-segment design. Remaining lever: zero-copy
+submit of worker buffers + a per-thread block-parse arena to remove
+`block_deserialize` malloc contention.

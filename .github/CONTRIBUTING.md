@@ -33,25 +33,10 @@ Never run the full `test_zcl` binary in the inner loop.
 ## The defensive-coding contract
 
 [`docs/DEFENSIVE_CODING.md`](../docs/DEFENSIVE_CODING.md) is mandatory
-reading before writing any code. The rules are enforced by the compiler
-and by the `make lint` gates (`make ci` runs lint before tests), not by review
-goodwill. The core of the contract:
-
-- **Every `node.db` write goes through the ActiveRecord lifecycle** —
-  `AR_BEGIN_SAVE` + `AR_FINISH_SAVE`, or the combined `AR_ADHOC_SAVE`
-  (locally-prepared statement) / `AR_CACHED_SAVE` (cached statement).
-  Raw `sqlite3_step()` in application code is a compile error
-  (`-DZCL_AR_ENFORCE`); all three macros run the same
-  `validate_*` → `before_save` → `after_save` hook chain.
-- **Every error return logs context** — use `LOG_FAIL()`, `LOG_ERR()`,
-  `LOG_NULL()` from `util/log_macros.h`. Never `return false;` silently.
-- **Every allocation is checked** — use `zcl_malloc(size, "label")` from
-  `util/safe_alloc.h`, never bare `malloc`.
-- **Every native command handler sets an error body** — never `return -1;` without
-  explaining why.
-- **Long-running loops register with the supervisor liveness tree**
-  (`lib/util/include/util/supervisor.h`), so a stalled loop is detected
-  instead of silently hanging.
+reading before writing any code — the AR-lifecycle-write, logged-error,
+checked-allocation, and supervised-loop rules there are enforced by the
+compiler and by the `make lint` gates (`make ci` runs lint before tests), not
+by review goodwill.
 
 Files under `app/` must live in exactly one of the eight shape folders
 (`models/`, `views/`, `controllers/`, `services/`, `jobs/`, `conditions/`,

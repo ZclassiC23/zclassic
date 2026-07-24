@@ -704,10 +704,9 @@ int test_script_validate_stage(void)
         sv_teardown(dir, &ms, &sc);
     }
 
-    /* lane/stall-taxonomy audit: stage_upstream_log_hole_note. A durable
+    /* stall-taxonomy audit: stage_upstream_log_hole_note. A durable
      * hole (row deleted below the already-advanced upstream cursor — the
-     * residue of a noncanonical-row purge, the exact class that pinned H*
-     * for 3 h on 2026-07-02 at heights 3166989 in script_validate_log +
+     * residue of a noncanonical-row purge in script_validate_log +
      * proof_validate_log, see docs/AGENT_TRAPS.md / reducer_frontier_
      * reconcile_light.c) must name a typed DEPENDENCY blocker immediately,
      * not rely solely on the 60-minute stage-freeze backstop. */

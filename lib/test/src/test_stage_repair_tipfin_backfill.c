@@ -1120,9 +1120,8 @@ int test_stage_repair_tipfin_backfill(void)
          * C with no finalized row at C makes reducer_anchor_candidate_ok
          * reject a fresh seed anchor, collapsing the trusted anchor to the
          * compiled checkpoint and latching the I4.3 HOLD over the log-less
-         * import region (the 2026-06-12 cold-import wedge, copy-proven on
-         * the wave-3 fixture: HOLD refuse_from=3056759, step_finalize FATAL
-         * loop at h=3145076). */
+         * import region (a cold-import wedge class: HOLD refuse_from=3056759,
+         * step_finalize FATAL loop at h=3145076). */
         struct main_state ms;
         main_state_init(&ms);
         struct stage_reducer_frontier_reconcile_result fin;

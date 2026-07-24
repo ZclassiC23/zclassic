@@ -14,8 +14,8 @@ struct main_state;
  * remedy ladder) does NOT run on the supervisor sweep thread: its detect()
  * probes and remedies can each run for seconds (SQL over a 3.1M-header
  * progress store, a reducer-frontier reconcile, a point-in-time chainstate
- * copy), and a heavy pass on the root sweep thread froze
- * supervisor_sweep_heartbeat() past the 30 s backstop (live 2026-07-19). The
+ * copy), and a heavy pass on the root sweep thread freezes
+ * supervisor_sweep_heartbeat() past the 30 s backstop otherwise. The
  * contract therefore carries NO on_tick — the sweep only SUPERVISES the
  * runner's heartbeat, naming a `self_heal.worker_wedged` blocker (never a
  * frozen liveness root) if a remedy hangs past the stall deadline. Call

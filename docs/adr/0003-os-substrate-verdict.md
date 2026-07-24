@@ -68,17 +68,13 @@ thread while the rest of the machine's cores sit idle. The answer already
 has a design:
 `docs/work/archive/lb1-wiring-design.md` (removed; see the Related section above) specifies a
 bounded verify pool gated behind `-par=N` (default parallel, `-par=1` the
-bit-for-bit serial oracle — the correctness rollback). **Correction to an
-earlier framing of this evidence:** the pool's scaffold code
-(`lib/validation/{thread_pool,verify_queue}.{c,h}`) was in fact built once,
-additively, as Phase-1.1 (commit `9c5357930`, 2026-06-20) — but it was never
-wired into the script/proof hot path, sat with zero live callers, and was
-deleted as dead code in this session's cleanup pass (`verify_queue` at
-`a55316466`, `thread_pool` at `b1e27ce0e`, both 2026-07-12, both ancestors of
-this ADR). The design doc is still the accurate target; the scaffold needs
-to be **rebuilt and wired**, not merely wired, before it exists again. Either
-way, the answer to the one real execution gap is a bounded verify pool on
-the existing LB-1 roadmap — not an OS-grade preemptive scheduler.
+bit-for-bit serial oracle — the correctness rollback). `lib/validation/thread_pool.{c,h}`
+and `lib/validation/verify_queue.{c,h}` do not exist in the tree: an earlier
+scaffold was never wired into the script/proof hot path and was removed as
+dead code. The design doc is still the accurate target; the pool needs to be
+**rebuilt and wired**, not merely wired. Either way, the answer to the one
+real execution gap is a bounded verify pool on the existing LB-1 roadmap —
+not an OS-grade preemptive scheduler.
 
 ### Evidence (b): the OS organs that matter are already here, shaped for this node's liveness philosophy
 

@@ -1660,7 +1660,7 @@ int test_reducer_frontier_reconcile_light(void)
         teardown_fixture(&fx);
     }
 
-    /* ── non-canonical residue purge (the 2026-06-10 -2 relabel class) ──
+    /* ── non-canonical residue purge (the relabel-offset class) ──
      * Rows recorded for the WRONG block at their height (hash != the
      * canonical active-chain block) must be purged — including the false
      * ok=0 bad-cb-height verdicts no other repair touches — while a
@@ -1804,10 +1804,10 @@ int test_reducer_frontier_reconcile_light(void)
         teardown_fixture(&fx);
     }
 
-    /* ── P3 (2026-07-02): peer-gate BYPASS for internal re-derivations ──
+    /* ── P3: peer-gate BYPASS for internal re-derivations ──
      * A rowless script_validate_log + proof_validate_log hole below the
-     * cursors (noncanonical-purge residue; the live shape at 3166989 while
-     * H* sat at 3166988) re-derives from local persisted state alone, so
+     * cursors (noncanonical-purge residue) re-derives from local persisted
+     * state alone, so
      * peers-present-but-none-ahead must NOT suppress the healer. */
     {
         struct rfrl_fixture fx;

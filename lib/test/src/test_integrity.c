@@ -461,7 +461,7 @@ static int test_integrity_xor_mismatch_policy(void)
          * this on a mismatch) = same cardinality, different contents:
          * the clearest corruption signature. */
         ASSERT(utxo_recovery_xor_mismatch_is_corruption_candidate(42, 42));
-        /* Shrink below the checkpoint = rows vanished: the 2026-06-10
+        /* Shrink below the checkpoint = rows vanished: a
          * silent keyspace-tail truncation class. */
         ASSERT(utxo_recovery_xor_mismatch_is_corruption_candidate(43, 42));
         ASSERT(utxo_recovery_xor_mismatch_is_corruption_candidate(

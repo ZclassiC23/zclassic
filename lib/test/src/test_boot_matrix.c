@@ -5,7 +5,7 @@
  * NAMED terminal (preflight refusal / typed blocker id / anchor reached)
  * under a wall-clock budget. A timeout is scored as a test FAILURE, not a
  * skip — the whole point of this group is that a silent multi-hour grind
- * (the 2026-07-13 mint-fold livelock class) can never pass here quietly.
+ * (a mint-fold livelock class) can never pass here quietly.
  *
  * Drives the REAL -mint-anchor entry functions in-process (no forked
  * binary): config/src/boot_mint_anchor_preflight.c's
@@ -246,12 +246,12 @@ static bool bm_stub_pass_validator(const struct block_index *bi,
 }
 
 /* ── Cell 2: -mint-anchor x headers-only (no bodies) → blocker_frontier_walled
- * Same shape the 2026-07-13 incident hit: header_admit / validate_headers
+ * header_admit / validate_headers
  * can march the whole backlog while body_fetch is walled at h=0. A bounded
  * number of reducer_kick_unbudgeted calls must converge inside the budget,
  * then the fail-closed reporter registers the typed PERMANENT blocker. */
 
-#define BM_2_BUDGET_US   (30ll * 1000 * 1000)  /* 30s: the incident ran HOURS */
+#define BM_2_BUDGET_US   (30ll * 1000 * 1000)  /* 30s: an unbounded grind can run HOURS */
 #define BM_2_MAX_KICKS   8
 
 static int bm_cell2_mint_anchor_headers_only(void)
@@ -682,9 +682,9 @@ static int bm_cell5_preflight_fresh_natural(void)
 
 /* ── Cell 6: preflight run-all x fresh, EXPLICITLY EMPTY legacy source ───
  * Forces both legacy_block_index_covers_anchor AND bodies_present_sampled to
- * fail in the SAME call — the exact composed hole the 2026-07-13 incident's
- * predecessor surfaced as two separate single-check failures across two
- * separate runs (a FATAL, then later a silent stall). */
+ * fail in the SAME call, a composed hole that two separate single-check
+ * failures across two separate runs (a FATAL, then later a silent stall)
+ * would otherwise surface only individually. */
 
 #define BM_6_BUDGET_US (10ll * 1000 * 1000)  /* 10s: pure read-only checks */
 

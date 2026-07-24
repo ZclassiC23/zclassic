@@ -555,10 +555,10 @@ int condition_engine_get_unresolved_count(void)
  * reindex-chainstate rung) off "is anything unresolved" must not be tripped
  * by a WARN-severity condition that owns its own bounded, self-contained
  * remedy/cooldown (e.g. download_queue_starved's unbounded kick_local_sync
- * re-arm) — that is a peer/bandwidth fault, never a chain-tip stall. Live
- * 2026-07-09: download_queue_starved stayed active 8+ hours on a healthy,
- * tip-synced node; once its own age-based operator-needed page latched, the
- * unscoped count kept the sticky ladder cycling through 'reindex' every few
+ * re-arm) — that is a peer/bandwidth fault, never a chain-tip stall. An
+ * unscoped count lets download_queue_starved stay active for hours on a
+ * healthy, tip-synced node and, once its own age-based operator-needed page
+ * latches, cycle the sticky ladder through 'reindex' every few
  * minutes for no chain reason (see sticky_escalator.c apply_drive()). */
 int condition_engine_get_unresolved_critical_count(void)
 {

@@ -1,10 +1,7 @@
-> **Correction (2026-07-19):** the shielded-anchor wedge this doc's earlier
-> correction referenced is CURED — the serve node is AT NETWORK TIP on
-> self-verified state (`docs/HANDOFF.md` §0-LATEST). Verify the live H* via
-> `zclassic23 status` / `zclassic23 dumpstate reducer_frontier` before trusting
-> either that or this note. This derive-state/delete-heal-ladder design
-> remains historical input, not an open plan; current gates are in
-> `SOVEREIGN-NETWORK-ROADMAP.md`.
+> Verify the live H* via `zclassic23 status` / `zclassic23 dumpstate
+> reducer_frontier` before trusting this note. This derive-state/
+> delete-heal-ladder design remains historical input, not an open plan;
+> current gates are in `SOVEREIGN-NETWORK-ROADMAP.md`.
 
 # Canonical frontier-derived state — two gates, delete the heal ladder
 

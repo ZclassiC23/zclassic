@@ -326,11 +326,10 @@ static bool detect_reducer_frontier_reconcile_light(void)
              * re-derivation needs no peer. Gating this repair on "a peer is
              * ahead" — connman_max_peer_height reads the peers' STATIC
              * handshake starting_height (lib/net/src/connman.c), which near
-             * tip is <= the local height forever — suppressed the only healer
-             * for 3 h on 2026-07-02 (rowless hole at 3166989 in
-             * script_validate_log + proof_validate_log, H* pinned at
-             * 3166988). body_fetch refill holes stay gated (re-fetching a
-             * body needs a peer to serve it); their suppression is now LOUD
+             * tip is <= the local height forever — would suppress the only
+             * healer for a rowless script_validate_log/proof_validate_log hole.
+             * body_fetch refill holes stay gated (re-fetching a
+             * body needs a peer to serve it); their suppression is LOUD
              * via note_gate_suppressed below. */
             note_peer_gate_bypass(&rr, "stage-log refill hole pending");
         } else if (rr.label_splice_rebind_lowest >= 0) {

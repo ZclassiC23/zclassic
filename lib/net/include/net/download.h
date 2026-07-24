@@ -179,7 +179,7 @@ struct download_manager {
      * per-item linear scan was O(queue_len) and, with the queue pinned
      * at its 65536 cap during deep IBD, turned every bulk enqueue into
      * an O(n^2) grind that held `cs` for minutes and starved every
-     * other thread touching the manager (2026-06-09 tracka wedge). */
+     * other thread touching the manager. */
     struct dl_queued_key *qset;
     size_t                qset_slots;   /* capacity (power of 2) */
     size_t                qset_live;    /* live entries == queue_len */

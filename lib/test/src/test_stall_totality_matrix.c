@@ -15,7 +15,7 @@
  * values via SQL) and the escalator surface (rung + armed).
  *
  *   K1  — rowless script/proof hole below the cursors at the coins
- *         frontier: THE 3166989 regression pin (2026-07-02 live stall —
+ *         frontier: the regression pin for the shape where a
  *         purge deletes committed while both cursors stayed above the
  *         hole, stage_repair_reducer_frontier_purge.c:88-94). Cure under
  *         test: the refill clamps script/proof cursors to the hole.
@@ -32,7 +32,7 @@
  *         ONE transaction (reducer_frontier_replay_tx.c).
  *   K3  — non-canonical relabeled rows above a reorg point: the purge
  *         deletes them AND clamps the script/proof cursors in the SAME
- *         transaction (the 2026-07-02 co-commit cure); a genuine consensus
+ *         transaction (the co-commit cure); a genuine consensus
  *         reject (ok=0 whose hash IS canonical) survives untouched.
  *   K4  — tip_finalize cursor stranded above the coins frontier: clamped
  *         into the [H*, coins-applied-through] serving band; nothing else

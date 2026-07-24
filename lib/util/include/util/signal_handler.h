@@ -45,8 +45,8 @@ int signal_handler_install(void);
 /* Open a durable, append-only crash log at `path` (best-effort, idempotent).
  * Both this module's handler and the event-log crash handler mirror their
  * backtrace there in addition to stderr, then fsync — so a crash leaves a
- * forensic record even when stderr routing is lost (the gap that swallowed
- * 6 SEGV backtraces on 2026-05-30). Call once the datadir is known. */
+ * forensic record even when stderr routing is lost. Call once the datadir
+ * is known. */
 void signal_handler_set_crash_log(const char *path);
 
 /* The durable crash-log fd opened by signal_handler_set_crash_log(), or -1

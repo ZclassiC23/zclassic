@@ -816,7 +816,7 @@ int test_utxo_apply_stage(void)
     }
 
     {
-        /* HASH-BOUND VERDICT GATE (2026-06-11 height-splice fix): a
+        /* HASH-BOUND VERDICT GATE (height-splice class): a
          * script_validate_log row at the apply height that is provably bound
          * to a DIFFERENT block hash (a stale verdict surviving a header
          * relabel/reorg) must REFUSE the apply with the typed transient

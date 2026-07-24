@@ -8,7 +8,7 @@
  *     RECONCILABLE (DEGRADED_SERVING, never fatal) vs UNRECOVERABLE
  *     (fatal-LOUD) vs CLEAN.
  *
- * The classifier cases mirror the live 2026-06-01 boot-loop shape:
+ * The classifier cases mirror a boot-loop shape:
  * zero_nbits=0, mismatches=0, tip_window_holes=2155 -> RECONCILABLE. */
 
 #include "test/test_helpers.h"

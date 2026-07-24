@@ -14,8 +14,8 @@ struct app_context;
 
 /* ── Operator-target flag policy (shared: daemon WARN + CLI-client refusal) ──
  *
- * SAFETY FOOTGUN fix (2026-07-23): `zclassic23 --rpcport=39071 status` (a
- * double-dash typo of `-rpcport=`, no `-datadir=`) used to make
+ * A double-dash typo of an operator-target flag (e.g. `--rpcport=39071` for
+ * `-rpcport=`) with no `-datadir=` must never make
  * `is_cli_mode()` bail out and boot a full node against the DEFAULT
  * datadir — the live node's directory. The seven flags below are the ones
  * that select WHICH node an invocation targets (datadir/rpcport/port/

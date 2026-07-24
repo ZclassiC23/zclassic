@@ -72,18 +72,18 @@
  * the whole sweep (2 forks per N, each a full small fold) finishes well
  * inside the SCS_BUDGET_SEC ceiling.
  *
- * Batch-vs-boundary finding (2026-07-17)
- * ---------------------------------------
- * The first version of this sweep drove the fixture through
+ * Batch-vs-boundary invariant
+ * ----------------------------
+ * Driving the fixture through
  * reducer_kick_unbudgeted at its PRODUCTION batch cadence
  * (ZCL_REFOLD_DRAIN_BATCH, default 2000; the steady-state supervisor path
- * defaults to 100) and failed assertion (c) at every N that landed inside
- * an open batch: the resumer correctly redid a WHOLE uncommitted batch
+ * defaults to 100) fails assertion (c) at every N that lands inside
+ * an open batch: the resumer correctly redoes a WHOLE uncommitted batch
  * (never less, never more than that), which is MORE than G-N when N isn't
  * itself a batch-end boundary. Assertions (a) and (b) — final digest and
- * no duplicate side effects — held at every single one of the 29 crash
- * points tested that way; only the "redid exactly G-N" optimality check
- * failed. Root cause: `stage_run_once`'s per-step commit is a real SQL
+ * no duplicate side effects — hold regardless;
+ * only the "redid exactly G-N" optimality check
+ * fails at a mid-batch crash point. Root cause: `stage_run_once`'s per-step commit is a real SQL
  * COMMIT only when unbatched; inside a drain driver's open
  * stage_batch_begin/end window (see util/stage.h + stage.c's "Batched
  * drain" doc comment) each step is a SAVEPOINT, and only the outer batch's

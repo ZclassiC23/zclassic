@@ -11,6 +11,8 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tools/dev/dev_lib.sh
+. "$SCRIPT_DIR/dev_lib.sh"  # is_uint, is_true (fail() below satisfies is_true's contract)
 DEFAULT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ROOT="${ZCL_DEV_WATCH_ROOT:-$DEFAULT_ROOT}"
 MODE="${ZCL_DEV_WATCH_MODE:-verify}"
@@ -114,20 +116,6 @@ Examples:
   ZCL_DEV_WATCH_MODE=check make dev-watch
   ZCL_DEV_WATCH_ONCE_FILES=lib/net/src/msg_tx.c make dev-watch-once
 EOF
-}
-
-is_uint()
-{
-    [[ "${1:-}" =~ ^[0-9]+$ ]]
-}
-
-is_true()
-{
-    case "${1:-}" in
-        1|true|yes|on) return 0 ;;
-        0|false|no|off|"") return 1 ;;
-        *) fail "expected boolean value, got: $1" ;;
-    esac
 }
 
 clock_ms()

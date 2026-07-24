@@ -25,10 +25,8 @@ line: **PASS / FAIL / BLOCKED(reason)**.
 The three **synced-node-dependent** criteria — **C3** (cold-start sync to tip),
 **C6** (168h soak), **C8** (consensus parity over the soak window) — CANNOT
 pass until the node holds a clean synced tip on the **sovereign foundation** and
-accrues a clean window. The sovereign-foundation precondition is now MET
-(`docs/HANDOFF.md` §0-LATEST — serve node AT NETWORK TIP on self-verified
-state) and the soak window is running; re-run this reporter against the live
-node (`zcl-rpc getblockchaininfo`, `zclassic23 status`) rather than trusting a
+accrues a clean window. Re-run this reporter against the live node
+(`zcl-rpc getblockchaininfo`, `zclassic23 status`) rather than trusting a
 pinned verdict here — no hermetic slice can stand in for "a fresh node
 reached the real ~3.15M-block tip in <10min" or "168h clean wall-clock". The
 reporter probes the live node: when `blocks != headers` (not at tip) the
@@ -43,16 +41,19 @@ human-readable echo of the same regression.
 
 ## The map
 
-| # | MVP.md criterion | Mechanical check `make mvp` runs | Full-claim resource | Status (re-run `tools/mvp_gate.sh` for the live verdict — do not trust these cells) |
-|---|---|---|---|---|
-| C1 | Single-binary install on clean Ubuntu/Debian | `ci_symbol_floor_gate.sh` (portability GLIBC/GLIBCXX/CXXABI floor) + built-binary existence | full claim = real `make install` + `systemctl --user start` → `make ci-install-linger` (a `mvp-verify` member) | **PASS** — symbol-floor + binaries present; install mechanism proven by `make ci-install` / `ci-install-linger` |
-| C2 | Tor onion bootstrap in <60s | `test_zcl` slice `ZCL_TEST_ONLY=onion_slice` (<60s budget + v3 address format) + Tor-egress probe | real <60s over Tor needs egress → `make mvp-onion-local` | **PASS** when Tor egress present (else BLOCKED(needs Tor egress)) |
-| C3 | Cold-start sync to tip in <10 min | `test_zcl` slice `ZCL_TEST_ONLY=cold_start` (sync FSM → at_tip, ~7s) | real <10min sync to the ~3.15M-block tip needs a serving peer + a **fresh** node | **BLOCKED(needs a fresh node)** — FSM slice PASS; the serve node reaching tip (`docs/HANDOFF.md` §0-LATEST) is the ONE node that ran the cure, not a fresh-node proof. The fresh-machine-to-tip gap (ROM fetch side, `lane/rom-fetch2`) is still open — see `FORWARD_PLAN.md` #1 item 3; `make mvp-coldstart-to-tip-local` remains pending. |
-| C4 | Receive shielded payment end-to-end | `test_zcl` slices `shielded_receive` + `shielded_receive_persist` (params-free RECEIVE half: note→ivk→z-balance→durable reopen) + `~/.zcash-params` probe | full Groth16 t→z send+decrypt needs ~770MB proving params → `make test-shielded-payment` | **PASS** when params present (else BLOCKED(needs ~/.zcash-params)) |
-| C5 | List + sell file via store | `test_zcl` slices `store_e2e` + `store_e2e_shielded` (in-process store + seeded note + ivk-decrypt + memo-bound) | full list→shielded-pay→.onion file transfer needs a live serving node + a real buyer | **BLOCKED(needs synced node)** — slices PASS; full purchase path needs a live node + buyer (see `FORWARD_PLAN.md` §A/§B) |
-| C6 | 7-day soak, zero operator intervention | `soak_evidence.sh judge` over accumulated samples (MET=PASS, NOT_MET=FAIL, INSUFFICIENT=BLOCKED), GATED on the live node being synced+accruing | 168h clean wall-clock with gap ≤1, exact same-height hash, complete security posture, continuous evidence, and no intervention | **BLOCKED(accruing)** — the sovereign-foundation precondition is met (`docs/HANDOFF.md` §0-LATEST) and the soak window is running; judge with `make soak-evidence-report` for the current formal verdict, do not trust a pinned one here |
-| C7 | Recover from kill -9 in <2 min | `test_zcl` slices `kill9` (node.db SIGKILL UTXO-atomicity) + `chain_advance_atomicity` | full-binary kill-9 → peer-tip recovery → `make test-crash-bootstrap` + `make test-two-node-peer-tip` (mvp-verify members; isolated regtest, no synced mainnet needed) | **PASS** — SQLite-atomicity teeth PASS; the full-binary harnesses run on fresh isolated regtest (independent of the live mainnet node's state) |
-| C8 | Consensus parity with zclassicd | `test_zcl` slice `parity_slice` (mismatch-detection machinery: consistent set→0, injected outpoint→DETECTED) | 0 byte-mismatches vs a live `zclassicd` oracle over the soak window; needs an EXACT reference (`gettxoutsetinfo` is height-only) + the soak window | **BLOCKED(accruing)** — detection machinery PASS; full claim needs the soak window to complete against the live oracle |
+| # | MVP.md criterion | Mechanical check `make mvp` runs | Full-claim resource |
+|---|---|---|---|
+| C1 | Single-binary install on clean Ubuntu/Debian | `ci_symbol_floor_gate.sh` (portability GLIBC/GLIBCXX/CXXABI floor) + built-binary existence | full claim = real `make install` + `systemctl --user start` → `make ci-install-linger` (a `mvp-verify` member) |
+| C2 | Tor onion bootstrap in <60s | `test_zcl` slice `ZCL_TEST_ONLY=onion_slice` (<60s budget + v3 address format) + Tor-egress probe | real <60s over Tor needs egress → `make mvp-onion-local` |
+| C3 | Cold-start sync to tip in <10 min | `test_zcl` slice `ZCL_TEST_ONLY=cold_start` (sync FSM → at_tip, ~7s) | real <10min sync to the ~3.15M-block tip needs a serving peer + a **fresh** node → `make mvp-coldstart-to-tip-local` / `make mvp-coldstart-to-tip-stopwatch` (see `FORWARD_PLAN.md` #1 item 1) |
+| C4 | Receive shielded payment end-to-end | `test_zcl` slices `shielded_receive` + `shielded_receive_persist` (params-free RECEIVE half: note→ivk→z-balance→durable reopen) + `~/.zcash-params` probe | full Groth16 t→z send+decrypt needs ~770MB proving params → `make test-shielded-payment` |
+| C5 | List + sell file via store | `test_zcl` slices `store_e2e` + `store_e2e_shielded` (in-process store + seeded note + ivk-decrypt + memo-bound) | full list→shielded-pay→.onion file transfer needs a live serving node + a real buyer (see `FORWARD_PLAN.md` §B) |
+| C6 | 7-day soak, zero operator intervention | `soak_evidence.sh judge` over accumulated samples (MET=PASS, NOT_MET=FAIL, INSUFFICIENT=BLOCKED), GATED on the live node being synced+accruing | 168h clean wall-clock with gap ≤1, exact same-height hash, complete security posture, continuous evidence, and no intervention — judge with `make soak-evidence-report` |
+| C7 | Recover from kill -9 in <2 min | `test_zcl` slices `kill9` (node.db SIGKILL UTXO-atomicity) + `chain_advance_atomicity` | full-binary kill-9 → peer-tip recovery → `make test-crash-bootstrap` + `make test-two-node-peer-tip` (mvp-verify members; isolated regtest, no synced mainnet needed) |
+| C8 | Consensus parity with zclassicd | `test_zcl` slice `parity_slice` (mismatch-detection machinery: consistent set→0, injected outpoint→DETECTED) | 0 byte-mismatches vs a live `zclassicd` oracle over the soak window; needs an EXACT reference (`gettxoutsetinfo` is height-only) + the soak window |
+
+Run `make mvp` or `tools/mvp_gate.sh` for the current PASS/FAIL/BLOCKED verdict
+per criterion — never trust a pinned verdict in this file.
 
 ## Current scoreboard
 

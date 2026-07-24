@@ -1,8 +1,8 @@
-# Service-result convergence — Phase 3 shrinking-floor inventory + lane plan
+# Service-result convergence — shrinking-floor inventory + lane plan
 
-Status: gate + baseline landed 2026-07-11. This doc is the inventory and lane
-partition for paying down the remaining baseline; it is not itself a
-completion record — re-derive the live baseline count from
+The gate and its shrink-only baseline are live. This doc is the inventory
+and lane partition for paying down the remaining baseline; it is not itself
+a completion record — re-derive the live baseline count from
 `tools/scripts/service_result_convergence_baseline.txt` before trusting any
 number below.
 

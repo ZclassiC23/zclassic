@@ -300,7 +300,7 @@ static bool icb_install_bundle_sapling_tree(struct node_db *ndb,
 /* Post-install derived-state reconciliation. The atomic activate step resets the
  * kernel store's (consensus.db) reducer/tip_finalize authority to the installed
  * anchor, but two derived surfaces live OUTSIDE that store and would fight the new
- * kernel on the next boot (the 2026-07-19 seam). Returns true iff every derived
+ * kernel on the next boot. Returns true iff every derived
  * store is now consistent with the freshly installed bundle at bundle_height. */
 static bool icb_invalidate_derived_state(struct node_db *ndb,
                                          sqlite3 *progress_db,

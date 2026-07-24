@@ -62,7 +62,7 @@ enum proof_validate_rearm_outcome proof_validate_null_hash_rearm(
      * (validation_evidence). The floor is the LOWEST of those two so we
      * re-derive every height a downstream consumer still needs, yet never rewind
      * below the deepest consumer's cursor (the LCC invariant — rewinding below a
-     * downstream consumer's cursor is what stalled the reducer on 2026-07-02).
+     * downstream consumer's cursor stalls the reducer).
      * tip_finalize lags utxo_apply by up to one block, so flooring at utxo_apply
      * alone leaves the tip_finalize boundary block hashless and it cannot
      * finalize. */

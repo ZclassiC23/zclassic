@@ -1,9 +1,11 @@
-# Secure P2P Transport for zclassic23 — Design
+# Secure P2P Transport for zclassic23 — protocol reference
 
-Status: DESIGN / RESEARCH. No wire, consensus, or running-service code is touched
-by this document. Authored from three verified research lanes (protocol/crypto,
-net integration, precedent/parity/threat). Every file:line and every
-function/type name below was read from the tree at authoring time.
+This is the protocol contract for the Noise-encrypted v2 transport
+(`lib/net/src/v2_transport.c`, `lib/session/src/noise_handshake.c`), which is
+implemented and armed as INITIATOR in `lib/net/src/net.c` / torn down in
+`lib/net/src/connman.c`, default OFF pending rollout (see [`os/A4-noise-transport-p1.md`](./os/A4-noise-transport-p1.md)
+for rollout status). No consensus code is touched by this transport; the
+parity firewall below is the invariant that keeps it that way.
 
 ## 1. Overview & goals
 
@@ -81,19 +83,16 @@ complete and tested; a Noise suite cannot mix a BLAKE2s transcript hash with a
 SHA-256 HKDF, so the whole suite is SHA-256). BLAKE2s-suite HMAC is deferred
 (§12) and unnecessary — the KDF runs a handful of times per session.
 
-Why not the alternatives (evaluated against the concrete model — persistent
-static X25519 identity per node, ephemeral per session, dialer usually does NOT
-know the responder's static on a cold dial):
-- Noise_IK (WireGuard): 1-RTT but REQUIRES the dialer to already hold the
-  responder's static → fails on cold dial. **Kept as an opt-in fast-reconnect**
-  once we have TOFU-pinned a peer's static in addrman (saves 0.5 RTT; needs an
-  anti-replay window on msg1).
-- Noise_XK: also needs the pre-known responder static → same cold-dial problem.
-- BIP324-style unauthenticated AKE: Bitcoin dropped authentication because it
-  has no peer identity. zclassic23 defines a persistent static identity, so
-  discarding auth would be strictly worse. We borrow BIP324's transport ideas
-  (length obfuscation, dropping redundant magic+checksum, garbage-tolerant
-  detection) on top of an authenticated Noise core, but only in later phases.
+Why not the alternatives (dialer usually does NOT know the responder's
+static on a cold dial): Noise_IK/WireGuard is 1-RTT but REQUIRES the dialer
+to already hold the responder's static, so it fails cold dial — **kept as an
+opt-in fast-reconnect** once a peer's static is TOFU-pinned in addrman
+(saves 0.5 RTT; needs an anti-replay window on msg1). Noise_XK has the same
+cold-dial problem. BIP324's unauthenticated AKE fits Bitcoin's lack of peer
+identity; zclassic23 defines a persistent static identity, so discarding
+auth would be strictly worse — we borrow BIP324's transport ideas (length
+obfuscation, dropping redundant magic+checksum, garbage-tolerant detection)
+on top of an authenticated Noise core, but only in later phases.
 
 After a successful XX handshake, TOFU-pin the peer's static key in addrman. A
 pinned static that later changes is flagged (KCI / MITM-on-reconnect anchor).

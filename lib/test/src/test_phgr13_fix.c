@@ -92,8 +92,8 @@ int test_phgr13_fix(void)
 
     /* ── 0. The G2 generator the verifier pairs against MUST be on-curve.
      * This is the regression that was MISSING: a corrupted g2_gen constant
-     * silently false-rejected EVERY Sprout proof at pairing check 1 (the
-     * 2026-05-30 flood) and the same verifier is on the consensus path. Runs
+     * silently false-rejects EVERY Sprout proof at pairing check 1,
+     * and the same verifier is on the consensus path. Runs
      * unconditionally — needs no params file, so CI always exercises it. */
     {
         struct bn_g2 g2_one;

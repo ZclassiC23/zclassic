@@ -30,14 +30,13 @@ CI signal that the soak machinery and RSS-plateau logic are sound.
 
 It is **not** the acceptance run. The real #3 (≥ 30-day MTBF) and #4
 (≤ 1 GB steady-state RSS) require **168 h+ of live wall time under real
-tx load** with zero operator restarts. Canonical is currently wedged below tip
-on incomplete historical shielded anchors/nullifiers (verify the live H\* via
-`zclassic23 status` / `zclassic23 dumpstate reducer_frontier`; `docs/HANDOFF.md` holds current
-state), so its current wall time is not clean soak evidence. `ab512d577` fixed an earlier
-transparent-loader failure but did not prove complete shielded state. After a
-complete atomic cure passes copy proof, start a fresh exact-same-height-parity
-window with complete security posture and zero intervention. Run that with
-`make soak-7day` against the pinned candidate.
+tx load** with zero operator restarts, starting only after a complete
+self-verified cure passes copy proof (complete shielded anchors/nullifiers,
+not just transparent state) — check current sync state with
+`zclassic23 status` / `zclassic23 dumpstate reducer_frontier`;
+`docs/HANDOFF.md` holds current state. Once the cure passes, start a fresh
+exact-same-height-parity window with complete security posture and zero
+intervention. Run that with `make soak-7day` against the pinned candidate.
 
 > **Gap to call out:** `make soak-7day` defaults to a **7-day** window,
 > while this table's #3 target is **30 days**. The 7-day target is the

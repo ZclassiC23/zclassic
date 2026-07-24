@@ -1,13 +1,13 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_mint_anchor_fresh_datadir — the COMPOSITION test the 2026-07-13
- * mint-fold livelock incident lacked: a fresh datadir driven through the
+ * test_mint_anchor_fresh_datadir — the COMPOSITION test: a fresh datadir
+ * driven through the
  * REAL -mint-anchor path (preflight -> reducer drive) must ALWAYS end in a
  * named terminal state, never a silent timeout/stall/FATAL-cascade. Each
  * scenario below wraps the drive in a wall-clock budget and asserts BOTH (1)
  * the budget was not exceeded and (2) the outcome is one of the states the
  * design allows for that scenario. A timeout is scored as a FAILURE, not a
- * skip — that is the whole point: this test would have caught the livelock
+ * skip — that is the whole point: this test catches a mint-fold livelock
  * (a silent multi-hour grind with zero progress-log output) because scenario
  * (b) below bounds the SAME walled-frontier shape to <30s wall clock.
  *
@@ -209,7 +209,7 @@ static bool mfd_stub_pass_validator(const struct block_index *bi,
 }
 
 /* ── Scenario (b): synthetic imported datadir, headers-only, NO bodies ───
- * The exact shape the 2026-07-13 incident hit: header_admit / validate_headers
+ * header_admit / validate_headers
  * can march the whole backlog while body_fetch is walled at h=0. A bounded
  * number of reducer_kick_unbudgeted calls must converge (frontier stops
  * moving) inside the wall-clock budget, then the drive loop's fail-closed

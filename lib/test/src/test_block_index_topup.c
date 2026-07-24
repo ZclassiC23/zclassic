@@ -163,7 +163,7 @@ int test_block_index_topup(void)
         e103->nChainWork.pn[0] = 0x1000;
     }
     /* e105: a CONTENTLESS STUB at the wrong height (the corrupt-flat-load
-     * shape that birthed the h=3166988 placeholder tip, 2026-07-02):
+     * shape that births a placeholder tip):
      * height 0, nBits 0, no HAVE_DATA, nTx 0. The projection row below
      * carries the real record at height 105 — the topup must HYDRATE this
      * entry instead of refusing the merge as a label conflict. */

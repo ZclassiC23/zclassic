@@ -734,12 +734,12 @@ int test_stage_repair(void)
         teardown_case(dir);
     }
 
-    /* === tip_finalize rewind-churn refusal (Lane 1C — defence-in-depth
-     * under the L1A coins-frontier clamp) ===
+    /* === tip_finalize rewind-churn refusal (defence-in-depth
+     * under the coins-frontier clamp) ===
      *
-     * Live 2026-07-16: the reconcile APPLY pass rewound tip_finalize
-     * 3183332->3183331 six-plus times in a row, each rewind "succeeding"
-     * while H* never moved — a livelock that reads as progress. The witness
+     * A repeated rewind-to-the-same-height pass (e.g. tip_finalize
+     * bouncing between two adjacent heights) can have each rewind "succeed"
+     * while H* never moves — a livelock that reads as progress. The witness
      * below drives the apply-only tip_finalize clamp directly (bypassing
      * the full frontier snapshot) at a fixed height with flat H*: the first
      * 3 asks must rewind normally, the 4th must refuse and name the

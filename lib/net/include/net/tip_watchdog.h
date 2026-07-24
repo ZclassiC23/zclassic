@@ -2,12 +2,11 @@
  *
  * backpressure watchdog — caps RAM blow-up under a tip-stall.
  *
- * Live-outage context (2026-04-18): a regression in update_tip
- * trapped the chain at h=3,081,601; new blocks kept arriving
- * but never advanced chain_tip, so download buffers + connect-block
- * scratch climbed to 6.0 GB RSS before the cgroup OOM path fired.
- * fixed the root cause; this watchdog is the diagnostic
- * backstop that turns the next tip-stall regression into a bounded
+ * A regression in update_tip that traps the chain at a fixed height while
+ * new blocks keep arriving but chain_tip never advances lets download
+ * buffers + connect-block scratch climb to GB-scale RSS before the cgroup
+ * OOM path fires. This watchdog is the diagnostic
+ * backstop that turns a tip-stall regression into a bounded
  * EV_BACKPRESSURE_* event stream instead of an OOM.
  *
  * State machine:
@@ -38,8 +37,8 @@
 #include <stddef.h>
 
 /* Tuning constants. Compile-time only in this patch — RPC-tunable
- * policy is a separate row. Numbers chosen against the 2026-04-18
- * incident: a stuck tip held for ~10 minutes accumulated 6 GB of
+ * policy is a separate row. Numbers chosen against the observed shape:
+ * a stuck tip held for ~10 minutes accumulates 6 GB of
  * residency; 256 MiB is ~25% of that, well under the cgroup high
  * watermark and large enough that normal IBD bursts don't trip. */
 #define TIP_STALL_THRESHOLD_SEC      60
@@ -78,7 +77,7 @@
  * 256 KiB would make the non-IBD cap exactly equal the high water
  * (1024 * 256 KiB == 256 MiB, strict `>` never fires — dead code).
  * >512 outstanding worst-case bodies is a genuine 100 MB–1 GB
- * exposure band — the regime the 2026-04-18 backstop exists for. */
+ * exposure band — the regime this backstop exists for. */
 #define BACKPRESSURE_AVG_BLOCK_BYTES (512UL * 1024)
 #define DL_QUEUED_ENTRY_BYTES        (64UL)
 

@@ -7,8 +7,8 @@
  * reducer_frontier_reconcile_light Condition's remedy uses, WITHOUT the
  * Condition's peer gate (connman_max_peer_height reads static handshake
  * starting_height, so near tip it reads "no peer ahead" forever and the
- * recomputed repair is discarded — the 2026-07-02 stall at H*=3166988 with a
- * rowless script/proof hole at 3166989). Proven here through the REAL ladder
+ * recomputed repair is discarded — leaving H* pinned with a
+ * rowless script/proof hole below it). Proven here through the REAL ladder
  * (note_stall -> retry -> targeted_rederive) over a synthetic progress.kv:
  *
  *   T1 — actionable rowless script+proof hole at coins_applied: the rung
@@ -690,9 +690,9 @@ int test_sticky_escalator(void)
      * reindex marker whose anchor the tip has progressed PAST:
      * withdraw_stale_reindex_request() (called from clear_episode) must
      * remove it so it does not outlive its episode and force a needless
-     * reindex-chainstate rebuild on the next boot (live 2026-07-09: this
-     * exact residue blocked `make deploy-dev` with "pending crash-only
-     * auto-reindex request anchor=3175394" after the stall had already
+     * reindex-chainstate rebuild on the next boot (a residue that can block
+     * `make deploy-dev` with "pending crash-only
+     * auto-reindex request anchor=<h>" after the stall had already
      * self-resolved). No progress-store fixture is needed: the cached H*
      * (reducer_frontier_provable_tip_set) drives observe_tip(), so the clear
      * fires on the very first drive call, before any rung dispatch. */
@@ -795,9 +795,9 @@ int test_sticky_escalator(void)
      * condition_engine_get_unresolved_critical_count() check, reached with NO
      * explicit sticky_escalator_note_stall) must only respond to an
      * unresolved CRITICAL condition, never a WARN-severity one that owns its
-     * own bounded remedy/cooldown. Live 2026-07-09: download_queue_starved
-     * (COND_WARN) stayed active 8+ hours on a healthy, tip-synced node and
-     * kept silently re-arming this exact path every few minutes. */
+     * own bounded remedy/cooldown — e.g. download_queue_starved
+     * (COND_WARN) can stay active for hours on a healthy, tip-synced node and
+     * must not silently re-arm this path every few minutes. */
     {
         static struct condition c_t7_warn = {
             .name = "t7_warn_only",
@@ -1367,9 +1367,10 @@ int test_sticky_escalator(void)
     }
 
     /* ── T17: a PERMANENT sync-domain blocker HOLDS the ladder ───────────────
-     * The live 2026-07-21 defect: a shielded-history-less node held two
+     * The defect class this guards against: a shielded-history-less node
+     * holding two
      * permanent utxo_apply blockers (anchor_backfill_gap + nullifier_backfill_
-     * gap) while the escalator churned resnapshot -> reindex against a cause NO
+     * gap) with the escalator churning resnapshot -> reindex against a cause NO
      * rung can cure. With the blocker registered, the ladder must NOT advance
      * off its rung (or dispatch a destructive one) — it HOLDS and surfaces the
      * hold state, re-checking each cadence. */

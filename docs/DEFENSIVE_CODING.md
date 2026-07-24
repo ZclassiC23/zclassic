@@ -251,7 +251,7 @@ assert green).
   has at least one `validates_*` call (from
   `app/models/include/models/activerecord.h`) OR a top-of-file
   `ar-validate-skip:<tag>` marker explaining why AR validation does not apply
-  (e.g. `connection-handle-not-a-row`). Pins the wave-6 result. Impl:
+  (e.g. `connection-handle-not-a-row`). Impl:
   `tools/scripts/check_model_validation.sh`.
 
 - **Gate #11b: `check-model-ar-lifecycle`** (HARD) — `app/models/src/*.c` may
@@ -319,17 +319,17 @@ assert green).
   `tools/scripts/check_domain_purity.sh`.
 
 - **Gate #46: `check-core-include-boundary`** (HARD) — the sealed consensus
-  core (top-level `core/`, populated by the Wave 1.1 physical split) is the
-  innermost layer. A `core/**/*.c|.h|.inc` file may only `#include` its own
-  preserved headers (`"domain/consensus/…"`, `"consensus/…"`, `"core/…"`,
+  core (top-level `core/`, the Wave 1.1 physical split) is the innermost
+  layer. A `core/**/*.c|.h|.inc` file may only `#include` its own preserved
+  headers (`"domain/consensus/…"`, `"consensus/…"`, `"core/…"`,
   `"chainparams/…"`), C/system `<…>` headers, bare siblings, or a pure leaf lib
   subsystem — **never** `lib/validation` (validation *drives* consensus, it is
-  not consensus) or any app/ shape. The gate is **exception-free** as of the
-  Pre-W5 content fix: `check_block.c` now calls the core sigops predicate
-  instead of `"validation/sigops.h"`, and `chainparams.h` gets
-  `MESSAGE_START_SIZE` from `chain/chainparamsbase.h` instead of
-  `"net/protocol.h"`. Any forbidden include now fails HARD. Override
-  `// core-boundary-ok:<tag>`. Impl: `tools/scripts/check_core_include_boundary.sh`.
+  not consensus) or any app/ shape. The gate is **exception-free**:
+  `check_block.c` calls the core sigops predicate instead of
+  `"validation/sigops.h"`, and `chainparams.h` gets `MESSAGE_START_SIZE` from
+  `chain/chainparamsbase.h` instead of `"net/protocol.h"`. Any forbidden
+  include fails HARD. Override `// core-boundary-ok:<tag>`. Impl:
+  `tools/scripts/check_core_include_boundary.sh`.
 
 - **Gate #47: `check-core-seal`** (HARD — frozen at split wave W5) — pins
   the byte-integrity of `core/` to the SHA3-256 manifest `core/MANIFEST.sha3`
@@ -525,7 +525,7 @@ current green tree.
 | **`check-markdown-links`** | HARD | Every local file/directory target in tracked Markdown resolves inside the repository. Network/mail/app URIs, page anchors, images, code examples, and explicit generated placeholders are outside this filesystem-only contract. The gate fails loud on an empty scan/parser result and carries isolated positive/negative self-tests. No baseline or override. |
 | **`check-no-stale-pinned-facts`** | HARD (binary size) / RATCHET (height pin) | "Make staleness impossible": docs (CLAUDE.md + README.md + docs/\*\*/\*.md) must not hand-pin a fact with a live source. (A) A "\<N\> MB" size ADJACENT to "binary" fails HARD — de-pin to size-agnostic prose or quote `tools/scripts/binary_size.sh`; never baseline-exemptible (the stale "~15 MB" survived because it was hand-pinned). (B) A live-state HEIGHT PIN (`H*=`, "wedged at", "held at", "currently …at", "live tip", "stuck/pinned at" next to a height-shaped number) outside the one live-state page `docs/HANDOFF.md` fails RATCHET against the shrink-only `tools/lint/stale_pinned_facts_baseline.txt`. `docs/work/archive/**` (frozen narratives) is exempt. Per-line override `<!-- stale-ok: <reason> -->`. |
 | **E12: `check-honest-witness`** | FAIL | Law 7 ("heal in the open, page when stuck"): a Condition's `witness_<name>()` must observe the symptom MOVE, not a constant, the pure inverse of `detect`, or an FSM/poison-flag the remedy itself set. Fails if TRIVIAL (every return a bare `true`/`false`), PURE-INVERSE (`return !detect_x()`), or NO-OBSERVABLE (references none of `active_chain_height`, reducer-frontier H\*, block_map iteration, a durable `SELECT`, a peer/inflight/staged/received progress counter). Exemplar: `app/conditions/src/block_failed_mask_at_tip.c`. Baseline `tools/lint/honest_witness_baseline.txt` (empty). Override `// honest-witness-ok:<reason>` (witness whose remedy returns `COND_REMEDY_FAILED` or re-verifies real structural state). |
-| **`check-no-uncited-victory`** | HARD | Exists because the repo shipped 9+ "cured / at tip / fully synced" claims in six weeks, every one later false (~103 "wedge FIXED" → re-wedge cycles). Splits the one live-state page `docs/HANDOFF.md` into blank-line paragraphs; a paragraph carrying a word-bounded VICTORY PHRASE (`at tip`, `at-tip`, `reaches tip`, `holds tip`, `fully synced`, `cured`, `unwedged`, `wedge cleared`/`closed`/`fixed`, `soak window open`/`running`, `proven live`, `live-proven`, `stable at tip`) FAILS unless the SAME paragraph carries a CITATION TOKEN (`uptime-ledger`, `slo-summary:`, `VERDICT=PASS`, `WALL_CLOCK_SECONDS`, `gap_vs_oracle`, a `ts=<digits>` stamp) or the explicit per-paragraph override `<!-- victory-ok: <reason> -->` (HISTORICAL narration only, never a current-state claim). Hollow-gate rule: `docs/HANDOFF.md` missing or < 10 lines FAILs. Hermetic `--selftest`. No baseline. |
+| **`check-no-uncited-victory`** | HARD | A progress claim without an external ledger line is not trustworthy — false "cured / at tip / fully synced" claims have repeatedly re-wedged without one. Splits the one live-state page `docs/HANDOFF.md` into blank-line paragraphs; a paragraph carrying a word-bounded VICTORY PHRASE (`at tip`, `at-tip`, `reaches tip`, `holds tip`, `fully synced`, `cured`, `unwedged`, `wedge cleared`/`closed`/`fixed`, `soak window open`/`running`, `proven live`, `live-proven`, `stable at tip`) FAILS unless the SAME paragraph carries a CITATION TOKEN (`uptime-ledger`, `slo-summary:`, `VERDICT=PASS`, `WALL_CLOCK_SECONDS`, `gap_vs_oracle`, a `ts=<digits>` stamp) or the explicit per-paragraph override `<!-- victory-ok: <reason> -->` (HISTORICAL narration only, never a current-state claim). Hollow-gate rule: `docs/HANDOFF.md` missing or < 10 lines FAILs. Hermetic `--selftest`. No baseline. |
 | **E14: `check-condition-cooldown`** | HARD | Closes the multi-hour page-storm bug class: a `COND_CRITICAL` condition whose `detect()` calls a known peer/network-liveness primitive (`connman_max_peer_height`, `connman_get_node_count`, `sync_monitor_connman`, `sync_monitor_max_peer_height`) or the legacy `zclassicd` RPC oracle (`legacy_chain_rpc_*`) must set `.cooldown_secs > 0` (condition.c re-arms the remedy instead of latching permanently at `max_attempts`) or wire a `.progressing` callback (TL-1's alternate anti-latch mechanism, e.g. `reducer_frontier_reconcile_light.c`). Exemplar fix: `app/conditions/src/sync_violation_lag.c`. Self-tested against an isolated tmp dir (`ZCL_CONDITION_COOLDOWN_SELFTEST=1`), proven in `make test`/`make test-parallel` via `t_e14_condition_cooldown_gate()`. No baseline (structural, not a ratchet). |
 
 E10 = the WARN→RATCHET graduation of #18 and #20 (above).
@@ -703,7 +703,7 @@ existing tag when the pattern matches; singleton tags survive only when they
 name a genuinely unique structural property
 (e.g. `fatal-true-triggers-rollback-and-partial-write-return`).
 
-**Concrete tag taxonomy (existing usage at wave-7c):**
+**Concrete tag taxonomy (current usage):**
 
 - `obs-ok:` — `pre-existing-diagnostic`, `helper-context-logged`,
   `helper-return-path`, `paired-with-return-false-below`,

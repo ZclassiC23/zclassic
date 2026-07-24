@@ -32,8 +32,8 @@ static struct { int64_t h; int64_t reason; uint64_t reps; }
     g_select_idle_warn = { .h = -1, .reason = UA_SELECT_IDLE_NONE };
 
 /* Registry-visible typed blocker for a REAL apply-candidate anomaly (as
- * opposed to a legitimate window-lag wait). See the lane/stall-taxonomy audit
- * (Task A): utxo_apply_select_apply_block returning NULL previously folded
+ * opposed to a legitimate window-lag wait). See the stall-taxonomy audit
+ * (Task A): utxo_apply_select_apply_block returning NULL must not fold
  * BOTH the legitimate backpressure classes (active-chain window lag,
  * no-script-hash yet) AND the genuine anomalies (the block map / durable
  * parent / on-disk body disagreeing with the height-keyed verdict) into one

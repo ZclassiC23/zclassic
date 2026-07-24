@@ -1,16 +1,16 @@
-# OS-A4 — Noise P1: wire the encrypted transport onto the P2P byte stream
+# OS-A4 — Noise P1: the encrypted transport on the P2P byte stream
 
-Status: EXECUTABLE RECIPE. Lane WF-security/A4 (opus). This document turns
-`docs/work/secure-transport-design.md` into a landable Phase-1 slice. Every
-file:line below was re-read on main at authoring time (post `6405cf48d`); lines
-rot — re-grep the anchor tokens (`send_segment_create(buf, total)`,
-`recv(target_fd`) before editing.
+This is the implementation contract for `docs/work/secure-transport-design.md`'s
+Phase-1 slice. Re-grep the anchor tokens (`send_segment_create(buf, total)`,
+`recv(target_fd`) before editing — lines rot.
 
-Phase-0 is DONE and this recipe consumes it as-is (NO edits to lib/session or
-lib/crypto): `lib/session/noise_handshake.{c,h}` (Noise_XX/_NK driver) and
+Built on `lib/session/noise_handshake.{c,h}` (Noise_XX/_NK driver) and
 `lib/session/session_transport.{c,h}` (record layer: 3-byte-length ChaCha20-
 Poly1305 frames, per-direction counters, epoch-in-AAD rekey), over
 `lib/crypto/{x25519_safe,hkdf_sha256,chacha20poly1305,curve25519,hmac_sha256}`.
+The transport is implemented and armed as INITIATOR in `lib/net/src/net.c`
+(decrypted/torn down in `lib/net/src/connman.c`), default OFF pending
+rollout.
 
 ## 0. The one structural invariant (why parity holds)
 
@@ -321,7 +321,7 @@ conditional). WARN→HARD once stable; the byte-parity test is the real proof.
 
 ## 8. Consensus parity confirmation (transport is NON-consensus)
 
-Confirmed from code this session: `g_msg_dispatch` keys purely on the 12-byte
+Confirmed from code: `g_msg_dispatch` keys purely on the 12-byte
 command string from `struct msg_header`; `net_message_read_data` strips framing
 before any handler; the eight reducer stages read stored block/tx data via
 `reducer_frontier.c`, never live socket bytes; keys/nonces never feed block/tx

@@ -1,4 +1,4 @@
-> **ARCHIVED / SUPERSEDED.** Superseded by docs/work/FORWARD_PLAN.md + docs/work/self-verified-tip-plan.md; docs/TENACITY.md remains the standing doctrine. See `docs/work/ROADMAPS.md` for the live roadmap index. Kept for history — do not act on this as current.
+> **ARCHIVED / SUPERSEDED.** Superseded by docs/work/FORWARD_PLAN.md + docs/work/self-verified-tip-plan.md; docs/TENACITY.md remains the standing doctrine. See `docs/work/README.md` for the live roadmap index. Kept for history — do not act on this as current.
 
 # Tenacity Roadmap — sync super fast, fail almost never
 
@@ -16,14 +16,35 @@ The three principles every item anchors to (state-duplication → divergence; ve
 
 ## Ordered items
 
-### 1. Invariant A — frontier-bounded tip — DONE (`21d177bf9`+`447fa757b`, merged `a2da7e107`), guarded by build+lint+`test_parallel` 0/409. Makes Wedge A (restore installs a tip above the validated header frontier) unwritable: every restore install funnels through the single `utxo_recovery_commit_tip` chokepoint with evidence-based floor rewind, and installs must be trust-rooted (pprev descent to genesis/SHA3-anchor).
+### 1. Invariant A — frontier-bounded tip
 
-### 2. Oversize grandfather fix + full genesis replay — DONE (`ccc7fbbfa`, merged `b0c0b4f9a`). **Standing rule:** legacy oversize txs (413 found, h=478544..1968856, max 1,922,197 B — mined when the block-size rule was larger) are excused via a txid-keyed grandfather allowlist in `domain/consensus/src/tx_structural.c`, **BLOCK context only** — mempool and fresh blocks stay strict at `MAX_TX_SIZE_AFTER_SAPLING=102000` (= zclassicd live behavior). The standing-nightly-replay institution (commitment == zclassicd `gettxoutsetinfo` every run) is item 5.
+Makes Wedge A (restore installs a tip above the validated header frontier)
+unwritable: every restore install funnels through the single
+`utxo_recovery_commit_tip` chokepoint with evidence-based floor rewind, and
+installs must be trust-rooted (pprev descent to genesis/SHA3-anchor).
+Guarded by build+lint+`test_parallel`.
 
-### 3. Reindex epilogue derivation — recovery must not manufacture the next wedge — DONE (`reindex_epilogue.c`, wired at `config/src/boot_index.c:402`), guarded by `test_reindex_epilogue.c`. The epilogue derives in one ordered commit: reseeds `coins_kv` from the replayed set, recomputes (never deletes) the SHA3 commitment, clamps the reducer cursors to the replayed tip.
+### 2. Oversize grandfather fix + full genesis replay
+
+**Standing rule:** legacy oversize txs (413 found, h=478544..1968856, max
+1,922,197 B — mined when the block-size rule was larger) are excused via a
+txid-keyed grandfather allowlist in `domain/consensus/src/tx_structural.c`,
+**BLOCK context only** — mempool and fresh blocks stay strict at
+`MAX_TX_SIZE_AFTER_SAPLING=102000` (= zclassicd live behavior). The
+standing-nightly-replay institution (commitment == zclassicd
+`gettxoutsetinfo` every run) is item 5.
+
+### 3. Reindex epilogue derivation — recovery must not manufacture the next wedge
+
+`reindex_epilogue.c` (wired at `config/src/boot_index.c:402`), guarded by
+`test_reindex_epilogue.c`. The epilogue derives in one ordered commit:
+reseeds `coins_kv` from the replayed set, recomputes (never deletes) the
+SHA3 commitment, clamps the reducer cursors to the replayed tip.
 
 ### 4. Seal + Window — `window_rebuild`, the one recovery verb *(DESIGN)*
-**Status: PLANNED unless a line is marked IS.** Survey basis: main @`706a7c00a`. Consensus parity untouched throughout — `ZCL_FINALITY_DEPTH`, checkpoints, validity rules are *read*, never written. Doctrine home: `docs/TENACITY.md`.
+**Status: PLANNED unless a line is marked IS.** Consensus parity untouched
+throughout — `ZCL_FINALITY_DEPTH`, checkpoints, validity rules are *read*,
+never written. Doctrine home: `docs/TENACITY.md`.
 
 **The doctrine (THE ZCLASSIC23 WAY).** The chain is the only immutable truth. Derived state lives in exactly two domains. The **SEALED DOMAIN** (≤ seal height S): pinned by a checkpointed SHA3 UTXO commitment, recomputable from genesis, continuously proven by the standing replay institution (item 5). The **WORKING WINDOW** (> S): cursors, stage logs, coin deltas, verdicts, mirrors — explicitly **disposable**. One recovery verb replaces the entire ladder: **`window_rebuild`** — discard the window, reset to the seal, replay forward, recompute the commitment, verify, resume. **Recompute, never repair.** The evidence: every recovery that has worked was a recompute (cold-import, reindex, auto-reindex, reorg unwind); every one that has failed/re-wedged was a repair (anchor heals, backfills, reconcile guesses, oscillating poison rewinds).
 
@@ -69,16 +90,18 @@ Window inventory (everything > S; all IS, survey-verified): the 8 stage cursors 
 
 Rule of thumb: **anomaly above S ⇒ rebuild; anomaly at/below S ⇒ page.** Nothing in between exists anymore.
 
-#### 4e. The deletion list (LOC by `wc -l`; every delete gated on grep-proven zero callers; `boot.c:1709` is the canary, falls first)
-- **Wave A (canonical-plan step-7 slate, retargeted at window_rebuild; lands only after 4f M1–M3):** `utxo_recovery_torn_anchor.c` 213; `stage_repair_reducer_frontier_{tipfin,refill,purge,coin}.c` + the tear branch 649+742+337+786+~400; `reducer_frontier_reconcile_light.c` 643; the chain_restore ladder (repair 692, disk_repair 490, executor 230, planner 74, boot_snapshot 176, boot_activation 50, integrity 148) 1,860; coins_view_sqlite rewind/reconcile/case-b ~300–500. **Subtotal ≈ 5,900–6,150.**
-- **Wave B (subsumed by "any window anomaly ⇒ rebuild"):** coin re-mint scanners (`stage_repair_coin_backfill{,_scan,_util}.c`) 1,720; point rungs (`stage_repair_rewind.c` 379, `utxo_apply_delta_repair.c` 456, `stage_repair_header_solution.c` 201, `stage_repair_body_fetch.c` 196, `stage_repair.c` 138, `stale_validate_headers_repair.c` 231) 1,601; the operator repair surface → one `zcl_window_rebuild` (`repair_controller{,_rebuild,_utxo}.c` + `blockchain_controller_recovery.c`) 1,678; guess-between-copies orchestration (`recovery_policy.c`, `utxo_recovery_{backfill,frontier_gate}.c`, majority of `utxo_recovery_{restore,service}.c` — **carve-out:** the external zclassicd/LevelDB import seam survives) net ~1,500–2,000; boot reconcile heuristics + block_index loader repair tails ~1,000–1,500; legacy self-heal hot path 401.
-- **Explicit KEEPS:** `boot_auto_reindex.c` + `boot_crashonly.c` (the fallback rung); `utxo_recovery_ldb_copy.c` (verified-install half); `utxo_apply_delta_reorg.c` (inner fast path AND the verb's step-3 engine); `rolling_anchor_service.c` (extended into seal ratifier + stall-pages fix).
-- **Additions:** seal writer + ratify ≈ 450–600; verb + sentinel + boot wiring ≈ 500–700; native command + state dump ≈ 150; fixtures/tests ≈ 800–1,200.
-- **The arithmetic:** Waves A+B itemized sum to ≈13,500–15,000 gross (a CEILING). Committed slate is the conservative **−9,000 to −10,500 gross production LOC** of the measured 13,760-LOC repair-family census (~16.2k with embedded branches), against ~+1,300–1,600 added — subsumes and more than doubles the old item's −4,500 gross slate.
+#### 4e. The deletion list
+
+Every delete is gated on grep-proven zero callers, `boot.c:1709` is the
+canary and falls first. The current per-file consumer graph and phasing
+authority is [`ladder-carve-audit.md`](./ladder-carve-audit.md); do not
+re-derive LOC estimates here.
 
 #### 4f. Migration sequencing (hard ordering)
-1. ~~Land `fix/header-splice-derive-heights`~~ DONE (`c572def48`, merged `600efd53b`) — trustworthy window *content* at write time (heights from parent links, hash-bound verdicts). Complementary, zero overlap.
-2. Canonical-frontier steps 1–6: Invariant A DONE (`a2da7e107`) + derive-`coins_best` / demote-`utxos`-mirror **semantics** (plan steps 5–6, IN FLIGHT, worktree branch `refactor/derive-coins-best-demote-mirror`: derivation fn + unit tests built, boot-gate + count repoints in progress — depend on the semantics, not the branch name).
+1. Trustworthy window *content* at write time (heights from parent links,
+   hash-bound verdicts) — landed, complementary to this plan, zero overlap.
+2. Canonical-frontier steps 1–6: Invariant A (item 1 above) plus
+   deriving `coins_best` / demoting the `utxos` mirror.
 3. **M1 — the seal (additive only):** seal table + candidate hook + ratify tick + prefix-end getter + `zclassic23 dumpstate seal` + the rolling-anchor page-on-read-failure fix. Ships independently; proves itself by accumulating ratified seals live, zero behavior change.
 4. **M2 — the verb:** `window_rebuild_run` + sentinel + `boot_crashonly` rewire (auto-reindex demoted to fallback). Fixture-proven before any trigger uses it.
 5. **M3 — trigger rewire:** §4d rows 1–7 flipped one at a time, each with its fixture; old rung stays compiled-but-uncalled one step, then grep-zero-callers, then delete.
@@ -164,7 +187,7 @@ these harden the bridge.
   `tip_window_holes`; confirm both sanitizers clean + the canary survives. Review the
   lock change against the LOCK-ORDER LAW (do NOT take `cs_main` while holding a leaf
   lock the drive path holds).
-- **(d1) Scope the replay-canary FAIL sentinel** — DONE. `canary_sentinel_watch.c`
+- **(d1) Scope the replay-canary FAIL sentinel.** `canary_sentinel_watch.c`
   filters both stale dimensions in the shared `~/.local/state/zclassic23-canary/`
   verdict dir (cross-build FAILs never page; FAILs predating the watcher's own
   start are recorded `stale_run` but never latch `replay_canary_failed`),
@@ -183,7 +206,7 @@ these harden the bridge.
 
 ### L2 — continuous proof (all LOCAL, no GitHub Actions)
 
-- **(4.1) Local pre-push enforcement** — DONE: tracked `tools/githooks/pre-push`,
+- **(4.1) Local pre-push enforcement** — tracked `tools/githooks/pre-push`,
   armed per clone by `make install-hooks` (`git config core.hooksPath
   tools/githooks`), runs `make ci` before push. `make lint`/`make ci` also run
   `check-git-hooks-installed`, which fails if the clone is unarmed or the
@@ -236,16 +259,8 @@ by the meta-detector above.)
 
 ## Stability hardening backlog
 
-Landed since (verified against HEAD, dropped from this list): deploy
-force-rebuild on every push (`Makefile` `deploy` target), loud DNS-seed
-resolution failure (`lib/net/src/connman.c`), IBD-class `getheaders` interval
-while a header-band hole is open (`syncsvc_header_band_hole_open()` /
-`syncsvc_getheaders_interval()`), unconditional cold-import seed-failure
-logging, and `healthy_outbound` peer accounting in the chain-advance
-coordinator dumps.
-
-Still-open, non-consensus, hermetically testable (grep-verified absent from
-HEAD at fold time — re-check before starting):
+Still-open, non-consensus, hermetically testable (re-check absent from HEAD
+before starting):
 
 - **`header_band` / `connman` health surfaced richer in `zclassic23 dumpstate`** —
   island-root / contiguous-frontier / remaining / ETA, and "N/3 healthy,
@@ -292,19 +307,14 @@ as repairable).
 
 ---
 
-## Sequencing at a glance
+## Sequencing
 
-```
-DONE (merged):              1 (Invariant A)   2 (grandfather + replay proof)
-                            5 (replay canary HARNESS+GATE; 7-green-nights + timer install owner-gated)
-                            4f-step-1 (header-splice-derive-heights)
-NOW (parallel, in flight):  4f-step-2 (derive coins_best / demote mirror, worktree)
-                            4-M1 (the seal — purely additive)
-THEN:                       3 (reindex epilogue)   5 timers (gates 4)
-THEN:                       4-M2/M3 (window_rebuild verb, then trigger rewire)
-THEN:                       4-M4 (delete the ladder, Waves A→B)  6 (extremals)  7 (crash soak)
-THEN:                       8 (one-command bootstrap + weekly canary)
-LAST (live, owner-gated):   9 (drop -nobgvalidation)
-```
+Remaining order: 4-M1 (the seal, additive) → 4-M2/M3 (`window_rebuild` verb,
+then trigger rewire) → 4-M4 (delete the ladder per
+[`ladder-carve-audit.md`](./ladder-carve-audit.md)) → 6 (extremals) → 7
+(crash soak) → 8 (one-command bootstrap + weekly canary) → 9 (drop
+`-nobgvalidation`, live, owner-gated, last).
 
-Everything here is an invariant at a chokepoint, a deletion, or a gate that samples reality. Nothing adds a repair module — item 4 adds exactly one recovery *verb* and deletes the ladder it replaces. Net production LOC is **negative**: item 4e's −9,000..−10,500 gross deletion against ~+1,300–1,600 added ≈ **−7,500..−9,000 net** (more than doubles the canonical plan's −2,800..−3,100 slate). Standing compute cost ~1–1.5 h/night + ~30 min/week on hardware we own.
+Everything here is an invariant at a chokepoint, a deletion, or a gate that
+samples reality — nothing adds a repair module. Item 4 adds exactly one
+recovery *verb* and deletes the ladder it replaces.

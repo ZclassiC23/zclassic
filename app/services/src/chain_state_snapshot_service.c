@@ -40,7 +40,7 @@ void csr_snapshot(struct chain_state_repository *csr,
      * publish through the CSR.  Copy only repository-owned memory while this
      * mutex is held.  The external progress.kv/node.db observations below run
      * after unlock, otherwise health/agent snapshotting creates the inverse
-     * csr->progress edge and deadlocks the reducer (observed live 2026-07-11). */
+     * csr->progress edge and deadlocks the reducer. */
     pthread_mutex_lock(&csr->lock);
     if (csr->chain_active) {
         out->tip_height = active_chain_height(csr->chain_active);

@@ -241,8 +241,8 @@ bool syncsvc_should_restart_headers_from_tip(size_t accepted,
                                              bool band_fill_in_progress)
 {
     /* A frontier-extending batch below an installed-above-frontier island
-     * is the band fill in progress — restarting from tip here is the
-     * self-defeating loop that kept the band hole open (2026-06-11). */
+     * is the band fill in progress — restarting from tip here is a
+     * self-defeating loop that keeps the band hole open forever. */
     if (band_fill_in_progress)
         return false;
     if (accepted == 0 || !last_header)

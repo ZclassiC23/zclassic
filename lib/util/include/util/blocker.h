@@ -5,24 +5,17 @@
  *
  * Why this exists
  * ----------------
- * Previously, "blocked" was a string. legacy_mirror_sync_service
- * stored a `char activation_blocker[128]` text field; chain_advance_
- * coordinator's `mir->blocked` was a bare bool computed from whether
- * that string was non-empty. There was no way to ask:
+ * A bare string or bool for "blocked" cannot answer:
  *
  *   - Is this blocker recoverable, or permanent?
  *   - What's the deadline before something must escalate?
  *   - What's the escape action when the deadline lapses?
  *   - How many times has it re-fired? Is it spam?
  *
- * Concretely: on 2026-05-21 the live node ran 4.3 days with
- * `activation_blocker = "activation-no-progress"` re-firing every ~3 s
- * (~5/sec at peak), 193+ counter increments in 10 s of telemetry —
- * because the underlying recorder had no de-duplication and the
- * coordinator had no durable way to distinguish a transient blocker
- * from a permanent one. The supervisor was firing recoveries,
- * but the recovery target itself was wedged behind a typeless blocker
- * that had no escape.
+ * Without de-duplication and a durable class distinction, a blocker can
+ * re-fire every few seconds for days while the supervisor keeps firing
+ * recoveries against a recovery target that stays wedged behind a typeless
+ * blocker with no escape.
  *
  * The primitive
  * --------------
@@ -34,7 +27,7 @@
  *   - retry accounting (`retry_count`, `retry_budget`)
  *   - reason (human + structured tail)
  *
- * Sites that previously set a string blocker now call `blocker_set`
+ * Every site names a block by calling `blocker_set`
  * with a typed record. The primitive de-duplicates within a token-
  * bucket window (5/min default). A dedicated supervisor child
  * (`chain.blocker_escape`) sweeps the registry, calls the registered
@@ -56,9 +49,9 @@
  * snapshot-and-dispatches outside the lock; escape callbacks may
  * freely call any blocker_* function.
  *
- * Root-cause chaining (additive, 2026-07-20)
- * -------------------------------------------
- * Live triage repeatedly surfaces two "unrelated" blockers that are
+ * Root-cause chaining
+ * -------------------
+ * Triage repeatedly surfaces two "unrelated" blockers that are
  * actually one root cause + one downstream symptom — e.g. an earlier
  * stage's body-read failure at height H means the coin that height
  * creates never enters coins_kv, so a much-later height's

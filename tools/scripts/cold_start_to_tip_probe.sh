@@ -51,11 +51,8 @@ seeded=0
 last_h=-1
 last_hdr=-1
 
-json_escape() {
-    printf '%s' "$1" \
-        | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g; s/\r/\\r/g' \
-        | tr '\n' ' '
-}
+# shellcheck source=tools/scripts/stopwatch_json_lib.sh
+. "$REPO_ROOT/tools/scripts/stopwatch_json_lib.sh"  # json_escape
 
 json_string() {
     printf '"%s"' "$(json_escape "$1")"

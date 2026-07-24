@@ -466,7 +466,7 @@ int test_sync_watchdog_conditions(void)
     }
 
     {
-        /* Regression (live latch 2026-07-09): a request that left flight
+        /* Regression: a request that left flight
          * without a body (disconnect-requeue / backpressure drain) must not
          * read as pending work once the queue is empty. The old
          * requested > received+timed_out arm turned that residue into a

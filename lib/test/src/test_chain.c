@@ -1864,7 +1864,7 @@ int test_chain(void)
 
     /* Regression test: skip_contextual gate must fire when the PoW averaging
      * window cannot be walked back contiguously from pindex_prev. Models
-     * the live mainnet 2026-04-21 case where FlyClient snapshot placed
+     * the case where a FlyClient snapshot places
      * tip=3,081,601 but block_index only reaches 3,081,408, so the
      * 17-block GetNextWorkRequired window returns weakest-allowed nBits
      * and every inbound header gets bad-diffbits-rejected. */

@@ -141,8 +141,8 @@ static bool status_machine_token(const char *value)
 /* ── Named-predicate validation ────────────────────────────────────
  *
  * zcl.public_status.v2 is validated by a long ordered list of
- * predicates. Historically these lived in one giant `&&` chain, so
- * whichever predicate failed, the operator/AI only ever saw one
+ * predicates. A single giant `&&` chain is unsafe here: whichever
+ * predicate fails, the operator/AI would only ever see one
  * opaque message ("RPC agent returned an error or invalid
  * zcl.public_status.v2") with no clue which field was the problem —
  * including the common case of an older node binary whose `agent` RPC

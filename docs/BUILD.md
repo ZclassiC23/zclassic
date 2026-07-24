@@ -65,163 +65,35 @@ build/bin/zclassic23-dev agentdevstatus
 build/bin/zclassic23-dev agentbuild
 ```
 
-`make dev-watch` is the save-driven AI/operator loop. It debounces and
-coalesces changed files, asks the shared `agentimpact` rules for the smallest
-focused verification set, and defaults to verify-only mode:
-
-- `MODE=verify` (the default) runs `make ff` and records a verdict without
-  linking, hot-swapping, or activating a runtime generation.
-- `MODE=auto`, `MODE=apply`, `MODE=hotswap`, `MODE=reload`, and `MODE=stage`
-  are Phase-0 contained and fail before any runtime publication or staging.
-  They do not fall back to another activation path.
-- `MODE=check` runs classification and focused checks without activation.
-
-Only `verify` and `check` are public watcher modes today. The historical
-activation machinery remains in-tree for tests and completion of the unified
-transaction, but it is not an operator authority. Watch-command override
-environment variables are accepted only by the hermetic `--self-test` path.
-
-Each attempted save writes one authoritative `zcl.dev_cycle.v1` record under
-`~/.local/state/zclassic23-dev/cycles/`, atomically refreshes
-`latest-cycle.json`, and updates the watcher heartbeat. The record contains the
-changed files, impact plan, selected path/reason, per-phase timings, candidate,
-running, and last-good generations, test/probe results, rollback result, a
-failure capsule, resident hot-swap response/provenance when applicable, and one
-executable `agent_next_action`. `make dev-watch` uses
-`inotifywait` when available and otherwise retains a stock-toolchain polling
-fallback. `make dev-watch-selftest` is the deterministic, node-free contract
-test.
-
-`make dev-activation-selftest` exercises the otherwise unreachable activation
-machinery only inside a mode-0700 `/tmp` fixture. The deploy script requires a
-mode-0600 sentinel through a bound inherited file descriptor, exact
-fixture-local paths, an inert candidate, and allowlisted fake service commands.
-No public environment variable can enable this mode or target the real dev
-HOME/unit. The retained generation manifest, candidate preflight, post-restart
-probe, recovery plan, and systemd intent all bind the baked 64-hex
-`source_id_sha256`; `build_commit` is optional GitHub trace metadata and never
-a freshness or activation decision.
-
-`make agent-dev-recover` is likewise read-only planning. Public `ARGS=--apply`
-and direct `recover-dev-lane.sh --apply` refuse before generation relinking,
-datadir replacement, or service commands. `make dev-recovery-selftest` proves
-the retained transaction only through its own inherited-FD, fixture-bound
-capability and fake service-command allowlist.
-
-The registry-owned C23 development plane is the preferred direct interface:
-
-```bash
-build/bin/zclassic23-dev dev loop ensure \
-  --input='{"root":"/home/rhett/github/zclassic23","mode":"verify"}'
-build/bin/zclassic23-dev dev loop status
-build/bin/zclassic23-dev dev loop wait \
-  --input='{"after_epoch":0,"timeout_ms":30000}'
-make hotswap-so FILES=app/controllers/src/status_native_handlers.c
-make t ONLY=hotswap_loader
-make hotswap-sim
-```
-
-`ensure` is singleton/idempotent, defaults to `mode:"verify"`, and returns the
-watcher ID used by `dev loop stop`. Changing an active watcher's mode requires
-stopping it first. The dev executable defaults this confined command tree to the
-`dev` operator lane, so the documented commands work without an environment
-prefix; an explicit canonical or soak lane still fails closed. The native
-cycle returns one bounded verdict after classify, proof, and build. Attempts to
-select `auto`/`apply`, call `dev.change.apply`, or publish through hot-swap
-return a structured containment refusal. The shell watcher remains a
-verify/check compatibility surface.
-
-The intended process-reload transaction is content-addressed under
-`~/.local/lib/zclassic23-dev/<generation>/`. Candidate build identity, native
-command catalog, and `ops selftest` are checked before the old process is
-disturbed. Activation takes a nonblocking lock and flips atomic `current` and
-`last-good` links. The bounded warm probe verifies the exact `/proc` executable,
-RPC, agent/operator contracts, and native-registry health. A failed candidate is
-quarantined; the activator restores `last-good`, restarts once, and verifies the
-recovery. Canonical and soak services, ports, and datadirs are rejected by the
-dev-lane guards. During Phase-0, `make deploy-dev`, `make deploy-dev-fast`,
-`make agent-deploy-fast`, `make agent-stage-dev`, and the direct deploy/hot-swap
-scripts hard-refuse unconditionally. A caller-supplied source identity cannot
-re-enable them. `dev.vcs.revert` remains source-only with
-`relink_generation=false`; `true` refuses before the source revert. This does
-not relax release, consensus, or full-suite gates.
-
-The native cycle no longer derives proof authority from a HEAD-relative Git
-dirty set. Its exact SHA-256 source epoch supplies supersession CAS; until a
-signed prior epoch can authenticate a content diff, every nonempty save event
-is conservatively routed through the reload/parity verification lane. This may
-cost more local CPU, but a path hint cannot downgrade the proof or authorize
-publication.
-
-`make agent-loop` remains the manual one-shot loop. It runs the cache-aware fast
-checks; set `ZCL_AGENT_LOOP_BIN=1` to also link the local dev binary.
-`ZCL_AGENT_LOOP_DEPLOY=stage|dev` reaches a contained backend and cannot stage
-or reload the dev lane.
-Native commands (`zclassic23 status`, `zclassic23 dumpstate <subsystem>`,
-`zclassic23 discover help`) are the agent interface. Use
-`build/bin/zclassic23-dev <leaf>` when checking the current development binary
-without paying the release LTO link.
-`make agent-doctor` is the no-build combined development check: build binary,
-dev-lane status, recent focused-test failure hints, dirty-file count, and the
-next safe command. Use `make agent-doctor ARGS=--json` for
-`zcl.agent_doctor.v1`.
-`make agent-dev-status` is the no-build read-only lane check: it reports the
-explicit `worker_lane` contract (`role=worker`,
-`mutation_policy=noncanonical_dev_only`, and
-`canonical_guard=never_touches_live_or_soak`), source/staged binaries, linger
-service PID, RPC readiness, the current/running/last-good/staged generations,
-activation lock, rejected generations, rollback availability, saved deploy
-state, current cycle and watcher heartbeat, background-quality freshness,
-latency-SLO status, auto-reindex marker, deploy blocker/reason, stale-marker
-candidate, and next safe action. Use
-`make agent-dev-status ARGS=--json` or `build/bin/zclassic23-dev status` for a
-machine-readable status form.
-When that status reports `auto_reindex_stale_candidate=true`, run
-`make agent-clear-stale-dev-reindex`; it archives the dev-lane marker only after
-the dev RPC serves at or above the marker anchor, and never touches canonical or
-soak.
-No busy-service path stages a generation during containment. `make
-agent-stage-dev` refuses; build and preflight must remain non-publishing until
-the complete transaction is implemented.
+`make dev-watch` is the save-driven AI/operator loop: `MODE=verify` (default)
+and `MODE=check` are the two public modes and only ever verify; `auto`,
+`apply`, `hotswap`, `reload`, and `stage` are Phase-0 contained and refuse
+before any runtime publication. Each attempted save writes one
+`zcl.dev_cycle.v1` verdict under `~/.local/state/zclassic23-dev/cycles/` and
+refreshes `latest-cycle.json`. `make dev-watch-selftest` is the deterministic
+contract test; `make dev-activation-selftest` and
+`make dev-recovery-selftest` exercise the otherwise-unreachable
+activation/recovery machinery inside `/tmp` fixtures only — no public
+environment variable reaches the real dev HOME/unit.
+The registry-owned C23 interface (`build/bin/zclassic23-dev dev loop
+ensure|status|wait`) reaches the same verify-only cycle without the shell
+wrapper. `make agent-loop` is the manual one-shot form
+(`ZCL_AGENT_LOOP_BIN=1` also links the dev binary); `make agent-doctor` and
+`make agent-dev-status` are the no-build status checks
+(`ARGS=--json` for `zcl.agent_doctor.v1` / `zcl.agent_dev_status.v2`).
+`make agent-index` regenerates `compile_commands.json`; `make dev-loop-bench`
+writes `zcl.dev_loop_bench.v1` latency samples. Full field-level semantics —
+every mode, the content-addressed generation/activation transaction, deploy
+guards, and the `agent-*` status contracts — live in
+[`docs/AGENT_API.md`](./AGENT_API.md) "Build loop"; this page stays the
+practical command list.
 
 Foreground candidate preflight uses `build/bin/zclassic23 ops selftest`. It
 validates every native leaf and generated input schema inside the candidate
 without depending on the health of the process being replaced. The exhaustive
 handler-dispatch self-test remains a background/live diagnostic.
 
-`make agent-index` generates root `compile_commands.json` by dry-running the
-real `DEV_OBJS` recipes. It therefore preserves generated-header prerequisites,
-the exact C23 flags, compiler/cache wrapper, and the normal `-Og` versus hot
-consensus/crypto/script/validation `-O2` split. It atomically records hash and
-freshness metadata under `.cache/zcl-agent-index/`; clangd is an optional
-consumer, not a build requirement. `zclassic23 agentbuild` embeds the current
-indexing status and an executable refresh command.
-
-`make dev-loop-bench` runs controlled no-op, controller, service, header,
-hot-swap, and process-reload cases and writes `zcl.dev_loop_bench.v1` with raw
-samples plus p50/p95 values. Hot-swap and reload are skipped unless the operator
-explicitly opts in with `ZCL_DEV_BENCH_ACTIVATE=1`, which measures the armed
-dev-lane hot-swap activate path, so an SLO is never claimed from build-only
-timings. `zclassic23 agentbuild` also exposes the latest benchmark status.
-
-In-process generation v2 is deliberately narrower than process reload. Its
-loader, simulator, and build paths remain available, but resident probing and
-every commit/publication entry point are Phase-0 contained. The intended mechanism
-admits only manifest-eligible, stateless native leaf providers; it stages the
-whole handler batch, validates ABI/capabilities/provenance, runs the generation
-self-test, and atomically publishes one resident registry snapshot. REST,
-diagnostics, services, models, storage, events, conditions, supervisors,
-network/wallet/crypto state, reducers, consensus, and bootstrap ownership remain
-`reload_required`. If publication is re-enabled after the transactional gates
-land, a committed hot-swap will remain process-local and disappear on restart;
-durable convergence must use the same receipt-bound activation transaction.
-No watcher currently schedules or stages a post-swap generation. Inspect any
-pre-containment provenance with
-`zclassic23 dumpstate hotswap` (`zcl.hotswap_generation.v2`). The resident
-mutation RPC (`dev_hotswap_native`) is dev-build only — release, canonical,
-and soak nodes never register it — and whole-generation publication entry
-points stay Phase-0 contained. Build and verify without resident
-loading:
+**Hot-swap (Tier-1, in-process).** Build/verify without resident loading:
 
 ```bash
 make hotswap-so FILES=app/controllers/src/status_native_handlers.c
@@ -229,53 +101,26 @@ make t ONLY=hotswap_loader
 make hotswap-sim
 ```
 
-`make hotswap` and
-`tools/dev/hotswap-running-dev.sh` always
-refuse and never call the loader. The live runtime surface is the single-leaf
-module loop: `make hotswap-try HANDLER=<leaf> ARGS="<cmd>"` rebuilds one
-swappable leaf's module `.so` and runs the command in a one-shot CLI with
-`ZCL_HOTSWAP_PRELOAD` against the dev lane; `make hotswap-apply HANDLER=<leaf>`
-commits the override in the running `zcl23-dev` node, gated on
-`-hotswap-activate` + `ZCL_HOTSWAP_ACTIVATE=1` + the exact dev datadir
-(canonical refused). Only the six read-only leaves on
-`config/hotswap_swappable.def` are eligible. Run
-`make hotswap-sim` for the focused deterministic simulated-network proof, and
-`make sim-fast` for the broader checked-in scenarios plus seeded replay sweep.
-Each successful mapping keeps both its code mapping and the exact artifact
-descriptor pinned for the process lifetime. This prevents `/proc/self/fd/N`
-loader-cache aliasing when several different providers are swapped in
-sequence; `zclassic23 dumpstate hotswap` reports
-`artifact_inode_pinned=true` for every accepted generation.
+`make hotswap` and `tools/dev/hotswap-running-dev.sh` always refuse. The live
+runtime surface is `make hotswap-try HANDLER=<leaf> ARGS="<cmd>"` (rebuilds
+one swappable leaf into a module `.so`, runs the command in a one-shot CLI via
+`ZCL_HOTSWAP_PRELOAD`) and `make hotswap-apply HANDLER=<leaf>` (commits the
+override in the running `zcl23-dev` node, gated on `-hotswap-activate` +
+`ZCL_HOTSWAP_ACTIVATE=1`; canonical refused). Only the six read-only leaves in
+`config/hotswap_swappable.def` are eligible. Inspect provenance with
+`zclassic23 dumpstate hotswap` (`zcl.hotswap_generation.v2`,
+`artifact_inode_pinned=true` per accepted generation) — full contract in
+`docs/AGENT_API.md`.
 
-`make fast-rebuild` is an alias for the local dev binary (`make dev-bin`). It
-writes per-file objects under
-`build/dev-obj/epochs/<compile-epoch>/`, links the exact candidate under
-`build/bin/dev/epochs/<compile-epoch>/`, then atomically refreshes the familiar
-`build/bin/zclassic23-dev` alias. It links without LTO, keeps symbols, and
-defaults most code to
-`ZCL_DEV_OPT=-Og` while compiling consensus/crypto/script/validation hot paths
-at `ZCL_DEV_HOT_OPT=-O2`; both are overrideable. The link step auto-selects
-`mold` or `ld.lld` through `ZCL_DEV_LINKER` when available; set
-`ZCL_DEV_LINKER=` to force the platform linker. When `ccache` is installed, the
-Makefile automatically wraps `CC` with it for rebuild speed; set
-`ZCL_USE_CCACHE=0` to opt out.
-
-For the absolute cheapest edit check, run `make fast-changed-compile`. It
-uses changed paths only as classification hints and always resolves the complete
-current dev source inventory through `make fast-compile`. Any source mutation
-selects a new compile epoch; `ccache`/`sccache` recovers unchanged translation
-units without reusing an object from a different source epoch.
-
-The host-local compile-epoch key binds the exact source SHA-256 and capture
-completeness, mutation token, compiler/toolchain fingerprint, profile, and
-effective compile/link flags. Per-TU object and depfile publication, candidate
-linking, and stable-alias publication are atomic. Final publication re-verifies
-the complete source/compiler/session record, so concurrent builds and an
-A→B→A edit/revert cannot publish a candidate from the wrong epoch.
-Epoch retention is bounded by `BUILD_EPOCH_KEEP` (default `3`). Lease
-acquisition prunes older inactive object trees and their matching candidates,
-but a lease is live only when both its `/proc` PID and process start tick still
-match; a concurrent Make epoch is therefore never garbage-collected.
+`make fast-rebuild` (alias for `make dev-bin`) links without LTO, keeps
+symbols, defaults to `ZCL_DEV_OPT=-Og` with consensus/crypto/script/validation
+hot paths at `ZCL_DEV_HOT_OPT=-O2` (both overrideable), and auto-selects
+`mold`/`ld.lld` via `ZCL_DEV_LINKER`. `make fast-changed-compile` /
+`make fast-compile` are the cheapest no-link edit check. The compile-epoch key
+(source SHA-256 + toolchain fingerprint + flags) makes per-TU object/candidate
+publication atomic and `ccache`/`sccache`-cacheable; retention is bounded by
+`BUILD_EPOCH_KEEP` (default `3`), pruned only when a lease's `/proc` PID and
+start tick no longer match a live build.
 
 This binary is for local AI/operator iteration only. `make zclassic23`,
 `make deploy`, reproducible builds, and releases continue to use
@@ -293,10 +138,9 @@ exact candidate is linked under `build/bin/test-strict/epochs/`. Consequences:
 - **Every edit gets a fresh immutable epoch.** Make resolves every current
   source in that epoch; compiler-cache hits recover unchanged TU work before
   one plain link. A no-edit invocation reuses the exact verified epoch.
-- **Header/`.def` and system-header inputs are tracked.** The retired
-  whole-program rule listed only `.c` files as prerequisites, so a header-only
-  edit did **not** rebuild `test_parallel` at all. Complete depfiles plus the
-  epoch key close that false-green path.
+- **Header/`.def` and system-header inputs are tracked** via complete `-MD -MP`
+  depfiles plus the epoch key, so a header-only edit reliably rebuilds
+  `test_parallel` — it is never a false-green no-op.
 - **`ccache` makes it cacheable.** A giant multi-source `cc` invocation cannot
   be cached; per-TU `.o` compiles hit the cache, so a clean object tree with a
   warm cache rebuilds in a few seconds. `ccache` stays optional (auto-detected
@@ -335,7 +179,8 @@ heuristic-warning family (`-Wformat-truncation`/`-overflow`, `-Warray-bounds`,
 runs at `-O3`, and no other build in the tree enforces them (release and
 `build-only` defer codegen to the LTO link; `test_parallel_fast` runs at `-O1`),
 so excluding them keeps the enforced warning set a superset-or-equal of the
-retired monolith's. Neither delta can change test behavior.
+whole-program build's (`test_parallel_wpo`). Neither delta can change test
+behavior.
 
 **Whole-program variant for debugging.** `make test_parallel_wpo` still builds
 the original monolithic whole-program LTO binary at
@@ -381,24 +226,22 @@ usual `ulimit -s unlimited`: ASan + PIE with an unlimited stack
 intermittently aborts at startup with "Shadow memory range interleaves with
 an existing memory mapping" (google/sanitizers#856).
 
-**Known-good as of 2026-07-18 — UBSan "left shift" in `lib/crypto/src/ed25519.c`
-and `curve25519.c`:** a `make t-asan` pass flags UBSan shift-base reports at
-`ed25519.c:81`/`:304` and `curve25519.c:50` — the TweetNaCl `int64_t`
-carry-propagation idiom (`o[i] -= c << 16;`), never the ref10
-sign-bit-into-`<<24` pattern. The left operand is legitimately negative (gf
-limbs are signed by design), so a pre-C23 compiler calls this UB; the project
-builds `-std=c23`, which redefines signed left shift as modular (the C++20
-rule), so it is no longer UB at the language level even though gcc's UBSan
-instrumentation still flags it under the old rule. Not a live miscompilation:
-both expressions lower to a plain `shlq`, identical to the C23-defined
-result, and the reachable magnitudes (`|c| <= 2^47`, `|carry| << 2^24`) never
-approach overflow. Fix (not yet applied — Ed25519 is consensus-adjacent per
-`docs/CONSENSUS_PARITY_DOCTRINE.md`, so it needs the full replay-canary bar,
-not just green ASan): cast through `uint64_t` before the shift,
-`(int64_t)((uint64_t)c << 16)` — bit-exact for all inputs (defined
-conversions + a defined unsigned shift either side), same `shlq` codegen
-(objdump-diff verifiable), silencing the sanitizer noise without touching
-consensus-relevant math.
+**Known limitation — UBSan "left shift" in `lib/crypto/src/ed25519.c` and
+`curve25519.c`:** `make t-asan` flags UBSan shift-base reports at
+`ed25519.c:81`/`:304` and `curve25519.c:50`, the TweetNaCl `int64_t`
+carry-propagation idiom (`o[i] -= c << 16;`). The left operand is
+legitimately negative (gf limbs are signed by design); the project builds
+`-std=c23`, which redefines signed left shift as modular (the C++20 rule), so
+this is not UB at the language level even though gcc's UBSan instrumentation
+still flags it under the pre-C23 rule. Not a live miscompilation: both
+expressions lower to a plain `shlq`, identical to the C23-defined result, and
+the reachable magnitudes (`|c| <= 2^47`, `|carry| << 2^24`) never approach
+overflow. Fix not yet applied — Ed25519 is consensus-adjacent per
+`docs/CONSENSUS_PARITY_DOCTRINE.md`, so silencing it needs the full
+replay-canary bar, not just green ASan: cast through `uint64_t` before the
+shift, `(int64_t)((uint64_t)c << 16)` — bit-exact for all inputs, same `shlq`
+codegen (objdump-diff verifiable), silencing the sanitizer noise without
+touching consensus-relevant math.
 
 ## ThreadSanitizer profiles (opt-in)
 
@@ -425,8 +268,8 @@ inside them.
   validation / net bootstrap / cpu topology) with
   `TSAN_OPTIONS=halt_on_error=1` so the first report fails the run.
   Deliberately **not** wired into `make ci` (instrumented runs are several
-  times slower and push times must stay stable). Green as of the R1 fix
-  below. Override the set with `TSAN_CI_GROUPS="..."`.
+  times slower and push times must stay stable). Override the set with
+  `TSAN_CI_GROUPS="..."`.
 - **`make dev-tsan`** — the dev node under TSan
   (`build/bin/zclassic23-dev-tsan`, `-Og`, non-LTO, object tree
   `build/dev-tsan-obj/`). For local data-race debugging on a scratch
@@ -434,35 +277,18 @@ inside them.
 
 `t-tsan` and `tsan-ci` both read `tools/tsan.supp` via
 `TSAN_OPTIONS=suppressions=...`. Every active entry there must be confirmed
-benign with a written justification — never suppress an untriaged report;
-it ships with zero active suppressions (comments only) — the one race found
-so far (below) was fixed in code, not hidden.
+benign with a written justification — never suppress an untriaged report. It
+ships with zero active suppressions (comments only): fix a real race in code,
+never hide it behind a suppression.
 
-**Known-good as of 2026-07-18 — first TSan sweep, R1 fixed:** a ~23 s
-thread-relevant subset of `test_parallel` (supervisor incl. its production
-tree / workpool / mailbox / parallel range-fold / parallel validation
-determinism / net bootstrap / cpu topology / net + peer-lifecycle / header
-sync / chain-advance atomicity / connman locking / service-state-driver /
-reducer-drive watchdog / sync-watchdog conditions, the 7 `tsan-ci` groups run
-3x for timing sensitivity) found **one unique real race**: R1 —
-`struct thread_liveness_child.id` (`lib/util/src/thread_liveness.c`)
-published via a plain (non-atomic) store in `thread_liveness_register()`
-while an already-spawned worker thread plain-reads it in
-`thread_liveness_worker_alive()` — the documented
-spawn-then-register contract, and exactly what production callers do
-(`rpc_timeout_start_watchdog`, `heartbeat.c`, `metrics.c`). Formally a C11
-data race; benign-looking on x86-64 (aligned 4-byte load/store can't tear,
-so the worst pre-fix outcome was one skipped, self-healing liveness beat) but
-real UB and a genuine missing-synchronization risk on weaker memory orders.
-**Fixed** (`lane/fix-tsan-r1`, merged): `id` is now `_Atomic
-supervisor_child_id`, release-stored after `supervisor_register()` completes
-and acquire-loaded by every reader (beat, worker_alive/_exited,
+`thread_liveness_child.id` (`lib/util/src/thread_liveness.c`) is
+`_Atomic supervisor_child_id`, release-stored after `supervisor_register()`
+completes and acquire-loaded by every reader (beat, worker_alive/_exited,
 stop_begin/_finish, retire, idempotent guards) — a worker observing a valid
-id also observes the completed registry insertion. Verified:
-`make t-tsan ONLY=test_supervisor` x3 -> 0 reports (was 3/4 flaky-red);
-`make tsan-ci` green. This was a THIN baseline (short unit-style runs, small
-race windows) — a full-suite TSan pass and a `dev-tsan` boot on a scratch
-datadir are still open follow-ups, not yet run.
+id also observes the completed registry insertion. `tsan-ci` runs the
+7 thread-spawning groups 3x for timing sensitivity. A full-suite TSan pass and
+a `dev-tsan` boot on a scratch datadir remain open (`tsan-ci` covers only a
+thin, short-unit-style subset with small race windows).
 
 Both runners wrap the harness in `setarch -R` (ASLR off): TSan reserves
 fixed shadow address ranges and the default-ASLR PIE/mmap placement

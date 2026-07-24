@@ -6,7 +6,7 @@
  *
  * The LIB_MODULES and shape lists here are the in-code MIRROR of the
  * Makefile's LIB_MODULES variable and the seven app/ shape folders (the
- * eighth shape, Event, has no app/ folder — deleted 2026-07-17, owned by
+ * eighth shape, Event, has no app/ folder — it is owned by
  * lib/event/ + lib/storage/event_log.c, see FRAMEWORK.md §3 row 7). A parity
  * test (test_codeindex, case 6) asserts they stay in sync. Keep them sorted
  * the way the Makefile lists them is NOT required — the parity test compares

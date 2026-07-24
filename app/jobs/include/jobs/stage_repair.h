@@ -316,8 +316,8 @@ static inline bool stage_reducer_frontier_result_has_row_residue_evidence(
  * Sentinel is -1 = no hole (the reconcile initializes all five to -1 before
  * the scan; a zeroed struct reads as a hole at height 0 — initialize like the
  * reconcile does). Suppressing a result carrying one of these MUST be loud:
- * on 2026-07-02 the peer gate silently discarded the recomputed
- * script_validate/proof_validate refill at 3166989 for 3 h. */
+ * a silently-discarded script_validate/proof_validate refill pins H*
+ * indefinitely with no operator-visible signal. */
 static inline bool stage_reducer_frontier_result_has_refill_hole_evidence(
     const struct stage_reducer_frontier_reconcile_result *rr)
 {

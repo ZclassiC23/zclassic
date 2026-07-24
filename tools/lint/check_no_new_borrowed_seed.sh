@@ -26,6 +26,8 @@ ROOT="${1:-$(cd "$(dirname "$0")/../.." && pwd)}"
 cd "$ROOT"
 # shellcheck source=tools/lint/scan_exclusions.sh
 source tools/lint/scan_exclusions.sh
+# shellcheck source=tools/lint/gate_lib.sh
+source tools/lint/gate_lib.sh
 
 BASELINE=tools/lint/borrowed_seed_caller_baseline.txt
 DEF_FILE=lib/storage/src/coins_kv_boot_rebuild.c
@@ -41,14 +43,9 @@ if [ ! -f "$DEF_FILE" ] || ! grep -q "$SYMBOL" "$DEF_FILE"; then
     exit 2
 fi
 
-[ -f "$BASELINE" ] || touch "$BASELINE"
 declare -A baseline
 baseline_count=0
-while IFS= read -r line; do
-    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
-    baseline["$line"]=1
-    baseline_count=$((baseline_count + 1))
-done < "$BASELINE"
+gate_load_list_file "$BASELINE" baseline baseline_count
 
 # All caller .c files (paren-call excludes the comment mentions, which use a
 # space / a `)` after the name). Exclude the definition file and the test tree.

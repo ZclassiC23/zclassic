@@ -1,10 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_fold_inram_crash_proof — the two proof items the 2026-07-15 fold-IO
- * cure (coins_ram in-RAM overlay during -mint-anchor, WAL autocheckpoint
+ * test_fold_inram_crash_proof — the two proof items the fold-IO
+ * design (coins_ram in-RAM overlay during -mint-anchor, WAL autocheckpoint
  * held, flush at high-water boundaries — lib/storage/src/coins_ram.c,
  * lib/storage/src/coins_kv.c:coins_kv_overlay_safe,
- * config/src/boot_mint_anchor.c) left open:
+ * config/src/boot_mint_anchor.c) requires:
  *
  *   (1) DURABLE-vs-INRAM A/B EQUIVALENCE: fold the SAME small regtest fixture
  *       chain genesis..N twice through the REAL 8-stage reducer pipeline —

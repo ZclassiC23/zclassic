@@ -352,16 +352,13 @@ static inline void stage_release_block_view(
  * would feed the supervisor restart-escalation ladder against a dependency
  * this stage cannot resolve itself.
  *
- * Before this helper existed only utxo_apply_stage.c named this exact class
- * (utxo_apply_upstream_hole_note, "reducer_frontier.upstream_log_hole") —
- * after a rowless hole at height 3166989 in script_validate_log AND
- * proof_validate_log pinned H* for THREE HOURS on 2026-07-02 with
+ * A rowless hole in any of script_validate_log, proof_validate_log,
+ * body_fetch, body_persist can pin H* silently, with
  * `zclassic23 core sync blockers` reporting nothing (only last_blocked_unix
- * timestamp — see reducer_frontier_reconcile_light.c's detect function for
- * the incident and its now-generic refill-hole scan). body_fetch,
- * body_persist, script_validate, and proof_validate had the exact same shape
- * unfixed; this generalizes the utxo_apply fix so every stage names the
- * same class of hole immediately instead of relying solely on
+ * timestamp — see reducer_frontier_reconcile_light.c's detect function and
+ * its generic refill-hole scan). This helper generalizes
+ * utxo_apply_upstream_hole_note ("reducer_frontier.upstream_log_hole") so
+ * every stage names the same class of hole immediately instead of relying solely on
  * staged_sync_supervisor's 60-minute stage-freeze backstop. */
 static inline void stage_upstream_log_hole_note(const char *stage_name,
                                                 const char *upstream_log_name,

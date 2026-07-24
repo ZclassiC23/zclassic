@@ -521,9 +521,9 @@ bool boot_mint_anchor_run(const char *datadir)
 
         /* Bounded drain chunk: returns within ZCL_MINT_KICK_BUDGET_MS (or at
          * the first frontier-stalled round) so THIS loop reliably regains
-         * control to log progress and run the stall detector below — the
-         * budgetless kick was a silent multi-hour spin (the 2026-07-13 mint
-         * livelock: no progress line, stall guard never ran). */
+         * control to log progress and run the stall detector below — an
+         * unbounded kick can otherwise spin silently for hours with no
+         * progress line and no stall guard ever running. */
         (void)reducer_kick_unbudgeted(ctl);
 
         if (!wal_manual && coins_ram_active()) {

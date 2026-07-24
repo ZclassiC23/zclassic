@@ -185,7 +185,7 @@ enum chain_evidence_controller_result chain_evidence_controller_promote_tip(
  * LOCK ORDER: takes csr->lock. csr_snapshot never nests csr->lock with
  * coins_kv/progress.kv; it releases the repository lock before sampling those
  * external stores. NEVER call from the reducer drive — it already holds
- * coins_kv, and blocking on csr there deadlocked the live node on 2026-06-12.
+ * coins_kv, and blocking on csr there deadlocks the reducer drive.
  * The drive calls chain_evidence_note_finalized_tip below; the health-collect
  * path drains. */
 bool chain_evidence_controller_record_finalized_tip(

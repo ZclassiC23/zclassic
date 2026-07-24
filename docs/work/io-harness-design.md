@@ -1,8 +1,7 @@
 # Network-IO Adversarial Simulation Harness (simnet_wire) — Design
 
-Opus code-grounded design, 2026-07-09. Owner directive: harness must simulate the node's
-real network IO so it can model+monitor any adversarial network. Copy to docs/work/ + build
-after phase-2 round-2 lands. Memory: [[io-level-adversarial-harness-2026-07-09]].
+The harness simulates the node's real network IO in-process so it can model
+and monitor any adversarial network without sockets or wall-clock time.
 
 ## Core insight
 The NUT's code above recv()/send() is already isolated behind two calls:

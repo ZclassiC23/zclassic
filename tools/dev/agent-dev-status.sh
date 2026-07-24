@@ -7,6 +7,8 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO"
+# shellcheck source=tools/dev/dev_lib.sh
+. "$REPO/tools/dev/dev_lib.sh"  # json_escape, is_uint
 
 DEV_BIN="${ZCL_AGENT_DEV_BIN:-$HOME/.local/bin/zclassic23-dev}"
 SRC_BIN="${ZCL_AGENT_SRC_BIN:-build/bin/zclassic23-dev}"
@@ -28,10 +30,6 @@ WATCHER_HEARTBEAT="$DEV_LOOP_STATE_DIR/watcher-heartbeat.json"
 QUALITY_STATE_DIR="${ZCL_QUALITY_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/zclassic23-quality}"
 SCHEMA="zcl.agent_dev_status.v2"
 MODE="${1:-text}"
-
-json_escape() {
-    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
-}
 
 is_source_id_sha256() {
     [[ "${1:-}" =~ ^[0-9a-f]{64}$ ]]
@@ -288,10 +286,6 @@ agent_marker_clear_probe() {
 service_field() {
     local field="$1"
     systemctl --user show "$UNIT" -p "$field" --value 2>/dev/null || true
-}
-
-is_uint() {
-    [[ "${1:-}" =~ ^[0-9]+$ ]]
 }
 
 memory_pressure_state() {

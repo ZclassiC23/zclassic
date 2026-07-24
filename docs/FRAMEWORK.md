@@ -214,7 +214,7 @@ know the shape.
 | 4 | **Job** | `app/jobs/` | cursor-stamped stage: advance-or-blocker | **real** — eight reducer stages live in `app/jobs/`; E5 HARD (advance-or-block) | `*_stage.c` |
 | 5 | **Supervisor** | `app/supervisors/` | declared liveness tree, restart policy | partial — `net`/`chain`/`staged_sync` declared; `boot_services.c` still owns lifecycle wiring | `app/supervisors/src/staged_sync_supervisor.c` |
 | 6 | **Condition** | `app/conditions/` | `{detect, remedy, witness}` struct + `register()` | **real, the model citizen** (`condition_registrations` count is machine-checked in `docs/CODEBASE_MAP.md`'s DOC-COUNTS block) | `block_failed_mask_at_tip.c` |
-| 7 | **Event** | *(no `app/` folder — concept, not a physical shape)* | typed append-only emit + subscribers | the reserved-empty `app/events/` folder was deleted 2026-07-17 (0 files ever lived there); the concept stays owned by `lib/event/` + `lib/storage/event_log.c` + `lib/storage/*_projection.c` | `lib/storage/event_log.c` |
+| 7 | **Event** | *(no `app/` folder — concept, not a physical shape)* | typed append-only emit + subscribers | there is no `app/events/` folder (0 files ever lived there); the concept stays owned by `lib/event/` + `lib/storage/event_log.c` + `lib/storage/*_projection.c` | `lib/storage/event_log.c` |
 | 8 | **Storage Adapter** | `adapters/` + `ports/` | port interface + swappable impl | **real — outbound-only by design** (§6); port/adapter counts are machine-checked in `docs/CODEBASE_MAP.md`'s DOC-COUNTS block; `check_raw_sqlite.sh` CLEAN | `adapters/outbound/persistence/` |
 
 The honest read: **Model, Condition, Job, the projection/state-dump registry, and
@@ -328,7 +328,7 @@ with the work they guard:
 | **health-is-the-gap** | one `tip_not_advancing` Condition is the sole liveness authority; others don't emit `EV_OPERATOR_NEEDED` for liveness (Directive, Law 10) | ratchet |
 | **operator-needed-has-a-sink** | every `EV_OPERATOR_NEEDED` emit pairs with a registered subscriber (Law 7) | hard |
 | **shape-is-content-checked** | a shape file includes its shape header (closes the "mislabeled Service" hole) | ratchet → hard |
-| **file-size-ceiling** | no `app/**/*.c` or `config/src/*.c` over 800 lines; mega-modules can't hide under <500-LOC functions (Law 1) | enforced ratchet (fails the build; baseline `file_size_ceiling_baseline.txt`, 18 grandfathered files as of this write, shrink-only) |
+| **file-size-ceiling** | no `app/**/*.c` or `config/src/*.c` over 800 lines; mega-modules can't hide under <500-LOC functions (Law 1) | enforced ratchet (fails the build; grandfathered files listed in `tools/scripts/file_size_ceiling_baseline.txt`, shrink-only) |
 | **one-result-type** | services return `zcl_result`, not bare `bool`/`int` (Law 2) | ratchet |
 
 Both strategic gates (`framework-shape`, `controller-SQL`) have graduated
@@ -434,12 +434,12 @@ a number.
 | Supervisor shape partial | only `net`/`chain`/`staged_sync` are declared under `app/supervisors/`; the rest of service lifecycle is still hand-wired in `config/src/boot_services.c`. |
 | Controller/Service legacy compat | the file-level E1/E2/typed-blocker baselines carry no NEW violations, but import/sync controllers still carry legacy orchestration and services keep bare-`bool` compatibility APIs alongside `zcl_result`. Subtraction work, not new structure. |
 
-Resolved and closed (kept for context, no longer tracked as debt): the
-storage-adapter seam is outbound-only **by design**, not a migration in
-progress (§6); `app/events/` was deleted 2026-07-17 — Event stays a concept
-owned by `lib/event/` + `lib/storage/event_log.c` + projections, never a
-physical `app/` folder (§3 row 7); the sealed `core/` consensus tree has
-landed — see [`docs/adr/0002-sealed-consensus-core.md`](./adr/0002-sealed-consensus-core.md).
+Not tracked as debt (do not re-flag): the storage-adapter seam is
+outbound-only **by design**, not a migration in progress (§6); there is no
+`app/events/` folder — Event stays a concept owned by `lib/event/` +
+`lib/storage/event_log.c` + projections, never a physical `app/` folder (§3
+row 7); the sealed `core/` consensus tree is landed — see
+[`docs/adr/0002-sealed-consensus-core.md`](./adr/0002-sealed-consensus-core.md).
 
 Gate mode/status is tracked in §5, not duplicated here.
 

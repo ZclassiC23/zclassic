@@ -458,8 +458,8 @@ static void boot_register_core_liveness_and_reducer(
     self_heal_register(svc->state);
     /* Spawn the dedicated condition-runner thread. The engine's detect/remedy
      * passes can run for seconds and MUST NOT run on the root supervisor sweep
-     * thread (a heavy pass there froze supervisor_sweep_heartbeat past the 30 s
-     * backstop — live 2026-07-19). The sweep only supervises the runner's
+     * thread (a heavy pass there freezes supervisor_sweep_heartbeat past the 30 s
+     * backstop otherwise). The sweep only supervises the runner's
      * heartbeat; a hung remedy becomes a named blocker, never a frozen root. */
     self_heal_start();
     staged_sync_supervisor_register(svc->state);

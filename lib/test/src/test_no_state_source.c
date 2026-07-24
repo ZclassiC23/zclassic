@@ -1,10 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_no_state_source — the LOUD no-state-source blocker (Lane 3). The
- * 2026-07-22 incident: a fresh node with NO bundle, NO fetchable manifest, and
- * NO block bodies silently fell through to folding an empty genesis datadir and
- * pinned 600s on a MISLEADING downstream symptom (proof_validate.stale_upstream_
- * hash at h=0). boot_select_state_source must now name the REAL problem the
+ * test_no_state_source — the LOUD no-state-source blocker. A fresh node with
+ * NO bundle, NO fetchable manifest, and
+ * NO block bodies must not silently fall through to folding an empty genesis
+ * datadir and pin on a MISLEADING downstream symptom (proof_validate.stale_upstream_
+ * hash at h=0). boot_select_state_source must name the REAL problem the
  * instant it concludes with no state source — the typed bootstrap.no_state_source
  * blocker — carrying the fetch outcome, bundle status, and the operator hint,
  * and clear it on the honest witness (H* climb / a state source landing), never

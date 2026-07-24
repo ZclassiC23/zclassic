@@ -524,8 +524,8 @@ int test_domain_consensus_tx_structural(void)
      * The canonical chain carries 413 post-Sapling txs above the 102000 cap
      * (heights 478544..1968856) — legal at mine time; zclassicd later
      * tightened the constant without grandfathering, so a from-genesis
-     * replay of its own text FATALs at block 478544 (proven live
-     * 2026-06-11). zclassic23 matches the LIVE network behavior: exactly
+     * replay of its own text FATALs at block 478544.
+     * zclassic23 matches the LIVE network behavior: exactly
      * those txs are excused, in-block only. */
 
     /* --- table invariants: the generated artifact itself --- */

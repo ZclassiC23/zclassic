@@ -322,10 +322,9 @@ bool syncsvc_build_stall_recovery(struct sync_stall_recovery *recovery,
     /* ONE pass over block_map gathers everything the planning below
      * needs: per-height data presence for the probe window (our_h+1..
      * our_h+10), the +1 entry counters, and the alt-candidate pool.
-     * The map holds millions of entries at depth — the previous
-     * shape (a probe loop of up to 10 full scans plus two more full
-     * scans) pinned a core and starved every other map reader when
-     * this ran near a deep tip (2026-06-09 trackb 90%-CPU stall). */
+     * The map holds millions of entries at depth — a probe loop of up to
+     * 10 full scans plus two more full scans pins a core and starves every
+     * other map reader when run near a deep tip. */
     #define STALL_PROBE_WINDOW 10
     #define STALL_ALT_CANDIDATES 256
     bool have_data_at[STALL_PROBE_WINDOW] = {false};

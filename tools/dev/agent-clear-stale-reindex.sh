@@ -5,6 +5,8 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO"
+# shellcheck source=tools/dev/dev_lib.sh
+. "$REPO/tools/dev/dev_lib.sh"  # json_escape, is_uint
 
 DEV_DATADIR="${ZCL_AGENT_DEV_DATADIR:-$HOME/.zclassic-c23-dev}"
 DEV_RPCPORT="${ZCL_AGENT_DEV_RPCPORT:-18252}"
@@ -14,16 +16,8 @@ MODE="${1:-text}"
 DRY_RUN="${ZCL_AGENT_CLEAR_STALE_REINDEX_DRY_RUN:-0}"
 SCHEMA="zcl.agent_dev_reindex_clear.v1"
 
-json_escape() {
-    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
-}
-
 is_int() {
     [[ "${1:-}" =~ ^-?[0-9]+$ ]]
-}
-
-is_uint() {
-    [[ "${1:-}" =~ ^[0-9]+$ ]]
 }
 
 service_active() {

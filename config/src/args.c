@@ -457,11 +457,10 @@ int args_parse_node_options(int argc, char **argv, struct app_context *ctx,
             return 0;
         }
         else if (argv[i][0] == '-' && !main_flag_is_known_extra(argv[i])) {
-            /* Loud unknown-flag WARNING (docs consolidation sweep,
-             * 2026-07-19): this loop previously accepted ANY unrecognized
-             * "-flag" silently (a documented footgun — see docs/SYNC.md and
-             * CLAUDE.md "Skipping step 1 is a footgun"). A typo'd or
-             * removed flag (e.g. the old -cold-import/-fastimport) must not
+            /* Loud unknown-flag WARNING: this loop must never accept ANY
+             * unrecognized "-flag" silently (a documented footgun — see
+             * docs/SYNC.md and CLAUDE.md "Skipping step 1 is a footgun"). A
+             * typo'd or removed flag (e.g. the old -cold-import/-fastimport) must not
              * silently no-op; it must say so, every boot, at WARN. This is
              * advisory only — it does not FATAL, since some recognized
              * flags are intentionally consumed by an earlier or later pass
@@ -470,8 +469,8 @@ int args_parse_node_options(int argc, char **argv, struct app_context *ctx,
              * via GetArg()/GetBoolArg() (main_flag_is_known_extra() above)
              * rather than this loop's own strncmp branches.
              *
-             * Daemon mode stays tolerant (CLAUDE.md / SAFETY FOOTGUN task,
-             * 2026-07-23) — it does not FATAL here even for a double-dash
+             * Daemon mode stays tolerant (CLAUDE.md)
+             * — it does not FATAL here even for a double-dash
              * typo of one of the seven operator-target flags (that hard
              * refusal is CLI-client-only, src/main_cli_modes.c). But when
              * cli_flag_classify() recognizes the shape, name the exact

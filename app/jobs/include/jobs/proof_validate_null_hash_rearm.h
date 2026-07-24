@@ -5,9 +5,9 @@
  *
  * Background
  * ----------
- * proof_validate_log_insert learned to stamp bi->phashBlock into the row's
- * block_hash column only from commit 7fb9f5650 (2026-07-13). proof_validate_log
- * rows authored earlier carry block_hash=NULL. utxo_apply's label_splice guard
+ * proof_validate_log_insert stamps bi->phashBlock into the row's
+ * block_hash column. proof_validate_log
+ * rows authored before that stamping existed carry block_hash=NULL. utxo_apply's label_splice guard
  * (app/jobs/src/utxo_apply_stage.c) CORRECTLY refuses a hashless proof verdict
  * — a NULL-block_hash row at or above utxo_apply's cursor is a hard wedge, and
  * proof_validate's own cursor has already passed those heights so it never

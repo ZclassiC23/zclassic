@@ -180,8 +180,7 @@ void tip_finalize_observe_note_cursor_gap(int next_h, uint64_t uv_cursor)
 
     /* Registry-visible typed blocker (JOB_IDLE at the call site, never
      * JOB_BLOCKED — tip_finalize can't fix utxo_apply's cursor itself;
-     * utxo_apply catching back up, or an operator repair, is the healer).
-     * Previously this anomaly touched only the WARN + counter above. */
+     * utxo_apply catching back up, or an operator repair, is the healer). */
     char reason[BLOCKER_REASON_MAX];
     snprintf(reason, sizeof(reason),
              "height=%d exceeds the utxo_apply cursor=%llu — tip_finalize's "

@@ -490,8 +490,8 @@ static struct block_index *ash_insert_index(struct main_state *ms,
     return bi;
 }
 
-/* Rowless script/proof/utxo hole at A+2 with cursors ahead of it — the live
- * 2026-07-02 shape (fail-safe-architecture.md §0 "the live specimen"). */
+/* Rowless script/proof/utxo hole at A+2 with cursors ahead of it (see
+ * fail-safe-architecture.md §0 "the live specimen"). */
 static bool ash_setup_hole_fixture(struct ash_fixture *fx, const char *tag)
 {
     memset(fx, 0, sizeof(*fx));

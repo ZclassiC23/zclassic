@@ -267,8 +267,8 @@ struct utxo_import_result utxo_recovery_import_ldb(
                            "— waiting for real block data.\n",
                            ldb_height, dbg_hex);
                     /* Record-only: a pprev-less anchor installed above
-                     * the trust-rooted extent is the band-hole class
-                     * (2026-06-11). Ancestry-derived — abstains on a
+                     * the trust-rooted extent is the band-hole class.
+                     * Ancestry-derived — abstains on a
                      * contiguous imported header chain. */
                     utxo_recovery_note_band_unrooted_tip(
                         anchor, "ldb_import_anchor");

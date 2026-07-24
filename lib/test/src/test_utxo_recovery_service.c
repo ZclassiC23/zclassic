@@ -1476,7 +1476,7 @@ int test_utxo_recovery_service(void)
             urs_frontier_fixture_teardown(&fx);
     }
 
-    /* ── 12h. The 2026-06-11 copy-prove shape: a detached index island
+    /* ── 12h. The detached-index-island shape: a detached index island
      *         vouched for by fabricated log evidence. The log frontier
      *         sits ABOVE the floor (fabricated anchor rows + cursors), so
      *         the log-only test passes — but the floor rows fail the INDEX

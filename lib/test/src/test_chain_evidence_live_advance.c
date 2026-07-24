@@ -302,9 +302,9 @@ static int test_live_advance_declines_when_frozen(void)
     return failures;
 }
 
-/* THE PRODUCTION PATH (post-deadlock 2026-06-12): the reducer drive only
+/* THE PRODUCTION PATH: the reducer drive only
  * NOTES the published tip (leaf-mutex slot, no evidence machinery — the drive
- * holds coins_kv and taking csr->lock there was the ABBA deadlock); the
+ * holds coins_kv and taking csr->lock there is an ABBA deadlock); the
  * health-collect drain runs the actual record with the correct lock order.
  * Drives note -> degraded snapshot still visible pre-drain via direct
  * snapshot -> drain -> healthy; a second drain with nothing pending is a

@@ -2,9 +2,9 @@
  *
  * Regression: addrman shutdown-ordering race.
  *
- * LIVE CRASH (2026-07-19, serve1): during a graceful shutdown, AFTER
- * "[shutdown] connman stopped" was logged, a detached message-cycle thread was
- * still processing a P2P `addr` message:
+ * CRASH SHAPE: during a graceful shutdown, AFTER
+ * "[shutdown] connman stopped" is logged, a detached message-cycle thread can
+ * still be processing a P2P `addr` message:
  *
  *   connman_run_message_cycle -> msg_process_messages -> mp_handle_addr
  *     -> addrman_add -> (find_addr: "bad args") -> SIGSEGV at addrman_add+0x79f

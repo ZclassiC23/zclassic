@@ -2,17 +2,14 @@
  *
  * Chain state repository — single writer for chain-tip mutations.
  *
- * Background
- * ----------
- * On 2026-04-10 the node lost 1.3M UTXOs because six independent sources
- * of truth disagreed about the chain tip. block_index.bin held a stale
- * h=60 entry while SQLite `blocks` had real data at h=3,073,476. Two
- * independent boot paths trusted whichever metadata they read first and
- * deleted "everything above tip". The smoking guns in boot.c were
- * patched, but the architecture that allowed it — 67 unguarded mutation
- * sites across 21 files — is still there.
+ * Invariant
+ * ---------
+ * The chain tip has six independent on-disk sources of truth
+ * (block_index.bin, SQLite `blocks`, and four more). An unguarded mutation
+ * site that updates one without the others lets a boot path trust whichever
+ * metadata it reads first and delete "everything above tip" on a stale view.
  *
- * This repository is the fix. Every chain-tip mutation must go through
+ * Every chain-tip mutation must go through
  * csr_commit_tip(). Internally the six sources are updated under one
  * mutex; if any cross-check fails, NOTHING changes and a structured
  * EV_CHAIN_TIP_REJECTED event is emitted with the reason.

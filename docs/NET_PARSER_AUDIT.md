@@ -8,18 +8,17 @@ the allocation pattern is, and what the failure action is. Verify fresh
 against the live code before trusting a line number; this doc rots like
 any other.
 
-**Verdict: the codebase already enforces the pedantic bound-before-parse
-discipline almost everywhere.** Every count-prefixed loop that could scale
-an allocation checks its declared count against a protocol cap (usually via
+**Verdict: the codebase enforces the pedantic bound-before-parse discipline
+almost everywhere.** Every count-prefixed loop that could scale an
+allocation checks its declared count against a protocol cap (usually via
 the shared `msg_count_exceeds()` helper in `msg_bounds_guard.c`) BEFORE
 allocating, and the highest-stakes parsers (`transaction_deserialize`,
 `block_deserialize`) additionally reject a declared count whose minimum
 per-element wire size cannot fit in the REMAINING stream bytes, closing the
 "claim 10M items, send 3 bytes" allocation-bomb shape one step earlier than
-the cap alone would. This audit found two real (low-severity) gaps, both
-fixed here, plus one behavior that looks like a gap but is an intentional,
-already-tested design choice — documented below so it is not
-re-"discovered" and re-litigated.
+the cap alone would. Two known low-severity gaps are fixed (below); one
+behavior that looks like a gap is an intentional, tested design choice —
+documented below so it is not re-"discovered" and re-litigated.
 
 ## Framing layer (`lib/net/src/net.c`)
 
@@ -36,8 +35,8 @@ nMessageSize[4] + nChecksum[4]`) and payload are read incrementally by
 | payload bytes | `alloc = hdr.nMessageSize` (already ≤2 MiB) charged against a **process-wide** budget (`g_recv_total_bytes`, default 256 MiB, env `ZCL_MAX_RECVBUFFER_TOTAL_BYTES`) before `zcl_realloc` (`net.c:238-253`) | budget-exhausted realloc request returns `-1` without allocating | bounded, budget-gated | same as data-phase reject |
 | `nChecksum` | verified (`hash256` of payload, first 4 bytes) in the dispatch loop, NOT in the framing layer (`msgprocessor.c:1641-1659`) | mismatch → message silently dropped, loop `continue`s | none | **not scored** — see "Checksum mismatch: intentional, not a gap" below |
 
-**Per-connection buffer cap** (explicit answer to the audit brief's #4):
-there is no *dedicated per-peer byte* cap on the receive side. Three
+**Per-connection buffer cap:** there is no *dedicated per-peer byte* cap on
+the receive side. Three
 independent bounds combine to make max-size messages sent back-to-back
 safe:
 1. Per-message cap: 2 MiB (`MAX_PROTOCOL_MESSAGE_LENGTH`), enforced before
@@ -93,7 +92,7 @@ BEFORE any loop/allocation keyed on the declared count.
 | `block` | `vtx` count | `<= MAX_BLOCK_TRANSACTIONS` (50000) **and** `count*10 > stream_remaining()` (`block.c:76-87`) | rejected before the `~14 MB` calloc | `zcl_calloc` only after both checks | `LOG_FAIL` → `false` |
 | `block` | `nSolutionSize` | `<= MAX_SOLUTION_SIZE` (`block.c:51-53`) | rejected before read | fixed field | `LOG_FAIL` → `false` |
 | `ping`/`pong` | nonce | fixed 8 bytes, protocol-gated by `BIP0031_VERSION` | n/a | n/a | truncated read is non-fatal (`msgprocessor_pingpong.c:22-24,48-50`) |
-| `reject` | `msg_type`/`reason` length | bounded against fixed local buffers (32 / 256 bytes) | **fixed in this audit** — see below | fixed stack buffers, no heap | non-fatal `return true` either way (advisory message) |
+| `reject` | `msg_type`/`reason` length | bounded against fixed local buffers (32 / 256 bytes) | oversized `msg_type` handled — see below | fixed stack buffers, no heap | non-fatal `return true` either way (advisory message) |
 | `feefilter` | fee rate | fixed 8 bytes | n/a | n/a | truncated is non-fatal |
 | `sendcmpct`/`cmpctblock`/`getblocktxn`/`blocktxn` | short-txid / prefilled-tx / index / tx counts | `msg_count_exceeds(..., MAX_COMPACT_BLOCK_TXNS=50000)` / `MAX_GETBLOCKTXN_INDICES=50000` (`compact_blocks.c:511,535,602,654`) | rejected before the corresponding `zcl_malloc`/`zcl_calloc` | bounded | reject + `PEER_OFFENCE_INVALID_PAYLOAD` at the call sites in `msg_compact.c` |
 | `getblocktxn` (server side) | requested `indices[i]` vs `blk.num_vtx` | explicit per-index bound check (`msg_compact.c:305`) | rejected mid-loop, response freed | n/a | `PEER_OFFENCE_PROTOCOL_VIOLATION` (100) |
@@ -124,98 +123,79 @@ BEFORE any loop/allocation keyed on the declared count.
 size (`core/math/src/serialize.c:90-99`), so a truncated/corrupt file fails
 fast on the first out-of-range read rather than looping unboundedly — the
 same structural protection as the wire parsers, just not exercised by a
-remote peer. Left as-is; not in scope for this audit's "wire input" bar.
+remote peer. Left as-is; not in scope for this doc's "wire input" bar.
 
-## Fixes applied by this audit
+## Known-fixed issue: `reject` oversized `msg_type`
 
-### 1. `reject`: oversized `msg_type` silently misaligned the fields that followed it
+`lib/net/src/msgprocessor_pingpong.c::process_reject()`: when the
+peer-declared `msg_type` length is `>= sizeof(msg_type)` (32), the code
+skips *storing* it, and explicitly skips exactly that many bytes
+(bounds-checked against `stream_remaining()` first, bailing out cleanly if
+the declared length exceeds the actual message body — the "claimed >
+actual" framing-lie shape) before reading `code`. `reason` needs no
+equivalent handling: it is the last field on the wire, so an oversized
+`reason_len` cannot misalign anything downstream — leaving it unread is a
+safe truncation there, not a misparse. `reject` is advisory-only (its
+parsed fields are only ever `printf`'d, never stored or acted on), so a
+misparse here is a garbled log line, not a security issue — but the
+"reject > bound, never silently truncate-and-continue-as-if-nothing-
+happened" discipline applies regardless.
 
-`lib/net/src/msgprocessor_pingpong.c::process_reject()`. Before: when the
-peer-declared `msg_type` length was `>= sizeof(msg_type)` (32), the code
-correctly skipped *storing* it, but never advanced the stream's read
-cursor past those bytes. The next reads (`code`, `reason_len`, `reason`)
-then consumed bytes from the WRONG wire offset — the tail of the
-unconsumed `msg_type` payload — instead of their real position. This is
-strictly worse than truncate-and-trust: it is truncate-without-consuming,
-producing a garbled (but always memory-safe — every read stays
-`stream_read`-bounds-checked) misparse instead of a clean reject. `reject`
-is advisory-only (its parsed fields are only ever `printf`'d, never stored
-or acted on), so the blast radius was a garbled log line, not a security
-issue, but it violates the "reject > bound, never silently
-truncate-and-continue-as-if-nothing-happened" discipline this audit is
-checking for.
+Pinned by tests **H** (oversized `msg_type`, asserts the read cursor lands
+exactly at the expected post-`reason` offset) and **H2** (declared length
+exceeds the actual message body) in `lib/test/src/test_net_msg_dos.c`.
 
-**Fix:** when `msg_type` exceeds the local buffer, explicitly skip
-exactly that many bytes (bounds-checked against `stream_remaining()`
-first, bailing out cleanly if the declared length exceeds the actual
-message body — the "claimed > actual" framing-lie shape) before reading
-`code`. `reason` needed no equivalent fix: it is the last field on the
-wire, so an oversized `reason_len` cannot misalign anything downstream —
-leaving it unread is a safe truncation there, not a misparse.
+## Regression-pinned, intentionally unchanged behaviors
 
-Pinned by new tests **H** (oversized `msg_type`, asserts the read cursor
-lands exactly at the expected post-`reason` offset) and **H2** (declared
-length exceeds the actual message body) in
-`lib/test/src/test_net_msg_dos.c`.
-
-### 2. Non-routable `addr` flood and checksum-mismatch behavior — regression-pinned, not changed
-
-Two behaviors already existed and are already correct, but had no
-regression test:
-
-- **`addr` batch of non-routable addresses**: already correctly filtered
-  by `addrman_add`'s `net_addr_is_routable()` gate (existing code, no
-  change needed) — pinned by new test **F**.
-- **Checksum mismatch (see "Checksum mismatch: intentional, not a gap"
-  below)** — pinned by new test **G**.
+- **`addr` batch of non-routable addresses**: correctly filtered by
+  `addrman_add`'s `net_addr_is_routable()` gate — pinned by test **F**.
+- **Checksum mismatch** (see below) — pinned by test **G**.
 
 ## Checksum mismatch: intentional, not a gap
 
 `msg_process_messages` (`msgprocessor.c:1641-1659`) verifies every
 message's `nChecksum` against `hash256(payload)` before dispatch, and on
 mismatch silently drops the message (`continue`, no dispatch) WITHOUT
-calling `peer_scoring_record`. This audit initially flagged the missing
-score as a gap, then found the codebase already has an explicit,
-tested precedent for the same design choice one case away: an
-unknown/garbage command string is *also* not treated as misbehaviour
-(`test_net_msg_dos.c`, case D, "Bitcoin Core parity: unknown commands are
-not misbehaviour"). A checksum failure has the identical property — it
-does not distinguish a malicious peer from a corrupted/buggy one (bit
-flips, a version skew, a badly-implemented alternate client), so scoring
-it risks banning honest peers for non-malicious noise. Real Bitcoin Core
-applies the same policy (log + drop, no `Misbehaving()` call on a
-checksum failure). The cost of NOT scoring it is bounded, not unbounded:
-one `hash256` over the already-framing-capped (≤2 MiB) payload, and the
-message occupies one of the peer's already-capped `MAX_RECV_MESSAGES`
-reassembly slots until drained — nothing scales with repetition beyond
-those existing caps. Left unchanged; regression-pinned by new test **G**
-so a future reader sees this was audited and decided, not missed.
+calling `peer_scoring_record`. This matches an explicit, tested precedent
+one case away: an unknown/garbage command string is *also* not treated as
+misbehaviour (`test_net_msg_dos.c`, case D, "Bitcoin Core parity: unknown
+commands are not misbehaviour"). A checksum failure has the identical
+property — it does not distinguish a malicious peer from a
+corrupted/buggy one (bit flips, a version skew, a badly-implemented
+alternate client), so scoring it risks banning honest peers for
+non-malicious noise. Real Bitcoin Core applies the same policy (log +
+drop, no `Misbehaving()` call on a checksum failure). The cost of NOT
+scoring it is bounded, not unbounded: one `hash256` over the
+already-framing-capped (≤2 MiB) payload, and the message occupies one of
+the peer's already-capped `MAX_RECV_MESSAGES` reassembly slots until
+drained — nothing scales with repetition beyond those existing caps. Left
+unchanged; regression-pinned by test **G** so a future reader sees this was
+decided, not missed.
 
 ## Negative-case test coverage
 
 `lib/test/src/test_net_msg_dos.c` (group `net_msg_dos`, registered in
 `lib/test/src/test_parallel.c`) and `test_net_framing_dos` (same file,
 registered separately) plus `lib/test/src/test_net_handshake_adversarial.c`
-(group `net_handshake_adversarial`) together cover, per the audit brief:
+(group `net_handshake_adversarial`) together cover:
 
-- **version**: oversized declared user-agent length (existing:
-  `test_oversized_user_agent_rejected`), protocol-too-old, duplicate
+- **version**: oversized declared user-agent length
+  (`test_oversized_user_agent_rejected`), protocol-too-old, duplicate
   version, self-connection.
-- **addr**: oversized count (existing, case A3), repeated max-legal
-  batches / rate limiting (existing, case A5), **non-routable flood
-  (new, case F)**.
-- **inv/getdata/notfound/headers**: oversized counts (existing, cases
-  A1/A2/A4, and `msg_headers.c`'s own 2000 cap).
+- **addr**: oversized count (case A3), repeated max-legal batches / rate
+  limiting (case A5), non-routable flood (case F).
+- **inv/getdata/notfound/headers**: oversized counts (cases A1/A2/A4, and
+  `msg_headers.c`'s own 2000 cap).
 - **framing layer**: declared size over cap at both the header phase
-  (`MAX_SIZE`) and data phase (`MAX_PROTOCOL_MESSAGE_LENGTH`) — existing,
-  `test_net_framing_dos` cases a/b/c, each asserting the connection IS
-  penalized (scored + would-ban on repeat). **Checksum mismatch (new,
-  case G)** is the one length/integrity-lie case that is intentionally
-  NOT penalized (see above) — pinned so that stays a decision, not a gap.
-- **reject parser realignment**: new cases H / H2 (this audit's fix).
+  (`MAX_SIZE`) and data phase (`MAX_PROTOCOL_MESSAGE_LENGTH`) — cases a/b/c
+  in `test_net_framing_dos`, each asserting the connection IS penalized
+  (scored + would-ban on repeat). Checksum mismatch (case G) is the one
+  length/integrity-lie case that is intentionally NOT penalized (see
+  above) — pinned so that stays a decision, not a gap.
+- **reject parser realignment**: cases H / H2.
 
-Every new/existing case asserts: no crash, no allocation proportional to
-a declared-but-undelivered count, and — for the cases where a bound is
+Every case asserts: no crash, no allocation proportional to a
+declared-but-undelivered count, and — for the cases where a bound is
 actually crossed — that the connection is scored via the existing typed
-`peer_offence` mechanism, matching the audit brief's "reject + typed
-misbehavior score via the existing scoring, never silent truncation" bar.
+`peer_offence` mechanism: reject + typed misbehavior score via the
+existing scoring, never silent truncation.

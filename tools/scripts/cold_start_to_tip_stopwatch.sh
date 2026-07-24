@@ -85,6 +85,8 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=tools/scripts/stopwatch_json_lib.sh
+. "$REPO_ROOT/tools/scripts/stopwatch_json_lib.sh"
 
 NODE_BIN="${ZCL_CS_NODE_BIN:-$REPO_ROOT/build/bin/zclassic23}"
 PEER="${ZCL_CS_PEER:-127.0.0.1:8033}"
@@ -162,27 +164,9 @@ last_ps="-1"
 saw_ps=0
 final_readback_failed="false"
 
-json_escape() {
-    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g; s/\r/\\r/g' | tr '\n' ' '
-}
-json_string() { printf '"%s"' "$(json_escape "$1")"; }
-json_number_or_null() {
-    case "${1:-}" in
-        ''|*[!0-9-]*) printf 'null' ;;
-        *) printf '%s' "$1" ;;
-    esac
-}
-
-# is_busy_response — true iff a `dumpstate reducer_frontier` body is the
-# PARTIAL progress_store-busy doc — {"snapshot_status":"progress_store_busy",
-# "retryable":true} — rather than a genuine empty/absent response. A naive
-# `grep -q '"hstar"'` miss cannot tell "the store is busy, retry" from "the
-# node isn't answering at all" apart; this lets both rpc_frontier() and the
-# failure-bundle capture below tell the two apart and label busy honestly
-# instead of reading it as hstar=-1 or a silent empty.
-is_busy_response() {
-    printf '%s' "$1" | grep -qE '"retryable"[[:space:]]*:[[:space:]]*true'
-}
+# json_escape/json_string/json_number_or_null/is_busy_response/jget: see
+# stopwatch_json_lib.sh (sourced above) — used by rpc_frontier() and the
+# failure-bundle capture below.
 
 # is_self_respawn_reason — true iff the given boot-exit-reason.v1 `reason` value
 # is a supervised self-respawn request (self_respawn_tip_watchdog /
@@ -210,14 +194,6 @@ read_exit_reason() {
     local f="$DATADIR/boot-exit-reason.v1"
     [ -f "$f" ] || return 0
     sed -n 's/^reason=\(.*\)$/\1/p' "$f" 2>/dev/null | tail -1
-}
-
-# jget <json> <key> — first top-level integer value of "key". The "key"[..]:
-# anchor with a required closing quote means "hstar" never matches
-# "hstar_next_height" and "network_tip" never matches "network_tip_read_ok".
-jget() {
-    printf '%s' "$1" | grep -oE "\"$2\"[[:space:]]*:[[:space:]]*-?[0-9]+" | head -1 |
-        grep -oE -- '-?[0-9]+$'
 }
 
 # frontier_hstar_full <frontier-doc> — the AUTHORITATIVE reducer-frontier H*,

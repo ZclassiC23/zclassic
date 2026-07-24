@@ -42,9 +42,9 @@ static _Atomic bool    g_running = false;
 static _Atomic bool    g_started = false;
 static _Atomic int     g_check_interval_ms = 1000;
 
-/* Supervisor liveness: the sweeper is the very thread whose 8.6 h silent
- * wedge (2026-05-21) motivated the supervisor. It now heartbeats onto the
- * tree so a repeat is a named blocker, not a silent stop. deadline=120 s
+/* Supervisor liveness: the sweeper is the very thread a silent
+ * wedge here would leave undetected without a supervisor. It heartbeats onto the
+ * tree so a wedge is a named blocker, not a silent stop. deadline=120 s
  * (interval defaults to 1 s; retunable, but far under the deadline);
  * progress marker = sweep count; no-progress gate disabled (the deadline
  * already covers a frozen loop). */

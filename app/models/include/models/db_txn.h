@@ -4,10 +4,9 @@
  *
  * Motivation
  * ----------
- * Every destructive multi-table recovery path today calls a sequence of
+ * A destructive multi-table recovery path that calls a raw sequence of
  * `node_db_exec("DELETE ...")` / `node_db_begin` / `node_db_commit`
- * statements that leaves partial state on crash or early return. The
- * 2026-04-10 post-mortem found four such paths in boot.c alone. This
+ * statements leaves partial state on crash or early return. This
  * module wraps the existing `node_db_{begin,commit,rollback}` primitives
  * in a value type that:
  *

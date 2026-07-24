@@ -1074,9 +1074,9 @@ static int test_sync_service_header_band_dumpstate(void)
     return failures;
 }
 
-/* Defect #7 regression (live 2026-06-11 ~19:50): the band walk accepted
- * batches into the BLOCK INDEX without populating active-chain slots, so
- * the slot-derived kick anchor pinned one batch back (3,141,533) and the
+/* Defect #7 regression: a band walk that accepts
+ * batches into the BLOCK INDEX without populating active-chain slots
+ * pins the slot-derived kick anchor one batch back, and the
  * peer re-served the same already-known range (3,141,534..3,141,693,
  * accepted=160 newly_added=0) forever — nothing in that path populates
  * slots, so the anchor never advanced: livelock. The anchor must follow

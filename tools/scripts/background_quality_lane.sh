@@ -24,11 +24,8 @@ mkdir -p "$STATUS_DIR" "$LOG_DIR" "$ARTIFACT_DIR"
 utc_now() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
 epoch_now() { date -u '+%s'; }
 
-json_escape() {
-    printf '%s' "$1" \
-        | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g; s/\r/\\r/g' \
-        | tr '\n' ' '
-}
+# shellcheck source=tools/scripts/stopwatch_json_lib.sh
+. "$SCRIPT_DIR/stopwatch_json_lib.sh"  # json_escape
 
 # Optional GitHub trace metadata only; source_id_sha256 owns freshness.
 git_commit() {

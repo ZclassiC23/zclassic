@@ -414,8 +414,9 @@ int test_chain_tip_watchdog_bounded_restart(void)
      * tip_finalize's TF_BLOCKED_SUCCESSOR_PENDING class — a persisted ok=0
      * script row) is byte-identical every boot, so a restart cannot clear it.
      * The cause-probe must page immediately and burn ZERO restarts, instead
-     * of power-cycling the full CAP first (the live 2026-06-19 wedge spent 3
-     * restarts on exactly this deterministic condition before paging). */
+     * of power-cycling the full CAP first — burning restarts on a
+     * deterministic condition before paging wastes the whole restart
+     * budget for nothing. */
     {
         char dir[256];
         test_make_tmpdir(dir, sizeof(dir), "chain_tip_wd", "deterministic");

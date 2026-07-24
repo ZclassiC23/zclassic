@@ -40,11 +40,8 @@ AGENT_RPC_TIMEOUT="${ZCL_LANE_AGENT_TIMEOUT:-10}"
 LAG_WARN="${ZCL_LANE_LAG_WARN:-10}"
 SOAK_LAG_WARN="${ZCL_SOAK_LAG_WARN:-$LAG_WARN}"
 
-json_escape() {
-    printf '%s' "$1" \
-        | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g; s/\r/\\r/g' \
-        | tr '\n' ' '
-}
+# shellcheck source=tools/scripts/stopwatch_json_lib.sh
+. "$REPO_ROOT/tools/scripts/stopwatch_json_lib.sh"  # json_escape
 
 json_bool() {
     if [ "$1" = "1" ]; then

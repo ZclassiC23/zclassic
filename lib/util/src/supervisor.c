@@ -88,7 +88,7 @@ static void note_stall_fire(struct liveness_contract *c,
  * atomics + heartbeats; it never enters a child callback, so a child whose
  * tick commits a SQLite transaction (fsync → jbd2_log_wait_commit under IO
  * saturation) can no longer freeze the sweep heartbeat and get a healthy,
- * progressing node killed by supervisor_backstop (the 2026-07-19 wedge).
+ * progressing node killed by supervisor_backstop.
  *
  * The runner is itself a supervised liveness contract: g_runner_contract has
  * a deadline, and the sweep monitors it INLINE (not via g_contracts, so the

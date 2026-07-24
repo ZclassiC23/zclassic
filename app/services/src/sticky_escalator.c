@@ -80,9 +80,9 @@ static _Atomic uint64_t g_livelock_force_advances     = 0;
  * the sync/chain reducer domain this ladder drives is active, the escalator
  * HOLDS: it advances/dispatches NO rung (no reindex/refold can conjure missing
  * shielded history or clear a consensus reject), only re-checks each cadence so
- * the hold releases the instant the blocker clears/retires. Live 2026-07-21: a
- * shielded-history-less node held two permanent utxo_apply blockers
- * (anchor_backfill_gap + nullifier_backfill_gap) while the ladder churned
+ * the hold releases the instant the blocker clears/retires. Without the hold,
+ * a shielded-history-less node holding two permanent utxo_apply blockers
+ * (anchor_backfill_gap + nullifier_backfill_gap) would have the ladder churn
  * resnapshot->reindex against a cause no rung can fix. */
 static _Atomic bool     g_held_by_permanent    = false; /* current hold state */
 static _Atomic uint64_t g_hold_permanent_fires = 0;     /* held drives, monotonic */
@@ -304,7 +304,7 @@ static bool permanent_sync_blocker_active(char id_out[BLOCKER_ID_MAX])
 static enum sticky_rung_result rung_retry_default(void)
 {
     /* Cheapest: fire any due blocker escape_actions + let the condition engine
-     * re-attempt. Wires the previously-dead blocker_supervisor_sweep() edge. */
+     * re-attempt via blocker_supervisor_sweep(). */
     int dispatched = blocker_supervisor_sweep();
     event_emitf(EV_RECOVERY_ACTION, 0,
                 "action=sticky-retry blocker_escapes=%d unresolved=%d",
@@ -323,10 +323,10 @@ static enum sticky_rung_result rung_targeted_rederive_default(void)
      * (stage_reducer_frontier_reconcile_light). That Condition's detect() is
      * peer-gated on connman_max_peer_height(), which reports peers' static
      * handshake starting_height, so near tip it reads "no peer ahead" and
-     * discards the recomputed repair on every tick (observed live 2026-07-02:
-     * rowless script_validate_log/proof_validate_log hole at 3166989 pinned
-     * H* at 3166988 for 3 h while the dry-run recomputed the exact clamp
-     * every 5 s). This rung only runs after the condition layer failed to
+     * discards the recomputed repair on every tick — a rowless
+     * script_validate_log/proof_validate_log hole can pin H* indefinitely
+     * while the dry-run recomputes the exact clamp every 5 s with no effect.
+     * This rung only runs after the condition layer failed to
      * clear the stall, so it calls the apply entry DIRECTLY — no peer gate,
      * no tear gate. Consensus-safe: the pass only purges non-canonical
      * residue rows and clamps stage cursors; the forward stages re-derive
@@ -583,10 +583,9 @@ static enum sticky_rung_result rung_reindex_default(void)
      * treats n in [1..MAX] as "reindex attempt n"), so it must count BOOTS
      * that attempt the rebuild, not runtime dispatches. apply_drive
      * re-dispatches this rung every supervisor tick; without the pending
-     * gate, three ticks burned the whole budget to TERMINAL in minutes
-     * with no reindex ever running (observed on the h=3166988 specimen,
-     * 2026-07-02) — permanently blocking the ladder's real last rung. A
-     * pending request means this lifetime's attempt is already armed (or
+     * gate, three ticks burn the whole budget to TERMINAL in minutes with no
+     * reindex ever running — permanently blocking the ladder's real last rung.
+     * A pending request means this lifetime's attempt is already armed (or
      * the one boot consumed is still converging): HOLD and let the
      * restart/boot consume it. */
     if (boot_auto_reindex_is_terminal(g_datadir))
@@ -882,7 +881,7 @@ static void enter_rung(enum sticky_rung r, int64_t now)
  * episode has genuinely resolved (tip proven strictly past the request's
  * anchor). The reindex rung arms boot_auto_reindex_request() durably for the
  * NEXT boot; if the stall self-resolves first, the marker outlives its episode
- * and would force a needless chainstate rebuild on restart (live 2026-07-09).
+ * and would force a needless chainstate rebuild on restart.
  * boot_auto_reindex_pending() excludes the TERMINAL marker, so this never
  * touches the budget-exhausted/operator-paged state — only a live, still-armed
  * request the tip has since proven past. */
@@ -1002,7 +1001,7 @@ static void apply_drive(int64_t tip, int64_t now)
          * download_queue_starved, a peer/bandwidth fault with its own
          * unbounded self-contained cooldown re-arm) must never itself arm this
          * chain-recovery ladder, which can reach the reindex-chainstate rung.
-         * Live 2026-07-09: an unscoped count let a stuck WARN condition
+         * An unscoped count would let a stuck WARN condition
          * silently re-arm this ladder every few minutes on an otherwise
          * healthy, tip-synced node. */
         if (condition_engine_get_unresolved_critical_count() > 0) {
@@ -1032,9 +1031,10 @@ static void apply_drive(int64_t tip, int64_t now)
     /* Blocker-aware HOLD (defect D5): a PERMANENT-class blocker owned by the
      * sync/chain reducer domain this ladder drives is an incomplete-STATE cause
      * that NO rung can cure. Churning resnapshot/reindex/refold against it wastes
-     * hours and can destroy useful state (live 2026-07-21: the ladder logged
+     * hours and can destroy useful state — e.g. logging
      * "rung 'resnapshot' made no progress — advancing to 'reindex'" while two
-     * permanent utxo_apply gap blockers were active). HOLD: advance/dispatch NO
+     * permanent utxo_apply gap blockers are active and no rung can clear them.
+     * HOLD: advance/dispatch NO
      * rung; re-check on the normal cadence so the hold releases the instant the
      * blocker clears/retires. Only PERMANENT holds — TRANSIENT/DEPENDENCY/
      * RESOURCE blockers are expected during normal stalls and their remedies are

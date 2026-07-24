@@ -456,8 +456,8 @@ size_t factoids_emit_section_10_opreturn(uint8_t *buf, size_t cap, size_t off,
     int64_t slp_opret = op_return_stats.zslp;
     int64_t nonslp_opret = total_opret - slp_opret;
     int64_t first_opret = fq_i64(db, "SELECT MIN(block_height) FROM op_returns");
-    /* The chain's very first OP_RETURN (375,159) was NOT a token, so
-     * "First non-ZSLP OP_RETURN" used to duplicate "First OP_RETURN".
+    /* The chain's very first OP_RETURN (375,159) is NOT a token, so
+     * "First non-ZSLP OP_RETURN" would duplicate "First OP_RETURN".
      * Surface the (non-redundant, more informative) first ZSLP one instead. */
     int64_t first_slp = fq_i64(db,
         "SELECT MIN(block_height) FROM op_returns WHERE is_slp = 1");

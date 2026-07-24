@@ -3,7 +3,7 @@
  * Self-test for the `make check-raw-sqlite` gate.
  *
  * Problem: the `check-raw-sqlite` lint is the only thing stopping new
- * raw `sqlite3_step` calls from reintroducing the 2026-04-10 UTXO-wipe
+ * raw `sqlite3_step` calls from reintroducing a UTXO-wipe
  * class of bug. If someone loosens the grep pattern ("oh, it's
  * annoying on this PR, let me add another exemption"), the gate
  * silently stops catching violations. This test prevents that.
@@ -1322,7 +1322,7 @@ static int t_git_hooks_gate_rejects_noop_pre_commit(void)
 #define FRESH_BOOT_WELD_PROVE_SELFTEST_REL \
     "tools/scripts/fresh-boot-weld-prove-selftest.sh"
 #define FRESH_BOOT_WELD_PROVE_SELFTEST_TIMEOUT_SECS "180"
-/* Gate E14 — condition cooldown re-arm (the 2026-07-13 27h-page bug class).
+/* Gate E14 — condition cooldown re-arm (a page-loop bug class).
  * The script's own selftest plants an isolated tmp-dir fixture (never the
  * real app/conditions/src tree) proving a network-dependent COND_CRITICAL
  * condition without cooldown_secs trips exit 2, and every sibling case
@@ -3066,9 +3066,9 @@ static int t_thread_supervision_ratchet(void)
     return failures;
 }
 
-/* Gate #15 — supervisor-registration ratchet, widened 2026-07-21 scope
- * (Task D/E: app/controllers, app/conditions, app/jobs, config/src, audited
- * lib/net,lib/health,lib/rpc — see check_supervisor_registration.sh). Runs
+/* Gate #15 — supervisor-registration ratchet, scoped to
+ * app/controllers, app/conditions, app/jobs, config/src, and audited
+ * lib/net, lib/health, lib/rpc (see check_supervisor_registration.sh). Runs
  * hermetically via ZCL_SERVICES_DIR / ZCL_SUPREG_BASELINE so it never
  * touches the live tree/baseline: a planted unsupervised raw pthread_create
  * (the acceptance-bar shape: "a planted unsupervised thread in
@@ -7935,9 +7935,9 @@ static int t_block_index_flat_atomic_save_contract(void)
      * as a SINGLE file with the 48-byte integrity header embedded inside
      * block_index.bin, published with ONE atomic rename. The old pin
      * encoded the TWO-file shape (body rename, then a separate
-     * bii_write_sidecar_raw sidecar rename) — that shape WAS the bug
-     * (a crash between the two renames stranded a fresh body under a
-     * stale sidecar; live 2026-06-12). The pin below enforces that:
+     * bii_write_sidecar_raw sidecar rename) — that shape is a bug
+     * class: a crash between the two renames strands a fresh body under a
+     * stale sidecar. The pin below enforces that:
      *   - the writer streams a SHA3 over the payload in bif_emit_payload,
      *   - it publishes via bii_write_embedded (the shared
      *     placeholder-header → payload → back-patch → one-rename helper),

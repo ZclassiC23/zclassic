@@ -1,8 +1,6 @@
 # ADR-0002: Physically split and seal the consensus core (`core/`)
 
-- **Status:** Accepted and landed 2026-07-10 (`check-core-seal` flipped HARD
-  at commit `7ae4ab55e`, "core: freeze the consensus-core seal — flip
-  check-core-seal HARD (W5)").
+- **Status:** Accepted and landed. `check-core-seal` is HARD.
 - **Deciders:** Project maintainer.
 - **Related:** `docs/FRAMEWORK.md` (the eight-shape architecture this split
   sits inside), [`docs/ZVCS.md`](../ZVCS.md) (the in-binary VCS whose own
@@ -130,14 +128,12 @@ checks `plan.sealed_core` **before any hot-swap or reload publish step**:
   span several iterative dev-cycles while the fix converges — never just one
   cycle.
 
-This refusal landed at commit `070849e7f` ("dev: fast loop structurally
-refuses to auto-publish sealed consensus core"), Wave 2.4 of the
-power-station plan. ZVCS's own independent seal guard
-(`lib/vcs/src/vcs_seal.c`, described in `docs/ZVCS.md`) is a second,
-defense-in-depth check at the source-snapshot layer; as of this writing it
-runs *after* the dev-loop's own publish step (advisory only at that
-integration point) — the dev-loop refusal above is the one that is
-load-bearing for blocking the running binary.
+The dev fast loop structurally refuses to auto-publish the sealed consensus
+core. ZVCS's own independent seal guard (`lib/vcs/src/vcs_seal.c`, described
+in `docs/ZVCS.md`) is a second, defense-in-depth check at the
+source-snapshot layer; it runs *after* the dev-loop's own publish step
+(advisory only at that integration point) — the dev-loop refusal above is
+the one that is load-bearing for blocking the running binary.
 
 ## Consequences
 

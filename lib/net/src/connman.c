@@ -2342,8 +2342,8 @@ void connman_free(struct connman *cm)
     /* ORDERING GUARD: if the message-cycle thread was detached during
      * connman_join() (bounded join timed out) it is STILL RUNNING and keeps
      * dereferencing cm->manager (addrman entries, node array, cs mutexes) on
-     * the addr/inv path. Freeing that state now is a use-after-free — the exact
-     * 2026-07-19 crash (addrman_add SIGSEGV after "[shutdown] connman stopped").
+     * the addr/inv path. Freeing that state now is a use-after-free (an
+     * addrman_add SIGSEGV after "[shutdown] connman stopped").
      * The process is terminating, so deliberately leak the network state rather
      * than free it under the live thread. addrman_add()'s fail-closed guard is
      * the second line of defense should this branch ever be bypassed. */

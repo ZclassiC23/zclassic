@@ -178,7 +178,7 @@ struct connman {
      * times out and the thread is detached while STILL RUNNING. A detached
      * message thread keeps dereferencing cm->manager (addrman entries, nodes,
      * mutexes) on the addr/inv path, so connman_free() must NOT tear that state
-     * down — doing so is a use-after-free (observed 2026-07-19: addrman_add
+     * down — doing so is a use-after-free (addrman_add
      * SIGSEGV after "[shutdown] connman stopped"). The process is terminating,
      * so the state is deliberately leaked instead. */
     bool message_thread_detached;

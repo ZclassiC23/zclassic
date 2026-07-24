@@ -8,9 +8,9 @@
  * a numeric code, and the source file:line where the failure was
  * produced — so every `return !r.ok` leaves a paper trail in the log.
  *
- * The 0.4 ZCL loss of 2026-04-12 happened because
- * wallet_sqlite_open() returned `false` with no log line. That bug
- * class is what this type is designed to eliminate. A zcl_result
+ * A bare `false` return with no log line — e.g. from
+ * wallet_sqlite_open() — can make an unspendable-funds bug undiagnosable.
+ * That bug class is what this type is designed to eliminate. A zcl_result
  * literal carries enough context that silence is no longer an option.
  *
  * Usage:

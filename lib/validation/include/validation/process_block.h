@@ -246,8 +246,7 @@ enum propagate_failed_child_result {
  * when the caller opts into rate-limiting (non-NULL last_propagate_sec).
  * At a live-tip block_map size of ~3M entries, each walk is ~24 MB of
  * scratch + an O(N log N) qsort; firing once per FSM flap event can
- * pin the node under sustained RSS + CPU pressure (see
- * docs/archive/2026-04/2026-04-19-bip30-stall.md). Ten seconds lets
+ * pin the node under sustained RSS + CPU pressure. Ten seconds lets
  * genuine back-to-back validation failures still propagate without
  * amplifying a stall into resource exhaustion. */
 #define PROPAGATE_FAILED_CHILD_MIN_INTERVAL_SEC 10
@@ -257,7 +256,7 @@ enum propagate_failed_child_result {
  * MUST have set a BLOCK_FAILED_MASK bit on pindex_root itself before
  * invoking.
  *
- * Guards (prevent the 2026-04-19 OOM amplifier):
+ * Guards (prevent an OOM amplifier):
  *   - SKIP_PARENT_FAILED when pindex_root->pprev is itself already in
  *     BLOCK_FAILED_MASK. The prior propagation from the ancestor
  *     already covered this subtree; re-walking the block_map would

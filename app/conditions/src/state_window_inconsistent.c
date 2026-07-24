@@ -11,7 +11,7 @@
  * SELF-CLEARING on a later clean pass (repair jobs may legitimately fix
  * holes); this Condition keeps an unresolved violation escalating.
  *
- * REMEDY (2026-06-29): the coins.commitment_spot_check arm is now
+ * REMEDY: the coins.commitment_spot_check arm is
  * auto-terminating — it is a benign projection-vs-stale-checkpoint skew (the
  * `utxos` mirror is a rebuildable projection of the coins_kv authority), so the
  * remedy releases the operator-facing diagnostic and the witness confirms the

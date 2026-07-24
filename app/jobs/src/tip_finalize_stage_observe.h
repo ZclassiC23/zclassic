@@ -42,8 +42,8 @@ void tip_finalize_observe_clear_cursor_gap(void);
 /* Current-tip-missing anomaly (Task A #11): the block AT next_h that finalize
  * must extend FROM could not be resolved from the active-chain window, the
  * durable finalized-hash table, OR the best-header ancestry — a genuine
- * data-availability anomaly, not the healthy at-tip wait. Previously this set
- * only the internal g_blocked_class counter; now it ALSO names a
+ * data-availability anomaly, not the healthy at-tip wait. This sets the
+ * internal g_blocked_class counter and ALSO names a
  * registry-visible TRANSIENT blocker so blocker_stall_meta_detector's safety
  * net and `core sync blockers` see it. `_clear` is called once old_tip
  * resolves. */

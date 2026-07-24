@@ -81,8 +81,8 @@ struct zcl_result ssio_write_sidecar(const char *datadir,
  * no rehash). For writers that stream the hash while producing the
  * body: re-hashing a 500 MB body after the rename leaves a multi-
  * second crash window where the new body sits under a stale sidecar
- * and the next boot quarantines a perfectly good file (live
- * 2026-06-12 deploy restart). Same atomic tmp+fsync+rename. */
+ * and the next boot quarantines a perfectly good file. Same atomic
+ * tmp+fsync+rename. */
 struct zcl_result ssio_write_sidecar_raw(const char *datadir,
                                          const struct ssio_spec *spec,
                                          uint64_t body_size,
@@ -98,8 +98,8 @@ enum ssio_read_verdict ssio_read_sidecar(const char *datadir,
  *
  * Two files (body + sidecar) can never be published as ONE atomic
  * step: a crash between the two renames orphans or mismatches them
- * (live 2026-06-12 — a killed shutdown left a fresh body under a
- * stale sidecar and the next boot quarantined a perfectly good file).
+ * (a killed shutdown can leave a fresh body under a
+ * stale sidecar, and the next boot quarantines a perfectly good file).
  *
  * The embedded format closes that window: the 48-byte
  * `ssio_sidecar_header` is the FIRST 48 bytes of the body file

@@ -105,8 +105,8 @@ static bool rung_kill9_load(struct boot_blkidx_load_ctx *c)
  * height in the loaded map, the flat is a corrupt union: drop `loaded` AND set
  * flat_union_tainted so the LevelDB rung's mid-boot flat re-save is suppressed
  * (persisting the union would launder the poison record into every future
- * boot — this is how the h=3166988 height-0 stub survived across boots,
- * 2026-07-02). The heal happens later this boot; the shutdown save persists
+ * boot — otherwise a height-0 stub can survive across boots).
+ * The heal happens later this boot; the shutdown save persists
  * the healed map. */
 static bool rung_taint_applicable(const struct boot_blkidx_load_ctx *c)
 {

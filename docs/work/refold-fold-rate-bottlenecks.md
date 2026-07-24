@@ -13,7 +13,7 @@ active-chain window to a target far above the fold frontier.
 
 ## Ranked bottlenecks (dominant first)
 
-### #1 — per-block full-height `pprev` walk (CPU/cache-bound) · LANDED
+### #1 — per-block full-height `pprev` walk (CPU/cache-bound)
 `tip_finalize` no longer retracts the active-chain coverage window during a
 refold — `active_chain_move_window_tip` is gated on `!refold_in_progress()`
 (`app/jobs/src/tip_finalize_stage.c:586`), so the first window-fill pass is
@@ -35,7 +35,7 @@ the tail batch (100→~2000). Compile-time consts in `app/jobs/include/jobs/*_st
 today; thread a refold-gated override. Needs batched commits (io-speedups) so a
 big batch is one fsync, not 2000.
 
-### #3 — utxo_mirror_sync full wipe+reinsert every 5s (O(n), goes quadratic) · LANDED
+### #3 — utxo_mirror_sync full wipe+reinsert every 5s (O(n), goes quadratic)
 `utxo_mirror_sync_run_once` early-returns during a refold
 (`app/services/src/utxo_mirror_sync_service.c:446`) instead of doing a full
 `DELETE FROM utxos` + per-row reinsert on every 5s tick; the mirror rebuilds
@@ -54,11 +54,10 @@ incrementally instead.
   paths take neither `progress_store_tx_lock` nor coins_kv; ruled out for a
   peerless refold.
 
-## io-speedups (round1/io-speedups) reorg bug — must fix to land batching
-**STATUS 2026-07-18: FIXED.** The batch-aware cursor writers landed in
-`429706f87` (`cursor_txn_begin/commit/rollback`, `STAGE_CURSOR_SP` savepoint in
-`lib/util/src/stage.c`); lane `lane/io-speedups-reorg` added focused regression
-coverage to `test_stage.c` (group `stage`, "batch-cursor" checks).
+## io-speedups reorg bug — fixed, watch for regression
+The batch-aware cursor writers (`cursor_txn_begin/commit/rollback`,
+`STAGE_CURSOR_SP` savepoint in `lib/util/src/stage.c`) are guarded by focused
+regression coverage in `test_stage.c` (group `stage`, "batch-cursor" checks).
 `stage_set_cursor` (`lib/util/src/stage.c:510`) and
 `stage_set_named_cursor_if_behind` (`:551`) do an unconditional `BEGIN IMMEDIATE`.
 Inside an open batch (the reorg-rewind path `tip_finalize_stage.c:286` calls

@@ -1,15 +1,15 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Deterministic reproduction of the 2026-04-19 chain stall.
+ * Deterministic reproduction of a BIP30 chain stall.
  *
  * Context
  * -------
- * On 2026-04-19 the live node stalled at h=3,081,407 with every
- * connect_tip(3,081,408) returning `bad-txns-BIP30`. shipped a
- * boot-time sweep that ran once and cleaned the orphan coinbase row;
- * the chain advanced to 3,081,408.  Three hours later the tip had
- * regressed to 3,081,407 on its own (no operator restart, no reorg
- * log line) and the BIP30 loop resumed.
+ * A stall can wedge the node at height N-1 with every
+ * connect_tip(N) returning `bad-txns-BIP30`. A boot-time sweep that
+ * runs once and cleans the orphan coinbase row lets
+ * the chain advance to N — but if the tip later regresses back to N-1 on
+ * its own (no operator restart, no reorg
+ * log line), the BIP30 loop resumes.
  *
  * The failing shape
  * -----------------
@@ -247,7 +247,7 @@ static int t_connect_block_tolerates_own_coinbase_self_write(void)
         bool ok = connect_block(&stall_blk, &vs, &stall_idx, &cache,
                                  &fx.params, /*just_check=*/true);
 
-        /* The live 2026-05-25 wedge is a same-height self-write:
+        /* A same-height self-write wedge:
          * block N's own coinbase is already present while durable tip
          * is N-1. Since contextual_check_block enforces BIP34 coinbase
          * height encoding for every height > 0, this cannot be a real
@@ -344,8 +344,7 @@ static int t_clean_view_advances(void)
 
 /* ── Test 3 — Regression test: disconnect_block purges coinbase ──
  *
- * The invariant (from `docs/archive/2026-04/2026-04-19-bip30-stall.md`,
- * Q3): for every txid T in the coins view, the block that created
+ * The invariant: for every txid T in the coins view, the block that created
  * T's outputs must be on the active chain. Concretely: after
  * `disconnect_block(B)` runs on a scratch view wrapping a parent
  * cache, AND `coins_view_cache_flush_for_testing(scratch)` propagates the

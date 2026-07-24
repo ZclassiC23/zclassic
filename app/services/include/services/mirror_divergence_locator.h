@@ -2,8 +2,8 @@
  *
  * mirror_divergence_locator — fail-loud validation pack, check 6.
  *
- * Evidence (2026-06-11): the mirror hash-disagreement blocker fired 279
- * times as identical quiet warnings while the node SERVED a poisoned
+ * A mirror hash-disagreement blocker that only fires identical quiet
+ * warnings lets the node SERVE a poisoned
  * chain. Disagreement alone is not actionable; the operator needs WHERE
  * the chains diverge. On a hash-disagreement this locator binary-searches
  * the first diverging height against the co-located zclassicd (bounded

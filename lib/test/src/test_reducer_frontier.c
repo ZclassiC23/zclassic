@@ -706,7 +706,7 @@ static int case_durable_base_survives_header_failure(void)
     return failures;
 }
 
-/* (b3) RECURRING POST-COLD-IMPORT WEDGE GUARD — the 2026-06-13 anchor-collapse.
+/* (b3) RECURRING POST-COLD-IMPORT WEDGE GUARD — the anchor-collapse class.
  *
  * Models the live tear class exactly: a cold import seeded a trusted base at
  * `base` (declared BOTH as a tip_finalize status='anchor' row AND the durable

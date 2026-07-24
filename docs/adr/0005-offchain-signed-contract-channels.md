@@ -8,10 +8,9 @@
   (capability service fabric — the sandboxed program tier), the consensus
   parity doctrine ([`CONSENSUS_PARITY_DOCTRINE.md`](../CONSENSUS_PARITY_DOCTRINE.md)),
   and the software-anchoring overlay ([`SOFTWARE_ANCHORING.md`](../SOFTWARE_ANCHORING.md)).
-- **Enabled by (in flight 2026-07-16):** the overlay SDK (`lib/overlay/`,
-  lane OS-D1), the generalized authority-receipt idiom
-  (`lib/util/authority_receipt.*`, lane OS-A1), and the sandbox/hotload
-  program tier (`lib/hotswap/`, `os_sandbox`).
+- **Enabled by:** the overlay SDK (`lib/overlay/`), the generalized
+  authority-receipt idiom (`lib/util/authority_receipt.*`), and the
+  sandbox/hotload program tier (`lib/hotswap/`, `os_sandbox`).
 - **Related primitives already in tree:** `lib/script/src/htlc.c`
   (HTLC build/redeem/refund + secret extraction), `app/controllers/src/anchor_controller.c`
   (ZANC on-chain software anchoring), the P2P messaging channels
@@ -182,9 +181,9 @@ a projection folded from settled contracts.
   script. This ADR cannot, by construction, propose a consensus change; if a
   future contract feature seems to need one, it is out of scope and must be
   rejected under ADR-0002 and the parity doctrine.
-- **New surface to build (ordered):** (1) the overlay SDK (OS-D1, in flight) as
-  the service-advertisement and oracle-outcome-publication substrate; (2) the
-  authority-receipt idiom (OS-A1, in flight) as the co-signed-state binder;
+- **New surface to build (ordered):** (1) the overlay SDK as the
+  service-advertisement and oracle-outcome-publication substrate (landed);
+  (2) the authority-receipt idiom as the co-signed-state binder (landed);
   (3) an adaptor-signature primitive (`lib/script/`, new) — the one genuinely
   new cryptographic piece, itself consensus-parity-neutral (it produces
   standard signatures); (4) a channel state machine (`app/services/`, new) for
@@ -210,9 +209,8 @@ a projection folded from settled contracts.
   anchoring; the P2P messaging channels exist in `lib/net/src/zmsg.c`.
 - **Design-only, not yet implemented:** the adaptor-signature primitive, the
   channel state machine, and the oracle-program registry do not exist in the
-  tree today; the overlay SDK (`lib/overlay/`) and authority-receipt primitive
-  (`lib/util/authority_receipt.*`) are in flight as of 2026-07-16 and are
-  prerequisites, not landed dependencies.
+  tree. The overlay SDK (`lib/overlay/`) and authority-receipt primitive
+  (`lib/util/authority_receipt.*`) are landed prerequisites this ADR builds on.
 - **Not evaluated here:** the precise adaptor-signature scheme (Schnorr vs
   ECDSA adaptor) and its interaction with ZClassic's signature format — that is
   the first design question of the implementation program this ADR authorizes,

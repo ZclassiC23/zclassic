@@ -172,8 +172,8 @@ void invariant_sentinel_pair_violation(const char *site, int height,
      * chain tip is still the (torn) UPPER tip from the borrowed datadir copy.
      * Every projection-tip write in that window resolves the pair to a
      * DIFFERENT height, so this fires on EVERY pass — pure non-consensus churn
-     * (the dominant ~143/200 log-line slowdown measured 2026-06-20), hammering
-     * the progress.kv lock and starving the genesis..anchor fold. The same
+     * that dominates fold log-line volume and hammers
+     * the progress.kv lock, starving the genesis..anchor fold. The same
      * refold_in_progress() guard already self-suppresses node_db_catchup and
      * utxo_mirror_sync for the identical reason. Scoped to mint/refold ONLY:
      * on a normal boot the key is absent and this stays fully active. Pure

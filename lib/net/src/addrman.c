@@ -636,7 +636,7 @@ bool addrman_add(struct addr_man *am, const struct net_address *addr,
      * addrman_free() has nulled am->entries and destroyed am->cs during
      * shutdown; without this guard find_addr returns NULL ("find_addr: bad
      * args") but addrman_add falls through to create_entry and dereferences the
-     * freed am->entries (2026-07-19 SIGSEGV). This must run BEFORE
+     * freed am->entries (a use-after-free SIGSEGV). This must run BEFORE
      * zcl_mutex_lock so we never lock an already-destroyed mutex. */
     if (!am || !addr || !am->entries)
         LOG_FAIL("addrman", "addrman_add: torn-down/invalid addrman (am=%p entries=%p)",

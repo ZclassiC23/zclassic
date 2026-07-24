@@ -91,11 +91,11 @@ static bool rf_height_is_vs_hash_split(sqlite3 *db, int h, bool *out_split)
 }
 
 /* Lazily-opened purge transaction. The row deletes and the script/proof
- * cursor clamps below MUST commit atomically: the 2026-07-02 stall at height
- * 3166989 was a purge whose deletes committed (rowless holes in
- * script_validate_log/proof_validate_log) while both cursors stayed above the
- * hole — the later refill scan could not see it (its body_persist_log anchor
- * row was deleted by the same pass), so no stage ever re-derived the rows.
+ * cursor clamps below MUST commit atomically: a purge whose deletes commit
+ * (rowless holes in script_validate_log/proof_validate_log) while both
+ * cursors stay above the hole leaves the later refill scan unable to see it
+ * (its body_persist_log anchor row was deleted by the same pass), so no
+ * stage ever re-derives the rows.
  * Caller holds progress_store_tx_lock(). */
 static bool rf_purge_tx_begin(sqlite3 *db, bool *tx_open)
 {
@@ -405,8 +405,7 @@ bool stage_reducer_frontier_purge_noncanonical(
      * script_validate / proof_validate cursor left ABOVE such a height would
      * strand it forever: the forward stages only walk up, and the refill
      * scans key on upstream anchor rows (body_persist_log / script_validate_
-     * log) this same pass just deleted, so they read no hole (the 2026-07-02
-     * stall at height 3166989). Clamp both cursors to the lowest purged
+     * log) this same pass just deleted, so they read no hole. Clamp both cursors to the lowest purged
      * height in the unapplied domain, in the SAME transaction as the deletes
      * — both log stores are INSERT OR REPLACE, the forward re-walk rewrites
      * fresh verdicts from the persisted canonical bodies and deletes nothing.

@@ -4,8 +4,8 @@
  * jobs/reducer_frontier.h. When stage_repair_read_active_block_checked
  * (reducer_frontier_replay.c) cannot read the canonical body for a HAVE_DATA
  * height — the on-disk bytes are torn (pread failed) or read fine but hash to
- * the WRONG block — the read used to only DEFER, wedging every downstream
- * stage forever. It now records the failing height HERE (event-driven; no new
+ * the WRONG block — a read that only DEFERs wedges every downstream
+ * stage forever. This records the failing height HERE (event-driven; no new
  * scan) so the have_data_unreadable Condition clears BLOCK_HAVE_DATA OFF-LOCK
  * and body_fetch re-downloads the body. Deliberately does NOT clear HAVE_DATA
  * from inside the progress-locked replay (a side-channel write racing the

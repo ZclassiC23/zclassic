@@ -1,7 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Regression guard for the COLD-IMPORT RESTART FRAGILITY class
- * (MEMORY: project_coldimport_restart_fragility_2026-06-15).
+ * Regression guard for the COLD-IMPORT RESTART FRAGILITY class.
  *
  * The bug
  * -------

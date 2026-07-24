@@ -43,7 +43,7 @@ the theory, then live here.
 | 10 | Q5 observability | ✓ DONE | |
 | 10 | Q6 no-silent-stall | ✗ | |
 | 10 | Q7 no-O(chain)-boot | ✗ | |
-|  0 | Q8 enforcement gate | ✗ | ceiling |
+|  0 | Q8 enforcement gate | ✓ DONE | ceiling |
 
 Dependency order (do these first, they unlock the boss): **Q7 → Q6 → Q2 → Q3
 → Q1**, with **Q4** last (needs Q1). Q8 anytime (locks in Q2).
@@ -131,14 +131,12 @@ Dependency order (do these first, they unlock the boss): **Q7 → Q6 → Q2 → 
   `sapling_tree_rebuild_start_deferred`. Verify the bundle carries a v3
   shielded section (it does); wire the install to land it.
 
-## Q8 — enforcement gate · 0 pts, but it LOCKS Q2
-- **📍 now:** the single-writer invariant is a convention, not a law — a future
-  executor can re-clone a ledger and nothing stops them.
-- **🏁 win-proof:** `tools/scripts/check_frontier_single_writer.sh` exists AND
-  is wired into `make lint` (the score prints `enforcement: PRESENT`).
-- **🔧 move:** a grep-class gate (same family as `check-consensus-parity`) that
-  reads `arch_frontier_owners.tsv` and FAILS the build if any frontier has a
-  writer outside its owner. Wire into the `lint` target.
+## Q8 — enforcement gate · 0 pts, but it LOCKS Q2 · ✓ DONE
+- `tools/scripts/check_frontier_single_writer.sh` exists and is wired into
+  `make lint` as `check-frontier-single-writer`: it reads
+  `arch_frontier_owners.tsv` and fails the build if any frontier has a writer
+  outside its owner. An executor cannot re-clone a ledger without tripping
+  the gate.
 
 ---
 

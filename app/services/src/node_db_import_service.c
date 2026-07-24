@@ -8,10 +8,9 @@
  * coins-format entries; a single writer thread bulk-inserts into the
  * utxos table.
  *
- * Relocated from node_db_sync_import_utxos's orchestration (formerly
- * app/controllers/src/sync_controller_import.c). It is consensus-adjacent
+ * node_db_sync_import_utxos's orchestration. It is consensus-adjacent
  * (§3 coins-wedge recovery surface): the import-write path — what rows land
- * in the UTXO set — is byte-identical to the controller body it came from.
+ * in the UTXO set — is byte-identical across callers.
  * Only the failure SIGNAL changed: this Service returns struct zcl_result
  * (Law 2) instead of a bare int; the thin controller wrapper maps it back to
  * the legacy `rows-or--1` int so every caller sees the same value as before.
@@ -194,10 +193,9 @@ struct zcl_result node_db_import_service_run(struct node_db *ndb,
 
     /* ── Recovery policy gate + scoped wipe ────────────────────────
      * The wipe below is a reimport prelude, not a reorg rollback — in
-     * normal operation the table is empty or nearly empty. Historically
-     * this call site is *not* the one that caused 2026-04-10, but it
-     * shares a primitive with the paths that did, so we gate it the
-     * same way: ask the policy, refuse if over cap, abort cleanly.
+     * normal operation the table is empty or nearly empty. It
+     * shares a primitive with every other destructive UTXO path, so it is
+     * gated the same way: ask the policy, refuse if over cap, abort cleanly.
      * The cap is deliberately generous here (reimport is legitimate)
      * but an operator can still raise ZCL_MAX_UTXO_WIPE_ROWS if a
      * partial import is being resumed.

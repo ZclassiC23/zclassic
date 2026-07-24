@@ -13,8 +13,8 @@
  * activation. Its presence is the "this datadir now holds sovereign, installed
  * consensus state" flag that boot_snapshot_failure_memory consults: once a
  * bundle has been installed here, a leftover starter-pack 'utxo-seed-*.snapshot'
- * must NEVER be auto-loaded back over the installed state (the 2026-07-19 seam
- * where a stale borrowed seed flipped coins-best off the installed anchor).
+ * must NEVER be auto-loaded back over the installed state — a stale borrowed
+ * seed can otherwise flip coins-best off the installed anchor.
  *
  * The marker records the installed height, the bundle artifact digest, and the
  * install time so an operator (and diagnostics) can see exactly which bundle is

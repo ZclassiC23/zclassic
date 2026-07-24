@@ -38,9 +38,8 @@
  * so the hot path stays integer/atomic (no _Atomic double). */
 #define SYNC_RATE_SCALE 1000
 
-/* Deliberately far below the measured historical worst-case LEGITIMATE fold
- * rate (~50 blk/s pprev-walk ceiling —
- * reference_refold_bottleneck_measured_2026-06-24.md) so a healthy node
+/* Deliberately far below the measured worst-case LEGITIMATE fold
+ * rate (~50 blk/s pprev-walk ceiling) so a healthy node
  * under heavy proof-validation load never false-fires; this only catches a
  * node that is genuinely crawling (< 1 block/sec of real, non-throttled
  * work) while it has both peers and a real backlog to fold. */

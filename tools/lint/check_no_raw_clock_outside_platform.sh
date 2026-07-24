@@ -10,6 +10,8 @@ ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$ROOT"
 # shellcheck source=tools/lint/scan_exclusions.sh
 source tools/lint/scan_exclusions.sh
+# shellcheck source=tools/lint/gate_lib.sh
+source tools/lint/gate_lib.sh
 
 roots=()
 for root in app lib config tools; do
@@ -27,13 +29,7 @@ matches=$(
 )
 
 violations=0
-if [[ -n "${matches//[[:space:]]/}" ]]; then
-    while IFS= read -r line; do
-        [[ -z "$line" ]] && continue
-        violations=$((violations + 1))
-        echo "$line" >&2
-    done <<< "$matches"
-fi
+gate_count_and_report "$matches" violations
 
 echo "[check_no_raw_clock_outside_platform] $violations violation(s) found (mode: $MODE)"
 echo "[check_no_raw_clock_outside_platform] ratchet now FAIL -- no new raw clock calls allowed"

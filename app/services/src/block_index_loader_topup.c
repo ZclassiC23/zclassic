@@ -152,7 +152,7 @@ static bool topup_row_cb(const uint8_t hash[32],
      * competing label; refusing the projection's full crash-safe record
      * here is what BIRTHS the boot placeholder tip — coins_best resolves
      * to the stub, the restore rewinds one height, and the node degrades
-     * for a whole boot (the h=3166988 two-boot heal, 2026-07-02). Adopt
+     * for a whole boot. Adopt
      * the projection row wholesale and track the entry like an insert so
      * the pprev-link + chainwork pass below covers it. */
     if (bi->nHeight != dbi->nHeight) {

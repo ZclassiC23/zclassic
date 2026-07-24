@@ -3,17 +3,16 @@
  * Wallet Backup Service — periodic, rotated, verified backups
  * of the wallet_* tables inside node.db.
  *
- * Motivation
- * ----------
- * On 2026-04-10 an interactive debug procedure deleted node.db
- * and its WAL/SHM sidecar files while the node was running a
- * UTXO reimport. That wiped the `wallet_keys` and
- * `wallet_sapling_keys` rows, which are the sole source of truth
- * for the user's private keys. The next boot generated fresh
- * keys; the 0.4 ZCL already sent to the original address became
- * permanently unspendable.
+ * Invariant
+ * ---------
+ * node.db and its WAL/SHM sidecar files hold the `wallet_keys` and
+ * `wallet_sapling_keys` rows, the sole source of truth for the user's
+ * private keys. Deleting node.db (whether by an operator mistake or a
+ * crash mid-reimport) wipes those keys; the next boot generates fresh ones
+ * and any funds already sent to the original addresses become permanently
+ * unspendable.
  *
- * The safety rails we've built so far (recovery_policy, db_txn,
+ * The safety rails (recovery_policy, db_txn,
  * chain_state_repository, block_index_integrity) all make the
  * *running* node safer. None of them defend against an operator
  * mistake that takes the whole database file out of play before

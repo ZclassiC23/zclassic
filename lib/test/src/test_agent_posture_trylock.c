@@ -1,10 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * test_agent_posture_trylock — the node.db-connection-level non-blocking
- * guard for agent_security_posture_collect()'s bootstrap read (wf/posture-
- * nonblocking, 2026-07-23).
+ * guard for agent_security_posture_collect()'s bootstrap read.
  *
- * Live forensics on a wedged node with a write-retry storm: the brief
+ * On a wedged node with a write-retry storm: the brief
  * typed status front door (`zclassic23 status` -> rpc_agent_summary) calls
  * agent_security_posture_collect() -> posture_collect_bootstrap() ->
  * chain_evidence_controller_snapshot(), which issues ~a dozen synchronous

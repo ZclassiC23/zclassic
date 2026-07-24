@@ -3,10 +3,10 @@
  * chain_linkage_check — fail-loud validation pack: the HOLD latch and the
  * O(1) per-connect linkage checks (pack checks 1 + 2).
  *
- * Why this exists (evidence, 2026-06-11): a header SPLICE poisoned the
- * nHeight labels of 3.1M block-index entries and was only caught 28 blocks
- * later by the contextual coinbase-height check inside script_validate.
- * The cause-side fix (derive-from-parent, c572def48) landed on main; this
+ * Why this exists: a header SPLICE can poison the
+ * nHeight labels of millions of block-index entries, caught only dozens of
+ * blocks later by the contextual coinbase-height check inside script_validate.
+ * nHeight is derived from the parent at the cause side; this
  * module is the DETECTOR-side complement: catch any future label
  * divergence at the EARLIEST detectable moment — the very first tip move
  * that touches a mislabeled block — and refuse forward progress LOUDLY.

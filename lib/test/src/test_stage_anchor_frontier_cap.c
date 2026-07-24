@@ -405,7 +405,7 @@ static int fc_case_fresh_seed(void)
     FC_CHECK("T5b: H* still anchored at H after the repeat",
              hs_ok && hstar == H);
 
-    /* Member 3 of the #31 lattice (run-3 copy-prove, 2026-06-12): the
+    /* Member 3 of the #31 lattice: the
      * pipeline CONSUMES the seed anchor row — the first forward step
      * replaces it with the H→H+1 'finalized' row. The trusted base must
      * survive that via the durable REDUCER_TRUSTED_BASE_HEIGHT_KEY

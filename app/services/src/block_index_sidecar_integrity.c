@@ -95,10 +95,10 @@ static enum bii_verdict bii_read_sidecar(const char *datadir,
 }
 
 /* Cross-check the loader's declared tip against the SQLite `blocks`
- * table. The single SELECT this used to issue inline now lives behind
+ * table. The single SELECT lives behind
  * block_index_sidecar_port; we bind the default sqlite adapter to the
  * node DB connection and translate the port's three-way lookup result
- * back to the EXACT verdict the inline code produced:
+ * to the EXACT verdict:
  *
  *   FOUND + height matches    -> BII_OK
  *   FOUND + height differs     -> BII_TIP_HEIGHT_MISMATCH
@@ -202,7 +202,7 @@ enum bii_verdict bii_verify(const char *datadir,
         if (err_out) snprintf(err_out, err_cap,
                 "no sidecar at %s (first run after upgrade?)", side_path);
         /* Even without a sidecar the SQLite cross-check is still
-         * useful — the 2026-04-10 bug would trip the tip check
+         * useful — a stale block_index.bin tip trips the tip check
          * regardless. */
         enum bii_verdict sql = bii_check_tip_in_sql(db, declared_tip);
         if (sql != BII_OK) {

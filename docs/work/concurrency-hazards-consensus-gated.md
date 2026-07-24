@@ -1,19 +1,12 @@
-> **CORRECTION:** `ab512d577` repaired the earlier transparent
-> coins-loader failure, but the borrowed snapshot did not prove complete state.
-> Canonical is now held below tip by incomplete shielded anchor/nullifier
-> history (verify the live H* via `zclassic23 status` / `zclassic23 dumpstate reducer_frontier`;
-> `docs/HANDOFF.md` holds current state). These hazards remain valid analysis, but live validation waits for
-> the complete-state cure and copy proof.
-
 # Consensus-gated concurrency hazards (boot-validation blocked)
 
-Status: **root-caused + verified by direct code reads (2026-06-03).** These are
-real cross-thread hazards in the consensus/chain-advance path, documented here
-with precise fixes. Each fix changes locking on the **live chain path** and MUST
-be boot-validated for both correctness AND absence of deadlock under live reorg
-before applying — currently **BLOCKED by the canonical shielded-history wedge**
-and the requirement to copy-prove the complete-state cure first. NONE is the already-fixed
-`phashBlock` UAF.
+These are real cross-thread hazards in the consensus/chain-advance path,
+documented here with precise fixes. Each fix changes locking on the **live
+chain path** and MUST be boot-validated for both correctness AND absence of
+deadlock under live reorg before applying — copy-prove first, per the
+standing method. Verify the live H\* via `zclassic23 status` /
+`zclassic23 dumpstate reducer_frontier`; `docs/HANDOFF.md` holds current
+state. NONE of these is the already-fixed `phashBlock` UAF.
 
 ## 1 — bg_validation_service.c lock-free `chain_active` read (HIGHEST value — a real UAF)
 

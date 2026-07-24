@@ -13,6 +13,8 @@ BASELINE="$SCRIPT_DIR/proc_self_shim_baseline.txt"
 cd "$ROOT"
 # shellcheck source=tools/lint/scan_exclusions.sh
 source tools/lint/scan_exclusions.sh
+# shellcheck source=tools/lint/gate_lib.sh
+source tools/lint/gate_lib.sh
 
 roots=()
 for root in app config lib tools; do
@@ -20,10 +22,7 @@ for root in app config lib tools; do
 done
 
 declare -A baseline
-while IFS= read -r line; do
-    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
-    baseline["$line"]=1
-done < "$BASELINE"
+gate_load_list_file "$BASELINE" baseline
 
 matches=$(
     grep -rln --include='*.c' -E '"/proc/self|"/proc/uptime' \

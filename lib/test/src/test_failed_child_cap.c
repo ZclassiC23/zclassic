@@ -2,14 +2,13 @@
  *
  * Regression test: cap BLOCK_FAILED_CHILD propagation (OOM amplifier).
  *
- * The live 2026-04-19 BIP30 stall re-walked the full block_map (~3M
+ * An unguarded BIP30-class stall re-walks the full block_map (~3M
  * entries, ~24 MB scratch + O(N log N) qsort) on every retry, pinning
- * the node under sustained RSS + CPU. See
- * docs/archive/2026-04/2026-04-19-bip30-stall.md.
+ * the node under sustained RSS + CPU.
  *
  * This test exercises process_block_propagate_failed_child directly
- * against a small fixture block_map. The GREEN commit must add
- * two cheap early returns; these cases assert the new shape.
+ * against a small fixture block_map, asserting the two cheap early
+ * returns (SKIP_PARENT_FAILED, see process_block.h) that bound the walk.
  *
  * Scope: guards only. Correctness of the underlying propagation is
  * covered by test_block_scan.c::test_failed_child_propagation.

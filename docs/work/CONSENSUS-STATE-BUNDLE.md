@@ -37,7 +37,7 @@ committed components:
 - trust posture (`sovereign` or explicitly assisted), signature set, target
   lane, acceptance receipt, and rollback generation.
 
-## Implementation status — 2026-07-15
+## Implementation status
 
 `consensus_state_snapshot_install()` is a deliberately contained, read-only
 admission validator. The name reserves the single future installation service;
@@ -166,8 +166,8 @@ the basic two-writer prerequisite; it does not itself authorize state exchange.
 Every newly invoked producer datadir is durably and permanently bound to either
 the full or checkpoint-fold lane before reset/resume. The binding survives a
 completed artifact and normal boot rejects every producer lane. Normal boot also
-rejects the older checkpoint-bound in-progress marker, which contains the two
-already-running pre-change producers as they exist on 2026-07-13. Their old fast
+rejects the older checkpoint-bound in-progress marker, which contains
+pre-change producers created before this contract existed. Their old fast
 rows say `verified`, and neither those rows nor the old marker records which
 crypto mode produced them. Pre-lane state is therefore never allowed to bind to
 the full lane: it may resume only after a conservative checkpoint-fold binding.

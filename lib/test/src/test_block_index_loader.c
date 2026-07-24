@@ -1031,7 +1031,7 @@ int test_block_index_loader(void)
 
     /* ── 14. seed_tip_from_finalized: genesis-root install + REFUSE cases ──
      *
-     * Regression guard for the kill-9-at-genesis recovery (2026-06-17). A
+     * Regression guard for the kill-9-at-genesis recovery. A
      * fresh regtest node mined N blocks, was kill-9'd, and rebooted to a NULL
      * active tip while the durable tip_finalize cursor + coins were at N. The
      * genesis-root branch of block_index_loader_seed_tip_from_finalized must

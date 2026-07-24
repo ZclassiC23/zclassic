@@ -30,9 +30,9 @@ struct coins_view_sqlite {
 /* Open coins view. If `db` is file-backed (`sqlite3_db_filename` returns
  * a non-empty path), opens a dedicated sqlite3 handle on that same file
  * so the flush's BEGIN IMMEDIATE runs on an independent `nVdbeWrite`
- * counter — avoids the live-node stall where SAVEPOINT on a shared
- * handle failed with "SQL statements in progress" whenever any other
- * subsystem had a writer VDBE mid-execution (, 2026-04-19).
+ * counter — avoids a stall where SAVEPOINT on a shared
+ * handle fails with "SQL statements in progress" whenever any other
+ * subsystem has a writer VDBE mid-execution.
  * `:memory:` handles fall back to the shared connection with SAVEPOINT
  * nesting (used by a handful of unit tests that pass a throwaway DB). */
 bool coins_view_sqlite_open(struct coins_view_sqlite *cvs, sqlite3 *db);

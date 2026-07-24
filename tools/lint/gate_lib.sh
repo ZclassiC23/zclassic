@@ -39,6 +39,11 @@
 #       but for baselines of the form "<key> <value>" per line (e.g. a
 #       recorded legacy-count): ARRAY["<first token>"]="<last token>".
 #
+#   gate_count_and_report <matches> <count-var-name>
+#       Print each non-blank line of <matches> to stderr; set the nameref'd
+#       <count-var-name> to the line count. Replaces the hand-rolled
+#       "violations=0; while read; do … done <<< $matches" block.
+#
 # Sourcing contract: a gate sources this AFTER `set -euo pipefail` and its
 # own `cd` to the repo root. These helpers do not change cwd.
 
@@ -128,5 +133,21 @@ gate_load_kv_file() {
             val="${line##* }"
             _glkf_arr["$key"]="$val"
         done < "$file"
+    fi
+}
+
+# Print each non-blank line of MATCHES to stderr; set the nameref'd
+# COUNT-VAR-NAME to the number of lines printed.
+gate_count_and_report() {
+    local matches="$1" _count_name="$2"
+    local -n _gcar_count="$_count_name"
+    _gcar_count=0
+    if [[ -n "${matches//[[:space:]]/}" ]]; then
+        local line
+        while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            _gcar_count=$((_gcar_count + 1))
+            echo "$line" >&2
+        done <<< "$matches"
     fi
 }

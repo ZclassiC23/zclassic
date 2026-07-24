@@ -22,6 +22,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 cd "$ROOT"
+# shellcheck source=tools/lint/gate_lib.sh
+source tools/lint/gate_lib.sh
 
 roots=()
 for root in app lib src config; do
@@ -39,13 +41,7 @@ matches=$(
 )
 
 violations=0
-if [[ -n "${matches//[[:space:]]/}" ]]; then
-    while IFS= read -r line; do
-        [[ -z "$line" ]] && continue
-        violations=$((violations + 1))
-        echo "$line" >&2
-    done <<< "$matches"
-fi
+gate_count_and_report "$matches" violations
 
 echo "[check_no_shellouts] $violations violation(s) found (mode: $MODE)"
 echo "[check_no_shellouts] the node must not shell out — use lib/util spawn"

@@ -1,14 +1,14 @@
 # simnet_wire next-wave lane specs (Steps D/E/F + app-layer flows)
 
-Prepared 2026-07-09. Grounded in read of `docs/work/io-harness-design.md`,
-`docs/SIMULATOR.md`, `docs/SIMULATOR_TXNS.md`, the merged step A/B code
-(`lib/sim/src/simnet_wire.c`, `simnet_wire_peer.c`, `simnet_wire_internal.h`,
-`lib/sim/include/sim/simnet_wire.h`, `lib/test/src/test_simnet_wire.c`), the
-in-flight step C branch `sim/wire-byzantine-c`, `lib/sim/src/simnet_cluster.c`,
-`lib/sim/include/sim/simnet_byzantine.h`, `lib/sim/src/simnet_wallet.c`,
-`lib/sim/include/sim/simnet_mempool.h`, `lib/net/src/net_fault.c`,
-`lib/net/include/net/net.h` (`struct net_manager`), and
-`lib/test/src/test_simnet_txkit.c`.
+Grounded in the merged step A/B code (`lib/sim/src/simnet_wire.c`,
+`simnet_wire_peer.c`, `simnet_wire_internal.h`,
+`lib/sim/include/sim/simnet_wire.h`, `lib/test/src/test_simnet_wire.c`),
+`lib/sim/src/simnet_cluster.c`, `lib/sim/include/sim/simnet_byzantine.h`,
+`lib/sim/src/simnet_wallet.c`, `lib/sim/include/sim/simnet_mempool.h`,
+`lib/net/src/net_fault.c`, `lib/net/include/net/net.h`
+(`struct net_manager`), and `lib/test/src/test_simnet_txkit.c`. See also
+[`io-harness-design.md`](./io-harness-design.md), `docs/SIMULATOR.md`,
+`docs/SIMULATOR_TXNS.md`.
 
 ## 0. Ground-truth architecture facts that change the plan
 

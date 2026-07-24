@@ -11,6 +11,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tools/dev/dev_lib.sh
+. "$SCRIPT_DIR/dev_lib.sh"  # is_true (fail() below satisfies its contract)
 ROOT="${ZCL_AGENT_INDEX_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 OUTPUT="${ZCL_AGENT_COMPDB_PATH:-$ROOT/compile_commands.json}"
 STATE_DIR="${ZCL_AGENT_INDEX_STATE_DIR:-$ROOT/.cache/zcl-agent-index}"
@@ -46,15 +48,6 @@ usage()
         '  ZCL_AGENT_INDEX_STATUS_PATH    metadata JSON path' \
         '  ZCL_AGENT_INDEX_CLANGD_CHECK   0 (default) or 1' \
         '  ZCL_AGENT_INDEX_CHECK_FILE     representative TU for clangd --check'
-}
-
-is_true()
-{
-    case "${1:-}" in
-        1|true|yes|on) return 0 ;;
-        0|false|no|off|"") return 1 ;;
-        *) fail "expected boolean value, got: $1" ;;
-    esac
 }
 
 json_escape()

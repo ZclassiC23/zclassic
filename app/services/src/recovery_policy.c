@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Recovery policy — see header for rationale (2026-04-10 incident).
+ * Recovery policy — see header for rationale.
  *
  * Implementation notes
  * --------------------

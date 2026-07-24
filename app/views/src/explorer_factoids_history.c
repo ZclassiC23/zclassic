@@ -368,7 +368,7 @@ size_t factoids_emit_section_4_milestones(uint8_t *buf, size_t cap, size_t off,
     };
 
     /* known_height values are immutable blockchain facts; the sapling/
-     * op_return firsts re-verified against the live node index on 2026-06-29
+     * op_return firsts are verified against the live node index
      * (MIN(block_height) of sapling_spends/sapling_outputs/op_returns).
      * They serve as fallbacks when
      * Phase B indexing tables (joinsplits, sapling_spends, sapling_outputs,

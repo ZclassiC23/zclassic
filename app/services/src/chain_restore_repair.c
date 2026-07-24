@@ -214,8 +214,7 @@ int chain_restore_rebuild_active_chain(struct main_state *ms,
      * arr[0..tip_h] but nothing raises c->height, and every
      * active_chain_at(tip_h) stays NULL (bounded by c->height) — the
      * post-restore integrity check then fails with a phantom tip-window
-     * hole and the node boots DEGRADED until the NEXT process start
-     * (the h=3166988 two-boot heal, 2026-07-02).
+     * hole and the node boots DEGRADED until the NEXT process start.
      *
      * RAISE-ONLY: c->height > tip_h is the normal RUNTIME shape (the
      * window is extended above the finalized tip for tip_finalize's
@@ -771,10 +770,8 @@ struct zcl_result chain_restore_finalize(struct main_state *ms, const char *data
          * forever. The TERMINAL marker must clear here too: it means
          * "budget exhausted at a stall that needs a human", but the node
          * is now provably healthy, so leaving it would permanently poison
-         * the reindex path for the NEXT genuine episode (attack-phase
-         * confirmed finding, 2026-07-02 — the marker was never
-         * auto-cleared because this clear was gated on pending(), which
-         * is false for terminal). */
+         * the reindex path for the NEXT genuine episode — a clear gated only
+         * on pending() never fires for a terminal marker. */
         if (datadir && datadir[0]) {
             bool was_terminal = boot_auto_reindex_is_terminal(datadir);
             if (was_terminal || boot_auto_reindex_pending(datadir)) {

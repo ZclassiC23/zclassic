@@ -598,7 +598,7 @@ int test_reorg_residue_tipfin_replace(void)
     /* ── REWOUND guard — header_admit_log at R+1 exists, but the durable
      * header_admit cursor was rewound TO R+1. That row is stale replay
      * territory until header_admit advances past it, so FIX-A must not use it
-     * as a lookahead binder. This models the live 2026-06-30 forward-fork
+     * as a lookahead binder. This models a forward-fork
      * recovery after header_admit clamped from far-ahead stale rows. ── */
     {
         char dir[256];

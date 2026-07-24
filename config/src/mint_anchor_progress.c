@@ -367,7 +367,7 @@ bool mint_anchor_progress_can_resume(sqlite3 *db,
         return true;
     }
 
-    /* Legacy adoption: the 2026-07-01 producer predates this marker and may
+    /* Legacy adoption: a producer that predates this marker may
      * have been killed after durable stage/coins commits. Only adopt when the
      * durable refold signal is active and the frontier is within the
      * genesis..anchor mint span. A contaminated or wrong fold cannot publish:

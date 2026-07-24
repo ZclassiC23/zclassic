@@ -612,8 +612,8 @@ int test_reducer_step_drain_harness(void)
  * reducer_ingest_block front door on an UNSEEDED genesis node (NO manual seed)
  * and asserts the ingest SELF-SEEDS genesis + advances the tip 0->1. If the fix
  * regresses, reducer_ingest_block(block 1) leaves the tip at 0 and this FAILS
- * loudly — the durable guard the 2026-06-06 fix lacked (it silently regressed).
- * Hermetic in-process mirror of the 2026-06-17 live copy-prove (generate 5 -> 5,
+ * loudly instead of silently regressing.
+ * Hermetic in-process mirror of a copy-prove run (generate 5 -> 5,
  * rejects=0). */
 int test_reducer_ondemand_genesis_seed(void);
 int test_reducer_ondemand_genesis_seed(void)
@@ -754,18 +754,16 @@ int test_reducer_ondemand_genesis_seed(void)
     return failures;
 }
 
-/* ── Regression guard: MINT-FOLD LIVELOCK (2026-07-13) ────────────────────────
- * A single reducer_kick_unbudgeted call used to drain up to hard_cap(64) *
+/* ── Regression guard: MINT-FOLD LIVELOCK ────────────────────────
+ * A single reducer_kick_unbudgeted call draining up to hard_cap(64) *
  * ZCL_REFOLD_DRAIN_BATCH(2000) = 128k blocks back-to-back with NO wall-clock
- * budget and NO frontier-progress check. When the utxo_apply frontier was
+ * budget and NO frontier-progress check is unsafe. When the utxo_apply frontier is
  * WALLED at a low height (a bodiless/failed block) while header_admit /
- * validate_headers kept advancing toward the mint ceiling, every round still
- * reported adv>0, so the kick ran for HOURS inside one call. The
+ * validate_headers keeps advancing toward the mint ceiling, every round still
+ * reports adv>0, so an unbudgeted kick can run for HOURS inside one call. The
  * boot_mint_anchor drive loop only logs progress and runs its 64-kick stall
- * detector BETWEEN kicks — so the process spun silently: no mint-progress.log
- * line, stall guard never ran, the tenacity doctrine's forbidden quiet stop
- * (live-reproduced 2026-07-13: main pinned in jbd2_log_wait_commit, progress
- * log frozen at height=-1 while stage cursors climbed).
+ * detector BETWEEN kicks — so the process spins silently: no mint-progress.log
+ * line, stall guard never runs — the tenacity doctrine's forbidden quiet stop.
  *
  * Scenario A (walled frontier): a synthetic header-only chain (no bodies) with
  * the mint ceiling armed and a small drain batch. One kick must RETURN having

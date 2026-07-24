@@ -1,8 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * tip_finalize batch drain. The generic stage drain opens one transaction for
- * max_steps, but tip_finalize historically collapsed chain[] after every step;
- * the next step then re-expanded up to 8,192 retained ancestors. Keep that
+ * max_steps; collapsing chain[] after every step forces the next step to
+ * re-expand up to 8,192 retained ancestors. Keep that
  * cache window wide within the transaction and collapse it once before COMMIT.
  * Durable rows, cursor writes, reorg checks, and per-block validation remain
  * in tip_finalize_stage_step_once(). */

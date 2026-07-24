@@ -2,7 +2,8 @@
  *
  * Canonical per-row header admission verify (see block_row_verify.h). The
  * single home for the hash-bind + CheckProofOfWork + checkpoint-gated
- * check_equihash_solution sequence that three loaders previously copied. This
+ * check_equihash_solution sequence, shared by every loader instead of each
+ * copying it. This
  * TU changes nothing about what "valid" means — it only calls the frozen
  * consensus verifiers in the frozen order. */
 

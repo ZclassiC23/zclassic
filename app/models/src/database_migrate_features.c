@@ -473,8 +473,8 @@ int node_db_migrate_features(struct node_db *ndb, int *version)
     if (current_ver < 25) {
         /* v25: ZNAM registration term. expiry_height records when a name's
          * registration lapses: set at REGISTER to reg_height +
-         * ZNAM_REGISTRATION_TERM_BLOCKS and extended by each RENEW (which was
-         * previously a silent no-op). Overlay bookkeeping only — resolution
+         * ZNAM_REGISTRATION_TERM_BLOCKS and extended by each RENEW.
+         * Overlay bookkeeping only — resolution
          * does not reap expired names, so this never affects consensus.
          * Existing rows default to 0 (pre-term); the ascending reindex
          * refreshes them from their REGISTER anchor. */

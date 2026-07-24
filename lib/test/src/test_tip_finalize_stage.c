@@ -835,10 +835,9 @@ int test_tip_finalize_stage(void)
         tf_teardown(dir, &ms, &sc);
     }
 
-    /* lane/stall-taxonomy audit: stage_upstream_log_hole_note. A durable
+    /* stall-taxonomy audit: stage_upstream_log_hole_note. A durable
      * hole (utxo_apply_log row deleted below the already-advanced
-     * utxo_apply cursor — the residue of a noncanonical-row purge, the
-     * exact class that pinned H* for 3 h on 2026-07-02, see
+     * utxo_apply cursor — the residue of a noncanonical-row purge, see
      * docs/AGENT_TRAPS.md) must name a typed DEPENDENCY blocker
      * immediately. tip_finalize was the one stage still relying solely on
      * the internal tip_finalize_observe_mark_blocked counter for this
@@ -1008,8 +1007,7 @@ int test_tip_finalize_stage(void)
         tf_teardown(dir, &ms, &sc);
     }
 
-    /* Live-frontier no-skip (task #30 root cause, forensic 2026-06-12 at
-     * h=3144857): every chain_set_active_tip re-anchors the JUST-PUBLISHED
+    /* Live-frontier no-skip (task #30 root cause): every chain_set_active_tip re-anchors the JUST-PUBLISHED
      * tip via set_authoritative_tip. The old height+1 anchor target bumped
      * the cursor past the pending tip→tip+1 transition, so each new block
      * could only be published when ITS successor arrived — the served tip
@@ -1138,11 +1136,11 @@ int test_tip_finalize_stage(void)
     }
 
     {
-        /* AUTHORITY PAIR SELF-CONSISTENCY (2026-06-11 height-splice fix):
+        /* AUTHORITY PAIR SELF-CONSISTENCY (height-splice class):
          * after a finalize PUBLISH the served pair must be the tip block's
          * OWN (height, hash) — active_chain_tip()->nHeight ==
-         * active_chain_height(). The pre-fix step path published
-         * (next_h, hash(next_h+1)), leaving the authority height one BELOW
+         * active_chain_height(). A step path that publishes
+         * (next_h, hash(next_h+1)) leaves the authority height one BELOW
          * the block its own hash resolves to; accept_block_header's
          * label-trust install then turned that pair into a -1 header-graph
          * splice on a tip re-delivery. */
@@ -1981,8 +1979,8 @@ int test_tip_finalize_stage(void)
      * coins arrived inside the verified chainstate; utxo_apply never
      * re-applies ≤H). step_finalize at cursor H consumes the utxo_apply row
      * AT H, so without the seed's own trust stamp the stage idles forever on
-     * uv_row_missing — copy-proven 2026-06-12 run 2: upstream applied through
-     * the live tip while tip_finalize held at the seed. This pins that the
+     * uv_row_missing when upstream has applied through
+     * the live tip while tip_finalize holds at the seed. This pins that the
      * seed itself supplies the row and the first live successor publishes. */
     {
         char dir[256]; struct main_state ms; struct synth_chain_tf sc;

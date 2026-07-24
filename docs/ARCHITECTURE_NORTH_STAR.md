@@ -2,11 +2,10 @@
 
 > **Read this before touching sync, boot, import, install, or any `*frontier`
 > / `*cursor` / `pindex_*` code.** It is the standing decision that governs
-> how this node acquires and tracks state. It exists because the node spent
-> weeks "built but never syncing", and the root cause was always the same
-> shape of bug (below). This doc is the cure and the guardrail.
+> how this node acquires and tracks state: the one recurring bug shape
+> (below) is cloned ledgers, and this doc is the cure and the guardrail.
 
-## Verdict: RESCUE, not rewrite (2026-07-21)
+## Verdict: RESCUE, not rewrite
 
 The core is correct and expensive: frozen consensus verifiers (Equihash,
 Sapling), the append-only log + reducer frontier, P2P/Tor, the swarm
@@ -137,17 +136,14 @@ authority.
 | no-ochain-boot | 10 | bundle-installed shielded tree skips the boot rebuild |
 
 Ceiling gate (weight 0 but load-bearing): **enforcement** — the
-single-writer invariant is lint-enforced (`check_frontier_single_writer.sh`
-wired into `make lint`) so a future LLM physically cannot re-clone a ledger.
-Until PRESENT, the invariant is a convention, not a law.
+single-writer invariant is lint-enforced (`check_frontier_single_writer.sh`,
+wired into `make lint` as `check-frontier-single-writer`) so an LLM
+physically cannot re-clone a ledger without tripping the gate.
 
-**Baseline 2026-07-21: 20/100.** Only observability (A2) and half the
-single-writer invariant are done; everything that makes a node actually sync
-(instant-on, stay-synced, the install binding, no-silent-stall, no-O(chain)
-boot) is 0. That low number is correct and honest — drive it up.
-
-Add a KPI row to `arch_score.sh` whenever a new invariant becomes
-mechanically checkable; never inflate an existing one.
+Run `make arch-score` for the current 0-100 number and the ranked ✗/◐ rows —
+never quote a pinned score in prose, it rots. Add a KPI row to `arch_score.sh`
+whenever a new invariant becomes mechanically checkable; never inflate an
+existing one.
 
 ## What "done" looks like
 

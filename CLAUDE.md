@@ -2,9 +2,9 @@
 
 ## Vision — Personal Sovereignty Stack
 
-ZClassic23 is one self-contained C23 binary that runs a full ZClassic node (Equihash 200,9 PoW, Sapling shielded txs), an embedded Tor onion service, a block explorer, a shielded wallet, a P2P file marketplace, ZNAM name registry, P2P messaging (plaintext P2P channel; on-chain Sapling-memo channel implemented — requires Sapling params + a passing prover self-test to send), cross-chain atomic swaps (BTC/LTC/DOGE; redeem/refund/settlement: in progress), a P2P game framework, and a native command registry. **Claude is a first-class operator via 100+ typed native commands** — not just an observer. Cold sync to tip in ~60 seconds via FlyClient + SHA3 UTXO snapshots (design target — see `docs/HANDOFF.md`; today's proven recovery is the two-step header-import + boot, ~25 min). Silent halts are unreachable by construction — a stall is always a named blocker or a growing tip gap, never a quiet stop (chain progress is a stage cursor on disk); the node can still halt, it just cannot do so without saying so. Bugs become 64-bit seeds in a deterministic simulator. Deterministic build flags and a legacy GPG-capable packaging script exist, but byte identity is not yet proven by a two-builder gate; unsigned output is local-development-only and stable publication remains contained. **One binary, one onion, one stack — your sovereign personal computing surface.**
+ZClassic23 is one self-contained C23 binary that runs a full ZClassic node (Equihash 200,9 PoW, Sapling shielded txs), an embedded Tor onion service, a block explorer, a shielded wallet, a P2P file marketplace, ZNAM name registry, P2P messaging (plaintext P2P channel; on-chain Sapling-memo channel implemented — requires Sapling params + a passing prover self-test to send), cross-chain atomic swaps (BTC/LTC/DOGE; redeem/refund/settlement: in progress), a P2P game framework, and a native command registry. **Claude is a first-class operator via 100+ typed native commands** — not just an observer. Cold sync to tip via FlyClient + SHA3 UTXO snapshots is a design target (`docs/HANDOFF.md`); the proven recovery path today is the two-step header-import + boot. Silent halts are unreachable by construction — a stall is always a named blocker or a growing tip gap, never a quiet stop (chain progress is a stage cursor on disk); the node can still halt, it just cannot do so without saying so. Bugs become 64-bit seeds in a deterministic simulator. Deterministic build flags and a legacy GPG-capable packaging script exist; unsigned output is local-development-only and stable publication remains contained pending two-builder byte-identity proof. **One binary, one onion, one stack — your sovereign personal computing surface.**
 
-See [`docs/HOW_THE_NODE_WORKS.md`](./docs/HOW_THE_NODE_WORKS.md) for the plain-language mental model (the node as a state machine), [`docs/FRAMEWORK.md`](./docs/FRAMEWORK.md) for the canonical architecture (the Prime Directive, the Ten Laws of Beauty, and the eight shapes), [`docs/AGENT_ARCHITECTURE.md`](./docs/AGENT_ARCHITECTURE.md) for the concrete future-agent feature slice (REST resources, ActiveRecord, validations, relationships, schema, services, native surfaces), [`docs/ARCHITECTURE_DIAGRAMS.md`](./docs/ARCHITECTURE_DIAGRAMS.md) for current subsystem/boot topology, and [`docs/adr/0001-personal-sovereignty-stack.md`](./docs/adr/0001-personal-sovereignty-stack.md) for the 2026-05-22 pivot rationale.
+See [`docs/HOW_THE_NODE_WORKS.md`](./docs/HOW_THE_NODE_WORKS.md) for the plain-language mental model (the node as a state machine), [`docs/FRAMEWORK.md`](./docs/FRAMEWORK.md) for the canonical architecture (the Prime Directive, the Ten Laws of Beauty, and the eight shapes), [`docs/AGENT_ARCHITECTURE.md`](./docs/AGENT_ARCHITECTURE.md) for the concrete future-agent feature slice (REST resources, ActiveRecord, validations, relationships, schema, services, native surfaces), [`docs/ARCHITECTURE_DIAGRAMS.md`](./docs/ARCHITECTURE_DIAGRAMS.md) for current subsystem/boot topology, and [`docs/adr/0001-personal-sovereignty-stack.md`](./docs/adr/0001-personal-sovereignty-stack.md) for the personal-sovereignty-stack pivot rationale.
 
 **The developer operating manual is the `zclassic23-dev` skill** ([`.claude/skills/zclassic23-dev/SKILL.md`](./.claude/skills/zclassic23-dev/SKILL.md)) — navigator-first code lookup, the fast dev loop / hot-swap tiers, typed-commands-over-bash, push traps, and build/test/deploy live there, not in this file.
 
@@ -50,9 +50,9 @@ atomically and passing copy proof, matching a header alone is not enough.
 Watch the v1-oriented refold-reset path (`config/src/boot_shielded_seed.c`)
 on any future cure: it must not discard a captured v3 shielded section.
 
-**The legacy TWO-step recipe still works** (verified 2026-06-11: hash-identical
-tip vs zclassicd at multiple heights, ~25 min total, warm-reboot-proven; this is
-the legacy `zclassicd`-datadir bootstrap, not the cure). zclassicd stays RUNNING:
+**The legacy TWO-step recipe works** (hash-identical tip vs `zclassicd` at
+multiple heights, warm-reboot-proven; this is the legacy `zclassicd`-datadir
+bootstrap, not the cure). zclassicd stays RUNNING:
 
 ```bash
 # 1. Headers FIRST — ~3.1M headers in ~60-74s from the legacy zclassicd datadir
@@ -108,7 +108,7 @@ is: `make arch-score` → open the top ✗ quest → make the move in a worktree
 copy-prove → confirm the score rose → `make lint && make test-parallel` →
 commit → repeat to 100. **Never edit the scorer to win.**
 
-**The framework/architecture refactor is ~90% done and OFF the v1 path — do not jump the queue.** [`docs/FRAMEWORK.md`](./docs/FRAMEWORK.md) is the canonical architecture (the Prime Directive, Ten Laws, eight shapes) and §9 is the architecture debt board. It is reference, not the mission. Every `.c` under `app/` still lives in exactly one of eight shape folders, lint-enforced.
+**The framework/architecture refactor is OFF the v1 path — do not jump the queue.** [`docs/FRAMEWORK.md`](./docs/FRAMEWORK.md) is the canonical architecture (the Prime Directive, Ten Laws, eight shapes) and §9 is the architecture debt board. It is reference, not the mission. Every `.c` under `app/` lives in exactly one of eight shape folders, lint-enforced.
 
 **Parallel-worktree workflow:** main repo is the orchestrator; `~/github/zclassic23-2` (wt2) and `~/github/zclassic23-3` (wt3) are workers. See [`docs/work/README.md`](./docs/work/README.md) and [`docs/work/agent-protocol.md`](./docs/work/agent-protocol.md). Worker identity = pwd suffix.
 
@@ -190,9 +190,9 @@ Every future subsystem becomes introspectable via `zclassic23 ops state` with
 live catalog with `zclassic23 ops state` and no `--subsystem` argument rather
 than trusting a hand-list here.
 
-The `supervisor` subsystem (Round 5) is the *root* of the liveness
+The `supervisor` subsystem is the *root* of the liveness
 tree: it lists every registered child (`sync.watchdog`,
-`net.outbound_floor`, `chain.coord_escalation` after Round 5), along
+`net.outbound_floor`, `chain.coord_escalation`), along
 with each child's last_tick_age_us, progress_marker, deadline,
 ticks_run, and stall_fires. Use it to confirm any time-driven thing
 is actually running. See `lib/util/include/util/supervisor.h` for the
@@ -276,7 +276,7 @@ This enables fully decentralized peer discovery even when DNS seeds are unavaila
 
 ### Fast Sync (FlyClient + MMB + SHA3)
 
-A fresh node is *designed* to sync 3M+ blocks in ~60 seconds (design target — the stack below is built but not yet the proven cold-start; today's proven cold-sync is the two-step `--importblockindex` + boot, ~25 min, see the Tenacity section and `docs/HANDOFF.md`):
+A fresh node is *designed* to sync 3M+ blocks in ~60 seconds (design target — the stack below is built but not yet the proven cold-start; the proven cold-sync path today is the two-step `--importblockindex` + boot, see the Tenacity section):
 
 1. **FlyClient** — sampled header/PoW evidence. The auxiliary MMB and any
    `utxo_root` it carries are not committed by ZClassic headers and cannot

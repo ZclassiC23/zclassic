@@ -1,10 +1,8 @@
 # FAIL-SAFE ARCHITECTURE — the progress law + universal repair ladder
 
-**Status: DESIGN (2026-07-02). Plan of record for making "stuck-needs-a-human"
-structurally impossible.** Supersedes per-class whack-a-mole; absorbs
+**Plan of record for making "stuck-needs-a-human" structurally impossible.**
+Supersedes per-class whack-a-mole; absorbs
 [`sticky-node-plan.md`](./sticky-node-plan.md) and `never-stuck-plan.md` §1b.
-Grounded in a 6-mapper code audit + live forensics of the stall active while
-this was written.
 
 ## 0. Motivation
 
@@ -256,11 +254,9 @@ Fixes (both container-only derived state, zero consensus surface):
   cover it); genuine label conflicts (loaded entry has real content) still
   refuse loudly.
 
-## 4a-bis. Review + attack round results (2026-07-02) — P8, P9, and the raise-only correction
+## 4a-bis. P8, P9, and the raise-only correction
 
-The P6/P7 adversarial review (3 lenses → refute-or-confirm, `wf_79f7208d-58d`)
-and the re-run attack phase (crash/byzantine/resource, `wf_02ae44d3-410`)
-confirmed four more defects, all fixed the same day:
+Four more defects, adversarially confirmed and fixed:
 
 - **P6 correction (raise-only)** — `chain_restore_finalize` is NOT boot-only
   (it is the `chain_integrity_failed` runtime remedy,
@@ -305,33 +301,6 @@ Everything else the adversaries tried was refuted by an existing layer:
 reorg-spam lands in the explicitly-permitted growing-gap + ladder branch;
 SQLITE_BUSY storms are impossible in-process (single progress.kv connection
 behind a recursive mutex); the operator_needed-latch chain was caught.
-
-## 4b. Verification status of this document
-
-- Map + Design phases: 8 subagents completed (6 mappers, 2 independent
-  designers), all claims file:line-grounded; full outputs in the session
-  workflow transcript (`wf_70afc3c5-46d`).
-- Copy-proof round 1: P1–P5 fired correctly (reconcile clamped
-  script/proof cursors 3167048→3166989 on the copy) but the climb gate
-  FAILED on the boot-restore defect above (§4a).
-- Copy-proof round 2 (P6+P7): the NODE's own log proved the one-boot heal —
-  boot-1 of the stalled specimen hydrated the stub at load
-  (`stubs_hydrated=1, height_conflicts=0`), passed post-restore integrity
-  ("OK: tip_h=3166988 nbits clean, active_chain full"), and folded offline
-  to H\*=3167141 / coins=3167143. The SCRIPT verdict, however, was
-  INCONCLUSIVE: a leftover diagnostic node from round 1 still held
-  rpcport 18299, so the round-2 node never bound RPC and the script's polls
-  hit the zombie's mismatched cookie (401). Trap re-learned: kill every
-  prior copy-prove/diagnostic node BY PID before launching the next run.
-- Copy-proof round 3 (`oneboot-final`): clean-port re-run on the exact
-  deploy binary (P6 raise-only + P7 + forward-pass + P8 + P9 +
-  terminal-clear) — the formal deploy gate.
-- Diagnosis workflow (`wf_15dea1ec-362`, 4 mappers + synthesis): 14-step
-  causal chain, all file:line; independently converged on P6/P7 as ranks
-  1-2 and surfaced P8; refuted the duplicate-same-hash-entry theory (one
-  entry mutated across lifetimes — a view split, not an entry split).
-- Attack phase COMPLETED 2026-07-02 (13 agents, `wf_02ae44d3-410`):
-  2 confirmed (both P9), all others refuted — see §4a-bis.
 
 ## 5. What this deliberately does NOT change
 

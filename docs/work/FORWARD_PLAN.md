@@ -13,9 +13,7 @@
 
 ## #1 PRIORITY — win Q1 on a COPY; keep canonical recovery owner-gated
 
-> The sovereign bundle path historically passed its wedge, but that does not
-> make every running lane healthy or prove a fresh-node stopwatch. Read
-> [`../HANDOFF.md`](../HANDOFF.md) §0-LATEST before acting. The current
+> Read [`../HANDOFF.md`](../HANDOFF.md) §0-LATEST before acting. The
 > autonomous task is the architecture-board Q1 proof on a datadir COPY; the
 > canonical lane is protected and any recovery/deploy remains the owner's
 > lever. Cure design record:
@@ -29,8 +27,7 @@
    `make mvp-coldstart-to-tip-stopwatch` proof; a climb or an `at_tip` FSM label
    is not enough. The ledger must PASS within 600 seconds with final H\* equal
    to the captured true peer tip. Then confirm `make arch-score` rises and run
-   the full lint/test gates. The measured remaining costs and resume checklist
-   are in `../HANDOFF.md` §0-LATEST.
+   the full lint/test gates.
 2. **Canonical lane diagnosis/recovery** — read-only diagnosis is autonomous;
    restart, deploy, or datadir repair is owner-gated. Never use the canonical
    lane to test a Q1 change. A previously at-tip observation does not override
@@ -39,24 +36,19 @@
    net-disruption proof, then accrue a clean 168-hour C6 window only on a
    sovereign, exact-parity candidate with gap ≤1 and zero manual restarts.
    `make soak-evidence-report` is the judge.
-4. **Existing C3 transport substrate** — both halves of the path are present:
-   the **seed** side (`rom_seed`) serves content-verified chunks, and the
-   **fetch** side (`lib/net/src/rom_fetch.c` +
-   `app/controllers/src/rom_fetch_controller.c`, operator-invocable via
+4. **C3 transport substrate** — the **seed** side (`rom_seed`) serves
+   content-verified chunks, and the **fetch** side (`lib/net/src/rom_fetch.c`
+   + `app/controllers/src/rom_fetch_controller.c`, operator-invocable via
    `ops.debug.rom_fetch.bundle`) does multi-seeder verify-by-content download
    with durable resume (`rom_fetch_download_verified_parallel`). Do not build
-   another transport. What remains is the exact end-to-end timed proof in item
-   1, against zclassic23 rather than `zclassicd`.
-5. **Hardening backlog** — ranked by the Wave-N first-principles audit (4
-   parallel read-only auditors covering integrity/trust/repair-consolidation/
-   pipeline-simplification, memory
-   `project_wave_n_first_principles_backlog_2026-07-19`, HEAD ~b2eb1393b):
-   1. **[in-flight]** Blocks-table row repair: per-row skip+purge in
+   another transport; what remains is the exact end-to-end timed proof in
+   item 1, against zclassic23 rather than `zclassicd`.
+5. **Hardening backlog** — ranked open items:
+   1. Blocks-table row repair: per-row skip+purge in
       `load_block_index_from_blocks_table` instead of whole-table refusal;
       quarantine via the existing unwired `db_block_delete`
       (`app/models/src/block.c`), drop `HAVE_DATA` → `body_fetch` refetch →
-      revalidate; typed blocker. This is the §0-LATEST-named follow-up
-      (poisoned solution-row quarantine/refetch).
+      revalidate; typed blocker.
    2. Persisted FAILED-bit trust at boot made consistent: below the ROM
       checkpoint, re-derive, never trust a persisted status bit; above it,
       treat a persisted FAILED bit as a revalidate candidate, never let it
@@ -90,12 +82,10 @@
       hardening pair.
    8. Non-anchor peer snapshot staging must refuse without
       checkpoint/PoW binding.
-   9. Mechanical: the `cac_`/`chain_advance_coordinator` →
-      `block_source_policy` rename mostly landed (Wave N,
-      `7855fcb57`/`47877391d`); `git grep 'cac_\|chain_advance_coordinator'`
-      still surfaces ~13 files — verify each is a legitimate compatibility
-      name (e.g. a stable `dumpstate` subsystem key) before treating the
-      rename as fully closed.
+   9. Mechanical: verify every remaining `cac_`/`chain_advance_coordinator`
+      hit (`git grep 'cac_\|chain_advance_coordinator'`) is a legitimate
+      compatibility name (e.g. a stable `dumpstate` subsystem key) before
+      treating the `block_source_policy` rename as fully closed.
 
 **Standing method (never skip):** copy-prove on a fixture before live; NEVER
 delete `tip_finalize_log` rows; NEVER lower the public tip below `coins_best`;
@@ -115,104 +105,53 @@ soak, and parity evidence → Wave-N hardening → transactional hot swap and
 sandboxed publishing.** Refactor debt must not jump the queue.
 
 ### A. AUTONOMOUS (do now — no live mutation, no owner gate)
-- [x] **Criterion tests are real CI gates (hermetic slices)** — DONE, guarded by
-      `make ci` → `ci-mvp-gates` (hermetic #3/#5/#7 slices) + `ci-stress`/`mvp-stress`
-      (non-hermetic #2/#4); ◐ not ✅ until promoted to full-scope (see next item).
 - [ ] **Promote slice-gates to full ✅ gates** — replace #3/#5/#7's slice tests
       with full-scope tests (real sync / real shielded buy / full-binary
       restart-to-peer-tip) and add net-new CI jobs for #1 (clean-container
       install) and #8 (parity). Only then does the CI-verified MRS move.
-      Regression-armor landed 2026-06-17 (raises the floor, NOT a ✅ promotion):
-      C8 `test_parity_slice.c` now also covers the COARSE `exact=false` production
-      branch the live `zclassicd` oracle hits (C1 match / C2 skip-on-skew / C3
-      clears a stale exact drift); the C3 seed-authority proof
-      (`mvp-coldstart-local`, preferring the `block_index.bin` +
-      `utxo-seed-*.snapshot` operator bundle through
-      `-load-snapshot-at-own-height`) is green locally, while the full C3
-      bundle-to-peer-tip command is `make mvp-coldstart-to-tip-local`. The full
-      Groth16 send+receive proof (C4 `test-shielded-payment`) is de-orphaned into
-      `make mvp-verify`. C1's portability floor is enforced
-      WITHOUT docker (docker is never used in this project) by the hermetic
-      `make ci-symbol-floor` (`tools/scripts/ci_symbol_floor_gate.sh`, in
-      `make ci`): max GLIBC/GLIBCXX/CXXABI symbol ≤ the documented triple floor.
-      The retired docker-based clean-OS gate is replaced by a planned
-      linger-service install proof (`make ci-install-linger`) exercising the real
-      `make install` + `systemctl --user start`. Audit of record: the 8-criterion
-      gap scoreboard (workflow `mvp8-gap-audit-and-close`, 2026-06-17).
+      C1's portability floor is enforced WITHOUT docker (docker is never used
+      in this project) by the hermetic `make ci-symbol-floor`
+      (`tools/scripts/ci_symbol_floor_gate.sh`, in `make ci`): max
+      GLIBC/GLIBCXX/CXXABI symbol ≤ the documented triple floor. The
+      clean-OS install gate is a planned linger-service install proof
+      (`make ci-install-linger`) exercising the real `make install` +
+      `systemctl --user start`.
       Best next coverage multiplier: a high-throughput deterministic simulation
       harness inside `build/bin/test_zcl` / `test_parallel` (not an operator
       binary) that drives reducer stages, fake peers, fake clocks, temp
       datadirs, and invariant checks by seed, then prints the 64-bit replay seed
       for every failure. Use it to turn current slice tests into broad scenario
       sweeps while keeping full-binary/live-network proofs owner-gated.
-- [x] **Consensus-parity-diff service (C8)** — DONE
-      (`app/services/src/utxo_parity_service.c`, wired via
-      `config/src/boot_utxo_parity.c`, default-ON), guarded by `mvp-parity-slice`
-      (`test_parity_slice.c`, in `make ci-mvp-gates`). REMAINING ◐→✅: 0
-      mismatches over the 7-day soak + an exact byte reference.
-- [x] **Regtest on-demand mining `generate N`** — DONE (`f83101b81`), guarded by
-      `test_reducer_ondemand_genesis_seed` and `make test-two-node-peer-tip`
-      (both opt-in, spawn real nodes — hermetic-CI promotion remains open).
-- [x] **Regtest kill-9 RESTART-DURABILITY (the C7 single-node blocker)** — DONE
-      (`341020c05`, owner-gated, copy-proven), guarded by `make lint` (E13),
-      `test_parallel` (`bil`/`seedfin` cases), and `make test-crash-bootstrap`.
-      Live deploy owner-gated (new binary on the live datadir = wipe+cold-import).
-- [x] **C5 store gate → real ivk-decrypt purchase (Slice 1, additive+hermetic)** —
-      DONE (`store_e2e_shielded`, wired into `ci-mvp-gates` alongside the old
-      `store_e2e` gate), guarded by
-      `ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=store_e2e_shielded build/bin/test_zcl`.
 - [ ] **Cleanup** — comment STRIP/REWORD pass + doc-pointer fixes; gate with
       `make lint && make test-parallel`.
-- [x] **Code-review remediation** (secondary hardening lane; must not displace
-      the #1 spine) — DONE for the autonomous subset of the 2026-06-27 audit
-      (archived: recover with
-      `git log --follow -- docs/work/archive/code-review-remediation-2026-06-30.md`);
-      continue MVP work from the Q1 checkpoint in `../HANDOFF.md`.
 
 ### B. OWNER-GATED (consensus-critical; explicit owner go + repro-on-copy)
-> NOTE (2026-06-17): the C7 **restart-durability** blocker is now handled by the
-> §A forward-seed keystone (`341020c05`). The coins-commitment-persist item below
-> is a SEPARATE self-heal hardening (a durable SHA3 anchor for stale-coins
-> reconciliation), no longer C7-blocking.
 - [ ] **Coins-commitment-persist keystone** — write the 76-byte anchored
       `utxo_sha3` record inside `coins_view_sqlite_batch_write_ex`'s txn
       (`lib/storage/src/coins_view_sqlite.c`), table-derived height/count,
       + `_save_anchored`/`_load_anchor` in `lib/coins/src/utxo_commitment.{c,h}`,
-      + re-validating heal in `coins_reconcile_stale_anchor`. Design-of-record
-      `coins-commitment-persist-plan.md` (adversary-vetted; original verdict
-      DO_NOT_APPLY → corrected design at top), removed from the tree —
-      recover with `git log --follow -- docs/work/archive/coins-commitment-persist-plan.md`.
+      + re-validating heal in `coins_reconcile_stale_anchor`.
       **Do NOT apply live without owner go.**
 - [ ] Persist `utxo_sha3` at finalized-tip so the self-heal has a fresh input.
-- [ ] **Reducer shielded-consensus enforcement** — nullifier double-spend gate
-      landed (`app/jobs/src/utxo_apply_nullifiers.c`, C-3); REMAINING = anchor
-      membership + ZIP-209 turnstile (design of record
+- [ ] **Reducer shielded-consensus enforcement** — anchor membership + ZIP-209
+      turnstile remain unbuilt (nullifier double-spend gate is already live in
+      `app/jobs/src/utxo_apply_nullifiers.c`). Design of record
       [`reducer-shielded-consensus-plan.md`](./reducer-shielded-consensus-plan.md)
-      — DESIGN-only, all 3 reviewers returned `consensus_safe=false`; a
-      refinement round is required before any code). Owner-gated + copy-prove.
+      — DESIGN-only; a refinement round closing its §8 gaps is required before
+      any code. Owner-gated + copy-prove.
 - [ ] **Deferred consensus hazards** in
       [`concurrency-hazards-consensus-gated.md`](./concurrency-hazards-consensus-gated.md)
       (owner-gated + repro-on-copy; item 1 = a real bg_validation lock-free
       `chain_active` UAF, same class as the fixed phashBlock bug).
 - [ ] MVP feature e2e proofs: C4 (receive shielded) + C5 (store sell) on a
       funded test wallet.
-- [x] **C5 store gate Slice 2 (memo-bound reconcile + no fake address fallback)**
-      — DONE: `store_process_payments` reconciles via the memo-bound finder
-      `db_store_received_payment_for_memo` (the old amount/address finder has no
-      app callers); `zslp_payment_generate_address` refuses to create an order
-      without a seeded Sapling keystore. App-layer only; no consensus path touched.
 
 ### C. OPERATIONAL (network/config, not code; proves C3/C6/C7)
 - [ ] **Prove C3 cold-sync end-to-end between zcl23 nodes** — use the immutable
       serving fixture named in `../HANDOFF.md`; remaining = the exact Q1 timed
       proof to a fresh peer.
-- [ ] **Resolve canonical peer-floor state (owner-gated)** — current typed
-      status has peers but still carries an active `peer_floor_violated`
-      operator latch. Diagnose read-only; do not restart or mutate the lane.
-      Do not lower the ≥3 floor.
-- [x] **zclassicd oracle up** — DONE: RPC 8232 reachable; the C8 parity oracle
-      runs against it continuously (read-only; per doctrine never stop
-      `zclassicd`).
+- [ ] **Resolve canonical peer-floor state (owner-gated)** — diagnose
+      read-only; do not restart or mutate the lane. Do not lower the ≥3 floor.
 - [ ] **Run the 7-day soak (C6)** — start/restart evidence only after the
       candidate is healthy (`../HANDOFF.md` §0-LATEST); require gap ≤1, exact
       same-height hash, complete security posture, continuous evidence, RSS
@@ -239,7 +178,5 @@ the boot refactor gates nothing v1.
 Architecture axis (~90% done): [`../FRAMEWORK.md`](../FRAMEWORK.md) §9 (the
 open-item debt board). The only remaining size debt is the three
 `config/` boot files (`boot.c`, `boot_services.c`, `boot_index.c`), frozen
-shrink-only by the size gate; seam plan was in `boot-decomposition-seams.md`,
-removed from the tree — recover with
-`git log --follow -- docs/work/archive/boot-decomposition-seams.md`.
+shrink-only by the size gate.
 Safe-execution method for any consensus-critical change: [`fast-path.md`](./fast-path.md).

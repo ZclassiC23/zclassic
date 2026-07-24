@@ -5,11 +5,11 @@
  *
  * WHY THIS FILE EXISTS
  * --------------------
- * The 2026-05-30 PHGR13 G2-generator consensus bug shipped GREEN: a
- * corrupted hardcoded generator constant made the zk-SNARK verifier
- * silently regress to *always-reject* — it false-rejected EVERY proof
- * at pairing check 1. Every existing test still passed because the
- * suite only pinned the NEGATIVE direction:
+ * A PHGR13 G2-generator consensus bug class can ship GREEN: a
+ * corrupted hardcoded generator constant makes the zk-SNARK verifier
+ * silently regress to *always-reject* — it false-rejects EVERY proof
+ * at pairing check 1. Negative-only tests still pass because the
+ * suite only pins the NEGATIVE direction:
  *   - reject when the VK is NULL (fail-closed),
  *   - reject a tampered params file,
  *   - on-curve guards on the generator constant itself.
@@ -39,7 +39,7 @@
  *     - sapling_check_output rejects a tampered public input / proof
  *       byte (fail-closed consensus verify path).
  *
- * Together these would have caught the 2026-05-30 silent always-reject:
+ * Together these catch a silent always-reject regression:
  * a verifier that regresses to rejecting valid relations fails the
  * bilinearity leg.
  *
@@ -57,8 +57,8 @@
  * The PHGR13 (BN254) verifier has no prover in this codebase and the
  * repo carries no real on-chain Sprout JoinSplit proof fixture, so a
  * real PHGR13 positive round-trip cannot be sourced here without
- * fabricating bytes. The BN254 subgroup/generator regression that
- * caused the 2026-05-30 flood stays pinned by test_phgr13_fix.c
+ * fabricating bytes. The BN254 subgroup/generator regression class
+ * stays pinned by test_phgr13_fix.c
  * (g2_one on-curve + the on-curve guard rejecting a corrupted
  * generator); this file adds the missing POSITIVE pairing pin on the
  * sibling BLS12-381 engine that powers Sapling consensus verification.

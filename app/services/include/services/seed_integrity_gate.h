@@ -4,10 +4,9 @@
  * linkage gate) + the post-import half of check 5 (commitment gate).
  *
  * Fail at birth: a seed (cold-import, snapshot apply, reducer ingest
- * re-seed) is the moment a poisoned datadir becomes "our" chain. The
- * 2026-06-11 splice and the restore-above-extent wedge both shipped
- * through an unchecked seed and were caught dozens of blocks (or one
- * crash-loop) later. This gate runs BEFORE the cursors are stamped:
+ * re-seed) is the moment a poisoned datadir becomes "our" chain. An unchecked
+ * seed is caught only dozens of blocks (or one crash-loop) later, if at all.
+ * This gate runs BEFORE the cursors are stamped:
  *
  *   step 0 — authority pair: if the blocks projection has a row at the
  *            seed height, its hash must equal the seed hash (subsumes
@@ -18,7 +17,7 @@
  *            link refuses the seed, NAMING (h, parent_h, hashes).
  *   commit — trusted seeds only: when a stored 'utxo_sha3' commitment
  *            exists AT the seed height, recompute over the utxos table
- *            and require an exact hash+count match (the 2026-06-10
+ *            and require an exact hash+count match (the
  *            keyspace-tail truncation detector). Absent/different-height
  *            stamp = skip with a logged note, never a refusal.
  *
@@ -51,9 +50,9 @@ bool seed_integrity_gate_check(int height, const uint8_t hash[32],
 /* ARM the commitment half: persist the 'utxo_sha3' stamp at the seed
  * height so gate_commitment_check actually runs for this datadir's
  * trusted seeds. The cold-import path MUST call this with the digest it
- * verified/accepted (the 2026-06-10 silent keyspace-tail truncation
- * shipped on the cold-import path, which previously never wrote a stamp
- * — making the gate's commitment half vacuously skipped there). Trust
+ * verified/accepted — a cold-import path that never writes a stamp leaves
+ * the gate's commitment half vacuously skipped there, silently missing a
+ * keyspace-tail truncation. Trust
  * model: at the compiled SHA3 checkpoint height the stamp is
  * cryptographically grounded; at other heights it pins the ACCEPTED set
  * so any LATER truncation/tear fails the next seed (the same model as

@@ -7,9 +7,9 @@
  * invariant): a stall must ALWAYS be a named blocker WITH an auto-terminating
  * remedy. A typed blocker (lib/util/blocker.h) that is active with an EMPTY
  * escape_action while H* (the reducer_frontier provable tip) does not advance
- * is, by construction, a stall with no remedy -- the exact shape of the live
- * 2026-07-10 sapling-anchor P0, which sat silent for hours because
- * utxo_apply.anchor_backfill_gap had no escape action.
+ * is, by construction, a stall with no remedy -- e.g. a sapling-anchor P0
+ * with no escape action on utxo_apply.anchor_backfill_gap sits silent
+ * for hours otherwise.
  *
  * Instance cures (e.g. sapling_anchor_frontier_unavailable) fix the specific
  * blocker. This condition fixes the CLASS: it knows NOTHING about any specific

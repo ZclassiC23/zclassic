@@ -2605,18 +2605,16 @@ int cli_main(int argc, char **argv)
 /* Detect CLI mode: a typed command word (a non-flag token, or one of the
  * -agent/-status/-summary aliases) is present ANYWHERE in argv.
  *
- * SAFETY FOOTGUN fix (2026-07-23, live incident): the previous version
- * returned false — "this is a node boot" — the moment it hit ANY argv token
- * starting with '-' that was not one of a small hardcoded set, even if a
- * real command word (e.g. "status") followed later. `zclassic23
- * --rpcport=39071 status` (a double-dash typo of `-rpcport=`, no
- * `-datadir=`) hit that early return at argv[1] and never reached "status",
- * so the WHOLE invocation fell through main()'s dispatch chain into a full
+ * SAFETY FOOTGUN: this function must never bail early — "this is a node
+ * boot" — the moment it hits ANY argv token starting with '-' that is not
+ * one of a small hardcoded set, even if a real command word (e.g. "status")
+ * follows later. `zclassic23 --rpcport=39071 status` (a double-dash typo of
+ * `-rpcport=`, no `-datadir=`) must still reach "status" rather than falling
+ * through main()'s dispatch chain into a full
  * node boot against the DEFAULT datadir — the protected live node's
- * directory — running a ~97s read-only integrity check before its shutdown
- * watchdog killed it.
+ * directory.
  *
- * This function no longer bails early on an unrecognized or malformed
+ * This function does not bail early on an unrecognized or malformed
  * flag: it just keeps scanning for the command word. None of this
  * codebase's flags take a space-separated value (every one is either bare
  * or "-flag=value"), so a bare non-dash token is unambiguous evidence of a
@@ -2665,7 +2663,7 @@ static int cli_refuse_malformed_target_flag(const char *arg,
     return ZCL_COMMAND_EXIT_INVALID;
 }
 
-/* SAFETY FOOTGUN fix (2026-07-23): once is_cli_mode() has decided this
+/* SAFETY FOOTGUN: once is_cli_mode() has decided this
  * invocation carries a typed command word, every one of the seven
  * operator-target flags (see config/args.h) must be either correctly
  * formed or absent — never silently mis-routed. Deliberately narrow: only
@@ -3208,7 +3206,7 @@ int import_complete_shielded_mode(int argc, char **argv)
         }
     }
 
-    /* Re-arm proof_validate over the pre-2026-07-13 NULL-block_hash suffix so the
+    /* Re-arm proof_validate over any NULL-block_hash suffix so the
      * post-cure fold is not wedged at utxo_apply's label_splice guard (which
      * correctly refuses a hashless proof verdict). The rewind FLOOR is
      * utxo_apply's own cursor (LCC-safe — never rewinds an already-applied

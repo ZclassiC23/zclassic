@@ -150,7 +150,7 @@ int test_consensus_parity(void)
      * zclassicd's text caps post-Sapling tx size at 102000 unconditionally
      * (src/consensus/consensus.h:27, main.cpp:1196-1200), but the canonical
      * chain carries exactly 413 post-Sapling txs above it (heights
-     * 478544..1968856; complete empirical scan 2026-06-11, re-verified
+     * 478544..1968856; complete empirical scan, re-verified
      * per-entry against zclassicd by the generator). Running nodes accept
      * them only because validated blocks are never re-checked, and enforce
      * 102000 on every new block. The pins below freeze that ruleset. ── */

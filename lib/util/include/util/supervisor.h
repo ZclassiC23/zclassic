@@ -5,16 +5,15 @@
  *
  * Why this exists
  * ----------------
- * Previously, every periodic check in the node ticked on a single
- * shared sweeper thread (`zcl_health_sweep` in lib/health/heartbeat.c).
- * On 2026-05-21 that sweeper wedged for 8.6 h: `sync_watchdog.checks_run`
- * stayed at 0 the whole time, no `EV_TIP_STALE` fired, and the node
- * sat 4,428 blocks behind the legacy daemon with `download.requested=0`
- * and 0 outbound peers — silently — because the very thing that would
- * notice (the watchdog) lives on the same dead thread.
+ * A single shared sweeper thread (`zcl_health_sweep` in
+ * lib/health/heartbeat.c) driving every periodic check in the node is a
+ * single point of failure: if that thread wedges, `sync_watchdog.checks_run`
+ * stays at 0, no `EV_TIP_STALE` fires, and the node can fall thousands of
+ * blocks behind with `download.requested=0` and 0 outbound peers —
+ * silently — because the very thing that would notice (the watchdog) lives
+ * on the same dead thread.
  *
- * The architectural fault was not the watchdog itself but its driver:
- * a single point of failure for all periodic work. The fix is
+ * The fix is
  * structural: have one *independent* time-driven supervisor whose only
  * job is to tick children's `on_tick` callbacks and fire `on_stall` when
  * a child's heartbeat lapses or its progress marker freezes.
@@ -186,9 +185,9 @@ struct liveness_contract {
     _Atomic int64_t  last_progress_seen;
 
     /* Tick-runner handoff. The sweep thread does ZERO I/O and never runs a
-     * child's on_tick inline (that caused the 2026-07-19 jbd2_log_wait_commit
-     * wedge, where a child's SQLite-commit tick froze the sweep heartbeat
-     * >=30s and the backstop killed a healthy node). Instead the sweep sets
+     * child's on_tick inline: a child's SQLite-commit tick running inline can
+     * freeze the sweep heartbeat via jbd2_log_wait_commit for >=30s and have
+     * the backstop kill a healthy node. Instead the sweep sets
      * tick_pending when a period-driven child is due; the dedicated
      * "zcl_supervisor_tick_runner" thread CAS-consumes it and executes
      * on_tick + stamps last_tick/ticks_run. Supervisor+runner owned. */

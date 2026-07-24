@@ -945,8 +945,8 @@ int test_reducer_reconcile_witness(void)
     }
 
     /* ── P2: the purge clamps script/proof cursors to the hole it makes ──
-     * Pinned live regression (2026-07-02, height 3166989): a 1-block reorg
-     * left rows at h describing the invalidated block; the reconcile apply
+     * A 1-block reorg can
+     * leave rows at h describing the invalidated block; the reconcile apply
      * pass purged them (rowless holes in script_validate_log /
      * proof_validate_log) but left the script_validate / proof_validate
      * cursors ABOVE h — the refill scan keys on the body_persist_log anchor

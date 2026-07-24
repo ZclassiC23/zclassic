@@ -361,10 +361,10 @@ static void alert_rules_seed_locked(void)
         /* zcl_header_gap_breach_seconds already folds in the magnitude
          * threshold (ZCL_ALERT_HEADER_GAP_BLOCKS, default 144) and the
          * SYNC_HEADERS_DOWNLOAD exclusion — see metrics_prometheus_set_header_gap.
-         * This is the rule that would have paged the 2026-07-10 incident
-         * (node held 216 blocks behind headers for 4.6h with tip_stalled
+         * This is the rule that pages a node held hundreds of blocks behind
+         * headers for hours with tip_stalled
          * as the only signal, because tip_advance_age only fires on a
-         * total block-connect stall, not a growing header/served gap). */
+         * total block-connect stall, not a growing header/served gap. */
         .gauge_name   = "zcl_header_gap_breach_seconds",
         .cmp          = METRIC_ALERT_GT,
         .threshold    = alert_env_double("ZCL_ALERT_HEADER_GAP_BREACH_SECS", 900.0),

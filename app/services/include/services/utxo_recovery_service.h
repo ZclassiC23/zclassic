@@ -3,11 +3,10 @@
  * UTXO Recovery Service — boot-time UTXO wipe, import, restore, and
  * integrity operations, all gated through recovery_policy.
  *
- * Background
- * ----------
- * Every destructive UTXO operation (wipe, import, restore) is policy-gated to
- * prevent a repeat of the 2026-04-10 incident where 1.3M UTXOs were wiped by
- * an unguarded recovery path.
+ * Invariant
+ * ---------
+ * Every destructive UTXO operation (wipe, import, restore) is policy-gated:
+ * an unguarded recovery path can wipe the entire UTXO set.
  *
  * All functions take explicit parameters — no globals.
  */
@@ -52,8 +51,8 @@ struct utxo_recovery_ctx {
  * (code -41) if recovery_policy refused; a persistence ZCL_ERR (code -42)
  * if node_db_wipe_utxos failed to delete the rows.
  * `reason` is a grep-able tag, e.g. "boot.reimport_utxos_flag".
- * This is the gate that would have saved the 1.3M UTXOs on
- * 2026-04-10. Do not bypass. */
+ * This is the gate that stands between a bug and a wiped UTXO set.
+ * Do not bypass. */
 struct zcl_result utxo_recovery_wipe(struct node_db *ndb, const char *reason);
 
 /* ── Auto-reimport flag ───────────────────────────────────── */
@@ -114,8 +113,8 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
  * root — genesis, the compiled SHA3 UTXO anchor extent, or a root at
  * anchor/anchor+1 (snapshot-anchored nodes). A detached island rooted
  * above the anchor is NOT derivable state no matter what the progress
- * logs or the coins cursor claim (the 2026-06-11 wedge: a 375-block
- * island rooted at 3,142,801 vouched for by fabricated anchor rows).
+ * logs or the coins cursor claim — even a fabricated anchor row can vouch
+ * for a detached island otherwise.
  * Every boot-time tip PROMOTION of a real block must pass this before
  * reaching CSR. O(height - anchor) pointer hops; boot/recovery only. */
 bool utxo_recovery_block_trust_rooted(const struct block_index *bi);
@@ -209,10 +208,9 @@ void utxo_recovery_set_cold_import_trust_anchor(const struct uint256 *hash,
 
 /* Typed-blocker id recorded when state is installed ABOVE the
  * trust-rooted header frontier, leaving a header hole ("the band")
- * between the contiguous frontier and the installed island. The
- * 2026-06-11 live defect: a cold-import anchor at h=3,143,301 over a
- * frontier at 3,140,573 left band (3,140,573, 3,143,301) unrequested
- * forever. The blocker is a loud CACHE of a fact derived from pprev
+ * between the contiguous frontier and the installed island. A cold-import
+ * anchor installed above the header frontier leaves that band unrequested
+ * forever without this blocker. It is a loud CACHE of a fact derived from pprev
  * contiguity — never an authority. Set by the producers below + the
  * boot scan in chain_restore_finalize; cleared by
  * syncsvc_header_band_after_batch when the band closes. */
@@ -259,8 +257,8 @@ struct utxo_count_check_result utxo_recovery_classify_count_check(
 /* Stale-vs-corruption split for an XOR commitment mismatch (call only
  * after utxo_commitment_equal() returned false). computed > saved = the
  * set advanced past a frozen checkpoint (stale, legitimate); computed <=
- * saved = rows vanished or same-count-different-hash (corruption
- * candidate — the 2026-06-10 silent-truncation class). See the
+ * saved = rows vanished or same-count-different-hash (a silent-truncation
+ * corruption candidate). See the
  * implementation comment for the full rationale. */
 bool utxo_recovery_xor_mismatch_is_corruption_candidate(
     uint64_t saved_count,

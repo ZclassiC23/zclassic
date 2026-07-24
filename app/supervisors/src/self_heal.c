@@ -22,17 +22,16 @@
  * ---------------------------------------------
  * The condition engine's detect() probes and remedies can each run for
  * seconds: SQL over a 3.1M-header progress store, a reducer-frontier L1
- * reconcile, a point-in-time chainstate copy. Before this file owned a
- * thread, the engine ran as the `self_heal.engine` supervisor CHILD's on_tick,
- * i.e. INLINE on the root supervisor sweep thread. Because
+ * reconcile, a point-in-time chainstate copy. Running the engine as the
+ * `self_heal.engine` supervisor CHILD's on_tick — INLINE on the root
+ * supervisor sweep thread — is unsafe: because
  * supervisor_sweep_heartbeat() is bumped once per sweep_once() BEFORE any child
- * callback runs, a heavy pass froze the heartbeat, and the independent backstop
- * declared a FATAL ">=30s sweep frozen" and shut the node down. Live
- * 2026-07-19: a single condition_engine_tick() pass on a freshly
- * bundle-activated datadir (3 heavy conditions detecting + remedying in one
- * pass) ran >30s and tripped exactly that false liveness death.
+ * callback runs, a heavy pass freezes the heartbeat, and the independent backstop
+ * declares a FATAL ">=30s sweep frozen" and shuts the node down (e.g. a single
+ * condition_engine_tick() pass on a freshly bundle-activated datadir with 3
+ * heavy conditions detecting + remedying in one pass can run >30s).
  *
- * Fix: the engine runs on a dedicated `zcl_self_heal` runner thread. The
+ * Instead: the engine runs on a dedicated `zcl_self_heal` runner thread. The
  * supervisor only SUPERVISES the runner's heartbeat — a remedy that hangs past
  * SELF_HEAL_STALL_DEADLINE_SECS becomes a NAMED blocker (self_heal.worker_
  * wedged), never a frozen liveness root. The root sweep keeps beating no matter
