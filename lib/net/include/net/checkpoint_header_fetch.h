@@ -49,6 +49,13 @@ void checkpoint_header_fetch_disarm(void);
 /* True while a fetch is armed (a request is outstanding). */
 bool checkpoint_header_fetch_is_armed(void);
 
+/* True when a captured header is waiting to be consumed by take() — a
+ * NON-consuming peek at the capture slot. The app-layer repair condition reads
+ * this to make its remedy immediately due (bypass the backoff) so a captured
+ * checkpoint header is verified + persisted on the next engine tick instead of
+ * waiting out the full backoff window. Cheap (one relaxed atomic). */
+bool checkpoint_header_fetch_has_capture(void);
+
 /* Consume a captured header. Returns true and fills *out (and *out_height, if
  * non-NULL) exactly once per capture, then clears the captured slot. The caller
  * MUST independently re-verify the hash-pin + frozen Equihash before trusting or

@@ -38,6 +38,9 @@ typedef bool (*condition_witness_fn)(int64_t target_at_detect);
  * below). Same argument convention as condition_witness_fn (the engine passes
  * the at-detect target). */
 typedef bool (*condition_progressing_fn)(int64_t target_at_detect);
+/* Optional REMEDY-URGENCY signal (see struct condition.urgent below). Takes no
+ * argument — it reports only whether a time-sensitive input is ready NOW. */
+typedef bool (*condition_urgent_fn)(void);
 typedef bool (*condition_detail_fn)(struct json_value *out);
 
 struct condition_state {
@@ -101,6 +104,15 @@ struct condition {
      * in bounded time. This is NEVER a clear-edge — it cannot mask a genuinely
      * stuck node, only keep a converging repair from false-paging. */
     condition_progressing_fn progressing;
+    /* Optional REMEDY-URGENCY hook. When non-NULL and it returns true, the
+     * remedy is treated as immediately due — the engine bypasses backoff_secs
+     * for this tick (still gated by the max_attempts cap + cooldown re-arm, so
+     * it can never spin past the attempt budget). Purpose: a time-sensitive
+     * input has landed (e.g. a captured checkpoint header awaiting consume) and
+     * should be processed on the next tick rather than after the full backoff.
+     * Must be cheap and side-effect-free (a relaxed atomic read). NULL = legacy
+     * backoff-only cadence. */
+    condition_urgent_fn urgent;
     condition_detail_fn detail;
     int witness_window_secs;
     struct condition_state state;
