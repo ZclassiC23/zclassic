@@ -629,8 +629,7 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
         "\"primary_blocker\":\"none\" }\n");
     int64_t first_call_started_us = agent_first_call_start_us();
     struct agent_fast_budget first_call_budget = {
-        .started_us = first_call_started_us,
-        .partial_result = false,
+        .started_us = first_call_started_us, .partial_result = false,
         .partial_reason = {0},
     };
     struct agent_fast_snapshot health;
@@ -859,6 +858,7 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
         health.log_head, health.log_head_gap);
     agent_push_security_posture_snapshot_json(result, "security_posture",
                                                &posture);
+    agent_push_trust_tier_json(result, "trust_tier"); /* OPTIONAL, see .h */
     agent_summary_push_detail_json(
         result, &health, first_call_budget.partial_result);
     return true;
