@@ -238,6 +238,49 @@ static void status_brief_blocker_registry_read(
         out->overdue_id = odom;
 }
 
+/* Trust-tier surface, OPTIONAL on both `agent` sub-objects it reads:
+ *   - agent.trust_tier (event_agent_summary.c, schema "zcl.trust_tier.v1") —
+ *     trust_mode and the comma-joined denied-capability list.
+ *   - agent.security_posture.{snapshot_anchor_height,
+ *     background_validation_height} — the same two heights the posture
+ *     surface already carries, read here as "install_height"/
+ *     "verified_height" for the flat brief.
+ * An older node predating either field simply omits it — `known` stays
+ * false and status_brief_compose_body omits the flattened key, same
+ * optional-sub-object contract as status_brief_blocker_registry_read. */
+struct status_brief_trust_tier {
+    bool known;                  /* agent.trust_tier sub-object was present */
+    const char *tier;            /* trust_tier.trust_mode; points into agent */
+    int64_t install_height; bool install_known;
+    int64_t verified_height; bool verified_known;
+    const char *capabilities_locked; /* trust_tier.capabilities_denied */
+};
+
+static void status_brief_trust_tier_read(const struct json_value *agent,
+                                         const struct json_value *security,
+                                         struct status_brief_trust_tier *out)
+{
+    *out = (struct status_brief_trust_tier){0};
+    const struct json_value *tt = json_get(agent, "trust_tier");
+    if (tt && tt->type == JSON_OBJ) {
+        out->known = true;
+        const char *tier = json_get_str(json_get(tt, "trust_mode"));
+        if (tier && status_machine_token(tier))
+            out->tier = tier;
+        const char *locked =
+            json_get_str(json_get(tt, "capabilities_denied"));
+        if (locked)
+            out->capabilities_locked = locked;
+    }
+    (void)status_read_optional_nonnegative(security, "snapshot_anchor_height",
+                                           &out->install_height,
+                                           &out->install_known);
+    (void)status_read_optional_nonnegative(security,
+                                           "background_validation_height",
+                                           &out->verified_height,
+                                           &out->verified_known);
+}
+
 struct status_brief_fields {
     int64_t served_height; bool served_known;
     int64_t header_height; bool header_known;
@@ -252,6 +295,7 @@ struct status_brief_fields {
     int64_t rss_mb; bool rss_known;
     int64_t tip_advance_age_seconds; bool tip_age_known;
     struct status_brief_blocker_registry registry;
+    struct status_brief_trust_tier trust_tier;
     /* NULL on the strict-v2 path; the mismatched schema string on the
      * degraded schema-skew path — adds `partial_result`/`schema_skew` to
      * the emitted body so the operator/AI can tell "old/new but fine"
@@ -305,6 +349,24 @@ static char *status_brief_compose_body(const struct status_brief_fields *f,
     status_push_int_if_known(&root, "rss_mb", f->rss_known, f->rss_mb);
     status_push_int_if_known(&root, "tip_advance_age_seconds",
                              f->tip_age_known, f->tip_advance_age_seconds);
+    /* Trust-tier surface: OMITTED (never null), same convention as the
+     * blocker_registry sub-fields above, on an older node that predates
+     * agent.trust_tier / the two security_posture heights — these are a
+     * newer optional facet, not part of the always-present v2 core (unlike
+     * hstar/header_height/gap, which use status_push_int_if_known's
+     * always-present-possibly-null convention because the v2 schema has
+     * always carried them). */
+    if (f->trust_tier.tier)
+        json_push_kv_str(&root, "tier", f->trust_tier.tier);
+    if (f->trust_tier.install_known)
+        json_push_kv_int(&root, "install_height",
+                         f->trust_tier.install_height);
+    if (f->trust_tier.verified_known)
+        json_push_kv_int(&root, "verified_height",
+                         f->trust_tier.verified_height);
+    if (f->trust_tier.capabilities_locked)
+        json_push_kv_str(&root, "capabilities_locked",
+                         f->trust_tier.capabilities_locked);
     if (f->schema_skew) {
         json_push_kv_bool(&root, "partial_result", true);
         json_push_kv_str(&root, "schema_skew", f->schema_skew);
@@ -372,6 +434,8 @@ static char *status_brief_build_schema_skew_body(
                                            &f.tip_advance_age_seconds,
                                            &f.tip_age_known);
     status_brief_blocker_registry_read(agent, &f.registry);
+    status_brief_trust_tier_read(agent, json_get(agent, "security_posture"),
+                                 &f.trust_tier);
     f.schema_skew = schema;
 
     return status_brief_compose_body(&f, err);
@@ -644,10 +708,13 @@ char *zcl_native_status_brief_body(const struct json_value *args,
         .tip_age_known = tip_age_known,
         .schema_skew = NULL,
     };
-    /* `f.registry.head`/`overdue_id` point into `agent`, which stays alive
-     * until after status_brief_compose_body() serializes them below
-     * (json_push_kv_str copies the string). */
+    /* `f.registry.head`/`overdue_id`/`f.trust_tier.*` point into `agent`,
+     * which stays alive until after status_brief_compose_body() serializes
+     * them below (json_push_kv_str copies the string). Both reads are
+     * lenient/OPTIONAL — never part of the strict SCHECK() chain above, so
+     * an older node missing either sub-object does not fail validation. */
     status_brief_blocker_registry_read(&agent, &f.registry);
+    status_brief_trust_tier_read(&agent, security, &f.trust_tier);
 
     char *out = status_brief_compose_body(&f, err);
     json_free(&agent);

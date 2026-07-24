@@ -61,6 +61,12 @@
                     "boot.stage_regression (fail-loud, never fail-stop)",
                     "config/src/boot_flight_recorder.c",
                     "lib/test/src/test_boot_flight_recorder.c"),
+    DIAG_PROJECTION("bbf_discovery", boot_bundle_fetch_discovery_dump_state_json,
+                    "instant-on bundle-fetch peer-directory discovery: last "
+                    "quorum outcome (reached / degraded_single_seed / "
+                    "no_quorum_fell_open_to_ibd) + seed_count/responded_count",
+                    "config/src/boot_bundle_fetch.c",
+                    "lib/test/src/test_boot_bundle_fetch.c"),
     DIAG_RUNTIME("service_state", service_state_dump_state_json,
                  "canonical runtime operational mode "
                  "(boot/restore/reconcile/degraded_serving/syncing/"

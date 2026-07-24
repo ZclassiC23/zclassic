@@ -26,7 +26,8 @@ struct json_value;
 #define SOVEREIGNTY_T_READY_KEY     "sovereignty.t_ready"
 #define SOVEREIGNTY_T_SOVEREIGN_KEY "sovereignty.t_sovereign"
 
-/* `zclassic23 dumpstate sovereignty`.
+/* `zclassic23 dumpstate sovereignty` — also folded into `zclassic23 status`'s
+ * trust-tier surface (event_agent_summary.c -> agent_summary_posture_cache.c).
  * Reports coins_kv_proven_authority, self_folded_marker, coins_applied_height,
  * hstar, self_derived_tip_static_checks (the G-SOV parts 2+3 predicate),
  * self_derived_reason, authority_posture, trust_mode
@@ -35,7 +36,16 @@ struct json_value;
  * (see SOVEREIGNTY_T_READY_KEY doc above and the stamping note on
  * sovereignty_guard_allow). `key` is unused (NULL-safe). SELECT-only apart
  * from the idempotent stamp-if-absent write, reentrant-safe; `out` is
- * caller-initialized (json_set_object done here). */
+ * caller-initialized (json_set_object done here).
+ *
+ * Never blocks on the progress store: it trylocks and, when a reducer fold
+ * or the shielded-history importer owns progress_store_tx_lock, answers
+ * from a process-wide last-known-good trust-tier cache instead of queuing —
+ * `durable_store_status` is "available" (fresh read), "busy_stale_cache"
+ * (busy, but a prior successful read populated the cache), or
+ * "unknown_progress_store_busy" (busy, nothing observed yet). This dumper's
+ * busy branch returns before ever reaching sovereignty_guard_allow() below,
+ * so it never inherits that function's blocking behavior. */
 bool sovereignty_dump_state_json(struct json_value *out, const char *key);
 
 /* Machine-readable trust_mode used by both the dumper above and

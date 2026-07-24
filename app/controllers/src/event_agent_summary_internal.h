@@ -167,4 +167,35 @@ struct agent_security_posture;
 void agent_summary_posture_collect_bounded(
     struct agent_security_posture *out);
 
+/* Compact trust-tier view for `agent`'s OPTIONAL "trust_tier" sub-object —
+ * the operational-vs-sovereign split (controllers/sovereignty_controller.h)
+ * distilled to what an operator/AI checks at a glance: the mode word, and
+ * which consequential capabilities are currently denied. Sourced from
+ * sovereignty_dump_state_json(), which is itself non-blocking (trylock, see
+ * sovereignty_controller.c) — this struct's OWN short TTL cache
+ * (agent_summary_trust_tier_collect_bounded(), agent_summary_posture_cache.c)
+ * exists only to coalesce a polling burst into one real collection, same
+ * rationale as agent_summary_posture_collect_bounded() above. */
+struct agent_trust_tier_snapshot {
+    char trust_mode[24];             /* "bare" | "release_assisted" | "sovereign" */
+    char trust_state[32];            /* sync_trust_state_name(), e.g. "sovereign" */
+    char durable_store_status[32];   /* "available" | "busy_stale_cache" | ... */
+    bool mint_denied;
+    bool wallet_spend_denied;
+    bool export_bundle_denied;
+    /* Comma-joined subset of {"mint","wallet_spend","export_bundle"} that is
+     * currently denied (empty string == nothing locked). */
+    char capabilities_denied[80];
+    bool served_from_cache;
+    int64_t cache_age_ms;
+};
+void agent_summary_trust_tier_collect_bounded(
+    struct agent_trust_tier_snapshot *out);
+
+/* Push the collected snapshot above as `agent`'s OPTIONAL "trust_tier"
+ * sub-object (schema "zcl.trust_tier.v1"). Never required by the strict
+ * zcl.public_status.v2 SCHECK() validator (status_brief_native_handler.c) —
+ * an older consumer that predates this key simply does not see it. */
+void agent_push_trust_tier_json(struct json_value *out, const char *key);
+
 #endif

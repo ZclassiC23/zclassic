@@ -912,6 +912,19 @@ id). Both come from the **same authority** as `zclassic23 dumpstate blocker`
 `dumpstate blocker` can never name disjoint blockers even when the headline
 `blocker=` is a higher-priority posture gate.
 
+Four more fields surface the node's **trust tier** — the operational-vs-
+sovereign split (`controllers/sovereignty_controller.h`) — again omitted
+(never fabricated) on a node that predates them: `tier` (`bare` |
+`release_assisted` | `sovereign`), `install_height` (the snapshot/checkpoint
+height the node started from, if any), `verified_height` (how far the
+background full-history validation walk has independently confirmed forward
+from `install_height`), and `capabilities_locked` (a comma-joined subset of
+`mint`, `wallet_spend`, `export_bundle` currently denied by that tier — empty
+when nothing is locked). These come from the `agent` RPC's OPTIONAL
+`trust_tier` sub-object (schema `zcl.trust_tier.v1`) and `security_posture`'s
+own heights, so `zclassic23 status` and `zclassic23 dumpstate sovereignty`
+can never disagree on the trust posture.
+
 **Field selector.** `zclassic23 status field=<k1,k2,...>` and
 `zclassic23 dumpstate <subsystem> field=<k1,k2,...>` print ONLY the named
 fields, one `key=value` line each, in the order requested:

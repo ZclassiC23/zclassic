@@ -36,6 +36,7 @@
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
 
+#include <pthread.h>
 #include <sqlite3.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -180,6 +181,61 @@ static void sov_render_stamp(sqlite3 *pdb, const char *key,
         json_push_kv_str(field, "iso8601", "");
 }
 
+/* ── Last-known-good trust-tier cache (busy-path fallback) ──────────────
+ *
+ * sovereignty_dump_state_json backs `zclassic23 status`'s trust-tier surface
+ * (event_agent_summary.c -> agent_summary_posture_cache.c). The reducer drive
+ * and the shielded-history importer both hold progress_store_tx_lock for
+ * extended stretches, so a BLOCKING acquire in a diagnostics/status path
+ * would take the whole front door dark exactly when an operator most wants
+ * it (the same class of bug commit cc4de081a fixed for refold_progress.c /
+ * validate_headers_stage.c — its message names `zclassic23 status` as a
+ * victim). This cache lets the busy branch answer truthfully-but-stale
+ * instead of queuing: same shape as agent_security_posture.c's
+ * g_posture_cache / posture_cache_store / posture_cache_load — a plain
+ * mutex (never the progress-store lock) around a tiny struct copy. */
+struct sov_trust_cache {
+    char trust_mode[24];
+    char authority_posture[40];
+    char trust_state[32];
+};
+
+static pthread_mutex_t g_sov_trust_cache_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct sov_trust_cache g_sov_trust_cache;
+static bool g_sov_trust_cache_valid;
+
+static void sov_trust_cache_store(const char *trust_mode,
+                                  const char *authority_posture,
+                                  const char *trust_state)
+{
+    pthread_mutex_lock(&g_sov_trust_cache_lock);
+    snprintf(g_sov_trust_cache.trust_mode, sizeof(g_sov_trust_cache.trust_mode),
+             "%s", trust_mode ? trust_mode : "");
+    snprintf(g_sov_trust_cache.authority_posture,
+             sizeof(g_sov_trust_cache.authority_posture), "%s",
+             authority_posture ? authority_posture : "");
+    snprintf(g_sov_trust_cache.trust_state,
+             sizeof(g_sov_trust_cache.trust_state), "%s",
+             trust_state ? trust_state : "");
+    g_sov_trust_cache_valid = true;
+    pthread_mutex_unlock(&g_sov_trust_cache_lock);
+}
+
+/* Copy the cache out under the mutex; returns false (out left untouched) when
+ * no successful trylock-path collection has ever published one yet. */
+static bool sov_trust_cache_load(struct sov_trust_cache *out)
+{
+    bool ok;
+    if (!out)
+        return false;
+    pthread_mutex_lock(&g_sov_trust_cache_lock);
+    ok = g_sov_trust_cache_valid;
+    if (ok)
+        *out = g_sov_trust_cache;
+    pthread_mutex_unlock(&g_sov_trust_cache_lock);
+    return ok;
+}
+
 const char *sovereignty_trust_mode(bool proven_authority, bool self_folded)
 {
     if (!proven_authority)
@@ -286,6 +342,36 @@ bool sovereignty_dump_state_json(struct json_value *out, const char *key)
 
     sqlite3 *pdb = progress_store_db();
     bool progress_open = pdb != NULL;
+
+    /* Observability must never queue behind a fold/backfill. Trylock
+     * non-blocking and, on a miss, answer from the last-known-good cache
+     * above rather than blocking an RPC/status worker — mirrors the A2/
+     * diagnostics-sweep trylock fix (refold_progress.c /
+     * validate_headers_report.c, cc4de081a). sovereignty_guard_allow()
+     * itself stays BLOCKING (enforcement gate, must be fresh) — this dumper
+     * returns before ever reaching its guard-probe calls below when busy, so
+     * it never inherits that block. */
+    bool progress_locked = progress_open && progress_store_tx_trylock();
+    if (progress_open && !progress_locked) {
+        struct sov_trust_cache cached;
+        bool have_cache = sov_trust_cache_load(&cached);
+        json_push_kv_str(out, "schema", "zcl.sovereignty.v2");
+        json_push_kv_int(out, "schema_version", 2);
+        json_push_kv_bool(out, "progress_store_open", true);
+        json_push_kv_str(out, "durable_store_status",
+                         have_cache ? "busy_stale_cache"
+                                    : "unknown_progress_store_busy");
+        json_push_kv_bool(out, "served_from_cache", have_cache);
+        json_push_kv_str(out, "trust_mode",
+                         have_cache ? cached.trust_mode : "unknown");
+        json_push_kv_str(out, "authority_posture",
+                         have_cache ? cached.authority_posture
+                                    : "unknown_progress_store_busy");
+        json_push_kv_str(out, "trust_state",
+                         have_cache ? cached.trust_state : "unknown");
+        return true;
+    }
+
     bool applied_found = false;
     bool applied_ok = false;
     bool proven_authority = false;
@@ -304,8 +390,7 @@ bool sovereignty_dump_state_json(struct json_value *out, const char *key)
     char provenance[320] = {0};
     bool provenance_present = false;
 
-    if (progress_open) {
-        progress_store_tx_lock();
+    if (progress_locked) {
         applied_ok = coins_kv_get_applied_height(pdb, &applied,
                                                  &applied_found);
         proven_authority = coins_kv_is_proven_authority(pdb, NULL);
@@ -359,6 +444,9 @@ bool sovereignty_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_str(out, "schema", "zcl.sovereignty.v2");
     json_push_kv_int(out, "schema_version", 2);
     json_push_kv_bool(out, "progress_store_open", progress_open);
+    json_push_kv_str(out, "durable_store_status",
+                     !progress_open ? "progress_store_unavailable"
+                                    : "available");
     json_push_kv_bool(out, "coins_kv_proven_authority", proven_authority);
     json_push_kv_bool(out, "self_folded_marker", self_folded);
     json_push_kv_bool(out, "hstar_available", hstar_ok);
@@ -384,6 +472,12 @@ bool sovereignty_dump_state_json(struct json_value *out, const char *key)
         sov_stamp_transitions(pdb, trust_st);
     uint32_t cap_mask = sync_trust_caps(trust_st);
     json_push_kv_str(out, "trust_state", sync_trust_state_name(trust_st));
+    /* Publish the last-known-good trust-tier cache from the SAME successful
+     * read this call just produced (the busy branch above never reaches
+     * here), so a subsequent busy call answers with genuinely-current-at-
+     * last-observation values, never a stale placeholder. */
+    sov_trust_cache_store(trust_mode, authority_posture,
+                          sync_trust_state_name(trust_st));
     /* Display-only posture: a coarse status label that authorizes NOTHING —
      * every capability above/below comes from the mask, never this string. */
     json_push_kv_str(out, "posture",

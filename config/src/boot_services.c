@@ -8,6 +8,7 @@
 #include "config/boot_shutdown_marker.h"
 #include "util/shutdown_stagewatch.h"
 #include "config/boot_background_workers.h"
+#include "config/bundle_fetch_seeds.h"  /* ZCL_BUNDLE_FETCH_CLEARNET_SEEDS */
 #include "config/boot_flyclient.h"
 #include "config/boot_snapshot_offer.h"
 #include "config/boot_msg_callbacks.h"
@@ -869,11 +870,7 @@ bool app_init_services(struct app_context *ctx,
              *
              * Also skipped in connect-only mode, where all bootstrap data must
              * come from the explicit peer set. */
-            const char *file_seeds[] = {
-                "205.209.104.118",
-                "140.174.189.3",
-                NULL
-            };
+            const char *const *file_seeds = ZCL_BUNDLE_FETCH_CLEARNET_SEEDS;
             if (!ctx->allow_clearnet_snapshot_fetch && !file_sync_ok)
                 printf("=== Auto-fetch of chainstate from hardcoded clearnet "
                        "seeds is DISABLED (unauthenticated; pass "
