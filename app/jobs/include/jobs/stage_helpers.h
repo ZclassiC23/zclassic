@@ -28,6 +28,7 @@
 #define ZCL_JOBS_STAGE_HELPERS_H
 
 #include "core/uint256.h"
+#include "jobs/reducer_frontier.h"
 #include "json/json.h"
 #include "platform/time_compat.h"
 #include "storage/block_parse_cache.h"
@@ -60,7 +61,14 @@ struct stage_cursor_read_result {
  * log attribution. Missing row is a valid fresh-stage result
  * (ok=true/found=false/cursor=0); sqlite/schema/read failures are explicit
  * (ok=false) so stage gates cannot silently reinterpret corruption as
- * cursor 0. */
+ * cursor 0.
+ *
+ * This is the RAW cursor read. The F1 log-derived upstream FRONTIER
+ * (stage_upstream_frontier_or_zero below) layers on top for the five
+ * pipeline floor checks that gate forward progress; every other reader —
+ * self control-flow, the invariant_sentinel's cursor-vs-frontier
+ * consistency checks, repair rewind bounds, observability — keeps reading
+ * this raw cursor. */
 static inline struct stage_cursor_read_result
 stage_cursor_read_persisted(sqlite3 *db, const char *name, const char *tag)
 {
@@ -175,6 +183,71 @@ static inline uint64_t stage_cursor_persisted(sqlite3 *db, const char *name,
     uint64_t out = 0;
     (void)stage_cursor_read_or_zero(db, name, tag, &out);
     return out;
+}
+
+/* ── F1: read an UPSTREAM stage's log-derived FRONTIER as a progress floor ──
+ *
+ * The surgical F1 seam. The five pipeline floor checks that gate how far a
+ * stage may advance — body_fetch<-validate_headers, script_validate<-
+ * body_persist, proof_validate<-script_validate, utxo_apply<-proof_validate,
+ * tip_finalize<-utxo_apply — read the UPSTREAM's contiguous ok=1 *_log prefix
+ * (reducer_frontier_stage_cursor_derived) instead of its raw stage_cursor row,
+ * so the LOG is the read authority for what an upstream has actually PROVEN.
+ * The derived value is clamped to the still-written raw cursor: it EQUALS the
+ * raw cursor in every contiguous state (the dual-write / single-read
+ * equivalence) and only LOWERS the floor to the proven prefix when the
+ * upstream's log has a durable hole below its cursor — strictly safer than
+ * advancing past an unproven forced cursor.
+ *
+ * This is ONLY for those upstream-ceiling floor reads. Self control-flow reads,
+ * the invariant_sentinel's cursor-vs-log-frontier consistency checks, repair
+ * rewind bounds, and observability all keep stage_cursor_read_or_zero (the raw
+ * cursor) — they inspect or heal the raw cursor and must SEE it, not the
+ * log-clamped frontier.
+ *
+ * Cached once per (db, batch generation, name): during a drain batch the
+ * upstream cursor is immutable, so this walks the upstream log at most once per
+ * batch (the derived reader's own memo further dedups a STATIC upstream across
+ * batches, keeping the reducer's O(1)-per-finalize fast-forward ratchet).
+ * ok=false on a real read error; *out is the frontier otherwise. */
+static inline bool stage_upstream_frontier_or_zero(sqlite3 *db, const char *name,
+                                                   const char *tag, uint64_t *out)
+{
+    (void)tag;
+    if (out)
+        *out = 0;
+    static _Thread_local sqlite3 *cached_db;
+    static _Thread_local uint64_t cached_generation;
+    static _Thread_local char cached_name[64];
+    static _Thread_local uint64_t cached_value;
+    static _Thread_local bool cached_ok;
+    bool batched = stage_batch_active();
+    uint64_t generation = batched ? stage_batch_generation() : 0;
+    if (batched && cached_db == db && cached_generation == generation &&
+        name && strcmp(cached_name, name) == 0) {
+        if (!cached_ok)
+            return false;
+        if (out)
+            *out = cached_value;
+        return true;
+    }
+
+    uint64_t derived = 0;
+    bool found = false;
+    bool ok = reducer_frontier_stage_cursor_derived(db, name, &derived, &found);
+    (void)found;
+    if (batched && name && strlen(name) < sizeof(cached_name)) {
+        cached_db = db;
+        cached_generation = generation;
+        memcpy(cached_name, name, strlen(name) + 1);
+        cached_value = derived;
+        cached_ok = ok;
+    }
+    if (!ok)
+        return false;
+    if (out)
+        *out = derived;
+    return true;
 }
 
 /* Shared block-body reader function-pointer type. Every stage that pulls a

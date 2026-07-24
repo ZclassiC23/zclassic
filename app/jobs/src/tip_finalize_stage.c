@@ -264,7 +264,7 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
     if (next_h < 0) return JOB_FATAL;
 
     uint64_t uv_cursor = 0;
-    if (!stage_cursor_read_or_zero(db, "utxo_apply", STAGE_NAME,
+    if (!stage_upstream_frontier_or_zero(db, "utxo_apply", STAGE_NAME,
                                    &uv_cursor))
         return JOB_FATAL;
     if ((uint64_t)next_h > uv_cursor) {  /* ANOMALY: names a typed blocker — see tip_finalize_observe_note_cursor_gap */

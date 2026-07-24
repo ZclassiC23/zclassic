@@ -74,7 +74,7 @@ static job_result_t step_body_fetch(struct stage_step_ctx *c)
      * never advances past what is actually committed upstream, and
      * keeps body_fetch testable in isolation. */
     uint64_t vh_cursor = 0;
-    if (!stage_cursor_read_or_zero(db, "validate_headers", STAGE_NAME,
+    if (!stage_upstream_frontier_or_zero(db, "validate_headers", STAGE_NAME,
                                    &vh_cursor))
         return JOB_FATAL;
     if ((uint64_t)next_h >= vh_cursor) {
