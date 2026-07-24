@@ -719,7 +719,8 @@ ZCL_COMMAND_READY_COMMAND(
     "Plan/commit spend: without confirm, a non-mutating plan "
     "(recipient, amount) plus the commit next-action; with "
     "confirm:true, the broadcast txid from sendtoaddress "
-    "(stage=committed).", 0,
+    "(stage=committed). idempotency_key correlates plan to commit; it "
+    "is not node-side deduplication.", 0,
     "wallet,send,pay,broadcast",
     "zcl.core_wallet_send.input.v1", "zcl.wallet_send.v1",
     "address,amount,idempotency_key,confirm", "",
@@ -783,7 +784,8 @@ ZCL_COMMAND_READY_COMMAND(
     "Plan/commit shielded spend: without confirm, a non-mutating plan "
     "(from, to, amount) plus the commit next-action; with "
     "confirm:true, the async z_sendmany operation id "
-    "(stage=committed).", 0,
+    "(stage=committed). idempotency_key correlates plan to commit; it "
+    "is not node-side deduplication.", 0,
     "shielded,send,z_sendmany",
     "zcl.core_shielded_send.input.v1", "zcl.shielded_send.v1",
     "from,to,amount,idempotency_key,confirm", "",

@@ -163,7 +163,13 @@ char *zcl_native_listaddresses_body(const struct json_value *args,
  * boolean input key: a first call without `confirm:true` returns a
  * non-mutating plan plus the exact commit next-action, and only a second call
  * with `confirm:true` broadcasts or reveals. Bound in
- * config/commands/core.def. */
+ * config/commands/core.def.
+ *
+ * `idempotency_key` is a caller-supplied correlation tag: it is folded into
+ * the plan token and echoed on the committed reply, so a plan and its commit
+ * are provably the same intent. It is NOT node-side deduplication — the
+ * wallet RPC layer has no replay ledger, so two identical confirmed commits
+ * broadcast twice. */
 
 #define WNH_TAG "native.wallet"
 
@@ -525,6 +531,8 @@ void zcl_native_handle_wallet_transaction_send(
     (void)json_push_kv_str(&reply->data, "txid", txid);
     (void)json_push_kv_str(&reply->data, "address", addr);
     (void)json_push_kv_real(&reply->data, "amount", amount);
+    if (idem && idem[0])
+        (void)json_push_kv_str(&reply->data, "idempotency_key", idem);
     (void)json_push_kv_str(&reply->data, "plan_token", token);
     reply->error.mutated = true;
     json_free(&body);
@@ -618,6 +626,8 @@ void zcl_native_handle_wallet_shielded_send(
     (void)json_push_kv_str(&reply->data, "from", from);
     (void)json_push_kv_str(&reply->data, "to", to);
     (void)json_push_kv_real(&reply->data, "amount", amount);
+    if (idem && idem[0])
+        (void)json_push_kv_str(&reply->data, "idempotency_key", idem);
     (void)json_push_kv_str(&reply->data, "plan_token", token);
     reply->error.mutated = true;
     json_free(&body);
