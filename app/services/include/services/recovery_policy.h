@@ -42,12 +42,25 @@
 #define RECOVERY_POLICY_DEFAULT_MAX_UTXO_WIPE_ROWS   1000
 #define RECOVERY_POLICY_DEFAULT_MAX_BLOCK_ROLLBACK   100
 #define RECOVERY_POLICY_DEFAULT_MAX_HEADER_REWIND    1000
+/* Validation-only cursor rewinds (proof_validate / script_validate re-bind of a
+ * pre-stamping NULL-block_hash suffix) are qualitatively cheaper and safer than
+ * a block_rollback: they NEVER touch coins, nullifiers, or tip_finalize, they
+ * are floored at MIN(utxo_apply_cursor, tip_finalize_cursor) by the caller so
+ * no downstream-applied height is ever crossed, and every re-stamped verdict is
+ * re-derived idempotently from the local block body by the same verifier the
+ * live reducer runs. They therefore get their own, larger cap — the small
+ * block_rollback cap (100) false-refuses the routine post-cure re-bind (a live
+ * 163-deep NULL suffix). The bound still protects against an unbounded rewind
+ * request (a corrupt cursor asking to re-derive millions of heights), which the
+ * MIN(utxo_apply, tip_finalize) floor alone would not cap. */
+#define RECOVERY_POLICY_DEFAULT_MAX_VALIDATION_REBIND 4096
 #define RECOVERY_POLICY_DEFAULT_OPERATOR_ACK_FILE    "/var/tmp/zcl-operator-ack"
 
 /* ── Tunable policy ─────────────────────────────────────────────── */
 struct recovery_policy {
     int64_t     max_utxo_wipe_rows;     /* env ZCL_MAX_UTXO_WIPE_ROWS */
     int64_t     max_block_rollback;     /* env ZCL_MAX_BLOCK_ROLLBACK */
+    int64_t     max_validation_rebind;  /* env ZCL_MAX_VALIDATION_REBIND */
     int64_t     max_header_rewind;      /* env ZCL_MAX_HEADER_REWIND */
     bool        require_backup_verified;/* env ZCL_REQUIRE_BACKUP_VERIFIED */
     bool        dry_run;                /* env ZCL_DRY_RUN */
@@ -110,6 +123,20 @@ enum policy_decision policy_check_utxo_wipe(
  * `to_height` is allowed. Depth = from_height - to_height; a negative
  * depth is structurally invalid. Same event behaviour. */
 enum policy_decision policy_check_block_rollback(
+    const struct recovery_policy *p,
+    int64_t from_height,
+    int64_t to_height,
+    const char *reason);
+
+/* Decide whether a VALIDATION-ONLY cursor rewind from `from_height` down to
+ * `to_height` is allowed. Same depth/decision semantics as
+ * policy_check_block_rollback but uses the larger `max_validation_rebind` cap
+ * (see RECOVERY_POLICY_DEFAULT_MAX_VALIDATION_REBIND). Callers MUST already
+ * have floored `to_height` at MIN(utxo_apply_cursor, tip_finalize_cursor) — the
+ * cap bounds the rewind depth, it does NOT establish the downstream-consumer
+ * floor. For proof_validate / script_validate NULL-block_hash re-arms only:
+ * these rewind no coins, no nullifiers, and no tip_finalize cursor. */
+enum policy_decision policy_check_validation_rebind(
     const struct recovery_policy *p,
     int64_t from_height,
     int64_t to_height,

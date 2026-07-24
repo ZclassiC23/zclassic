@@ -333,6 +333,15 @@ static bool detect_reducer_frontier_reconcile_light(void)
              * body needs a peer to serve it); their suppression is now LOUD
              * via note_gate_suppressed below. */
             note_peer_gate_bypass(&rr, "stage-log refill hole pending");
+        } else if (rr.label_splice_rebind_lowest >= 0) {
+            /* A NULL-block_hash proof/script suffix pinning utxo_apply on
+             * label_splice is durable below-frontier internal damage: the
+             * canonical bodies are already persisted, so re-deriving + re-stamping
+             * block_hash needs no peer. Gating it on "a peer is ahead" would idle
+             * the only healer for the pure label_splice wedge near tip (a
+             * zero/behind-peer copy). Peer-independent, exactly like a stage-log
+             * refill hole. */
+            note_peer_gate_bypass(&rr, "label_splice re-bind pending");
         } else {
             /* Gate KEPT for the plain cursor-churn repair class: peers that
              * exist but are not ahead are no staleness evidence. The tear
@@ -382,6 +391,69 @@ static bool detect_reducer_frontier_reconcile_light(void)
     return true;
 }
 
+/* The operative cause the remedy reports on, in strict precedence order. Split
+ * out (with rfrl_remedy_outcome below) so the outcome is a PURE function of the
+ * reconcile result — directly testable, and the single source of truth the
+ * remedy switch logs against. The label-splice re-bind deliberately outranks
+ * every coin refusal: a fired re-bind is coins-untouching forward progress and
+ * must never be masked by an unrelated coin_backfill refusal at a later height
+ * (the conflation regression this precedence fixes). */
+enum rfrl_remedy_cause {
+    RFRL_CAUSE_REPAIRED_OR_SKIP = 0, /* outcome derives from rr.repaired */
+    RFRL_CAUSE_COIN_UNKNOWN,
+    RFRL_CAUSE_TIPFIN_PENDING,
+    RFRL_CAUSE_LABEL_SPLICE_REBOUND,
+    RFRL_CAUSE_COIN_TEAR,
+    RFRL_CAUSE_VALUE_OVERFLOW_REFUSED,
+    RFRL_CAUSE_COIN_BACKFILL_OWNER_REFUSED,
+    RFRL_CAUSE_COIN_BACKFILL_REFUSED,
+    RFRL_CAUSE_STALE_SCRIPT_INVALID,
+};
+
+static enum rfrl_remedy_cause rfrl_remedy_classify(
+    const struct stage_reducer_frontier_reconcile_result *rr)
+{
+    if (rr->refused_coin_unknown)
+        return RFRL_CAUSE_COIN_UNKNOWN;
+    if (stage_repair_tipfin_refusal_is_pending_forward(rr))
+        return RFRL_CAUSE_TIPFIN_PENDING;
+    /* Conflation fix: a fired label-splice re-bind outranks any coin refusal. */
+    if (rr->label_splice_rebound > 0)
+        return RFRL_CAUSE_LABEL_SPLICE_REBOUND;
+    if (rr->refused_coin_tear)
+        return RFRL_CAUSE_COIN_TEAR;
+    if (rr->value_overflow_repair_owner_refused)
+        return RFRL_CAUSE_VALUE_OVERFLOW_REFUSED;
+    if (rr->coin_backfill_owner_refused)
+        return RFRL_CAUSE_COIN_BACKFILL_OWNER_REFUSED;
+    if (coin_backfill_refused_reconcile(rr))
+        return RFRL_CAUSE_COIN_BACKFILL_REFUSED;
+    if (rr->stale_script_repair_genuinely_invalid)
+        return RFRL_CAUSE_STALE_SCRIPT_INVALID;
+    return RFRL_CAUSE_REPAIRED_OR_SKIP;
+}
+
+static enum condition_remedy_result rfrl_remedy_outcome(
+    const struct stage_reducer_frontier_reconcile_result *rr)
+{
+    switch (rfrl_remedy_classify(rr)) {
+    case RFRL_CAUSE_COIN_UNKNOWN:
+    case RFRL_CAUSE_TIPFIN_PENDING:
+        return COND_REMEDY_SKIP;
+    case RFRL_CAUSE_LABEL_SPLICE_REBOUND:
+        return COND_REMEDY_OK;
+    case RFRL_CAUSE_COIN_TEAR:
+    case RFRL_CAUSE_VALUE_OVERFLOW_REFUSED:
+    case RFRL_CAUSE_COIN_BACKFILL_OWNER_REFUSED:
+    case RFRL_CAUSE_COIN_BACKFILL_REFUSED:
+    case RFRL_CAUSE_STALE_SCRIPT_INVALID:
+        return COND_REMEDY_FAILED;
+    case RFRL_CAUSE_REPAIRED_OR_SKIP:
+    default:
+        return rr->repaired ? COND_REMEDY_OK : COND_REMEDY_SKIP;
+    }
+}
+
 static enum condition_remedy_result remedy_reducer_frontier_reconcile_light(void)
 {
     /* detect() suspends during a staged refold, but the condition engine
@@ -414,7 +486,13 @@ static enum condition_remedy_result remedy_reducer_frontier_reconcile_light(void
     if (!stage_reducer_frontier_reconcile_light(db, ms, &rr))
         return COND_REMEDY_FAILED;
     rfrl_snapshot_reconcile_result(RFRL_RR_PHASE_REMEDY, &rr);
-    if (rr.refused_coin_unknown) {
+
+    /* One classification drives BOTH the observability WARN and the returned
+     * outcome (rfrl_remedy_outcome is the single source of truth). The cases
+     * are in strict precedence order; label-splice re-bind outranks the coin
+     * refusals below it so a successful re-bind is never masked. */
+    switch (rfrl_remedy_classify(&rr)) {
+    case RFRL_CAUSE_COIN_UNKNOWN: {
         static struct log_throttle t = LOG_THROTTLE_INIT;
         uint64_t reps = 0;
         if (rfrl_throttle_emit(&t, 1, &reps))
@@ -424,7 +502,7 @@ static enum condition_remedy_result remedy_reducer_frontier_reconcile_light(void
                      (unsigned long long)reps);
         return COND_REMEDY_SKIP;
     }
-    if (stage_repair_tipfin_refusal_is_pending_forward(&rr)) {
+    case RFRL_CAUSE_TIPFIN_PENDING: {
         /* Keyed on refused height + coins_applied/hstar/reason so a moving
          * refusal re-emits but a stuck one collapses to keepalive. */
         static struct log_throttle t = LOG_THROTTLE_INIT;
@@ -449,7 +527,31 @@ static enum condition_remedy_result remedy_reducer_frontier_reconcile_light(void
                      (unsigned long long)reps);
         return COND_REMEDY_SKIP;
     }
-    if (rr.refused_coin_tear) {
+    case RFRL_CAUSE_LABEL_SPLICE_REBOUND: {
+        /* Coins-untouching forward progress: report success independent of any
+         * coin_backfill refusal at a later height (the conflation regression).
+         * Keyed on (hstar, lowest, rebound count) so a genuinely-advancing
+         * re-bind re-emits but a stuck repeat collapses to keepalive. */
+        static struct log_throttle t = LOG_THROTTLE_INIT;
+        uint64_t key =
+            ((uint64_t)(uint32_t)rr.hstar << 32) |
+            (uint32_t)(((uint32_t)rr.label_splice_rebind_lowest << 4) ^
+                       (uint32_t)rr.label_splice_rebound);
+        uint64_t reps = 0;
+        if (rfrl_throttle_emit(&t, key, &reps))
+            LOG_WARN("condition",
+                     "[condition:reducer_frontier_reconcile_light] label_splice "
+                     "RE-BOUND hstar=%d lowest_null=%d cursors_rewound=%d "
+                     "deleted_null_rows=%lld coin_backfill_status=%d "
+                     "(re-bind is progress regardless of any coin refusal) "
+                     "repeats=%llu",
+                     rr.hstar, rr.label_splice_rebind_lowest,
+                     rr.label_splice_rebound,
+                     (long long)rr.label_splice_deleted_rows,
+                     rr.coin_backfill_status, (unsigned long long)reps);
+        return COND_REMEDY_OK;
+    }
+    case RFRL_CAUSE_COIN_TEAR: {
         /* Keyed on (coins_applied_height, hstar), mirroring
          * stage_repair_reducer_frontier.c's l1_refuse_throttle. */
         static struct log_throttle t = LOG_THROTTLE_INIT;
@@ -464,7 +566,7 @@ static enum condition_remedy_result remedy_reducer_frontier_reconcile_light(void
                      (unsigned long long)reps);
         return COND_REMEDY_FAILED;
     }
-    if (rr.value_overflow_repair_owner_refused) {
+    case RFRL_CAUSE_VALUE_OVERFLOW_REFUSED: {
         static struct log_throttle t = LOG_THROTTLE_INIT;
         uint64_t reps = 0, h = (uint64_t)(uint32_t)rr.value_overflow_repair_height;
         if (rfrl_throttle_emit(&t, h, &reps))
@@ -479,7 +581,7 @@ static enum condition_remedy_result remedy_reducer_frontier_reconcile_light(void
     /* Belt-and-suspenders engine accounting: the backfill Job pages the
      * operator directly on every refusal status; never delete — coin_backfill
      * owner-ack env gate — this surfacing must never be the paging path. */
-    if (rr.coin_backfill_owner_refused) {
+    case RFRL_CAUSE_COIN_BACKFILL_OWNER_REFUSED: {
         static struct log_throttle t = LOG_THROTTLE_INIT;
         uint64_t reps = 0, h = (uint64_t)(uint32_t)rr.coin_backfill_hole_height;
         if (rfrl_throttle_emit(&t, h, &reps))
@@ -490,7 +592,7 @@ static enum condition_remedy_result remedy_reducer_frontier_reconcile_light(void
                      (unsigned long long)reps);
         return COND_REMEDY_FAILED;
     }
-    if (coin_backfill_refused_reconcile(&rr)) {
+    case RFRL_CAUSE_COIN_BACKFILL_REFUSED: {
         /* Keyed on hole height + status/unresolved/inserted/scan_next. */
         static struct log_throttle t = LOG_THROTTLE_INIT;
         uint64_t key =
@@ -511,7 +613,7 @@ static enum condition_remedy_result remedy_reducer_frontier_reconcile_light(void
                      rr.coin_backfill_scan_next, (unsigned long long)reps);
         return COND_REMEDY_FAILED;
     }
-    if (rr.stale_script_repair_genuinely_invalid) {
+    case RFRL_CAUSE_STALE_SCRIPT_INVALID: {
         static struct log_throttle t = LOG_THROTTLE_INIT;
         uint64_t reps = 0, h = (uint64_t)(uint32_t)rr.stale_script_repair_height;
         if (rfrl_throttle_emit(&t, h, &reps))
@@ -523,6 +625,11 @@ static enum condition_remedy_result remedy_reducer_frontier_reconcile_light(void
                      (unsigned long long)reps);
         return COND_REMEDY_FAILED;
     }
+    case RFRL_CAUSE_REPAIRED_OR_SKIP:
+    default:
+        break;
+    }
+
     if (!rr.repaired)
         return COND_REMEDY_SKIP;
 
@@ -563,7 +670,10 @@ static enum condition_remedy_result remedy_reducer_frontier_reconcile_light(void
                  rr.lowest_script_validate_refill_hole,
                  rr.lowest_proof_validate_refill_hole,
                  rr.failed_mask_cleared, (unsigned long long)repaired_reps);
-    return COND_REMEDY_OK;
+    /* rr.repaired is true here (the !repaired SKIP above returned); route the
+     * terminal outcome through the single source of truth so the switch and this
+     * tail can never diverge. */
+    return rfrl_remedy_outcome(&rr);
 }
 
 static bool witness_reducer_frontier_reconcile_light(int64_t target_at_detect)
@@ -752,6 +862,20 @@ void reducer_frontier_reconcile_light_test_clear_backoff(void)
 int reducer_frontier_reconcile_light_test_remedy_calls(void)
 {
     return rfrl_remedy_calls();
+}
+
+/* Pure remedy-decision hook: exercises rfrl_remedy_outcome (the single source of
+ * truth the remedy switch logs against) on a caller-constructed result. Lets the
+ * conflation regression — a successful label_splice re-bind masked by an
+ * unrelated coin_backfill refusal — be asserted directly without the engine. */
+enum condition_remedy_result
+reducer_frontier_reconcile_light_test_remedy_outcome(
+    const struct stage_reducer_frontier_reconcile_result *rr);
+enum condition_remedy_result
+reducer_frontier_reconcile_light_test_remedy_outcome(
+    const struct stage_reducer_frontier_reconcile_result *rr)
+{
+    return rfrl_remedy_outcome(rr);
 }
 
 /* src-private test hooks (mirrored by test_reducer_reconcile_witness.c, the

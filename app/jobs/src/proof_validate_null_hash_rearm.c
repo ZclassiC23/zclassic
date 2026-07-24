@@ -115,23 +115,29 @@ enum proof_validate_rearm_outcome proof_validate_null_hash_rearm(
     report->lowest_null_height = lowest_null;
     report->null_row_count = null_count;
 
-    /* Containment gate. A block_rollback-shaped decision: depth = how many
-     * heights the reducer will re-derive. Default policy refuses beyond the
-     * small cap, so this never autonomously mutates a public/dev node — the
-     * operator raises ZCL_MAX_BLOCK_ROLLBACK / supplies the ack after a copy
-     * proof. A NULL policy is loaded from the environment (default-refuse). */
+    /* Containment gate. A VALIDATION-ONLY rewind: this rewinds ONLY the
+     * proof_validate cursor (never coins, nullifiers, or tip_finalize), it is
+     * already floored at ua_cursor = MIN(utxo_apply, tip_finalize) above (the
+     * scan range starts at ua_cursor, so lowest_null >= ua_cursor and no
+     * downstream-applied height is ever crossed — that floor is HARD and
+     * independent of the cap), and every re-stamped verdict is re-derived
+     * idempotently from the local block body. It therefore uses the larger
+     * ZCL_MAX_VALIDATION_REBIND cap, not the small block_rollback cap that
+     * false-refuses the routine post-cure re-bind (a live 163-deep NULL
+     * suffix). The cap still bounds an unbounded rewind depth. A NULL policy is
+     * loaded from the environment (default-refuse beyond the cap). */
     struct recovery_policy loaded;
     if (!policy) {
         policy_load_from_env(&loaded);
         policy = &loaded;
     }
-    enum policy_decision decision = policy_check_block_rollback(
+    enum policy_decision decision = policy_check_validation_rebind(
         policy, (int64_t)pv_cursor, (int64_t)lowest_null, REARM_REASON);
     if (decision != POLICY_ALLOW) {
         LOG_WARN("proof_validate",
                  "[proof_validate] null-hash re-arm REFUSED (%s): would rewind "
                  "pv cursor %llu -> %d (%lld heights, %lld NULL rows); raise "
-                 "ZCL_MAX_BLOCK_ROLLBACK or ack to authorise after copy proof",
+                 "ZCL_MAX_VALIDATION_REBIND or ack to authorise after copy proof",
                  policy_decision_name(decision),
                  (unsigned long long)pv_cursor, lowest_null,
                  (long long)((int64_t)pv_cursor - lowest_null),

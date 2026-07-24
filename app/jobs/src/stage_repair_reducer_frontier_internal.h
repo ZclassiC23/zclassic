@@ -270,4 +270,23 @@ bool stage_reducer_frontier_try_tipfin_backfill(
     struct stage_reducer_frontier_reconcile_result *out,
     bool *handled);
 
+/* Label-splice re-bind arm (stage_repair_reducer_frontier_rebind.c). A
+ * pre-stamping NULL-block_hash suffix in proof_validate_log / script_validate_log
+ * at/above the utxo_apply frontier makes utxo_apply's label_splice guard refuse.
+ * This arm rewinds ONLY the proof/script VALIDATION cursors to the lowest NULL
+ * height (floored at MIN(utxo_apply, tip_finalize)) and deletes the NULL suffix
+ * so the forward fold re-derives + re-stamps block_hash. Never touches coins,
+ * nullifiers, or tip_finalize. Gated on the label_splice blocker being active OR
+ * the proof/script row at hstar+1 carrying a NULL block_hash, so it is a cheap
+ * no-op on a healthy node. Dry-run (apply=false) only reports
+ * out->label_splice_rebind_lowest; apply mutates and sets *mutated=true plus
+ * out->label_splice_rebound. Independent of every coin arm — a fired re-bind is
+ * forward progress on its own. Returns false only on a store error.
+ * PRECONDITION: out->hstar populated by the frontier snapshot. */
+bool stage_reducer_frontier_try_label_splice_rebind(
+    struct sqlite3 *db,
+    bool apply,
+    struct stage_reducer_frontier_reconcile_result *out,
+    bool *mutated);
+
 #endif /* ZCL_JOBS_STAGE_REPAIR_REDUCER_FRONTIER_INTERNAL_H */
