@@ -1757,17 +1757,17 @@ bool chaos_fault_reorg_during_artifact_download(uint64_t seed,
     uint64_t sid = 1000ull + (seed % 1000ull);
     struct sync_kernel_state st;
     memset(&st, 0, sizeof(st));
-    st.session_id = sid;
+    st.session_id.value = sid;
     st.phase = SYNC_PHASE_IDLE;
     uint32_t evn = 0;
 
     struct sync_event e;
 #define SFM_STEP(kind_) do {                                               \
         memset(&e, 0, sizeof(e));                                          \
-        e.session_id = sid;                                                \
+        e.session_id.value = sid;                                          \
         e.kind = (kind_);                                                  \
-        struct sync_decision d = sync_reduce(st, e);                       \
-        st.phase = d.next;                                                 \
+        struct sync_transition d = sync_reduce(st, e);                     \
+        st.phase = d.next_state.phase;                                     \
         evn++;                                                             \
     } while (0)
 
@@ -1786,13 +1786,13 @@ bool chaos_fault_reorg_during_artifact_download(uint64_t seed,
      * this session was chasing was reorged out from under it" (no separate
      * REORG event exists in the catalog; see sim/simnet_chaos_faults.h (j)). */
     memset(&e, 0, sizeof(e));
-    e.session_id = sid;
+    e.session_id.value = sid;
     e.kind = SYNC_EVENT_PEER_LOST;
-    struct sync_decision fault_decision = sync_reduce(st, e);
-    st.phase = fault_decision.next;
+    struct sync_transition fault_decision = sync_reduce(st, e);
+    st.phase = fault_decision.next_state.phase;
     evn++;
 
-    bool failed_named = fault_decision.next == SYNC_PHASE_FAILED &&
+    bool failed_named = fault_decision.next_state.phase == SYNC_PHASE_FAILED &&
                         fault_decision.has_blocker &&
                         fault_decision.blocker == SYNC_BLOCKER_PEER_LOST &&
                         fault_decision.action_count == 1 &&
@@ -1803,11 +1803,11 @@ bool chaos_fault_reorg_during_artifact_download(uint64_t seed,
     SFM_STEP(SYNC_EVENT_CHUNK_RECEIVED);
     SFM_STEP(SYNC_EVENT_RECEIVE_COMPLETE);
     memset(&e, 0, sizeof(e));
-    e.session_id = sid;
+    e.session_id.value = sid;
     e.kind = SYNC_EVENT_PROOF_VERIFIED;
     e.proof_ok = true;
-    struct sync_decision final_decision = sync_reduce(st, e);
-    st.phase = final_decision.next;
+    struct sync_transition final_decision = sync_reduce(st, e);
+    st.phase = final_decision.next_state.phase;
     evn++;
 #undef SFM_STEP
 

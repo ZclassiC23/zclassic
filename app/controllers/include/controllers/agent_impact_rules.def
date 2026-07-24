@@ -690,6 +690,11 @@ AGENT_IMPACT_RULE("lib/core/include/core/zcl_ids.h|lib/test/src/test_zcl_ids.c",
  * live offer path in msgprocessor_snapshot.c, which keeps its own existing
  * rule below). */
 AGENT_IMPACT_RULE("lib/net/src/sync_reduce_adapter.c|lib/net/include/net/sync_reduce_adapter.h", "sync_reduce_adapter sync_reduce snapshot_sync_service make_lint_gates")
+/* Sync-authority P1 — full-lifecycle shadow observer (net/sync_shadow.*).
+ * Diagnostics-only; registered in diagnostics_registry and fed from the live
+ * chunk/end paths in msgprocessor_snapshot.c (its own rule above covers that
+ * file). */
+AGENT_IMPACT_RULE("lib/net/src/sync_shadow.c|lib/net/include/net/sync_shadow.h|lib/test/src/test_sync_shadow.c", "sync_shadow sync_reduce_adapter sync_reduce snapshot_sync_service syncdiag_rpc make_lint_gates")
 /* WF2 — per-chunk-verified ROM + durable resume. */
 AGENT_IMPACT_RULE("lib/net/src/rom_journal.c|lib/net/include/net/rom_journal.h|lib/test/src/test_rom_journal_resume.c", "rom_journal_resume rom_fetch make_lint_gates")
 AGENT_IMPACT_RULE("lib/net/src/rom_peer_scoring.c|lib/net/include/net/rom_peer_scoring.h", "rom_manifest rom_fetch make_lint_gates")
