@@ -83,10 +83,24 @@ and must NOT red main — the loud line keeps it visible.
 
 Any optimization to a consensus crypto primitive must stay **bit-identical** to
 the frozen verify logic. The differential parity oracle
-(`lib/test/differential/`, on the `wf/groth16-beat-rust` workflow) exists to
-prove an optimized implementation returns the exact same accept/reject verdict
-as the reference on adversarial inputs. Flow: optimise → prove bit-identity via
-the differential oracle + the `crypto_perf_selftest` teeth → re-run
-`make check-crypto-perf` → **shrink** the baseline in
-`tools/crypto_perf_baseline.csv` (and flip `behind`→`beat` once you clear the
-margin). The ratchet then holds the new line forever.
+(`lib/test/differential/`, run with `make check-groth16-parity`) proves an
+optimized implementation returns the exact same accept/reject verdict as the
+frozen reference on adversarial inputs. It compiles
+`lib/sapling/src/bls12_381.c` straight from source and replays a frozen corpus
+of point encodings (canonical + non-canonical infinity, out-of-field x,
+on-curve non-subgroup), malformed proofs, and crafted single/batch
+verifications against `groth16_parity_golden.bin` +
+`groth16_decode_corpus.bin`. A single verdict flip fails the gate.
+
+Parity is defined **against our own frozen behavior**, not against
+librustzcash: the corpus deliberately pins the quirks this chain accepts —
+notably the BLS12-381 non-canonical infinity encoding (infinity flag set with
+dirty trailing bytes), which librustzcash rejects and we ACCEPT. Never
+"fix" a pinned quirk; that is a consensus break.
+
+Flow: optimise → `make check-groth16-parity` → prove bit-identity via the
+`crypto_perf_selftest` teeth → re-run `make check-crypto-perf` → **shrink** the
+baseline in `tools/crypto_perf_baseline.csv` (and flip `behind`→`beat` once you
+clear the margin). The ratchet then holds the new line forever.
+`run_parity_oracle.sh record` re-freezes the golden and is legitimate ONLY
+after a deliberate, full-history-replay-approved consensus change.
