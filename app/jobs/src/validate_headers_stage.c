@@ -59,29 +59,15 @@
 /* The default header validator (PoW target + Equihash-from-nSolution)
  * lives in validate_headers_validator.c — see validate_headers_internal.h. */
 
-/* ── Job + pool state ─────────────────────────────────────────────── */
-
-struct vh_job {
-    const struct block_index *bi;       /* in: validation input */
-    struct block_index       *mark_bi;  /* in: real index to mark on pass */
-    struct block_index        snapshot; /* in: optional repaired-header copy */
-    unsigned char             solution[MAX_SOLUTION_SIZE];
-    int                       height;   /* in: convenience for logging */
-    bool                      had_repair_row; /* in: a hash-bound header_solution_repair
-                                               * row backs this height — the
-                                               * solutionless-backfill fingerprint that
-                                               * proves a stale FAILED mask is the
-                                               * serve-refusal (clearable) class */
-    bool                      ok;       /* out */
-    char                      reason[VH_MAX_REASON];
-};
+/* struct vh_job — the per-height work item — lives in validate_headers_pool.h
+ * with the pool that stores and dispatches it. */
 
 /* ── Globals ──────────────────────────────────────────────────────── */
 
 static pthread_mutex_t  g_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct main_state *g_ms = NULL;
 static stage_t          *g_stage = NULL;
-static struct vh_pool    g_pool;
+static struct vh_pool    g_pool;   /* also owns the per-step vh_job scratch */
 
 static _Atomic uint64_t g_passed_total = 0;
 static _Atomic uint64_t g_failed_total = 0;
@@ -690,13 +676,13 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     }
 
     int available = (int)(ha_cursor - (uint64_t)next_h);
-    int batch_n = (available < VH_BATCH_SIZE) ? available : VH_BATCH_SIZE;
-    if (batch_n <= 0) return JOB_IDLE;
+    int batch_n = (available < g_pool.batch_cap) ? available : g_pool.batch_cap;
+    if (batch_n <= 0 || !g_pool.batch) return JOB_IDLE;
 
     /* Build the batch. Each job points to the block_index entry at
      * its target height. */
-    struct vh_job jobs[VH_BATCH_SIZE];
-    memset(jobs, 0, sizeof(jobs));
+    struct vh_job *jobs = g_pool.batch;
+    memset(jobs, 0, sizeof(*jobs) * (size_t)batch_n);
     for (int i = 0; i < batch_n; i++) {
         int h = next_h + i;
         struct block_index *bi = vh_resolve_bi(ms, h);
@@ -819,7 +805,10 @@ bool validate_headers_stage_init(struct main_state *ms)
         return false;
     }
 
-    if (!vh_pool_start(&g_pool, vh_run_job, NULL)) {
+    /* Widths for this run: the compile-time defaults on a live node, wider only
+     * under an offline mint/refold fold (validate_headers_tuning.c). */
+    if (!vh_pool_start(&g_pool, vh_run_job, NULL, vh_runtime_pool_size(),
+                       vh_runtime_batch_size())) {
         pthread_mutex_unlock(&g_lock);
         return false;
     }
@@ -843,7 +832,7 @@ bool validate_headers_stage_init(struct main_state *ms)
 
     LOG_INFO("validate_headers",
              "[validate_headers] stage initialised (authoritative, pool=%d batch=%d)",
-             VH_POOL_SIZE, VH_BATCH_SIZE);
+             g_pool.n_threads, g_pool.batch_cap);
     return true;
 }
 
@@ -991,8 +980,9 @@ bool validate_headers_stage_dump_state_json(struct json_value *out,
     json_push_kv_str(out, "authority", "authoritative");
     json_push_kv_int (out, "cursor",
                       (int64_t)(g_stage ? stage_cursor(g_stage) : 0));
-    json_push_kv_int (out, "pool_size", (int64_t)VH_POOL_SIZE);
-    json_push_kv_int (out, "batch_size", (int64_t)VH_BATCH_SIZE);
+    /* The widths in force this run, not the compile-time defaults. */
+    json_push_kv_int (out, "pool_size", (int64_t)g_pool.n_threads);
+    json_push_kv_int (out, "batch_size", (int64_t)g_pool.batch_cap);
     json_push_kv_int(out, "passed_total", (int64_t)atomic_load(&g_passed_total));
     json_push_kv_int(out, "failed_total", (int64_t)atomic_load(&g_failed_total));
     json_push_kv_int(out, "last_step_unix", atomic_load(&g_last_step_unix));

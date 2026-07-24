@@ -1,13 +1,17 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * validate_headers_pool — fixed worker pool used by validate_headers_stage.c. */
+ * validate_headers_pool — Equihash worker pool used by
+ * validate_headers_stage.c. The width is chosen once at stage init
+ * (vh_runtime_pool_size) and fixed for the pool's lifetime. */
 
 #include "validate_headers_pool.h"
 
 #include "util/log_macros.h"
+#include "util/safe_alloc.h"
 #include "util/thread_registry.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static void *vh_pool_worker_entry(void *arg)
@@ -40,19 +44,30 @@ static void *vh_pool_worker_entry(void *arg)
 }
 
 bool vh_pool_start(struct vh_pool *pool, vh_pool_job_fn run_job,
-                   void *run_user)
+                   void *run_user, int n_threads, int batch_cap)
 {
-    if (!pool || !run_job)
+    if (!pool || !run_job || batch_cap < 1)
         return false;
+    if (n_threads < 1)          n_threads = 1;
+    if (n_threads > VH_MAX_POOL) n_threads = VH_MAX_POOL;
 
     memset(pool, 0, sizeof(*pool));
     pool->run_job = run_job;
     pool->run_user = run_user;
+    pool->n_threads = n_threads;
+    pool->batch_cap = batch_cap;
+    pool->batch = zcl_calloc((size_t)batch_cap, sizeof(*pool->batch),
+                             "vh job batch");
+    if (!pool->batch) {
+        memset(pool, 0, sizeof(*pool));
+        LOG_FAIL("validate_headers", "pool: job-batch alloc failed cap=%d",
+                 batch_cap);
+    }
     pthread_mutex_init(&pool->mu, NULL);
     pthread_cond_init(&pool->cv_take, NULL);
     pthread_cond_init(&pool->cv_done, NULL);
 
-    for (int i = 0; i < VH_POOL_SIZE; i++) {
+    for (int i = 0; i < n_threads; i++) {
         char name[32];
         snprintf(name, sizeof(name), "vh.worker.%d", i);
         // thread-supervision-ok:bounded-worker-pool joined in vh_pool_stop; idle-blocked on cv_take, runs bounded batches
@@ -71,6 +86,7 @@ bool vh_pool_start(struct vh_pool *pool, vh_pool_job_fn run_job,
             pthread_mutex_destroy(&pool->mu);
             pthread_cond_destroy(&pool->cv_take);
             pthread_cond_destroy(&pool->cv_done);
+            free(pool->batch);
             memset(pool, 0, sizeof(*pool));
             return false;
         }
@@ -110,7 +126,7 @@ void vh_pool_stop(struct vh_pool *pool)
     pool->stop = true;
     pthread_cond_broadcast(&pool->cv_take);
     pthread_mutex_unlock(&pool->mu);
-    for (int i = 0; i < VH_POOL_SIZE; i++) {
+    for (int i = 0; i < pool->n_threads; i++) {
         if (pool->thread_started[i]) {
             pthread_join(pool->threads[i], NULL);
             pool->thread_started[i] = false;
@@ -119,5 +135,7 @@ void vh_pool_stop(struct vh_pool *pool)
     pthread_mutex_destroy(&pool->mu);
     pthread_cond_destroy(&pool->cv_take);
     pthread_cond_destroy(&pool->cv_done);
+    /* Workers are joined, so no step can still be reading the scratch. */
+    free(pool->batch);
     memset(pool, 0, sizeof(*pool));
 }
