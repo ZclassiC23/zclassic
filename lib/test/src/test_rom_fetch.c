@@ -300,6 +300,45 @@ static int test_parse_directory(void)
     return failures;
 }
 
+/* GAP-4: the optional "height" field parses onto rom_fetch_manifest.height
+ * (download-cosmetic, not part of manifest_sane); a legacy entry with no height
+ * defaults to 0. */
+static int test_parse_directory_height(void)
+{
+    int failures = 0;
+    TEST("rom_fetch: directory.json parses optional height (0 when absent)") {
+        struct rom_fetch_manifest out[ROM_FETCH_MAX_ARTIFACTS];
+        memset(out, 0, sizeof(out));
+        const uint64_t vsize = (uint64_t)ROM_SEED_CHUNK_SIZE + 4096;
+        char doc[1024];
+        snprintf(doc, sizeof(doc),
+            "{\"artifacts\":["
+            "{\"kind\":\"consensus_bundle\","
+            "\"digest\":\"00112233445566778899aabbccddeeff"
+            "00112233445566778899aabbccddeeff\","
+            "\"whole_sha3\":\"ffffffffffffffffffffffffffffffff"
+            "ffffffffffffffffffffffffffffffff\","
+            "\"size\":%llu,\"chunk_size\":%u,\"chunks\":2,\"height\":3056758},"
+            /* legacy entry: no height field at all → parses to 0. */
+            "{\"kind\":\"consensus_bundle\","
+            "\"digest\":\"11223344556677889900aabbccddeeff"
+            "11223344556677889900aabbccddeeff\","
+            "\"whole_sha3\":\"ffffffffffffffffffffffffffffffff"
+            "ffffffffffffffffffffffffffffffff\","
+            "\"size\":%llu,\"chunk_size\":%u,\"chunks\":2}]}",
+            (unsigned long long)vsize, (unsigned)ROM_SEED_CHUNK_SIZE,
+            (unsigned long long)vsize, (unsigned)ROM_SEED_CHUNK_SIZE);
+        int n = rom_fetch_parse_directory(doc, out, ROM_FETCH_MAX_ARTIFACTS);
+        ASSERT_EQ(n, 2);
+        ASSERT(out[0].height == 3056758);
+        ASSERT(out[1].height == 0); /* legacy no-height default */
+        /* Height is NOT a sanity gate — both entries still parse valid. */
+        ASSERT(out[0].used && out[1].used);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── (c) Whole-file verification vs serve-side digests ──────────────── */
 
 static int test_verify_file(void)
@@ -1356,6 +1395,7 @@ int test_rom_fetch(void)
     int failures = 0;
     failures += test_manifest_sane();
     failures += test_parse_directory();
+    failures += test_parse_directory_height();
     failures += test_verify_file();
     failures += test_loopback_e2e();
     failures += test_directory_discovery();

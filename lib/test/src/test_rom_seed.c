@@ -56,6 +56,69 @@ static bool write_file(const char *dir, const char *name,
     return true;
 }
 
+/* ── (a0) Deregister: the inverse of register (GAP-2) ───────────────── */
+
+static int test_deregister(void)
+{
+    int failures = 0;
+    TEST("rom_seed: deregister drops the artifact from count + serve_lookup") {
+        rom_seed_reset();
+        char root[] = "/tmp/zcl_romseed_dereg_XXXXXX";
+        char *dir = mkdtemp(root);
+        ASSERT(dir != NULL);
+
+        size_t size = 64 * 1024;
+        uint8_t *content = malloc(size);
+        ASSERT(content != NULL);
+        gen_content(content, size, true);
+        ASSERT(write_file(dir, "consensus-state-bundle-500.sqlite", content,
+                          size));
+
+        struct rom_artifact art;
+        ASSERT(rom_seed_register(dir, "consensus-state-bundle-500.sqlite", NULL,
+                                 &art) == ROM_REG_OK);
+        ASSERT(rom_seed_count() == 1);
+        struct rom_artifact hit;
+        ASSERT(rom_seed_serve_lookup(art.chunk_root, 0, &hit)
+               == ROM_SERVE_FREE_OK);
+
+        /* The served directory listing carries the parsed height (GAP-4). */
+        char json[1024];
+        size_t jn = rom_seed_directory_json(json, sizeof(json));
+        ASSERT(jn > 0);
+        ASSERT(strstr(json, "\"height\":500") != NULL);
+
+        /* Bad args are refused (mirrors register). */
+        ASSERT(rom_seed_deregister(NULL, "consensus-state-bundle-500.sqlite")
+               == ROM_REG_ERR_ARGS);
+        ASSERT(rom_seed_deregister(dir, NULL) == ROM_REG_ERR_ARGS);
+        ASSERT(rom_seed_deregister(dir, "../evil") == ROM_REG_ERR_ARGS);
+        ASSERT(rom_seed_count() == 1); /* still registered after bad calls */
+
+        /* Cross-shape match: registered bare, deregistered via the
+         * "bundles/<name>" reseed shape — matched on basename. */
+        ASSERT(rom_seed_deregister(dir,
+               "bundles/consensus-state-bundle-500.sqlite") == ROM_REG_OK);
+        ASSERT(rom_seed_count() == 0);
+        ASSERT(rom_seed_serve_lookup(art.chunk_root, 0, NULL)
+               == ROM_SERVE_NOT_ARTIFACT);
+
+        /* Idempotent: deregistering an absent entry is OK, not an error. */
+        ASSERT(rom_seed_deregister(dir, "consensus-state-bundle-500.sqlite")
+               == ROM_REG_OK);
+        ASSERT(rom_seed_count() == 0);
+
+        free(content);
+        char p[1100];
+        snprintf(p, sizeof(p), "%s/consensus-state-bundle-500.sqlite", dir);
+        unlink(p);
+        rmdir(dir);
+        rom_seed_reset();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── (a) Registration digests, including multi-chunk ────────────────── */
 
 static int test_register_digests(void)
@@ -493,6 +556,7 @@ static int test_bundles_path_shape_refused(void)
 int test_rom_seed(void)
 {
     int failures = 0;
+    failures += test_deregister();
     failures += test_register_digests();
     failures += test_free_vs_priced();
     failures += test_caps();

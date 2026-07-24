@@ -168,6 +168,22 @@ enum rom_register_result rom_seed_register(const char *datadir,
                                            const uint8_t *expected_whole_sha3,
                                            struct rom_artifact *out);
 
+/* Drop `filename` from the registry so it stops being served — the inverse of
+ * rom_seed_register. The rotation path (config/src/bundle_exporter.c bx_rotate)
+ * calls this immediately BEFORE it unlinks a rotated-out generation, so a
+ * deleted file is never left advertised in the served directory / serve_lookup.
+ *
+ * `filename` is matched by BARE BASENAME against the stored artifact names, so a
+ * caller may pass either the bare basename ("consensus-state-bundle-<h>.sqlite")
+ * or the "ROM_SEED_BUNDLES_SUBDIR/<basename>" ("bundles/<name>") shape the
+ * reseed path registered it under — both resolve to the same entry. The same
+ * arg rules as rom_seed_register apply (rom_filename_ok): a NULL/empty datadir
+ * or an unsafe filename returns ROM_REG_ERR_ARGS. IDEMPOTENT: removing an entry
+ * that is not present is not an error (ROM_REG_OK). No per-artifact refcounts —
+ * an artifact is either registered or it is not. */
+enum rom_register_result rom_seed_deregister(const char *datadir,
+                                             const char *filename);
+
 /* Bounded datadir scan: register every entry matching a known artifact kind
  * (today: consensus-state-bundle-*.sqlite) found directly under `datadir`,
  * PLUS one level into `datadir`/ROM_SEED_BUNDLES_SUBDIR ("bundles/") — where

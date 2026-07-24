@@ -31,6 +31,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 struct app_context;
 struct rom_fetch_manifest;
@@ -87,14 +88,17 @@ bool boot_bundle_fetch_download(const char *datadir,
  * ctx->connect_only); then obtains the manifest commitment. It prefers a LOCAL
  * <datadir>/bundles/directory.json (an operator hint, or one a prior discovery
  * persisted); when that is absent — the truly fresh node — it DISCOVERS the
- * manifest from the seed set over the file-service "RLS" wire, requiring >=2
- * independent seeds to return a byte-identical (chunk_root, whole_sha3, size)
- * triple before trusting it (quorum=1 accepted only for the operator's explicit
- * -fileservice seed), persisting the winner as the local hint, then downloads.
- * The big bytes are always swarmed + content-verified against the committed
- * manifest, and the install path binds the result to the compiled checkpoint.
- * Best-effort: any miss returns false and boot proceeds unchanged (P2P IBD).
- * Returns true iff a verified bundle landed this boot. */
+ * manifest(s) from the seed set over the file-service "RLS" wire and RANKS them
+ * newest-first (highest advertised height), preferring a >=2-seed / explicit
+ * -fileservice candidate at a given height but never refusing a lone newest one
+ * (STEP 0: the export is not cross-node byte-deterministic, so a per-height
+ * triple quorum almost never forms; quorum is a bandwidth-DoS guard, not a trust
+ * source — trust binds at install). It persists the winner as the local hint,
+ * then downloads newest-first with bounded fallback to the next-highest on a
+ * miss. The big bytes are always swarmed + content-verified against the
+ * committed manifest, and the install path binds the result to the compiled
+ * checkpoint. Best-effort: any miss returns false and boot proceeds unchanged
+ * (P2P IBD). Returns true iff a verified bundle landed this boot. */
 bool boot_bundle_fetch_maybe(const char *datadir, const struct app_context *ctx);
 
 /* See CLAUDE.md "Adding state introspection". Reentrant-safe. SELECT-only
@@ -109,8 +113,8 @@ bool boot_bundle_fetch_discovery_dump_state_json(struct json_value *out,
 #ifdef ZCL_TESTING
 /* Test surface (implemented in config/src/boot_bundle_fetch.c). */
 bool boot_bundle_manifest_facts_ok_for_test(const struct rom_fetch_manifest *m);
-int  boot_bundle_quorum_pick_for_test(const int *counts, const bool *has_explicit,
-                                      size_t ncand);
+int  boot_bundle_quorum_pick_for_test(const int64_t *heights, const int *counts,
+                                      const bool *has_explicit, size_t ncand);
 #endif
 
 #endif /* ZCL_CONFIG_BOOT_BUNDLE_FETCH_H */

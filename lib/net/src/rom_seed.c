@@ -363,6 +363,41 @@ enum rom_register_result rom_seed_register(const char *datadir,
     return ROM_REG_OK;
 }
 
+/* Bare basename of a registerable name: "bundles/foo.sqlite" -> "foo.sqlite",
+ * "foo.sqlite" -> "foo.sqlite". Pure — mirrors the basename rule the classifier
+ * uses so deregister matches an entry regardless of which shape it was
+ * registered under. */
+static const char *rom_basename(const char *name)
+{
+    const char *slash = strrchr(name, '/');
+    return slash ? slash + 1 : name;
+}
+
+enum rom_register_result rom_seed_deregister(const char *datadir,
+                                             const char *filename)
+{
+    if (!datadir || !datadir[0] || !rom_filename_ok(filename)) {
+        LOG_WARN(ROM_SUBSYS, "deregister: bad args (datadir/filename)");
+        return ROM_REG_ERR_ARGS;
+    }
+    const char *want = rom_basename(filename);
+    pthread_mutex_lock(&g_reg_mutex);
+    /* Match by bare basename so either the "bundles/<name>" reseed shape or a
+     * plain basename resolves the same entry. The registry is tiny
+     * (ROM_SEED_MAX_ARTIFACTS) and heights are unique, so at most one slot
+     * matches; the loop still clears every match to stay idempotent. */
+    for (unsigned i = 0; i < ROM_SEED_MAX_ARTIFACTS; i++) {
+        if (g_artifacts[i].used &&
+            strcmp(rom_basename(g_artifacts[i].filename), want) == 0) {
+            LOG_INFO(ROM_SUBSYS, "deregistered '%s' (matched '%s')",
+                     g_artifacts[i].filename, filename);
+            memset(&g_artifacts[i], 0, sizeof(g_artifacts[i]));
+        }
+    }
+    pthread_mutex_unlock(&g_reg_mutex);
+    return ROM_REG_OK; /* idempotent: OK whether or not a slot matched */
+}
+
 /* Bounded scan of <datadir>/ROM_SEED_BUNDLES_SUBDIR ("bundles/"): register
  * every entry whose bare basename classifies as a known artifact kind,
  * storing the registered filename as "bundles/<name>" so rom_seed_read_chunk's
@@ -765,6 +800,35 @@ bool rom_seed_build_offer(const struct rom_artifact *a,
     return true;
 }
 
+/* Parse the height out of a canonical bundle name
+ * "consensus-state-bundle-<N>.sqlite" (matched on the bare basename, so the
+ * "bundles/<name>" shape resolves the same). Returns 0 for the header seed, an
+ * unknown kind, or any non-canonical name — the download-cosmetic default that
+ * a legacy directory (no "height" field) also parses to. Pure, no I/O. */
+static int64_t rom_bundle_height_from_name(const char *filename)
+{
+    if (!filename || !filename[0])
+        return 0;
+    const char *base = rom_basename(filename);
+    static const char pfx[] = "consensus-state-bundle-";
+    static const char sfx[] = ".sqlite";
+    size_t bl = strlen(base), pl = sizeof(pfx) - 1, sl = sizeof(sfx) - 1;
+    if (bl <= pl + sl || strncmp(base, pfx, pl) != 0 ||
+        strcmp(base + bl - sl, sfx) != 0)
+        return 0;
+    const char *d = base + pl;
+    size_t dcount = bl - pl - sl;
+    if (dcount == 0 || dcount >= 19) /* fits int64 without overflow */
+        return 0;
+    int64_t h = 0;
+    for (size_t i = 0; i < dcount; i++) {
+        if (d[i] < '0' || d[i] > '9')
+            return 0;
+        h = h * 10 + (d[i] - '0');
+    }
+    return h;
+}
+
 size_t rom_seed_directory_json(char *buf, size_t max)
 {
     if (!buf || max == 0) return 0;
@@ -784,11 +848,13 @@ size_t rom_seed_directory_json(char *buf, size_t max)
         HexStr(arts[i].whole_sha3, 32, false, whole_hex, sizeof(whole_hex));
         w = snprintf(buf + off, max - off,
                      "%s{\"kind\":\"%s\",\"digest\":\"%s\",\"whole_sha3\":\"%s\","
-                     "\"size\":%llu,\"chunk_size\":%u,\"chunks\":%u}",
+                     "\"size\":%llu,\"chunk_size\":%u,\"chunks\":%u,"
+                     "\"height\":%lld}",
                      emitted ? "," : "", kind_name(arts[i].kind),
                      digest_hex, whole_hex,
                      (unsigned long long)arts[i].size_bytes,
-                     arts[i].chunk_size, arts[i].num_chunks);
+                     arts[i].chunk_size, arts[i].num_chunks,
+                     (long long)rom_bundle_height_from_name(arts[i].filename));
         if (w < 0 || (size_t)w >= max - off) {
             /* Overflow — close the array at what we have so the JSON stays
              * well-formed rather than truncating mid-object. */

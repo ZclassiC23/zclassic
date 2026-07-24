@@ -78,24 +78,32 @@ bool boot_bundle_pick_manifest(const char *directory_json,
     if (n <= 0)
         return false;
 
-    /* Kind-aware bundle selection. Pass 1: prefer an explicitly consensus-
-     * bundle-kinded artifact (largest such). Pass 2 (legacy back-compat): a
-     * directory that carries no "kind" field parses every entry to
-     * ROM_ARTIFACT_UNKNOWN, so fall back to the LARGEST non-header-seed
-     * artifact — today's "the bundle is the big one" behavior — while never
-     * mis-picking the header-chain seed as a .sqlite bundle. */
+    /* Kind-aware, NEWEST-by-height bundle selection. Pass 1: among explicitly
+     * consensus-bundle-kinded artifacts pick the HIGHEST advertised height, with
+     * size as the tie-break (and, since a legacy no-height entry parses to
+     * height 0, this reduces to "largest wins" when every candidate is a legacy
+     * 0). Pass 2 (legacy back-compat): a directory that carries no "kind" field
+     * parses every entry to ROM_ARTIFACT_UNKNOWN, so fall back to the same
+     * newest-then-largest rule over non-header-seed artifacts — never
+     * mis-picking the header-chain seed as a .sqlite bundle. Newest-by-height
+     * (not size) is what lets a fresh consumer pick the freshest bundle across a
+     * mixed-height seed set; height is untrusted (trust binds at install). */
     int best = -1;
     for (int i = 0; i < n; i++) {
         if (!arts[i].used || arts[i].kind != ROM_ARTIFACT_CONSENSUS_BUNDLE)
             continue;
-        if (best < 0 || arts[i].size_bytes > arts[best].size_bytes)
+        if (best < 0 || arts[i].height > arts[best].height ||
+            (arts[i].height == arts[best].height &&
+             arts[i].size_bytes > arts[best].size_bytes))
             best = i;
     }
     if (best < 0) {
         for (int i = 0; i < n; i++) {
             if (!arts[i].used || arts[i].kind == ROM_ARTIFACT_HEADER_SEED)
                 continue;
-            if (best < 0 || arts[i].size_bytes > arts[best].size_bytes)
+            if (best < 0 || arts[i].height > arts[best].height ||
+                (arts[i].height == arts[best].height &&
+                 arts[i].size_bytes > arts[best].size_bytes))
                 best = i;
         }
     }
@@ -107,11 +115,15 @@ bool boot_bundle_pick_manifest(const char *directory_json,
     /* directory.json entries carry digests + layout but NO filename. Assign a
      * canonical, classifiable name so both boot_autodetect_consensus_bundle
      * (requires *.sqlite) and the installer's classify step (requires the
-     * consensus-state-bundle- prefix) accept the downloaded file. The height is
+     * consensus-state-bundle- prefix) accept the downloaded file. Name it by the
+     * ADVERTISED height when present so the staged file (and the
+     * lexicographic-then-numeric autodetect in boot_auto_install_bundle.c) knows
+     * WHICH generation it is; only when the advertisement carried no height
+     * (legacy 0) fall back to the compiled checkpoint height. The height is
      * cosmetic to the classifier; the CHECKPOINT_ROM authority is what actually
      * binds the installed state. */
     const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
-    long h = cp ? (long)cp->height : 0;
+    long h = out->height > 0 ? (long)out->height : (cp ? (long)cp->height : 0);
     snprintf(out->filename, sizeof(out->filename),
              "consensus-state-bundle-%ld.sqlite", h);
     out->used = true;
@@ -369,9 +381,9 @@ static int bbf_emit_artifact_obj(char *dst, size_t cap, const char *kind,
     HexStr(m->whole_sha3, 32, false, whole_hex, sizeof(whole_hex));
     int wn = snprintf(dst, cap,
         "{\"kind\":\"%s\",\"digest\":\"%s\",\"whole_sha3\":\"%s\","
-        "\"size\":%llu,\"chunk_size\":%u,\"chunks\":%u}",
+        "\"size\":%llu,\"chunk_size\":%u,\"chunks\":%u,\"height\":%lld}",
         kind, digest_hex, whole_hex, (unsigned long long)m->size_bytes,
-        m->chunk_size, m->num_chunks);
+        m->chunk_size, m->num_chunks, (long long)m->height);
     if (wn <= 0 || (size_t)wn >= cap)
         return 0;
     return wn;
@@ -484,21 +496,48 @@ static size_t bbf_assemble_seeds(const struct app_context *ctx,
     return np;
 }
 
-/* One discovered-manifest candidate and how many independent seeds served it. */
+/* One discovered-manifest candidate and how many independent seeds served it.
+ * The advertised height is carried on `m.height` (rom_fetch_manifest.height) and
+ * drives newest-first ranking (bbf_quorum_pick / bbf_quorum_rank). */
 struct bbf_disc_cand {
     struct rom_fetch_manifest m;
     int  count;
     bool has_explicit;   /* an explicit -fileservice seed served this triple */
 };
 
-/* Pure quorum decision over the tallied candidates. Returns the winning index,
- * or -1 for "no quorum" (fail-open to IBD). The rule: the most-agreed candidate
- * wins iff >=2 independent seeds served its (chunk_root, whole_sha3, size)
- * triple; a lone candidate wins ONLY when the operator explicitly named its
- * seed (-fileservice); a lone non-explicit candidate is refused (bandwidth-DoS
- * guard — trust binds at install, not here). No IO. */
-static int bbf_quorum_pick(const int *counts, const bool *has_explicit,
-                           size_t ncand)
+/* Pure candidate ranking over the tallied candidates. Returns the index of the
+ * candidate to attempt FIRST, or -1 only when ncand == 0.
+ *
+ * STEP 0 verdict — the export is NOT byte-deterministic across independent
+ * nodes, so a per-height triple quorum almost never forms across a mixed fleet.
+ * A consensus-state bundle is a SQLite file, and its `source_receipt` table
+ * binds the PRODUCER's running-binary digest (SHA3 of /proc/self/exe — see
+ * config/src/consensus_state_producer_receipt.c) plus toolchain/build-input
+ * digests; two honest at-tip nodes at the same height whose binaries are not
+ * proven byte-identical (they are not — no two-builder gate exists yet) write
+ * different bundle bytes, so their (chunk_root, whole_sha3, size) triples
+ * differ. SQLite page/freelist/writer-version layout is a further nondeterminism
+ * source over the whole-file digest. A triple therefore agrees across seeds
+ * essentially ONLY when the SAME physical artifact re-propagated (a re-seeded
+ * copy), never as an independent second attestation.
+ *
+ * Consequences for the rule (this is why the old ">=2 agree or refuse" gate is
+ * gone — it silently fell OPEN to a from-genesis IBD whenever a mixed-height
+ * fleet served distinct triples, even with a perfectly valid newest bundle on
+ * offer):
+ *   - Prefer the HIGHEST advertised height (the freshest bundle).
+ *   - Within the same height, a >=2-seed triple still beats a lone one, then an
+ *     explicit -fileservice seed beats a non-explicit one.
+ *   - A lone non-explicit highest-height candidate is STILL returned: quorum is
+ *     only a bandwidth-DoS guard here, NOT a trust source. Trust binds solely at
+ *     install under the CHECKPOINT_ROM authority (boot_bundle_fetch.c's install
+ *     path / config/src/boot_install_consensus_bundle.c), so a lying seed at
+ *     worst wastes ONE bounded, content-verified fetch that fails to install;
+ *     the caller then falls back to the next-highest candidate (bbf_quorum_rank)
+ *     before it ever falls open to IBD.
+ * `heights`/`counts`/`has_explicit` are parallel arrays of length `ncand`. No IO. */
+static int bbf_quorum_pick(const int64_t *heights, const int *counts,
+                           const bool *has_explicit, size_t ncand)
 {
     int best = -1;
     for (size_t c = 0; c < ncand; c++) {
@@ -506,19 +545,20 @@ static int bbf_quorum_pick(const int *counts, const bool *has_explicit,
             best = (int)c;
             continue;
         }
-        /* Higher count wins; a tie prefers an explicit-seed candidate so a lone
-         * operator-named seed is not shadowed by an equal-count non-explicit. */
+        if (heights[c] > heights[(size_t)best]) {
+            best = (int)c;
+            continue;
+        }
+        if (heights[c] < heights[(size_t)best])
+            continue;
+        /* Same height: higher count wins; a tie prefers an explicit-seed
+         * candidate so a lone operator-named seed is not shadowed by an
+         * equal-count non-explicit. */
         if (counts[c] > counts[best] ||
             (counts[c] == counts[best] && has_explicit[c] && !has_explicit[best]))
             best = (int)c;
     }
-    if (best < 0)
-        return -1;
-    if (counts[best] >= 2)
-        return best;
-    if (has_explicit[best])
-        return best;
-    return -1;
+    return best;
 }
 
 /* Tally one picked manifest into a candidate list, merging on a byte-identical
@@ -544,30 +584,76 @@ static void bbf_tally_cand(struct bbf_disc_cand *cands, size_t *ncand,
     }
 }
 
-/* Apply the quorum rule to a tallied candidate list. Returns true (and fills
- * *out) when a candidate wins; false = no quorum. */
+/* Apply the ranking to a tallied candidate list. Returns true (and fills *out)
+ * with the top candidate; false only when ncand == 0. */
 static bool bbf_quorum_winner(const struct bbf_disc_cand *cands, size_t ncand,
                               struct rom_fetch_manifest *out)
 {
+    int64_t heights[ROM_FETCH_MAX_WORKERS];
     int counts[ROM_FETCH_MAX_WORKERS];
     bool flags[ROM_FETCH_MAX_WORKERS];
-    for (size_t c = 0; c < ncand && c < ROM_FETCH_MAX_WORKERS; c++) {
+    if (ncand > ROM_FETCH_MAX_WORKERS)
+        ncand = ROM_FETCH_MAX_WORKERS;
+    for (size_t c = 0; c < ncand; c++) {
+        heights[c] = cands[c].m.height;
         counts[c] = cands[c].count;
         flags[c] = cands[c].has_explicit;
     }
-    int best = bbf_quorum_pick(counts, flags, ncand);
+    int best = bbf_quorum_pick(heights, counts, flags, ncand);
     if (best < 0)
         return false;
     *out = cands[best].m;
     return true;
 }
 
-/* One discovered directory: the required consensus bundle plus the optional
- * header-chain seed. */
+/* Rank a tallied candidate list into `out[]` (capacity `out_cap`), best first,
+ * by repeatedly selecting the current bbf_quorum_pick winner among the not-yet-
+ * emitted candidates. This is the bounded fallback list: the caller downloads
+ * the newest, and on a fetch/verify miss tries the next-highest before ever
+ * falling open to IBD (see bbf_quorum_pick's STEP 0 rationale). Returns the
+ * number written. O(n^2) over a list bounded by ROM_FETCH_MAX_WORKERS. */
+static size_t bbf_quorum_rank(const struct bbf_disc_cand *cands, size_t ncand,
+                              struct rom_fetch_manifest *out, size_t out_cap)
+{
+    if (ncand > ROM_FETCH_MAX_WORKERS)
+        ncand = ROM_FETCH_MAX_WORKERS;
+    bool taken[ROM_FETCH_MAX_WORKERS] = { false };
+    size_t nout = 0;
+    for (size_t rank = 0; rank < ncand && nout < out_cap; rank++) {
+        int64_t heights[ROM_FETCH_MAX_WORKERS];
+        int counts[ROM_FETCH_MAX_WORKERS];
+        bool flags[ROM_FETCH_MAX_WORKERS];
+        int map[ROM_FETCH_MAX_WORKERS];
+        size_t k = 0;
+        for (size_t c = 0; c < ncand; c++) {
+            if (taken[c])
+                continue;
+            heights[k] = cands[c].m.height;
+            counts[k] = cands[c].count;
+            flags[k] = cands[c].has_explicit;
+            map[k] = (int)c;
+            k++;
+        }
+        if (k == 0)
+            break;
+        int pick = bbf_quorum_pick(heights, counts, flags, k);
+        if (pick < 0)
+            break;
+        int src = map[pick];
+        out[nout++] = cands[src].m;
+        taken[src] = true;
+    }
+    return nout;
+}
+
+/* One discovered directory: the required consensus bundle(s) plus the optional
+ * header-chain seed. `bundles` is ranked newest-first (bbf_quorum_rank); the
+ * download tries them in order (bounded fallback to the next-highest on a
+ * fetch/verify miss). n_bundles == 0 means no usable bundle was advertised. */
 struct bbf_discovery {
-    struct rom_fetch_manifest bundle;
+    struct rom_fetch_manifest bundles[ROM_FETCH_MAX_WORKERS];
+    size_t n_bundles;
     struct rom_fetch_manifest header_seed;
-    bool have_bundle;
     bool have_header_seed;
 };
 
@@ -639,33 +725,46 @@ static bool bbf_discover_from_peers(const char *datadir,
     }
     free(body);
 
-    out->have_bundle = bbf_quorum_winner(bundle_cands, nbundle, &out->bundle);
-    if (!out->have_bundle) {
-        if (nbundle == 0) {
-            LOG_INFO(BBF_SUBSYS, "discovery: no reachable seed served a usable "
-                     "bundle manifest — skipping instant-on fetch");
-            bbf_record_discovery_outcome("no_quorum_fell_open_to_ibd", np,
-                                         responded);
-        } else {
-            LOG_WARN(BBF_SUBSYS, "discovery: only a lone non-explicit seed "
-                     "served a bundle manifest — refusing quorum=1 "
-                     "(bandwidth-DoS guard); falling back to P2P IBD");
-            bbf_record_discovery_outcome("degraded_single_seed", np,
-                                         responded);
-        }
+    out->n_bundles = bbf_quorum_rank(bundle_cands, nbundle, out->bundles,
+                                     ROM_FETCH_MAX_WORKERS);
+    if (out->n_bundles == 0) {
+        LOG_INFO(BBF_SUBSYS, "discovery: no reachable seed served a usable "
+                 "bundle manifest — skipping instant-on fetch");
+        bbf_record_discovery_outcome("no_quorum_fell_open_to_ibd", np,
+                                     responded);
         return false;
     }
 
     out->have_header_seed = bbf_quorum_winner(hs_cands, nhs, &out->header_seed);
 
-    LOG_INFO(BBF_SUBSYS, "discovery: bundle manifest quorum reached (size=%llu); "
-             "header-seed manifest %s — proceeding",
-             (unsigned long long)out->bundle.size_bytes,
-             out->have_header_seed ? "also reached quorum (headers arrive as an "
-             "artifact)" : "not advertised/quorum (header chain via P2P)");
-    bbf_record_discovery_outcome("reached", np, responded);
+    LOG_INFO(BBF_SUBSYS, "discovery: %zu bundle candidate(s) ranked "
+             "(newest height=%lld, size=%llu); header-seed manifest %s — "
+             "proceeding", out->n_bundles, (long long)out->bundles[0].height,
+             (unsigned long long)out->bundles[0].size_bytes,
+             out->have_header_seed ? "also advertised (headers arrive as an "
+             "artifact)" : "not advertised (header chain via P2P)");
 
-    if (!bbf_write_directory_hint(datadir, &out->bundle,
+    /* Outcome category under ranked discovery: proceeding on a >=2-seed
+     * byte-identical winner is "reached"; proceeding on a lone-seed winner is
+     * "degraded_single_seed" (no longer a refusal — trust binds at install,
+     * not at discovery; see bbf_quorum_pick's STEP 0 comment). */
+    {
+        int win_count = 0;
+        for (size_t c = 0; c < nbundle; c++) {
+            if (memcmp(bundle_cands[c].m.whole_sha3, out->bundles[0].whole_sha3,
+                       sizeof(out->bundles[0].whole_sha3)) == 0) {
+                win_count = bundle_cands[c].count;
+                break;
+            }
+        }
+        bbf_record_discovery_outcome(win_count >= 2 ? "reached"
+                                                    : "degraded_single_seed",
+                                     np, responded);
+    }
+
+    /* Persist the winning (newest) bundle + header seed as the local hint for a
+     * resume; a fetch/verify miss on it re-discovers the full ranked set. */
+    if (!bbf_write_directory_hint(datadir, &out->bundles[0],
                                   out->have_header_seed ? &out->header_seed
                                                         : NULL))
         LOG_WARN(BBF_SUBSYS, "discovery: could not persist the discovered "
@@ -739,11 +838,12 @@ bool boot_bundle_fetch_maybe(const char *datadir, const struct app_context *ctx)
 
     char *body = bbf_read_text_file(hint_path, BBF_DIRECTORY_JSON_MAX);
     if (body) {
-        disc.have_bundle = boot_bundle_pick_manifest(body, &disc.bundle);
+        if (boot_bundle_pick_manifest(body, &disc.bundles[0]))
+            disc.n_bundles = 1;
         disc.have_header_seed =
             boot_bundle_pick_header_seed_manifest(body, &disc.header_seed);
         free(body);
-        if (!disc.have_bundle && !disc.have_header_seed) {
+        if (disc.n_bundles == 0 && !disc.have_header_seed) {
             LOG_WARN(BBF_SUBSYS,
                      "manifest hint present at %s but no usable artifact "
                      "— skipping", hint_path);
@@ -776,8 +876,27 @@ bool boot_bundle_fetch_maybe(const char *datadir, const struct app_context *ctx)
         }
     }
 
-    if (bundle_needed && disc.have_bundle)
-        any = boot_bundle_fetch_download(datadir, peers, np, &disc.bundle) || any;
+    /* Bounded fallback: try the ranked bundle candidates newest-first, stopping
+     * at the first that lands (content-verified). A miss on the newest is not
+     * fatal — the next-highest is tried before boot falls open to IBD (STEP 0:
+     * the export is not cross-node deterministic, so a lone newest candidate is
+     * legitimate and must not be refused, but it also cannot be blindly trusted;
+     * a bad one just wastes one bounded fetch, and the install gate is the trust
+     * boundary either way). */
+    if (bundle_needed) {
+        for (size_t bi = 0; bi < disc.n_bundles; bi++) {
+            if (boot_bundle_fetch_download(datadir, peers, np,
+                                           &disc.bundles[bi])) {
+                any = true;
+                break;
+            }
+            if (bi + 1 < disc.n_bundles)
+                LOG_WARN(BBF_SUBSYS,
+                         "instant-on: bundle candidate height=%lld did not land "
+                         "— trying the next-highest of %zu candidate(s)",
+                         (long long)disc.bundles[bi].height, disc.n_bundles);
+        }
+    }
 
     return any;
 }
@@ -790,9 +909,9 @@ bool boot_bundle_manifest_facts_ok_for_test(const struct rom_fetch_manifest *m)
     return bbf_manifest_facts_ok(m);
 }
 
-int boot_bundle_quorum_pick_for_test(const int *counts, const bool *has_explicit,
-                                     size_t ncand)
+int boot_bundle_quorum_pick_for_test(const int64_t *heights, const int *counts,
+                                     const bool *has_explicit, size_t ncand)
 {
-    return bbf_quorum_pick(counts, has_explicit, ncand);
+    return bbf_quorum_pick(heights, counts, has_explicit, ncand);
 }
 #endif
