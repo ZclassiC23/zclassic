@@ -164,22 +164,22 @@ scope for every `core.*`/`ops.*` leaf is `local | dev | canonical | soak`
 |---|---|---|---|---|---|---|
 | `core.wallet.status` | `core wallet status` | ready | read / operator, cap `WALLET_REQUEST` | none | `zcl.wallet_status.v1` | Wallet summary and key counts |
 | `core.wallet.balance` | `core wallet balance` | ready | read / operator | none | `zcl.wallet_balance.v1` | Confirmed and total balance |
-| `core.wallet.address.new` | `core wallet address new` | **planned** | mutate / wallet / **owner** | none | `zcl.wallet_address.v1` | Derive and persist a new transparent address — *Wave 2.2* |
+| `core.wallet.address.new` | `core wallet address new` | ready | mutate / wallet / **owner** | none | `zcl.wallet_address.v1` | Derive and persist a new transparent address |
 | `core.wallet.address.list` | `core wallet address list` | ready | read / operator | none | `zcl.wallet_addresses.v1` | List transparent addresses |
-| `core.wallet.address.import` | `core wallet address import --address=<addr>` | **planned** | mutate / wallet / **owner** | **`address`** | `zcl.wallet_address.v1` | Import a watch-only address — *Wave 2.2* |
-| `core.wallet.address.export-key` | `core wallet address export-key --address=<addr>` | **planned** | read / **owner**, plan-commit | **`address`** | `zcl.wallet_privkey.v1` | Export the private key for an address — *owner-gated, Wave 2.2* |
+| `core.wallet.address.import` | `core wallet address import --address=<addr>` | ready | mutate / wallet / **owner** | **`address`** | `zcl.wallet_address.v1` | Import a watch-only address |
+| `core.wallet.address.export-key` | `core wallet address export-key --address=<addr>` | ready | read / **owner**, plan-commit | **`address`**, `confirm` | `zcl.wallet_privkey.v1` | Export the private key for an address — *reveals only on `confirm:true`* |
 | `core.wallet.utxo.list` | `core wallet utxo list` | ready | read / operator | none | `zcl.wallet_utxos.v1` | List spendable UTXOs |
 | `core.wallet.transaction.list` | `core wallet transaction list` | ready | read / operator | none | `zcl.wallet_tx_list.v1` | List recent wallet transactions |
 | `core.wallet.transaction.get` | `core wallet transaction get --txid=<hex>` | ready | read / operator | **`txid`** | `zcl.wallet_tx.v1` | Get one wallet transaction by id |
-| `core.wallet.transaction.send` | `core wallet transaction send --input='<obj>'` | **planned** | mutate / wallet / **owner**, plan-commit | `address,amount,idempotency_key` | `zcl.wallet_send.v1` | Build, sign, and broadcast a payment — *Wave 2.2 spend handshake* |
+| `core.wallet.transaction.send` | `core wallet transaction send --input='<obj>'` | ready | mutate / wallet / **owner**, plan-commit | `address,amount,idempotency_key,confirm` | `zcl.wallet_send.v1` | Build, sign, and broadcast a payment — *broadcasts only on `confirm:true`* |
 | `core.wallet.shielded.address` | `core wallet shielded address` | **planned** | mutate / wallet / **owner** | none | `zcl.shielded_address.v1` | Derive a new shielded address — *Wave 2.2* |
 | `core.wallet.shielded.balance` | `core wallet shielded balance --address=<zaddr>` | **planned** | read / operator | **`address`** | `zcl.shielded_balance.v1` | Shielded balance for one address — *Wave 2.2 arg mapping* |
 | `core.wallet.shielded.notes` | `core wallet shielded notes` | **planned** | read / operator | none | `zcl.shielded_notes.v1` | List spendable shielded notes — *Wave 2.2* |
-| `core.wallet.shielded.send` | `core wallet shielded send --input='<obj>'` | **planned** | mutate / wallet / **owner**, job, plan-commit | `from,to,amount,idempotency_key` | `zcl.shielded_send.v1` | Send a shielded payment (`z_sendmany`) — *Wave 2.2* |
+| `core.wallet.shielded.send` | `core wallet shielded send --input='<obj>'` | ready | mutate / wallet / **owner**, job, plan-commit | `from,to,amount,idempotency_key,confirm` | `zcl.shielded_send.v1` | Send a shielded payment (`z_sendmany`) — *broadcasts only on `confirm:true`* |
 | `core.wallet.backup.status` | `core wallet backup status` | ready | read / operator | none | `zcl.wallet_backup_status.v1` | Wallet backup freshness |
-| `core.wallet.backup.now` | `core wallet backup now` | **planned** | mutate / wallet / **owner**, idempotent | none | `zcl.wallet_backup.v1` | Take a wallet backup now — *Wave 2.2* |
+| `core.wallet.backup.now` | `core wallet backup now` | ready | mutate / wallet / **owner**, idempotent | none | `zcl.wallet_backup.v1` | Take a wallet backup now |
 | `core.wallet.audit` | `core wallet audit` | ready | read / operator | none | `zcl.wallet_audit.v1` | Audit wallet key/UTXO consistency (foreground) |
-| `core.wallet.rescan` | `core wallet rescan` | **planned** | mutate / wallet / **owner**, job | `start_height` | `zcl.wallet_rescan.v1` | Rescan the chain for wallet transactions — *Wave 2.2* |
+| `core.wallet.rescan` | `core wallet rescan` | ready | mutate / wallet / **owner**, job | `start_height` | `zcl.wallet_rescan.v1` | Rescan the chain for wallet transactions |
 | `core.wallet.replay` | `core wallet replay` | **planned** | mutate / wallet / **owner**, job | none | `zcl.wallet_replay.v1` | Replay wallet state from chain — *Wave 2.2* |
 
 ### `core.storage.*`, `core.mining.*`
