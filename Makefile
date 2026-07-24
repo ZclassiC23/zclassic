@@ -5292,6 +5292,18 @@ check-no-stale-pinned-facts:
 	@echo "══ LINT: no stale pinned facts (binary size / live-state height) ══"
 	@./tools/lint/check_no_stale_pinned_facts.sh
 
+# No UNCITED victory claim in the one live-state page (HARD). This repo shipped
+# 9+ "cured / at tip / fully synced" claims in six weeks, every one later false
+# (~103 "wedge FIXED" -> re-wedge cycles). A paragraph in docs/HANDOFF.md that
+# carries a victory phrase ("at tip", "cured", "wedge closed", "soak window
+# open", ...) must also carry a machine-checkable citation token (VERDICT=PASS,
+# gap_vs_oracle, uptime-ledger, a ts= stamp, slo-summary:, WALL_CLOCK_SECONDS)
+# or the explicit historical override <!-- victory-ok: <reason> -->. See
+# tools/scripts/check_no_uncited_victory.sh (has --selftest).
+check-no-uncited-victory:
+	@echo "══ LINT: no uncited victory claim (docs/HANDOFF.md) ══"
+	@./tools/scripts/check_no_uncited_victory.sh
+
 # Dev-UX: the DERIVED binary size (counterpart to the forbid gate above). Quote
 # this instead of hand-pinning a size in prose; a reviewer re-runs it to confirm.
 .PHONY: binary-size
@@ -5537,6 +5549,7 @@ LINT_GATES := \
     check-doc-accuracy \
     check-doc-counts \
     check-no-stale-pinned-facts \
+    check-no-uncited-victory \
     check-markdown-links \
     check-one-result-type \
     check-service-result-convergence \

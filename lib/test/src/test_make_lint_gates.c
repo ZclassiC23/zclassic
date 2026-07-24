@@ -95,6 +95,15 @@
     "lib/util/include/util/_dev_history_lint_fixture_tmp.h"
 #define NO_DEV_HISTORY_ALLOWLIST_FIXTURE_DST \
     "lib/util/include/util/_dev_history_lint_fixture_test.h"
+/* Gate — no UNCITED victory claim in docs/HANDOFF.md. The gate takes a
+ * scanned-doc override via ZCL_LINT_MODE (which run_gate_script's 2nd arg
+ * sets), so we point it at a planted fixture .md instead of the live page. */
+#define NO_UNCITED_VICTORY_SCRIPT_REL \
+    "tools/scripts/check_no_uncited_victory.sh"
+#define NO_UNCITED_VICTORY_FIXTURE_REL \
+    "test-tmp/_uncited_victory_fixture_tmp.md"
+#define NO_UNCITED_VICTORY_CITED_FIXTURE_REL \
+    "test-tmp/_uncited_victory_cited_fixture_tmp.md"
 
 static int run_gate_script(const char *script_rel, const char *mode);
 
@@ -8570,6 +8579,114 @@ static int t_no_dev_history_in_contracts(void)
     return failures;
 }
 
+/* check-no-uncited-victory — the one live-state page (docs/HANDOFF.md) may not
+ * carry a victory phrase ("at tip", "cured", "wedge closed", ...) without a
+ * machine-checkable citation token in the SAME paragraph. Exists because the
+ * repo shipped 9+ false "cured / at tip" claims in six weeks (~103 wedge-FIXED
+ * -> re-wedge cycles). Proof:
+ * (1) the clean tree passes (the real HANDOFF.md is citation-clean);
+ * (2) a planted fixture doc with an UNCITED victory paragraph trips the gate —
+ *     scanned via the ZCL_LINT_MODE doc-override run_gate_script supports;
+ * (3) a planted fixture doc whose victory paragraph carries a citation token
+ *     (VERDICT=PASS / gap_vs_oracle) passes;
+ * (4) removing the fixtures recovers green;
+ * (5) the gate is wired into the Makefile LINT_GATES list and documented in
+ *     DEFENSIVE_CODING.md's canonical block. */
+static int t_no_uncited_victory(void)
+{
+    int failures = 0;
+    char path[PATH_MAX];
+    char *makefile_buf = NULL;
+    char *doc_buf = NULL;
+
+    unlink_rel(NO_UNCITED_VICTORY_FIXTURE_REL);
+    unlink_rel(NO_UNCITED_VICTORY_CITED_FIXTURE_REL);
+
+    int baseline_rc = run_gate_script(NO_UNCITED_VICTORY_SCRIPT_REL, NULL);
+
+    /* Uncited victory: >= 10 lines (clears the hollow-gate floor) with a
+     * victory paragraph that carries no citation token. */
+    const char *uncited_body =
+        "# fixture handoff\n"
+        "\n"
+        "The node is at tip and fully synced now, all good.\n"
+        "No citation token appears in this paragraph, on purpose.\n"
+        "\n"
+        "Pad line one to clear the hollow-gate line floor.\n"
+        "Pad line two to clear the hollow-gate line floor.\n"
+        "Pad line three to clear the hollow-gate line floor.\n"
+        "Pad line four to clear the hollow-gate line floor.\n"
+        "Pad line five to clear the hollow-gate line floor.\n"
+        "Pad line six to clear the hollow-gate line floor.\n";
+
+    int uncited_planted =
+        (repo_path(path, sizeof(path), NO_UNCITED_VICTORY_FIXTURE_REL) == 0 &&
+         write_file(path, uncited_body) == 0) ? 0 : -1;
+    int trip_rc =
+        uncited_planted == 0
+            ? run_gate_script(NO_UNCITED_VICTORY_SCRIPT_REL,
+                              NO_UNCITED_VICTORY_FIXTURE_REL)
+            : -1;
+    unlink_rel(NO_UNCITED_VICTORY_FIXTURE_REL);
+
+    /* Cited victory: same victory phrase, but the paragraph carries citation
+     * tokens, so the gate must pass. */
+    const char *cited_body =
+        "# fixture handoff\n"
+        "\n"
+        "The soak run reached tip and held at tip: VERDICT=PASS,\n"
+        "gap_vs_oracle=0. This paragraph carries a citation token.\n"
+        "\n"
+        "Pad line one to clear the hollow-gate line floor.\n"
+        "Pad line two to clear the hollow-gate line floor.\n"
+        "Pad line three to clear the hollow-gate line floor.\n"
+        "Pad line four to clear the hollow-gate line floor.\n"
+        "Pad line five to clear the hollow-gate line floor.\n"
+        "Pad line six to clear the hollow-gate line floor.\n";
+
+    int cited_planted =
+        (repo_path(path, sizeof(path),
+                   NO_UNCITED_VICTORY_CITED_FIXTURE_REL) == 0 &&
+         write_file(path, cited_body) == 0) ? 0 : -1;
+    int cited_rc =
+        cited_planted == 0
+            ? run_gate_script(NO_UNCITED_VICTORY_SCRIPT_REL,
+                              NO_UNCITED_VICTORY_CITED_FIXTURE_REL)
+            : -1;
+    unlink_rel(NO_UNCITED_VICTORY_CITED_FIXTURE_REL);
+
+    int recover_rc = run_gate_script(NO_UNCITED_VICTORY_SCRIPT_REL, NULL);
+
+    int makefile_wired = 0;
+    if (repo_path(path, sizeof(path), "Makefile") == 0 &&
+        read_entire_file(path, &makefile_buf) == 0) {
+        makefile_wired =
+            strstr(makefile_buf, "check-no-uncited-victory:") != NULL &&
+            strstr(makefile_buf, "check-no-uncited-victory \\") != NULL;
+    }
+    int doc_wired = 0;
+    if (repo_path(path, sizeof(path), "docs/DEFENSIVE_CODING.md") == 0 &&
+        read_entire_file(path, &doc_buf) == 0) {
+        doc_wired = strstr(doc_buf, "check-no-uncited-victory") != NULL;
+    }
+
+    TEST("[lint-gate] check-no-uncited-victory: clean HANDOFF passes, uncited "
+         "victory fixture trips, cited fixture passes, recovers, wired") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(uncited_planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(cited_planted == 0);
+        ASSERT(cited_rc == 0);
+        ASSERT(recover_rc == 0);
+        ASSERT(makefile_wired);
+        ASSERT(doc_wired);
+        PASS();
+    } _test_next:;
+    free(makefile_buf);
+    free(doc_buf);
+    return failures;
+}
+
 /* ── Internal parallel runner for the make_lint_gates group ───────────────
  * Historically these ~100+ checks ran strictly serially, and the group ran
  * as an exclusive serial PRE-PASS (see group_requires_exclusive_repo in
@@ -8714,6 +8831,7 @@ static const struct lint_gate_entry g_lint_gate_entries[] = {
     R_(t_no_trust_state_ordering_gate),          /* git grep --untracked */
     S_(t_lint_gates_fail_loud_on_empty_scan),
     S_(t_no_dev_history_in_contracts),
+    S_(t_no_uncited_victory),
 };
 #undef S_
 #undef R_
