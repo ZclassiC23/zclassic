@@ -63,6 +63,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(test_png_writer) X(shared_validators_zcl_address) \
     X(script) X(net) X(netbase_split_host_port) X(transaction) X(mempool) X(accept_to_mempool) X(rpc) X(sqlite) \
     X(activerecord) X(validation) X(sapling_lazy_init) X(sapling) X(sapling_crypto) \
+    X(groth16_msm_parity) \
     X(bn254) X(merkle_tree) X(merkle_malleability) X(slp) X(models) X(core) X(overlay) X(znam) X(znam_site) X(zanc) X(htlc) \
     X(swap_settlement) \
     X(file_market) X(strong_params) X(json) X(robustness) X(wallet) \

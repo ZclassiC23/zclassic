@@ -63,6 +63,7 @@
  */
 
 #include "sapling/bls12_381.h"
+#include "util/log_level.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -539,6 +540,58 @@ static void build_corpus(void)
 /* ============================================================
  * Verdict computation — the current (frozen) verifier
  * ============================================================ */
+
+/* Verdict byte that can never equal a recorded ACCEPT(1)/REJECT(0), so an
+ * internal divergence always fails `check` even if the golden were stale. */
+#define VERDICT_DIVERGED 0xFF
+static int g_path_divergences;
+
+/* Run a verify/batch vector down BOTH public-input paths — the naive
+ * double-and-add and the precomputed fixed-base tables — and require the same
+ * verdict. The frozen golden only pins one number per vector, so without this
+ * the corpus would silently exercise whichever path the VK happened to carry;
+ * running both is what makes the gate bite on the optimization itself. */
+static uint8_t run_verify_both_paths(size_t idx)
+{
+    struct verify_payload *vp = &g_vpayload[idx];
+    bool batch = (g_vecs[idx].fam == FAM_BATCH);
+
+    vp->vk.ic_combs = NULL;
+    uint8_t naive = batch
+        ? (groth16_batch_verify(&vp->vk, vp->proof,
+                                (const uint64_t (*)[4])vp->inputs,
+                                vp->n_inputs, vp->n_proofs) ? 1 : 0)
+        : (groth16_verify(&vp->vk, &vp->proof[0],
+                          (const uint64_t (*)[4])vp->inputs,
+                          vp->n_inputs) ? 1 : 0);
+
+    if (!groth16_vk_build_combs(&vp->vk)) {
+        fprintf(stderr, "PARITY FAIL @%zu [%s]: build_combs failed\n",
+                idx, g_vecs[idx].label);
+        g_path_divergences++;
+        return VERDICT_DIVERGED;
+    }
+    uint8_t comb = batch
+        ? (groth16_batch_verify(&vp->vk, vp->proof,
+                                (const uint64_t (*)[4])vp->inputs,
+                                vp->n_inputs, vp->n_proofs) ? 1 : 0)
+        : (groth16_verify(&vp->vk, &vp->proof[0],
+                          (const uint64_t (*)[4])vp->inputs,
+                          vp->n_inputs) ? 1 : 0);
+    groth16_vk_free_combs(&vp->vk);
+
+    if (naive != comb) {
+        fprintf(stderr,
+                "PATH DIVERGENCE @%zu [%s]: naive=%u fixed-base=%u — the "
+                "optimized public-input path accepts a DIFFERENT set of "
+                "proofs = CONSENSUS BREAK\n",
+                idx, g_vecs[idx].label, naive, comb);
+        g_path_divergences++;
+        return VERDICT_DIVERGED;
+    }
+    return naive;
+}
+
 static uint8_t run_vector(size_t idx)
 {
     struct vec *v = &g_vecs[idx];
@@ -563,18 +616,9 @@ static uint8_t run_vector(size_t idx)
         struct groth16_proof gp;
         return groth16_proof_read(&gp, v->input) ? 1 : 0;
     }
-    case FAM_VERIFY: {
-        struct verify_payload *vp = &g_vpayload[idx];
-        return groth16_verify(&vp->vk, &vp->proof[0],
-                              (const uint64_t (*)[4])vp->inputs,
-                              vp->n_inputs) ? 1 : 0;
-    }
-    case FAM_BATCH: {
-        struct verify_payload *vp = &g_vpayload[idx];
-        return groth16_batch_verify(&vp->vk, vp->proof,
-                                    (const uint64_t (*)[4])vp->inputs,
-                                    vp->n_inputs, vp->n_proofs) ? 1 : 0;
-    }
+    case FAM_VERIFY:
+    case FAM_BATCH:
+        return run_verify_both_paths(idx);
     }
     return 0;
 }
@@ -735,8 +779,21 @@ int main(int argc, char **argv)
     snprintf(golden, sizeof(golden), "%s/groth16_parity_golden.bin", dir);
     snprintf(corpus, sizeof(corpus), "%s/groth16_decode_corpus.bin", dir);
 
+    /* Most vectors are SUPPOSED to be rejected, and every reject path logs.
+     * Silence the verifier's own logging so stderr carries only this harness's
+     * mismatch and divergence lines — which callers must be able to see. */
+    zcl_log_level_set(ZCL_LOG_OFF);
+
     build_corpus();
     run_all();
+
+    /* A divergence poisons every affected verdict, so refuse to freeze it. */
+    if (g_path_divergences && strcmp(mode, "list") != 0) {
+        fprintf(stderr,
+                "PARITY FAILED: %d naive-vs-fixed-base path divergence(s)\n",
+                g_path_divergences);
+        return 1;
+    }
 
     if (strcmp(mode, "record") == 0) {
         if (write_golden(golden) != 0) return 2;
@@ -755,7 +812,8 @@ int main(int argc, char **argv)
         if (read_golden_and_check(golden) != 0) rc = 1;
         if (check_decode_corpus(corpus) != 0) rc = 1;
         if (rc == 0)
-            printf("PARITY OK: %zu vectors, verdicts match frozen golden\n",
+            printf("PARITY OK: %zu vectors, verdicts match frozen golden "
+                   "(verify/batch vectors agree on both public-input paths)\n",
                    g_nvecs);
         else
             fprintf(stderr, "PARITY FAILED (see mismatches above)\n");

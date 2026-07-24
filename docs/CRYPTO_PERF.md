@@ -104,3 +104,31 @@ baseline in `tools/crypto_perf_baseline.csv` (and flip `behind`→`beat` once yo
 clear the margin). The ratchet then holds the new line forever.
 `run_parity_oracle.sh record` re-freezes the golden and is legitimate ONLY
 after a deliberate, full-history-replay-approved consensus change.
+
+## Landed: fixed-base public-input scalar-mul
+
+`vk_x = IC[0] + sum(input[i]*IC[i+1])` multiplies bases that are CONSTANT for
+the life of a verifying key, yet the naive path paid a full 256-bit
+double-and-add per non-zero input on every verify. `groth16_vk_build_combs()`
+precomputes a windowed table per IC point once at param load
+(`lib/sapling/src/params_init.c`), and each per-verify scalar-mul becomes 64
+table lookups plus adds with zero doublings. Tables are read-only after the
+build, so one VK stays shareable across verify threads.
+
+Measured with `make bench-groth16-comb ITERS=40` (7950X3D, `-O2 -march=x86-64-v3`,
+median of three runs — both paths timed in one process against the same key):
+
+| circuit | inputs | naive | fixed-base | speedup |
+|---|--:|--:|--:|--:|
+| sapling OUTPUT verify | 5 | 6.98 ms | 4.93 ms | 1.41x (-29%) |
+| sapling SPEND verify | 7 | 7.74 ms | 5.05 ms | 1.53x (-35%) |
+
+Cost: ~144 KiB of table per IC point (≈1.0 MB for the 7-input SPEND key), built
+once in ~9 ms. On allocation failure the naive path is kept — same verdicts,
+original speed. The remaining verify time is the four Miller loops plus the
+final exponentiation, which is where the next optimization has to go.
+
+The `tools/crypto_perf_baseline.csv` ratchet still carries the pre-optimization
+`groth16 output verify` number: shrinking it requires a `make
+check-crypto-perf` run against a full build with real params, not this
+micro-bench.

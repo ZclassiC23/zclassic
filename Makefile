@@ -3793,6 +3793,15 @@ check-crypto-perf: zclassic23
 check-groth16-parity:
 	@bash lib/test/differential/run_parity_oracle.sh check
 
+# Times the two public-input paths (naive double-and-add vs the precomputed
+# fixed-base tables) in ONE process against the same key, at the public-input
+# counts the Sapling SPEND (7) and OUTPUT (5) circuits actually use. Verdicts
+# are asserted equal every iteration, so a timing run can never report a
+# speedup that came from diverging.
+.PHONY: bench-groth16-comb
+bench-groth16-comb:
+	@bash lib/test/differential/run_parity_oracle.sh bench $(or $(ITERS),30)
+
 bench-regress: zclassic23
 	@ZCL_BENCH_COMMIT="$(BUILD_COMMIT)" $(ZCLASSIC23_BIN) -bench-regress
 
