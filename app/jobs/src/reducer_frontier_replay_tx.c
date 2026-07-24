@@ -17,6 +17,7 @@
 #include "primitives/block.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
+#include "storage/repair_marker.h"
 #include "utxo_apply_delta_internal.h"
 
 #include "core/uint256.h"
@@ -506,7 +507,7 @@ bool reducer_frontier_replay_stale_proof_tx(sqlite3 *db,
                                             int replay_first,
                                             int proof_cursor,
                                             int utxo_cursor,
-                                            const char *marker)
+                                            const struct uint256 *block_hash)
 {
     char *err = NULL;
     if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
@@ -531,7 +532,8 @@ bool reducer_frontier_replay_stale_proof_tx(sqlite3 *db,
         (rewind_coins &&
          !utxo_apply_frontier_set_in_tx(db, replay_first)) ||
         !stage_reducer_frontier_repair_marker_record_in_tx(
-            db, marker, "stale proof")) {
+            db, REPAIR_MARKER_KIND_RF_PROOF_REPLAY, height, block_hash,
+            "stale proof")) {
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
         return false;
     }

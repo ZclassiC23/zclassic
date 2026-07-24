@@ -44,6 +44,7 @@
 #include "crypto/sha3.h"
 #include "platform/clock.h"
 #include "storage/progress_store.h"
+#include "storage/repair_marker.h"
 #include "util/log_macros.h"
 
 #include <sqlite3.h>
@@ -51,22 +52,7 @@
 #include <stdio.h>
 #include <string.h>
 
-/* ── Record key / digest / codec ─────────────────────────────────── */
-
-bool coin_backfill_scan_record_key(char key[192], int hole_height,
-                                   const struct uint256 *hole_hash)
-{
-    if (!key || !hole_hash)
-        LOG_FAIL("stage_repair", "[coin_backfill] scan record key: NULL input");
-    char hex[65];
-    uint256_get_hex(hole_hash, hex);
-    int n = snprintf(key, 192, "coin_backfill.scan.%d.%s", hole_height, hex);
-    if (n <= 0 || n >= 192)
-        LOG_FAIL("stage_repair",
-                 "[coin_backfill] scan record key overflow hole=%d",
-                 hole_height);
-    return true;
-}
+/* ── Record digest / codec ─────────────────────────────────────────── */
 
 static int outpoint_set_entry_cmp(const struct coin_backfill_outpoint *a,
                                   const struct coin_backfill_outpoint *b)
@@ -132,16 +118,14 @@ bool coin_backfill_scan_record_load(struct sqlite3 *db, int hole_height,
     *found = false;
     memset(rec, 0, sizeof(*rec));
 
-    char key[192];
-    if (!coin_backfill_scan_record_key(key, hole_height, hole_hash))
-        return false; /* logged in helper */
-
     uint8_t buf[COIN_BACKFILL_SCAN_REC_PENDING_LEN];
     size_t len = 0;
     bool present = false;
-    if (!progress_meta_get(db, key, buf, sizeof(buf), &len, &present))
+    if (!repair_marker_have(db, REPAIR_MARKER_KIND_COIN_BACKFILL_SCAN,
+                            hole_height, hole_hash->data, &present,
+                            buf, sizeof(buf), &len))
         LOG_FAIL("stage_repair",
-                 "[coin_backfill] scan record read failed key=%s", key);
+                 "[coin_backfill] scan record read failed h=%d", hole_height);
     if (!present)
         return true;
 
@@ -152,9 +136,9 @@ bool coin_backfill_scan_record_load(struct sqlite3 *db, int hole_height,
     if (len != COIN_BACKFILL_SCAN_REC_BASE_LEN && !clean_form && !pending_form) {
         /* Malformed: treated as absent so the scan restarts from floor. */
         LOG_WARN("stage_repair",
-                 "[coin_backfill] scan record malformed key=%s len=%zu; "
+                 "[coin_backfill] scan record malformed h=%d len=%zu; "
                  "treating as absent (restart from floor)",
-                 key, len);
+                 hole_height, len);
         return true;
     }
 
@@ -174,7 +158,8 @@ bool coin_backfill_scan_record_load(struct sqlite3 *db, int hole_height,
     return true;
 }
 
-static bool scan_record_store(struct sqlite3 *db, const char *key,
+static bool scan_record_store(struct sqlite3 *db, int hole_height,
+                              const struct uint256 *hole_hash,
                               int32_t next_height, int32_t frontier_at_start,
                               const struct uint256 *lineage,
                               const uint8_t set_digest[32],
@@ -191,12 +176,13 @@ static bool scan_record_store(struct sqlite3 *db, const char *key,
     size_t len = COIN_BACKFILL_SCAN_REC_BASE_LEN;
     if (clean && pending_spent)
         LOG_FAIL("stage_repair",
-                 "[coin_backfill] scan record store: clean+pending key=%s", key);
+                 "[coin_backfill] scan record store: clean+pending h=%d",
+                 hole_height);
     if (clean) {
         if (!top_hash)
             LOG_FAIL("stage_repair",
                      "[coin_backfill] scan record store: CLEAN without "
-                     "top_hash key=%s", key);
+                     "top_hash h=%d", hole_height);
         memcpy(rec + 72, top_hash->data, 32);
         rec[COIN_BACKFILL_SCAN_REC_CLEAN_LEN - 1] = 1;
         len = COIN_BACKFILL_SCAN_REC_CLEAN_LEN;
@@ -204,16 +190,17 @@ static bool scan_record_store(struct sqlite3 *db, const char *key,
         if (!spender_txid || spent_height < 0)
             LOG_FAIL("stage_repair",
                      "[coin_backfill] scan record store: bad pending spend "
-                     "key=%s height=%d", key, (int)spent_height);
+                     "h=%d height=%d", hole_height, (int)spent_height);
         WriteLE32(rec + 72, (uint32_t)spent_height);
         memcpy(rec + 76, spender_txid, 32);
         rec[COIN_BACKFILL_SCAN_REC_PENDING_LEN - 1] = 2;
         len = COIN_BACKFILL_SCAN_REC_PENDING_LEN;
     }
-    if (!progress_meta_set(db, key, rec, len))
+    if (!repair_marker_note(db, REPAIR_MARKER_KIND_COIN_BACKFILL_SCAN,
+                            hole_height, hole_hash->data, rec, len))
         LOG_FAIL("stage_repair",
-                 "[coin_backfill] scan record write failed key=%s next=%d",
-                 key, next_height);
+                 "[coin_backfill] scan record write failed h=%d next=%d",
+                 hole_height, next_height);
     return true;
 }
 
@@ -289,8 +276,9 @@ static bool block_spends_set(const struct block *blk,
  * each restart requires an actual lineage break (a reorg event); refusal
  * markers upstream stop rescans for terminal refusals. */
 static enum coin_backfill_scan_verdict scan_restart_from_floor(
-    struct sqlite3 *db, const struct coin_backfill_io *io, const char *key,
-    int hole_height, int floor_height, int32_t frontier_at_start,
+    struct sqlite3 *db, const struct coin_backfill_io *io,
+    int hole_height, const struct uint256 *hole_hash,
+    int floor_height, int32_t frontier_at_start,
     const uint8_t set_digest[32], const char *reason, int at_height,
     int *out_next_height)
 {
@@ -298,9 +286,10 @@ static enum coin_backfill_scan_verdict scan_restart_from_floor(
              "[coin_backfill] scan chain_rebound hole=%d at h=%d (%s): "
              "discarding record, restarting from floor=%d",
              hole_height, at_height, reason, floor_height);
-    if (!progress_meta_delete(db, key)) {
+    if (!repair_marker_forget(db, REPAIR_MARKER_KIND_COIN_BACKFILL_SCAN,
+                              hole_height, hole_hash->data)) {
         LOG_WARN("stage_repair",
-                 "[coin_backfill] scan record delete failed key=%s", key);
+                 "[coin_backfill] scan record delete failed h=%d", hole_height);
         return COIN_SCAN_GAP;
     }
     struct uint256 seed;
@@ -309,8 +298,9 @@ static enum coin_backfill_scan_verdict scan_restart_from_floor(
         *out_next_height = floor_height;
         return COIN_SCAN_GAP;
     }
-    if (!scan_record_store(db, key, floor_height, frontier_at_start, &seed,
-                           set_digest, false, NULL, false, -1, NULL))
+    if (!scan_record_store(db, hole_height, hole_hash, floor_height,
+                           frontier_at_start, &seed, set_digest, false, NULL,
+                           false, -1, NULL))
         return COIN_SCAN_GAP; /* logged in helper */
     *out_next_height = floor_height;
     return COIN_SCAN_CHAIN_REBOUND;
@@ -360,13 +350,9 @@ enum coin_backfill_scan_verdict coin_backfill_scan_step(
                    frontier_at_start, hole_height,
                    hole_height - frontier_at_start + 1, max_blocks);
 
-    if (!progress_meta_table_ensure(db))
+    if (!progress_meta_table_ensure(db) || !repair_marker_table_ensure(db))
         LOG_RETURN(COIN_SCAN_GAP, "stage_repair",
-                   "[coin_backfill] scan: progress_meta ensure failed");
-
-    char key[192];
-    if (!coin_backfill_scan_record_key(key, hole_height, hole_hash))
-        return COIN_SCAN_GAP; /* logged in helper */
+                   "[coin_backfill] scan: table ensure failed");
 
     uint8_t set_digest[32];
     if (!coin_backfill_scan_set_digest(set, n, set_digest))
@@ -476,9 +462,9 @@ enum coin_backfill_scan_verdict coin_backfill_scan_step(
                 LOG_RETURN(COIN_SCAN_GAP, "stage_repair",
                            "[coin_backfill] scan checkpoint without top "
                            "hash h=%d (programming error)", h);
-            if (!scan_record_store(db, key, persist_next, frontier_at_start,
-                                   pl, set_digest, false, NULL,
-                                   pending_spent, pending_spent_height,
+            if (!scan_record_store(db, hole_height, hole_hash, persist_next,
+                                   frontier_at_start, pl, set_digest, false,
+                                   NULL, pending_spent, pending_spent_height,
                                    pending_spent ? pending_spender_txid : NULL))
                 return COIN_SCAN_GAP; /* logged in helper */
             char lin_hex[65];
@@ -503,9 +489,9 @@ enum coin_backfill_scan_verdict coin_backfill_scan_step(
                 pl = &lineage;
             }
             if (h <= top_height || have_top || pending_spent)
-                (void)scan_record_store(db, key, persist_next,
-                                        frontier_at_start, pl, set_digest,
-                                        false, NULL, pending_spent,
+                (void)scan_record_store(db, hole_height, hole_hash,
+                                        persist_next, frontier_at_start, pl,
+                                        set_digest, false, NULL, pending_spent,
                                         pending_spent_height,
                                         pending_spent ? pending_spender_txid
                                                       : NULL); /* failure logged */
@@ -520,7 +506,7 @@ enum coin_backfill_scan_verdict coin_backfill_scan_step(
 
         if (uint256_cmp(&blk.header.hashPrevBlock, &lineage) != 0) {
             block_free(&blk);
-            return scan_restart_from_floor(db, io, key, hole_height,
+            return scan_restart_from_floor(db, io, hole_height, hole_hash,
                                            floor_height, frontier_at_start,
                                            set_digest, "prev-link mismatch",
                                            h, out_next_height);
@@ -556,8 +542,9 @@ enum coin_backfill_scan_verdict coin_backfill_scan_step(
          * hash: the hole block itself was reorged (or the row is stale).
          * Not CLEAN — restart; G3 upstream refuses a permanently stale
          * hole row. */
-        return scan_restart_from_floor(db, io, key, hole_height, floor_height,
-                                       frontier_at_start, set_digest,
+        return scan_restart_from_floor(db, io, hole_height, hole_hash,
+                                       floor_height, frontier_at_start,
+                                       set_digest,
                                        "terminal hash(H) != hole hash",
                                        hole_height, out_next_height);
     }
@@ -567,9 +554,11 @@ enum coin_backfill_scan_verdict coin_backfill_scan_step(
                    "(programming error)", hole_height);
 
     if (pending_spent) {
-        if (!progress_meta_delete(db, key))
+        if (!repair_marker_forget(db, REPAIR_MARKER_KIND_COIN_BACKFILL_SCAN,
+                                  hole_height, hole_hash->data))
             LOG_WARN("stage_repair",
-                     "[coin_backfill] scan record delete failed key=%s", key);
+                     "[coin_backfill] scan record delete failed h=%d",
+                     hole_height);
         memcpy(out_spender_txid, pending_spender_txid, 32);
         *out_spent_height = pending_spent_height;
         *out_next_height = pending_spent_height;
@@ -584,9 +573,9 @@ enum coin_backfill_scan_verdict coin_backfill_scan_step(
         return COIN_SCAN_SPENT_FOUND;
     }
 
-    if (!scan_record_store(db, key, hole_height + 1, frontier_at_start,
-                           &lineage, set_digest, true, &top_hash,
-                           false, -1, NULL))
+    if (!scan_record_store(db, hole_height, hole_hash, hole_height + 1,
+                           frontier_at_start, &lineage, set_digest, true,
+                           &top_hash, false, -1, NULL))
         return COIN_SCAN_GAP; /* logged in helper */
 
     char top_hex[65];

@@ -109,9 +109,8 @@
 bool find_lowest_prevout_unresolved_hole_unlocked(
     struct sqlite3 *db, int cursor, const char *wanted_status, int *out_height,
     char status_out[32], struct uint256 *hash_out, bool *hash_found);
-bool coin_backfill_key_h_hash(char out[192], const char *prefix, int height,
-                              const struct uint256 *hash);
-bool coin_backfill_refusal_marker_read(struct sqlite3 *db, const char *key,
+bool coin_backfill_refusal_marker_read(struct sqlite3 *db, int height,
+                                       const struct uint256 *hash,
                                        bool *out_active,
                                        bool *out_legacy_spent,
                                        bool *out_legacy_txindex_miss);
@@ -169,20 +168,17 @@ bool block_index_loader_torn_import_detect(struct main_state *ms,
             progress_db, (int)ceiling + 1, "prevout_unresolved", &hole_h,
             hole_status, &hole_hash, &hole_hash_found);
         hole_found = (hole_h > 0);
-        /* (3) require coin_backfill's durable refusal of THIS hole. The key is
-         * built from the hole's own block_hash (captured by the helper) — the
-         * exact key the producer writes. A hole the helper could not hash-bind
+        /* (3) require coin_backfill's durable refusal of THIS hole, keyed by
+         * the hole's own (height, block_hash) in the repair_marker table — the
+         * exact row the producer writes. A hole the helper could not hash-bind
          * (hole_hash_found false) cannot be matched to a refusal marker, so it
          * never fires. */
         if (hole_found && hole_hash_found) {
-            char refused_key[192];
             bool legacy_spent = false;
             bool legacy_txindex_miss = false;
-            if (coin_backfill_key_h_hash(refused_key, "coin_backfill.refused",
-                                         hole_h, &hole_hash))
-                (void)coin_backfill_refusal_marker_read(
-                    progress_db, refused_key, &backfill_refused,
-                    &legacy_spent, &legacy_txindex_miss);
+            (void)coin_backfill_refusal_marker_read(
+                progress_db, hole_h, &hole_hash, &backfill_refused,
+                &legacy_spent, &legacy_txindex_miss);
             if (legacy_spent || legacy_txindex_miss) {
                 LOG_WARN("torn_gate",
                          "ignoring legacy coin_backfill refusal marker h=%d; "

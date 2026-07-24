@@ -26,6 +26,7 @@
 #include "services/block_index_loader.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
+#include "storage/repair_marker.h"
 #include "event/event.h"
 #include "util/blocker.h"
 
@@ -484,6 +485,23 @@ static int cb_meta_count_like(sqlite3 *db, const char *pattern)
     return v;
 }
 
+/* Count repair_marker rows of a given kind (the coin_backfill.refused /
+ * coin_backfill.scan namespaces now live there, not in progress_meta). */
+static int cb_marker_count(sqlite3 *db, const char *kind)
+{
+    sqlite3_stmt *st = NULL;
+    int v = -1;
+    if (sqlite3_prepare_v2(db,
+            "SELECT COUNT(*) FROM repair_marker WHERE kind = ?",
+            -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(st, 1, kind, -1, SQLITE_STATIC);
+        if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:test-readback
+            v = sqlite3_column_int(st, 0);
+    }
+    sqlite3_finalize(st);
+    return v;
+}
+
 static bool cb_put_script_row(sqlite3 *db, int height, const char *status,
                               int ok_flag, const struct uint256 *hash)
 {
@@ -581,20 +599,23 @@ static bool cb_tamper_scan_digest(sqlite3 *db)
 {
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
-            "SELECT key, value FROM progress_meta "
-            "WHERE key LIKE 'coin_backfill.scan.%' LIMIT 1",
+            "SELECT height, hash, payload FROM repair_marker "
+            "WHERE kind = 'coin_backfill.scan' LIMIT 1",
             -1, &st, NULL) != SQLITE_OK)
         return false;
     bool ok = false;
-    char key[192] = {0};
+    int64_t height = 0;
+    uint8_t hash[32] = {0};
     uint8_t buf[256];
     size_t len = 0;
     if (sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:test-readback
-        const unsigned char *k = sqlite3_column_text(st, 0);
-        const void *v = sqlite3_column_blob(st, 1);
-        int vl = sqlite3_column_bytes(st, 1);
-        if (k && v && vl > 45 && vl <= (int)sizeof(buf)) {
-            snprintf(key, sizeof(key), "%s", (const char *)k);
+        height = sqlite3_column_int64(st, 0);
+        const void *h = sqlite3_column_blob(st, 1);
+        int hl = sqlite3_column_bytes(st, 1);
+        const void *v = sqlite3_column_blob(st, 2);
+        int vl = sqlite3_column_bytes(st, 2);
+        if (h && hl == 32 && v && vl > 45 && vl <= (int)sizeof(buf)) {
+            memcpy(hash, h, 32);
             memcpy(buf, v, (size_t)vl);
             len = (size_t)vl;
             ok = true;
@@ -604,7 +625,8 @@ static bool cb_tamper_scan_digest(sqlite3 *db)
     if (!ok)
         return false;
     buf[45] ^= 0x5a;   /* inside set_digest [40..71] */
-    return progress_meta_set(db, key, buf, len);
+    return repair_marker_note(db, REPAIR_MARKER_KIND_COIN_BACKFILL_SCAN,
+                              height, hash, buf, len);
 }
 
 /* ── Fixture ───────────────────────────────────────────────────────── */
@@ -810,13 +832,26 @@ static bool cb_is_refusal(int status)
            status == COIN_BACKFILL_MARKER_SEEN;
 }
 
-static bool cb_refused_key(struct cbf *fx, char out[192])
+/* Seed / read the coin_backfill.refused repair_marker for the CB_HOLE hole. */
+static bool cb_refused_seed(struct cbf *fx, const void *val, size_t len)
 {
-    char hhex[65];
-    uint256_get_hex(&fx->chain.hashes[CB_HOLE], hhex);
-    int n = snprintf(out, 192, "coin_backfill.refused.%d.%s", CB_HOLE,
-                     hhex);
-    return n > 0 && n < 192;
+    return repair_marker_note(fx->db, REPAIR_MARKER_KIND_COIN_BACKFILL_REFUSED,
+                              CB_HOLE, fx->chain.hashes[CB_HOLE].data, val, len);
+}
+
+static bool cb_refused_have(struct cbf *fx, void *buf, size_t cap,
+                            size_t *len, bool *present)
+{
+    return repair_marker_have(fx->db, REPAIR_MARKER_KIND_COIN_BACKFILL_REFUSED,
+                              CB_HOLE, fx->chain.hashes[CB_HOLE].data, present,
+                              buf, cap, len);
+}
+
+/* Plant a raw coin_backfill.scan record payload for the CB_HOLE hole. */
+static bool cb_scan_seed(struct cbf *fx, const void *val, size_t len)
+{
+    return repair_marker_note(fx->db, REPAIR_MARKER_KIND_COIN_BACKFILL_SCAN,
+                              CB_HOLE, fx->chain.hashes[CB_HOLE].data, val, len);
 }
 
 static enum coin_backfill_scan_verdict cb_scan(
@@ -907,7 +942,7 @@ static int cb_case_happy(void)
         det.inserted_count == 0);
     CBT("happy: detect writes nothing",
         coins_kv_count(fx->db) == coins_before &&
-        cb_meta_count_like(fx->db, "coin_backfill.scan.%") == 0);
+        cb_marker_count(fx->db, "coin_backfill.scan") == 0);
 
     /* Multi-chunk chain-bound scan through the internal seam: max_blocks=3
      * over [5..13] forces several persisted-record resumes. */
@@ -936,7 +971,7 @@ static int cb_case_happy(void)
     CBT("happy: scan progressed over >= 2 chunks, cursor monotonic",
         ip_count >= 2 && monotonic);
     CBT("happy: scan record persisted while in flight",
-        cb_meta_count_like(fx->db, "coin_backfill.scan.%") == 1);
+        cb_marker_count(fx->db, "coin_backfill.scan") == 1);
 
     /* Apply: the CLEAN proof is consumed by the insert transaction. */
     struct coin_backfill_result res;
@@ -983,7 +1018,7 @@ static int cb_case_happy(void)
         progress_meta_get(fx->db, op_key, blob, sizeof(blob), &blen, &found) &&
         found);
     CBT("happy: scan record consumed",
-        cb_meta_count_like(fx->db, "coin_backfill.scan.%") == 0);
+        cb_marker_count(fx->db, "coin_backfill.scan") == 0);
 
     /* Cursors and logs untouched; tip_finalize_log rows never deleted. */
     CBT("happy: cursors untouched",
@@ -1074,16 +1109,13 @@ static int cb_case_spent(void)
         coins_kv_count(fx->db) == coins_before &&
         !cb_coin_present(fx->db, fx, CB_CREATOR, 1, 0));
     CBT("spent: refusal marker written",
-        cb_meta_count_like(fx->db, "coin_backfill.refused.%") == 1);
+        cb_marker_count(fx->db, "coin_backfill.refused") == 1);
     {
-        char key[192];
         uint8_t blob[16] = {0};
         size_t blen = 0;
         bool present = false;
-        CBT("spent: refused key built", cb_refused_key(fx, key));
         CBT("spent: marker value is terminal-linkage v2",
-            progress_meta_get(fx->db, key, blob, sizeof(blob), &blen,
-                              &present) &&
+            cb_refused_have(fx, blob, sizeof(blob), &blen, &present) &&
             present && blen == 8 && memcmp(blob, "spent:v2", 8) == 0);
     }
 
@@ -1182,10 +1214,8 @@ static int cb_case_legacy_spent_marker_reproved(void)
         cb_setup(fx, "legacy_spent_marker", 22, CBV_TA0, CB_TA0_VALUE,
                  false, true));
 
-    char key[192];
-    CBT("legacy_spent_marker: refused key built", cb_refused_key(fx, key));
     CBT("legacy_spent_marker: seed old unsafe marker",
-        progress_meta_set(fx->db, key, "spent", 5));
+        cb_refused_seed(fx, "spent", 5));
 
     int64_t coins_before = coins_kv_count(fx->db);
     struct coin_backfill_result res;
@@ -1195,7 +1225,7 @@ static int cb_case_legacy_spent_marker_reproved(void)
     CBT("legacy_spent_marker: coin inserted and marker deleted",
         coins_kv_count(fx->db) == coins_before + 1 &&
         cb_coin_present(fx->db, fx, CB_CREATOR, 1, 0) &&
-        cb_meta_count_like(fx->db, "coin_backfill.refused.%") == 0);
+        cb_marker_count(fx->db, "coin_backfill.refused") == 0);
 
     cb_teardown(fx);
     free(fx);
@@ -1214,10 +1244,8 @@ static int cb_case_legacy_txindex_miss_marker_reproved(void)
         cb_setup(fx, "legacy_txidx_marker", 23, CBV_TA0, CB_TA0_VALUE,
                  false, true));
 
-    char key[192];
-    CBT("legacy_txidx_marker: refused key built", cb_refused_key(fx, key));
     CBT("legacy_txidx_marker: seed old unsafe marker",
-        progress_meta_set(fx->db, key, "txindex_miss", 12));
+        cb_refused_seed(fx, "txindex_miss", 12));
 
     const struct transaction *ta = cb_tx_at(&fx->chain, CB_CREATOR);
     CBT("legacy_txidx_marker: delete stale projection tx row",
@@ -1231,7 +1259,7 @@ static int cb_case_legacy_txindex_miss_marker_reproved(void)
     CBT("legacy_txidx_marker: coin inserted and marker deleted",
         coins_kv_count(fx->db) == coins_before + 1 &&
         cb_coin_present(fx->db, fx, CB_CREATOR, 1, 0) &&
-        cb_meta_count_like(fx->db, "coin_backfill.refused.%") == 0);
+        cb_marker_count(fx->db, "coin_backfill.refused") == 0);
 
     cb_teardown(fx);
     free(fx);
@@ -1352,7 +1380,7 @@ static int cb_case_txindex_miss_persistence(void)
         st == COIN_BACKFILL_REPAIRED && res.inserted_count == 1 &&
         coins_kv_count(fx->db) == coins_before + 1);
     CBT("txidx_hint: no durable refusal marker",
-        cb_meta_count_like(fx->db, "coin_backfill.refused.%") == 0);
+        cb_marker_count(fx->db, "coin_backfill.refused") == 0);
 
     cb_teardown(fx);
     free(fx);
@@ -1377,7 +1405,7 @@ static int cb_case_txindex_miss_persistence(void)
         strstr(res.refuse_reason, "txindex_miss") != NULL &&
         res.inserted_count == 0 && coins_kv_count(fx->db) == coins_before);
     CBT("txidx_miss: incomplete txindex => NO durable marker (retryable)",
-        cb_meta_count_like(fx->db, "coin_backfill.refused.%") == 0);
+        cb_marker_count(fx->db, "coin_backfill.refused") == 0);
 
     /* (b) TERMINAL: mark txindex complete (>= 3). The same miss is now a
      * proven-absent creator → REFUSED_UNPROVABLE AND a durable marker. */
@@ -1388,21 +1416,15 @@ static int cb_case_txindex_miss_persistence(void)
         st == COIN_BACKFILL_REFUSED_UNPROVABLE &&
         strstr(res.refuse_reason, "txindex_miss") != NULL);
     CBT("txidx_miss: complete txindex => durable marker persisted (terminal)",
-        cb_meta_count_like(fx->db, "coin_backfill.refused.%") == 1);
+        cb_marker_count(fx->db, "coin_backfill.refused") == 1);
 
-    /* The persisted marker keys on the HOLE (h, hash), exactly the key the
-     * boot gate reads via coin_backfill_meta_present. Verify presence. */
-    char refused_key[192];
+    /* The persisted marker keys on the HOLE (height, hash), exactly the row the
+     * boot gate reads via coin_backfill_refusal_marker_read. Verify presence. */
     bool present = false;
     uint8_t blob[32];
     size_t blen = 0;
-    char hex[65];
-    uint256_get_hex(&fx->chain.hashes[CB_HOLE], hex);
-    snprintf(refused_key, sizeof(refused_key), "coin_backfill.refused.%d.%s",
-             CB_HOLE, hex);
     CBT("txidx_miss: marker keyed on (hole_h, hole_hash)",
-        progress_meta_get(fx->db, refused_key, blob, sizeof(blob), &blen,
-                          &present) && present);
+        cb_refused_have(fx, blob, sizeof(blob), &blen, &present) && present);
     CBT("txidx_miss: marker value is active-chain-vetted v2",
         present && blen == 15 && memcmp(blob, "txindex_miss:v2", 15) == 0);
     CBT("txidx_miss: still zero coin writes",
@@ -1440,7 +1462,7 @@ static int cb_case_txindex_stale_row_fallback(void)
         coins_kv_count(fx->db) == coins_before + 1 &&
         cb_coin_present(fx->db, fx, CB_CREATOR, 1, 0));
     CBT("txidx_stale_row: no durable refusal marker",
-        cb_meta_count_like(fx->db, "coin_backfill.refused.%") == 0);
+        cb_marker_count(fx->db, "coin_backfill.refused") == 0);
 
     cb_teardown(fx);
     free(fx);
@@ -1470,7 +1492,7 @@ static int cb_case_creator_body_unreadable_retryable(void)
         res.inserted_count == 0 &&
         coins_kv_count(fx->db) == coins_before);
     CBT("creator_gap: no durable marker while body is missing",
-        cb_meta_count_like(fx->db, "coin_backfill.refused.%") == 0);
+        cb_marker_count(fx->db, "coin_backfill.refused") == 0);
 
     fx->chain.missing[CB_CREATOR] = false;
     st = cb_try_until(fx, &res);
@@ -1506,7 +1528,7 @@ static int cb_case_node_db_unavailable_no_persist(void)
         strstr(res.refuse_reason, "node_db_unavailable") != NULL &&
         res.inserted_count == 0 && coins_kv_count(fx->db) == coins_before);
     CBT("ndb_gone: NO durable marker (retryable infra gap)",
-        cb_meta_count_like(fx->db, "coin_backfill.refused.%") == 0);
+        cb_marker_count(fx->db, "coin_backfill.refused") == 0);
 
     cb_teardown(fx);
     free(fx);
@@ -1573,7 +1595,7 @@ static int cb_case_gate_fires_on_real_marker(void)
     CBT("gate_e2e: real path refuses txindex_miss + persists marker",
         st == COIN_BACKFILL_REFUSED_UNPROVABLE &&
         strstr(res.refuse_reason, "txindex_miss") != NULL &&
-        cb_meta_count_like(fx->db, "coin_backfill.refused.%") == 1);
+        cb_marker_count(fx->db, "coin_backfill.refused") == 1);
 
     /* Now the gate FIRES on that real-path marker (window: hole 16 in
      * (15, 16]; status prevout_unresolved; durable marker present). */
@@ -1675,7 +1697,7 @@ static int cb_case_multi_coin(void)
         cb_meta_count_like(fx->db,
                            "utxo_apply.coin_backfill.outpoint.%") == 2);
     CBT("multi: the single scan record was consumed by the insert",
-        cb_meta_count_like(fx->db, "coin_backfill.scan.%") == 0);
+        cb_marker_count(fx->db, "coin_backfill.scan") == 0);
 
     st = cb_try_until(fx, &res);
     CBT("multi: re-run is NOT_APPLICABLE",
@@ -1713,7 +1735,7 @@ static int cb_case_resume_integrity(void)
     CBT("resume: cursor persists and advances across calls",
         v1 == COIN_SCAN_IN_PROGRESS && v2 == COIN_SCAN_IN_PROGRESS &&
         next2 > next1 &&
-        cb_meta_count_like(fx->db, "coin_backfill.scan.%") == 1);
+        cb_marker_count(fx->db, "coin_backfill.scan") == 1);
 
     /* Tampered set digest -> restart from floor. */
     CBT("resume: tamper persisted set digest", cb_tamper_scan_digest(fx->db));
@@ -1728,16 +1750,11 @@ static int cb_case_resume_integrity(void)
      * from floor, never decoded, never CLEAN on that call. With
      * max_blocks=3 a from-floor restart checkpoints at exactly floor+3,
      * the observable proof the resume cursor was discarded. */
-    char scan_key[192];
-    char hole_hex[65];
-    uint256_get_hex(&fx->chain.hashes[CB_HOLE], hole_hex);
-    snprintf(scan_key, sizeof(scan_key), "coin_backfill.scan.%d.%s",
-             CB_HOLE, hole_hex);
     uint8_t junk[105];   /* 105 == the record's CLEAN length */
     memset(junk, 0xC3, sizeof(junk));
     int next4 = -1;
     CBT("resume: plant 50-byte garbage record",
-        progress_meta_set(fx->db, scan_key, junk, 50));
+        cb_scan_seed(fx, junk, 50));
     enum coin_backfill_scan_verdict v4 =
         cb_scan(fx, &fx->chain.hashes[CB_HOLE], set, 1, CB_CREATOR, CB_TOP,
                 CB_FRONTIER, 3, &next4, &spent, spender);
@@ -1749,7 +1766,7 @@ static int cb_case_resume_integrity(void)
     junk[104] = 0;
     int next5 = -1;
     CBT("resume: plant 105-byte record with clean flag 0",
-        progress_meta_set(fx->db, scan_key, junk, sizeof(junk)));
+        cb_scan_seed(fx, junk, sizeof(junk)));
     enum coin_backfill_scan_verdict v5 =
         cb_scan(fx, &fx->chain.hashes[CB_HOLE], set, 1, CB_CREATOR, CB_TOP,
                 CB_FRONTIER, 3, &next5, &spent, spender);
@@ -1806,7 +1823,7 @@ static int cb_case_frontier_moved_before_insert(void)
                     CB_TOP, CB_FRONTIER, 64, &next, &spent, spender);
     CBT("frontier_move: scan CLEAN at the original frontier",
         v == COIN_SCAN_CLEAN &&
-        cb_meta_count_like(fx->db, "coin_backfill.scan.%") == 1);
+        cb_marker_count(fx->db, "coin_backfill.scan") == 1);
 
     /* The frontier moves (kill-9 / concurrent apply) before the insert, and
      * the new top is unreadable — no fresh proof can be derived. */
@@ -1856,7 +1873,7 @@ static int cb_case_owner_gate(void)
         ok && res.status == COIN_BACKFILL_OWNER_REFUSED &&
         res.inserted_count == 0 &&
         coins_kv_count(fx->db) == coins_before &&
-        cb_meta_count_like(fx->db, "coin_backfill.scan.%") == 0);
+        cb_marker_count(fx->db, "coin_backfill.scan") == 0);
 
     struct cb_blocker_view bv;
     cb_find_blocker(&bv);
@@ -2011,7 +2028,7 @@ static int cb_case_marker_seen_other_height(void)
      * refused marker the boot torn-gate reads, not just the in-memory blocker
      * (which is gone after a reboot). */
     CBT("marker: durable refused marker persisted for the boot torn-gate",
-        cb_meta_count_like(fx->db, "coin_backfill.refused.%") == 1);
+        cb_marker_count(fx->db, "coin_backfill.refused") == 1);
 
     cb_teardown(fx);
     free(fx);
@@ -2290,7 +2307,7 @@ static int cb_case_terminal_linkage(void)
     CBT("terminal_spent: off-branch spend -> CHAIN_REBOUND, never SPENT",
         v2 == COIN_SCAN_CHAIN_REBOUND && spent == -1);
     CBT("terminal_spent: no durable refusal marker from scan",
-        cb_meta_count_like(fx->db, "coin_backfill.refused.%") == 0);
+        cb_marker_count(fx->db, "coin_backfill.refused") == 0);
 
     free(set2);
     cb_teardown(fx);
@@ -2337,7 +2354,7 @@ static int cb_case_scan_window_budget(void)
         CBT(desc, v == COIN_SCAN_WINDOW_OVER_BUDGET && calls < CB_TRY_CAP);
     }
     CBT("budget: over-budget guard leaves no scan record",
-        cb_meta_count_like(fx->db, "coin_backfill.scan.%") == 0);
+        cb_marker_count(fx->db, "coin_backfill.scan") == 0);
 
     /* max_blocks=4: chunks [5..8], [9..12], then a checkpoint EXACTLY at
      * top_height=13; the final chunk walks 13 plus the whole 3-block
@@ -2390,7 +2407,7 @@ static int cb_case_spend_in_creator_block(void)
         coins_kv_count(fx->db) == coins_before &&
         !cb_coin_present(fx->db, fx, CB_CREATOR, 1, 0));
     CBT("creator_spend: refusal marker written",
-        cb_meta_count_like(fx->db, "coin_backfill.refused.%") == 1);
+        cb_marker_count(fx->db, "coin_backfill.refused") == 1);
 
     cb_teardown(fx);
     free(fx);
@@ -2475,7 +2492,7 @@ static int cb_case_gate_not_masked_by_lower_internal_error(void)
     int st = cb_try_until(fx, &res);
     CBT("gate_mask: real path refuses txindex_miss + persists marker",
         st == COIN_BACKFILL_REFUSED_UNPROVABLE &&
-        cb_meta_count_like(fx->db, "coin_backfill.refused.%") == 1);
+        cb_marker_count(fx->db, "coin_backfill.refused") == 1);
 
     /* The gate fires on the prevout_unresolved tear despite the lower
      * internal_error row. */

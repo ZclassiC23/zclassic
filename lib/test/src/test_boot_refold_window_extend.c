@@ -55,6 +55,7 @@
 #include "storage/nullifier_kv.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
+#include "storage/repair_marker.h"
 #include "services/block_index_loader.h"    /* block_index_loader_torn_import_detect */
 #include "jobs/refold_progress.h"           /* refold_from_anchor_active/refresh */
 #include "models/database.h"                /* struct node_db, node_db_open/close */
@@ -67,15 +68,12 @@
 #include <stdio.h>
 #include <string.h>
 
-/* Non-static exported helpers, forward-declared rather than dragging their
- * src-private headers onto this test TU's include path (same pattern
+/* Non-static exported helper, forward-declared rather than dragging its
+ * src-private header onto this test TU's include path (same pattern
  * block_index_loader_torn_gate.c uses). script_validate_log_ensure_schema:
- * app/jobs/src/script_validate_log_store.h. coin_backfill_key_h_hash:
- * app/jobs/src/stage_repair_coin_backfill_util.h — builds the EXACT
- * coin_backfill.refused.<h>.<hash> key the torn detector reads. */
+ * app/jobs/src/script_validate_log_store.h. The torn detector reads the
+ * coin_backfill.refused marker keyed (height, hash) from repair_marker. */
 bool script_validate_log_ensure_schema(struct sqlite3 *db);
-bool coin_backfill_key_h_hash(char out[192], const char *prefix, int height,
-                              const struct uint256 *hash);
 
 #define BRWE_CHECK(name, expr) do {                       \
     printf("  boot_refold_window_extend: %s... ", (name)); \
@@ -440,13 +438,11 @@ int test_boot_refold_window_extend(void)
          * fires — detect() is true and reports HOLE_H. (We do NOT arm here: this
          * only proves detect() CAN fire, so the D1 false is a real verdict.) */
         {
-            char refused_key[192];
-            bool key_ok = coin_backfill_key_h_hash(
-                refused_key, "coin_backfill.refused", HOLE_H, &hole_hash);
             /* "unprovable" is one of the active refusal markers the decoder
              * treats as out_active=true (stage_repair_coin_backfill_util.h). */
-            bool wrote = key_ok &&
-                         progress_meta_set(pdb, refused_key, "unprovable", 10);
+            bool wrote = repair_marker_note(
+                pdb, REPAIR_MARKER_KIND_COIN_BACKFILL_REFUSED, HOLE_H,
+                hole_hash.data, "unprovable", 10);
             BRWE_CHECK("D2: durable coin_backfill.refused marker written", wrote);
 
             int32_t hole = 0, ceiling = 0;

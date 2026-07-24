@@ -12,6 +12,7 @@
 #include "net/connman.h"
 #include "services/sync_monitor.h"
 #include "storage/progress_store.h"
+#include "storage/repair_marker.h"
 #include "util/log_macros.h"
 #include "util/log_throttle.h"
 #include "validation/chainstate.h"
@@ -26,8 +27,8 @@
 /* Peer-gate visibility memo. detect runs only on the serial condition-engine
  * tick thread; the active bit lives in the observability helper because
  * diagnostics can read it. The gate-suppress WARN is the shared log_throttle
- * de-storm primitive, keyed on a
- * single "active" token: log_throttle_reset() re-arms it when the suppression
+ * de-storm primitive, keyed on a single "active" token:
+ * log_throttle_reset() re-arms it when the suppression
  * ends (so the next engagement emits immediately, reps=0), and a same-key
  * keep-alive fires every 300 s carrying the suppressed-tick count. */
 #define GATE_SUPPRESS_ACTIVE_KEY ((uint64_t)1)
@@ -395,6 +396,11 @@ static enum condition_remedy_result remedy_reducer_frontier_reconcile_light(void
     struct main_state *ms = sync_monitor_main_state();
     if (!db || !ms)
         return COND_REMEDY_SKIP;
+
+    /* Reclaim settled repair markers below the retention margin (best-effort). */
+    if (repair_marker_gc_settled(db, reducer_frontier_provable_tip_cached()) < 0)
+        LOG_WARN("condition", "[condition:reducer_frontier_reconcile_light] "
+                 "repair_marker GC failed");
 
     rfrl_increment_remedy_calls();
 #ifdef ZCL_TESTING

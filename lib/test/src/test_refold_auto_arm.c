@@ -45,6 +45,7 @@
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
 #include "storage/progress_store.h"
+#include "storage/repair_marker.h"
 #include "storage/coins_kv.h"
 #include "models/database.h"
 #include "chain/checkpoints.h"
@@ -123,22 +124,16 @@ static bool raa_insert_hole_status(sqlite3 *db, int height,
     return rc == SQLITE_DONE;
 }
 
-/* coin_backfill's durable refusal marker, byte-identical to the producer
- * (coin_backfill_key_h_hash builds "<prefix>.<height>.<hex>"). The detect
- * predicate's (3) condition requires this. */
+/* coin_backfill's durable refusal marker (repair_marker kind
+ * coin_backfill.refused keyed (height, hash)) — byte-identical to the producer.
+ * The detect predicate's (3) condition requires this. */
 static bool raa_seed_backfill_refused(sqlite3 *db, int height,
                                       const struct uint256 *hash)
 {
-    if (!progress_meta_table_ensure(db))
+    if (!repair_marker_table_ensure(db))
         return false;
-    char hex[65];
-    uint256_get_hex(hash, hex);
-    char key[192];
-    int n = snprintf(key, sizeof(key), "coin_backfill.refused.%d.%s",
-                     height, hex);
-    if (n <= 0 || n >= (int)sizeof(key))
-        return false;
-    return progress_meta_set(db, key, "spent:v2", 8);
+    return repair_marker_note(db, REPAIR_MARKER_KIND_COIN_BACKFILL_REFUSED,
+                              height, hash->data, "spent:v2", 8);
 }
 
 /* Stamp coins_applied_height = frontier (the forward-apply ceiling). */
@@ -478,13 +473,8 @@ int test_refold_auto_arm(void)
         {
             struct uint256 hh;
             raa_hash_for(RAA_HOLE_H, &hh);
-            char hex[65]; uint256_get_hex(&hh, hex);
-            char key[192];
-            snprintf(key, sizeof(key), "coin_backfill.refused.%d.%s",
-                     RAA_HOLE_H, hex);
-            progress_store_tx_lock();
-            (void)progress_meta_delete(pk, key);
-            progress_store_tx_unlock();
+            (void)repair_marker_forget(pk,
+                REPAIR_MARKER_KIND_COIN_BACKFILL_REFUSED, RAA_HOLE_H, hh.data);
         }
         hole_h = -1; ceiling = -1;
         bool n2 = block_index_loader_torn_import_detect(

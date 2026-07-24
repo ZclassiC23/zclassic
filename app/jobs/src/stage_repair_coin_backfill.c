@@ -21,6 +21,7 @@
 #include "jobs/stage_repair_internal.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
+#include "storage/repair_marker.h"
 #include "storage/utxo_projection.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -71,15 +72,8 @@ static int coin_backfill_insert_tx(sqlite3 *db,
                                    const struct coin_backfill_outpoint *set,
                                    int n, int32_t *out_round, char fail[64])
 {
-    char scan_key[192], rounds_key[192];
     fail[0] = '\0';
     *out_round = 0;
-    if (!coin_backfill_scan_record_key(scan_key, hole_height, hole_hash) ||
-        !coin_backfill_key_h_hash(rounds_key, "coin_backfill.rounds",
-                                  hole_height, hole_hash))
-        LOG_RETURN(-1, "coin_backfill",
-                   "[coin_backfill] insert key build failed h=%d",
-                   hole_height);
 
     /* Read the CLEAN scan record BEFORE BEGIN (the load helper is own-tx by
      * contract); the caller's progress_store_tx_lock serializes the window
@@ -153,7 +147,7 @@ static int coin_backfill_insert_tx(sqlite3 *db,
         }
 
         int32_t rounds = 0;
-        if (!coin_backfill_rounds_read(db, rounds_key, &rounds)) {
+        if (!coin_backfill_rounds_read(db, hole_height, hole_hash, &rounds)) {
             rc = -1;
             break;
         }
@@ -214,8 +208,12 @@ static int coin_backfill_insert_tx(sqlite3 *db,
          * dry-run resolves the prevout and the rewind re-derives ok=1. */
         uint8_t le[4];
         coin_backfill_le32_put(le, rounds + 1);
-        if (!progress_meta_set_in_tx(db, rounds_key, le, sizeof(le)) ||
-            !progress_meta_delete_in_tx(db, scan_key)) {
+        if (!repair_marker_note_in_tx(db,
+                REPAIR_MARKER_KIND_COIN_BACKFILL_ROUNDS, hole_height,
+                hole_hash->data, le, sizeof(le)) ||
+            !repair_marker_forget_in_tx(db,
+                REPAIR_MARKER_KIND_COIN_BACKFILL_SCAN, hole_height,
+                hole_hash->data)) {
             LOG_WARN("coin_backfill",
                      "[coin_backfill] round/scan bookkeeping failed h=%d",
                      hole_height);
@@ -321,16 +319,6 @@ static bool backfill_run(sqlite3 *db, struct main_state *ms,
     }
     r->scan_top_height = frontier - 1;
 
-    char rounds_key[192], refused_key[192];
-    if (!coin_backfill_key_h_hash(rounds_key, "coin_backfill.rounds", hole_h,
-                                  &hole_hash) ||
-        !coin_backfill_key_h_hash(refused_key, "coin_backfill.refused",
-                                  hole_h, &hole_hash)) {
-        block_free(&blk);
-        LOG_FAIL("coin_backfill",
-                 "[coin_backfill] marker key build failed h=%d", hole_h);
-    }
-
     /* G5: enumeration + outpoint markers + refusal marker + round cap,
      * one consistent locked section */
     int n = 0;
@@ -361,12 +349,12 @@ static bool backfill_run(sqlite3 *db, struct main_state *ms,
             }
         }
         if (ok)
-            ok = coin_backfill_refusal_marker_read(db, refused_key,
+            ok = coin_backfill_refusal_marker_read(db, hole_h, &hole_hash,
                                                    &refused_marker,
                                                    &legacy_spent_marker,
                                                    &legacy_txindex_miss_marker);
         if (ok)
-            ok = coin_backfill_rounds_read(db, rounds_key, &rounds);
+            ok = coin_backfill_rounds_read(db, hole_h, &hole_hash, &rounds);
     }
     progress_store_tx_unlock();
     block_free(&blk);
@@ -375,21 +363,22 @@ static bool backfill_run(sqlite3 *db, struct main_state *ms,
                  "[coin_backfill] enumeration/marker read failed h=%d",
                  hole_h);
     if (legacy_spent_marker) {
-        if (!progress_meta_delete(db, refused_key))
+        if (!repair_marker_forget(db, REPAIR_MARKER_KIND_COIN_BACKFILL_REFUSED,
+                                  hole_h, hole_hash.data))
             LOG_WARN("coin_backfill",
-                     "[coin_backfill] legacy spent marker delete failed key=%s "
-                     "(continuing with v2 re-proof)", refused_key);
+                     "[coin_backfill] legacy spent marker delete failed h=%d "
+                     "(continuing with v2 re-proof)", hole_h);
         else
             LOG_WARN("coin_backfill",
                      "[coin_backfill] ignored legacy spent marker h=%d; "
                      "re-proving with terminal-bound scan", hole_h);
     }
     if (legacy_txindex_miss_marker) {
-        if (!progress_meta_delete(db, refused_key))
+        if (!repair_marker_forget(db, REPAIR_MARKER_KIND_COIN_BACKFILL_REFUSED,
+                                  hole_h, hole_hash.data))
             LOG_WARN("coin_backfill",
                      "[coin_backfill] legacy txindex_miss marker delete "
-                     "failed key=%s (continuing with v2 re-proof)",
-                     refused_key);
+                     "failed h=%d (continuing with v2 re-proof)", hole_h);
         else
             LOG_WARN("coin_backfill",
                      "[coin_backfill] ignored legacy txindex_miss marker h=%d; "
@@ -400,7 +389,7 @@ static bool backfill_run(sqlite3 *db, struct main_state *ms,
     if (ereason[0]) {
         /* coin_present_unusable (metadata height tear) / too_many_unresolved
          * are deterministic properties of the hole block — terminal. */
-        coin_backfill_persist_terminal_refusal(db, io, refused_key,
+        coin_backfill_persist_terminal_refusal(db, io, hole_h, &hole_hash,
                                  COIN_BACKFILL_TC_TERMINAL,
                                  COIN_BACKFILL_UNPROVABLE_MARKER);
         return refuse(r, COIN_BACKFILL_REFUSED_UNPROVABLE, &hole_hash, "%s",
@@ -414,7 +403,7 @@ static bool backfill_run(sqlite3 *db, struct main_state *ms,
          * torn-gate reads (condition 3), mirroring the unprovable/round_cap
          * terminal persists — otherwise refuse() raises only the in-memory
          * blocker, which is gone after a reboot and the boot gate stays silent. */
-        coin_backfill_persist_terminal_refusal(db, io, refused_key,
+        coin_backfill_persist_terminal_refusal(db, io, hole_h, &hole_hash,
                                  COIN_BACKFILL_TC_TERMINAL,
                                  COIN_BACKFILL_RELOST_MARKER);
         return refuse(r, COIN_BACKFILL_MARKER_SEEN, &hole_hash, "%s",
@@ -425,7 +414,7 @@ static bool backfill_run(sqlite3 *db, struct main_state *ms,
                       "refusal_marker_present");
     if (rounds >= COIN_BACKFILL_MAX_ROUNDS) {
         /* repair exhausted its retry budget for this hole — terminal. */
-        coin_backfill_persist_terminal_refusal(db, io, refused_key,
+        coin_backfill_persist_terminal_refusal(db, io, hole_h, &hole_hash,
                                  COIN_BACKFILL_TC_TERMINAL,
                                  COIN_BACKFILL_ROUND_CAP_MARKER);
         return refuse(r, COIN_BACKFILL_REFUSED_UNPROVABLE, &hole_hash,
@@ -463,7 +452,7 @@ static bool backfill_run(sqlite3 *db, struct main_state *ms,
         /* txindex_miss persists ONLY when txindex is complete (guarded inside
          * the helper); the corrupt creator_* classes persist unconditionally;
          * node_db_unavailable stays RETRYABLE. */
-        coin_backfill_persist_terminal_refusal(db, io, refused_key, creator_tc,
+        coin_backfill_persist_terminal_refusal(db, io, hole_h, &hole_hash, creator_tc,
                                  creator_tc ==
                                      COIN_BACKFILL_TC_TERMINAL_IF_TXINDEX_COMPLETE
                                      ? COIN_BACKFILL_TXINDEX_MISS_MARKER_V2
@@ -534,13 +523,13 @@ static bool backfill_run(sqlite3 *db, struct main_state *ms,
         coin_backfill_txid_hex(spender, shex);
         /* refusal marker: a PROVEN spend means the failing block double-
          * spends or local history is torn — never rescan, never guess */
-        progress_store_tx_lock();
-        if (!progress_meta_set(db, refused_key, COIN_BACKFILL_SPENT_MARKER_V2,
-                               strlen(COIN_BACKFILL_SPENT_MARKER_V2)))
+        if (!repair_marker_note(db, REPAIR_MARKER_KIND_COIN_BACKFILL_REFUSED,
+                                hole_h, hole_hash.data,
+                                COIN_BACKFILL_SPENT_MARKER_V2,
+                                strlen(COIN_BACKFILL_SPENT_MARKER_V2)))
             LOG_WARN("coin_backfill",
-                     "[coin_backfill] refusal marker write failed key=%s "
-                     "(refusing anyway)", refused_key);
-        progress_store_tx_unlock();
+                     "[coin_backfill] refusal marker write failed h=%d "
+                     "(refusing anyway)", hole_h);
         return refuse(r, COIN_BACKFILL_REFUSED_SPENT, &hole_hash,
                       "spent h=%d tx=%.16s", spent_h, shex);
     }

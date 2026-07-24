@@ -16,6 +16,7 @@
 #include "primitives/block.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
+#include "storage/repair_marker.h"
 #include "storage/utxo_projection.h"
 #include "util/log_macros.h"
 
@@ -116,44 +117,6 @@ static int inverse_walk_consistent(sqlite3 *db, int first_h, int last_h)
              first_h, last_h, (long long)missing_log,
              (long long)ok_no_delta, (long long)delta_no_ok);
     return 0;
-}
-
-static bool repair_marker_key(char key[160], const char *kind, int height,
-                              const struct uint256 *block_hash)
-{
-    if (!key || !kind || !block_hash)
-        return false;
-    char hex[65];
-    uint256_get_hex(block_hash, hex);
-    int n = snprintf(key, 160, "utxo_apply.%s_repair.%d.%s",
-                     kind, height, hex);
-    return n > 0 && n < 160;
-}
-
-static bool repair_marker_seen(sqlite3 *db, const char *key, bool *seen)
-{
-    *seen = false;
-    uint8_t blob[8] = {0};
-    size_t n = 0;
-    if (!progress_meta_get(db, key, blob, sizeof(blob), &n, seen)) {
-        LOG_WARN("utxo_apply",
-                 "[utxo_apply] repair marker read failed key=%s",
-                 key ? key : "(null)");
-        return false;
-    }
-    return true;
-}
-
-static bool repair_marker_record_in_tx(sqlite3 *db, const char *key)
-{
-    uint8_t one = 1;
-    if (!progress_meta_set_in_tx(db, key, &one, sizeof(one))) {
-        LOG_WARN("utxo_apply",
-                 "[utxo_apply] repair marker write failed key=%s",
-                 key ? key : "(null)");
-        return false;
-    }
-    return true;
 }
 
 static bool repair_live_lookup(const struct uint256 *txid, uint32_t vout,
@@ -309,18 +272,14 @@ bool utxo_apply_repair_value_overflow_hole(
         return true;
     }
 
-    char marker[160];
-    if (!repair_marker_key(marker, "value_overflow", height, block_hash)) {
+    bool marker_seen = false;
+    if (!repair_marker_have(db, REPAIR_MARKER_KIND_UTXO_VALUE_OVERFLOW,
+                            height, block_hash->data, &marker_seen,
+                            NULL, 0, NULL)) {
         progress_store_tx_unlock();
         LOG_WARN("utxo_apply",
-                 "[utxo_apply] value_overflow repair marker key overflow h=%d",
+                 "[utxo_apply] value_overflow repair marker read failed h=%d",
                  height);
-        return false;
-    }
-
-    bool marker_seen = false;
-    if (!repair_marker_seen(db, marker, &marker_seen)) {
-        progress_store_tx_unlock();
         return false;
     }
     if (marker_seen) {
@@ -408,7 +367,10 @@ bool utxo_apply_repair_value_overflow_hole(
         progress_store_tx_unlock();
         return false;
     }
-    if (!repair_marker_record_in_tx(db, marker)) {
+    static const uint8_t present = 1;  /* legacy progress_meta presence value */
+    if (!repair_marker_note_in_tx(db, REPAIR_MARKER_KIND_UTXO_VALUE_OVERFLOW,
+                                  height, block_hash->data, &present,
+                                  sizeof(present))) {
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
         progress_store_tx_unlock();
         return false;

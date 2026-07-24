@@ -106,24 +106,23 @@ bool stage_reducer_frontier_try_absent_script_hole_replay(
     bool apply,
     struct stage_reducer_frontier_reconcile_result *out);
 
-/* Shared one-shot progress_meta marker helpers for reducer-frontier repairs.
- * Key shape:
- *   reducer_frontier.<repair_name>_repair.<height>.<block_hash_hex>
- * Caller holds progress_store_tx_lock() for marker reads and
- * progress-store transaction ownership for *_record_in_tx. */
-bool stage_reducer_frontier_repair_marker_key(
-    char key[192],
-    const char *repair_name,
-    int height,
-    const struct uint256 *block_hash);
+/* Shared one-shot repair_marker helpers for reducer-frontier repairs. Keyed
+ * (kind, height, block_hash) in the repair_marker table; `kind` is a per-repair
+ * constant (REPAIR_MARKER_KIND_RF_PROOF_REPLAY / _RF_TIPFIN_BACKFILL, in
+ * storage/repair_marker.h). Caller holds progress_store_tx_lock() for marker
+ * reads and progress-store transaction ownership for *_record_in_tx. */
 bool stage_reducer_frontier_repair_marker_seen(
     struct sqlite3 *db,
-    const char *key,
+    const char *kind,
+    int height,
+    const struct uint256 *block_hash,
     const char *label,
     bool *seen);
 bool stage_reducer_frontier_repair_marker_record_in_tx(
     struct sqlite3 *db,
-    const char *key,
+    const char *kind,
+    int height,
+    const struct uint256 *block_hash,
     const char *label);
 
 bool stage_reducer_frontier_try_replay_repairs(

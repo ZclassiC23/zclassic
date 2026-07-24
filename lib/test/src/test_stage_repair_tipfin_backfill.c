@@ -14,6 +14,7 @@
 #include "jobs/stage_repair.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
+#include "storage/repair_marker.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 
@@ -49,7 +50,7 @@ enum {
 } while (0)
 
 #define A REDUCER_FRONTIER_TRUSTED_ANCHOR
-#define TIPFIN_WITNESS_KEY "tipfin_backfill.progress"
+static const uint8_t TIPFIN_WITNESS_ZERO_HASH[32] = {0};
 
 /* Distinct deterministic hashes per height (rfrl fixture convention). */
 static void mk_hash(struct uint256 *h, int height)
@@ -450,8 +451,9 @@ static bool witness_at(sqlite3 *db, bool *found, int32_t *last,
     *total = 0;
     uint8_t buf[8] = {0};
     size_t n = 0;
-    if (!progress_meta_get(db, TIPFIN_WITNESS_KEY, buf, sizeof(buf), &n,
-                           found))
+    if (!repair_marker_have(db, REPAIR_MARKER_KIND_TIPFIN_PROGRESS,
+                            REPAIR_MARKER_TIPFIN_HEIGHT, TIPFIN_WITNESS_ZERO_HASH,
+                            found, buf, sizeof(buf), &n))
         return false;
     if (!*found)
         return true;
@@ -474,7 +476,9 @@ static bool put_tipfin_witness(sqlite3 *db, int32_t last, uint32_t total)
         buf[i] = (uint8_t)((uint32_t)last >> (8 * i));
     for (int i = 0; i < 4; i++)
         buf[4 + i] = (uint8_t)(total >> (8 * i));
-    return progress_meta_set(db, TIPFIN_WITNESS_KEY, buf, sizeof(buf));
+    return repair_marker_note(db, REPAIR_MARKER_KIND_TIPFIN_PROGRESS,
+                              REPAIR_MARKER_TIPFIN_HEIGHT,
+                              TIPFIN_WITNESS_ZERO_HASH, buf, sizeof(buf));
 }
 
 static long long marker_count(sqlite3 *db)
@@ -482,8 +486,8 @@ static long long marker_count(sqlite3 *db)
     sqlite3_stmt *st = NULL;
     long long n = -1;
     if (sqlite3_prepare_v2(db,
-            "SELECT COUNT(*) FROM progress_meta WHERE key LIKE "
-            "'reducer_frontier.tipfin_backfill_repair.%'",
+            "SELECT COUNT(*) FROM repair_marker WHERE kind = "
+            "'reducer_frontier.tipfin_backfill_repair'",
             -1, &st, NULL) == SQLITE_OK &&
         sqlite3_step(st) == SQLITE_ROW)
         n = sqlite3_column_int64(st, 0);
@@ -491,37 +495,23 @@ static long long marker_count(sqlite3 *db)
     return n;
 }
 
-static bool tipfin_marker_key(char key[192], int first_p,
-                              const struct uint256 *binder_hash)
-{
-    char hex[65];
-    uint256_get_hex(binder_hash, hex);
-    int n = snprintf(key, 192,
-                     "reducer_frontier.tipfin_backfill_repair.%d.%s",
-                     first_p, hex);
-    return n > 0 && (size_t)n < 192;
-}
-
 static bool put_tipfin_marker(sqlite3 *db, int first_p,
                               const struct uint256 *binder_hash)
 {
-    char key[192];
-    if (!tipfin_marker_key(key, first_p, binder_hash))
-        return false;
     uint8_t one = 1;
-    return progress_meta_set(db, key, &one, sizeof(one));
+    return repair_marker_note(db, REPAIR_MARKER_KIND_RF_TIPFIN_BACKFILL,
+                              first_p, binder_hash->data, &one, sizeof(one));
 }
 
 static bool tipfin_marker_is_one(sqlite3 *db, int first_p,
                                  const struct uint256 *binder_hash)
 {
-    char key[192];
-    if (!tipfin_marker_key(key, first_p, binder_hash))
-        return false;
     uint8_t blob[8] = {0};
     size_t n = 0;
     bool found = false;
-    return progress_meta_get(db, key, blob, sizeof(blob), &n, &found) &&
+    return repair_marker_have(db, REPAIR_MARKER_KIND_RF_TIPFIN_BACKFILL,
+                              first_p, binder_hash->data, &found,
+                              blob, sizeof(blob), &n) &&
            found && n == 1 && blob[0] == 1;
 }
 

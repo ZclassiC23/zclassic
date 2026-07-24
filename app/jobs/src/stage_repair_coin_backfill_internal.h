@@ -24,7 +24,7 @@ enum coin_backfill_scan_verdict {
 
 /* Chunked, resumable, chain-bound no-spend scan (guard G9).
  *
- * Persisted record key: coin_backfill.scan.<H>.<holehash> in progress_meta;
+ * Persisted record: repair_marker kind coin_backfill.scan keyed (H, holehash);
  * payload [next_height i32 LE][frontier_at_start i32 LE]
  *         [last_scanned_hash 32B][set_digest 32B]
  * (+ either [top_hash 32B][CLEAN flag] once complete, or
@@ -44,11 +44,11 @@ enum coin_backfill_scan_verdict coin_backfill_scan_step(
 /* ── Persisted scan-record helpers (shared with the orchestration TU) ──
  *
  * Transaction contract: coin_backfill_scan_step (and the load helper)
- * persist/read the record via progress_meta own-tx helpers (internally
- * locked BEGIN IMMEDIATE..COMMIT) — call them OUTSIDE any open progress.kv
- * transaction. Only the insert tx (orchestration TU) uses the _in_tx
- * variants, deleting the record via coin_backfill_scan_record_key +
- * progress_meta_delete_in_tx.
+ * persist/read the record via repair_marker own-tx helpers (kind
+ * REPAIR_MARKER_KIND_COIN_BACKFILL_SCAN, keyed (hole_height, hole_hash);
+ * internally locked BEGIN IMMEDIATE..COMMIT) — call them OUTSIDE any open
+ * progress.kv transaction. Only the insert tx (orchestration TU) uses the
+ * _in_tx variant, deleting the record via repair_marker_forget_in_tx.
  *
  * Wire layout of the progress_meta blob (all integers i32 LE):
  *   [ 0.. 3] next_height        — next height to scan; always <= frontier
@@ -84,10 +84,6 @@ struct coin_backfill_scan_record {
     int32_t spent_height;      /* valid iff pending_spent */
     uint8_t spender_txid[32];  /* valid iff pending_spent */
 };
-
-/* Builds "coin_backfill.scan.<H>.<holehash>". False (logged) on overflow. */
-bool coin_backfill_scan_record_key(char key[192], int hole_height,
-                                   const struct uint256 *hole_hash);
 
 /* Load + decode the persisted record. *found=false when absent. A malformed
  * payload returns true with *found=false (and a WARN) so callers restart

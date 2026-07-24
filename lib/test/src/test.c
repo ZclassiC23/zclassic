@@ -1516,6 +1516,8 @@ int main(int argc, char **argv)
     failures += test_mint_fold_livelock();
     failures += test_reducer_drain_spin_contract();
     failures += test_stage_reducer_unwedge();
+    { extern int test_repair_marker(void);
+      failures += test_repair_marker(); }
     failures += test_stage_repair_coin_backfill();
     { extern int test_stage_anchor_frontier_cap(void);
       failures += test_stage_anchor_frontier_cap(); }

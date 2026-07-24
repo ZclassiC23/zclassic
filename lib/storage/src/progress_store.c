@@ -16,6 +16,7 @@
 
 #include "sqlite_integrity_gate.h"
 #include "storage/consensus_db.h"
+#include "storage/repair_marker.h"
 #include "event/event.h"
 #include "json/json.h"
 #include "util/hw_profile.h"
@@ -328,7 +329,9 @@ bool progress_store_open(const char *datadir)
     }
 
     if (!apply_pragmas(db) || !stage_table_ensure(db) ||
-        !progress_meta_table_ensure(db)) {
+        !progress_meta_table_ensure(db) ||
+        !repair_marker_table_ensure(db) ||
+        !repair_marker_migrate_from_progress_meta(db)) {
         sqlite3_close(db);
         (void)close(opened_dir_fd);
         pthread_mutex_unlock(&g_lock);
@@ -613,6 +616,45 @@ bool progress_meta_set_in_tx(sqlite3 *db, const char *key,
 bool progress_meta_delete_in_tx(sqlite3 *db, const char *key)
 {
     return progress_meta_delete_stmt(db, key);
+}
+
+bool progress_meta_raise_u64_in_tx(sqlite3 *db, const char *key, uint64_t value,
+                                   bool *raised, uint64_t *winner)
+{
+    if (raised) *raised = false;
+    if (winner) *winner = value;
+    if (!db || !key || !key[0]) return false;
+
+    /* Read the current floor with exact-BLOB semantics (fail closed on any
+     * coercible non-BLOB / wrong-length value). Reuses the caller's open txn —
+     * progress_meta_get_blob_exact takes the recursive lock internally. */
+    uint8_t blob[8] = {0};
+    size_t n = 0;
+    bool present = false;
+    if (!progress_meta_get_blob_exact(db, key, blob, sizeof(blob), &n,
+                                      &present))
+        return false;
+    uint64_t prior = 0;
+    if (present) {
+        if (n != sizeof(blob))
+            return false;  /* malformed floor — never overwrite, fail closed */
+        for (int i = 7; i >= 0; i--)
+            prior = (prior << 8) | blob[i];
+    }
+
+    if (present && value <= prior) {
+        if (winner) *winner = prior;
+        return true;  /* raise-only: a non-greater value is a no-op */
+    }
+
+    uint8_t out[8];
+    for (int i = 0; i < 8; i++)
+        out[i] = (uint8_t)((value >> (8 * i)) & 0xff);
+    if (!progress_meta_set_in_tx(db, key, out, sizeof(out)))
+        return false;
+    if (raised) *raised = true;
+    if (winner) *winner = value;
+    return true;
 }
 
 /* Single-source the transaction discipline shared by progress_meta_set and
