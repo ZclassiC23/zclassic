@@ -185,18 +185,13 @@ static void manifest_from_artifact(const struct rom_artifact *a,
     memcpy(m->whole_sha3, a->whole_sha3, 32);
 }
 
-static uint16_t start_fixture_server(const char *dir, const uint16_t *cand,
-                                     size_t n)
+static uint16_t start_fixture_server(const char *dir)
 {
-    for (size_t i = 0; i < n; i++) {
-        fs_server_start(dir, cand[i]);
-        for (int w = 0; w < 40 && !fs_server_is_running(); w++)
-            platform_sleep_ms(50); /* up to 2 s for bind+listen */
-        if (fs_server_is_running())
-            return cand[i];
-        fs_server_stop();
-    }
-    return 0;
+    /* OS-assigned port: suites in parallel worktrees must never collide. */
+    fs_server_start(dir, 0);
+    for (int w = 0; w < 40 && !fs_server_is_running(); w++)
+        platform_sleep_ms(50); /* up to 2 s for bind+listen */
+    return fs_server_is_running() ? fs_server_get_port() : 0;
 }
 
 static int64_t seed_chunks_served(void)
@@ -244,8 +239,7 @@ static int test_rom_journal_kill9_resume(void)
         struct rom_fetch_manifest m;
         manifest_from_artifact(&art, &m);
 
-        static const uint16_t ports[] = { 18201, 18205, 18209 };
-        uint16_t port = start_fixture_server(sdir, ports, 3);
+                uint16_t port = start_fixture_server(sdir);
         ASSERT(port != 0);
 
         /* Real manifest fetch — the actual RMF wire path. */
@@ -356,8 +350,7 @@ static int test_rom_journal_header_mismatch_discard(void)
         struct rom_fetch_manifest m;
         manifest_from_artifact(&art, &m);
 
-        static const uint16_t ports[] = { 18213, 18217, 18221 };
-        uint16_t port = start_fixture_server(sdir, ports, 3);
+                uint16_t port = start_fixture_server(sdir);
         ASSERT(port != 0);
 
         uint8_t (*chunk_sha3)[32] =
@@ -458,8 +451,7 @@ static int test_rom_journal_bad_chunk_then_recovery(void)
         struct rom_fetch_manifest m;
         manifest_from_artifact(&art, &m);
 
-        static const uint16_t ports[] = { 18225, 18229, 18233 };
-        uint16_t port = start_fixture_server(sdir, ports, 3);
+                uint16_t port = start_fixture_server(sdir);
         ASSERT(port != 0);
 
         uint8_t (*good_sha3)[32] = malloc((size_t)ROM_SEED_MAX_CHUNKS * 32);

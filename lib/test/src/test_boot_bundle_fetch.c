@@ -275,18 +275,12 @@ static int case_e2e(void)
         ASSERT(rom_seed_register(sdir, "consensus-state-bundle-3056758.sqlite",
                                  NULL, &art) == ROM_REG_OK);
 
-        static const uint16_t cand_ports[] = { 18159, 18163, 18169 };
-        uint16_t port = 0;
-        for (size_t i = 0; i < sizeof(cand_ports) / sizeof(cand_ports[0]); i++) {
-            fs_server_start(sdir, cand_ports[i]);
-            for (int w = 0; w < 40 && !fs_server_is_running(); w++)
-                platform_sleep_ms(50);
-            if (fs_server_is_running()) {
-                port = cand_ports[i];
-                break;
-            }
-            fs_server_stop();
-        }
+                uint16_t port = 0;
+        fs_server_start(sdir, 0); /* OS-assigned: no cross-checkout port collisions */
+        for (int w = 0; w < 40 && !fs_server_is_running(); w++)
+            platform_sleep_ms(50);
+        if (fs_server_is_running())
+            port = fs_server_get_port();
         ASSERT(port != 0);
 
         /* pick_manifest consumes the seeder's REAL directory.json. */
@@ -594,18 +588,12 @@ static int case_discovery(void)
         ASSERT(rom_seed_register(sdir, "consensus-state-bundle-3056758.sqlite",
                                  NULL, &art) == ROM_REG_OK);
 
-        static const uint16_t cand_ports[] = { 18175, 18181, 18187 };
-        uint16_t port = 0;
-        for (size_t i = 0; i < sizeof(cand_ports) / sizeof(cand_ports[0]); i++) {
-            fs_server_start(sdir, cand_ports[i]);
-            for (int w = 0; w < 40 && !fs_server_is_running(); w++)
-                platform_sleep_ms(50);
-            if (fs_server_is_running()) {
-                port = cand_ports[i];
-                break;
-            }
-            fs_server_stop();
-        }
+                uint16_t port = 0;
+        fs_server_start(sdir, 0); /* OS-assigned: no cross-checkout port collisions */
+        for (int w = 0; w < 40 && !fs_server_is_running(); w++)
+            platform_sleep_ms(50);
+        if (fs_server_is_running())
+            port = fs_server_get_port();
         ASSERT(port != 0);
 
         /* Fresh client datadir with NO bundles/directory.json hint. The explicit
@@ -692,18 +680,12 @@ static int case_discovery_outcome_persists(void)
         ASSERT(rom_seed_register(sdir, "consensus-state-bundle-3056758.sqlite",
                                  NULL, &art) == ROM_REG_OK);
 
-        static const uint16_t cand_ports[] = { 18211, 18217, 18223 };
-        uint16_t port = 0;
-        for (size_t i = 0; i < sizeof(cand_ports) / sizeof(cand_ports[0]); i++) {
-            fs_server_start(sdir, cand_ports[i]);
-            for (int w = 0; w < 40 && !fs_server_is_running(); w++)
-                platform_sleep_ms(50);
-            if (fs_server_is_running()) {
-                port = cand_ports[i];
-                break;
-            }
-            fs_server_stop();
-        }
+                uint16_t port = 0;
+        fs_server_start(sdir, 0); /* OS-assigned: no cross-checkout port collisions */
+        for (int w = 0; w < 40 && !fs_server_is_running(); w++)
+            platform_sleep_ms(50);
+        if (fs_server_is_running())
+            port = fs_server_get_port();
         ASSERT(port != 0);
 
         char croot[] = "/tmp/zcl_bbf_disc_outcome_cli_XXXXXX";
@@ -750,16 +732,11 @@ static int case_discovery_outcome_persists(void)
         ASSERT(sdir2 != NULL);
 
         uint16_t port2 = 0;
-        for (size_t i = 0; i < sizeof(cand_ports) / sizeof(cand_ports[0]); i++) {
-            fs_server_start(sdir2, cand_ports[i]);
-            for (int w = 0; w < 40 && !fs_server_is_running(); w++)
-                platform_sleep_ms(50);
-            if (fs_server_is_running()) {
-                port2 = cand_ports[i];
-                break;
-            }
-            fs_server_stop();
-        }
+        fs_server_start(sdir2, 0); /* OS-assigned: no cross-checkout port collisions */
+        for (int w = 0; w < 40 && !fs_server_is_running(); w++)
+            platform_sleep_ms(50);
+        if (fs_server_is_running())
+            port2 = fs_server_get_port();
         ASSERT(port2 != 0);
 
         char croot2[] = "/tmp/zcl_bbf_disc_outcome_empty_cli_XXXXXX";

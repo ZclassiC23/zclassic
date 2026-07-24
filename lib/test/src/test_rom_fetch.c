@@ -441,18 +441,12 @@ static int test_loopback_e2e(void)
 
         /* Start the real serve path on the fixture datadir; retry across a
          * few candidate ports in case one is already bound. */
-        static const uint16_t cand_ports[] = { 18099, 18107, 18113 };
-        uint16_t port = 0;
-        for (size_t i = 0; i < sizeof(cand_ports) / sizeof(cand_ports[0]); i++) {
-            fs_server_start(sdir, cand_ports[i]);
-            for (int w = 0; w < 40 && !fs_server_is_running(); w++)
-                platform_sleep_ms(50); /* up to 2 s for bind+listen */
-            if (fs_server_is_running()) {
-                port = cand_ports[i];
-                break;
-            }
-            fs_server_stop();
-        }
+                uint16_t port = 0;
+        fs_server_start(sdir, 0); /* OS-assigned: no cross-checkout port collisions */
+        for (int w = 0; w < 40 && !fs_server_is_running(); w++)
+            platform_sleep_ms(50);
+        if (fs_server_is_running())
+            port = fs_server_get_port();
         ASSERT(port != 0);
 
         /* (1) One chunk over the wire matches the source bytes exactly. */
@@ -571,18 +565,12 @@ static int test_rate_cap_retry(void)
         struct rom_fetch_manifest m;
         manifest_from_artifact(&art, &m);
 
-        static const uint16_t cand_ports[] = { 18139, 18143, 18149 };
-        uint16_t port = 0;
-        for (size_t i = 0; i < sizeof(cand_ports) / sizeof(cand_ports[0]); i++) {
-            fs_server_start(sdir, cand_ports[i]);
-            for (int w = 0; w < 40 && !fs_server_is_running(); w++)
-                platform_sleep_ms(50); /* up to 2 s for bind+listen */
-            if (fs_server_is_running()) {
-                port = cand_ports[i];
-                break;
-            }
-            fs_server_stop();
-        }
+                uint16_t port = 0;
+        fs_server_start(sdir, 0); /* OS-assigned: no cross-checkout port collisions */
+        for (int w = 0; w < 40 && !fs_server_is_running(); w++)
+            platform_sleep_ms(50);
+        if (fs_server_is_running())
+            port = fs_server_get_port();
         ASSERT(port != 0);
 
         /* THE assertion: with the window at one chunk/second this download
@@ -647,18 +635,12 @@ static int test_parallel_download(void)
         struct rom_fetch_manifest m;
         manifest_from_artifact(&art, &m);
 
-        static const uint16_t cand_ports[] = { 18119, 18127, 18133 };
-        uint16_t port = 0;
-        for (size_t i = 0; i < sizeof(cand_ports) / sizeof(cand_ports[0]); i++) {
-            fs_server_start(sdir, cand_ports[i]);
-            for (int w = 0; w < 40 && !fs_server_is_running(); w++)
-                platform_sleep_ms(50);
-            if (fs_server_is_running()) {
-                port = cand_ports[i];
-                break;
-            }
-            fs_server_stop();
-        }
+                uint16_t port = 0;
+        fs_server_start(sdir, 0); /* OS-assigned: no cross-checkout port collisions */
+        for (int w = 0; w < 40 && !fs_server_is_running(); w++)
+            platform_sleep_ms(50);
+        if (fs_server_is_running())
+            port = fs_server_get_port();
         ASSERT(port != 0);
 
         /* (1) 2 workers against 1 peer (the serve-side per-peer inflight
@@ -765,18 +747,12 @@ static int test_verified_multi_seeder(void)
         struct rom_fetch_manifest m;
         manifest_from_artifact(&art, &m);
 
-        static const uint16_t cand_ports[] = { 18301, 18305, 18309 };
-        uint16_t port = 0;
-        for (size_t i = 0; i < sizeof(cand_ports) / sizeof(cand_ports[0]); i++) {
-            fs_server_start(sdir, cand_ports[i]);
-            for (int w = 0; w < 40 && !fs_server_is_running(); w++)
-                platform_sleep_ms(50);
-            if (fs_server_is_running()) {
-                port = cand_ports[i];
-                break;
-            }
-            fs_server_stop();
-        }
+                uint16_t port = 0;
+        fs_server_start(sdir, 0); /* OS-assigned: no cross-checkout port collisions */
+        for (int w = 0; w < 40 && !fs_server_is_running(); w++)
+            platform_sleep_ms(50);
+        if (fs_server_is_running())
+            port = fs_server_get_port();
         ASSERT(port != 0);
 
         /* Real per-chunk manifest over the RMF wire path. */
@@ -932,18 +908,12 @@ static int test_verified_multi_seeder_hang_failover(void)
         struct rom_fetch_manifest m;
         manifest_from_artifact(&art, &m);
 
-        static const uint16_t cand_ports[] = { 18501, 18505, 18509 };
-        uint16_t port = 0;
-        for (size_t i = 0; i < sizeof(cand_ports) / sizeof(cand_ports[0]); i++) {
-            fs_server_start(sdir, cand_ports[i]);
-            for (int w = 0; w < 40 && !fs_server_is_running(); w++)
-                platform_sleep_ms(50);
-            if (fs_server_is_running()) {
-                port = cand_ports[i];
-                break;
-            }
-            fs_server_stop();
-        }
+                uint16_t port = 0;
+        fs_server_start(sdir, 0); /* OS-assigned: no cross-checkout port collisions */
+        for (int w = 0; w < 40 && !fs_server_is_running(); w++)
+            platform_sleep_ms(50);
+        if (fs_server_is_running())
+            port = fs_server_get_port();
         ASSERT(port != 0);
 
         uint8_t (*chunk_sha3)[32] = malloc((size_t)ROM_SEED_MAX_CHUNKS * 32);
@@ -1085,18 +1055,12 @@ static int test_default_caps_parallel_multichunk(void)
         struct rom_fetch_manifest m;
         manifest_from_artifact(&art, &m);
 
-        static const uint16_t cand_ports[] = { 18601, 18605, 18609 };
-        uint16_t port = 0;
-        for (size_t i = 0; i < sizeof(cand_ports) / sizeof(cand_ports[0]); i++) {
-            fs_server_start(sdir, cand_ports[i]);
-            for (int w = 0; w < 40 && !fs_server_is_running(); w++)
-                platform_sleep_ms(50);
-            if (fs_server_is_running()) {
-                port = cand_ports[i];
-                break;
-            }
-            fs_server_stop();
-        }
+                uint16_t port = 0;
+        fs_server_start(sdir, 0); /* OS-assigned: no cross-checkout port collisions */
+        for (int w = 0; w < 40 && !fs_server_is_running(); w++)
+            platform_sleep_ms(50);
+        if (fs_server_is_running())
+            port = fs_server_get_port();
         ASSERT(port != 0);
 
         uint8_t (*chunk_sha3)[32] = malloc((size_t)ROM_SEED_MAX_CHUNKS * 32);
@@ -1234,18 +1198,12 @@ static int test_bundle_handler_corrupted_refused(void)
                                  NULL, &art) == ROM_REG_OK);
         ASSERT(art.num_chunks == 1);
 
-        static const uint16_t cand_ports[] = { 18521, 18525, 18529 };
-        uint16_t port = 0;
-        for (size_t i = 0; i < sizeof(cand_ports) / sizeof(cand_ports[0]); i++) {
-            fs_server_start(sdir, cand_ports[i]);
-            for (int w = 0; w < 40 && !fs_server_is_running(); w++)
-                platform_sleep_ms(50);
-            if (fs_server_is_running()) {
-                port = cand_ports[i];
-                break;
-            }
-            fs_server_stop();
-        }
+                uint16_t port = 0;
+        fs_server_start(sdir, 0); /* OS-assigned: no cross-checkout port collisions */
+        for (int w = 0; w < 40 && !fs_server_is_running(); w++)
+            platform_sleep_ms(50);
+        if (fs_server_is_running())
+            port = fs_server_get_port();
         ASSERT(port != 0);
 
         char root_hex[65], whole_hex[65];
@@ -1338,18 +1296,12 @@ static int test_directory_discovery(void)
         ASSERT(rom_seed_register(sdir, "consensus-state-bundle-rls.sqlite",
                                  NULL, &art) == ROM_REG_OK);
 
-        static const uint16_t cand_ports[] = { 18201, 18205, 18209 };
-        uint16_t port = 0;
-        for (size_t i = 0; i < sizeof(cand_ports) / sizeof(cand_ports[0]); i++) {
-            fs_server_start(sdir, cand_ports[i]);
-            for (int w = 0; w < 40 && !fs_server_is_running(); w++)
-                platform_sleep_ms(50);
-            if (fs_server_is_running()) {
-                port = cand_ports[i];
-                break;
-            }
-            fs_server_stop();
-        }
+                uint16_t port = 0;
+        fs_server_start(sdir, 0); /* OS-assigned: no cross-checkout port collisions */
+        for (int w = 0; w < 40 && !fs_server_is_running(); w++)
+            platform_sleep_ms(50);
+        if (fs_server_is_running())
+            port = fs_server_get_port();
         ASSERT(port != 0);
 
         /* (1) Fetch + MAC-verify the listing, then parse it back to the exact

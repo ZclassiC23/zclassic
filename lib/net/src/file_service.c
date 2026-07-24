@@ -1354,12 +1354,25 @@ static void *fs_server_thread(void *arg)
         LOG_NULL("filesvc", "server_thread: bind port %d failed: %s", g_fs_port, strerror(errno));
     }
 
+    /* Port 0 = OS-assigned (test fixtures; concurrent checkouts must never
+     * collide on a fixed port). Resolve the real port before announcing;
+     * published under the state mutex so fs_server_bound_port() readers
+     * never see a torn/stale value. */
+    uint16_t resolved_port = g_fs_port;
+    if (resolved_port == 0) {
+        struct sockaddr_in6 bound;
+        socklen_t blen = sizeof(bound);
+        if (getsockname(listen_fd, (struct sockaddr *)&bound, &blen) == 0)
+            resolved_port = ntohs(bound.sin6_port);
+    }
+
     listen(listen_fd, 32);
     log_jsonf(LOG_JSON_INFO, "file_service_listening",
               "\"port\":%d,\"transport\":\"sha3_quantum_secure\"",
-              g_fs_port);
+              resolved_port);
 
     pthread_mutex_lock(&g_fs_state_mutex);
+    g_fs_port = resolved_port;
     g_fs_listen_fd = listen_fd;
     pthread_mutex_unlock(&g_fs_state_mutex);
 
@@ -1424,7 +1437,15 @@ bool fs_server_is_running(void)
     return running;
 }
 
-uint16_t fs_server_get_port(void) { return g_fs_port; }
+uint16_t fs_server_get_port(void)
+{
+    uint16_t port;
+
+    pthread_mutex_lock(&g_fs_state_mutex);
+    port = g_fs_port;
+    pthread_mutex_unlock(&g_fs_state_mutex);
+    return port;
+}
 
 /* ── Diagnostics: `ops state --subsystem=file_service` ───────────────
  *

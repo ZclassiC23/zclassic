@@ -111,19 +111,14 @@ static void hsi_directory_json(char *out, size_t cap)
     snprintf(out, cap, "{\"artifacts\":%s}", (an > 0) ? arts : "[]");
 }
 
-/* Start the loopback seeder on the first reachable candidate port. */
-static uint16_t hsi_start_seeder(const char *sdir, const uint16_t *ports,
-                                 size_t nports)
+/* Start the loopback seeder on an OS-assigned port (no cross-checkout
+ * port collisions when suites run in parallel worktrees). */
+static uint16_t hsi_start_seeder(const char *sdir)
 {
-    for (size_t i = 0; i < nports; i++) {
-        fs_server_start(sdir, ports[i]);
-        for (int w = 0; w < 40 && !fs_server_is_running(); w++)
-            platform_sleep_ms(50);
-        if (fs_server_is_running())
-            return ports[i];
-        fs_server_stop();
-    }
-    return 0;
+    fs_server_start(sdir, 0);
+    for (int w = 0; w < 40 && !fs_server_is_running(); w++)
+        platform_sleep_ms(50);
+    return fs_server_is_running() ? fs_server_get_port() : 0;
 }
 
 /* Save a synthetic header index to `sdir`/block_index.bin and register+serve it. */
@@ -159,8 +154,7 @@ static int case_import_roundtrip(void)
         ASSERT(hsi_seed_artifact(sdir, 100, -1, &art));
         ASSERT(art.kind == ROM_ARTIFACT_HEADER_SEED);
 
-        static const uint16_t ports[] = { 18191, 18197, 18211 };
-        uint16_t port = hsi_start_seeder(sdir, ports, sizeof(ports)/sizeof(ports[0]));
+        uint16_t port = hsi_start_seeder(sdir);
         ASSERT(port != 0);
 
         /* The client picks the header-seed manifest from the seeder's real
@@ -251,8 +245,7 @@ static int case_bad_row(void)
         struct rom_artifact art;
         ASSERT(hsi_seed_artifact(sdir, 100, 99, &art));
 
-        static const uint16_t ports[] = { 18217, 18223, 18229 };
-        uint16_t port = hsi_start_seeder(sdir, ports, sizeof(ports)/sizeof(ports[0]));
+        uint16_t port = hsi_start_seeder(sdir);
         ASSERT(port != 0);
 
         char dirjson[3200];
