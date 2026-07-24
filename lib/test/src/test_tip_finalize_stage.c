@@ -12,6 +12,9 @@
 #include "../../../app/jobs/src/tip_finalize_stage_observe.h"
 /* src-private: the incremental utxo_apply SUM cache under differential KAT. */
 #include "../../../app/jobs/src/tip_finalize_log_store.h"
+/* src-private: the durable-cursor hydrate seam under the cross-txn crash-window
+ * clamp test (tip_finalize.uv_cursor_gap cure). */
+#include "../../../app/jobs/src/tip_finalize_stage_durable.h"
 #include "services/consensus_state_publication_cas.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
@@ -596,6 +599,28 @@ static void tf_teardown(const char *dir, struct main_state *ms,
     test_cleanup_tmpdir(dir);
 }
 
+/* Minimal non-null step for a bare tip_finalize stage_t handle used to drive
+ * the durable-cursor hydrate seam directly (no full stage lifecycle needed). */
+static job_result_t uv_gap_dummy_step(struct stage_step_ctx *c)
+{
+    (void)c;
+    return JOB_IDLE;
+}
+
+static int64_t tf_count_rows(sqlite3 *db, const char *table)
+{
+    char sql[128];
+    snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM %s", table);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    int64_t n = -1;
+    if (sqlite3_step(st) == SQLITE_ROW)
+        n = sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    return n;
+}
+
 int test_tip_finalize_stage(void);
 int test_tip_finalize_stage(void)
 {
@@ -603,6 +628,71 @@ int test_tip_finalize_stage(void)
     int failures = 0;
 
     blocker_module_init();
+
+    /* uv_cursor_gap crash-window clamp (Lane C root-cause fix).
+     *
+     * The reorg unwind commits the utxo_apply cursor rewind in one txn
+     * (utxo_apply_delta_reorg.c) while tip_finalize's own cursor is rewound in
+     * a SEPARATE, LATER txn (rewind_cursor_if_active_chain_reorged). A kill-9
+     * between those two durable commits persists tip_finalize_cursor >
+     * utxo_apply_cursor. On the next open, hydrate must clamp the tip_finalize
+     * CURSOR down to the utxo_apply frontier (restoring the step_finalize
+     * invariant tip_finalize <= utxo_apply) WITHOUT deleting a tip_finalize_log
+     * row — otherwise step_finalize wedges forever on tip_finalize.uv_cursor_gap.
+     * Pre-fix this case is RED (cursor stays at 5). */
+    {
+        char dir[256];
+        test_fmt_tmpdir(dir, sizeof(dir), "tip_finalize", "uv_gap_clamp");
+        mkdir_p_tf("./test-tmp");
+        mkdir_p_tf(dir);
+        bool ok_setup = progress_store_open(dir);
+        sqlite3 *db = progress_store_db();
+
+        /* Durable crash-window image: tip_finalize cursor ahead (5) of the
+         * rewound utxo_apply cursor (0), plus two surviving finalized-log rows
+         * that the clamp must preserve. */
+        ok_setup = ok_setup && exec_sql(db,
+            "CREATE TABLE IF NOT EXISTS stage_cursor(name TEXT PRIMARY KEY,"
+            " cursor INTEGER NOT NULL, updated_at INTEGER NOT NULL)");
+        ok_setup = ok_setup && exec_sql(db,
+            "INSERT OR REPLACE INTO stage_cursor(name,cursor,updated_at) "
+            "VALUES('utxo_apply',0,1)");
+        ok_setup = ok_setup && exec_sql(db,
+            "INSERT OR REPLACE INTO stage_cursor(name,cursor,updated_at) "
+            "VALUES('tip_finalize',5,1)");
+        struct uint256 h2, h3;
+        synthetic_hash(&h2, 2);
+        synthetic_hash(&h3, 3);
+        ok_setup = ok_setup && seed_tip_anchor_tf(db, 2, &h2);
+        ok_setup = ok_setup && seed_tip_anchor_tf(db, 3, &h3);
+        TF_CHECK("uv_gap_clamp: setup", ok_setup);
+
+        /* The inversion is durably present before hydrate runs. */
+        TF_CHECK("uv_gap_clamp: durable inversion present pre-hydrate",
+                 cursor_at(db, "tip_finalize") == 5 &&
+                 cursor_at(db, "utxo_apply") == 0);
+        int64_t rows_before = tf_count_rows(db, "tip_finalize_log");
+
+        stage_t *s = stage_create("tip_finalize", uv_gap_dummy_step, NULL);
+        TF_CHECK("uv_gap_clamp: stage created", s != NULL);
+        TF_CHECK("uv_gap_clamp: hydrate returns ok",
+                 tip_finalize_stage_hydrate_cursor_from_store(db, s,
+                                                              "uv_gap_test"));
+
+        /* GREEN: cursor clamped to the upstream frontier; invariant restored;
+         * log rows untouched. */
+        TF_CHECK("uv_gap_clamp: tip_finalize cursor clamped to utxo_apply",
+                 cursor_at(db, "tip_finalize") == 0);
+        TF_CHECK("uv_gap_clamp: tip_finalize <= utxo_apply after clamp",
+                 cursor_at(db, "tip_finalize") <= cursor_at(db, "utxo_apply"));
+        TF_CHECK("uv_gap_clamp: tip_finalize_log rows preserved (none deleted)",
+                 rows_before == 2 &&
+                 tf_count_rows(db, "tip_finalize_log") == rows_before);
+
+        if (s) stage_destroy(s);
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
 
     {
         char dir[256]; struct main_state ms; struct synth_chain_tf sc;
@@ -1098,6 +1188,12 @@ int test_tip_finalize_stage(void)
         ok_setup = ok_setup &&
             seed_tip_anchor_tf(progress_store_db(), 2, &sc.hashes[2]) &&
             seed_cursor_tf(progress_store_db(), "tip_finalize", 2) &&
+            /* utxo_apply stage cursor is co-committed with coins_applied_height
+             * in production (utxo_apply_stage.c); seed it consistently (== 3)
+             * so the boot-open clamp (tip_finalize <= utxo_apply) sees a
+             * realistic frontier and does not fire on an unseeded-cursor
+             * fixture. The coin-frontier cap under test still holds tip at 2. */
+            seed_cursor_tf(progress_store_db(), "utxo_apply", 3) &&
             seed_coins_applied_height(progress_store_db(), 3);
         ok_setup = ok_setup && tip_finalize_stage_init(&ms);
         TF_CHECK("authority_coin_cap: setup", ok_setup);
