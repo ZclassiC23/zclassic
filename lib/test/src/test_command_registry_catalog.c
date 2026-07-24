@@ -809,6 +809,133 @@ static int test_status_brief_overdue_transient_absent_when_zero(void)
     return failures;
 }
 
+/* wf/status-tier-frontdoor: the trust-tier surface (agent.trust_tier +
+ * security_posture.{snapshot_anchor_height,background_validation_height})
+ * flattens into core.status.brief as tier/install_height/verified_height/
+ * capabilities_locked — all OPTIONAL, so their presence here must not shrink
+ * the field count test_status_brief_flat_lean_envelope's default fixture
+ * asserts (that fixture carries neither sub-field, so those four keys stay
+ * absent there; this is the PRESENT case). */
+static int test_status_brief_trust_tier_surfaces(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    char out[ZCL_COMMAND_RESULT_BUDGET + 1];
+    TEST("core.status.brief surfaces tier/install_height/verified_height/"
+         "capabilities_locked from agent.trust_tier + security_posture") {
+        const struct zcl_command_spec *s =
+            find_spec(reg, "core.status.brief");
+        ASSERT(s != NULL);
+
+        static const char fixture[] =
+            "{\"schema\":\"zcl.public_status.v2\","
+            "\"partial_result\":false,"
+            "\"served_height\":100,\"header_height\":100,"
+            "\"served_height_known\":true,"
+            "\"header_height_known\":true,"
+            "\"gap\":0,\"peer_best_height\":100,"
+            "\"peer_best_height_known\":true,"
+            "\"target_height\":100,\"target_height_known\":true,"
+            "\"chain_evidence_consistent\":true,"
+            "\"sync_state\":\"at_tip\",\"serving\":true,"
+            "\"healthy\":true,\"primary_blocker\":\"none\","
+            "\"first_call\":{\"schema\":\"zcl.first_call_contract.v1\","
+                "\"budget_ms\":250,\"partial_result\":false,"
+                "\"budget_exceeded\":false},"
+            "\"peers\":{\"total\":1},"
+            "\"conditions\":{"
+                "\"schema\":\"zcl.condition_engine_summary.v2\","
+                "\"active_count\":0},"
+            "\"resources\":{\"schema\":\"zcl.node_resources.v1\","
+                "\"rss_mb\":512},"
+            "\"reducer\":{\"tip_advance_age_seconds\":3},"
+            "\"security_posture\":{"
+                "\"schema\":\"zcl.security_posture.v1\","
+                "\"anchor_backfill_gap\":false,"
+                "\"nullifier_backfill_gap\":false,"
+                "\"snapshot_anchor_height\":3000000,"
+                "\"background_validation_height\":2500000},"
+            "\"trust_tier\":{"
+                "\"schema\":\"zcl.trust_tier.v1\","
+                "\"trust_mode\":\"release_assisted\","
+                "\"trust_state\":\"release_assisted_ready\","
+                "\"durable_store_status\":\"available\","
+                "\"mint_denied\":true,\"wallet_spend_denied\":true,"
+                "\"export_bundle_denied\":true,"
+                "\"capabilities_denied\":\"mint,wallet_spend,export_bundle\","
+                "\"served_from_cache\":false,\"cache_age_ms\":0}}";
+        g_status_brief_agent_fixture = fixture;
+
+        node_rpc_client_set_test_hook(status_brief_mock_rpc);
+        enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+        bool dispatched = exec_leaf(reg, s, out, sizeof(out), &code);
+        node_rpc_client_set_test_hook(NULL);
+        ASSERT(dispatched);
+        ASSERT_EQ(code, ZCL_COMMAND_EXIT_OK);
+
+        struct json_value root;
+        ASSERT(json_read(&root, out, strlen(out)) && root.type == JSON_OBJ);
+        const struct json_value *data = json_get(&root, "data");
+        ASSERT(data != NULL && data->type == JSON_OBJ);
+
+        ASSERT_STR_EQ(json_get_str(json_get(data, "tier")),
+                      "release_assisted");
+        ASSERT_EQ(json_get_int(json_get(data, "install_height")),
+                  (int64_t)3000000);
+        ASSERT_EQ(json_get_int(json_get(data, "verified_height")),
+                  (int64_t)2500000);
+        ASSERT_STR_EQ(json_get_str(json_get(data, "capabilities_locked")),
+                      "mint,wallet_spend,export_bundle");
+
+        json_free(&root);
+        PASS();
+    } _test_next:;
+    g_status_brief_agent_fixture = NULL;
+    node_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+/* Absent case: a node predating agent.trust_tier and the two security_
+ * posture heights (an older-schema-family document, or a current v2 document
+ * that simply hasn't populated them yet) must omit all four keys, never
+ * fabricate a placeholder tier or a zero height. Reuses the DEFAULT
+ * status_brief_mock_rpc fixture (no g_status_brief_agent_fixture override),
+ * which carries neither sub-field. */
+static int test_status_brief_trust_tier_absent_when_missing(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    char out[ZCL_COMMAND_RESULT_BUDGET + 1];
+    TEST("core.status.brief omits tier/install_height/verified_height/"
+         "capabilities_locked when the source document predates them") {
+        const struct zcl_command_spec *s =
+            find_spec(reg, "core.status.brief");
+        ASSERT(s != NULL);
+
+        node_rpc_client_set_test_hook(status_brief_mock_rpc);
+        enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+        bool dispatched = exec_leaf(reg, s, out, sizeof(out), &code);
+        node_rpc_client_set_test_hook(NULL);
+        ASSERT(dispatched);
+        ASSERT_EQ(code, ZCL_COMMAND_EXIT_OK);
+
+        struct json_value root;
+        ASSERT(json_read(&root, out, strlen(out)) && root.type == JSON_OBJ);
+        const struct json_value *data = json_get(&root, "data");
+        ASSERT(data != NULL && data->type == JSON_OBJ);
+
+        ASSERT(json_get(data, "tier") == NULL);
+        ASSERT(json_get(data, "install_height") == NULL);
+        ASSERT(json_get(data, "verified_height") == NULL);
+        ASSERT(json_get(data, "capabilities_locked") == NULL);
+
+        json_free(&root);
+        PASS();
+    } _test_next:;
+    node_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
 static int test_status_brief_composite_fails_closed(void)
 {
     int failures = 0;
@@ -2348,6 +2475,8 @@ int test_command_registry_catalog(void)
     failures += test_status_brief_flat_lean_envelope();
     failures += test_status_brief_overdue_transient_surfaces();
     failures += test_status_brief_overdue_transient_absent_when_zero();
+    failures += test_status_brief_trust_tier_surfaces();
+    failures += test_status_brief_trust_tier_absent_when_missing();
     failures += test_status_brief_composite_fails_closed();
     failures += test_status_brief_schema_skew_degrades_gracefully();
     failures += test_status_brief_valid_unknown_and_partial_contracts();
