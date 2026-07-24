@@ -191,10 +191,53 @@ static int case_collect_nonblocking_scenario(void)
     return failures;
 }
 
+/* background_validation_height (agent_security_posture.h) is copied from the
+ * SAME chain_evidence_controller_snapshot() call posture_collect_bootstrap()
+ * already makes for snapshot_anchor_height — no new read, no new lock. Prove
+ * it defaults to -1 alongside snapshot_anchor_height on a fresh datadir with
+ * no recorded evidence, and that it reflects a persisted value once one
+ * exists (mirroring how chain_evidence_snapshot.c reads either field:
+ * state_get_i32(ndb, key, -1)). */
+static int case_background_validation_height_populates(void)
+{
+    int failures = 0;
+    struct node_db ndb;
+
+    bool opened = node_db_open(&ndb, ":memory:");
+    AP_CHECK("bvh: node.db (:memory:) opens", opened);
+    if (!opened)
+        return failures;
+
+    struct agent_security_posture fresh;
+    agent_security_posture_collect(&fresh, &ndb);
+    AP_CHECK("bvh: fresh node_db_available", fresh.node_db_available);
+    AP_CHECK("bvh: fresh snapshot_anchor_height defaults -1",
+             fresh.snapshot_anchor_height == -1);
+    AP_CHECK("bvh: fresh background_validation_height defaults -1 alongside it",
+             fresh.background_validation_height == -1);
+
+    AP_CHECK("bvh: seed cec.background_validation_height=777",
+             node_db_state_set_int(&ndb, "cec.background_validation_height",
+                                   777));
+
+    struct agent_security_posture seeded;
+    agent_security_posture_collect(&seeded, &ndb);
+    AP_CHECK("bvh: seeded background_validation_height == 777",
+             seeded.background_validation_height == 777);
+    /* Unrelated field stays at its own default — the two are independent
+     * columns of the same view, not aliases of one another. */
+    AP_CHECK("bvh: snapshot_anchor_height still -1 (untouched)",
+             seeded.snapshot_anchor_height == -1);
+
+    node_db_close(&ndb);
+    return failures;
+}
+
 int test_agent_posture_trylock(void)
 {
     int failures = 0;
     failures += case_collect_nonblocking_scenario();
+    failures += case_background_validation_height_populates();
     if (failures == 0)
         printf("test_agent_posture_trylock: ALL PASSED\n");
     else

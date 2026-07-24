@@ -160,6 +160,7 @@ static void posture_collect_bootstrap(struct agent_security_posture *out,
     chain_evidence_controller_init(&cec, ndb, csr_instance());
     chain_evidence_controller_snapshot(&cec, &view);
     out->snapshot_anchor_height = view.snapshot_anchor_height;
+    out->background_validation_height = view.background_validation_height;
     out->snapshot_evidence_present =
         view.snapshot_evidence_loaded &&
         (view.snapshot_anchor_height >= 0 ||
@@ -355,6 +356,7 @@ void agent_security_posture_collect(struct agent_security_posture *out,
         return;
     *out = empty;
     out->snapshot_anchor_height = -1;
+    out->background_validation_height = -1;
     out->sprout_anchor_activation_cursor = -1;
     out->sapling_anchor_activation_cursor = -1;
     out->nullifier_activation_cursor = -1;
@@ -459,6 +461,8 @@ void agent_push_security_posture_snapshot_json(
                       posture->trusted_state_present);
     json_push_kv_int(&obj, "snapshot_anchor_height",
                      posture->snapshot_anchor_height);
+    json_push_kv_int(&obj, "background_validation_height",
+                     posture->background_validation_height);
     json_push_kv_bool(&obj, "snapshot_full_validation_complete",
                       posture->snapshot_full_validation_complete);
     json_push_kv_bool(&obj, "full_history_validation_complete",
