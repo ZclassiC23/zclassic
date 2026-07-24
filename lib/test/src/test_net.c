@@ -4669,7 +4669,7 @@ skip_parallel_tests:
         bool solved2 = msgprocessor_test_snap_pow_solve(ip, t, bits, &nonce2);
 
         /* Verifying the same solution twice both succeed — a stateful
-         * single-use ring (like fast_sync_pow_gate's) would reject the
+         * single-use ring (like struct puzzle_gate's) would reject the
          * second; this guard deliberately keeps none. */
         bool admit1 = msgprocessor_test_snap_pow_admit_at(ip, t, &nonce1);
         bool admit2 = msgprocessor_test_snap_pow_admit_at(ip, t, &nonce1);

@@ -27,6 +27,7 @@
 #include <stdbool.h>
 
 #include "net/fast_sync.h"
+#include "net/puzzle.h"
 
 #define FS_FRAME_SIZE    65536
 #define FS_MAC_SIZE      32
@@ -49,8 +50,9 @@
  * The bulk block/index stream (ALL/RNG) is public data, but streaming
  * multi-GB to any unauthenticated connection is a denial-of-service lever.
  * Before committing a worker to a large stream the server requires a valid
- * solution to a rotating, adaptive PoW challenge (fast_sync_pow_gate), then
- * bounds the spend with the caps below. None of this touches any consensus
+ * solution to a rotating, adaptive PoW challenge (struct puzzle_gate,
+ * net/puzzle.h), then bounds the spend with the caps below. None of this
+ * touches any consensus
  * predicate or wire consensus rule — the served bytes are byte-identical. */
 
 /* PoW solution carried in a gated FS_REQUEST, prefixed before the request
@@ -142,7 +144,7 @@ double fs_session_mbps(const struct fs_session *s);
 /* ── PoW-gated admission + resource caps (testable, pure decisions) ────── */
 
 /* The process-wide file-service PoW gate. */
-struct fast_sync_pow_gate *fs_pow_gate(void);
+struct puzzle_gate *fs_pow_gate(void);
 
 /* Reset the gate + per-IP cap table (tests + a clean server start). */
 void fs_pow_reset_state(void);

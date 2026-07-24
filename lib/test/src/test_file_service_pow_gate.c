@@ -17,6 +17,7 @@
 #include "test/test_helpers.h"
 #include "net/file_service.h"
 #include "net/fast_sync.h"
+#include "net/puzzle.h"
 #include <string.h>
 #include <stdint.h>
 
@@ -37,10 +38,10 @@ static bool solve_for_gate(const uint8_t token[32],
     uint8_t seed[32];
     int bits = 0;
     int64_t st = 0;
-    fast_sync_pow_gate_challenge(fs_pow_gate(), seed, &bits, &st);
+    puzzle_gate_challenge(fs_pow_gate(), seed, &bits, &st);
     int64_t ts = (int64_t)platform_time_wall_time_t();
     uint64_t nonce = 0;
-    if (!fast_sync_solve_pow_ex(seed, token, ts, bits, &nonce))
+    if (!puzzle_solve(seed, token, ts, bits, &nonce))
         return false;
     memcpy(solution, token, 32);
     memcpy(solution + 32, &ts, 8);

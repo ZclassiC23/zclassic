@@ -530,7 +530,7 @@ static pthread_mutex_t g_manifest_build_mutex = PTHREAD_MUTEX_INITIALIZER;
  * bounds concurrency and hourly volume. Nothing here is persisted or a
  * consensus predicate — it only decides whether to SPEND uplink on a public
  * stream. */
-static struct fast_sync_pow_gate g_fs_pow_gate;
+static struct puzzle_gate g_fs_pow_gate;
 
 struct fs_ip_stat {
     uint8_t  ip[16];
@@ -543,14 +543,14 @@ struct fs_ip_stat {
 static struct fs_ip_stat g_fs_ip[FS_IP_TABLE_CAP];
 static pthread_mutex_t g_fs_ip_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-struct fast_sync_pow_gate *fs_pow_gate(void)
+struct puzzle_gate *fs_pow_gate(void)
 {
     return &g_fs_pow_gate;
 }
 
 void fs_pow_reset_state(void)
 {
-    fast_sync_pow_gate_init(&g_fs_pow_gate);
+    puzzle_gate_init(&g_fs_pow_gate, NULL);
     pthread_mutex_lock(&g_fs_ip_mutex);
     memset(g_fs_ip, 0, sizeof(g_fs_ip));
     pthread_mutex_unlock(&g_fs_ip_mutex);
@@ -765,7 +765,7 @@ enum fs_admit_result fs_admit_serve_pow(const uint8_t *puzzle,
 {
     /* No puzzle → hand back a fresh challenge (graceful, not a drop). */
     if (!puzzle || !peer_token) {
-        fast_sync_pow_gate_challenge(&g_fs_pow_gate, out_seed, out_bits,
+        puzzle_gate_challenge(&g_fs_pow_gate, out_seed, out_bits,
                                      out_server_time);
         return FS_ADMIT_CHALLENGE;
     }
@@ -781,10 +781,10 @@ enum fs_admit_result fs_admit_serve_pow(const uint8_t *puzzle,
     memcpy(&nonce, puzzle + 40, 8);
 
     bool bound = memcmp(tok, peer_token, 32) == 0;
-    if (bound && fast_sync_pow_gate_verify(&g_fs_pow_gate, tok, ts, nonce))
+    if (bound && puzzle_gate_verify(&g_fs_pow_gate, tok, ts, nonce))
         return FS_ADMIT_SERVE;
 
-    fast_sync_pow_gate_challenge(&g_fs_pow_gate, out_seed, out_bits,
+    puzzle_gate_challenge(&g_fs_pow_gate, out_seed, out_bits,
                                  out_server_time);
     return FS_ADMIT_CHALLENGE;
 }
@@ -1202,9 +1202,9 @@ static void fs_handle_client_fd(int client_fd, const uint8_t client_ip[16])
         /* Client explicitly asks for a challenge before requesting bulk data. */
         if (type == FS_CHALLENGE) {
             uint8_t seed[32];
-            int bits = FAST_SYNC_POW_MIN_BITS;
+            int bits = PUZZLE_MIN_BITS;
             int64_t st = 0;
-            fast_sync_pow_gate_challenge(fs_pow_gate(), seed, &bits, &st);
+            puzzle_gate_challenge(fs_pow_gate(), seed, &bits, &st);
             if (!fs_send_challenge(&session, seed, bits, st))
                 break;
             continue;
@@ -1248,7 +1248,7 @@ static void fs_handle_client_fd(int client_fd, const uint8_t client_ip[16])
              * large stream. Missing/invalid/stale puzzle → challenge + retry,
              * never a silent drop. ─────────────────────────────────────── */
             uint8_t seed[32];
-            int bits = FAST_SYNC_POW_MIN_BITS;
+            int bits = PUZZLE_MIN_BITS;
             int64_t st = 0;
             enum fs_admit_result adm =
                 fs_admit_serve_pow(puzzle, session.peer_nonce, seed, &bits, &st);
@@ -1267,7 +1267,7 @@ static void fs_handle_client_fd(int client_fd, const uint8_t client_ip[16])
                 continue;
             }
 
-            fast_sync_pow_gate_serve_begin(fs_pow_gate());
+            puzzle_gate_serve_begin(fs_pow_gate());
             if (is_rng) {
                 uint32_t end = rng_end;
                 if (end > manifest.num_chunks) end = manifest.num_chunks;
@@ -1282,7 +1282,7 @@ static void fs_handle_client_fd(int client_fd, const uint8_t client_ip[16])
                 printf("file_service: streaming done (%.1f MB/s)\n",
                        fs_session_mbps(&session));
             }
-            fast_sync_pow_gate_serve_end(fs_pow_gate());
+            puzzle_gate_serve_end(fs_pow_gate());
             fs_ip_serve_release(client_ip);
         } else if (type == FS_MANIFEST && have_manifest) {
             for (uint32_t i = 0; i < manifest.num_chunks; i++) {
@@ -1664,7 +1664,7 @@ static bool fs_client_solve_challenge(struct fs_session *s,
     int bits = payload[32];
     int64_t ts = (int64_t)platform_time_wall_time_t();
     uint64_t nonce = 0;
-    if (!fast_sync_solve_pow_ex(seed, s->our_nonce, ts, bits, &nonce))
+    if (!puzzle_solve(seed, s->our_nonce, ts, bits, &nonce))
         return false;
 
     memcpy(solution, s->our_nonce, 32);
