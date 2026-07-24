@@ -4182,7 +4182,7 @@ quality-linger-status:
 # self-reports. Probes canonical/soak/dev by RPC every 60s and appends to
 # ~/.local/state/zclassic23-slo/uptime-ledger.jsonl (tools/scripts/
 # node_slo_probe.sh). Never restarts, stops, or writes to any node.
-.PHONY: install-slo-probe slo-probe-status
+.PHONY: install-slo-probe install-slo-pager slo-probe-status
 install-slo-probe:
 	@install -d "$(HOME)/.config/systemd/user"
 	@install -m 644 deploy/zclassic23-slo-probe.service "$(HOME)/.config/systemd/user/zclassic23-slo-probe.service"
@@ -4193,10 +4193,27 @@ install-slo-probe:
 	@echo "ledger: $(HOME)/.local/state/zclassic23-slo/uptime-ledger.jsonl"
 	@echo "status: make slo-probe-status"
 
+# install-slo-pager: the pager half of the scoreboard. A SEPARATE 5-min timer
+# (self-watchdog: still fires when the probe itself dies) runs
+# tools/scripts/slo_page_if_stalled.sh; the unit sitting FAILED is the page
+# surface (plus wall(1) + pages.jsonl on first fire / 6h renotify). Pages on:
+# canonical no-advance >2h, ledger stale >5m, canonical unreachable >10m.
+install-slo-pager:
+	@install -d "$(HOME)/.config/systemd/user"
+	@install -m 644 deploy/zclassic23-slo-pager.service "$(HOME)/.config/systemd/user/zclassic23-slo-pager.service"
+	@install -m 644 deploy/zclassic23-slo-pager.timer "$(HOME)/.config/systemd/user/zclassic23-slo-pager.timer"
+	@systemctl --user daemon-reload
+	@systemctl --user enable --now zclassic23-slo-pager.timer
+	@echo "installed external SLO pager: zclassic23-slo-pager.timer (every 5 min)"
+	@echo "pages: $(HOME)/.local/state/zclassic23-slo/pages.jsonl"
+	@echo "status: make slo-probe-status"
+
 slo-probe-status:
-	@systemctl --user list-timers zclassic23-slo-probe.timer --no-pager 2>/dev/null || true
+	@systemctl --user list-timers zclassic23-slo-probe.timer zclassic23-slo-pager.timer --no-pager 2>/dev/null || true
 	@systemctl --user status zclassic23-slo-probe.service zclassic23-slo-probe.timer --no-pager -n 12 2>/dev/null || true
+	@systemctl --user status zclassic23-slo-pager.service zclassic23-slo-pager.timer --no-pager -n 12 2>/dev/null || true
 	@tail -n 6 "$(HOME)/.local/state/zclassic23-slo/uptime-ledger.jsonl" 2>/dev/null || echo "no ledger yet"
+	@tail -n 4 "$(HOME)/.local/state/zclassic23-slo/pages.jsonl" 2>/dev/null || echo "no pages (good)"
 	@./tools/scripts/slo_ledger_summary.sh --window-hours 24 2>/dev/null || true
 
 # slo-probe-selftest: hermetic regression guard for both the prober and the
