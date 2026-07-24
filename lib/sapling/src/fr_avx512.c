@@ -2,10 +2,17 @@
  *
  * Hardware-accelerated field arithmetic for BLS12-381 Fr and Fp.
  *
- * Runtime CPUID detection with graceful degradation:
- *   Tier 1: AVX-512 IFMA — VPMADD52 batch multiply (8 Fr muls at once)
- *   Tier 2: BMI2+ADX — MULX+ADCX+ADOX carry chains
- *   Tier 3: Portable — __int128 fallback (always available)
+ * Runtime CPUID detection with graceful degradation. Two tiers EXIST:
+ *   Tier 1: BMI2 — MULX schoolbook Montgomery (target attribute, so it
+ *           compiles into the x86-64-v3 baseline and is entered only after
+ *           CPUID confirms support). Note it does NOT build ADCX/ADOX carry
+ *           chains: every _addcarryx_u64 below takes a zero carry-in and the
+ *           carry is folded by scalar adds, so ADX contributes nothing today.
+ *   Tier 2: Portable — __int128 fallback (always available)
+ *
+ * AVX-512 IFMA (VPMADD52) is DETECTED but not implemented — there is no
+ * VPMADD52 code in this file. fr_accel_implementation() reports it as present-
+ * and-unused rather than claiming a tier that has never executed.
  *
  * Detection runs once at first use. Binary works on any x86-64 CPU. */
 
@@ -59,13 +66,20 @@ static void detect_cpu_features(void)
     cpu_detected = true;
 }
 
+/* Reports the multiply that init_dispatch() ACTUALLY installs — never a tier
+ * that merely exists in CPUID. There is no VPMADD52 implementation in this
+ * file, so an IFMA-capable host still runs the BMI2 path; saying otherwise made
+ * `zclassic23`'s boot banner claim a tier that has never executed. IFMA is
+ * still reported, as an unused capability, so the headroom stays visible.
+ * The BMI2 path uses MULX but does not build ADCX/ADOX carry chains (every
+ * _addcarryx_u64 there takes a zero carry-in), so ADX is not claimed either. */
 const char *fr_accel_implementation(void)
 {
     detect_cpu_features();
-    if (cpu_has_avx512ifma)
-        return "AVX-512 IFMA (VPMADD52 + MULX+ADCX+ADOX)";
     if (cpu_has_bmi2 && cpu_has_adx)
-        return "BMI2+ADX (MULX+ADCX+ADOX)";
+        return cpu_has_avx512ifma
+            ? "BMI2 MULX (AVX-512 IFMA present, unimplemented)"
+            : "BMI2 MULX";
     return "portable (__int128)";
 }
 
