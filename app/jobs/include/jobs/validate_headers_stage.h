@@ -80,6 +80,15 @@ struct json_value;
 #define VH_MAX_REASON       64
 #define VH_BATCH_PER_TICK   64
 
+/* Offline mint/refold fold widening (validate_headers_tuning.c). These apply
+ * ONLY while refold_cadence_active(); a live node always runs VH_POOL_SIZE /
+ * VH_BATCH_SIZE. Verdict-identical at any width — Equihash verification is a
+ * pure function of the header. */
+#define VH_FOLD_POOL_DEFAULT   16
+#define VH_FOLD_BATCH_DEFAULT 256
+#define VH_MAX_POOL           128
+#define VH_MAX_BATCH         4096
+
 /* Test seam: injectable validator. The default validator runs the full
  * PoW + Equihash pipeline against persisted header records; tests inject a stub that
  * decides purely from in-memory fields.
