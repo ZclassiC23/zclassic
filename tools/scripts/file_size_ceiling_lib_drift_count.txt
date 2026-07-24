@@ -164,4 +164,14 @@
 # optional "height" onto rom_fetch_manifest.height (download-cosmetic, untrusted).
 # Both are real, shape-matching feature growth on the starter-pack delivery path.
 # Re-baselined in file_size_ceiling_lib_baseline.txt (1043, 1709); count unchanged.
+#
+# 2026-07-24 (wf Program-O4e, wallet cached-stmt reset audit): wallet_sqlite.c
+# grew 1383 -> 1425 fixing the cached-SELECT snapshot-pin class — read_single_key
+# now copies the privkey blob out and resets the cursor UNCONDITIONALLY (it
+# parked on SQLITE_ROW after every successful lookup), and read_keys / read_txs /
+# read_sapling_keys (whose loop BREAKs at MAX_SAPLING_KEYS) / read_scripts /
+# read_watch_only reset after their drain loop so a mid-iteration error or break
+# can no longer leave a cursor pinning the WAL snapshot (SQLITE_BUSY_SNAPSHOT for
+# every later writer on the shared handle). Real defensive growth. Re-baselined
+# in file_size_ceiling_lib_baseline.txt (1425); count unchanged.
 13

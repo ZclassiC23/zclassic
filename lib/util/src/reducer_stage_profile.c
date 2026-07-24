@@ -31,6 +31,12 @@ static struct profile_domain g_profiles[REDUCER_PROFILE_DOMAIN_COUNT] = {
     [REDUCER_PROFILE_SCRIPT_VALIDATE] = {
         .rollover_lock = PTHREAD_MUTEX_INITIALIZER,
     },
+    [REDUCER_PROFILE_TIP_FINALIZE] = {
+        .rollover_lock = PTHREAD_MUTEX_INITIALIZER,
+    },
+    [REDUCER_PROFILE_UTXO_APPLY] = {
+        .rollover_lock = PTHREAD_MUTEX_INITIALIZER,
+    },
 };
 
 static const char *const g_field_names[RPF_FIELD_COUNT] = {
@@ -74,6 +80,13 @@ static const char *const g_field_names[RPF_FIELD_COUNT] = {
     [RPF_ORDERED_REDUCTION_US] = "ordered_reduction_us",
     [RPF_HEADER_EVENT_US] = "header_event_emission_us",
     [RPF_STAGE_LOG_CURSOR_US] = "stage_log_cursor_us",
+    [RPF_TF_LOG_INSERT_US] = "tf_log_insert_us",
+    [RPF_TF_INCREMENTAL_SUM_US] = "tf_incremental_sum_us",
+    [RPF_TF_WINDOW_MOVE_US] = "tf_window_move_us",
+    [RPF_TF_PROVABLE_TIP_US] = "tf_provable_tip_us",
+    [RPF_UA_PREVOUT_US] = "ua_prevout_us",
+    [RPF_UA_APPLY_US] = "ua_apply_us",
+    [RPF_UA_COMMIT_US] = "ua_commit_us",
 };
 
 static void rollover_if_needed(struct profile_domain *p, uint64_t generation)
@@ -276,5 +289,15 @@ bool reducer_stage_profile_dump_state_json(struct json_value *out,
     push_domain(&script, &g_profiles[REDUCER_PROFILE_SCRIPT_VALIDATE]);
     json_push_kv(out, "body_persist", &body);
     json_push_kv(out, "script_validate", &script);
+
+    struct json_value tip_finalize, utxo_apply;
+    json_init(&tip_finalize);
+    json_init(&utxo_apply);
+    json_set_object(&tip_finalize);
+    json_set_object(&utxo_apply);
+    push_domain(&tip_finalize, &g_profiles[REDUCER_PROFILE_TIP_FINALIZE]);
+    push_domain(&utxo_apply, &g_profiles[REDUCER_PROFILE_UTXO_APPLY]);
+    json_push_kv(out, "tip_finalize", &tip_finalize);
+    json_push_kv(out, "utxo_apply", &utxo_apply);
     return true;
 }

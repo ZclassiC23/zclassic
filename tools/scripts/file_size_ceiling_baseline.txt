@@ -27,7 +27,7 @@ app/jobs/src/reducer_frontier.c 801
 app/jobs/src/reducer_frontier_replay.c 809
 app/jobs/src/stage_repair_reducer_frontier.c 839
 app/jobs/src/tip_finalize_stage.c 809
-app/jobs/src/utxo_apply_stage.c 926
+app/jobs/src/utxo_apply_stage.c 945
 app/jobs/src/validate_headers_stage.c 1024
 app/models/src/block.c 853
 app/services/src/block_index_loader.c 857

@@ -44,6 +44,14 @@ void zcl_db_txn_trace_register(sqlite3 *db, const char *label);
  * tracing is disabled or the handle was never registered. */
 void zcl_db_txn_trace_unregister(sqlite3 *db);
 
+/* See CLAUDE.md "Adding state introspection". Reentrant-safe; NEVER touches a
+ * live sqlite handle from the caller's (RPC) thread — the per-connection
+ * txn_state / busy-statement scan runs only on the background dumper thread and
+ * is read here from a seqlock-published snapshot block. Emits {enabled:false}
+ * when ZCL_DB_TXN_TRACE was not set at process start. */
+struct json_value;
+bool db_txn_trace_dump_state_json(struct json_value *out, const char *key);
+
 #ifdef __cplusplus
 }
 #endif

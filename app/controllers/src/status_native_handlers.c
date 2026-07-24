@@ -27,8 +27,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-char *zcl_native_status_body(const struct json_value *args,
-                             struct zcl_native_body_err *err)
+/* The legacy full-detail composition: TWELVE sequential node_rpc_call()s,
+ * each re-entering the 4-worker RPC pool and racing the fold under a 10s
+ * kill-timeout. Kept verbatim behind `status --full` for the cold SQLite
+ * detail (nested sync/validation/health + the drill-down dumpstate bodies);
+ * the default front door now takes ONE round-trip to the status_frontdoor
+ * snapshot composition (see zcl_native_status_body below). */
+static char *zcl_native_status_body_full(const struct json_value *args,
+                                          struct zcl_native_body_err *err)
 {
     (void)args;
     char *h  = node_rpc_call("getblockcount", NULL);
@@ -252,6 +258,87 @@ char *zcl_native_status_body(const struct json_value *args,
         LOG_NULL("native.ops", "malloc failed for %s", "status response");
     }
     return out;
+}
+
+/* True when the caller asked for the legacy full document. Accepts a JSON
+ * bool, a nonzero int, or the strings "true"/"1"/"yes" so it honors the flag
+ * however the CLI/REST arg layer renders `--full`. */
+static bool status_want_full(const struct json_value *args)
+{
+    const struct json_value *v = args ? json_get(args, "full") : NULL;
+    if (!v)
+        return false;
+    if (v->type == JSON_BOOL)
+        return v->val.b;
+    if (v->type == JSON_INT)
+        return v->val.i != 0;
+    if (v->type == JSON_STR) {
+        const char *s = json_get_str(v);
+        return s && (strcmp(s, "true") == 0 || strcmp(s, "1") == 0 ||
+                     strcmp(s, "yes") == 0);
+    }
+    return false;
+}
+
+/* Default front door: ONE dumpstate round-trip to the node-side
+ * status_frontdoor composition, which reads only lock-free / trylock-guarded
+ * in-process snapshot sources and labels every member's staleness (with a
+ * degraded[] array). This never queues behind the reducer's write lock, so the
+ * front door stays answerable under load — the whole point of Program O2. The
+ * envelope's `state` object IS the operator body; it is returned verbatim. */
+static char *status_frontdoor_body(struct zcl_native_body_err *err)
+{
+    char *raw = node_rpc_call("dumpstate", "[\"status_frontdoor\"]");
+    struct json_value env;
+    json_init(&env);
+    if (!raw || !json_read(&env, raw, strlen(raw))) {
+        json_free(&env);
+        free(raw);
+        err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
+        snprintf(err->message, sizeof(err->message),
+                 "status front door dumpstate returned %s",
+                 raw ? "invalid JSON" : "null");
+        LOG_NULL("native.ops", "status front door dumpstate returned %s",
+                 raw ? "invalid JSON" : "null");
+    }
+    free(raw);
+
+    const struct json_value *state = json_get(&env, "state");
+    if (!state || state->type != JSON_OBJ) {
+        json_free(&env);
+        err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
+        snprintf(err->message, sizeof(err->message),
+                 "status front door envelope missing state object");
+        LOG_NULL("native.ops",
+                 "status front door envelope missing state object");
+    }
+
+    struct json_value body;
+    json_init(&body);
+    json_copy(&body, state);
+    json_push_kv_str(&body, "status_source", "status_frontdoor");
+    json_push_kv_str(&body, "client_build_commit", zcl_build_commit());
+    char *out = zcl_json_value_to_body(&body, "status_frontdoor_body");
+    json_free(&body);
+    json_free(&env);
+    if (!out) {
+        err->status = ZCL_NATIVE_BODY_INTERNAL;
+        snprintf(err->message, sizeof(err->message),
+                 "malloc failed for %s", "status front door response");
+        LOG_NULL("native.ops", "malloc failed for %s",
+                 "status front door response");
+    }
+    return out;
+}
+
+/* `zclassic23 status` (core.status) front door. Default = the single
+ * round-trip snapshot composition; `--full` = the legacy 12-call document. */
+char *zcl_native_status_body(const struct json_value *args,
+                             struct zcl_native_body_err *err)
+{
+    if (status_want_full(args))
+        return zcl_native_status_body_full(args, err);
+    return status_frontdoor_body(err);
 }
 
 /* core.status.brief lives in status_brief_native_handler.c (split out to

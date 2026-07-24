@@ -556,28 +556,48 @@ struct zcl_result wallet_sqlite_read_single_key(struct wallet_sqlite *ws,
     sqlite3_bind_blob(s, 1, kid.id.data, 20, SQLITE_STATIC);
 
     int rc = AR_STEP_ROW_READONLY(s);
-    if (rc == SQLITE_DONE)
+    if (rc == SQLITE_DONE) {
+        sqlite3_reset(s);
         return wsql_fail(ws, ZCL_ERR(WSQL_READ_FAIL,
             "read_single_key: pubkey_hash not found in wallet_keys"));
-    if (rc != SQLITE_ROW)
-        return wsql_fail(ws, ZCL_ERR(WSQL_READ_FAIL,
+    }
+    if (rc != SQLITE_ROW) {
+        struct zcl_result e = wsql_fail(ws, ZCL_ERR(WSQL_READ_FAIL,
             "read_single_key: step rc=%d: %s", rc, sqlite3_errmsg(ws->db)));
+        sqlite3_reset(s);
+        return e;
+    }
 
+    /* Copy the private-key blob out and RESET the cursor immediately and
+     * UNCONDITIONALLY. A cached SELECT left parked on SQLITE_ROW keeps an
+     * implicit read transaction (WAL snapshot) open on this shared connection;
+     * every later write on the same handle (wallet flush, node_db state_set,
+     * catchup) then fails forever with SQLITE_BUSY_SNAPSHOT. Same discipline as
+     * wallet_sqlite_read_sapling_seed — the column pointer is invalidated by
+     * reset, so the blob is copied into a local buffer first. */
     int priv_len = sqlite3_column_bytes(s, 1);
     const void *priv_data = sqlite3_column_blob(s, 1);
     int compressed = sqlite3_column_int(s, 2);
+    uint8_t priv_buf[512];
+    bool have_priv = priv_data && priv_len >= 32 &&
+                     (size_t)priv_len <= sizeof(priv_buf);
+    if (have_priv)
+        memcpy(priv_buf, priv_data, (size_t)priv_len);
+    sqlite3_reset(s);
 
-    if (!priv_data || priv_len < 32)
+    if (!have_priv)
         return wsql_fail(ws, ZCL_ERR(WSQL_READ_FAIL,
-            "read_single_key: privkey column too short (%d bytes)", priv_len));
+            "read_single_key: privkey column too short/long (%d bytes)",
+            priv_len));
 
     privkey_init(out_key);
-    if (is_wks1_blob(priv_data, (size_t)priv_len)) {
+    if (is_wks1_blob(priv_buf, (size_t)priv_len)) {
         uint8_t *plain = NULL;
         size_t plain_len = 0;
-        if (!wallet_decrypt_blob(priv_data, (size_t)priv_len,
+        if (!wallet_decrypt_blob(priv_buf, (size_t)priv_len,
                                  &plain, &plain_len) || plain_len < 32) {
             if (plain) { memory_cleanse(plain, plain_len); free(plain); }
+            memory_cleanse(priv_buf, sizeof(priv_buf));
             return wsql_fail(ws, ZCL_ERR(WSQL_READ_FAIL,
                 "read_single_key: decrypt failed (wrong passphrase?)"));
         }
@@ -585,8 +605,9 @@ struct zcl_result wallet_sqlite_read_single_key(struct wallet_sqlite *ws,
         memory_cleanse(plain, plain_len);
         free(plain);
     } else {
-        memcpy(out_key->vch, priv_data, 32);
+        memcpy(out_key->vch, priv_buf, 32);
     }
+    memory_cleanse(priv_buf, sizeof(priv_buf));
     out_key->fValid = true;
     out_key->fCompressed = (compressed != 0);
     return ZCL_OK;
@@ -669,6 +690,11 @@ struct zcl_result wallet_sqlite_read_keys_r(struct wallet_sqlite *ws,
         loaded++;
     }
 
+    /* Release the cursor on EVERY exit — a normal drain to SQLITE_DONE
+     * auto-completes, but a mid-iteration error (rc != ROW && != DONE) leaves
+     * the statement parked on a row, pinning the WAL snapshot on this shared
+     * connection (SQLITE_BUSY_SNAPSHOT for every later writer). */
+    sqlite3_reset(s);
     if (rc != SQLITE_DONE)
         return wsql_fail(ws, ZCL_ERR(WSQL_READ_FAIL,
             "read_keys: step rc=%d after %d rows: %s",
@@ -753,6 +779,10 @@ bool wallet_sqlite_read_txs(struct wallet_sqlite *ws, struct wallet *w)
         stream_free(&bs);
     }
 
+    /* Unconditional cursor release: a mid-iteration step error would otherwise
+     * leave this cached SELECT parked on a row, pinning the WAL snapshot on the
+     * shared connection (SQLITE_BUSY_SNAPSHOT for every later writer). */
+    sqlite3_reset(s);
     return true;
 }
 
@@ -1039,6 +1069,12 @@ bool wallet_sqlite_read_sapling_keys(struct wallet_sqlite *ws,
         }
     }
 
+    /* Unconditional cursor release. This loop BREAKs at MAX_SAPLING_KEYS
+     * mid-iteration, leaving the cached SELECT parked on a row — which pins the
+     * WAL snapshot on the shared connection and wedges every later writer with
+     * SQLITE_BUSY_SNAPSHOT. Reset closes that (and the mid-iteration error
+     * path) on every exit. */
+    sqlite3_reset(s);
     return true;
 }
 
@@ -1085,6 +1121,9 @@ bool wallet_sqlite_read_scripts(struct wallet_sqlite *ws, struct wallet *w)
         keystore_add_cscript(&w->keystore, &scr);
     }
 
+    /* Unconditional cursor release: a mid-iteration step error must not leave
+     * this cached SELECT parked on a row pinning the WAL snapshot. */
+    sqlite3_reset(s);
     return true;
 }
 
@@ -1126,6 +1165,9 @@ bool wallet_sqlite_read_watch_only(struct wallet_sqlite *ws, struct wallet *w)
         keystore_add_watch_only_id(&w->keystore, &kid);
     }
 
+    /* Unconditional cursor release: a mid-iteration step error must not leave
+     * this cached SELECT parked on a row pinning the WAL snapshot. */
+    sqlite3_reset(s);
     return true;
 }
 

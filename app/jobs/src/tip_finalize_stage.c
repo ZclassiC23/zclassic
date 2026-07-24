@@ -23,6 +23,7 @@
 #include "services/chain_evidence_authority_service.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
+#include "util/reducer_stage_profile.h"
 #include "util/stage.h"
 #include "validation/main_state.h"
 
@@ -502,11 +503,15 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
          * folds in exactly the row the full SUM would; it falls back to the full
          * SUM on any non-adjacency (reorg rewind / ok=0 gap) or the self-check
          * stride. Identical values to utxo_apply_sums_through in all cases. */
+        int64_t tf_sum_t0 = platform_time_monotonic_us();
         if (!utxo_apply_sum_through_incremental(db, next_h,
                                                 upstream.spent_count,
                                                 upstream.added_count,
                                                 &spent, &added))
             return JOB_FATAL;
+        reducer_stage_profile_observe_us(
+            REDUCER_PROFILE_TIP_FINALIZE, RPF_TF_INCREMENTAL_SUM_US,
+            (uint64_t)(platform_time_monotonic_us() - tf_sum_t0));
         int64_t expected = added - spent;
         if (utxo_size_after != expected) {
             if (!log_insert(db, next_h, "utxo_count_diverged", false,
@@ -521,9 +526,13 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
         }
     }
 
+    int64_t tf_log_t0 = platform_time_monotonic_us();
     if (!log_insert(db, next_h, "finalized", true, &work_delta,
                     utxo_size_after, 0, new_tip->phashBlock))
         return JOB_FATAL;
+    reducer_stage_profile_observe_us(
+        REDUCER_PROFILE_TIP_FINALIZE, RPF_TF_LOG_INSERT_US,
+        (uint64_t)(platform_time_monotonic_us() - tf_log_t0));
 
     int64_t published_before = tip_finalize_observe_last_height();
     /* Advertise the served-tip authority (g_last_advance_height ->
@@ -548,7 +557,10 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
      * the watchdog/reconcile are suspended (refold_in_progress()). Normal sync
      * keeps the retraction (the window must track the finalized frontier). See
      * docs/work/refold-fold-rate-bottlenecks.md (#1). */
-    if (!refold_in_progress() && (new_tip->nStatus & BLOCK_HAVE_DATA) &&
+    bool tf_do_window =
+        !refold_in_progress() && (new_tip->nStatus & BLOCK_HAVE_DATA);
+    int64_t tf_win_t0 = platform_time_monotonic_us();
+    if (tf_do_window &&
         !tip_finalize_batch_window_move(ms, new_tip)) { // one-write-path-ok:reducer-tip-authority
         /* HAVE_DATA gate (deadlock-cure step 3): never move the window onto a
          * body-missing N+1 — that is the bodiless-slot pin the have-data extender
@@ -560,6 +572,10 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
         LOG_WARN("tip_finalize", "[tip_finalize] chain_active set_tip failed height=%d", next_h);
         return JOB_FATAL;
     }
+    if (tf_do_window)
+        reducer_stage_profile_observe_us(
+            REDUCER_PROFILE_TIP_FINALIZE, RPF_TF_WINDOW_MOVE_US,
+            (uint64_t)(platform_time_monotonic_us() - tf_win_t0));
 
     tip_finalize_observe_inc_finalized();
     tip_finalize_observe_add_work(&work_delta);
@@ -577,7 +593,11 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
     }
     /* O(1) watermark advance (or full-fold fallback on any doubt) — see
      * tf_advance_provable_tip. reorg rewind always takes the full path above. */
+    int64_t tf_pt_t0 = platform_time_monotonic_us();
     tf_advance_provable_tip(db, next_h);
+    reducer_stage_profile_observe_us(
+        REDUCER_PROFILE_TIP_FINALIZE, RPF_TF_PROVABLE_TIP_US,
+        (uint64_t)(platform_time_monotonic_us() - tf_pt_t0));
     c->cursor_out = c->cursor_in + 1;
     return JOB_ADVANCED;
 }
