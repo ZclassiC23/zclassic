@@ -504,6 +504,39 @@ static bool seed_ratified_seal(sqlite3 *db, int32_t g)
     return mok;
 }
 
+/* Seed a ratified seal slot whose stored bytes no longer match their own
+ * self_sha3: write the serialized record directly into ring slot 0 with one
+ * block_hash byte flipped AFTER serialization, so seal_read_slot computes
+ * self_ok=0 and the ring reports no valid ratified seal. Used by T20 to prove a
+ * corrupt seal is never selected as a re-entry base. */
+static bool seed_corrupt_ratified_seal(sqlite3 *db, int32_t g)
+{
+    if (!seal_kv_ensure_schema(db) || !progress_meta_table_ensure(db))
+        return false;
+    struct seal_record r;
+    memset(&r, 0, sizeof(r));
+    r.height = g;
+    for (int i = 0; i < 32; i++) {
+        r.block_hash[i]         = (uint8_t)(g + i + 1);
+        r.coins_sha3[i]         = (uint8_t)(g + i + 0x40);
+        r.anchor_window_sha3[i] = (uint8_t)(g + i + 0x80);
+    }
+    r.utxo_count = (int64_t)g * 7 + 11;
+    r.supply     = (int64_t)g * 1000000 + 333;
+    r.ratified   = 1;
+    r.sealed_at  = 1700000000 + g;
+
+    uint8_t blob[SEAL_RECORD_BYTES];
+    if (!seal_serialize(&r, blob))
+        return false;
+    blob[5] ^= 0xff;  /* tamper: self_sha3 no longer covers the stored content */
+
+    if (!progress_meta_set(db, SEAL_SLOT_KEY_PREFIX "0", blob, sizeof(blob)))
+        return false;
+    uint8_t head[8] = {0};
+    return progress_meta_set(db, SEAL_HEAD_KEY, head, sizeof(head));
+}
+
 /* ── T7 fixture: a synthetic never-clearing condition ────────────────────
  * detect() always fires, witness() never clears — the shape of a condition
  * that stays "active" forever under its own remedy/cooldown schedule
@@ -1492,6 +1525,115 @@ int test_sticky_escalator(void)
         blocker_reset_for_testing();
         sticky_escalator_test_reset();
         reducer_frontier_provable_tip_reset();
+    }
+
+    /* ── T20: a CORRUPT seal is skipped, never a re-entry base ──────────────
+     * A ratified seal sits in the ring below the frontier, but its stored bytes
+     * no longer match their own self_sha3. resnapshot must refuse it exactly as
+     * it refuses an absent one — name resnapshot_no_base and leave every body
+     * cursor untouched. The negative half of the re-entry-depth proof: recovery
+     * never rewinds onto state it cannot self-verify. */
+    {
+        struct se_fixture fx;
+        SE_CHECK("T20: setup fixture", setup_fixture(&fx, "t20_corrupt_seal"));
+        sqlite3 *db = progress_store_db();
+        SE_CHECK("T20: make rederive rung an honest no-op",
+                 put_tip_log(db, A + 2, 1, &fx.hashes[2]) &&
+                 put_tip_log(db, A + 3, 1, &fx.hashes[3]) &&
+                 seed_coins_applied(db, A + 4) &&
+                 seed_cursor(db, "tip_finalize", A + 3));
+        SE_CHECK("T20: seed a CORRUPT ratified seal below the frontier",
+                 seed_corrupt_ratified_seal(db, A + 3));
+
+        struct seal_record got;
+        bool found = true;
+        SE_CHECK("T20: ring reports NO valid ratified seal (slot skipped)",
+                 seal_kv_newest_ratified(db, &got, &found) && !found);
+
+        int sc_before = cursor_value(db, "script_validate");
+        int pv_before = cursor_value(db, "proof_validate");
+        int bf_before = cursor_value(db, "body_fetch");
+
+        sync_monitor_set_context(NULL, NULL, &fx.ms);
+        sticky_escalator_test_reset();
+        blocker_reset_for_testing();
+        stage_reducer_frontier_reset_detect_memo_for_testing();
+        reducer_frontier_provable_tip_reset();
+        reducer_frontier_provable_tip_set(A + 10);
+
+        sticky_escalator_note_stall("test_corrupt_seal_no_base");
+        int64_t t = (int64_t)platform_time_wall_time_t();
+        SE_CHECK("T20: retry -> targeted_rederive",
+                 sticky_escalator_test_drive(0, t + 31) ==
+                     STICKY_RUNG_TARGETED_REDERIVE);
+        SE_CHECK("T20: no-op rederive -> resnapshot",
+                 sticky_escalator_test_drive(0, t + 32) ==
+                     STICKY_RUNG_RESNAPSHOT);
+        (void)sticky_escalator_test_drive(0, t + 33);
+        SE_CHECK("T20: resnapshot names no_base (corrupt seal not a base)",
+                 blocker_exists("sticky_escalator.resnapshot_no_base"));
+        SE_CHECK("T20: no cursor rewound onto the corrupt seal",
+                 cursor_value(db, "script_validate") == sc_before &&
+                 cursor_value(db, "proof_validate") == pv_before &&
+                 cursor_value(db, "body_fetch") == bf_before);
+
+        blocker_reset_for_testing();
+        reducer_frontier_provable_tip_reset();
+        teardown_fixture(&fx);
+    }
+
+    /* ── T21: re-entry DEPTH — a reachable seal makes recovery O(delta) ─────
+     * T12B proves resnapshot finds a ratified base and invokes the re-derive
+     * consumer. This pins the property that matters for recovery COST: with an
+     * observable tip above a valid seal, the body cursors rewind to the SEAL
+     * height, not down to the compiled anchor A. Recovery is O(tip - seal), not
+     * O(tip - anchor) — the difference between a delta refold and a full
+     * chain refold. */
+    {
+        struct se_fixture fx;
+        SE_CHECK("T21: setup fixture", setup_fixture(&fx, "t21_seal_reentry"));
+        sqlite3 *db = progress_store_db();
+        SE_CHECK("T21: make rederive rung an honest no-op",
+                 put_tip_log(db, A + 2, 1, &fx.hashes[2]) &&
+                 put_tip_log(db, A + 3, 1, &fx.hashes[3]) &&
+                 seed_coins_applied(db, A + 4) &&
+                 seed_cursor(db, "tip_finalize", A + 3));
+        SE_CHECK("T21: seed a VALID ratified seal at A+3",
+                 seed_ratified_seal(db, A + 3));
+
+        struct seal_record got;
+        bool found = false;
+        SE_CHECK("T21: ring reports the ratified seal at A+3",
+                 seal_kv_newest_ratified(db, &got, &found) && found &&
+                 got.height == A + 3);
+
+        sync_monitor_set_context(NULL, NULL, &fx.ms);
+        sticky_escalator_test_reset();
+        blocker_reset_for_testing();
+        stage_reducer_frontier_reset_detect_memo_for_testing();
+        reducer_frontier_provable_tip_reset();
+        reducer_frontier_provable_tip_set(A + 10); /* tip well above the seal */
+
+        sticky_escalator_note_stall("test_seal_reentry_depth");
+        int64_t t = (int64_t)platform_time_wall_time_t();
+        SE_CHECK("T21: retry -> targeted_rederive",
+                 sticky_escalator_test_drive(0, t + 31) ==
+                     STICKY_RUNG_TARGETED_REDERIVE);
+        SE_CHECK("T21: no-op rederive -> resnapshot",
+                 sticky_escalator_test_drive(0, t + 32) ==
+                     STICKY_RUNG_RESNAPSHOT);
+        (void)sticky_escalator_test_drive(0, t + 33);
+        SE_CHECK("T21: a reachable base means no_base is NOT named",
+                 !blocker_exists("sticky_escalator.resnapshot_no_base"));
+        SE_CHECK("T21: re-entered at the SEAL (A+3), not the compiled anchor",
+                 cursor_value(db, "script_validate") == A + 3 &&
+                 cursor_value(db, "proof_validate") == A + 3 &&
+                 cursor_value(db, "body_fetch") == A + 3 &&
+                 cursor_value(db, "script_validate") != A);
+
+        blocker_reset_for_testing();
+        reducer_frontier_provable_tip_reset();
+        teardown_fixture(&fx);
     }
 
     reducer_frontier_test_set_compiled_anchor(-1); /* restore production floor */
