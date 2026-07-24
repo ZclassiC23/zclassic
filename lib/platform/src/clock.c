@@ -96,6 +96,28 @@ int64_t clock_now_wall_ms(void)
     return p->now_wall_ms(p->self);
 }
 
+int64_t clock_now_monotonic_raw_us(void)
+{
+    struct timespec ts;
+#if defined(CLOCK_MONOTONIC_RAW)
+    if (clock_gettime(CLOCK_MONOTONIC_RAW, &ts) == 0)
+        return (int64_t)ts.tv_sec * 1000000LL + (int64_t)ts.tv_nsec / 1000LL;
+    /* CLOCK_MONOTONIC_RAW is a compile-time constant on this platform but can
+     * still fail at runtime (unsupported kernel); fall through to the
+     * CLOCK_MONOTONIC fallback below rather than returning a stuck zero. */
+#endif
+    /* No CLOCK_MONOTONIC_RAW available — CLOCK_MONOTONIC is the closest
+     * substitute (still never steps backward, just may be gently slewed). */
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        int e = errno;
+        fprintf(stderr, // obs-ok:platform-primitive
+            "[platform] %s:%d %s(): clock_gettime(CLOCK_MONOTONIC) fallback failed errno=%d\n",
+            __FILE__, __LINE__, __func__, e);
+        return 0;
+    }
+    return (int64_t)ts.tv_sec * 1000000LL + (int64_t)ts.tv_nsec / 1000LL;
+}
+
 int64_t clock_thread_cpu_ns(void)
 {
     struct timespec ts;

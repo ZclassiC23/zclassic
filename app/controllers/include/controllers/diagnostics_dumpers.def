@@ -628,6 +628,14 @@
     DIAG_LOCAL("self_backtrace", self_backtrace_dump_state_json,
                "live self-backtrace surface: installed flag, dump_count, and last dump's "
                "{last_path, last_thread_count, last_unix_ts}. Triggered by ops.debug.backtrace"),
+    DIAG_RUNTIME("time_authority", time_authority_dump_state_json,
+                 "time-discipline organ: wall-vs-CLOCK_MONOTONIC_RAW offset_us, EWMA drift "
+                 "(drift_ppm_milli / drift_ppm_approx), step_count + last_step_age_us/"
+                 "last_step_magnitude_us (|Δoffset|>500ms jumps), observation_count. "
+                 "Sampled from the health-sweep tick; feeds the clock_skew_reconcile "
+                 "condition. Operational time only — consensus timestamp rules untouched",
+                 "lib/util/src/time_authority.c",
+                 "lib/test/src/test_time_authority.c"),
     DIAG_RUNTIME("db_txn_trace", db_txn_trace_dump_state_json,
                  "opt-in (ZCL_DB_TXN_TRACE=1) node.db transaction tracer: per "
                  "registered connection {owner, txn_state, busy_stmts, "

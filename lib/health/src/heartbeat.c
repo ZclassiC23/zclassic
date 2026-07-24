@@ -10,6 +10,7 @@
 #include "platform/os_sandbox.h"
 #include "util/thread_liveness.h"
 #include "util/thread_registry.h"
+#include "util/time_authority.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -243,6 +244,13 @@ static void *sweeper_thread(void *arg)
             (void)os_sandbox_landlock_apply_to_self();
 
         sweep_once();
+        /* time-discipline organ: fold one real-clock sample every sweep
+         * (~1 Hz). This IS the "existing supervised tick" the sampler rides
+         * on — zcl_health_sweep is already a supervisor-tree child (see
+         * thread_liveness_register_restartable below), so no dedicated
+         * thread is spun up for skew/step tracking. O(1), no allocation,
+         * no locks. See util/time_authority.h. */
+        time_auth_observe();
         /* Heartbeat onto the supervisor tree (atomic-only; zero behavior
          * change). Marker advances every sweep so a frozen loop is visible. */
         thread_liveness_beat(&g_sweep_child,

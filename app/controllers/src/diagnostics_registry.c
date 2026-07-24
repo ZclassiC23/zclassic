@@ -136,6 +136,7 @@
 #include "util/blocker.h"
 #include "util/db_txn_trace.h"
 #include "util/self_backtrace.h"
+#include "util/time_authority.h"
 #include "util/cpu_topology.h"
 #include "util/hw_bench.h"
 #include "util/hw_profile.h"
