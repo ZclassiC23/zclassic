@@ -1408,6 +1408,7 @@ int main(int argc, char **argv)
     failures += test_service_state();
     failures += test_service_state_driver();
     failures += test_clock();
+    failures += test_time_authority();
     failures += test_rng();
     { extern int test_os_proc(void);
       failures += test_os_proc(); }

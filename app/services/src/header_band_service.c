@@ -125,7 +125,7 @@ bool syncsvc_header_band_continue(const struct active_chain *chain,
     /* The peer cannot buy restart-suppression with a detached low fork:
      * only a batch that extends the trust-rooted frontier is progress. */
     if (!utxo_recovery_block_trust_rooted(last_header))
-        return false;
+        return false;  // raw-return-ok:not-trust-rooted-is-a-normal-non-progress-batch
 
     /* Defensive: a producer or the boot scan normally recorded the band
      * already; derive-and-record here so a runtime-created band is just

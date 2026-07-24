@@ -310,7 +310,7 @@ bool snapsync_is_active(void)
 
     if (!svc) {
         if (!snapsync_global_initialized())
-            return false;
+            return false;  // raw-return-ok:not-initialized-is-a-normal-not-active-result
         svc = snapsync_global();
     }
     snapsync_get_status_snapshot(svc, &st);
@@ -508,7 +508,7 @@ bool snapsync_check_negotiation_stall(void)
     struct snapshot_sync_service *svc = app_runtime_snapshot_sync();
     if (!svc) {
         if (!snapsync_global_initialized())
-            return false;
+            return false;  // raw-return-ok:not-initialized-is-a-normal-not-active-result
         svc = snapsync_global();
     }
 
@@ -533,7 +533,7 @@ bool snapsync_check_failed_reset(void)
     struct snapshot_sync_service *svc = app_runtime_snapshot_sync();
     if (!svc) {
         if (!snapsync_global_initialized())
-            return false;
+            return false;  // raw-return-ok:not-initialized-is-a-normal-not-active-result
         svc = snapsync_global();
     }
 
@@ -571,7 +571,7 @@ bool snapsync_check_stall(void)
     struct snapshot_sync_service *svc = app_runtime_snapshot_sync();
     if (!svc) {
         if (!snapsync_global_initialized())
-            return false;
+            return false;  // raw-return-ok:not-initialized-is-a-normal-not-active-result
         svc = snapsync_global();
     }
 

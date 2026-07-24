@@ -143,7 +143,7 @@ bool db_tx_find_native_or_reversed(struct node_db *ndb,
         reversed[i] = txid[sizeof(reversed) - 1 - i];
 
     if (!db_tx_find(ndb, reversed, out))
-        return false;
+        return false;  // raw-return-ok:tx-not-found-is-a-normal-lookup-miss
 
     if (used_reversed)
         *used_reversed = true;

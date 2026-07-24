@@ -279,7 +279,7 @@ bool chain_evidence_controller_record_finalized_tip(
      * condition's witness (state!=FROZEN) auto-clears only after a real lift. */
     if (authority->state == CEC_CONTRADICTION_FROZEN) {
         if (!cec_boot_tip_divergence_resolved(authority, finalized_tip))
-            return false;
+            return false;  // raw-return-ok:fail-closed-predicate-still-frozen-keeps-paging
         cec_lift_boot_tip_divergence_freeze(authority, finalized_tip->nHeight);
     }
 

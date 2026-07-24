@@ -96,7 +96,7 @@ static bool snapsync_insert_staging_raw(struct node_db *ndb,
     struct snapshot_store_port store = {0};
 
     if (!snapsync_bind_store_internal(&sctx, ndb, &store).ok)
-        return false;
+        return false;  // raw-return-ok:bind-only-fails-on-null-ctx/port-both-local-addresses
     return store.staging_insert(store.self, u);
 }
 

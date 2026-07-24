@@ -55,6 +55,25 @@ const clock_iface_t *clock_default(void);
 int64_t clock_now_monotonic_ns(void);
 int64_t clock_now_wall_ms(void);
 
+/* CLOCK_MONOTONIC_RAW microseconds — the hardware monotonic counter with NO
+ * NTP frequency-slewing applied (unlike CLOCK_MONOTONIC, which a running
+ * `ntpd`/`chronyd` can gently speed up or slow down to converge on true
+ * time). This is the intended clock for the time-discipline organ
+ * (util/time_authority.h): it needs a monotonic reference that is itself
+ * immune to the very adjustment it is trying to detect in the OTHER two
+ * clocks (now_monotonic_ns / now_wall_ms). Falls back to CLOCK_MONOTONIC on
+ * a platform/kernel without CLOCK_MONOTONIC_RAW (pre-2.6.28 Linux, some
+ * non-Linux libcs) so the return value is always well-defined.
+ *
+ * Deliberately NOT part of the injectable clock_iface_t / tape-source
+ * surface — same rationale as clock_thread_cpu_ns() below: it measures a
+ * real hardware property (no NTP correction applied) that a simulated/
+ * fast-forwarded clock cannot meaningfully model, and the one caller that
+ * needs it is specifically trying to observe drift in the adjustable
+ * clocks relative to this unadjusted one. Injecting it would erase the
+ * signal it exists to measure. */
+int64_t clock_now_monotonic_raw_us(void);
+
 /* Per-thread CPU time in nanoseconds — only accrues while THIS thread is
  * executing on a core, so it is immune to cross-process scheduler preemption.
  * That is the correct clock for a constant-time work-ratio measurement: it

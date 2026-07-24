@@ -16,6 +16,7 @@
 
 #include "event/event.h"
 #include "platform/time_compat.h"
+#include "util/time_authority.h"
 
 #include <stdatomic.h>
 #include <stdint.h>
@@ -34,6 +35,16 @@ static _Atomic int64_t g_last_wall_unix;       /* 0 = no baseline yet */
 static _Atomic int64_t g_last_mono_ms;
 static _Atomic int64_t g_last_skew_secs;
 
+/* time_authority feed: the last step_count value we've already accounted
+ * for. time_auth (util/time_authority.h) runs its own independent ~1 Hz
+ * wall-vs-CLOCK_MONOTONIC_RAW sampler (fed from the health-sweep tick) and
+ * flags a step whenever |Δoffset| exceeds its own 500 ms threshold. That is
+ * an ADDITIONAL detection signal on top of this condition's own Δwall/
+ * Δmonotonic poll below — a step time_authority sees but this condition's
+ * coarser CLOCK_SKEW_POLL_SECS-spaced poll might straddle (a step followed
+ * by a compensating step within one 30 s window) still trips detect() here. */
+static _Atomic int64_t g_last_step_count_seen;
+
 #ifdef ZCL_TESTING
 static _Atomic int g_test_remedy_calls;
 #endif
@@ -48,6 +59,18 @@ static int64_t skew_tolerance(void)
     return CLOCK_SKEW_TOLERANCE_SECS;
 }
 
+/* time_authority feed: has ITS independent sampler recorded a step since
+ * the last time WE checked? Always advances g_last_step_count_seen (even on
+ * this condition's first poll) so a step that happened before this
+ * condition started watching is not re-attributed to a later poll. */
+static bool time_authority_step_signal(void)
+{
+    int64_t steps_now = time_auth_step_count();
+    int64_t last_seen = atomic_load(&g_last_step_count_seen);
+    atomic_store(&g_last_step_count_seen, steps_now);
+    return steps_now > last_seen;
+}
+
 static bool detect_clock_skew(void)
 {
     int64_t wall = platform_time_wall_unix();
@@ -56,10 +79,11 @@ static bool detect_clock_skew(void)
     int64_t prev_wall = atomic_load(&g_last_wall_unix);
     int64_t prev_mono = atomic_load(&g_last_mono_ms);
 
-    /* First poll: just seed the baseline; nothing to compare against. */
+    /* First poll: just seed both baselines; nothing to compare against yet. */
     if (prev_wall == 0) {
         atomic_store(&g_last_wall_unix, wall);
         atomic_store(&g_last_mono_ms, mono);
+        (void)time_authority_step_signal(); /* seed only — ignore on first poll */
         return false;
     }
 
@@ -70,7 +94,14 @@ static bool detect_clock_skew(void)
 
     atomic_store(&g_last_skew_secs, skew);
 
-    if (abs_skew > skew_tolerance()) {
+    /* Additional signal: time_authority's own independent ~1 Hz sampler
+     * (util/time_authority.h) recorded a step since our last poll. Its
+     * 500 ms step threshold is finer-grained than this condition's
+     * CLOCK_SKEW_POLL_SECS-spaced Δwall/Δmonotonic comparison, so it can
+     * catch a step this poll's coarser math would otherwise straddle. */
+    bool step_signal = time_authority_step_signal();
+
+    if (abs_skew > skew_tolerance() || step_signal) {
         /* Do NOT advance the baseline here — the remedy re-baselines after it
          * reconciles, so the witness measures the post-remedy stability. */
         return true;
@@ -154,6 +185,7 @@ void clock_skew_reconcile_test_reset(void)
     atomic_store(&g_last_wall_unix, 0);
     atomic_store(&g_last_mono_ms, 0);
     atomic_store(&g_last_skew_secs, 0);
+    atomic_store(&g_last_step_count_seen, 0);
     atomic_store(&g_test_remedy_calls, 0);
 }
 

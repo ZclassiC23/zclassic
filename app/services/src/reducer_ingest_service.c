@@ -223,7 +223,7 @@ static bool reducer_pending_body_is_accepted(
      * (HAVE_DATA && !FAILED is no witness — stage fails record ok=0, never
      * BLOCK_FAILED_MASK). Caller already confirmed bi IS the active tip. */
     if (!utxo_apply_stage_succeeded_at(bi->nHeight))
-        return false;
+        return false;  // raw-return-ok:not-yet-cleared-utxo_apply-is-a-normal-gate-result
 
     validation_state_init(out);
     return true;

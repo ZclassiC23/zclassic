@@ -550,7 +550,7 @@ bool invariant_sentinel_commitment_audit_once(void)
     memset(&saved, 0, sizeof(saved));
     memset(&computed, 0, sizeof(computed));
     if (!utxo_commitment_load_checkpoint(ndb->db, &saved))
-        return false; /* no checkpoint to audit against — skip */
+        return false; /* raw-return-ok:no checkpoint to audit against — skip */
 
     /* Torn-scan discard, keyed to the table's ACTUAL writer: every utxos
      * flush co-commits a fresh checkpoint in the same txn, so a stored
