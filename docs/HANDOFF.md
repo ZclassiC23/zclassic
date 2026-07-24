@@ -8,7 +8,7 @@
 > first, transactional C23 hot swap second, sandboxed publishing third. It does
 > not displace the immediate Q1/canonical-state priority below.
 
-# HANDOFF — current state (2026-07-22)
+# HANDOFF — current state (2026-07-24)
 
 ## 0-LATEST. Regroup checkpoint — **Q1 is not won; protect the live lane**
 
@@ -16,13 +16,19 @@ Three different nodes/artifacts are in play. Do not treat one as another.
 
 | Role | Identity | Observed state | Rule |
 |---|---|---|---|
-| **Canonical live lane** | default datadir, running build `3b0de63b0` | 2026-07-22 typed status: H\*=3,176,325, header tip 3,190,451, gap 14,126; operator latch active on `peer_floor_violated`; security posture names a nullifier-history gap | **Observe only.** Owner-gated; no restart, deploy, or state surgery from an agent. |
+| **Canonical live lane** | default datadir, running build `3b0de63b0` | 2026-07-24: up 13 days with ZERO H\* advance the entire uptime; H\*=3,176,325, header frontier ~3,192,025, oracle 3,192,030, gap_vs_oracle ~15,705; primary blocker `catchup_stalled` (downstream symptom of the permanent fold blocker, `app/conditions/src/download_queue_starved.c`); status RPC over its 250 ms budget; restart watchdog escalation_level=3, `automation_restart_ok:false` | **Observe only.** Owner-gated; no restart, deploy, or state surgery from an agent. |
 | **Stopwatch serving fixture** | `$HOME/.zclassic-c23-COPY-20260722-tipfresh3`, P2P `127.0.0.1:39070`, RPC `39071` | Typed fixture status reported H\*=3,190,536, `sync=at_tip`, 4 peers on 2026-07-22 | Immutable upstream fixture. Do not kill or mutate it while Q1 evidence depends on it. |
 | **Q1 code checkpoint** | `298affaf1` (followed only by this documentation regroup) | Clean and pushed; `make arch-score` = **50/100** | Development happens in a fresh worktree/datadir COPY. Never deploy this checkpoint merely because unit tests pass. |
 
-The old July 19 at-tip statement is historical, not current. The canonical
-lane has not earned soak time in its observed blocked state. Re-derive all
-three rows before acting; heights move and fixtures can exit.
+As of 2026-07-24 the canonical lane has been up 13 days with ZERO H\* advance
+the entire uptime, so it has earned no soak time in its observed blocked state.
+The wedge ROOT CAUSE is closed in code (baked `pprev` poison in
+`block_index.bin`; the REBUILD recipe is copy-proven through install+climb in
+the proof series under `~/.local/state/zclassic23-cure/`), but the LIVE APPLY IS
+PENDING the owner gate, and the `tip_finalize` rate bug (~94% of each fold
+round; fold rate collapses from ~50 to ~3 blk/s) is OPEN and gates any
+catch-up. The old July 19 top-of-chain claim is historical, not current.
+Re-derive all three rows before acting; heights move and fixtures can exit.
 
 ### Q1 evidence at this checkpoint
 
@@ -79,9 +85,10 @@ Mechanism detail for the historical wedge classes remains in
 
 ---
 
-## 0. History — everything before the at-tip pass
+## 0. History — earlier state narratives
 
-The wedge is cured (§0-LATEST). Every earlier state this file used to narrate
+The wedge is root-caused and its fix copy-proven on a fixture; the live apply is
+still pending the owner gate (§0-LATEST). Every earlier state this file used to narrate
 in detail — the 2026-07-17 bundle-export/chain-binding-refusal night, the
 mint3 from-genesis fold, the pre-cure "live node wedged at H\*=3,176,325 on
 `utxo_apply.anchor_backfill_gap`" diagnosis, and the dated producer/cure
@@ -90,15 +97,16 @@ cure runs) — is archived in Git, not this file (the header above already
 says so). Recover any of it with `git log --follow -- docs/HANDOFF.md` and
 `git show <rev>^:docs/HANDOFF.md` for a revision before the change that
 interests you; `git show a22dc39265^:docs/HANDOFF.md` is the pre-2026-07-19
-sweep baseline. Root-cause mechanism for the cured wedge is preserved as
+sweep baseline. Root-cause mechanism for the wedge is preserved as
 design reference (not live narrative) in
 [`docs/work/self-verified-tip-plan.md`](work/self-verified-tip-plan.md) and
 memory `project_live_wedge_anchor_frontier_rootcause_2026-07-12`. The
 alternate **operational** cure design
 ([`docs/work/shielded-history-importer.md`](work/shielded-history-importer.md))
-documents currently-shipped importer code but is **not** the path that
-actually passed the wedge — the sovereign consensus-bundle install
-(`docs/work/sovereign-cutover-runbook.md`) is, per §0-LATEST.
+documents currently-shipped importer code but is **not** the path the July 19
+narrative credited with passing the wedge — that credit went to the sovereign
+consensus-bundle install (`docs/work/sovereign-cutover-runbook.md`). Neither has
+passed the wedge on the live lane; both remain design references, per §0-LATEST.
 
 ## 3. Agent interface
 
