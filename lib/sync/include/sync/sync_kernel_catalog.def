@@ -52,6 +52,30 @@ SYNC_EVENT(PEER_LOST, "peer_lost")
 SYNC_EVENT(TIMEOUT, "timeout")
 SYNC_EVENT(STOP_REQUESTED, "stop_requested")
 
+/* ── Typed offer/manifest verdict (WF sync-authority P1) ────────────────
+ * MANIFEST_VALIDATED carries the verdict of the SOLE offer-validity authority
+ * (app/services snapshot_manifest_validate_offer), mapped to a coarse sync-
+ * local `enum sync_offer_verdict` by the adapter. The kernel does NOT duplicate
+ * the range/schema/finality/work rules — it only orchestrates on the verdict:
+ * ACCEPT stores the offer and moves toward NEGOTIATING; REJECT is inert. This
+ * is the typed successor to the quality-blind OFFER_RECEIVED path. */
+SYNC_EVENT(MANIFEST_VALIDATED, "manifest_validated")
+
+/* ── Generic-artifact catalog stubs (Phase 3 wires the installer) ───────
+ * Reserved surface for the future generic-artifact install/activate path.
+ * They are TYPES ONLY this slice: every phase arm folds them as inert no-ops
+ * (they carry NO phase forward and emit NO action), so the exhaustive switches
+ * stay total while install/activation remains UNREPRESENTABLE — there is still
+ * no ACTIVATE/PUBLISH action, and no phase transition reaches an installed or
+ * committed state. Do not add behavior here without the Phase-3 installer. */
+SYNC_EVENT(ARTIFACT_VERIFIED, "artifact_verified")
+SYNC_EVENT(INSTALL_PREPARED, "install_prepared")
+SYNC_EVENT(INSTALL_COMMITTED, "install_committed")
+SYNC_EVENT(TAIL_PIECE_VERIFIED, "tail_piece_verified")
+SYNC_EVENT(REDUCER_ADVANCED, "reducer_advanced")
+SYNC_EVENT(READY_REACHED, "ready_reached")
+SYNC_EVENT(SOVEREIGN_REACHED, "sovereign_reached")
+
 /* Side-effect intents the reducer may emit (executed by the impure adapter,
  * never by the reducer itself). NONE is the zero slot for the fixed-size
  * actions[] array. CRITICAL: no ACTIVATE / PUBLISH — see the file header. */

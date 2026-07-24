@@ -103,6 +103,13 @@ static struct chain_segment_store *g_seg_store; /* NULL until first open */
 static char g_seg_datadir[3072];
 static bool g_seg_open_tried;                   /* store open attempted for g_seg_datadir */
 
+/* Segment-vs-blk*.dat read source counters (see block_parse_cache.h). Counted
+ * once per MISS-path body fetch, at the exact fork point between the two
+ * sources — proves whether the fold is actually reading through the sealed
+ * substrate or still falling back to blk*.dat. */
+static _Atomic uint64_t g_bpc_seg_reads;
+static _Atomic uint64_t g_bpc_blkdat_reads;
+
 /* Ensure the resident store matches `datadir`. MUST hold g_seg_mutex. */
 static void bpc_segment_sync_store_locked(const char *datadir)
 {
@@ -254,6 +261,7 @@ bool block_parse_cache_acquire(int32_t height, const uint8_t block_hash[32],
     block_init(&loaded);
     if (!bpc_segment_try(height, block_hash, datadir, &loaded,
                          &out->disk_read_us, &out->parse_us)) {
+        atomic_fetch_add(&g_bpc_blkdat_reads, 1);
         struct disk_block_pos pos;
         disk_block_pos_init(&pos);
         if (!block_index_disk_pos_snapshot(bi, &pos, NULL))
@@ -268,6 +276,8 @@ bool block_parse_cache_acquire(int32_t height, const uint8_t block_hash[32],
         }
         out->disk_read_us += disk_read_us;
         out->parse_us += parse_us;
+    } else {
+        atomic_fetch_add(&g_bpc_seg_reads, 1);
     }
 
     struct uint256 got_hash;
@@ -401,4 +411,11 @@ void block_parse_cache_clear(void)
         }
     }
     pthread_mutex_unlock(&g_bpc_mutex);
+}
+
+void block_parse_cache_segment_read_stats(uint64_t *segment_hits,
+                                          uint64_t *blkdat_reads)
+{
+    if (segment_hits)  *segment_hits  = atomic_load(&g_bpc_seg_reads);
+    if (blkdat_reads)  *blkdat_reads  = atomic_load(&g_bpc_blkdat_reads);
 }

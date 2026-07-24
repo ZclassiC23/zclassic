@@ -28,20 +28,24 @@ struct sync_reduce_offer_shadow_result sync_reduce_offer_shadow_check(
 {
     struct sync_kernel_state state;
     memset(&state, 0, sizeof(state));
-    state.session_id = state_session_id;
+    state.session_id.value = state_session_id;
     state.phase = sync_reduce_adapter_map_phase(state_before);
 
     struct sync_event event;
     memset(&event, 0, sizeof(event));
-    event.session_id = event_session_id;
+    event.session_id.value = event_session_id;
     event.kind = SYNC_EVENT_OFFER_RECEIVED;
     event.height.value = offer_height;
     if (offer_utxo_root)
         memcpy(event.utxo_root.bytes, offer_utxo_root, 32);
 
+    /* The kernel now returns a full transition; the offer shadow only needs the
+     * legacy phase-only view, so project it (compat). */
+    struct sync_transition t = sync_reduce(state, event);
+
     struct sync_reduce_offer_shadow_result r;
     memset(&r, 0, sizeof(r));
-    r.kernel_decision = sync_reduce(state, event);
+    r.kernel_decision = sync_transition_to_decision(&t);
 
     r.kernel_accepts = false;
     for (int i = 0; i < r.kernel_decision.action_count; i++) {

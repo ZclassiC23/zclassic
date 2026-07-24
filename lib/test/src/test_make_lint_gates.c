@@ -1477,6 +1477,17 @@ static int t_git_hooks_gate_rejects_noop_pre_commit(void)
 #define COIN_BACKFILL_ROOT_REL \
     "test-tmp/_coin_backfill_caller_root_tmp"
 
+#define WRITER_FRONTIER_SCRIPT_REL \
+    "tools/lint/check_no_writer_below_sealed_frontier.sh"
+/* A non-designated production caller of the sealed-segment WRITE API
+ * (chain_segment_seal_range), planted under app/services/src so the gate's
+ * app/lib/config scan sees it. app/services/src IS the designated sealer's
+ * own directory, so the fixture basename must not collide with the real
+ * segment_sealer_service.c — it doesn't (different file, same dir is fine;
+ * the gate allowlists by exact path, not by directory). */
+#define WRITER_FRONTIER_FIXTURE_DST \
+    "app/services/src/_writer_below_sealed_frontier_fixture_tmp.c"
+
 static int plant_oversized_file(const char *rel, int n_lines)
 {
     char path[PATH_MAX];
@@ -2044,6 +2055,51 @@ static int t_no_new_coin_backfill_caller(void)
         ASSERT(trip_dup_rc != 0);
         ASSERT(restore_allowed == 0);
         ASSERT(recover_after_dup_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Sealed-segment substrate hardening — only the designated sealer/RPC/healer
+ * surface may call the ROM write API (chain_segment_seal_range /
+ * chain_segment_manifest_rebuild); a planted call from any other production
+ * file must trip the gate, the documented `// writer-below-frontier-ok`
+ * marker must exempt it, and removing it must recover the gate clean. */
+static int t_no_writer_below_sealed_frontier(void)
+{
+    int failures = 0;
+    char path[PATH_MAX];
+    unlink_rel(WRITER_FRONTIER_FIXTURE_DST);
+    int baseline_rc = run_gate_script(WRITER_FRONTIER_SCRIPT_REL, NULL);
+    int planted = (repo_path(path, sizeof(path),
+                             WRITER_FRONTIER_FIXTURE_DST) == 0 &&
+                   write_file(path,
+                              "void writer_below_sealed_frontier_fixture("
+                              "const char *dir) {\n"
+                              "    chain_segment_seal_range(dir, 0, 0, 0, 0, "
+                              "0, 0);\n"
+                              "}\n") == 0) ? 0 : -1;
+    int trip_rc =
+        planted == 0 ? run_gate_script(WRITER_FRONTIER_SCRIPT_REL, NULL) : -1;
+    /* The documented escape hatch must actually exempt the same call. */
+    int planted_marked = planted == 0 &&
+                   write_file(path,
+                              "void writer_below_sealed_frontier_fixture("
+                              "const char *dir) {\n"
+                              "    chain_segment_seal_range(dir, 0, 0, 0, 0, "
+                              "0, 0); // writer-below-frontier-ok\n"
+                              "}\n") == 0 ? 0 : -1;
+    int marked_rc = planted_marked == 0
+        ? run_gate_script(WRITER_FRONTIER_SCRIPT_REL, NULL) : -1;
+    unlink_rel(WRITER_FRONTIER_FIXTURE_DST);
+    int recover_rc = run_gate_script(WRITER_FRONTIER_SCRIPT_REL, NULL);
+    TEST("[lint-gate] no-writer-below-sealed-frontier: clean, trips on non-designated caller, marker exempts, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(planted_marked == 0);
+        ASSERT(marked_rc == 0);
+        ASSERT(recover_rc == 0);
         PASS();
     } _test_next:;
     return failures;
@@ -8787,6 +8843,7 @@ static const struct lint_gate_entry g_lint_gate_entries[] = {
     S_(t_no_new_repair_rung),
     S_(t_no_new_borrowed_seed_caller),
     S_(t_no_new_coin_backfill_caller),
+    S_(t_no_writer_below_sealed_frontier),
     S_(t_e9_operator_needed_sink),
     S_(t_systemd_memory_budget),
     S_(t_quality_job_guard),

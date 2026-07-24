@@ -20,6 +20,7 @@
 #include "net/peer_lifecycle.h"
 #include "net/file_service.h"
 #include "net/sync_reduce_adapter.h"
+#include "net/sync_shadow.h"
 #include "storage/disk_block_io.h"
 #include "coins/coins_view.h"
 #include "net/snapshot_sync_contract.h"
@@ -911,6 +912,9 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
         } else if (strcmp(cmd, MSG_SNAPSHOT_DATA) == 0) {
             /* ── Route: zsnapdata → snapsync_apply_chunk ───────── */
             struct snapshot_sync_service *svc = msg_snapshot_sync_ensure(mp);
+            struct snapsync_status chunk_pre = {0};
+            if (svc)
+                snapsync_get_status_snapshot(svc, &chunk_pre);
             int applied = svc ? snapsync_apply_chunk(svc,
                 s->data + s->read_pos, s->size - s->read_pos) : -1;
             if (applied < 0)
@@ -918,12 +922,31 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
             else
                 node->zsync_offset += (uint64_t)applied;
 
+            /* SHADOW (net/sync_shadow.h): fold the SAME chunk outcome through
+             * the pure kernel and compare its phase change against the
+             * reference's. Strictly AFTER the reference decision; nothing here
+             * feeds back into any branch above. */
+            if (svc) {
+                struct snapsync_status chunk_post = {0};
+                snapsync_get_status_snapshot(svc, &chunk_post);
+                sync_shadow_observe(
+                    applied < 0 ? SYNC_SHADOW_CHUNK_REJECTED
+                                : SYNC_SHADOW_CHUNK_ACCEPTED,
+                    (uint64_t)chunk_pre.serving_peer_id,
+                    chunk_pre.state, chunk_post.state,
+                    applied < 0 ? SYNC_EVENT_CHUNK_REJECTED
+                                : SYNC_EVENT_CHUNK_RECEIVED,
+                    false);
+            }
+
         } else if (strcmp(cmd, MSG_SNAPSHOT_END) == 0) {
             /* ── Route: zsnapend → snapsync_handle_end ─────────── */
             struct snapshot_sync_service *svc = msg_snapshot_sync(mp);
             if (!svc) {
                 /* nothing to finalize */
             } else {
+                struct snapsync_status end_pre = {0};
+                snapsync_get_status_snapshot(svc, &end_pre);
                 struct snapsync_end_result end_result = {0};
                 struct zcl_result end_res = snapsync_handle_end(svc,
                                                     (uint32_t)node->id);
@@ -980,6 +1003,34 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                 } else {
                 peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_PROOF,
                     "snapshot SHA3 verification failed");
+                }
+
+                /* SHADOW (net/sync_shadow.h): the reference finalize has fully
+                 * run (RECEIVING→VERIFYING→outcome). Model the proof step in the
+                 * kernel's VERIFYING phase and compare its outcome against the
+                 * reference's. The activation-contained case is an ALLOWLISTED
+                 * gap (kernel stages, reference re-marks FAILED). Strictly after
+                 * the reference decision; no feedback. */
+                {
+                    struct snapsync_status end_post = {0};
+                    snapsync_get_status_snapshot(svc, &end_post);
+                    enum sync_shadow_point pt;
+                    enum sync_event_kind kev;
+                    bool pok;
+                    if (end_result.verified) {
+                        pt = SYNC_SHADOW_PROOF_SUCCESS;
+                        kev = SYNC_EVENT_PROOF_VERIFIED; pok = true;
+                    } else if (end_res.code ==
+                               SNAPSYNC_ACTIVATION_CONTAINED_ERROR_CODE) {
+                        pt = SYNC_SHADOW_CONTAINMENT;
+                        kev = SYNC_EVENT_PROOF_VERIFIED; pok = true;
+                    } else {
+                        pt = SYNC_SHADOW_PROOF_FAILURE;
+                        kev = SYNC_EVENT_PROOF_FAILED; pok = false;
+                    }
+                    sync_shadow_observe(pt,
+                        (uint64_t)end_pre.serving_peer_id,
+                        SNAPSYNC_VERIFYING, end_post.state, kev, pok);
                 }
             }
 

@@ -105,6 +105,7 @@ gate_command() {
         check-sysinit-ordering)            echo './tools/lint/check_sysinit_ordering.sh' ;;
         check-sandbox-wired)               echo './tools/lint/check_sandbox_wired.sh' ;;
         check-no-shellouts)                echo './tools/lint/check_no_shellouts.sh' ;;
+        check-no-writer-below-sealed-frontier) echo './tools/lint/check_no_writer_below_sealed_frontier.sh' ;;
         check-peer-floor-single-source)    echo './tools/lint/check_peer_floor_single_source.sh' ;;
         check-proc-self-shim)              echo './tools/lint/check_proc_self_shim.sh' ;;
         check-no-raw-sqlite-in-controllers) echo 'ZCL_LINT_MODE=RATCHET ./tools/lint/check_no_raw_sqlite_in_controllers.sh' ;;

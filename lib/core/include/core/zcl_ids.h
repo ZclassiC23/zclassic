@@ -55,6 +55,14 @@ struct zcl_byte_count { uint64_t value; };
 struct zcl_chunk_index { uint32_t value; };
 /* An opaque peer identity. */
 struct zcl_peer_id { uint64_t value; };
+/* A snapshot/artifact fast-sync SESSION identity. Deliberately DISTINCT from a
+ * peer id: one sync session is bound to a peer at a point in time, but a peer
+ * can be re-selected across sessions and a session precedes/outlives any single
+ * peer binding — so the two must never be confused. `0` is the "no active
+ * session" sentinel (the kernel's stale-session guard treats a zero state
+ * session as "not yet gating"). Minted owner-side via zcl_sync_session_id_mint;
+ * not a consensus value and not a wire-protocol field. */
+struct zcl_sync_session_id { uint64_t value; };
 
 /* ── Layout guards: wire-compat is the whole point ──────────────────── */
 
@@ -69,6 +77,7 @@ _Static_assert(sizeof(struct zcl_height) == sizeof(int32_t), "zcl_height must wr
 _Static_assert(sizeof(struct zcl_byte_count) == sizeof(uint64_t), "zcl_byte_count must wrap uint64_t");
 _Static_assert(sizeof(struct zcl_chunk_index) == sizeof(uint32_t), "zcl_chunk_index must wrap uint32_t");
 _Static_assert(sizeof(struct zcl_peer_id) == sizeof(uint64_t), "zcl_peer_id must wrap uint64_t");
+_Static_assert(sizeof(struct zcl_sync_session_id) == sizeof(uint64_t), "zcl_sync_session_id must wrap uint64_t");
 
 /* ── eq / copy helpers (static inline, no external linkage) ──────────── */
 
@@ -102,7 +111,29 @@ ZCL_ID_DEFINE_SCALAR_HELPERS(zcl_height)
 ZCL_ID_DEFINE_SCALAR_HELPERS(zcl_byte_count)
 ZCL_ID_DEFINE_SCALAR_HELPERS(zcl_chunk_index)
 ZCL_ID_DEFINE_SCALAR_HELPERS(zcl_peer_id)
+ZCL_ID_DEFINE_SCALAR_HELPERS(zcl_sync_session_id)
 
 #undef ZCL_ID_DEFINE_SCALAR_HELPERS
+
+/* ── Session-id minting (owner-side, pure) ──────────────────────────────
+ *
+ * The session owner (the impure sync shell) draws a monotonic `tick` from a
+ * caller-owned counter and mints a session id from it. The mint is pure — it
+ * takes the tick by value and touches no clock/RNG/global — so the OWNER, not
+ * the kernel, decides when a new session begins. Two guarantees the "0 == no
+ * session" sentinel relies on:
+ *   - the result is ALWAYS nonzero (a live session id is never the sentinel);
+ *   - distinct ticks below 2^63 mint distinct ids (`(tick<<1)|1` is injective
+ *     over that range), so a stale session can never alias a fresh one. */
+static inline struct zcl_sync_session_id zcl_sync_session_id_mint(uint64_t tick)
+{
+    return (struct zcl_sync_session_id){ .value = (tick << 1) | 1u };
+}
+
+/* True iff this id is the "no active session" sentinel. */
+static inline bool zcl_sync_session_id_is_none(struct zcl_sync_session_id s)
+{
+    return s.value == 0;
+}
 
 #endif /* ZCL_CORE_ZCL_IDS_H */

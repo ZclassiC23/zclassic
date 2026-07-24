@@ -693,6 +693,15 @@
                  "count, and the retention cap it prunes to.",
                  "lib/net/src/rom_seed_ledger.c",
                  "lib/test/src/test_rom_seed_ledger.c"),
+    DIAG_SERVICE("sync_shadow", sync_shadow_dump_state_json,
+                 "pure sync-kernel SHADOW observer (sync/sync_reduce.h): per "
+                 "lifecycle-point observed/agree/allowlisted/mismatch counters "
+                 "plus a bounded ring of recent genuine mismatches. Observability "
+                 "ONLY — the reference snapshot-sync FSM stays authoritative; "
+                 "`authoritative:false` and any non-zero total_mismatches is a "
+                 "LOUD signal that the kernel and reference diverged.",
+                 "lib/net/src/sync_shadow.c",
+                 "lib/test/src/test_sync_shadow.c"),
     DIAG_SERVICE("checkpoint_ladder", checkpoint_ladder_dump_state_json,
                  "checkpoint ladder verifier: the compiled sealed keystone (the "
                  "one `bound` trust root) plus on-disk candidate rung artifacts "

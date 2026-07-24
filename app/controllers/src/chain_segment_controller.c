@@ -21,6 +21,7 @@
 #include "core/serialize.h"
 #include "json/json.h"
 #include "primitives/block.h"
+#include "storage/block_parse_cache.h"
 #include "storage/chain_segment.h"
 #include "storage/disk_block_io.h"
 #include "rpc/server.h"
@@ -201,6 +202,24 @@ bool chain_segment_dump_state_json(struct json_value *out, const char *key)
     char dir[2560];
     segments_dir(dir, sizeof(dir));
     json_push_kv_str(out, "segments_dir", dir);
+
+    /* Fold read-source counters — proves the substrate is actually used:
+     * how often block_parse_cache's miss path was served from a sealed
+     * segment vs fell through to blk*.dat. Emitted unconditionally (before
+     * the store-stat early return) because they describe the reader, not the
+     * store. See storage/block_parse_cache.h. */
+    uint64_t seg_hits = 0, blkdat_reads = 0;
+    block_parse_cache_segment_read_stats(&seg_hits, &blkdat_reads);
+    json_push_kv_int(out, "fold_reads_from_segment", (int64_t)seg_hits);
+    json_push_kv_int(out, "fold_reads_from_blk_dat", (int64_t)blkdat_reads);
+    uint64_t total_reads = seg_hits + blkdat_reads;
+    json_push_kv_int(out, "fold_reads_total", (int64_t)total_reads);
+    /* Ratio as a 0..10000 basis-points integer (json has no float pusher
+     * here) so a dumpstate consumer can compute a percentage without
+     * dividing by zero client-side. */
+    int64_t hit_ratio_bp = total_reads
+        ? (int64_t)((seg_hits * 10000ull) / total_reads) : 0;
+    json_push_kv_int(out, "fold_reads_segment_hit_ratio_bp", hit_ratio_bp);
 
     /* Cheap dump: manifest summary + present-file check, no full re-hash. The
      * `verifysegments` action does the O(store) digest pass. */

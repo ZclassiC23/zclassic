@@ -5131,6 +5131,15 @@ check-no-shellouts:
 	@echo "→ Gate: no_shellouts (os-substrate Rung 0)"
 	@./tools/lint/check_no_shellouts.sh
 
+# North Star invariant 1 (single writer per frontier), made mechanical for the
+# sealed ROM segment store: only the designated sealer/RPC/healer/writer surface
+# may call the store's WRITE API (chain_segment_seal_range /
+# chain_segment_manifest_rebuild). See
+# tools/lint/check_no_writer_below_sealed_frontier.sh for the rationale.
+check-no-writer-below-sealed-frontier:
+	@echo "→ Gate: no_writer_below_sealed_frontier (sealed ROM segment store)"
+	@./tools/lint/check_no_writer_below_sealed_frontier.sh
+
 # os-substrate Rung 1: no raw /proc/self/* or /proc/uptime reads outside
 # lib/platform/ — every such read migrates onto platform/os_proc.h.
 # RATCHET: tools/lint/proc_self_shim_baseline.txt grandfathers today's
@@ -5616,6 +5625,7 @@ LINT_GATES := \
     check-sysinit-ordering \
     check-sandbox-wired \
     check-no-shellouts \
+    check-no-writer-below-sealed-frontier \
     check-peer-floor-single-source \
     check-proc-self-shim \
     check-no-raw-sqlite-in-controllers \

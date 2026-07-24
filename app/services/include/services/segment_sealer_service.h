@@ -16,12 +16,24 @@
  * its supervision heartbeat but seals nothing, so a default node's on-disk state
  * is unchanged.
  *
+ * PRUNE-AFTER-SEAL: after a segment seals successfully, this service
+ * immediately re-opens it (a full mmap + whole-segment SHA3 re-verify off
+ * disk — not trusting the writer's own digest) and, only when that verify
+ * passes AND an optional block_pruning_service has been wired via
+ * segment_sealer_set_prune_service(), prunes the now-redundant blk*.dat range
+ * strictly below the just-verified segment's top via
+ * block_pruning_prune_sealed_range(). A verify failure never prunes — the
+ * blk*.dat bodies remain the only copy until a later seal attempt succeeds.
+ * prune_svc defaults to NULL (prune-after-seal disabled) so a caller that
+ * never wires it sees byte-for-byte unchanged sealer behavior.
+ *
  * API
  * ---
  *   segment_sealer_init(svc, ms, datadir)  — init struct (reads env flag)
+ *   segment_sealer_set_prune_service(svc, prune_svc) — wire prune-after-seal
  *   segment_sealer_start(svc)              — launch background thread
  *   segment_sealer_stop(svc)               — join thread
- *   segment_sealer_run_once(svc)           — seal at most one segment (tests)
+ *   segment_sealer_run_catchup(svc, n, force) — seal up to n segments (tests)
  *   segment_sealer_dump_state_json — `zclassic23 dumpstate segment_sealer`
  */
 
@@ -51,10 +63,17 @@
  * the reducer drive for disk. */
 #define SEGMENT_SEALER_DEFAULT_CATCHUP_BATCH  4
 
+struct block_pruning_service;
+
 struct segment_sealer_service {
     /* References (not owned) */
     struct main_state *ms;
     const char *datadir;
+
+    /* Optional: prune-after-seal target. NULL (the segment_sealer_init
+     * default) disables prune-after-seal entirely — wire it explicitly via
+     * segment_sealer_set_prune_service(). Not owned. */
+    struct block_pruning_service *prune_svc;
 
     /* Config */
     bool    enabled;         /* ZCL_SEGMENT_SEALER=1 or forced on */
@@ -77,6 +96,11 @@ struct segment_sealer_service {
     _Atomic int64_t last_sealed_first;  /* first_height of the last sealed seg */
     _Atomic int64_t frontier;           /* last computed finalized frontier */
     _Atomic int     last_status;        /* enum cseg_status of last attempt */
+
+    /* Prune-after-seal observability (all zero when prune_svc is NULL) */
+    _Atomic int64_t segments_verified;    /* post-seal re-verify succeeded */
+    _Atomic int64_t verify_failures;      /* post-seal re-verify failed (never pruned) */
+    _Atomic int64_t sealed_prune_files;   /* files pruned via the seal-triggered path */
 };
 
 /* Global pointer for dumpstate access. Set by boot, NULL before init. */
@@ -84,6 +108,13 @@ extern struct segment_sealer_service *g_segment_sealer;
 
 void segment_sealer_init(struct segment_sealer_service *svc,
                          struct main_state *ms, const char *datadir);
+
+/* Wire (or clear, with prune_svc=NULL) the optional prune-after-seal target.
+ * Not owned; the caller keeps prune_svc alive for as long as this service
+ * may seal. Safe to call before or after start(). */
+void segment_sealer_set_prune_service(struct segment_sealer_service *svc,
+                                      struct block_pruning_service *prune_svc);
+
 struct zcl_result segment_sealer_start(struct segment_sealer_service *svc);
 void segment_sealer_stop(struct segment_sealer_service *svc);
 

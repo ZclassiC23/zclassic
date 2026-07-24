@@ -88,6 +88,17 @@ bool block_parse_cache_get(int32_t height, const uint8_t block_hash[32],
  * with an empty cache. */
 void block_parse_cache_clear(void);
 
+/* Segment-vs-blk*.dat read source counters — proves the sealed-segment
+ * substrate is actually being used by the fold. Counted once per MISS-path
+ * body fetch (the LRU-hit path never touches either source, so it is
+ * intentionally excluded): `*segment_hits` is incremented when the body was
+ * served from a sealed, hash-verified segment; `*blkdat_reads` is
+ * incremented when it fell through to the ordinary blk*.dat pread (no
+ * covering segment, or the segment source declined). Either pointer may be
+ * NULL to skip that output. Reentrant-safe (atomic loads). */
+void block_parse_cache_segment_read_stats(uint64_t *segment_hits,
+                                          uint64_t *blkdat_reads);
+
 /* Remove exactly the (height, hash) entry if present; a no-op if it isn't
  * cached (or hash is NULL). Call this from a stage's OWN post-read
  * verification failure (hash mismatch, merkle mismatch, etc.) on a body that

@@ -1601,6 +1601,7 @@ int main(int argc, char **argv)
     { extern int test_sync_reduce_invariants(void); failures += test_sync_reduce_invariants(); }
     { extern int test_sync_reduce_fuzz(void); failures += test_sync_reduce_fuzz(); }
     { extern int test_sync_reduce_adapter(void); failures += test_sync_reduce_adapter(); }
+    { extern int test_sync_shadow(void); failures += test_sync_shadow(); }
     { extern int test_zcl_ids(void); failures += test_zcl_ids(); }
     { extern int test_rom_manifest(void); failures += test_rom_manifest(); }
     { extern int test_rom_journal_resume(void); failures += test_rom_journal_resume(); }

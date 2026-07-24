@@ -39,6 +39,7 @@
 #include "util/thread_registry.h"
 
 #include <errno.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -202,17 +203,15 @@ static int64_t file_size_or_zero(const char *path)
 
 /* ── Core pruning logic ────────────────────────────────────── */
 
-int block_pruning_run_once(struct block_pruning_service *svc)
+/* Shared prune-below-height core for both entry points: run_once's
+ * keep_blocks-depth cadence and prune_sealed_range's segment-gated cadence.
+ * `prune_below` is the exclusive height boundary — a file is prunable only
+ * when the highest block it contains is strictly below it. */
+static int block_pruning_run_below(struct block_pruning_service *svc,
+                                   int chain_height, int prune_below)
 {
-    if (!svc || !svc->ms || !svc->datadir)
-        return 0;
-
-    int chain_height = active_chain_height(&svc->ms->chain_active);
-    atomic_store(&svc->lowest_have_data, chain_height);
-    if (chain_height < svc->keep_blocks)
-        return 0;  /* chain too short to prune anything */
-
-    int prune_below = chain_height - svc->keep_blocks;
+    if (prune_below <= 0)
+        return 0;  /* nothing old enough yet */
 
     /* Phase 1: Build map of file_num → max block height. */
     struct file_height_map fmap;
@@ -306,6 +305,40 @@ int block_pruning_run_once(struct block_pruning_service *svc)
 
     file_height_map_free(&fmap);
     return files_pruned_this_pass;
+}
+
+int block_pruning_run_once(struct block_pruning_service *svc)
+{
+    if (!svc || !svc->ms || !svc->datadir)
+        return 0;
+
+    int chain_height = active_chain_height(&svc->ms->chain_active);
+    atomic_store(&svc->lowest_have_data, chain_height);
+    if (chain_height < svc->keep_blocks)
+        return 0;  /* chain too short to prune anything */
+
+    int prune_below = chain_height - svc->keep_blocks;
+    return block_pruning_run_below(svc, chain_height, prune_below);
+}
+
+int block_pruning_prune_sealed_range(struct block_pruning_service *svc,
+                                     uint32_t sealed_verified_top_excl)
+{
+    if (!svc || !svc->ms || !svc->datadir)
+        return 0;
+
+    int chain_height = active_chain_height(&svc->ms->chain_active);
+
+    /* Never prune above the caller's just-sealed+verified boundary, and never
+     * beyond what keep_blocks already permits — the intersection of both
+     * floors is the only height range this call is allowed to touch. */
+    int prune_below = sealed_verified_top_excl > (uint32_t)INT32_MAX
+        ? INT32_MAX : (int)sealed_verified_top_excl;
+    int keep_floor = chain_height - svc->keep_blocks;
+    if (keep_floor < prune_below)
+        prune_below = keep_floor;
+
+    return block_pruning_run_below(svc, chain_height, prune_below);
 }
 
 /* ── Background thread ─────────────────────────────────────── */
