@@ -164,7 +164,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(sapling_prover_rng_determinism) \
     X(no_hardcoded_home) X(cookie_rotation) X(cli_auth_robust) X(cli_argv_strict) \
     X(reorg_safety) X(reorg_parity) \
-    X(reorg_projection_parity) X(stage_reorg_unwind_parity) \
+    X(stage_reorg_unwind_parity) \
     X(coins_applied_frontier) \
     X(utxo_apply_value_balance) X(utxo_apply_unspendable) \
     X(utxo_apply_coinbase_maturity) \
@@ -226,7 +226,6 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(projection) X(projection_adoption) X(projection_consumer) X(progress_store) X(event_log) \
     X(mempool_projection) X(peers_projection) X(topology_store) X(znam_projection) \
     X(wallet_projection) X(small_projections) \
-    X(utxo_projection) X(utxo_apply_authorship) X(coins_view_projection) \
     X(coins_view_kv) \
     X(block_index_projection) X(block_index_rebuild) \
     X(block_index_topup) \

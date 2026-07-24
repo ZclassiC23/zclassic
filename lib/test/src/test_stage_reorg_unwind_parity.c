@@ -5,20 +5,17 @@
  *
  * WHY THIS TEST EXISTS
  * --------------------
- * test_reorg_projection_parity proves the legacy disconnect path
- * (disconnect_block) unwinds the UTXO set correctly. When
- * utxo_projection_test_set_author(UTXO_AUTHOR_STAGE), the authoritative
- * writer is utxo_apply_stage, which now authors ONLY coins_kv (the
- * canonical UTXO set in progress.kv — the projection dual-write was
- * removed). A reorg on that path must produce a BYTE-IDENTICAL coins_kv
+ * The authoritative UTXO writer is utxo_apply_stage, which authors the
+ * kernel coins_kv (the canonical UTXO set in progress.kv — the one UTXO
+ * ledger). A reorg on that path must produce a BYTE-IDENTICAL coins_kv
  * SHA3 commitment to a direct build of the winning branch — otherwise a
  * reorg silently and permanently corrupts the UTXO set (a wrong inverse
  * SPENDs an absent coin = a no-op DELETE, with NO crash). This is the proof
  * the stage-side inverse path (utxo_apply_reorg_unwind_if_needed) is
  * correct, in isolation.
  *
- * WHAT IS DRIVEN (author == STAGE throughout)
- * -------------------------------------------
+ * WHAT IS DRIVEN
+ * --------------
  *   Base UTXO set: a few pre-fork external coins, seeded IDENTICALLY into
  *   both runs' coins_kv (a coin spent on the losing branch and restored on
  *   unwind must already exist in both, or the runs diverge).
@@ -45,8 +42,8 @@
  *     restored live, and EXT_W is spent.
  *
  * No legacy coins.db is involved — this is coins_kv-vs-coins_kv over the
- * SHA3 commitment of each derived UTXO set, exactly like
- * test_reorg_projection_parity but exercising the STAGE inverse path. */
+ * SHA3 commitment of each derived UTXO set, exercising the stage inverse
+ * path. */
 
 #include "test/test_helpers.h"
 
@@ -59,7 +56,6 @@
 #include "storage/coins_kv.h"
 #include "storage/event_log.h"
 #include "storage/progress_store.h"
-#include "storage/utxo_projection.h"
 #include "util/blocker.h"
 #include "util/safe_alloc.h"
 #include "util/stage.h"
@@ -410,19 +406,14 @@ int test_stage_reorg_unwind_parity(void)
     /* ── RUN 1: stage reorg path ─────────────────────────────────────── */
     if (built) {
         char dir[256]; test_make_tmpdir(dir, sizeof(dir), "stage_reorg_unwind", "run1");
-        char log_path[512], proj_path[512];
+        char log_path[512];
         snprintf(log_path, sizeof(log_path), "%s/events.log", dir);
-        snprintf(proj_path, sizeof(proj_path), "%s/utxo.db", dir);
 
         SRU_CHECK("run1: progress_store opens", progress_store_open(dir));
         event_log_t *lg = event_log_open(log_path);
         SRU_CHECK("run1: event log opens", lg != NULL);
-        utxo_projection_t *p = lg ? utxo_projection_open(proj_path, lg) : NULL;
-        SRU_CHECK("run1: projection opens", p != NULL);
 
-        if (lg && p) {
-            utxo_projection_set_event_log(lg);
-            utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
+        if (lg) {
             seed_base_coins(progress_store_db(), ext, 2);
 
             struct main_state ms;
@@ -492,9 +483,6 @@ int test_stage_reorg_unwind_parity(void)
             utxo_apply_stage_shutdown();
             active_chain_free(&ms.chain_active);
         }
-        utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
-        utxo_projection_set_event_log(NULL);
-        if (p) utxo_projection_close(p);
         if (lg) event_log_close(lg);
         progress_store_close();
         test_cleanup_tmpdir(dir);
@@ -503,19 +491,14 @@ int test_stage_reorg_unwind_parity(void)
     /* ── RUN 2: direct build of W ─────────────────────────────────────── */
     if (built) {
         char dir[256]; test_make_tmpdir(dir, sizeof(dir), "stage_reorg_unwind", "run2");
-        char log_path[512], proj_path[512];
+        char log_path[512];
         snprintf(log_path, sizeof(log_path), "%s/events.log", dir);
-        snprintf(proj_path, sizeof(proj_path), "%s/utxo.db", dir);
 
         SRU_CHECK("run2: progress_store opens", progress_store_open(dir));
         event_log_t *lg = event_log_open(log_path);
         SRU_CHECK("run2: event log opens", lg != NULL);
-        utxo_projection_t *p = lg ? utxo_projection_open(proj_path, lg) : NULL;
-        SRU_CHECK("run2: projection opens", p != NULL);
 
-        if (lg && p) {
-            utxo_projection_set_event_log(lg);
-            utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
+        if (lg) {
             seed_base_coins(progress_store_db(), ext, 2);
 
             struct main_state ms;
@@ -545,9 +528,6 @@ int test_stage_reorg_unwind_parity(void)
             utxo_apply_stage_shutdown();
             active_chain_free(&ms.chain_active);
         }
-        utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
-        utxo_projection_set_event_log(NULL);
-        if (p) utxo_projection_close(p);
         if (lg) event_log_close(lg);
         progress_store_close();
         test_cleanup_tmpdir(dir);

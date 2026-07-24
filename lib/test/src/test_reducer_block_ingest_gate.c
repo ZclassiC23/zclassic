@@ -69,9 +69,9 @@
 #include "services/chain_activation_service.h"
 #include "services/header_admit_inbox.h"
 #include "storage/disk_block_io.h"
+#include "storage/coins_kv.h"
 #include "storage/event_log.h"
 #include "storage/progress_store.h"
-#include "storage/utxo_projection.h"
 #include "jobs/header_admit_stage.h"
 #include "jobs/validate_headers_stage.h"
 #include "jobs/body_fetch_stage.h"
@@ -330,9 +330,8 @@ int test_reducer_block_ingest_gate(void)
     snprintf(blocksdir, sizeof(blocksdir), "%s/blocks", netdir);
     rbi_mkdir_p(blocksdir);
 
-    char log_path[512], proj_path[512];
+    char log_path[512];
     snprintf(log_path, sizeof(log_path), "%s/events.log", dir);
-    snprintf(proj_path, sizeof(proj_path), "%s/utxo.db", dir);
 
     progress_store_close();
     bool store_ok = progress_store_open(dir);
@@ -341,11 +340,7 @@ int test_reducer_block_ingest_gate(void)
     event_log_t *lg = store_ok ? event_log_open(log_path) : NULL;
     RBI_CHECK("event log opens", lg != NULL);
 
-    utxo_projection_t *proj = lg ? utxo_projection_open(proj_path, lg) : NULL;
-    RBI_CHECK("UTXO projection opens", proj != NULL);
-
-    if (!store_ok || !lg || !proj) {
-        if (proj) utxo_projection_close(proj);
+    if (!store_ok || !lg) {
         if (lg) event_log_close(lg);
         progress_store_close();
         test_cleanup_tmpdir(blocksdir);
@@ -359,19 +354,10 @@ int test_reducer_block_ingest_gate(void)
         return failures;
     }
 
-    /* Put utxo_apply in STAGE author mode (the production default; set
-     * explicitly so the test is robust to runner ordering, restored on
-     * teardown). STAGE author means the stage writes the applied coinbase
-     * into coins_kv — the SOLE live UTXO author and read source. The stage
-     * emits NO EV_UTXO_* events; the utxo_projection is a seed-only MIRROR
-     * derived from coins_kv via utxo_projection_reseed_from_coins_kv (exactly
-     * how production rebuilds it — utxo_apply_delta_repair.c:444). We reseed
-     * the projection from coins_kv at both the before/after snapshots below,
-     * so the UTXO-count/commitment assertions compare the store the reducer
-     * genuinely authored. (The event log `lg` is wired only so the projection
-     * can open against it; it carries no applied-delta frames.) */
-    utxo_projection_set_event_log(lg);
-    utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
+    /* utxo_apply writes the applied coinbase into the kernel coins_kv — the
+     * SOLE live UTXO author and read source. The UTXO-count/commitment
+     * assertions below read coins_kv directly, so they compare the store the
+     * reducer genuinely authored. */
 
     struct main_state ms;
     main_state_init(&ms);
@@ -436,17 +422,15 @@ int test_reducer_block_ingest_gate(void)
     int height_before = active_chain_height(&ms.chain_active);
     RBI_CHECK("genesis tip height is 0", height_before == 0);
 
-    /* Mirror the projection from the authoritative coins_kv set the reducer
-     * writes (the production derivation; see the wiring note above). coins_kv
+    /* Snapshot the authoritative coins_kv set the reducer writes. coins_kv
      * is empty here — genesis seeded only the utxo_apply_log row — so
      * count_before==0 and commit_before is the empty-set hash, preserving the
      * gate's baseline. (Runs after utxo_apply_stage_init, so the coins schema
      * exists.) */
-    (void)utxo_projection_reseed_from_coins_kv(proj, progress_store_db());
-    uint64_t count_before = utxo_projection_count(proj);
+    uint64_t count_before = (uint64_t)coins_kv_count(progress_store_db());
     uint8_t commit_before[32];
     bool have_commit_before =
-        (utxo_projection_commitment(proj, commit_before) == 0);
+        (coins_kv_commitment(progress_store_db(), commit_before) == 0);
     RBI_CHECK("genesis UTXO commitment computed", have_commit_before);
     printf("reducer_block_ingest_gate: genesis utxo count=%llu\n",
            (unsigned long long)count_before);
@@ -585,11 +569,7 @@ int test_reducer_block_ingest_gate(void)
      * Block 1's coinbase is live in the UTXO set and the SHA3 commitment moved.
      * (The set also carries block 2's coinbase as the pending successor; we
      * assert specifically on block 1's coinbase — the block under test.) */
-    bool reseeded = utxo_projection_reseed_from_coins_kv(proj,
-                                                         progress_store_db());
-    RBI_CHECK("projection reseeded from the applied coins_kv set", reseeded);
-
-    uint64_t count_after = utxo_projection_count(proj);
+    uint64_t count_after = (uint64_t)coins_kv_count(progress_store_db());
     printf("reducer_block_ingest_gate: utxo count %llu -> %llu\n",
            (unsigned long long)count_before, (unsigned long long)count_after);
     /* Block 1 added exactly one new coinbase UTXO over the genesis baseline
@@ -598,15 +578,15 @@ int test_reducer_block_ingest_gate(void)
               count_after == count_before + 1 + (applied2 ? 1 : 0));
 
     int64_t live_value = 0;
-    bool cb_live = utxo_projection_get(proj, cb_txid.data, 0,
-                                       &live_value, NULL, 0, NULL);
+    bool cb_live = coins_kv_get(progress_store_db(), cb_txid.data, 0,
+                                &live_value, NULL, 0, NULL);
     RBI_CHECK("block 1's coinbase output is live in the UTXO set", cb_live);
     RBI_CHECK("live coinbase value equals subsidy",
               cb_live && live_value == cb_value && cb_value > 0);
 
     uint8_t commit_after[32];
     bool have_commit_after =
-        (utxo_projection_commitment(proj, commit_after) == 0);
+        (coins_kv_commitment(progress_store_db(), commit_after) == 0);
     RBI_CHECK("post-ingest UTXO commitment recomputes", have_commit_after);
     RBI_CHECK("UTXO commitment changed after the block applied",
               have_commit_before && have_commit_after &&
@@ -656,12 +636,7 @@ int test_reducer_block_ingest_gate(void)
 
     activation_controller_destroy(&ctl);
 
-    /* Restore the production projection author + detach the event log. */
-    utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
-    utxo_projection_set_event_log(NULL);
-
     main_state_free(&ms);
-    utxo_projection_close(proj);
     event_log_close(lg);
     progress_store_close();
     /* Remove the on-disk block file the front door wrote, then the dirs. */

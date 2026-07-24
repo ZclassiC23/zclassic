@@ -40,7 +40,6 @@
 #include "storage/coins_kv.h"
 #include "storage/event_log.h"
 #include "storage/progress_store.h"
-#include "storage/utxo_projection.h"
 #include "util/blocker.h"
 #include "util/safe_alloc.h"
 #include "util/stage.h"
@@ -386,18 +385,14 @@ int test_coins_applied_frontier(void)
 
     if (built) {
         char dir[256]; test_make_tmpdir(dir, sizeof(dir), "coins_applied_frontier", "main");
-        char log_path[512], proj_path[512];
+        char log_path[512];
         snprintf(log_path, sizeof(log_path), "%s/events.log", dir);
-        snprintf(proj_path, sizeof(proj_path), "%s/utxo.db", dir);
 
         CAF_CHECK("progress_store opens", progress_store_open(dir));
         event_log_t *lg = event_log_open(log_path);
-        utxo_projection_t *p = lg ? utxo_projection_open(proj_path, lg) : NULL;
-        CAF_CHECK("projection opens", p != NULL);
+        CAF_CHECK("event log opens", lg != NULL);
 
-        if (lg && p) {
-            utxo_projection_set_event_log(lg);
-            utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
+        if (lg) {
             sqlite3 *pdb = progress_store_db();
 
             /* (4a) VIRGIN: before any stage activity coins_applied_height is
@@ -464,7 +459,7 @@ int test_coins_applied_frontier(void)
              *      blocks the plain-set decrease, leaving frontier at 4 while the
              *      cursor drops to 1 → frontier != cursor, frd != 1.
              * (A strictly-shorter-winner sub-case cannot pin this in this
-             * harness: in UTXO_AUTHOR_STAGE driver mode the stage-side reorg only
+             * harness: the stage-side reorg only
              * fires when a competing block occupies the old tip height C-1, so a
              * winner shorter than the applied tip never triggers the unwind; and
              * these branches always fork at genesis. The unwind-alone snapshot is
@@ -526,9 +521,6 @@ int test_coins_applied_frontier(void)
             utxo_apply_stage_shutdown();
             active_chain_free(&ms.chain_active);
         }
-        utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
-        utxo_projection_set_event_log(NULL);
-        if (p) utxo_projection_close(p);
         if (lg) event_log_close(lg);
         progress_store_close();
         test_cleanup_tmpdir(dir);
@@ -541,17 +533,13 @@ int test_coins_applied_frontier(void)
 
     if (fbuilt) {
         char dir[256]; test_make_tmpdir(dir, sizeof(dir), "coins_applied_frontier", "upfail");
-        char log_path[512], proj_path[512];
+        char log_path[512];
         snprintf(log_path, sizeof(log_path), "%s/events.log", dir);
-        snprintf(proj_path, sizeof(proj_path), "%s/utxo.db", dir);
 
         CAF_CHECK("upfail: progress_store opens", progress_store_open(dir));
         event_log_t *lg = event_log_open(log_path);
-        utxo_projection_t *p = lg ? utxo_projection_open(proj_path, lg) : NULL;
 
-        if (lg && p) {
-            utxo_projection_set_event_log(lg);
-            utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
+        if (lg) {
             sqlite3 *pdb = progress_store_db();
 
             struct main_state ms;
@@ -590,9 +578,6 @@ int test_coins_applied_frontier(void)
             utxo_apply_stage_shutdown();
             active_chain_free(&ms.chain_active);
         }
-        utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
-        utxo_projection_set_event_log(NULL);
-        if (p) utxo_projection_close(p);
         if (lg) event_log_close(lg);
         progress_store_close();
         test_cleanup_tmpdir(dir);
@@ -789,17 +774,13 @@ int test_coins_applied_frontier(void)
 
         if (rbuilt) {
             char dir[256]; test_make_tmpdir(dir, sizeof(dir), "coins_applied_frontier", "reject");
-            char log_path[512], proj_path[512];
+            char log_path[512];
             snprintf(log_path, sizeof(log_path), "%s/events.log", dir);
-            snprintf(proj_path, sizeof(proj_path), "%s/utxo.db", dir);
 
             CAF_CHECK("reject: progress_store opens", progress_store_open(dir));
             event_log_t *lg = event_log_open(log_path);
-            utxo_projection_t *p = lg ? utxo_projection_open(proj_path, lg) : NULL;
 
-            if (lg && p) {
-                utxo_projection_set_event_log(lg);
-                utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
+            if (lg) {
                 sqlite3 *pdb = progress_store_db();
 
                 struct main_state ms;
@@ -835,9 +816,6 @@ int test_coins_applied_frontier(void)
                 utxo_apply_stage_shutdown();
                 active_chain_free(&ms.chain_active);
             }
-            utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
-            utxo_projection_set_event_log(NULL);
-            if (p) utxo_projection_close(p);
             if (lg) event_log_close(lg);
             progress_store_close();
             test_cleanup_tmpdir(dir);

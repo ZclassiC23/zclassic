@@ -22,7 +22,6 @@
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "storage/repair_marker.h"
-#include "storage/utxo_projection.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -280,12 +279,6 @@ static bool backfill_run(sqlite3 *db, struct main_state *ms,
         return true;
     if (strcmp(hole_status, "prevout_unresolved") != 0)
         return true;
-
-    /* G1 (after the NOT_APPLICABLE short-circuit so hole-free nodes on a
-     * non-stage author never page) */
-    if (utxo_projection_get_author() != UTXO_AUTHOR_STAGE)
-        return refuse(r, COIN_BACKFILL_REFUSED_UNPROVABLE,
-                      hash_found ? &hole_hash : NULL, "utxo_author_not_stage");
 
     /* G3: failing block hash-verified on the active chain AND equal to the
      * hole row's own hash (a NULL legacy row cannot bind → refuse) */

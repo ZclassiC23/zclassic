@@ -27,8 +27,7 @@
  *
  * Divergent siblings that must keep their LOCAL copies and do NOT include
  * this header: block_index_projection.c (mono_now_ms, 5-pragma loop
- * apply_pragmas, 3-arg meta_get_u64/set_u64), coins_view_projection.c,
- * progress_store.c.
+ * apply_pragmas, 3-arg meta_get_u64/set_u64), progress_store.c.
  */
 
 #ifndef ZCL_STORAGE_PROJECTION_UTIL_H

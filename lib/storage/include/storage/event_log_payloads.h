@@ -1059,7 +1059,13 @@ ev_node_census_observed_parse(const void *payload, size_t len,
     return true;
 }
 
-/* ── EV_UTXO_ADD / EV_UTXO_SPEND for utxo_projection ───────────────
+/* ── EV_UTXO_ADD / EV_UTXO_SPEND codec (reserved wire slots) ───────────────
+ *
+ * The event-log-fed UTXO projection these fed was removed in Program H1 (the
+ * kernel coins store is the one UTXO ledger). The wire slots (event_log.h tags
+ * 5/6) and this codec are RETAINED: the tags are frozen so old event logs stay
+ * readable, and the serialiser is still used by the rebuild_recent tool and the
+ * event-log unit tests. No production emitter or consumer remains.
  *
  * Frozen wire formats. Extending requires a new event_log_type id, not
  * an in-place change.

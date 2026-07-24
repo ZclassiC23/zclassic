@@ -35,7 +35,6 @@
 #include "storage/nullifier_kv.h"
 #include "storage/anchor_kv.h"
 #include "storage/progress_store.h"
-#include "storage/utxo_projection.h"
 #include "util/blocker.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -414,7 +413,7 @@ static job_result_t step_apply(struct stage_step_ctx *c)
         return JOB_ADVANCED;
     }
 
-    if (summary.ok && utxo_projection_get_author() == UTXO_AUTHOR_STAGE) {
+    if (summary.ok) {
         enum utxo_apply_shielded_gate_result sg =
             utxo_apply_shielded_history_gate(db, blk, next_h, &summary);
         if (sg == UTXO_SHIELDED_GATE_ERROR) {
@@ -436,7 +435,7 @@ static job_result_t step_apply(struct stage_step_ctx *c)
         }
     }
 
-    if (summary.ok && utxo_projection_get_author() == UTXO_AUTHOR_STAGE) {
+    if (summary.ok) {
         if (!utxo_apply_check_and_insert_nullifiers(db, blk, next_h,
                                                     &summary)) {
             ua_fatal_permanent_blocker(next_h,
@@ -447,12 +446,11 @@ static job_result_t step_apply(struct stage_step_ctx *c)
         }
     }
 
-    /* Author the canonical coins_kv set when the stage holds UTXO authority
-     * (UTXO_AUTHOR_STAGE — it guards the sole live UTXO author). In-txn: a
+    /* Author the canonical coins_kv set (the sole live UTXO ledger). In-txn: a
      * failure rolls back the whole stage txn (cursor + inverse-delta + log
      * row + coins) — never a torn partial apply. Scripts in `summary.added`
      * alias into `blk`, so apply before block_free. */
-    if (summary.ok && utxo_projection_get_author() == UTXO_AUTHOR_STAGE) {
+    if (summary.ok) {
         if (!apply_coins_kv(db, &summary, (uint32_t)next_h)) {
             ua_fatal_permanent_blocker(next_h,
                                        "coins_kv author store failure");
@@ -758,10 +756,8 @@ job_result_t utxo_apply_stage_step_once(void)
     /* Chain-extender: keep the visible chain[] window extended to the
      * most-work candidate so both the reorg-unwind detection and the
      * forward-apply below (each reads active_chain_at) see the winning
-     * branch. This runs only when the stage owns UTXO projection authorship;
-     * otherwise it leaves the active-chain window untouched. */
-    reducer_extend_window_to_candidate(
-        g_ms, utxo_projection_get_author() == UTXO_AUTHOR_STAGE);
+     * branch. The stage is the sole UTXO authority, so this always runs. */
+    reducer_extend_window_to_candidate(g_ms, true);
 
     /* Mark THIS thread as the coins_ram writer for the fold step (the UAF
      * guard — see coins_ram.h). The overlay is mutated by apply_coins_kv →

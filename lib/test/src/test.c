@@ -296,7 +296,6 @@ int main(int argc, char **argv)
     if (only && strcmp(only, "parity_diff") == 0) {
         printf("[test] ZCL_TEST_ONLY=parity_diff — running parity-diff gate only\n");
         failures += test_reorg_parity();
-        failures += test_reorg_projection_parity();
         failures += test_projection_replay_invariant();
         printf("\n=== parity_diff subset complete: %d failure(s) ===\n",
                failures);
@@ -1290,7 +1289,6 @@ int main(int argc, char **argv)
     failures += test_invalidateblock();
     failures += test_most_work_selector();
     failures += test_reorg_parity();
-    failures += test_reorg_projection_parity();
     failures += test_stage_reorg_unwind_parity();
     failures += test_utxo_apply_value_balance();
     failures += test_utxo_apply_unspendable();
@@ -1431,11 +1429,6 @@ int main(int argc, char **argv)
       failures += test_topology_store(); }
     failures += test_wallet_projection();
     failures += test_small_projections();
-    failures += test_utxo_projection();
-    { extern int test_utxo_apply_authorship(void);
-      failures += test_utxo_apply_authorship(); }
-    { extern int test_coins_view_projection(void);
-      failures += test_coins_view_projection(); }
     { extern int test_coins_view_kv(void);
       failures += test_coins_view_kv(); }
     failures += test_block_index_projection();

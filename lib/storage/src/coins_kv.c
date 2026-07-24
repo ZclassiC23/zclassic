@@ -4,9 +4,9 @@
  * durability rationale (docs/work/tip-durability-collapse.md).
  *
  * Raw sqlite3_step calls carry // raw-sql-ok:progress-kv-kernel-store, the
- * sanctioned hatch for the kernel store (same convention as progress_store.c /
- * utxo_projection.c). The coins set sits BELOW the AR lifecycle — it is reducer
- * state, not an AR model.
+ * sanctioned hatch for the kernel store (same convention as progress_store.c).
+ * The coins set sits BELOW the AR lifecycle — it is reducer state, not an AR
+ * model.
  *
  * Statement lifetime: every helper prepares/finalizes per call ON PURPOSE —
  * do NOT cache statements here. These run cross-thread on the ONE shared
@@ -787,8 +787,8 @@ int coins_kv_commitment(sqlite3 *db, uint8_t out[32])
         int cb_int = sqlite3_column_int(s, 5);
 
         /* Canonical must-never-fork record — see utxo_commitment.h. This is
-         * BYTE-IDENTICAL to utxo_projection_commitment / the legacy `utxos`
-         * commitment because all three share this single encoder. */
+         * BYTE-IDENTICAL to the legacy `utxos` commitment because both share
+         * this single encoder (utxo_commitment_sha3_write_record). */
         utxo_commitment_sha3_write_record(&ctx, txid, vout, value,
                                           (script_len > 0) ? script : NULL,
                                           (uint32_t)(script_len > 0 ? script_len : 0),

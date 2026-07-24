@@ -30,9 +30,9 @@ struct delta_entry {
     struct uint256 txid;
     uint32_t vout;
     int64_t value;
-    /* Added entries carry what EV_UTXO_ADD needs.
+    /* Added entries carry the coin fields the apply path writes.
      * `script` aliases into the live `struct block` and is valid only
-     * until block_free — emission must happen before the block is freed.
+     * until block_free — the apply must happen before the block is freed.
      *
      * Spent entries also carry the full pre-image (height + is_coinbase
      * + script) so a stage-side disconnect can emit a correct restore-ADD
@@ -140,7 +140,6 @@ bool utxo_apply_reorg_unwind_if_needed(sqlite3 *db,
 struct utxo_apply_value_overflow_repair_result {
     bool attempted;
     bool repaired;
-    bool author_refused;
     bool owner_refused;
     bool marker_seen;
     bool genuinely_invalid;

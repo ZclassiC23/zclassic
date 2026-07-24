@@ -232,8 +232,8 @@ bool utxo_commitment_compute_range(struct sqlite3 *db, const char *table,
  * the count actually emitted (0 if script==NULL). is_coinbase is
  * normalized to 0/1.
  *
- * This is the authoritative encoder behind utxo_commitment_sha3_compute_table,
- * utxo_projection_commitment, and coins_kv_commitment — feeding *buf into a
+ * This is the authoritative encoder behind utxo_commitment_sha3_compute_table
+ * and coins_kv_commitment — feeding *buf into a
  * SHA3-256 sponge in (txid,vout) row order is byte-for-byte equivalent to the
  * separate per-field writes those callers historically did (a sponge does not
  * distinguish write boundaries). A single endianness/field-order divergence

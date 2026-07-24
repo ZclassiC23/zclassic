@@ -64,7 +64,6 @@
 #include "storage/wallet_projection.h"
 #include "storage/small_projections.h"
 #include "storage/progress_store.h"
-#include "storage/utxo_projection.h"
 #include "services/block_index_loader.h"
 #include "services/reducer_ingest_service.h" /* reducer_ingest_try_seed_anchor (regtest genesis boot seed) */
 #include "jobs/tip_finalize_stage.h"         /* tip_finalize_stage_cursor + active_chain_tip */
@@ -584,7 +583,7 @@ bool app_init_services(struct app_context *ctx,
 
     /* Projection storage fan-out. Opens the append-only event log and the
      * reducer read-model projections used by runtime services. */
-    boot_start_projection_storage(ctx->datadir, boot_node_db(svc));
+    boot_start_projection_storage(ctx->datadir);
 
     /* ── Register sync state observer ──────────────────────────── *
      * Logs every sync state transition via the event system.

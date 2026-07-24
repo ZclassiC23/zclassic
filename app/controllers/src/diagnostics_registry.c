@@ -110,7 +110,6 @@
 #include "services/sovereign_promotion_service.h"
 #include "storage/small_projections.h"
 #include "storage/topology_store.h"
-#include "storage/utxo_projection.h"
 #include "storage/znam_projection.h"
 #include "storage/wallet_projection.h"
 #include "crypto_registry/crypto_registry.h"

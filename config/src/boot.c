@@ -82,7 +82,6 @@
 #include "storage/coins_view_kv.h"
 #include "storage/coins_kv.h"
 #include "storage/consensus_db.h"
-#include "storage/utxo_projection.h"
 #include "storage/coins_db.h"
 #include "storage/ldb_snapshot.h"
 #include "consensus/validation.h"
@@ -2162,15 +2161,14 @@ bool app_init(struct app_context *ctx)
     /* coins_kv-backed read authority: the coins_tip RAM cache resolves
      * misses against coins_kv (canonical UTXO set in progress.kv), authored
      * in-txn by the reducer so it is atomically consistent with the stage
-     * cursor on every crash — durability the projection's separate WAL
-     * lacks, which is what guards against the tip-wedge tear class.
-     * We still open the log + UTXO projection (no-op reuse of the later
-     * boot_start_projection_storage open): it is the SEED conduit only
-     * (coins_kv_boot_rebuild_if_needed copies it into coins_kv); the read
-     * view binds coins_kv, not the projection. FATAL only if progress.kv
-     * (the coins_kv home) is not
-     * open — coins_view_kv binds progress_store_db() lazily at read time. */
-    (void)boot_ensure_log_and_utxo_projection(ctx->datadir);
+     * cursor on every crash — durability a separate-WAL projection lacks,
+     * which is what guards against the tip-wedge tear class.
+     * We open + publish the event_log here (no-op reuse of the later
+     * boot_start_projection_storage open) so the singleton is available before
+     * the coins read view + the other projections bind. FATAL only if
+     * progress.kv (the coins_kv home) is not open — coins_view_kv binds
+     * progress_store_db() lazily at read time. */
+    (void)boot_ensure_event_log(ctx->datadir);
     if (!progress_store_db() ||
         !coins_view_kv_init(&g_coins_read_view)) {
         fprintf(stderr,
@@ -2200,7 +2198,7 @@ bool app_init(struct app_context *ctx)
     }
     coins_view_cache_init(&g_coins_tip, &g_coins_read_view.view);
 
-    /* Hoist the block_index_projection open next to the log/utxo projection
+    /* Hoist the block_index_projection open next to the event-log open
      * so load_block_index_from_projection (under -rebuildfromlog) has the
      * caught-up projection available BEFORE the block-index load below.
      * The phase-4 fan-out re-call in

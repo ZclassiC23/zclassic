@@ -78,7 +78,6 @@
 #include "storage/event_log.h"
 #include "storage/progress_store.h"
 #include "storage/snapshot_shielded.h"
-#include "storage/utxo_projection.h"
 #include "jobs/header_admit_stage.h"
 #include "jobs/validate_headers_stage.h"
 #include "jobs/body_fetch_stage.h"

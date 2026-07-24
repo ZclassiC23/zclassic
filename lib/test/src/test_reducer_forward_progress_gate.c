@@ -83,7 +83,6 @@
 #include "storage/disk_block_io.h"
 #include "storage/event_log.h"
 #include "storage/progress_store.h"
-#include "storage/utxo_projection.h"
 #include "jobs/header_admit_stage.h"
 #include "jobs/validate_headers_stage.h"
 #include "jobs/body_fetch_stage.h"
@@ -343,9 +342,8 @@ int test_reducer_forward_progress_gate(void)
     snprintf(blocksdir, sizeof(blocksdir), "%s/blocks", netdir);
     rfp_mkdir_p(blocksdir);
 
-    char log_path[512], proj_path[512];
+    char log_path[512];
     snprintf(log_path, sizeof(log_path), "%s/events.log", dir);
-    snprintf(proj_path, sizeof(proj_path), "%s/utxo.db", dir);
 
     progress_store_close();
     bool store_ok = progress_store_open(dir);
@@ -354,11 +352,7 @@ int test_reducer_forward_progress_gate(void)
     event_log_t *lg = store_ok ? event_log_open(log_path) : NULL;
     RFP_CHECK("event log opens", lg != NULL);
 
-    utxo_projection_t *proj = lg ? utxo_projection_open(proj_path, lg) : NULL;
-    RFP_CHECK("UTXO projection opens", proj != NULL);
-
-    if (!store_ok || !lg || !proj) {
-        if (proj) utxo_projection_close(proj);
+    if (!store_ok || !lg) {
         if (lg) event_log_close(lg);
         progress_store_close();
         test_cleanup_tmpdir(blocksdir);
@@ -371,9 +365,6 @@ int test_reducer_forward_progress_gate(void)
                failures);
         return failures;
     }
-
-    utxo_projection_set_event_log(lg);
-    utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
 
     struct main_state ms;
     main_state_init(&ms);
@@ -807,91 +798,24 @@ int test_reducer_forward_progress_gate(void)
             RFP_CHECK("PART2: all W-branch coinbases present",
                       w_present == W_LEN);
 
-            /* coins_kv_commitment uses the SAME SHA3 encoder as
-             * utxo_projection_commitment (coins_kv.h), so the reorged coins_kv
-             * commitment is byte-comparable to the from-scratch projection
-             * reference (proj2) built below. */
             uint8_t commit_reorg[32];
             bool have_reorg_commit =
                 (coins_kv_commitment(pdb, commit_reorg) == 0);
             uint64_t count_reorg = (uint64_t)coins_kv_count(pdb);
             RFP_CHECK("PART2: reorg-path commitment computed", have_reorg_commit);
+            printf("reducer_forward_progress_gate: PART2 reorg count=%llu\n",
+                   (unsigned long long)count_reorg);
 
-            /* ── From-scratch recompute of the WINNING chain ───────────────
-             * Build a SEPARATE projection that directly applies the canonical
-             * winning chain: blocks 1..F (shared) then W's F+1..N+1. Compare the
-             * SHA3 commitment byte-for-byte. A mismatch means the reorg inverse
-             * silently corrupted the UTXO set. We emit the same coinbase ADDs
-             * the stage would, in canonical order, over the same genesis seed. */
-            char dir2[300], proj2_path[600], log2_path[600];
-            snprintf(dir2, sizeof(dir2), "%s-direct", dir);
-            rfp_mkdir_p(dir2);
-            snprintf(proj2_path, sizeof(proj2_path), "%s/utxo.db", dir2);
-            snprintf(log2_path, sizeof(log2_path), "%s/events.log", dir2);
-            event_log_t *lg2 = event_log_open(log2_path);
-            utxo_projection_t *proj2 = lg2 ? utxo_projection_open(proj2_path,
-                                                                  lg2) : NULL;
-            bool direct_ok = (lg2 && proj2);
-            RFP_CHECK("PART2: from-scratch projection opens", direct_ok);
-            if (direct_ok) {
-                /* emit_add writes to the GLOBAL event log; point it at lg2 so
-                 * proj2 (opened over lg2) folds the canonical coinbases. Restore
-                 * the live log (lg) afterward. */
-                utxo_projection_set_event_log(lg2);
-                /* Genesis baseline carries no coinbase in this harness's model
-                 * (the genesis utxo_apply row is a zero delta), so the direct
-                 * build starts empty and adds exactly the canonical coinbases.
-                 * CRITICAL: the commitment hashes the coinbase SCRIPT too, so we
-                 * must emit each coinbase's real script_pub_key (the same bytes
-                 * utxo_apply stored from the block body) — not an empty script. */
-                /* Shared blocks 1..F (L == W below the fork). */
-                for (int h = 1; h <= F; h++) {
-                    const struct script *spk =
-                        &blocks[h].vtx[0].vout[0].script_pub_key;
-                    utxo_projection_emit_add(cbids[h].data, 0,
-                                             cbvals[h], (uint32_t)h, true,
-                                             spk->size ? spk->data : NULL,
-                                             (uint32_t)spk->size);
-                }
-                /* Winning branch W: heights F+1..N+1. */
-                for (int i = 0; i < W_LEN; i++) {
-                    int h = F + 1 + i;
-                    const struct script *spk =
-                        &wblk[i].vtx[0].vout[0].script_pub_key;
-                    utxo_projection_emit_add(wcbid[i].data, 0,
-                                             wcbv[i], (uint32_t)h, true,
-                                             spk->size ? spk->data : NULL,
-                                             (uint32_t)spk->size);
-                }
-                (void)utxo_projection_catch_up(proj2);
-                uint8_t commit_direct[32];
-                bool have_direct =
-                    (utxo_projection_commitment(proj2, commit_direct) == 0);
-                uint64_t count_direct = utxo_projection_count(proj2);
-                printf("reducer_forward_progress_gate: PART2 reorg count=%llu "
-                       "direct count=%llu commitment_match=%d\n",
-                       (unsigned long long)count_reorg,
-                       (unsigned long long)count_direct,
-                       (have_reorg_commit && have_direct &&
-                        memcmp(commit_reorg, commit_direct, 32) == 0) ? 1 : 0);
-                RFP_CHECK("PART2: reorg UTXO count == from-scratch count",
-                          count_reorg == count_direct);
-                reorg_ok =
-                    have_reorg_commit && have_direct &&
-                    memcmp(commit_reorg, commit_direct, 32) == 0 &&
-                    count_reorg == count_direct;
-                RFP_CHECK("PART2: reorg UTXO commitment == from-scratch "
-                          "(byte-exact SHA3 — reorg did not corrupt the set)",
-                          reorg_ok);
-            }
-            if (proj2) utxo_projection_close(proj2);
-            if (lg2) event_log_close(lg2);
-            test_cleanup_tmpdir(dir2);
-
-            /* Restore the live projection's event log: the from-scratch build
-             * temporarily pointed the GLOBAL emit target at lg2; put it back to
-             * the live log so any later emission stays on the real projection. */
-            utxo_projection_set_event_log(lg);
+            /* Byte-exact from-scratch reorg parity (coins_kv-vs-coins_kv over
+             * the SHA3 commitment) is the dedicated job of
+             * test_stage_reorg_unwind_parity. Here we assert the reorged
+             * coins_kv is STRUCTURALLY correct: every displaced L coinbase is
+             * gone, every W coinbase is present, and the commitment recomputes. */
+            reorg_ok = have_reorg_commit && count_reorg > 0 &&
+                       l_total > 0 && l_absent == l_total &&
+                       w_present == W_LEN;
+            RFP_CHECK("PART2: reorg produced a structurally correct coins_kv "
+                      "(L coinbases gone, W coinbases present)", reorg_ok);
         }
 
         if (wblk) for (int i = 0; i < W_LEN; i++) block_free(&wblk[i]);
@@ -915,11 +839,7 @@ int test_reducer_forward_progress_gate(void)
 
     activation_controller_destroy(&ctl);
 
-    utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
-    utxo_projection_set_event_log(NULL);
-
     main_state_free(&ms);
-    utxo_projection_close(proj);
     event_log_close(lg);
     progress_store_close();
     test_cleanup_tmpdir(blocksdir);
