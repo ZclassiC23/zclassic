@@ -63,13 +63,24 @@
 #                        unreachable). Not a verdict on C3 either way.
 #   5  FRONTIER-BUSY-TIMEOUT — `dumpstate reducer_frontier` kept returning a
 #                        partial `{"snapshot_status":"progress_store_busy",
-#                        "retryable":true}` doc (no "hstar" field) for the
-#                        entire busy-timeout window (--busy-timeout=SECS /
+#                        "retryable":true}` doc that carried no usable provable
+#                        sample (neither "hstar" NOR a cached_provable_tip
+#                        proxy) for the entire busy-timeout window
+#                        (--busy-timeout=SECS /
 #                        ZCL_CS_FRONTIER_BUSY_TIMEOUT_SECS, default 120s) —
 #                        this harness never observed a real frontier sample.
 #                        Distinct from FAIL: this is an instrument failure
 #                        ("we could not read the node's state"), not a claim
 #                        about the node's actual progress.
+#   6  READBACK-FAILED — no forward progress was OBSERVED and no blocker was
+#                        named, but the final frontier readback (after bounded
+#                        retries) yielded neither an authoritative "hstar" nor a
+#                        cached_provable_tip proxy — the instrument could not
+#                        read the node's provable tip at end-of-run. Carries the
+#                        last good provable sample. Distinct from the silent-
+#                        stall FAIL (exit 1): "we could not observe" is NOT "we
+#                        observed nothing happening." Never PASS, never silent-
+#                        stall — a FAIL with a named, honest cause.
 
 set -uo pipefail
 
@@ -138,6 +149,18 @@ last_blocker_count="0"
 busy_streak_start=0
 boots=1
 last_respawn_reason=""
+# Provable-sample tracking. The provable sample is the authoritative full-read
+# H* when available, else the lock-free cached_provable_tip proxy the busy
+# partial doc still carries (see rpc_frontier / frontier_provable_sample). This
+# is the honest "did the node climb" signal: a busy-but-healthy fold that only
+# ever exposed cached_provable_tip under load must NEVER be denied as a stall.
+# The PASS predicate stays authoritative-only (max_hstar/network_tip); the proxy
+# proves CLIMB, never mints a PASS.
+first_ps=""
+max_ps="-1"
+last_ps="-1"
+saw_ps=0
+final_readback_failed="false"
 
 json_escape() {
     printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g; s/\r/\\r/g' | tr '\n' ' '
@@ -189,6 +212,76 @@ read_exit_reason() {
     sed -n 's/^reason=\(.*\)$/\1/p' "$f" 2>/dev/null | tail -1
 }
 
+# jget <json> <key> — first top-level integer value of "key". The "key"[..]:
+# anchor with a required closing quote means "hstar" never matches
+# "hstar_next_height" and "network_tip" never matches "network_tip_read_ok".
+jget() {
+    printf '%s' "$1" | grep -oE "\"$2\"[[:space:]]*:[[:space:]]*-?[0-9]+" | head -1 |
+        grep -oE -- '-?[0-9]+$'
+}
+
+# frontier_hstar_full <frontier-doc> — the AUTHORITATIVE reducer-frontier H*,
+# present only in a FULL read (after the progress-store trylock succeeds). Echoes
+# -1 for a busy partial doc / an empty response — the proxy is deliberately NOT
+# substituted here, so the PASS predicate can never be minted from a proxy.
+frontier_hstar_full() {
+    local h; h="$(jget "$1" hstar)"; [ -z "$h" ] && h="-1"; printf '%s' "$h"
+}
+
+# frontier_provable_sample <frontier-doc> — the provable tip actually usable for
+# PROGRESS honesty: the authoritative full-read "hstar" when present, else the
+# lock-free "cached_provable_tip" the busy partial doc still carries (it is
+# emitted BEFORE the trylock in reducer_frontier_dump.c, exactly so a diagnostic
+# read during a busy fold still learns the served provable tip — the same proxy
+# ~/.local/state/zclassic23-cure/run-anchor-refold-proof-9.sh read_hstar() falls
+# back to). Echoes -1 only when NEITHER is available (opaque/empty response), so
+# a read miss is never faked into a sample.
+frontier_provable_sample() {
+    local h c
+    h="$(jget "$1" hstar)"
+    if [ -n "$h" ] && [ "$h" != "-1" ]; then printf '%s' "$h"; return 0; fi
+    c="$(jget "$1" cached_provable_tip)"; [ -z "$c" ] && c="-1"
+    printf '%s' "$c"
+}
+
+# blocker_ids <blocker-doc> — comma-joined "id" values of a `dumpstate blocker`
+# doc (empty if none / unreadable).
+blocker_ids() {
+    printf '%s' "$1" | tr -d '\n' |
+        grep -oE '"id"[[:space:]]*:[[:space:]]*"[^"]*"' |
+        sed -E 's/.*"id"[[:space:]]*:[[:space:]]*"([^"]*)"/\1/' | paste -sd, -
+}
+
+# classify_final_verdict — the PURE end-of-run decision, factored out of the
+# artifact/exit plumbing so its precedence is unit-testable (see --selftest).
+# Echoes exactly one token:
+#   pass            — H* reached network_tip (authoritative), decided upstream.
+#   seam            — the PROVABLE SAMPLE (authoritative H* OR cached_provable_tip
+#                     proxy) strictly climbed but did not catch tip in budget:
+#                     real forward progress. A busy-but-healthy fold that only
+#                     ever exposed the proxy lands HERE, never in silent-stall.
+#   stalled-named   — no observed climb, but a named blocker explains why.
+#   readback-failed — no observed climb, no blocker, and the final readback
+#                     failed (or no sample was ever taken): an INSTRUMENT
+#                     failure, not an observed stall.
+#   silent-stall    — no observed climb, no blocker, and we COULD read the
+#                     provable tip throughout — a genuine silent stall.
+# Args: reached first_ps max_ps saw_ps final_readback_failed last_blocker_count
+classify_final_verdict() {
+    local reached="$1" f_ps="$2" m_ps="$3" saw="$4" rbf="$5" bc="$6"
+    [ "$reached" = 1 ] && { printf 'pass'; return 0; }
+    if [ -n "$f_ps" ] && [ "$m_ps" -gt "$f_ps" ] 2>/dev/null; then
+        printf 'seam'; return 0
+    fi
+    if [ "${bc:-0}" -gt 0 ] 2>/dev/null; then
+        printf 'stalled-named'; return 0
+    fi
+    if [ "$rbf" = "true" ] || [ "$saw" = "0" ]; then
+        printf 'readback-failed'; return 0
+    fi
+    printf 'silent-stall'
+}
+
 # --selftest: hermetic classification self-check for is_busy_response() /
 # the "hstar" field detector rpc_frontier() uses — canned JSON fixtures,
 # no binary/network/mktemp touched. Exits before any real infra setup.
@@ -223,6 +316,47 @@ if [ "$SELFTEST" = "1" ]; then
     is_self_respawn_reason "";                                 st_check "empty/absent breadcrumb is NOT a respawn request (crash class)" 1 $?
     is_self_respawn_reason "self_respawn";                     st_check "bare 'self_respawn' (no suffix) is NOT a known respawn reason" 1 $?
 
+    # Provable-sample extraction: a FULL read yields the authoritative hstar; a
+    # busy partial doc (no hstar) falls back to cached_provable_tip WITHOUT ever
+    # promoting the proxy into the authoritative hstar; a busy doc whose proxy is
+    # still -1 (pre-fold) and a truly empty response both yield NO usable sample.
+    st_full_json='{"cached_provable_tip":3107000,"hstar":3107923,"network_tip":3190019,"network_tip_read_ok":true}'
+    st_busy_cpt_json='{"cached_provable_tip":3107923,"snapshot_status":"progress_store_busy","retryable":true}'
+    st_busy_nocpt_json='{"cached_provable_tip":-1,"snapshot_status":"progress_store_busy","retryable":true}'
+    st_ps_check() {  # desc, expect, actual
+        if [ "$3" = "$2" ]; then
+            echo "  ok: $1"
+        else
+            echo "  FAIL: $1 (expected '$2' got '$3')"
+            st_fail=1
+        fi
+    }
+    st_ps_check "full read: provable sample IS the authoritative hstar" 3107923 "$(frontier_provable_sample "$st_full_json")"
+    st_ps_check "full read: hstar_full IS the authoritative hstar" 3107923 "$(frontier_hstar_full "$st_full_json")"
+    st_ps_check "busy doc: provable sample falls back to cached_provable_tip" 3107923 "$(frontier_provable_sample "$st_busy_cpt_json")"
+    st_ps_check "busy doc: hstar_full stays -1 (proxy never becomes authoritative)" -1 "$(frontier_hstar_full "$st_busy_cpt_json")"
+    st_ps_check "busy doc, proxy=-1 (pre-fold): NO usable provable sample" -1 "$(frontier_provable_sample "$st_busy_nocpt_json")"
+    st_ps_check "empty response: NO usable provable sample" -1 "$(frontier_provable_sample "")"
+    st_ps_check "full read: network_tip extracted, not confused with network_tip_read_ok" 3190019 "$(jget "$st_full_json" network_tip)"
+
+    # Final-verdict precedence. Args: reached first_ps max_ps saw rbf blocker_ct.
+    # The headline regression this fixes: the 20260724T060944Z-880436 run — a
+    # healthy fold whose provable tip climbed 3056758 -> 3117923 under load —
+    # must classify SEAM, NEVER silent-stall.
+    st_ps_check "reached tip -> pass" pass "$(classify_final_verdict 1 3056758 3192164 1 false 0)"
+    st_ps_check "climbing proxy under load (the real failing run) -> seam, not silent-stall" \
+        seam "$(classify_final_verdict 0 3056758 3117923 1 false 0)"
+    st_ps_check "climb wins even if final readback later failed -> seam" \
+        seam "$(classify_final_verdict 0 3056758 3117923 1 true 0)"
+    st_ps_check "flat + named blocker -> stalled-named" \
+        stalled-named "$(classify_final_verdict 0 3100000 3100000 1 false 2)"
+    st_ps_check "never sampled all run (all-empty readback) -> readback-failed, not silent-stall" \
+        readback-failed "$(classify_final_verdict 0 '' -1 0 true 0)"
+    st_ps_check "sampled then final readback failed, no climb/blocker -> readback-failed" \
+        readback-failed "$(classify_final_verdict 0 3100000 3100000 1 true 0)"
+    st_ps_check "genuinely flat, readable throughout, no blocker -> silent-stall (preserved)" \
+        silent-stall "$(classify_final_verdict 0 3100000 3100000 1 false 0)"
+
     if [ "$st_fail" = 0 ]; then
         echo "cold-start-wipe-stopwatch: --selftest PASS"
         exit 0
@@ -252,8 +386,13 @@ capture_failure_bundle() {
     FRONTIER_BUSY_AT_CAPTURE="false"
     local got_frontier=0 got_drive=0 got_profile=0 got_stages=0 got_blocker=0 got_logs=0
     if [ -n "${PID:-}" ] && kill -0 "$PID" 2>/dev/null && [ -x "${NODE_BIN:-}" ] && [ -n "${DATADIR:-}" ]; then
-        "$NODE_BIN" -rpcport="$RPC" -datadir="$DATADIR" dumpstate reducer_frontier \
-            >"$ARTIFACT_DIR/frontier.json" 2>/dev/null && [ -s "$ARTIFACT_DIR/frontier.json" ] && got_frontier=1
+        # Frontier read goes through rpc_frontier (bounded retries + busy
+        # handling) so a lock-contention blip during capture doesn't drop the
+        # artifact to 0 bytes. Under heavy fold load this single one-shot was
+        # exactly what returned empty and mislabelled a healthy climb — capture
+        # must survive the same busy window the sample loop does.
+        rpc_frontier >"$ARTIFACT_DIR/frontier.json" 2>/dev/null
+        [ -s "$ARTIFACT_DIR/frontier.json" ] && got_frontier=1
         if [ "$got_frontier" = 1 ] && is_busy_response "$(cat "$ARTIFACT_DIR/frontier.json" 2>/dev/null)"; then
             FRONTIER_BUSY_AT_CAPTURE="true"
         fi
@@ -268,8 +407,12 @@ capture_failure_bundle() {
                 >"$ARTIFACT_DIR/stage-$stage_name.json" 2>/dev/null &&
                 [ -s "$ARTIFACT_DIR/stage-$stage_name.json" ] || got_stages=0
         done
-        "$NODE_BIN" -rpcport="$RPC" -datadir="$DATADIR" dumpstate blocker \
-            >"$ARTIFACT_DIR/blocker.json" 2>/dev/null && [ -s "$ARTIFACT_DIR/blocker.json" ] && got_blocker=1
+        # Blocker read is retried too — it feeds the STALLED-NAMED verdict, so a
+        # busy-window miss that empties it must not silently erase a real named
+        # blocker.
+        rpc_retry_nonempty dumpstate blocker \
+            >"$ARTIFACT_DIR/blocker.json" 2>/dev/null
+        [ -s "$ARTIFACT_DIR/blocker.json" ] && got_blocker=1
         "$NODE_BIN" -rpcport="$RPC" -datadir="$DATADIR" ops logs \
             --pattern='.' --since_secs=3600 --max_lines=500 --level=all \
             >"$ARTIFACT_DIR/ops.log.tail.txt" 2>/dev/null && [ -s "$ARTIFACT_DIR/ops.log.tail.txt" ] && got_logs=1
@@ -315,6 +458,11 @@ write_artifact() {
         printf '  "max_hstar": %s,\n' "$(json_number_or_null "$max_hstar")"
         printf '  "final_hstar": %s,\n' "$(json_number_or_null "$last_hstar")"
         printf '  "final_network_tip": %s,\n' "$(json_number_or_null "$last_network_tip")"
+        printf '  "first_provable_sample": %s,\n' "$(json_number_or_null "${first_ps:-}")"
+        printf '  "max_provable_sample": %s,\n' "$(json_number_or_null "$max_ps")"
+        printf '  "final_provable_sample": %s,\n' "$(json_number_or_null "$last_ps")"
+        printf '  "saw_provable_sample": %s,\n' "$([ "${saw_ps:-0}" = 1 ] && printf true || printf false)"
+        printf '  "final_readback_failed": %s,\n' "${final_readback_failed:-false}"
         printf '  "reached_network_tip": %s,\n' "$([ "$verdict" = "pass" ] && printf true || printf false)"
         printf '  "scratch_datadir": %s,\n' "$(json_string "${DATADIR:-}")"
         printf '  "scratch_datadir_removed": true,\n'
@@ -431,22 +579,42 @@ echo "cold-start-wipe-stopwatch: launched pid=$PID (boot $boots)"
 
 rpc() { "$NODE_BIN" -rpcport=$RPC -datadir="$DATADIR" "$@" 2>/dev/null; }
 
+# rpc_retry_nonempty <dumpstate-arg...> — a generic bounded-retry read (growing
+# backoff 1,1,2,3s) that returns the first NON-EMPTY response, so a busy-window
+# miss during failure-bundle capture doesn't drop a diagnostic artifact to 0
+# bytes. Echoes the last response (possibly empty if every retry missed). The
+# node RPC deadline (RPC_TIMEOUT_DEFAULT_MS, 10s) is what returns empty under a
+# heavy fold; retrying across a longer window catches a load gap.
+rpc_retry_nonempty() {
+    local out="" backoff
+    for backoff in 1 1 2 3 0; do
+        out="$(rpc "$@")"
+        [ -n "$out" ] && { printf '%s' "$out"; return 0; }
+        [ "$backoff" = 0 ] && break
+        sleep "$backoff"
+    done
+    printf '%s' "$out"
+}
+
 # dumpstate reads can transiently miss while the reducer drive holds the
 # progress_store lock — `dumpstate reducer_frontier` then returns a PARTIAL
 # doc, {"snapshot_status":"progress_store_busy","retryable":true}, with NO
-# "hstar" field (see is_busy_response() above). Retry with bounded,
-# growing backoff (1,1,2,3,5s — ~12s worst case per call) so a lock-
-# contention blip never reads as a regression or an empty sample. Sets the
-# global FRONTIER_LAST_BUSY=1 when every retry within this call still came
-# back busy (0 otherwise) — the caller tracks a busy STREAK across sample
-# ticks so a progress_store that never clears gets its own named verdict
-# (see FRONTIER_BUSY_TIMEOUT_SECS in the main loop) instead of silently
-# degrading into "no forward progress, no blocker" (silent-stall FAIL) —
-# those are different claims: "we could not observe" is not "we observed
-# nothing happening".
+# "hstar" field but STILL carrying cached_provable_tip (emitted lock-free before
+# the trylock). Under a heavy fold the RPC deadline can also be missed entirely,
+# returning empty. Retry with bounded, growing backoff (1,1,2,3,5s — ~12s worst
+# case per call), preferring a FULL read (has "hstar"); failing that, return the
+# best BUSY partial we saw (it carries the cached_provable_tip PROGRESS proxy)
+# in preference to an empty response, so a later empty retry can never erase an
+# earlier proxy. Sets FRONTIER_LAST_BUSY=1 when the best we got across retries
+# was a busy partial (0 on a full read or a truly empty response). The caller
+# tracks an unreadable STREAK across sample ticks so a progress_store that never
+# yields even a proxy gets its own named verdict (see FRONTIER_BUSY_TIMEOUT_SECS
+# in the main loop) instead of silently degrading into "no forward progress, no
+# blocker" (silent-stall FAIL) — those are different claims: "we could not
+# observe" is not "we observed nothing happening".
 FRONTIER_LAST_BUSY=0
 rpc_frontier() {
-    local out="" backoff
+    local out="" best_busy="" backoff
     for backoff in 1 1 2 3 5 0; do
         out="$(rpc dumpstate reducer_frontier)"
         if printf '%s' "$out" | grep -q '"hstar"'; then
@@ -454,20 +622,19 @@ rpc_frontier() {
             printf '%s' "$out"
             return 0
         fi
+        # Not a full read. Keep the busy partial (it still carries
+        # cached_provable_tip) so a subsequent empty retry can't lose it.
+        is_busy_response "$out" && best_busy="$out"
         [ "$backoff" = 0 ] && break
         sleep "$backoff"
     done
-    if is_busy_response "$out"; then
+    if [ -n "$best_busy" ]; then
         FRONTIER_LAST_BUSY=1
-    else
-        FRONTIER_LAST_BUSY=0
+        printf '%s' "$best_busy"
+        return 0
     fi
+    FRONTIER_LAST_BUSY=0
     printf '%s' "$out"
-}
-
-jget() {
-    printf '%s' "$1" | grep -oE "\"$2\"[[:space:]]*:[[:space:]]*-?[0-9]+" | head -1 |
-        grep -oE -- '-?[0-9]+$'
 }
 
 # Some boot-storage gates (config/src/boot.c boot_park_until_shutdown, e.g.
@@ -482,8 +649,8 @@ log_named_park() {
         tail -1 | sed -E "s/.*gate '([^']*)'.*/\1/"
 }
 
-printf '%-8s %-8s %-10s %-8s %s\n' "t(s)" "hstar" "net_tip" "tip_ok" "blockers"
-printf '%-8s %-8s %-10s %-8s %s\n' "----" "-----" "-------" "------" "--------"
+printf '%-8s %-10s %-10s %-10s %-8s %s\n' "t(s)" "hstar" "prov" "net_tip" "tip_ok" "blockers"
+printf '%-8s %-10s %-10s %-10s %-8s %s\n' "----" "-----" "----" "-------" "------" "--------"
 
 t=0
 reached=0
@@ -530,32 +697,33 @@ while :; do
     fj="$(rpc_frontier)"
     bj="$(rpc dumpstate blocker)"
 
-    hs="$(jget "$fj" hstar)";              [ -z "$hs" ] && hs="-1"
+    hs="$(frontier_hstar_full "$fj")"      # authoritative full-read H* (-1 = read miss / busy)
+    ps="$(frontier_provable_sample "$fj")" # progress sample: full H* or cached_provable_tip proxy (-1 = neither)
     nt="$(jget "$fj" network_tip)";        [ -z "$nt" ] && nt="-1"
     nt_ok="$(printf '%s' "$fj" | grep -oE '"network_tip_read_ok"[[:space:]]*:[[:space:]]*true')"
     bc="$(jget "$bj" active_count)";       [ -z "$bc" ] && bc="0"
-    bids="$(printf '%s' "$bj" | tr -d '\n' |
-            grep -oE '"id"[[:space:]]*:[[:space:]]*"[^"]*"' |
-            sed -E 's/.*"id"[[:space:]]*:[[:space:]]*"([^"]*)"/\1/' | paste -sd, -)"
+    bids="$(blocker_ids "$bj")"
     [ -z "$bids" ] && bids="-"
     park_gate="$(log_named_park)"
     if [ -n "$park_gate" ] && [ "$bc" = "0" ]; then
         bc=1; bids="boot_park:$park_gate"
     fi
 
-    printf '%-8s %-8s %-10s %-8s %s\n' "$elapsed" "$hs" "$nt" "${nt_ok:+yes}" "b=$bc:$bids"
+    printf '%-8s %-10s %-10s %-10s %-8s %s\n' "$elapsed" "$hs" "$ps" "$nt" "${nt_ok:+yes}" "b=$bc:$bids"
 
-    # Bounded busy-streak check: a progress_store that stays busy
-    # (retryable:true, no "hstar") across the ENTIRE FRONTIER_BUSY_TIMEOUT_SECS
-    # window means this harness never observed a real frontier sample in
-    # that time — an instrument failure, not evidence the node stalled.
-    # Reported as its own named verdict, never folded into hstar=-1 / "no
-    # forward progress, no blocker" (see D6).
-    if [ "$hs" = "-1" ] && [ "$FRONTIER_LAST_BUSY" = "1" ]; then
+    # Bounded unreadable-streak check: only accumulates when NO usable provable
+    # sample was obtained (ps == -1) AND the node kept answering the busy
+    # partial doc (retryable:true). Once a fold starts publishing a
+    # cached_provable_tip, ps>=0 and this resets — a busy-but-climbing node is
+    # observed via the proxy and never mistaken for an instrument blackout. A
+    # busy store that never yields even a proxy for the entire window is the
+    # honest FRONTIER-BUSY-TIMEOUT instrument-failure class (see D6), never
+    # folded into "no forward progress, no blocker" (silent-stall FAIL).
+    if [ "$ps" = "-1" ] && [ "$FRONTIER_LAST_BUSY" = "1" ]; then
         [ "$busy_streak_start" = 0 ] && busy_streak_start="$now"
         busy_elapsed=$((now - busy_streak_start))
         if [ "$busy_elapsed" -ge "$FRONTIER_BUSY_TIMEOUT_SECS" ]; then
-            echo "=== cold-start-wipe-stopwatch: FRONTIER-BUSY-TIMEOUT — progress_store_busy persisted ${busy_elapsed}s (>= ${FRONTIER_BUSY_TIMEOUT_SECS}s) with no hstar sample ever observed in that window ==="
+            echo "=== cold-start-wipe-stopwatch: FRONTIER-BUSY-TIMEOUT — progress_store_busy persisted ${busy_elapsed}s (>= ${FRONTIER_BUSY_TIMEOUT_SECS}s) with no hstar/cached_provable_tip sample ever observed in that window ==="
             write_artifact "frontier_busy_timeout" 5 \
                 "progress_store_busy persisted >= ${FRONTIER_BUSY_TIMEOUT_SECS}s (--busy-timeout); last raw frontier response: $fj"
             exit 5
@@ -564,8 +732,10 @@ while :; do
         busy_streak_start=0
     fi
 
-    # H* must never regress (a real regression is a correctness bug, not a
-    # timing seam) — read-misses (-1) are excluded, they are not regressions.
+    # Authoritative H* must never regress (a real regression is a correctness
+    # bug, not a timing seam). Only the FULL-read hstar is checked — read-misses
+    # (-1) are excluded, and the advisory proxy is deliberately NOT a regression
+    # tripwire (a cache read may lag without the ledger having regressed).
     if [ "$hs" != "-1" ] && [ "$last_hstar" != "-1" ] && [ "$hs" -lt "$last_hstar" ] 2>/dev/null; then
         die "H* REGRESSED: $last_hstar -> $hs at t=${elapsed}s (this is a correctness bug, not a budget seam)"
     fi
@@ -574,9 +744,22 @@ while :; do
         last_hstar="$hs"
         [ "$hs" -gt "$max_hstar" ] 2>/dev/null && max_hstar="$hs"
     fi
+    # Provable-sample tracking (full H* OR proxy): the honest "did it climb"
+    # signal a busy-but-healthy fold must never be denied. A run whose
+    # successive samples strictly increase can never be classed silent-stall.
+    if [ "$ps" != "-1" ]; then
+        saw_ps=1
+        [ -z "$first_ps" ] && first_ps="$ps"
+        last_ps="$ps"
+        [ "$ps" -gt "$max_ps" ] 2>/dev/null && max_ps="$ps"
+    fi
     [ "$nt" != "-1" ] && last_network_tip="$nt"
     last_blocker_ids="$bids"; last_blocker_count="$bc"
 
+    # PASS predicate — deliberately AUTHORITATIVE-ONLY: a full read (hstar +
+    # network_tip both present, network_tip_read_ok true) whose authoritative H*
+    # has caught the peer tip. The proxy can prove CLIMB but can NEVER mint a
+    # PASS (network_tip is absent from the busy partial doc anyway).
     if [ -n "$nt_ok" ] && [ "$nt" -gt 0 ] 2>/dev/null && [ "$hs" != "-1" ] && [ "$hs" -ge "$nt" ] 2>/dev/null; then
         reached=1
         break
@@ -602,23 +785,83 @@ if [ "$reached" = 1 ]; then
 fi
 
 echo "WALL_CLOCK_SECONDS=$elapsed"
-climbed=0
-if [ -n "$first_hstar" ] && [ "$max_hstar" -gt "$first_hstar" ] 2>/dev/null; then
-    climbed=1
+
+# FINAL CAPTURE READBACK — one more bounded-retry frontier + blocker read so the
+# closing verdict reflects the freshest observable state, not a single
+# end-of-budget miss. It refreshes the provable-sample / authoritative / blocker
+# trackers and decides final_readback_failed: true iff even this retried read
+# yielded NEITHER an authoritative hstar NOR a cached_provable_tip proxy. A run
+# that could not be observed at the end is an INSTRUMENT failure, never a claim
+# the node stalled.
+final_fj="$(rpc_frontier)"
+final_hs="$(frontier_hstar_full "$final_fj")"
+final_ps="$(frontier_provable_sample "$final_fj")"
+final_nt="$(jget "$final_fj" network_tip)"; [ -z "$final_nt" ] && final_nt="-1"
+if [ "$final_hs" != "-1" ]; then
+    [ -z "$first_hstar" ] && first_hstar="$final_hs"
+    last_hstar="$final_hs"
+    [ "$final_hs" -gt "$max_hstar" ] 2>/dev/null && max_hstar="$final_hs"
+fi
+if [ "$final_ps" != "-1" ]; then
+    saw_ps=1
+    [ -z "$first_ps" ] && first_ps="$final_ps"
+    last_ps="$final_ps"
+    [ "$final_ps" -gt "$max_ps" ] 2>/dev/null && max_ps="$final_ps"
+fi
+[ "$final_nt" != "-1" ] && last_network_tip="$final_nt"
+final_readback_failed="false"
+[ "$final_ps" = "-1" ] && final_readback_failed="true"
+
+# Refresh the named-blocker view with a retried read too, so a busy-window miss
+# doesn't erase a real blocker right before the STALLED-NAMED decision.
+final_bj="$(rpc_retry_nonempty dumpstate blocker)"
+final_bc="$(jget "$final_bj" active_count)"
+if [ -n "$final_bc" ]; then
+    last_blocker_count="$final_bc"
+    final_bids="$(blocker_ids "$final_bj")"
+    [ -n "$final_bids" ] && last_blocker_ids="$final_bids"
+fi
+final_park="$(log_named_park)"
+if [ -n "$final_park" ] && [ "${last_blocker_count:-0}" = "0" ]; then
+    last_blocker_count=1; last_blocker_ids="boot_park:$final_park"
 fi
 
-if [ "$climbed" = 1 ]; then
-    echo "=== cold-start-wipe-stopwatch: SEAM — H* climbed ($first_hstar -> $max_hstar) across $boots boot(s) but did not reach network_tip=$last_network_tip within ${BUDGET}s ==="
-    write_artifact "seam" 3 "H* made forward progress across $boots boot(s) but did not catch network_tip within budget"
-    exit 3
-fi
+# The verdict precedence is decided by the pure classify_final_verdict()
+# (unit-tested in --selftest). CLIMB is judged on the PROVABLE SAMPLE
+# (authoritative H* OR the cached_provable_tip proxy), so a healthy fold that
+# only ever exposed the proxy under load still counts as real forward progress
+# and can NEVER be called a silent stall.
+verdict_token="$(classify_final_verdict "$reached" "$first_ps" "$max_ps" \
+                    "$saw_ps" "$final_readback_failed" "$last_blocker_count")"
 
-if [ "${last_blocker_count:-0}" -gt 0 ] 2>/dev/null; then
-    echo "=== cold-start-wipe-stopwatch: STALLED-NAMED — no forward progress in ${BUDGET}s; active blocker(s): $last_blocker_ids ==="
-    write_artifact "stalled-named" 4 "no forward progress; named blocker(s): $last_blocker_ids"
-    exit 4
-fi
-
-echo "cold-start-wipe-stopwatch: last 20 log lines:"
-tail -20 "$DATADIR/node.log" 2>/dev/null | sed 's/^/  /'
-die "no forward progress AND no named blocker in ${BUDGET}s (silent-stall failure class)"
+case "$verdict_token" in
+    seam)
+        echo "=== cold-start-wipe-stopwatch: SEAM — provable tip climbed ($first_ps -> $max_ps) across $boots boot(s) but did not reach network_tip=$last_network_tip within ${BUDGET}s ==="
+        write_artifact "seam" 3 "provable tip made forward progress ($first_ps -> $max_ps) across $boots boot(s) but did not catch network_tip within budget"
+        exit 3
+        ;;
+    stalled-named)
+        echo "=== cold-start-wipe-stopwatch: STALLED-NAMED — no forward progress in ${BUDGET}s; active blocker(s): $last_blocker_ids ==="
+        write_artifact "stalled-named" 4 "no forward progress; named blocker(s): $last_blocker_ids"
+        exit 4
+        ;;
+    readback-failed)
+        # We could NOT read the node's provable tip at the end (final readback
+        # failed) or never got a single sample all run — an INSTRUMENT failure.
+        # Carries the last good provable sample; judged FAIL-with-named-cause,
+        # never silent-stall, never PASS.
+        echo "cold-start-wipe-stopwatch: last 20 log lines:"
+        tail -20 "$DATADIR/node.log" 2>/dev/null | sed 's/^/  /'
+        echo "=== cold-start-wipe-stopwatch: READBACK-FAILED — no authoritative hstar or cached_provable_tip proxy at final capture (last good provable sample: ${last_ps}, saw_sample=${saw_ps}) ==="
+        write_artifact "readback-failed" 6 "frontier readback yielded neither hstar nor cached_provable_tip after bounded retries (last good provable sample=${last_ps}, saw_sample=${saw_ps}); instrument failure, not an observed stall"
+        exit 6
+        ;;
+    *)
+        # silent-stall: we COULD read the provable tip throughout, it was
+        # genuinely flat, and nothing named a blocker — the real silent-stall
+        # failure class.
+        echo "cold-start-wipe-stopwatch: last 20 log lines:"
+        tail -20 "$DATADIR/node.log" 2>/dev/null | sed 's/^/  /'
+        die "no forward progress AND no named blocker in ${BUDGET}s (silent-stall failure class)"
+        ;;
+esac
