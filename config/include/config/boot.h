@@ -955,6 +955,22 @@ bool boot_refold_body_span_contiguous(struct main_state *ms,
                                       int32_t *out_first_missing,
                                       bool raise_blocker);
 
+/* Set (once, from boot) the datadir boot_refold_body_span_contiguous uses for
+ * its LOCAL body rebind: on a fold-span gap it runs scan_block_files_mark_data
+ * over <datadir>/blocks/blk*.dat to mark HAVE_DATA from the on-disk bodies
+ * before naming refold.body_gap. This is the header-only-import self-heal (the
+ * import carries hashes/heights but not body positions). NULL/empty disables the
+ * rebind (the pre-existing "name the gap" behavior). Copies the path. */
+void boot_refold_body_rebind_set_datadir(const char *datadir);
+
+#ifdef ZCL_TESTING
+/* Number of times the fold-span rebind scan was ATTEMPTED this process
+ * (once-per-process cap). Lets a test assert the rebind fired on a gap. */
+int  boot_refold_body_rebind_scan_attempts_for_test(void);
+/* Clear the rebind datadir + once-guard + attempt counter between test cases. */
+void boot_refold_body_rebind_reset_for_test(void);
+#endif
+
 /* -load-verify-boot eligibility probe (impl in config/src/boot_refold_staged.c).
  * Pure, side-effect-free predicate that decides whether a NORMAL boot should
  * route the load+verify+anchor-fold path instead of the cold-import seed. Returns

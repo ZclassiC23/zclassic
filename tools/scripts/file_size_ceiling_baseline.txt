@@ -49,11 +49,11 @@ app/views/src/explorer_pages_view.c 823
 # 2026-07-21: two merged changes — #7 node.db-open-failure gate (Task D/E, +1:
 # shared boot_park_until_shutdown signature; fix itself extracted to
 # boot_node_db_gate.c) and -full-fold boot mode (+7: boot_full_fold dispatch).
-config/src/boot.c 4346
+config/src/boot.c 4361
 config/src/boot_bundle_fetch.c 917
 config/src/boot_index.c 853
 config/src/boot_mint_anchor.c 809
-config/src/boot_refold_staged.c 2034
+config/src/boot_refold_staged.c 2077
 config/src/boot_services.c 1481
 config/src/bundle_exporter.c 925
 config/src/consensus_state_producer_receipt.c 805

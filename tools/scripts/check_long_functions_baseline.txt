@@ -24,4 +24,4 @@
 # sapling_tree_verify_at_saved_height / sapling_tree_attempt_fold_forward
 # helpers instead of unconditionally deferring or full-rebuilding.
 # 2026-07-21: merged #7 node.db gate call-site (+1) and -full-fold dispatch (+6).
-config/src/boot.c app_init 2810
+config/src/boot.c app_init 2823

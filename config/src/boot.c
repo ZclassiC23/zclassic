@@ -3178,6 +3178,14 @@ bool app_init(struct app_context *ctx)
      * Uses scan_max_have_data_h from the single-pass scan above
      * instead of another partial iteration. */
     {
+        /* FIXME(option-ii, follow-up): scan_max_have_data_h is the MAX HAVE_DATA
+         * height, NOT span COVERAGE. A header-only import whose projection rung
+         * marked an UPPER sub-span (e.g. h>=3,155,843) leaves this gate reading a
+         * high max while the LOWER fold span has no bodies — need_scan stays
+         * false and this broad scan is skipped. The from-anchor fold-span rebind
+         * (boot_refold_body_span_contiguous → scan_block_files_mark_data) now
+         * covers that case on a real gap; this gate could ADDITIONALLY fire on a
+         * coins-tip-ancestry body gap here rather than trusting the max. */
         bool need_scan = (scan_max_have_data_h < 100 &&
                           g_state.map_block_index.size > 1000) ||
                          g_state.map_block_index.size < 100 ||
@@ -3780,6 +3788,15 @@ sapling_tree_boot_check_done:
      * (a durable request OR <datadir>/bundles/<name>.sqlite) via the atomic installer,
      * which SUPERSEDES the transparent-only from-anchor reset; then consume any
      * armed refold request and compute do_from_anchor. Fail-closed + marker-guarded. */
+    /* Arm the fold-span LOCAL body rebind: on a from-anchor / post-install
+     * body-span gap (a header-only import carries hashes/heights but not body
+     * positions), boot_refold_body_span_contiguous scans <datadir>/blocks so it
+     * marks HAVE_DATA from the on-disk bodies before naming refold.body_gap.
+     * Set here (before the install + do_from_anchor gates that consult it) so
+     * the self-heal covers those callers without threading datadir through the
+     * install-runtime seam. */
+    boot_refold_body_rebind_set_datadir(ctx->datadir);
+
     struct boot_state_source_selection ssel;
     boot_select_state_source(&g_node_db, &g_state, ctx, &ssel);
     bool consumed_auto_refold = ssel.consumed_auto_refold;

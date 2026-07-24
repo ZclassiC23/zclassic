@@ -41,11 +41,14 @@
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
 #include "chain/chain.h"
+#include "chain/chainparams.h"
+#include "chain/chainparamsbase.h"
 #include "core/uint256.h"
 #include "util/blocker.h"
 
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #define BSC_CHECK(name, expr) do {                        \
     printf("  refold_body_span: %s... ", (name));          \
@@ -206,6 +209,119 @@ int test_refold_body_span_contiguous(void)
         BSC_CHECK("C6: NO blocker raised when raise_blocker=false",
                   !blocker_exists("refold.body_gap"));
         main_state_free(&ms);
+        blocker_reset_for_testing();
+    }
+
+    /* ── C7: LOCAL body rebind on a gap (header-only-import self-heal). ──────
+     * A gap should trigger scan_block_files_mark_data ONCE — but only when the
+     * rebind datadir is set AND local blk*.dat exist. The scan over a dummy
+     * block file marks nothing (no real bodies), so the gap persists and the
+     * blocker is still raised — the point here is the GATING/WIRING (the scan
+     * FIRES on a real gap when local files are present, and never otherwise);
+     * proof-N covers the end-to-end "marks HAVE_DATA from real bodies → fold
+     * arms". */
+
+    /* C7a: datadir set + a local blk00000.dat present → the rebind scan fires
+     * exactly ONCE (once-per-process guard), even across two calls. */
+    {
+        boot_refold_body_rebind_reset_for_test();
+        blocker_reset_for_testing();
+        chain_params_select(CHAIN_REGTEST);   /* scan reads chain_params_get() */
+
+        char root[256], blocksdir[400], blkpath[512];
+        test_make_tmpdir(root, sizeof(root), "refold_rebind", "havefiles");
+        snprintf(blocksdir, sizeof(blocksdir), "%s/blocks", root);
+        (void)mkdir(blocksdir, 0700);
+        snprintf(blkpath, sizeof(blkpath), "%s/blk00000.dat", blocksdir);
+        FILE *bf = fopen(blkpath, "wb");
+        bool wrote = bf && fwrite("nomagic-dummy-body", 1, 18, bf) == 18;
+        if (bf) fclose(bf);
+        BSC_CHECK("C7a: dummy blk00000.dat staged", wrote);
+
+        boot_refold_body_rebind_set_datadir(root);
+
+        struct main_state ms;
+        main_state_init(&ms);
+        const int hole = BSC_ANCHOR + 3;
+        bool seeded = true;
+        for (int h = BSC_ANCHOR; h <= BSC_ANCHOR + 6; h++)
+            seeded = seeded && bsc_install(&ms, h, (h != hole));
+        BSC_CHECK("C7a: chain with a body hole installed", seeded);
+
+        int32_t fm = -1;
+        bool ok = boot_refold_body_span_contiguous(
+            &ms, BSC_ANCHOR, BSC_ANCHOR + 6, &fm, true);
+        BSC_CHECK("C7a: gap persists (dummy file has no real bodies)", !ok);
+        BSC_CHECK("C7a: rebind scan FIRED once", // NOLINT
+                  boot_refold_body_rebind_scan_attempts_for_test() == 1);
+        BSC_CHECK("C7a: named blocker still raised (bodies genuinely absent)",
+                  blocker_exists("refold.body_gap"));
+
+        /* Second call: the once-per-process guard means NO second scan. */
+        (void)boot_refold_body_span_contiguous(
+            &ms, BSC_ANCHOR, BSC_ANCHOR + 6, &fm, true);
+        BSC_CHECK("C7a: rebind scan NOT repeated (once-per-process guard)",
+                  boot_refold_body_rebind_scan_attempts_for_test() == 1);
+
+        main_state_free(&ms);
+        test_rm_rf_recursive(root);
+        boot_refold_body_rebind_reset_for_test();
+        blocker_reset_for_testing();
+    }
+
+    /* C7b: datadir set but NO local block files → the files-exist gate blocks
+     * the scan (attempts stays 0); the gap is still named. */
+    {
+        boot_refold_body_rebind_reset_for_test();
+        blocker_reset_for_testing();
+        char root[256];
+        test_make_tmpdir(root, sizeof(root), "refold_rebind", "nofiles");
+        boot_refold_body_rebind_set_datadir(root);   /* no blocks/ dir */
+
+        struct main_state ms;
+        main_state_init(&ms);
+        bool seeded = true;
+        for (int h = BSC_ANCHOR; h <= BSC_ANCHOR + 4; h++)
+            seeded = seeded && bsc_install(&ms, h, (h != BSC_ANCHOR + 2));
+        BSC_CHECK("C7b: chain with a hole installed", seeded);
+
+        int32_t fm = -1;
+        bool ok = boot_refold_body_span_contiguous(
+            &ms, BSC_ANCHOR, BSC_ANCHOR + 4, &fm, true);
+        BSC_CHECK("C7b: gap named (returns false)", !ok);
+        BSC_CHECK("C7b: rebind scan NOT attempted (no local block files)",
+                  boot_refold_body_rebind_scan_attempts_for_test() == 0);
+        BSC_CHECK("C7b: named blocker raised", blocker_exists("refold.body_gap"));
+
+        main_state_free(&ms);
+        test_rm_rf_recursive(root);
+        boot_refold_body_rebind_reset_for_test();
+        blocker_reset_for_testing();
+    }
+
+    /* C7c: default (rebind datadir UNSET) → the pre-existing behavior is
+     * unchanged: a gap is named, the scan never runs. */
+    {
+        boot_refold_body_rebind_reset_for_test();   /* datadir unset */
+        blocker_reset_for_testing();
+
+        struct main_state ms;
+        main_state_init(&ms);
+        bool seeded = true;
+        for (int h = BSC_ANCHOR; h <= BSC_ANCHOR + 4; h++)
+            seeded = seeded && bsc_install(&ms, h, (h != BSC_ANCHOR + 1));
+        BSC_CHECK("C7c: chain with a hole installed", seeded);
+
+        int32_t fm = -1;
+        bool ok = boot_refold_body_span_contiguous(
+            &ms, BSC_ANCHOR, BSC_ANCHOR + 4, &fm, true);
+        BSC_CHECK("C7c: gap named (returns false)", !ok);
+        BSC_CHECK("C7c: rebind scan NOT attempted (datadir unset — default)",
+                  boot_refold_body_rebind_scan_attempts_for_test() == 0);
+        BSC_CHECK("C7c: named blocker raised", blocker_exists("refold.body_gap"));
+
+        main_state_free(&ms);
+        boot_refold_body_rebind_reset_for_test();
         blocker_reset_for_testing();
     }
 
