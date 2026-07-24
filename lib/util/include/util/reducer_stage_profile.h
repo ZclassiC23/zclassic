@@ -14,6 +14,8 @@ struct json_value;
 enum reducer_profile_domain {
     REDUCER_PROFILE_BODY_PERSIST = 0,
     REDUCER_PROFILE_SCRIPT_VALIDATE,
+    REDUCER_PROFILE_TIP_FINALIZE,
+    REDUCER_PROFILE_UTXO_APPLY,
     REDUCER_PROFILE_DOMAIN_COUNT
 };
 
@@ -58,7 +60,18 @@ enum reducer_profile_field {
     RPF_ORDERED_REDUCTION_US,
     RPF_HEADER_EVENT_US,
     RPF_STAGE_LOG_CURSOR_US,
-    RPF_FIELD_COUNT
+    /* tip_finalize per-phase timings (REDUCER_PROFILE_TIP_FINALIZE) — splits the
+     * finalize step so the "tip_finalize is 94% of the round" figure resolves
+     * into which phase actually spends the time (historically the window move). */
+    RPF_TF_LOG_INSERT_US,
+    RPF_TF_INCREMENTAL_SUM_US,
+    RPF_TF_WINDOW_MOVE_US,
+    RPF_TF_PROVABLE_TIP_US,
+    /* utxo_apply per-phase timings (REDUCER_PROFILE_UTXO_APPLY). */
+    RPF_UA_PREVOUT_US,
+    RPF_UA_APPLY_US,
+    RPF_UA_COMMIT_US,
+    RPF_FIELD_COUNT  /* must stay <= 63: the `present` bitmask is 1<<field */
 };
 
 void reducer_stage_profile_add(enum reducer_profile_domain domain,

@@ -619,6 +619,15 @@
                "shielded_import.provenance row (source/best-block/counts/"
                "tip-bind from -import-complete-shielded), and what is gated "
                "(mint/wallet-spend/snapshot-export vs tip-following)"),
+    DIAG_LOCAL("status_frontdoor", status_frontdoor_dump_state_json,
+               "single-round-trip operator status (Program O2): provable tip "
+               "(H*), reducer floor, peer snapshot (trylock+cached), and the "
+               "in-memory blocker registry — each labeled with its staleness "
+               "and any dark member named in degraded[]. Takes NO "
+               "progress_store_tx_lock and runs no COUNT(*), so `status` stays "
+               "answerable while the reducer owns the write lock. The native "
+               "`status` handler reaches it in one dumpstate call; the legacy "
+               "12-call document stays behind `status --full`"),
     DIAG_LOCAL("principals", principal_dump_state_json,
                "multi-user-server identity registry: count + public projection of each principal {address, role, status, key_kind, last_login, has_znam}"),
     DIAG_LOCAL("auth", auth_challenge_dump_state_json,
@@ -626,6 +635,14 @@
     DIAG_LOCAL("self_backtrace", self_backtrace_dump_state_json,
                "live self-backtrace surface: installed flag, dump_count, and last dump's "
                "{last_path, last_thread_count, last_unix_ts}. Triggered by ops.debug.backtrace"),
+    DIAG_RUNTIME("db_txn_trace", db_txn_trace_dump_state_json,
+                 "opt-in (ZCL_DB_TXN_TRACE=1) node.db transaction tracer: per "
+                 "registered connection {owner, txn_state, busy_stmts, "
+                 "holds_open_txn} + open_txn_holders, read from the background "
+                 "dumper thread's seqlock-published snapshot (never a live "
+                 "sqlite handle on the RPC thread); enabled:false when unset",
+                 "lib/util/src/db_txn_trace.c",
+                 "lib/test/src/test_syncdiag_rpc.c"),
     DIAG_LOCAL("cpu_topology", cpu_topology_dump_state_json,
                "CPU topology organ: logical_cpus, physical_cores, smt_threads_per_core, "
                "l3_domains + per-domain {id, l3_size_bytes, cpu_count, cpus}, "

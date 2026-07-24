@@ -38,6 +38,7 @@
 #include "storage/utxo_projection.h"
 #include "util/blocker.h"
 #include "util/log_macros.h"
+#include "util/reducer_stage_profile.h"
 #include "util/safe_alloc.h"
 #include "util/stage.h"
 #include "util/util.h"
@@ -378,8 +379,14 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     }
     stage_body_read_hold_clear(STAGE_NAME);
     struct delta_summary summary;
+    /* Prevout-resolution phase: compute_block_delta walks each input's prevout
+     * (created-index / coins_kv) to build the add/spend set. */
+    int64_t ua_pv_t0 = platform_time_monotonic_us();
     utxo_apply_compute_block_delta(blk, (uint32_t)next_h,
                                    g_lookup, g_lookup_user, &summary);
+    reducer_stage_profile_observe_us(
+        REDUCER_PROFILE_UTXO_APPLY, RPF_UA_PREVOUT_US,
+        (uint64_t)(platform_time_monotonic_us() - ua_pv_t0));
 
     /* REPLAY GATE (D2 count-and-continue, env-gated ZCL_REPLAY_COUNT_ONLY).
      * count_only_d2_skip is set ONLY in count-only mode when
@@ -453,7 +460,12 @@ static job_result_t step_apply(struct stage_step_ctx *c)
      * row + coins) — never a torn partial apply. Scripts in `summary.added`
      * alias into `blk`, so apply before block_free. */
     if (summary.ok && utxo_projection_get_author() == UTXO_AUTHOR_STAGE) {
-        if (!apply_coins_kv(db, &summary, (uint32_t)next_h)) {
+        int64_t ua_apply_t0 = platform_time_monotonic_us();
+        bool ua_apply_ok = apply_coins_kv(db, &summary, (uint32_t)next_h);
+        reducer_stage_profile_observe_us(
+            REDUCER_PROFILE_UTXO_APPLY, RPF_UA_APPLY_US,
+            (uint64_t)(platform_time_monotonic_us() - ua_apply_t0));
+        if (!ua_apply_ok) {
             ua_fatal_permanent_blocker(next_h,
                                        "coins_kv author store failure");
             free_delta(&summary);
@@ -523,10 +535,17 @@ static job_result_t step_apply(struct stage_step_ctx *c)
 
     const char *apply_status = summary.ok
         ? mint_validation_evidence_status(expected_evidence) : summary.status;
-    if (!utxo_apply_log_insert(db, next_h, apply_status, summary.ok,
+    /* Commit phase: the durable utxo_apply_log row that stamps this height's
+     * verdict (the step's own last write before the batch COMMIT/savepoint). */
+    int64_t ua_commit_t0 = platform_time_monotonic_us();
+    bool ua_log_ok = utxo_apply_log_insert(db, next_h, apply_status, summary.ok,
                     summary.spent_count, summary.added_count,
                     summary.total_value_delta, summary.failure_kind,
-                    summary.ok ? NULL : summary.failure_detail)) {
+                    summary.ok ? NULL : summary.failure_detail);
+    reducer_stage_profile_observe_us(
+        REDUCER_PROFILE_UTXO_APPLY, RPF_UA_COMMIT_US,
+        (uint64_t)(platform_time_monotonic_us() - ua_commit_t0));
+    if (!ua_log_ok) {
         ua_fatal_permanent_blocker(next_h,
                                    "utxo_apply_log insert store failure");
         free_delta(&summary);

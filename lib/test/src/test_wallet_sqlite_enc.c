@@ -19,6 +19,7 @@
 #include "wallet/wallet_keystore.h"
 #include "wallet/wallet_lock.h"
 #include "wallet/wallet.h"
+#include "wallet/sapling_keys.h"   /* MAX_SAPLING_KEYS (break-park regression) */
 #include "keys/key.h"
 #include "support/cleanse.h"
 
@@ -392,6 +393,150 @@ static int test_seed_ops_leave_no_open_txn(void)
     return failures;
 }
 
+/* Regression (Program O4e — wallet cached-stmt audit): every cached `_read`
+ * SELECT must sqlite3_reset its cursor on EVERY exit path (row-found, no-row,
+ * loop break, mid-iteration error). A cached SELECT left parked on SQLITE_ROW
+ * keeps an implicit WAL read transaction open on the shared node.db
+ * connection; every later write on that handle then fails forever with
+ * SQLITE_BUSY_SNAPSHOT. read_single_key parked on the row after a successful
+ * lookup, and read_sapling_keys parked when its loop broke at
+ * MAX_SAPLING_KEYS — both now reset unconditionally. This asserts the
+ * connection returns to SQLITE_TXN_NONE after each cached read. */
+static int test_read_ops_leave_no_open_txn(void)
+{
+    int failures = 0;
+    TEST("wallet_sqlite: cached reads leave no open read txn") {
+        set_passphrase(NULL);
+        sqlite3 *db = open_mem_db();
+        ASSERT(db);
+        struct wallet_sqlite ws;
+        ASSERT(wallet_sqlite_open(&ws, db));
+
+        /* single-key read — the historically ROW-parked path. */
+        struct privkey k;
+        struct pubkey pk;
+        make_test_key(&k, &pk, 0x5A);
+        ASSERT(wallet_sqlite_write_key(&ws, &pk, &k));
+        ASSERT(sqlite3_txn_state(db, NULL) == SQLITE_TXN_NONE);
+
+        struct privkey out;
+        ASSERT(wallet_sqlite_read_single_key(&ws, &pk, &out).ok);
+        ASSERT(sqlite3_txn_state(db, NULL) == SQLITE_TXN_NONE);
+
+        /* no-row lookup for an absent key must still reset. */
+        struct privkey k2;
+        struct pubkey pk2;
+        make_test_key(&k2, &pk2, 0x77);
+        ASSERT(!wallet_sqlite_read_single_key(&ws, &pk2, &out).ok);
+        ASSERT(sqlite3_txn_state(db, NULL) == SQLITE_TXN_NONE);
+
+        struct wallet *w = alloc_wallet();
+        ASSERT(w);
+
+        /* multi-row key loader. */
+        ASSERT(wallet_sqlite_read_keys(&ws, w));
+        ASSERT(sqlite3_txn_state(db, NULL) == SQLITE_TXN_NONE);
+
+        /* scripts / watch-only loop readers (rows inserted via direct SQL to
+         * avoid pulling script/uint160 construction into this test). */
+        {
+            sqlite3_stmt *ins = NULL;
+            ASSERT(sqlite3_prepare_v2(db,
+                "INSERT INTO wallet_scripts(script_hash,redeem_script)"
+                " VALUES(?,?)", -1, &ins, NULL) == SQLITE_OK);
+            uint8_t sh[20];
+            memset(sh, 0xA1, sizeof(sh));
+            uint8_t redeem[4] = { 0x51, 0x52, 0x53, 0x54 };
+            sqlite3_bind_blob(ins, 1, sh, sizeof(sh), SQLITE_STATIC);
+            sqlite3_bind_blob(ins, 2, redeem, sizeof(redeem), SQLITE_STATIC);
+            ASSERT(sqlite3_step(ins) == SQLITE_DONE);
+            sqlite3_finalize(ins);
+        }
+        ASSERT(wallet_sqlite_read_scripts(&ws, w));
+        ASSERT(sqlite3_txn_state(db, NULL) == SQLITE_TXN_NONE);
+
+        {
+            sqlite3_stmt *ins = NULL;
+            ASSERT(sqlite3_prepare_v2(db,
+                "INSERT INTO wallet_watch_only(address_hash,address,created_at)"
+                " VALUES(?,?,0)", -1, &ins, NULL) == SQLITE_OK);
+            uint8_t ah[20];
+            memset(ah, 0xB2, sizeof(ah));
+            sqlite3_bind_blob(ins, 1, ah, sizeof(ah), SQLITE_STATIC);
+            sqlite3_bind_text(ins, 2, "zWatchAddr", -1, SQLITE_STATIC);
+            ASSERT(sqlite3_step(ins) == SQLITE_DONE);
+            sqlite3_finalize(ins);
+        }
+        ASSERT(wallet_sqlite_read_watch_only(&ws, w));
+        ASSERT(sqlite3_txn_state(db, NULL) == SQLITE_TXN_NONE);
+
+        /* scan-height read (already correct — regression floor). */
+        ASSERT(wallet_sqlite_write_scan_height(&ws, 12345));
+        int h = 0;
+        ASSERT(wallet_sqlite_read_scan_height(&ws, &h) && h == 12345);
+        ASSERT(sqlite3_txn_state(db, NULL) == SQLITE_TXN_NONE);
+
+        /* transactions loop reader (dummy rows; undecodable blobs are skipped
+         * but the reader must still reach DONE and reset). */
+        for (int i = 0; i < 3; i++) {
+            sqlite3_stmt *ins = NULL;
+            ASSERT(sqlite3_prepare_v2(db,
+                "INSERT INTO wallet_transactions"
+                "(txid,raw_tx,block_hash,block_height,time_received,from_me,fee)"
+                " VALUES(?,?,?,0,0,0,0)", -1, &ins, NULL) == SQLITE_OK);
+            uint8_t txid[32];
+            memset(txid, (uint8_t)(0xC0 + i), sizeof(txid));
+            uint8_t raw[16];
+            memset(raw, 0x00, sizeof(raw));
+            uint8_t bh[32];
+            memset(bh, 0, sizeof(bh));
+            sqlite3_bind_blob(ins, 1, txid, sizeof(txid), SQLITE_STATIC);
+            sqlite3_bind_blob(ins, 2, raw, sizeof(raw), SQLITE_STATIC);
+            sqlite3_bind_blob(ins, 3, bh, sizeof(bh), SQLITE_STATIC);
+            ASSERT(sqlite3_step(ins) == SQLITE_DONE);
+            sqlite3_finalize(ins);
+        }
+        ASSERT(wallet_sqlite_read_txs(&ws, w));
+        ASSERT(sqlite3_txn_state(db, NULL) == SQLITE_TXN_NONE);
+
+        /* sapling loader — insert MAX_SAPLING_KEYS+1 well-formed rows so the
+         * loop BREAKS at the cap, exiting PARKED on a row pre-fix. */
+        for (int i = 0; i < MAX_SAPLING_KEYS + 1; i++) {
+            sqlite3_stmt *ins = NULL;
+            ASSERT(sqlite3_prepare_v2(db,
+                "INSERT INTO wallet_sapling_keys"
+                "(ivk,xsk,xfvk,diversifier,pk_d,child_index,address)"
+                " VALUES(?,?,?,?,?,?,'')", -1, &ins, NULL) == SQLITE_OK);
+            uint8_t ivk[32];
+            memset(ivk, 0, sizeof(ivk));
+            ivk[0] = (uint8_t)i;         /* unique PRIMARY KEY across [0,256] */
+            ivk[1] = (uint8_t)(i >> 8);
+            uint8_t big[256];
+            memset(big, 0x33, sizeof(big)); /* >= sizeof(zip32_xsk / _xfvk) */
+            uint8_t div[11];
+            memset(div, 0x44, sizeof(div));
+            uint8_t pkd[32];
+            memset(pkd, 0x55, sizeof(pkd));
+            sqlite3_bind_blob(ins, 1, ivk, sizeof(ivk), SQLITE_STATIC);
+            sqlite3_bind_blob(ins, 2, big, sizeof(big), SQLITE_STATIC);
+            sqlite3_bind_blob(ins, 3, big, sizeof(big), SQLITE_STATIC);
+            sqlite3_bind_blob(ins, 4, div, sizeof(div), SQLITE_STATIC);
+            sqlite3_bind_blob(ins, 5, pkd, sizeof(pkd), SQLITE_STATIC);
+            sqlite3_bind_int(ins, 6, i);
+            ASSERT(sqlite3_step(ins) == SQLITE_DONE);
+            sqlite3_finalize(ins);
+        }
+        ASSERT(wallet_sqlite_read_sapling_keys(&ws, w));
+        ASSERT(sqlite3_txn_state(db, NULL) == SQLITE_TXN_NONE);
+
+        free_wallet(w);
+        wallet_sqlite_close(&ws);
+        sqlite3_close(db);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* Runtime unlock/lock drives at-rest encryption via the wallet_lock register
  * (not just the env var): unlock encrypts writes, a full unlock into a wallet
  * reloads decrypted keys, lock wipes them, and a wrong passphrase fails
@@ -490,6 +635,7 @@ int test_wallet_sqlite_enc(void)
     failures += test_seed_encrypted_roundtrip();
     failures += test_seed_plaintext_still_works();
     failures += test_seed_ops_leave_no_open_txn();
+    failures += test_read_ops_leave_no_open_txn();
     failures += test_runtime_unlock_lock_reload();
 
     /* Cleanup: ensure passphrase env is unset and the lock register is clean. */
