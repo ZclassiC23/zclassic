@@ -50,6 +50,31 @@
 
 /* ── 1b — Autodetect a complete-state bundle under <datadir>/bundles/ ───────── */
 
+/* Parse the height out of a canonical "consensus-state-bundle-<N>.sqlite" name,
+ * or -1 for any other *.sqlite name. Lets the freshest-selection sort NUMERICALLY
+ * by height rather than lexicographically (which mis-orders un-padded heights,
+ * e.g. "...-9.sqlite" > "...-3056758.sqlite"). Pure. */
+static long icb_bundle_height(const char *name)
+{
+    static const char PFX[] = "consensus-state-bundle-";
+    static const char SFX[] = ".sqlite";
+    size_t pl = sizeof(PFX) - 1, sl = sizeof(SFX) - 1, nl = strlen(name);
+    if (nl <= pl + sl || strncmp(name, PFX, pl) != 0 ||
+        strcmp(name + nl - sl, SFX) != 0)
+        return -1;
+    const char *d = name + pl;
+    size_t dcount = nl - pl - sl;
+    if (dcount == 0 || dcount >= 19)
+        return -1;
+    long h = 0;
+    for (size_t i = 0; i < dcount; i++) {
+        if (d[i] < '0' || d[i] > '9')
+            return -1;
+        h = h * 10 + (d[i] - '0');
+    }
+    return h;
+}
+
 char *boot_autodetect_consensus_bundle(const char *datadir)
 {
     if (!datadir || !datadir[0])
@@ -71,6 +96,7 @@ char *boot_autodetect_consensus_bundle(const char *datadir)
     static const char SFX[] = ".sqlite";
     const size_t slen = sizeof(SFX) - 1;
     char best_name[256] = {0};
+    long best_h = -1;
     struct dirent *ent;
     while ((ent = readdir(d)) != NULL) {
         const char *nm = ent->d_name;
@@ -88,9 +114,23 @@ char *boot_autodetect_consensus_bundle(const char *datadir)
         int fpn = snprintf(failp, sizeof(failp), "%s/%s.failed", dirpath, nm);
         if (fpn > 0 && (size_t)fpn < sizeof(failp) && access(failp, F_OK) == 0)
             continue;
-        /* Lexicographically-greatest name wins — stable + deterministic. */
-        if (best_name[0] == '\0' || strcmp(nm, best_name) > 0)
+        /* FRESHEST wins, NUMERICALLY by parsed height (not lexicographically —
+         * un-padded heights lex-mis-sort). A canonical bundle (height >= 0)
+         * always beats a non-canonical *.sqlite (height -1); among canonical
+         * names the higher height wins; ties / two non-canonical names break
+         * lexicographically for stable determinism. */
+        long h = icb_bundle_height(nm);
+        bool take;
+        if (best_name[0] == '\0')
+            take = true;
+        else if (h != best_h)
+            take = h > best_h;
+        else
+            take = strcmp(nm, best_name) > 0;
+        if (take) {
             snprintf(best_name, sizeof(best_name), "%s", nm);
+            best_h = h;
+        }
     }
     closedir(d);
 

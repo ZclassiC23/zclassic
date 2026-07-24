@@ -68,6 +68,14 @@ struct rom_fetch_manifest {
      * rather than by size alone. ROM_ARTIFACT_UNKNOWN when the directory entry
      * carried no (or an unrecognized) kind — the back-compat legacy shape. */
     enum rom_artifact_kind kind;
+    /* Advertised chain height (parsed from the directory.json "height" field,
+     * itself derived from the canonical consensus-state-bundle-<h>.sqlite name;
+     * 0 for the header seed / a legacy directory carrying no height). Like
+     * `kind`, this is DOWNLOAD-COSMETIC and untrusted — it is NOT checked by
+     * rom_fetch_manifest_sane and grants no trust; it only lets the boot picker
+     * prefer the NEWEST bundle across mixed-height seeds. The digests remain the
+     * sole content anchor and CHECKPOINT_ROM binds the installed state. */
+    int64_t height;
 };
 
 /* Progress callback for rom_fetch_download: called after each chunk lands

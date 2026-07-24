@@ -459,32 +459,111 @@ static int case_baked_facts(void)
 static int case_quorum(void)
 {
     int failures = 0;
-    TEST("boot_bundle_fetch: quorum decision needs >=2 agree or an explicit seed") {
-        /* No candidates → no quorum. */
-        ASSERT(boot_bundle_quorum_pick_for_test(NULL, NULL, 0) == -1);
+    /* STEP 0: the export is NOT byte-deterministic across independent nodes, so
+     * a per-height triple quorum almost never forms across a mixed fleet. The
+     * pick therefore ranks NEWEST-height-first (bandwidth-DoS guard, not a trust
+     * source — trust binds at install), and a lone non-explicit newest candidate
+     * is ACCEPTED (no longer refused). heights is the new first argument. */
+    TEST("boot_bundle_fetch: quorum ranks newest-height-first, never refuses a "
+         "valid newest candidate") {
+        /* No candidates → still -1. */
+        ASSERT(boot_bundle_quorum_pick_for_test(NULL, NULL, NULL, 0) == -1);
 
-        /* Lone non-explicit seed → refused (bandwidth-DoS guard). */
+        /* REGRESSION (the bug this fixes): a lone non-explicit seed used to be
+         * REFUSED (→ silent fall-open to from-genesis IBD). Now it is ACCEPTED —
+         * a fresh consumer must be able to use the one bundle on offer. */
+        int64_t h1[] = { 3056758 };
         int c1[] = { 1 };
         bool f_false[] = { false };
-        ASSERT(boot_bundle_quorum_pick_for_test(c1, f_false, 1) == -1);
+        ASSERT(boot_bundle_quorum_pick_for_test(h1, c1, f_false, 1) == 0);
 
-        /* Lone explicit -fileservice seed → accepted at quorum=1. */
+        /* Lone explicit -fileservice seed → also accepted. */
         bool f_true[] = { true };
-        ASSERT(boot_bundle_quorum_pick_for_test(c1, f_true, 1) == 0);
+        ASSERT(boot_bundle_quorum_pick_for_test(h1, c1, f_true, 1) == 0);
 
-        /* >=2 agree → accepted even when non-explicit. */
-        int c2[] = { 2 };
-        ASSERT(boot_bundle_quorum_pick_for_test(c2, f_false, 1) == 0);
+        /* Highest height wins regardless of count/explicit: a lower-height
+         * 2-seed / explicit candidate does NOT shadow a higher-height lone one. */
+        int64_t hh[] = { 3000000, 3056758 };
+        int lowmore[] = { 2, 1 };
+        bool lowexpl[] = { true, false };
+        ASSERT(boot_bundle_quorum_pick_for_test(hh, lowmore, lowexpl, 2) == 1);
 
-        /* Two candidates: the >=2-agreed one wins over a lone explicit. */
-        int cc[] = { 1, 2 };
-        bool ff[] = { true, false };
-        ASSERT(boot_bundle_quorum_pick_for_test(cc, ff, 2) == 1);
+        /* THE mixed-height regression case: two distinct single-seed triples at
+         * two heights (exports are not cross-node deterministic, so no two seeds
+         * share a triple). Must pick the NEWEST (index 1), never -1 / fall open
+         * to IBD. */
+        int64_t mixed_h[] = { 3000000, 3056758 };
+        int mixed_c[] = { 1, 1 };
+        bool mixed_f[] = { false, false };
+        ASSERT(boot_bundle_quorum_pick_for_test(mixed_h, mixed_c, mixed_f, 2)
+               == 1);
 
-        /* Tie on count → prefer the explicit-seed candidate. */
-        int tie[] = { 1, 1 };
+        /* Same height: higher count wins (a >=2-seed triple beats a lone one). */
+        int64_t same_h[] = { 3056758, 3056758 };
+        int same_c[] = { 1, 2 };
+        bool same_f[] = { false, false };
+        ASSERT(boot_bundle_quorum_pick_for_test(same_h, same_c, same_f, 2) == 1);
+
+        /* Same height, tie count → prefer the explicit-seed candidate. */
+        int64_t tie_h[] = { 3056758, 3056758 };
+        int tie_c[] = { 1, 1 };
         bool tie_f[] = { false, true };
-        ASSERT(boot_bundle_quorum_pick_for_test(tie, tie_f, 2) == 1);
+        ASSERT(boot_bundle_quorum_pick_for_test(tie_h, tie_c, tie_f, 2) == 1);
+    } _test_next:;
+    return failures;
+}
+
+/* ── (e2) Newest-by-height pick + legacy size fallback (GAP-4) ──────────── */
+
+static int case_pick_newest(void)
+{
+    int failures = 0;
+    TEST("boot_bundle_fetch: pick_manifest chooses the NEWEST height + names it") {
+        uint64_t size = (uint64_t)ROM_SEED_CHUNK_SIZE + 4096;
+        /* Two consensus_bundle-kinded artifacts at different heights; the newer
+         * (3056758) must win even though it is listed first and same-sized. */
+        char body[1024];
+        snprintf(body, sizeof(body),
+                 "{\"artifacts\":["
+                 "{\"kind\":\"consensus_bundle\",\"digest\":\"%064d\","
+                 "\"whole_sha3\":\"%064d\",\"size\":%llu,\"chunk_size\":%u,"
+                 "\"chunks\":2,\"height\":3056758},"
+                 "{\"kind\":\"consensus_bundle\",\"digest\":\"%064d\","
+                 "\"whole_sha3\":\"%064d\",\"size\":%llu,\"chunk_size\":%u,"
+                 "\"chunks\":2,\"height\":3000000}]}",
+                 1, 2, (unsigned long long)size, (unsigned)ROM_SEED_CHUNK_SIZE,
+                 3, 4, (unsigned long long)size, (unsigned)ROM_SEED_CHUNK_SIZE);
+
+        struct rom_fetch_manifest m;
+        memset(&m, 0, sizeof(m));
+        ASSERT(boot_bundle_pick_manifest(body, &m));
+        ASSERT(m.height == 3056758);
+        /* Named by the ADVERTISED height (not the compiled checkpoint). */
+        ASSERT(strcmp(m.filename, "consensus-state-bundle-3056758.sqlite") == 0);
+        ASSERT(rom_fetch_manifest_sane(&m));
+
+        /* LEGACY fallback: no kind (→ UNKNOWN) and no height (→ 0) on either
+         * entry → the picker falls back to LARGEST size, and names the file from
+         * the compiled checkpoint height (height 0 → not advertised). */
+        uint64_t small = (uint64_t)ROM_SEED_CHUNK_SIZE + 4096; /* 2 chunks */
+        uint64_t big = (uint64_t)ROM_SEED_CHUNK_SIZE * 2 + 4096; /* 3 chunks */
+        char legacy[1024];
+        snprintf(legacy, sizeof(legacy),
+                 "{\"artifacts\":["
+                 "{\"digest\":\"%064d\",\"whole_sha3\":\"%064d\",\"size\":%llu,"
+                 "\"chunk_size\":%u,\"chunks\":2},"
+                 "{\"digest\":\"%064d\",\"whole_sha3\":\"%064d\",\"size\":%llu,"
+                 "\"chunk_size\":%u,\"chunks\":3}]}",
+                 5, 6, (unsigned long long)small, (unsigned)ROM_SEED_CHUNK_SIZE,
+                 7, 8, (unsigned long long)big, (unsigned)ROM_SEED_CHUNK_SIZE);
+        struct rom_fetch_manifest lm;
+        memset(&lm, 0, sizeof(lm));
+        ASSERT(boot_bundle_pick_manifest(legacy, &lm));
+        ASSERT(lm.height == 0);         /* legacy: no height advertised */
+        ASSERT(lm.size_bytes == big);   /* largest wins in the legacy path */
+        ASSERT(strncmp(lm.filename, "consensus-state-bundle-", 23) == 0);
+        size_t fl = strlen(lm.filename);
+        ASSERT(fl > 7 && strcmp(lm.filename + fl - 7, ".sqlite") == 0);
     } _test_next:;
     return failures;
 }
@@ -577,6 +656,7 @@ int test_boot_bundle_fetch(void)
     failures += case_pick_kinds();
     failures += case_e2e();
     failures += case_baked_facts();
+    failures += case_pick_newest();
     failures += case_quorum();
     failures += case_discovery();
     printf("=== boot_bundle_fetch: %d failure(s) ===\n", failures);

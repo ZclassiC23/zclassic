@@ -167,6 +167,12 @@ int rom_fetch_parse_directory(const char *json_body,
          * trust anchor). Absent/unrecognized → ROM_ARTIFACT_UNKNOWN, the legacy
          * back-compat shape the size-based picker still handles. */
         m.kind = rom_seed_kind_from_name(json_get_str(json_get(e, "kind")));
+        /* Optional "height" (untrusted, download-cosmetic — NOT part of the
+         * manifest_sane trust check; see rom_fetch_manifest.height). Absent /
+         * negative -> 0, the legacy no-height default the size-based picker
+         * still handles. */
+        int64_t height = json_get_int(json_get(e, "height"));
+        m.height = height > 0 ? height : 0;
         if (!rom_fetch_manifest_sane(&m))
             continue;
         m.used = true;
