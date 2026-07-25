@@ -56,7 +56,11 @@
 #       converting the LOG_* family is a separate change. This is the ONLY
 #       warning class this gate switches off.
 #
+# The two sentences below name node flags in prose; they are not a compile
+# surface, and both flags are annotated at their real use sites further down.
+# suppression-ok: prose, not a build surface
 # The node's `-Wno-unused-result` IS copied (clang spells it the same). Its
+# suppression-ok: same prose sentence, continued
 # `-Wno-stringop-overflow` is NOT: clang has no -Wstringop-overflow, and an
 # unknown -Wno-* is itself an error under -Werror (-Wunknown-warning-option).
 # Same class of trap as -flto=auto above — check a GCC flag exists in clang
@@ -120,8 +124,11 @@ MAKEFILE="Makefile"
 # whole layer moved, and a "clean" verdict off that would be hollow.
 SRC_FLOOR=900
 
-# Common to both front ends. -Wno-unused-result is not a relaxation: the node
-# CFLAGS carry it and both compilers spell it the same.
+# Common to both front ends. This gate's job is to reproduce the node's own
+# compile environment and then ADD warnings, so it must carry the same
+# suppressions the node build carries — otherwise it reports a diagnostic
+# population the real build would never see, and its baseline measures a
+# configuration nobody compiles.
 WARN_FLAGS=(
     -std=c23
     -Wall
@@ -130,6 +137,9 @@ WARN_FLAGS=(
     -pedantic
     -Wimplicit-fallthrough
     -fsyntax-only
+    # The 119 sites behind this flag are tracked and driven to zero by the
+    # node's ZCL_WARN_UNUSED_RESULT, not by this scanner.
+    # suppression-ok: mirrors the node build so the baseline measures reality
     -Wno-unused-result
 )
 
@@ -177,7 +187,9 @@ if "$CC_BIN" --version 2>/dev/null | head -1 | grep -qi clang; then
 else
     FAMILY=gcc
     WARN_FLAGS+=(
-        # Carried by the node CFLAGS; GCC-only, absent from clang.
+        # Carried by the node CFLAGS; GCC-only, absent from clang. Retiring it
+        # is owned by the node's ZCL_WARN_STRINGOP_OVERFLOW, not by this gate.
+        # suppression-ok: mirrors the node build so the baseline measures reality
         -Wno-stringop-overflow
         -fno-diagnostics-show-caret
         -fdiagnostics-color=never

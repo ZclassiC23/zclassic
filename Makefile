@@ -5230,6 +5230,24 @@ check-no-gnu-va-args:
 	@echo "══ LINT: C23 __VA_OPT__, never the GNU comma-swallowing extension ══"
 	@./tools/lint/check_no_gnu_va_args.sh
 
+# Second-compiler portability. The node ships as one whole-program GCC build,
+# so nothing ever asked a different compiler whether the tree is well-formed
+# and GCC-only spellings landed invisibly — including real undefined behaviour
+# in lib/net/src/p2p_game.c that only clang rejects. Ratchets realized
+# diagnostic sites against a recorded baseline. SKIPs loudly when clang is
+# absent, so a contributor without it is never blocked by a tool they lack.
+check-clang-portability:
+	@echo "══ LINT: second-compiler portability (clang -std=c23 -pedantic) ══"
+	@./tools/lint/check_clang_portability.sh --self-test && ./tools/lint/check_clang_portability.sh
+
+# C23 lets a `(void)` cast suppress [[nodiscard]], so annotating
+# struct zcl_result fences off NEW silent discards but cannot excavate the
+# existing ones. This is the excavator: a shrink-only ratchet over the cast
+# discards that remain. Fix one with ZCL_IGNORE_RESULT(expr, "reason").
+check-result-discard:
+	@echo "══ LINT: zcl_result cast-discard (RATCHET) ══"
+	@ZCL_LINT_MODE=FAIL ./tools/lint/check_result_discard.sh
+
 # Gate #20 graduated WARN → RATCHET (E10): fails on any new controller
 # file that uses raw sqlite. Baseline of grandfathered files lives in
 # tools/lint/no_raw_sqlite_in_controllers_baseline.txt (may only shrink).
@@ -5744,6 +5762,8 @@ LINT_GATES := \
     check-command-contract \
     check-privileged-transition-receipt \
     check-no-gnu-va-args \
+    check-clang-portability \
+    check-result-discard \
     check-no-trust-state-ordering \
     check-no-warning-suppression
 
