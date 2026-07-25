@@ -112,9 +112,20 @@ static void *hp_mock_loop(void *arg)  /* raw-pthread-ok: test-local */
         int cfd = accept(m->listen_fd, (struct sockaddr *)&cli, &cl);
         if (cfd < 0) break;
 
+        /* buf MUST start terminated. Every branch below reaches for
+         * strstr(buf, ...), and the read loop can legitimately exit with
+         * got == 0 (recv timeout, or the peer hanging up), which used to leave
+         * this whole array uninitialized — the request classification then read
+         * random stack bytes and answered an arbitrary method. That only shows
+         * up when the box is loaded enough for a recv to time out, which is
+         * precisely when it is hardest to diagnose. */
         char buf[8192];
+        buf[0] = '\0';
         size_t got = 0;
-        struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+        /* Matches LRC_TIMEOUT_SECS in lib/rpc/src/legacy_rpc_client.c: the
+         * client gives up at 5s, so a shorter ceiling here can only ever make
+         * this mock the one that fails first under contention. */
+        struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
         setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
         for (;;) {
             ssize_t n = recv(cfd, buf + got, sizeof(buf) - 1 - got, 0);
@@ -125,6 +136,11 @@ static void *hp_mock_loop(void *arg)  /* raw-pthread-ok: test-local */
              * \r\n\r\n separator. (Tiny test bodies fit in 1 recv.) */
             if (strstr(buf, "\r\n\r\n")) break;
             if (got >= sizeof(buf) - 1) break;
+        }
+        if (got == 0) {
+            /* Nothing arrived — answering would be answering noise. */
+            close(cfd);
+            continue;
         }
 
         const char *method = NULL;

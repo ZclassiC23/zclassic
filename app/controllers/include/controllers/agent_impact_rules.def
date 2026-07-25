@@ -754,3 +754,18 @@ AGENT_IMPACT_RULE("lib/test/src/test_os_sandbox_hotswap_interaction.c|lib/platfo
 /* wf/supervision — three named faults of the upper layer (undrained hot-swap
  * generation, config reload divergence, service declaration divergence). */
 AGENT_IMPACT_RULE("lib/hotswap/src/hotswap_retire_blocker.c|lib/hotswap/include/hotswap/hotswap_retire_blocker.h|config/src/boot_declaration_drift.c|config/include/config/boot_declaration_drift.h|lib/hotswap/src/hotswap_activate.c", "blocker blocker_history supervisor make_lint_gates")
+
+/* Load-sensitivity repairs: harnesses whose verdict used to depend on how busy
+ * the machine was (an elapsed-seconds budget, a mock server that answered an
+ * uninitialized request buffer after a recv timeout, a capture that stopped
+ * reading on a partial match, a bounded consumer spin that could park its
+ * producers forever). Each is a self-contained test file — the group it names
+ * is the only thing its content can affect. */
+AGENT_IMPACT_RULE("lib/test/src/test_stage_crash_sweep.c", "stage_crash_sweep make_lint_gates")
+AGENT_IMPACT_RULE("lib/test/src/test_mailbox.c|lib/util/src/mailbox.c|lib/util/include/util/mailbox.h", "mailbox make_lint_gates")
+AGENT_IMPACT_RULE("lib/test/src/test_subsystem_snapshot.c", "subsystem_snapshot make_lint_gates")
+AGENT_IMPACT_RULE("lib/test/src/test_header_probe.c|app/services/src/header_probe.c|app/services/include/services/header_probe.h", "header_probe make_lint_gates")
+/* The legacy-oracle mock harness needs no row of its own: the
+ * `lib/test/src/test_*oracle.c` pattern earlier in this file already claims it,
+ * and naming it here would put a legacy-daemon mention outside
+ * check-zclassicd-reach-allowlist's frozen set for no gain. */

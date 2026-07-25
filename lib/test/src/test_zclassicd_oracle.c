@@ -87,9 +87,18 @@ static void *mock_server_loop(void *arg)  /* raw-pthread-ok: test-local */
         /* Read until we see end-of-headers marker (\r\n\r\n), then
          * consume up to Content-Length more bytes. Time-bounded by
          * the recv timeout below. */
+        /* buf MUST start terminated: every dispatch branch below calls
+         * strstr(buf, ...), and this loop can exit with got == 0 on a recv
+         * timeout or an early hangup. Leaving the array uninitialized in that
+         * case made the mock classify random stack bytes as an RPC method —
+         * a failure mode that needs a loaded machine to appear at all. */
         char buf[4096];
+        buf[0] = '\0';
         size_t got = 0;
-        struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+        /* 5s to match LRC_TIMEOUT_SECS in lib/rpc/src/legacy_rpc_client.c;
+         * a tighter ceiling only makes the mock give up before the client
+         * does when the box is contended. */
+        struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
         setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
         for (;;) {
             ssize_t n = recv(cfd, buf + got, sizeof(buf) - 1 - got, 0);
@@ -98,6 +107,11 @@ static void *mock_server_loop(void *arg)  /* raw-pthread-ok: test-local */
             buf[got] = '\0';
             if (strstr(buf, "\r\n\r\n")) break;
             if (got >= sizeof(buf) - 1) break;
+        }
+        if (got == 0) {
+            /* Nothing arrived — do not answer noise. */
+            close(cfd);
+            continue;
         }
 
         /* Build JSON-RPC body */

@@ -224,10 +224,26 @@ int test_ibd_throttle(void)
         int64_t dur_ms = (int64_t)(t1.tv_sec - t0.tv_sec) * 1000 +
                          (t1.tv_nsec - t0.tv_nsec) / 1000000;
         IT_CHECK("it: acquire returns true after blocking", got == true);
+        /* Lower bound only. The bucket is drained and refills at 500/s, so the
+         * call CANNOT return before ~2ms have passed — and a busy machine only
+         * ever makes the observed wait longer, never shorter. That direction is
+         * forced; the other one is not.
+         *
+         * There used to be an "it: blocked less than 100ms" assertion here. It
+         * asserted nothing about ibd_throttle: an over-100ms reading means the
+         * OS did not schedule this thread promptly, which is a fact about the
+         * box, not about the token bucket. The refill arithmetic it was
+         * standing in for is covered exactly and without a clock by the pure
+         * ibd_throttle_refill() cases above (4-8). Kept as an opt-in
+         * measurement below so the number is still available on demand. */
         IT_CHECK("it: blocked at least ~1ms before refill",
                  dur_ms >= 1);
-        IT_CHECK("it: blocked less than 100ms (refill is fast)",
-                 dur_ms < 100);
+        printf("it: blocked acquire measured %lld ms "
+               "(reported, not asserted)\n", (long long)dur_ms);
+        if (getenv("ZCL_TEST_PERF_ASSERTS")) {
+            IT_CHECK("it: PERF (opt-in): blocked less than 100ms",
+                     dur_ms < 100);
+        }
 
         struct ibd_throttle_status st;
         ibd_throttle_status_snapshot(&st);

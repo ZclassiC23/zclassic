@@ -218,6 +218,10 @@ static int case_torn_window_deterministic(void)
 
 #define SS_RACING_READS 200000
 #define SS_QUIET_READS  1000
+/* How many writer publishes must land DURING the racing reads for the racing
+ * phase to count as having raced anything. Small on purpose: this is a
+ * "did the other thread run at all" floor, not a throughput target. */
+#define SS_MIN_RACING_WRITES 64
 
 static int case_concurrent_coherence(void)
 {
@@ -253,6 +257,8 @@ static int case_concurrent_coherence(void)
     bool writer_ran = wait_until_u64_at_least(&ctl.writes, 1);
     SS_CHECK("concurrent: writer published before the racing reads begin",
              writer_ran);
+    uint64_t writes_before_race =
+        atomic_load_explicit(&ctl.writes, memory_order_acquire);
 
     int64_t coherent_reads = 0, torn_fallbacks = 0;
     int64_t last_a = 0, last_b = 0;  /* last-known-good fallback */
@@ -281,6 +287,44 @@ static int case_concurrent_coherence(void)
                 fallback_ever_empty = true;
         }
     }
+
+    /* Coverage, established by CONSTRUCTION rather than hoped for.
+     *
+     * Waiting for one publish before the loop proves the writer had run at
+     * some point; it does not prove the writer ran DURING the 200k reads. On a
+     * saturated box the writer can sit off-CPU for that whole window, in which
+     * case every assertion above is being made about an UNCONTENDED reader and
+     * passes without exercising the seqlock at all — the failure mode this
+     * group was found in previously. So: keep reading until the writer has
+     * demonstrably raced us, bounded by the same guard the other handshakes
+     * use. If the writer never advances, that is a real problem and it fails
+     * here with a name instead of passing vacuously. */
+    {
+        int64_t guard = platform_time_monotonic_us() + SS_HANDSHAKE_GUARD_US;
+        while (atomic_load_explicit(&ctl.writes, memory_order_acquire) <
+                   writes_before_race + SS_MIN_RACING_WRITES &&
+               platform_time_monotonic_us() < guard) {
+            int64_t a = -1, b = -2;
+            if (read_pair(&p, &a, &b)) {
+                coherent_reads++;
+                if (a != b) ever_incoherent = true;
+                last_a = a; last_b = b;
+            } else {
+                torn_fallbacks++;
+                zcl_snapshot_note_torn(&p.env);
+                if (last_a != last_b) fallback_ever_incoherent = true;
+                if (atomic_load_explicit(&p.env.generation,
+                                         memory_order_relaxed) == 0)
+                    fallback_ever_empty = true;
+            }
+        }
+    }
+    uint64_t raced_writes =
+        atomic_load_explicit(&ctl.writes, memory_order_acquire) -
+        writes_before_race;
+    SS_CHECK("racing: the writer published concurrently with the reads "
+             "(the racing phase actually raced)",
+             raced_writes >= SS_MIN_RACING_WRITES);
 
     SS_CHECK("racing: NO completed read ever saw a torn (a!=b) pair",
              !ever_incoherent);

@@ -18,7 +18,9 @@
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define MBX_CHECK(name, expr) do { \
     printf("mailbox: %s... ", (name)); \
@@ -27,9 +29,11 @@
 } while (0)
 
 struct producer_args {
-    mailbox_t *m;
-    int        tid;
-    int        count;
+    mailbox_t    *m;
+    int           tid;
+    int           count;
+    _Atomic bool *abort_flag;  /* consumer gave up — stop, don't wedge */
+    _Atomic int   sent;        /* what this producer actually got in */
 };
 
 static void *producer_thread(void *arg)
@@ -38,12 +42,38 @@ static void *producer_thread(void *arg)
     /* Encode (tid, seq) in a uint64 so the consumer can verify no loss. */
     for (int i = 0; i < a->count; i++) {
         uint64_t msg = ((uint64_t)a->tid << 32) | (uint64_t)i;
-        /* Spin-retry on overflow so the test never silently drops. */
+        /* Spin-retry on overflow so the test never silently drops — but honour
+         * the consumer's abort flag. The ring holds 64 and the producers offer
+         * 1024, so a consumer that stops draining leaves every producer parked
+         * in this loop forever; without the flag the pthread_join below would
+         * never return and the whole GROUP would hang until the runner's
+         * per-group timeout SIGKILLed it. A wedge must fail an assertion and
+         * say why, not stop the clock. */
         while (!mailbox_try_send(a->m, &msg)) {
+            if (atomic_load(a->abort_flag)) return NULL;
             sched_yield();
         }
+        atomic_fetch_add(&a->sent, 1);
     }
     return NULL;
+}
+
+/* Monotonic milliseconds — bounds how long the consumer is willing to wait for
+ * producers. Never asserted on. */
+static long mbx_now_ms(void)
+{
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;  // platform-ok:test-wedge-deadline-bounds-a-wait-never-an-assertion
+    return (long)ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
+}
+
+/* Widen the consumer's patience on a knowingly-loaded runner without changing
+ * what is being waited for. Same knob test_wallet_backup.c uses. */
+static long mbx_timeout_scale(void)
+{
+    const char *env = getenv("ZCL_TEST_TIMEOUT_SCALE");
+    long v = env ? strtol(env, NULL, 10) : 1;
+    return (v >= 1 && v <= 100) ? v : 1;
 }
 
 int test_mailbox(void)
@@ -147,28 +177,104 @@ int test_mailbox(void)
         mailbox_destroy(m);
     }
 
-    /* ── MPSC: 4 producers × 256 = 1024 messages, no loss ────── */
+    /* ── Single-threaded MPSC shape: same accounting, no scheduler ─────
+     * The 4-producer case below can only ever prove the counters agree once
+     * the producers are joined. This case proves the SAME accounting with the
+     * threads removed entirely, so if the concurrent case ever degenerates
+     * (producers aborted, ring never filled) the group still has a case that
+     * genuinely exercises interleaved send/recv across a wrapping ring. */
+    {
+        const int N_PROD = 4;
+        const int PER    = 256;
+        const int target = N_PROD * PER;
+        mailbox_t *m = mailbox_create(64, sizeof(uint64_t));
+
+        int seen[4][256] = {{0}};
+        int drained = 0;
+        int next[4] = {0, 0, 0, 0};
+        int done_prod = 0;
+        /* Round-robin the four "producers" by hand, draining whenever the ring
+         * fills — the exact wrap-around/interleave pattern the threaded case
+         * hits, made deterministic. */
+        while (done_prod < N_PROD || mailbox_depth(m) > 0) {
+            /* Fill the ring to capacity before draining, so this case really
+             * does wrap it (16 times over) rather than tiptoeing along an
+             * always-near-empty buffer. */
+            bool progressed = true;
+            while (progressed) {
+                progressed = false;
+                for (int t = 0; t < N_PROD; t++) {
+                    if (next[t] >= PER) continue;
+                    uint64_t msg = ((uint64_t)t << 32) | (uint64_t)next[t];
+                    if (mailbox_try_send(m, &msg)) {
+                        progressed = true;
+                        if (++next[t] == PER) done_prod++;
+                    }
+                }
+            }
+            uint64_t got;
+            while (mailbox_try_recv(m, &got)) {
+                int tid = (int)(got >> 32);
+                int seq = (int)(got & 0xffffffffu);
+                if (tid >= 0 && tid < N_PROD && seq >= 0 && seq < PER)
+                    seen[tid][seq]++;
+                drained++;
+            }
+        }
+
+        MBX_CHECK("MPSC (single-threaded) drained every message",
+                  drained == target);
+        bool no_dup_no_miss = true;
+        for (int t = 0; t < N_PROD && no_dup_no_miss; t++)
+            for (int s = 0; s < PER; s++)
+                if (seen[t][s] != 1) { no_dup_no_miss = false; break; }
+        MBX_CHECK("MPSC (single-threaded) no duplicates / no misses",
+                  no_dup_no_miss);
+        MBX_CHECK("MPSC (single-threaded) sent_count=target",
+                  mailbox_sent_count(m) == (size_t)target);
+        MBX_CHECK("MPSC (single-threaded) recv_count=target",
+                  mailbox_recv_count(m) == (size_t)target);
+        mailbox_destroy(m);
+    }
+
+    /* ── MPSC: 4 producers × 256 = 1024 messages, no loss ──────
+     * Every assertion here is made AFTER the producers are joined and the ring
+     * is drained, so none of them depends on which thread won any particular
+     * race — only on the totals, which are forced once the producers have
+     * finished. The consumer loop below is bounded by real elapsed time (not a
+     * spin count) and tells the producers to give up when it expires, so a
+     * genuine wedge fails an assertion instead of hanging the suite. */
     {
         const int N_PROD = 4;
         const int PER    = 256;
         mailbox_t *m = mailbox_create(64, sizeof(uint64_t));
 
+        _Atomic bool abort_flag = false;
         pthread_t threads[4];
         struct producer_args args[4];
+        int started = 0;
         for (int i = 0; i < N_PROD; i++) {
             args[i].m = m;
             args[i].tid = i;
             args[i].count = PER;
-            pthread_create(&threads[i], NULL, producer_thread, &args[i]);
+            args[i].abort_flag = &abort_flag;
+            atomic_store(&args[i].sent, 0);
+            if (pthread_create(&threads[i], NULL, producer_thread,
+                               &args[i]) == 0)
+                started++;
         }
+        MBX_CHECK("MPSC all producers started", started == N_PROD);
 
         /* Consumer drains 1024 messages, tracking what's seen. */
         int seen[4][256] = {{0}};
         int drained = 0;
         const int target = N_PROD * PER;
 
-        /* Use a generous bound to give producers time. */
-        for (int spin = 0; spin < 1000000 && drained < target; spin++) {
+        /* 30s baseline. Draining 1024 messages takes microseconds; this is a
+         * wedge detector, not a schedule the producers have to keep. */
+        const long deadline = mbx_now_ms() + 30000L * mbx_timeout_scale();
+        bool timed_out = false;
+        while (drained < target) {
             uint64_t msg;
             if (mailbox_try_recv(m, &msg)) {
                 int tid = (int)(msg >> 32);
@@ -178,11 +284,15 @@ int test_mailbox(void)
                 }
                 drained++;
             } else {
+                if (mbx_now_ms() > deadline) { timed_out = true; break; }
                 sched_yield();
             }
         }
+        MBX_CHECK("MPSC consumer drained without hitting the wedge deadline",
+                  !timed_out);
 
-        for (int i = 0; i < N_PROD; i++) pthread_join(threads[i], NULL);
+        atomic_store(&abort_flag, true);  /* releases any parked producer */
+        for (int i = 0; i < started; i++) pthread_join(threads[i], NULL);
 
         /* Drain any stragglers post-join. */
         uint64_t leftover;
@@ -195,6 +305,11 @@ int test_mailbox(void)
             drained++;
         }
 
+        /* Post-join: every producer has returned, so these totals are fixed
+         * and no longer depend on the scheduler. */
+        int offered = 0;
+        for (int i = 0; i < started; i++) offered += atomic_load(&args[i].sent);
+        MBX_CHECK("MPSC every producer offered its full run", offered == target);
         MBX_CHECK("MPSC drained 1024", drained == target);
         bool no_dup_no_miss = true;
         for (int t = 0; t < N_PROD; t++) {

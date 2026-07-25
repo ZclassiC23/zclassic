@@ -67,10 +67,37 @@
  *          short of G-N or the digest in (a) would diverge.
  *
  * Determinism: N sweeps every integer in [0, G) in order — no RNG, no
- * wall-clock. Runtime is bounded: SCS_N_BLOCKS is kept tiny so G stays in
- * the "dozens" range (measured, not tuned to a hardcoded expectation) and
- * the whole sweep (2 forks per N, each a full small fold) finishes well
- * inside the SCS_BUDGET_SEC ceiling.
+ * wall-clock. SCS_N_BLOCKS is kept tiny so G stays in the "dozens" range
+ * (measured, not tuned to a hardcoded expectation).
+ *
+ * Why there is no wall-clock budget
+ * ---------------------------------
+ * This harness used to abort the sweep and count a FAILURE when its elapsed
+ * time passed a 30-second ceiling. That was a performance assertion wearing a
+ * correctness assertion's clothes, and it behaved like one: 29/29 crash points
+ * in 9s on an idle box, a hard FAIL at n=18/29 under load average 42 on the
+ * same 32-core machine — on branches that do not touch any code this harness
+ * exercises. It also silently WEAKENED the proof exactly when it fired, since
+ * aborting at n=18 leaves boundaries 18..28 unswept.
+ *
+ * What the budget was really guarding is bounded work, and work here is
+ * countable without consulting a clock:
+ *
+ *   - G itself is bounded by SCS_MAX_BOUNDARIES (see below) — the pipeline
+ *     may not commit more than once per (stage, height).
+ *   - The sweep's total work is then FORCED: cycle n's resumer redoes exactly
+ *     G-n boundaries (assertion (c)), so summed over the sweep the resumer
+ *     side performs exactly G*(G+1)/2 boundary commits. That total is
+ *     asserted directly. A regression that made any cycle redo more work
+ *     inflates it; one that skipped work deflates it. Neither can hide behind
+ *     a fast machine, and neither can be manufactured by a slow one.
+ *
+ * Hangs are still caught: the suite runner (lib/test/src/test_parallel.c)
+ * SIGKILLs any group exceeding its per-group timeout (300s by default), so an
+ * in-test stopwatch was never what stood between a wedged fold and a wedged
+ * suite. If you want a genuine performance guard, set ZCL_TEST_PERF_BUDGET_SEC
+ * to a positive integer — it is opt-in, off in the default suite, and it fails
+ * loudly rather than truncating the sweep.
  *
  * Batch-vs-boundary invariant
  * ----------------------------
@@ -159,7 +186,21 @@
 #include <unistd.h>
 
 #define SCS_N_BLOCKS   4
-#define SCS_BUDGET_SEC 30
+
+/* Structural ceiling on G, the golden run's total commit-boundary count.
+ *
+ * This replaces an elapsed-seconds budget that used to abort the sweep (see
+ * "Why there is no wall-clock budget" in the file header). The thing that can
+ * actually blow this harness up is the BOUNDARY COUNT, not the clock: the
+ * sweep runs one crasher + one resumer fork per boundary, so its total work is
+ * quadratic in G. With ZCL_REFOLD_DRAIN_BATCH=1 every hook-observed boundary
+ * is one real COMMIT, and the pipeline's contract is at most one commit per
+ * (stage, height) — eight stages over SCS_N_BLOCKS heights, plus a margin of
+ * one height's worth for seed/init commits. Exceeding that means a stage
+ * started committing per-row, or re-folding heights, or the cadence knob
+ * stopped being honoured. Every one of those is a real defect, and every one
+ * of them trips this bound identically on an idle box and a saturated one. */
+#define SCS_MAX_BOUNDARIES (8 * (SCS_N_BLOCKS + 1))
 
 #define SCS_CHECK(name, expr) do {                        \
     printf("  stage_crash_sweep: %s... ", (name));          \
@@ -509,10 +550,14 @@ static bool scs_golden_run(const char *dir, struct scs_digest *out_digest,
 
 /* One crash-at-N cycle: fork a crasher (self-SIGKILLs at boundary N), then
  * a resumer (fresh process, same datadir). Returns true iff every
- * assertion for this N held (failures already printed on mismatch). */
+ * assertion for this N held (failures already printed on mismatch).
+ * `out_rseen` receives the number of commit boundaries THIS cycle's resumer
+ * performed (0 when the cycle could not produce one) so the caller can total
+ * the sweep's work and check it against the forced analytic value. */
 static bool scs_cycle(const char *base_dir, int64_t n, uint64_t g,
-                      const struct scs_digest *golden)
+                      const struct scs_digest *golden, uint64_t *out_rseen)
 {
+    if (out_rseen) *out_rseen = 0;
     char dir[300];
     snprintf(dir, sizeof(dir), "%s_n%" PRId64, base_dir, n);
     test_rm_rf_recursive(dir);
@@ -571,6 +616,7 @@ static bool scs_cycle(const char *base_dir, int64_t n, uint64_t g,
     bool read_ok = scs_read_result(res, &rd, &rseen, &rdone);
     unlink(res);
     test_rm_rf_recursive(dir);
+    if (read_ok && out_rseen) *out_rseen = rseen;
 
     bool pass = true;
     if (!read_ok) {
@@ -638,7 +684,11 @@ int test_stage_crash_sweep(void)
      * any fork in this function). */
     setenv("ZCL_REFOLD_DRAIN_BATCH", "1", 1);
 
-    time_t t0 = time(NULL);  // platform-ok:stage-crash-sweep-budget-wallclock
+    /* Informational only — reported, never asserted on. The one exception is
+     * the opt-in ZCL_TEST_PERF_BUDGET_SEC guard at the end, which is unset in
+     * the default suite. See "Why there is no wall-clock budget" in the file
+     * header. */
+    time_t t0 = time(NULL);  // platform-ok:stage-crash-sweep-elapsed-report-only
 
     char golden_dir[256];
     test_fmt_tmpdir(golden_dir, sizeof(golden_dir), "stage_crash_sweep", "golden");
@@ -669,28 +719,69 @@ int test_stage_crash_sweep(void)
     SCS_CHECK("golden boundary count is nonzero (the sweep has something "
               "to cover)", g > 0);
 
+    /* THE work bound — deterministic, machine-independent, and the reason no
+     * stopwatch is needed. See SCS_MAX_BOUNDARIES. */
+    if (g > SCS_MAX_BOUNDARIES)
+        printf("  stage_crash_sweep: G=%llu exceeds the structural ceiling "
+               "%d = 8 stages x (%d blocks + 1) — some stage is committing "
+               "more than once per height, or the per-step commit cadence "
+               "(ZCL_REFOLD_DRAIN_BATCH=1) stopped being honoured\n",
+               (unsigned long long)g, SCS_MAX_BOUNDARIES, SCS_N_BLOCKS);
+    SCS_CHECK("golden boundary count is within the structural ceiling "
+              "(at most one commit per stage per height)",
+              g <= SCS_MAX_BOUNDARIES);
+
     char base_dir[256];
     test_fmt_tmpdir(base_dir, sizeof(base_dir), "stage_crash_sweep", "n");
 
+    /* Every crash point is swept, always. Nothing shortens this loop — a
+     * truncated sweep is a weaker proof, and "the box was busy" is not a
+     * reason to prove less. */
     int n_pass = 0;
+    uint64_t resumer_boundaries_total = 0;
     for (int64_t n = 0; n < (int64_t)g; n++) {
-        bool ok = scs_cycle(base_dir, n, g, &golden);
+        uint64_t rseen = 0;
+        bool ok = scs_cycle(base_dir, n, g, &golden, &rseen);
+        resumer_boundaries_total += rseen;
         if (ok) n_pass++;
         else failures++;
-
-        time_t elapsed = time(NULL) - t0;  // platform-ok:stage-crash-sweep-budget-wallclock
-        if (elapsed > SCS_BUDGET_SEC) {
-            printf("FAIL (sweep exceeded %ds budget at n=%" PRId64 "/%llu; "
-                   "stopping early)\n", SCS_BUDGET_SEC, n, (unsigned long long)g);
-            failures++;
-            break;
-        }
     }
 
-    time_t elapsed = time(NULL) - t0;  // platform-ok:stage-crash-sweep-budget-wallclock
-    printf("  stage_crash_sweep: %d/%llu crash points passed in %llds "
-           "(budget %ds)\n", n_pass, (unsigned long long)g,
-           (long long)elapsed, SCS_BUDGET_SEC);
+    /* The sweep's total work, stated as one number. Cycle n's resumer redoes
+     * exactly G-n boundaries, so the sum over n in [0,G) is G*(G+1)/2 — forced
+     * by the pipeline's resume contract, identical on every machine. This is
+     * the operation count the deleted 30-second budget was a proxy for. */
+    uint64_t expect_total = g * (g + 1) / 2;
+    if (resumer_boundaries_total != expect_total)
+        printf("  stage_crash_sweep: resumer work total %llu != forced "
+               "G*(G+1)/2 = %llu (G=%llu) — some cycle re-folded durable work "
+               "or failed to resume fully\n",
+               (unsigned long long)resumer_boundaries_total,
+               (unsigned long long)expect_total, (unsigned long long)g);
+    SCS_CHECK("sweep resumer work totals exactly G*(G+1)/2 commit boundaries",
+              resumer_boundaries_total == expect_total);
+
+    time_t elapsed = time(NULL) - t0;  // platform-ok:stage-crash-sweep-elapsed-report-only
+    printf("  stage_crash_sweep: %d/%llu crash points passed, %llu resumer "
+           "commit boundaries total, in %llds (elapsed is reported, not "
+           "asserted)\n", n_pass, (unsigned long long)g,
+           (unsigned long long)resumer_boundaries_total, (long long)elapsed);
+
+    /* Opt-in performance guard. Unset in the default suite, so a loaded box
+     * never turns this correctness harness red; set it when you actually want
+     * to measure. */
+    {
+        const char *perf = getenv("ZCL_TEST_PERF_BUDGET_SEC");
+        long budget = perf ? strtol(perf, NULL, 10) : 0;
+        if (budget > 0) {
+            if (elapsed > budget)
+                printf("  stage_crash_sweep: PERF sweep took %llds > "
+                       "ZCL_TEST_PERF_BUDGET_SEC=%ld\n",
+                       (long long)elapsed, budget);
+            SCS_CHECK("PERF (opt-in): sweep inside ZCL_TEST_PERF_BUDGET_SEC",
+                      elapsed <= budget);
+        }
+    }
 
     unsetenv("ZCL_REFOLD_DRAIN_BATCH");
 
