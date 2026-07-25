@@ -21,7 +21,7 @@
  * returns a fixed constant), so this condition's own monotonic sample must
  * be test-injected to get a meaningful elapsed_us between windows. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "conditions/sync_rate_below_floor.h"
 #include "framework/condition.h"

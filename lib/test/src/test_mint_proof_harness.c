@@ -40,7 +40,7 @@
  * file for part 3, never the live blocks/).
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/utxo_snapshot_loader.h"
 #include "coins/utxo_commitment.h"

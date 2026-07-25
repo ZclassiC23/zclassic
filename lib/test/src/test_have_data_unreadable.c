@@ -42,7 +42,7 @@
  * makes block_index_have_data_readable() return false immediately.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "conditions/have_data_unreadable.h"
 #include "core/arith_uint256.h"

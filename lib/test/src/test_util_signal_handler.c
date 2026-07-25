@@ -32,7 +32,7 @@
  * (lib/util/src/signal_handler.c:5), which defines _GNU_SOURCE before any
  * include so <signal.h> exposes the alternate-stack API. */
 #define _GNU_SOURCE
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "util/signal_handler.h"
 
 #include <fcntl.h>

@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "coins/undo.h"
 #include "controllers/blog_controller.h"
 #include "controllers/blog_post_controller.h"
 #include "views/blog_post_view.h"
@@ -24,7 +25,7 @@
 
 /* db_service owns two background pthreads (zcl_db_worker, zcl_db_ckpt) that
  * run for as long as the service is started. ASSERT()'s goto _test_next
- * (test/test_helpers.h) can leave the block that started the service on ANY
+ * (test/test_core.h) can leave the block that started the service on ANY
  * failing check between db_service_start() and the matching stop — and
  * test_blog_publication_slice keeps the service live across ~20 ASSERTs. A
  * skipped db_service_stop() leaves both threads running against a

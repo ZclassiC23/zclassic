@@ -23,7 +23,7 @@
  * the find_failed_pindex_at_height helper (verified through the
  * height-not-found contract). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/chain.h"
 #include "validation/chainstate.h"

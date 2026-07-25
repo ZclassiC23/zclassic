@@ -6,7 +6,7 @@
  * every READY leaf has a live binding — without contacting a node.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "config/command_catalog.h"
 #include "config/command_handler_index.h"

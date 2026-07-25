@@ -19,7 +19,7 @@
  *      crashing.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "adapters/outbound/persistence/bg_validation_store_sqlite.h"
 #include "ports/bg_validation_store_port.h"

@@ -33,7 +33,7 @@
  * Pure: hand-built coinbase transactions, no node / datadir / network.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "primitives/transaction.h"
 #include "script/script.h"

@@ -6,7 +6,7 @@
  * block_parse_cache level; here we prove the selection invariants directly.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/chain.h"
 #include "services/block_pruning_service.h"

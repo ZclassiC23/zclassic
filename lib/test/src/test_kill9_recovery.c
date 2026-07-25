@@ -108,7 +108,7 @@
  */
 
 #include "platform/time_compat.h"
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "storage/coins_view_sqlite.h"
 #include <errno.h>
 #include <pthread.h>

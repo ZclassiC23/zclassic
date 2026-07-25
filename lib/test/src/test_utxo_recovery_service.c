@@ -4,7 +4,7 @@
  * restore, and integrity operations.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "services/utxo_recovery_service.h"
 #include "services/recovery_policy.h"
 #include "services/chain_state_service.h"

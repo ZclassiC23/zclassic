@@ -8,7 +8,7 @@
  * prevent CI hangs. */
 
 #define _DEFAULT_SOURCE  /* usleep */
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "net/ws_events.h"
 #include "event/event.h"
 

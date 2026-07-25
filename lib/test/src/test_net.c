@@ -2,7 +2,11 @@
 
 #define _DEFAULT_SOURCE
 #include "platform/time_compat.h"
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "core/hash.h"
+#include "core/random.h"
+#include "core/utiltime.h"
+#include "net/p2p_message.h"
 #include "config/boot_snapshot_offer.h"
 #include "primitives/transaction.h"
 #include "chain/chainparams.h"

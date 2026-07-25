@@ -21,7 +21,7 @@
  *     found path is exercised directly, exit code + JSON schema checked)
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "controllers/agent_test_controller.h"
 #include "json/json.h"
 

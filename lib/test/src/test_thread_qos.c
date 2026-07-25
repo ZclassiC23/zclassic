@@ -12,7 +12,7 @@
 
 #define _GNU_SOURCE  /* SCHED_BATCH, syscall() */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "util/thread_qos.h"
 
 #include <sched.h>

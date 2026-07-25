@@ -9,7 +9,7 @@
  * and one commit" vs "one begin, one rollback, one leaked").
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "models/db_txn.h"
 #include "models/database.h"
 #include "event/event.h"

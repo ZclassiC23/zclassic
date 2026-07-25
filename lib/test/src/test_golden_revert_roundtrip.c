@@ -38,7 +38,7 @@
  * and a token-authorized case still succeeds exactly as vcs_snapshot's own
  * (consuming) guard would allow it. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "dev_activation.h"
 #include "json/json.h"

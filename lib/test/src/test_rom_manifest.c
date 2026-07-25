@@ -12,7 +12,7 @@
  *     header-mismatch discard, discard file).
  * All pure/local — no network, no live seeder. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "net/file_service.h"
 #include "net/rom_seed.h"
 #include "net/rom_fetch.h"

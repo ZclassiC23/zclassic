@@ -64,7 +64,7 @@
  * update_coins_with_undo), no stubs.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "validation/connect_block.h"
 #include "validation/update_coins.h"
 #include "coins/coins_view.h"

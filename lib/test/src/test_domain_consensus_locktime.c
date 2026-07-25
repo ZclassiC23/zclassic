@@ -14,7 +14,8 @@
  * edit to one path from silently diverging from the other.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "validation/main_constants.h"
 
 #include "domain/consensus/locktime.h"
 #include "validation/contextual_check_tx.h"

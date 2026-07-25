@@ -21,7 +21,9 @@
  * as verify_bench_selftest).
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "chain/equihash.h"
+#include "sapling/params_init.h"
 #include "test/verify_bench_fixture.h"       /* baked real (200,9) witness */
 #include "domain/consensus/equihash.h"
 #include "sapling/bls12_381.h"

@@ -5,7 +5,7 @@
  * compliance with BIP32 test vectors.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "wallet/hd_keychain.h"
 #include "chain/chainparams.h"
 #include "support/cleanse.h"

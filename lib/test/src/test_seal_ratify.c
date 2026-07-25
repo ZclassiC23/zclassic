@@ -13,7 +13,7 @@
  *       all-pass ratifies, and ratify is idempotent.
  *   (d) PRUNE DARK: with SEAL_PRUNE_ENABLED 0 a ratify deletes nothing. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "services/seal_service.h"
 #include "services/rolling_anchor_service.h"

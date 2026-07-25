@@ -13,7 +13,7 @@
  * Each test process is fork-isolated by the parallel runner, so mutating the
  * global boot stage + sysinit table here does not leak into sibling tests. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "util/sysinit.h"
 #include "util/boot_phase.h"
 

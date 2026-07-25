@@ -48,7 +48,7 @@
  *     verifying the median and the next block's minimum-nTime rule.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "validation/check_block.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"

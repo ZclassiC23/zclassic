@@ -11,7 +11,7 @@
  * lib/test/src/test_recovery_policy.c captures EV_RECOVERY_POLICY_*.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "metrics/prometheus_metrics.h"
 #include "metrics/operator_events.h"
 #include "event/event.h"

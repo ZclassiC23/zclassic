@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "conditions/download_queue_starved.h"
 #include "conditions/header_stall_at_height.h"

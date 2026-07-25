@@ -42,7 +42,7 @@
  * (no params) clean per the lane contract.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "wallet/wallet.h"
 #include "wallet/keystore.h"

@@ -2,7 +2,7 @@
  * Tests for the block download manager. */
 
 #include "platform/time_compat.h"
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "services/gap_fill_service.h"
 #include "net/download.h"
 #include "core/uint256.h"

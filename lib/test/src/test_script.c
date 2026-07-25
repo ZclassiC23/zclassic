@@ -1,6 +1,17 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "chain/pow.h"
+#include "coins/compressor.h"
+#include "script/standard.h"
+#include "coins/coins.h"
+#include "script/sigencoding.h"
+#include "support/pagelocker.h"
+#include "script/interpreter.h"
+#include "script/sigcache.h"
+#include "consensus/validation.h"
+#include "validation/sigops.h"
+#include "script/zcashconsensus.h"
 #include <sys/resource.h>
 #include <sys/time.h>
 

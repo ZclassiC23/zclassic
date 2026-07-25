@@ -4,7 +4,7 @@
  * ingestion seam), the anchor_verify/anchor_list RPC surface (hit/miss), and
  * digest-of-file correctness against known SHA2-256/SHA3-256 vectors. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "models/database.h"
 #include "models/zanc.h"
 #include "zanc/zanc.h"

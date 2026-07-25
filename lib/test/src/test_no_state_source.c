@@ -23,7 +23,7 @@
  * make t ONLY=no_state_source
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/chain.h"                       /* block_index_init */
 #include "conditions/no_state_source.h"

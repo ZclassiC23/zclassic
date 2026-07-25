@@ -14,7 +14,7 @@
  * spend uplink on a public stream. */
 
 #include "platform/time_compat.h"
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "net/file_service.h"
 #include "net/fast_sync.h"
 #include "net/puzzle.h"

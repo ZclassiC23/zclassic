@@ -27,7 +27,7 @@
  * make t ONLY=importblockindex_cli_dispatch
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include <errno.h>
 #include <signal.h>

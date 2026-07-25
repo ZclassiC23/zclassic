@@ -5,7 +5,7 @@
  * agrees with that tree.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "controllers/wallet_rescan_controller_internal.h"
 
 static struct uint256 test_root(uint8_t seed)

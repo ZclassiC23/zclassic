@@ -16,7 +16,7 @@
  *       independently trusted root supplies authority.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/mmb.h"
 #include "chain/mmr.h"

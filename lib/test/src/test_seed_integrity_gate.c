@@ -14,7 +14,7 @@
  *   - memo: re-running the same (height,hash) returns the cached verdict.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "models/database.h"
 #include "services/seed_integrity_gate.h"

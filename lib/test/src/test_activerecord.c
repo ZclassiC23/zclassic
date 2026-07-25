@@ -1,6 +1,13 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "models/block.h"
+#include "models/tx_index.h"
+#include "models/utxo.h"
+#include "models/wallet_key.h"
+#include "models/wallet_tx.h"
+#include "models/mempool_entry.h"
+#include "models/peer.h"
 
 /* AR test callbacks (must be file-scope for ISO C23) */
 

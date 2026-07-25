@@ -18,7 +18,7 @@
  *   - pin_reducer_thread: false (advisory, no crash) on a symmetric
  *     topology, true on the synthetic asymmetric fixture */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "util/hw_profile.h"
 #include "util/cpu_topology.h"
 #include "json/json.h"

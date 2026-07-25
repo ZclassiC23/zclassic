@@ -4,7 +4,7 @@
  * Covers derivation, path formatting, wallet HD integration, and determinism.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "wallet/bip44.h"
 #include "wallet/hd_keychain.h"
 #include "wallet/mnemonic.h"

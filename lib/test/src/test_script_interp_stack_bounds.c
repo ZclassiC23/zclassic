@@ -27,7 +27,7 @@
  *                  MAX_STACK_ITEMS without STACK_SIZE, the next OP_DUP
  *                  fails with SCRIPT_ERR_STACK_SIZE. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "domain/consensus/script_interp.h"
 #include "script/interpreter.h"

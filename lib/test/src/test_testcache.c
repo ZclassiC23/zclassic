@@ -18,7 +18,7 @@
  * unrelated tc_other, so the forward closure is exactly {top, mid, leaf, header}
  * and never tc_other. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "test/testcache.h"
 
 #include <stdio.h>

@@ -29,7 +29,7 @@
  * make t ONLY=cli_auth_robust
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "rpc/server.h"
 #include "rpc/httpserver.h"
 #include "kernel/command_registry.h"

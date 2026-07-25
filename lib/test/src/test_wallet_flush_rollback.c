@@ -13,7 +13,7 @@
  * We also verify the converse (clean flush commits everything).
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "wallet/wallet_sqlite.h"
 #include "wallet/wallet.h"
 #include "wallet/keystore.h"

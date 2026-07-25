@@ -1,7 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Shared test helper functions. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "consensus/params.h"
 #include "services/chain_evidence_authority_service.h"
 #include "storage/nullifier_kv.h"
 #include "storage/progress_store.h"

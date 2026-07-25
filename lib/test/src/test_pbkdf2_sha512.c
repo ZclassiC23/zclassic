@@ -18,7 +18,7 @@
  * per function would not compile).
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "crypto/pbkdf2_sha512.h"
 
 /* ── Shared expected vectors (lowercase hex) ─────────────────────────────

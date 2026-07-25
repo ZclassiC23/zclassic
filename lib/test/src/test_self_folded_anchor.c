@@ -47,7 +47,7 @@
  * Wave-1 Lane E of docs/work/self-verified-tip-plan.md. Authored as Act-3 prep.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/checkpoints.h"
 #include "chain/utxo_snapshot_loader.h"        /* uss_open — re-derive body SHA3 */

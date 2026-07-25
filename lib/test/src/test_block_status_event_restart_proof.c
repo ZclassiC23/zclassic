@@ -84,7 +84,7 @@
  * make t-fast ONLY=block_status_event_restart_proof
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/chain.h"
 #include "core/uint256.h"

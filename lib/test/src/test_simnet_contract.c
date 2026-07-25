@@ -26,7 +26,7 @@
  *     SCRIPT_ERR_EQUALVERIFY. No faked in-sim rejection.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "coins/coins.h"
 #include "coins/coins_view.h"

@@ -11,7 +11,7 @@
  * reference implementation — if either side drifts the test shouts.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "domain/consensus/coinbase.h"
 

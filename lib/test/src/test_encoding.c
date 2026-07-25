@@ -3,7 +3,21 @@
  * random, time, consensus upgrades, money, string encoding, version,
  * chainparams, noui, deprecation, timedata, ConvertBits. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "domain/encoding/base58.h"
+#include "domain/encoding/bech32.h"
+#include "core/arith_uint256.h"
+#include "core/random.h"
+#include "core/utiltime.h"
+#include "consensus/upgrades.h"
+#include "encoding/utilmoneystr.h"
+#include "encoding/utilstrencodings.h"
+#include "util/clientversion.h"
+#include "chain/chainparamsbase.h"
+#include "util/util.h"
+#include "util/ui_interface.h"
+#include "util/noui.h"
+#include "util/timedata.h"
 
 int test_encoding(void)
 {

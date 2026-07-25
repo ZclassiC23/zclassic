@@ -14,7 +14,9 @@
  * live handler reads via app_runtime_node_db() — so we're proving the
  * real code path, not a mock. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "json/json.h"
+#include "models/database.h"
 #include "controllers/diagnostics_internal.h"
 #include "config/db_service.h"
 #include "config/runtime.h"

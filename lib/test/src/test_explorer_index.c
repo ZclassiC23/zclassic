@@ -9,7 +9,7 @@
  * view_integrity. Proves the indexer populates the projection tables and
  * is idempotent under a re-walk (INSERT OR REPLACE). node.db only. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "models/database.h"
 #include "models/explorer_index.h"
 #include "models/znam.h"

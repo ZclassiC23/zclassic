@@ -21,7 +21,7 @@
  * Scratch files live under ./test-tmp/bir_<pid>_<tag>/ in line with the
  * project's no-/tmp convention. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "services/block_index_loader.h"
 #include "jobs/tip_finalize_stage.h"

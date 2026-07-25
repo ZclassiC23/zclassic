@@ -44,7 +44,7 @@
  * a same-seed second run must reproduce the FNV fingerprint exactly.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "core/serialize.h"
 #include "net/net.h"

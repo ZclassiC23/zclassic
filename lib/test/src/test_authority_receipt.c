@@ -8,7 +8,7 @@
 
 #define _GNU_SOURCE
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "util/authority_receipt.h"
 

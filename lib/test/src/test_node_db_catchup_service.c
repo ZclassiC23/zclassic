@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "services/node_db_catchup_service.h"
 #include "models/database.h"
 #include "controllers/sync_controller.h"

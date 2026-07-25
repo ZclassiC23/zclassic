@@ -6,7 +6,7 @@
  * equals the role's authz mask for EVERY role, and that validation rejects a
  * malformed address/pubkey/role/status. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "models/database.h"
 #include "models/principal.h"

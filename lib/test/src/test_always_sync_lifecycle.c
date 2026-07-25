@@ -29,7 +29,7 @@
  * keeps them out of lib/sim): a non-monotonic clock and a peer-floor breach. */
 
 #include "platform/time_compat.h"
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/chainparams.h"
 #include "jobs/reducer_frontier.h"

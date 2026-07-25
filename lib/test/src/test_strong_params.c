@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Tests for strong_params.h — RPC parameter validation. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "json/json.h"
 #include "controllers/strong_params.h"
 

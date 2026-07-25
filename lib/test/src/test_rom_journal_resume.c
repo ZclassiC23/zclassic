@@ -40,7 +40,7 @@
  *     never peer identity.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "net/rom_journal.h"
 #include "net/rom_fetch.h"
 #include "net/rom_seed.h"

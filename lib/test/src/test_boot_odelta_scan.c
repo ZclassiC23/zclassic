@@ -37,7 +37,7 @@
  * slow-boot defect, NOT a delta path. See docs/AGENT_TRAPS.md; do not "fix" it
  * by asserting it here as O(delta). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "jobs/reducer_frontier.h"
 #include "storage/block_index_projection.h"

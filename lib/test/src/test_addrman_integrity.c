@@ -8,7 +8,7 @@
  * and cleans up. All file I/O is local — no network, no SQLite.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "net/addrman_integrity.h"
 #include "event/event.h"
 

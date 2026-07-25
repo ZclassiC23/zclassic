@@ -22,7 +22,7 @@
  * the overlay-merge encoder and the SQLite encoder ever diverged a byte, these
  * two roots would differ. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "coins/coins.h"
 #include "core/uint256.h"

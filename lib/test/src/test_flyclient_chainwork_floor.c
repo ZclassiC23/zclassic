@@ -15,7 +15,7 @@
  * against the checkpoint table (whose mainnet hashes are all-zero
  * placeholders); pinning is unsafe until real checkpoint hashes exist. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/chainparams.h"
 #include "consensus/params.h"

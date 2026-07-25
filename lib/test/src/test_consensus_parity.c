@@ -16,7 +16,7 @@
  * Equihash override). This test pins the *values*.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "chain/chainparams.h"
 #include "consensus/params.h"
 #include "consensus/upgrades.h"
@@ -30,7 +30,7 @@
  * included directly so the golden pins below bind the artifact, not just
  * the predicate. consensus/consensus.h is NOT included (its unguarded
  * MAX_BLOCK_SIGOPS collides with validation/main_constants.h via
- * test_helpers.h); the 102000 cap is pinned as a literal below. */
+ * test/test_core.h); the 102000 cap is pinned as a literal below. */
 #include "../../../core/consensus/src/oversize_grandfather_table.inc"
 
 #include <stdio.h>

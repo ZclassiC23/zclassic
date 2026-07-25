@@ -29,7 +29,7 @@
  *      a fresh checkout (or a box with the live node running) never fails.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "services/replay_verify_service.h"
 
 #include "adapters/outbound/persistence/block_log_file.h"

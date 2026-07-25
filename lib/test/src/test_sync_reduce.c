@@ -9,7 +9,7 @@
  * session moves no field; chunk counters are bounded; STAGED cannot activate;
  * Phase-3 stubs are inert) get their own focused tests below. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "sync/sync_reduce.h"
 #include <string.h>
 

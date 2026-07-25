@@ -4,7 +4,7 @@
  * must leave a valid empty C string so callers never parse uninitialized stack.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "../../../app/controllers/src/explorer_controller_internal.h"
 
 #include <string.h>

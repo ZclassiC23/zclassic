@@ -63,7 +63,7 @@
  *      declaration is REFUSED, a coherent lower/covered move is allowed. */
 
 #include "platform/time_compat.h"
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "conditions/blocker_stall_meta_detector.h"
 #include "core/arith_uint256.h"

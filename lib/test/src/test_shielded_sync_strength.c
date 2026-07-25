@@ -45,7 +45,7 @@
  *     replacing the two silent `continue` sites with a `fail_reason =
  *     "..."; fail_height = h; goto fail;` triple, not a new blocker id. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "bloom/merkle.h"
 #include "chain/chain.h"

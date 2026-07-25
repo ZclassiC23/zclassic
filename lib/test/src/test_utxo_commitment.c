@@ -2,7 +2,7 @@
  * Tests for the incremental UTXO set commitment (XOR-hash accumulator). */
 
 #include "platform/time_compat.h"
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "coins/utxo_commitment.h"
 #include "net/fast_sync.h"
 #include <string.h>

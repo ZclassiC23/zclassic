@@ -44,7 +44,8 @@
  * with sibling boot tests and is cleaned at the end).
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "coins/undo.h"
 
 #include "validation/main_state.h"
 #include "validation/chainstate.h"

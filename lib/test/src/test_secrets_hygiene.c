@@ -27,7 +27,7 @@
  *      green because the scan logic is broken.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "config/command_catalog.h"
 #include "kernel/command_registry.h"
 

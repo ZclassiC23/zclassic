@@ -16,7 +16,7 @@
  * A real end-to-end dlopen swap is a ZCL_DEV_BUILD/manual path (dev node +
  * `dev hotswap` command); it cannot run in the -DZCL_TESTING harness. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "hotswap/hotswap.h"
 #include "hotswap/hotswap_module.h"

@@ -33,7 +33,7 @@
  * not touch the header), and the spent input coin is supplied by the lookup.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/chain.h"
 #include "core/uint256.h"

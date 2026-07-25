@@ -22,7 +22,8 @@
  * The cross-checks are the regression seal: any divergence between
  * domain and lib paths fails the test. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "core/hash.h"
 
 #include "domain/consensus/script_interp.h"
 #include "script/interpreter.h"

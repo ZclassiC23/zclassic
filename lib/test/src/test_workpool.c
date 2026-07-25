@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Tests for lib/util/workpool.{h,c} — thread pool for parallel work. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "platform/time_compat.h"
 #include "util/workpool.h"
 #include <unistd.h>

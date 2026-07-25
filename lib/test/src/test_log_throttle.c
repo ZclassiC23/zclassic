@@ -8,7 +8,7 @@
  * count on a keep-alive. The clock is caller-supplied, so these are pure and
  * deterministic — no real time. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "util/log_throttle.h"
 

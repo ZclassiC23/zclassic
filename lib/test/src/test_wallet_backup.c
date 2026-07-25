@@ -14,7 +14,8 @@
  * be recovered from.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "json/json.h"
 
 #include "services/wallet_backup_service.h"
 #include "event/event.h"

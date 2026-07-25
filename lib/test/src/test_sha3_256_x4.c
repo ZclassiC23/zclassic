@@ -25,7 +25,7 @@
 
 #define _POSIX_C_SOURCE 200809L
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "crypto/sha3.h"
 
 #include <stdbool.h>

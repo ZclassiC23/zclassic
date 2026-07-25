@@ -14,7 +14,7 @@
  * including the same source text is safe -- no link collision.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "sim/postmortem.h"
 #include "sim/seed_tape.h"
 

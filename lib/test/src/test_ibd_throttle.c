@@ -12,7 +12,7 @@
  */
 
 #include "platform/time_compat.h"
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "services/ibd_throttle.h"
 #include "event/event.h"
 

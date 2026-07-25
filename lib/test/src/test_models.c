@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Aggregates focused model test files. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 int test_model_core(void);
 int test_model_zslp(void);

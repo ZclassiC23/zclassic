@@ -3,7 +3,7 @@
  * reconnect on parent arrival. */
 
 #include "platform/time_compat.h"
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "validation/orphan_pool.h"
 #include "validation/txmempool.h"
 #include "util/safe_alloc.h"

@@ -52,7 +52,7 @@
  * stays false.  Runtime: <100ms.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "validation/connect_block.h"
 #include "validation/process_block.h"
 #include "validation/update_coins.h"

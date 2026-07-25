@@ -59,7 +59,7 @@
  *   make mvp-onion-slice
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "net/tor_integration.h"
 #include "net/onion_service.h"
 

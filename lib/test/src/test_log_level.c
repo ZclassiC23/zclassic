@@ -17,7 +17,7 @@
  *     here (WARN).
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "util/log_level.h"
 #include "util/log_macros.h"
 

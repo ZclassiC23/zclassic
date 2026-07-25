@@ -24,7 +24,7 @@
  *      reject — anchor_kv_latest_tree(SAPLING) == HISTORY_INCOMPLETE.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/chain.h"
 #include "chain/utxo_snapshot_loader.h"

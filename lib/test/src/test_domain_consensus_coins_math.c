@@ -24,7 +24,7 @@
  *   - script_compress_special_size lookup is total
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "domain/consensus/coins_math.h"
 #include "coins/coins.h"

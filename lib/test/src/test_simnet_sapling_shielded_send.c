@@ -54,7 +54,7 @@
  * pattern). The params-free tree plumbing runs unconditionally.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "sim/simnet.h"
 #include "sim/simnet_sapling.h"
@@ -75,7 +75,8 @@
 #include "validation/sighash.h"
 #include "validation/contextual_check_tx.h" /* the REAL shielded verifier */
 #include "consensus/validation.h"           /* struct validation_state */
-/* COINBASE_MATURITY comes from validation/main_constants.h (via test_helpers.h);
+/* COINBASE_MATURITY comes from validation/main_constants.h, reached through
+ * validation/contextual_check_tx.h above;
  * consensus/consensus.h is deliberately NOT included — it re-defines
  * MAX_BLOCK_SIGOPS with a different suffix and would warn under -Werror. */
 #include "consensus/upgrades.h"           /* consensus_current_epoch_branch_id */

@@ -9,7 +9,7 @@
  * real blocks (real-block wiring lives in chain_segment_controller.c).
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "storage/chain_segment.h"
 #include "crypto/sha3.h"

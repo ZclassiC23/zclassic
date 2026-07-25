@@ -24,7 +24,7 @@
  * holds; re-evaluation never rewrites either stamp; a later posture
  * regression keeps the historical stamp. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "controllers/sovereignty_controller.h"
 #include "core/uint256.h"

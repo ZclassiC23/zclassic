@@ -7,7 +7,9 @@
  * parse path real proofs use.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "keys/key.h"
+#include "json/json.h"
 #include "crypto_registry/crypto_registry.h"
 #include "crypto/blake2b.h"
 #include "crypto/equihash.h"

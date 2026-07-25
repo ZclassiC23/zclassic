@@ -8,7 +8,7 @@
  * coins_kv_seed_from_node_db (which short-circuits when the stamp is set) does
  * a FRESH copy rather than a no-op over a stale set. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "core/uint256.h"
 #include "storage/coins_kv.h"

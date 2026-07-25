@@ -46,7 +46,7 @@
  *   - two-pass atomicity   → pass-2 inserts only when the whole block is clean
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "primitives/block.h"
 #include "primitives/transaction.h"

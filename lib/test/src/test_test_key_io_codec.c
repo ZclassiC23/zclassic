@@ -19,7 +19,7 @@
  * test_parallel's per-child harness already calls ecc_start() before
  * running any group (see test_parallel.c), so no setup is needed here. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "core/uint256.h"
 #include "domain/encoding/base58.h"

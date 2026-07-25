@@ -21,7 +21,8 @@
 
 #define _POSIX_C_SOURCE 200809L
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "coins/undo.h"
 #include "net/anchor_peers.h"
 #include "net/connman.h"
 #include "net/addrman.h"

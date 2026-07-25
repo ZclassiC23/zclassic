@@ -21,7 +21,7 @@
  *   - uses the served tip's OWN height convention (cursor C == served tip at C,
  *     NOT C+1), and no-ops when coins_best < 0. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "jobs/stage_repair.h"
 #include "storage/progress_store.h"
 

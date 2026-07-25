@@ -21,7 +21,7 @@
  * None of this touches a consensus predicate — it only decides whether to
  * spend server resources on an unauthenticated request. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "net/puzzle.h"
 #include "platform/time_compat.h"
 #include <string.h>

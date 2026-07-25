@@ -22,7 +22,8 @@
  *                     with multiple heights.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "chain/chainparams.h"
 
 #include "domain/consensus/checkpoints.h"
 #include "chain/checkpoints.h"

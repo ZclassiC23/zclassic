@@ -19,7 +19,7 @@
  *       contract that the count reflects the nodes actually registered.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "core/serialize.h"
 #include "primitives/transaction.h"
 #include "primitives/block.h"

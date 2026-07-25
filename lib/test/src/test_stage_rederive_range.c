@@ -22,7 +22,7 @@
  * Scaffolding (datadir/stores/block builder/genesis seed) mirrors
  * test_reducer_step_drain_harness.c — production step bodies, no stubs. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "bloom/merkle.h"
 #include "chain/chainparams.h"

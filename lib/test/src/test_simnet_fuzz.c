@@ -64,7 +64,7 @@
  * `ZCL_SIMNET_FUZZ_SEED=<hex|dec>` to pin the base seed for replay.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "coins/utxo_commitment.h"
 #include "core/uint256.h"

@@ -33,7 +33,9 @@
  *   passphrase fails closed and leaves no partial file.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "support/pagelocker.h"
+#include "keys/key_io.h"
 
 #include "sim/simnet.h"
 

@@ -21,7 +21,7 @@
  * not touch them and uses its own throwaway DB so it is hermetic.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "adapters/outbound/persistence/hodl_history_sqlite.h"
 #include "ports/hodl_history_port.h"

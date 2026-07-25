@@ -9,7 +9,7 @@
  *   4. Corrupt one byte → re-open must fail with "body sha3 mismatch".
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "chain/utxo_snapshot_loader.h"
 #include "core/amount.h"
 #include "crypto/sha3.h"

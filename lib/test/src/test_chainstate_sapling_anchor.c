@@ -16,7 +16,7 @@
  *   (d) round-trips the exact wire bytes zcashd stores (serialize -> store ->
  *       get), so the reader is compatible with the borrow source's format. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "core/serialize.h"
 #include "core/uint256.h"

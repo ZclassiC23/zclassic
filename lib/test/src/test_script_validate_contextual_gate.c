@@ -24,7 +24,8 @@
  * is_ibd=false branch is pinned at rule level via direct
  * contextual_check_block calls. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "test/block_fixtures.h"
 
 #include "bloom/merkle.h"
 #include "chain/chain.h"

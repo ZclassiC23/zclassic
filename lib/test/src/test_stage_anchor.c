@@ -30,7 +30,7 @@
 #include "jobs/stage_helpers.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "util/stage.h"
 
 #include <sqlite3.h>

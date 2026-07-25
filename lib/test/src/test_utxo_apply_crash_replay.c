@@ -39,7 +39,8 @@
  * UCR_BLOCKS synthetic blocks measures low single-digit seconds. */
 
 #include "platform/time_compat.h"
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "test/block_fixtures.h"
 
 #include "bloom/merkle.h"
 #include "chain/chain.h"

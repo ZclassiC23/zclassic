@@ -21,7 +21,7 @@
  *     - I4.5 tip_finalize oscillation at an unmoving cursor fires at the
  *       threshold, not below it. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "models/database.h"
 #include "services/invariant_sentinel.h"

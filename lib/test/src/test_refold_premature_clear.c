@@ -31,7 +31,7 @@
  * Hermetic: a throwaway :memory: progress.kv image. No node, no drive, no locks
  * beyond the progress_store recursive tx lock the helpers take internally. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "jobs/refold_progress.h"
 #include "storage/progress_store.h"

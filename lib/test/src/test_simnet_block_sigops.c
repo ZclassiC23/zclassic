@@ -37,12 +37,13 @@
  * connect_block.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "validation/main_constants.h"
 
 #include "sim/simnet.h"
 /* COINBASE_MATURITY / MAX_BLOCK_SIGOPS come from
  * validation/main_constants.h, already pulled in transitively by
- * test_helpers.h. */
+ * included directly by this file. */
 
 #include <stdio.h>
 #include <string.h>

@@ -40,7 +40,7 @@
  * (ZCL_TEST_ONLY=parity_slice).
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "services/utxo_parity_service.h"
 #include "services/utxo_reference_source.h"

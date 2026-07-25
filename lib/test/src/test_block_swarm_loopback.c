@@ -48,7 +48,8 @@
  *      failover peer. This is the fix wired into connman's disconnect cleanup. */
 
 #define _GNU_SOURCE
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "consensus/validation.h"
 
 #include "chain/chain.h"
 #include "chain/chainparams.h"

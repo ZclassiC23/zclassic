@@ -28,7 +28,7 @@
  * nStatus mirror what the production reader sees.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "storage/block_parse_cache.h"
 #include "storage/chain_segment.h"
 #include "storage/disk_block_io.h"

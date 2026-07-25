@@ -5,7 +5,7 @@
  * we use log_json_format() which renders into a caller-supplied
  * buffer, which is what the unit tests need anyway. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "util/log_json.h"
 
 #include <stdio.h>

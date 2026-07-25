@@ -7,7 +7,7 @@
  *   3. each of the three redundant detectors fires on its synthetic trigger and
  *      does NOT false-fire on healthy data. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "services/network_monitor.h"
 #include "models/peer_chain_observation.h"

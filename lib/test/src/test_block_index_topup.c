@@ -30,7 +30,7 @@
  * no-/tmp convention.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "services/block_index_loader.h"
 #include "storage/block_index_projection.h"

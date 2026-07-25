@@ -15,7 +15,7 @@
  * fold gate, honors + clamps its env knobs there, and that clearing the gate
  * RESTORES the inert identity. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "../../../app/jobs/src/validate_headers_internal.h"
 

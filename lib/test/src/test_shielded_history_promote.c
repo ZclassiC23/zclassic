@@ -23,7 +23,7 @@
  *   placeholder     — the default (real-symbol) cross-check returns false, so the
  *                     production default is fail-closed. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/chain.h"
 #include "core/serialize.h"

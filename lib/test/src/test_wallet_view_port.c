@@ -19,7 +19,7 @@
  * uses its own throwaway DB so it is hermetic.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "adapters/outbound/persistence/wallet_view_sqlite.h"
 #include "ports/wallet_view_port.h"

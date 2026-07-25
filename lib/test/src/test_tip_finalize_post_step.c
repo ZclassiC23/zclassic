@@ -19,7 +19,10 @@
  * may run when the body is absent (HAVE_DATA clear) or unreadable
  * (HAVE_DATA set, file missing). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "util/util.h"
+#include "coins/undo.h"
+#include "wallet/wallet.h"
 
 #include "chain/chain.h"
 #include "config/runtime.h"

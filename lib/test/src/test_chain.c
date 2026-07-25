@@ -1,6 +1,21 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "consensus/upgrades.h"
+#include "util/timedata.h"
+#include "bloom/merkle.h"
+#include "keys/key_io.h"
+#include "chain/subsidy.h"
+#include "validation/contextual_check_tx.h"
+#include "validation/main_logic.h"
+#include "storage/coins_db.h"
+#include "validation/update_coins.h"
+#include "storage/block_index_db.h"
+#include "crypto/equihash.h"
+#include "crypto/equihash_solver.h"
+#include "chain/equihash.h"
+#include "validation/check_block.h"
+#include "models/block.h"
 #include "controllers/explorer_internal.h"
 #include <unistd.h>
 #include "util/safe_alloc.h"

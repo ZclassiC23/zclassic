@@ -18,7 +18,7 @@
  * tiny mock function.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "services/recovery_policy.h"
 #include "event/event.h"
 

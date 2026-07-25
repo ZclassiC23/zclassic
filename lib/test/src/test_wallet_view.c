@@ -21,7 +21,7 @@
  *  12. Edge cases — empty DB, huge values, special characters */
 
 #include "platform/time_compat.h"
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "controllers/wallet_view_controller.h"
 #include "models/database.h"
 #include "util/template.h"

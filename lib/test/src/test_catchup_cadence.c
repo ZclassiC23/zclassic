@@ -24,7 +24,7 @@
  * catchup_cadence_test_set_log_head_override() instead of standing up a
  * real progress_store-backed tip_finalize_stage_init(). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "jobs/catchup_cadence.h"
 #include "jobs/validate_headers_stage.h"   /* VH_BATCH_SIZE, VH_BATCH_PER_TICK */

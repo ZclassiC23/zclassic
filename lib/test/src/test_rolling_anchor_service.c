@@ -4,7 +4,7 @@
  * The service used to run from lib/health; it now owns a chain-domain
  * liveness contract and must stay idempotent across start/stop. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/sha3_windows.h"
 #include "event/event.h"

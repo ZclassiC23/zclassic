@@ -14,7 +14,7 @@
  *   - sha3_commitment is order-independent and stable
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "adapters/outbound/persistence/utxo_snapshot_inmem.h"
 #include "ports/utxo_snapshot_port.h"

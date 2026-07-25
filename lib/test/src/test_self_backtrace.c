@@ -6,7 +6,7 @@
 
 #define _GNU_SOURCE
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "util/self_backtrace.h"
 #include "util/thread_registry.h"
 #include "util/util.h"          /* SetDataDir */

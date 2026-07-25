@@ -47,7 +47,7 @@
  * convention.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "event/event.h"
 #include "jobs/reducer_frontier.h"

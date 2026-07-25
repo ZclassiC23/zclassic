@@ -12,7 +12,7 @@
  * so the sequential test driver (test.c) can run this alongside other
  * tests without polluting their view of the boot stage. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "config/boot.h"
 #include "util/boot_phase.h"
 #include <stdio.h>

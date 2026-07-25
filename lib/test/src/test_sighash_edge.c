@@ -48,7 +48,7 @@
  * Deterministic, no network, no node process.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "validation/sighash.h"
 #include "validation/tx_verifier.h"

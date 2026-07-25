@@ -36,7 +36,7 @@
  * vacuous when the scheduler declines to interleave.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "json/json.h"
 #include "platform/time_compat.h"

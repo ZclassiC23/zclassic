@@ -18,7 +18,7 @@
  *     and it never goes backward across two ticks (the monotonic-clock
  *     contract, not a real-time-value assumption). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "util/boot_progress.h"
 

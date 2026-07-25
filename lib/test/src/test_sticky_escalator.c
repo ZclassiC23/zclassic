@@ -23,7 +23,8 @@
  * rows at the mainnet trusted anchor A). */
 
 #include "platform/time_compat.h"
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "coins/undo.h"
 
 #include "core/arith_uint256.h"
 #include "core/uint256.h"

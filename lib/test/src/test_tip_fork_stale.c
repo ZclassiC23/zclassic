@@ -22,7 +22,7 @@
  * the higher-work head.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "conditions/tip_fork_stale.h"
 #include "core/arith_uint256.h"

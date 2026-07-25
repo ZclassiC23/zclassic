@@ -15,7 +15,7 @@
  *     (advisory, no crash) for an invalid domain
  *   - dump_state_json: keys present, domains array well-formed */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "util/cpu_topology.h"
 #include "json/json.h"
 

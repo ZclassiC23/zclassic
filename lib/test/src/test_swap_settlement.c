@@ -17,7 +17,7 @@
  *   - refund with a FINAL input sequence is rejected (CLTV skipped)
  *   - state transitions PENDING -> FUNDED -> REDEEMED persist via AR save */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "services/swap_settlement_service.h"
 #include "script/htlc.h"
 #include "script/interpreter.h"

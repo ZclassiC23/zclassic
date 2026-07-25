@@ -22,11 +22,11 @@
  *
  * One TEST()/ASSERT() block per function — this codebase's TEST macro
  * uses a single fixed `_test_next:` goto label per function (see
- * test/test_helpers.h), so more than one TEST block in the same
+ * test/test_core.h), so more than one TEST block in the same
  * function is a duplicate-label compile error.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "net/net.h"
 
 #include <stdio.h>

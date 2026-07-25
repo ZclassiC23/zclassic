@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "coins/undo.h"
 
 #include "conditions/local_header_refill_needed.h"
 #include "services/block_source_policy.h"

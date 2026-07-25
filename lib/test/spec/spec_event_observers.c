@@ -2,7 +2,7 @@
  *
  * Spec tests for event observer system. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "event/event.h"
 #include <string.h>
 #include <stdio.h>

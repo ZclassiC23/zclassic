@@ -7,10 +7,11 @@
  * this tree yet), the generosity-boost window, and live counters.
  *
  * One TEST(...) block per function (the ASSERT()/ASSERT_EQ() macros `goto
- * _test_next`, a single hardcoded label — see test/test_helpers.h — so two
+ * _test_next`, a single hardcoded label — see test/test_core.h — so two
  * TEST blocks sharing one function collide on that label). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "json/json.h"
 
 #include "net/rom_seed_policy.h"
 

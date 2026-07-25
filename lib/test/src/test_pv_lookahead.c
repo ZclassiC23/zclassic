@@ -13,7 +13,8 @@
  * runs the REAL verifier (sapling params + ed25519 joinsplit check) instead of
  * the injected one. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "test/block_fixtures.h"
 
 #include "bloom/merkle.h"
 #include "chain/chain.h"

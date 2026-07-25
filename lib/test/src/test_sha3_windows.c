@@ -4,7 +4,7 @@
  * placeholder (count == 0) so verify_window must reject every index;
  * we also exercise the verifier with a hand-computed local window. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "chain/sha3_windows.h"
 #include "crypto/sha3.h"
 #include "util/blocker.h"

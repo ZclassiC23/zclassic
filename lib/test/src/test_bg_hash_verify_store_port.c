@@ -17,7 +17,7 @@
  *      crashing.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "adapters/outbound/persistence/bg_hash_verify_store_sqlite.h"
 #include "ports/bg_hash_verify_store_port.h"

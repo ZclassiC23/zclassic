@@ -12,7 +12,7 @@
  * All fixtures live under a mkdtemp() dir in /tmp — never a real datadir,
  * never the network, never a live progress-store fold. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "config/rom_bundle_admission.h"
 #include "config/consensus_state_replay_receipt.h"
 #include "net/rom_seed.h"

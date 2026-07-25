@@ -25,7 +25,7 @@
  *      the decode path even in CI where no snapshot exists)
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "storage/chainstate_legacy_reader.h"
 #include "storage/dbwrapper.h"
 #include "sapling/incremental_merkle_tree.h"

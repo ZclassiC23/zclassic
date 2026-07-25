@@ -12,7 +12,7 @@
  * here). Every test below hand-builds the struct fixture, so the suite is
  * fully deterministic and needs no datadir/DB/network. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "services/chain_frontier_snapshot_service.h"
 

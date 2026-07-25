@@ -2,7 +2,12 @@
  * Fr/Fs field arithmetic, Jubjub, BLS12-381, PRF, FF1 tests. */
 
 #include "platform/time_compat.h"
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "sapling/jubjub.h"
+#include "sapling/prf.h"
+#include "sapling/sapling.h"
+#include "sapling/ff1.h"
+#include "sapling/sprout.h"
 #include "sapling/groth16_prover.h"
 #include "sapling/sapling_circuit.h"
 #include <time.h>

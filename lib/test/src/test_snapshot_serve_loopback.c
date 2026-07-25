@@ -74,7 +74,8 @@
  * anchors in the test body below. This is the first coverage of the
  * wire-level zsnapend handler's ban-vs-no-ban branch. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "models/database.h"
 
 #include "chain/chainparams.h"
 #include "coins/coins_view.h"

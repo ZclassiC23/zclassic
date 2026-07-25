@@ -43,7 +43,7 @@
  * covered in their own suites, exactly as test_stage_reorg_unwind_parity does.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "bloom/merkle.h"
 #include "chain/chain.h"

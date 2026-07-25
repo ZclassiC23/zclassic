@@ -22,7 +22,7 @@
  *                             cut, in the fixed documented order, while
  *                             identity/def/route are never dropped. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "codeindex/codeindex.h"
 #include "config/command_handler_index.h"
 #include "command/native_command.h"

@@ -9,7 +9,8 @@
  * node takes — not a mock. */
 
 #include "platform/time_compat.h"
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "models/database.h"
 
 #include "wallet/wallet_canary.h"
 

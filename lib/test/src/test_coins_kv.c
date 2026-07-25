@@ -5,7 +5,7 @@
  * the move — coins commit or roll back together with the stage cursor, closing
  * the tip-wedge tear class (docs/work/tip-durability-collapse.md). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/checkpoints.h"
 #include "coins/coins_view.h"

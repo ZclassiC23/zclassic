@@ -14,7 +14,10 @@
  *   - distinct dk values yield distinct default diversifiers,
  *   - FF1 itself is deterministic and 11-byte (88-bit) in/out. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "sapling/sapling.h"
+#include "sapling/ff1.h"
+#include "sapling/zip32.h"
 
 /* ── Local fixtures ──────────────────────────────────────────────── */
 

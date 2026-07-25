@@ -33,7 +33,8 @@
  * fast default pool (group_is_params_heavy) and opted in via ZCL_PARAMS_TESTS=1.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "validation/main_constants.h"
 
 #include "sim/simnet.h"
 #include "sim/simnet_sapling.h"

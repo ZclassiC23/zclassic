@@ -5,7 +5,7 @@
  * assert no crashes and correct accept/reject. */
 
 #include "platform/time_compat.h"
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "validation/check_transaction.h"
 #include "core/amount.h"
 #include "primitives/transaction.h"
@@ -14,8 +14,9 @@
 #include <time.h>
 #include "util/safe_alloc.h"
 
-/* Avoid re-including consensus.h which conflicts with main_constants.h
- * pulled in by test_helpers.h.  Guard the constants we need. */
+/* Avoid including consensus.h: it conflicts with main_constants.h, which
+ * arrives through validation/check_transaction.h. Guard the constants we
+ * need instead. */
 #ifndef TX_EXPIRY_HEIGHT_THRESHOLD
 #define TX_EXPIRY_HEIGHT_THRESHOLD 500000000U
 #endif

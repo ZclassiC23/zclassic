@@ -14,7 +14,7 @@
  * calls), but these tests exercise every scrubbed code path to catch
  * regressions. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "sapling/zip32.h"
 #include "sapling/prf.h"
 #include "sapling/fr.h"

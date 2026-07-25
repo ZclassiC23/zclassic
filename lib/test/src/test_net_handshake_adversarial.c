@@ -30,7 +30,7 @@
  * constants; addr-timestamp sanitization is tested directly against
  * addr_info_is_terrible() with a fixed "now" anchor. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/chainparams.h"
 #include "core/hash.h"

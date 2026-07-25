@@ -19,7 +19,7 @@
  *       torn record write — open() must truncate cleanly.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "adapters/outbound/persistence/block_log_file.h"
 #include "ports/block_log_port.h"

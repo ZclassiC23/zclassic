@@ -6,7 +6,7 @@
  * migration (correctness + idempotency + convergence on a half-migrated store,
  * plus preservation of out-of-scope keys). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "core/uint256.h"
 #include "storage/progress_store.h"

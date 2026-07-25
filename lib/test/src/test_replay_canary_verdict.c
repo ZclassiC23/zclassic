@@ -25,7 +25,8 @@
  * live node, the live datadir, and the operator's real verdict dir are
  * never touched. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "crypto/sha256.h"
 
 #include <errno.h>
 #include <fcntl.h>

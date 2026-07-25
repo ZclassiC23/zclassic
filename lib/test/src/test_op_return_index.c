@@ -22,7 +22,8 @@
  *     run reproduces the exact same row set and running digest
  *     ("rebuildable + integrity"). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "validation/main_state.h"
 #include "models/database.h"
 #include "models/explorer_index.h"
 #include "models/op_return_index.h"

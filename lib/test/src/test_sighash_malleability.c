@@ -58,7 +58,7 @@
  * No consensus predicate is modified anywhere in this file.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "keys/key.h"
 #include "keys/pubkey.h"

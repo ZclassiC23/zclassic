@@ -22,7 +22,8 @@
  * "0xdeadbeef" token still parses to a 4-byte script.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "coins/undo.h"
 #include "core/core_io.h"
 #include "script/script.h"
 #include <stdlib.h>

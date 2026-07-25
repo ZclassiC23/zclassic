@@ -54,7 +54,7 @@
  * flips at the documented boundary (teeth) and pins the current verdict.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "validation/contextual_check_tx.h"
 #include "validation/check_block.h"

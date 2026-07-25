@@ -7,7 +7,8 @@
  * re-derivation driver is out of scope (it is the deferred integration); these
  * tests drive the decision + flip logic with a synthetic seam. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "core/uint256.h"
 
 #include "config/boot.h"
 #include "config/consensus_state_snapshot_install.h"

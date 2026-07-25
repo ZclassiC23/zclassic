@@ -5,7 +5,9 @@
  * faced with adversarial inputs: extreme fees, bimodal distributions,
  * spam floods, sudden fee spikes/drops, and empty blocks. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "validation/txmempool.h"
+#include "policy/fees.h"
 #include <math.h>
 
 /* Helper: build a minimal mempool_entry with the given fee/size/height. */

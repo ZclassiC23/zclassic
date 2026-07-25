@@ -21,7 +21,7 @@
  * building the durable image, not production reducer code (mirrors
  * test_hstar_integrity.c). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "config/boot.h"
 #include "chain/chain.h"

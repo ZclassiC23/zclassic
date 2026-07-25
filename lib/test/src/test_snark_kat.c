@@ -64,7 +64,10 @@
  * sibling BLS12-381 engine that powers Sapling consensus verification.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "sapling/sapling.h"
+#include "sapling/bls12_381.h"
+#include "sapling/params_init.h"
 #include "sapling/sapling_prover.h"
 #include "util/safe_alloc.h"
 

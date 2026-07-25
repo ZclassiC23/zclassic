@@ -12,7 +12,8 @@
  * - Inconsistent active tab highlighting
  * - Privacy claims contradicting actual data */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "test/wallet_view_fixture.h"
 #include "controllers/wallet_view_controller.h"
 #include "controllers/wallet_view_internal.h"
 #include "models/database.h"

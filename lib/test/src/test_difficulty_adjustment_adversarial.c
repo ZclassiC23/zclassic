@@ -49,7 +49,7 @@
  * in the clamp direction, the /4 damping, or the div-then-mul order diverges.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/chain.h"
 #include "chain/chainparams.h"

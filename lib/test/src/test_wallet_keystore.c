@@ -2,7 +2,7 @@
  *
  * Tests for wallet_keystore — passphrase-based AES-256-GCM at rest. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "wallet/wallet_keystore.h"
 #include "wallet/wallet_lock.h"
 #include "wallet/keystore.h"   /* basic_keystore + keystore_wipe_private_keys */

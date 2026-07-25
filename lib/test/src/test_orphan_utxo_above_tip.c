@@ -22,7 +22,7 @@
  * via condition_engine_set_main_state().
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "conditions/orphan_utxo_above_tip.h"
 #include "core/arith_uint256.h"

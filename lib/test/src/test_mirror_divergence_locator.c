@@ -12,7 +12,8 @@
  *   - rate limit: a second locate inside the window is skipped;
  *   - crash-only: every outcome is a return code, process alive. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "json/json.h"
 
 #include "services/mirror_divergence_locator.h"
 #include "util/blocker.h"

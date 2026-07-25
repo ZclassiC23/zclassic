@@ -22,7 +22,7 @@
  * 2, 4, 5, 6 all FAIL. Post-GREEN: all six pass.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "test/soak_harness.h"
 
 int test_soak_harness(void);

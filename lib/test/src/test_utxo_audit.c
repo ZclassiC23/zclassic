@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "conditions/utxo_drift_detected.h"
 #include "services/utxo_audit_service.h"
 #include "coins/utxo_commitment.h"

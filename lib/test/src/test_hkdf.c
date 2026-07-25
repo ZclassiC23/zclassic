@@ -7,7 +7,7 @@
  * an exact byte output — any regression in extract, the T(i) chaining, or the
  * counter byte changes the OKM and fails the test. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "crypto/hkdf_sha256.h"
 
 /* Decode `hex` (2*n chars) into out[n]. Returns n. */

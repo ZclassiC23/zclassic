@@ -2,7 +2,7 @@
  *
  * Tests for the alert routing subsystem (wave 9 #5). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "util/alerts.h"
 #include "event/event.h"
 

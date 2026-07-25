@@ -6,7 +6,7 @@
  * Kathy Sierra "Badass" specs: every test verifies
  * the USER becomes more capable, not the APP works. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "keys/key.h"
 #include "chain/chainparams.h"
 #include <signal.h>

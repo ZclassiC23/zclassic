@@ -23,9 +23,9 @@
  *   5. Dumper shape.
  *
  * Fixture dirs live under ./test-tmp/ per the project's no-/tmp
- * convention (test_fmt_tmpdir, test/test_helpers.h). */
+ * convention (test_fmt_tmpdir, test/test_core.h). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "services/blocker_history.h"
 #include "event/event.h"

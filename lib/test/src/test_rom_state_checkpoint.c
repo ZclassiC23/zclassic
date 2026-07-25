@@ -23,7 +23,7 @@
  *   (3) it asserts the test-override seam works.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "chain/checkpoints.h"
 #include "crypto/sha3.h"
 

@@ -10,7 +10,7 @@
  * EV_OPERATOR_NEEDED fired. A sibling case proves the healthy path stays
  * silent (no blocker, no page). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "event/event.h"
 #include "framework/condition.h"

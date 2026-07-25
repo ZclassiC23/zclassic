@@ -32,7 +32,7 @@
  * machine and is left untouched; this file is hermetic.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "adapters/outbound/persistence/snapshot_store_sqlite.h"
 #include "ports/snapshot_store_port.h"

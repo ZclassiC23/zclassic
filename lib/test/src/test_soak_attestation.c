@@ -19,7 +19,7 @@
  * Tests use a tmpdir built under /tmp so the live node.db is never touched.
  * The service is reset between cases so each case starts clean. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "controllers/agent_security_posture.h"
 #include "services/soak_attestation_service.h"
 #include "services/sync_benchmark_service.h"

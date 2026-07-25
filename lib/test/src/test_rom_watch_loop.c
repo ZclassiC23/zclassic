@@ -14,7 +14,7 @@
  * Each case is its own static function (the shared ASSERT() macro hardcodes
  * `goto _test_next`, so one label per function). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "command/rom_watch_loop.h"
 #include "command/rom_compile_offline.h"

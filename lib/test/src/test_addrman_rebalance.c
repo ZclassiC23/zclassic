@@ -6,7 +6,7 @@
  * All IPs use public ranges (50-99.x.x.x) to pass net_addr_is_routable(). */
 
 #include "platform/time_compat.h"
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "net/addrman.h"
 #include "core/random.h"
 #include "core/serialize.h"

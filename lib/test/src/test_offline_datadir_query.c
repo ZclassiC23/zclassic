@@ -17,7 +17,7 @@
  * it) — same shape, written through progress_store_open() at a real
  * directory instead of an in-memory handle. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "command/native_command.h"
 #include "controllers/diagnostics_controller.h"

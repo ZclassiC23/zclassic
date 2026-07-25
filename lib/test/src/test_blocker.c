@@ -22,7 +22,7 @@
  *     PERMANENT/DEPENDENCY/RESOURCE staying completely unaffected by
  *     both rules */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "util/blocker.h"
 #include "json/json.h"
 #include "hotswap/hotswap_retire_blocker.h"

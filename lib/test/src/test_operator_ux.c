@@ -9,7 +9,7 @@
  *   fixtures / a synthetic datadir.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "controllers/explain_native_handlers.h"
 #include "config/consensus_state_producer_receipt.h"

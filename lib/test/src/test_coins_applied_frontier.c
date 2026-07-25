@@ -26,7 +26,7 @@
  * Built on the same synthetic-branch harness as test_stage_reorg_unwind_parity
  * (the closest existing reducer fixture). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "bloom/merkle.h"
 #include "chain/chain.h"

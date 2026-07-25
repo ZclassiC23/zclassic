@@ -35,7 +35,7 @@
  * block bodies — the gate reads only the BLOCK_HAVE_DATA bit, exactly the live
  * signal. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "config/boot.h"
 #include "validation/main_state.h"

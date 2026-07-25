@@ -7,7 +7,7 @@
  * panel-required exact live state: FIX-2a clamp -> simulated refill ->
  * span backfill -> arithmetic convergence -> tip_finalize clamps to C). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "core/uint256.h"
 #include "jobs/reducer_frontier.h"

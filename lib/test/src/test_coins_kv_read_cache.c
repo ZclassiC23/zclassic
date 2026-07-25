@@ -25,7 +25,7 @@
  * make t ONLY=coins_kv_read_cache
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "script/script.h"
 #include "storage/coins_kv.h"
