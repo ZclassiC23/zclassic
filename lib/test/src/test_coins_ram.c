@@ -1008,7 +1008,16 @@ int test_coins_ram(void)
      *     before the ~35h mint is committed. N is sized down automatically if
      *     the build can't afford the larger fill cheaply. */
     {
-        const int N = 1000000;  /* target populated coins */
+        /* Default N is small: this block is a MEASUREMENT, not an assertion —
+         * the only thing checked below is "both legs actually hit", which is
+         * true at any N. At the full 1,000,000 it fills a million SQLite rows
+         * and does 400k probes, roughly 4.6s of pure CPU and IO that every
+         * `make test-parallel` was paying, on one of 32 workers, adding load
+         * that pushed OTHER groups' timing-sensitive assertions over their
+         * ceilings. The real speedup number is still one env var away.
+         *
+         * Set ZCL_TEST_PERF_ASSERTS=1 to run the full-size measurement. */
+        const int N = getenv("ZCL_TEST_PERF_ASSERTS") ? 1000000 : 20000;
         char dirP[256];
         test_make_tmpdir(dirP, sizeof(dirP), "coins_ram_bench", "p");
         if (progress_store_open(dirP)) {
@@ -1039,7 +1048,7 @@ int test_coins_ram(void)
                    filled, fill_s);
 
             /* ── SQLite B-tree get cost (overlay OFF) ── */
-            const int PROBES = 200000;
+            const int PROBES = getenv("ZCL_TEST_PERF_ASSERTS") ? 200000 : 5000;
             clock_gettime(CLOCK_MONOTONIC, &t0);  // platform-ok:coins-ram-benchmark-realtime
             volatile int64_t sink = 0; int hit = 0;
             for (int p = 0; p < PROBES; p++) {

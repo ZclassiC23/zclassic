@@ -224,10 +224,49 @@ int test_ibd_throttle(void)
         int64_t dur_ms = (int64_t)(t1.tv_sec - t0.tv_sec) * 1000 +
                          (t1.tv_nsec - t0.tv_nsec) / 1000000;
         IT_CHECK("it: acquire returns true after blocking", got == true);
+        /* Lower bound only. The bucket is drained and refills at 500/s, so the
+         * call CANNOT return before ~2ms have passed — and a busy machine only
+         * ever makes the observed wait longer, never shorter. That direction is
+         * forced; the other one is not.
+         *
+         * There used to be an "it: blocked less than 100ms" assertion here. It
+         * asserted nothing about ibd_throttle: an over-100ms reading means the
+         * OS did not schedule this thread promptly, which is a fact about the
+         * box, not about the token bucket. The refill arithmetic it was
+         * standing in for is covered exactly and without a clock by the pure
+         * ibd_throttle_refill() cases above (4-8). Kept as an opt-in
+         * measurement below so the number is still available on demand. */
         IT_CHECK("it: blocked at least ~1ms before refill",
                  dur_ms >= 1);
-        IT_CHECK("it: blocked less than 100ms (refill is fast)",
-                 dur_ms < 100);
+
+        /* Upper bound, kept in the DEFAULT suite, via best-of-N.
+         *
+         * Deleting it lost real coverage: a 200x oversleep planted in
+         * ibd_throttle_acquire's wait loop leaves every other assertion here
+         * green, because the pure refill cases (4-8) never touch the sleep
+         * path and the lower bound only gets easier to satisfy.
+         *
+         * A single wall-clock sample cannot carry the bound — an over-100ms
+         * reading usually means the OS did not schedule us, which is a fact
+         * about the box. The MINIMUM over several attempts can: it needs only
+         * ONE unimpeded sample, so load has to starve every attempt to make it
+         * fire, while a genuine oversleep inflates all of them equally and
+         * still trips it. Same reason a benchmark quotes its best run. */
+        int64_t best_ms = dur_ms;
+        for (int attempt = 0; attempt < 8 && best_ms >= 100; attempt++) {
+            (void)ibd_throttle_try_acquire();   /* drain again */
+            platform_time_monotonic_timespec(&t0);
+            bool again = ibd_throttle_acquire().ok;
+            platform_time_monotonic_timespec(&t1);
+            if (!again) break;
+            int64_t d = (int64_t)(t1.tv_sec - t0.tv_sec) * 1000 +
+                        (t1.tv_nsec - t0.tv_nsec) / 1000000;
+            if (d < best_ms) best_ms = d;
+        }
+        printf("it: blocked acquire best-of-9 measured %lld ms\n",
+               (long long)best_ms);
+        IT_CHECK("it: fastest blocked acquire is well under 100ms",
+                 best_ms < 100);
 
         struct ibd_throttle_status st;
         ibd_throttle_status_snapshot(&st);
