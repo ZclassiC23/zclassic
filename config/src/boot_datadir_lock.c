@@ -1,7 +1,15 @@
-/* Copyright 2026 Rhett Creighton - Apache License 2.0 */
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Single-writer admission for the selected datadir: take a nonblocking OS
+ * lock on <datadir>/zclassic23.pid, or refuse the boot with a typed reason.
+ * Every refusal here is rendered through boot_error_report (config/
+ * boot_error.h) because this runs long before the command registry exists —
+ * an operator or agent gets {code, phase, message, evidence, next[]} in the
+ * same shape a dispatched command would give them. */
 
 #include "config/boot_datadir_lock.h"
 
+#include "config/boot_error.h"
 #include "util/hw_bench.h"
 
 #include <errno.h>
@@ -13,6 +21,9 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+
+#define BDL_PIDFILE "zclassic23.pid"
+#define BDL_PHASE   "datadir_lock"
 
 static int g_pidfile_fd = -1;
 
@@ -50,68 +61,249 @@ static long lock_holder_pid(int fd)
     return pid;
 }
 
+/* The suggestion every "this datadir is unavailable" refusal shares: a second
+ * node needs a second datadir. Always true, always runnable. */
+static const char *const k_second_instance_reason =
+    "a second node instance needs its OWN data directory; two processes "
+    "writing one datadir corrupt the SQLite and LevelDB stores";
+
 bool boot_datadir_lock_acquire(const char *datadir)
 {
     if (!datadir || !*datadir) {
-        fprintf(stderr, "[boot] Cannot acquire datadir lock: empty datadir\n");
+        const struct boot_error_next next[] = {
+            { "zclassic23 -datadir=/path/to/datadir",
+              "name the data directory explicitly; an empty -datadir= value "
+              "resolves to nothing and the default only applies when the flag "
+              "is absent entirely" },
+        };
+        boot_error_report(BOOT_ERROR_FATAL, "BOOT_DATADIR_UNSET", BDL_PHASE,
+                          "no data directory was resolved, so the "
+                          "single-writer lock cannot be taken",
+                          next, 1, "datadir=%s",
+                          datadir ? "(empty string)" : "(null)");
         return false;
     }
     if (g_pidfile_fd >= 0) {
-        fprintf(stderr,
-                "[boot] Cannot acquire datadir lock: this process already "
-                "holds one\n");
+        /* No next[]: this is an internal ordering violation, not an operator
+         * condition. Naming a command would be a guess. */
+        boot_error_report(BOOT_ERROR_FATAL, "BOOT_DATADIR_LOCK_REENTERED",
+                          BDL_PHASE,
+                          "this process already holds a datadir lock — "
+                          "boot_datadir_lock_acquire is not re-entrant and a "
+                          "second call would leak the first descriptor",
+                          NULL, 0, "datadir=%s held_fd=%d pid=%ld",
+                          datadir, g_pidfile_fd, (long)getpid());
         return false;
     }
 
     int dir_fd = open(datadir,
                       O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
     if (dir_fd < 0) {
-        fprintf(stderr, "[boot] Cannot open data directory %s: %s\n",
-                datadir, strerror(errno));
+        int e = errno;
+        char parent[1024];
+        (void)snprintf(parent, sizeof(parent), "%s", datadir);
+        char *slash = strrchr(parent, '/');
+        if (slash && slash != parent)
+            *slash = '\0';
+        else if (slash)
+            (void)snprintf(parent, sizeof(parent), "/");
+        else
+            (void)snprintf(parent, sizeof(parent), ".");
+
+        char mk[1100], ls[1100], rl[1100];
+        (void)snprintf(mk, sizeof(mk), "mkdir -p %s", datadir);
+        (void)snprintf(ls, sizeof(ls), "ls -ld %s", parent);
+        (void)snprintf(rl, sizeof(rl), "readlink -f %s", datadir);
+
+        /* MEASURED, not assumed: on Linux, open(O_DIRECTORY|O_NOFOLLOW) over a
+         * symlink-to-directory reports ENOTDIR, not the ELOOP that POSIX
+         * describes — the final component is the link itself, and a link is
+         * not a directory. Classifying ENOTDIR as "this path is a file" would
+         * tell the operator to point -datadir= at a directory when it already
+         * is one. lstat settles which case this actually is. */
+        struct stat lst;
+        bool is_symlink = lstat(datadir, &lst) == 0 && S_ISLNK(lst.st_mode);
+
+        if (e == ELOOP || (e == ENOTDIR && is_symlink)) {
+            /* O_NOFOLLOW: the path itself is a symlink. Following it would
+             * let the datadir be swapped underneath a running node. */
+            const struct boot_error_next next[] = {
+                { rl, "resolve the link and pass the real directory with "
+                      "-datadir=; zclassic23 opens the datadir with O_NOFOLLOW "
+                      "so the target cannot be swapped under a running node" },
+            };
+            boot_error_report(BOOT_ERROR_FATAL,
+                              "BOOT_DATADIR_SYMLINK_REFUSED", BDL_PHASE,
+                              "the -datadir path is a symbolic link; "
+                              "zclassic23 refuses to follow it",
+                              next, 1,
+                              "datadir=%s is_symlink=true open_errno=%s",
+                              datadir, strerror(e));
+        } else if (e == ENOENT) {
+            /* boot already attempted a single-level mkdir before this point
+             * (boot_step_select_chain_and_datadir); reaching ENOENT here
+             * means that attempt also failed — usually a missing parent. */
+            const struct boot_error_next next[] = {
+                { mk, "create the directory INCLUDING its parents; the node's "
+                      "own create attempt is single-level and fails when a "
+                      "parent is missing" },
+                { ls, "confirm the parent directory exists and is writable by "
+                      "the user running the node" },
+            };
+            boot_error_report(BOOT_ERROR_FATAL, "BOOT_DATADIR_MISSING",
+                              BDL_PHASE,
+                              "the data directory does not exist and the "
+                              "node could not create it",
+                              next, 2, "datadir=%s parent=%s open_errno=%s",
+                              datadir, parent, strerror(e));
+        } else if (e == EACCES || e == EPERM) {
+            char lsd[1100];
+            (void)snprintf(lsd, sizeof(lsd), "ls -ld %s", datadir);
+            const struct boot_error_next next[] = {
+                { lsd, "compare the directory owner and mode against the user "
+                       "running the node" },
+                { "id -un", "print the user this process runs as" },
+            };
+            boot_error_report(BOOT_ERROR_FATAL, "BOOT_DATADIR_UNREADABLE",
+                              BDL_PHASE,
+                              "the data directory exists but this user cannot "
+                              "open it",
+                              next, 2, "datadir=%s uid=%ld open_errno=%s",
+                              datadir, (long)getuid(), strerror(e));
+        } else if (e == ENOTDIR) {
+            char lsd[1100];
+            (void)snprintf(lsd, sizeof(lsd), "ls -ld %s", datadir);
+            const struct boot_error_next next[] = {
+                { lsd, "the -datadir path resolves to a file, not a "
+                       "directory — point -datadir= at a directory" },
+            };
+            boot_error_report(BOOT_ERROR_FATAL,
+                              "BOOT_DATADIR_NOT_A_DIRECTORY", BDL_PHASE,
+                              "the -datadir path exists but is not a "
+                              "directory",
+                              next, 1, "datadir=%s open_errno=%s",
+                              datadir, strerror(e));
+        } else {
+            const struct boot_error_next next[] = {
+                { ls, "inspect the parent directory; the open failed for a "
+                      "reason other than missing/denied/not-a-directory" },
+            };
+            boot_error_report(BOOT_ERROR_FATAL, "BOOT_DATADIR_OPEN_FAILED",
+                              BDL_PHASE,
+                              "the data directory could not be opened",
+                              next, 1, "datadir=%s open_errno=%s",
+                              datadir, strerror(e));
+        }
         return false;
     }
 
-    int fd = openat(dir_fd, "zclassic23.pid",
+    int fd = openat(dir_fd, BDL_PIDFILE,
                     O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK,
                     0600);
     if (fd < 0) {
-        int saved_errno = errno;
+        int e = errno;
         close(dir_fd);
-        fprintf(stderr, "[boot] Cannot open datadir lock in %s: %s\n",
-                datadir, strerror(saved_errno));
+        char ls[1100];
+        (void)snprintf(ls, sizeof(ls), "ls -l %s/%s", datadir, BDL_PIDFILE);
+        const struct boot_error_next next[] = {
+            { ls, e == ELOOP
+                      ? "the lock file is a symlink; zclassic23 opens it with "
+                        "O_NOFOLLOW and refuses. Remove the link only after "
+                        "confirming no node is running"
+                      : "inspect the lock file's owner and mode" },
+        };
+        boot_error_report(BOOT_ERROR_FATAL,
+                          "BOOT_DATADIR_LOCKFILE_OPEN_FAILED", BDL_PHASE,
+                          "the datadir lock file could not be opened or "
+                          "created",
+                          next, 1, "datadir=%s lockfile=%s open_errno=%s",
+                          datadir, BDL_PIDFILE, strerror(e));
         return false;
     }
 
     struct stat st;
     int stat_rc = fstat(fd, &st);
     if (stat_rc != 0 || !S_ISREG(st.st_mode) || st.st_nlink != 1) {
-        int saved_errno = stat_rc != 0 ? errno : EINVAL;
+        int e = stat_rc != 0 ? errno : EINVAL;
+        unsigned long mode = stat_rc == 0 ? (unsigned long)st.st_mode : 0;
+        unsigned long links = stat_rc == 0 ? (unsigned long)st.st_nlink : 0;
         close(fd);
         close(dir_fd);
-        fprintf(stderr,
-                "[boot] Datadir lock in %s is not a private regular file: "
-                "%s\n", datadir, strerror(saved_errno));
+        char ls[1100];
+        (void)snprintf(ls, sizeof(ls), "ls -li %s/%s", datadir, BDL_PIDFILE);
+        const struct boot_error_next next[] = {
+            { ls, "a lock file with extra hard links or a non-regular type "
+                  "can be observed or replaced by another user; replace it "
+                  "only after confirming no node is running" },
+        };
+        boot_error_report(BOOT_ERROR_FATAL,
+                          "BOOT_DATADIR_LOCKFILE_NOT_PRIVATE", BDL_PHASE,
+                          "the datadir lock file is not a private regular "
+                          "file, so holding a lock on it proves nothing",
+                          next, 1,
+                          "datadir=%s lockfile=%s st_mode=0%lo nlink=%lu "
+                          "stat_errno=%s",
+                          datadir, BDL_PIDFILE, mode, links, strerror(e));
         return false;
     }
 
     if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
-        int saved_errno = errno;
+        int e = errno;
         long holder = lock_holder_pid(fd);
         close(fd);
         close(dir_fd);
-        if (saved_errno == EWOULDBLOCK || saved_errno == EAGAIN) {
+        if (e == EWOULDBLOCK || e == EAGAIN) {
+            char ps[128], ls[1100];
+            (void)snprintf(ps, sizeof(ps), "ps -o pid,lstart,cmd -p %ld",
+                           holder);
+            (void)snprintf(ls, sizeof(ls), "ls -l %s/%s", datadir,
+                           BDL_PIDFILE);
             if (holder > 0) {
-                fprintf(stderr,
-                        "[boot] Data directory locked by PID %ld. Cannot "
-                        "start.\n", holder);
+                const struct boot_error_next next[] = {
+                    { ps, "identify the process that holds the lock before "
+                          "stopping anything; it is normally the node service "
+                          "for this datadir" },
+                    { "zclassic23 -datadir=/path/to/other/datadir",
+                      k_second_instance_reason },
+                };
+                boot_error_report(BOOT_ERROR_FATAL, "BOOT_DATADIR_LOCKED",
+                                  BDL_PHASE,
+                                  "another process already holds this data "
+                                  "directory",
+                                  next, 2,
+                                  "datadir=%s holder_pid=%ld lockfile=%s",
+                                  datadir, holder, BDL_PIDFILE);
             } else {
-                fprintf(stderr,
-                        "[boot] Data directory is locked by another process. "
-                        "Cannot start.\n");
+                const struct boot_error_next next[] = {
+                    { ls, "the lock file records the owning PID but was empty "
+                          "or unparseable here; its mtime still dates the "
+                          "holder's start" },
+                    { "zclassic23 -datadir=/path/to/other/datadir",
+                      k_second_instance_reason },
+                };
+                boot_error_report(BOOT_ERROR_FATAL, "BOOT_DATADIR_LOCKED",
+                                  BDL_PHASE,
+                                  "another process already holds this data "
+                                  "directory and did not record a readable "
+                                  "PID",
+                                  next, 2,
+                                  "datadir=%s holder_pid=unknown lockfile=%s",
+                                  datadir, BDL_PIDFILE);
             }
         } else {
-            fprintf(stderr, "[boot] Cannot lock data directory %s: %s\n",
-                    datadir, strerror(saved_errno));
+            char stfs[1100];
+            (void)snprintf(stfs, sizeof(stfs), "stat -f -c %%T %s", datadir);
+            const struct boot_error_next next[] = {
+                { stfs, "print the filesystem type: flock is unsupported or "
+                        "unreliable on several network filesystems, and the "
+                        "datadir must live on a local one" },
+            };
+            boot_error_report(BOOT_ERROR_FATAL, "BOOT_DATADIR_LOCK_FAILED",
+                              BDL_PHASE,
+                              "the datadir lock could not be taken for a "
+                              "reason other than contention",
+                              next, 1, "datadir=%s flock_errno=%s",
+                              datadir, strerror(e));
         }
         return false;
     }
@@ -127,12 +319,22 @@ bool boot_datadir_lock_acquire(const char *datadir)
                     write_all(fd, pid_text, (size_t)pid_len) && fsync(fd) == 0 &&
                     fsync(dir_fd) == 0;
     if (!recorded) {
-        int saved_errno = errno;
+        int e = errno ? errno : EIO;
         (void)flock(fd, LOCK_UN);
         close(fd);
         close(dir_fd);
-        fprintf(stderr, "[boot] Cannot persist datadir lock in %s: %s\n",
-                datadir, strerror(saved_errno ? saved_errno : EIO));
+        char df[1100];
+        (void)snprintf(df, sizeof(df), "df -h %s", datadir);
+        const struct boot_error_next next[] = {
+            { df, "check free space and the mount's read-only state; the lock "
+                  "was taken but its PID could not be written and fsynced, so "
+                  "the boot fails closed rather than run unrecorded" },
+        };
+        boot_error_report(BOOT_ERROR_FATAL,
+                          "BOOT_DATADIR_LOCK_PERSIST_FAILED", BDL_PHASE,
+                          "the datadir lock could not be durably recorded",
+                          next, 1, "datadir=%s lockfile=%s write_errno=%s",
+                          datadir, BDL_PIDFILE, strerror(e));
         return false;
     }
 

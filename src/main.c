@@ -20,6 +20,7 @@
 
 #include "config/boot.h"
 #include "config/boot_cold_start.h"     /* -cold-start staged driver */
+#include "config/boot_error.h"          /* pre-registry typed failure surface */
 #include "config/args.h"                /* flag ladder, -loglevel, usage text */
 #include "main_cli_modes.h"             /* bench/cli/import/gen run-and-exit modes */
 #include "net/file_service.h"           /* -filesync fast path (fs_client_sync) */
@@ -27,6 +28,7 @@
 #include "views/wallet_gui.h"           /* -gui launch */
 #include "config/boot_self_respawn.h"   /* #8/Pillar 7: off-systemd self-respawn */
 #include "util/thread_registry.h"
+#include "util/boot_phase.h"            /* boot_stage_current/boot_stage_name */
 #include "util/util.h"                  /* ParseParameters */
 #include "util/sd_notify.h"             /* -sandbox=steady NOTIFY_SOCKET check */
 #include <signal.h>
@@ -81,6 +83,62 @@ static void signal_handler(int sig)
      * allow enough time for app_init to unwind into app_shutdown. */
     signal(SIGALRM, shutdown_alarm_handler);
     alarm(90);
+}
+
+/* app_init() returns a bare bool across ~2800 lines and ~20 refusal points.
+ * Nearly all of those points DO print their own reason first (a FATAL line, a
+ * [sysinit] boundary line, or a named blocker + alive-degraded park), so the
+ * call site must not restate the cause — it has none to add and a guess would
+ * be worse than silence.
+ *
+ * What the call site alone can contribute is the one fact none of those inner
+ * messages carry: HOW FAR boot got. boot_stage_current() is a measurement, not
+ * an inference — the stage machine only advances past a boundary whose
+ * guarantees held (docs/BOOT_INVARIANTS.md) — so naming the last reached stage
+ * tells the reader which of the printed lines above was the terminal one, and
+ * tells an agent which subsystem to inspect. The historical text here was the
+ * single line "Initialization failed.", which named neither. */
+static void report_app_init_failed(const struct app_context *ctx)
+{
+    const char *stage = boot_stage_name(boot_stage_current());
+    const char *datadir = ctx && ctx->datadir ? ctx->datadir : "(unset)";
+
+    if (boot_error_reported()) {
+        /* The failure already rendered itself in this exact shape. Add the
+         * stage measurement and the exit contract; do NOT re-issue next[]. */
+        boot_error_report(BOOT_ERROR_FATAL, "BOOT_INIT_FAILED", "app_init",
+                          "node initialisation stopped at the failure "
+                          "reported above; exiting non-zero without starting "
+                          "any service",
+                          NULL, 0, "first_error=%s stage_reached=%s datadir=%s",
+                          boot_error_first_code(), stage, datadir);
+        return;
+    }
+
+    char bootstatus[1100];
+    char rerun[1100];
+    (void)snprintf(bootstatus, sizeof(bootstatus),
+                   "zclassic23 core node bootstatus -datadir=%s", datadir);
+    (void)snprintf(rerun, sizeof(rerun),
+                   "zclassic23 -datadir=%s -loglevel=debug", datadir);
+    const struct boot_error_next next[] = {
+        { bootstatus,
+          "read the on-disk boot beacon (<datadir>/boot_status.json). It needs "
+          "no running node and records the last stage this boot durably "
+          "reached" },
+        { rerun,
+          "re-run the same boot with debug logging; the step that refused "
+          "prints its reason to stderr above this line" },
+    };
+    boot_error_report(BOOT_ERROR_FATAL, "BOOT_INIT_FAILED", "app_init",
+                      "node initialisation did not complete and no boot step "
+                      "recorded a typed reason — treat the last stderr lines "
+                      "above as the failure site",
+                      next, 2, "stage_reached=%s datadir=%s lane=%s profile=%s",
+                      stage, datadir,
+                      ctx ? app_operator_lane_name(ctx->operator_lane) : "?",
+                      ctx ? app_runtime_profile_name(ctx->runtime_profile)
+                          : "?");
 }
 
 int main(int argc, char **argv)
@@ -286,7 +344,28 @@ int main(int argc, char **argv)
                 printf("=== File sync complete: %lld seconds ===\n",
                        (long long)elapsed);
             } else {
-                fprintf(stderr, "File sync failed from %s\n", host);
+                /* NOT fatal: the loop breaks and boot continues, so ordinary
+                 * P2P sync fetches the same blocks — slower, same result. The
+                 * old text ("File sync failed from <host>") left that
+                 * unstated, so an operator could not tell whether the node
+                 * was about to exit or about to keep going. */
+                /* No next[]: fs_client_sync already logged the specific
+                 * cause under the [filesvc] subsystem (resolve failure,
+                 * connect timeout, short read, …), and every network probe
+                 * that could be suggested here depends on a tool this host
+                 * may not have. Point at the measurement that definitely
+                 * exists rather than a command that might not run. */
+                boot_error_report(BOOT_ERROR_WARN, "BOOT_FILESYNC_FAILED",
+                                  "filesync",
+                                  "the -filesync bulk block-file transfer did "
+                                  "not complete — boot CONTINUES and the node "
+                                  "will fetch the same blocks over ordinary "
+                                  "P2P sync instead",
+                                  NULL, 0,
+                                  "host=%s port=%d datadir=%s elapsed_s=%lld "
+                                  "cause=see the [filesvc] lines above",
+                                  host, FS_PORT, ctx.datadir,
+                                  (long long)elapsed);
             }
             break;
         }
@@ -372,7 +451,7 @@ int main(int argc, char **argv)
     }
 
     if (!app_init(&ctx)) {
-        fprintf(stderr, "Initialization failed.\n");
+        report_app_init_failed(&ctx);
         return 1;
     }
 

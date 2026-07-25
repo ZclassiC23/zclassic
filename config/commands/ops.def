@@ -168,7 +168,7 @@ ZCL_COMMAND_READY_READ(
     "producer,mint,anchor,receipt,fold,progress,eta",
     "zcl.ops_producer_status.input.v1", "zcl.ops_producer_status.v1",
     "datadir", "datadir",
-    "zclassic23 ops producer status --datadir=/home/you/.zclassic-c23-mint",
+    "zclassic23 ops producer status -datadir=/home/you/.zclassic-c23-mint",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
