@@ -372,3 +372,28 @@ ZCL_BLOCKER_REMEDY(node_db_unopened,                             OWNER)
  * serving on the borrowed state and never self-promotes; an operator must
  * investigate the bundle source, not an auto-retry. */
 ZCL_BLOCKER_REMEDY(sovereign_promotion.seam_mismatch,           OWNER)
+/* ── 2026-07-24 (wf/supervision) — three named faults of the upper layer.
+ * Each replaces a fallback that was SAFE but silent; silence is the defect,
+ * because a quiet accumulation is indistinguishable from a healthy node.
+ *
+ *   hotswap.retired_generation_undrained — a superseded module .so kept
+ *     mapped because in-flight dispatch drain could not be confirmed inside
+ *     retire_handle()'s bounded window (lib/hotswap/src/hotswap_activate.c
+ *     → hotswap_retire_blocker.c). BLOCKER_DEPENDENCY: it is waiting on
+ *     command dispatch to drain, and DEPENDENCY keeps it below a genuine
+ *     resource exhaustion in blocker_causal_priority. The escape IS the
+ *     auto-remedy — it retries the drain and dlcloses everything that has
+ *     since quiesced, clearing the blocker only when NOTHING is retained.
+ *
+ *   config.reload_diverged / service.declaration_diverged — the effective
+ *     configuration is not the requested one; the declared service catalog
+ *     is not what is running (config/src/boot_declaration_drift.c). OWNER,
+ *     not ESCAPE: the escapes exist and are registered, but they route
+ *     through a reconciler seam that the detecting organs (not yet in-tree)
+ *     must install, and a service declaration is observation only — nothing
+ *     is allowed to reshape a running service because a manifest said so.
+ *     Until an organ installs a reconciler these escalate to the operator
+ *     and honestly leave the blocker standing. ──────────────────────────── */
+ZCL_BLOCKER_REMEDY(hotswap.retired_generation_undrained,        ESCAPE(hotswap_reclaim_retry))
+ZCL_BLOCKER_REMEDY(config.reload_diverged,                      OWNER)
+ZCL_BLOCKER_REMEDY(service.declaration_diverged,                OWNER)

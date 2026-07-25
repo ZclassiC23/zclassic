@@ -19,6 +19,7 @@
 #define _GNU_SOURCE
 #include "hotswap/hotswap_module.h"
 #include "hotswap/hotswap.h"
+#include "hotswap/hotswap_retire_blocker.h"
 
 #include "json/json.h"
 #include "platform/time_compat.h"
@@ -376,8 +377,54 @@ static struct hotswap_act_slot *slot_for_handler_locked(const char *handler)
     return slot;
 }
 
+/* Pending-retire table: mappings kept because drain was unconfirmed. This
+ * exists so the retention is RECLAIMABLE (the escape retries it) instead of
+ * being an unbounded silent leak. Bounded: past the cap we still never
+ * dlclose an undrained handle — we just stop tracking it for retry, and the
+ * blocker (raised below) keeps saying so. */
+#define HOTSWAP_PENDING_RETIRE_MAX 32
+struct pending_retire {
+    void *handle;
+    int fd;
+    hotswap_quiesced_cb quiesced_cb;
+    void *ctx;
+};
+static struct pending_retire g_pending[HOTSWAP_PENDING_RETIRE_MAX];
+static size_t g_pending_count;  /* guarded by g_act_lock */
+
+/* Reclaim seam invoked from the blocker escape (outside the registry lock).
+ * Returns true only when NOTHING is left retained — the escape refuses to
+ * clear the blocker on a partial reclaim. */
+static bool hotswap_reclaim_pending(void *unused)
+{
+    (void)unused;
+    pthread_mutex_lock(&g_act_lock);
+    size_t kept = 0;
+    for (size_t i = 0; i < g_pending_count; i++) {
+        struct pending_retire p = g_pending[i];
+        bool drained = p.quiesced_cb ? p.quiesced_cb(p.ctx) : false;
+        if (drained) {
+            dlclose(p.handle);
+            if (p.fd >= 0) close(p.fd);
+            atomic_fetch_add_explicit(&g_dlclose_count, 1,
+                                      memory_order_relaxed);
+            atomic_fetch_sub_explicit(&g_retained_mapped_count, 1,
+                                      memory_order_relaxed);
+            hotswap_retire_blocker_note_reclaimed();
+            continue;
+        }
+        g_pending[kept++] = p;
+    }
+    g_pending_count = kept;
+    bool all_clear = (kept == 0);
+    pthread_mutex_unlock(&g_act_lock);
+    return all_clear;
+}
+
 /* Drain then dlclose a superseded module .so. Bounded wait; on doubt, keep it
- * mapped forever (always memory-safe). */
+ * mapped (always memory-safe) — but NAMED, and queued for a reclaim retry.
+ * The old behaviour kept it mapped forever behind one LOG_WARN, which at a
+ * high swap rate is a mapping + fd leaked per swap with no operator signal. */
 static void retire_handle(void *handle, int fd,
                           hotswap_quiesced_cb quiesced_cb, void *ctx)
 {
@@ -402,13 +449,30 @@ static void retire_handle(void *handle, int fd,
         atomic_fetch_add_explicit(&g_dlclose_count, 1, memory_order_relaxed);
         LOG_INFO("hotswap.activate",
                  "retired superseded module .so after drain (dlclosed)");
-    } else {
-        atomic_fetch_add_explicit(&g_retained_mapped_count, 1,
-                                  memory_order_relaxed);
-        LOG_WARN("hotswap.activate",
-                 "drain unconfirmed; keeping superseded module .so mapped "
-                 "(safe leak, no quiesce callback or timeout)");
+        return;
     }
+
+    atomic_fetch_add_explicit(&g_retained_mapped_count, 1,
+                              memory_order_relaxed);
+    hotswap_retire_blocker_set_reclaimer(hotswap_reclaim_pending, NULL);
+    pthread_mutex_lock(&g_act_lock);
+    bool queued = false;
+    if (g_pending_count < HOTSWAP_PENDING_RETIRE_MAX) {
+        g_pending[g_pending_count++] = (struct pending_retire){
+            .handle = handle, .fd = fd, .quiesced_cb = quiesced_cb,
+            .ctx = ctx,
+        };
+        queued = true;
+    }
+    pthread_mutex_unlock(&g_act_lock);
+    /* Raise unconditionally, queued or not: an untracked retention is a
+     * WORSE fault than a tracked one, so it must not be the quiet case. */
+    hotswap_retire_blocker_raise();
+    LOG_WARN("hotswap.activate",
+             "drain unconfirmed; keeping superseded module .so mapped "
+             "(safe leak) — blocker %s raised, reclaim retry %s",
+             HOTSWAP_RETIRE_UNDRAINED_BLOCKER_ID,
+             queued ? "queued" : "NOT queued (pending table full)");
 }
 
 static bool activate_run(const char *so_path, const char *resolved_datadir,

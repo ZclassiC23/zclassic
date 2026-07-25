@@ -713,3 +713,6 @@ AGENT_IMPACT_RULE("lib/test/src/test_rom_manifest.c", "rom_manifest make_lint_ga
 AGENT_IMPACT_RULE("app/services/src/sync_trust_policy.c|app/services/include/services/sync_trust_policy.h|lib/test/src/test_sync_trust_policy.c", "sync_trust_policy make_lint_gates")
 /* WF4 — code capsule navigator. */
 AGENT_IMPACT_RULE("lib/test/src/test_code_capsule.c", "code_capsule make_lint_gates")
+/* wf/supervision — three named faults of the upper layer (undrained hot-swap
+ * generation, config reload divergence, service declaration divergence). */
+AGENT_IMPACT_RULE("lib/hotswap/src/hotswap_retire_blocker.c|lib/hotswap/include/hotswap/hotswap_retire_blocker.h|config/src/boot_declaration_drift.c|config/include/config/boot_declaration_drift.h|lib/hotswap/src/hotswap_activate.c", "blocker blocker_history supervisor make_lint_gates")

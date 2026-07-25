@@ -34,11 +34,22 @@
 #
 # Such a file must contain ≥1 call to a recognized registration site —
 # `supervisor_register(_in_domain)?(`, the lib/util/thread_liveness.h
-# adapter `thread_liveness_register(`, or the config/src boot-worker wrapper
-# `boot_register_worker_supervisor(` (which itself calls
+# adapters `thread_liveness_register(` /
+# `thread_liveness_register_restartable(`, or the config/src boot-worker
+# wrapper `boot_register_worker_supervisor(` (which itself calls
 # supervisor_register_in_domain — see boot_worker_supervisor.c) — OR an
 # entry in `tools/scripts/supervisor_baseline.txt`, OR a per-file override
 # marker `// supervisor-ok:<tag>` on a line in the file.
+#
+# The `_restartable` variant is a recognized registration site because it
+# IS one: thread_liveness_register_restartable() calls
+# thread_liveness_register() (lib/util/src/thread_liveness.c) and then adds
+# the bounded-restart wiring on top, so the child lands on the root liveness
+# tree exactly like the plain form. Before this was spelled out the anchored
+# `thread_liveness_register\(` alternative missed it, and two genuinely
+# supervised daemons — lib/health/src/heartbeat.c (zcl_health_sweep) and
+# lib/rpc/src/rpc_timeout.c (zcl_rpc_timeout) — were carried as baseline
+# debt they had already paid off.
 #
 # To clean up debt: pick a baseline entry, register a liveness
 # contract for that service (mirror what sync_watchdog_service.c
@@ -55,7 +66,7 @@ cd "$(dirname "$0")/../.."
 # silently iterating the literal unmatched pattern and passing hollow.
 read -r -a SERVICES_ROOTS <<< "${ZCL_SERVICES_DIR:-app/services/src app/controllers/src app/conditions/src app/jobs/src config/src lib/net/src lib/health/src lib/rpc/src}"
 
-COVER_RE='supervisor_register(_in_domain)?\(|thread_liveness_register\(|boot_register_worker_supervisor\('
+COVER_RE='supervisor_register(_in_domain)?\(|thread_liveness_register(_restartable)?\(|boot_register_worker_supervisor\('
 
 # Baseline path is overridable via ZCL_SUPREG_BASELINE so the lint-gate
 # self-test can point the gate at a throwaway baseline file (planted

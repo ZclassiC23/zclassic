@@ -61,14 +61,16 @@ config/src/boot_fast_restart.c
 # file-header "Pillar 7" note; a wedge here stops the ping and lets
 # systemd's WatchdogSec timer restart the unit, an independent recovery path
 config/src/boot_sd_watchdog.c
-# the pre-Round-5 periodic sweeper itself (zcl_health_sweep) — the
-# historical single-point-of-failure this whole supervisor tree was built
-# to route around; joining it to the tree it predates is tracked debt, not
-# a new gap
-lib/health/src/heartbeat.c
 # bounded: one-shot ROM parallel-fetch + verify worker pools
 # (zcl_romfetch/zcl_romver), joined at job end
 lib/net/src/rom_fetch.c
-# bounded: one-shot RPC-timeout watchdog thread (zcl_rpc_timeout), joined
-# at manager shutdown
-lib/rpc/src/rpc_timeout.c
+#
+# ── 2026-07-24 (wf/supervision) two entries RETIRED, not exempted ────────
+# lib/health/src/heartbeat.c and lib/rpc/src/rpc_timeout.c are gone from
+# this list because they are genuinely supervised, not because the bar
+# moved: both register through thread_liveness_register_restartable(),
+# which calls thread_liveness_register() and lands the child on the root
+# liveness tree. The gate's cover regex was anchored to the plain form and
+# did not see the `_restartable` variant, so it billed two paid-off files
+# as debt. Widening the regex (check_supervisor_registration.sh COVER_RE)
+# is what let these two go; nothing about either daemon changed.
