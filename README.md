@@ -3,13 +3,13 @@
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![language](https://img.shields.io/badge/language-C23-00599C.svg)](#)
 [![status](https://img.shields.io/badge/status-pre--v1-orange.svg)](docs/MVP.md)
-[![CI](https://img.shields.io/badge/CI-local%20make%20lint%20(83%20gates)-success.svg)](docs/DEFENSIVE_CODING.md)
+[![CI](https://img.shields.io/badge/CI-local%20make%20lint-success.svg)](docs/DEFENSIVE_CODING.md)
 
 One self-contained pure-C23 binary: a full ZClassic node (Equihash 200,9
 PoW, Sapling shielded transactions), an embedded Tor onion service, a block
 explorer, a shielded wallet, a P2P file marketplace, a ZNAM on-chain name
 registry, ZCL messaging, cross-chain atomic-swap scaffolding, and a native
-command registry that lets an AI agent operate the node through ~130 typed
+command registry that lets an AI agent operate the node through typed
 commands (`zclassic23 <command>`) — a **personal sovereignty stack**: a
 secure personal-computing OS whose only trust foundation is the ZClassic
 proof-of-work network and the compiled binary itself, with no DNS, CAs, or
@@ -111,7 +111,7 @@ git clone https://github.com/ZclassiC23/zclassic.git && cd zclassic
 make                # node + CLI + RPC tool -> build/bin/{zclassic23,zclassic-cli,zcl-rpc}
 make fast-rebuild   # changed-file dev compile + non-LTO local node link
 make dev-bin        # fast non-LTO local node -> build/bin/zclassic23-dev
-make test           # full suite (631 parallel groups)
+make test           # full suite (every registered parallel group)
 make lint           # defensive-coding gates
 ```
 
@@ -159,7 +159,10 @@ A brand-new datadir is honestly empty. It does **not** report a fake height:
   tip. `getblockchaininfo` returns `blocks: 0, headers: 0,
   initialblockdownload: true` (best-block resolves to genesis).
 - **Peer discovery has no DNS seeders** — the historical ZCL DNS names no longer
-  resolve. The node bootstraps from hardcoded legacy ZClassic IP seeds (10 addresses)
+  resolve. The node bootstraps from a small hardcoded set of reachable-verified
+  ZClassic IP seeds (baked into the sealed `core/` chain params, and re-verified
+  before release rather than pinned in prose — the node prints the live tally as
+  `[net] bootstrap sources: … fixed_seeds=N` on every boot)
   and a Tor `.onion` directory seed, harvesting clearnet peers from each onion's
   `/directory.json`. You can add your own onion seeds (one `.onion` per line,
   `#` comments allowed) in `~/.config/zclassic23/onion-seeds`.
@@ -246,19 +249,25 @@ For the live bootstrap posture and the in-flight sovereign cold-start cure (fold
 real bodies forward from a self-minted checkpoint, then delete the borrowed
 seed), see [`docs/HANDOFF.md`](docs/HANDOFF.md).
 
-## Claude integration
+## AI agent integration
 
 The differentiator: a native command registry built into the binary — the
-**primary** agent surface — so an AI agent queries and operates the node
-through typed commands, no curl, no log spelunking, no separate server
-process. It is the ABI: **~130 typed command leaves** (178 catalog entries
-counting branches) across 7 registry files
-(`config/commands/{root,core,app,dev,ops,accounts,code}.def`) under
-`core.*`/`app.*`/`ops.*`/`dev.*`/`discover.*`/`code.*`, each a typed
-`zcl_command_spec` (input/output schema, a one-line output **semantics**
-contract, a per-leaf response **byte budget**, auth, risk, latency, cost)
-validated fail-closed at every startup — so responses are self-describing and
-bounded, and no error reply lacks a `next` action to run.
+**primary** agent surface — so an AI agent (Claude is the one this project
+develops against day to day; the interface is model-agnostic and needs no
+vendor SDK) queries and operates the node through typed commands, no curl, no
+log spelunking, no separate server process.
+
+It is the ABI. Every leaf lives in a `.def` file under `config/commands/`,
+grouped under `core.*`/`app.*`/`ops.*`/`dev.*`/`discover.*`/`code.*`, and each
+is a typed `zcl_command_spec` (input/output schema, a one-line output
+**semantics** contract, a per-leaf response **byte budget**, auth, risk,
+latency, cost) validated fail-closed at every startup — so responses are
+self-describing and bounded, and no error reply lacks a `next` action to run.
+
+How many leaves there are is a question for the binary, not this page: run
+`zclassic23 discover help` for the live catalog. The code-derived counts the
+docs are allowed to quote live in the machine-checked DOC-COUNTS block of
+[`docs/CODEBASE_MAP.md`](docs/CODEBASE_MAP.md).
 
 ```bash
 build/bin/zclassic23 status
@@ -317,7 +326,7 @@ zclassic23 (single static binary)
 ├── MVC            Models (SQLite) · Controllers (C23) · Views (HTML/JSON)
 ├── Fast sync      FlyClient + SHA3 UTXO snapshot
 ├── Wallet         transparent + Sapling
-└── Native cmds    ~130 typed command leaves (`zclassic23 <cmd>`)
+└── Native cmds    typed command leaves (`zclassic23 <cmd>`; `discover help`)
 ```
 
 ## Security posture
@@ -342,10 +351,15 @@ zclassic23 (single static binary)
   pathnames.
 - **`zclassic23 dbquery`** is SELECT-only, semicolon-rejected, auto-LIMIT, and denies a
   set of wallet-secret tables/columns by name.
-- **83 lint gates** (`make lint`) enforce these and the defensive-coding
-  rules below on every change. Full list:
-  [`docs/DEFENSIVE_CODING.md`](docs/DEFENSIVE_CODING.md); safety boundary:
-  [`docs/SECURITY_AND_INTEGRITY.md`](docs/SECURITY_AND_INTEGRITY.md).
+- **Lint gates** (`make lint`) enforce these and the defensive-coding rules
+  below on every change. The gate list is the `LINT_GATES` variable in the
+  `Makefile`, and the `check-doc-accuracy` gate fails the build if
+  [`docs/DEFENSIVE_CODING.md`](docs/DEFENSIVE_CODING.md) ever names a
+  different set — so that doc, not this one, is where the gates are listed.
+  Safety boundary:
+  [`docs/SECURITY_AND_INTEGRITY.md`](docs/SECURITY_AND_INTEGRITY.md); the
+  gates that specifically police AI-agent honesty are described in
+  [`docs/AI_SAFETY_GATES.md`](docs/AI_SAFETY_GATES.md).
 
 Known gaps: off-chain P2P messaging is plaintext on the wire (Noise-based
 transport encryption is designed, not yet wired); the wallet-encryption
@@ -373,9 +387,13 @@ default doesn't yet apply retroactively to existing plaintext wallets.
   ([`docs/DEFENSIVE_CODING.md`](docs/DEFENSIVE_CODING.md)): every write through the
   ActiveRecord lifecycle, every error logs context, every alloc checked, every
   long loop on a supervisor liveness tree.
-- **Tests:** `make test` (631 registered parallel groups); bugs become 64-bit
-  seeds in a
-  deterministic simulator ([`docs/CHAOS_HARNESS.md`](docs/CHAOS_HARNESS.md)).
+- **Tests:** `make test` runs all registered parallel groups — how many there
+  are is derived from the code by `tools/scripts/check_doc_counts.sh` and
+  declared in the DOC-COUNTS block of
+  [`docs/CODEBASE_MAP.md`](docs/CODEBASE_MAP.md), which `make lint` fails on
+  drift. A test that compiles but is registered in no runner is caught by the
+  `check-test-registration` gate. Bugs become 64-bit seeds in a deterministic
+  simulator ([`docs/CHAOS_HARNESS.md`](docs/CHAOS_HARNESS.md)).
 - **Crash recovery is demonstrable:** `make test-crash-bootstrap` runs a
   hermetic kill-9 / restart harness (`tools/crash_recovery_test.c`, isolated
   self-seeded datadir) that proves the node folds back to its tip after being
@@ -456,10 +474,14 @@ paths and the kill-9 / OOM cases are in [`docs/RUNBOOK.md`](docs/RUNBOOK.md).
 - [`docs/SECURITY_AND_INTEGRITY.md`](docs/SECURITY_AND_INTEGRITY.md) · [`.github/SECURITY.md`](.github/SECURITY.md) — security
 - [`.github/CONTRIBUTING.md`](.github/CONTRIBUTING.md) — build prereqs + contribution contract
 - [`docs/BUILD.md`](docs/BUILD.md) — vendored-library sources, versions, build steps
+- [`docs/AI_SAFETY_GATES.md`](docs/AI_SAFETY_GATES.md) — the gates that stop an AI agent from claiming a victory it cannot cite
 
-**Issues & changes:** file bugs and features via GitHub Issues (templates
-provided); security reports follow [`.github/SECURITY.md`](.github/SECURITY.md).
-Consensus changes are declined on principle — see
+**Issues & changes:** file bugs and features via GitHub Issues — the forms in
+[`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/) ask for the two things
+that decide whether a report is actionable (the output of `zclassic23 status`,
+and whether the change touches consensus). Security reports follow
+[`.github/SECURITY.md`](.github/SECURITY.md). Consensus changes are declined on
+principle — see
 [`docs/CONSENSUS_PARITY_DOCTRINE.md`](docs/CONSENSUS_PARITY_DOCTRINE.md).
 
 ## License

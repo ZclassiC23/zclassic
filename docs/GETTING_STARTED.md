@@ -306,6 +306,17 @@ tail -f ~/.zclassic-c23/node.log
 ## Contributing
 
 Read [`.github/CONTRIBUTING.md`](../.github/CONTRIBUTING.md) and
-[`docs/DEFENSIVE_CODING.md`](DEFENSIVE_CODING.md) before changing code.
-Consensus parity with `zclassicd` is inviolable; see
+[`docs/DEFENSIVE_CODING.md`](DEFENSIVE_CODING.md) before changing code —
+CONTRIBUTING covers the two walls that are easiest to hit by accident: the
+sealed consensus core under `core/`, and consensus-changing PRs, which are
+declined on principle no matter how they are framed. Consensus parity with
+`zclassicd` is inviolable; see
 [`docs/CONSENSUS_PARITY_DOCTRINE.md`](CONSENSUS_PARITY_DOCTRINE.md).
+
+To report a bug or propose a feature, use the forms in
+[`.github/ISSUE_TEMPLATE/`](../.github/ISSUE_TEMPLATE/); they ask for
+`zclassic23 status` output and the consensus question up front.
+
+Next: [`HOW_THE_NODE_WORKS.md`](HOW_THE_NODE_WORKS.md) for the mental model,
+and [`AGENT_TRAPS.md`](AGENT_TRAPS.md) for the list of things that look broken
+but are intentional or already done.

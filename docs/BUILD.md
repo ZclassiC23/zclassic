@@ -398,10 +398,20 @@ to build for the host CPU only.
 
 ## Reproducible / signed releases
 
-`tools/release.sh` is a legacy local packaging primitive with deterministic
-flags and GPG support. `--unsigned` produces only a local-development artifact;
-it is not eligible for stable publication. Stable release publication remains
-contained until exact-candidate evidence, two independently provisioned
-byte-identical builds, complete manifests/SBOM/provenance, and the required
-offline signatures are enforced. See `docs/SECURITY_AND_INTEGRITY.md` for the
-integrity model.
+`tools/release.sh` does not build, package, sign, or publish anything. It
+accepts exactly one invocation — `tools/release.sh --verify <archive.tar.gz>` —
+which checks an *already existing* signed archive: it requires a sibling
+`.sha3` manifest and a detached `.sha3.sig`, recomputes the archive's SHA3-256
+and compares it to the manifest, verifies the GPG signature over the manifest,
+confirms the tar structure is readable, and then prints
+`legacy_local_artifact_verification=PASS`, `stable_release_verification=NOT_IMPLEMENTED`,
+`publishable=false`. Every other invocation — including any attempt to produce
+an artifact — prints a REFUSING message and exits 2, before touching the
+workspace.
+
+That refusal is the current release posture, not a missing feature. Stable
+release publication stays contained until exact-candidate evidence, two
+independently provisioned byte-identical builds, complete manifests/SBOM/
+provenance, and the required offline signatures are all enforced. For a local
+binary, use the ordinary build targets above. See
+`docs/SECURITY_AND_INTEGRITY.md` for the integrity model.
