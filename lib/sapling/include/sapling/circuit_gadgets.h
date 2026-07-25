@@ -28,6 +28,26 @@ void gadget_unpack_bits(struct constraint_system *cs,
 size_t gadget_pack_bits(struct constraint_system *cs,
                         const size_t *bits, size_t n_bits);
 
+/* ── Strict bit decomposition / point representation ────────────── */
+
+/* Number of bits a strict decomposition of a BLS12-381 Fr element emits:
+ * one per bit position of (r - 1) at or below its most significant set bit. */
+#define FR_STRICT_BITS 255
+
+/* bellman AllocatedNum::into_bits_le_strict. Decomposes the value on wire
+ * `var` into FR_STRICT_BITS boolean wires, LITTLE-endian (index 0 = LSB), and
+ * constrains the decomposition to be the in-field representation — a
+ * congruency >= r is rejected. 388 constraints / 387 aux per call; the count
+ * is emergent from the bit pattern of r-1, not a tunable. */
+void gadget_into_bits_le_strict(struct constraint_system *cs, size_t var,
+                                size_t bits_out[FR_STRICT_BITS]);
+
+/* bellman ecc::EdwardsPoint::repr. Unpacks x then y (order is load-bearing)
+ * and writes 256 bits: y's 255 little-endian bits followed by x's sign bit
+ * x[0]. 776 constraints. */
+void gadget_point_repr(struct constraint_system *cs,
+                       size_t x_var, size_t y_var, size_t bits_out[256]);
+
 /* ── Field Arithmetic Gadgets ───────────────────────────────────── */
 
 /* Constrain a * b = c (multiplication gate) */
@@ -53,17 +73,6 @@ void gadget_pedersen_hash(struct constraint_system *cs,
                           const char *personalization,
                           size_t *x_out, size_t *y_out);
 
-/* ── Blake2s Gadget (in-circuit) ────────────────────────────────── */
-
-/* Blake2s hash with boolean input/output variables.
- * Used for PRF computations (nk derivation, nullifier, etc.)
- * Input: boolean variables (LSB first per byte).
- * Output: 256 boolean variables representing the hash output. */
-void gadget_blake2s(struct constraint_system *cs,
-                    const size_t *input_bits, size_t n_input_bits,
-                    const uint8_t *personalization,
-                    size_t *output_bits);
-
 /* ── Jubjub Curve Gadgets ───────────────────────────────────────── */
 
 /* Edwards curve point addition in-circuit.
@@ -82,39 +91,6 @@ void gadget_fixed_base_mul(struct constraint_system *cs,
                            const size_t *scalar_bits, size_t n_bits,
                            const struct fr *base_x, const struct fr *base_y,
                            size_t *x_out, size_t *y_out);
-
-/* ── Merkle Tree Authentication Path Gadget ─────────────────────── */
-
-/* Verify a Merkle tree authentication path using Pedersen hash.
- * leaf: variable index for the leaf value.
- * path_bits: boolean variables for direction (left/right) at each level.
- * siblings: variable indices for sibling hashes at each level.
- * depth: tree depth (Sapling uses 32).
- * root_out: computed root variable index. */
-size_t gadget_merkle_path(struct constraint_system *cs,
-                          size_t leaf,
-                          const size_t *path_bits,
-                          const size_t *siblings,
-                          size_t depth);
-
-/* ── Note Commitment Gadget ─────────────────────────────────────── */
-
-/* Sapling note commitment: cm = PedersenHash("Zcash_PH", g_d || pk_d || v || rcm)
- * where g_d and pk_d are Jubjub points, v is 64-bit value, rcm is randomness. */
-size_t gadget_note_commitment(struct constraint_system *cs,
-                              size_t *gd_bits, size_t n_gd_bits,
-                              size_t *pkd_bits, size_t n_pkd_bits,
-                              size_t *value_bits,
-                              size_t *rcm_bits);
-
-/* ── Nullifier Derivation Gadget ────────────────────────────────── */
-
-/* Sapling nullifier: nf = MixingPedersenHash(nk, rho)
- * where nk is the nullifier deriving key and rho = cm + position */
-void gadget_nullifier(struct constraint_system *cs,
-                      size_t *nk_bits, size_t n_nk_bits,
-                      size_t rho_x, size_t rho_y,
-                      size_t *nf_x, size_t *nf_y);
 
 /* ── Edwards Double ────────────────────────────────────────────── */
 void gadget_edwards_double(struct constraint_system *cs,

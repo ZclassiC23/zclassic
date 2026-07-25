@@ -135,6 +135,27 @@ void lc_evaluate(struct fr *result, const struct linear_combination *lc,
     }
 }
 
+bool cs_is_satisfied(const struct constraint_system *cs, size_t *bad_index_out)
+{
+    if (bad_index_out)
+        *bad_index_out = SIZE_MAX;
+    if (!cs || !cs->witness)
+        return false;
+    for (size_t i = 0; i < cs->num_constraints; i++) {
+        struct fr av, bv, cv, ab;
+        lc_evaluate(&av, &cs->constraints[i].a, cs->witness);
+        lc_evaluate(&bv, &cs->constraints[i].b, cs->witness);
+        lc_evaluate(&cv, &cs->constraints[i].c, cs->witness);
+        fr_mul(&ab, &av, &bv);
+        if (!fr_eq(&ab, &cv)) {
+            if (bad_index_out)
+                *bad_index_out = i;
+            return false;
+        }
+    }
+    return true;
+}
+
 void cs_init(struct constraint_system *cs)
 {
     memset(cs, 0, sizeof(*cs));

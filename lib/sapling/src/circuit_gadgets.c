@@ -120,6 +120,181 @@ size_t gadget_pack_bits(struct constraint_system *cs,
     return result;
 }
 
+/* ── Strict little-endian bit decomposition ─────────────────────────
+ *
+ * Port of bellman/sapling-crypto AllocatedNum::into_bits_le_strict
+ * (sapling-crypto/src/circuit/num.rs at pinned commit 06da3b9a...), used by
+ * EdwardsPoint::repr. "Strict" means the emitted bits are constrained to be a
+ * representation that literally exists in the field — a congruency (a value
+ * >= r that reduces to the same element) is rejected. Plain into_bits_le does
+ * NOT do this and is a different, cheaper gadget; do not substitute it.
+ *
+ * The algorithm walks the bit pattern of (r - 1) from the most significant set
+ * bit down, in BIG-endian order, and for each of the 255 positions:
+ *   - r-1 has a 1 here  -> allocate an ordinary boolean bit (1 constraint).
+ *   - r-1 has a 0 here  -> the value's bit may only be 1 if some earlier
+ *                          higher-order run of ones was not fully matched. So
+ *                          first collapse the just-ended run of ones (and the
+ *                          previous run's flag) with a k-ary AND, then allocate
+ *                          the bit CONDITIONALLY on that flag: if the flag is
+ *                          set, the bit is forced to zero.
+ * Finally one "unpacking" constraint binds the recomposed bits back to `var`.
+ *
+ * The constraint count is EMERGENT from the fixed bit pattern of r-1, not a
+ * tunable: 133 plain bits + 122 conditional bits + 132 k-ary AND steps + 1
+ * unpacking constraint = 388 constraints and 387 aux variables per field
+ * element. That is why the section-boundary oracle (2032 -> 2808 -> 3584) is
+ * the right acceptance test — the number cannot be reverse-engineered from a
+ * target, it either falls out of a faithful port or it does not.
+ *
+ * Allocation ORDER is load-bearing for QAP alignment, so the k-ary AND
+ * intermediates are allocated exactly where bellman allocates them: inside the
+ * zero-bit branch, before that position's conditional bit.
+ *
+ * bits_out receives 255 variable indices in LITTLE-endian order (bit 0 = LSB),
+ * which is the reverse of the order in which they are allocated. */
+
+/* AllocatedBit::alloc_conditionally — allocate a boolean that is additionally
+ * forced to zero when `must_be_false` is one.
+ * Constraint: (1 - must_be_false - a) * a = 0.
+ *   must_be_false = 1  ->  (-a) * a = 0  ->  a = 0
+ *   must_be_false = 0  ->  (1 - a) * a = 0  ->  ordinary boolean constraint */
+static size_t alloc_boolean_conditionally(struct constraint_system *cs,
+                                          bool value, size_t must_be_false)
+{
+    struct fr val;
+    if (value) fr_one(&val); else fr_zero(&val);
+    size_t var = cs_alloc_aux(cs, &val);
+
+    struct fr one_val, neg_one;
+    fr_one(&one_val);
+    fr_neg(&neg_one, &one_val);
+
+    struct linear_combination la, lb, lc;
+    lc_init(&la);
+    lc_add_term(&la, CS_ONE, &one_val);
+    lc_add_term(&la, must_be_false, &neg_one);
+    lc_add_term(&la, var, &neg_one);
+    lc_init(&lb);
+    lc_add_term(&lb, var, &one_val);
+    lc_init(&lc);
+    cs_enforce(cs, &la, &lb, &lc);
+    lc_free(&la); lc_free(&lb); lc_free(&lc);
+    return var;
+}
+
+/* (r - 1) for the BLS12-381 scalar field, most-significant limb first.
+ * r = 0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001 */
+static const uint64_t FR_CHAR_MINUS_ONE_BE[4] = {
+    UINT64_C(0x73eda753299d7d48), UINT64_C(0x3339d80809a1d805),
+    UINT64_C(0x53bda402fffe5bfe), UINT64_C(0xffffffff00000000)
+};
+
+void gadget_into_bits_le_strict(struct constraint_system *cs, size_t var,
+                                size_t bits_out[FR_STRICT_BITS])
+{
+    /* Canonical big-endian bit access to the wire's value. fr_to_bytes emits
+     * the canonical (non-Montgomery) little-endian encoding. */
+    uint8_t value_bytes[32];
+    fr_to_bytes(value_bytes, &cs->witness[var]);
+
+    size_t big_endian[FR_STRICT_BITS]; /* allocated order: MSB first */
+    size_t n_be = 0;
+
+    size_t current_run[FR_STRICT_BITS];
+    size_t run_len = 0;
+    size_t last_run = 0;
+    bool have_last_run = false;
+    bool found_one = false;
+
+    for (size_t limb = 0; limb < 4; limb++) {
+        for (int j = 63; j >= 0; j--) {
+            size_t bit_pos = (3 - limb) * 64 + (size_t)j; /* 255..0 */
+            bool char_bit = (FR_CHAR_MINUS_ONE_BE[limb] >> j) & 1;
+
+            /* Skip leading zeros of r-1. Every field element is < r, so its
+             * bits above the top set bit of r-1 are zero too — nothing to
+             * allocate and nothing to constrain. */
+            found_one |= char_bit;
+            if (!found_one)
+                continue;
+
+            bool a_bit = (value_bytes[bit_pos / 8] >> (bit_pos % 8)) & 1;
+
+            if (char_bit) {
+                /* Inside a run of ones: an ordinary boolean bit. */
+                size_t b = gadget_alloc_boolean(cs, a_bit);
+                current_run[run_len++] = b;
+                big_endian[n_be++] = b;
+            } else {
+                if (run_len > 0) {
+                    /* A run of ones just ended. Fold it — together with the
+                     * previous run's flag — into a single k-ary AND flag. */
+                    if (have_last_run)
+                        current_run[run_len++] = last_run;
+                    size_t cur = current_run[0];
+                    for (size_t k = 1; k < run_len; k++)
+                        cur = gadget_alloc_mul(cs, cur, current_run[k]);
+                    last_run = cur;
+                    have_last_run = true;
+                    run_len = 0;
+                }
+                /* r-1's top bit is one, so a flag always exists by here. */
+                big_endian[n_be++] =
+                    alloc_boolean_conditionally(cs, a_bit, last_run);
+            }
+        }
+    }
+
+    /* r is prime, so its low bit is one and r-1 always ends on a run of zeros:
+     * every run of ones has been folded by now. */
+
+    /* Unpacking constraint, exactly as bellman emits it:
+     *   0 * 0 = (sum_i 2^i * bit_i) - var
+     * A and B are EMPTY linear combinations (not 1*ONE) — that is the shape in
+     * the reference and it is what the coefficient-level satisfaction check
+     * evaluates, so it is written out literally. */
+    struct linear_combination la, lb, lc;
+    struct fr coeff, neg_one, one_val;
+    fr_one(&one_val);
+    fr_neg(&neg_one, &one_val);
+    fr_one(&coeff);
+    lc_init(&la);
+    lc_init(&lb);
+    lc_init(&lc);
+    for (size_t i = n_be; i-- > 0;) { /* LSB first: reverse of allocation */
+        lc_add_term(&lc, big_endian[i], &coeff);
+        fr_add(&coeff, &coeff, &coeff);
+    }
+    lc_add_term(&lc, var, &neg_one);
+    cs_enforce(cs, &la, &lb, &lc);
+    lc_free(&la); lc_free(&lb); lc_free(&lc);
+
+    /* Reverse to little-endian for the caller. */
+    for (size_t i = 0; i < n_be; i++)
+        bits_out[i] = big_endian[n_be - 1 - i];
+
+    memory_cleanse(value_bytes, sizeof(value_bytes));
+}
+
+/* Port of ecc::EdwardsPoint::repr — the 256-bit representation of a Jubjub
+ * point fed into the CRH^ivk / PRF^nf preimages. x is unpacked first (its
+ * allocation order is load-bearing even though only x[0] survives), then y;
+ * the result is y's 255 little-endian bits followed by the sign bit x[0].
+ * 776 constraints (two strict decompositions). */
+void gadget_point_repr(struct constraint_system *cs,
+                       size_t x_var, size_t y_var, size_t bits_out[256])
+{
+    size_t x_bits[FR_STRICT_BITS];
+    size_t y_bits[FR_STRICT_BITS];
+    gadget_into_bits_le_strict(cs, x_var, x_bits);
+    gadget_into_bits_le_strict(cs, y_var, y_bits);
+
+    for (size_t i = 0; i < FR_STRICT_BITS; i++)
+        bits_out[i] = y_bits[i];
+    bits_out[FR_STRICT_BITS] = x_bits[0];
+}
+
 /* ── Field Arithmetic Gadgets ───────────────────────────────────── */
 
 void gadget_mul(struct constraint_system *cs, size_t a, size_t b, size_t c)
@@ -1280,109 +1455,6 @@ void gadget_pedersen_hash(struct constraint_system *cs,
 
     *x_out = edwards_acc_x;
     *y_out = edwards_acc_y;
-}
-
-/* ── Blake2s Gadget ─────────────────────────────────────────────── */
-
-void gadget_blake2s(struct constraint_system *cs,
-                    const size_t *input_bits, size_t n_input_bits,
-                    const uint8_t *personalization,
-                    size_t *output_bits)
-{
-    uint8_t input_bytes[256];
-    memset(input_bytes, 0, sizeof(input_bytes));
-    size_t n_bytes = (n_input_bits + 7) / 8;
-    if (n_bytes > sizeof(input_bytes)) n_bytes = sizeof(input_bytes);
-
-    for (size_t i = 0; i < n_input_bits && i / 8 < n_bytes; i++) {
-        struct fr bit_val = cs->witness[input_bits[i]];
-        if (!fr_is_zero(&bit_val))
-            input_bytes[i / 8] |= (uint8_t)(1 << (i % 8));
-    }
-
-    uint8_t hash_out[32];
-    uint8_t pers[BLAKE2S_PERSONALBYTES];
-    memset(pers, 0, sizeof(pers));
-    if (personalization)
-        memcpy(pers, personalization,
-               strlen((const char *)personalization) < BLAKE2S_PERSONALBYTES
-               ? strlen((const char *)personalization) : BLAKE2S_PERSONALBYTES);
-
-    struct blake2s_ctx bctx;
-    blake2s_init_personal(&bctx, 32, pers);
-    blake2s_update(&bctx, input_bytes, n_bytes);
-    blake2s_final(&bctx, hash_out, 32);
-
-    /* input_bytes holds a witness-derived byte decomposition; it has been
-     * fully consumed by blake2s_update above and is never read again. */
-    memory_cleanse(input_bytes, sizeof(input_bytes));
-
-    for (size_t i = 0; i < 256; i++) {
-        bool bit = (hash_out[i / 8] >> (i % 8)) & 1;
-        output_bits[i] = gadget_alloc_boolean(cs, bit);
-    }
-}
-
-/* ── Merkle Path Verification ───────────────────────────────────── */
-
-size_t gadget_merkle_path(struct constraint_system *cs,
-                          size_t leaf,
-                          const size_t *path_bits,
-                          const size_t *siblings,
-                          size_t depth)
-{
-    size_t current = leaf;
-    for (size_t i = 0; i < depth; i++) {
-        size_t left = gadget_select(cs, path_bits[i], siblings[i], current);
-        size_t right = gadget_select(cs, path_bits[i], current, siblings[i]);
-        size_t left_bits[256], right_bits[256];
-        gadget_unpack_bits(cs, left_bits, 256, &cs->witness[left]);
-        gadget_unpack_bits(cs, right_bits, 256, &cs->witness[right]);
-        size_t hash_bits[512];
-        memcpy(hash_bits, left_bits, 256 * sizeof(size_t));
-        memcpy(hash_bits + 256, right_bits, 256 * sizeof(size_t));
-        size_t hash_x, hash_y;
-        gadget_pedersen_hash(cs, hash_bits, 512, "Zcash_PH", &hash_x, &hash_y);
-        current = hash_x;
-    }
-    return current;
-}
-
-/* ── Note Commitment Gadget ─────────────────────────────────────── */
-
-size_t gadget_note_commitment(struct constraint_system *cs,
-                              size_t *gd_bits, size_t n_gd_bits,
-                              size_t *pkd_bits, size_t n_pkd_bits,
-                              size_t *value_bits,
-                              size_t *rcm_bits)
-{
-    size_t total_bits = n_gd_bits + n_pkd_bits + 64 + 256;
-    size_t *all_bits = zcl_malloc(total_bits * sizeof(size_t), "circuit_note_bits");
-    if (!all_bits) return 0;
-    size_t offset = 0;
-    memcpy(all_bits + offset, gd_bits, n_gd_bits * sizeof(size_t)); offset += n_gd_bits;
-    memcpy(all_bits + offset, pkd_bits, n_pkd_bits * sizeof(size_t)); offset += n_pkd_bits;
-    memcpy(all_bits + offset, value_bits, 64 * sizeof(size_t)); offset += 64;
-    memcpy(all_bits + offset, rcm_bits, 256 * sizeof(size_t));
-    size_t cm_x, cm_y;
-    gadget_pedersen_hash(cs, all_bits, total_bits, "Zcash_PH", &cm_x, &cm_y);
-    /* all_bits holds a witness-derived bit decomposition; consumed by the
-     * pedersen hash above. Cleanse before free (value already consumed). */
-    memory_cleanse(all_bits, total_bits * sizeof(size_t));
-    free(all_bits);
-    return cm_x;
-}
-
-/* ── Nullifier Derivation ───────────────────────────────────────── */
-
-void gadget_nullifier(struct constraint_system *cs,
-                      size_t *nk_bits, size_t n_nk_bits,
-                      size_t rho_x, size_t rho_y,
-                      size_t *nf_x, size_t *nf_y)
-{
-    size_t hash_x, hash_y;
-    gadget_pedersen_hash(cs, nk_bits, n_nk_bits, "Zcash_J_", &hash_x, &hash_y);
-    gadget_edwards_add(cs, hash_x, hash_y, rho_x, rho_y, nf_x, nf_y);
 }
 
 /* ── Point On-Curve Check (4 constraints) ──────────────────────── */

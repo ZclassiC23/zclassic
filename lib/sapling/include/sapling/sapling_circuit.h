@@ -78,6 +78,13 @@ struct spend_wire_probe {
     size_t ak_x, ak_y;   /* witnessed spend-authority key (section 1) */
     size_t rk_x, rk_y;   /* re-randomized key rk = ak + [ar] G (section 4) */
     size_t nk_x, nk_y;   /* nullifier deriving key [nsk] G_proof (section 7) */
+    /* EdwardsPoint::repr bit wires — 256 boolean variable indices each, in
+     * little-endian order. Because Jubjub's compressed encoding is y with x's
+     * low bit in the top bit, these bits ARE the bits of the point's 32-byte
+     * compressed encoding; that makes them checkable against ground truth
+     * rather than merely counted. SIZE_MAX-filled when not yet synthesized. */
+    size_t ak_repr[256]; /* representation of ak  (section 8) */
+    size_t nk_repr[256]; /* representation of nk  (section 9) */
 };
 
 /* Traced synthesis. `sections`/`probe` may be NULL. Writes at most

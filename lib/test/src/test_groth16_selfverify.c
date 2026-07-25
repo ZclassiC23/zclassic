@@ -172,7 +172,7 @@ static void native_circuit_baseline(void)
  *
  * The spend circuit is ported gadget-by-gadget in bellman's Spend::synthesize
  * order. This gate is params-free (pure R1CS synthesis, no proving key) and
- * pins the ported prefix (sections 1..7) against ground truth:
+ * pins the ported prefix (sections 1..9) against ground truth:
  *   (1) cumulative constraint counts per section == the reference trace's
  *       cumulative boundaries (exact, verified by the salvage-plan legs);
  *   (2) the in-circuit nk / rk wires carry the reference-correct Jubjub points,
@@ -184,7 +184,7 @@ static void native_circuit_baseline(void)
  * spend round-trip. Returns the number of failures (0 == green). */
 static int spend_circuit_shape_gate(void)
 {
-    printf("\n--- H3: Sapling SPEND circuit port shape gate (sections 1-7) ---\n");
+    printf("\n--- H3: Sapling SPEND circuit port shape gate (sections 1-9) ---\n");
     int failures = 0;
 
     /* Fixed witness — reuses the H2 KAT scalars so the nk wire ties to the
@@ -209,18 +209,19 @@ static int spend_circuit_shape_gate(void)
     memcpy(pub.rk, rk_bytes, 32);
     memcpy(pub.cv, ak, 32);         /* any valid Jubjub point (bound later) */
 
-    struct spend_section_shape sections[8];
+    struct spend_section_shape sections[10];
     size_t nsec = 0;
     struct spend_wire_probe probe;
     struct constraint_system cs;
     cs_init(&cs);
     bool synth_ok = sapling_spend_synthesize_traced(
-        &cs, &wit, &pub, sections, 8, &nsec, &probe);
+        &cs, &wit, &pub, sections, 10, &nsec, &probe);
     PROVER_CHECK("traced spend synthesis succeeded", synth_ok);
 
     /* (1) Per-section cumulative constraint counts vs the reference trace. */
-    static const size_t REF_CUM[7] = {20, 272, 1022, 1028, 1030, 1282, 2032};
-    static const char *REF_NAME[7] = {
+    static const size_t REF_CUM[9] =
+        {20, 272, 1022, 1028, 1030, 1282, 2032, 2808, 3584};
+    static const char *REF_NAME[9] = {
         "S1 ak witness/on-curve/not-small-order (cum 20)",
         "S2 ar bits (cum 272)",
         "S3 randomization of signing key (cum 1022)",
@@ -228,14 +229,16 @@ static int spend_circuit_shape_gate(void)
         "S5 rk inputize (cum 1030)",
         "S6 nsk bits (cum 1282)",
         "S7 nk = [nsk] ProofGenerationKey (cum 2032)",
+        "S8 representation of ak (cum 2808)",
+        "S9 representation of nk (cum 3584)",
     };
-    PROVER_CHECK("synthesized all 7 ported sections", nsec == 7);
-    for (size_t i = 0; i < 7 && i < nsec; i++)
+    PROVER_CHECK("synthesized all 9 ported sections", nsec == 9);
+    for (size_t i = 0; i < 9 && i < nsec; i++)
         PROVER_CHECK(REF_NAME[i], sections[i].num_constraints == REF_CUM[i]);
     PROVER_CHECK("7 public inputs allocated (bellman-faithful low indices)",
                  cs.num_inputs == 7);
-    PROVER_CHECK("ported-prefix constraint count == 2032",
-                 cs.num_constraints == 2032);
+    PROVER_CHECK("ported-prefix constraint count == 3584",
+                 cs.num_constraints == 3584);
 
     /* (2) Value gate: in-circuit wires carry reference-correct points; nk is
      *     pinned to the librustzcash reference (H2 KAT). */

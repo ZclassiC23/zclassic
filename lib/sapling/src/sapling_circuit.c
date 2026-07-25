@@ -46,16 +46,28 @@ static bool point_to_xy(struct fr *x, struct fr *y, const uint8_t compressed[32]
 
 /* ── Spend Circuit Synthesis ────────────────────────────────────── */
 
-/* Port status (H3 lane): sections 1..7 of bellman's Spend::synthesize are
+/* Port status (H3 lane): sections 1..9 of bellman's Spend::synthesize are
  * ported faithfully in the exact synthesis order (variable-allocation order is
  * load-bearing for QAP alignment). Cumulative constraint counts match the
- * reference trace's per-section boundaries (verified by the shape gate in
- * test_groth16_selfverify.c). Sections 8..28 (EdwardsPoint::repr helpers, the
- * two blake2s hashes ivk/nf at ~21006 constraints each, variable-base pk_d,
- * value commitment, note commitment, the 32-level Merkle path, and the
- * nullifier packing) remain to be ported — the circuit below is therefore a
- * faithful PARTIAL prefix (~2032/98777 constraints) and does not yet round-trip
- * against the trusted-setup proving key.
+ * reference trace's per-section boundaries, every emitted constraint is
+ * satisfied by the honest witness (A*B==C — the coefficient-level check), and
+ * the section 8/9 output bits reproduce librustzcash's compressed point
+ * encodings; all three are gated by the `groth16_selfverify` test group.
+ * Sections 10..28 (the two blake2s hashes ivk/nf at 21006 constraints each,
+ * variable-base pk_d, value commitment, note commitment, the 32-level Merkle
+ * path, and the nullifier packing) remain to be ported — the circuit below is
+ * therefore a faithful PARTIAL prefix (3584/98777 constraints) and does not yet
+ * round-trip against the trusted-setup proving key.
+ *
+ * The next section is the architectural fork, not more of the same: blake2s is
+ * built on bellman's Boolean/UInt32/multieq stack, where a circuit bit is
+ * `Constant(bool) | Is(AllocatedBit) | Not(AllocatedBit)` so that constant
+ * folding and negation cost ZERO constraints. This gadget layer represents
+ * every wire as a bare variable index and cannot express either, so section 10
+ * will miss 21006 by thousands until that abstraction exists. Sections 1..9
+ * did not need it (they allocate only ordinary and conditional bits); section
+ * 10 does. Decide it deliberately before starting, with boolean.rs / uint32.rs
+ * / multieq.rs open — do not discover it mid-port.
  *
  * The seven public inputs are allocated up front (indices 1..7) in bellman's
  * input order (rk.x, rk.y, cv.x, cv.y, anchor, nf[0], nf[1]). Under this
@@ -126,6 +138,8 @@ bool sapling_spend_synthesize_traced(struct constraint_system *cs,
         probe->ak_x = probe->ak_y = SIZE_MAX;
         probe->rk_x = probe->rk_y = SIZE_MAX;
         probe->nk_x = probe->nk_y = SIZE_MAX;
+        for (size_t i = 0; i < 256; i++)
+            probe->ak_repr[i] = probe->nk_repr[i] = SIZE_MAX;
     }
 
     /* ── Public inputs 1..7 (allocated up front — see header note) ── */
@@ -214,9 +228,29 @@ bool sapling_spend_synthesize_traced(struct constraint_system *cs,
     section_record(cs, sections, max_sections, &nsec,
                    "7:computation of nk");
 
-    /* Sections 8..28 remain to be ported (see the port-status note above).
+    /* ════ Section 8: representation of ak (776) ════
+     * ivk_preimage starts with ak's 256-bit representation. */
+    size_t ivk_preimage[512];
+    gadget_point_repr(cs, ak_x_var, ak_y_var, &ivk_preimage[0]);
+    if (probe)
+        memcpy(probe->ak_repr, &ivk_preimage[0], sizeof(probe->ak_repr));
+    section_record(cs, sections, max_sections, &nsec, "8:representation of ak");
+
+    /* ════ Section 9: representation of nk (776) ════
+     * nk's 256-bit representation is used TWICE: it completes the 512-bit
+     * ivk preimage and is the whole 256-bit nf preimage. One gadget, two
+     * consumers — the bits are shared wires, not re-derived. */
+    size_t nf_preimage[256];
+    gadget_point_repr(cs, nk_var_x, nk_var_y, &ivk_preimage[256]);
+    memcpy(nf_preimage, &ivk_preimage[256], sizeof(nf_preimage));
+    if (probe)
+        memcpy(probe->nk_repr, &ivk_preimage[256], sizeof(probe->nk_repr));
+    section_record(cs, sections, max_sections, &nsec, "9:representation of nk");
+    (void)nf_preimage; /* consumed by section 27 once blake2s lands */
+
+    /* Sections 10..28 remain to be ported (see the port-status note above).
      * The prefix synthesized here is deterministic and shape-matched to the
-     * reference for sections 1..7. */
+     * reference for sections 1..9. */
 
     if (n_sections_out)
         *n_sections_out = nsec;
@@ -332,8 +366,19 @@ void sapling_spend_prover_native_status(struct spend_prover_native_status *out)
 
 /* ── Output Circuit Synthesis ───────────────────────────────────── */
 
-/* Matching Zcash sapling-crypto Output::synthesize exactly:
- * 7827 constraints, 6 inputs (ONE + cv.x + cv.y + epk.x + epk.y + cm).
+/* NOT at parity with Zcash sapling-crypto Output::synthesize — measured, not
+ * assumed. This synthesis produces 7571 constraints / 7567 aux / 5 inputs; the
+ * trusted-setup output proving key says num_aux == pk.l_len == 7821, so the
+ * native circuit is ~254 aux and ~256 constraints SHORT of the reference, and
+ * one input slot off. It therefore does not round-trip against the real key
+ * either. Confirm with the H1 baseline line in the `groth16_selfverify` test
+ * group ("OUTPUT match: num_aux==pk.l_len? NO").
+ *
+ * This matters beyond the output circuit: the shared gadgets it leans on
+ * (gadget_pedersen_hash, bit decomposition, gadget_variable_base_mul) are the
+ * same ones spend sections 13/15/16/17/19/21 will reuse, so they must not be
+ * assumed reference-exact. Reaching output parity is its own port task; the
+ * step list below is the intended shape, not a parity claim.
  *
  * Steps:
  *   1. expose_value_commitment: value_bits→fixed_base_mul(G_v) +
