@@ -46,7 +46,7 @@
 #include "util/util.h"  /* GetDataDir — net-specific block-body serve dir */
 #include "validation/main_state.h"
 #include "validation/txmempool.h"
-#include "config/runtime.h"
+#include "net/net_runtime_port.h"
 #include "core/uint256.h"
 #include "core/hash.h"
 #include "core/random.h"
@@ -105,7 +105,7 @@ struct node_db *msg_node_db(const struct msg_processor *mp)
 {
     if (!mp || !mp->runtime)
         LOG_NULL("net", "mp or mp->runtime is NULL");
-    return db_service_node_db(mp->runtime->db_service);
+    return net_runtime_node_db(mp->runtime);
 }
 
 /* ── Recent-block / recent-tx dedup ring buffers ─────────────── */
