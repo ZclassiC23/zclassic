@@ -161,9 +161,16 @@ So the ~3.6x splits into two independent factors, both measured:
 7.85 ms row was measured on the live-node host under load; the algorithmic
 explanation stops at 6.4 ms and the rest is host.
 
-**Consequence for anyone optimizing:** the Miller loop is 55% of the verify,
-and the pairing as a whole (Miller + final exp) is 68%. Restructuring pairing
-arithmetic cannot address the other 32%, which is a public-input MSM. The
+Use the multiply-count column, not the wall-time column, for the phase split.
+The time decomposition is subtractive (`T(1) - T(0)`, `T(4)` vs the whole) and
+its three shares sum to ~107% — each subtraction carries the noise of both
+terms. The counts are exact and sum to 100%, and the two agree inside that
+noise.
+
+**Consequence for anyone optimizing:** the four Miller loops are 43% of the
+verify and the pairing as a whole (Miller + final exponentiation) is 62%.
+Restructuring pairing arithmetic cannot touch the other 38%, which is a
+public-input MSM. The
 already-shipped fixed-base comb tables (`groth16_vk_build_combs`, wired at
 `lib/sapling/src/params_init.c:176`) take that MSM down and are worth **1.40x
 on OUTPUT (k=5) and 1.54x on SPEND (k=7)** measured end to end —
