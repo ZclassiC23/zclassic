@@ -76,6 +76,109 @@ elliptic-curve/pairing/Groth16 stack, ed25519, and SHA256 (no SHA-NI) are the
 tracked optimize targets. Run `make check-crypto-perf` for the current
 per-primitive standing.
 
+### Shipped flags vs host flags — what the shipped binary leaves on the table
+
+Two builds of the same commit, benched on the same host: the shipped default
+(`-march=x86-64-v3` — AVX2/FMA/BMI2, **SHA-NI and AVX-512 compiled out**) and
+`ZCL_NATIVE=1` (`-march=native` — AVX-512 + SHA-NI compiled in).
+
+Method matters here: the build machine is shared, and a neighbour's build
+inflates a whole median-of-N run, so median-of-N is *not* enough protection.
+The two binaries were stashed side by side and run **interleaved, four
+alternating rounds each**, and the table reports the **minimum** per primitive —
+the least-contended observation. A first pass that did not interleave produced
+a 1.71x "Groth16 regression" that vanished under A/B; that number was
+contention, not instruction set.
+
+| primitive | shipped `-v3` | host ISA | host / shipped |
+|---|---|---|---|
+| Equihash 200,9 verify | 123,553 ns | 124,923 ns | 1.01 |
+| BLS12-381 `fp_mul` | 60.2 ns | 65.1 ns | **1.08 (slower)** |
+| BLS12-381 Ate pairing | 1,908,834 ns | 2,045,707 ns | **1.07 (slower)** |
+| secp256k1 ECDSA verify | 52,462 ns | 53,096 ns | 1.01 |
+| ed25519 verify | 1,618,294 ns | 1,838,567 ns | **1.14 (slower)** |
+| SHA-256 (1 KiB) | 2,115.8 ns | 516.4 ns | **0.24 (4.10x faster)** |
+| SHA3-256 (1 KiB) | 1,861.7 ns | 1,841.2 ns | 0.99 |
+| BLAKE2b-512 (1 KiB) | 908.2 ns | 888.8 ns | 0.98 |
+| Groth16 output verify | 6,399,453 ns | 6,987,349 ns | **1.09 (slower)** |
+
+**SHA-256 is the only instruction-set path worth compiling in — it is not the
+first of several, it is the only one.** SHA-NI is guarded by `#ifdef __SHA__`
+(`lib/crypto/src/sha256.c`), which `-march=x86-64-v3` does not define, so the
+shipped binary runs the portable transform on a CPU that has the instruction.
+That is a real 4.1x left on the table, and it is worth a targeted fix — a
+per-file `-msha` on `sha256.c` plus the runtime CPUID self-test that already
+exists there, not a global flag change.
+
+A global `ZCL_NATIVE=1` would be a **net loss on the consensus path**:
+everything else is flat (within ±2%) or regresses, and the whole BLS12-381
+stack goes 7-9% the wrong way. A cross-check narrows where that comes from —
+building the *same* BLS12-381 sources standalone at `-O2` without LTO shows no
+ISA sensitivity at all (6.61 ms `-v3` vs 6.39 ms native), so the regression is
+produced by `-O3 -march=native -flto` on the whole program, not by the field
+arithmetic being AVX-512-hostile in itself. Auto-vectorising 6-limb carry
+chains that want scalar `mulx/adcx/adox` is the obvious suspect; it is a lead,
+not yet a diagnosis.
+
+Row naming: host-ISA runs land under `crypto-vs-rust [host-isa] <key>`, never
+under the shipped name. `-bench-regress` gates the last two rows sharing a
+name at ±20% and SHA-256 moves 4x between the builds, so one untagged
+host-flags row would red the next shipped run for a change nobody made.
+`tools/crypto_perf_baseline.csv` pins the **shipped** build and must not be
+re-baselined from a `ZCL_NATIVE=1` run.
+
+### Where the 7.7 ms of a Groth16 verify actually goes
+
+`bash lib/test/differential/run_parity_oracle.sh profile` — exact Fp-multiply
+counts per phase (linker-interposed `fp_mont_mul_accel`, which every multiply
+in `bls12_381.c` reaches through) plus per-phase wall time, decomposed with
+the public multi-pairing API at n=0/1/4. No edit to the frozen verifier.
+
+A naive "4 Miller loops + 1 final exponentiation" operation count predicts
+~2 ms. At the measured `fp_mul` cost of 60.2 ns that model is implicitly
+budgeting ~33,000 field multiplies. The real number is **76,658**, and the
+gap is fully enumerable:
+
+| phase | Fp muls | share | note |
+|---|---|---|---|
+| 4 x Miller loop | 32,644 | 43% | 8,161 each; **1,245 of each (15%) is the two to-affine Fermat inversions**, redone every pairing on points that are VK constants |
+| final exponentiation | 14,486 | 19% | vs ~8k textbook: `fp12_inv` bottoms out in `fp_inv` = `fp_pow(q-2)` = 613 muls, and `fp12_sq` is the generic one, not a cyclotomic squaring |
+| **public-input MSM + negations** | **29,312** | **38%** | 5 public inputs, ~5,862 muls each. **Absent from the naive model entirely** |
+| 4 x `fp12_mul` (accumulate) | 216 | <1% | |
+| **total `groth16_verify`** | **76,658** | | |
+
+So the ~3.6x splits into two independent factors, both measured:
+
+* **2.32x — more multiplies than the model counted.** The public-input MSM is
+  38% of the verify and the naive model does not count it at all; the final
+  exponentiation is ~1.8x textbook because inversion is Fermat exponentiation.
+* **1.39x — work that is not a multiply.** 76,658 x 60.2 ns = 4.61 ms
+  predicted vs 6.40 ms measured: Fp multiplies are only **70%** of the wall
+  time. The other 30% is `fp_add`/`fp_sub` (6-limb add + conditional subtract
+  each) and by-value struct copies through the fp2/fp6/fp12 tower.
+
+2.32 x 1.39 = 3.2x, i.e. ~2 ms -> 6.4 ms on the quiet build machine. The older
+7.85 ms row was measured on the live-node host under load; the algorithmic
+explanation stops at 6.4 ms and the rest is host.
+
+Use the multiply-count column, not the wall-time column, for the phase split.
+The time decomposition is subtractive (`T(1) - T(0)`, `T(4)` vs the whole) and
+its three shares sum to ~107% — each subtraction carries the noise of both
+terms. The counts are exact and sum to 100%, and the two agree inside that
+noise.
+
+**Consequence for anyone optimizing:** the four Miller loops are 43% of the
+verify and the pairing as a whole (Miller + final exponentiation) is 62%.
+Restructuring pairing arithmetic cannot touch the other 38%, which is a
+public-input MSM. The
+already-shipped fixed-base comb tables (`groth16_vk_build_combs`, wired at
+`lib/sapling/src/params_init.c:176`) take that MSM down and are worth **1.40x
+on OUTPUT (k=5) and 1.54x on SPEND (k=7)** measured end to end —
+`run_parity_oracle.sh bench`. The cheapest remaining wins are outside the
+pairing restructure: hoist the constant-point to-affine inversions out of the
+per-pairing path, and replace Fermat inversion with a binary/extended-Euclid
+inverse (613 multiplies per inversion today).
+
 ## Native rebuild benchmark (`rebuild_recent` tool)
 
 | date | commit | N blocks | rebuild ms | blocks/s | bytes | notes |
