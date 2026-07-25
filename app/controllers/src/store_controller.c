@@ -497,9 +497,11 @@ size_t store_handle_request(const char *method, const char *path,
                 "be solved before submission (this prevents automated "
                 "flooding of the order queue). Reload the product page "
                 "and submit again — the page solves the puzzle "
-                "automatically. Programmatic callers: see the pow_ts / "
+                "automatically. The challenge seed rotates and its "
+                "difficulty rises with load, so a stale page must be "
+                "reloaded. Programmatic callers: see the pow_ts / "
                 "pow_nonce protocol documented next to "
-                "store_pow_verify_and_claim() in store_controller.c.</p>"
+                "store_pow_verify_and_claim() in store_controller_pow.c.</p>"
                 "<p><a href='/store/products'>&larr; Back to store</a></p>";
             result = store_error_response("402 Payment Required",
                 err_body, strlen(err_body), response, response_max);

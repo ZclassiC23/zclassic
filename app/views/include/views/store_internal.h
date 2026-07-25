@@ -25,6 +25,26 @@
 #include <stdint.h>
 #include <sqlite3.h>
 
+/* ── Order-form client puzzle (DERIVED in store_controller_pow.c) ──
+ *
+ * The controller owns the security machinery — the shared net/puzzle.h
+ * gate, its policy, the seed rotation and the single-use ring. The view
+ * only embeds the result in the order form, exactly as it does for the
+ * CSRF token. The type lives here because serve_product_detail() needs it
+ * by value and the view must not include a controller-internal header.
+ *
+ * The client solves SHA3-256(seed || token || ts || nonce) for `bits`
+ * leading zero bits, where seed and token are the two 32-byte values
+ * these hex strings decode to and ts is `server_time`. */
+struct store_pow_challenge {
+    char    seed_hex[65];   /* server-issued rotating challenge seed */
+    char    token_hex[65];  /* product-bound peer token             */
+    int     bits;           /* required leading zero bits, right now */
+    int64_t server_time;    /* wall seconds; the client echoes this  */
+};
+
+void store_pow_challenge(int64_t product_id, struct store_pow_challenge *out);
+
 /* ── Shared response/format helpers (defined in store_view.c) ── */
 
 /* Onion address this node serves on, or NULL before Tor publishes one. */

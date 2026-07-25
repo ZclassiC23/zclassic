@@ -330,6 +330,31 @@ enum snapsync_serve_result snapsync_validate_serve_request(
     const uint8_t *pow_data, size_t pow_len,
     const uint8_t peer_ip[16]);
 
+/* Serve-side client-puzzle LOAD CENSUS — observation only.
+ *
+ * Every accepted zsnapreq is offered to a struct puzzle_gate via
+ * puzzle_gate_admit_external() so the shared primitive's load EWMA is fed
+ * by real snapshot-serve traffic. The gate's verdict is deliberately NOT
+ * load-bearing here: see the block comment above
+ * snapsync_validate_serve_request() in app/services/src/snapshot_sync_service.c
+ * for why single-use cannot be enforced on this wire format yet, and what
+ * protocol revision would make it enforceable.
+ *
+ * `duplicates` is the count of accepted requests whose proof was
+ * byte-identical to one already seen — i.e. exactly the honest-peer
+ * collision that blocks turning the verdict on. A window with
+ * duplicates == 0 under real traffic is evidence; a nonzero count is the
+ * measured cost of enforcing it today. */
+struct snapsync_serve_puzzle_census {
+    uint64_t offered;      /* accepted requests fed to the gate       */
+    uint64_t first_sight;  /* gate admitted (proof not seen before)   */
+    uint64_t duplicates;   /* gate refused: byte-identical proof      */
+    int      bits_now;     /* difficulty the gate would demand now    */
+    int64_t  rate_ewma_milli; /* accepted-per-second ×1000            */
+};
+void snapsync_get_serve_puzzle_census(struct snapsync_serve_puzzle_census *out);
+void snapsync_reset_serve_puzzle_census(void);
+
 /* ── Low-level (used internally / by handle_offer) ─────────────── */
 
 struct zcl_result snapsync_accept_offer(struct snapshot_sync_service *svc,

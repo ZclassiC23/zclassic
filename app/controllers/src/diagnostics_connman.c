@@ -217,6 +217,24 @@ bool connman_diag_dump_state_json(struct json_value *out, const char *key)
     json_push_kv(out, "reactor", &reactor);
     json_free(&reactor);
 
+    /* v2 (Noise) transport advertisement census — observation only. The
+     * default stays OFF; this is the evidence a future owner decision
+     * about flipping it would need. See connman.h. */
+    struct connman_v2transport_stats v2;
+    connman_get_v2transport_stats(&v2);
+    struct json_value v2j = {0};
+    json_set_object(&v2j);
+    json_push_kv_int(&v2j, "advertising_now", (int64_t)v2.advertising_now);
+    json_push_kv_int(&v2j, "handshaked_now", (int64_t)v2.handshaked_now);
+    json_push_kv_int(&v2j, "advertising_high_water",
+                     (int64_t)v2.advertising_high_water);
+    json_push_kv_int(&v2j, "advertising_observations_total",
+                     (int64_t)v2.advertising_observations_total);
+    json_push_kv_int(&v2j, "samples_total", (int64_t)v2.samples_total);
+    json_push_kv_bool(&v2j, "default_enabled", cm->manager.v2_enabled);
+    json_push_kv(out, "v2transport", &v2j);
+    json_free(&v2j);
+
     struct connman_message_cycle_stats mc;
     connman_get_message_cycle_stats(cm, &mc);
     struct json_value msg = {0};

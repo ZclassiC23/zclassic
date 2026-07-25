@@ -15,27 +15,81 @@
  * hit mints a real Sapling z-address (real CPU) and writes an unbounded
  * `orders` row (real disk), all unauthenticated. This gate adds a
  * hashcash-style client puzzle ON TOP of CSRF (CSRF stays the floor,
- * unchanged in store_controller.c): the client must find a nonce such
- * that SHA3-256(peer_id || timestamp || nonce) has FAST_SYNC_POW_BITS
- * leading zero bits — reusing fast_sync_verify_pow directly, the same
- * primitive lib/net/src/fast_sync.c uses to gate snapshot-sync requests
- * (no separate puzzle-issuance infra exists for this surface).
- * `peer_id` here is SHA3-256("store:order:pow:<product_id>"),
- * binding a solved puzzle to one product so it cannot be replayed
- * against another. An honest buyer solves ONE puzzle (~0.5s on a
- * native solver; see the browser JS solver in app/views/src/store_view.c
- * for the human-facing path) per order; a flood pays that CPU cost on
- * every attempt instead of getting mint+DB-write for free.
+ * unchanged in store_controller.c).
+ *
+ * The puzzle is the SHARED primitive, net/puzzle.h — one struct
+ * puzzle_gate for this surface, the same implementation the file service
+ * and the onion expensive-route tier use. It replaces this file's former
+ * pairing of fast_sync_verify_pow() (fixed 20 bits, client-chosen
+ * challenge) with a hand-rolled 4096-entry replay ring. What that swap
+ * buys, at identical cost to an honest buyer:
+ *
+ *   - a SERVER-ISSUED, rotating challenge seed, so a flooder can no
+ *     longer precompute solutions offline against a challenge it picks
+ *     itself (the old peer_id was SHA3 of the product id — a constant);
+ *   - LOAD-ADAPTIVE difficulty: the idle floor is pinned at the old fixed
+ *     FAST_SYNC_POW_BITS so a quiet node asks a buyer for exactly what it
+ *     asked before, and the price rises only while orders are actually
+ *     flooding in;
+ *   - single-use from the primitive's shared ring, deleting the third
+ *     hand-rolled replay table in the tree.
+ *
+ * peer_token is SHA3-256("store:order:pow:<product_id>"), binding a solved
+ * puzzle to one product so it cannot be replayed against another. An
+ * honest buyer solves ONE puzzle per order (the browser JS solver lives in
+ * app/views/src/store_view.c); a flood pays that CPU cost on every attempt
+ * instead of getting mint+DB-write for free.
  *
  * NOTE on client identity: this HTTP surface is Tor-onion-only (see
  * lib/net/src/onion_service.c / tor_integration.c — the dynhost bridge
  * carries method/path/body only, no circuit or IP identity reaches the
  * app layer by design), so there is no per-IP axis to cap on. The bound
  * that IS available and meaningful is per-product (see the pending-order
- * caps in store_controller.c) plus the existing global 100 req/s
- * listener-wide limiter in onion_service.c. */
+ * caps in store_controller.c) plus the tiered onion budgets in
+ * lib/net/src/onion_ratelimit.c, which classify /store/orders EXPENSIVE. */
 
 #include "controllers/store_controller_internal.h"
+#include "net/puzzle.h"
+
+/* Policy for this surface, all in the "never make an honest buyer worse
+ * off than yesterday" direction:
+ *   - min_bits is the OLD fixed difficulty, so an idle node's price is
+ *     bit-for-bit what it was before this file moved onto the gate;
+ *   - max_bits 24 (16x the floor) is the saturated ceiling — a browser JS
+ *     solver is the client here, not a C sync peer, so the primitive's
+ *     own 26-bit ceiling is too steep;
+ *   - soft_rate 2 accepted orders/sec before the ramp starts: real store
+ *     traffic is human-paced, and the onion EXPENSIVE budget already caps
+ *     this route at 20 req/s;
+ *   - a 180 s seed epoch, which with the primitive's one-epoch grace keeps
+ *     a rendered page solvable for up to six minutes — longer than a slow
+ *     Tor round trip plus a slow in-browser solve;
+ *   - ts_skew 300 s, preserving fast_sync_verify_pow's old backward
+ *     tolerance so a page that sat open still submits. */
+static struct puzzle_gate g_store_pow_gate;
+static pthread_once_t g_store_pow_once = PTHREAD_ONCE_INIT;
+
+static const struct puzzle_policy g_store_pow_policy = {
+    .min_bits          = FAST_SYNC_POW_BITS,
+    .max_bits          = 24,
+    .soft_rate_per_sec = 2,
+    .rate_step_per_sec = 1,
+    .seed_rotate_secs  = 180,
+    .ts_skew_secs      = 300,
+};
+
+static void store_pow_gate_init_once(void)
+{
+    puzzle_gate_init(&g_store_pow_gate, &g_store_pow_policy);
+}
+
+/* pthread_once, not a "did I init yet" flag: a flag published before
+ * puzzle_gate_init() returns lets a second thread fall through to the
+ * gate's own lazy default init and race it. */
+static void store_pow_gate_ready(void)
+{
+    pthread_once(&g_store_pow_once, store_pow_gate_init_once);
+}
 
 static void store_pow_bind_product(int64_t product_id, uint8_t out[32])
 {
@@ -44,80 +98,60 @@ static void store_pow_bind_product(int64_t product_id, uint8_t out[32])
     sha3_256((const unsigned char *)ctx, strlen(ctx), out);
 }
 
-/* Public: the product-bound puzzle commitment, hex-encoded, for the view
- * layer to embed in the order form (the client hashes SHA3-256(peer ||
- * ts || nonce) itself — see the JS solver in app/views/src/store_view.c —
- * so it needs this same 32-byte commitment, not just the product id).
- * Mirrors store_csrf_token/store_csrf_context's split: security-relevant
- * derivation stays in the controller, the view only embeds the result. */
-void store_pow_challenge(int64_t product_id, char peer_id_hex[65])
+static void store_pow_hex32(const uint8_t in[32], char out[65])
 {
-    uint8_t bind[32];
     static const char hex[] = "0123456789abcdef";
-
-    store_pow_bind_product(product_id, bind);
     for (size_t i = 0; i < 32; i++) {
-        peer_id_hex[i * 2]     = hex[(bind[i] >> 4) & 0x0f];
-        peer_id_hex[i * 2 + 1] = hex[bind[i] & 0x0f];
+        out[i * 2]     = hex[(in[i] >> 4) & 0x0f];
+        out[i * 2 + 1] = hex[in[i] & 0x0f];
     }
-    peer_id_hex[64] = '\0';
+    out[64] = '\0';
 }
 
-/* Bounded ring of recently-accepted (product, timestamp, nonce) solutions.
- * fast_sync_verify_pow is a pure function — it has no memory of which
- * nonces it already accepted — so without this, ONE solved puzzle could
- * be replayed for unlimited orders within its ~5-minute validity window,
- * defeating "a flood pays CPU per attempt". Fixed-size, never malloc'd;
- * process-local (does not need to survive a restart — the caps in
- * store_controller.c still bound the worst case even if the ring is
- * empty right after one). */
-#define STORE_POW_USED_RING 4096
-static uint8_t s_pow_used_key[STORE_POW_USED_RING][32];
-static int64_t s_pow_used_at[STORE_POW_USED_RING];
-static size_t s_pow_used_next = 0;
-static pthread_mutex_t s_pow_used_lock = PTHREAD_MUTEX_INITIALIZER;
-
-/* A hair over fast_sync_verify_pow's own [-300s,+60s] timestamp
- * acceptance window, so no solution that could still verify has already
- * aged out of the replay ring. */
-#define STORE_POW_USED_TTL_SECS 400
-
-static bool store_pow_claim_once(const struct fast_sync_pow *pow)
+/* Public: the live challenge for one product, for the view layer to embed
+ * in the order form. The client hashes SHA3-256(seed || token || ts ||
+ * nonce) itself — see the JS solver in app/views/src/store_view.c — so it
+ * needs the server's current seed and difficulty, not just the
+ * product-bound token. Mirrors store_csrf_token/store_csrf_context's
+ * split: security-relevant derivation stays in the controller, the view
+ * only embeds the result.
+ *
+ * Every call is a real challenge issuance: it rotates the seed when the
+ * epoch has elapsed and re-reads the adaptive difficulty, so a page
+ * rendered during a flood quotes the flood price. */
+void store_pow_challenge(int64_t product_id, struct store_pow_challenge *out)
 {
-    uint8_t key[32];
-    sha3_256((const unsigned char *)pow, sizeof(*pow), key);
-    int64_t now = (int64_t)platform_time_wall_time_t();
-    bool replay = false;
+    uint8_t seed[32], token[32];
+    int bits = 0;
+    int64_t server_time = 0;
 
-    pthread_mutex_lock(&s_pow_used_lock);
-    for (size_t i = 0; i < STORE_POW_USED_RING; i++) {
-        if (now - s_pow_used_at[i] < STORE_POW_USED_TTL_SECS &&
-            memcmp(s_pow_used_key[i], key, 32) == 0) {
-            replay = true;
-            break;
-        }
-    }
-    if (!replay) {
-        memcpy(s_pow_used_key[s_pow_used_next], key, 32);
-        s_pow_used_at[s_pow_used_next] = now;
-        s_pow_used_next = (s_pow_used_next + 1) % STORE_POW_USED_RING;
-    }
-    pthread_mutex_unlock(&s_pow_used_lock);
-    return !replay;
+    if (!out)
+        return; // raw-return-ok:nothing-to-fill-caller-passed-no-output-buffer
+
+    memset(out, 0, sizeof(*out));
+    store_pow_gate_ready();
+    puzzle_gate_challenge(&g_store_pow_gate, seed, &bits, &server_time);
+    store_pow_bind_product(product_id, token);
+
+    store_pow_hex32(seed, out->seed_hex);
+    store_pow_hex32(token, out->token_hex);
+    out->bits = bits;
+    out->server_time = server_time;
 }
 
 /* Verify + claim in one step. Returns true only for a solution that (a)
- * parses, (b) hashes correctly and is fresh (fast_sync_verify_pow), and
- * (c) has not been used before. Never claims a ring slot on a failed
- * verify — only a genuinely solved puzzle costs one, so a flood of
- * unsolved guesses cannot exhaust the ring and lock out real buyers.
- * Declared in store_controller_internal.h; called from
+ * parses, (b) is within the timestamp window, (c) solves the LIVE
+ * challenge for this product at the current difficulty (or the one-epoch
+ * grace seed), and (d) has not been used before. Nothing is recorded for a
+ * failed verify — only a genuinely solved puzzle consumes a single-use
+ * slot, so a flood of unsolved guesses cannot evict real buyers from the
+ * ring. Declared in store_controller_internal.h; called from
  * store_handle_request() in store_controller.c. */
 bool store_pow_verify_and_claim(int64_t product_id,
                                 const char *pow_ts_str,
                                 const char *pow_nonce_str)
 {
-    struct fast_sync_pow pow;
+    uint8_t token[32];
     char *end = NULL;
     long long ts;
     unsigned long long nonce;
@@ -133,12 +167,17 @@ bool store_pow_verify_and_claim(int64_t product_id,
     if (!end || *end != '\0')
         return false; // raw-return-ok:malformed-client-field-not-a-server-error
 
-    memset(&pow, 0, sizeof(pow));
-    store_pow_bind_product(product_id, pow.peer_id);
-    pow.timestamp = (int64_t)ts;
-    pow.nonce = (uint64_t)nonce;
+    store_pow_gate_ready();
+    store_pow_bind_product(product_id, token);
+    return puzzle_gate_verify(&g_store_pow_gate, token,
+                              (int64_t)ts, (uint64_t)nonce);
+}
 
-    if (!fast_sync_verify_pow(&pow))
-        return false; // raw-return-ok:unsolved-or-stale-puzzle-not-a-server-error
-    return store_pow_claim_once(&pow);
+/* Test-only: drop every issued seed and every claimed solution. Lets a
+ * test file exercise the gate from a known-clean state without depending
+ * on the order its cases happen to run in. */
+void store_pow_reset_state(void)
+{
+    store_pow_gate_ready();
+    puzzle_gate_init(&g_store_pow_gate, &g_store_pow_policy);
 }
