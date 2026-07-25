@@ -31,6 +31,9 @@ Wallet key material is stored inside `<datadir>/node.db` (SQLite), in the
 `wallet_keys`, `wallet_sapling_keys`, and `wallet_seed` tables. There is no
 separate `wallet.dat` file to move.
 
+`<datadir>/wallet_projection.db` is a derived read model, not the key store.
+Copying or repairing it recovers nothing.
+
 `zclassic23 core storage query` and `core storage query offline` deliberately
 **refuse** any statement that names those tables — they answer
 `QUERY_REJECTED: query references secret wallet key material and is denied`.
