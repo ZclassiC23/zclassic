@@ -5186,6 +5186,15 @@ check-no-trust-state-ordering:
 	@echo "══ LINT: no ordinal sync_trust_state comparison ══"
 	@./tools/scripts/check_no_trust_state_ordering.sh
 
+# The GNU comma-swallowing extension `, ##__VA_ARGS__` is not standard C, and
+# it is the single idiom that made this tree unbuildable by a second compiler:
+# one use in a header included by ~1100 translation units produced over seven
+# thousand diagnostics under `clang -std=c23 -pedantic`. C23 spells it
+# `__VA_OPT__(,) __VA_ARGS__` with an identical token stream.
+check-no-gnu-va-args:
+	@echo "══ LINT: C23 __VA_OPT__, never the GNU comma-swallowing extension ══"
+	@./tools/lint/check_no_gnu_va_args.sh
+
 # Gate #20 graduated WARN → RATCHET (E10): fails on any new controller
 # file that uses raw sqlite. Baseline of grandfathered files lives in
 # tools/lint/no_raw_sqlite_in_controllers_baseline.txt (may only shrink).
@@ -5695,6 +5704,7 @@ LINT_GATES := \
     check-vendor-provenance \
     check-command-contract \
     check-privileged-transition-receipt \
+    check-no-gnu-va-args \
     check-no-trust-state-ordering
 
 # The driver execs gate scripts directly, so the two gates backed by a built
