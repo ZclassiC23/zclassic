@@ -1,22 +1,27 @@
 #!/usr/bin/env bash
 # Copyright 2026 Rhett Creighton - Apache License 2.0
 #
-# Pre-commit MAIN-CHECKOUT lane guard.
+# Pre-commit guard — refuses ONE accident, in ONE situation, and is otherwise
+# silent.
 #
-# The recurring accident this refuses: a lane agent leaves the MAIN checkout
-# sitting on its lane branch and commits there directly; the orchestrator's
-# next merge then surfs onto the lane ref. Lane work belongs in a linked
-# worktree under .claude/worktrees/ (see docs/work/agent-protocol.md) —
-# never as a non-main branch commit in the main checkout.
+# The accident: this project runs parallel automated helpers, each in its own
+# additional checkout created with `git worktree add`. Those helpers merge
+# FROM the primary checkout. If the primary checkout is left sitting on a side
+# branch, the next merge picks up that side branch instead of `main`.
 #
-# Refuses the commit only when ALL of these hold:
-#   1. cwd is the MAIN checkout — git-dir == git-common-dir. A linked
-#      worktree has git-dir = <common>/worktrees/<name> != git-common-dir,
-#      so lane commits in worktrees are always allowed.
-#   2. the current branch is NOT main (a detached HEAD counts as not-main) —
-#      the orchestrator committing ON main in the main checkout is normal
-#      work and stays allowed.
-#   3. ZCL_LANE_COMMIT_OK is unset/empty — the deliberate-override valve.
+# The situation therefore requires ALL of:
+#   1. this is the PRIMARY checkout — git-dir == git-common-dir. An additional
+#      checkout has git-dir = <common>/worktrees/<name>, so committing on any
+#      branch from one of those is always allowed.
+#   2. the branch here is not `main` (a detached HEAD counts as not-main).
+#   3. this repository actually HAS additional checkouts — `git worktree list`
+#      reports more than one. A plain clone has exactly one, no helper can be
+#      running in it, and there is no accident available to prevent, so
+#      `git checkout -b fix/thing && git commit` is simply allowed. This is
+#      the same shape as app/controllers/src/agent_copy_prove_controller.c,
+#      which earns its safety by making the dangerous input not exist rather
+#      than by warning about it.
+#   4. ZCL_LANE_COMMIT_OK is unset/empty — the deliberate-override valve.
 #
 # Activate:  make install-hooks   (sets core.hooksPath=tools/githooks)
 set -euo pipefail
@@ -29,23 +34,34 @@ fi
 git_dir="$(cd "$(git rev-parse --absolute-git-dir)" && pwd)"
 common_dir="$(cd "$(git rev-parse --git-common-dir)" && pwd)"
 
-# Linked worktree -> normal lane work, any branch allowed.
+# An additional checkout -> normal work, any branch allowed.
 if [ "$git_dir" != "$common_dir" ]; then
     exit 0
 fi
 
 branch="$(git symbolic-ref --short -q HEAD || true)"
 
-# Orchestrator committing on main in the main checkout -> normal.
+# Committing on main in the primary checkout -> normal work.
 if [ "$branch" = "main" ]; then
     exit 0
 fi
 
-echo "pre-commit: COMMIT REFUSED — the MAIN checkout is on branch '${branch:-DETACHED-HEAD}', not 'main'." >&2 || true
-echo "pre-commit: lane branches are committed from a linked worktree, never from the main checkout." >&2 || true
-echo "pre-commit: do it right:" >&2 || true
-echo "pre-commit:   git worktree add .claude/worktrees/wf_<name> -b lane/<name> main" >&2 || true
-echo "pre-commit:   cd .claude/worktrees/wf_<name>   # commit there" >&2 || true
-echo "pre-commit: if this main-checkout lane commit is truly deliberate, override once:" >&2 || true
-echo "pre-commit:   ZCL_LANE_COMMIT_OK=1 git commit ..." >&2 || true
+# No additional checkouts -> no parallel helper -> nothing to protect.
+checkouts="$(git worktree list --porcelain 2>/dev/null | grep -c '^worktree ' || true)"
+if [ "${checkouts:-1}" -le 1 ]; then
+    exit 0
+fi
+
+echo "pre-commit: this commit was refused. To make it anyway, run:" >&2 || true
+echo "pre-commit:     ZCL_LANE_COMMIT_OK=1 git commit ..." >&2 || true
+echo "pre-commit:" >&2 || true
+echo "pre-commit: Why: you are in this repository's PRIMARY checkout, on branch" >&2 || true
+echo "pre-commit: '${branch:-a detached HEAD}' rather than 'main', and this repository" >&2 || true
+echo "pre-commit: currently has $checkouts checkouts (see: git worktree list)." >&2 || true
+echo "pre-commit: Automated helpers run in those other checkouts and merge from this" >&2 || true
+echo "pre-commit: one, so a side-branch commit made here can be merged by mistake." >&2 || true
+echo "pre-commit:" >&2 || true
+echo "pre-commit: Either commit on 'main' here, or give your branch its own checkout:" >&2 || true
+echo "pre-commit:     git worktree add .claude/worktrees/my-change -b fix/my-change main" >&2 || true
+echo "pre-commit:     cd .claude/worktrees/my-change      # commit there instead" >&2 || true
 exit 1
