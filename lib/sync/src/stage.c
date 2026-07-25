@@ -21,14 +21,14 @@
  * cursor row is not a model. */
 
 #include "platform/time_compat.h"
-#include "util/stage.h"
+#include "sync/stage.h"
 #include "stage_batch_internal.h"
 
 #include "core/utiltime.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
-#include "util/stage_lcc.h"
+#include "sync/stage_lcc.h"
 #include "util/subsystem_snapshot.h"
 
 #include <pthread.h>

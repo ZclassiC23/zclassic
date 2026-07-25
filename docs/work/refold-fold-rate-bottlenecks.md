@@ -56,9 +56,9 @@ incrementally instead.
 
 ## io-speedups reorg bug — fixed, watch for regression
 The batch-aware cursor writers (`cursor_txn_begin/commit/rollback`,
-`STAGE_CURSOR_SP` savepoint in `lib/util/src/stage.c`) are guarded by focused
+`STAGE_CURSOR_SP` savepoint in `lib/sync/src/stage.c`) are guarded by focused
 regression coverage in `test_stage.c` (group `stage`, "batch-cursor" checks).
-`stage_set_cursor` (`lib/util/src/stage.c:510`) and
+`stage_set_cursor` (`lib/sync/src/stage.c:510`) and
 `stage_set_named_cursor_if_behind` (`:551`) do an unconditional `BEGIN IMMEDIATE`.
 Inside an open batch (the reorg-rewind path `tip_finalize_stage.c:286` calls
 set_cursor) SQLite rejects the nested BEGIN → "cannot start a transaction within

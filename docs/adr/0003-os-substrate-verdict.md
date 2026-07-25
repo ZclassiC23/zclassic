@@ -94,7 +94,7 @@ fairly." The organs that contract actually needs are built:
   detect/remedy/witness healers — the node's equivalent of an OS's
   self-healing daemons, but wired to the append-only log instead of ambient
   process state.
-- **Durable stage cursors** — `lib/util/include/util/stage.h`: one SQLite
+- **Durable stage cursors** — `lib/sync/include/sync/stage.h`: one SQLite
   table (`stage_cursor`) keyed by stage name; chain progress is a cursor on
   disk, never RAM-only authoritative state (`docs/FRAMEWORK.md` §0's Prime
   Directive).

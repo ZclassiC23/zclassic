@@ -7,11 +7,11 @@
  * the AR lifecycle because it operates on the stage_cursor / stage-log kernel
  * tables, which are not models. */
 
-#include "util/stage_lcc.h"
+#include "sync/stage_lcc.h"
 
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
-#include "util/stage.h"
+#include "sync/stage.h"
 
 #include <stdio.h>
 #include <string.h>
