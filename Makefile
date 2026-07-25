@@ -406,10 +406,45 @@ BUILD_IDENTITY_CPPFLAGS = -DZCL_BUILD_SOURCE_ID=\"$(BUILD_SOURCE_ID)\" -DZCL_BUI
 # (already-unresolvable-post-deploy) comp_dir source-root hint moves.
 ZCL_REPRO_ROOT ?= /zclassic23
 REPRO_CFLAGS = -ffile-prefix-map=$(CURDIR)=$(ZCL_REPRO_ROOT) -gno-record-gcc-switches
+
+# ── The two blanket warning suppressions, each defined exactly ONCE ───────
+# Both arrived in the first commit as unexplained copy-forward defaults and
+# had since been copy-pasted into seven separate compile rules, so there was
+# no single place to reason about either one. Each now has one definition,
+# one written reason, and a lint gate (check-no-warning-suppression) that
+# rejects any new unmarked instance. A rule that needs one references the
+# variable; a rule that does not, does not.
+#
+# -Wunused-result is ALSO the diagnostic GCC and Clang use to report
+# [[nodiscard]], so this flag silently voids the repository's result-type
+# discipline: a result type could be annotated and every dropped return would
+# still compile clean. Deleting it is not a Makefile change — it is a source
+# change in config/src/boot_cold_start.c, config/src/boot_legacy_blocks.c,
+# lib/net/src/https_server.c, lib/net/src/nat.c, tools/zcl-rpc.c and a long
+# tail of lib/test/ sources that drop a write/read/link/fgets/system result.
+# Note GCC does NOT accept a `(void)` cast as consuming a warn_unused_result
+# return, so most of those sites need a real check, not a cast.
+# Re-derive the current site list (never trust a count typed here):
+#   sed -i 's/^ZCL_WARN_UNUSED_RESULT = .*/ZCL_WARN_UNUSED_RESULT = -Wno-error=unused-result/' Makefile
+#   make build-only && make -j$(nproc) 2>&1 | grep -- '-Wunused-result]'
+# suppression-ok: removing it breaks the build until the source sites above are fixed; tracked, not defaulted
+ZCL_WARN_UNUSED_RESULT = -Wno-unused-result
+#
+# -Wstringop-overflow hides a memory-safety diagnostic class. Deleting it is
+# likewise a source change, not a flag change: the sites live in
+# lib/script/include/script/script.h, lib/script/include/script/op_return_push.h,
+# app/controllers/src/nodelog_controller.c and one test, plus the glibc
+# fortify header they induce. Note the per-TU compile is clean — these only
+# appear in the whole-program LTO build, so `make build-only` alone will
+# report zero and mislead you. Re-derive with the same substitution as above,
+# using -Wno-error=stringop-overflow, and a FULL `make -j$(nproc)`.
+# suppression-ok: separate decision from the unused-result deletion; blockers are source sites, measured, not assumed
+ZCL_WARN_STRINGOP_OVERFLOW = -Wno-stringop-overflow
+
 CFLAGS = -std=c23 -g -O3 $(if $(ZCL_NATIVE),-march=native,-march=x86-64-v3) -flto=auto -Wall -Wextra -Werror -pedantic \
 	$(REPRO_CFLAGS) \
 	$(HARDEN_CFLAGS) \
-	-Wno-stringop-overflow -Wno-unused-result \
+	$(ZCL_WARN_STRINGOP_OVERFLOW) $(ZCL_WARN_UNUSED_RESULT) \
 	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(CORE_INCLUDES) $(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) $(ADAPTERS_INCLUDES) $(TOOLS_INCLUDES) $(DEVLOOP_INCLUDES) $(APP_SDK_INCLUDES) \
 	-Ilib/test/include \
 	-D_POSIX_C_SOURCE=200809L -DZCL_AR_ENFORCE $(BUILD_IDENTITY_CPPFLAGS) -Ivendor/include $(GTK_DEF) $(GTK_CFLAGS) \
@@ -2228,7 +2263,7 @@ $(BIN_DIR)/gen_sha3_windows: tools/gen_sha3_windows.c \
 		lib/util/src/safe_alloc.c lib/support/src/cleanse.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O3 -march=native -Wall -Wextra -Werror -pedantic \
-	    -Wno-stringop-overflow -Wno-unused-result \
+	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
 	    -Ilib/chain/include -Ilib/crypto/include -Ilib/encoding/include \
 	    -Ilib/json/include -Ilib/platform/include -Ilib/util/include \
 	    -Ilib/support/include \
@@ -2251,7 +2286,7 @@ $(BIN_DIR)/gen_utxo_root_ladder: tools/gen_utxo_root_ladder.c \
 		lib/chain/src/mmb.c lib/crypto/src/sha3.c lib/crypto/src/keccak_avx512.c lib/support/src/cleanse.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
-	    -Wno-unused-result -Wno-stringop-overflow \
+	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
 	    -Ilib/chain/include -Ilib/crypto/include -Ilib/support/include \
 	    -Ilib/util/include -Ivendor/include \
 	    -D_POSIX_C_SOURCE=200809L \
@@ -2270,7 +2305,7 @@ $(BIN_DIR)/rom_two_builder_compare: tools/rom_two_builder_compare.c \
 		lib/crypto/src/sha3.c lib/crypto/src/keccak_avx512.c lib/support/src/cleanse.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
-	    -Wno-unused-result -Wno-stringop-overflow \
+	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
 	    -Ilib/crypto/include -Ilib/support/include -Ivendor/include \
 	    -D_POSIX_C_SOURCE=200809L \
 	    -o $@ $^ -Lvendor/lib -l:libsqlite3.a -lpthread -lm
@@ -2290,7 +2325,7 @@ $(BIN_DIR)/checkpoint_rung_export: tools/checkpoint_rung_export.c \
 		lib/crypto/src/sha3.c lib/crypto/src/keccak_avx512.c lib/support/src/cleanse.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
-	    -Wno-unused-result -Wno-stringop-overflow \
+	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
 	    -Ilib/storage/include -Ilib/crypto/include -Ilib/util/include \
 	    -Ilib/support/include -Ivendor/include \
 	    -D_POSIX_C_SOURCE=200809L \
@@ -2307,7 +2342,7 @@ $(BIN_DIR)/rom_bundle_sha3: tools/rom_bundle_sha3.c \
 		lib/crypto/src/sha3.c lib/crypto/src/keccak_avx512.c lib/support/src/cleanse.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
-	    -Wno-unused-result -Wno-stringop-overflow \
+	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
 	    -Ilib/crypto/include -Ilib/support/include \
 	    -D_POSIX_C_SOURCE=200809L \
 	    -o $@ $^ -lm
@@ -3543,7 +3578,7 @@ mvp: test_zcl zclassic23 zcl-rpc
 # never false-green without the toolchain: install clang/libFuzzer or
 # opt out explicitly with `make ci SKIP_FUZZ=1`.
 FUZZ_CC ?= clang
-FUZZ_CFLAGS = -std=c23 -O1 -g -Wall -Wextra -Wno-unused-result \
+FUZZ_CFLAGS = -std=c23 -O1 -g -Wall -Wextra \
 	-Wno-deprecated-declarations \
 	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(CORE_INCLUDES) \
 	$(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) \
@@ -5585,7 +5620,7 @@ check-scanner-immunity:
 	@./tools/lint/selftest_scanner_immunity.sh
 
 # ── Lint umbrella ────────────────────────────────────────────────────────
-# LINT_GATES is the single ordered source of truth for the 88-gate umbrella
+# LINT_GATES is the single ordered source of truth for the lint umbrella
 # (E11 check-doc-accuracy cross-checks it against DEFENSIVE_CODING.md).
 #
 # Two execution modes:
@@ -5601,10 +5636,14 @@ check-scanner-immunity:
 #                        maintained path).
 #
 # Wall-time budget (SOFT, warn-only — never fails the build): the umbrella
-# should stay <= 75 s wall on the dev reference host. Measured 2026-07-18:
-# serial p50 ~56 s (87 gates, warm cache); driver ~17-23 s at 8-12 jobs.
-# Per-gate ms lands in .cache/lint-timing/last-run.json and every run prints
-# the slowest 10, so a creeping gate is visible before it eats the budget.
+# carries a budget in seconds — ZCL_LINT_BUDGET_SEC, defaulted in
+# tools/lint/run_lint.sh and echoed into every timing artifact as
+# "budget_sec", which is where to read its current value. Per-gate ms lands in
+# .cache/lint-timing/last-run.json and every run prints the slowest 10, so a
+# creeping gate is visible before it eats the budget. Do NOT type an observed
+# duration into this comment — durations are per host and per commit, and the
+# ones that used to live here had gone stale. Ask the host instead:
+#   make timings   (says NOT MEASURED rather than quoting another machine)
 ZCL_LINT_JOBS ?= 8
 LINT_GATES := \
     check-no-retired-agent-protocol \
@@ -5705,7 +5744,8 @@ LINT_GATES := \
     check-command-contract \
     check-privileged-transition-receipt \
     check-no-gnu-va-args \
-    check-no-trust-state-ordering
+    check-no-trust-state-ordering \
+    check-no-warning-suppression
 
 # The driver execs gate scripts directly, so the two gates backed by a built
 # tool (check-core-seal, check-observability-pairing) need their binaries
@@ -5878,7 +5918,7 @@ $(BIN_DIR)/postmortem_to_scenario: tools/postmortem_to_scenario.c \
 		lib/util/src/safe_alloc.c lib/json/src/json.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
-	    -Wno-unused-result -Wno-format-truncation \
+	    -Wno-format-truncation \
 	    -Ilib/sim/include -Ilib/platform/include -Ilib/util/include \
 	    -Ilib/json/include \
 	    -D_POSIX_C_SOURCE=200809L \
@@ -5891,3 +5931,76 @@ postmortem-to-scenario: tools/postmortem_to_scenario
 	    exit 2; \
 	fi
 	$(BIN_DIR)/postmortem_to_scenario --cap=$(CAP) $(if $(OUT),--out=$(OUT),)
+
+# ── Entry points: help, setup, doctor, timings, pr-check ─────────────────
+# Appended as one self-contained block at the end of the file to keep the
+# merge surface with in-flight lanes minimal. The content of each lives in
+# tools/scripts/, so the Makefile side stays a single line per target.
+#
+# These exist because this file had hundreds of targets and no front door:
+# `make help` printed "No rule to make target 'help'", the prerequisite list
+# lived in three prose files that disagreed with each other and with
+# build_vendor.sh, and there was no way to ask the host how long anything
+# actually takes. `make help` prints the live target count; do not restate it
+# here.
+.PHONY: help setup doctor timings pr-check help-selftest doctor-selftest timings-selftest
+
+help:
+	@tools/scripts/make_help.sh
+
+# Idempotent, and it announces every file it touches: nothing should appear
+# on disk that the operator did not see named first.
+setup:
+	@echo "══ setup: arming this clone ══"
+	@$(MAKE) --no-print-directory install-hooks
+	@echo "  wrote  .git/config          core.hooksPath = tools/githooks"
+	@$(MAKE) --no-print-directory compdb
+	@echo "  wrote  compile_commands.json  (clangd/LSP; regenerate with make compdb)"
+	@echo "  wrote  .cache/               (gitignored tool caches, created on demand)"
+	@echo "setup: done — nothing else was created. Next: make doctor"
+
+# What is missing on THIS host, and the one command that installs it.
+# Source of truth is tools/scripts/vendor_prereqs.tsv; the script fails if
+# that table has fallen behind build_vendor.sh.
+doctor:
+	@tools/scripts/doctor.sh
+
+# Where the wall time went, read from artifacts measured on this host.
+# Never prints a duration it did not measure here.
+timings:
+	@tools/scripts/timings.sh
+
+# What an outside contributor can run before opening a PR, with nothing built.
+# Same two checks the public gate runs, in the same order.
+pr-check:
+	@echo "══ pr-check: lint + whole-tree syntax ══"
+	@$(MAKE) --no-print-directory lint
+	@$(MAKE) --no-print-directory syntax-check
+	@tools/scripts/make_help.sh --self-test
+	@tools/scripts/doctor.sh --prereq-coverage
+	@tools/scripts/timings.sh --self-test
+	@echo "══ pr-check: passed ══"
+
+help-selftest:
+	@tools/scripts/make_help.sh --self-test
+
+doctor-selftest:
+	@tools/scripts/doctor.sh --self-test
+
+timings-selftest:
+	@tools/scripts/timings.sh --self-test
+
+# ── Lint gate: blanket warning suppressions stay named ───────────────────
+# The unused-result suppression is the flag that ALSO disables [[nodiscard]]
+# reporting on both GCC and Clang, so it silently voids the repository's
+# result-type discipline; the stringop-overflow one hides a memory-safety
+# diagnostic. Both arrived as unexplained copy-forward defaults in the first
+# commit and had spread by copy-paste to seven compile rules. It does not ban
+# them, it
+# bans an UNEXPLAINED one: any instance needs a `suppression-ok: <reason>`
+# marker on its line or the line above. Carries hermetic detector fixtures and
+# runs them before it certifies the tree, so it cannot report clean while
+# blind. Self-test: tools/lint/check_no_warning_suppression.sh --self-test
+check-no-warning-suppression:
+	@echo "══ LINT: unexplained warning suppressions ══"
+	@./tools/lint/check_no_warning_suppression.sh .

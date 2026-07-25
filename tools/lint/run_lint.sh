@@ -156,6 +156,7 @@ gate_command() {
         check-privileged-transition-receipt) echo './tools/lint/check_privileged_transition_receipt.sh' ;;
         check-no-trust-state-ordering)     echo './tools/scripts/check_no_trust_state_ordering.sh' ;;
         check-no-gnu-va-args)              echo './tools/lint/check_no_gnu_va_args.sh' ;;
+        check-no-warning-suppression)      echo './tools/lint/check_no_warning_suppression.sh .' ;;
         *) return 1 ;;
     esac
 }

@@ -1,0 +1,39 @@
+# Prerequisite tools for building zclassic23 — the single source of truth.
+#
+# `make doctor` (tools/scripts/doctor.sh) reads this file, probes the host,
+# and prints the install line for ONLY what is missing. It also asserts that
+# every `need <tool>` call in tools/scripts/build_vendor.sh has a row here, so
+# a new vendor prerequisite cannot be added without appearing in the doctor.
+# That assertion is why this file, not prose, is authoritative: three separate
+# prose lists (docs/BUILD.md, .github/CONTRIBUTING.md, README.md) disagreed
+# with each other and with the script, and none of them listed perl, nm or tar.
+#
+# Columns (tab-separated):
+#   tool    argv name probed with `command -v`
+#   class   required        — the node build cannot proceed without it
+#           vendor          — `make vendor` (the one-time archive build) needs it
+#           vendor-optional — vendor builds without it, on a slower/fallback path
+#           vendor-either   — at least ONE tool in this class must be present
+#   apt     Debian/Ubuntu package
+#   dnf     Fedora/RHEL package
+#   why     what breaks without it, in one clause
+#
+# Package names are per-distro and deliberately not deduplicated: the doctor
+# prints one install line per manager, and duplicates there are harmless.
+tool	class	apt	dnf	why
+cc	required	gcc	gcc	compiles every translation unit; gcc 14+ or a clang with working -std=c23
+make	required	make	make	drives every build, test and lint target
+git	required	git	git	tracked-file enumeration used by the build and most lint gates
+ar	vendor	binutils	binutils	archives each vendored static library
+nm	vendor	binutils	binutils	libevent symbol audit and the librustzcash proving-ABI check
+sha256sum	vendor	coreutils	coreutils	verifies every pinned source tarball against its hash
+tar	vendor	tar	tar	unpacks the openssl, libevent, zlib and leveldb tarballs
+perl	vendor	perl	perl	OpenSSL's Configure is a perl program
+patch	vendor	patch	patch	applies vendor/patches/libevent-2.1.12-secure-rng-abi.patch
+unzip	vendor	unzip	unzip	the SQLite amalgamation ships as a zip, not a tarball
+cargo	vendor	cargo	cargo	builds librustzcash, the canonical Sapling prover
+rustc	vendor	rustc	rust	same; cargo without a matching rustc cannot build the prover
+curl	vendor-either	curl	curl	downloads pinned sources; build_vendor falls back to wget
+wget	vendor-either	wget	wget	downloads pinned sources when curl is absent
+c++	vendor-optional	g++	gcc-c++	LevelDB is C++11; without a C++ compiler libleveldb.a cannot be built
+cmake	vendor-optional	cmake	cmake	preferred LevelDB route; a direct C++11 compile is used when absent
