@@ -63,9 +63,13 @@ In a tree built by the current Makefile, **every live depfile is written under
 `lib/codeindex/src/codeindex_deps.c` deliberately skips any directory named
 `epochs` (and `history`). The include graph is therefore built from whatever
 non-epoch depfiles happen to be left over from an older build — or, in a fresh
-worktree, from nothing at all. Measured: a freshly built worktree had **0**
-depfiles outside `epochs/` and 17,062 inside; the primary checkout had 5,151
-outside (newest 7 days stale) and 17,062 inside.
+worktree, from nothing at all. Measured in a worktree after `make build-only`
+plus `make t-fast`: **0** depfiles outside `epochs/`, every one of the 6,833
+inside. The absolute count is not the finding and does not reproduce across
+trees — it scales with how many epoch directories a checkout has accumulated.
+The finding is the **0**: the graph builder is looking where the compiler no
+longer writes, so what it finds is whatever an older build happened to leave
+behind.
 
 The cache now fails **closed** on this (`no-include-graph` /
 `input-newer-than-include-graph`, both reported in the histogram), so it cannot

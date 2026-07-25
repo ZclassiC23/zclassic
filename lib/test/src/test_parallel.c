@@ -1188,9 +1188,17 @@ int main(int argc, char **argv)
      *   - the bare token "ALL TESTS PASSED" ONLY for a cold run. A cached run
      *     says "ALL TESTS PASSED (CACHED)", which a `grep -q "ALL TESTS
      *     PASSED"` still matches — so gate-and-report.sh is taught to reject
-     *     the cached form explicitly rather than relying on the token alone. */
+     *     the cached form explicitly rather than relying on the token alone.
+     *
+     * `mode` is derived from what the run actually SERVED from cache, not from
+     * whether the cache was enabled. Keying it on the flag produced its own
+     * misreport — `ZCL_TEST_CACHE=1 ... --only=<group>` printed
+     * "mode=cached ... groups_cached=0" and the (CACHED) headline for a run in
+     * which every selected group executed. A run with zero hits ran everything
+     * and is a cold run; a run with one hit is not, and says so. */
+    bool served_from_cache = (cached_count > 0);
     struct suite_verdict verdict = {
-        .mode          = (cache_mode == CACHE_ON) ? "cached" : "cold",
+        .mode          = served_from_cache ? "cached" : "cold",
         .groups_total  = g_num_groups,
         .groups_ran    = g_num_groups - pre_skipped - cached_count,
         .groups_cached = cached_count,
@@ -1213,7 +1221,7 @@ int main(int argc, char **argv)
 
     printf("%s — %d/%zu groups failed, %d skipped (%.1fs wall, %d workers)%s\n",
            failed_groups != 0 ? "SOME TESTS FAILED"
-                              : (cache_mode == CACHE_ON
+                              : (served_from_cache
                                      ? "ALL TESTS PASSED (CACHED)"
                                      : "ALL TESTS PASSED"),
            failed_groups, g_num_groups - pre_skipped, skip_groups, wall, jobs,

@@ -119,9 +119,11 @@ static const char *TC_H_B =
     "int tc_other(void);\n"
     "#endif\n";
 
-/* An X-macro registry, the shape of the ~23 tracked *.def files. It is a
- * compiler prerequisite exactly like a header, and changing it changes the
- * translation unit's behavior exactly like a header. */
+/* An X-macro registry, the shape of the 26 tracked *.def files (`git ls-files
+ * '*.def' | wc -l`), 17 of which the compiler currently lists as a prerequisite
+ * of 29 translation units. It is a compiler prerequisite exactly like a header,
+ * and changing it changes the translation unit's behavior exactly like a
+ * header. */
 static const char *TC_DEF_A =
     "/* lib/net/include/net/tc_registry.def — pristine. */\n"
     "TC_ROW(alpha, 1)\n"
@@ -167,16 +169,97 @@ static bool write_fixture(const char *leaf, const char *other, const char *hdr)
 }
 
 /* Does `path` contain `needle`? Used by the source-contract assertions below,
- * which pin runner/gate behavior this module cannot reach from a fixture. */
+ * which pin runner/gate behavior this module cannot reach from a fixture.
+ *
+ * Reads the WHOLE file, growing the buffer. A fixed 256 KB buffer was a silent
+ * correctness hole rather than a limit: the Makefile is ~330 KB, so the last
+ * ~68 KB — which is where the `ci` retry recipe this file asserts on lives —
+ * was simply invisible, and a truncated read is indistinguishable from "the
+ * string is absent". Every way this can fail to see the whole file now prints
+ * a diagnostic instead of returning a bare false. */
 static bool file_contains(const char *path, const char *needle)
 {
     FILE *f = fopen(path, "rb");
-    if (!f) return false;
-    char buf[262144];
-    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    if (!f) {
+        printf("  testcache: file_contains: cannot open %s\n", path);
+        return false;
+    }
+    size_t cap = 1u << 16, len = 0;
+    char *buf = malloc(cap);
+    if (!buf) {
+        fclose(f);
+        printf("  testcache: file_contains: out of memory reading %s\n", path);
+        return false;
+    }
+    for (;;) {
+        if (len + 1 == cap) {
+            char *grown = realloc(buf, cap * 2);
+            if (!grown) {
+                free(buf);
+                fclose(f);
+                printf("  testcache: file_contains: out of memory growing to "
+                       "%zu bytes for %s\n", cap * 2, path);
+                return false;
+            }
+            buf = grown;
+            cap *= 2;
+        }
+        size_t n = fread(buf + len, 1, cap - 1 - len, f);
+        len += n;
+        if (n == 0) break;
+    }
+    bool read_error = ferror(f) != 0;
     fclose(f);
-    buf[n] = '\0';
-    return strstr(buf, needle) != NULL;
+    if (read_error) {
+        free(buf);
+        printf("  testcache: file_contains: read error on %s after %zu byte(s)"
+               "\n", path, len);
+        return false;
+    }
+    buf[len] = '\0';
+    /* strstr stops at the first NUL. Every file scanned here is text, so a NUL
+     * means the scan is not covering what the caller thinks it is — say so
+     * rather than silently searching a prefix. */
+    if (memchr(buf, '\0', len) != NULL)
+        printf("  testcache: file_contains: %s contains a NUL byte — the scan "
+               "covers only the bytes before it\n", path);
+    bool found = strstr(buf, needle) != NULL;
+    free(buf);
+    return found;
+}
+
+/* Caller-environment preservation.
+ *
+ * Phase H must move ZCL_STRESS_TESTS to prove it is in the key. `test.c` runs
+ * this group IN-PROCESS (test.c:1463) with 125 further group calls after it,
+ * and one of those — test_shielded_spend_slice at test.c:1600 — reads
+ * getenv("ZCL_STRESS_TESTS") at call time to decide whether to run its gate.
+ * Clearing the variable unconditionally on the way out silently switched that
+ * group onto its SKIP path under `ZCL_STRESS_TESTS=1`, and the run still exited
+ * 0. test_parallel forks per group so it never saw this. One group is the
+ * blast radius today only because of where the call sits in test.c — nothing
+ * stops the next in-process group from landing after this one. Any variable
+ * this group moves goes through this pair. */
+struct tc_envsave { char *val; bool was_set; };
+
+static void tc_env_capture(struct tc_envsave *s, const char *name)
+{
+    const char *v = getenv(name);
+    s->was_set = (v != NULL);
+    s->val = v ? strdup(v) : NULL;
+    /* strdup failure would make the restore lie about the caller's value; a
+     * loud abort of the assertion beats a silent downgrade to "was unset". */
+    if (s->was_set && !s->val)
+        printf("  testcache: tc_env_capture: strdup(%s) failed\n", name);
+}
+
+static void tc_env_restore(struct tc_envsave *s, const char *name)
+{
+    if (s->was_set && s->val) setenv(name, s->val, 1);
+    else                      unsetenv(name);
+    free(s->val);
+    s->val = NULL;
+    s->was_set = false;
 }
 
 int test_testcache(void)
@@ -341,6 +424,17 @@ int test_testcache(void)
      * executed the stress lane at all — a confirmed false green. */
     TC_CHECK("restore pristine fixture", write_fixture(TC_LEAF_A, TC_OTHER_A,
                                                        TC_H_A));
+    /* The caller's ZCL_STRESS_TESTS is captured before anything moves it and
+     * put back at the end of this phase. To keep that restore load-bearing no
+     * matter what the ambient environment happens to be, the phase installs its
+     * own sentinel as the value it must come back to — so the assertion below
+     * fails if the restore degrades to an unconditional unsetenv, whether or
+     * not the real caller had the variable set. */
+    struct tc_envsave caller_stress, phase_stress;
+    tc_env_capture(&caller_stress, "ZCL_STRESS_TESTS");
+    setenv("ZCL_STRESS_TESTS", "tc-phase-h-sentinel", 1);
+    tc_env_capture(&phase_stress, "ZCL_STRESS_TESTS");
+
     uint8_t key_nostress[32];
     bool have_nostress = false;
     unsetenv("ZCL_STRESS_TESTS");
@@ -372,7 +466,36 @@ int test_testcache(void)
             testcache_close(tc);
         }
     }
-    unsetenv("ZCL_STRESS_TESTS");
+    tc_env_restore(&phase_stress, "ZCL_STRESS_TESTS");
+    {
+        const char *back = getenv("ZCL_STRESS_TESTS");
+        TC_CHECK("phase H puts the caller's ZCL_STRESS_TESTS back",
+                 back && strcmp(back, "tc-phase-h-sentinel") == 0);
+    }
+    tc_env_restore(&caller_stress, "ZCL_STRESS_TESTS");
+
+    /* Both branches of the capture/restore pair on a private variable, so the
+     * "caller had it set" case above is not the only one covered. test.c runs
+     * this group in-process ahead of 125 more groups; leaking either branch
+     * silently moves those groups onto a different coverage path. */
+    {
+        const char *probe = "ZCL_TESTCACHE_ENV_RESTORE_PROBE";
+        struct tc_envsave s;
+        setenv(probe, "caller-value", 1);
+        tc_env_capture(&s, probe);
+        setenv(probe, "phase-value", 1);
+        tc_env_restore(&s, probe);
+        const char *v = getenv(probe);
+        TC_CHECK("a SET caller value survives a phase that overwrites it",
+                 v && strcmp(v, "caller-value") == 0);
+
+        unsetenv(probe);
+        tc_env_capture(&s, probe);
+        setenv(probe, "phase-value", 1);
+        tc_env_restore(&s, probe);
+        TC_CHECK("an UNSET caller value is left unset, not invented",
+                 getenv(probe) == NULL);
+    }
 
     /* ── Phase I: the denylist matches EXACT names, and covers the binaries ──
      * The old strstr() form could not list "net" (it would have swallowed
@@ -415,11 +538,25 @@ int test_testcache(void)
         testcache_toolkey_digest12(d);
         TC_CHECK("toolkey digest12 is 12 chars", strlen(d) == 12);
     }
+    /* Each needle is text this change INTRODUCED. The bare variable names
+     * (TEST_FAST_EPOCH_COMPILE_FLAGS et al) are not: the epoch machinery has
+     * defined all three for a long time, so asserting on them pinned nothing —
+     * revert the toolkey plumbing entirely and they still matched. What is new
+     * is the derivation tag and the per-profile injection of it. */
     TC_CHECK("Makefile derives the toolkey per PROFILE + compile flags",
              file_contains("Makefile", "zcl.testcache.toolkey.v1") &&
-             file_contains("Makefile", "TEST_FAST_EPOCH_COMPILE_FLAGS") &&
-             file_contains("Makefile", "TEST_REL_EPOCH_COMPILE_FLAGS") &&
-             file_contains("Makefile", "TEST_ASAN_EPOCH_COMPILE_FLAGS"));
+             file_contains("Makefile",
+                           "$(call TESTCACHE_TOOLKEY_CPPFLAGS,"
+                           "$(TEST_FAST_PROFILE),"
+                           "TEST_FAST_EPOCH_COMPILE_FLAGS)") &&
+             file_contains("Makefile",
+                           "$(call TESTCACHE_TOOLKEY_CPPFLAGS,"
+                           "$(TEST_REL_PROFILE),"
+                           "TEST_REL_EPOCH_COMPILE_FLAGS)") &&
+             file_contains("Makefile",
+                           "$(call TESTCACHE_TOOLKEY_CPPFLAGS,"
+                           "$(TEST_ASAN_PROFILE),"
+                           "TEST_ASAN_EPOCH_COMPILE_FLAGS)"));
 
     /* ── Phase K: the headline cannot claim a cold pass for a cached run ───
      * test_parallel printed "ALL TESTS PASSED" whether it ran 743 groups or 1,
@@ -432,13 +569,28 @@ int test_testcache(void)
     TC_CHECK("runner marks a cached pass as (CACHED)",
              file_contains("lib/test/src/test_parallel.c",
                            "ALL TESTS PASSED (CACHED)"));
+    /* The label has to describe the run, not the flag. Keying it on cache_mode
+     * made `ZCL_TEST_CACHE=1 ... --only=<group>` report "mode=cached ...
+     * groups_cached=0" and the (CACHED) headline for a run in which everything
+     * executed — a second misreport inside the change whose whole point is that
+     * the headline must say what the run did. */
+    TC_CHECK("the CACHED label is derived from what was served, not the flag",
+             file_contains("lib/test/src/test_parallel.c",
+                           "bool served_from_cache = (cached_count > 0);") &&
+             !file_contains("lib/test/src/test_parallel.c",
+                            "(cache_mode == CACHE_ON) ? \"cached\" : \"cold\""));
     TC_CHECK("gate rejects a cached run instead of reporting GATE OK",
              file_contains("tools/scripts/gate-and-report.sh",
                            "ALL TESTS PASSED (CACHED)") &&
              file_contains("tools/scripts/gate-and-report.sh",
                            "SUITE REJECTED"));
+    /* The needle is the RECIPE, not the word. "--no-cache" already appeared in
+     * a prose comment near the top of the Makefile long before this change, so
+     * matching it passed with the retry fix fully reverted. Only the retry
+     * invocation itself distinguishes the two. */
     TC_CHECK("CI retry runs cold so a flake cannot be laundered into a PASS",
-             file_contains("Makefile", "--no-cache"));
+             file_contains("Makefile",
+                           "$(TEST_PARALLEL_REL_ACTIVE) --no-cache"));
 
     system("rm -rf " TC_FIX);
     printf("test_testcache: %d failure(s)\n", failures);
