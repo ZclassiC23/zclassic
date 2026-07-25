@@ -15,65 +15,88 @@
 
 #if defined(__x86_64__) || defined(__i386__)
 #include <cpuid.h>
+#include <immintrin.h>
+#include <stdatomic.h>
 
-/* The SHA-NI runtime detection (this variable + detect_sha_ni) is referenced
- * ONLY from the (x86 && __SHA__)-guarded call sites below, so its definition
- * must carry the same guard — otherwise an x86 -march that does not enable
- * __SHA__ leaves both defined-but-unused and -Werror=unused-{variable,function}
- * fails the build. Reported by @jmprcx (ZclassiC23/zclassic PR #5). */
-#ifdef __SHA__
-static int sha_ni_available = -1; /* -1 = not checked, 0 = no, 1 = yes */
+/* This transform is compiled into EVERY x86 build and selected at RUNTIME.
+ * It is deliberately NOT behind `#ifdef __SHA__`.
+ *
+ * The shipped -march is x86-64-v3 (Makefile), which does NOT define __SHA__, so
+ * a compile-time guard here deleted the hardware transform from the release
+ * binary on every CPU that has the instruction — silently, with no warning and
+ * no runtime signal. The per-function `target("sha,sse4.1")` attribute is what
+ * permits the SHA-NI opcodes to be emitted from a baseline translation unit;
+ * blake2b_avx2.c, keccak_avx512.c and sha3_256_x4.c all use this same shape.
+ *
+ * Do not narrow this back to a compile-time predicate. Two properties depend on
+ * runtime dispatch: the binary stays byte-identical across build hosts
+ * (tools/scripts/check_reproducible_build.sh, which deliberately does not set
+ * ZCL_NATIVE), and the SHA-NI path stays reachable on the portable build.
+ *
+ * The `#ifdef __SHA__` on the detection state used to be load-bearing: with the
+ * transform guarded but the state not, an x86 -march without __SHA__ left both
+ * defined-but-unused and -Werror=unused-{variable,function} failed the build —
+ * correctly reported by @jmprcx (ZclassiC23/zclassic PR #5). Deleting every
+ * guard fixes that root cause instead of balancing it: the state, the probe and
+ * all three dispatch sites are now unconditionally reachable on x86, so nothing
+ * is unused at any -march. Both -march=x86-64-v3 and -march=native build clean
+ * under -Werror.
+ *
+ * -1 = not probed, 0 = portable, 1 = SHA-NI. Relaxed atomic because several
+ * hashing threads may race to probe: each computes the same value from CPUID
+ * plus the known-answer test below, so ordering is irrelevant and only the
+ * absence of a data race matters. On x86 a relaxed load is a plain mov. */
+static _Atomic int sha_ni_available = -1;
 
 /* Forward declarations for self-test in detect_sha_ni */
 static void sha256_transform_portable(uint32_t *s, const unsigned char *chunk);
-#ifdef __SHA__
 __attribute__((target("sha,sse4.1")))
 static void sha256_transform_shani(uint32_t *state, const unsigned char *data);
-#endif
 
 static void detect_sha_ni(void)
 {
     unsigned int eax, ebx, ecx, edx;
     if (!__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) {
-        sha_ni_available = 0;
+        atomic_store_explicit(&sha_ni_available, 0, memory_order_relaxed);
         return;
     }
-    int hw_capable = (ebx >> 29) & 1;
+    int hw_capable = (ebx >> 29) & 1; /* CPUID.(EAX=7,ECX=0):EBX[29] = SHA */
     if (!hw_capable) {
-        sha_ni_available = 0;
+        atomic_store_explicit(&sha_ni_available, 0, memory_order_relaxed);
         return;
     }
 
-    /* Hardware SHA-NI detected — validate with self-test before enabling.
-     * This catches implementation bugs and CPU errata. */
-#ifdef __SHA__
-    {
-        const unsigned char test_data[64] = {
-            0x61, 0x62, 0x63, 0x80, 0,0,0,0, 0,0,0,0, 0,0,0,0,
-            0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
-            0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
-            0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,24
-        };
-        uint32_t sp[8] = {0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,
-                          0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19};
-        uint32_t sn[8] = {0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,
-                          0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19};
-        sha256_transform_portable(sp, test_data);
-        sha256_transform_shani(sn, test_data);
-        if (memcmp(sp, sn, 32) == 0) {
-            sha_ni_available = 1;
-        } else {
-            sha_ni_available = 0; /* Implementation mismatch — stay on portable */
-        }
-    }
-#else
-    sha_ni_available = 0;
-#endif
+    /* Hardware SHA-NI detected — validate against the frozen portable
+     * reference before enabling. This catches implementation bugs and CPU
+     * errata; a mismatch keeps the node on the portable transform rather than
+     * letting a wrong compression function reach consensus hashing. */
+    const unsigned char test_data[64] = {
+        0x61, 0x62, 0x63, 0x80, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+        0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+        0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+        0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,24
+    };
+    uint32_t sp[8] = {0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,
+                      0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19};
+    uint32_t sn[8] = {0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,
+                      0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19};
+    sha256_transform_portable(sp, test_data);
+    sha256_transform_shani(sn, test_data);
+    atomic_store_explicit(&sha_ni_available,
+                          memcmp(sp, sn, sizeof sp) == 0 ? 1 : 0,
+                          memory_order_relaxed);
 }
-#endif /* __SHA__ — detection defs match the (x86 && __SHA__) call sites */
 
-#ifdef __SHA__
-#include <immintrin.h>
+/* Probe-on-first-use accessor. 0 = portable, nonzero = SHA-NI. */
+static inline int sha_ni_state(void)
+{
+    int v = atomic_load_explicit(&sha_ni_available, memory_order_relaxed);
+    if (__builtin_expect(v < 0, 0)) {
+        detect_sha_ni();
+        v = atomic_load_explicit(&sha_ni_available, memory_order_relaxed);
+    }
+    return v;
+}
 
 __attribute__((target("sha,sse4.1")))
 static void sha256_transform_shani(uint32_t *state, const unsigned char *data)
@@ -280,7 +303,6 @@ static void sha256_transform_shani(uint32_t *state, const unsigned char *data)
     _mm_storeu_si128((__m128i *)(state), state0);
     _mm_storeu_si128((__m128i *)(state + 4), state1);
 }
-#endif /* __SHA__ */
 #endif /* x86 */
 
 /* --- Portable C fallback --- */
@@ -389,10 +411,8 @@ static void sha256_transform_portable(uint32_t *s, const unsigned char *chunk)
 
 static inline void sha256_transform(uint32_t *s, const unsigned char *chunk)
 {
-#if (defined(__x86_64__) || defined(__i386__)) && defined(__SHA__)
-    if (__builtin_expect(sha_ni_available < 0, 0))
-        detect_sha_ni();
-    if (sha_ni_available) {
+#if defined(__x86_64__) || defined(__i386__)
+    if (sha_ni_state()) {
         sha256_transform_shani(s, chunk);
         return;
     }
@@ -404,9 +424,8 @@ static inline void sha256_transform(uint32_t *s, const unsigned char *chunk)
  * Called once at startup. Returns true if SHA-NI is safe to use. */
 bool sha256_selftest(void)
 {
-#if (defined(__x86_64__) || defined(__i386__)) && defined(__SHA__)
-    if (sha_ni_available < 0) detect_sha_ni();
-    if (!sha_ni_available) return true; /* no SHA-NI, nothing to test */
+#if defined(__x86_64__) || defined(__i386__)
+    if (!sha_ni_state()) return true; /* no SHA-NI, nothing to test */
 
     /* Test vector: SHA-256("abc") = ba7816bf... */
     const unsigned char test_data[64] = {
@@ -432,7 +451,9 @@ bool sha256_selftest(void)
 
     /* Compare */
     if (memcmp(s_port, s_shani, 32) != 0) {
-        sha_ni_available = 0; /* Disable — results don't match */
+        /* Disable — results don't match. LOG_FAIL returns false, which boot
+         * (config/src/boot.c) turns into the portable-fallback warning. */
+        atomic_store_explicit(&sha_ni_available, 0, memory_order_relaxed);
         LOG_FAIL("sha256",
                  "sha_ni_selftest: portable vs SHA-NI mismatch — CPU reports SHA-NI "
                  "but test vectors disagree; falling back to portable implementation");
@@ -445,11 +466,39 @@ bool sha256_selftest(void)
 
 const char *sha256_implementation(void)
 {
-#if (defined(__x86_64__) || defined(__i386__)) && defined(__SHA__)
-    if (sha_ni_available < 0) detect_sha_ni();
-    if (sha_ni_available) return "SHA-NI (hardware)";
+#if defined(__x86_64__) || defined(__i386__)
+    if (sha_ni_state()) return "SHA-NI (hardware)";
 #endif
     return "portable C";
+}
+
+bool sha256_shani_available(void)
+{
+#if defined(__x86_64__) || defined(__i386__)
+    return sha_ni_state() != 0;
+#else
+    return false;
+#endif
+}
+
+int sha256_select_impl(enum sha256_impl which)
+{
+#if defined(__x86_64__) || defined(__i386__)
+    if (which == SHA256_IMPL_PORTABLE) {
+        atomic_store_explicit(&sha_ni_available, 0, memory_order_relaxed);
+        return SHA256_IMPL_PORTABLE;
+    }
+    /* SHA256_IMPL_SHANI and SHA256_IMPL_AUTO both re-run the probe from
+     * scratch, so a previous force-to-portable cannot masquerade as "hardware
+     * absent". SHANI cannot override a FAILED known-answer test — a compression
+     * function that disagrees with the frozen reference never reaches consensus
+     * hashing, whatever the caller asked for. */
+    atomic_store_explicit(&sha_ni_available, -1, memory_order_relaxed);
+    return sha_ni_state() ? SHA256_IMPL_SHANI : SHA256_IMPL_PORTABLE;
+#else
+    (void)which;
+    return SHA256_IMPL_PORTABLE;
+#endif
 }
 
 void sha256_init(struct sha256_ctx *ctx)
