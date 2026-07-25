@@ -34,6 +34,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include "test/setup_result.h"
 
 #define ANCHOR_SCRATCH_ROOT "./test-tmp"
 
@@ -205,7 +206,7 @@ int test_anchor_peers(void)
         in.peers[0].port = 8033; in.peers[0].services = 1;
         anchor_set_ipv4(&in.peers[1].addr, 198, 51, 100, 1);
         in.peers[1].port = 8033; in.peers[1].services = 1;
-        anchor_peers_save(dir, &in);
+        ZCL_TEST_SETUP(anchor_peers_save(dir, &in));
 
         /* Flip a byte in the body without updating the sidecar. */
         char body[1024];
@@ -359,5 +360,5 @@ int test_anchor_peers(void)
     }
 #endif
 
-    return failures;
+    return failures + ZCL_TEST_SETUP_FAILURES();
 }

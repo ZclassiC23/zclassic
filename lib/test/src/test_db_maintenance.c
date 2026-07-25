@@ -22,6 +22,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "test/setup_result.h"
 
 #define DBM_SCRATCH_DIR "./test-tmp"
 
@@ -187,8 +188,8 @@ int test_db_maintenance(void)
     {
         struct dbm_fixture f;
         dbm_fixture_init(&f, "status");
-        db_maintenance_run_now(&f.ndb, "wal");
-        db_maintenance_run_now(&f.ndb, "analyze");
+        ZCL_TEST_SETUP(db_maintenance_run_now(&f.ndb, "wal"));
+        ZCL_TEST_SETUP(db_maintenance_run_now(&f.ndb, "analyze"));
 
         struct db_maintenance_status st;
         db_maintenance_status_snapshot(&st);
@@ -270,5 +271,5 @@ int test_db_maintenance(void)
     event_clear_observers(EV_DB_MAINTENANCE_START);
     event_clear_observers(EV_DB_MAINTENANCE_DONE);
     event_clear_observers(EV_DB_MAINTENANCE_FAILED);
-    return failures;
+    return failures + ZCL_TEST_SETUP_FAILURES();
 }

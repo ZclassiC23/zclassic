@@ -29,12 +29,18 @@
 #ifndef ZCL_UTIL_RESULT_H
 #define ZCL_UTIL_RESULT_H
 
-#include <stdbool.h>
 #include <stdarg.h>
 
 #define ZCL_RESULT_MSG_MAX 256
 
-struct zcl_result {
+/* [[nodiscard]] on the TYPE, so every function returning it inherits the
+ * requirement without touching 343 declarations. Note the two compilers
+ * report it differently: gcc under -Wunused-result, clang under
+ * -Wunused-value. Note also that C23 lets a `(void)` cast suppress it —
+ * so this attribute is a fence against NEW silent discards, not a way to
+ * excavate the existing cast-discard population. That population is what
+ * tools/lint/check_result_discard.sh ratchets down. */
+struct [[nodiscard]] zcl_result {
     bool        ok;
     int         code;                         /* 0 on success */
     char        message[ZCL_RESULT_MSG_MAX];  /* always NUL terminated */
@@ -62,6 +68,24 @@ struct zcl_result {
         return _zr_chk;                                              \
     }                                                                \
 } while (0)
+
+/* Deliberately discard a zcl_result, with a stated reason.
+ *
+ * A bare `(void)call();` also silences [[nodiscard]] under C23, but says
+ * nothing about why the failure is safe to drop. This macro makes the
+ * discard expressible rather than merely tolerated: `reason` must be a
+ * non-empty string literal, enforced at compile time, and the lint gate
+ * tools/lint/check_result_discard.sh counts every remaining bare
+ * `(void)` discard as debt that may only shrink.
+ *
+ *   ZCL_IGNORE_RESULT(flush_cache(db), "best-effort; tip refold re-derives it");
+ */
+#define ZCL_IGNORE_RESULT(res_expr, reason)                              \
+    do {                                                                 \
+        static_assert(sizeof("" reason) > 1,                             \
+                      "ZCL_IGNORE_RESULT requires a non-empty reason");  \
+        (void)(res_expr);                                                \
+    } while (0)
 
 /* Build a zcl_result from a format string. Defined in result.c.
  * NULL fmt is accepted defensively and becomes an explicit diagnostic

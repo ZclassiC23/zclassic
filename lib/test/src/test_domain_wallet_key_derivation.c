@@ -25,6 +25,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include "test/setup_result.h"
 
 #define DWK_CHECK(name, expr) do {                                  \
     printf("domain_wallet_key_derivation: %s... ", (name));         \
@@ -315,16 +316,16 @@ int test_domain_wallet_key_derivation(void)
      * the regression seal that "extraction didn't perturb the math". */
     {
         struct ext_key m1, m2, c1, c2;
-        domain_wallet_master_from_seed(&m1, k_tv1_seed, sizeof(k_tv1_seed));
-        domain_wallet_master_from_seed(&m2, k_tv1_seed, sizeof(k_tv1_seed));
+        ZCL_TEST_SETUP(domain_wallet_master_from_seed(&m1, k_tv1_seed, sizeof(k_tv1_seed)));
+        ZCL_TEST_SETUP(domain_wallet_master_from_seed(&m2, k_tv1_seed, sizeof(k_tv1_seed)));
         uint32_t path[4] = {
             DOMAIN_WALLET_BIP44_PURPOSE  | DOMAIN_WALLET_BIP32_HARDENED,
             DOMAIN_WALLET_BIP44_ZCL_COIN | DOMAIN_WALLET_BIP32_HARDENED,
             0u | DOMAIN_WALLET_BIP32_HARDENED,
             0u,
         };
-        domain_wallet_derive_path(&m1, &c1, path, 4);
-        domain_wallet_derive_path(&m2, &c2, path, 4);
+        ZCL_TEST_SETUP(domain_wallet_derive_path(&m1, &c1, path, 4));
+        ZCL_TEST_SETUP(domain_wallet_derive_path(&m2, &c2, path, 4));
         DWK_CHECK("determinism: same seed + path -> byte-identical child",
                   ext_key_bytes_equal(&c1, &c2));
         memory_cleanse(&m1, sizeof(m1));
@@ -394,7 +395,7 @@ int test_domain_wallet_key_derivation(void)
      * with explicit indices. */
     {
         struct ext_key master;
-        domain_wallet_master_from_seed(&master, k_tv1_seed, sizeof(k_tv1_seed));
+        ZCL_TEST_SETUP(domain_wallet_master_from_seed(&master, k_tv1_seed, sizeof(k_tv1_seed)));
 
         bool all_match = true;
         const uint32_t accounts[] = { 0, 1, 7 };
@@ -474,5 +475,5 @@ int test_domain_wallet_key_derivation(void)
         DWK_CHECK("bip44_format_path wrapper tiny buf -> -1", n == -1);
     }
 
-    return failures;
+    return failures + ZCL_TEST_SETUP_FAILURES();
 }

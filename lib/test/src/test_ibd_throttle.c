@@ -24,6 +24,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include "test/setup_result.h"
 
 static _Atomic int g_it_events;
 
@@ -179,7 +180,7 @@ int test_ibd_throttle(void)
     {
         struct ibd_throttle_config cfg = { .blocks_per_sec = 1,
                                             .burst = 3 };
-        ibd_throttle_start(&cfg);
+        ZCL_TEST_SETUP(ibd_throttle_start(&cfg));
         bool a = ibd_throttle_try_acquire();
         bool b = ibd_throttle_try_acquire();
         bool c = ibd_throttle_try_acquire();
@@ -195,7 +196,7 @@ int test_ibd_throttle(void)
     {
         struct ibd_throttle_config cfg = { .blocks_per_sec = 10000,
                                             .burst = 5 };
-        ibd_throttle_start(&cfg);
+        ZCL_TEST_SETUP(ibd_throttle_start(&cfg));
         for (int i = 0; i < 5; i++) (void)ibd_throttle_try_acquire();
         struct ibd_throttle_status st;
         ibd_throttle_status_snapshot(&st);
@@ -213,7 +214,7 @@ int test_ibd_throttle(void)
         /* burst=1, rate=500/s → 2ms per token. */
         struct ibd_throttle_config cfg = { .blocks_per_sec = 500,
                                             .burst = 1 };
-        ibd_throttle_start(&cfg);
+        ZCL_TEST_SETUP(ibd_throttle_start(&cfg));
         /* Drain. */
         (void)ibd_throttle_try_acquire();
         struct timespec t0, t1;
@@ -243,7 +244,7 @@ int test_ibd_throttle(void)
          * acquire, then stop the throttle. acquire must unstick. */
         struct ibd_throttle_config cfg = { .blocks_per_sec = 1,
                                             .burst = 1 };
-        ibd_throttle_start(&cfg);
+        ZCL_TEST_SETUP(ibd_throttle_start(&cfg));
         (void)ibd_throttle_try_acquire();
 
         _Atomic bool done = false;
@@ -269,7 +270,7 @@ int test_ibd_throttle(void)
         it_reset_observer();
         struct ibd_throttle_config cfg = { .blocks_per_sec = 500,
                                             .burst = 1 };
-        ibd_throttle_start(&cfg);
+        ZCL_TEST_SETUP(ibd_throttle_start(&cfg));
         (void)ibd_throttle_try_acquire();
         /* Blocked acquire #1 — emits (last_event_us was 0). */
         (void)ibd_throttle_acquire();
@@ -289,7 +290,7 @@ int test_ibd_throttle(void)
         it_reset_observer();
         struct ibd_throttle_config cfg = { .blocks_per_sec = 100000,
                                             .burst = 100 };
-        ibd_throttle_start(&cfg);
+        ZCL_TEST_SETUP(ibd_throttle_start(&cfg));
         for (int i = 0; i < 5; i++) (void)ibd_throttle_acquire();
         IT_CHECK("it: no event when never blocked",
                  atomic_load(&g_it_events) == 0);
@@ -300,7 +301,7 @@ int test_ibd_throttle(void)
     {
         struct ibd_throttle_config cfg = { .blocks_per_sec = 777,
                                             .burst = 12 };
-        ibd_throttle_start(&cfg);
+        ZCL_TEST_SETUP(ibd_throttle_start(&cfg));
         struct ibd_throttle_status st;
         ibd_throttle_status_snapshot(&st);
         IT_CHECK("it: snapshot running=true after start",
@@ -317,5 +318,5 @@ int test_ibd_throttle(void)
 
     printf("ibd_throttle tests: %s (%d failures)\n",
            failures == 0 ? "OK" : "FAIL", failures);
-    return failures;
+    return failures + ZCL_TEST_SETUP_FAILURES();
 }
