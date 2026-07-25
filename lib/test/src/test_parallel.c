@@ -3,8 +3,11 @@
  * Fork-parallel driver for the zclassic23 test suite.
  *
  * The sequential runner (`build/bin/test_zcl`, `main()` in test.c) executes
- * ~170 test groups back-to-back on a single CPU. On a 32-core box we
- * barely use 3% of available compute and the suite takes 8-15 minutes.
+ * every group back-to-back on a single CPU. On a 32-core box that uses a few
+ * percent of available compute and the suite takes many minutes. (The group
+ * count is deliberately not pinned here — it moves every few commits and the
+ * old hand-written "~170" was off by a factor of four before anyone noticed.
+ * The runner prints the live count on every start.)
  *
  * This binary runs the same groups concurrently. Every group gets its
  * own child process via fork(), with output captured to a per-child
@@ -18,12 +21,19 @@
  * `ecc_verify_destroy` + `ecc_stop` before exit. The extra setup cost
  * is paid once per group and is dwarfed by the per-group test time.
  *
- * Maintenance note: the registry below must stay in sync with the
- * dispatch list in lib/test/src/test.c. Adding a test to test.c but
- * not here means the parallel runner silently skips it. Adding it
- * here but not test.c means the sequential path skips it. A
- * lightweight source-level diff would catch drift, but the canonical
- * registry is test_parallel.c — test.c is the legacy shape. */
+ * Maintenance note: the registry below is CANONICAL — `make test-parallel`
+ * is the doctrine runner and the acceptance gate, and build/bin/test_zcl
+ * (test.c, the legacy sequential shape) is never run. So a test dispatched
+ * by test.c but absent here does not merely "skip the parallel runner": it
+ * executes in NO gate at all and proves nothing.
+ *
+ * That drift is no longer unpoliced. tools/scripts/check_test_registration.sh
+ * has two prongs: (A) every filename-matching entry point is dispatched by at
+ * least one runner, and (B) every name dispatched by test.c is either in
+ * TEST_LIST/SPEC_LIST here or is a sub-test of a file whose own group IS
+ * registered. Prong B is HARD and has no baseline. When it first ran
+ * (2026-07-25) it found 5 such names; one of them, test_lcc_write_rules, was
+ * not just dead but WRONG — it failed the moment it was finally executed. */
 
 #define _POSIX_C_SOURCE 200809L
 
@@ -113,6 +123,9 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(block_locator_bounds) X(block_map_grow_collision) \
     X(connect_node_locked) X(stream_read_no_overflow) \
     X(fast_sync_serve_chunk_db_clamps) X(connman_node_count_locked) \
+    X(transaction_deserialize_count_amplification) \
+    X(block_deserialize_txcount_amplification) \
+    X(block_index_node_db_topup) X(lcc_write_rules) X(seal_rewind) \
     X(fees_oom) X(fees_oom_inject) X(multisig_consensus_branches) \
     X(parse_script_oversize_hex) X(script_num_minimal_encoding) \
     X(domain_consensus_pow_seal_matrix)    X(domain_consensus_pow_seal_powlimit_floor) \

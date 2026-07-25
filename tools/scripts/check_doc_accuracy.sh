@@ -128,7 +128,17 @@ fi
 CLAIM_RE='(^|[^[:alnum:]/_-])[0-9]+\+?[[:space:]]+(defensive[- ]coding([[:space:]]+lint)?|lint)[[:space:]]+gates?([^a-zA-Z]|$)'
 
 list_docs() {
-    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    # Use git ONLY when this directory is itself the worktree root git would
+    # answer for. Being "inside a work tree" is not enough: the lint-gate
+    # sandbox is a hardlink copy at <root>.lint_sb_<pid>, a sibling that still
+    # sits under an OUTER repo, so `--is-inside-work-tree` says yes while
+    # `git ls-files` — which answers for the OUTER repo, where this whole
+    # directory is untracked or ignored — returns NOTHING. That emptied the
+    # scan silently and made this gate hollow exactly where its own
+    # plant/trip/recover proof runs. Same trap for any exported/copied tree.
+    local top=""
+    top=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    if [ -n "$top" ] && [ "$top" -ef . ] 2>/dev/null; then
         # Tracked AND not-yet-added-but-not-ignored: a stale claim must be
         # caught the moment the file exists, not only after `git add`. The
         # `--exclude-standard` filter keeps build output and gitignored
@@ -136,11 +146,26 @@ list_docs() {
         git ls-files -z -- '*.md'
         git ls-files -z --others --exclude-standard -- '*.md'
     else
-        # Tarball / vendored checkout: same scan without git.
+        # Tarball / vendored checkout / hardlink sandbox: same scan without git.
         find . \( -name .git -o -name vendor -o -name build -o -name node_modules \) \
              -prune -o -name '*.md' -type f -print0
     fi
 }
+
+# FAIL-LOUD floor on the SCAN SET, not on the hit count. The repo currently
+# carries zero prose gate-count claims (they were all de-pinned), so
+# "0 claims verified" is a legitimate clean result and cannot be the floor.
+# What must never be zero is the number of .md files actually looked at — that
+# is the signal that list_docs came back empty and the gate is inspecting
+# nothing. Hundreds of .md files are tracked; anything under 50 means the
+# enumeration broke.
+docs_scanned=$(list_docs | tr -cd '\0' | wc -c)
+if [ "$docs_scanned" -lt 50 ]; then
+    echo "check_doc_accuracy: FATAL — scan set is $docs_scanned .md file(s) (expected >=50)." >&2
+    echo "  list_docs came back (near-)empty, so this gate would report clean" >&2
+    echo "  without inspecting anything. Refusing to pass off a dead scan." >&2
+    exit 2
+fi
 
 claim_hits=$(list_docs | xargs -0 -r grep -HnoEi "$CLAIM_RE" 2>/dev/null || true)
 

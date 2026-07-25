@@ -148,8 +148,11 @@ paying the release build's whole-program LTO pass. It emits
 `make fast-rebuild` builds `build/bin/zclassic23-dev` from cached per-file objects, with default
 `ZCL_DEV_OPT=-Og`, hot consensus/crypto/script/validation buckets at
 `ZCL_DEV_HOT_OPT=-O2`, no LTO, no strip, and optional fast-linker selection via
-`ZCL_DEV_LINKER` (auto-detects `mold` or `ld.lld` when present; override with
-`ZCL_DEV_LINKER=` to force the platform default). When `sccache` or `ccache` is
+`ZCL_DEV_LINKER` (probes `mold`, then `ld.lld`; expands to **empty** when
+neither is installed — the common case — so the link silently uses the platform
+linker with no speedup. Verify with `command -v mold ld.lld` before attributing
+link time to it; set `ZCL_DEV_LINKER=` to force the platform default). When
+`sccache` or `ccache` is
 installed, the Makefile auto-wraps `CC` with it unless `ZCL_USE_CCACHE=0` is set. This is
 the right binary for
 local `agentbuild`, `agentimpact`, parser, API, and diagnostics iteration; it is

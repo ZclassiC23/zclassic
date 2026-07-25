@@ -219,6 +219,17 @@ int test_lcc_write_rules(void)
               stage_set_named_cursor(db, "some_helper_cursor", 999) &&
               read_cursor(db, "some_helper_cursor") == 999);
 
+    /* Clear the trusted base before the batch sections. Those sections drive
+     * their stages from height 0, and the base=20 left by the section above
+     * would make heights [0,21) wholly base-exempt — the batch-hole case would
+     * then be ALLOWED for a reason that has nothing to do with the batch commit
+     * boundary it is meant to prove, and the contiguous case would pass without
+     * its rows being consulted. Both batch assertions are only meaningful with
+     * nothing exempted. */
+    LCC_CHECK("reset trusted base to 0 for the batch sections",
+              stage_lcc_set_trusted_base_in_tx(db, 0) &&
+              stage_lcc_trusted_base(db) == 0);
+
     /* A batched stage coalesces its repeated cursor checks to the only
      * externally-visible boundary. Prove both sides: a complete range commits;
      * one missing row vetoes and rolls back the entire batch. */
