@@ -1338,6 +1338,10 @@ static int t_git_hooks_gate_rejects_noop_pre_commit(void)
 #define E10_SQL_SCRIPT_REL "tools/lint/check_no_raw_sqlite_in_controllers.sh"
 #define E10_SQL_FIXTURE_DST "app/controllers/src/_e10_rawsql_fixture_tmp.c"
 #define E11_SCRIPT_REL   "tools/scripts/check_doc_accuracy.sh"
+/* Not gitignored on purpose: E11's repo-wide prong scans tracked files plus
+ * not-yet-added files git does not ignore, so an ignored path would make the
+ * trip case silently vacuous. */
+#define E11_FIXTURE_DST  "docs/_e11_doc_count_fixture_tmp.md"
 #define MODEL_AR_SCRIPT_REL "tools/scripts/check_model_ar_lifecycle.sh"
 #define MODEL_AR_FIXTURE_DST "app/models/src/_model_ar_lifecycle_fixture_tmp.c"
 #define E2_SCRIPT_REL    "tools/scripts/check_one_result_type.sh"
@@ -2666,12 +2670,41 @@ static int t_log_macro_return_type_gate(void)
 }
 
 /* E11 — doc accuracy: the in-tree DEFENSIVE_CODING.md gate block matches
- * the Makefile lint: target, so the gate passes. */
+ * the Makefile lint: target, so the gate passes.
+ *
+ * The clean-run assertion alone cannot tell "the docs are right" from "the
+ * gate stopped looking". It could not: E11 checked exactly one filename, so
+ * docs/BUILD.md ("40 defensive-coding gates") and docs/TENACITY.md ("36 lint
+ * gates") sat wrong against a real list of 98 with this test green. E11 now
+ * derives the count and scans every in-tree .md, and the plant/trip/recover
+ * case below proves that scan is live: a stale count written into a doc the
+ * gate has never heard of must fail it. The fixture states a deliberately
+ * impossible count, so the case stays valid as gates are added or removed. */
 static int t_e11_doc_accuracy(void)
 {
     int failures = 0;
-    TEST("[lint-gate] E11 doc gate list matches Makefile lint: target") {
-        ASSERT(run_gate_script(E11_SCRIPT_REL, NULL) == 0);
+    unlink_rel(E11_FIXTURE_DST);
+    int baseline_rc = run_gate_script(E11_SCRIPT_REL, NULL);
+
+    char path[PATH_MAX];
+    int planted = -1;
+    if (repo_path(path, sizeof(path), E11_FIXTURE_DST) == 0)
+        planted = write_file(path,
+                       "# E11 fixture\n\n"
+                       "This page claims 999999 lint gates, which the repo\n"
+                       "cannot have. E11 must reject it even though no code\n"
+                       "names this file.\n");
+    int trip_rc = run_gate_script(E11_SCRIPT_REL, NULL);
+
+    unlink_rel(E11_FIXTURE_DST);
+    int recover_rc = run_gate_script(E11_SCRIPT_REL, NULL);
+
+    TEST("[lint-gate] E11 gate list matches Makefile; stale count in an "
+         "unnamed doc trips it") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
         PASS();
     } _test_next:;
     return failures;

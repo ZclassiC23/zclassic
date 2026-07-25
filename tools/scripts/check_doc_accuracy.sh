@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Lint gate E11 — DEFENSIVE_CODING.md gate list matches the Makefile (HARD).
+# Lint gate E11 — the documented lint-gate set matches the Makefile (HARD).
 #
 # Doc rot is silent: the Makefile LINT_GATES target gains/loses a check-* gate
 # and DEFENSIVE_CODING.md still claims the old count and names. This gate
@@ -18,6 +18,34 @@
 # The gate fails if the COUNT differs or the NAME SET differs. To fix a
 # real drift: update the doc block (markers) to match the Makefile — never
 # the other way around (the Makefile is authoritative for what runs).
+#
+# Prong C (repo-wide, added after a measured escape): checking one filename
+# only protects one filename. On 2026-07-25 the Makefile carried 98 gates and
+# DEFENSIVE_CODING.md correctly said 98, so prongs A/B were green — while
+# docs/BUILD.md said "40 defensive-coding gates" and docs/TENACITY.md said
+# "36 lint gates". Both had been wrong for months with lint green, because
+# neither file was named in this script. Prong C therefore does NOT name
+# files: it derives the count from the Makefile (source A) and then scans
+# EVERY in-tree *.md (tracked, plus not-yet-added files git does not ignore)
+# for a count-shaped claim about the umbrella gate set.
+# Writing the stale claim into a brand-new file is caught the same way, and
+# the gate stays correct when the gate count changes because nothing here is
+# hardcoded to a number.
+#
+# What prong C considers a claim about the umbrella set (deliberately narrow
+# so it can be strict rather than advisory): a number immediately followed by
+# a FAMILY NAME for the whole set — "lint gates", "defensive-coding gates",
+# "defensive-coding lint gates". Anything between the number and "gates" that
+# is not a family word makes it a SUBSET claim and is ignored, which is what
+# keeps true statements like "11 architecture gates", "7 fail-silent lint
+# gates" and "~15 high-signal lint gates" from being false positives. The
+# number must also start on a non-alphanumeric boundary, so identifier runs
+# like "the P1/P2/P3 lint gates" and "I1/I2 lint gates" do not read as "3
+# lint gates" / "2 lint gates".
+#
+# A matched claim must equal the derived count EXACTLY — including the "98+"
+# form. The intended fix for a failure is not to re-pin a fresh number (that
+# buys one week); it is to delete the number and point at the derived source.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -89,5 +117,61 @@ if [ "$fail" != "0" ]; then
     exit 1
 fi
 
-echo "check_doc_accuracy: clean — $make_count gates, doc and Makefile agree"
+# ---------------------------------------------------------------------------
+# C) Repo-wide: no in-tree .md may state a gate count other than the derived
+#    one. No filename is hardcoded here on purpose — see the header comment.
+# ---------------------------------------------------------------------------
+
+# A number on a word boundary, then a family name for the WHOLE gate set,
+# then "gate"/"gates". Subset qualifiers between the number and "gates"
+# (architecture, fail-silent, high-signal, ...) make it not a whole-set claim.
+CLAIM_RE='(^|[^[:alnum:]/_-])[0-9]+\+?[[:space:]]+(defensive[- ]coding([[:space:]]+lint)?|lint)[[:space:]]+gates?([^a-zA-Z]|$)'
+
+list_docs() {
+    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        # Tracked AND not-yet-added-but-not-ignored: a stale claim must be
+        # caught the moment the file exists, not only after `git add`. The
+        # `--exclude-standard` filter keeps build output and gitignored
+        # scratch out of the scan.
+        git ls-files -z -- '*.md'
+        git ls-files -z --others --exclude-standard -- '*.md'
+    else
+        # Tarball / vendored checkout: same scan without git.
+        find . \( -name .git -o -name vendor -o -name build -o -name node_modules \) \
+             -prune -o -name '*.md' -type f -print0
+    fi
+}
+
+claim_hits=$(list_docs | xargs -0 -r grep -HnoEi "$CLAIM_RE" 2>/dev/null || true)
+
+claims_checked=0
+while IFS= read -r hit; do
+    [ -n "$hit" ] || continue
+    hit_file=${hit%%:*}
+    hit_rest=${hit#*:}
+    hit_line=${hit_rest%%:*}
+    hit_text=${hit_rest#*:}
+    claimed=$(printf '%s' "$hit_text" | grep -oE '[0-9]+' | head -1)
+    [ -n "$claimed" ] || continue
+    claims_checked=$((claims_checked + 1))
+    if [ "$claimed" != "$make_count" ]; then
+        echo "FAIL: $hit_file:$hit_line claims $claimed gates; Makefile LINT_GATES has $make_count"
+        echo "      claim text: $(printf '%s' "$hit_text" | sed 's/^[[:space:]]*//')"
+        fail=1
+    fi
+done <<EOF
+$claim_hits
+EOF
+
+if [ "$fail" != "0" ]; then
+    echo ""
+    echo "Fix: do NOT re-pin the number — a corrected constant goes stale again"
+    echo "     the next time a gate lands. Delete the count from the prose and"
+    echo "     point at the derived source instead: \`make lint\` prints what it"
+    echo "     ran, and the canonical gate list lives in the"
+    echo "     <!-- LINT-GATES-BEGIN/END --> block of $DOC."
+    exit 1
+fi
+
+echo "check_doc_accuracy: clean — $make_count gates; doc block agrees; $claims_checked prose gate-count claim(s) across in-tree .md verified"
 exit 0

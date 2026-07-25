@@ -379,9 +379,21 @@ make -j"$(nproc)"   # test_zcl + zclassic23 + zclassic-cli
 make dev-bin        # fast local node executable, not for deploy/release
 make test           # full parallel suite via the cached per-TU test_parallel
 make test_parallel_wpo  # whole-program LTO test binary (debug per-TU/LTO divergence)
-make lint           # 40 defensive-coding gates
+make lint           # every defensive-coding gate; it prints the list it ran
 make ci             # local gate: lint + tests + MVP slices (runs locally, not on GitHub Actions)
 make deploy         # rebuild + restart; verify exact source ID and running executable SHA-256
+```
+
+This page deliberately does not state how many defensive-coding gates exist.
+That number changes whenever a gate lands, and every copy of it in prose has
+gone stale within weeks. The authoritative list is the `LINT_GATES` variable in
+the `Makefile`; the same list is mirrored, and machine-checked against the
+Makefile by the `check-doc-accuracy` gate, in the `<!-- LINT-GATES-BEGIN -->`
+block of [`DEFENSIVE_CODING.md`](DEFENSIVE_CODING.md). To see what runs on your
+tree, run `make lint` and read what it names, or print the list itself:
+
+```bash
+awk '/^LINT_GATES[[:space:]]*:=/{f=1} f{print; if ($0 !~ /\\[[:space:]]*$/) exit}' Makefile
 ```
 
 `make deploy` pins its outer `BUILD_SOURCE_RECORD` into every recursive Make,
