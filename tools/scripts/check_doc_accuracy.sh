@@ -127,8 +127,20 @@ fi
 # (architecture, fail-silent, high-signal, ...) make it not a whole-set claim.
 CLAIM_RE='(^|[^[:alnum:]/_-])[0-9]+\+?[[:space:]]+(defensive[- ]coding([[:space:]]+lint)?|lint)[[:space:]]+gates?([^a-zA-Z]|$)'
 
+# git is the right lister only when THIS directory is the root of the repo git
+# would answer for. `--is-inside-work-tree` was not that test: the lint-gate
+# self-test runs these scripts inside a hardlink COPY of the tree (a sibling of
+# the worktree root, with no .git of its own), and when that copy lands under
+# some OTHER repo's ignored path — an agent worktree under .claude/worktrees/,
+# say — the probe answered yes for the ENCLOSING repo and both ls-files calls
+# returned nothing, because an ignored prefix has no tracked files and
+# --exclude-standard drops the rest. Prong C then scanned zero files and
+# reported clean. Compare the toplevel against the cwd and fall back to find
+# whenever they differ.
 list_docs() {
-    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    local top
+    top=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    if [ -n "$top" ] && [ "$top" -ef "." ]; then
         # Tracked AND not-yet-added-but-not-ignored: a stale claim must be
         # caught the moment the file exists, not only after `git add`. The
         # `--exclude-standard` filter keeps build output and gitignored
@@ -136,11 +148,26 @@ list_docs() {
         git ls-files -z -- '*.md'
         git ls-files -z --others --exclude-standard -- '*.md'
     else
-        # Tarball / vendored checkout: same scan without git.
+        # Tarball / vendored checkout / sandbox copy: same scan without git.
         find . \( -name .git -o -name vendor -o -name build -o -name node_modules \) \
              -prune -o -name '*.md' -type f -print0
     fi
 }
+
+# A scan that reads no files verifies nothing and must not report clean. This
+# repo always has in-tree .md; an empty list means the lister is looking in the
+# wrong place, which is exactly the failure above.
+if ! doc_nuls=$(list_docs | tr -cd '\0' | wc -c); then
+    echo "FAIL: prong C could not enumerate in-tree .md files (cwd: $(pwd -P))"
+    exit 1
+fi
+if [ "$doc_nuls" -eq 0 ]; then
+    echo "FAIL: prong C found NO in-tree .md files to scan (cwd: $(pwd -P))."
+    echo "      A scan that reads nothing verifies nothing — refusing to report"
+    echo "      clean. Check that this directory is the root of the tree being"
+    echo "      linted."
+    exit 1
+fi
 
 claim_hits=$(list_docs | xargs -0 -r grep -HnoEi "$CLAIM_RE" 2>/dev/null || true)
 

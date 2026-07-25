@@ -22,6 +22,26 @@ if ! make -j"$(nproc)" >>"$LINTLOG" 2>&1; then
 fi
 echo "GATE: FULL BUILD OK"
 make test-parallel >"$TESTLOG" 2>&1
+# A green token is NOT enough. The runner prints the same "ALL TESTS PASSED"
+# whether it executed every group or returned almost all of them from the
+# content-addressed cache, so this gate reads the machine-greppable
+# `SUITE VERDICT` line and refuses anything that did not actually run cold.
+VERDICT="$(grep -E '^SUITE VERDICT ' "$TESTLOG" | tail -1)"
+if [ -z "$VERDICT" ]; then
+  echo "GATE: SUITE FAILED — no SUITE VERDICT line (runner too old, or the run died before reporting)"
+  tail -20 "$TESTLOG"; exit 2
+fi
+echo "GATE: $VERDICT"
+if grep -q "ALL TESTS PASSED (CACHED)" "$TESTLOG"; then
+  echo "GATE: SUITE REJECTED — this run was CACHED, not cold. A cached run proves"
+  echo "      only that nothing downstream of the cached groups changed; it is not"
+  echo "      a gate. Re-run with: make test-parallel TEST_PARALLEL_ARGS=--no-cache"
+  exit 2
+fi
+case "$VERDICT" in
+  *" mode=cold "*) : ;;
+  *) echo "GATE: SUITE REJECTED — mode is not cold: $VERDICT"; exit 2 ;;
+esac
 if grep -q "ALL TESTS PASSED" "$TESTLOG" && ! grep -q "SOME TESTS FAILED" "$TESTLOG"; then
   echo "GATE: SUITE OK — $(grep -E 'ALL TESTS PASSED' "$TESTLOG" | tail -1)"; exit 0
 fi

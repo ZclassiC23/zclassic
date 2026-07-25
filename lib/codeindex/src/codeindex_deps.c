@@ -2,13 +2,23 @@
  *
  * codeindex_deps — turn the compiler's own dependency files (the depfiles
  * under build/, extension .d) into include edges. Each depfile records
- * "<obj>: <src.c> <hdr.h> ..."; we
- * emit (source, header) pairs for in-tree prerequisites, which is the exact
- * include graph the build already computed — no re-parsing of #include lines,
- * no guessing search paths. Retained `epochs/` and `history/` generations are
- * excluded; their duplicate immutable receipts are not the active graph. If
- * build/ is absent (a fresh tree), no edges are produced. Other I/O failures
- * fail closed. */
+ * "<obj>: <src.c> <prereq> ..."; we emit a (source, prerequisite) pair for
+ * EVERY in-tree prerequisite the compiler listed, which is the exact include
+ * graph the build already computed — no re-parsing of #include lines, no
+ * guessing search paths.
+ *
+ * The prerequisite list is taken verbatim, never filtered by file extension.
+ * The compiler records every byte it read, and plenty of those are not .h:
+ * the ~23 tracked X-macro registries (`*.def` — the command catalog, the
+ * condition registry, the sync-kernel catalog, the diagnostics dumpers) are
+ * `#include`d exactly like headers and change a translation unit's behavior
+ * exactly like headers. An extension allowlist silently dropped them from the
+ * graph, so a registry edit moved no downstream content key and busted no
+ * cache. The depfile is the authority; if the compiler read it, it is an edge.
+ *
+ * Retained `epochs/` and `history/` generations are excluded; their duplicate
+ * immutable receipts are not the active graph. If build/ is absent (a fresh
+ * tree), no edges are produced. Other I/O failures fail closed. */
 
 #include "codeindex_priv.h"
 
@@ -83,8 +93,10 @@ static void parse_depfile(const char *root, char *text, size_t len,
                 have_src = true;
                 continue;
             }
-            if (have_src && (has_ext(rel, ".h") || has_ext(rel, ".hpp") ||
-                             has_ext(rel, ".hh")))
+            /* Every remaining in-tree prerequisite is an edge — no extension
+             * filter (see the file header: *.def registries are prerequisites
+             * too, and an allowlist dropped them). */
+            if (have_src)
                 cb(src_rel, rel, user);
         }
     }

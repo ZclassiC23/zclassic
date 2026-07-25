@@ -3928,15 +3928,36 @@ $(DEV_OBJ_DIR)/%.o: %.c $(VIEW_GEN_HEADERS) $(BUILD_EPOCH_OBJECT_TOOL) $(BUILD_E
 # The dev object tree also needs the identity TU refreshed when its stamp changes.
 $(DEV_OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_IDENTITY_STAMP)
 
-# The content-addressed test cache (lib/test/src/testcache.c) folds the
-# toolchain fingerprint into every per-group key so a compiler/flags change busts
-# the whole cache. Reuse the already-computed, already-validated 64-hex compiler
-# id (no extra shell); injected per-object so only testcache.o carries it.
-TESTCACHE_TOOLKEY_CPPFLAGS = -DZCL_TESTCACHE_TOOLKEY=\"$(BUILD_COMPILER_ID)\"
+# The content-addressed test cache (lib/test/src/testcache.c) folds a
+# toolchain+FLAGS fingerprint into every per-group key.
+#
+# BUILD_COMPILER_ID alone was not enough and shipped a false green:
+# build-epoch-key.sh's compiler-id mode fingerprints the CC/CXX argv and the
+# tool BYTES, never the flags. TEST_FAST_CFLAGS compiles at -O1 and
+# TEST_REL_CFLAGS at -O3, so `make t-fast` and the release gate binary carried
+# the SAME toolkey and shared ONE keyspace — a PASS recorded by the -O1 fast
+# profile was honored, unexecuted, by the -O3 gate.
+#
+# The epoch machinery's own digest (zcl_compile_epoch) cannot be reused as the
+# toolkey: build-epoch-key.sh's `key` mode binds BUILD_SOURCE_ID and
+# BUILD_MUTATION, so it changes on EVERY source edit and would bust the whole
+# cache every time — the exact opposite of the cache's purpose. What is reused
+# is the epoch machinery's already-assembled effective-compile-flag strings
+# (*_EPOCH_COMPILE_FLAGS, which already fold in the identity-TU and depfile
+# flags); this hashes those, and nothing source-dependent.
+#
+# $(1) profile name, $(2) NAME of the profile's *_EPOCH_COMPILE_FLAGS variable.
+# Injected per-object so only testcache.o carries it.
+zcl_testcache_toolkey = $(strip $(shell printf '%s\0%s\0%s\0%s\0' \
+  'zcl.testcache.toolkey.v1' '$(BUILD_COMPILER_ID)' '$(1)' '$(strip $($(2)))' \
+  | sha256sum | cut -d' ' -f1))
+TESTCACHE_TOOLKEY_CPPFLAGS = \
+  -DZCL_TESTCACHE_TOOLKEY=\"$(call zcl_testcache_toolkey,$(1),$(2))\"
 
 TEST_FAST_OBJECT_CFLAGS = $(TEST_FAST_CFLAGS)
 $(TEST_FAST_OBJ_DIR)/lib/util/src/clientversion.o: TEST_FAST_OBJECT_CFLAGS += $(BUILD_IDENTITY_CPPFLAGS)
-$(TEST_FAST_OBJ_DIR)/lib/test/src/testcache.o: TEST_FAST_OBJECT_CFLAGS += $(TESTCACHE_TOOLKEY_CPPFLAGS)
+$(TEST_FAST_OBJ_DIR)/lib/test/src/testcache.o: TEST_FAST_OBJECT_CFLAGS += \
+  $(call TESTCACHE_TOOLKEY_CPPFLAGS,$(TEST_FAST_PROFILE),TEST_FAST_EPOCH_COMPILE_FLAGS)
 $(TEST_FAST_OBJ_DIR)/%.o: %.c $(VIEW_GEN_HEADERS) $(BUILD_EPOCH_OBJECT_TOOL) | $(TEST_FAST_LEASE)
 	@$(BUILD_EPOCH_OBJECT_TOOL) dep "$@" "$<" \
 	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" \
@@ -3951,7 +3972,8 @@ $(TEST_FAST_OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_IDENTITY_STAMP)
 # records the complete include closure inside the exact epoch — no false green.
 TEST_REL_OBJECT_CFLAGS = $(TEST_REL_CFLAGS)
 $(TEST_REL_OBJ_DIR)/lib/util/src/clientversion.o: TEST_REL_OBJECT_CFLAGS += $(BUILD_IDENTITY_CPPFLAGS)
-$(TEST_REL_OBJ_DIR)/lib/test/src/testcache.o: TEST_REL_OBJECT_CFLAGS += $(TESTCACHE_TOOLKEY_CPPFLAGS)
+$(TEST_REL_OBJ_DIR)/lib/test/src/testcache.o: TEST_REL_OBJECT_CFLAGS += \
+  $(call TESTCACHE_TOOLKEY_CPPFLAGS,$(TEST_REL_PROFILE),TEST_REL_EPOCH_COMPILE_FLAGS)
 $(TEST_REL_OBJ_DIR)/%.o: %.c $(VIEW_GEN_HEADERS) $(BUILD_EPOCH_OBJECT_TOOL) | $(TEST_REL_LEASE)
 	@$(BUILD_EPOCH_OBJECT_TOOL) dep "$@" "$<" \
 	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" \
@@ -3966,6 +3988,11 @@ $(TEST_REL_OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_IDENTITY_STAMP)
 # the complete include closure inside the exact epoch — no false green.
 TEST_ASAN_OBJECT_CFLAGS = $(TEST_ASAN_CFLAGS)
 $(TEST_ASAN_OBJ_DIR)/lib/util/src/clientversion.o: TEST_ASAN_OBJECT_CFLAGS += $(BUILD_IDENTITY_CPPFLAGS)
+# The ASan tree needs its OWN testcache keyspace, by design rather than by
+# accident: without this the -D is absent and testcache.c falls back to
+# __VERSION__, which pins the compiler but not the sanitizer flags.
+$(TEST_ASAN_OBJ_DIR)/lib/test/src/testcache.o: TEST_ASAN_OBJECT_CFLAGS += \
+  $(call TESTCACHE_TOOLKEY_CPPFLAGS,$(TEST_ASAN_PROFILE),TEST_ASAN_EPOCH_COMPILE_FLAGS)
 $(TEST_ASAN_OBJ_DIR)/%.o: %.c $(VIEW_GEN_HEADERS) $(BUILD_EPOCH_OBJECT_TOOL) | $(TEST_ASAN_LEASE)
 	@$(BUILD_EPOCH_OBJECT_TOOL) dep "$@" "$<" \
 	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" \
@@ -5909,9 +5936,18 @@ ci: vendor-ready lint bench-regress zclassic23 $(TEST_PARALLEL_REL_CANDIDATE)
 	@# flake passes on retry and is logged LOUDLY here so it stays visible and
 	@# tracked, never silently swallowed. Deep root-cause of the flake is a
 	@# separate follow-up; this keeps the gate trustworthy + armable now.
+	@#
+	@# The retry runs --no-cache, and that is load-bearing. "A real regression
+	@# fails BOTH passes" holds only while both passes actually EXECUTE the same
+	@# groups. With the cache enabled, pass 1 fails group G and still stores a
+	@# PASS for the ~742 groups that succeeded; pass 2 would then skip those 742
+	@# and re-run G alone on an unloaded box, where a load-sensitive failure
+	@# gets lucky and stores its own PASS — after which G is skipped forever.
+	@# The retry would launder a flake into a permanent cached green. Forcing
+	@# the retry cold keeps it the independent second opinion it claims to be.
 	@ulimit -s unlimited; if $(TEST_PARALLEL_REL_ACTIVE); then :; else \
-		echo "[ci] !! test_parallel FAILED first pass — retrying ONCE (load-contention flake-tolerance; a real regression fails BOTH) !!"; \
-		ulimit -s unlimited; $(TEST_PARALLEL_REL_ACTIVE); \
+		echo "[ci] !! test_parallel FAILED first pass — retrying ONCE, COLD (--no-cache: a cached retry would re-run only the failing group and launder a flake into a stored PASS) !!"; \
+		ulimit -s unlimited; $(TEST_PARALLEL_REL_ACTIVE) --no-cache; \
 	fi
 	@echo ""
 	@echo "══ CI: mvp-gates (hermetic MVP acceptance #3/#5/#7) ══"

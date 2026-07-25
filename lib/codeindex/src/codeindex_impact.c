@@ -317,7 +317,14 @@ int codeindex_impact_closure(struct codeindex *ci,
     int n = 0;
     for (size_t i = 0; i < c.files.len && n < cap; i++) {
         memset(out[n], 0, sizeof(out[n]));
-        snprintf(out[n], sizeof(out[n]), "%s", c.files.items[i]);
+        int w = snprintf(out[n], sizeof(out[n]), "%s", c.files.items[i]);
+        /* A path longer than the caller's row lands as a SILENTLY DIFFERENT
+         * path: the caller then hashes whatever the truncated prefix names, or
+         * fails to open it. Either way the set it holds is not the set we
+         * computed, so report truncation — testcache turns that into
+         * UNCACHEABLE and the group runs. */
+        if (w < 0 || (size_t)w >= sizeof(out[n]))
+            *truncated = true;
         n++;
     }
     if ((size_t)n < c.files.len)
@@ -474,7 +481,14 @@ int codeindex_forward_closure(struct codeindex *ci, const char *root_symbol,
     int n = 0;
     for (size_t i = 0; i < c.files.len && n < cap; i++) {
         memset(out[n], 0, sizeof(out[n]));
-        snprintf(out[n], sizeof(out[n]), "%s", c.files.items[i]);
+        int w = snprintf(out[n], sizeof(out[n]), "%s", c.files.items[i]);
+        /* A path longer than the caller's row lands as a SILENTLY DIFFERENT
+         * path: the caller then hashes whatever the truncated prefix names, or
+         * fails to open it. Either way the set it holds is not the set we
+         * computed, so report truncation — testcache turns that into
+         * UNCACHEABLE and the group runs. */
+        if (w < 0 || (size_t)w >= sizeof(out[n]))
+            *truncated = true;
         n++;
     }
     if ((size_t)n < c.files.len)
