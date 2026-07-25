@@ -193,3 +193,41 @@ in-memory buffer and offset bookkeeping and does not scale past a few
 threads — keep the per-thread-segment design. Remaining lever: zero-copy
 submit of worker buffers + a per-thread block-parse arena to remove
 `block_deserialize` malloc contention.
+
+## 2026-07-25 — developer inner-loop baseline (build/test, not node runtime)
+
+Host: 32 core / 93 GB, HEAD `7e28252b5`, gcc, ccache enabled.
+First build-time measurements ever recorded here; `tools/scripts/timings.sh`
+still reads only lint/test/dev-loop artifacts and says outright that build wall
+time is unrecorded. These are the before-numbers for the inner-loop work.
+
+| Action | Wall |
+|---|---|
+| `make -j32 build-only`, no change | 6.0s |
+| `make -j32 build-only`, one .c edited | 9.0s |
+| `make -j32 test_parallel`, no change | 10.7s |
+| `make -j32 test_parallel`, one .c edited | 31.6s |
+| `make -j32 zclassic23`, one .c edited | 67.0s (whole-program LTO, uncacheable by design) |
+| `make lint`, 103 gates, 8 jobs | 16.6s |
+| full suite, cold, 32 workers | ~157s |
+
+### Bare link, test-strict lane, measured directly
+
+1883 objects / 179 MB in, 90 MB binary out, same object set both runs:
+
+| Linker | Wall | maxrss |
+|---|---|---|
+| `ld.bfd` (what the gate uses today) | 0.90s | 423 MB |
+| `ld.gold` | 0.58s | 446 MB |
+
+**The link is not the bottleneck.** A pre-measurement hypothesis held that
+`ld.bfd` accounted for most of the 21s one-file delta, because
+`ZCL_DEV_LINKER` (Makefile:457) resolves to empty on this host — mold and lld
+are both absent — and `TEST_REL_LDFLAGS` (Makefile:906) never references it
+anyway. Both facts are true, and both are worth fixing, but the measurement
+prices the fix at ~0.3s, not ~20s.
+
+The one-file delta is therefore the compile-epoch churn: the object directory is
+keyed on a whole-tree content-and-stat hash, so a single edit relocates all 1883
+objects to a new `epochs/<hash>/` directory and Make re-invokes the compile
+recipe for every one, each spawning ~13 processes before reaching ccache.
