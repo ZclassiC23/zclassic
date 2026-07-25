@@ -252,6 +252,13 @@ static int write_single_css_header(const char *src_path, const char *out_path,
     return 0;
 }
 
+/* Order two directory entries by name, so the emitted header depends on the
+ * template SET and never on the filesystem that stored it. */
+static int name_cmp(const void *a, const void *b)
+{
+    return strcmp((const char *)a, (const char *)b);
+}
+
 static int process_dir(const char *dir, const char *ext, const char *prefix,
                        bool minify, FILE *out) {
     DIR *d = opendir(dir);
@@ -259,34 +266,68 @@ static int process_dir(const char *dir, const char *ext, const char *prefix,
 
     int count = 0;
     size_t ext_len = strlen(ext);
+
+    /* Collect the matching names, THEN sort, THEN emit.
+     *
+     * readdir returns entries in filesystem order. That order is not stable
+     * across machines, and not even across two checkouts on one machine —
+     * it follows directory inode layout. This generator writes a TRACKED
+     * header, so an unsorted walk means the first build in a fresh clone
+     * rewrites a committed file with the same 49 templates in a different
+     * order: the tree goes dirty and the build's own source-identity guard
+     * kills the link. That is a fresh clone failing its first `make`, and it
+     * also makes a byte-identical two-builder result impossible by
+     * construction. Sorting is the whole fix. */
+    static char names[MAX_TEMPLATES][256];
+    size_t n_names = 0;
     struct dirent *ent;
     while ((ent = readdir(d)) != NULL) {
         size_t nlen = strlen(ent->d_name);
         if (nlen <= ext_len ||
             strcmp(ent->d_name + nlen - ext_len, ext) != 0)
             continue;
+        if (nlen >= sizeof(names[0])) {
+            fprintf(stderr, "gen_templates: skipping over-long name: %s\n",
+                ent->d_name);
+            continue;
+        }
+        if (n_names >= MAX_TEMPLATES) {
+            fprintf(stderr, "gen_templates: FATAL more than %d '%s' files in "
+                "%s — raise MAX_TEMPLATES\n", MAX_TEMPLATES, ext, dir);
+            closedir(d);
+            exit(1);
+        }
+        memcpy(names[n_names], ent->d_name, nlen + 1);
+        n_names++;
+    }
+    closedir(d);
+    qsort(names, n_names, sizeof(names[0]), name_cmp);
+
+    for (size_t ni = 0; ni < n_names; ni++) {
+        const char *d_name = names[ni];
+        size_t nlen = strlen(d_name);
 
         size_t base_len = nlen - ext_len;
-        if (!valid_filename(ent->d_name, base_len)) {
+        if (!valid_filename(d_name, base_len)) {
             fprintf(stderr, "gen_templates: skipping invalid name: %s\n",
-                ent->d_name);
+                d_name);
             continue;
         }
 
         char path[1024];
-        snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name);
+        snprintf(path, sizeof(path), "%s/%s", dir, d_name);
 
         size_t flen = 0;
         char *buf = read_file(path, &flen);
         if (!buf) {
-            fprintf(stderr, "gen_templates: skipping %s\n", ent->d_name);
+            fprintf(stderr, "gen_templates: skipping %s\n", d_name);
             continue;
         }
 
         /* Convert filename to C identifier */
         char name_base[256];
         snprintf(name_base, sizeof(name_base), "%.*s",
-            (int)base_len, ent->d_name);
+            (int)base_len, d_name);
         char name_upper[256];
         to_upper_underscore(name_base, name_upper, sizeof(name_upper));
 
@@ -353,7 +394,6 @@ static int process_dir(const char *dir, const char *ext, const char *prefix,
         }
         count++;
     }
-    closedir(d);
     return count;
 }
 
