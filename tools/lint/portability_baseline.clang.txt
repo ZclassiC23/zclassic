@@ -11,8 +11,6 @@
 # A different compiler VERSION legitimately reports a different
 # set; that is why CI scopes its verdict with
 # ZCL_PORTABILITY_SCOPE instead of trusting this file verbatim.
-app/services/src/auth_login_service.c 2
 config/src/boot_services_shutdown.c 1
 core/math/src/hash.c 2
 lib/net/src/compact_blocks.c 6
-lib/net/src/p2p_game.c 10

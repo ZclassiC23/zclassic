@@ -171,6 +171,46 @@ if ! command -v "$CC_BIN" >/dev/null 2>&1; then
     exit 0
 fi
 
+# ── SKIP contract, part two: compiler VERSION skew ───────────────────────
+# A ratchet baseline is a statement about one compiler version. A different
+# version legitimately reports a different set, so running this baseline
+# against another one measures the compiler, not the change.
+#
+# This is not hypothetical. The baseline was recorded with clang 20; the
+# project's own build host carries clang 18, and clang 18 rejects STANDARD
+# C23 as an extension:
+#
+#   lib/sapling/src/circuit_gadgets.c:475:38: error: binary integer literals
+#     are a GNU extension [-Werror,-Wgnu-binary-literal]
+#
+# Binary literals are C23 (they are one of the few genuinely-C23 constructs
+# in this tree), and clang 18 accepts -std=c23 while still diagnosing them.
+# It also rejects the "vaes" and "sha" CPU feature strings that GCC — the
+# compiler that actually ships the node — accepts. Nineteen "failures" in one
+# file and two in another, none of them defects.
+#
+# Failing a contributor's `make lint` because their clang is a different
+# version would be this gate reporting on the wrong thing, loudly. SKIP
+# instead, naming both versions, so the skip is visible and actionable rather
+# than silent. Same principle as the absent-compiler case above.
+BASELINE_CC_MAJOR="$(sed -n 's/^#.*clang version \([0-9][0-9]*\)\..*/\1/p' \
+    "$SCRIPT_DIR/portability_baseline.clang.txt" 2>/dev/null | head -1)"
+LOCAL_CC_MAJOR="$("$CC_BIN" --version 2>/dev/null \
+    | sed -n 's/.*clang version \([0-9][0-9]*\)\..*/\1/p' | head -1)"
+if [ -n "$BASELINE_CC_MAJOR" ] && [ -n "$LOCAL_CC_MAJOR" ] &&
+   [ "$LOCAL_CC_MAJOR" != "$BASELINE_CC_MAJOR" ]; then
+    echo "  check-clang-portability: SKIP — compiler version skew."
+    echo "    baseline recorded with: clang $BASELINE_CC_MAJOR"
+    echo "    installed here:         clang $LOCAL_CC_MAJOR"
+    echo "  A ratchet baseline is only meaningful against the version it was"
+    echo "  recorded with; judging one clang's output by another clang's"
+    echo "  baseline measures the compilers, not the change. To run the gate"
+    echo "  here, re-record it and commit the result:"
+    echo "    ZCL_CC=$CC_BIN ZCL_LINT_MODE=UPDATE $0"
+    echo "  Skipping is not a failure."
+    exit 0
+fi
+
 # ── Compiler family: picks the diagnostic-format flags and the baseline ──
 # Both front ends must be told "one line per diagnostic, no caret art, no
 # colour" or the parsed log stops being stable, but they spell it
