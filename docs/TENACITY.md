@@ -196,8 +196,10 @@ canary, G2 chain-derived golden extremals, G3 crash-boot soak, G4 recipe smokes,
 G5 push-time execution) and its land status are in
 [`tenacity-roadmap.md`](work/tenacity-roadmap.md).
 
-**What exists today (honest):** 36 lint gates (source-text greps), 430 hermetic
-test_parallel groups (synthetic regtest 48,5 fixtures), `make ci`
+**What exists today (honest):** the `make lint` gates (source-text greps —
+count derived from `LINT_GATES` in the Makefile, not restated here), the
+hermetic test_parallel groups (synthetic regtest 48,5 fixtures — count derived
+by `make test-parallel`, likewise not restated), `make ci`
 (policy-forbidden from starting a node), test-crash (guaranteed-SKIP —
 `ZCL_CRASH_DATADIR` unset). All valuable as a regression floor; none sample the
 live failure distribution. That is the gap G1–G5 close.
