@@ -367,6 +367,10 @@ void app_context_defaults(struct app_context *ctx);
 const char *app_runtime_profile_name(enum zcl_runtime_profile profile);
 bool app_runtime_profile_parse(const char *name,
                                enum zcl_runtime_profile *out);
+/* Human-readable list of every spelling app_runtime_profile_parse accepts,
+ * aliases included. Lives beside the parser so a rejection can print the
+ * accepted set instead of making the reader go find it. */
+const char *app_runtime_profile_accepted_csv(void);
 bool app_runtime_profile_has_explorer(enum zcl_runtime_profile profile);
 bool app_runtime_profile_has_store(enum zcl_runtime_profile profile);
 bool app_runtime_profile_has_onion(enum zcl_runtime_profile profile,
@@ -375,6 +379,8 @@ bool app_runtime_profile_has_file_service(enum zcl_runtime_profile profile);
 const char *app_operator_lane_name(enum zcl_operator_lane lane);
 bool app_operator_lane_parse(const char *name,
                              enum zcl_operator_lane *out);
+/* Same contract as app_runtime_profile_accepted_csv, for operator lanes. */
+const char *app_operator_lane_accepted_csv(void);
 
 /* ── First-run wallet creation: boot-site decision ────────────────── *
  *
