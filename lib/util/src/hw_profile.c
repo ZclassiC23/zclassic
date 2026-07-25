@@ -18,6 +18,7 @@
 #include "util/hw_profile.h"
 
 #include "util/cpu_topology.h"
+#include "crypto/sha256.h"
 #include "json/json.h"
 #include "util/log_macros.h"
 
@@ -487,6 +488,11 @@ bool hw_profile_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_bool(&isa, "vaes", g_state.isa.vaes);
     json_push_kv_bool(&isa, "gfni", g_state.isa.gfni);
     json_push_kv_bool(&isa, "sha_ni", g_state.isa.sha_ni);
+    /* The CPUID capability above is NOT the same claim as "the node is using
+     * it". These two disagreed silently for the whole life of the -v3 build
+     * (SHA-NI was compiled out by `#ifdef __SHA__`), so report the transform
+     * actually installed right next to the capability bit. */
+    json_push_kv_str(&isa, "sha256_transform", sha256_implementation());
     json_push_kv(out, "isa", &isa);
     json_free(&isa);
 

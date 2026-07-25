@@ -46,4 +46,23 @@ bool sha256_selftest(void);
 /* Returns "SHA-NI (hardware)" or "portable C" */
 const char *sha256_implementation(void);
 
+/* True when the host has SHA-NI *and* it passed the known-answer test against
+ * the portable reference. False on non-x86, on CPUs without the instruction,
+ * and after a failed self-test. */
+bool sha256_shani_available(void);
+
+/* Force the compression transform. PORTABLE always succeeds. SHANI and AUTO
+ * both re-run the CPUID probe + known-answer test and fall back to PORTABLE
+ * when the host cannot supply a verified hardware transform — SHANI is a
+ * request, never an override of a failed self-test. Returns the impl actually
+ * installed (SHA256_IMPL_PORTABLE or SHA256_IMPL_SHANI).
+ *
+ * Both transforms produce identical output by construction (that is what the
+ * sha256_isa_parity test group proves), so this only ever changes speed. It
+ * exists for the differential parity oracle and the benchmark; production code
+ * should leave the dispatch on AUTO. Not thread-safe against concurrent
+ * hashing. */
+enum sha256_impl { SHA256_IMPL_AUTO = -1, SHA256_IMPL_PORTABLE = 0, SHA256_IMPL_SHANI = 1 };
+int sha256_select_impl(enum sha256_impl which);
+
 #endif
