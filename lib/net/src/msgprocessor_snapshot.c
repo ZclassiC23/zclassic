@@ -11,6 +11,7 @@
 #include "msgprocessor_internal.h"
 #include "msgprocessor_snapshot_internal.h"
 
+#include "config/runtime.h"
 #include "net/addrman.h"
 #include "net/download.h"
 #include "net/fast_sync.h"
