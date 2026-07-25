@@ -5,7 +5,7 @@
 -- REFERENCE DUMP ONLY — this file is never read or executed at runtime.
 -- The live schema is created by embedded C migrations in
 -- app/models/src/database_migrate.c. Kept as human-readable documentation
--- (cited by lib/wallet/src/wallet_sqlite.c and docs/spec/power-node-contract.md).
+-- (cited by lib/wallet/src/wallet_sqlite.c and power-node-contract.md).
 
 -- Blockchain
 CREATE TABLE IF NOT EXISTS blocks (

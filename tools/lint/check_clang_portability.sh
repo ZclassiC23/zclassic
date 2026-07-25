@@ -242,7 +242,7 @@ BASELINE="tools/lint/portability_baseline.${FAMILY}.txt"
 # extra -I can only add a search path, and headers are namespaced under
 # include/<module>/ so there is nothing to collide.
 mapfile -t INC_DIRS < <(find app config lib core domain application adapters \
-    sdk ports -maxdepth 3 -type d -name include 2>/dev/null | sort)
+    ports -maxdepth 3 -type d -name include 2>/dev/null | sort)
 gate_require_scanned "${#INC_DIRS[@]}" 20 check-clang-portability \
     "no include/ roots found — the layer directory layout moved"
 

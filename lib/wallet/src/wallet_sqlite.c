@@ -186,7 +186,7 @@ static bool wallet_decrypt_blob(const uint8_t *envelope, size_t env_len,
  *
  * Invariant: every wallet table this code prepares statements against
  * must exist in app/models/src/database.c SCHEMA[] (the production
- * schema runner).  db/schema.sql is a reference dump and is never
+ * schema runner).  docs/spec/schema.sql is a reference dump and is never
  * executed, so a table present only there is absent at runtime.  A
  * missing table must surface WSQL_SCHEMA_MISSING / WSQL_PREPARE_FAIL
  * with the offending table name rather than returning a bare false:

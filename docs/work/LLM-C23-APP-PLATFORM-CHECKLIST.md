@@ -118,7 +118,7 @@ Foundations already present, not proof the target platform is complete.
   compiler failures coalesce, every other red reruns.
 - [x] Public App ABI skeleton declares capabilities/routes/topics/state/
   migration/self-test/quiescence/leases without exposing consensus or
-  private keys (`sdk/include/zclassic23/app.h`).
+  private keys (`lib/framework/include/zclassic23/app.h`).
 - [x] `apps/social/app.def` + a deterministic Social simulation prove the
   manifest and seeded-scenario shape.
 - [x] Bounded event ring, traces, metrics, state dumpers, postmortem
@@ -248,12 +248,12 @@ Use this loop while the later platform items remain incomplete.
 | What commands exist now? | `discover search/describe` |
 | Where is a symbol and who uses it? | `code sym/refs/room` |
 | Which proof is required? | `dev test plan` + `code tests` |
-| What can an App request? | `sdk/include/zclassic23/app.h` |
+| What can an App request? | `lib/framework/include/zclassic23/app.h` |
 | What does an App declare? | `dev app describe` + `apps/<id>/app.def` |
 | What apparent bug may be intentional? | `docs/AGENT_TRAPS.md` |
 
 Detailed contracts: `../NATIVE_COMMAND_INTERFACE.md`,
-`../AGENT_ARCHITECTURE.md`, `../../sdk/include/zclassic23/app.h`. Daily
+`../AGENT_ARCHITECTURE.md`, `../../lib/framework/include/zclassic23/app.h`. Daily
 operating loop: `.claude/skills/zclassic23-dev/SKILL.md`.
 
 ## Target compact protocol — extend, do not fork

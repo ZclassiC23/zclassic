@@ -46,7 +46,7 @@ the ordinary agent loop.
 | Raw storage, reducers, boot, and process ownership | Web, onion, ZNAM, and UI bindings |
 | Never hot-swappable | Transactionally hot-swappable after ABI/state proof |
 
-Apps compile against `sdk/include/zclassic23/app.h`, not project internals.
+Apps compile against `lib/framework/include/zclassic23/app.h`, not project internals.
 The public App ABI intentionally exposes no consensus mutation, raw SQL,
 filesystem, socket, private-key, peer-state, boot, or process capability.
 

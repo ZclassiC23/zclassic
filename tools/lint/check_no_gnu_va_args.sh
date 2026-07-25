@@ -31,7 +31,7 @@ cd "$ROOT"
 
 # `,` then optional whitespace then `##` then `__VA_ARGS__`.
 HITS=$(grep -rn ',[[:space:]]*##[[:space:]]*__VA_ARGS__' \
-        app/ config/ core/ lib/ domain/ application/ adapters/ ports/ sdk/ src/ tools/ \
+        app/ config/ core/ lib/ domain/ application/ adapters/ ports/ src/ tools/ \
         --include='*.c' --include='*.h' \
     | grep -v 'gnu-va-args-ok' \
     | while IFS= read -r line; do

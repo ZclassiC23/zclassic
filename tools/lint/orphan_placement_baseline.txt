@@ -3,7 +3,7 @@
 # Shrink-only baseline for tools/lint/check_no_orphan_placement.sh (Gate P3,
 # docs/work/palace-design.md §3). Each line is a tracked .c/.h that today
 # resolves to the catch-all "root" group in ci_group_for_path() — a top-level
-# file (src/) or a dir (examples/, sdk/) outside the known navigator tops. The
+# file (src/) or a dir (examples/) outside the known navigator tops. The
 # gate runs RATCHET: any new violation NOT listed here fails the build. As
 # these files are relocated under a known top, DELETE their line here — this
 # file may only shrink. Goal: empty (gate graduates to FAIL).
@@ -20,7 +20,6 @@ examples/08_byzantine_blocks.c
 examples/09_seed_replay.c
 examples/10_wire_adversaries.c
 examples/11_collectible_market.c
-sdk/include/zclassic23/app.h
 src/cli.c
 src/main.c
 src/main_cli_modes.c
