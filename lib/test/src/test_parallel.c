@@ -96,7 +96,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(protocols) \
     X(chain_restore_planner) X(chain_restore_service) \
     X(chain_activation_controller) \
-    X(hotswap_loader) X(hotswap_simnet) X(hotswap_module) X(dev_platform) \
+    X(hotswap_loader) X(hotswap_simnet) X(hotswap_module) \
+    X(hotswap_module_v2) X(dev_platform) \
     X(dev_activation) \
     X(command_registry_catalog) \
     X(native_api_contract) \

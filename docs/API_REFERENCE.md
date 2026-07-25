@@ -292,8 +292,8 @@ generation activation.
 
 | Path | CLI | Avail | Input (required) | Output schema | Summary |
 |---|---|---|---|---|---|
-| `dev.hotswap.apply` 🔧 | `dev hotswap apply --input='{"so_path":"/abs/module.so"}'` | dev build, dev lane armed (`-hotswap-activate` + `ZCL_HOTSWAP_ACTIVATE=1` on `zcl23-dev.service`) | `so_path` (**absolute**, allowlisted read-only leaf) | `zcl.hotswap_activate.v1` | Forward to the resident `dev_hotswap_native` RPC: dlopen + admit gauntlet + live commit of one allowlisted leaf override in the running dev node; canonical datadir refused |
-| `dev.hotswap.probe` 🔧 | `dev hotswap probe --input='{"so_path":"/abs/module.so"}'` | dev build | `so_path` (**absolute**) | `zcl.hotswap_activate.v1` | Verify-only in-process probe: dlopen + ABI-validate + module self_test, never commits (`verify_only:true`) |
+| `dev.hotswap.apply` 🔧 | `dev hotswap apply --input='{"so_path":"/abs/module.so"}'` | dev build, dev lane armed (`-hotswap-activate` + `ZCL_HOTSWAP_ACTIVATE=1` on `zcl23-dev.service`) | `so_path` (**absolute**, allowlisted read-only shape-leaf TU) | `zcl.hotswap_activate.v2` | Forward to the resident `dev_hotswap_native` RPC: dlopen + admit gauntlet + probe-before-publish + ONE all-or-nothing batch commit of every allowlisted leaf that module owns, in the running dev node; canonical datadir refused |
+| `dev.hotswap.probe` 🔧 | `dev hotswap probe --input='{"so_path":"/abs/module.so"}'` | dev build | `so_path` (**absolute**) | `zcl.hotswap_activate.v2` | Verify-only in-process probe: dlopen + ABI-validate + full leaf admit + probe-before-publish, never commits (`verify_only:true`) |
 
 See [`docs/work/HOTSWAP.md`](./work/HOTSWAP.md) for the full mechanism, ABI,
 eligibility rules, the armed dev-lane gates, and the observable

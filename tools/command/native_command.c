@@ -26,6 +26,7 @@
 
 #ifdef ZCL_DEV_BUILD
 #include "hotswap/hotswap_module.h"
+#include "command/native_dev_hotswap.h"
 #endif
 
 #include "chain/chainparams.h"
@@ -387,26 +388,6 @@ void zcl_native_bridge_ensure_rpc(void)
 {
     bridge_ensure_rpc_client();
 }
-
-#ifdef ZCL_DEV_BUILD
-/* Commit ONE {handler_name, fn} override into THIS process's command registry
- * (the ZCL_HOTSWAP_PRELOAD path — process-local, dies with the CLI). */
-static bool nc_hotswap_preload_commit(void *ctx, const char *handler_name,
-                                      zcl_hotswap_handler_fn fn,
-                                      uint32_t *out_gen,
-                                      char *why, size_t why_sz)
-{
-    (void)ctx;
-    struct zcl_command_handler_override ovr = {
-        .path = handler_name, .handler = fn,
-    };
-    if (!zcl_command_registry_replace_batch(0, &ovr, 1, why, why_sz))
-        return false;
-    if (out_gen)
-        *out_gen = zcl_command_registry_active_generation();
-    return true;
-}
-#endif /* ZCL_DEV_BUILD */
 
 /* Translate the CLI leaf input into the exact argument object its handler
  * expects. Most leaves are pass-through; a few need a rename. */
@@ -2768,18 +2749,22 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
 
 #ifdef ZCL_DEV_BUILD
     /* ZCL_HOTSWAP_PRELOAD=<module.so> — process-local hot-swap: install the
-     * module's leaf override in THIS throwaway CLI's registry, then dispatch
-     * normally, so the operator sees the freshly compiled body with no
-     * resident restart. Probe-class authority (hotswap_activate_local): path
-     * confinement, the dev-datadir check, and the admit gauntlet all apply,
-     * and the registry commit re-checks READY + EFFECT_READ. The override
-     * dies with the process. */
+     * module's ENTIRE leaf set in THIS throwaway CLI's registry as one
+     * all-or-nothing batch, then dispatch normally, so the operator sees the
+     * freshly compiled bodies with no resident restart. Probe-class authority
+     * (hotswap_activate_local): path confinement, the dev-datadir check, the
+     * admit gauntlet, and probe-before-publish all apply, and the registry
+     * commit re-checks READY + EFFECT_READ. The overrides die with the
+     * process. The hooks are the ONE shared implementation in
+     * tools/command/native_dev_hotswap.c. */
     const char *hotswap_preload = getenv("ZCL_HOTSWAP_PRELOAD");
     if (hotswap_preload && hotswap_preload[0]) {
         zcl_command_registry_set_active(reg);
+        struct hotswap_publish_hooks preload_hooks;
+        zcl_native_hotswap_publish_hooks(&preload_hooks, /*with_quiesce=*/false);
         struct hotswap_activate_report report;
         if (!hotswap_activate_local(hotswap_preload, g_bridge_datadir,
-                                    nc_hotswap_preload_commit, &report)) {
+                                    &preload_hooks, &report)) {
             nc_print_error("dev.hotswap.preload", "HOTSWAP_REFUSED",
                            report.stage[0] ? report.stage : "activate",
                            report.error[0] ? report.error

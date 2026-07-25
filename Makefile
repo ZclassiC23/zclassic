@@ -1686,16 +1686,21 @@ hotswap: $(VIEW_GEN_HEADERS)
 	@exit 3
 
 .PHONY: hotswap-module-so
-# make hotswap-module-so HANDLER=core.status
-# Compile the single swappable TU that OWNS a handler (per the
-# config/hotswap_swappable.def allowlist) into a content-addressed,
-# single-handler module .so that exports `zcl_hotswap_module`. This is the REAL
-# (activatable) ABI's build path — deliberately NOT the whole-program LTO node
-# compile: ONE non-LTO `-fPIC -shared` translation unit, seconds not a relink.
-# Unresolved kernel symbols (node_rpc_call, json_*, zcl_native_bridge_run, ...)
-# bind against the -rdynamic dev node at dlopen. Prints the .so path as the LAST
-# line. The .so is loaded ONLY by hotswap_activate (dev-only, gated). See
-# docs/work/HOTSWAP.md "Real module ABI".
+# make hotswap-module-so FILE=app/controllers/src/status_native_handlers.c
+# make hotswap-module-so HANDLER=core.status      (compat: leaf -> owning file)
+# Compile ONE swappable TU (a row in config/hotswap_swappable.def) into a
+# content-addressed, MULTI-LEAF module .so that exports `zcl_hotswap_module`
+# carrying every leaf that file owns. This is the REAL (activatable) ABI's build
+# path — deliberately NOT the whole-program LTO node compile: ONE non-LTO
+# `-fPIC -shared` translation unit, seconds not a relink. Unresolved kernel
+# symbols (node_rpc_call, json_*, zcl_native_bridge_run, ...) bind against the
+# -rdynamic dev node at dlopen. Prints the .so path as the LAST line. The .so is
+# loaded ONLY by hotswap_activate (dev-only, gated). See docs/work/HOTSWAP.md
+# "Real module ABI".
+#
+# -DZCL_HOTSWAP_MODULE_SOURCE_TU stamps the module with the repo-relative TU it
+# was built from, so a module cannot mislabel which allowlist row it belongs to;
+# hotswap_module_admit() refuses any source_tu absent from the allowlist.
 #
 # HOTSWAP_MODULE_LDFLAGS is the single source of truth for the module link,
 # shared by this recipe and the fast path's cached flags.env. -Wl,-Bsymbolic
@@ -1714,14 +1719,24 @@ HOTSWAP_MODULE_LDFLAGS = -shared -Wl,--build-id=none -Wl,-z,relro -Wl,-z,now \
 # BUILD_SOURCE_ID/CLEAN/MUTATION themselves are ordinary parse-time variables
 # and remain available regardless.
 hotswap-module-so: $(VIEW_GEN_HEADERS)
-	@if [ -z "$(HANDLER)" ]; then \
-	  echo "usage: make hotswap-module-so HANDLER=core.status" >&2; exit 2; fi
+	@if [ -z "$(HANDLER)$(FILE)" ]; then \
+	  echo "usage: make hotswap-module-so FILE=app/controllers/src/status_native_handlers.c" >&2; \
+	  echo "   or: make hotswap-module-so HANDLER=core.status" >&2; exit 2; fi
 	@set -eu; \
-	src="$$(sed -n 's/^[[:space:]]*HOTSWAP_SWAPPABLE("$(HANDLER)"[[:space:]]*,[[:space:]]*"\([^"]*\)").*/\1/p' config/hotswap_swappable.def | head -1)"; \
-	[ -n "$$src" ] || { echo "hotswap-module-so: handler '$(HANDLER)' is not on config/hotswap_swappable.def (the swappable shape-leaf allowlist)" >&2; exit 2; }; \
+	rows="$$(tr '\n' ' ' < config/hotswap_swappable.def \
+	  | grep -oE 'HOTSWAP_SWAPPABLE\("[^"]*"[[:space:]]*,[[:space:]]*"[^"]*"\)')"; \
+	[ -n "$$rows" ] || { echo "hotswap-module-so: config/hotswap_swappable.def parsed to zero rows" >&2; exit 2; }; \
+	if [ -n "$(FILE)" ]; then \
+	  src="$(FILE)"; \
+	  printf '%s\n' "$$rows" | grep -Fq "HOTSWAP_SWAPPABLE(\"$$src\"" || { \
+	    echo "hotswap-module-so: '$$src' is not a row in config/hotswap_swappable.def (the swappable shape-leaf allowlist)" >&2; exit 2; }; \
+	else \
+	  src="$$(printf '%s\n' "$$rows" | awk -v leaf='$(HANDLER)' -F '"' '{ n = split($$4, L, " "); for (i = 1; i <= n; i++) if (L[i] == leaf) { print $$2; exit } }')"; \
+	  [ -n "$$src" ] || { echo "hotswap-module-so: leaf '$(HANDLER)' is not on config/hotswap_swappable.def (the swappable shape-leaf allowlist)" >&2; exit 2; }; \
+	fi; \
 	[ -f "$$src" ] || { echo "hotswap-module-so: source does not exist: $$src" >&2; exit 2; }; \
 	mkdir -p "$(HOTSWAP_OBJ_DIR)" "$(HOTSWAP_SO_DIR)" "$(HOTSWAP_SO_DIR)/fast"; \
-	safe="$$(printf '%s' "$(HANDLER)" | tr -c 'A-Za-z0-9_.-' '_')"; \
+	safe="$$(printf '%s' "$$src" | tr -c 'A-Za-z0-9_.-' '_')"; \
 	o="$(HOTSWAP_OBJ_DIR)/mod-$$safe-$(BUILD_SOURCE_ID).o"; \
 	so="$(HOTSWAP_SO_DIR)/$$safe-$(BUILD_SOURCE_ID).so"; \
 	tmp_o="$$(mktemp "$(HOTSWAP_OBJ_DIR)/.module.XXXXXX.o")"; \
@@ -1730,12 +1745,14 @@ hotswap-module-so: $(VIEW_GEN_HEADERS)
 	tmp_env="$$(mktemp "$(HOTSWAP_SO_DIR)/fast/.flags.XXXXXX")"; \
 	trap 'rm -f "$$tmp_o" "$$tmp_d" "$$tmp_so" "$$tmp_env"' EXIT HUP INT TERM; \
 	publish_exact() { \
-	  src="$$1"; dst="$$2"; \
-	  if ln -- "$$src" "$$dst" 2>/dev/null; then rm -f "$$src"; return 0; fi; \
-	  [ -f "$$dst" ] && [ ! -L "$$dst" ] && cmp -s "$$src" "$$dst" || return 1; \
-	  rm -f "$$src"; \
+	  pe_src="$$1"; pe_dst="$$2"; \
+	  if ln -- "$$pe_src" "$$pe_dst" 2>/dev/null; then rm -f "$$pe_src"; return 0; fi; \
+	  [ -f "$$pe_dst" ] && [ ! -L "$$pe_dst" ] && cmp -s "$$pe_src" "$$pe_dst" || return 1; \
+	  rm -f "$$pe_src"; \
 	}; \
-	$(CC) $(DEV_CFLAGS) -fPIC -DZCL_HOTSWAP_MODULE_GEN -MD -MF "$$tmp_d" -c -o "$$tmp_o" "$$src" >&2; \
+	$(CC) $(DEV_CFLAGS) -fPIC -DZCL_HOTSWAP_MODULE_GEN \
+	  -DZCL_HOTSWAP_MODULE_SOURCE_TU=\"$$src\" \
+	  -MD -MF "$$tmp_d" -c -o "$$tmp_o" "$$src" >&2; \
 	$(CC) $(HOTSWAP_MODULE_LDFLAGS) -o "$$tmp_so" "$$tmp_o" >&2; \
 	tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
 	publish_exact "$$tmp_o" "$$o" || { \
@@ -1761,23 +1778,26 @@ hotswap-module-so: $(VIEW_GEN_HEADERS)
 	printf '%s\n' '$(CC) $(DEV_CFLAGS)' > "$$cache_cmd"; \
 	printf '%s\n' "$$so" > "$$cache_ptr"; \
 	trap - EXIT HUP INT TERM; \
-	echo "hotswap-module-so: linked single-handler module candidate $$so" >&2; \
+	echo "hotswap-module-so: linked multi-leaf module candidate $$so ($$src)" >&2; \
 	echo "$$so"
 
 .PHONY: hotswap-apply
 # make hotswap-apply HANDLER=core.status
-# One shot from edit to live: build the single-handler module .so for HANDLER
+# make hotswap-apply FILE=app/controllers/src/status_native_handlers.c
+# One shot from edit to live: build the MULTI-LEAF module .so for the owning TU
 # (hotswap-module-so, seconds) and hand it to the RUNNING dev node's resident
-# dev_hotswap_native RPC via `dev hotswap apply`, which re-points that command
-# leaf in the resident registry with no restart. Gated inside the node by
-# hotswap_activation_authorized() (-hotswap-activate + ZCL_HOTSWAP_ACTIVATE=1 +
-# the exact dev datadir); only config/hotswap_swappable.def read-only leaves
-# can ever activate, and the canonical datadir is hard-refused. Prints the
-# zcl.hotswap_activate.v1 report. See docs/work/HOTSWAP.md "Real module ABI".
+# dev_hotswap_native RPC via `dev hotswap apply`, which re-points EVERY leaf that
+# file owns in ONE all-or-nothing registry batch with no restart. Gated inside
+# the node by hotswap_activation_authorized() (-hotswap-activate +
+# ZCL_HOTSWAP_ACTIVATE=1 + the exact dev datadir); only config/
+# hotswap_swappable.def READY read-only leaves can ever activate, the declared
+# probe leaf must pass probe-before-publish, and the canonical datadir is
+# hard-refused. Prints the zcl.hotswap_activate.v2 report. See
+# docs/work/HOTSWAP.md "Real module ABI".
 hotswap-apply:
-	@if [ -z "$(HANDLER)" ]; then \
-	  echo "usage: make hotswap-apply HANDLER=core.status" >&2; exit 2; fi
-	@so="$$(tools/dev/hotswap-module-fast.sh HANDLER=$(HANDLER) | tail -1)"; \
+	@if [ -z "$(HANDLER)$(FILE)" ]; then \
+	  echo "usage: make hotswap-apply HANDLER=core.status | FILE=<tu.c>" >&2; exit 2; fi
+	@so="$$(tools/dev/hotswap-module-fast.sh $(if $(FILE),FILE=$(FILE),HANDLER=$(HANDLER)) | tail -1)"; \
 	case "$$so" in /*) ;; *) so="$(CURDIR)/$$so" ;; esac; \
 	[ -n "$$so" ] && [ -f "$$so" ] || { \
 	  echo "hotswap-apply: module build did not yield a .so (see stderr)" >&2; exit 3; }; \
@@ -1789,21 +1809,23 @@ hotswap-apply:
 
 .PHONY: hotswap-try
 # make hotswap-try HANDLER=core.status ARGS="core status"
-# The OBSERVABLE dev loop: build the single-handler module .so for HANDLER,
-# then run ARGS in a one-shot CLI with ZCL_HOTSWAP_PRELOAD — the freshly
-# compiled body executes in the CLI process (probe-class authority; the
-# override dies with the process) and fetches live data from the dev lane.
-# No resident restart; the full edit->see loop is seconds. Only
-# config/hotswap_swappable.def read-only leaves can be built into a module.
-# The module rebuild goes through tools/dev/hotswap-module-fast.sh (cached
-# compile metadata, no second make parse on the happy path) and falls back to
-# the authoritative `hotswap-module-so` whenever the cache is stale.
+# make hotswap-try FILE=app/controllers/src/status_native_handlers.c ARGS="core status"
+# The OBSERVABLE dev loop: build the MULTI-LEAF module .so for the owning TU,
+# then run ARGS in a one-shot CLI with ZCL_HOTSWAP_PRELOAD — every leaf that
+# file owns is installed in ONE batch and the freshly compiled bodies execute in
+# the CLI process (probe-class authority; the overrides die with the process)
+# while fetching live data from the dev lane. No resident restart; the full
+# edit->see loop is seconds. Only config/hotswap_swappable.def READY read-only
+# leaves can be built into a module. The module rebuild goes through
+# tools/dev/hotswap-module-fast.sh (cached compile metadata, no second make
+# parse on the happy path) and falls back to the authoritative
+# `hotswap-module-so` whenever the cache is stale.
 hotswap-try:
-	@if [ -z "$(HANDLER)" ]; then \
+	@if [ -z "$(HANDLER)$(FILE)" ]; then \
 	  echo "usage: make hotswap-try HANDLER=core.status ARGS=\"core status\"" >&2; exit 2; fi
 	@if [ -z "$(ARGS)" ]; then \
 	  echo "hotswap-try: ARGS is required, e.g. ARGS=\"core status\"" >&2; exit 2; fi
-	@so="$$(tools/dev/hotswap-module-fast.sh HANDLER=$(HANDLER) | tail -1)"; \
+	@so="$$(tools/dev/hotswap-module-fast.sh $(if $(FILE),FILE=$(FILE),HANDLER=$(HANDLER)) | tail -1)"; \
 	case "$$so" in /*) ;; *) so="$(CURDIR)/$$so" ;; esac; \
 	[ -n "$$so" ] && [ -f "$$so" ] || { \
 	  echo "hotswap-try: module build did not yield a .so (see stderr)" >&2; exit 3; }; \
@@ -4819,12 +4841,18 @@ check-hotswap-dev-only:
 check-hotswap-eligible-scope:
 	@tools/lint/check_hotswap_eligible_scope.sh
 
+# Scans the UNION of config/hotswap_eligible.def and
+# config/hotswap_swappable.def: every TU either manifest can recompile into a
+# .so must be free of mutable file-scope statics.
 check-hotswap-static-state:
 	@tools/lint/check_hotswap_static_state.sh
 
-# THE HARD LINE for the REAL (activatable) module ABI: every swappable handler
-# (config/hotswap_swappable.def) must be owned by a controller/view/condition
-# LEAF — never a reducer/consensus/storage/supervisor TU. Self-tested in
+# THE HARD LINE for the REAL (activatable) module ABI, both halves: every
+# swappable source_tu (config/hotswap_swappable.def) must be owned by a
+# controller/view/condition LEAF — never a reducer/consensus/storage/supervisor
+# TU — AND every leaf in its leaf list must be declared ZCL_COMMAND_READY_READ
+# (READY + read-only) in the config/commands catalog and be claimed by exactly
+# one file. Self-tested with seeded-violation fixtures in
 # test_make_lint_gates.c. See docs/work/HOTSWAP.md "Real module ABI".
 check-hotswap-swappable-shape:
 	@tools/lint/check_hotswap_swappable_shape.sh

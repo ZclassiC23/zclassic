@@ -1,38 +1,65 @@
-/* THE HARD LINE — swappable-handler allowlist for the REAL module ABI.
+/* THE HARD LINE — swappable-module allowlist for the REAL module ABI.
  *
  * Consumer must define:
- *   HOTSWAP_SWAPPABLE(handler_name, source_tu)
+ *   HOTSWAP_SWAPPABLE(source_tu, leaves)
  *
- * handler_name  A canonical, READY, read-only leaf command path. hotswap_activate
- *               refuses at runtime any handler_name absent from this list; the
- *               command-registry commit additionally re-checks READY + read-only.
- * source_tu     The shape-leaf translation unit that owns the handler. It MUST be
- *               a controller / view / condition — a shape LEAF. It may NEVER be a
- *               reducer stage, consensus validation, the storage engine, a
- *               supervisor, or any state root. This is what makes activation safe.
+ * source_tu  The shape-leaf translation unit that owns the leaves. It MUST be a
+ *            controller / view / condition — a shape LEAF. It may NEVER be a
+ *            reducer stage, consensus validation, the storage engine, a
+ *            supervisor, or any state root. This is what makes activation safe.
+ *            ONE row per source file: a module .so is compiled from exactly one
+ *            TU and re-points every leaf in `leaves` in ONE all-or-nothing
+ *            registry batch.
+ * leaves     Space-separated canonical command-leaf paths owned by source_tu.
+ *            Every entry MUST be declared with ZCL_COMMAND_READY_READ in
+ *            the config/commands catalog (READY + read-only). hotswap_module_admit()
+ *            refuses at runtime any leaf absent from its own file's list, and
+ *            the command-registry batch commit independently re-checks
+ *            READY + EFFECT_READ + non-alias for every leaf. A leaf may appear
+ *            under exactly ONE source_tu (globally unique).
  *
- * Two things enforce the hard line and must never disagree:
- *   - check-hotswap-swappable-shape (make lint): fails if any source_tu resolves
- *     under a forbidden root (core/, lib/consensus/, lib/validation/,
+ * Widening this list widens BATCH SIZE, never authority: an added leaf still
+ * has to be a READY read-only leaf of an already-admitted shape-leaf TU, still
+ * activates only on the dev datadir behind -hotswap-activate +
+ * ZCL_HOTSWAP_ACTIVATE=1, and still has to survive probe-before-publish. To add
+ * one: append it here AND add its trampoline to that TU's
+ * `#ifdef ZCL_HOTSWAP_MODULE_GEN` leaf table.
+ *
+ * Three things enforce the hard line and must never disagree:
+ *   - check-hotswap-swappable-shape (make lint): fails if any source_tu
+ *     resolves under a forbidden root (core/, lib/consensus/, lib/validation/,
  *     lib/storage/, lib/net/, lib/coins/, lib/chain/, lib/mining/, app/jobs/,
- *     lib/kernel/, lib/supervisor/, app/supervisors/) or is not under an allowed
- *     shape folder (app/controllers/, app/views/, app/conditions/). Self-tested
- *     in lib/test/src/test_make_lint_gates.c.
- *   - hotswap_handler_is_swappable() (runtime): #includes this file to build the
- *     compiled allowlist consulted before any dlopen'd handler is published.
+ *     lib/kernel/, lib/supervisor/, app/supervisors/) or is not under an
+ *     allowed shape folder (app/controllers/, app/views/, app/conditions/);
+ *     and fails if any leaf is not declared ZCL_COMMAND_READY_READ in
+ *     the config/commands catalog, or is claimed by two source files.
+ *   - check-hotswap-static-state (make lint): scans the UNION of this file's
+ *     source_tu column and config/hotswap_eligible.def for mutable file-scope
+ *     statics (a module .so gets its own zero-initialized copy).
+ *   - hotswap_module_admit() (runtime): #includes this file to build the
+ *     compiled allowlist consulted before any dlopen'd module is published.
+ *
+ * Both gates are self-tested with seeded-violation fixtures in
+ * lib/test/src/test_make_lint_gates.c.
  *
  * Keep this DATA ONLY (no C tokens beyond the macro invocations). */
 
 /* Read-only status projection (controller leaf; tolerates empty args). */
-HOTSWAP_SWAPPABLE("core.status", "app/controllers/src/status_native_handlers.c")
+HOTSWAP_SWAPPABLE("app/controllers/src/status_native_handlers.c",
+                  "core.status")
 /* Read-only peer-incident projection (controller leaf). */
-HOTSWAP_SWAPPABLE("core.network.peers.incidents", "app/controllers/src/net_native_handlers.c")
+HOTSWAP_SWAPPABLE("app/controllers/src/net_native_handlers.c",
+                  "core.network.peers.incidents")
 /* Read-only operator metrics projection (controller leaf). */
-HOTSWAP_SWAPPABLE("ops.metrics", "app/controllers/src/meta_native_handlers.c")
+HOTSWAP_SWAPPABLE("app/controllers/src/meta_native_handlers.c",
+                  "ops.metrics")
 /* Read-only wallet address projection (controller leaf). */
-HOTSWAP_SWAPPABLE("core.wallet.address.list", "app/controllers/src/wallet_native_handlers.c")
+HOTSWAP_SWAPPABLE("app/controllers/src/wallet_native_handlers.c",
+                  "core.wallet.address.list")
 /* Read-only UTXO drift-audit projection (controller leaf; an audit VIEW, not
  * consensus validation — validation/state roots stay unswappable). */
-HOTSWAP_SWAPPABLE("core.consensus.utxo.audit", "app/controllers/src/chain_native_handlers.c")
+HOTSWAP_SWAPPABLE("app/controllers/src/chain_native_handlers.c",
+                  "core.consensus.utxo.audit")
 /* Read-only ZNAM name-index projection (controller leaf). */
-HOTSWAP_SWAPPABLE("app.names.list", "app/controllers/src/app_native_handlers.c")
+HOTSWAP_SWAPPABLE("app/controllers/src/app_native_handlers.c",
+                  "app.names.list")
