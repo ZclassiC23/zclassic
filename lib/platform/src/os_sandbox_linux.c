@@ -18,9 +18,11 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <sched.h>
 #include <stdatomic.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/prctl.h>
@@ -129,6 +131,198 @@ static _Atomic int g_retained_ruleset_fd = -1;
  * iteration of a retrofitted thread costs one branch, not a repeated
  * syscall + wasted domain-stack layer. */
 static _Thread_local bool tl_landlock_joined = false;
+
+/* ── Confinement witness state (backs the `confinement` dumper) ────────────
+ *
+ * os_sandbox_active() alone cannot tell an operator the two things that
+ * matter after a failed apply: that confinement was REQUESTED, and where the
+ * process can still read/write. These records close that gap, and give any
+ * subsystem about to open a path outside the datadir a way to REFUSE with a
+ * named reason instead of surfacing a bare EACCES. */
+
+/* The profile name confinement was requested under — COPIED, never aliased,
+ * so a caller may pass a stack buffer. "" = never requested. */
+static char g_requested_profile[64] = "";
+
+struct sandbox_grant_record {
+    char path[OS_SANDBOX_GRANT_PATH_MAX];
+    bool allow_read;
+    bool allow_write;
+};
+static struct sandbox_grant_record g_grants[OS_SANDBOX_MAX_RECORDED_GRANTS];
+static _Atomic size_t g_grant_count = 0;
+
+/* Latched true once a Landlock domain is enforced in this process. */
+static _Atomic bool g_landlock_enforced = false;
+
+/* The ABI observed while BUILDING the domain, cached so nothing has to
+ * re-probe later: landlock_create_ruleset(2) is absent from both -confine
+ * seccomp allow-sets, so a probe from inside a confined process is a
+ * KILL_PROCESS, not an error. -1 = no domain was ever built. */
+static _Atomic int g_landlock_abi_cached = -1;
+
+/* Set when the grant set could NOT be recorded faithfully (more rules than
+ * OS_SANDBOX_MAX_RECORDED_GRANTS, or a path over the length bound). It forces
+ * os_sandbox_path_is_granted() to answer "granted" for everything, so this
+ * module never hands a caller a refusal it cannot actually prove. */
+static _Atomic bool g_grants_incomplete = false;
+
+/* Cleared when a seccomp ALLOW-list is installed that omits prctl(2) or
+ * landlock_restrict_self(2) — the two syscalls a retrofit Landlock join
+ * makes. Under such a filter the join is not a failure, it is a process
+ * KILL, so the retrofit primitive must refuse to attempt it. */
+static _Atomic bool g_retrofit_join_permitted = true;
+
+void os_sandbox_note_requested(const char *profile_name)
+{
+    if (!profile_name)
+        profile_name = "";
+    size_t n = strlen(profile_name);
+    if (n >= sizeof(g_requested_profile))
+        n = sizeof(g_requested_profile) - 1;
+    memcpy(g_requested_profile, profile_name, n);
+    g_requested_profile[n] = '\0';
+}
+
+const char *os_sandbox_requested_profile(void) { return g_requested_profile; }
+
+bool os_sandbox_unconfined(void)
+{
+    /* Honest across every entry route: a profile may have entered via
+     * os_sandbox_enter(), or an individual builder may have been applied
+     * directly (the tests, and any future partial adopter). Confined means at
+     * least one of the two enforcement mechanisms is live. */
+    return !g_sandbox_active &&
+           !atomic_load(&g_landlock_enforced) &&
+           atomic_load(&g_seccomp_install_method) == SECCOMP_INSTALL_NONE;
+}
+
+int os_sandbox_landlock_abi_cached(void)
+{
+    return atomic_load(&g_landlock_abi_cached);
+}
+
+bool os_sandbox_retrofit_join_permitted(void)
+{
+    return atomic_load(&g_retrofit_join_permitted);
+}
+
+size_t os_sandbox_fs_grant_count(void) { return atomic_load(&g_grant_count); }
+
+const char *os_sandbox_fs_grant_at(size_t i, bool *allow_read, bool *allow_write)
+{
+    if (i >= atomic_load(&g_grant_count))
+        return NULL;
+    if (allow_read)  *allow_read  = g_grants[i].allow_read;
+    if (allow_write) *allow_write = g_grants[i].allow_write;
+    return g_grants[i].path;
+}
+
+#ifdef ZCL_HAVE_LANDLOCK
+/* Stage one grant into slot `idx`. Called from the rule loop BEFORE
+ * restrict_self; the count is published only once the domain is live. Guarded
+ * because its only call site is inside the same guard — on a build without the
+ * Landlock headers no domain can exist, and an unused static is -Werror. */
+static void sandbox_grant_stage(size_t idx, const struct os_sandbox_path_rule *r)
+{
+    if (idx >= OS_SANDBOX_MAX_RECORDED_GRANTS || !r || !r->path) {
+        atomic_store(&g_grants_incomplete, true);
+        return;
+    }
+    memset(&g_grants[idx], 0, sizeof(g_grants[idx]));
+    char real[PATH_MAX];
+    const char *src = realpath(r->path, real) ? real : r->path;
+    size_t n = strlen(src);
+    if (n >= sizeof(g_grants[idx].path)) {
+        atomic_store(&g_grants_incomplete, true);
+        return;
+    }
+    memcpy(g_grants[idx].path, src, n + 1);
+    g_grants[idx].allow_read  = r->allow_read;
+    g_grants[idx].allow_write = r->allow_write;
+}
+#endif /* ZCL_HAVE_LANDLOCK */
+
+/* Does one recorded grant cover `path` (already absolute) with at least the
+ * requested access? Prefix match anchored at a component boundary so a grant
+ * of /x/.zclassic-c23 does not spuriously cover /x/.zclassic-c23-dev. */
+static bool sandbox_grant_covers(const struct sandbox_grant_record *g,
+                                 const char *path, bool need_write)
+{
+    if (need_write ? !g->allow_write : !g->allow_read)
+        return false;
+    size_t gl = strlen(g->path);
+    if (gl == 0)
+        return false;
+    if (gl == 1 && g->path[0] == '/')
+        return true;  /* a root grant covers everything beneath it */
+    if (strncmp(path, g->path, gl) != 0)
+        return false;
+    return path[gl] == '\0' || path[gl] == '/';
+}
+
+bool os_sandbox_path_is_granted(const char *path, bool need_write)
+{
+    /* Fail OPEN on every "cannot prove a denial" branch — a caller may turn a
+     * false answer into a refusal, so a false must mean provably-outside. */
+    if (!atomic_load(&g_landlock_enforced))
+        return true;                      /* no filesystem restriction in force */
+    if (atomic_load(&g_grants_incomplete))
+        return true;                      /* grant set not faithfully recorded */
+    if (!path || path[0] != '/')
+        return true;                      /* not an absolute path we scope */
+
+    char real[PATH_MAX];
+    const char *p = realpath(path, real) ? real : path;
+
+    size_t n = atomic_load(&g_grant_count);
+    for (size_t i = 0; i < n; i++)
+        if (sandbox_grant_covers(&g_grants[i], p, need_write))
+            return true;
+    return false;
+}
+
+size_t os_sandbox_explain_denied_path(const char *path, bool need_write,
+                                      char *out, size_t out_sz)
+{
+    if (!out || out_sz == 0)
+        return 0;
+    out[0] = '\0';
+    if (os_sandbox_path_is_granted(path, need_write))
+        return 0;
+
+    char grants[320];
+    grants[0] = '\0';
+    size_t used = 0;
+    size_t n = atomic_load(&g_grant_count);
+    for (size_t i = 0; i < n && used + 1 < sizeof(grants); i++) {
+        int w = snprintf(grants + used, sizeof(grants) - used, "%s%s(%s)",
+                         used ? ", " : "", g_grants[i].path,
+                         g_grants[i].allow_write ? "rw" : "ro");
+        if (w < 0)
+            break;
+        used += (size_t)w;
+        if (used >= sizeof(grants)) {
+            used = sizeof(grants) - 1;
+            break;
+        }
+    }
+
+    const char *prof = g_active_profile_name ? g_active_profile_name : "?";
+    int w = snprintf(out, out_sz,
+                     "confinement: the kernel filesystem restriction (Landlock "
+                     "ABI %d, profile '%s') does not grant %s access to '%s'. "
+                     "Active grants: [%s]. Restart without the confinement flag "
+                     "or extend the grant set to cover this path.",
+                     atomic_load(&g_landlock_abi_cached), prof,
+                     need_write ? "write" : "read", path ? path : "(null)",
+                     grants);
+    if (w < 0) {
+        out[0] = '\0';
+        return 0;
+    }
+    return strlen(out);
+}
 
 bool os_sandbox_active(void) { return g_sandbox_active; }
 
@@ -277,6 +471,10 @@ struct zcl_result os_sandbox_landlock_restrict(
                            "landlock_add_rule %s failed errno=%d (%s)",
                            r->path, errno, strerror(errno));
         }
+        /* Stage the grant for the confinement witness. Staging (not
+         * publishing) here keeps the visible grant set empty until the domain
+         * is actually live — a half-built ruleset restricts nothing. */
+        sandbox_grant_stage(i, r);
     }
 
     if (ll_restrict_self(ruleset_fd, 0) != 0) {
@@ -294,6 +492,15 @@ struct zcl_result os_sandbox_landlock_restrict(
         close(prev_fd);
     tl_landlock_joined = true;
     atomic_fetch_add(&g_landlock_restrict_count, 1);
+    /* Publish the witness: the grant set is only meaningful now that the
+     * domain is enforced, and this is the last moment the ABI can be read
+     * without re-probing (landlock_create_ruleset is absent from the -confine
+     * allow-sets, so a later probe would be SIGSYS-killed, not merely fail). */
+    atomic_store(&g_landlock_abi_cached, abi);
+    atomic_store(&g_grant_count,
+                 n_rules < OS_SANDBOX_MAX_RECORDED_GRANTS
+                     ? n_rules : OS_SANDBOX_MAX_RECORDED_GRANTS);
+    atomic_store(&g_landlock_enforced, true);
     return ZCL_OK;
 #endif
 }
@@ -306,6 +513,18 @@ struct zcl_result os_sandbox_landlock_apply_to_self(void)
 #else
     if (tl_landlock_joined)
         return ZCL_OK;  /* idempotent: this thread already holds the domain */
+
+    /* A retrofit join makes exactly two syscalls: prctl(PR_SET_NO_NEW_PRIVS)
+     * and landlock_restrict_self(2). Under a seccomp ALLOW-list that omits
+     * either — which BOTH -confine allow-sets do today — those are not
+     * failures, they are SECCOMP_RET_KILL_PROCESS. Refuse the attempt with a
+     * typed non-ok (callers already treat non-ok as "skip and retry later")
+     * rather than taking the node down from inside a health-sweep tick. */
+    if (!atomic_load(&g_retrofit_join_permitted))
+        return ZCL_ERR(OS_SANDBOX_ERR_LANDLOCK_UNAVAILABLE,
+                       "retrofit Landlock join refused: the active seccomp "
+                       "allow-list omits prctl/landlock_restrict_self, so the "
+                       "join would be killed rather than fail");
 
     int fd = atomic_load(&g_retained_ruleset_fd);
     if (fd < 0)
@@ -813,6 +1032,21 @@ struct zcl_result os_sandbox_seccomp_allow(const int *allowed, size_t n_allowed)
     if (n_allowed > 0 && allowed == NULL)
         return ZCL_ERR(OS_SANDBOX_ERR_INVALID_ARG,
                        "n_allowed>0 but allowed==NULL");
+
+    /* Record whether a retrofit Landlock join stays SURVIVABLE under this
+     * allow-list. The join calls prctl(PR_SET_NO_NEW_PRIVS) then
+     * landlock_restrict_self(2); if either is outside the allow-set the join
+     * is a process KILL, not an error return, so the retrofit primitive must
+     * refuse it. Computed here (the one place that sees the allow-set) rather
+     * than hard-coding knowledge of the shipped profiles. */
+    {
+        bool has_prctl = false, has_restrict_self = false;
+        for (size_t i = 0; i < n_allowed; i++) {
+            if (allowed[i] == __NR_prctl)                  has_prctl = true;
+            if (allowed[i] == __NR_landlock_restrict_self) has_restrict_self = true;
+        }
+        atomic_store(&g_retrofit_join_permitted, has_prctl && has_restrict_self);
+    }
 
     /* Bound: 4 (arch preamble + nr load) + 2 per allowed syscall + 1 tail
      * (default KILL). Refuse rather than overflow the fixed filter buffer. */

@@ -1148,19 +1148,20 @@ static size_t sandbox_build_fs_rules(const char *datadir,
 }
 
 /* -confine / -confine=serving (strict seccomp ALLOW-list + Landlock): apply
- * once every listen socket/file/thread is up. Fail-fast doctrine extended to
- * security — an unexpected syscall KILLs the process. actx->confine_serving
- * picks the wider allow-set (adds the socket family so a node doing real
- * P2P/HTTPS/onion I/O is not SIGSYS-killed at its first accept()/recv()/
- * connect()); plain -confine keeps the strict status/storage-only set.
- * Refuse to HALF-apply: if os_sandbox_enter() fails partway, run the node
- * UNCONFINED and raise the named blocker 'confine.apply_failed' (remedy
- * OWNER — only an operator can widen the allow-list / enable Landlock and
- * restart) rather than leaving a partial sandbox. Landlock degrades
- * gracefully on an older kernel (logged, skipped); a genuine syscall failure
- * after the ruleset is built is the raise path. */
+ * once every listen socket/file/thread is up. An unexpected syscall KILLs the
+ * process; actx->confine_serving picks the wider allow-set (adds the socket
+ * family) so a node doing real P2P/HTTPS/onion I/O is not SIGSYS-killed at its
+ * first accept()/recv()/connect(); plain -confine keeps the strict set.
+ * Refuse to HALF-apply: on a partway os_sandbox_enter() failure run the node
+ * UNCONFINED and raise 'confine.apply_failed' (remedy OWNER — only an operator
+ * can widen the allow-list / enable Landlock and restart) rather than leave a
+ * partial sandbox; Landlock degrades gracefully on an older kernel (logged,
+ * skipped). Every degrade path returns ZCL_OK, so the REQUEST is noted FIRST —
+ * that is the only way the `confinement` witness tells "nobody asked" apart
+ * from "asked, and running wide open anyway". */
 static struct zcl_result sr_confine_enter(const struct app_context *actx)
 {
+    os_sandbox_note_requested(actx->confine_serving ? "node_confine_serving" : "node_confine");
     const char *datadir = actx->datadir ? actx->datadir : g_datadir;
     if (!datadir || !datadir[0]) {
         /* No datadir to scope: cannot confine safely. Run unconfined + name it. */
@@ -1238,6 +1239,7 @@ static struct zcl_result sr_sandbox_enter(void *ctx)
     if (!actx->sandbox_steady)
         return ZCL_OK;  /* -sandbox=off (default): no confinement requested */
 
+    os_sandbox_note_requested("node_steady_state");
     const char *datadir = actx->datadir ? actx->datadir : g_datadir;
     if (!datadir || !datadir[0])
         return ZCL_ERR(-1, "-sandbox=steady: no datadir to grant");

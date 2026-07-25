@@ -319,12 +319,21 @@ int os_sandbox_landlock_restricted_count(void);
  * one) — those remain the documented Landlock-unconfined-but-seccomp-confined
  * residual.
  *
- * Returns ZCL_OK (including the idempotent no-op case). Returns non-ok with
- * OS_SANDBOX_ERR_LANDLOCK_UNAVAILABLE if no steady-state Landlock domain is
- * active yet (os_sandbox_enter() with a Landlock-enabled profile hasn't run,
- * or this kernel/build lacks Landlock — never fatal, callers should just skip
- * retrying until sandbox state changes) or OS_SANDBOX_ERR_LANDLOCK_SYSCALL on
- * a genuine syscall failure. On success, increments the count read by
+ * Returns ZCL_OK (including the idempotent no-op case), or non-ok — never
+ * fatal, callers should just skip and retry on a later tick — with:
+ *
+ *   OS_SANDBOX_ERR_LANDLOCK_UNAVAILABLE when the join cannot be ATTEMPTED:
+ *     either a seccomp ALLOW-list is installed that omits this join's own two
+ *     syscalls, prctl(2) and landlock_restrict_self(2), in which case an
+ *     attempt would be SECCOMP_RET_KILL_PROCESS rather than an error (BOTH
+ *     -confine allow-sets omit them today — see
+ *     os_sandbox_retrofit_join_permitted()); or no steady-state Landlock
+ *     domain exists yet (os_sandbox_enter() with a Landlock-enabled profile
+ *     has not run, or this kernel/build lacks Landlock).
+ *
+ *   OS_SANDBOX_ERR_LANDLOCK_SYSCALL on a genuine syscall failure.
+ *
+ * On success, increments the count read by
  * os_sandbox_landlock_restricted_count(). */
 struct zcl_result os_sandbox_landlock_apply_to_self(void);
 
@@ -419,6 +428,97 @@ const char *os_sandbox_active_profile_name(void);
  * filter install is reachable). Cheap, non-forking — unlike os_sandbox_probe_
  * caps() it does not fork a child. */
 bool os_sandbox_seccomp_supported(void);
+
+/* ── Confinement witness: is this process actually confined, and where can
+ *    it still read/write? ────────────────────────────────────────────────
+ *
+ * os_sandbox_active() answers "did a profile enter", which conflates two very
+ * different operator situations: confinement was never REQUESTED (the default,
+ * and fine) versus confinement WAS requested and the process is running
+ * UNCONFINED anyway (the -confine contract's unconfined-but-loud degrade path,
+ * config/src/boot.c:sr_confine_enter). The accessors below separate them and
+ * expose the grant set the Landlock domain was actually built from, so an
+ * operator (and any subsystem about to open a path outside the datadir) can
+ * see the boundary instead of inferring it from an EACCES. */
+
+/* Max fs grants retained for introspection, and the per-grant path bound.
+ * Boot's grant builder emits at most 5; the headroom is for future profiles.
+ * A grant set that does not FIT is recorded as incomplete, which makes
+ * os_sandbox_path_is_granted() answer "granted" for everything (see below). */
+#define OS_SANDBOX_MAX_RECORDED_GRANTS 8
+#define OS_SANDBOX_GRANT_PATH_MAX      512
+
+/* Record that confinement was REQUESTED under `profile_name`, BEFORE the
+ * attempt. Call once from the boot path; the name is copied into static
+ * storage (bounded, never allocated). Idempotent — a second call overwrites. */
+void os_sandbox_note_requested(const char *profile_name);
+
+/* The Landlock ABI as observed at the moment the domain was built, WITHOUT
+ * re-probing. Use this — never os_sandbox_landlock_abi() — from any code that
+ * may run after confinement is applied: the probe issues
+ * landlock_create_ruleset(2), which is NOT in either -confine seccomp
+ * allow-set, so probing from inside a confined process is
+ * SECCOMP_RET_KILL_PROCESS. Returns -1 when no domain was ever built. */
+int os_sandbox_landlock_abi_cached(void);
+
+/* True iff an os_sandbox_landlock_apply_to_self() retrofit join would be SAFE
+ * to attempt right now. It is unsafe when a seccomp ALLOW-list is installed
+ * that omits prctl(2) and/or landlock_restrict_self(2) — the join would then
+ * be killed by the filter rather than merely failing. Both -confine allow-sets
+ * omit them today, so a thread wired to the retrofit join must consult this
+ * before calling. Always true when no allow-list is installed. */
+bool os_sandbox_retrofit_join_permitted(void);
+
+/* The profile name passed to os_sandbox_note_requested(), or "" if
+ * confinement was never requested in this process. */
+const char *os_sandbox_requested_profile(void);
+
+/* True iff NEITHER enforcement mechanism is live — no Landlock domain and no
+ * seccomp filter — i.e. this process is running wide open. The headline field
+ * of the `confinement` witness. True both when confinement was never requested
+ * AND when it was requested and failed to apply; compare with
+ * os_sandbox_requested_profile() to tell those apart. */
+bool os_sandbox_unconfined(void);
+
+/* How many fs grants the active Landlock domain was built from (0 when no
+ * Landlock domain is enforced). */
+size_t os_sandbox_fs_grant_count(void);
+
+/* The i-th recorded fs grant path (canonicalized at record time), or NULL if
+ * `i` is out of range. `allow_read`/`allow_write` (either may be NULL) receive
+ * the access the grant carries. */
+const char *os_sandbox_fs_grant_at(size_t i, bool *allow_read, bool *allow_write);
+
+/* True iff `path` is inside the active Landlock grant set with at least the
+ * requested access — i.e. an open() of it should NOT be refused by the kernel
+ * filesystem restriction.
+ *
+ * Deliberately FAIL-OPEN: returns true when no Landlock domain is enforced,
+ * when the grant set could not be recorded faithfully, or when `path` is NULL/
+ * relative. A false answer therefore means "provably outside the grants", so a
+ * caller may turn it into a refusal without risking a spurious one. This is a
+ * pure string predicate over the recorded grant roots plus one best-effort
+ * realpath() — it issues no open() and cannot itself trip the sandbox. */
+bool os_sandbox_path_is_granted(const char *path, bool need_write);
+
+/* Explain, in operator language, why `path` is outside the active filesystem
+ * restriction. Writes a NUL-terminated message into `out` and returns its
+ * length; writes "" and returns 0 when the path IS granted (or nothing is
+ * enforced), so the call doubles as the predicate:
+ *
+ *     char why[256];
+ *     if (os_sandbox_explain_denied_path(p, false, why, sizeof(why)))
+ *         REFUSE("confinement", "%s", why);
+ *
+ * The message names the restriction interface (Landlock + ABI), the active
+ * profile, and the grant that is missing — so the failure is a typed refusal
+ * rather than a bare EACCES that names nothing. Never allocates. */
+size_t os_sandbox_explain_denied_path(const char *path, bool need_write,
+                                      char *out, size_t out_sz);
+
+/* See CLAUDE.md "Adding state introspection". Reentrant-safe. */
+struct json_value;
+bool confinement_dump_state_json(struct json_value *out, const char *key);
 
 #ifdef __cplusplus
 }

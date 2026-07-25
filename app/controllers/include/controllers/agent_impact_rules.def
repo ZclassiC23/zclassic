@@ -724,3 +724,9 @@ AGENT_IMPACT_RULE("lib/test/src/test_code_capsule.c", "code_capsule make_lint_ga
  * allowlist honest (shape + READY-read-only; static-state over the UNION of both
  * manifests), their seeded-violation fixtures, and the module build paths. */
 AGENT_IMPACT_RULE("lib/test/src/test_hotswap_module_v2.c|lib/hotswap/include/hotswap/hotswap_module.h|lib/hotswap/src/hotswap_activate.c|config/hotswap_swappable.def|tools/lint/check_hotswap_swappable_shape.sh|tools/lint/check_hotswap_static_state.sh|tools/dev/hotswap-module-fast.sh|lib/test/fixtures/hotswap_swappable_not_ready_read.def|lib/test/fixtures/hotswap_swappable_dup_leaf.def|lib/test/fixtures/hotswap_swappable_bad_static.def", "hotswap_module_v2 hotswap_module hotswap_loader hotswap_simnet command_handler_snapshot make_lint_gates")
+/* Confinement visibility + the confinement/hot-swap filesystem collision:
+ * the `confinement` witness (os_sandbox_witness.c + its dumpers.def row), the
+ * grant-recording / path-grant predicate / typed-refusal primitives in
+ * os_sandbox, boot's request notation, and the suite that proves a hot-swap
+ * module open is EACCES under a datadir-only Landlock grant. */
+AGENT_IMPACT_RULE("lib/test/src/test_os_sandbox_hotswap_interaction.c|lib/platform/src/os_sandbox_witness.c|lib/platform/src/os_sandbox_linux.c|lib/platform/include/platform/os_sandbox.h|app/controllers/include/controllers/diagnostics_dumpers.def", "os_sandbox_hotswap_interaction os_sandbox confine syncdiag_rpc make_lint_gates")
