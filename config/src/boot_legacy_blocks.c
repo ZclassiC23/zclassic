@@ -216,14 +216,16 @@ boot_legacy_link_missing_block_files(const char *legacy_blocks_dir,
             result.truncated_path = true;
             break;
         }
-        /* rev%05d.dat is zclassicd's undo data. No zclassic23 code path reads
-         * it — the node re-derives its own state rather than replaying
-         * zclassicd undo records — so a failed rev link cannot make the node
-         * wrong, and it is deliberately NOT counted in `linked`. It is counted
-         * in `failures` because a rev link failing for a reason that would
-         * equally hit blk files (EXDEV across filesystems, ENOSPC, EPERM) is
-         * exactly the early warning worth having; the copy-fallback import
-         * path already reports its rev failures the same way. */
+        /* rev%05d.dat is undo data, and it IS read: bg_validation's
+         * read_block_undo() recovers each block's spent outputs from it so the
+         * ECDSA script signatures can be checked. A missing rev file does not
+         * make the node wrong — the block still advances verified_height on
+         * header/structure/shielded proofs and the gap is counted in
+         * script_verif_skipped_no_undo — but it silently narrows what
+         * "verified" covers. Not counted in `linked` (that counter is
+         * historically blk-only), counted in `failures`, which is also the
+         * early warning for whatever would hit blk files next (EXDEV across
+         * filesystems, ENOSPC, EPERM). */
         if (stat(src, &ss) == 0)
             (void)boot_legacy_link_if_missing(src, dst, &result.failures,
                                               &first_errno);
@@ -235,8 +237,10 @@ boot_legacy_link_missing_block_files(const char *legacy_blocks_dir,
     if (result.failures > 0)
         LOG_WARN("boot",
                  "[boot] %d legacy block-file hardlink(s) failed while "
-                 "linking %s into %s (first errno=%d %s); block bodies for "
-                 "those files are not present in this datadir",
+                 "linking %s into %s (first errno=%d %s); the blk/rev files "
+                 "for those indexes are absent from this datadir — block "
+                 "bodies get re-fetched from peers, missing undo data leaves "
+                 "those heights script-unverified",
                  result.failures, legacy_blocks_dir, dst_blocks_dir,
                  first_errno, strerror(first_errno));
 

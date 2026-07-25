@@ -419,11 +419,18 @@ REPRO_CFLAGS = -ffile-prefix-map=$(CURDIR)=$(ZCL_REPRO_ROOT) -gno-record-gcc-swi
 # [[nodiscard]], so this flag silently voids the repository's result-type
 # discipline: a result type could be annotated and every dropped return would
 # still compile clean. Deleting it is not a Makefile change — it is a source
-# change in config/src/boot_cold_start.c, config/src/boot_legacy_blocks.c,
-# lib/net/src/https_server.c, lib/net/src/nat.c, tools/zcl-rpc.c and a long
-# tail of lib/test/ sources that drop a write/read/link/fgets/system result.
+# change at every site that drops a write/read/link/fgets/system result.
+#
+# The SHIPPED tree is now clean: every ALL_SRCS TU was rebuilt at -O3 with the
+# suppression defeated and reported zero, with a deliberately-planted ignored
+# write() confirming the scan was armed. What remains is lib/test/ alone.
+# Deleting the flag means fixing those, and only then does [[nodiscard]] on
+# struct zcl_result start doing anything — both ride this one diagnostic.
+#
 # Note GCC does NOT accept a `(void)` cast as consuming a warn_unused_result
-# return, so most of those sites need a real check, not a cast.
+# return, so most of those sites need a real check, not a cast. The check runs
+# during gimplification, so `cc -fsyntax-only` reports NONE of them even at
+# -O3 — only an optimised codegen pass finds them.
 # Re-derive the current site list (never trust a count typed here):
 #   sed -i 's/^ZCL_WARN_UNUSED_RESULT = .*/ZCL_WARN_UNUSED_RESULT = -Wno-error=unused-result/' Makefile
 #   make build-only && make -j$(nproc) 2>&1 | grep -- '-Wunused-result]'

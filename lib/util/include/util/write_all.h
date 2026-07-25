@@ -2,11 +2,22 @@
  *
  * zcl_write_all — the one full-write loop.
  *
- * write(2) is allowed to transfer fewer bytes than asked for, on sockets,
- * pipes and files alike. A single unchecked call therefore truncates silently
- * whenever the destination is under pressure, and because glibc marks write()
- * warn_unused_result, an ignored return is exactly the shape the C23
- * [[nodiscard]] discipline exists to catch.
+ * write(2) is allowed to transfer fewer bytes than asked for, and two of the
+ * ways it does so are reachable here, both measured:
+ *
+ *   - a socket carrying SO_SNDTIMEO returns the partial count when the timeout
+ *     expires. https_server.c sets a 15s SO_SNDTIMEO on every accepted HTTPS
+ *     client fd, so one stalled peer is enough. Measured on a socketpair with
+ *     a 200ms send timeout: write() of 4 MiB returned 219264.
+ *   - a signal arriving mid-write on a blocking fd with a non-restarting
+ *     handler returns what was already transferred. Measured on a pipe with
+ *     SIGALRM: write() of 4 MiB returned 65536 with errno left at 0 — so an
+ *     `if (n < 0)` check does NOT catch this one. Only the count does.
+ *
+ * A regular file adds a third: a partial write when the filesystem fills.
+ *
+ * Because glibc marks write() warn_unused_result, an ignored return is exactly
+ * the shape the C23 [[nodiscard]] discipline exists to catch.
  *
  * Callers with a correctness stake in delivery (a response body, a request
  * body another process reads back) must branch on the result. Callers that are
