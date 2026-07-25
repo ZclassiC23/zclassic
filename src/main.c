@@ -283,7 +283,25 @@ int main(int argc, char **argv)
     const char *env_lane = getenv("ZCL_OPERATOR_LANE");
     if (env_lane && env_lane[0] &&
         !app_operator_lane_parse(env_lane, &ctx.operator_lane)) {
-        fprintf(stderr, "Ignoring unknown ZCL_OPERATOR_LANE=%s\n", env_lane);
+        /* Silently-ignored environment is worse than a rejected flag: the
+         * node keeps running under a lane the operator did not choose, and
+         * the old one-liner named neither the lane actually in force nor the
+         * spellings that would have worked. */
+        /* Careful with the wording: -operator-lane= is parsed AFTER this
+         * point, so the lane left in ctx here is the default, not
+         * necessarily the lane that ends up in force. Report the default and
+         * say what can still override it, rather than claiming a final
+         * value this early. */
+        boot_error_report(BOOT_ERROR_WARN, "BOOT_UNKNOWN_OPERATOR_LANE_ENV",
+                          "env",
+                          "ZCL_OPERATOR_LANE names a lane this binary does "
+                          "not have — it is IGNORED and the node keeps the "
+                          "default lane unless a later -operator-lane= sets "
+                          "one",
+                          NULL, 0, "given=%s default_lane=%s accepted=%s",
+                          env_lane,
+                          app_operator_lane_name(ctx.operator_lane),
+                          app_operator_lane_accepted_csv());
     }
     const char *env_nf_backfill = getenv("ZCL_NULLIFIER_BACKFILL");
     if (env_nf_backfill && strcmp(env_nf_backfill, "1") == 0)
