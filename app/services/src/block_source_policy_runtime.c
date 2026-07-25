@@ -17,6 +17,7 @@
 #include "util/log_macros.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "net/snapshot_sync_contract.h"
+#include "config/runtime.h"          /* app_runtime_snapshot_sync */
 #include "services/sync_monitor.h"
 #include "models/block.h"
 #include "models/database.h"

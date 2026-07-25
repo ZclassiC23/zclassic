@@ -24,7 +24,6 @@
 #ifndef ZCL_NET_SNAPSHOT_SYNC_CONTRACT_H
 #define ZCL_NET_SNAPSHOT_SYNC_CONTRACT_H
 
-#include "config/runtime.h"
 #include "event/event.h"
 #include "net/flyclient.h"
 #include "sync/sync_state.h"

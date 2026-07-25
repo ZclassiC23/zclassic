@@ -11,7 +11,6 @@
 #include "msgprocessor_internal.h"
 #include "msgprocessor_snapshot_internal.h"
 
-#include "config/boot_snapshot_offer.h"
 #include "net/addrman.h"
 #include "net/download.h"
 #include "net/fast_sync.h"
