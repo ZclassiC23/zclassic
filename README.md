@@ -391,7 +391,10 @@ default doesn't yet apply retroactively to existing plaintext wallets.
   are is derived from the code by `tools/scripts/check_doc_counts.sh` and
   declared in the DOC-COUNTS block of
   [`docs/CODEBASE_MAP.md`](docs/CODEBASE_MAP.md), which `make lint` fails on
-  drift. A test that compiles but is registered in no runner is caught by the
+  drift. That same gate re-derives the count for every tracked Markdown file in
+  the repo — this README included — so a doc that quotes a group/port/adapter
+  count that no longer matches the code fails the build rather than quietly
+  rotting. A test that compiles but is registered in no runner is caught by the
   `check-test-registration` gate. Bugs become 64-bit seeds in a deterministic
   simulator ([`docs/CHAOS_HARNESS.md`](docs/CHAOS_HARNESS.md)).
 - **Crash recovery is demonstrable:** `make test-crash-bootstrap` runs a
