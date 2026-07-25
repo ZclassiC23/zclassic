@@ -34,6 +34,11 @@ deployed**, and none of it is live until an owner-gated `make deploy`:
 | Groth16 comb-based verify speedup behind a differential parity oracle | `make check-groth16-parity`, `make bench-groth16-comb` |
 | Sapling-tree rebuild seeded from the anchor_kv frontier (the healer for the blocker below) | merged earlier as `82f11c697` |
 | Fault-injection and convergence proof harnesses; sync shadow observer; prune-after-seal safety gate; time authority | test groups + `lib/util/src/time_authority.c` |
+| `lib/base` — the dependency sink (logging, allocation, the result type). `util/log_macros.h` and `util/result.h` forward to it, so the 733 includers are untouched | `lib/base/` |
+| `config/` no longer reachable from `lib/`: the 14 upward symbol references (5 of them bare `extern`, invisible to the include-grep gate) replaced by boot-registered ports | `lib/net/src/net_runtime_port.c`, `config/src/node_db_runtime.c` |
+| Per-file test headers: `test_core.h` + facets, so a node-header edit no longer dirties ~36% of the test build | `lib/test/include/test/` |
+| Two ISA paths that had never compiled into a shipped binary — AVX-512 SHA3-512 (missing permutation + a 32-byte over-read) and SHA-NI SHA-256 (now runtime-dispatched with a known-answer self-test) | `lib/crypto/src/` |
+| Boot refusals that fire before the log exists now report themselves; the doc they name is guaranteed to exist by `check-error-doc-refs` | `config/src/boot_error.c`, `tools/lint/check_error_doc_refs.sh` |
 
 Deploy policy during the hold window is unchanged: a restart resets the 72h
 trailing window, so deploy when the escalator fires anyway, or after
@@ -64,6 +69,37 @@ trailing window, so deploy when the escalator fires anyway, or after
   residue. The escalator's 600-block resnapshot refold self-cures it (crude,
   always-terminating). The merged in-place healer fixes the fault at the
   source; deploy it the next time this class fires.
+
+## Open branches — work that is finished but did not pass review
+
+Four branches exist because an independent verifier ran the gates and found a
+specific defect, not because they ran out of time. Each names what to fix.
+Re-verify before trusting any of it; all four forked before the merges above
+and need a reconcile pass.
+
+| Branch | What it does | Why it is not in `main` |
+|---|---|---|
+| `perf/stable-objdir-and-gold-linker` | Stops relocating all 1883 objects on every edit; per-object attestation replaces the whole-tree key. **5x less CPU per edit, independently reproduced.** | Wall time got ~11% WORSE on a 32-core box — the wasted work was hiding in spare cores, and the new per-link verifier costs ~1s. Also: editing a per-object CFLAGS line in the Makefile changes no source file, so the toolkey does not move and a stale object survives — a real regression against the guarantee it replaces. And `check-build-epoch-integrity` can now report PASS while nothing ran (its cache key omits the two new scripts; copy-proven). |
+| `lane/testcache-soundness-phase0` | Fixes three live soundness bugs in the test skip-cache: `.def` files were absent from the key, the key bound the compiler but not the flags (an `-O1` pass was honoured by the `-O3` gate), and a fresh tree silently produced a header-free key. Toolkeys now differ per profile, proven by `strings` on the binaries. | One of its own new assertions passes on the unmodified code too, so it pins nothing. It also mutates `ZCL_STRESS_TESTS` without restoring it, which suppresses coverage in the sequential runner, and its Makefile-scanning helper reads only the first 256 KB of a 327 KB file. |
+| `lane/module-linkgraph-enforcement` | Measures the module graph from the linker (`nm`), declares the rank order in `config/lib_module_order.def`, and adds two gates. Also fixes a real bug: the code index skipped `epochs/`, which is where 100% of live depfiles are, so its include graph was empty. | `check-no-cross-layer-extern` false-fails on a clean tree whenever the only warm object tree is a test tree — proven end-to-end with no env override. The gate docstrings also claim a full `make` arms them; it does not (a full `make` produces zero `.o` files). |
+| `wf/measure` | Block-fold pipeline instrumentation. | Never reviewed: it wraps every stage, so it needs a deliberate overhead measurement before landing. Its profiling datadir copy (`~/.zclassic-c23-COPY-20260725-001046-fold-profile`, 17 GB) is intentionally left in place — delete it if this lane is abandoned. |
+
+`archive/stash-refold-driver-wip` is older experimental work preserved from a
+stash, not a live lane.
+
+## Where the developer loop actually spends its time
+
+Measured, recorded in [`BENCHMARKS_LOG.md`](BENCHMARKS_LOG.md). Read that before
+optimising anything here — two confident hypotheses died against these numbers.
+
+- The bare link over 1883 objects is **0.90s** (`ld.bfd`) / **0.58s** (`ld.gold`).
+  It is not the bottleneck, despite `ZCL_DEV_LINKER` resolving to empty on this
+  host and the gating lane never referencing it. Both true, both worth ~0.3s.
+- The one-file rebuild cost is the compile-epoch churn: the object directory is
+  keyed on a whole-tree content-and-stat hash, so one edit — even `touch` with
+  no change — relocates every object and re-invokes every recipe.
+- The remaining large lever is the ~36% of test objects that a node-header edit
+  used to dirty; the header split took a real edit from 680 recompiles to 9.
 
 ## MVP status
 
