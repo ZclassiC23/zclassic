@@ -943,7 +943,7 @@ int addrman_consistency_check(const struct addr_man *am,
 {
 #define CC_ERR(fmt, ...) do { \
     if (err_buf && err_cap > 0) \
-        snprintf(err_buf, err_cap, fmt, ##__VA_ARGS__); \
+        snprintf(err_buf, err_cap, fmt __VA_OPT__(,) __VA_ARGS__); \
     return -1; \
 } while (0)
 
@@ -1031,7 +1031,7 @@ int addrman_index_verify(const struct addr_man *am,
 {
 #define IV_ERR(fmt, ...) do { \
     if (err_buf && err_cap > 0) \
-        snprintf(err_buf, err_cap, fmt, ##__VA_ARGS__); \
+        snprintf(err_buf, err_cap, fmt __VA_OPT__(,) __VA_ARGS__); \
     return -1; \
 } while (0)
 

@@ -81,10 +81,10 @@ void ttt_render(const struct ttt_state *s, char *out, size_t max)
         "Turn: %c  Moves: %u  %s",
         S(0), S(1), S(2), S(3), S(4), S(5), S(6), S(7), S(8),
         sym[t], s->move_count,
-    #undef S
         s->winner == 1 ? "X wins!" :
         s->winner == 2 ? "O wins!" :
         s->winner == 3 ? "Draw!" : "");
+    #undef S
 }
 
 /* ── Wire format serialization ───────────────────────────── */
