@@ -32,11 +32,10 @@
 #include <string.h>
 #include <strings.h>
 
-/* The block_tree_db handle is owned by config/src/boot.c and exposed as
- * a process-wide pointer for validation. We reuse the same handle here so
- * cleared status updates land in the same LevelDB the rest of the validation
- * path persists to. */
-extern struct block_tree_db *g_active_block_tree;
+/* The block_tree_db handle is opened by config/src/boot.c and published
+ * into g_active_block_tree (declared in <validation/process_block.h>). We
+ * reuse the same handle here so cleared status updates land in the same
+ * LevelDB the rest of the validation path persists to. */
 
 const char *reval_result_name(enum reval_result r)
 {
@@ -337,7 +336,7 @@ enum reval_result process_block_revalidate(int target_height,
      * with NULL block (no specific block to connect — just kick the
      * activation loop to re-evaluate find_most_work_chain with our
      * newly cleared entries). */
-    struct chain_activation_controller *ctl = boot_activation_controller();
+    struct chain_activation_controller *ctl = process_block_activation_controller();
     if (!ctl) {
         fprintf(stderr,  // obs-ok:revalidate-no-controller
                 "[revalidate] h=%d: no activation controller; cannot "

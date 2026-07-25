@@ -12,7 +12,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "config/runtime.h"
+#include "storage/node_db_runtime.h"
 #include "validation/process_block.h"
 #include "validation/main_logic.h"
 #include "validation/connect_block.h"
@@ -211,7 +211,7 @@ void sapling_ckpt_get_stats(struct sapling_ckpt_stats *out)
 bool sapling_tree_persist_once(void)
 {
     struct node_db *ndb = process_block_node_db_internal();
-    if (!app_runtime_node_db_handle_open(ndb) || !g_sapling_tree_for_flush)
+    if (!node_db_runtime_handle_open(ndb) || !g_sapling_tree_for_flush)
         return false;
 
     struct byte_stream ts;
@@ -227,7 +227,7 @@ bool sapling_tree_persist_once(void)
     if (force_fail > 0) {
         persist_ok = false;
     } else {
-        persist_ok = app_runtime_node_db_state_set(
+        persist_ok = node_db_runtime_state_set(
             ndb, "sapling_tree", ts.data, ts.size);
         atomic_store(&g_sapling_persist_test_force_fail, 0);
     }
