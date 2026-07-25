@@ -54,7 +54,7 @@ static void diagnostics_catalog_push_tests(struct json_value *obj,
     json_init(&tests);
     json_set_array(&tests);
     diagnostics_catalog_push_str(&tests,
-                                 "lib/test/src/test_syncdiag_rpc.c:statecatalog");
+                                 "lib/test/src/test_syncdiag_agent_ops.c:statecatalog");
     diagnostics_catalog_push_str(&tests, e ? e->primary_test : "");
     json_push_kv(obj, "tests", &tests);
     json_free(&tests);
