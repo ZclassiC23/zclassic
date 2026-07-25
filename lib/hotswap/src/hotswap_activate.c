@@ -1,19 +1,25 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Tier-1 hot-swap — the REAL (activatable) single-handler module loader.
+ * Tier-1 hot-swap — the REAL (activatable) MULTI-LEAF module loader.
  *
  * See hotswap/hotswap_module.h for the ABI. The pure surface (swappable
- * allowlist, activation flag, the activation GATE, and telemetry) compiles in
- * every build; only the dlopen/dlsym/dlclose activation core is DEV-ONLY. A
- * release build links the refusal stub at the bottom.
+ * allowlist, probe map, activation flag, the activation GATE, admission, and
+ * telemetry) compiles in every build; only the dlopen/dlsym/dlclose activation
+ * core is DEV-ONLY. A release build links the refusal stub at the bottom.
+ *
+ * Publish order is fixed and all-or-nothing:
+ *   dlopen -> dlsym -> admit EVERY leaf -> probe the file's DECLARED probe leaf
+ *   against the registry's public contract -> ONE batch replace.
+ * Any failure before the batch replace publishes ZERO leaves and leaves every
+ * resident handler untouched.
  *
  * Safety of the dlclose-after-drain reclamation: the superseded module .so is
- * closed ONLY after the resident quiesced_cb confirms every retired command
- * registry override snapshot has drained (no in-flight dispatch can still enter
- * the old handler). If drain cannot be confirmed within a bounded window the
- * old .so is KEPT mapped forever — the pilot's never-close behavior, always
- * memory-safe. dlclose is thus best-effort reclamation, never a correctness
- * dependency.
+ * closed ONLY after the resident quiesced callback confirms every retired
+ * command registry override snapshot has drained (no in-flight dispatch can
+ * still enter an old handler). If drain cannot be confirmed within a bounded
+ * window the old .so is KEPT mapped forever — the pilot's never-close behavior,
+ * always memory-safe. dlclose is thus best-effort reclamation, never a
+ * correctness dependency.
  */
 
 #define _GNU_SOURCE
@@ -26,31 +32,98 @@
 
 #include <limits.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
-/* ── swappable allowlist, compiled from config/hotswap_swappable.def ─────── */
+/* ── swappable allowlist, compiled from config/hotswap_swappable.def ───────
+ * ONE row per source TU; `leaves` is the space-separated set of canonical
+ * leaf paths that TU's module may re-point. */
 static const struct {
-    const char *handler;
     const char *source;
+    const char *leaves;
 } g_swappable[] = {
-#define HOTSWAP_SWAPPABLE(handler_, source_) { .handler = handler_, .source = source_ },
+#define HOTSWAP_SWAPPABLE(source_, leaves_) { .source = source_, .leaves = leaves_ },
 #include "../../../config/hotswap_swappable.def"
 #undef HOTSWAP_SWAPPABLE
 };
 
-bool hotswap_handler_is_swappable(const char *handler_name)
+/* ── probe map, compiled from config/hotswap_eligible.def ─────────────────
+ * The declared param-free probe leaf per eligible TU. A module never chooses
+ * its own probe: the loader looks it up here by source_tu. */
+static const struct {
+    const char *source;
+    const char *probe;
+} g_probes[] = {
+#define HOTSWAP_ELIGIBLE(path_) { .source = path_,
+#define HOTSWAP_PROBE(tool_) .probe = tool_ },
+#include "../../../config/hotswap_eligible.def"
+#undef HOTSWAP_ELIGIBLE
+#undef HOTSWAP_PROBE
+};
+
+#define SWAPPABLE_COUNT (sizeof(g_swappable) / sizeof(g_swappable[0]))
+#define PROBE_COUNT (sizeof(g_probes) / sizeof(g_probes[0]))
+
+/* Space/tab-separated membership test over a `leaves` column. No allocation. */
+static bool leaf_list_contains(const char *list, const char *leaf)
 {
-    if (!handler_name || !handler_name[0])
+    if (!list || !leaf || !leaf[0])
         return false;
-    for (size_t i = 0; i < sizeof(g_swappable) / sizeof(g_swappable[0]); i++) {
-        if (strcmp(handler_name, g_swappable[i].handler) == 0)
+    size_t want = strlen(leaf);
+    const char *p = list;
+    while (*p) {
+        while (*p == ' ' || *p == '\t')
+            p++;
+        const char *start = p;
+        while (*p && *p != ' ' && *p != '\t')
+            p++;
+        size_t len = (size_t)(p - start);
+        if (len == want && strncmp(start, leaf, want) == 0)
             return true;
     }
     return false;
+}
+
+const char *hotswap_swappable_source_for_leaf(const char *leaf)
+{
+    if (!leaf || !leaf[0])
+        return NULL;
+    for (size_t i = 0; i < SWAPPABLE_COUNT; i++) {
+        if (leaf_list_contains(g_swappable[i].leaves, leaf))
+            return g_swappable[i].source;
+    }
+    return NULL;
+}
+
+bool hotswap_handler_is_swappable(const char *leaf)
+{
+    return hotswap_swappable_source_for_leaf(leaf) != NULL;
+}
+
+static const char *swappable_leaves_for_source(const char *source_tu)
+{
+    if (!source_tu || !source_tu[0])
+        return NULL;
+    for (size_t i = 0; i < SWAPPABLE_COUNT; i++) {
+        if (strcmp(source_tu, g_swappable[i].source) == 0)
+            return g_swappable[i].leaves;
+    }
+    return NULL;
+}
+
+const char *hotswap_module_probe_leaf(const char *source_tu)
+{
+    if (!source_tu || !source_tu[0])
+        return NULL;
+    for (size_t i = 0; i < PROBE_COUNT; i++) {
+        if (strcmp(source_tu, g_probes[i].source) == 0)
+            return g_probes[i].probe;
+    }
+    return NULL;
 }
 
 static void act_copy(char *dst, size_t cap, const char *src)
@@ -71,28 +144,97 @@ bool hotswap_module_admit(const struct zcl_hotswap_module *module,
         act_copy(why, why_cap, "null module");
         return false;
     }
-    if (module->abi_version != ZCL_HOTSWAP_MODULE_ABI_V1) {
+    if (module->abi_version != ZCL_HOTSWAP_MODULE_ABI_V2) {
         act_copy(stage, stage_cap, "abi");
         if (why && why_cap)
-            snprintf(why, why_cap, "module abi_version %u != required %u",
-                     module->abi_version, ZCL_HOTSWAP_MODULE_ABI_V1);
+            snprintf(why, why_cap,
+                     "module abi_version %u != required %u (rebuild the module "
+                     "against the current hotswap_module.h)",
+                     module->abi_version, ZCL_HOTSWAP_MODULE_ABI_V2);
         return false;
     }
-    if (!module->handler_name || !module->handler_name[0] || !module->fn ||
-        !module->self_test) {
+    if (!module->source_tu || !module->source_tu[0] || !module->leaves ||
+        !module->self_test || module->leaf_count == 0) {
         act_copy(stage, stage_cap, "fields");
         act_copy(why, why_cap,
-                 "module fields incomplete (handler_name/fn/self_test)");
+                 "module fields incomplete (source_tu/leaves/leaf_count/self_test)");
         return false;
     }
-    if (!hotswap_handler_is_swappable(module->handler_name)) {
+    if (module->leaf_count > ZCL_HOTSWAP_MODULE_MAX_LEAVES) {
+        act_copy(stage, stage_cap, "capacity");
+        if (why && why_cap)
+            snprintf(why, why_cap,
+                     "module declares %u leaves, ceiling is %u (one batch "
+                     "replace must carry them all)",
+                     module->leaf_count, ZCL_HOTSWAP_MODULE_MAX_LEAVES);
+        return false;
+    }
+    for (uint32_t i = 0; i < module->leaf_count; i++) {
+        if (!module->leaves[i].name || !module->leaves[i].name[0] ||
+            !module->leaves[i].fn) {
+            act_copy(stage, stage_cap, "fields");
+            if (why && why_cap)
+                snprintf(why, why_cap,
+                         "leaf %u has an empty name or NULL handler", i);
+            return false;
+        }
+    }
+
+    const char *allowed = swappable_leaves_for_source(module->source_tu);
+    if (!allowed) {
         act_copy(stage, stage_cap, "allowlist");
         if (why && why_cap)
             snprintf(why, why_cap,
-                     "handler '%s' is not on the swappable shape-leaf allowlist",
-                     module->handler_name);
+                     "source '%s' is not on the swappable shape-leaf allowlist",
+                     module->source_tu);
         return false;
     }
+
+    for (uint32_t i = 0; i < module->leaf_count; i++) {
+        const char *leaf = module->leaves[i].name;
+        if (!leaf_list_contains(allowed, leaf)) {
+            act_copy(stage, stage_cap, "allowlist");
+            if (why && why_cap)
+                snprintf(why, why_cap,
+                         "leaf '%s' is not on the swappable allowlist for '%s'",
+                         leaf, module->source_tu);
+            return false;
+        }
+        for (uint32_t j = 0; j < i; j++) {
+            if (strcmp(leaf, module->leaves[j].name) == 0) {
+                act_copy(stage, stage_cap, "duplicate");
+                if (why && why_cap)
+                    snprintf(why, why_cap,
+                             "leaf '%s' is declared twice in one module", leaf);
+                return false;
+            }
+        }
+    }
+
+    /* The declared probe leaf must exist for this file AND be one of the
+     * leaves this module actually re-points; otherwise probe-before-publish
+     * would validate code the module never installs. */
+    const char *probe = hotswap_module_probe_leaf(module->source_tu);
+    if (!probe || !probe[0]) {
+        act_copy(stage, stage_cap, "probe");
+        if (why && why_cap)
+            snprintf(why, why_cap,
+                     "source '%s' declares no probe leaf in "
+                     "config/hotswap_eligible.def", module->source_tu);
+        return false;
+    }
+    bool probe_exported = false;
+    for (uint32_t i = 0; i < module->leaf_count && !probe_exported; i++)
+        probe_exported = strcmp(module->leaves[i].name, probe) == 0;
+    if (!probe_exported) {
+        act_copy(stage, stage_cap, "probe");
+        if (why && why_cap)
+            snprintf(why, why_cap,
+                     "module does not export its declared probe leaf '%s'",
+                     probe);
+        return false;
+    }
+
     char st_err[192] = {0};
     if (!module->self_test(st_err, sizeof(st_err))) {
         act_copy(stage, stage_cap, "self_test");
@@ -181,11 +323,12 @@ bool hotswap_activation_authorized(const char *resolved_datadir,
 #define HOTSWAP_ACT_MAX_SLOTS 32
 
 struct hotswap_act_slot {
-    char handler[128];
-    void *handle;            /* currently-live module .so for this handler */
+    char source[256];        /* one slot per swappable source TU */
+    void *handle;            /* currently-live module .so for this source */
     int artifact_fd;
     char artifact_sha256[65];
     uint32_t generation;
+    uint32_t leaf_count;
     time_t activated_at;
     uint64_t swaps;
     bool in_use;
@@ -194,7 +337,9 @@ struct hotswap_act_slot {
 struct hotswap_act_event {
     bool present;
     time_t at;
-    char handler[128];
+    char source[256];
+    char leaves[512];
+    uint32_t leaf_count;
     char stage[64];
     char error[256];
     bool activated;
@@ -209,6 +354,8 @@ static struct hotswap_act_event g_last_rejection;
 static _Atomic uint64_t g_activation_count;
 static _Atomic uint64_t g_rollback_count;
 static _Atomic uint64_t g_verify_count;
+static _Atomic uint64_t g_probe_reject_count;
+static _Atomic uint64_t g_leaves_published;
 static _Atomic uint64_t g_dlclose_count;
 static _Atomic uint64_t g_retained_mapped_count;
 
@@ -219,7 +366,9 @@ static void event_json(struct json_value *obj, const struct hotswap_act_event *e
     if (!ev->present)
         return;
     json_push_kv_int(obj, "at", (int64_t)ev->at);
-    json_push_kv_str(obj, "handler", ev->handler);
+    json_push_kv_str(obj, "source", ev->source);
+    json_push_kv_str(obj, "leaves", ev->leaves);
+    json_push_kv_int(obj, "leaf_count", (int64_t)ev->leaf_count);
     json_push_kv_str(obj, "stage", ev->stage);
     if (ev->error[0])
         json_push_kv_str(obj, "error", ev->error);
@@ -233,8 +382,10 @@ void hotswap_activate_dump_json(struct json_value *out)
         return;
     struct json_value act = {0};
     json_set_object(&act);
-    json_push_kv_str(&act, "abi", "zcl.hotswap_module.v1");
-    json_push_kv_int(&act, "abi_version", (int64_t)ZCL_HOTSWAP_MODULE_ABI_V1);
+    json_push_kv_str(&act, "abi", "zcl.hotswap_module.v2");
+    json_push_kv_int(&act, "abi_version", (int64_t)ZCL_HOTSWAP_MODULE_ABI_V2);
+    json_push_kv_int(&act, "max_leaves_per_module",
+                     (int64_t)ZCL_HOTSWAP_MODULE_MAX_LEAVES);
 #ifdef ZCL_DEV_BUILD
     json_push_kv_bool(&act, "available", true);
 #else
@@ -255,6 +406,10 @@ void hotswap_activate_dump_json(struct json_value *out)
                      (int64_t)atomic_load(&g_verify_count));
     json_push_kv_int(&act, "rollback_count",
                      (int64_t)atomic_load(&g_rollback_count));
+    json_push_kv_int(&act, "probe_reject_count",
+                     (int64_t)atomic_load(&g_probe_reject_count));
+    json_push_kv_int(&act, "leaves_published",
+                     (int64_t)atomic_load(&g_leaves_published));
     json_push_kv_int(&act, "dlclose_count",
                      (int64_t)atomic_load(&g_dlclose_count));
     json_push_kv_int(&act, "retained_mapped_count",
@@ -262,11 +417,15 @@ void hotswap_activate_dump_json(struct json_value *out)
 
     struct json_value allow = {0};
     json_set_array(&allow);
-    for (size_t i = 0; i < sizeof(g_swappable) / sizeof(g_swappable[0]); i++) {
-        struct json_value s = {0};
-        json_set_str(&s, g_swappable[i].handler);
-        json_push_back(&allow, &s);
-        json_free(&s);
+    for (size_t i = 0; i < SWAPPABLE_COUNT; i++) {
+        struct json_value row = {0};
+        json_set_object(&row);
+        json_push_kv_str(&row, "source", g_swappable[i].source);
+        json_push_kv_str(&row, "leaves", g_swappable[i].leaves);
+        const char *probe = hotswap_module_probe_leaf(g_swappable[i].source);
+        json_push_kv_str(&row, "probe_leaf", probe ? probe : "");
+        json_push_back(&allow, &row);
+        json_free(&row);
     }
     json_push_kv(&act, "swappable_allowlist", &allow);
     json_free(&allow);
@@ -279,8 +438,9 @@ void hotswap_activate_dump_json(struct json_value *out)
             continue;
         struct json_value s = {0};
         json_set_object(&s);
-        json_push_kv_str(&s, "handler", g_slots[i].handler);
+        json_push_kv_str(&s, "source", g_slots[i].source);
         json_push_kv_int(&s, "generation", (int64_t)g_slots[i].generation);
+        json_push_kv_int(&s, "leaf_count", (int64_t)g_slots[i].leaf_count);
         json_push_kv_str(&s, "artifact_sha256", g_slots[i].artifact_sha256);
         json_push_kv_int(&s, "activated_at", (int64_t)g_slots[i].activated_at);
         json_push_kv_int(&s, "swaps", (int64_t)g_slots[i].swaps);
@@ -303,6 +463,159 @@ void hotswap_activate_dump_json(struct json_value *out)
     json_free(&act);
 }
 
+static void record_event(struct hotswap_act_event *ev,
+                         const struct hotswap_activate_report *report,
+                         const char *stage, const char *error,
+                         bool activated, bool ok)
+{
+    pthread_mutex_lock(&g_act_lock);
+    memset(ev, 0, sizeof(*ev));
+    ev->present = true;
+    ev->at = platform_time_wall_time_t();
+    act_copy(ev->source, sizeof(ev->source), report->source_tu);
+    act_copy(ev->leaves, sizeof(ev->leaves), report->leaves);
+    ev->leaf_count = report->leaf_count;
+    act_copy(ev->stage, sizeof(ev->stage), stage);
+    act_copy(ev->error, sizeof(ev->error), error);
+    ev->activated = activated;
+    ev->ok = ok;
+    pthread_mutex_unlock(&g_act_lock);
+}
+
+/* Populate the report, log, record the rejection, count it, and return false.
+ * Any dlopen/fd cleanup is the caller's, done BEFORE calling this. */
+static bool act_reject(struct hotswap_activate_report *report,
+                       const char *stage, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    (void)vsnprintf(report->error, sizeof(report->error), fmt, ap);
+    va_end(ap);
+    act_copy(report->stage, sizeof(report->stage), stage);
+    report->ok = false;
+    report->rolled_back = true;
+    atomic_fetch_add_explicit(&g_rollback_count, 1, memory_order_relaxed);
+    record_event(&g_last_rejection, report, stage, report->error, false, false);
+    LOG_WARN("hotswap.activate", "reject stage=%s: %s", stage, report->error);
+    return false;
+}
+
+/* Fill report->leaves / leaf_count / handler_name from an admitted module. */
+static void report_describe_leaves(struct hotswap_activate_report *report,
+                                   const struct zcl_hotswap_module *mod)
+{
+    report->leaf_count = mod->leaf_count;
+    act_copy(report->handler_name, sizeof(report->handler_name),
+             mod->leaves[0].name);
+    size_t used = 0;
+    report->leaves[0] = '\0';
+    for (uint32_t i = 0; i < mod->leaf_count; i++) {
+        int n = snprintf(report->leaves + used, sizeof(report->leaves) - used,
+                         "%s%s", i ? "," : "", mod->leaves[i].name);
+        if (n < 0 || (size_t)n >= sizeof(report->leaves) - used)
+            break;              /* clipped; report->leaf_count stays exact */
+        used += (size_t)n;
+    }
+}
+
+bool hotswap_module_publish(const struct zcl_hotswap_module *module,
+                            bool request_activate,
+                            const struct hotswap_publish_hooks *hooks,
+                            struct hotswap_activate_report *report)
+{
+    if (!report)
+        return false;
+    report->ok = false;
+    report->activated = false;
+    report->probed = false;
+    report->verify_only = !request_activate;
+    if (module && module->abi_version == ZCL_HOTSWAP_MODULE_ABI_V2 &&
+        module->source_tu)
+        act_copy(report->source_tu, sizeof(report->source_tu),
+                 module->source_tu);
+
+    hotswap_commit_batch_cb commit_cb = hooks ? hooks->commit : NULL;
+    hotswap_probe_leaf_cb probe_cb = hooks ? hooks->probe : NULL;
+    void *cb_ctx = hooks ? hooks->ctx : NULL;
+
+    /* ABI version + required fields + leaf ceiling + the swappable file/leaf
+     * allowlist + intra-module leaf uniqueness + the declared probe leaf +
+     * module self_test, all in one pure gauntlet. Any failure => refuse
+     * LOUDLY, ZERO leaves published, every resident handler untouched. */
+    char stage[64] = {0}, why[256] = {0};
+    if (!hotswap_module_admit(module, stage, sizeof(stage), why, sizeof(why)))
+        return act_reject(report, stage[0] ? stage : "abi", "%s", why);
+    report_describe_leaves(report, module);
+
+    const char *probe_leaf = hotswap_module_probe_leaf(module->source_tu);
+    act_copy(report->probe_leaf, sizeof(report->probe_leaf), probe_leaf);
+    zcl_hotswap_handler_fn probe_fn = NULL;
+    for (uint32_t i = 0; i < module->leaf_count && !probe_fn; i++) {
+        if (strcmp(module->leaves[i].name, probe_leaf) == 0)
+            probe_fn = module->leaves[i].fn;
+    }
+
+    /* PROBE BEFORE PUBLISH. A module asserting its own health is
+     * self-certification; this dispatches the DECLARED probe leaf against the
+     * registry's public spec/input-validation/reply contract and checks the
+     * reply against that leaf's declared output schema. Publishing without it
+     * is refused outright. */
+    if (probe_cb) {
+        why[0] = '\0';
+        if (!probe_cb(cb_ctx, probe_leaf, probe_fn, why, sizeof(why))) {
+            atomic_fetch_add_explicit(&g_probe_reject_count, 1,
+                                      memory_order_relaxed);
+            return act_reject(report, "probe", "probe leaf '%s' failed: %s",
+                              probe_leaf,
+                              why[0] ? why
+                                     : "reply did not match its declared schema");
+        }
+        report->probed = true;
+    } else if (request_activate) {
+        return act_reject(report, "probe",
+                          "no probe callback supplied; publishing without a "
+                          "probe-before-publish check is refused");
+    }
+
+    if (!request_activate) {
+        report->ok = true;
+        report->verify_only = true;
+        act_copy(report->stage, sizeof(report->stage), "verified");
+        atomic_fetch_add_explicit(&g_verify_count, 1, memory_order_relaxed);
+        record_event(&g_last_activation, report, "verified", "", false, true);
+        LOG_INFO("hotswap.activate",
+                 "verify-only OK source=%s leaves=%u (not activated)",
+                 report->source_tu, report->leaf_count);
+        return true;
+    }
+
+    if (!commit_cb)
+        return act_reject(report, "commit",
+                          "no registry commit callback supplied");
+    uint32_t gen = 0;
+    why[0] = '\0';
+    if (!commit_cb(cb_ctx, module->leaves, (size_t)module->leaf_count, &gen,
+                   why, sizeof(why))) {
+        /* Rollback: the registry never published, old handlers untouched. */
+        return act_reject(report, "commit", "%s",
+                          why[0] ? why : "registry commit failed");
+    }
+
+    report->ok = true;
+    report->activated = true;
+    report->verify_only = false;
+    report->generation = gen;
+    act_copy(report->stage, sizeof(report->stage), "activated");
+    atomic_fetch_add_explicit(&g_activation_count, 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_leaves_published, module->leaf_count,
+                              memory_order_relaxed);
+    record_event(&g_last_activation, report, "activated", "", true, true);
+    LOG_INFO("hotswap.activate",
+             "activated source=%s leaves=%u (%s) gen=%u",
+             report->source_tu, report->leaf_count, report->leaves, gen);
+    return true;
+}
+
 #ifdef ZCL_DEV_BUILD
 
 #include <dlfcn.h>
@@ -313,22 +626,6 @@ void hotswap_activate_dump_json(struct json_value *out)
 #include <unistd.h>
 
 #include "crypto/sha256.h"
-
-static void record_event(struct hotswap_act_event *ev, const char *handler,
-                         const char *stage, const char *error,
-                         bool activated, bool ok)
-{
-    pthread_mutex_lock(&g_act_lock);
-    memset(ev, 0, sizeof(*ev));
-    ev->present = true;
-    ev->at = platform_time_wall_time_t();
-    act_copy(ev->handler, sizeof(ev->handler), handler);
-    act_copy(ev->stage, sizeof(ev->stage), stage);
-    act_copy(ev->error, sizeof(ev->error), error);
-    ev->activated = activated;
-    ev->ok = ok;
-    pthread_mutex_unlock(&g_act_lock);
-}
 
 static bool artifact_sha256_fd(int fd, char hex_out[65])
 {
@@ -358,12 +655,12 @@ static bool artifact_sha256_fd(int fd, char hex_out[65])
     return true;
 }
 
-/* Find (or, if activating a not-yet-seen handler, add) the per-handler slot.
+/* Find (or, if activating a not-yet-seen source, add) the per-source slot.
  * ASSUMES g_act_lock held. Returns NULL only when the fixed table is full. */
-static struct hotswap_act_slot *slot_for_handler_locked(const char *handler)
+static struct hotswap_act_slot *slot_for_source_locked(const char *source)
 {
     for (size_t i = 0; i < g_slot_count; i++) {
-        if (g_slots[i].in_use && strcmp(g_slots[i].handler, handler) == 0)
+        if (g_slots[i].in_use && strcmp(g_slots[i].source, source) == 0)
             return &g_slots[i];
     }
     if (g_slot_count >= HOTSWAP_ACT_MAX_SLOTS)
@@ -371,7 +668,7 @@ static struct hotswap_act_slot *slot_for_handler_locked(const char *handler)
     struct hotswap_act_slot *slot = &g_slots[g_slot_count++];
     memset(slot, 0, sizeof(*slot));
     slot->artifact_fd = -1;
-    act_copy(slot->handler, sizeof(slot->handler), handler);
+    act_copy(slot->source, sizeof(slot->source), source);
     slot->in_use = true;
     return slot;
 }
@@ -411,10 +708,13 @@ static void retire_handle(void *handle, int fd,
     }
 }
 
+/* The dlopen half: confinement, authorization, pin+hash, dlopen/dlsym. The
+ * admit -> probe -> ONE batch commit half is hotswap_module_publish(), which
+ * compiles in every build and is unit-tested directly with fabricated modules
+ * (lib/test/src/test_hotswap_module_v2.c). */
 static bool activate_run(const char *so_path, const char *resolved_datadir,
                          bool request_activate, bool require_authorization,
-                         hotswap_commit_handler_cb commit_cb,
-                         hotswap_quiesced_cb quiesced_cb, void *cb_ctx,
+                         const struct hotswap_publish_hooks *hooks,
                          struct hotswap_activate_report *report)
 {
     if (!report)
@@ -422,40 +722,25 @@ static bool activate_run(const char *so_path, const char *resolved_datadir,
     memset(report, 0, sizeof(*report));
     report->verify_only = !request_activate;
 
-/* Populate the report, log, record the rejection, count it, and return false.
- * Cleanup (dlclose/close) is done at the call site BEFORE invoking this. */
-#define ACT_REJECT(stage_, ...)                                              \
-    do {                                                                     \
-        act_copy(report->stage, sizeof(report->stage), (stage_));            \
-        snprintf(report->error, sizeof(report->error), __VA_ARGS__);         \
-        report->ok = false;                                                  \
-        report->rolled_back = true;                                          \
-        atomic_fetch_add_explicit(&g_rollback_count, 1, memory_order_relaxed); \
-        record_event(&g_last_rejection, report->handler_name, (stage_),      \
-                     report->error, false, false);                           \
-        LOG_WARN("hotswap.activate", "reject stage=%s: %s", (stage_),        \
-                 report->error);                                             \
-        return false;                                                        \
-    } while (0)
-
     char why[256] = {0};
     if (!hotswap_path_is_acceptable(so_path, why, sizeof(why)))
-        ACT_REJECT("precheck", "rejected so_path: %s", why);
+        return act_reject(report, "precheck", "rejected so_path: %s", why);
     if (!hotswap_datadir_is_dev(resolved_datadir))
-        ACT_REJECT("precheck",
-                   "hot-swap requires the exact dev datadir ~/.zclassic-c23-dev, got '%s'",
-                   resolved_datadir ? resolved_datadir : "");
+        return act_reject(report, "precheck",
+            "hot-swap requires the exact dev datadir ~/.zclassic-c23-dev, got '%s'",
+            resolved_datadir ? resolved_datadir : "");
 
     if (require_authorization && request_activate &&
         !hotswap_activation_authorized(resolved_datadir, why, sizeof(why)))
-        ACT_REJECT("authorize", "%s", why);
+        return act_reject(report, "authorize", "%s", why);
 
     int fd = open(so_path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     struct stat st;
     if (fd < 0 || fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
         !artifact_sha256_fd(fd, report->artifact_sha256)) {
         if (fd >= 0) close(fd);
-        ACT_REJECT("dlopen", "could not pin and hash a regular module artifact");
+        return act_reject(report, "dlopen",
+                          "could not pin and hash a regular module artifact");
     }
 
     char pinned[64];
@@ -466,7 +751,7 @@ static bool activate_run(const char *so_path, const char *resolved_datadir,
         char msg[200];
         snprintf(msg, sizeof(msg), "dlopen failed: %s", dl ? dl : "(unknown)");
         close(fd);
-        ACT_REJECT("dlopen", "%s", msg);
+        return act_reject(report, "dlopen", "%s", msg);
     }
 
     dlerror();
@@ -478,64 +763,36 @@ static bool activate_run(const char *so_path, const char *resolved_datadir,
                  ZCL_HOTSWAP_MODULE_SYMBOL, sym_err ? sym_err : "not found");
         dlclose(handle);
         close(fd);
-        ACT_REJECT("abi", "%s", msg);
-    }
-    if (mod->handler_name)
-        act_copy(report->handler_name, sizeof(report->handler_name),
-                 mod->handler_name);
-    /* ABI version + required fields + swappable allowlist + module self_test,
-     * all in one pure gauntlet (also unit-tested directly with a fabricated
-     * struct). Any failure => refuse LOUDLY, old handler untouched. */
-    char admit_stage[64] = {0};
-    if (!hotswap_module_admit(mod, admit_stage, sizeof(admit_stage),
-                              why, sizeof(why))) {
-        dlclose(handle);
-        close(fd);
-        ACT_REJECT(admit_stage[0] ? admit_stage : "abi", "%s", why);
+        return act_reject(report, "abi", "%s", msg);
     }
 
-    /* Verification passed. */
-    if (!request_activate) {
+    /* admit -> probe -> ONE all-or-nothing batch replace. ZERO leaves publish
+     * on any failure, and the resident handlers are untouched. */
+    if (!hotswap_module_publish(mod, request_activate, hooks, report)) {
         dlclose(handle);
         close(fd);
-        report->ok = true;
-        report->verify_only = true;
-        report->activated = false;
-        act_copy(report->stage, sizeof(report->stage), "verified");
-        atomic_fetch_add_explicit(&g_verify_count, 1, memory_order_relaxed);
-        record_event(&g_last_activation, report->handler_name, "verified", "",
-                     false, true);
-        LOG_INFO("hotswap.activate",
-                 "verify-only OK handler=%s sha=%s (not activated)",
-                 report->handler_name, report->artifact_sha256);
+        return false;
+    }
+    if (!report->activated) {
+        /* Verify-only: nothing referenced the candidate, drop it now. */
+        dlclose(handle);
+        close(fd);
+        LOG_INFO("hotswap.activate", "verify-only OK sha=%s (not activated)",
+                 report->artifact_sha256);
         return true;
-    }
-
-    /* Authorized live activation. */
-    if (!commit_cb) {
-        dlclose(handle);
-        close(fd);
-        ACT_REJECT("commit", "no registry commit callback supplied");
-    }
-    uint32_t gen = 0;
-    why[0] = '\0';
-    if (!commit_cb(cb_ctx, mod->handler_name, mod->fn, &gen, why, sizeof(why))) {
-        /* Rollback: the registry never published, old handler untouched. */
-        dlclose(handle);
-        close(fd);
-        ACT_REJECT("commit", "%s", why[0] ? why : "registry commit failed");
     }
 
     void *prev_handle = NULL;
     int prev_fd = -1;
     pthread_mutex_lock(&g_act_lock);
-    struct hotswap_act_slot *slot = slot_for_handler_locked(mod->handler_name);
+    struct hotswap_act_slot *slot = slot_for_source_locked(mod->source_tu);
     if (slot) {
         prev_handle = slot->handle;
         prev_fd = slot->artifact_fd;
         slot->handle = handle;
         slot->artifact_fd = fd;
-        slot->generation = gen;
+        slot->generation = report->generation;
+        slot->leaf_count = mod->leaf_count;
         slot->activated_at = platform_time_wall_time_t();
         slot->swaps++;
         act_copy(slot->artifact_sha256, sizeof(slot->artifact_sha256),
@@ -551,63 +808,50 @@ static bool activate_run(const char *so_path, const char *resolved_datadir,
                  "activation slot table full; keeping module .so mapped");
     }
 
-    report->ok = true;
-    report->activated = true;
-    report->verify_only = false;
-    report->generation = gen;
-    act_copy(report->stage, sizeof(report->stage), "activated");
-    atomic_fetch_add_explicit(&g_activation_count, 1, memory_order_relaxed);
-    record_event(&g_last_activation, report->handler_name, "activated", "",
-                 true, true);
-    LOG_INFO("hotswap.activate",
-             "activated handler=%s gen=%u sha=%s",
-             report->handler_name, gen, report->artifact_sha256);
-
-    /* Retire the previous module .so for this handler once dispatch drains. */
-    retire_handle(prev_handle, prev_fd, quiesced_cb, cb_ctx);
+    /* Retire the previous module .so for this source once dispatch drains. */
+    retire_handle(prev_handle, prev_fd, hooks ? hooks->quiesced : NULL,
+                  hooks ? hooks->ctx : NULL);
     return true;
-#undef ACT_REJECT
 }
 
 bool hotswap_activate(const char *so_path, const char *resolved_datadir,
                       bool request_activate,
-                      hotswap_commit_handler_cb commit_cb,
-                      hotswap_quiesced_cb quiesced_cb, void *cb_ctx,
+                      const struct hotswap_publish_hooks *hooks,
                       struct hotswap_activate_report *report)
 {
     return activate_run(so_path, resolved_datadir, request_activate,
-                        /*require_authorization=*/true, commit_cb, quiesced_cb,
-                        cb_ctx, report);
+                        /*require_authorization=*/true, hooks, report);
 }
 
 bool hotswap_activate_local(const char *so_path, const char *resolved_datadir,
-                            hotswap_commit_handler_cb commit_cb,
+                            const struct hotswap_publish_hooks *hooks,
                             struct hotswap_activate_report *report)
 {
     /* Process-local commit in the operator's own one-shot CLI: probe-class
      * authority, so the resident gate (-hotswap-activate +
-     * ZCL_HOTSWAP_ACTIVATE=1) does not apply. The override dies with the
+     * ZCL_HOTSWAP_ACTIVATE=1) does not apply. The overrides die with the
      * process. Path confinement, the dev-datadir check, the admit gauntlet,
-     * and the registry's READY/EFFECT_READ re-check all still apply. */
+     * probe-before-publish, and the registry's READY/EFFECT_READ re-check all
+     * still apply. */
+    struct hotswap_publish_hooks local = {0};
+    if (hooks)
+        local = *hooks;
+    local.quiesced = NULL;      /* nothing to reclaim in a one-shot process */
     return activate_run(so_path, resolved_datadir, /*request_activate=*/true,
-                        /*require_authorization=*/false, commit_cb,
-                        NULL, NULL, report);
+                        /*require_authorization=*/false, &local, report);
 }
 
 #else /* !ZCL_DEV_BUILD — release: no dynamic activation surface */
 
 bool hotswap_activate(const char *so_path, const char *resolved_datadir,
                       bool request_activate,
-                      hotswap_commit_handler_cb commit_cb,
-                      hotswap_quiesced_cb quiesced_cb, void *cb_ctx,
+                      const struct hotswap_publish_hooks *hooks,
                       struct hotswap_activate_report *report)
 {
     (void)so_path;
     (void)resolved_datadir;
     (void)request_activate;
-    (void)commit_cb;
-    (void)quiesced_cb;
-    (void)cb_ctx;
+    (void)hooks;
     if (!report)
         return false;
     memset(report, 0, sizeof(*report));
@@ -620,12 +864,12 @@ bool hotswap_activate(const char *so_path, const char *resolved_datadir,
 }
 
 bool hotswap_activate_local(const char *so_path, const char *resolved_datadir,
-                            hotswap_commit_handler_cb commit_cb,
+                            const struct hotswap_publish_hooks *hooks,
                             struct hotswap_activate_report *report)
 {
     (void)so_path;
     (void)resolved_datadir;
-    (void)commit_cb;
+    (void)hooks;
     if (!report)
         return false;
     memset(report, 0, sizeof(*report));

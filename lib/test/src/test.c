@@ -1151,6 +1151,7 @@ int main(int argc, char **argv)
     failures += test_hotswap_loader();
     failures += test_hotswap_simnet();
     failures += test_hotswap_module();
+    failures += test_hotswap_module_v2();
     failures += test_dev_platform();
     failures += test_command_registry_catalog();
     failures += test_native_api_contract();

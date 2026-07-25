@@ -46,14 +46,29 @@ static bool selftest_false(char *err, size_t cap)
     return false;
 }
 
+/* The status controller row of config/hotswap_swappable.def, whose declared
+ * probe leaf in config/hotswap_eligible.def is core.status. */
+#define STATUS_TU "app/controllers/src/status_native_handlers.c"
+
+static const struct zcl_hotswap_leaf k_status_leaves[] = {
+    { "core.status", mod_handler },
+};
+static const struct zcl_hotswap_leaf k_status_leaves_nullfn[] = {
+    { "core.status", NULL },
+};
+static const struct zcl_hotswap_leaf k_consensus_leaves[] = {
+    { "core.consensus.pow.verify", mod_handler },
+};
+
 static int test_admit_ok(void)
 {
     int failures = 0;
     TEST("hotswap_module_admit accepts a well-formed allowlisted module") {
         struct zcl_hotswap_module m = {
-            .abi_version = ZCL_HOTSWAP_MODULE_ABI_V1,
-            .handler_name = "core.status",   /* on config/hotswap_swappable.def */
-            .fn = mod_handler,
+            .abi_version = ZCL_HOTSWAP_MODULE_ABI_V2,
+            .source_tu = STATUS_TU,   /* on config/hotswap_swappable.def */
+            .leaf_count = 1,
+            .leaves = k_status_leaves,
             .self_test = selftest_true,
         };
         char stage[64], why[192];
@@ -68,9 +83,9 @@ static int test_admit_abi_mismatch(void)
     int failures = 0;
     TEST("ABI version mismatch is refused at stage=abi") {
         struct zcl_hotswap_module m = {
-            .abi_version = ZCL_HOTSWAP_MODULE_ABI_V1 + 7u,
-            .handler_name = "core.status", .fn = mod_handler,
-            .self_test = selftest_true,
+            .abi_version = ZCL_HOTSWAP_MODULE_ABI_V2 + 7u,
+            .source_tu = STATUS_TU, .leaf_count = 1,
+            .leaves = k_status_leaves, .self_test = selftest_true,
         };
         char stage[64] = {0}, why[192] = {0};
         ASSERT(!hotswap_module_admit(&m, stage, sizeof(stage), why, sizeof(why)));
@@ -84,11 +99,11 @@ static int test_admit_abi_mismatch(void)
 static int test_admit_missing_fields(void)
 {
     int failures = 0;
-    TEST("missing fields (NULL fn) refused at stage=fields") {
+    TEST("missing fields (NULL leaf fn) refused at stage=fields") {
         struct zcl_hotswap_module m = {
-            .abi_version = ZCL_HOTSWAP_MODULE_ABI_V1,
-            .handler_name = "core.status", .fn = NULL,
-            .self_test = selftest_true,
+            .abi_version = ZCL_HOTSWAP_MODULE_ABI_V2,
+            .source_tu = STATUS_TU, .leaf_count = 1,
+            .leaves = k_status_leaves_nullfn, .self_test = selftest_true,
         };
         char stage[64] = {0}, why[192] = {0};
         ASSERT(!hotswap_module_admit(&m, stage, sizeof(stage), why, sizeof(why)));
@@ -101,12 +116,13 @@ static int test_admit_missing_fields(void)
 static int test_admit_allowlist(void)
 {
     int failures = 0;
-    TEST("a non-allowlisted handler is refused at stage=allowlist (HARD LINE)") {
+    TEST("a non-allowlisted source is refused at stage=allowlist (HARD LINE)") {
         struct zcl_hotswap_module m = {
-            .abi_version = ZCL_HOTSWAP_MODULE_ABI_V1,
-            /* A consensus/validation path — must NEVER be swappable. */
-            .handler_name = "core.consensus.pow.verify",
-            .fn = mod_handler, .self_test = selftest_true,
+            .abi_version = ZCL_HOTSWAP_MODULE_ABI_V2,
+            /* A consensus/validation TU — must NEVER be swappable. */
+            .source_tu = "lib/consensus/src/pow.c",
+            .leaf_count = 1, .leaves = k_consensus_leaves,
+            .self_test = selftest_true,
         };
         char stage[64] = {0}, why[192] = {0};
         ASSERT(!hotswap_module_admit(&m, stage, sizeof(stage), why, sizeof(why)));
@@ -117,14 +133,32 @@ static int test_admit_allowlist(void)
     return failures;
 }
 
+static int test_admit_leaf_not_owned(void)
+{
+    int failures = 0;
+    TEST("an allowlisted source claiming a leaf it does not own is refused") {
+        struct zcl_hotswap_module m = {
+            .abi_version = ZCL_HOTSWAP_MODULE_ABI_V2,
+            .source_tu = STATUS_TU, .leaf_count = 1,
+            .leaves = k_consensus_leaves, .self_test = selftest_true,
+        };
+        char stage[64] = {0}, why[192] = {0};
+        ASSERT(!hotswap_module_admit(&m, stage, sizeof(stage), why, sizeof(why)));
+        ASSERT_EQ(strcmp(stage, "allowlist"), 0);
+        ASSERT(strstr(why, "core.consensus.pow.verify") != NULL);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_admit_selftest_fail(void)
 {
     int failures = 0;
     TEST("a failing module self_test is refused at stage=self_test (rollback)") {
         struct zcl_hotswap_module m = {
-            .abi_version = ZCL_HOTSWAP_MODULE_ABI_V1,
-            .handler_name = "core.status", .fn = mod_handler,
-            .self_test = selftest_false,
+            .abi_version = ZCL_HOTSWAP_MODULE_ABI_V2,
+            .source_tu = STATUS_TU, .leaf_count = 1,
+            .leaves = k_status_leaves, .self_test = selftest_false,
         };
         char stage[64] = {0}, why[192] = {0};
         ASSERT(!hotswap_module_admit(&m, stage, sizeof(stage), why, sizeof(why)));
@@ -142,6 +176,7 @@ static int test_module_admit(void)
     failures += test_admit_abi_mismatch();
     failures += test_admit_missing_fields();
     failures += test_admit_allowlist();
+    failures += test_admit_leaf_not_owned();
     failures += test_admit_selftest_fail();
     return failures;
 }
@@ -228,8 +263,8 @@ static int test_release_stub_refuses(void)
     int failures = 0;
     TEST("hotswap_activate is the release stub in the non-dev test binary") {
         struct hotswap_activate_report report;
-        bool ok = hotswap_activate("/tmp/whatever.so", "/tmp", true,
-                                   NULL, NULL, NULL, &report);
+        bool ok = hotswap_activate("/tmp/whatever.so", "/tmp", true, NULL,
+                                   &report);
         ASSERT(!ok);
         ASSERT(!report.ok);
         ASSERT_EQ(strcmp(report.stage, "release"), 0);

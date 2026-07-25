@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Copyright 2026 Rhett Creighton - Apache License 2.0
 #
-# Fast single-handler module rebuild for the observable hot-swap loop
+# Fast MULTI-LEAF module rebuild for the observable hot-swap loop
 # (`make hotswap-try` / `make hotswap-apply`). Bypasses the whole-program make
 # parse by replaying cached compile metadata (build/hotswap/fast/flags.env)
 # written by the authoritative `make hotswap-module-so` recipe.
@@ -12,8 +12,10 @@
 # It never silently skips a needed rebuild.
 #
 # Replicated semantics from the make recipe (Makefile: hotswap-module-so):
-#   - handler allowlist resolution from config/hotswap_swappable.def
-#   - exact DEV_CFLAGS + `-fPIC -DZCL_HOTSWAP_MODULE_GEN` compile
+#   - per-FILE allowlist resolution from config/hotswap_swappable.def (a leaf
+#     given as HANDLER= is resolved to the one file that owns it)
+#   - exact DEV_CFLAGS + `-fPIC -DZCL_HOTSWAP_MODULE_GEN
+#     -DZCL_HOTSWAP_MODULE_SOURCE_TU="<tu>"` compile
 #   - link with HOTSWAP_MODULE_LDFLAGS, including the LOAD-BEARING
 #     -Wl,-Bsymbolic (ELF interposition guard; refused if absent from cache)
 #   - mutation guard: source/header mtimes verified unchanged across the build
@@ -29,14 +31,17 @@
 set -euo pipefail
 
 HANDLER=""
+FILE=""
 for arg in "$@"; do
     case "$arg" in
         HANDLER=*) HANDLER="${arg#HANDLER=}" ;;
+        FILE=*) FILE="${arg#FILE=}" ;;
         *) echo "hotswap-module-fast: unknown argument: $arg" >&2; exit 2 ;;
     esac
 done
-[ -n "$HANDLER" ] || {
-    echo "usage: tools/dev/hotswap-module-fast.sh HANDLER=core.status" >&2
+[ -n "$HANDLER" ] || [ -n "$FILE" ] || {
+    echo "usage: tools/dev/hotswap-module-fast.sh FILE=app/controllers/src/status_native_handlers.c" >&2
+    echo "   or: tools/dev/hotswap-module-fast.sh HANDLER=core.status" >&2
     exit 2
 }
 
@@ -55,30 +60,49 @@ fallback() {
     # top of the recipe's own post-compile verify-record. If the capture
     # itself fails here, fall through to letting make capture it instead of
     # masking the failure.
-    local record
+    local record selector
+    if [ -n "$FILE" ]; then selector="FILE=$FILE"; else selector="HANDLER=$HANDLER"; fi
     if record="$(tools/dev/source-identity.sh capture-record 2>/dev/null)"; then
         exec make --no-print-directory hotswap-module-so \
-            "HANDLER=$HANDLER" "BUILD_SOURCE_RECORD=$record"
+            "$selector" "BUILD_SOURCE_RECORD=$record"
     fi
-    exec make --no-print-directory hotswap-module-so "HANDLER=$HANDLER"
+    exec make --no-print-directory hotswap-module-so "$selector"
 }
 
-# Handler names are command-leaf paths; anything outside this charset is for
-# the authoritative make path to diagnose (never interpolated into sed here).
+# Leaf names are command-leaf paths and FILE is a repo-relative .c; anything
+# outside these charsets is for the authoritative make path to diagnose.
 case "$HANDLER" in
-    *[!A-Za-z0-9_.-]* | "") fallback "handler name outside safe charset" ;;
+    *[!A-Za-z0-9_.-]*) fallback "leaf name outside safe charset" ;;
+esac
+case "$FILE" in
+    *[!A-Za-z0-9_./-]*) fallback "FILE outside safe charset" ;;
 esac
 
 DEF=config/hotswap_swappable.def
-src="$(sed -n 's/^[[:space:]]*HOTSWAP_SWAPPABLE("'"$HANDLER"'"[[:space:]]*,[[:space:]]*"\([^"]*\)").*/\1/p' "$DEF" | head -1)"
-[ -n "$src" ] || fallback "handler '$HANDLER' not resolved by $DEF"
+# Rows are per-FILE and span lines: flatten, then match only complete
+# HOTSWAP_SWAPPABLE("<src>", "<leaves>") invocations (the header comment spells
+# the signature without quotes, so it can never match).
+rows="$(tr '\n' ' ' < "$DEF" \
+    | grep -oE 'HOTSWAP_SWAPPABLE\("[^"]*"[[:space:]]*,[[:space:]]*"[^"]*"\)')" ||
+    fallback "no HOTSWAP_SWAPPABLE rows parsed from $DEF"
+[ -n "$rows" ] || fallback "no HOTSWAP_SWAPPABLE rows parsed from $DEF"
+
+if [ -n "$FILE" ]; then
+    src="$FILE"
+    printf '%s\n' "$rows" | grep -Fq "HOTSWAP_SWAPPABLE(\"$src\"" ||
+        fallback "'$src' is not a row in $DEF"
+else
+    src="$(printf '%s\n' "$rows" | awk -v leaf="$HANDLER" -F '"' \
+        '{ n = split($4, L, " "); for (i = 1; i <= n; i++) if (L[i] == leaf) { print $2; exit } }')"
+    [ -n "$src" ] || fallback "leaf '$HANDLER' not resolved by $DEF"
+fi
 [ -f "$src" ] || fallback "source does not exist: $src"
 
 FAST_DIR=build/hotswap/fast
 FLAGS_ENV="$FAST_DIR/flags.env"
 HOTSWAP_OBJ_DIR=build/hotswap-obj
 HOTSWAP_SO_DIR=build/hotswap
-safe="$(printf '%s' "$HANDLER" | tr -c 'A-Za-z0-9_.-' '_')"
+safe="$(printf '%s' "$src" | tr -c 'A-Za-z0-9_.-' '_')"
 
 # ── Cached metadata must be present and fresher than everything that could
 # invalidate it: the Makefile (flag definitions), the allowlist (handler ->
@@ -167,7 +191,9 @@ trap 'rm -f "$tmp_o" "$tmp_d" "$tmp_so"' EXIT HUP INT TERM
 pre_snapshot="$( { [ -f "$cache_d" ] && deps_from_depfile "$cache_d"; printf '%s\n' "$src"; } | LC_ALL=C sort -u | xargs -r stat -c '%n %i:%s:%y' 2>/dev/null || true )"
 
 # shellcheck disable=SC2086
-$F_CC $F_CFLAGS -fPIC -DZCL_HOTSWAP_MODULE_GEN -MD -MF "$tmp_d" -c -o "$tmp_o" "$src" >&2 ||
+$F_CC $F_CFLAGS -fPIC -DZCL_HOTSWAP_MODULE_GEN \
+    "-DZCL_HOTSWAP_MODULE_SOURCE_TU=\"$src\"" \
+    -MD -MF "$tmp_d" -c -o "$tmp_o" "$src" >&2 ||
     fallback "compile failed under cached flags"
 mapfile -t new_deps < <(deps_from_depfile "$tmp_d")
 [ "${#new_deps[@]}" -gt 0 ] || fallback "depfile from cached compile is empty"
@@ -227,5 +253,5 @@ printf '%s\n' "$want_cc" > "$cache_cmd"
 printf '%s\n' "$final_so" > "$cache_ptr"
 trap - EXIT HUP INT TERM
 
-echo "hotswap-module-fast: linked single-handler module candidate $final_so" >&2
+echo "hotswap-module-fast: linked multi-leaf module candidate $final_so ($src)" >&2
 printf '%s\n' "$final_so"

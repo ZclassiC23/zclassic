@@ -74,6 +74,12 @@
 #define HOTSWAP_SWAPPABLE_MANIFEST_REL "config/hotswap_swappable.def"
 #define HOTSWAP_SWAPPABLE_BAD_MANIFEST_REL \
     "lib/test/fixtures/hotswap_swappable_bad_shape.def"
+#define HOTSWAP_SWAPPABLE_NOT_READY_READ_REL \
+    "lib/test/fixtures/hotswap_swappable_not_ready_read.def"
+#define HOTSWAP_SWAPPABLE_DUP_LEAF_REL \
+    "lib/test/fixtures/hotswap_swappable_dup_leaf.def"
+#define HOTSWAP_SWAPPABLE_BAD_STATIC_REL \
+    "lib/test/fixtures/hotswap_swappable_bad_static.def"
 #define GIT_HOOKS_SCRIPT_REL "tools/scripts/check_git_hooks_installed.sh"
 #define PRIV_RECEIPT_SCRIPT_REL \
     "tools/lint/check_privileged_transition_receipt.sh"
@@ -3740,10 +3746,34 @@ static int t_hotswap_swappable_shape_gate(void)
     TEST("hotswap swappable-shape gate: real allowlist passes, forbidden root trips") {
         /* The committed allowlist is all shape-leaf surfaces → clean (exit 0). */
         ASSERT(run_hotswap_swappable_gate(HOTSWAP_SWAPPABLE_MANIFEST_REL) == 0);
-        /* A seeded allowlist that points a handler at a lib/consensus TU trips
-         * the gate (exit 1) — proof the hard line is not hollow. */
+        /* A seeded allowlist that points a row at a lib/consensus TU trips
+         * the gate (exit 1) — proof the shape half is not hollow. */
         ASSERT(run_hotswap_swappable_gate(HOTSWAP_SWAPPABLE_BAD_MANIFEST_REL) == 1);
         /* Recovery: back on the real allowlist the gate passes again. */
+        ASSERT(run_hotswap_swappable_gate(HOTSWAP_SWAPPABLE_MANIFEST_REL) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* The READY-read-only half of the hard line. Before the swappable def carried a
+ * leaf column this gate checked shape FOLDERS only: a leaf that was mutating or
+ * non-READY reached the runtime unchallenged, invisible only because the six
+ * allowlisted files happened to match config/hotswap_eligible.def. Both seeded
+ * fixtures below MUST trip, or the widened batch has no static guard. */
+static int t_hotswap_swappable_leaf_contract_gate(void)
+{
+    int failures = 0;
+    TEST("hotswap swappable gate: a non-READY_READ leaf and a duplicate leaf trip") {
+        ASSERT(run_hotswap_swappable_gate(HOTSWAP_SWAPPABLE_MANIFEST_REL) == 0);
+        /* An in-shape controller row whose leaf list names a mutating
+         * (ZCL_COMMAND_READY_COMMAND) leaf trips the gate (exit 1). */
+        ASSERT(run_hotswap_swappable_gate(HOTSWAP_SWAPPABLE_NOT_READY_READ_REL) == 1);
+        /* One leaf claimed by two source files trips the gate (exit 1) — a leaf
+         * belongs to exactly one module, so two modules can never both publish
+         * a handler for it. */
+        ASSERT(run_hotswap_swappable_gate(HOTSWAP_SWAPPABLE_DUP_LEAF_REL) == 1);
+        /* Recovery. */
         ASSERT(run_hotswap_swappable_gate(HOTSWAP_SWAPPABLE_MANIFEST_REL) == 0);
         PASS();
     } _test_next:;
@@ -3761,6 +3791,39 @@ static int t_hotswap_static_state_gate(void)
          * file-scope static trips the gate (exit 1). */
         ASSERT(run_hotswap_gate_with_manifest(HOTSWAP_STATIC_SCRIPT_REL,
                                               HOTSWAP_BAD_STATIC_MANIFEST_REL) == 1);
+        /* Recovery. */
+        ASSERT(run_hotswap_gate_with_manifest(HOTSWAP_STATIC_SCRIPT_REL,
+                                              HOTSWAP_MANIFEST_REL) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* The static-state scan must cover the UNION of the eligible AND swappable
+ * manifests. It used to read config/hotswap_eligible.def only; a TU reachable
+ * ONLY through config/hotswap_swappable.def could carry mutable file-scope
+ * state, get a zero-initialized copy inside its module .so, and silently lose
+ * live process state — no crash, just wrong answers. This proves the swappable
+ * half of the scan really fires. */
+static int t_hotswap_static_state_covers_swappable(void)
+{
+    int failures = 0;
+    TEST("hotswap static-state gate scans the swappable manifest too (union)") {
+        char real_abs[PATH_MAX], bad_abs[PATH_MAX];
+        ASSERT(repo_path(real_abs, sizeof(real_abs),
+                         HOTSWAP_SWAPPABLE_MANIFEST_REL) == 0);
+        ASSERT(repo_path(bad_abs, sizeof(bad_abs),
+                         HOTSWAP_SWAPPABLE_BAD_STATIC_REL) == 0);
+        /* Real pair → clean. */
+        ASSERT(run_gate_script_with_env(HOTSWAP_STATIC_SCRIPT_REL,
+                                        "ZCL_HOTSWAP_SWAPPABLE_MANIFEST",
+                                        real_abs) == 0);
+        /* A SWAPPABLE-only row pointing at the mutable-static fixture TU trips
+         * the gate (exit 1) while the eligible manifest stays the real, clean
+         * one — the exact hole the union closes. */
+        ASSERT(run_gate_script_with_env(HOTSWAP_STATIC_SCRIPT_REL,
+                                        "ZCL_HOTSWAP_SWAPPABLE_MANIFEST",
+                                        bad_abs) == 1);
         /* Recovery. */
         ASSERT(run_hotswap_gate_with_manifest(HOTSWAP_STATIC_SCRIPT_REL,
                                               HOTSWAP_MANIFEST_REL) == 0);
@@ -8880,7 +8943,9 @@ static const struct lint_gate_entry g_lint_gate_entries[] = {
     S_(t_gate21_supervisor_worker_lockin),
     S_(t_hotswap_eligible_scope_gate),
     S_(t_hotswap_swappable_shape_gate),
+    S_(t_hotswap_swappable_leaf_contract_gate),
     S_(t_hotswap_static_state_gate),
+    S_(t_hotswap_static_state_covers_swappable),
     S_(t_privileged_transition_receipt_gate),
     S_(t_blocker_escape_registered_gate),
     R_(t_no_trust_state_ordering_gate),          /* git grep --untracked */
