@@ -33,7 +33,7 @@ lib/net/src/connman.c 2765
 lib/net/src/download.c 1385
 lib/net/src/fast_sync.c 1889
 lib/net/src/file_service.c 2255
-lib/net/src/https_server.c 920
+lib/net/src/https_server.c 951
 lib/net/src/msg_blocks.c 878
 lib/net/src/msg_headers.c 1148
 lib/net/src/msgprocessor.c 2415
