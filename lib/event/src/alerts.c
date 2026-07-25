@@ -2,7 +2,7 @@
  *
  * Alert routing implementation — see alerts.h for the contract. */
 
-#include "util/alerts.h"
+#include "event/alerts.h"
 #include "util/sd_notify.h"
 #include "util/spawn.h"
 #include "event/event.h"

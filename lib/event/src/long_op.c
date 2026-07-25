@@ -19,7 +19,7 @@
  */
 
 #include "platform/time_compat.h"
-#include "util/long_op.h"
+#include "event/long_op.h"
 
 #include "event/event.h"
 #include "json/json.h"

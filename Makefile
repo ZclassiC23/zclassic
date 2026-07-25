@@ -5329,7 +5329,7 @@ check-no-dev-history-in-contracts:
 
 # Gate E9 — EV_OPERATOR_NEEDED emit must reach a registered sink (HARD).
 # The silent-halt fix: the loud "human needed" signal can never be emitted
-# without a subscriber in lib/util/src/alerts.c.
+# without a subscriber in lib/event/src/alerts.c.
 check-operator-needed-sink:
 	@echo "══ LINT: operator-needed sink (E9) ══"
 	@./tools/scripts/check_operator_needed_sink.sh
