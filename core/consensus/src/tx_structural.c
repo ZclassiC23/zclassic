@@ -39,7 +39,7 @@
             (out)->reject_reason = (reason_lit);                       \
             (out)->dos = (dos_score);                                  \
         }                                                              \
-        return ZCL_ERR((err_code), fmt, ##__VA_ARGS__);                \
+        return ZCL_ERR((err_code), fmt __VA_OPT__(,) __VA_ARGS__);     \
     } while (0)
 
 struct zcl_result domain_consensus_check_transaction_structural(
