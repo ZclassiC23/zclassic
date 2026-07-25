@@ -21,6 +21,36 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+/* Every on-disk and on-network resource this group touches must be unique to
+ * this process. Two copies of the suite run concurrently (and each worktree
+ * runs its own), so a fixed /tmp path or a fixed port is a cross-run
+ * collision: a LevelDB LOCK held by the other run, or an EADDRINUSE from its
+ * listener, fails a test that has nothing wrong with it. */
+static void rpc_test_tmpdir(char *buf, size_t n, const char *tag)
+{
+    test_make_tmpdir(buf, n, "rpc", tag);
+}
+
+/* Ask the kernel for a free loopback port, then release it. */
+static uint16_t rpc_test_free_port(void)
+{
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return 0;
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = htons(0);
+    uint16_t port = 0;
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+        socklen_t len = sizeof(addr);
+        if (getsockname(fd, (struct sockaddr *)&addr, &len) == 0)
+            port = ntohs(addr.sin_port);
+    }
+    close(fd);
+    return port;
+}
+
 struct rpc_fake_clock {
     int64_t wall_ms;
 };
@@ -837,8 +867,10 @@ int test_rpc(void) {
 
     printf("dbwrapper open/write/read/close... ");
     {
+        char dbdir[512];
+        rpc_test_tmpdir(dbdir, sizeof(dbdir), "dbwrapper1");
         struct db_wrapper db;
-        bool ok = db_wrapper_open(&db, "/tmp/zcl_test_db", 1024 * 1024,
+        bool ok = db_wrapper_open(&db, dbdir, 1024 * 1024,
                                   false, true);
         if (ok) {
             ok = ok && db_is_empty(&db);
@@ -859,13 +891,16 @@ int test_rpc(void) {
 
             db_wrapper_close(&db);
         }
+        test_rm_rf(dbdir);
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
     printf("dbwrapper batch... ");
     {
+        char dbdir[512];
+        rpc_test_tmpdir(dbdir, sizeof(dbdir), "dbwrapper2");
         struct db_wrapper db;
-        bool ok = db_wrapper_open(&db, "/tmp/zcl_test_db2", 1024 * 1024,
+        bool ok = db_wrapper_open(&db, dbdir, 1024 * 1024,
                                   false, true);
         if (ok) {
             struct db_batch batch;
@@ -882,13 +917,16 @@ int test_rpc(void) {
 
             db_wrapper_close(&db);
         }
+        test_rm_rf(dbdir);
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
     printf("dbwrapper iterator... ");
     {
+        char dbdir[512];
+        rpc_test_tmpdir(dbdir, sizeof(dbdir), "dbwrapper3");
         struct db_wrapper db;
-        bool ok = db_wrapper_open(&db, "/tmp/zcl_test_db3", 1024 * 1024,
+        bool ok = db_wrapper_open(&db, dbdir, 1024 * 1024,
                                   false, true);
         if (ok) {
             db_write(&db, "x", 1, "10", 2, false);
@@ -907,6 +945,7 @@ int test_rpc(void) {
             db_iter_free(&it);
             db_wrapper_close(&db);
         }
+        test_rm_rf(dbdir);
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
@@ -1267,6 +1306,13 @@ int test_rpc(void) {
         int cfd = mkstemp(cert_path);
         int kfd = mkstemp(key_path);
         bool ok = false;
+        /* Private datadir: rpc_http_start writes <datadir>/.cookie, so a
+         * shared "/tmp" would have two concurrent runs overwriting and then
+         * unlinking each other's credential file. */
+        char rpcdir[512];
+        rpc_test_tmpdir(rpcdir, sizeof(rpcdir), "tls");
+        const uint16_t tls_port = rpc_test_free_port();
+        const uint16_t http_port = rpc_test_free_port();
 
         if (cfd >= 0 && kfd >= 0) {
             /* Generate RSA key + self-signed cert via OpenSSL */
@@ -1307,16 +1353,19 @@ int test_rpc(void) {
                 }
 
                 /* Set env vars and start RPC with TLS */
+                char tls_port_s[16];
+                snprintf(tls_port_s, sizeof(tls_port_s), "%u",
+                         (unsigned)tls_port);
                 setenv("ZCL_RPC_TLS_CERT", cert_path, 1);
                 setenv("ZCL_RPC_TLS_KEY", key_path, 1);
-                setenv("ZCL_RPC_TLS_PORT", "19444", 1);
+                setenv("ZCL_RPC_TLS_PORT", tls_port_s, 1);
 
                 /* Create a minimal RPC table */
                 struct rpc_table tbl;
                 rpc_table_init(&tbl);
 
-                bool started = rpc_http_start(&tbl, 19443, NULL, NULL,
-                                               "/tmp");
+                bool started = tls_port && http_port &&
+                    rpc_http_start(&tbl, http_port, NULL, NULL, rpcdir);
                 if (started) {
                     ok = rpc_http_tls_active();
 
@@ -1328,7 +1377,7 @@ int test_rpc(void) {
                             struct sockaddr_in sa;
                             memset(&sa, 0, sizeof(sa));
                             sa.sin_family = AF_INET;
-                            sa.sin_port = htons(19444);
+                            sa.sin_port = htons(tls_port);
                             sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
                             if (connect(sock, (struct sockaddr *)&sa,
                                         sizeof(sa)) == 0) {
@@ -1386,8 +1435,8 @@ int test_rpc(void) {
         unsetenv("ZCL_RPC_TLS_CERT");
         unsetenv("ZCL_RPC_TLS_KEY");
         unsetenv("ZCL_RPC_TLS_PORT");
-        /* Clean up cookie file */
-        unlink("/tmp/.cookie");
+        /* Clean up cookie file (ours, not a shared /tmp/.cookie) */
+        test_rm_rf(rpcdir);
 
         if (ok)
             printf("OK\n");
@@ -1401,13 +1450,16 @@ int test_rpc(void) {
     {
         unsetenv("ZCL_RPC_TLS_CERT");
         unsetenv("ZCL_RPC_TLS_KEY");
+        char rpcdir[512];
+        rpc_test_tmpdir(rpcdir, sizeof(rpcdir), "notls");
+        const uint16_t port = rpc_test_free_port();
         struct rpc_table tbl;
         rpc_table_init(&tbl);
-        bool started = rpc_http_start(&tbl, 19445, NULL, NULL, "/tmp");
+        bool started = port && rpc_http_start(&tbl, port, NULL, NULL, rpcdir);
         bool tls = rpc_http_tls_active();
         if (started) rpc_http_stop();
         (void)tbl;
-        unlink("/tmp/.cookie");
+        test_rm_rf(rpcdir);
         if (started && !tls)
             printf("OK\n");
         else {

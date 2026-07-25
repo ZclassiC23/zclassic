@@ -53,19 +53,25 @@
     else { printf("FAIL\n"); failures++; }               \
 } while (0)
 
+/* Explicit opt-in only. There is deliberately no $HOME/.zclassic fallback:
+ * that directory belongs to a running zclassicd, and replay_verify_run →
+ * block_log_legacy_open → bilr_open → db_wrapper_open is an ordinary
+ * read-WRITE LevelDB open — it creates if missing, takes the LOCK, and can
+ * run log recovery against a live daemon's block index.
+ *
+ * This was the second instance of the same fallback; the first was removed
+ * from test_block_log_legacy.c. It was not theoretical: the live index
+ * logged fresh LevelDB recoveries advancing about two per full-suite run
+ * while this fallback was in place. Point ZCL_LEGACY_DATADIR at a datadir
+ * you own (a stopped node, or a copy) to exercise the live block. */
 static const char *rv_resolve_live_datadir(void)
 {
     const char *env = getenv("ZCL_LEGACY_DATADIR");
-    if (env && env[0]) return env;
-
-    static char home_zcl[1024];
-    const char *home = getenv("HOME");
-    if (!home || !home[0]) return NULL;
-    snprintf(home_zcl, sizeof home_zcl, "%s/.zclassic", home);
+    if (!env || !env[0]) return NULL;
     struct stat st;
-    if (stat(home_zcl, &st) != 0 || !S_ISDIR(st.st_mode))
+    if (stat(env, &st) != 0 || !S_ISDIR(st.st_mode))
         return NULL;
-    return home_zcl;
+    return env;
 }
 
 /* ── Fixture-block builders ─────────────────────────────────────────

@@ -28,6 +28,16 @@
 #include <string.h>
 #include <unistd.h>
 
+/* Ack files are real files that these tests write, read back, and unlink.
+ * At a fixed /tmp path a second copy of the suite would unlink one between
+ * this run's write and its read-back, so every ack path is per-process. */
+static const char *rp_ack_path(char *buf, size_t n, const char *tag)
+{
+    mkdir("test-tmp", 0755);
+    test_fmt_tmpdir(buf, n, "rp_ack", tag);
+    return buf;
+}
+
 /* ── Event counters (sync observer) ──────────────────────────── */
 
 static _Atomic int g_ev_allow;
@@ -116,7 +126,9 @@ static int t_env_overrides(void)
     setenv("ZCL_MAX_HEADER_REWIND",        "99",   1);
     setenv("ZCL_REQUIRE_BACKUP_VERIFIED",  "yes",  1);
     setenv("ZCL_DRY_RUN",                  "1",    1);
-    setenv("ZCL_OPERATOR_ACK_FILE",        "/tmp/rp_override_ack", 1);
+    char ack[512];
+    rp_ack_path(ack, sizeof(ack), "env_override");
+    setenv("ZCL_OPERATOR_ACK_FILE",        ack,    1);
 
     struct recovery_policy p;
     policy_load_from_env(&p);
@@ -128,7 +140,7 @@ static int t_env_overrides(void)
         p.require_backup_verified == true &&
         p.dry_run == true &&
         p.operator_ack_file != NULL &&
-        strcmp(p.operator_ack_file, "/tmp/rp_override_ack") == 0;
+        strcmp(p.operator_ack_file, ack) == 0;
     RP_RUN("rp: load_from_env applies all six overrides", ok);
 
     unsetenv("ZCL_MAX_UTXO_WIPE_ROWS");
@@ -184,7 +196,8 @@ static int t_utxo_wipe_refuse_too_large(void)
     policy_set_defaults(&p);
     /* Point ack file somewhere harmless; there's no prompt hook so the
      * decision must be REFUSE_TOO_LARGE regardless of the file. */
-    p.operator_ack_file = "/tmp/rp_refuse_ack";
+    char ack[512];
+    p.operator_ack_file = rp_ack_path(ack, sizeof(ack), "refuse");
     unlink(p.operator_ack_file);
     enum policy_decision d =
         policy_check_utxo_wipe(&p, 5000, "test.over_cap");
@@ -192,7 +205,7 @@ static int t_utxo_wipe_refuse_too_large(void)
               atomic_load(&g_ev_refused) == 1 &&
               atomic_load(&g_ev_allow)   == 0;
     RP_RUN("rp: utxo wipe over cap w/o hook returns REFUSE_TOO_LARGE", ok);
-    unlink("/tmp/rp_refuse_ack");
+    unlink(ack);
     return failures;
 }
 
@@ -273,7 +286,8 @@ static int t_operator_prompt_accepts(void)
 
     struct recovery_policy p;
     policy_set_defaults(&p);
-    const char *ack = "/tmp/rp_prompt_accept_ack";
+    char ackbuf[512];
+    const char *ack = rp_ack_path(ackbuf, sizeof(ackbuf), "prompt_accept");
     unlink(ack);
     p.operator_ack_file = ack;
     p.operator_prompt_fn = rp_prompt_accept;
@@ -306,7 +320,8 @@ static int t_operator_prompt_rejects(void)
 
     struct recovery_policy p;
     policy_set_defaults(&p);
-    const char *ack = "/tmp/rp_prompt_reject_ack";
+    char ackbuf[512];
+    const char *ack = rp_ack_path(ackbuf, sizeof(ackbuf), "prompt_reject");
     unlink(ack);
     p.operator_ack_file = ack;
     p.operator_prompt_fn = rp_prompt_reject;
@@ -487,7 +502,8 @@ static int t_hook_not_called_under_cap(void)
     struct recovery_policy p;
     policy_set_defaults(&p);
     p.operator_prompt_fn = rp_prompt_accept;
-    p.operator_ack_file = "/tmp/rp_under_cap_ack";
+    char ack[512];
+    p.operator_ack_file = rp_ack_path(ack, sizeof(ack), "under_cap");
     unlink(p.operator_ack_file);
 
     enum policy_decision d =
