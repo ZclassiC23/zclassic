@@ -16,38 +16,44 @@
 #include "models/database.h"
 #include "models/store_blob.h"
 #include "platform/time_compat.h"
-#include "net/fast_sync.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* CSRF form-token + PoW-challenge helpers stay in the controller as
- * security machinery; serve_product_detail only embeds their outputs,
- * so it calls them by declaration here. Defined in store_controller.c. */
+/* CSRF form-token helpers stay in the controller as security machinery;
+ * serve_product_detail only embeds their outputs, so it calls them by
+ * declaration here. Defined in store_controller.c. The puzzle challenge
+ * (store_pow_challenge, defined in store_controller_pow.c) is declared in
+ * views/store_internal.h because it returns a struct. */
 void store_csrf_token(const char *context, char out[33]);
 void store_csrf_context(char *out, size_t outmax, int64_t product_id);
-void store_pow_challenge(int64_t product_id, char peer_id_hex[65]);
 
 /* Client-side hashcash puzzle solver embedded in the order-form page (see
  * app/controllers/src/store_controller.c "Proof-of-work order gate" for
  * the server-side half of this contract). Reimplements SHA3-256
  * (Keccak-f[1600], FIPS 202) from scratch in plain JS — no CDN, no
  * external dependency — because browsers have no native SHA3, only
- * SHA-2, so fast_sync_verify_pow's SHA3-256(peer_id||timestamp||nonce)
- * scheme can't be solved via window.crypto.subtle. Its digests match
- * Node's native `sha3-256` for empty/short/multi-block inputs.
+ * SHA-2, so the gate's SHA3-256(seed||token||timestamp||nonce) scheme
+ * can't be solved via window.crypto.subtle. Its digests match Node's
+ * native `sha3-256` for empty/short/multi-block inputs.
  *
- * On DOMContentLoaded, wires <form id='orderForm'> (data-pow-peer /
- * data-pow-ts / data-pow-bits attributes, written by serve_product_detail
- * below) so submit: (1) intercepts, (2) chunks a search over `nonce`
- * (20000 tries per event-loop tick, so the tab stays responsive) until
- * SHA3-256(peer||ts||nonce) has the required leading zero bits, (3)
- * writes the solution into #pow_nonce_field, (4) calls form.submit()
- * (bypasses the 'submit' listener — no infinite loop). Programmatic /
- * curl-style buyers can solve the same puzzle without a browser: the
- * wire contract is just the two POST fields `pow_ts` (echo the value
- * this page embeds) and `pow_nonce` (any value making the hash check in
- * store_pow_verify_and_claim() pass). */
+ * On DOMContentLoaded, wires <form id='orderForm'> (data-pow-seed /
+ * data-pow-token / data-pow-ts / data-pow-bits attributes, written by
+ * serve_product_detail below) so submit: (1) intercepts, (2) chunks a
+ * search over `nonce` (20000 tries per event-loop tick, so the tab stays
+ * responsive) until SHA3-256(seed||token||ts||nonce) has the required
+ * leading zero bits, (3) writes the solution into #pow_nonce_field,
+ * (4) calls form.submit() (bypasses the 'submit' listener — no infinite
+ * loop). Programmatic / curl-style buyers can solve the same puzzle
+ * without a browser: the wire contract is just the two POST fields
+ * `pow_ts` (echo the value this page embeds) and `pow_nonce` (any value
+ * making the hash check in store_pow_verify_and_claim() pass).
+ *
+ * The nonce search starts at a RANDOM offset, not at 0. A search from 0
+ * is a pure function of (seed, token, ts): two buyers of the same product
+ * in the same wall second would find the identical nonce, and the gate's
+ * single-use ring would refuse the second one's genuinely-solved puzzle
+ * as a replay. Starting somewhere random makes that collision vanish. */
 /* Two literals because one 4750-char literal trips -Woverlength-strings
  * (-Werror; ISO C99's 4095-char minimum translation limit) even though
  * this compiler would accept more. Concatenated at point of use via two
@@ -143,26 +149,29 @@ static const char STORE_ORDER_POW_JS_2[] =
     "  }\n"
     "  return true;\n"
     "}\n"
-    "function storePowSolveChunked(peerHex,ts,bits,statusEl,onDone){\n"
-    "  var peer=hexToBytes(peerHex);\n"
+    "function storePowSolveChunked(seedHex,tokenHex,ts,bits,statusEl,onDone){\n"
+    "  var seed=hexToBytes(seedHex);\n"
+    "  var token=hexToBytes(tokenHex);\n"
     "  var tsBytes=numToBytesLE(ts,8);\n"
-    "  var buf=new Uint8Array(48);\n"
-    "  buf.set(peer,0);\n"
-    "  buf.set(tsBytes,32);\n"
-    "  var nonce=0;\n"
+    "  var buf=new Uint8Array(80);\n"
+    "  buf.set(seed,0);\n"
+    "  buf.set(token,32);\n"
+    "  buf.set(tsBytes,64);\n"
+    "  var nonce=Math.floor(Math.random()*4294967296);\n"
+    "  var tries=0;\n"
     "  var startTime=Date.now();\n"
     "  function step(){\n"
-    "    var chunkEnd=nonce+20000;\n"
-    "    for(;nonce<chunkEnd;nonce++){\n"
+    "    var chunkEnd=tries+20000;\n"
+    "    for(;tries<chunkEnd;tries++,nonce++){\n"
     "      var nb=numToBytesLE(nonce,8);\n"
-    "      buf.set(nb,40);\n"
+    "      buf.set(nb,72);\n"
     "      var h=sha3_256(buf);\n"
     "      if(leadingZeroBitsOk(h,bits)){\n"
     "        onDone(nonce);\n"
     "        return;\n"
     "      }\n"
     "    }\n"
-    "    if(statusEl) statusEl.textContent='Solving proof-of-work... '+nonce+' tries, '+((Date.now()-startTime)/1000).toFixed(1)+'s';\n"
+    "    if(statusEl) statusEl.textContent='Solving proof-of-work... '+tries+' tries, '+((Date.now()-startTime)/1000).toFixed(1)+'s';\n"
     "    setTimeout(step,0);\n"
     "  }\n"
     "  step();\n"
@@ -178,10 +187,11 @@ static const char STORE_ORDER_POW_JS_2[] =
     "    var btn=document.getElementById('buyBtn');\n"
     "    var status=document.getElementById('powStatus');\n"
     "    if(btn) btn.disabled=true;\n"
-    "    var peerHex=form.getAttribute('data-pow-peer');\n"
+    "    var seedHex=form.getAttribute('data-pow-seed');\n"
+    "    var tokenHex=form.getAttribute('data-pow-token');\n"
     "    var ts=parseInt(form.getAttribute('data-pow-ts'),10);\n"
     "    var bits=parseInt(form.getAttribute('data-pow-bits'),10);\n"
-    "    storePowSolveChunked(peerHex,ts,bits,status,function(nonce){\n"
+    "    storePowSolveChunked(seedHex,tokenHex,ts,bits,status,function(nonce){\n"
     "      nonceField.value=String(nonce);\n"
     "      if(status) status.textContent='Proof-of-work solved ('+nonce+' tries). Submitting...';\n"
     "      form.submit();\n"
@@ -495,15 +505,16 @@ size_t serve_product_detail(sqlite3 *db, int64_t product_id,
     store_csrf_context(csrf_ctx, sizeof(csrf_ctx), product_id);
     store_csrf_token(csrf_ctx, csrf_tok);
 
-    /* Proof-of-work puzzle challenge: peer_id is bound to this product
-     * (see store_pow_challenge / store_pow_bind_product in
-     * store_controller.c) and ts is "now" — the client has up to
-     * fast_sync_verify_pow's [-300s,+60s] window (minus solve time) to
-     * finish and POST. The order-create gate refuses the expensive
-     * z-address mint without a solution to this exact challenge. */
-    char pow_peer_hex[65];
-    store_pow_challenge(product_id, pow_peer_hex);
-    int64_t pow_ts = (int64_t)platform_time_wall_time_t();
+    /* Proof-of-work puzzle challenge. Issued live by the shared
+     * net/puzzle.h gate (store_pow_challenge in store_controller_pow.c):
+     * `seed` is the server's rotating challenge, `token` is bound to this
+     * product, `bits` is the difficulty the gate is asking for right now,
+     * and `server_time` is the timestamp the client must echo. The
+     * order-create gate refuses the expensive z-address mint without a
+     * solution to this exact challenge. */
+    struct store_pow_challenge pow_ch;
+    store_pow_challenge(product_id, &pow_ch);
+    int64_t pow_ts = pow_ch.server_time;
 
     n = snprintf(body + off, sizeof(body) - off,
         "<div class='product'>"
@@ -513,7 +524,8 @@ size_t serve_product_detail(sqlite3 *db, int64_t product_id,
         "<p>You will receive <b>%lld</b> %s tokens.</p>"
         "<h3>Purchase</h3>"
         "<form id='orderForm' method='post' action='/store/orders' "
-        "data-pow-peer='%s' data-pow-ts='%lld' data-pow-bits='%d'>"
+        "data-pow-seed='%s' data-pow-token='%s' "
+        "data-pow-ts='%lld' data-pow-bits='%d'>"
         "<input type='hidden' name='product_id' value='%lld'>"
         "<input type='hidden' name='csrf_token' value='%s'>"
         "<input type='hidden' name='pow_ts' value='%lld'>"
@@ -525,10 +537,12 @@ size_t serve_product_detail(sqlite3 *db, int64_t product_id,
         "<p id='powStatus' style='color:#888;font-size:12px'></p>"
         "<noscript><p style='color:#f80'>JavaScript is required to solve "
         "the anti-flood proof-of-work puzzle in your browser. Scripted "
-        "buyers may instead solve it directly: SHA3-256(peer_id || "
+        "buyers may instead solve it directly: SHA3-256(seed || token || "
         "timestamp || nonce) must have %d leading zero bits, where "
-        "peer_id=%s (hex) and timestamp is the pow_ts value above; submit "
-        "the winning nonce as pow_nonce.</p></noscript>"
+        "seed=%s and token=%s (both hex, 32 bytes each) and timestamp is "
+        "the pow_ts value above; submit the winning nonce as pow_nonce. "
+        "The seed rotates and the difficulty rises with load, so re-read "
+        "this page if a submission is refused.</p></noscript>"
         "</form>"
         "</div>"
         "<p><a href='/store/products'>&larr; Back to store</a></p>"
@@ -539,14 +553,16 @@ size_t serve_product_detail(sqlite3 *db, int64_t product_id,
         detail_price,
         (long long)product.tokens_per_purchase,
         safe_token,
-        pow_peer_hex,
+        pow_ch.seed_hex,
+        pow_ch.token_hex,
         (long long)pow_ts,
-        FAST_SYNC_POW_BITS,
+        pow_ch.bits,
         (long long)product_id,
         csrf_tok,
         (long long)pow_ts,
-        FAST_SYNC_POW_BITS,
-        pow_peer_hex,
+        pow_ch.bits,
+        pow_ch.seed_hex,
+        pow_ch.token_hex,
         STORE_ORDER_POW_JS_1,
         STORE_ORDER_POW_JS_2);
     if (n > 0) off += (size_t)n;

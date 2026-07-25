@@ -21,6 +21,9 @@
  *   snapshot_fetch.c   — chunk receive, turbo mode, staging
  *   snapshot_verify.c  — FlyClient + SHA3 verification, finalize
  *   snapshot_apply.c   — promote staging + tip activation
+ *   snapshot_serve.c   — the SERVE side: admission (client puzzle +
+ *                        rate limit) and the chunk cursor for a peer
+ *                        asking US for a snapshot
  *
  * The public API is declared by net/snapshot_sync_contract.h so app/config/net
  * callers share one contract header. */
@@ -36,8 +39,8 @@
 //   * write-runner: snapsync_run_write_internal — returns the shared
 //     db_service_write_fn (config/db_service.h) callback's bool commit answer.
 // The genuinely fallible service surface returns struct zcl_result
-// (snapsync_bind_store_internal, snapsync_prepare_serve_step, and the
-// begin/verify/handle/finalize actions in the sibling snapshot_*.c files).
+// (snapsync_bind_store_internal and the begin/verify/handle/finalize
+// actions in the sibling snapshot_*.c files).
 
 #include "net/snapshot_sync_contract.h"
 #include "services/snapshot_manifest.h"
@@ -664,126 +667,3 @@ void snapsync_get_status_snapshot(const struct snapshot_sync_service *svc,
     snapsync_service_unlock_internal();
 }
 
-/* ── Serve-side: PoW + rate-limit validation and prepare ─────────
- *
- * Snapshot serving (when this node *responds* to a peer asking for
- * a snapshot) is small enough to live here.  The state transitions
- * are owned by the requesting peer, so there is no separate "serve"
- * phase file. */
-
-/* Rate limiter — declared in fast_sync but we need the global instance */
-extern struct fast_sync_rate_limiter g_rate_limiter;
-
-/* Action: validate a snapshot serve request (PoW + rate limit). */
-enum snapsync_serve_result snapsync_validate_serve_request(
-    const uint8_t *pow_data, size_t pow_len,
-    const uint8_t peer_ip[16])
-{
-    if (!pow_data || pow_len < 48)
-        return SNAPSYNC_SERVE_TRUNCATED;
-
-    /* Parse PoW fields */
-    struct fast_sync_pow pow;
-    memset(&pow, 0, sizeof(pow));
-    memcpy(pow.peer_id, pow_data, 32);
-    memcpy(&pow.timestamp, pow_data + 32, 8);
-    memcpy(&pow.nonce, pow_data + 40, 8);
-
-    if (!fast_sync_verify_pow(&pow))
-        return SNAPSYNC_SERVE_BAD_POW;
-
-    if (!fast_sync_rate_check(&g_rate_limiter, peer_ip))
-        return SNAPSYNC_SERVE_RATE_LIMITED;
-
-    return SNAPSYNC_SERVE_OK;
-}
-
-struct zcl_result snapsync_prepare_serve_step(struct snapsync_serve_step *step,
-                                              struct p2p_node *node,
-                                              const uint8_t *buf,
-                                              int64_t buf_size)
-{
-    int64_t pos;
-    int64_t scan;
-    uint32_t entries;
-    bool ok = true;
-
-    if (!step || !node || !buf || buf_size <= 0)
-        return ZCL_ERR(-1, "prepare_serve_step: invalid args step=%p node=%p "
-                       "buf=%p size=%lld", (void*)step, (void*)node,
-                       (void*)buf, (long long)buf_size);
-
-    memset(step, 0, sizeof(*step));
-    if (node->zsync_file_size == 0)
-        node->zsync_file_size = buf_size;
-    /* Allow up to 8MB of send buffer during snapshot serving.
-     * The previous 2MB limit caused stalls: the receiver's SQLite writes
-     * slow TCP drainage, the 2MB fills in ~50 chunks, and the sender's
-     * message loop moves on to other peers before returning to pump more.
-     * 8MB gives ~200 chunks of headroom. */
-    if (node->send_size > 8 * 1024 * 1024)
-        return ZCL_OK;  /* step->action == SNAPSYNC_SERVE_ACTION_NONE (backpressure) */
-
-    pos = node->zsync_file_offset;
-    if (pos >= buf_size) {
-        step->action = SNAPSYNC_SERVE_ACTION_SEND_END;
-        return ZCL_OK;
-    }
-
-    if (pos + 4 > buf_size)
-        return ZCL_ERR(-2, "prepare_serve_step: pos %lld + 4 > buf_size %lld",
-                       (long long)pos, (long long)buf_size);
-
-    entries = buf[pos] | ((uint32_t)buf[pos + 1] << 8) |
-              ((uint32_t)buf[pos + 2] << 16) |
-              ((uint32_t)buf[pos + 3] << 24);
-    if (entries == 0 || entries > 1000)
-        return ZCL_ERR(-3, "prepare_serve_step: bad entry count %u at pos %lld",
-                       entries, (long long)pos);
-
-    scan = pos + 4;
-    for (uint32_t i = 0; i < entries && ok; i++) {
-        uint64_t slen;
-
-        scan += 49;
-        if (scan >= buf_size) {
-            ok = false;
-            break;
-        }
-
-        slen = buf[scan++];
-        if (slen == 253) {
-            if (scan + 2 > buf_size) {
-                ok = false;
-                break;
-            }
-            slen = buf[scan] | ((uint16_t)buf[scan + 1] << 8);
-            scan += 2;
-        } else if (slen == 254) {
-            if (scan + 4 > buf_size) {
-                ok = false;
-                break;
-            }
-            slen = buf[scan] | ((uint32_t)buf[scan + 1] << 8) |
-                   ((uint32_t)buf[scan + 2] << 16) |
-                   ((uint32_t)buf[scan + 3] << 24);
-            scan += 4;
-        }
-        scan += (int64_t)slen;
-    }
-
-    if (!ok || scan > buf_size)
-        return ZCL_ERR(-4, "prepare_serve_step: scan overflow scan=%lld "
-                       "buf_size=%lld entries=%u",
-                       (long long)scan, (long long)buf_size, entries);
-
-    step->action = SNAPSYNC_SERVE_ACTION_SEND_CHUNK;
-    step->chunk_offset = pos;
-    step->chunk_len = (size_t)(scan - pos);
-    step->entries = entries;
-
-    node->zsync_file_offset = scan;
-    node->zsync_offset += entries;
-    node->zsync_sent++;
-    return ZCL_OK;
-}

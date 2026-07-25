@@ -49,11 +49,37 @@ bool puzzle_verify(const uint8_t challenge_seed[32],
                    const uint8_t peer_token[32],
                    int64_t ts, uint64_t nonce, int difficulty_bits);
 
-/* Exhaustive nonce search for a solution (blocking). Returns true and sets
- * *nonce_out on success. */
+/* Nonce search for a solution (blocking). Returns true and sets
+ * *nonce_out on success.
+ *
+ * WHERE THE SEARCH STARTS MATTERS. A search from zero is a pure function
+ * of (seed, token, ts): two honest solvers that share all three — same
+ * surface, same second — return the SAME nonce, so the second one's
+ * genuinely-solved puzzle is refused by the single-use ring as a replay.
+ * That is a live defect wherever the token is not per-requester (it is
+ * why the snapshot-serve surface cannot enforce single-use on its current
+ * wire format — see app/services/src/snapshot_sync_service.c).
+ *
+ *   puzzle_solve()        — from zero. Deterministic; use when the caller
+ *                           wants a reproducible answer (tests, fixtures).
+ *   puzzle_solve_random() — from a random offset. THE DEFAULT for a real
+ *                           client: collisions between independent honest
+ *                           solvers become negligible.
+ *   puzzle_solve_from()   — explicit start, for a caller that owns the
+ *                           de-collision policy itself.
+ *
+ * All three cost the same expected number of hashes: the predicate is a
+ * leading-zero-bits test on a hash, so no start point is luckier. */
 bool puzzle_solve(const uint8_t challenge_seed[32],
                   const uint8_t peer_token[32],
                   int64_t ts, int difficulty_bits, uint64_t *nonce_out);
+bool puzzle_solve_random(const uint8_t challenge_seed[32],
+                         const uint8_t peer_token[32],
+                         int64_t ts, int difficulty_bits, uint64_t *nonce_out);
+bool puzzle_solve_from(const uint8_t challenge_seed[32],
+                       const uint8_t peer_token[32],
+                       int64_t ts, int difficulty_bits,
+                       uint64_t start_nonce, uint64_t *nonce_out);
 
 /* ── Difficulty band + load knobs (defaults) ─────────────────────────── */
 

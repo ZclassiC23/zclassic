@@ -33,7 +33,7 @@
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
 #include "config/runtime.h"
-#include "net/fast_sync.h"
+#include "net/puzzle.h"
 
 #include <unistd.h>
 
@@ -143,11 +143,47 @@ static bool p11_5_fetch_csrf_token(const char *datadir,
     return true;
 }
 
-/* Fetch the product-bound PoW peer_id (see serve_product_detail's
- * data-pow-peer='...' attribute) and solve it via fast_sync_solve_pow —
- * the same primitive store_pow_verify_and_claim() checks with — so this
- * gate's order-create exercises the REAL gate, not a bypass. Formats
- * the pow_ts / pow_nonce values a real client would submit. */
+/* Order-gate internals: defined in app/controllers/src/store_controller_pow.c,
+ * declared in the controller's private store_controller_internal.h. Forward
+ * declared here, matching the pattern the store view already uses. */
+void store_pow_reset_state(void);
+
+/* Read one data-pow-* attribute value out of an already-fetched page. */
+static bool p11_5_scrape_attr(const char *page, const char *attr,
+                              char *out, size_t out_size)
+{
+    char needle[48];
+    const char *p, *end;
+    size_t len;
+
+    snprintf(needle, sizeof(needle), "%s='", attr);
+    p = strstr(page, needle);
+    if (!p)
+        return false;
+    p += strlen(needle);
+    end = strchr(p, '\'');
+    if (!end)
+        return false;
+    len = (size_t)(end - p);
+    if (len >= out_size)
+        return false;
+    memcpy(out, p, len);
+    out[len] = '\0';
+    return true;
+}
+
+/* Fetch the LIVE order-form puzzle challenge (serve_product_detail's
+ * data-pow-seed / data-pow-token / data-pow-ts / data-pow-bits attributes)
+ * and solve it via puzzle_solve — the same primitive
+ * store_pow_verify_and_claim() checks with — so this gate's order-create
+ * exercises the REAL gate, not a bypass. Formats the pow_ts / pow_nonce
+ * values a real client would submit. One page fetch: each render is a
+ * real challenge issuance, so the four attributes must come from one.
+ *
+ * The gate is reset first so the difficulty this gate has to solve does not
+ * depend on how much order traffic earlier cases generated — the ramp is
+ * proven in lib/test/src/test_puzzle.c, not here. The challenge is issued
+ * after the reset and solved at whatever difficulty it names. */
 static bool p11_5_solve_store_pow(const char *datadir,
                                   int64_t product_id,
                                   char *pow_ts_out, size_t ts_max,
@@ -155,44 +191,54 @@ static bool p11_5_solve_store_pow(const char *datadir,
 {
     uint8_t page[16384];
     char path[64];
-    const char *needle = "data-pow-peer='";
-    const char *p, *end;
-    size_t n, hex_len;
-    char peer_hex[65];
-    uint8_t peer_id[32];
-    struct fast_sync_pow pow;
+    char seed_hex[65], token_hex[65], ts_str[32], bits_str[16];
+    uint8_t seed[32], token[32];
+    uint64_t nonce = 0;
+    int64_t ts;
+    int bits;
+    size_t n;
 
     if (!datadir || !pow_ts_out || !pow_nonce_out)
         return false;
 
+    store_pow_reset_state();
     snprintf(path, sizeof(path), "/store/product/%lld", (long long)product_id);
     n = store_handle_request("GET", path, NULL, 0,
                              page, sizeof(page), datadir);
     if (n == 0)
         return false;
     page[(n < sizeof(page)) ? n : (sizeof(page) - 1)] = '\0';
-    p = strstr((const char *)page, needle);
-    if (!p)
+
+    if (!p11_5_scrape_attr((const char *)page, "data-pow-seed",
+                           seed_hex, sizeof(seed_hex)) ||
+        !p11_5_scrape_attr((const char *)page, "data-pow-token",
+                           token_hex, sizeof(token_hex)) ||
+        !p11_5_scrape_attr((const char *)page, "data-pow-ts",
+                           ts_str, sizeof(ts_str)) ||
+        !p11_5_scrape_attr((const char *)page, "data-pow-bits",
+                           bits_str, sizeof(bits_str)))
         return false;
-    p += strlen(needle);
-    end = strchr(p, '\'');
-    if (!end)
+    if (strlen(seed_hex) != 64 || strlen(token_hex) != 64)
         return false;
-    hex_len = (size_t)(end - p);
-    if (hex_len != 64)
-        return false;
-    memcpy(peer_hex, p, 64);
-    peer_hex[64] = '\0';
 
     for (int i = 0; i < 32; i++) {
-        char b[3] = { peer_hex[i * 2], peer_hex[i * 2 + 1], '\0' };
-        peer_id[i] = (uint8_t)strtoul(b, NULL, 16);
+        char b[3] = { seed_hex[i * 2], seed_hex[i * 2 + 1], '\0' };
+        seed[i] = (uint8_t)strtoul(b, NULL, 16);
+        b[0] = token_hex[i * 2]; b[1] = token_hex[i * 2 + 1];
+        token[i] = (uint8_t)strtoul(b, NULL, 16);
     }
-    memset(&pow, 0, sizeof(pow));
-    if (!fast_sync_solve_pow(peer_id, &pow))
+    ts = strtoll(ts_str, NULL, 10);
+    bits = (int)strtol(bits_str, NULL, 10);
+    if (bits <= 0)
         return false;
-    snprintf(pow_ts_out, ts_max, "%lld", (long long)pow.timestamp);
-    snprintf(pow_nonce_out, nonce_max, "%llu", (unsigned long long)pow.nonce);
+    /* Random start, matching the browser solver: a search from zero is a
+     * pure function of (seed, token, ts), so two solves for one product in
+     * one wall second would return the same nonce and the gate's
+     * single-use ring would refuse the second. */
+    if (!puzzle_solve_random(seed, token, ts, bits, &nonce))
+        return false;
+    snprintf(pow_ts_out, ts_max, "%lld", (long long)ts);
+    snprintf(pow_nonce_out, nonce_max, "%llu", (unsigned long long)nonce);
     return true;
 }
 

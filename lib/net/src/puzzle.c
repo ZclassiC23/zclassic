@@ -54,21 +54,41 @@ bool puzzle_verify(const uint8_t challenge_seed[32],
     return puzzle_hash_has_bits(hash, difficulty_bits);
 }
 
-bool puzzle_solve(const uint8_t challenge_seed[32],
-                  const uint8_t peer_token[32],
-                  int64_t ts, int difficulty_bits, uint64_t *nonce_out)
+bool puzzle_solve_from(const uint8_t challenge_seed[32],
+                       const uint8_t peer_token[32],
+                       int64_t ts, int difficulty_bits,
+                       uint64_t start_nonce, uint64_t *nonce_out)
 {
     GUARD(challenge_seed && peer_token && nonce_out, "puzzle",
           "solve: NULL arg (seed=%p token=%p out=%p)",
           (const void *)challenge_seed, (const void *)peer_token,
           (void *)nonce_out);
-    for (uint64_t n = 0; n < UINT64_MAX; n++) {
+    uint64_t n = start_nonce;
+    for (uint64_t tried = 0; tried < UINT64_MAX; tried++, n++) {
         if (puzzle_verify(challenge_seed, peer_token, ts, n, difficulty_bits)) {
             *nonce_out = n;
             return true;
         }
     }
     LOG_FAIL("puzzle", "solve: exhausted nonce space at D=%d", difficulty_bits);
+}
+
+bool puzzle_solve(const uint8_t challenge_seed[32],
+                  const uint8_t peer_token[32],
+                  int64_t ts, int difficulty_bits, uint64_t *nonce_out)
+{
+    return puzzle_solve_from(challenge_seed, peer_token, ts, difficulty_bits,
+                             0, nonce_out);
+}
+
+bool puzzle_solve_random(const uint8_t challenge_seed[32],
+                         const uint8_t peer_token[32],
+                         int64_t ts, int difficulty_bits, uint64_t *nonce_out)
+{
+    uint64_t start = 0;
+    GetRandBytes((unsigned char *)&start, sizeof(start));
+    return puzzle_solve_from(challenge_seed, peer_token, ts, difficulty_bits,
+                             start, nonce_out);
 }
 
 /* ── Policy resolution ───────────────────────────────────────────────── */

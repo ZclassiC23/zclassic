@@ -10,7 +10,8 @@
 #include "wallet/wallet.h"
 #include "wallet/sapling_keys.h"
 #include "config/runtime.h"
-#include "net/fast_sync.h"
+#include "net/puzzle.h"
+#include "views/store_internal.h"
 #include "models/store.h"
 #include "models/database.h"
 #include "platform/time_compat.h"
@@ -21,14 +22,16 @@
  * machinery (defined in store_controller.c, declared in the controller's
  * private store_controller_internal.h — not part of the public store
  * surface). Most tests below exercise them end-to-end via HTTP scraping
- * (fetch_csrf_token / fetch_pow_peer_hex), matching the real client
+ * (fetch_csrf_token / fetch_pow_attrs), matching the real client
  * path; the cap tests use a SYNTHETIC product_id with no real product
  * row (so there is no page to scrape a token from) and call these
  * directly instead, mirroring the same forward-declare-only pattern
- * app/views/src/store_view.c already uses for store_csrf_token/context. */
+ * app/views/src/store_view.c already uses for store_csrf_token/context.
+ * store_pow_challenge() itself is declared in views/store_internal.h
+ * (included above) since the view embeds its output. */
 void store_csrf_token(const char *context, char out[33]);
 void store_csrf_context(char *out, size_t outmax, int64_t product_id);
-void store_pow_challenge(int64_t product_id, char peer_id_hex[65]);
+void store_pow_reset_state(void);
 
 static char test_datadir[256];
 
@@ -71,21 +74,13 @@ static bool fetch_csrf_token(int64_t product_id, char *out, size_t outmax)
     return true;
 }
 
-/* Fetch the PoW-challenge peer_id embedded in the purchase form for
- * product_id.  GET /store/product/<id> and scrape value='...' from the
- * data-pow-peer='...' attribute serve_product_detail writes on
- * <form id='orderForm'>.  Returns true on success. */
-static bool fetch_pow_peer_hex(int64_t product_id, char *out, size_t outmax)
+/* Read one data-pow-* attribute out of an already-fetched page. */
+static bool scrape_pow_attr(const char *page, const char *attr,
+                            char *out, size_t outmax)
 {
-    uint8_t page[16384];
-    char path[64];
-    snprintf(path, sizeof(path), "/store/product/%lld", (long long)product_id);
-    size_t n = store_handle_request("GET", path, NULL, 0,
-                                     page, sizeof(page), test_datadir);
-    if (n == 0) return false;
-    page[sizeof(page) - 1] = 0;
-    const char *needle = "data-pow-peer='";
-    const char *p = strstr((char *)page, needle);
+    char needle[48];
+    snprintf(needle, sizeof(needle), "%s='", attr);
+    const char *p = strstr(page, needle);
     if (!p) return false;
     p += strlen(needle);
     const char *end = strchr(p, '\'');
@@ -97,14 +92,41 @@ static bool fetch_pow_peer_hex(int64_t product_id, char *out, size_t outmax)
     return true;
 }
 
-/* fast_sync_solve_pow searches nonces deterministically from 0 for a
- * given (peer_id, timestamp) — two solves for the SAME product within
- * the SAME wall-clock second reproduce the identical (peer,ts,nonce)
- * tuple, which store_pow_claim_once() would then (correctly) refuse as
- * a replay of the first. This test file calls the solver repeatedly for
- * product 1 across nearby test blocks, so always advance to a fresh
- * second first — the same margin any two independent real buyers get
- * "for free" from human-scale request spacing. */
+/* GET /store/product/<id> ONCE and pull the whole live challenge out of
+ * <form id='orderForm'>. One fetch on purpose: every render is a real
+ * challenge issuance (it can rotate the seed and re-reads the adaptive
+ * difficulty), so scraping the four attributes from four separate pages
+ * could mix a seed from one issuance with a difficulty from another. */
+static bool fetch_pow_attrs(int64_t product_id,
+                            char seed_hex[65], char token_hex[65],
+                            char ts_str[32], char bits_str[16])
+{
+    uint8_t page[16384];
+    char path[64];
+    snprintf(path, sizeof(path), "/store/product/%lld", (long long)product_id);
+    size_t n = store_handle_request("GET", path, NULL, 0,
+                                     page, sizeof(page), test_datadir);
+    if (n == 0) return false;
+    page[sizeof(page) - 1] = 0;
+    return scrape_pow_attr((char *)page, "data-pow-seed", seed_hex, 65) &&
+           scrape_pow_attr((char *)page, "data-pow-token", token_hex, 65) &&
+           scrape_pow_attr((char *)page, "data-pow-ts", ts_str, 32) &&
+           scrape_pow_attr((char *)page, "data-pow-bits", bits_str, 16);
+}
+
+static bool hex32_to_bytes(const char *hex, uint8_t out[32])
+{
+    if (!hex || strlen(hex) != 64) return false;
+    for (int i = 0; i < 32; i++) {
+        char b[3] = { hex[i * 2], hex[i * 2 + 1], '\0' };
+        out[i] = (uint8_t)strtoul(b, NULL, 16);
+    }
+    return true;
+}
+
+/* Block until the wall clock crosses into the next whole second. Used by
+ * the order-pruning cases, whose "created before right now" cutoff is
+ * second-granular and would otherwise tie with rows created a moment ago. */
 static void wait_for_next_wall_second(void)
 {
     int64_t start = (int64_t)platform_time_wall_time_t();
@@ -113,31 +135,47 @@ static void wait_for_next_wall_second(void)
         nanosleep(&ts, NULL);
 }
 
-/* Solve the product-bound puzzle for product_id (fetching its peer_id
- * from the real rendered page, then reusing fast_sync_solve_pow — the
- * same primitive store_pow_verify_and_claim checks with) and format the
- * pow_ts / pow_nonce form-field values a real client would submit. */
+/* Solve the live product-bound puzzle for product_id — scraping the
+ * server-issued seed, the product token, the difficulty and the server
+ * timestamp out of the REAL rendered page, then running the same
+ * primitive store_pow_verify_and_claim() checks with — and format the
+ * pow_ts / pow_nonce form-field values a real client would submit.
+ *
+ * puzzle_solve_RANDOM, matching the browser solver: a search from zero is
+ * a pure function of (seed, token, ts), so this file's repeated solves for
+ * product 1 inside one wall second would all return the same nonce and the
+ * gate's single-use ring would refuse every one after the first.
+ *
+ * The gate is reset first. Not to weaken the check — the challenge is
+ * issued AFTER the reset and solved at whatever difficulty it names — but
+ * to keep this file's runtime bounded and deterministic. The gate is
+ * load-adaptive: a test that fires order after order looks exactly like the
+ * flood it is designed to price, so difficulty (and therefore solve time)
+ * would climb with how many cases ran before. The ramp itself is proven in
+ * lib/test/src/test_puzzle.c; this file proves the ORDER path. */
 static bool solve_store_pow_fields(int64_t product_id,
                                    char *pow_ts_out, size_t ts_max,
                                    char *pow_nonce_out, size_t nonce_max)
 {
-    char peer_hex[65] = "";
-    uint8_t peer_id[32];
-    struct fast_sync_pow pow;
+    char seed_hex[65] = "", token_hex[65] = "", ts_str[32] = "", bits_str[16] = "";
+    uint8_t seed[32], token[32];
+    uint64_t nonce = 0;
+    int64_t ts;
+    int bits;
 
-    wait_for_next_wall_second();
-    if (!fetch_pow_peer_hex(product_id, peer_hex, sizeof(peer_hex)))
+    store_pow_reset_state();
+    if (!fetch_pow_attrs(product_id, seed_hex, token_hex, ts_str, bits_str))
         return false;
-    if (strlen(peer_hex) != 64)
+    if (!hex32_to_bytes(seed_hex, seed) || !hex32_to_bytes(token_hex, token))
         return false;
-    for (int i = 0; i < 32; i++) {
-        char b[3] = { peer_hex[i * 2], peer_hex[i * 2 + 1], '\0' };
-        peer_id[i] = (uint8_t)strtoul(b, NULL, 16);
-    }
-    if (!fast_sync_solve_pow(peer_id, &pow))
+    ts = strtoll(ts_str, NULL, 10);
+    bits = (int)strtol(bits_str, NULL, 10);
+    if (bits <= 0)
         return false;
-    snprintf(pow_ts_out, ts_max, "%lld", (long long)pow.timestamp);
-    snprintf(pow_nonce_out, nonce_max, "%llu", (unsigned long long)pow.nonce);
+    if (!puzzle_solve_random(seed, token, ts, bits, &nonce))
+        return false;
+    snprintf(pow_ts_out, ts_max, "%lld", (long long)ts);
+    snprintf(pow_nonce_out, nonce_max, "%llu", (unsigned long long)nonce);
     return true;
 }
 
@@ -1326,23 +1364,26 @@ int test_store(void)
             char csrf_ctx77[64], csrf77[33];
             store_csrf_context(csrf_ctx77, sizeof(csrf_ctx77), 77);
             store_csrf_token(csrf_ctx77, csrf77);
-            char peer_hex77[65];
-            store_pow_challenge(77, peer_hex77);
-            uint8_t peer_id77[32];
-            for (int i = 0; i < 32; i++) {
-                char b[3] = { peer_hex77[i * 2], peer_hex77[i * 2 + 1], '\0' };
-                peer_id77[i] = (uint8_t)strtoul(b, NULL, 16);
-            }
-            struct fast_sync_pow pow77;
-            memset(&pow77, 0, sizeof(pow77));
-            bool solved77 = fast_sync_solve_pow(peer_id77, &pow77);
+            /* Synthetic product 77 has no page to scrape, so ask the gate
+             * for its live challenge directly — same call the view makes.
+             * Reset first, same reason as solve_store_pow_fields(). */
+            store_pow_reset_state();
+            struct store_pow_challenge ch77;
+            store_pow_challenge(77, &ch77);
+            uint8_t seed77[32], token77[32];
+            uint64_t nonce77 = 0;
+            bool solved77 =
+                hex32_to_bytes(ch77.seed_hex, seed77) &&
+                hex32_to_bytes(ch77.token_hex, token77) &&
+                puzzle_solve_random(seed77, token77, ch77.server_time,
+                                    ch77.bits, &nonce77);
 
             char body[384];
             snprintf(body, sizeof(body),
                 "product_id=77&customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn"
                 "&csrf_token=%s&pow_ts=%lld&pow_nonce=%llu",
-                csrf77, (long long)pow77.timestamp,
-                (unsigned long long)pow77.nonce);
+                csrf77, (long long)ch77.server_time,
+                (unsigned long long)nonce77);
             size_t n = store_handle_request("POST", "/store/orders",
                                              (const uint8_t *)body, strlen(body),
                                              resp, sizeof(resp), test_datadir);
