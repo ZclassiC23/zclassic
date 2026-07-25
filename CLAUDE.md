@@ -1,5 +1,17 @@
 # ZClassic23 — AI-Integrated Personal Sovereignty Stack
 
+<!-- FIRST-FIVE-BEGIN -->
+## First five commands in a fresh clone
+
+1. `make setup` — one-time: fetch and build the vendored dependencies, and arm this clone's local git hooks.
+2. `make -j"$(nproc)"` — build the binary at `build/bin/zclassic23`.
+3. `build/bin/zclassic23 discover help` — list every typed command. `discover search <query>` narrows it; `discover schema <command>` gives the exact input keys.
+4. `build/bin/zclassic23 code map` — the source tree's floor plan, from the navigator built into the binary.
+5. `make t-fast ONLY=<group>` — run one test group. `make test-parallel` runs the whole suite.
+
+Scope every text search with `git grep` (or `git ls-files | xargs grep`) — never `grep -r` or `find .` from the repository root. The root also contains untracked full checkouts under `.claude/worktrees/` and per-run scratch under `test-tmp/`, so an unscoped recursive search reads duplicate copies of the source and test debris instead of the tracked tree. The root `.ignore` file makes most search tools skip those by default; `git grep` is exact regardless.
+<!-- FIRST-FIVE-END -->
+
 ## Vision — Personal Sovereignty Stack
 
 ZClassic23 is one self-contained C23 binary that runs a full ZClassic node (Equihash 200,9 PoW, Sapling shielded txs), an embedded Tor onion service, a block explorer, a shielded wallet, a P2P file marketplace, ZNAM name registry, P2P messaging (plaintext P2P channel; on-chain Sapling-memo channel implemented — requires Sapling params + a passing prover self-test to send), cross-chain atomic swaps (BTC/LTC/DOGE; redeem/refund/settlement: in progress), a P2P game framework, and a native command registry. **Claude is a first-class operator via 100+ typed native commands** — not just an observer. Cold sync to tip via FlyClient + SHA3 UTXO snapshots is a design target (`docs/HANDOFF.md`); the proven recovery path today is the two-step header-import + boot. Silent halts are unreachable by construction — a stall is always a named blocker or a growing tip gap, never a quiet stop (chain progress is a stage cursor on disk); the node can still halt, it just cannot do so without saying so. Bugs become 64-bit seeds in a deterministic simulator. Deterministic build flags and a legacy GPG-capable packaging script exist; unsigned output is local-development-only and stable publication remains contained pending two-builder byte-identity proof. **One binary, one onion, one stack — your sovereign personal computing surface.**
