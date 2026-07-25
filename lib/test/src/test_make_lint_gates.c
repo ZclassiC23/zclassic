@@ -262,6 +262,7 @@ static const struct lint_gate_entry g_lint_gate_entries[] = {
     S_(t_lint_gates_fail_loud_on_empty_scan),
     S_(t_no_dev_history_in_contracts),
     S_(t_no_uncited_victory),
+    R_(t_no_stray_root_files),                   /* git ls-files + real root */
 };
 #undef S_
 #undef R_

@@ -239,8 +239,13 @@ static int fc_tip_row(sqlite3 *db, int height, char *status, size_t n)
 static int fc_case_helper(void)
 {
     int failures = 0;
-    char path[128];
-    snprintf(path, sizeof(path), "test_frontier_cap_%d.db", (int)getpid());
+    /* Under ./test-tmp, not the checkout root: the unlink() below is the
+     * only cleanup, so a crash or a signal between open and close used to
+     * strand a test_frontier_cap_<pid>.db in the repo root. */
+    char dir[192];
+    test_make_tmpdir(dir, sizeof(dir), "frontier_cap", "helper");
+    char path[256];
+    snprintf(path, sizeof(path), "%s/frontier_cap.db", dir);
     unlink(path);
     sqlite3 *db = NULL;
     FC_CHECK("T5: db open", sqlite3_open(path, &db) == SQLITE_OK);
@@ -305,6 +310,7 @@ static int fc_case_helper(void)
 
     sqlite3_close(db);
     unlink(path);
+    test_cleanup_tmpdir(dir);
     return failures;
 }
 

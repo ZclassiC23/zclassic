@@ -1,3 +1,13 @@
+# Ignoring a file is not the same as it being welcome. The repository ROOT is
+# a curated list — source areas, top-level docs, and a short set of generated
+# entries (build/, test-tmp/, compile_commands.json, tool caches). The rules
+# below are broad on purpose (`*.db`, `*.log`) so scratch inside a datadir or
+# a test's scratch dir stays out of `git status`; they do NOT bless a database
+# or a log sitting in the root. `make lint` fails on that
+# (check-no-stray-root-files) — fix it at the writer: tests write under
+# ./test-tmp/<prefix>_<pid>_<tag> (test_make_tmpdir), scripts write logs under
+# a state/log directory.
+
 # Build artifacts
 build/
 

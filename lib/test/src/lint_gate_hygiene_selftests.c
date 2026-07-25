@@ -799,6 +799,63 @@ int t_no_uncited_victory(void)
     return failures;
 }
 
+/* check-no-stray-root-files — the repository root is a curated list: git's
+ * tracked top-level entries plus a short allowlist of generated/local ones
+ * (build/, vendor/, test-tmp/, compile_commands.json, tool caches). Proof:
+ * (1) the clean tree passes; (2) a planted stray root file trips the gate —
+ *     it is gitignored (*.db), which is exactly the class that used to sit
+ *     in the root forever because `git status` never objected;
+ * (3) removing it recovers green; (4) the gate is wired into the Makefile
+ *     LINT_GATES list and documented in DEFENSIVE_CODING.md's canonical
+ *     block. Runs on the real worktree (it reads git ls-files). */
+#define ROOT_STRAY_SCRIPT_REL  "tools/lint/check_no_stray_root_files.sh"
+#define ROOT_STRAY_FIXTURE_REL "zcl_root_stray_lint_fixture.db"
+
+int t_no_stray_root_files(void)
+{
+    int failures = 0;
+    char path[PATH_MAX];
+    char *makefile_buf = NULL;
+    char *doc_buf = NULL;
+
+    unlink_rel(ROOT_STRAY_FIXTURE_REL);
+    int baseline_rc = run_gate_script(ROOT_STRAY_SCRIPT_REL, NULL);
+
+    int planted =
+        (repo_path(path, sizeof(path), ROOT_STRAY_FIXTURE_REL) == 0 &&
+         write_file(path, "stray root debris\n") == 0) ? 0 : -1;
+    int trip_rc = planted == 0 ? run_gate_script(ROOT_STRAY_SCRIPT_REL, NULL) : -1;
+    unlink_rel(ROOT_STRAY_FIXTURE_REL);
+    int recover_rc = run_gate_script(ROOT_STRAY_SCRIPT_REL, NULL);
+
+    int makefile_wired = 0;
+    if (repo_path(path, sizeof(path), "Makefile") == 0 &&
+        read_entire_file(path, &makefile_buf) == 0) {
+        makefile_wired =
+            strstr(makefile_buf, "check-no-stray-root-files:") != NULL &&
+            strstr(makefile_buf, "check-no-stray-root-files \\") != NULL;
+    }
+    int doc_wired = 0;
+    if (repo_path(path, sizeof(path), "docs/DEFENSIVE_CODING.md") == 0 &&
+        read_entire_file(path, &doc_buf) == 0) {
+        doc_wired = strstr(doc_buf, "check-no-stray-root-files") != NULL;
+    }
+
+    TEST("[lint-gate] check-no-stray-root-files: clean root passes, planted "
+         "gitignored stray trips, recovers, wired") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
+        ASSERT(makefile_wired);
+        ASSERT(doc_wired);
+        PASS();
+    } _test_next:;
+    free(makefile_buf);
+    free(doc_buf);
+    return failures;
+}
+
 #else  /* !ZCL_TESTING */
 
 /* Without ZCL_TESTING the lint-gate self-tests compile to nothing; this

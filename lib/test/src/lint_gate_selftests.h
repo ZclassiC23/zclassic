@@ -469,5 +469,6 @@ int t_gap_fill_wakes_connman_dispatch_contract(void);
 int t_msg_process_yields_to_send_phase_contract(void);
 int t_no_dev_history_in_contracts(void);
 int t_no_uncited_victory(void);
+int t_no_stray_root_files(void);
 
 #endif /* ZCL_LINT_GATE_SELFTESTS_H */

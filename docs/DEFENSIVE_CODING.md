@@ -618,6 +618,7 @@ add/remove a gate.
 - `check-no-orphan-placement`
 - `check-no-silent-ready`
 - `check-no-stray-untracked-source`
+- `check-no-stray-root-files`
 - `check-observability-pairing`
 - `check-one-result-type`
 - `check-one-write-path`
@@ -683,6 +684,18 @@ lint`; they are documented in their own docs rather than expanded here.)
 
 `check-no-retired-agent-protocol` rejects the retired agent-transport token in
 tracked paths and filenames while explicitly allowing ordinary `memcpy` usage.
+
+`check-no-stray-root-files` (`tools/lint/check_no_stray_root_files.sh`) keeps
+the repository root a curated list. It compares the root's depth-1 entries
+against git's tracked top-level set (derived, so a folder move needs no edit)
+plus a short allowlist of generated or developer-local entries — `build/`,
+`vendor/`, `test-tmp/`, `compile_commands.json`, tool caches. Anything else is
+named as a stray. The gate exists because gitignoring debris hides it from
+`git status` while `ls` still shows it: a stray database, a `nohup` capture,
+and a second scratch directory all sat in the root indefinitely. The fix is
+always at the writer — a test writes its scratch under
+`./test-tmp/<prefix>_<pid>_<tag>` (`test_make_tmpdir`), a script writes its log
+under a state/log directory — never by growing the allowlist.
 
 `check-no-dev-history-in-contracts` (`tools/scripts/
 check_no_dev_history_in_contracts.sh`) rejects a narrow, high-signal set of
