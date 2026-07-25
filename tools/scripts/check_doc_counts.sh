@@ -15,18 +15,36 @@
 #       code — never the other way around; the code is authoritative for what
 #       exists.
 #
-#   (B) STALE-PHRASE DENYLIST (best-effort regression guard): scans the prose of
-#       CLAUDE.md + docs/**/*.md for a small set of compound number-phrases that
-#       are UNAMBIGUOUSLY stale at the current counts (e.g. "15 ports",
-#       "10 sqlite impls", "460 parallel groups", "1500+ tests"). Compound
-#       phrases only (number+unit together) => no false positives on bare
-#       numbers. This catches the exact historical drifts this gate was created
-#       to prevent from creeping back.
+#   (B) PROSE NUMBER SCAN (regression guard) over every TRACKED *.md in the
+#       repo. Two matchers:
+#         B1 DERIVED — a compound "<N> <unit>" phrase whose unit maps to a
+#            count this script measures from the code (e.g. "<N> parallel
+#            groups" -> test_groups) FAILS when N disagrees with the measured
+#            count. "<N>+ <unit>" is an at-least claim: it fails only when N
+#            exceeds the measured count.
+#         B2 DENYLIST — a fixed set of historically-wrong phrases that no
+#            derived rule covers (e.g. "1500+ tests", "10 sqlite impls").
+#       Compound phrases only (number+unit together) => no false positives on
+#       bare numbers. Per-line escape hatch: put `doc-count-ok` in an HTML
+#       comment on the same line when a small local number is genuinely not a
+#       whole-repo count.
 #
-# Standalone-runnable. NOT yet wired into the Makefile `lint:` target (a separate
-# worker owns Makefile targets this round) — invoke directly, or wire with a
-# `check-doc-counts:` target that calls this script. Fast: filesystem + grep only,
-# no build, no test run.
+#       The scan set is `git ls-files '*.md'` — TRACKED files only. It used to
+#       be `CLAUDE.md` + `find docs -name '*.md'`, which silently excluded the
+#       root README.md; README.md then claimed "631 parallel groups" (real
+#       count 739, correctly declared in docs/CODEBASE_MAP.md all along) and
+#       this gate — the gate whose entire job is catching that — passed every
+#       run. A `find` set also lets untracked scratch .md files into the scan.
+#
+#   (C) SELF-CHECK (runs BEFORE the tree scan, always): the B matchers are run
+#       over a hermetic temp fixture with known-good and known-bad prose, and
+#       the script aborts if the matchers do not produce exactly the expected
+#       violations. A gate that reports clean because it can no longer fail is
+#       the failure mode this whole file exists to prevent, so "clean" is only
+#       printed after the matcher has demonstrated it still fires.
+#
+# Standalone-runnable; wired into `make lint` as `check-doc-counts`. Fast:
+# filesystem + grep only, no build, no test run.
 #
 # Source of truth: the CODE.
 set -euo pipefail
@@ -116,38 +134,152 @@ dec_conditions=$(get_declared condition_registrations)
     add_fail "condition_registrations MISMATCH — code=$code_conditions doc-says=${dec_conditions:-<blank>} (update the DOC-COUNTS block in $DOC)"
 
 # --------------------------------------------------------------------------
-# (B) Stale-phrase denylist. Compound number+unit phrases only — these were
-# wrong when this gate was authored and must never return. Adding a phrase here
-# is safe as long as it cannot appear in a correct context.
+# (B) Prose number scan. Two matchers, both compound (number+unit) so a bare
+# number in unrelated prose can never trip them.
+#
+# B1 DERIVED rules: "<unit-regex>#<expected>#<label>". Any "<N> <unit>" whose N
+# disagrees with the code-measured count fails. "<N>+ <unit>" is an at-least
+# claim and fails only when N exceeds the measured count. The unit regexes are
+# deliberately qualified ("parallel groups", "port interfaces") so ordinary
+# prose ("8 groups of peers", "3 ports") is not matched.
+#
+# B2 DENYLIST: historically-wrong fixed phrases that no derived rule covers.
 # --------------------------------------------------------------------------
-# Build the denylist dynamically from the current counts so it stays correct as
-# the code grows: any "N parallel groups" / "N port" / "N sqlite impls" that
-# does NOT match the current count is suspect. But to avoid false positives on
-# unrelated numbers, we only flag a closed set of historically-wrong phrasings.
+# Fields are '#'-separated: the unit regexes contain '|' alternations, so '|'
+# cannot be the field separator.
+derived_rules=(
+    "((registered|parallel|test)[ -])+groups#$code_test_groups#test_groups"
+    "port interfaces#$code_ports#port_interfaces"
+    "(persistence adapters|sqlite impls)#$code_adapters#persistence_adapters"
+    "(registered conditions|conditions registered)#$code_conditions#condition_registrations"
+)
 
 denylist=(
-    # test-group drifts (current: 487)
-    '1500+ tests' '1500 tests' '460 parallel groups' '460 test groups' '486 groups' '486 parallel groups'
-    # ports drifts (current: 12)
+    # total-test-count claims (no derived rule: the suite counts groups, not tests)
+    '1500+ tests' '1500 tests'
+    # historical ports drift, phrased without the "interfaces" qualifier
     '15 ports'
-    # adapter drifts (current: 13 persistence adapters; "10 sqlite impls" was wrong)
-    '10 sqlite impls'
-    # condition drifts (current: 30 registered conditions)
+    # historical condition-count drift, phrased without the "registered" qualifier
     '28 conditions live'
 )
 
-# Docs to scan: CLAUDE.md at repo root + everything under docs/.
-scan_files=(CLAUDE.md)
-while IFS= read -r f; do scan_files+=("$f"); done < <(find docs -type f -name '*.md' 2>/dev/null)
+# A line carrying `doc-count-ok` (put it in an HTML comment) is exempt — for the
+# rare case where a small local number legitimately shares a unit phrase with a
+# whole-repo count.
+SUPPRESS_MARKER='doc-count-ok'
 
-for phrase in "${denylist[@]}"; do
-    # -F fixed-string (phrases contain regex metachars like '+'), -I skip binary,
-    # -n line numbers. One grep per phrase over all scan files.
-    while IFS= read -r match_line; do
-        [ -n "$match_line" ] || continue
-        add_fail "stale phrase \"$phrase\" → $match_line  (remove or correct the prose)"
-    done < <(grep -rnIF -- "$phrase" "${scan_files[@]}" 2>/dev/null || true)
-done
+# scan_prose <file>... — prints one violation per line; prints nothing when clean.
+scan_prose() {
+    [ "$#" -gt 0 ] || return 0
+    local phrase rule unit rest expected label hit hrest f ln text m num_tok plus num
+
+    for phrase in "${denylist[@]}"; do
+        # -F fixed-string (phrases contain regex metachars like '+'), -I skip
+        # binary, -H always print the filename (a single-file scan otherwise
+        # emits bare line numbers), -n line numbers.
+        while IFS= read -r hit; do
+            [ -n "$hit" ] || continue
+            case "$hit" in *"$SUPPRESS_MARKER"*) continue ;; esac
+            echo "stale phrase \"$phrase\" → $hit  (remove or correct the prose)"
+        done < <(grep -HnIF -- "$phrase" "$@" 2>/dev/null || true)
+    done
+
+    for rule in "${derived_rules[@]}"; do
+        unit=${rule%%#*}
+        rest=${rule#*#}
+        expected=${rest%%#*}
+        label=${rest##*#}
+        while IFS= read -r hit; do
+            [ -n "$hit" ] || continue
+            case "$hit" in *"$SUPPRESS_MARKER"*) continue ;; esac
+            f=${hit%%:*}
+            hrest=${hit#*:}
+            ln=${hrest%%:*}
+            text=${hrest#*:}
+            # One line can carry several claims; check each match on it.
+            while IFS= read -r m; do
+                [ -n "$m" ] || continue
+                num_tok=$(printf '%s' "$m" | grep -oE '^[0-9][0-9,]*\+?')
+                plus=0
+                case "$num_tok" in *+) plus=1; num_tok=${num_tok%+} ;; esac
+                num=$((10#${num_tok//,/}))
+                if [ "$plus" = 1 ]; then
+                    [ "$num" -le "$expected" ] && continue
+                    echo "count claim \"$m\" at $f:$ln claims MORE than the code has — code-measured $label=$expected"
+                else
+                    [ "$num" -eq "$expected" ] && continue
+                    echo "count claim \"$m\" at $f:$ln disagrees with the code — code-measured $label=$expected"
+                fi
+            done < <(printf '%s\n' "$text" | grep -oE "[0-9][0-9,]*\+?[*_\` ]+$unit" || true)
+        done < <(grep -HnIE -- "[0-9][0-9,]*\+?[*_\` ]+$unit" "$@" 2>/dev/null || true)
+    done
+}
+
+# --------------------------------------------------------------------------
+# (C) Self-check — prove the matchers still fire BEFORE trusting a clean tree
+# scan. Hermetic: a temp dir, no repo files read or written.
+# --------------------------------------------------------------------------
+selftest_dir=$(mktemp -d)
+trap 'rm -rf "$selftest_dir"' EXIT
+
+at_least=$(( code_test_groups > 1 ? code_test_groups - 1 : 1 ))
+{
+    echo "The suite has $code_test_groups parallel groups."
+    echo "There are $code_ports port interfaces and $code_adapters persistence adapters."
+    echo "More than ${at_least}+ parallel groups run per CI pass."
+    echo "Unrelated prose: 8 groups of peers, 3 ports, 12 conditions were met."
+} > "$selftest_dir/good.md"
+{
+    echo "$((code_test_groups + 1)) parallel groups"
+    echo "$((code_ports + 1)) port interfaces"
+    echo "$((code_test_groups + 5))+ registered test groups"
+    echo "1500+ tests"
+} > "$selftest_dir/bad.md"
+{
+    echo "$((code_test_groups + 1)) parallel groups <!-- doc-count-ok: fixture -->"
+    echo "1500+ tests <!-- doc-count-ok: fixture -->"
+} > "$selftest_dir/suppressed.md"
+
+selftest_out=$(scan_prose "$selftest_dir/good.md" "$selftest_dir/bad.md" \
+                          "$selftest_dir/suppressed.md")
+selftest_n=$(printf '%s' "$selftest_out" | grep -c . || true)
+selftest_bad=$(printf '%s' "$selftest_out" | grep -c 'bad\.md' || true)
+
+if [ "$selftest_n" != "4" ] || [ "$selftest_bad" != "4" ]; then
+    echo "FAIL: check_doc_counts self-check broken — the prose matcher no longer" >&2
+    echo "      behaves as specified, so a clean tree scan would prove nothing." >&2
+    echo "      expected 4 violations, all in bad.md; got $selftest_n total," >&2
+    echo "      $selftest_bad in bad.md:" >&2
+    printf '        %s\n' "$selftest_out" >&2
+    exit 1
+fi
+
+# --------------------------------------------------------------------------
+# Tree scan: every TRACKED *.md. `git ls-files` (not `find`) so untracked
+# scratch files never enter the scan and no tracked file escapes it.
+# --------------------------------------------------------------------------
+# Symlinks are skipped so a doc that is an alias of another (AGENTS.md ->
+# CLAUDE.md) is not reported twice; the target is tracked and scanned in its
+# own right.
+scan_files=()
+while IFS= read -r f; do
+    [ -n "$f" ] && [ -f "$f" ] && [ ! -L "$f" ] && scan_files+=("$f")
+done < <(git ls-files -- '*.md' 2>/dev/null || true)
+
+if [ "${#scan_files[@]}" -lt 2 ]; then
+    # No git index available (source tarball / detached export): fall back to
+    # the historical set rather than skipping the scan entirely.
+    scan_files=()
+    [ -f CLAUDE.md ] && scan_files+=(CLAUDE.md)
+    [ -f README.md ] && scan_files+=(README.md)
+    while IFS= read -r f; do scan_files+=("$f"); done \
+        < <(find docs -type f -name '*.md' 2>/dev/null)
+fi
+
+while IFS= read -r violation; do
+    [ -n "$violation" ] || continue
+    add_fail "$violation"
+done < <(scan_prose "${scan_files[@]}")
 
 # --------------------------------------------------------------------------
 # Report.
@@ -164,5 +296,5 @@ if [ "$fail" != "0" ]; then
     exit 1
 fi
 
-echo "check_doc_counts: clean — test_groups=$code_test_groups port_interfaces=$code_ports persistence_adapters=$code_adapters condition_registrations=$code_conditions, docs agree and no stale phrasings found"
+echo "check_doc_counts: clean — test_groups=$code_test_groups port_interfaces=$code_ports persistence_adapters=$code_adapters condition_registrations=$code_conditions; self-check fired as expected; ${#scan_files[@]} tracked *.md scanned, no stale count claims"
 exit 0
