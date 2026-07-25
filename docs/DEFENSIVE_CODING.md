@@ -283,11 +283,19 @@ assert green).
   structured event emit and a Prometheus gauge.
 
 - **Gate #15: `check-lib-layering`** (RATCHET) — flags any
-  `#include "controllers/…"`, `"models/…"`, `"services/…"`, or `"views/…"` in
-  `lib/**/*.c|.h` outside `lib/test/`. lib/ is the foundation; a backward
-  include means a lib/ file is doing app/ work. Baseline
-  `tools/scripts/lib_layering_baseline.txt` is empty (98 originals all
-  remediated). Override `// lib-layer-ok:<tag>`. Impl:
+  `#include "controllers/…"`, `"models/…"`, `"services/…"`, `"views/…"`, or
+  `"config/…"` in `lib/**/*.c|.h` outside `lib/test/`. lib/ is the
+  foundation; app/ consumes it and config/ composes the whole process, so
+  both sit above it. A backward include means a lib/ file is doing upstairs
+  work — and for `config/` it is worse than a misplaced dependency: config/
+  constructs the message processor, the reducer and the databases, so naming
+  a config/ symbol from lib/ makes the two layers cyclic. When lib/ needs
+  something the composition root owns, declare a port in lib/ and register
+  the implementation from config/ (`lib/net/include/net/net_runtime_port.h`,
+  `lib/storage/include/storage/node_db_runtime.h`). lib/hotswap's
+  `../../../config/*.def` X-macro data tables are not matched and carry no
+  link edge. Baseline `tools/scripts/lib_layering_baseline.txt` is empty (98
+  originals all remediated). Override `// lib-layer-ok:<tag>`. Impl:
   `tools/scripts/check_lib_layering.sh`.
 
 - **Gate #49: `check-shape-include-direction`** (RATCHET) — the eight app/
@@ -689,7 +697,7 @@ mechanically hold:
 | `// raw-return-ok:<tag>` | bare `return -1;` in service/controller code with no preceding log line | `check-silent-errors-services`, `-controllers` |
 | `// raw-alloc-ok:<tag>` | line with `malloc/calloc/realloc` outside the `zcl_*` wrappers | `check-raw-malloc` |
 | `// long-function-ok:<tag>` | signature line of a function whose body spans >500 lines (controllers/services/config-src ENFORCED, lib/ WARN) | `check-long-functions` |
-| `// lib-layer-ok:<tag>` | line in `lib/` that includes a `controllers/`, `models/`, `services/`, or `views/` header | `check-lib-layering` |
+| `// lib-layer-ok:<tag>` | line in `lib/` that includes a `controllers/`, `models/`, `services/`, `views/`, or `config/` header | `check-lib-layering` |
 | `// shape-layer-ok:<tag>` | line in `app/models/` that includes a `services/`/`controllers/` header, or in `app/services/` that includes a `controllers/` header | `check-shape-include-direction` |
 | `// domain-purity-ok:<tag>` | line in `domain/` that includes an app/ shape or an unlisted lib/ subsystem header | `check-domain-purity` |
 | `// supervisor-ok:<tag>` | any line in a long-running `app/services/src/*_service.c` that intentionally does not register a supervisor liveness contract | `check-supervisor-registration` |
