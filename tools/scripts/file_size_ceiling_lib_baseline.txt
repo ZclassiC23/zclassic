@@ -29,7 +29,7 @@ lib/hotswap/src/hotswap_loader.c 809
 lib/kernel/src/command_registry.c 1761
 lib/metrics/src/prometheus_metrics.c 1084
 lib/net/src/addrman.c 1268
-lib/net/src/connman.c 2765
+lib/net/src/connman.c 2832
 lib/net/src/download.c 1385
 lib/net/src/fast_sync.c 1889
 lib/net/src/file_service.c 2255
@@ -68,3 +68,4 @@ lib/sim/src/simnet_chaos_faults.c 2684
 lib/util/src/supervisor.c 801
 lib/util/src/stage.c 819
 src/main_cli_modes.c 3820
+lib/hotswap/src/hotswap_activate.c 948
