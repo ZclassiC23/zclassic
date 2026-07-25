@@ -6,8 +6,9 @@ board this doctrine was distilled from — the divergence-surface audit, the
 failure-rate budget (F1–F11), the verification gates (G1–G5), and the merged
 rock-solid recovery-program L1/L2 items — is
 [`docs/work/tenacity-roadmap.md`](work/tenacity-roadmap.md), superseded as a
-roadmap (see `docs/work/ROADMAPS.md`) but retained on disk because
-reindex/replay-canary/seal_kv code still cites its numbered items by name.
+roadmap by [`docs/work/FORWARD_PLAN.md`](work/FORWARD_PLAN.md) but retained on
+disk because reindex/replay-canary/seal_kv code still cites its numbered items
+by name.
 Near-term hardening sequencing (including the hold-class doctrine and the
 stability-hardening backlog) is in that same file's "Hold-class doctrine" and
 "Stability hardening backlog" sections.*

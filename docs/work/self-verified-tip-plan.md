@@ -36,7 +36,7 @@ network's best valid chain — or name, precisely, the one input it is
 missing.*
 
 The node holds every block body on disk and a locally pinned checkpoint (the
-baked SHA3 checkpoint @3,056,758, `lib/chain/src/checkpoints.c:86-104`). The
+baked SHA3 checkpoint @3,056,758, `core/chainparams/src/checkpoints.c`). The
 checkpoint is not a ZClassic-header state commitment; sovereignty comes from
 reproducing it from validated bodies. The remaining defect: some paths still
 read conclusions off persisted `*_log.ok` cursors and a *borrowed* `coins_kv`

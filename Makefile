@@ -825,7 +825,7 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
         check-before-save-hooks check-pthread-create check-model-validation \
         check-long-functions check-rpc-registrar check-lag-slo-observable \
         check-file-size-ceiling check-framework-filename-suffix \
-        check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-no-stale-pinned-facts check-markdown-links \
+        check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-no-stale-pinned-facts check-markdown-links check-doc-inline-paths \
         check-no-new-repair-rung \
         fuzz-ci-leaks \
         soak-smoke soak-7day soak-ci test-crash-bootstrap \
@@ -5510,6 +5510,15 @@ check-markdown-links:
 	@echo "══ LINT: local Markdown targets ══"
 	@./tools/lint/check_markdown_links.sh .
 
+# check-markdown-links covers Markdown LINK targets and explicitly excludes
+# inline code. Every dead path an agent actually trusts is inline code — a doc
+# naming `domain/consensus/src/tx_structural.c:121` reads as verified and sends
+# the agent to a directory that moved. This gate resolves every backticked
+# source path in tracked Markdown; shrink-only baseline.
+check-doc-inline-paths:
+	@echo "══ LINT: inline code paths in Markdown ══"
+	@./tools/lint/check_doc_inline_paths.sh
+
 # Doc counts vs code: numeric claims (test_groups / port_interfaces /
 # persistence_adapters) declared in the <!-- DOC-COUNTS --> block of
 # docs/CODEBASE_MAP.md must agree with the code, and known-stale compound
@@ -5823,6 +5832,7 @@ LINT_GATES := \
     check-no-uncited-victory \
     check-error-doc-refs \
     check-markdown-links \
+    check-doc-inline-paths \
     check-one-result-type \
     check-service-result-convergence \
     check-shape-includes-header \

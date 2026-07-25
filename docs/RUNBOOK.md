@@ -413,12 +413,12 @@ shielded state from the start.
 ## Onion-Seed Bootstrap (extending peer-discovery-of-last-resort)
 
 **What it's for:** when DNS seeds (`nSeeds=0` today — see
-`lib/chain/src/chainparams.c`) and the hardcoded clearnet fixed-IP seeds are
+`core/chainparams/src/chainparams.c`) and the hardcoded clearnet fixed-IP seeds are
 both unreachable (churn, firewall, ISP blackhole), the node's remaining
 bootstrap path is Tor: fetch `/directory.json` (its own .onion + advertised
 clearnet IP/height) from one or more onion-directory seed nodes. Today the
 binary ships exactly **one** hardcoded first-party onion seed
-(`lib/chain/src/chainparams.c` — search `kOnionSeeds`), a known single point
+(`core/chainparams/src/chainparams.c` — search `kOnionSeeds`), a known single point
 of failure: no second first-party address is currently available in this
 repo/docs/deploy — do not add a fabricated one;
 adding a dead hostname wastes a recovering node's bootstrap budget on a dead

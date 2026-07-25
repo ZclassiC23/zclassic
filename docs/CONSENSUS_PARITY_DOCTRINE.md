@@ -59,8 +59,11 @@ observability. Here zclassic23 is free to be better than zclassicd.
 | **3. Runtime cross-check** | Compares live block hashes against zclassicd | `legacy_mirror` / `zclassic23 ops mirror` / `zclassic23 core consensus report` |
 
 **Lint gate E13** fails if a **non-zclassicd consensus mechanism** appears in
-the consensus source path (`lib/consensus`, `lib/validation`, `lib/chain`,
-`lib/mining`, `app/jobs`, `domain/consensus`). Banned token classes:
+the consensus source path — the `PATHS` array in
+`tools/scripts/check_consensus_parity.sh`: `core/params`, `core/chainparams`,
+`core/consensus`, `lib/validation`, `lib/chain`, `lib/mining`, `app/jobs`.
+Every entry must exist on disk or the gate hard-fails rather than scanning
+nothing. Banned token classes:
 `versionbits`, `VersionBitsState`, `ComputeBlockVersion`, `ehUpgrade` /
 `eh_upgrade`, `nSignalBit`, `vbits_`, `equihash_n_at` / `equihash_k_at`
 (dynamic override getters), `BIP9`, `BIP8`. These guard the *mechanism* —
@@ -79,7 +82,7 @@ The doctrine target is **the behavior of the running network**, not the
 reference TEXT — and there is one proven place where they diverge.
 
 zclassicd's text enforces `serialized size > MAX_TX_SIZE_AFTER_SAPLING (102000)`
-unconditionally in `CheckTransaction` (`src/consensus/consensus.h:27`,
+unconditionally in `CheckTransaction` (`src/consensus/consensus.h:27`, <!-- doc-path-ok: zclassicd (upstream C++) path -->
 `src/main.cpp:1196-1200`). But the canonical chain contains **413 post-Sapling
 txs above 102000** (heights 478,544..1,968,856; max 1,922,197 bytes). They were
 legal when mined (the original Zcash-Sapling rule capped a tx at `MAX_BLOCK_SIZE`
@@ -114,10 +117,12 @@ Mechanics:
 - `tools/scripts/gen_oversize_grandfather_table.sh` — regenerates the table,
   re-verifying EVERY entry against a live zclassicd (canonical-at-height +
   byte-exact size); `--fixture` emits the 478,544 KAT input.
-- `domain/consensus/src/oversize_grandfather_table.inc` — the generated static
+- `core/consensus/src/oversize_grandfather_table.inc` — the generated static
   table (sorted, bsearch-able).
 - `domain_consensus_tx_oversize_grandfathered()` + `enum domain_tx_check_context`
-  in `domain/consensus/tx_structural.{c,h}`; consumed via
+  in `core/consensus/src/tx_structural.c` +
+  `core/consensus/include/domain/consensus/tx_structural.h` (the `domain/`
+  include token is preserved by `-Icore/consensus/include`); consumed via
   `check_transaction_in_block()` (block paths) vs `check_transaction()`
   (mempool, strict).
 - Golden pins: `test_consensus_parity` (count 413, max 1,922,197, first/last

@@ -13,7 +13,7 @@ function `connect_block()` in RAM (no disk, no real PoW, no real funds):
    recipient outputs (plus a change output) in a single transaction.
 2. A **P2SH spend** — fund a hash-time-locked contract (HTLC) script (the
    same 97-byte contract shape ZSWP atomic swaps use), then redeem it with
-   the real "reveal secret + sign" scriptSig builder from `script/htlc.c`.
+   the real "reveal secret + sign" scriptSig builder from `lib/script/src/htlc.c`.
 
 Everything is deterministic (one fixed seed tape drives both the wallet
 keys and the virtual block clock), so the printed txids/fees/sizes are
@@ -75,7 +75,7 @@ P2SH HTLC fund: 162 bytes / 1620 zats; HTLC redeem: 325 bytes / 3250 zats
   `lib/wallet/include/wallet/wallet.h`, reached via the `zclassic23 rpc z_sendmany` /
   `sendtoaddress` RPC path (`app/controllers/src/wallet_controller.c`,
   `app/controllers/src/transaction_controller.c`).
-- P2SH HTLC fund + redeem: `script/htlc.h`'s builders are already
+- P2SH HTLC fund + redeem: `lib/script/include/script/htlc.h`'s builders are already
   production code (this example calls the same functions the node calls).
   Swap state lives in `app/controllers/src/swap_controller.c`
   (`swap_initiate`, `swap_participate`); on-chain broadcast/settlement of

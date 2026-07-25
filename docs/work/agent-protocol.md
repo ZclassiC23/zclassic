@@ -115,8 +115,13 @@ rebase another worker's lane.
 
 When all tasks pass:
 
-1. **Run the full suite once more:** `make test_parallel` + `make lint`. All
-   green = ready.
+1. **Run the full suite once more —
+   `tools/scripts/gate-and-report.sh <lintlog> <testlog>`.** This is the owning
+   runbook for that script: it runs `make lint` → a full link build (`make
+   build-only` does not link) → `make test-parallel`, then keys success on the
+   `SUITE VERDICT … groups_ran=N groups_failed=N` line and **rejects a cached
+   run**. A bare `grep "ALL TESTS PASSED"` also matches
+   `ALL TESTS PASSED (CACHED)`, which can mean zero groups executed.
 
    **⚠️ A GREEN SUITE IS NOT A HEALTHY NODE (RESILIENCE DOCTRINE #1).** If your
    change touches sync, validation, header/block admit, a cutover, or anything

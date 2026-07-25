@@ -28,7 +28,7 @@ Guarded by build+lint+`test_parallel`.
 
 **Standing rule:** legacy oversize txs (413 found, h=478544..1968856, max
 1,922,197 B — mined when the block-size rule was larger) are excused via a
-txid-keyed grandfather allowlist in `domain/consensus/src/tx_structural.c`,
+txid-keyed grandfather allowlist in `core/consensus/src/tx_structural.c`,
 **BLOCK context only** — mempool and fresh blocks stay strict at
 `MAX_TX_SIZE_AFTER_SAPLING=102000` (= zclassicd live behavior). The
 standing-nightly-replay institution (commitment == zclassicd
@@ -232,7 +232,7 @@ these harden the bridge.
 ## Hold-class doctrine
 
 The stickiness invariant applied to reducer holds: **a stall must always be a
-NAMED typed blocker (`lib/util/blocker.h`) with either an auto-remedy
+NAMED typed blocker (`lib/util/include/util/blocker.h`) with either an auto-remedy
 condition or an honest, documented owner-gate rationale** — never a bare
 fail-closed refusal invisible to `zclassic23 core sync blockers` /
 `zclassic23 dumpstate subsystem=blocker`. An audit of every fail-closed hold

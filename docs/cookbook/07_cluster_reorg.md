@@ -59,24 +59,24 @@ step or the final convergence check fails.
 | `lib/sim/include/sim/simnet_cluster.h` | `simnet_cluster_deliver_pending` |
 | `lib/sim/include/sim/simnet_cluster.h` | `simnet_cluster_tip_hash`, `simnet_cluster_coins_digest` |
 | `lib/coins/include/coins/utxo_commitment.h` | `struct utxo_commitment`, `utxo_commitment_equal` |
-| `lib/core/include/core/uint256.h` | `struct uint256`, `uint256_eq`, `uint256_get_hex` |
+| `core/math/include/core/uint256.h` | `struct uint256`, `uint256_eq`, `uint256_get_hex` |
 
 Underneath `simnet_cluster_deliver_pending`, the reorg replay itself lives in
 `lib/sim/src/simnet_chain.c`: it calls `disconnect_block()` in reverse order
 to unwind the losing branch, then `connect_block()` forward to apply the
-winning branch — the same two functions
-(`lib/chain/src/disconnect_block.c`, `lib/chain/src/connect_block.c`) a live
-node calls.
+winning branch — the same pair a live node calls. **Both live in
+`lib/validation/src/connect_block.c`**; there is no `disconnect_block.c` under
+any prefix.
 
 ## Production counterpart
 
 The equivalent live-node machinery:
 
 - `find_most_work_chain()` / `activate_best_chain()` —
-  `lib/chain/src/chainstate.c` — selects the best-work tip across all known
+  `lib/validation/src/chainstate.c` — selects the best-work tip across all known
   block-index entries and drives the disconnect/connect walk.
-- `connect_block()` / `disconnect_block()` —
-  `lib/chain/src/connect_block.c` / `lib/chain/src/disconnect_block.c`.
+- `connect_block()` / `disconnect_block()` — both in
+  `lib/validation/src/connect_block.c`.
 - `app/jobs/src/utxo_apply_delta_reorg.c` — the reducer-side job that applies
   a block-index reorg to the on-disk `coins_kv` authority table (the
   persistent-storage analogue of this example's in-RAM UTXO digest).

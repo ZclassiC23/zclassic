@@ -124,8 +124,11 @@ build/bin/zclassic23
 
 Skipping step 1 is a footgun: importing UTXOs without the header import leaves a
 ~3.1M-header hole (headers=960) and the node pins. The old single-flag forms
-(`-cold-import=`/`-fastimport=`) no longer exist — the argv loop ignores unknown
-flags, so passing them silently no-ops.
+(`-cold-import=`/`-fastimport=`) no longer exist. Passing one does **not**
+silently no-op: the argv loop prints
+`Warning: unrecognized flag '<f>' (ignored) — check spelling or docs/RUNBOOK.md`
+to stderr on every boot (`config/src/args.c`). It is advisory, never fatal, so
+grep stderr for `unrecognized flag` after any flag change.
 
 **Caveat:** the legacy cold import is slow (a ~12k-block header band backfills
 over P2P, and the first boot can latch a transient freeze that needs a restart).
