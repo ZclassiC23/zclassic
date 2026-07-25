@@ -5927,10 +5927,12 @@ postmortem-to-scenario: tools/postmortem_to_scenario
 # merge surface with in-flight lanes minimal. The content of each lives in
 # tools/scripts/, so the Makefile side stays a single line per target.
 #
-# These four exist because the Makefile had 400+ targets and no front door:
+# These exist because this file had hundreds of targets and no front door:
 # `make help` printed "No rule to make target 'help'", the prerequisite list
-# lived in three prose files that disagreed, and there was no way to ask the
-# host how long anything actually takes.
+# lived in three prose files that disagreed with each other and with
+# build_vendor.sh, and there was no way to ask the host how long anything
+# actually takes. `make help` prints the live target count; do not restate it
+# here.
 .PHONY: help setup doctor timings pr-check help-selftest doctor-selftest timings-selftest
 
 help:
@@ -5982,9 +5984,9 @@ timings-selftest:
 # The unused-result suppression is the flag that ALSO disables [[nodiscard]]
 # reporting on both GCC and Clang, so it silently voids the repository's
 # result-type discipline; the stringop-overflow one hides a memory-safety
-# diagnostic. Both
-# arrived as unexplained copy-forward defaults in the first commit and had
-# spread by copy-paste to seven compile rules. The gate does not ban them, it
+# diagnostic. Both arrived as unexplained copy-forward defaults in the first
+# commit and had spread by copy-paste to seven compile rules. It does not ban
+# them, it
 # bans an UNEXPLAINED one: any instance needs a `suppression-ok: <reason>`
 # marker on its line or the line above. Carries hermetic detector fixtures and
 # runs them before it certifies the tree, so it cannot report clean while

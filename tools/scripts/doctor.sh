@@ -140,8 +140,6 @@ while IFS=$'\t' read -r tool class apt dnf why; do
         missing_n=$((missing_n + 1))
         missing_apt+=("$apt"); missing_dnf+=("$dnf")
     fi
-    [ "$status" = "MISSING" ] && [ "$class" = "vendor-either" ] &&
-        { either_apt+=("$apt"); either_dnf+=("$dnf"); }
 done < "$TSV"
 
 echo "══ doctor: build prerequisites on $(uname -n) ══"

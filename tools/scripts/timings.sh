@@ -101,7 +101,7 @@ section_lint() {
     if [ -n "$n" ] && [ -n "$umbrella" ] && [ "$umbrella" -gt 0 ] && [ "$n" -lt "$umbrella" ]; then
         printf '  PARTIAL %s of the %s gates in the Makefile LINT_GATES umbrella ran.\n' \
             "$n" "$umbrella"
-        printf '         This is a subset run (make lint-fast), not the full gate.\n'
+        printf '         A subset run (e.g. make lint-fast) — real wall time, but not the full gate.\n'
     fi
     printf '         slowest gates: %s\n' \
         "$(grep -o '{"name":"[^"]*","ms":[0-9]*' "$LINT_JSON" 2>/dev/null | head -3 |
