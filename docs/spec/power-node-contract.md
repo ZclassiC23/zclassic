@@ -42,7 +42,7 @@ Invariants:
 - Native commands and controller reads may report `node_state` values, but mutation remains
   behind the owning subsystem APIs.
 
-Concrete files: `db/schema.sql`, `app/models/src/database.c`,
+Concrete files: `docs/spec/schema.sql`, `app/models/src/database.c`,
 `lib/wallet/src/wallet_sqlite.c`, `lib/coins/src/utxo_commitment.c`,
 `lib/storage/src/coins_view_sqlite.c`, `config/src/boot.c`.
 

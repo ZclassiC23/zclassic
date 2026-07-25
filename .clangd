@@ -38,7 +38,7 @@ CompileFlags:
     - -Ivendor/include
     - -Ilib/util/include
     - -Ilib/crypto/include
-    - -Isdk/include
+    - -Ilib/framework/include
     - -Iports/include
 
 ---
