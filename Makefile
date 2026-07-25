@@ -237,7 +237,7 @@ CONFIG_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(wildcard config/src/*.c))
 
 # Library layer
-LIB_MODULES = bloom chain codeindex coins core crypto crypto_registry encoding event framework health hotswap kernel \
+LIB_MODULES = base bloom chain codeindex coins core crypto crypto_registry encoding event framework health hotswap kernel \
 	json keys metrics mining net platform policy primitives rpc script session sim storage \
 	support sync util validation vcs wallet sapling overlay zslp znam zanc
 LIB_INCLUDES = $(foreach m,$(LIB_MODULES),-Ilib/$(m)/include)
@@ -836,7 +836,7 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
         soak-evidence-report soak-evidence-selftest \
         install-slo-probe slo-probe-status slo-probe-selftest
 
-CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c lib/encoding/src/utilstrencodings.c lib/util/src/log_level.c
+CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c lib/encoding/src/utilstrencodings.c lib/base/src/log_level.c
 all: test_zcl zclassic23 zclassic-cli zcl-rpc
 
 TEST_SRCS = $(call zcl_filter_ephemeral_sources,\
@@ -1070,9 +1070,9 @@ EXPLORER_CSS_GEN = app/views/include/views/explorer_css.h
 EXPLORER_CSS_SRC = app/views/src/explorer_css.css
 VIEW_GEN_HEADERS = $(VIEW_GEN_HEADERS_EARLY)
 
-$(TMPL_TOOL): tools/gen_templates.c lib/util/src/safe_alloc.c
+$(TMPL_TOOL): tools/gen_templates.c lib/base/src/safe_alloc.c
 	@mkdir -p $(dir $@)
-	$(CC) -std=c23 -O2 -Wall -Wextra -Ilib/util/include -o $@ $^
+	$(CC) -std=c23 -O2 -Wall -Wextra -Ilib/base/include -Ilib/util/include -o $@ $^
 
 $(BIN_DIR)/inspect_html: tools/inspect_html.c
 	@mkdir -p $(dir $@)
@@ -2235,7 +2235,7 @@ $(ZCLASSIC23_BIN): $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) $(NODE_ENTRY_SRCS
 
 .PHONY: zclassic-cli
 zclassic-cli: $(ZCLASSIC_CLI_BIN)
-$(ZCLASSIC_CLI_BIN): $(BUILD_IDENTITY_STAMP) src/cli.c $(CLI_SRCS) lib/util/src/safe_alloc.c
+$(ZCLASSIC_CLI_BIN): $(BUILD_IDENTITY_STAMP) src/cli.c $(CLI_SRCS) lib/base/src/safe_alloc.c
 	@mkdir -p $(dir $@)
 	@set -eu; \
 	tmp="$$(mktemp "$@.link.XXXXXX")"; \
@@ -2289,12 +2289,12 @@ $(BIN_DIR)/gen_sha3_windows: tools/gen_sha3_windows.c \
 		lib/chain/src/sha3_windows.c \
 		lib/crypto/src/sha3.c lib/crypto/src/keccak_avx512.c lib/encoding/src/utilstrencodings.c \
 		lib/json/src/json.c lib/platform/src/clock.c \
-		lib/util/src/safe_alloc.c lib/support/src/cleanse.c
+		lib/base/src/safe_alloc.c lib/support/src/cleanse.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O3 -march=native -Wall -Wextra -Werror -pedantic \
 	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
 	    -Ilib/chain/include -Ilib/crypto/include -Ilib/encoding/include \
-	    -Ilib/json/include -Ilib/platform/include -Ilib/util/include \
+	    -Ilib/json/include -Ilib/platform/include -Ilib/base/include -Ilib/util/include \
 	    -Ilib/support/include \
 	    -D_POSIX_C_SOURCE=200809L \
 	    -o $@ $^ -pthread
@@ -2317,7 +2317,7 @@ $(BIN_DIR)/gen_utxo_root_ladder: tools/gen_utxo_root_ladder.c \
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
 	    -Ilib/chain/include -Ilib/crypto/include -Ilib/support/include \
-	    -Ilib/util/include -Ivendor/include \
+	    -Ilib/base/include -Ilib/util/include -Ivendor/include \
 	    -D_POSIX_C_SOURCE=200809L \
 	    -o $@ $^ -Lvendor/lib -l:libsqlite3.a -lpthread -lm
 
@@ -2350,12 +2350,12 @@ $(BIN_DIR)/rom_two_builder_compare: tools/rom_two_builder_compare.c \
 .PHONY: tools/checkpoint_rung_export
 tools/checkpoint_rung_export: $(BIN_DIR)/checkpoint_rung_export
 $(BIN_DIR)/checkpoint_rung_export: tools/checkpoint_rung_export.c \
-		lib/storage/src/checkpoint_rung.c lib/util/src/log_level.c \
+		lib/storage/src/checkpoint_rung.c lib/base/src/log_level.c \
 		lib/crypto/src/sha3.c lib/crypto/src/keccak_avx512.c lib/support/src/cleanse.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
-	    -Ilib/storage/include -Ilib/crypto/include -Ilib/util/include \
+	    -Ilib/storage/include -Ilib/crypto/include -Ilib/base/include -Ilib/util/include \
 	    -Ilib/support/include -Ivendor/include \
 	    -D_POSIX_C_SOURCE=200809L \
 	    -o $@ $^ -Lvendor/lib -l:libsqlite3.a -lpthread -lm
@@ -2422,7 +2422,7 @@ bundle-bootstrap: $(BIN_DIR)/rom_bundle_sha3
 zcl-nodectl: $(ZCL_NODECTL_BIN)
 $(ZCL_NODECTL_BIN): tools/zcl-nodectl.c lib/util/include/util/rpc_paths.h
 	@mkdir -p $(dir $@)
-	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -Ilib/util/include -o $@ $<
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -Ilib/base/include -Ilib/util/include -o $@ $<
 
 .PHONY: export_snapshot
 export_snapshot: $(BIN_DIR)/export_snapshot
@@ -2722,7 +2722,7 @@ crash_recovery_test: $(CRASH_RECOVERY_TEST_BIN)
 $(CRASH_RECOVERY_TEST_BIN): tools/crash_recovery_test.c lib/platform/src/clock.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pthread \
-	    -Ilib/platform/include -Ilib/util/include -Ivendor/include -o $@ \
+	    -Ilib/platform/include -Ilib/base/include -Ilib/util/include -Ivendor/include -o $@ \
 	    tools/crash_recovery_test.c lib/platform/src/clock.c \
 	    -Lvendor/lib -l:libsqlite3.a -lpthread -ldl -lm
 
@@ -3783,7 +3783,7 @@ $(SOAK_RUNNER_BIN): tools/soak/main.c lib/test/src/soak_harness.c \
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    -D_POSIX_C_SOURCE=200809L \
-	    -Ilib/test/include -Ilib/platform/include -Ilib/util/include -o $@ \
+	    -Ilib/test/include -Ilib/platform/include -Ilib/base/include -Ilib/util/include -o $@ \
 	    tools/soak/main.c lib/test/src/soak_harness.c lib/platform/src/clock.c
 
 soak-7day: soak_runner zcl-rpc
@@ -5426,7 +5426,7 @@ check-no-dev-history-in-contracts:
 
 # Gate E9 — EV_OPERATOR_NEEDED emit must reach a registered sink (HARD).
 # The silent-halt fix: the loud "human needed" signal can never be emitted
-# without a subscriber in lib/util/src/alerts.c.
+# without a subscriber in lib/event/src/alerts.c.
 check-operator-needed-sink:
 	@echo "══ LINT: operator-needed sink (E9) ══"
 	@./tools/scripts/check_operator_needed_sink.sh
@@ -5981,11 +5981,11 @@ $(BIN_DIR)/postmortem_to_scenario: tools/postmortem_to_scenario.c \
 		lib/sim/src/postmortem.c lib/sim/src/seed_tape.c \
 		lib/platform/src/clock.c lib/platform/src/rng.c \
 		lib/util/src/signal_handler.c lib/util/src/clientversion.c \
-		lib/util/src/safe_alloc.c lib/json/src/json.c
+		lib/base/src/safe_alloc.c lib/json/src/json.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    -Wno-format-truncation \
-	    -Ilib/sim/include -Ilib/platform/include -Ilib/util/include \
+	    -Ilib/sim/include -Ilib/platform/include -Ilib/base/include -Ilib/util/include \
 	    -Ilib/json/include \
 	    -D_POSIX_C_SOURCE=200809L \
 	    -o $@ $^ -Lvendor/lib -l:libz.a -lpthread -lm

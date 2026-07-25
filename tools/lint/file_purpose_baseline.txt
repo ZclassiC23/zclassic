@@ -246,8 +246,6 @@ lib/util/include/util/png_writer.h
 lib/util/src/boot_phase.c
 lib/util/src/path_check.c
 lib/util/src/pprev_walk.c
-lib/util/src/result.c
-lib/util/src/safe_alloc.c
 lib/util/src/service_state.c
 lib/validation/include/validation/mirror_consensus.h
 lib/validation/include/validation/sync_evidence_policy.h

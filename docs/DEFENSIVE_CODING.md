@@ -101,7 +101,7 @@ row) does NOT get the kernel-store marker — it goes through the AR lifecycle.
 
 **Enforcement:** standard result type `struct zcl_result` (`.ok`, `.code`,
 `.message[256]`, `.source_file`, `.source_line`) with `ZCL_OK`, `ZCL_ERR`, and
-`ZCL_CHECK` macros — see `lib/util/include/util/result.h`.
+`ZCL_CHECK` macros — see `lib/base/include/base/result.h`.
 
 **Rule:** new service functions MUST return `struct zcl_result` instead of
 `bool`. Existing code migrates incrementally.
@@ -118,7 +118,7 @@ the failure.
 **Problem:** 15+ unchecked malloc/calloc calls in sync services → silent NULL
 dereference.
 
-**Enforcement:** `lib/util/include/util/safe_alloc.h` provides:
+**Enforcement:** `lib/base/include/base/safe_alloc.h` provides:
 
 - `zcl_malloc(size, label)` — logs (`malloc_failed` + `EV_OOM`) and returns
   NULL; use when graceful degradation is possible.
@@ -548,7 +548,7 @@ current green tree.
 | **E6c: `check-dumper-never-blocks`** | RATCHET | No `*_dump_state_json` function body reaches a blocking primitive (`progress_store_tx_lock(`, `stage_log_row_count(`, `stage_cursor_count(`, `from_anchor_target`) — it publishes through the snapshot plane (`util/subsystem_snapshot.h` / `jobs/stage_log_rows.h`) and reads lock-free, using `progress_store_tx_trylock` only for cold single-row detail. Manifest `dumper_blocking_primitives.tsv`; reviewed-but-unmigrated sites in `dumper_blocking_baseline.tsv` (goal empty). No inline override. |
 | **E7: `check-no-authoritative-ram-state`** | RATCHET | No direct `active_chain` internals access / new global-static `struct active_chain`. Derived RAM indexes only via accessors; consensus authority is the log/projection/cursor surface. Baseline `no_authoritative_ram_state_baseline.txt` (empty). Override `// ram-state-ok:<tag>` (documented derived cache). |
 | **E8: `check-no-silent-ready`** | HARD | The block-connection authority (`app/services/src/chain_activation_service.c`) must advance-the-tip OR name a typed blocker every tick (FRAMEWORK.md Prime Directive). Any `activation_set_state(…, ACTIVATION_READY, …)` must also route a typed blocker via `blocker_set(` (or `activation_set_behind_blocker(`). Closes the silent-ready hole class (e.g. READY reported as "behind_peers" while hundreds of blocks behind). Override `// no-silent-ready-ok:<tag>`. |
-| **E9: `check-operator-needed-sink`** | HARD | `EV_OPERATOR_NEEDED` ("auto-healing gave up, page a human") is emitted in production AND has a registered subscriber in `lib/util/src/alerts.c` (rule with `.trigger = EV_OPERATOR_NEEDED` via `event_observe(`). Prevents the silent-halt class where the loud signal reaches no sink. No override. |
+| **E9: `check-operator-needed-sink`** | HARD | `EV_OPERATOR_NEEDED` ("auto-healing gave up, page a human") is emitted in production AND has a registered subscriber in `lib/event/src/alerts.c` (rule with `.trigger = EV_OPERATOR_NEEDED` via `event_observe(`). Prevents the silent-halt class where the loud signal reaches no sink. No override. |
 | **P1-3: `check-systemd-memory-budget`** | HARD | Systemd service hard caps (`MemoryMax` plus finite `MemorySwapMax`) must stay below the host budget (default 70% of MemTotal); explicit `MemoryMax=infinity` fails. Prevents host-level OOM from cap drift. |
 | **E11: `check-doc-accuracy`** | HARD | The canonical gate block below matches the `check-*` prerequisites of the Makefile `lint:` target by count AND name set. On mismatch, fix the doc block — the Makefile is authoritative. No override. |
 | **`check-markdown-links`** | HARD | Every local file/directory target in tracked Markdown resolves inside the repository. Network/mail/app URIs, page anchors, images, code examples, and explicit generated placeholders are outside this filesystem-only contract. The gate fails loud on an empty scan/parser result and carries isolated positive/negative self-tests. No baseline or override. |

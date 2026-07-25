@@ -4,8 +4,8 @@
 #include "stage_batch_internal.h"
 
 #include "core/utiltime.h"
-#include "util/stage.h"
-#include "util/stage_lcc.h"
+#include "sync/stage.h"
+#include "sync/stage_lcc.h"
 
 #include <stdatomic.h>
 #include <stdio.h>

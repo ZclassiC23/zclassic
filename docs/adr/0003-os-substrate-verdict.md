@@ -94,7 +94,7 @@ fairly." The organs that contract actually needs are built:
   detect/remedy/witness healers — the node's equivalent of an OS's
   self-healing daemons, but wired to the append-only log instead of ambient
   process state.
-- **Durable stage cursors** — `lib/util/include/util/stage.h`: one SQLite
+- **Durable stage cursors** — `lib/sync/include/sync/stage.h`: one SQLite
   table (`stage_cursor`) keyed by stage name; chain progress is a cursor on
   disk, never RAM-only authoritative state (`docs/FRAMEWORK.md` §0's Prime
   Directive).
@@ -164,7 +164,7 @@ Detail, file inventories, and the ordered checklist are in
 - **epoll/kqueue reactor.** `lib/net/src/connman.c:1270` runs one `poll()`
   thread over a `≤256`-fd array (`connman.c:1230`) at a 50 ms timeout — no
   measured need for an edge-triggered reactor at today's peer counts.
-- **Custom allocator.** `zcl_malloc` (`util/safe_alloc.h`) is a checked
+- **Custom allocator.** `zcl_malloc` (`base/safe_alloc.h`) is a checked
   wrapper over the system allocator; no measured fragmentation pain.
 - **Thread priorities / QoS.** Contradicts the liveness philosophy (cursor +
   named blocker, never "starve the low-priority thing quietly"); no
@@ -187,7 +187,7 @@ Detail, file inventories, and the ordered checklist are in
 - Rung 0's shell-out removal is valuable independent of sandboxing — it
   also removes ~12 sites where `system()`'s return code is already known to
   be untrustworthy tree-wide, because `alerts_init()`
-  (`lib/util/src/alerts.c:287-291`) installs a process-wide `SIGCHLD`
+  (`lib/event/src/alerts.c:287-291`) installs a process-wide `SIGCHLD`
   handler with `SA_NOCLDWAIT` so `system()`'s internal `waitpid()` reliably
   fails `ECHILD` (documented in-place at
   `app/services/src/utxo_recovery_ldb_copy.c:76-85`).

@@ -337,7 +337,7 @@ after the command has focused unit coverage.
 
 Existing examples:
 
-- Allocation faults: `lib/util/src/safe_alloc.c` plus `trigger_oom_at`.
+- Allocation faults: `lib/base/src/safe_alloc.c` plus `trigger_oom_at`.
 - Network partitions: `lib/net/src/net_fault.c` plus `partition_network`.
 
 ## From Capsule To Scenario

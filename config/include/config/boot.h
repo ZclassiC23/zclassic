@@ -1068,6 +1068,11 @@ struct chain_params;
 struct connman;
 void app_log_bootstrap_sources(const struct chain_params *params,
                                 struct connman *cm);
+/* Register the metrics data sources whose lifetime is the process, not the
+ * metrics thread — today the Prometheus `zcl_rpc_*` counter source, which must
+ * be live even with -showmetrics=0 (the dump is served on demand). Call once
+ * from main(), unconditionally, before app_start_metrics(). */
+void app_wire_metrics_sources(void);
 void app_start_metrics(bool mining);
 void app_stop_metrics(void);
 

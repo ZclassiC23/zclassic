@@ -2,7 +2,7 @@
  *
  * Alert routing implementation — see alerts.h for the contract. */
 
-#include "util/alerts.h"
+#include "event/alerts.h"
 #include "util/sd_notify.h"
 #include "util/spawn.h"
 #include "event/event.h"
@@ -82,7 +82,10 @@ static void sink_webhook(const char *url, const char *rule_name,
         "-H", "Content-Type: application/json",
         "-d", body, "--max-time", "5", url, NULL
     };
-    (void)zcl_spawn_detached(argv, NULL);
+    ZCL_IGNORE_RESULT(zcl_spawn_detached(argv, NULL),
+                      "best-effort notification; the alert is already in the "
+                      "event log and a failed webhook must not stall the "
+                      "caller or take a second delivery path");
 }
 
 /* ── Core logic ──────────────────────────────────────────────── */

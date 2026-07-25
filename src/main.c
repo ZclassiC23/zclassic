@@ -563,6 +563,11 @@ int main(int argc, char **argv)
         }
     }
 
+    /* Prometheus `zcl_rpc_*` counter source. Unconditional: the dump is
+     * served on demand (native `meta`, HTTPS, RPC HTTP) even on a node run
+     * with -showmetrics=0, where the metrics thread below never starts. */
+    app_wire_metrics_sources();
+
     if (show_metrics) app_start_metrics(ctx.gen);
 
     while (!g_shutdown_requested &&

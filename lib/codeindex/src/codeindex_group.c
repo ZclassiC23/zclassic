@@ -24,7 +24,7 @@
 /* ── canonical mirrors (SINGLE source in code; parity-tested vs Makefile) ── */
 
 static const char *const k_lib_modules[] = {
-    "bloom", "chain", "coins", "core", "crypto", "crypto_registry", "encoding",
+    "base", "bloom", "chain", "coins", "core", "crypto", "crypto_registry", "encoding",
     "event", "framework", "health", "hotswap", "kernel", "json", "keys",
     "metrics", "mining", "net", "platform", "policy", "primitives", "rpc",
     "script", "session", "sim", "storage", "support", "sync", "util", "validation",
@@ -119,6 +119,7 @@ const char *ci_group_purpose(const char *group)
     if (strcmp(group, "app/views") == 0) return "shape: explorer/HTML/JSON views";
 
     /* lib/<mod> — one line per module in k_lib_modules[] above. */
+    if (strcmp(group, "lib/base") == 0) return "dependency sink: LOG_*/GUARD* macros, log-level filter, checked allocators, zcl_result (references nothing in-tree)";
     if (strcmp(group, "lib/bloom") == 0) return "bloom filters + merkle proofs for lightweight block/tx filtering";
     if (strcmp(group, "lib/chain") == 0) return "chain index primitives: MMB/MMR fast-sync proofs, UTXO-root ladder, snapshot loader";
     if (strcmp(group, "lib/coins") == 0) return "the UTXO set: coins view, undo data, compression, SHA3 UTXO commitment";

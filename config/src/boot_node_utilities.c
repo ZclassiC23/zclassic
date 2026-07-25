@@ -6,14 +6,22 @@
  * unit holds the small operator-facing utilities that hang off the live boot
  * context: -addnode connection setup (app_add_node), the metrics thread
  * lifecycle (app_start_metrics / app_stop_metrics) with its injected external
- * gauge callback (boot_metrics_external_gauges), and the async sync-state
- * observer that logs sync-pipeline transitions (boot_sync_state_logger).
+ * gauge callback (boot_metrics_external_gauges), the Prometheus RPC-counter
+ * source (app_wire_metrics_sources), and the async sync-state observer that
+ * logs sync-pipeline transitions (boot_sync_state_logger).
+ *
+ * This TU is the single place that reads live subsystem state on behalf of
+ * lib/metrics. lib/metrics deliberately links against neither lib/net,
+ * lib/validation nor lib/rpc; every number it publishes about the chain tip,
+ * the peer count, or the RPC middleware arrives through one of the two
+ * callbacks defined here.
  *
  * Owns no file-statics. The public app_* entry points reach the live context
  * through boot_active_svc() (declared in boot_internal.h, called from main.c);
  * boot_metrics_external_gauges is private here (only app_start_metrics injects
  * it). boot_sync_state_logger is wired by app_init_services in boot_services.c,
- * so its prototype lives in config/boot_internal.h. */
+ * so its prototype lives in config/boot_internal.h; app_wire_metrics_sources is
+ * called unconditionally from main() and is declared in config/boot.h. */
 
 #include "config/boot_internal.h"
 #include "services/node_health_service.h"
@@ -30,6 +38,9 @@
 #include "jobs/utxo_apply_stage.h"
 #include "jobs/tip_finalize_stage.h"
 #include "chain/chainparams.h"
+#include "metrics/prometheus_metrics.h"
+#include "rpc/http_middleware.h"
+#include "validation/chainstate.h"
 #include "sync/sync_state.h"
 #include "event/event.h"
 #include "net/connman.h"
@@ -120,6 +131,56 @@ static void boot_metrics_external_gauges(
     out->stage_step_us_ewma[6] = utxo_apply_stage_step_us_ewma();
     out->stage_cursor[7]       = (int64_t)tip_finalize_stage_cursor();
     out->stage_step_us_ewma[7] = tip_finalize_stage_step_us_ewma();
+
+    /* Active-chain tip + peer count. lib/metrics used to call
+     * active_chain_tip() (lib/validation) and connman_get_node_count()
+     * (lib/net) straight from its tick, bypassing this seam; both reads
+     * belong here, where the boot context already owns cs_main and the
+     * connman. The tip read is under cs_main exactly as it was. */
+    if (svc && svc->state) {
+        zcl_mutex_lock(&svc->state->cs_main);
+        struct block_index *tip = active_chain_tip(&svc->state->chain_active);
+        out->tip_height = tip ? (int64_t)tip->nHeight : 0;
+        out->tip_time   = tip ? (int64_t)tip->nTime : 0;
+        zcl_mutex_unlock(&svc->state->cs_main);
+    }
+    if (svc && svc->connman)
+        out->connection_count = (int64_t)connman_get_node_count(svc->connman);
+}
+
+/* Prometheus `zcl_rpc_*` counter source. lib/metrics must not link against
+ * lib/rpc, so the renderer pulls through this callback (registered by
+ * app_wire_metrics_sources below) instead of calling
+ * rpc_http_middleware_get_global()/stats_snapshot() itself. Called with the
+ * renderer's lock held — do nothing here but snapshot and copy. */
+static void boot_metrics_rpc_http_gauges(struct metrics_rpc_http_gauges *out,
+                                         void *ctx)
+{
+    (void)ctx;
+    if (!out)
+        return;
+
+    struct rpc_http_stats_snapshot snap;
+    rpc_http_middleware_stats_snapshot(rpc_http_middleware_get_global(), &snap);
+
+    out->allowed             = snap.allowed;
+    out->rate_limited_global = snap.rate_limited_global;
+    out->rate_limited_per_ip = snap.rate_limited_per_ip;
+    out->banned_rejected     = snap.banned_rejected;
+    out->bans_issued         = snap.bans_issued;
+    out->auth_failures       = snap.auth_failures;
+    out->tracked_ips         = (uint64_t)snap.tracked_ips;
+    out->active_bans         = (uint64_t)snap.active_bans;
+}
+
+/* Wire the metrics sources that are NOT tied to the metrics thread's
+ * lifetime. The Prometheus dump is served on demand (native `meta`
+ * handler, HTTPS, and the RPC HTTP server), including on a node started
+ * with -showmetrics=0 where app_start_metrics() never runs — so main()
+ * calls this unconditionally rather than folding it into app_start_metrics. */
+void app_wire_metrics_sources(void)
+{
+    metrics_prometheus_set_rpc_http_source(boot_metrics_rpc_http_gauges, NULL);
 }
 
 /* ── Utility functions ─────────────────────────────────────── */
@@ -249,7 +310,6 @@ void app_start_metrics(bool mining)
 {
     struct boot_svc_ctx *svc = boot_active_svc();
     svc->metrics->ms = svc->state;
-    svc->metrics->cm = svc->connman;
     svc->metrics->params = chain_params_get();
     svc->metrics->mining = mining;
     svc->metrics->external_gauges = boot_metrics_external_gauges;
