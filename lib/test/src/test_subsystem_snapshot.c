@@ -3,13 +3,37 @@
  * test_subsystem_snapshot — the seqlock publish envelope (util/subsystem_snapshot.h).
  * Proves the two contract properties the diagnostic snapshot plane relies on:
  *
- *   1. Multi-field coherence under a hammering writer: a reader bracket that
- *      completes (read_ok == true) NEVER observes a torn multi-field snapshot;
- *      when it cannot get a coherent read it falls back to the LAST published
- *      (still-coherent) values labeled stale — never an empty body.
+ *   1. Multi-field coherence: a reader bracket that completes (read_ok == true)
+ *      NEVER observes a torn multi-field snapshot; when it cannot get a coherent
+ *      read it falls back to the LAST published (still-coherent) values labeled
+ *      stale — never an empty body.
  *   2. The uniform staleness label reports {stale, age_us, last_publish_height,
  *      generation, warning_reason} correctly for never-published, fresh, and
  *      torn reads.
+ *
+ * Assertion discipline — read this before adding a check here. Which SIDE of
+ * the race wins is a scheduler decision and this group runs under a 32-worker
+ * suite, so no assertion may depend on it. Two measured failure modes come from
+ * ignoring that:
+ *
+ *   - The writer thread was never scheduled during the racing reads, so every
+ *     read was uncontended (writes=0, torn=0). The coherence assertions passed
+ *     over a reader with no competition at all: the group reported success while
+ *     proving nothing.
+ *   - The writer was scheduled and hammered without pause. A reader bracket
+ *     retries at most ZCL_SNAPSHOT_READ_MAX_RETRIES (8) times, which is not
+ *     enough to beat an uninterrupted publisher — or to outlast a writer
+ *     preempted mid-publish, which parks the seq odd for a whole timeslice — so
+ *     every read fell back (coherent=0, torn=200000) and a "some reads
+ *     completed" assertion failed.
+ *
+ * So: the racing phase asserts SAFETY only (nothing a completed read observes is
+ * ever inconsistent), which holds no matter who wins or whether either side runs
+ * at all. Everything that needs a definite outcome is asserted where the outcome
+ * is forced — against a writer that has acknowledged it is idle, or after the
+ * writer thread is joined. The torn window itself is exercised deterministically
+ * on one thread in case_torn_window_deterministic, so the group cannot go
+ * vacuous when the scheduler declines to interleave.
  */
 
 #include "test/test_helpers.h"
@@ -19,6 +43,7 @@
 #include "util/subsystem_snapshot.h"
 
 #include <pthread.h>
+#include <sched.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -30,6 +55,12 @@
     else { printf("FAIL\n"); failures++; }            \
 } while (0)
 
+/* Hang guard for the two handshakes below. It is NOT a tuned delay: the waits
+ * need microseconds of scheduler fairness, and this bound is four orders of
+ * magnitude past that. It exists so a wedged writer thread FAILS this group
+ * instead of hanging the whole suite. */
+#define SS_HANDSHAKE_GUARD_US (30 * 1000 * 1000)
+
 /* A two-field payload the writer keeps EQUAL (a == b) at all times; a coherent
  * read must therefore always see a == b. A torn read (writer mid-publish) would
  * see a != b — which the seqlock bracket must reject. */
@@ -39,9 +70,18 @@ struct hammer_payload {
     _Atomic int64_t b;
 };
 
+/* Writer duty cycle. RUN publishes continuously; QUIESCE stops publishing and
+ * acknowledges, which is what lets the main thread assert a definite outcome
+ * against a writer that is provably not in flight. The mode only ever moves
+ * RUN -> QUIESCE, so once the acknowledgement is visible no further publish can
+ * start. */
+enum hammer_mode { HAMMER_RUN = 0, HAMMER_QUIESCE = 1 };
+
 struct hammer_ctl {
     struct hammer_payload *p;
     _Atomic int stop;
+    _Atomic int mode;
+    _Atomic int quiesced;        /* writer is outside a window and will not open one */
     _Atomic uint64_t writes;
 };
 
@@ -50,6 +90,14 @@ static void *hammer_writer(void *arg)
     struct hammer_ctl *c = arg;
     int64_t v = 0;
     while (!atomic_load_explicit(&c->stop, memory_order_acquire)) {
+        if (atomic_load_explicit(&c->mode, memory_order_acquire) ==
+            HAMMER_QUIESCE) {
+            /* Publish window is closed here, and the mode never returns to RUN,
+             * so it stays closed. Announce that and idle. */
+            atomic_store_explicit(&c->quiesced, 1, memory_order_release);
+            sched_yield();
+            continue;
+        }
         v++;
         zcl_snapshot_publish_begin(&c->p->env);
         atomic_store_explicit(&c->p->a, v, memory_order_relaxed);
@@ -59,6 +107,12 @@ static void *hammer_writer(void *arg)
         atomic_store_explicit(&c->p->b, v, memory_order_relaxed);
         zcl_snapshot_publish_end(&c->p->env, v);
         atomic_fetch_add_explicit(&c->writes, 1, memory_order_relaxed);
+        /* Gap BETWEEN publishes. Without it the reader's 8-retry bracket can
+         * never win and a scheduled writer drives the racing phase to 100%
+         * fallback, which exercises only one of the two outcomes. This is a
+         * bounded spin rather than a sleep, and no assertion depends on its
+         * length — it only shifts how often each outcome is observed. */
+        for (volatile int spin = 0; spin < 512; spin++) { }
     }
     return NULL;
 }
@@ -80,6 +134,91 @@ static bool read_pair(struct hammer_payload *p, int64_t *a, int64_t *b)
     return false;
 }
 
+/* Wait for a counter the writer thread must eventually bump. Yields rather than
+ * busy-spinning so it makes progress on a fully subscribed box. */
+static bool wait_until_u64_at_least(const _Atomic uint64_t *v, uint64_t least)
+{
+    int64_t deadline = platform_time_monotonic_us() + SS_HANDSHAKE_GUARD_US;
+    for (;;) {
+        if (atomic_load_explicit(v, memory_order_acquire) >= least)
+            return true;
+        if (platform_time_monotonic_us() >= deadline)
+            return false;
+        sched_yield();
+    }
+}
+
+static bool wait_until_int_eq(const _Atomic int *v, int want)
+{
+    int64_t deadline = platform_time_monotonic_us() + SS_HANDSHAKE_GUARD_US;
+    for (;;) {
+        if (atomic_load_explicit(v, memory_order_acquire) == want)
+            return true;
+        if (platform_time_monotonic_us() >= deadline)
+            return false;
+        sched_yield();
+    }
+}
+
+/* The torn window, made deterministic. One thread opens a publish window and
+ * writes only the FIRST of the two fields, so the payload is genuinely
+ * inconsistent at a point we choose. This case proves the bracket rejects that
+ * state without involving the scheduler at all — it is the part of the group
+ * that cannot go vacuous, and it is what fails if the seqlock is broken. */
+static int case_torn_window_deterministic(void)
+{
+    int failures = 0;
+    struct hammer_payload p;
+    memset(&p, 0, sizeof(p));
+    struct zcl_snapshot_env init = ZCL_SNAPSHOT_ENV_INIT;
+    p.env = init;
+
+    zcl_snapshot_publish_begin(&p.env);
+    atomic_store_explicit(&p.a, 1, memory_order_relaxed);
+    atomic_store_explicit(&p.b, 1, memory_order_relaxed);
+    zcl_snapshot_publish_end(&p.env, 1);
+
+    int64_t a = -1, b = -2;
+    SS_CHECK("torn-window: a read outside any publish window completes",
+             read_pair(&p, &a, &b) && a == 1 && b == 1);
+
+    /* Open a window and update only field a: the pair is now inconsistent. */
+    zcl_snapshot_publish_begin(&p.env);
+    atomic_store_explicit(&p.a, 2, memory_order_relaxed);
+
+    SS_CHECK("torn-window: the payload really is inconsistent here (a != b)",
+             atomic_load_explicit(&p.a, memory_order_relaxed) !=
+             atomic_load_explicit(&p.b, memory_order_relaxed));
+
+    int64_t ta = -1, tb = -2;
+    SS_CHECK("torn-window: the bracket REFUSES to complete a read",
+             !read_pair(&p, &ta, &tb));
+
+    uint64_t torn_before =
+        atomic_load_explicit(&p.env.torn_reads_total, memory_order_relaxed);
+    zcl_snapshot_note_torn(&p.env);
+    SS_CHECK("torn-window: the fallback is accounted",
+             atomic_load_explicit(&p.env.torn_reads_total,
+                                  memory_order_relaxed) == torn_before + 1);
+    /* The whole point of the fallback: last-known values are still there to
+     * serve, labeled stale, rather than an empty body. */
+    SS_CHECK("torn-window: last-known values survive the window (never empty)",
+             atomic_load_explicit(&p.env.generation, memory_order_relaxed) > 0 &&
+             atomic_load_explicit(&p.env.last_height, memory_order_relaxed) == 1);
+
+    atomic_store_explicit(&p.b, 2, memory_order_relaxed);
+    zcl_snapshot_publish_end(&p.env, 2);
+
+    a = -1; b = -2;
+    SS_CHECK("torn-window: once the window closes the read completes with the new pair",
+             read_pair(&p, &a, &b) && a == 2 && b == 2);
+
+    return failures;
+}
+
+#define SS_RACING_READS 200000
+#define SS_QUIET_READS  1000
+
 static int case_concurrent_coherence(void)
 {
     int failures = 0;
@@ -96,6 +235,8 @@ static int case_concurrent_coherence(void)
 
     struct hammer_ctl ctl = { .p = &p };
     atomic_store(&ctl.stop, 0);
+    atomic_store(&ctl.mode, HAMMER_RUN);
+    atomic_store(&ctl.quiesced, 0);
     atomic_store(&ctl.writes, 0);
 
     pthread_t th;
@@ -104,12 +245,22 @@ static int case_concurrent_coherence(void)
     if (rc != 0)
         return failures;
 
+    /* ── Phase 1: race ─────────────────────────────────────────────────────
+     * Wait for one completed publish first, so the reads below race a writer
+     * that has demonstrably run — otherwise a run where the writer never got
+     * scheduled would assert coherence over an uncontended reader and call that
+     * a pass. Nothing here asserts WHICH side wins. */
+    bool writer_ran = wait_until_u64_at_least(&ctl.writes, 1);
+    SS_CHECK("concurrent: writer published before the racing reads begin",
+             writer_ran);
+
     int64_t coherent_reads = 0, torn_fallbacks = 0;
     int64_t last_a = 0, last_b = 0;  /* last-known-good fallback */
     bool ever_incoherent = false;    /* a coherent read that saw a != b */
     bool fallback_ever_incoherent = false;
+    bool fallback_ever_empty = false; /* fallback with nothing published to serve */
 
-    for (int i = 0; i < 200000; i++) {
+    for (int i = 0; i < SS_RACING_READS; i++) {
         int64_t a = -1, b = -2;
         if (read_pair(&p, &a, &b)) {
             coherent_reads++;
@@ -120,30 +271,82 @@ static int case_concurrent_coherence(void)
         } else {
             torn_fallbacks++;
             zcl_snapshot_note_torn(&p.env);
-            /* Fallback path: serve last-known-good — which is always coherent. */
+            /* Fallback path: serve last-known-good — which is always coherent,
+             * and always present (generation > 0 means there is something to
+             * serve, so the dumper never emits an empty body). */
             if (last_a != last_b)
                 fallback_ever_incoherent = true;
+            if (atomic_load_explicit(&p.env.generation,
+                                     memory_order_relaxed) == 0)
+                fallback_ever_empty = true;
         }
+    }
+
+    SS_CHECK("racing: NO completed read ever saw a torn (a!=b) pair",
+             !ever_incoherent);
+    SS_CHECK("racing: the fallback value is always coherent",
+             !fallback_ever_incoherent);
+    SS_CHECK("racing: the fallback always has published values to serve",
+             !fallback_ever_empty);
+    SS_CHECK("racing: torn_reads_total accounts every fallback",
+             atomic_load_explicit(&p.env.torn_reads_total,
+                                  memory_order_relaxed) ==
+             (uint64_t)torn_fallbacks);
+
+    /* ── Phase 2: writer parked ────────────────────────────────────────────
+     * Ask the writer to stop publishing and wait for its acknowledgement. After
+     * that no publish window can open, so "a reader completes" is forced, not
+     * hoped for. This is where the coverage assertion belongs. */
+    atomic_store_explicit(&ctl.mode, HAMMER_QUIESCE, memory_order_release);
+    bool quiesced = wait_until_int_eq(&ctl.quiesced, 1);
+    SS_CHECK("parked: writer acknowledges it stopped publishing", quiesced);
+
+    if (quiesced) {
+        uint64_t torn_before =
+            atomic_load_explicit(&p.env.torn_reads_total, memory_order_relaxed);
+        uint64_t writes_at_park =
+            atomic_load_explicit(&ctl.writes, memory_order_acquire);
+        int64_t quiet_coherent = 0;
+        bool quiet_wrong_value = false;
+        for (int i = 0; i < SS_QUIET_READS; i++) {
+            int64_t a = -1, b = -2;
+            if (read_pair(&p, &a, &b)) {
+                quiet_coherent++;
+                /* The writer's counter starts at 0 and pre-increments, so after
+                 * N publishes the pair is exactly (N, N). */
+                if (a != b || a != (int64_t)writes_at_park)
+                    quiet_wrong_value = true;
+            }
+        }
+        SS_CHECK("parked: every read completes (no writer in flight)",
+                 quiet_coherent == SS_QUIET_READS);
+        SS_CHECK("parked: every read returns the last published pair",
+                 !quiet_wrong_value);
+        SS_CHECK("parked: no read fell back",
+                 atomic_load_explicit(&p.env.torn_reads_total,
+                                      memory_order_relaxed) == torn_before);
+        SS_CHECK("parked: last_publish_height is the last value published",
+                 atomic_load_explicit(&p.env.last_height,
+                                      memory_order_relaxed) ==
+                 (int64_t)writes_at_park);
+        SS_CHECK("parked: generation counts the seed publish plus every write",
+                 atomic_load_explicit(&p.env.generation, memory_order_relaxed) ==
+                 writes_at_park + 1);
     }
 
     atomic_store_explicit(&ctl.stop, 1, memory_order_release);
     pthread_join(th, NULL);
 
-    SS_CHECK("concurrent: writer actually published",
-             atomic_load(&ctl.writes) > 0);
-    SS_CHECK("concurrent: some reads completed", coherent_reads > 0);
-    SS_CHECK("concurrent: NO coherent read ever saw a torn (a!=b) pair",
-             !ever_incoherent);
-    SS_CHECK("concurrent: fallback last-known value is always coherent",
-             !fallback_ever_incoherent);
-    /* torn_reads_total must equal the number of times we fell back. */
-    SS_CHECK("concurrent: torn_reads_total accounts every fallback",
-             atomic_load_explicit(&p.env.torn_reads_total,
-                                  memory_order_relaxed) ==
-             (uint64_t)torn_fallbacks);
-    printf("subsystem_snapshot: concurrent stats coherent=%lld torn_fallback=%lld writes=%llu\n",
+    /* ── Phase 3: writer joined ────────────────────────────────────────────*/
+    uint64_t writes = atomic_load_explicit(&ctl.writes, memory_order_relaxed);
+    SS_CHECK("joined: the writer actually published", writes > 0);
+    int64_t a = -1, b = -2;
+    SS_CHECK("joined: a read completes and returns the final pair",
+             read_pair(&p, &a, &b) && a == b && a == (int64_t)writes);
+
+    printf("subsystem_snapshot: racing stats completed=%lld fell_back=%lld writes=%llu\n",
            (long long)coherent_reads, (long long)torn_fallbacks,
-           (unsigned long long)atomic_load(&ctl.writes));
+           (unsigned long long)writes);
     return failures;
 }
 
@@ -248,6 +451,7 @@ int test_subsystem_snapshot(void)
 {
     int failures = 0;
     failures += case_deterministic_bracket();
+    failures += case_torn_window_deterministic();
     failures += case_label();
     failures += case_concurrent_coherence();
     if (failures == 0)
