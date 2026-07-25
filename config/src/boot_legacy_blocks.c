@@ -144,6 +144,26 @@ boot_legacy_import_block_files(const char *legacy_blocks_dir,
     return result;
 }
 
+/* Hardlink src -> dst if dst is absent. Returns true only when this call
+ * created the link. A failure is counted and its errno remembered (first one
+ * wins) so the caller can report the whole pass in one line; EEXIST is not a
+ * failure — it means another writer won the race and the file is there. */
+static bool boot_legacy_link_if_missing(const char *src, const char *dst,
+                                        int *failures, int *first_errno)
+{
+    struct stat st;
+    if (stat(dst, &st) == 0)
+        return false;
+    if (link(src, dst) == 0)
+        return true;
+    if (errno == EEXIST)
+        return false;
+    (*failures)++;
+    if (*first_errno == 0)
+        *first_errno = errno;
+    return false;
+}
+
 struct boot_legacy_block_file_link_result
 boot_legacy_link_missing_block_files(const char *legacy_blocks_dir,
                                      const char *datadir,
@@ -162,6 +182,7 @@ boot_legacy_link_missing_block_files(const char *legacy_blocks_dir,
     if (!legacy_blocks_dir || !*legacy_blocks_dir || max_files <= 0)
         return result;
 
+    int first_errno = 0;
     for (int fi = 0; fi < max_files; fi++) {
         char src[1200], dst[1200];
         if (!boot_legacy_file_path(src, sizeof(src), legacy_blocks_dir,
@@ -172,7 +193,7 @@ boot_legacy_link_missing_block_files(const char *legacy_blocks_dir,
             break;
         }
 
-        struct stat ss, ds;
+        struct stat ss;
         if (stat(src, &ss) != 0) {
             if (fi > 2)
                 break;
@@ -180,7 +201,12 @@ boot_legacy_link_missing_block_files(const char *legacy_blocks_dir,
         }
         result.source_available = true;
 
-        if (stat(dst, &ds) != 0 && link(src, dst) == 0)
+        /* A missing blk file IS load-bearing: block bodies are read straight
+         * out of blk%05d.dat by the refold, catchup, wallet-scan and
+         * file-service paths, so a link that silently does not happen shows
+         * up much later as an unexplained body-read hole. */
+        if (boot_legacy_link_if_missing(src, dst, &result.failures,
+                                        &first_errno))
             result.linked++;
 
         if (!boot_legacy_file_path(src, sizeof(src), legacy_blocks_dir,
@@ -190,9 +216,29 @@ boot_legacy_link_missing_block_files(const char *legacy_blocks_dir,
             result.truncated_path = true;
             break;
         }
-        if (stat(src, &ss) == 0 && stat(dst, &ds) != 0)
-            (void)link(src, dst);
+        /* rev%05d.dat is zclassicd's undo data. No zclassic23 code path reads
+         * it — the node re-derives its own state rather than replaying
+         * zclassicd undo records — so a failed rev link cannot make the node
+         * wrong, and it is deliberately NOT counted in `linked`. It is counted
+         * in `failures` because a rev link failing for a reason that would
+         * equally hit blk files (EXDEV across filesystems, ENOSPC, EPERM) is
+         * exactly the early warning worth having; the copy-fallback import
+         * path already reports its rev failures the same way. */
+        if (stat(src, &ss) == 0)
+            (void)boot_legacy_link_if_missing(src, dst, &result.failures,
+                                              &first_errno);
     }
+
+    /* One aggregated line, not one per file: a cross-filesystem legacy
+     * datadir makes every one of the 256 candidates fail identically, and
+     * 256 warnings would bury the boot log. */
+    if (result.failures > 0)
+        LOG_WARN("boot",
+                 "[boot] %d legacy block-file hardlink(s) failed while "
+                 "linking %s into %s (first errno=%d %s); block bodies for "
+                 "those files are not present in this datadir",
+                 result.failures, legacy_blocks_dir, dst_blocks_dir,
+                 first_errno, strerror(first_errno));
 
     return result;
 }

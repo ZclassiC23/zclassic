@@ -5,6 +5,8 @@
  * Usage: zcl-rpc <method> [param1] [param2] ... */
 
 #define _POSIX_C_SOURCE 200809L
+#include <errno.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,6 +14,25 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+
+/* Write every byte or report failure. A single write(2) may transfer fewer
+ * bytes than requested; for the JSON-RPC body below a short write produces a
+ * truncated request that the node rejects as malformed JSON, which surfaces
+ * to the operator as an unexplained RPC error rather than an I/O error. */
+static bool write_all(int fd, const char *buf, size_t len)
+{
+    size_t done = 0;
+    while (done < len) {
+        ssize_t n = write(fd, buf + done, len - done);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return false;
+        }
+        if (n == 0) return false;
+        done += (size_t)n;
+    }
+    return true;
+}
 
 static int rpc_call(const char *host, int port, const char *cookie,
                     const char *method, const char *params_json,
@@ -26,8 +47,21 @@ static int rpc_call(const char *host, int port, const char *cookie,
     char tmpf[] = "/tmp/zcl-rpc-XXXXXX";
     int tfd = mkstemp(tmpf);
     if (tfd < 0) return -1;
-    write(tfd, body, strlen(body));
-    close(tfd);
+    if (!write_all(tfd, body, strlen(body))) {
+        fprintf(stderr, "zcl-rpc: writing request body to %s failed: %s\n",
+                tmpf, strerror(errno));
+        close(tfd);
+        unlink(tmpf);
+        return -1;
+    }
+    /* close(2) can report a deferred write error; the body must be complete
+     * on disk before curl reads it back. */
+    if (close(tfd) != 0) {
+        fprintf(stderr, "zcl-rpc: closing request body %s failed: %s\n",
+                tmpf, strerror(errno));
+        unlink(tmpf);
+        return -1;
+    }
 
     char cmd[16384];
     snprintf(cmd, sizeof(cmd),

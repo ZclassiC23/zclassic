@@ -32,6 +32,7 @@
 #include "util/safe_alloc.h"
 #include "util/thread_registry.h"
 #include "util/thread_liveness.h"
+#include "util/write_all.h"
 #include "metrics/prometheus_metrics.h"
 
 static SSL_CTX *g_ssl_ctx = NULL;
@@ -416,7 +417,12 @@ static void *https_listen_fn(void *arg)
         if (atomic_load(&g_active_connections) >= MAX_HTTPS_CONNECTIONS) {
             const char *busy = "HTTP/1.1 503 Service Unavailable\r\n"
                 "Retry-After: 5\r\nConnection: close\r\n\r\n";
-            write(client_fd, busy, strlen(busy));
+            /* Best-effort courtesy status: this connection is being closed
+             * either way, and the alternative to a partial 503 is a bare RST,
+             * which the client already handles. Not worth logging — an
+             * attacker driving us to the connection cap would then also
+             * control our log volume. */
+            (void)zcl_write_all(client_fd, busy, strlen(busy));
             close(client_fd);
             continue;
         }
@@ -434,7 +440,8 @@ static void *https_listen_fn(void *arg)
         if (!client_queue_push(&ca)) {
             const char *busy = "HTTP/1.1 503 Service Unavailable\r\n"
                 "Retry-After: 5\r\nConnection: close\r\n\r\n";
-            write(client_fd, busy, strlen(busy));
+            /* Best-effort: see the connection-cap branch above. */
+            (void)zcl_write_all(client_fd, busy, strlen(busy));
             close(client_fd);
         }
     }
@@ -542,8 +549,21 @@ static void handle_http_client_fd(int fd)
                 "Content-Type: text/plain\r\n"
                 "Content-Length: %zu\r\n"
                 "Connection: close\r\n\r\n", n);
-            (void)write(fd, hdr, (size_t)hlen);
-            (void)write(fd, body, n);
+            /* Load-bearing, not cosmetic: this is the ACME HTTP-01 challenge
+             * response. The CA compares the delivered body byte-for-byte with
+             * the key authorization it issued, so a short write fails the
+             * validation and with it the certificate renewal — silently, and
+             * the consequence (an expired certificate) only shows up weeks
+             * later. Logged with the token path so it is diagnosable when it
+             * happens, which is rare enough not to be a log-volume lever. */
+            bool sent = hlen > 0 && (size_t)hlen < sizeof(hdr) &&
+                        zcl_write_all(fd, hdr, (size_t)hlen) &&
+                        zcl_write_all(fd, body, n);
+            if (!sent)
+                LOG_WARN("https",
+                         "ACME http-01 challenge response for %s was not "
+                         "delivered in full (%s) — certificate renewal will "
+                         "fail this attempt", filepath, strerror(errno));
             close(fd);
             return;
         }
@@ -569,7 +589,17 @@ static void handle_http_client_fd(int fd)
             "Location: %s\r\n"
             "Connection: close\r\n\r\n",
             path);
-    (void)write(fd, resp, (size_t)n);
+    /* Best-effort and deliberately unlogged: this is the unauthenticated
+     * port-80 redirect, a peer hanging up mid-response is routine, and one log
+     * line per failed client write would hand an anonymous caller control of
+     * our log volume. Nothing here is left inconsistent by a failure. The loop
+     * is what matters — an unlooped write(2) can deliver a truncated Location
+     * header, which a browser renders as a hard error instead of a redirect.
+     * `n` is bounded (path <= 2047, host <= 255) but clamped regardless. */
+    if (n > 0) {
+        size_t resp_len = (size_t)n < sizeof(resp) ? (size_t)n : sizeof(resp) - 1;
+        (void)zcl_write_all(fd, resp, resp_len);
+    }
     close(fd);
 }
 
@@ -598,7 +628,8 @@ static void *http_listen_fn(void *arg)
         if (!client_queue_push(&ca)) {
             const char *busy = "HTTP/1.1 503 Service Unavailable\r\n"
                 "Retry-After: 5\r\nConnection: close\r\n\r\n";
-            write(client_fd, busy, strlen(busy));
+            /* Best-effort: see https_listen_fn(). */
+            (void)zcl_write_all(client_fd, busy, strlen(busy));
             close(client_fd);
         }
     }
