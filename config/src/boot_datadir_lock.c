@@ -122,7 +122,8 @@ bool boot_datadir_lock_acquire(const char *datadir)
          * tell the operator to point -datadir= at a directory when it already
          * is one. lstat settles which case this actually is. */
         struct stat lst;
-        bool is_symlink = lstat(datadir, &lst) == 0 && S_ISLNK(lst.st_mode);
+        bool path_stats = lstat(datadir, &lst) == 0;
+        bool is_symlink = path_stats && S_ISLNK(lst.st_mode);
 
         if (e == ELOOP || (e == ENOTDIR && is_symlink)) {
             /* O_NOFOLLOW: the path itself is a symlink. Following it would
@@ -157,11 +158,15 @@ bool boot_datadir_lock_acquire(const char *datadir)
                               next, 2, "datadir=%s parent=%s open_errno=%s",
                               datadir, parent, strerror(e));
         } else if (e == EACCES || e == EPERM) {
-            char lsd[1100];
-            (void)snprintf(lsd, sizeof(lsd), "ls -ld %s", datadir);
+            /* List the PARENT as well as the datadir: a denial is just as
+             * often a parent without +x, and `ls -ld <datadir>` alone would
+             * then fail the same way and tell the reader nothing new. */
+            char lsd[2200];
+            (void)snprintf(lsd, sizeof(lsd), "ls -ld %s %s", parent, datadir);
             const struct boot_error_next next[] = {
-                { lsd, "compare the directory owner and mode against the user "
-                       "running the node" },
+                { lsd, "compare the owner and mode of the datadir AND its "
+                       "parent against the user running the node; a missing "
+                       "+x on the parent denies the datadir too" },
                 { "id -un", "print the user this process runs as" },
             };
             boot_error_report(BOOT_ERROR_FATAL, "BOOT_DATADIR_UNREADABLE",
@@ -171,18 +176,33 @@ bool boot_datadir_lock_acquire(const char *datadir)
                               next, 2, "datadir=%s uid=%ld open_errno=%s",
                               datadir, (long)getuid(), strerror(e));
         } else if (e == ENOTDIR) {
+            /* ENOTDIR covers two different mistakes: the path itself is a
+             * file, or some PARENT component is. lstat distinguishes them —
+             * telling an operator "-datadir= points at a file" when the file
+             * is three components up sends them to the wrong place. */
             char lsd[1100];
-            (void)snprintf(lsd, sizeof(lsd), "ls -ld %s", datadir);
-            const struct boot_error_next next[] = {
-                { lsd, "the -datadir path resolves to a file, not a "
-                       "directory — point -datadir= at a directory" },
+            (void)snprintf(lsd, sizeof(lsd), "ls -ld %s",
+                           path_stats ? datadir : parent);
+            const struct boot_error_next final_is_file[] = {
+                { lsd, "the -datadir path itself is a file — point -datadir= "
+                       "at a directory" },
+            };
+            const struct boot_error_next component_is_file[] = {
+                { lsd, "a PARENT component of the -datadir path is a file, so "
+                       "the path can never resolve; this lists the nearest "
+                       "one" },
             };
             boot_error_report(BOOT_ERROR_FATAL,
                               "BOOT_DATADIR_NOT_A_DIRECTORY", BDL_PHASE,
-                              "the -datadir path exists but is not a "
-                              "directory",
-                              next, 1, "datadir=%s open_errno=%s",
-                              datadir, strerror(e));
+                              path_stats
+                                  ? "the -datadir path exists but is not a "
+                                    "directory"
+                                  : "a component of the -datadir path is not "
+                                    "a directory, so the path cannot resolve",
+                              path_stats ? final_is_file : component_is_file,
+                              1, "datadir=%s path_lstat=%s open_errno=%s",
+                              datadir, path_stats ? "ok" : "failed",
+                              strerror(e));
         } else {
             const struct boot_error_next next[] = {
                 { ls, "inspect the parent directory; the open failed for a "
