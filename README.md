@@ -84,16 +84,30 @@ snapshot.
 
 ## Requirements
 
-- A C23 compiler: **gcc 14+** (or clang with working `-std=c23`), and **GNU
-  make**. No other required runtime dependencies — the shipped binary links
-  only stock `libc` plus static archives built from vendored/fetched sources
-  (see below); there is no separate package/runtime dependency to install.
-- For the one-time vendored-library build only: `cmake`, `autoconf`, `patch`,
-  `cargo` + `rustc`, `curl`/`wget`, and `unzip`. **The first build needs
-  internet** — it fetches pinned third-party source tarballs (OpenSSL,
-  libevent, LevelDB, zlib, SQLite, and the canonical Zcash Sapling prover) and
-  verifies them against pinned SHA-256s before compiling locally; afterward
-  the archives are cached in `vendor/lib/` and builds are offline.
+Run **`make doctor`**: it probes this host against
+`tools/scripts/vendor_prereqs.tsv` — the single source of truth — and prints
+the one install line for whatever is missing. The list below is what that
+table says today.
+
+- **To build and run the node:** a C23 compiler (**gcc 14+**, or clang with a
+  working `-std=c23`), **GNU make**, and **git**. The shipped binary links only
+  stock `libc` plus the static archives in `vendor/lib/`, so there is no
+  runtime package to install.
+- **To build those archives once (`make vendor`):** `ar`, `nm`, `sha256sum`,
+  `tar`, `unzip`, `patch`, `perl` (OpenSSL's `Configure` is a perl program),
+  and `curl` **or** `wget`.
+- **Two non-C toolchains, and the project needs both** — "pure C23" describes
+  the node's own source, not the third-party archives it links:
+  - **Rust** (`cargo` + `rustc`) builds `librustzcash.a`, the canonical Zcash
+    Sapling prover. There is no C fallback; without Rust `make vendor` stops.
+  - **A C++ compiler** (`c++`/`g++`) builds LevelDB, which is C++11. `cmake` is
+    the preferred route and is genuinely optional — a direct C++ compile is
+    used when it is absent — but the C++ compiler itself is not optional.
+- **The first `make vendor` needs the internet.** It downloads pinned source
+  tarballs (OpenSSL, libevent, LevelDB, zlib, SQLite, and the Sapling prover),
+  verifies each against a pinned SHA-256, and compiles them locally; cargo also
+  fetches the prover's crates. Afterwards `vendor/lib/` is cached and every
+  later build is offline.
 
 ## Quick start
 
@@ -104,7 +118,27 @@ instance. This README is the overview; `docs/HANDOFF.md` and
 `docs/RUNBOOK.md` are maintainer/operator documents for the project's own
 hosted lanes.
 
-A clean `make vendor && make` takes ~1–2 minutes on a modern multi-core box.
+### What the first build costs
+
+Measured, not estimated: `make first-build-timing` clones the repository into a
+scratch directory and times every stage of a cold build; `make timings` prints
+the result back.
+
+| Stage | Command | Wall time | What it needs |
+|---|---|---|---|
+| Clone | `git clone` | seconds locally; the history is 932 MiB over the network | `git` |
+| Vendored archives | `make vendor` | 92 s | network, Rust (`cargo`+`rustc`), a C++ compiler |
+| Arm the clone | `make setup` | 41 s | nothing beyond the above |
+| Binaries | `make -j"$(nproc)"` | 205 s | gcc 14+ |
+| Full test suite | `make -j"$(nproc)" test-parallel` | 252 s | nothing beyond the above |
+| **Clone to passing suite** | | **590 s (under 10 minutes)** | **1.6 GB of disk** |
+
+Measured on a 32-core host (gcc 14.2, rustc 1.95) with the compiler cache
+switched off, so it reflects a machine that has never built this project; the
+host was running other builds at the time (1-minute load average 29 rising to
+49). Your own numbers come from `make first-build-timing`, and `make doctor`
+names anything this host is still missing. Fuller breakdown, including which
+stage is the long pole and why, is in [`docs/BUILD.md`](docs/BUILD.md).
 
 ```bash
 git clone https://github.com/ZclassiC23/zclassic.git && cd zclassic
