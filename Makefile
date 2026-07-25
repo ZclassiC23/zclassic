@@ -1856,6 +1856,7 @@ syntax-check: $(VIEW_GEN_HEADERS)
 # Run full `make lint` at sub-wave boundaries / before commit.
 LINT_FAST_GATES := \
     check-no-stray-untracked-source \
+    check-no-stray-root-files \
     check-raw-sqlite \
     check-malloc \
     check-raw-malloc \
@@ -5717,6 +5718,14 @@ check-no-stray-untracked-source:
 	@echo "══ LINT: no stray untracked source (DX1) ══"
 	@./tools/lint/check_no_stray_untracked_source.sh
 
+# The repository root is a curated list — source areas, top-level docs, and a
+# short allowlist of generated/local entries. Anything else (a stray database,
+# a nohup capture, a second scratch dir) is gitignored debris that `git status`
+# never objected to. See tools/lint/check_no_stray_root_files.sh.
+check-no-stray-root-files:
+	@echo "══ LINT: no stray files in the repository root ══"
+	@./tools/lint/check_no_stray_root_files.sh
+
 check-no-retired-agent-protocol:
 	@./tools/lint/check_no_retired_agent_protocol.sh
 
@@ -5761,6 +5770,7 @@ LINT_GATES := \
     check-build-epoch-integrity \
     check-checkout-lock \
     check-no-stray-untracked-source \
+    check-no-stray-root-files \
     check-scanner-immunity \
     check-git-hooks-installed \
     check-malloc \

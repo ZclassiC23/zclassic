@@ -32,7 +32,11 @@
 #include <sys/time.h>
 #include <unistd.h>
 
-#define SR_DIR "./test-tmp-reclaim"
+/* Scratch datadir. Lives INSIDE the suite's one scratch root (./test-tmp) so
+ * a `ls` of the checkout shows one ignored scratch dir, not two. Static
+ * (not test_make_tmpdir) because every path below is a compile-time
+ * concatenation, and this group never runs twice in one process. */
+#define SR_DIR "./test-tmp/storage-reclaim"
 
 #define SR_CHECK(name, expr) do { \
     printf("%s... ", (name));     \
@@ -65,7 +69,8 @@ int test_storage_reclaim(void)
     printf("\n=== storage_reclaim / disk-full survival tests ===\n");
     int failures = 0;
 
-    /* Clean slate: a fresh scratch dir. */
+    /* Clean slate: a fresh scratch dir under the suite's scratch root. */
+    mkdir("./test-tmp", 0755);
     mkdir(SR_DIR, 0755);
     unlink(SR_DIR "/stale.tmp");
     unlink(SR_DIR "/fresh.tmp");
@@ -176,6 +181,7 @@ int test_storage_reclaim(void)
     disk_monitor_stop();
     unlink(SR_DIR "/fresh.tmp");
     unlink(SR_DIR "/keep.dat");
+    test_cleanup_tmpdir(SR_DIR);
 
     return failures;
 }

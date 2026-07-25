@@ -648,12 +648,16 @@ int test_blog(void)
     {
         struct onion_peer peers[10];
         bool ok = true;
+        /* Every datadir handed to production code is a per-run scratch dir
+         * under ./test-tmp, never "." — see the block comment below. */
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "blog_disc", "peers");
         /* NULL checks */
         int found = blog_discover_onion_peers(NULL, peers, 10);
         ok = ok && (found == 0);
-        found = blog_discover_onion_peers(".", NULL, 10);
+        found = blog_discover_onion_peers(dir, NULL, 10);
         ok = ok && (found == 0);
-        found = blog_discover_onion_peers(".", peers, 0);
+        found = blog_discover_onion_peers(dir, peers, 0);
         ok = ok && (found == 0);
         /* Non-existent dir — opens SQLite which may return 0.
          * test-tmp/-namespaced + pid-tagged (test_make_tmpdir), not a
@@ -662,9 +666,10 @@ int test_blog(void)
          * root, where a crash mid-test (or any exit path that skips
          * test_cleanup_tmpdir) leaves debris that pollutes `git status`
          * and the source-identity inventory for every other concurrent
-         * consumer of this checkout. */
-        char dir[256];
-        test_make_tmpdir(dir, sizeof(dir), "blog_disc", "peers");
+         * consumer of this checkout. Passing "." as the datadir is the same
+         * defect one level up: the production path builds
+         * "<datadir>/node.db" and node_db_open() CREATES it, so a "."
+         * datadir mints a full-schema node.db in the checkout root. */
         found = blog_discover_onion_peers(dir, peers, 10);
         ok = ok && (found == 0);
         test_cleanup_tmpdir(dir);
@@ -722,15 +727,18 @@ int test_blog(void)
     printf("blog: serve handles NULL/empty inputs... ");
     {
         char out[4096];
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "blog_serve", "nullin");
         /* NULL path */
-        size_t len = blog_serve(".", NULL, out, sizeof(out));
+        size_t len = blog_serve(dir, NULL, out, sizeof(out));
         bool ok = (len == 0);
         /* NULL output buffer */
-        len = blog_serve(".", "/index.html", NULL, sizeof(out));
+        len = blog_serve(dir, "/index.html", NULL, sizeof(out));
         ok = ok && (len == 0);
         /* Buffer too small */
-        len = blog_serve(".", "/index.html", out, 100);
+        len = blog_serve(dir, "/index.html", out, 100);
         ok = ok && (len == 0);
+        test_cleanup_tmpdir(dir);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -747,10 +755,17 @@ int test_blog(void)
 
     printf("blog: auto_announce_onion rejects invalid input... ");
     {
+        /* "no_suffix" clears the argument guards, so the call reaches
+         * node_db_open("<datadir>/node.db") — which CREATES the file —
+         * before the .onion-suffix check rejects it. A per-run scratch
+         * datadir keeps that side effect inside ./test-tmp. */
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "blog_ann", "reject");
         bool ok = !blog_auto_announce_onion(NULL, "test.onion");
-        ok = ok && !blog_auto_announce_onion(".", NULL);
-        ok = ok && !blog_auto_announce_onion(".", "");
-        ok = ok && !blog_auto_announce_onion(".", "no_suffix");
+        ok = ok && !blog_auto_announce_onion(dir, NULL);
+        ok = ok && !blog_auto_announce_onion(dir, "");
+        ok = ok && !blog_auto_announce_onion(dir, "no_suffix");
+        test_cleanup_tmpdir(dir);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

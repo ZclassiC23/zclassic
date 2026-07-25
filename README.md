@@ -367,19 +367,44 @@ default doesn't yet apply retroactively to existing plaintext wallets.
 
 ## Repository layout
 
-| Dir | Contents |
+The root is a curated list. Everything in it is either a source area, a
+top-level document, or one of the four generated entries at the bottom of this
+section — nothing else belongs there, and `make lint` fails on anything that
+shows up (`check-no-stray-root-files`).
+
+**Where the code lives**, from the inside out — the further down the table, the
+further from consensus:
+
+| Area | Purpose |
 |-----|----------|
-| `src/` | Binary entry points (node, CLI) |
-| `core/` | Sealed consensus core (checkpoints, chain params, consensus math) — SHA3-manifest pinned, HARD lint gate |
-| `app/` | App code in the eight shape folders (models, views, controllers, services, jobs, conditions, events, supervisors) |
-| `lib/` | Subsystem libraries (consensus, net, sync, storage, crypto, sapling, script, rpc, util, test harness) |
-| `domain/` | Pure domain logic (consensus rules, encodings, wallet primitives — no I/O) |
-| `config/` | Composition root: boot sequence + wiring; `config/commands/*.def` is the native command registry |
-| `ports/` · `adapters/` | Hexagonal port interfaces + outbound adapters |
-| `tools/` | Developer tools, lint gates, fuzzers, simulators, release scripts |
-| `docs/` | All documentation |
-| `deploy/` | systemd user service + host setup |
-| `vendor/` | Vendored deps + Tor submodule |
+| `core/` | The sealed consensus core: checkpoints, chain params, consensus math. SHA3-manifest pinned; changing it needs the owner unseal ritual. |
+| `domain/` | Pure domain logic — consensus rules, encodings, wallet primitives. No clock, no RNG, no I/O, so it is testable in isolation. |
+| `app/` | Everything the node *does*, filed into the eight shapes (models, views, controllers, services, jobs, conditions, events, supervisors). Lint decides which folder a file belongs in. |
+| `lib/` | Subsystem libraries the app builds on: consensus, net, sync, storage, crypto, sapling, script, rpc, util, and the test harness. |
+| `ports/` · `adapters/` | The hexagonal write seam — port interfaces on one side, outbound implementations on the other. |
+| `config/` | The composition root: what gets wired to what at boot, plus `config/commands/*.def`, the native command registry. |
+| `src/` | Binary entry points. Thin — the node and the CLI both assemble what the areas above provide. |
+
+**Everything else at the top level**, one line each:
+
+| Area | Purpose |
+|-----|----------|
+| `tools/` | Anything you run *at* the code rather than ship: lint gates, fuzzers, simulators, the dev loop, release scripts. |
+| `docs/` | Every document. [`docs/DEVELOPING.md`](docs/DEVELOPING.md) is the operating manual; [`docs/CODEBASE_MAP.md`](docs/CODEBASE_MAP.md) is the detailed where-things-live map this table summarizes. |
+| `deploy/` | How the node runs on a host: systemd user service and setup. |
+| `vendor/` | Third-party source built from pinned inputs, plus the Tor submodule. Nothing here is ours. |
+| `examples/` · `sdk/` · `apps/` | The outward-facing surface: worked examples you can compile, the app SDK header, and app manifests built on it. |
+| `db/` · `tests/` | Declared SQL schema and shared test fixtures — data, not code. |
+
+**Generated, never tracked** — these appear after a build and are the only
+untracked entries the root is allowed to have:
+
+| Entry | Where it comes from |
+|-----|----------|
+| `build/` | All build output, including the binaries in `build/bin/`. |
+| `test-tmp/` | The one scratch root for test runs — every test writes its per-run datadir under here, never into the checkout root. Safe to delete at any time. |
+| `compile_commands.json` | Written by `make setup` / `make compdb` so clangd and editors know the exact compile flags. Conventional at the root; leave it there. |
+| `.cache/` · `.codeindex/` | Tool caches: lint timings, the clangd index, the source navigator's index. |
 
 ## Engineering posture
 
