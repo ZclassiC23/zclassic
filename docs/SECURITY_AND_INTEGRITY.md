@@ -67,7 +67,7 @@ does not mean.
   path** (`lib/validation/src/connect_block.c`), equivalent to Bitcoin Core's
   `-assumevalid` (removed as a direct flag; controlled via
   `-deferproofvalidationbelow=<blockhash|0>`, default the highest in-binary
-  PoW checkpoint, height 3,100,000; `lib/chain/src/chainparams.c`). That path
+  PoW checkpoint, height 3,100,000; `core/chainparams/src/chainparams.c`). That path
   is driven by `-reindex-chainstate` (`reindex_chainstate()` in
   `config/src/boot_index.c`), by the offline harness/simnet code, and by the
   background revalidation walker (`app/services/src/bg_validation_service.c`,

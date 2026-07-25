@@ -34,7 +34,7 @@ Concepts we've adopted:
 | ETL (Extract-Transform-Load) for bulk writes | [`db/etl/README.md`](https://github.com/erigontech/erigon/blob/main/db/etl/README.md) | Temp-file sort before bulk load to minimize write amplification |
 | Temporal DB interface (hot mutable + cold immutable) | [`db/kv/kv_interface.go`](https://github.com/erigontech/erigon/blob/main/db/kv/kv_interface.go), [`db/agents.md`](https://github.com/erigontech/erigon/blob/main/db/agents.md) | `get_latest(k)` + `get_as_of(k, ts)` |
 | Stream vs Cursor split | `db/kv/stream/`, cursor interfaces in `kv_interface.go` | High-level iterator over low-level cursor |
-| Per-subsystem `agents.md` files | [`execution/stagedsync/agents.md`](https://github.com/erigontech/erigon/blob/main/execution/stagedsync/agents.md), `cl/agents.md`, `p2p/agents.md`, `db/agents.md` | Localized AI guidance close to code |
+| Per-subsystem `agents.md` files | [`execution/stagedsync/agents.md`](https://github.com/erigontech/erigon/blob/main/execution/stagedsync/agents.md), `cl/agents.md`, `p2p/agents.md`, `db/agents.md` | Localized AI guidance close to code | <!-- doc-path-ok: upstream erigon paths, not this tree -->
 | Explicit naming discipline at the top of storage headers | [`kv_interface.go:30-50`](https://github.com/erigontech/erigon/blob/main/db/kv/kv_interface.go) naming block | `tx` vs `txn`, `blockNum` vs `blockID`, etc. |
 | Per-stage timing table | `sync.go::timings` | Wall-clock per stage, dumped on cycle end |
 | Ruleguard-style antipattern lint | Erigon `CLAUDE.md` ("defer tx.Rollback after error check") | Pattern-level grep gates per recurring issue |
@@ -78,7 +78,7 @@ behavior used by the zclassic23 parity-diff service.
 
 The cross-chain atomic-swap HTLC script format (P2SH-wrapped, 97-byte contract)
 used by the ZCL atomic-swap protocol (ZSWP) was **reimplemented** from dcrdex's
-design in `lib/script/` (`script/htlc.*`) — no dcrdex source is vendored in this
+design in `lib/script/` (`lib/script/{src/htlc.c,include/script/htlc.h}`) — no dcrdex source is vendored in this
 tree. Credited here for the script-format concept.
 
 ## SQLite — Public Domain

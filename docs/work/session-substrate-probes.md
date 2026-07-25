@@ -90,7 +90,7 @@ sub-checks matched prediction: (1) a ruleset granting
 outside that dir, after `landlock_restrict_self`, returns `-1 EACCES`; (3)
 `open()`/`write()` inside the granted dir, after restrict, succeeds; (4) an
 fd opened **before** `landlock_restrict_self` to a file outside the granted
-dir remains fully writable afterward — confirms `linux/landlock.h`'s own doc
+dir remains fully writable afterward — confirms `linux/landlock.h`'s own doc <!-- doc-path-ok: Linux system header -->
 comment that pre-opened fds are not subject to the restriction.
 
 **VERDICT:** Landlock (ABI v4) is fully functional rootless for path-scoped

@@ -6,9 +6,11 @@
   positioning this verdict protects), `docs/adr/0002-sealed-consensus-core.md`
   (the structural-boundary pattern this ADR reuses for confinement),
   [`docs/work/os-substrate-plan.md`](../work/os-substrate-plan.md) (the
-  three-rung working plan), `docs/work/archive/lb1-wiring-design.md`
-  (the bounded verify-pool design cited in Evidence (a); removed from the
-  tree, recover with `git log --follow -- docs/work/archive/lb1-wiring-design.md`).
+  three-rung working plan), and the deleted lb1-wiring-design memo — the
+  bounded verify-pool design cited in Evidence (a). Neither that file nor
+  `docs/work/archive/` is in the tree; recover it with
+  `git log --follow --diff-filter=D -- 'docs/work/archive/lb1-wiring-design.md'`.
+  <!-- doc-path-ok: deleted file, cited for git recovery only -->
 
 ---
 
@@ -66,7 +68,7 @@ The one genuine **execution-parallelism** gap this review found is real:
 script/proof verification (ECDSA, Groth16) runs serially on the drive
 thread while the rest of the machine's cores sit idle. The answer already
 has a design:
-`docs/work/archive/lb1-wiring-design.md` (removed; see the Related section above) specifies a
+The deleted lb1-wiring-design memo (see the Related section above) specifies a
 bounded verify pool gated behind `-par=N` (default parallel, `-par=1` the
 bit-for-bit serial oracle — the correctness rollback). `lib/validation/thread_pool.{c,h}`
 and `lib/validation/verify_queue.{c,h}` do not exist in the tree: an earlier

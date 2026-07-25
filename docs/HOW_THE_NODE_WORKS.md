@@ -128,7 +128,7 @@ the UTXO, Sapling/Sprout frontier, or nullifier roots. The state is therefore
 **borrowed**, not consensus-bound or re-derived from genesis. The plan
 (`docs/work/self-verified-tip-plan.md`; the ordered-steps predecessor
 `sync-fix-plan-2026-06-21.md` was removed from the tree — recover with
-`git log --follow -- docs/work/archive/sync-fix-plan-2026-06-21.md`)
+`git log --follow --diff-filter=D -- 'docs/work/archive/sync-fix-plan-*'`)
 replaces it with a **self-verified UTXO anchor rebuild**:
 the internal boot path is `-refold-from-anchor`
 (`app/jobs/src/refold_progress.c`, `app/services/src/anchor_selfmint.c`), which

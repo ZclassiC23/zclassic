@@ -12,7 +12,7 @@ header_admit -> validate_headers -> body_fetch -> body_persist
 
 Jobs return `job_result_t` from `app/jobs/include/jobs/job.h`:
 `JOB_ADVANCED`, `JOB_BLOCKED`, `JOB_IDLE`, or `JOB_FATAL`. The generic stage
-runner in `lib/util/stage.h` handles cursor/replay mechanics; job files own the
+runner in `lib/util/include/util/stage.h` handles cursor/replay mechanics; job files own the
 stage-specific work and must advance a durable cursor or name a typed blocker.
 
 Do not add macro-only job scaffold. If a helper is shared by stages, keep it

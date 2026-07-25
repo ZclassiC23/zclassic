@@ -25,8 +25,10 @@ Then [`MVP.md`](./MVP.md) for what "v1" means and an honest readiness account,
 and [`AGENT_TRAPS.md`](./AGENT_TRAPS.md) before you "fix" anything that looks
 broken — several things that look broken are intentional or already done.
 
-**Skip `HANDOFF.md`.** It is live state for the maintainer's own hosted node
-and will tell you nothing about your machine.
+**`HANDOFF.md` is live state for the maintainer's own hosted node.** Run
+`zclassic23 status` — if it answers, you are on that node and `HANDOFF.md` is
+your first read (that is what `CLAUDE.md`'s fresh-session ritual assumes). If
+it does not, skip it: it will tell you nothing about your machine.
 
 ## Maintainer entry points (the project's own hosted node)
 
@@ -74,10 +76,10 @@ you operate that host, and misleading otherwise.
 
 ## Dated review evidence
 
-- `work/archive/CODEBASE-CONSOLIDATION-REVIEW-2026-07-14.md` — full-tree code,
-  tooling, documentation, and developer-experience reduction audit; evidence,
-  not a competing plan. Removed from the tree; recover with
-  `git log --follow -- docs/work/archive/CODEBASE-CONSOLIDATION-REVIEW-2026-07-14.md`.
+The full-tree code/tooling/docs reduction audit of 2026-07-14 is **not in the
+tree** — neither the file nor `docs/work/archive/` exists. Recover it from
+history: <!-- doc-path-ok: recovered from git history, not present on disk -->
+`git log --follow --diff-filter=D -- 'docs/work/archive/CODEBASE-CONSOLIDATION-REVIEW-*'`.
 
 ## Architecture (reference, off the v1 path)
 

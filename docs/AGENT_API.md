@@ -7,6 +7,16 @@ reference. Shell wrappers are compatibility shims only. New feature work follows
 database schema, ActiveRecord model, validations, relationships, service
 workflow, REST route contract, then the native surface.
 
+**The flat `agent*` / `statecatalog` / `dumpstate` / `proofbundle` / `timeline`
+commands below are compatibility shims.** They work, but they are not in
+`config/commands/*.def` and do not appear in `zclassic23 discover help` — so
+"the typed registry is the sole agent interface" and "`statecatalog` works" are
+both true. Do not add new flat commands; add a registry leaf
+(see [`docs/CODEBASE_MAP.md`](./CODEBASE_MAP.md) §2 "Add a native command").
+Everything below the "First calls" table is response-schema transcription that
+the running node returns anyway — prefer `zclassic23 discover schema <leaf>` or
+just calling the command.
+
 ## First calls
 
 | need | native command |

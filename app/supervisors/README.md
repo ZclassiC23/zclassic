@@ -4,7 +4,7 @@
 
 Each source file in `src/` owns one supervisor domain or one narrow liveness
 registration surface. Supervisors register `struct liveness_contract` children
-through `lib/util/supervisor.h`, grouped by domain in `domains.c`.
+through `lib/util/include/util/supervisor.h`, grouped by domain in `domains.c`.
 
 Current roots include network, chain, staged-sync, legacy-mirror, and
 self-heal/condition-engine liveness. Boot still wires lifecycle dependencies,

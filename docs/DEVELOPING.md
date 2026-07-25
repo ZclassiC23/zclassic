@@ -77,7 +77,11 @@ Every `.c` under `app/` is exactly one shape (lint-enforced). Open the folder, k
 `models/` (the only readers/writers of state; AR lifecycle), `jobs/` (the reducer stages,
 cursor-stamped, advance-or-block), `supervisors/` (liveness trees), `conditions/`
 (`{detect,remedy,witness}` healers), `events/` (reserved-empty), `views/` (explorer templates).
-Pure consensus core: `domain/` (no clock/RNG/IO). Primitives: `lib/`. Hexagonal write seam:
+Consensus predicates + params: `core/` — **byte-sealed** by `core/MANIFEST.sha3`
+and the `check-core-seal` gate; an edit there fails `make lint` until
+`make core-unseal REASON="…"` then `make core-seal` (read
+[`core/UNSEAL.md`](../core/UNSEAL.md) first). Pure bounded contexts:
+`domain/{encoding,wallet}` (no clock/RNG/IO). Primitives: `lib/`. Hexagonal write seam:
 `ports/` + `adapters/`. Boot: `config/src/`. Command tooling and lint: `tools/`.
 Full map + "how to add a model / healer / native command / reducer stage /
 lint gate" is in `docs/CODEBASE_MAP.md`.
@@ -112,9 +116,17 @@ lint gate" is in `docs/CODEBASE_MAP.md`.
 
 ## Build / test / deploy
 
-- `make build-only` — fast parallel compile-check (inner loop).
+- `make build-only` — fast parallel compile-check (inner loop). **It compiles
+  library objects and does not link** — `src/main.c` and the binaries are never
+  built, so it cannot catch a broken entry point, a missing symbol, or a link
+  gap. Green here is not green.
 - `make -j$(nproc)` — full build (`zclassic23`, `test_zcl`, `zclassic-cli`).
 - `make test` / `make test-parallel` — the canonical test runner. **Use this, not `test_zcl`.**
+- `make t-fast ONLY=<substr>` — one focused run. `ONLY=` is a **substring**
+  match, not a group name (`ONLY=wallet` runs 36 groups). Exact names:
+  `make test_parallel && build/bin/test_parallel --list` — the underscore
+  target is the only one that publishes that alias; the run targets execute an
+  epoch candidate under `build/bin/test-strict/epochs/<epoch>/`.
 - `make lint` — all gates; must pass before tests. `make ci` — lint + build + tests + checks.
 - `make deploy` is owner-gated live deployment. All public dev-lane publication,
   stage, relink, and recovery-apply paths currently hard-refuse — the gated
@@ -123,18 +135,33 @@ lint gate" is in `docs/CODEBASE_MAP.md`.
   activation authority.
   `make deploy` rm's the stale binary first
   (a stale binary was a real multi-day outage) and verifies `build_commit`.
-- Gate every change: `make` + `make lint` + `make test-parallel` (read the `N passed, M failed` line).
+- **Gate every change with `tools/scripts/gate-and-report.sh <lintlog> <testlog>`**
+  — `make lint` → full link build → `make test-parallel`, keyed on the pass
+  token rather than a grep match. Running it by hand: the runner prints
+  `SUITE VERDICT mode=<cold|cached> … groups_ran=N groups_failed=N` and then one
+  of `ALL TESTS PASSED` / `ALL TESTS PASSED (CACHED)` / `SOME TESTS FAILED`.
+  There is no `N passed, M failed` line. A bare `grep -q "ALL TESTS PASSED"`
+  matches the `(CACHED)` form and green-lights a run that executed **zero**
+  groups — that false green already shipped once (see the comment above the
+  `SUITE VERDICT` printf in `lib/test/src/test_parallel.c`). Force cold with
+  `make test-parallel TEST_PARALLEL_ARGS=--no-cache`.
 
 ## The agent surface — native command registry
 
-The interface is the native registry: `zclassic23 <path>` under `core.*` / `app.*` / `ops.*` / `dev.*` /
-`discover.*`. Start with `zclassic23 status`. Three diagnostic primitives cover most questions:
-`ops state --subsystem=<name>` (generic state dump; the catalog is the `DIAG_*` row set in
-`app/controllers/include/controllers/diagnostics_dumpers.def` — enumerate it live with `ops state`
-and no `--subsystem`, and expect the 8 stage names plus `blocker`, `reducer_frontier`,
-`condition_engine`), `ops logs`, and `core storage query` for SELECT-only SQL. Discover everything with
-`discover help` / `discover search <q>`. Add introspection by registering one `*_dump_state_json` in
-`app/controllers/src/diagnostics_registry.c` — no new command needed.
+The interface is the native registry: `zclassic23 <path>` under seven roots —
+`status`, `core.*`, `app.*`, `dev.*`, `ops.*`, `discover.*`, `code.*`. Start with
+`zclassic23 status`. Three diagnostic primitives cover most questions:
+`ops state --subsystem=<name>` (generic state dump), `ops logs`, and
+`core storage query` for SELECT-only SQL. Discover everything with `discover help` /
+`discover search <q>` (query is **positional** — the `--input='{"query":…}'`
+form its schema advertises returns `MISSING_QUERY`).
+
+**Enumerating the 134 dumpstate subsystems is `zclassic23 statecatalog`**, not
+`ops state` with no `--subsystem` — that errors `MISSING_SUBSYSTEM`.
+`statecatalog` returns each subsystem's owner `.c` file, accepted key forms,
+cost, and owning test path. Add one by appending a `DIAG_*` descriptor row to
+`app/controllers/include/controllers/diagnostics_dumpers.def` — full recipe in
+[`docs/CODEBASE_MAP.md`](CODEBASE_MAP.md) §3.
 
 Postmortem fast path: `zclassic23 ops debug bundle` writes ONE JSON (every dumper + build identity +
 supervisor stalls) to `<datadir>/debug-bundle-<utc>.json` — also auto-written, rate-limited, when the

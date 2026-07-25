@@ -41,6 +41,14 @@ mechanism) + the `test_consensus_parity` test group (the golden values).
 This is also the bar for reviewing outside PRs (thank + attribute + decline
 consensus-breakers, mine the idea, build it better ourselves).
 
+**Every consensus predicate lives under `core/` and `core/` is byte-sealed.**
+`core/{consensus,chainparams,params,math}` is pinned by `core/MANIFEST.sha3`;
+the `check-core-seal` gate fails `make lint` on any drift — *after* you have
+already written the edit. Unlock with `make core-unseal REASON="…"` (owner
+ritual: appends to [`core/UNSEAL.md`](./core/UNSEAL.md), mints a one-commit
+token), then re-freeze with `make core-seal`. Rationale:
+[`docs/adr/0002-sealed-consensus-core.md`](./docs/adr/0002-sealed-consensus-core.md).
+
 ## Tenacity & recovery (operator invariants)
 
 Full model: [`docs/TENACITY.md`](./docs/TENACITY.md) + the live-diagnosis
@@ -74,8 +82,11 @@ build/bin/zclassic23 --importblockindex $HOME/.zclassic
 build/bin/zclassic23
 ```
 
-(The old `-cold-import=` flag no longer exists — the argv loop ignores
-unknown flags, so passing it silently no-ops.) Skipping step 1 is a
+(The old `-cold-import=`/`-fastimport=` flags no longer exist. The argv loop
+does **not** accept an unrecognized `-flag` silently — it prints
+`Warning: unrecognized flag '<f>' (ignored) — …` to stderr on every boot
+(`config/src/args.c`). Advisory, never fatal, so after any flag change grep
+stderr for `unrecognized flag`.) Skipping step 1 is a
 footgun: importing UTXOs without the header import leaves a ~3.1M-header
 hole (headers=960) and the node pins.
 
@@ -129,14 +140,22 @@ commit → repeat to 100. **Never edit the scorer to win.**
 Type **`continue zclassic23 development`**. The agent will:
 1. Run `pwd` to detect worktree ID (`main`, `wt2`, `wt3`, ...).
 2. For the one-page mental model, skim **[`docs/HOW_THE_NODE_WORKS.md`](./docs/HOW_THE_NODE_WORKS.md)** (append-only fact log in `consensus.db` → eight reducer stages, each advance-cursor-or-name-a-blocker → projections → health = `network_tip − log_head`). **[`docs/CODEBASE_MAP.md`](./docs/CODEBASE_MAP.md)** is where-things-live + how-to-do-each-thing; **[`docs/AGENT_ARCHITECTURE.md`](./docs/AGENT_ARCHITECTURE.md)** is the required feature-slice recipe for REST resources, ActiveRecord models, validations, relationships, database schema, services, and native command surfaces; **[`docs/AGENT_TRAPS.md`](./docs/AGENT_TRAPS.md)** lists things that look broken but are intentional or already-done — read it before "fixing" or re-proposing anything.
-3. `cat docs/HANDOFF.md` FIRST (the current entry point / live state), then `docs/MVP.md` (the v1 contract) and `docs/work/FORWARD_PLAN.md` (THE plan; the sovereign-cure spine is `docs/work/self-verified-tip-plan.md`). `docs/FRAMEWORK.md` (§9 is the debt board) is architecture reference, off the v1 path.
+3. Read exactly two more: `docs/HANDOFF.md` (live state) and `docs/work/FORWARD_PLAN.md` (the ordered priority). `docs/MVP.md` (the v1 contract), `docs/ARCH_QUEST_BOARD.md`, `docs/ARCHITECTURE_NORTH_STAR.md`, and `docs/FRAMEWORK.md` are **reference — open on demand, not on arrival**. The sovereign-cure spine is `docs/work/self-verified-tip-plan.md`.
 4. Check the live node before trusting any doc: `zclassic23 status`, then
    `zclassic23 dumpstate reducer_frontier`. A doc can be stale; the node cannot.
 5. If worker → read `docs/work/wt<N>-*.md` and follow `docs/work/agent-protocol.md`. If orchestrator → review in-flight work in the status board, merge pushed branches, dispatch next assignments.
 
+**[`docs/README.md`](./docs/README.md) is the curated documentation map** — use
+it to find anything not listed here. It splits public-contributor docs from
+maintainer/live-node docs; `docs/HANDOFF.md` is on the maintainer side, which is
+why step 3 above applies to this host and not to a fresh clone.
+
 ## Defensive Coding Standards (MANDATORY)
 
-**Read [`DEFENSIVE_CODING.md`](./docs/DEFENSIVE_CODING.md) before writing any code.**
+**The five rules that matter are listed below — they are the whole contract.**
+[`DEFENSIVE_CODING.md`](./docs/DEFENSIVE_CODING.md) is the per-gate reference
+(one section per `check-*` gate); open the section `make lint` names, not the
+whole file.
 
 For modules prefixed `legacy_` (cold-start bootstrap, drift detection
 against an external `zclassicd`), see [`LEGACY_LIFECYCLE.md`](./docs/LEGACY_LIFECYCLE.md)
@@ -159,7 +178,8 @@ Key rules enforced by the compiler and CI:
 ## Agent interface — native commands
 
 The interface is the native command registry: `zclassic23 <command>` under
-`core.*`/`app.*`/`ops.*`/`dev.*`/`discover.*`. Start with `zclassic23 status`;
+seven roots — `status`, `core.*`, `app.*`, `dev.*`, `ops.*`, `discover.*`,
+`code.*`. Start with `zclassic23 status`;
 enumerate with `discover help` / `discover search <q>`; three diagnostic
 primitives (`ops state --subsystem=<name>`, `ops logs`, and
 `core storage query` for SELECT-only SQL)
@@ -188,19 +208,23 @@ runtime state, follow the convention:
    for snapshot consistency. Don't allocate (the caller's JSON value
    owns the buffer).
 
-3. Register the dump function in the dispatcher table at
-   `app/controllers/src/diagnostics_registry.c:g_dumpers`. One line.
+3. Add one descriptor row to
+   `app/controllers/include/controllers/diagnostics_dumpers.def` — a
+   `DIAG_ENTRY` (~12 fields: name, dump fn, description, category,
+   state_class, owner `.c` path, freshness, cost, key form, two example keys,
+   owning test path, bool) or the shorter `DIAG_RUNTIME` / `DIAG_CONDITION`.
+   **Do not edit `app/controllers/src/diagnostics_registry.c`** — it builds
+   `g_dumpers[]` by `#include`-ing that `.def` and has no editable table.
 
 4. No edit to the state command handler is needed; its subsystem catalog is
    populated at runtime from the diagnostics registry. Update the native
    diagnostics registry test if it asserts the list.
 
 That's it — no new RPC handler, command route, or schema.
-Every future subsystem becomes introspectable via `zclassic23 ops state` with
-~30 lines of changes total. 121+ subsystems are wired today (see
-`app/controllers/include/controllers/diagnostics_dumpers.def`); enumerate the
-live catalog with `zclassic23 ops state` and no `--subsystem` argument rather
-than trusting a hand-list here.
+**Enumerate the live catalog with `zclassic23 statecatalog`** (name, owner
+file, accepted key forms, cost, owning test path) rather than trusting a
+hand-list here. `zclassic23 ops state` with no `--subsystem` is not an
+enumeration — it fails with `MISSING_SUBSYSTEM`.
 
 The `supervisor` subsystem is the *root* of the liveness
 tree: it lists every registered child (`sync.watchdog`,
@@ -357,9 +381,9 @@ HTLC contract scaffolding: swap initiation and participation with redeem script 
 
 - **Chains**: ZCL, BTC, LTC, DOGE (same 97-byte contract as dcrdex)
 - Script: OP_IF/OP_SHA256/OP_CLTV with shared OP_CHECKSIG
-- Secret extraction / redeem + refund scriptSig builders exist as library primitives (`script/htlc.*`, tested) and are wired to the node-broadcast/settlement path via the RPCs below
+- Secret extraction / redeem + refund scriptSig builders exist as library primitives (`lib/script/{src/htlc.c,include/script/htlc.h}`, tested) and are wired to the node-broadcast/settlement path via the RPCs below
 - RPC: `swap_chains`, `swap_initiate`, `swap_participate`, `swap_list`, `swap_redeem`, `swap_refund`, `swap_status`, `swap_extractsecret`
-- Reference: dcrdex HTLC script format (Blue Oak License 1.0.0), reimplemented in `script/htlc.*`
+- Reference: dcrdex HTLC script format (Blue Oak License 1.0.0), reimplemented in `lib/script/{src/htlc.c,include/script/htlc.h}`
 
 ### Background Validation
 

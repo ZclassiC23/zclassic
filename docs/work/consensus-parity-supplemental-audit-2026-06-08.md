@@ -54,7 +54,7 @@ is now wired on the connect path with an IBD early-return gate.
   Reachability: unconditional rule (active since genesis), but ~20000 *top-level*
   CHECKDATASIG opcodes in one block is exotic — no known historical block crosses
   it; history-safe.
-- **LANDED:** `domain/consensus/src/check_block.c:59` defines
+- **LANDED:** `core/consensus/src/check_block.c:59` defines
   `DOMAIN_CONSENSUS_SIGOP_COUNT_FLAGS SCRIPT_VERIFY_CHECKDATASIG_SIGOPS`, used at
   `check_block.c:183`.
 
@@ -99,7 +99,7 @@ is now wired on the connect path with an IBD early-return gate.
   propagating `ok=0` to block `tip_finalize`.
 
 ### #4 — Height-gated Sapling/Overwinter structural tx rules NOT enforced on connect
-- **c23 vs zclassicd:** c23's `domain/consensus/src/sapling_structural.c:36-161`
+- **c23 vs zclassicd:** c23's `core/consensus/src/sapling_structural.c:36-161`
   (overwinter-not-active, tx-overwintered-flag-not-set,
   bad-sapling-tx-version-group-id, bad-tx-sapling-version-too-low/high,
   tx-overwinter-active, pre-Sapling bad-txns-oversize) was reached only via

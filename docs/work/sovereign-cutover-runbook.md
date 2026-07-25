@@ -24,7 +24,7 @@ it in place of this bundle-install cure.
 
 - **Producer side** (a separate lane; not this doc's scope): a `-mint-anchor`
   fold that reaches the compiled checkpoint height (currently 3,056,758,
-  `lib/chain/src/checkpoints.c`) exports a `zcl.consensus_state_bundle.v1`
+  `core/chainparams/src/checkpoints.c`) exports a `zcl.consensus_state_bundle.v1`
   file to `<producer-datadir>/consensus-state-bundle-3056758.sqlite`
   (`config/src/boot_mint_anchor.c:boot_mint_anchor_export_bundle`,
   `config/include/config/boot.h:420-430`). The export is proof-bound to the

@@ -56,14 +56,14 @@ property the whole simulator is built around.
 | `lib/sim/include/sim/simnet.h` | `simnet_spend` | Spend a coin at `txid:vout` to a new output, at a height that satisfies `COINBASE_MATURITY` |
 | `lib/sim/include/sim/simnet.h` | `simnet_coin_exists`, `simnet_coin_value` | Query the live in-RAM UTXO view — the same fold `coins_view_cache` performs on a real node |
 | `lib/sim/include/sim/simnet_wallet.h` | `simnet_wallet_create`, `simnet_wallet_address`, `simnet_wallet_script`, `simnet_wallet_free` | Deterministic P2PKH wallet toolkit for the sim |
-| `lib/consensus/include/consensus/consensus.h` | `COINBASE_MATURITY` (=100) | The real consensus constant driving step 3 |
+| `core/params/include/consensus/consensus.h` | `COINBASE_MATURITY` (=100) | The real consensus constant driving step 3 |
 
 ## Production counterpart
 
 The example's steps map onto real node code as:
 
-- **Mint a coinbase** → the miner's block-template assembly (`app/jobs/`) followed by the same `connect_block()` in `lib/consensus`, driven live by the `utxo_apply` reducer stage (`app/jobs/src/utxo_apply_stage.c`).
-- **Coinbase maturity** → `lib/consensus/include/consensus/consensus.h` (`COINBASE_MATURITY`), enforced inside `connect_block()` for every real block, not just the sim.
+- **Mint a coinbase** → the miner's block-template assembly (`app/jobs/`) followed by the same `connect_block()` in `lib/validation`, driven live by the `utxo_apply` reducer stage (`app/jobs/src/utxo_apply_stage.c`).
+- **Coinbase maturity** → `core/params/include/consensus/consensus.h` (`COINBASE_MATURITY`), enforced inside `connect_block()` for every real block, not just the sim.
 - **Spend the coin** → `wallet_create_transaction()` / `wallet_create_transaction_multi()` (`lib/wallet/include/wallet/wallet.h`) followed by `wallet_commit_transaction()`, surfaced through `zclassic23 rpc sendtoaddress` on a live node.
 - **UTXO existence/value query** → `coins_view_cache_have_coins()` and friends in `lib/coins/include/coins/coins_view.h` over the real on-disk `coins_kv` table, or `zclassic23 core wallet utxo list` / `zclassic23 core chain transaction get` at the command layer.
 

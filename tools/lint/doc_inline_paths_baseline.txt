@@ -1,0 +1,38 @@
+# check_doc_inline_paths baseline — SHRINK-ONLY.
+#
+# Each line is "<doc> -> <backticked path that does not exist>".
+# A NEW unresolvable path fails the gate; these are the survivors at the time
+# the gate landed. Deleting a line is always allowed (and required once the
+# path resolves). Adding one is a review decision, not a convenience.
+#
+# Two kinds live here:
+#   (a) DESIGN MEMOS naming files the design would create. The doc is a plan,
+#       not a description of the tree. Delete the line when the file lands.
+#   (b) Genuinely dead references in files this lane does not own, or in
+#       dated logs whose text is historically accurate.
+#
+# For a path that is deliberately absent forever (a deleted file cited so it
+# can be recovered from git, an upstream project's file in an attribution),
+# use a per-line `<!-- doc-path-ok: <reason> -->` in the doc instead of a
+# baseline entry.
+
+# (b) dated benchmark log: the script was deleted after the measurement.
+docs/BENCHMARKS_LOG.md -> tools/bench_cold_import_equivalence.sh
+
+# (b) docs/BUILD.md is owned by another lane.
+docs/BUILD.md -> vendor/sqlite3.c
+
+# (a) design memos — files the plan would create.
+docs/work/ladder-carve-audit.md -> tools/scripts/check_no_rowcount_install.sh
+docs/work/reducer-shielded-consensus-plan.md -> lib/test/src/test_shielded_consensus_stage.c
+docs/work/self-verified-tip-plan.md -> lib/validation/src/verify_queue.c
+docs/work/shielded-history-importer.md -> chainstate_legacy_reader.c/.h
+docs/work/shielded-history-importer.md -> tools/scripts/cure-copy-prove.sh
+docs/work/tenacity-roadmap.md -> app/jobs/src/window_rebuild.c
+docs/work/tenacity-roadmap.md -> lib/storage/src/window_rebuild_sentinel.c
+docs/work/wire-next-wave-specs.md -> lib/sim/include/sim/simnet_wire_app.h
+docs/work/wire-next-wave-specs.md -> lib/sim/src/simnet_wire_app.c
+docs/work/wire-next-wave-specs.md -> lib/test/src/test_simnet_wire_app.c
+
+# (b) a roadmap doc that never landed under that name.
+docs/work/shielded-history-importer.md -> docs/SOVEREIGN-NETWORK-ROADMAP.md

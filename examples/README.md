@@ -1,7 +1,7 @@
 # zclassic23 teaching examples
 
 Eleven small, standalone C23 programs that each exercise a real slice of the
-node — the same `lib/sim`, `lib/consensus`, `lib/wallet`, `lib/script`,
+node — the same `lib/sim`, `lib/validation`, `lib/wallet`, `lib/script`,
 `lib/znam`, `lib/zslp`, `lib/net` code a live node runs, driven through the
 deterministic simulator (`lib/sim/include/sim/simnet.h` and friends) instead
 of a live chain. No disk, no real proof-of-work, no live funds, no wall

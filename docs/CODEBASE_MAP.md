@@ -8,15 +8,17 @@ live state* read `docs/HANDOFF.md`; for *coding rules* read
 `docs/DEFENSIVE_CODING.md`. For the one-page mental model read
 `docs/HOW_THE_NODE_WORKS.md`.
 
-File counts below are `.c` implementation files, from
-`find app/<dir> -name '*.c' | wc -l` (verified 2026-07-19). They drift;
-re-run if exactness matters.
+**Never hand-write a file count into this page.** They drift 5-15% a week and a
+wrong count reads as authority. Derive one when you need it:
+`zclassic23 code map` (per-root and per-shape counts, straight from the
+navigator), or `git ls-files 'app/jobs/**/*.c' | wc -l` for one folder. The
+only pinned counts live in the machine-checked `DOC-COUNTS` block below.
 
 ---
 
 ## 1. Where things live
 
-### The app shapes — `app/` (572 `.c` files, seven physical folders)
+### The app shapes — `app/`, seven physical folders
 
 Every `.c` under `app/` lives in exactly one shape folder, lint-enforced
 (`framework_shape_check.sh`). Filename suffix must match the shape
@@ -24,24 +26,53 @@ Every `.c` under `app/` lives in exactly one shape folder, lint-enforced
 folder — see [`docs/FRAMEWORK.md`](FRAMEWORK.md) §3 row 7 for why (and where
 the concept actually lives).
 
-| Shape | Path | Files | Role | Exemplar |
-|-------|------|-------|------|----------|
-| Controllers | `app/controllers/` | 185 | parse → authorize → call ONE service → return; no business logic, no raw storage | `app/controllers/src/diagnostics_registry.c` |
-| Services | `app/services/` | 150 | orchestrate a workflow; return `zcl_result` (typed code + message) | `app/services/src/` |
-| Models | `app/models/` | 46 | ActiveRecord rows; own all reads (Law 5); save via `AR_*_SAVE` | `app/models/src/block.c` + `include/models/block.h` |
-| Jobs | `app/jobs/` | 101 | cursor-stamped idempotent stages; the 8 reducer stages live here; advance-or-block | `app/jobs/src/*_stage.c` |
-| Supervisors | `app/supervisors/` | 6 | liveness tree; children with `last_tick_age_us`, `progress_marker`, `deadline` | `app/supervisors/src/staged_sync_supervisor.c` |
-| Conditions | `app/conditions/` | 49 | (detect, remedy, witness) healers; poll/backoff/page-on-exhaustion | `app/conditions/src/block_failed_mask_at_tip.c` |
-| Views | `app/views/` | 35 | read-only explorer templates; no persistence writes; served over HTTPS + onion | `app/views/src/explorer_dashboard_view.c` |
+| Shape | Path | Role | Exemplar |
+|-------|------|------|----------|
+| Controllers | `app/controllers/` | parse → authorize → call ONE service → return; no business logic, no raw storage | `app/controllers/src/diagnostics_registry.c` |
+| Services | `app/services/` | orchestrate a workflow; return `zcl_result` (typed code + message) | `app/services/src/` |
+| Models | `app/models/` | ActiveRecord rows; own all reads (Law 5); save via `AR_*_SAVE` | `app/models/src/block.c` + `include/models/block.h` |
+| Jobs | `app/jobs/` | cursor-stamped idempotent stages; the 8 reducer stages live here; advance-or-block | `app/jobs/src/*_stage.c` |
+| Supervisors | `app/supervisors/` | liveness tree; children with `last_tick_age_us`, `progress_marker`, `deadline` | `app/supervisors/src/staged_sync_supervisor.c` |
+| Conditions | `app/conditions/` | (detect, remedy, witness) healers; poll/backoff/page-on-exhaustion | `app/conditions/src/block_failed_mask_at_tip.c` |
+| Views | `app/views/` | read-only explorer templates; no persistence writes; served over HTTPS + onion | `app/views/src/explorer_dashboard_view.c` |
 
-### Core consensus — `domain/` (8 files)
+### Sealed consensus core — `core/`
 
-Pure modules under `domain/{consensus,encoding,wallet}`. **No clock, no RNG,
-no IO** (lint: `check_no_raw_clock_outside_platform.sh`). Replayable from a
-64-bit seed. Fronted by thin `lib/` wrappers; sealed by `test_domain_*`.
-Never put IO here.
+`core/{consensus,chainparams,params,math}` — every consensus predicate and
+parameter table. `zclassic23 code map` reports it as *"sealed consensus core
+(params, chainparams, math...)"*. This is where block/tx validity lives:
+`core/consensus/src/{check_block,tx_structural,sapling_structural,sigops,
+upgrades,checkpoints}.c`, `core/chainparams/src/{chainparams,checkpoints,
+pow,equihash,subsidy}.c`, `core/params/src/{params,upgrades}.c`,
+`core/math/include/core/{uint256,hash,serialize}.h`.
 
-### Primitives — `lib/` (1429 files, 38 subdirs)
+**Every byte is sealed.** `core/MANIFEST.sha3` pins the tree and the
+`check-core-seal` gate fails `make lint` on any drift — *after* you have
+already written the edit. The unlock is an owner ritual:
+
+```bash
+make core-unseal REASON="why this consensus change is parity-safe"   # mints .core-unseal-token, one commit
+#   … edit core/ …
+make core-seal                                                        # re-freeze MANIFEST.sha3
+```
+
+Read [`core/UNSEAL.md`](../core/UNSEAL.md) and
+[`docs/adr/0002-sealed-consensus-core.md`](adr/0002-sealed-consensus-core.md)
+before touching anything under `core/`. Include paths were preserved across the
+move, so `#include "domain/consensus/…"` inside `core/` is correct and is *not*
+a stale path (`-Icore/consensus/include`); a `domain/consensus/…` path in a
+**doc** is stale. `check-core-include-boundary` (Gate #46) additionally forbids
+`core/` from including `lib/validation` or any `app/` shape.
+
+### Pure bounded contexts — `domain/`
+
+`domain/{encoding,wallet}` only — base58/bech32 and key-derivation/mnemonic.
+`zclassic23 code map` reports it as *"pure framework-free bounded contexts"*.
+**No clock, no RNG, no IO** (lint: `check_no_raw_clock_outside_platform.sh`,
+`check_domain_purity.sh`). Replayable from a 64-bit seed. Never put IO here.
+The consensus modules that used to live here are under `core/` (above).
+
+### Primitives — `lib/` (one subdirectory per module)
 
 Framework, `platform/` (the ONLY clock/RNG source: `time_compat.h`,
 `random.h`), `storage/` (`event_log.c` + `*_projection.c`), `net`, `crypto`,
@@ -55,12 +86,14 @@ trust boundary and remaining transport/CAS work. The current swarm layer is a
 codec only; it has no socket, install, execution, wallet, or publication
 authority.
 
-### Hexagonal seam — `ports/` + `adapters/` (39 files)
+### Hexagonal seam — `ports/` + `adapters/`
 
 Outbound-only by design: 12 port interfaces in `ports/include/ports/*_port.h`
-+ 13 sqlite/file write impls in `adapters/outbound/persistence/{src,include}/`
-(26 files = 13 `.c` + 13 `.h`). Reads are owned by Models (Law 5), so inbound
-repository ports are reserved-empty.
++ 13 sqlite/file write impls in `adapters/outbound/persistence/{src,include}/`.
+Reads are owned by Models (Law 5), so inbound repository ports are
+reserved-empty. Both counts are pinned by the `DOC-COUNTS` block below —
+`check_doc_counts.sh` fails if either directory changes shape without this
+page changing with it.
 
 <!-- DOC-COUNTS-BEGIN -->
 <!-- Canonical code-derived counts (machine-checked by tools/scripts/check_doc_counts.sh). -->
@@ -76,7 +109,7 @@ persistence_adapters: 13
 condition_registrations: 50
 <!-- DOC-COUNTS-END -->
 
-### Composition root — `config/src/` (96 files)
+### Composition root — `config/src/`
 
 Boot orchestration. `boot.c` (main orchestrator) + fragments
 (`boot_services.c` legacy lifecycle, `boot_refold_staged.c` staged consensus
@@ -146,9 +179,9 @@ Use `docs/AGENT_ARCHITECTURE.md` as the full checklist. The short path:
    tests before running `make build-only` and `make lint`.
 
 ### Add a model
-1. Struct in `app/models/include/models/X.h`.
+1. Struct in `app/models/include/models/X.h`. <!-- doc-path-ok: X is a placeholder for your resource name -->
 2. `DEFINE_MODEL_CALLBACKS` + `db_X_save`/`validate`/`find`/`delete` in
-   `app/models/src/X.c`. Use `AR_*_SAVE` macros — raw `sqlite3_step()` is
+   `app/models/src/X.c`. Use `AR_*_SAVE` macros — raw `sqlite3_step()` is <!-- doc-path-ok: X is a placeholder -->
    lint-rejected in app code (text-scan gate `check_raw_sqlite.sh`).
 3. Add a migration in `app/models/src/database_migrate.c` (per-feature tables
    in `database_migrate_features.c`; schema `database_schema.c`; validators
@@ -157,7 +190,7 @@ Use `docs/AGENT_ARCHITECTURE.md` as the full checklist. The short path:
 4. Wire before/after save hooks (HARD-enforced, E3).
 
 ### Add a healer (condition)
-1. `app/conditions/src/name.c` with static `detect`/`remedy`/`witness` +
+1. `app/conditions/src/name.c` with static `detect`/`remedy`/`witness` + <!-- doc-path-ok: name is a placeholder -->
    `struct condition` (set `poll_secs`, `backoff_secs`, `max_attempts`).
 2. `condition_register()` at module scope.
 3. Forward-decl `void register_name()` and call it in
@@ -165,17 +198,21 @@ Use `docs/AGENT_ARCHITECTURE.md` as the full checklist. The short path:
    witness/paging.
 
 ### Add a native command
-1. Declare the command in the matching `config/commands/*.def` bundle
-   (`core`/`ops`/`dev`/`apps`/`accounts`/`code`/`root`): name, transports
-   (`ZCL_COMMAND_TRANSPORT_NATIVE`), and handler symbol.
+1. Declare the command in the matching `config/commands/*.def` bundle — eight
+   of them: `core`, `ops`, `dev`, `apps`, `app_features`, `accounts`, `code`,
+   `root`. Give it a name, transports (`ZCL_COMMAND_TRANSPORT_NATIVE`), and a
+   handler symbol.
 2. Implement the handler in the matching
    `app/controllers/src/*_native_handlers.c`. Must set an error body on
    failure (never bare `return -1`).
 3. The command registry loads every `.def` bundle at startup; there is no
    central per-command registry file to edit.
+4. `tools/lint/check_command_contract.sh` HARD-fails any leaf whose
+   `semantics` argument is empty. Write a real one-line semantics string or
+   `make lint` rejects the command.
 
 ### Add a reducer stage (Job)
-1. `app/jobs/src/STAGE_stage.c` with `stage_exec()` returning
+1. `app/jobs/src/STAGE_stage.c` with `stage_exec()` returning <!-- doc-path-ok: STAGE is a placeholder -->
    `ADVANCED`/`BLOCKED`/`IDLE`/`FATAL`.
 2. Persist the cursor in `consensus.db` keyed by stage name (re-run at same
    cursor = no-op).
@@ -187,22 +224,33 @@ Stage order and per-stage contract: see
 **only** chain writer.
 
 ### Change a reducer stage
-1. Locate `app/jobs/src/STAGE_stage.c`; edit the advance path or the
+1. Locate `app/jobs/src/STAGE_stage.c`; edit the advance path or the <!-- doc-path-ok: STAGE is a placeholder -->
    `blocker_set()` path.
-2. If touching validation rules, verify against `domain/consensus/`
-   predicates.
+2. If touching validation rules, verify against the `core/consensus/`
+   predicates — and note that `core/` is byte-sealed (§1): an edit there needs
+   `make core-unseal REASON="…"` before `make lint` will pass.
 3. Run `make lint` (`check-consensus-parity`) + the `test_reducer_*` suite
    (`lib/test/src/test_reducer_*.c`) before shipping.
 4. Consensus parity is inviolable — never ship a consensus change to
    zclassic23 first.
 
 ### Add a lint gate
-Add a shell script under `tools/lint/` (or a `check-*` recipe), then add it as
-a dependency of the `lint` target in the `Makefile`. RATCHET gates compare
-against a baseline file (e.g. `honest_witness_baseline.txt`,
-`no_raw_sqlite_in_controllers_baseline.txt`). Note: many gates can fail-silent
-on an empty scan set — use the zero-broadening preflight and verify the gate
-actually fires.
+Gates live in **two** directories and neither is deprecated:
+`tools/lint/check_*.sh` and `tools/scripts/check_*.sh` (roughly half each).
+Rule of thumb: put it in `tools/lint/` if it sources `tools/lint/gate_lib.sh`;
+put it in `tools/scripts/` if it is also runnable standalone as an operator
+tool (`check_consensus_parity.sh`, `check_doc_counts.sh`,
+`check_domain_purity.sh`, `check_raw_sqlite.sh` all live there). Either way,
+add it as a dependency of the `lint` target in the `Makefile`.
+
+RATCHET gates compare against a baseline file (e.g.
+`honest_witness_baseline.txt`, `no_raw_sqlite_in_controllers_baseline.txt`).
+
+**Every new gate needs a fail-loud floor.** A gate whose scan set goes empty
+(directory renamed, glob stops matching) reports CLEAN and nobody notices —
+`check_domain_purity.sh` is one `find domain …` away from exactly that. Call
+`gate_require_scanned <n> <min> <gate-name> "<what was empty>"` from
+`tools/lint/gate_lib.sh`, as `check_command_contract.sh` does.
 
 ---
 
@@ -211,10 +259,28 @@ actually fires.
 > The native typed command registry is the sole agent interface — see
 > [`docs/NATIVE_COMMAND_INTERFACE.md`](NATIVE_COMMAND_INTERFACE.md). Command
 > contracts carry native paths plus input/output schemas for discovery.
+> Alongside it a set of ~40 **flat compatibility shims** (`statecatalog`,
+> `dumpstate`, `agentdiagnose`, `proofbundle`, …) still work but are not in
+> `discover help` and not in any `config/commands/*.def`. They are documented
+> in [`docs/AGENT_API.md`](AGENT_API.md). Do not add new ones.
 
 100+ typed commands. Discover them natively with `zclassic23 discover help` /
 `zclassic23 discover search <q>`. Source of truth is the `config/commands/*.def`
 bundles + `app/controllers/src/*_native_handlers.c`.
+
+### Enumerate before you guess
+
+| I need the list of… | Run |
+|---|---|
+| dumpstate subsystems (134 today) | `zclassic23 statecatalog` — name, owner file, accepted key forms, owning test. **Not** `ops state` with no `--subsystem`: that errors `MISSING_SUBSYSTEM`. |
+| test group names (one per line) | `make test_parallel && build/bin/test_parallel --list` — the underscore target is the only one that publishes the `build/bin/test_parallel` alias; `make test` / `make test-parallel` / `make t-fast` run an epoch candidate under `build/bin/test-strict/epochs/<epoch>/` and leave that alias absent |
+| registry commands | `zclassic23 discover help` (seven roots: `status`, `core`, `app`, `dev`, `ops`, `discover`, `code`), then `discover help <path>` to descend |
+| a command's exact input keys | `zclassic23 discover schema <leaf>` |
+| test groups a change touches | `zclassic23 agentimpact <files...>` |
+
+`discover search` takes its query **positionally** (`zclassic23 discover search
+sapling`); the `--input='{"query":"…"}'` form its schema advertises returns
+`MISSING_QUERY`.
 
 ### Start here
 - `zclassic23 agentinterface` — preferred AI operator
@@ -413,11 +479,11 @@ bundles + `app/controllers/src/*_native_handlers.c`.
 ### Catalog and primitives (prefer these over a new bespoke command)
 - `zclassic23 statecatalog` — discover the subsystem list and metadata before
   drilling into a subsystem. It returns `zcl.state_catalog.v2`.
-- `zclassic23 dumpstate X` — generic target state dump. The target catalog is
-  authoritative. Currently ~56 subsystems are wired (supervisor, watchdog, boot,
-  block_index, health,
-  chain_evidence, chain_advance_coordinator, legacy_mirror, oracle,
-  header_probe, verify_engine, ...).
+- `zclassic23 dumpstate X` — generic target state dump (supervisor, watchdog,
+  boot, block_index, health, chain_evidence, chain_advance_coordinator,
+  legacy_mirror, oracle, header_probe, verify_engine, ...). The target's own
+  catalog is authoritative — read it with `zclassic23 statecatalog`, never a
+  hand-list.
 - `zclassic23 getnodelog --pattern=... --since-secs=N --max-lines=N
   --level=...` — server-side reverse
   scan of node.log in 64 KB chunks.
@@ -552,21 +618,53 @@ Confirm the target before acting.
    `bool <name>_dump_state_json(struct json_value *out, const char *key);`
 2. Implement in the subsystem `.c` (caller does `json_set_object(out)` first;
    use `atomic_load` for thread-touched fields; don't allocate).
-3. Register one line in `app/controllers/src/diagnostics_registry.c`
-   (`g_dumpers[]`). That's it — `zclassic23 statecatalog` and `zclassic23
-   dumpstate` expose it with owner file, accepted key forms, safety level,
-   tests, and drill-down commands. ~30 lines total.
+3. Add **one descriptor row** to
+   `app/controllers/include/controllers/diagnostics_dumpers.def` — a
+   `DIAG_ENTRY` (~12 fields: name, dump fn, description, category,
+   state_class, owner `.c` path, freshness, cost, key form, two example keys,
+   owning test path, bool) or the shorter `DIAG_RUNTIME` / `DIAG_CONDITION`
+   forms. **Do not edit `app/controllers/src/diagnostics_registry.c`** — it
+   builds `g_dumpers[]` by `#include`-ing that `.def`; there is no editable
+   table in it.
+
+Then `zclassic23 statecatalog` and `zclassic23 dumpstate <name>` expose it with
+owner file, accepted key forms, safety level, tests, and drill-down commands.
+No new command, route, or schema.
 
 ---
 
 ## 4. Build / test / deploy
+
+### Reading a test result
+
+`make test-parallel` prints a machine-greppable line **before** any verdict word:
+
+```
+SUITE VERDICT mode=<cold|cached> groups_total=N groups_ran=N groups_cached=N groups_gated=N groups_failed=N self_skips=N toolkey=…
+```
+
+then exactly one of `ALL TESTS PASSED`, `ALL TESTS PASSED (CACHED)`, or
+`SOME TESTS FAILED`. There is no `N passed, M failed` line.
+
+- `grep -q "ALL TESTS PASSED"` alone is a **false green**: it also matches the
+  `(CACHED)` form, and a cached run can have `groups_ran=0`. That escape
+  already shipped once — see the comment at `lib/test/src/test_parallel.c`
+  above the `SUITE VERDICT` printf.
+- The correct wrapper is `tools/scripts/gate-and-report.sh <lintlog> <testlog>`:
+  `make lint` → full link build → `make test-parallel` → reads `SUITE VERDICT`
+  and rejects the cached form.
+- Force a cold run: `make test-parallel TEST_PARALLEL_ARGS=--no-cache`.
+- `ONLY=` is a **substring** match, not a group name. `make t-fast ONLY=wallet`
+  runs every group whose name contains `wallet` (36 of them). List the exact
+  names with `make test_parallel && build/bin/test_parallel --list` — no other
+  test target publishes that alias.
 
 | Command | Effect |
 |---------|--------|
 | `make -j$(nproc)` | Build `zclassic23`, `test_zcl`, `zclassic-cli`. `-j` only overlaps the 2–3 binaries + LTO link, not per-binary front-end. |
 | `make fast-changed-compile` | Compatibility name for the source-wide dev compile proof; changed paths are classification hints only. |
 | `make fast-compile` | Fastest no-link dev compile check; exact non-LTO objects under `build/dev-obj/epochs/<compile-epoch>/`, with compiler-cache recovery. |
-| `make build-only` | Strict release-flag source-wide `cc -c` proof under `build/obj/epochs/<compile-epoch>/`; use before push/release. |
+| `make build-only` | Strict release-flag source-wide `cc -c` proof under `build/obj/epochs/<compile-epoch>/`. **Compiles library objects only — it does not link, and never builds `src/main.c` or the binaries**, so it cannot catch a broken entry point, a missing symbol, or a link gap. Run `make -j$(nproc)` before claiming green. |
 | `make fast-rebuild` | Fast local node binary alias for `make dev-bin`; cached per-file objects, no LTO, uses `ccache` automatically when installed. |
 | `make dev-bin` | Link an exact epoch candidate, then atomically refresh `build/bin/zclassic23-dev`; non-LTO/unstripped, with hot consensus/crypto/script/validation buckets still optimized. Local iteration only; not deploy/release. |
 | `make dev-watch [MODE=verify\|check]` | Unified save loop. Both public modes prove and record without runtime activation. `auto`/`apply`/`hotswap`/`reload`/`stage` are recognized only to return a containment refusal. |
@@ -592,7 +690,7 @@ Confirm the target before acting.
 | `make hotswap-apply HANDLER=<leaf>` | Resident activation: commit the rebuilt leaf override in the RUNNING `zcl23-dev` service via `dev hotswap apply`. Gated inside the node on `-hotswap-activate` + `ZCL_HOTSWAP_ACTIVATE=1` + the exact dev datadir; refuses otherwise, and the canonical `zclassic23` is never eligible. |
 | `tools/dev/hotswap-running-dev.sh` | Phase-0 contained direct transport: always refuses before RPC or loader activity. |
 | `make test-full` | Runs the `test_zcl` monolith (sequential). |
-| `make lint` | All 45+ `check-*` gates. Must pass before tests. HARD gates fail the build; RATCHET gates compare to baselines. |
+| `make lint` | Every gate in the Makefile's `LINT_GATES` list (that variable is the count — never hand-pin a number). Must pass before tests. HARD gates fail the build; RATCHET gates compare to a shrink-only baseline. |
 | `make ci` | lint + bench-regress + build + `test_parallel` (retry-once for flakes) + symbol-floor. Pre-push hook runs this. |
 | `make deploy` | Pin the outer source record through recursive Make, freeze and preflight one candidate, install those exact bytes, WAL checkpoint, restart, then verify exact source/artifact identity over the canonical systemd `MainPID`'s forced loopback RPC endpoint (`deploy_verify.sh`). Inherited lane selectors cannot redirect the proof. If RPC stays closed during crash-only recovery, the verifier reports `reindex-chainstate` progress from that service's datadir log. |
 | `make deploy-dev` | Phase-0 contained: always refuses before stopping a service or moving a generation link. |
