@@ -285,13 +285,12 @@ int main(int argc, char **argv)
         !app_operator_lane_parse(env_lane, &ctx.operator_lane)) {
         /* Silently-ignored environment is worse than a rejected flag: the
          * node keeps running under a lane the operator did not choose, and
-         * the old one-liner named neither the lane actually in force nor the
-         * spellings that would have worked. */
-        /* Careful with the wording: -operator-lane= is parsed AFTER this
-         * point, so the lane left in ctx here is the default, not
-         * necessarily the lane that ends up in force. Report the default and
-         * say what can still override it, rather than claiming a final
-         * value this early. */
+         * the old one-liner named neither the lane in force nor the spellings
+         * that would have worked. Careful with the wording, though:
+         * -operator-lane= is parsed AFTER this point, so the lane left in ctx
+         * here is the DEFAULT, not necessarily the one that ends up in force.
+         * Report the default and name what can still override it rather than
+         * claiming a final value this early. */
         boot_error_report(BOOT_ERROR_WARN, "BOOT_UNKNOWN_OPERATOR_LANE_ENV",
                           "env",
                           "ZCL_OPERATOR_LANE names a lane this binary does "
@@ -366,12 +365,13 @@ int main(int argc, char **argv)
                  * P2P sync fetches the same blocks — slower, same result. The
                  * old text ("File sync failed from <host>") left that
                  * unstated, so an operator could not tell whether the node
-                 * was about to exit or about to keep going. */
-                /* No next[]: fs_client_sync already logged the specific
-                 * cause under the [filesvc] subsystem (resolve failure,
-                 * connect timeout, short read, …), and every network probe
-                 * that could be suggested here depends on a tool this host
-                 * may not have. Point at the measurement that definitely
+                 * was about to exit or about to keep going.
+                 *
+                 * No next[] on purpose: fs_client_sync already logged the
+                 * specific cause under the [filesvc] subsystem (resolve
+                 * failure, connect timeout, short read, …), and every network
+                 * probe that could be suggested here depends on a tool this
+                 * host may not have. Point at the measurement that definitely
                  * exists rather than a command that might not run. */
                 boot_error_report(BOOT_ERROR_WARN, "BOOT_FILESYNC_FAILED",
                                   "filesync",
