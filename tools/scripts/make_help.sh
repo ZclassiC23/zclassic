@@ -40,6 +40,7 @@ gate	pr-check	lint plus a whole-tree syntax pass; needs nothing built first
 gate	ci	the umbrella a push must survive: lint, then the isolated test runner
 gate	fuzz-ci	build the fuzz harnesses and smoke-run each one
 agent	timings	where wall time actually went ON THIS HOST (reads measured artifacts)
+agent	first-build-timing	time a fresh clone through the full suite and record it for make timings
 agent	arch-score	0-100 mechanical completion of the sync architecture
 agent	compdb	regenerate compile_commands.json for clangd / LSP
 agent	doctor-build	which build accelerators (ccache, mold, clang) this host has

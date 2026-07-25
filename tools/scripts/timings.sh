@@ -9,6 +9,8 @@
 #   .cache/lint-timing/last-run.json      written by tools/lint/run_lint.sh
 #   .cache/test-timing/last-run.json      written by the parallel test runner
 #   .cache/zcl-dev-loop/bench-latest.json written by tools/dev/dev-loop-bench.sh
+#   .cache/first-build-timing/last-run.json  written by
+#                                         tools/scripts/first_build_timing.sh
 #
 # Four honesty rules, each of which exists because the failure it prevents is
 # on disk right now:
@@ -26,6 +28,9 @@
 #                 artifact itself tells. The reader refuses to repeat it.
 #                 (The bench script is not the bug — it emits a real command
 #                 for the case that has one. The reader is what needed fixing.)
+#   FAILED        a recorded stage exited nonzero. Its duration is real but it
+#                 is not the cost of a build that works, so the total is
+#                 withheld and the stage is named instead.
 #   PARTIAL       the run covered fewer units than the current suite defines,
 #                 e.g. a lint artifact from a fast-subset run. The wall time is
 #                 real but it is not the wall time of the full gate.
@@ -39,6 +44,7 @@ CACHE="${ZCL_TIMINGS_CACHE:-$ROOT/.cache}"
 LINT_JSON="$CACHE/lint-timing/last-run.json"
 TEST_JSON="$CACHE/test-timing/last-run.json"
 BENCH_JSON="$CACHE/zcl-dev-loop/bench-latest.json"
+FIRST_BUILD_JSON="$CACHE/first-build-timing/last-run.json"
 
 # HEAD's committer time is the staleness reference: an artifact written before
 # the newest tracked commit describes code that no longer exists.
@@ -177,6 +183,66 @@ section_devloop() {
     printf '         detail: %s\n' "$(rel "$BENCH_JSON")"
 }
 
+section_first_build() {
+    echo
+    echo "first build — make first-build-timing   (fresh clone -> passing suite)"
+    if [ ! -f "$FIRST_BUILD_JSON" ]; then
+        not_measured "first build" "$FIRST_BUILD_JSON" "make first-build-timing"; return
+    fi
+    local state stamp cores total peak src cc_id rustc_id failed=0 line
+    state="$(artifact_state "$FIRST_BUILD_JSON")"
+    stamp="$(jstr "$FIRST_BUILD_JSON" generated_at_utc)"
+    cores="$(jnum "$FIRST_BUILD_JSON" cores)"
+    total="$(jnum "$FIRST_BUILD_JSON" total_seconds)"
+    peak="$(jnum "$FIRST_BUILD_JSON" peak_disk_bytes)"
+    src="$(jstr "$FIRST_BUILD_JSON" clone_source)"
+    cc_id="$(jstr "$FIRST_BUILD_JSON" cc)"
+    rustc_id="$(jstr "$FIRST_BUILD_JSON" rustc)"
+
+    # Any nonzero stage rc makes the whole run a failed build, not a cost.
+    grep -q '"rc":[1-9]' "$FIRST_BUILD_JSON" && failed=1
+
+    if [ "$failed" -eq 1 ]; then
+        printf '  FAILED a stage exited nonzero — total withheld   [%s]\n' \
+            "${stamp:-no timestamp}"
+    else
+        printf '  %-6s %s s total on %s core(s), peak disk %s MiB   [%s]\n' \
+            "$state" "${total:-?}" "${cores:-?}" "$(( ${peak:-0} / 1048576 ))" \
+            "${stamp:-no timestamp}"
+    fi
+    if [ "$state" = STALE ]; then
+        printf '         measured before HEAD (%s) — re-run: make first-build-timing\n' \
+            "$head_desc"
+    fi
+
+    while IFS= read -r line; do
+        local name secs rc
+        name="$(sed 's/.*"name":"\([^"]*\)".*/\1/' <<<"$line")"
+        secs="$(grep -o '"seconds":[0-9]*' <<<"$line" | grep -o '[0-9]*$')"
+        rc="$(grep -o '"rc":[0-9]*' <<<"$line" | grep -o '[0-9]*$')"
+        if [ "${rc:-0}" -ne 0 ]; then
+            printf '  FAILED     %-8s %s s, exited %s — this stage did not work\n' \
+                "$name" "${secs:-?}" "$rc"
+        else
+            printf '  ok         %-8s %s s\n' "$name" "${secs:-?}"
+        fi
+    done <<<"$(grep -o '{"name":"[^"]*"[^}]*"rc":[0-9]*[^}]*}' "$FIRST_BUILD_JSON" 2>/dev/null)"
+
+    if [ "$src" = local ]; then
+        printf '         clone measured from a LOCAL path — a network clone adds transfer time\n'
+    fi
+    local l0 l1
+    l0="$(jstr "$FIRST_BUILD_JSON" loadavg_start)"
+    l1="$(jstr "$FIRST_BUILD_JSON" loadavg_end)"
+    [ -n "$l0$l1" ] &&
+        printf '         host 1-min load %s at start, %s at end (cores: %s)\n' \
+            "${l0:-?}" "${l1:-?}" "${cores:-?}"
+    [ "$(jstr "$FIRST_BUILD_JSON" compiler_cache)" = disabled ] &&
+        printf '         compiler cache disabled — this is a never-built-here cost\n'
+    printf '         toolchain: %s / %s\n' "${cc_id:-unknown cc}" "${rustc_id:-no rustc}"
+    printf '         detail: %s\n' "$(rel "$FIRST_BUILD_JSON")"
+}
+
 # --------------------------------------------------------------------------
 run_selftest() {
     local out
@@ -185,9 +251,9 @@ run_selftest() {
     local tmp="$SELFTEST_TMP"
     local self="${BASH_SOURCE[0]}"
 
-    # (1) Nothing on disk -> NOT MEASURED for all three, never a number.
+    # (1) Nothing on disk -> NOT MEASURED for all four, never a number.
     out="$(ZCL_TIMINGS_CACHE="$tmp/empty" bash "$self" 2>&1)"
-    [ "$(grep -c '^  NOT MEASURED' <<<"$out")" -eq 3 ] ||
+    [ "$(grep -c '^  NOT MEASURED' <<<"$out")" -eq 4 ] ||
         { echo "timings selftest: FAIL — absent artifacts must all read NOT MEASURED: $out" >&2
           exit 1; }
 
@@ -224,6 +290,23 @@ run_selftest() {
     grep -q 'PARTIAL' <<<"$out" ||
         { echo "timings selftest: FAIL — subset lint run must read PARTIAL: $out" >&2; exit 1; }
 
+    # (5) A first-build run with a failed stage names the stage and withholds
+    #     the total. A first-build number is only meaningful if the build
+    #     actually produced a working tree.
+    mkdir -p "$tmp/fb/first-build-timing"
+    printf '{"schema":"zcl.first_build_timing.v1","generated_at_utc":"2099-01-01T00:00:00Z","host":"h","cores":8,"commit":"abc","clone_source":"local","cc":"cc","rustc":"rustc","total_seconds":999,"peak_disk_bytes":1048576,"stages":[{"name":"clone","command":"git clone x","seconds":3,"rc":0,"disk_bytes":1},{"name":"vendor","command":"make vendor","seconds":42,"rc":1,"disk_bytes":2}]}\n' \
+        > "$tmp/fb/first-build-timing/last-run.json"
+    touch "$tmp/fb/first-build-timing/last-run.json"
+    out="$(ZCL_TIMINGS_CACHE="$tmp/fb" bash "$self" 2>&1)"
+    grep -q 'FAILED     vendor' <<<"$out" ||
+        { echo "timings selftest: FAIL — failed stage must be named: $out" >&2; exit 1; }
+    if grep -q '999 s total' <<<"$out"; then
+        echo "timings selftest: FAIL — a failed first build must not report a total: $out" >&2
+        exit 1
+    fi
+    grep -q 'LOCAL path' <<<"$out" ||
+        { echo "timings selftest: FAIL — local clone must be labelled: $out" >&2; exit 1; }
+
     echo "timings selftest: PASS"
 }
 
@@ -239,8 +322,10 @@ echo
 section_lint
 section_tests
 section_devloop
+section_first_build
 echo
-echo "Build wall time is not recorded by any artifact — time it directly:"
+echo "Cold build wall time comes from the first-build artifact above."
+echo "Incremental build wall time is not recorded — time it directly:"
 echo "  time make build-only     (per-TU compile, genuinely parallel under -j)"
 echo "  time make -j\$(nproc)      (whole-program LTO link dominates)"
 exit 0

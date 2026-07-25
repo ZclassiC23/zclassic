@@ -6069,7 +6069,7 @@ postmortem-to-scenario: tools/postmortem_to_scenario
 # build_vendor.sh, and there was no way to ask the host how long anything
 # actually takes. `make help` prints the live target count; do not restate it
 # here.
-.PHONY: help setup doctor timings pr-check help-selftest doctor-selftest timings-selftest
+.PHONY: help setup doctor timings pr-check help-selftest doctor-selftest timings-selftest first-build-timing first-build-timing-selftest
 
 help:
 	@tools/scripts/make_help.sh
@@ -6096,6 +6096,14 @@ doctor:
 timings:
 	@tools/scripts/timings.sh
 
+# What a newcomer's first build costs: clone this repository into a scratch
+# directory, run the whole fresh-clone sequence, and time each stage. Writes
+# .cache/first-build-timing/last-run.json, which `make timings` reads — that
+# is how the published figure gets refreshed without editing markdown.
+# It runs a full build and the full test suite, so it is not quick.
+first-build-timing:
+	@tools/scripts/first_build_timing.sh $(ARGS)
+
 # What an outside contributor can run before opening a PR, with nothing built.
 # Same two checks the public gate runs, in the same order.
 pr-check:
@@ -6105,6 +6113,7 @@ pr-check:
 	@tools/scripts/make_help.sh --self-test
 	@tools/scripts/doctor.sh --prereq-coverage
 	@tools/scripts/timings.sh --self-test
+	@tools/scripts/first_build_timing.sh --self-test
 	@echo "══ pr-check: passed ══"
 
 help-selftest:
@@ -6115,6 +6124,9 @@ doctor-selftest:
 
 timings-selftest:
 	@tools/scripts/timings.sh --self-test
+
+first-build-timing-selftest:
+	@tools/scripts/first_build_timing.sh --self-test
 
 # ── Lint gate: blanket warning suppressions stay named ───────────────────
 # The unused-result suppression is the flag that ALSO disables [[nodiscard]]

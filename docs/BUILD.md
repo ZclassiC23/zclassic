@@ -10,6 +10,72 @@ links to for build detail.
 ~660–1400 `.c` files with LTO, linked against a set of **static** third-party
 archives in `vendor/lib/`.
 
+## What the first build costs
+
+Measured, not estimated. `make first-build-timing` clones this repository into
+a scratch directory, runs the whole fresh-clone sequence with a wall clock on
+each stage, and writes `.cache/first-build-timing/last-run.json`;
+`make timings` reads it back. Both numbers below and the ones in the README
+come from that artifact, so refreshing them is a command, not an edit.
+
+| Stage | Command | Wall time | Disk after the stage |
+|---|---|---|---|
+| Clone | `git clone` | 0 s from a local path (hard-linked) | 1007 MiB |
+| Vendored archives | `make vendor` | 92 s | 1070 MiB |
+| Arm the clone | `make setup` | 41 s | 1073 MiB |
+| Binaries | `make -j32` | 205 s | 1233 MiB |
+| Full test suite | `make -j32 test-parallel` | 252 s | 1581 MiB |
+| **Clone to passing suite** | | **590 s** | **1581 MiB peak** |
+
+Host: 32 cores, gcc 14.2.0, rustc 1.95.0, compiler cache disabled, 1-minute
+load average 29.3 at the start and 48.6 at the end — the machine was running
+other builds throughout, so a quiet host of the same size finishes sooner. The
+suite stage ends with the runner's own pass line; 224 s of its 252 s is the
+suite actually running, the rest is compiling the test tree.
+
+How to read this:
+
+- **The measurement runs with the compiler cache switched off** (`ccache` is
+  auto-detected by the build and disabled for the run). A host that has built
+  this project before finishes far faster, and that faster number is not a
+  first build.
+- **The clone stage is a local clone**, which git satisfies by hard-linking —
+  effectively free. A real `git clone` from GitHub transfers the pack, and the
+  history is 932 MiB of packed objects for a 3558-file tracked tree, so over a
+  home connection the clone takes minutes and can cost more than every other
+  line combined. `git clone --depth 1` fetches far less when all you want is
+  to build. This is a known cost of the repository's history, recorded here
+  rather than hidden.
+- **`make vendor` and `make setup` are interchangeable as the first command.**
+  `make setup` regenerates `compile_commands.json`, which crosses the
+  Makefile's vendor barrier and pulls the vendored-archive build in with it.
+  Whichever you type first pays for the archives; the second one is cheap. The
+  measurement runs `make vendor` first so the cost is billed where it belongs.
+- **The suite stage compiles before it runs.** `make test-parallel` builds a
+  ~1400-file per-TU test tree, and those objects are ordinary Make
+  prerequisites — a bare `make test-parallel` compiles them one at a time.
+  Pass `-j` (`make -j"$(nproc)" test-parallel`, which is what the measurement
+  runs) or the first suite run is dominated by a missing flag. This is a known
+  cost, written down rather than papered over.
+- **Host load matters and is recorded.** The artifact carries the 1-minute
+  load average at both ends of the run, because the same machine under
+  someone else's build reports a different first-build cost.
+
+Peak disk is the size of the built clone: source, git history, vendored
+archives, both binaries with debug info, and the per-TU test object tree.
+
+To refresh the numbers on your own machine:
+
+```bash
+make first-build-timing    # clone + build + suite in a scratch dir, timed
+make timings               # print what was measured here, never elsewhere
+```
+
+`make timings` labels the artifact `STALE` once HEAD moves past it and prints
+`NOT MEASURED` when it is absent, so this page can be re-derived rather than
+believed. A run whose stage exits nonzero is reported as `FAILED` with the
+total withheld: a build that did not work has no first-build cost.
+
 ## One command: `make vendor`
 
 The static third-party archives in `vendor/lib/` are **built from source** by
@@ -298,13 +364,30 @@ so no-ASLR is an acceptable trade.
 
 ## Prerequisites
 
-- **gcc 14+** (or clang with working `-std=c23`) and **GNU make**.
-- For `make vendor`: a C++11 compiler (`c++` or `g++`) for LevelDB, **`cargo`**
-  + **`rustc`** for the canonical Sapling prover, optional **`cmake`** for the
-  preferred LevelDB build path, **`autoconf`** + an
-  autotools toolchain (libevent, zlib), **`curl`** or **`wget`**, **`unzip`**
-  (SQLite amalgamation zip), **`patch`** (pinned libevent compatibility patch),
-  and **`sha256sum`**.
+`make doctor` is the authority: it probes the host against
+`tools/scripts/vendor_prereqs.tsv` and prints one install line for exactly what
+is missing. That table is machine-checked against every `need <tool>` call in
+`tools/scripts/build_vendor.sh`, so a new vendor prerequisite cannot appear
+without the doctor learning about it. Prose here can only describe it.
+
+- **Node build:** **gcc 14+** (or clang with a working `-std=c23`), **GNU
+  make**, **git**.
+- **`make vendor`:** `ar`, `nm`, `sha256sum`, `tar`, `unzip`, `patch`, `perl`
+  (OpenSSL's `Configure` is a perl program), and `curl` **or** `wget`.
+- **Rust — `cargo` + `rustc`.** `librustzcash.a`, the canonical Zcash Sapling
+  prover, is a Rust crate built from a pinned upstream revision. There is no C
+  fallback: without a Rust toolchain `make vendor` stops at that archive. The
+  node's own ~970k lines are C23; the prover it links is not, and the honest
+  prerequisite list says so.
+- **A C++ compiler — `c++`/`g++`.** LevelDB is C++11. `cmake` is the preferred
+  build route and is genuinely optional (a direct C++11 compile is the
+  fallback), but the C++ compiler is required either way. `vendor_prereqs.tsv`
+  currently files `c++` under `vendor-optional`, which understates it — the
+  build has no path to `libleveldb.a` without one.
+- **Not needed:** `autoconf`. The zlib and libevent tarballs ship a generated
+  `./configure`; `make vendor` runs it and never regenerates it.
+- The first `make vendor` needs **network access** for the pinned tarballs and
+  the prover's crates. Every later build is offline.
 - For the embedded Tor onion service (optional): the `vendor/tor` submodule
   (`git submodule update --init`). When that submodule is built, the Makefile
   links the real Tor; otherwise it links the in-tree `libtor_stub.a` that
