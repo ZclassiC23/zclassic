@@ -439,7 +439,8 @@ same `zcl.rest_index.v2` body as both REST index paths.
 Keep version/schema constants in
 `app/controllers/src/api_controller_internal.h`, exact resource routes in
 `app/controllers/src/api_controller_routes.c`, and contract tests in
-`lib/test/src/test_api.c`. Unsupported version prefixes such as
+`lib/test/src/test_api_*.c` (one file per API area, dispatched in order by
+`lib/test/src/test_api.c`). Unsupported version prefixes such as
 `/api/v2/agent` must return `zcl.rest_error.v1` with
 `error="unsupported_api_version"` and `supported_versions`.
 
