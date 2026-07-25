@@ -18,6 +18,9 @@ You want to build it, run it, and change something. In order:
 3. [`HOW_THE_NODE_WORKS.md`](./HOW_THE_NODE_WORKS.md) — the one-page mental
    model: append-only log → reducer stages → projections → health.
 
+Then [`DEVELOPING.md`](./DEVELOPING.md) — the developer operating manual,
+described under "Develop here" below. Read it before making changes.
+
 Then [`MVP.md`](./MVP.md) for what "v1" means and an honest readiness account,
 and [`AGENT_TRAPS.md`](./AGENT_TRAPS.md) before you "fix" anything that looks
 broken — several things that look broken are intentional or already done.
@@ -40,7 +43,7 @@ you operate that host, and misleading otherwise.
 
 ## Develop here — the fast loop (read before making changes)
 
-- [`.claude/skills/zclassic23-dev/SKILL.md`](../.claude/skills/zclassic23-dev/SKILL.md) — **the efficient-AI-C23-developer playbook**: the native dev loop (drop-in-C watcher, `dev change apply`), hot-swap tiers, typed-commands-over-bash, workflows of tiered subagents, the push traps (impact-rules mapping, pre-push SIGPIPE), and the inviolable rules. Auto-loads as the `zclassic23-dev` skill; start here for any change.
+- [`DEVELOPING.md`](./DEVELOPING.md) — **the efficient-AI-C23-developer playbook**: the native dev loop (drop-in-C watcher), hot-swap tiers, typed-commands-over-bash, workflows of tiered subagents, the push traps (impact-rules mapping, pre-push SIGPIPE), and the inviolable rules. Also the body of the `zclassic23-dev` Claude Code skill, whose stub at [`.claude/skills/zclassic23-dev/SKILL.md`](../.claude/skills/zclassic23-dev/SKILL.md) imports it. Start here for any change.
 - [`NATIVE_COMMAND_INTERFACE.md`](./NATIVE_COMMAND_INTERFACE.md) — the native command registry (`core.*`/`app.*`/`ops.*`/`dev.*`/`discover.*`), the only agent interface going forward: grammar, tree, and the frozen CLI UX contract.
 - [`API_REFERENCE.md`](./API_REFERENCE.md) — every leaf the registry currently declares, transcribed from `config/commands/`.
 - [`AGENT_API.md`](./AGENT_API.md) — the practical field-by-field reference for the implemented agent surface (`agentops`, `agentdiagnose`, `healthcheck`, `agentlanes`, service catalog, and more); referenced directly from `app/controllers/src/agent_controller.c` response bodies.

@@ -18,7 +18,7 @@ ZClassic23 is one self-contained C23 binary that runs a full ZClassic node (Equi
 
 See [`docs/HOW_THE_NODE_WORKS.md`](./docs/HOW_THE_NODE_WORKS.md) for the plain-language mental model (the node as a state machine), [`docs/FRAMEWORK.md`](./docs/FRAMEWORK.md) for the canonical architecture (the Prime Directive, the Ten Laws of Beauty, and the eight shapes), [`docs/AGENT_ARCHITECTURE.md`](./docs/AGENT_ARCHITECTURE.md) for the concrete future-agent feature slice (REST resources, ActiveRecord, validations, relationships, schema, services, native surfaces), [`docs/ARCHITECTURE_DIAGRAMS.md`](./docs/ARCHITECTURE_DIAGRAMS.md) for current subsystem/boot topology, and [`docs/adr/0001-personal-sovereignty-stack.md`](./docs/adr/0001-personal-sovereignty-stack.md) for the personal-sovereignty-stack pivot rationale.
 
-**The developer operating manual is the `zclassic23-dev` skill** ([`.claude/skills/zclassic23-dev/SKILL.md`](./.claude/skills/zclassic23-dev/SKILL.md)) — navigator-first code lookup, the fast dev loop / hot-swap tiers, typed-commands-over-bash, push traps, and build/test/deploy live there, not in this file.
+**The developer operating manual is [`docs/DEVELOPING.md`](./docs/DEVELOPING.md)** (also loaded as the `zclassic23-dev` skill, which is a stub that imports it) — navigator-first code lookup, the fast dev loop / hot-swap tiers, typed-commands-over-bash, push traps, and build/test/deploy live there, not in this file.
 
 ## Security model for AI agents
 
