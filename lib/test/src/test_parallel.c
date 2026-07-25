@@ -647,6 +647,21 @@ static void run_group_exclusive(size_t idx, pid_t parent_pid,
     results[idx].wall_seconds = (double)(now - results[idx].start);
 }
 
+/* What a run actually DID, as opposed to what it concluded. Carried to both the
+ * terminal (the SUITE VERDICT line) and .cache/test-timing/last-run.json so
+ * neither can claim a cold pass for a run that executed almost nothing. */
+struct suite_verdict {
+    const char *mode;          /* "cold" | "cached" */
+    size_t groups_total;
+    size_t groups_ran;         /* actually forked */
+    size_t groups_cached;      /* returned from cache, never forked */
+    size_t groups_gated;       /* --only / params-heavy: excluded up front */
+    size_t groups_cacheable;   /* probed cacheable this run */
+    int    groups_failed;
+    int    self_skips;         /* groups printing an in-test SKIP marker */
+    char   toolkey[13];
+};
+
 /* Per-group JSON timing artifact — the same "make results visible so
  * regressions are visible" pattern as tools/lint/run_lint.sh's
  * .cache/lint-timing/last-run.json (schema zcl.lint_timing.v1), applied
@@ -661,7 +676,8 @@ static void run_group_exclusive(size_t idx, pid_t parent_pid,
 static void write_test_timing_json(const struct group_result *results,
                                    double wall_seconds, int jobs,
                                    size_t group_count, int failed_groups,
-                                   size_t skipped_count)
+                                   size_t skipped_count,
+                                   const struct suite_verdict *v)
 {
     const char *dir = ".cache/test-timing";
     if (mkdir(".cache", 0755) != 0 && errno != EEXIST) {
@@ -721,6 +737,14 @@ static void write_test_timing_json(const struct group_result *results,
     fprintf(fp, "  \"group_count\":%zu,\n", group_count);
     fprintf(fp, "  \"failed_count\":%d,\n", failed_groups);
     fprintf(fp, "  \"skipped_count\":%zu,\n", skipped_count);
+    /* The cache facts belong in the artifact, not only on the terminal: a
+     * consumer of this file must be able to tell a run that EXECUTED 743 groups
+     * from one that executed 1 and read 742 out of the cache. */
+    fprintf(fp, "  \"mode\":\"%s\",\n", v->mode);
+    fprintf(fp, "  \"groups_ran\":%zu,\n", v->groups_ran);
+    fprintf(fp, "  \"groups_cached\":%zu,\n", v->groups_cached);
+    fprintf(fp, "  \"groups_cacheable\":%zu,\n", v->groups_cacheable);
+    fprintf(fp, "  \"toolkey\":\"%s\",\n", v->toolkey);
     fprintf(fp, "  \"groups\":[\n");
     int first = 1;
     for (size_t k = 0; k < group_count; k++) {
@@ -735,9 +759,10 @@ static void write_test_timing_json(const struct group_result *results,
                                      : results[i].exit_code;
         fprintf(fp,
                 "    {\"name\":\"%s\",\"ms\":%lld,\"rc\":%d,"
-                "\"signaled\":%s}",
+                "\"signaled\":%s,\"cached\":%s}",
                 g_groups[i].name, ms, rc,
-                results[i].signaled ? "true" : "false");
+                results[i].signaled ? "true" : "false",
+                results[i].cached ? "true" : "false");
     }
     fprintf(fp, "\n  ]\n}\n");
     fclose(fp);
@@ -900,6 +925,8 @@ int main(int argc, char **argv)
     struct testcache *tc = NULL;
     struct testcache_probe *probes = NULL;
     size_t cached_count = 0;
+    size_t cacheable_count = 0;
+    size_t reason_hist[TESTCACHE_R__COUNT] = {0};
     if (cache_mode != CACHE_OFF) {
         tc = testcache_open(NULL);
         if (!tc) {
@@ -937,6 +964,46 @@ int main(int argc, char **argv)
                 }
             }
         }
+
+        /* ── The PLAN, printed BEFORE dispatch ──────────────────────────────
+         * Announcing "cached 742 / ran 1" only in the retrospective summary
+         * means an operator watching a run cannot tell, while it is happening,
+         * that almost nothing is being executed. Say it up front. */
+        for (size_t i = 0; i < g_num_groups; i++) {
+            if (results[i].skipped) continue;
+            if (probes[i].cacheable) cacheable_count++;
+        }
+        for (size_t i = 0; i < g_num_groups; i++) {
+            if (results[i].skipped) continue;
+            if (probes[i].code < TESTCACHE_R__COUNT)
+                reason_hist[probes[i].code]++;
+        }
+        printf("test_parallel: cache PLAN — %zu cacheable, %zu cache HIT "
+               "(will NOT run), %zu will run%s\n",
+               cacheable_count, cached_count,
+               g_num_groups - pre_skipped - cached_count,
+               cache_mode == CACHE_COLD_AUDIT ? " [cold-audit: runs all]" : "");
+        /* The uncacheable-reason histogram. probe.reason was already filled for
+         * every group and thrown away; printing it is how a whole-run
+         * degradation (an absent include graph making EVERY group uncacheable,
+         * say) becomes visible instead of looking like a normal cold run. */
+        printf("test_parallel: cacheability by reason:\n");
+        for (int r = 0; r < TESTCACHE_R__COUNT; r++) {
+            if (reason_hist[r] == 0) continue;
+            printf("  %-32s %zu\n",
+                   testcache_reason_label((enum testcache_reason)r),
+                   reason_hist[r]);
+        }
+        if (testcache_depfile_count(tc) == 0)
+            printf("test_parallel: !! NO DEPFILES under build/ — the include "
+                   "graph is ABSENT, so every group is UNCACHEABLE and the "
+                   "whole run is cold. Build first to restore caching. !!\n");
+        else if (reason_hist[TESTCACHE_R_GRAPH_STALE] > 0)
+            printf("test_parallel: !! %zu group(s) have inputs NEWER than the "
+                   "include graph (%zu depfiles) — the graph cannot describe "
+                   "them, so they are UNCACHEABLE. Rebuild to refresh. !!\n",
+                   reason_hist[TESTCACHE_R_GRAPH_STALE],
+                   testcache_depfile_count(tc));
     }
 
     struct child_slot *slots =
@@ -1107,11 +1174,47 @@ int main(int argc, char **argv)
         if (pass && results[i].out_path[0]) unlink(results[i].out_path);
     }
 
-    write_test_timing_json(results, wall, jobs, g_num_groups, failed_groups,
-                           pre_skipped);
+    /* ── The verdict ────────────────────────────────────────────────────────
+     * The old headline printed "ALL TESTS PASSED — 0/743 groups failed" whether
+     * 743 groups ran or 1 ran and 742 were returned from cache: `pre_skipped`
+     * counted only --only filtering and the params gate, never cache hits. The
+     * push gate greps for exactly that string, so a run that executed nothing
+     * reported GATE OK.
+     *
+     * Two fixes, both required:
+     *   - a machine-greppable SUITE VERDICT line emitted BEFORE any verdict
+     *     word, leading with groups_ran (what actually executed); and
+     *   - the bare token "ALL TESTS PASSED" ONLY for a cold run. A cached run
+     *     says "ALL TESTS PASSED (CACHED)", which a `grep -q "ALL TESTS
+     *     PASSED"` still matches — so gate-and-report.sh is taught to reject
+     *     the cached form explicitly rather than relying on the token alone. */
+    struct suite_verdict verdict = {
+        .mode          = (cache_mode == CACHE_ON) ? "cached" : "cold",
+        .groups_total  = g_num_groups,
+        .groups_ran    = g_num_groups - pre_skipped - cached_count,
+        .groups_cached = cached_count,
+        .groups_gated  = pre_skipped,
+        .groups_cacheable = cacheable_count,
+        .groups_failed = failed_groups,
+        .self_skips    = skip_groups,
+    };
+    testcache_toolkey_digest12(verdict.toolkey);
 
-    printf("\n%s — %d/%zu groups failed, %d skipped (%.1fs wall, %d workers)%s\n",
-           failed_groups == 0 ? "ALL TESTS PASSED" : "SOME TESTS FAILED",
+    write_test_timing_json(results, wall, jobs, g_num_groups, failed_groups,
+                           pre_skipped, &verdict);
+
+    printf("\nSUITE VERDICT mode=%s groups_total=%zu groups_ran=%zu "
+           "groups_cached=%zu groups_gated=%zu groups_failed=%d self_skips=%d "
+           "toolkey=%s\n",
+           verdict.mode, verdict.groups_total, verdict.groups_ran,
+           verdict.groups_cached, verdict.groups_gated, verdict.groups_failed,
+           verdict.self_skips, verdict.toolkey);
+
+    printf("%s — %d/%zu groups failed, %d skipped (%.1fs wall, %d workers)%s\n",
+           failed_groups != 0 ? "SOME TESTS FAILED"
+                              : (cache_mode == CACHE_ON
+                                     ? "ALL TESTS PASSED (CACHED)"
+                                     : "ALL TESTS PASSED"),
            failed_groups, g_num_groups - pre_skipped, skip_groups, wall, jobs,
            only ? " [--only filtered]" : "");
     if (skip_groups > 0) {

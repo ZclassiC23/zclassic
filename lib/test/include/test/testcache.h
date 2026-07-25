@@ -15,14 +15,27 @@
  *   - the forward closure truncated (a cap/fan-out/depth limit) -> UNCACHEABLE
  *   - the entry symbol does not resolve in the code index      -> UNCACHEABLE
  *   - the group is on the external-input denylist (reads fixtures/live DB/
- *     network/params beyond its source closure)                 -> UNCACHEABLE
+ *     network/params/built binaries beyond its source closure)  -> UNCACHEABLE
+ *   - the depfile-derived include graph is absent entirely      -> UNCACHEABLE
+ *   - any closure input is NEWER than the newest depfile the graph was built
+ *     from, i.e. the graph cannot describe that input yet       -> UNCACHEABLE
  *   - only PASS verdicts are ever stored (a fail is never cached)
- * An UNCACHEABLE group ALWAYS runs. The residual assumption (the call graph
- * captures a test's dependency edges by name; an indirect/function-pointer edge
- * is invisible to source scanning) is backed by the MANDATORY cold-audit path:
- * the canonical push gate runs COLD (cache disabled) and the --cold-audit mode
- * re-runs every group fresh and asserts every cache HIT would have matched the
- * fresh verdict. The cache accelerates the inner dev loop; it never gates a push.
+ * An UNCACHEABLE group ALWAYS runs.
+ *
+ * Two things that are NOT source bytes are folded into the key, because both
+ * change a group's verdict without changing a single file:
+ *   - the toolchain fingerprint AND the effective compile flags (an -O1 fast
+ *     profile and an -O3 release profile must never share a keyspace), and
+ *   - the coverage-gating environment (ZCL_STRESS_TESTS and friends). ~16
+ *     groups `return 0` from a `SKIP (set ZCL_STRESS_TESTS=1 ...)` path, so a
+ *     normal run stores a PASS for the SKIPPING variant; without the env in the
+ *     key a later ZCL_STRESS_TESTS=1 run would hit that PASS and never execute
+ *     the stress lane at all.
+ *
+ * The residual assumption (the call graph captures a test's dependency edges by
+ * name; an indirect/function-pointer edge is invisible to source scanning) is
+ * backed by the --cold-audit path: it re-runs every group fresh and asserts
+ * every cache HIT would have matched the fresh verdict.
  *
  * This is a TEST-BINARY-ONLY module (lib/test/), never linked into the node. */
 
@@ -43,12 +56,33 @@ struct testcache;
 struct testcache *testcache_open(const char *repo_root);
 void testcache_close(struct testcache *tc);
 
+/* Why a group was (not) cacheable. A STABLE identity for histogram bucketing —
+ * it deliberately carries no volatile data (counts, paths), unlike the free-text
+ * `reason` beside it. Keep testcache_reason_label() in sync. */
+enum testcache_reason {
+    TESTCACHE_R_OK = 0,            /* cacheable */
+    TESTCACHE_R_NO_HANDLE,         /* no cache handle / bad argument */
+    TESTCACHE_R_EXTERNAL_INPUT,    /* on the external-input denylist */
+    TESTCACHE_R_CLOSURE_ERROR,     /* the closure query itself failed */
+    TESTCACHE_R_ENTRY_UNRESOLVED,  /* entry symbol not in the code index */
+    TESTCACHE_R_TRUNCATED,         /* closure hit a cap/fan-out/depth limit */
+    TESTCACHE_R_EMPTY_CLOSURE,     /* resolved to zero input files */
+    TESTCACHE_R_FILE_UNREADABLE,   /* an input file could not be hashed */
+    TESTCACHE_R_NO_INCLUDE_GRAPH,  /* build/ carries no depfiles at all */
+    TESTCACHE_R_GRAPH_STALE,       /* an input is newer than the include graph */
+    TESTCACHE_R__COUNT
+};
+
+/* Stable short label for a reason code (histogram/report text). */
+const char *testcache_reason_label(enum testcache_reason r);
+
 /* The per-group cache decision. */
 struct testcache_probe {
     bool    cacheable;    /* false => the group MUST run this time */
     bool    hit;          /* true  => a stored PASS exists at this exact key */
     uint8_t key[32];      /* the content-addressed key (valid iff cacheable) */
     int     n_closure;    /* number of input files hashed (diagnostic) */
+    enum testcache_reason code;  /* stable bucket for the reason histogram */
     char    reason[96];   /* why uncacheable, or a short closure note */
 };
 
@@ -58,6 +92,11 @@ struct testcache_probe {
  * UNCACHEABLE (fail-safe). *out is always fully populated. */
 void testcache_probe_group(struct testcache *tc, const char *group_name,
                            struct testcache_probe *out);
+
+/* True when group_name is on the external-input denylist (never cacheable).
+ * Exposed so the contract test can re-derive the exec-a-built-binary set from
+ * the source tree and assert the list still covers it. */
+bool testcache_group_is_denylisted(const char *group_name);
 
 /* Store a PASS verdict at key[32] (best effort; a store failure is ignored —
  * it only costs a future re-run, never correctness). Pass the key from a
@@ -69,8 +108,17 @@ void testcache_store_pass(struct testcache *tc, const uint8_t key[32]);
  * soundness proofs. */
 void testcache_dump_group(struct testcache *tc, const char *group_name);
 
-/* The compiled-in toolchain fingerprint folded into every key (a compiler/
- * flags change busts the whole cache). Exposed for the dump surface. */
+/* The compiled-in toolchain+flags fingerprint folded into every key (a compiler
+ * OR compile-flag change busts the whole cache). Exposed for the dump surface. */
 const char *testcache_toolkey(void);
+
+/* First 12 hex chars of SHA3-256(toolkey), for compact run headers. `out` must
+ * hold 13 bytes. Always NUL-terminated. */
+void testcache_toolkey_digest12(char out[13]);
+
+/* Number of depfiles the include graph was built from. ZERO means the graph is
+ * absent (a fresh clone / after `make clean`), which is NOT "a closure with no
+ * headers" — it is no closure at all, and every group reports uncacheable. */
+size_t testcache_depfile_count(const struct testcache *tc);
 
 #endif /* ZCL_TEST_TESTCACHE_H */

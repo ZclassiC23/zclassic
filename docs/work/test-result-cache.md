@@ -6,13 +6,42 @@ byte-identical to the last time that group passed. Editing one leaf re-runs only
 the handful of groups downstream of it; every unrelated group is a ~0-time cache
 hit.
 
-## The invariant: the canonical gate runs COLD
+## The invariant: a run says what it actually did
 
-The cache is **OFF by default**. `make test-parallel` with no flags/env is
-byte-for-byte the historical runner: it forks and runs every group, prints
-`ALL TESTS PASSED`, and returns `failed_groups == 0 ? 0 : 1`. A cached SKIP can
-therefore never gate a push. **The push gate is always cold; the cache only
-accelerates the inner dev loop.**
+The cache is **OFF by default** today. That default is scheduled to flip to ON
+everywhere, so "the gate is cold by construction" is being replaced by "a run
+cannot misreport whether it was cold."
+
+Every run prints one machine-greppable line **before** any verdict word:
+
+```
+SUITE VERDICT mode=<cold|cached> groups_total=N groups_ran=N groups_cached=N \
+  groups_gated=N groups_failed=N self_skips=N toolkey=<hex12>
+```
+
+`groups_ran` is the count actually forked, and it is the first number to read.
+Only a **cold** run prints the bare token `ALL TESTS PASSED`; a cached run prints
+`ALL TESTS PASSED (CACHED)`. `tools/scripts/gate-and-report.sh` reads the
+`SUITE VERDICT` line, rejects anything whose `mode` is not `cold`, and rejects
+the `(CACHED)` headline explicitly.
+
+This matters because the old headline printed `ALL TESTS PASSED — 0/743 groups
+failed` whether 743 groups ran or 1 ran and 742 came from cache: `pre_skipped`
+counted only `--only` filtering and the params gate, never cache hits. The gate
+grepped exactly that string, so a run that executed nothing reported `GATE OK`.
+
+The runner also prints, **before dispatch**, the cache plan and a histogram of
+uncacheable reasons — that histogram is how a whole-run degradation (an absent
+include graph making every group uncacheable, say) becomes visible instead of
+looking like a normal cold run.
+
+`make ci`'s single retry on a `test_parallel` failure runs `--no-cache`. Its
+justification — "a real regression fails BOTH passes" — holds only while both
+passes execute the same groups. With the cache on, pass 1 would store a `PASS`
+for the ~742 groups that succeeded, pass 2 would skip those and re-run the
+failing group alone on an unloaded box, and a lucky result would be stored — so
+the group would be skipped forever. Forcing the retry cold keeps it an
+independent second opinion instead of a flake-laundering machine.
 
 ## Using it (inner dev loop)
 
@@ -22,7 +51,28 @@ make test-parallel                    # default: cold, runs everything
 make test-parallel TEST_PARALLEL_ARGS=--no-cache   # force cold even if ZCL_TEST_CACHE set
 ```
 
-The final summary gains one line: `cached N / ran M`.
+The final summary gains one line: `cached N / ran M`, and the run reports its
+plan and reason histogram up front. `.cache/test-timing/last-run.json` carries
+`mode`, `groups_ran`, `groups_cached`, `groups_cacheable`, `toolkey`, and a
+per-group `cached` flag.
+
+### Known blocker before the default can flip
+
+In a tree built by the current Makefile, **every live depfile is written under
+`build/*/epochs/<epoch>/`**, and `collect_dep_paths()` in
+`lib/codeindex/src/codeindex_deps.c` deliberately skips any directory named
+`epochs` (and `history`). The include graph is therefore built from whatever
+non-epoch depfiles happen to be left over from an older build — or, in a fresh
+worktree, from nothing at all. Measured: a freshly built worktree had **0**
+depfiles outside `epochs/` and 17,062 inside; the primary checkout had 5,151
+outside (newest 7 days stale) and 17,062 inside.
+
+The cache now fails **closed** on this (`no-include-graph` /
+`input-newer-than-include-graph`, both reported in the histogram), so it cannot
+produce a wrong skip — but it also means caching is effectively disabled until
+the epoch/depfile discovery is reconciled. That reconciliation changes a
+contract asserted by `test_codeindex` ("historical epoch depfiles cannot change
+active include edges") and is intentionally **not** done here.
 
 Inspect what a group keys on (the operator/proof lens):
 
@@ -34,41 +84,82 @@ ZCL_TEST_CACHE_DUMP=test_hkdf_sha256_rfc5869 <test_parallel binary>
 ## How the key is computed
 
 For group `test_<x>` the key is `SHA3-256` over, in order: a domain tag; the
-compiled-in **toolchain fingerprint** (`BUILD_COMPILER_ID`, a compiler/flags
-change busts the whole cache); the group name; and, for every file in the
-group's **forward (callee) input closure** sorted by path, the file's path and
-its `SHA3-256` content hash.
+compiled-in **toolchain + compile-flags fingerprint**; the **coverage-gating
+environment digest**; the group name; and, for every file in the group's
+**forward (callee) input closure** sorted by path, the file's path and its
+`SHA3-256` content hash.
 
 The forward closure is `codeindex_forward_closure()`
 (`lib/codeindex/src/codeindex_impact.c`) — the mirror of the `code impact`
 reverse-closure engine. From the entry symbol it walks the callee call graph and
 collects every in-tree file that **defines** a reachable symbol, plus every
-in-tree header those files include (compiler depfile edges). That is exactly the
-set of bytes whose change can alter the group's verdict. A stored `PASS` record
-addressed by the key lives in the `.zvcs` object store
+in-tree prerequisite those files pull in (compiler depfile edges — headers *and*
+the `*.def` X-macro registries, which are prerequisites exactly like headers). A
+stored `PASS` record addressed by the key lives in the `.zvcs` object store
 (`vcs_object_put_addressed`); only `PASS` is ever stored.
+
+### The toolkey binds the FLAGS, not just the compiler
+
+`BUILD_COMPILER_ID` (`tools/dev/build-epoch-key.sh compiler-id`) fingerprints the
+`CC`/`CXX` argv and the tool bytes — **never the flags**. `TEST_FAST_CFLAGS`
+compiles at `-O1` and `TEST_REL_CFLAGS` at `-O3`, so using it alone put both
+profiles in ONE keyspace and a `PASS` recorded by `make t-fast` was honored,
+unexecuted, by the release gate binary. The toolkey is now a digest over the
+compiler id **plus the profile name plus that profile's effective compile
+flags**, injected per-object as `-DZCL_TESTCACHE_TOOLKEY` for the fast, release
+and ASan trees (the ASan tree used to get no define at all and silently fell back
+to `__VERSION__`).
+
+The epoch machinery's own digest (`zcl_compile_epoch`) is deliberately **not**
+reused as the toolkey: it binds `BUILD_SOURCE_ID` and `BUILD_MUTATION`, so it
+changes on every source edit and would bust the entire cache every time.
+
+### The environment is in the key
+
+About 16 groups `return 0` from a `SKIP (set ZCL_STRESS_TESTS=1 ...)` path. Their
+source bytes are identical whether the stress lane ran or not, so a normal run
+stored a `PASS` for the *skipping* variant and a later `ZCL_STRESS_TESTS=1` run
+got a cache HIT and never executed the stress lane — reporting green for coverage
+that did not run. Every `ZCL_`-prefixed variable (plus `HOME`, `EQUIHASH_TEST`,
+`REDUCER_FUZZ_SEED`) is therefore hashed into the key. Hashing beats denylisting
+those 16 groups: it is exhaustive by construction and cannot rot when someone adds
+the 17th gate. The cache's own control variables (`ZCL_TEST_CACHE`,
+`ZCL_TEST_CACHE_DUMP`) are excluded — they change no group's verdict, and folding
+them in would put cold and cached runs in different keyspaces.
 
 ## Soundness: a cached SKIP is provably equivalent to a fresh PASS
 
 A group is **UNCACHEABLE (always runs)** when its inputs cannot be bounded:
 
-- the forward closure came back `truncated` (a cap / fan-out / depth limit),
+- the forward closure came back `truncated` (a cap / fan-out / depth limit, or a
+  closure path too long for the caller's row),
 - the entry symbol does not resolve in the code index,
 - the group is on the **external-input denylist** — it reads fixtures, the live
-  node DB, an external `zclassicd`, `~/.zcash-params`, built binary artifacts, or
-  a legacy datadir, i.e. inputs outside its source closure
-  (`group_reads_external_inputs()` in `lib/test/src/testcache.c`).
+  node DB, an external `zclassicd`, `~/.zcash-params`, a legacy datadir, or (the
+  load-bearing case) **execs a built binary**, whose behavior comes from the
+  whole link and which the forward source closure never reaches
+  (`group_reads_external_inputs()` in `lib/test/src/testcache.c`). Matching is on
+  the **exact** group name — the previous `strstr()` form could not list `net`
+  without also swallowing `netmask`/`subnet`/`net_bootstrap`, which is exactly
+  why `test_net` went uncovered,
+- **the include graph is absent** — no depfiles under `build/`. Zero include
+  edges is not "a closure with no headers", it is *no closure*: a strictly
+  smaller set that is never flagged `truncated` and therefore looks complete. On
+  a fresh clone or after `make clean`, every key would otherwise cover zero
+  headers,
+- **an input is newer than the include graph** — if any closure file's mtime is
+  newer than the newest depfile the graph was built from, the graph cannot
+  describe that file, so an include added since is invisible to the key.
 
 The one residual assumption is the standard one for any source-based
 "affected-tests" analysis: the call graph captures a test's dependency edges by
 name (an indirect/function-pointer/dlopen edge is invisible to source scanning,
-exactly as it is to `code impact`). That assumption is backed by two nets:
+exactly as it is to `code impact`). That assumption is backed by:
 
-1. **Default OFF** — the canonical gate is cold, so the cache never gates a push.
-2. **`--cold-audit`** — runs *every* group fresh (cache disabled for execution)
-   and asserts that every group carrying a stored `PASS` at its current key also
-   passes the fresh run. A divergence is a closure/cache soundness bug and fails
-   the run loudly:
+**`--cold-audit`** — runs *every* group fresh (cache disabled for execution) and
+asserts that every group carrying a stored `PASS` at its current key also passes
+the fresh run. A divergence is a closure/cache soundness bug and fails the run
+loudly:
 
    ```bash
    ZCL_TEST_CACHE=1 make test-parallel                        # populate

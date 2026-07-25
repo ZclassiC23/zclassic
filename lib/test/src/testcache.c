@@ -2,16 +2,19 @@
  *
  * testcache — content-addressed per-group test result cache (see testcache.h).
  *
- * The key for a group is SHA3-256 over: a domain tag; the compiled-in toolchain
- * fingerprint; the group name; and, for every file in the group's forward
- * (callee) input closure sorted by path, the file's path and its SHA3-256
- * content hash. A stored PASS record addressed by that key (in the .zvcs object
- * store) means the exact same inputs already passed. Only PASS is ever stored,
- * a truncated/unresolved closure or a denylisted external-input group is never
- * cacheable, and the cold-audit path re-verifies every hit against a fresh run.
+ * The key for a group is SHA3-256 over: a domain tag; the compiled-in
+ * toolchain+flags fingerprint; the coverage-gating environment; the group name;
+ * and, for every file in the group's forward (callee) input closure sorted by
+ * path, the file's path and its SHA3-256 content hash. A stored PASS record
+ * addressed by that key (in the .zvcs object store) means the exact same inputs
+ * already passed. Only PASS is ever stored, a truncated/unresolved closure or a
+ * denylisted external-input group is never cacheable, and the cold-audit path
+ * re-verifies every hit against a fresh run.
  *
- * Fail-open: any internal error reports the group UNCACHEABLE (so it runs) or
- * silently skips a store — a cache miss only costs a re-run, never correctness. */
+ * Fail-CLOSED on anything the module cannot bound: an internal error, an absent
+ * include graph, or an input newer than the graph all report the group
+ * UNCACHEABLE (so it runs). Only a *store* is best-effort — a skipped store
+ * costs a re-run, never correctness. */
 
 #include "test/testcache.h"
 
@@ -22,16 +25,22 @@
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
 
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
-/* The toolchain fingerprint is injected at compile time by the Makefile
- * (tools/dev/build-epoch-key.sh compiler-id). Without that -D we fall back to
- * the compiler's own version string so the module still binds SOMETHING to the
- * toolchain and always builds. */
+extern char **environ;
+
+/* The toolchain+flags fingerprint is injected at compile time by the Makefile
+ * (BUILD_COMPILER_ID plus the profile's effective compile-flag digest — see
+ * TESTCACHE_TOOLKEY_CPPFLAGS). Without that -D we fall back to the compiler's
+ * own version string, which pins the compiler but NOT the flags — so the
+ * fallback additionally refuses to share a keyspace with any -D'd build by
+ * tagging itself. A missing -D must never silently alias a real profile. */
 #ifndef ZCL_TESTCACHE_TOOLKEY
-#define ZCL_TESTCACHE_TOOLKEY __VERSION__
+#define ZCL_TESTCACHE_TOOLKEY "no-toolkey-define/" __VERSION__
 #endif
 
 /* Largest input closure we will hold for one group. A closure larger than this
@@ -50,10 +59,11 @@ struct trc_record {
     uint8_t generation_le[8];     /* store wall-clock stamp (observability) */
 };
 
-/* ── file-hash memo (path -> SHA3-256), open addressing, per-run ── */
+/* ── file-hash memo (path -> SHA3-256 + mtime), open addressing, per-run ── */
 struct trc_memo_ent {
-    char   *path;         /* NULL == empty slot */
-    uint8_t hash[32];
+    char    *path;        /* NULL == empty slot */
+    uint8_t  hash[32];
+    int64_t  mtime_ns;    /* content mtime, for the graph-freshness check */
 };
 struct trc_memo {
     struct trc_memo_ent *slots;
@@ -66,6 +76,10 @@ struct testcache {
     char              root[4096];
     struct trc_memo   memo;
     char            (*closure)[256];   /* TRC_MAX_CLOSURE scratch rows */
+    /* Include-graph liveness, measured once at open (see trc_scan_depfiles). */
+    size_t            dep_count;       /* depfiles the graph was built from */
+    int64_t           dep_newest_ns;   /* newest depfile mtime */
+    uint8_t           envkey[32];      /* SHA3 of the coverage-gating env */
 };
 
 static uint64_t trc_hash_str(const char *s)
@@ -119,10 +133,17 @@ static bool trc_memo_grow(struct trc_memo *m)
     return true;
 }
 
+static int64_t trc_stat_mtime_ns(const struct stat *st)
+{
+    return (int64_t)st->st_mtim.tv_sec * INT64_C(1000000000) +
+           (int64_t)st->st_mtim.tv_nsec;
+}
+
 /* SHA3-256 the bytes of <root>/<relpath> via a streaming read (no whole-file
- * buffer). Returns false (and logs) if the file cannot be opened/read. */
+ * buffer), and report the file's mtime. Returns false (and logs) if the file
+ * cannot be opened/read. */
 static bool trc_hash_file(const char *root, const char *relpath,
-                          uint8_t out[32])
+                          uint8_t out[32], int64_t *out_mtime_ns)
 {
     char path[4200];
     int n = snprintf(path, sizeof(path), "%s/%s", root, relpath);
@@ -133,6 +154,12 @@ static bool trc_hash_file(const char *root, const char *relpath,
     FILE *fp = fopen(path, "rb");
     if (!fp) {
         ZCL_LOG_EMIT_AT(ZCL_LOG_WARN, "[testcache] open failed: %s\n", path);
+        return false;
+    }
+    struct stat st;
+    if (fstat(fileno(fp), &st) != 0) {
+        ZCL_LOG_EMIT_AT(ZCL_LOG_WARN, "[testcache] fstat failed: %s\n", path);
+        fclose(fp);
         return false;
     }
     struct sha3_256_ctx ctx;
@@ -147,15 +174,17 @@ static bool trc_hash_file(const char *root, const char *relpath,
         ok = false;
     }
     fclose(fp);
-    if (ok)
+    if (ok) {
         sha3_256_finalize(&ctx, out);
+        *out_mtime_ns = trc_stat_mtime_ns(&st);
+    }
     return ok;
 }
 
-/* Memoized content hash of one closure file. Returns false on read failure
- * (the caller then treats the whole group as UNCACHEABLE). */
+/* Memoized content hash + mtime of one closure file. Returns false on read
+ * failure (the caller then treats the whole group as UNCACHEABLE). */
 static bool trc_file_hash(struct testcache *tc, const char *relpath,
-                          uint8_t out[32])
+                          uint8_t out[32], int64_t *out_mtime_ns)
 {
     struct trc_memo *m = &tc->memo;
     if (m->len * 10 >= m->cap * 7 && !trc_memo_grow(m))
@@ -164,61 +193,302 @@ static bool trc_file_hash(struct testcache *tc, const char *relpath,
     while (m->slots[j].path) {
         if (strcmp(m->slots[j].path, relpath) == 0) {
             memcpy(out, m->slots[j].hash, 32);
+            *out_mtime_ns = m->slots[j].mtime_ns;
             return true;
         }
         j = (j + 1) & (m->cap - 1);
     }
     uint8_t h[32];
-    if (!trc_hash_file(tc->root, relpath, h))
+    int64_t mt = 0;
+    if (!trc_hash_file(tc->root, relpath, h, &mt))
         return false;
     char *dup = zcl_strdup(relpath, "trc_memo_key");
     if (!dup)
         return false;
     m->slots[j].path = dup;
     memcpy(m->slots[j].hash, h, 32);
+    m->slots[j].mtime_ns = mt;
     m->len++;
     memcpy(out, h, 32);
+    *out_mtime_ns = mt;
     return true;
 }
 
+/* ── include-graph liveness ────────────────────────────────────────────────
+ *
+ * codeindex builds its include edges from the compiler's depfiles under build/.
+ * Two ways that graph can be a lie, both of which used to pass silently:
+ *
+ *   1. There are NO depfiles (a fresh clone, or after `make clean`). Then every
+ *      closure is just the .c files reachable by call graph — a SMALLER set that
+ *      looks complete. Nothing is reported truncated, so every key silently
+ *      covered zero headers.
+ *   2. The depfiles that exist are OLDER than the sources. Then the graph
+ *      describes a tree that no longer exists, and an include added since is
+ *      invisible to the key.
+ *
+ * So we measure the graph the same way codeindex does — walking build/ for *.d
+ * and skipping the retained `epochs/` and `history/` generations — and record
+ * the count and the newest mtime. A group whose inputs are all older than that
+ * bound is describable by the graph; anything else is UNCACHEABLE.
+ *
+ * KEEP THE EXCLUSION SET IN SYNC with collect_dep_paths() in
+ * lib/codeindex/src/codeindex_deps.c. A drift here can only make this bound
+ * older than the real one, i.e. fail safe (more groups run). */
+static void trc_scan_depfiles(const char *root, const char *reldir, int depth,
+                              size_t *count, int64_t *newest_ns)
+{
+    if (depth > 24)
+        return;  /* pathological nesting; the bound stays conservative */
+    char full[4200];
+    int n = snprintf(full, sizeof(full), "%s/%s", root, reldir);
+    if (n < 0 || (size_t)n >= sizeof(full))
+        return;
+    DIR *dir = opendir(full);
+    if (!dir)
+        return;
+    struct dirent *e;
+    while ((e = readdir(dir)) != NULL) {
+        if (e->d_name[0] == '.')
+            continue;
+        if (strcmp(e->d_name, "epochs") == 0 || strcmp(e->d_name, "history") == 0)
+            continue;
+        char child[4200];
+        int cn = snprintf(child, sizeof(child), "%s/%s", reldir, e->d_name);
+        if (cn < 0 || (size_t)cn >= sizeof(child))
+            continue;
+        char child_full[4200];
+        int fn = snprintf(child_full, sizeof(child_full), "%s/%s", root, child);
+        if (fn < 0 || (size_t)fn >= sizeof(child_full))
+            continue;
+        struct stat st;
+        if (lstat(child_full, &st) != 0)
+            continue;
+        if (S_ISDIR(st.st_mode)) {
+            trc_scan_depfiles(root, child, depth + 1, count, newest_ns);
+            continue;
+        }
+        size_t len = strlen(e->d_name);
+        if (!S_ISREG(st.st_mode) || len < 3 ||
+            strcmp(e->d_name + len - 2, ".d") != 0)
+            continue;
+        (*count)++;
+        int64_t mt = trc_stat_mtime_ns(&st);
+        if (mt > *newest_ns)
+            *newest_ns = mt;
+    }
+    closedir(dir);
+}
+
+/* ── coverage-gating environment ───────────────────────────────────────────
+ *
+ * ~16 groups return SUCCESS from a `SKIP (set ZCL_STRESS_TESTS=1 ...)` path.
+ * Their source bytes are identical either way, so without the environment in
+ * the key a normal run stores a PASS for the SKIPPING variant and a later
+ * ZCL_STRESS_TESTS=1 run gets a HIT and never executes the stress lane —
+ * reporting green for coverage that did not run.
+ *
+ * Hashing the environment beats denylisting the ~16 groups: it is exhaustive by
+ * construction and cannot rot when someone adds the 17th gate. We fold every
+ * ZCL_-prefixed variable (they are this project's namespace: gates, fuzz seeds,
+ * fixture path overrides, tunables) plus HOME (the ~/.zcash-params root) and the
+ * two legacy-named gates.
+ *
+ * EXCLUDED, and it must stay that way: the cache's OWN control variables. They
+ * are set on a cached run and unset on a cold one while provably changing no
+ * group's verdict, so folding them in would put cold and cached runs in
+ * different keyspaces and the cache could never hit. */
+static bool trc_env_is_cache_control(const char *name, size_t namelen)
+{
+    static const char *const ctl[] = {
+        "ZCL_TEST_CACHE", "ZCL_TEST_CACHE_DUMP",
+    };
+    for (size_t i = 0; i < sizeof(ctl) / sizeof(ctl[0]); i++)
+        if (strlen(ctl[i]) == namelen && strncmp(name, ctl[i], namelen) == 0)
+            return true;
+    return false;
+}
+
+static bool trc_env_is_relevant(const char *entry)
+{
+    const char *eq = strchr(entry, '=');
+    if (!eq)
+        return false;
+    size_t namelen = (size_t)(eq - entry);
+    if (trc_env_is_cache_control(entry, namelen))
+        return false;
+    if (namelen > 4 && strncmp(entry, "ZCL_", 4) == 0)
+        return true;
+    static const char *const extra[] = { "HOME", "EQUIHASH_TEST",
+                                         "REDUCER_FUZZ_SEED" };
+    for (size_t i = 0; i < sizeof(extra) / sizeof(extra[0]); i++)
+        if (strlen(extra[i]) == namelen &&
+            strncmp(entry, extra[i], namelen) == 0)
+            return true;
+    return false;
+}
+
+static int trc_str_cmp(const void *a, const void *b)
+{
+    return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+/* SHA3 the sorted, relevant NAME=VALUE entries. On any allocation failure we
+ * fall back to a sentinel digest that is deliberately UNIQUE per run, so the
+ * keys computed under it can never collide with a real environment's keys. */
+static void trc_env_digest(uint8_t out[32])
+{
+    struct sha3_256_ctx ctx;
+    sha3_256_init(&ctx);
+    static const char DOMAIN[] = "zcl.testcache.env.v1";
+    sha3_256_write(&ctx, (const unsigned char *)DOMAIN, sizeof(DOMAIN));
+
+    size_t n = 0;
+    for (char **e = environ; e && *e; e++)
+        if (trc_env_is_relevant(*e))
+            n++;
+    if (n == 0) {
+        sha3_256_finalize(&ctx, out);
+        return;
+    }
+    const char **items = zcl_malloc(n * sizeof(*items), "trc_env_items");
+    if (!items) {
+        /* Poison rather than silently hash an empty environment. */
+        uint64_t uniq = (uint64_t)platform_time_wall_time_t() ^
+                        (uint64_t)(uintptr_t)&ctx;
+        sha3_256_write(&ctx, (const unsigned char *)&uniq, sizeof(uniq));
+        sha3_256_finalize(&ctx, out);
+        return;
+    }
+    size_t k = 0;
+    for (char **e = environ; e && *e && k < n; e++)
+        if (trc_env_is_relevant(*e))
+            items[k++] = *e;
+    qsort(items, k, sizeof(*items), trc_str_cmp);
+    for (size_t i = 0; i < k; i++)
+        sha3_256_write(&ctx, (const unsigned char *)items[i],
+                       strlen(items[i]) + 1);
+    free((void *)items);
+    sha3_256_finalize(&ctx, out);
+}
+
 /* Groups whose verdict depends on inputs OUTSIDE their source closure — on-disk
- * fixtures, the live node DB, an external zclassicd, ~/.zcash-params, built
- * binary artifacts, or a legacy datadir. These are NEVER cached (always run).
- * The list is intentionally conservative; the cold-audit path is the net that
- * catches anything mis-classified. `name` may carry the test_/spec_ prefix. */
+ * fixtures, the live node DB, an external zclassicd, ~/.zcash-params, a legacy
+ * datadir, or (the big one) a BUILT BINARY they exec. These are NEVER cached.
+ *
+ * Matching is on the EXACT group name, not a substring. The old strstr() form
+ * was both too loose and too tight: "explorer" also swallowed any future
+ * explorer_* group, while "net" could not be listed at all because it would
+ * have swallowed netmask/subnet/net_bootstrap — which is precisely why
+ * test_net, a group that execs built binaries, reads /proc, spawns threads AND
+ * gates coverage on ZCL_STRESS_TESTS, was never denylisted.
+ *
+ * The exec-a-binary entries are the load-bearing ones: a child process's
+ * behavior comes from the WHOLE LINK of the binary it runs, and the forward
+ * source closure of the test never reaches it. Editing any node source changes
+ * that child's behavior while leaving the test's own closure key untouched.
+ *
+ * Derived by grepping lib/test/src for `build/bin/`, popen/system/exec of a
+ * repo artifact, /proc readers, and CPU-feature dispatch. Kept in sorted order.
+ * `name` may carry the test_/spec_ prefix. */
 static bool group_reads_external_inputs(const char *name)
 {
     if (strncmp(name, "test_", 5) == 0 || strncmp(name, "spec_", 5) == 0)
         name += 5;
     static const char *const ext[] = {
-        "make_lint_gates",                /* plants fixtures + compiles the tree */
-        "consensus_state_snapshot",       /* fd-dup + atomic bundle publish to a
-                                           * datadir; load-flaky, so its PASS is
-                                           * not reliably reproducible (surfaced
-                                           * by --cold-audit) */
-        "dev_platform",                   /* reads lib/test/fixtures source */
+        /* --- execs a built binary or a repo script (whole-link input) --- */
+        "agent_copy_prove",
+        "chain_advance_atomicity",
         "chaos_harness",                  /* reads tests/fixtures block files */
-        "explorer",                       /* live node DB coupling */
-        "soak",                           /* soak_harness/soak_attestation: datadir */
-        "oracle",                         /* zclassicd_oracle/oracle_policy: ext node */
-        "binary_staleness",               /* reads built binary artifacts */
-        "binary_ab_fallback",
-        "snark_kat",                      /* ~/.zcash-params */
-        "sapling_prover_rng_determinism",
-        "simnet_sapling_shielded_send",
-        "simnet_zmsg_onchain",
+        "cli_argv_strict",
+        "cli_auth_robust",
+        "cold_start_sync",
+        "crypto_perf_selftest",
+        "dev_platform",                   /* reads lib/test/fixtures source */
+        "importblockindex_cli_dispatch",
+        "kill9_recovery",
+        "make_lint_gates",                /* plants fixtures + compiles the tree */
+        "net",
         "no_hardcoded_home",              /* scans tree + env for home usage */
-        "chainstate_legacy",              /* legacy datadir reader */
-        "importblockindex",               /* legacy datadir import */
-        "e2e_cold_start",                 /* datadir */
-        "offline_datadir",                /* datadir */
-        "load_verify_boot",               /* datadir */
+        "onion_bootstrap",
+        "onion_bootstrap_slice",
+        "replay_canary_verdict",
+        "secrets_hygiene",
+        "self_folded_anchor",
+        "shielded_payment_gate",
+        "syncdiag_rpc",
+        "utxo_root_ladder",
+        "verify_bench_selftest",
+        "wallet_persistence_cycle",
+        "wallet_view",
+        /* --- live node DB / external zclassicd / datadir / built artifacts --- */
+        "binary_ab_fallback",
+        "binary_staleness",
+        "chainstate_legacy_reader",
         "coldimport_restart_fragility",
+        "consensus_state_snapshot_export", /* fd-dup + atomic bundle publish to
+                                            * a datadir; load-flaky, so its PASS
+                                            * is not reliably reproducible */
+        "consensus_state_snapshot_install",
+        "e2e_cold_start",
+        "explorer",
+        "explorer_index",
+        "explorer_rpc_call",
+        "importblockindex_roundtrip",
+        "load_verify_boot",
+        "offline_datadir_query",
+        "oracle_policy",
+        "soak_attestation",
+        "soak_harness",
+        "zclassicd_oracle",
+        /* --- ~/.zcash-params / Sapling+Sprout proving keys --- */
+        "bls12_381_adversarial",
+        "chainstate_sapling_anchor",
+        "groth16_selfverify",
+        "mint_proof_harness",
+        "phgr13_fix",
+        "proof_validate_stage",
+        "pv_lookahead",
+        "replay_verify",
+        "sapling",
+        "sapling_anchor_frontier_condition",
+        "sapling_ckpt_persist",
+        "sapling_crypto",
+        "sapling_nullifier_adversarial",
+        "sapling_prover_rng_determinism",
+        "shielded_history_import",
+        "shielded_receive_slice",
+        "shielded_spend_slice",
+        "simnet_sapling_shielded_send",
+        "simnet_shielded_wallet_e2e",
+        "simnet_wallet_reorg",
+        "simnet_zmsg_onchain",
+        "snark_kat",
+        "sprout_phgr13_kat",
+        /* --- /proc + CPU-feature dispatch (the host, not the tree) --- */
+        "boot_self_respawn",
+        "canary_sentinel_watch",
+        "confine",
+        "keccak_avx512",
+        "os_sandbox",
+        "sha3_256_x4",
+        /* --- asserts on wall-clock timing (host load, not the tree) --- */
+        "parallel_range_fold",
+        /* --- reads repo files outside its own closure (Makefile, the runner
+         * source, the gate script) to pin the cache's own contracts --- */
+        "testcache",
     };
     for (size_t i = 0; i < sizeof(ext) / sizeof(ext[0]); i++)
-        if (strstr(name, ext[i]))
+        if (strcmp(name, ext[i]) == 0)
             return true;
     return false;
+}
+
+/* Exposed for the contract test, which re-derives the exec-a-binary set from
+ * the source tree and asserts this list still covers it. */
+bool testcache_group_is_denylisted(const char *name)
+{
+    return name && name[0] && group_reads_external_inputs(name);
 }
 
 static void trc_put_u32le(unsigned char b[4], uint32_t v)
@@ -230,18 +500,24 @@ static void trc_put_u32le(unsigned char b[4], uint32_t v)
 }
 
 /* Fold the closure into the SHA3 key. Files are already sorted by
- * codeindex_forward_closure. Returns false on a file-read failure. */
+ * codeindex_forward_closure. Returns false on a file-read failure; sets
+ * *stale when any input is newer than the include graph that produced it. */
 static bool trc_compute_key(struct testcache *tc, const char *group_name,
-                            int n_closure, uint8_t out_key[32])
+                            int n_closure, uint8_t out_key[32], bool *stale)
 {
     struct sha3_256_ctx ctx;
     sha3_256_init(&ctx);
 
-    static const char DOMAIN[] = "zcl.testcache.key.v1";
+    /* v2: the preimage now carries the coverage-gating environment. Bumping the
+     * domain tag retires every v1 record, which is required — a v1 key was
+     * computed WITHOUT the environment, so honoring one could serve a PASS
+     * recorded by a run that skipped the coverage a v2 run intends to execute. */
+    static const char DOMAIN[] = "zcl.testcache.key.v2";
     sha3_256_write(&ctx, (const unsigned char *)DOMAIN, sizeof(DOMAIN)); /* +NUL */
 
     const char *tk = ZCL_TESTCACHE_TOOLKEY;
     sha3_256_write(&ctx, (const unsigned char *)tk, strlen(tk) + 1);
+    sha3_256_write(&ctx, tc->envkey, sizeof(tc->envkey));
     sha3_256_write(&ctx, (const unsigned char *)group_name,
                    strlen(group_name) + 1);
 
@@ -252,8 +528,11 @@ static bool trc_compute_key(struct testcache *tc, const char *group_name,
     for (int i = 0; i < n_closure; i++) {
         const char *p = tc->closure[i];
         uint8_t fh[32];
-        if (!trc_file_hash(tc, p, fh))
+        int64_t mt = 0;
+        if (!trc_file_hash(tc, p, fh, &mt))
             return false;
+        if (mt > tc->dep_newest_ns)
+            *stale = true;
         sha3_256_write(&ctx, (const unsigned char *)p, strlen(p) + 1);
         sha3_256_write(&ctx, fh, 32);
     }
@@ -304,6 +583,9 @@ struct testcache *testcache_open(const char *repo_root)
         LOG_NULL("testcache", "memo init failed");
     }
 
+    trc_env_digest(tc->envkey);
+    trc_scan_depfiles(tc->root, "build", 0, &tc->dep_count, &tc->dep_newest_ns);
+
     tc->ci = codeindex_open(tc->root);
     if (!tc->ci) {
         trc_memo_free(&tc->memo);
@@ -312,6 +594,42 @@ struct testcache *testcache_open(const char *repo_root)
         LOG_NULL("testcache", "codeindex_open failed under %s", root);
     }
     return tc;
+}
+
+size_t testcache_depfile_count(const struct testcache *tc)
+{
+    return tc ? tc->dep_count : 0;
+}
+
+const char *testcache_reason_label(enum testcache_reason r)
+{
+    switch (r) {
+    case TESTCACHE_R_OK:               return "cacheable";
+    case TESTCACHE_R_NO_HANDLE:        return "no-cache-handle";
+    case TESTCACHE_R_EXTERNAL_INPUT:   return "external-input-denylist";
+    case TESTCACHE_R_CLOSURE_ERROR:    return "closure-query-error";
+    case TESTCACHE_R_ENTRY_UNRESOLVED: return "entry-symbol-unresolved";
+    case TESTCACHE_R_TRUNCATED:        return "closure-truncated";
+    case TESTCACHE_R_EMPTY_CLOSURE:    return "empty-closure";
+    case TESTCACHE_R_FILE_UNREADABLE:  return "input-file-unreadable";
+    case TESTCACHE_R_NO_INCLUDE_GRAPH: return "no-include-graph";
+    case TESTCACHE_R_GRAPH_STALE:      return "input-newer-than-include-graph";
+    case TESTCACHE_R__COUNT:           break;
+    }
+    return "unknown";
+}
+
+void testcache_toolkey_digest12(char out[13])
+{
+    const char *tk = ZCL_TESTCACHE_TOOLKEY;
+    uint8_t d[32];
+    struct sha3_256_ctx ctx;
+    sha3_256_init(&ctx);
+    sha3_256_write(&ctx, (const unsigned char *)tk, strlen(tk));
+    sha3_256_finalize(&ctx, d);
+    for (int i = 0; i < 6; i++)
+        snprintf(out + i * 2, 3, "%02x", d[i]);
+    out[12] = '\0';
 }
 
 void testcache_close(struct testcache *tc)
@@ -336,12 +654,25 @@ void testcache_probe_group(struct testcache *tc, const char *group_name,
 {
     memset(out, 0, sizeof(*out));
     if (!tc || !tc->ci || !group_name || !group_name[0]) {
+        out->code = TESTCACHE_R_NO_HANDLE;
         snprintf(out->reason, sizeof(out->reason), "no cache handle");
         return;
     }
 
     if (group_reads_external_inputs(group_name)) {
+        out->code = TESTCACHE_R_EXTERNAL_INPUT;
         snprintf(out->reason, sizeof(out->reason), "external-input denylist");
+        return;
+    }
+
+    /* No depfiles at all => the include graph is ABSENT, not empty. Every
+     * closure would then be call-graph-only: a strictly smaller set that is
+     * never reported truncated and so looks complete. Refuse the whole
+     * keyspace rather than mint header-free keys. */
+    if (tc->dep_count == 0) {
+        out->code = TESTCACHE_R_NO_INCLUDE_GRAPH;
+        snprintf(out->reason, sizeof(out->reason),
+                 "no depfiles under build/ (include graph absent)");
         return;
     }
 
@@ -349,29 +680,44 @@ void testcache_probe_group(struct testcache *tc, const char *group_name,
     int nc = codeindex_forward_closure(tc->ci, group_name, tc->closure,
                                        TRC_MAX_CLOSURE, &truncated, &root_found);
     if (nc < 0) {
+        out->code = TESTCACHE_R_CLOSURE_ERROR;
         snprintf(out->reason, sizeof(out->reason), "closure query error");
         return;
     }
     if (!root_found) {
+        out->code = TESTCACHE_R_ENTRY_UNRESOLVED;
         snprintf(out->reason, sizeof(out->reason), "entry symbol unresolved");
         return;
     }
     if (truncated) {
+        out->code = TESTCACHE_R_TRUNCATED;
         snprintf(out->reason, sizeof(out->reason),
                  "closure truncated (%d files, cap hit)", nc);
         return;
     }
     if (nc == 0) {
+        out->code = TESTCACHE_R_EMPTY_CLOSURE;
         snprintf(out->reason, sizeof(out->reason), "empty closure");
         return;
     }
 
-    if (!trc_compute_key(tc, group_name, nc, out->key)) {
+    bool stale = false;
+    if (!trc_compute_key(tc, group_name, nc, out->key, &stale)) {
+        out->code = TESTCACHE_R_FILE_UNREADABLE;
         snprintf(out->reason, sizeof(out->reason), "input file unreadable");
+        return;
+    }
+    /* An input newer than every depfile cannot be described by the graph those
+     * depfiles built: an include added since is invisible to this key. */
+    if (stale) {
+        out->code = TESTCACHE_R_GRAPH_STALE;
+        snprintf(out->reason, sizeof(out->reason),
+                 "input newer than include graph (rebuild to refresh)");
         return;
     }
 
     out->cacheable = true;
+    out->code = TESTCACHE_R_OK;
     out->n_closure = nc;
     snprintf(out->reason, sizeof(out->reason), "%d input files", nc);
 
@@ -421,22 +767,44 @@ void testcache_dump_group(struct testcache *tc, const char *group_name)
     }
     struct testcache_probe p;
     testcache_probe_group(tc, group_name, &p);
+    char tkd[13];
+    testcache_toolkey_digest12(tkd);
     printf("testcache dump: group=%s\n", group_name);
-    printf("  toolkey=%s\n", testcache_toolkey());
-    printf("  cacheable=%s  hit=%s  n_closure=%d  reason=%s\n",
+    printf("  toolkey=%s (digest %s)\n", testcache_toolkey(), tkd);
+    printf("  depfiles=%zu (include graph %s)\n", tc->dep_count,
+           tc->dep_count ? "present" : "ABSENT");
+    printf("  cacheable=%s  hit=%s  n_closure=%d  code=%s  reason=%s\n",
            p.cacheable ? "yes" : "no", p.hit ? "yes" : "no",
-           p.n_closure, p.reason);
+           p.n_closure, testcache_reason_label(p.code), p.reason);
     if (p.cacheable) {
         char kh[65];
         for (int i = 0; i < 32; i++)
             snprintf(kh + i * 2, 3, "%02x", p.key[i]);
         printf("  key=%s\n", kh);
+    }
+    /* Always list the closure, cacheable or not. When a group is UNCACHEABLE
+     * the closure is the evidence for WHY — in particular, a closure of .c
+     * files with zero headers is what an absent include graph looks like, and
+     * that is the shape that used to be keyed and cached silently. */
+    {
         /* Recompute the closure for the listing (probe consumed tc->closure). */
         bool truncated = false, root_found = false;
         int nc = codeindex_forward_closure(tc->ci, group_name, tc->closure,
                                            TRC_MAX_CLOSURE, &truncated,
                                            &root_found);
-        printf("  closure (%d files):\n", nc);
+        /* Counted BY EXTENSION, which is not the same as "reached via an
+         * include edge": a .h can enter the closure as the DEFINITION file of
+         * an inline function or macro even when the include graph is empty.
+         * Read this beside the depfiles= line above, never instead of it. */
+        int hdr_ext = 0;
+        for (int i = 0; i < nc; i++) {
+            size_t l = strlen(tc->closure[i]);
+            if ((l > 2 && strcmp(tc->closure[i] + l - 2, ".h") == 0) ||
+                (l > 4 && strcmp(tc->closure[i] + l - 4, ".def") == 0))
+                hdr_ext++;
+        }
+        printf("  closure (%d files, %d with a .h/.def extension, "
+               "truncated=%s):\n", nc, hdr_ext, truncated ? "yes" : "no");
         for (int i = 0; i < nc; i++)
             printf("    %s\n", tc->closure[i]);
     }
