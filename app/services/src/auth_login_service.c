@@ -38,8 +38,11 @@ static const char k_auth_magic[] = "\x18ZClassic Signed Message:\n";
 
 /* Constant-time comparison of two NUL-terminated strings. Compares over a
  * fixed span so the running time does not depend on the mismatch position or
- * whether the lengths differ. */
-static bool auth_ct_streq(const char *a, const char *b)
+ * whether the lengths differ. Returns int, not bool, so callers can combine
+ * results with a bitwise `&` (see the bind check below) without tripping the
+ * bool-operand-of-& diagnostic that would push them toward short-circuiting
+ * `&&`. 1 == equal, 0 == differ. */
+static int auth_ct_streq(const char *a, const char *b)
 {
     size_t la = strlen(a), lb = strlen(b);
     size_t n = la > lb ? la : lb;
@@ -229,10 +232,13 @@ struct zcl_result auth_login_verify(struct node_db *ndb,
         struct key_id kid = pubkey_get_id(&pk);
         if (!auth_encode_address_from_keyid(&kid, recovered, sizeof(recovered)))
             return auth_verify_denied();
-        size_t hlen = 0;
+        /* Each iteration writes exactly two hex digits plus its own NUL; the
+         * next iteration overwrites that NUL, and the last one terminates the
+         * string. stored_pubkey_hex is zero-initialised, so a zero-length key
+         * still yields "". The per-call return is a constant 2 and was
+         * previously accumulated into a variable nothing ever read. */
         for (unsigned i = 0; i < pk.size && i < PRINCIPAL_PUBKEY_HEX_MAX / 2; i++)
-            hlen += (size_t)snprintf(stored_pubkey_hex + i * 2, 3, "%02x",
-                                     pk.vch[i]);
+            snprintf(stored_pubkey_hex + i * 2, 3, "%02x", pk.vch[i]);
     } else {
         /* ed25519: recovery is impossible; the client must present its key. */
         if (!pubkey_hex || !pubkey_hex[0])
@@ -250,7 +256,15 @@ struct zcl_result auth_login_verify(struct node_db *ndb,
     }
 
     /* Constant-time bind: the recovered signer must be the claimed address and
-     * the address the nonce was issued to. */
+     * the address the nonce was issued to.
+     *
+     * The single `&` is LOAD-BEARING — do NOT "fix" it to `&&`. `&&`
+     * short-circuits, so a caller whose address already mismatches would skip
+     * the second compare entirely and the reply would come back measurably
+     * sooner: a timing oracle that distinguishes "wrong claimed address" from
+     * "wrong issued-to address" on the login path. `&` evaluates both
+     * comparisons unconditionally. auth_ct_streq returns int for exactly this
+     * reason, so this is an ordinary bitwise AND of two 0/1 ints. */
     bool addr_ok = auth_ct_streq(recovered, address) &
                    auth_ct_streq(recovered, row.address);
     if (!addr_ok)

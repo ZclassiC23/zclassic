@@ -68,28 +68,28 @@ void zcl_fuzz_discard_log(const char *fmt, ...)
 /* Log error and return false. Use in functions returning bool. */
 #define LOG_FAIL(domain, fmt, ...) do { \
     ZCL_LOG_EMIT_AT(ZCL_LOG_ERROR, "[%s] %s:%d %s(): " fmt "\n", \
-            (domain), __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
+            (domain), __FILE__, __LINE__, __func__ __VA_OPT__(,) __VA_ARGS__); \
     return false; \
 } while (0)
 
 /* Log error and return -1. Use in command handlers / int-returning funcs. */
 #define LOG_ERR(domain, fmt, ...) do { \
     ZCL_LOG_EMIT_AT(ZCL_LOG_ERROR, "[%s] %s:%d %s(): " fmt "\n", \
-            (domain), __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
+            (domain), __FILE__, __LINE__, __func__ __VA_OPT__(,) __VA_ARGS__); \
     return -1; \
 } while (0)
 
 /* Log error and return NULL. Use in pointer-returning functions. */
 #define LOG_NULL(domain, fmt, ...) do { \
     ZCL_LOG_EMIT_AT(ZCL_LOG_ERROR, "[%s] %s:%d %s(): " fmt "\n", \
-            (domain), __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
+            (domain), __FILE__, __LINE__, __func__ __VA_OPT__(,) __VA_ARGS__); \
     return NULL; \
 } while (0)
 
 /* Log error and return a custom value. */
 #define LOG_RETURN(val, domain, fmt, ...) do { \
     ZCL_LOG_EMIT_AT(ZCL_LOG_ERROR, "[%s] %s:%d %s(): " fmt "\n", \
-            (domain), __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
+            (domain), __FILE__, __LINE__, __func__ __VA_OPT__(,) __VA_ARGS__); \
     return (val); \
 } while (0)
 
@@ -114,13 +114,13 @@ void zcl_fuzz_discard_log(const char *fmt, ...)
 /* Log a warning and continue (no return). */
 #define LOG_WARN(domain, fmt, ...) do { \
     ZCL_LOG_EMIT_AT(ZCL_LOG_WARN, "[%s] %s:%d %s(): " fmt "\n", \
-            (domain), __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
+            (domain), __FILE__, __LINE__, __func__ __VA_OPT__(,) __VA_ARGS__); \
 } while (0)
 
 /* Log an informational line and continue (no return). */
 #define LOG_INFO(domain, fmt, ...) do { \
     ZCL_LOG_EMIT_AT(ZCL_LOG_INFO, "[%s] %s:%d %s(): " fmt "\n", \
-            (domain), __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
+            (domain), __FILE__, __LINE__, __func__ __VA_OPT__(,) __VA_ARGS__); \
 } while (0)
 
 /* Log an ERROR-level line and continue (no return). The returning error
@@ -131,7 +131,7 @@ void zcl_fuzz_discard_log(const char *fmt, ...)
  * non-returning WARN/INFO pair at ERROR rank. */
 #define LOG_ERROR(domain, fmt, ...) do { \
     ZCL_LOG_EMIT_AT(ZCL_LOG_ERROR, "[%s] %s:%d %s(): " fmt "\n", \
-            (domain), __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
+            (domain), __FILE__, __LINE__, __func__ __VA_OPT__(,) __VA_ARGS__); \
 } while (0)
 
 /* ── Guards: check condition, log + return on failure ─────────── */
@@ -140,7 +140,7 @@ void zcl_fuzz_discard_log(const char *fmt, ...)
 #define GUARD(cond, domain, fmt, ...) do { \
     if (!(cond)) { \
         ZCL_LOG_EMIT_AT(ZCL_LOG_ERROR, "[%s] %s:%d %s(): GUARD FAILED: " fmt "\n", \
-                (domain), __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
+                (domain), __FILE__, __LINE__, __func__ __VA_OPT__(,) __VA_ARGS__); \
         return false; \
     } \
 } while (0)
