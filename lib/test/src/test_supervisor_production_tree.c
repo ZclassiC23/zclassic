@@ -130,6 +130,32 @@ static bool spt_poll_int_ge(_Atomic int *v, int target, int timeout_ms)
     return atomic_load(v) >= target;
 }
 
+/* Poll a child's supervisor-side restart_count.
+ *
+ * There is no happens-before edge between "the respawned worker ran" and "the
+ * supervisor recorded the restart": the worker bumps its own incarnation
+ * counter on entry (spt_restart_worker_fn), while restart_count is bumped by
+ * the SUPERVISOR thread only after on_respawn() returns
+ * (supervisor.c, runner_on_death). So a test that waits on incarnations and
+ * then reads restart_count instantaneously is asserting on a value the other
+ * thread may not have stored yet. Poll for it instead — the assertion is
+ * "the restart is eventually recorded", not "it is recorded by the time the
+ * new worker happens to have started". */
+static bool spt_poll_restart_count_ge(const char *child_name, uint32_t target,
+                                      int timeout_ms)
+{
+    for (int i = 0; i < timeout_ms; i++) {
+        struct supervisor_snapshot s;
+        int c = 0;
+        if (find_child_snapshot(child_name, &s, &c) >= 0 &&
+            s.restart_count >= target)
+            return true;
+        struct timespec ts = { 0, 1000000L };  /* 1 ms */
+        nanosleep(&ts, NULL);
+    }
+    return false;
+}
+
 static bool spt_poll_blocker(const char *id, int timeout_ms)
 {
     for (int i = 0; i < timeout_ms; i++) {
@@ -661,9 +687,8 @@ int test_supervisor_production_tree(void)
         atomic_store(&w.die_through, 1);
         SPT_CHECK("dead worker is respawned — a new worker thread (new tid) runs",
                   spt_poll_int_ge(&w.incarnations, 2, 2000));
-        idx = find_child_snapshot("zcl_spt_restart", &snap, &count);
         SPT_CHECK("restart_count advanced after the respawn",
-                  idx >= 0 && snap.restart_count >= 1);
+                  spt_poll_restart_count_ge("zcl_spt_restart", 1, 2000));
         SPT_CHECK("no restart-storm blocker after a single restart",
                   !blocker_exists("thread_restart_storm_zcl_spt_restart"));
 
