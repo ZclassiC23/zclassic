@@ -72,9 +72,13 @@ any prefix.
 
 The equivalent live-node machinery:
 
-- `find_most_work_chain()` / `activate_best_chain()` —
-  `lib/validation/src/chainstate.c` — selects the best-work tip across all known
-  block-index entries and drives the disconnect/connect walk.
+- `find_most_work_chain()` — `lib/validation/src/process_block_core.c` — picks
+  the best-work tip across all known block-index entries. It is a thin wrapper
+  over `select_most_work_eligible()` in `lib/validation/src/chainstate.c`,
+  which holds the actual selection rule (including the refuse-below-tip guard).
+  There is **no** `activate_best_chain()` in this tree — the disconnect/connect
+  walk is driven by the reducer stage below, not by a Bitcoin-Core-named
+  activation function.
 - `connect_block()` / `disconnect_block()` — both in
   `lib/validation/src/connect_block.c`.
 - `app/jobs/src/utxo_apply_delta_reorg.c` — the reducer-side job that applies

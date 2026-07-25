@@ -72,7 +72,7 @@ a stale path (`-Icore/consensus/include`); a `domain/consensus/…` path in a
 `check_domain_purity.sh`). Replayable from a 64-bit seed. Never put IO here.
 The consensus modules that used to live here are under `core/` (above).
 
-### Primitives — `lib/` (38 subdirs)
+### Primitives — `lib/` (one subdirectory per module)
 
 Framework, `platform/` (the ONLY clock/RNG source: `time_compat.h`,
 `random.h`), `storage/` (`event_log.c` + `*_projection.c`), `net`, `crypto`,
@@ -273,7 +273,7 @@ bundles + `app/controllers/src/*_native_handlers.c`.
 | I need the list of… | Run |
 |---|---|
 | dumpstate subsystems (134 today) | `zclassic23 statecatalog` — name, owner file, accepted key forms, owning test. **Not** `ops state` with no `--subsystem`: that errors `MISSING_SUBSYSTEM`. |
-| test group names (one per line) | `build/bin/test_parallel --list` |
+| test group names (one per line) | `make test_parallel && build/bin/test_parallel --list` — the underscore target is the only one that publishes the `build/bin/test_parallel` alias; `make test` / `make test-parallel` / `make t-fast` run an epoch candidate under `build/bin/test-strict/epochs/<epoch>/` and leave that alias absent |
 | registry commands | `zclassic23 discover help` (seven roots: `status`, `core`, `app`, `dev`, `ops`, `discover`, `code`), then `discover help <path>` to descend |
 | a command's exact input keys | `zclassic23 discover schema <leaf>` |
 | test groups a change touches | `zclassic23 agentimpact <files...>` |
@@ -655,7 +655,8 @@ then exactly one of `ALL TESTS PASSED`, `ALL TESTS PASSED (CACHED)`, or
 - Force a cold run: `make test-parallel TEST_PARALLEL_ARGS=--no-cache`.
 - `ONLY=` is a **substring** match, not a group name. `make t-fast ONLY=wallet`
   runs every group whose name contains `wallet` (36 of them). List the exact
-  names with `build/bin/test_parallel --list`.
+  names with `make test_parallel && build/bin/test_parallel --list` — no other
+  test target publishes that alias.
 
 | Command | Effect |
 |---------|--------|

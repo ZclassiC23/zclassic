@@ -17,8 +17,8 @@ activation heights, block/transaction validity, and coin accounting are
 ahead of the reference chain, even framed as opt-in or miner-signaled (see
 `docs/CONSENSUS_PARITY_DOCTRINE.md`). Before this ADR, that line was
 enforced entirely by *review discipline*: the consensus predicates and
-static parameter tables lived scattered across `domain/consensus/`,
-`lib/consensus/`, `lib/chain/`, and `lib/core/`, alongside ordinary
+static parameter tables lived scattered across `domain/consensus/`, <!-- doc-path-ok: pre-ADR location, named so the move is legible -->
+`lib/consensus/`, `lib/chain/`, and `lib/core/`, alongside ordinary <!-- doc-path-ok: pre-ADR location, named so the move is legible -->
 application code, with no structural barrier stopping an autonomous dev-loop
 cycle from editing a validity predicate and auto-publishing it the same way
 it would publish an explorer template fix.
@@ -45,8 +45,8 @@ did not need touching:
 
 | Context | Moved from | Include token preserved |
 |---------|-----------|--------------------------|
-| `core/consensus/` | `domain/consensus/` | `-Icore/consensus/include` → `domain/consensus/*.h` |
-| `core/params/` | `lib/consensus/` | `-Icore/params/include` → `consensus/*.h` |
+| `core/consensus/` | `domain/consensus/` | `-Icore/consensus/include` → `domain/consensus/*.h` | <!-- doc-path-ok: "moved from" column — the old paths are gone by design -->
+| `core/params/` | `lib/consensus/` | `-Icore/params/include` → `consensus/*.h` | <!-- doc-path-ok: "moved from" column — the old paths are gone by design -->
 | `core/math/` | `lib/core/` (pure math) | `-Icore/math/include` → `core/*.h` |
 | `core/chainparams/` | the pure params/verify subset of `lib/chain/` | `-Icore/chainparams/include` → `chain/*.h` |
 
@@ -179,7 +179,7 @@ the one that is load-bearing for blocking the running binary.
 ## Alternatives considered
 
 **(a) Lint-only boundary, no physical move.** Keep the consensus code where
-it lived (`domain/consensus/`, `lib/consensus/`, `lib/chain/`, `lib/core/`)
+it lived (`domain/consensus/`, `lib/consensus/`, `lib/chain/`, `lib/core/`) <!-- doc-path-ok: rejected-alternative narration of the pre-ADR layout -->
 and rely solely on a `check-consensus-parity`-style gate scanning a hardcoded
 path list. Rejected: a hardcoded path list is exactly the kind of thing the
 lint-gate-hollowness audit (`docs/work/lint-gate-hollowness-audit.md`)

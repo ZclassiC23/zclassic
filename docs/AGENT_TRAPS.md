@@ -183,14 +183,16 @@ CLEAN**, and nothing fires for months.
 | `adapters/` | thin sqlite wrappers | Same gate hard-counts `adapters/outbound/persistence/src/*.c` against `persistence_adapters`. |
 | `src/` | four loose files at the root | The program entry point (`src/main.c`, `src/cli.c`, `src/main_cli_modes.{c,h}`) and the most content-asserted path outside `app/`. It is also in the same `roots[]` list as `application/`. |
 
-- **The set of top-level code directories is mirrored in two places that no gate
-  cross-checks.** `KNOWN_TOPS=(lib app domain core config tools adapters ports)`
-  in `tools/lint/check_no_orphan_placement.sh` is a hand-kept shell copy of
+- **The set of top-level code directories is mirrored in three places that no
+  gate cross-checks.** `KNOWN_TOPS=(lib app domain core config tools adapters
+  ports)` in `tools/lint/check_no_orphan_placement.sh` and `MODULE_TOPS` in
+  `tools/lint/check_doc_inline_paths.sh` are both hand-kept shell copies of
   `ci_group_for_path()` in `lib/codeindex/src/codeindex_group.c`. Adding or
-  removing a top-level folder means editing **both**, plus `ci_group_purpose()`
-  (the string `zclassic23 code map` prints). Change one only, and the gate and
-  the navigator disagree silently — lint stays green while `code map` /
-  `code group` misclassify every file in the new tree.
+  removing a top-level folder means editing **all three**, plus
+  `ci_group_purpose()` (the string `zclassic23 code map` prints). Change one
+  only, and the gates and the navigator disagree silently — lint stays green
+  while `code map` / `code group` misclassify every file in the new tree, and
+  docs may cite a directory in the new tree with nothing checking it.
 - **Verify emptiness against the guard, not against `ls`.** Before deleting any
   top-level directory: `git grep -n '"<dirname>"' -- lib/test tools/lint tools/scripts lib/framework`
   and `git grep -n '<dirname>/' -- tools/lint tools/scripts`. A directory with

@@ -5514,7 +5514,9 @@ check-markdown-links:
 # inline code. Every dead path an agent actually trusts is inline code — a doc
 # naming `domain/consensus/src/tx_structural.c:121` reads as verified and sends
 # the agent to a directory that moved. This gate resolves every backticked
-# source path in tracked Markdown; shrink-only baseline.
+# source path in tracked Markdown, plus every backticked module directory
+# (`lib/consensus`, `app/events`) — a moved module is invisible to a
+# file-extension scan. Shrink-only baseline.
 check-doc-inline-paths:
 	@echo "══ LINT: inline code paths in Markdown ══"
 	@./tools/lint/check_doc_inline_paths.sh

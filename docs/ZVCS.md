@@ -319,7 +319,7 @@ aligned with) the physical `core/` seal described in ADR-0002. On every
 `vcs_snapshot()`:
 
 1. Load the sealed glob set — from `.zvcs/sealed_paths` if present, else the
-   compiled default: `core/`, `domain/consensus/`, `lib/consensus/`,
+   compiled default: `core/`, `domain/consensus/`, `lib/consensus/`, <!-- doc-path-ok: quotes the compiled glob set in lib/vcs/src/vcs_seal.c, which still lists the pre-core/ globs -->
    `lib/validation/`, `lib/chain/`, `lib/mining/`, `app/jobs/`.
 2. Compute `sealset_hash` — `SHA3(0x24 || concat over the bytewise-sorted
    entry hashes of every manifest entry matching a sealed glob)`. Sorting

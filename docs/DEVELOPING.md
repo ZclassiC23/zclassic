@@ -124,7 +124,9 @@ lint gate" is in `docs/CODEBASE_MAP.md`.
 - `make test` / `make test-parallel` — the canonical test runner. **Use this, not `test_zcl`.**
 - `make t-fast ONLY=<substr>` — one focused run. `ONLY=` is a **substring**
   match, not a group name (`ONLY=wallet` runs 36 groups). Exact names:
-  `build/bin/test_parallel --list`.
+  `make test_parallel && build/bin/test_parallel --list` — the underscore
+  target is the only one that publishes that alias; the run targets execute an
+  epoch candidate under `build/bin/test-strict/epochs/<epoch>/`.
 - `make lint` — all gates; must pass before tests. `make ci` — lint + build + tests + checks.
 - `make deploy` is owner-gated live deployment. All public dev-lane publication,
   stage, relink, and recovery-apply paths currently hard-refuse — the gated
