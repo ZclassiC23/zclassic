@@ -1,13 +1,42 @@
 # docs/ — documentation map
 
-Curated entry map, not an exhaustive file inventory. Start with the entry
-points in order; dated evidence and backlog material are intentionally omitted.
+Curated entry map, not an exhaustive file inventory. Dated evidence and backlog
+material are intentionally omitted.
 
-## Entry points (read in this order)
+There are two audiences here and they need opposite starting points. Pick yours.
 
-- [`HANDOFF.md`](./HANDOFF.md) — current state; read this FIRST on a fresh session.
-- [`MVP.md`](./MVP.md) — the v1 contract: 8 binary acceptance criteria (v1 = MRS 8/8).
+## New here? Start with these three
+
+You want to build it, run it, and change something. In order:
+
+1. [`GETTING_STARTED.md`](./GETTING_STARTED.md) — the fresh-machine path:
+   prerequisites, build, run a node, run the block explorer, set up an isolated
+   development instance.
+2. [`../.github/CONTRIBUTING.md`](../.github/CONTRIBUTING.md) — the contribution
+   contract: the dev loop, which walls are hard (the sealed consensus core), what
+   the git hooks do, and how a PR is judged.
+3. [`HOW_THE_NODE_WORKS.md`](./HOW_THE_NODE_WORKS.md) — the one-page mental
+   model: append-only log → reducer stages → projections → health.
+
+Then [`MVP.md`](./MVP.md) for what "v1" means and an honest readiness account,
+and [`AGENT_TRAPS.md`](./AGENT_TRAPS.md) before you "fix" anything that looks
+broken — several things that look broken are intentional or already done.
+
+**Skip `HANDOFF.md`.** It is live state for the maintainer's own hosted node
+and will tell you nothing about your machine.
+
+## Maintainer entry points (the project's own hosted node)
+
+These describe one specific running node. They are the right starting point if
+you operate that host, and misleading otherwise.
+
+- [`HANDOFF.md`](./HANDOFF.md) — the single live-state page: current height,
+  blockers, in-flight cure. Read FIRST on a fresh maintainer session; nothing
+  else in the tree is allowed to carry a live height claim. Any victory phrase
+  on this page must carry machine-checkable evidence — enforced by the
+  `check-no-uncited-victory` gate ([`AI_SAFETY_GATES.md`](./AI_SAFETY_GATES.md)).
 - [`work/FORWARD_PLAN.md`](./work/FORWARD_PLAN.md) — THE plan, MVP-anchored.
+- [`RUNBOOK.md`](./RUNBOOK.md) — symptom-driven operator troubleshooting.
 
 ## Develop here — the fast loop (read before making changes)
 
@@ -78,6 +107,7 @@ points in order; dated evidence and backlog material are intentionally omitted.
 
 - [`../CLAUDE.md`](../CLAUDE.md) — project instructions for AI agents; native command setup; build/run quick reference.
 - [`DEFENSIVE_CODING.md`](./DEFENSIVE_CODING.md) — mandatory coding standards, enforced by `make lint`.
+- [`AI_SAFETY_GATES.md`](./AI_SAFETY_GATES.md) — the gates that make an AI agent's claims checkable: no uncited victory, no dishonest witness, no hand-pinned rot-prone fact, no undispatched test, and a copy-prove harness with no destructive parameter to pass.
 - [`ATTRIBUTIONS.md`](./ATTRIBUTIONS.md) — concept/code attributions (companion to the root `NOTICE`).
 - [`BOOT_INVARIANTS.md`](./BOOT_INVARIANTS.md) — boot stage ordering invariants (`enum boot_stage`).
 - [`LEGACY_LIFECYCLE.md`](./LEGACY_LIFECYCLE.md) — which `legacy_*` paths are active vs deprecated.

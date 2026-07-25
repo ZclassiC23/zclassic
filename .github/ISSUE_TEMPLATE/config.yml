@@ -1,0 +1,13 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/ZclassiC23/zclassic/blob/main/.github/SECURITY.md
+    about: >
+      Do not open a public issue. Follow the private disclosure process so the
+      report stays confidential until there is a fix.
+  - name: Consensus change (read first — declined on principle)
+    url: https://github.com/ZclassiC23/zclassic/blob/main/docs/CONSENSUS_PARITY_DOCTRINE.md
+    about: >
+      Equihash parameters, activation heights, block/transaction validity:
+      zclassic23 never ships a consensus change first, so these are declined
+      even when opt-in or miner-signaled. Read this before building one.
