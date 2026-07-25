@@ -1,0 +1,202 @@
+# Does this patch compile?
+#
+# Until this workflow existed, the repo's only automation SCANNED the text of
+# a diff and explicitly never executed anything, so an outside contributor
+# could open a pull request and neither they nor the maintainers learned
+# whether the code even built. That is the credibility gap this file closes.
+#
+# ── Security posture (copied from pr-security-review.yml, then extended) ──
+#   * trigger is `pull_request`, NOT `pull_request_target`. Fork PRs run in
+#     the UNTRUSTED context: read-only GITHUB_TOKEN, no repo secrets, no
+#     write access to anything. That is the only context in which it is safe
+#     to COMPILE a stranger's code, and compiling is the entire point here —
+#     unlike the two security workflows, which deliberately never execute PR
+#     code because they hold (or feed) a privileged step.
+#   * `persist-credentials: false` on every checkout — the job never holds a
+#     git credential.
+#   * no `secrets` are referenced anywhere in this file. Adding one later
+#     would break the posture above; don't.
+#   * dependency CACHE is restore-only on pull requests and written only from
+#     a push to the default branch, so a hostile PR cannot poison the cache
+#     that later runs consume.
+#   * nothing here comments on, labels, or otherwise writes to the PR. The
+#     pass/fail check IS the signal.
+#
+# Leave pr-security-review.yml and pr-security-comment.yml alone; they run
+# independently and this workflow neither replaces nor feeds them.
+
+name: Build
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read          # minimal; intentionally NO write, NO secrets
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── JOB 1 — THE CREDIBILITY JOB ────────────────────────────────────────
+  # Answers "does this patch compile" for every pull request, under BOTH
+  # compilers, with no dependency build at all: a whole-tree -fsyntax-only
+  # pass needs only the C sources, the in-tree headers, and the two system
+  # dev packages the sources include directly. Measured 3 s wall over 1174
+  # translation units at 32 workers on the dev reference host, so even a
+  # 4-vCPU hosted runner finishes it in well under a minute.
+  compile-check:
+    name: compile-check (${{ matrix.cc }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false      # a clang failure must not hide a gcc failure
+      matrix:
+        cc: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: the syntax pass scopes its verdict to the files this
+          # pull request actually changed (see below), which needs the base
+          # commit present.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install the direct system headers the sources include
+        run: |
+          sudo apt-get update -qq
+          # zlib.h + <openssl/*.h> are included directly by four TUs
+          # (lib/sim/src/postmortem.c, lib/wallet/src/wallet_keystore.c,
+          # lib/net/src/https_server.c, lib/rpc/src/httpserver.c). The real
+          # build uses the vendored OpenSSL instead; for a syntax pass the
+          # distribution headers are equivalent and cost seconds, not the
+          # from-source dependency build Job 2 pays for.
+          sudo apt-get install -y --no-install-recommends \
+            clang zlib1g-dev libssl-dev
+          ${{ matrix.cc }} --version
+
+      - name: Compute the changed-file scope (pull requests only)
+        id: scope
+        run: |
+          set -eu
+          # On a pull request the verdict is scoped to the files the patch
+          # touches: those must be diagnostic-FREE. Pre-existing diagnostics
+          # elsewhere stay advisory, because this runner's compiler is a
+          # different VERSION from the one the ratchet baseline was recorded
+          # with and version skew must never fail a contributor's patch.
+          #
+          # On push/dispatch there is no diff, so the gate runs its full-tree
+          # ratchet — the strict mode `make lint` uses on the dev host.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git diff --name-only --diff-filter=d \
+              '${{ github.event.pull_request.base.sha }}' HEAD \
+              -- '*.c' '*.h' > changed.txt
+            echo "scope=$PWD/changed.txt" >> "$GITHUB_OUTPUT"
+            echo "Changed C files in this pull request:"
+            cat changed.txt
+          else
+            echo "scope=" >> "$GITHUB_OUTPUT"
+            echo "not a pull request — running the full-tree ratchet"
+          fi
+
+      - name: Whole-tree syntax pass (${{ matrix.cc }})
+        env:
+          ZCL_CC: ${{ matrix.cc }}
+          ZCL_PORTABILITY_SCOPE: ${{ steps.scope.outputs.scope }}
+        run: |
+          # --self-test first: proves the flag set still REJECTS a planted
+          # violation, so a mis-built flag set cannot report a hollow pass.
+          tools/lint/check_clang_portability.sh --self-test
+          tools/lint/check_clang_portability.sh
+
+      # The lint umbrella is compiler-independent, so it runs on exactly one
+      # matrix leg rather than twice. It needs no vendored dependency: its two
+      # tool binaries (core_seal, check_observability_pairing) are single-file
+      # compiles. Measured 12.7 s wall at 8 jobs on the dev reference host.
+      - name: Lint umbrella (make lint)
+        if: matrix.cc == 'gcc'
+        run: make lint
+
+  # ── JOB 2 — the fuller build, on cached dependencies ───────────────────
+  # SCOPE, and what is deliberately NOT here:
+  #   INCLUDED  `make vendor-ready` — builds every pinned dependency from a
+  #             SHA256-verified tarball (OpenSSL, SQLite, libevent, LevelDB,
+  #             zlib) and then independently audits the installed bytes.
+  #   INCLUDED  `make build-only` — compiles every node translation unit with
+  #             GCC against those real vendored headers. Non-LTO and per-TU,
+  #             so it genuinely parallelizes and gives real "it builds"
+  #             evidence for the cost of a compile.
+  #   EXCLUDED  `make ci` as a whole. It pulls in `bench-regress`, which is a
+  #             timing measurement — on a shared hosted runner with noisy
+  #             neighbours that is a coin flip, not a gate. Coverage is
+  #             likewise excluded: it is a second instrumented rebuild for a
+  #             number nobody reads on a PR.
+  #   EXCLUDED  the whole-program LTO link (`make zclassic23`) and
+  #             `make test-parallel`. One `cc` over ~1200 files at -O3 with
+  #             -flto=auto is a multi-GB, tens-of-minutes step on a 4-vCPU
+  #             runner, and parts of the test corpus expect a local node
+  #             datadir. Both belong on the project's own machines
+  #             (`zcl-remote-verify.sh`), which is where they already run.
+  #   EXCLUDED  `make ci-symbol-floor` — it inspects the LINKED binary, so it
+  #             follows the LTO link out of this job.
+  build:
+    name: build (cached dependencies)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential perl
+          gcc --version
+
+      # The first dependency build fetches pinned tarballs and compiles
+      # OpenSSL from source — minutes, and network-dependent. The cache key is
+      # the hash of the pin file itself (tools/scripts/build_vendor.sh holds
+      # every URL + SHA256) plus the patches applied to them, so bumping a pin
+      # invalidates the cache exactly when it should and never otherwise.
+      - name: Restore vendored dependencies
+        id: vendor-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            vendor/lib
+            vendor/include
+            vendor/provenance
+          key: vendor-${{ runner.os }}-${{ hashFiles('tools/scripts/build_vendor.sh', 'vendor/patches/**') }}
+
+      - name: Build/repair + audit vendored dependencies
+        run: |
+          # Runs even on a cache hit: it is incremental (provenance stamps
+          # decide what to rebuild) and `make vendor-ready` also runs the
+          # independent byte audit over whatever the cache handed us. A stale
+          # or partial cache therefore self-repairs instead of poisoning the
+          # build.
+          make vendor-ready
+
+      # Cache WRITE only from the default branch. A fork pull request must
+      # never be able to place bytes that a later run consumes.
+      - name: Save vendored dependencies
+        if: >-
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/main' &&
+          steps.vendor-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            vendor/lib
+            vendor/include
+            vendor/provenance
+          key: ${{ steps.vendor-cache.outputs.cache-primary-key }}
+
+      - name: Compile every node translation unit
+        run: make build-only -j"$(nproc)"

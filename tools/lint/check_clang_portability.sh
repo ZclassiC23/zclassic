@@ -1,0 +1,478 @@
+#!/usr/bin/env bash
+# Copyright 2026 Rhett Creighton - Apache License 2.0
+#
+# check_clang_portability.sh — SECOND-COMPILER portability gate.
+#
+# The node ships as one whole-program GCC build. Nothing in the repo ever
+# asked a second C compiler whether the tree is even well-formed, so
+# GCC-only spellings (a `/* fallthrough */` comment GCC honours and clang
+# does not, a declaration that only exists because glibc's _FORTIFY_SOURCE
+# wrapper pulled it in, a truncating snprintf GCC's analysis misses) landed
+# invisibly. This gate runs a whole-tree
+#
+#     clang -std=c23 -Wall -Wextra -Werror -pedantic -Wimplicit-fallthrough
+#           -fsyntax-only
+#
+# over the SAME source set the node binary is built from, and ratchets the
+# realized diagnostic sites against a recorded baseline. A patch that adds a
+# new clang diagnostic fails; the recorded pre-existing sites are a visible
+# to-do list, not a silent allowance.
+#
+# Cost: measured 3.0 s wall at 32 workers over 1174 translation units on the
+# dev reference host — cheaper than most gates in the umbrella.
+#
+# SKIP CONTRACT: when clang is absent this prints a loud SKIP and exits 0,
+# exactly like `make ci-symbol-floor` does when objdump/ldd are missing. An
+# outside contributor without clang installed must never be blocked by a gate
+# whose tool they do not have.
+#
+# NOTE ON LTO SPELLING: the node's CFLAGS carry `-flto=auto`, which is a GCC
+# spelling — clang wants `-flto=thin` (or plain `-flto`). This gate is
+# -fsyntax-only, so it never reaches a link and never expands LTO flags; the
+# difference only matters if a full clang LINK lane is added later. Do not
+# copy `-flto=auto` into a clang link.
+#
+# Flag replication. The rule is: reproduce the node's PREPROCESSOR-visible
+# environment exactly, then add warnings. Two points deserve explanation.
+#
+#   -O3 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2   Copied verbatim from the node
+#       CFLAGS, and load-bearing even though -fsyntax-only never generates
+#       code. glibc only arms its _FORTIFY_SOURCE wrapper headers when
+#       __OPTIMIZE__ is defined, and those wrappers incidentally declare a
+#       few POSIX functions (realpath) that _POSIX_C_SOURCE=200809L alone
+#       leaves hidden. Drop the -O and the tree reports phantom "undeclared
+#       identifier" errors that say nothing about clang. -fsyntax-only stops
+#       before IR generation, so the -O costs nothing.
+#       (Passing -D_DEFAULT_SOURCE instead was tried and rejected: several
+#       lib/net TUs #define it themselves, so the command-line define
+#       collides into -Wmacro-redefined — a gate artifact, not a finding.)
+#
+#   -Wno-gnu-zero-variadic-macro-arguments   util/log_macros.h and its
+#       callers use the GNU `, ##__VA_ARGS__` comma-elision extension in
+#       every LOG_* macro. GCC accepts it silently under -pedantic; clang
+#       diagnoses it once per expansion, which would bury every real finding
+#       under thousands of duplicates of one known, deliberate, both-compilers
+#       -supported extension. The standard C23 spelling is `__VA_OPT__(,)`;
+#       converting the LOG_* family is a separate change. This is the ONLY
+#       warning class this gate switches off.
+#
+# The node's `-Wno-unused-result` IS copied (clang spells it the same). Its
+# `-Wno-stringop-overflow` is NOT: clang has no -Wstringop-overflow, and an
+# unknown -Wno-* is itself an error under -Werror (-Wunknown-warning-option).
+# Same class of trap as -flto=auto above — check a GCC flag exists in clang
+# before adding it here.
+#
+# KNOWN BLIND SPOT: with _FORTIFY_SOURCE armed (as the real build has it),
+# glibc redirects snprintf through __snprintf_chk, and clang's
+# -Wformat-truncation stops seeing the call. Running this gate's flag set
+# with `-U_FORTIFY_SOURCE` and no -O surfaces nine "'snprintf' will always
+# be truncated" sites in the stage/blocker reason builders; those are real
+# and worth fixing, but they are hidden from the faithful-to-the-build
+# configuration this gate deliberately runs.
+#
+# SECOND COMPILER, NOT ONLY CLANG: point ZCL_CC at gcc and the same scan runs
+# under GCC's front end with GCC's spelling of the diagnostic-format flags and
+# its own baseline file. That is what lets one script answer "does this patch
+# compile" for BOTH compilers in CI. Default is clang, because clang is the
+# one the node is never built with.
+#
+# Modes:
+#   (default)              scan + ratchet against the baseline; exit 1 on any
+#                          new diagnostic site.
+#   ZCL_LINT_MODE=UPDATE   re-record the baseline from the current tree.
+#                          Never runs under `make lint`.
+#   --self-test            prove the gate actually trips: compile a planted
+#                          violating TU and assert the compiler rejects it.
+#                          Guards against a hollow pass from a mis-built flag
+#                          set.
+#   --sites                print every diagnostic the tree currently produces
+#                          (the to-do list the baseline summarizes).
+#
+# Env:
+#   ZCL_CC             compiler to run (default: clang; gcc also supported)
+#   ZCL_CC_JOBS        parallel workers (default: nproc, capped at 32)
+#   ZCL_PORTABILITY_SCOPE
+#       Path to a file of repo-relative paths (one per line) — normally the
+#       set of files a pull request touched. When set:
+#         * a diagnostic in a LISTED file FAILS, baseline or not: your patch
+#           must compile;
+#         * a diagnostic elsewhere that exceeds the baseline is reported as a
+#           NOTE, not a failure.
+#       This exists because the baseline is recorded against ONE compiler
+#       build, and a CI runner's compiler is a different version with a
+#       different diagnostic set. Scoping to the diff keeps the CI verdict
+#       about the contributor's code instead of about GCC/clang version skew.
+#       Unset (the `make lint` path) = full-tree ratchet.
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$ROOT"
+# shellcheck source=tools/lint/gate_lib.sh
+. tools/lint/gate_lib.sh
+
+CC_BIN="${ZCL_CC:-clang}"
+MAKEFILE="Makefile"
+
+# Known floor for the scan set. The node's release source set is ~1174 TUs;
+# anything under this means the Makefile variable parse below broke or a
+# whole layer moved, and a "clean" verdict off that would be hollow.
+SRC_FLOOR=900
+
+# Common to both front ends. -Wno-unused-result is not a relaxation: the node
+# CFLAGS carry it and both compilers spell it the same.
+WARN_FLAGS=(
+    -std=c23
+    -Wall
+    -Wextra
+    -Werror
+    -pedantic
+    -Wimplicit-fallthrough
+    -fsyntax-only
+    -Wno-unused-result
+)
+
+# The node CFLAGS' preprocessor-visible subset — see the header block on why
+# the optimization level is not optional here.
+BUILD_ENV_FLAGS=(
+    -O3
+    -U_FORTIFY_SOURCE
+    -D_FORTIFY_SOURCE=2
+)
+
+DEFINES=(
+    -D_POSIX_C_SOURCE=200809L
+    -DZCL_AR_ENFORCE
+    # Build-identity macros the node's CFLAGS inject; any value parses.
+    -DZCL_BUILD_SOURCE_ID=\"clang-portability-gate\"
+    -DZCL_BUILD_CLEAN=1
+)
+
+echo "══ LINT: clang portability (second-compiler whole-tree syntax pass) ══"
+
+# ── SKIP contract ────────────────────────────────────────────────────────
+if ! command -v "$CC_BIN" >/dev/null 2>&1; then
+    echo "  check-clang-portability: SKIP — '$CC_BIN' is not installed."
+    echo "  This gate is a SECOND-compiler cross-check, not a build"
+    echo "  requirement: the node builds with GCC and every other gate still"
+    echo "  applies. Install clang (apt install clang) to run it, or set"
+    echo "  ZCL_CC=<path>. Skipping is not a failure."
+    exit 0
+fi
+
+# ── Compiler family: picks the diagnostic-format flags and the baseline ──
+# Both front ends must be told "one line per diagnostic, no caret art, no
+# colour" or the parsed log stops being stable, but they spell it
+# differently — and an unknown -f/-W is itself fatal under -Werror.
+if "$CC_BIN" --version 2>/dev/null | head -1 | grep -qi clang; then
+    FAMILY=clang
+    WARN_FLAGS+=(
+        # The one real suppression — see the header block.
+        -Wno-gnu-zero-variadic-macro-arguments
+        -fno-caret-diagnostics
+        -fno-color-diagnostics
+        -fno-diagnostics-fixit-info
+    )
+else
+    FAMILY=gcc
+    WARN_FLAGS+=(
+        # Carried by the node CFLAGS; GCC-only, absent from clang.
+        -Wno-stringop-overflow
+        -fno-diagnostics-show-caret
+        -fdiagnostics-color=never
+    )
+fi
+BASELINE="tools/lint/portability_baseline.${FAMILY}.txt"
+
+# ── Include search path ──────────────────────────────────────────────────
+# Superset by construction (every include/ root under the layer dirs); an
+# extra -I can only add a search path, and headers are namespaced under
+# include/<module>/ so there is nothing to collide.
+mapfile -t INC_DIRS < <(find app config lib core domain application adapters \
+    sdk ports -maxdepth 3 -type d -name include 2>/dev/null | sort)
+gate_require_scanned "${#INC_DIRS[@]}" 20 check-clang-portability \
+    "no include/ roots found — the layer directory layout moved"
+
+INC_FLAGS=()
+for d in "${INC_DIRS[@]}"; do INC_FLAGS+=("-I$d"); done
+# Fixed roots the Makefile adds by hand (TOOLS_INCLUDES, DEVLOOP_INCLUDES,
+# vendor headers).
+INC_FLAGS+=(-Itools -Itools/dev -Ivendor/include)
+
+# ── Source set: derived from the Makefile, not hardcoded ─────────────────
+# The build's layer lists are the single source of truth. Parsing them here
+# means a new lib module or app dir is covered the day it is added, instead
+# of silently falling out of the gate's scan.
+makefile_list() {
+    awk -v var="$1" '
+        $0 ~ "^" var "[[:space:]]*[:+]?=" { inb = 1; sub("^" var "[[:space:]]*[:+]?=", "") }
+        inb {
+            line = $0
+            cont = (line ~ /\\[[:space:]]*$/)
+            sub(/\\[[:space:]]*$/, "", line)
+            printf "%s ", line
+            if (!cont) exit
+        }
+    ' "$MAKEFILE"
+}
+
+APP_DIRS="$(makefile_list APP_DIRS)"
+LIB_MODULES="$(makefile_list LIB_MODULES)"
+CORE_CONTEXTS="$(makefile_list CORE_CONTEXTS)"
+DOMAIN_CONTEXTS="$(makefile_list DOMAIN_CONTEXTS)"
+APPLICATION_CONTEXTS="$(makefile_list APPLICATION_CONTEXTS)"
+
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/zcl-clang-portability.XXXXXX")" || {
+    echo "check-clang-portability: FATAL — mktemp failed." >&2; exit 2; }
+trap 'rm -rf "$WORK"' EXIT
+
+SRC_RAW="$WORK/srcs.raw"
+: > "$SRC_RAW"
+collect() { find "$1" -maxdepth 1 -name '*.c' -type f 2>/dev/null >> "$SRC_RAW"; }
+
+for d in $APP_DIRS;             do collect "app/$d/src"; done
+for m in $LIB_MODULES;          do collect "lib/$m/src"; done
+for c in $CORE_CONTEXTS;        do collect "core/$c/src"; done
+for c in $DOMAIN_CONTEXTS;      do collect "domain/$c/src"; done
+for c in $APPLICATION_CONTEXTS; do collect "application/$c/src"; done
+collect config/src
+collect adapters/outbound/persistence/src
+collect tools/dev
+collect tools/command
+collect src
+
+# `/_` marks an ephemeral source the build itself filters out
+# (zcl_filter_ephemeral_sources in the Makefile) — mirror that exactly.
+SRC_LIST="$WORK/srcs.txt"
+grep -v '/_' "$SRC_RAW" | sort -u > "$SRC_LIST"
+SRC_COUNT="$(wc -l < "$SRC_LIST")"
+
+gate_require_scanned "$SRC_COUNT" "$SRC_FLOOR" check-clang-portability \
+    "parsed APP_DIRS/LIB_MODULES/CORE_CONTEXTS from $MAKEFILE — a variable rename there empties this scan"
+
+# ── Self-test: prove the flag set actually rejects a violation ────────────
+if [ "${1:-}" = "--self-test" ]; then
+    probe="$WORK/probe.c"
+    cat > "$probe" <<'PROBE'
+int zcl_gate_probe(int a);
+int zcl_gate_probe(int a)
+{
+    int unused_on_purpose = a + 1;
+    switch (a) {
+    case 1:
+        a++;
+    case 2:
+        a += 2;
+        break;
+    default:
+        break;
+    }
+    return a;
+}
+PROBE
+    if "$CC_BIN" "${WARN_FLAGS[@]}" "${BUILD_ENV_FLAGS[@]}" "${DEFINES[@]}" "$probe" >/dev/null 2>&1; then
+        echo "FAIL: --self-test — the flag set ACCEPTED a TU with an unused"
+        echo "  variable and an unannotated switch fall-through. The gate is"
+        echo "  hollow: it would report 'clean' on real violations."
+        exit 1
+    fi
+    clean="$WORK/clean.c"
+    printf 'int zcl_gate_clean(int a);\nint zcl_gate_clean(int a) { return a + 1; }\n' > "$clean"
+    if ! "$CC_BIN" "${WARN_FLAGS[@]}" "${BUILD_ENV_FLAGS[@]}" "${DEFINES[@]}" "$clean" >/dev/null 2>&1; then
+        echo "FAIL: --self-test — the flag set REJECTED a trivially clean TU."
+        echo "  The gate would false-fail every contributor."
+        exit 1
+    fi
+    echo "  OK: --self-test — flag set trips on a violation, passes clean code"
+    exit 0
+fi
+
+# ── The scan ─────────────────────────────────────────────────────────────
+JOBS="${ZCL_CC_JOBS:-$(nproc 2>/dev/null || echo 4)}"
+[[ "$JOBS" =~ ^[0-9]+$ ]] && [ "$JOBS" -ge 1 ] || JOBS=4
+[ "$JOBS" -le 32 ] || JOBS=32
+
+LOG="$WORK/clang.log"
+OUT_DIR="$WORK/out"
+mkdir -p "$OUT_DIR"
+printf '%s\0' "${WARN_FLAGS[@]}" "${BUILD_ENV_FLAGS[@]}" "${DEFINES[@]}" "${INC_FLAGS[@]}" > "$WORK/flags.nul"
+
+# One clang per TU, N at a time, each writing to its OWN file. Concurrent
+# writers sharing one fd tear their output once a diagnostic block exceeds
+# PIPE_BUF, which made an earlier draft of this gate report a different
+# finding set on every run. Per-TU files make the scan bit-deterministic.
+#
+# Exit status is ignored on purpose: the verdict comes from PARSING the
+# diagnostics, so a failing clang can never short-circuit the scan into a
+# hollow pass.
+xargs -a "$SRC_LIST" -P "$JOBS" -n 1 -I '{}' \
+    env ZCL_GATE_FLAGS="$WORK/flags.nul" ZCL_GATE_CC="$CC_BIN" ZCL_GATE_OUT="$OUT_DIR" \
+    bash -c 'mapfile -t -d "" f < "$ZCL_GATE_FLAGS"
+             o="$ZCL_GATE_OUT/$(printf "%s" "$1" | tr -c "[:alnum:]" "_").log"
+             "$ZCL_GATE_CC" "${f[@]}" "$1" > "$o" 2>&1' _ '{}' \
+    >/dev/null 2>&1
+cat "$OUT_DIR"/*.log > "$LOG" 2>/dev/null
+
+# Every TU must have produced a log file. A missing one means its worker
+# never ran (fork failure, ENOSPC) and its diagnostics would be invisible.
+LOG_COUNT="$(find "$OUT_DIR" -maxdepth 1 -name '*.log' -type f | wc -l)"
+gate_require_scanned "$LOG_COUNT" "$SRC_COUNT" check-clang-portability \
+    "only $LOG_COUNT of $SRC_COUNT translation units produced a clang result"
+
+# A diagnostic SITE is "<path>:<line>:<col>: error|warning". Deduplicate:
+# a diagnostic inside a shared header is reported once per including TU, and
+# counting those per-TU would make the gate trip when an UNRELATED new .c
+# starts including that header. Attribute each unique site to the file it is
+# reported in.
+SITES="$WORK/sites.txt"
+grep -oE '^[A-Za-z0-9_./-]+\.[ch]:[0-9]+:[0-9]+: (error|warning): .*$' "$LOG" \
+    | sort -u > "$SITES"
+
+COUNTS="$WORK/counts.txt"
+cut -d: -f1 "$SITES" | sort | uniq -c \
+    | awk '{ printf "%s %s\n", $2, $1 }' | sort > "$COUNTS"
+
+TOTAL_SITES="$(wc -l < "$SITES")"
+
+# --sites: print every diagnostic the tree currently produces. This is the
+# to-do list the baseline summarizes; keep it out of the normal run so a
+# green gate stays one line.
+if [ "${1:-}" = "--sites" ]; then
+    echo "  $TOTAL_SITES diagnostic site(s) over $SRC_COUNT TU(s):"
+    sed 's/^/    /' "$SITES"
+    exit 0
+fi
+
+# ── UPDATE mode: re-record the baseline ──────────────────────────────────
+if [ "${ZCL_LINT_MODE:-}" = "UPDATE" ]; then
+    {
+        echo "# $FAMILY portability ratchet baseline — regenerate with:"
+        echo "#   ZCL_CC=$CC_BIN ZCL_LINT_MODE=UPDATE tools/lint/check_clang_portability.sh"
+        echo "#"
+        echo "# One '<path> <count>' line per file that still holds $FAMILY"
+        echo "# diagnostic sites under the gate's flag set. Every one is a real"
+        echo "# second-compiler finding to be driven to zero; a file absent from"
+        echo "# this list must produce ZERO diagnostics. Counts may only go DOWN."
+        echo "#"
+        echo "# Recorded from $SRC_COUNT translation units with:"
+        echo "#   $("$CC_BIN" --version 2>/dev/null | head -1)"
+        echo "# A different compiler VERSION legitimately reports a different"
+        echo "# set; that is why CI scopes its verdict with"
+        echo "# ZCL_PORTABILITY_SCOPE instead of trusting this file verbatim."
+        cat "$COUNTS"
+    } > "$BASELINE"
+    echo "  UPDATED: $BASELINE ($(wc -l < "$COUNTS") file(s), $TOTAL_SITES site(s))"
+    exit 0
+fi
+
+if [ ! -f "$BASELINE" ]; then
+    echo "check-clang-portability: FATAL — baseline '$BASELINE' is missing." >&2
+    echo "  Refusing to report 'clean' with nothing to ratchet against." >&2
+    echo "  Regenerate: ZCL_CC=$CC_BIN ZCL_LINT_MODE=UPDATE $0" >&2
+    exit 2
+fi
+
+declare -A BASE=()
+gate_load_kv_file "$BASELINE" BASE
+
+# ── Scope: PR-diff mode vs full-tree ratchet ─────────────────────────────
+declare -A SCOPE=()
+SCOPED=0
+SCOPE_FILE="${ZCL_PORTABILITY_SCOPE:-}"
+if [ -n "$SCOPE_FILE" ]; then
+    if [ ! -f "$SCOPE_FILE" ]; then
+        echo "check-clang-portability: FATAL — ZCL_PORTABILITY_SCOPE points at" >&2
+        echo "  '$SCOPE_FILE', which does not exist. Refusing to guess a scope." >&2
+        exit 2
+    fi
+    gate_load_list_file "$SCOPE_FILE" SCOPE SCOPE_N
+    SCOPED=1
+    echo "  scope: ${SCOPE_N:-0} changed file(s) must be diagnostic-FREE;" \
+         "the rest is ratcheted advisory-only (compiler-version skew)."
+fi
+
+regressions=""
+advisory=""
+improvements=""
+while read -r file count; do
+    [ -n "$file" ] || continue
+    allowed="${BASE[$file]:-0}"
+    if [ "$SCOPED" -eq 1 ] && [ -n "${SCOPE[$file]:-}" ]; then
+        # A file this patch touched. The baseline does not excuse it: the
+        # whole point is that the code you are submitting compiles.
+        [ "$count" -gt 0 ] && \
+            regressions="${regressions}  $file: $count diagnostic(s) in a file this change touches"$'\n'
+        continue
+    fi
+    if [ "$count" -gt "$allowed" ]; then
+        if [ "$SCOPED" -eq 1 ]; then
+            advisory="${advisory}  $file: $count site(s), baseline allows $allowed"$'\n'
+        else
+            regressions="${regressions}  $file: $count site(s), baseline allows $allowed"$'\n'
+        fi
+    elif [ "$count" -lt "$allowed" ]; then
+        improvements="${improvements}  $file: $count site(s) (baseline $allowed)"$'\n'
+    fi
+done < "$COUNTS"
+
+# A baselined file that now produces nothing at all is an improvement too.
+for file in "${!BASE[@]}"; do
+    if ! gate_grep -qE "^${file//./\\.} " "$COUNTS"; then
+        improvements="${improvements}  $file: 0 site(s) (baseline ${BASE[$file]})"$'\n'
+    fi
+done
+
+print_diags_for() {
+    local list="$1" f
+    while read -r f; do
+        [ -n "$f" ] || continue
+        gate_grep -E "^${f//./\\.}:" "$SITES" | sed 's/^/    /' >&2 || true
+    done < <(printf '%s' "$list" | sed 's/^  //; s/:.*//')
+}
+
+if [ -n "${regressions//[[:space:]]/}" ]; then
+    echo "" >&2
+    echo "FAIL: $FAMILY diagnostic site(s) — this change does not compile" >&2
+    echo "      cleanly under $CC_BIN." >&2
+    echo "" >&2
+    printf '%s' "$regressions" >&2
+    echo "" >&2
+    echo "  Diagnostics:" >&2
+    print_diags_for "$regressions"
+    echo "" >&2
+    echo "  Fix the code. Cross-compiler traps that commonly land here:" >&2
+    echo "    * '/* fallthrough */' COMMENTS — GCC honours them, clang does" >&2
+    echo "      not. Use [[fallthrough]]; (C23) instead." >&2
+    echo "    * a preprocessor directive inside a function-call argument list:" >&2
+    echo "      undefined behaviour, and once _FORTIFY_SOURCE turns that call" >&2
+    echo "      into a macro, clang rejects it outright." >&2
+    echo "    * snprintf into a buffer smaller than the format literal." >&2
+    echo "    * bitwise & / | on bool operands (cast if the branchless form is" >&2
+    echo "      deliberate, e.g. constant-time compares)." >&2
+    echo "  Reproduce one file:" >&2
+    echo "    $CC_BIN ${WARN_FLAGS[*]} ${BUILD_ENV_FLAGS[*]} <the -I set> <file.c>" >&2
+    exit 1
+fi
+
+if [ -n "${advisory//[[:space:]]/}" ]; then
+    echo "  NOTE: diagnostics outside this change exceed the recorded baseline."
+    echo "        Expected when this compiler differs in version from the one"
+    echo "        the baseline was recorded with. Not failing the change:"
+    printf '%s' "$advisory"
+fi
+
+if [ -n "${improvements//[[:space:]]/}" ] && [ "$SCOPED" -eq 0 ]; then
+    echo "  NOTE: $FAMILY diagnostics went DOWN — tighten the ratchet:"
+    printf '%s' "$improvements"
+    echo "    ZCL_CC=$CC_BIN ZCL_LINT_MODE=UPDATE tools/lint/check_clang_portability.sh"
+fi
+
+if [ "$SCOPED" -eq 1 ]; then
+    echo "  OK: $SRC_COUNT TU(s) syntax-checked with $CC_BIN ($FAMILY) at $JOBS jobs;" \
+         "every changed file is diagnostic-free"
+else
+    echo "  OK: $SRC_COUNT TU(s) syntax-checked with $CC_BIN ($FAMILY) at $JOBS jobs;" \
+         "$TOTAL_SITES known diagnostic site(s), no new ones"
+fi
+exit 0
