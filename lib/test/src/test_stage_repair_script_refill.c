@@ -23,7 +23,7 @@
  *     REPLACE) and re-advance coins to the tip.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "bloom/merkle.h"
 #include "chain/chainparams.h"

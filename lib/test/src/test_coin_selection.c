@@ -7,7 +7,7 @@
  * first-fit behavior and establishes acceptance criteria for any
  * future BnB or knapsack upgrade. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "wallet/wallet.h"
 
 #include <stdio.h>

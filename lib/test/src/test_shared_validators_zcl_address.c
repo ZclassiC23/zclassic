@@ -57,7 +57,7 @@
  * runs) and the Sapling bech32 payment-address codec, both of which
  * are pure codecs with no side effects. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "models/shared_validators.h"
 #include "keys/key_io.h"

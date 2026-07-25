@@ -7,7 +7,9 @@
  * Round-trip equivalence, delta-replay root equivalence, and corruption
  * fall-back are all here. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "core/utiltime.h"
+#include "validation/main_state.h"
 
 static void fill_hash(struct uint256 *h, uint8_t seed, size_t idx)
 {

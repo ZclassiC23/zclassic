@@ -5,7 +5,7 @@
  * migration stamping, and rollback-on-any-mismatch.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/utxo_snapshot_loader.h"
 #include "config/boot.h"

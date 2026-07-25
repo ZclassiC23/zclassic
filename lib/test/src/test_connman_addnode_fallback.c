@@ -1,7 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "platform/time_compat.h"
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "coins/undo.h"
+#include "net/connman.h"
+#include "net/tor_integration.h"
 #include "storage/census_read.h"
 #include "util/blocker.h"
 #include <unistd.h>

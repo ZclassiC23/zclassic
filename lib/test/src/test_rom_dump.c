@@ -18,7 +18,7 @@
  *     utxo_root_ladder) are present with the right shape.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/checkpoints.h"
 #include "chain/utxo_root_ladder.h"

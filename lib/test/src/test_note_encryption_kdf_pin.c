@@ -19,10 +19,11 @@
  * real functions over fixed inputs and are pinned byte-for-byte: any drift in
  * the KDF construction breaks the seal.
  *
- * sapling/note_encryption.h is pulled in transitively via test/test_helpers.h.
+ * sapling/note_encryption.h is included directly by this file.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "sapling/note_encryption.h"
 
 /* Fill `buf[32]` with bytes (base + i) & 0xff for a deterministic, distinct
  * 32-byte input. Distinct `base` values produce distinct blocks. */

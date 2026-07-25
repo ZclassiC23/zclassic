@@ -44,7 +44,7 @@
  * reason to weaken production entropy.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "sapling/sapling.h"
 #include "sapling/sapling_prover.h"

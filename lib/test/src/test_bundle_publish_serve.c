@@ -17,7 +17,7 @@
  * Fixtures live under mkdtemp() — never a real datadir, never the network.
  * Touches no consensus predicate. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "net/rom_seed.h"
 #include "config/bundle_exporter.h"
 

@@ -9,7 +9,7 @@
  * `snapshot_sync_service` stays fully authoritative in production; this test
  * exercises the comparator in isolation. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "net/sync_reduce_adapter.h"
 #include <string.h>
 

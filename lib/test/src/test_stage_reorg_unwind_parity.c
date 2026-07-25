@@ -45,7 +45,7 @@
  * SHA3 commitment of each derived UTXO set, exercising the stage inverse
  * path. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "bloom/merkle.h"
 #include "chain/chain.h"

@@ -5,7 +5,10 @@
  *
  * FEATURE: Bit-for-bit UTXO compatibility with ZClassic C++ (zclassicd) */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "chain/pow.h"
+#include "coins/compressor.h"
+#include "coins/coins_view.h"
 
 #ifndef COINBASE_MATURITY
 #define COINBASE_MATURITY 100

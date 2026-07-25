@@ -37,7 +37,7 @@
  * Each assertion invokes the real function and asserts the correct result.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "core/uint256.h"
 #include "primitives/transaction.h"

@@ -4,7 +4,7 @@
  * SQLite cache save/load, round-trip integrity, and edge cases.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "services/block_index_loader.h"
 #include "services/block_index_cache_envelope.h"
 #include "services/block_index_integrity.h"

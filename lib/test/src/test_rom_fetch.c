@@ -18,7 +18,7 @@
  * assumptions (zero-root handshake, frame/chunk counter alignment, MAC) and
  * the no-partial-trust discard against the merged server code. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "net/rom_fetch.h"
 #include "net/rom_journal.h"
 #include "net/rom_peer_scoring.h"

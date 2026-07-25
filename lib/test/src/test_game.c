@@ -2,7 +2,7 @@
  *
  * Tests for P2P game engine. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "net/p2p_game.h"
 
 int test_game(void)

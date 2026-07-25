@@ -9,7 +9,7 @@
  * each upgrade defined in mainnet consensus params.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "domain/consensus/upgrades.h"
 #include "consensus/upgrades.h"

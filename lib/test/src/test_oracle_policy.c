@@ -24,7 +24,7 @@
  * test's globals.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "services/oracle_policy.h"
 #include "json/json.h"
 

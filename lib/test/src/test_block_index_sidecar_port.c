@@ -27,7 +27,7 @@
  * untouched. This file is the hermetic adapter/port-level companion.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "adapters/outbound/persistence/block_index_sidecar_sqlite.h"
 #include "ports/block_index_sidecar_port.h"

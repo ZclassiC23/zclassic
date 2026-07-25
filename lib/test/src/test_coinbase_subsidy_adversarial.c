@@ -78,7 +78,7 @@
  * consensus predicate is touched — this file only pins existing behavior.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "sim/simnet.h"
 #include "domain/consensus/subsidy.h"

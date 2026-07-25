@@ -8,7 +8,7 @@
  * _Static_assert guards in those headers are exercised by simply compiling
  * this file (any layout drift breaks the build, not just this test). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "core/zcl_ids.h"
 #include "net/flyclient.h"
 #include "services/snapshot_manifest.h"

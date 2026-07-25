@@ -3,7 +3,7 @@
  * Unit tests for the deterministic chaos scenario runner.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include <stdbool.h>
 #include <stdio.h>

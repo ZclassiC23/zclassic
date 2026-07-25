@@ -11,7 +11,7 @@
  * any drift in either side is caught immediately.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "domain/consensus/pow.h"
 #include "chain/pow.h"

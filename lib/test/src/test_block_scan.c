@@ -2,7 +2,7 @@
  * Tests for block file scanning, nChainTx propagation, and
  * BLOCK_FAILED_CHILD propagation. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "storage/coins_view_sqlite.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"

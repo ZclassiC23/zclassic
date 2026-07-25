@@ -10,7 +10,7 @@
  * (ZCL_LEGACY_DATADIR override or $HOME/.zclassic). The live block is
  * skipped with PASS in CI so a fresh checkout doesn't fail. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "adapters/outbound/persistence/block_log_legacy.h"
 #include "ports/block_log_port.h"
 

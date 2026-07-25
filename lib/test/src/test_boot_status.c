@@ -13,7 +13,7 @@
  * Node-free and filesystem-scoped to a private mkdtemp dir, so it runs under
  * the parallel test driver without touching any live datadir. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "util/boot_status.h"
 #include "util/boot_phase.h"
 

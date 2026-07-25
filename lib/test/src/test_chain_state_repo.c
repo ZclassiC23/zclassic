@@ -8,7 +8,7 @@
  * Each test lives in its own static helper that returns a failure
  * count. The top-level test_chain_state_repo() aggregates them. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "config/db_service.h"
 #include "services/chain_state_service.h"
 #include "validation/chainstate.h"

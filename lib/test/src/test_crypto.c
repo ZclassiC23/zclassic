@@ -2,7 +2,13 @@
  * Crypto hash tests: SHA-256, SHA-512, SHA-1, RIPEMD-160, HMAC-SHA256,
  * BLAKE2b, Hash256, Hash160. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "crypto/sha1.h"
+#include "crypto/hmac_sha256.h"
+#include "crypto/pbkdf2_sha256.h"
+#include "crypto/blake2b.h"
+#include "core/hash.h"
+#include "crypto/ed25519.h"
 #include "platform/time_compat.h"
 #include "util/safe_alloc.h"
 

@@ -20,7 +20,7 @@
  *
  * All scratch work happens under ./test-tmp/ (project no-/tmp convention). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "codeindex/codeindex.h"
 #include "codeindex/codeindex_build.h"

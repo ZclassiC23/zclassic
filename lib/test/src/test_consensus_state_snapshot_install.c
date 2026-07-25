@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Atomic promotion tests for external zcl.consensus_state_bundle.v1 files. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "coins/utxo_commitment.h"
 #include "chain/checkpoints.h"

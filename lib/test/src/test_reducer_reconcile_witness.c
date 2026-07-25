@@ -31,7 +31,7 @@
  * Fixture is a trimmed copy of test_reducer_frontier_reconcile_light.c's. */
 
 #include "platform/time_compat.h"
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "conditions/reducer_frontier_reconcile_light.h"
 #include "chain/chain.h"

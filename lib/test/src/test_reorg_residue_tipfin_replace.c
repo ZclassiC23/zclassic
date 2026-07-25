@@ -60,7 +60,7 @@
  * semantics change correctly removed.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "jobs/reducer_frontier.h"
 #include "jobs/stage_repair.h"

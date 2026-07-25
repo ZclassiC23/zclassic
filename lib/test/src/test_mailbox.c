@@ -11,7 +11,7 @@
  *   - MPSC: 4 producer threads × 256 messages, single consumer drains
  *     all 1024 with no loss */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "util/mailbox.h"
 
 #include <pthread.h>

@@ -1,7 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Focused ZSLP model tests. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "models/zslp.h"
 #include "services/zslp_service.h"
 #include <unistd.h>
 

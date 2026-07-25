@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Mining controller unit tests — RPC registration, edge cases. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "controllers/mining_controller.h"
 #include <string.h>
 

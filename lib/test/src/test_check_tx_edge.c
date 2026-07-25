@@ -38,7 +38,7 @@
  * no network, no node process.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "domain/consensus/tx_structural.h"
 #include "validation/check_transaction.h"

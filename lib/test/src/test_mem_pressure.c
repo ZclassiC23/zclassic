@@ -17,7 +17,7 @@
  * seam (platform/os_proc.h).
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "util/mem_pressure.h"
 #include "platform/os_proc.h"
 #include "json/json.h"

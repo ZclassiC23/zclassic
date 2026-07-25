@@ -38,7 +38,7 @@
  * Scratch files live under ./test-tmp/ per the project's no-/tmp convention.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "config/boot.h"
 #include "services/block_index_loader.h"

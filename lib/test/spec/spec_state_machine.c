@@ -2,7 +2,7 @@
  *
  * Spec tests for peer and sync state machines. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "event/event.h"
 #include "sync/sync_state.h"
 #include <string.h>

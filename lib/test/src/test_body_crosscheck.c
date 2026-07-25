@@ -18,7 +18,7 @@
  * nullifier -> nullifiers_ok=false; (5) a corrupted body byte -> run()==false
  * (infrastructure failure). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "bloom/merkle.h"
 #include "chain/chain.h"

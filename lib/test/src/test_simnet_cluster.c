@@ -4,7 +4,7 @@
  * deterministic delivery, and real disconnect/connect reorg activation.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "sim/simnet_cluster.h"
 

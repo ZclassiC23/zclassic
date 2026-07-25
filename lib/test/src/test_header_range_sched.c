@@ -36,7 +36,7 @@
  *      triggers, exactly once, while its own live span is untouched.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "services/header_range_scheduler.h"
 
 int test_header_range_sched(void)

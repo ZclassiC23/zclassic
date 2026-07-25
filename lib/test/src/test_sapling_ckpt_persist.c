@@ -16,7 +16,7 @@
  * no ~/.zcash-params and no live chain are needed. The header-chain binding
  * is exercised through the pure sapling_ckpt_verify_binding() decision. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "jobs/reducer_frontier.h"
 #include "services/sapling_checkpoint_hook.h"

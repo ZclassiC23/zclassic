@@ -3,7 +3,7 @@
  * Tests for lib/util/spawn.{h,c} — no-shell process-spawn primitives
  * (zcl_spawn_detached, zcl_spawn_capture). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "platform/time_compat.h"
 #include "util/spawn.h"
 

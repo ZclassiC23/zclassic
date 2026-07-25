@@ -65,12 +65,13 @@
  * in simnet_mempool.c or a consensus predicate.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "validation/main_constants.h"
 
 #include "sim/simnet.h"
 #include "sim/simnet_mempool.h"
-/* COINBASE_MATURITY, MAX_MONEY, MoneyRange come in transitively via
- * test_helpers.h (validation/main_constants.h, core/amount.h). */
+/* COINBASE_MATURITY, MAX_MONEY, MoneyRange come in transitively through the
+ * simnet headers above (validation/main_constants.h, core/amount.h). */
 
 #include <stdio.h>
 #include <string.h>

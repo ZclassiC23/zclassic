@@ -8,7 +8,7 @@
  * while running, joins + clears once finished). */
 
 #include "platform/time_compat.h"
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "services/catchup_lifecycle_service.h"
 #include "controllers/sync_controller.h"
 #include "models/database.h"

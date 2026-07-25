@@ -26,7 +26,7 @@
  *   (d) unbaked (placeholder) keystone                -> not activate ("none")
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/checkpoints.h"
 #include "config/consensus_state_snapshot_install.h"

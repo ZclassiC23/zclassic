@@ -14,7 +14,7 @@
  *   - registration + the rearm-forever cooldown posture.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "conditions/catalog_lag_exceeded.h"
 #include "framework/condition.h"

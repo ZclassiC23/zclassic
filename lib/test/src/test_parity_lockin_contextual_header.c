@@ -29,7 +29,7 @@
  * deterministic and independent of any open progress-store DB.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "validation/process_block.h"
 #include "validation/main_state.h"

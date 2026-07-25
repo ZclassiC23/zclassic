@@ -3,7 +3,9 @@
  * Tests for multisig P2SH support — script building, keystore,
  * address encoding, and P2SH-wrapped multisig signing. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "chain/chainparams.h"
+#include "validation/sighash.h"
 #include "wallet/keystore.h"
 #include "keys/key_io.h"
 #include "util/safe_alloc.h"

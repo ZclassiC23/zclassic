@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Tests for the first framework mailbox production adopter. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "services/header_admit_inbox.h"
 

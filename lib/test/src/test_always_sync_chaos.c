@@ -34,7 +34,7 @@
  * subsystem below.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "services/block_index_loader.h"
 #include "sim/simnet_chaos_faults.h"

@@ -30,7 +30,7 @@
  * own fixtures and is left untouched; this file is hermetic.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "adapters/outbound/persistence/wallet_backup_store_sqlite.h"
 #include "ports/wallet_backup_store_port.h"

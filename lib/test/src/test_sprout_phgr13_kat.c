@@ -8,7 +8,7 @@
  * dependency on ~/.zcash-params or a node datadir.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "sapling/bn254.h"
 
 #include <string.h>

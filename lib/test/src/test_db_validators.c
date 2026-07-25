@@ -11,7 +11,7 @@
  * in-memory surface and can run without a live database.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "models/database_validators.h"
 #include "models/database.h"
 #include "models/block.h"

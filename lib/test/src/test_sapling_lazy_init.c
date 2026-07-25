@@ -20,7 +20,9 @@
  * multi-core systems — concurrent first-callers all enter the body.
  * Post-fix pthread_once pins body_runs to exactly one. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "validation/main_state.h"
+#include "sapling/pedersen_hash.h"
 #include <pthread.h>
 #include <stdatomic.h>
 

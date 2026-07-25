@@ -9,7 +9,7 @@
  * get_block_subsidy() to prove the extraction was behaviour-preserving.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "domain/consensus/subsidy.h"
 #include "chain/subsidy.h"

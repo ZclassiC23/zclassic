@@ -49,7 +49,7 @@
  * Scratch files live under ./test-tmp/<name>_<pid>/ per the no-/tmp convention.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "core/arith_uint256.h"
 #include "jobs/reducer_frontier.h"

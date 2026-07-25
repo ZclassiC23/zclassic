@@ -4,7 +4,8 @@
  * must be populate-only: it reuses utxo_apply_check_and_insert_nullifiers()
  * and leaves the consensus check path unchanged. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "test/block_fixtures.h"
 
 #include "bloom/merkle.h"
 #include "chain/chain.h"

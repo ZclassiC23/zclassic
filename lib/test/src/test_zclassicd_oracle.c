@@ -11,7 +11,7 @@
  *   4. supervisor tick increments probes_total.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "services/zclassicd_oracle_service.h"
 #include "services/chain_evidence_authority_service.h"
 #include "services/legacy_mirror_sync_service.h"

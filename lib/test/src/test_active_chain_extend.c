@@ -21,7 +21,7 @@
  * pointers).
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/chain.h"
 #include "core/arith_uint256.h"

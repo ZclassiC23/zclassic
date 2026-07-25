@@ -14,7 +14,7 @@
  * deterministically without needing a running chain.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "storage/coins_view_sqlite.h"
 #include "models/database.h"
 

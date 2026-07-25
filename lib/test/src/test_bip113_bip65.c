@@ -2,7 +2,8 @@
  * BIP113 (median-time-past for nLockTime) and BIP65 (OP_CHECKLOCKTIMEVERIFY)
  * hardening tests with adversarial timestamps. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "validation/tx_verifier.h"
 #include "validation/check_block.h"
 #include "validation/contextual_check_tx.h"
 #include "chain/chain.h"

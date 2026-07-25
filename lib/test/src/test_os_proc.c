@@ -13,7 +13,7 @@
  *     unavailable — never garbage
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "platform/os_proc.h"
 
 #include <stdint.h>

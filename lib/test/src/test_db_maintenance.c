@@ -11,7 +11,7 @@
  * default 60 s.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "services/db_maintenance.h"
 #include "event/event.h"
 #include "models/database.h"

@@ -22,7 +22,7 @@
  * into an in-memory json_value.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 /* Internal seam: bsp_source_to_json / bsp_decision_to_json /
  * bsp_source_class_name are declared in this sibling-file-only header, not

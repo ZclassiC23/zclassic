@@ -51,7 +51,7 @@
  * span.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "bloom/merkle.h"
 #include "chain/chainparams.h"

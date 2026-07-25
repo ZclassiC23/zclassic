@@ -5,7 +5,7 @@
  * masks + the impossible-combo bans. WF3 lanes 3B/3C/3D add the per-site
  * equivalence tests (old expr == table answer) as they route each gate. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "services/sync_trust_policy.h"
 #include <string.h>
 

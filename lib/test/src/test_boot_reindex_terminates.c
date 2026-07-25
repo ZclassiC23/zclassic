@@ -25,7 +25,7 @@
  *       cannot re-arm the cap.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "config/boot_crashonly.h"
 #include "storage/boot_auto_reindex.h"

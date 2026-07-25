@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Tests for shared scan utility data structures (scan_util.h). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "controllers/scan_util.h"
 #include "util/safe_alloc.h"
 

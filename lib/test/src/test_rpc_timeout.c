@@ -7,7 +7,7 @@
  * process — the background watchdog thread is only stressed by one
  * targeted test at the end. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "platform/time_compat.h"
 #include "rpc/rpc_timeout.h"
 #include "event/event.h"

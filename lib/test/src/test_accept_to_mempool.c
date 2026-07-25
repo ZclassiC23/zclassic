@@ -10,7 +10,7 @@
  * The core assertion: a tx with a BAD signature is REJECTED (and so
  * never relayed); the same tx with a VALID signature is ACCEPTED. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "validation/accept_to_mempool.h"
 #include "validation/main_state.h"
 #include "validation/txmempool.h"

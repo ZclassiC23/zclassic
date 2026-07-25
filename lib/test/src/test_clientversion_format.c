@@ -24,7 +24,7 @@
  * is a plain snprintf-based formatter over an int, safe to drive directly
  * with synthetic nVersion values -- it does not have to be CLIENT_VERSION. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "config/bundle_exporter.h"
 #include "util/clientversion.h"

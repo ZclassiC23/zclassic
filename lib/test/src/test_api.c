@@ -2,7 +2,13 @@
  * API controller unit tests — routing, input validation, edge cases,
  * and supply calculation correctness. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "coins/undo.h"
+#include "models/block.h"
+#include "models/utxo.h"
+#include "models/peer.h"
+#include "models/zslp.h"
+#include "models/onion_announcement.h"
 #include "controllers/agent_background_quality.h"
 #include "controllers/agent_controller.h"
 #include "controllers/agent_security_posture.h"

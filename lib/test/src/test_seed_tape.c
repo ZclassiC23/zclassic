@@ -16,7 +16,7 @@
  *  11.  memory_codec_roundtrip
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "sim/seed_tape.h"
 #include "platform/rng.h"
 #include "platform/clock.h"

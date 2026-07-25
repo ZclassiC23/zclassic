@@ -16,7 +16,7 @@
  *   3. best_block — returns false + null (coins_kv tracks no best-block;
  *      the tip_finalize cursor is the definitional tip). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "coins/coins.h"
 #include "coins/coins_view.h"

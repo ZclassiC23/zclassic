@@ -15,7 +15,7 @@
  *   naming:  the typed blocker is a retry-forever DEPENDENCY (no silent halt)
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "services/recovery_coordinator.h"
 #include "framework/condition.h"

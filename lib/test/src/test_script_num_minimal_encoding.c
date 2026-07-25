@@ -11,7 +11,8 @@
  * second pair would be a duplicate-label compile error. All sub-checks
  * live in this single block and short-circuit via ASSERT -> _test_next. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "chain/pow.h"
 
 int test_script_num_minimal_encoding(void);
 int test_script_num_minimal_encoding(void)

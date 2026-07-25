@@ -8,7 +8,7 @@
  * prints the seed and the minimal reproducing event trace, then fails — the
  * "every bug becomes a 64-bit seed" contract. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "sync/sync_reduce.h"
 #include "sim/seed_tape.h"
 #include "platform/rng.h"

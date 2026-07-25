@@ -16,7 +16,7 @@
  * exercised per function and ASSERT's hard-coded `goto _test_next` label
  * only tolerates a single TEST() block per function. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "net/netaddr.h"
 

@@ -15,7 +15,7 @@
  *      on synthetic seeds across several paths.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "domain/wallet/key_derivation.h"
 #include "wallet/bip44.h"

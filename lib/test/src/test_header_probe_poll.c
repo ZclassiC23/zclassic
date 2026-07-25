@@ -13,7 +13,8 @@
  *      runs and supervisor_progress / supervisor_tick are observed
  *      via ticks_run advancing. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "json/json.h"
 
 #include "jobs/header_probe_poll.h"
 #include "services/header_probe.h"

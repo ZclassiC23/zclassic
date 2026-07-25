@@ -2,7 +2,7 @@
  * File controller tests — manifest coverage and cache invalidation. */
 
 #include "platform/time_compat.h"
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "config/boot_snapshot_offer.h"
 #include "controllers/file_controller.h"
 #include "net/file_service.h"

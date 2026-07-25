@@ -3,7 +3,7 @@
  * Tests for the HTTP RPC middleware: rate limit, per-IP bucket, ban
  * threshold, env loading, loopback exemption, and stat counters. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "rpc/http_middleware.h"
 
 #include <stdlib.h>

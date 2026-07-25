@@ -14,7 +14,7 @@
  * up after itself. Tests do not depend on each other.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "storage/utxo_reimport_flag.h"
 
 #include <stdatomic.h>

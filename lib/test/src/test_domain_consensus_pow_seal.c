@@ -29,7 +29,7 @@
  *   data[0] by +/-1 walks the hash one unit across the target.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "domain/consensus/verify.h"
 #include "chain/pow.h"        /* legacy CheckProofOfWork — the seal oracle */

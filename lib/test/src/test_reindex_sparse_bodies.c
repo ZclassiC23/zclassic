@@ -61,7 +61,7 @@
  * (boot_auto_reindex_clear, a real storage primitive) and re-detecting the
  * same wedge on a second pass (a second boot_auto_reindex_request call). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "storage/boot_auto_reindex.h"
 

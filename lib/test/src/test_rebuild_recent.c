@@ -30,7 +30,7 @@
  *   REBUILD_RECENT_DEFAULT_MARGIN   = 10
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include <stdbool.h>
 #include <stddef.h>

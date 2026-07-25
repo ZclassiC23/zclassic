@@ -2,7 +2,25 @@
  * Sapling/Zcash test suite for ZClassic C23. */
 
 #include "platform/time_compat.h"
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "crypto/blake2b.h"
+#include "core/random.h"
+#include "validation/main_state.h"
+#include "sapling/jubjub.h"
+#include "sapling/prf.h"
+#include "sapling/pedersen_hash.h"
+#include "sapling/note.h"
+#include "crypto/chacha20poly1305.h"
+#include "crypto/curve25519.h"
+#include "sapling/note_encryption.h"
+#include "crypto/blake2s.h"
+#include "sapling/sapling.h"
+#include "sapling/bls12_381.h"
+#include "crypto/aes256.h"
+#include "sapling/sprout.h"
+#include "sapling/params_init.h"
+#include "crypto/ed25519.h"
+#include "wallet/wallet.h"
 #include "util/safe_alloc.h"
 #include <time.h>
 

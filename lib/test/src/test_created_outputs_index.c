@@ -1,7 +1,7 @@
 /* Unit tests for the forward creation index (P0 §2.1) — the prevout source
  * that lets script_validate resolve transparent spends without -txindex. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "core/uint256.h"
 #include "jobs/created_outputs_index.h"

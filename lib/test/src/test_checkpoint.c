@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "validation/checkpoint.h"
 #include "validation/main_constants.h"
 #include "validation/sync_evidence_policy.h"

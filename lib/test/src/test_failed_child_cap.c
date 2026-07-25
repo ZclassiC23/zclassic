@@ -14,7 +14,7 @@
  * covered by test_block_scan.c::test_failed_child_propagation.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "validation/process_block.h"
 #include "validation/chainstate.h"
 #include "chain/chain.h"

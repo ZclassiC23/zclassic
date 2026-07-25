@@ -20,7 +20,7 @@
  * (zslp_transfers / tx_outputs / tx_inputs), so these tests seed those
  * tables directly — no on-disk block bodies required. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "models/database.h"
 #include "models/zslp_ledger.h"
 #include "services/zslp_ledger_backfill_service.h"

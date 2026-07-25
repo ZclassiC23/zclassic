@@ -38,7 +38,7 @@
  */
 
 #include "platform/time_compat.h"
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "net/tor_integration.h"
 #include <sys/stat.h>
 #include <unistd.h>

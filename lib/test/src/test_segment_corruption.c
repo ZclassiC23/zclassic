@@ -8,7 +8,7 @@
  * is intentionally out of scope here.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "conditions/segment_corruption.h"
 #include "storage/chain_segment.h"

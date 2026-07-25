@@ -32,7 +32,7 @@
  * ok==false). The global flag is restored to its default (off) at the end.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/chain.h"
 #include "chain/chainparams.h"

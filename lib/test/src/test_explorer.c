@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Explorer controller unit tests — routing, edge cases, factoids. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "controllers/explorer_controller.h"
 #include "controllers/explorer_internal.h"
 #include "jobs/reducer_frontier.h"

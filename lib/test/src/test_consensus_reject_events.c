@@ -25,7 +25,7 @@
  * AGENT3 wave 7) just needs the event stream to be reliable.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "validation/check_transaction.h"
 #include "validation/check_block.h"
 #include "primitives/transaction.h"

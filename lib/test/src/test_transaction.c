@@ -1,6 +1,13 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "bloom/bloom.h"
+#include "chain/chainparams.h"
+#include "validation/check_transaction.h"
+#include "validation/tx_verifier.h"
+#include "validation/contextual_check_tx.h"
+#include "coins/undo.h"
+#include "bloom/merkleblock.h"
 
 int test_transaction(void)
 {

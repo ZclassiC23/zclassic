@@ -23,7 +23,7 @@
  * hermetic (its own throwaway DBs).
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "adapters/outbound/persistence/db_maintenance_sqlite.h"
 #include "ports/db_maintenance_port.h"

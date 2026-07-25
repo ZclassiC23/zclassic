@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Tests for disk_block_io thread safety and pread correctness. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "storage/disk_block_io.h"
 #include "primitives/block.h"
 #include "core/serialize.h"

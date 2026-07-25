@@ -18,7 +18,8 @@
  * Headers for case 3/4 are REAL regtest Equihash (48,5) blocks mined via
  * mine_block_pow, so accept_block_header's PoW gate runs for real. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "util/util.h"
 
 #include "mining/miner.h"
 #include "net/msg_internal.h"

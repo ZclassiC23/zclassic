@@ -11,7 +11,7 @@
  *       cursor advances monotonically to tip.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "services/utxo_recovery_service.h"
 #include "models/database.h"

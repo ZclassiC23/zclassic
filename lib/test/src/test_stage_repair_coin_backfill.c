@@ -19,7 +19,12 @@
  *   (spender tx, variant-controlled inputs), second spender of (T_A,0) @18
  *   for the MARKER_SEEN-at-H' case. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "test/block_fixtures.h"
+#include "bloom/merkle.h"
+#include "coins/coins.h"
+#include "validation/main_state.h"
+#include "models/tx_index.h"
 
 #include "jobs/stage_repair_coin_backfill.h"
 #include "jobs/created_outputs_index.h"

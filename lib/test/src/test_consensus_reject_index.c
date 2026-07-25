@@ -28,7 +28,8 @@
  * manually via a helper).
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "json/json.h"
 #include "services/consensus_reject_index.h"
 #include "validation/check_transaction.h"
 #include "validation/check_block.h"

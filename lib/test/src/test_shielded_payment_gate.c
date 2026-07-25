@@ -18,7 +18,12 @@
  */
 
 #include "platform/time_compat.h"
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "keys/key_io.h"
+#include "coins/undo.h"
+#include "validation/main_state.h"
+#include "sapling/params_init.h"
+#include "models/wallet_tx.h"
 #include "controllers/wallet_controller.h"
 #include "controllers/wallet_shielded_controller.h"
 #include "wallet/keystore.h"

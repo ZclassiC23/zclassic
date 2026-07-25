@@ -8,7 +8,8 @@
  * and verify: correct files deleted, flags cleared, stats updated.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "storage/disk_block_io.h"
 #include "services/block_pruning_service.h"
 #include "chain/chain.h"
 #include "event/event.h"

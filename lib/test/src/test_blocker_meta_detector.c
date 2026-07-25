@@ -16,7 +16,7 @@
  *   NO-FIRE flapping    -- ANY H* movement re-arms the window (hysteresis holds).
  *   WITNESS -- H* climbing past the detect baseline is the sole clear-edge. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "conditions/blocker_stall_meta_detector.h"
 #include "conditions/condition_registry.h"

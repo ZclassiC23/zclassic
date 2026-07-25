@@ -32,7 +32,7 @@
  *       genuinely-recovered episode still starts fresh.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "config/boot_internal.h"
 #include "models/database.h"

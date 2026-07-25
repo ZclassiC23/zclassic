@@ -15,7 +15,7 @@
  *   - dump_state_json: well-formed, every documented key present.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "util/hw_bench.h"
 #include "util/hw_profile.h"
 #include "json/json.h"

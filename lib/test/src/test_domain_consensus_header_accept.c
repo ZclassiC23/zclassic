@@ -23,7 +23,7 @@
  * legacy cross-check for those and rely on (a) + (b).
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "domain/consensus/header_accept.h"
 #include "validation/accept_block_header.h"

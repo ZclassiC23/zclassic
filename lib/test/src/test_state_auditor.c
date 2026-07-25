@@ -22,7 +22,8 @@
  *     state_auditor's own latch clears.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "validation/main_state.h"
 
 #include "conditions/state_auditor_mismatch.h"
 #include "coins/utxo_commitment.h"

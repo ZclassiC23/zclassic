@@ -2,7 +2,10 @@
  * SQLite ActiveRecord model tests for ZClassic C23. */
 
 #include "platform/time_compat.h"
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "chain/chainparams.h"
+#include "storage/coins_db.h"
+#include "models/wallet_key.h"
 #include "controllers/snapshot_controller.h"
 #include "controllers/sync_controller.h"
 #include "config/db_service.h"

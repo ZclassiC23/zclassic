@@ -19,7 +19,7 @@
  *   - cross-check legacy wrapper output for every shape
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "domain/consensus/sigops.h"
 #include "validation/sigops.h"

@@ -6,7 +6,8 @@
  *
  * This is the last line of defense before the user sees it. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "test/wallet_view_fixture.h"
 #include "controllers/wallet_view_controller.h"
 #include "controllers/wallet_view_internal.h"
 #include <string.h>

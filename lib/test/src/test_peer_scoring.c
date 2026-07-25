@@ -6,7 +6,7 @@
  * env-var overrides.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "net/peer_scoring.h"
 #include "net/net.h"
 

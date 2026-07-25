@@ -1,7 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Store controller + ZSLP token + template engine tests. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "coins/undo.h"
 #include "controllers/store_controller.h"
 #include "controllers/zslp_controller.h"
 #include "services/zslp_command_service.h"

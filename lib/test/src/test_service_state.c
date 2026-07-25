@@ -11,7 +11,7 @@
  * The classifier cases mirror a boot-loop shape:
  * zero_nbits=0, mismatches=0, tip_window_holes=2155 -> RECONCILABLE. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "util/service_state.h"
 #include "services/chain_restore_integrity.h"
 

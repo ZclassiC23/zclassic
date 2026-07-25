@@ -38,7 +38,7 @@
  * make t ONLY=importblockindex_roundtrip
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/chain.h"           /* BLOCK_HAVE_DATA / BLOCK_HAVE_UNDO / BLOCK_VALID_* */
 #include "chain/chainparams.h"

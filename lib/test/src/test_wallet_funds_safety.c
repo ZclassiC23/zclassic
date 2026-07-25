@@ -14,7 +14,7 @@
  *    after a nullifier mark-spent.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "models/database.h"
 #include "models/wallet_tx.h"

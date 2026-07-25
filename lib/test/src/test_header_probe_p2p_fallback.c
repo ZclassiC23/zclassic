@@ -18,7 +18,8 @@
  *      page); a valid header from an honest peer is NOT scored.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "util/util.h"
 
 #include "framework/condition.h"
 #include "jobs/reducer_frontier.h"

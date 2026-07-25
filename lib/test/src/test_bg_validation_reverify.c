@@ -9,7 +9,7 @@
  * The seam is what the loop calls for every sampled height, so this proves the
  * branch the loop depends on without needing an on-disk historical chain. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "services/bg_validation_service.h"
 #include "util/blocker.h"
 

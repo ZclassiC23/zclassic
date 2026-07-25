@@ -19,7 +19,7 @@
  * the durable image, not production reducer code. compute_hstar is the unit
  * under test. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "jobs/reducer_frontier.h"
 #include "jobs/stage_row_itag.h"

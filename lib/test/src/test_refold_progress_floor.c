@@ -17,7 +17,7 @@
  * a folded prefix in a handful of rows instead of 3 million. The production
  * floor logic is identical at the real anchor. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "jobs/reducer_frontier.h"
 #include "jobs/refold_progress.h"

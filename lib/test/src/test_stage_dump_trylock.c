@@ -44,7 +44,7 @@
  * call then reports "busy_stale_cache" carrying THAT observed value.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "controllers/sovereignty_controller.h"
 #include "jobs/proof_validate_stage.h"

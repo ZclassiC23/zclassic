@@ -26,7 +26,7 @@
  * (COND_REMEDY_OK -> COND_REMEDY_UNWITNESSED when the witness still sees
  * the symptom), not just the bare detect() predicate. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "coins/utxo_commitment.h"
 #include "framework/condition.h"

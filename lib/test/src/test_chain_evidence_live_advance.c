@@ -12,7 +12,7 @@
  * the served tip, exactly as a real forward block does.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "services/chain_evidence_authority_service.h"
 #include "validation/chainstate.h"

@@ -1,7 +1,14 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Validation pipeline tests: check_transaction, check_block, consensus rules. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "validation/check_transaction.h"
+#include "validation/sigops.h"
+#include "validation/contextual_check_tx.h"
+#include "validation/chainstate.h"
+#include "validation/main_constants.h"
+#include "validation/check_block.h"
+#include "crypto/ed25519.h"
 #include "validation/connect_block.h"
 #include "validation/txmempool.h"
 #include "validation/sighash.h"

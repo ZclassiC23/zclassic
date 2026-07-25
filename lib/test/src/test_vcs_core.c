@@ -23,7 +23,7 @@
  *
  * All work happens under ./test-tmp/ (project no-/tmp convention). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "vcs/vcs.h"
 #include "vcs/vcs_commit.h"

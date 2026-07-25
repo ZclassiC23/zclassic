@@ -12,7 +12,7 @@
  *     distinct boot_epochs.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "config/boot_flight_recorder.h"
 #include "config/boot_loop_guard.h"

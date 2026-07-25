@@ -54,7 +54,7 @@
  * documented in docs/work/GROTH16-SPEND-PARITY.md.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "test/groth16_spend_oracle_kat.h"
 
 #include "sapling/sapling.h"

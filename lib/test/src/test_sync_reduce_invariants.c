@@ -19,7 +19,7 @@
  *      the enum has no such member; asserted at runtime as the witness).
  *   9. The Phase-3 generic-artifact stub events are inert in every phase. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "sync/sync_reduce.h"
 #include <string.h>
 

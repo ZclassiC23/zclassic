@@ -13,7 +13,7 @@
  * test_znam_projection.c; this file exercises the request-path surface built
  * on top of them. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "controllers/name_site_controller.h"
 #include "controllers/name_controller.h"
 #include "models/znam.h"

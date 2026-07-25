@@ -17,7 +17,7 @@
  *     the reported drift_ppm_milli toward the true injected rate
  *   - dumpstate: time_authority_dump_state_json exposes all report fields */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "util/time_authority.h"
 
 #include <stdint.h>

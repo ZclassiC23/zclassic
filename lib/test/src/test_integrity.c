@@ -6,7 +6,8 @@
  *   - bg_hash_verification_service state machine
  *   - Stall recovery window expansion */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "net/net.h"
 #include "coins/utxo_commitment.h"
 #include "chain/checkpoints.h"
 #include "services/authority_projection_audit.h"

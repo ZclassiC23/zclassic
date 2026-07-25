@@ -16,7 +16,7 @@
  * Uses checkpoints_set_sha3_override_for_test to pin a tiny anchor height (5)
  * so the fixture datadir does not need a multi-million-row block index. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/checkpoints.h"
 #include "config/boot.h"

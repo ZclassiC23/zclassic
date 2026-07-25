@@ -25,7 +25,7 @@
  *     returns the same bool the domain function reports as `valid`.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/chainparams.h"
 #include "chain/equihash.h"

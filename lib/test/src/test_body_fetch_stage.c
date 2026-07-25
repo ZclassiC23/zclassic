@@ -19,7 +19,8 @@
  *     validate cursor is forced backward (truncated log) */
 
 #include "platform/time_compat.h"
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "json/json.h"
 
 #include "chain/chain.h"
 #include "core/uint256.h"

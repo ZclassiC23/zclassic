@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Tests for HTLC (Hash Time-Locked Contracts) — atomic swap infrastructure. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "script/htlc.h"
 #include "crypto/sha256.h"
 #include "crypto/sha3.h"

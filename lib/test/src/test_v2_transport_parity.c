@@ -22,7 +22,7 @@
  * `_test_next` label, so only one TEST_CASE/TEST_END pair is allowed per test
  * function (see test_connect_node_locked.c for the same convention). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "net/v2_transport.h"
 
 #include <string.h>

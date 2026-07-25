@@ -29,7 +29,7 @@
  * driver + reducer_frontier_compute_hstar + stage_rederive_range are the units
  * under test. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "coins/utxo_commitment.h"
 #include "config/db_service.h"

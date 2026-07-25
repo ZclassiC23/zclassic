@@ -15,7 +15,8 @@
  *   - the feeder NEVER touches coins_kv (consensus authority untouched).
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "json/json.h"
 
 #include "coins/utxo_commitment.h"
 #include "config/db_service.h"

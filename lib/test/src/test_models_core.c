@@ -1,7 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Focused model validation and ActiveRecord core tests. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "models/utxo.h"
+#include "models/wallet_key.h"
+#include "models/wallet_tx.h"
 
 int test_model_core(void)
 {

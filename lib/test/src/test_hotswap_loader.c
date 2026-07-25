@@ -10,7 +10,7 @@
  * exercised directly. A real end-to-end dlopen is proven by `make
  * hotswap-so` / `make hotswap-sim` (see docs/work/HOTSWAP.md). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "hotswap/hotswap.h"
 #include "json/json.h"
 #include "util/clientversion.h"

@@ -14,7 +14,7 @@
  * that the validator is wrong — no consensus predicate is touched.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "sim/simnet.h"
 #include "chain/chainparams.h"

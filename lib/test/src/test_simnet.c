@@ -14,7 +14,8 @@
  * construction, never in a consensus predicate.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "models/zslp.h"
 
 #include "models/explorer_index.h"
 #include "models/znam.h"

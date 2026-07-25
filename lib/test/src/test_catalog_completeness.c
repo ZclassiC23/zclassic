@@ -21,7 +21,7 @@
  *     max < registered count truncates cleanly)
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "jobs/address_index.h"
 #include "jobs/txindex_projection.h"

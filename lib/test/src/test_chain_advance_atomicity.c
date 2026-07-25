@@ -51,7 +51,7 @@
  * Gating: ZCL_STRESS_TESTS=1 — same convention as test_kill9_recovery.
  * Default `build/bin/test_zcl` reports PASS-skipped so CI runs are predictable. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "validation/process_block.h"
 
 #include <errno.h>

@@ -6,7 +6,7 @@
  * migration registry, execution, and rollback paths.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "models/schema_migration.h"
 #include "models/database.h"
 

@@ -4,7 +4,7 @@
  * the open path can produce must carry a distinct non-empty message.
  * Plan: WALLET_PERSISTENCE_PLAN.md §8.1 / AGENT_2_WALLET_SQLITE.md D5. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "wallet/wallet_sqlite.h"
 #include "util/result.h"
 #include <string.h>

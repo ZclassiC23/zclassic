@@ -21,7 +21,8 @@
  * module's process-global latch (NOTIFY_SOCKET is read once, matching
  * real systemd semantics) doesn't leak state between scenarios. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "support/pagelocker.h"
 #include "util/sd_notify.h"
 
 #include <errno.h>

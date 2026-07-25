@@ -10,7 +10,7 @@
  * equivalence (both parties independently derive identical keys and h);
  * x25519_safe and the RFC-5869 HKDF beneath it are pinned by KAT in test_hkdf. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "crypto/x25519_safe.h"
 #include "crypto/curve25519.h"
 #include "session/noise_handshake.h"

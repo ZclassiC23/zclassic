@@ -118,7 +118,6 @@
 #include "sapling/note_encryption.h"
 #include "sapling/fr.h"
 #include "crypto/blake2s.h"
-#include "sapling/pedersen_hash.h"
 #include "sapling/sapling.h"
 #include "sapling/bls12_381.h"
 #include "crypto/aes256.h"

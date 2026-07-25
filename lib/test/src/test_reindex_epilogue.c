@@ -16,7 +16,7 @@
  * known `utxos` set + a synthetic active chain to a known tip, STALE-HIGH
  * coins_applied as the precondition tear, then assert the post-state. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/chain.h"
 #include "coins/utxo_commitment.h"

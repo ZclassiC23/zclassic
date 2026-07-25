@@ -4,7 +4,7 @@
  * Our forked Tor uses dynhost — NO SOCKS, NO extra ports.
  * These tests verify that invariant is never violated. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "net/tor_integration.h"
 #include "net/onion_service.h"
 #include <sys/stat.h>

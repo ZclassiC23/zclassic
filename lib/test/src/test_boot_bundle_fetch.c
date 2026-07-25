@@ -25,7 +25,7 @@
  * the fetch content-verifies, but it is NOT a real consensus-state bundle, so
  * the install path fail-closes at admission (exactly the sovereignty guard). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "config/boot.h"                       /* struct app_context */
 #include "config/boot_bundle_fetch.h"

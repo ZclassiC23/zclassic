@@ -13,7 +13,7 @@
  *     returns false instead of aborting the process.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "domain/encoding/base58.h"
 #include "keys/key.h"

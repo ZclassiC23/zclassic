@@ -52,7 +52,8 @@
  * make t ONLY=fold_inram_crash_proof
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "coins/undo.h"
 
 #include "bloom/merkle.h"
 #include "chain/chainparams.h"

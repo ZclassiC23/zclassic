@@ -6,7 +6,7 @@
  * path is covered elsewhere (test_net.c); this asserts the upper-bound
  * rejection branch directly. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "core/serialize.h"
 #include "primitives/block.h"

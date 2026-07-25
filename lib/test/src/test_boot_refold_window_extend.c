@@ -48,7 +48,7 @@
  * the (B) case asserts), so this test needs no fork.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "config/boot.h"
 #include "storage/anchor_kv.h"

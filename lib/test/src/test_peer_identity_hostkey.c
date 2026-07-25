@@ -17,7 +17,7 @@
  * small for what it would extract — this must return false, never
  * truncate silently. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "net/peer_identity.h"
 #include "net/net.h"

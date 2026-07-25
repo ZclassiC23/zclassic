@@ -17,7 +17,7 @@
  * Chain-construction mirrors test_tip_fork_stale.c.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "conditions/tip_stall_oracle_rebuild.h"
 #include "core/arith_uint256.h"

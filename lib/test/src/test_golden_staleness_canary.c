@@ -31,7 +31,7 @@
  * not being re-minted for a very long time even though nothing was ever
  * dropped. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/sha3_windows.h"
 #include "chain/utxo_root_ladder.h"

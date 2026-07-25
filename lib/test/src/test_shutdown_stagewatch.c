@@ -23,7 +23,7 @@
  * Hermetic: injected clock, arm_alarm=false everywhere (no real SIGALRM), temp
  * files only. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "util/shutdown_stagewatch.h"
 
 #include <fcntl.h>

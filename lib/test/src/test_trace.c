@@ -5,7 +5,7 @@
  * Strategy: exercise the span lifecycle, attributes, parent-child
  * linkage, TLS stack, enable/disable, and edge cases. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "util/trace.h"
 
 #include <stdio.h>

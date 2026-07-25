@@ -30,7 +30,7 @@
  * seal for free. fake_checker / fc_init / seal_eval are copied verbatim
  * from test_domain_consensus_script_interp.c. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "domain/consensus/script_interp.h"
 #include "script/interpreter.h"

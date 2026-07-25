@@ -54,7 +54,7 @@
  * Scratch dirs under ./test-tmp/pri_<pid>_<tag>/ (no-/tmp convention).
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "storage/event_log.h"
 #include "storage/event_log_payloads.h"

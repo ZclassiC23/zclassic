@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "bloom/merkle.h"
 #include "net/msgprocessor.h"
 
 int test_bloom(void)

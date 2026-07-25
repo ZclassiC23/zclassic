@@ -22,7 +22,10 @@
  *      the caller guard that earlier only the growth branch left untested.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "coins/undo.h"
+#include "validation/txmempool.h"
+#include "policy/fees.h"
 
 int test_fees_oom(void)
 {

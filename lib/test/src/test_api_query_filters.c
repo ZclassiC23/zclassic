@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Focused regression tests for the shared REST query-filter engine. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "controllers/api_controller.h"
 #include "controllers/name_controller.h"

@@ -12,7 +12,7 @@
  *     keep CI green on hosts without a legacy zclassic datadir.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "storage/ldb_snapshot.h"
 
 #include <leveldb/c.h>

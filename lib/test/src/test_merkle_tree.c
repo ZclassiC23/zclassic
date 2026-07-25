@@ -1,7 +1,15 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Incremental Merkle tree and witness tests for Sapling. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "core/random.h"
+#include "validation/main_state.h"
+#include "sapling/pedersen_hash.h"
+#include "sapling/note.h"
+#include "crypto/curve25519.h"
+#include "sapling/note_encryption.h"
+#include "sapling/sapling.h"
+#include "wallet/wallet.h"
 #include "util/safe_alloc.h"
 
 static int test_merkle_tree_scale(void);

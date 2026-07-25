@@ -5,7 +5,7 @@
  * blocker, keep the tip still, and accept the next honest block.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "sim/simnet_byzantine.h"
 #include "util/blocker.h"

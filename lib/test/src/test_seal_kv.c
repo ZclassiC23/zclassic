@@ -7,7 +7,7 @@
  * the prior good one. These are the guarantees window_rebuild (M2) leans on
  * when it selects "the newest self-hash-valid ratified seal". */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "storage/seal_kv.h"
 #include "storage/progress_store.h"

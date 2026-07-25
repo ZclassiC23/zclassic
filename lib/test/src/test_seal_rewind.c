@@ -16,7 +16,7 @@
  * spends) and persists the matching add-only inverse delta, so unwinding [G, C)
  * exactly restores the coins set the seal at G committed to. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "jobs/seal_rewind.h"
 #include "jobs/stage_repair_internal.h"   /* stage_repair_force_stage_cursor */

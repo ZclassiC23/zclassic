@@ -4,7 +4,7 @@
  * before_validate, after_validate, before_save, after_save,
  * before_destroy, after_destroy, async callbacks. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "models/activerecord.h"
 #include "models/block.h"
 #include "models/wallet_key.h"

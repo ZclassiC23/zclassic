@@ -25,7 +25,7 @@
  * runs identically at a handful of rows instead of 1.35 M.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "services/anchor_selfmint.h"
 #include "storage/progress_store.h"

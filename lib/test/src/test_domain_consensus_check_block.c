@@ -22,7 +22,7 @@
  * branches we test in the domain.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "domain/consensus/check_block.h"
 #include "validation/check_block.h"

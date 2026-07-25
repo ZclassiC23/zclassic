@@ -22,7 +22,7 @@
  *      error.code, and exit code INVALID.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "config/command_catalog.h"
 #include "dev_failure_store.h"

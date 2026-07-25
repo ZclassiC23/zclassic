@@ -16,7 +16,7 @@
  *      and a diverging row count with a typed message, and a migration whose
  *      copy fails leaves NO consensus.db behind (fail fast, never half-state). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "storage/anchor_kv.h"
 #include "storage/consensus_db.h"

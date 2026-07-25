@@ -5,7 +5,7 @@
  * plus the negative paths — single-use nonce, expired nonce, wrong server id,
  * and a tampered message — all fail closed. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "models/database.h"
 #include "models/principal.h"

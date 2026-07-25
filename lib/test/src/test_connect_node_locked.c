@@ -12,7 +12,8 @@
  *   - releasing that caller ref balances the count, so a deduped/new return
  *     does not leak into deferred_free forever and a release-to-zero frees. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "coins/undo.h"
 
 #include "net/net.h"
 #include "net/netaddr.h"

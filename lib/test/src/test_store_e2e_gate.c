@@ -13,7 +13,7 @@
  *      - token-gated access succeeds after reconciliation
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "controllers/store_controller.h"
 #include "controllers/zslp_controller.h"
 #include "models/block.h"

@@ -19,7 +19,7 @@
  * Part 1 of G-SOV (H* CLIMB) is a two-sample runtime fact the copy-prove
  * harness owns; this unit covers only the two single-snapshot parts. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "core/uint256.h"
 #include "storage/coins_kv.h"
