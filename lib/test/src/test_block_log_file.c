@@ -31,6 +31,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include "test/setup_result.h"
 
 #define BLF_CHECK(name, expr) do {                          \
     printf("block_log_file: %s... ", (name));               \
@@ -139,11 +140,11 @@ int test_block_log_file(void)
         char dir[64]; make_tmpdir(dir, sizeof dir);
         struct block_log_file *h = NULL;
         struct block_log_port p = {0};
-        block_log_file_open(dir, &h, &p);
+        ZCL_TEST_SETUP(block_log_file_open(dir, &h, &p));
 
         struct block_hash hash_a; fill_hash(&hash_a, 0xaa);
         uint8_t bytes_a[16] = "hello block log!";
-        p.append(p.self, 5, &hash_a, bytes_a, sizeof bytes_a);
+        ZCL_TEST_SETUP(p.append(p.self, 5, &hash_a, bytes_a, sizeof bytes_a));
         struct zcl_result r = p.append(p.self, 5, &hash_a, bytes_a,
                                         sizeof bytes_a);
         BLF_CHECK("re-append same hash+bytes -> OK", r.ok);
@@ -163,14 +164,14 @@ int test_block_log_file(void)
         char dir[64]; make_tmpdir(dir, sizeof dir);
         struct block_log_file *h = NULL;
         struct block_log_port p = {0};
-        block_log_file_open(dir, &h, &p);
+        ZCL_TEST_SETUP(block_log_file_open(dir, &h, &p));
 
         struct block_hash ha, hb, hc;
         fill_hash(&ha, 1); fill_hash(&hb, 2); fill_hash(&hc, 3);
         uint8_t one[1] = {'a'}, two[1] = {'b'}, three[1] = {'c'};
-        p.append(p.self, 0, &ha, one, 1);
-        p.append(p.self, 1, &hb, two, 1);
-        p.append(p.self, 2, &hc, three, 1);
+        ZCL_TEST_SETUP(p.append(p.self, 0, &ha, one, 1));
+        ZCL_TEST_SETUP(p.append(p.self, 1, &hb, two, 1));
+        ZCL_TEST_SETUP(p.append(p.self, 2, &hc, three, 1));
 
         struct iter_collect_state st = {0};
         struct zcl_result r = p.iter_from(p.self, 1, iter_collect, &st);
@@ -187,11 +188,11 @@ int test_block_log_file(void)
         char dir[64]; make_tmpdir(dir, sizeof dir);
         struct block_log_file *h = NULL;
         struct block_log_port p = {0};
-        block_log_file_open(dir, &h, &p);
+        ZCL_TEST_SETUP(block_log_file_open(dir, &h, &p));
 
         struct block_hash ha; fill_hash(&ha, 0x55);
         uint8_t buf[8] = {1,2,3,4,5,6,7,8};
-        p.append(p.self, 42, &ha, buf, sizeof buf);
+        ZCL_TEST_SETUP(p.append(p.self, 42, &ha, buf, sizeof buf));
         block_log_file_close(h);
 
         h = NULL; memset(&p, 0, sizeof p);
@@ -215,11 +216,11 @@ int test_block_log_file(void)
         char dir[64]; make_tmpdir(dir, sizeof dir);
         struct block_log_file *h = NULL;
         struct block_log_port p = {0};
-        block_log_file_open(dir, &h, &p);
+        ZCL_TEST_SETUP(block_log_file_open(dir, &h, &p));
 
         struct block_hash ha; fill_hash(&ha, 0x77);
         uint8_t payload[12] = "crashA-data!";
-        p.append(p.self, 100, &ha, payload, sizeof payload);
+        ZCL_TEST_SETUP(p.append(p.self, 100, &ha, payload, sizeof payload));
         block_log_file_close(h);
 
         /* Wipe blocks.idx — simulates a power-cut between log fsync
@@ -249,11 +250,11 @@ int test_block_log_file(void)
         char dir[64]; make_tmpdir(dir, sizeof dir);
         struct block_log_file *h = NULL;
         struct block_log_port p = {0};
-        block_log_file_open(dir, &h, &p);
+        ZCL_TEST_SETUP(block_log_file_open(dir, &h, &p));
 
         struct block_hash ha; fill_hash(&ha, 0x99);
         uint8_t payload[5] = {9,9,9,9,9};
-        p.append(p.self, 7, &ha, payload, sizeof payload);
+        ZCL_TEST_SETUP(p.append(p.self, 7, &ha, payload, sizeof payload));
         block_log_file_close(h);
 
         /* Append 3 garbage bytes — less than a header, so the open()
@@ -285,17 +286,17 @@ int test_block_log_file(void)
         char dir[64]; make_tmpdir(dir, sizeof dir);
         struct block_log_file *h = NULL;
         struct block_log_port p = {0};
-        block_log_file_open(dir, &h, &p);
+        ZCL_TEST_SETUP(block_log_file_open(dir, &h, &p));
 
         struct block_hash hs[4];
         for (int i = 0; i < 4; i++) fill_hash(&hs[i], (uint8_t)(0xa0 + i));
         uint8_t blob[2] = {0xde, 0xad};
 
         /* Append out-of-order heights: 0, 2, 1, 3. tip_height must be 3. */
-        p.append(p.self, 0, &hs[0], blob, sizeof blob);
-        p.append(p.self, 2, &hs[1], blob, sizeof blob);
-        p.append(p.self, 1, &hs[2], blob, sizeof blob);
-        p.append(p.self, 3, &hs[3], blob, sizeof blob);
+        ZCL_TEST_SETUP(p.append(p.self, 0, &hs[0], blob, sizeof blob));
+        ZCL_TEST_SETUP(p.append(p.self, 2, &hs[1], blob, sizeof blob));
+        ZCL_TEST_SETUP(p.append(p.self, 1, &hs[2], blob, sizeof blob));
+        ZCL_TEST_SETUP(p.append(p.self, 3, &hs[3], blob, sizeof blob));
         BLF_CHECK("tip = max(height) across out-of-order appends",
                   p.tip_height(p.self) == 3);
 
@@ -303,5 +304,5 @@ int test_block_log_file(void)
         test_rm_rf(dir);
     }
 
-    return failures;
+    return failures + ZCL_TEST_SETUP_FAILURES();
 }

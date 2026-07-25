@@ -841,16 +841,27 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                                 SNAPSYNC_FOLLOWUP_SEND_FC_CHALLENGE) {
                                 /* Send FlyClient challenge — verify chain
                                  * before requesting snapshot data */
-                                p2p_node_begin_message(node, MSG_FC_CHALLENGE,
-                                    mp->params->pchMessageStart);
+                                /* Serialise BEFORE opening the message, so a
+                                 * failed encode cannot put a truncated
+                                 * challenge on the wire. */
                                 struct byte_stream fc;
                                 stream_init(&fc, 72);
-                                snapsync_write_fc_challenge(svc, &fc);
-                                p2p_node_write_message_data(node, fc.data, fc.size);
-                                p2p_node_end_message(node);
-                                stream_free(&fc);
-                                printf("[snapsync] Sent FlyClient challenge to %s\n",
-                                       node->addr_name);
+                                struct zcl_result fcw =
+                                    snapsync_write_fc_challenge(svc, &fc);
+                                if (!fcw.ok) {
+                                    LOG_WARN("snapsync",
+                                        "fc challenge encode failed for %s: code=%d %s",
+                                        node->addr_name, fcw.code, fcw.message);
+                                    stream_free(&fc);
+                                } else {
+                                    p2p_node_begin_message(node, MSG_FC_CHALLENGE,
+                                        mp->params->pchMessageStart);
+                                    p2p_node_write_message_data(node, fc.data, fc.size);
+                                    p2p_node_end_message(node);
+                                    stream_free(&fc);
+                                    printf("[snapsync] Sent FlyClient challenge to %s\n",
+                                           node->addr_name);
+                                }
                             } else if (followup.action ==
                                        SNAPSYNC_FOLLOWUP_SEND_SNAPSHOT_REQ) {
                                 /* No MMB — send zsnapreq directly */
@@ -1067,17 +1078,26 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                                 &resp, &challenge,
                                 &mp->main_state->chain_active,
                                 mp->flyclient_proof_ctx)) {
-                            /* Send zfcproofs */
-                            p2p_node_begin_message(node, MSG_FC_PROOFS,
-                                mp->params->pchMessageStart);
+                            /* Send zfcproofs — serialise first, so a failed
+                             * encode cannot put truncated proofs on the wire. */
                             struct byte_stream fp;
                             stream_init(&fp, 4 + resp.num_samples * 2048);
-                            snapsync_write_fc_response(&fp, &resp);
-                            p2p_node_write_message_data(node, fp.data, fp.size);
-                            p2p_node_end_message(node);
-                            stream_free(&fp);
-                            printf("Peer %s: sent %u FlyClient proofs\n",
-                                   node->addr_name, resp.num_samples);
+                            struct zcl_result fpw =
+                                snapsync_write_fc_response(&fp, &resp);
+                            if (!fpw.ok) {
+                                LOG_WARN("snapsync",
+                                    "fc response encode failed for %s: code=%d %s",
+                                    node->addr_name, fpw.code, fpw.message);
+                                stream_free(&fp);
+                            } else {
+                                p2p_node_begin_message(node, MSG_FC_PROOFS,
+                                    mp->params->pchMessageStart);
+                                p2p_node_write_message_data(node, fp.data, fp.size);
+                                p2p_node_end_message(node);
+                                stream_free(&fp);
+                                printf("Peer %s: sent %u FlyClient proofs\n",
+                                       node->addr_name, resp.num_samples);
+                            }
                         }
                     } else {
                         printf("Peer %s: FlyClient challenge but no MMB data\n",

@@ -33,6 +33,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "test/setup_result.h"
 
 #define BIL_CHECK(name, expr) do {          \
     printf("%s... ", (name));              \
@@ -295,7 +296,7 @@ int test_block_index_loader(void)
         memset(&ms2, 0, sizeof(ms2));
         block_map_init(&ms2.map_block_index);
         active_chain_init(&ms2.chain_active);
-        load_block_index_flat(tmpdir, &ms2);
+        ZCL_TEST_SETUP(load_block_index_flat(tmpdir, &ms2));
 
         struct uint256 tip_hash = make_test_hash(49);
         struct block_index *tip = block_map_find(&ms2.map_block_index, &tip_hash);
@@ -1988,5 +1989,5 @@ int test_block_index_loader(void)
     }
 
     printf("=== block index loader: %d failures ===\n", failures);
-    return failures;
+    return failures + ZCL_TEST_SETUP_FAILURES();
 }

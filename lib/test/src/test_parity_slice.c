@@ -54,6 +54,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include "test/setup_result.h"
 
 /* Height label the fixture is pinned at; the comparator only declares a byte
  * DRIFT when the (exact) reference height equals the local applied height, so
@@ -129,7 +130,7 @@ static void slice_wire(struct node_db *ndb,
         .enabled = true, .finality_depth = 0, .max_checks_per_tick = 1,
     };
     utxo_parity_reset_for_test();
-    utxo_parity_init(&cfg, ndb);
+    ZCL_TEST_SETUP(utxo_parity_init(&cfg, ndb));
     utxo_parity_set_reference_source(src);
 }
 
@@ -432,5 +433,5 @@ int test_parity_slice(void)
     failures += slice_case_coarse_clears_prior_exact_drift();/* (C3) coarse clears*/
 
     printf("=== parity slice: %d failure(s) ===\n", failures);
-    return failures;
+    return failures + ZCL_TEST_SETUP_FAILURES();
 }

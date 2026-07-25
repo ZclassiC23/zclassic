@@ -26,6 +26,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "test/setup_result.h"
 
 #define DM_SCRATCH_DIR "./test-tmp"
 
@@ -158,7 +159,7 @@ int test_disk_monitor(void)
         cfg.warn_free_bytes   = INT64_MAX;
         cfg.refuse_free_bytes = INT64_MAX;
         cfg.poll_seconds      = 3600;
-        disk_monitor_start(&cfg);
+        ZCL_TEST_SETUP(disk_monitor_start(&cfg));
         bool was_crit = disk_monitor_is_critical();
         disk_monitor_stop();
 
@@ -166,7 +167,7 @@ int test_disk_monitor(void)
         dm_reset_observer();
         cfg.warn_free_bytes   = 1;
         cfg.refuse_free_bytes = 1;
-        disk_monitor_start(&cfg);
+        ZCL_TEST_SETUP(disk_monitor_start(&cfg));
         bool now_ok = disk_monitor_level() == DISK_MONITOR_OK;
         /* EV_DISK_OK only fires on a *transition*. Since each
          * fresh start() begins at last_level=DISK_MONITOR_OK, an
@@ -218,7 +219,7 @@ int test_disk_monitor(void)
         cfg.warn_free_bytes   = 42;
         cfg.refuse_free_bytes = 21;
         cfg.poll_seconds      = 3600;
-        disk_monitor_start(&cfg);
+        ZCL_TEST_SETUP(disk_monitor_start(&cfg));
         struct disk_monitor_status st;
         disk_monitor_status_snapshot(&st);
         DM_CHECK("dm: status snapshot records running + thresholds + datadir",
@@ -233,5 +234,5 @@ int test_disk_monitor(void)
     event_clear_observers(EV_DISK_LOW);
     event_clear_observers(EV_DISK_CRITICAL);
     event_clear_observers(EV_DISK_OK);
-    return failures;
+    return failures + ZCL_TEST_SETUP_FAILURES();
 }

@@ -457,7 +457,11 @@ struct zcl_result snapsync_begin_receive(struct snapshot_sync_service *svc)
     snapsync_service_unlock_internal();
 
     if (!snapsync_run_write_internal(svc, snapsync_begin_receive_write, svc)) {
-        snapsync_exit_turbo_mode_internal(svc);
+        /* Every other exit_turbo call site checks .ok; this one used to drop
+         * it, so a stuck turbo pragma set left no trace. */
+        if (!snapsync_exit_turbo_mode_internal(svc).ok)
+            event_emitf(EV_SNAPSYNC_VERIFIED, 0,
+                        "snapshot=FAILED reason=turbo_exit_failed path=begin_receive");
         trace_set_status(ss_span, TRACE_STATUS_ERROR);
         trace_attr_str(ss_span, "error", "begin_receive_write");
         trace_end(ss_span);

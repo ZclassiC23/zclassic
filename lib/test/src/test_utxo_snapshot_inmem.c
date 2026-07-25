@@ -21,6 +21,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include "test/setup_result.h"
 
 #define USI_CHECK(name, expr) do {                          \
     printf("utxo_snapshot_inmem: %s... ", (name));          \
@@ -76,7 +77,7 @@ int test_utxo_snapshot_inmem(void)
     {
         struct utxo_snapshot_inmem *h = NULL;
         struct utxo_snapshot_port p = {0};
-        utxo_snapshot_inmem_open(&h, &p);
+        ZCL_TEST_SETUP(utxo_snapshot_inmem_open(&h, &p));
         struct block_hash bh0 = mk_hash(0xb0);
 
         struct utxo_outpoint creates[2] = { mk_op(0x01, 0), mk_op(0x01, 1) };
@@ -112,7 +113,7 @@ int test_utxo_snapshot_inmem(void)
     {
         struct utxo_snapshot_inmem *h = NULL;
         struct utxo_snapshot_port p = {0};
-        utxo_snapshot_inmem_open(&h, &p);
+        ZCL_TEST_SETUP(utxo_snapshot_inmem_open(&h, &p));
         struct block_hash bh = mk_hash(0xc1);
         struct utxo_diff d = {
             .target_height = 2, .target_block = &bh,
@@ -129,7 +130,7 @@ int test_utxo_snapshot_inmem(void)
     {
         struct utxo_snapshot_inmem *h = NULL;
         struct utxo_snapshot_port p = {0};
-        utxo_snapshot_inmem_open(&h, &p);
+        ZCL_TEST_SETUP(utxo_snapshot_inmem_open(&h, &p));
         struct block_hash bh = mk_hash(0xd1);
         struct utxo_outpoint phantom = mk_op(0x77, 0);
         struct utxo_diff d = {
@@ -147,7 +148,7 @@ int test_utxo_snapshot_inmem(void)
     {
         struct utxo_snapshot_inmem *h = NULL;
         struct utxo_snapshot_port p = {0};
-        utxo_snapshot_inmem_open(&h, &p);
+        ZCL_TEST_SETUP(utxo_snapshot_inmem_open(&h, &p));
         struct block_hash bh0 = mk_hash(0xe0), bh1 = mk_hash(0xe1);
         struct utxo_outpoint op = mk_op(0x02, 0);
         struct utxo_coin coin = mk_coin(100, 0, NULL, 0);
@@ -155,7 +156,7 @@ int test_utxo_snapshot_inmem(void)
             .target_height = 0, .target_block = &bh0,
             .creates = &op, .creates_coin = &coin, .creates_len = 1,
         };
-        p.apply_diff(p.self, &d0);
+        ZCL_TEST_SETUP(p.apply_diff(p.self, &d0));
         /* Now try to create the same outpoint at h=1 — collides. */
         struct utxo_diff d1 = {
             .target_height = 1, .target_block = &bh1,
@@ -171,7 +172,7 @@ int test_utxo_snapshot_inmem(void)
     {
         struct utxo_snapshot_inmem *h = NULL;
         struct utxo_snapshot_port p = {0};
-        utxo_snapshot_inmem_open(&h, &p);
+        ZCL_TEST_SETUP(utxo_snapshot_inmem_open(&h, &p));
         struct block_hash bh0 = mk_hash(0xf0), bh1 = mk_hash(0xf1);
 
         struct utxo_outpoint op_a = mk_op(0x03, 0);
@@ -180,10 +181,10 @@ int test_utxo_snapshot_inmem(void)
             .target_height = 0, .target_block = &bh0,
             .creates = &op_a, .creates_coin = &coin_a, .creates_len = 1,
         };
-        p.apply_diff(p.self, &d0);
+        ZCL_TEST_SETUP(p.apply_diff(p.self, &d0));
 
         uint8_t com_after_d0[32];
-        p.sha3_commitment(p.self, com_after_d0);
+        ZCL_TEST_SETUP(p.sha3_commitment(p.self, com_after_d0));
 
         /* h=1 spends op_a and creates op_b. */
         struct utxo_outpoint op_b = mk_op(0x04, 0);
@@ -193,7 +194,7 @@ int test_utxo_snapshot_inmem(void)
             .spends = &op_a, .spends_len = 1,
             .creates = &op_b, .creates_coin = &coin_b, .creates_len = 1,
         };
-        p.apply_diff(p.self, &d1);
+        ZCL_TEST_SETUP(p.apply_diff(p.self, &d1));
         USI_CHECK("tip after 2nd apply = 1", p.tip_height(p.self) == 1);
 
         struct zcl_result r = p.revert_tip(p.self, 1);
@@ -211,7 +212,7 @@ int test_utxo_snapshot_inmem(void)
 
         /* Commitment must match the post-d0 state. */
         uint8_t com_after_revert[32];
-        p.sha3_commitment(p.self, com_after_revert);
+        ZCL_TEST_SETUP(p.sha3_commitment(p.self, com_after_revert));
         USI_CHECK("commitment after revert matches pre-d1",
                   memcmp(com_after_d0, com_after_revert, 32) == 0);
 
@@ -222,10 +223,10 @@ int test_utxo_snapshot_inmem(void)
     {
         struct utxo_snapshot_inmem *h = NULL;
         struct utxo_snapshot_port p = {0};
-        utxo_snapshot_inmem_open(&h, &p);
+        ZCL_TEST_SETUP(utxo_snapshot_inmem_open(&h, &p));
         struct block_hash bh = mk_hash(0x55);
         struct utxo_diff d = { .target_height = 0, .target_block = &bh };
-        p.apply_diff(p.self, &d);
+        ZCL_TEST_SETUP(p.apply_diff(p.self, &d));
         struct zcl_result r = p.revert_tip(p.self, 99);
         USI_CHECK("revert_tip with wrong expected -> TIP_MISMATCH",
                   !r.ok && r.code == UTXO_ERR_TIP_MISMATCH);
@@ -237,8 +238,8 @@ int test_utxo_snapshot_inmem(void)
     {
         struct utxo_snapshot_inmem *h1 = NULL, *h2 = NULL;
         struct utxo_snapshot_port p1 = {0}, p2 = {0};
-        utxo_snapshot_inmem_open(&h1, &p1);
-        utxo_snapshot_inmem_open(&h2, &p2);
+        ZCL_TEST_SETUP(utxo_snapshot_inmem_open(&h1, &p1));
+        ZCL_TEST_SETUP(utxo_snapshot_inmem_open(&h2, &p2));
         struct block_hash bh = mk_hash(0x66);
 
         struct utxo_outpoint ops[3] = {
@@ -253,7 +254,7 @@ int test_utxo_snapshot_inmem(void)
             .target_height = 0, .target_block = &bh,
             .creates = ops, .creates_coin = coins, .creates_len = 3,
         };
-        p1.apply_diff(p1.self, &d1);
+        ZCL_TEST_SETUP(p1.apply_diff(p1.self, &d1));
 
         /* Build snapshot 2 with the same coins, different ordering. */
         struct utxo_outpoint ops_rev[3] = { ops[2], ops[0], ops[1] };
@@ -262,11 +263,11 @@ int test_utxo_snapshot_inmem(void)
             .target_height = 0, .target_block = &bh,
             .creates = ops_rev, .creates_coin = coins_rev, .creates_len = 3,
         };
-        p2.apply_diff(p2.self, &d2);
+        ZCL_TEST_SETUP(p2.apply_diff(p2.self, &d2));
 
         uint8_t c1[32], c2[32];
-        p1.sha3_commitment(p1.self, c1);
-        p2.sha3_commitment(p2.self, c2);
+        ZCL_TEST_SETUP(p1.sha3_commitment(p1.self, c1));
+        ZCL_TEST_SETUP(p2.sha3_commitment(p2.self, c2));
         USI_CHECK("commitment is order-independent",
                   memcmp(c1, c2, 32) == 0);
 
@@ -274,5 +275,5 @@ int test_utxo_snapshot_inmem(void)
         utxo_snapshot_inmem_close(h2);
     }
 
-    return failures;
+    return failures + ZCL_TEST_SETUP_FAILURES();
 }
