@@ -730,3 +730,6 @@ AGENT_IMPACT_RULE("lib/test/src/test_hotswap_module_v2.c|lib/hotswap/include/hot
  * os_sandbox, boot's request notation, and the suite that proves a hot-swap
  * module open is EACCES under a datadir-only Landlock grant. */
 AGENT_IMPACT_RULE("lib/test/src/test_os_sandbox_hotswap_interaction.c|lib/platform/src/os_sandbox_witness.c|lib/platform/src/os_sandbox_linux.c|lib/platform/include/platform/os_sandbox.h|app/controllers/include/controllers/diagnostics_dumpers.def", "os_sandbox_hotswap_interaction os_sandbox confine syncdiag_rpc make_lint_gates")
+/* wf/supervision — three named faults of the upper layer (undrained hot-swap
+ * generation, config reload divergence, service declaration divergence). */
+AGENT_IMPACT_RULE("lib/hotswap/src/hotswap_retire_blocker.c|lib/hotswap/include/hotswap/hotswap_retire_blocker.h|config/src/boot_declaration_drift.c|config/include/config/boot_declaration_drift.h|lib/hotswap/src/hotswap_activate.c", "blocker blocker_history supervisor make_lint_gates")

@@ -25,6 +25,8 @@
 #include "test/test_helpers.h"
 #include "util/blocker.h"
 #include "json/json.h"
+#include "hotswap/hotswap_retire_blocker.h"
+#include "config/boot_declaration_drift.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -51,6 +53,29 @@ static void esc_b(const struct blocker_snapshot *s)
 {
     (void)s;
     atomic_fetch_add(&g_esc_b_count, 1);
+}
+
+/* Seam stubs for the upper-layer named faults. These stand in for the
+ * reclaim/reconcile implementations the owning subsystems install — the
+ * hotswap one exists only under ZCL_DEV_BUILD, and the two drift organs are
+ * not in-tree yet (see the handoff note in the section that uses them). */
+static _Atomic bool g_reclaim_all_clear;
+static _Atomic int  g_reclaim_calls;
+static _Atomic bool g_reconcile_converged;
+static _Atomic int  g_reconcile_calls;
+
+static bool test_reclaim_stub(void *ctx)
+{
+    (void)ctx;
+    atomic_fetch_add(&g_reclaim_calls, 1);
+    return atomic_load(&g_reclaim_all_clear);
+}
+
+static bool test_reconcile_stub(void *ctx)
+{
+    (void)ctx;
+    atomic_fetch_add(&g_reconcile_calls, 1);
+    return atomic_load(&g_reconcile_converged);
 }
 
 int test_blocker(void)
@@ -808,6 +833,210 @@ int test_blocker(void)
         blocker_init(&r, "overflow", "lms", BLOCKER_TRANSIENT, "x");
         int rc = blocker_set(&r);
         BCK_CHECK("overflow → -1", rc == -1);
+    }
+
+    /* ── upper-layer named faults (wf/supervision) ─────────────────
+     * Three fallbacks that were SAFE but silent are now typed blockers.
+     * The common bar for all three: raised with a FIXED reason (so a
+     * refire is the SAME fault and dedup/escalation converge), a
+     * registered escape action (an unregistered one dead-ends the sweep
+     * lookup), and an escape that only clears the blocker when the fault
+     * is genuinely gone. */
+
+    /* (1) hotswap: a retired generation whose mapping never drained. */
+    {
+        blocker_reset_for_testing();
+        blocker_set_clock_for_testing(80000000);
+        blocker_set_rate_limit_ms_for_testing(0);
+        hotswap_retire_blocker_reset_for_testing();
+        hotswap_retire_blocker_register_escape();
+
+        BCK_CHECK("hotswap: escape action is registered",
+                  blocker_lookup_escape(HOTSWAP_RETIRE_ESCAPE_ACTION) != NULL);
+        BCK_CHECK("hotswap: nothing retained, nothing named",
+                  !blocker_exists(HOTSWAP_RETIRE_UNDRAINED_BLOCKER_ID));
+
+        hotswap_retire_blocker_raise();
+        struct blocker_snapshot s;
+        int n = blocker_snapshot_all(&s, 1);
+        BCK_CHECK("hotswap: retention raises the named blocker",
+                  n == 1 &&
+                  strcmp(s.id, HOTSWAP_RETIRE_UNDRAINED_BLOCKER_ID) == 0);
+        BCK_CHECK("hotswap: DEPENDENCY class (stays under a real resource "
+                  "exhaustion in causal priority)",
+                  n == 1 && s.class == BLOCKER_DEPENDENCY);
+        BCK_CHECK("hotswap: names its escape action",
+                  n == 1 && strcmp(s.escape_action,
+                                   HOTSWAP_RETIRE_ESCAPE_ACTION) == 0);
+        BCK_CHECK("hotswap: retained count tracks outside the record",
+                  hotswap_retire_blocker_retained() == 1);
+
+        /* Dedup keystone: a second retention is the SAME fault. The reason
+         * carries no count/handle, so identity must not change and the
+         * registry must not grow a second row. */
+        char reason_first[BLOCKER_REASON_MAX];
+        snprintf(reason_first, sizeof(reason_first), "%s", s.reason);
+        hotswap_retire_blocker_raise();
+        n = blocker_snapshot_all(&s, 1);
+        BCK_CHECK("hotswap: second retention does not add a second blocker",
+                  blocker_count_active() == 1);
+        BCK_CHECK("hotswap: reason is stable across retentions (dedup holds)",
+                  n == 1 && strcmp(s.reason, reason_first) == 0);
+        BCK_CHECK("hotswap: fire_count records the second retention",
+                  blocker_fire_count_for_testing(
+                      HOTSWAP_RETIRE_UNDRAINED_BLOCKER_ID) == 2);
+        BCK_CHECK("hotswap: retained count is 2 (the varying part lives "
+                  "outside the reason)",
+                  hotswap_retire_blocker_retained() == 2);
+
+        /* No reclaimer installed (release build / seam not armed): the
+         * escape must NOT clear a fault it did not fix. */
+        blocker_advance_clock_for_testing(
+            (int64_t)(HOTSWAP_RETIRE_ESCAPE_DEADLINE_SECS + 1) * 1000000);
+        int fired = blocker_supervisor_sweep();
+        BCK_CHECK("hotswap: escape dispatches on the deadline", fired == 1);
+        BCK_CHECK("hotswap: no reclaimer → blocker stays named",
+                  blocker_exists(HOTSWAP_RETIRE_UNDRAINED_BLOCKER_ID));
+
+        /* A reclaimer that still sees a retained mapping also may not
+         * clear it. */
+        hotswap_retire_blocker_set_reclaimer(test_reclaim_stub, NULL);
+        atomic_store(&g_reclaim_all_clear, false);
+        atomic_store(&g_reclaim_calls, 0);
+        /* Escape dispatch is edge-triggered per record, so re-raise on a
+         * fresh record to get a fresh deadline edge. */
+        blocker_clear(HOTSWAP_RETIRE_UNDRAINED_BLOCKER_ID);
+        hotswap_retire_blocker_raise();
+        blocker_advance_clock_for_testing(
+            (int64_t)(HOTSWAP_RETIRE_ESCAPE_DEADLINE_SECS + 1) * 1000000);
+        blocker_supervisor_sweep();
+        BCK_CHECK("hotswap: reclaimer ran", atomic_load(&g_reclaim_calls) == 1);
+        BCK_CHECK("hotswap: partial reclaim → blocker still named",
+                  blocker_exists(HOTSWAP_RETIRE_UNDRAINED_BLOCKER_ID));
+
+        /* Full reclaim clears it — the claim must not outlive the fault. */
+        atomic_store(&g_reclaim_all_clear, true);
+        blocker_clear(HOTSWAP_RETIRE_UNDRAINED_BLOCKER_ID);
+        hotswap_retire_blocker_raise();
+        blocker_advance_clock_for_testing(
+            (int64_t)(HOTSWAP_RETIRE_ESCAPE_DEADLINE_SECS + 1) * 1000000);
+        blocker_supervisor_sweep();
+        BCK_CHECK("hotswap: full reclaim clears the blocker",
+                  !blocker_exists(HOTSWAP_RETIRE_UNDRAINED_BLOCKER_ID));
+        BCK_CHECK("hotswap: retained count zeroed by the reclaim",
+                  hotswap_retire_blocker_retained() == 0);
+
+        /* The non-escape path: each reclaim decrements, and only the LAST
+         * one clears. */
+        hotswap_retire_blocker_raise();
+        hotswap_retire_blocker_raise();
+        hotswap_retire_blocker_note_reclaimed();
+        BCK_CHECK("hotswap: one of two reclaimed → still named",
+                  blocker_exists(HOTSWAP_RETIRE_UNDRAINED_BLOCKER_ID) &&
+                  hotswap_retire_blocker_retained() == 1);
+        hotswap_retire_blocker_note_reclaimed();
+        BCK_CHECK("hotswap: last reclaim clears the blocker",
+                  !blocker_exists(HOTSWAP_RETIRE_UNDRAINED_BLOCKER_ID) &&
+                  hotswap_retire_blocker_retained() == 0);
+        hotswap_retire_blocker_note_reclaimed();  /* underflow guard */
+        BCK_CHECK("hotswap: reclaim past zero does not underflow",
+                  hotswap_retire_blocker_retained() == 0);
+
+        hotswap_retire_blocker_reset_for_testing();
+    }
+
+    /* (2)+(3) declared-vs-observed drift. NOTE (handoff): neither
+     * detecting organ exists in-tree yet — no config reload path, no
+     * service-catalog observer — so these exercise the naming surface and
+     * the reconciler SEAM the organs will install into, never a fabricated
+     * caller. */
+    {
+        blocker_reset_for_testing();
+        blocker_set_clock_for_testing(90000000);
+        blocker_set_rate_limit_ms_for_testing(0);
+        boot_declaration_drift_reset_for_testing();
+        boot_declaration_drift_register_escapes();
+
+        BCK_CHECK("drift: config-reload escape registered",
+                  blocker_lookup_escape(CONFIG_RELOAD_ESCAPE_ACTION) != NULL);
+        BCK_CHECK("drift: service-declaration escape registered",
+                  blocker_lookup_escape(
+                      SERVICE_DECLARATION_ESCAPE_ACTION) != NULL);
+
+        boot_config_reload_divergence_raise("rpcport");
+        boot_service_declaration_divergence_raise("edge");
+        BCK_CHECK("drift: both faults are named",
+                  blocker_exists(CONFIG_RELOAD_DIVERGED_BLOCKER_ID) &&
+                  blocker_exists(SERVICE_DECLARATION_DIVERGED_BLOCKER_ID));
+        BCK_CHECK("drift: scopes recorded outside the blocker record",
+                  strcmp(boot_declaration_drift_last_scope(
+                             DECLARATION_DRIFT_CONFIG_RELOAD), "rpcport") == 0 &&
+                  strcmp(boot_declaration_drift_last_scope(
+                             DECLARATION_DRIFT_SERVICE_DECL), "edge") == 0);
+
+        /* Dedup keystone: a DIFFERENT scope must not look like a brand-new
+         * blocker. This is the whole reason the scope is not in the reason
+         * text — identity keys on class+reason+cause, so a per-occurrence
+         * reason would re-anchor the deadline forever. */
+        struct blocker_snapshot snaps[8];
+        int total = blocker_snapshot_all(snaps, 8);
+        BCK_CHECK("drift: exactly two records", total == 2);
+        char cfg_reason[BLOCKER_REASON_MAX] = {0};
+        for (int i = 0; i < total; i++) {
+            if (strcmp(snaps[i].id, CONFIG_RELOAD_DIVERGED_BLOCKER_ID) == 0)
+                snprintf(cfg_reason, sizeof(cfg_reason), "%s", snaps[i].reason);
+        }
+        boot_config_reload_divergence_raise("datadir");
+        total = blocker_snapshot_all(snaps, 8);
+        BCK_CHECK("drift: a new scope does not add a record", total == 2);
+        for (int i = 0; i < total; i++) {
+            if (strcmp(snaps[i].id, CONFIG_RELOAD_DIVERGED_BLOCKER_ID) != 0)
+                continue;
+            BCK_CHECK("drift: reason unchanged by a new scope (dedup holds)",
+                      strcmp(snaps[i].reason, cfg_reason) == 0);
+            BCK_CHECK("drift: DEPENDENCY class",
+                      snaps[i].class == BLOCKER_DEPENDENCY);
+        }
+        BCK_CHECK("drift: newest scope is visible where it belongs",
+                  strcmp(boot_declaration_drift_last_scope(
+                             DECLARATION_DRIFT_CONFIG_RELOAD), "datadir") == 0);
+
+        /* No reconciler installed (the organs are pending) — the escapes
+         * fire, escalate, and honestly leave both blockers standing. */
+        blocker_advance_clock_for_testing(
+            (int64_t)(DECLARATION_DRIFT_ESCAPE_DEADLINE_SECS + 1) * 1000000);
+        int fired = blocker_supervisor_sweep();
+        BCK_CHECK("drift: both escapes dispatch on the deadline", fired == 2);
+        BCK_CHECK("drift: no reconciler → both stay named",
+                  blocker_exists(CONFIG_RELOAD_DIVERGED_BLOCKER_ID) &&
+                  blocker_exists(SERVICE_DECLARATION_DIVERGED_BLOCKER_ID));
+
+        /* Seam proof: a reconciler reporting convergence clears exactly its
+         * own blocker; the other is untouched. */
+        atomic_store(&g_reconcile_converged, true);
+        atomic_store(&g_reconcile_calls, 0);
+        boot_declaration_drift_set_reconciler(DECLARATION_DRIFT_CONFIG_RELOAD,
+                                              test_reconcile_stub, NULL);
+        blocker_clear(CONFIG_RELOAD_DIVERGED_BLOCKER_ID);
+        boot_config_reload_divergence_raise("rpcport");
+        blocker_advance_clock_for_testing(
+            (int64_t)(DECLARATION_DRIFT_ESCAPE_DEADLINE_SECS + 1) * 1000000);
+        blocker_supervisor_sweep();
+        BCK_CHECK("drift: reconciler seam was invoked",
+                  atomic_load(&g_reconcile_calls) == 1);
+        BCK_CHECK("drift: converged reconciler clears its blocker",
+                  !blocker_exists(CONFIG_RELOAD_DIVERGED_BLOCKER_ID));
+        BCK_CHECK("drift: the other fault is untouched by that escape",
+                  blocker_exists(SERVICE_DECLARATION_DIVERGED_BLOCKER_ID));
+
+        /* Convergence via the explicit clear seam. */
+        boot_service_declaration_divergence_clear();
+        BCK_CHECK("drift: explicit clear retires the declaration fault",
+                  !blocker_exists(SERVICE_DECLARATION_DIVERGED_BLOCKER_ID));
+        boot_service_declaration_divergence_clear();  /* idempotent */
+        BCK_CHECK("drift: clear is idempotent", blocker_count_active() == 0);
+
+        boot_declaration_drift_reset_for_testing();
     }
 
     /* ── class names ──────────────────────────────────────────── */

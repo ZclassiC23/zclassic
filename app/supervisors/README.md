@@ -12,5 +12,12 @@ so this shape is partial; do not add placeholder roots or macro-only scaffold.
 A supervisor file should make a running child visible through the root
 liveness tree or it should not exist.
 
+What is still in `config/src/boot_services.c` is the ORDER the registrars run
+in, not the registrations themselves: every other long-running service owns
+its own `liveness_contract` in its own file. That order is load-bearing (the
+tip watchdog before the escalator, the escalator before self-heal) and is
+pinned by ordering asserts in `lib/test/src/test_make_lint_gates.c`, so it
+moves under a seam design, never as a code-motion sweep.
+
 See [`docs/FRAMEWORK.md`](../../docs/FRAMEWORK.md) for the destination shape
 and its §9 debt board for remaining supervisor cleanup.
