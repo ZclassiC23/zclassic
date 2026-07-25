@@ -101,7 +101,7 @@ row) does NOT get the kernel-store marker — it goes through the AR lifecycle.
 
 **Enforcement:** standard result type `struct zcl_result` (`.ok`, `.code`,
 `.message[256]`, `.source_file`, `.source_line`) with `ZCL_OK`, `ZCL_ERR`, and
-`ZCL_CHECK` macros — see `lib/util/include/util/result.h`.
+`ZCL_CHECK` macros — see `lib/base/include/base/result.h`.
 
 **Rule:** new service functions MUST return `struct zcl_result` instead of
 `bool`. Existing code migrates incrementally.
@@ -118,7 +118,7 @@ the failure.
 **Problem:** 15+ unchecked malloc/calloc calls in sync services → silent NULL
 dereference.
 
-**Enforcement:** `lib/util/include/util/safe_alloc.h` provides:
+**Enforcement:** `lib/base/include/base/safe_alloc.h` provides:
 
 - `zcl_malloc(size, label)` — logs (`malloc_failed` + `EV_OOM`) and returns
   NULL; use when graceful degradation is possible.

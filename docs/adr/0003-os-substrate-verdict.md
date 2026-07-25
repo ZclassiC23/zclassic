@@ -164,7 +164,7 @@ Detail, file inventories, and the ordered checklist are in
 - **epoll/kqueue reactor.** `lib/net/src/connman.c:1270` runs one `poll()`
   thread over a `≤256`-fd array (`connman.c:1230`) at a 50 ms timeout — no
   measured need for an edge-triggered reactor at today's peer counts.
-- **Custom allocator.** `zcl_malloc` (`util/safe_alloc.h`) is a checked
+- **Custom allocator.** `zcl_malloc` (`base/safe_alloc.h`) is a checked
   wrapper over the system allocator; no measured fragmentation pain.
 - **Thread priorities / QoS.** Contradicts the liveness philosophy (cursor +
   named blocker, never "starve the low-priority thing quietly"); no
