@@ -83,6 +83,25 @@ int api_controller_supervision_focused_tests(void);
     "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 #define API_TEST_ADDR "t1TestLookupAddr0000000000"
 
+/* Private, per-process datadir for api_set_state().
+ *
+ * The controller stores the pointer rather than copying, and that pointer
+ * outlives the block that set it — so this buffer has static lifetime and a
+ * stack buffer would dangle. It replaces a bare "/tmp": handlers derive
+ * "<datadir>/node.db" and hand the datadir to the explorer and file
+ * controllers, which is machine-shared state that a concurrent copy of this
+ * suite (or anything else on the box) can write underneath us. */
+static const char *api_test_datadir(void)
+{
+    static char dir[512];
+    if (dir[0] == '\0') {
+        test_fmt_tmpdir(dir, sizeof(dir), "api", "datadir");
+        mkdir("test-tmp", 0755);
+        mkdir(dir, 0755);
+    }
+    return dir;
+}
+
 static int api_test_write_rpc(char *out, size_t outmax, const char *json)
 {
     size_t len;
@@ -4332,7 +4351,7 @@ int test_api(void)
         struct block_index *blocks[4] = {0};
         bool ok = api_test_build_chain(&ms, blocks, 4);
         reducer_frontier_provable_tip_set(1);
-        api_set_state(&ms, NULL, NULL, NULL, "/tmp");
+        api_set_state(&ms, NULL, NULL, NULL, api_test_datadir());
 
         char hstar_hex[65] = {0};
         char active_hex[65] = {0};
@@ -4388,7 +4407,7 @@ int test_api(void)
         struct block_index *blocks[2] = {0};
         bool ok = api_test_build_chain(&ms, blocks, 2);
         reducer_frontier_provable_tip_set(1);
-        api_set_state(&ms, NULL, NULL, NULL, "/tmp");
+        api_set_state(&ms, NULL, NULL, NULL, api_test_datadir());
 
         static const char *routes[] = {
             "/api/node/status", "/api/status", "/api/health",
@@ -4605,7 +4624,7 @@ int test_api(void)
         rpc_agent_set_boot_context("canonical", "full",
                                    "/tmp/zcl-canonical", 18232, 8033,
                                    8443, 18034);
-        api_set_state(&ms, NULL, NULL, NULL, "/tmp");
+        api_set_state(&ms, NULL, NULL, NULL, api_test_datadir());
 
         size_t n = api_handle_request("GET", "/api/status", NULL, 0,
                                       resp, sizeof(resp));
@@ -4653,7 +4672,7 @@ int test_api(void)
         decision.projection_height = 2;
         node_health_test_set_chain_advance_decision_override(&decision);
         reducer_frontier_provable_tip_set(2);
-        api_set_state(&ms, NULL, NULL, NULL, "/tmp");
+        api_set_state(&ms, NULL, NULL, NULL, api_test_datadir());
 
         size_t n = api_handle_request("GET", "/api/v1/agent", NULL, 0,
                                       resp, sizeof(resp));
@@ -4938,7 +4957,7 @@ int test_api(void)
         struct block_index *blocks[3] = {0};
         bool ok = api_test_build_chain(&ms, blocks, 3);
         reducer_frontier_provable_tip_set(2);
-        api_set_state(&ms, NULL, NULL, NULL, "/tmp");
+        api_set_state(&ms, NULL, NULL, NULL, api_test_datadir());
 
         size_t n = api_handle_request("GET", "/api/status", NULL, 0,
                                       resp, sizeof(resp));
@@ -5021,7 +5040,7 @@ int test_api(void)
             sync_set_state(SYNC_IDLE, "api status reset");
             sync_set_state(SYNC_FINDING_PEERS, "api status");
             sync_set_state(SYNC_HEADERS_DOWNLOAD, "api status");
-            api_set_state(&ms, NULL, NULL, NULL, "/tmp");
+            api_set_state(&ms, NULL, NULL, NULL, api_test_datadir());
 
             size_t n = api_handle_request("GET", "/api/status", NULL, 0,
                                           resp, sizeof(resp));
@@ -5189,7 +5208,7 @@ int test_api(void)
             ok = ok && sync_set_state(SYNC_AT_TIP,
                                       "api agent latch");
             node_health_test_set_log_head_override(2);
-            api_set_state(&ms, NULL, NULL, NULL, "/tmp");
+            api_set_state(&ms, NULL, NULL, NULL, api_test_datadir());
 
             size_t n = api_handle_request("GET", "/api/v1/agent", NULL, 0,
                                           resp, sizeof(resp));
@@ -5262,7 +5281,7 @@ int test_api(void)
             sync_set_state(SYNC_IDLE, "api status reset");
             sync_set_state(SYNC_FINDING_PEERS, "api status");
             sync_set_state(SYNC_HEADERS_DOWNLOAD, "api status");
-            api_set_state(&ms, NULL, NULL, NULL, "/tmp");
+            api_set_state(&ms, NULL, NULL, NULL, api_test_datadir());
 
             size_t n = api_handle_request("GET", "/api/status", NULL, 0,
                                           resp, sizeof(resp));

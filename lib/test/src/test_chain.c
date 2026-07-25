@@ -275,8 +275,13 @@ int test_chain(void)
 
     printf("block_tree_db flags... ");
     {
+        /* Per-process path: a fixed one would contend for the LevelDB LOCK
+         * with a concurrently running copy of the suite, and the open below
+         * silently degrades a collision into a SKIP. */
+        char dbdir[512];
+        test_make_tmpdir(dbdir, sizeof(dbdir), "chain", "btdb_flags");
         struct block_tree_db btdb;
-        if (block_tree_db_open(&btdb, "/tmp/test_btdb", 1 << 20, false, true)) {
+        if (block_tree_db_open(&btdb, dbdir, 1 << 20, false, true)) {
             bool val = false;
             block_tree_db_write_flag(&btdb, "txindex", true);
             block_tree_db_read_flag(&btdb, "txindex", &val);
@@ -297,12 +302,15 @@ int test_chain(void)
         } else {
             printf("SKIP (open failed)\n");
         }
+        test_rm_rf(dbdir);
     }
 
     printf("block_tree_db reindex... ");
     {
+        char dbdir[512];
+        test_make_tmpdir(dbdir, sizeof(dbdir), "chain", "btdb_reindex");
         struct block_tree_db btdb;
-        if (block_tree_db_open(&btdb, "/tmp/test_btdb2", 1 << 20, false, true)) {
+        if (block_tree_db_open(&btdb, dbdir, 1 << 20, false, true)) {
             bool val = false;
             block_tree_db_write_reindexing(&btdb, true);
             block_tree_db_read_reindexing(&btdb, &val);
@@ -323,6 +331,7 @@ int test_chain(void)
         } else {
             printf("SKIP (open failed)\n");
         }
+        test_rm_rf(dbdir);
     }
 
     printf("is_final_tx... ");
@@ -389,9 +398,13 @@ int test_chain(void)
 
     printf("disk_block_io write/read roundtrip... ");
     {
-        const char *tmpdir = "/tmp/test_disk_block_io";
-        char cmd[256];
-        snprintf(cmd, sizeof(cmd), "rm -rf %s && mkdir -p %s/blocks", tmpdir, tmpdir);
+        /* Per-process: this block used to `rm -rf` a fixed path, so a
+         * concurrent copy of the suite would delete this fixture mid-test. */
+        char tmpbuf[512];
+        test_make_tmpdir(tmpbuf, sizeof(tmpbuf), "chain", "disk_block_io");
+        const char *tmpdir = tmpbuf;
+        char cmd[600];
+        snprintf(cmd, sizeof(cmd), "mkdir -p %s/blocks", tmpdir);
         (void)system(cmd);
 
         struct block b;
@@ -428,8 +441,7 @@ int test_chain(void)
             failures++;
         }
         block_free(&b);
-        snprintf(cmd, sizeof(cmd), "rm -rf %s", tmpdir);
-        (void)system(cmd);
+        test_rm_rf(tmpdir);
     }
 
     printf("main_state init/free... ");
@@ -494,8 +506,10 @@ int test_chain(void)
 
     printf("coins_view_db write/read... ");
     {
+        char dbdir[512];
+        test_make_tmpdir(dbdir, sizeof(dbdir), "chain", "coins_db");
         struct coins_view_db cvdb;
-        if (coins_view_db_open(&cvdb, "/tmp/test_coins_db", 1 << 20, false, true)) {
+        if (coins_view_db_open(&cvdb, dbdir, 1 << 20, false, true)) {
             struct uint256 txid;
             memset(txid.data, 0xab, 32);
 
@@ -529,6 +543,7 @@ int test_chain(void)
         } else {
             printf("SKIP (open failed)\n");
         }
+        test_rm_rf(dbdir);
     }
 
     printf("update_coins... ");
@@ -1676,8 +1691,10 @@ int test_chain(void)
          * Create an in-memory SQLite DB and verify hash→height lookup. */
         struct node_db ndb;
         memset(&ndb, 0, sizeof(ndb));
-        (void)mkdir("/tmp/test_boot_fallback", 0755);
-        if (node_db_open(&ndb, "/tmp/test_boot_fallback/node.db")) {
+        char ddir[512], dbpath[600];
+        test_make_tmpdir(ddir, sizeof(ddir), "chain", "boot_fallback");
+        snprintf(dbpath, sizeof(dbpath), "%s/node.db", ddir);
+        if (node_db_open(&ndb, dbpath)) {
             /* Insert a block */
             struct db_block blk;
             memset(&blk, 0, sizeof(blk));
@@ -1714,18 +1731,17 @@ int test_chain(void)
             printf("SKIP (SQLite init failed)\n");
         }
         /* Cleanup */
-        (void)remove("/tmp/test_boot_fallback/node.db");
-        (void)remove("/tmp/test_boot_fallback/node.db-wal");
-        (void)remove("/tmp/test_boot_fallback/node.db-shm");
-        (void)rmdir("/tmp/test_boot_fallback");
+        test_rm_rf(ddir);
     }
 
     printf("boot: SQLite lookup for missing hash returns false... ");
     {
         struct node_db ndb;
         memset(&ndb, 0, sizeof(ndb));
-        (void)mkdir("/tmp/test_boot_fallback2", 0755);
-        if (node_db_open(&ndb, "/tmp/test_boot_fallback2/node.db")) {
+        char ddir[512], dbpath[600];
+        test_make_tmpdir(ddir, sizeof(ddir), "chain", "boot_fallback2");
+        snprintf(dbpath, sizeof(dbpath), "%s/node.db", ddir);
+        if (node_db_open(&ndb, dbpath)) {
             uint8_t missing[32];
             memset(missing, 0xFF, 32);
             struct db_block found;
@@ -1740,10 +1756,7 @@ int test_chain(void)
         } else {
             printf("SKIP (SQLite init failed)\n");
         }
-        (void)remove("/tmp/test_boot_fallback2/node.db");
-        (void)remove("/tmp/test_boot_fallback2/node.db-wal");
-        (void)remove("/tmp/test_boot_fallback2/node.db-shm");
-        (void)rmdir("/tmp/test_boot_fallback2");
+        test_rm_rf(ddir);
     }
 
     /* ── Checkpoint helpers (testable API over the inlined scan) ── */

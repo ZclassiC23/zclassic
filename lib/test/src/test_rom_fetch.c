@@ -132,6 +132,7 @@ static void manifest_from_artifact(const struct rom_artifact *a,
  * one that was never reachable. */
 struct rf_hang_seeder {
     int listen_fd;
+    uint16_t port;      /* OS-assigned; read back after bind(port 0) */
     pthread_t tid;
     _Atomic bool stop;
     _Atomic int accepts;
@@ -158,21 +159,30 @@ static void *rf_hang_seeder_thread(void *arg)
     return NULL;
 }
 
-static bool rf_hang_seeder_start(struct rf_hang_seeder *h, uint16_t port)
+/* Binds an OS-assigned loopback port (port 0) and reads the assignment back
+ * out of the still-open listener, so there is no window in which another
+ * process could take it. A fixed port here would fail whenever anything else
+ * held it — including a second copy of this suite. */
+static bool rf_hang_seeder_start(struct rf_hang_seeder *h)
 {
     memset(h, 0, sizeof(*h));
     h->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (h->listen_fd < 0)
         return false;
-    int one = 1;
-    setsockopt(h->listen_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    addr.sin_port = htons(port);
+    addr.sin_port = htons(0);
+    socklen_t alen = sizeof(addr);
     if (bind(h->listen_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
-        listen(h->listen_fd, 8) != 0) {
+        listen(h->listen_fd, 8) != 0 ||
+        getsockname(h->listen_fd, (struct sockaddr *)&addr, &alen) != 0) {
+        close(h->listen_fd);
+        return false;
+    }
+    h->port = ntohs(addr.sin_port);
+    if (h->port == 0) {
         close(h->listen_fd);
         return false;
     }
@@ -928,13 +938,12 @@ static int test_verified_multi_seeder_hang_failover(void)
          * is the real live seeder. Chunk i starts at peer (i % 2), so
          * chunks 0 and 2 hit the hung endpoint first and must fail over. */
         struct rf_hang_seeder hang;
-        const uint16_t hang_port = 18513;
-        ASSERT(rf_hang_seeder_start(&hang, hang_port));
+        ASSERT(rf_hang_seeder_start(&hang));
 
         struct rom_fetch_peer peers[2];
         memset(peers, 0, sizeof(peers));
         snprintf(peers[0].addr, sizeof(peers[0].addr), "%s", "127.0.0.1");
-        peers[0].port = hang_port;
+        peers[0].port = hang.port;
         snprintf(peers[1].addr, sizeof(peers[1].addr), "%s", "127.0.0.1");
         peers[1].port = port;
 

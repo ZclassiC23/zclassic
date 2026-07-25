@@ -6,9 +6,19 @@
  *
  * Strategy mirrors test_chainstate_legacy_reader: cheap unit assertions
  * always run (NULL guards, missing-datadir → NOT_FOUND), and a richer
- * "live" assertion block runs when a legacy datadir is reachable
- * (ZCL_LEGACY_DATADIR override or $HOME/.zclassic). The live block is
- * skipped with PASS in CI so a fresh checkout doesn't fail. */
+ * "live" assertion block runs ONLY when the operator names a datadir in
+ * ZCL_LEGACY_DATADIR. The live block is skipped with PASS otherwise, so a
+ * fresh checkout doesn't fail.
+ *
+ * There is deliberately no $HOME/.zclassic fallback. That directory belongs
+ * to a running zclassicd, and block_log_legacy_open → bilr_open →
+ * db_wrapper_open is an ordinary read-WRITE LevelDB open: it takes the LOCK
+ * and can run log recovery, rewriting the MANIFEST of a live daemon's block
+ * index. It happened to be harmless only because the daemon held the LOCK
+ * and the open failed — which also made every assertion below silently
+ * vanish, and made the result depend on whether a service was running.
+ * Point ZCL_LEGACY_DATADIR at a datadir you own (a stopped node, or a copy)
+ * to exercise it. */
 
 #include "test/test_core.h"
 #include "adapters/outbound/persistence/block_log_legacy.h"
@@ -26,19 +36,16 @@
     else { printf("FAIL\n"); failures++; }               \
 } while (0)
 
+/* Explicit opt-in only — see the header comment for why there is no
+ * $HOME/.zclassic fallback. */
 static const char *resolve_live_datadir(void)
 {
     const char *env = getenv("ZCL_LEGACY_DATADIR");
-    if (env && env[0]) return env;
-
-    static char home_zcl[1024];
-    const char *home = getenv("HOME");
-    if (!home || !home[0]) return NULL;
-    snprintf(home_zcl, sizeof home_zcl, "%s/.zclassic", home);
+    if (!env || !env[0]) return NULL;
     struct stat st;
-    if (stat(home_zcl, &st) != 0 || !S_ISDIR(st.st_mode))
+    if (stat(env, &st) != 0 || !S_ISDIR(st.st_mode))
         return NULL;
-    return home_zcl;
+    return env;
 }
 
 struct iter_state {
@@ -114,7 +121,8 @@ int test_block_log_legacy(void)
     const char *datadir = resolve_live_datadir();
     if (!datadir) {
         printf("block_log_legacy: live block SKIPPED "
-               "(no ZCL_LEGACY_DATADIR or ~/.zclassic)\n");
+               "(set ZCL_LEGACY_DATADIR to a datadir you own; this test "
+               "never opens the live ~/.zclassic)\n");
         return failures;
     }
 

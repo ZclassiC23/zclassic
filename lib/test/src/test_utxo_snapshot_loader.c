@@ -107,10 +107,19 @@ int test_utxo_snapshot_loader(void)
     /* anchor block hash: leave zero */
     memcpy(header + 72, sha3, 32);
 
-    /* Write to a tmp file. */
-    const char *tmp = "/tmp/zcl_test_uss.dat";
+    /* Write to a tmp file. Per-process: these fixtures were fixed /tmp paths,
+     * so two concurrent copies of the suite would truncate and rewrite each
+     * other's snapshot file mid-read. */
+    char ussdir[512], tmpbuf[600];
+    test_make_tmpdir(ussdir, sizeof(ussdir), "uss", "loader");
+    snprintf(tmpbuf, sizeof(tmpbuf), "%s/uss.dat", ussdir);
+    const char *tmp = tmpbuf;
     FILE *f = fopen(tmp, "wb");
-    if (!f) { printf("uss: tmp open FAIL\n"); return 1; }
+    if (!f) {
+        printf("uss: tmp open FAIL\n");
+        test_rm_rf(ussdir);
+        return 1;
+    }
     fwrite(header, 1, 104, f);
     fwrite(body, 1, body_len, f);
     fclose(f);
@@ -196,7 +205,9 @@ int test_utxo_snapshot_loader(void)
         wle64(v2hdr + 32, (uint64_t)(50000 + 12345 + 99999));
         memcpy(v2hdr + 72, v2sha3, 32);
 
-        const char *tmp2 = "/tmp/zcl_test_uss_v2.dat";
+        char tmp2buf[600];
+        snprintf(tmp2buf, sizeof(tmp2buf), "%s/uss_v2.dat", ussdir);
+        const char *tmp2 = tmp2buf;
         FILE *fv = fopen(tmp2, "wb");
         bool ok = (fv != NULL);
         if (fv) {
@@ -245,7 +256,9 @@ int test_utxo_snapshot_loader(void)
     printf("uss: exact legacy layout + canonical records... ");
     {
         bool ok = true;
-        const char *bad = "/tmp/zcl_test_uss_bad_layout.dat";
+        char badbuf[600];
+        snprintf(badbuf, sizeof(badbuf), "%s/uss_bad_layout.dat", ussdir);
+        const char *bad = badbuf;
         uint8_t bh[104];
         uint8_t bb[4097];
 
@@ -349,5 +362,6 @@ int test_utxo_snapshot_loader(void)
 
 cleanup:
     unlink(tmp);
+    test_rm_rf(ussdir);
     return failures;
 }
