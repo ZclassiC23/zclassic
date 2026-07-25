@@ -7,7 +7,7 @@
  * spawning the real detached worker threads (which sleep and drive
  * compute_* against whatever main_state is/isn't set). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "controllers/api_controller.h"
 #include "supervisors/domains.h"

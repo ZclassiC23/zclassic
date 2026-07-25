@@ -20,7 +20,7 @@
  *     reorg bug on the tip_finalize rewind path), mark the batch dirty so a
  *     non-advancing drain still COMMITs the rewind, and roll back with it. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "util/blocker.h"
 #include "util/stage.h"
 

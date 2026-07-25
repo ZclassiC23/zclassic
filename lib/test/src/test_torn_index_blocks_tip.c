@@ -31,7 +31,7 @@
  * coins_view_cache + csr + authority over 3 blocks at heights 0,1,2).
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "services/chain_evidence_authority_service.h"
 #include "validation/process_block.h"

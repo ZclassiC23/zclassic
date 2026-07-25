@@ -14,7 +14,8 @@
  * / ssio_read_sidecar across lib/test/src turned up nothing but an
  * unrelated string match in test_make_lint_gates.c. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "coins/undo.h"
 
 #include "crypto/sha3.h"
 #include "storage/sha3_sidecar_io.h"

@@ -7,7 +7,7 @@
  * observable by dispatch. No sockets, services, files, or datadirs are used.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "json/json.h"
 #include "kernel/command_registry.h"

@@ -26,7 +26,7 @@
  *
  * Hermetic: temp datadirs only, no child processes, no node boot. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "config/boot_cold_start.h"
 
 #include <stdio.h>

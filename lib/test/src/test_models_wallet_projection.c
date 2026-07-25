@@ -1,7 +1,12 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Focused wallet projection model tests. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "models/block.h"
+#include "models/tx_index.h"
+#include "models/utxo.h"
+#include "models/wallet_key.h"
+#include "models/wallet_tx.h"
 #include <unistd.h>
 
 int test_model_wallet_projection(void)

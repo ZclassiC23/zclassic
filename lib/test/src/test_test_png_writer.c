@@ -25,7 +25,7 @@
  *     already use — not a synthetic stub.
  * No node.db, no live node, no clock, no network. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include <stdbool.h>
 #include <stdint.h>

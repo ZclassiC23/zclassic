@@ -13,7 +13,7 @@
  * mirror the enum + declare the entry points directly. Kept in lockstep
  * with utxo_root_ladder_tripwire.h. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/utxo_root_ladder.h"
 #include "jobs/reducer_frontier.h"

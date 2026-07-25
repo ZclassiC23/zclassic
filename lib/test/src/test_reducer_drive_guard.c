@@ -7,7 +7,7 @@
  *   (c) plain reducer_drive_enter() still works and reads as "unlabeled".
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "util/reducer_drive_guard.h"
 

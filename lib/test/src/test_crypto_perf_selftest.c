@@ -21,7 +21,9 @@
  * as verify_bench_selftest).
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "chain/equihash.h"
+#include "sapling/params_init.h"
 #include "test/verify_bench_fixture.h"       /* baked real (200,9) witness */
 #include "domain/consensus/equihash.h"
 #include "sapling/bls12_381.h"
@@ -70,6 +72,18 @@ static const uint8_t CP_ED_SIG[64] = {
     0x3e,0x15,0x99,0x6e,0x45,0x8f,0x36,0x13,0xd0,0xf1,0x1d,0x8c,
     0x38,0x7b,0x2e,0xae,0xb4,0x30,0x2a,0xee,0xb0,0x0d,0x29,0x16,
     0x12,0xbb,0x0c,0x00 };
+
+/* Host SHA-NI capability, probed independently of lib/crypto/src/sha256.c so
+ * the check below cannot be satisfied by that module agreeing with itself. */
+static bool cp_host_has_sha_ni(void)
+{
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_cpu_init();
+    return __builtin_cpu_supports("sha") != 0;
+#else
+    return false;
+#endif
+}
 
 static bool cp_find_diversifier(uint8_t diversifier[11])
 {
@@ -190,6 +204,17 @@ int test_crypto_perf_selftest(void)
         sha256_init(&sc); sha256_write(&sc, flip, sizeof(flip)); sha256_finalize(&sc, b);
         CP_CHECK("SHA256 avalanche + not-a-copy",
                  memcmp(a, b, 32) != 0 && memcmp(a, msg, 32) != 0);
+
+        /* The `sha256` baseline row is pinned at the SHA-NI number and gated
+         * `beat`. That row is only meaningful if the bench actually exercises
+         * the hardware transform on a host that has it — measuring the
+         * portable fallback would trip the ratchet with a misleading message,
+         * and (worse) a silently-portable build would look like a perf
+         * regression rather than the build defect it is. Byte-for-byte parity
+         * between the two transforms is proven by the sha256_isa_parity group;
+         * this is only the "are we measuring what we pinned" check. */
+        CP_CHECK("SHA256 bench runs the transform the node ships",
+                 !cp_host_has_sha_ni() || sha256_shani_available());
 
         zcl_sha3_256(msg, sizeof(msg), a);
         zcl_sha3_256(flip, sizeof(flip), b);

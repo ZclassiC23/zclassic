@@ -13,7 +13,6 @@
 #include "metrics/stage_metrics.h"
 
 struct main_state;
-struct connman;
 struct chain_params;
 
 struct metrics_external_gauges {
@@ -31,6 +30,17 @@ struct metrics_external_gauges {
      * before the chain-state repository initializes). Feeds the
      * `header_gap_growing` metric alert. */
     int64_t header_gap_blocks;
+    /* Active-chain tip height + its nTime, and the live peer count.
+     * These arrive through the seam for the same reason everything else
+     * in this struct does: lib/metrics must not link against
+     * lib/validation (active_chain_tip) or lib/net (connman_get_node_count).
+     * boot_metrics_external_gauges() reads the tip under cs_main, exactly
+     * as the metrics tick used to. tip_height/tip_time are 0 and
+     * connection_count is 0 before the chain/connman exist — the same
+     * values the old direct calls produced on a NULL tip. */
+    int64_t tip_height;
+    int64_t tip_time;
+    int64_t connection_count;
     /* The 8 reducer stages' live cursor + step_us_ewma, indexed in the
      * fixed METRICS_STAGE_COUNT order (metrics_stage_name()). Filled by
      * boot_metrics_external_gauges() (config/src/boot_node_utilities.c,
@@ -52,7 +62,6 @@ extern _Atomic uint64_t g_eh_solver_runs;
 
 struct metrics_context {
     struct main_state *ms;
-    struct connman *cm;
     const struct chain_params *params;
     bool mining;
     metrics_external_gauges_fn external_gauges;

@@ -1,8 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * See lib/util/include/util/log_level.h for the contract. */
+ * See lib/base/include/base/log_level.h for the contract. */
 
-#include "util/log_level.h"
+#include "base/log_level.h"
 
 #include <stdarg.h>
 #include <stdatomic.h>

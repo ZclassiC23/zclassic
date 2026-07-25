@@ -12,13 +12,18 @@
 #include "validation/txmempool.h"
 #include "coins/coins_view.h"
 #include "chain/chainparams.h"
-#include "config/runtime.h"
 #include "net/fast_sync.h"
 #include "event/event.h"
 #include "sync/sync_state.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+/* config/ is the composition root and sits ABOVE lib/; msgprocessor only
+ * ever holds an opaque pointer to the runtime context, so it forward-declares
+ * the struct instead of including config/runtime.h. The .c files that need
+ * the fields include that header themselves. */
+struct app_runtime_context;
 
 struct block;
 struct transaction;

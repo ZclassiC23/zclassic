@@ -2,7 +2,7 @@
  *
  * thread_registry stress test. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "util/thread_registry.h"
 
 #include <pthread.h>

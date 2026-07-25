@@ -43,7 +43,7 @@
  * — or is broken by — whatever order test_parallel/test_zcl happen to run
  * cases in. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "controllers/agent_security_posture.h"
 #include "models/database.h"

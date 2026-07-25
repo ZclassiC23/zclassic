@@ -24,7 +24,7 @@
  * chain + mirrored progress.kv schemas) and test_stage_anchor.c (private
  * on-disk sqlite DBs, public API only). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/chain.h"
 #include "jobs/reducer_frontier.h"

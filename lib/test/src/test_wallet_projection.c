@@ -1,6 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "json/json.h"
+#include "models/wallet_key.h"
+#include "models/wallet_tx.h"
 
 #include "storage/event_log.h"
 #include "storage/event_log_payloads.h"

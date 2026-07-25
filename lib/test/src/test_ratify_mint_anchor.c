@@ -12,7 +12,7 @@
  * lane before any applied frontier exists, then sets applied_height = height+1
  * (the shape a completed genesis..anchor mint leaves). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/checkpoints.h"
 #include "config/boot.h"

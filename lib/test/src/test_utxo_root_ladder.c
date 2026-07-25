@@ -9,7 +9,7 @@
  * section for the dense mmb_root layer, which needs a real ~100 MB
  * mmb_leaves.bin fixture to exercise for real. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/mmb.h"
 #include "chain/utxo_root_ladder.h"

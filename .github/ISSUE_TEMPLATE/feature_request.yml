@@ -1,0 +1,64 @@
+name: Feature request
+description: Propose a capability the node does not have yet.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before writing code: this project is pre-v1 and the bar for v1 is the
+        eight acceptance criteria in `docs/MVP.md`. A proposal that is off that
+        path may be a good idea and still wait — saying so early is meant to
+        save your time, not to discourage you.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >
+        What can't you do today? Describe the situation you are actually in,
+        not the solution you have in mind — the solution is the next field.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you propose
+      description: >
+        If it touches the operator surface, say which typed command or flag it
+        would add or change (`zclassic23 discover help` lists what exists).
+    validations:
+      required: true
+
+  - type: dropdown
+    id: consensus
+    attributes:
+      label: Does this change consensus?
+      description: >
+        zclassic23 must stay bit-for-bit consensus-compatible with `zclassicd`.
+        A change to Equihash parameters, activation heights, or block/transaction
+        validity is **declined on principle** — even if framed as opt-in,
+        miner-signaled, or a "sidegrade" — because a consensus change must never
+        ship to zclassic23 first. We will thank you, credit the idea, and decline
+        the change; we may reimplement any non-consensus part of it ourselves.
+        Non-consensus proposals are judged purely on merit. Full policy:
+        `docs/CONSENSUS_PARITY_DOCTRINE.md`.
+
+        Answering "Yes" honestly is welcome — it just routes the discussion to
+        the ZClassic network rather than to this repository.
+      options:
+        - "No — non-consensus (sync, wallet, RPC, explorer, Tor, CLI, tooling, docs)"
+        - "Yes — this would change block or transaction validity"
+        - "I'm not sure"
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: >
+        Including "do nothing". If an existing command or flag almost does it,
+        name the gap.
+    validations:
+      required: false

@@ -14,7 +14,8 @@
  * does not route through the AR lifecycle (no model, no progress.kv handle).
  * compute_hstar itself is the SELECT-only unit under test. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "json/json.h"
 
 #include "coins/utxo_commitment.h"
 #include "config/db_service.h"

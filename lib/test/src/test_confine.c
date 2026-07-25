@@ -41,7 +41,7 @@
 
 #define _GNU_SOURCE  /* getrandom / syscall — must precede every include */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "platform/os_sandbox.h"
 
 #include <errno.h>

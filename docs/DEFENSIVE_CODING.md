@@ -101,7 +101,7 @@ row) does NOT get the kernel-store marker — it goes through the AR lifecycle.
 
 **Enforcement:** standard result type `struct zcl_result` (`.ok`, `.code`,
 `.message[256]`, `.source_file`, `.source_line`) with `ZCL_OK`, `ZCL_ERR`, and
-`ZCL_CHECK` macros — see `lib/util/include/util/result.h`.
+`ZCL_CHECK` macros — see `lib/base/include/base/result.h`.
 
 **Rule:** new service functions MUST return `struct zcl_result` instead of
 `bool`. Existing code migrates incrementally.
@@ -118,7 +118,7 @@ the failure.
 **Problem:** 15+ unchecked malloc/calloc calls in sync services → silent NULL
 dereference.
 
-**Enforcement:** `lib/util/include/util/safe_alloc.h` provides:
+**Enforcement:** `lib/base/include/base/safe_alloc.h` provides:
 
 - `zcl_malloc(size, label)` — logs (`malloc_failed` + `EV_OOM`) and returns
   NULL; use when graceful degradation is possible.
@@ -283,11 +283,19 @@ assert green).
   structured event emit and a Prometheus gauge.
 
 - **Gate #15: `check-lib-layering`** (RATCHET) — flags any
-  `#include "controllers/…"`, `"models/…"`, `"services/…"`, or `"views/…"` in
-  `lib/**/*.c|.h` outside `lib/test/`. lib/ is the foundation; a backward
-  include means a lib/ file is doing app/ work. Baseline
-  `tools/scripts/lib_layering_baseline.txt` is empty (98 originals all
-  remediated). Override `// lib-layer-ok:<tag>`. Impl:
+  `#include "controllers/…"`, `"models/…"`, `"services/…"`, `"views/…"`, or
+  `"config/…"` in `lib/**/*.c|.h` outside `lib/test/`. lib/ is the
+  foundation; app/ consumes it and config/ composes the whole process, so
+  both sit above it. A backward include means a lib/ file is doing upstairs
+  work — and for `config/` it is worse than a misplaced dependency: config/
+  constructs the message processor, the reducer and the databases, so naming
+  a config/ symbol from lib/ makes the two layers cyclic. When lib/ needs
+  something the composition root owns, declare a port in lib/ and register
+  the implementation from config/ (`lib/net/include/net/net_runtime_port.h`,
+  `lib/storage/include/storage/node_db_runtime.h`). lib/hotswap's
+  `../../../config/*.def` X-macro data tables are not matched and carry no
+  link edge. Baseline `tools/scripts/lib_layering_baseline.txt` is empty (98
+  originals all remediated). Override `// lib-layer-ok:<tag>`. Impl:
   `tools/scripts/check_lib_layering.sh`.
 
 - **Gate #49: `check-shape-include-direction`** (RATCHET) — the eight app/
@@ -540,14 +548,19 @@ current green tree.
 | **E6c: `check-dumper-never-blocks`** | RATCHET | No `*_dump_state_json` function body reaches a blocking primitive (`progress_store_tx_lock(`, `stage_log_row_count(`, `stage_cursor_count(`, `from_anchor_target`) — it publishes through the snapshot plane (`util/subsystem_snapshot.h` / `jobs/stage_log_rows.h`) and reads lock-free, using `progress_store_tx_trylock` only for cold single-row detail. Manifest `dumper_blocking_primitives.tsv`; reviewed-but-unmigrated sites in `dumper_blocking_baseline.tsv` (goal empty). No inline override. |
 | **E7: `check-no-authoritative-ram-state`** | RATCHET | No direct `active_chain` internals access / new global-static `struct active_chain`. Derived RAM indexes only via accessors; consensus authority is the log/projection/cursor surface. Baseline `no_authoritative_ram_state_baseline.txt` (empty). Override `// ram-state-ok:<tag>` (documented derived cache). |
 | **E8: `check-no-silent-ready`** | HARD | The block-connection authority (`app/services/src/chain_activation_service.c`) must advance-the-tip OR name a typed blocker every tick (FRAMEWORK.md Prime Directive). Any `activation_set_state(…, ACTIVATION_READY, …)` must also route a typed blocker via `blocker_set(` (or `activation_set_behind_blocker(`). Closes the silent-ready hole class (e.g. READY reported as "behind_peers" while hundreds of blocks behind). Override `// no-silent-ready-ok:<tag>`. |
-| **E9: `check-operator-needed-sink`** | HARD | `EV_OPERATOR_NEEDED` ("auto-healing gave up, page a human") is emitted in production AND has a registered subscriber in `lib/util/src/alerts.c` (rule with `.trigger = EV_OPERATOR_NEEDED` via `event_observe(`). Prevents the silent-halt class where the loud signal reaches no sink. No override. |
+| **E9: `check-operator-needed-sink`** | HARD | `EV_OPERATOR_NEEDED` ("auto-healing gave up, page a human") is emitted in production AND has a registered subscriber in `lib/event/src/alerts.c` (rule with `.trigger = EV_OPERATOR_NEEDED` via `event_observe(`). Prevents the silent-halt class where the loud signal reaches no sink. No override. |
 | **P1-3: `check-systemd-memory-budget`** | HARD | Systemd service hard caps (`MemoryMax` plus finite `MemorySwapMax`) must stay below the host budget (default 70% of MemTotal); explicit `MemoryMax=infinity` fails. Prevents host-level OOM from cap drift. |
 | **E11: `check-doc-accuracy`** | HARD | The canonical gate block below matches the `check-*` prerequisites of the Makefile `lint:` target by count AND name set. On mismatch, fix the doc block — the Makefile is authoritative. No override. |
 | **`check-markdown-links`** | HARD | Every local file/directory target in tracked Markdown resolves inside the repository. Network/mail/app URIs, page anchors, images, code examples, and explicit generated placeholders are outside this filesystem-only contract. The gate fails loud on an empty scan/parser result and carries isolated positive/negative self-tests. No baseline or override. |
 | **`check-no-stale-pinned-facts`** | HARD (binary size) / RATCHET (height pin) | "Make staleness impossible": docs (CLAUDE.md + README.md + docs/\*\*/\*.md) must not hand-pin a fact with a live source. (A) A "\<N\> MB" size ADJACENT to "binary" fails HARD — de-pin to size-agnostic prose or quote `tools/scripts/binary_size.sh`; never baseline-exemptible (the stale "~15 MB" survived because it was hand-pinned). (B) A live-state HEIGHT PIN (`H*=`, "wedged at", "held at", "currently …at", "live tip", "stuck/pinned at" next to a height-shaped number) outside the one live-state page `docs/HANDOFF.md` fails RATCHET against the shrink-only `tools/lint/stale_pinned_facts_baseline.txt`. `docs/work/archive/**` (frozen narratives) is exempt. Per-line override `<!-- stale-ok: <reason> -->`. |
 | **E12: `check-honest-witness`** | FAIL | Law 7 ("heal in the open, page when stuck"): a Condition's `witness_<name>()` must observe the symptom MOVE, not a constant, the pure inverse of `detect`, or an FSM/poison-flag the remedy itself set. Fails if TRIVIAL (every return a bare `true`/`false`), PURE-INVERSE (`return !detect_x()`), or NO-OBSERVABLE (references none of `active_chain_height`, reducer-frontier H\*, block_map iteration, a durable `SELECT`, a peer/inflight/staged/received progress counter). Exemplar: `app/conditions/src/block_failed_mask_at_tip.c`. Baseline `tools/lint/honest_witness_baseline.txt` (empty). Override `// honest-witness-ok:<reason>` (witness whose remedy returns `COND_REMEDY_FAILED` or re-verifies real structural state). |
+| **`check-error-doc-refs`** | HARD | A remedy the operator cannot follow is worse than none: three wallet-path boot refusals in `config/src/boot.c` said "see WALLET_PERSISTENCE_RECOVERY.md", a file that had never existed — and they fire exactly when private keys are already on disk and the node refuses to write over them. Scans every string literal in a tracked `.c`/`.h` for a token ending in `.md` and resolves it against the repo root, or by basename under `docs/` / `docs/work/`. Comments are ignored (only literals reach an operator); literals carrying a printf conversion or a shell/SQL glob are skipped, since the gate cannot know what they expand to. Complements `check-markdown-links`, which only covers `.md`-to-`.md`. Per-line override `// error-doc-ref-ok:<reason>` for a genuinely runtime-created path. Hermetic `--selftest`. Zero violations, no baseline. |
 | **`check-no-uncited-victory`** | HARD | A progress claim without an external ledger line is not trustworthy — false "cured / at tip / fully synced" claims have repeatedly re-wedged without one. Splits the one live-state page `docs/HANDOFF.md` into blank-line paragraphs; a paragraph carrying a word-bounded VICTORY PHRASE (`at tip`, `at-tip`, `reaches tip`, `holds tip`, `fully synced`, `cured`, `unwedged`, `wedge cleared`/`closed`/`fixed`, `soak window open`/`running`, `proven live`, `live-proven`, `stable at tip`) FAILS unless the SAME paragraph carries a CITATION TOKEN (`uptime-ledger`, `slo-summary:`, `VERDICT=PASS`, `WALL_CLOCK_SECONDS`, `gap_vs_oracle`, a `ts=<digits>` stamp) or the explicit per-paragraph override `<!-- victory-ok: <reason> -->` (HISTORICAL narration only, never a current-state claim). Hollow-gate rule: `docs/HANDOFF.md` missing or < 10 lines FAILs. Hermetic `--selftest`. No baseline. |
 | **E14: `check-condition-cooldown`** | HARD | Closes the multi-hour page-storm bug class: a `COND_CRITICAL` condition whose `detect()` calls a known peer/network-liveness primitive (`connman_max_peer_height`, `connman_get_node_count`, `sync_monitor_connman`, `sync_monitor_max_peer_height`) or the legacy `zclassicd` RPC oracle (`legacy_chain_rpc_*`) must set `.cooldown_secs > 0` (condition.c re-arms the remedy instead of latching permanently at `max_attempts`) or wire a `.progressing` callback (TL-1's alternate anti-latch mechanism, e.g. `reducer_frontier_reconcile_light.c`). Exemplar fix: `app/conditions/src/sync_violation_lag.c`. Self-tested against an isolated tmp dir (`ZCL_CONDITION_COOLDOWN_SELFTEST=1`), proven in `make test`/`make test-parallel` via `t_e14_condition_cooldown_gate()`. No baseline (structural, not a ratchet). |
+| **`check-no-gnu-va-args`** | HARD | Variadic macros use the C23 `__VA_OPT__(,) __VA_ARGS__`, never the GNU comma-swallowing `, ##__VA_ARGS__`. A GNU-only idiom is invisible while exactly one compiler ever reads the tree, and this one was load-bearing: twelve uses — ten in `lib/util/include/util/log_macros.h` and `lib/net/src/addrman.c`, two inside the sealed consensus tree — produced 7,141 diagnostics under `clang -std=c23 -pedantic`, enough to bury every real finding. The two spellings expand to an identical token stream for the zero-, one-, and n-argument cases; the sealed-tree conversion was proven by compiling both revisions to **identical object files**. Opt out with `// gnu-va-args-ok: <reason>` on the line or the line above (no site uses it today). |
+| **`check-clang-portability`** | RATCHET | Second-compiler portability: a whole-tree `clang -std=c23 -Wall -Wextra -Werror -pedantic -fsyntax-only` over the same source set the node binary is built from, ratcheted against `tools/lint/portability_baseline.clang.txt` (counts may only go DOWN). The node ships as one whole-program GCC build, so nothing had ever asked a second compiler whether the tree is even well-formed — and GCC-only spellings landed invisibly, including genuine undefined behaviour in `lib/net/src/p2p_game.c` where a `#undef` sat inside a function call's argument list (GCC tolerates it; clang rejects it and every use fails). Measured 3.0 s wall at 32 workers over 1174 translation units. **SKIP contract:** prints a loud SKIP and exits 0 when clang is absent, exactly like `check-ci-symbol-floor` without objdump — an outside contributor must never be blocked by a gate whose tool they do not have. |
+| **`check-result-discard`** | RATCHET | Shrink-only ratchet over `(void)` casts that discard a `struct zcl_result`, baseline `tools/lint/result_discard_baseline.txt`. Exists because C23 lets an explicit cast suppress `[[nodiscard]]`: annotating the type (done — see `lib/util/include/util/result.h`) fences off NEW silent discards but cannot excavate the existing population, measured at 94 cast discards versus ~67 bare ones. Fix a site with `ZCL_IGNORE_RESULT(expr, "why the failure is safe to drop")`, which requires a non-empty reason at compile time via `static_assert` — the point being to make the discard *expressible* rather than merely tolerated. |
+| **`check-no-warning-suppression`** | HARD | A blanket warning suppression may not sit on a build surface unexplained. `-Wno-unused-result` and `-Wno-stringop-overflow` — in flag form, or as `#pragma GCC diagnostic ignored` — fail on any tracked makefile, `*.c`/`*.h`, or `*.sh` unless the line, or the line above it, carries `suppression-ok: <reason>` with a non-empty reason. `-Wno-unused-result` matters most: it is the SAME diagnostic GCC and Clang use to report `[[nodiscard]]`, so leaving it on silently voids the result-type discipline the repository is built around — a result type could be annotated and nothing would change. Both flags entered in the first commit as copy-forward defaults and had spread to seven compile rules; each now has one named definition (`ZCL_WARN_UNUSED_RESULT`, `ZCL_WARN_STRINGOP_OVERFLOW`) carrying the reason and the command to re-derive its blocking sites. `vendor/` (third-party recipes) and `.clangd` (editor diagnostics, never emitted code) are out of scope. Hermetic detector fixtures run BEFORE the tree scan on every invocation, so the gate cannot report clean while its matcher is broken, and an empty scan set exits 2. `--self-test`. No baseline. |
 
 E10 = the WARN→RATCHET graduation of #18 and #20 (above).
 
@@ -568,6 +581,7 @@ add/remove a gate.
 - `check-doc-accuracy`
 - `check-doc-counts`
 - `check-domain-purity`
+- `check-error-doc-refs`
 - `check-file-purpose`
 - `check-file-size-ceiling`
 - `check-framework-filename-suffix`
@@ -653,7 +667,11 @@ add/remove a gate.
 - `check-vcs-no-sha1`
 - `check-command-contract`
 - `check-privileged-transition-receipt`
+- `check-no-gnu-va-args`
+- `check-clang-portability`
+- `check-result-discard`
 - `check-no-trust-state-ordering`
+- `check-no-warning-suppression`
 <!-- LINT-GATES-END -->
 
 (`check-consensus-parity` [E13, the parity mechanism — see
@@ -689,7 +707,7 @@ mechanically hold:
 | `// raw-return-ok:<tag>` | bare `return -1;` in service/controller code with no preceding log line | `check-silent-errors-services`, `-controllers` |
 | `// raw-alloc-ok:<tag>` | line with `malloc/calloc/realloc` outside the `zcl_*` wrappers | `check-raw-malloc` |
 | `// long-function-ok:<tag>` | signature line of a function whose body spans >500 lines (controllers/services/config-src ENFORCED, lib/ WARN) | `check-long-functions` |
-| `// lib-layer-ok:<tag>` | line in `lib/` that includes a `controllers/`, `models/`, `services/`, or `views/` header | `check-lib-layering` |
+| `// lib-layer-ok:<tag>` | line in `lib/` that includes a `controllers/`, `models/`, `services/`, `views/`, or `config/` header | `check-lib-layering` |
 | `// shape-layer-ok:<tag>` | line in `app/models/` that includes a `services/`/`controllers/` header, or in `app/services/` that includes a `controllers/` header | `check-shape-include-direction` |
 | `// domain-purity-ok:<tag>` | line in `domain/` that includes an app/ shape or an unlisted lib/ subsystem header | `check-domain-purity` |
 | `// supervisor-ok:<tag>` | any line in a long-running `app/services/src/*_service.c` that intentionally does not register a supervisor liveness contract | `check-supervisor-registration` |

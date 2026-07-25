@@ -18,7 +18,7 @@
  *   NO remedy (a healthy node surfaces no cure to run).
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "controllers/agent_controller.h"
 #include "controllers/shielded_gap_remedy_controller.h"

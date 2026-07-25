@@ -12,7 +12,7 @@
  *   6. Ban expiry (time-based)
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "rpc/http_middleware.h"
 #include "rpc/httpserver.h"
 #include "encoding/utilstrencodings.h"

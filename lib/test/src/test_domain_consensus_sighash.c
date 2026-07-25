@@ -22,7 +22,7 @@
  * the other, this test shouts.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "domain/consensus/sighash.h"
 #include "validation/sighash.h"

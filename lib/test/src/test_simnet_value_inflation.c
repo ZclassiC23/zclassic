@@ -44,11 +44,12 @@
  * always in this file's block construction, never in connect_block.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "validation/main_constants.h"
 
 #include "sim/simnet.h"
 /* COINBASE_MATURITY comes from consensus/consensus.h, already pulled in
- * transitively by test_helpers.h. */
+ * included directly by this file. */
 
 #include <stdio.h>
 #include <string.h>

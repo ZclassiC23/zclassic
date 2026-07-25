@@ -1,0 +1,41 @@
+# Search-tool ignore list (ripgrep, fd, and anything else honouring `.ignore`).
+#
+# Why this file exists: the repository root holds several GENERATED or
+# DUPLICATE-CHECKOUT trees. A recursive text search started at the root walks
+# into them and reads the same source many times over — most visibly
+# `.claude/worktrees/`, which holds a full additional checkout per parallel
+# helper. This file makes the common agent/developer search tools skip them by
+# default, so an unscoped search still lands on the tracked source tree.
+#
+# This is a convenience layer, not a boundary:
+#   * `git grep` (the recommended way to search this repo) ignores this file
+#     entirely and always searches exactly the tracked tree.
+#   * `rg --no-ignore` / `rg -uu` searches these paths anyway when you mean to.
+# Unlike `.gitignore`, `.ignore` is still honoured under `rg --no-ignore-vcs`,
+# which is why the two lists are kept separately even where they overlap.
+#
+# Rule for editing: every entry here must be a generated tree or an additional
+# checkout — never a directory holding source that is tracked in THIS
+# repository. The one gitlink below (`vendor/tor`) is a third-party submodule
+# whose contents `git grep` does not descend into either.
+
+# Build output.
+build/
+
+# Per-run test scratch.
+test-tmp/
+
+# One full additional checkout per parallel helper.
+.claude/worktrees/
+
+# Source-navigator index cache.
+.codeindex/
+
+# Chaos-harness run artifacts.
+chaos-output/
+
+# Third-party dependencies fetched/built by `make vendor`.
+vendor/tor/
+vendor/zclassic-ref/
+vendor/.cache/
+vendor/.build/

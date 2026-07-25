@@ -8,7 +8,7 @@
  * and cleans up. All file I/O is local — no network, no SQLite.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "net/addrman_integrity.h"
 #include "event/event.h"
 
@@ -20,6 +20,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include "test/setup_result.h"
 
 #define AII_SCRATCH_ROOT "./test-tmp"
 
@@ -153,7 +154,7 @@ int test_addrman_integrity(void)
         uint8_t body[1024];
         memset(body, 0x5A, sizeof(body));
         aii_write_body(dir, body, sizeof(body));
-        aii_write_sidecar(dir);
+        ZCL_TEST_SETUP(aii_write_sidecar(dir));
 
         /* Flip a single byte in the middle. */
         char body_path[1024];
@@ -182,7 +183,7 @@ int test_addrman_integrity(void)
         uint8_t body[2048];
         memset(body, 0x11, sizeof(body));
         aii_write_body(dir, body, sizeof(body));
-        aii_write_sidecar(dir);
+        ZCL_TEST_SETUP(aii_write_sidecar(dir));
 
         /* Truncate to half its size. */
         char body_path[1024];
@@ -202,7 +203,7 @@ int test_addrman_integrity(void)
         char dir[256]; aii_tmp_dir(dir, sizeof(dir), "bad_magic");
         uint8_t body[] = "hello world";
         aii_write_body(dir, body, sizeof(body) - 1);
-        aii_write_sidecar(dir);
+        ZCL_TEST_SETUP(aii_write_sidecar(dir));
 
         /* Flip the first byte of the sidecar magic. */
         char side[1024];
@@ -227,7 +228,7 @@ int test_addrman_integrity(void)
         char dir[256]; aii_tmp_dir(dir, sizeof(dir), "bad_version");
         uint8_t body[] = "version test";
         aii_write_body(dir, body, sizeof(body) - 1);
-        aii_write_sidecar(dir);
+        ZCL_TEST_SETUP(aii_write_sidecar(dir));
 
         char side[1024];
         snprintf(side, sizeof(side), "%s/peers.dat.sha3", dir);
@@ -252,7 +253,7 @@ int test_addrman_integrity(void)
         char dir[256]; aii_tmp_dir(dir, sizeof(dir), "quarantine");
         uint8_t body[] = "quarantine me";
         aii_write_body(dir, body, sizeof(body) - 1);
-        aii_write_sidecar(dir);
+        ZCL_TEST_SETUP(aii_write_sidecar(dir));
 
         char body_path[1024], side_path[1024];
         snprintf(body_path, sizeof(body_path), "%s/peers.dat", dir);
@@ -293,7 +294,7 @@ int test_addrman_integrity(void)
         uint8_t body[1024];
         memset(body, 0x22, sizeof(body));
         aii_write_body(dir, body, sizeof(body));
-        aii_write_sidecar(dir);
+        ZCL_TEST_SETUP(aii_write_sidecar(dir));
 
         /* Append bytes to body after sidecar was committed. */
         char body_path[1024];
@@ -344,5 +345,5 @@ int test_addrman_integrity(void)
     }
 
     event_clear_observers(EV_ADDRMAN_CORRUPT);
-    return failures;
+    return failures + ZCL_TEST_SETUP_FAILURES();
 }

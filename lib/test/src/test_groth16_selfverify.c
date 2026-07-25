@@ -8,7 +8,7 @@
  * hard assertion and independently exercises the public Output API.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "sapling/params_init.h"
 #include "sapling/sapling.h"

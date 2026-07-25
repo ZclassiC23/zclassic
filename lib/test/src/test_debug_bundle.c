@@ -28,7 +28,7 @@
  * uses — every registered dumper must tolerate an unbooted process — so
  * no extra per-subsystem setup is paid here. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "controllers/diagnostics_controller.h"
 #include "controllers/diagnostics_internal.h"
 #include "json/json.h"

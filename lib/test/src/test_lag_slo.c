@@ -12,7 +12,7 @@
  * sd_notify heartbeat to stop pinging WatchdogSec and triggers a
  * systemd restart. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "services/legacy_mirror_sync_service.h"
 #include "event/event.h"

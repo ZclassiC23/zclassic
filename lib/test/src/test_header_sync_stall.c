@@ -25,7 +25,8 @@
  *        exempts loopback/whitelisted while a plain remote keeps
  *        full stall discipline. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "net/net.h"
 #include "sync/sync_planner.h"
 #include "net/netaddr.h"
 

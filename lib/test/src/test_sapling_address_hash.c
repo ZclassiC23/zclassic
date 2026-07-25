@@ -27,7 +27,8 @@
  * SHA implementation backend while still failing loudly on a regression
  * that drops a field, mis-orders serialization, or zeroes the output. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "sapling/address.h"
 
 /* ── Sapling helpers ─────────────────────────────────────── */
 

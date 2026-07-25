@@ -10,7 +10,7 @@
  * complement for the rows that cannot be injected from outside the process
  * (binary clock, mounted tmpfs, forced /proc memory readings). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "conditions/clock_skew_reconcile.h"
 #include "conditions/disk_full_pause.h"

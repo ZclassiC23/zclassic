@@ -20,7 +20,7 @@
  * test creates and removes; no coupling to the live node DB.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "adapters/outbound/persistence/zslp_store_sqlite.h"
 #include "ports/zslp_store_port.h"

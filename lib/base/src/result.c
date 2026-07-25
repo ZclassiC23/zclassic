@@ -1,6 +1,10 @@
-/* Copyright 2026 Rhett Creighton - Apache License 2.0 */
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * struct zcl_result constructors — formats the failure message, code, and
+ * originating file:line carried by every service-layer error return.
+ * See lib/base/include/base/result.h for the contract. */
 
-#include "util/result.h"
+#include "base/result.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>

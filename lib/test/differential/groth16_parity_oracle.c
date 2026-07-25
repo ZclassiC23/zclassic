@@ -60,7 +60,32 @@
  *   - valid proof with the C point corrupted                            -> REJECT
  *   - batch: all-valid set ACCEPT; one-bad-proof set REJECT; crafted
  *     error-cancelling invalid pair REJECT (RLC soundness)
+ *
+ * VALUE PARITY, NOT ONLY VERDICT PARITY
+ * -------------------------------------
+ * Everything above pins a BIT per vector. That is the right bar for decode and
+ * for accept/reject behaviour, but it is too weak to gate a restructure of the
+ * pairing arithmetic: two pairing implementations can agree on every verdict
+ * in a finite corpus and still compute different GT elements, and the first
+ * block where they disagree forks this node off the network permanently.
+ *
+ * So `record`/`check` also freeze groth16_pairing_values.bin — the canonically
+ * serialized Fp12 output of the pairing on a fixed corpus (pairing_corpus.h),
+ * 576 bytes per vector, out of Montgomery form and fully reduced so the
+ * comparison is immune to representation changes. `check` asserts byte
+ * equality against the frozen file AND, when
+ * bls12_381_pairing_candidate is linked in, against the candidate too.
+ *
+ * The frozen file catches a change that moves BOTH in-process implementations
+ * together; the in-process comparison catches a change that moves only one.
+ * Neither subsumes the other.
+ *
+ * IF FP12 BIT EQUALITY CANNOT BE MADE TO HOLD FOR AN OPTIMIZATION, ABANDON THE
+ * OPTIMIZATION. Re-recording the golden is legitimate ONLY for a deliberate,
+ * replay-approved consensus change — never to make a diff go green.
  */
+
+#include "pairing_corpus.h"
 
 #include "sapling/bls12_381.h"
 #include "util/log_level.h"
@@ -634,6 +659,115 @@ static void run_all(void)
  * ============================================================ */
 #define GOLDEN_MAGIC "G16PARITY-GOLD-01\n"
 #define DECODE_MAGIC "G16PARITY-DECODE-01\n"
+#define PAIRVAL_MAGIC "G16PARITY-PAIRVAL-01\n"
+
+/* ── frozen pairing VALUES ───────────────────────────────────────────
+ *
+ * One record per pairing_corpus.h vector: the canonically serialized Fp12
+ * (576 bytes) the current verifier computes. Verdict parity pins one bit per
+ * vector; this pins all 4608. See the "VALUE PARITY" section at the top of
+ * this file for why the weaker assertion is not acceptable for the pairing.
+ */
+static int write_pairing_values(const char *path)
+{
+    struct pc_vec v[PC_MAX_VECS];
+    size_t n = pc_build(v);
+    if (n == 0) { fprintf(stderr, "pairing corpus build failed\n"); return -1; }
+    FILE *f = fopen(path, "wb");
+    if (!f) { perror(path); return -1; }
+    fwrite(PAIRVAL_MAGIC, 1, strlen(PAIRVAL_MAGIC), f);
+    uint32_t cnt = (uint32_t)n;
+    fwrite(&cnt, sizeof(cnt), 1, f);
+    for (size_t i = 0; i < n; i++) {
+        struct fp12 e;
+        uint8_t bytes[PC_FP12_BYTES];
+        bls12_381_pairing(&e, &v[i].p, &v[i].q);
+        pc_fp12_to_bytes(bytes, &e);
+        uint16_t llen = (uint16_t)strlen(v[i].label);
+        fwrite(&llen, sizeof(llen), 1, f);
+        fwrite(v[i].label, 1, llen, f);
+        fwrite(bytes, 1, PC_FP12_BYTES, f);
+    }
+    fclose(f);
+    return 0;
+}
+
+/* Returns 0 iff every vector's Fp12 is byte-identical to the frozen file AND
+ * (when linked) to bls12_381_pairing_candidate. */
+static int check_pairing_values(const char *path)
+{
+    struct pc_vec v[PC_MAX_VECS];
+    size_t n = pc_build(v);
+    if (n == 0) { fprintf(stderr, "pairing corpus build failed\n"); return -1; }
+    FILE *f = fopen(path, "rb");
+    if (!f) { perror(path); return -1; }
+    char magic[64] = {0};
+    if (fread(magic, 1, strlen(PAIRVAL_MAGIC), f) != strlen(PAIRVAL_MAGIC) ||
+        memcmp(magic, PAIRVAL_MAGIC, strlen(PAIRVAL_MAGIC)) != 0) {
+        fprintf(stderr, "pairing values: bad magic\n"); fclose(f); return -1;
+    }
+    uint32_t cnt = 0;
+    if (fread(&cnt, sizeof(cnt), 1, f) != 1) { fclose(f); return -1; }
+    if (cnt != (uint32_t)n) {
+        fprintf(stderr,
+                "PAIRING VALUE FAIL: frozen vector count %u != current %zu "
+                "(the corpus changed — regenerate + re-freeze)\n", cnt, n);
+        fclose(f);
+        return -1;
+    }
+    const bool have_cand = pc_have_candidate();
+    int bad = 0;
+    for (uint32_t i = 0; i < cnt; i++) {
+        uint16_t llen = 0;
+        char label[128] = {0};
+        uint8_t frozen[PC_FP12_BYTES];
+        if (fread(&llen, sizeof(llen), 1, f) != 1) break;
+        if (llen >= sizeof(label)) { fclose(f); return -1; }
+        if (fread(label, 1, llen, f) != llen) break;
+        if (fread(frozen, 1, PC_FP12_BYTES, f) != PC_FP12_BYTES) break;
+
+        struct fp12 e;
+        uint8_t now[PC_FP12_BYTES];
+        bls12_381_pairing(&e, &v[i].p, &v[i].q);
+        pc_fp12_to_bytes(now, &e);
+        if (memcmp(now, frozen, PC_FP12_BYTES) != 0) {
+            int d = 0;
+            while (d < PC_FP12_BYTES && now[d] == frozen[d]) d++;
+            fprintf(stderr,
+                    "PAIRING VALUE MISMATCH [%s]: Fp12 coefficient %s, "
+                    "byte %d: frozen %02x current %02x\n"
+                    "  -> the pairing computes a DIFFERENT field element than "
+                    "the frozen consensus one. ABANDON the change.\n",
+                    label, pc_fp12_coeff_name(d), d, frozen[d], now[d]);
+            bad++;
+            continue;
+        }
+        if (have_cand) {
+            struct fp12 ec;
+            uint8_t cand[PC_FP12_BYTES];
+            bls12_381_pairing_candidate(&ec, &v[i].p, &v[i].q);
+            pc_fp12_to_bytes(cand, &ec);
+            if (memcmp(cand, frozen, PC_FP12_BYTES) != 0) {
+                int d = 0;
+                while (d < PC_FP12_BYTES && cand[d] == frozen[d]) d++;
+                fprintf(stderr,
+                        "PAIRING CANDIDATE MISMATCH [%s]: Fp12 coefficient %s, "
+                        "byte %d: frozen %02x candidate %02x\n"
+                        "  -> ABANDON the optimization. Do NOT fall back to "
+                        "verdict equality.\n",
+                        label, pc_fp12_coeff_name(d), d, frozen[d], cand[d]);
+                bad++;
+            }
+        }
+    }
+    fclose(f);
+    if (bad) return -1;
+    printf("PAIRING VALUES OK: %u vectors, all %d Fp12 bytes match the frozen "
+           "consensus values%s\n", cnt, PC_FP12_BYTES,
+           have_cand ? " (candidate checked too)"
+                     : " (no candidate linked — baseline only)");
+    return 0;
+}
 
 static int write_golden(const char *path)
 {
@@ -775,9 +909,10 @@ int main(int argc, char **argv)
 {
     const char *mode = (argc > 1) ? argv[1] : "check";
     const char *dir  = (argc > 2) ? argv[2] : ".";
-    char golden[1024], corpus[1024];
+    char golden[1024], corpus[1024], pairval[1024];
     snprintf(golden, sizeof(golden), "%s/groth16_parity_golden.bin", dir);
     snprintf(corpus, sizeof(corpus), "%s/groth16_decode_corpus.bin", dir);
+    snprintf(pairval, sizeof(pairval), "%s/groth16_pairing_values.bin", dir);
 
     /* Most vectors are SUPPOSED to be rejected, and every reject path logs.
      * Silence the verifier's own logging so stderr carries only this harness's
@@ -798,8 +933,10 @@ int main(int argc, char **argv)
     if (strcmp(mode, "record") == 0) {
         if (write_golden(golden) != 0) return 2;
         if (write_decode_corpus(corpus) != 0) return 2;
+        if (write_pairing_values(pairval) != 0) return 2;
         printf("recorded %zu golden verdicts -> %s\n", g_nvecs, golden);
         printf("recorded decode corpus -> %s\n", corpus);
+        printf("recorded pairing Fp12 values -> %s\n", pairval);
         /* Print a human-readable manifest to stdout. */
         for (size_t i = 0; i < g_nvecs; i++)
             printf("  [%3zu] fam=%d verdict=%s  %s\n",
@@ -811,6 +948,7 @@ int main(int argc, char **argv)
         int rc = 0;
         if (read_golden_and_check(golden) != 0) rc = 1;
         if (check_decode_corpus(corpus) != 0) rc = 1;
+        if (check_pairing_values(pairval) != 0) rc = 1;
         if (rc == 0)
             printf("PARITY OK: %zu vectors, verdicts match frozen golden "
                    "(verify/batch vectors agree on both public-input paths)\n",

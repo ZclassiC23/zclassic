@@ -17,7 +17,7 @@
  * hardcodes `goto _test_next`, so two TEST blocks in one function would
  * collide on the label) — each case below is its own static function. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "jobs/rom_compile_status.h"
 #include "jobs/refold_progress.h"

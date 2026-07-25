@@ -33,7 +33,7 @@
  * default. Set ZCL_GOLDEN_TIMING_STRICT=1 for the manual demo / quality
  * linger run: `ZCL_GOLDEN_TIMING_STRICT=1 make t ONLY=golden_dev_cycle`. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "dev_activation.h"
 #include "devloop.h"

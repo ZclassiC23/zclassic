@@ -124,6 +124,59 @@ void connman_get_reactor_stats(struct connman_reactor_stats *out)
         atomic_load(&g_reactor_configured_listen_sockets);
 }
 
+/* v2-transport advertisement census — see struct connman_v2transport_stats
+ * in net/connman.h. Written only by thread_socket_handler (single writer,
+ * once per poll iteration); read by the dump-state surface and tests.
+ * Nothing in the node branches on these. */
+static _Atomic size_t   g_v2_advertising_now        = 0;
+static _Atomic size_t   g_v2_handshaked_now         = 0;
+static _Atomic size_t   g_v2_advertising_high_water = 0;
+static _Atomic uint64_t g_v2_advertising_obs_total  = 0;
+static _Atomic uint64_t g_v2_samples_total          = 0;
+
+/* Record one census sample. Plain atomics and no allocation, so it is safe
+ * with or without cs_nodes held; the reactor calls it after unlocking
+ * because there is no reason to widen the lock hold. */
+static void connman_note_v2transport_sample(size_t advertising,
+                                            size_t handshaked)
+{
+    atomic_store_explicit(&g_v2_advertising_now, advertising,
+                          memory_order_relaxed);
+    atomic_store_explicit(&g_v2_handshaked_now, handshaked,
+                          memory_order_relaxed);
+    if (advertising > atomic_load_explicit(&g_v2_advertising_high_water,
+                                           memory_order_relaxed))
+        atomic_store_explicit(&g_v2_advertising_high_water, advertising,
+                              memory_order_relaxed);
+    if (advertising > 0)
+        atomic_fetch_add_explicit(&g_v2_advertising_obs_total,
+                                  (uint64_t)advertising, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_v2_samples_total, 1, memory_order_relaxed);
+}
+
+void connman_get_v2transport_stats(struct connman_v2transport_stats *out)
+{
+    if (!out) return;
+    out->advertising_now = atomic_load(&g_v2_advertising_now);
+    out->handshaked_now  = atomic_load(&g_v2_handshaked_now);
+    out->advertising_high_water = atomic_load(&g_v2_advertising_high_water);
+    out->advertising_observations_total =
+        atomic_load(&g_v2_advertising_obs_total);
+    out->samples_total = atomic_load(&g_v2_samples_total);
+}
+
+#ifdef ZCL_TESTING
+/* Feed the census one synthetic sample. The real feeder is the reactor
+ * poll loop, which a unit test cannot spin up; the accumulation rule is
+ * what needs proving, so expose exactly the recorder, not a shortcut
+ * around it. */
+void connman_note_v2transport_sample_for_test(size_t advertising,
+                                              size_t handshaked)
+{
+    connman_note_v2transport_sample(advertising, handshaked);
+}
+#endif
+
 #define CONNMAN_RECV_LOW_WATER_SLOTS 16
 
 static size_t connman_recv_cap_for_queue(size_t queued, size_t base_cap)
@@ -1238,7 +1291,21 @@ static void *thread_socket_handler(void *arg)
             }
             npfds++;
         }
+        /* v2-transport advertisement census (observation only — see
+         * connman_get_v2transport_stats). Same lock hold, own walk: the
+         * poll-array loop above skips fd<0 and stops at REACTOR_MAX_FDS,
+         * and a census that silently under-counts is worse than none. */
+        size_t v2_advertising = 0, v2_handshaked = 0;
+        for (size_t i = 0; i < cm->manager.num_nodes; i++) {
+            const struct p2p_node *n = cm->manager.nodes[i];
+            if (!n || n->disconnect || n->state < PEER_HANDSHAKE_COMPLETE)
+                continue;
+            v2_handshaked++;
+            if (n->services & NODE_V2TRANSPORT)
+                v2_advertising++;
+        }
         zcl_mutex_unlock(&cm->manager.cs_nodes);
+        connman_note_v2transport_sample(v2_advertising, v2_handshaked);
 
         /* High-water mark for operator/agent introspection (net/connman
          * dump-state). Single writer (this thread), plain atomic store. */

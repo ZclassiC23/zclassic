@@ -11,12 +11,17 @@
  *      idle — with NO reset edge (the property the EWMA exists to give over a
  *      tumbling window);
  *   5. puzzle_gate_admit_external's single-use ring (used by the snapshot
- *      serve path, which verifies its own legacy PoW) rejects replays.
+ *      serve path, which verifies its own legacy PoW) rejects replays, and
+ *      feeds the same load EWMA a verified admission does;
+ *   6. the nonce-start contract: a search from zero is a pure function of
+ *      (seed, token, ts), so two independent honest solvers collide and the
+ *      single-use ring refuses the second — puzzle_solve_random() is what a
+ *      real client must use.
  *
  * None of this touches a consensus predicate — it only decides whether to
  * spend server resources on an unauthenticated request. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "net/puzzle.h"
 #include "platform/time_compat.h"
 #include <string.h>
@@ -237,6 +242,114 @@ static int test_gate_admit_external_replay(void)
     return failures;
 }
 
+/* ── 5b. admit_external feeds the load EWMA ────────────────────────────────
+ *
+ * This is the whole point of giving admit_external a caller: a surface that
+ * verifies its own proof still makes the shared gate's difficulty respond to
+ * real traffic. An idle gate reads zero; a run of distinct admissions must
+ * push the measured rate up and the difficulty off the floor. */
+static int test_gate_admit_external_feeds_load(void)
+{
+    int failures = 0;
+    TEST("puzzle: admit_external drives the load EWMA off the idle floor") {
+        struct puzzle_policy pol = {
+            .min_bits = 12, .max_bits = 26,
+            .soft_rate_per_sec = 2, .rate_step_per_sec = 1,
+            .ewma_halflife_secs = 10,
+        };
+        struct puzzle_gate g;
+        memset(&g, 0, sizeof(g));
+        puzzle_gate_init(&g, &pol);
+
+        ASSERT_EQ(puzzle_gate_rate_ewma_milli(&g), 0);
+        ASSERT_EQ(puzzle_gate_current_bits(&g), 12);
+
+        /* 40 distinct digests — no replays, so every one is admitted and
+         * every one counts as load. */
+        for (int i = 0; i < 40; i++) {
+            uint8_t d[32];
+            memset(d, 0, 32);
+            d[0] = (uint8_t)i;
+            d[1] = (uint8_t)(i >> 8);
+            ASSERT(puzzle_gate_admit_external(&g, d));
+        }
+
+        ASSERT(puzzle_gate_rate_ewma_milli(&g) >
+               (int64_t)pol.soft_rate_per_sec * 1000);
+        ASSERT(puzzle_gate_current_bits(&g) > 12);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* ── 6. Nonce-start contract: from-zero collides, random does not ──────────
+ *
+ * The defect this pins is why the snapshot-serve surface cannot turn its
+ * single-use ring on: its solver walks nonces from zero over inputs that two
+ * honest peers can share, so both produce the same proof and the second is
+ * refused as a replay. Proven here on the primitive rather than inherited
+ * from a comment. */
+static int test_puzzle_solve_nonce_start(void)
+{
+    int failures = 0;
+    TEST("puzzle: solve-from-zero collides across solvers, random does not") {
+        uint8_t seed[32], token[32];
+        memset(seed, 0x77, 32);
+        memset(token, 0x88, 32);
+        int64_t ts = 1700000000;
+        int bits = 14;
+
+        /* Two independent solvers with the SAME (seed, token, ts) and the
+         * default from-zero search return the IDENTICAL nonce. */
+        uint64_t a = 1, b = 2;
+        ASSERT(puzzle_solve(seed, token, ts, bits, &a));
+        ASSERT(puzzle_solve(seed, token, ts, bits, &b));
+        ASSERT(a == b);
+
+        /* So a gate with a single-use ring admits the first and refuses the
+         * second — two honest clients, one served. */
+        struct puzzle_gate g;
+        memset(&g, 0, sizeof(g));
+        puzzle_gate_init(&g, NULL);
+        uint8_t seed_live[32];
+        int live_bits = 0;
+        int64_t st = 0;
+        puzzle_gate_challenge(&g, seed_live, &live_bits, &st);
+        int64_t now = (int64_t)platform_time_wall_time_t();
+        uint64_t n1 = 0, n2 = 0;
+        ASSERT(puzzle_solve(seed_live, token, now, live_bits, &n1));
+        ASSERT(puzzle_solve(seed_live, token, now, live_bits, &n2));
+        ASSERT(n1 == n2);
+        ASSERT(puzzle_gate_verify(&g, token, now, n1));
+        ASSERT(!puzzle_gate_verify(&g, token, now, n2));  /* honest, refused */
+
+        /* puzzle_solve_random searches from an independent random offset, so
+         * repeated solves over the same inputs land on different nonces and
+         * each is admitted in turn. Two draws matching is ~2^-64 per pair;
+         * assert only that BOTH still verify and that a run of them is
+         * admitted, so the case can never flake. */
+        for (int i = 0; i < 8; i++) {
+            uint64_t nr = 0;
+            ASSERT(puzzle_solve_random(seed_live, token, now, live_bits, &nr));
+            ASSERT(puzzle_verify(seed_live, token, now, nr, live_bits));
+            /* nr == n1 only if the random start happened to land exactly on
+             * the from-zero answer's basin; skip that astronomically rare
+             * case rather than assert against it. */
+            if (nr != n1)
+                ASSERT(puzzle_gate_verify(&g, token, now, nr));
+        }
+
+        /* An explicit start is honoured: starting past the from-zero answer
+         * must not return it. */
+        uint64_t nf = 0;
+        ASSERT(puzzle_solve_from(seed_live, token, now, live_bits, n1 + 1, &nf));
+        ASSERT(nf != n1);
+        ASSERT(puzzle_verify(seed_live, token, now, nf, live_bits));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_puzzle(void)
 {
     int failures = 0;
@@ -245,5 +358,7 @@ int test_puzzle(void)
     failures += test_gate_difficulty_rises_and_falls();
     failures += test_gate_inflight_difficulty();
     failures += test_gate_admit_external_replay();
+    failures += test_gate_admit_external_feeds_load();
+    failures += test_puzzle_solve_nonce_start();
     return failures;
 }

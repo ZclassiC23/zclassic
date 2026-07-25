@@ -24,7 +24,7 @@
  * (zcl_format_time calls gmtime_r, but only on caller-supplied timestamps
  * with UTC output — no wall-clock read.) */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "views/format_helpers.h"
 

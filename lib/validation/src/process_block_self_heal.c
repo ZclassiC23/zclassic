@@ -20,7 +20,7 @@
  * already take. Inline marker keeps the lib_layering baseline flat. */
 #include "validation/chainstate.h"
 #include "services/chain_activation_service.h"  // lib-layer-ok:self-heal-reducer-retry
-#include "config/runtime.h"
+#include "storage/node_db_runtime.h"
 #include "event/event.h"
 
 #include "process_block_internal.h"
@@ -58,7 +58,7 @@ void process_block_note_utxo_failure(struct main_state *ms,
     }
 
     int durable_utxo_max_h =
-        app_runtime_node_db_utxo_max_height(process_block_node_db_internal());
+        node_db_runtime_utxo_max_height(process_block_node_db_internal());
 
     if (durable_utxo_max_h > height + 10) {
         if (s_utxo_fail_count == 1 || s_utxo_fail_count == 5) {
@@ -95,7 +95,7 @@ void process_block_note_utxo_failure(struct main_state *ms,
                 "h=%d to retry (reducer-authoritative)\n",
                 s_utxo_fail_count, height, tip->nHeight);
             if (active_chain_move_window_tip(&ms->chain_active, tip->pprev)) {
-                (void)reducer_kick(boot_activation_controller());
+                (void)reducer_kick(process_block_activation_controller());
                 s_utxo_fail_count = 0;
                 s_utxo_fail_height = -1;
                 fprintf(stderr, // obs-ok:pre-existing-diagnostic

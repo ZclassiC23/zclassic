@@ -9,7 +9,8 @@
  * delete would lose operator forensic data.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "json/json.h"
 
 #include "services/block_index_integrity.h"
 #include "config/boot_cursor_state.h"

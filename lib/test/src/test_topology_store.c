@@ -20,7 +20,7 @@
  *     ledger) both work end to end
  *   - dump_state_json reports open/edge_count/top_advertised/last_sweep */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "json/json.h"
 #include "net/netaddr.h"

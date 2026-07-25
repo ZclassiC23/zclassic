@@ -18,6 +18,7 @@
 #define ZCL_SNAPSHOT_SYNC_INTERNAL_H
 
 #include "net/snapshot_sync_contract.h"
+#include "config/db_service.h"       /* db_service_write_fn */
 #include "services/snapshot_manifest.h"
 #include "models/database.h"
 #include "util/result.h"

@@ -10,7 +10,7 @@
  * history fails closed with a distinct verdict, and anchor writes are atomic
  * with reducer commit/rollback/reorg handling. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "coins/coins_view.h"
 #include "jobs/utxo_apply_anchors.h"

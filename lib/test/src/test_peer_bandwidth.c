@@ -4,7 +4,7 @@
  * throttle, direction isolation, trusted-peer bypass, env
  * overrides, LRU eviction, and EV_PEER_THROTTLED emission. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "net/peer_bandwidth.h"
 #include "event/event.h"
 

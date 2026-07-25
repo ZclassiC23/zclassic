@@ -10,7 +10,7 @@
  *   - data persisted via the F-2 stage primitive survives close + reopen
  *   - dump_state_json reports open status, path, and stage_cursor row count */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "json/json.h"
 #include "storage/consensus_db.h"

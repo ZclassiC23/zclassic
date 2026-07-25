@@ -3,7 +3,7 @@
  * Adversarial tests for private App checkpoint identity, exact admission,
  * fork quarantine, chunk layout, warm-cache detachment, and journal receipts. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "framework/app_checkpoint.h"
 

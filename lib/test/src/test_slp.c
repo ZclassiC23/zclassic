@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Tests for Simple Ledger Protocol (SLP) parser and builder. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "zslp/slp.h"
 
 int test_slp(void)

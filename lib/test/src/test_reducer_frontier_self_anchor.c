@@ -27,7 +27,7 @@
  * cache between cases (the cache is intentionally resolved AT MOST ONCE per
  * process in production — see reducer_frontier.c). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "jobs/reducer_frontier.h"
 #include "services/anchor_selfmint.h"

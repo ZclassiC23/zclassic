@@ -9,7 +9,7 @@
  * delegates to during Epoch I.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "domain/consensus/verify.h"
 #include "consensus/params.h"

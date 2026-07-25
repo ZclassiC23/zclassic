@@ -76,7 +76,8 @@
  * make t ONLY=e2e_cold_start
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "coins/undo.h"
 
 #include "chain/chain.h"                 /* BLOCK_HAVE_DATA / BLOCK_VALID_* */
 #include "chain/chainparams.h"           /* chain_params_get / consensus.powLimit */

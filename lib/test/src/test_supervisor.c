@@ -16,7 +16,7 @@
  * ~150 ms. supervisor_reset_for_testing() runs between sub-tests to
  * keep the registry clean. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "util/supervisor.h"
 #include "util/blocker.h"
 #include "json/json.h"

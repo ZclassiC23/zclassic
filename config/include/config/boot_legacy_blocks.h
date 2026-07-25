@@ -20,7 +20,8 @@ struct boot_legacy_block_file_link_result {
     bool source_available;
     bool destination_ready;
     bool truncated_path;
-    int linked;
+    int linked;          /* blk files newly hardlinked (historical counter) */
+    int failures;        /* blk+rev link(2) calls that returned an error */
 };
 
 /* Import legacy zclassicd blk/rev files into <datadir>/blocks, using hardlinks
@@ -31,7 +32,11 @@ boot_legacy_import_block_files(const char *legacy_blocks_dir,
                                int max_files);
 
 /* Warm-boot helper: hardlink any missing legacy blk/rev files without copying.
- * This is best-effort and preserves the historical "linked blk count" output. */
+ * Preserves the historical "linked blk count" output in `linked`. Link
+ * failures do not abort the pass (the missing bodies are re-fetched from
+ * peers) but they are counted in `failures` and summarised in one LOG_WARN,
+ * so a cross-filesystem or out-of-space legacy datadir is visible at boot
+ * instead of surfacing later as an unexplained block-body hole. */
 struct boot_legacy_block_file_link_result
 boot_legacy_link_missing_block_files(const char *legacy_blocks_dir,
                                      const char *datadir,

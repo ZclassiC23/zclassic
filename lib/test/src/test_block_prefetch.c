@@ -17,7 +17,7 @@
  * bounded-memory-invariant assertions are FS-agnostic and always run. */
 
 #define _GNU_SOURCE
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "storage/block_prefetch.h"
 #include "storage/disk_block_io.h"

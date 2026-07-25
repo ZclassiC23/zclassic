@@ -10,7 +10,7 @@
  * No chain, cursor, tip, or consensus gate is touched here — the driver is
  * pure observability/state, and these tests pin that contract. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "util/service_state.h"
 #include "services/service_state_driver.h"

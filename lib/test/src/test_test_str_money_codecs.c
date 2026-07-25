@@ -22,7 +22,7 @@
  *
  * Pure and deterministic: no clock, no RNG, no network, no live DB. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "encoding/utilmoneystr.h"
 #include "encoding/utilstrencodings.h"

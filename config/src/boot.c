@@ -15,6 +15,7 @@
 #include "config/boot_legacy_blocks.h"
 #include "config/boot_memory_guard.h"
 #include "config/boot_postmortem.h"
+#include "config/boot_refusal_reports.h"
 #include "config/boot_shutdown_marker.h"
 #include "util/shutdown_stagewatch.h"
 #include "config/boot_fast_restart.h"
@@ -132,6 +133,7 @@
 #include "event/event.h"
 #include "controllers/event_controller.h"
 #include "models/block.h"
+#include <errno.h>
 #include <netdb.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -167,7 +169,9 @@ struct chain_activation_controller *boot_activation_controller(void)
     return &g_activation_ctl;
 }
 static struct block_tree_db g_block_tree;
-struct block_tree_db *g_active_block_tree = NULL;
+/* g_active_block_tree is defined in lib/validation (declared in
+ * <validation/process_block.h>); boot publishes g_block_tree into it once
+ * the tree is open. */
 static bool g_block_tree_open = false;
 static struct tx_mempool g_mempool;
 static struct rpc_table g_rpc_table;
@@ -439,11 +443,26 @@ static bool boot_step_select_chain_and_datadir(struct app_context *ctx)
     g_blog_datadir = ctx->datadir;
     SetDataDir(ctx->datadir);
 
-    /* Auto-create datadir if it doesn't exist */
+    /* Auto-create datadir if it doesn't exist.
+     *
+     * The mkdir return value used to be discarded and "Created data
+     * directory: X" printed unconditionally — so a create that FAILED (a
+     * missing parent, a read-only mount, a denied path) still claimed
+     * success, and the operator's first real signal was the datadir lock a
+     * few lines below reporting a bare errno on a directory the log had just
+     * said was created. Name the create failure where it happens. EEXIST is
+     * not a failure: another process (or the stat race) won. */
     struct stat st;
     if (stat(ctx->datadir, &st) != 0) {
-        mkdir(ctx->datadir, 0700);
-        printf("Created data directory: %s\n", ctx->datadir);
+        if (mkdir(ctx->datadir, 0700) == 0) {
+            printf("Created data directory: %s\n", ctx->datadir);
+        } else if (errno != EEXIST) {
+            int e = errno;
+            boot_report_datadir_create_failed(ctx->datadir, e);
+            event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                        "datadir_create_failed errno=%d", e);
+            return false;
+        }
     }
 
     /* Now that the datadir is known, point the crash handler at a durable,
@@ -1148,19 +1167,20 @@ static size_t sandbox_build_fs_rules(const char *datadir,
 }
 
 /* -confine / -confine=serving (strict seccomp ALLOW-list + Landlock): apply
- * once every listen socket/file/thread is up. Fail-fast doctrine extended to
- * security — an unexpected syscall KILLs the process. actx->confine_serving
- * picks the wider allow-set (adds the socket family so a node doing real
- * P2P/HTTPS/onion I/O is not SIGSYS-killed at its first accept()/recv()/
- * connect()); plain -confine keeps the strict status/storage-only set.
- * Refuse to HALF-apply: if os_sandbox_enter() fails partway, run the node
- * UNCONFINED and raise the named blocker 'confine.apply_failed' (remedy
- * OWNER — only an operator can widen the allow-list / enable Landlock and
- * restart) rather than leaving a partial sandbox. Landlock degrades
- * gracefully on an older kernel (logged, skipped); a genuine syscall failure
- * after the ruleset is built is the raise path. */
+ * once every listen socket/file/thread is up. An unexpected syscall KILLs the
+ * process; actx->confine_serving picks the wider allow-set (adds the socket
+ * family) so a node doing real P2P/HTTPS/onion I/O is not SIGSYS-killed at its
+ * first accept()/recv()/connect(); plain -confine keeps the strict set.
+ * Refuse to HALF-apply: on a partway os_sandbox_enter() failure run the node
+ * UNCONFINED and raise 'confine.apply_failed' (remedy OWNER — only an operator
+ * can widen the allow-list / enable Landlock and restart) rather than leave a
+ * partial sandbox; Landlock degrades gracefully on an older kernel (logged,
+ * skipped). Every degrade path returns ZCL_OK, so the REQUEST is noted FIRST —
+ * that is the only way the `confinement` witness tells "nobody asked" apart
+ * from "asked, and running wide open anyway". */
 static struct zcl_result sr_confine_enter(const struct app_context *actx)
 {
+    os_sandbox_note_requested(actx->confine_serving ? "node_confine_serving" : "node_confine");
     const char *datadir = actx->datadir ? actx->datadir : g_datadir;
     if (!datadir || !datadir[0]) {
         /* No datadir to scope: cannot confine safely. Run unconfined + name it. */
@@ -1238,6 +1258,7 @@ static struct zcl_result sr_sandbox_enter(void *ctx)
     if (!actx->sandbox_steady)
         return ZCL_OK;  /* -sandbox=off (default): no confinement requested */
 
+    os_sandbox_note_requested("node_steady_state");
     const char *datadir = actx->datadir ? actx->datadir : g_datadir;
     if (!datadir || !datadir[0])
         return ZCL_ERR(-1, "-sandbox=steady: no datadir to grant");
@@ -1611,21 +1632,8 @@ bool app_init(struct app_context *ctx)
          * boot and preserve the datadir for the operator to
          * investigate. Silently generating a fresh keypool here is
          * what caused 0.4 ZCL to become unspendable. */
-        fprintf(stderr,
-            "\nFATAL: wallet persistence initialisation failed.\n"
-            "       code=%d\n"
-            "       message=%s\n"
-            "       source=%s:%d\n"
-            "       node.db contains %lld existing wallet_keys rows —"
-            " REFUSING to regenerate.\n"
-            "       To recover: see WALLET_PERSISTENCE_RECOVERY.md\n\n",
-            wsql_open_r.code,
-            wsql_open_r.message[0] ? wsql_open_r.message
-                                   : "wallet_sqlite_open_r returned !ok",
-            wsql_open_r.source_file ? wsql_open_r.source_file
-                                    : "config/src/boot.c",
-            wsql_open_r.source_line,
-            (long long)pre_open_key_rows);
+        boot_report_wallet_persistence_open_failed(
+            ctx->datadir, &wsql_open_r, (long long)pre_open_key_rows);
         event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
                     "wallet_persistence_open_failed code=%d rows=%lld",
                     wsql_open_r.code, (long long)pre_open_key_rows);
@@ -1678,15 +1686,9 @@ bool app_init(struct app_context *ctx)
         int crc = wallet_canary_run(g_node_db.db, &cs);
         if (crc != WALLET_CANARY_OK) {
             if (pre_open_key_rows > 0) {
-                fprintf(stderr,
-                    "\nFATAL: wallet canary self-test failed.\n"
-                    "       code=%d\n"
-                    "       message=%s\n"
-                    "       source=lib/wallet/src/wallet_canary.c\n"
-                    "       node.db contains %lld existing wallet_keys rows —"
-                    " REFUSING to proceed.\n"
-                    "       To recover: see WALLET_PERSISTENCE_RECOVERY.md\n\n",
-                    crc, cs.error, (long long)pre_open_key_rows);
+                boot_report_wallet_canary_failed(
+                    ctx->datadir, crc, cs.error,
+                    (long long)pre_open_key_rows);
                 event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
                             "wallet_canary_failed code=%d rows=%lld",
                             crc, (long long)pre_open_key_rows);
@@ -1704,14 +1706,9 @@ bool app_init(struct app_context *ctx)
          * loss on the next flush. */
         if (pre_open_key_rows > 0 &&
             (int64_t)g_wallet.keystore.num_keys != pre_open_key_rows) {
-            fprintf(stderr,
-                "\nFATAL: wallet keystore count mismatch.\n"
-                "       wallet_keys rows=%lld\n"
-                "       loaded keystore=%zu\n"
-                "       source=config/src/boot.c\n"
-                "       REFUSING to proceed — in-memory and on-disk diverged.\n"
-                "       To recover: see WALLET_PERSISTENCE_RECOVERY.md\n\n",
-                (long long)pre_open_key_rows, g_wallet.keystore.num_keys);
+            boot_report_wallet_keystore_count_mismatch(
+                ctx->datadir, (long long)pre_open_key_rows,
+                g_wallet.keystore.num_keys);
             event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
                         "wallet_keystore_count_mismatch rows=%lld loaded=%zu",
                         (long long)pre_open_key_rows,

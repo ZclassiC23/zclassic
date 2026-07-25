@@ -1,7 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Main test runner for ZClassic C23 test suite. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "keys/key.h"
+#include "chain/chainparams.h"
 #include <signal.h>
 
 /* Required by process_block.c (normally in main.c) */
@@ -1151,6 +1153,7 @@ int main(int argc, char **argv)
     failures += test_hotswap_loader();
     failures += test_hotswap_simnet();
     failures += test_hotswap_module();
+    failures += test_hotswap_module_v2();
     failures += test_dev_platform();
     failures += test_command_registry_catalog();
     failures += test_native_api_contract();

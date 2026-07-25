@@ -22,7 +22,7 @@
  *     script_id_from_script wrapper
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "domain/consensus/script_standard.h"
 #include "script/standard.h"

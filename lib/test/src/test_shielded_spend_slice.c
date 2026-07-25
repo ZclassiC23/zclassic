@@ -42,7 +42,7 @@
  * plus negative checks (wrong vk, wrong value_balance) that must be rejected.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "core/uint256.h"
 #include "primitives/transaction.h"

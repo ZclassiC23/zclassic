@@ -15,7 +15,7 @@
  * operator signal, not any validation rule.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "controllers/diagnostics_internal.h"
 
 #include <stdio.h>

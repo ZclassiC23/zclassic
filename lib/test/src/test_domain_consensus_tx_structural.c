@@ -23,7 +23,7 @@
  * the other, the test shouts.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "domain/consensus/tx_structural.h"
 #include "validation/check_transaction.h"
@@ -43,7 +43,7 @@ extern const unsigned char g_fixture_tx_oversize_478544[];
 extern const size_t g_fixture_tx_oversize_478544_len;
 /* consensus/consensus.h not included: its MAX_BLOCK_SIZE/MAX_BLOCK_SIGOPS
  * collide with validation/main_constants.h (auto-included via
- * test_helpers.h). The constants we need for these tests are pinned
+ * test/test_core.h). The constants we need for these tests are pinned
  * locally below — they mirror the canonical definitions in
  * lib/consensus/include/consensus/consensus.h and are static across
  * the protocol. If they drift, the regression seal (verdicts_match)

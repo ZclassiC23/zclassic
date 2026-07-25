@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Tests for the first production projection adopter. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "controllers/chain_projection.h"
 #include "controllers/rpc_client.h"

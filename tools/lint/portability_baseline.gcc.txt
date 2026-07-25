@@ -1,0 +1,14 @@
+# gcc portability ratchet baseline — regenerate with:
+#   ZCL_CC=gcc ZCL_LINT_MODE=UPDATE tools/lint/check_clang_portability.sh
+#
+# One '<path> <count>' line per file that still holds gcc
+# diagnostic sites under the gate's flag set. Every one is a real
+# second-compiler finding to be driven to zero; a file absent from
+# this list must produce ZERO diagnostics. Counts may only go DOWN.
+#
+# Recorded from 1174 translation units with:
+#   gcc (Ubuntu 14.2.0-4ubuntu2~24.04.1) 14.2.0
+# A different compiler VERSION legitimately reports a different
+# set; that is why CI scopes its verdict with
+# ZCL_PORTABILITY_SCOPE instead of trusting this file verbatim.
+config/src/boot_services_shutdown.c 1

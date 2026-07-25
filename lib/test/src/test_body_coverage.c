@@ -6,7 +6,7 @@
  * synthetic coverage hole through the real download manager (enqueue →
  * assign → receive → note_stored → hole closes). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "storage/body_coverage.h"
 #include "storage/progress_store.h"

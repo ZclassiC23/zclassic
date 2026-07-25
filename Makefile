@@ -237,7 +237,7 @@ CONFIG_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(wildcard config/src/*.c))
 
 # Library layer
-LIB_MODULES = bloom chain codeindex coins core crypto crypto_registry encoding event framework health hotswap kernel \
+LIB_MODULES = base bloom chain codeindex coins core crypto crypto_registry encoding event framework health hotswap kernel \
 	json keys metrics mining net platform policy primitives rpc script session sim storage \
 	support sync util validation vcs wallet sapling overlay zslp znam zanc
 LIB_INCLUDES = $(foreach m,$(LIB_MODULES),-Ilib/$(m)/include)
@@ -406,10 +406,52 @@ BUILD_IDENTITY_CPPFLAGS = -DZCL_BUILD_SOURCE_ID=\"$(BUILD_SOURCE_ID)\" -DZCL_BUI
 # (already-unresolvable-post-deploy) comp_dir source-root hint moves.
 ZCL_REPRO_ROOT ?= /zclassic23
 REPRO_CFLAGS = -ffile-prefix-map=$(CURDIR)=$(ZCL_REPRO_ROOT) -gno-record-gcc-switches
+
+# ── The two blanket warning suppressions, each defined exactly ONCE ───────
+# Both arrived in the first commit as unexplained copy-forward defaults and
+# had since been copy-pasted into seven separate compile rules, so there was
+# no single place to reason about either one. Each now has one definition,
+# one written reason, and a lint gate (check-no-warning-suppression) that
+# rejects any new unmarked instance. A rule that needs one references the
+# variable; a rule that does not, does not.
+#
+# -Wunused-result is ALSO the diagnostic GCC and Clang use to report
+# [[nodiscard]], so this flag silently voids the repository's result-type
+# discipline: a result type could be annotated and every dropped return would
+# still compile clean. Deleting it is not a Makefile change — it is a source
+# change at every site that drops a write/read/link/fgets/system result.
+#
+# The SHIPPED tree is now clean: every ALL_SRCS TU was rebuilt at -O3 with the
+# suppression defeated and reported zero, with a deliberately-planted ignored
+# write() confirming the scan was armed. What remains is lib/test/ alone.
+# Deleting the flag means fixing those, and only then does [[nodiscard]] on
+# struct zcl_result start doing anything — both ride this one diagnostic.
+#
+# Note GCC does NOT accept a `(void)` cast as consuming a warn_unused_result
+# return, so most of those sites need a real check, not a cast. The check runs
+# during gimplification, so `cc -fsyntax-only` reports NONE of them even at
+# -O3 — only an optimised codegen pass finds them.
+# Re-derive the current site list (never trust a count typed here):
+#   sed -i 's/^ZCL_WARN_UNUSED_RESULT = .*/ZCL_WARN_UNUSED_RESULT = -Wno-error=unused-result/' Makefile
+#   make build-only && make -j$(nproc) 2>&1 | grep -- '-Wunused-result]'
+# suppression-ok: removing it breaks the build until the source sites above are fixed; tracked, not defaulted
+ZCL_WARN_UNUSED_RESULT = -Wno-unused-result
+#
+# -Wstringop-overflow hides a memory-safety diagnostic class. Deleting it is
+# likewise a source change, not a flag change: the sites live in
+# lib/script/include/script/script.h, lib/script/include/script/op_return_push.h,
+# app/controllers/src/nodelog_controller.c and one test, plus the glibc
+# fortify header they induce. Note the per-TU compile is clean — these only
+# appear in the whole-program LTO build, so `make build-only` alone will
+# report zero and mislead you. Re-derive with the same substitution as above,
+# using -Wno-error=stringop-overflow, and a FULL `make -j$(nproc)`.
+# suppression-ok: separate decision from the unused-result deletion; blockers are source sites, measured, not assumed
+ZCL_WARN_STRINGOP_OVERFLOW = -Wno-stringop-overflow
+
 CFLAGS = -std=c23 -g -O3 $(if $(ZCL_NATIVE),-march=native,-march=x86-64-v3) -flto=auto -Wall -Wextra -Werror -pedantic \
 	$(REPRO_CFLAGS) \
 	$(HARDEN_CFLAGS) \
-	-Wno-stringop-overflow -Wno-unused-result \
+	$(ZCL_WARN_STRINGOP_OVERFLOW) $(ZCL_WARN_UNUSED_RESULT) \
 	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(CORE_INCLUDES) $(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) $(ADAPTERS_INCLUDES) $(TOOLS_INCLUDES) $(DEVLOOP_INCLUDES) $(APP_SDK_INCLUDES) \
 	-Ilib/test/include \
 	-D_POSIX_C_SOURCE=200809L -DZCL_AR_ENFORCE $(BUILD_IDENTITY_CPPFLAGS) -Ivendor/include $(GTK_DEF) $(GTK_CFLAGS) \
@@ -794,7 +836,7 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
         soak-evidence-report soak-evidence-selftest \
         install-slo-probe slo-probe-status slo-probe-selftest
 
-CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c lib/encoding/src/utilstrencodings.c lib/util/src/log_level.c
+CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c lib/encoding/src/utilstrencodings.c lib/base/src/log_level.c
 all: test_zcl zclassic23 zclassic-cli zcl-rpc
 
 TEST_SRCS = $(call zcl_filter_ephemeral_sources,\
@@ -1028,9 +1070,9 @@ EXPLORER_CSS_GEN = app/views/include/views/explorer_css.h
 EXPLORER_CSS_SRC = app/views/src/explorer_css.css
 VIEW_GEN_HEADERS = $(VIEW_GEN_HEADERS_EARLY)
 
-$(TMPL_TOOL): tools/gen_templates.c lib/util/src/safe_alloc.c
+$(TMPL_TOOL): tools/gen_templates.c lib/base/src/safe_alloc.c
 	@mkdir -p $(dir $@)
-	$(CC) -std=c23 -O2 -Wall -Wextra -Ilib/util/include -o $@ $^
+	$(CC) -std=c23 -O2 -Wall -Wextra -Ilib/base/include -Ilib/util/include -o $@ $^
 
 $(BIN_DIR)/inspect_html: tools/inspect_html.c
 	@mkdir -p $(dir $@)
@@ -1651,16 +1693,21 @@ hotswap: $(VIEW_GEN_HEADERS)
 	@exit 3
 
 .PHONY: hotswap-module-so
-# make hotswap-module-so HANDLER=core.status
-# Compile the single swappable TU that OWNS a handler (per the
-# config/hotswap_swappable.def allowlist) into a content-addressed,
-# single-handler module .so that exports `zcl_hotswap_module`. This is the REAL
-# (activatable) ABI's build path — deliberately NOT the whole-program LTO node
-# compile: ONE non-LTO `-fPIC -shared` translation unit, seconds not a relink.
-# Unresolved kernel symbols (node_rpc_call, json_*, zcl_native_bridge_run, ...)
-# bind against the -rdynamic dev node at dlopen. Prints the .so path as the LAST
-# line. The .so is loaded ONLY by hotswap_activate (dev-only, gated). See
-# docs/work/HOTSWAP.md "Real module ABI".
+# make hotswap-module-so FILE=app/controllers/src/status_native_handlers.c
+# make hotswap-module-so HANDLER=core.status      (compat: leaf -> owning file)
+# Compile ONE swappable TU (a row in config/hotswap_swappable.def) into a
+# content-addressed, MULTI-LEAF module .so that exports `zcl_hotswap_module`
+# carrying every leaf that file owns. This is the REAL (activatable) ABI's build
+# path — deliberately NOT the whole-program LTO node compile: ONE non-LTO
+# `-fPIC -shared` translation unit, seconds not a relink. Unresolved kernel
+# symbols (node_rpc_call, json_*, zcl_native_bridge_run, ...) bind against the
+# -rdynamic dev node at dlopen. Prints the .so path as the LAST line. The .so is
+# loaded ONLY by hotswap_activate (dev-only, gated). See docs/work/HOTSWAP.md
+# "Real module ABI".
+#
+# -DZCL_HOTSWAP_MODULE_SOURCE_TU stamps the module with the repo-relative TU it
+# was built from, so a module cannot mislabel which allowlist row it belongs to;
+# hotswap_module_admit() refuses any source_tu absent from the allowlist.
 #
 # HOTSWAP_MODULE_LDFLAGS is the single source of truth for the module link,
 # shared by this recipe and the fast path's cached flags.env. -Wl,-Bsymbolic
@@ -1679,14 +1726,24 @@ HOTSWAP_MODULE_LDFLAGS = -shared -Wl,--build-id=none -Wl,-z,relro -Wl,-z,now \
 # BUILD_SOURCE_ID/CLEAN/MUTATION themselves are ordinary parse-time variables
 # and remain available regardless.
 hotswap-module-so: $(VIEW_GEN_HEADERS)
-	@if [ -z "$(HANDLER)" ]; then \
-	  echo "usage: make hotswap-module-so HANDLER=core.status" >&2; exit 2; fi
+	@if [ -z "$(HANDLER)$(FILE)" ]; then \
+	  echo "usage: make hotswap-module-so FILE=app/controllers/src/status_native_handlers.c" >&2; \
+	  echo "   or: make hotswap-module-so HANDLER=core.status" >&2; exit 2; fi
 	@set -eu; \
-	src="$$(sed -n 's/^[[:space:]]*HOTSWAP_SWAPPABLE("$(HANDLER)"[[:space:]]*,[[:space:]]*"\([^"]*\)").*/\1/p' config/hotswap_swappable.def | head -1)"; \
-	[ -n "$$src" ] || { echo "hotswap-module-so: handler '$(HANDLER)' is not on config/hotswap_swappable.def (the swappable shape-leaf allowlist)" >&2; exit 2; }; \
+	rows="$$(tr '\n' ' ' < config/hotswap_swappable.def \
+	  | grep -oE 'HOTSWAP_SWAPPABLE\("[^"]*"[[:space:]]*,[[:space:]]*"[^"]*"\)')"; \
+	[ -n "$$rows" ] || { echo "hotswap-module-so: config/hotswap_swappable.def parsed to zero rows" >&2; exit 2; }; \
+	if [ -n "$(FILE)" ]; then \
+	  src="$(FILE)"; \
+	  printf '%s\n' "$$rows" | grep -Fq "HOTSWAP_SWAPPABLE(\"$$src\"" || { \
+	    echo "hotswap-module-so: '$$src' is not a row in config/hotswap_swappable.def (the swappable shape-leaf allowlist)" >&2; exit 2; }; \
+	else \
+	  src="$$(printf '%s\n' "$$rows" | awk -v leaf='$(HANDLER)' -F '"' '{ n = split($$4, L, " "); for (i = 1; i <= n; i++) if (L[i] == leaf) { print $$2; exit } }')"; \
+	  [ -n "$$src" ] || { echo "hotswap-module-so: leaf '$(HANDLER)' is not on config/hotswap_swappable.def (the swappable shape-leaf allowlist)" >&2; exit 2; }; \
+	fi; \
 	[ -f "$$src" ] || { echo "hotswap-module-so: source does not exist: $$src" >&2; exit 2; }; \
 	mkdir -p "$(HOTSWAP_OBJ_DIR)" "$(HOTSWAP_SO_DIR)" "$(HOTSWAP_SO_DIR)/fast"; \
-	safe="$$(printf '%s' "$(HANDLER)" | tr -c 'A-Za-z0-9_.-' '_')"; \
+	safe="$$(printf '%s' "$$src" | tr -c 'A-Za-z0-9_.-' '_')"; \
 	o="$(HOTSWAP_OBJ_DIR)/mod-$$safe-$(BUILD_SOURCE_ID).o"; \
 	so="$(HOTSWAP_SO_DIR)/$$safe-$(BUILD_SOURCE_ID).so"; \
 	tmp_o="$$(mktemp "$(HOTSWAP_OBJ_DIR)/.module.XXXXXX.o")"; \
@@ -1695,12 +1752,14 @@ hotswap-module-so: $(VIEW_GEN_HEADERS)
 	tmp_env="$$(mktemp "$(HOTSWAP_SO_DIR)/fast/.flags.XXXXXX")"; \
 	trap 'rm -f "$$tmp_o" "$$tmp_d" "$$tmp_so" "$$tmp_env"' EXIT HUP INT TERM; \
 	publish_exact() { \
-	  src="$$1"; dst="$$2"; \
-	  if ln -- "$$src" "$$dst" 2>/dev/null; then rm -f "$$src"; return 0; fi; \
-	  [ -f "$$dst" ] && [ ! -L "$$dst" ] && cmp -s "$$src" "$$dst" || return 1; \
-	  rm -f "$$src"; \
+	  pe_src="$$1"; pe_dst="$$2"; \
+	  if ln -- "$$pe_src" "$$pe_dst" 2>/dev/null; then rm -f "$$pe_src"; return 0; fi; \
+	  [ -f "$$pe_dst" ] && [ ! -L "$$pe_dst" ] && cmp -s "$$pe_src" "$$pe_dst" || return 1; \
+	  rm -f "$$pe_src"; \
 	}; \
-	$(CC) $(DEV_CFLAGS) -fPIC -DZCL_HOTSWAP_MODULE_GEN -MD -MF "$$tmp_d" -c -o "$$tmp_o" "$$src" >&2; \
+	$(CC) $(DEV_CFLAGS) -fPIC -DZCL_HOTSWAP_MODULE_GEN \
+	  -DZCL_HOTSWAP_MODULE_SOURCE_TU=\"$$src\" \
+	  -MD -MF "$$tmp_d" -c -o "$$tmp_o" "$$src" >&2; \
 	$(CC) $(HOTSWAP_MODULE_LDFLAGS) -o "$$tmp_so" "$$tmp_o" >&2; \
 	tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
 	publish_exact "$$tmp_o" "$$o" || { \
@@ -1726,23 +1785,26 @@ hotswap-module-so: $(VIEW_GEN_HEADERS)
 	printf '%s\n' '$(CC) $(DEV_CFLAGS)' > "$$cache_cmd"; \
 	printf '%s\n' "$$so" > "$$cache_ptr"; \
 	trap - EXIT HUP INT TERM; \
-	echo "hotswap-module-so: linked single-handler module candidate $$so" >&2; \
+	echo "hotswap-module-so: linked multi-leaf module candidate $$so ($$src)" >&2; \
 	echo "$$so"
 
 .PHONY: hotswap-apply
 # make hotswap-apply HANDLER=core.status
-# One shot from edit to live: build the single-handler module .so for HANDLER
+# make hotswap-apply FILE=app/controllers/src/status_native_handlers.c
+# One shot from edit to live: build the MULTI-LEAF module .so for the owning TU
 # (hotswap-module-so, seconds) and hand it to the RUNNING dev node's resident
-# dev_hotswap_native RPC via `dev hotswap apply`, which re-points that command
-# leaf in the resident registry with no restart. Gated inside the node by
-# hotswap_activation_authorized() (-hotswap-activate + ZCL_HOTSWAP_ACTIVATE=1 +
-# the exact dev datadir); only config/hotswap_swappable.def read-only leaves
-# can ever activate, and the canonical datadir is hard-refused. Prints the
-# zcl.hotswap_activate.v1 report. See docs/work/HOTSWAP.md "Real module ABI".
+# dev_hotswap_native RPC via `dev hotswap apply`, which re-points EVERY leaf that
+# file owns in ONE all-or-nothing registry batch with no restart. Gated inside
+# the node by hotswap_activation_authorized() (-hotswap-activate +
+# ZCL_HOTSWAP_ACTIVATE=1 + the exact dev datadir); only config/
+# hotswap_swappable.def READY read-only leaves can ever activate, the declared
+# probe leaf must pass probe-before-publish, and the canonical datadir is
+# hard-refused. Prints the zcl.hotswap_activate.v2 report. See
+# docs/work/HOTSWAP.md "Real module ABI".
 hotswap-apply:
-	@if [ -z "$(HANDLER)" ]; then \
-	  echo "usage: make hotswap-apply HANDLER=core.status" >&2; exit 2; fi
-	@so="$$(tools/dev/hotswap-module-fast.sh HANDLER=$(HANDLER) | tail -1)"; \
+	@if [ -z "$(HANDLER)$(FILE)" ]; then \
+	  echo "usage: make hotswap-apply HANDLER=core.status | FILE=<tu.c>" >&2; exit 2; fi
+	@so="$$(tools/dev/hotswap-module-fast.sh $(if $(FILE),FILE=$(FILE),HANDLER=$(HANDLER)) | tail -1)"; \
 	case "$$so" in /*) ;; *) so="$(CURDIR)/$$so" ;; esac; \
 	[ -n "$$so" ] && [ -f "$$so" ] || { \
 	  echo "hotswap-apply: module build did not yield a .so (see stderr)" >&2; exit 3; }; \
@@ -1754,21 +1816,23 @@ hotswap-apply:
 
 .PHONY: hotswap-try
 # make hotswap-try HANDLER=core.status ARGS="core status"
-# The OBSERVABLE dev loop: build the single-handler module .so for HANDLER,
-# then run ARGS in a one-shot CLI with ZCL_HOTSWAP_PRELOAD — the freshly
-# compiled body executes in the CLI process (probe-class authority; the
-# override dies with the process) and fetches live data from the dev lane.
-# No resident restart; the full edit->see loop is seconds. Only
-# config/hotswap_swappable.def read-only leaves can be built into a module.
-# The module rebuild goes through tools/dev/hotswap-module-fast.sh (cached
-# compile metadata, no second make parse on the happy path) and falls back to
-# the authoritative `hotswap-module-so` whenever the cache is stale.
+# make hotswap-try FILE=app/controllers/src/status_native_handlers.c ARGS="core status"
+# The OBSERVABLE dev loop: build the MULTI-LEAF module .so for the owning TU,
+# then run ARGS in a one-shot CLI with ZCL_HOTSWAP_PRELOAD — every leaf that
+# file owns is installed in ONE batch and the freshly compiled bodies execute in
+# the CLI process (probe-class authority; the overrides die with the process)
+# while fetching live data from the dev lane. No resident restart; the full
+# edit->see loop is seconds. Only config/hotswap_swappable.def READY read-only
+# leaves can be built into a module. The module rebuild goes through
+# tools/dev/hotswap-module-fast.sh (cached compile metadata, no second make
+# parse on the happy path) and falls back to the authoritative
+# `hotswap-module-so` whenever the cache is stale.
 hotswap-try:
-	@if [ -z "$(HANDLER)" ]; then \
+	@if [ -z "$(HANDLER)$(FILE)" ]; then \
 	  echo "usage: make hotswap-try HANDLER=core.status ARGS=\"core status\"" >&2; exit 2; fi
 	@if [ -z "$(ARGS)" ]; then \
 	  echo "hotswap-try: ARGS is required, e.g. ARGS=\"core status\"" >&2; exit 2; fi
-	@so="$$(tools/dev/hotswap-module-fast.sh HANDLER=$(HANDLER) | tail -1)"; \
+	@so="$$(tools/dev/hotswap-module-fast.sh $(if $(FILE),FILE=$(FILE),HANDLER=$(HANDLER)) | tail -1)"; \
 	case "$$so" in /*) ;; *) so="$(CURDIR)/$$so" ;; esac; \
 	[ -n "$$so" ] && [ -f "$$so" ] || { \
 	  echo "hotswap-try: module build did not yield a .so (see stderr)" >&2; exit 3; }; \
@@ -2171,7 +2235,7 @@ $(ZCLASSIC23_BIN): $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) $(NODE_ENTRY_SRCS
 
 .PHONY: zclassic-cli
 zclassic-cli: $(ZCLASSIC_CLI_BIN)
-$(ZCLASSIC_CLI_BIN): $(BUILD_IDENTITY_STAMP) src/cli.c $(CLI_SRCS) lib/util/src/safe_alloc.c
+$(ZCLASSIC_CLI_BIN): $(BUILD_IDENTITY_STAMP) src/cli.c $(CLI_SRCS) lib/base/src/safe_alloc.c
 	@mkdir -p $(dir $@)
 	@set -eu; \
 	tmp="$$(mktemp "$@.link.XXXXXX")"; \
@@ -2225,12 +2289,12 @@ $(BIN_DIR)/gen_sha3_windows: tools/gen_sha3_windows.c \
 		lib/chain/src/sha3_windows.c \
 		lib/crypto/src/sha3.c lib/crypto/src/keccak_avx512.c lib/encoding/src/utilstrencodings.c \
 		lib/json/src/json.c lib/platform/src/clock.c \
-		lib/util/src/safe_alloc.c lib/support/src/cleanse.c
+		lib/base/src/safe_alloc.c lib/support/src/cleanse.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O3 -march=native -Wall -Wextra -Werror -pedantic \
-	    -Wno-stringop-overflow -Wno-unused-result \
+	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
 	    -Ilib/chain/include -Ilib/crypto/include -Ilib/encoding/include \
-	    -Ilib/json/include -Ilib/platform/include -Ilib/util/include \
+	    -Ilib/json/include -Ilib/platform/include -Ilib/base/include -Ilib/util/include \
 	    -Ilib/support/include \
 	    -D_POSIX_C_SOURCE=200809L \
 	    -o $@ $^ -pthread
@@ -2251,9 +2315,9 @@ $(BIN_DIR)/gen_utxo_root_ladder: tools/gen_utxo_root_ladder.c \
 		lib/chain/src/mmb.c lib/crypto/src/sha3.c lib/crypto/src/keccak_avx512.c lib/support/src/cleanse.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
-	    -Wno-unused-result -Wno-stringop-overflow \
+	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
 	    -Ilib/chain/include -Ilib/crypto/include -Ilib/support/include \
-	    -Ilib/util/include -Ivendor/include \
+	    -Ilib/base/include -Ilib/util/include -Ivendor/include \
 	    -D_POSIX_C_SOURCE=200809L \
 	    -o $@ $^ -Lvendor/lib -l:libsqlite3.a -lpthread -lm
 
@@ -2270,7 +2334,7 @@ $(BIN_DIR)/rom_two_builder_compare: tools/rom_two_builder_compare.c \
 		lib/crypto/src/sha3.c lib/crypto/src/keccak_avx512.c lib/support/src/cleanse.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
-	    -Wno-unused-result -Wno-stringop-overflow \
+	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
 	    -Ilib/crypto/include -Ilib/support/include -Ivendor/include \
 	    -D_POSIX_C_SOURCE=200809L \
 	    -o $@ $^ -Lvendor/lib -l:libsqlite3.a -lpthread -lm
@@ -2286,12 +2350,12 @@ $(BIN_DIR)/rom_two_builder_compare: tools/rom_two_builder_compare.c \
 .PHONY: tools/checkpoint_rung_export
 tools/checkpoint_rung_export: $(BIN_DIR)/checkpoint_rung_export
 $(BIN_DIR)/checkpoint_rung_export: tools/checkpoint_rung_export.c \
-		lib/storage/src/checkpoint_rung.c lib/util/src/log_level.c \
+		lib/storage/src/checkpoint_rung.c lib/base/src/log_level.c \
 		lib/crypto/src/sha3.c lib/crypto/src/keccak_avx512.c lib/support/src/cleanse.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
-	    -Wno-unused-result -Wno-stringop-overflow \
-	    -Ilib/storage/include -Ilib/crypto/include -Ilib/util/include \
+	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
+	    -Ilib/storage/include -Ilib/crypto/include -Ilib/base/include -Ilib/util/include \
 	    -Ilib/support/include -Ivendor/include \
 	    -D_POSIX_C_SOURCE=200809L \
 	    -o $@ $^ -Lvendor/lib -l:libsqlite3.a -lpthread -lm
@@ -2307,7 +2371,7 @@ $(BIN_DIR)/rom_bundle_sha3: tools/rom_bundle_sha3.c \
 		lib/crypto/src/sha3.c lib/crypto/src/keccak_avx512.c lib/support/src/cleanse.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
-	    -Wno-unused-result -Wno-stringop-overflow \
+	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
 	    -Ilib/crypto/include -Ilib/support/include \
 	    -D_POSIX_C_SOURCE=200809L \
 	    -o $@ $^ -lm
@@ -2358,7 +2422,7 @@ bundle-bootstrap: $(BIN_DIR)/rom_bundle_sha3
 zcl-nodectl: $(ZCL_NODECTL_BIN)
 $(ZCL_NODECTL_BIN): tools/zcl-nodectl.c lib/util/include/util/rpc_paths.h
 	@mkdir -p $(dir $@)
-	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -Ilib/util/include -o $@ $<
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -Ilib/base/include -Ilib/util/include -o $@ $<
 
 .PHONY: export_snapshot
 export_snapshot: $(BIN_DIR)/export_snapshot
@@ -2658,7 +2722,7 @@ crash_recovery_test: $(CRASH_RECOVERY_TEST_BIN)
 $(CRASH_RECOVERY_TEST_BIN): tools/crash_recovery_test.c lib/platform/src/clock.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pthread \
-	    -Ilib/platform/include -Ilib/util/include -Ivendor/include -o $@ \
+	    -Ilib/platform/include -Ilib/base/include -Ilib/util/include -Ivendor/include -o $@ \
 	    tools/crash_recovery_test.c lib/platform/src/clock.c \
 	    -Lvendor/lib -l:libsqlite3.a -lpthread -ldl -lm
 
@@ -3543,7 +3607,7 @@ mvp: test_zcl zclassic23 zcl-rpc
 # never false-green without the toolchain: install clang/libFuzzer or
 # opt out explicitly with `make ci SKIP_FUZZ=1`.
 FUZZ_CC ?= clang
-FUZZ_CFLAGS = -std=c23 -O1 -g -Wall -Wextra -Wno-unused-result \
+FUZZ_CFLAGS = -std=c23 -O1 -g -Wall -Wextra \
 	-Wno-deprecated-declarations \
 	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(CORE_INCLUDES) \
 	$(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) \
@@ -3719,7 +3783,7 @@ $(SOAK_RUNNER_BIN): tools/soak/main.c lib/test/src/soak_harness.c \
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    -D_POSIX_C_SOURCE=200809L \
-	    -Ilib/test/include -Ilib/platform/include -Ilib/util/include -o $@ \
+	    -Ilib/test/include -Ilib/platform/include -Ilib/base/include -Ilib/util/include -o $@ \
 	    tools/soak/main.c lib/test/src/soak_harness.c lib/platform/src/clock.c
 
 soak-7day: soak_runner zcl-rpc
@@ -4811,12 +4875,18 @@ check-hotswap-dev-only:
 check-hotswap-eligible-scope:
 	@tools/lint/check_hotswap_eligible_scope.sh
 
+# Scans the UNION of config/hotswap_eligible.def and
+# config/hotswap_swappable.def: every TU either manifest can recompile into a
+# .so must be free of mutable file-scope statics.
 check-hotswap-static-state:
 	@tools/lint/check_hotswap_static_state.sh
 
-# THE HARD LINE for the REAL (activatable) module ABI: every swappable handler
-# (config/hotswap_swappable.def) must be owned by a controller/view/condition
-# LEAF — never a reducer/consensus/storage/supervisor TU. Self-tested in
+# THE HARD LINE for the REAL (activatable) module ABI, both halves: every
+# swappable source_tu (config/hotswap_swappable.def) must be owned by a
+# controller/view/condition LEAF — never a reducer/consensus/storage/supervisor
+# TU — AND every leaf in its leaf list must be declared ZCL_COMMAND_READY_READ
+# (READY + read-only) in the config/commands catalog and be claimed by exactly
+# one file. Self-tested with seeded-violation fixtures in
 # test_make_lint_gates.c. See docs/work/HOTSWAP.md "Real module ABI".
 check-hotswap-swappable-shape:
 	@tools/lint/check_hotswap_swappable_shape.sh
@@ -5213,6 +5283,33 @@ check-no-trust-state-ordering:
 	@echo "══ LINT: no ordinal sync_trust_state comparison ══"
 	@./tools/scripts/check_no_trust_state_ordering.sh
 
+# The GNU comma-swallowing extension `, ##__VA_ARGS__` is not standard C, and
+# it is the single idiom that made this tree unbuildable by a second compiler:
+# one use in a header included by ~1100 translation units produced over seven
+# thousand diagnostics under `clang -std=c23 -pedantic`. C23 spells it
+# `__VA_OPT__(,) __VA_ARGS__` with an identical token stream.
+check-no-gnu-va-args:
+	@echo "══ LINT: C23 __VA_OPT__, never the GNU comma-swallowing extension ══"
+	@./tools/lint/check_no_gnu_va_args.sh
+
+# Second-compiler portability. The node ships as one whole-program GCC build,
+# so nothing ever asked a different compiler whether the tree is well-formed
+# and GCC-only spellings landed invisibly — including real undefined behaviour
+# in lib/net/src/p2p_game.c that only clang rejects. Ratchets realized
+# diagnostic sites against a recorded baseline. SKIPs loudly when clang is
+# absent, so a contributor without it is never blocked by a tool they lack.
+check-clang-portability:
+	@echo "══ LINT: second-compiler portability (clang -std=c23 -pedantic) ══"
+	@./tools/lint/check_clang_portability.sh --self-test && ./tools/lint/check_clang_portability.sh
+
+# C23 lets a `(void)` cast suppress [[nodiscard]], so annotating
+# struct zcl_result fences off NEW silent discards but cannot excavate the
+# existing ones. This is the excavator: a shrink-only ratchet over the cast
+# discards that remain. Fix one with ZCL_IGNORE_RESULT(expr, "reason").
+check-result-discard:
+	@echo "══ LINT: zcl_result cast-discard (RATCHET) ══"
+	@ZCL_LINT_MODE=FAIL ./tools/lint/check_result_discard.sh
+
 # Gate #20 graduated WARN → RATCHET (E10): fails on any new controller
 # file that uses raw sqlite. Baseline of grandfathered files lives in
 # tools/lint/no_raw_sqlite_in_controllers_baseline.txt (may only shrink).
@@ -5356,7 +5453,7 @@ check-no-dev-history-in-contracts:
 
 # Gate E9 — EV_OPERATOR_NEEDED emit must reach a registered sink (HARD).
 # The silent-halt fix: the loud "human needed" signal can never be emitted
-# without a subscriber in lib/util/src/alerts.c.
+# without a subscriber in lib/event/src/alerts.c.
 check-operator-needed-sink:
 	@echo "══ LINT: operator-needed sink (E9) ══"
 	@./tools/scripts/check_operator_needed_sink.sh
@@ -5423,6 +5520,16 @@ check-no-stale-pinned-facts:
 check-no-uncited-victory:
 	@echo "══ LINT: no uncited victory claim (docs/HANDOFF.md) ══"
 	@./tools/scripts/check_no_uncited_victory.sh
+
+# A document path baked into an operator-facing C string literal must resolve
+# to a file that exists. Three wallet-path boot refusals pointed the operator
+# at WALLET_PERSISTENCE_RECOVERY.md, which had never existed — a dead pointer
+# at the one moment the reader most needs the instructions.
+# check-markdown-links covers .md-to-.md; this covers .md inside C literals.
+# See tools/lint/check_error_doc_refs.sh (has --selftest).
+check-error-doc-refs:
+	@echo "══ LINT: operator-named docs exist (C string literals) ══"
+	@./tools/lint/check_error_doc_refs.sh
 
 # Dev-UX: the DERIVED binary size (counterpart to the forbid gate above). Quote
 # this instead of hand-pinning a size in prose; a reviewer re-runs it to confirm.
@@ -5603,7 +5710,7 @@ check-scanner-immunity:
 	@./tools/lint/selftest_scanner_immunity.sh
 
 # ── Lint umbrella ────────────────────────────────────────────────────────
-# LINT_GATES is the single ordered source of truth for the 88-gate umbrella
+# LINT_GATES is the single ordered source of truth for the lint umbrella
 # (E11 check-doc-accuracy cross-checks it against DEFENSIVE_CODING.md).
 #
 # Two execution modes:
@@ -5619,10 +5726,14 @@ check-scanner-immunity:
 #                        maintained path).
 #
 # Wall-time budget (SOFT, warn-only — never fails the build): the umbrella
-# should stay <= 75 s wall on the dev reference host. Measured 2026-07-18:
-# serial p50 ~56 s (87 gates, warm cache); driver ~17-23 s at 8-12 jobs.
-# Per-gate ms lands in .cache/lint-timing/last-run.json and every run prints
-# the slowest 10, so a creeping gate is visible before it eats the budget.
+# carries a budget in seconds — ZCL_LINT_BUDGET_SEC, defaulted in
+# tools/lint/run_lint.sh and echoed into every timing artifact as
+# "budget_sec", which is where to read its current value. Per-gate ms lands in
+# .cache/lint-timing/last-run.json and every run prints the slowest 10, so a
+# creeping gate is visible before it eats the budget. Do NOT type an observed
+# duration into this comment — durations are per host and per commit, and the
+# ones that used to live here had gone stale. Ask the host instead:
+#   make timings   (says NOT MEASURED rather than quoting another machine)
 ZCL_LINT_JOBS ?= 8
 LINT_GATES := \
     check-no-retired-agent-protocol \
@@ -5690,6 +5801,7 @@ LINT_GATES := \
     check-doc-counts \
     check-no-stale-pinned-facts \
     check-no-uncited-victory \
+    check-error-doc-refs \
     check-markdown-links \
     check-one-result-type \
     check-service-result-convergence \
@@ -5722,7 +5834,11 @@ LINT_GATES := \
     check-vendor-provenance \
     check-command-contract \
     check-privileged-transition-receipt \
-    check-no-trust-state-ordering
+    check-no-gnu-va-args \
+    check-clang-portability \
+    check-result-discard \
+    check-no-trust-state-ordering \
+    check-no-warning-suppression
 
 # The driver execs gate scripts directly, so the two gates backed by a built
 # tool (check-core-seal, check-observability-pairing) need their binaries
@@ -5901,11 +6017,11 @@ $(BIN_DIR)/postmortem_to_scenario: tools/postmortem_to_scenario.c \
 		lib/sim/src/postmortem.c lib/sim/src/seed_tape.c \
 		lib/platform/src/clock.c lib/platform/src/rng.c \
 		lib/util/src/signal_handler.c lib/util/src/clientversion.c \
-		lib/util/src/safe_alloc.c lib/json/src/json.c
+		lib/base/src/safe_alloc.c lib/json/src/json.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
-	    -Wno-unused-result -Wno-format-truncation \
-	    -Ilib/sim/include -Ilib/platform/include -Ilib/util/include \
+	    -Wno-format-truncation \
+	    -Ilib/sim/include -Ilib/platform/include -Ilib/base/include -Ilib/util/include \
 	    -Ilib/json/include \
 	    -D_POSIX_C_SOURCE=200809L \
 	    -o $@ $^ -Lvendor/lib -l:libz.a -lpthread -lm
@@ -5917,3 +6033,76 @@ postmortem-to-scenario: tools/postmortem_to_scenario
 	    exit 2; \
 	fi
 	$(BIN_DIR)/postmortem_to_scenario --cap=$(CAP) $(if $(OUT),--out=$(OUT),)
+
+# ── Entry points: help, setup, doctor, timings, pr-check ─────────────────
+# Appended as one self-contained block at the end of the file to keep the
+# merge surface with in-flight lanes minimal. The content of each lives in
+# tools/scripts/, so the Makefile side stays a single line per target.
+#
+# These exist because this file had hundreds of targets and no front door:
+# `make help` printed "No rule to make target 'help'", the prerequisite list
+# lived in three prose files that disagreed with each other and with
+# build_vendor.sh, and there was no way to ask the host how long anything
+# actually takes. `make help` prints the live target count; do not restate it
+# here.
+.PHONY: help setup doctor timings pr-check help-selftest doctor-selftest timings-selftest
+
+help:
+	@tools/scripts/make_help.sh
+
+# Idempotent, and it announces every file it touches: nothing should appear
+# on disk that the operator did not see named first.
+setup:
+	@echo "══ setup: arming this clone ══"
+	@$(MAKE) --no-print-directory install-hooks
+	@echo "  wrote  .git/config          core.hooksPath = tools/githooks"
+	@$(MAKE) --no-print-directory compdb
+	@echo "  wrote  compile_commands.json  (clangd/LSP; regenerate with make compdb)"
+	@echo "  wrote  .cache/               (gitignored tool caches, created on demand)"
+	@echo "setup: done — nothing else was created. Next: make doctor"
+
+# What is missing on THIS host, and the one command that installs it.
+# Source of truth is tools/scripts/vendor_prereqs.tsv; the script fails if
+# that table has fallen behind build_vendor.sh.
+doctor:
+	@tools/scripts/doctor.sh
+
+# Where the wall time went, read from artifacts measured on this host.
+# Never prints a duration it did not measure here.
+timings:
+	@tools/scripts/timings.sh
+
+# What an outside contributor can run before opening a PR, with nothing built.
+# Same two checks the public gate runs, in the same order.
+pr-check:
+	@echo "══ pr-check: lint + whole-tree syntax ══"
+	@$(MAKE) --no-print-directory lint
+	@$(MAKE) --no-print-directory syntax-check
+	@tools/scripts/make_help.sh --self-test
+	@tools/scripts/doctor.sh --prereq-coverage
+	@tools/scripts/timings.sh --self-test
+	@echo "══ pr-check: passed ══"
+
+help-selftest:
+	@tools/scripts/make_help.sh --self-test
+
+doctor-selftest:
+	@tools/scripts/doctor.sh --self-test
+
+timings-selftest:
+	@tools/scripts/timings.sh --self-test
+
+# ── Lint gate: blanket warning suppressions stay named ───────────────────
+# The unused-result suppression is the flag that ALSO disables [[nodiscard]]
+# reporting on both GCC and Clang, so it silently voids the repository's
+# result-type discipline; the stringop-overflow one hides a memory-safety
+# diagnostic. Both arrived as unexplained copy-forward defaults in the first
+# commit and had spread by copy-paste to seven compile rules. It does not ban
+# them, it
+# bans an UNEXPLAINED one: any instance needs a `suppression-ok: <reason>`
+# marker on its line or the line above. Carries hermetic detector fixtures and
+# runs them before it certifies the tree, so it cannot report clean while
+# blind. Self-test: tools/lint/check_no_warning_suppression.sh --self-test
+check-no-warning-suppression:
+	@echo "══ LINT: unexplained warning suppressions ══"
+	@./tools/lint/check_no_warning_suppression.sh .

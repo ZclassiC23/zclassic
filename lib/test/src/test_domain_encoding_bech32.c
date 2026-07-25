@@ -13,7 +13,7 @@
  *   3. Invalid BIP-173 strings rejected.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "domain/encoding/bech32.h"
 

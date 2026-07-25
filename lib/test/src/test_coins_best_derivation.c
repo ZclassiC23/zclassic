@@ -20,7 +20,7 @@
  *      auto-rewind), and (c) still FATAL on the legacy branch once
  *      coins_applied_height is deleted (legacy datadirs keep their gate). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "jobs/reducer_frontier.h"
 #include "storage/coins_kv.h"

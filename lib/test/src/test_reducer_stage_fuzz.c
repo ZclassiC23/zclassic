@@ -66,7 +66,8 @@
  * checker flags it. If the checker had no teeth, that block would fail.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "bloom/merkle.h"
 
 #include "chain/chain.h"
 #include "core/uint256.h"

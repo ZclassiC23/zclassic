@@ -20,7 +20,7 @@
  *     live datadir, must never be reported as ok)
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "controllers/agent_copy_prove_controller.h"
 #include "json/json.h"
 

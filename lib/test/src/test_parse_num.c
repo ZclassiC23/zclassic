@@ -7,7 +7,7 @@
  *
  * Pure: deterministic, no I/O, no global state, no clock. Table-driven. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "util/parse_num.h"
 

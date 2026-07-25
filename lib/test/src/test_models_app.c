@@ -1,7 +1,11 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Focused app-model tests. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "models/peer.h"
+#include "models/contact.h"
+#include "models/onion_announcement.h"
+#include "models/store.h"
 #include "models/file_service.h"
 #include "models/swap_contract.h"
 #include "models/zmsg.h"

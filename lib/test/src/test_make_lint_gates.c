@@ -22,7 +22,7 @@
 
 #define _POSIX_C_SOURCE 200809L
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #ifdef ZCL_TESTING
 
@@ -74,6 +74,12 @@
 #define HOTSWAP_SWAPPABLE_MANIFEST_REL "config/hotswap_swappable.def"
 #define HOTSWAP_SWAPPABLE_BAD_MANIFEST_REL \
     "lib/test/fixtures/hotswap_swappable_bad_shape.def"
+#define HOTSWAP_SWAPPABLE_NOT_READY_READ_REL \
+    "lib/test/fixtures/hotswap_swappable_not_ready_read.def"
+#define HOTSWAP_SWAPPABLE_DUP_LEAF_REL \
+    "lib/test/fixtures/hotswap_swappable_dup_leaf.def"
+#define HOTSWAP_SWAPPABLE_BAD_STATIC_REL \
+    "lib/test/fixtures/hotswap_swappable_bad_static.def"
 #define GIT_HOOKS_SCRIPT_REL "tools/scripts/check_git_hooks_installed.sh"
 #define PRIV_RECEIPT_SCRIPT_REL \
     "tools/lint/check_privileged_transition_receipt.sh"
@@ -1338,6 +1344,10 @@ static int t_git_hooks_gate_rejects_noop_pre_commit(void)
 #define E10_SQL_SCRIPT_REL "tools/lint/check_no_raw_sqlite_in_controllers.sh"
 #define E10_SQL_FIXTURE_DST "app/controllers/src/_e10_rawsql_fixture_tmp.c"
 #define E11_SCRIPT_REL   "tools/scripts/check_doc_accuracy.sh"
+/* Not gitignored on purpose: E11's repo-wide prong scans tracked files plus
+ * not-yet-added files git does not ignore, so an ignored path would make the
+ * trip case silently vacuous. */
+#define E11_FIXTURE_DST  "docs/_e11_doc_count_fixture_tmp.md"
 #define MODEL_AR_SCRIPT_REL "tools/scripts/check_model_ar_lifecycle.sh"
 #define MODEL_AR_FIXTURE_DST "app/models/src/_model_ar_lifecycle_fixture_tmp.c"
 #define E2_SCRIPT_REL    "tools/scripts/check_one_result_type.sh"
@@ -2666,12 +2676,41 @@ static int t_log_macro_return_type_gate(void)
 }
 
 /* E11 — doc accuracy: the in-tree DEFENSIVE_CODING.md gate block matches
- * the Makefile lint: target, so the gate passes. */
+ * the Makefile lint: target, so the gate passes.
+ *
+ * The clean-run assertion alone cannot tell "the docs are right" from "the
+ * gate stopped looking". It could not: E11 checked exactly one filename, so
+ * docs/BUILD.md ("40 defensive-coding gates") and docs/TENACITY.md ("36 lint
+ * gates") sat wrong against a real list of 98 with this test green. E11 now
+ * derives the count and scans every in-tree .md, and the plant/trip/recover
+ * case below proves that scan is live: a stale count written into a doc the
+ * gate has never heard of must fail it. The fixture states a deliberately
+ * impossible count, so the case stays valid as gates are added or removed. */
 static int t_e11_doc_accuracy(void)
 {
     int failures = 0;
-    TEST("[lint-gate] E11 doc gate list matches Makefile lint: target") {
-        ASSERT(run_gate_script(E11_SCRIPT_REL, NULL) == 0);
+    unlink_rel(E11_FIXTURE_DST);
+    int baseline_rc = run_gate_script(E11_SCRIPT_REL, NULL);
+
+    char path[PATH_MAX];
+    int planted = -1;
+    if (repo_path(path, sizeof(path), E11_FIXTURE_DST) == 0)
+        planted = write_file(path,
+                       "# E11 fixture\n\n"
+                       "This page claims 999999 lint gates, which the repo\n"
+                       "cannot have. E11 must reject it even though no code\n"
+                       "names this file.\n");
+    int trip_rc = run_gate_script(E11_SCRIPT_REL, NULL);
+
+    unlink_rel(E11_FIXTURE_DST);
+    int recover_rc = run_gate_script(E11_SCRIPT_REL, NULL);
+
+    TEST("[lint-gate] E11 gate list matches Makefile; stale count in an "
+         "unnamed doc trips it") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
         PASS();
     } _test_next:;
     return failures;
@@ -3740,10 +3779,34 @@ static int t_hotswap_swappable_shape_gate(void)
     TEST("hotswap swappable-shape gate: real allowlist passes, forbidden root trips") {
         /* The committed allowlist is all shape-leaf surfaces → clean (exit 0). */
         ASSERT(run_hotswap_swappable_gate(HOTSWAP_SWAPPABLE_MANIFEST_REL) == 0);
-        /* A seeded allowlist that points a handler at a lib/consensus TU trips
-         * the gate (exit 1) — proof the hard line is not hollow. */
+        /* A seeded allowlist that points a row at a lib/consensus TU trips
+         * the gate (exit 1) — proof the shape half is not hollow. */
         ASSERT(run_hotswap_swappable_gate(HOTSWAP_SWAPPABLE_BAD_MANIFEST_REL) == 1);
         /* Recovery: back on the real allowlist the gate passes again. */
+        ASSERT(run_hotswap_swappable_gate(HOTSWAP_SWAPPABLE_MANIFEST_REL) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* The READY-read-only half of the hard line. Before the swappable def carried a
+ * leaf column this gate checked shape FOLDERS only: a leaf that was mutating or
+ * non-READY reached the runtime unchallenged, invisible only because the six
+ * allowlisted files happened to match config/hotswap_eligible.def. Both seeded
+ * fixtures below MUST trip, or the widened batch has no static guard. */
+static int t_hotswap_swappable_leaf_contract_gate(void)
+{
+    int failures = 0;
+    TEST("hotswap swappable gate: a non-READY_READ leaf and a duplicate leaf trip") {
+        ASSERT(run_hotswap_swappable_gate(HOTSWAP_SWAPPABLE_MANIFEST_REL) == 0);
+        /* An in-shape controller row whose leaf list names a mutating
+         * (ZCL_COMMAND_READY_COMMAND) leaf trips the gate (exit 1). */
+        ASSERT(run_hotswap_swappable_gate(HOTSWAP_SWAPPABLE_NOT_READY_READ_REL) == 1);
+        /* One leaf claimed by two source files trips the gate (exit 1) — a leaf
+         * belongs to exactly one module, so two modules can never both publish
+         * a handler for it. */
+        ASSERT(run_hotswap_swappable_gate(HOTSWAP_SWAPPABLE_DUP_LEAF_REL) == 1);
+        /* Recovery. */
         ASSERT(run_hotswap_swappable_gate(HOTSWAP_SWAPPABLE_MANIFEST_REL) == 0);
         PASS();
     } _test_next:;
@@ -3761,6 +3824,39 @@ static int t_hotswap_static_state_gate(void)
          * file-scope static trips the gate (exit 1). */
         ASSERT(run_hotswap_gate_with_manifest(HOTSWAP_STATIC_SCRIPT_REL,
                                               HOTSWAP_BAD_STATIC_MANIFEST_REL) == 1);
+        /* Recovery. */
+        ASSERT(run_hotswap_gate_with_manifest(HOTSWAP_STATIC_SCRIPT_REL,
+                                              HOTSWAP_MANIFEST_REL) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* The static-state scan must cover the UNION of the eligible AND swappable
+ * manifests. It used to read config/hotswap_eligible.def only; a TU reachable
+ * ONLY through config/hotswap_swappable.def could carry mutable file-scope
+ * state, get a zero-initialized copy inside its module .so, and silently lose
+ * live process state — no crash, just wrong answers. This proves the swappable
+ * half of the scan really fires. */
+static int t_hotswap_static_state_covers_swappable(void)
+{
+    int failures = 0;
+    TEST("hotswap static-state gate scans the swappable manifest too (union)") {
+        char real_abs[PATH_MAX], bad_abs[PATH_MAX];
+        ASSERT(repo_path(real_abs, sizeof(real_abs),
+                         HOTSWAP_SWAPPABLE_MANIFEST_REL) == 0);
+        ASSERT(repo_path(bad_abs, sizeof(bad_abs),
+                         HOTSWAP_SWAPPABLE_BAD_STATIC_REL) == 0);
+        /* Real pair → clean. */
+        ASSERT(run_gate_script_with_env(HOTSWAP_STATIC_SCRIPT_REL,
+                                        "ZCL_HOTSWAP_SWAPPABLE_MANIFEST",
+                                        real_abs) == 0);
+        /* A SWAPPABLE-only row pointing at the mutable-static fixture TU trips
+         * the gate (exit 1) while the eligible manifest stays the real, clean
+         * one — the exact hole the union closes. */
+        ASSERT(run_gate_script_with_env(HOTSWAP_STATIC_SCRIPT_REL,
+                                        "ZCL_HOTSWAP_SWAPPABLE_MANIFEST",
+                                        bad_abs) == 1);
         /* Recovery. */
         ASSERT(run_hotswap_gate_with_manifest(HOTSWAP_STATIC_SCRIPT_REL,
                                               HOTSWAP_MANIFEST_REL) == 0);
@@ -7530,7 +7626,12 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
         ASSERT(repo_path(path, sizeof(path),
                          "lib/validation/src/process_block.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
-        ASSERT(strstr(buf, "app_runtime_node_db_handle_open") != NULL);
+        /* The accessors live behind storage/node_db_runtime.h, a lib/-owned
+         * port config/ registers into. Naming config/ from lib/ would make
+         * the composition root and the foundation mutually dependent, so the
+         * negative guard below is joined by check-lib-layering (gate #15). */
+        ASSERT(strstr(buf, "node_db_runtime_handle_open") != NULL);
+        ASSERT(strstr(buf, "config/runtime.h") == NULL);
         ASSERT(strstr(buf, "models/database.h") == NULL);
         free(buf);
         buf = NULL;
@@ -7538,8 +7639,8 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
         ASSERT(repo_path(path, sizeof(path),
                          "lib/validation/src/process_block_flush_policy.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
-        ASSERT(strstr(buf, "app_runtime_node_db_handle_open") != NULL);
-        ASSERT(strstr(buf, "app_runtime_node_db_state_set") != NULL);
+        ASSERT(strstr(buf, "node_db_runtime_handle_open") != NULL);
+        ASSERT(strstr(buf, "node_db_runtime_state_set") != NULL);
         /* sync_flush_if_needed + wal_checkpoint positive-assertions removed:
          * their only use site here (flush_coins_if_needed, the dead
          * forward-writer) was deleted in the dead-code removal — process_block
@@ -7555,7 +7656,7 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
         ASSERT(repo_path(path, sizeof(path),
                          "lib/validation/src/process_block_self_heal.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
-        ASSERT(strstr(buf, "app_runtime_node_db_utxo_max_height") != NULL);
+        ASSERT(strstr(buf, "node_db_runtime_utxo_max_height") != NULL);
         ASSERT(strstr(buf, "app_runtime_node_db_tx_index_find") == NULL);
         ASSERT(strstr(buf, "db_tx_find_native_or_reversed") == NULL);
         ASSERT(strstr(buf, "sqlite3_prepare_v2") == NULL);
@@ -8880,7 +8981,9 @@ static const struct lint_gate_entry g_lint_gate_entries[] = {
     S_(t_gate21_supervisor_worker_lockin),
     S_(t_hotswap_eligible_scope_gate),
     S_(t_hotswap_swappable_shape_gate),
+    S_(t_hotswap_swappable_leaf_contract_gate),
     S_(t_hotswap_static_state_gate),
+    S_(t_hotswap_static_state_covers_swappable),
     S_(t_privileged_transition_receipt_gate),
     S_(t_blocker_escape_registered_gate),
     R_(t_no_trust_state_ordering_gate),          /* git grep --untracked */

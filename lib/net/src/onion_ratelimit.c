@@ -19,6 +19,7 @@
 #include "crypto/sha3.h"
 #include "json/json.h"
 #include "util/log_json.h"
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -199,14 +200,26 @@ static const struct puzzle_policy g_onion_puzzle_policy = {
     .seed_rotate_secs = 120,
 };
 
+static pthread_once_t g_onion_puzzle_once = PTHREAD_ONCE_INIT;
+
+static void onion_puzzle_gate_init_once(void)
+{
+    puzzle_gate_init(&g_onion_puzzle_gate, &g_onion_puzzle_policy);
+}
+
 static void onion_puzzle_gate_ready(void)
 {
     /* puzzle_gate_* self-initialize on first use, but that default init
-     * would install the default policy. Install ours exactly once. */
-    static _Atomic bool inited = false;
-    bool expected = false;
-    if (atomic_compare_exchange_strong(&inited, &expected, true))
-        puzzle_gate_init(&g_onion_puzzle_gate, &g_onion_puzzle_policy);
+     * would install the default policy. Install ours exactly once.
+     *
+     * pthread_once, not a compare-exchange flag: the flag version published
+     * "initialized" BEFORE puzzle_gate_init() had run, so a second thread
+     * arriving in that window fell through to the gate's own lazy
+     * ensure_init and raced puzzle_gate_init() on the same mutex — two
+     * pthread_mutex_init() calls on one mutex, and the default policy
+     * possibly winning over ours. pthread_once blocks the second thread
+     * until the initializer has completed. */
+    pthread_once(&g_onion_puzzle_once, onion_puzzle_gate_init_once);
 }
 
 /* Called once per completed one-second window on the EXPENSIVE budget,

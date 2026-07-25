@@ -14,7 +14,8 @@
  * be recovered from.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "json/json.h"
 
 #include "services/wallet_backup_service.h"
 #include "event/event.h"
@@ -34,6 +35,7 @@
 #include <unistd.h>
 #include <utime.h>
 #include "util/safe_alloc.h"
+#include "test/setup_result.h"
 
 /* ── Event observer ────────────────────────────────────────── */
 
@@ -343,12 +345,12 @@ static int t_list_newest_first(void)
     wb_seed_keys(&f.ndb, 1);
 
     char p1[512], p2[512], p3[512];
-    wallet_backup_run_once(f.backup_dir, &f.ndb, p1, sizeof(p1), NULL, NULL, 0);
+    ZCL_TEST_SETUP(wallet_backup_run_once(f.backup_dir, &f.ndb, p1, sizeof(p1), NULL, NULL, 0));
     /* Make the second file strictly newer by mtime. */
     sleep(1);
-    wallet_backup_run_once(f.backup_dir, &f.ndb, p2, sizeof(p2), NULL, NULL, 0);
+    ZCL_TEST_SETUP(wallet_backup_run_once(f.backup_dir, &f.ndb, p2, sizeof(p2), NULL, NULL, 0));
     sleep(1);
-    wallet_backup_run_once(f.backup_dir, &f.ndb, p3, sizeof(p3), NULL, NULL, 0);
+    ZCL_TEST_SETUP(wallet_backup_run_once(f.backup_dir, &f.ndb, p3, sizeof(p3), NULL, NULL, 0));
 
     char listing[10][512];
     int n = wallet_backup_list(f.backup_dir, listing, 10);
@@ -724,7 +726,7 @@ static int t_encrypt_tamper_detected(void)
     snprintf(dst, sizeof(dst), WB_ENC_SCRATCH_DIR "/wbenc_%d_tamper_plain.bin", (int)getpid());
 
     wb_write_blob(src, (const uint8_t *)plain, strlen(plain));
-    wallet_backup_encrypt_file(src, enc, "pw");
+    ZCL_TEST_SETUP(wallet_backup_encrypt_file(src, enc, "pw"));
 
     /* Read the encrypted file, flip a bit in the salt region
      * (still a valid header structurally), write it back, and
@@ -974,5 +976,5 @@ int test_wallet_backup(void)
     failures += t_rotation_counts_enc();
     event_clear_observers(EV_WALLET_BACKUP);
     event_clear_observers(EV_WALLET_BACKUP_FAILED);
-    return failures;
+    return failures + ZCL_TEST_SETUP_FAILURES();
 }

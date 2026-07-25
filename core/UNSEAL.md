@@ -48,3 +48,7 @@ later lane flips it HARD.
 - 2026-07-18T03:06:01Z — REASON: record two-builder gate PASS in keystone provenance comment
   old ROOT: 9b922e9fcad73991469b4cef4941119f3a3e0a2eb3ab7e997478e99f2356ea94
   by: owner unseal ritual (make core-unseal)
+
+- 2026-07-25T02:04:04Z — REASON: C23 __VA_OPT__ conversion: replace the GNU comma-swallowing ', ##__VA_ARGS__' extension at the two core/consensus sites so the tree compiles under a second compiler. Preprocessor-only, line-count preserving; proven by byte-identical stripped binary + consensus parity group.
+  old ROOT: 016af0ada9b91d737137332fc6f800d18d0f60ece5533a13ddc7fff347236f84
+  by: owner unseal ritual (make core-unseal)

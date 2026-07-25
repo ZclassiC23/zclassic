@@ -26,7 +26,8 @@
  * Fixture is a trimmed copy of test_utxo_apply_stage.c's synthetic chain
  * (happy path only — no fail kinds needed). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "test/block_fixtures.h"
 
 #include "bloom/merkle.h"
 #include "core/uint256.h"

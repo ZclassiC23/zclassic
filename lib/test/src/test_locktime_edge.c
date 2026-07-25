@@ -41,7 +41,7 @@
  * the real domain_consensus_* function and asserts the exact verdict.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "domain/consensus/locktime.h"
 #include "primitives/transaction.h"

@@ -10,7 +10,7 @@
  * byte-layout round trip, so this is exercised entirely with in-memory
  * buffers, no node.db and no live node. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "net/zmsg.h"
 

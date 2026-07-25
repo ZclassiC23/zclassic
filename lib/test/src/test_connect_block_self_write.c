@@ -27,7 +27,7 @@
  * — not short-circuited.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "validation/connect_block.h"
 #include "validation/check_block.h"

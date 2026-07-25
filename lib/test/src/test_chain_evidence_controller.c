@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "services/chain_evidence_authority_service.h"
 #include "coins/coins_view.h"

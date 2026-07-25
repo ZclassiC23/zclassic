@@ -26,7 +26,7 @@
  * These tests assert both layers hold and neither path crashes. */
 
 #include "platform/time_compat.h"
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "net/addrman.h"
 #include "net/connman.h"
 #include "net/net.h"

@@ -1,89 +1,12 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Bounded, monotonic reducer hot-stage measurements.  This is observability
- * only: writers add elapsed/work values, diagnostics take read-only snapshots.
- */
-#ifndef ZCL_UTIL_REDUCER_STAGE_PROFILE_H
-#define ZCL_UTIL_REDUCER_STAGE_PROFILE_H
+ * Forwarding header — the reducer hot-stage work/timing diagnostics moved to
+ * lib/sync with the stage machinery they key off (stage_batch_generation).
+ * New code should include "sync/reducer_stage_profile.h" directly. */
 
-#include <stdbool.h>
-#include <stdint.h>
+#ifndef ZCL_UTIL_REDUCER_STAGE_PROFILE_FORWARD_H
+#define ZCL_UTIL_REDUCER_STAGE_PROFILE_FORWARD_H
 
-struct json_value;
+#include "sync/reducer_stage_profile.h"
 
-enum reducer_profile_domain {
-    REDUCER_PROFILE_BODY_PERSIST = 0,
-    REDUCER_PROFILE_SCRIPT_VALIDATE,
-    REDUCER_PROFILE_TIP_FINALIZE,
-    REDUCER_PROFILE_UTXO_APPLY,
-    REDUCER_PROFILE_DOMAIN_COUNT
-};
-
-enum reducer_profile_field {
-    RPF_BLOCKS = 0,
-    RPF_TOTAL_US,
-    RPF_UPSTREAM_US,
-    RPF_CACHE_HITS,
-    RPF_CACHE_MISSES,
-    RPF_CACHE_PROBES,
-    RPF_CACHE_LOCK_WAIT_US,
-    RPF_DISK_READ_US,
-    RPF_PARSE_US,
-    RPF_DEEP_CLONES,
-    RPF_DEEP_CLONE_BYTES,
-    RPF_BLOCK_HASH_US,
-    RPF_MERKLE_US,
-    RPF_MERKLE_ALLOCS,
-    RPF_MERKLE_BYTES,
-    RPF_EVENT_ENCODE_US,
-    RPF_EVENT_APPEND_US,
-    RPF_CREATED_INDEX_BLOCKS,
-    RPF_CREATED_INDEX_TXS,
-    RPF_CREATED_INDEX_OUTPUTS,
-    RPF_CREATED_INDEX_PREPARES,
-    RPF_CREATED_INDEX_STEPS,
-    RPF_CREATED_INDEX_US,
-    RPF_CONTEXTUAL_US,
-    RPF_TX_PRECOMPUTE_US,
-    RPF_JOB_ARRAY_ALLOCS,
-    RPF_JOB_ARRAY_BYTES,
-    RPF_PREVOUT_CREATED_LOOKUPS,
-    RPF_PREVOUT_COINS_FALLBACKS,
-    RPF_PREVOUT_PREPARES,
-    RPF_PREVOUT_HITS,
-    RPF_PREVOUT_MISSES,
-    RPF_PREVOUT_US,
-    RPF_POOL_SETUP_US,
-    RPF_POOL_WAKE_US,
-    RPF_VERIFY_SCRIPT_CPU_US,
-    RPF_WORKER_WAIT_US,
-    RPF_ORDERED_REDUCTION_US,
-    RPF_HEADER_EVENT_US,
-    RPF_STAGE_LOG_CURSOR_US,
-    /* tip_finalize per-phase timings (REDUCER_PROFILE_TIP_FINALIZE) — splits the
-     * finalize step so the "tip_finalize is 94% of the round" figure resolves
-     * into which phase actually spends the time (historically the window move). */
-    RPF_TF_LOG_INSERT_US,
-    RPF_TF_INCREMENTAL_SUM_US,
-    RPF_TF_WINDOW_MOVE_US,
-    RPF_TF_PROVABLE_TIP_US,
-    /* utxo_apply per-phase timings (REDUCER_PROFILE_UTXO_APPLY). */
-    RPF_UA_PREVOUT_US,
-    RPF_UA_APPLY_US,
-    RPF_UA_COMMIT_US,
-    RPF_FIELD_COUNT  /* must stay <= 63: the `present` bitmask is 1<<field */
-};
-
-void reducer_stage_profile_add(enum reducer_profile_domain domain,
-                               enum reducer_profile_field field,
-                               uint64_t value);
-/* Add a duration and one sample to the bounded log2 histogram used for p50/p95
- * diagnostics. Use this rather than `_add` for elapsed-time fields. */
-void reducer_stage_profile_observe_us(enum reducer_profile_domain domain,
-                                      enum reducer_profile_field field,
-                                      uint64_t value);
-void reducer_stage_profile_reset(void);
-bool reducer_stage_profile_dump_state_json(struct json_value *out,
-                                           const char *key);
-
-#endif /* ZCL_UTIL_REDUCER_STAGE_PROFILE_H */
+#endif /* ZCL_UTIL_REDUCER_STAGE_PROFILE_FORWARD_H */

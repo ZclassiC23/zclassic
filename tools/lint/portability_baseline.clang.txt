@@ -1,0 +1,16 @@
+# clang portability ratchet baseline — regenerate with:
+#   ZCL_CC=clang ZCL_LINT_MODE=UPDATE tools/lint/check_clang_portability.sh
+#
+# One '<path> <count>' line per file that still holds clang
+# diagnostic sites under the gate's flag set. Every one is a real
+# second-compiler finding to be driven to zero; a file absent from
+# this list must produce ZERO diagnostics. Counts may only go DOWN.
+#
+# Recorded from 1174 translation units with:
+#   Ubuntu clang version 20.1.8 (++20250804090239+87f0227cb601-1~exp1~20250804210352.139)
+# A different compiler VERSION legitimately reports a different
+# set; that is why CI scopes its verdict with
+# ZCL_PORTABILITY_SCOPE instead of trusting this file verbatim.
+config/src/boot_services_shutdown.c 1
+core/math/src/hash.c 2
+lib/net/src/compact_blocks.c 6

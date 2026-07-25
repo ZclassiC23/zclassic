@@ -74,7 +74,8 @@
  * anchors in the test body below. This is the first coverage of the
  * wire-level zsnapend handler's ban-vs-no-ban branch. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "models/database.h"
 
 #include "chain/chainparams.h"
 #include "coins/coins_view.h"
@@ -443,9 +444,25 @@ static int test_snapshot_serve_loopback_impl(bool corrupt_chunk)
 
         /* ── Step 4: pump B->A, real receive dispatch. Validates PoW +
          * rate limit, transitions node_a_side to PEER_SNAPSHOT_SERVING. */
+        struct snapsync_serve_puzzle_census census_before, census_after;
+        snapsync_get_serve_puzzle_census(&census_before);
         ASSERT(lb_pump(node_b_side, sentinel_b, &mp_a, node_a_side,
                       params->pchMessageStart));
         ASSERT(node_a_side->state == PEER_SNAPSHOT_SERVING);
+
+        /* The accepted request was fed to the shared client-puzzle gate so
+         * its load EWMA sees real serve traffic — and the gate's verdict is
+         * NOT allowed to affect admission. The state assertion above is the
+         * whole point: this file runs the same loopback twice from one
+         * fixed address, and whenever the two runs land in the same wall
+         * second the second zsnapreq proof is BYTE-IDENTICAL to the first
+         * (peer_id = SHA3(address), whole-second timestamp, nonce walked
+         * from zero), so the gate reports a duplicate. An honest peer must
+         * still be served. */
+        snapsync_get_serve_puzzle_census(&census_after);
+        ASSERT(census_after.offered == census_before.offered + 1);
+        ASSERT(census_after.first_sight + census_after.duplicates ==
+               census_after.offered);
 
         /* ── Step 5 (documented send-tick substitution — shortcut 2):
          * streams both real zsnapdata chunks + zsnapend from the real
@@ -587,7 +604,34 @@ int test_snapshot_serve_loopback(void)
 {
     int failures = 0;
 
+    /* Start the serve-side puzzle census from zero — but only ONCE, before
+     * both runs. Resetting between them would clear the single-use ring and
+     * hide the very thing worth measuring: the two runs use one fixed
+     * address, so if they land in the same wall second their zsnapreq proofs
+     * are byte-identical and the second is counted as a duplicate. Both are
+     * served either way; the impl asserts exactly that. */
+    snapsync_reset_serve_puzzle_census();
+
     failures += test_snapshot_serve_loopback_impl(false);
     failures += test_snapshot_serve_loopback_impl(true);
+
+    {
+        struct snapsync_serve_puzzle_census c;
+        snapsync_get_serve_puzzle_census(&c);
+        printf("snapshot_serve_loopback: serve puzzle census "
+               "offered=%llu first_sight=%llu duplicates=%llu "
+               "bits_now=%d rate_ewma_milli=%lld... ",
+               (unsigned long long)c.offered,
+               (unsigned long long)c.first_sight,
+               (unsigned long long)c.duplicates,
+               c.bits_now, (long long)c.rate_ewma_milli);
+        /* Two serves happened, both admitted, and every one is accounted
+         * for as either a first sight or a duplicate. */
+        bool ok = c.offered == 2 &&
+                  c.first_sight + c.duplicates == c.offered &&
+                  c.first_sight >= 1;
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
     return failures;
 }

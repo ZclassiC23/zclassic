@@ -8,8 +8,30 @@
  * and tip state transitions. */
 
 #include <pthread.h>
+#include <stdatomic.h>
 
 #include "process_block_internal.h"
+
+/* Active block-index database, published by the composition root once the
+ * tree is open. Defined here rather than in boot.c so that config/ stays
+ * strictly above lib/: boot assigns it, validation and the app-side readers
+ * consume it. */
+struct block_tree_db *g_active_block_tree = NULL;
+
+static _Atomic process_block_activation_controller_fn g_activation_controller;
+
+void process_block_set_activation_controller(
+    process_block_activation_controller_fn fn)
+{
+    atomic_store_explicit(&g_activation_controller, fn, memory_order_release);
+}
+
+struct chain_activation_controller *process_block_activation_controller(void)
+{
+    process_block_activation_controller_fn fn =
+        atomic_load_explicit(&g_activation_controller, memory_order_acquire);
+    return fn ? fn() : NULL;
+}
 
 static pthread_mutex_t g_gap_fill_kick_lock = PTHREAD_MUTEX_INITIALIZER;
 static process_block_gap_fill_kick_fn g_gap_fill_kick;

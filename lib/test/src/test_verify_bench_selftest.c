@@ -29,7 +29,10 @@
  *   are not vendored), exactly like snark_kat.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "chain/equihash.h"
+#include "sapling/sapling.h"
+#include "sapling/params_init.h"
 #include "test/verify_bench_fixture.h"
 #include "sapling/sapling_prover.h"
 #include "domain/consensus/equihash.h"

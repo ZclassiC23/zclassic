@@ -749,3 +749,14 @@
                  "puzzle_required/passed/failed_total",
                  "lib/net/src/onion_ratelimit.c",
                  "lib/test/src/test_net.c"),
+    DIAG_SERVICE("confinement", confinement_dump_state_json,
+                 "process confinement verdict: unconfined (the headline), "
+                 "requested vs active profile and the requested_but_unconfined "
+                 "degrade, the filesystem-restriction interface + ABI + the "
+                 "actual fs_grants[] the Landlock domain was built from, how "
+                 "the syscall filter was installed (tsync/prctl/none) and "
+                 "whether it covers all threads, and retrofit_join_permitted. "
+                 "Reads only latched apply-time state — never re-probes "
+                 "Landlock, which a confined process cannot survive",
+                 "lib/platform/src/os_sandbox_witness.c",
+                 "lib/test/src/test_os_sandbox_hotswap_interaction.c"),

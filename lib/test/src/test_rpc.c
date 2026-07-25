@@ -1,6 +1,11 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "keys/key.h"
+#include "storage/dbwrapper.h"
+#include "core/core_io.h"
+#include "rpc/async_rpc_queue.h"
+#include "validation/main_state.h"
 #include "controllers/diagnostics_controller.h"
 #include "controllers/diagnostics_internal.h"
 #include "platform/clock.h"

@@ -10,6 +10,23 @@
   links without manual archive copying; see [`docs/BUILD.md`](../docs/BUILD.md)
   for each dependency's source, version, and build notes.
 
+## Step 0 — set up the checkout
+
+```bash
+make vendor              # one-time: build the static third-party archives
+make install-hooks       # point core.hooksPath at tools/githooks
+```
+
+`make vendor` is the only step that needs the network: it fetches pinned source
+tarballs, verifies them against pinned SHA-256 hashes, and compiles them into
+`vendor/lib/`. Plain `make` auto-runs it on a fresh clone, so running it
+explicitly is just a way to get the long part over with first. Afterwards
+builds are offline.
+
+`make install-hooks` is optional but strongly recommended — see
+[What the git hooks do](#what-the-git-hooks-do) below. Without it you can still
+push, you just find out about a lint or test failure after the fact.
+
 ## Build and test
 
 ```bash
@@ -43,11 +60,64 @@ Files under `app/` must live in exactly one of the eight shape folders
 `events/`, `supervisors/`) — lint-enforced; see
 [`docs/FRAMEWORK.md`](../docs/FRAMEWORK.md).
 
+## The `core/` tree is sealed — read this before patching consensus
+
+Everything under `core/` (checkpoints, chain parameters, consensus math) is
+pinned to a SHA3-256 manifest at `core/MANIFEST.sha3`. Change one byte of it and
+the HARD lint gate `check-core-seal` fails `make lint`, and therefore `make ci`
+and the pre-push hook. This is deliberate: it makes it structurally impossible
+for a contributor — human or AI agent — to alter consensus without an explicit,
+deliberate unseal ritual documented in `core/UNSEAL.md`.
+
+Two things follow, and we would rather you learn both now than after a weekend
+of work:
+
+- **The wall is real, not a misconfiguration.** If your build suddenly fails
+  `check-core-seal`, you edited a sealed file. That is the gate working. Don't
+  regenerate the manifest to make it pass.
+- **A consensus-changing PR would be declined anyway** — see
+  [Consensus parity is inviolable](#consensus-parity-is-inviolable) below. So if
+  the change you have in mind requires unsealing `core/`, the seal is not the
+  obstacle; the policy is. Please open an issue and describe the idea before
+  writing the code. We would much rather thank you and credit you at the idea
+  stage than decline finished work.
+
+Non-consensus changes never touch `core/`, and this gate will never bother you.
+
+## What the git hooks do
+
+`make install-hooks` sets `core.hooksPath=tools/githooks`. Two hooks:
+
+- **`pre-push` — the local CI gate.** Runs `make pre-push-ci`, writing verbose
+  output to `build/pre-push-ci.log` and printing only a summary. **It is scoped
+  to the files you are actually pushing**: the hook computes the changed-file
+  list from the ref update and passes it down, so what runs is a focused lint +
+  build + test selection for those files, not the full multi-minute suite. This
+  matters because people assume the opposite and then bypass the hook out of
+  habit. The full suite, fuzzing, and coverage run on background timers instead
+  (`make install-quality-linger`), so long-running evidence jobs never block a
+  push — only focused regressions do.
+
+  Bypass one push with `git push --no-verify` or `ZCL_SKIP_PREPUSH=1 git push`.
+
+- **`pre-commit` — a lane guard, not a code check.** It refuses a commit only
+  when the *main* checkout is sitting on a non-`main` branch, because
+  branch work belongs in a linked worktree. It never inspects your code. In a
+  worktree it always exits 0, and `ZCL_LANE_COMMIT_OK=1 git commit` overrides it.
+
+CI runs on the maintainer's own servers, never GitHub Actions, so these hooks
+plus `make ci` are the whole gate — there is nothing that will catch a problem
+for you later in a cloud runner.
+
 ## Adding a test
 
 Add `lib/test/src/test_<name>.c` and register its group in the
 `TEST_LIST` X-macro in `lib/test/src/test_parallel.c`. Run it with
 `make t-fast ONLY=<name>`.
+
+Both halves are required. The `check-test-registration` lint gate fails a test
+file that compiles and links but is dispatched by no runner — it exists because
+three real tests once sat in the tree for weeks, fully merged, proving nothing.
 
 ## Pull requests
 
@@ -62,6 +132,14 @@ not on GitHub Actions; maintainers run the full gate on every PR before
 merging, so a PR that fails lint or tests will not merge. Keep commits
 honest about what is proven versus scaffolding — the project documents
 incomplete subsystems as incomplete, and PRs are expected to do the same.
+That expectation is partly mechanized: several lint gates exist specifically to
+reject an unprovable claim rather than trust the author's word for it. See
+[`docs/AI_SAFETY_GATES.md`](../docs/AI_SAFETY_GATES.md).
+
+Not ready to send a patch? Open an issue first — the forms in
+[`.github/ISSUE_TEMPLATE/`](ISSUE_TEMPLATE/) ask for `zclassic23 status` output
+and whether the change touches consensus, which is usually enough to tell you
+whether the work is worth starting.
 
 ## Consensus parity is inviolable
 
@@ -74,6 +152,17 @@ will thank you, credit the idea, and decline the change (we may reimplement the
 Enforced by the `check-consensus-parity` lint gate + the `test_consensus_parity`
 golden values; full policy in
 [`docs/CONSENSUS_PARITY_DOCTRINE.md`](../docs/CONSENSUS_PARITY_DOCTRINE.md).
+
+## Conduct
+
+Keep it technical. Critique code, designs, and claims as hard as you like;
+don't attack the person making them. The maintainer moderates, and will edit,
+lock, or remove content that crosses that line.
+
+That is the whole policy, deliberately. This project is maintained by one
+person, and publishing a formal enforcement process nobody is staffed to run
+would be a promise with no way to keep it — the same uncited-victory failure
+the rest of this repository is built to prevent, in social form.
 
 ## Licensing of contributions
 

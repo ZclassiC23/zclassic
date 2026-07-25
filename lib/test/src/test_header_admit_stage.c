@@ -10,7 +10,8 @@
  *   - missing-pprev → JOB_BLOCKED with PERMANENT typed blocker
  *   - replay across progress_store close/reopen: cursor + log persist */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "json/json.h"
 
 #include "chain/chain.h"
 #include "core/uint256.h"

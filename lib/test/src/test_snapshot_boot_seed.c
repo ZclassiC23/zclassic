@@ -32,7 +32,7 @@
  * "pinned at 0 / looks-synced-but-isn't" defect state, which is the property
  * under test. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "config/boot_snapshot_import.h"
 #include "coins/utxo_commitment.h"

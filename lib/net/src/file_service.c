@@ -7,7 +7,7 @@
  * overhead visible to observers, wire-speed on gigabit links. */
 
 #include "platform/time_compat.h"
-#include "config/boot_snapshot_offer.h"
+#include "net/net_runtime_port.h"
 #include "net/file_manifest.h"
 #include "net/file_service.h"
 #include "net/rom_seed.h"
@@ -802,7 +802,7 @@ static void fs_build_challenge_payload(const uint8_t seed[32], int bits,
 
 static bool fs_snapshot_serving_allowed(void)
 {
-    return boot_snapshot_offer_artifact_is_eligible(g_fs_datadir, NULL, 0);
+    return net_runtime_snapshot_artifact_is_eligible(g_fs_datadir, NULL, 0);
 }
 
 static bool fs_server_rebuild_manifest_locked(struct file_manifest *out)

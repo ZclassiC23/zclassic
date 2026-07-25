@@ -13,7 +13,7 @@
  * get coverage.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "services/binary_staleness_service.h"
 #include "util/blocker.h"
 #include "json/json.h"

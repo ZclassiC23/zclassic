@@ -15,7 +15,7 @@
  *   (d) the empty-table (curable) vs missing-historical-anchor / from-genesis
  *       (not seed-curable) discrimination. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "conditions/sapling_anchor_frontier_unavailable.h"
 #include "chain/checkpoints.h"

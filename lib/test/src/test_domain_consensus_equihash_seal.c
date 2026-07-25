@@ -35,7 +35,7 @@
  *      Any parallel code path that drifts is caught here.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/equihash.h"            /* check_equihash_solution (legacy seal) */
 #include "chain/chainparams.h"         /* chain_params_get */

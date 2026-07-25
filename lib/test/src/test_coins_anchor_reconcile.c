@@ -23,7 +23,7 @@
  * public coins_view_sqlite_open() entry point.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "storage/coins_view_sqlite.h"
 #include "coins/utxo_commitment.h"
 #include "models/database.h"

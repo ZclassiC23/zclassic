@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Tests for FlyClient probabilistic chain verification. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "net/flyclient.h"
 #include "chain/mmb.h"
 #include "crypto/sha3.h"

@@ -31,6 +31,7 @@
 #include "controllers/rpc_client.h"
 #include "rpc/protocol.h"
 #include "rpc/server.h"
+#include "util/safe_alloc.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -45,20 +46,157 @@
  * stash is always the exact dev datadir (or empty before boot). */
 static char g_resident_datadir[512];
 
-/* Publish ONE {handler_name, fn} override into the live command registry. */
-static bool registry_commit_cb(void *ctx, const char *handler_name,
-                               zcl_hotswap_handler_fn fn, uint32_t *out_gen,
-                               char *why, size_t why_sz)
+/* Publish a module's ENTIRE leaf set into the live command registry as ONE
+ * all-or-nothing batch. zcl_command_registry_replace_batch pre-validates every
+ * path (READY + EFFECT_READ + non-alias + resolvable) BEFORE it clones or
+ * publishes anything, so a partial admit publishes ZERO leaves. */
+static bool registry_commit_batch_cb(void *ctx,
+                                     const struct zcl_hotswap_leaf *leaves,
+                                     size_t leaf_count, uint32_t *out_gen,
+                                     char *why, size_t why_sz)
 {
     (void)ctx;
-    struct zcl_command_handler_override ovr = {
-        .path = handler_name, .handler = fn,
-    };
-    if (!zcl_command_registry_replace_batch(0, &ovr, 1, why, why_sz))
+    if (!leaves || leaf_count == 0) {
+        if (why && why_sz)
+            snprintf(why, why_sz, "module published no leaves");
+        return false;
+    }
+    if (leaf_count > ZCL_COMMAND_HANDLER_OVERRIDE_MAX) {
+        if (why && why_sz)
+            snprintf(why, why_sz,
+                     "module carries %zu leaves, registry batch ceiling is %u",
+                     leaf_count, (unsigned)ZCL_COMMAND_HANDLER_OVERRIDE_MAX);
+        return false;
+    }
+    struct zcl_command_handler_override ovr[ZCL_COMMAND_HANDLER_OVERRIDE_MAX];
+    for (size_t i = 0; i < leaf_count; i++) {
+        ovr[i].path = leaves[i].name;
+        ovr[i].handler = leaves[i].fn;
+    }
+    if (!zcl_command_registry_replace_batch(0, ovr, leaf_count, why, why_sz))
         return false;
     if (out_gen)
         *out_gen = zcl_command_registry_active_generation();
     return true;
+}
+
+/* PROBE BEFORE PUBLISH — the last gate, and the one that replaces module
+ * self-certification.
+ *
+ * The candidate's declared probe leaf is dispatched against the PUBLIC command
+ * registry's contract for that leaf: the registry-resolved spec (which must
+ * still be a READY, read-only, non-alias leaf), the registry's own input
+ * validation of a bounded EMPTY request, and the registry reply envelope. The
+ * reply is then checked against the leaf's DECLARED output schema and response
+ * budget. Any mismatch returns false and the loader publishes NOTHING.
+ *
+ * This runs the candidate body, which for a native bridge leaf issues one
+ * loopback RPC. In the resident node that is a self-call served by a sibling
+ * RPC worker (RPC_HTTP_WORKERS=4) under the client's receive timeout — it
+ * cannot wedge the activation path. */
+static bool registry_probe_cb(void *ctx, const char *leaf,
+                              zcl_hotswap_handler_fn fn, char *why,
+                              size_t why_sz)
+{
+    (void)ctx;
+#define PROBE_FAIL(...)                                                      \
+    do {                                                                     \
+        if (why && why_sz) snprintf(why, why_sz, __VA_ARGS__);               \
+        return false;                                                        \
+    } while (0)
+
+    if (!leaf || !leaf[0] || !fn)
+        PROBE_FAIL("probe leaf or candidate handler missing");
+
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    bool was_alias = false;
+    const struct zcl_command_spec *spec =
+        zcl_command_registry_find(reg, leaf, &was_alias);
+    if (!spec)
+        PROBE_FAIL("probe leaf '%s' does not resolve in the public registry",
+                   leaf);
+    if (was_alias)
+        PROBE_FAIL("probe leaf '%s' resolves only through an alias", leaf);
+    if (spec->availability != ZCL_COMMAND_READY)
+        PROBE_FAIL("probe leaf '%s' is not READY", leaf);
+    if (spec->effect != ZCL_COMMAND_EFFECT_READ)
+        PROBE_FAIL("probe leaf '%s' is not read-only", leaf);
+    if (!spec->output_schema || !spec->output_schema[0])
+        PROBE_FAIL("probe leaf '%s' declares no output schema", leaf);
+
+    struct json_value input;
+    json_init(&input);
+    json_set_object(&input);
+    char vwhy[192] = {0};
+    if (!zcl_command_registry_input_validate(spec, &input, vwhy,
+                                             sizeof(vwhy))) {
+        json_free(&input);
+        PROBE_FAIL("bounded empty request rejected for '%s': %s", leaf,
+                   vwhy[0] ? vwhy : "input validation failed");
+    }
+
+    size_t budget = spec->budget_bytes > 0 ? (size_t)spec->budget_bytes
+                                           : ZCL_COMMAND_RESULT_BUDGET;
+    struct zcl_command_context context = {
+        .registry = reg,
+        .authority_ceiling = spec->authority,
+        .dev_build = true,
+    };
+    struct zcl_command_request request = {
+        .spec = spec,
+        .context = &context,
+        .input = &input,
+        .budget_bytes = budget,
+        .invoked_name = spec->path,
+    };
+    struct zcl_command_reply reply;
+    zcl_command_reply_init(&reply, spec->output_schema);
+    fn(&request, &reply);
+
+    bool ok = true;
+    char detail[192] = {0};
+    if (reply.status != ZCL_COMMAND_STATUS_PASSED &&
+        reply.status != ZCL_COMMAND_STATUS_ACCEPTED) {
+        ok = false;
+        snprintf(detail, sizeof(detail), "status=%s code=%s message=%s",
+                 zcl_command_status_name(reply.status),
+                 reply.error.code[0] ? reply.error.code : "(none)",
+                 reply.error.message[0] ? reply.error.message : "(none)");
+    } else if (!reply.data_schema ||
+               strcmp(reply.data_schema, spec->output_schema) != 0) {
+        ok = false;
+        snprintf(detail, sizeof(detail),
+                 "reply data_schema '%s' != declared output schema '%s'",
+                 reply.data_schema ? reply.data_schema : "(null)",
+                 spec->output_schema);
+    } else if (reply.data.type != JSON_OBJ) {
+        ok = false;
+        snprintf(detail, sizeof(detail),
+                 "reply data is not a JSON object (type %d)",
+                 (int)reply.data.type);
+    } else {
+        char *rendered = (char *)zcl_malloc(budget + 1, "hotswap.probe.render");
+        if (!rendered) {
+            ok = false;
+            snprintf(detail, sizeof(detail), "probe render buffer unavailable");
+        } else {
+            size_t n = json_write(&reply.data, rendered, budget + 1);
+            if (n == 0 || n > budget) {
+                ok = false;
+                snprintf(detail, sizeof(detail),
+                         "reply data does not render inside the declared "
+                         "%zu-byte budget", budget);
+            }
+            free(rendered);
+        }
+    }
+
+    zcl_command_reply_free(&reply);
+    json_free(&input);
+    if (!ok)
+        PROBE_FAIL("%s", detail);
+    return true;
+#undef PROBE_FAIL
 }
 
 /* Gate the dlclose of a superseded module .so on override-snapshot drain. */
@@ -68,6 +206,17 @@ static bool registry_quiesced_cb(void *ctx)
     return zcl_command_registry_all_retired_quiesced();
 }
 
+void zcl_native_hotswap_publish_hooks(struct hotswap_publish_hooks *out,
+                                      bool with_quiesce)
+{
+    if (!out)
+        return;
+    out->commit = registry_commit_batch_cb;
+    out->probe = registry_probe_cb;
+    out->quiesced = with_quiesce ? registry_quiesced_cb : NULL;
+    out->ctx = NULL;
+}
+
 /* Render a hotswap_activate_report into an already-init'd reply. */
 static void report_to_reply(struct zcl_command_reply *reply,
                             const struct hotswap_activate_report *report)
@@ -75,12 +224,17 @@ static void report_to_reply(struct zcl_command_reply *reply,
     json_free(&reply->data);
     json_init(&reply->data);
     json_set_object(&reply->data);
-    json_push_kv_str(&reply->data, "schema", "zcl.hotswap_activate.v1");
+    json_push_kv_str(&reply->data, "schema", "zcl.hotswap_activate.v2");
     json_push_kv_bool(&reply->data, "ok", report->ok);
     json_push_kv_bool(&reply->data, "verify_only", report->verify_only);
     json_push_kv_bool(&reply->data, "activated", report->activated);
     json_push_kv_bool(&reply->data, "rolled_back", report->rolled_back);
+    json_push_kv_bool(&reply->data, "probed", report->probed);
     json_push_kv_int(&reply->data, "generation", (int64_t)report->generation);
+    json_push_kv_int(&reply->data, "leaf_count", (int64_t)report->leaf_count);
+    json_push_kv_str(&reply->data, "source_tu", report->source_tu);
+    json_push_kv_str(&reply->data, "leaves", report->leaves);
+    json_push_kv_str(&reply->data, "probe_leaf", report->probe_leaf);
     json_push_kv_str(&reply->data, "handler", report->handler_name);
     json_push_kv_str(&reply->data, "artifact_sha256", report->artifact_sha256);
     json_push_kv_str(&reply->data, "stage", report->stage);
@@ -139,18 +293,24 @@ static bool rpc_dev_hotswap_native(const struct json_value *params, bool help,
     }
     bool activate = act_v && act_v->type == JSON_BOOL && json_get_bool(act_v);
 
+    struct hotswap_publish_hooks hooks;
+    zcl_native_hotswap_publish_hooks(&hooks, /*with_quiesce=*/true);
     struct hotswap_activate_report report;
-    hotswap_activate(so_path, g_resident_datadir, activate,
-                     registry_commit_cb, registry_quiesced_cb, NULL, &report);
+    hotswap_activate(so_path, g_resident_datadir, activate, &hooks, &report);
 
     /* Return the full report either way; the CLI renders ok/verify_only/error. */
     json_set_object(result);
-    json_push_kv_str(result, "schema", "zcl.hotswap_activate.v1");
+    json_push_kv_str(result, "schema", "zcl.hotswap_activate.v2");
     json_push_kv_bool(result, "ok", report.ok);
     json_push_kv_bool(result, "verify_only", report.verify_only);
     json_push_kv_bool(result, "activated", report.activated);
     json_push_kv_bool(result, "rolled_back", report.rolled_back);
+    json_push_kv_bool(result, "probed", report.probed);
     json_push_kv_int(result, "generation", (int64_t)report.generation);
+    json_push_kv_int(result, "leaf_count", (int64_t)report.leaf_count);
+    json_push_kv_str(result, "source_tu", report.source_tu);
+    json_push_kv_str(result, "leaves", report.leaves);
+    json_push_kv_str(result, "probe_leaf", report.probe_leaf);
     json_push_kv_str(result, "handler", report.handler_name);
     json_push_kv_str(result, "artifact_sha256", report.artifact_sha256);
     json_push_kv_str(result, "stage", report.stage);
@@ -249,9 +409,11 @@ void zcl_native_handle_dev_hotswap_probe(
             false, "so_path (absolute) is required", "dev.hotswap.probe");
         return;
     }
+    struct hotswap_publish_hooks hooks;
+    zcl_native_hotswap_publish_hooks(&hooks, /*with_quiesce=*/false);
     struct hotswap_activate_report report;
-    hotswap_activate(so_path, node_rpc_client_datadir(), /*request_activate=*/false,
-                     NULL, NULL, NULL, &report);
+    hotswap_activate(so_path, node_rpc_client_datadir(),
+                     /*request_activate=*/false, &hooks, &report);
     report_to_reply(reply, &report);
 }
 

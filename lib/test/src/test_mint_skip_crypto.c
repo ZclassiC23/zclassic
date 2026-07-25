@@ -26,7 +26,8 @@
  * == 0). This proves the OFF path runs real verify_script and the ON path does
  * not — so a normal boot (toggle unset) runs full crypto. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "test/block_fixtures.h"
 
 #include "bloom/merkle.h"
 #include "chain/chain.h"

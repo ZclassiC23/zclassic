@@ -27,6 +27,7 @@
 #include "storage/catalog_completeness.h"
 
 #include "storage/anchor_kv.h"
+#include "storage/node_db_runtime.h"
 #include "storage/nullifier_kv.h"
 #include "storage/progress_store.h"
 #include "storage/projection_store.h"
@@ -48,10 +49,11 @@
 
 struct node_db;
 
-/* config/src/runtime.c — process-wide explorer/node.db handle, or NULL
- * before boot wires it. Zero-arg singleton load, same shape as
- * progress_store_db() below. */
-extern struct node_db *app_runtime_node_db(void);
+/* The process-wide explorer/node.db handle arrives through
+ * storage/node_db_runtime.h — a lib/-owned port the composition root fills
+ * in. It is NOT in the forward-declared list below: config/ sits ABOVE
+ * lib/, so naming a config/ symbol from here would close a layering cycle
+ * rather than merely skip an include. */
 
 /* app/models/src/op_return_index.c (models/op_return_index.h) */
 extern bool op_return_index_get_cursor(struct node_db *ndb,
@@ -85,7 +87,7 @@ extern bool zslp_ledger_get_cursor(struct node_db *ndb, int32_t *out_height,
 
 static int64_t cc_get_op_return_cursor(void)
 {
-    struct node_db *ndb = app_runtime_node_db();
+    struct node_db *ndb = node_db_runtime();
     if (!ndb) return CATALOG_CURSOR_UNAVAILABLE;
     int32_t h = -1;
     uint8_t digest[32];
@@ -128,7 +130,7 @@ static int64_t cc_get_txindex_cursor(void)
 
 static int64_t cc_get_zslp_ledger_cursor(void)
 {
-    struct node_db *ndb = app_runtime_node_db();
+    struct node_db *ndb = node_db_runtime();
     if (!ndb) return CATALOG_CURSOR_UNAVAILABLE;
     int32_t h = -1;
     uint8_t digest[32];
@@ -141,14 +143,14 @@ static int64_t cc_get_zslp_ledger_cursor(void)
 
 static int64_t cc_get_view_integrity_cursor(void)
 {
-    struct node_db *ndb = app_runtime_node_db();
+    struct node_db *ndb = node_db_runtime();
     if (!ndb) return CATALOG_CURSOR_UNAVAILABLE;
     return db_view_integrity_max_height(ndb);
 }
 
 static int64_t cc_get_explorer_projection_cursor(void)
 {
-    struct node_db *ndb = app_runtime_node_db();
+    struct node_db *ndb = node_db_runtime();
     if (!ndb) return CATALOG_CURSOR_UNAVAILABLE;
     return (int64_t)node_db_sync_get_tip_height(ndb);
 }

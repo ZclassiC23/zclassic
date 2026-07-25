@@ -2,7 +2,7 @@
 
 ZClassic23 has two native development mechanisms:
 
-1. The activatable single-handler module ABI. It is ARMED on the dev lane
+1. The activatable MULTI-LEAF module ABI. It is ARMED on the dev lane
    (`zcl23-dev.service` passes `-hotswap-activate` and
    `ZCL_HOTSWAP_ACTIVATE=1`; the loader still refuses the canonical datadir).
    Verify-only probing (`dev.hotswap.probe`) skips the two arming gates but
@@ -18,37 +18,90 @@ Neither mechanism is publication authority for the canonical node.
 
 ## Real module ABI (activatable, gated)
 
-The finished single-handler path loads one swappable native leaf per `.so`.
-After command dispatch drains every reference to the superseded generation,
-the loader may unmap its module.
+The module path loads ONE swappable translation unit per `.so`, carrying EVERY
+command leaf that file owns, and publishes them in ONE all-or-nothing registry
+batch. Editing a 761-line controller and swapping a single leaf used to leave
+every sibling leaf in that file stale in the running process; a module now
+re-points the whole file at once. After command dispatch drains every reference
+to the superseded generation, the loader may unmap its module.
 
 | Piece | Where |
 |-------|-------|
 | ABI struct + emitter + activation API | `lib/hotswap/include/hotswap/hotswap_module.h` |
 | Loader, gate, retirement, and telemetry | `lib/hotswap/src/hotswap_activate.c` |
-| Epoch/refcount drain | `lib/kernel/src/command_registry.c` |
-| Swappable allowlist | `config/hotswap_swappable.def` |
-| Shape lint + self-test | `tools/lint/check_hotswap_swappable_shape.sh`, `lib/test/src/test_make_lint_gates.c` |
-| Per-handler build | `make hotswap-module-so HANDLER=core.status` |
-| Native verify/apply commands | `tools/command/native_dev_hotswap.c` |
+| Admit → probe → ONE batch commit | `hotswap_module_publish()` (same file) |
+| Epoch/refcount drain + 64-entry batch replace | `lib/kernel/src/command_registry.c` |
+| Swappable allowlist (ONE row per file) | `config/hotswap_swappable.def` |
+| Probe leaf per file | `config/hotswap_eligible.def` |
+| Shape + READY-read-only lint, self-tested | `tools/lint/check_hotswap_swappable_shape.sh`, `lib/test/src/test_make_lint_gates.c` |
+| Static-state lint over BOTH manifests | `tools/lint/check_hotswap_static_state.sh` |
+| Per-file build | `make hotswap-module-so FILE=<tu.c>` (or `HANDLER=<leaf>`) |
+| Native verify/apply commands + publish hooks | `tools/command/native_dev_hotswap.c` |
 | Activation flag | `src/main.c` |
-| Tests | `lib/test/src/test_hotswap_module.c` |
+| Tests | `lib/test/src/test_hotswap_module.c`, `lib/test/src/test_hotswap_module_v2.c` |
 
 Each module exports one `zcl_hotswap_module` symbol:
 
 ```c
+struct zcl_hotswap_leaf {
+    const char *name;            /* canonical READY read-only leaf path */
+    zcl_hotswap_handler_fn fn;   /* replacement handler (non-NULL) */
+};
+
 struct zcl_hotswap_module {
-    uint32_t abi_version;
-    const char *handler_name;
-    zcl_hotswap_handler_fn fn;
+    uint32_t abi_version;                     /* == ZCL_HOTSWAP_MODULE_ABI_V2 */
+    const char *source_tu;                    /* row in hotswap_swappable.def */
+    uint32_t leaf_count;                      /* 1..64 */
+    const struct zcl_hotswap_leaf *leaves;
     bool (*self_test)(char *err, size_t cap);
 };
 ```
 
-A missing symbol, ABI mismatch, invalid field, non-allowlisted handler, or
-failed self-test produces a typed refusal and never calls the candidate.
-`hotswap_module_admit()` is the pure admission gauntlet and has direct unit
-coverage with fabricated module descriptors.
+The emitter is `ZCL_HOTSWAP_MODULE_LEAVES(k_module_leaves, self_test)`. The
+original single-handler `ZCL_HOTSWAP_MODULE("leaf", fn, self_test)` still works
+as a compatibility alias — it expands to a one-entry table of the same v2
+struct, so a TU that has not yet grown a multi-leaf table keeps building and
+swapping unchanged. `source_tu` is stamped by the build recipe
+(`-DZCL_HOTSWAP_MODULE_SOURCE_TU="<tu>"`), so a module cannot mislabel which
+allowlist row it belongs to.
+
+**ABI v1 is retired.** A `.so` still stamped `abi_version = 1` has an
+incompatible layout and is refused at `stage=abi` before any other field is
+read, with a reason naming both versions. Rebuild it.
+
+A missing symbol, ABI mismatch, invalid field, a leaf count over 64, a leaf not
+owned by that file, a leaf declared twice, a missing probe leaf, or a failed
+self-test produces a typed refusal and never publishes anything.
+`hotswap_module_admit()` is the pure admission gauntlet and
+`hotswap_module_publish()` is the whole post-`dlsym` sequence; both compile in
+every build and have direct unit coverage with fabricated module descriptors
+(no `dlopen`, no dev build needed).
+
+### All-or-nothing, and probe before publish
+
+The publish order is fixed:
+
+1. **Admit every leaf.** A partial admit publishes ZERO leaves — the loader
+   never calls the commit hook at all.
+2. **Probe.** The file's DECLARED probe leaf (from `config/hotswap_eligible.def`
+   — a module never chooses its own probe, and must export it) is dispatched
+   against the public command registry's contract for that leaf: the
+   registry-resolved spec (still READY, read-only, non-alias), the registry's
+   own validation of a bounded EMPTY request, and the reply envelope. The reply
+   is checked against the leaf's DECLARED `output_schema` and response budget.
+   Any mismatch publishes NOTHING. Activating with no probe hook at all is
+   refused: a module asserting its own health is self-certification, and
+   self-certification is not a publish credential.
+3. **ONE `zcl_command_registry_replace_batch()`** carrying all the leaves. The
+   registry pre-validates every path (READY + `EFFECT_READ` + resolvable +
+   non-alias) BEFORE it clones or publishes, so in-flight readers observe the
+   entire old or the entire new override set, never a torn one. Generations are
+   strictly monotonic.
+
+Widening a file's leaf list widens BATCH SIZE, not authority: the same
+read-only requirement, the same shape-leaf requirement, the same
+dev-datadir-only activation gate, and now an additional probe every candidate
+must survive.
 
 ### Quiescent retirement
 
@@ -60,28 +113,51 @@ be proved, the module remains mapped. The no-override fast path stays zero-RMW.
 
 ### The hard line
 
-Only shape-leaf handlers—controllers, views, and conditions—may be swapped.
-`config/hotswap_swappable.def` is the allowlist. The
-`check-hotswap-swappable-shape` lint gate rejects any entry whose source lives
-under a reducer stage, consensus validation, the storage engine, a supervisor,
-or another state root. Reducers, consensus code, storage, and supervisors are
-never swappable.
+`config/hotswap_swappable.def` is the allowlist, ONE row per source file:
+`HOTSWAP_SWAPPABLE("<source_tu>", "<space-separated leaves>")`. The
+`check-hotswap-swappable-shape` lint gate enforces BOTH halves of the line:
+
+- **Shape.** Only shape-leaf translation units — controllers, views, and
+  conditions — may be swapped. Any `source_tu` under a reducer stage, consensus
+  validation, the storage engine, a supervisor, or another state root is
+  rejected. Reducers, consensus code, storage, and supervisors are never
+  swappable.
+- **Leaf contract.** Every leaf must be declared with `ZCL_COMMAND_READY_READ`
+  in the `config/commands` catalog — the READY, `EFFECT_READ` macro form — and
+  must be claimed by exactly ONE source file. A leaf declared with any
+  `COMMAND`/`PLANNED`/`COMPAT`/`DEV` form (which can carry `EFFECT_MUTATE` or a
+  non-READY availability) fails the gate before it can reach the runtime, and a
+  leaf claimed by two files fails too, which is what makes a duplicate leaf
+  across two modules unrepresentable.
+
+Before the def grew a leaf column the gate checked shape FOLDERS only, and the
+READY/read-only property was asserted nowhere but at runtime. Likewise
+`check-hotswap-static-state` read only `config/hotswap_eligible.def`; it now
+scans the UNION of both manifests, because a TU reachable only through the
+swappable list would otherwise get a zero-initialized copy of its module-level
+state inside the `.so` and silently lose live process state — no crash, just
+wrong answers. Both holes were invisible only because the two lists happened to
+name the same six files. Both gates are proven to trip by seeded-violation
+fixtures in `lib/test/src/test_make_lint_gates.c`.
 
 The current allowlist (all read-only `app/controllers/` leaves, each with its
-`ZCL_HOTSWAP_MODULE` emitter in the owning TU):
+emitter in the owning TU):
 
-| Leaf | Owning TU (`app/controllers/src/`) |
-|---|---|
-| `core.status` | `status_native_handlers.c` |
-| `core.network.peers.incidents` | `net_native_handlers.c` |
-| `ops.metrics` | `meta_native_handlers.c` |
-| `core.wallet.address.list` | `wallet_native_handlers.c` |
-| `core.consensus.utxo.audit` | `chain_native_handlers.c` |
-| `app.names.list` | `app_native_handlers.c` |
+| Owning TU (`app/controllers/src/`) | Swappable leaves | Probe leaf |
+|---|---|---|
+| `status_native_handlers.c` | `core.status` | `core.status` |
+| `net_native_handlers.c` | `core.network.peers.incidents` | `core.network.peers.incidents` |
+| `meta_native_handlers.c` | `ops.metrics` | `ops.metrics` |
+| `wallet_native_handlers.c` | `core.wallet.address.list` | `core.wallet.address.list` |
+| `chain_native_handlers.c` | `core.consensus.utxo.audit` | `core.consensus.utxo.audit` |
+| `app_native_handlers.c` | `app.names.list` | `app.names.list` |
 
-Adding one is: `ZCL_HOTSWAP_MODULE(...)` emitter in the TU plus one allowlist
-row; the registry commit re-checks READY + EFFECT_READ, so a mutating leaf
-fails closed even if listed.
+Adding a leaf to an existing file is: append it to that row's leaf list AND add
+its trampoline to the TU's `#ifdef ZCL_HOTSWAP_MODULE_GEN` leaf table. Adding a
+new file is one new row plus the emitter. The gate refuses a leaf that is not
+`ZCL_COMMAND_READY_READ`, the runtime refuses a leaf its file does not own, and
+the registry commit independently re-checks READY + `EFFECT_READ`, so a
+mutating leaf fails closed three separate ways.
 
 ### Activation gate
 
@@ -127,14 +203,20 @@ ZCL_HOTSWAP_PRELOAD=/abs/module.so \
   core status
 ```
 
-`ZCL_HOTSWAP_PRELOAD` (dev builds only) installs the module's override in the
-CLI's own registry via `hotswap_activate_local()` and dispatches normally:
-the freshly compiled body fetches live data from the dev lane and renders it.
-Authority is probe-class (same as `dev.hotswap.probe`): the throwaway CLI is
-the operator's own process and the override dies with it, so the resident
-activation gate does not apply. Path confinement, the dev-datadir check, the
-admit gauntlet, and the registry's READY + EFFECT_READ re-check all still
-apply. The full edit→see cycle is one single-TU compile plus one CLI call.
+`ZCL_HOTSWAP_PRELOAD` (dev builds only) installs the module's ENTIRE leaf set in
+the CLI's own registry via `hotswap_activate_local()` — one batch — and
+dispatches normally: the freshly compiled bodies fetch live data from the dev
+lane and render it. Authority is probe-class (same as `dev.hotswap.probe`): the
+throwaway CLI is the operator's own process and the overrides die with it, so
+the resident activation gate does not apply. Path confinement, the dev-datadir
+check, the admit gauntlet, probe-before-publish, and the registry's READY +
+EFFECT_READ re-check all still apply. The full edit→see cycle is one single-TU
+compile plus one CLI call.
+
+The commit and probe hooks are ONE shared implementation
+(`zcl_native_hotswap_publish_hooks()` in `tools/command/native_dev_hotswap.c`),
+used by the resident RPC, `dev hotswap probe`, and the preload path alike — so
+"how a candidate is validated and published" has exactly one definition.
 
 ### Module link rule: `-Wl,-Bsymbolic` is mandatory
 
@@ -146,9 +228,14 @@ host-only symbols (`json_*`, `node_rpc_call`, `zcl_native_bridge_run`, ...)
 to bind against the `-rdynamic` host at dlopen. Both `make hotswap-module-so`
 and `make hotswap-so` link with it.
 
-The current module self-test proves structure. An isolated behavioral
-precommit probe that dispatches the candidate against a bounded fixture and
-checks its response schema remains required before broader activation.
+The module self-test proves structure only. The behavioral precommit probe that
+dispatches the candidate's declared probe leaf with a bounded empty request and
+validates the reply against its declared output schema is now wired and
+mandatory for any publish (see "All-or-nothing, and probe before publish"). It
+is also one of the twelve steps required before runtime publication could ever
+be uncontained; the remaining steps (immutable source epoch, signed seal
+authority, proof receipts, expected-resident-epoch compare-and-swap, durable
+prepared provenance, and exact-prior-generation restore) are not built.
 
 ## Native-leaf manifest and staging
 

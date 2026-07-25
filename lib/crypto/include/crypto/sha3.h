@@ -59,8 +59,12 @@ void zcl_sha3_512(const unsigned char *data, size_t len, unsigned char output[64
 #define sha3_256 zcl_sha3_256
 #define sha3_512 zcl_sha3_512
 
-/* 4-way parallel SHA3-512 via AVX-512 (4x keystream throughput).
- * Generates 256 bytes per call. Falls back to sequential if no AVX-512. */
+/* 4-way parallel SHA3-512 keystream: SHA3-512(key || nonce || counter) for the
+ * four consecutive counters counter_base..counter_base+3, concatenated into 256
+ * bytes. Byte-identical to four sequential sha3_512 calls; that scalar lane is
+ * the always-available fallback and the differential-oracle reference
+ * (`sha3_512_x4` test group). Uses an AVX-512 4-lane Keccak when the CPU
+ * supports it (compiled into the x86-64-v3 baseline via target attributes). */
 void sha3_512_x4(const uint8_t key[32], const uint8_t nonce[32],
                   uint64_t counter_base, uint8_t out[256]);
 
@@ -82,6 +86,11 @@ bool sha3_keccakf_avx512_available(void);
  * one-time init, and for the parity oracle / benchmark to force a path. */
 enum sha3_impl { SHA3_IMPL_AUTO = -1, SHA3_IMPL_SCALAR = 0, SHA3_IMPL_AVX512 = 1 };
 int sha3_select_impl(enum sha3_impl which);
+
+/* Force/select the sha3_512_x4 keystream implementation (parity oracle + bench).
+ * SHA3_IMPL_AVX512 falls back to scalar when AVX-512 is unavailable; returns the
+ * impl actually installed. Not thread-safe against concurrent generation. */
+int sha3_512_x4_select_impl(enum sha3_impl which);
 
 /* 4-way batched SHA3-256: hash FOUR independent messages, produce FOUR digests.
  * msgs[k]/lens[k] describe message k (lens[k]==0 is allowed; msgs[k] may be NULL

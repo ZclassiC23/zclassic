@@ -9,7 +9,7 @@
  *   - close: subsequent queries return -1
  *   - query_int64: zero rows → -1, multi-row → -1, non-integer → -1 */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "util/projection.h"
 
 #include <sqlite3.h>

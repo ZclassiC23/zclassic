@@ -3,7 +3,8 @@
  * by sha3_256(scriptPubKey) so it catalogs every output type (P2PKH, P2SH,
  * OP_RETURN/ZNAM/ZSLP, nonstandard) uniformly. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "encoding/utilstrencodings.h"
 
 #include "core/uint256.h"
 #include "crypto/sha3.h"

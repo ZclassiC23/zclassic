@@ -122,6 +122,7 @@ gate_command() {
         check-doc-counts)                  echo './tools/scripts/check_doc_counts.sh' ;;
         check-no-stale-pinned-facts)       echo './tools/lint/check_no_stale_pinned_facts.sh' ;;
         check-no-uncited-victory)          echo './tools/scripts/check_no_uncited_victory.sh' ;;
+        check-error-doc-refs)              echo './tools/lint/check_error_doc_refs.sh' ;;
         check-markdown-links)              echo './tools/lint/check_markdown_links.sh .' ;;
         check-one-result-type)             echo './tools/scripts/check_one_result_type.sh' ;;
         check-service-result-convergence)  echo './tools/scripts/check_service_result_convergence.sh' ;;
@@ -155,6 +156,10 @@ gate_command() {
         check-command-contract)            echo './tools/lint/check_command_contract.sh' ;;
         check-privileged-transition-receipt) echo './tools/lint/check_privileged_transition_receipt.sh' ;;
         check-no-trust-state-ordering)     echo './tools/scripts/check_no_trust_state_ordering.sh' ;;
+        check-no-gnu-va-args)              echo './tools/lint/check_no_gnu_va_args.sh' ;;
+        check-no-warning-suppression)      echo './tools/lint/check_no_warning_suppression.sh .' ;;
+        check-clang-portability)           echo './tools/lint/check_clang_portability.sh --self-test && ./tools/lint/check_clang_portability.sh' ;;
+        check-result-discard)              echo 'ZCL_LINT_MODE=FAIL ./tools/lint/check_result_discard.sh' ;;
         *) return 1 ;;
     esac
 }

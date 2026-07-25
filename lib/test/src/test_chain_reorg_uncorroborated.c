@@ -15,7 +15,7 @@
  *   - a held switch auto-clears when the branch is abandoned/absorbed
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "net/header_corroboration.h"
 #include "chain/chain.h"

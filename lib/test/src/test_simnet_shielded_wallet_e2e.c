@@ -30,7 +30,8 @@
  * SKIPs cleanly. Consensus crypto / the native Groth16 prover are NOT touched.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "sapling/note_encryption.h"
 
 #include "sim/simnet.h"
 #include "sim/simnet_sapling.h"

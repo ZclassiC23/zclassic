@@ -12,7 +12,7 @@
 #   1. At least one `event_emitf(EV_OPERATOR_NEEDED` / `event_emit(EV_OPERATOR_NEEDED`
 #      exists in production code (app/, lib/, config/) — proves the loud
 #      signal is wired to fire.
-#   2. lib/util/src/alerts.c registers a subscriber for it: an alert rule
+#   2. lib/event/src/alerts.c registers a subscriber for it: an alert rule
 #      with `.trigger = EV_OPERATOR_NEEDED` AND an `event_observe(` call
 #      that routes the trigger to the alert observer.
 # If a refactor drops the emit or the subscriber, the signal goes silent
@@ -24,7 +24,7 @@ cd "$(dirname "$0")/../.."
 source tools/lint/scan_exclusions.sh
 
 EVENT=EV_OPERATOR_NEEDED
-ALERTS_FILE="lib/util/src/alerts.c"
+ALERTS_FILE="lib/event/src/alerts.c"
 
 # 1. Production emit present? (exclude lib/test fixtures)
 emit_hits=$(grep -rln --include='*.c' \

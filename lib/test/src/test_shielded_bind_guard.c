@@ -33,7 +33,7 @@
  * shapes), temp progress.kv, temp node.db — no live datadir, no chain, no
  * params. Small synthetic heights throughout. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/chain.h"
 #include "core/serialize.h"

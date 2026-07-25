@@ -15,7 +15,7 @@
  *   whole import: nothing is committed, both cursors stay POSITIVE (safe
  *   wedge), and both gap blockers stay. A partial set can never flip a cursor. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/chain.h"
 #include "controllers/sovereignty_controller.h"

@@ -45,7 +45,7 @@
  * make t ONLY=cli_argv_strict
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "kernel/command_registry.h"
 
 #include <arpa/inet.h>

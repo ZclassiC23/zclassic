@@ -24,7 +24,8 @@
  * RFC 4231 test cases (HMAC-SHA-512), so they additionally pin the module
  * to the standard rather than merely to its own current behavior. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "crypto/hmac_sha512.h"
 
 /* Compute HMAC-SHA512(key, msg) into out[64] in one pass. */
 static void hmac512_oneshot(const unsigned char *key, size_t keylen,

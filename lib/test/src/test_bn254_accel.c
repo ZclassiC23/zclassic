@@ -14,7 +14,7 @@
  * The self-consistency Montgomery identities (mul by R == to-Montgomery, etc.)
  * are covered by test_bn254; here the sole job is scalar-vs-accel equality. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "sapling/bn254_accel.h"
 #include "platform/time_compat.h"
 

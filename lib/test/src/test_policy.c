@@ -1,7 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Tests for policy fee estimation: tx_confirm_stats and block_policy_estimator. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "policy/fees.h"
 #include <math.h>
 
 int test_policy(void)

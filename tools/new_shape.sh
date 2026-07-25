@@ -274,7 +274,7 @@ ${LICENSE}
  * A Job (FRAMEWORK.md §3.4) is the single-purpose, idempotent step the
  * supervisor ticks. Its only verb is advance-a-durable-cursor or
  * name-a-typed-blocker. Re-running at the same cursor is a no-op. The F-2
- * stage primitive (util/stage.h) owns the cursor persistence and replay;
+ * stage primitive (sync/stage.h) owns the cursor persistence and replay;
  * this file is just the step body + init/shutdown glue.
  *
  * Contract (E5 gate, HARD): the step MUST be honest about non-progress —
@@ -282,7 +282,7 @@ ${LICENSE}
  * path, and it MUST reason about its cursor. It never spins forward silently.
  */
 
-#include "util/stage.h"
+#include "sync/stage.h"
 #include "util/blocker.h"
 #include "util/log_macros.h"
 #include "storage/progress_store.h"

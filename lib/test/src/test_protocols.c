@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Tests for application protocol stack: ZNAM, ZMSG, HTLC/ZSWP. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "znam/znam.h"
 #include "net/zmsg.h"
 #include "script/htlc.h"

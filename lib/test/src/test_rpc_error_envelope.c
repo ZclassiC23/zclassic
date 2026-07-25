@@ -6,7 +6,7 @@
  *   {error: {code, message[, method]}}
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "rpc/protocol.h"
 #include "rpc/httpserver.h"
 #include "json/json.h"

@@ -9,7 +9,7 @@
  *   4. Checksum mismatch rejection (Base58Check).
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "domain/encoding/base58.h"
 #include "core/hash.h"

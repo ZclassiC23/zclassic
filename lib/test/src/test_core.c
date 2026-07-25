@@ -1,7 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Core module tests: uint256, hashing, serialization, amount. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "core/random.h"
+#include "encoding/utilmoneystr.h"
+#include "core/serialize.h"
 
 #include <errno.h>
 #include <fcntl.h>

@@ -4,7 +4,8 @@
  * between coins_best_block and active chain tip.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "coins/coins_view.h"
 #include "services/chain_state_validator.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"

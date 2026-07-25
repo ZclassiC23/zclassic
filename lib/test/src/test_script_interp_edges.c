@@ -82,7 +82,7 @@
  * No consensus predicate is touched; this file only reads through the
  * existing eval_script entry point. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "domain/consensus/script_interp.h"
 #include "script/interpreter.h"

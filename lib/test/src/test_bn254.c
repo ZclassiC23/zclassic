@@ -3,7 +3,7 @@
  * Validates Fq arithmetic, G1/G2 operations, and pairing correctness
  * using known test vectors from Ethereum EIP-197 and mathematical properties. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "sapling/bn254.h"
 
 /* Load Fq element from decimal string (for test vectors) */

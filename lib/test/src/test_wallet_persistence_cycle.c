@@ -9,7 +9,7 @@
  * Also exercises wallet_sqlite_self_test, invariant rejection in
  * wallet_sqlite_write_key_r, and wallet_sqlite_get_health. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "wallet/wallet_sqlite.h"
 #include "wallet/wallet.h"
 #include "wallet/keystore.h"

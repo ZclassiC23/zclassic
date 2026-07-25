@@ -3,7 +3,7 @@
  * and the name_update/name_transfer/name_renew/name_set_record/
  * name_set_text RPC write surface (app/controllers/src/name_controller.c). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "models/database.h"
 #include "models/znam.h"
 #include "controllers/name_controller.h"

@@ -34,7 +34,7 @@
  *   full reward base = 12.5 * COIN = 1250000000 sat
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "domain/consensus/subsidy.h"
 #include "chain/subsidy.h"

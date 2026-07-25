@@ -19,7 +19,7 @@
  * still work.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "validation/chainstate.h"
 #include "core/uint256.h"
 #include "util/safe_alloc.h"

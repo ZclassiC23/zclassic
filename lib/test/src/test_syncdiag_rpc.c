@@ -17,7 +17,8 @@
  * zero-initialized), the RPC must return a well-formed JSON object
  * containing non-empty `watchdog` and `headers` sub-objects. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "coins/undo.h"
 #include "chain/checkpoints.h"
 #include "controllers/agent_controller.h"
 #include "controllers/agent_resources.h"

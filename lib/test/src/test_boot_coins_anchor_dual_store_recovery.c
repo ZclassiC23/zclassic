@@ -19,7 +19,7 @@
  * Reset-safe: coins_kv rows + applied_height asserted UNTOUCHED throughout.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "models/database.h"
 #include "models/block.h"

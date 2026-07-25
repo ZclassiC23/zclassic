@@ -46,6 +46,11 @@ AGENT_IMPACT_RULE("app/controllers/src/dbquery_controller.c|app/controllers/incl
 AGENT_IMPACT_RULE("app/controllers/src/shielded_gap_remedy_controller.c|app/controllers/include/controllers/shielded_gap_remedy_controller.h|app/controllers/src/agent_runtime_controller.c|lib/test/src/test_shielded_gap_remedy.c", "shielded_gap_remedy syncdiag_rpc rpc make_lint_gates")
 
 AGENT_IMPACT_RULE("lib/crypto/src/hkdf_sha256.c|lib/crypto/include/crypto/hkdf_sha256.h|lib/test/src/test_hkdf.c", "hkdf_sha256_rfc5869 crypto make_lint_gates")
+/* SHA-256 is consensus crypto (block hash, merkle root, txid, sighash) and
+ * dispatches between a portable and a SHA-NI transform at runtime. Any edit to
+ * either transform, the dispatch, or the hw_profile reporting of the live
+ * transform must re-run the differential oracle + the bench teeth. */
+AGENT_IMPACT_RULE("lib/crypto/src/sha256.c|lib/crypto/include/crypto/sha256.h|lib/test/src/test_sha256_isa_parity.c|lib/util/src/hw_profile.c", "sha256_isa_parity crypto crypto_perf_selftest hw_profile make_lint_gates")
 AGENT_IMPACT_RULE("lib/crypto/src/x25519_safe.c|lib/crypto/include/crypto/x25519_safe.h|lib/session/src/noise_handshake.c|lib/session/include/session/noise_handshake.h|lib/session/src/session_transport.c|lib/session/include/session/session_transport.h|lib/test/src/test_noise_transport.c", "x25519_safe noise_nk_handshake noise_xx_handshake session_transport crypto make_lint_gates")
 
 AGENT_IMPACT_RULE("lib/net/src/peer_lifecycle.c|lib/net/src/peer_identity.c|lib/net/include/net/peer_identity.h|lib/net/src/msg_version.c|lib/net/src/protocol.c|app/controllers/src/network_controller.c|lib/test/src/test_peer_lifecycle.c|lib/test/src/test_peer_identity_hostkey.c", "peer_lifecycle peer_identity_hostkey syncdiag_rpc node_health_service explorer")
@@ -76,10 +81,15 @@ AGENT_IMPACT_RULE("lib/test/src/test_pow_diffadj_precedence.c", "pow_diffadj_pre
 AGENT_IMPACT_RULE("lib/test/fuzz_seeds/block/*", "block_parse_cache")
 AGENT_IMPACT_RULE("lib/storage/src/block_parse_cache.c|lib/storage/include/storage/block_parse_cache.h|lib/test/src/test_block_parse_cache.c", "block_parse_cache chain_segment mem_pressure make_lint_gates")
 AGENT_IMPACT_RULE("app/jobs/src/created_outputs_index.c|app/jobs/include/jobs/created_outputs_index.h|app/jobs/src/script_validate_stage_prevout.c|lib/test/src/test_created_outputs_index.c", "created_outputs_index script_validate_stage validate_parallel_determinism make_lint_gates")
-AGENT_IMPACT_RULE("lib/util/src/reducer_stage_profile.c|lib/util/include/util/reducer_stage_profile.h", "block_parse_cache body_persist_stage script_validate_stage syncdiag_rpc make_lint_gates")
+AGENT_IMPACT_RULE("lib/sync/src/reducer_stage_profile.c|lib/sync/include/sync/reducer_stage_profile.h|lib/util/include/util/reducer_stage_profile.h", "block_parse_cache body_persist_stage script_validate_stage syncdiag_rpc make_lint_gates")
 AGENT_IMPACT_RULE("lib/platform/src/os_proc.c|lib/platform/include/platform/os_proc.h|lib/test/src/test_os_proc.c", "os_proc mem_pressure node_health_service make_lint_gates")
 AGENT_IMPACT_RULE("lib/util/src/mem_pressure.c|lib/util/include/util/mem_pressure.h|lib/test/src/test_mem_pressure.c|config/src/boot_mem_pressure.c|app/conditions/src/memory_pressure_high.c|app/conditions/include/conditions/memory_pressure_high.h|tools/lint/check_proc_self_shim.sh|tools/lint/proc_self_shim_baseline.txt", "mem_pressure sticky_conditions os_proc supervisor condition_engine make_lint_gates")
-AGENT_IMPACT_RULE("lib/util/include/util/log_macros.h|lib/util/include/util/log_level.h|lib/util/src/log_level.c|lib/test/src/test_log_level.c", "log_level make_lint_gates")
+/* lib/base is the in-tree dependency sink (log macros, log-level filter,
+ * checked allocators, zcl_result). The util/ paths below are one-line
+ * forwarding headers kept so the ~734 existing includers do not churn. */
+AGENT_IMPACT_RULE("lib/base/include/base/log_macros.h|lib/base/include/base/log_level.h|lib/base/src/log_level.c|lib/util/include/util/log_macros.h|lib/util/include/util/log_level.h|lib/test/src/test_log_level.c", "log_level make_lint_gates")
+AGENT_IMPACT_RULE("lib/base/src/safe_alloc.c|lib/base/include/base/safe_alloc.h|lib/util/include/util/safe_alloc.h", "chaos_harness coins fees_oom test_png_writer make_lint_gates")
+AGENT_IMPACT_RULE("lib/base/src/result.c|lib/base/include/base/result.h|lib/util/include/util/result.h", "zcl_result make_lint_gates")
 AGENT_IMPACT_RULE("lib/net/src/file_service.c|lib/net/include/net/file_service.h|app/controllers/src/file_controller.c|app/controllers/include/controllers/file_controller.h|lib/test/src/test_file_controller.c", "file_controller file_service_pow_gate rom_manifest api make_lint_gates")
 AGENT_IMPACT_RULE("lib/net/src/fast_sync.c|lib/net/include/net/fast_sync.h|lib/test/src/test_file_service_pow_gate.c", "fast_sync file_service_pow_gate snapshot_sync_service make_lint_gates")
 AGENT_IMPACT_RULE("lib/net/src/puzzle.c|lib/net/include/net/puzzle.h|lib/test/src/test_puzzle.c", "puzzle net file_service_pow_gate snapshot_sync_service make_lint_gates")
@@ -239,11 +249,16 @@ AGENT_IMPACT_RULE("app/services/src/block_source_policy*.c|app/services/include/
 AGENT_IMPACT_RULE("app/services/src/legacy_mirror_sync_*.c|app/services/include/services/legacy_mirror_sync_service.h|lib/validation/src/mirror_consensus.c|lib/validation/include/validation/mirror_consensus.h|lib/test/src/test_*oracle.c", "oracle_policy mirror_divergence_locator syncdiag_rpc lag_slo make_lint_gates")
 AGENT_IMPACT_RULE("app/services/src/oracle_policy.c|app/services/include/services/oracle_policy.h|lib/test/src/test_oracle_policy.c", "oracle_policy rolling_anchor_service make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/src/health_controller.c|app/controllers/include/controllers/health_controller.h|lib/test/src/test_lag_slo.c", "syncdiag_rpc lag_slo make_lint_gates")
-AGENT_IMPACT_RULE("lib/util/src/alerts.c|lib/util/include/util/alerts.h|lib/test/src/test_alerts.c", "alerts node_health_service api syncdiag_rpc make_lint_gates")
+AGENT_IMPACT_RULE("lib/event/src/alerts.c|lib/event/include/event/alerts.h|lib/util/include/util/alerts.h|lib/test/src/test_alerts.c", "alerts node_health_service api syncdiag_rpc make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/src/block_intake_json.c|app/controllers/include/controllers/block_intake_json.h", "api syncdiag_rpc make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/src/api_controller*.c|app/controllers/src/api_controller*.h|app/controllers/src/api_controller_internal.h|lib/test/src/test_api.c", "api")
 AGENT_IMPACT_RULE("app/controllers/src/snapshot_controller_txindex.c|config/src/boot_snapshot_offer.c", "api syncdiag_rpc snapshot_sync_service supervisor make_lint_gates")
 AGENT_IMPACT_RULE("app/services/src/snapshot_sync_service.c|app/services/src/snapshot_fetch.c|lib/net/include/net/snapshot_sync_contract.h|lib/net/src/msgprocessor_snapshot.c|lib/net/src/msgprocessor_snapshot_serve.c|lib/net/src/msgprocessor_snapshot_internal.h|lib/test/src/test_snapshot_sync_service.c", "snapshot_sync_service peer_snapshot_conditions syncdiag_rpc net snapshot_serve_loopback block_swarm_loopback make_lint_gates")
+/* The one seam through which lib/net reaches the composition root: node_db
+ * handle, snapshot-sync service, and the two snapshot-serving trust
+ * predicates. Touching it moves the P2P serving gate, so it pulls the
+ * serving-path groups plus the file service that shares the predicate. */
+AGENT_IMPACT_RULE("lib/net/src/net_runtime_port.c|lib/net/include/net/net_runtime_port.h", "net snapshot_sync_service snapshot_serve_loopback file_controller file_service_pow_gate make_lint_gates")
 /* BitTorrent-style parallel block swarm (zblkmanfst/zblkreq/zblkdata) end-to-end
  * over the loopback wire, plus the connman disconnect requeue hook. */
 AGENT_IMPACT_RULE("lib/test/src/test_block_swarm_loopback.c", "block_swarm_loopback")
@@ -268,9 +283,12 @@ AGENT_IMPACT_RULE("lib/rpc/include/rpc/client.h|lib/rpc/src/client.c|src/cli.c|s
 AGENT_IMPACT_RULE("lib/test/src/test_rpc.c", "rpc")
 AGENT_IMPACT_RULE("lib/rpc/include/rpc/*port.h|lib/rpc/src/legacy_chain_*.c|app/services/src/header_probe.c|app/services/src/utxo_parity_service.c|app/services/src/utxo_reference_source_*.c|app/services/src/*_oracle_service.c|app/services/src/legacy_mirror_sync_internal.h", "rpc syncdiag_rpc parity_slice oracle_policy mirror_divergence_locator make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_sqlite.c", "sqlite make_lint_gates")
-AGENT_IMPACT_RULE("lib/test/src/test.c|lib/test/src/test_helpers.c|lib/test/include/test/test_helpers.h|lib/test/src/test_parallel.c", "make_lint_gates")
+AGENT_IMPACT_RULE("lib/test/src/test.c|lib/test/src/test_helpers.c|lib/test/include/test/test_helpers.h|lib/test/include/test/test_core.h|lib/test/include/test/block_fixtures.h|lib/test/include/test/wallet_view_fixture.h|lib/test/src/test_parallel.c", "make_lint_gates")
 AGENT_IMPACT_RULE("lib/event/src/event.c|lib/event/include/event/event.h|lib/test/src/test_event.c", "event make_lint_gates")
-AGENT_IMPACT_RULE("lib/util/src/stage.c|lib/util/src/stage_batch.c|lib/util/src/stage_batch_internal.h|lib/util/include/util/stage.h|lib/test/src/test_stage.c", "stage utxo_apply_stage tip_finalize_stage reducer_frontier stage_repair make_lint_gates")
+/* Reducer stage machinery lives in lib/sync (it is a reducer state machine,
+ * and it reads lib/storage's progress store). The util/ header paths are
+ * one-line forwarders kept so existing includers do not churn. */
+AGENT_IMPACT_RULE("lib/sync/src/stage.c|lib/sync/src/stage_batch.c|lib/sync/src/stage_lcc.c|lib/sync/src/stage_batch_internal.h|lib/sync/include/sync/stage.h|lib/sync/include/sync/stage_lcc.h|lib/util/include/util/stage.h|lib/util/include/util/stage_lcc.h|lib/test/src/test_stage.c", "stage utxo_apply_stage tip_finalize_stage reducer_frontier stage_repair make_lint_gates")
 AGENT_IMPACT_RULE("lib/storage/src/disk_block_io.c|lib/storage/include/storage/disk_block_io.h|lib/test/src/test_disk_block_io.c", "disk_block_io block_parse_cache stage make_lint_gates")
 AGENT_IMPACT_RULE("app/conditions/src/snapshot_negotiation_stalled.c|app/conditions/include/conditions/snapshot_negotiation_stalled.h|lib/test/src/test_snapshot_negotiation_stalled_condition.c", "snapshot_negotiation_stalled_condition condition_engine make_lint_gates")
 AGENT_IMPACT_RULE("lib/net/src/addrman.c|lib/net/include/net/addrman.h|lib/net/src/addrman_integrity.c|lib/test/src/test_addrman_rebalance.c|lib/test/src/test_addrman_integrity.c|lib/test/src/test_addrman_eclipse.c", "addrman_rebalance addrman_integrity addrman_eclipse net make_lint_gates")
@@ -297,6 +315,14 @@ AGENT_IMPACT_RULE("lib/sim/src/seed_tape.c|lib/sim/include/sim/seed_tape.h|lib/s
 AGENT_IMPACT_RULE("tools/postmortem_to_scenario.c|lib/test/src/test_postmortem_to_scenario.c|docs/CHAOS_HARNESS.md", "postmortem_to_scenario chaos_harness make_lint_gates")
 AGENT_IMPACT_RULE("lib/sapling/*|lib/test/src/test_sapling*.c|lib/test/src/test_simnet_sapling*.c|lib/test/src/test_snark_kat.c|lib/test/src/test_shielded_*.c", "sapling sapling_tree sapling_ckpt_persist simnet_sapling_activation make_lint_gates")
 AGENT_IMPACT_RULE("lib/validation/src/process_block_flush_policy.c|lib/validation/include/validation/process_block.h|app/services/src/node_db_catchup_service.c|app/services/src/sapling_checkpoint_hook.c|app/services/include/services/sapling_checkpoint_hook.h", "sapling_ckpt_persist sapling_tree utxo_apply_stage sapling_anchor_frontier_condition make_lint_gates")
+/* The rest of the process_block translation units: chain selection and the
+ * two operator levers that flip BLOCK_FAILED_*, plus the runtime-hook file
+ * that owns g_active_block_tree and the activation-controller seam they all
+ * reach through. */
+AGENT_IMPACT_RULE("lib/validation/src/process_block.c|lib/validation/src/process_block_runtime_hooks.c|lib/validation/src/process_block_internal.h|lib/validation/src/process_block_invalidate.c|lib/validation/src/process_block_revalidate.c|lib/validation/src/process_block_self_heal.c", "invalidateblock process_block_revalidate self_heal_scan_fallback reducer_frontier chain_activation_service make_lint_gates")
+/* The lib/-owned port for the process-wide node.db handle. Every lib/ reader
+ * of that handle goes through it, so it pulls the two subsystems that do. */
+AGENT_IMPACT_RULE("lib/storage/src/node_db_runtime.c|lib/storage/include/storage/node_db_runtime.h", "catalog_completeness sapling_ckpt_persist invalidateblock make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/src/sync_controller_sapling_tree.c|app/controllers/src/sync_controller_sapling_tree_persist.c|app/controllers/src/sync_controller_sapling_tree_resume.c|app/controllers/src/sync_controller_blocks.c|app/controllers/src/wallet_rescan_controller_witness.c|lib/test/src/test_unclean_shutdown_advance.c|lib/test/src/test_shielded_sync_strength.c", "unclean_shutdown_advance sapling_tree sapling_ckpt_persist shielded_sync_strength syncdiag_rpc make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_groth16_selfverify.c|lib/test/src/groth16_spend_oracle.c|lib/test/src/groth16_spend_parity.c|lib/test/src/groth16_spend_adversarial.c", "groth16_selfverify snark_kat make_lint_gates")
 AGENT_IMPACT_RULE("lib/sapling/src/bls12_381.c|lib/test/src/test_bls12_381_adversarial.c", "bls12_381_adversarial snark_kat make_lint_gates")
@@ -713,3 +739,18 @@ AGENT_IMPACT_RULE("lib/test/src/test_rom_manifest.c", "rom_manifest make_lint_ga
 AGENT_IMPACT_RULE("app/services/src/sync_trust_policy.c|app/services/include/services/sync_trust_policy.h|lib/test/src/test_sync_trust_policy.c", "sync_trust_policy make_lint_gates")
 /* WF4 — code capsule navigator. */
 AGENT_IMPACT_RULE("lib/test/src/test_code_capsule.c", "code_capsule make_lint_gates")
+/* Hot-swap MULTI-LEAF module ABI (v2): one shared library, many leaves, ONE
+ * atomic registry batch, plus probe-before-publish. Covers the v2 admit/publish
+ * core, the per-FILE swappable allowlist, the two lint gates that keep that
+ * allowlist honest (shape + READY-read-only; static-state over the UNION of both
+ * manifests), their seeded-violation fixtures, and the module build paths. */
+AGENT_IMPACT_RULE("lib/test/src/test_hotswap_module_v2.c|lib/hotswap/include/hotswap/hotswap_module.h|lib/hotswap/src/hotswap_activate.c|config/hotswap_swappable.def|tools/lint/check_hotswap_swappable_shape.sh|tools/lint/check_hotswap_static_state.sh|tools/dev/hotswap-module-fast.sh|lib/test/fixtures/hotswap_swappable_not_ready_read.def|lib/test/fixtures/hotswap_swappable_dup_leaf.def|lib/test/fixtures/hotswap_swappable_bad_static.def", "hotswap_module_v2 hotswap_module hotswap_loader hotswap_simnet command_handler_snapshot make_lint_gates")
+/* Confinement visibility + the confinement/hot-swap filesystem collision:
+ * the `confinement` witness (os_sandbox_witness.c + its dumpers.def row), the
+ * grant-recording / path-grant predicate / typed-refusal primitives in
+ * os_sandbox, boot's request notation, and the suite that proves a hot-swap
+ * module open is EACCES under a datadir-only Landlock grant. */
+AGENT_IMPACT_RULE("lib/test/src/test_os_sandbox_hotswap_interaction.c|lib/platform/src/os_sandbox_witness.c|lib/platform/src/os_sandbox_linux.c|lib/platform/include/platform/os_sandbox.h|app/controllers/include/controllers/diagnostics_dumpers.def", "os_sandbox_hotswap_interaction os_sandbox confine syncdiag_rpc make_lint_gates")
+/* wf/supervision — three named faults of the upper layer (undrained hot-swap
+ * generation, config reload divergence, service declaration divergence). */
+AGENT_IMPACT_RULE("lib/hotswap/src/hotswap_retire_blocker.c|lib/hotswap/include/hotswap/hotswap_retire_blocker.h|config/src/boot_declaration_drift.c|config/include/config/boot_declaration_drift.h|lib/hotswap/src/hotswap_activate.c", "blocker blocker_history supervisor make_lint_gates")

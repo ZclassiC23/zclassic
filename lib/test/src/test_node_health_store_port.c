@@ -23,7 +23,7 @@
  * file is hermetic (its own throwaway DBs).
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "adapters/outbound/persistence/node_health_store_sqlite.h"
 #include "ports/node_health_store_port.h"

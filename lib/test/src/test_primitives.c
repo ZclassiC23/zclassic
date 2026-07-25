@@ -1,6 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "chain/pow.h"
+#include "core/serialize.h"
 #include "util/safe_alloc.h"
 
 int test_primitives(void)

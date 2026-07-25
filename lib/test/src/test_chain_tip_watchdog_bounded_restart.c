@@ -23,7 +23,7 @@
  *       CHAIN_TIP_WD_EPISODE_MARGIN of the anchor) is ONE episode: the count
  *       carries, the cap still bites; outside the margin is a new episode. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "config/boot_background_workers.h"
 #include "services/chain_tip_watchdog.h"

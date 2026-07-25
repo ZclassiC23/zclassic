@@ -9,7 +9,7 @@
  * authority, and that the principals/auth dumpstate surfaces return bounded
  * JSON. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "config/command_catalog.h"
 #include "kernel/command_registry.h"

@@ -17,7 +17,7 @@
  * CRITICAL; refuse=1 classifies it as OK. The stale .tmp is aged via utimes().
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "platform/time_compat.h"
 #include "services/storage_reclaim.h"

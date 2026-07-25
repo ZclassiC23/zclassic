@@ -2,7 +2,9 @@
  * Tests for headers-first sync refinement: exponential backoff on stale
  * peers, tighter getheaders intervals, locator construction. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "chain/pow.h"
+#include "net/net.h"
 #include "sync/sync_planner.h"
 
 /* Helper: build a minimal p2p_node for testing sync decisions. */

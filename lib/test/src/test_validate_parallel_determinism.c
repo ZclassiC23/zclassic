@@ -17,7 +17,8 @@
  * params are needed. Each scenario is asserted parallel==serial AND
  * serial==expected, and repeated to shake out any ordering race. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "coins/undo.h"
 
 #include "chain/chainparams.h"
 #include "core/uint256.h"

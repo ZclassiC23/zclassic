@@ -35,7 +35,7 @@
  *
  * make t ONLY=psc_real_range
  */
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "bloom/merkle.h"
 #include "chain/chain.h"

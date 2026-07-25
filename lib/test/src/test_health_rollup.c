@@ -39,7 +39,7 @@
  * that one real dumper into its healthy state for test (a) — no new health
  * logic anywhere, just exercising what each dumper already computes. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "controllers/diagnostics_internal.h"
 #include "jobs/tip_finalize_stage.h"
 #include "storage/event_log.h"

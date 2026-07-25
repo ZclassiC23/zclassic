@@ -17,7 +17,7 @@
  *   5. FOLD-CONTINUES: a stage_cursor migrated into consensus.db is still
  *      readable and advanceable after the flip. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "storage/anchor_kv.h"
 #include "storage/consensus_db.h"

@@ -13,7 +13,7 @@
  *   - genesis install and >+1 jumps are scoped out of pointer identity
  *     but the label check still applies (non-fire on healthy labels). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "core/arith_uint256.h"
 #include "core/uint256.h"

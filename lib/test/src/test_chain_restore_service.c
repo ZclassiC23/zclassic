@@ -4,7 +4,7 @@
  * Each test exercises the pure plan() function with struct inputs. */
 
 #include "platform/time_compat.h"
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "services/block_index_integrity.h"
 #include "services/chain_restore_boot_activation.h"
 #include "services/chain_restore_boot_snapshot.h"

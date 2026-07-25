@@ -14,7 +14,7 @@
  * All fixtures live under a mkdtemp() dir in /tmp — never a real datadir, never
  * the network. None of this touches a consensus predicate. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "net/rom_seed.h"
 #include "net/file_market.h"
 #include "crypto/sha3.h"

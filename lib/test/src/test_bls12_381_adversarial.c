@@ -34,7 +34,7 @@
  * must go through a full-chain replay first (CONSENSUS_PARITY_DOCTRINE).
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "sapling/bls12_381.h"
 
 #include <stdio.h>

@@ -3,7 +3,7 @@
  * simnet transaction toolkit coverage.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "crypto/sha256.h"
 #include "script/htlc.h"

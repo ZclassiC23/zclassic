@@ -5,7 +5,8 @@
  * connectable bottom of a large header gap.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "json/json.h"
 
 #include "chain/chain.h"
 #include "services/gap_fill_service.h"

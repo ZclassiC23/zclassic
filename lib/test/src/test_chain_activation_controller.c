@@ -2,7 +2,7 @@
  *
  * Tests for chain_activation_controller — state machine + planning tests. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "services/chain_activation_service.h"
 #include "net/snapshot_sync_contract.h"
 #include "validation/main_state.h"

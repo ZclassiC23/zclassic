@@ -43,7 +43,7 @@
  * coinbase maturity nor the all-zeros Sapling-root check interferes.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "validation/connect_block.h"
 #include "validation/contextual_check_tx.h"

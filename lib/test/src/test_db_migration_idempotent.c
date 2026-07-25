@@ -9,7 +9,7 @@
  * same migration on every boot).
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "models/database.h"
 
 #include <errno.h>

@@ -6,7 +6,7 @@
  * outbound/whitelisted immunity, the longest-connected quartile, recent
  * novel block/tx relay, and the "evict newest" tie-break among what's left. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "net/peer_eviction.h"
 

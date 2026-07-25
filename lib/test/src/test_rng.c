@@ -13,7 +13,7 @@
  *   - rng_reset_default restores real behavior
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "platform/rng.h"
 
 #include <stdatomic.h>

@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Tests for Merkle Mountain Range + SHA3 UTXO commitment. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "chain/mmr.h"
 #include "coins/utxo_commitment.h"
 #include "crypto/sha3.h"

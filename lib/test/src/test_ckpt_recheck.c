@@ -14,7 +14,7 @@
  * matching case is exact by construction), the same shape the real ceremony and
  * the -ratify-mint-anchor test use. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/checkpoints.h"
 #include "config/boot.h"

@@ -15,7 +15,7 @@
  * the same fake clock_iface_t the sync_watchdog / reducer_drive_watchdog
  * condition tests use to advance wall time without sleeping. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "conditions/stage_step_budget_exceeded.h"
 #include "framework/condition.h"

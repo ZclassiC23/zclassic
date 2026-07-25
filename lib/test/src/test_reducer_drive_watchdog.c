@@ -14,7 +14,7 @@
  * nonzero age; the forced threshold of 0s means any nonzero age trips it.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "conditions/batch_fsync_slow.h"
 #include "conditions/reducer_drive_watchdog.h"

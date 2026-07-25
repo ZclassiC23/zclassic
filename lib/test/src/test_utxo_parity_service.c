@@ -17,7 +17,7 @@
  * fails the negative control.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "services/utxo_parity_service.h"
 #include "services/utxo_reference_source.h"
@@ -35,6 +35,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include "test/setup_result.h"
 
 /* The fixture reference is height-independent, so the parity tick path
  * (which reads the live applied height) is exercised via the synchronous
@@ -122,7 +123,7 @@ static void wire_case(struct node_db *ndb,
         .enabled = true, .finality_depth = 0, .max_checks_per_tick = 1,
     };
     utxo_parity_reset_for_test();
-    utxo_parity_init(&cfg, ndb);
+    ZCL_TEST_SETUP(utxo_parity_init(&cfg, ndb));
     utxo_parity_set_reference_source(src);
 
     condition_engine_reset_for_testing();
@@ -144,7 +145,7 @@ static void wire_bh_only_case(struct node_db *ndb)
         .enabled = true, .finality_depth = 0, .max_checks_per_tick = 1,
     };
     utxo_parity_reset_for_test();
-    utxo_parity_init(&cfg, ndb);
+    ZCL_TEST_SETUP(utxo_parity_init(&cfg, ndb));
     utxo_parity_set_reference_source(NULL);  /* no SHA3 ref — BH path only */
 
     condition_engine_reset_for_testing();
@@ -338,7 +339,7 @@ static int case_dormant(void)
             .enabled = false, .finality_depth = 100, .max_checks_per_tick = 1,
         };
         utxo_parity_reset_for_test();
-        utxo_parity_init(&cfg, &ndb);
+        ZCL_TEST_SETUP(utxo_parity_init(&cfg, &ndb));
         utxo_parity_set_frontier_for_test(PARITY_TEST_HEIGHT);
 
         atomic_store(&g_op_events, 0);
@@ -409,7 +410,7 @@ static int case_activation_gating_no_env(void)
             .enabled = true, .finality_depth = 100, .max_checks_per_tick = 1,
         };
         utxo_parity_reset_for_test();
-        utxo_parity_init(&cfg, &ndb);
+        ZCL_TEST_SETUP(utxo_parity_init(&cfg, &ndb));
         utxo_parity_set_reference_source(NULL);   /* no oracle */
         utxo_parity_set_frontier_for_test(applied + 200);
 
@@ -892,5 +893,5 @@ int test_utxo_parity_service(void)
     failures += case_bh_ref_height_behind_skip();
     failures += case_bh_no_recheck_same_height();
     failures += case_bh_latch_survives_sha3_confirm();
-    return failures;
+    return failures + ZCL_TEST_SETUP_FAILURES();
 }

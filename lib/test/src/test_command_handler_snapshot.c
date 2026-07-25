@@ -14,7 +14,7 @@
  *   - two-thread hammer (writer replace_batch loop + reader dispatch loop)
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "kernel/command_registry.h"
 #include "json/json.h"

@@ -25,7 +25,7 @@
  * the other, the test shouts.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "domain/consensus/sapling_structural.h"
 #include "validation/contextual_check_tx.h"

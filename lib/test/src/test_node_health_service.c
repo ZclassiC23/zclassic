@@ -2,7 +2,7 @@
  * Tests for node health snapshot service. */
 
 #include "platform/time_compat.h"
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "config/db_service.h"
 #include "config/runtime.h"
 #include "coins/coins_view.h"

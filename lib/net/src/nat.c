@@ -41,7 +41,15 @@ bool nat_get_gateway(uint8_t gw_out[4])
     if (!f) LOG_FAIL("nat", "cannot open /proc/net/route");
 
     char line[256];
-    fgets(line, sizeof(line), f); /* skip header */
+    /* /proc/net/route always opens even when the routing table is empty, so
+     * a failed header read is the only signal that there is nothing to parse.
+     * Distinguishing it from "parsed every row, found no default route" is
+     * what makes the two failures separately diagnosable in the log. */
+    if (!fgets(line, sizeof(line), f)) { /* column header */
+        fclose(f);
+        LOG_FAIL("nat", "/proc/net/route has no header line — routing table "
+                        "unreadable or empty");
+    }
     while (fgets(line, sizeof(line), f)) {
         char iface[32];
         uint32_t dest, gw;

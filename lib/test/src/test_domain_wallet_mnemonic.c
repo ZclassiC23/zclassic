@@ -16,7 +16,7 @@
  *      produce byte-identical output to the pure domain functions.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "domain/wallet/mnemonic.h"
 #include "wallet/mnemonic.h"

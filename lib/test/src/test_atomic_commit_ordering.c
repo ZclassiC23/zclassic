@@ -54,7 +54,7 @@
  * not the production write-ordering itself.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "storage/coins_view_sqlite.h"
 
 #include <sqlite3.h>

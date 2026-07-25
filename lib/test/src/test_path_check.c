@@ -6,7 +6,7 @@
  * Both helpers are pure: deterministic, no I/O, no global state. So
  * tests are simple table-driven assertions. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "net/https_server.h"
 #include "util/file_io.h"
 #include "util/path_check.h"

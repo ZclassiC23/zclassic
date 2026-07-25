@@ -17,7 +17,7 @@
  *       validate_headers_stage_has_pass_record then passes.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "conditions/checkpoint_header_solution_repair.h"
 

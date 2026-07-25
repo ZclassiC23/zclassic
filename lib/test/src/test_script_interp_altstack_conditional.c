@@ -32,7 +32,7 @@
  *     unconditionally touching the altstack.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "domain/consensus/script_interp.h"
 #include "script/interpreter.h"

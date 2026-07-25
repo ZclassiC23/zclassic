@@ -14,7 +14,7 @@
  * tx gets a unique prevout derived from its index.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "services/mempool_limits.h"
 #include "validation/txmempool.h"
 #include "event/event.h"

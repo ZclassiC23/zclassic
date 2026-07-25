@@ -2,7 +2,12 @@
  * Robustness and defensive coding tests: validation, bounds, edge cases. */
 
 #include "platform/time_compat.h"
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "domain/encoding/base58.h"
+#include "chain/pow.h"
+#include "core/serialize.h"
+#include "validation/check_transaction.h"
+#include "models/database.h"
 #include "controllers/store_controller.h"
 #include "controllers/zslp_controller.h"
 #include "net/fast_sync.h"

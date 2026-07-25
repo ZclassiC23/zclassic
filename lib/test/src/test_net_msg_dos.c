@@ -53,7 +53,8 @@
  * mutex-guarded node/dispatch machinery and use a heap node from
  * p2p_node_create (properly mutex-initialized). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "util/util.h"
 
 #include "mining/miner.h"
 #include "net/msg_internal.h"

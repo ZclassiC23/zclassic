@@ -115,7 +115,3 @@ the cold-memory spec corpus in `docs/spec/`.
 
 Embedded Tor with in-process dynhost API for .onion hidden service
 hosting. Fork maintained at https://github.com/RhettCreighton/tor.
-
----
-
-*Last updated: 2026-04-21 (license decision: Apache-2.0 adopted; LICENSE + NOTICE files installed).*

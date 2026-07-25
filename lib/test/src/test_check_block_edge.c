@@ -45,7 +45,7 @@
  * checks, no network, no node process. Deterministic.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "domain/consensus/check_block.h"
 #include "bloom/merkle.h"

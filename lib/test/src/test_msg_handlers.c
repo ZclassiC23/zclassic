@@ -11,7 +11,7 @@
  *   4. Dandelion globals — initial state
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "chain/chainparams.h"
 #include "core/hash.h"
 #include "net/msgprocessor.h"

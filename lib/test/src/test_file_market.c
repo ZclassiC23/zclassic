@@ -2,7 +2,7 @@
  * Tests for ZCL Market — file sharing serialization, cache, and DB. */
 
 #include "platform/time_compat.h"
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "net/file_market.h"
 #include "core/serialize.h"
 #include "models/database.h"

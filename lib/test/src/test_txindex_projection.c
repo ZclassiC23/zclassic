@@ -3,7 +3,7 @@
  * index-in-block) without a full-chain scan, so a getrawtransaction-class
  * lookup can jump straight to the block. Mirrors test_address_index.c. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "core/uint256.h"
 #include "encoding/utilstrencodings.h"

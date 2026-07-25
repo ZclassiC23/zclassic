@@ -4,7 +4,7 @@
  * active_chain_most_work_candidate() and find_most_work_chain().
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/chain.h"
 #include "core/arith_uint256.h"

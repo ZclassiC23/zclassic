@@ -68,7 +68,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(swap_settlement) \
     X(file_market) X(strong_params) X(json) X(robustness) X(wallet) \
     X(primitives) X(bloom) X(coins) X(store) X(blog) X(api) \
-    X(explorer) X(explorer_rpc_call) X(explorer_index) X(format_helpers_codec) X(mining) X(utxo_commitment) X(mmr) X(mmb) X(sha3_windows) X(keccak_avx512) X(sha3_256_x4) \
+    X(explorer) X(explorer_rpc_call) X(explorer_index) X(format_helpers_codec) X(mining) X(utxo_commitment) X(mmr) X(mmb) X(sha3_windows) X(keccak_avx512) X(sha3_256_x4) X(sha3_512_x4) X(sha256_isa_parity) \
     X(keystone_utxo_binding) X(self_folded_anchor) X(utxo_root_ladder) X(utxo_root_ladder_tripwire) \
     X(golden_staleness_canary) \
     X(flyclient) X(flyclient_chainwork_floor) X(test_zmsg_memo_codec) X(scan_util) X(tor) \
@@ -96,7 +96,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(protocols) \
     X(chain_restore_planner) X(chain_restore_service) \
     X(chain_activation_controller) \
-    X(hotswap_loader) X(hotswap_simnet) X(hotswap_module) X(dev_platform) \
+    X(hotswap_loader) X(hotswap_simnet) X(hotswap_module) \
+    X(hotswap_module_v2) X(dev_platform) \
     X(dev_activation) \
     X(command_registry_catalog) \
     X(native_api_contract) \
@@ -224,7 +225,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(chain_tip_watchdog_bounded_restart) X(blocker) X(cpu_topology) X(hw_profile) X(hw_bench) X(log_level) X(service_state) \
     X(service_state_driver) \
     X(storage_coins_utxo) \
-    X(clock) X(time_authority) X(rng) X(os_proc) X(os_sandbox) X(confine) X(seed_tape) X(postmortem) X(simnet) X(simnet_cluster) X(simnet_cluster_reorg) X(simnet_wire) X(simnet_wire_ibd) X(simnet_byzantine) X(simnet_txkit) X(simnet_contract) X(simnet_doublespend) X(simnet_chained_tx) X(simnet_wallet_reorg) X(simnet_mempool_adv) X(simnet_block_sigops) X(simnet_duplicate_input) X(simnet_value_inflation) X(simnet_fee_range) X(simnet_empty_vin_vout) X(simnet_input_value_range) X(simnet_sapling_activation) X(simnet_sapling_shielded_send) X(simnet_wallet_import_backup) X(simnet_zmsg_onchain) X(coinbase_subsidy_adversarial) X(simnet_fuzz) X(simnet_byzantine_cluster) X(util_signal_handler) X(chaos_harness) X(postmortem_to_scenario) X(stage) X(stage_anchor) X(mailbox) X(mailbox_adoption) \
+    X(clock) X(time_authority) X(rng) X(os_proc) X(os_sandbox) X(os_sandbox_hotswap_interaction) X(confine) X(seed_tape) X(postmortem) X(simnet) X(simnet_cluster) X(simnet_cluster_reorg) X(simnet_wire) X(simnet_wire_ibd) X(simnet_byzantine) X(simnet_txkit) X(simnet_contract) X(simnet_doublespend) X(simnet_chained_tx) X(simnet_wallet_reorg) X(simnet_mempool_adv) X(simnet_block_sigops) X(simnet_duplicate_input) X(simnet_value_inflation) X(simnet_fee_range) X(simnet_empty_vin_vout) X(simnet_input_value_range) X(simnet_sapling_activation) X(simnet_sapling_shielded_send) X(simnet_wallet_import_backup) X(simnet_zmsg_onchain) X(coinbase_subsidy_adversarial) X(simnet_fuzz) X(simnet_byzantine_cluster) X(util_signal_handler) X(chaos_harness) X(postmortem_to_scenario) X(stage) X(stage_anchor) X(mailbox) X(mailbox_adoption) \
     X(projection) X(projection_adoption) X(projection_consumer) X(progress_store) X(event_log) \
     X(mempool_projection) X(peers_projection) X(topology_store) X(znam_projection) \
     X(wallet_projection) X(small_projections) \

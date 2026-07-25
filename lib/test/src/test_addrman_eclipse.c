@@ -54,7 +54,7 @@
  * timestamps, matching test_addrman_rebalance.c's convention — only
  * OFFSETS from "now" are asserted, never absolute values. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "net/addrman.h"
 #include "platform/rng.h"
 #include "platform/time_compat.h"

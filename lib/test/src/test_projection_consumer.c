@@ -7,7 +7,7 @@
  * directly, independent of any real projection's schema.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "storage/event_log.h"
 #include "storage/projection_consumer.h"

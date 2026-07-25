@@ -26,7 +26,7 @@
  * `_test_next:` label per function).
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "services/network_crawler.h"
 #include "storage/census_read.h"
 #include "storage/peers_projection.h"

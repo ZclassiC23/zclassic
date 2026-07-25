@@ -1,10 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * reducer_stage_profile — bounded reducer hot-stage work/timing diagnostics. */
 
-#include "util/reducer_stage_profile.h"
+#include "sync/reducer_stage_profile.h"
 
 #include "json/json.h"
-#include "util/stage.h"
+#include "sync/stage.h"
 
 #include <pthread.h>
 #include <stdatomic.h>

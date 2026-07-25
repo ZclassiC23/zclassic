@@ -39,7 +39,7 @@
  * deterministic and does not touch a live/soaking datadir.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/checkpoints.h"
 #include "config/boot.h"

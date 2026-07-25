@@ -14,7 +14,7 @@
  * Each test opens a fresh in-memory SQLite DB, creates the schema,
  * and operates through the wallet_sqlite API. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "wallet/wallet_sqlite.h"
 #include "wallet/wallet_keystore.h"
 #include "wallet/wallet_lock.h"

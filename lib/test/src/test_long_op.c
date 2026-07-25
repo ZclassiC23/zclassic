@@ -10,7 +10,7 @@
  *   - dump_state_json shape
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "util/long_op.h"
 #include "event/event.h"
 #include "json/json.h"

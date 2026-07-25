@@ -28,7 +28,7 @@
  *
  * make t ONLY=parallel_range_fold
  */
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/chainparams.h"
 #include "chain/chainparamsbase.h"

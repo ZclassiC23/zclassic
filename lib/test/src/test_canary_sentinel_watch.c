@@ -26,7 +26,8 @@
  * Plus the documented absence policy: a FAIL stays latched when its
  * sentinel disappears (a re-running canary must not un-page the node). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "crypto/sha256.h"
 
 #include "framework/condition.h"
 #include "json/json.h"

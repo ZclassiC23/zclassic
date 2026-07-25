@@ -355,7 +355,16 @@ static bool sandbox_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_bool(out, "active", os_sandbox_active());
     const char *prof = os_sandbox_active_profile_name();
     json_push_kv_str(out, "profile", prof ? prof : "");
-    json_push_kv_int(out, "landlock_abi", (int64_t)os_sandbox_landlock_abi());
+    /* CACHED, never a fresh probe: os_sandbox_landlock_abi() issues
+     * landlock_create_ruleset(2), which is absent from both -confine seccomp
+     * allow-sets — probing it from inside a confined node is
+     * SECCOMP_RET_KILL_PROCESS, so `ops state --subsystem=sandbox` would kill
+     * the node it is diagnosing. Falls back to a live probe only while
+     * unconfined (cached is -1 until a domain is built). */
+    json_push_kv_int(out, "landlock_abi",
+                     (int64_t)(os_sandbox_active()
+                                   ? os_sandbox_landlock_abi_cached()
+                                   : os_sandbox_landlock_abi()));
     json_push_kv_bool(out, "seccomp_supported", os_sandbox_seccomp_supported());
     json_push_kv_bool(out, "seccomp_active",
                       os_sandbox_active() && os_sandbox_seccomp_supported());

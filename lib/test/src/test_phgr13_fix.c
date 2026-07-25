@@ -23,7 +23,7 @@
  * 3. Test the FE2IP decoder against a known Zcash test vector.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "sapling/bn254.h"
 
 #include <stdio.h>

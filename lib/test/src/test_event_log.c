@@ -20,7 +20,7 @@
  * The test creates tmpdirs under ./test-tmp/event_log_<pid>_<tag>/ to
  * comply with the project's "no /tmp" convention. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "platform/time_compat.h"
 #include "services/reducer_ingest_service.h"

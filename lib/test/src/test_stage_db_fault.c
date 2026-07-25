@@ -9,7 +9,7 @@
  * Parity note: this helper is for INFRA faults only — it never sees a validity
  * verdict, which is why no consensus path is exercised here. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "jobs/stage_db_fault.h"
 #include "jobs/job.h"

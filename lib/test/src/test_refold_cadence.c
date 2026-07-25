@@ -17,7 +17,7 @@
  * fold (refold_progress cache) — and that clearing the gate RESTORES the inert
  * identity, so the accelerated cadence cannot leak into the live path. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "jobs/refold_cadence.h"
 #include "jobs/refold_progress.h"     /* refold_progress_test_set_cached */

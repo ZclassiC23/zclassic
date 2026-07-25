@@ -1,7 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Tests for snapshot sync service policy helpers. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "models/database.h"
 #include "net/snapshot_sync_contract.h"
 #include "services/snapshot_manifest.h"
 #include "config/db_service.h"

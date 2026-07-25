@@ -22,7 +22,7 @@
  *      ring buffer the mirror's comparator writes one row to per tick).
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "conditions/parity_slo_breach.h"
 #include "framework/condition.h"

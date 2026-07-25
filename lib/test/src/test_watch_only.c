@@ -3,7 +3,7 @@
  * Tests for watch-only address support: keystore, wallet_is_mine,
  * wallet_is_watch_only, wallet_sqlite persistence. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "wallet/wallet.h"
 #include "wallet/keystore.h"
 #include "wallet/wallet_sqlite.h"

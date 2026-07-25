@@ -12,7 +12,7 @@
  *   4. direct poll tick under-lag -> no headers fetched.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "services/header_probe.h"
 #include "controllers/wallet_helpers.h"
 #include "validation/main_state.h"

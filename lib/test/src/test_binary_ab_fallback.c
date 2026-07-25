@@ -11,7 +11,7 @@
  *      real launcher in its ZCL_LAUNCH_TEST_ECHO seam against fake slots.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "services/binary_ab_fallback.h"
 #include "platform/os_proc.h"
 #include "util/blocker.h"

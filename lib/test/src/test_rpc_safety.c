@@ -3,7 +3,7 @@
  * chainstate-backed RPCs must fail cleanly when the active
  * chain height points at a missing block-index entry. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "controllers/blockchain_controller.h"
 #include "controllers/chain_inspect_controller.h"
 #include "controllers/health_controller.h"

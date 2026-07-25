@@ -24,7 +24,7 @@
  * actual re-exec — every case injects its own heartbeat/clock values, so
  * the whole file runs in well under a second. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "util/supervisor_backstop.h"
 #include "util/supervisor.h"
 #include "util/boot_phase.h"

@@ -34,7 +34,7 @@
  * plus a handful of pointer-arithmetic edge cases that don't fit the
  * table shape. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "net/netbase.h"
 

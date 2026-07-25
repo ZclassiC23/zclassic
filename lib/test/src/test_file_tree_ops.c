@@ -19,7 +19,7 @@
  * Pure filesystem I/O under a mkdtemp scratch dir, matching test_file_ops.c's
  * convention; no node / network / RNG / wall-clock dependence. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "util/file_tree_ops.h"
 

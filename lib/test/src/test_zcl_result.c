@@ -3,7 +3,7 @@
  * Unit tests for struct zcl_result / ZCL_ERR / ZCL_CHECK.
  * Plan: WALLET_PERSISTENCE_PLAN.md §5.1 / tasks/AGENT_2_WALLET_SQLITE.md D1. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "util/result.h"
 #include <string.h>
 

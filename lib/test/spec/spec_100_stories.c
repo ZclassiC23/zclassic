@@ -16,7 +16,8 @@
  * Every story checks: renders, no crashes, no SQL leaks,
  * no template leaks, correct content for that wallet state. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "test/wallet_view_fixture.h"
 #include "controllers/wallet_view_controller.h"
 #include "controllers/wallet_view_internal.h"
 #include <string.h>

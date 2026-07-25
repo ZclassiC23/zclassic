@@ -32,7 +32,7 @@
  *       installed_height are safe no-ops.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "chain/chain.h"
 #include "chain/checkpoints.h"

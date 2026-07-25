@@ -1,6 +1,10 @@
-/* Copyright 2026 Rhett Creighton - Apache License 2.0 */
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Checked allocation wrappers (zcl_malloc/zcl_calloc/zcl_realloc) plus the
+ * single-shot allocation-fault injection hook the chaos harness arms.
+ * See lib/base/include/base/safe_alloc.h for the contract. */
 
-#include "util/safe_alloc.h"
+#include "base/safe_alloc.h"
 
 #include <stdatomic.h>
 #include <string.h>

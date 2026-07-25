@@ -4,7 +4,7 @@
  * The spec is the contract; this test keeps the required surfaces
  * discoverable for RAG and future native tooling work. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include <errno.h>
 

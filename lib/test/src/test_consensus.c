@@ -1,7 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Tests for consensus parameter functions: upgrades, halving, spacing. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "consensus/upgrades.h"
+#include "chain/chainparams.h"
 
 int test_consensus(void)
 {

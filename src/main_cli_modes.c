@@ -863,6 +863,54 @@ static bool bench_verify_ed25519(void *arg)
     return ed25519_verify(a->sig, a->msg, a->msglen, a->pk);
 }
 
+/* ── compiled ISA baseline of THIS binary ────────────────────────────
+ *
+ * The shipped build is -march=x86-64-v3, which defines neither __SHA__ nor
+ * __AVX512F__: SHA-NI and every AVX-512 path are COMPILED OUT of the binary we
+ * ship, no matter what the host CPU can do. A ZCL_NATIVE=1 build on a Zen4+
+ * host defines both and compiles them in. The two builds are therefore
+ * measuring different code, and their rows must NOT share a bench name.
+ *
+ * They must not share a name because -bench-regress (run in `make ci`) gates
+ * the last two rows carrying the SAME name at ±20%. sha256 alone moves ~3x
+ * between the two builds, so one interleaved host-flags row would manufacture
+ * a phantom >20% "regression" on the very next shipped-flags run and red the
+ * build for a change nobody made. The shipped name is left EXACTLY as it was
+ * so the existing history and the ratchet stay continuous; only the host-ISA
+ * build gets the tag.
+ *
+ * The CRYPTOPERF key is deliberately unchanged in both builds:
+ * tools/scripts/check_crypto_perf.sh parses it against a baseline pinned to
+ * the -v3 build, and renaming it would silently disarm the gate. Running
+ * `make check-crypto-perf` against a ZCL_NATIVE=1 binary compares host-ISA
+ * numbers to -v3-pinned ceilings and would ratchet the ceiling to a value the
+ * shipped build cannot meet — the banner below says so out loud. */
+#if defined(__SHA__) || defined(__AVX512F__)
+#  define ZCL_BENCH_ISA_HOST 1
+#else
+#  define ZCL_BENCH_ISA_HOST 0
+#endif
+
+static const char *bench_isa_name(void)
+{
+    return ZCL_BENCH_ISA_HOST ? " [host-isa]" : "";
+}
+
+static const char *bench_isa_desc(void)
+{
+    return
+#if defined(__AVX512F__) && defined(__SHA__)
+        "host ISA (AVX-512 + SHA-NI compiled in)";
+#elif defined(__AVX512F__)
+        "host ISA (AVX-512 compiled in, no SHA-NI)";
+#elif defined(__SHA__)
+        "host ISA (SHA-NI compiled in, no AVX-512)";
+#else
+        "x86-64-v3 shipped default (AVX2/FMA/BMI2; SHA-NI and AVX-512 "
+        "compiled OUT)";
+#endif
+}
+
 /* Record one primitive: median ns/op, machine line, and a bench-history row. */
 static void bench_vsr_record(struct bench_row *rows, size_t *nrows,
                              const char *key, const char *human, double ns)
@@ -870,13 +918,15 @@ static void bench_vsr_record(struct bench_row *rows, size_t *nrows,
     printf("  %-30s %14.1f ns/op  (%.0f ops/sec)\n", human, ns, 1e9 / ns);
     printf("CRYPTOPERF %s %.1f %.0f\n", key, ns, 1e9 / ns);
     struct bench_row *r = &rows[*nrows];
-    snprintf(r->bench, sizeof(r->bench), "crypto-vs-rust %s", key);
+    snprintf(r->bench, sizeof(r->bench), "crypto-vs-rust%s %s",
+             bench_isa_name(), key);
     snprintf(r->unit, sizeof(r->unit), "ns/op");
     r->value = ns;
     r->numeric = true;
     snprintf(r->notes, sizeof(r->notes),
-             "median C ns/op; host-relative; vs pinned Rust baseline "
-             "(tools/crypto_perf_baseline.csv); %.0f ops/sec", 1e9 / ns);
+             "median C ns/op; host-relative; %s; vs pinned Rust baseline "
+             "(tools/crypto_perf_baseline.csv); %.0f ops/sec",
+             bench_isa_desc(), 1e9 / ns);
     (*nrows)++;
 }
 
@@ -899,7 +949,17 @@ static int bench_crypto_vs_rust(void)
     printf("  commit:   %s\n", bench_commit());
     printf("  history:  %s\n", path);
     printf("  budget:   %.0f ms/sample, median of %d samples\n", budget_ms, samples);
-    printf("  clock:    clock_now_monotonic_ns (monotonic)\n\n");
+    printf("  clock:    clock_now_monotonic_ns (monotonic)\n");
+    printf("  isa:      %s\n", bench_isa_desc());
+    printf("  rows:     \"crypto-vs-rust%s <key>\"\n", bench_isa_name());
+    if (ZCL_BENCH_ISA_HOST)
+        printf("  NOTE:     host-ISA build — rows are tagged so -bench-regress "
+               "never compares them\n"
+               "            against shipped -march=x86-64-v3 rows. Do NOT "
+               "re-baseline\n"
+               "            tools/crypto_perf_baseline.csv from this run: it "
+               "pins the SHIPPED build.\n");
+    printf("\n");
 
     struct bench_row rows[16];
     size_t nrows = 0;

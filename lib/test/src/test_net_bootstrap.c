@@ -9,7 +9,8 @@
  *      connman instances sharing a datadir — proves known-good peers survive
  *      a restart. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "net/connman.h"
 
 #include "net/addnode_file.h"
 

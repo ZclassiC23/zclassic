@@ -45,7 +45,7 @@
  */
 
 #define _GNU_SOURCE
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "config/boot.h"          /* struct app_context, boot_snapshot_anchor_hash_matches */
 #include "config/boot_internal.h" /* boot_loader_owns_seed */

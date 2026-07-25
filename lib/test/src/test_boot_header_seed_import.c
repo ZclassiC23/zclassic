@@ -25,7 +25,7 @@
  * synthetic index uses regtest params (easy PoW target) so honest rows pass the
  * loader's frozen CheckProofOfWork gate and a crafted max-hash row fails it. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "config/boot_header_seed_import.h"
 #include "config/boot_bundle_fetch.h"

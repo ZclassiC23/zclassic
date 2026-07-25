@@ -25,7 +25,7 @@
  * depends on to fall through to its unchanged _exit(0).
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "config/boot_self_respawn.h"
 #include "services/chain_tip_watchdog.h"

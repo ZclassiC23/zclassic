@@ -20,7 +20,9 @@
  * implementation: it fails if the passthrough breaks, the clamp rule
  * changes, or the a_pk/sk_enc t-indices are swapped. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "sapling/prf.h"
+#include "sapling/address.h"
 
 int test_sprout_spending_key_viewing_key(void)
 {

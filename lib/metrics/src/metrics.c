@@ -7,7 +7,6 @@
 #include "metrics/prometheus_metrics.h"
 #include "metrics/stage_metrics.h"
 #include "validation/main_state.h"
-#include "net/connman.h"
 #include "chain/chainparams.h"
 #include "consensus/params.h"
 #include "core/utiltime.h"
@@ -220,14 +219,19 @@ static int estimate_net_height(const struct consensus_params *cp,
     return ((est + 5) / 10) * 10;
 }
 
-static int print_stats(struct metrics_context *ctx)
+/* `ext` is this tick's external-gauge snapshot (see metrics.h): it carries
+ * the tip height/time and the peer count, which used to be read here with
+ * direct active_chain_tip() / connman_get_node_count() calls into
+ * lib/validation and lib/net. */
+static int print_stats(struct metrics_context *ctx,
+                       const struct metrics_external_gauges *ext)
 {
     int lines = 3;
 
+    int height = (int)ext->tip_height;
+    int64_t tip_time = ext->tip_time;
+
     zcl_mutex_lock(&ctx->ms->cs_main);
-    struct block_index *tip = active_chain_tip(&ctx->ms->chain_active);
-    int height = tip ? tip->nHeight : 0;
-    int64_t tip_time = tip ? (int64_t)tip->nTime : 0;
     struct block_index *best_hdr = ctx->ms->pindex_best_header;
     int hdr_height = best_hdr ? best_hdr->nHeight : height;
     int64_t hdr_time = best_hdr ? (int64_t)best_hdr->nTime : 0;
@@ -235,7 +239,8 @@ static int print_stats(struct metrics_context *ctx)
     bool reindexing = atomic_load(&ctx->ms->fReindex);
     zcl_mutex_unlock(&ctx->ms->cs_main);
 
-    size_t connections = connman_get_node_count(ctx->cm);
+    size_t connections = (size_t)(ext->connection_count > 0
+                                      ? ext->connection_count : 0);
 
     bool downloading = importing || reindexing ||
                        (tip_time > 0 &&
@@ -352,18 +357,38 @@ static void *metrics_thread_fn(void *arg)
         if (is_tty)
             printf("\033[J");
 
-        lines += print_stats(ctx);
+        /* One external-gauge snapshot per tick, taken BEFORE anything is
+         * printed: the console block and the Prometheus block both read
+         * it, so they now report the same tip height and peer count
+         * instead of sampling the chain twice a few microseconds apart. */
+        enum sync_state gss = sync_get_state();
+        struct metrics_external_gauges ext = {
+            .utxo_count = 0,
+            .sync_state = (int)gss,
+            .tip_advance_age_seconds = -1,
+            .mirror_lag_blocks = -1,
+            .mirror_lag_breach_seconds = 0,
+            .mirror_lag_critical_seconds = 0,
+            .magicbean_peer_count = 0,
+            .zclassic_c23_peer_count = 0,
+            .header_gap_blocks = -1,
+            .tip_height = 0,
+            .tip_time = 0,
+            .connection_count = 0,
+        };
+        snprintf(ext.sync_state_name, sizeof(ext.sync_state_name), "%s",
+                 sync_state_name(gss));
+        if (ctx->external_gauges)
+            ctx->external_gauges(&ext, ctx->external_gauges_ctx);
+
+        lines += print_stats(ctx, &ext);
         lines += print_mining_status(ctx->mining);
         lines += print_metrics(ctx->mining);
 
         /* Update Prometheus node-level gauges */
         {
-            zcl_mutex_lock(&ctx->ms->cs_main);
-            struct block_index *gtip = active_chain_tip(&ctx->ms->chain_active);
-            int64_t gh = gtip ? (int64_t)gtip->nHeight : 0;
-            zcl_mutex_unlock(&ctx->ms->cs_main);
-
-            int64_t gpc = (int64_t)connman_get_node_count(ctx->cm);
+            int64_t gh = ext.tip_height;
+            int64_t gpc = ext.connection_count;
             int64_t gup = GetTime() - g_start_time;
 
             /* RSS from /proc/self/status (Linux) */
@@ -380,23 +405,6 @@ static void *metrics_thread_fn(void *arg)
                 }
                 fclose(sf);
             }
-
-            enum sync_state gss = sync_get_state();
-            struct metrics_external_gauges ext = {
-                .utxo_count = 0,
-                .sync_state = (int)gss,
-                .tip_advance_age_seconds = -1,
-                .mirror_lag_blocks = -1,
-                .mirror_lag_breach_seconds = 0,
-                .mirror_lag_critical_seconds = 0,
-                .magicbean_peer_count = 0,
-                .zclassic_c23_peer_count = 0,
-                .header_gap_blocks = -1,
-            };
-            snprintf(ext.sync_state_name, sizeof(ext.sync_state_name), "%s",
-                     sync_state_name(gss));
-            if (ctx->external_gauges)
-                ctx->external_gauges(&ext, ctx->external_gauges_ctx);
 
             metrics_prometheus_set_node_gauges(gh, gpc, grss, ext.utxo_count, gup);
 

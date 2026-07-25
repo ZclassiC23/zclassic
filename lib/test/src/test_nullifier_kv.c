@@ -8,7 +8,7 @@
  * the exact bounds of delete_range, the rewind primitive every cursor
  * rewind relies on (see the rewind invariant in storage/nullifier_kv.h). */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "storage/anchor_kv.h"
 #include "storage/nullifier_kv.h"

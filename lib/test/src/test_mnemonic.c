@@ -4,7 +4,7 @@
  * seed derivation, and compliance with BIP39 test vectors.
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "wallet/mnemonic.h"
 #include "wallet/hd_keychain.h"
 #include "support/cleanse.h"

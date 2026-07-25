@@ -17,6 +17,7 @@
 #include "util/file_tree_ops.h"  /* zcl_mkdir_p */
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"     /* zcl_malloc */
+#include "util/write_all.h"      /* zcl_write_all */
 
 #include <errno.h>
 #include <fcntl.h>
@@ -523,7 +524,11 @@ static enum cold_start_result cold_start_spawn_classify(char *const child_argv[]
         }
         if (m == 0)
             break;
-        (void)write(STDERR_FILENO, chunk, (size_t)m); /* tee — operator visible */
+        /* Operator tee, discarded on purpose: the refusal/exit-code decision
+         * below reads `tail`, never the terminal, so a dead stderr cannot
+         * change it. The loop is the part that matters — an unlooped write(2)
+         * short-writes the transcript the operator is reading. */
+        (void)zcl_write_all(STDERR_FILENO, chunk, (size_t)m);
         cold_start_tail_append(tail, &tail_len, COLD_START_TAIL_CAP, chunk,
                                (size_t)m);
     }

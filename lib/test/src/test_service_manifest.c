@@ -3,7 +3,7 @@
  * Contract tests for the shadow service catalog, privilege deny rules, graph
  * validation, and canonical service/catalog SHA3 identities. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "config/service_catalog.h"
 #include "kernel/service_manifest.h"

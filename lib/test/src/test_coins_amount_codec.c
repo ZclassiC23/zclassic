@@ -37,7 +37,9 @@
  *
  * No allocation, no I/O — the codec is a pure total function of inputs. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "encoding/utilmoneystr.h"
+#include "coins/compressor.h"
 
 #include "domain/consensus/coins_math.h"
 

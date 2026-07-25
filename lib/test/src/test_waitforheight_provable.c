@@ -15,7 +15,7 @@
  * open and no chain authority installed, active_chain_height returns
  * chain_active.height verbatim, which the fixture seeds directly. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 
 #include "controllers/blockchain_controller.h"
 #include "jobs/reducer_frontier.h"

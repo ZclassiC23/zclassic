@@ -28,7 +28,8 @@
  * manually via a helper).
  */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
+#include "json/json.h"
 #include "services/consensus_reject_index.h"
 #include "validation/check_transaction.h"
 #include "validation/check_block.h"
@@ -44,6 +45,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "util/safe_alloc.h"
+#include "test/setup_result.h"
 
 #define CRI_CHECK(name, expr) do {         \
     printf("%s... ", (name));              \
@@ -113,19 +115,19 @@ int test_consensus_reject_index(void)
     /* ── 2. Capacity rounding + clamping ────────────────────── */
     {
         /* 50 → next pow2 = 64 */
-        consensus_reject_index_start(50);
+        ZCL_TEST_SETUP(consensus_reject_index_start(50));
         CRI_CHECK("cri: capacity 50 rounds up to 64",
                   consensus_reject_index_capacity() == 64);
         consensus_reject_index_stop();
 
         /* 1 → clamped up to 8 */
-        consensus_reject_index_start(1);
+        ZCL_TEST_SETUP(consensus_reject_index_start(1));
         CRI_CHECK("cri: capacity 1 clamped to 8",
                   consensus_reject_index_capacity() == 8);
         consensus_reject_index_stop();
 
         /* Beyond max → clamped to CRI_MAX_CAPACITY */
-        consensus_reject_index_start(CRI_MAX_CAPACITY * 2);
+        ZCL_TEST_SETUP(consensus_reject_index_start(CRI_MAX_CAPACITY * 2));
         CRI_CHECK("cri: capacity above max clamped",
                   consensus_reject_index_capacity() == CRI_MAX_CAPACITY);
         consensus_reject_index_stop();
@@ -133,7 +135,7 @@ int test_consensus_reject_index(void)
 
     /* ── 3. Direct record() — basic insert + lookup ───────── */
     {
-        consensus_reject_index_start(16);
+        ZCL_TEST_SETUP(consensus_reject_index_start(16));
         struct cri_entry e = {0};
         e.hash = make_hash(0x11);
         e.kind = CRI_KIND_TX;
@@ -167,7 +169,7 @@ int test_consensus_reject_index(void)
 
     /* ── 4. Kind filter ─────────────────────────────────────── */
     {
-        consensus_reject_index_start(16);
+        ZCL_TEST_SETUP(consensus_reject_index_start(16));
         struct cri_entry etx = {0};
         etx.hash = make_hash(0x33); etx.kind = CRI_KIND_TX; etx.dos = 10;
         snprintf(etx.reason, sizeof(etx.reason), "tx-reason");
@@ -197,7 +199,7 @@ int test_consensus_reject_index(void)
 
     /* ── 5. Newest-match-wins when same hash recorded twice ─ */
     {
-        consensus_reject_index_start(16);
+        ZCL_TEST_SETUP(consensus_reject_index_start(16));
         struct cri_entry e1 = {0};
         e1.hash = make_hash(0x44); e1.kind = CRI_KIND_TX; e1.dos = 100;
         snprintf(e1.reason, sizeof(e1.reason), "first");
@@ -217,7 +219,7 @@ int test_consensus_reject_index(void)
 
     /* ── 6. Ring eviction at capacity ───────────────────────── */
     {
-        consensus_reject_index_start(8);  /* cap=8 */
+        ZCL_TEST_SETUP(consensus_reject_index_start(8));  /* cap=8 */
         /* Record 12 — the first 4 should be evicted. */
         for (int i = 0; i < 12; i++) {
             struct cri_entry e = {0};
@@ -257,7 +259,7 @@ int test_consensus_reject_index(void)
 
     /* ── 7. recent() returns newest-first ───────────────────── */
     {
-        consensus_reject_index_start(8);
+        ZCL_TEST_SETUP(consensus_reject_index_start(8));
         for (int i = 0; i < 5; i++) {
             struct cri_entry e = {0};
             e.hash = make_hash((uint8_t)(0x80 + i));
@@ -277,7 +279,7 @@ int test_consensus_reject_index(void)
 
     /* ── 8. clear() drops entries, keeps service running ────── */
     {
-        consensus_reject_index_start(16);
+        ZCL_TEST_SETUP(consensus_reject_index_start(16));
         struct cri_entry e = {0};
         e.hash = make_hash(0x55); e.kind = CRI_KIND_TX; e.dos = 1;
         consensus_reject_index_record(&e);
@@ -310,7 +312,7 @@ int test_consensus_reject_index(void)
 
     /* ── 10. Event path: real check_transaction rejection ───── */
     {
-        consensus_reject_index_start(16);
+        ZCL_TEST_SETUP(consensus_reject_index_start(16));
 
         /* Invalid tx: num_vin = 0, num_vout = 0, no joinsplits */
         struct transaction tx;
@@ -343,7 +345,7 @@ int test_consensus_reject_index(void)
 
     /* ── 11. Event path: check_block_header rejection ──────── */
     {
-        consensus_reject_index_start(16);
+        ZCL_TEST_SETUP(consensus_reject_index_start(16));
 
         const struct chain_params *params = chain_params_get();
         struct block_header hdr;
@@ -372,7 +374,7 @@ int test_consensus_reject_index(void)
 
     /* ── 12. Valid check_transaction → no entry ─────────────── */
     {
-        consensus_reject_index_start(16);
+        ZCL_TEST_SETUP(consensus_reject_index_start(16));
         struct transaction tx = cri_valid_tx();
         memset(tx.hash.data, 0x77, 32);
         struct validation_state vs;
@@ -387,14 +389,14 @@ int test_consensus_reject_index(void)
 
     /* ── 13. Restart between runs leaves clean state ────────── */
     {
-        consensus_reject_index_start(16);
+        ZCL_TEST_SETUP(consensus_reject_index_start(16));
         struct cri_entry e = {0};
         e.hash = make_hash(0x88); e.kind = CRI_KIND_TX; e.dos = 7;
         consensus_reject_index_record(&e);
         CRI_CHECK("cri: recorded before stop",
                   consensus_reject_index_count() == 1);
         consensus_reject_index_stop();
-        consensus_reject_index_start(16);
+        ZCL_TEST_SETUP(consensus_reject_index_start(16));
         CRI_CHECK("cri: fresh state after restart",
                   consensus_reject_index_count() == 0 &&
                   consensus_reject_index_total() == 0);
@@ -405,7 +407,7 @@ int test_consensus_reject_index(void)
      * running/total/count/capacity plus a `recent` array with the newest
      * entry's fields intact. ─────────────────────────────────────────── */
     {
-        consensus_reject_index_start(16);
+        ZCL_TEST_SETUP(consensus_reject_index_start(16));
         struct cri_entry e = {0};
         e.hash = make_hash(0x99);
         e.kind = CRI_KIND_BLOCK;
@@ -441,5 +443,5 @@ int test_consensus_reject_index(void)
 
     printf("consensus reject index: %s (%d failures)\n",
            failures == 0 ? "OK" : "FAIL", failures);
-    return failures;
+    return failures + ZCL_TEST_SETUP_FAILURES();
 }

@@ -183,4 +183,12 @@
 # the file's established (a)-(m) shape. Real growth, same class as the G3 and
 # G4 injector additions above. Re-baselined in
 # file_size_ceiling_lib_baseline.txt (2684); count unchanged.
+#
+# 2026-07-25 (module-graph acyclicity, metrics -> rpc cut): prometheus_metrics.c
+# grew 1084 -> 1100 replacing its direct rpc_http_middleware_get_global() /
+# rpc_http_middleware_stats_snapshot() calls with a registered counter source
+# (metrics_prometheus_set_rpc_http_source), so lib/metrics no longer links
+# against lib/rpc. Re-baselined in file_size_ceiling_lib_baseline.txt (1100),
+# which keeps it OUT of the drift list rather than spending the last slot under
+# the ratchet; live count 12. Ratchet left at 13.
 13

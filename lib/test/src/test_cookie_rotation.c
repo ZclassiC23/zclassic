@@ -6,7 +6,7 @@
  * Verifies timed rotation, dual-password grace window, disk write,
  * env config, and explicit-user bypass. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "rpc/httpserver.h"
 #include "rpc/server.h"
 #include "encoding/utilstrencodings.h"

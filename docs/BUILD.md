@@ -379,9 +379,21 @@ make -j"$(nproc)"   # test_zcl + zclassic23 + zclassic-cli
 make dev-bin        # fast local node executable, not for deploy/release
 make test           # full parallel suite via the cached per-TU test_parallel
 make test_parallel_wpo  # whole-program LTO test binary (debug per-TU/LTO divergence)
-make lint           # 40 defensive-coding gates
+make lint           # every defensive-coding gate; it prints the list it ran
 make ci             # local gate: lint + tests + MVP slices (runs locally, not on GitHub Actions)
 make deploy         # rebuild + restart; verify exact source ID and running executable SHA-256
+```
+
+This page deliberately does not state how many defensive-coding gates exist.
+That number changes whenever a gate lands, and every copy of it in prose has
+gone stale within weeks. The authoritative list is the `LINT_GATES` variable in
+the `Makefile`; the same list is mirrored, and machine-checked against the
+Makefile by the `check-doc-accuracy` gate, in the `<!-- LINT-GATES-BEGIN -->`
+block of [`DEFENSIVE_CODING.md`](DEFENSIVE_CODING.md). To see what runs on your
+tree, run `make lint` and read what it names, or print the list itself:
+
+```bash
+awk '/^LINT_GATES[[:space:]]*:=/{f=1} f{print; if ($0 !~ /\\[[:space:]]*$/) exit}' Makefile
 ```
 
 `make deploy` pins its outer `BUILD_SOURCE_RECORD` into every recursive Make,
@@ -398,10 +410,20 @@ to build for the host CPU only.
 
 ## Reproducible / signed releases
 
-`tools/release.sh` is a legacy local packaging primitive with deterministic
-flags and GPG support. `--unsigned` produces only a local-development artifact;
-it is not eligible for stable publication. Stable release publication remains
-contained until exact-candidate evidence, two independently provisioned
-byte-identical builds, complete manifests/SBOM/provenance, and the required
-offline signatures are enforced. See `docs/SECURITY_AND_INTEGRITY.md` for the
-integrity model.
+`tools/release.sh` does not build, package, sign, or publish anything. It
+accepts exactly one invocation — `tools/release.sh --verify <archive.tar.gz>` —
+which checks an *already existing* signed archive: it requires a sibling
+`.sha3` manifest and a detached `.sha3.sig`, recomputes the archive's SHA3-256
+and compares it to the manifest, verifies the GPG signature over the manifest,
+confirms the tar structure is readable, and then prints
+`legacy_local_artifact_verification=PASS`, `stable_release_verification=NOT_IMPLEMENTED`,
+`publishable=false`. Every other invocation — including any attempt to produce
+an artifact — prints a REFUSING message and exits 2, before touching the
+workspace.
+
+That refusal is the current release posture, not a missing feature. Stable
+release publication stays contained until exact-candidate evidence, two
+independently provisioned byte-identical builds, complete manifests/SBOM/
+provenance, and the required offline signatures are all enforced. For a local
+binary, use the ordinary build targets above. See
+`docs/SECURITY_AND_INTEGRITY.md` for the integrity model.

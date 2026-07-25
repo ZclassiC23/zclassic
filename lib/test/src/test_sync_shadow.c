@@ -8,7 +8,7 @@
  * dumpstate-visible counter. The reference FSM stays authoritative throughout —
  * this only observes. */
 
-#include "test/test_helpers.h"
+#include "test/test_core.h"
 #include "net/sync_shadow.h"
 #include "json/json.h"
 #include <string.h>
