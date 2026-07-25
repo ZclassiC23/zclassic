@@ -5,13 +5,20 @@ points in order; dated evidence and backlog material are intentionally omitted.
 
 ## Entry points (read in this order)
 
-- [`HANDOFF.md`](./HANDOFF.md) — current state; read this FIRST on a fresh session.
+New here? Start with the first two. `HANDOFF.md` is maintainer-only live state
+for the project's own hosted node — read it before acting **on that host**, and
+skip it otherwise (`GETTING_STARTED.md` says the same thing; these two pages must
+not disagree).
+
+- [`GETTING_STARTED.md`](./GETTING_STARTED.md) — fresh-machine setup: build the binary, then run it as a production node or an isolated dev instance.
+- [`DEVELOPING.md`](./DEVELOPING.md) — the developer operating manual; read before making changes.
 - [`MVP.md`](./MVP.md) — the v1 contract: 8 binary acceptance criteria (v1 = MRS 8/8).
 - [`work/FORWARD_PLAN.md`](./work/FORWARD_PLAN.md) — THE plan, MVP-anchored.
+- [`HANDOFF.md`](./HANDOFF.md) — maintainer-only current live state of the hosted node; read it FIRST **only** if you are operating that host.
 
 ## Develop here — the fast loop (read before making changes)
 
-- [`.claude/skills/zclassic23-dev/SKILL.md`](../.claude/skills/zclassic23-dev/SKILL.md) — **the efficient-AI-C23-developer playbook**: the native dev loop (drop-in-C watcher, `dev change apply`), hot-swap tiers, typed-commands-over-bash, workflows of tiered subagents, the push traps (impact-rules mapping, pre-push SIGPIPE), and the inviolable rules. Auto-loads as the `zclassic23-dev` skill; start here for any change.
+- [`DEVELOPING.md`](./DEVELOPING.md) — **the efficient-AI-C23-developer playbook**: the native dev loop (drop-in-C watcher), hot-swap tiers, typed-commands-over-bash, workflows of tiered subagents, the push traps (impact-rules mapping, pre-push SIGPIPE), and the inviolable rules. Also the body of the `zclassic23-dev` Claude Code skill, whose stub at [`.claude/skills/zclassic23-dev/SKILL.md`](../.claude/skills/zclassic23-dev/SKILL.md) imports it. Start here for any change.
 - [`NATIVE_COMMAND_INTERFACE.md`](./NATIVE_COMMAND_INTERFACE.md) — the native command registry (`core.*`/`app.*`/`ops.*`/`dev.*`/`discover.*`), the only agent interface going forward: grammar, tree, and the frozen CLI UX contract.
 - [`API_REFERENCE.md`](./API_REFERENCE.md) — every leaf the registry currently declares, transcribed from `config/commands/`.
 - [`AGENT_API.md`](./AGENT_API.md) — the practical field-by-field reference for the implemented agent surface (`agentops`, `agentdiagnose`, `healthcheck`, `agentlanes`, service catalog, and more); referenced directly from `app/controllers/src/agent_controller.c` response bodies.
