@@ -27,7 +27,7 @@ lib/codeindex/src/codeindex_store.c 875
 lib/event/src/event.c 1055
 lib/hotswap/src/hotswap_loader.c 809
 lib/kernel/src/command_registry.c 1761
-lib/metrics/src/prometheus_metrics.c 1084
+lib/metrics/src/prometheus_metrics.c 1100
 lib/net/src/addrman.c 1268
 lib/net/src/connman.c 2765
 lib/net/src/download.c 1385

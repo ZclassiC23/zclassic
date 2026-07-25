@@ -32,6 +32,39 @@ void metrics_prometheus_reset(void);
  * written (excluding NUL).  Truncates silently if the buffer is small. */
 size_t metrics_prometheus_render_prometheus(char *buf, size_t cap);
 
+/* ── HTTP RPC middleware counters ─────────────────────────────
+ *
+ * The `zcl_rpc_*` block of the dump. The counters live in lib/rpc's
+ * middleware, which lib/metrics must not link against — same seam, and
+ * same reason, as metrics_external_gauges in metrics.h.
+ *
+ * The composition root (config/src/boot_node_utilities.c, wired from
+ * app_init_services) registers a source; the renderer pulls through it
+ * so the numbers stay as fresh as the direct call they replaced. With no
+ * source registered the block renders all-zero, which is what
+ * rpc_http_middleware_stats_snapshot() already produced before the RPC
+ * server was up.
+ *
+ * The source function is called with the renderer's own lock held, so it
+ * must not re-enter metrics_prometheus_*. */
+struct metrics_rpc_http_gauges {
+    uint64_t allowed;
+    uint64_t rate_limited_global;
+    uint64_t rate_limited_per_ip;
+    uint64_t banned_rejected;
+    uint64_t bans_issued;
+    uint64_t auth_failures;
+    uint64_t tracked_ips;
+    uint64_t active_bans;
+};
+
+typedef void (*metrics_rpc_http_gauges_fn)(
+    struct metrics_rpc_http_gauges *out, void *ctx);
+
+/* Register (or, with fn == NULL, clear) the RPC-counter source. */
+void metrics_prometheus_set_rpc_http_source(metrics_rpc_http_gauges_fn fn,
+                                            void *ctx);
+
 /* ── Peer scoring counters ────────────────────────────────────
  *
  * Subscribed to EV_PEER_MISBEHAVE and EV_PEER_BANNED. The handler

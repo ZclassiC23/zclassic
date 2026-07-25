@@ -8,7 +8,6 @@
 #include "core/utiltime.h"
 #include "event/event.h"
 #include "net/peer_scoring.h"
-#include "rpc/http_middleware.h"
 #include "sync/sync_state.h"
 #include "util/blocker.h"
 
@@ -92,6 +91,14 @@ static uint64_t                  g_reject_overflow_block;
 
 static pthread_mutex_t      g_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool                 g_observer_installed = false;
+
+/* HTTP RPC middleware counter source (prometheus_metrics.h). Registered by
+ * the composition root; read by the renderer under g_lock, which is also
+ * where the direct rpc_http_middleware_stats_snapshot() call it replaced
+ * used to run — so the lock order (g_lock then the middleware's own mutex)
+ * is unchanged. */
+static metrics_rpc_http_gauges_fn g_rpc_http_source = NULL;
+static void                      *g_rpc_http_source_ctx = NULL;
 
 /* Sync state gauge (set atomically alongside node gauges) */
 static _Atomic int          g_node_sync_state;
@@ -804,6 +811,15 @@ static size_t append(char *buf, size_t cap, size_t pos, const char *fmt, ...)
     return pos + (size_t)n;
 }
 
+void metrics_prometheus_set_rpc_http_source(metrics_rpc_http_gauges_fn fn,
+                                            void *ctx)
+{
+    pthread_mutex_lock(&g_lock);
+    g_rpc_http_source = fn;
+    g_rpc_http_source_ctx = fn ? ctx : NULL;
+    pthread_mutex_unlock(&g_lock);
+}
+
 size_t metrics_prometheus_render_prometheus(char *buf, size_t cap)
 {
     if (!buf || cap == 0) return 0;
@@ -829,9 +845,9 @@ size_t metrics_prometheus_render_prometheus(char *buf, size_t cap)
         (unsigned long long)g_peer_bans_total);
 
     /* ── HTTP RPC middleware block ───────────────────────────── */
-    struct rpc_http_middleware *rpc_mw = rpc_http_middleware_get_global();
-    struct rpc_http_stats_snapshot snap;
-    rpc_http_middleware_stats_snapshot(rpc_mw, &snap);
+    struct metrics_rpc_http_gauges snap = {0};
+    if (g_rpc_http_source)
+        g_rpc_http_source(&snap, g_rpc_http_source_ctx);
 
     pos = append(buf, cap, pos,
         "# HELP zcl_rpc_requests_total HTTP RPC middleware decisions by result\n"
