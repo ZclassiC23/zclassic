@@ -379,11 +379,12 @@ without the doctor learning about it. Prose here can only describe it.
   fallback: without a Rust toolchain `make vendor` stops at that archive. The
   node's own ~970k lines are C23; the prover it links is not, and the honest
   prerequisite list says so.
-- **A C++ compiler — `c++`/`g++`.** LevelDB is C++11. `cmake` is the preferred
-  build route and is genuinely optional (a direct C++11 compile is the
-  fallback), but the C++ compiler is required either way. `vendor_prereqs.tsv`
-  currently files `c++` under `vendor-optional`, which understates it — the
-  build has no path to `libleveldb.a` without one.
+- **A C++ compiler — `c++`/`g++`.** LevelDB is C++11, and `libleveldb.a` is
+  the last archive in the tree that is not C. `cmake` is the preferred build
+  route and is genuinely optional (a direct C++11 compile is the fallback),
+  but the C++ compiler is required either way, so `vendor_prereqs.tsv` files
+  `c++` under `vendor` rather than `vendor-optional`. Work to retire this
+  requirement is under way — see *Retiring the C++ requirement* below.
 - **Not needed:** `autoconf`. The zlib and libevent tarballs ship a generated
   `./configure`; `make vendor` runs it and never regenerates it.
 - The first `make vendor` needs **network access** for the pinned tarballs and
@@ -444,6 +445,53 @@ Notes:
 - Downloads are cached under `vendor/.cache/` (gitignored); build trees live in
   `vendor/.build/` (removed on a clean full run). To bump a version, edit the
   pinned version + SHA256 in `tools/scripts/build_vendor.sh`.
+
+### Retiring the C++ requirement
+
+`libleveldb.a` is the only reason this project needs a C++ compiler. Nothing
+in the tree uses LevelDB's C++ API — every call site goes through the
+`leveldb_*` C API — so C++ is needed to *compile* the archive, never to
+consume it.
+
+The replacement is in the tree and proven: **`lib/storage/src/ldb_reader_*.c`
+is a read-only LevelDB reader written in C23** against stock `cc` and libc,
+with no new dependency. It reads the real format — CURRENT, the MANIFEST
+VersionEdit log, `.log` write-ahead logs, and `.ldb`/`.sst` tables — and
+resolves sequence numbers and tombstones the way LevelDB does. Its contract,
+including what it deliberately refuses, is documented in
+`lib/storage/include/storage/ldb_reader.h`.
+
+Byte identity is the acceptance bar, and it is checked differentially rather
+than asserted:
+
+```bash
+make ldb_verify_c23
+# both directories must be COPIES: the C++ open MUTATES its target
+build/bin/ldb_verify_c23 /path/to/copy-a /path/to/copy-b
+```
+
+`tools/ldb_verify_c23.c` links **both** implementations, walks the entire
+ordered keyspace comparing every key and value byte for byte, then sweeps
+point reads (present and absent keys) and seek positions. It is the tool to
+re-run against any datadir before trusting the reader on it. The in-suite
+regression is `make t-fast ONLY=ldb_reader`, which builds its own fixture with
+overwrites, tombstones and unflushed log writes, compares it against
+`libleveldb.a`, and then damages five different ways to confirm each is
+refused by name rather than answered wrongly.
+
+Two things must still land before `c++` can leave the prerequisite list:
+
+1. **The two production LevelDB writes must go.** They are
+   `process_block_invalidate.c` and `process_block_revalidate.c`, both
+   persisting a block-index status flip that the line above them already
+   emits to SQLite. A read-only reader cannot serve them, and the C23 reader
+   refuses every mutation by name rather than pretending.
+2. **`test_ldb_snapshot` and `tools/verify_anchor_completeness.c` must stop
+   linking `<leveldb/c.h>`** — they are the remaining consumers of
+   `leveldb_compact_range` and `leveldb_options_set_error_if_exists`. Until
+   then the C++ archive survives in the test build even if the node no longer
+   needs it. `tools/ldb_verify_c23.c` links it deliberately and forever: it is
+   the cross-check oracle, and an oracle you have deleted proves nothing.
 
 ### Verify
 

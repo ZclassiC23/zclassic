@@ -1007,6 +1007,8 @@ int main(int argc, char **argv)
     failures += test_blob_read_bounds();
     { extern int test_ldb_snapshot(void);
       failures += test_ldb_snapshot(); }
+    { extern int test_ldb_reader(void);
+      failures += test_ldb_reader(); }
     { extern int test_utxo_snapshot_loader(void);
       failures += test_utxo_snapshot_loader(); }
     failures += test_snapshot_apply_coins_kv();
