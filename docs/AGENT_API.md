@@ -1109,9 +1109,14 @@ This is a C23 project, so the edit loop should compile only what changed.
   refreshes the stable alias after final source/compiler/session verification.
   It links without LTO, keeps symbols, defaults most code to
   `ZCL_DEV_OPT=-Og`, and keeps hot consensus/crypto/script/validation buckets
-  at `ZCL_DEV_HOT_OPT=-O2`. `ZCL_DEV_LINKER` auto-selects `mold` or `ld.lld`
-  when present and can be set empty to force the platform linker. This binary
-  is for local agent/API iteration, not deploy or release.
+  at `ZCL_DEV_HOT_OPT=-O2`. `ZCL_DEV_LINKER` probes for `mold`, then `ld.lld`,
+  and expands to **empty** when neither is on `PATH` — which is the common
+  case, and means dev links fall back to the platform linker with no speedup
+  and no warning. Do not assume you are getting a fast link; check with
+  `make -sp 2>/dev/null | grep -m1 '^ZCL_DEV_LINKER'` (or
+  `command -v mold ld.lld`). Set it empty to force the platform linker
+  explicitly. This binary is for local agent/API iteration, not deploy or
+  release.
 - `make agent-dev-status` is the no-build dev-lane status command. It reports
   the lane's explicit `worker_lane` contract (`role=worker`,
   `mutation_policy=noncanonical_dev_only`, safe status/deploy/stage/recover

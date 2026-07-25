@@ -138,9 +138,12 @@ CLAIM_RE='(^|[^[:alnum:]/_-])[0-9]+\+?[[:space:]]+(defensive[- ]coding([[:space:
 # reported clean. Compare the toplevel against the cwd and fall back to find
 # whenever they differ.
 list_docs() {
-    local top
+    # Two lanes found this independently and wrote the same test; the sandbox
+    # is a hardlink copy at <root>.lint_sb_<pid>, so the gate was hollow
+    # exactly where its own plant/trip/recover proof runs.
+    local top=""
     top=$(git rev-parse --show-toplevel 2>/dev/null || true)
-    if [ -n "$top" ] && [ "$top" -ef "." ]; then
+    if [ -n "$top" ] && [ "$top" -ef . ] 2>/dev/null; then
         # Tracked AND not-yet-added-but-not-ignored: a stale claim must be
         # caught the moment the file exists, not only after `git add`. The
         # `--exclude-standard` filter keeps build output and gitignored
@@ -148,25 +151,25 @@ list_docs() {
         git ls-files -z -- '*.md'
         git ls-files -z --others --exclude-standard -- '*.md'
     else
-        # Tarball / vendored checkout / sandbox copy: same scan without git.
+        # Tarball / vendored checkout / hardlink sandbox: same scan without git.
         find . \( -name .git -o -name vendor -o -name build -o -name node_modules \) \
              -prune -o -name '*.md' -type f -print0
     fi
 }
 
-# A scan that reads no files verifies nothing and must not report clean. This
-# repo always has in-tree .md; an empty list means the lister is looking in the
-# wrong place, which is exactly the failure above.
-if ! doc_nuls=$(list_docs | tr -cd '\0' | wc -c); then
-    echo "FAIL: prong C could not enumerate in-tree .md files (cwd: $(pwd -P))"
-    exit 1
-fi
-if [ "$doc_nuls" -eq 0 ]; then
-    echo "FAIL: prong C found NO in-tree .md files to scan (cwd: $(pwd -P))."
-    echo "      A scan that reads nothing verifies nothing — refusing to report"
-    echo "      clean. Check that this directory is the root of the tree being"
-    echo "      linted."
-    exit 1
+# FAIL-LOUD floor on the SCAN SET, not on the hit count. The repo currently
+# carries zero prose gate-count claims (they were all de-pinned), so
+# "0 claims verified" is a legitimate clean result and cannot be the floor.
+# What must never be zero is the number of .md files actually looked at — that
+# is the signal that list_docs came back empty and the gate is inspecting
+# nothing. Hundreds of .md files are tracked; anything under 50 means the
+# enumeration broke.
+docs_scanned=$(list_docs | tr -cd '\0' | wc -c)
+if [ "$docs_scanned" -lt 50 ]; then
+    echo "check_doc_accuracy: FATAL — scan set is $docs_scanned .md file(s) (expected >=50)." >&2
+    echo "  list_docs came back (near-)empty, so this gate would report clean" >&2
+    echo "  without inspecting anything. Refusing to pass off a dead scan." >&2
+    exit 2
 fi
 
 claim_hits=$(list_docs | xargs -0 -r grep -HnoEi "$CLAIM_RE" 2>/dev/null || true)

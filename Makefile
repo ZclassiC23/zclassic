@@ -1074,9 +1074,10 @@ $(TMPL_TOOL): tools/gen_templates.c lib/base/src/safe_alloc.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Ilib/base/include -Ilib/util/include -o $@ $^
 
-$(BIN_DIR)/inspect_html: tools/inspect_html.c
+$(BIN_DIR)/inspect_html: tools/inspect_html.c lib/base/src/safe_alloc.c
 	@mkdir -p $(dir $@)
-	$(CC) -std=c23 -O2 -Wall -Wextra -o $@ $<
+	$(CC) -std=c23 -O2 -Wall -Wextra \
+	    -Ilib/base/include -Ilib/util/include -o $@ $^
 
 $(TMPL_GEN): $(TMPL_SRC) $(TMPL_TOOL)
 	$(TMPL_TOOL) app/views/templates $@ app/views/css
@@ -2312,7 +2313,8 @@ $(BIN_DIR)/gen_sha3_windows: tools/gen_sha3_windows.c \
 .PHONY: tools/gen_utxo_root_ladder
 tools/gen_utxo_root_ladder: $(BIN_DIR)/gen_utxo_root_ladder
 $(BIN_DIR)/gen_utxo_root_ladder: tools/gen_utxo_root_ladder.c \
-		lib/chain/src/mmb.c lib/crypto/src/sha3.c lib/crypto/src/keccak_avx512.c lib/support/src/cleanse.c
+		lib/chain/src/mmb.c lib/crypto/src/sha3.c lib/crypto/src/keccak_avx512.c lib/support/src/cleanse.c \
+		lib/base/src/log_level.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
@@ -2420,15 +2422,23 @@ bundle-bootstrap: $(BIN_DIR)/rom_bundle_sha3
 
 .PHONY: zcl-nodectl
 zcl-nodectl: $(ZCL_NODECTL_BIN)
-$(ZCL_NODECTL_BIN): tools/zcl-nodectl.c lib/util/include/util/rpc_paths.h
+$(ZCL_NODECTL_BIN): tools/zcl-nodectl.c lib/util/include/util/rpc_paths.h \
+		lib/platform/src/clock.c lib/base/src/log_level.c
 	@mkdir -p $(dir $@)
-	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -Ilib/base/include -Ilib/util/include -o $@ $<
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror \
+	    -Ilib/base/include -Ilib/util/include -Ilib/platform/include \
+	    -D_POSIX_C_SOURCE=200809L -o $@ \
+	    tools/zcl-nodectl.c lib/platform/src/clock.c lib/base/src/log_level.c
 
 .PHONY: export_snapshot
 export_snapshot: $(BIN_DIR)/export_snapshot
-$(BIN_DIR)/export_snapshot: tools/export_snapshot.c
+$(BIN_DIR)/export_snapshot: tools/export_snapshot.c \
+		lib/platform/src/clock.c lib/base/src/log_level.c
 	@mkdir -p $(dir $@)
-	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -Ivendor/include -o $@ $< -Lvendor/lib -l:libsqlite3.a -lpthread
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -Ivendor/include \
+	    -Ilib/platform/include -Ilib/base/include -Ilib/util/include \
+	    -D_POSIX_C_SOURCE=200809L \
+	    -o $@ $^ -Lvendor/lib -l:libsqlite3.a -lpthread -lm
 
 # verify_anchor_completeness: cross-checks a zclassicd chainstate LevelDB copy
 # against a zclassic23 progress.kv — did the shielded-history importer
@@ -3808,9 +3818,11 @@ bench-sync: zclassic23 bench_fresh_sync
 
 .PHONY: bench_fresh_sync
 bench_fresh_sync: $(BIN_DIR)/bench_fresh_sync
-$(BIN_DIR)/bench_fresh_sync: tools/bench_fresh_sync.c
+$(BIN_DIR)/bench_fresh_sync: tools/bench_fresh_sync.c \
+		lib/platform/src/clock.c lib/base/src/log_level.c
 	@mkdir -p $(dir $@)
-	$(CC) -O2 -o $@ $<
+	$(CC) -O2 -Ilib/platform/include -Ilib/base/include -Ilib/util/include \
+	    -D_DEFAULT_SOURCE -o $@ $^
 
 bench: zclassic23
 	@ZCL_BENCH_COMMIT="$(BUILD_COMMIT)" $(ZCLASSIC23_BIN) -bench
@@ -5249,6 +5261,15 @@ check-no-shellouts:
 	@echo "→ Gate: no_shellouts (os-substrate Rung 0)"
 	@./tools/lint/check_no_shellouts.sh
 
+# Every standalone tool rule in this file must actually build. lint/
+# test-parallel/ci build the node, the test runners, the fuzzers and two lint
+# helpers — nothing else — so every other $(BIN_DIR)/<tool> rule was reachable
+# from no gate and rotted silently. The tool list is DERIVED from this
+# Makefile (fail-closed: a new tool is covered the day it lands).
+check-standalone-tools-link:
+	@echo "→ Gate: standalone_tools_link (every tool rule still builds)"
+	@./tools/lint/check_standalone_tools_link.sh
+
 # North Star invariant 1 (single writer per frontier), made mechanical for the
 # sealed ROM segment store: only the designated sealer/RPC/healer/writer surface
 # may call the store's WRITE API (chain_segment_seal_range /
@@ -5838,7 +5859,8 @@ LINT_GATES := \
     check-clang-portability \
     check-result-discard \
     check-no-trust-state-ordering \
-    check-no-warning-suppression
+    check-no-warning-suppression \
+    check-standalone-tools-link
 
 # The driver execs gate scripts directly, so the two gates backed by a built
 # tool (check-core-seal, check-observability-pairing) need their binaries
@@ -6017,7 +6039,9 @@ $(BIN_DIR)/postmortem_to_scenario: tools/postmortem_to_scenario.c \
 		lib/sim/src/postmortem.c lib/sim/src/seed_tape.c \
 		lib/platform/src/clock.c lib/platform/src/rng.c \
 		lib/util/src/signal_handler.c lib/util/src/clientversion.c \
-		lib/base/src/safe_alloc.c lib/json/src/json.c
+		lib/util/src/async_safe_write.c \
+		lib/base/src/safe_alloc.c lib/base/src/log_level.c \
+		lib/json/src/json.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    -Wno-format-truncation \

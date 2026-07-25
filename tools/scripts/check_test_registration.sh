@@ -180,6 +180,104 @@ if [ "$entry_count" -lt 100 ]; then
     exit 2
 fi
 
+# ── PRONG B: canonical-registry drift ────────────────────────────────────
+# Prong A above accepts a test dispatched by EITHER runner. That union is too
+# weak in one direction, and the weak direction is the one that matters:
+# test_parallel.c is the CANONICAL registry and `make test-parallel` is the
+# doctrine runner (and the acceptance gate). test.c is the legacy sequential
+# shape, and `build/bin/test_zcl` is explicitly never run. So a test dispatched
+# ONLY by test.c runs in NO gate — it is dead coverage that reports nothing,
+# exactly the failure prong A was written to prevent, just one runner over.
+#
+# Found on 2026-07-25 by this prong: 5 such names. One of them
+# (test_lcc_write_rules) did not merely fail to run — it FAILED when finally
+# executed, having been wrong since it was written, because no runner had ever
+# reached it.
+#
+# A serial-dispatched name is canonical-clean iff EITHER
+#   (1) it is itself in TEST_LIST/SPEC_LIST, OR
+#   (2) the filename-matching entry point of the FILE that defines it is in
+#       TEST_LIST/SPEC_LIST — i.e. it is a sub-test reached through a
+#       registered parent group (test_simnet_wire.c's per-scenario functions
+#       are dispatched by the registered `simnet_wire` group).
+# Index every entry-point definition ONCE (name -> defining file). Grepping
+# per dispatched name re-scanned the whole test tree ~600 times and cost ~13 s
+# of the lint wall on its own.
+set +e
+defs=$(grep -HE "^int[[:space:]]+test_[a-zA-Z0-9_]+\(void\)[[:space:]]*\$" \
+       "$TEST_DIR"/*.c 2>/dev/null)
+grc=$?
+set -e
+if [ "$grc" -ge 2 ]; then
+    echo "check_test_registration: FATAL — grep indexing entry points failed (exit $grc)" >&2
+    exit 2
+fi
+declare -A DEF_FILE=()
+while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    f=${line%%:*}
+    fn=${line#*:}
+    fn=${fn#int}
+    fn=${fn##*[[:space:]]}          # test_<name>(void)
+    fn=${fn%%(*}                    # test_<name>
+    [ -n "${DEF_FILE[${fn#test_}]:-}" ] || DEF_FILE[${fn#test_}]="$f"
+done <<< "$defs"
+
+if [ "${#DEF_FILE[@]}" -lt 100 ]; then
+    echo "check_test_registration: FATAL — indexed only ${#DEF_FILE[@]} entry-point" >&2
+    echo "  definitions under $TEST_DIR (expected >=100). Refusing to report 'clean'." >&2
+    exit 2
+fi
+
+drift=""
+serial_checked=0
+for name in $dispatched; do
+    [ -n "$name" ] || continue
+    # (1) directly registered?
+    if grep -qxF "$name" <<< "$registered"; then
+        serial_checked=$((serial_checked + 1))
+        continue
+    fi
+    # Not defined in a dedicated lib/test/src file: a helper or an out-of-tree
+    # symbol, not a registrable group. Out of scope.
+    def_file="${DEF_FILE[$name]:-}"
+    [ -n "$def_file" ] || continue
+    serial_checked=$((serial_checked + 1))
+    # (2) is the defining file's own group registered?
+    parent=$(basename "$def_file" .c); parent=${parent#test_}
+    if grep -qxF "$parent" <<< "$registered"; then
+        continue
+    fi
+    drift="${drift}${name}\t${def_file}\n"
+done
+
+# FAIL-LOUD floor: the serial runner must have yielded a real population, else
+# the scan silently emptied and this prong is decorative.
+if [ "$serial_checked" -lt 100 ]; then
+    echo "check_test_registration: FATAL — only $serial_checked serial-dispatched" >&2
+    echo "  names resolved against the canonical registry (expected >=100)." >&2
+    echo "  The dispatch or definition convention drifted; refusing to report 'clean'." >&2
+    exit 2
+fi
+
+if [ -n "$drift" ]; then
+    echo "FAIL: test(s) dispatched ONLY by the legacy serial runner (test.c) and"
+    echo "  ABSENT from the canonical TEST_LIST/SPEC_LIST registry in"
+    echo "  test_parallel.c. \`make test-parallel\` is the doctrine runner and the"
+    echo "  acceptance gate; build/bin/test_zcl is never run. These therefore"
+    echo "  execute in NO gate and prove NOTHING:"
+    echo ""
+    printf '%b' "$drift" | while IFS=$'\t' read -r n path; do
+        [ -n "$n" ] && echo "    test_$n   ($path)"
+    done
+    echo ""
+    echo "  Fix: add X(<name>) to TEST_LIST in lib/test/src/test_parallel.c — and"
+    echo "  RUN it (make t-fast ONLY=test_<name>) before assuming it passes."
+    echo "  Do NOT delete the test, and do NOT silence this by removing the"
+    echo "  test.c dispatch."
+    exit 1
+fi
+
 if [ -n "$orphans" ]; then
     echo "FAIL: test entry point(s) DEFINED + COMPILED but dispatched by NEITHER"
     echo "  the TEST_LIST X() macro (test_parallel.c) nor the serial runner"
@@ -198,4 +296,6 @@ fi
 
 echo "check_test_registration: clean — all $entry_count test entry points are dispatched"
 echo "  ($reg_count registered in TEST_LIST; the rest covered by the serial runner)"
+echo "  canonical-registry drift: 0 of $serial_checked serial-dispatched name(s)"
+echo "  run only under the legacy test.c runner"
 exit 0
