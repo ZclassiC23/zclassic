@@ -175,6 +175,52 @@ static bool valid_c_identifier(const char *s) {
     return true;
 }
 
+/* ── Write-if-changed ─────────────────────────────────────────────────
+ *
+ * These headers are TRACKED files that the build produces, and the build's
+ * source-identity guard hashes the mtime/ctime of every tracked source. A
+ * fresh clone has to compile this generator first, which leaves the tool
+ * newer than the committed header, so make re-runs the rule on every first
+ * build. Rewriting the file then moves the source identity out from under
+ * the in-flight build and the link is refused outright:
+ *
+ *     source-identity: source build superseded: expected=.../mutation=...
+ *
+ * That is a fresh clone failing its first `make`, on every machine. Emitting
+ * to a temporary and replacing the target only when the BYTES differ makes a
+ * no-op regeneration leave no trace. Sorted output (see process_dir) is what
+ * makes "no-op" actually reachable across machines; the two go together. */
+static FILE *open_staged(const char *out_path, char *tmp_path, size_t tmp_cap)
+{
+    int n = snprintf(tmp_path, tmp_cap, "%s.tmp", out_path);
+    if (n < 0 || (size_t)n >= tmp_cap) return NULL;
+    return fopen(tmp_path, "w");
+}
+
+/* Close the staged file and move it over out_path only if the contents
+ * changed. Returns 0 on success, 1 on I/O failure. */
+static int commit_staged(FILE *out, const char *tmp_path, const char *out_path,
+                         bool *out_changed)
+{
+    *out_changed = false;
+    if (fclose(out) != 0) { remove(tmp_path); return 1; }
+
+    size_t new_len = 0, old_len = 0;
+    char *new_buf = read_file(tmp_path, &new_len);
+    if (!new_buf) { remove(tmp_path); return 1; }
+    char *old_buf = read_file(out_path, &old_len);
+
+    bool same = old_buf && new_len == old_len &&
+                memcmp(new_buf, old_buf, new_len) == 0;
+    free(new_buf);
+    free(old_buf);
+
+    if (same) { remove(tmp_path); return 0; }
+    if (rename(tmp_path, out_path) != 0) { remove(tmp_path); return 1; }
+    *out_changed = true;
+    return 0;
+}
+
 static int write_single_css_header(const char *src_path, const char *out_path,
                                    const char *symbol, const char *guard)
 {
@@ -201,7 +247,8 @@ static int write_single_css_header(const char *src_path, const char *out_path,
     if (!minified)
         return 1;
 
-    out = fopen(out_path, "w");
+    char tmp_path[1200];
+    out = open_staged(out_path, tmp_path, sizeof(tmp_path));
     if (!out) {
         fprintf(stderr, "gen_templates: cannot write: %s\n", out_path);
         free(minified);
@@ -245,10 +292,16 @@ static int write_single_css_header(const char *src_path, const char *out_path,
         "#endif\n",
         symbol, symbol, symbol, symbol);
 
-    fclose(out);
+    bool changed = false;
+    if (commit_staged(out, tmp_path, out_path, &changed) != 0) {
+        fprintf(stderr, "gen_templates: cannot write: %s\n", out_path);
+        free(minified);
+        return 1;
+    }
     free(minified);
-    fprintf(stderr, "gen_templates: CSS %s -> %s (%zu bytes)\n",
-            src_path, out_path, min_len);
+    fprintf(stderr, "gen_templates: CSS %s -> %s (%zu bytes, %s)\n",
+            src_path, out_path, min_len,
+            changed ? "updated" : "unchanged");
     return 0;
 }
 
@@ -315,7 +368,12 @@ static int process_dir(const char *dir, const char *ext, const char *prefix,
         }
 
         char path[1024];
-        snprintf(path, sizeof(path), "%s/%s", dir, d_name);
+        int plen = snprintf(path, sizeof(path), "%s/%s", dir, d_name);
+        if (plen < 0 || (size_t)plen >= sizeof(path)) {
+            fprintf(stderr, "gen_templates: skipping over-long path: %s/%s\n",
+                dir, d_name);
+            continue;
+        }
 
         size_t flen = 0;
         char *buf = read_file(path, &flen);
@@ -418,7 +476,8 @@ int main(int argc, char **argv) {
     const char *out_path = argv[2];
     const char *css_dir = (argc >= 4) ? argv[3] : NULL;
 
-    FILE *out = fopen(out_path, "w");
+    char tmp_path[1200];
+    FILE *out = open_staged(out_path, tmp_path, sizeof(tmp_path));
     if (!out) {
         fprintf(stderr, "Cannot write: %s\n", out_path);
         return 1;
@@ -454,9 +513,14 @@ int main(int argc, char **argv) {
         tmpl_name_count);
 
     fprintf(out, "#endif\n");
-    fclose(out);
 
-    fprintf(stderr, "gen_templates: %d .chtml + %d .ccss files -> %s\n",
-        tmpl_count, css_count, out_path);
+    bool changed = false;
+    if (commit_staged(out, tmp_path, out_path, &changed) != 0) {
+        fprintf(stderr, "Cannot write: %s\n", out_path);
+        return 1;
+    }
+
+    fprintf(stderr, "gen_templates: %d .chtml + %d .ccss files -> %s (%s)\n",
+        tmpl_count, css_count, out_path, changed ? "updated" : "unchanged");
     return 0;
 }
