@@ -41,11 +41,11 @@
 #include <string.h>
 #include <time.h>
 
-/* The block_tree_db handle is owned by config/src/boot.c and exposed as
- * a process-wide pointer for validation. We reuse the same handle here so
- * flipped status updates land in the same LevelDB the rest of the validation
- * path persists to. Shared with process_block_revalidate.c. */
-extern struct block_tree_db *g_active_block_tree;
+/* The block_tree_db handle is opened by config/src/boot.c and published
+ * into g_active_block_tree (declared in <validation/process_block.h>). We
+ * reuse the same handle here so flipped status updates land in the same
+ * LevelDB the rest of the validation path persists to. Shared with
+ * process_block_revalidate.c. */
 
 const char *invalidate_result_name(enum invalidate_result r)
 {
@@ -221,7 +221,7 @@ bool process_block_disconnect_to_parent(struct validation_state *state,
                    parent ? parent->nHeight : -1, target->nHeight);
     }
     /* Drive the stage inverse-delta unwind to convergence. */
-    (void)reducer_kick(boot_activation_controller());
+    (void)reducer_kick(process_block_activation_controller());
     return true;
 }
 
@@ -262,7 +262,7 @@ enum invalidate_result process_block_invalidate(struct main_state *ms,
 
     /* Resolve the disconnect context from the activation controller —
      * the single owner of coins_tip/params/datadir. */
-    struct chain_activation_controller *ctl = boot_activation_controller();
+    struct chain_activation_controller *ctl = process_block_activation_controller();
 
     /* Mark FAILED_VALID before any reducer kick. The disconnect helper moves
      * the active-chain cursor down and kicks the reducer so the staged unwind
@@ -359,7 +359,7 @@ enum reconsider_result process_block_reconsider(struct main_state *ms,
     /* Kick the engine so the now-eligible chain is re-evaluated.
      * The reducer re-walks via reducer_kick (the stage forward-apply that
      * mirrors connect_block). */
-    struct chain_activation_controller *ctl = boot_activation_controller();
+    struct chain_activation_controller *ctl = process_block_activation_controller();
     if (ctl)
         (void)reducer_kick(ctl);
 

@@ -69,6 +69,27 @@ typedef void (*process_block_gap_fill_kick_fn)(void *ctx);
 void process_block_set_gap_fill_kick(process_block_gap_fill_kick_fn fn,
                                      void *ctx);
 
+/* Active block-index database. Owned and opened by the composition root,
+ * which publishes it here once the tree is open; NULL until then and in
+ * tests that never open one. Declared in validation because that is where
+ * the definition lives -- config/ sits ABOVE lib/, so the pointer cannot be
+ * defined up there and read back down by name. */
+struct block_tree_db;
+extern struct block_tree_db *g_active_block_tree;
+
+/* The composition root's single chain-activation controller. Validation
+ * decides what became invalid or valid again; the reducer owns acting on
+ * it. The controller instance is boot-owned, so validation reaches it
+ * through this hook rather than naming a config/ symbol. Returns NULL when
+ * unregistered, and every call site already treats that as "no reducer to
+ * kick". */
+struct chain_activation_controller;
+typedef struct chain_activation_controller *
+    (*process_block_activation_controller_fn)(void);
+void process_block_set_activation_controller(
+    process_block_activation_controller_fn fn);
+struct chain_activation_controller *process_block_activation_controller(void);
+
 struct process_block_tip_evidence {
     bool header_ancestry_linked;
     bool chainwork_recomputed;

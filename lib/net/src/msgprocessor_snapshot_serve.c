@@ -25,7 +25,7 @@
 #include "msgprocessor_internal.h"
 #include "msgprocessor_snapshot_internal.h"
 
-#include "config/boot_snapshot_offer.h"
+#include "net/net_runtime_port.h"
 #include "net/fast_sync.h"
 #include "net/puzzle.h"
 #include "net/peer_scoring.h"
@@ -313,7 +313,7 @@ static bool msg_block_manifest_is_reasonable(
 
 static bool msg_snapshot_serving_allowed(void)
 {
-    return boot_snapshot_offer_state_is_sovereign(NULL, 0);
+    return net_runtime_snapshot_state_is_sovereign(NULL, 0);
 }
 
 /* Thread-safe accessor: update cached snapshot offer from boot.c */

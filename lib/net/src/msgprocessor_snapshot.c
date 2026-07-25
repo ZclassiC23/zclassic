@@ -11,7 +11,7 @@
 #include "msgprocessor_internal.h"
 #include "msgprocessor_snapshot_internal.h"
 
-#include "config/boot_snapshot_offer.h"
+#include "net/net_runtime_port.h"
 #include "net/addrman.h"
 #include "net/download.h"
 #include "net/fast_sync.h"
@@ -259,8 +259,8 @@ static int32_t block_swarm_contiguous_window_cap(
 struct snapshot_sync_service *msg_snapshot_sync(
     const struct msg_processor *mp)
 {
-    if (mp && mp->runtime && mp->runtime->snapshot_sync)
-        return mp->runtime->snapshot_sync;
+    struct snapshot_sync_service *svc = net_runtime_snapshot_sync(mp ? mp->runtime : NULL);
+    if (svc) return svc;
     if (snapsync_global_initialized())
         return snapsync_global();
     LOG_NULL("net", "no snapshot sync service available");

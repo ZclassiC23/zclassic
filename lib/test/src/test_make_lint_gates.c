@@ -7626,7 +7626,12 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
         ASSERT(repo_path(path, sizeof(path),
                          "lib/validation/src/process_block.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
-        ASSERT(strstr(buf, "app_runtime_node_db_handle_open") != NULL);
+        /* The accessors live behind storage/node_db_runtime.h, a lib/-owned
+         * port config/ registers into. Naming config/ from lib/ would make
+         * the composition root and the foundation mutually dependent, so the
+         * negative guard below is joined by check-lib-layering (gate #15). */
+        ASSERT(strstr(buf, "node_db_runtime_handle_open") != NULL);
+        ASSERT(strstr(buf, "config/runtime.h") == NULL);
         ASSERT(strstr(buf, "models/database.h") == NULL);
         free(buf);
         buf = NULL;
@@ -7634,8 +7639,8 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
         ASSERT(repo_path(path, sizeof(path),
                          "lib/validation/src/process_block_flush_policy.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
-        ASSERT(strstr(buf, "app_runtime_node_db_handle_open") != NULL);
-        ASSERT(strstr(buf, "app_runtime_node_db_state_set") != NULL);
+        ASSERT(strstr(buf, "node_db_runtime_handle_open") != NULL);
+        ASSERT(strstr(buf, "node_db_runtime_state_set") != NULL);
         /* sync_flush_if_needed + wal_checkpoint positive-assertions removed:
          * their only use site here (flush_coins_if_needed, the dead
          * forward-writer) was deleted in the dead-code removal — process_block
@@ -7651,7 +7656,7 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
         ASSERT(repo_path(path, sizeof(path),
                          "lib/validation/src/process_block_self_heal.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
-        ASSERT(strstr(buf, "app_runtime_node_db_utxo_max_height") != NULL);
+        ASSERT(strstr(buf, "node_db_runtime_utxo_max_height") != NULL);
         ASSERT(strstr(buf, "app_runtime_node_db_tx_index_find") == NULL);
         ASSERT(strstr(buf, "db_tx_find_native_or_reversed") == NULL);
         ASSERT(strstr(buf, "sqlite3_prepare_v2") == NULL);

@@ -5,7 +5,10 @@
 #include "config/runtime.h"
 #include "models/database.h"
 #include "models/tx_index.h"
+#include "services/chain_activation_service.h"
+#include "storage/node_db_runtime.h"
 #include "util/ar_step_readonly.h"
+#include "validation/process_block.h"
 #include <limits.h>
 #include <string.h>
 #include <stddef.h>
@@ -170,4 +173,30 @@ struct coins_view_cache *app_runtime_coins_tip(void)
     if (!g_current_runtime)
         return NULL;
     return g_current_runtime->coins_tip;
+}
+
+/* ── downward wiring for lib/ ────────────────────────────────────────────
+ * lib/storage and lib/validation need the live node.db handle and the
+ * boot-owned chain-activation controller. config/ composes the process and
+ * therefore sits ABOVE lib/; calling back down is fine, being called up by
+ * name is not. Each lib/ module declares a port, and this file fills it in
+ * with the very functions those call sites used to name directly, so the
+ * behaviour is unchanged.
+ *
+ * A constructor rather than an app_init step: the node and the test runner
+ * then get identical wiring with no start-order question, matching what
+ * direct calls to these functions already guaranteed. */
+
+static const struct node_db_runtime_port g_node_db_runtime_port = {
+    .handle = app_runtime_node_db,
+    .handle_open = app_runtime_node_db_handle_open,
+    .state_set = app_runtime_node_db_state_set,
+    .utxo_max_height = app_runtime_node_db_utxo_max_height,
+};
+
+__attribute__((constructor))
+static void app_runtime_register_lib_ports(void)
+{
+    node_db_runtime_port_set(&g_node_db_runtime_port);
+    process_block_set_activation_controller(boot_activation_controller);
 }

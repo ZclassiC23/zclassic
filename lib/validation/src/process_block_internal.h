@@ -47,8 +47,8 @@ struct tx_mempool;
  * Exposed here as extern so the split modules can read them
  * without going through getter calls in hot paths. */
 
-/* Owner: process_block.c */
-extern struct block_tree_db *g_active_block_tree;       /* defined in boot.c */
+/* Owner: process_block_runtime_hooks.c (g_active_block_tree is declared in
+ * <validation/process_block.h>; boot assigns it once the tree is open) */
 extern volatile sig_atomic_t g_shutdown_requested;      /* defined in boot.c */
 extern _Atomic int g_body_pull_active;                  /* public in process_block.h */
 

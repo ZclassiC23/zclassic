@@ -26,7 +26,7 @@
 
 #include "validation/process_block.h"
 #include "validation/process_block_internals.h"
-#include "config/runtime.h"
+#include "storage/node_db_runtime.h"
 
 #include "process_block_internal.h"
 
@@ -50,10 +50,10 @@ void process_block_set_node_db(struct node_db *ndb)
  * caller, the fast-sync legacy_body_pull ingester, was deleted. */
 struct node_db *process_block_node_db_internal(void)
 {
-    struct node_db *ndb = app_runtime_node_db();
-    if (app_runtime_node_db_handle_open(ndb))
+    struct node_db *ndb = node_db_runtime();
+    if (node_db_runtime_handle_open(ndb))
         return ndb;
-    return app_runtime_node_db_handle_open(g_process_block_node_db)
+    return node_db_runtime_handle_open(g_process_block_node_db)
          ? g_process_block_node_db
          : NULL;
 }

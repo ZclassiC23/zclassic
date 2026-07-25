@@ -169,7 +169,9 @@ struct chain_activation_controller *boot_activation_controller(void)
     return &g_activation_ctl;
 }
 static struct block_tree_db g_block_tree;
-struct block_tree_db *g_active_block_tree = NULL;
+/* g_active_block_tree is defined in lib/validation (declared in
+ * <validation/process_block.h>); boot publishes g_block_tree into it once
+ * the tree is open. */
 static bool g_block_tree_open = false;
 static struct tx_mempool g_mempool;
 static struct rpc_table g_rpc_table;
