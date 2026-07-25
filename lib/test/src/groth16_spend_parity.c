@@ -44,6 +44,15 @@
  *   (D) DETERMINISM. Re-synthesizing an identical witness yields a byte-identical
  *       witness vector.
  *
+ *   (E) R1CS SATISFACTION — the coefficient-level check. (A) reads constraint
+ *       COUNTS and (C) reads three wire VALUES; neither can see a wrong
+ *       coefficient inside an otherwise correctly-shaped constraint. So every
+ *       emitted constraint is evaluated against the honest witness and asserted
+ *       to satisfy A*B==C (bellman's TestConstraintSystem::which_is_unsatisfied).
+ *       Without this, "proven at parity" would mean only that the right NUMBER
+ *       of constraints exist — a circuit whose own witness does not satisfy it
+ *       yields proofs the network rejects, and counts alone cannot detect that.
+ *
  * On the FIRST divergence in any category the oracle prints the offending
  * (witness index, section name, expected vs actual) — it flags, never hides.
  *
@@ -215,7 +224,7 @@ int groth16_spend_parity_oracle(void)
     for (unsigned c = 0; c < CORPUS_N; c++) {
         struct parity_witness pw;
         build_corpus_witness(&pw, c);
-        char label[96];
+        char label[160];
 
         snprintf(label, sizeof(label),
                  "corpus[%u]: witness constructed (valid rk/ak points)", c);
@@ -328,6 +337,60 @@ int groth16_spend_parity_oracle(void)
         snprintf(label, sizeof(label),
                  "corpus[%u]: in-circuit rk wire == ak + [ar]G (section 4)", c);
         PARITY_CHECK(label, rk_wire_ok);
+
+        /* Sections 8/9: the EdwardsPoint::repr bit wires. Jubjub's compressed
+         * encoding is y with x's low bit in the top bit, so repr's 256 bits
+         * (y[0..255] then x[0]) are exactly the bits of the point's 32-byte
+         * compressed encoding, LSB first. For nk that encoding is
+         * librustzcash's own output — so this is a genuine per-witness
+         * differential on the newly-ported sections, not a count. */
+        bool ak_repr_ok = true, nk_repr_ok = true;
+        for (size_t b = 0; b < 256; b++) {
+            bool want_ak = (pw.wit.ak[b / 8] >> (b % 8)) & 1;
+            bool want_nk = (nk_ref[b / 8] >> (b % 8)) & 1;
+            size_t vak = probe.ak_repr[b], vnk = probe.nk_repr[b];
+            struct fr one_fr;
+            fr_one(&one_fr);
+            if (vak >= cs.num_vars
+                || fr_eq(&cs.witness[vak], &one_fr) != want_ak)
+                ak_repr_ok = false;
+            if (vnk >= cs.num_vars
+                || fr_eq(&cs.witness[vnk], &one_fr) != want_nk)
+                nk_repr_ok = false;
+        }
+        if (!nk_repr_ok && !flagged) {
+            flagged = true;
+            printf("  >> FIRST DIVERGENCE: corpus[%u] in-circuit repr(nk) bits "
+                   "!= librustzcash compressed nk encoding\n", c);
+        }
+        snprintf(label, sizeof(label),
+                 "corpus[%u]: repr(ak) 256 bits == compressed ak (section 8)", c);
+        PARITY_CHECK(label, ak_repr_ok);
+        snprintf(label, sizeof(label),
+                 "corpus[%u]: repr(nk) 256 bits == librustzcash compressed nk "
+                 "(section 9)", c);
+        PARITY_CHECK(label, nk_repr_ok);
+
+        /* (E) R1CS SATISFACTION — the coefficient-level check. (A) compares
+         *     constraint COUNTS and (C) probes three wire VALUES; neither can
+         *     see a wrong coefficient inside an otherwise correctly-shaped
+         *     constraint. A one-bit error in a constraint's A/B/C linear
+         *     combination leaves counts and probed wires untouched but makes
+         *     the honest witness fail to satisfy the circuit — i.e. a proof
+         *     the network rejects. Assert A*B==C over the real witness for
+         *     every emitted constraint, per corpus witness. */
+        size_t bad_constraint = SIZE_MAX;
+        bool sat_ok = cs_is_satisfied(&cs, &bad_constraint);
+        if (!sat_ok && !flagged) {
+            flagged = true;
+            printf("  >> FIRST DIVERGENCE: corpus[%u] R1CS UNSATISFIED at "
+                   "constraint index %zu of %zu (A*B != C under the honest "
+                   "witness)\n", c, bad_constraint, cs.num_constraints);
+        }
+        snprintf(label, sizeof(label),
+                 "corpus[%u]: all %zu constraints satisfied by the witness "
+                 "(A*B==C)", c, cs.num_constraints);
+        PARITY_CHECK(label, sat_ok);
 
         /* (D) Determinism: re-synthesize, expect a byte-identical witness. */
         struct constraint_system cs2;

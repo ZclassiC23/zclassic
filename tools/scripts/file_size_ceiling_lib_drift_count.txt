@@ -191,4 +191,16 @@
 # against lib/rpc. Re-baselined in file_size_ceiling_lib_baseline.txt (1100),
 # which keeps it OUT of the drift list rather than spending the last slot under
 # the ratchet; live count 12. Ratchet left at 13.
+#
+# 2026-07-25 (Groth16 spend-circuit port, sections 8-9): circuit_gadgets.c grew
+# 1574 -> 1646 NET — it gained gadget_into_bits_le_strict + gadget_point_repr
+# (bellman's strict in-field bit decomposition and EdwardsPoint::repr, 388
+# constraints per field element) and simultaneously SHED 103 lines of dead
+# unsound stubs (gadget_blake2s, gadget_merkle_path, gadget_note_commitment,
+# gadget_nullifier — all four computed their result out of circuit and
+# allocated the answer with no constraint binding output to input; none had a
+# caller). groth16_prover.c grew 1036 -> 1057 adding cs_is_satisfied(), the
+# A*B==C check over the witness that the parity oracle needs to see a wrong
+# constraint COEFFICIENT (counts and probed wire values cannot). Both
+# re-baselined here rather than spending a ratchet slot; count unchanged.
 13

@@ -94,6 +94,17 @@ void groth16_prover_test_set_force_domain(size_t forced);
 void lc_evaluate(struct fr *result, const struct linear_combination *lc,
                    const struct fr *witness);
 
+/* R1CS satisfaction: does the recorded witness actually satisfy A*B=C for
+ * every emitted constraint? This is the ONLY check that reads constraint
+ * COEFFICIENTS — constraint counts and a handful of probed wire values cannot
+ * see a wrong coefficient, and a circuit whose honest witness does not satisfy
+ * its own constraints produces proofs the network rejects. Mirrors bellman's
+ * TestConstraintSystem::which_is_unsatisfied (sapling-crypto circuit/test).
+ * Returns true when every constraint holds; on failure returns false and, when
+ * bad_index_out is non-NULL, stores the index of the first unsatisfied
+ * constraint (SIZE_MAX when the system itself is unusable). O(total LC terms). */
+bool cs_is_satisfied(const struct constraint_system *cs, size_t *bad_index_out);
+
 /* ── Proving Key ────────────────────────────────────────────────── */
 
 /* Proving key for Groth16.
