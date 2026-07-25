@@ -5487,6 +5487,16 @@ check-no-uncited-victory:
 	@echo "══ LINT: no uncited victory claim (docs/HANDOFF.md) ══"
 	@./tools/scripts/check_no_uncited_victory.sh
 
+# A document path baked into an operator-facing C string literal must resolve
+# to a file that exists. Three wallet-path boot refusals pointed the operator
+# at WALLET_PERSISTENCE_RECOVERY.md, which had never existed — a dead pointer
+# at the one moment the reader most needs the instructions.
+# check-markdown-links covers .md-to-.md; this covers .md inside C literals.
+# See tools/lint/check_error_doc_refs.sh (has --selftest).
+check-error-doc-refs:
+	@echo "══ LINT: operator-named docs exist (C string literals) ══"
+	@./tools/lint/check_error_doc_refs.sh
+
 # Dev-UX: the DERIVED binary size (counterpart to the forbid gate above). Quote
 # this instead of hand-pinning a size in prose; a reviewer re-runs it to confirm.
 .PHONY: binary-size
@@ -5757,6 +5767,7 @@ LINT_GATES := \
     check-doc-counts \
     check-no-stale-pinned-facts \
     check-no-uncited-victory \
+    check-error-doc-refs \
     check-markdown-links \
     check-one-result-type \
     check-service-result-convergence \

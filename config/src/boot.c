@@ -15,6 +15,7 @@
 #include "config/boot_legacy_blocks.h"
 #include "config/boot_memory_guard.h"
 #include "config/boot_postmortem.h"
+#include "config/boot_refusal_reports.h"
 #include "config/boot_shutdown_marker.h"
 #include "util/shutdown_stagewatch.h"
 #include "config/boot_fast_restart.h"
@@ -132,6 +133,7 @@
 #include "event/event.h"
 #include "controllers/event_controller.h"
 #include "models/block.h"
+#include <errno.h>
 #include <netdb.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -439,11 +441,26 @@ static bool boot_step_select_chain_and_datadir(struct app_context *ctx)
     g_blog_datadir = ctx->datadir;
     SetDataDir(ctx->datadir);
 
-    /* Auto-create datadir if it doesn't exist */
+    /* Auto-create datadir if it doesn't exist.
+     *
+     * The mkdir return value used to be discarded and "Created data
+     * directory: X" printed unconditionally — so a create that FAILED (a
+     * missing parent, a read-only mount, a denied path) still claimed
+     * success, and the operator's first real signal was the datadir lock a
+     * few lines below reporting a bare errno on a directory the log had just
+     * said was created. Name the create failure where it happens. EEXIST is
+     * not a failure: another process (or the stat race) won. */
     struct stat st;
     if (stat(ctx->datadir, &st) != 0) {
-        mkdir(ctx->datadir, 0700);
-        printf("Created data directory: %s\n", ctx->datadir);
+        if (mkdir(ctx->datadir, 0700) == 0) {
+            printf("Created data directory: %s\n", ctx->datadir);
+        } else if (errno != EEXIST) {
+            int e = errno;
+            boot_report_datadir_create_failed(ctx->datadir, e);
+            event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                        "datadir_create_failed errno=%d", e);
+            return false;
+        }
     }
 
     /* Now that the datadir is known, point the crash handler at a durable,
@@ -1613,21 +1630,8 @@ bool app_init(struct app_context *ctx)
          * boot and preserve the datadir for the operator to
          * investigate. Silently generating a fresh keypool here is
          * what caused 0.4 ZCL to become unspendable. */
-        fprintf(stderr,
-            "\nFATAL: wallet persistence initialisation failed.\n"
-            "       code=%d\n"
-            "       message=%s\n"
-            "       source=%s:%d\n"
-            "       node.db contains %lld existing wallet_keys rows —"
-            " REFUSING to regenerate.\n"
-            "       To recover: see WALLET_PERSISTENCE_RECOVERY.md\n\n",
-            wsql_open_r.code,
-            wsql_open_r.message[0] ? wsql_open_r.message
-                                   : "wallet_sqlite_open_r returned !ok",
-            wsql_open_r.source_file ? wsql_open_r.source_file
-                                    : "config/src/boot.c",
-            wsql_open_r.source_line,
-            (long long)pre_open_key_rows);
+        boot_report_wallet_persistence_open_failed(
+            ctx->datadir, &wsql_open_r, (long long)pre_open_key_rows);
         event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
                     "wallet_persistence_open_failed code=%d rows=%lld",
                     wsql_open_r.code, (long long)pre_open_key_rows);
@@ -1680,15 +1684,9 @@ bool app_init(struct app_context *ctx)
         int crc = wallet_canary_run(g_node_db.db, &cs);
         if (crc != WALLET_CANARY_OK) {
             if (pre_open_key_rows > 0) {
-                fprintf(stderr,
-                    "\nFATAL: wallet canary self-test failed.\n"
-                    "       code=%d\n"
-                    "       message=%s\n"
-                    "       source=lib/wallet/src/wallet_canary.c\n"
-                    "       node.db contains %lld existing wallet_keys rows —"
-                    " REFUSING to proceed.\n"
-                    "       To recover: see WALLET_PERSISTENCE_RECOVERY.md\n\n",
-                    crc, cs.error, (long long)pre_open_key_rows);
+                boot_report_wallet_canary_failed(
+                    ctx->datadir, crc, cs.error,
+                    (long long)pre_open_key_rows);
                 event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
                             "wallet_canary_failed code=%d rows=%lld",
                             crc, (long long)pre_open_key_rows);
@@ -1706,14 +1704,9 @@ bool app_init(struct app_context *ctx)
          * loss on the next flush. */
         if (pre_open_key_rows > 0 &&
             (int64_t)g_wallet.keystore.num_keys != pre_open_key_rows) {
-            fprintf(stderr,
-                "\nFATAL: wallet keystore count mismatch.\n"
-                "       wallet_keys rows=%lld\n"
-                "       loaded keystore=%zu\n"
-                "       source=config/src/boot.c\n"
-                "       REFUSING to proceed — in-memory and on-disk diverged.\n"
-                "       To recover: see WALLET_PERSISTENCE_RECOVERY.md\n\n",
-                (long long)pre_open_key_rows, g_wallet.keystore.num_keys);
+            boot_report_wallet_keystore_count_mismatch(
+                ctx->datadir, (long long)pre_open_key_rows,
+                g_wallet.keystore.num_keys);
             event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
                         "wallet_keystore_count_mismatch rows=%lld loaded=%zu",
                         (long long)pre_open_key_rows,

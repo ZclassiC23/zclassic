@@ -14,6 +14,7 @@
 
 #include "config/args.h"
 #include "config/boot.h"
+#include "config/boot_error.h"
 #include "controllers/agent_controller.h"  /* agent_print_native_usage (print_usage) */
 #include "hotswap/hotswap_module.h"
 #include "util/hw_profile.h"
@@ -329,14 +330,30 @@ int args_parse_node_options(int argc, char **argv, struct app_context *ctx,
         else if (strncmp(argv[i], "-profile=", 9) == 0) {
             if (!app_runtime_profile_parse(argv[i] + 9,
                                            &ctx->runtime_profile)) {
-                fprintf(stderr, "Unknown runtime profile: %s\n", argv[i] + 9);
+                /* The typed registry answers an unknown subsystem by printing
+                 * the whole valid set (diagnostics_registry.c). Match that
+                 * here: "Unknown runtime profile: X" alone made the reader go
+                 * read app_runtime_profile_parse to find out what IS valid. */
+                boot_error_report(BOOT_ERROR_FATAL,
+                                  "BOOT_UNKNOWN_RUNTIME_PROFILE", "argv",
+                                  "-profile= names a runtime profile this "
+                                  "binary does not have",
+                                  NULL, 0, "given=%s accepted=%s",
+                                  argv[i] + 9,
+                                  app_runtime_profile_accepted_csv());
                 return 1;
             }
         }
         else if (strncmp(argv[i], "-operator-lane=", 15) == 0) {
             if (!app_operator_lane_parse(argv[i] + 15,
                                          &ctx->operator_lane)) {
-                fprintf(stderr, "Unknown operator lane: %s\n", argv[i] + 15);
+                boot_error_report(BOOT_ERROR_FATAL,
+                                  "BOOT_UNKNOWN_OPERATOR_LANE", "argv",
+                                  "-operator-lane= names a lane this binary "
+                                  "does not have",
+                                  NULL, 0, "given=%s accepted=%s",
+                                  argv[i] + 15,
+                                  app_operator_lane_accepted_csv());
                 return 1;
             }
         }

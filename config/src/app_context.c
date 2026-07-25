@@ -71,6 +71,15 @@ bool app_runtime_profile_parse(const char *name,
     return false;
 }
 
+/* Kept adjacent to the parser above so the two cannot drift: a refusal that
+ * only says "Unknown runtime profile: X" makes the reader go and find this
+ * function, which is exactly the round trip a good error removes. */
+const char *app_runtime_profile_accepted_csv(void)
+{
+    return "full, zclassic-only (alias: zclassic), explorer, "
+           "onion-node (alias: onion), legacy-compat (alias: legacy)";
+}
+
 bool app_runtime_profile_has_explorer(enum zcl_runtime_profile profile)
 {
     return profile == ZCL_RUNTIME_FULL ||
@@ -159,6 +168,13 @@ bool app_operator_lane_parse(const char *name,
         return true;
     }
     return false;
+}
+
+/* Adjacent to the parser above for the same reason as the profile list. */
+const char *app_operator_lane_accepted_csv(void)
+{
+    return "canonical (aliases: live, main), soak, dev (alias: development), "
+           "test (alias: ci), copy (alias: repro), standby, unknown";
 }
 
 /* A declared, non-canonical operator lane (dev/soak/test/copy) is an
