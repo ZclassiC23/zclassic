@@ -322,22 +322,30 @@ static void wnh_commit_input(const struct json_value *ci, char *commit,
 }
 
 /* Emit the non-mutating plan half of a CONFIRM_PLAN_COMMIT leaf: stage=plan,
- * a plan_token, a confirm hint, and one next-action re-running THIS leaf with
- * the committed input. `commit_input` must be a schema-valid JSON object for
- * this leaf (it always includes "confirm":true). */
+ * a plan_token, a confirm hint, and the exact input that commits it.
+ *
+ * The commit input travels as DATA, not as a next-action. A next-action naming
+ * this same leaf cannot be serialized at all: push_next_array() rejects a next
+ * whose path equals the current leaf's (lib/kernel/src/command_registry.c),
+ * which is a deliberate guard against a command that only ever points at
+ * itself. Emitting one anyway failed the whole reply, so every plan leg here —
+ * send, shielded-send, export-key — answered RESPONSE_BUDGET_EXCEEDED instead
+ * of a plan, and the plan/commit flow could not be driven from the typed
+ * interface at all. The caller needs the committing input, not a link; it is
+ * `commit_input` below, and re-running this leaf with it executes the plan. */
 static void wnh_emit_plan(struct zcl_command_reply *reply, const char *path,
                           const char *action, const char *token,
                           const char *commit_input)
 {
+    (void)path; /* the commit re-runs THIS leaf; see the note above */
     (void)json_push_kv_str(&reply->data, "stage", "plan");
     (void)json_push_kv_str(&reply->data, "action", action);
     (void)json_push_kv_bool(&reply->data, "committed", false);
     (void)json_push_kv_str(&reply->data, "plan_token", token);
     (void)json_push_kv_str(
         &reply->data, "confirm_hint",
-        "re-run with \"confirm\":true to execute this plan");
-    (void)zcl_command_reply_add_next(reply, path, commit_input,
-                                     "commit this plan with confirm:true");
+        "re-run this same command with the commit_input below to execute");
+    (void)json_push_kv_str(&reply->data, "commit_input", commit_input);
     reply->error.mutated = false;
 }
 
