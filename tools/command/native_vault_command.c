@@ -100,7 +100,7 @@ enum {
  * routing claim this file makes. `vault_verb` is empty for a class the vault
  * deliberately exposes no verb for: minting one would mean writing the builder
  * the route is missing, which is the one thing this file may not do. */
-struct vault_class {
+struct vault_route {
     const char *name;
     const char *kind;          /* fungible_zat | contract | record */
     const char *route_kind;    /* native_command | node_rpc | none */
@@ -110,7 +110,7 @@ struct vault_class {
     const char *route_note;
 };
 
-static const struct vault_class k_vault_classes[] = {
+static const struct vault_route k_vault_routes[] = {
     { "transparent", "fungible_zat", "native_command",
       "core.wallet.transaction.send",
       "app/controllers/src/wallet_native_handlers.c -> sendtoaddress",
@@ -139,20 +139,20 @@ static const struct vault_class k_vault_classes[] = {
       "the swap controller builds, signs, broadcasts and persists state" },
 };
 
-enum { VAULT_CLASS_COUNT =
-           (int)(sizeof(k_vault_classes) / sizeof(k_vault_classes[0])) };
+enum { VAULT_ROUTE_COUNT =
+           (int)(sizeof(k_vault_routes) / sizeof(k_vault_routes[0])) };
 
 /* All six class names as one comma list, for error evidence. */
 static const char k_vault_class_list[] =
     "transparent,shielded,tokens,names,market,swaps";
 
-static const struct vault_class *vault_class_find(const char *name)
+static const struct vault_route *vault_class_find(const char *name)
 {
     if (!name || !name[0])
         return NULL;
-    for (int i = 0; i < VAULT_CLASS_COUNT; i++)
-        if (strcmp(k_vault_classes[i].name, name) == 0)
-            return &k_vault_classes[i];
+    for (int i = 0; i < VAULT_ROUTE_COUNT; i++)
+        if (strcmp(k_vault_routes[i].name, name) == 0)
+            return &k_vault_routes[i];
     return NULL;
 }
 
@@ -253,7 +253,20 @@ static bool vault_read_seam(const char *class_filter, struct json_value *out,
     if (!out || !why || why_cap == 0)
         LOG_FAIL(VAULT_TAG, "read seam called without an output buffer");
 #if ZCL_VAULT_READ_LINKED
-    return vault_read_snapshot(class_filter, out, why, why_cap);
+    /* vault_read_dump_state_json() is the read model's own class-filtered JSON
+     * projection — NULL/empty key for every class, a class name for one row —
+     * which is exactly this seam's contract. Going through it rather than
+     * building a snapshot and rendering it here keeps the projection in one
+     * place: the diagnostics dumper and this command cannot disagree about
+     * what a row looks like, because they are the same call. */
+    if (!vault_read_dump_state_json(out, class_filter)) {
+        (void)snprintf(why, why_cap,
+                       "the vault read model could not build a snapshot%s%s",
+                       (class_filter && class_filter[0]) ? " for class " : "",
+                       (class_filter && class_filter[0]) ? class_filter : "");
+        return false;
+    }
+    return true;
 #else
     (void)class_filter;
     (void)snprintf(why, why_cap,
@@ -333,8 +346,8 @@ void zcl_native_handle_vault_list(const struct zcl_command_request *request,
     json_set_array(&lines);
 
     int available = 0, unavailable = 0;
-    for (int i = 0; i < VAULT_CLASS_COUNT; i++) {
-        const struct vault_class *c = &k_vault_classes[i];
+    for (int i = 0; i < VAULT_ROUTE_COUNT; i++) {
+        const struct vault_route *c = &k_vault_routes[i];
         if (filter && strcmp(filter, c->name) != 0)
             continue;
         const struct json_value *row =
@@ -487,8 +500,8 @@ static void vault_render_items(const struct zcl_command_request *request,
         matched = 0;
         classes_missing = 0;
 
-        for (int ci = 0; ci < VAULT_CLASS_COUNT; ci++) {
-            const struct vault_class *c = &k_vault_classes[ci];
+        for (int ci = 0; ci < VAULT_ROUTE_COUNT; ci++) {
+            const struct vault_route *c = &k_vault_routes[ci];
             if (filter && strcmp(filter, c->name) != 0)
                 continue;
             const struct json_value *row = vault_snapshot_class(&snap, c->name);
@@ -645,8 +658,8 @@ void zcl_native_handle_vault_routes(const struct zcl_command_request *request,
     json_set_array(&unrouted);
 
     int routed = 0;
-    for (int i = 0; i < VAULT_CLASS_COUNT; i++) {
-        const struct vault_class *c = &k_vault_classes[i];
+    for (int i = 0; i < VAULT_ROUTE_COUNT; i++) {
+        const struct vault_route *c = &k_vault_routes[i];
         if (filter && strcmp(filter, c->name) != 0)
             continue;
         struct json_value o;
@@ -698,7 +711,7 @@ void zcl_native_handle_vault_routes(const struct zcl_command_request *request,
                        &unrouted);
     (void)json_push_kv(&reply->data, "dropped_sections", &dropped);
     (void)json_push_kv_int(&reply->data, "classes_routed", routed);
-    (void)json_push_kv_int(&reply->data, "class_count", VAULT_CLASS_COUNT);
+    (void)json_push_kv_int(&reply->data, "class_count", VAULT_ROUTE_COUNT);
     (void)json_push_kv_bool(&reply->data, "spend_logic_in_vault", false);
     (void)json_push_kv_str(&reply->data, "source",
                            "config/src/command_catalog.c (live registry) + "
