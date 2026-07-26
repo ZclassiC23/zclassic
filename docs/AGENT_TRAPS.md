@@ -183,16 +183,42 @@ CLEAN**, and nothing fires for months.
 | `adapters/` | thin sqlite wrappers | Same gate hard-counts `adapters/outbound/persistence/src/*.c` against `persistence_adapters`. |
 | `src/` | four loose files at the root | The program entry point (`src/main.c`, `src/cli.c`, `src/main_cli_modes.{c,h}`) and the most content-asserted path outside `app/`. It is also in the same `roots[]` list as `application/`. |
 
-- **The set of top-level code directories is mirrored in three places that no
-  gate cross-checks.** `KNOWN_TOPS=(lib app domain core config tools adapters
-  ports)` in `tools/lint/check_no_orphan_placement.sh` and `MODULE_TOPS` in
-  `tools/lint/check_doc_inline_paths.sh` are both hand-kept shell copies of
-  `ci_group_for_path()` in `lib/codeindex/src/codeindex_group.c`. Adding or
-  removing a top-level folder means editing **all three**, plus
-  `ci_group_purpose()` (the string `zclassic23 code map` prints). Change one
-  only, and the gates and the navigator disagree silently — lint stays green
-  while `code map` / `code group` misclassify every file in the new tree, and
-  docs may cite a directory in the new tree with nothing checking it.
+- **The top-level directory set was mirrored in several hand-kept copies; most
+  are now derived, one is not.** `tools/lint/repo_shape.sh` parses the
+  Makefile and publishes `ZCL_REPO_TOPS[]`, and `check_no_orphan_placement.sh`
+  now reads it rather than restating it. `MODULE_TOPS` in
+  `tools/lint/check_doc_inline_paths.sh` is still a hand-kept literal, and
+  deliberately a **different** set — it matches doc-citable paths, so it
+  includes `docs`, `apps` and `src`, which are not build roots. Do not
+  "unify" the two without reading both: they answer different questions.
+  The historical failure this bullet recorded did happen — the Makefile
+  carried an `application/` root that every hand copy omitted, so a file
+  placed there would have been filed under the catch-all group while the gate
+  meant to catch exactly that passed, because its own list was one of the
+  copies missing the entry.
+- **`ci_group_for_path()` in `lib/codeindex/src/codeindex_group.c` still owns
+  the path→group rule** (the module *list* it uses is now pasted from
+  `config/lib_module_order.def` as an X-macro, but the routing logic is its
+  own). `ci_group_purpose()` — the string `zclassic23 code map` prints — is
+  still a hand-written table with one arm per group. A new group needs both.
+- **`zslp_balances` is NOT a superseded copy of `zslp_ledger`. Do not delete
+  it.** This one nearly shipped: `zslp_ledger.h`'s header says a credit-only
+  ledger "cannot debit SEND inputs and would over-count holders" and that the
+  chain-scan path leaves `zslp_balances` empty on purpose, which reads exactly
+  like an abandoned duplicate awaiting cleanup. It is not. The two are
+  different ledgers for different features, and their keys do not convert:
+  `zslp_ledger` keys on a 32-byte genesis txid plus a 20-byte hash160, while
+  the **store** (merchant checkout) writes `zslp_balances` keyed on permanent
+  ticker strings — `"ZCL23ACCESS"`, `"ZCL23VPN"`, hardcoded in
+  `store_controller_schema.c` — which `uint256_set_hex()` cannot parse at all.
+  The store credits on a shielded ZCL payment reaching confirmations, before
+  and independent of any SLP transaction, so nothing the store does can ever
+  produce the rows `zslp_ledger` derives from. Live writer:
+  `zslp_service_credit_balance` → `db_zslp_balance_credit`, driven from
+  `app/services/src/zslp_command_service.c`. Readers include
+  `store_controller.c` and `store_view.c` (token-gated access). Deleting it
+  silently zeroes every store customer's balance. If it must go, that is a
+  store-migration project, not a hygiene sweep.
 - **Verify emptiness against the guard, not against `ls`.** Before deleting any
   top-level directory: `git grep -n '"<dirname>"' -- lib/test tools/lint tools/scripts lib/framework`
   and `git grep -n '<dirname>/' -- tools/lint tools/scripts`. A directory with
