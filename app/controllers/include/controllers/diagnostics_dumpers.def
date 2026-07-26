@@ -415,6 +415,21 @@
                     "balance sums a holder's unspent rows).",
                     "app/services/src/zslp_ledger_backfill_service.c",
                     "lib/test/src/test_zslp_ledger.c"),
+    DIAG_ENTRY("vault", vault_read_dump_state_json,
+               "vault read model: one row per asset class the node can hold "
+               "(transparent_zcl, shielded_zcl, zslp_tokens, znam_names, "
+               "swap_encumbered, file_market_offers), each with an evidence "
+               "grade (exact_*/heuristic_*), the primitive the number came "
+               "from, and separate spendable/pending/immature/encumbered "
+               "columns. Swap-encumbered HTLC funds appear here and in no "
+               "other balance surface. A class that cannot be determined "
+               "emits a row saying why rather than being omitted.",
+               "projection", "service",
+               "app/services/src/vault_read.c",
+               "persisted_projection_snapshot", "bounded_lookup",
+               "a class name, or empty for every class",
+               "swap_encumbered", "transparent_zcl",
+               "lib/test/src/test_vault_read.c", false),
     DIAG_PROJECTION("wallet_projection", wallet_projection_dump_state_json,
                     "wallet view projection: public-only "
                     "address/tx/UTXO/note counts, total value, cursor, "

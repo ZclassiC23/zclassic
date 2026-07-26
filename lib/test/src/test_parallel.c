@@ -405,7 +405,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(op_return_index) X(rom_seed_policy) X(rom_seed_ledger) \
     X(catalog_completeness) X(zslp_ledger) X(catalog_lag_exceeded) \
     X(parity_slo) X(state_auditor) \
-    X(recovery_no_worse)
+    X(recovery_no_worse) X(vault_read)
 
 #define SPEC_LIST(X) \
     X(wallet_dashboard) X(wallet_send) X(wallet_receive) \

@@ -50,6 +50,7 @@
 #include "services/segment_sealer_service.h"
 #include "services/op_return_backfill_service.h"
 #include "services/zslp_ledger_backfill_service.h"
+#include "services/vault_read.h"
 #include "net/rom_seed.h"
 #include "net/rom_fetch.h"
 #include "net/fast_sync.h"
