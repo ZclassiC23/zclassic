@@ -394,7 +394,7 @@ int groth16_spend_parity_oracle(void)
                 || fr_eq(&cs.witness[vnk], &one_fr) != want_nk)
                 nk_repr_ok = false;
         }
-        if (!nk_repr_ok && !flagged) {
+        if (have_nk_ref && !nk_repr_ok && !flagged) {
             flagged = true;
             printf("  >> FIRST DIVERGENCE: corpus[%u] in-circuit repr(nk) bits "
                    "!= librustzcash compressed nk encoding\n", c);
@@ -402,10 +402,22 @@ int groth16_spend_parity_oracle(void)
         snprintf(label, sizeof(label),
                  "corpus[%u]: repr(ak) 256 bits == compressed ak (section 8)", c);
         PARITY_CHECK(label, ak_repr_ok);
-        snprintf(label, sizeof(label),
-                 "corpus[%u]: repr(nk) 256 bits == librustzcash compressed nk "
-                 "(section 9)", c);
-        PARITY_CHECK(label, nk_repr_ok);
+        /* repr(nk) is a differential against the reference encoding, so it
+         * can only run where the reference exists: linked librustzcash, or
+         * the baked KAT witness. Asserting it without one compares against
+         * zeroed bytes and fails for a reason that has nothing to do with
+         * the circuit. Section 8's repr(ak) needs no reference — ak comes
+         * from the witness — so it stays unconditional. */
+        if (!have_nk_ref) {
+            printf("  corpus[%u]: SKIP (repr(nk) section 9 differential) — "
+                   "no reference nk in this build; rebuild with "
+                   "`make ZCL_WITH_RUST=1`\n", c);
+        } else {
+            snprintf(label, sizeof(label),
+                     "corpus[%u]: repr(nk) 256 bits == librustzcash compressed "
+                     "nk (section 9)", c);
+            PARITY_CHECK(label, nk_repr_ok);
+        }
 
         /* (E) R1CS SATISFACTION — the coefficient-level check. (A) compares
          *     constraint COUNTS and (C) probes three wire VALUES; neither can
