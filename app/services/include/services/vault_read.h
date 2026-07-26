@@ -69,7 +69,7 @@ enum vault_class {
 
 static_assert(VAULT_CLASS_COUNT == 6,
               "the node holds six asset classes; a change here needs a "
-              "collector in vault_read.c and a docs/CLAUDE.md update");
+              "collector in vault_read.c and a CLAUDE.md update");
 
 /* Evidence grade, reusing the exact_/heuristic_ vocabulary the `code
  * capsule` command established (tools/command/native_code_command.c). An
