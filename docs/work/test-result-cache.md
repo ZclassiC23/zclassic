@@ -56,27 +56,34 @@ plan and reason histogram up front. `.cache/test-timing/last-run.json` carries
 `mode`, `groups_ran`, `groups_cached`, `groups_cacheable`, `toolkey`, and a
 per-group `cached` flag.
 
-### Known blocker before the default can flip
+### Where the include graph comes from
 
-In a tree built by the current Makefile, **every live depfile is written under
-`build/*/epochs/<epoch>/`**, and `collect_dep_paths()` in
-`lib/codeindex/src/codeindex_deps.c` deliberately skips any directory named
-`epochs` (and `history`). The include graph is therefore built from whatever
-non-epoch depfiles happen to be left over from an older build — or, in a fresh
-worktree, from nothing at all. Measured in a worktree after `make build-only`
-plus `make t-fast`: **0** depfiles outside `epochs/`, every one of the 6,833
-inside. The absolute count is not the finding and does not reproduce across
-trees — it scales with how many epoch directories a checkout has accumulated.
-The finding is the **0**: the graph builder is looking where the compiler no
-longer writes, so what it finds is whatever an older build happened to leave
-behind.
+Every depfile the build writes lands in a per-build compile epoch,
+`build/*/epochs/<epoch>/`. Each build mints a new epoch and the previous few are
+retained, so the directory holds immutable receipts of trees that are no longer
+checked out; reading them all duplicates every edge and inflates a warm lookup
+to tens of thousands of files.
 
-The cache now fails **closed** on this (`no-include-graph` /
-`input-newer-than-include-graph`, both reported in the histogram), so it cannot
-produce a wrong skip — but it also means caching is effectively disabled until
-the epoch/depfile discovery is reconciled. That reconciliation changes a
-contract asserted by `test_codeindex` ("historical epoch depfiles cannot change
-active include edges") and is intentionally **not** done here.
+`tools/dev/build-epoch-session.sh` names the live generation in
+`<object-root>/.current-epoch` while holding the lock that mints the epoch
+directory and hands out the compile lease. Every profile reaches a compiler only
+through that acquire, so the name and the build cannot disagree, and
+`collect_dep_paths()` in `lib/codeindex/src/codeindex_deps.c` reads an
+epoch-managed object root through that name and through nothing else — retained
+generations stay out, and so do the pre-epoch `.d` files still sitting loose in
+the old flat object roots.
+
+This is what used to break the cache. The collector skipped any directory called
+`epochs`, which by then was where the whole graph lived: measured in a worktree
+after `make build-only` plus `make -j`, **0 of 3,111** depfiles were visible and
+every group reported `no-include-graph`. The cache failed **closed** on it
+(`no-include-graph` / `input-newer-than-include-graph`, both in the histogram),
+so it never produced a wrong skip — it just never produced a hit either.
+
+The cache asks the graph for its own inventory
+(`codeindex_depfile_graph()`) instead of walking `build/` a second time. The
+private copy it used to keep is what let the two answers drift apart in the
+first place.
 
 Inspect what a group keys on (the operator/proof lens):
 

@@ -52,6 +52,17 @@
 
 #define FIX "test-tmp/ci_fix"
 
+/* The fixture mirrors the real object layout: every depfile the build writes
+ * lands in a per-build compile epoch, `<object-root>/.current-epoch` names the
+ * live one, and older generations stay on disk beside it. `build/obj` is an
+ * epoch-managed root here; `build/test-obj` is a plain one. */
+#define CUR_EPOCH \
+    "1111111111111111111111111111111111111111111111111111111111111111"
+#define RETAINED_EPOCH \
+    "2222222222222222222222222222222222222222222222222222222222222222"
+#define CUR_EPOCH_DEP "build/obj/epochs/" CUR_EPOCH "/foo.d"
+#define RETAINED_EPOCH_DEP "build/obj/epochs/" RETAINED_EPOCH "/foo.d"
+
 /* Write content to <dir>/<rel>, creating parent dirs. */
 static bool mk_write(const char *dir, const char *rel, const char *content)
 {
@@ -287,15 +298,23 @@ static bool write_fixture(void)
     return mk_write(FIX, "lib/net/src/foo.c", FOO_C) &&
            mk_write(FIX, "lib/net/include/net/foo.h", FOO_H) &&
            mk_write(FIX, "lib/net/include/net/bar.h", BAR_H) &&
-           mk_write(FIX, "build/obj/foo.d",
+           /* the live generation of the epoch-managed root */
+           mk_write(FIX, "build/obj/.current-epoch", CUR_EPOCH "\n") &&
+           mk_write(FIX, CUR_EPOCH_DEP,
                     "build/obj/foo.o: lib/net/src/foo.c "
                     "lib/net/include/net/foo.h\n") &&
+           /* a pre-epoch leftover: no current compile wrote it */
+           mk_write(FIX, "build/obj/foo.d",
+                    "build/obj/foo.o: lib/net/src/foo.c "
+                    "lib/net/include/net/bar.h\n") &&
+           /* a retained generation of a tree that is no longer checked out */
+           mk_write(FIX, RETAINED_EPOCH_DEP,
+                    "build/obj/foo.o: lib/net/src/foo.c "
+                    "lib/net/include/net/bar.h\n") &&
+           /* a plain object root, with no generations at all */
            mk_write(FIX, "build/test-obj/foo.d",
                     "build/test-obj/foo.o: lib/net/src/foo.c "
                     "lib/net/include/net/foo.h\n") &&
-           mk_write(FIX, "build/obj/epochs/old/foo.d",
-                    "build/obj/foo.o: lib/net/src/foo.c "
-                    "lib/net/include/net/bar.h\n") &&
            mk_write(FIX, "lib/net/src/purpose_stem.c", PURPOSE_STEM_C) &&
            mk_write(FIX, "lib/net/src/purpose_override.c", PURPOSE_OVERRIDE_C) &&
            mk_write(FIX, "lib/net/src/purpose_none.c", PURPOSE_NONE_C) &&
@@ -615,6 +634,9 @@ int test_codeindex(void)
     char includes[8][256];
     int nincludes = codeindex_includes_of_file(
         ci, "lib/net/src/foo.c", includes, 8);
+    /* Only the live generation and the plain root are inputs, and both name
+     * foo.h. The retained generation and the pre-epoch leftover both name
+     * bar.h, so either one leaking in would show up here. */
     CI_CHECK("compiler depfile include edge is indexed",
              nincludes == 1 &&
              strcmp(includes[0], "lib/net/include/net/foo.h") == 0);
@@ -625,7 +647,7 @@ int test_codeindex(void)
     codeindex_close(ci);
     ci = NULL;
     CI_CHECK("historical epoch mutation fixture writes",
-             mk_write(FIX, "build/obj/epochs/old/foo.d",
+             mk_write(FIX, RETAINED_EPOCH_DEP,
                       "build/obj/foo.o: lib/net/src/foo.c "
                       "lib/net/include/net/foo.h\n"));
     codeindex_test_reset_exact_bytes_read();
@@ -646,6 +668,50 @@ int test_codeindex(void)
     CI_CHECK("historical epoch depfiles cannot change active include edges",
              ci && nincludes == 1 &&
              strcmp(includes[0], "lib/net/include/net/foo.h") == 0);
+
+    /* Which generation is live is what .current-epoch says, not which one was
+     * written last: repoint the root at the older one and its edges become the
+     * graph. This is the whole mechanism — a build names the epoch it compiled
+     * into, and the graph reads that name. */
+    if (ci) { codeindex_close(ci); ci = NULL; }
+    CI_CHECK("repoint the object root at its other generation",
+             mk_write(FIX, RETAINED_EPOCH_DEP,
+                      "build/obj/foo.o: lib/net/src/foo.c "
+                      "lib/net/include/net/bar.h\n") &&
+             mk_write(FIX, "build/obj/.current-epoch", RETAINED_EPOCH "\n"));
+    ci = codeindex_open(FIX);
+    memset(includes, 0, sizeof(includes));
+    nincludes = ci ? codeindex_includes_of_file(
+        ci, "lib/net/src/foo.c", includes, 8) : -1;
+    CI_CHECK("the include graph follows the named generation",
+             ci && nincludes == 2 &&
+             strcmp(includes[0], "lib/net/include/net/bar.h") == 0 &&
+             strcmp(includes[1], "lib/net/include/net/foo.h") == 0);
+
+    if (ci) { codeindex_close(ci); ci = NULL; }
+    CI_CHECK("restore the original live generation",
+             mk_write(FIX, RETAINED_EPOCH_DEP,
+                      "build/obj/foo.o: lib/net/src/foo.c "
+                      "lib/net/include/net/foo.h\n") &&
+             mk_write(FIX, "build/obj/.current-epoch", CUR_EPOCH "\n"));
+    ci = codeindex_open(FIX);
+    memset(includes, 0, sizeof(includes));
+    nincludes = ci ? codeindex_includes_of_file(
+        ci, "lib/net/src/foo.c", includes, 8) : -1;
+    CI_CHECK("the retained generation is inert again",
+             ci && nincludes == 1 &&
+             strcmp(includes[0], "lib/net/include/net/foo.h") == 0);
+
+    /* Four depfiles are on disk; two of them are the graph. Anyone who needs
+     * that number (the test-result cache asks whether the graph exists at all)
+     * gets it from the graph rather than from a second walk of build/. */
+    {
+        size_t dep_n = 0;
+        int64_t dep_newest = 0;
+        bool inventory = codeindex_depfile_graph(FIX, &dep_n, &dep_newest);
+        CI_CHECK("depfile inventory counts the live generation only",
+                 inventory && dep_n == 2 && dep_newest > 0);
+    }
 
     /* Warm acceptance uses an owner-controlled directory capability. Mode
      * drift fails closed before SQLite can consume the canonical pathname. */
@@ -834,15 +900,15 @@ int test_codeindex(void)
     static const char dep_b[] =
         "build/obj/foo.o: lib/net/src/foo.c lib/net/include/net/bar.h\n";
     struct stat dep_st;
-    bool dep_stat = stat(FIX "/build/obj/foo.d", &dep_st) == 0;
-    bool dep_write = mk_write(FIX, "build/obj/foo.d", dep_b);
+    bool dep_stat = stat(FIX "/" CUR_EPOCH_DEP, &dep_st) == 0;
+    bool dep_write = mk_write(FIX, CUR_EPOCH_DEP, dep_b);
     struct timespec dep_times[2];
     if (dep_stat) {
         dep_times[0] = dep_st.st_atim;
         dep_times[1] = dep_st.st_mtim;
     }
     bool dep_mtime = dep_stat && dep_write &&
-        utimensat(AT_FDCWD, FIX "/build/obj/foo.d", dep_times, 0) == 0;
+        utimensat(AT_FDCWD, FIX "/" CUR_EPOCH_DEP, dep_times, 0) == 0;
     CI_CHECK("same-size depfile edit restores exact previous mtime",
              dep_mtime);
     if (ci) { codeindex_close(ci); ci = NULL; }

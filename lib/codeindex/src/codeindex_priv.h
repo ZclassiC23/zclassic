@@ -183,8 +183,9 @@ bool ci_deps_scan(const char *root, ci_dep_cb cb, void *user,
                   uint8_t out_root[32]);
 bool ci_deps_scan_roots(const char *root, ci_dep_cb cb, void *user,
                         uint8_t exact_out[32], uint8_t stat_out[32]);
-/* Metadata cache key for ci_deps_scan's exact root. Historical compile epochs
- * are excluded by both functions; this path reads no depfile content. */
+/* Metadata cache key for ci_deps_scan's exact root. Both functions read the
+ * live compile epoch of each object root and nothing else; this path reads no
+ * depfile content. */
 bool ci_deps_stat_root_sha3(const char *root, uint8_t out_root[32]);
 
 #ifdef ZCL_TESTING

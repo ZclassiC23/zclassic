@@ -16,9 +16,26 @@
  * graph, so a registry edit moved no downstream content key and busted no
  * cache. The depfile is the authority; if the compiler read it, it is an edge.
  *
- * Retained `epochs/` and `history/` generations are excluded; their duplicate
- * immutable receipts are not the active graph. If build/ is absent (a fresh
- * tree), no edges are produced. Other I/O failures fail closed. */
+ * Depfiles are written into a per-build compile epoch,
+ * `<object-root>/epochs/<64-hex>/`. Every build mints a new epoch and the
+ * previous few are retained, so the directory accumulates immutable receipts of
+ * trees that are no longer checked out: reading them all inflates a warm lookup
+ * to tens of thousands of files and duplicates every edge. Exactly one of them
+ * is the live graph — the epoch the build actually compiled into — and
+ * `tools/dev/build-epoch-session.sh` names it in `<object-root>/.current-epoch`
+ * while holding the lock that mints the epoch directory and hands out the
+ * compile lease. A compile cannot land in an epoch that file does not name, so
+ * the name and the build cannot disagree.
+ *
+ * An object root that has an `epochs/` directory is therefore read through that
+ * pointer and through nothing else. Loose `.d` files beside it are pre-epoch
+ * leftovers that no current compile wrote; they describe a tree that is days
+ * stale, and reading them is how this scan came to see 0 of 3,111 live
+ * depfiles. `history/` generations are excluded for the same reason.
+ *
+ * If build/ is absent (a fresh tree), no edges are produced. An epoch-managed
+ * root with no resolvable current epoch contributes nothing and says so.
+ * Other I/O failures fail closed. */
 
 #include "codeindex_priv.h"
 
@@ -137,9 +154,88 @@ static int dep_path_cmp(const void *left, const void *right)
     return strcmp(*(const char *const *)left, *(const char *const *)right);
 }
 
+/* A compile epoch's directory name is exactly 64 lowercase hex digits. Nothing
+ * else is accepted, so a pointer can never name a parent, a sibling tree, or an
+ * absolute path. */
+static bool epoch_name_valid(const char *name, size_t len)
+{
+    if (len != 64) return false;
+    for (size_t i = 0; i < len; i++) {
+        char c = name[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+            return false;
+    }
+    return true;
+}
+
+enum epoch_state {
+    EPOCH_NONE,     /* not an epoch-managed root: read the directory as-is */
+    EPOCH_CURRENT,  /* `out` is the repo-relative dir of the live epoch */
+    EPOCH_UNKNOWN,  /* epoch-managed, but no epoch is claimed as current */
+};
+
+static enum epoch_state epoch_current_dir(const char *root, const char *reldir,
+                                          char out[CI_PATH_MAX])
+{
+    char path[CI_PATH_MAX];
+    int n = snprintf(path, sizeof(path), "%s/%s/epochs", root, reldir);
+    if (n <= 0 || (size_t)n >= sizeof(path)) return EPOCH_NONE;
+    struct stat st;
+    if (lstat(path, &st) != 0 || !S_ISDIR(st.st_mode)) return EPOCH_NONE;
+
+    n = snprintf(path, sizeof(path), "%s/%s/.current-epoch", root, reldir);
+    if (n <= 0 || (size_t)n >= sizeof(path)) return EPOCH_UNKNOWN;
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) {
+        LOG_WARN("codeindex",
+                 "%s keeps compile epochs but claims no current one (%s) — its "
+                 "depfiles are OUTSIDE the include graph; rebuild to restore it",
+                 reldir, strerror(errno));
+        return EPOCH_UNKNOWN;
+    }
+    char name[72];
+    ssize_t got;
+    do {
+        got = read(fd, name, sizeof(name));
+    } while (got < 0 && errno == EINTR);
+    close(fd);
+    size_t len = got > 0 ? (size_t)got : 0;
+    while (len > 0 && (name[len - 1] == '\n' || name[len - 1] == '\r')) len--;
+    if (!epoch_name_valid(name, len)) {
+        LOG_WARN("codeindex",
+                 "%s names an unreadable current compile epoch — its depfiles "
+                 "are OUTSIDE the include graph", reldir);
+        return EPOCH_UNKNOWN;
+    }
+    int cn = snprintf(out, CI_PATH_MAX, "%s/epochs/%.*s", reldir, (int)len,
+                      name);
+    if (cn <= 0 || (size_t)cn >= CI_PATH_MAX) return EPOCH_UNKNOWN;
+    int fn = snprintf(path, sizeof(path), "%s/%s", root, out);
+    if (fn <= 0 || (size_t)fn >= sizeof(path) || lstat(path, &st) != 0 ||
+        !S_ISDIR(st.st_mode)) {
+        LOG_WARN("codeindex",
+                 "%s names current compile epoch %.*s, which is not a "
+                 "directory — its depfiles are OUTSIDE the include graph",
+                 reldir, (int)len, name);
+        return EPOCH_UNKNOWN;
+    }
+    return EPOCH_CURRENT;
+}
+
 static bool collect_dep_paths(const char *root, const char *reldir,
                               struct dep_paths *paths)
 {
+    char current[CI_PATH_MAX];
+    switch (epoch_current_dir(root, reldir, current)) {
+    case EPOCH_CURRENT:
+        /* The live generation is the whole of this root's contribution. */
+        return collect_dep_paths(root, current, paths);
+    case EPOCH_UNKNOWN:
+        return true;
+    case EPOCH_NONE:
+        break;
+    }
+
     char full[CI_PATH_MAX];
     int fn = snprintf(full, sizeof(full), "%s/%s", root, reldir);
     if (fn <= 0 || (size_t)fn >= sizeof(full))
@@ -171,12 +267,10 @@ static bool collect_dep_paths(const char *root, const char *reldir,
             break;
         }
         if (S_ISDIR(st.st_mode)) {
-            /* Compile epochs are immutable build-history receipts, not the
-             * current include graph. Scanning all retained epochs inflated a
-             * warm lookup to tens of thousands of files and duplicated every
-             * edge. The familiar object-root aliases are the current inputs. */
-            if (strcmp(entry->d_name, "epochs") == 0 ||
-                strcmp(entry->d_name, "history") == 0)
+            /* `epochs` is unreachable here: a root that has one was resolved to
+             * its live generation above. `history` is the same kind of retained
+             * receipt and is never the active graph. */
+            if (strcmp(entry->d_name, "history") == 0)
                 continue;
             ok = collect_dep_paths(root, child, paths);
         } else if (has_ext(entry->d_name, ".d")) {
@@ -373,6 +467,60 @@ bool ci_deps_scan_roots(const char *root, ci_dep_cb cb, void *user,
     if (!stat_out)
         LOG_FAIL("codeindex", "null dep stat root output");
     return deps_scan_exact(root, cb, user, exact_out, stat_out);
+}
+
+bool codeindex_depfile_graph(const char *root, size_t *out_count,
+                             int64_t *out_newest_mtime_ns)
+{
+    if (!root || !out_count || !out_newest_mtime_ns)
+        LOG_FAIL("codeindex", "null arg to depfile_graph");
+    *out_count = 0;
+    *out_newest_mtime_ns = 0;
+
+    char build[CI_PATH_MAX];
+    int bn = snprintf(build, sizeof(build), "%s/build", root);
+    if (bn <= 0 || (size_t)bn >= sizeof(build))
+        LOG_FAIL("codeindex", "build path too long");
+    struct stat build_st;
+    if (lstat(build, &build_st) != 0) {
+        if (errno == ENOENT)
+            return true;  /* fresh tree: the graph is absent, not broken */
+        LOG_FAIL("codeindex", "inspect build directory failed: %s",
+                 strerror(errno));
+    }
+    if (!S_ISDIR(build_st.st_mode))
+        LOG_FAIL("codeindex", "build path is not a directory");
+
+    struct dep_paths paths = {0};
+    if (!collect_dep_paths(root, "build", &paths)) {
+        dep_paths_free(&paths);
+        LOG_FAIL("codeindex", "collect depfile inventory failed: %s",
+                 strerror(errno));
+    }
+    bool ok = true;
+    size_t count = 0;
+    int64_t newest = 0;
+    for (size_t i = 0; i < paths.count; i++) {
+        char full[CI_PATH_MAX];
+        int fn = snprintf(full, sizeof(full), "%s/%s", root, paths.items[i]);
+        struct stat st;
+        if (fn <= 0 || (size_t)fn >= sizeof(full) ||
+            lstat(full, &st) != 0 || !S_ISREG(st.st_mode)) {
+            ok = false;
+            break;
+        }
+        count++;
+        int64_t mt = (int64_t)st.st_mtim.tv_sec * INT64_C(1000000000) +
+                     (int64_t)st.st_mtim.tv_nsec;
+        if (mt > newest) newest = mt;
+    }
+    dep_paths_free(&paths);
+    if (!ok)
+        LOG_FAIL("codeindex", "inspect depfile inventory failed: %s",
+                 strerror(errno ? errno : EIO));
+    *out_count = count;
+    *out_newest_mtime_ns = newest;
+    return true;
 }
 
 bool ci_deps_stat_root_sha3(const char *root, uint8_t out_root[32])
