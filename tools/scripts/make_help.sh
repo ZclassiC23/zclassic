@@ -41,6 +41,7 @@ gate	ci	the umbrella a push must survive: lint, then the isolated test runner
 gate	fuzz-ci	build the fuzz harnesses and smoke-run each one
 agent	timings	where wall time actually went ON THIS HOST (reads measured artifacts)
 agent	first-build-timing	time a fresh clone through the full suite and record it for make timings
+agent	build-bench	measure the build and test loop scenario by scenario (ARGS=--quick for the subset)
 agent	arch-score	0-100 mechanical completion of the sync architecture
 agent	compdb	regenerate compile_commands.json for clangd / LSP
 agent	doctor-build	which build accelerators (ccache, mold, clang) this host has

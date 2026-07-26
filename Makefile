@@ -6292,3 +6292,28 @@ first-build-timing-selftest:
 check-no-warning-suppression:
 	@echo "══ LINT: unexplained warning suppressions ══"
 	@./tools/lint/check_no_warning_suppression.sh .
+
+# ── Entry point: build-bench ─────────────────────────────────────────────
+# What the build and test loop costs on THIS host, measured with a wall clock
+# and written to .cache/build-bench/last-run.json. It exists so that any claim
+# about build speed — including the ones the build/test cache work is about to
+# make — has a measured baseline to be compared against instead of a
+# remembered one. Same honesty contract as `make timings`: a scenario that was
+# skipped, failed, or did not measure what it claims publishes NO duration.
+#
+#   make build-bench                    full baseline (two cold builds + the
+#                                       whole suite; not quick)
+#   make build-bench ARGS=--quick       inner-loop subset, no cold work
+#   make build-bench ARGS='--samples=5 --group=<substr>'
+#   make build-bench ARGS=--report      re-read the last artifact, measure nothing
+#
+# The primary scenarios run with ZCL_USE_CCACHE=0 on purpose: this Makefile
+# prepends any sccache/ccache it finds to $(CC) (see the top of this file), and
+# a warm compiler cache reports a compile time the compiler never paid. The
+# ccache-enabled variants are measured separately and labelled.
+.PHONY: build-bench build-bench-selftest
+build-bench:
+	@tools/scripts/build_bench.sh $(ARGS)
+
+build-bench-selftest:
+	@tools/scripts/build_bench.sh --self-test
