@@ -594,6 +594,7 @@ add/remove a gate.
 - `check-honest-witness`
 - `check-lag-slo-observable`
 - `check-lib-layering`
+- `check-lib-module-order`
 - `check-log-macro-return-type`
 - `check-long-functions`
 - `check-markdown-links`
