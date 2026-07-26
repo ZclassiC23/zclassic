@@ -141,6 +141,14 @@ COVERAGE_CADENCE_SEC="${ZCL_SLO_PAGE_COVERAGE_CADENCE_SEC:-60}"
 RENOTIFY_SEC="${ZCL_SLO_PAGE_RENOTIFY_SEC:-21600}"
 WALL="${ZCL_SLO_PAGE_WALL:-1}"
 
+# Which nodes exist on this host, asked of the prober rather than inferred
+# from ledger history. Empty (prober missing/unreadable) falls back to
+# ageing every instance in the ledger — noisier, never quieter, which is the
+# right direction to fail for a pager.
+LIVE_INSTANCES="${ZCL_SLO_PAGE_LIVE_INSTANCES-$(
+    "$SCRIPT_DIR/node_slo_probe.sh" --list-instances 2>/dev/null | paste -sd, - || true
+)}"
+
 # Node binary for best-effort blocker enrichment. An explicit override always
 # wins (even to empty, which disables enrichment); otherwise default to this
 # checkout's build output. Never required — enrichment is decoration.
@@ -212,6 +220,7 @@ enrich_blocker() {
 evaluate_ledger() {
     local now="$1"
     awk -v now="$now" -v stale_sec="$STALE_SEC" -v unreach_sec="$UNREACH_SEC" \
+        -v live_instances="${LIVE_INSTANCES:-}" \
         -v advance_sec="$ADVANCE_SEC" -v adv_min_trailing="$ADV_MIN_TRAILING" \
         -v cov_window_sec="$COVERAGE_WINDOW_SEC" -v cov_min_ratio="$COVERAGE_MIN_RATIO" \
         -v cov_cadence_sec="$COVERAGE_CADENCE_SEC" '
@@ -275,9 +284,19 @@ evaluate_ledger() {
             # ── stale_ledger: the OLDEST newest-per-instance sample is too
             # old. If the prober died, every instance goes stale together;
             # deterministic tie-break on instance name keeps the detail stable.
+            # Only instances the prober CURRENTLY probes can be stale. The
+            # rows of a retired lane stay in the retained ledger forever, so
+            # ageing every name ever seen would page "prober may be dead"
+            # falsely and permanently the moment a lane is retired. The
+            # instance table in the prober is the authority for who exists;
+            # live_instances carries it in.
+            nlive = split(live_instances, livearr, ",")
+            for (i = 1; i <= nlive; i++) if (livearr[i] != "") live[livearr[i]] = 1
+
             stale=0; stale_detail=""
             worst_inst=""; worst_age=-1
             for (inst in imax) {
+                if (nlive > 0 && !(inst in live)) continue
                 age = now - imax[inst]
                 if (age > worst_age || (age == worst_age && (worst_inst == "" || inst < worst_inst))) {
                     worst_age = age; worst_inst = inst
@@ -545,6 +564,33 @@ cmd_selftest() {
     [ "$rc" -eq 1 ] || st_fail "case=stale expected rc 1 got $rc"
     grep -q 'stale_ledger' "$p" || { cat "$p" >&2; st_fail "case=stale missing stale_ledger"; }
     echo "selftest: ok case=stale-ledger"
+
+    # (e2) a RETIRED instance must not page. Its rows sit in the retained
+    # ledger forever and never get another sample, so ageing every name ever
+    # seen pages "prober may be dead" falsely and permanently the moment a
+    # lane is retired. Live rows fresh + retired rows ancient => rc 0.
+    # The paired assertion below is the one that matters: the same ancient
+    # rows DO page when the instance is still live, so this is a narrowing of
+    # who can be stale, not a weakening of staleness itself.
+    mkdir -p "$ST_TMP/e2"; f="$ST_TMP/e2/uptime-ledger.jsonl"
+    : > "$f"
+    st_line "$f" retired_lane "$base" 1 5 100 95
+    now=$((base + 100000))
+    st_line "$f" canonical "$now" 1 5 100 95
+    rc=0
+    env ZCL_SLO_LEDGER_DIR="$ST_TMP/e2" ZCL_SLO_NOW="$now" ZCL_SLO_PAGE_WALL=0 \
+        ZCL_SLO_NODE_BIN=/nonexistent/zclassic23 ZCL_SLO_PAGE_STALE_SEC=300 \
+        ZCL_SLO_PAGE_LIVE_INSTANCES=canonical \
+        bash "$SELF" evaluate >/dev/null 2>&1 || rc=$?
+    [ "$rc" -eq 0 ] || { cat "$ST_TMP/e2/pages.jsonl" >&2 2>/dev/null || true
+        st_fail "case=retired-not-stale a retired instance must not page (rc $rc)"; }
+    rc=0
+    env ZCL_SLO_LEDGER_DIR="$ST_TMP/e2" ZCL_SLO_NOW="$now" ZCL_SLO_PAGE_WALL=0 \
+        ZCL_SLO_NODE_BIN=/nonexistent/zclassic23 ZCL_SLO_PAGE_STALE_SEC=300 \
+        ZCL_SLO_PAGE_LIVE_INSTANCES=canonical,retired_lane \
+        bash "$SELF" evaluate >/dev/null 2>&1 || rc=$?
+    [ "$rc" -eq 1 ] || st_fail "case=retired-not-stale the SAME old rows must page while the instance is live (rc $rc)"
+    echo "selftest: ok case=retired-not-stale"
 
     # (f) all-unreachable streak => rc 1 + canonical_unreachable.
     mkdir -p "$ST_TMP/f"; f="$ST_TMP/f/uptime-ledger.jsonl"

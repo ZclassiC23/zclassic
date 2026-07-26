@@ -337,6 +337,19 @@ cmd_collect() {
 
 st_fail() { echo "selftest: FAIL $*" >&2; exit 1; }
 
+# The instance table is the ONE place that says which nodes exist on this
+# host. Downstream readers must ASK for it rather than infer it from ledger
+# history: a retired lane's rows stay in the retained ledger forever, so an
+# inferring reader treats a deleted node as a node that stopped answering.
+# That is what the pager used to do, and retiring a lane would have made it
+# page "prober may be dead" — falsely, forever.
+cmd_list_instances() {
+    local row
+    for row in "${INSTANCES[@]}"; do
+        printf '%s\n' "${row%%|*}"
+    done
+}
+
 cmd_selftest() {
     ST_TMP="$(mktemp -d /tmp/zcl-node-slo-probe-selftest.XXXXXX)"
     trap 'rm -rf "$ST_TMP"' EXIT
@@ -466,8 +479,9 @@ cmd_selftest() {
 case "${1:-collect}" in
     collect)    shift || true; cmd_collect "$@" ;;
     --selftest) shift; cmd_selftest "$@" ;;
+    --list-instances) shift; cmd_list_instances "$@" ;;
     *)
-        echo "usage: node_slo_probe.sh [collect] | --selftest" >&2
+        echo "usage: node_slo_probe.sh [collect] | --selftest | --list-instances" >&2
         exit 2
         ;;
 esac
