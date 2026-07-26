@@ -46,6 +46,27 @@ ZCL_HOTSWAP_DEPFILE_LEAN_ONLY := $(if $(strip $(MAKECMDGOALS)),$(if $(strip $(fi
 # exemption shape as ZCL_HOTSWAP_LOOP_ONLY above.
 ZCL_WORKTREE_PRIME_ONLY := $(if $(strip $(MAKECMDGOALS)),$(if $(strip $(filter-out worktree-prime,$(MAKECMDGOALS))),,1),)
 
+# ── Optional Rust proving backend ─────────────────────────────────────────
+# librustzcash.a is the ONE vendored archive that needs a Rust toolchain
+# (cargo + rustc), and it buys exactly ONE capability: creating Sapling proofs,
+# i.e. SENDING shielded value. Consensus verification, shielded receive, the
+# explorer, mining, the wallet's transparent side and every other subsystem are
+# native C23 and never call it.
+#
+# So it is OFF by default: `make` on a host with no Rust toolchain builds a
+# working full node, and shielded send returns a typed refusal naming this
+# flag (lib/sapling/src/sapling_prover_unavailable.c). Opt in with
+#     make ZCL_WITH_RUST=1
+# which adds the archive to the vendor bootstrap, links -lrustzcash, and
+# compiles lib/sapling/src/sapling_prover_librustzcash.c in its place.
+#
+# This must be decided BEFORE VENDOR_ARCHIVES below: a Rust-free clone would
+# otherwise enter the vendor parse-restart trying to build an archive it does
+# not want and die on `need cargo`. The flag also rides into $(LIBS) and
+# $(CFLAGS), both of which are hashed into the compile epoch, so the two
+# configurations get distinct object roots and can never mix stale objects.
+ZCL_WITH_RUST ?=
+
 # Linked vendor archives are part of the exact source identity. On a fresh
 # clone they do not exist until the vendor builder runs, so Make must cross a
 # parse/restart boundary before BUILD_SOURCE_RECORD is captured. Otherwise the
@@ -54,7 +75,7 @@ ZCL_WORKTREE_PRIME_ONLY := $(if $(strip $(MAKECMDGOALS)),$(if $(strip $(filter-o
 # whose `vendor-ready` prerequisite may repair stale archives.
 VENDOR_ARCHIVES = libsecp256k1.a libcrypto.a libssl.a libevent.a \
 	libevent_openssl.a libevent_pthreads.a libleveldb.a libsqlite3.a \
-	libz.a librustzcash.a libtor_stub.a
+	libz.a libtor_stub.a $(if $(ZCL_WITH_RUST),librustzcash.a)
 VENDOR_LIBS = $(addprefix vendor/lib/,$(VENDOR_ARCHIVES))
 VENDOR_BOOTSTRAP_MK := build/identity/vendor-inputs-ready.mk
 VENDOR_MISSING_INPUTS := $(filter-out $(wildcard $(VENDOR_LIBS)),$(VENDOR_LIBS))
@@ -179,7 +200,17 @@ $(BUILD_MUTATION_STAMP): tools/dev/source-identity.sh
 	mv -f -- "$$tmp" "$@"; \
 	trap - EXIT HUP INT TERM
 
-BUILD_IDENTITY_STAMP := $(BUILD_DIR)/identity/$(BUILD_SOURCE_ID).$(BUILD_CLEAN).$(BUILD_MUTATION).stamp
+# The Sapling proving backend (ZCL_WITH_RUST, declared at the top of this file)
+# selects a different translation unit AND a different link line, but it does
+# not change one byte of source — so without it in this key, flipping the flag
+# would leave the previous configuration's binary sitting at the same path,
+# newer than every prerequisite, and `make` would report nothing to do. Keying
+# the identity stamp on it makes every link rule (node, tools, test candidates,
+# dev profiles — they all take this stamp as a prerequisite) relink on a flip.
+# Object roots are already separated by the compile epoch, which hashes $(LIBS)
+# and $(CFLAGS); this is the binary-level counterpart.
+BUILD_PROVER_BACKEND := $(if $(ZCL_WITH_RUST),librustzcash,none)
+BUILD_IDENTITY_STAMP := $(BUILD_DIR)/identity/$(BUILD_SOURCE_ID).$(BUILD_CLEAN).$(BUILD_MUTATION).prover-$(BUILD_PROVER_BACKEND).stamp
 $(BUILD_IDENTITY_STAMP): $(BUILD_MUTATION_STAMP) tools/dev/source-identity.sh
 	@set -eu; \
 	mkdir -p "$(dir $@)"; \
@@ -189,7 +220,8 @@ $(BUILD_IDENTITY_STAMP): $(BUILD_MUTATION_STAMP) tools/dev/source-identity.sh
 	printf '%s\n' \
 	  'source=$(BUILD_SOURCE_ID)' \
 	  'clean=$(BUILD_CLEAN)' \
-	  'mutation=$(BUILD_MUTATION)' > "$$tmp"; \
+	  'mutation=$(BUILD_MUTATION)' \
+	  'prover_backend=$(BUILD_PROVER_BACKEND)' > "$$tmp"; \
 	mv -f -- "$$tmp" "$@"; \
 	trap - EXIT HUP INT TERM
 
@@ -241,8 +273,17 @@ LIB_MODULES = base bloom chain codeindex coins core crypto crypto_registry encod
 	json keys metrics mining net platform policy primitives rpc script session sim storage \
 	support sync util validation vcs wallet sapling overlay zslp znam zanc
 LIB_INCLUDES = $(foreach m,$(LIB_MODULES),-Ilib/$(m)/include)
+# Wallet-side Sapling proving backend: exactly ONE of these two translation
+# units is compiled, chosen by ZCL_WITH_RUST (declared at the top of this
+# file). The unselected one is filtered out of the wildcard below, the same
+# shape DEV_ONLY_SRCS uses. Consensus verification is in neither — it lives in
+# sapling.c behind sapling_prover_c23.c, which is always compiled.
+SAPLING_PROVER_BACKEND_UNUSED = $(if $(ZCL_WITH_RUST),\
+	lib/sapling/src/sapling_prover_unavailable.c,\
+	lib/sapling/src/sapling_prover_librustzcash.c)
 LIB_SRCS = $(call zcl_filter_ephemeral_sources,\
-	$(foreach m,$(LIB_MODULES),$(wildcard lib/$(m)/src/*.c)))
+	$(filter-out $(SAPLING_PROVER_BACKEND_UNUSED),\
+	$(foreach m,$(LIB_MODULES),$(wildcard lib/$(m)/src/*.c))))
 
 # Ports layer (Clean Architecture / Hexagonal interface headers).
 # Headers only — adapters that implement these interfaces live elsewhere.
@@ -454,7 +495,7 @@ CFLAGS = -std=c23 -g -O3 $(if $(ZCL_NATIVE),-march=native,-march=x86-64-v3) -flt
 	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(CORE_INCLUDES) $(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) $(ADAPTERS_INCLUDES) $(TOOLS_INCLUDES) $(DEVLOOP_INCLUDES) \
 	-Ilib/test/include \
 	-D_POSIX_C_SOURCE=200809L -DZCL_AR_ENFORCE $(BUILD_IDENTITY_CPPFLAGS) -Ivendor/include $(GTK_DEF) $(GTK_CFLAGS) \
-	$(WEBKIT_DEF) $(WEBKIT_CFLAGS)
+	$(WEBKIT_DEF) $(WEBKIT_CFLAGS) $(if $(ZCL_WITH_RUST),-DZCL_WITH_RUST=1)
 LDFLAGS = -pthread -flto=auto -rdynamic $(HARDEN_LDFLAGS)
 CACHED_CFLAGS = $(filter-out -DZCL_BUILD_SOURCE_ID=% -DZCL_BUILD_CLEAN=%,$(CFLAGS))
 BUILD_ONLY_CFLAGS = $(CACHED_CFLAGS) -Wno-deprecated-declarations
@@ -515,9 +556,10 @@ TOR_FULL = $(wildcard vendor/tor/libtor.a \
 TOR_LIBS = $(if $(TOR_FULL),$(TOR_FULL),-Lvendor/lib -ltor_stub)
 # All dependencies bundled in vendor/lib as static archives.
 # Zero system library requirements beyond libc.
-# OpenSSL 3.0 (Apache 2.0), libevent, zlib, and the Zcash Sapling prover
-# (MIT/Apache 2.0) — all vendored and statically linked.  librustzcash is used
-# only for wallet-side proving; consensus verification remains in C23.
+# OpenSSL 3.0 (Apache 2.0), libevent and zlib — all vendored and statically
+# linked. The Zcash Sapling prover (librustzcash, MIT/Apache 2.0) is linked
+# only under ZCL_WITH_RUST=1 and is used only for wallet-side proving;
+# consensus verification remains in C23 in every build.
 # LevelDB is a C++ archive behind a C API. Link with cc for release LTO
 # consistency, but add the C++ driver's stdlib search directory so hosts whose
 # cc/c++ packages are split still find libstdc++.
@@ -531,7 +573,7 @@ CXX_STDLIB_LDFLAGS := $(if $(CXX_STDLIB_DIR),-L$(CXX_STDLIB_DIR),)
 LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
 	$(CXX_STDLIB_LDFLAGS) -lstdc++ -lsqlite3 \
 	-levent -levent_openssl -levent_pthreads \
-	-lssl -lcrypto -lz -lrustzcash -ldl -lpthread -lm
+	-lssl -lcrypto -lz $(if $(ZCL_WITH_RUST),-lrustzcash) -ldl -lpthread -lm
 
 # ── Host-local compile epochs ─────────────────────────────────────────────
 # Source bytes remain the portable authority. Cached objects/candidates add a
@@ -742,17 +784,21 @@ endif
 .PHONY: vendor vendor-force vendor-provenance vendor-ready check-vendor-provenance
 # Build every missing OR provenance-stale vendor/lib/*.a from its pinned,
 # SHA256-verified source. `make vendor-force` rebuilds all of them.
+# ZCL_WITH_RUST rides into every vendor entry point so the optional
+# librustzcash archive is built/audited exactly when the build wants to link
+# it, and is otherwise never attempted (a Rust-free host must not die on
+# `need cargo`). See the flag's declaration at the top of this file.
 vendor:
-	tools/scripts/build_vendor.sh
+	ZCL_WITH_RUST='$(ZCL_WITH_RUST)' tools/scripts/build_vendor.sh
 vendor-force:
-	VENDOR_FORCE=1 tools/scripts/build_vendor.sh
+	VENDOR_FORCE=1 ZCL_WITH_RUST='$(ZCL_WITH_RUST)' tools/scripts/build_vendor.sh
 vendor-provenance:
-	@tools/scripts/build_vendor.sh --check-provenance
+	@ZCL_WITH_RUST='$(ZCL_WITH_RUST)' tools/scripts/build_vendor.sh --check-provenance
 # Link/release/deploy front door: repair stale archives, then independently
 # audit installed bytes before any binary can consume them.
 vendor-ready:
-	@tools/scripts/build_vendor.sh
-	@tools/dep_audit.sh
+	@ZCL_WITH_RUST='$(ZCL_WITH_RUST)' tools/scripts/build_vendor.sh
+	@ZCL_WITH_RUST='$(ZCL_WITH_RUST)' tools/dep_audit.sh
 
 # Included only on the first parse when inputs are missing or a requested
 # front door can repair them. Remaking an included makefile forces GNU Make to
@@ -809,7 +855,7 @@ worktree-prime:
 # clone without re-running the whole script when the libs are already there.
 # libsecp256k1.a is tracked, so it has no recipe (git provides it).
 $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
-	tools/scripts/build_vendor.sh $(notdir $@)
+	ZCL_WITH_RUST='$(ZCL_WITH_RUST)' tools/scripts/build_vendor.sh $(notdir $@)
 
 .PHONY: all test test-e2e test-shielded-payment test-store-e2e clean deploy deploy-dev remote-node-plan remote-node-plan-json remote-node-update remote-node-update-json lane-health lane-recover check-agent-cli check-restart-follow \
         background-fuzz background-coverage background-tests install-quality-linger quality-linger-status pre-push-ci \
@@ -1304,8 +1350,21 @@ t-fast: $(TEST_PARALLEL_FAST_CANDIDATE)
 # Runs the groth16_selfverify group's oracle in emit mode against
 # vendor/lib/librustzcash.a and prints a ready-to-paste C block for
 # lib/test/include/test/groth16_spend_oracle_kat.h. Deterministic, params-free.
+#
+# Regeneration is by definition a librustzcash operation — the whole point is
+# to re-derive the vector FROM the reference archive — so it requires
+# ZCL_WITH_RUST=1. Refuse up front rather than emitting the baked bytes back at
+# the operator, which would be circular and would look like a successful
+# regeneration. (The oracle itself refuses too; this is the earlier, cheaper
+# door.)
 .PHONY: spend-oracle-kat
 spend-oracle-kat: $(TEST_PARALLEL_FAST_CANDIDATE)
+ifeq ($(strip $(ZCL_WITH_RUST)),)
+	@echo "spend-oracle-kat: refusing — the reference vector can only be" >&2
+	@echo "  re-derived from vendor/lib/librustzcash.a. Re-run as:" >&2
+	@echo "      make ZCL_WITH_RUST=1 spend-oracle-kat" >&2
+	@exit 2
+endif
 	@mkdir -p "$(BUILD_DIR)"
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
 	  sh -c 'ulimit -s unlimited && ZCL_EMIT_SPEND_ORACLE_KAT=1 exec $(TEST_PARALLEL_FAST_ACTIVE) --only=groth16_selfverify'
@@ -6058,7 +6117,7 @@ ci: vendor-ready lint bench-regress zclassic23 $(TEST_PARALLEL_REL_CANDIDATE)
 	@echo "══ CI: ALL STAGES PASSED ══"
 
 audit:
-	@tools/dep_audit.sh
+	@ZCL_WITH_RUST='$(ZCL_WITH_RUST)' tools/dep_audit.sh
 
 check-restart-follow:
 	$(ZCL_NODECTL_BIN) verify-follow --restart

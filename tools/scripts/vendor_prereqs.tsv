@@ -12,7 +12,10 @@
 #   tool    argv name probed with `command -v`
 #   class   required        — the node build cannot proceed without it
 #           vendor          — `make vendor` (the one-time archive build) needs it
-#           vendor-optional — vendor builds without it, on a slower/fallback path
+#           vendor-optional — the build completes without it; something is
+#                             slower, on a fallback path, or a named optional
+#                             capability is absent. Never counted as a missing
+#                             prerequisite by `make doctor`.
 #           vendor-either   — at least ONE tool in this class must be present
 #   apt     Debian/Ubuntu package
 #   dnf     Fedora/RHEL package
@@ -25,14 +28,14 @@ cc	required	gcc	gcc	compiles every translation unit; gcc 14+ or a clang with wor
 make	required	make	make	drives every build, test and lint target
 git	required	git	git	tracked-file enumeration used by the build and most lint gates
 ar	vendor	binutils	binutils	archives each vendored static library
-nm	vendor	binutils	binutils	libevent symbol audit and the librustzcash proving-ABI check
+nm	vendor	binutils	binutils	libevent symbol audit, and the librustzcash proving-ABI check under ZCL_WITH_RUST=1
 sha256sum	vendor	coreutils	coreutils	verifies every pinned source tarball against its hash
 tar	vendor	tar	tar	unpacks the openssl, libevent, zlib and leveldb tarballs
 perl	vendor	perl	perl	OpenSSL's Configure is a perl program
 patch	vendor	patch	patch	applies vendor/patches/libevent-2.1.12-secure-rng-abi.patch
 unzip	vendor	unzip	unzip	the SQLite amalgamation ships as a zip, not a tarball
-cargo	vendor	cargo	cargo	builds librustzcash, the canonical Sapling prover
-rustc	vendor	rustc	rust	same; cargo without a matching rustc cannot build the prover
+cargo	vendor-optional	cargo	cargo	builds librustzcash; only needed for ZCL_WITH_RUST=1, which adds SENDING shielded value
+rustc	vendor-optional	rustc	rust	same; cargo without a matching rustc cannot build the prover
 curl	vendor-either	curl	curl	downloads pinned sources; build_vendor falls back to wget
 wget	vendor-either	wget	wget	downloads pinned sources when curl is absent
 c++	vendor	g++	gcc-c++	LevelDB is C++11 and `make vendor` has no path to libleveldb.a without it

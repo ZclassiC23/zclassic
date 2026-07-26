@@ -24,7 +24,10 @@ it as your only mainnet node yet.
 - A C++ compiler (`c++`/`g++`), `autoconf`, `curl` or `wget`, `unzip`,
   `sha256sum`, and (optional — a fallback build path exists without it)
   `cmake`, for the one-time vendored-library build.
-- `cargo` + `rustc`, for the canonical Zcash Sapling prover.
+- `cargo` + `rustc` — **optional**. Without them the node builds and runs
+  fully; only SENDING shielded value is unavailable, and it refuses with a
+  message naming the flag. Add it with `make ZCL_WITH_RUST=1`, which builds
+  and links the canonical Zcash Sapling prover.
 
 No other external dependencies: everything else is stock `cc`/`ld`/`make`
 and libc.

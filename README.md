@@ -96,23 +96,29 @@ table says today.
 - **To build those archives once (`make vendor`):** `ar`, `nm`, `sha256sum`,
   `tar`, `unzip`, `patch`, `perl` (OpenSSL's `Configure` is a perl program),
   and `curl` **or** `wget`.
-- **Two non-C toolchains, and the project needs both** — "pure C23" describes
-  the node's own source, not the third-party archives it links:
-  - **Rust** (`cargo` + `rustc`) builds `librustzcash.a`, the canonical Zcash
-    Sapling prover. There is no C fallback; without Rust `make vendor` stops.
-  - **A C++ compiler** (`c++`/`g++`) builds LevelDB, which is C++11. `cmake` is
-    the preferred route and is genuinely optional — a direct C++ compile is
-    used when it is absent — but the C++ compiler itself is not optional.
-    This one is on its way out: `lib/storage/src/ldb_reader_*.c` is a
-    read-only LevelDB reader in plain C23, proven byte-identical to
-    `libleveldb.a` over the real on-disk databases on this host. What still
-    has to land before `c++` leaves this list is spelled out in
-    [`docs/BUILD.md`](docs/BUILD.md) under *Retiring the C++ requirement*.
+- **Rust is NOT required.** `make` on a host with no `cargo`/`rustc` produces a
+  full node: it validates the chain, verifies and relays other people's
+  shielded transactions, serves the explorer and REST API, mines, and receives
+  shielded funds — all of that is native C23. The single capability that needs
+  Rust is *creating* Sapling proofs, i.e. **sending** shielded value; without
+  it `z_sendmany` refuses with a typed error naming the flag to rebuild with,
+  and never fails silently. Add it with `make ZCL_WITH_RUST=1`, which builds
+  and links `librustzcash.a` (the canonical Zcash Sapling prover) and needs
+  `cargo` + `rustc`.
+- **A C++ compiler** (`c++`/`g++`) builds LevelDB, which is C++11. `cmake` is
+  the preferred route and is genuinely optional — a direct C++ compile is used
+  when it is absent — but the C++ compiler itself is not optional. "Pure C23"
+  describes the node's own source, not every third-party archive it links.
+  This one is on its way out: `lib/storage/src/ldb_reader_*.c` is a read-only
+  LevelDB reader in plain C23, proven byte-identical to `libleveldb.a` over the
+  real on-disk databases on this host. What still has to land before `c++`
+  leaves this list is spelled out in [`docs/BUILD.md`](docs/BUILD.md) under
+  *Retiring the C++ requirement*.
 - **The first `make vendor` needs the internet.** It downloads pinned source
-  tarballs (OpenSSL, libevent, LevelDB, zlib, SQLite, and the Sapling prover),
-  verifies each against a pinned SHA-256, and compiles them locally; cargo also
-  fetches the prover's crates. Afterwards `vendor/lib/` is cached and every
-  later build is offline.
+  tarballs (OpenSSL, libevent, LevelDB, zlib, SQLite — plus the Sapling prover
+  under `ZCL_WITH_RUST=1`), verifies each against a pinned SHA-256, and
+  compiles them locally. Afterwards `vendor/lib/` is cached and every later
+  build is offline.
 
 ## Quick start
 
@@ -132,7 +138,7 @@ the result back.
 | Stage | Command | Wall time | What it needs |
 |---|---|---|---|
 | Clone | `git clone` | seconds locally; the history is 932 MiB over the network | `git` |
-| Vendored archives | `make vendor` | 92 s | network, Rust (`cargo`+`rustc`), a C++ compiler |
+| Vendored archives | `make vendor` | 92 s | network, a C++ compiler (Rust only under `ZCL_WITH_RUST=1`) |
 | Arm the clone | `make setup` | 41 s | nothing beyond the above |
 | Binaries | `make -j"$(nproc)"` | 205 s | gcc 14+ |
 | Full test suite | `make -j"$(nproc)" test-parallel` | 252 s | nothing beyond the above |
@@ -141,7 +147,10 @@ the result back.
 Measured on a 32-core host (gcc 14.2, rustc 1.95) with the compiler cache
 switched off, so it reflects a machine that has never built this project; the
 host was running other builds at the time (1-minute load average 29 rising to
-49). Your own numbers come from `make first-build-timing`, and `make doctor`
+49). The 92 s vendor row was measured while the Sapling prover was still part
+of the default archive set — it is now opt-in, so a default `make vendor` does
+less than that row records and `make ZCL_WITH_RUST=1 vendor` is what it
+describes. Your own numbers come from `make first-build-timing`, and `make doctor`
 names anything this host is still missing. Fuller breakdown, including which
 stage is the long pole and why, is in [`docs/BUILD.md`](docs/BUILD.md).
 
@@ -158,7 +167,7 @@ make lint           # defensive-coding gates
 `zclassic-cli` / `zcl-rpc` clients used in the examples below.) The first build
 auto-runs **`make vendor`**, which builds the static
 third-party archives in `vendor/lib/` from source (OpenSSL, libevent ×3, LevelDB,
-SQLite, zlib, librustzcash) plus the in-tree Tor stub — sources are pulled from pinned URLs and
+SQLite, zlib — and librustzcash only under `ZCL_WITH_RUST=1`) plus the in-tree Tor stub — sources are pulled from pinned URLs and
 verified against pinned SHA256 hashes, then compiled locally. Only
 `libsecp256k1.a` (a custom Bitcoin Core fork build) ships committed. `make vendor`
 is provenance-idempotent: it skips only archives whose bytes, source pin,

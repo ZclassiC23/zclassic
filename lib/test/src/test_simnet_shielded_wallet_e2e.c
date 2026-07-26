@@ -770,7 +770,10 @@ int test_simnet_shielded_wallet_e2e(void)
     fclose(probe);
 
     if (!sapling_init_params(params_dir) || !zclassic_sapling_prover_is_ready()) {
-        printf("  production prover not ready (status=%s) — SKIP\n",
+        /* "SKIP (" is the harness sentinel (test_parallel.c). Without it this
+         * real prove->verify shielded end-to-end vanishes from the suite's
+         * skipped-coverage ledger instead of being reported as not run. */
+        printf("  production prover not ready — SKIP (status=%s)\n",
                zclassic_sapling_prover_status());
         return 0;
     }

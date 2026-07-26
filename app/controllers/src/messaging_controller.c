@@ -11,7 +11,8 @@
 #include "net/zmsg.h"
 #include "net/net.h"
 #include "net/connman.h"
-#include "sapling/params_init.h"     /* sapling_params_loaded (prover-ready gate) */
+#include "sapling/params_init.h"     /* sapling_params_loaded (diagnostics) */
+#include "sapling/sapling_prover.h"  /* prover readiness = can we send on-chain */
 #include "chain/chainparams.h"
 #include "models/znam.h"
 #include "encoding/utilstrencodings.h"
@@ -73,11 +74,25 @@ static bool msg_send_onchain(const char *to_addr, const char *body,
                              const char *from_addr, const char *reply_hex,
                              struct json_value *result)
 {
-    if (!sapling_params_loaded()) {
-        json_set_str(result,
-            "On-chain ZMSG unavailable: Sapling proving params not loaded "
-            "(prover not READY) — cannot build a shielded transaction");
-        LOG_FAIL("zmsg", "msg_send onchain: sapling params not loaded");
+    /* On-chain ZMSG rides a shielded transaction, so it needs BOTH the params
+     * on disk and a proving backend in the build. Checking only the params
+     * would report ready on a build with no proving backend (params load fine
+     * there; only proving is absent) and then fail deep in the stack with a
+     * vaguer message. */
+    if (!zclassic_sapling_prover_is_ready()) {
+        char err[320];
+        snprintf(err, sizeof(err),
+                 "On-chain ZMSG unavailable: cannot build a shielded "
+                 "transaction (backend=%s, status=%s)",
+                 zclassic_sapling_prover_backend(),
+                 zclassic_sapling_prover_status());
+        json_set_str(result, err);
+        LOG_FAIL("zmsg",
+                 "msg_send onchain: prover not ready: backend=%s status=%s "
+                 "params_loaded=%d",
+                 zclassic_sapling_prover_backend(),
+                 zclassic_sapling_prover_status(),
+                 (int)sapling_params_loaded());
     }
     if (!to_addr || strncmp(to_addr, "zs1", 3) != 0) {
         json_set_str(result,
@@ -459,13 +474,22 @@ bool messaging_dump_state_json(struct json_value *out, const char *key)
 
     bool db_open = g_msg_ndb != NULL;
     bool net_up = g_msg_connman != NULL;
-    bool onchain_ready = sapling_params_loaded();
+    /* READY means a shielded tx can actually be built: params on disk AND a
+     * proving backend compiled into this binary. Reporting only the former
+     * advertised a channel that cannot send on a build with no proving
+     * backend. */
+    bool onchain_ready = zclassic_sapling_prover_is_ready();
 
     json_push_kv_bool(out, "controller_wired", db_open && net_up);
     json_push_kv_bool(out, "db_open", db_open);
     json_push_kv_bool(out, "network_available", net_up);
     json_push_kv_bool(out, "p2p_channel_available", true);
     json_push_kv_bool(out, "onchain_channel_ready", onchain_ready);
+    json_push_kv_bool(out, "sapling_params_loaded", sapling_params_loaded());
+    json_push_kv_str(out, "onchain_prover_backend",
+                     zclassic_sapling_prover_backend());
+    json_push_kv_str(out, "onchain_prover_status",
+                     zclassic_sapling_prover_status());
     json_push_kv_int(out, "inbox_store_count", (int64_t)zmsg_store_count());
     json_push_kv_int(out, "inbox_store_cap", (int64_t)ZMSG_MAX_STORED);
     json_push_kv_int(out, "onchain_memo_max_bytes",
@@ -474,8 +498,8 @@ bool messaging_dump_state_json(struct json_value *out, const char *key)
     diag_push_health(out, true,
                      onchain_ready
                          ? "messaging ready (p2p + on-chain)"
-                         : "messaging ready (p2p only; on-chain prover not "
-                           "loaded)");
+                         : "messaging ready (p2p only; on-chain send needs "
+                           "a Sapling proving backend)");
     return true;
 }
 

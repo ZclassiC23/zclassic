@@ -189,6 +189,26 @@ bool rpc_z_sendmany(const struct json_value *params, bool help,
 
     /* ── Transparent spend path (t→t, t→z) ─────────────────────── */
 
+    /* Shielding (t→z) needs a Sapling OUTPUT description, and an output
+     * description carries its own Groth16 proof — so it needs the proving
+     * backend exactly as a shielded spend does. Refuse here, before coin
+     * selection allocates anything and before any spent-state is touched, and
+     * name the backend + status so a build with no proving backend explains
+     * itself instead of surfacing a bare "Failed to init proving context"
+     * hundreds of lines later. Pure t→t sends are unaffected. */
+    if (num_z_out > 0 && !zclassic_sapling_prover_is_ready()) {
+        char err[320];
+        snprintf(err, sizeof(err),
+                 "Shielded proving unavailable (backend=%s, status=%s)",
+                 zclassic_sapling_prover_backend(),
+                 zclassic_sapling_prover_status());
+        json_set_str(result, err);
+        LOG_FAIL("wallet_shielded",
+                 "z_sendmany: refusing t->z shielding: backend=%s status=%s",
+                 zclassic_sapling_prover_backend(),
+                 zclassic_sapling_prover_status());
+    }
+
     /* Select coins from SQLite model layer, restricted to the from-address.
      * Pushing the address hash into the SQL WHERE (rather than selecting
      * globally then post-filtering) ensures a fully funded from-address is
@@ -307,18 +327,27 @@ bool rpc_z_sendmany(const struct json_value *params, bool help,
             GetRandBytes(ovk, 32);
         }
 
-        /* Use Sapling proving context for output proofs + binding sig */
-        extern void *zclassic_sapling_proving_ctx_init(void);
-        extern bool zclassic_sapling_binding_sig(
-            const void *ctx, int64_t valueBalance,
-            const unsigned char *sighash, unsigned char *result_out);
-        extern void zclassic_sapling_proving_ctx_free(void *);
-
+        /* Use Sapling proving context for output proofs + binding sig.
+         * The declarations come from sapling/sapling_prover.h via
+         * wallet_shielded_internal.h. */
         void *proving_ctx = zclassic_sapling_proving_ctx_init();
         if (!proving_ctx) {
+            /* Every other error return below this point frees the selected
+             * UTXO rows; this one used to leak them. The readiness precheck
+             * above makes reaching here rare, not impossible. */
+            for (size_t j = 0; j < num_selected; j++)
+                db_wallet_utxo_free(&db_selected[j]);
             transaction_free(&wtx.tx);
-            json_set_str(result, "Failed to init proving context");
-            LOG_FAIL("wallet_shielded", "z_sendmany: sapling_proving_ctx_init failed (transparent spend path)");
+            char err[320];
+            snprintf(err, sizeof(err),
+                     "Failed to init proving context (backend=%s, status=%s)",
+                     zclassic_sapling_prover_backend(),
+                     zclassic_sapling_prover_status());
+            json_set_str(result, err);
+            LOG_FAIL("wallet_shielded",
+                     "z_sendmany: sapling_proving_ctx_init failed (transparent spend path): backend=%s status=%s",
+                     zclassic_sapling_prover_backend(),
+                     zclassic_sapling_prover_status());
         }
 
         for (size_t i = 0; i < num_z_out; i++) {

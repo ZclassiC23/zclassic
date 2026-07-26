@@ -188,6 +188,10 @@ int test_sapling_prover_rng_determinism(void)
 
         if (!sapling_init_params(params_dir)) {
             printf("  ~/.zcash-params absent — SKIPPING end-to-end prover leg\n");
+        } else if (!zclassic_sapling_prover_is_ready()) {
+            printf("  SKIP (end-to-end prover leg) — %s (status=%s)\n",
+                   zclassic_sapling_prover_backend(),
+                   zclassic_sapling_prover_status());
         } else {
             const uint64_t SEED_E = 0xABCDEF0011223344ULL;
             const uint64_t VALUE = 12345ULL;

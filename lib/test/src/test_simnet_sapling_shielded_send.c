@@ -808,9 +808,16 @@ int test_simnet_sapling_shielded_send(void)
     snprintf(params_dir, sizeof(params_dir), "%s/.zcash-params",
              (home && *home) ? home : ".");
 
-    if (!sapling_init_params(params_dir)) {
-        printf("  ~/.zcash-params absent — SKIPPING params-gated shielded legs "
-               "(tree plumbing above ran)\n");
+    if (!sapling_init_params(params_dir) ||
+        !zclassic_sapling_prover_is_ready()) {
+        if (zclassic_sapling_prover_is_ready())
+            printf("  ~/.zcash-params absent — SKIPPING params-gated shielded "
+                   "legs (tree plumbing above ran)\n");
+        else
+            printf("  SKIP (params-gated shielded legs) — %s (status=%s). "
+                   "Tree plumbing above ran.\n",
+                   zclassic_sapling_prover_backend(),
+                   zclassic_sapling_prover_status());
         printf("Sapling Lane C: %s (%d failures, prover legs skipped)\n",
                failures == 0 ? "OK" : "FAIL", failures);
         atomic_store(&g_deferred_proof_validation_below_height, saved_defer);

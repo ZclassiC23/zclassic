@@ -75,10 +75,38 @@
 #include <stdio.h>
 #include <string.h>
 
-/* Test-only bridge to the pinned reference archive (vendor/lib/librustzcash.a,
- * already linked by the test binary). Declared locally so the third-party FFI
- * surface never leaks into the repo's C API. */
+/* Test-only bridge to the pinned reference archive (vendor/lib/librustzcash.a).
+ * Declared locally so the third-party FFI surface never leaks into the repo's
+ * C API. The archive is linked only under ZCL_WITH_RUST=1; see below for what
+ * the default Rust-free build asserts instead. */
+#ifdef ZCL_WITH_RUST
 extern void librustzcash_nsk_to_nk(const uint8_t *nsk, uint8_t *result);
+#endif
+
+/* Reference nk for one corpus witness.
+ *
+ * With the archive linked, every witness has a reference value. Without it,
+ * the checked-in KAT still supplies the reference nk for the ONE witness whose
+ * nsk is the KAT nsk, so the differential keeps a real anchor; the remaining
+ * corpus entries report no reference and their two reference-differential
+ * checks are skipped by name rather than silently compared against the native
+ * value they are supposed to be checking (which would be circular). */
+static bool parity_reference_nk(const uint8_t *nsk, uint8_t out[32])
+{
+#ifdef ZCL_WITH_RUST
+    librustzcash_nsk_to_nk(nsk, out);
+    return true;
+#else
+#if SPEND_ORACLE_KAT_BAKED
+    if (memcmp(nsk, SPEND_ORACLE_KAT_NSK, 32) == 0) {
+        memcpy(out, SPEND_ORACLE_KAT_NK, 32);
+        return true;
+    }
+#endif
+    (void)nsk; (void)out;
+    return false;
+#endif
+}
 
 /* ── Pinned reference section-boundary table ────────────────────────────────
  * Cumulative num_constraints after each of bellman's 28 Spend::synthesize
@@ -294,27 +322,35 @@ int groth16_spend_parity_oracle(void)
         /* (C) Per-wire value parity. */
         /* nk wire vs the librustzcash reference (the differential). */
         uint8_t nk_ref[32];
-        librustzcash_nsk_to_nk(pw.wit.nsk, nk_ref);
+        const bool have_nk_ref = parity_reference_nk(pw.wit.nsk, nk_ref);
         uint8_t nk_native[32];
         sapling_nsk_to_nk(pw.wit.nsk, nk_native);
-        snprintf(label, sizeof(label),
-                 "corpus[%u]: native nsk_to_nk == librustzcash reference", c);
-        PARITY_CHECK(label, memcmp(nk_native, nk_ref, 32) == 0);
+        if (!have_nk_ref) {
+            printf("  corpus[%u]: SKIP (nk reference differential) — built "
+                   "without ZCL_WITH_RUST=1 and this witness is not the baked "
+                   "KAT witness; rebuild with `make ZCL_WITH_RUST=1` for full "
+                   "corpus coverage\n", c);
+        } else {
+            snprintf(label, sizeof(label),
+                     "corpus[%u]: native nsk_to_nk == librustzcash reference", c);
+            PARITY_CHECK(label, memcmp(nk_native, nk_ref, 32) == 0);
 
-        struct fr nkx, nky;
-        bool nk_dec = decode_xy(nk_ref, &nkx, &nky);
-        bool nk_wire_ok = nk_dec
-            && probe.nk_x < cs.num_vars && probe.nk_y < cs.num_vars
-            && fr_eq(&cs.witness[probe.nk_x], &nkx)
-            && fr_eq(&cs.witness[probe.nk_y], &nky);
-        if (!nk_wire_ok && !flagged) {
-            flagged = true;
-            printf("  >> FIRST DIVERGENCE: corpus[%u] in-circuit nk wire != "
-                   "librustzcash [nsk] ProofGenerationKeyGenerator\n", c);
+            struct fr nkx, nky;
+            bool nk_dec = decode_xy(nk_ref, &nkx, &nky);
+            bool nk_wire_ok = nk_dec
+                && probe.nk_x < cs.num_vars && probe.nk_y < cs.num_vars
+                && fr_eq(&cs.witness[probe.nk_x], &nkx)
+                && fr_eq(&cs.witness[probe.nk_y], &nky);
+            if (!nk_wire_ok && !flagged) {
+                flagged = true;
+                printf("  >> FIRST DIVERGENCE: corpus[%u] in-circuit nk wire != "
+                       "librustzcash [nsk] ProofGenerationKeyGenerator\n", c);
+            }
+            snprintf(label, sizeof(label),
+                     "corpus[%u]: in-circuit nk wire == reference nk (section 7)",
+                     c);
+            PARITY_CHECK(label, nk_wire_ok);
         }
-        snprintf(label, sizeof(label),
-                 "corpus[%u]: in-circuit nk wire == reference nk (section 7)", c);
-        PARITY_CHECK(label, nk_wire_ok);
 
         /* ak wire vs the decoded witness ak (self-consistent, section 1). */
         struct fr akx, aky;

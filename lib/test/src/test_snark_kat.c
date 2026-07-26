@@ -236,6 +236,11 @@ int test_snark_kat(void)
 
         if (!sapling_init_params(params_dir)) {
             printf("  zcash-params init failed — skipping prover round-trip\n");
+        } else if (!zclassic_sapling_prover_is_ready()) {
+            printf("  SKIP (KAT B prover round-trip) — %s (status=%s). "
+                   "KAT A above is pure C23 and ran.\n",
+                   zclassic_sapling_prover_backend(),
+                   zclassic_sapling_prover_status());
         } else {
             uint8_t diversifier[11];
             bool div_ok = find_diversifier(diversifier);
