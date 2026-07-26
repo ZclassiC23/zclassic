@@ -10,9 +10,11 @@
 #
 # Three things fail the gate:
 #   (a) the module SET in config/lib_module_order.def disagreeing with the
-#       Makefile's LIB_MODULES (read through tools/lint/repo_shape.sh). The
-#       .def is a second copy of that list, so it is checked against the
-#       build's copy on every run rather than trusted,
+#       lib/ tree itself. That file is the DECLARATION — the Makefile derives
+#       LIB_MODULES from it and repo_shape.sh reads it — so it is checked
+#       against the filesystem, the one witness that is still independent of
+#       it. Checking it against anything derived from it would compare it to
+#       itself,
 #   (b) a lib/ module in the link graph that config/lib_module_order.def does
 #       not declare (someone added lib/<mod>/ without ranking it), and
 #   (c) an edge lib/A -> lib/B where rank(B) >= rank(A) and the edge is not
@@ -56,6 +58,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+# shellcheck source=tools/lint/gate_lib.sh
+. tools/lint/gate_lib.sh
+
 DEF=config/lib_module_order.def
 BASELINE=tools/scripts/lib_module_order_baseline.txt
 GRAPH_TOOL=tools/dev/module-linkgraph.sh
@@ -80,26 +85,36 @@ if [ -n "$declared_tree" ] && [ "$declared_tree" != "$OBJ_ROOT" ]; then
     exit 1
 fi
 
-# ── the .def is a SECOND copy of the module list, so check it ────────────
-# The Makefile's LIB_MODULES is the build's copy: it feeds LIB_SRCS and the
-# -I flags, so it cannot rot without the build breaking. The .def adds rank,
-# which the build does not need and therefore cannot police. Rather than let
-# the two drift, read the build's copy through the repo's own shape parser
-# and assert set equality. lib/test is in neither: the test runner is built
-# from its own Makefile variable and is outside the production link order.
-# shellcheck source=tools/lint/repo_shape.sh
-source tools/lint/repo_shape.sh
+# ── the .def is the DECLARATION, so check it against the tree ────────────
+# The Makefile derives LIB_MODULES from this file and repo_shape.sh reads it
+# directly, so comparing the .def to either of them now compares it to itself
+# and would pass no matter how wrong it was. Deleting a copy removes the
+# cross-check that copy provided, so the check has to be re-pointed at
+# something that is still an independent witness. That is the filesystem: a
+# lib/<mod>/ directory with tracked sources exists whether or not anyone
+# remembered to declare it.
+#
+# lib/test is excluded deliberately — the test runner is built from its own
+# Makefile variable and is outside the production link order (see the .def
+# header).
+def_set=$(sed -n 's/^[[:space:]]*LIB_MODULE("\([A-Za-z0-9_]*\)").*/\1/p' "$DEF" | LC_ALL=C sort -u)
+disk_set=$(git ls-files lib | cut -d/ -f2 | LC_ALL=C sort -u | grep -vx test || true)
 
-def_set=$(sed -n 's/^[[:space:]]*LIB_MODULE("\([A-Za-z0-9_]*\)").*/\1/p' "$DEF" | sort -u)
-mk_set=$(printf '%s\n' "${ZCL_LIB_MODULES[@]}" | sort -u)
-if [ "$def_set" != "$mk_set" ]; then
-    echo "check_lib_module_order: FAIL — $DEF and the Makefile's LIB_MODULES declare different modules."
-    echo "  only in $DEF:"
-    comm -23 <(printf '%s\n' "$def_set") <(printf '%s\n' "$mk_set") | sed 's/^/    /'
-    echo "  only in Makefile LIB_MODULES:"
-    comm -13 <(printf '%s\n' "$def_set") <(printf '%s\n' "$mk_set") | sed 's/^/    /'
-    echo "  Adding a lib module means adding it to BOTH — to the Makefile so it"
-    echo "  compiles, and to $DEF at the lowest rank that keeps this gate green."
+gate_require_scanned "$(printf '%s\n' "$disk_set" | grep -c . || true)" 1 \
+    check_lib_module_order \
+    "no lib/<mod>/ directories found — is this a checkout, and did git ls-files run?"
+
+if [ "$def_set" != "$disk_set" ]; then
+    echo "check_lib_module_order: FAIL — $DEF does not match the lib/ tree."
+    echo "  declared but no such module directory:"
+    comm -23 <(printf '%s\n' "$def_set") <(printf '%s\n' "$disk_set") | sed 's/^/    /'
+    echo "  present in lib/ but never declared:"
+    comm -13 <(printf '%s\n' "$def_set") <(printf '%s\n' "$disk_set") | sed 's/^/    /'
+    echo
+    echo "  An undeclared module compiles nothing: the Makefile derives every"
+    echo "  lib/ source glob and -I flag from this file, so a module missing"
+    echo "  here is a module missing from the build. Add it at the lowest rank"
+    echo "  that keeps this gate green."
     exit 1
 fi
 

@@ -16,11 +16,17 @@
 # tree under the catch-all group and the orphan-placement gate reports the
 # whole tree as misplaced.
 #
-# The Makefile is the source of truth because the BUILD already depends on
-# these variables: APP_DIRS, LIB_MODULES and DOMAIN_CONTEXTS feed ALL_SRCS
-# and the -I flag lists, so they cannot rot without the build breaking. That
-# makes them the one representation that is load-bearing rather than
-# descriptive.
+# The Makefile is the source of truth for the shapes and domain contexts
+# because the BUILD already depends on them: APP_DIRS and DOMAIN_CONTEXTS feed
+# ALL_SRCS and the -I flag lists, so they cannot rot without the build
+# breaking. That makes them load-bearing rather than descriptive.
+#
+# The lib module set is read from config/lib_module_order.def instead, because
+# that file — not the Makefile — is now where the set is declared. The
+# Makefile derives LIB_MODULES from it. Reading the Makefile's copy here would
+# work, but it would be reading a derivation of the real answer and would go
+# quiet the day that derivation broke; reading the declaration means this file
+# and the build cannot disagree about which modules exist.
 #
 # This file is PARSED LIVE on every source, and is deliberately NOT a
 # generated artifact checked into the tree. A generated copy would need a
@@ -29,7 +35,7 @@
 # is a 23.6 s wall, so the whole-suite cost is under a tenth of a percent.
 #
 #   ZCL_APP_SHAPES[]       app/<shape>       from APP_DIRS
-#   ZCL_LIB_MODULES[]      lib/<module>      from LIB_MODULES (line-continued)
+#   ZCL_LIB_MODULES[]      lib/<module>      from config/lib_module_order.def
 #   ZCL_DOMAIN_CONTEXTS[]  domain/<context>  from DOMAIN_CONTEXTS
 #   ZCL_REPO_TOPS[]        top-level roots   DERIVED from the -I flag lists,
 #                                            not declared: a REPO_TOPS variable
@@ -41,13 +47,15 @@
 # pass — a consumer that silently degraded to an empty scan set is the
 # hollow-gate failure gate_lib.sh was written to stop.
 #
-# Set ZCL_REPO_SHAPE_MAKEFILE to point at a fixture Makefile in tests.
+# Set ZCL_REPO_SHAPE_MAKEFILE / ZCL_REPO_SHAPE_MODULE_DEF to point at fixtures
+# in tests.
 
 _repo_shape_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=tools/lint/gate_lib.sh
 . "$_repo_shape_dir/gate_lib.sh"
 
 ZCL_REPO_SHAPE_MAKEFILE="${ZCL_REPO_SHAPE_MAKEFILE:-$_repo_shape_dir/../../Makefile}"
+ZCL_REPO_SHAPE_MODULE_DEF="${ZCL_REPO_SHAPE_MODULE_DEF:-$_repo_shape_dir/../../config/lib_module_order.def}"
 
 if [ ! -r "$ZCL_REPO_SHAPE_MAKEFILE" ]; then
     echo "repo-shape: FATAL — cannot read '$ZCL_REPO_SHAPE_MAKEFILE'." >&2
@@ -56,8 +64,16 @@ if [ ! -r "$ZCL_REPO_SHAPE_MAKEFILE" ]; then
     exit 2
 fi
 
+if [ ! -r "$ZCL_REPO_SHAPE_MODULE_DEF" ]; then
+    echo "repo-shape: FATAL — cannot read '$ZCL_REPO_SHAPE_MODULE_DEF'." >&2
+    echo "  That file declares which lib/ modules exist; the Makefile derives" >&2
+    echo "  LIB_MODULES from it. Without it every lib-scoped gate would scan" >&2
+    echo "  an empty set and report clean." >&2
+    exit 2
+fi
+
 # One pass. Emits "VAR<TAB>tok" lines. Handles backslash line continuation
-# (LIB_MODULES spans two lines) and strips any trailing comment.
+# (DOMAIN_CONTEXTS/APP_DIRS may span lines) and strips any trailing comment.
 _repo_shape_parse() {
     awk '
         function emit(name, rest,   i, n, a) {
@@ -86,7 +102,6 @@ _repo_shape_parse() {
             sub(/^[^=]*=/, "", line)
             if (line ~ /\\[ \t]*$/) { cont = 1; acc = line; keep = name; next }
             if (name == "APP_DIRS")        emit("APP_DIRS", line)
-            if (name == "LIB_MODULES")     emit("LIB_MODULES", line)
             if (name == "DOMAIN_CONTEXTS") emit("DOMAIN_CONTEXTS", line)
             next
         }
@@ -95,7 +110,6 @@ _repo_shape_parse() {
             if ($0 ~ /\\[ \t]*$/) next
             cont = 0
             if (keep == "APP_DIRS")        emit("APP_DIRS", acc)
-            if (keep == "LIB_MODULES")     emit("LIB_MODULES", acc)
             if (keep == "DOMAIN_CONTEXTS") emit("DOMAIN_CONTEXTS", acc)
             next
         }
@@ -107,7 +121,8 @@ _repo_shape_raw="$(_repo_shape_parse)"
 # shellcheck disable=SC2034  # consumed by sourcing gates
 mapfile -t ZCL_APP_SHAPES < <(printf '%s\n' "$_repo_shape_raw" | awk -F'\t' '$1=="APP_DIRS"{print $2}')
 # shellcheck disable=SC2034
-mapfile -t ZCL_LIB_MODULES < <(printf '%s\n' "$_repo_shape_raw" | awk -F'\t' '$1=="LIB_MODULES"{print $2}')
+mapfile -t ZCL_LIB_MODULES < <(sed -n 's/^[[:space:]]*LIB_MODULE("\([A-Za-z0-9_]*\)").*/\1/p' \
+    "$ZCL_REPO_SHAPE_MODULE_DEF" | LC_ALL=C sort -u)
 # shellcheck disable=SC2034
 mapfile -t ZCL_DOMAIN_CONTEXTS < <(printf '%s\n' "$_repo_shape_raw" | awk -F'\t' '$1=="DOMAIN_CONTEXTS"{print $2}')
 # shellcheck disable=SC2034
@@ -116,7 +131,7 @@ mapfile -t ZCL_REPO_TOPS < <(printf '%s\n' "$_repo_shape_raw" | awk -F'\t' '$1==
 gate_require_scanned "${#ZCL_APP_SHAPES[@]}" 1 repo-shape \
     "APP_DIRS parse came back empty — Makefile:256 layout changed?"
 gate_require_scanned "${#ZCL_LIB_MODULES[@]}" 1 repo-shape \
-    "LIB_MODULES parse came back empty — Makefile:272 layout changed?"
+    "no LIB_MODULE rows in $ZCL_REPO_SHAPE_MODULE_DEF — row layout changed?"
 gate_require_scanned "${#ZCL_DOMAIN_CONTEXTS[@]}" 1 repo-shape \
     "DOMAIN_CONTEXTS parse came back empty — Makefile:295 layout changed?"
 gate_require_scanned "${#ZCL_REPO_TOPS[@]}" 1 repo-shape \

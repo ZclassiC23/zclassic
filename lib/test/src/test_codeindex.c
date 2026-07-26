@@ -8,8 +8,8 @@
  *   3. rebuild-from-scratch identity — delete store, reopen, same dump.
  *   4. staleness ⇒ auto-rebuild    — edit a file, reopen, edit is reflected.
  *   5. verify-on-read              — a corrupted symbol row is rejected.
- *   6. group parity                — scanner module list == Makefile
- *                                    LIB_MODULES, and the eight app/ shapes.
+ *   6. group parity                — scanner module list == the lib/ tree
+ *                                    on disk, and the eight app/ shapes.
  *   7. file counts + route parity  — recursive vs direct group file counts, and
  *                                    `code tests` route == `dev test plan`
  *                                    proof_group for the same single file.
@@ -516,38 +516,37 @@ static bool concurrent_open_32(const char *required_symbol)
     return ok;
 }
 
-/* Parse the Makefile's LIB_MODULES (possibly line-continued) into a set. */
-static int makefile_lib_modules(char out[64][64])
+/* Enumerate the lib/<module>/ directories that actually exist.
+ *
+ * This used to parse the Makefile's LIB_MODULES. That is no longer a list:
+ * config/lib_module_order.def declares the modules and the Makefile derives
+ * LIB_MODULES from it, so scraping the Makefile would read a $(shell ...) line,
+ * and scraping the .def would compare the scanner's array against the very file
+ * it is pasted from — a check that cannot fail no matter how wrong either is.
+ *
+ * The filesystem is the one witness still independent of both: a lib/<mod>/
+ * directory exists whether or not anyone declared it. lib/test is excluded —
+ * the test runner is built from its own Makefile variable and is outside the
+ * production link order (see the .def header). */
+static int disk_lib_modules(char out[64][64])
 {
-    FILE *f = fopen("Makefile", "rb");
-    if (!f) return -1;
-    char line[4096];
+    DIR *d = opendir("lib");
+    if (!d) return -1;
     int count = 0;
-    bool in_block = false;
-    while (fgets(line, sizeof(line), f)) {
-        char *p = line;
-        while (*p == ' ' || *p == '\t') p++;
-        if (!in_block) {
-            if (strncmp(p, "LIB_MODULES", 11) != 0) continue;
-            in_block = true;
-            /* skip "LIB_MODULES" and "=" */
-            p += 11;
-            char *eq = strchr(p, '=');
-            if (eq) p = eq + 1;
+    const struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;
+        if (strcmp(e->d_name, "test") == 0) continue;
+        char path[512];
+        snprintf(path, sizeof(path), "lib/%s", e->d_name);
+        struct stat st;
+        if (stat(path, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+        if (count < 64) {
+            snprintf(out[count], 64, "%s", e->d_name);
+            count++;
         }
-        bool cont = strchr(p, '\\') != NULL;
-        /* tokenize p on whitespace, dropping a trailing backslash token */
-        char *tok = strtok(p, " \t\r\n");
-        while (tok) {
-            if (strcmp(tok, "\\") != 0 && count < 64) {
-                snprintf(out[count], 64, "%s", tok);
-                count++;
-            }
-            tok = strtok(NULL, " \t\r\n");
-        }
-        if (!cont) break;
     }
-    fclose(f);
+    closedir(d);
     return count;
 }
 
@@ -1029,10 +1028,10 @@ int test_codeindex(void)
 
     free(dump1); free(dump2); free(dump3);
 
-    /* ── 6: group parity vs Makefile + shapes ── */
+    /* ── 6: group parity vs the lib/ tree + shapes ── */
     {
         char mk[64][64];
-        int mn = makefile_lib_modules(mk);
+        int mn = disk_lib_modules(mk);
         size_t cn = 0;
         const char *const *code = ci_lib_modules(&cn);
         /* set equality (both directions) */
@@ -1045,7 +1044,7 @@ int test_codeindex(void)
         }
         for (size_t j = 0; j < cn; j++)
             if (!set_contains(mk, mn, code[j])) all_code_in_mk = false;
-        CI_CHECK("lib module list matches Makefile LIB_MODULES",
+        CI_CHECK("lib module list matches the lib/ tree on disk",
                  mn > 0 && (size_t)mn == cn && all_mk_in_code && all_code_in_mk);
 
         size_t sn = 0;

@@ -269,9 +269,21 @@ CONFIG_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(wildcard config/src/*.c))
 
 # Library layer
-LIB_MODULES = base bloom chain codeindex coins core crypto crypto_registry encoding event framework health hotswap kernel \
-	json keys metrics mining net platform policy primitives rpc script session sim storage \
-	support sync util validation vcs wallet sapling overlay zslp znam zanc
+# DERIVED, never restated. config/lib_module_order.def is the one declaration
+# of which lib/ modules exist; this reads its set. Sorted rather than kept in
+# the file's rank order because rank governs the LINK graph, not the compile
+# order, and a canonical sort makes the source list stable no matter how the
+# ranks are later rearranged. `sort` also dedupes, so a doubled row there
+# cannot double a wildcard here.
+LIB_MODULE_ORDER_DEF = config/lib_module_order.def
+LIB_MODULES := $(sort $(shell sed -n 's/^[[:space:]]*LIB_MODULE("\([A-Za-z0-9_]*\)").*/\1/p' \
+	$(LIB_MODULE_ORDER_DEF) 2>/dev/null))
+ifeq ($(strip $(LIB_MODULES)),)
+$(error could not derive LIB_MODULES from $(LIB_MODULE_ORDER_DEF) — every lib/ \
+source glob and -I flag comes from that file, so an empty parse would silently \
+build nothing rather than fail. Check the file exists and its LIB_MODULE rows \
+are intact)
+endif
 LIB_INCLUDES = $(foreach m,$(LIB_MODULES),-Ilib/$(m)/include)
 # Wallet-side Sapling proving backend: exactly ONE of these two translation
 # units is compiled, chosen by ZCL_WITH_RUST (declared at the top of this

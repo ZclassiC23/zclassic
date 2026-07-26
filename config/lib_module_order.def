@@ -5,14 +5,26 @@
  * may reference only STRICTLY LOWER ranks. There are no numbers in this file
  * to keep in sync; the order IS the rank.
  *
- * What this file adds is RANK. The module SET already exists twice — the
- * Makefile's LIB_MODULES (source globs + -I flags) and k_lib_modules[] in
- * lib/codeindex/src/codeindex_group.c — and the build keeps both honest
- * because it cannot compile if either is wrong. Rank is the part no build
- * step needs and therefore no build step can police, which is why it lives
- * here and why tools/scripts/check_lib_module_order.sh both enforces the rank
- * rule against the MEASURED link graph (tools/dev/module-linkgraph.sh) and
- * asserts this file's module set still equals the Makefile's.
+ * This file declares both the SET and the RANK, and it is the only place
+ * either is written down. Everything else derives from it:
+ *
+ *   Makefile                              LIB_MODULES := $(shell sed ... )
+ *                                         — every lib/ source glob and -I flag
+ *   tools/lint/repo_shape.sh              ZCL_LIB_MODULES[], for the gates
+ *   lib/codeindex/src/codeindex_group.c   k_lib_modules[], an X-macro paste
+ *
+ * It used to be a third copy of a set the Makefile and the scanner each kept
+ * by hand, checked against each other. Deleting those copies removes the
+ * cross-check they provided, so the check moved to the one witness that is
+ * still independent of this file: the lib/ tree itself. A lib/<mod>/ directory
+ * exists whether or not anyone declared it, and both
+ * tools/scripts/check_lib_module_order.sh and test_codeindex.c case 6 compare
+ * this file's set against it. Rank has no such witness — no build step needs
+ * it, so no build step can police it — which is why the gate also enforces the
+ * rank rule against the MEASURED link graph (tools/dev/module-linkgraph.sh).
+ *
+ * A module missing from this file is not a lint warning, it is a module
+ * missing from the build.
  *
  * How the order was derived — re-measured 2026-07-26 on today's tree, and
  * re-derivable at any time with two commands:

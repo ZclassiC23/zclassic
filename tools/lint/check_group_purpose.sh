@@ -50,12 +50,20 @@ extract_array() {
     ' "$SRC"
 }
 
-mapfile -t lib_modules < <(extract_array "k_lib_modules")
+# k_lib_modules[] is no longer a literal to scrape: codeindex_group.c pastes
+# config/lib_module_order.def in as an X-macro, so the array's contents exist
+# only after the preprocessor runs. Read the same declaration this gate's
+# subject reads. The two remaining arrays are still literals and are still
+# scraped, then cross-checked against the Makefile below.
+mapfile -t lib_modules < <(printf '%s\n' "${ZCL_LIB_MODULES[@]}")
 mapfile -t app_shapes  < <(extract_array "k_app_shapes")
 mapfile -t domain_ctxs < <(extract_array "k_domain_contexts")
 
-gate_require_scanned "${#lib_modules[@]}" 1 check-group-purpose \
-    "k_lib_modules[] parse came back empty — codeindex_group.c layout changed?"
+# Floor is the module count repo_shape.sh itself read, not 1: a one-element
+# result here would once have satisfied a floor of 1 while the real list was
+# 38 long, which is precisely the hollow scan this helper exists to refuse.
+gate_require_scanned "${#lib_modules[@]}" "${#ZCL_LIB_MODULES[@]}" check-group-purpose \
+    "lib module list came back short — config/lib_module_order.def layout changed?"
 gate_require_scanned "${#app_shapes[@]}" 1 check-group-purpose \
     "k_app_shapes[] parse came back empty — codeindex_group.c layout changed?"
 gate_require_scanned "${#domain_ctxs[@]}" 1 check-group-purpose \

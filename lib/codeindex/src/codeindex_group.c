@@ -21,14 +21,29 @@
 #include <stdio.h>
 #include <string.h>
 
-/* ── canonical mirrors (SINGLE source in code; parity-tested vs Makefile) ── */
+/* ── canonical taxonomy ───────────────────────────────────────────────────
+ * The lib module list is not restated here. config/lib_module_order.def is the
+ * one declaration of which lib/ modules exist; the Makefile derives its source
+ * globs and -I flags from it, tools/lint/repo_shape.sh reads it, and this
+ * pastes the same rows in as an X-macro. A hand-kept array here could disagree
+ * with the build, and the failure would be quiet: an unlisted module's files
+ * fall into the catch-all `root` group and the navigator misfiles the whole
+ * subtree while everything still compiles. That is exactly how lib/application
+ * went missing from four separate copies of this taxonomy.
+ *
+ * Included by relative path because lib/ may not name config/ in an #include —
+ * see tools/scripts/check_lib_layering.sh, which deliberately does not match
+ * these data-only X-macro pastes (lib/hotswap does the same with
+ * config/hotswap_eligible.def). It is a text paste, not a link edge: `nm` shows
+ * no undefined config symbols in this object.
+ *
+ * Order here is rank order, which only matters in that it sets the order
+ * groups are emitted; membership is what this array is for. */
 
 static const char *const k_lib_modules[] = {
-    "base", "bloom", "chain", "coins", "core", "crypto", "crypto_registry", "encoding",
-    "event", "framework", "health", "hotswap", "kernel", "json", "keys",
-    "metrics", "mining", "net", "platform", "policy", "primitives", "rpc",
-    "script", "session", "sim", "storage", "support", "sync", "util", "validation",
-    "vcs", "wallet", "sapling", "overlay", "zslp", "znam", "zanc", "codeindex",
+#define LIB_MODULE(name_) name_,
+#include "../../../config/lib_module_order.def"
+#undef LIB_MODULE
 };
 
 static const char *const k_app_shapes[] = {

@@ -269,10 +269,18 @@ makefile_list() {
     ' "$MAKEFILE"
 }
 
-APP_DIRS="$(makefile_list APP_DIRS)"
-LIB_MODULES="$(makefile_list LIB_MODULES)"
+# APP_DIRS / LIB_MODULES / DOMAIN_CONTEXTS come from the shared reader rather
+# than the local awk above: LIB_MODULES is no longer a literal in the Makefile
+# at all — it is derived from config/lib_module_order.def — so scraping its
+# assignment line here would yield the $(shell ...) text and silently collapse
+# the lib/ arm of this scan to nothing. CORE_CONTEXTS and APPLICATION_CONTEXTS
+# have no shared reader yet, so they keep using it.
+# shellcheck source=tools/lint/repo_shape.sh
+. "$(dirname "${BASH_SOURCE[0]}")/repo_shape.sh"
+APP_DIRS="${ZCL_APP_SHAPES[*]}"
+LIB_MODULES="${ZCL_LIB_MODULES[*]}"
 CORE_CONTEXTS="$(makefile_list CORE_CONTEXTS)"
-DOMAIN_CONTEXTS="$(makefile_list DOMAIN_CONTEXTS)"
+DOMAIN_CONTEXTS="${ZCL_DOMAIN_CONTEXTS[*]}"
 APPLICATION_CONTEXTS="$(makefile_list APPLICATION_CONTEXTS)"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/zcl-clang-portability.XXXXXX")" || {
