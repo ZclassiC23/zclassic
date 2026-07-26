@@ -1,0 +1,72 @@
+# Grandfathered lib/ module link-order back edges — see
+# tools/scripts/check_lib_module_order.sh.
+#
+# Each line is an edge "lib/<from> -> lib/<to>" where <to> is ranked at or
+# above <from> in config/lib_module_order.def, i.e. a reference that runs the
+# wrong way along the declared link order.
+#
+# WHICH TREE THIS WAS MEASURED FROM — load-bearing, and asserted by the gate:
+#
+# measured-from-tree: build/obj
+#
+# build/obj is the production compile tree, the one `make build-only`
+# populates. The test roots are compiled -O3 non-LTO with -DZCL_TESTING and do
+# not have the same edges, so a baseline seeded from one tree reports phantom
+# violations against the other. The gate pins build/obj and refuses to run if
+# the header line above disagrees with it.
+#
+# WHY THERE ARE ANY: measured 2026-07-26 over the compiled objects of the
+# production tree (make build-only; tools/dev/module-linkgraph.sh --summary
+# --obj-root build/obj), lib/ has 195 module-to-module edges across the 37 lib
+# modules that have any edge at all, with two non-trivial strongly-connected
+# components: {metrics sync validation net rpc storage script} and
+# {util health}. A cycle cannot be ordered, so some edges must run backward
+# whatever order is chosen.
+#
+# THESE FIVE ARE THE PROVEN MINIMUM, not a heuristic's leftovers. Re-check it
+# in one command:
+#
+#   tools/dev/module-linkgraph.sh --fas --obj-root build/obj
+#
+# It solves each component exactly and reports the floor as 4 + 1 = 5, which
+# the order in config/lib_module_order.def hits exactly. Minimum feedback arc
+# set decomposes over strongly-connected components — an edge between two
+# components can always be made forward by ordering the components
+# topologically — so solving those two components settles the whole graph.
+# Removing these 5 and running `tsort` over the remaining 190 edges succeeds
+# and emits all 37 modules, proving the residue is acyclic. Consequence: NO
+# reordering of the .def can delete a line here. Each one is paid down only by
+# breaking the cycle.
+#
+# THE RATCHET: this file may only SHRINK, never grow. Every entry is debt, and
+# a new back edge is a gate failure rather than a new line here. The gate
+# reports any entry that has stopped being a violation so the file can be
+# tightened the moment a cycle is broken.
+#
+# What each line owes (symbol counts re-measured 2026-07-26 from build/obj;
+# tools/dev/module-linkgraph.sh --summary):
+#   lib/net -> lib/rpc            1 sym   legacy_chain_rpc_get_chainwork
+#   lib/script -> lib/validation  3 syms  tx_make_sig_checker, precompute_tx_data,
+#                                         tx_sig_checker_init
+#   lib/storage -> lib/net        2 syms  net_addr_to_string, net_addr_is_routable
+#   lib/sync -> lib/storage       5 syms  progress_meta_get, progress_meta_set_in_tx,
+#                                         progress_store_tx_lock/_unlock,
+#                                         progress_store_epoch
+#   lib/util -> lib/health        4 syms  health_start, health_register,
+#                                         health_register_periodic, health_unregister
+#
+# lib/net -> lib/rpc is the cheapest cut on the board: one symbol.
+#
+# To pay one down: move the symbol into a lower-ranked module, or invert the
+# dependency behind a registered seam, then delete the line here. The gate
+# reports entries that no longer violate, so it tells you when a line is ripe
+# for deletion.
+#
+# Reference sites for any one edge:
+#   tools/dev/module-linkgraph.sh --edges | grep -P '^lib/net\tlib/rpc\t'
+
+lib/net -> lib/rpc
+lib/script -> lib/validation
+lib/storage -> lib/net
+lib/sync -> lib/storage
+lib/util -> lib/health

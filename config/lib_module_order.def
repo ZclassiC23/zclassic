@@ -1,0 +1,98 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * lib_module_order — the ONE declaration of which lib/ modules exist and in
+ * what LINK ORDER. Rank is position: the first line is rank 1, and a module
+ * may reference only STRICTLY LOWER ranks. There are no numbers in this file
+ * to keep in sync; the order IS the rank.
+ *
+ * What this file adds is RANK. The module SET already exists twice — the
+ * Makefile's LIB_MODULES (source globs + -I flags) and k_lib_modules[] in
+ * lib/codeindex/src/codeindex_group.c — and the build keeps both honest
+ * because it cannot compile if either is wrong. Rank is the part no build
+ * step needs and therefore no build step can police, which is why it lives
+ * here and why tools/scripts/check_lib_module_order.sh both enforces the rank
+ * rule against the MEASURED link graph (tools/dev/module-linkgraph.sh) and
+ * asserts this file's module set still equals the Makefile's.
+ *
+ * How the order was derived — re-measured 2026-07-26 on today's tree, and
+ * re-derivable at any time with two commands:
+ *   make build-only -j"$(nproc)"          # the ONLY tree the gate measures
+ *   tools/dev/module-linkgraph.sh --fas --obj-root build/obj
+ * The graph is 195 lib->lib edges over the 37 lib modules that have any edge
+ * at all (lib/znam has none), with 30 strongly-connected components of which
+ * two are non-trivial: {metrics sync validation net rpc storage script} and
+ * {util health}. The sequence below leaves 5 back edges, and that is OPTIMAL,
+ * not merely good: --fas solves each component exactly (minimum feedback arc
+ * set decomposes over components) and reports the floor as 4 + 1 = 5, so no
+ * reordering of this file can do better. Deleting those 5 and running `tsort`
+ * over the remaining 190 confirms the residue is acyclic and covers all 37
+ * modules. The 5 are grandfathered in
+ * tools/scripts/lib_module_order_baseline.txt and the gate ratchets: the
+ * baseline may only shrink, and shrinking it now requires BREAKING A CYCLE,
+ * not reordering.
+ *
+ * Every number in this comment is output of the two commands above, not
+ * inherited from an earlier measurement. Re-run them before editing the order,
+ * and replace the numbers with what you actually see.
+ *
+ * Adding a module: put it at the LOWEST rank that keeps the gate green
+ * (i.e. below everything it references). Never reorder to make a violation
+ * disappear without re-running the tool — the baseline is the record of what
+ * we owe, and moving a module to hide an edge just relabels the debt.
+ *
+ * Not listed here: lib/test (the test runner is not part of the production
+ * link order; the Makefile builds it from its own variable).
+ */
+
+/* Leaf utilities and low-level building blocks. lib/base is the sink — the
+ * logging / allocation / result vocabulary every other module speaks. */
+LIB_MODULE("base")
+LIB_MODULE("primitives")
+LIB_MODULE("support")
+LIB_MODULE("json")
+LIB_MODULE("encoding")
+LIB_MODULE("overlay")
+LIB_MODULE("platform")
+LIB_MODULE("core")
+LIB_MODULE("crypto")
+LIB_MODULE("session")
+LIB_MODULE("bloom")
+
+/* The foundation hub. Almost everything above it depends on util; util's one
+ * remaining upward reach is util -> health (4 symbols), one of the 5
+ * grandfathered back edges. */
+LIB_MODULE("util")
+LIB_MODULE("sapling")
+LIB_MODULE("crypto_registry")
+LIB_MODULE("event")
+LIB_MODULE("keys")
+
+/* Consensus state, the chain index, transport and observability. These seven
+ * — metrics sync validation net rpc storage script — are one strongly
+ * connected component, so 4 of the 5 back edges necessarily live in here. */
+LIB_MODULE("coins")
+LIB_MODULE("chain")
+LIB_MODULE("sync")
+LIB_MODULE("metrics")
+LIB_MODULE("script")
+LIB_MODULE("storage")
+LIB_MODULE("validation")
+LIB_MODULE("net")
+LIB_MODULE("rpc")
+LIB_MODULE("health")
+
+/* Application-facing subsystems. */
+LIB_MODULE("wallet")
+LIB_MODULE("framework")
+
+/* On-chain overlays and the top of the stack. */
+LIB_MODULE("zslp")
+LIB_MODULE("znam")
+LIB_MODULE("zanc")
+LIB_MODULE("vcs")
+LIB_MODULE("sim")
+LIB_MODULE("policy")
+LIB_MODULE("mining")
+LIB_MODULE("kernel")
+LIB_MODULE("hotswap")
+LIB_MODULE("codeindex")

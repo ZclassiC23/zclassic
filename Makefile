@@ -5222,6 +5222,40 @@ check-lib-layering:
 	@echo "══ LINT: lib/ layer purity ══"
 	@./tools/scripts/check_lib_layering.sh
 
+# lib/ module link order. config/lib_module_order.def declares every lib module
+# in link order (rank = line position) and a module may reference only strictly
+# lower ranks. Unlike check-lib-layering above, which greps #include lines, this
+# gate asks the linker: tools/dev/module-linkgraph.sh joins nm's defined and
+# undefined symbols over the compiled objects, so it also sees a module reached
+# through a bare `extern` with no include at all.
+#
+# ARMING. It measures ONE object tree — build/obj, the production compile tree —
+# and `make build-only` is the one and only command that populates it, so that
+# is the canonical arming path; `make lint-armed` below runs it and then lint
+# with this gate made mandatory. A plain `make` does NOT arm it: every binary in
+# `all` is a single whole-program `cc` over $(ALL_SRCS) with no -c step and
+# leaves zero .o behind. `make test*` populates build/test-rel-obj, which the
+# gate deliberately ignores — those objects are -O3 non-LTO with -DZCL_TESTING
+# and carry references the shipped binary does not have, so scoring them against
+# a build/obj baseline manufactures violations. Unarmed, the gate prints
+# NOT MEASURED and exits 0 rather than failing on unmodified code.
+#
+# Baseline tools/scripts/lib_module_order_baseline.txt grandfathers the 5 back
+# edges that are the proven-minimum feedback arc set over the two cycles in the
+# graph; it may only shrink.
+check-lib-module-order:
+	@echo "══ LINT: lib/ module link order ══"
+	@./tools/scripts/check_lib_module_order.sh
+
+# Lint with the link-graph gate actually armed and MANDATORY: compile the
+# objects it measures, then refuse to accept "NOT MEASURED" as a pass. Plain
+# `make lint` stays fast and skips it when build/obj is cold; this is the target
+# to run when you want every gate enforced.
+.PHONY: lint-armed
+lint-armed:
+	@$(MAKE) --no-print-directory build-only
+	@ZCL_LINT_REQUIRE_LINKGRAPH=1 $(MAKE) --no-print-directory lint
+
 # Inter-shape include direction: the eight app/ shapes include DOWNWARD only
 # (controllers -> services -> models -> lib/core). Flags app/models/** files
 # including "services/..." or "controllers/...", and app/services/** files
@@ -5892,6 +5926,7 @@ LINT_GATES := \
     check-rpc-registrar \
     check-lag-slo-observable \
     check-lib-layering \
+    check-lib-module-order \
     check-shape-include-direction \
     check-domain-purity \
     check-core-include-boundary \
