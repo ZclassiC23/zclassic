@@ -7,6 +7,7 @@
  * Writes only the `nullifiers` table (via storage/nullifier_kv) inside the
  * caller's stage transaction. */
 
+#include "platform/time_compat.h"
 #include "jobs/utxo_apply_nullifiers.h"
 #include "jobs/utxo_apply_delta.h"
 #include "jobs/utxo_apply_anchors.h"
@@ -20,6 +21,7 @@
 #include "storage/nullifier_kv.h"
 #include "util/blocker.h"
 #include "util/log_macros.h"
+#include "util/reducer_stage_profile.h"
 #include "util/safe_alloc.h"
 
 #include <sqlite3.h>
@@ -186,7 +188,7 @@ static bool shielded_history_preflight(sqlite3 *db, const struct block *blk,
     return true;
 }
 
-enum utxo_apply_shielded_gate_result utxo_apply_shielded_history_gate(
+static enum utxo_apply_shielded_gate_result shielded_history_gate_impl(
     sqlite3 *db, const struct block *blk, int height,
     struct delta_summary *summary)
 {
@@ -211,6 +213,21 @@ enum utxo_apply_shielded_gate_result utxo_apply_shielded_history_gate(
             db, UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID))
         return UTXO_SHIELDED_GATE_ERROR;
     return UTXO_SHIELDED_GATE_HOLD;
+}
+
+/* Fold-path attribution (RPF_UA_SHIELDED_GATE_US): times the whole gate —
+ * dominated by anchor_kv root re-derivation inside the anchor insert. */
+enum utxo_apply_shielded_gate_result utxo_apply_shielded_history_gate(
+    sqlite3 *db, const struct block *blk, int height,
+    struct delta_summary *summary)
+{
+    const int64_t t0 = platform_time_monotonic_us();
+    enum utxo_apply_shielded_gate_result r =
+        shielded_history_gate_impl(db, blk, height, summary);
+    reducer_stage_profile_observe_us(
+        REDUCER_PROFILE_UTXO_APPLY, RPF_UA_SHIELDED_GATE_US,
+        (uint64_t)(platform_time_monotonic_us() - t0));
+    return r;
 }
 
 /* One entry of the per-block nullifier accumulator: the pass-1 same-block
@@ -357,10 +374,10 @@ static bool nf_check_one(sqlite3 *db, const uint8_t nf[32], int pool,
  * rejected block never leaves partial rows even before the txn rollback:
  * pass 1 checks every nullifier of every tx (durable set + earlier-tx
  * accumulator); pass 2 inserts only if the whole block is clean. */
-bool utxo_apply_check_and_insert_nullifiers(struct sqlite3 *db,
-                                            const struct block *blk,
-                                            int height,
-                                            struct delta_summary *summary)
+static bool check_and_insert_nullifiers_impl(struct sqlite3 *db,
+                                             const struct block *blk,
+                                             int height,
+                                             struct delta_summary *summary)
 {
     size_t total = 0;
     for (size_t ti = 0; ti < blk->num_vtx; ti++) {
@@ -442,6 +459,20 @@ bool utxo_apply_check_and_insert_nullifiers(struct sqlite3 *db,
     }
     nf_acc_free(acc, &seen);
     return true;
+}
+
+/* Fold-path attribution (RPF_UA_NULLIFIERS_US). */
+bool utxo_apply_check_and_insert_nullifiers(struct sqlite3 *db,
+                                            const struct block *blk,
+                                            int height,
+                                            struct delta_summary *summary)
+{
+    const int64_t t0 = platform_time_monotonic_us();
+    bool ok = check_and_insert_nullifiers_impl(db, blk, height, summary);
+    reducer_stage_profile_observe_us(
+        REDUCER_PROFILE_UTXO_APPLY, RPF_UA_NULLIFIERS_US,
+        (uint64_t)(platform_time_monotonic_us() - t0));
+    return ok;
 }
 
 void utxo_apply_nullifier_gap_blocker_refresh(struct sqlite3 *db)

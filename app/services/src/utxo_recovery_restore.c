@@ -547,16 +547,12 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
                     ctx, &committed, "scan_fallback", false, false).ok) {
                 printf("WARNING: Chain tip at height %d but coins DB is empty!\n",
                        scan_fallback->nHeight);
-                printf("Attempting fast chainstate rebuild from SQLite...\n");
-                if (fast_rebuild_chainstate(ctx->coins_sqlite, ctx->coins_tip,
-                                             ctx->datadir))
-                    printf("Fast rebuild complete — will activate chain.\n");
-                else
-                    printf("Fast rebuild unavailable — will activate from genesis.\n");
-                res.restored = true;
-                res.restored_height = committed->nHeight;
-                if (committed->phashBlock)
-                    res.restored_hash = *committed->phashBlock;
+                if (utxo_recovery_scan_fallback_keep_commit(ctx, committed)) {
+                    res.restored = true;
+                    res.restored_height = committed->nHeight;
+                    if (committed->phashBlock)
+                        res.restored_hash = *committed->phashBlock;
+                }
             } else {
                 res.status = ZCL_ERR(-21,
                     "utxo_recovery_restore_chain_tip: scan_fallback commit "

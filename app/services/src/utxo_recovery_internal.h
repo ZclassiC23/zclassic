@@ -124,6 +124,14 @@ int utxo_recovery_settle_finalized_floor(struct utxo_recovery_ctx *ctx,
 struct zcl_result utxo_recovery_commit_genesis(struct utxo_recovery_ctx *ctx,
                                   const char *reason);
 
+/* scan_fallback restore epilogue (implemented in utxo_recovery_service.c):
+ * true when the committed tip stands (fast rebuild succeeded, or the coins
+ * view is unwired — legacy anchor commit); false when the commit was rolled
+ * back to genesis because the wired canonical coins store is genuinely
+ * empty (a tip with no state behind it is a phantasm). */
+bool utxo_recovery_scan_fallback_keep_commit(struct utxo_recovery_ctx *ctx,
+                                             const struct block_index *committed);
+
 /* utxo_recovery_copy_chainstate_stable (point-in-time chainstate copy,
  * implemented in utxo_recovery_ldb_copy.c) is now declared in the PUBLIC
  * services/utxo_recovery_service.h (included above) so the borrowed-frontier

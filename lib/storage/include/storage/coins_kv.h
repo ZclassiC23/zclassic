@@ -283,8 +283,11 @@ bool coins_kv_verify_against_checkpoint(struct sqlite3 *db,
  * _set there fails 100% ("cannot start a transaction within a transaction")
  * and never persists the root. _get returns false in *found when the boundary
  * root has not been recorded yet, in which case the caller uses the zero
- * sentinel (the leaf hash is then the pre-keystone value for that height and
- * is back-filled on the next pass).
+ * sentinel (the leaf hash is then the pre-keystone value for that height). A
+ * boundary skipped under the IBD / live-catch-up defer gates
+ * (tip_finalize_post_step.c) is never re-folded — no path can observe the
+ * historical coins set at that height once the tip has moved past it — so
+ * its binding stays absent, never forged.
  */
 bool coins_kv_boundary_root_set(struct sqlite3 *db, int32_t height,
                                 const uint8_t utxo_root[32]);

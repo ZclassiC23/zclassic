@@ -247,6 +247,24 @@ static _Atomic int64_t  g_drain_last_round_advances;
 static _Atomic int64_t  g_drain_last_elapsed_us;
 static _Atomic int64_t  g_drain_last_stage_us[REDUCER_DRAIN_NUM_STAGES];
 
+/* CUMULATIVE per-stage accounting (see struct reducer_drain_exit_stats). The
+ * last-round array above answers nothing about where a fold round's time goes:
+ * it is overwritten every round, so an observer sampling on a timer nearly
+ * always catches a converged all-idle round and reads zeros. These are
+ * monotonic, so the difference between two samples is an exact interval
+ * measurement. Same single-writer/atomic contract as the counters above. */
+static _Atomic uint64_t g_drain_rounds_total;
+static _Atomic uint64_t g_drain_stage_us_total[REDUCER_DRAIN_NUM_STAGES];
+static _Atomic uint64_t g_drain_stage_calls[REDUCER_DRAIN_NUM_STAGES];
+static _Atomic uint64_t g_drain_stage_advances[REDUCER_DRAIN_NUM_STAGES];
+
+const char *reducer_drain_stage_name(int idx)
+{
+    if (idx < 0 || idx >= REDUCER_DRAIN_NUM_STAGES)
+        return NULL;
+    return g_drain_stages[idx].name;
+}
+
 void reducer_drain_exit_stats_snapshot(struct reducer_drain_exit_stats *out)
 {
     if (!out)
@@ -255,8 +273,13 @@ void reducer_drain_exit_stats_snapshot(struct reducer_drain_exit_stats *out)
     out->exit_budget_total    = atomic_load(&g_drain_exit_budget_total);
     out->last_round_advances  = atomic_load(&g_drain_last_round_advances);
     out->last_elapsed_us      = atomic_load(&g_drain_last_elapsed_us);
-    for (int i = 0; i < REDUCER_DRAIN_NUM_STAGES; i++)
-        out->last_stage_us[i] = atomic_load(&g_drain_last_stage_us[i]);
+    out->rounds_total         = atomic_load(&g_drain_rounds_total);
+    for (int i = 0; i < REDUCER_DRAIN_NUM_STAGES; i++) {
+        out->last_stage_us[i]  = atomic_load(&g_drain_last_stage_us[i]);
+        out->stage_us_total[i] = atomic_load(&g_drain_stage_us_total[i]);
+        out->stage_calls[i]    = atomic_load(&g_drain_stage_calls[i]);
+        out->stage_advances[i] = atomic_load(&g_drain_stage_advances[i]);
+    }
 }
 
 #ifdef ZCL_TESTING
@@ -266,8 +289,13 @@ void reducer_drain_exit_stats_reset_for_testing(void)
     atomic_store(&g_drain_exit_budget_total, 0u);
     atomic_store(&g_drain_last_round_advances, 0);
     atomic_store(&g_drain_last_elapsed_us, 0);
-    for (int i = 0; i < REDUCER_DRAIN_NUM_STAGES; i++)
+    atomic_store(&g_drain_rounds_total, 0u);
+    for (int i = 0; i < REDUCER_DRAIN_NUM_STAGES; i++) {
         atomic_store(&g_drain_last_stage_us[i], 0);
+        atomic_store(&g_drain_stage_us_total[i], 0u);
+        atomic_store(&g_drain_stage_calls[i], 0u);
+        atomic_store(&g_drain_stage_advances[i], 0u);
+    }
 }
 #endif
 
@@ -281,11 +309,20 @@ static int reducer_drain_all_stages(int max_steps_per_stage,
                                     int *adv_per_stage)
 {
     int total = 0;
+    atomic_fetch_add(&g_drain_rounds_total, 1u);
     for (int i = 0; i < REDUCER_DRAIN_NUM_STAGES; i++) {
         int64_t started_us = GetTimeMicros();
         int a = g_drain_stages[i].drain(max_steps_per_stage);
-        atomic_store(&g_drain_last_stage_us[i],
-                     GetTimeMicros() - started_us);
+        int64_t elapsed_us = GetTimeMicros() - started_us;
+        atomic_store(&g_drain_last_stage_us[i], elapsed_us);
+        /* CUMULATIVE alongside the overwritten last-round value — three
+         * relaxed adds on a path that just spent its time inside a stage
+         * drain (block validation + a SQLite batch), so the cost is noise. */
+        atomic_fetch_add(&g_drain_stage_us_total[i],
+                         elapsed_us > 0 ? (uint64_t)elapsed_us : 0u);
+        atomic_fetch_add(&g_drain_stage_calls[i], 1u);
+        if (a > 0)
+            atomic_fetch_add(&g_drain_stage_advances[i], (uint64_t)a);
         if (adv_per_stage)
             adv_per_stage[i] = a;
         total += a;

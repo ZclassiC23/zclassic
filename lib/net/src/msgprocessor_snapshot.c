@@ -63,6 +63,13 @@ static int64_t g_swarm_last_progress_time = 0;
  * same per-block cap. */
 #define BLOCK_PAYLOAD_SUBMIT_RETRIES 3
 #define BLOCK_PIECE_TIMEOUT_SECS 8
+/* No piece completion for this long => the swarm is black-holing (peer
+ * silently dropping zblkreq, serve-side gap, TCP backpressure): abandon it
+ * so legacy getdata — paused while a swarm is active — resumes the fetch. */
+#define BLOCK_SWARM_STALL_SECS 90
+/* Minimum legacy-getdata ownership window before a reaped swarm may be
+ * re-armed by a fresh manifest (anti-flap). */
+#define BLOCK_SWARM_RESTART_COOLDOWN_SECS 300
 /* Keep one full per-peer request pipeline contiguous: a bounded 1,024-block
  * ahead window. Every piece remains manifest-hash checked before any block
  * reaches the reducer. */
@@ -136,7 +143,20 @@ static bool block_payload_submit_all(struct msg_processor *mp,
         dl_mark_received(get_download_mgr(), &hash);
         dl_add_bytes_received(get_download_mgr(), refs[i].len);
 
-        if (!msg_processor_snapshot_active(mp) && !block_already_seen(&hash)) {
+        /* Skip only bodies already persisted (BLOCK_HAVE_DATA). The
+         * block_already_seen ring ALSO covers blocks that were received and
+         * REJECTED at intake — marked seen without ever being persisted —
+         * so keying the skip on the ring completed the piece while leaving
+         * the body missing: a permanent fold hole behind a "complete"
+         * swarm. Persisting here is idempotent (the submit path
+         * early-returns on HAVE_DATA), so a genuinely-persisted block costs
+         * one map lookup, same as the ring check it replaces. */
+        struct block_index *have_bi =
+            mp->main_state
+                ? block_map_find(&mp->main_state->map_block_index, &hash)
+                : NULL;
+        if (!msg_processor_snapshot_active(mp) &&
+            !(have_bi && (have_bi->nStatus & BLOCK_HAVE_DATA))) {
             bool accepted = false;
             char last_reason[MAX_REJECT_REASON] = {0};
             if (!mp->block_submit) {
@@ -289,6 +309,11 @@ static struct block_swarm g_block_swarm __attribute__((used));
 static _Atomic bool g_block_swarm_active = false;
 static pthread_mutex_t g_block_swarm_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int64_t g_block_swarm_last_progress = 0;
+/* Wall-clock of the last stall-abandon. A reaped swarm may be re-armed by a
+ * fresh manifest only after BLOCK_SWARM_RESTART_COOLDOWN_SECS, so a peer
+ * whose piece service is silently black-holing cannot flap the body
+ * transfer back out of legacy getdata's hands every few seconds. */
+static _Atomic int64_t g_block_swarm_reaped_unix = 0;
 
 /* per-peer FlyClient challenge rate limit.
  *
@@ -604,6 +629,8 @@ static void block_swarm_mark_complete_through_height(struct block_swarm *bs,
         bs->piece_request_time[i] = 0;
         bs->pieces_complete++;
     }
+    if (full_pieces > 0)
+        bs->last_complete_unix = (int64_t)platform_time_wall_time_t();
 }
 
 bool mp_snapshot_is_active(void)
@@ -620,6 +647,97 @@ bool mp_block_swarm_is_active(void)
 {
     return atomic_load(&g_block_swarm_active);
 }
+
+/* Stall watchdog. The legacy getdata assignment in msg_send_messages is
+ * paused for as long as a block swarm is active (zblkreq/zblkdata owns body
+ * transfer), but the swarm's only exit was full completion: a peer that
+ * silently stops answering piece requests (serve-side gap, rate limit, TCP
+ * backpressure) left the swarm re-requesting the same pieces every
+ * BLOCK_PIECE_TIMEOUT_SECS forever — queue full, flight zero, frontier body
+ * never fetched, permanent catch-up wedge. Reap a swarm with no piece
+ * completion for BLOCK_SWARM_STALL_SECS so the height-sorted legacy queue
+ * (frontier at the front) resumes. Also clears every peer's block-piece
+ * pipeline slots so a later re-armed swarm does not inherit stale
+ * CHUNK_INFLIGHT references from the dead one. Returns true when it reaped. */
+bool mp_block_swarm_reap_if_stalled(struct msg_processor *mp)
+{
+    if (!atomic_load(&g_block_swarm_active))
+        return false;
+
+    int64_t now = (int64_t)platform_time_wall_time_t();
+    uint32_t complete = 0, total = 0;
+    int64_t last_complete = 0;
+    pthread_mutex_lock(&g_block_swarm_mutex);
+    struct block_swarm *bs = &g_block_swarm;
+    bool stalled = bs->piece_states &&
+                   bs->manifest.num_pieces > 0 &&
+                   bs->pieces_complete < bs->manifest.num_pieces &&
+                   bs->last_complete_unix > 0 &&
+                   now - bs->last_complete_unix >= BLOCK_SWARM_STALL_SECS;
+    if (stalled) {
+        complete = bs->pieces_complete;
+        total = bs->manifest.num_pieces;
+        last_complete = bs->last_complete_unix;
+        block_swarm_free(bs);
+        atomic_store(&g_block_swarm_active, false);
+        atomic_store(&g_block_swarm_reaped_unix, now);
+    }
+    pthread_mutex_unlock(&g_block_swarm_mutex);
+    if (!stalled)
+        return false;
+
+    if (mp && mp->net_mgr) {
+        zcl_mutex_lock(&mp->net_mgr->cs_nodes);
+        for (size_t i = 0; i < mp->net_mgr->num_nodes; i++) {
+            struct p2p_node *n = mp->net_mgr->nodes[i];
+            if (!n)
+                continue;
+            for (int pi = 0; pi < PIECE_PIPELINE_DEPTH; pi++)
+                n->blk_pipeline[pi].piece_index = -1;
+        }
+        zcl_mutex_unlock(&mp->net_mgr->cs_nodes);
+    }
+
+    LOG_WARN("net",
+             "block swarm stalled at %u/%u pieces (no completion for %llds) "
+             "— abandoning swarm; legacy getdata resumes body fetch",
+             complete, total, (long long)(now - last_complete));
+    event_emitf(EV_BLOCK_REQUESTED, 0,
+                "block_swarm_stall_abandon complete=%u total=%u stall_s=%lld",
+                complete, total, (long long)(now - last_complete));
+    return true;
+}
+
+#ifdef ZCL_TESTING
+/* Seed a minimal live swarm at a chosen completion age so stall-reap tests
+ * need no wire dance. complete==0/total==0 tears the swarm down instead. */
+void mp_block_swarm_test_seed_stall(uint32_t complete, uint32_t total,
+                                    int64_t last_complete_unix)
+{
+    pthread_mutex_lock(&g_block_swarm_mutex);
+    block_swarm_free(&g_block_swarm);
+    atomic_store(&g_block_swarm_active, false);
+    atomic_store(&g_block_swarm_reaped_unix, 0);
+    if (total > 0) {
+        struct block_piece_manifest pm;
+        memset(&pm, 0, sizeof(pm));
+        pm.start_height = 1;
+        pm.end_height = (int32_t)total * BLOCKS_PER_PIECE;
+        pm.num_pieces = total;
+        if (block_swarm_init(&g_block_swarm, &pm, NULL)) {
+            g_block_swarm.pieces_complete = complete;
+            g_block_swarm.last_complete_unix = last_complete_unix;
+            atomic_store(&g_block_swarm_active, true);
+        }
+    }
+    pthread_mutex_unlock(&g_block_swarm_mutex);
+}
+
+int64_t mp_block_swarm_test_reaped_unix(void)
+{
+    return atomic_load(&g_block_swarm_reaped_unix);
+}
+#endif
 
 /* Event-driven block-swarm requeue on peer disconnect. connman's cleanup
  * sweep already calls dl_peer_disconnected() to reclaim the legacy download
@@ -1472,10 +1590,16 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                 if (node->blk_manifest_received)
                     printf("Peer %s: block manifest h=%d..%d (%u pieces)\n",
                            node->addr_name, start_h, end_h, num_pieces);
-                /* If peer is ahead and no active block swarm, start one. */
+                /* If peer is ahead and no active block swarm, start one.
+                 * After a stall-abandon, hold off re-arming for
+                 * BLOCK_SWARM_RESTART_COOLDOWN_SECS so legacy getdata owns
+                 * body transfer long enough to push past the hole. */
                 if (node->blk_manifest_received &&
                     end_h > our_h + BLOCKS_PER_PIECE &&
-                    !g_block_swarm_active && num_pieces > 0) {
+                    !g_block_swarm_active && num_pieces > 0 &&
+                    (int64_t)platform_time_wall_time_t() -
+                        atomic_load(&g_block_swarm_reaped_unix) >=
+                            BLOCK_SWARM_RESTART_COOLDOWN_SECS) {
                     struct block_piece_manifest pm = {
                         .start_height = start_h,
                         .end_height = end_h,
@@ -1486,6 +1610,8 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                     memcpy(pm.merkle_root, merkle_root, 32);
                     pthread_mutex_lock(&g_block_swarm_mutex);
                     if (block_swarm_init(&g_block_swarm, &pm, mp->datadir)) {
+                        g_block_swarm.last_complete_unix =
+                            (int64_t)platform_time_wall_time_t();
                         block_swarm_mark_complete_through_height(
                             &g_block_swarm, our_h);
                         g_block_swarm_active = true;
@@ -1572,23 +1698,59 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                     }
                     bool payloads_accepted = block_refs != NULL;
                     if (verified && block_refs) {
+                        /* Swarm identity before dropping the lock: payload
+                         * submit can block for seconds under reducer
+                         * backpressure, and the stall watchdog may reap (and
+                         * the net loop re-arm) the swarm meanwhile. */
+                        const int32_t swarm_start =
+                            g_block_swarm.manifest.start_height;
+                        const uint32_t swarm_pieces =
+                            g_block_swarm.manifest.num_pieces;
                         pthread_mutex_unlock(&g_block_swarm_mutex);
                         payloads_accepted = block_payload_submit_all(
                             mp, node, block_refs, block_count);
                         pthread_mutex_lock(&g_block_swarm_mutex);
+                        if (!atomic_load(&g_block_swarm_active) ||
+                            !g_block_swarm.piece_states ||
+                            g_block_swarm.manifest.start_height !=
+                                swarm_start ||
+                            g_block_swarm.manifest.num_pieces !=
+                                swarm_pieces) {
+                            LOG_INFO("net",
+                                     "zblkdata piece %u: swarm reaped during "
+                                     "payload submit; dropping piece credit",
+                                     piece_index);
+                            payloads_accepted = false;
+                        }
                     }
 
                     if (verified && payloads_accepted) {
-                        block_swarm_receive_piece(&g_block_swarm,
-                                                  piece_index, node->id);
-                        block_pipeline_clear_piece(node, piece_index);
+                        if (g_block_swarm.piece_states[piece_index] ==
+                            CHUNK_COMPLETE) {
+                            /* Duplicate delivery: a piece re-requested on
+                             * BLOCK_PIECE_TIMEOUT_SECS can be answered twice
+                             * (slow original + re-request). Crediting it again
+                             * inflates pieces_complete past the genuinely-
+                             * delivered count, letting the swarm "complete"
+                             * with pieces never fetched — fold holes behind a
+                             * complete swarm (the live tail wedge: 67 pieces
+                             * credited-but-never-delivered). Clear the stale
+                             * pipeline slot but never double-count. */
+                            block_pipeline_clear_piece(node, piece_index);
+                        } else {
+                            block_swarm_receive_piece(&g_block_swarm,
+                                                      piece_index, node->id);
+                            g_block_swarm.last_complete_unix =
+                                (int64_t)platform_time_wall_time_t();
+                            block_pipeline_clear_piece(node, piece_index);
 
-                        if (block_swarm_is_complete(&g_block_swarm)) {
-                            printf("Block swarm complete: %u/%u pieces\n",
-                                   g_block_swarm.pieces_complete,
-                                   g_block_swarm.manifest.num_pieces);
-                            block_swarm_free(&g_block_swarm);
-                            g_block_swarm_active = false;
+                            if (block_swarm_is_complete(&g_block_swarm)) {
+                                printf("Block swarm complete: %u/%u pieces\n",
+                                       g_block_swarm.pieces_complete,
+                                       g_block_swarm.manifest.num_pieces);
+                                block_swarm_free(&g_block_swarm);
+                                g_block_swarm_active = false;
+                            }
                         }
                     } else if (verified) {
                         LOG_INFO("net",

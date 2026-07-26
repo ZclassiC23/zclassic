@@ -580,7 +580,11 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
     tip_finalize_observe_inc_finalized();
     tip_finalize_observe_add_work(&work_delta);
     if (publish) {
+        int64_t tf_post_t0 = platform_time_monotonic_us();
         tip_finalize_run_post_finalize(new_tip);
+        reducer_stage_profile_observe_us(
+            REDUCER_PROFILE_TIP_FINALIZE, RPF_TF_POST_FINALIZE_US,
+            (uint64_t)(platform_time_monotonic_us() - tf_post_t0));
         /* Publish the SELF-CONSISTENT authority pair: the served tip block's
          * OWN height with its OWN hash — derive the label from the block,
          * never the cursor. Publishing (next_h, hash(next_h+1)) makes

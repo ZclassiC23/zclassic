@@ -490,7 +490,10 @@ static bool anchor_is_empty(enum coins_anchor_pool pool,
     else
         sapling_tree_init(&tree);
     struct uint256 empty;
-    incremental_tree_root(&tree, &empty);
+    /* The empty-tree root is a per-pool CONSTANT — use the cached form. A
+     * full incremental_tree_root here is a ~8ms Pedersen fold and this
+     * helper runs per shielded spend/JoinSplit. Bit-identical. */
+    incremental_tree_empty_root(&tree, &empty);
     if (!uint256_eq(root, &empty))
         return false;
     if (tree_out)

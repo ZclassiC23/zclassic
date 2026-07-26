@@ -94,7 +94,8 @@ struct staged_stage_desc {
      * by stage_effective_batch() so an accelerated catch-up batch does not
      * multiply by this factor inside ONE commit held under
      * progress_store_tx_lock (which would stall every other supervised child
-     * — incl. the dumpstate/status front door — each sweep). */
+     * — incl. the dumpstate/status front door — each sweep) beyond what the
+     * stage's catch-up-scaled worker pool can absorb in the same wall time. */
     int         per_step_fanout;
     void      (*log_stall)(void);   /* per-stage stall LOG_WARN body */
     /* The immediately-preceding pipeline stage, wired explicitly (not
@@ -200,7 +201,8 @@ static struct staged_stage_desc g_stages[] = {
               NULL, NULL),
     /* validate_headers fans out VH_BATCH_SIZE Equihash verifications per
      * step_once (see STAGE_DRAIN_IMPL + validate_headers_stage.c). Its fanout
-     * caps the accelerated catch-up batch so per-commit work stays bounded. */
+     * caps the accelerated catch-up batch (scaled by the catch-up pool width,
+     * max VH_CATCHUP_STEP_MULT) so per-commit work stays wall-clock-bounded. */
     INIT_DESC("staged.validate_headers",
               "[supervisor] WARN staged.validate_headers init failed — " "validator not running this boot",
               validate_headers, VH_BATCH_PER_TICK, VH_BATCH_SIZE,
@@ -397,12 +399,17 @@ static int stage_effective_batch(int normal_batch, int per_step_fanout)
      * verifications inside ONE commit held under progress_store_tx_lock —
      * stalling every other supervised child (incl. the dumpstate/status front
      * door) for the whole sweep (catchup_cadence.h:37-44 does not model this).
-     * Keep such a stage at its proven normal batch; the catch-up optimization
-     * targets the one-block-per-step tail stages. No-op when the override is
-     * inactive (catchup_batch == normal_batch) or the stage does not fan out
+     * During catch-up the stage's Equihash pool is itself scaled
+     * (ZCL_VH_CATCHUP_POOL_SIZE, default min(nproc,16) — see
+     * validate_headers_tuning.c), so the containment is loosened by exactly
+     * the pool scale actually in force, capped at VH_CATCHUP_STEP_MULT:
+     * per-tick wall time stays bounded by the same work at a wider width,
+     * and an operator who pins the pool at/below VH_POOL_SIZE gets NO step
+     * raise. No-op when the override is inactive
+     * (catchup_batch == normal_batch) or the stage does not fan out
      * — the live hot path is left untouched. */
     if (per_step_fanout > 1 && catchup_batch > normal_batch)
-        catchup_batch = normal_batch;
+        catchup_batch = validate_headers_stage_catchup_step_cap(normal_batch);
     return catchup_batch;
 }
 

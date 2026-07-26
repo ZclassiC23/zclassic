@@ -225,7 +225,7 @@
                "app/jobs/src/body_persist_stage.c", "lib/test/src/test_stage.c"),
     DIAG_STAGE("reducer_stage_profile", reducer_stage_profile_dump_state_json,
                "versioned body_persist + script_validate subphase timings and work counters",
-               "lib/util/src/reducer_stage_profile.c", "lib/test/src/test_stage.c"),
+               "lib/sync/src/reducer_stage_profile.c", "lib/test/src/test_stage.c"),
     DIAG_STAGE("script_validate", script_validate_dump_state_json,
                "script_validate stage: cursor, script counters, log rows",
                "app/jobs/src/script_validate_stage_dump.c", "lib/test/src/test_stage.c"),

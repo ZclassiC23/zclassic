@@ -42,9 +42,12 @@
  * value is measured rather than projected: over a fixed 360-second budget on
  * a frozen corpus it processed 36,810 blocks vs. 29,000 for the 500-block
  * value (+26.9%), with the slowest observed
- * utxo_apply subphase taking 8.485s. Fan-out stages remain at their normal
- * batch (stage_effective_batch) so this wider window applies only to stages
- * whose step_once performs one block of work.
+ * utxo_apply subphase taking 8.485s. Fan-out stages (validate_headers) stay
+ * bounded by stage_effective_batch: their catch-up step count scales only
+ * with the catch-up Equihash pool width actually in force
+ * (validate_headers_stage_catchup_step_cap, max VH_CATCHUP_STEP_MULT x), so
+ * per-tick wall time stays bounded; the full 2000-block window applies only
+ * to stages whose step_once performs one block of work.
  *
  * TICK-PERIOD OVERRIDE — catchup_cadence_tick_period_us() — shortens the
  * PER-CHILD tick period for the eight staged-sync children ONLY, from the

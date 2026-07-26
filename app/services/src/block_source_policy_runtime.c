@@ -48,6 +48,10 @@
 #define BSP_KEY_LAST_PROJECTION_DEFERRED_REASON \
     BSP_STATE_PREFIX "last_projection_deferred_reason"
 
+/* Min seconds between projection-deferral mirror persists (see
+ * block_source_policy_note_projection_deferred). */
+#define BSP_PROJECTION_DEFERRED_PERSIST_INTERVAL_SECS 2
+
 /* ---------------------------------------------------------------------------
  * Stateful block-source decision surface.
  * --------------------------------------------------------------------------- */
@@ -407,6 +411,7 @@ void block_source_policy_note_projection_deferred(int height,
     int64_t total = 0;
     int64_t when = (int64_t)platform_time_wall_time_t();
     char reason_copy[64];
+    bool persist = false;
 
     bsp_copy_text(reason_copy, sizeof(reason_copy),
                   reason && *reason ? reason : "unknown");
@@ -421,9 +426,23 @@ void block_source_policy_note_projection_deferred(int height,
                   sizeof(g_bsp.last_projection_deferred_reason),
                   reason_copy);
     ndb = g_bsp.node_db;
+    /* Persist/event throttle. Every note updates the in-memory counters
+     * (status + dump-state readers stay exact), but the node.db mirror is
+     * 4 autocommit KV UPSERTs plus one event-log append PER CALL — on a
+     * catch-up fold this runs per block and sits on the tip-finalize
+     * critical path. The mirror exists for crash-time diagnosis, so
+     * persisting at most once per interval loses nothing an operator can
+     * act on. At the live tip blocks are minutes apart, the throttle never
+     * binds, and every note still persists and emits on every call. */
+    persist = !ndb ||
+              g_bsp.last_projection_deferred_persist == 0 ||
+              when - g_bsp.last_projection_deferred_persist >=
+                  BSP_PROJECTION_DEFERRED_PERSIST_INTERVAL_SECS;
+    if (persist)
+        g_bsp.last_projection_deferred_persist = when;
     zcl_mutex_unlock(&g_bsp.lock);
 
-    if (ndb) {
+    if (persist && ndb) {
         (void)node_db_state_set_int(ndb, BSP_KEY_PROJECTION_DEFERRED_TOTAL,
                                     total);
         (void)node_db_state_set_int(
@@ -435,10 +454,11 @@ void block_source_policy_note_projection_deferred(int height,
                                 reason_copy, strlen(reason_copy) + 1);
     }
 
-    event_emitf(EV_CHAIN_ADVANCE_DECISION, 0,
-                "op=projection_deferred reason=%s h=%d total=%lld "
-                "authority=local_consensus_validation",
-                reason_copy, height, (long long)total);
+    if (persist)
+        event_emitf(EV_CHAIN_ADVANCE_DECISION, 0,
+                    "op=projection_deferred reason=%s h=%d total=%lld "
+                    "authority=local_consensus_validation",
+                    reason_copy, height, (long long)total);
 }
 
 void block_source_policy_reset_for_test(void)
@@ -458,5 +478,6 @@ void block_source_policy_reset_for_test(void)
     g_bsp.last_projection_deferred_time = 0;
     memset(g_bsp.last_projection_deferred_reason, 0,
            sizeof(g_bsp.last_projection_deferred_reason));
+    g_bsp.last_projection_deferred_persist = 0;
     zcl_mutex_unlock(&g_bsp.lock);
 }

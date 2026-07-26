@@ -31,14 +31,14 @@ lib/metrics/src/prometheus_metrics.c 1100
 lib/net/src/addrman.c 1268
 lib/net/src/connman.c 2832
 lib/net/src/download.c 1385
-lib/net/src/fast_sync.c 1889
+lib/net/src/fast_sync.c 1899
 lib/net/src/file_service.c 2255
 lib/net/src/https_server.c 951
 lib/net/src/msg_blocks.c 878
 lib/net/src/msg_headers.c 1148
 lib/net/src/msgprocessor.c 2415
-lib/net/src/msgprocessor_snapshot.c 1837
-lib/net/src/msgprocessor_snapshot_serve.c 1108
+lib/net/src/msgprocessor_snapshot.c 2005
+lib/net/src/msgprocessor_snapshot_serve.c 1114
 lib/net/src/net.c 1666
 lib/net/src/onion_service.c 1021
 lib/net/src/peer_lifecycle.c 1779
@@ -48,7 +48,7 @@ lib/platform/src/os_sandbox_linux.c 1396
 lib/rpc/src/httpserver.c 1320
 lib/sapling/src/circuit_gadgets.c 1646
 lib/sapling/src/groth16_prover.c 1057
-lib/sapling/src/incremental_merkle_tree.c 984
+lib/sapling/src/incremental_merkle_tree.c 1019
 lib/sapling/src/sapling.c 1214
 lib/sim/src/postmortem.c 1444
 lib/sim/src/simnet_cluster.c 873

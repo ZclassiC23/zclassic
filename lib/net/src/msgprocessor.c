@@ -2184,6 +2184,13 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
         struct download_manager *dm = get_download_mgr();
         int64_t now_dl = (int64_t)platform_time_wall_time_t();
         bool block_swarm_active = mp_block_swarm_is_active();
+        /* A swarm whose piece completions have gone silent would otherwise
+         * hold body transfer forever: its only exit was full completion,
+         * and legacy getdata stays paused while it is active. Reap it so
+         * the height-sorted legacy queue (frontier at the front) resumes.
+         * No-op at tip, where no swarm exists. */
+        if (block_swarm_active && mp_block_swarm_reap_if_stalled(mp))
+            block_swarm_active = false;
 
         /* During ZCL23 block-swarm catch-up, zblkreq/zblkdata owns body
          * transfer. Letting legacy getdata run at the same time fills the

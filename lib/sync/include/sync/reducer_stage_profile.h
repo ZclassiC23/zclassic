@@ -16,6 +16,7 @@ enum reducer_profile_domain {
     REDUCER_PROFILE_SCRIPT_VALIDATE,
     REDUCER_PROFILE_TIP_FINALIZE,
     REDUCER_PROFILE_UTXO_APPLY,
+    REDUCER_PROFILE_PROOF_VALIDATE,
     REDUCER_PROFILE_DOMAIN_COUNT
 };
 
@@ -71,7 +72,49 @@ enum reducer_profile_field {
     RPF_UA_PREVOUT_US,
     RPF_UA_APPLY_US,
     RPF_UA_COMMIT_US,
-    RPF_FIELD_COUNT  /* must stay <= 63: the `present` bitmask is 1<<field */
+    /* proof_validate per-phase timings + shielded work counts
+     * (REDUCER_PROFILE_PROOF_VALIDATE). The stage is repeatedly described as
+     * 13-18 ms/block with no sub-phase evidence behind the figure; these split
+     * a step into body acquisition, the proof sweep itself, and the terminal
+     * log insert, and count the shielded primitives the sweep actually ran so
+     * a per-proof cost is derivable instead of asserted.
+     *
+     * SCOPE: every field here is emitted from app/jobs/src/proof_validate_stage.c
+     * (the stage state machine). Splitting RPF_PV_VERIFY_US further into
+     * Groth16-spend vs Groth16-output vs Sprout vs binding-sig TIME needs a
+     * clock pair inside the per-tx sweep in app/jobs/src/proof_validate_verify.c;
+     * the COUNTS below carry the denominator for that split in the meantime. */
+    RPF_PV_BODY_ACQUIRE_US,
+    RPF_PV_VERIFY_US,
+    RPF_PV_LOG_INSERT_US,
+    RPF_PV_SPENDS,
+    RPF_PV_OUTPUTS,
+    RPF_PV_SPROUT_GROTH16,
+    RPF_PV_SPROUT_PHGR13,
+    RPF_PV_BINDING_SIGS,
+    RPF_PV_LOOKAHEAD_HITS,
+    RPF_PV_LOOKAHEAD_MISSES,
+    /* utxo_apply / tip_finalize remaining-step coverage
+     * (REDUCER_PROFILE_UTXO_APPLY / REDUCER_PROFILE_TIP_FINALIZE). The three
+     * UA phases above plus the TF phases above left the majority of a fold's
+     * per-block wall time unattributed ("the middle"); these bracket the
+     * remaining hot segments so drain-level µs/advance resolves: the
+     * shielded history gate, nullifier check + insert, inverse-delta
+     * persist (all timed inside their utxo_apply_nullifiers.c /
+     * utxo_apply_delta.c implementations), and tip_finalize's
+     * post-finalize side effects (wallet/mempool/MMR/MMB). */
+    RPF_UA_SHIELDED_GATE_US,
+    RPF_UA_NULLIFIERS_US,
+    RPF_UA_DELTA_PERSIST_US,
+    RPF_TF_POST_FINALIZE_US,
+    /* The `present`/`last_present` bitmask is ONE uint64_t per domain and a
+     * field's bit is `UINT64_C(1) << field`, so the highest legal field index
+     * is 63 and RPF_FIELD_COUNT must stay <= 64. Exceeding it shifts out of
+     * range and silently corrupts the presence mask (fields start reporting
+     * null while their counters keep moving). Widen the mask explicitly in the
+     * same commit that crosses the bound — reducer_stage_profile.c holds a
+     * _Static_assert on exactly this. */
+    RPF_FIELD_COUNT
 };
 
 void reducer_stage_profile_add(enum reducer_profile_domain domain,

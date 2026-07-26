@@ -67,6 +67,12 @@ static _Atomic unsigned g_body_fsync_scope_depth = 0;
  * thread and the batch_fsync_slow condition, hence atomics. */
 static _Atomic int64_t g_fsync_last_flush_us;
 static _Atomic int64_t g_fsync_flush_us_ewma;
+/* Running totals beside the EWMA. The EWMA smooths ONE flush's duration and
+ * counts nothing, so it cannot answer how many durability barriers a fold
+ * actually pays — the question behind every "N fsyncs per block" claim. Each
+ * flush here is exactly one barrier for one committing batch. */
+static _Atomic uint64_t g_fsync_flush_count;
+static _Atomic uint64_t g_fsync_flush_us_total;
 
 #ifdef ZCL_TESTING
 #include <time.h>
@@ -86,6 +92,8 @@ void reducer_body_fsync_test_reset(void)
     atomic_store(&g_test_inject_delay_us, 0);
     atomic_store(&g_fsync_last_flush_us, 0);
     atomic_store(&g_fsync_flush_us_ewma, 0);
+    atomic_store(&g_fsync_flush_count, 0u);
+    atomic_store(&g_fsync_flush_us_total, 0u);
 }
 #endif
 
@@ -120,6 +128,8 @@ static bool reducer_batched_durability_precommit(void)
     int64_t prev = atomic_load(&g_fsync_flush_us_ewma);
     int64_t next = (prev == 0) ? elapsed_us : prev + (elapsed_us - prev) / 16;
     atomic_store(&g_fsync_flush_us_ewma, next);
+    atomic_fetch_add(&g_fsync_flush_count, 1u);
+    atomic_fetch_add(&g_fsync_flush_us_total, (uint64_t)elapsed_us);
 
     return bodies && events;
 }
@@ -131,6 +141,15 @@ void reducer_body_fsync_timing_snapshot(int64_t *last_flush_us,
         *last_flush_us = atomic_load(&g_fsync_last_flush_us);
     if (flush_us_ewma)
         *flush_us_ewma = atomic_load(&g_fsync_flush_us_ewma);
+}
+
+void reducer_body_fsync_totals_snapshot(uint64_t *flush_count,
+                                        uint64_t *flush_us_total)
+{
+    if (flush_count)
+        *flush_count = atomic_load(&g_fsync_flush_count);
+    if (flush_us_total)
+        *flush_us_total = atomic_load(&g_fsync_flush_us_total);
 }
 
 void reducer_body_fsync_scope_snapshot(unsigned *depth,

@@ -203,4 +203,22 @@
 # A*B==C check over the witness that the parity oracle needs to see a wrong
 # constraint COEFFICIENT (counts and probed wire values cannot). Both
 # re-baselined here rather than spending a ratchet slot; count unchanged.
+#
+# 2026-07-26 (fold perf, incremental-tree root memoization):
+# incremental_merkle_tree.c grew 984 -> 1019 adding the runtime-only
+# cached-root fields + per-mutator invalidation (root memo in the tree
+# struct so repeated incremental_tree_root() calls on an unmutated tree
+# skip the full Pedersen fold; bit-identical output, wire format
+# unchanged). Re-baselined in file_size_ceiling_lib_baseline.txt (1019);
+# count unchanged.
+#
+# 2026-07-26 (swarm throughput: pipeline depth + block-piece rate split):
+# fast_sync.c grew 1889 -> 1899 (fast_sync_rate_check refactored into the
+# parameterized fast_sync_rate_check_n + the original 2-arg wrapper) and
+# msgprocessor_snapshot_serve.c grew 1108 -> 1114 (dedicated
+# g_blk_rate_limiter instance + call-site switch + its comment). Block
+# pieces now draw from FAST_SYNC_MAX_BLOCK_PIECES_PER_HOUR (100k/hr per
+# IP) instead of the snapshot-chunk bucket (5k/hr) that starved a
+# single-peer swarm sync mid-download. Both re-baselined in
+# file_size_ceiling_lib_baseline.txt; count unchanged.
 13

@@ -42,6 +42,11 @@ extern struct bsp_state {
     int last_projection_deferred_height;
     int64_t last_projection_deferred_time;
     char last_projection_deferred_reason[64];
+    /* Wall-clock of the last projection-deferral KV/event persist; the
+     * in-memory counters above update on every note, the disk mirror and
+     * diagnostic event are throttled to one persist per
+     * BSP_PROJECTION_DEFERRED_PERSIST_INTERVAL_SECS (see the note fn). */
+    int64_t last_projection_deferred_persist;
 } g_bsp;
 
 void bsp_lock_init_once(void);

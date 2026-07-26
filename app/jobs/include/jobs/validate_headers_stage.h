@@ -27,10 +27,16 @@
  * Worker pool
  * -----------
  * Steps 3–5 are CPU+I/O bound (Equihash is ~ms per block). The stage
- * runs a fixed pool of `VH_POOL_SIZE` pthread workers; each step
+ * runs a pool of `VH_POOL_SIZE` pthread workers; each step
  * submits up to `VH_BATCH_SIZE` jobs, awaits them all, then writes the
  * batch + cursor bump atomically. Workers are created at init and
- * joined at shutdown.
+ * joined at shutdown. The width is NOT fixed: it is chosen at init by
+ * vh_runtime_pool_size()/vh_runtime_batch_size() and re-synced between
+ * steps (vh_pool_sync_width) so a catch-up-gated widening
+ * (ZCL_VH_CATCHUP_POOL_SIZE) or an offline fold widening
+ * (ZCL_VH_POOL/ZCL_VH_BATCH) can engage mid-run. Widening changes HOW
+ * MANY headers are verified concurrently, never WHAT is checked — at a
+ * normal at-tip node every width is the compile-time default.
  *
  * Cursor floor
  * ------------
@@ -89,6 +95,18 @@ struct json_value;
 #define VH_MAX_POOL           128
 #define VH_MAX_BATCH         4096
 
+/* Live catch-up widening (validate_headers_tuning.c). Applies ONLY while
+ * catchup_cadence_active() (peers connected AND tip gap >= threshold) and no
+ * fold is in progress: the pool scales to min(nproc, VH_CATCHUP_POOL_CAP) or
+ * the ZCL_VH_CATCHUP_POOL_SIZE override, and the supervisor's fan-out
+ * containment (A12, stage_effective_batch) lets the stage drain up to
+ * VH_CATCHUP_STEP_MULT x its normal steps per tick so per-tick wall time
+ * stays bounded by the same work at a wider width. The per-STEP batch stays
+ * VH_BATCH_SIZE — only concurrency and step count change. Verdict-identical
+ * at any width. */
+#define VH_CATCHUP_POOL_CAP   16
+#define VH_CATCHUP_STEP_MULT   4
+
 /* Test seam: injectable validator. The default validator runs the full
  * PoW + Equihash pipeline against persisted header records; tests inject a stub that
  * decides purely from in-memory fields.
@@ -104,7 +122,8 @@ typedef bool (*vh_validator_fn)(const struct block_index *bi,
                                  void *user);
 
 /* Bind the stage to `ms`, ensure the validate_headers_log schema, and
- * launch VH_POOL_SIZE workers. Idempotent — a second call against the
+ * launch the worker pool at the current runtime width (VH_POOL_SIZE on a
+ * normal node). Idempotent — a second call against the
  * same `ms` returns true. Requires `progress_store_open` first. */
 bool validate_headers_stage_init(struct main_state *ms);
 
@@ -119,6 +138,16 @@ void           validate_headers_stage_shutdown(void);
 uint64_t validate_headers_stage_cursor(void);
 /* Step-timing EWMA (us); see util/stage.h. 0 if never stepped. */
 int64_t  validate_headers_stage_step_us_ewma(void);
+
+/* Catch-up drain-steps cap for the supervisor's fan-out containment (A12).
+ * Returns `normal_steps` UNCHANGED unless catchup_cadence_active(); when
+ * active, returns normal_steps scaled by the pool widening actually in force
+ * (vh_runtime_pool_size() / VH_POOL_SIZE), clamped to [1, VH_CATCHUP_STEP_MULT]
+ * — so an operator who pins ZCL_VH_CATCHUP_POOL_SIZE at/below VH_POOL_SIZE
+ * gets NO step raise, and the per-tick Equihash volume never exceeds
+ * VH_CATCHUP_STEP_MULT x baseline while the workers to run it in the same
+ * wall time exist. Implemented in validate_headers_tuning.c. */
+int validate_headers_stage_catchup_step_cap(int normal_steps);
 uint64_t validate_headers_stage_passed_total(void);
 uint64_t validate_headers_stage_failed_total(void);
 

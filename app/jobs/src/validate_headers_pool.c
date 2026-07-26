@@ -1,8 +1,11 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * validate_headers_pool — Equihash worker pool used by
- * validate_headers_stage.c. The width is chosen once at stage init
- * (vh_runtime_pool_size) and fixed for the pool's lifetime. */
+ * validate_headers_stage.c. The width is chosen at stage init
+ * (vh_runtime_pool_size) and may be re-synced between steps by
+ * vh_pool_sync_width() on a catch-up/fold gate transition: a stop+start
+ * of the idle pool from the stage drive thread, the only thread that
+ * ever submits batches. */
 
 #include "validate_headers_pool.h"
 

@@ -224,6 +224,27 @@ uint64_t stage_batch_generation(void);
  * process-global sample is exact. 0 before the first batched COMMIT. */
 int64_t stage_batch_commit_us_ewma(void);
 
+/* Monotonic transaction accounting for the outer batch lifecycle. The EWMA
+ * above prices ONE commit; this prices the whole cadence — how many write
+ * transactions a fold opens, how many of them commit, and how many are opened
+ * and rolled back with nothing in them (`empty`: the drain asked to end
+ * without committing because no step advanced and no durable non-advancing
+ * work was enrolled). STAGE_DRAIN_IMPL opens one per stage per drain round, so
+ * `empty` is the direct measure of the converged-round overhead. Counters are
+ * process-global and monotonic; difference two snapshots for an interval.
+ * Lock-free atomic reads, no allocation — safe from a dump/RPC thread. */
+struct stage_batch_stats {
+    uint64_t opened;
+    uint64_t committed;
+    uint64_t rolled_back;
+    uint64_t empty;
+    uint64_t commit_count;
+    uint64_t commit_us_total;
+    int64_t  commit_last_us;
+    int64_t  commit_us_ewma;
+};
+void stage_batch_stats_snapshot(struct stage_batch_stats *out);
+
 /* ── Pre-commit ordering hook ──────────────────────────────────────────
  * stage_batch_end() invokes this hook (when set) immediately BEFORE the outer
  * COMMIT, and only when it is about to commit. If the hook returns false it

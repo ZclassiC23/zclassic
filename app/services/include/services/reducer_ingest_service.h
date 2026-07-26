@@ -79,6 +79,18 @@ void reducer_exit_batched_body_sync(void);
 void reducer_body_fsync_timing_snapshot(int64_t *last_flush_us,
                                         int64_t *flush_us_ewma);
 
+/* Running totals beside the EWMA above: how many pre-commit durability
+ * flushes have run and their summed wall time. A flush is the fold's ONE
+ * remaining fsync/journal-barrier point per committed batch, so `count` is
+ * literally the number of durability barriers paid — the number behind claims
+ * of the form "at tip we pay N barriers per block" (divide the delta by the
+ * blocks folded over the same interval). The EWMA alone cannot answer that:
+ * it smooths one duration and counts nothing. Monotonic; difference two
+ * snapshots for an interval. Either output pointer may be NULL. Lock-free
+ * atomic reads, no allocation. */
+void reducer_body_fsync_totals_snapshot(uint64_t *flush_count,
+                                        uint64_t *flush_us_total);
+
 /* Live batching-state snapshot. `depth` is the global nest count and
  * `event_log_deferred` proves the CURRENT singleton handle is actually armed
  * (not merely that an outer scope once entered before the handle existed).

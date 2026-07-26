@@ -83,8 +83,9 @@ int64_t staged_sync_supervisor_test_run_stage_tick(
  * stage's normal batch and its per-step fan-out, returns the batch the tick
  * would actually drain, applying the refold/catch-up cadence overrides and the
  * fan-out cap. No clock, no contract. Exposed so a test can assert that an
- * active catch-up does NOT multiply a fan-out stage's per-commit work, and
- * that an inactive cadence returns the normal batch untouched. */
+ * active catch-up scales a fan-out stage's per-tick work only by the catch-up
+ * pool width in force (never to the raw catch-up batch), and that an inactive
+ * cadence returns the normal batch untouched. */
 int staged_sync_supervisor_test_effective_batch(int normal_batch,
                                                  int per_step_fanout);
 #endif

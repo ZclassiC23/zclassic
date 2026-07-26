@@ -1355,6 +1355,64 @@ int test_utxo_recovery_service(void)
             urs_frontier_fixture_teardown(&fx);
     }
 
+    /* ── 12d4. Wired-but-EMPTY canonical coins store (the pre-fold instant-on
+     *         shape: boot-1 prefetched bodies ahead of the validated headers,
+     *         zero coins behind them): the scan_fallback commit must roll back
+     *         to genesis — a clamped tip with no state is a phantasm that
+     *         breaks the bundle-install fresh-genesis gate and fires a doomed
+     *         Sapling rebuild. NULL/unwired coins view keeps the legacy anchor
+     *         commit (12d1-12d3 above). ── */
+
+    {
+        const int A = REDUCER_FRONTIER_TRUSTED_ANCHOR;
+        struct urs_frontier_fixture fx;
+        bool up = urs_frontier_fixture_setup(&fx, "urs_empty_coins_rb", A, 21);
+        bool seeded = up && urs_seed_frontier_schema()
+                   && urs_seed_validated_headers(A + 1, A + 10);
+
+        /* The fixture segment starts at A — seat genesis so the rollback
+         * target resolves, exactly as the production block-index ladder
+         * guarantees. */
+        bool genesis_ok = false;
+        if (up) {
+            const struct chain_params *cp = chain_params_get();
+            struct block_index *g = chainstate_insert_block_index(
+                (struct chainstate *)&fx.ms,
+                &cp->consensus.hashGenesisBlock);
+            if (g) {
+                g->nHeight = 0;
+                genesis_ok = true;
+            }
+        }
+
+        struct uint256 cand_hash;
+        urs_hash_for_height(A + 20, &cand_hash);
+        struct block_index *scan_fallback = up
+            ? block_map_find(&fx.ms.map_block_index, &cand_hash) : NULL;
+
+        /* Wire the canonical coins view — genuinely EMPTY utxos. */
+        struct coins_view_sqlite cvs;
+        bool cvs_open = up && coins_view_sqlite_open(&cvs, fx.ndb.db);
+        if (cvs_open)
+            fx.uctx.coins_sqlite = &cvs;
+
+        struct chain_restore_result rr;
+        memset(&rr, 0, sizeof(rr));
+        if (up && seeded && genesis_ok && scan_fallback && cvs_open)
+            rr = utxo_recovery_restore_chain_tip(&fx.uctx, scan_fallback);
+
+        URS_CHECK("urs: wired empty coins store rolls the scan_fallback "
+                  "commit back to genesis (no state behind the tip)",
+                  up && seeded && genesis_ok && scan_fallback && cvs_open &&
+                  rr.status.ok && !rr.restored &&
+                  active_chain_height(&fx.ms.chain_active) == 0);
+
+        if (cvs_open)
+            coins_view_sqlite_close(&cvs);
+        if (up)
+            urs_frontier_fixture_teardown(&fx);
+    }
+
     /* ── 12e. Fresh datadir / no frontier evidence: FAIL OPEN (no clamp,
      *         today's behavior preserved bit-for-bit) ── */
 

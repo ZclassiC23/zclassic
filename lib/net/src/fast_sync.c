@@ -650,6 +650,16 @@ bool fast_sync_solve_pow(const uint8_t peer_id[32], struct fast_sync_pow *pow)
 bool fast_sync_rate_check(struct fast_sync_rate_limiter *rl,
                            const uint8_t ip[16])
 {
+    return fast_sync_rate_check_n(rl, ip,
+                                  FAST_SYNC_MAX_CHUNKS_PER_HOUR,
+                                  FAST_SYNC_MAX_GLOBAL_CHUNKS_PER_HOUR);
+}
+
+bool fast_sync_rate_check_n(struct fast_sync_rate_limiter *rl,
+                            const uint8_t ip[16],
+                            uint32_t max_per_ip_per_hour,
+                            uint64_t max_global_per_hour)
+{
     int64_t now = (int64_t)platform_time_wall_time_t();
 
     /* Global rate limit — prevents distributed DoS from many IPs */
@@ -657,7 +667,7 @@ bool fast_sync_rate_check(struct fast_sync_rate_limiter *rl,
         rl->global_window_start = now;
         rl->global_chunks_sent = 0;
     }
-    if (rl->global_chunks_sent >= FAST_SYNC_MAX_GLOBAL_CHUNKS_PER_HOUR)
+    if (rl->global_chunks_sent >= max_global_per_hour)
         LOG_FAIL("sync", "rate_check: global rate limit exceeded (%llu chunks/hr)",
                  (unsigned long long)rl->global_chunks_sent);
 
@@ -668,7 +678,7 @@ bool fast_sync_rate_check(struct fast_sync_rate_limiter *rl,
                 rl->entries[i].window_start = now;
                 rl->entries[i].chunks_sent = 0;
             }
-            if (rl->entries[i].chunks_sent >= FAST_SYNC_MAX_CHUNKS_PER_HOUR)
+            if (rl->entries[i].chunks_sent >= max_per_ip_per_hour)
                 LOG_FAIL("sync", "rate_check: per-IP rate limit exceeded (%llu chunks/hr)",
                          (unsigned long long)rl->entries[i].chunks_sent);
             rl->entries[i].chunks_sent++;

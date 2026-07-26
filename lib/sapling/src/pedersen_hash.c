@@ -1,7 +1,11 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Pedersen hash for Sapling Merkle tree — pure C23 implementation.
- * Windowed scalar multiplication on Jubjub generators with BLS12-381 Fr. */
+ * Precomputed chunk-multiple tables on the Jubjub Pedersen generators
+ * (BLS12-381 Fr base field): each 3-bit window decodes to v = ±m with
+ * m in {1,2,3,4} at radix 16^chunk, so the per-segment scalar multiply
+ * becomes one table lookup + one point addition per chunk. The summed point is exactly
+ * [scalar]·G — byte-identical output to the naive scalar-mul form. */
 
 #include "sapling/pedersen_hash.h"
 #include "sapling/sapling.h"
@@ -15,9 +19,22 @@
 
 #define PEDERSEN_CHUNKS_PER_GENERATOR 63
 #define PEDERSEN_NUM_GENERATORS 6
+/* Per-chunk window magnitude values: the (a,b,c) encoding yields
+ * v = ±(1 + a + 2b), so m spans 1..4 (4 table slots per chunk). */
+#define PEDERSEN_TABLE_SLOTS 4
 
 static struct jub_point cached_generators[PEDERSEN_NUM_GENERATORS];
 static pthread_once_t generators_once = PTHREAD_ONCE_INIT;
+
+/* s_chunk_tables[seg][chunk][m-1] = m · 16^chunk · G_seg in extended
+ * twisted-Edwards coordinates. The per-chunk radix is 16, matching the
+ * scalar accumulation this replaces: each chunk doubles cur once for
+ * the b-term setup and three more times at the end (cur: C -> 16C).
+ * ~193 KB of read-only-after-init data. */
+static struct jub_point
+    s_chunk_tables[PEDERSEN_NUM_GENERATORS][PEDERSEN_CHUNKS_PER_GENERATOR]
+                  [PEDERSEN_TABLE_SLOTS];
+static pthread_once_t s_tables_once = PTHREAD_ONCE_INIT;
 
 #ifdef ZCL_TESTING
 /* Observability for concurrent-first-caller race. Post-fix the
@@ -29,9 +46,15 @@ void zcl_pedersen_generators_reset_for_test(void)
     /* Reassigning a pthread_once_t is not specified by POSIX but is
      * the canonical test-only trick on glibc (the type is a plain int
      * with PTHREAD_ONCE_INIT == 0). Only safe to call when no other
-     * thread is racing — the race tests join all workers first. */
+     * thread is racing — the race tests join all workers first.
+     * The chunk tables derive deterministically from the generators,
+     * so they must be re-armed together: a reset that re-derived the
+     * generators while leaving the tables armed would leave no caller
+     * that ever re-runs the generator body (body_runs assertion). */
     generators_once = (pthread_once_t)PTHREAD_ONCE_INIT;
     memset(cached_generators, 0, sizeof(cached_generators));
+    s_tables_once = (pthread_once_t)PTHREAD_ONCE_INIT;
+    memset(s_chunk_tables, 0, sizeof(s_chunk_tables));
     atomic_store(&zcl_pedersen_generators_body_runs_for_test, 0);
 }
 #endif
@@ -68,53 +91,67 @@ static void ensure_generators(void)
     pthread_once(&generators_once, load_generators);
 }
 
+/* Build the chunk-multiple tables from the generators. Chunk 0 holds
+ * {1,2,3,4}·G_seg; each later chunk quadruple-doubles the previous row
+ * (16^chunk · m · G_seg — the per-chunk radix is 16: the replaced scalar
+ * loop doubled cur once for the b-term setup and three more times at the
+ * end of every chunk). Cost is ~6k point operations, one-time —
+ * about two naive Pedersen combines. */
+static void load_chunk_tables(void)
+{
+    ensure_generators();
+    for (int seg = 0; seg < PEDERSEN_NUM_GENERATORS; seg++) {
+        struct jub_point *row0 = s_chunk_tables[seg][0];
+        row0[0] = cached_generators[seg];          /* 1·G */
+        jub_double(&row0[1], &row0[0]);            /* 2·G */
+        jub_add(&row0[2], &row0[1], &row0[0]);     /* 3·G */
+        jub_double(&row0[3], &row0[1]);            /* 4·G */
+        for (int c = 1; c < PEDERSEN_CHUNKS_PER_GENERATOR; c++) {
+            for (int m = 0; m < PEDERSEN_TABLE_SLOTS; m++) {
+                struct jub_point p;
+                jub_double(&p, &s_chunk_tables[seg][c - 1][m]);
+                jub_double(&p, &p);
+                jub_double(&p, &p);
+                jub_double(&s_chunk_tables[seg][c][m], &p);
+            }
+        }
+    }
+}
+
+static void ensure_chunk_tables(void)
+{
+    pthread_once(&s_tables_once, load_chunk_tables);
+}
 
 /* Core Pedersen hash over pre-assembled bits (personalization already included) */
 void pedersen_hash_bits(const uint8_t *bits, int nbits,
                          struct jub_point *result_pt)
 {
-    ensure_generators();
+    ensure_chunk_tables();
     jub_identity(result_pt);
 
     int bit_pos = 0;
     for (int seg = 0; seg < PEDERSEN_NUM_GENERATORS && bit_pos < nbits; seg++) {
-        /* Accumulate scalar in Fs (Jubjub scalar field order), NOT Fr. */
-        struct fs acc, cur, tmp;
-        fs_zero(&acc);
-        fs_one(&cur);
-
-        bool encountered = false;
+        /* Window decode per chunk: bits (a,b,c) select
+         * v = ±(1 + a + 2b) · 16^chunk · G_seg — the exact summands of
+         * the scalar the naive form accumulated in Fs, so the segment
+         * total is the same group element (a zero scalar is the
+         * identity point; adding it is a no-op, matching the old
+         * fs_is_zero skip). */
         for (int chunk = 0; chunk < PEDERSEN_CHUNKS_PER_GENERATOR; chunk++) {
             if (bit_pos >= nbits) break;
-            encountered = true;
 
             uint8_t a_bit = bits[bit_pos++];
             uint8_t b_bit = (bit_pos < nbits) ? bits[bit_pos++] : 0;
             uint8_t c_bit = (bit_pos < nbits) ? bits[bit_pos++] : 0;
 
-            tmp = cur;
-            if (a_bit) fs_add(&tmp, &tmp, &cur);
-            fs_add(&cur, &cur, &cur);
-            if (b_bit) fs_add(&tmp, &tmp, &cur);
-            if (c_bit) fs_neg(&tmp, &tmp);
-            fs_add(&acc, &acc, &tmp);
-
-            if (chunk < PEDERSEN_CHUNKS_PER_GENERATOR - 1) {
-                fs_add(&cur, &cur, &cur);
-                fs_add(&cur, &cur, &cur);
-                fs_add(&cur, &cur, &cur);
-            }
-        }
-
-        if (!encountered) break;
-
-        if (!fs_is_zero(&acc)) {
-            uint8_t scalar_bytes[32];
-            fs_to_bytes(scalar_bytes, &acc);
-
-            struct jub_point scaled;
-            jub_scalar_mul(&scaled, &cached_generators[seg], scalar_bytes);
-            jub_add(result_pt, result_pt, &scaled);
+            int slot = a_bit + 2 * b_bit;   /* m - 1 in 0..3 */
+            struct jub_point term;
+            if (c_bit)
+                jub_neg(&term, &s_chunk_tables[seg][chunk][slot]);
+            else
+                term = s_chunk_tables[seg][chunk][slot];
+            jub_add(result_pt, result_pt, &term);
         }
     }
 }

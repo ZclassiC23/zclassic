@@ -353,6 +353,41 @@ static int test_rate_limiter(void)
     return failures;
 }
 
+static int test_rate_limiter_n(void)
+{
+    int failures = 0;
+    TEST("fast_sync_rate_check_n honors caller-supplied caps") {
+        struct fast_sync_rate_limiter rl;
+        memset(&rl, 0, sizeof(rl));
+
+        uint8_t ip1[16] = {0};
+        ip1[0] = 1;
+        uint8_t ip2[16] = {0};
+        ip2[0] = 2;
+
+        /* Block-piece-scale cap: ip1 gets exactly 3 */
+        ASSERT(fast_sync_rate_check_n(&rl, ip1, 3, 1000));
+        ASSERT(fast_sync_rate_check_n(&rl, ip1, 3, 1000));
+        ASSERT(fast_sync_rate_check_n(&rl, ip1, 3, 1000));
+        ASSERT(!fast_sync_rate_check_n(&rl, ip1, 3, 1000));
+
+        /* A different cap applies per call site, not per limiter */
+        ASSERT(fast_sync_rate_check_n(&rl, ip1, 4, 1000));
+
+        /* Global cap: 1000 - 5 spent leaves room, but a tiny global
+         * cap refuses even a fresh IP */
+        struct fast_sync_rate_limiter rl2;
+        memset(&rl2, 0, sizeof(rl2));
+        ASSERT(fast_sync_rate_check_n(&rl2, ip1, 100, 2));
+        ASSERT(fast_sync_rate_check_n(&rl2, ip2, 100, 2));
+        uint8_t ip3[16] = {0};
+        ip3[0] = 3;
+        ASSERT(!fast_sync_rate_check_n(&rl2, ip3, 100, 2));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_snapshot_cache_publish_reset(void)
 {
     int failures = 0;
@@ -1566,6 +1601,7 @@ int test_fast_sync(void)
 
     /* Rate limiting */
     failures += test_rate_limiter();
+    failures += test_rate_limiter_n();
     failures += test_snapshot_cache_publish_reset();
     failures += test_snapshot_cache_versioning();
     failures += test_utxo_root_cache_publish_reset();

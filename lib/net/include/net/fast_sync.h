@@ -87,6 +87,16 @@ bool fast_sync_solve_pow(const uint8_t peer_id[32], struct fast_sync_pow *pow);
 /* Max total chunks across all IPs per hour (global cap) */
 #define FAST_SYNC_MAX_GLOBAL_CHUNKS_PER_HOUR 50000
 
+/* Block pieces (zblkreq) get their own limiter: each piece is a
+ * manifest-hash-bound batch of BLOCKS_PER_PIECE blocks, so a full-tip
+ * swarm sync needs ~48k pieces from one peer — the snapshot-chunk caps
+ * above would floor a single-peer sync at ~10 hours and starve the
+ * swarm mid-download (requester re-requests on timeout, burning the
+ * shared bucket). 100k/hr per IP ≈ two full-tip syncs with re-request
+ * headroom; still a hard DoS cap (each serve is ≤2 MB on the wire). */
+#define FAST_SYNC_MAX_BLOCK_PIECES_PER_HOUR 100000
+#define FAST_SYNC_MAX_GLOBAL_BLOCK_PIECES_PER_HOUR 1000000
+
 /* Rate limiter state (per node, tracks IPs + global) */
 struct fast_sync_rate_limiter {
     struct {
@@ -100,9 +110,17 @@ struct fast_sync_rate_limiter {
     uint64_t global_chunks_sent;
 };
 
-/* Check if an IP is rate-limited. Returns true if OK to serve. */
+/* Check if an IP is rate-limited. Returns true if OK to serve.
+ * Uses the snapshot-chunk caps (FAST_SYNC_MAX_*_CHUNKS_PER_HOUR). */
 bool fast_sync_rate_check(struct fast_sync_rate_limiter *rl,
                            const uint8_t ip[16]);
+
+/* Same check against caller-supplied caps — used by block piece
+ * serving with FAST_SYNC_MAX_*_BLOCK_PIECES_PER_HOUR. */
+bool fast_sync_rate_check_n(struct fast_sync_rate_limiter *rl,
+                            const uint8_t ip[16],
+                            uint32_t max_per_ip_per_hour,
+                            uint64_t max_global_per_hour);
 
 /* UTXO snapshot chunk: batch of UTXOs for transfer.
  * Max 1000 entries for legacy full-snapshot transfer.
@@ -366,9 +384,13 @@ void swarm_sync_handle_timeouts(struct swarm_sync *ss, int timeout_secs);
 /* Max inflight block pieces per peer. Each piece is independently hashed
  * against the manifest before payload blocks are submitted, so this only
  * controls bandwidth-delay utilization, not trust. */
-/* One peer may keep 64 independently hash-bound 64-block pieces in flight.
- * The global contiguous window and loopback proof derive from this constant. */
-#define PIECE_PIPELINE_DEPTH 64
+/* One peer may keep 256 independently hash-bound 64-block pieces in flight.
+ * The global contiguous window and loopback proof derive from this constant.
+ * 64 under-filled the bandwidth-delay product even on loopback (~10 s piece
+ * turnaround at ~6 pieces/s pinned the inflight count and capped fold at
+ * ~300 blocks/s vs ~2000 blocks/s raw serve capacity); 256 restores
+ * throughput without changing trust (each piece is hash-bound on arrival). */
+#define PIECE_PIPELINE_DEPTH 256
 
 /* Endgame threshold: when fewer than this many pieces remain,
  * request all remaining from every available peer. */
@@ -403,6 +425,9 @@ struct block_swarm {
     uint32_t pieces_complete;
     uint32_t pieces_inflight;
     uint32_t pieces_failed;
+    int64_t  last_complete_unix;        /* last piece-completion stamp; the
+                                         * stall watchdog (msgprocessor_snapshot.c)
+                                         * abandons the swarm when this goes quiet */
     bool endgame;                       /* true when < ENDGAME_THRESHOLD remain */
     const char *datadir;
 };

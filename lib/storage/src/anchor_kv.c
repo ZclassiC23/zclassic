@@ -8,8 +8,10 @@
 #include "storage/anchor_kv.h"
 
 #include "core/serialize.h"
+#include "crypto/sha3.h"
 #include "util/log_macros.h"
 
+#include <pthread.h>
 #include <sqlite3.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -17,6 +19,63 @@
 #include <string.h>
 
 #define ANCHOR_SUBSYS "anchor_kv"
+
+/* ── Verified-blob memo ─────────────────────────────────
+ * Re-deriving a Sapling tree root costs ~10ms of Pedersen combines, and
+ * fold/spend validation re-verifies a small working set of recent anchor
+ * blobs over and over (anchor_kv_latest_tree per shielded block,
+ * anchor_kv_get per Sapling spend). The memo binds
+ * sha3_256(pool || blob) → "root integrity check passed":
+ *  - the deserialize into `out` still runs on EVERY call (only the root
+ *    recompute is skipped), so callers always get a fully-populated tree;
+ *  - deserialization + root fold are pure functions of (pool, blob bytes),
+ *    so a memo hit is byte-identical to a recompute;
+ *  - tampering that flips any blob bit hash-misses, so the fail-closed
+ *    check still fires on first sight of any distinct byte string.
+ * Round-robin eviction, one mutex; 1024 entries cover a catch-up fold's
+ * anchor working set (every add_tree notes its blob → same-boot hits). */
+#define ANCHOR_VERIFY_MEMO_SIZE 1024
+static struct {
+    bool valid;
+    uint8_t blob_hash[32];
+} s_verify_memo[ANCHOR_VERIFY_MEMO_SIZE];
+static size_t s_verify_memo_next;
+static pthread_mutex_t s_verify_memo_mtx = PTHREAD_MUTEX_INITIALIZER;
+
+static void anchor_blob_hash(int pool, const void *blob, size_t blob_len,
+                             uint8_t out[32])
+{
+    struct sha3_256_ctx ctx;
+    uint8_t p = (uint8_t)pool;
+    sha3_256_init(&ctx);
+    sha3_256_write(&ctx, &p, 1);
+    sha3_256_write(&ctx, (const unsigned char *)blob, blob_len);
+    sha3_256_finalize(&ctx, out);
+}
+
+static bool anchor_verify_memo_lookup(const uint8_t blob_hash[32])
+{
+    bool hit = false;
+    pthread_mutex_lock(&s_verify_memo_mtx);
+    for (size_t i = 0; i < ANCHOR_VERIFY_MEMO_SIZE; i++) {
+        if (s_verify_memo[i].valid &&
+            memcmp(s_verify_memo[i].blob_hash, blob_hash, 32) == 0) {
+            hit = true;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&s_verify_memo_mtx);
+    return hit;
+}
+
+static void anchor_verify_memo_note(const uint8_t blob_hash[32])
+{
+    pthread_mutex_lock(&s_verify_memo_mtx);
+    memcpy(s_verify_memo[s_verify_memo_next].blob_hash, blob_hash, 32);
+    s_verify_memo[s_verify_memo_next].valid = true;
+    s_verify_memo_next = (s_verify_memo_next + 1) % ANCHOR_VERIFY_MEMO_SIZE;
+    pthread_mutex_unlock(&s_verify_memo_mtx);
+}
 
 static bool anchor_pool_valid(int pool)
 {
@@ -43,7 +102,7 @@ static bool anchor_empty_tree(int pool, const struct uint256 *root,
     struct incremental_merkle_tree empty;
     struct uint256 empty_root;
     anchor_tree_init(pool, &empty);
-    incremental_tree_root(&empty, &empty_root);
+    incremental_tree_empty_root(&empty, &empty_root); /* cached constant */
     if (!uint256_eq(root, &empty_root))
         return false;
     if (tree_out)
@@ -241,6 +300,10 @@ static bool anchor_deserialize_checked(int pool, const struct uint256 *want,
                  pool, blob_len, stream_remaining(&bs));
         return false;
     }
+    uint8_t blob_hash[32];
+    anchor_blob_hash(pool, blob, (size_t)blob_len, blob_hash);
+    if (anchor_verify_memo_lookup(blob_hash))
+        return true; /* this exact blob already passed the root check below */
     struct uint256 got;
     incremental_tree_root(out, &got);
     if (!uint256_eq(&got, want)) {
@@ -249,6 +312,7 @@ static bool anchor_deserialize_checked(int pool, const struct uint256 *want,
                  pool);
         return false;
     }
+    anchor_verify_memo_note(blob_hash);
     return true;
 }
 
@@ -394,7 +458,7 @@ bool anchor_kv_add_tree(sqlite3 *db, int pool,
     struct incremental_merkle_tree empty;
     struct uint256 empty_root;
     anchor_tree_init(pool, &empty);
-    incremental_tree_root(&empty, &empty_root);
+    incremental_tree_empty_root(&empty, &empty_root); /* cached constant */
     if (uint256_eq(&root, &empty_root))
         return true;  /* implicit in zclassicd too */
 
@@ -434,6 +498,13 @@ bool anchor_kv_add_tree(sqlite3 *db, int pool,
     }
     int rc = sqlite3_step(s);  // raw-sql-ok:progress-kv-kernel-store
     sqlite3_finalize(s);
+    if (rc == SQLITE_DONE) {
+        /* This blob's root IS the row key by construction, so it is verified
+         * without a re-fold: note it for same-boot latest_tree/spend gets. */
+        uint8_t blob_hash[32];
+        anchor_blob_hash(pool, bs.data, bs.size, blob_hash);
+        anchor_verify_memo_note(blob_hash);
+    }
     stream_free(&bs);
     if (rc != SQLITE_DONE) {
         LOG_WARN(ANCHOR_SUBSYS, "add_tree step rc=%d: %s", rc,

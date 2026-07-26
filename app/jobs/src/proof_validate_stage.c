@@ -35,6 +35,7 @@
 #include "storage/disk_block_io.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
+#include "util/reducer_stage_profile.h"
 #include "util/stage.h"
 #include "util/util.h"
 #include "validation/main_state.h"
@@ -168,6 +169,31 @@ static job_result_t pv_hold_unresolved(struct stage_step_ctx *c, int height,
     return JOB_BLOCKED;
 }
 
+/* ── Sub-phase profiling (util/reducer_stage_profile.h) ──────────────────
+ * proof_validate is routinely quoted at "13-18 ms/block" with nothing behind
+ * the figure: the stage had no sub-phase instrumentation at all, so the number
+ * could not be attributed to body acquisition, the proof sweep, or the log
+ * insert, and no per-proof cost was derivable. These helpers feed the
+ * REDUCER_PROFILE_PROOF_VALIDATE domain. Timing calls are two GetTimeMicros()
+ * reads around work that is already milliseconds long.
+ *
+ * SCOPE BOUNDARY: the Groth16-spend vs Groth16-output vs Sprout vs binding-sig
+ * TIME split lives inside the per-tx sweep (app/jobs/src/proof_validate_verify.c)
+ * and is not reachable from this file; what is emitted here is the sweep's
+ * total plus the exact primitive COUNTS that sweep ran, which is the
+ * denominator that split would divide. */
+static inline void pv_profile_add(enum reducer_profile_field f, uint64_t v)
+{
+    reducer_stage_profile_add(REDUCER_PROFILE_PROOF_VALIDATE, f, v);
+}
+
+static inline void pv_profile_us(enum reducer_profile_field f, int64_t started)
+{
+    int64_t d = platform_time_monotonic_us() - started;
+    reducer_stage_profile_observe_us(REDUCER_PROFILE_PROOF_VALIDATE, f,
+                                     d > 0 ? (uint64_t)d : 0);
+}
+
 /* Reduce-order counter callbacks (proof_verify_success_cb /
  * proof_verify_failure_cb): proof_verify_block invokes these in ORIGINAL tx
  * order during its serial reduce, so the telemetry atomics see exactly the
@@ -181,15 +207,22 @@ static void add_success_counters(const struct transaction *tx,
                      (uint64_t)r->sapling_spends_total);
     atomic_fetch_add(&g_sapling_outputs_verified_total,
                      (uint64_t)r->sapling_outputs_total);
+    pv_profile_add(RPF_PV_SPENDS, (uint64_t)r->sapling_spends_total);
+    pv_profile_add(RPF_PV_OUTPUTS, (uint64_t)r->sapling_outputs_total);
     for (size_t i = 0; tx && i < tx->num_joinsplit; i++) {
-        if (tx->v_joinsplit[i].use_groth)
+        if (tx->v_joinsplit[i].use_groth) {
             atomic_fetch_add(&g_sprout_groth16_verified_total, 1);
-        else
+            pv_profile_add(RPF_PV_SPROUT_GROTH16, 1);
+        } else {
             atomic_fetch_add(&g_sprout_phgr13_verified_total, 1);
+            pv_profile_add(RPF_PV_SPROUT_PHGR13, 1);
+        }
     }
     if (tx && (tx->num_shielded_spend > 0 ||
-               tx->num_shielded_output > 0))
+               tx->num_shielded_output > 0)) {
         atomic_fetch_add(&g_binding_sig_verified_total, 1);
+        pv_profile_add(RPF_PV_BINDING_SIGS, 1);
+    }
 }
 
 static void add_failure_counter(const char *type, void *user)
@@ -211,6 +244,7 @@ static void add_failure_counter(const char *type, void *user)
 static job_result_t step_validate(struct stage_step_ctx *c)
 {
     atomic_store(&g_last_step_unix, platform_time_wall_unix());
+    const int64_t t_step = platform_time_monotonic_us();
     struct main_state *ms = g_ms;
     if (!ms) return JOB_IDLE;
     sqlite3 *db = progress_store_db();
@@ -221,9 +255,11 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     enum mint_validation_evidence expected_evidence =
         mint_validation_evidence_expected(skip_crypto);
     uint64_t sv_cursor = 0;
+    int64_t t_upstream = platform_time_monotonic_us();
     if (!stage_upstream_frontier_or_zero(db, "script_validate", STAGE_NAME,
                                    &sv_cursor))
         return JOB_FATAL;
+    pv_profile_us(RPF_UPSTREAM_US, t_upstream);
     if ((uint64_t)next_h >= sv_cursor) {
         atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;
@@ -268,6 +304,8 @@ static job_result_t step_validate(struct stage_step_ctx *c)
         pv_unresolved_clear();
         atomic_store(&g_last_advance_height, (int64_t)next_h);
         c->cursor_out = c->cursor_in + 1;
+        pv_profile_add(RPF_BLOCKS, 1);
+        pv_profile_us(RPF_TOTAL_US, t_step);
         return JOB_ADVANCED;
     }
     struct proof_verify_summary summary;
@@ -306,21 +344,38 @@ static job_result_t step_validate(struct stage_step_ctx *c)
                          cached.binding_sig_verified);
         if (!cached.ok)
             add_failure_counter(cached.first_failure_proof_type, NULL);
+        pv_profile_add(RPF_PV_LOOKAHEAD_HITS, 1);
+        pv_profile_add(RPF_PV_SPENDS, cached.spends_verified);
+        pv_profile_add(RPF_PV_OUTPUTS, cached.outputs_verified);
+        pv_profile_add(RPF_PV_SPROUT_GROTH16, cached.sprout_groth16_verified);
+        pv_profile_add(RPF_PV_SPROUT_PHGR13, cached.sprout_phgr13_verified);
+        pv_profile_add(RPF_PV_BINDING_SIGS, cached.binding_sig_verified);
         stage_body_read_hold_clear(STAGE_NAME);
     } else {
+    /* Lookahead consulted and missed. skip_crypto never consults it, so that
+     * pass-through is neither a hit nor a miss. */
+    if (!skip_crypto)
+        pv_profile_add(RPF_PV_LOOKAHEAD_MISSES, 1);
     struct block owned;
     struct block_parse_handle handle;
     const struct block *blk = NULL;
     bool borrowed = false;
+    /* Body acquisition. In production this is a block_parse_cache acquire, so
+     * it is normally a shared-cache hit populated by body_persist rather than
+     * a disk read + deserialize — whether that is true on a live fold is
+     * exactly what this measurement answers. */
+    int64_t t_acquire = platform_time_monotonic_us();
     if (!stage_acquire_block_view(&owned, &handle, &blk, &borrowed,
                                   bi, next_h, g_datadir,
                                   g_reader, g_reader_user)) {
+        pv_profile_us(RPF_PV_BODY_ACQUIRE_US, t_acquire);
         block_free(&owned);
         /* body_persist already hash+merkle verified this body — a later
          * read failure is not a normal wait (see stage_body_read_hold). */
         return stage_body_read_hold(STAGE_NAME, next_h, bi->phashBlock,
                                     &g_last_blocked_unix);
     }
+    pv_profile_us(RPF_PV_BODY_ACQUIRE_US, t_acquire);
     stage_body_read_hold_clear(STAGE_NAME);
     /* The sapling-params wait gate is a VERIFICATION precondition; in the
      * OFFLINE FAST-MINT pass-through we never call the proof verifier, so the
@@ -373,9 +428,11 @@ static job_result_t step_validate(struct stage_step_ctx *c)
         /* Production path: fan per-tx shielded-proof verification across the
          * worker pool, then reduce in original tx order — the add_success /
          * add_failure counter callbacks fire in serial-sweep order. */
+        int64_t t_verify = platform_time_monotonic_us();
         proof_verify_block(blk, next_h, g_tx_verifier, g_tx_verifier_user,
                            true, add_success_counters, add_failure_counter,
                            NULL, &summary);
+        pv_profile_us(RPF_PV_VERIFY_US, t_verify);
     }
     stage_release_block_view(&owned, &handle, borrowed);
     }
@@ -415,18 +472,22 @@ static job_result_t step_validate(struct stage_step_ctx *c)
         atomic_fetch_add(&g_verified_total, 1);
     }
 
+    int64_t t_insert = platform_time_monotonic_us();
     if (!proof_validate_log_insert(db, next_h, status, ok,
                     summary.sapling_spends_total,
                     summary.sapling_outputs_total,
                     summary.sprout_joinsplits_total, bi->phashBlock,
                     fail_txid, fail_type))
         return JOB_FATAL;
+    pv_profile_us(RPF_PV_LOG_INSERT_US, t_insert);
 
     /* A height advanced cleanly: release any HOLD budget/named blocker so a
      * later internal_error restarts the budget clock from scratch. */
     pv_unresolved_clear();
     atomic_store(&g_last_advance_height, (int64_t)next_h);
     c->cursor_out = c->cursor_in + 1;
+    pv_profile_add(RPF_BLOCKS, 1);
+    pv_profile_us(RPF_TOTAL_US, t_step);
     return JOB_ADVANCED;
 }
 bool proof_validate_stage_init(struct main_state *ms)

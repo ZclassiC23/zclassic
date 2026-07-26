@@ -103,7 +103,11 @@ struct chain_restore_result {
 
 /* Restore chain tip from coins DB best block hash.
  * Creates placeholder anchor if coins_best_block is ahead of index.
- * Falls back to fast_rebuild_chainstate if coins DB is empty. */
+ * Falls back to fast_rebuild_chainstate if coins DB is empty. When the
+ * canonical coins store is wired AND genuinely empty (pre-fold instant-on
+ * with prefetched bodies ahead of the validated headers), the scan_fallback
+ * commit is rolled back to genesis — a tip with no state behind it is a
+ * phantasm. An unwired (NULL) coins view keeps the legacy anchor commit. */
 struct chain_restore_result utxo_recovery_restore_chain_tip(
     struct utxo_recovery_ctx *ctx,
     struct block_index *scan_fallback);

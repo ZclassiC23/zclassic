@@ -56,8 +56,10 @@ void validate_headers_failure_summary_load(
 
 /* ── Runtime pool/batch sizing (validate_headers_tuning.c) ──────────
  * The compile-time VH_POOL_SIZE / VH_BATCH_SIZE on a normal live node; wider
- * only under an offline mint/refold fold (refold_cadence_active), optionally
- * tuned there by ZCL_VH_POOL / ZCL_VH_BATCH. Verdict-identical at any width. */
+ * only under an offline mint/refold fold (refold_cadence_active, optionally
+ * tuned there by ZCL_VH_POOL / ZCL_VH_BATCH) or — pool width only — under a
+ * live catch-up (catchup_cadence_active, ZCL_VH_CATCHUP_POOL_SIZE).
+ * Verdict-identical at any width. */
 int vh_runtime_pool_size(void);
 int vh_runtime_batch_size(void);
 

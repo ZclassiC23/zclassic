@@ -52,6 +52,16 @@ void sha256_compress_uncommitted(struct uint256 *out)
     memset(out->data, 0, 32);
 }
 
+/* Invalidate the runtime-only root memo. Every writer of the content
+ * fields (depth/has_left/left/has_right/right/has_parent/parents/
+ * num_parents) must call this BEFORE or WHILE mutating, so a stale memo
+ * can never survive a content change. All such writers live in this file
+ * (audited via git grep over the public struct). */
+static void tree_root_invalidate(struct incremental_merkle_tree *t)
+{
+    t->root_cached = false;
+}
+
 static void tree_init(struct incremental_merkle_tree *t, size_t depth,
                        void (*combine)(const struct uint256 *, const struct uint256 *,
                                        size_t, struct uint256 *),
@@ -68,6 +78,8 @@ static void tree_init(struct incremental_merkle_tree *t, size_t depth,
     t->num_parents = 0;
     t->combine = combine;
     t->uncommitted = uncommitted;
+    memset(&t->cached_root, 0, sizeof(struct uint256));
+    tree_root_invalidate(t);
 }
 
 void sprout_tree_init(struct incremental_merkle_tree *t)
@@ -178,6 +190,7 @@ static void filler_next(const struct incremental_merkle_tree *t,
 void incremental_tree_append(struct incremental_merkle_tree *t,
                               const struct uint256 *obj)
 {
+    tree_root_invalidate(t);
     if (!t->has_left) {
         t->left = *obj;
         t->has_left = true;
@@ -216,6 +229,11 @@ void incremental_tree_append(struct incremental_merkle_tree *t,
 void incremental_tree_root(const struct incremental_merkle_tree *t,
                             struct uint256 *out)
 {
+    if (t->root_cached) {
+        *out = t->cached_root;
+        return;
+    }
+
     size_t filler_idx = 0;
     struct uint256 combine_left;
     if (t->has_left) {
@@ -256,6 +274,13 @@ void incremental_tree_root(const struct incremental_merkle_tree *t,
         root = next;
         d++;
     }
+
+    /* Memoize for the next caller. Trees are never truly const (stack,
+     * heap, or global storage), so casting away const is safe; see the
+     * struct comment for the threading discipline. */
+    struct incremental_merkle_tree *m = (struct incremental_merkle_tree *)t;
+    m->cached_root = root;
+    m->root_cached = true;
 
     *out = root;
 }
@@ -338,6 +363,10 @@ bool incremental_tree_deserialize(struct incremental_merkle_tree *t,
                                    struct byte_stream *s)
 {
     uint8_t disc;
+
+    /* Content may be half-overwritten on an early IMT_FAIL return below;
+     * drop any memo up front so a stale root can never survive. */
+    tree_root_invalidate(t);
 
     /* left */
     if (!stream_read(s, &disc, 1))
@@ -935,10 +964,13 @@ bool incremental_witness_deserialize(struct incremental_witness *w,
                                                       size_t, struct uint256 *),
                                       void (*uncommitted)(struct uint256 *))
 {
-    /* Initialize function pointers first */
+    /* Initialize function pointers first. depth/combine/uncommitted are
+     * root-affecting fields, so drop any memo carried over from a prior
+     * use of *w (the deserializes below invalidate again, conservatively). */
     w->tree.depth = depth;
     w->tree.combine = combine;
     w->tree.uncommitted = uncommitted;
+    tree_root_invalidate(&w->tree);
 
     if (!incremental_tree_deserialize(&w->tree, s))
         IMT_FAIL("read underlying tree");
@@ -966,6 +998,7 @@ bool incremental_witness_deserialize(struct incremental_witness *w,
         w->cursor.depth = depth;
         w->cursor.combine = combine;
         w->cursor.uncommitted = uncommitted;
+        tree_root_invalidate(&w->cursor);
         if (!incremental_tree_deserialize(&w->cursor, s))
             IMT_FAIL("read cursor tree");
     }
@@ -975,9 +1008,11 @@ bool incremental_witness_deserialize(struct incremental_witness *w,
     /* cursor.depth must match cursor_depth, NOT full tree depth.
      * The cursor is a subtree at a specific level — its root computation
      * pads empty hashes up to cursor.depth. Using the full tree depth (32)
-     * instead of cursor_depth produces a wrong root with 27+ extra levels. */
+     * instead of cursor_depth produces a wrong root with 27+ extra levels.
+     * depth feeds the root fold, so the memo must not survive this fix. */
     if (w->has_cursor) {
         w->cursor.depth = w->cursor_depth;
+        tree_root_invalidate(&w->cursor);
     }
 
     return true;

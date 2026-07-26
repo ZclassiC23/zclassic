@@ -29,20 +29,78 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Serialize one composed JSON document into a fresh heap buffer, or report a
+ * body failure. Defined with the shielded read bodies below; the transparent
+ * listunspent body uses it too. */
+enum { WNH_SMALL_BODY = 4096, WNH_LIST_BODY = 262144 };
+static char *wnh_body_render(const struct json_value *doc, const char *what,
+                             size_t cap, struct zcl_native_body_err *err);
+
 char *zcl_native_listunspent_body(const struct json_value *args,
                                    struct zcl_native_body_err *err)
 {
+    int64_t minconf = json_get_int_or(args, "minconf", 1);
+    int64_t maxconf = json_get_int_or(args, "maxconf", 9999999);
     char params[128];
     snprintf(params, sizeof(params), "[%lld,%lld]",
-             (long long)json_get_int_or(args, "minconf", 1),
-             (long long)json_get_int_or(args, "maxconf", 9999999));
-    char *out = node_rpc_call("listunspent", params);
-    if (!out) {
+             (long long)minconf, (long long)maxconf);
+    char *raw = node_rpc_call("listunspent", params);
+    if (!raw) {
         err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
         snprintf(err->message, sizeof(err->message),
                  "RPC %s returned null", "listunspent");
         LOG_NULL("native.wallet", "RPC %s returned null", "listunspent");
     }
+
+    /* The node RPC listunspent is Bitcoin-compatible and answers a BARE
+     * ARRAY; the native command bridge projects an OBJECT and drops a
+     * non-object body — the same defect class that made `app swap list`
+     * answer BAD_TOOL_BODY for its whole existence (see rpc_swap_list).
+     * Wrap the array in the envelope this command declared as its output
+     * schema (config/commands/core.def: zcl.wallet_utxos.v1), naming the
+     * confirmation window the answer was computed under — the projection
+     * idiom the shielded read bodies below already use. */
+    struct json_value utxos;
+    if (!json_read(&utxos, raw, strlen(raw))) {
+        json_free(&utxos);
+        free(raw);
+        err->status = ZCL_NATIVE_BODY_INTERNAL;
+        snprintf(err->message, sizeof(err->message),
+                 "RPC %s returned an unparseable body", "listunspent");
+        LOG_NULL("native.wallet", "RPC %s returned an unparseable body",
+                 "listunspent");
+    }
+    free(raw);
+
+    /* An RPC-level error body is forwarded verbatim: the bridge already
+     * turns {"error":...} into a typed TOOL_ERROR, and re-wrapping it would
+     * hide the node's own message. */
+    if (utxos.type == JSON_OBJ && json_get(&utxos, "error")) {
+        char *passthru = wnh_body_render(&utxos, "listunspent",
+                                         WNH_LIST_BODY, err);
+        json_free(&utxos);
+        return passthru;
+    }
+
+    struct json_value doc;
+    json_init(&doc);
+    json_set_object(&doc);
+    if (utxos.type != JSON_ARR) {
+        /* A wallet with no UTXOs still answers with an empty list, never a
+         * missing key — an empty holding is an answer, not an absence. */
+        json_free(&utxos);
+        json_init(&utxos);
+        json_set_array(&utxos);
+    }
+    (void)json_push_kv_str(&doc, "schema", "zcl.wallet_utxos.v1");
+    (void)json_push_kv(&doc, "utxos", &utxos);
+    (void)json_push_kv_int(&doc, "count", (int64_t)utxos.num_children);
+    (void)json_push_kv_int(&doc, "minconf", minconf);
+    (void)json_push_kv_int(&doc, "maxconf", maxconf);
+    json_free(&utxos);
+
+    char *out = wnh_body_render(&doc, "listunspent", WNH_LIST_BODY, err);
+    json_free(&doc);
     return out;
 }
 
@@ -168,12 +226,10 @@ char *zcl_native_listaddresses_body(const struct json_value *args,
  * scalar the caller has to remember the question for. */
 
 /* Serialize one composed JSON document into a fresh heap buffer, or report a
- * body failure. Shared by the two shielded read bodies; `cap` is sized to
- * the answer (a balance is three fields, a note list is unbounded by design
- * and pages at the bridge). */
-enum { WNH_SMALL_BODY = 4096, WNH_LIST_BODY = 262144 };
-
-
+ * body failure. Shared by the list bodies; `cap` is sized to the answer (a
+ * balance is three fields, a note list is unbounded by design and pages at
+ * the bridge). The WNH_* sizes are declared with the forward declaration at
+ * the top of the file. */
 static char *wnh_body_render(const struct json_value *doc, const char *what,
                              size_t cap, struct zcl_native_body_err *err)
 {

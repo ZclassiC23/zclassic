@@ -19,6 +19,7 @@
 #include "primitives/transaction.h"
 #include "script/script.h"  /* script_is_unspendable — UTXO-set exclusion */
 #include "util/log_macros.h"
+#include "util/reducer_stage_profile.h"
 #include "util/safe_alloc.h"
 #include "util/stage.h"
 #include "validation/checkpoint.h"
@@ -718,9 +719,9 @@ static uint8_t *serialize_added(const struct delta_summary *s, size_t *out_len)
     return buf;
 }
 
-bool utxo_apply_delta_persist(sqlite3 *db, int height,
-                              const struct uint256 *branch_hash,
-                              const struct delta_summary *s)
+static bool delta_persist_impl(sqlite3 *db, int height,
+                               const struct uint256 *branch_hash,
+                               const struct delta_summary *s)
 {
     size_t spent_len = 0, added_len = 0;
     uint8_t *spent_blob = serialize_spent(s, &spent_len);
@@ -754,4 +755,17 @@ bool utxo_apply_delta_persist(sqlite3 *db, int height,
         return false;
     }
     return true;
+}
+
+/* Fold-path attribution (RPF_UA_DELTA_PERSIST_US). */
+bool utxo_apply_delta_persist(sqlite3 *db, int height,
+                              const struct uint256 *branch_hash,
+                              const struct delta_summary *s)
+{
+    const int64_t t0 = platform_time_monotonic_us();
+    bool ok = delta_persist_impl(db, height, branch_hash, s);
+    reducer_stage_profile_observe_us(
+        REDUCER_PROFILE_UTXO_APPLY, RPF_UA_DELTA_PERSIST_US,
+        (uint64_t)(platform_time_monotonic_us() - t0));
+    return ok;
 }

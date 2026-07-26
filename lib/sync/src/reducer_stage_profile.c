@@ -9,9 +9,17 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stddef.h>
+#include <string.h>
 
 #define PROFILE_SCHEMA "zcl.reducer_stage_profile.v1"
 #define PROFILE_HIST_BUCKETS 48u
+
+/* The presence mask is one uint64_t and a field's bit is 1<<field, so the
+ * highest legal field index is 63. Crossing this silently corrupts the mask
+ * (undefined shift), so the bound is a build error, not a comment. */
+_Static_assert(RPF_FIELD_COUNT <= 64,
+               "reducer_stage_profile presence bitmask is 64 bits wide — "
+               "widen it explicitly before adding a 65th field");
 
 struct profile_domain {
     _Atomic uint64_t cumulative[RPF_FIELD_COUNT];
@@ -37,6 +45,18 @@ static struct profile_domain g_profiles[REDUCER_PROFILE_DOMAIN_COUNT] = {
     [REDUCER_PROFILE_UTXO_APPLY] = {
         .rollover_lock = PTHREAD_MUTEX_INITIALIZER,
     },
+    [REDUCER_PROFILE_PROOF_VALIDATE] = {
+        .rollover_lock = PTHREAD_MUTEX_INITIALIZER,
+    },
+};
+
+/* Domain names — also the accepted values of the dump's `key` filter. */
+static const char *const g_domain_names[REDUCER_PROFILE_DOMAIN_COUNT] = {
+    [REDUCER_PROFILE_BODY_PERSIST]    = "body_persist",
+    [REDUCER_PROFILE_SCRIPT_VALIDATE] = "script_validate",
+    [REDUCER_PROFILE_TIP_FINALIZE]    = "tip_finalize",
+    [REDUCER_PROFILE_UTXO_APPLY]      = "utxo_apply",
+    [REDUCER_PROFILE_PROOF_VALIDATE]  = "proof_validate",
 };
 
 static const char *const g_field_names[RPF_FIELD_COUNT] = {
@@ -87,6 +107,20 @@ static const char *const g_field_names[RPF_FIELD_COUNT] = {
     [RPF_UA_PREVOUT_US] = "ua_prevout_us",
     [RPF_UA_APPLY_US] = "ua_apply_us",
     [RPF_UA_COMMIT_US] = "ua_commit_us",
+    [RPF_PV_BODY_ACQUIRE_US] = "pv_body_acquire_us",
+    [RPF_PV_VERIFY_US] = "pv_verify_us",
+    [RPF_PV_LOG_INSERT_US] = "pv_log_insert_us",
+    [RPF_PV_SPENDS] = "pv_sapling_spends",
+    [RPF_PV_OUTPUTS] = "pv_sapling_outputs",
+    [RPF_PV_SPROUT_GROTH16] = "pv_sprout_groth16_joinsplits",
+    [RPF_PV_SPROUT_PHGR13] = "pv_sprout_phgr13_joinsplits",
+    [RPF_PV_BINDING_SIGS] = "pv_binding_sigs",
+    [RPF_PV_LOOKAHEAD_HITS] = "pv_lookahead_hits",
+    [RPF_PV_LOOKAHEAD_MISSES] = "pv_lookahead_misses",
+    [RPF_UA_SHIELDED_GATE_US] = "ua_shielded_gate_us",
+    [RPF_UA_NULLIFIERS_US] = "ua_nullifiers_us",
+    [RPF_UA_DELTA_PERSIST_US] = "ua_delta_persist_us",
+    [RPF_TF_POST_FINALIZE_US] = "tf_post_finalize_us",
 };
 
 static void rollover_if_needed(struct profile_domain *p, uint64_t generation)
@@ -233,8 +267,14 @@ static void push_latency_quantiles(struct json_value *out,
         json_push_kv_int(&field, "p50", (int64_t)p50);
         json_push_kv_int(&field, "p95", (int64_t)p95);
         json_push_kv(&quantiles, g_field_names[i], &field);
+        /* json_push_kv COPIES the child (lib/json/src/json.c json_copy), so
+         * every temporary built here must be released or each dump call leaks
+         * its whole tree — this dumper is sampled on a timer by
+         * tools/scripts/fold_profile.sh, so the leak was unbounded. */
+        json_free(&field);
     }
     json_push_kv(out, "latency_quantiles_us", &quantiles);
+    json_free(&quantiles);
 }
 
 static void push_nullable_fields(struct json_value *out,
@@ -252,6 +292,7 @@ static void push_nullable_fields(struct json_value *out,
             json_set_null(&v);
         }
         json_push_kv(out, g_field_names[i], &v);
+        json_free(&v);
     }
 }
 
@@ -270,16 +311,58 @@ static void push_domain(struct json_value *out, struct profile_domain *p)
                      (int64_t)atomic_load(&p->generation));
     json_push_kv(out, "cumulative", &cumulative);
     json_push_kv(out, "last_batch", &last);
+    json_free(&cumulative);
+    json_free(&last);
+}
+
+/* Emit ONE domain, COMPACTLY. The all-domains body is far over the native
+ * command's 4096-byte state budget — `ops state --subsystem=reducer_stage_profile`
+ * answers `skipped_oversize:"state"` and returns no numbers at all — and one
+ * domain in the full shape is still over it, because the full shape spells out
+ * every one of the RPF_FIELD_COUNT fields as an explicit null in BOTH the
+ * cumulative and last_batch objects. So the keyed view drops what a caller
+ * measuring an interval does not need: only fields this domain has actually
+ * observed, and only the cumulative (monotonic) side, which is the side two
+ * samples can be differenced. The unkeyed view is unchanged.
+ *   zclassic23 ops state --subsystem=reducer_stage_profile --key=proof_validate
+ * An unknown key is named rather than silently answered with everything. */
+static bool dump_one_domain(struct json_value *out, int domain)
+{
+    struct profile_domain *p = &g_profiles[domain];
+    json_push_kv_str(out, "domain", g_domain_names[domain]);
+    json_push_kv_str(out, "view", "cumulative_present_only");
+    uint64_t present = atomic_load(&p->present);
+    struct json_value cum;
+    json_init(&cum);
+    json_set_object(&cum);
+    for (size_t i = 0; i < RPF_FIELD_COUNT; i++) {
+        if ((present & (UINT64_C(1) << i)) == 0)
+            continue;
+        json_push_kv_int(&cum, g_field_names[i],
+                         (int64_t)atomic_load(&p->cumulative[i]));
+    }
+    json_push_kv(out, "cumulative", &cum);
+    json_free(&cum);
+    push_latency_quantiles(out, p, false);
+    json_push_kv_int(out, "batch_generation",
+                     (int64_t)atomic_load(&p->generation));
+    return true;
 }
 
 bool reducer_stage_profile_dump_state_json(struct json_value *out,
                                            const char *key)
 {
-    (void)key;
     if (!out)
         return false;
     json_set_object(out);
     json_push_kv_str(out, "schema", PROFILE_SCHEMA);
+    if (key && key[0]) {
+        for (int d = 0; d < REDUCER_PROFILE_DOMAIN_COUNT; d++)
+            if (strcmp(key, g_domain_names[d]) == 0)
+                return dump_one_domain(out, d);
+        json_push_kv_str(out, "unknown_key", key);
+        return true;
+    }
     struct json_value body, script;
     json_init(&body);
     json_init(&script);
@@ -289,6 +372,8 @@ bool reducer_stage_profile_dump_state_json(struct json_value *out,
     push_domain(&script, &g_profiles[REDUCER_PROFILE_SCRIPT_VALIDATE]);
     json_push_kv(out, "body_persist", &body);
     json_push_kv(out, "script_validate", &script);
+    json_free(&body);
+    json_free(&script);
 
     struct json_value tip_finalize, utxo_apply;
     json_init(&tip_finalize);
@@ -299,5 +384,14 @@ bool reducer_stage_profile_dump_state_json(struct json_value *out,
     push_domain(&utxo_apply, &g_profiles[REDUCER_PROFILE_UTXO_APPLY]);
     json_push_kv(out, "tip_finalize", &tip_finalize);
     json_push_kv(out, "utxo_apply", &utxo_apply);
+    json_free(&tip_finalize);
+    json_free(&utxo_apply);
+
+    struct json_value proof_validate;
+    json_init(&proof_validate);
+    json_set_object(&proof_validate);
+    push_domain(&proof_validate, &g_profiles[REDUCER_PROFILE_PROOF_VALIDATE]);
+    json_push_kv(out, "proof_validate", &proof_validate);
+    json_free(&proof_validate);
     return true;
 }

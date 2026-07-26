@@ -12,6 +12,7 @@
  */
 
 #include "tip_finalize_post_step.h"
+#include "jobs/catchup_cadence.h"      /* live catch-up boundary-fold defer */
 #include "jobs/stage_helpers.h"
 #include "utxo_root_ladder_tripwire.h"   /* OBSERVE-ONLY golden ladder caller */
 
@@ -344,10 +345,29 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
      * and leaf-store rebuild read that recorded value so every leaf hash is
      * byte-identical regardless of which path built it. The O(N) SHA3 fold runs
      * only once per 100 blocks and only at the live tip — never on a
-     * latency-critical path. It is gated OFF during deferred-proof-validation
-     * IBD (the same guard the MMR commit uses): re-folding the full set every
-     * 100 blocks while replaying millions of blocks is wasteful, and the
-     * boundary roots are back-filled on the catch-up pass once the tip is live. */
+     * latency-critical path.
+     *
+     * The fold is gated OFF in two catch-up postures; in both, the boundary
+     * root is left ABSENT — the leaf carries the zero sentinel, the same
+     * pre-keystone hash the catch-up pass (rpc_blockchain_mmb_catchup) and
+     * leaf-store rebuild reproduce from a missing table entry (the keystone
+     * binding for that boundary is simply absent, never forged):
+     *   1. deferred-proof-validation IBD (h <=
+     *      g_deferred_proof_validation_below_height — the same guard the MMR
+     *      commit uses): re-folding the full set every 100 blocks while
+     *      replaying millions of blocks is wasteful.
+     *   2. live catch-up (catchup_cadence_active(): peers connected AND gap
+     *      >= ZCL_CATCHUP_GAP_THRESHOLD, default 500 — the same predicate the
+     *      staged-sync supervisor already uses for this class of decision):
+     *      a snapshot/bundle-seeded node folds ABOVE the checkpoint, where
+     *      guard 1 no longer applies, but the full-table scan every 100
+     *      blocks still sits inline on the fold critical path.
+     * Skipped roots are NOT recomputed later: no path can observe the
+     * historical coins set at H once the tip has moved past it, and every
+     * consumer (mmb catch-up, leaf-store rebuild, FlyClient prover, legacy
+     * oracle, ladder verify) maps a missing entry back to the zero sentinel,
+     * so this node's leaf hashes stay internally byte-consistent. At tip both
+     * gates are false and the fold runs exactly as before. */
     if (pindex_new->phashBlock) {
         uint8_t utxo_root[32] = {0};
         if (pindex_new->nHeight > 0 &&
@@ -356,7 +376,12 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
             int defer_below = atomic_load(&g_deferred_proof_validation_below_height);
             bool ibd_defer = (defer_below >= 0 &&
                               pindex_new->nHeight <= defer_below);
-            if (!ibd_defer) {
+            /* Live catch-up: skip the O(N) boundary scan exactly like the
+             * IBD-defer posture (zero-sentinel leaf). Cheap: evaluated only
+             * at boundary heights; catchup_cadence_active() is two lock-free
+             * reads and touches no reducer-drive lock. */
+            bool catchup_defer = !ibd_defer && catchup_cadence_active();
+            if (!ibd_defer && !catchup_defer) {
                 sqlite3 *pdb = progress_store_db();
                 if (pdb && coins_kv_commitment(pdb, utxo_root) == 0) {
                     /* Persist before the leaf so a crash between append and

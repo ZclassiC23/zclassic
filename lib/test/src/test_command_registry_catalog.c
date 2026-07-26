@@ -640,6 +640,81 @@ static int test_status_brief_flat_lean_envelope(void)
     return failures;
 }
 
+/* core.wallet.utxo.list: the node RPC listunspent is Bitcoin-compatible and
+ * answers a BARE ARRAY, which the native command bridge drops (the defect
+ * class that made `app swap list` answer BAD_TOOL_BODY for its whole
+ * existence — see rpc_swap_list). The body must wrap the array in the
+ * leaf's declared output envelope (zcl.wallet_utxos.v1, config/commands/
+ * core.def) so `zclassic23 core wallet utxo list` returns a usable body.
+ * Drives the leaf end-to-end through the registry with a mocked
+ * node_rpc_call and asserts on the rendered reply bytes — the in-memory
+ * reply struct alone would not catch a body the serializer drops. */
+static char *listunspent_mock_rpc(const char *method,
+                                  const char *params_json)
+{
+    (void)params_json;
+    if (strcmp(method, "listunspent") == 0)
+        return strdup(
+            "[{\"txid\":\"aabbccddeeff00112233445566778899aabbccddeeff0011"
+            "2233445566778899\",\"vout\":0,"
+            "\"address\":\"t1Rv4ex2u7SG2G9hD9WjvjR1x4mZ3nQabcd\","
+            "\"amount\":1.5,\"confirmations\":12,"
+            "\"spendable\":true,\"solvable\":true},"
+            "{\"txid\":\"00112233445566778899aabbccddeeff0011223344556677"
+            "8899aabbccddeeff\",\"vout\":1,"
+            "\"amount\":0.25,\"confirmations\":3,"
+            "\"spendable\":true,\"solvable\":true}]");
+    return strdup("null");
+}
+
+static int test_wallet_utxo_list_envelope(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    char out[ZCL_COMMAND_RESULT_BUDGET + 1];
+    TEST("core.wallet.utxo.list wraps the bare RPC array in its declared "
+        "zcl.wallet_utxos.v1 envelope") {
+        const struct zcl_command_spec *s =
+            find_spec(reg, "core.wallet.utxo.list");
+        ASSERT(s != NULL);
+        ASSERT_EQ(s->availability, ZCL_COMMAND_READY);
+        ASSERT(s->handler == zcl_native_bridge_command);
+        ASSERT_STR_EQ(s->output_schema, "zcl.wallet_utxos.v1");
+        ASSERT(bridge_has_exact_binding("core.wallet.utxo.list"));
+
+        node_rpc_client_set_test_hook(listunspent_mock_rpc);
+        enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+        bool dispatched = exec_leaf(reg, s, out, sizeof(out), &code);
+        node_rpc_client_set_test_hook(NULL);
+        ASSERT(dispatched);
+        ASSERT_EQ(code, ZCL_COMMAND_EXIT_OK);
+
+        struct json_value root;
+        ASSERT(json_read(&root, out, strlen(out)) && root.type == JSON_OBJ);
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
+                      "zcl.result.v1");
+        ASSERT(json_get_bool(json_get(&root, "ok")));
+
+        const struct json_value *data = json_get(&root, "data");
+        ASSERT(data != NULL && data->type == JSON_OBJ);
+        ASSERT_STR_EQ(json_get_str(json_get(data, "schema")),
+                      "zcl.wallet_utxos.v1");
+        const struct json_value *utxos = json_get(data, "utxos");
+        ASSERT(utxos != NULL && utxos->type == JSON_ARR);
+        ASSERT_EQ((int64_t)utxos->num_children, (int64_t)2);
+        ASSERT_STR_EQ(json_get_str(json_get(json_at(utxos, 0), "txid")),
+                      "aabbccddeeff00112233445566778899aabbccddeeff0011"
+                      "2233445566778899");
+        ASSERT_EQ(json_get_int(json_get(data, "count")), (int64_t)2);
+        ASSERT_EQ(json_get_int(json_get(data, "minconf")), (int64_t)1);
+        ASSERT_EQ(json_get_int(json_get(data, "maxconf")), (int64_t)9999999);
+        json_free(&root);
+        PASS();
+    } _test_next:;
+    node_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
 /* POINT 3.4: a TRANSIENT/DEPENDENCY blocker never drives `primary_blocker`
  * (PERMANENT/RESOURCE-only headline, unchanged) so an overdue one could
  * otherwise sit invisible behind a "healthy" brief. Proves the registry's
@@ -2528,6 +2603,7 @@ int test_command_registry_catalog(void)
     failures += test_bridge_rpc_errors_fail_closed();
     failures += test_bridge_rpc_success_shapes_fail_closed();
     failures += test_status_brief_flat_lean_envelope();
+    failures += test_wallet_utxo_list_envelope();
     failures += test_status_brief_overdue_transient_surfaces();
     failures += test_status_brief_overdue_transient_absent_when_zero();
     failures += test_status_brief_trust_tier_surfaces();

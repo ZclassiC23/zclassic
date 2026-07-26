@@ -46,6 +46,19 @@ struct incremental_merkle_tree {
     void (*combine)(const struct uint256 *a, const struct uint256 *b,
                     size_t depth, struct uint256 *out);
     void (*uncommitted)(struct uint256 *out);
+
+    /* Runtime-only memo of incremental_tree_root(): valid iff root_cached.
+     * NEVER serialized (the wire/checkpoint formats are unchanged) and
+     * invalidated by every mutator (init/append/deserialize). A value copy
+     * of the struct carries content + memo together, so copies stay
+     * consistent; invalidation is per-instance and conservative.
+     * Threading: the memo is written inside the const root() via a const
+     * cast. This adds no new synchronization requirement — concurrent
+     * root-vs-append on one instance was already a data race on the
+     * content fields, so callers must serialize mutation vs reads exactly
+     * as before. Concurrent root-vs-root writes identical bytes. */
+    bool root_cached;
+    struct uint256 cached_root;
 };
 
 /* Initialize an empty tree with the protocol-specific depth + hash:
@@ -72,7 +85,11 @@ void incremental_tree_append(struct incremental_merkle_tree *t,
  * substituting the precomputed empty-subtree root for every absent branch.
  * The result is exactly the `anchor` a spend proves membership against.
  * The root changes with every append; a spend's anchor must equal the root
- * at (or after) the time its note was appended. */
+ * at (or after) the time its note was appended.
+ *
+ * Memoized: the result is cached in the tree (root_cached/cached_root) and
+ * recomputed only after a mutator ran. The cached bytes are always exactly
+ * what a fresh fold would produce — caching changes cost, never output. */
 void incremental_tree_root(const struct incremental_merkle_tree *t,
                             struct uint256 *out);
 

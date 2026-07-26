@@ -166,6 +166,44 @@ struct zcl_result utxo_recovery_commit_tip(struct utxo_recovery_ctx *ctx,
         "h=%d", csr_result_name(rc), reason ? reason : "", tip->nHeight);
 }
 
+/* scan_fallback restore epilogue (utxo_recovery_restore.c): keep the —
+ * possibly Invariant-A-clamped — commit only when coins can back it. A wired
+ * AND genuinely-empty canonical store (a pre-fold instant-on node whose
+ * boot-1 body prefetch left block files ahead of its validated headers) makes
+ * the commit a phantasm tip with NO state behind it: the bundle-install
+ * fresh-genesis gate refuses (-3, served H* != 0 on a quiescent store) and a
+ * doomed Sapling rebuild fires against it. "Will activate from genesis" must
+ * be TRUE — roll the commit back. An unwired coins view (NULL) keeps the
+ * legacy anchor commit: emptiness is unprovable before the view exists. */
+bool utxo_recovery_scan_fallback_keep_commit(struct utxo_recovery_ctx *ctx,
+                                             const struct block_index *committed)
+{
+    printf("Attempting fast chainstate rebuild from SQLite...\n");
+    if (fast_rebuild_chainstate(ctx ? ctx->coins_sqlite : NULL,
+                                ctx ? ctx->coins_tip : NULL,
+                                ctx ? ctx->datadir : NULL)) {
+        printf("Fast rebuild complete — will activate chain.\n");
+        return true;
+    }
+    if (!ctx || !ctx->coins_sqlite || !ctx->coins_sqlite->db) {
+        printf("Fast rebuild unavailable — will activate from genesis.\n");
+        return true;
+    }
+    printf("Fast rebuild unavailable on a wired, empty coins store — "
+           "rolling the tip commit back to genesis; will activate from "
+           "genesis.\n");
+    struct zcl_result grc = utxo_recovery_commit_genesis(
+        ctx, "scan_fallback_empty_coins_rollback");
+    if (!grc.ok) {
+        LOG_WARN("utxo_recovery",
+                 "scan_fallback empty-coins rollback to genesis failed "
+                 "(tip left at h=%d): %s",
+                 committed ? committed->nHeight : -1, grc.message);
+        return true; /* rollback failed — no worse than the legacy behavior */
+    }
+    return false;
+}
+
 struct zcl_result utxo_recovery_commit_genesis(struct utxo_recovery_ctx *ctx,
                                   const char *reason)
 {

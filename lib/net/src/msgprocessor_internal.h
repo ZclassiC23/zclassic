@@ -106,6 +106,11 @@ bool mp_snapshot_is_active(void);
  * disconnect actions while a swarm is in progress. */
 bool mp_swarm_is_active(void);
 bool mp_block_swarm_is_active(void);
+/* Stall watchdog for the block swarm: reaps an active swarm with no piece
+ * completion for BLOCK_SWARM_STALL_SECS so the legacy getdata path (paused
+ * while a swarm is active) resumes body fetch. Called from
+ * msg_send_messages before the swarm-active gate. */
+bool mp_block_swarm_reap_if_stalled(struct msg_processor *mp);
 /* One crash-ordered durability scope held across the complete block swarm;
  * per-piece scopes nest inside it. */
 

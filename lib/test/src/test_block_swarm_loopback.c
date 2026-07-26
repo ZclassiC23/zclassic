@@ -711,10 +711,211 @@ static int test_block_swarm_disconnect_requeue(void)
     return failures;
 }
 
+/* ══════════════════════ Test 3: stall reap watchdog ══════════════════════
+ * The legacy getdata assignment in msg_send_messages is paused while a block
+ * swarm is active, and the swarm's only exit used to be full completion — a
+ * peer that silently stops answering zblkreq wedged catch-up permanently
+ * (queue full, flight zero, frontier body never fetched). The watchdog must
+ * abandon a completion-silent swarm (and stay off a healthy or finished one). */
+bool mp_block_swarm_reap_if_stalled(struct msg_processor *mp);
+void mp_block_swarm_test_seed_stall(uint32_t complete, uint32_t total,
+                                    int64_t last_complete_unix);
+int64_t mp_block_swarm_test_reaped_unix(void);
+
+static int test_block_swarm_stall_reap(void)
+{
+    int failures = 0;
+
+    TEST("block swarm stall watchdog: completion-silent swarm is abandoned, "
+         "healthy and finished swarms are left alone") {
+        int64_t now = (int64_t)platform_time_wall_time_t();
+
+        /* Healthy swarm (recent completion) → no reap. */
+        mp_block_swarm_test_seed_stall(5, 10, now);
+        ASSERT(mp_block_swarm_is_active());
+        ASSERT(!mp_block_swarm_reap_if_stalled(NULL));
+        ASSERT(mp_block_swarm_is_active());
+        ASSERT(mp_block_swarm_test_reaped_unix() == 0);
+
+        /* Fully-complete swarm, however old → never reaped (completion is
+         * the normal exit path, not a stall). */
+        mp_block_swarm_test_seed_stall(10, 10, now - 100000);
+        ASSERT(mp_block_swarm_is_active());
+        ASSERT(!mp_block_swarm_reap_if_stalled(NULL));
+        ASSERT(mp_block_swarm_is_active());
+        ASSERT(mp_block_swarm_test_reaped_unix() == 0);
+
+        /* Completion-silent far past the stall threshold → reaped, once. */
+        mp_block_swarm_test_seed_stall(5, 10, now - 100000);
+        ASSERT(mp_block_swarm_is_active());
+        ASSERT(mp_block_swarm_reap_if_stalled(NULL));
+        ASSERT(!mp_block_swarm_is_active());
+        ASSERT(mp_block_swarm_test_reaped_unix() > 0);
+        ASSERT(!mp_block_swarm_reap_if_stalled(NULL));   /* idempotent */
+
+        mp_block_swarm_test_seed_stall(0, 0, 0);         /* teardown */
+        ASSERT(!mp_block_swarm_is_active());
+        ASSERT(mp_block_swarm_test_reaped_unix() == 0);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+/* ══════════════ Test 4: duplicate piece delivery never double-credits ════
+ * A piece re-requested on BLOCK_PIECE_TIMEOUT_SECS can be answered twice
+ * (slow original + re-request). Crediting both deliveries inflates
+ * pieces_complete past the genuinely-delivered count, so the swarm can
+ * "complete" with pieces never fetched — fold holes behind a complete swarm
+ * (the live tail wedge: 67 pieces credited-but-never-delivered). */
+struct bs_kept { unsigned char *data; size_t size; };
+
+/* Steal every segment queued behind `sentinel` on `from`, keeping a heap copy
+ * of each (caller frees kept[i].data) WITHOUT delivering it. */
+static size_t bs_steal_queue(struct p2p_node *from,
+                             struct send_segment *sentinel,
+                             struct bs_kept *kept, size_t max_kept)
+{
+    size_t n = 0;
+    while (sentinel->next && n < max_kept) {
+        struct send_segment *seg = sentinel->next;
+        sentinel->next = seg->next;
+        if (from->send_tail == seg)
+            from->send_tail = sentinel;
+        if (from->send_size >= seg->size)
+            from->send_size -= seg->size;
+        else
+            from->send_size = 0;
+        kept[n].data = zcl_malloc(seg->size, "bs_kept_seg");
+        memcpy(kept[n].data, seg->data, seg->size);
+        kept[n].size = seg->size;
+        n++;
+        send_segment_free(seg);
+    }
+    from->send_head = sentinel;
+    from->send_tail = sentinel;
+    from->send_offset = 0;
+    return n;
+}
+
+static bool bs_deliver(struct msg_processor *to_mp, struct p2p_node *to,
+                       const struct bs_kept *k,
+                       const unsigned char msgstart[MESSAGE_START_SIZE])
+{
+    if (!p2p_node_receive_bytes(to, (const char *)k->data,
+                                (unsigned int)k->size, msgstart))
+        return false;
+    return msg_process_messages(to_mp, to);
+}
+
+static int test_block_swarm_duplicate_delivery(void)
+{
+    int failures = 0;
+
+    TEST("block swarm loopback: a piece delivered twice is credited once — "
+         "the swarm cannot complete with an unfetched piece") {
+        const struct chain_params *params = chain_params_get();
+        const int32_t end_height = 128;             /* 2 pieces of 64 */
+        struct bs_seeder seed;
+
+        ASSERT(!mp_block_swarm_is_active());
+        ASSERT(bs_seeder_build(&seed, end_height, 1u, "dup"));
+
+        struct main_state ms_b;
+        struct tx_mempool mempool_b;
+        struct coins_view null_view_b;
+        struct coins_view_cache coins_b;
+        struct net_manager nm_b;
+        struct msg_processor mp_b;
+        struct bs_sink sink = { .transient_submit_failures = 0 };
+
+        main_state_init(&ms_b);
+        tx_mempool_init(&mempool_b, 0);
+        coins_view_cache_init(&coins_b, &null_view_b);
+        net_manager_init(&nm_b);
+        memset(&mp_b, 0, sizeof(mp_b));
+        mp_b.main_state = &ms_b;
+        mp_b.mempool = &mempool_b;
+        mp_b.coins_tip = &coins_b;
+        mp_b.params = params;
+        mp_b.datadir = ".";
+        mp_b.net_mgr = &nm_b;
+        msg_processor_set_block_submit(&mp_b, bs_block_submit, &sink);
+        msg_processor_set_catchup_drain(&mp_b, bs_catchup_drain, &sink);
+        msg_processor_set_catchup_batch_scope(
+            &mp_b, bs_scope_begin, bs_scope_end, &sink);
+
+        struct uint256 bhh;
+        memset(&bhh, 0, sizeof(bhh));
+        bhh.data[0] = 0xB0; bhh.data[1] = 0x0B; bhh.data[2] = 0x11;
+        struct block_index *b_besthdr =
+            chainstate_insert_block_index((struct chainstate *)&ms_b, &bhh);
+        ASSERT(b_besthdr != NULL);
+        b_besthdr->nHeight = end_height;
+        b_besthdr->nStatus = BLOCK_VALID_TREE;
+        ms_b.pindex_best_header = b_besthdr;
+
+        struct p2p_node *a_node = bs_make_peer(&seed.nm, 1);
+        struct p2p_node *b_node = bs_make_peer(&nm_b, 2);
+        ASSERT(a_node && b_node);
+        struct send_segment *sent_a = bs_install_sentinel(a_node);
+        struct send_segment *sent_b = bs_install_sentinel(b_node);
+
+        push_block_manifest(&seed.mp, a_node);
+        bool ok = true;
+        bs_pump(a_node, sent_a, &mp_b, b_node, params->pchMessageStart, &ok);
+        ASSERT(ok);
+        ASSERT(mp_block_swarm_is_active());
+
+        /* B requests both pieces; A serves both. Capture the two zblkdata
+         * replies WITHOUT delivering them. */
+        mp_snapshot_send_tick(&mp_b, b_node);
+        bs_pump(b_node, sent_b, &seed.mp, a_node, params->pchMessageStart, &ok);
+        ASSERT(ok);
+        struct bs_kept kept[4] = {0};
+        size_t kept_n = bs_steal_queue(a_node, sent_a, kept, 4);
+        ASSERT(kept_n == 2);
+
+        /* Deliver piece 0, then a DUPLICATE of piece 0 (the timeout
+         * re-request answered twice). The duplicate must not complete the
+         * swarm: piece 1 has never been delivered. */
+        ASSERT(bs_deliver(&mp_b, b_node, &kept[0], params->pchMessageStart));
+        ASSERT(mp_block_swarm_is_active());
+        ASSERT(bs_deliver(&mp_b, b_node, &kept[0], params->pchMessageStart));
+        ASSERT(mp_block_swarm_is_active());   /* would be freed on double-credit */
+
+        /* The genuine second piece completes the swarm. */
+        ASSERT(bs_deliver(&mp_b, b_node, &kept[1], params->pchMessageStart));
+        ASSERT(!mp_block_swarm_is_active());
+        ASSERT(sink.blocks == 3 * (uint64_t)BLOCKS_PER_PIECE); /* p0 + dup + p1 */
+        ASSERT(sink.scope_begins == 3);       /* duplicate still verified+submitted */
+        ASSERT(sink.scope_ends == sink.scope_begins);
+
+        free(kept[0].data);
+        free(kept[1].data);
+        send_segment_free(sent_a);
+        send_segment_free(sent_b);
+        a_node->send_head = a_node->send_tail = NULL;
+        b_node->send_head = b_node->send_tail = NULL;
+        p2p_node_free(a_node);
+        p2p_node_free(b_node);
+        net_manager_free(&nm_b);
+        coins_view_cache_free(&coins_b);
+        tx_mempool_free(&mempool_b);
+        main_state_free(&ms_b);
+        bs_seeder_free(&seed);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 int test_block_swarm_loopback(void)
 {
     int failures = 0;
     failures += test_block_swarm_throughput();
     failures += test_block_swarm_disconnect_requeue();
+    failures += test_block_swarm_stall_reap();
+    failures += test_block_swarm_duplicate_delivery();
     return failures;
 }

@@ -3,10 +3,12 @@
  * validate_headers_stage — implementation. See validate_headers_stage.h.
  *
  * Single-process singleton. Validates header_admit_log output via a
- * fixed pthread pool (VH_POOL_SIZE workers) and a per-step bounded
- * batch. The pool stays warm for the lifetime of the stage; each step
- * submits up to VH_BATCH_SIZE jobs, awaits them all, and writes the
- * batch + cursor bump atomically. */
+ * pthread pool (VH_POOL_SIZE workers on a normal live node; wider only
+ * under a catch-up/fold gate — see validate_headers_tuning.c) and a
+ * per-step bounded batch. The pool stays warm for the lifetime of the
+ * stage, re-sized between steps by vh_pool_sync_width() on a gate
+ * transition; each step submits up to VH_BATCH_SIZE jobs, awaits them
+ * all, and writes the batch + cursor bump atomically. */
 
 #include "platform/time_compat.h"
 #include "jobs/validate_headers_stage.h"
@@ -181,6 +183,54 @@ static void vh_run_job(void *jobp, void *user)
     job->ok = g_validator(job->bi, g_datadir,
                           job->reason, sizeof(job->reason),
                           g_validator_user);
+}
+
+/* Reconcile the live pool width with vh_runtime_pool_size() /
+ * vh_runtime_batch_size(). Called once per step from step_once. A no-op
+ * compare while the gate state is unchanged (the hot path); on a
+ * catch-up/fold transition edge it stops and restarts the pool at the new
+ * width.
+ *
+ * Race/deadlock safety: this runs on the stage drive thread — the ONLY
+ * thread that ever calls vh_pool_run_batch — and only BETWEEN batches, so
+ * the workers being joined are idle-blocked on cv_take holding no locks.
+ * In the batched drain, STAGE_DRAIN_IMPL already holds
+ * progress_store_tx_lock across the whole step loop, so the join happens
+ * under that lock — safe because workers never acquire it (when busy they
+ * run under the drive's tx lock today) and pool->mu is never held while
+ * taking it (no lock-order cycle). shutdown() joins the same pool after
+ * the supervisor stops ticking, exactly as it did when the width was
+ * fixed. The resize is all-or-nothing: if the new width fails to start,
+ * fall back to the compile-time defaults so the pool is never left dead
+ * (a dead pool would make vh_pool_run_batch a silent no-op and steps
+ * would mis-write ok=0 rows); if even the fallback cannot start, return
+ * false and the stage idles with its cursor held. */
+static bool vh_pool_sync_width(void)
+{
+    if (!g_pool.inited)
+        return false;
+    int want_pool  = vh_runtime_pool_size();
+    int want_batch = vh_runtime_batch_size();
+    if (want_pool == g_pool.n_threads && want_batch == g_pool.batch_cap)
+        return true;
+
+    int prev_pool  = g_pool.n_threads;
+    int prev_batch = g_pool.batch_cap;
+    vh_pool_stop(&g_pool);
+    if (!vh_pool_start(&g_pool, vh_run_job, NULL, want_pool, want_batch) &&
+        !vh_pool_start(&g_pool, vh_run_job, NULL, VH_POOL_SIZE,
+                       VH_BATCH_SIZE))
+        LOG_FAIL("validate_headers",
+                 "pool resize %d/%d -> %d/%d failed and the %d/%d fallback "
+                 "would not start; stage idles with cursor held",
+                 prev_pool, prev_batch, want_pool, want_batch,
+                 VH_POOL_SIZE, VH_BATCH_SIZE);
+    LOG_INFO("validate_headers",
+             "[validate_headers] pool resized %d/%d -> %d/%d "
+             "(catch-up/fold gate transition; per-header validation "
+             "unchanged)", prev_pool, prev_batch, g_pool.n_threads,
+             g_pool.batch_cap);
+    return true;
 }
 
 /* ── Schema + log writes ──────────────────────────────────────────────
@@ -805,8 +855,10 @@ bool validate_headers_stage_init(struct main_state *ms)
         return false;
     }
 
-    /* Widths for this run: the compile-time defaults on a live node, wider only
-     * under an offline mint/refold fold (validate_headers_tuning.c). */
+    /* Starting widths for this run: the compile-time defaults on a live node,
+     * wider only under an offline mint/refold fold (validate_headers_tuning.c).
+     * A live catch-up normally arms AFTER init (peers connect later), so its
+     * widening engages via vh_pool_sync_width() on the step path. */
     if (!vh_pool_start(&g_pool, vh_run_job, NULL, vh_runtime_pool_size(),
                        vh_runtime_batch_size())) {
         pthread_mutex_unlock(&g_lock);
@@ -849,6 +901,11 @@ job_result_t validate_headers_stage_step_once(void)
     if (!g_stage) return JOB_IDLE;
     sqlite3 *db = progress_store_db();
     if (!db) return JOB_IDLE;
+
+    /* Resize the pool on a catch-up/fold gate edge, before the tx lock is
+     * taken. No-op compare on the hot path; a false return leaves the cursor
+     * held (retry next tick). */
+    if (!vh_pool_sync_width()) return JOB_IDLE;
 
     progress_store_tx_lock();
 

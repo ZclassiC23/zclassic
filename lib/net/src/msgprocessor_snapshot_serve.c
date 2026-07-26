@@ -51,6 +51,9 @@ static _Atomic bool g_cached_offer_valid = false;
 static _Atomic uint64_t g_cached_offer_version = 0;
 static pthread_mutex_t g_offer_mutex = PTHREAD_MUTEX_INITIALIZER;
 struct fast_sync_rate_limiter g_rate_limiter = {0};
+/* Separate limiter for block piece serving (zblkreq) — see
+ * FAST_SYNC_MAX_BLOCK_PIECES_PER_HOUR in net/fast_sync.h. */
+struct fast_sync_rate_limiter g_blk_rate_limiter = {0};
 
 /* Cached manifest for parallel chunk sync (built in background at startup). */
 struct sync_manifest g_cached_manifest;
@@ -954,8 +957,10 @@ void mp_serve_block_req(struct msg_processor *mp, struct p2p_node *node,
                bm.num_pieces);
         peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_MESSAGE,
                             "zblkreq out of range");
-    } else if (!fast_sync_rate_check(&g_rate_limiter,
-                                      node->addr.svc.addr.ip)) {
+    } else if (!fast_sync_rate_check_n(&g_blk_rate_limiter,
+                                       node->addr.svc.addr.ip,
+                                       FAST_SYNC_MAX_BLOCK_PIECES_PER_HOUR,
+                                       FAST_SYNC_MAX_GLOBAL_BLOCK_PIECES_PER_HOUR)) {
         printf("Peer %s: rate limited on block piece\n",
                node->addr_name);
     } else if (!snap_pow_admit(node->addr.svc.addr.ip,

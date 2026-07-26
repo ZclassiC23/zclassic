@@ -82,8 +82,30 @@ struct reducer_drain_exit_stats {
     int64_t  last_round_advances;  /* adv count of the last round run */
     int64_t  last_elapsed_us;      /* wall-clock time of the last drain call */
     int64_t  last_stage_us[REDUCER_DRAIN_NUM_STAGES];
+    /* CUMULATIVE per-stage accounting. last_stage_us above describes ONLY the
+     * most recent round and is overwritten every round, so it cannot answer
+     * "where does a fold round's time go" — a sample almost always lands on a
+     * converged (all-idle) round and reads as zeros. These four are monotonic
+     * since process start, so any two samples give an exact interval share:
+     *   stage_us_total  — microseconds spent inside that stage's drain entry
+     *   stage_calls     — times the stage's drain entry was invoked (== rounds)
+     *   stage_advances  — steps the stage reported as advancing, summed
+     *   rounds_total    — drain rounds run (one round = one pass over all eight)
+     * Wall-clock share of stage i over an interval is
+     * d(stage_us_total[i]) / sum_j d(stage_us_total[j]); microseconds per
+     * advancing block is d(stage_us_total[i]) / d(stage_advances[i]). */
+    uint64_t rounds_total;
+    uint64_t stage_us_total[REDUCER_DRAIN_NUM_STAGES];
+    uint64_t stage_calls[REDUCER_DRAIN_NUM_STAGES];
+    uint64_t stage_advances[REDUCER_DRAIN_NUM_STAGES];
 };
 void reducer_drain_exit_stats_snapshot(struct reducer_drain_exit_stats *out);
+
+/* Pipeline-order name of drain stage `idx`, or NULL when out of range. The one
+ * authority for the stage names (reducer_drain.c's g_drain_stages table); the
+ * reducer_drive dumpstate reads it instead of keeping a second hand-maintained
+ * copy that could silently drift out of order. */
+const char *reducer_drain_stage_name(int idx);
 
 #ifdef ZCL_TESTING
 /* Zero every drain-exit counter (test isolation only — process-global). */
