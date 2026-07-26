@@ -403,6 +403,20 @@ struct ldbr_db *ldbr_db_open_internal(const char *dir, bool verify,
             ldbr_db_close_internal(db);
             return NULL;
         }
+        /* create_if_missing only licenses treating a directory with NOTHING
+         * in it as a fresh empty database. A directory that holds real
+         * LevelDB files but has lost CURRENT is a damaged database, and
+         * reporting it as empty would hand back zero records with no error —
+         * a chainstate would read as zero UTXOs. Production opens with
+         * create_if_missing set (dbwrapper.c), so this is the live path.
+         * Refuse by name instead. */
+        if (ldb_dir_holds_database_files(dir)) {
+            *err = ldb_errf("ldb: %s has no CURRENT file but holds LevelDB "
+                            "data files — damaged database, refusing to "
+                            "report it as empty", dir);
+            ldbr_db_close_internal(db);
+            return NULL;
+        }
         /* Datadir that predates any sync: an empty database, exactly what
          * the C++ library produced here by creating one. */
         db->empty = true;

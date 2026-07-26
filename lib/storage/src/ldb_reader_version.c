@@ -138,10 +138,12 @@ static bool apply_edit(struct ldb_version *v, const struct ldb_slice *rec,
         case LDB_TAG_NEXT_FILE_NUMBER:
             if (!ldb_get_varint64(&p, end, &v->next_file_number))
                 goto truncated;
+            v->have_next_file = true;
             break;
         case LDB_TAG_LAST_SEQUENCE:
             if (!ldb_get_varint64(&p, end, &v->last_sequence))
                 goto truncated;
+            v->have_last_sequence = true;
             break;
         case LDB_TAG_COMPACT_POINTER: {
             uint32_t level = 0;
@@ -276,6 +278,16 @@ bool ldb_version_load(struct ldb_version *v, const char *dir, char **err)
     }
     if (ok && edits == 0) {
         *err = ldb_errf("ldb: %s contains no version edits", manifest_name);
+        ok = false;
+    }
+    if (ok && !v->have_next_file) {
+        *err = ldb_errf("ldb: %s has no meta-nextfile entry in descriptor "
+                        "(truncated or corrupt MANIFEST)", manifest_name);
+        ok = false;
+    }
+    if (ok && !v->have_last_sequence) {
+        *err = ldb_errf("ldb: %s has no last-sequence entry in descriptor "
+                        "(truncated or corrupt MANIFEST)", manifest_name);
         ok = false;
     }
     ldb_log_reader_free(&r);

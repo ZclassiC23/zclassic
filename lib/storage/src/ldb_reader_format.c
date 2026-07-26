@@ -16,6 +16,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <dirent.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -575,4 +576,29 @@ bool ldb_log_reader_next(struct ldb_log_reader *r, struct ldb_slice *rec)
             return true;
         }
     }
+}
+
+/* Does this directory hold anything that says "a LevelDB lived here"? Used
+ * only to tell a fresh empty datadir apart from one that lost its CURRENT.
+ * A read failure answers true: unreadable is not evidence of emptiness, and
+ * for a storage reader the safe direction is to refuse. */
+bool ldb_dir_holds_database_files(const char *dir)
+{
+    DIR *d = opendir(dir);
+    if (!d)
+        return true;
+    bool found = false;
+    const struct dirent *e;
+    while (!found && (e = readdir(d)) != NULL) {
+        const char *n = e->d_name;
+        size_t len = strlen(n);
+        if (strncmp(n, "MANIFEST-", 9) == 0)
+            found = true;
+        else if (len > 4 && (strcmp(n + len - 4, ".ldb") == 0 ||
+                             strcmp(n + len - 4, ".sst") == 0 ||
+                             strcmp(n + len - 4, ".log") == 0))
+            found = true;
+    }
+    closedir(d);
+    return found;
 }

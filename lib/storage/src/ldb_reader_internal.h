@@ -182,9 +182,19 @@ struct ldb_version {
     uint64_t prev_log_number;
     uint64_t next_file_number;
     uint64_t last_sequence;
+    /* LevelDB's VersionSet::Recover returns Corruption when the folded
+     * descriptor never carried these. Without them a truncated MANIFEST
+     * folds whatever prefix survived and reports success. */
+    bool have_next_file;
+    bool have_last_sequence;
     bool has_comparator;
     char comparator[64];
 };
+
+/* True when dir holds a MANIFEST-NNNNNN, or any .ldb, .sst or .log file.
+ * Distinguishes a fresh empty datadir from one that lost its CURRENT;
+ * unreadable answers true, because unreadable is not evidence of emptiness. */
+bool ldb_dir_holds_database_files(const char *dir);
 
 /* Reads CURRENT, folds every VersionEdit in the named MANIFEST. */
 bool ldb_version_load(struct ldb_version *v, const char *dir, char **err);
