@@ -14,12 +14,17 @@
  * stays in lib/znam/src/znam.c. */
 
 #include "models/znam.h"
+#include "chain/chainparams.h"
+#include "keys/key_io.h"
 #include "platform/clock.h"
+#include "script/standard.h"
 #include "storage/znam_projection.h"
 #include "util/log_macros.h"
+#include "util/safe_alloc.h"
 
 #include <sqlite3.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 DEFINE_MODEL_CALLBACKS(znam_entry)
@@ -309,6 +314,166 @@ int db_znam_list_by_owner(struct node_db *ndb, const char *owner,
         AR_BIND_TEXT(s, 1, owner);
         AR_BIND_INT(s, 2, (int)max),
         if (!row_to_znam(s, &out[count])) continue);
+}
+
+/* ── Wallet-wide sweep ─────────────────────────────────────────────────
+ *
+ * znam_names.owner_address is the Base58Check address TEXT an on-chain
+ * REGISTER named, while the wallet stores 20-byte hash160 keys — so unlike
+ * the ZSLP ledger there is no blob to join on and the wallet's addresses
+ * have to be rendered into that text form first. Rendering is one-way and
+ * cheap (a keypool is hundreds of entries, and each owner lookup rides the
+ * idx_znam_owner index), so the sweep encodes once and then asks the
+ * registry per owner rather than materializing the whole registry. */
+
+/* Upper bound on wallet addresses folded by one sweep. A keypool is two
+ * orders of magnitude below this; the cap exists so a pathological wallet
+ * bounds the scratch allocation instead of the allocation bounding the
+ * node. */
+#define ZNAM_WALLET_ADDRESS_MAX 4096
+
+typedef char znam_address_text[64]; /* matches znam_entry.owner_address */
+
+/* Base58Check-encode a wallet pubkey hash as this chain's P2PKH address.
+ * False when chain params are not selected yet (a pre-boot caller) or the
+ * encoding does not fit — either way the address contributes nothing and
+ * the sweep simply folds one fewer address. */
+static bool znam_encode_wallet_p2pkh(const uint8_t hash160[20],
+                                     znam_address_text out)
+{
+    const struct chain_params *cp = chain_params_get();
+    if (!cp)
+        LOG_FAIL("znam", "wallet sweep: chain params not selected");
+
+    size_t pk_len = 0;
+    size_t sc_len = 0;
+    const unsigned char *pk_pfx =
+        chain_params_base58_prefix(cp, B58_PUBKEY_ADDRESS, &pk_len);
+    const unsigned char *sc_pfx =
+        chain_params_base58_prefix(cp, B58_SCRIPT_ADDRESS, &sc_len);
+
+    struct tx_destination dest;
+    memset(&dest, 0, sizeof(dest));
+    dest.type = DEST_KEY_ID;
+    memcpy(dest.id.key.id.data, hash160, 20);
+    if (!encode_destination(&dest, pk_pfx, pk_len, sc_pfx, sc_len,
+                            out, sizeof(znam_address_text)))
+        LOG_FAIL("znam", "wallet sweep: address encoding overflowed");
+    return true;
+}
+
+/* Append `addr` unless it is already present. The registry keys a name on
+ * exactly one owner, so a duplicate address would list the same name twice
+ * (a wallet that imported its own key as watch-only is the ordinary way to
+ * get one). */
+static bool znam_addr_append_unique(znam_address_text *list, int *count,
+                                    int cap, const char *addr)
+{
+    if (!addr || !addr[0] || *count >= cap)
+        return false;
+    for (int i = 0; i < *count; i++) {
+        if (strcmp(list[i], addr) == 0)
+            return false;
+    }
+    snprintf(list[*count], sizeof(znam_address_text), "%s", addr);
+    (*count)++;
+    return true;
+}
+
+/* Every transparent address this wallet could own a name at: wallet_keys'
+ * hashes encoded as P2PKH, plus wallet_watch_only's stored address text
+ * verbatim (a watch-only entry may be a P2SH whose hash is a script hash,
+ * so re-encoding it as P2PKH would invent an address the wallet does not
+ * have). Returns how many were written. */
+static int znam_wallet_addresses(struct node_db *ndb, znam_address_text *out,
+                                 int max)
+{
+    int count = 0;
+    sqlite3_stmt *s = NULL;
+
+    AR_PREPARE_RET(ndb, s, "SELECT pubkey_hash FROM wallet_keys", count);
+    while (count < max && AR_STEP_ROW(s)) {
+        if (AR_COL_BYTES(s, 0) != 20)
+            continue;
+        uint8_t hash160[20];
+        AR_READ_BLOB(s, 0, hash160, 20);
+        znam_address_text addr;
+        if (znam_encode_wallet_p2pkh(hash160, addr))
+            (void)znam_addr_append_unique(out, &count, max, addr);
+    }
+    AR_FINALIZE(s);
+
+    AR_PREPARE_RET(ndb, s, "SELECT address FROM wallet_watch_only", count);
+    while (count < max && AR_STEP_ROW(s))
+        (void)znam_addr_append_unique(out, &count, max, AR_COL_TEXT(s, 0));
+    AR_FINALIZE(s);
+
+    return count;
+}
+
+int db_znam_list_wallet_owned(struct node_db *ndb, struct znam_entry *out,
+                              size_t max)
+{
+    if (!ndb || !ndb->open) return 0;
+    if (!out && max > 0)
+        LOG_RETURN(0, "znam", "db_znam_list_wallet_owned: out is NULL");
+    if (max == 0) return 0;
+
+    znam_address_text *addrs =
+        zcl_malloc(sizeof(znam_address_text) * ZNAM_WALLET_ADDRESS_MAX,
+                   "znam_wallet_addresses");
+    if (!addrs)
+        LOG_RETURN(0, "znam",
+                   "db_znam_list_wallet_owned: address buffer alloc failed "
+                   "(%d entries)", ZNAM_WALLET_ADDRESS_MAX);
+
+    int num_addrs = znam_wallet_addresses(ndb, addrs, ZNAM_WALLET_ADDRESS_MAX);
+
+    int count = 0;
+    if (num_addrs > 0) {
+        sqlite3_stmt *s = NULL;
+        if (sqlite3_prepare_v2(ndb->db,
+                "SELECT name,owner_address,target_type,target_value,"
+                "reg_txid,reg_height,last_update_txid,expiry_height"
+                " FROM znam_names WHERE owner_address=? ORDER BY name",
+                -1, &s, NULL) != SQLITE_OK || !s) {
+            free(addrs);
+            LOG_RETURN(0, "znam",
+                       "db_znam_list_wallet_owned: prepare failed: %s",
+                       sqlite3_errmsg(ndb->db));
+        }
+        for (int i = 0; i < num_addrs && (size_t)count < max; i++) {
+            sqlite3_reset(s);
+            sqlite3_clear_bindings(s);
+            AR_BIND_TEXT(s, 1, addrs[i]);
+            while ((size_t)count < max && AR_STEP_ROW(s)) {
+                memset(&out[count], 0, sizeof(out[count]));
+                if (!row_to_znam(s, &out[count]))
+                    continue;
+                count++;
+            }
+        }
+        AR_FINALIZE(s);
+    }
+
+    free(addrs);
+    return count;
+}
+
+int db_znam_wallet_address_count(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open) return 0;
+
+    znam_address_text *addrs =
+        zcl_malloc(sizeof(znam_address_text) * ZNAM_WALLET_ADDRESS_MAX,
+                   "znam_wallet_addresses");
+    if (!addrs)
+        LOG_RETURN(0, "znam",
+                   "db_znam_wallet_address_count: alloc failed (%d entries)",
+                   ZNAM_WALLET_ADDRESS_MAX);
+    int n = znam_wallet_addresses(ndb, addrs, ZNAM_WALLET_ADDRESS_MAX);
+    free(addrs);
+    return n;
 }
 
 bool db_znam_text_save(struct node_db *ndb, const char *name,

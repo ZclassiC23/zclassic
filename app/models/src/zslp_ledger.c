@@ -393,3 +393,65 @@ int64_t zslp_ledger_unspent_count(struct node_db *ndb)
         "SELECT COUNT(*) FROM zslp_ledger WHERE spent_by_txid IS NULL",
         (void)0);
 }
+
+/* ── Wallet-wide sweep ─────────────────────────────────────────────────
+ *
+ * "Which addresses are mine" is a node.db question with a node.db answer:
+ * wallet_keys holds every spendable 20-byte pubkey hash and
+ * wallet_watch_only every imported one, and both live in the SAME database
+ * as zslp_ledger. So the wallet-wide fold is one indexed statement — no C
+ * address list, no per-address round trip, and no second source of truth
+ * about what the wallet owns. Rows with a NULL address (a token output
+ * whose recipient script was not address-shaped) can belong to no wallet
+ * and are excluded by the join. */
+#define ZSLP_WALLET_ADDRESS_SET                                              \
+    "SELECT pubkey_hash FROM wallet_keys"                                    \
+    " UNION SELECT address_hash FROM wallet_watch_only"
+
+#define ZSLP_WALLET_OWNS_ADDRESS                                             \
+    " AND address IS NOT NULL AND address IN (" ZSLP_WALLET_ADDRESS_SET ")"
+
+int zslp_ledger_wallet_tokens(struct node_db *ndb,
+                              struct zslp_wallet_token *out, size_t max)
+{
+    if (!ndb || !ndb->open) return 0;
+    if (!out && max > 0)
+        LOG_RETURN(0, "zslp_ledger", "wallet_tokens: out is NULL");
+
+    sqlite3_stmt *s = NULL;
+    AR_QUERY_LIST(ndb, s,
+        "SELECT token_id,COALESCE(SUM(amount),0),COUNT(*)"
+        " FROM zslp_ledger"
+        " WHERE spent_by_txid IS NULL" ZSLP_WALLET_OWNS_ADDRESS
+        " GROUP BY token_id ORDER BY token_id LIMIT ?",
+        out, max,
+        AR_BIND_INT(s, 1, (int64_t)max),
+        if (AR_COL_BYTES(s, 0) != 32) {
+            LOG_WARN("zslp_ledger",
+                     "wallet_tokens: skipping row with %d-byte token_id",
+                     AR_COL_BYTES(s, 0));
+            continue;
+        }
+        AR_READ_BLOB(s, 0, out[count].token_id, 32);
+        out[count].balance = AR_COL_INT(s, 1);
+        out[count].utxo_count = AR_COL_INT(s, 2));
+}
+
+int64_t zslp_ledger_wallet_balance(struct node_db *ndb,
+                                   const uint8_t token_id[32])
+{
+    if (!ndb || !ndb->open || !token_id) return 0;
+    sqlite3_stmt *s = NULL;
+    AR_QUERY_INT64_BOUND(ndb, s,
+        "SELECT COALESCE(SUM(amount),0) FROM zslp_ledger"
+        " WHERE token_id=? AND spent_by_txid IS NULL" ZSLP_WALLET_OWNS_ADDRESS,
+        AR_BIND_BLOB(s, 1, token_id, 32));
+}
+
+int64_t zslp_ledger_wallet_address_count(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open) return 0;
+    sqlite3_stmt *s = NULL;
+    AR_QUERY_INT64_BOUND(ndb, s,
+        "SELECT COUNT(*) FROM (" ZSLP_WALLET_ADDRESS_SET ")", (void)0);
+}
