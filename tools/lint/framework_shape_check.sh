@@ -18,23 +18,22 @@ cd "$ROOT"
 source "$SCRIPT_DIR/scan_exclusions.sh"
 # shellcheck source=tools/lint/gate_lib.sh
 source "$SCRIPT_DIR/gate_lib.sh"
+# shellcheck source=tools/lint/repo_shape.sh
+source "$SCRIPT_DIR/repo_shape.sh"
 
 declare -A ALLOWED=()
 gate_load_list_file "$ALLOWLIST" ALLOWED
 
+# The shape set is DERIVED from the Makefile's APP_DIRS by repo_shape.sh, not
+# spelled out here — a hand-written case arm per shape is a copy of the
+# taxonomy that nothing cross-checks.
 is_known_shape_path() {
-    local path="$1"
-    case "$path" in
-        app/controllers/src/*.c|\
-        app/services/src/*.c|\
-        app/models/src/*.c|\
-        app/jobs/src/*.c|\
-        app/supervisors/src/*.c|\
-        app/conditions/src/*.c|\
-        app/views/src/*.c)
-            return 0
-            ;;
-    esac
+    local path="$1" shape
+    for shape in "${ZCL_APP_SHAPES[@]}"; do
+        case "$path" in
+            "app/$shape/src/"*.c) return 0 ;;
+        esac
+    done
     return 1
 }
 

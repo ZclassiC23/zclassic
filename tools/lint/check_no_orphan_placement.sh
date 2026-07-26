@@ -23,6 +23,8 @@ ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$ROOT"
 # shellcheck source=tools/lint/gate_lib.sh
 source "$SCRIPT_DIR/gate_lib.sh"
+# shellcheck source=tools/lint/repo_shape.sh
+source "$SCRIPT_DIR/repo_shape.sh"
 
 MODE="${ZCL_LINT_MODE:-WARN}"
 BASELINE="$SCRIPT_DIR/orphan_placement_baseline.txt"
@@ -52,9 +54,14 @@ is_excluded() {
     return 1
 }
 
-# Mirror of ci_group_for_path(): does the path resolve to a known group, or the
-# catch-all "root"? Returns 0 (placed) or 1 (orphan → "root").
-KNOWN_TOPS=(lib app domain core config tools adapters ports)
+# Does the path resolve to a known group, or the catch-all "root"?
+# Returns 0 (placed) or 1 (orphan → "root").
+#
+# The list is DERIVED from the Makefile's -I flag lists by repo_shape.sh, not
+# hand-kept here. The hand-kept version omitted `application` — which the build
+# has always carried an APPLICATION_INCLUDES for — so the first file written
+# under application/ would have been reported as misplaced by this very gate.
+KNOWN_TOPS=("${ZCL_REPO_TOPS[@]}")
 is_placed() {
     local f="$1" top
     for top in "${KNOWN_TOPS[@]}"; do

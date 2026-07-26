@@ -37,8 +37,15 @@ ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$ROOT" || exit 1
 # shellcheck source=tools/lint/scan_exclusions.sh
 source "$SCRIPT_DIR/scan_exclusions.sh"
+# shellcheck source=tools/lint/gate_lib.sh
+source "$SCRIPT_DIR/gate_lib.sh"
+# shellcheck source=tools/lint/repo_shape.sh
+source "$SCRIPT_DIR/repo_shape.sh"
 BASELINE="tools/lint/silent_bool_errors_baseline.txt"
-DIRS="${ZCL_SILENT_BOOL_SCAN_DIRS_FOR_TEST:-app/controllers/src app/services/src app/jobs/src app/conditions/src app/models/src app/views/src app/supervisors/src}"
+# The default scan set is every app shape, DERIVED from the Makefile's APP_DIRS
+# by repo_shape.sh. Spelled out by hand it was a taxonomy copy that would have
+# silently skipped an eighth shape's whole directory.
+DIRS="${ZCL_SILENT_BOOL_SCAN_DIRS_FOR_TEST:-$(repo_shape_dirs app src | tr '\n' ' ')}"
 MODE="${ZCL_LINT_MODE:-FAIL}"
 
 scan() {

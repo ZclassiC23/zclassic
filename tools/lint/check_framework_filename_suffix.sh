@@ -40,6 +40,36 @@ declare -A OWN=(
 )
 ALL_SHAPES="controller service model view job supervisor condition"
 
+# The singular suffix for each shape is hand-knowledge (services -> service,
+# but also conditions -> condition and views -> view; no rule derives it), so
+# the map above stays hand-written. What IS derivable is whether the map is
+# COMPLETE: assert it covers exactly the shapes the Makefile declares, so a new
+# shape cannot be silently unchecked by this gate.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tools/lint/gate_lib.sh
+source "$SCRIPT_DIR/gate_lib.sh"
+# shellcheck source=tools/lint/repo_shape.sh
+source "$SCRIPT_DIR/repo_shape.sh"
+for _shape in "${ZCL_APP_SHAPES[@]}"; do
+    if [ -z "${OWN[$_shape]:-}" ]; then
+        echo "check_framework_filename_suffix: FATAL — Makefile APP_DIRS has" >&2
+        echo "  '$_shape' but the OWN[] suffix map has no entry for it." >&2
+        echo "  Add its singular suffix; leaving it out silently exempts the" >&2
+        echo "  whole app/$_shape/ tree from this gate." >&2
+        exit 2
+    fi
+done
+for _shape in "${!OWN[@]}"; do
+    _hit=0
+    for _s in "${ZCL_APP_SHAPES[@]}"; do [ "$_shape" = "$_s" ] && _hit=1 && break; done
+    if [ "$_hit" -eq 0 ]; then
+        echo "check_framework_filename_suffix: FATAL — OWN[] has '$_shape'" >&2
+        echo "  but the Makefile's APP_DIRS does not declare it." >&2
+        exit 2
+    fi
+done
+unset _shape _s _hit
+
 fail=0
 violations=()
 

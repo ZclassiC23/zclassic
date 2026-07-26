@@ -24,6 +24,8 @@ ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$ROOT"
 # shellcheck source=tools/lint/gate_lib.sh
 source "$SCRIPT_DIR/gate_lib.sh"
+# shellcheck source=tools/lint/repo_shape.sh
+source "$SCRIPT_DIR/repo_shape.sh"
 
 MODE="${ZCL_LINT_MODE:-WARN}"
 # ZCL_FILE_PURPOSE_ROOT overrides the base directory whose codeindex roots are
@@ -43,27 +45,12 @@ BASELINE="$SCRIPT_DIR/file_purpose_baseline.txt"
 # is NOT enumerated there, so it is NOT scanned here either.
 
 # Parse a (possibly line-continued) Makefile variable into a space list. The
-# lib-module list is the in-code MIRROR of k_lib_modules[] (parity-tested
-# vs the Makefile in test_codeindex case 6), so reading it from the Makefile
-# keeps this gate pinned to the same module set the scanner walks.
-extract_make_var() {
-    local var="$1"
-    awk -v v="$var" '
-        $0 ~ "^"v"[[:space:]]*=" { collecting=1; sub("^"v"[[:space:]]*=", "") }
-        collecting {
-            cont = ($0 ~ /\\[[:space:]]*$/)
-            gsub(/\\[[:space:]]*$/, "")
-            printf "%s ", $0
-            if (!cont) { exit }
-        }
-    ' Makefile
-}
-
-read -r -a lib_modules <<< "$(extract_make_var LIB_MODULES)"
-# app shapes: the seven physical app/ folders (mirror of k_app_shapes[],
-# codeindex_group.c:32 — Event is the eighth shape but has no app/ folder,
-# see FRAMEWORK.md §3 row 7).
-app_shapes=(conditions controllers jobs models services supervisors views)
+# Both lists are DERIVED from the Makefile by repo_shape.sh — the build
+# depends on LIB_MODULES and APP_DIRS, so they cannot rot without the build
+# breaking. (Event is an eighth framework shape with no app/ folder of its
+# own; see FRAMEWORK.md §3 row 7.)
+lib_modules=("${ZCL_LIB_MODULES[@]}")
+app_shapes=("${ZCL_APP_SHAPES[@]}")
 
 gate_require_scanned "${#lib_modules[@]}" 1 check-file-purpose \
     "LIB_MODULES parse came back empty — Makefile layout changed?"

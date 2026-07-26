@@ -19,6 +19,8 @@ ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$ROOT"
 # shellcheck source=tools/lint/gate_lib.sh
 source "$SCRIPT_DIR/gate_lib.sh"
+# shellcheck source=tools/lint/repo_shape.sh
+source "$SCRIPT_DIR/repo_shape.sh"
 
 MODE="${ZCL_LINT_MODE:-WARN}"
 # ZCL_GROUP_PURPOSE_SRC overrides the scanned source file — test isolation
@@ -59,9 +61,34 @@ gate_require_scanned "${#app_shapes[@]}" 1 check-group-purpose \
 gate_require_scanned "${#domain_ctxs[@]}" 1 check-group-purpose \
     "k_domain_contexts[] parse came back empty — codeindex_group.c layout changed?"
 
+# Cross-check the C arrays against the Makefile, which is the source of truth
+# (the build depends on these variables, so they cannot rot without the build
+# breaking). ZCL_APP_SHAPES/ZCL_DOMAIN_CONTEXTS come from repo_shape.sh.
+#
+# APP_DIRS is checked HERE and not left to test_codeindex.c case 6: that case
+# compares k_app_shapes[] against a hand-typed expect[] literal inside the test
+# itself and never reads the Makefile, so two copies by the same hand agreeing
+# was the whole of the guarantee.
+app_mismatch=0
+for c in "${ZCL_APP_SHAPES[@]}"; do
+    hit=0
+    for a in "${app_shapes[@]}"; do [[ "$c" == "$a" ]] && hit=1 && break; done
+    if [[ "$hit" -eq 0 ]]; then
+        echo "check_group_purpose: Makefile APP_DIRS has '$c' but k_app_shapes[] does not" >&2
+        app_mismatch=1
+    fi
+done
+for a in "${app_shapes[@]}"; do
+    hit=0
+    for c in "${ZCL_APP_SHAPES[@]}"; do [[ "$c" == "$a" ]] && hit=1 && break; done
+    if [[ "$hit" -eq 0 ]]; then
+        echo "check_group_purpose: k_app_shapes[] has '$a' but Makefile APP_DIRS does not" >&2
+        app_mismatch=1
+    fi
+done
+
 # Cross-check k_domain_contexts against the Makefile's DOMAIN_CONTEXTS (the
-# comment above k_domain_contexts[] promises this; lib/app already have a
-# parity test in test_codeindex.c case 6 so are not re-checked here).
+# comment above k_domain_contexts[] promises this).
 mk_domain_line="$(grep -E '^DOMAIN_CONTEXTS[[:space:]]*=' Makefile || true)"
 if [[ -z "$mk_domain_line" ]]; then
     echo "check_group_purpose: FATAL — Makefile has no DOMAIN_CONTEXTS line" >&2
@@ -87,10 +114,14 @@ for d in "${domain_ctxs[@]}"; do
     fi
 done
 
-# The fixed top-level roots ci_group_emit_all() always writes (see
-# codeindex_group.c: emit(s, "root"|"lib"|"app"|"core"|"config"|"tools"|
-# "domain"|"adapters"|"ports", ...)).
-fixed_roots=(root lib app core config tools domain adapters ports)
+# The fixed top-level roots ci_group_emit_all() writes. DERIVED from the
+# Makefile's -I flag lists (repo_shape.sh), plus the synthetic "root" node that
+# holds top-level files like src/main.c and has no -I of its own.
+#
+# This list used to be hand-typed right here — a fourth copy of the taxonomy,
+# inside the very gate whose subject is the taxonomy. docs/AGENT_TRAPS.md
+# recorded the drift risk and counted three copies; it missed this one.
+fixed_roots=(root "${ZCL_REPO_TOPS[@]}")
 
 groups=("${fixed_roots[@]}")
 for m in "${lib_modules[@]}"; do groups+=("lib/$m"); done
@@ -143,6 +174,10 @@ if (( violations > 0 )) && [[ "$MODE" == "FAIL" || "$MODE" == "RATCHET" ]]; then
 fi
 if (( domain_mismatch != 0 )); then
     echo "[check_group_purpose] k_domain_contexts[] vs Makefile DOMAIN_CONTEXTS mismatch" >&2
+    fail=1
+fi
+if (( app_mismatch != 0 )); then
+    echo "[check_group_purpose] k_app_shapes[] vs Makefile APP_DIRS mismatch" >&2
     fail=1
 fi
 
