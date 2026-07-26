@@ -43,7 +43,13 @@ SELF="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
 LEDGER_DIR="${ZCL_SLO_LEDGER_DIR:-${HOME:-/root}/.local/state/zclassic23-slo}"
 LEDGER_FILE="$LEDGER_DIR/uptime-ledger.jsonl"
 
-INSTANCES="canonical soak dev"
+# Instances the prober currently samples — mirrors the INSTANCES table in
+# node_slo_probe.sh and drives the default per-instance summary. RETIRED
+# names are no longer probed but still appear in retained ledger history, so
+# `--instance <retired>` can read the past while the default summary stops
+# carrying an empty section for a lane nobody runs.
+INSTANCES="canonical dev"
+RETIRED_INSTANCES="soak"
 
 summarize() {
     local window_hours="$1" only_instance="$2" ledger_file="$3" now_ts="$4"
@@ -54,12 +60,12 @@ summarize() {
         return 2
     fi
 
+    # No --instance: summarize every currently-probed instance. With
+    # --instance: summarize exactly that one, which is how a retired lane's
+    # retained history stays readable after it leaves INSTANCES.
     local inst
     local overall_rc=0
-    for inst in $INSTANCES; do
-        if [ -n "$only_instance" ] && [ "$inst" != "$only_instance" ]; then
-            continue
-        fi
+    for inst in ${only_instance:-$INSTANCES}; do
         local out rc
         set +e
         out="$(awk -v inst="$inst" -v wh="$window_hours" -v now="$now_ts" '
@@ -273,9 +279,9 @@ case "$WINDOW_HOURS" in
     ''|*[!0-9]*) echo "slo-summary: --window-hours must be a positive integer" >&2; exit 2 ;;
 esac
 if [ -n "$ONLY_INSTANCE" ]; then
-    case " $INSTANCES " in
+    case " $INSTANCES $RETIRED_INSTANCES " in
         *" $ONLY_INSTANCE "*) ;;
-        *) echo "slo-summary: unknown --instance '$ONLY_INSTANCE' (known: $INSTANCES)" >&2; exit 2 ;;
+        *) echo "slo-summary: unknown --instance '$ONLY_INSTANCE' (known: $INSTANCES $RETIRED_INSTANCES)" >&2; exit 2 ;;
     esac
 fi
 

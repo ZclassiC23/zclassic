@@ -1,9 +1,12 @@
 [Unit]
 Description=ZClassic23 External SLO Prober — client-viewpoint uptime ledger (read-only)
-# Appends 3 JSON lines per run (one per local instance: canonical rpcport
-# 18232, soak rpcport 18242, dev rpcport 18252) to
-# ~/.local/state/zclassic23-slo/uptime-ledger.jsonl via tools/scripts/
-# node_slo_probe.sh. This is an EXTERNAL prober — it dials each instance's
+# Appends one JSON line per run per DEPLOYED local instance (canonical
+# rpcport 18232, dev rpcport 18252 — the INSTANCES table in the script is
+# the list) to ~/.local/state/zclassic23-slo/uptime-ledger.jsonl via
+# tools/scripts/node_slo_probe.sh. An instance that is not deployed gets no
+# row at all rather than a permanently unreachable one, so any_unreachable=1
+# in the ledger always means something is actually wrong.
+# This is an EXTERNAL prober — it dials each instance's
 # RPC port the same way any outside client would and records exactly what
 # came back, never trusting node self-reports. READ-ONLY: it never
 # restarts, stops, or writes to any node. After= the canonical node so a
