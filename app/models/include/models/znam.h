@@ -70,6 +70,22 @@ int db_znam_list(struct node_db *ndb, struct znam_entry *out, size_t max);
 int db_znam_list_by_owner(struct node_db *ndb, const char *owner,
                           struct znam_entry *out, size_t max);
 
+/* Wallet-wide sweep: every name owned by ANY address this wallet holds,
+ * with its registration and expiry heights, ordered by owner then name.
+ * "Any address this wallet holds" is wallet_keys (Base58Check-encoded as
+ * this chain's P2PKH addresses) plus wallet_watch_only's stored address
+ * text — de-duplicated, so a name is never listed twice.
+ *
+ * Returns the number of entries written (never negative). A wallet that
+ * owns no names returns 0 with `out` untouched: owning nothing is an
+ * answer, not an error. Bounded by `max`. */
+int db_znam_list_wallet_owned(struct node_db *ndb, struct znam_entry *out,
+                              size_t max);
+
+/* How many distinct transparent addresses db_znam_list_wallet_owned folds
+ * over. 0 for a wallet with no keys — which is why its sweep is empty. */
+int db_znam_wallet_address_count(struct node_db *ndb);
+
 /* Text records */
 bool db_znam_text_save(struct node_db *ndb, const char *name,
                        const char *key, const char *value);

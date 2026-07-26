@@ -151,6 +151,195 @@ char *zcl_native_listaddresses_body(const struct json_value *args,
     return out;
 }
 
+/* ── shielded read bodies ────────────────────────────────────────────────
+ * z_getbalance answers with a bare decimal STRING and z_listunspent with a
+ * bare ARRAY; the bridge projects an OBJECT. Each body therefore names what
+ * it asked for alongside the answer, so the reply carries the address and
+ * confirmation floor the number was computed under instead of an unlabelled
+ * scalar the caller has to remember the question for. */
+
+/* Serialize one composed JSON document into a fresh heap buffer, or report a
+ * body failure. Shared by the two shielded read bodies; `cap` is sized to
+ * the answer (a balance is three fields, a note list is unbounded by design
+ * and pages at the bridge). */
+enum { WNH_SMALL_BODY = 4096, WNH_LIST_BODY = 262144 };
+
+
+static char *wnh_body_render(const struct json_value *doc, const char *what,
+                             size_t cap, struct zcl_native_body_err *err)
+{
+    char *out = zcl_malloc(cap, "shielded_body");
+    if (!out) {
+        err->status = ZCL_NATIVE_BODY_INTERNAL;
+        snprintf(err->message, sizeof(err->message),
+                 "malloc failed for %s response", what);
+        LOG_NULL("native.wallet", "malloc failed for %s response (%zu bytes)",
+                 what, cap);
+    }
+    size_t n = json_write(doc, out, cap);
+    if (n == 0 || n >= cap) {
+        free(out);
+        err->status = ZCL_NATIVE_BODY_INTERNAL;
+        snprintf(err->message, sizeof(err->message),
+                 "%s response did not fit the body buffer", what);
+        LOG_NULL("native.wallet", "%s response did not fit %zu bytes",
+                 what, cap);
+    }
+    return out;
+}
+
+/* True when `s` is a plain decimal amount ("0.00000000", "12", "-0.5").
+ * z_getbalance answers a rejected address by setting its result string to
+ * prose ("Invalid address") rather than an RPC error, so a body that copied
+ * the string through would publish that prose as a balance under ok:true.
+ * A balance field must always parse as a number or not exist. */
+static bool wnh_is_decimal_amount(const char *s)
+{
+    if (!s || !s[0])
+        return false;
+    if (*s == '-' || *s == '+')
+        s++;
+    bool any_digit = false;
+    bool seen_dot = false;
+    for (; *s; s++) {
+        if (*s >= '0' && *s <= '9') {
+            any_digit = true;
+        } else if (*s == '.' && !seen_dot) {
+            seen_dot = true;
+        } else {
+            return false;
+        }
+    }
+    return any_digit;
+}
+
+char *zcl_native_z_getbalance_body(const struct json_value *args,
+                                   struct zcl_native_body_err *err)
+{
+    const char *addr = json_get_str(json_get(args, "address"));
+    if (!addr || !addr[0]) {
+        err->status = ZCL_NATIVE_BODY_INVALID;
+        snprintf(err->message, sizeof(err->message),
+                 "address is required for a shielded balance");
+        LOG_NULL("native.wallet", "z_getbalance: address is required");
+    }
+
+    struct rpc_arg_builder p;
+    rpc_arg_builder_init(&p);
+    rpc_arg_builder_push_str(&p, addr);
+    char *params = rpc_arg_builder_to_json(&p);
+    char *raw = params ? node_rpc_call("z_getbalance", params) : NULL;
+    free(params);
+    if (!raw) {
+        err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
+        snprintf(err->message, sizeof(err->message),
+                 "RPC %s failed: address=%s", "z_getbalance", addr);
+        LOG_NULL("native.wallet", "%s failed: address=%s", "z_getbalance",
+                 addr);
+    }
+
+    struct json_value result;
+    if (!json_read(&result, raw, strlen(raw))) {
+        json_free(&result);
+        free(raw);
+        err->status = ZCL_NATIVE_BODY_INTERNAL;
+        snprintf(err->message, sizeof(err->message),
+                 "RPC %s returned an unparseable body", "z_getbalance");
+        LOG_NULL("native.wallet", "RPC %s returned an unparseable body",
+                 "z_getbalance");
+    }
+    free(raw);
+
+    /* An RPC-level error body is forwarded verbatim: the bridge already
+     * turns {"error":...} into a typed TOOL_ERROR, and re-wrapping it would
+     * hide the node's own message. */
+    if (result.type == JSON_OBJ && json_get(&result, "error")) {
+        char *passthru = wnh_body_render(&result, "z_getbalance", WNH_SMALL_BODY, err);
+        json_free(&result);
+        return passthru;
+    }
+
+    const char *amount = result.type == JSON_STR ? json_get_str(&result)
+                                                 : NULL;
+    if (!wnh_is_decimal_amount(amount)) {
+        char reason[128];
+        (void)snprintf(reason, sizeof(reason), "%s",
+                       amount && amount[0] ? amount : "no amount in reply");
+        json_free(&result);
+        err->status = ZCL_NATIVE_BODY_INVALID;
+        snprintf(err->message, sizeof(err->message),
+                 "z_getbalance did not return an amount for %s: %s",
+                 addr, reason);
+        LOG_NULL("native.wallet",
+                 "z_getbalance returned a non-amount for address=%s: %s",
+                 addr, reason);
+    }
+
+    struct json_value doc;
+    json_init(&doc);
+    json_set_object(&doc);
+    (void)json_push_kv_str(&doc, "address", addr);
+    (void)json_push_kv_str(&doc, "balance", amount);
+    (void)json_push_kv_int(&doc, "minconf", 1);
+    json_free(&result);
+
+    char *out = wnh_body_render(&doc, "z_getbalance", WNH_SMALL_BODY, err);
+    json_free(&doc);
+    return out;
+}
+
+char *zcl_native_z_listunspent_body(const struct json_value *args,
+                                    struct zcl_native_body_err *err)
+{
+    (void)args;
+    /* minconf 0 — every note the wallet can see, confirmed or not. Each
+     * entry carries its own `confirmations`, so filtering stays with the
+     * caller instead of being silently applied here. */
+    char *raw = node_rpc_call("z_listunspent", "[0]");
+    if (!raw) {
+        err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
+        snprintf(err->message, sizeof(err->message),
+                 "RPC %s returned null", "z_listunspent");
+        LOG_NULL("native.wallet", "RPC %s returned null", "z_listunspent");
+    }
+
+    struct json_value notes;
+    if (!json_read(&notes, raw, strlen(raw))) {
+        json_free(&notes);
+        free(raw);
+        err->status = ZCL_NATIVE_BODY_INTERNAL;
+        snprintf(err->message, sizeof(err->message),
+                 "RPC %s returned an unparseable body", "z_listunspent");
+        LOG_NULL("native.wallet", "RPC %s returned an unparseable body",
+                 "z_listunspent");
+    }
+    free(raw);
+
+    if (notes.type == JSON_OBJ && json_get(&notes, "error")) {
+        char *passthru = wnh_body_render(&notes, "z_listunspent", WNH_LIST_BODY, err);
+        json_free(&notes);
+        return passthru;
+    }
+
+    struct json_value doc;
+    json_init(&doc);
+    json_set_object(&doc);
+    if (notes.type != JSON_ARR) {
+        /* A wallet with no notes still answers with an empty list, never a
+         * missing key — an empty holding is an answer, not an absence. */
+        json_free(&notes);
+        json_init(&notes);
+        json_set_array(&notes);
+    }
+    (void)json_push_kv_int(&doc, "count", (int64_t)notes.num_children);
+    (void)json_push_kv(&doc, "notes", &notes);
+    json_free(&notes);
+
+    char *out = wnh_body_render(&doc, "z_listunspent", WNH_LIST_BODY, err);
+    json_free(&doc);
+    return out;
+}
+
 /* ── core.wallet.* mutating native leaves ────────────────────────────────
  * Dedicated registry handlers (request -> reply) for the leaves that create
  * keys, reveal keys, move funds, rescan, or write a backup. Each reaches the
@@ -364,6 +553,27 @@ void zcl_native_handle_wallet_address_new(
         json_free(&body);
         wnh_fail(reply, ZCL_COMMAND_EXIT_FAILED, "NO_ADDRESS",
                  "getnewaddress did not return an address", "getnewaddress");
+        return;
+    }
+    (void)json_push_kv_str(&reply->data, "address", addr);
+    (void)json_push_kv_bool(&reply->data, "created", true);
+    reply->error.mutated = true;
+    json_free(&body);
+}
+
+void zcl_native_handle_wallet_shielded_address(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    (void)request;
+    struct json_value body;
+    if (!wnh_call_rpc(reply, "z_getnewaddress", NULL, &body))
+        return;
+    const char *addr = wnh_string_result(&body);
+    if (!addr) {
+        json_free(&body);
+        wnh_fail(reply, ZCL_COMMAND_EXIT_FAILED, "NO_ADDRESS",
+                 "z_getnewaddress did not return a shielded address",
+                 "z_getnewaddress");
         return;
     }
     (void)json_push_kv_str(&reply->data, "address", addr);

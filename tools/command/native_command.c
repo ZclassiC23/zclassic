@@ -107,6 +107,8 @@ static const struct {
     { "core.wallet.utxo.list", zcl_native_listunspent_body },
     { "core.wallet.transaction.list", zcl_native_listtransactions_body },
     { "core.wallet.transaction.get", zcl_native_gettransaction_body },
+    { "core.wallet.shielded.balance", zcl_native_z_getbalance_body },
+    { "core.wallet.shielded.notes", zcl_native_z_listunspent_body },
     { "core.storage.query", zcl_native_sql_body },
     { "ops.diagnose", zcl_native_agent_diagnose_body },
     { "ops.logs", zcl_native_node_log_body },

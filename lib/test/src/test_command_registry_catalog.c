@@ -2302,6 +2302,57 @@ static int test_describe_emits_observed_p99(void)
     return failures;
 }
 
+/* core.wallet.shielded is a complete surface: the node could already SPEND
+ * shielded funds through a typed command while it could not READ them, so
+ * balance/notes/address are bound rather than PLANNED. balance and notes are
+ * READY reads dispatched through a body function (z_getbalance answers with a
+ * bare string and z_listunspent with a bare array, so neither is a 1:1
+ * RPC-shape proxy); address is a READY owner mutation with its own handler,
+ * like core.wallet.address.new. */
+static int test_wallet_shielded_reads_bound(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    TEST("core.wallet.shielded reads are READY and bound, not PLANNED") {
+        const char *reads[] = {
+            "core.wallet.shielded.balance",
+            "core.wallet.shielded.notes",
+        };
+        for (size_t i = 0; i < sizeof(reads) / sizeof(reads[0]); i++) {
+            const struct zcl_command_spec *s = find_spec(reg, reads[i]);
+            ASSERT(s != NULL);
+            ASSERT_EQ(s->availability, ZCL_COMMAND_READY);
+            ASSERT_EQ(s->effect, ZCL_COMMAND_EFFECT_READ);
+            ASSERT_STR_EQ(s->parent, "core.wallet.shielded");
+            ASSERT(s->handler == zcl_native_bridge_command);
+            ASSERT(zcl_native_bridge_body_for_path(reads[i]) != NULL);
+            ASSERT(zcl_native_bridge_rpc_for_path(reads[i]) == NULL);
+            /* A bound leaf carries no residual "not wired yet" excuse. */
+            ASSERT(s->availability_reason != NULL);
+            ASSERT(s->availability_reason[0] == 0);
+            ASSERT(s->semantics != NULL && s->semantics[0]);
+        }
+
+        const struct zcl_command_spec *addr =
+            find_spec(reg, "core.wallet.shielded.address");
+        ASSERT(addr != NULL);
+        ASSERT_EQ(addr->availability, ZCL_COMMAND_READY);
+        ASSERT_EQ(addr->effect, ZCL_COMMAND_EFFECT_MUTATE);
+        ASSERT_EQ(addr->authority, ZCL_COMMAND_AUTH_OWNER);
+        ASSERT(addr->handler != NULL);
+        ASSERT(addr->handler != zcl_native_bridge_command);
+        ASSERT(addr->availability_reason[0] == 0);
+
+        /* The spend half was already READY; reading no longer lags it. */
+        const struct zcl_command_spec *send =
+            find_spec(reg, "core.wallet.shielded.send");
+        ASSERT(send != NULL);
+        ASSERT_EQ(send->availability, ZCL_COMMAND_READY);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* The ZCL application-feature leaves (config/commands/app_features.def) expose
  * a native read surface
  * (names resolve/list, tokens list, messaging inbox, market list/status, swap
@@ -2452,6 +2503,7 @@ int test_command_registry_catalog(void)
     failures += test_handler_index_matches_catalog();
     failures += test_handler_index_known_symbol_maps_to_path();
     failures += test_app_features_leaves();
+    failures += test_wallet_shielded_reads_bound();
     failures += test_ops_dash_dashboards_ported();
     failures += test_semantics_contract_negative();
     failures += test_leaf_semantics_and_budget();

@@ -376,6 +376,127 @@ static int test_live_hook(void)
     return failures;
 }
 
+/* ── (6) wallet-wide sweep ─────────────────────────────────────────────
+ *
+ * zslp_ledger_balance answers for ONE (token, address) pair; the wallet-wide
+ * sweep answers "what does this node own" by folding the same rows over
+ * every address the wallet holds. The fixture puts 600 at addrA and 400 at
+ * addrB, so the three cases that matter are: a wallet holding neither
+ * address (empty, not an error), a wallet holding one (600), and a wallet
+ * holding both across wallet_keys AND wallet_watch_only (1000). */
+
+static void ins_wallet_key(struct node_db *ndb, const uint8_t hash160[20])
+{
+    sqlite3_stmt *s = NULL;
+    sqlite3_prepare_v2(ndb->db,
+        "INSERT OR REPLACE INTO wallet_keys"
+        "(pubkey_hash,pubkey,privkey,compressed,created_at)"
+        " VALUES(?,zeroblob(33),zeroblob(32),1,0)", -1, &s, NULL);
+    sqlite3_bind_blob(s, 1, hash160, 20, SQLITE_STATIC);
+    sqlite3_step(s);  // raw-sql-ok:test-fixture-insert
+    sqlite3_finalize(s);
+}
+
+static void ins_watch_only(struct node_db *ndb, const uint8_t hash160[20],
+                           const char *address)
+{
+    sqlite3_stmt *s = NULL;
+    sqlite3_prepare_v2(ndb->db,
+        "INSERT OR REPLACE INTO wallet_watch_only"
+        "(address_hash,address,created_at) VALUES(?,?,0)", -1, &s, NULL);
+    sqlite3_bind_blob(s, 1, hash160, 20, SQLITE_STATIC);
+    sqlite3_bind_text(s, 2, address, -1, SQLITE_STATIC);
+    sqlite3_step(s);  // raw-sql-ok:test-fixture-insert
+    sqlite3_finalize(s);
+}
+
+static int test_wallet_wide_sweep(void)
+{
+    int failures = 0;
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+
+    printf("zslp_ledger wallet: open in-memory node.db... ");
+    if (node_db_open(&ndb, ":memory:") && ndb.open) printf("OK\n");
+    else { printf("FAIL\n"); return 1; }
+
+    seed_fixture(&ndb);
+    g_zslp_ledger_backfill_test_ndb = &ndb;
+    zslp_ledger_backfill_reset_for_test();
+    reducer_frontier_provable_tip_set(2);
+    (void)zslp_ledger_backfill_run_once();
+
+    struct zslp_wallet_token held[8];
+
+    /* THE empty case: unspent token rows exist, but none of them is ours. */
+    printf("zslp_ledger wallet: a wallet with no keys sweeps to 0 rows "
+           "(empty, not an error)... ");
+    { int n = zslp_ledger_wallet_tokens(&ndb, held, 8);
+      int64_t a = zslp_ledger_wallet_address_count(&ndb);
+      int64_t b = zslp_ledger_wallet_balance(&ndb, g_token);
+      if (n == 0 && a == 0 && b == 0) printf("OK\n");
+      else { printf("FAIL (rows=%d addrs=%lld bal=%lld)\n", n,
+                    (long long)a, (long long)b); failures++; } }
+
+    /* One owned address: the wallet-wide answer equals the per-address one. */
+    ins_wallet_key(&ndb, g_addr_a);
+
+    printf("zslp_ledger wallet: one owned address folds to that address's "
+           "balance (600)... ");
+    { int n = zslp_ledger_wallet_tokens(&ndb, held, 8);
+      int64_t per_addr = zslp_ledger_balance(&ndb, g_token, g_addr_a);
+      if (n == 1 && memcmp(held[0].token_id, g_token, 32) == 0 &&
+          held[0].balance == 600 && held[0].balance == per_addr &&
+          held[0].utxo_count == 1) printf("OK\n");
+      else { printf("FAIL (rows=%d bal=%lld per_addr=%lld utxos=%lld)\n", n,
+                    (long long)held[0].balance, (long long)per_addr,
+                    (long long)held[0].utxo_count); failures++; } }
+
+    /* Second address arrives as WATCH-ONLY: the sweep must cross both
+     * tables, not just wallet_keys. */
+    ins_watch_only(&ndb, g_addr_b, "t1FixtureWatchOnlyAddressForAddrB");
+
+    printf("zslp_ledger wallet: watch-only address joins the fold — "
+           "600 + 400 == 1000 across 2 outpoints... ");
+    { int n = zslp_ledger_wallet_tokens(&ndb, held, 8);
+      int64_t a = zslp_ledger_wallet_address_count(&ndb);
+      int64_t total = zslp_ledger_wallet_balance(&ndb, g_token);
+      if (n == 1 && held[0].balance == 1000 && held[0].utxo_count == 2 &&
+          total == 1000 && a == 2) printf("OK\n");
+      else { printf("FAIL (rows=%d bal=%lld utxos=%lld total=%lld addrs=%lld)\n",
+                    n, (long long)held[0].balance,
+                    (long long)held[0].utxo_count, (long long)total,
+                    (long long)a); failures++; } }
+
+    /* The spent GENESIS outpoint also sat at addrA. A credit-only fold would
+     * report 1600; a debit-correct one reports 1000. */
+    printf("zslp_ledger wallet: sweep counts UNSPENT rows only "
+           "(spent GENESIS excluded)... ");
+    { int64_t total = zslp_ledger_wallet_balance(&ndb, g_token);
+      int64_t rows = zslp_ledger_count(&ndb);
+      if (total == 1000 && rows == 3) printf("OK\n");
+      else { printf("FAIL (total=%lld rows=%lld)\n", (long long)total,
+                    (long long)rows); failures++; } }
+
+    printf("zslp_ledger wallet: a zero-capacity sweep writes nothing and "
+           "returns 0... ");
+    { int n = zslp_ledger_wallet_tokens(&ndb, held, 0);
+      if (n == 0) printf("OK\n");
+      else { printf("FAIL (rows=%d)\n", n); failures++; } }
+
+    printf("zslp_ledger wallet: an unheld token id sweeps to balance 0... ");
+    { uint8_t other[32];
+      fill(other, 32, 0xEE);
+      int64_t b = zslp_ledger_wallet_balance(&ndb, other);
+      if (b == 0) printf("OK\n");
+      else { printf("FAIL (%lld)\n", (long long)b); failures++; } }
+
+    g_zslp_ledger_backfill_test_ndb = NULL;
+    reducer_frontier_provable_tip_reset();
+    node_db_close(&ndb);
+    return failures;
+}
+
 /* ── Entry point ──────────────────────────────────────────────────── */
 
 int test_zslp_ledger(void)
@@ -385,5 +506,6 @@ int test_zslp_ledger(void)
     failures += test_backfill_ledger();
     failures += test_digest_and_rebuild();
     failures += test_live_hook();
+    failures += test_wallet_wide_sweep();
     return failures;
 }

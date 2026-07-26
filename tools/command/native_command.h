@@ -439,6 +439,9 @@ void zcl_native_handle_wallet_address_new(
 void zcl_native_handle_wallet_address_import(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_wallet_shielded_address(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_wallet_address_export_key(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

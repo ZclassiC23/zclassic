@@ -94,6 +94,41 @@ bool zslp_ledger_truncate(struct node_db *ndb);
 int64_t zslp_ledger_balance(struct node_db *ndb, const uint8_t token_id[32],
                             const uint8_t address[20]);
 
+/* One ZSLP token this wallet holds, folded over EVERY address the wallet
+ * owns rather than the single (token, address) pair zslp_ledger_balance
+ * answers for. */
+struct zslp_wallet_token {
+    uint8_t token_id[32];  /* internal (node) byte order, as stored */
+    int64_t balance;       /* SUM(amount) over the wallet's UNSPENT rows */
+    int64_t utxo_count;    /* how many unspent token outputs back it */
+};
+
+/* Wallet-wide sweep: every token this wallet holds, one row per token_id in
+ * ascending token_id order, each balance folded across the wallet's own
+ * addresses. "The wallet's own addresses" is the union of wallet_keys
+ * (spendable) and wallet_watch_only (imported, watched) — both are 20-byte
+ * hash160 keys in the same node.db as the ledger, so the whole fold is one
+ * indexed GROUP BY and never a per-address round trip.
+ *
+ * Returns the number of rows written to `out` (never negative). A wallet
+ * that holds no tokens returns 0 with `out` untouched — an empty holding is
+ * an answer, not an error. Bounded by `max`; a wallet holding more distinct
+ * tokens than `max` is truncated at the cap (raise the cap to see the rest).
+ * Reads only UNSPENT rows, so it is debit-correct by construction. */
+int zslp_ledger_wallet_tokens(struct node_db *ndb,
+                              struct zslp_wallet_token *out, size_t max);
+
+/* The same wallet-wide fold narrowed to ONE token — the wallet-wide answer
+ * to the question zslp_ledger_balance() answers per address. 0 when the
+ * wallet holds none of it. */
+int64_t zslp_ledger_wallet_balance(struct node_db *ndb,
+                                   const uint8_t token_id[32]);
+
+/* How many transparent addresses the two wallet-wide sweeps above fold
+ * over (wallet_keys + wallet_watch_only, de-duplicated). 0 for a wallet
+ * with no keys — which is exactly why an empty sweep is empty. */
+int64_t zslp_ledger_wallet_address_count(struct node_db *ndb);
+
 /* Row counts for diagnostics. */
 int64_t zslp_ledger_count(struct node_db *ndb);
 int64_t zslp_ledger_unspent_count(struct node_db *ndb);

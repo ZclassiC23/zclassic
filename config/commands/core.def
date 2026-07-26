@@ -736,12 +736,12 @@ ZCL_COMMAND_READY_COMMAND(
 ZCL_COMMAND_BRANCH("core.wallet.shielded", "core.wallet",
                    "Sapling shielded addresses and notes",
                    ZCL_COMMAND_LAYER_CORE)
-ZCL_COMMAND_PLANNED_COMMAND(
+ZCL_COMMAND_READY_COMMAND(
     "core.wallet.shielded.address", "core.wallet.shielded", "",
     "Derive a new shielded address",
-    "Will report the newly derived Sapling shielded address once "
-    "wired; today the handler is unbound and fails closed with exit 3 "
-    "rather than mutating the wallet.", 0,
+    "The freshly derived Sapling shielded address, persisted in the "
+    "wallet by the running node's z_getnewaddress at call time; created "
+    "is true when a new spending key was written.", 0,
     "shielded,sapling,address,new",
     "zcl.command.empty_input.v1", "zcl.shielded_address.v1", "", "",
     "zclassic23 core wallet shielded address",
@@ -750,35 +750,43 @@ ZCL_COMMAND_PLANNED_COMMAND(
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW, ZCL_COMMAND_CONFIRM_NONE,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
-    "shielded key-mutation binding is a Wave 2.2 deliverable")
-ZCL_COMMAND_PLANNED_READ(
+    zcl_native_handle_wallet_shielded_address)
+ZCL_COMMAND_READY_READ(
     "core.wallet.shielded.balance", "core.wallet.shielded", "",
     "Shielded balance for one address",
-    "Will report the confirmed shielded balance in zatoshi for the "
-    "given address once the argument mapping is wired; today the "
-    "handler is unbound and fails closed with exit 3.", 0,
+    "The balance held at one address in ZCL (8-decimal string), read "
+    "live from the running node's z_getbalance at call time with a "
+    "1-confirmation floor; a shielded address sums its unspent Sapling "
+    "notes, a transparent one its UTXOs. address and minconf echo the "
+    "question the number answers. Absent notes read 0.00000000, not an "
+    "error; balance always parses as a number, and an address the node "
+    "rejects fails instead of reporting prose.", 0,
     "shielded,balance,sapling",
     "zcl.core_shielded_ref.input.v1", "zcl.shielded_balance.v1", "address",
     "address", "zclassic23 core wallet shielded balance --address=<zaddr>",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
-    ZCL_COMMAND_CAP_WALLET_REQUEST,
-    "shielded balance argument mapping is a Wave 2.2 deliverable")
-ZCL_COMMAND_PLANNED_READ(
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+ZCL_COMMAND_READY_READ(
     "core.wallet.shielded.notes", "core.wallet.shielded", "",
     "List spendable shielded notes",
-    "Will list every spendable Sapling note the wallet holds once "
-    "wired, bounded to the list budget row cap; today the handler is "
-    "unbound and fails closed with exit 3.", ZCL_COMMAND_LIST_BUDGET,
+    "Every unspent Sapling note the wallet holds, read live from the "
+    "running node's z_listunspent at call time with no confirmation "
+    "floor — each note carries its own confirmations, amount in ZCL, "
+    "and block_height, so the caller filters rather than the node. "
+    "count is the full note count; the list itself is bounded to the "
+    "list budget row cap and pages beyond it. An empty wallet answers "
+    "count 0 with an empty list.", ZCL_COMMAND_LIST_BUDGET,
     "shielded,notes,unspent",
     "zcl.command.empty_input.v1", "zcl.shielded_notes.v1", "", "",
     "zclassic23 core wallet shielded notes",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
-    ZCL_COMMAND_CAP_WALLET_REQUEST,
-    "shielded note listing binding is a Wave 2.2 deliverable")
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
 ZCL_COMMAND_READY_COMMAND(
     "core.wallet.shielded.send", "core.wallet.shielded", "",
     "Send a shielded payment",

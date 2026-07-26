@@ -174,9 +174,9 @@ scope for every `core.*`/`ops.*` leaf is `local | dev | canonical | soak`
 | `core.wallet.transaction.list` | `core wallet transaction list` | ready | read / operator | none | `zcl.wallet_tx_list.v1` | List recent wallet transactions |
 | `core.wallet.transaction.get` | `core wallet transaction get --txid=<hex>` | ready | read / operator | **`txid`** | `zcl.wallet_tx.v1` | Get one wallet transaction by id |
 | `core.wallet.transaction.send` | `core wallet transaction send --input='<obj>'` | ready | mutate / wallet / **owner**, plan-commit | `address,amount,idempotency_key,confirm` | `zcl.wallet_send.v1` | Build, sign, and broadcast a payment — *broadcasts only on `confirm:true`* |
-| `core.wallet.shielded.address` | `core wallet shielded address` | **planned** | mutate / wallet / **owner** | none | `zcl.shielded_address.v1` | Derive a new shielded address — *Wave 2.2* |
-| `core.wallet.shielded.balance` | `core wallet shielded balance --address=<zaddr>` | **planned** | read / operator | **`address`** | `zcl.shielded_balance.v1` | Shielded balance for one address — *Wave 2.2 arg mapping* |
-| `core.wallet.shielded.notes` | `core wallet shielded notes` | **planned** | read / operator | none | `zcl.shielded_notes.v1` | List spendable shielded notes — *Wave 2.2* |
+| `core.wallet.shielded.address` | `core wallet shielded address` | ready | mutate / wallet / **owner** | none | `zcl.shielded_address.v1` | Derive a new shielded address (`z_getnewaddress`) |
+| `core.wallet.shielded.balance` | `core wallet shielded balance --address=<zaddr>` | ready | read / operator | **`address`** | `zcl.shielded_balance.v1` | Shielded balance for one address (`z_getbalance`) |
+| `core.wallet.shielded.notes` | `core wallet shielded notes` | ready | read / operator | none | `zcl.shielded_notes.v1` | List spendable shielded notes (`z_listunspent`) |
 | `core.wallet.shielded.send` | `core wallet shielded send --input='<obj>'` | ready | mutate / wallet / **owner**, job, plan-commit | `from,to,amount,idempotency_key,confirm` | `zcl.shielded_send.v1` | Send a shielded payment (`z_sendmany`) — *broadcasts only on `confirm:true`* |
 | `core.wallet.backup.status` | `core wallet backup status` | ready | read / operator | none | `zcl.wallet_backup_status.v1` | Wallet backup freshness |
 | `core.wallet.backup.now` | `core wallet backup now` | ready | mutate / wallet / **owner**, idempotent | none | `zcl.wallet_backup.v1` | Take a wallet backup now |

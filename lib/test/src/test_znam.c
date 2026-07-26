@@ -12,6 +12,8 @@
 #include "wallet/wallet.h"
 #include "services/zslp_command_service.h"
 #include "script/standard.h"
+#include "chain/chainparams.h"
+#include "keys/key_io.h"
 #include "validation/txmempool.h"
 #include "validation/main_state.h"
 #include "coins/coins_view.h"
@@ -117,6 +119,164 @@ static bool fund_wallet_key(struct wallet *w, const struct key_id *kid,
     bool ok = wallet_add_to_wallet(w, &wtx);
     transaction_free(&wtx.tx);
     return ok;
+}
+
+/* ── Wallet-wide name sweep ────────────────────────────────────────────
+ *
+ * db_znam_list_by_owner answers for ONE owner address the caller already
+ * knows. The wallet-wide sweep answers "which names does this node own" by
+ * deriving that owner set from the wallet itself — wallet_keys encoded as
+ * this chain's P2PKH addresses plus wallet_watch_only's stored text. The
+ * cases that matter: a keyless wallet (empty, not an error), a name owned
+ * by a wallet key, a name owned by a stranger (excluded), a name owned by
+ * a watch-only address, and the same address reachable twice (listed once). */
+
+static void znam_test_p2pkh(const uint8_t hash160[20], char out[64])
+{
+    const struct chain_params *cp = chain_params_get();
+    size_t pk_len = 0, sc_len = 0;
+    const unsigned char *pk_pfx =
+        chain_params_base58_prefix(cp, B58_PUBKEY_ADDRESS, &pk_len);
+    const unsigned char *sc_pfx =
+        chain_params_base58_prefix(cp, B58_SCRIPT_ADDRESS, &sc_len);
+    struct tx_destination dest;
+    memset(&dest, 0, sizeof(dest));
+    dest.type = DEST_KEY_ID;
+    memcpy(dest.id.key.id.data, hash160, 20);
+    out[0] = 0;
+    (void)encode_destination(&dest, pk_pfx, pk_len, sc_pfx, sc_len, out, 64);
+}
+
+static void znam_test_ins_key(struct node_db *ndb, const uint8_t hash160[20])
+{
+    sqlite3_stmt *s = NULL;
+    sqlite3_prepare_v2(ndb->db,
+        "INSERT OR REPLACE INTO wallet_keys"
+        "(pubkey_hash,pubkey,privkey,compressed,created_at)"
+        " VALUES(?,zeroblob(33),zeroblob(32),1,0)", -1, &s, NULL);
+    sqlite3_bind_blob(s, 1, hash160, 20, SQLITE_STATIC);
+    sqlite3_step(s);  // raw-sql-ok:test-fixture-insert
+    sqlite3_finalize(s);
+}
+
+static void znam_test_ins_watch(struct node_db *ndb, const uint8_t hash160[20],
+                                const char *address)
+{
+    sqlite3_stmt *s = NULL;
+    sqlite3_prepare_v2(ndb->db,
+        "INSERT OR REPLACE INTO wallet_watch_only"
+        "(address_hash,address,created_at) VALUES(?,?,0)", -1, &s, NULL);
+    sqlite3_bind_blob(s, 1, hash160, 20, SQLITE_STATIC);
+    sqlite3_bind_text(s, 2, address, -1, SQLITE_STATIC);
+    sqlite3_step(s);  // raw-sql-ok:test-fixture-insert
+    sqlite3_finalize(s);
+}
+
+static bool znam_test_register(struct node_db *ndb, const char *name,
+                               const char *owner, int32_t reg_height)
+{
+    struct znam_entry e;
+    memset(&e, 0, sizeof(e));
+    snprintf(e.name, sizeof(e.name), "%s", name);
+    snprintf(e.owner_address, sizeof(e.owner_address), "%s", owner);
+    e.target_type = ZNAM_TYPE_ONION;
+    snprintf(e.target_value, sizeof(e.target_value), "%s.onion", name);
+    memset(e.reg_txid, 0x5A, sizeof(e.reg_txid));
+    memset(e.last_update_txid, 0x5A, sizeof(e.last_update_txid));
+    e.reg_height = reg_height;
+    e.expiry_height = reg_height + 1000;
+    return db_znam_save(ndb, &e);
+}
+
+static int test_znam_wallet_sweep(void)
+{
+    int failures = 0;
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+
+    printf("znam wallet: open in-memory node.db... ");
+    if (node_db_open(&ndb, ":memory:") && ndb.open) printf("OK\n");
+    else { printf("FAIL\n"); return 1; }
+
+    uint8_t mine[20], watched[20], stranger[20];
+    memset(mine, 0xC1, sizeof(mine));
+    memset(watched, 0xC2, sizeof(watched));
+    memset(stranger, 0xC3, sizeof(stranger));
+
+    char mine_addr[64], watched_addr[64], stranger_addr[64];
+    znam_test_p2pkh(mine, mine_addr);
+    znam_test_p2pkh(watched, watched_addr);
+    znam_test_p2pkh(stranger, stranger_addr);
+
+    bool seeded = znam_test_register(&ndb, "mine", mine_addr, 100) &&
+                  znam_test_register(&ndb, "watched", watched_addr, 200) &&
+                  znam_test_register(&ndb, "notmine", stranger_addr, 300);
+    printf("znam wallet: seeded three registered names... ");
+    if (seeded) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+
+    struct znam_entry owned[8];
+
+    printf("znam wallet: a wallet with no keys owns 0 names "
+           "(empty, not an error)... ");
+    { int n = db_znam_list_wallet_owned(&ndb, owned, 8);
+      int a = db_znam_wallet_address_count(&ndb);
+      int all = db_znam_list(&ndb, owned, 8);
+      if (n == 0 && a == 0 && all == 3) printf("OK\n");
+      else { printf("FAIL (owned=%d addrs=%d registry=%d)\n", n, a, all);
+             failures++; } }
+
+    znam_test_ins_key(&ndb, mine);
+
+    printf("znam wallet: a wallet key claims its own name and not the "
+           "stranger's... ");
+    { int n = db_znam_list_wallet_owned(&ndb, owned, 8);
+      if (n == 1 && strcmp(owned[0].name, "mine") == 0 &&
+          strcmp(owned[0].owner_address, mine_addr) == 0 &&
+          owned[0].reg_height == 100 && owned[0].expiry_height == 1100)
+          printf("OK\n");
+      else { printf("FAIL (n=%d name=%s expiry=%d)\n", n,
+                    n > 0 ? owned[0].name : "-",
+                    n > 0 ? owned[0].expiry_height : -1); failures++; } }
+
+    printf("znam wallet: the wallet-wide answer matches the per-owner one... ");
+    { struct znam_entry by_owner[8];
+      int a = db_znam_list_wallet_owned(&ndb, owned, 8);
+      int b = db_znam_list_by_owner(&ndb, mine_addr, by_owner, 8);
+      if (a == b && a == 1 && strcmp(owned[0].name, by_owner[0].name) == 0)
+          printf("OK\n");
+      else { printf("FAIL (wallet=%d owner=%d)\n", a, b); failures++; } }
+
+    znam_test_ins_watch(&ndb, watched, watched_addr);
+
+    printf("znam wallet: a watch-only address adds its name (2 owned, "
+           "stranger still excluded)... ");
+    { int n = db_znam_list_wallet_owned(&ndb, owned, 8);
+      int a = db_znam_wallet_address_count(&ndb);
+      bool saw_stranger = false;
+      for (int i = 0; i < n; i++)
+          if (strcmp(owned[i].name, "notmine") == 0) saw_stranger = true;
+      if (n == 2 && a == 2 && !saw_stranger) printf("OK\n");
+      else { printf("FAIL (owned=%d addrs=%d stranger=%d)\n", n, a,
+                    (int)saw_stranger); failures++; } }
+
+    /* Importing your own key as watch-only is the ordinary way one address
+     * becomes reachable twice; the name must still be listed once. */
+    znam_test_ins_watch(&ndb, mine, mine_addr);
+
+    printf("znam wallet: an address reachable through both tables is folded "
+           "once... ");
+    { int n = db_znam_list_wallet_owned(&ndb, owned, 8);
+      int a = db_znam_wallet_address_count(&ndb);
+      if (n == 2 && a == 2) printf("OK\n");
+      else { printf("FAIL (owned=%d addrs=%d)\n", n, a); failures++; } }
+
+    printf("znam wallet: a zero-capacity sweep writes nothing and "
+           "returns 0... ");
+    { int n = db_znam_list_wallet_owned(&ndb, owned, 0);
+      if (n == 0) printf("OK\n"); else { printf("FAIL (%d)\n", n); failures++; } }
+
+    node_db_close(&ndb);
+    return failures;
 }
 
 int test_znam(void)
@@ -1075,6 +1235,8 @@ int test_znam(void)
         }
         if (opened) sqlite3_close(db);
     }
+
+    failures += test_znam_wallet_sweep();
 
     printf("\n%d ZNAM test(s) failed\n", failures);
     return failures;
