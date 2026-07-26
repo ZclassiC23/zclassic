@@ -23,6 +23,7 @@
 #include "storage/event_log.h"
 #include "storage/event_log_pending.h"
 
+#include "util/crc32c.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -40,117 +41,28 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#if defined(__x86_64__) || defined(__i386__)
-#include <nmmintrin.h>
-#endif
-
 /* ── on-disk constants ─────────────────────────────────────────────── */
 
 #define EVT_HDR_LEN       16u    /* 4 + 4 + 4 + 4 */
 #define EVT_SENTINEL_LEN  16u    /* 8 magic + 8 offset */
 
-/* ── crc32c (Castagnoli) — software table impl, public domain ──────── */
+/* ── crc32c (Castagnoli) ────────────────────────────────────────────
+ *
+ * The implementation lives in lib/util/src/crc32c.c so the event log and
+ * the C23 LevelDB reader share one set of bytes. This file keeps only the
+ * thin names it already used. */
 
-static uint32_t g_crc32c_table[256];
-static pthread_once_t g_crc32c_once = PTHREAD_ONCE_INIT;
-static bool g_crc32c_use_hw = false;
-
-static void crc32c_table_build(void)
-{
-    /* Castagnoli polynomial reflected: 0x82F63B78. */
-    for (uint32_t i = 0; i < 256; i++) {
-        uint32_t c = i;
-        for (int j = 0; j < 8; j++)
-            c = (c >> 1) ^ (0x82F63B78u & -(c & 1u));
-        g_crc32c_table[i] = c;
-    }
-}
-
-static uint32_t crc32c_sw(const void *data, size_t len)
-{
-    const uint8_t *p = (const uint8_t *)data;
-    uint32_t crc = 0xFFFFFFFFu;
-    for (size_t i = 0; i < len; i++)
-        crc = (crc >> 8) ^ g_crc32c_table[(crc ^ p[i]) & 0xFFu];
-    return crc ^ 0xFFFFFFFFu;
-}
-
-#if defined(__x86_64__) || defined(__i386__)
-__attribute__((target("sse4.2")))
-static uint32_t crc32c_hw(const void *data, size_t len)
-{
-    const uint8_t *p = (const uint8_t *)data;
-    uint32_t crc = 0xFFFFFFFFu;
-#if defined(__x86_64__)
-    while (len >= 8) {
-        uint64_t v;
-        memcpy(&v, p, sizeof(v));
-        crc = (uint32_t)_mm_crc32_u64((uint64_t)crc, v);
-        p += 8;
-        len -= 8;
-    }
-#else
-    while (len >= 4) {
-        uint32_t v;
-        memcpy(&v, p, sizeof(v));
-        crc = _mm_crc32_u32(crc, v);
-        p += 4;
-        len -= 4;
-    }
-#endif
-    while (len > 0) {
-        crc = _mm_crc32_u8(crc, *p++);
-        len--;
-    }
-    return crc ^ 0xFFFFFFFFu;
-}
-#endif
-
-static void crc32c_init_once(void)
-{
-    crc32c_table_build();
-#if defined(__x86_64__) || defined(__i386__)
-    if (__builtin_cpu_supports("sse4.2")) {
-        uint8_t buf[4099];
-        for (size_t i = 0; i < sizeof(buf); i++)
-            buf[i] = (uint8_t)(i * 31u + 7u);
-        bool ok = true;
-        for (size_t n = 0; n <= sizeof(buf); n += (n < 64 ? 1 : 257)) {
-            if (crc32c_hw(buf, n) != crc32c_sw(buf, n)) {
-                ok = false;
-                break;
-            }
-        }
-        g_crc32c_use_hw = ok;
-        if (!ok) {
-            fprintf(stderr,  // obs-ok:event-log-crc-selfcheck
-                    "[event_log] SSE4.2 crc32c self-check failed; "
-                    "using software crc32c\n");
-        }
-    }
-#endif
-}
-
-static uint32_t crc32c(const void *data, size_t len)
-{
-    pthread_once(&g_crc32c_once, crc32c_init_once);
-#if defined(__x86_64__) || defined(__i386__)
-    if (g_crc32c_use_hw)
-        return crc32c_hw(data, len);
-#endif
-    return crc32c_sw(data, len);
-}
+#define crc32c(data, len)    zcl_crc32c((data), (len))
+#define crc32c_sw(data, len) zcl_crc32c_sw((data), (len))
 
 #ifdef ZCL_TESTING
 const char *event_log_crc32c_impl(void)
 {
-    pthread_once(&g_crc32c_once, crc32c_init_once);
-    return g_crc32c_use_hw ? "hardware-sse4.2" : "software-table";
+    return zcl_crc32c_impl_name();
 }
 
 uint32_t event_log_crc32c_test_sw(const void *data, size_t len)
 {
-    pthread_once(&g_crc32c_once, crc32c_init_once);
     return crc32c_sw(data, len);
 }
 
@@ -161,8 +73,7 @@ uint32_t event_log_crc32c_test_active(const void *data, size_t len)
 
 bool event_log_crc32c_hw_available(void)
 {
-    pthread_once(&g_crc32c_once, crc32c_init_once);
-    return g_crc32c_use_hw;
+    return zcl_crc32c_hw_available();
 }
 #endif
 

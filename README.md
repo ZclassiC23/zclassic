@@ -103,6 +103,11 @@ table says today.
   - **A C++ compiler** (`c++`/`g++`) builds LevelDB, which is C++11. `cmake` is
     the preferred route and is genuinely optional — a direct C++ compile is
     used when it is absent — but the C++ compiler itself is not optional.
+    This one is on its way out: `lib/storage/src/ldb_reader_*.c` is a
+    read-only LevelDB reader in plain C23, proven byte-identical to
+    `libleveldb.a` over the real on-disk databases on this host. What still
+    has to land before `c++` leaves this list is spelled out in
+    [`docs/BUILD.md`](docs/BUILD.md) under *Retiring the C++ requirement*.
 - **The first `make vendor` needs the internet.** It downloads pinned source
   tarballs (OpenSSL, libevent, LevelDB, zlib, SQLite, and the Sapling prover),
   verifies each against a pinned SHA-256, and compiles them locally; cargo also

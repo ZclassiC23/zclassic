@@ -2451,6 +2451,29 @@ $(BIN_DIR)/verify_anchor_completeness: tools/verify_anchor_completeness.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -Ivendor/include -o $@ $< -Lvendor/lib -l:libleveldb.a -l:libsqlite3.a -lstdc++ -lpthread -lm -ldl
 
+# ldb_verify_c23: differential proof that the C23 read-only LevelDB reader
+# (lib/storage/src/ldb_reader_*.c) returns byte-identical data to the
+# vendored C++ libleveldb.a. Links BOTH implementations and walks the whole
+# ordered keyspace of two COPIES of the same directory — the C++ open
+# mutates its target, so each side needs its own. This is the only rule in
+# the tree that deliberately links libleveldb.a as a cross-check oracle.
+#   build/bin/ldb_verify_c23 <dir-for-cxx> <dir-for-c23> [max-records]
+.PHONY: ldb_verify_c23
+ldb_verify_c23: $(BIN_DIR)/ldb_verify_c23
+$(BIN_DIR)/ldb_verify_c23: tools/ldb_verify_c23.c \
+		lib/storage/src/ldb_reader_format.c \
+		lib/storage/src/ldb_reader_table.c \
+		lib/storage/src/ldb_reader_version.c \
+		lib/storage/src/ldb_reader_db.c \
+		lib/storage/src/ldb_reader_api.c \
+		lib/util/src/crc32c.c lib/base/src/safe_alloc.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    -D_POSIX_C_SOURCE=200809L \
+	    -Ivendor/include -Ilib/base/include -Ilib/util/include \
+	    -Ilib/storage/include \
+	    -o $@ $^ -Lvendor/lib -l:libleveldb.a -lstdc++ -lpthread -lm -ldl
+
 .PHONY: zcl-blog
 zcl-blog: $(BIN_DIR)/zcl-blog
 $(BIN_DIR)/zcl-blog: tools/zcl-blog

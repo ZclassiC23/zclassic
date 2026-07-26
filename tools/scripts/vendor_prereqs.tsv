@@ -35,5 +35,5 @@ cargo	vendor	cargo	cargo	builds librustzcash, the canonical Sapling prover
 rustc	vendor	rustc	rust	same; cargo without a matching rustc cannot build the prover
 curl	vendor-either	curl	curl	downloads pinned sources; build_vendor falls back to wget
 wget	vendor-either	wget	wget	downloads pinned sources when curl is absent
-c++	vendor-optional	g++	gcc-c++	LevelDB is C++11; without a C++ compiler libleveldb.a cannot be built
+c++	vendor	g++	gcc-c++	LevelDB is C++11 and `make vendor` has no path to libleveldb.a without it
 cmake	vendor-optional	cmake	cmake	preferred LevelDB route; a direct C++11 compile is used when absent
