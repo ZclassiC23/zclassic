@@ -39,6 +39,11 @@ deployed**, and none of it is live until an owner-gated `make deploy`:
 | Per-file test headers: `test_core.h` + facets, so a node-header edit no longer dirties ~36% of the test build | `lib/test/include/test/` |
 | Two ISA paths that had never compiled into a shipped binary — AVX-512 SHA3-512 (missing permutation + a 32-byte over-read) and SHA-NI SHA-256 (now runtime-dispatched with a known-answer self-test) | `lib/crypto/src/` |
 | Boot refusals that fire before the log exists now report themselves; the doc they name is guaranteed to exist by `check-error-doc-refs` | `config/src/boot_error.c`, `tools/lint/check_error_doc_refs.sh` |
+| **The vault** — one read model over all six asset classes (transparent, shielded, tokens, names, market offers, swaps), each row carrying an evidence grade. Funds locked in a swap HTLC are counted for the first time; `getbalance` still cannot see them | `app/services/src/vault_read.c`, `tools/command/native_vault_command.c`, `zclassic23 vault list` |
+| Wallet-wide sweeps for ZSLP balances, ZNAM names, and shielded notes — previously every one of these could only answer per-address | `app/services/src/`, bound into the vault read model |
+| Three broken commands fixed, all one defect: a handler returned a bare JSON array or an in-memory-only field, and the command bridge dropped it. `app.swap.list` and the three wallet plan legs now return usable bodies | `swap_controller.c:970`, `wallet_native_handlers.c` |
+| The `lib/` module set is declared once in `config/lib_module_order.def` and derived everywhere else — it had been copied into five places, and two of the cross-checks were vacuous | `Makefile:272`, `tools/lint/repo_shape.sh` |
+| The code index reads the depfiles the build actually writes (it had been reading a stale flat directory), so the test skip-cache can key on a real include graph: **0 → 677 of 749 groups cacheable** | `lib/codeindex/src/codeindex_deps.c` |
 
 Deploy policy during the hold window is unchanged: a restart resets the 72h
 trailing window, so deploy when the escalator fires anyway, or after
@@ -86,6 +91,63 @@ and need a reconcile pass.
 
 `archive/stash-refold-driver-wip` is older experimental work preserved from a
 stash, not a live lane.
+
+## Picked up next — known open items
+
+Ordered by how much they cost the next person. Everything here was found with
+evidence and left deliberately, not forgotten.
+
+1. **`core.wallet.utxo.list` is still broken**, and it is the last known
+   instance of the defect that also broke `app.swap.list` and the three wallet
+   plan legs. The handler returns a bare JSON array; the command bridge expects
+   an object envelope and drops the body. The two fixed cases show the shape:
+   wrap in `{schema, <items>, count}`. Its test will pass either way — see
+   item 3.
+2. **The compile epoch is the whole build-loop lever.** `zcl_compile_epoch`
+   (`Makefile:626`) keys the object directory on a whole-tree content hash, so
+   there is no per-TU incremental compile: any edit recompiles all 1,182 TUs.
+   Measured, one-line edits: `.c` ~8.7s, header ~9.0s — identical, because both
+   rebuild everything. Re-key the epoch on toolchain and flags only. Note this
+   kills a tempting design: an interface/implementation header hash split pays
+   **nothing** until the epoch changes, because the epoch, not the include
+   graph, is what triggers the rebuild.
+3. **A passing test can still be hollow.** The wallet plan bug survived because
+   its test asserted on the in-memory reply struct, which was correct, while
+   the serializer that the caller actually reads never emitted the field. The
+   rewritten test (`lib/test/src/test_native_api_contract.c`) executes through
+   `zcl_command_registry_execute_json` and asserts on rendered bytes. Any new
+   command test should do the same. Assume sibling command tests have the same
+   hole until checked.
+4. **One unexplained log line.** `test_native_api_contract` emits a single
+   `MISSING_ADDRESS` ERROR that was absent before the test rewrite. The test
+   passes and its assertions were proven non-hollow by deliberately breaking
+   them, and the handler is invoked exactly once — but the log's origin was
+   never run to ground. It is a loose thread, not a known-benign one.
+5. **ZNAM and market write verbs are unrouted.** They are registered `PLANNED`
+   with NULL handlers, so the vault can report those classes but cannot act on
+   them. The market class is additionally the one vault row graded
+   `heuristic_payment_address_match`, because `file_offers` carries no
+   ownership marker at all — that column has to exist before the row can be
+   exact.
+6. **The package library (P1) is not started.** The design is written and
+   decided: `docs/P2P_SOURCE_HOSTING.md` items 3–12, plus a publish-time SPDX
+   allowlist gate. Two of twelve pieces exist and are tested
+   (`lib/vcs/package_manifest.*`, `lib/vcs/package_swarm.*`); the codec has
+   never been given a socket. Owner decisions on record: hash-only package
+   identity, license enforced mechanically at publish, free distribution by
+   default.
+7. **The ontology work is paused mid-design**, at `ba4ded785` + `0343defc3`
+   (`config/onto/extractors.def` + `tools/lint/onto_shape.sh` are landed and
+   green). Three lane designs were returned and saved under
+   `~/.claude/plans/`; worktrees `zclassic23-onto-{a,b,c}` exist with no
+   commits. Nothing depends on it.
+
+Standing pattern behind items 1, 5, and much of the above: **when one fact has
+two writable copies, fix it by deleting a copy, never by adding a
+reconciliation guard.** Five instances were found this session; four were real
+and were collapsed. The fifth (`zslp_balances`) looks exactly like the disease
+and is not — it is load-bearing, and `docs/AGENT_TRAPS.md` now says so. Read
+that entry before deleting anything that looks obviously dead.
 
 ## Where the developer loop actually spends its time
 
