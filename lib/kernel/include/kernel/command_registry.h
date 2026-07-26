@@ -18,7 +18,14 @@
 extern "C" {
 #endif
 
-#define ZCL_COMMAND_ROOT_BUDGET 1200U
+/* Raised 1200 -> 1536: the root menu lists every root as the same fixed
+ * 5-field child summary the branch menus use, so it grows ~130 bytes per root.
+ * The `vault` root (what this node owns, and the custody paths that may act on
+ * it) took the eight roots to 1237 bytes — legitimate growth with an already
+ * minimal summary, not bloat. 1536 clears that with ~300 bytes (two more roots)
+ * of headroom, so adding a root is a deliberate act rather than a surprise
+ * budget failure in an unrelated test. */
+#define ZCL_COMMAND_ROOT_BUDGET 1536U
 /* Raised 1600 -> 2048: each branch menu lists its immediate children as a
  * fixed 5-field summary (path, summary, risk, latency, availability), so a
  * branch's size grows one summary per leaf. The `code` navigator branch reached

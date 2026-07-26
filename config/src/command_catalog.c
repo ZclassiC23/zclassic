@@ -250,6 +250,7 @@ static const struct zcl_command_spec g_catalog_commands[] = {
 #include "../commands/dev.def"
 #include "../commands/code.def"
 #include "../commands/accounts.def"
+#include "../commands/vault.def"
 };
 
 #undef ZCL_COMMAND_BRANCH
@@ -380,6 +381,7 @@ static const struct zcl_command_handler_entry g_handler_index_entries[] = {
 #include "../commands/dev.def"
 #include "../commands/code.def"
 #include "../commands/accounts.def"
+#include "../commands/vault.def"
 };
 
 #undef ZCL_COMMAND_BRANCH

@@ -103,6 +103,7 @@ static int test_domain_leaf_counts(void)
         ASSERT(count_domain(reg, "code") >= 5);
         ASSERT(count_domain(reg, "discover") >= 4);
         ASSERT(count_domain(reg, "status") >= 1);
+        ASSERT(count_domain(reg, "vault") >= 8);
         PASS();
     } _test_next:;
     return failures;
@@ -112,14 +113,14 @@ static int test_six_roots(void)
 {
     int failures = 0;
     const struct zcl_command_registry *reg = zcl_command_catalog();
-    TEST("root exposes exactly seven choices") {
+    TEST("root exposes exactly eight choices") {
         size_t roots = 0;
         for (size_t i = 0; i < reg->count; i++) {
             const char *p = reg->commands[i].parent;
             if (!p || !p[0])
                 roots++;
         }
-        ASSERT_EQ(roots, (size_t)7);
+        ASSERT_EQ(roots, (size_t)8);
         ASSERT(find_spec(reg, "status") != NULL);
         ASSERT(find_spec(reg, "core") != NULL);
         ASSERT(find_spec(reg, "app") != NULL);
@@ -127,6 +128,7 @@ static int test_six_roots(void)
         ASSERT(find_spec(reg, "ops") != NULL);
         ASSERT(find_spec(reg, "discover") != NULL);
         ASSERT(find_spec(reg, "code") != NULL);
+        ASSERT(find_spec(reg, "vault") != NULL);
         PASS();
     } _test_next:;
     return failures;
@@ -1974,7 +1976,7 @@ static int test_ops_state_requires_subsystem(void)
 static int test_is_root_ownership(void)
 {
     int failures = 0;
-    TEST("is_root owns terse status plus core/app/dev/ops/discover/code") {
+    TEST("is_root owns terse status plus core/app/dev/ops/discover/code/vault") {
         ASSERT(zcl_native_command_is_root("core"));
         ASSERT(zcl_native_command_is_root("app"));
         ASSERT(zcl_native_command_is_root("ops"));
@@ -1984,6 +1986,7 @@ static int test_is_root_ownership(void)
         ASSERT(zcl_native_command_is_root("search"));
         ASSERT(zcl_native_command_is_root("status"));
         ASSERT(zcl_native_command_is_root("dev"));
+        ASSERT(zcl_native_command_is_root("vault"));
         ASSERT(!zcl_native_command_is_root("getblockcount"));
         PASS();
     } _test_next:;

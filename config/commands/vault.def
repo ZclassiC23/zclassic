@@ -1,0 +1,198 @@
+/* The vault: one surface that states what this node OWNS across the six asset
+ * classes (transparent, shielded, tokens, names, market, swaps), and routes
+ * every custody action to the path that already owns it.
+ *
+ * THE INVARIANT OF THIS BRANCH: the vault contains no spend logic. Not one
+ * leaf here builds, signs, or broadcasts a transaction. The read leaves
+ * project the vault read model; the custody leaves select, preview, confirm,
+ * and then dispatch — `vault.send` calls the very handler function
+ * `core.wallet.transaction.send` binds, and the swap leaves call the very RPC
+ * method the swap controller registers. A second transaction builder living
+ * here would drift from the real one and eventually sign something other than
+ * what the operator was shown, so there is none; `vault routes` prints the
+ * binding table that says so, resolved from the registry at call time.
+ *
+ * Consumer defines ZCL_COMMAND_*; see config/src/command_catalog.c. */
+
+ZCL_COMMAND_BRANCH("vault", "", "What this node owns, and what may act on it",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_READ(
+    "vault.list", "vault", "",
+    "One row per asset class: everything this node owns",
+    "One row per vault asset class — transparent, shielded, tokens, names, "
+    "market, swaps — projected from the vault read model at call time. "
+    "Fungible rows carry zatoshi totals, non-fungible rows carry item counts; "
+    "each row names its own `source` and carries `complete`. A class whose "
+    "reader is absent is emitted with status=unavailable and a reason, never "
+    "dropped — a missing reader can never read as a zero balance.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "vault,own,assets,balance,portfolio,classes",
+    "zcl.vault_list.input.v1", "zcl.vault_list.v1", "class", "class",
+    "zclassic23 vault list",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_vault_list)
+
+ZCL_COMMAND_READY_READ(
+    "vault.show", "vault", "",
+    "Itemize the holdings inside one asset class",
+    "The individual holdings inside ONE asset class, projected from the vault "
+    "read model at call time and capped by `limit` — a bounded page, with "
+    "`items_truncated` set whenever the class holds more than was rendered. "
+    "Amounts are zatoshi; every item carries its own `encumbered` flag so an "
+    "itemized total is never mistaken for a spendable one.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "vault,show,class,holdings,items,detail",
+    "zcl.vault_show.input.v1", "zcl.vault_show.v1", "class,limit", "class",
+    "zclassic23 vault show transparent",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_vault_show)
+
+ZCL_COMMAND_READY_READ(
+    "vault.encumbered", "vault", "",
+    "What is owned but not free to move, and what would release it",
+    "Only the holdings the vault read model marks encumbered — immature "
+    "coinbase, notes under the confirmation floor, funds locked in an unsettled "
+    "swap HTLC, anything mid-transfer — with the reason per item and, where one "
+    "exists, the vault command that releases it. Amounts are zatoshi at call "
+    "time; bounded by `limit` with `items_truncated`. An empty result means the "
+    "read model reported nothing encumbered, not that nothing was checked: the "
+    "classes actually examined are listed in `classes_scanned`.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "vault,encumbered,locked,immature,unspendable,htlc",
+    "zcl.vault_encumbered.input.v1", "zcl.vault_encumbered.v1", "class,limit",
+    "class", "zclassic23 vault encumbered",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_vault_encumbered)
+
+ZCL_COMMAND_READY_READ(
+    "vault.routes", "vault", "",
+    "Which existing path owns the spend for each asset class",
+    "The custody routing table, resolved from the in-binary command registry "
+    "at call time: for each asset class, the command or RPC method that owns "
+    "building/signing/broadcasting, that owner's live availability, and whether "
+    "a vault verb dispatches to it. Deterministic and node-free. A class with "
+    "no executable owner is listed with route=none and the reason — this leaf "
+    "is the machine-readable statement that the vault holds no spend logic of "
+    "its own, so a route that silently grew a second builder would show up "
+    "here as a changed owner.", ZCL_COMMAND_LIST_BUDGET,
+    "vault,routes,custody,dispatch,owner,registry",
+    "zcl.vault_routes.input.v1", "zcl.vault_routes.v1", "class", "class",
+    "zclassic23 vault routes",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_INSTANT, ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_vault_routes)
+
+/* ── custody verbs — dispatch only ─────────────────────────────────────────
+ * Each of these declares AT LEAST the authority, capability, risk and
+ * confirmation of the path it routes to, re-checks that at dispatch time, and
+ * then hands the built input object to the owning handler. The transaction is
+ * therefore the owning path's transaction, byte for byte. */
+
+ZCL_COMMAND_READY_COMMAND(
+    "vault.send", "vault", "",
+    "Spend transparent ZCL by dispatching to the wallet's own send",
+    "A pass-through of core.wallet.transaction.send, whose plan/commit contract "
+    "is reproduced verbatim: without confirm, that command's non-mutating plan "
+    "(recipient, amount) plus its commit next-action, additionally annotated "
+    "with the vault's advisory transparent-class preflight (spendable and "
+    "encumbered zatoshi at call time, or an explicit unknown when the read "
+    "model is unavailable); with confirm:true, that command's broadcast txid "
+    "and nothing added. `routed_to` names the owning leaf. The vault builds no "
+    "transaction — the bytes are sendtoaddress's, reached through the very "
+    "handler the owning leaf binds.", 0,
+    "vault,send,pay,transparent,broadcast,route",
+    "zcl.vault_send.input.v1", "zcl.wallet_send.v1",
+    "address,amount,idempotency_key,confirm", "",
+    "zclassic23 vault send --input='{\"address\":\"t1..\",\"amount\":1.5}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER,
+    ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_FOREGROUND,
+    ZCL_COMMAND_COST_MODERATE, ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_vault_send)
+
+ZCL_COMMAND_READY_COMMAND(
+    "vault.send-shielded", "vault", "",
+    "Spend shielded ZCL by dispatching to the wallet's own shielded send",
+    "A pass-through of core.wallet.shielded.send, whose plan/commit contract is "
+    "reproduced verbatim: without confirm, that command's non-mutating plan "
+    "(from, to, amount) plus its commit next-action, additionally annotated "
+    "with the vault's advisory shielded-class preflight, or an explicit unknown "
+    "when the read model is unavailable; with confirm:true, that command's "
+    "async z_sendmany operation id and nothing added. `routed_to` names the "
+    "owning leaf. Sending still requires Sapling parameters loaded and a "
+    "passing prover self-test — that precondition belongs to the owning path "
+    "and its failure is surfaced unmodified.", 0,
+    "vault,send,shielded,sapling,z_sendmany,route",
+    "zcl.vault_send_shielded.input.v1", "zcl.shielded_send.v1",
+    "from,to,amount,idempotency_key,confirm", "",
+    "zclassic23 vault send-shielded --input='{\"from\":\"zs1..\",\"to\":\"zs1..\",\"amount\":1}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER,
+    ZCL_COMMAND_MODE_JOB, ZCL_COMMAND_LATENCY_BACKGROUND,
+    ZCL_COMMAND_COST_HIGH, ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_vault_send_shielded)
+
+ZCL_COMMAND_BRANCH("vault.swap", "vault",
+                   "Release funds locked in an atomic-swap contract",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_COMMAND(
+    "vault.swap.redeem", "vault.swap", "",
+    "Claim a funded swap HTLC by dispatching the node's swap_redeem",
+    "Without confirm, a non-mutating plan naming the swap id and the owning RPC "
+    "plus the commit next-action; with confirm:true, the swap_redeem RPC's own "
+    "result — that RPC builds the claim-branch redeem transaction, signs it "
+    "with the wallet's recipient key, broadcasts it and persists SWAP_REDEEMED. "
+    "The confirmation gate is the vault's only contribution; the transaction is "
+    "entirely the swap controller's. ZCL-chain leg only — a counterparty leg on "
+    "BTC/LTC/DOGE is settled by that chain's wallet, and the RPC says so.", 0,
+    "vault,swap,redeem,htlc,settle,secret,route",
+    "zcl.vault_swap_settle.input.v1", "zcl.vault_swap_settle.v1",
+    "swap_id,secret,funding_txid,vout,confirm", "",
+    "zclassic23 vault swap redeem --input='{\"swap_id\":\"..\",\"secret\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER,
+    ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_FOREGROUND,
+    ZCL_COMMAND_COST_MODERATE, ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_vault_swap_redeem)
+
+ZCL_COMMAND_READY_COMMAND(
+    "vault.swap.refund", "vault.swap", "",
+    "Reclaim an expired swap HTLC by dispatching the node's swap_refund",
+    "Without confirm, a non-mutating plan naming the swap id and the owning RPC "
+    "plus the commit next-action; with confirm:true, the swap_refund RPC's own "
+    "result — that RPC builds the timeout-branch refund transaction, signs it "
+    "with the wallet's refunder key, broadcasts it and persists SWAP_REFUNDED. "
+    "The CLTV precondition is enforced by that RPC, which refuses before the "
+    "locktime height and names the unlock height; the vault neither predicts "
+    "nor overrides it.", 0,
+    "vault,swap,refund,htlc,timeout,cltv,route",
+    "zcl.vault_swap_settle.input.v1", "zcl.vault_swap_settle.v1",
+    "swap_id,funding_txid,vout,confirm", "",
+    "zclassic23 vault swap refund --input='{\"swap_id\":\"..\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER,
+    ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_FOREGROUND,
+    ZCL_COMMAND_COST_MODERATE, ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_vault_swap_refund)

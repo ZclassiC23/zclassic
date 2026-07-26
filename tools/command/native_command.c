@@ -68,8 +68,8 @@ bool zcl_native_command_is_root(const char *word)
     if (!word || !word[0])
         return false;
     static const char *const roots[] = {
-        "status", "core", "app", "dev", "ops", "discover", "code", "help",
-        "search",
+        "status", "core", "app", "dev", "ops", "discover", "code", "vault",
+        "help", "search",
         /* Operator-UX convenience roots: bare aliases of ops.explain /
          * ops.profile so `zclassic23 explain sync` / `zclassic23 profile`
          * work without the `ops` prefix (each leaf carries the matching

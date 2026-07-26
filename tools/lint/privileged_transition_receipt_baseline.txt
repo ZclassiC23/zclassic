@@ -69,3 +69,13 @@ ops.debug.rom_seed.enable  exempt: in-process policy flag flip + JSON persist, n
 ops.debug.rom_seed.disable exempt: in-process policy flag flip + JSON persist, no artifact install
 ops.debug.rom_fetch.bundle exempt: downloads+content-verifies a file into the datadir only; activation is the separate receipt-gated -install-consensus-bundle path
 ops.debug.rom_seed.publish exempt: idempotent re-scan registering already-on-disk content-verified artifacts for serving; produces and installs nothing
+
+# Vault custody verbs (config/commands/vault.def). None of them builds, signs
+# or installs anything: each resolves the path that already owns the spend and
+# dispatches to it, so the Law-7 disposition of the routed leaf governs. If a
+# vault verb ever grows its own artifact install it stops being a route, and
+# this line must become a receipt:.
+vault.send                 exempt: pure route to core.wallet.transaction.send, which owns the disposition
+vault.send-shielded        exempt: pure route to core.wallet.shielded.send, which owns the disposition
+vault.swap.redeem          exempt: pure route to the swap_redeem RPC, which owns build/sign/broadcast
+vault.swap.refund          exempt: pure route to the swap_refund RPC, which owns build/sign/broadcast

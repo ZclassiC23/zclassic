@@ -197,6 +197,42 @@ void zcl_native_handle_app_inspect(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* ── vault.* — what this node owns, and what may act on it
+ * (tools/command/native_vault_command.c). The read leaves project the vault
+ * read model (services/vault_read.h) through one documented seam and never
+ * aggregate anything themselves; an asset class the model cannot answer for is
+ * an explicit unavailable row, never an omitted one. The custody leaves hold
+ * NO spend logic: vault.send / vault.send-shielded resolve their owning leaf in
+ * the live catalog and call the handler function pointer it binds, and the
+ * swap settlements call the RPC method the swap controller registers, so the
+ * transaction is always the owning path's. `vault.routes` prints that binding
+ * table, resolved from the registry at call time. Bound by
+ * config/commands/vault.def. */
+void zcl_native_handle_vault_list(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_vault_show(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_vault_encumbered(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_vault_routes(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_vault_send(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_vault_send_shielded(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_vault_swap_redeem(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_vault_swap_refund(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* ops.state — generic subsystem state dump. Dispatches the `dumpstate` RPC
  * method directly. `subsystem` (required) selects the
  * owning module's *_dump_state_json; `key` is subsystem-specific (e.g. a
