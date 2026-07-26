@@ -25,7 +25,6 @@
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
 
-#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -76,7 +75,7 @@ struct testcache {
     char              root[4096];
     struct trc_memo   memo;
     char            (*closure)[256];   /* TRC_MAX_CLOSURE scratch rows */
-    /* Include-graph liveness, measured once at open (see trc_scan_depfiles). */
+    /* Include-graph liveness, from the graph itself, measured once at open. */
     size_t            dep_count;       /* depfiles the graph was built from */
     int64_t           dep_newest_ns;   /* newest depfile mtime */
     uint8_t           envkey[32];      /* SHA3 of the coverage-gating env */
@@ -227,58 +226,15 @@ static bool trc_file_hash(struct testcache *tc, const char *relpath,
  *      describes a tree that no longer exists, and an include added since is
  *      invisible to the key.
  *
- * So we measure the graph the same way codeindex does — walking build/ for *.d
- * and skipping the retained `epochs/` and `history/` generations — and record
- * the count and the newest mtime. A group whose inputs are all older than that
- * bound is describable by the graph; anything else is UNCACHEABLE.
+ * So we ask the graph for its own inventory — the count and the newest mtime of
+ * the depfiles it read. A group whose inputs are all older than that bound is
+ * describable by the graph; anything else is UNCACHEABLE.
  *
- * KEEP THE EXCLUSION SET IN SYNC with collect_dep_paths() in
- * lib/codeindex/src/codeindex_deps.c. A drift here can only make this bound
- * older than the real one, i.e. fail safe (more groups run). */
-static void trc_scan_depfiles(const char *root, const char *reldir, int depth,
-                              size_t *count, int64_t *newest_ns)
-{
-    if (depth > 24)
-        return;  /* pathological nesting; the bound stays conservative */
-    char full[4200];
-    int n = snprintf(full, sizeof(full), "%s/%s", root, reldir);
-    if (n < 0 || (size_t)n >= sizeof(full))
-        return;
-    DIR *dir = opendir(full);
-    if (!dir)
-        return;
-    struct dirent *e;
-    while ((e = readdir(dir)) != NULL) {
-        if (e->d_name[0] == '.')
-            continue;
-        if (strcmp(e->d_name, "epochs") == 0 || strcmp(e->d_name, "history") == 0)
-            continue;
-        char child[4200];
-        int cn = snprintf(child, sizeof(child), "%s/%s", reldir, e->d_name);
-        if (cn < 0 || (size_t)cn >= sizeof(child))
-            continue;
-        char child_full[4200];
-        int fn = snprintf(child_full, sizeof(child_full), "%s/%s", root, child);
-        if (fn < 0 || (size_t)fn >= sizeof(child_full))
-            continue;
-        struct stat st;
-        if (lstat(child_full, &st) != 0)
-            continue;
-        if (S_ISDIR(st.st_mode)) {
-            trc_scan_depfiles(root, child, depth + 1, count, newest_ns);
-            continue;
-        }
-        size_t len = strlen(e->d_name);
-        if (!S_ISREG(st.st_mode) || len < 3 ||
-            strcmp(e->d_name + len - 2, ".d") != 0)
-            continue;
-        (*count)++;
-        int64_t mt = trc_stat_mtime_ns(&st);
-        if (mt > *newest_ns)
-            *newest_ns = mt;
-    }
-    closedir(dir);
-}
+ * This used to be a private copy of codeindex's walk, kept in sync by comment.
+ * It drifted the moment the build moved its depfiles into per-build compile
+ * epochs: both copies then looked where the compiler no longer writes, and the
+ * cache reported an ABSENT include graph for every group. One traversal, one
+ * answer — codeindex_depfile_graph() is that traversal. */
 
 /* ── coverage-gating environment ───────────────────────────────────────────
  *
@@ -584,7 +540,11 @@ struct testcache *testcache_open(const char *repo_root)
     }
 
     trc_env_digest(tc->envkey);
-    trc_scan_depfiles(tc->root, "build", 0, &tc->dep_count, &tc->dep_newest_ns);
+    if (!codeindex_depfile_graph(tc->root, &tc->dep_count,
+                                 &tc->dep_newest_ns)) {
+        tc->dep_count = 0;
+        tc->dep_newest_ns = 0;
+    }
 
     tc->ci = codeindex_open(tc->root);
     if (!tc->ci) {

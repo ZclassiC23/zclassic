@@ -136,6 +136,27 @@ printf 'pid=%s\nstart=%s\n' "$OWNER_PID" "$OWNER_START" > "$tmp_lease"
 mv -f -- "$tmp_lease" "$LEASE"
 tmp_lease=""
 
+# Name the epoch this build compiles into, at the root of the generation
+# directory, while still holding the lock that mints it.  Every profile reaches
+# a compiler only through this acquire, so a compile cannot land in an epoch
+# this file does not name, and the file cannot name an epoch no build claimed.
+# The retained generations beside it are receipts of trees that are no longer
+# checked out; a reader that wants the live build inputs -- the code index's
+# include graph, above all -- reads this one name instead of guessing from
+# mtimes or scanning every generation.
+publish_current_epoch()
+{
+    local root="$1" tmp
+    [ -n "$root" ] && [ "$root" != - ] || return 0
+    mkdir -p "$root"
+    tmp="$(mktemp "$root/.current-epoch.XXXXXX")" ||
+        fail "could not stage the current-epoch pointer under $root"
+    printf '%s\n' "$EPOCH" > "$tmp"
+    mv -f -- "$tmp" "$root/.current-epoch"
+}
+publish_current_epoch "$OBJECT_ROOT"
+publish_current_epoch "$CANDIDATE_ROOT"
+
 lease_is_live()
 {
     local lease="$1" pid start actual

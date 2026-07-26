@@ -244,4 +244,22 @@ int codeindex_forward_closure(struct codeindex *ci, const char *root_symbol,
                               char (*out)[256], int cap,
                               bool *truncated, bool *root_found);
 
+/* The include graph's own inventory: how many compiler depfiles it was built
+ * from, and the newest modification time among them (nanoseconds). Both come
+ * from the exact traversal the graph itself uses, so a caller asking "does the
+ * graph exist?" or "is my input newer than the graph?" gets the graph's answer
+ * rather than its own.
+ *
+ * Walk build/ yourself and you are writing a second traversal of a layout with
+ * real rules — retained compile epochs, pre-epoch leftovers, the pointer that
+ * names the live generation — and the two copies drift the moment the layout
+ * moves. They already did: a private copy of this walk kept the result cache
+ * reporting an ABSENT include graph long after the graph was rebuilt.
+ *
+ * A count of 0 means ABSENT (fresh tree, or nothing current to read), which is
+ * a legitimate state and not an error. Returns false on I/O failure, with both
+ * outputs zeroed. */
+bool codeindex_depfile_graph(const char *root, size_t *out_count,
+                             int64_t *out_newest_mtime_ns);
+
 #endif /* ZCL_CODEINDEX_H */
