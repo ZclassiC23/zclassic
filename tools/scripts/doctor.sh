@@ -116,6 +116,7 @@ fi
 have() { command -v "$1" >/dev/null 2>&1; }
 
 missing_apt=(); missing_dnf=(); either_present=0; either_seen=0
+missing_opt_apt=(); missing_opt_dnf=(); missing_opt_n=0
 present_n=0; missing_n=0
 rows_required=(); rows_vendor=(); rows_optional=()
 
@@ -136,9 +137,20 @@ while IFS=$'\t' read -r tool class apt dnf why; do
         vendor|vendor-either)     rows_vendor+=("$line") ;;
         vendor-optional)          rows_optional+=("$line") ;;
     esac
-    if [ "$status" = "MISSING" ] && [ "$class" != "vendor-either" ]; then
-        missing_n=$((missing_n + 1))
-        missing_apt+=("$apt"); missing_dnf+=("$dnf")
+    # vendor-optional is counted SEPARATELY: absent means a slower path or one
+    # named capability off, never a build that cannot proceed. Folding it into
+    # the blocking count is what made `make doctor` demand a Rust toolchain on
+    # a host that does not need one.
+    if [ "$status" = "MISSING" ]; then
+        case "$class" in
+            vendor-either) ;;
+            vendor-optional)
+                missing_opt_n=$((missing_opt_n + 1))
+                missing_opt_apt+=("$apt"); missing_opt_dnf+=("$dnf") ;;
+            *)
+                missing_n=$((missing_n + 1))
+                missing_apt+=("$apt"); missing_dnf+=("$dnf") ;;
+        esac
     fi
 done < "$TSV"
 
@@ -150,7 +162,8 @@ echo
 echo "Required for 'make vendor' (one-time vendored-archive build):"
 printf '%s\n' "${rows_vendor[@]}"
 echo
-echo "Optional — vendor builds without these, on a slower path:"
+echo "Optional — the build completes without these (slower path, or one"
+echo "named capability off; see the reason on each line):"
 printf '%s\n' "${rows_optional[@]}"
 echo
 
@@ -220,6 +233,24 @@ fi
 echo
 if [ "$missing_n" -eq 0 ]; then
     echo "No missing prerequisites on this host."
+    if [ "$missing_opt_n" -gt 0 ]; then
+        echo
+        echo "Everything required is present. $missing_opt_n OPTIONAL tool(s) are absent —"
+        echo "the build works without them; each line above says what you give up."
+        echo "In particular, without cargo/rustc the node builds and runs fully:"
+        echo "it validates the chain, serves the explorer and RECEIVES shielded"
+        echo "funds. Only SENDING shielded value is unavailable, and it refuses"
+        echo "with a message naming the rebuild flag. To turn it on:"
+        echo "  make ZCL_WITH_RUST=1"
+        if have apt-get || have apt; then
+            printf '  sudo apt-get install -y %s\n' \
+                "$(printf '%s\n' "${missing_opt_apt[@]}" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+        fi
+        if have dnf; then
+            printf '  sudo dnf install -y %s\n' \
+                "$(printf '%s\n' "${missing_opt_dnf[@]}" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+        fi
+    fi
 else
     echo "Install the $missing_n missing prerequisite(s):"
     if have apt-get || have apt; then

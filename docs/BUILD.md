@@ -39,6 +39,12 @@ How to read this:
   auto-detected by the build and disabled for the run). A host that has built
   this project before finishes far faster, and that faster number is not a
   first build.
+- **The 92 s vendor stage above was measured while `librustzcash.a` was still
+  part of the default archive set.** It no longer is (see *Prerequisites* —
+  Rust is opt-in), so a default `make vendor` now does strictly less work than
+  that row records; `make ZCL_WITH_RUST=1 vendor` is the configuration the row
+  describes. The row is left as measured rather than guessed at — re-run
+  `make first-build-timing` to replace it with a fresh measurement.
 - **The clone stage is a local clone**, which git satisfies by hard-linking —
   effectively free. A real `git clone` from GitHub transfers the pack, and the
   history is 932 MiB of packed objects for a 3558-file tracked tree, so over a
@@ -374,11 +380,34 @@ without the doctor learning about it. Prose here can only describe it.
   make**, **git**.
 - **`make vendor`:** `ar`, `nm`, `sha256sum`, `tar`, `unzip`, `patch`, `perl`
   (OpenSSL's `Configure` is a perl program), and `curl` **or** `wget`.
-- **Rust — `cargo` + `rustc`.** `librustzcash.a`, the canonical Zcash Sapling
-  prover, is a Rust crate built from a pinned upstream revision. There is no C
-  fallback: without a Rust toolchain `make vendor` stops at that archive. The
-  node's own ~970k lines are C23; the prover it links is not, and the honest
-  prerequisite list says so.
+- **Rust — `cargo` + `rustc` — OPTIONAL, and off by default.** A host with no
+  Rust toolchain runs `make vendor` and `make` to completion and gets a full
+  node: it validates the chain, relays and verifies other people's shielded
+  transactions, serves the explorer and REST API, mines, and RECEIVES shielded
+  funds. All of that is native C23 (`lib/sapling/` is ~14k lines of C23
+  covering BLS12-381, Groth16 verification, Jubjub, Pedersen hash and note
+  encryption).
+
+  The one capability that needs Rust is CREATING Sapling proofs — i.e. SENDING
+  shielded value, in every direction (t→z as much as z→z and z→t, because an
+  output description carries its own Groth16 proof). Without the backend,
+  `z_sendmany` and on-chain ZMSG refuse with a typed error naming the flag, and
+  `ops state --subsystem=messaging` reports `onchain_channel_ready: false`.
+  Nothing crashes and nothing silently succeeds.
+
+  Turn it on with the compile-time flag, which needs `cargo` + `rustc` once to
+  build `vendor/lib/librustzcash.a` (the canonical Zcash Sapling prover, at a
+  pinned upstream revision):
+
+  ```bash
+  make ZCL_WITH_RUST=1                  # vendor + build with the prover linked
+  make ZCL_WITH_RUST=1 test-parallel    # and its test coverage
+  ```
+
+  The flag rides into both the compile flags and the link inputs, which the
+  build-epoch key hashes, so the two configurations get separate object roots
+  and can never mix stale objects. `make doctor` files `cargo`/`rustc` under
+  *optional* and says exactly what their absence costs.
 - **A C++ compiler — `c++`/`g++`.** LevelDB is C++11. `cmake` is the preferred
   build route and is genuinely optional (a direct C++11 compile is the
   fallback), but the C++ compiler is required either way. `vendor_prereqs.tsv`
@@ -386,8 +415,9 @@ without the doctor learning about it. Prose here can only describe it.
   build has no path to `libleveldb.a` without one.
 - **Not needed:** `autoconf`. The zlib and libevent tarballs ship a generated
   `./configure`; `make vendor` runs it and never regenerates it.
-- The first `make vendor` needs **network access** for the pinned tarballs and
-  the prover's crates. Every later build is offline.
+- The first `make vendor` needs **network access** for the pinned tarballs (and
+  for the prover's crates when `ZCL_WITH_RUST=1`). Every later build is
+  offline.
 - For the embedded Tor onion service (optional): the `vendor/tor` submodule
   (`git submodule update --init`). When that submodule is built, the Makefile
   links the real Tor; otherwise it links the in-tree `libtor_stub.a` that
@@ -411,10 +441,13 @@ against its minimum-safe version.
 | `libleveldb.a` | LevelDB | 1.23 | fetched + built | https://github.com/google/leveldb |
 | `libsqlite3.a` | SQLite (amalgamation) | 3.49.0 | fetched + built | https://www.sqlite.org/ |
 | `libz.a` | zlib | 1.3.1 | fetched + built | https://github.com/madler/zlib |
-| `librustzcash.a` | Zcash Sapling prover | `06da3b9ac8f2` | fetched + built | https://github.com/zcash/librustzcash |
+| `librustzcash.a` *(optional)* | Zcash Sapling prover | `06da3b9ac8f2` | fetched + built, only under `ZCL_WITH_RUST=1` | https://github.com/zcash/librustzcash |
 
-That is 11 archives total (the 10 `make vendor` builds + the committed
-`libsecp256k1.a`).
+That is 10 archives in a default `make vendor` (9 builds + the committed
+`libsecp256k1.a`), and 11 under `ZCL_WITH_RUST=1`, which adds
+`librustzcash.a`. `make audit` reports the optional archive as `SKIP` when the
+build did not ask for it, and keeps every provenance and proving-ABI check
+HARD when it did.
 
 Notes:
 - **OpenSSL pinned to 3.0.16** — the project's minimum-safe floor (the older
@@ -436,10 +469,14 @@ Notes:
 - **SQLite 3.49.0** amalgamation; `make vendor` also refreshes
   `vendor/include/sqlite3.h` and `vendor/sqlite3.c` so the rest of the build
   (e.g. `tools/sqlq.c`) stays in sync.
-- **librustzcash is proving-only.** It is the exact, SHA256-pinned revision
-  used by the canonical ZClassic daemon and is linked statically behind the
-  repository's C ABI. Sapling block/transaction verification stays in the
-  independent C23 verifier. `Cargo.lock` pins registry checksums and the git
+- **librustzcash is proving-only, and optional.** It is the exact,
+  SHA256-pinned revision used by the canonical ZClassic daemon, linked
+  statically behind the repository's C ABI, and only when `ZCL_WITH_RUST=1`
+  asks for it. Sapling block/transaction verification stays in the independent
+  C23 verifier in every build. Exactly one of two sibling translation units is
+  compiled: `lib/sapling/src/sapling_prover_librustzcash.c` with the flag, and
+  `lib/sapling/src/sapling_prover_unavailable.c` (typed refusals, no Rust)
+  without it. `Cargo.lock` pins registry checksums and the git
   dependency revision; build paths are remapped before the archive is linked.
 - Downloads are cached under `vendor/.cache/` (gitignored); build trees live in
   `vendor/.build/` (removed on a clean full run). To bump a version, edit the

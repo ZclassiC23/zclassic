@@ -79,9 +79,9 @@ bool z_sendmany_shielded(
          * diagnostics; fail here before witness/proof work or spent-state
          * mutation. */
         if (!zclassic_sapling_prover_is_ready()) {
-            char err[256];
+            char err[320];
             snprintf(err, sizeof(err),
-                     "Shielded proving unavailable (%s, %s)",
+                     "Shielded proving unavailable (backend=%s, status=%s)",
                      zclassic_sapling_prover_backend(),
                      zclassic_sapling_prover_status());
             json_set_str(result, err);

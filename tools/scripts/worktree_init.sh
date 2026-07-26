@@ -79,10 +79,14 @@ else
 fi
 
 # -- Step 3: sanity-check link prerequisites -----------------------------
-# Mirrors the Makefile's VENDOR_ARCHIVES list.
+# Mirrors the Makefile's VENDOR_ARCHIVES list. librustzcash.a is deliberately
+# NOT here: it is optional (Makefile flag ZCL_WITH_RUST) and a Rust-free
+# checkout links fine without it, so demanding it would fail a healthy lane.
+# It is still COPIED below when the source checkout has it, so a worktree can
+# run `make ZCL_WITH_RUST=1` without a second vendor build.
 vendor_archives=(libsecp256k1.a libcrypto.a libssl.a libevent.a
     libevent_openssl.a libevent_pthreads.a libleveldb.a libsqlite3.a
-    libz.a librustzcash.a libtor_stub.a)
+    libz.a libtor_stub.a)
 
 missing=()
 [[ -d vendor/include ]] || missing+=("vendor/include")

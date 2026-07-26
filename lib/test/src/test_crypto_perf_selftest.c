@@ -240,6 +240,10 @@ int test_crypto_perf_selftest(void)
                  (home && *home) ? home : ".");
         if (!sapling_init_params(params_dir)) {
             printf("  ~/.zcash-params absent -> SKIPPING Groth16 leg\n");
+        } else if (!zclassic_sapling_prover_is_ready()) {
+            printf("  SKIP (Groth16 proving leg) — %s (status=%s)\n",
+                   zclassic_sapling_prover_backend(),
+                   zclassic_sapling_prover_status());
         } else {
             uint8_t diversifier[11];
             bool div_ok = cp_find_diversifier(diversifier);

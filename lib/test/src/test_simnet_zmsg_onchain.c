@@ -41,6 +41,7 @@
 
 #include "sapling/sapling.h"
 #include "sapling/params_init.h"
+#include "sapling/sapling_prover.h"
 #include "sapling/zip32.h"
 #include "sapling/fr.h"
 #include "sapling/note_encryption.h"
@@ -169,9 +170,16 @@ int test_simnet_zmsg_onchain(void)
     char params_dir[512];
     snprintf(params_dir, sizeof(params_dir), "%s/.zcash-params",
              (home && *home) ? home : ".");
-    if (!sapling_init_params(params_dir)) {
-        printf("  ~/.zcash-params absent — SKIPPING real-prover leg "
-               "(codec + ingest above ran)\n");
+    if (!sapling_init_params(params_dir) ||
+        !zclassic_sapling_prover_is_ready()) {
+        if (zclassic_sapling_prover_is_ready())
+            printf("  ~/.zcash-params absent — SKIPPING real-prover leg "
+                   "(codec + ingest above ran)\n");
+        else
+            printf("  SKIP (real-prover leg) — %s (status=%s). "
+                   "Codec + ingest above ran.\n",
+                   zclassic_sapling_prover_backend(),
+                   zclassic_sapling_prover_status());
         printf("ZMSG on-chain: %s (%d failures, prover leg skipped)\n",
                failures == 0 ? "OK" : "FAIL", failures);
         return failures;

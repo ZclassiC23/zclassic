@@ -58,8 +58,16 @@
 /* ── Test-only bridge to the pinned reference archive ──────────────────────
  * Declared locally (not in any public header) so the third-party FFI surface
  * never leaks into the repo's C API. These resolve against vendor/lib/
- * librustzcash.a, which the test binary already links (the sapling prover
- * references it). */
+ * librustzcash.a, which the test binary links only under ZCL_WITH_RUST=1.
+ *
+ * The DEFAULT build links no Rust (see the ZCL_WITH_RUST block at the top of
+ * the Makefile). This oracle then still runs, and still asserts the C23
+ * derivations against the BAKED reference vector in groth16_spend_oracle_kat.h
+ * — part (b) below, which is the ground truth the native spend-circuit port is
+ * measured against. What it cannot do without the archive is part (a),
+ * re-deriving that vector from the reference to prove the baked bytes are
+ * still faithful; that leg prints a named SKIP naming the rebuild flag. */
+#ifdef ZCL_WITH_RUST
 extern void librustzcash_nsk_to_nk(const uint8_t *nsk, uint8_t *result);
 extern void librustzcash_crh_ivk(const uint8_t *ak, const uint8_t *nk,
                                  uint8_t *result);
@@ -74,6 +82,7 @@ extern bool librustzcash_sapling_compute_nf(const uint8_t *diversifier,
                                             const uint8_t *r, const uint8_t *ak,
                                             const uint8_t *nk, uint64_t position,
                                             uint8_t *result);
+#endif
 
 /* Reference ground truth for the fixed KAT witness, filled in by
  * spend_oracle_derive_reference(). */
@@ -93,6 +102,7 @@ struct spend_oracle_reference {
  * archive does not export ask->ak; ak is a private circuit *input*, not a
  * circuit-derived wire, so this does not weaken the differential). Every other
  * quantity comes straight from the reference FFI. */
+#ifdef ZCL_WITH_RUST
 static void spend_oracle_derive_reference(struct spend_oracle_reference *ref)
 {
     memset(ref, 0, sizeof(*ref));
@@ -134,7 +144,28 @@ static void spend_oracle_derive_reference(struct spend_oracle_reference *ref)
     }
     ref->valid = true;
 }
+#else  /* !ZCL_WITH_RUST — no reference archive linked */
+/* Load the checked-in vector instead of re-deriving it. Everything downstream
+ * (the C23 differential, part (b)) still runs and still gates; only the
+ * "is the baked vector still what the reference produces" leg is unavailable,
+ * and it is skipped by name at the call site rather than faked. */
+static void spend_oracle_load_baked_reference(struct spend_oracle_reference *ref)
+{
+    memset(ref, 0, sizeof(*ref));
+#if SPEND_ORACLE_KAT_BAKED
+    memcpy(ref->diversifier, SPEND_ORACLE_KAT_DIVERSIFIER, 11);
+    memcpy(ref->ak,   SPEND_ORACLE_KAT_AK,   32);
+    memcpy(ref->nk,   SPEND_ORACLE_KAT_NK,   32);
+    memcpy(ref->ivk,  SPEND_ORACLE_KAT_IVK,  32);
+    memcpy(ref->pk_d, SPEND_ORACLE_KAT_PK_D, 32);
+    memcpy(ref->cm,   SPEND_ORACLE_KAT_CM,   32);
+    memcpy(ref->nf,   SPEND_ORACLE_KAT_NF,   32);
+    ref->valid = true;
+#endif
+}
+#endif /* ZCL_WITH_RUST */
 
+#ifdef ZCL_WITH_RUST
 static void emit_bytes(const char *name, const uint8_t *b, size_t n)
 {
     printf("static const uint8_t %s[%zu] = {\n    ", name, n);
@@ -161,6 +192,7 @@ static void spend_oracle_emit_kat(const struct spend_oracle_reference *ref)
     printf("#define SPEND_ORACLE_KAT_BAKED 1\n");
     printf("/* ==== END generated spend-oracle KAT ==== */\n\n");
 }
+#endif /* ZCL_WITH_RUST */
 
 #define ORACLE_CHECK(name, expr) do {                 \
     printf("  %s... ", (name));                        \
@@ -172,8 +204,11 @@ static void spend_oracle_emit_kat(const struct spend_oracle_reference *ref)
     ORACLE_CHECK(name, memcmp((a), (b), (n)) == 0)
 
 /* Public entry point: reference differential oracle for the Sapling spend
- * circuit. Returns the number of failures (0 == green). Non-skippable and
- * params-free — it links the reference archive and needs no on-disk state. */
+ * circuit. Returns the number of failures (0 == green). Params-free — it needs
+ * no on-disk state. Under ZCL_WITH_RUST=1 it re-derives the ground truth from
+ * the linked reference archive; in the default Rust-free build it loads the
+ * baked vector instead and says so, and the C23 differential below runs
+ * identically either way. */
 int groth16_spend_reference_oracle(void);
 int groth16_spend_reference_oracle(void)
 {
@@ -181,9 +216,19 @@ int groth16_spend_reference_oracle(void)
     int failures = 0;
 
     struct spend_oracle_reference ref;
+#ifdef ZCL_WITH_RUST
     spend_oracle_derive_reference(&ref);
     ORACLE_CHECK("reference archive produced ground truth for fixed witness",
                  ref.valid);
+#else
+    spend_oracle_load_baked_reference(&ref);
+    printf("  SKIP (reference re-derivation) — built without ZCL_WITH_RUST=1, "
+           "so vendor/lib/librustzcash.a is not linked; using the baked KAT in "
+           "groth16_spend_oracle_kat.h as ground truth. Rebuild with "
+           "`make ZCL_WITH_RUST=1` to re-prove the baked vector against the "
+           "reference archive.\n");
+    ORACLE_CHECK("baked KAT vector is present as ground truth", ref.valid);
+#endif
     if (!ref.valid) {
         printf("--- end H2 oracle (%d failure[s]) ---\n", failures + 1);
         return failures + 1;
@@ -191,12 +236,23 @@ int groth16_spend_reference_oracle(void)
 
     /* Emit mode: dump the reference vector and stop (regeneration path). */
     if (getenv("ZCL_EMIT_SPEND_ORACLE_KAT")) {
+#ifdef ZCL_WITH_RUST
         spend_oracle_emit_kat(&ref);
         printf("--- end H2 oracle (emit mode, no assertions) ---\n");
         return 0;
+#else
+        /* The operator explicitly asked to REGENERATE the vector. Emitting the
+         * baked bytes back would be circular and would look like a successful
+         * regeneration, so this is a hard failure, not a skip. */
+        printf("  FAIL — ZCL_EMIT_SPEND_ORACLE_KAT=1 requires the reference "
+               "archive; re-run `make ZCL_WITH_RUST=1 spend-oracle-kat`\n");
+        printf("--- end H2 oracle (1 failure[s]) ---\n");
+        return 1;
+#endif
     }
 
 #if SPEND_ORACLE_KAT_BAKED
+#ifdef ZCL_WITH_RUST
     /* (a) The reference re-derivation must equal the checked-in KAT. Proves the
      *     baked vector is faithful to the pinned archive AND that the reference
      *     FFI is deterministic across runs (no hidden RNG on this path). */
@@ -208,13 +264,26 @@ int groth16_spend_reference_oracle(void)
     ORACLE_EQ("reference pk_d == baked KAT", ref.pk_d, SPEND_ORACLE_KAT_PK_D, 32);
     ORACLE_EQ("reference cm   == baked KAT", ref.cm,   SPEND_ORACLE_KAT_CM,   32);
     ORACLE_EQ("reference nf   == baked KAT", ref.nf,   SPEND_ORACLE_KAT_NF,   32);
+#endif
 
     /* (b) The native C23 spend-circuit building blocks must reproduce the
      *     reference wire values exactly — the differential substrate H4 grows
      *     into a full per-constraint witness diff. Each C23 stage is fed the
      *     preceding C23 stage's output, so an all-green chain proves end-to-end
      *     C23<->reference agreement on nk / ivk / pk_d / cm / nf. */
-    uint8_t nk_c23[32], ivk_c23[32], pk_d_c23[32], cm_c23[32], nf_c23[32];
+    uint8_t ak_c23[32], nk_c23[32], ivk_c23[32], pk_d_c23[32];
+    uint8_t cm_c23[32], nf_c23[32];
+    uint8_t d_c23[11];
+    memset(d_c23, 0, sizeof(d_c23));
+    for (unsigned i = 0; i < 256; i++) {
+        d_c23[0] = (uint8_t)i;
+        if (sapling_check_diversifier(d_c23)) break;
+    }
+    ORACLE_EQ("C23 first valid diversifier == baked KAT",
+              d_c23, SPEND_ORACLE_KAT_DIVERSIFIER, 11);
+    sapling_ask_to_ak(SPEND_ORACLE_KAT_ASK, ak_c23);
+    ORACLE_EQ("C23 sapling_ask_to_ak == baked KAT (circuit input ak)",
+              ak_c23, SPEND_ORACLE_KAT_AK, 32);
     sapling_nsk_to_nk(SPEND_ORACLE_KAT_NSK, nk_c23);
     sapling_crh_ivk(ref.ak, nk_c23, ivk_c23);
     bool pkd_ok = sapling_ivk_to_pkd(ivk_c23, ref.diversifier, pk_d_c23);

@@ -695,8 +695,14 @@ static int bench_crypto_verify(void)
             if (pctx) zclassic_sapling_proving_ctx_free(pctx);
 
             if (!built) {
-                fprintf(stderr, "[bench-crypto-verify] prover failed; "
-                                "skipping groth16 row\n");
+                fprintf(stderr, "[bench-crypto-verify] no groth16 row: the "
+                        "verify benchmark needs a freshly proved "
+                        "output description and this build has no "
+                        "Sapling proving backend or it is not "
+                        "ready (backend=%s status=%s). Rebuild "
+                        "with `make ZCL_WITH_RUST=1`.\n",
+                        zclassic_sapling_prover_backend(),
+                        zclassic_sapling_prover_status());
             } else {
                 /* TEETH: valid -> true, one-bit-flipped -> false. */
                 sapling_verification_ctx_init(&ga.vctx);
@@ -1195,8 +1201,14 @@ static int bench_crypto_vs_rust(void)
                                               out_ct, ga.proof);
             if (pctx) zclassic_sapling_proving_ctx_free(pctx);
             if (!built) {
-                fprintf(stderr, "[bench-crypto-vs-rust] prover failed; "
-                                "skipping groth16 row\n");
+                fprintf(stderr, "[bench-crypto-vs-rust] no groth16 row: the "
+                        "verify benchmark needs a freshly proved "
+                        "output description and this build has no "
+                        "Sapling proving backend or it is not "
+                        "ready (backend=%s status=%s). Rebuild "
+                        "with `make ZCL_WITH_RUST=1`.\n",
+                        zclassic_sapling_prover_backend(),
+                        zclassic_sapling_prover_status());
             } else {
                 sapling_verification_ctx_init(&ga.vctx);
                 bool pos = sapling_check_output(&ga.vctx, ga.cv, ga.cm,

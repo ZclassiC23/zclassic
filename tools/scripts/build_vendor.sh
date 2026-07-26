@@ -669,9 +669,21 @@ need "$VENDOR_CC"; need "$VENDOR_AR"; need sha256sum; need tar; need make
 mkdir -p "$LIB" "$INC" "$WORK"
 acquire_vendor_lock
 
+# librustzcash is the ONE vendored archive that needs a Rust toolchain, and it
+# buys exactly ONE capability: creating Sapling proofs, i.e. SENDING shielded
+# value. Consensus verification, shielded receive, the explorer and everything
+# else are native C23. So it is OPTIONAL and OFF by default, matching the
+# Makefile flag of the same name: a host with no cargo/rustc runs `make vendor`
+# and `make` to completion. Turn it on with ZCL_WITH_RUST=1 (or by naming the
+# archive: `tools/scripts/build_vendor.sh librustzcash.a`).
+ZCL_WITH_RUST="${ZCL_WITH_RUST:-}"
+
 REQUIRED=(libsecp256k1.a libcrypto.a libssl.a libevent.a libevent_openssl.a
           libevent_pthreads.a libleveldb.a libsqlite3.a libz.a
-          librustzcash.a libtor_stub.a)
+          libtor_stub.a)
+if [[ -n "$ZCL_WITH_RUST" ]]; then
+    REQUIRED+=(librustzcash.a)
+fi
 
 check_one_provenance() {
     local archive="$1" descriptor
@@ -712,7 +724,12 @@ if [[ "${1:-}" == "--check-provenance" ]]; then
 fi
 
 # Build order: openssl before libevent (libevent_openssl needs its headers).
-ALL=(build_tor_stub build_zlib build_sqlite build_openssl build_libevent build_leveldb build_rustzcash)
+# build_rustzcash is appended only under ZCL_WITH_RUST (see REQUIRED above);
+# without it this list needs no Rust toolchain at all.
+ALL=(build_tor_stub build_zlib build_sqlite build_openssl build_libevent build_leveldb)
+if [[ -n "$ZCL_WITH_RUST" ]]; then
+    ALL+=(build_rustzcash)
+fi
 
 # Map .a names -> builder for the subset form.
 declare -A BUILDER=(

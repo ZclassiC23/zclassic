@@ -28,6 +28,10 @@
     else { printf("FAIL\n"); failures++; }     \
 } while (0)
 
+/* Both statics below are used only by the prover-backed section at the bottom
+ * of this file, which the default Rust-free build skips; guarding them keeps
+ * -Werror=unused-function honest instead of suppressed. */
+#ifdef ZCL_WITH_RUST
 static bool find_diversifier(uint8_t d[11])
 {
     memset(d, 0, 11);
@@ -167,6 +171,7 @@ static void native_circuit_baseline(void)
     }
     printf("--- end H1 baseline (informational) ---\n");
 }
+#endif /* ZCL_WITH_RUST */
 
 /* H3 lane: Sapling SPEND circuit port — shape + value + determinism gate.
  *
@@ -310,6 +315,24 @@ int test_groth16_selfverify(void)
     failures += spend_circuit_shape_gate();
     failures += groth16_spend_parity_oracle();
 
+#ifndef ZCL_WITH_RUST
+    /* The DEFAULT build links no proving backend (see ZCL_WITH_RUST at the top
+     * of the Makefile). Everything above this point is pure C23 and has
+     * already run and gated: the H2 reference differential against the baked
+     * KAT, the H3 spend-circuit shape gate, and the H4 parity oracle. What
+     * remains below needs a prover, so skip it by name — and skip BEFORE the
+     * first PROVER_CHECK, because "backend provenance is pinned librustzcash"
+     * and the self-test assertion would hard-fail on a host that merely
+     * happens to have ~/.zcash-params on disk. */
+    printf("  SKIP (prover self-test) — %s (status=%s). The H2 reference "
+           "differential, the H3 shape gate and the H4 parity oracle above are "
+           "pure C23 and already ran.\n",
+           zclassic_sapling_prover_backend(),
+           zclassic_sapling_prover_status());
+    printf("Sapling prover capability: %s (%d failures)\n",
+           failures == 0 ? "OK" : "FAIL", failures);
+    return failures;
+#else
     const char *home = getenv("HOME");
     char params_dir[512];
     char output_path[640];
@@ -393,4 +416,5 @@ int test_groth16_selfverify(void)
     printf("Sapling prover capability: %s (%d failures)\n",
            failures == 0 ? "OK" : "FAIL", failures);
     return failures;
+#endif /* ZCL_WITH_RUST */
 }
