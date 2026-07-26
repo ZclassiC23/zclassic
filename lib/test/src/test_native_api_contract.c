@@ -818,19 +818,46 @@ static int test_wallet_mutating_native_e2e(void)
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")), "plan");
         ASSERT(!json_get_bool(json_get(&reply.data, "committed")));
         ASSERT(!reply.error.mutated);
-        ASSERT(reply.next_count >= 1);
-        ASSERT_STR_EQ(reply.next[0].command, "core.wallet.transaction.send");
+        /* No next-action, and specifically not one naming this same leaf.
+         * push_next_array() rejects a next whose path equals the running
+         * command, so emitting one failed the WHOLE envelope and this leaf
+         * answered RESPONSE_BUDGET_EXCEEDED instead of a plan. The previous
+         * version of this test asserted next_count >= 1 and passed throughout,
+         * because it only ever inspected the in-memory reply and never asked
+         * whether that reply could be serialized. */
+        ASSERT_EQ(reply.next_count, 0);
         ASSERT_EQ(g_wallet_send_calls, 0);
-        /* The plan's committed next-action must validate against the leaf. */
+        /* The committing input travels as data, and must validate against
+         * this leaf — re-running it with that input is what commits. */
+        const char *commit_input =
+            json_get_str(json_get(&reply.data, "commit_input"));
+        ASSERT(commit_input && commit_input[0]);
         struct json_value commit_next;
         json_init(&commit_next);
-        ASSERT(json_read(&commit_next, reply.next[0].input_json,
-                         strlen(reply.next[0].input_json)));
+        ASSERT(json_read(&commit_next, commit_input, strlen(commit_input)));
         char why[160] = {0};
         ASSERT(zcl_command_registry_input_validate(send_spec, &commit_next,
                                                    why, sizeof(why)));
         ASSERT(json_get_bool(json_get(&commit_next, "confirm")));
         json_free(&commit_next);
+        /* THE check the old assertion was missing: the plan reply must
+         * actually serialize. A reply that cannot be rendered is not a plan,
+         * whatever its fields say. */
+        {
+            char rendered[8192];
+            enum zcl_command_exit rc = ZCL_COMMAND_EXIT_OK;
+            struct zcl_command_context sctx = {
+                .registry = reg,
+                .granted_capabilities = ~(uint64_t)0,
+                .authority_ceiling = ZCL_COMMAND_AUTH_OWNER,
+            };
+            size_t n = zcl_command_registry_execute_json(
+                reg, send_spec, &sctx, &plan_in, false, send_spec->path,
+                "normal", 0, 0, NULL, rendered, sizeof(rendered), &rc);
+            ASSERT(n > 0);
+            ASSERT_EQ(rc, ZCL_COMMAND_EXIT_OK);
+            ASSERT(strstr(rendered, "\"stage\":\"plan\"") != NULL);
+        }
         zcl_command_reply_free(&reply);
         json_free(&plan_in);
 
