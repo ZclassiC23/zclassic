@@ -733,7 +733,7 @@ size_t explorer_view_swaps(uint8_t *r, size_t max)
         "try{"
         "const[sr,cr]=await Promise.all(["
         "fetch('/api/swaps'),fetch('/api/swap_chains')]);"
-        "const swaps=await sr.json();"
+        "const swaps=(await sr.json()).swaps||[];"
         "const chains=await cr.json();"
         "document.getElementById('chains').innerHTML="
         "'Supported: '+chains.map(c=>"

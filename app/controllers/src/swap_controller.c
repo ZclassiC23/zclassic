@@ -967,18 +967,32 @@ static bool rpc_swap_list(const struct json_value *params, bool help,
         }
     }
 
-    json_set_array(result);
-    if (!g_swap_ndb) return true;
+    /* An OBJECT, not a bare array: the native command bridge rejects a
+     * non-object body (tools/command/native_command.c), which is why
+     * `zclassic23 app swap list` answered BAD_TOOL_BODY for its whole
+     * existence. The envelope is the one this command already declared as
+     * its output schema, and matches rpc_name_list / zcl.names.index.v1. */
+    struct json_value swaps_json;
+    json_init(&swaps_json);
+    json_set_array(&swaps_json);
 
     struct swap_contract swaps[50];
-    int count = db_swap_list(g_swap_ndb, swaps, 50, state_filter);
+    int count = g_swap_ndb
+        ? db_swap_list(g_swap_ndb, swaps, 50, state_filter)
+        : 0;
 
     for (int i = 0; i < count; i++) {
         struct json_value e = {0};
         swap_to_json(&swaps[i], &e);
-        json_push_back(result, &e);
+        json_push_back(&swaps_json, &e);
         json_free(&e);
     }
+
+    json_set_object(result);
+    json_push_kv_str(result, "schema", "zcl.app_swap_index.v1");
+    json_push_kv(result, "swaps", &swaps_json);
+    json_push_kv_int(result, "count", count);
+    json_free(&swaps_json);
     return true;
 }
 
