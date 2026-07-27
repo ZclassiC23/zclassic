@@ -83,13 +83,16 @@ check_stamp()
 
 verify_authority()
 {
-    local actual_compiler actual_epoch
+    local actual_compiler actual_epoch actual_build_system
     actual_compiler="$("$KEY_TOOL" compiler-id "$CC_COMMAND" "$CXX_COMMAND")" ||
         fail 'compiler fingerprint revalidation failed'
     [ "$actual_compiler" = "$COMPILER_ID" ] ||
         fail "compiler/toolchain changed during build expected=$COMPILER_ID actual=$actual_compiler"
-    actual_epoch="$("$KEY_TOOL" key "$SOURCE_ID" "$COMPLETE" "$MUTATION" \
-        "$COMPILER_ID" "$PROFILE" "$COMPILE_FLAGS" "$LINK_FLAGS")" ||
+    actual_build_system="$("$KEY_TOOL" build-system-id)" ||
+        fail 'build-system fingerprint revalidation failed'
+    actual_epoch="$("$KEY_TOOL" key \
+        "$COMPILER_ID" "$PROFILE" "$COMPILE_FLAGS" "$LINK_FLAGS" \
+        "$actual_build_system")" ||
         fail 'compile epoch recomputation failed'
     [ "$actual_epoch" = "$EPOCH" ] || fail 'profile/flags do not derive the requested epoch'
     "$VERIFY_TOOL" verify-record "$SOURCE_ID" "$COMPLETE" "$MUTATION" >/dev/null

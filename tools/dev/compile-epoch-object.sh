@@ -46,8 +46,9 @@ esac
 
 # O(1) per-TU guard. The lease/session creator performs the expensive complete
 # source + compiler + profile verification once; final aggregate/candidate
-# publication verifies it again. Mutation-keyed paths quarantine any compile
-# started after the source moves.
+# publication verifies it again. The session stamp still binds the exact
+# source id/mutation, so a TU compile in a stable epoch can only proceed under
+# a session authority that names the current source record.
 [ -f "$SESSION" ] || fail 'verified compile-session stamp is missing'
 grep -Fxq 'schema=zcl.build_epoch_session.v1' "$SESSION" &&
 grep -Fxq "source_id=$SOURCE_ID" "$SESSION" &&

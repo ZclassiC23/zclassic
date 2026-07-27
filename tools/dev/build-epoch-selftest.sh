@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Copyright 2026 Rhett Creighton - Apache License 2.0
-# Executable regression for compile-epoch A -> B -> A and concurrent publish.
+# Executable regression for toolchain+flags-keyed compile epochs: the epoch
+# namespace is STABLE across source edits (incremental rebuilds ride make's
+# timestamp+depfile graph), moves on toolchain/flags/profile/build-system
+# changes, and atomic candidate publication remains bound to the exact source
+# record via the session stamp + publish-time verify-record.
 
 set -euo pipefail
 
@@ -42,10 +46,9 @@ sha_label()
     printf '%s' "$1" | sha256sum | awk '{print $1}'
 }
 
-key()
+epoch_key()
 {
-    "$KEY_TOOL" key "$1" 1 "$2" "$COMPILER_ID" "$PROFILE" \
-        "$COMPILE_FLAGS" "$LINK_FLAGS"
+    "$KEY_TOOL" key "$1" "$2" "$3" "$4" "$5"
 }
 
 build_candidate()
@@ -93,42 +96,52 @@ if "$KEY_TOOL" compiler-id 'cc; printf unsafe' "$CC_COMMAND" \
     fail 'shell-active CC string was accepted'
 fi
 
+# The build-system fingerprint is real (the checkout's own Makefile + epoch
+# scripts); synthetic labels below prove it is bound into the key.
+BSYS_REAL="$("$KEY_TOOL" build-system-id)" || fail 'build-system-id failed'
+[[ "$BSYS_REAL" =~ ^[0-9a-f]{64}$ ]] || fail 'invalid build-system fingerprint'
+[ "$BSYS_REAL" = "$("$KEY_TOOL" build-system-id)" ] ||
+    fail 'build-system fingerprint was not deterministic'
+
+# Source/mutation labels remain the session/publish authority states. They
+# deliberately play NO role in epoch selection anymore.
 SOURCE_A="$(sha_label source-A)"
 SOURCE_B="$(sha_label source-B)"
 MUTATION_A1="$(sha_label mutation-A-session-1)"
 MUTATION_B="$(sha_label mutation-B-session)"
 MUTATION_A2="$(sha_label mutation-A-session-2)"
 
-EPOCH_A1="$(key "$SOURCE_A" "$MUTATION_A1")"
-EPOCH_B="$(key "$SOURCE_B" "$MUTATION_B")"
-EPOCH_A2="$(key "$SOURCE_A" "$MUTATION_A2")"
-[ "$EPOCH_A1" != "$EPOCH_B" ] || fail 'A and B shared an epoch'
-[ "$EPOCH_A1" != "$EPOCH_A2" ] ||
-    fail 'restored A reused its pre-mutation compile session'
-[ "$EPOCH_A1" = "$(key "$SOURCE_A" "$MUTATION_A1")" ] ||
+# One stable epoch for every source state under one toolchain+flags+build
+# system; a second namespace exists only when the flags themselves differ.
+EPOCH_MAIN="$(epoch_key "$COMPILER_ID" "$PROFILE" "$COMPILE_FLAGS" "$LINK_FLAGS" "$BSYS_REAL")"
+EPOCH_ALT="$(epoch_key "$COMPILER_ID" "$PROFILE" '-std=c23 -O3 -Wall' "$LINK_FLAGS" "$BSYS_REAL")"
+[ "$EPOCH_MAIN" = "$(epoch_key "$COMPILER_ID" "$PROFILE" "$COMPILE_FLAGS" "$LINK_FLAGS" "$BSYS_REAL")" ] ||
     fail 'identical compile record was not deterministic'
-
-FLAGS_EPOCH="$($KEY_TOOL key "$SOURCE_A" 1 "$MUTATION_A1" \
-    "$COMPILER_ID" fixture-v1 '-std=c23 -O3 -Wall' '-pthread -Wl,-z,now')"
-[ "$FLAGS_EPOCH" != "$EPOCH_A1" ] || fail 'compile flags were omitted from key'
-PROFILE_EPOCH="$($KEY_TOOL key "$SOURCE_A" 1 "$MUTATION_A1" \
-    "$COMPILER_ID" fixture-v2 "$COMPILE_FLAGS" "$LINK_FLAGS")"
-[ "$PROFILE_EPOCH" != "$EPOCH_A1" ] || fail 'compile profile was omitted from key'
-LINK_EPOCH="$($KEY_TOOL key "$SOURCE_A" 1 "$MUTATION_A1" \
-    "$COMPILER_ID" fixture-v1 "$COMPILE_FLAGS" '-pthread -fuse-ld=lld')"
-[ "$LINK_EPOCH" != "$EPOCH_A1" ] || fail 'effective linker flags were omitted from key'
-if "$KEY_TOOL" key "$SOURCE_A" 1 "$MUTATION_A1" "$COMPILER_ID" \
-        fixture-v1 '@compiler-response' links >/dev/null 2>&1; then
+[ "$EPOCH_ALT" != "$EPOCH_MAIN" ] || fail 'compile flags were omitted from key'
+PROFILE_EPOCH="$(epoch_key "$COMPILER_ID" fixture-v2 "$COMPILE_FLAGS" "$LINK_FLAGS" "$BSYS_REAL")"
+[ "$PROFILE_EPOCH" != "$EPOCH_MAIN" ] || fail 'compile profile was omitted from key'
+LINK_EPOCH="$(epoch_key "$COMPILER_ID" "$PROFILE" "$COMPILE_FLAGS" '-pthread -fuse-ld=lld' "$BSYS_REAL")"
+[ "$LINK_EPOCH" != "$EPOCH_MAIN" ] || fail 'effective linker flags were omitted from key'
+COMPILER_EPOCH="$(epoch_key "$(sha_label other-compiler)" "$PROFILE" "$COMPILE_FLAGS" "$LINK_FLAGS" "$BSYS_REAL")"
+[ "$COMPILER_EPOCH" != "$EPOCH_MAIN" ] || fail 'compiler fingerprint was omitted from key'
+BSYS_EPOCH="$(epoch_key "$COMPILER_ID" "$PROFILE" "$COMPILE_FLAGS" "$LINK_FLAGS" "$(sha_label other-build-system)")"
+[ "$BSYS_EPOCH" != "$EPOCH_MAIN" ] ||
+    fail 'build-system fingerprint was omitted from key (a Makefile flags edit would leave stale objects)'
+if epoch_key "$COMPILER_ID" fixture-v1 '@compiler-response' links "$BSYS_REAL" \
+        >/dev/null 2>&1; then
     fail 'unhashed compiler response file was accepted'
 fi
-if "$KEY_TOOL" key "$SOURCE_A" 0 "$MUTATION_A1" "$COMPILER_ID" \
+if epoch_key "$COMPILER_ID" fixture-v1 flags links not-a-sha >/dev/null 2>&1; then
+    fail 'non-SHA-256 build-system fingerprint was accepted'
+fi
+# The retired source-keyed derivation must stay rejected: its old argv shape
+# (SOURCE COMPLETE MUTATION COMPILER PROFILE FLAGS LINKS) shifts a non-SHA
+# token into the build-system slot and has to fail closed.
+if "$KEY_TOOL" key "$SOURCE_A" 1 "$MUTATION_A1" "$COMPILER_ID" \
         fixture-v1 flags links >/dev/null 2>&1; then
-    fail 'incomplete source capture received an epoch'
+    fail 'retired source-keyed epoch derivation was accepted'
 fi
 
-CANDIDATE_A1="$(build_candidate "$EPOCH_A1" A)"
-CANDIDATE_B="$(build_candidate "$EPOCH_B" B)"
-CANDIDATE_A2="$(build_candidate "$EPOCH_A2" A)"
 STABLE="$WORK/bin/fixture"
 STATE="$WORK/source.state"
 VERIFY="$WORK/verify-record.sh"
@@ -154,50 +167,39 @@ set_state()
     printf '%s %s %s\n' "$1" 1 "$2" > "$STATE"
 }
 
+# Every Make invocation re-acquires its session (the lease is an order-only
+# FORCE prerequisite), so the shared stable-epoch session stamp always names
+# the CURRENT source record before any compile or publish under it.
+SESSION_MAIN="$WORK/sessions/epochs/$EPOCH_MAIN/.build-session"
 start_session()
 {
-    local source_id="$1" mutation="$2" epoch="$3"
+    local source_id="$1" mutation="$2"
     local root="$WORK/sessions"
-    local session="$root/epochs/$epoch/.build-session"
-    local lease="$root/epochs/$epoch/.leases/selftest-$$"
+    local lease="$root/epochs/$EPOCH_MAIN/.leases/selftest-$$"
     set_state "$source_id" "$mutation"
-    STATE_FILE="$STATE" "$SESSION_TOOL" acquire "$session" "$lease" \
+    STATE_FILE="$STATE" "$SESSION_TOOL" acquire "$SESSION_MAIN" "$lease" \
         "$root" "$WORK/candidates" 5 "$source_id" 1 "$mutation" \
-        "$COMPILER_ID" "$epoch" "$PROFILE" "$COMPILE_FLAGS" \
+        "$COMPILER_ID" "$EPOCH_MAIN" "$PROFILE" "$COMPILE_FLAGS" \
         "$LINK_FLAGS" "$CC_COMMAND" "$CC_COMMAND" "$$" "$VERIFY" \
         >/dev/null
-    printf '%s\n' "$session"
-}
-
-SESSION_A1="$(start_session "$SOURCE_A" "$MUTATION_A1" "$EPOCH_A1")"
-SESSION_B="$(start_session "$SOURCE_B" "$MUTATION_B" "$EPOCH_B")"
-SESSION_A2="$(start_session "$SOURCE_A" "$MUTATION_A2" "$EPOCH_A2")"
-
-session_for_epoch()
-{
-    case "$1" in
-        "$EPOCH_A1") printf '%s\n' "$SESSION_A1" ;;
-        "$EPOCH_B") printf '%s\n' "$SESSION_B" ;;
-        "$EPOCH_A2") printf '%s\n' "$SESSION_A2" ;;
-        *) fail 'unknown fixture epoch' ;;
-    esac
+    printf '%s\n' "$SESSION_MAIN"
 }
 
 compile_graph_object()
 {
-    local epoch="$1" payload="$2" source_id="$3" mutation="$4"
-    local source="$WORK/graph-$epoch.c"
-    local object="$WORK/graph/epochs/$epoch/graph.o"
-    local binary="$WORK/graph/epochs/$epoch/graph"
+    local payload="$1" source_id="$2" mutation="$3"
+    local source="$WORK/graph-$EPOCH_MAIN.c"
+    local object="$WORK/graph/epochs/$EPOCH_MAIN/graph.o"
+    local binary="$WORK/graph/epochs/$EPOCH_MAIN/graph"
     local -a cc_argv
-    set_state "$source_id" "$mutation"
+    start_session "$source_id" "$mutation" >/dev/null
     mkdir -p "$(dirname "$object")"
     printf '#include <stdio.h>\nint main(void) { puts("%s"); return 0; }\n' \
         "$payload" > "$source"
     read -r -a cc_argv <<< "$CC_COMMAND"
     "$OBJECT_TOOL" dep "$object" "$source" \
-        "$source_id" 1 "$mutation" "$epoch" "$COMPILER_ID" \
-        "$(session_for_epoch "$epoch")" -- \
+        "$source_id" 1 "$mutation" "$EPOCH_MAIN" "$COMPILER_ID" \
+        "$SESSION_MAIN" -- \
         "${cc_argv[@]}" -std=c23 -O2 -Wall -Wextra -Werror
     "${cc_argv[@]}" -o "$binary" "$object"
     [ "$("$binary")" = "$payload" ] ||
@@ -206,17 +208,30 @@ compile_graph_object()
     printf '%s\n' "$object"
 }
 
-GRAPH_A1="$(compile_graph_object "$EPOCH_A1" A "$SOURCE_A" "$MUTATION_A1")"
-GRAPH_B="$(compile_graph_object "$EPOCH_B" B "$SOURCE_B" "$MUTATION_B")"
-GRAPH_A2="$(compile_graph_object "$EPOCH_A2" A "$SOURCE_A" "$MUTATION_A2")"
-[ "$GRAPH_A1" != "$GRAPH_B" ] && [ "$GRAPH_A1" != "$GRAPH_A2" ] ||
-    fail 'A -> B -> A graph reused an object namespace'
+# The stable-epoch contract: sequential source states A -> B -> A all reuse
+# ONE object namespace, and each recompile atomically replaces the object.
+# This is the incremental-rebuild path the re-keying exists to enable.
+GRAPH_A1="$(compile_graph_object A "$SOURCE_A" "$MUTATION_A1")"
+GRAPH_B="$(compile_graph_object B "$SOURCE_B" "$MUTATION_B")"
+GRAPH_A2="$(compile_graph_object A "$SOURCE_A" "$MUTATION_A2")"
+[ "$GRAPH_A1" = "$GRAPH_B" ] && [ "$GRAPH_A1" = "$GRAPH_A2" ] ||
+    fail 'stable epoch did not reuse one object namespace across source states'
+
+# ...but a per-TU compile is still source-bound: the session stamp must name
+# the exact source record the compile claims, or the object tool refuses.
+start_session "$SOURCE_A" "$MUTATION_A2" >/dev/null
+if "$OBJECT_TOOL" dep "$WORK/mismatch/epochs/$EPOCH_MAIN/mismatch.o" \
+        "$WORK/graph-$EPOCH_MAIN.c" \
+        "$SOURCE_B" 1 "$MUTATION_B" "$EPOCH_MAIN" "$COMPILER_ID" \
+        "$SESSION_MAIN" -- /bin/true >/dev/null 2>&1; then
+    fail 'object compile accepted a session stamp from another source record'
+fi
 
 # Two Make-like processes may schedule the same missing object before either
 # publishes it.  Force one compiler to pause, let the other publish, then let
 # the first finish.  Both .d and .o must remain complete atomic files.
 CONCURRENT_SOURCE="$WORK/concurrent.c"
-CONCURRENT_OBJECT="$WORK/concurrent/epochs/$EPOCH_A2/concurrent.o"
+CONCURRENT_OBJECT="$WORK/concurrent/epochs/$EPOCH_MAIN/concurrent.o"
 COMPILER_WRAPPER="$WORK/compiler-wrapper.sh"
 mkdir -p "$(dirname "$CONCURRENT_OBJECT")"
 printf '#include <stdio.h>\nint main(void) { puts("A"); return 0; }\n' \
@@ -235,14 +250,14 @@ chmod +x "$COMPILER_WRAPPER"
 COMPILER_BLOCK_ONCE="$WORK/compiler-block-once"
 COMPILER_BLOCK_MARKER="$WORK/compiler-blocked"
 COMPILER_BLOCK_RELEASE="$WORK/compiler-release"
-set_state "$SOURCE_A" "$MUTATION_A2"
+start_session "$SOURCE_A" "$MUTATION_A2" >/dev/null
     REAL_CC_COMMAND="$CC_COMMAND" \
     COMPILER_BLOCK_ONCE="$COMPILER_BLOCK_ONCE" \
     COMPILER_BLOCK_MARKER="$COMPILER_BLOCK_MARKER" \
     COMPILER_BLOCK_RELEASE="$COMPILER_BLOCK_RELEASE" \
     "$OBJECT_TOOL" dep "$CONCURRENT_OBJECT" "$CONCURRENT_SOURCE" \
-        "$SOURCE_A" 1 "$MUTATION_A2" "$EPOCH_A2" "$COMPILER_ID" \
-        "$SESSION_A2" -- \
+        "$SOURCE_A" 1 "$MUTATION_A2" "$EPOCH_MAIN" "$COMPILER_ID" \
+        "$SESSION_MAIN" -- \
         "$COMPILER_WRAPPER" -std=c23 -O2 -Wall -Wextra -Werror &
 OBJECT_PID_1=$!
 CHILD_PIDS+=("$OBJECT_PID_1")
@@ -257,8 +272,8 @@ REAL_CC_COMMAND="$CC_COMMAND" \
     COMPILER_BLOCK_MARKER="$COMPILER_BLOCK_MARKER" \
     COMPILER_BLOCK_RELEASE="$COMPILER_BLOCK_RELEASE" \
     "$OBJECT_TOOL" dep "$CONCURRENT_OBJECT" "$CONCURRENT_SOURCE" \
-        "$SOURCE_A" 1 "$MUTATION_A2" "$EPOCH_A2" "$COMPILER_ID" \
-        "$SESSION_A2" -- \
+        "$SOURCE_A" 1 "$MUTATION_A2" "$EPOCH_MAIN" "$COMPILER_ID" \
+        "$SESSION_MAIN" -- \
         "$COMPILER_WRAPPER" -std=c23 -O2 -Wall -Wextra -Werror &
 OBJECT_PID_2=$!
 CHILD_PIDS+=("$OBJECT_PID_2")
@@ -287,11 +302,11 @@ read -r -a cc_argv <<< "$CC_COMMAND"
 
 # Compiler failure must not leak a same-directory staging tree that a later
 # graph walk could mistake for a valid object input.
-FAILED_OBJECT="$WORK/failure/epochs/$EPOCH_A2/failure.o"
+FAILED_OBJECT="$WORK/failure/epochs/$EPOCH_MAIN/failure.o"
 mkdir -p "$(dirname "$FAILED_OBJECT")"
 if "$OBJECT_TOOL" dep "$FAILED_OBJECT" "$CONCURRENT_SOURCE" \
-        "$SOURCE_A" 1 "$MUTATION_A2" "$EPOCH_A2" "$COMPILER_ID" \
-        "$SESSION_A2" -- /bin/false >/dev/null 2>&1; then
+        "$SOURCE_A" 1 "$MUTATION_A2" "$EPOCH_MAIN" "$COMPILER_ID" \
+        "$SESSION_MAIN" -- /bin/false >/dev/null 2>&1; then
     fail 'failing compiler unexpectedly published an object'
 fi
 if find "$(dirname "$FAILED_OBJECT")" -maxdepth 1 \
@@ -301,17 +316,17 @@ fi
 
 # Coverage cache hits require the separately retained .gcno. Delete it and
 # prove the helper repairs the cache instead of accepting an unusable object.
-COVERAGE_OBJECT="$WORK/coverage/epochs/$EPOCH_A2/coverage.o"
+COVERAGE_OBJECT="$WORK/coverage/epochs/$EPOCH_MAIN/coverage.o"
 mkdir -p "$(dirname "$COVERAGE_OBJECT")"
 "$OBJECT_TOOL" coverage "$COVERAGE_OBJECT" "$CONCURRENT_SOURCE" \
-    "$SOURCE_A" 1 "$MUTATION_A2" "$EPOCH_A2" "$COMPILER_ID" \
-    "$SESSION_A2" -- "${cc_argv[@]}" --coverage -std=c23 -O0
+    "$SOURCE_A" 1 "$MUTATION_A2" "$EPOCH_MAIN" "$COMPILER_ID" \
+    "$SESSION_MAIN" -- "${cc_argv[@]}" --coverage -std=c23 -O0
 read -r COVERAGE_NOTE < "${COVERAGE_OBJECT%.o}.gcno-path"
 [ -s "$COVERAGE_NOTE" ] || fail 'coverage compile did not retain its .gcno'
 rm -f "$COVERAGE_NOTE"
 "$OBJECT_TOOL" coverage "$COVERAGE_OBJECT" "$CONCURRENT_SOURCE" \
-    "$SOURCE_A" 1 "$MUTATION_A2" "$EPOCH_A2" "$COMPILER_ID" \
-    "$SESSION_A2" -- "${cc_argv[@]}" --coverage -std=c23 -O0
+    "$SOURCE_A" 1 "$MUTATION_A2" "$EPOCH_MAIN" "$COMPILER_ID" \
+    "$SESSION_MAIN" -- "${cc_argv[@]}" --coverage -std=c23 -O0
 read -r COVERAGE_NOTE_REPAIRED < "${COVERAGE_OBJECT%.o}.gcno-path"
 [ -s "$COVERAGE_NOTE_REPAIRED" ] ||
     fail 'coverage cache did not repair its missing .gcno'
@@ -336,10 +351,10 @@ printf 'pid=99999998\nstart=1\n' \
     > "$GC_ROOT/epochs/$GC_DEAD_2/.leases/dead"
 set_state "$SOURCE_A" "$MUTATION_A2"
 STATE_FILE="$STATE" "$SESSION_TOOL" acquire \
-    "$GC_ROOT/epochs/$EPOCH_A2/.build-session" \
-    "$GC_ROOT/epochs/$EPOCH_A2/.leases/current" \
+    "$GC_ROOT/epochs/$EPOCH_MAIN/.build-session" \
+    "$GC_ROOT/epochs/$EPOCH_MAIN/.leases/current" \
     "$GC_ROOT" "$GC_CANDIDATES" 1 "$SOURCE_A" 1 "$MUTATION_A2" \
-    "$COMPILER_ID" "$EPOCH_A2" "$PROFILE" "$COMPILE_FLAGS" \
+    "$COMPILER_ID" "$EPOCH_MAIN" "$PROFILE" "$COMPILE_FLAGS" \
     "$LINK_FLAGS" "$CC_COMMAND" "$CC_COMMAND" "$$" "$VERIFY" >/dev/null
 [ -d "$GC_ROOT/epochs/$GC_LIVE" ] &&
 [ -d "$GC_CANDIDATES/epochs/$GC_LIVE" ] ||
@@ -358,28 +373,34 @@ publish()
         >/dev/null
 }
 
-set_state "$SOURCE_A" "$MUTATION_A1"
-publish "$CANDIDATE_A1" "$SOURCE_A" "$MUTATION_A1" "$EPOCH_A1" "$SESSION_A1"
+# Publish across source states A -> B -> A inside the ONE stable epoch. Each
+# transition re-acquires the session and rebuilds the candidate, exactly as a
+# Make invocation refreshes its lease and relinks before publishing.
+SESSION_MAIN="$(start_session "$SOURCE_A" "$MUTATION_A1")"
+CANDIDATE_A1="$(build_candidate "$EPOCH_MAIN" A)"
+publish "$CANDIDATE_A1" "$SOURCE_A" "$MUTATION_A1" "$EPOCH_MAIN" "$SESSION_MAIN"
 [ "$($STABLE)" = A ] || fail 'A candidate was not published'
-set_state "$SOURCE_B" "$MUTATION_B"
-publish "$CANDIDATE_B" "$SOURCE_B" "$MUTATION_B" "$EPOCH_B" "$SESSION_B"
+SESSION_MAIN="$(start_session "$SOURCE_B" "$MUTATION_B")"
+CANDIDATE_B="$(build_candidate "$EPOCH_MAIN" B)"
+publish "$CANDIDATE_B" "$SOURCE_B" "$MUTATION_B" "$EPOCH_MAIN" "$SESSION_MAIN"
 [ "$($STABLE)" = B ] || fail 'B candidate was not published'
-set_state "$SOURCE_A" "$MUTATION_A2"
-publish "$CANDIDATE_A2" "$SOURCE_A" "$MUTATION_A2" "$EPOCH_A2" "$SESSION_A2"
+SESSION_MAIN="$(start_session "$SOURCE_A" "$MUTATION_A2")"
+CANDIDATE_A2="$(build_candidate "$EPOCH_MAIN" A)"
+publish "$CANDIDATE_A2" "$SOURCE_A" "$MUTATION_A2" "$EPOCH_MAIN" "$SESSION_MAIN"
 [ "$($STABLE)" = A ] || fail 'restored A candidate was not published'
 
-# Deterministically hold a stale A publisher inside the alias lock, advance the
-# source record to B, and start B behind it.  A must fail its source check and B
-# must be the only process allowed to publish.
+# Deterministically hold a stale A publisher inside the alias lock, advance
+# the source record to B (with B's session re-acquire and candidate relink,
+# as a real B Make invocation would do), and start B behind it.  A must fail
+# its source check and B must be the only process allowed to publish.
 BLOCK_MARKER="$WORK/stale-a-blocked"
 BLOCK_RELEASE="$WORK/release-stale-a"
 BLOCK_ONCE="$WORK/stale-a-blocked-once"
-set_state "$SOURCE_A" "$MUTATION_A2"
 STATE_FILE="$STATE" BLOCK_SOURCE="$SOURCE_A" \
     BLOCK_MUTATION="$MUTATION_A2" BLOCK_MARKER="$BLOCK_MARKER" \
     BLOCK_RELEASE="$BLOCK_RELEASE" BLOCK_ONCE="$BLOCK_ONCE" \
-    "$PUBLISH_TOOL" "$CANDIDATE_A2" "$STABLE" "$SESSION_A2" "$SOURCE_A" 1 \
-        "$MUTATION_A2" "$EPOCH_A2" "$COMPILER_ID" "$PROFILE" \
+    "$PUBLISH_TOOL" "$CANDIDATE_A2" "$STABLE" "$SESSION_MAIN" "$SOURCE_A" 1 \
+        "$MUTATION_A2" "$EPOCH_MAIN" "$COMPILER_ID" "$PROFILE" \
         "$COMPILE_FLAGS" "$LINK_FLAGS" "$CC_COMMAND" "$CC_COMMAND" \
         "$VERIFY" >/dev/null 2>&1 &
 STALE_PID=$!
@@ -392,11 +413,12 @@ for _ in $(seq 1 500); do
 done
 [ -e "$BLOCK_MARKER" ] || fail 'stale publisher did not enter the locked verifier'
 
-set_state "$SOURCE_B" "$MUTATION_B"
-STATE_FILE="$STATE" "$PUBLISH_TOOL" "$CANDIDATE_B" "$STABLE" \
-    "$SESSION_B" "$SOURCE_B" 1 "$MUTATION_B" "$EPOCH_B" "$COMPILER_ID" \
-    "$PROFILE" "$COMPILE_FLAGS" "$LINK_FLAGS" "$CC_COMMAND" "$CC_COMMAND" \
-    "$VERIFY" >/dev/null &
+SESSION_B="$(start_session "$SOURCE_B" "$MUTATION_B")"
+CANDIDATE_B2="$(build_candidate "$EPOCH_MAIN" B)"
+STATE_FILE="$STATE" "$PUBLISH_TOOL" "$CANDIDATE_B2" "$STABLE" \
+    "$SESSION_B" "$SOURCE_B" 1 "$MUTATION_B" "$EPOCH_MAIN" \
+    "$COMPILER_ID" "$PROFILE" "$COMPILE_FLAGS" "$LINK_FLAGS" "$CC_COMMAND" \
+    "$CC_COMMAND" "$VERIFY" >/dev/null &
 CURRENT_PID=$!
 CHILD_PIDS+=("$CURRENT_PID")
 : > "$BLOCK_RELEASE"
@@ -411,5 +433,5 @@ set -e
 [ "$CURRENT_RC" -eq 0 ] || fail 'current B publisher failed behind stale A'
 [ "$($STABLE)" = B ] || fail 'stale A overwrote the current B alias'
 
-printf 'build-epoch-selftest: PASS a_b_a=true mutation_bound=true concurrent_publish=true compiler_id=%s\n' \
+printf 'build-epoch-selftest: PASS toolchain_keyed=true stable_namespace=true source_bound_publish=true concurrent_publish=true compiler_id=%s\n' \
     "$COMPILER_ID"

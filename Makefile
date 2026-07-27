@@ -588,11 +588,19 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
 	-lssl -lcrypto -lz $(if $(ZCL_WITH_RUST),-lrustzcash) -ldl -lpthread -lm
 
 # ── Host-local compile epochs ─────────────────────────────────────────────
-# Source bytes remain the portable authority. Cached objects/candidates add a
-# host-local mutation token, compiler/tool/search-root fingerprint, profile,
-# effective compile flags, and effective link inputs. Different Make sessions
-# therefore never share mutable object paths unless every admitted input is the
-# same; ccache/sccache still recover unchanged TU speed across new epochs.
+# Source bytes remain the portable authority, but they no longer select the
+# object namespace. The epoch key binds ONLY inputs that change object bytes
+# without changing a tracked TU: compiler/tool/search-root fingerprint,
+# profile name, effective compile flags, effective link inputs, and
+# BUILD_SYSTEM_ID (the root Makefile — which holds every flag variable and
+# per-object/per-pattern override — plus the four epoch driver scripts,
+# hashed by `build-epoch-key.sh build-system-id`). A source edit therefore
+# recompiles exactly the TUs that make's timestamp+depfile graph marks stale
+# inside the STABLE epoch; a flags/Makefile/toolchain edit re-keys every
+# epoch and forces a full rebuild. Source freshness of the shipped identity
+# is unchanged: BUILD_IDENTITY_STAMP (above) rebuilds clientversion.o and
+# relinks every binary on any source-identity move, and every publish path
+# re-verifies the exact source record after compiling.
 BUILD_EPOCH_KEY_TOOL = tools/dev/build-epoch-key.sh
 BUILD_EPOCH_OBJECT_TOOL = tools/dev/compile-epoch-object.sh
 BUILD_EPOCH_PUBLISH_TOOL = tools/dev/publish-build-alias.sh
@@ -615,21 +623,35 @@ CHECKOUT_LOCK_MODE = $(if $(filter 1,$(ZCL_DEV_WATCH_LANE)),watcher,foreground)
 BUILD_EPOCH_OBJECT_FORCE = $(if $(ZCL_COMPDB_FORCE),FORCE,)
 ifeq ($(BUILD_EPOCH_CLEAN_ONLY),1)
 BUILD_COMPILER_ID := $(ZCL_ZERO_SHA256)
+BUILD_SYSTEM_ID := $(ZCL_ZERO_SHA256)
 else
 BUILD_COMPILER_ID := $(strip $(shell $(BUILD_EPOCH_KEY_TOOL) compiler-id "$(CC)" "$(CXX)" 2>/dev/null))
 BUILD_COMPILER_ID_VALID := $(shell printf '%s\n' '$(BUILD_COMPILER_ID)' | awk '$$0 ~ /^[0-9a-f]{64}$$/ { print "yes" }')
 ifneq ($(BUILD_COMPILER_ID_VALID),yes)
 $(error compiler/toolchain fingerprint failed; refusing to select a compile epoch)
 endif
+# Fingerprint of every build-system input that changes compile/link semantics
+# without changing a tracked TU (this Makefile's flag variables and per-object
+# overrides, plus the epoch driver scripts). This is what keeps a Makefile
+# CFLAGS edit — which touches no source file — busting every epoch now that
+# the source identity no longer does.
+BUILD_SYSTEM_ID := $(strip $(shell $(BUILD_EPOCH_KEY_TOOL) build-system-id 2>/dev/null))
+BUILD_SYSTEM_ID_VALID := $(shell printf '%s\n' '$(BUILD_SYSTEM_ID)' | awk '$$0 ~ /^[0-9a-f]{64}$$/ { print "yes" }')
+ifneq ($(BUILD_SYSTEM_ID_VALID),yes)
+$(error build-system fingerprint failed; refusing to select a compile epoch)
+endif
 endif
 
+# $(1) profile name, $(2) NAME of the profile's *_EPOCH_COMPILE_FLAGS variable,
+# $(3) NAME of its *_EPOCH_LINK_FLAGS variable. Source identity is deliberately
+# NOT an input: see the epoch-section comment above.
 define zcl_compile_epoch
-$(strip $(shell $(BUILD_EPOCH_KEY_TOOL) key "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" "$(BUILD_COMPILER_ID)" "$(1)" "$(strip $($(2)))" "$(strip $($(3)))" 2>/dev/null))
+$(strip $(shell $(BUILD_EPOCH_KEY_TOOL) key "$(BUILD_COMPILER_ID)" "$(1)" "$(strip $($(2)))" "$(strip $($(3)))" "$(BUILD_SYSTEM_ID)" 2>/dev/null))
 endef
 
-BUILD_ONLY_EPOCH_COMPILE_FLAGS := $(strip $(BUILD_ONLY_CFLAGS) identity-tu=$(BUILD_IDENTITY_CPPFLAGS) deps=-MD,-MP)
+BUILD_ONLY_EPOCH_COMPILE_FLAGS := $(strip $(BUILD_ONLY_CFLAGS) deps=-MD,-MP)
 BUILD_ONLY_EPOCH_LINK_FLAGS := no-link
-DEV_EPOCH_COMPILE_FLAGS := $(strip normal=$(DEV_CFLAGS) hot=$(DEV_HOT_CFLAGS) identity-tu=$(BUILD_IDENTITY_CPPFLAGS) deps=-MD,-MP)
+DEV_EPOCH_COMPILE_FLAGS := $(strip normal=$(DEV_CFLAGS) hot=$(DEV_HOT_CFLAGS) deps=-MD,-MP)
 DEV_EPOCH_LINK_FLAGS := $(strip $(DEV_LDFLAGS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) cxx=$(CXX))
 
 ifeq ($(BUILD_EPOCH_CLEAN_ONLY),1)
@@ -651,7 +673,7 @@ DEV_ACTIVE_BIN = $(DEV_CANDIDATE_BIN)
 # Own object root (build/dev-asan-obj) and own candidate dir, mirroring the
 # coverage profile's self-contained derivation; the shared *_EPOCHS_VALID
 # asserts above stay untouched.
-DEV_ASAN_EPOCH_COMPILE_FLAGS := $(strip $(DEV_ASAN_CFLAGS) identity-tu=$(BUILD_IDENTITY_CPPFLAGS) deps=-MD,-MP)
+DEV_ASAN_EPOCH_COMPILE_FLAGS := $(strip $(DEV_ASAN_CFLAGS) deps=-MD,-MP)
 DEV_ASAN_EPOCH_LINK_FLAGS := $(strip $(DEV_ASAN_LDFLAGS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) cxx=$(CXX))
 ifeq ($(BUILD_EPOCH_CLEAN_ONLY),1)
 DEV_ASAN_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
@@ -675,7 +697,7 @@ DEV_ASAN_LEASE = $(DEV_ASAN_OBJ_DIR)/.leases/$(BUILD_INVOCATION_ID)
 # dev-tsan: epoch-keyed TSan dev node (build/bin/zclassic23-dev-tsan).
 # Own object root (build/dev-tsan-obj) and own candidate dir, mirroring the
 # dev-asan derivation; the shared *_EPOCHS_VALID asserts above stay untouched.
-DEV_TSAN_EPOCH_COMPILE_FLAGS := $(strip $(DEV_TSAN_CFLAGS) identity-tu=$(BUILD_IDENTITY_CPPFLAGS) deps=-MD,-MP)
+DEV_TSAN_EPOCH_COMPILE_FLAGS := $(strip $(DEV_TSAN_CFLAGS) deps=-MD,-MP)
 DEV_TSAN_EPOCH_LINK_FLAGS := $(strip $(DEV_TSAN_LDFLAGS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) cxx=$(CXX))
 ifeq ($(BUILD_EPOCH_CLEAN_ONLY),1)
 DEV_TSAN_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
@@ -912,7 +934,7 @@ TEST_PARALLEL_FAST_SRCS = $(TEST_SRCS_NO_MAIN) lib/test/src/test_parallel.c $(SP
 TEST_FAST_CFLAGS = $(filter-out -O3 -flto=auto -Werror,$(CACHED_CFLAGS)) -O1 -g -DZCL_TESTING \
 	-Wno-deprecated-declarations -Wno-format-truncation -Wno-maybe-uninitialized
 TEST_FAST_LDFLAGS = $(filter-out -flto=auto,$(LDFLAGS)) $(ZCL_DEV_LINKER)
-TEST_FAST_EPOCH_COMPILE_FLAGS := $(strip $(TEST_FAST_CFLAGS) identity-tu=$(BUILD_IDENTITY_CPPFLAGS) deps=-MD,-MP)
+TEST_FAST_EPOCH_COMPILE_FLAGS := $(strip $(TEST_FAST_CFLAGS) deps=-MD,-MP)
 TEST_FAST_EPOCH_LINK_FLAGS := $(strip $(TEST_FAST_LDFLAGS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) cxx=$(CXX))
 ifeq ($(BUILD_EPOCH_CLEAN_ONLY),1)
 TEST_FAST_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
@@ -968,7 +990,7 @@ TEST_REL_CFLAGS = $(filter-out -flto=auto,$(CACHED_CFLAGS)) -DZCL_TESTING \
 	-Wno-array-bounds -Wno-stringop-truncation -Wno-stringop-overread \
 	-Wno-restrict -Wno-nonnull -Wno-maybe-uninitialized
 TEST_REL_LDFLAGS = $(filter-out -flto=auto,$(LDFLAGS))
-TEST_REL_EPOCH_COMPILE_FLAGS := $(strip $(TEST_REL_CFLAGS) identity-tu=$(BUILD_IDENTITY_CPPFLAGS) deps=-MD,-MP)
+TEST_REL_EPOCH_COMPILE_FLAGS := $(strip $(TEST_REL_CFLAGS) deps=-MD,-MP)
 TEST_REL_EPOCH_LINK_FLAGS := $(strip $(TEST_REL_LDFLAGS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) cxx=$(CXX))
 ifeq ($(BUILD_EPOCH_CLEAN_ONLY),1)
 TEST_REL_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
@@ -1031,7 +1053,7 @@ TEST_ASAN_CFLAGS = $(filter-out -O3 -flto=auto -Werror,$(CACHED_CFLAGS)) -O1 -g 
 	$(ASAN_COMMON_SAN_FLAGS) \
 	-Wno-deprecated-declarations -Wno-format-truncation -Wno-maybe-uninitialized
 TEST_ASAN_LDFLAGS = $(filter-out -flto=auto,$(LDFLAGS)) $(ASAN_COMMON_SAN_FLAGS)
-TEST_ASAN_EPOCH_COMPILE_FLAGS := $(strip $(TEST_ASAN_CFLAGS) identity-tu=$(BUILD_IDENTITY_CPPFLAGS) deps=-MD,-MP)
+TEST_ASAN_EPOCH_COMPILE_FLAGS := $(strip $(TEST_ASAN_CFLAGS) deps=-MD,-MP)
 TEST_ASAN_EPOCH_LINK_FLAGS := $(strip $(TEST_ASAN_LDFLAGS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) cxx=$(CXX))
 ifeq ($(BUILD_EPOCH_CLEAN_ONLY),1)
 TEST_ASAN_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
@@ -1083,7 +1105,7 @@ TEST_TSAN_CFLAGS = $(filter-out -O3 -flto=auto -Werror,$(CACHED_CFLAGS)) -O1 -g 
 	$(TSAN_COMMON_SAN_FLAGS) \
 	-Wno-deprecated-declarations -Wno-format-truncation -Wno-maybe-uninitialized
 TEST_TSAN_LDFLAGS = $(filter-out -flto=auto,$(LDFLAGS)) $(TSAN_COMMON_SAN_FLAGS)
-TEST_TSAN_EPOCH_COMPILE_FLAGS := $(strip $(TEST_TSAN_CFLAGS) identity-tu=$(BUILD_IDENTITY_CPPFLAGS) deps=-MD,-MP)
+TEST_TSAN_EPOCH_COMPILE_FLAGS := $(strip $(TEST_TSAN_CFLAGS) deps=-MD,-MP)
 TEST_TSAN_EPOCH_LINK_FLAGS := $(strip $(TEST_TSAN_LDFLAGS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) cxx=$(CXX))
 ifeq ($(BUILD_EPOCH_CLEAN_ONLY),1)
 TEST_TSAN_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
@@ -1347,7 +1369,7 @@ t: $(TEST_PARALLEL_REL_CANDIDATE)
 	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_REL_ACTIVE) --only=$(ONLY)'
 
 # Hot-path variant for edit loops. It resolves the complete source inventory in
-# a cached, mutation-keyed per-file epoch and links a non-LTO harness; use strict `make t`
+# a cached, stable (toolchain+flags-keyed) per-file epoch and links a non-LTO harness; use strict `make t`
 # before push/release or when chasing optimizer-dependent behavior.
 # Checkout-locked — see the `test-parallel` target above for why.
 t-fast: $(TEST_PARALLEL_FAST_CANDIDATE)
@@ -1517,7 +1539,7 @@ $(DEV_OBJ_COMPLETE): $(VIEW_GEN_HEADERS) $(DEV_OBJS)
 
 # Compatibility name for the common edit-loop compile gate. Changed paths are
 # classification hints only: the proof always resolves every current dev source
-# in a mutation-keyed epoch via `fast-compile`.
+# in the stable (toolchain+flags-keyed) epoch via `fast-compile`.
 fast-changed-compile:
 	@ZCL_FAST_BUILD_SOURCE_RECORD="$(BUILD_SOURCE_RECORD)" \
 	  ZCL_FAST_CC="$${ZCL_FAST_CC:-$(CC)}" \
@@ -4044,13 +4066,13 @@ $(DEV_OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_IDENTITY_STAMP)
 # the SAME toolkey and shared ONE keyspace — a PASS recorded by the -O1 fast
 # profile was honored, unexecuted, by the -O3 gate.
 #
-# The epoch machinery's own digest (zcl_compile_epoch) cannot be reused as the
-# toolkey: build-epoch-key.sh's `key` mode binds BUILD_SOURCE_ID and
-# BUILD_MUTATION, so it changes on EVERY source edit and would bust the whole
-# cache every time — the exact opposite of the cache's purpose. What is reused
-# is the epoch machinery's already-assembled effective-compile-flag strings
-# (*_EPOCH_COMPILE_FLAGS, which already fold in the identity-TU and depfile
-# flags); this hashes those, and nothing source-dependent.
+# The epoch machinery's own digest (zcl_compile_epoch) is deliberately NOT
+# reused as the toolkey: it also binds BUILD_SYSTEM_ID (the whole Makefile +
+# epoch scripts), so any Makefile touch — even a comment — would bust the
+# whole test cache, and it mixes in link flags the per-TU test cache does not
+# care about. What is reused is the epoch machinery's already-assembled
+# effective-compile-flag strings (*_EPOCH_COMPILE_FLAGS, which also carry the
+# depfile flags); this hashes those, and nothing source-dependent.
 #
 # $(1) profile name, $(2) NAME of the profile's *_EPOCH_COMPILE_FLAGS variable.
 # Injected per-object so only testcache.o carries it.
@@ -4767,7 +4789,7 @@ COV_CFLAGS = $(filter-out -flto -flto=% -O3 -march=native -Werror,$(CACHED_CFLAG
              --coverage -O1 -g -DCOVERAGE_BUILD -DZCL_TESTING
 COV_LDFLAGS = $(filter-out -flto -flto=%,$(LDFLAGS)) --coverage
 COV_TEST_BIN = $(BIN_DIR)/test_zcl_cov
-COV_EPOCH_COMPILE_FLAGS := $(strip $(COV_CFLAGS) -Wno-deprecated-declarations identity-tu=$(BUILD_IDENTITY_CPPFLAGS) deps=-MD,-MP coverage-staging=v1)
+COV_EPOCH_COMPILE_FLAGS := $(strip $(COV_CFLAGS) -Wno-deprecated-declarations deps=-MD,-MP coverage-staging=v1)
 COV_EPOCH_LINK_FLAGS := $(strip $(COV_LDFLAGS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) cxx=$(CXX))
 ifeq ($(BUILD_EPOCH_CLEAN_ONLY),1)
 COV_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
@@ -5855,7 +5877,7 @@ check-%: export ZCL_LINT_PRODUCTION_SCAN := 1
 # compiles / `make -n` dry runs and reproduces the identical verdict, an
 # input change is a cache MISS that reruns both probes for real.
 check-build-epoch-integrity:
-	@echo "══ LINT: mutation-keyed compile epochs + atomic publication ══"
+	@echo "══ LINT: toolchain-keyed compile epochs + atomic publication ══"
 	@tools/dev/build-epoch-integrity-cached.sh
 
 check-checkout-lock:

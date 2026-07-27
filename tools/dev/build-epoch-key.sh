@@ -3,11 +3,17 @@
 #
 # Produce the fail-closed compiler/profile keys used by Make's cached object
 # epochs.  The portable source authority remains independent of mtimes and Git
-# history.  This host-local compile-session key intentionally also binds the
-# mutation token (including nanosecond mtime/ctime metadata), so edit/revert
-# ABA sessions cannot late-publish objects compiled during a transient epoch.
-# Exact source bytes/completeness, mutation, compiler/tool bytes, and effective
-# flags together select the disposable local object/candidate namespace.
+# history.  The epoch namespace binds ONLY inputs that change object bytes
+# without changing any tracked TU: compiler/tool bytes, profile name,
+# effective compile/link flags, and the build-system fingerprint
+# (build-system-id mode: the root Makefile, which holds every flag variable
+# and per-object override, plus the four epoch driver scripts).  Source edits
+# deliberately do NOT re-key the epoch: make's own timestamp+depfile
+# incrementality recompiles exactly the affected TUs inside the stable epoch,
+# and the identity stamp (BUILD_IDENTITY_STAMP) rebuilds clientversion.o and
+# relinks whenever the source identity moves.  Artifact publication remains
+# source-bound: every publish path re-verifies the exact source record, so a
+# build that raced an edit still fails closed at publish time.
 
 set -euo pipefail
 
@@ -294,39 +300,64 @@ compiler-id)
     ;;
 
 key)
-    SOURCE_ID="${1:-}"
-    COMPLETE="${2:-}"
-    MUTATION="${3:-}"
-    COMPILER_ID="${4:-}"
-    PROFILE="${5:-}"
-    COMPILE_FLAGS="${6:-}"
-    LINK_FLAGS="${7:-}"
-    is_sha256 "$SOURCE_ID" || fail 'key requires a lowercase SHA-256 source id'
-    [ "$COMPLETE" = 1 ] || fail 'key requires capture completeness bit 1'
-    is_sha256 "$MUTATION" || fail 'key requires a source mutation token'
+    COMPILER_ID="${1:-}"
+    PROFILE="${2:-}"
+    COMPILE_FLAGS="${3:-}"
+    LINK_FLAGS="${4:-}"
+    BUILD_SYSTEM="${5:-}"
     is_sha256 "$COMPILER_ID" || fail 'key requires a compiler fingerprint'
     [ -n "$PROFILE" ] || fail 'key requires a nonempty profile name'
     case "$PROFILE" in *$'\n'*|*$'\r'*) fail 'profile contains a control line' ;; esac
     case "$COMPILE_FLAGS $LINK_FLAGS" in
         *@*) fail 'response-file syntax is forbidden in compile/link flags' ;;
     esac
+    is_sha256 "$BUILD_SYSTEM" || fail 'key requires a build-system fingerprint'
 
     WORK="$(mktemp -d "${TMPDIR:-/tmp}/zcl-build-epoch.XXXXXX")" ||
         fail 'could not create build epoch workspace'
     {
-        printf 'zcl.build_compile_epoch.v1\0'
-        printf 'source_id_sha256\0%s\0' "$SOURCE_ID"
-        printf 'capture_complete\0%s\0' "$COMPLETE"
-        printf 'source_mutation_sha256\0%s\0' "$MUTATION"
+        printf 'zcl.build_compile_epoch.v2\0'
         printf 'compiler_id_sha256\0%s\0' "$COMPILER_ID"
         printf 'profile\0%s\0' "$PROFILE"
         printf 'compile_flags\0%s\0' "$COMPILE_FLAGS"
         printf 'link_flags\0%s\0' "$LINK_FLAGS"
+        printf 'build_system_sha256\0%s\0' "$BUILD_SYSTEM"
     } > "$WORK/epoch.preimage"
     sha256_file "$WORK/epoch.preimage"
     ;;
 
+build-system-id)
+    # Canonical fingerprint of every build-system input that can change
+    # compile/link semantics WITHOUT changing a tracked TU's bytes: the root
+    # Makefile (all flag variables and every per-object/per-pattern flag
+    # override) and the four epoch driver scripts (this key tool's algorithm,
+    # the per-object compiler driver, the session/lease/GC authority, and the
+    # candidate publisher).  Editing any of them must re-key every compile
+    # epoch; a stale object must never survive a flags or driver edit.  This
+    # is the single source of truth for the list — Make and
+    # build-epoch-session.sh both call this mode.
+    SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    ROOT="$(cd "$SELF_DIR/../.." && pwd)"
+    BUILD_SYSTEM_FILES=(
+        "$ROOT/Makefile"
+        "$SELF_DIR/build-epoch-key.sh"
+        "$SELF_DIR/compile-epoch-object.sh"
+        "$SELF_DIR/build-epoch-session.sh"
+        "$SELF_DIR/publish-build-alias.sh"
+    )
+    WORK="$(mktemp -d "${TMPDIR:-/tmp}/zcl-build-system.XXXXXX")" ||
+        fail 'could not create build-system fingerprint workspace'
+    : > "$WORK/build-system.preimage"
+    printf 'zcl.build_system_id.v1\0' >> "$WORK/build-system.preimage"
+    for f in "${BUILD_SYSTEM_FILES[@]}"; do
+        [ -f "$f" ] || fail "build-system input is missing: $f"
+        printf 'file\0%s\0%s\0' "${f#"$ROOT"/}" "$(sha256_file "$f")" \
+            >> "$WORK/build-system.preimage"
+    done
+    sha256_file "$WORK/build-system.preimage"
+    ;;
+
 *)
-    fail 'usage: build-epoch-key.sh compiler-id CC [CXX] | key SOURCE COMPLETE MUTATION COMPILER PROFILE COMPILE_FLAGS LINK_FLAGS'
+    fail 'usage: build-epoch-key.sh compiler-id CC [CXX] | key COMPILER PROFILE COMPILE_FLAGS LINK_FLAGS BUILD_SYSTEM_ID | build-system-id'
     ;;
 esac
