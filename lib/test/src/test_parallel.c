@@ -101,7 +101,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(sync_reduce) X(sync_reduce_invariants) X(sync_reduce_fuzz) X(sync_reduce_adapter) \
     X(sync_shadow) \
     X(zcl_ids) X(rom_manifest) X(rom_journal_resume) X(sync_trust_policy) X(code_capsule) \
-    X(code_impact) \
+    X(code_impact) X(code_merkle) X(code_emitter) X(fact_writers) \
     X(file_tree_ops) X(spawn) X(integrity) X(rolling_anchor_service) \
     X(protocols) \
     X(chain_restore_planner) X(chain_restore_service) \

@@ -190,6 +190,33 @@ void zcl_native_handle_code_room(
 void zcl_native_handle_code_impact(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+/* code.merkle — the identity leaf: the SHA3-256 Merkle root over the indexed
+ * source tree, any directory's subtree root, or one file's leaf digest, plus
+ * the direct child subtree roots and what the refresh cost (files re-read,
+ * bytes hashed, directory nodes recomputed). Backed by
+ * lib/codeindex/src/codeindex_merkle.c; does not open the symbol index. */
+void zcl_native_handle_code_merkle(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
+/* code.provenance.facts — the writer census: every durable named slot (a key in
+ * progress_meta / stage_cursor / node_state) with the count of distinct FILES
+ * that write it, ranked multi-writer first; with a `key`, each writer as
+ * file:line via its write function or SQL verb. Re-derived from the tree on
+ * every call. See app/controllers/src/fact_writers.c for the two derivations
+ * and controllers/fact_store_writers.def for the manifest that states them. */
+void zcl_native_handle_code_facts(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
+/* code.provenance.emitter — the reverse direction of every other code leaf:
+ * given text the node EMITTED (a blocker id, a dumper subsystem name, a
+ * reason/log fragment), return the source site that formatted it, its enclosing
+ * function and callers, the .def registry rows that own it, and the proof that
+ * covers it. Implemented in tools/command/native_code_emitter_command.c. */
+void zcl_native_handle_code_emitter(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 
 /* Resolve the focused-test proof group for a changed source `path`, mirroring
  * tools/dev/devloop_plan.c:171-185 so `code tests` and `dev test plan` never

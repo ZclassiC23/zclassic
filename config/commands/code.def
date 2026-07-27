@@ -8,7 +8,7 @@ ZCL_COMMAND_BRANCH("code", "", "Hierarchical source-code navigator",
 
 ZCL_COMMAND_READY_READ(
     "code.group", "code", "",
-    "List the top source groups, or one group's subgroups and files",
+    "Top source groups, or one group's subgroups and files",
     "Subgroups and files of one navigator group (top groups when none given), "
     "from the in-binary code index which self-rebuilds if the tree is stale; "
     "complete for that group.", 0,
@@ -25,7 +25,7 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_READ(
     "code.map", "code", "",
-    "Map the whole tree: the root groups (aggregate file counts) and app shapes",
+    "Map the tree: root groups and app shapes with file counts",
     "The whole tree's root groups with aggregate file counts and the eight app "
     "shapes, from the in-binary code index; a complete overview at index-build "
     "time.", 0,
@@ -42,7 +42,7 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_READ(
     "code.tests", "code", "",
-    "Show which focused test group a change to one file routes to",
+    "Which focused test group a change to one file routes to",
     "The focused test group(s) a change to one file routes to, derived from the "
     "code index's file-to-proof mapping; deterministic, empty if the path maps "
     "to no focused group.", 0,
@@ -59,7 +59,7 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_READ(
     "code.room", "code", "",
-    "Compose shape, purpose, group+neighbors and tests/route for one path",
+    "Compose shape, purpose, neighbors and test route for one path",
     "One path's shape, purpose, group with sibling neighbors, and test route "
     "composed from the in-binary code index; complete for that path at "
     "index-build time.", 0,
@@ -76,7 +76,7 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_READ(
     "code.file", "code", "",
-    "Show one file's symbol table and its in-tree include dependencies",
+    "One file's symbol table and in-tree include dependencies",
     "One file's symbol table and its in-tree include dependencies from the code "
     "index; complete for symbols the indexer parsed, in-tree includes only.", 0,
     "code,file,symbols,includes,deps", "zcl.code_path_input.v1",
@@ -92,7 +92,7 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_READ(
     "code.sym", "code", "",
-    "Show one symbol's card: kind, signature, def/decl, doc, guard, group",
+    "One symbol's card: kind, signature, def/decl, doc, guard",
     "One symbol's card — kind, signature, definition/declaration sites, doc, "
     "guard, and group — from the code index; complete for the symbol the "
     "indexer resolved.", 0,
@@ -109,7 +109,7 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_READ(
     "code.capsule", "code", "",
-    "Compose one symbol's identity, call graph, includes, and command join",
+    "Compose one symbol's identity, call graph, includes and commands",
     "One symbol's identity (id/def/decl/signature/group), direct callers and "
     "callees (each capped), compiler-depfile includes, exact .def command "
     "bindings for that handler, evidence labels, likely change files, and "
@@ -131,7 +131,7 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_READ(
     "code.change-plan", "code", "",
-    "Turn one symbol, intent, or patch into a bounded edit and proof plan",
+    "Turn a symbol, intent, or patch into an edit and proof plan",
     "A small evidence-labelled plan of files to read/edit, boundaries to "
     "avoid, affected compilation, and focused tests. Stable symbol ids resolve "
     "exactly; intent resolution is explicitly heuristic; patch paths are read "
@@ -149,7 +149,7 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_READ(
     "code.refs", "code", "",
-    "List bounded call sites and references to one symbol",
+    "List call sites and references to one symbol",
     "Call sites and references to one symbol from the code index, capped by "
     "`limit`; bounded — may be a partial view of all references when the cap is "
     "hit.", ZCL_COMMAND_LIST_BUDGET,
@@ -166,7 +166,7 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_READ(
     "code.impact", "code", "",
-    "Show the reverse-dependency closure (blast radius) of one changed file",
+    "The reverse-dependency blast radius of one changed file",
     "The reverse-dependency closure of one changed file — every file "
     "transitively downstream via the call graph (codeindex_impact_closure) — "
     "plus the downstream focused test groups from the same shared-rule "
@@ -185,7 +185,7 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_READ(
     "code.find", "code", "",
-    "Rank at most N symbols by name, with a one-line context per hit",
+    "Rank N symbols by name, with a one-line context per hit",
     "At most `limit` symbols ranked by name match, one context line each, from "
     "the code index; a bounded ranked slice, not every match.",
     ZCL_COMMAND_LIST_BUDGET,
@@ -199,3 +199,88 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_CAP_NONE,
     ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_code_find)
+
+/* Provenance sub-branch. Every leaf here answers "what produced this?" about
+ * the codebase itself rather than reading it: which tree state produced an
+ * answer (merkle), which code writes a durable fact (facts), which code
+ * formatted a string the node emitted (emitter). They are nested rather than
+ * flat because the parent `code` menu is bounded by ZCL_COMMAND_BRANCH_BUDGET
+ * (2048) and three more siblings do not fit in it — a sub-branch costs the
+ * parent one child entry no matter how many leaves it grows. Do not raise the
+ * budget; add provenance leaves here. */
+ZCL_COMMAND_BRANCH("code.provenance", "code",
+                   "Attribute output back to the code that produced it",
+                   ZCL_COMMAND_LAYER_CODE)
+
+ZCL_COMMAND_READY_READ(
+    "code.provenance.merkle", "code.provenance", "",
+    "Give the SHA3 Merkle root of the tree or a subtree",
+    "One 32-byte SHA3-256 identity: the whole indexed source tree by default, "
+    "one directory's subtree root when `path` names a directory, or one file's "
+    "leaf digest when it names a file. Leaves bind (repo-relative path, length, "
+    "bytes); internal nodes bind the directory path and its children's "
+    "kind/name/digest in a fixed order, so two checkouts of the same content in "
+    "different directories produce the same root. `children` lists the direct "
+    "subtree roots (16-hex prefixes, capped — `children_total` is the true "
+    "count) so a changed subtree can be located by comparison instead of "
+    "rescanning. `build` reports what THIS call cost: files_read of "
+    "files_total, bytes_read, nodes_hashed of nodes_total. A `path` outside the "
+    "indexed set is reported as found=false, never an error. The digests are a "
+    "derived cache over the files on disk, which remain the only authority.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "code,merkle,tree,digest,identity,root,subtree,changed,hash",
+    "zcl.code_path_input.v1",
+    "zcl.code_merkle.v1", "path", "path",
+    "zclassic23 code provenance merkle lib/net",
+    ZCL_COMMAND_LAYER_CODE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_code_merkle)
+
+ZCL_COMMAND_READY_READ(
+    "code.provenance.facts", "code.provenance", "",
+    "Census the durable named slots and name the ones with several writers",
+    "Every durable named slot (a key in progress_meta / stage_cursor / "
+    "node_state) with the count of distinct FILES that write it, ranked so the "
+    "multi-writer slots come first; with a `key`, every writer of that slot as "
+    "file:line via the write function or SQL verb. Re-derived from the tree on "
+    "every call — there is no recorded finding set. `sites_unresolved` is the "
+    "census's own blind spot: writes whose key argument is not a literal, "
+    "counted rather than dropped.", ZCL_COMMAND_LIST_BUDGET,
+    "code,facts,writers,duplication,drift,ledger,slots",
+    "zcl.code_facts_input.v1",
+    "zcl.code_facts.v1", "key,store", "key",
+    "zclassic23 code provenance facts coins_applied_height",
+    ZCL_COMMAND_LAYER_CODE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_BACKGROUND,
+    ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_code_facts)
+
+ZCL_COMMAND_READY_READ(
+    "code.provenance.emitter", "code.provenance", "",
+    "Resolve emitted text to its emitting code",
+    "The source site that formatted a string the node emitted, joined across "
+    "four registries that already own the answer: the source text (which "
+    "literal or format string), the code index (enclosing function + callers), "
+    "blocker_remedy_bindings.def (which blocker-id pattern owns it and whether "
+    "any auto-remedy exists), and diagnostics_dumpers.def (owner .c + declared "
+    "test). Every field is re-derived per call — no stored mapping. A miss "
+    "names WHICH join missed and the next move, and is never an empty result.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "code,emitter,blocker,reason,origin,who,said,attribute",
+    "zcl.code_text_input.v1",
+    "zcl.code_emitter.v1", "text", "text",
+    "zclassic23 code provenance emitter 'address_index.below_snapshot_seed'",
+    ZCL_COMMAND_LAYER_CODE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_FOREGROUND,
+    ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_code_emitter)

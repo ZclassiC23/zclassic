@@ -500,6 +500,22 @@ AGENT_IMPACT_RULE("lib/codeindex/*|lib/test/src/test_codeindex.c", "codeindex co
 /* Code navigator command surface: the `code` branch backed by lib/codeindex. */
 AGENT_IMPACT_RULE("lib/codeindex/*|config/commands/code.def|tools/command/native_code_command.c|tools/command/native_command.h|lib/test/src/test_code_impact.c", "codeindex code_capsule code_impact command_registry_catalog make_lint_gates")
 
+/* Source-tree SHA3 Merkle identity: the leaf/node hashing rule, its snapshot
+ * cache, and the code.merkle surface that projects it. */
+AGENT_IMPACT_RULE("lib/codeindex/src/codeindex_merkle.c|lib/codeindex/include/codeindex/codeindex_merkle.h|lib/test/src/test_code_merkle.c", "code_merkle codeindex command_registry_catalog make_lint_gates")
+
+/* Emitted-text -> emitting-code attribution: the query-time source-evidence
+ * scan, the leaf that joins it against blocker_remedy_bindings.def and
+ * diagnostics_dumpers.def, and the two registries themselves (a row removed
+ * from either changes this leaf's answer). */
+AGENT_IMPACT_RULE("lib/codeindex/src/codeindex_emitter.c|lib/codeindex/include/codeindex/codeindex_emitter.h|tools/command/native_code_emitter_command.c|lib/test/src/test_code_emitter.c|app/conditions/include/conditions/blocker_remedy_bindings.def", "code_emitter blocker make_lint_gates")
+
+/* Durable-named-slot writer census: the derivation manifest, the three
+ * derivations that read it, and the code.provenance.facts surface. A wrong row
+ * in the manifest fails the link, so the manifest and its readers move
+ * together. */
+AGENT_IMPACT_RULE("app/controllers/src/fact_writers*|app/controllers/include/controllers/fact_writers.h|app/controllers/include/controllers/fact_store_writers.def|tools/command/native_code_facts_command.c|lib/test/src/test_fact_writers.c", "fact_writers codeindex make_lint_gates")
+
 /* Content-addressed per-group test result cache (lib/test/src/testcache.c),
  * keyed on codeindex_forward_closure() — editing the forward-closure engine or
  * the cache module re-runs the cache's own contract test. */

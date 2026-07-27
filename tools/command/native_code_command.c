@@ -19,6 +19,7 @@
 #include "json/json.h"
 #include "codeindex/codeindex.h"
 #include "codeindex/codeindex_build.h"
+#include "codeindex/codeindex_merkle.h"
 #include "config/command_handler_index.h"
 #include "controllers/agent_impact_rules.h"
 
@@ -52,6 +53,9 @@ enum {
     CODE_IMPACT_INC_CAP = 32,  /* direct_includes fan-out cap */
     CODE_IMPACT_SYM_CAP = 64,  /* symbols-in-file cap when summing direct_callers */
     CODE_IMPACT_REF_CAP = 256, /* per-symbol callers cap when summing direct_callers */
+    CODE_MERKLE_CHILD_CAP = 40, /* direct subtree roots rendered by code.merkle
+                                 * (list budget); `children_total` always
+                                 * reports the true count */
 };
 
 /* Bounded copy of at most `max` visible chars of `src` into dst[cap]; appends
@@ -1289,4 +1293,175 @@ void zcl_native_handle_code_impact(const struct zcl_command_request *request,
     (void)json_push_kv_str(&reply->data, "summary", summary);
 
     codeindex_close(ci);
+}
+
+/* ── code.merkle ────────────────────────────────────────────────────────── */
+/* The identity leaf: one 32-byte SHA3 answer to "what does this checkout
+ * contain", and one 32-byte answer per directory to "did anything under here
+ * change since I last looked". Backed by lib/codeindex/src/codeindex_merkle.c,
+ * whose snapshot makes a repeat call re-read only the files whose stat cache key
+ * moved — so this is cheap enough to call between edits, and the `build` object
+ * reports exactly what the call cost (files_read, bytes_read, nodes_hashed).
+ *
+ * Deliberately does NOT open the symbol index: the Merkle pass is independent of
+ * it and must not drag a full index rebuild behind a digest question. */
+void zcl_native_handle_code_merkle(const struct zcl_command_request *request,
+                                   struct zcl_command_reply *reply)
+{
+    const char *path = code_str(request, "path");
+    const char *root = code_source_root(request);
+
+    struct ci_merkle_cost cost;
+    memset(&cost, 0, sizeof(cost));
+    struct ci_merkle *m = ci_merkle_refresh(root, &cost);
+    if (!m) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "MERKLE_BUILD",
+                               "dispatch", true, false,
+                               "could not build the source-tree Merkle root",
+                               root);
+        return;
+    }
+
+    struct ci_merkle_node tree;
+    if (!ci_merkle_root(m, &tree)) {
+        ci_merkle_free(m);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "MERKLE_NO_ROOT",
+                               "dispatch", true, false,
+                               "the source-tree Merkle tree has no root node",
+                               root);
+        return;
+    }
+
+    /* Resolve the request: absent/""/"." = the whole tree, else a directory
+     * subtree, else one file's leaf. An unresolvable path reports found=false
+     * rather than failing — the same contract code.impact uses for a path
+     * outside the indexed set. */
+    const char *want = path ? path : "";
+    bool is_root = !path || !path[0] || strcmp(path, ".") == 0 ||
+                   strcmp(path, "/") == 0;
+    struct ci_merkle_node node = tree;
+    struct ci_merkle_leaf leaf;
+    memset(&leaf, 0, sizeof(leaf));
+    const char *kind = "tree";
+    bool found = true;
+    bool is_file = false;
+    if (!is_root) {
+        bool dir_found = false, file_found = false;
+        (void)ci_merkle_node(m, want, &node, &dir_found);
+        if (dir_found) {
+            kind = "dir";
+        } else if (ci_merkle_leaf(m, want, &leaf, &file_found) && file_found) {
+            kind = "file";
+            is_file = true;
+        } else {
+            kind = "absent";
+            found = false;
+        }
+    }
+
+    char hex[65] = "";
+    if (found) ci_merkle_hex(is_file ? &leaf.digest : &node.digest, hex);
+    char tree_hex[65];
+    ci_merkle_hex(&tree.digest, tree_hex);
+
+    (void)json_push_kv_str(&reply->data, "path", is_root ? "" : want);
+    (void)json_push_kv_str(&reply->data, "kind", kind);
+    (void)json_push_kv_bool(&reply->data, "found", found);
+    (void)json_push_kv_str(&reply->data, "digest", hex);
+    if (is_file) {
+        (void)json_push_kv_int(&reply->data, "size_bytes", (int64_t)leaf.size);
+    } else if (found) {
+        (void)json_push_kv_int(&reply->data, "file_count",
+                               (int64_t)node.file_count);
+        (void)json_push_kv_int(&reply->data, "dir_count",
+                               (int64_t)node.dir_count);
+        (void)json_push_kv_int(&reply->data, "direct_children",
+                               (int64_t)node.direct_children);
+        (void)json_push_kv_int(&reply->data, "total_bytes",
+                               (int64_t)node.total_bytes);
+    }
+
+    /* Direct subdirectory subtree roots (16-hex prefixes — enough to compare,
+     * cheap enough to list), so an agent descends to the changed subtree in a
+     * few steps instead of rescanning the tree. */
+    if (found && !is_file) {
+        static struct ci_merkle_node kids[CODE_MERKLE_CHILD_CAP];
+        int nkids = ci_merkle_child_dirs(m, is_root ? "" : want, kids,
+                                        CODE_MERKLE_CHILD_CAP);
+        if (nkids < 0) nkids = 0;
+        int shown = nkids > CODE_MERKLE_CHILD_CAP ? CODE_MERKLE_CHILD_CAP : nkids;
+        struct json_value arr;
+        json_init(&arr); json_set_array(&arr);
+        for (int i = 0; i < shown; i++) {
+            char kh[65];
+            ci_merkle_hex(&kids[i].digest, kh);
+            kh[16] = '\0';
+            struct json_value o;
+            json_init(&o); json_set_object(&o);
+            (void)json_push_kv_str(&o, "path", kids[i].path);
+            (void)json_push_kv_str(&o, "digest", kh);
+            (void)json_push_kv_int(&o, "file_count",
+                                   (int64_t)kids[i].file_count);
+            (void)json_push_kv_int(&o, "total_bytes",
+                                   (int64_t)kids[i].total_bytes);
+            code_push_obj(&arr, &o);
+        }
+        (void)json_push_kv(&reply->data, "children", &arr);
+        (void)json_push_kv_int(&reply->data, "children_total", nkids);
+        (void)json_push_kv_bool(&reply->data, "children_truncated",
+                                nkids > shown);
+        json_free(&arr);
+    }
+
+    /* Every answer carries the whole-tree identity, so a subtree digest is
+     * always attributable to one tree state. */
+    (void)json_push_kv_str(&reply->data, "tree_root", tree_hex);
+    (void)json_push_kv_int(&reply->data, "tree_files",
+                           (int64_t)tree.file_count);
+    (void)json_push_kv_int(&reply->data, "tree_bytes",
+                           (int64_t)tree.total_bytes);
+
+    /* What this call cost — the incrementality report, not a claim about it. */
+    struct json_value build;
+    json_init(&build); json_set_object(&build);
+    (void)json_push_kv_int(&build, "files_total", (int64_t)cost.files_total);
+    (void)json_push_kv_int(&build, "files_read", (int64_t)cost.files_read);
+    (void)json_push_kv_int(&build, "leaves_reused",
+                           (int64_t)cost.leaves_reused);
+    (void)json_push_kv_int(&build, "bytes_read", (int64_t)cost.bytes_read);
+    (void)json_push_kv_int(&build, "nodes_total", (int64_t)cost.nodes_total);
+    (void)json_push_kv_int(&build, "nodes_hashed", (int64_t)cost.nodes_hashed);
+    (void)json_push_kv_int(&build, "nodes_reused", (int64_t)cost.nodes_reused);
+    (void)json_push_kv_bool(&build, "snapshot_used", cost.snapshot_used);
+    (void)json_push_kv_bool(&build, "snapshot_saved", cost.snapshot_saved);
+    (void)json_push_kv(&reply->data, "build", &build);
+    json_free(&build);
+
+    char summary[288];
+    if (!found) {
+        (void)snprintf(summary, sizeof(summary),
+                       "'%s' is not an indexed source file or directory; tree "
+                       "root %.16s covers %u file(s)",
+                       want, tree_hex, (unsigned)tree.file_count);
+    } else if (is_file) {
+        (void)snprintf(summary, sizeof(summary),
+                       "leaf %s = %.16s (%llu bytes); tree root %.16s; re-read "
+                       "%u/%u file(s) this call",
+                       leaf.path, hex, (unsigned long long)leaf.size, tree_hex,
+                       (unsigned)cost.files_read, (unsigned)cost.files_total);
+    } else {
+        (void)snprintf(summary, sizeof(summary),
+                       "%s subtree %.16s over %u file(s)/%llu bytes; tree root "
+                       "%.16s; re-read %u/%u file(s), hashed %u/%u node(s)",
+                       is_root ? "whole-tree" : want, hex,
+                       (unsigned)node.file_count,
+                       (unsigned long long)node.total_bytes, tree_hex,
+                       (unsigned)cost.files_read, (unsigned)cost.files_total,
+                       (unsigned)cost.nodes_hashed, (unsigned)cost.nodes_total);
+    }
+    (void)json_push_kv_str(&reply->data, "summary", summary);
+
+    ci_merkle_free(m);
 }

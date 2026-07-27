@@ -43,7 +43,7 @@
  *     runtime-substituted part(s) of a dynamically-built id (e.g.
  *     "coin_backfill.unprovable.*" for `snprintf(id, ..., "coin_backfill.
  *     unprovable.%d", h)`). The pattern text must match, character for
- *     character (specifiers collapsed to `*`), a `/* blocker-id: <pattern>
+ *     character (specifiers collapsed to `*`), a `/​* blocker-id: <pattern>
  *     *​/` marker comment the gate finds at the id's construction site —
  *     see e.g. app/conditions/src/catalog_lag_exceeded.c. A blocker_init
  *     call whose id argument is a bare (non-literal, non-macro) variable

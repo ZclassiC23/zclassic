@@ -14,6 +14,17 @@ wrong count reads as authority. Derive one when you need it:
 navigator), or `git ls-files 'app/jobs/**/*.c' | wc -l` for one folder. The
 only pinned counts live in the machine-checked `DOC-COUNTS` block below.
 
+To pin *which* tree state an answer came from, or to ask "did anything under
+`lib/net` change since I last looked", use
+`zclassic23 code provenance merkle [path]`: one
+SHA3-256 root over every indexed source file, one subtree root per directory,
+one leaf digest per file, plus the direct child subtree roots so a changed
+subtree is found by comparison instead of a rescan. The reply's `build` block
+reports what that call cost (files re-read of files total, directory nodes
+rehashed) — a repeat call over an untouched tree reads no file bytes at all.
+The digests are a derived cache (`.codeindex/source_tree.merkle`, gitignored);
+deleting it is always safe and costs one full pass.
+
 ---
 
 ## 1. Where things live
@@ -103,7 +114,7 @@ page changing with it.
 <!--   persistence_adapters = adapters/outbound/persistence/src/*.c                  -->
 <!--   condition_registrations = condition_register() calls in app/conditions/src    -->
 
-test_groups: 754
+test_groups: 757
 port_interfaces: 12
 persistence_adapters: 13
 condition_registrations: 50

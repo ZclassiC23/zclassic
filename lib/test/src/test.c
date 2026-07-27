@@ -1615,6 +1615,9 @@ int main(int argc, char **argv)
     { extern int test_sync_trust_policy(void); failures += test_sync_trust_policy(); }
     { extern int test_code_capsule(void); failures += test_code_capsule(); }
     { extern int test_code_impact(void); failures += test_code_impact(); }
+    { extern int test_code_merkle(void); failures += test_code_merkle(); }
+    { extern int test_code_emitter(void); failures += test_code_emitter(); }
+    { extern int test_fact_writers(void); failures += test_fact_writers(); }
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();
