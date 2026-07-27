@@ -89,6 +89,131 @@ static int test_explain_sync_names_dominant_blocker(void)
     return failures;
 }
 
+/* `explain sync` must show the stage cursors AND say which of them are above
+ * the verified height. It showed neither: the block tested the frontier's
+ * stage_cursors for JSON_OBJ while reducer_frontier emits an ARRAY, so the
+ * whole section was silently dropped from the plain-language surface. Third
+ * case: a node that sends no depth field must read "UNAVAILABLE", never as an
+ * all-clear. */
+static int test_explain_sync_marks_run_ahead_cursors(void)
+{
+    int failures = 0;
+    TEST("explain sync marks stage cursors above the verified height") {
+        struct json_value frontier;
+        json_init(&frontier);
+        json_set_object(&frontier);
+        json_push_kv_int(&frontier, "hstar", 100);
+        json_push_kv_int(&frontier, "served_floor", 100);
+
+        struct json_value cursors, c;
+        json_init(&cursors);
+        json_set_array(&cursors);
+        json_init(&c);
+        json_set_object(&c);
+        json_push_kv_str(&c, "stage", "utxo_apply");
+        json_push_kv_int(&c, "cursor", 101);
+        json_push_kv_int(&c, "heights_above_hstar", 0);
+        json_push_back(&cursors, &c);
+        json_free(&c);
+        json_init(&c);
+        json_set_object(&c);
+        json_push_kv_str(&c, "stage", "body_fetch");
+        json_push_kv_int(&c, "cursor", 108);
+        json_push_kv_int(&c, "heights_above_hstar", 7);
+        json_push_back(&cursors, &c);
+        json_free(&c);
+        json_push_kv(&frontier, "stage_cursors", &cursors);
+        json_free(&cursors);
+
+        struct explain_inputs in = {
+            .frontier = &frontier,
+            .block_height = 100, .block_height_known = true,
+        };
+        struct json_value out;
+        json_init(&out);
+        explain_compose_sync(&in, &out);
+        const char *text = json_get_str(json_get(&out, "text"));
+        ASSERT(text != NULL);
+        /* The section is rendered at all. */
+        ASSERT(strstr(text, "stage cursors") != NULL);
+        ASSERT(strstr(text, "body_fetch=108*") != NULL);
+        /* The level cursor is NOT starred. */
+        ASSERT(strstr(text, "utxo_apply=101 ") != NULL ||
+               strstr(text, "utxo_apply=101\n") != NULL);
+        /* And the meaning is spelled out, not left to the reader. */
+        ASSERT(strstr(text, "ABOVE H*") != NULL);
+        ASSERT(strstr(text, "unproven") != NULL);
+        ASSERT(strstr(text, "1 cursor(s), up to 7 height(s)") != NULL);
+        json_free(&out);
+
+        /* Nothing above H*: an explicit all-clear, no star. */
+        struct json_value clear_cursors, cc;
+        json_init(&clear_cursors);
+        json_set_array(&clear_cursors);
+        json_init(&cc);
+        json_set_object(&cc);
+        json_push_kv_str(&cc, "stage", "utxo_apply");
+        json_push_kv_int(&cc, "cursor", 101);
+        json_push_kv_int(&cc, "heights_above_hstar", 0);
+        json_push_back(&clear_cursors, &cc);
+        json_free(&cc);
+        struct json_value clear_frontier;
+        json_init(&clear_frontier);
+        json_set_object(&clear_frontier);
+        json_push_kv_int(&clear_frontier, "hstar", 100);
+        json_push_kv(&clear_frontier, "stage_cursors", &clear_cursors);
+        json_free(&clear_cursors);
+        struct explain_inputs clear_in = {
+            .frontier = &clear_frontier,
+            .block_height = 100, .block_height_known = true,
+        };
+        struct json_value clear_out;
+        json_init(&clear_out);
+        explain_compose_sync(&clear_in, &clear_out);
+        const char *clear_text = json_get_str(json_get(&clear_out, "text"));
+        ASSERT(clear_text != NULL);
+        ASSERT(strstr(clear_text, "no cursor is above H*") != NULL);
+        ASSERT(strstr(clear_text, "ABOVE H*") == NULL);
+        ASSERT(strstr(clear_text, "utxo_apply=101*") == NULL);
+        json_free(&clear_out);
+        json_free(&clear_frontier);
+
+        /* A node that sends no depth field: never an all-clear. */
+        struct json_value old_cursors, oc;
+        json_init(&old_cursors);
+        json_set_array(&old_cursors);
+        json_init(&oc);
+        json_set_object(&oc);
+        json_push_kv_str(&oc, "stage", "body_fetch");
+        json_push_kv_int(&oc, "cursor", 108);
+        json_push_back(&old_cursors, &oc);
+        json_free(&oc);
+        struct json_value old_frontier;
+        json_init(&old_frontier);
+        json_set_object(&old_frontier);
+        json_push_kv_int(&old_frontier, "hstar", 100);
+        json_push_kv(&old_frontier, "stage_cursors", &old_cursors);
+        json_free(&old_cursors);
+        struct explain_inputs old_in = {
+            .frontier = &old_frontier,
+            .block_height = 100, .block_height_known = true,
+        };
+        struct json_value old_out;
+        json_init(&old_out);
+        explain_compose_sync(&old_in, &old_out);
+        const char *old_text = json_get_str(json_get(&old_out, "text"));
+        ASSERT(old_text != NULL);
+        ASSERT(strstr(old_text, "UNAVAILABLE") != NULL);
+        ASSERT(strstr(old_text, "no cursor is above H*") == NULL);
+        json_free(&old_out);
+        json_free(&old_frontier);
+
+        json_free(&frontier);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_explain_topics_and_health(void)
 {
     int failures = 0;
@@ -1007,6 +1132,7 @@ int test_operator_ux(void)
 {
     int failures = 0;
     failures += test_explain_sync_names_dominant_blocker();
+    failures += test_explain_sync_marks_run_ahead_cursors();
     failures += test_explain_topics_and_health();
     failures += test_profile_samples_threads();
     failures += test_producer_status_synthetic();

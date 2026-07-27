@@ -76,6 +76,22 @@ static int64_t next_cursor_for_dump(const struct dump_log *log, int64_t cursor)
     return log && log->served_tip_cursor && cursor > 0 ? cursor + 1 : cursor;
 }
 
+/* Highest height a stage cursor has already consumed. Every reducer stage step
+ * reads `next_h = cursor_in` and writes `cursor_in + 1` (header_admit_stage.c,
+ * body_fetch_stage.c, body_persist_stage.c, script_validate_stage.c,
+ * proof_validate_stage.c, tip_finalize_stage.c), so the cursor names the NEXT
+ * height and the consumed height is one below it — uniformly, tip_finalize
+ * included: its live cursor sits one behind the others precisely because its
+ * contiguous frontier IS H*. The served-tip +1 that next_cursor_for_dump
+ * applies covers the seed-anchor stamping (a seed anchor at H stamps cursor H),
+ * where this reads one height LOW. That direction is chosen deliberately: a
+ * "this may be wrong" marker that under-reports the edge by one is honest,
+ * while one that over-reports fires on every healthy store and gets ignored. */
+static int64_t cursor_consumed_height(int64_t cursor)
+{
+    return cursor - 1;
+}
+
 /* Map a first-H*-blocker to the subsystem that owns its repair. Kind-keyed
  * with a reason refinement, and NEVER empty: the reason-only table this
  * replaced had no entry for kind=log_hole (missing-success-row), so the
@@ -511,23 +527,58 @@ bool reducer_frontier_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_bool(out, "coins_best_above_hstar",
                       coins_ok && coins_found && coins_applied - 1 > hstar);
 
+    /* Per-cursor run-ahead marking. A cursor above H* has consumed heights
+     * nothing has proven: on the 2026-07-27 one-block fork at 3195363, five
+     * cursors read 3195370 while H* was 3195362 — work done over the LOSING
+     * branch, every height of it clamped back by the reorg repair. The dump
+     * printed those numbers bare, and a reader took them for a better height
+     * than H*. Derived here at query time from (cursor, hstar), never stored:
+     * a persisted copy of a comparison is a second copy of the fact. */
     struct json_value cursors = {0};
     json_set_array(&cursors);
+    int64_t cursors_above = 0;
+    int64_t cursors_above_max = 0;
     for (size_t i = 0;
          i < sizeof(k_stage_cursors) / sizeof(k_stage_cursors[0]);
          i++) {
         int64_t cursor = 0;
         bool ok = cursor_at(db, k_stage_cursors[i], &cursor);
+        int64_t consumed = ok ? cursor_consumed_height(cursor) : -1;
+        int64_t above = (ok && consumed > hstar) ? consumed - hstar : 0;
+        if (above > 0) {
+            cursors_above++;
+            if (above > cursors_above_max)
+                cursors_above_max = above;
+        }
         struct json_value obj = {0};
         json_set_object(&obj);
         json_push_kv_str(&obj, "stage", k_stage_cursors[i]);
         json_push_kv_bool(&obj, "read_ok", ok);
         json_push_kv_int(&obj, "cursor", ok ? cursor : -1);
+        json_push_kv_int(&obj, "consumed_height", ok ? consumed : -1);
+        json_push_kv_bool(&obj, "above_hstar", above > 0);
+        json_push_kv_int(&obj, "heights_above_hstar", above);
+        json_push_kv_str(&obj, "trust",
+                         !ok ? "unknown_cursor_unreadable"
+                             : (above > 0 ? "unproven_may_be_wrong"
+                                          : "within_verified_hstar"));
         json_push_back(&cursors, &obj);
         json_free(&obj);
     }
     json_push_kv(out, "stage_cursors", &cursors);
     json_free(&cursors);
+    json_push_kv_int(out, "stage_cursors_above_hstar_count", cursors_above);
+    json_push_kv_int(out, "stage_cursors_above_hstar_max_depth",
+                     cursors_above_max);
+    json_push_kv_str(out, "stage_cursors_trust_note",
+                     "hstar is the only proven height. A stage cursor with "
+                     "trust=unproven_may_be_wrong has consumed heights above "
+                     "hstar that nothing has verified: they can sit on a "
+                     "losing fork and be clamped back by the reorg repair, so "
+                     "such a cursor may be WRONG and must never be read as a "
+                     "better height than hstar. One height of lead is the "
+                     "normal working edge; a growing depth is run-ahead over "
+                     "an unverified branch.");
 
     struct json_value frontiers = {0};
     json_set_array(&frontiers);

@@ -1104,6 +1104,174 @@ static int case_dump_reports_validate_failure_owner(void)
     return failures;
 }
 
+static const struct json_value *dumped_cursor(const struct json_value *out,
+                                             const char *stage)
+{
+    const struct json_value *arr = json_get(out, "stage_cursors");
+    if (!arr || arr->type != JSON_ARR)
+        return NULL;
+    for (size_t i = 0; i < arr->num_children; i++) {
+        const struct json_value *c = &arr->children[i];
+        if (strcmp(json_get_str(json_get(c, "stage")), stage) == 0)
+            return c;
+    }
+    return NULL;
+}
+
+/* Run-ahead visibility. A stage cursor above H* has consumed heights nothing
+ * has verified — on the 2026-07-27 one-block fork at 3195363 five cursors read
+ * 3195370 against H*=3195362, all of it work over the LOSING branch that the
+ * reorg repair clamped back. The dump printed those as bare numbers and a
+ * reader took them for a better height than H*. Both directions are pinned
+ * here: a run-ahead cursor is reported as unproven, and a cursor level with H*
+ * is NOT. header_admit and body_fetch are the two cursors outside the
+ * H*-bearing log set, so moving them cannot move H* — which also proves the
+ * marking is a comparison derived at query time, not a stored verdict. */
+static int case_dump_marks_run_ahead_stage_cursors(void)
+{
+    int failures = 0;
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "reducer_frontier", "runahead");
+
+    progress_store_close();
+    bool opened = progress_store_open(dir);
+    RF_CHECK("runahead: progress_store opens", opened);
+    if (!opened) {
+        test_cleanup_tmpdir(dir);
+        return failures;
+    }
+
+    sqlite3 *db = progress_store_db();
+    RF_CHECK("runahead: schema", db && build_schema(db));
+    RF_CHECK("runahead: proven authority", db && stamp_proven_authority(db, A));
+
+    const int32_t tip = A + 3;
+    bool built = db != NULL;
+    for (int32_t h = A + 1; h <= tip; h++)
+        built = built && put_consistent_height(db, h);
+    RF_CHECK("runahead: rows built", built);
+    RF_CHECK("runahead: log cursors", db && set_all_cursors(db, tip + 1));
+    RF_CHECK("runahead: header_admit cursor",
+             db && set_cursor(db, "header_admit", tip + 1));
+
+    struct json_value probe;
+    json_init(&probe);
+    bool probed = reducer_frontier_dump_state_json(&probe, NULL);
+    RF_CHECK("runahead: probe dump returns true", probed);
+    int64_t hstar = probed ? json_get_int(json_get(&probe, "hstar")) : -1;
+    json_free(&probe);
+    RF_CHECK("runahead: fixture hstar known", hstar == tip);
+
+    RF_CHECK("runahead: level cursor set to hstar+1",
+             db && set_cursor(db, "header_admit", hstar + 1));
+    RF_CHECK("runahead: run-ahead cursor set to hstar+8",
+             db && set_cursor(db, "body_fetch", hstar + 8));
+
+    struct json_value out;
+    json_init(&out);
+    bool dumped = reducer_frontier_dump_state_json(&out, NULL);
+    RF_CHECK("runahead: returns true", dumped);
+    if (dumped) {
+        RF_CHECK("runahead: cursor moves did not move hstar",
+                 json_get_int(json_get(&out, "hstar")) == hstar);
+
+        const struct json_value *ahead = dumped_cursor(&out, "body_fetch");
+        RF_CHECK("runahead: run-ahead cursor is serialized", ahead != NULL);
+        if (ahead) {
+            RF_CHECK("runahead: run-ahead cursor marked above hstar",
+                     json_get_bool(json_get(ahead, "above_hstar")));
+            RF_CHECK("runahead: run-ahead depth is 7 heights",
+                     json_get_int(json_get(ahead, "heights_above_hstar"))
+                         == 7);
+            RF_CHECK("runahead: run-ahead consumed height is hstar+7",
+                     json_get_int(json_get(ahead, "consumed_height"))
+                         == hstar + 7);
+            RF_CHECK("runahead: run-ahead trust says it may be wrong",
+                     strcmp(json_get_str(json_get(ahead, "trust")),
+                            "unproven_may_be_wrong") == 0);
+        }
+
+        const struct json_value *level = dumped_cursor(&out, "header_admit");
+        RF_CHECK("runahead: level cursor is serialized", level != NULL);
+        if (level) {
+            RF_CHECK("runahead: level cursor NOT marked above hstar",
+                     !json_get_bool(json_get(level, "above_hstar")));
+            RF_CHECK("runahead: level cursor depth is zero",
+                     json_get_int(json_get(level, "heights_above_hstar"))
+                         == 0);
+            RF_CHECK("runahead: level cursor consumed height is hstar",
+                     json_get_int(json_get(level, "consumed_height"))
+                         == hstar);
+            RF_CHECK("runahead: level cursor trust is within-verified",
+                     strcmp(json_get_str(json_get(level, "trust")),
+                            "within_verified_hstar") == 0);
+        }
+
+        RF_CHECK("runahead: exactly one cursor counted above hstar",
+                 json_get_int(json_get(&out,
+                     "stage_cursors_above_hstar_count")) == 1);
+        RF_CHECK("runahead: deepest run-ahead reported",
+                 json_get_int(json_get(&out,
+                     "stage_cursors_above_hstar_max_depth")) == 7);
+        RF_CHECK("runahead: note names hstar as the only proven height",
+                 strstr(json_get_str(json_get(&out,
+                            "stage_cursors_trust_note")),
+                        "only proven height") != NULL);
+
+        /* The serializer is where a field goes to die here, so pin the WIRE
+         * text, not just the in-memory value: json_write is the same writer
+         * the dumpstate reply travels through. */
+        static char wire[32768];
+        size_t need = json_write(&out, wire, sizeof(wire));
+        RF_CHECK("runahead: serialized dump not truncated",
+                 need < sizeof(wire));
+        RF_CHECK("runahead: wire carries the unproven marking",
+                 strstr(wire, "\"trust\":\"unproven_may_be_wrong\"") != NULL);
+        RF_CHECK("runahead: wire carries the run-ahead depth",
+                 strstr(wire, "\"heights_above_hstar\":7") != NULL);
+        RF_CHECK("runahead: wire carries the within-verified marking",
+                 strstr(wire, "\"trust\":\"within_verified_hstar\"") != NULL);
+        RF_CHECK("runahead: wire carries the run-ahead count",
+                 strstr(wire, "\"stage_cursors_above_hstar_count\":1") != NULL);
+    }
+    json_free(&out);
+
+    /* The incident shape itself: five cursors run ahead together while the
+     * verified height does not move (raising a cursor without rows above the
+     * tip cannot raise a log frontier, exactly as the losing branch's work
+     * could not raise H*). The aggregate must count all five. */
+    bool ran_ahead = db != NULL
+        && set_cursor(db, "validate_headers", hstar + 8)
+        && set_cursor(db, "body_fetch", hstar + 8)
+        && set_cursor(db, "body_persist", hstar + 8)
+        && set_cursor(db, "script_validate", hstar + 8)
+        && set_cursor(db, "proof_validate", hstar + 8);
+    RF_CHECK("runahead: five cursors run ahead", ran_ahead);
+
+    struct json_value five;
+    json_init(&five);
+    bool dumped_five = reducer_frontier_dump_state_json(&five, NULL);
+    RF_CHECK("runahead-five: returns true", dumped_five);
+    if (dumped_five) {
+        RF_CHECK("runahead-five: verified height did not move",
+                 json_get_int(json_get(&five, "hstar")) == hstar);
+        RF_CHECK("runahead-five: five cursors counted above hstar",
+                 json_get_int(json_get(&five,
+                     "stage_cursors_above_hstar_count")) == 5);
+        RF_CHECK("runahead-five: deepest run-ahead is 7 heights",
+                 json_get_int(json_get(&five,
+                     "stage_cursors_above_hstar_max_depth")) == 7);
+        const struct json_value *utxo = dumped_cursor(&five, "utxo_apply");
+        RF_CHECK("runahead-five: the cursor left behind is not marked",
+                 utxo && !json_get_bool(json_get(utxo, "above_hstar")));
+    }
+    json_free(&five);
+
+    progress_store_close();
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 static int case_dump_reports_unavailable_store(void)
 {
     int failures = 0;
@@ -2095,6 +2263,7 @@ int test_reducer_frontier(void)
     failures += case_split_at_floor();
     failures += case_preflip_no_proof_block_hash();
     failures += case_dump_reports_validate_failure_owner();
+    failures += case_dump_marks_run_ahead_stage_cursors();
     failures += case_dump_reports_unavailable_store();
     failures += case_dump_reports_hstar_log_hole();
     failures += case_dump_reports_hstar_hash_split();

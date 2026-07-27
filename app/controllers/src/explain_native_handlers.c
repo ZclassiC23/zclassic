@@ -42,7 +42,9 @@ void explain_compose_sync(const struct explain_inputs *in,
                           struct json_value *out)
 {
     json_set_object(out);
-    char t[1600];
+    /* Sized so the restored stage-cursor section + its trust note cannot push
+     * the "next action" line past the accumulator's cap. */
+    char t[2048];
     size_t len = 0;
 
     int64_t hstar = in->frontier
@@ -119,15 +121,57 @@ void explain_compose_sync(const struct explain_inputs *in,
         tline(t, sizeof(t), &len,
               "  next-height blocker: none (frontier advancing)\n");
 
-    /* Per-stage cursors from the frontier snapshot. */
+    /* Per-stage cursors from the frontier snapshot. reducer_frontier emits an
+     * ARRAY of {stage, cursor, heights_above_hstar, ...} objects; this block
+     * tested for JSON_OBJ and so printed nothing at all — the plain-language
+     * surface dropped the whole section. Each cursor above H* is marked, not
+     * merely listed: a bare cursor next to H* is exactly what one reader
+     * mistook for a better height than H*. */
     const struct json_value *cursors = in->frontier
         ? json_get(in->frontier, "stage_cursors") : NULL;
-    if (cursors && cursors->type == JSON_OBJ && cursors->num_children > 0) {
-        tline(t, sizeof(t), &len, "  stage cursors:");
-        for (size_t i = 0; i < cursors->num_children && i < 10; i++)
-            tline(t, sizeof(t), &len, " %s=%lld", cursors->keys[i],
-                  (long long)json_get_int(&cursors->children[i]));
+    if (cursors && cursors->type == JSON_ARR && cursors->num_children > 0) {
+        int nabove = 0;
+        int64_t deepest = 0;
+        /* This composer runs in the CLI process against whatever node answered
+         * the dumpstate RPC. A node that predates the per-cursor marking sends
+         * no depth field at all, and reporting that absence as "nothing is
+         * above H*" would be a false all-clear — say "unavailable" instead. */
+        bool marked = true;
+        tline(t, sizeof(t), &len,
+              "  stage cursors (next height each stage will consume):");
+        for (size_t i = 0; i < cursors->num_children && i < 10; i++) {
+            const struct json_value *c = &cursors->children[i];
+            const struct json_value *depth =
+                json_get(c, "heights_above_hstar");
+            if (!depth)
+                marked = false;
+            int64_t lead = json_get_int(depth);
+            if (lead > 0) {
+                nabove++;
+                if (lead > deepest) deepest = lead;
+            }
+            tline(t, sizeof(t), &len, " %s=%lld%s",
+                  json_get_str(json_get(c, "stage")),
+                  (long long)json_get_int(json_get(c, "cursor")),
+                  lead > 0 ? "*" : "");
+        }
         tline(t, sizeof(t), &len, "\n");
+        if (!marked)
+            tline(t, sizeof(t), &len,
+                  "  run-ahead marking: UNAVAILABLE from this node — these "
+                  "cursors cannot be told apart from proven heights here; "
+                  "H* above is the only proven height\n");
+        else if (nabove > 0)
+            tline(t, sizeof(t), &len,
+                  "  * = has consumed heights ABOVE H* (%d cursor(s), up to "
+                  "%lld height(s)): unproven work that can sit on a losing "
+                  "fork and be clamped back — never read such a cursor as a "
+                  "better height than H*\n",
+                  nabove, (long long)deepest);
+        else
+            tline(t, sizeof(t), &len,
+                  "  no cursor is above H* — every stage is within the "
+                  "verified height\n");
         tline(t, sizeof(t), &len,
               "  (per-stage step-EWMA rates: run `zclassic23 ops profile`)\n");
     }
