@@ -199,6 +199,40 @@ enum vcs_package_store_result vcs_package_store_get_chunk(
     struct vcs_package_store *store, const uint8_t package_root[32],
     const char *path, uint32_t chunk_index, uint8_t **out, size_t *out_len);
 
+/* Slice 12 (package swarm) index-addressed reads. get_chunk_at resolves
+ * (file_index, chunk_index) — the manifest's canonical ascending path-order
+ * coordinates the swarm wire speaks — to the file and behaves exactly like
+ * get_chunk (same logical-access bump). get_manifest_wire reads back the
+ * stored canonical manifest wire (staged or committed; allocates *out).
+ * chunk_present is a pure CAS-presence probe at exact coordinates (no
+ * access bump, no bytes read) for resumable-download bitmap rebuilds. */
+enum vcs_package_store_result vcs_package_store_get_chunk_at(
+    struct vcs_package_store *store, const uint8_t package_root[32],
+    uint32_t file_index, uint32_t chunk_index, uint8_t **out,
+    size_t *out_len);
+enum vcs_package_store_result vcs_package_store_get_manifest_wire(
+    struct vcs_package_store *store, const uint8_t package_root[32],
+    uint8_t **out, size_t *out_len);
+bool vcs_package_store_chunk_present(
+    struct vcs_package_store *store, const uint8_t package_root[32],
+    uint32_t file_index, uint32_t chunk_index);
+
+/* Bounded tracked-package enumeration for swarm announcements (slice
+ * 12). Fills up to `max` summaries in tracked (insertion) order and
+ * returns the row count written. complete_only skips staged packages. */
+struct vcs_package_store_summary {
+    uint8_t root[32];
+    uint32_t manifest_bytes;
+    uint32_t file_count;
+    uint64_t total_bytes;
+    uint32_t total_chunks;
+    bool complete;
+    bool pinned;
+};
+size_t vcs_package_store_list_summaries(
+    struct vcs_package_store *store, bool complete_only,
+    struct vcs_package_store_summary *out, size_t max);
+
 /* Admit a signed release envelope through the acceptance layer. OK and
  * DUPLICATE persist the envelope under releases/<release-id-hex>; any
  * other acceptance result stores nothing and returns ERR_ACCEPT with

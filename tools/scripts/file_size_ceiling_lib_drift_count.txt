@@ -292,3 +292,18 @@
 # Same lint run exposed one restored regression already committed on this
 # branch: codeindex_merkle.c (1070 lines, be8471cf1) had never been
 # baselined. Freshly baselined at 1070; count unchanged.
+#
+# 2026-07-27 (ZCODE slice 12, authenticated package swarm):
+# package_swarm_node.c is a NEW 1800-line file (the swarm engine: peer
+# table + per-peer offence accounting, manifest-first download scheduler
+# with named terminal stalls, per-chunk attempt caps, tick-driven outbound
+# queue, and the frame handler returning typed penalty/rule/disconnect —
+# one cohesive engine module mirroring package_store.c's one-file shape).
+# Freshly baselined at its starting size (1800) so future growth on it
+# becomes visible; count unchanged. Same slice: package_store.c grew
+# 964 -> 1069 adding the swarm read APIs (get_chunk_at, get_manifest_wire,
+# chunk_present, list_summaries) — re-baselined at 1069; count unchanged.
+# msgprocessor.c grew 2415 -> 2472 (the zpkgswm dispatch row, the tick
+# hook call, and the hook-field NULLs; 2462 of it predates this slice on
+# this branch) — re-baselined at 2472, which also absorbs that restored
+# branch drift; count unchanged.

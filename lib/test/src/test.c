@@ -1474,6 +1474,9 @@ int main(int argc, char **argv)
     { extern int test_zcode_rank(void); failures += test_zcode_rank(); }
     { extern int test_zcode_badge(void); failures += test_zcode_badge(); }
     { extern int test_zcode_policy(void); failures += test_zcode_policy(); }
+    { extern int test_zcode_swarm(void); failures += test_zcode_swarm(); }
+    { extern int test_zcode_swarm_net(void); failures += test_zcode_swarm_net(); }
+    { extern int test_zcode_fetch(void); failures += test_zcode_fetch(); }
     { extern int test_vcs_devloop(void); failures += test_vcs_devloop(); }
     { extern int test_testcache(void); failures += test_testcache(); }
     failures += test_nullifier_kv();

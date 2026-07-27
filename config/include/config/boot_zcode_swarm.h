@@ -1,0 +1,57 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * boot_zcode_swarm — the config-layer glue between lib/net (below, owns
+ * sockets + the "zpkgswm" dispatch row) and the ZCODE package swarm
+ * engine in lib/vcs (above, pure scheduler + accounting). lib/net may
+ * NOT include vcs headers (module rank net < vcs), so net speaks to the
+ * swarm only through the msg_zcode_swarm_* hooks on struct msg_processor;
+ * this unit implements those hooks.
+ *
+ * Responsibilities:
+ *   - lazily create the node-global engine on the first swarm frame when
+ *     -packagehost=1 and the package store is open (borrowed global store,
+ *     owned service book + reward ledger loaded from <datadir>/zcode);
+ *   - derive each peer's LOCAL session pseudo-key (0x02 ||
+ *     SHA3-256("zcl.zcode_swarm_peer.v1" || host identity)) — a transport
+ *     session scope for the service book, NOT a contributor identity;
+ *   - map engine penalties onto typed peer offences (peer_scoring_record);
+ *   - sync engine peer membership from the live node set (handshake
+ *     complete + NODE_ZCL23 + not disconnecting), announce tracked
+ *     packages to newly known peers, drive the scheduler tick, and drain
+ *     the engine's bounded outbound queue onto the node's send queue.
+ *
+ * The engine itself (lib/vcs/src/package_swarm_node.c) carries the whole
+ * contract; this file is transport + offence-mapping only. */
+
+#ifndef ZCL_CONFIG_BOOT_ZCODE_SWARM_H
+#define ZCL_CONFIG_BOOT_ZCODE_SWARM_H
+
+#include "net/msgprocessor.h"
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+struct boot_svc_ctx;
+
+/* msg_zcode_swarm_frame_fn: deliver one received "zpkgswm" payload. */
+bool boot_zcode_swarm_frame(struct msg_processor *mp, struct p2p_node *node,
+                            const uint8_t *payload, size_t payload_len,
+                            void *ctx);
+
+/* msg_zcode_swarm_tick_fn: called once per peer message cycle (node is
+ * the peer being serviced). Membership sync + engine tick are throttled
+ * internally; the outbound drain is per-call for THIS node. */
+void boot_zcode_swarm_tick(struct msg_processor *mp, struct p2p_node *node,
+                           void *ctx);
+
+/* Wire the hooks onto svc->msg_processor. Cheap; safe before the store
+ * opens (the engine is created lazily on first use). */
+void boot_zcode_swarm_wire(struct boot_svc_ctx *svc);
+
+/* Free the engine + book + ledger and clear the node-global engine.
+ * Idempotent. MUST run before vcs_package_store_close_global() (the
+ * engine borrows the global store). */
+void boot_zcode_swarm_shutdown(void);
+
+#endif /* ZCL_CONFIG_BOOT_ZCODE_SWARM_H */

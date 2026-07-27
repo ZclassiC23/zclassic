@@ -720,6 +720,111 @@ enum vcs_package_store_result vcs_package_store_get_chunk(
     return VCS_PACKAGE_STORE_OK;
 }
 
+/* ── reads: slice-12 swarm coordinates ────────────────────────────── */
+
+enum vcs_package_store_result vcs_package_store_get_chunk_at(
+    struct vcs_package_store *store, const uint8_t package_root[32],
+    uint32_t file_index, uint32_t chunk_index, uint8_t **out,
+    size_t *out_len)
+{
+    if (!store || !package_root || !out || !out_len)
+        LOG_RETURN(VCS_PACKAGE_STORE_ERR_NULL, STORE_LOG,
+                   "null store/root/out");
+    pthread_mutex_lock(&store->lock);
+    struct store_package *pkg = store_find(store, package_root, NULL);
+    if (!pkg) {
+        pthread_mutex_unlock(&store->lock);
+        return VCS_PACKAGE_STORE_ERR_UNKNOWN_PACKAGE;
+    }
+    if (file_index >= pkg->manifest.count) {
+        pthread_mutex_unlock(&store->lock);
+        return VCS_PACKAGE_STORE_ERR_CHUNK_COORD;
+    }
+    const char *path = pkg->manifest.files[file_index].path;
+    pthread_mutex_unlock(&store->lock);
+    return vcs_package_store_get_chunk(store, package_root, path,
+                                       chunk_index, out, out_len);
+}
+
+enum vcs_package_store_result vcs_package_store_get_manifest_wire(
+    struct vcs_package_store *store, const uint8_t package_root[32],
+    uint8_t **out, size_t *out_len)
+{
+    if (!store || !package_root || !out || !out_len)
+        LOG_RETURN(VCS_PACKAGE_STORE_ERR_NULL, STORE_LOG,
+                   "null store/root/out");
+    *out = NULL;
+    *out_len = 0;
+    pthread_mutex_lock(&store->lock);
+    struct store_package *pkg = store_find(store, package_root, NULL);
+    if (!pkg) {
+        pthread_mutex_unlock(&store->lock);
+        return VCS_PACKAGE_STORE_ERR_UNKNOWN_PACKAGE;
+    }
+    uint8_t *buf = zcl_malloc(pkg->manifest_wire_len,
+                              "vcs_store_get_manifest_wire");
+    if (!buf) {
+        pthread_mutex_unlock(&store->lock);
+        LOG_RETURN(VCS_PACKAGE_STORE_ERR_ALLOC, STORE_LOG,
+                   "alloc %zu manifest wire bytes", pkg->manifest_wire_len);
+    }
+    memcpy(buf, pkg->manifest_wire, pkg->manifest_wire_len);
+    *out = buf;
+    *out_len = pkg->manifest_wire_len;
+    pthread_mutex_unlock(&store->lock);
+    return VCS_PACKAGE_STORE_OK;
+}
+
+bool vcs_package_store_chunk_present(
+    struct vcs_package_store *store, const uint8_t package_root[32],
+    uint32_t file_index, uint32_t chunk_index)
+{
+    if (!store || !package_root)
+        return false;
+    pthread_mutex_lock(&store->lock);
+    struct store_package *pkg = store_find(store, package_root, NULL);
+    bool present = false;
+    if (pkg && file_index < pkg->manifest.count) {
+        const struct vcs_package_file *file =
+            &pkg->manifest.files[file_index];
+        if (chunk_index < file->chunk_count)
+            present = store_cas_contains(
+                store, file->chunk_hashes + (size_t)chunk_index * 32u);
+    }
+    pthread_mutex_unlock(&store->lock);
+    return present;
+}
+
+size_t vcs_package_store_list_summaries(
+    struct vcs_package_store *store, bool complete_only,
+    struct vcs_package_store_summary *out, size_t max)
+{
+    if (!store || (!out && max > 0))
+        LOG_RETURN(0, STORE_LOG, "null store/summaries out");
+    size_t n = 0;
+    pthread_mutex_lock(&store->lock);
+    for (size_t i = 0; i < store->pkg_count && n < max; i++) {
+        struct store_package *pkg = &store->pkgs[i];
+        bool complete = store_package_complete(store, pkg);
+        if (complete_only && !complete)
+            continue;
+        struct vcs_package_store_summary *s = &out[n++];
+        memset(s, 0, sizeof(*s));
+        memcpy(s->root, pkg->root, 32);
+        s->manifest_bytes = (uint32_t)pkg->manifest_wire_len;
+        s->file_count = (uint32_t)pkg->manifest.count;
+        s->total_bytes = pkg->total_bytes;
+        /* The true coordinate total (the announce consistency rules speak
+         * of every chunk position, not the deduped unique-hash count). */
+        for (size_t f = 0; f < pkg->manifest.count; f++)
+            s->total_chunks += pkg->manifest.files[f].chunk_count;
+        s->complete = complete;
+        s->pinned = pkg->pinned;
+    }
+    pthread_mutex_unlock(&store->lock);
+    return n;
+}
+
 /* ── operator: pins and class ─────────────────────────────────────── */
 
 enum vcs_package_store_result vcs_package_store_pin(

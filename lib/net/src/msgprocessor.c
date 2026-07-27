@@ -1191,6 +1191,8 @@ static const struct msg_dispatch_entry g_msg_dispatch[] = {
     { "zfilepay",     handle_zfilepay,       true,  true,  "market" },
     /* ── ZCL23 Game ── */
     { "zgame",        handle_game_msg,       true,  true,  "game" },
+    /* ── ZCODE package swarm (slice 12; engine above net via hooks) ── */
+    { "zpkgswm",      mp_handle_zcode_swarm, true,  true,  "zcode" },
     /* sentinel */
     { "",             NULL,                  false, false, NULL }
 };
@@ -1281,6 +1283,9 @@ void msg_processor_init(struct msg_processor *mp,
     mp->utxo_sha3_compute = NULL;
     mp->utxo_sha3_compute_ctx = NULL;
     mp->block_intake = NULL;
+    mp->zcode_swarm_frame = NULL;
+    mp->zcode_swarm_tick = NULL;
+    mp->zcode_swarm_ctx = NULL;
 
     /* Initialize download manager once (before threads start) */
     msg_get_download_mgr();
@@ -1704,6 +1709,11 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
      * peer per cycle is plenty — state transitions happen on second-
      * scale, not per-message scale. */
     tip_watchdog_tick();
+
+    /* ZCODE package swarm (slice 12): peer-membership sync + scheduler
+     * tick + outbound drain for THIS node, when the engine is wired. */
+    if (mp->zcode_swarm_tick)
+        mp->zcode_swarm_tick(mp, node, mp->zcode_swarm_ctx);
 
     size_t processed = 0;
     while (!node->disconnect &&

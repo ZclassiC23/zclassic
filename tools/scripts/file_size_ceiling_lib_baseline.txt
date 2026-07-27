@@ -36,7 +36,7 @@ lib/net/src/file_service.c 2255
 lib/net/src/https_server.c 951
 lib/net/src/msg_blocks.c 878
 lib/net/src/msg_headers.c 1148
-lib/net/src/msgprocessor.c 2415
+lib/net/src/msgprocessor.c 2472
 lib/net/src/msgprocessor_snapshot.c 2005
 lib/net/src/msgprocessor_snapshot_serve.c 1114
 lib/net/src/net.c 1666
@@ -69,9 +69,10 @@ lib/util/src/supervisor.c 801
 lib/sync/src/stage.c 819
 src/main_cli_modes.c 3820
 lib/hotswap/src/hotswap_activate.c 948
-lib/vcs/src/package_store.c 964
+lib/vcs/src/package_store.c 1069
 lib/vcs/src/package_score.c 845
 lib/vcs/src/package_reward.c 2135
 lib/codeindex/src/codeindex_merkle.c 1070
 lib/vcs/src/package_badge.c 1339
 lib/vcs/src/package_badge_eligible.c 816
+lib/vcs/src/package_swarm_node.c 1800

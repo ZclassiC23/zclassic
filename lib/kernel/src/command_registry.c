@@ -882,6 +882,10 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
                    strcmp(key, "after") == 0 ||
                    strcmp(key, "after_epoch") == 0) {
             type_ok = value->type == JSON_INT && json_get_int(value) >= 0;
+        } else if (strcmp(key, "day") == 0) {
+            /* Civil day number (unix/86400) — the deterministic window
+             * pin every zcode reward/badge/seed/fetch surface takes. */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 0;
         } else if (strcmp(key, "min-height") == 0) {
             /* net census height floor: a non-negative advertised height. */
             type_ok = value->type == JSON_INT && json_get_int(value) >= 0;

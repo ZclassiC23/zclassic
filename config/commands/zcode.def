@@ -788,3 +788,111 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_storage_status)
+
+/* ── slice 12: the authenticated package swarm ─────────────────────────
+ * The swarm engine (lib/vcs/package_swarm_node.*) is pure; the "zpkgswm"
+ * wire frames ride the existing P2P transport through net hooks, and the
+ * glue lives in config/src/boot_zcode_swarm.c. fetch is live when a
+ * -packagehost=1 node runs (node-global engine) and otherwise persists
+ * the resumable download record — never a faked download. peers is
+ * session state: it reports live:false honestly on a one-shot CLI. */
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.package.fetch", "zcode.package", "",
+    "Fetch a package from the authenticated swarm (resumable)",
+    "Starts (or idempotently resumes) a swarm download of one 64-hex "
+    "package `root`: manifest-first, then chunks rarest-first across the "
+    "peers advertising the root, every chunk SHA3-verified against the "
+    "root-committed manifest BEFORE it is stored (the authentication), "
+    "with bounded attempts naming a terminal failure. Against a running "
+    "-packagehost=1 node this drives the live engine (live:true); a "
+    "one-shot CLI persists the resumable record under "
+    "<datadir>/zcode/downloads/<root-hex> and reports live:false — the "
+    "next hosting boot resumes it. ALREADY_COMPLETE (already_complete:"
+    "true) is the idempotent redelivery. Rejections name the rule: "
+    "BAD_ROOT, NO_STORE, DOWNLOAD_SLOTS_FULL (16 tracked downloads), "
+    "RECORD_IO. `day` pins the accounting window for deterministic "
+    "testing (host clock when omitted).",
+    0,
+    "zcode,package,fetch,download,swarm,resume",
+    "zcl.zcode_package_fetch.input.v1", "zcl.zcode_package_fetch.v1",
+    "root,day,datadir", "root",
+    "zclassic23 zcode package fetch --input='{\"root\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_package_fetch)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.package.peers", "zcode.package", "",
+    "Live swarm peers advertising one package root",
+    "The live swarm engine's per-peer view for one 64-hex package `root`: "
+    "peer id, the LOCAL session pseudo-key (0x02 || SHA3-256(domain || "
+    "host identity) — a transport-session scope for the service book, "
+    "explicitly NOT a contributor identity), resolved tier, in-flight "
+    "requests, verified bytes served/received both ways, the "
+    "download-allowance-exhausted flag, and the book offence tally, plus "
+    "the download status summary. Rows bounded at 32 (peers_truncated "
+    "flags the rest). Peer facts are session-scoped and never persisted: "
+    "without a live hosting engine the reply is live:false with an empty "
+    "list — honestly, never replayed from disk.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,package,peers,swarm,advertisers,tier,session",
+    "zcl.zcode_package_peers.input.v1", "zcl.zcode_package_peers.v1",
+    "root,datadir", "root",
+    "zclassic23 zcode package peers --input='{\"root\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_package_peers)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.package.pin", "zcode.package", "",
+    "Operator-pin a tracked package (PINS pool, never evicted)",
+    "Pins one tracked 64-hex package `root` into the PINS pool: pinned "
+    "packages are never evicted. This is the OPERATOR path — never "
+    "tier-gated; the contributor-requested pin allowance "
+    "(pin-allowance-exceeded, vcs_policy_check_pin — pins are earned) is "
+    "a separate gate the swarm's serving side applies. Pinning fails "
+    "with PINS_POOL_FULL when the package's bytes do not fit the pins "
+    "budget (pins are never made room for by eviction) and "
+    "UNKNOWN_PACKAGE names an untracked root.",
+    0,
+    "zcode,package,pin,operator,pins,quota",
+    "zcl.zcode_package_pin.input.v1", "zcl.zcode_package_pin.v1",
+    "root,datadir", "root",
+    "zclassic23 zcode package pin --input='{\"root\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_package_pin)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.package.unpin", "zcode.package", "",
+    "Release an operator pin",
+    "Unpins one tracked 64-hex package `root` (the package returns to "
+    "its classification pool and becomes evictable again; its bytes stay "
+    "in the CAS). UNKNOWN_PACKAGE names an untracked root. Idempotent: "
+    "unpinning an unpinned package reports ok.",
+    0,
+    "zcode,package,unpin,operator,pins,quota",
+    "zcl.zcode_package_unpin.input.v1", "zcl.zcode_package_unpin.v1",
+    "root,datadir", "root",
+    "zclassic23 zcode package unpin --input='{\"root\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_package_unpin)

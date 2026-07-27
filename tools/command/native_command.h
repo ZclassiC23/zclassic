@@ -420,6 +420,26 @@ void zcl_native_handle_zcode_storage_status(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* zcode slice 12 — the authenticated package swarm's operator surface:
+ * fetch starts/resumes a swarm download (live node-global engine when a
+ * hosting node runs, otherwise the persisted resumable record for the
+ * next hosting boot), peers reports the live engine's per-peer view of
+ * one root (session pseudo-keys, never contributor identities), and
+ * pin/unpin are the operator's never-tier-gated PINS-pool path. Every
+ * rejection names the exact rule. Bound by config/commands/zcode.def. */
+void zcl_native_handle_zcode_package_fetch(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_package_peers(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_package_pin(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_package_unpin(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* ops.state — generic subsystem state dump. Dispatches the `dumpstate` RPC
  * method directly. `subsystem` (required) selects the
  * owning module's *_dump_state_json; `key` is subsystem-specific (e.g. a

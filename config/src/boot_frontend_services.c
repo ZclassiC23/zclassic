@@ -20,6 +20,7 @@
 #include "config/boot_internal.h"
 #include "config/boot_background_workers.h"
 #include "config/boot_msg_callbacks.h"
+#include "config/boot_zcode_swarm.h"
 #include "controllers/api_controller.h"
 #include "controllers/explorer_controller.h"
 #include "net/file_service.h"
@@ -34,6 +35,7 @@
 #include "keys/key_io.h"
 #include "script/standard.h"
 #include "vcs/package_store.h"
+#include "config/boot_zcode_swarm.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -379,6 +381,9 @@ static bool boot_zcode_store_start(void *ctx)
 static void boot_zcode_store_stop(void *ctx)
 {
     (void)ctx;
+    /* The swarm engine borrows the global store: it must be freed
+     * BEFORE the store closes (slice 12). */
+    boot_zcode_swarm_shutdown();
     if (vcs_package_store_global())
         vcs_package_store_close_global();
 }
@@ -388,6 +393,11 @@ static void boot_zcode_store_stop(void *ctx)
  * is started. Returns false on the first registration failure. */
 bool boot_register_frontend_services(struct boot_svc_ctx *svc)
 {
+    /* ZCODE package swarm (slice 12): net↔vcs engine hooks. The engine
+     * itself is created lazily on first use when -packagehost=1 and the
+     * store is open; wiring the hooks is always safe. */
+    boot_zcode_swarm_wire(svc);
+
     const struct zcl_service_spec specs[] = {
         {
             .name = "file_service",

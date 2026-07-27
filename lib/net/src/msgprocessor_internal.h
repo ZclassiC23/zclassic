@@ -72,6 +72,12 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                           struct byte_stream *s,
                           const char *cmd);
 
+/* msgprocessor_zcode_swarm.c — the ZCODE package swarm frame hook seam
+ * (slice 12; "zpkgswm"). */
+bool mp_handle_zcode_swarm(struct msg_processor *mp,
+                           struct p2p_node *node,
+                           struct byte_stream *s);
+
 /* msgprocessor_snapshot.c lifecycle hooks invoked from
  * msg_processor_init and msg_send_messages. Encapsulate the heavy
  * snapshot/swarm/fast-sync state machine. */

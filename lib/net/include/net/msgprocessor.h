@@ -114,6 +114,23 @@ struct msg_block_intake_stats {
     bool stopping;
 };
 
+/* Slice-12 hook signatures. frame: one received swarm frame's payload
+ * bytes (already framing-verified); the implementation penalizes
+ * (peer_scoring_record) and replies through the node's send queue.
+ * tick: one per-peer message-cycle; the implementation syncs peer
+ * membership, drives the scheduler, and drains outbound frames
+ * addressed to THIS node. The file-scope forward declarations are
+ * required: without them the tags in the typedef parameter lists below
+ * get prototype scope and no longer match the definitions. */
+struct msg_processor;
+struct p2p_node;
+typedef bool (*msg_zcode_swarm_frame_fn)(struct msg_processor *mp,
+                                         struct p2p_node *node,
+                                         const uint8_t *payload,
+                                         size_t payload_len, void *ctx);
+typedef void (*msg_zcode_swarm_tick_fn)(struct msg_processor *mp,
+                                        struct p2p_node *node, void *ctx);
+
 struct msg_processor {
     struct main_state *main_state;
     struct tx_mempool *mempool;
@@ -172,6 +189,12 @@ struct msg_processor {
     msg_utxo_sha3_compute_fn utxo_sha3_compute;
     void *utxo_sha3_compute_ctx;
     struct msg_block_intake *block_intake;
+    /* ZCODE package swarm (slice 12): the engine lives ABOVE lib/net in
+     * the module order (lib/vcs), so net speaks to it only through these
+     * hooks. NULL = the swarm is not wired (handlers drop frames). */
+    msg_zcode_swarm_frame_fn zcode_swarm_frame;
+    msg_zcode_swarm_tick_fn zcode_swarm_tick;
+    void *zcode_swarm_ctx;
 };
 
 /* ── P2P message dispatch table ──────────────────────────────────
@@ -288,6 +311,14 @@ void msg_processor_set_block_hashes_range(
 void msg_processor_set_utxo_sha3_compute(
     struct msg_processor *mp,
     msg_utxo_sha3_compute_fn compute,
+    void *ctx);
+
+/* ZCODE package swarm (slice 12): wire the engine hooks. The P2P
+ * command is "zpkgswm"; the dispatch row lives in msgprocessor.c. */
+void msg_processor_set_zcode_swarm(
+    struct msg_processor *mp,
+    msg_zcode_swarm_frame_fn frame,
+    msg_zcode_swarm_tick_fn tick,
     void *ctx);
 
 /* Fairness contract for the connman message cycle: inbound work for one

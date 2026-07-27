@@ -69,7 +69,7 @@ JSON (JSON is display-only).
 11. [x] Local P2P ratio + anti-spam policy (free allowance for new users; verified-bytes
         ratio is local credit; no global ZCODE mint for bandwidth; every rejection names
         the exact failed rule)
-12. [ ] Authenticated package swarm (wire package_swarm codec to authenticated transport
+12. [x] Authenticated package swarm (wire package_swarm codec to authenticated transport
         only after signatures + storage are complete; rarest-first, bounded windows,
         timeouts/retries/cancel/disconnect-requeue/resume, per-peer offence accounting)
 13. [ ] Onion website (`/zcode*` routes, same models/projections as typed commands —
