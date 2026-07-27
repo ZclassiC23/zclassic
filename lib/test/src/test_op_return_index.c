@@ -563,6 +563,59 @@ static int test_backfill_e2e(void)
     return failures;
 }
 
+/* Regression: on a seeded datadir the genesis index entry carries
+ * BLOCK_HAVE_DATA with a fake (file=0, pos=0) — its body is never on disk,
+ * so a pread hashes whatever sits at offset 0 and the backfill wedged on
+ * h=0 forever (~100k mismatch lines in node.log). The fold must skip the
+ * read for h=0 (genesis has no OP_RETURN outputs) and advance. */
+static int test_backfill_genesis_fake_pos(void)
+{
+    int failures = 0;
+    struct e2e_fixture f;
+
+    printf("backfill genesis fake pos: fixture... ");
+    if (e2e_fixture_init(&f)) printf("OK\n");
+    else { printf("FAIL\n"); return 1; }
+
+    /* Re-point h=0 at offset 0: the msg_start/size prefix, not a block —
+     * the same lie the block-index loader persists for genesis. */
+    f.blocks[0].nFile = 0;
+    f.blocks[0].nDataPos = 0;
+
+    g_op_return_backfill_test_ndb = &f.ndb;
+    g_op_return_backfill_test_ms = &f.ms;
+    g_op_return_backfill_test_datadir = f.datadir;
+    op_return_backfill_reset_for_test();
+    reducer_frontier_provable_tip_set(OPRIDX_E2E_HEIGHTS - 1); /* H*=2 */
+
+    printf("backfill genesis fake pos: fake h=0 pos does not wedge the fold "
+          "(folds all 3 blocks, cursor reaches H*=2)... ");
+    {
+        int folded = op_return_backfill_run_once();
+        int32_t cursor = -1;
+        uint8_t digest[32];
+        op_return_index_get_cursor(&f.ndb, &cursor, digest);
+        if (folded == OPRIDX_E2E_HEIGHTS && cursor == OPRIDX_E2E_HEIGHTS - 1)
+            printf("OK\n");
+        else {
+            printf("FAIL (folded=%d cursor=%d)\n", folded, cursor);
+            failures++;
+        }
+    }
+
+    printf("backfill genesis fake pos: catalog rows identical to a real "
+          "genesis body (h=0 contributes zero OP_RETURN rows)... ");
+    { int n = count_rows(&f.ndb, "SELECT COUNT(*) FROM op_return_index");
+      if (n == 2) printf("OK\n"); else { printf("FAIL (got %d)\n", n); failures++; } }
+
+    g_op_return_backfill_test_ndb = NULL;
+    g_op_return_backfill_test_ms = NULL;
+    g_op_return_backfill_test_datadir = NULL;
+    reducer_frontier_provable_tip_reset();
+    e2e_fixture_free(&f);
+    return failures;
+}
+
 /* ── Entry point ──────────────────────────────────────────────────── */
 
 int test_op_return_index(void)
@@ -573,5 +626,6 @@ int test_op_return_index(void)
     failures += test_explorer_wiring();
     failures += test_digest_pure();
     failures += test_backfill_e2e();
+    failures += test_backfill_genesis_fake_pos();
     return failures;
 }

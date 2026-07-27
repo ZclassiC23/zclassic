@@ -131,12 +131,11 @@ int op_return_backfill_run_once(void)
              * (bodies never downloaded on a seeded datadir — the fold can
              * never cross), above it a transient gap. Without this the only
              * signal is catalog_lag_exceeded's "stalled and must resume",
-             * which is false on a seeded datadir. */
+             * which is false on a seeded datadir. The named blocker carries
+             * the signal — no per-tick WARN (address_index_service stays
+             * silent here for the same reason). */
             index_fold_note_absent_body("op_return_index", "op_return_index",
                                         ndb->db, h);
-            LOG_WARN("op_return_index",
-                     "backfill: h=%d not readable yet (index/data missing) "
-                     "— stopping this batch, retrying next tick", h);
             break;
         }
 
@@ -144,6 +143,32 @@ int op_return_backfill_run_once(void)
         block_init(&blk);
         if (!read_block_from_disk_index_pread(&blk, bi, datadir)) {
             block_free(&blk);
+            if (h == 0) {
+                /* Genesis carries BLOCK_HAVE_DATA with a fake (file=0,pos=0)
+                 * on seeded datadirs — its body was never written to this
+                 * node's blk files, so a pread hashes whatever sits at
+                 * offset 0 and the fold wedges on h=0 forever. The real
+                 * genesis coinbase has no OP_RETURN outputs, so folding zero
+                 * rows when the body is unreadable is byte-identical to
+                 * folding the real body. When a body IS present (fixtures,
+                 * a future full import) the normal path reads it and
+                 * extracts whatever rows it carries — extraction parity with
+                 * the state auditor is preserved. Same fact pattern as
+                 * bg_validation_service.c ("if (h == 0) continue;"). */
+                uint8_t genesis_digest[32];
+                op_return_index_fold_block_digest(digest, 0,
+                                                  bi->phashBlock->data,
+                                                  rows, 0, genesis_digest);
+                if (!op_return_index_set_cursor(ndb, 0, genesis_digest)) {
+                    LOG_WARN("op_return_index",
+                             "backfill: cursor persist failed at h=0 (genesis)");
+                    break;
+                }
+                memcpy(digest, genesis_digest, 32);
+                folded++;
+                atomic_store(&g_backfill_last_height, 0);
+                continue;
+            }
             atomic_fetch_add(&g_backfill_holes, 1);
             LOG_WARN("op_return_index",
                      "backfill: h=%d body unreadable — stopping this batch",
