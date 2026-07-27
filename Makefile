@@ -916,7 +916,7 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
         install-slo-probe slo-probe-status slo-probe-selftest
 
 CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c lib/encoding/src/utilstrencodings.c lib/base/src/log_level.c
-all: test_zcl zclassic23 zclassic-cli zcl-rpc
+all: test_zcl zclassic23 zclassic-cli zcl-rpc zclassic23-package-verify
 
 TEST_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(wildcard lib/test/src/*.c))
@@ -2289,6 +2289,10 @@ $(BIN_DIR)/mock_rpc: tools/mock_rpc.c
 $(eval $(call BUILD_NODE_TOOL,wallet_sim,tools/wallet_sim.c))
 $(eval $(call BUILD_NODE_TOOL,wallet_check,tools/wallet_check.c,-lm))
 $(eval $(call BUILD_NODE_TOOL,rebuild_recent,tools/rebuild_recent.c,-lm,-fopenmp))
+# The EXTERNAL ZCODE package verifier (slice 6): the ONLY program that ever
+# compiles/executes package code, sandboxed per child (seccomp + rlimits +
+# Landlock). The node binary never does. See tools/package_verify.c.
+$(eval $(call BUILD_NODE_TOOL,zclassic23-package-verify,tools/package_verify.c))
 
 .PHONY: sim dump check-wallet
 sim: wallet_sim

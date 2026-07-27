@@ -12,7 +12,9 @@
  *   recipes/<recipe-root-hex>   validated declarative build recipe wire
  *                               (slice 5; committed by the envelope's
  *                               recipe_root)
- *   attestations/  badges/      created empty; later slices fill them
+ *   attestations/<id-hex>       signed external-verifier attestation wire
+ *                               (slice 6; committed by zclassic23-package-verify)
+ *   badges/                     created empty; a later slice fills it
  *   cas/sha3/<hh>/<hash-hex>    verified chunk bytes, named by SHA3-256
  *                               (<hh> is the hash's first byte, hex)
  *   staging/<root-hex>/manifest in-flight manifest, not yet complete

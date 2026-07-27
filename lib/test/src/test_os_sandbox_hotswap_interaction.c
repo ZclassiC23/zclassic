@@ -158,7 +158,7 @@ static void tear_down_fixture(void)
  * config/src/boot.c:sandbox_build_fs_rules produces for a node. */
 static bool enter_datadir_only_domain(void)
 {
-    struct os_sandbox_path_rule rules[] = {{ g_datadir, true, true }};
+    struct os_sandbox_path_rule rules[] = {{ .path = g_datadir, .allow_read = true, .allow_write = true }};
     if (!os_sandbox_no_new_privs()) return false;
     return os_sandbox_landlock_restrict(rules, 1).ok;
 }

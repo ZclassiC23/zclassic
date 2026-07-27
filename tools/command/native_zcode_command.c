@@ -18,6 +18,11 @@
  *   zcode package recipe          the decoded, bounded declarative build
  *                                 recipe (slice 5) for one package root —
  *                                 display JSON from the canonical wire
+ *   zcode package verify          external-verifier attestation quorum
+ *                                 (slice 6) for one package root against
+ *                                 the LOCAL approved-verifier allowlist —
+ *                                 the node reads attestations, it never
+ *                                 compiles or executes downloaded code
  *
  * Publication requires a declarative build recipe whose root equals the
  * release envelope's recipe_root (slice 5): a missing or invalid recipe is
@@ -50,10 +55,13 @@
 #include "base/safe_alloc.h"
 #include "chain/chainparams.h"
 #include "json/json.h"
+#include "vcs/package_attest.h"
 #include "vcs/package_index.h"
 #include "vcs/package_publish.h"
 #include "vcs/package_store.h"
+#include "vcs/package_verify_policy.h"
 
+#include <dirent.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -890,6 +898,247 @@ void zcl_native_handle_zcode_package_recipe(
         "declarative only: the node never compiles or executes downloaded "
         "code; compilation belongs to the external verifier "
         "(zclassic23-package-verify)");
+}
+
+/* ── zcode package verify (slice 6) ─────────────────────────────────── */
+
+/* Bound on attestation files scanned per call. */
+#define ZC_VERIFY_MAX_SCAN 256u
+
+void zcl_native_handle_zcode_package_verify(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply)
+{
+    if (!request || !reply)
+        return;
+    const char *datadir = zc_datadir(request);
+    if (!datadir) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "MISSING_DATADIR",
+                               "normalize", false, false,
+                               "no datadir given (input datadir or --datadir)",
+                               "zcode.package.verify");
+        return;
+    }
+    const char *root_hex = zc_input_str(request->input, "root");
+    uint8_t root[32];
+    size_t root_len = 0;
+    if (!root_hex || !zc_hex_decode(root_hex, root, 32, &root_len) ||
+        root_len != 32) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "BAD_ROOT",
+                               "normalize", false, false,
+                               "root must be a 64-hex package root",
+                               root_hex ? root_hex : "");
+        return;
+    }
+    char zcode_dir[4400];
+    int n = snprintf(zcode_dir, sizeof(zcode_dir), "%s/zcode", datadir);
+    if (n < 0 || (size_t)n >= sizeof(zcode_dir)) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "DATADIR_TOO_LONG",
+                               "normalize", false, false,
+                               "datadir path too long", datadir);
+        return;
+    }
+    struct vcs_package_index *index = vcs_package_index_build(zcode_dir);
+    if (!index) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "INDEX_BUILD",
+                               "execute", false, false,
+                               "the package index could not be built",
+                               zcode_dir);
+        return;
+    }
+    const struct vcs_package_index_entry *e =
+        vcs_package_index_find_root(index, root);
+    if (!e) {
+        vcs_package_index_free(index);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "UNKNOWN_PACKAGE",
+                               "execute", false, false,
+                               "no published release names this package root",
+                               root_hex);
+        return;
+    }
+
+    /* The envelope is the self-verification reference (publisher key) and
+     * commits the recipe root every matching attestation must name. */
+    char path[4400];
+    snprintf(path, sizeof(path), "%s/releases/%s", zcode_dir,
+             e->release_id_hex);
+    char name[VCS_PACKAGE_RELEASE_NAME_MAX + 1u];
+    char semver[VCS_PACKAGE_RELEASE_SEMVER_MAX + 1u];
+    char publisher_hex[67];
+    snprintf(name, sizeof(name), "%s", e->name);
+    snprintf(semver, sizeof(semver), "%s", e->semver);
+    snprintf(publisher_hex, sizeof(publisher_hex), "%s", e->publisher_hex);
+    char release_id_hex[65];
+    snprintf(release_id_hex, sizeof(release_id_hex), "%s", e->release_id_hex);
+    vcs_package_index_free(index);
+    uint8_t *release_wire = NULL;
+    size_t release_wire_len = 0;
+    struct vcs_package_release release;
+    if (!zc_read_object(path, VCS_PACKAGE_RELEASE_MAX_WIRE_BYTES,
+                        &release_wire, &release_wire_len) ||
+        vcs_package_release_parse(release_wire, release_wire_len,
+                                  &release) != VCS_PACKAGE_RELEASE_OK) {
+        free(release_wire);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "RELEASE_READ",
+                               "execute", false, false,
+                               "the persisted release envelope is unreadable",
+                               release_id_hex);
+        return;
+    }
+    free(release_wire);
+
+    /* The approved-verifier allowlist: explicit local configuration, never
+     * the network. A missing/unloadable file means NO quorum is possible —
+     * a named rejection, not a silent "unverified". */
+    snprintf(path, sizeof(path), "%s/approved_verifiers", zcode_dir);
+    struct vcs_verifier_policy policy;
+    vcs_verifier_policy_init(&policy);
+    enum vcs_verifier_policy_error perr = VCS_VERIFIER_POLICY_OK;
+    if (!vcs_verifier_policy_load(&policy, path, &perr)) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID,
+                               "NO_APPROVED_VERIFIERS", "execute", false,
+                               false,
+                               "the approved-verifier allowlist is missing "
+                               "or invalid — create it with one 66-hex "
+                               "verifier pubkey per line (explicit local "
+                               "configuration; anonymous peers are not a "
+                               "quorum)",
+                               vcs_verifier_policy_error_string(perr));
+        return;
+    }
+
+    /* Scan the attestations dir (bounded): every hex64 file is a candidate;
+     * unparseable wires stay in the report as attestation-invalid rows. */
+    snprintf(path, sizeof(path), "%s/attestations", zcode_dir);
+    struct vcs_verify_candidate *candidates = zcl_malloc(
+        ZC_VERIFY_MAX_SCAN * sizeof(*candidates), "zc_verify_candidates");
+    if (!candidates) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "ALLOC",
+                               "execute", false, false,
+                               "verify candidate buffer", path);
+        return;
+    }
+    size_t candidate_count = 0;
+    size_t scanned = 0;
+    bool scan_truncated = false;
+    DIR *dir = opendir(path);
+    if (dir) {
+        struct dirent *ent;
+        while ((ent = readdir(dir)) != NULL) {
+            uint8_t scratch[32];
+            size_t scratch_len = 0;
+            if (!zc_hex_decode(ent->d_name, scratch, 32, &scratch_len) ||
+                scratch_len != 32)
+                continue;
+            if (candidate_count == ZC_VERIFY_MAX_SCAN) {
+                scan_truncated = true;
+                break;
+            }
+            scanned++;
+            char apath[4400];
+            int an = snprintf(apath, sizeof(apath), "%s/%s", path,
+                              ent->d_name);
+            if (an < 0 || (size_t)an >= sizeof(apath))
+                continue;
+            uint8_t *wire = NULL;
+            size_t wire_len = 0;
+            struct vcs_verify_candidate *cand =
+                &candidates[candidate_count];
+            cand->parsed = false;
+            if (zc_read_object(apath, VCS_PACKAGE_ATTEST_MAX_WIRE_BYTES,
+                               &wire, &wire_len)) {
+                cand->parsed =
+                    vcs_package_attest_parse(wire, wire_len,
+                                             &cand->attestation) ==
+                    VCS_PACKAGE_ATTEST_OK;
+            }
+            free(wire);
+            candidate_count++;
+        }
+        closedir(dir);
+    }
+
+    struct vcs_verify_quorum quorum;
+    vcs_verify_evaluate(candidates, candidate_count, root,
+                        release.recipe_root, release.publisher_pubkey,
+                        &policy, &quorum);
+    free(candidates);
+
+    (void)json_push_kv_str(&reply->data, "name", name);
+    (void)json_push_kv_str(&reply->data, "semver", semver);
+    (void)json_push_kv_str(&reply->data, "package_root", root_hex);
+    (void)json_push_kv_str(&reply->data, "release_id", release_id_hex);
+    (void)json_push_kv_str(&reply->data, "publisher", publisher_hex);
+    char recipe_root_hex[65];
+    zc_hex_encode(release.recipe_root, 32, recipe_root_hex);
+    (void)json_push_kv_str(&reply->data, "recipe_root", recipe_root_hex);
+    (void)json_push_kv_int(&reply->data, "approved_verifiers",
+                           (int64_t)policy.count);
+    (void)json_push_kv_bool(&reply->data, "verified", quorum.verified);
+    (void)json_push_kv_int(&reply->data, "quorum_required",
+                           (int64_t)VCS_VERIFY_QUORUM_REQUIRED);
+    (void)json_push_kv_bool(&reply->data, "quorum_reached",
+                            quorum.quorum_reached);
+    (void)json_push_kv_str(
+        &reply->data, "quorum_class",
+        quorum.quorum_reached
+            ? vcs_package_attest_result_string(quorum.quorum_class)
+            : "");
+    (void)json_push_kv_int(&reply->data, "quorum_signers",
+                           (int64_t)quorum.quorum_signers);
+    (void)json_push_kv_int(&reply->data, "attestations_scanned",
+                           (int64_t)scanned);
+    (void)json_push_kv_bool(&reply->data, "attestations_truncated",
+                            scan_truncated);
+    (void)json_push_kv_int(&reply->data, "candidates",
+                           (int64_t)quorum.candidates);
+    (void)json_push_kv_int(&reply->data, "counted",
+                           (int64_t)quorum.counted);
+    struct json_value rows;
+    json_init(&rows);
+    json_set_array(&rows);
+    for (size_t i = 0; i < quorum.row_count; i++) {
+        const struct vcs_verify_row *row = &quorum.rows[i];
+        struct json_value r;
+        json_init(&r);
+        json_set_object(&r);
+        if (row->has_pubkey) {
+            char pk_hex[67];
+            zc_hex_encode(row->verifier_pubkey, 33, pk_hex);
+            (void)json_push_kv_str(&r, "verifier", pk_hex);
+        } else {
+            (void)json_push_kv_str(&r, "verifier", "");
+        }
+        (void)json_push_kv_str(
+            &r, "result",
+            row->result_class
+                ? vcs_package_attest_result_string(row->result_class)
+                : "");
+        (void)json_push_kv_str(&r, "rule",
+                               vcs_verify_row_rule_string(row->rule));
+        (void)json_push_kv_bool(&r, "counted",
+                                row->rule == VCS_VERIFY_ROW_COUNTED);
+        (void)json_push_back(&rows, &r);
+        json_free(&r);
+    }
+    (void)json_push_kv(&reply->data, "rows", &rows);
+    json_free(&rows);
+    (void)json_push_kv_bool(&reply->data, "rows_truncated",
+                            quorum.rows_truncated);
+    (void)json_push_kv_str(
+        &reply->data, "verification_note",
+        "quorum = 2+ approved independent verifier keys signing matching "
+        "attestations; attestations are produced by the external "
+        "zclassic23-package-verify program — the node never compiles or "
+        "executes downloaded code");
 }
 
 /* ── zcode package search ───────────────────────────────────────────── */

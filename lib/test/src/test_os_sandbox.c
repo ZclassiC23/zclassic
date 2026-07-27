@@ -158,7 +158,7 @@ static int c_landlock(void)
     int pre = open("/etc/hostname", O_RDONLY | O_CLOEXEC);
     if (pre < 0) return 70;
 
-    struct os_sandbox_path_rule rules[] = {{ g_ll_dir, true, true }};
+    struct os_sandbox_path_rule rules[] = {{ .path = g_ll_dir, .allow_read = true, .allow_write = true }};
     if (!os_sandbox_no_new_privs()) return 71;
     struct zcl_result r = os_sandbox_landlock_restrict(rules, 1);
     if (!r.ok) return 72;
@@ -240,7 +240,7 @@ static int c_landlock_retrofit_join(void)
 
     int before_count = os_sandbox_landlock_restricted_count();
 
-    struct os_sandbox_path_rule rules[] = {{ g_ll2_dir, true, true }};
+    struct os_sandbox_path_rule rules[] = {{ .path = g_ll2_dir, .allow_read = true, .allow_write = true }};
     if (!os_sandbox_no_new_privs()) return 71;
     struct zcl_result r = os_sandbox_landlock_restrict(rules, 1);
     if (!r.ok) return 72;
@@ -293,7 +293,7 @@ static int c_enter_alive(void)
     char inside[192];
     snprintf(inside, sizeof inside, "%s/f.txt", g_sess_dir);
     int f = open(inside, O_CREAT | O_RDWR, 0600); if (f >= 0) close(f);
-    struct os_sandbox_path_rule rules[] = {{ g_sess_dir, true, true }};
+    struct os_sandbox_path_rule rules[] = {{ .path = g_sess_dir, .allow_read = true, .allow_write = true }};
     struct os_sandbox_profile p = sess_profile(rules);
     if (!os_sandbox_enter(&p).ok) return 70;
     if (!os_sandbox_active()) return 71;
@@ -308,7 +308,7 @@ static int c_enter_alive(void)
 
 static int c_enter_exec(void)
 {
-    struct os_sandbox_path_rule rules[] = {{ g_sess_dir, true, true }};
+    struct os_sandbox_path_rule rules[] = {{ .path = g_sess_dir, .allow_read = true, .allow_write = true }};
     struct os_sandbox_profile p = sess_profile(rules);
     if (!os_sandbox_enter(&p).ok) return 70;
     execve("/bin/true", (char *const[]){"/bin/true", NULL}, (char *const[]){NULL});
@@ -317,7 +317,7 @@ static int c_enter_exec(void)
 
 static int c_enter_socket(void)
 {
-    struct os_sandbox_path_rule rules[] = {{ g_sess_dir, true, true }};
+    struct os_sandbox_path_rule rules[] = {{ .path = g_sess_dir, .allow_read = true, .allow_write = true }};
     struct os_sandbox_profile p = sess_profile(rules);
     if (!os_sandbox_enter(&p).ok) return 70;
     int s = socket(AF_INET, SOCK_STREAM, 0);
@@ -341,7 +341,7 @@ static char g_node_dir[128];
 
 static int c_node_enter_socket_ok(void)
 {
-    struct os_sandbox_path_rule rules[] = {{ g_node_dir, true, true }};
+    struct os_sandbox_path_rule rules[] = {{ .path = g_node_dir, .allow_read = true, .allow_write = true }};
     struct os_sandbox_profile p = os_sandbox_node_steady_state_profile(rules, 1);
     if (!os_sandbox_enter(&p).ok) return 70;
     if (!os_sandbox_active()) return 71;
@@ -354,7 +354,7 @@ static int c_node_enter_socket_ok(void)
 
 static int c_node_enter_fork_ok(void)
 {
-    struct os_sandbox_path_rule rules[] = {{ g_node_dir, true, true }};
+    struct os_sandbox_path_rule rules[] = {{ .path = g_node_dir, .allow_read = true, .allow_write = true }};
     struct os_sandbox_profile p = os_sandbox_node_steady_state_profile(rules, 1);
     if (!os_sandbox_enter(&p).ok) return 70;
     /* clone/fork must be ALLOWED (the node spawns threads). No nproc clamp. */
@@ -367,7 +367,7 @@ static int c_node_enter_fork_ok(void)
 
 static int c_node_enter_exec_denied(void)
 {
-    struct os_sandbox_path_rule rules[] = {{ g_node_dir, true, true }};
+    struct os_sandbox_path_rule rules[] = {{ .path = g_node_dir, .allow_read = true, .allow_write = true }};
     struct os_sandbox_profile p = os_sandbox_node_steady_state_profile(rules, 1);
     if (!os_sandbox_enter(&p).ok) return 70;
     execve("/bin/true", (char *const[]){"/bin/true", NULL}, (char *const[]){NULL});
@@ -523,7 +523,8 @@ int test_os_sandbox(void)
 
     /* ── node steady-state profile: construction + child probe ─────── */
     {
-        struct os_sandbox_path_rule r = { g_node_dir, true, true };
+        struct os_sandbox_path_rule r = {
+            .path = g_node_dir, .allow_read = true, .allow_write = true };
         struct os_sandbox_profile np = os_sandbox_node_steady_state_profile(&r, 1);
         SB_CHECK("node profile is named node_steady_state",
                  np.name && strcmp(np.name, "node_steady_state") == 0);

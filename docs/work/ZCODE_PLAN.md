@@ -54,7 +54,7 @@ JSON (JSON is display-only).
 5. [x] Declarative C23 build recipe (bounded: public_headers/sources/test_sources/include_dirs/
        defines/allowed system libs = libc,libm,pthread/expected exit/max seconds/max bytes;
        node never compiles or executes downloaded code)
-6. [ ] External verifier attestations (`zclassic23-package-verify <release-root>`: no network,
+6. [x] External verifier attestations (`zclassic23-package-verify <release-root>`: no network,
        no wallet, no datadir, read-only source, tmp build dir, CPU/RAM/proc/time limits,
        GCC+Clang, ASan+UBSan, delete binaries after attestation; ≥2 approved independent
        verifier keys sign matching attestations before any reward)

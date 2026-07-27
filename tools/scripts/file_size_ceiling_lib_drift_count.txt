@@ -242,4 +242,12 @@
 # a BEGIN IMMEDIATE (the deferred BEGIN's first INSERT could fail instantly
 # with SQLITE_BUSY_SNAPSHOT against a concurrent catchup/coins commit).
 # Re-baselined in file_size_ceiling_lib_baseline.txt (1909); count unchanged.
+#
+# 2026-07-27 (ZCODE slice 6, external verifier attestations):
+# os_sandbox_linux.c grew 1396 -> 1415 — os_sandbox_path_rule gains
+# allow_execute/allow_create (mapped to Landlock EXECUTE and the
+# MAKE_REG/MAKE_DIR/REMOVE_FILE/REMOVE_DIR family, dir-bits masked off for
+# file rules) so zclassic23-package-verify's build children can exec the
+# toolchain and create objects inside their confined build dir. Re-baselined
+# in file_size_ceiling_lib_baseline.txt (1415); count unchanged.
 13

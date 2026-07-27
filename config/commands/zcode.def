@@ -124,7 +124,6 @@ ZCL_COMMAND_READY_READ(
  * The recipe is declarative ONLY: the node never compiles or executes
  * downloaded code; compilation belongs to the external verifier
  * (zclassic23-package-verify, slice 6). */
-
 ZCL_COMMAND_READY_READ(
     "zcode.package.recipe", "zcode.package", "",
     "Decoded declarative build recipe for one package root",
@@ -148,6 +147,44 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_package_recipe)
+
+/* ── slice 6: external verifier attestations ───────────────────────────
+ * The node NEVER compiles or executes downloaded code: attestations are
+ * signed by the SEPARATE zclassic23-package-verify program and persisted
+ * in the store's attestations/ dir. This command only READS them and
+ * evaluates the quorum against the operator's LOCAL approved-verifier
+ * allowlist (<datadir>/zcode/approved_verifiers — one 66-hex compressed
+ * secp256k1 pubkey per line, '#' comments; anonymous peers are not a
+ * quorum). Verified = 2+ approved independent (non-publisher) keys
+ * signing matching attestations (same package root, recipe root, release
+ * id, result class). */
+
+ZCL_COMMAND_READY_READ(
+    "zcode.package.verify", "zcode.package", "",
+    "External-verifier attestation quorum for one package root",
+    "Evaluates every attestation in the local store's attestations/ dir "
+    "against the approved-verifier allowlist for one 64-hex package "
+    "`root`: verified=true exactly when 2+ distinct approved verifier keys "
+    "(never the release's own publisher key — self-verification and "
+    "duplicate signers are named rejections) signed MATCHING attestations "
+    "(same package root + recipe root + release id + result class). The "
+    "report carries quorum_reached/quorum_class/quorum_signers plus a "
+    "bounded per-attestation rows[] naming each rule (counted, "
+    "attestation-invalid, package-root-mismatch, recipe-root-mismatch, "
+    "signer-not-approved, self-verification, duplicate-signer). "
+    "NO_APPROVED_VERIFIERS names a missing/invalid allowlist file "
+    "(<datadir>/zcode/approved_verifiers); UNKNOWN_PACKAGE names a root "
+    "no persisted release claims.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,package,verify,attestation,quorum,verifier,approved",
+    "zcl.zcode_package_verify.input.v1", "zcl.zcode_package_verify.v1",
+    "root,datadir", "root",
+    "zclassic23 zcode package verify --input='{\"root\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_package_verify)
 
 /* ── slice 4: contributor identity + ZNAM pointers ─────────────────────
  * The secp256k1 publisher key is the only authoritative identity; ZNAM

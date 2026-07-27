@@ -310,6 +310,15 @@ void zcl_native_handle_zcode_package_recipe(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* zcode slice 6 — external-verifier attestation quorum for one package
+ * root: evaluates the attestations/ dir against the local approved-verifier
+ * allowlist (<datadir>/zcode/approved_verifiers) and reports the quorum
+ * state with every named rule. The node only READS attestations; they are
+ * produced by the separate zclassic23-package-verify program. */
+void zcl_native_handle_zcode_package_verify(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* zcode slice 4 — contributor identity + ZNAM pointers. The publisher key
  * is the only identity; ZNAM records resolve through the canonical model
  * with an explicit binding proof. Bound by config/commands/zcode.def. */

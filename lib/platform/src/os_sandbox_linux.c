@@ -420,10 +420,18 @@ struct zcl_result os_sandbox_landlock_restrict(
 
     /* Handle only the FS accesses this ABI knows about (forward-compatible).
      * ABI 1 introduced the file/dir bits; later ABIs add refer/truncate/net —
-     * we do not enforce those here, so we do not need to handle them. */
+     * we do not enforce those here, so we do not need to handle them. The
+     * execute/make/remove bits are only granted when a rule asks for them
+     * (allow_execute / allow_create); handling them here costs nothing for
+     * rules that never set those flags. */
     uint64_t handled = LANDLOCK_ACCESS_FS_READ_FILE |
                        LANDLOCK_ACCESS_FS_WRITE_FILE |
-                       LANDLOCK_ACCESS_FS_READ_DIR;
+                       LANDLOCK_ACCESS_FS_READ_DIR |
+                       LANDLOCK_ACCESS_FS_EXECUTE |
+                       LANDLOCK_ACCESS_FS_MAKE_REG |
+                       LANDLOCK_ACCESS_FS_MAKE_DIR |
+                       LANDLOCK_ACCESS_FS_REMOVE_FILE |
+                       LANDLOCK_ACCESS_FS_REMOVE_DIR;
 
     struct landlock_ruleset_attr rattr = { .handled_access_fs = handled };
     int ruleset_fd = ll_create_ruleset(&rattr, sizeof(rattr), 0);
@@ -443,6 +451,12 @@ struct zcl_result os_sandbox_landlock_restrict(
         if (r->allow_read)  allow |= LANDLOCK_ACCESS_FS_READ_FILE |
                                      LANDLOCK_ACCESS_FS_READ_DIR;
         if (r->allow_write) allow |= LANDLOCK_ACCESS_FS_WRITE_FILE;
+        if (r->allow_execute) allow |= LANDLOCK_ACCESS_FS_EXECUTE;
+        if (r->allow_create)
+            allow |= LANDLOCK_ACCESS_FS_MAKE_REG |
+                     LANDLOCK_ACCESS_FS_MAKE_DIR |
+                     LANDLOCK_ACCESS_FS_REMOVE_FILE |
+                     LANDLOCK_ACCESS_FS_REMOVE_DIR;
         allow &= handled;
 
         int path_fd = open(r->path, O_PATH | O_CLOEXEC);
@@ -452,13 +466,18 @@ struct zcl_result os_sandbox_landlock_restrict(
                            "open(O_PATH) %s failed errno=%d (%s)",
                            r->path, errno, strerror(errno));
         }
-        /* Directory-only access bits (READ_DIR) are rejected with EINVAL when
-         * the path is a regular FILE (e.g. /proc/self/status, /etc/resolv.conf).
-         * Probe the fd and mask the dir-only bits off for a non-directory so a
-         * caller can grant either a dir tree or a single file uniformly. */
+        /* Directory-only access bits (READ_DIR and the make/remove family)
+         * are rejected with EINVAL when the path is a regular FILE (e.g.
+         * /proc/self/status, /etc/resolv.conf). Probe the fd and mask the
+         * dir-only bits off for a non-directory so a caller can grant either
+         * a dir tree or a single file uniformly. */
         struct stat pst;
         if (fstat(path_fd, &pst) == 0 && !S_ISDIR(pst.st_mode))
-            allow &= ~(uint64_t)LANDLOCK_ACCESS_FS_READ_DIR;
+            allow &= ~(uint64_t)(LANDLOCK_ACCESS_FS_READ_DIR |
+                                 LANDLOCK_ACCESS_FS_MAKE_REG |
+                                 LANDLOCK_ACCESS_FS_MAKE_DIR |
+                                 LANDLOCK_ACCESS_FS_REMOVE_FILE |
+                                 LANDLOCK_ACCESS_FS_REMOVE_DIR);
         struct landlock_path_beneath_attr pb = {
             .allowed_access = allow,
             .parent_fd = path_fd,

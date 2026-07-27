@@ -77,11 +77,19 @@ enum os_sandbox_err {
 /* A single path grant for the Landlock builder: everything BENEATH `path`
  * (the path is opened O_PATH and used as a path-beneath anchor) gets the
  * requested access. Directories should set allow_read to also permit
- * READ_DIR/listing. */
+ * READ_DIR/listing. allow_execute adds LANDLOCK_ACCESS_FS_EXECUTE (running
+ * binaries beneath the path); allow_create adds the directory-mutation
+ * rights (MAKE_REG/MAKE_DIR/REMOVE_FILE/REMOVE_DIR) a writable working
+ * tree needs — allow_write alone is WRITE_FILE (modify existing files),
+ * which cannot create new ones. The execute/create flags exist for the
+ * external package verifier's build children (slice 6); the node profiles
+ * leave both false. */
 struct os_sandbox_path_rule {
     const char *path;
     bool        allow_read;
     bool        allow_write;
+    bool        allow_execute;
+    bool        allow_create;
 };
 
 /* The metrics thread's steady-state RSS-sample path, named here (not as a
@@ -91,6 +99,14 @@ struct os_sandbox_path_rule {
  * an unshimmed read — os_sandbox never opens this path itself, it only names
  * it in a struct os_sandbox_path_rule for the boot thread to grant. */
 #define OS_SANDBOX_PROC_SELF_STATUS_PATH "/proc/self/status"
+
+/* Same shim treatment for the per-process /proc/self DIRECTORY: named here
+ * so a Landlock path-GRANT on the child's own proc entries (e.g. the
+ * ZCODE package verifier's sanitizer runs, whose compiler-rt runtimes
+ * re-read /proc/self/environ for their flags) is not flagged by
+ * tools/lint/check_proc_self_shim.sh — os_sandbox only names the path in a
+ * struct os_sandbox_path_rule, it never opens it. */
+#define OS_SANDBOX_PROC_SELF_PATH "/proc/self"
 
 /* Sentinel for "leave this resource limit untouched". A real limit of 0
  * (e.g. RLIMIT_CORE = 0 to disable core dumps) is set explicitly; only this

@@ -1468,6 +1468,7 @@ int main(int argc, char **argv)
     { extern int test_zcode_publish(void); failures += test_zcode_publish(); }
     { extern int test_zcode_recipe(void); failures += test_zcode_recipe(); }
     { extern int test_zcode_contributor(void); failures += test_zcode_contributor(); }
+    { extern int test_zcode_verify(void); failures += test_zcode_verify(); }
     { extern int test_vcs_devloop(void); failures += test_vcs_devloop(); }
     { extern int test_testcache(void); failures += test_testcache(); }
     failures += test_nullifier_kv();
