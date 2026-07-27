@@ -120,6 +120,55 @@ transforms and the standing regression guard: on a CPU that advertises SHA-NI
 it FAILS if the node does not actually install SHA-NI, so a re-introduced
 compile-time guard cannot go unnoticed again.
 
+### The rest of the ISA inventory
+
+The rule above is tree-wide, not a SHA-256 special case: `#ifdef __<ISA>__`
+around a vector body deletes it from every shipped binary, because
+`-march=x86-64-v3` defines `__AVX__/__AVX2__/__BMI__/__BMI2__/__FMA__` and
+does **not** define `__SHA__`, `__AVX512*__`, `__ADX__`, `__AES__` or
+`__PCLMUL__` — all of which the baseline host physically has. A per-function
+`__attribute__((target(...)))` plus a runtime CPUID (**and** XCR0/XGETBV)
+predicate is the only shape that ships.
+
+Every accelerated path under `lib/crypto/src/` and `lib/sapling/src/` now
+follows it. The audited inventory is `sha256.c`, `sha3_avx512.c`,
+`keccak_avx512.c`, `sha3_256_x4.c`, `blake2b_avx2.c`, `fr_avx512.c`,
+`bn254_accel.c` — every other file in those two directories has no
+accelerated path at all (no `immintrin.h`, no `target(...)`, no CPUID), so
+absent acceleration there is a perf opportunity, not this defect class.
+
+Two dispatch decisions are deliberate and must not be read as bugs:
+`keccak_avx512.c` is default **off** because single-stream Keccak-f measures
+0.84–0.99× on Zen 4 (the cross-lane π gather dominates), while the
+lane-parallel `sha3_256_x4.c` and `sha3_avx512.c` (`sha3_512_x4`) are default
+**on** and measure ~1.7–2×. A measured loss left off is not a compiled-out
+path.
+
+Three gaps are known, still open, and each needs its own job:
+
+* **`blake2b_avx2.c` gates on CPUID alone.** `detect_features()` reads leaf-7
+  EBX bits 5 and 16 with no XCR0 check, unlike every other ZMM entry point in
+  the tree. On a kernel booted with AVX-512 state disabled, `g_has_avx512f`
+  reads 1 and the 8-way compress would `SIGILL`. Practically unreachable on a
+  supported Linux, but this is a live dispatch predicate on the Equihash
+  verification path, so tightening it is a consensus-adjacent change and needs
+  its own gate.
+* **`fr_avx512.c` and `bn254_accel.c` claim ADX carry chains they do not
+  build.** `fp_mont_mul_bmi2` passes a literal `0` carry-in to every
+  `_addcarryx_u64` and folds the carry back with an ordinary add, so zero
+  carry chains exist; `fr_mont_mul_bmi2` and `bn_fq_mont_mul_bmi2` thread one
+  chain through the `lo` adds and still use a literal `0` for the `carry_mul`
+  adds. `target("bmi2,adx")` therefore buys MULX and nothing else. Any fix is
+  Fp/Fr Montgomery arithmetic on the BLS12-381 pairing path and must clear
+  `make check-groth16-parity` on the full frozen corpus first.
+* **`bn254_accel.c` still advertises `"BMI2+ADX (MULX+ADCX+ADOX)"`** in its
+  header tier list and from `bn254_accel_implementation()`. That is a naming
+  overclaim per the point above. `fr_accel_implementation()` has already been
+  corrected to report the tier `init_dispatch()` installs — `"BMI2 MULX
+  (AVX-512 IFMA present, unimplemented)"` — because reporting a *detected*
+  capability as the *running* one is the exact mechanism that kept the
+  compiled-out SHA-256 path invisible.
+
 ## Optimizing safely
 
 Any optimization to a consensus crypto primitive must stay **bit-identical** to
