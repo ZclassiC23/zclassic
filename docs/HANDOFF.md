@@ -44,6 +44,19 @@ deployed**, and none of it is live until an owner-gated `make deploy`:
 | Three broken commands fixed, all one defect: a handler returned a bare JSON array or an in-memory-only field, and the command bridge dropped it. `app.swap.list` and the three wallet plan legs now return usable bodies | `swap_controller.c:970`, `wallet_native_handlers.c` |
 | The `lib/` module set is declared once in `config/lib_module_order.def` and derived everywhere else — it had been copied into five places, and two of the cross-checks were vacuous | `Makefile:272`, `tools/lint/repo_shape.sh` |
 | The code index reads the depfiles the build actually writes (it had been reading a stale flat directory), so the test skip-cache can key on a real include graph: **0 → 677 of 749 groups cacheable** | `lib/codeindex/src/codeindex_deps.c` |
+| Compile-epoch re-key on toolchain+flags: a source edit now recompiles 2 TUs instead of 1199 | `Makefile`, `tools/dev/` (pushed `cf63879e8`) |
+| Boot-liveness watchdog pump during block-index hydrate + LevelDB load (the long silent window that read as a stall) | `app/services/src/block_index_blocks_hydrate.c` (`2950a8111`) |
+| Stale `.failed` bundle marker cleared once the bundle actually installs | `config/src/boot_auto_install_bundle.c` (`eb3e943d7`) |
+| `op_return_index` names the snapshot-seed floor instead of a fake stall; `catalog_lag_exceeded` suppressed while the seed floor is the cause | `8181b9dee`, `3eb29dfed` |
+| Wipe-to-tip Wedge A: genesis (nVersion=0) exempted from the contextual header-version gate; regression test | `app/jobs/src/validate_headers_validator.c` (`1aa370c7c`, `71f084afe`) |
+
+In flight on branches/worktrees at push time (`main` at `71f084afe`,
+pushed to origin): plaintext wallet-key mirror deletion (single
+encryption-aware writer for `node.db` key tables), Wipe-to-tip Wedge B
+(getheaders serve path falls back to node.db `blocks` rows below the body
+floor, `zclassic23-wedge-b`), and the ZCODE program
+(`docs/work/ZCODE_PLAN.md`, slice 1 signed release envelope on
+`work/zcode-slices` in `zclassic23-zcode`).
 
 Deploy policy during the hold window is unchanged: a restart resets the 72h
 trailing window, so deploy when the escalator fires anyway, or after
