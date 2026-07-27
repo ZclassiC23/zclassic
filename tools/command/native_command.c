@@ -49,6 +49,7 @@
 #include "command/rom_compile_render.h"
 #include "command/rom_compile_offline.h"
 #include "command/rom_watch_loop.h"
+#include "command/cli_render.h"
 #include "controllers/rpc_client.h"
 
 #include <ctype.h>
@@ -2232,6 +2233,48 @@ static bool nc_next_input_valid(const char *current_command,
     return true;
 }
 
+/* ── terminal-lane human presentation (docs/work/UX_PLAN.md (terminal lane)) ────
+ * The canonical typed-JSON document is ALWAYS computed first, unchanged;
+ * these helpers only decide whether the final print swaps in the human
+ * rendering from tools/command/cli_render.c. Resolution is once per CLI
+ * process: isatty(stdout) (or the ZCL_HUMAN force), with NO_COLOR /
+ * TERM=dumb honored inside the renderer. A successfully parsed
+ * --format=json pins the canonical JSON even on a TTY. Pipes therefore
+ * stay byte-identical by construction — and a renderer that does not
+ * recognize a document shape returns 0 and falls through to the JSON. */
+static struct zcl_cli_render_env g_nc_render_env;
+static bool g_nc_render_resolved;
+static bool g_nc_format_json;
+
+static const struct zcl_cli_render_env *nc_render_env(void)
+{
+    if (!g_nc_render_resolved) {
+        g_nc_render_env = zcl_cli_render_resolve(fileno(stdout));
+        g_nc_render_resolved = true;
+    }
+    return &g_nc_render_env;
+}
+
+static bool nc_human(void)
+{
+    return nc_render_env()->human && !g_nc_format_json;
+}
+
+static void nc_print_doc(const char *doc, const char *command_path)
+{
+    if (nc_human()) {
+        char human[ZCL_COMMAND_LIST_BUDGET + 1];
+        size_t hn = zcl_cli_render_doc(doc, strlen(doc), command_path,
+                                       nc_render_env(), human,
+                                       sizeof(human));
+        if (hn > 0) {
+            fputs(human, stdout);
+            return;
+        }
+    }
+    printf("%s\n", doc);
+}
+
 static void nc_print_error(const char *command, const char *code,
                            const char *phase, const char *message,
                            const char *evidence,
@@ -2283,11 +2326,12 @@ static void nc_print_error(const char *command, const char *code,
 
     char out[ZCL_COMMAND_ERROR_BUDGET + 1];
     size_t n = json_write(&root, out, sizeof(out));
-    if (n > 0 && n < sizeof(out))
-        printf("%s\n", out);
-    else
-        printf("{\"schema\":\"zcl.result.v1\",\"ok\":false,"
-               "\"status\":\"failed\",\"error\":{\"code\":\"%s\"}}\n", code);
+    if (n == 0 || n >= sizeof(out))
+        (void)snprintf(out, sizeof(out),
+                       "{\"schema\":\"zcl.result.v1\",\"ok\":false,"
+                       "\"status\":\"failed\",\"error\":{\"code\":\"%s\"}}",
+                       code);
+    nc_print_doc(out, command);
     json_free(&item);
     json_free(&next);
     json_free(&blockers);
@@ -2327,7 +2371,7 @@ static int nc_emit_menu(const char *path)
             "path", path, "inspect this branch contract");
         return ZCL_COMMAND_EXIT_INTERNAL;
     }
-    printf("%s\n", out);
+    nc_print_doc(out, path);
     return ZCL_COMMAND_EXIT_OK;
 }
 
@@ -2399,7 +2443,7 @@ static int nc_run_discover(const struct zcl_command_spec *spec,
         }
         return ZCL_COMMAND_EXIT_INVALID;
     }
-    printf("%s\n", out);
+    nc_print_doc(out, spec->path);
     return ZCL_COMMAND_EXIT_OK;
 }
 
@@ -2933,6 +2977,7 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
                 break;
             }
             seen_format = true;
+            g_nc_format_json = true;
         } else if (strcmp(flag_key, "field") == 0) {
             if (seen_field || !value || !value[0]) {
                 flag_error = true;
@@ -3233,7 +3278,19 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
             char text[ZCL_COMMAND_LIST_BUDGET + 1];
             const struct json_value *data = json_get(&env, "data");
             if (nc_prose_text(spec->path, data, text, sizeof(text))) {
-                printf("%s\n", text);
+                /* The ONE-LINE brief is the frozen contract; on a human
+                 * terminal it additionally takes ANSI accents (dim keys,
+                 * sync/blocker tint). Pipes and NO_COLOR get the exact
+                 * plain line. */
+                const char *emit = text;
+                char colored[ZCL_COMMAND_LIST_BUDGET + 1];
+                if (nc_human() &&
+                    (strcmp(spec->path, "status") == 0 ||
+                     strcmp(spec->path, "core.status.brief") == 0) &&
+                    zcl_cli_render_brief(text, nc_render_env(), colored,
+                                         sizeof(colored)) > 0)
+                    emit = colored;
+                printf("%s\n", emit);
                 if (suggest_next &&
                     (strcmp(spec->path, "status") == 0 ||
                      strcmp(spec->path, "core.status.brief") == 0))
@@ -3246,6 +3303,6 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
         json_free(&env);
     }
 
-    printf("%s\n", out);
+    nc_print_doc(out, spec->path);
     return (int)exit_code;
 }

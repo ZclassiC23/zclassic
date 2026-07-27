@@ -1059,3 +1059,57 @@ prints a `zcl.cli_local_instances.v1` JSON document listing every sibling
 bounded live/dead TCP probe) instead of a bare failure — one command answers
 "what nodes exist on this host", with exit code `5` (transient — the
 *default* target has nothing running, but this is not a dead end).
+
+## 26. Terminal human presentation layer (wf/terminal-ux)
+
+The canonical typed-JSON contract above is unchanged — this section
+describes a presentation layer that sits strictly AFTER it
+(`tools/command/cli_render.c`, wired at the print sites in
+`tools/command/native_command.c` and `src/main_cli_modes.c`). The rule is:
+**machines get canonical JSON, humans get beauty.** The canonical document
+is always computed first, byte-identical; only the final print swaps in a
+human rendering, and only when a human is watching.
+
+**Activation.** Human rendering is on when `isatty(stdout)`, unless
+overridden: `ZCL_HUMAN=1` (also `true`/`yes`/`on`) forces it even on a pipe
+— this is the deterministic test hook, there is no `--human` flag —
+`ZCL_HUMAN=0` forces JSON even on a TTY, and a parsed `--format=json`
+always wins. A pipe without `ZCL_HUMAN=1` therefore emits exactly the bytes
+it always did (asserted by `test_cli_render` against the real binary).
+ANSI emphasis (bold/dim/red/green) is suppressed by `NO_COLOR` (any value,
+even empty) and `TERM=dumb`; layout is unchanged either way, and no ANSI
+ever appears on a non-TTY.
+
+**What renders.** Dispatch is on the document's own `schema`, so anything
+unrecognized falls through to the canonical JSON:
+
+- `zcl.command_menu.v1` (branch menus, `discover help`) — an aligned
+  PATH/SUMMARY/RISK/AVAIL table plus a `next:` hint;
+- `zcl.command_search.v1` (`discover search`) — a match table plus `next:`;
+- `zcl.command_spec.v1` (`discover describe`) — kv sections (availability,
+  semantics, input/output, policy, aliases, example);
+- `zcl.command_schema.v1` (`discover schema`) — kv lines;
+- `zcl.state_catalog.v2` (`statecatalog`) — a NAME/COST/KEYS/DESCRIPTION
+  table;
+- `zcl.result.v1` with `ok=false` (every command error) — an error block:
+  `error: <CODE> (<phase>)`, the one-line message, and a `run:` suggestion;
+- `zcl.result.v1` with `ok=true` for the tree-render allowlist
+  (`ops.state`, `ops.logs`) — a bounded aligned kv tree of `data`;
+- the ONE-LINE status brief keeps its frozen bytes and gains ANSI accents
+  only (dim keys, sync/blocker tint) on a TTY.
+
+**Bounded everywhere.** Tables cap at 24 rows with an exact
+`... (N more, pipe to JSON for full)` footer, every line respects the
+terminal width (`TIOCGWINSZ`, else `$COLUMNS`, else 80, clamped 40..240)
+with U+2026 truncation, and tree output caps depth and lines with the same
+footer. A renderer that does not recognize a shape returns 0 and the
+canonical JSON prints instead — human mode degrades to JSON, never the
+reverse.
+
+**Error suggestions.** The `run:` line comes from a small curated
+code → next-action table in `cli_render.c` (e.g. `MISSING_SUBSYSTEM` →
+`run: zclassic23 statecatalog`, `BAD_INPUT` → `discover schema <path>`),
+which is the optional suggestion descriptor: codes absent from the table
+fall back to the envelope's own `next[0]` rendered as an executable shell
+line, then to no hint. `UNKNOWN_COMMAND` always prefers the envelope's
+`next[0]` because it carries the operator's real query.

@@ -76,6 +76,7 @@
 #include "util/ar_step_readonly.h"
 #include "controllers/rpc_client.h"
 #include "command/native_command.h"
+#include "command/cli_render.h"
 #include "config/command_catalog.h"
 #include "kernel/command_registry.h"
 #include <signal.h>
@@ -2285,7 +2286,18 @@ static int cli_run_static_agent_method(const char *method,
         fprintf(stderr, "agent contract JSON exceeded CLI buffer\n");
         ok = false;
     } else if (ok) {
-        printf("%s\n", out);
+        /* Terminal lane (docs/work/UX_PLAN.md): on a human terminal the
+         * statecatalog renders as a bounded table; every other static
+         * agent method — and every pipe — keeps the canonical JSON. */
+        struct zcl_cli_render_env renv = zcl_cli_render_resolve(
+            fileno(stdout));
+        char human[16384];
+        if (renv.human &&
+            zcl_cli_render_doc(out, strlen(out), NULL, &renv, human,
+                               sizeof(human)) > 0)
+            fputs(human, stdout);
+        else
+            printf("%s\n", out);
         exit_code = cli_static_agent_result_exit_code(method, &result);
     } else {
         fprintf(stderr, "agent contract generation failed\n");

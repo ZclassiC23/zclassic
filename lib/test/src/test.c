@@ -1412,6 +1412,7 @@ int main(int argc, char **argv)
     failures += test_hw_bench();
     failures += test_log_level();
     failures += test_operator_ux();
+    failures += test_cli_render();
     failures += test_service_state();
     failures += test_service_state_driver();
     failures += test_clock();
