@@ -49,14 +49,15 @@ deployed**, and none of it is live until an owner-gated `make deploy`:
 | Stale `.failed` bundle marker cleared once the bundle actually installs | `config/src/boot_auto_install_bundle.c` (`eb3e943d7`) |
 | `op_return_index` names the snapshot-seed floor instead of a fake stall; `catalog_lag_exceeded` suppressed while the seed floor is the cause | `8181b9dee`, `3eb29dfed` |
 | Wipe-to-tip Wedge A: genesis (nVersion=0) exempted from the contextual header-version gate; regression test | `app/jobs/src/validate_headers_validator.c` (`1aa370c7c`, `71f084afe`) |
+| Plaintext wallet-key mirror deleted — one encryption-aware writer for the node.db key tables; boot-time WKS1 scrub of legacy plaintext rows, fail-loud | `lib/wallet/src/wallet_sqlite.c`, `app/models/src/wallet_key.c` (`d027c034b`) |
+| Wipe-to-tip Wedge B: getheaders serve path falls back to the hash-bound node.db `blocks` row below the snapshot body floor (full Equihash solution); serve refusals no longer poison entries with `BLOCK_FAILED_VALID`; the successor walk advances instead of ending the reply | `lib/net/src/msg_headers.c`, port `storage/node_db_runtime.h` (`44bf0426f`) |
+| ZCODE slice 1: signed package release envelope codec (703-byte bounded wire, frozen KAT, SPDX allowlist, low-S secp256k1) | `lib/vcs/package_release.*` (`fb37cc885`) |
 
-In flight on branches/worktrees at push time (`main` at `71f084afe`,
-pushed to origin): plaintext wallet-key mirror deletion (single
-encryption-aware writer for `node.db` key tables), Wipe-to-tip Wedge B
-(getheaders serve path falls back to node.db `blocks` rows below the body
-floor, `zclassic23-wedge-b`), and the ZCODE program
-(`docs/work/ZCODE_PLAN.md`, slice 1 signed release envelope on
-`work/zcode-slices` in `zclassic23-zcode`).
+In flight on branches/worktrees at push time (`main` at `fb37cc885`):
+ZCODE slice 2 staging CAS (`work/zcode-slices`), the end-to-end web UX
+design system (`zclassic23-ux`), and the node.db lock-contention fixes
+(`zclassic23-dblock`). Program plans: `docs/work/ZCODE_PLAN.md`,
+`docs/work/UX_PLAN.md`, `docs/work/NAT_AND_ONION_TRANSPORT.md`.
 
 Deploy policy during the hold window is unchanged: a restart resets the 72h
 trailing window, so deploy when the escalator fires anyway, or after
