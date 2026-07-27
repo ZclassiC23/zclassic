@@ -7,6 +7,9 @@
 #include "models/utxo.h"
 #include "models/wallet_key.h"
 #include "models/wallet_tx.h"
+#include "keys/key.h"
+#include "support/cleanse.h"
+#include "wallet/wallet_sqlite.h"
 #include <unistd.h>
 
 int test_model_wallet_projection(void)
@@ -365,7 +368,6 @@ int test_model_wallet_projection(void)
         ok = node_db_open(&ndb, dbpath);
 
         if (ok) {
-            struct db_wallet_key key;
             struct db_utxo wallet_utxo;
             struct db_utxo external_utxo;
             uint8_t wallet_script[] = {0x76, 0xa9, 0x14, 0x88, 0xac};
@@ -374,18 +376,33 @@ int test_model_wallet_projection(void)
             int address_rows = 0;
             int64_t address_balance = 0;
 
-            memset(&key, 0, sizeof(key));
             memset(&wallet_utxo, 0, sizeof(wallet_utxo));
             memset(&external_utxo, 0, sizeof(external_utxo));
             memset(external_addr, 0x66, sizeof(external_addr));
 
-            memset(key.pubkey_hash, 0x41, sizeof(key.pubkey_hash));
-            memset(key.pubkey, 0x42, sizeof(key.pubkey));
-            memset(key.privkey, 0x43, sizeof(key.privkey));
-            key.pubkey_len = sizeof(key.pubkey);
-            key.compressed = true;
-            key.created_at = 1770000600;
-            ok = db_wallet_key_save(&ndb, &key);
+            /* Plant the wallet key through the single writer (the model
+             * save is gone — wallet_sqlite owns the wallet_keys table). */
+            uint8_t key_pkh[20];
+            memset(key_pkh, 0, sizeof(key_pkh));
+            {
+                struct wallet_sqlite ws;
+                ok = wallet_sqlite_open(&ws, ndb.db);
+                struct privkey key;
+                struct pubkey pk;
+                privkey_init(&key);
+                memset(key.vch, 0x43, 32);
+                key.vch[1] = 0x34;
+                key.fValid = true;
+                key.fCompressed = true;
+                ok = ok && privkey_get_pubkey(&key, &pk);
+                ok = ok && wallet_sqlite_write_key(&ws, &pk, &key);
+                if (ok) {
+                    struct key_id kid = pubkey_get_id(&pk);
+                    memcpy(key_pkh, kid.id.data, 20);
+                }
+                wallet_sqlite_close(&ws);
+                memory_cleanse(key.vch, 32);
+            }
 
             memset(wallet_utxo.txid, 0x51, sizeof(wallet_utxo.txid));
             wallet_utxo.vout = 0;
@@ -393,7 +410,7 @@ int test_model_wallet_projection(void)
             wallet_utxo.script = wallet_script;
             wallet_utxo.script_len = sizeof(wallet_script);
             wallet_utxo.script_type = SCRIPT_P2PKH;
-            memcpy(wallet_utxo.address_hash, key.pubkey_hash,
+            memcpy(wallet_utxo.address_hash, key_pkh,
                    sizeof(wallet_utxo.address_hash));
             wallet_utxo.has_address = true;
             wallet_utxo.height = 10;

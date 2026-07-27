@@ -271,11 +271,6 @@ int node_db_sync_catchup(struct node_db *ndb,
                          const struct wallet *w,
                          const char *datadir);
 
-/* Copy wallet keys (transparent + Sapling) to SQLite.
- * Idempotent — skips keys that already exist. */
-int node_db_sync_wallet_keys(struct node_db *ndb,
-                             const struct wallet *w);
-
 /* Import the full UTXO set from chainstate LevelDB into SQLite.
  * Iterates all 'c'-prefixed entries, decodes compressed outputs,
  * and bulk-inserts into the utxos table with address indexing.

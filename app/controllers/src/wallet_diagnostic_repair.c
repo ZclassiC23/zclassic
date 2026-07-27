@@ -37,7 +37,6 @@
 #include "models/wallet_tx.h"
 #include "models/mempool_entry.h"
 #include "models/peer.h"
-#include "controllers/sync_controller.h"
 #include "controllers/wallet_scan.h"
 #include "models/chain_snapshot.h"
 #include "controllers/legacy_import.h"
@@ -131,7 +130,17 @@ bool rpc_reindexdb(const struct json_value *params, bool help,
         &ctx->main_state->chain_active, ctx->wallet, ctx->datadir,
         0, chain_tip);
 
-    node_db_sync_wallet_keys(ctx->node_db, ctx->wallet);
+    /* Persist the repaired wallet through the encryption-aware writer —
+     * the single writer of the wallet key tables (the old plaintext
+     * mirror sync was removed). */
+    if (ctx->wallet_db) {
+        struct zcl_result fr = wallet_sqlite_flush_r(ctx->wallet_db,
+                                                     ctx->wallet);
+        if (!fr.ok) {
+            LOG_FAIL("wallet", "reindexdb: post-scan flush failed "
+                               "(code=%d): %s", fr.code, fr.message);
+        }
+    }
 
     json_set_object(result);
     json_push_kv_int(result, "blocks_scanned", chain_tip + 1);

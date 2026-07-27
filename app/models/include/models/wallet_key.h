@@ -25,14 +25,15 @@ struct db_wallet_key {
 
 /* Callbacks and validation */
 struct ar_callbacks *db_wallet_key_callbacks(void);
-/* Test-only: re-arm the wallet_key before/after_save hooks (see .c). */
-void wallet_key_reset_hooks_for_testing(void);
 struct ar_callbacks *db_sapling_key_callbacks(void);
 struct ar_callbacks *db_wallet_script_callbacks(void);
 bool db_wallet_key_validate(const struct db_wallet_key *k,
                             struct ar_errors *errors);
 
-bool db_wallet_key_save(struct node_db *ndb, const struct db_wallet_key *k);
+/* NOTE: no db_wallet_key_save — the wallet_keys secret column has a
+ * single writer, the encryption-aware wallet_sqlite layer
+ * (lib/wallet/src/wallet_sqlite.c). This model is the read/destroy side
+ * for diagnostics and the vault. */
 
 bool db_wallet_key_find(struct node_db *ndb, const uint8_t pubkey_hash[20],
                         struct db_wallet_key *out);
@@ -63,16 +64,13 @@ struct db_sapling_key {
 
 bool db_sapling_key_validate(const struct db_sapling_key *k,
                               struct ar_errors *errors);
-bool db_sapling_key_save(struct node_db *ndb, const struct db_sapling_key *k);
+/* NOTE: no db_sapling_key_save — single writer is wallet_sqlite. */
 bool db_sapling_key_find_by_ivk(struct node_db *ndb, const uint8_t ivk[32],
                                 struct db_sapling_key *out);
-bool db_sapling_key_find_by_address(struct node_db *ndb, const char *address,
-                                    struct db_sapling_key *out);
 int db_sapling_key_count(struct node_db *ndb);
 
-/* Wallet seed (singleton) */
-bool db_wallet_seed_save(struct node_db *ndb, const uint8_t seed[32],
-                         uint32_t next_child);
+/* Wallet seed (singleton). NOTE: no db_wallet_seed_save — single writer
+ * is wallet_sqlite (wallet_sqlite_write_sapling_seed). */
 bool db_wallet_seed_load(struct node_db *ndb, uint8_t seed[32],
                          uint32_t *next_child);
 

@@ -8,6 +8,58 @@
 #include "models/wallet_tx.h"
 #include "models/mempool_entry.h"
 #include "models/peer.h"
+#include "keys/key.h"
+#include "support/cleanse.h"
+#include "wallet/sapling_keys.h"
+#include "wallet/wallet_sqlite.h"
+
+/* Write one wallet_keys row through the encryption-aware single writer
+ * (the model save functions are gone — wallet_sqlite owns the secret
+ * columns). Returns the row's derived pubkey_hash in kid_out. */
+static bool ar_test_write_wallet_key(struct node_db *ndb, uint8_t seed,
+                                     uint8_t kid_out[20])
+{
+    struct wallet_sqlite ws;
+    if (!wallet_sqlite_open(&ws, ndb->db))
+        return false;
+    struct privkey key;
+    struct pubkey pk;
+    privkey_init(&key);
+    memset(key.vch, seed, 32);
+    key.vch[1] = (uint8_t)(seed ^ 0xAA);
+    key.fValid = true;
+    key.fCompressed = true;
+    bool ok = privkey_get_pubkey(&key, &pk) &&
+              wallet_sqlite_write_key(&ws, &pk, &key);
+    if (ok) {
+        struct key_id kid = pubkey_get_id(&pk);
+        memcpy(kid_out, kid.id.data, 20);
+    }
+    wallet_sqlite_close(&ws);
+    memory_cleanse(key.vch, 32);
+    return ok;
+}
+
+/* Write one wallet_sapling_keys row through the single writer. */
+static bool ar_test_write_sapling_key(struct node_db *ndb,
+                                      const uint8_t ivk[32])
+{
+    struct wallet_sqlite ws;
+    if (!wallet_sqlite_open(&ws, ndb->db))
+        return false;
+    struct sapling_key_entry e;
+    memset(&e, 0, sizeof(e));
+    memcpy(e.ivk, ivk, 32);
+    memset(&e.xsk, 0xBB, sizeof(e.xsk));
+    memset(&e.xfvk, 0xCC, sizeof(e.xfvk));
+    memset(e.diversifier, 0xDD, 11);
+    memset(e.pk_d, 0xEE, 32);
+    e.child_index = 0;
+    e.used = true;
+    bool ok = wallet_sqlite_write_sapling_key(&ws, 0, &e);
+    wallet_sqlite_close(&ws);
+    return ok;
+}
 
 /* AR test callbacks (must be file-scope for ISO C23) */
 
@@ -736,16 +788,9 @@ int test_activerecord(void)
         struct node_db ndb;
         bool ok = node_db_open(&ndb, ":memory:");
 
-        /* Save a wallet key */
-        struct db_wallet_key k;
-        memset(&k, 0, sizeof(k));
-        memset(k.pubkey_hash, 0x40, 20);
-        memset(k.pubkey, 0x41, 33);
-        k.pubkey_len = 33;
-        memset(k.privkey, 0x42, 32);
-        k.compressed = true;
-        k.created_at = 1700000000;
-        ok = ok && db_wallet_key_save(&ndb, &k);
+        /* Save a wallet key via the single writer */
+        uint8_t key_pkh[20];
+        ok = ok && ar_test_write_wallet_key(&ndb, 0x40, key_pkh);
 
         /* Save 2 wallet UTXOs for this key */
         uint8_t script[] = {0x76, 0xa9};
@@ -755,7 +800,7 @@ int test_activerecord(void)
             memset(u.txid, 0x50 + i, 32);
             u.vout = 0;
             u.value = 10000 * (i + 1);
-            memcpy(u.address_hash, k.pubkey_hash, 20);
+            memcpy(u.address_hash, key_pkh, 20);
             u.script = script;
             u.script_len = sizeof(script);
             u.height = 400 + i;
@@ -764,7 +809,7 @@ int test_activerecord(void)
 
         /* Query relationship: key.utxos */
         struct db_wallet_utxo utxos[10];
-        int count = db_wallet_key_utxos(&ndb, k.pubkey_hash, utxos, 10);
+        int count = db_wallet_key_utxos(&ndb, key_pkh, utxos, 10);
         ok = ok && (count == 2);
         /* Ordered by value DESC */
         ok = ok && (utxos[0].value == 20000);
@@ -773,7 +818,7 @@ int test_activerecord(void)
         /* WalletUTXO belongs_to key */
         struct db_wallet_key found_key;
         ok = ok && db_wallet_utxo_key(&ndb, &utxos[0], &found_key);
-        ok = ok && (memcmp(found_key.pubkey_hash, k.pubkey_hash, 20) == 0);
+        ok = ok && (memcmp(found_key.pubkey_hash, key_pkh, 20) == 0);
 
         node_db_close(&ndb);
         if (ok) printf("OK\n");
@@ -986,44 +1031,18 @@ int test_activerecord(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    /* AR save rejects invalid sapling_key */
+    /* wallet_seed roundtrip through the single writer (the model save is
+     * gone — wallet_sqlite_write_sapling_seed owns the seed column) */
     {
-        printf("AR save rejects invalid sapling_key... ");
+        printf("wallet_seed write/read via single writer... ");
         struct node_db ndb;
         bool ok = node_db_open(&ndb, ":memory:");
-        struct ar_callbacks *cbs = db_sapling_key_callbacks();
-        ar_callbacks_init(cbs);
-
-        struct db_sapling_key k;
-        memset(&k, 0, sizeof(k));
-        ok = ok && !db_sapling_key_save(&ndb, &k);
-
-        memset(k.ivk, 0xAA, 32);
-        memset(k.xsk, 0x11, 169);
-        memset(k.xfvk, 0xBB, 169);
-        memset(k.diversifier, 0xCC, 11);
-        memset(k.pk_d, 0xDD, 32);
-        snprintf(k.address, sizeof(k.address), "zs1test");
-        ok = ok && db_sapling_key_save(&ndb, &k);
-        ok = ok && (db_sapling_key_count(&ndb) == 1);
-
-        node_db_close(&ndb);
-        if (ok) printf("OK\n");
-        else { printf("FAIL\n"); failures++; }
-    }
-
-    /* AR validation: wallet_seed rejects zero seed */
-    {
-        printf("AR validation: wallet_seed rejects zero... ");
-        struct node_db ndb;
-        bool ok = node_db_open(&ndb, ":memory:");
-
-        uint8_t zero_seed[32] = {0};
-        ok = ok && !db_wallet_seed_save(&ndb, zero_seed, 0);
+        struct wallet_sqlite ws;
+        ok = ok && wallet_sqlite_open(&ws, ndb.db);
 
         uint8_t real_seed[32];
         memset(real_seed, 0x42, 32);
-        ok = ok && db_wallet_seed_save(&ndb, real_seed, 0);
+        ok = ok && wallet_sqlite_write_sapling_seed(&ws, real_seed);
 
         uint8_t loaded[32];
         uint32_t next = 99;
@@ -1031,6 +1050,7 @@ int test_activerecord(void)
         ok = ok && (memcmp(loaded, real_seed, 32) == 0);
         ok = ok && (next == 0);
 
+        wallet_sqlite_close(&ws);
         node_db_close(&ndb);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -1558,64 +1578,26 @@ int test_activerecord(void)
 
     /* AR callbacks on wallet_key model */
     {
-        printf("AR callbacks: wallet_key save/delete... ");
+        printf("AR callbacks: wallet_key delete... ");
         struct node_db ndb;
         bool ok = node_db_open(&ndb, ":memory:");
         struct ar_callbacks *cbs = db_wallet_key_callbacks();
         ar_callbacks_init(cbs);
 
-        ar_test_save_count = 0;
-        ar_register_after_save(cbs, ar_test_count_saves);
-
-        struct db_wallet_key k;
-        memset(&k, 0, sizeof(k));
-        memset(k.pubkey_hash, 0x88, 20);
-        memset(k.pubkey, 0x99, 33);
-        k.pubkey_len = 33;
-        memset(k.privkey, 0xAA, 32);
-        k.compressed = true;
-        k.created_at = 1700000000;
-        ok = ok && db_wallet_key_save(&ndb, &k);
-        ok = ok && (ar_test_save_count == 1);
+        /* Insert via the single writer (the model save is gone) */
+        uint8_t key_pkh[20];
+        ok = ok && ar_test_write_wallet_key(&ndb, 0x88, key_pkh);
         ok = ok && (db_wallet_key_count(&ndb) == 1);
 
         /* before_destroy reject */
         ar_register_before_destroy(cbs, ar_test_prevent_delete);
-        ok = ok && !db_wallet_key_delete(&ndb, k.pubkey_hash);
+        ok = ok && !db_wallet_key_delete(&ndb, key_pkh);
         ok = ok && (db_wallet_key_count(&ndb) == 1);
 
         /* Allow delete */
         ar_callbacks_init(cbs);
-        ok = ok && db_wallet_key_delete(&ndb, k.pubkey_hash);
+        ok = ok && db_wallet_key_delete(&ndb, key_pkh);
         ok = ok && (db_wallet_key_count(&ndb) == 0);
-
-        node_db_close(&ndb);
-        if (ok) printf("OK\n");
-        else { printf("FAIL\n"); failures++; }
-    }
-
-    /* AR save rejects invalid wallet_key (has validation gate) */
-    {
-        printf("AR save rejects invalid wallet_key... ");
-        struct node_db ndb;
-        bool ok = node_db_open(&ndb, ":memory:");
-        struct ar_callbacks *cbs = db_wallet_key_callbacks();
-        ar_callbacks_init(cbs);
-
-        /* Invalid wallet_key (zero pubkey_hash, zero pubkey, zero privkey) */
-        struct db_wallet_key k;
-        memset(&k, 0, sizeof(k));
-        ok = ok && !db_wallet_key_save(&ndb, &k);
-        ok = ok && (db_wallet_key_count(&ndb) == 0);
-
-        /* Valid wallet_key saves */
-        memset(k.pubkey_hash, 0xAA, 20);
-        memset(k.pubkey, 0xBB, 33);
-        k.pubkey_len = 33;
-        memset(k.privkey, 0xCC, 32);
-        k.compressed = true;
-        ok = ok && db_wallet_key_save(&ndb, &k);
-        ok = ok && (db_wallet_key_count(&ndb) == 1);
 
         node_db_close(&ndb);
         if (ok) printf("OK\n");
@@ -1662,16 +1644,10 @@ int test_activerecord(void)
         struct ar_callbacks *cbs = db_sapling_note_callbacks();
         ar_callbacks_init(cbs);
 
-        /* Save a sapling key */
-        struct db_sapling_key sk;
-        memset(&sk, 0, sizeof(sk));
-        memset(sk.ivk, 0xAA, 32);
-        memset(sk.xsk, 0xBB, 169);
-        memset(sk.xfvk, 0xCC, 169);
-        memset(sk.diversifier, 0xDD, 11);
-        memset(sk.pk_d, 0xEE, 32);
-        snprintf(sk.address, sizeof(sk.address), "zs1test");
-        ok = ok && db_sapling_key_save(&ndb, &sk);
+        /* Save a sapling key via the single writer */
+        uint8_t ivk[32];
+        memset(ivk, 0xAA, 32);
+        ok = ok && ar_test_write_sapling_key(&ndb, ivk);
 
         /* Save 2 notes for this key */
         for (int i = 0; i < 2; i++) {
@@ -1680,7 +1656,7 @@ int test_activerecord(void)
             memset(n.txid, 0x50 + i, 32);
             n.output_index = (uint32_t)i;
             n.value = 100000 * (i + 1);
-            memcpy(n.ivk, sk.ivk, 32);
+            memcpy(n.ivk, ivk, 32);
             memset(n.nullifier, 0x60 + i, 32);
             memset(n.diversifier, 0xDD, 11);
             memset(n.pk_d, 0xEE, 32);
@@ -1691,7 +1667,7 @@ int test_activerecord(void)
         }
 
         struct db_sapling_note notes[10];
-        int count = db_sapling_key_notes(&ndb, sk.ivk, notes, 10);
+        int count = db_sapling_key_notes(&ndb, ivk, notes, 10);
         ok = ok && (count == 2);
         ok = ok && (notes[0].value == 200000);
         ok = ok && (notes[1].value == 100000);
@@ -1821,9 +1797,10 @@ int test_activerecord(void)
 
     /* This group calls ar_callbacks_init() on the SHARED production wallet
      * model callback structs to silence emits during validation tests, which
-     * wipes the before/after_save hooks process-wide. Restore them so later
-     * groups (wallet_projection) see the model save emits again. */
-    wallet_key_reset_hooks_for_testing();
+     * wipes the before/after_save hooks process-wide. Restore the wallet_tx
+     * hooks so later groups see the model save emits again. (The wallet_key
+     * model hooks are gone with the model save functions — the wallet_sqlite
+     * single writer owns the key-saved event feed now.) */
     wallet_tx_reset_hooks_for_testing();
 
     return failures;

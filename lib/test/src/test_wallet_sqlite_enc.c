@@ -21,6 +21,8 @@
 #include "wallet/wallet.h"
 #include "wallet/sapling_keys.h"   /* MAX_SAPLING_KEYS (break-park regression) */
 #include "keys/key.h"
+#include "models/database.h"       /* node_db (scrub reader assertions) */
+#include "models/wallet_key.h"     /* db_wallet_key_each / count */
 #include "support/cleanse.h"
 
 #include <stdio.h>
@@ -98,6 +100,18 @@ static void free_wallet(struct wallet *w)
     if (!w) return;
     keystore_free(&w->keystore);
     free(w);
+}
+
+/* db_wallet_key_each callback state for the scrub reader assertions. */
+static int g_each_seen;
+static uint8_t g_each_pkh[8][20];
+
+static void scrub_count_each_cb(const struct db_wallet_key *key, void *ctx)
+{
+    (void)ctx;
+    if (g_each_seen < 8)
+        memcpy(g_each_pkh[g_each_seen], key->pubkey_hash, 20);
+    g_each_seen++;
 }
 
 /* ── Tests ───────────────────────────────────────────────────── */
@@ -615,6 +629,175 @@ static int test_runtime_unlock_lock_reload(void)
     return failures;
 }
 
+/* Boot-time plaintext scrub (wallet_sqlite_scrub_plaintext_r): with a
+ * passphrase configured, every plaintext secret row — including rows the
+ * in-memory wallet never loaded, like the removed mirror writer's stale
+ * plantings — is wrapped into a WKS1 envelope IN PLACE; nothing is
+ * deleted. Assert all three secret columns are envelopes after the
+ * scrub, the decrypting read path still returns the original bytes, the
+ * diagnostic reader (db_wallet_key_each) still sees the rows, and a
+ * second scrub is a no-op. */
+static int test_scrub_upgrades_plaintext_rows(void)
+{
+    int failures = 0;
+    TEST("wallet_sqlite_enc: scrub wraps plaintext rows into envelopes") {
+        wallet_lock_reset_for_test();
+        set_passphrase(NULL);
+        sqlite3 *db = open_mem_db();
+        ASSERT(db);
+        struct wallet_sqlite ws;
+        ASSERT(wallet_sqlite_open(&ws, db));
+
+        /* Plant PLAINTEXT rows (mirror-era / pre-encryption state). */
+        struct privkey k1, k2;
+        struct pubkey p1, p2;
+        make_test_key(&k1, &p1, 0x31);
+        make_test_key(&k2, &p2, 0x32);
+        ASSERT(wallet_sqlite_write_key(&ws, &p1, &k1));
+        ASSERT(wallet_sqlite_write_key(&ws, &p2, &k2));
+
+        struct sapling_key_entry e;
+        memset(&e, 0, sizeof(e));
+        memset(e.ivk, 0x91, 32);
+        memset(&e.xsk, 0x92, sizeof(e.xsk));
+        memset(&e.xfvk, 0x93, sizeof(e.xfvk));
+        memset(e.diversifier, 0x94, 11);
+        memset(e.pk_d, 0x95, 32);
+        e.child_index = 0;
+        e.used = true;
+        ASSERT(wallet_sqlite_write_sapling_key(&ws, 0, &e));
+
+        uint8_t seed[32];
+        memset(seed, 0x96, 32);
+        ASSERT(wallet_sqlite_write_sapling_seed(&ws, seed));
+
+        /* Sanity: without a passphrase the rows sit raw on disk. */
+        {
+            sqlite3_stmt *st = NULL;
+            ASSERT(sqlite3_prepare_v2(db,
+                "SELECT privkey FROM wallet_keys LIMIT 1",
+                -1, &st, NULL) == SQLITE_OK);
+            ASSERT(sqlite3_step(st) == SQLITE_ROW);
+            const void *blob = sqlite3_column_blob(st, 0);
+            ASSERT(blob && sqlite3_column_bytes(st, 0) == 32);
+            ASSERT(memcmp(blob, "WKS1", 4) != 0);
+            sqlite3_finalize(st);
+        }
+
+        /* Operator sets a passphrase and boots — the scrub fires. */
+        set_passphrase("scrub-pass");
+        ASSERT(wallet_sqlite_scrub_plaintext_r(&ws).ok);
+
+        /* Every secret column in every row is now a WKS1 envelope. */
+        static const char *k_cols[] = {
+            "SELECT privkey FROM wallet_keys",
+            "SELECT xsk FROM wallet_sapling_keys",
+            "SELECT seed FROM wallet_seed",
+        };
+        int envelope_rows = 0;
+        for (size_t q = 0; q < sizeof(k_cols) / sizeof(k_cols[0]); q++) {
+            sqlite3_stmt *st = NULL;
+            ASSERT(sqlite3_prepare_v2(db, k_cols[q], -1, &st, NULL)
+                   == SQLITE_OK);
+            while (sqlite3_step(st) == SQLITE_ROW) {
+                const void *blob = sqlite3_column_blob(st, 0);
+                int blen = sqlite3_column_bytes(st, 0);
+                ASSERT(blob && blen > 60);
+                ASSERT(memcmp(blob, "WKS1", 4) == 0);
+                envelope_rows++;
+            }
+            sqlite3_finalize(st);
+        }
+        ASSERT(envelope_rows == 4); /* 2 keys + 1 sapling + 1 seed */
+
+        /* The decrypting read path still returns the original bytes. */
+        struct wallet *w = alloc_wallet();
+        ASSERT(w);
+        ASSERT(wallet_sqlite_read_keys(&ws, w));
+        ASSERT(w->keystore.num_keys == 2);
+        struct key_id kid1 = pubkey_get_id(&p1);
+        struct privkey got;
+        privkey_init(&got);
+        ASSERT(keystore_get_key(&w->keystore, &kid1, &got));
+        ASSERT(memcmp(got.vch, k1.vch, 32) == 0);
+
+        uint8_t got_seed[32];
+        ASSERT(wallet_sqlite_read_sapling_seed(&ws, got_seed));
+        ASSERT(memcmp(got_seed, seed, 32) == 0);
+
+        /* The diagnostic reader still sees the rows (pubkey_hash intact). */
+        {
+            struct node_db ndb;
+            memset(&ndb, 0, sizeof(ndb));
+            ndb.db = db;
+            ndb.open = true;
+            g_each_seen = 0;
+            memset(g_each_pkh, 0, sizeof(g_each_pkh));
+            int n = db_wallet_key_each(&ndb, scrub_count_each_cb, NULL);
+            ASSERT(n == 2);
+            ASSERT(g_each_seen == 2);
+            bool kid1_seen = false;
+            for (int i = 0; i < g_each_seen; i++)
+                if (memcmp(g_each_pkh[i], kid1.id.data, 20) == 0)
+                    kid1_seen = true;
+            ASSERT(kid1_seen);
+        }
+
+        /* Idempotent: a second scrub upgrades nothing and succeeds. */
+        ASSERT(wallet_sqlite_scrub_plaintext_r(&ws).ok);
+        ASSERT(db_wallet_key_count(&(struct node_db){
+                   .db = db, .open = true }) == 2);
+
+        wallet_sqlite_close(&ws);
+        free_wallet(w);
+        sqlite3_close(db);
+        set_passphrase(NULL);
+        wallet_lock_reset_for_test();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_scrub_noop_without_passphrase(void)
+{
+    int failures = 0;
+    TEST("wallet_sqlite_enc: scrub is a no-op without a passphrase") {
+        wallet_lock_reset_for_test();
+        set_passphrase(NULL);
+        sqlite3 *db = open_mem_db();
+        ASSERT(db);
+        struct wallet_sqlite ws;
+        ASSERT(wallet_sqlite_open(&ws, db));
+
+        struct privkey k1;
+        struct pubkey p1;
+        make_test_key(&k1, &p1, 0x41);
+        ASSERT(wallet_sqlite_write_key(&ws, &p1, &k1));
+        uint8_t seed[32];
+        memset(seed, 0x42, 32);
+        ASSERT(wallet_sqlite_write_sapling_seed(&ws, seed));
+
+        /* No passphrase: raw 32-byte rows are the legitimate format. */
+        ASSERT(wallet_sqlite_scrub_plaintext_r(&ws).ok);
+
+        sqlite3_stmt *st = NULL;
+        ASSERT(sqlite3_prepare_v2(db,
+            "SELECT privkey FROM wallet_keys LIMIT 1",
+            -1, &st, NULL) == SQLITE_OK);
+        ASSERT(sqlite3_step(st) == SQLITE_ROW);
+        const void *blob = sqlite3_column_blob(st, 0);
+        ASSERT(blob && sqlite3_column_bytes(st, 0) == 32);
+        ASSERT(memcmp(blob, k1.vch, 32) == 0);
+        sqlite3_finalize(st);
+
+        wallet_sqlite_close(&ws);
+        sqlite3_close(db);
+        wallet_lock_reset_for_test();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Entry point ─────────────────────────────────────────────── */
 
 int test_wallet_sqlite_enc(void);
@@ -637,6 +820,8 @@ int test_wallet_sqlite_enc(void)
     failures += test_seed_ops_leave_no_open_txn();
     failures += test_read_ops_leave_no_open_txn();
     failures += test_runtime_unlock_lock_reload();
+    failures += test_scrub_upgrades_plaintext_rows();
+    failures += test_scrub_noop_without_passphrase();
 
     /* Cleanup: ensure passphrase env is unset and the lock register is clean. */
     set_passphrase(NULL);

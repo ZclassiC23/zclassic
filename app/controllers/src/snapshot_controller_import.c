@@ -607,7 +607,6 @@ static void *import_wallet_thread(void *arg)
     if (wallet_keys == 0 && a->wallet->sapling_keys.num_keys == 0) {
         printf("T3: no wallet keys, skipping scan\n");
         fflush(stdout);
-        node_db_sync_wallet_keys(&ndb, a->wallet);
         node_db_close(&ndb);
         a->result = 0;
         return NULL;

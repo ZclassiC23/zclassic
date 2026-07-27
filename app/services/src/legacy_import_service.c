@@ -29,7 +29,6 @@
 
 #include "platform/time_compat.h"
 #include "services/legacy_import_service.h"
-#include "controllers/sync_controller.h" /* node_db_sync_wallet_keys */
 #include "models/wallet_tx.h"
 #include "wallet/wallet.h"
 #include "wallet/sapling_keys.h"
@@ -591,8 +590,9 @@ pass2_db_done:
         fctxs = NULL;
     }
 
-    /* Sync wallet keys to SQLite. */
-    node_db_sync_wallet_keys(ndb, w);
+    /* Wallet keys are persisted exclusively by the encryption-aware
+     * wallet_sqlite writer (single-writer doctrine); the import above
+     * only adds transactions and notes. */
 
     /* Report final results. */
     int64_t t_bal = db_wallet_utxo_balance(ndb);

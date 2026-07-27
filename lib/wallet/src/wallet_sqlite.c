@@ -16,8 +16,15 @@
 #include "wallet/wallet_lock.h"
 #include "wallet/keystore.h"
 #include "keys/key.h"
+#include "keys/key_io.h"
+#include "chain/chainparams.h"
+#include "script/standard.h"
 #include "core/serialize.h"
 #include "crypto/sha256.h"
+#include "encoding/utilstrencodings.h"
+#include "storage/event_log_payloads.h"
+#include "storage/wallet_projection.h"
+#include "event/event.h"
 #include "support/cleanse.h"
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
@@ -180,6 +187,92 @@ static bool wallet_decrypt_blob(const uint8_t *envelope, size_t env_len,
     *out = buf;
     *out_len = plen;
     return true;
+}
+
+/* ── Key-write event emission ────────────────────────────────────── *
+ * The app-model save hooks that used to feed these events are gone —
+ * single-writer doctrine makes wallet_sqlite the ONLY writer of the
+ * wallet_keys / wallet_sapling_keys secret columns, so the writer
+ * itself owns the event feed.  Emission fires only when the row did
+ * not previously exist (the deleted mirror's effective once-per-key
+ * semantics) so a boot-time whole-wallet flush does not re-append the
+ * entire keypool to the wallet event log.  Best-effort: an emit
+ * failure never fails the key write (the projection is rebuildable,
+ * and with no event log installed append is a no-op). */
+
+static void wsql_emit_transparent_key_add(const struct key_id *kid)
+{
+    char addr_hex[41];
+    HexStr(kid->id.data, 20, false, addr_hex, sizeof(addr_hex));
+    event_emitf(EV_WALLET_KEY_SAVED, 0,
+                "kind=transparent addr_hash=%s", addr_hex);
+
+    char address[EV_WALLET_ADDRESS_MAX + 1];
+    memset(address, 0, sizeof(address));
+    const struct chain_params *cp = chain_params_get();
+    if (cp) {
+        size_t pk_pfx_len = 0;
+        size_t sc_pfx_len = 0;
+        const unsigned char *pk_pfx = chain_params_base58_prefix(
+            cp, B58_PUBKEY_ADDRESS, &pk_pfx_len);
+        const unsigned char *sc_pfx = chain_params_base58_prefix(
+            cp, B58_SCRIPT_ADDRESS, &sc_pfx_len);
+        struct tx_destination dest;
+        memset(&dest, 0, sizeof(dest));
+        dest.type = DEST_KEY_ID;
+        dest.id.key = *kid;
+        (void)encode_destination(&dest, pk_pfx, pk_pfx_len,
+                                 sc_pfx, sc_pfx_len,
+                                 address, sizeof(address));
+    }
+
+    if (!wallet_projection_emit_key_add(kid->id.data, address, "",
+            (uint32_t)platform_time_wall_time_t())) {
+        LOG_WARN("wallet_projection",
+                 "[wallet_projection] key add projection emit failed");
+    }
+}
+
+static void wsql_emit_sapling_key_add(const struct sapling_key_entry *entry)
+{
+    char fvk_hex[33];
+    HexStr((const uint8_t *)&entry->xfvk, 16, false, fvk_hex,
+           sizeof(fvk_hex));
+    char addr_hex[33];
+    HexStr(entry->ivk, 16, false, addr_hex, sizeof(addr_hex));
+    event_emitf(EV_WALLET_KEY_SAVED, 0,
+                "kind=sapling addr_hash=%s", addr_hex);
+    event_emitf(EV_SAPLING_KEY_SAVED, 0, "fvk_hash=%s", fvk_hex);
+}
+
+/* Row-existence probes for the emit-once gate.  A failed probe is
+ * treated as "new" — a duplicate emit is idempotent in the projection
+ * (INSERT OR REPLACE), a missed row write is not. */
+
+static bool wsql_wallet_key_row_exists(struct wallet_sqlite *ws,
+                                       const struct key_id *kid)
+{
+    sqlite3_stmt *s = ws->stmt_key_read_one;
+    sqlite3_reset(s);
+    sqlite3_bind_blob(s, 1, kid->id.data, 20, SQLITE_STATIC);
+    bool existed = (AR_STEP_ROW_READONLY(s) == SQLITE_ROW);
+    sqlite3_reset(s);
+    return existed;
+}
+
+static bool wsql_sapling_key_row_exists(struct wallet_sqlite *ws,
+                                        const uint8_t ivk[32])
+{
+    sqlite3_stmt *chk = NULL;
+    bool existed = false;
+    if (sqlite3_prepare_v2(ws->db,
+            "SELECT 1 FROM wallet_sapling_keys WHERE ivk=?",
+            -1, &chk, NULL) == SQLITE_OK && chk) {
+        sqlite3_bind_blob(chk, 1, ivk, 32, SQLITE_STATIC);
+        existed = (AR_STEP_ROW_READONLY(chk) == SQLITE_ROW);
+    }
+    if (chk) sqlite3_finalize(chk);
+    return existed;
 }
 
 /* ── Open / Close ──────────────────────────────────────────────── *
@@ -479,6 +572,7 @@ struct zcl_result wallet_sqlite_write_key_r(struct wallet_sqlite *ws,
     if (!v.ok) return wsql_fail(ws, v);
 
     struct key_id kid = pubkey_get_id(pk);
+    bool existed = wsql_wallet_key_row_exists(ws, &kid);
 
     uint8_t *enc_blob = NULL;
     size_t enc_len = 0;
@@ -500,6 +594,8 @@ struct zcl_result wallet_sqlite_write_key_r(struct wallet_sqlite *ws,
     if (rc != SQLITE_DONE)
         return wsql_fail(ws, ZCL_ERR(WSQL_WRITE_FAIL,
             "write_key: step rc=%d: %s", rc, sqlite3_errmsg(ws->db)));
+    if (!existed)
+        wsql_emit_transparent_key_add(&kid);
     return ZCL_OK;
 }
 
@@ -926,6 +1022,8 @@ bool wallet_sqlite_write_sapling_key(struct wallet_sqlite *ws,
     if (!ws || !ws->open)
         LOG_FAIL("wallet_sqlite", "write_sapling_key: not open");
 
+    bool existed = wsql_sapling_key_row_exists(ws, entry->ivk);
+
     uint8_t *enc_xsk = NULL;
     size_t enc_xsk_len = 0;
     size_t xsk_raw_len = sizeof(struct zip32_xsk);
@@ -987,6 +1085,8 @@ bool wallet_sqlite_write_sapling_key(struct wallet_sqlite *ws,
                  "write_sapling_key: next_child UPDATE step rc=%d child=%u: %s",
                  step_rc, child_index, sqlite3_errmsg(ws->db));
     }
+    if (!existed)
+        wsql_emit_sapling_key_add(entry);
     return true;
 }
 
@@ -1386,6 +1486,129 @@ bool wallet_sqlite_flush(struct wallet_sqlite *ws, struct wallet *w)
     LOG_FAIL("wallet_sqlite", "code=%d (%s:%d) %s",
              r.code,
              r.source_file ? r.source_file : "?", r.source_line, r.message);
+}
+
+/* ── Plaintext-at-rest scrub ───────────────────────────────────── */
+
+/* Upgrade one secret column row-by-row: every non-NULL, non-empty blob
+ * that is not already a WKS1 envelope is wrapped in place under the
+ * configured passphrase.  The blob is encrypted byte-for-byte as
+ * stored, so rows the in-memory wallet never loaded (oversized
+ * keystore, stale mirror-era rows) are UPGRADED, never deleted — the
+ * scrub cannot destroy key material.  Returns rows upgraded, or -1 on
+ * failure (the caller rolls back). */
+static int wsql_scrub_column(sqlite3 *db, const char *table,
+                             const char *secret_col)
+{
+    char select_sql[160];
+    char update_sql[160];
+    snprintf(select_sql, sizeof(select_sql),
+             "SELECT rowid, %s FROM %s", secret_col, table);
+    snprintf(update_sql, sizeof(update_sql),
+             "UPDATE %s SET %s=?1 WHERE rowid=?2", table, secret_col);
+
+    sqlite3_stmt *scan = NULL;
+    if (sqlite3_prepare_v2(db, select_sql, -1, &scan, NULL) != SQLITE_OK ||
+        !scan) {
+        if (scan) sqlite3_finalize(scan);
+        return -1;
+    }
+    sqlite3_stmt *upd = NULL;
+    if (sqlite3_prepare_v2(db, update_sql, -1, &upd, NULL) != SQLITE_OK ||
+        !upd) {
+        if (upd) sqlite3_finalize(upd);
+        sqlite3_finalize(scan);
+        return -1;
+    }
+
+    /* Updating rows under the scan's own read cursor is safe here: the
+     * UPDATE touches only rows already classified, changes no rowid,
+     * and inserts nothing, so every row is still visited exactly once. */
+    int upgraded = 0;
+    bool fail = false;
+    int rc;
+    while ((rc = AR_STEP_ROW_READONLY(scan)) == SQLITE_ROW) {
+        const void *blob = sqlite3_column_blob(scan, 1);
+        int blen = sqlite3_column_bytes(scan, 1);
+        if (!blob || blen <= 0)
+            continue;      /* malformed — the read path drops it loudly */
+        if (is_wks1_blob(blob, (size_t)blen))
+            continue;      /* already an envelope */
+
+        int64_t rid = sqlite3_column_int64(scan, 0);
+        uint8_t *enc = NULL;
+        size_t enc_len = 0;
+        if (!wallet_encrypt_blob(blob, (size_t)blen, &enc, &enc_len)) {
+            fail = true;
+            break;
+        }
+        sqlite3_reset(upd);
+        sqlite3_bind_blob(upd, 1, enc, (int)enc_len, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(upd, 2, rid);
+        int urc = AR_STEP_WRITE(upd);
+        memory_cleanse(enc, enc_len);
+        free(enc);
+        if (urc != SQLITE_DONE) {
+            fail = true;
+            break;
+        }
+        upgraded++;
+    }
+    sqlite3_finalize(upd);
+    sqlite3_finalize(scan);
+    if (fail || rc != SQLITE_DONE)
+        return -1;
+    return upgraded;
+}
+
+struct zcl_result wallet_sqlite_scrub_plaintext_r(struct wallet_sqlite *ws)
+{
+    if (!ws)
+        return ZCL_ERR(WSQL_NULL_ARG, "wallet_sqlite pointer is NULL");
+    if (!ws->open)
+        return wsql_fail(ws, ZCL_ERR(WSQL_DB_NOT_OPEN,
+            "scrub: wallet_sqlite is not open"));
+
+    /* No passphrase: raw 32-byte secrets are the legitimate at-rest
+     * format (Bitcoin-Core unlocked-wallet semantics) — no-op. */
+    if (!wallet_passphrase())
+        return ZCL_OK;
+
+    char *err = NULL;
+    if (sqlite3_exec(ws->db, "BEGIN IMMEDIATE", NULL, NULL, &err)
+            != SQLITE_OK) {
+        struct zcl_result r = ZCL_ERR(WSQL_TXN_BEGIN_FAIL,
+            "scrub: BEGIN IMMEDIATE failed: %s", err ? err : "(unknown)");
+        if (err) sqlite3_free(err);
+        return wsql_fail(ws, r);
+    }
+
+    int t = wsql_scrub_column(ws->db, "wallet_keys", "privkey");
+    int z = (t < 0) ? -1
+                    : wsql_scrub_column(ws->db, "wallet_sapling_keys", "xsk");
+    int sd = (t < 0 || z < 0) ? -1
+                    : wsql_scrub_column(ws->db, "wallet_seed", "seed");
+
+    if (t < 0 || z < 0 || sd < 0) {
+        sqlite3_exec(ws->db, "ROLLBACK", NULL, NULL, NULL);
+        return wsql_fail(ws, ZCL_ERR(WSQL_WRITE_FAIL,
+            "scrub: plaintext upgrade failed: %s", sqlite3_errmsg(ws->db)));
+    }
+
+    err = NULL;
+    if (sqlite3_exec(ws->db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
+        struct zcl_result r = ZCL_ERR(WSQL_TXN_COMMIT_FAIL,
+            "scrub: COMMIT failed: %s", err ? err : "(unknown)");
+        if (err) sqlite3_free(err);
+        sqlite3_exec(ws->db, "ROLLBACK", NULL, NULL, NULL);
+        return wsql_fail(ws, r);
+    }
+
+    if (t + z + sd > 0)
+        printf("wallet_sqlite: scrubbed %d plaintext secret row(s) into "
+               "WKS1 envelopes (keys=%d sapling=%d seed=%d)\n",
+               t + z + sd, t, z, sd);
+    return ZCL_OK;
 }
 
 /* ── Health snapshot ───────────────────────────────────────────── */

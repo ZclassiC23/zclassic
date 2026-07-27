@@ -4,6 +4,7 @@
  * mining, wallet sync, shutdown, and utility functions. */
 #include "platform/time_compat.h"
 #include "config/boot_internal.h"
+#include "config/boot_refusal_reports.h"
 #include "util/sysinit.h"
 #include "config/boot_shutdown_marker.h"
 #include "util/shutdown_stagewatch.h"
@@ -180,14 +181,6 @@ struct db_service *boot_db_service(struct boot_svc_ctx *svc)
     if (!runtime)
         return NULL;
     return runtime->db_service;
-}
-
-static struct wallet *boot_wallet(struct boot_svc_ctx *svc)
-{
-    struct app_runtime_context *runtime = boot_runtime(svc);
-    if (!runtime)
-        return NULL;
-    return runtime->wallet;
 }
 
 /* Runtime-profile gate accessors. Non-static (prototypes in boot_internal.h)
@@ -703,10 +696,17 @@ bool app_init_services(struct app_context *ctx,
         }
     }
 
-    /* Sync wallet keys to SQLite */
-    if (boot_node_db(svc))
-        node_db_sync_wallet_keys(boot_node_db(svc), boot_wallet(svc));
-
+    /* STATE G: wrap legacy plaintext rows into WKS1 envelopes; fail loud. */
+    if (svc->wallet_sqlite->open) {
+        struct zcl_result scrub_r =
+            wallet_sqlite_scrub_plaintext_r(svc->wallet_sqlite);
+        if (!scrub_r.ok) {
+            boot_report_wallet_scrub_failed(ctx->datadir, &scrub_r);
+            event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                        "wallet_plaintext_scrub_failed code=%d", scrub_r.code);
+            exit(1);
+        }
+    }
     /* Pass base datadir; msg_processor_init re-resolves NET-SPECIFIC. */
     msg_processor_init(svc->msg_processor, svc->state, svc->mempool,
                        svc->coins_tip, params, ctx->datadir,

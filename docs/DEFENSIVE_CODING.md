@@ -34,8 +34,8 @@ identically. Pick the one that fits the call site:
 | `AR_ADHOC_SAVE(ndb, stmt, sql, cbs, name, rec, validate_fn, bind_code)` | Single locally-prepared INSERT/UPDATE (the common case) | Wraps `AR_BEGIN_SAVE` + `AR_PREPARE_BOOL` + bind block + `AR_FINALIZE_STEP_DONE` + `AR_FINISH_SAVE` |
 | `AR_CACHED_SAVE(stmt, cbs, name, rec, validate_fn, bind_code)` | Hot path with a cached prepared stmt owned by `node_db` | Same lifecycle, skips prepare — call `AR_RESET(stmt)` and bind |
 
-For a worked call-site example (`db_wallet_key_save` using `AR_ADHOC_SAVE`),
-see `lib/wallet/src/wallet_sqlite.c`.
+For a worked call-site example (`db_wallet_script_save` using `AR_ADHOC_SAVE`),
+see `app/models/src/wallet_key.c`.
 
 Storage primitives that legitimately need raw SQL
 (`lib/storage/src/coins_view_sqlite.c`) opt out with `#define ZCL_AR_RAW_SQL`.
@@ -181,12 +181,16 @@ error path; the lint also prevents the silent-fail class entirely.
 
 **Status: shipped.** Every critical model wires `ar_register_before_save` and
 `ar_register_after_save`. `check-before-save-hooks` enforces that `utxo`,
-`block`, `wallet_key`, and `wallet_tx` keep these hooks — drop one and `make
-lint` fails.
+`block`, and `wallet_tx` keep these hooks — drop one and `make lint` fails.
+`wallet_key` is deliberately absent from that list: the model has no AR save
+at all (single-writer doctrine — the encryption-aware `wallet_sqlite` layer
+is the only writer of the `wallet_keys` / `wallet_sapling_keys` /
+`wallet_seed` secret columns, and it owns the `EV_WALLET_KEY_SAVED` /
+`EV_SAPLING_KEY_SAVED` + wallet-projection key-add emission at the write
+site). The same gate ratchets that the plaintext model saves never return.
 
 | Model | before_save | after_save |
 |-------|-------------|------------|
-| wallet_key | Log if `ZCL_WALLET_PASSPHRASE` set (keystore owns at-rest wrap) | Emit `EV_WALLET_KEY_SAVED` (`EV_SAPLING_KEY_SAVED` for sapling rows) |
 | utxo | Validate money range + script coherence | Update UTXO commitment cache |
 | block | Validate hash matches header | Emit `EV_BLOCK_SAVED` |
 | wallet_tx | Validate txid format | Emit `EV_WALLET_TX_SAVED` |

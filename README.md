@@ -253,18 +253,19 @@ build/bin/zclassic23 dumpstate sandbox      # per-thread coverage
 **No subprocess execution.** Zero `system()` and `popen()` in shipped
 app/lib/config code, enforced by a lint gate rather than convention.
 
-**⚠ Wallet key encryption is incomplete — read this before storing value.**
-The keystore file path wraps keys in AES-256-GCM (PBKDF2-HMAC-SHA512, 200k
-iterations). But `wallet_keys` in `node.db` has a **second writer that persists
-private keys in cleartext**, and it runs at every boot
-(`node_db_sync_wallet_keys`, `config/src/boot_services.c:708` →
-`db_wallet_key_save`, `app/models/src/wallet_key.c:218`). Setting a passphrase
-does **not** change this: the model's before-save hook logs
-`wallet_key.passphrase_set_pending_encryption` and, in its own words, lets
-"the save proceed unencrypted (legacy behaviour) until the keystore wiring
-lands" (`app/models/src/wallet_key.c:55-67`). Treat the datadir as holding
-key material in the clear. This README previously claimed flat
-"AES-256-GCM at rest"; that was wrong, and the full picture is in
+**Wallet key encryption at rest is single-writer.** The keystore file path
+wraps keys in AES-256-GCM (PBKDF2-HMAC-SHA512, 200k iterations), and the
+`wallet_keys` / `wallet_sapling_keys` / `wallet_seed` secret columns in
+`node.db` have exactly one writer — the encryption-aware `wallet_sqlite`
+layer (`lib/wallet/src/wallet_sqlite.c`). The old plaintext mirror
+(`node_db_sync_wallet_keys` → `db_wallet_key_save`) is deleted, and a lint
+gate ratchets that it never returns. With no passphrase set, keys are stored
+as raw 32-byte blobs (Bitcoin-Core unlocked-wallet semantics — the datadir
+must be protected). A boot-time scrub
+(`wallet_sqlite_scrub_plaintext_r`, run from `config/src/boot_services.c`)
+wraps any legacy plaintext secret rows into WKS1 envelopes in place
+whenever a passphrase is configured; it never deletes rows. The full
+picture is in
 [`docs/CUSTODY_MODEL.md`](docs/CUSTODY_MODEL.md).
 
 **Crash recovery is executed, not claimed.** `make test-crash-bootstrap` kill-9s

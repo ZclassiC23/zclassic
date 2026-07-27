@@ -166,6 +166,16 @@ struct zcl_result wallet_sqlite_delete_key_r(struct wallet_sqlite *ws,
  * BEGIN/COMMIT failure. */
 struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
                                         struct wallet *w);
+/* One-time migration scrub for datadirs that hold PLAINTEXT secret rows
+ * (written before at-rest encryption was configured, or by the deleted
+ * plaintext mirror writer).  When a passphrase is configured, wraps every
+ * non-envelope blob in wallet_keys.privkey, wallet_sapling_keys.xsk, and
+ * wallet_seed.seed into a WKS1 envelope IN PLACE (byte content preserved;
+ * nothing is deleted).  No-op when no passphrase is set — raw 32-byte
+ * secrets are the legitimate format for an unencrypted wallet.  Runs
+ * inside one BEGIN IMMEDIATE transaction; any failure rolls back and
+ * returns a WSQL_* error.  Idempotent. */
+struct zcl_result wallet_sqlite_scrub_plaintext_r(struct wallet_sqlite *ws);
 /* Return a non-destructive health snapshot: open/canary state, the live
  * SELECT COUNT(*) FROM wallet_keys row_count, the caller-supplied
  * keystore_count, their mismatch flag, and the last recorded error. If

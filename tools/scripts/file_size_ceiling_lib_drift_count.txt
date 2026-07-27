@@ -221,4 +221,18 @@
 # IP) instead of the snapshot-chunk bucket (5k/hr) that starved a
 # single-peer swarm sync mid-download. Both re-baselined in
 # file_size_ceiling_lib_baseline.txt; count unchanged.
+#
+# 2026-07-27 (wf wallet-secret single-writer, plaintext-mirror elimination):
+# wallet_sqlite.c grew 1425 -> 1648 adding wallet_sqlite_scrub_plaintext_r()
+# (the boot STATE-G one-shot in-place WKS1-envelope upgrade of any remaining
+# plaintext wallet_keys/wallet_sapling_keys/wallet_seed rows) plus the
+# wsql_emit_transparent_key_add / wsql_emit_sapling_key_add event+projection
+# feed moved here from the deleted app/models wallet_key save hooks (the
+# model-layer save path that wrote the plaintext mirror is gone; the primary
+# writer is now the only writer). Real defensive growth. Re-baselined in
+# file_size_ceiling_lib_baseline.txt (1648), removing it from the drift list;
+# live count back to 13. Ratchet left at 13. Same task: config/src/boot_services.c
+# shed the deleted boot_wallet()/node_db_sync_wallet_keys() mirror call (-12)
+# and regained exactly those 12 lines for the STATE-G scrub wiring (boot.c had
+# zero baseline headroom) — size unchanged at its 1477 baseline.
 13

@@ -5,9 +5,12 @@
 #include "models/wallet_key.h"
 #include "models/wallet_tx.h"
 
+#include "keys/key.h"
 #include "storage/event_log.h"
 #include "storage/event_log_payloads.h"
 #include "storage/wallet_projection.h"
+#include "support/cleanse.h"
+#include "wallet/wallet_sqlite.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -645,24 +648,35 @@ static int t_model_shadow_emits(void)
     WP_CHECK("model shadow open", ok);
 
     if (ok) {
-        struct db_wallet_key key;
         struct db_wallet_tx tx;
         struct db_wallet_utxo utxo;
         struct db_sapling_note note;
         uint8_t raw_tx[] = {0x01, 0x02, 0x03};
         uint8_t script[] = {0x76, 0xa9, 0x14, 0x88, 0xac};
-        memset(&key, 0, sizeof(key));
         memset(&tx, 0, sizeof(tx));
         memset(&utxo, 0, sizeof(utxo));
         memset(&note, 0, sizeof(note));
 
-        fill_seq(key.pubkey_hash, sizeof(key.pubkey_hash), 0x10);
-        fill_seq(key.pubkey, sizeof(key.pubkey), 0x20);
-        fill_seq(key.privkey, sizeof(key.privkey), 0x30);
-        key.pubkey_len = sizeof(key.pubkey);
-        key.compressed = true;
-        key.created_at = 1770000400;
-        ok = db_wallet_key_save(&ndb, &key);
+        /* Write the key through the single writer — it owns the key-add
+         * projection emit now that the model save hook is gone. */
+        uint8_t key_pkh[20];
+        struct wallet_sqlite ws;
+        ok = wallet_sqlite_open(&ws, ndb.db);
+        struct privkey key;
+        struct pubkey pk;
+        privkey_init(&key);
+        memset(key.vch, 0x30, 32);
+        key.vch[1] = 0x03;
+        key.fValid = true;
+        key.fCompressed = true;
+        ok = ok && privkey_get_pubkey(&key, &pk);
+        ok = ok && wallet_sqlite_write_key(&ws, &pk, &key);
+        {
+            struct key_id kid = pubkey_get_id(&pk);
+            memcpy(key_pkh, kid.id.data, 20);
+        }
+        wallet_sqlite_close(&ws);
+        memory_cleanse(key.vch, 32);
         WP_CHECK("model shadow key save", ok);
 
         fill_seq(tx.txid, sizeof(tx.txid), 0x40);
@@ -680,7 +694,7 @@ static int t_model_shadow_emits(void)
         memcpy(utxo.txid, tx.txid, sizeof(utxo.txid));
         utxo.vout = 1;
         utxo.value = 200;
-        memcpy(utxo.address_hash, key.pubkey_hash, sizeof(utxo.address_hash));
+        memcpy(utxo.address_hash, key_pkh, sizeof(utxo.address_hash));
         utxo.script = script;
         utxo.script_len = sizeof(script);
         utxo.height = 77;

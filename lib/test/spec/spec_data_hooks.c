@@ -10,6 +10,9 @@
 #include "models/wallet_key.h"
 #include "models/database.h"
 #include "event/event.h"
+#include "keys/key.h"
+#include "wallet/sapling_keys.h"
+#include "wallet/wallet_sqlite.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -163,7 +166,7 @@ int spec_data_hooks(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
-    {   printf("wallet_key after_save emits model.wallet_key_saved... ");
+    {   printf("wallet_sqlite key write emits model.wallet_key_saved... ");
         event_log_init();
         event_clear_all_observers();
         g_wk_saved_fired = 0;
@@ -172,26 +175,34 @@ int spec_data_hooks(void)
         event_observe(EV_WALLET_KEY_SAVED, on_wallet_key_saved, NULL);
         event_observe(EV_SAPLING_KEY_SAVED, on_sapling_key_saved, NULL);
 
+        /* The model save hook is gone — the encryption-aware single
+         * writer (wallet_sqlite) owns the key-saved event feed. */
         struct node_db ndb;
         bool ok = node_db_open(&ndb, ":memory:");
-        struct db_wallet_key k;
-        memset(&k, 0, sizeof(k));
-        memset(k.pubkey_hash, 0xA1, 20);
-        memset(k.pubkey, 0xB2, 33);
-        k.pubkey_len = 33;
-        memset(k.privkey, 0xC3, 32);
-        k.compressed = true;
-        k.created_at = 1700000000;
-        ok = ok && db_wallet_key_save(&ndb, &k);
+        struct wallet_sqlite ws;
+        ok = ok && wallet_sqlite_open(&ws, ndb.db);
+        struct privkey key;
+        struct pubkey pk;
+        privkey_init(&key);
+        memset(key.vch, 0xC3, 32);
+        key.vch[1] = 0x3C;              /* keep it a valid scalar */
+        key.fValid = true;
+        key.fCompressed = true;
+        ok = ok && privkey_get_pubkey(&key, &pk);
+        ok = ok && wallet_sqlite_write_key(&ws, &pk, &key);
         ok = ok && g_wk_saved_fired == 1;
         ok = ok && strstr(g_wk_payload, "kind=transparent") != NULL;
         ok = ok && g_sk_saved_fired == 0;
+        /* Rewrite of an existing row must NOT re-emit (once-per-key). */
+        ok = ok && wallet_sqlite_write_key(&ws, &pk, &key);
+        ok = ok && g_wk_saved_fired == 1;
+        wallet_sqlite_close(&ws);
         node_db_close(&ndb);
         event_clear_all_observers();
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
-    {   printf("sapling_key after_save emits both events... ");
+    {   printf("wallet_sqlite sapling write emits both events... ");
         event_log_init();
         event_clear_all_observers();
         g_wk_saved_fired = 0;
@@ -202,18 +213,26 @@ int spec_data_hooks(void)
 
         struct node_db ndb;
         bool ok = node_db_open(&ndb, ":memory:");
-        struct db_sapling_key sk;
+        struct wallet_sqlite ws;
+        ok = ok && wallet_sqlite_open(&ws, ndb.db);
+        struct sapling_key_entry sk;
         memset(&sk, 0, sizeof(sk));
         memset(sk.ivk, 0xA1, 32);
-        memset(sk.xsk, 0xB2, 169);
-        memset(sk.xfvk, 0xC3, 169);
+        memset(&sk.xsk, 0xB2, sizeof(sk.xsk));
+        memset(&sk.xfvk, 0xC3, sizeof(sk.xfvk));
         memset(sk.diversifier, 0xD4, 11);
         memset(sk.pk_d, 0xE5, 32);
-        snprintf(sk.address, sizeof(sk.address), "zs1test");
-        ok = ok && db_sapling_key_save(&ndb, &sk);
+        sk.child_index = 0;
+        sk.used = true;
+        ok = ok && wallet_sqlite_write_sapling_key(&ws, 0, &sk);
         ok = ok && g_wk_saved_fired == 1;
         ok = ok && strstr(g_wk_payload, "kind=sapling") != NULL;
         ok = ok && g_sk_saved_fired == 1;
+        /* Rewrite of an existing row must NOT re-emit. */
+        ok = ok && wallet_sqlite_write_sapling_key(&ws, 0, &sk);
+        ok = ok && g_wk_saved_fired == 1;
+        ok = ok && g_sk_saved_fired == 1;
+        wallet_sqlite_close(&ws);
         node_db_close(&ndb);
         event_clear_all_observers();
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }

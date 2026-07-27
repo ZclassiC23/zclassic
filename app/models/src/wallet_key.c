@@ -15,149 +15,28 @@
  * validates :xsk, :xfvk, :diversifier, :pk_d, presence: true
  * validates :address, string_present: true */
 
-#include "platform/time_compat.h"
 #include "util/log_macros.h"
-#include "encoding/utilstrencodings.h"
 #include "models/wallet_key.h"
 #include "models/wallet_tx.h"
-#include "keys/key.h"
-#include "keys/key_io.h"
-#include "keys/pubkey.h"
-#include "chain/chainparams.h"
-#include "script/standard.h"
-#include "storage/event_log_payloads.h"
-#include "storage/wallet_projection.h"
 #include "support/cleanse.h"
 #include "util/result.h"
-#include "event/event.h"
-#include "util/log_json.h"
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
 #include "util/safe_alloc.h"
 
-/* WSQL_* error codes used by the rich-error save. */
-#include "wallet/wallet_sqlite.h"
-
-/* ── Callbacks ─────────────────────────────────────────────────── */
+/* ── Callbacks ─────────────────────────────────────────────────── *
+ * The wallet_key/sapling_key before/after_save hooks are gone with the
+ * model save functions: node.db's secret columns have a single writer —
+ * the encryption-aware wallet_sqlite layer — which owns the
+ * EV_WALLET_KEY_SAVED / EV_SAPLING_KEY_SAVED and wallet-projection
+ * key-add emission (see lib/wallet/src/wallet_sqlite.c). The callback
+ * registries stay: db_wallet_key_delete and db_wallet_script_save still
+ * run the AR destroy/save lifecycle. */
 
 DEFINE_MODEL_CALLBACKS(wallet_key)
 DEFINE_MODEL_CALLBACKS(sapling_key)
 DEFINE_MODEL_CALLBACKS(wallet_script)
-DEFINE_MODEL_CALLBACKS(wallet_seed)
-
-struct db_wallet_seed_row {
-    uint8_t seed[32];
-    uint32_t next_child;
-};
-
-static bool wallet_key_before_save(void *record, void *ctx)
-{
-    (void)record;
-    (void)ctx;
-    /* If the operator set a passphrase, the keystore-at-rest path is
-     * the right place to wrap the privkey before persistence.  This
-     * model does not own that crypto; signal that wrapping is pending
-     * via a structured log line and let the save proceed unencrypted
-     * (legacy behaviour) until the keystore wiring lands. */
-    if (getenv("ZCL_WALLET_PASSPHRASE"))
-        log_jsonf(LOG_JSON_WARN, "wallet_key.passphrase_set_pending_encryption",
-                  "\"model\":\"wallet_key\"");
-    return true;
-}
-
-static void wallet_key_after_save(void *record, void *ctx)
-{
-    (void)ctx;
-    const struct db_wallet_key *k = record;
-    char addr_hex[41];
-    char address[EV_WALLET_ADDRESS_MAX + 1];
-    HexStr(k->pubkey_hash, 20, false, addr_hex, sizeof(addr_hex));
-    event_emitf(EV_WALLET_KEY_SAVED, 0,
-                "kind=transparent addr_hash=%s", addr_hex);
-
-    memset(address, 0, sizeof(address));
-    const struct chain_params *cp = chain_params_get();
-    if (cp) {
-        size_t pk_pfx_len = 0;
-        size_t sc_pfx_len = 0;
-        const unsigned char *pk_pfx = chain_params_base58_prefix(
-            cp, B58_PUBKEY_ADDRESS, &pk_pfx_len);
-        const unsigned char *sc_pfx = chain_params_base58_prefix(
-            cp, B58_SCRIPT_ADDRESS, &sc_pfx_len);
-        struct tx_destination dest;
-        memset(&dest, 0, sizeof(dest));
-        dest.type = DEST_KEY_ID;
-        memcpy(dest.id.key.id.data, k->pubkey_hash, 20);
-        (void)encode_destination(&dest, pk_pfx, pk_pfx_len,
-                                 sc_pfx, sc_pfx_len,
-                                 address, sizeof(address));
-    }
-
-    if (!wallet_projection_emit_key_add(k->pubkey_hash, address, "",
-            (uint32_t)k->created_at)) {
-        LOG_WARN("wallet_projection", "[wallet_projection] key add projection emit failed");
-    }
-}
-
-static void wallet_key_init_hooks(void)
-{
-    static bool done = false;
-    if (done) return;
-    struct ar_callbacks *cbs = db_wallet_key_callbacks();
-    ar_register_before_save(cbs, wallet_key_before_save);
-    ar_register_after_save(cbs, wallet_key_after_save);
-    done = true;
-}
-
-static bool sapling_key_before_save(void *record, void *ctx)
-{
-    (void)record;
-    (void)ctx;
-    if (getenv("ZCL_WALLET_PASSPHRASE"))
-        log_jsonf(LOG_JSON_WARN, "wallet_key.passphrase_set_pending_encryption",
-                  "\"model\":\"sapling_key\"");
-    return true;
-}
-
-static void sapling_key_after_save(void *record, void *ctx)
-{
-    (void)ctx;
-    const struct db_sapling_key *k = record;
-    char fvk_hex[33];
-    HexStr(k->xfvk, 16, false, fvk_hex, sizeof(fvk_hex));
-    char addr_hex[33];
-    HexStr(k->ivk, 16, false, addr_hex, sizeof(addr_hex));
-    event_emitf(EV_WALLET_KEY_SAVED, 0,
-                "kind=sapling addr_hash=%s", addr_hex);
-    event_emitf(EV_SAPLING_KEY_SAVED, 0, "fvk_hash=%s", fvk_hex);
-}
-
-static void sapling_key_init_hooks(void)
-{
-    static bool done = false;
-    if (done) return;
-    struct ar_callbacks *cbs = db_sapling_key_callbacks();
-    ar_register_before_save(cbs, sapling_key_before_save);
-    ar_register_after_save(cbs, sapling_key_after_save);
-    done = true;
-}
-
-/* Test-only: re-arm the wallet_key AND sapling_key model hooks after a group
- * cleared the shared callback structs via ar_callbacks_init() (test_activerecord
- * does this to silence emits, leaving them wiped for later groups). Mirrors the
- * init_hooks pair but bypasses their one-shot `done` guards. */
-void wallet_key_reset_hooks_for_testing(void)
-{
-    struct ar_callbacks *wk = db_wallet_key_callbacks();
-    ar_callbacks_init(wk);
-    ar_register_before_save(wk, wallet_key_before_save);
-    ar_register_after_save(wk, wallet_key_after_save);
-    struct ar_callbacks *sk = db_sapling_key_callbacks();
-    ar_callbacks_init(sk);
-    ar_register_before_save(sk, sapling_key_before_save);
-    ar_register_after_save(sk, sapling_key_after_save);
-}
 
 /* ── Validation ────────────────────────────────────────────────── */
 
@@ -205,38 +84,10 @@ bool db_wallet_script_validate(const struct db_wallet_script *sc,
     return !ar_errors_any(errors);
 }
 
-static bool db_wallet_seed_validate(const struct db_wallet_seed_row *row,
-                                    struct ar_errors *errors)
-{
-    ar_errors_clear(errors);
-    validates_presence_of(errors, row, seed);
-    return !ar_errors_any(errors);
-}
-
-/* ── WalletKey CRUD ───────────────────────────────────────────── */
-
-bool db_wallet_key_save(struct node_db *ndb, const struct db_wallet_key *k)
-{
-    if (!ndb->open) return false;
-    if (k->created_at == 0)
-        ((struct db_wallet_key *)k)->created_at = (int64_t)platform_time_wall_time_t();
-
-    wallet_key_init_hooks();
-    struct ar_callbacks *cbs = db_wallet_key_callbacks();
-    sqlite3_stmt *s = NULL;
-    AR_ADHOC_SAVE(ndb, s,
-        "INSERT OR REPLACE INTO wallet_keys"
-        "(pubkey_hash,pubkey,privkey,compressed,created_at)"
-        " VALUES(?,?,?,?,?)",
-        cbs, "wallet_key", k, db_wallet_key_validate,
-        AR_BIND_BLOB(s, 1, k->pubkey_hash, 20);
-        AR_BIND_BLOB(s, 2, k->pubkey, (int)k->pubkey_len);
-        AR_BIND_BLOB(s, 3, k->privkey, 32);
-        AR_BIND_INT(s, 4, k->compressed ? 1 : 0);
-        AR_BIND_INT(s, 5, k->created_at));
-}
-
-
+/* ── WalletKey CRUD ───────────────────────────────────────────── *
+ * There is no db_wallet_key_save: the wallet_keys secret column has a
+ * single writer, the encryption-aware wallet_sqlite layer. This model
+ * keeps the read/destroy side for diagnostics and the vault. */
 bool db_wallet_key_find(struct node_db *ndb, const uint8_t pubkey_hash[20],
                         struct db_wallet_key *out)
 {
@@ -343,27 +194,10 @@ int db_wallet_key_each(struct node_db *ndb, wallet_key_cb cb, void *ctx)
     return count;
 }
 
-/* ── SaplingKey CRUD ──────────────────────────────────────────── */
-
-bool db_sapling_key_save(struct node_db *ndb, const struct db_sapling_key *k)
-{
-    if (!ndb->open) return false;
-    sapling_key_init_hooks();
-    struct ar_callbacks *cbs = db_sapling_key_callbacks();
-    sqlite3_stmt *s = NULL;
-    AR_ADHOC_SAVE(ndb, s,
-        "INSERT OR REPLACE INTO wallet_sapling_keys"
-        "(ivk,xsk,xfvk,diversifier,pk_d,child_index,address)"
-        " VALUES(?,?,?,?,?,?,?)",
-        cbs, "sapling_key", k, db_sapling_key_validate,
-        AR_BIND_BLOB(s, 1, k->ivk, 32);
-        AR_BIND_BLOB(s, 2, k->xsk, 169);
-        AR_BIND_BLOB(s, 3, k->xfvk, 169);
-        AR_BIND_BLOB(s, 4, k->diversifier, 11);
-        AR_BIND_BLOB(s, 5, k->pk_d, 32);
-        AR_BIND_INT(s, 6, (int)k->child_index);
-        AR_BIND_TEXT(s, 7, k->address));
-}
+/* ── SaplingKey CRUD ──────────────────────────────────────────── *
+ * There is no db_sapling_key_save: the wallet_sapling_keys secret
+ * column has a single writer, the encryption-aware wallet_sqlite
+ * layer. This model keeps the read side for diagnostics. */
 
 /* ── SaplingKey Row Deserialization ────────────────────────────── */
 
@@ -393,45 +227,15 @@ bool db_sapling_key_find_by_ivk(struct node_db *ndb, const uint8_t ivk[32],
             row_to_sapling_key(s, 0, out));
 }
 
-bool db_sapling_key_find_by_address(struct node_db *ndb, const char *address,
-                                    struct db_sapling_key *out)
-{
-    if (!ndb->open) return false;
-    sqlite3_stmt *s = NULL;
-    AR_QUERY_ONE_BOOL(ndb, s,
-        "SELECT ivk,xsk,xfvk,diversifier,pk_d,child_index,address"
-        " FROM wallet_sapling_keys WHERE address=?",
-        AR_BIND_TEXT(s, 1, address),
-        row_to_sapling_key(s, 0, out));
-}
-
 int db_sapling_key_count(struct node_db *ndb)
 {
     if (!ndb->open) return 0;
     AR_QUERY_COUNT_SQL(ndb, "SELECT COUNT(*) FROM wallet_sapling_keys");
 }
 
-/* ── Wallet Seed ──────────────────────────────────────────────── */
-
-bool db_wallet_seed_save(struct node_db *ndb, const uint8_t seed[32],
-                         uint32_t next_child)
-{
-    if (!ndb->open) return false;
-    struct db_wallet_seed_row row;
-    memset(&row, 0, sizeof(row));
-    if (seed)
-        memcpy(row.seed, seed, sizeof(row.seed));
-    row.next_child = next_child;
-
-    sqlite3_stmt *s = NULL;
-    AR_ADHOC_SAVE(ndb, s,
-        "INSERT OR REPLACE INTO wallet_seed(id,seed,next_child)"
-        " VALUES(1,?,?)",
-        db_wallet_seed_callbacks(), "wallet_seed", &row,
-        db_wallet_seed_validate,
-        AR_BIND_BLOB(s, 1, row.seed, 32);
-        AR_BIND_INT(s, 2, (int)row.next_child));
-}
+/* ── Wallet Seed ──────────────────────────────────────────────── *
+ * There is no db_wallet_seed_save: wallet_seed has a single writer,
+ * the encryption-aware wallet_sqlite layer. The read side stays. */
 
 bool db_wallet_seed_load(struct node_db *ndb, uint8_t seed[32],
                          uint32_t *next_child)

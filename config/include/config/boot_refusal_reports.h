@@ -50,6 +50,12 @@ void boot_report_wallet_keystore_count_mismatch(const char *datadir,
                                                 long long wallet_key_rows,
                                                 size_t loaded_keys);
 
+/* BOOT_WALLET_PLAINTEXT_SCRUB_FAILED — STATE G: wrapping legacy plaintext
+ * secret rows into WKS1 envelopes failed, so an encrypted wallet would
+ * keep plaintext key material at rest. */
+void boot_report_wallet_scrub_failed(const char *datadir,
+                                     const struct zcl_result *scrub_result);
+
 #ifdef __cplusplus
 }
 #endif

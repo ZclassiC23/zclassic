@@ -165,3 +165,32 @@ void boot_report_wallet_keystore_count_mismatch(const char *datadir,
                       "source=config/src/boot.c recovery_doc=%s",
                       wallet_key_rows, loaded_keys, WALLET_RECOVERY_DOC);
 }
+
+void boot_report_wallet_scrub_failed(const char *datadir,
+                                     const struct zcl_result *scrub_result)
+{
+    const char *dd = datadir && datadir[0] ? datadir : "(unset)";
+    char cp[1200];
+    rescue_copy_command(dd, cp, sizeof(cp));
+    const struct boot_error_next next[] = {
+        { cp, "copy the whole data directory BEFORE anything else — the "
+              "scrub failed mid-upgrade and the on-disk rows are the only "
+              "copy of those keys" },
+    };
+    boot_error_report(BOOT_ERROR_FATAL,
+                      "BOOT_WALLET_PLAINTEXT_SCRUB_FAILED", WALLET_PHASE,
+                      "wrapping legacy plaintext secret rows into WKS1 "
+                      "envelopes failed — refusing to proceed, because "
+                      "continuing would leave plaintext key material at "
+                      "rest on an encrypted wallet",
+                      next, 1,
+                      "scrub_code=%d scrub_message=%s source=%s:%d "
+                      "recovery_doc=%s",
+                      scrub_result ? scrub_result->code : 0,
+                      scrub_result && scrub_result->message[0]
+                          ? scrub_result->message : "(no message)",
+                      scrub_result && scrub_result->source_file
+                          ? scrub_result->source_file : "?",
+                      scrub_result ? scrub_result->source_line : 0,
+                      WALLET_RECOVERY_DOC);
+}

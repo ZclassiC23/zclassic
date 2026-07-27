@@ -94,26 +94,32 @@ there is nothing to lock.
 plaintext wallet still loads with a warning" is accurate for the
 `wallet_sqlite` path, which is the path the wallet itself uses.
 
-**It is not the whole truth, because `wallet_keys` has a second writer.**
-`app/models/src/wallet_key.c:218-238` (`db_wallet_key_save`) writes
-`privkey` as a raw 32-byte bind, and its `before_save` hook explicitly declines
-to encrypt — with a passphrase set it emits
-`wallet_key.passphrase_set_pending_encryption` and proceeds
-(`wallet_key.c:54-67`, and `:113-121` for the Sapling equivalent). That writer
-is live: `node_db_sync_wallet_keys` calls it at every boot
-(`config/src/boot_services.c:708`), after a legacy import
-(`app/services/src/legacy_import_service.c:595`), after a snapshot import
-(`app/controllers/src/snapshot_controller_import.c:610`), and from the
-`reindexdb` RPC (`app/controllers/src/wallet_diagnostic_repair.c:134`).
+**It is now the whole truth: `wallet_keys` has a single writer.** The former
+second writer — `db_wallet_key_save` / `db_sapling_key_save` /
+`db_wallet_seed_save` in `app/models/src/wallet_key.c`, driven by
+`node_db_sync_wallet_keys` at every boot, after legacy/snapshot imports, and
+from the `reindexdb` RPC — is deleted. The `wallet_sqlite` layer
+(`lib/wallet/src/wallet_sqlite.c`) is the only writer of the `wallet_keys` /
+`wallet_sapling_keys` / `wallet_seed` secret columns, the
+`check-before-save-hooks` lint gate ratchets that the plaintext saves never
+return, and the key-saved event / wallet-projection feed moved into that
+writer (emitted once per new row). `reindexdb` now repairs through the
+encryption-aware `wallet_sqlite_flush_r`.
 
-It is narrow in practice — it skips keys that already have a row
-(`sync_controller_persistence.c:70`) and returns early when the DB already
-holds at least as many keys as RAM (`:54-56`) — so it writes only keys the
-`wallet_sqlite` flush has not yet persisted. But the honest statement is: **a
-wallet with a passphrase set can end up with plaintext key rows on disk, and
-nothing in the system reports which rows are which.** Neither
-`getwalletinfo.persistence` nor any dumper counts enveloped-vs-plaintext rows.
-This is the largest open gap in the model (§8).
+**Legacy plaintext rows are scrubbed at boot.** Datadirs written before this
+change may still hold plaintext secret rows. After wallet load (and after
+the STATE F keystore-count invariant), boot runs
+`wallet_sqlite_scrub_plaintext_r`: when a passphrase is configured, every
+non-envelope blob in the three secret columns is wrapped into a WKS1
+envelope **in place** — byte content preserved, nothing deleted, so a row
+the in-memory wallet never loaded is upgraded rather than destroyed. With
+no passphrase configured the scrub is a no-op (raw 32-byte rows are the
+legitimate format for an unencrypted wallet). A scrub SQL/encrypt failure
+aborts the boot loudly instead of leaving plaintext at rest silently.
+
+One residual blind spot remains: neither `getwalletinfo.persistence` nor any
+dumper counts enveloped-vs-plaintext rows, so an operator cannot ask the node
+which rows are which (§8).
 
 ---
 
@@ -229,12 +235,11 @@ was debited, so the exemption is stated rather than inferred from an absence.
 
 ## 8. Known gaps
 
-1. **Mixed at-rest state is possible and invisible.** `db_wallet_key_save` /
-   `db_sapling_key_save` write cleartext key material with a passphrase set
-   (§3). Nothing counts enveloped-vs-plaintext rows, so an operator cannot
-   tell. Closing this needs the second writer routed through the same envelope
-   the `wallet_sqlite` path uses, plus a count surfaced on
-   `getwalletinfo.persistence`.
+1. **At-rest state is single-writer but not yet observable.** The plaintext
+   second writer is deleted (§3) and the boot scrub upgrades legacy plaintext
+   rows, but nothing counts enveloped-vs-plaintext rows, so an operator
+   cannot ask the node to prove the scrub ran clean. Closing this needs a
+   count surfaced on `getwalletinfo.persistence`.
 2. **The secret denylist is hand-maintained.** A future table with a
    spend-authorizing column is readable through `core storage query` until
    someone remembers to list it. There is no mechanism tying `SECRET_TABLES`

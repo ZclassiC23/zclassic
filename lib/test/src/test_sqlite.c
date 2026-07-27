@@ -12,6 +12,8 @@
 #include "config/runtime.h"
 #include "services/chain_evidence_persistence_service.h"
 #include "wallet/wallet.h"
+#include "wallet/wallet_sqlite.h"
+#include "support/cleanse.h"
 #include "script/standard.h"
 #include "coins/coins_view.h"
 #include "validation/chainstate.h"
@@ -21,6 +23,33 @@
 #include <pthread.h>
 #include <time.h>
 #include <unistd.h>
+
+/* Write one wallet_keys row through the encryption-aware single writer
+ * (the model save functions are gone — wallet_sqlite owns the secret
+ * columns). Returns the row's derived pubkey_hash in kid_out. */
+static bool sqlite_test_write_wallet_key(struct node_db *ndb, uint8_t seed,
+                                         uint8_t kid_out[20])
+{
+    struct wallet_sqlite ws;
+    if (!wallet_sqlite_open(&ws, ndb->db))
+        return false;
+    struct privkey key;
+    struct pubkey pk;
+    privkey_init(&key);
+    memset(key.vch, seed, 32);
+    key.vch[1] = (uint8_t)(seed ^ 0xAA);
+    key.fValid = true;
+    key.fCompressed = true;
+    bool ok = privkey_get_pubkey(&key, &pk) &&
+              wallet_sqlite_write_key(&ws, &pk, &key);
+    if (ok) {
+        struct key_id kid = pubkey_get_id(&pk);
+        memcpy(kid_out, kid.id.data, 20);
+    }
+    wallet_sqlite_close(&ws);
+    memory_cleanse(key.vch, 32);
+    return ok;
+}
 
 static struct transaction make_sync_test_tx(void)
 {
@@ -1157,28 +1186,21 @@ int test_sqlite(void) {
 
     /* DB wallet key CRUD */
     {
-        printf("SQLite wallet key save/find... ");
+        printf("SQLite wallet key write/find... ");
         struct node_db ndb;
         bool ok = node_db_open(&ndb, ":memory:");
 
-        struct db_wallet_key k;
-        memset(&k, 0, sizeof(k));
-        memset(k.pubkey_hash, 0x11, 20);
-        memset(k.pubkey, 0x02, 33);
-        k.pubkey_len = 33;
-        memset(k.privkey, 0xFF, 32);
-        k.compressed = true;
-        k.created_at = 1700000000;
-
-        ok = ok && db_wallet_key_save(&ndb, &k);
-        ok = ok && db_wallet_key_exists(&ndb, k.pubkey_hash);
+        /* Insert via the single writer (model save is gone) */
+        uint8_t key_pkh[20];
+        ok = ok && sqlite_test_write_wallet_key(&ndb, 0x11, key_pkh);
+        ok = ok && db_wallet_key_exists(&ndb, key_pkh);
         ok = ok && (db_wallet_key_count(&ndb) == 1);
 
         struct db_wallet_key found;
-        ok = ok && db_wallet_key_find(&ndb, k.pubkey_hash, &found);
+        ok = ok && db_wallet_key_find(&ndb, key_pkh, &found);
         ok = ok && found.compressed;
         ok = ok && (found.pubkey_len == 33);
-        ok = ok && (memcmp(found.privkey, k.privkey, 32) == 0);
+        ok = ok && (memcmp(found.pubkey_hash, key_pkh, 20) == 0);
 
         node_db_close(&ndb);
         if (ok) printf("OK\n");
@@ -1621,31 +1643,30 @@ int test_sqlite(void) {
 
     /* DB sapling key CRUD */
     {
-        printf("SQLite Sapling key save/find... ");
+        printf("SQLite Sapling key write/find... ");
         struct node_db ndb;
         bool ok = node_db_open(&ndb, ":memory:");
 
-        struct db_sapling_key k;
-        memset(&k, 0, sizeof(k));
-        memset(k.ivk, 0x11, 32);
-        memset(k.xsk, 0x22, 169);
-        memset(k.xfvk, 0x33, 169);
-        memset(k.diversifier, 0x44, 11);
-        memset(k.pk_d, 0x55, 32);
-        k.child_index = 0;
-        snprintf(k.address, sizeof(k.address), "zs1testaddr");
-
-        ok = ok && db_sapling_key_save(&ndb, &k);
+        /* Insert via the single writer (model save is gone) */
+        struct wallet_sqlite ws;
+        ok = ok && wallet_sqlite_open(&ws, ndb.db);
+        struct sapling_key_entry e;
+        memset(&e, 0, sizeof(e));
+        memset(e.ivk, 0x11, 32);
+        memset(&e.xsk, 0x22, sizeof(e.xsk));
+        memset(&e.xfvk, 0x33, sizeof(e.xfvk));
+        memset(e.diversifier, 0x44, 11);
+        memset(e.pk_d, 0x55, 32);
+        e.child_index = 0;
+        e.used = true;
+        ok = ok && wallet_sqlite_write_sapling_key(&ws, 0, &e);
         ok = ok && (db_sapling_key_count(&ndb) == 1);
 
         struct db_sapling_key found;
-        ok = ok && db_sapling_key_find_by_ivk(&ndb, k.ivk, &found);
+        ok = ok && db_sapling_key_find_by_ivk(&ndb, e.ivk, &found);
         ok = ok && (found.child_index == 0);
-        ok = ok && (strcmp(found.address, "zs1testaddr") == 0);
 
-        ok = ok && db_sapling_key_find_by_address(&ndb, "zs1testaddr", &found);
-        ok = ok && (memcmp(found.ivk, k.ivk, 32) == 0);
-
+        wallet_sqlite_close(&ws);
         node_db_close(&ndb);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -1653,25 +1674,44 @@ int test_sqlite(void) {
 
     /* DB wallet seed singleton */
     {
-        printf("SQLite wallet seed save/load... ");
+        printf("SQLite wallet seed write/load... ");
         struct node_db ndb;
         bool ok = node_db_open(&ndb, ":memory:");
 
+        struct wallet_sqlite ws;
+        ok = ok && wallet_sqlite_open(&ws, ndb.db);
+
         uint8_t seed[32];
         memset(seed, 0xAB, 32);
-        ok = ok && db_wallet_seed_save(&ndb, seed, 5);
+        ok = ok && wallet_sqlite_write_sapling_seed(&ws, seed);
 
+        /* Decrypting reader round-trips the seed bytes. */
         uint8_t loaded[32];
-        uint32_t next = 0;
-        ok = ok && db_wallet_seed_load(&ndb, loaded, &next);
+        ok = ok && wallet_sqlite_read_sapling_seed(&ws, loaded);
         ok = ok && (memcmp(loaded, seed, 32) == 0);
+
+        /* next_child starts at 0 and advances as keys are written. */
+        uint32_t next = 99;
+        uint8_t raw[32];
+        ok = ok && db_wallet_seed_load(&ndb, raw, &next);
+        ok = ok && (next == 0);
+
+        struct sapling_key_entry e;
+        memset(&e, 0, sizeof(e));
+        memset(e.ivk, 0x77, 32);
+        e.child_index = 4;
+        e.used = true;
+        ok = ok && wallet_sqlite_write_sapling_key(&ws, 4, &e);
+        ok = ok && db_wallet_seed_load(&ndb, raw, &next);
         ok = ok && (next == 5);
 
-        /* Update */
-        ok = ok && db_wallet_seed_save(&ndb, seed, 10);
-        ok = ok && db_wallet_seed_load(&ndb, loaded, &next);
+        memset(e.ivk, 0x88, 32);
+        e.child_index = 9;
+        ok = ok && wallet_sqlite_write_sapling_key(&ws, 9, &e);
+        ok = ok && db_wallet_seed_load(&ndb, raw, &next);
         ok = ok && (next == 10);
 
+        wallet_sqlite_close(&ws);
         node_db_close(&ndb);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
