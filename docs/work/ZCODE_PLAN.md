@@ -50,7 +50,7 @@ JSON (JSON is display-only).
        verify-before-store, dedup, atomic rename, crash recovery, never evict pins,
        no credit for unverified bytes, quota enforced before accepting; 64 MiB per-package v1 cap)
 3. [x] Package publication and local search
-4. [ ] Contributor identity + ZNAM pointers
+4. [x] Contributor identity + ZNAM pointers
 5. [ ] Declarative C23 build recipe (bounded: public_headers/sources/test_sources/include_dirs/
        defines/allowed system libs = libc,libm,pthread/expected exit/max seconds/max bytes;
        node never compiles or executes downloaded code)

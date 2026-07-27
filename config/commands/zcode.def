@@ -119,3 +119,77 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_package_show)
+
+/* ── slice 4: contributor identity + ZNAM pointers ─────────────────────
+ * The secp256k1 publisher key is the only authoritative identity; ZNAM
+ * records are mutable pointers resolved through the canonical ZNAM model
+ * and bound only when the name owner equals the publisher key's P2PKH. */
+
+ZCL_COMMAND_BRANCH("zcode.contributor", "zcode",
+                   "Contributors: secp256k1 publisher-key identities",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.contributor.show", "zcode.contributor", "",
+    "Contributor profile for one publisher pubkey",
+    "The profile for one 66-hex publisher key, projected at call time: the "
+    "authoritative release facts (count, latest release, reward address — "
+    "from the signed envelopes via the rebuilt package index), a bounded "
+    "package_roots page (16, package_roots_truncated flags the rest), and "
+    "the ZNAM publisher-profile pointer when one claims this key, with its "
+    "binding proof (bound only when the name owner equals the key's "
+    "P2PKH). has_published=false means the key has no release in the local "
+    "store; the ZNAM section is always labelled a pointer, never identity.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,contributor,show,profile,publisher,identity,znam",
+    "zcl.zcode_contributor_show.input.v1",
+    "zcl.zcode_contributor_show.v1", "pubkey,datadir", "pubkey",
+    "zclassic23 zcode contributor show --input='{\"pubkey\":\"<66hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_contributor_show)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.contributor.packages", "zcode.contributor", "",
+    "Published releases of one contributor key",
+    "One row per release signed by the given 66-hex publisher key, from "
+    "the rebuilt package index at call time: name, semver, license, "
+    "sequence, release id, package root, bytes. Bounded at 16 rows with "
+    "total_matches and items_truncated; an empty list means the key has "
+    "not published here, not that the check was skipped.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,contributor,packages,releases,publisher,list",
+    "zcl.zcode_contributor_packages.input.v1",
+    "zcl.zcode_contributor_packages.v1", "pubkey,datadir", "pubkey",
+    "zclassic23 zcode contributor packages --input='{\"pubkey\":\"<66hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_contributor_packages)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.package.resolve", "zcode.package", "",
+    "Resolve a ZNAM package name to its release",
+    "Resolves a ZNAM name carrying a package pointer (zcode:kind=package) "
+    "to the signed release it names, at call time. The output keeps the "
+    "two kinds of fact apart: `pointer` (the mutable ZNAM record claims, "
+    "with the binding proof) and `identity` (the authoritative signed-"
+    "release facts, with matches_pointer_root/publisher cross-checks). "
+    "Rejections name the rule: UNKNOWN_NAME, NOT_A_ZCODE_POINTER, "
+    "WRONG_POINTER_KIND, POINTER_NOT_BOUND (owner is not the claimed "
+    "key), BAD_POINTER_ROOT, RELEASE_NOT_HOSTED.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,package,resolve,znam,pointer,name,identity",
+    "zcl.zcode_package_resolve.input.v1",
+    "zcl.zcode_package_resolve.v1", "name,datadir", "name",
+    "zclassic23 zcode package resolve --input='{\"name\":\"ringbuffer\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_package_resolve)

@@ -303,6 +303,19 @@ void zcl_native_handle_zcode_package_show(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* zcode slice 4 — contributor identity + ZNAM pointers. The publisher key
+ * is the only identity; ZNAM records resolve through the canonical model
+ * with an explicit binding proof. Bound by config/commands/zcode.def. */
+void zcl_native_handle_zcode_contributor_show(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_contributor_packages(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_package_resolve(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* ops.state — generic subsystem state dump. Dispatches the `dumpstate` RPC
  * method directly. `subsystem` (required) selects the
  * owning module's *_dump_state_json; `key` is subsystem-specific (e.g. a
