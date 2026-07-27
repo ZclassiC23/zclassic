@@ -322,6 +322,7 @@ int test_invalidateblock(void);
 int test_most_work_selector(void);
 int test_reorg_parity(void);
 int test_stage_reorg_unwind_parity(void);
+int test_coins_wipe_rebuild_reorg(void);
 int test_coins_applied_frontier(void);
 int test_utxo_apply_value_balance(void);
 int test_utxo_apply_unspendable(void);

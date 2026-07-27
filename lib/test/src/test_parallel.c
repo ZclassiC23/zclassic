@@ -181,6 +181,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(no_hardcoded_home) X(cookie_rotation) X(cli_auth_robust) X(cli_argv_strict) \
     X(reorg_safety) X(reorg_parity) \
     X(stage_reorg_unwind_parity) \
+    X(coins_wipe_rebuild_reorg) \
     X(coins_applied_frontier) \
     X(utxo_apply_value_balance) X(utxo_apply_unspendable) \
     X(utxo_apply_coinbase_maturity) \

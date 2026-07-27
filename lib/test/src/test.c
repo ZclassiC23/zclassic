@@ -1296,6 +1296,7 @@ int main(int argc, char **argv)
     failures += test_most_work_selector();
     failures += test_reorg_parity();
     failures += test_stage_reorg_unwind_parity();
+    failures += test_coins_wipe_rebuild_reorg();
     failures += test_utxo_apply_value_balance();
     failures += test_utxo_apply_unspendable();
     failures += test_coins_applied_frontier();
