@@ -146,9 +146,36 @@ struct sapling_rebuild_skip_tally {
     char classes[64];   /* comma-separated names of the non-zero classes */
 };
 
+/* fail_reason for the header-only pre-flight refusal below. Classified exactly
+ * like a root mismatch over tolerated skips: a body-availability DEPENDENCY. */
+#define SAPLING_REBUILD_REASON_REPLAY_IMPOSSIBLE \
+    "replay_impossible_bodies_absent_below_first_foldable_body"
+
 void sapling_tree_rebuild_raise_fail_blocker(
         const char *fail_reason, int fail_height, int total_commitments,
         int mismatches, const struct sapling_rebuild_skip_tally *skips);
+
+/* Findings of the pre-flight below: the first foldable height (-1 when there is
+ * none in range), the last height of the absent run, and that run's per-class
+ * counts. Only written when the pre-flight returns true. */
+struct sapling_rebuild_impossible {
+    int first_body_h;
+    int gap_last_h;
+    int no_index;
+    int no_data;
+};
+
+/* Pre-flight: true when the replay from `start_tree` at `start_height` is
+ * PROVABLY unable to reproduce a header-committed root, proven from headers
+ * alone before any block is read (and logged at that point). False whenever the
+ * proof does not hold — no absent run, no committed root to prove against, or
+ * an absent run that carried no commitments — so a recoverable walk always
+ * still runs. */
+bool sapling_rebuild_replay_is_impossible(
+        const struct active_chain *chain,
+        const struct incremental_merkle_tree *start_tree,
+        int start_height, int chain_tip,
+        struct sapling_rebuild_impossible *out);
 
 /* Count + name one block the replay could not fold. Returns true when the
  * caller MUST fail-closed (the coins-applied endpoint). */

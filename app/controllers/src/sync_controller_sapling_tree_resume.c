@@ -34,6 +34,98 @@ bool sapling_rebuild_header_root_known(const struct block_index *bi)
     return bi && memcmp(bi->hashFinalSaplingRoot.data, zeros32, 32) != 0;
 }
 
+/* Pre-flight: prove from HEADERS ALONE that the replay about to run cannot
+ * reproduce a header-committed root, before walking a single block.
+ *
+ * The shape this exists for is a snapshot-seeded datadir. Bodies below the seed
+ * height were never downloaded, so `start_height` opens onto a run of heights
+ * whose block index carries no BLOCK_HAVE_DATA. The replay loop tolerates each
+ * of those as a skip (header-tip endpoint), folds nothing, and then reports the
+ * first Sapling-commitment block ABOVE the body floor as a root mismatch — a
+ * downstream shadow. On the live node that read
+ * `height=3155873 commitments=1 mismatches=1`: a one-leaf tree measured against
+ * a root committing ~1.79M leaves, at a height 30 blocks above the real
+ * boundary, after 2.68M tolerated skips and thousands of log lines.
+ *
+ * The proof needs no bodies. Let F be the first height at/above `start_height`
+ * whose body is foldable, and B = F-1 the last height in the absent run. The
+ * frontier the loop must hold when it reaches F is exactly the tree after block
+ * B, and the header chain COMMITS that tree's root in hashFinalSaplingRoot(B).
+ * Appends only ever add leaves, and the loop folds nothing over [start_height,
+ * B], so the tree it carries into F is the tree it started with. If that
+ * starting tree's root already differs from hashFinalSaplingRoot(B), every
+ * subsequent per-block root check is doomed: the commitments that would close
+ * the gap live in bodies that are not on disk.
+ *
+ * Conservative by construction — false only, never wrongly true:
+ *   - F == start_height (no absent run) => not our call.
+ *   - no foldable body anywhere in range => B = chain_tip, same test against
+ *     the endpoint's own committed root.
+ *   - hashFinalSaplingRoot(B) unknown (pre-activation/header-only) => cannot
+ *     prove, fall through to the walk unchanged.
+ *   - roots EQUAL => the absent run carried no commitments; the walk is
+ *     legitimately recoverable and runs unchanged.
+ *
+ * Detection and reporting only: no consensus predicate, no fold result, and no
+ * acceptance decision changes — a walk that could have succeeded still runs.
+ * The absent run's per-class counts come back split so the caller reports it
+ * with the same typed classes the loop's own skip tally uses; the WARN that
+ * names the boundary is emitted here so the call site stays a guard. */
+bool sapling_rebuild_replay_is_impossible(
+        const struct active_chain *chain,
+        const struct incremental_merkle_tree *start_tree,
+        int start_height, int chain_tip,
+        struct sapling_rebuild_impossible *out)
+{
+    if (!chain || !start_tree || !out || start_height > chain_tip)
+        return false;
+
+    int first_body_h = -1;
+    int no_index = 0;
+    int no_data = 0;
+    for (int h = start_height; h <= chain_tip; h++) {
+        const struct block_index *bi = active_chain_at(chain, h);
+        if (!bi) {
+            no_index++;
+            continue;
+        }
+        if (!(bi->nStatus & BLOCK_HAVE_DATA)) {
+            no_data++;
+            continue;
+        }
+        first_body_h = h;
+        break;
+    }
+
+    int gap_last_h = (first_body_h >= 0) ? first_body_h - 1 : chain_tip;
+    if (gap_last_h < start_height)
+        return false;   // raw-return-ok:the first height is foldable — no absent run, the walk runs unchanged
+
+    const struct block_index *bi_b = active_chain_at(chain, gap_last_h);
+    if (!sapling_rebuild_header_root_known(bi_b))
+        return false;   // raw-return-ok:no committed root at the boundary — nothing to prove against, the walk runs unchanged
+
+    struct uint256 start_root;
+    incremental_tree_root(start_tree, &start_root);
+    if (memcmp(start_root.data, bi_b->hashFinalSaplingRoot.data, 32) == 0)
+        return false;   // raw-return-ok:the absent run carried no commitments — the walk is recoverable and runs unchanged
+
+    out->first_body_h = first_body_h;
+    out->gap_last_h = gap_last_h;
+    out->no_index = no_index;
+    out->no_data = no_data;
+    LOG_WARN("sapling_tree_rebuild",
+             "sapling_tree_rebuild: refusing the replay h=%d..%d before "
+             "reading a block — no body is foldable below h=%d and the header "
+             "chain commits a different Sapling root at h=%d than the frontier "
+             "this walk would start from, so the commitments that would close "
+             "the gap are not on disk (absent run [%d..%d] no_index=%d "
+             "no_data=%d)",
+             start_height, chain_tip, first_body_h, gap_last_h, start_height,
+             gap_last_h, no_index, no_data);
+    return true;
+}
+
 /* Raise (or clear) the fail-closed blocker family the boot-time "Sapling
  * tree root MISMATCH" path drives sapling_tree_rebuild() through — every
  * fail-closed reason from this function (root mismatch included) shares
@@ -60,14 +152,22 @@ void sapling_tree_rebuild_raise_fail_blocker(
     bool is_root_mismatch = fail_reason &&
         (strstr(fail_reason, "sapling_root_mismatch") != NULL ||
          strcmp(fail_reason, "tip_missing_sapling_root") == 0);
-    bool body_gap = is_root_mismatch && skips && skips->total > 0;
+    /* The pre-flight refusal (sapling_rebuild_replay_is_impossible) is the same
+     * body-availability fact as a post-hoc mismatch over tolerated skips, just
+     * proven from headers before any walk — so it classifies identically, and
+     * always with a non-empty absent run by construction. */
+    bool bodies_absent = fail_reason &&
+        strcmp(fail_reason, SAPLING_REBUILD_REASON_REPLAY_IMPOSSIBLE) == 0;
+    bool body_gap = (is_root_mismatch || bodies_absent) &&
+                    skips && skips->total > 0;
     char reason[BLOCKER_REASON_MAX];
     if (body_gap)
         snprintf(reason, sizeof(reason),
                 "sapling_tree_rebuild fail-closed reason=%s height=%d "
                 "commitments=%d mismatches=%d body_gap=%d span=[%d..%d] "
-                "classes=%s: bodies absent below the mismatch height, "
-                "seed anchor_kv or backfill bodies",
+                "classes=%s: bodies absent below this height, so no rebuild "
+                "from local bodies can match; seed anchor_kv or backfill "
+                "bodies",
                 fail_reason ? fail_reason : "unknown", fail_height,
                 total_commitments, mismatches, skips->total,
                 skips->first_height, skips->last_height,

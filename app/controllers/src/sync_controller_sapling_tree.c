@@ -290,13 +290,33 @@ int sapling_tree_rebuild(struct node_db *ndb,
         }
     }
 
-    LOG_INFO("sapling_tree_rebuild", "sapling_tree_rebuild: replaying h=%d..%d", start_height, chain_tip);
-    fflush(stderr);
-
     int64_t t_replay_start = GetTimeMillis();
     int cached_file = -1;
     uint8_t *cached_data = NULL;
     size_t cached_size = 0;
+
+    /* Refuse a provably-impossible replay UP FRONT, from headers alone — see
+     * sapling_rebuild_replay_is_impossible for the proof and why it can only
+     * ever be conservative. Seeding the skip counters here is what makes the
+     * shared fail path below report the absent run with the same tally and the
+     * same body-availability DEPENDENCY class a post-hoc mismatch produces. */
+    {
+        struct sapling_rebuild_impossible pf = {0};
+        if (sapling_rebuild_replay_is_impossible(chain, &tree, start_height,
+                                                 chain_tip, &pf)) {
+            skipped_no_index = pf.no_index;
+            skipped_no_data = pf.no_data;
+            first_skip_height = start_height;
+            last_skip_height = pf.gap_last_h;
+            fail_reason = SAPLING_REBUILD_REASON_REPLAY_IMPOSSIBLE;
+            fail_height = (pf.first_body_h >= 0) ? pf.first_body_h
+                                                 : pf.gap_last_h;
+            goto fail;
+        }
+    }
+
+    LOG_INFO("sapling_tree_rebuild", "sapling_tree_rebuild: replaying h=%d..%d", start_height, chain_tip);
+    fflush(stderr);
 
     for (int h = start_height; h <= chain_tip; h++) {
         if ((h % 100) == 0)

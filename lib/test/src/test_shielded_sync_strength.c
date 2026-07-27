@@ -896,6 +896,156 @@ static int test_sst_root_mismatch_classification(void)
     return failures;
 }
 
+/* ── Deliverable 8: refuse a provably-impossible replay BEFORE walking ───
+ *
+ * The live shape: a snapshot-seeded datadir where no body below the seed was
+ * ever downloaded. No resume candidate binds, so the replay opens onto a run of
+ * body-less heights, folds nothing across it, and then reports the first
+ * commitment block ABOVE the body floor as a root mismatch. On the live node
+ * that latched `height=3155873 commitments=1 mismatches=1` — a one-leaf tree
+ * measured against a root committing ~1.79M leaves, 30 blocks above the real
+ * boundary (the seed height + 1), after 2.68M tolerated skips — and it read as
+ * a PERMANENT derived-state disagreement rather than absent bodies.
+ *
+ * The fact is provable from headers alone: hashFinalSaplingRoot at the LAST
+ * absent height commits the frontier the walk must hold when it reaches the
+ * first foldable body, appends only add leaves, and the walk folds nothing over
+ * the absent run — so a starting tree whose root already differs there can
+ * never converge. This asserts both directions: refuse when the absent run
+ * demonstrably carried commitments, and DO NOT refuse when it did not. */
+static int test_sst_preflight_refuses_impossible_replay(void)
+{
+    int failures = 0;
+    const int base = SST_SAPLING_ACTIVATION;
+    const int bodies_from = 8;      /* bodies exist only at idx >= 8 */
+    char dir[256], dbpath[512];
+
+    printf("sapling_tree_rebuild: a replay that headers prove impossible is "
+          "refused before reading a block, and a recoverable one is not... ");
+
+    /* ── POSITIVE: the absent run carried commitments. Must refuse. ── */
+    progress_store_close();
+    test_make_tmpdir(dir, sizeof(dir), "sst_preflight_pos", "case");
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    bool ok = node_db_open(&ndb, dbpath);
+
+    blocker_module_init();
+    blocker_reset_for_testing();
+
+    struct sst_window_opts opts = {
+        .missing_idx = -1,
+        .corrupt_idx = -1,
+        .bodies_from_idx = bodies_from,
+        .anchor_idx = -1,           /* no seed: the replay starts empty */
+        .tag = 0x40,
+    };
+    struct sst_window *w = ok ? sst_window_build(dir, &opts) : NULL;
+    ok = ok && w != NULL;
+
+    int rc_pos = ok ? sapling_tree_rebuild(&ndb, &w->chain, dir) : 0;
+
+    char want_boundary[32], want_span[48];
+    snprintf(want_boundary, sizeof(want_boundary), "height=%d",
+             base + bodies_from);
+    snprintf(want_span, sizeof(want_span), "span=[%d..%d]", base,
+             base + bodies_from - 1);
+    int class_pos = -1;
+    bool found_pos = sst_blocker_class_for(want_boundary, &class_pos);
+    /* commitments=0 mismatches=0 is the un-fakeable proof that NOTHING was
+     * read or folded: the pre-empted walk would have reported commitments=1
+     * mismatches=1 at this same height in this small window. */
+    bool nothing_folded = sst_blocker_reason_mentions("commitments=0") &&
+                          sst_blocker_reason_mentions("mismatches=0");
+    bool names_cause =
+        sst_blocker_reason_mentions(want_span) &&
+        sst_blocker_reason_mentions("classes=no_data") &&
+        sst_blocker_reason_mentions(
+            "replay_impossible_bodies_absent_below_first_foldable_body");
+    bool pos_pass = ok && rc_pos < 0 && found_pos &&
+                    class_pos == BLOCKER_DEPENDENCY && nothing_folded &&
+                    names_cause;
+
+    sst_window_free(w);
+    node_db_close(&ndb);
+    test_rm_rf_recursive(dir);
+
+    /* ── NEGATIVE: same absent run, but it carried NO commitments, so the
+     * header root at the last absent height IS the empty-tree root the walk
+     * starts from. The walk is recoverable and must run untouched. ── */
+    char dir_neg[256];
+    test_make_tmpdir(dir_neg, sizeof(dir_neg), "sst_preflight_neg", "case");
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir_neg);
+
+    struct node_db ndb_neg;
+    memset(&ndb_neg, 0, sizeof(ndb_neg));
+    bool ok_neg = node_db_open(&ndb_neg, dbpath);
+
+    blocker_reset_for_testing();
+
+    struct incremental_merkle_tree neg_tree;
+    sapling_tree_init(&neg_tree);
+    struct uint256 empty_root;
+    incremental_tree_root(&neg_tree, &empty_root);
+    /* Fixture validity: an all-zero root reads as "header root unknown" and
+     * would make the pre-flight skip for the wrong reason. */
+    static const uint8_t zeros32[32] = {0};
+    bool empty_root_is_bindable =
+        memcmp(empty_root.data, zeros32, 32) != 0;
+
+    struct active_chain neg_chain;
+    active_chain_init(&neg_chain);
+    struct block_index neg_bis[11];
+    for (int i = 0; i < 11 && ok_neg; i++) {
+        sst_init_index(&neg_bis[i], base + i, (uint8_t)(0x50 + i));
+        if (i >= bodies_from) {
+            struct uint256 cm;
+            memset(cm.data, 0, 32);
+            cm.data[0] = (uint8_t)(0x60 + i);
+            incremental_tree_append(&neg_tree, &cm);
+            struct disk_block_pos pos;
+            ok_neg = sst_write_output_block(dir_neg, &cm, &pos);
+            if (ok_neg) {
+                neg_bis[i].nStatus |= BLOCK_HAVE_DATA;
+                neg_bis[i].nFile = pos.nFile;
+                neg_bis[i].nDataPos = pos.nPos;
+            }
+        }
+        incremental_tree_root(&neg_tree, &neg_bis[i].hashFinalSaplingRoot);
+        ok_neg = ok_neg && active_chain_install_tip_slot(&neg_chain,
+                                                        &neg_bis[i]);
+    }
+
+    int rc_neg = ok_neg ? sapling_tree_rebuild(&ndb_neg, &neg_chain, dir_neg)
+                        : -1;
+    bool neg_blocker = sst_fail_closed_active();
+    int want_neg = 11 - bodies_from;   /* only the bodies above the run fold */
+    bool neg_pass = ok_neg && empty_root_is_bindable && rc_neg == want_neg &&
+                    !neg_blocker;
+
+    active_chain_free(&neg_chain);
+    node_db_close(&ndb_neg);
+    test_rm_rf_recursive(dir_neg);
+
+    if (pos_pass && neg_pass) {
+        printf("OK\n");
+    } else {
+        printf("FAIL (impossible: ok=%d rc=%d found=%d class=%d "
+              "nothing_folded=%d names_cause=%d | recoverable: ok=%d "
+              "bindable=%d rc=%d want=%d blocker=%d) -- want a DEPENDENCY (%d) "
+              "naming h=%d with commitments=0 and span=[%d..%d], and a clean "
+              "%d-commitment fold for the recoverable window\n",
+              ok, rc_pos, found_pos, class_pos, nothing_folded, names_cause,
+              ok_neg, empty_root_is_bindable, rc_neg, want_neg, neg_blocker,
+              BLOCKER_DEPENDENCY, base + bodies_from, base,
+              base + bodies_from - 1, want_neg);
+        failures++;
+    }
+    return failures;
+}
+
 /* ── Deliverable 4: incremental-merkle-tree math is untouched ────────────
  * A tiny fixed leaf set over the PRODUCTION depth-32 Pedersen Sapling tree
  * (the exact primitive sapling_tree_rebuild()/utxo_apply_anchors.c fold
@@ -948,6 +1098,7 @@ int test_shielded_sync_strength(void)
     failures += test_sst_anchor_kv_frontier_is_first_resume_candidate();
     failures += test_sst_anchor_kv_binding_refusal_falls_through();
     failures += test_sst_root_mismatch_classification();
+    failures += test_sst_preflight_refuses_impossible_replay();
     failures += test_sst_merkle_tree_math_golden_root_unchanged();
 
     return failures;
