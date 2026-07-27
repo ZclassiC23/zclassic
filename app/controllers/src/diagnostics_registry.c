@@ -121,6 +121,7 @@
 #include "health/heartbeat.h"
 #include "models/database.h"
 #include "models/principal.h"
+#include "models/agent_session.h"
 #include "models/auth_challenge.h"
 #include "config/runtime.h"
 #include "net/peer_lifecycle.h"

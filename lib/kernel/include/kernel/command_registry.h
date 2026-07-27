@@ -218,6 +218,13 @@ struct zcl_command_context {
      * (the least-privilege floor); real sessions raise it from their role via
      * authz_ceiling_for_role(). A NULL context bypasses the check entirely. */
     enum zcl_command_authority authority_ceiling;
+    /* Agent spend-policy session id (agent_sessions.session_id), presented
+     * per-invocation by a bounded agent. Dispatch consults
+     * agent_spend_policy_check() before running a spend-shaped handler and
+     * fails closed with the policy's why token on refusal. NULL (the
+     * zero-initialized default) is the local operator and is explicitly
+     * exempt — a zero-init context is unaffected. */
+    const char *agent_session;
     bool dev_build;
 };
 
@@ -231,6 +238,15 @@ struct zcl_command_request {
     const char *cursor;       /* opaque page cursor for --view=full, or NULL */
     bool invoked_by_alias;
     const char *invoked_name;
+    /* True once the agent spend policy has already ruled on THIS invocation
+     * (set by zcl_command_registry_execute_json after its gate allows). A
+     * handler that dispatches onward in-process — vault_dispatch is the only
+     * one — must not re-run the gate: the amount it would present is the same
+     * amount already authorized and debited, so a second run charges the
+     * window twice and can refuse a spend the caller is entitled to. It
+     * re-checks nothing and records nothing; the kernel gate is the single
+     * accounting point per invocation. */
+    bool agent_policy_settled;
 };
 
 struct zcl_command_next {

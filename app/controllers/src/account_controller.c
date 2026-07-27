@@ -147,6 +147,10 @@ void zcl_native_handle_auth_verify(const struct zcl_command_request *request,
     (void)json_push_kv_str(&reply->data, "authority_ceiling",
                            zcl_command_authority_name(sess.authority_ceiling));
     (void)json_push_kv_bool(&reply->data, "newly_registered", sess.newly_registered);
+    /* Scoped spend authority exists for this account: the operator can mint
+     * a bounded agent session (vault.session.create) on top of this login —
+     * see docs/work/agent-spend-policy-design.md. */
+    (void)json_push_kv_bool(&reply->data, "sessions_available", true);
 }
 
 /* ── account.list ───────────────────────────────────────────────────── */

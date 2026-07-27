@@ -191,6 +191,43 @@ int node_db_migrate_features2(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 36) {
+        /* v36: agent_sessions — scoped agent spend-authority grants. One row
+         * per minted session: a revocable, expiring cap set (per-tx limit,
+         * rolling-window limit, recipient allowlist) bound to a principal.
+         * See docs/work/agent-spend-policy-design.md. App-layer policy only —
+         * never consulted by consensus. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS agent_sessions ("
+            "session_id TEXT PRIMARY KEY,"
+            "account TEXT NOT NULL REFERENCES principals(address),"
+            "max_per_tx_zat INTEGER NOT NULL "
+            "  CHECK(max_per_tx_zat >= 0 AND max_per_tx_zat <= 2100000000000000),"
+            "max_per_window_zat INTEGER NOT NULL "
+            "  CHECK(max_per_window_zat >= 0 AND max_per_window_zat <= 2100000000000000),"
+            /* Upper bound as well as lower: an unbounded window_seconds makes
+             * the roll comparison overflow and the per-window cap vanish
+             * (AGENT_SESSION_WINDOW_SECONDS_MAX, models/agent_session.h). */
+            "window_seconds INTEGER NOT NULL "
+            "  CHECK(window_seconds > 0 AND window_seconds <= 31536000),"
+            "window_start_epoch INTEGER NOT NULL,"
+            "spent_in_window_zat INTEGER NOT NULL DEFAULT 0,"
+            "recipient_allowlist TEXT NOT NULL DEFAULT '',"
+            "created_at INTEGER NOT NULL,"
+            "expires_at INTEGER NOT NULL,"
+            "revoked INTEGER NOT NULL DEFAULT 0)");
+
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_agent_sessions_account "
+            "ON agent_sessions(account)");
+
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('036')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 36);
+        current_ver = 36;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }

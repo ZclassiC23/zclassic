@@ -149,6 +149,91 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
     zcl_native_handle_vault_send_shielded)
 
+/* ── agent session grants — mint/list/revoke, not custody ──────────────────
+ * Scoped, revocable spend-authority grants for agents
+ * (docs/work/agent-spend-policy-design.md, "Minting + presentation"). These
+ * leaves hold no spend logic either: they mint, list and revoke the grants
+ * the policy gate (services/agent_spend_policy.h) enforces at the dispatch
+ * choke points. The full session token is returned exactly once — the create
+ * commit reply — and is redacted everywhere after. */
+
+ZCL_COMMAND_BRANCH("vault.session", "vault",
+                   "Scoped, revocable spend-authority grants for agents",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_COMMAND(
+    "vault.session.create", "vault.session", "",
+    "Mint a scoped agent spend session; returns the token once",
+    "Mints one agent spend session for an existing principal: a 128-bit "
+    "random session id carrying its own cap set (per-tx limit, rolling-window "
+    "limit, optional recipient allowlist, optional expiry). Without confirm, "
+    "a non-mutating plan naming the normalized grant plus the commit "
+    "next-action; with confirm:true, the grant is persisted and the full "
+    "session id is returned EXACTLY ONCE — store it then, because every "
+    "later surface (vault.session.list included) shows it redacted. An agent "
+    "presents the grant as ZCL_AGENT_SESSION on its CLI environment; the "
+    "dispatch gates then bound it to the session's caps and DEFAULT-DENY every "
+    "money leaf the policy has no rule for — key export, wallet backup and "
+    "this grant surface itself are refused outright while a grant is "
+    "presented. The grant narrows only: the principal's role still derives the "
+    "authority ceiling and capabilities, unchanged. This bounds a COOPERATING "
+    "agent at the typed surface; it is not a sandbox, because the agent owns "
+    "its own environment and the datadir cookie. Confinement is an OS job "
+    "(separate uid, or a wrapper that refuses to exec anything else).", 0,
+    "vault,session,agent,policy,mint,grant,spend",
+    "zcl.vault_session_create.input.v1", "zcl.vault_session_create.v1",
+    "account,max_per_tx,max_per_window,window_seconds,allowlist,expires_in,confirm", "",
+    "zclassic23 vault session create --input='{\"account\":\"t1..\",\"max_per_tx\":\"1.5\",\"max_per_window\":\"10\",\"window_seconds\":\"86400\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER,
+    ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_FOREGROUND,
+    ZCL_COMMAND_COST_MODERATE, ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_vault_session_create)
+
+ZCL_COMMAND_READY_READ(
+    "vault.session.list", "vault.session", "",
+    "List agent spend sessions; the token is always redacted",
+    "One row per minted agent spend session — for the named `account`, or "
+    "across every principal when `account` is omitted — with caps, window "
+    "accounting, expiry and revoked flag as persisted. The session id is "
+    "rendered redacted (first 8 chars + \"…\") on every row: the full token "
+    "is a bearer grant and crossed the wire exactly once, at mint. An empty "
+    "result means no grants exist, not that none were checked.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "vault,session,agent,policy,list,grants",
+    "zcl.vault_session_list.input.v1", "zcl.vault_session_list.v1",
+    "account", "",
+    "zclassic23 vault session list --input='{\"account\":\"t1..\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_vault_session_list)
+
+ZCL_COMMAND_READY_COMMAND(
+    "vault.session.revoke", "vault.session", "",
+    "Revoke an agent spend session by its full token",
+    "Revokes one agent spend session, named by its full session id. Without "
+    "confirm, a non-mutating plan naming the (redacted) target plus the "
+    "commit next-action; with confirm:true, the grant is marked revoked and "
+    "the spend policy gate fails it closed from the next dispatch on — "
+    "in-flight window accounting is kept, so the revocation is auditable "
+    "rather than an edit of history. Idempotent on an already-revoked "
+    "session.", 0,
+    "vault,session,agent,policy,revoke,grant",
+    "zcl.vault_session_revoke.input.v1", "zcl.vault_session_revoke.v1",
+    "session_id,confirm", "",
+    "zclassic23 vault session revoke --input='{\"session_id\":\"<32hex>\",\"confirm\":true}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER,
+    ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_FOREGROUND,
+    ZCL_COMMAND_COST_MODERATE, ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_vault_session_revoke)
+
 ZCL_COMMAND_BRANCH("vault.swap", "vault",
                    "Release funds locked in an atomic-swap contract",
                    ZCL_COMMAND_LAYER_APP)

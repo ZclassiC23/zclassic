@@ -60,6 +60,11 @@
 
 #include "json/json.h"
 #include "rpc/server.h"
+#include "jobs/reducer_frontier.h"
+#include "storage/coins_kv.h"
+#include "storage/progress_store.h"
+
+#include <sqlite3.h>
 
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -121,6 +126,35 @@ static void ib_make_datadir(char *dir, size_t dirlen, const char *tag)
     char blocks[384];
     snprintf(blocks, sizeof(blocks), "%s/blocks", dir);
     mkdir(blocks, 0755); /* raw-alloc-ok:test-fixture */
+}
+
+/* Trust fixture for the sendtoaddress sovereignty guard
+ * (sovereignty_guard_allow fails closed when the progress store is
+ * absent): give this test process the same bare/self-derived fixture as
+ * test_sovereignty_guard.c — one coin at h=50, applied=51, H* pinned to
+ * 50. Bare (no migration stamp) grants wallet_spend, which is the state
+ * every pre-guard run of this test implicitly spent under. */
+static bool ib_open_trust_fixture(const char *dir)
+{
+    if (!progress_store_open(dir))
+        return false;
+    sqlite3 *db = progress_store_db();
+    if (!db || !coins_kv_ensure_schema(db))
+        return false;
+    reducer_frontier_provable_tip_set(50);
+    struct uint256 t1;
+    uint256_set_null(&t1);
+    t1.data[0] = 0x51;
+    t1.data[31] = 0x77;
+    unsigned char sc[4] = {0xE0, 0xE0, 0xE0, 0xE0};
+    if (!coins_kv_add(db, t1.data, 0, 1234, 50, true, sc, sizeof(sc)))
+        return false;
+    char *err = NULL;
+    bool ok = sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) == SQLITE_OK
+              && coins_kv_set_applied_height_in_tx(db, 51)
+              && sqlite3_exec(db, "COMMIT", NULL, NULL, &err) == SQLITE_OK;
+    if (err) sqlite3_free(err);
+    return ok;
 }
 
 /* Build a deterministic 1-in/1-out transparent spend tx. Called twice with
@@ -685,8 +719,16 @@ int test_simnet_wallet_import_backup(void)
     printf("\n=== simnet wallet import/export + backup/restore E2E "
            "(lane W1-b) ===\n");
     int failures = 0;
+    /* Sovereignty-guard trust fixture (bare ⇒ wallet_spend allowed) for the
+     * sendtoaddress spend in part 1 — see ib_open_trust_fixture. */
+    char trustdir[256];
+    ib_make_dir(trustdir, sizeof(trustdir), "trust");
+    IB_CHECK("trust fixture (progress store, bare self-derived)",
+             ib_open_trust_fixture(trustdir));
     failures += part1_import_rescan_spend();
     failures += part2_backup_restore();
+    reducer_frontier_provable_tip_reset();
+    progress_store_close();
     printf("simnet_wallet_import_backup: %s (%d failures)\n",
            failures == 0 ? "OK" : "FAIL", failures);
     return failures;

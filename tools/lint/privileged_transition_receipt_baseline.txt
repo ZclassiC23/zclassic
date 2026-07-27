@@ -79,3 +79,12 @@ vault.send                 exempt: pure route to core.wallet.transaction.send, w
 vault.send-shielded        exempt: pure route to core.wallet.shielded.send, which owns the disposition
 vault.swap.redeem          exempt: pure route to the swap_redeem RPC, which owns build/sign/broadcast
 vault.swap.refund          exempt: pure route to the swap_refund RPC, which owns build/sign/broadcast
+
+# Agent session grants (config/commands/vault.def). Minting/revoking writes an
+# agent_sessions ROW through the AR lifecycle — a scoped, revocable grant
+# record in node.db, not a privileged artifact installed over the datadir or
+# the running binary, and the row is itself fail-closed policy input (an
+# over-broad grant still passes through the ceiling/caps the kernel derives
+# from the principal's role).
+vault.session.create       exempt: AR insert of an agent_sessions grant row; no artifact install
+vault.session.revoke       exempt: AR update marking an agent_sessions row revoked; no artifact install

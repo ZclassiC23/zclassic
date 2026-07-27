@@ -621,14 +621,27 @@ int test_wallet_view(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    printf("wallet_view: send confirm shows node offline when no node... ");
+    /* The send form carries the sovereignty guard ahead of its
+     * transparent/shielded split, because its shielded branch reaches
+     * z_sendmany directly and would otherwise be ungated (see
+     * test_sovereignty_guard.c). This file deliberately runs with NO datadir,
+     * so there is no progress store and the guard therefore fails closed —
+     * which is the property to assert here: a spend surface with no provenance
+     * evidence refuses rather than proceeding.
+     *
+     * The node-offline degradation this check used to cover now lives in
+     * test_sovereignty_guard.c's SOVEREIGN section, which is the only place
+     * that can establish the precondition it needs (proven authority +
+     * self_folded); asserting it here would need this file to stop being the
+     * no-datadir file. */
+    printf("wallet_view: send confirm with no provenance evidence refuses... ");
     {
         size_t n = wv_post("/wallet/send/confirm",
             "address=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn&amount=0.01");
-        bool ok = (n > 0);
-        /* Node isn't running in test env, so should get offline or error */
-        ok = ok && (wv_has("Node Offline") || wv_has("Send Failed") ||
-                    wv_has("Unknown Response"));
+        bool ok = (n > 0) && wv_has("Spend Refused") &&
+                  wv_has("release_assisted");
+        /* And it must not have reached the send path at all. */
+        ok = ok && !wv_has("Node Offline") && !wv_has("Send Failed");
         if (ok) printf("OK\n");
         else { printf("FAIL (n=%zu)\n", n); failures++; }
     }

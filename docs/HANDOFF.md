@@ -97,12 +97,32 @@ stash, not a live lane.
 Ordered by how much they cost the next person. Everything here was found with
 evidence and left deliberately, not forgotten.
 
-1. **`core.wallet.utxo.list` is still broken**, and it is the last known
-   instance of the defect that also broke `app.swap.list` and the three wallet
-   plan legs. The handler returns a bare JSON array; the command bridge expects
-   an object envelope and drops the body. The two fixed cases show the shape:
-   wrap in `{schema, <items>, count}`. Its test will pass either way — see
-   item 3.
+1. **`core.wallet.utxo.list`: the envelope defect is CLOSED; a different one
+   was underneath it.** The `{schema, utxos, count}` wrapper landed in
+   `wallet_native_read_bodies.c` and `test_command_registry_catalog.c` drives it
+   through the registry on rendered bytes, so that instance of the bare-array
+   class is done. The `TOOL_ERROR "RPC listunspent returned an unparseable
+   body"` still seen afterwards was **not** that defect: `node_rpc_call`
+   returned the *truncated* reply when its deadline fired mid-body (the node
+   writes HTTP headers before its handler blocks), and every caller then
+   complained about the body's shape instead of about a busy node. Fixed in
+   `rpc_client.c` — a timed-out read that does not parse is now named as a
+   timeout; pinned by `test_native_api_contract.c` against a real socket that
+   sends only headers. This affected **every** native read body, not just this
+   leaf.
+
+   The 10 s latency on that command is a **third, still-open** defect and is
+   node-side, not command-side: `getbalance` and `listunspent` stall ~10 s in
+   bursts while `getblockcount` and `dumpstate` never do, i.e. it is node.db
+   contention, not the RPC server. `node.log` shows the cause — the SQLite
+   catchup service re-scans the same 2,829-block range in a write transaction
+   every ~13 s and its `COMMIT` fails with *"cannot commit transaction - SQL
+   statements in progress"* (a statement left open on the shared connection),
+   so it aborts, retries forever, and holds the write lock ~10 s each round
+   while everything else logs `database is locked`. Start at
+   `node_db_catchup_service_run` (`app/services/src/node_db_catchup_service.c`,
+   the `catchup: initial COMMIT failed — aborting` path). Not touched here: it
+   needs a copy-proven fixture, and the live node is mid-hold.
 2. **The compile epoch is the whole build-loop lever.** `zcl_compile_epoch`
    (`Makefile:626`) keys the object directory on a whole-tree content hash, so
    there is no per-TU incremental compile: any edit recompiles all 1,182 TUs.

@@ -2,6 +2,7 @@
 
 #include "controllers/wallet_view_internal.h"
 #include "controllers/wallet_controller.h"
+#include "controllers/sovereignty_controller.h"
 #include "models/contact.h"
 #include "util/log_macros.h"
 
@@ -320,6 +321,39 @@ size_t serve_send_confirm(uint8_t *r, size_t max,
             (char *)r + off, max - off);
         wv_emit_footer(r, max, &off);
         return off;
+    }
+
+    /* Sovereign guard, ahead of the transparent/shielded split so every branch
+     * of this form refuses identically. The transparent branch inherits the
+     * guard inside wallet_direct_sendtoaddress, but the shielded branch reaches
+     * z_sendmany over wv_rpc_call directly — so without this, the same form
+     * refused a t-address send and completed a zs1 one while the tip is
+     * release_assisted. Checked once here rather than duplicated into each
+     * branch, so a third branch cannot be added ungated. Placed after input
+     * validation (unlike the RPC paths, which have no separate validation
+     * stage) so a typo still reads as a typo. */
+    {
+        char sov_reason[96] = {0};
+        if (!sovereignty_guard_allow("wallet_spend", sov_reason,
+                                     sizeof(sov_reason))) {
+            LOG_WARN("wallet_view", "send/confirm: spend refused — %s",
+                     sov_reason);
+            struct template_var sv[] = {
+                { "heading",    "Spend Refused" },
+                { "message",    "Spend refused — tip is release_assisted "
+                                "(borrowed shielded history, not self-folded). "
+                                "No spend, transparent or shielded, is "
+                                "released until the node has folded its own "
+                                "history." },
+                { "back_url",   "/wallet" },
+                { "back_label", "Back to Wallet" },
+                { "retry_url",  "/wallet/send" },
+            };
+            off += template_render(TMPL_VALIDATION_ERROR, sv, 5,
+                                   (char *)r + off, max - off);
+            wv_emit_footer(r, max, &off);
+            return off;
+        }
     }
 
     /* Execute send */

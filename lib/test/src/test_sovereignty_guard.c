@@ -27,9 +27,13 @@
 #include "test/test_core.h"
 
 #include "controllers/sovereignty_controller.h"
+#include "controllers/wallet_controller.h"
+#include "controllers/wallet_view_internal.h"
+#include "controllers/zslp_controller.h"
 #include "core/uint256.h"
 #include "jobs/reducer_frontier.h"
 #include "json/json.h"
+#include "rpc/server.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 
@@ -236,6 +240,90 @@ int test_sovereignty_guard(void)
         json_free(&out);
     }
 
+    /* ── borrowed call sites: every spend entry point must refuse with the
+     * same release_assisted reason. The guard fires before wallet/context/
+     * param checks (z_sendmany doctrine), so no wallet fixture is needed.
+     * sendtoaddress backs core.wallet.transaction.send and vault.send;
+     * zslp_send stands for the three ZSLP write verbs that share
+     * zslp_sovereignty_spend_guard (createtoken/send/mint). */
+    {
+        struct rpc_table tbl;
+        rpc_table_init(&tbl);
+        register_wallet_rpc_commands(&tbl);
+        register_zslp_rpc_commands(&tbl);
+        set_rpc_warmup_finished();
+        struct json_value params = {0};
+        struct json_value result = {0};
+        json_init(&params);
+        json_init(&result);
+        json_set_array(&params);
+        SG_CHECK("borrowed: sendtoaddress RPC refused",
+                 !rpc_table_execute(&tbl, "sendtoaddress", &params, &result));
+        SG_CHECK("borrowed: sendtoaddress body names release_assisted",
+                 result.type == JSON_STR &&
+                 strstr(json_get_str(&result), "release_assisted") != NULL);
+        json_free(&result);
+        json_init(&result);
+        /* zslp_send's usage/arity gate runs before the sovereignty guard
+         * (help must always work), so pass a well-formed (dummy) triple —
+         * the guard fires before request parsing, values never read. */
+        json_free(&params);
+        json_init(&params);
+        json_set_array(&params);
+        {
+            struct json_value tid = {0}, addr = {0}, amt = {0};
+            json_init(&tid);
+            json_init(&addr);
+            json_init(&amt);
+            json_set_str(&tid, "deadbeef");
+            json_set_str(&addr, "t1dummy");
+            json_set_int(&amt, 1);
+            json_push_back(&params, &tid);
+            json_push_back(&params, &addr);
+            json_push_back(&params, &amt);
+        }
+        SG_CHECK("borrowed: zslp_send RPC refused",
+                 !rpc_table_execute(&tbl, "zslp_send", &params, &result));
+        SG_CHECK("borrowed: zslp_send body names release_assisted",
+                 result.type == JSON_STR &&
+                 strstr(json_get_str(&result), "release_assisted") != NULL);
+        json_free(&result);
+        json_free(&params);
+    }
+
+    /* ── the web-UI send FORM. Its transparent branch calls
+     * wallet_direct_sendtoaddress (guarded), but its shielded branch reaches
+     * z_sendmany over wv_rpc_call — so while the tip is release_assisted the
+     * same form used to refuse a t-address send and complete a zs1 one.
+     * serve_send_confirm now guards ahead of the transparent/shielded split, so
+     * ONE check on the shared path covers both branches: reaching the guard at
+     * all is what proves the split cannot be reached ungated.
+     *
+     * The address must be checksum-valid or the form stops at its own
+     * validation stage and the assertion would pass for the wrong reason —
+     * hence the real t-address (the one test_wallet_view.c uses), and hence
+     * asserting on "release_assisted" specifically rather than on any refusal.
+     * Asserted on the rendered HTML the browser receives, not on an internal
+     * predicate. */
+    {
+        static uint8_t page[262144];
+        static const char body[] =
+            "address=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn&amount=1.0";
+        memset(page, 0, 4096);
+        size_t n = serve_send_confirm(page, sizeof(page),
+                                      (const uint8_t *)body, strlen(body));
+        page[n < sizeof(page) ? n : sizeof(page) - 1] = '\0';
+        SG_CHECK("borrowed: web-UI send form refuses, naming release_assisted",
+                 n > 0 &&
+                 strstr((const char *)page, "release_assisted") != NULL &&
+                 strstr((const char *)page, "Spend Refused") != NULL);
+        /* And it never reached the send path. */
+        SG_CHECK("borrowed: web-UI send form never reached the send path",
+                 n > 0 &&
+                 strstr((const char *)page, "Node Offline") == NULL &&
+                 strstr((const char *)page, "Send Failed") == NULL);
+    }
+
     /* ── sovereign: stamp self_folded — everything unlocks. */
     SG_CHECK("mark_self_folded", coins_kv_mark_self_folded(db));
     {
@@ -311,6 +399,75 @@ int test_sovereignty_guard(void)
                  t_sovereign && !json_is_null(t_sovereign) &&
                  json_get_int(json_get(t_sovereign, "epoch")) == sov_epoch1);
         json_free(&out);
+    }
+
+    /* ── sovereign call sites: the guard no longer refuses — each RPC fails
+     * later (params/context/wallet), never with release_assisted. Proves the
+     * new call-site guards open again after self_folded. */
+    {
+        struct rpc_table tbl;
+        rpc_table_init(&tbl);
+        register_wallet_rpc_commands(&tbl);
+        register_zslp_rpc_commands(&tbl);
+        struct json_value params = {0};
+        struct json_value result = {0};
+        json_init(&params);
+        json_init(&result);
+        json_set_array(&params);
+        SG_CHECK("sovereign: sendtoaddress failure is NOT release_assisted",
+                 !rpc_table_execute(&tbl, "sendtoaddress", &params, &result) &&
+                 result.type == JSON_STR &&
+                 strstr(json_get_str(&result), "release_assisted") == NULL);
+        json_free(&result);
+        json_init(&result);
+        /* Same well-formed dummy triple as the borrowed block — gets past
+         * the usage/arity gate so the (now-open) sovereignty guard and the
+         * context check decide the outcome. */
+        json_free(&params);
+        json_init(&params);
+        json_set_array(&params);
+        {
+            struct json_value tid = {0}, addr = {0}, amt = {0};
+            json_init(&tid);
+            json_init(&addr);
+            json_init(&amt);
+            json_set_str(&tid, "deadbeef");
+            json_set_str(&addr, "t1dummy");
+            json_set_int(&amt, 1);
+            json_push_back(&params, &tid);
+            json_push_back(&params, &addr);
+            json_push_back(&params, &amt);
+        }
+        SG_CHECK("sovereign: zslp_send failure is NOT release_assisted",
+                 !rpc_table_execute(&tbl, "zslp_send", &params, &result) &&
+                 result.type == JSON_STR &&
+                 strstr(json_get_str(&result), "release_assisted") == NULL);
+        json_free(&result);
+        json_free(&params);
+    }
+
+    /* ── the web-UI send form opens again too, and degrades to the node being
+     * absent rather than to a refusal. This is the assertion
+     * test_wallet_view.c cannot make (that file runs with no datadir, so it has
+     * no progress store and the guard correctly fails closed there); the
+     * sovereign fixture here is the only place the offline path is reachable. */
+    {
+        static uint8_t page[262144];
+        static const char body[] =
+            "address=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn&amount=0.01";
+        memset(page, 0, 4096);
+        size_t n = serve_send_confirm(page, sizeof(page),
+                                      (const uint8_t *)body, strlen(body));
+        page[n < sizeof(page) ? n : sizeof(page) - 1] = '\0';
+        SG_CHECK("sovereign: web-UI send form is no longer refused",
+                 n > 0 &&
+                 strstr((const char *)page, "Spend Refused") == NULL &&
+                 strstr((const char *)page, "release_assisted") == NULL);
+        SG_CHECK("sovereign: web-UI send form degrades to node-absent",
+                 n > 0 &&
+                 (strstr((const char *)page, "Node Offline") != NULL ||
+                  strstr((const char *)page, "Send Failed") != NULL ||
+                  strstr((const char *)page, "Unknown Response") != NULL));
     }
 
     /* ── NULL-input hardening. */

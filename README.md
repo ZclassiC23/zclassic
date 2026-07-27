@@ -23,14 +23,12 @@ registries anywhere in the path.
 criteria in [`docs/MVP.md`](docs/MVP.md) (v1 = MRS 8/8). Don't rely on it as
 your only mainnet node yet.
 
-It runs on ZClassic mainnet on the `zclassicd` consensus floor. The node's
-UTXO/anchor/nullifier state is either self-derived by folding real block
-bodies forward from the in-binary SHA3/PoW checkpoint
-(`core/chainparams/src/checkpoints.c`) — the **sovereign cure** — or, where a
-borrowed snapshot was used to seed transparent state, checked against a
-validated local header; ZClassic headers do not commit a snapshot's UTXO or
-shielded-state contents, so a header match alone does not make borrowed
-contents consensus- or PoW-bound. Design: [`docs/work/self-verified-tip-plan.md`](docs/work/self-verified-tip-plan.md).
+It runs on ZClassic mainnet on the `zclassicd` consensus floor. The design
+goal for node state is that every UTXO/anchor/nullifier is self-derived by
+folding real block bodies forward from the in-binary SHA3/PoW checkpoint —
+never borrowed from an external snapshot, because ZClassic headers do not
+commit a snapshot's UTXO or shielded-state contents
+([`docs/work/self-verified-tip-plan.md`](docs/work/self-verified-tip-plan.md)).
 The other known soft spot: **off-chain ZMSG is plaintext on the wire**.
 
 Live state: `zclassic23 status` / [`docs/HANDOFF.md`](docs/HANDOFF.md).
@@ -57,31 +55,6 @@ shielded; off-chain P2P is plaintext on the wire); **ZCL Market** + **ZSWP**
 atomic swaps (scaffolding — no settlement yet); **P2P games** (ping +
 TicTacToe).
 
-### The OS model: a layered immutable machine
-
-zclassic23 is organized as a small stack of storage regions with a strict
-trust ladder — every arrow below is a SHA3 verify; a mismatch is a named
-blocker, never a silent failure:
-
-```
- mutable    TIP RING      mempool / peers / wallet journal — small, delta-replayable
-            DELTA         anchor→tip full-validation fold — the only re-done work
- ─────────────────────── finalized frontier ───────────────────────────────────────
- immutable  SEALED STATE  base bundle @ anchor + independent replay receipt
-                          (coins, Sprout/Sapling anchors, nullifiers) — re-derived
-                          from the datadir's own tables, read via a capability fd
-            SEALED        chain_segment store: write-once 0444 segment files,
-            HISTORY       SHA3-committed, with a manifest root
- ROM        TRUST ROOT    in-binary SHA3/PoW checkpoint (h=3,056,758) + the binary
-                          itself, sealed in `core/` (`core/MANIFEST.sha3`)
-```
-
-Every trust claim reduces to two things: the compiled binary and the
-PoW-heaviest header chain — no DNS, CAs, or registries in the path. The
-**sovereign cure** (see [Status](#status)) makes the sealed-state layer
-independently derived rather than borrowed from an external `zclassicd`
-snapshot.
-
 ## Requirements
 
 Run **`make doctor`**: it probes this host against
@@ -105,15 +78,8 @@ table says today.
   and never fails silently. Add it with `make ZCL_WITH_RUST=1`, which builds
   and links `librustzcash.a` (the canonical Zcash Sapling prover) and needs
   `cargo` + `rustc`.
-- **A C++ compiler** (`c++`/`g++`) builds LevelDB, which is C++11. `cmake` is
-  the preferred route and is genuinely optional — a direct C++ compile is used
-  when it is absent — but the C++ compiler itself is not optional. "Pure C23"
+- **A C++ compiler** (`c++`/`g++`) builds LevelDB, which is C++11. "Pure C23"
   describes the node's own source, not every third-party archive it links.
-  This one is on its way out: `lib/storage/src/ldb_reader_*.c` is a read-only
-  LevelDB reader in plain C23, proven byte-identical to `libleveldb.a` over the
-  real on-disk databases on this host. What still has to land before `c++`
-  leaves this list is spelled out in [`docs/BUILD.md`](docs/BUILD.md) under
-  *Retiring the C++ requirement*.
 - **The first `make vendor` needs the internet.** It downloads pinned source
   tarballs (OpenSSL, libevent, LevelDB, zlib, SQLite — plus the Sapling prover
   under `ZCL_WITH_RUST=1`), verifies each against a pinned SHA-256, and
@@ -123,36 +89,10 @@ table says today.
 ## Quick start
 
 Public start here: [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) is the
-fresh-machine path for people cloning from GitHub, covering build, running a
-production node + block explorer, and setting up an isolated development
-instance. This README is the overview; `docs/HANDOFF.md` and
-`docs/RUNBOOK.md` are maintainer/operator documents for the project's own
+fresh-machine path, covering build, running a production node + block explorer,
+and setting up an isolated development instance. This README is the overview; `docs/HANDOFF.md`
+and `docs/RUNBOOK.md` are maintainer/operator documents for the project's own
 hosted lanes.
-
-### What the first build costs
-
-Measured, not estimated: `make first-build-timing` clones the repository into a
-scratch directory and times every stage of a cold build; `make timings` prints
-the result back.
-
-| Stage | Command | Wall time | What it needs |
-|---|---|---|---|
-| Clone | `git clone` | seconds locally; the history is 932 MiB over the network | `git` |
-| Vendored archives | `make vendor` | 92 s | network, a C++ compiler (Rust only under `ZCL_WITH_RUST=1`) |
-| Arm the clone | `make setup` | 41 s | nothing beyond the above |
-| Binaries | `make -j"$(nproc)"` | 205 s | gcc 14+ |
-| Full test suite | `make -j"$(nproc)" test-parallel` | 252 s | nothing beyond the above |
-| **Clone to passing suite** | | **590 s (under 10 minutes)** | **1.6 GB of disk** |
-
-Measured on a 32-core host (gcc 14.2, rustc 1.95) with the compiler cache
-switched off, so it reflects a machine that has never built this project; the
-host was running other builds at the time (1-minute load average 29 rising to
-49). The 92 s vendor row was measured while the Sapling prover was still part
-of the default archive set — it is now opt-in, so a default `make vendor` does
-less than that row records and `make ZCL_WITH_RUST=1 vendor` is what it
-describes. Your own numbers come from `make first-build-timing`, and `make doctor`
-names anything this host is still missing. Fuller breakdown, including which
-stage is the long pole and why, is in [`docs/BUILD.md`](docs/BUILD.md).
 
 ```bash
 git clone https://github.com/ZclassiC23/zclassic.git && cd zclassic
@@ -165,16 +105,9 @@ make lint           # defensive-coding gates
 
 (`make zclassic23` builds only the node; plain `make` also builds the
 `zclassic-cli` / `zcl-rpc` clients used in the examples below.) The first build
-auto-runs **`make vendor`**, which builds the static
-third-party archives in `vendor/lib/` from source (OpenSSL, libevent ×3, LevelDB,
-SQLite, zlib — and librustzcash only under `ZCL_WITH_RUST=1`) plus the in-tree Tor stub — sources are pulled from pinned URLs and
-verified against pinned SHA256 hashes, then compiled locally. Only
-`libsecp256k1.a` (a custom Bitcoin Core fork build) ships committed. `make vendor`
-is provenance-idempotent: it skips only archives whose bytes, source pin,
-recipe, toolchain, and dependencies match their deterministic stamp
-(`make vendor-force` rebuilds all fetched archives). Per-library sources,
-versions, and hashes are in
-[`docs/BUILD.md`](docs/BUILD.md).
+auto-runs **`make vendor`**, which builds the static third-party archives in
+`vendor/lib/` from pinned, SHA-256-verified sources. Per-library versions,
+hashes, and the vendoring details are in [`docs/BUILD.md`](docs/BUILD.md).
 
 ```bash
 build/bin/zclassic23          # start a node (fresh datadir → long initial sync)
@@ -195,9 +128,27 @@ has a **long** initial sync.
 > `zclassic23 status`).
 
 Datadir `~/.zclassic-c23/` (`-datadir=DIR`). Default ports: P2P `8033`, RPC
-`18232`. On the operator host, `zclassic23` owns the canonical public P2P port
-`8033`; the co-located legacy `zclassicd` oracle is isolated on P2P `8034` and
-RPC `8232`. The authoritative lane/port table is in [`docs/HANDOFF.md`](docs/HANDOFF.md).
+`18232`. The authoritative lane/port table for the operator host is in
+[`docs/HANDOFF.md`](docs/HANDOFF.md).
+
+### What the first build costs
+
+Measured, not estimated: `make first-build-timing` clones the repository into a
+scratch directory and times every stage of a cold build; `make timings` prints
+the result back.
+
+| Stage | Command | Wall time | What it needs |
+|---|---|---|---|
+| Clone | `git clone` | seconds locally; the history is 932 MiB over the network | `git` |
+| Vendored archives | `make vendor` | 92 s | network, a C++ compiler (Rust only under `ZCL_WITH_RUST=1`) |
+| Arm the clone | `make setup` | 41 s | nothing beyond the above |
+| Binaries | `make -j"$(nproc)"` | 205 s | gcc 14+ |
+| Full test suite | `make -j"$(nproc)" test-parallel` | 252 s | nothing beyond the above |
+| **Clone to passing suite** | | **590 s (under 10 minutes)** | **1.6 GB of disk** |
+
+Your own numbers come from `make first-build-timing`, and `make doctor`
+names anything this host is still missing. Fuller breakdown is in
+[`docs/BUILD.md`](docs/BUILD.md).
 
 ## First boot — what a fresh node looks like
 
@@ -208,9 +159,8 @@ A brand-new datadir is honestly empty. It does **not** report a fake height:
   initialblockdownload: true` (best-block resolves to genesis).
 - **Peer discovery has no DNS seeders** — the historical ZCL DNS names no longer
   resolve. The node bootstraps from a small hardcoded set of reachable-verified
-  ZClassic IP seeds (baked into the sealed `core/` chain params, and re-verified
-  before release rather than pinned in prose — the node prints the live tally as
-  `[net] bootstrap sources: … fixed_seeds=N` on every boot)
+  ZClassic IP seeds (baked into the sealed `core/` chain params; the node prints
+  the live tally as `[net] bootstrap sources: … fixed_seeds=N` on every boot)
   and a Tor `.onion` directory seed, harvesting clearnet peers from each onion's
   `/directory.json`. You can add your own onion seeds (one `.onion` per line,
   `#` comments allowed) in `~/.config/zclassic23/onion-seeds`.
@@ -245,7 +195,7 @@ prebuilt block index plus digest-verified UTXO snapshot exists (the
 release). At boot the node recomputes its SHA3 body hash and checks the claimed
 anchor height/hash against the validated local header chain. That detects
 changed bytes and the wrong chain location; it does not prove UTXO or shielded
-contents. Stable starter-pack publication is currently disabled.
+contents.
 
 ```bash
 # 1. Download both assets from the release (block_index.bin 543 MB + snapshot 105 MB)
@@ -265,22 +215,18 @@ build/bin/zclassic23 -datadir="$DATADIR" \
   -load-snapshot-at-own-height="$DATADIR/utxo-seed-3155842.snapshot"
 ```
 
-The borrowed seed may initialize the held frontier near **3,155,842**, but the
-current fail-closed shielded-history gate intentionally stops at the first
-spend whose anchor/nullifier prefix is unproven. Do not expect this v2 artifact
-to reach tip under the current safety posture. See
-[`docs/BOOTSTRAPPING.md`](docs/BOOTSTRAPPING.md).
+The borrowed seed may initialize the frontier near **3,155,842**, but the
+fail-closed shielded-history gate stops at the first spend whose
+anchor/nullifier prefix is unproven — do not expect this v2 artifact to reach
+tip. See [`docs/BOOTSTRAPPING.md`](docs/BOOTSTRAPPING.md).
 
 **Other paths:**
 
 - **Plain start, no starter pack** — the from-genesis P2P path is the sovereignty
-  target, but its current end-to-end time/completeness claim is not proven. The
-  proven recovery floor remains header import plus normal boot with a local
-  `zclassicd` archive.
+  target, but its current end-to-end time/completeness claim is not proven.
 - **Native P2P fast sync (designed, not yet the everyday proof):** pull the
   digest-verified snapshot directly from another zclassic23 peer. FlyClient/MMB
-  authenticates advertised header work, not peer UTXO contents; this remains an
-  assisted-readiness design, not a sovereign minute-sync claim. Details:
+  authenticates advertised header work, not peer UTXO contents. Details:
   [`docs/SYNC.md`](docs/SYNC.md) "Method 1".
 - **From a local `zclassicd` (~25 min, dev bootstrap):** if you already run the
   C++ node, import headers first, then boot:
@@ -293,17 +239,14 @@ to reach tip under the current safety posture. See
   Order matters: skipping step 1 leaves a ~3.1M-header hole and the node pins.
   Leave `zclassicd` running. Full recipe: [`docs/SYNC.md`](docs/SYNC.md) "Method 3".
 
-For the live bootstrap posture and the in-flight sovereign cold-start cure (fold
-real bodies forward from a self-minted checkpoint, then delete the borrowed
-seed), see [`docs/HANDOFF.md`](docs/HANDOFF.md).
+Live bootstrap posture: [`docs/HANDOFF.md`](docs/HANDOFF.md).
 
 ## AI agent integration
 
 The differentiator: a native command registry built into the binary — the
-**primary** agent surface — so an AI agent (Claude is the one this project
-develops against day to day; the interface is model-agnostic and needs no
-vendor SDK) queries and operates the node through typed commands, no curl, no
-log spelunking, no separate server process.
+**primary** agent surface — so an AI agent queries and operates the node
+through typed commands, no curl, no log spelunking, no separate server
+process. The interface is model-agnostic and needs no vendor SDK.
 
 It is the ABI. Every leaf lives in a `.def` file under `config/commands/`,
 grouped under `core.*`/`app.*`/`ops.*`/`dev.*`/`discover.*`/`code.*`, and each
@@ -329,20 +272,11 @@ Start with `status` (height, peers, sync, blocker, health in one call);
 catalog. Full doc: [`docs/NATIVE_COMMAND_INTERFACE.md`](docs/NATIVE_COMMAND_INTERFACE.md);
 daily-driver reference in [`CLAUDE.md`](CLAUDE.md).
 
-The typed native command registry is the sole AI/operator surface.
-
 ## Block explorer
 
 The node serves a web block explorer (`/explorer`, with a JSON API under `/api`).
 It is **not** on the RPC port (`18232`) — a plain `GET` there returns
 `405 Method Not Allowed`, by design. The explorer is reachable two ways:
-
-Start API discovery at `/api/v1`. Use `/api/v1/service-catalog` to see what the
-node can host, advertise, verify, or construct for users, and
-`/api/v1/service-catalog/{service}` for one service contract.
-`/api/v1/protocols` lists ZCL application-protocol contracts, and
-`/api/v1/bootstrap` checks whether the node is currently useful for fresh-peer
-bootstrap.
 
 - **Over the onion service** — build the bundled Tor fork (see the opt-in note in
   [Quick start](#quick-start)) and run `-tor`; the explorer is then served on the
@@ -352,6 +286,11 @@ bootstrap.
   explorer then starts once the node is near tip (default port `8443`). Without a
   cert the node logs `HTTPS: no cert … block explorer not on clearnet` and skips
   it — this is expected on a default build.
+
+Start API discovery at `/api/v1`: `/api/v1/service-catalog` lists what the
+node can host, advertise, verify, or construct, `/api/v1/protocols` lists ZCL
+application-protocol contracts, and `/api/v1/bootstrap` checks whether the
+node is currently useful for fresh-peer bootstrap.
 
 A default build (Tor stub, no cert) intentionally has **no public explorer
 endpoint**. Use the native command registry or `zcl-rpc` for node data in that
@@ -365,7 +304,8 @@ the Ten Laws, and the eight lint-enforced code shapes. Diagrams:
 
 The short version: **an event log is the source of truth, state is rebuilt
 through pure projections, and chain progress is a stage cursor on disk** — so
-silent halts are unreachable by construction.
+silent halts are unreachable by construction. Every trust claim reduces to two
+things: the compiled binary and the PoW-heaviest header chain.
 
 ```
 zclassic23 (single static binary)
@@ -416,7 +356,7 @@ default doesn't yet apply retroactively to existing plaintext wallets.
 ## Repository layout
 
 The root is a curated list. Everything in it is either a source area, a
-top-level document, or one of the four generated entries at the bottom of this
+top-level document, or one of the generated entries at the bottom of this
 section — nothing else belongs there, and `make lint` fails on anything that
 shows up (`check-no-stray-root-files`).
 
@@ -444,15 +384,19 @@ further from consensus:
 | `examples/` · `apps/` | The outward-facing surface: worked examples you can compile, and the app manifests built on the Core→App header in `lib/framework/include/zclassic23/`. |
 | `tests/` | Shared test fixtures — data, not code. |
 
-**Generated, never tracked** — these appear after a build and are the only
-untracked entries the root is allowed to have:
+**Generated or tool-local, never tracked** — the only untracked entries the
+root is allowed to have (the `check-no-stray-root-files` gate's allowlist is
+the authoritative list):
 
 | Entry | Where it comes from |
 |-----|----------|
 | `build/` | All build output, including the binaries in `build/bin/`. |
 | `test-tmp/` | The one scratch root for test runs — every test writes its per-run datadir under here, never into the checkout root. Safe to delete at any time. |
 | `compile_commands.json` | Written by `make setup` / `make compdb` so clangd and editors know the exact compile flags. Conventional at the root; leave it there. |
-| `.cache/` · `.codeindex/` | Tool caches: lint timings, the clangd index, the source navigator's index. |
+| `.cache/` · `.codeindex/` | Tool caches: lint timings, the clangd index, the source navigator's derived index. |
+| `.zvcs/` | The in-tree experimental VCS's own state (dev-loop snapshots). |
+| `.zcl_test_render/` | Optional render-test page dumps (only written by the live-inspection test mode). |
+| `.claude/` · `.antigravitycli/` etc. | Per-developer AI-tool state, gitignored. |
 
 ## Engineering posture
 
@@ -464,12 +408,8 @@ untracked entries the root is allowed to have:
   are is derived from the code by `tools/scripts/check_doc_counts.sh` and
   declared in the DOC-COUNTS block of
   [`docs/CODEBASE_MAP.md`](docs/CODEBASE_MAP.md), which `make lint` fails on
-  drift. That same gate re-derives the count for every tracked Markdown file in
-  the repo — this README included — so a doc that quotes a group/port/adapter
-  count that no longer matches the code fails the build rather than quietly
-  rotting. A test that compiles but is registered in no runner is caught by the
-  `check-test-registration` gate. Bugs become 64-bit seeds in a deterministic
-  simulator ([`docs/CHAOS_HARNESS.md`](docs/CHAOS_HARNESS.md)).
+  drift. Bugs become 64-bit seeds in a deterministic simulator
+  ([`docs/CHAOS_HARNESS.md`](docs/CHAOS_HARNESS.md)).
 - **Crash recovery is demonstrable:** `make test-crash-bootstrap` runs a
   hermetic kill-9 / restart harness (`tools/crash_recovery_test.c`, isolated
   self-seeded datadir) that proves the node folds back to its tip after being
@@ -477,10 +417,9 @@ untracked entries the root is allowed to have:
 - **Gates are local:** `make lint` + `make ci` (not GitHub Actions).
 - **Deploy builds fresh:** `make deploy` rebuilds the binary and verifies the
   running `build_commit` — never ships stale code.
-- **Release work is contained:** deterministic flags and legacy GPG-capable
-  packaging exist, but stable publication waits for exact-candidate evidence,
-  two-builder byte identity, and required offline signatures. Unsigned output is
-  local-development-only.
+- **Release work is contained:** unsigned build output is
+  local-development-only; stable publication waits for two-builder
+  byte-identity proof and required offline signatures.
 
 ## Operating
 

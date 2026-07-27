@@ -2732,6 +2732,12 @@ static bool nc_prose_text(const char *path, const struct json_value *data,
     return false;
 }
 
+const char *zcl_native_agent_session_env(void)
+{
+    const char *s = getenv("ZCL_AGENT_SESSION");
+    return (s && s[0]) ? s : NULL;
+}
+
 int zcl_native_command_main(const char *root_word, const char *const *args,
                             int nargs, const char *datadir, int rpc_port)
 {
@@ -3155,6 +3161,16 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
          * OWNER authority ceiling. Remote/multi-user sessions raise the ceiling
          * from their role instead (never reaching this argv path). */
         .authority_ceiling = ZCL_COMMAND_AUTH_OWNER,
+        /* Agent spend-policy presentation (docs/work/agent-spend-policy-design.md,
+         * "Minting + presentation"): ZCL_AGENT_SESSION carries a session id
+         * minted by vault.session.create. When set and non-empty the kernel's
+         * execute_json gate and the vault's dispatch gate bound every
+         * spend-shaped dispatch to that session's caps. Explicit exemption:
+         * unset/empty leaves context.agent_session NULL and this argv context
+         * is the omnipotent local operator, byte-identical to before the
+         * policy layer existed — the ceiling and capabilities above stay as
+         * built either way, because a session grant only ever narrows. */
+        .agent_session = zcl_native_agent_session_env(),
 #ifdef ZCL_DEV_BUILD
         .dev_build = true,
 #else

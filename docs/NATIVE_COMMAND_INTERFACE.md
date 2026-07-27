@@ -554,6 +554,27 @@ intent. There is no generic `--force` or English `yes` confirmation.
 
 Successful mutations return an effect ID and, when reversible, a rollback ID.
 
+### Agent spend grants (`ZCL_AGENT_SESSION`)
+
+An operator can mint a bounded spend grant (`vault.session.create`) and hand it
+to an agent, which presents it per-invocation as `ZCL_AGENT_SESSION`. Every
+dispatch then carries an `authority` block naming `policy: bounded | exempt`,
+the redacted grant, and what it debited. While a grant is presented the
+dispatch gates **default-deny the money surface**: the leaves the policy
+understands are capped (per-tx, rolling window, recipient allowlist) and
+everything else touching the wallet capability — key export, wallet backup, key
+import, and the grant surface itself — is refused outright. Full contract:
+[`docs/work/agent-spend-policy-design.md`](./work/agent-spend-policy-design.md).
+
+**This is a bound, not a sandbox.** The grant lives in the agent's own
+environment, so the same agent can run with it unset and be the unbounded local
+operator; and it holds the datadir, so it can call `sendtoaddress` over
+JSON-RPC below the kernel entirely. Confining an agent is an OS-level job — a
+separate uid without read access to the RPC cookie, or a wrapper binary that
+injects the grant and refuses to exec anything else. What this layer gives you
+is the bound a cooperating agent runs under, plus an auditable record of what it
+did.
+
 Local development commands are never registered as node RPC or REST
 methods. Remote input cannot gain authority over a checkout, compiler, test
 runner, generation loader, or service manager.

@@ -37,6 +37,7 @@
 #include "json/json.h"
 #include "controllers/rpc_client.h"
 #include "controllers/rpc_params.h"
+#include "services/agent_spend_policy.h"
 #include "base/log_macros.h"
 
 /* ── THE READ SEAM ─────────────────────────────────────────────────────────
@@ -822,6 +823,40 @@ static bool vault_dispatch(const struct zcl_command_request *request,
                    "not granted", target_path);
         return false;
     }
+    /* Agent spend policy. The vault calls target->handler directly, so the
+     * TARGET never passes through execute_json — but the vault LEAF itself
+     * did, and the kernel gate already ruled on this invocation (and, for a
+     * confirmed spend, already debited it). vault_forward_keys copies `amount`
+     * and the recipient verbatim, so re-running the gate here would charge the
+     * same spend twice: a session with max_per_window == max_per_tx could
+     * never complete a single vault send, because the second check saw its own
+     * first debit and refused. `agent_policy_settled` is the kernel saying "I
+     * own the accounting for this dispatch"; the gate below therefore exists
+     * only for a caller that reached vault_dispatch WITHOUT the kernel gate,
+     * which no registry path does today and a future one must not do silently.
+     */
+    if (!request->agent_policy_settled) {
+        const char *agent_session =
+            request->context ? request->context->agent_session : NULL;
+        if (agent_session && agent_session[0]) {
+            struct agent_spend_policy_decision d;
+            bool committing = json_get_bool_or(input, "confirm", false);
+            agent_spend_policy_evaluate(agent_session, target, input,
+                                        committing, &d);
+            if (!d.allowed) {
+                vault_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
+                           ZCL_COMMAND_EXIT_DENIED,
+                           d.code[0] ? d.code : "POLICY_DENIED", "policy",
+                           false,
+                           d.detail[0] ? d.detail
+                                       : "the agent session's spend policy "
+                                         "refused this custody route",
+                           /* redacted grant id, never the bearer token */
+                           d.evidence);
+                return false;
+            }
+        }
+    }
 
     char why[192] = { 0 };
     if (!zcl_command_registry_input_validate(target, input, why, sizeof(why))) {
@@ -842,6 +877,9 @@ static bool vault_dispatch(const struct zcl_command_request *request,
         .cursor = request->cursor,
         .invoked_by_alias = false,
         .invoked_name = self->path,
+        /* Carried forward: the accounting for this invocation is already
+         * settled, so nothing further down may debit it again. */
+        .agent_policy_settled = request->agent_policy_settled,
     };
     target->handler(&routed, reply);
 

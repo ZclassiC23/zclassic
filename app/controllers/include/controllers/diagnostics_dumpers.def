@@ -638,6 +638,10 @@
                "12-call document stays behind `status --full`"),
     DIAG_LOCAL("principals", principal_dump_state_json,
                "multi-user-server identity registry: count + public projection of each principal {address, role, status, key_kind, last_login, has_znam}"),
+    DIAG_LOCAL("agent_sessions", agent_session_dump_state_json,
+               "scoped agent spend-authority grants: count; with a session_id key, the session's "
+               "{account, max_per_tx_zat, max_per_window_zat, window_seconds, window_start_epoch, "
+               "spent_in_window_zat, expires_at, revoked} projection"),
     DIAG_LOCAL("auth", auth_challenge_dump_state_json,
                "auth login-challenge nonce store: db_open + pending (unconsumed) single-use challenge count"),
     DIAG_LOCAL("self_backtrace", self_backtrace_dump_state_json,

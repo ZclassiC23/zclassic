@@ -30,6 +30,25 @@
 #include <time.h>
 #include <sqlite3.h>
 #include "util/log_macros.h"
+#include "controllers/sovereignty_controller.h"
+
+/* Sovereign guard for the three write verbs (createtoken/send/mint all spend
+ * wallet UTXOs and mutate asset state): refuse while the tip is
+ * release_assisted (borrowed shielded history, not self-folded) — same
+ * doctrine as rpc_z_sendmany / rpc_sendtoaddress. Returns true when the
+ * spend capability is granted; on refusal sets the error body and returns
+ * false via LOG_FAIL. */
+static bool zslp_sovereignty_spend_guard(struct json_value *result,
+                                         const char *verb)
+{
+    char sov_reason[96] = {0};
+    if (sovereignty_guard_allow("wallet_spend", sov_reason,
+                                sizeof(sov_reason)))
+        return true;
+    json_set_str(result, "Error: spend refused — tip is release_assisted "
+                         "(borrowed shielded history, not self-folded)");
+    LOG_FAIL("zslp", "%s: refused — %s", verb, sov_reason);
+}
 
 struct zslp_context {
     const char *datadir;
@@ -527,6 +546,8 @@ static bool rpc_zslp_createtoken(const struct json_value *params,
             "zslp_createtoken \"ticker\" \"name\" decimals supply");
         return !help;
     }
+    if (!zslp_sovereignty_spend_guard(result, "zslp_createtoken"))
+        return false; // raw-return-ok:RPC error body already set via json_set_str(result,...)
     if (!zslp_rpc_require_context(result))
         return false; // raw-return-ok:RPC error body already set via json_set_str(result,...)
     if (!zslp_parse_create_request(params, &req, result))
@@ -554,6 +575,8 @@ static bool rpc_zslp_send(const struct json_value *params,
             "zslp_send \"token_id\" \"address\" amount");
         return !help;
     }
+    if (!zslp_sovereignty_spend_guard(result, "zslp_send"))
+        return false; // raw-return-ok:RPC error body already set via json_set_str(result,...)
     if (!zslp_rpc_require_context(result))
         return false; // raw-return-ok:RPC error body already set via json_set_str(result,...)
     strict_chain_addr = (zslp_wallet() != NULL && zslp_mempool() != NULL);
@@ -600,6 +623,8 @@ static bool rpc_zslp_mint(const struct json_value *params,
             "zslp_mint \"token_id\" \"address\" amount");
         return !help;
     }
+    if (!zslp_sovereignty_spend_guard(result, "zslp_mint"))
+        return false; // raw-return-ok:RPC error body already set via json_set_str(result,...)
     if (!zslp_rpc_require_context(result))
         return false; // raw-return-ok:RPC error body already set via json_set_str(result,...)
     strict_chain_addr = (zslp_wallet() != NULL && zslp_mempool() != NULL);

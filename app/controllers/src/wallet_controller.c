@@ -7,6 +7,8 @@
 #include "controllers/wallet_shielded_controller.h"
 #include "controllers/wallet_diagnostic_controller.h"
 #include "controllers/wallet_rescan_controller.h"
+#include "controllers/sovereignty_controller.h"
+#include "controllers/agent_session_controller.h"
 #include "wallet/wallet_lock.h"
 void rpc_wallet_set_state(struct wallet *w, struct main_state *ms,
                           const char *datadir, struct wallet_sqlite *wdb,
@@ -408,6 +410,22 @@ static bool rpc_sendtoaddress(const struct json_value *params, bool help,
     RPC_HELP(help, result, "sendtoaddress \"address\" amount\n"
         "Send an amount to a given address.");
 
+    /* Sovereign guard (same doctrine as rpc_z_sendmany): refuse the spend
+     * while the tip is release_assisted (borrowed shielded history, not
+     * self-folded). This RPC backs core.wallet.transaction.send and
+     * vault.send — leaving it ungated would bypass the z_sendmany gate.
+     * Fires before wallet/param checks, identically to z_sendmany. */
+    {
+        char sov_reason[96] = {0};
+        if (!sovereignty_guard_allow("wallet_spend", sov_reason,
+                                     sizeof(sov_reason))) {
+            json_set_str(result, "Error: spend refused — tip is "
+                                 "release_assisted (borrowed shielded "
+                                 "history, not self-folded)");
+            LOG_FAIL("wallet", "sendtoaddress: refused — %s", sov_reason);
+        }
+    }
+
     struct rpc_params p;
     rpc_params_init(&p, params);
     rpc_params_expect(&p, 2, 2);
@@ -506,6 +524,22 @@ bool wallet_direct_sendtoaddress(const char *address, int64_t amount_sat,
 {
     struct wallet_rpc_context *ctx = wallet_ctx();
     (void)txid_out_size; /* always 65 bytes for hex txid */
+    /* Sovereign guard, same as both RPC send paths. Fires first. This covers
+     * the web-UI form's TRANSPARENT branch only — its shielded branch reaches
+     * z_sendmany over wv_rpc_call without passing through here, so
+     * serve_send_confirm (wallet_view_send.c) carries the guard for the form
+     * as a whole, ahead of the transparent/shielded split. */
+    {
+        char sov_reason[96] = {0};
+        if (!sovereignty_guard_allow("wallet_spend", sov_reason,
+                                     sizeof(sov_reason))) {
+            snprintf(error_out, error_out_size,
+                     "Spend refused — tip is release_assisted (borrowed "
+                     "shielded history, not self-folded)");
+            LOG_FAIL("wallet", "direct_sendtoaddress: refused — %s",
+                     sov_reason);
+        }
+    }
     if (!ctx->wallet) {
         snprintf(error_out, error_out_size, "Wallet not loaded");
         LOG_FAIL("wallet", "direct_sendtoaddress: wallet not loaded");
@@ -724,4 +758,10 @@ void register_wallet_rpc_commands(struct rpc_table *t)
     register_wallet_shielded_rpc_commands(t);
     register_wallet_diagnostic_rpc_commands(t);
     register_wallet_rescan_rpc_commands(t);
+    /* Agent spend grants ride the wallet family because that is what they
+     * bound. The node is the SINGLE writer of agent_sessions and this method
+     * is how the CLI's policy gates reach it — they run in a process with no
+     * node.db. Needs no state wiring: the service resolves node.db through
+     * app_runtime. See controllers/agent_session_controller.h. */
+    register_agent_session_rpc_commands(t);
 }

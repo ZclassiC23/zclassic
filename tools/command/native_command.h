@@ -24,6 +24,15 @@ int zcl_native_command_main(const char *root_word,
                             const char *const *args, int nargs,
                             const char *datadir, int rpc_port);
 
+/* Agent spend-policy presentation (docs/work/agent-spend-policy-design.md,
+ * "Minting + presentation"): the value of ZCL_AGENT_SESSION when set and
+ * non-empty, NULL otherwise. The argv context builder in native_command.c
+ * wires the result into zcl_command_context.agent_session; unset is the
+ * explicit local-operator exemption and leaves the omnipotent context
+ * byte-identical. Extracted so the presentation rule is unit-testable
+ * without driving the whole argv path. */
+const char *zcl_native_agent_session_env(void);
+
 /* Ensure the one-shot JSON-RPC client (datadir cookie + port) is initialized
  * from the CLI-resolved -datadir/-rpcport. Handlers that call node_rpc_call()
  * or node_rpc_client_datadir() WITHOUT going through the bridge dispatch
@@ -230,6 +239,22 @@ void zcl_native_handle_vault_swap_redeem(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 void zcl_native_handle_vault_swap_refund(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
+/* vault.session.* — scoped, revocable spend-authority grants for agents
+ * (tools/command/native_vault_session_command.c): mint/list/revoke over the
+ * agent session service (services/agent_session_service.h). Grants, not
+ * custody — no spend logic here either, and the full session token is
+ * rendered exactly once (the create commit reply); every later rendering is
+ * redacted. Bound by config/commands/vault.def. */
+void zcl_native_handle_vault_session_create(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_vault_session_list(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_vault_session_revoke(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 

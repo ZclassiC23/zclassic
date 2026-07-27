@@ -4,6 +4,7 @@
 
 #include "crypto/sha256.h"
 #include "platform/time_compat.h"
+#include "services/agent_spend_policy.h"  // lib-layer-ok:agent-spend-policy-gate
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -1558,6 +1559,8 @@ static size_t serialize_reply(const struct zcl_command_registry *registry,
                               uint64_t request_sequence,
                               int64_t elapsed_us,
                               size_t budget_bytes,
+                              bool agent_session_presented,
+                              const struct agent_spend_policy_decision *policy,
                               char *out, size_t out_size)
 {
     char request_id[48];
@@ -1586,6 +1589,33 @@ static size_t serialize_reply(const struct zcl_command_registry *registry,
     ok = ok && json_push_kv_int(&root, "budget_ms", budget_ms) &&
          json_push_kv_int(&root, "elapsed_ms", elapsed_ms) &&
          json_push_kv_bool(&root, "budget_exceeded", budget_exceeded);
+    /* Per-invocation authority block: whether THIS dispatch ran bounded by an
+     * agent grant or as the unbounded local operator. Without it, a spend by a
+     * 0.001-ZCL grant and the same spend by the omnipotent operator serialize
+     * to identical bytes, so a transcript cannot be audited for which one
+     * happened, and the exemption is only implied by absence. Present on every
+     * reply — the exemption is stated, not assumed. The grant id is always the
+     * redacted form. */
+    {
+        struct json_value auth;
+        json_init(&auth);
+        json_set_object(&auth);
+        (void)json_push_kv_str(&auth, "policy",
+                               agent_session_presented ? "bounded" : "exempt");
+        (void)json_push_kv_str(
+            &auth, "agent_session",
+            (agent_session_presented && policy && policy->evidence[0])
+                ? policy->evidence
+                : "none (local operator)");
+        if (agent_session_presented && policy) {
+            (void)json_push_kv_int(&auth, "debited_zat", policy->debited_zat);
+            if (policy->debited_zat > 0)
+                (void)json_push_kv_int(&auth, "window_remaining_zat",
+                                       policy->window_remaining_zat);
+        }
+        ok = ok && json_push_kv(&root, "authority", &auth);
+        json_free(&auth);
+    }
     if (invoked_by_alias)
         ok = ok && json_push_kv_str(&root, "canonical_path", spec->path);
     if (successful) {
@@ -1653,6 +1683,7 @@ size_t zcl_command_registry_execute_json(
 
     struct zcl_command_reply reply;
     zcl_command_reply_init(&reply, spec->output_schema);
+    struct agent_spend_policy_decision policy = { 0 };
     int64_t started_us = platform_time_monotonic_us();
     if (spec->availability == ZCL_COMMAND_PLANNED) {
         zcl_command_reply_fail(&reply, ZCL_COMMAND_STATUS_BLOCKED,
@@ -1704,18 +1735,66 @@ size_t zcl_command_registry_execute_json(
         (void)reply_add_describe_next(
             &reply, spec, "inspect required capabilities");
     } else {
-        struct zcl_command_request request = {
-            .spec = spec,
-            .context = context,
-            .input = input,
-            .view = view && view[0] ? view : "normal",
-            .budget_bytes = budget_bytes,
-            .max_items = max_items,
-            .cursor = cursor,
-            .invoked_by_alias = invoked_by_alias,
-            .invoked_name = invoked_name,
-        };
-        handler(&request, &reply);
+        /* ── agent spend policy ───────────────────────────────────────────
+         * A bounded agent session presented per-invocation
+         * (docs/work/agent-spend-policy-design.md). Placed AFTER the lane,
+         * authority and capability gates on purpose: this gate is the one
+         * that WRITES (it debits the session's rolling window), so running it
+         * ahead of the free refusals let a caller who could reach the gate
+         * drain an agent's budget with commands that were then denied anyway.
+         * Last check before the handler, first thing that costs anything.
+         *
+         * `committing` resolves the plan/commit gate the same way the handlers
+         * do, so a plan-stage preview enforces the caps without spending the
+         * window; only the confirmed invocation is debited. If the handler
+         * then fails, the debit is released below — the window tracks money
+         * that moved, not commands that were attempted. */
+        const struct json_value *confirm_v = json_get(input, "confirm");
+        bool committing =
+            spec->confirmation != ZCL_COMMAND_CONFIRM_PLAN_COMMIT ||
+            (confirm_v && json_get_bool(confirm_v));
+        agent_spend_policy_evaluate(
+            context ? context->agent_session : NULL, spec, input, committing,
+            &policy);
+        if (!policy.allowed) {
+            zcl_command_reply_fail(&reply, ZCL_COMMAND_STATUS_BLOCKED,
+                                   ZCL_COMMAND_EXIT_DENIED,
+                                   policy.code[0] ? policy.code
+                                                  : "POLICY_DENIED",
+                                   "authorize", false, false,
+                                   policy.detail[0]
+                                       ? policy.detail
+                                       : "the agent session's spend policy "
+                                         "refused this command",
+                                   /* the REDACTED grant id: a refusal says
+                                    * which grant said no, it never re-prints
+                                    * the bearer token into a transcript. */
+                                   policy.evidence);
+            (void)reply_add_describe_next(
+                &reply, spec, "inspect the session's spend policy");
+        } else {
+            struct zcl_command_request request = {
+                .spec = spec,
+                .context = context,
+                .input = input,
+                .view = view && view[0] ? view : "normal",
+                .budget_bytes = budget_bytes,
+                .max_items = max_items,
+                .cursor = cursor,
+                .invoked_by_alias = invoked_by_alias,
+                .invoked_name = invoked_name,
+                .agent_policy_settled = true,
+            };
+            handler(&request, &reply);
+            /* The debit paid for a spend. If the handler did not report a
+             * mutation, no money moved (RPC unreachable, insufficient funds,
+             * a sovereignty refusal), so the window gets it back. */
+            if (policy.debited_zat > 0 && !reply.error.mutated) {
+                agent_spend_policy_release(
+                    context ? context->agent_session : NULL, &policy);
+                policy.debited_zat = 0;
+            }
+        }
     }
 
     bool status_ok = reply.status == ZCL_COMMAND_STATUS_PASSED ||
@@ -1745,7 +1824,10 @@ size_t zcl_command_registry_execute_json(
     latency_ring_record(registry, spec, elapsed_us);
     size_t result = serialize_reply(next_registry, spec, &reply,
                                     invoked_by_alias, sequence, elapsed_us,
-                                    budget_bytes, out, out_size);
+                                    budget_bytes,
+                                    context && context->agent_session &&
+                                        context->agent_session[0],
+                                    &policy, out, out_size);
     if (result == 0) {
         static const char fallback[] =
             "{\"schema\":\"zcl.result.v1\",\"command\":\"internal\","
