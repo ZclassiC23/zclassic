@@ -126,6 +126,7 @@ gate_command() {
         check-no-stale-pinned-facts)       echo './tools/lint/check_no_stale_pinned_facts.sh' ;;
         check-no-uncited-victory)          echo './tools/scripts/check_no_uncited_victory.sh' ;;
         check-error-doc-refs)              echo './tools/lint/check_error_doc_refs.sh' ;;
+        check-api-reference-generated)     echo './tools/lint/check_api_reference_generated.sh' ;;
         check-markdown-links)              echo './tools/lint/check_markdown_links.sh .' ;;
         check-doc-inline-paths)            echo './tools/lint/check_doc_inline_paths.sh' ;;
         check-one-result-type)             echo './tools/scripts/check_one_result_type.sh' ;;

@@ -906,6 +906,7 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
         check-long-functions check-rpc-registrar check-lag-slo-observable \
         check-file-size-ceiling check-framework-filename-suffix \
         check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-no-stale-pinned-facts check-markdown-links check-doc-inline-paths \
+        check-api-reference-generated \
         check-no-new-repair-rung \
         fuzz-ci-leaks \
         soak-smoke soak-7day soak-ci test-crash-bootstrap \
@@ -5732,6 +5733,33 @@ check-error-doc-refs:
 	@echo "══ LINT: operator-named docs exist (C string literals) ══"
 	@./tools/lint/check_error_doc_refs.sh
 
+# docs/API_REFERENCE.md is GENERATED from config/commands/*.def by
+# tools/gen_api_reference.c (editorial prose lives in docs/API_REFERENCE.md.in).
+# It used to be hand-transcribed, and drifted: the page still claimed 106 leaves
+# across 41 branches long after the catalog had more than doubled. This gate
+# regenerates into a temp file and fails on any difference, so a `.def` change
+# and the reference can never disagree. Fix a failure with
+# `make docs-api-reference`, never by editing the generated page.
+# Has --selftest (plants a hand edit, proves the gate trips).
+check-api-reference-generated:
+	@echo "══ LINT: docs/API_REFERENCE.md is generated, not hand-edited ══"
+	@./tools/lint/check_api_reference_generated.sh
+
+# Regenerate the native command reference from the declarative catalog.
+API_REFERENCE_TOOL = $(BIN_DIR)/gen_api_reference
+
+$(API_REFERENCE_TOOL): tools/gen_api_reference.c \
+                       lib/kernel/include/kernel/command_registry.h \
+                       $(wildcard config/commands/*.def)
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Ilib/kernel/include -Ilib/json/include \
+	    -o $@ tools/gen_api_reference.c
+
+.PHONY: tools/gen_api_reference docs-api-reference
+tools/gen_api_reference: $(API_REFERENCE_TOOL)
+docs-api-reference: $(API_REFERENCE_TOOL)
+	@$(API_REFERENCE_TOOL) docs/API_REFERENCE.md.in docs/API_REFERENCE.md
+
 # Dev-UX: the DERIVED binary size (counterpart to the forbid gate above). Quote
 # this instead of hand-pinning a size in prose; a reviewer re-runs it to confirm.
 .PHONY: binary-size
@@ -6013,6 +6041,7 @@ LINT_GATES := \
     check-no-stale-pinned-facts \
     check-no-uncited-victory \
     check-error-doc-refs \
+    check-api-reference-generated \
     check-markdown-links \
     check-doc-inline-paths \
     check-one-result-type \

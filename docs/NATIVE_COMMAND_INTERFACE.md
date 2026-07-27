@@ -6,7 +6,8 @@ adapters
 
 This document is the grammar/tree/envelope contract. For every leaf the
 registry currently declares, see [`docs/API_REFERENCE.md`](./API_REFERENCE.md)
-(transcribed from `config/commands/`). For the practical field-by-field
+(generated from `config/commands/` by `tools/gen_api_reference.c`; regenerate
+with `make docs-api-reference`). For the practical field-by-field
 reference of the implemented agent surface (`agentops`, `agentdiagnose`,
 `healthcheck`, `agentlanes`, the service/operation catalog, and more), see
 [`docs/AGENT_API.md`](./AGENT_API.md).

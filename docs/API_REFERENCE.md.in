@@ -1,0 +1,150 @@
+# API_REFERENCE.md — the native command tree, leaf by leaf
+
+This is a **reference table**, not a spec. For the grammar, envelope shapes,
+budgets, and migration status, read
+[`docs/NATIVE_COMMAND_INTERFACE.md`](./NATIVE_COMMAND_INTERFACE.md) first —
+that document is the frozen contract; this one enumerates every leaf the
+contract currently declares. For additional native aliases and operator
+contracts (`agentops`, `agentdiagnose`, `servicecatalog`, and the ZNAM/ZMSG/
+Market/ZSWP methods), see [`docs/AGENT_API.md`](./AGENT_API.md).
+
+## Source of truth
+
+**This page is generated. Do not edit it by hand.**
+
+Every table below is emitted by
+[`tools/gen_api_reference.c`](../tools/gen_api_reference.c) directly from the
+declarative `.def` files under [`config/commands/`](../config/commands/) — the
+same files [`config/src/command_catalog.c`](../config/src/command_catalog.c)
+expands into the immutable `g_catalog_commands[]` table
+([`lib/kernel/src/command_registry.c`](../lib/kernel/src/command_registry.c)).
+The generator is a second consumer of the identical X-macro grammar, so the C
+preprocessor — not a hand-rolled parser — reads the catalog. A leaf added,
+promoted, or re-scheduled in a `.def` file shows up here the moment the page is
+regenerated, and never before or after.
+
+Editorial prose (this section, the legend, the envelope summary, and the proof
+table at the end) lives in the template
+[`docs/API_REFERENCE.md.in`](./API_REFERENCE.md.in) and is copied through
+verbatim; everything derived from the catalog replaces a
+`<!-- ZCL-GEN:… -->` marker.
+
+```bash
+make docs-api-reference      # regenerate this page from config/commands/*.def
+make lint                    # check-api-reference-generated fails on any drift
+```
+
+The drift gate is
+[`tools/lint/check_api_reference_generated.sh`](../tools/lint/check_api_reference_generated.sh):
+it regenerates into a temporary file and fails if the checked-in page differs.
+Editing this page instead of the `.def` file it came from is therefore a lint
+failure, not a silent lie.
+
+To confirm any row against a running binary:
+
+```bash
+zclassic23 discover help [path]        # branch menu — immediate children only
+zclassic23 discover describe <path>    # one leaf's full spec
+zclassic23 discover search <text>      # ≤5 ranked matches
+zclassic23 discover schema <path> --side=input|output
+```
+
+## What the catalog currently declares
+
+<!-- ZCL-GEN:counts -->
+
+## Column legend
+
+| Column | Meaning |
+|---|---|
+| **Command** | the leaf's dotted path written as CLI words (`core chain block get`), plus any declared aliases |
+| **Avail** | `ready` (dispatches now) · `compat` (metadata only; NULL handler, names a `→` fallback) · `planned` (fail-closed BLOCKED, exit 3, no handler) · 🔧 = dev-gated |
+| **Policy** | `effect / risk / authority`, then a non-`sync` mode and any confirmation ritual, then `· latency/cost` — the `zcl_command_*` enums, see `docs/NATIVE_COMMAND_INTERFACE.md` §13 |
+| **Input keys** | the leaf's allowed input keys; **bold** = `positional_keys`, the key(s) the handler requires |
+| **Output schema** | the leaf's `output_schema` id |
+| **Example** | the invocation the `.def` entry declares as its canonical example |
+| **Summary** | the leaf's one-line `summary`; for a non-`ready` leaf, its `availability_reason` follows in italics |
+
+A `ready` leaf always has a live handler in this build; a `planned` leaf always
+fails closed with `COMMAND_PLANNED` (exit 3) and no handler — never a silent
+stub. Both invariants are proven for the *whole* catalog by
+`test_command_registry_catalog.c` (`test_catalog_wellformed`,
+`test_ready_leaves_bound`, `test_planned_fail_closed`), not asserted here.
+
+**Dev-gated leaves** (🔧) are declared via `ZCL_COMMAND_DEV_READ` /
+`ZCL_COMMAND_DEV_COMMAND`. In a `ZCL_DEV_BUILD` binary (`zclassic23-dev`) they
+are `ready` with a real handler; in a release build they are honest `compat`
+stubs whose `availability_reason` and `compat_target` tell you to run the same
+command against `zclassic23-dev` instead. This page always renders the
+**release** view, so it describes the binary an operator actually ships.
+[`tools/lint/check_release_no_dev_symbols.sh`](../tools/lint/check_release_no_dev_symbols.sh)
+proves via `nm` that the release binary links none of the dev executors, so the
+distinction is structural, not a convention.
+
+**Never RPC/REST-bound**: everything under `dev.*` is checkout-local by design
+(see [`config/commands/README.md`](../config/commands/README.md): "No `lib/`
+source may include App, controller, service, or development handler headers").
+Almost every `ready` leaf under `core.*` and `ops.*` dispatches through
+`zcl_native_bridge_command` — a direct call into either a native handler body
+(`app/controllers/src/*_native_handlers.c`) or the backing JSON-RPC method,
+through the command bridge.
+
+## Roots
+
+The root order below is a wire contract, not a presentation choice.
+
+<!-- ZCL-GEN:roots -->
+
+## The tree, leaf by leaf
+
+Sections follow catalog declaration order. A branch appears only when it owns
+at least one direct leaf; a branch that exists purely to nest other branches is
+represented by its children's sections.
+
+<!-- ZCL-GEN:tree -->
+
+## Aliases
+
+Every alias resolves through the same grammar as its canonical path
+(`test_native_api_contract.c::test_root_and_discover_aliases_resolve`).
+
+<!-- ZCL-GEN:aliases -->
+
+## Shared output schemas
+
+Output schema ids carried by more than one leaf — the places where two commands
+promise the same document shape.
+
+<!-- ZCL-GEN:schemas -->
+
+## Envelope shapes (quick reference)
+
+Full spec: `docs/NATIVE_COMMAND_INTERFACE.md` §8–§9. Summary only:
+
+| Schema | When | Key fields |
+|---|---|---|
+| `zcl.command_menu.v1` | `discover help <branch>` / invoking a branch | `path`, `summary`, `registry_digest`, `children[]` (each: `path`,`summary`,`risk`,`latency`,`availability` — nothing else) |
+| `zcl.command_spec.v1` | `discover describe <leaf>` | `availability`(+`availability_reason` if non-ready), `input_schema{id,allowed_keys,positional_keys}`, `output_schema`, `policy{layer,effect,risk,scope,authority,mode,latency,cost,confirmation,...}`, `example` |
+| `zcl.command_search.v1` | `discover search <text>` | `matches[]` (≤5: `path`,`reason`,`risk`,`latency`,`availability`), `total_matches`, `truncated` |
+| `zcl.result.v1` | executing any leaf | `ok`, `status` (`passed`\|`accepted`\|`blocked`\|`failed`), `data_schema`+`data` on success, `error{code,message,phase,retryable,mutated,blockers}` on failure, `next[]` |
+
+Exit codes: `0` passed/accepted · `1` failed · `2` invalid input/unknown
+command · `3` blocked by a named precondition (includes every `planned`
+leaf) · `4` auth/capability denied · `5` transiently unavailable · `6`
+internal contract failure.
+
+## Where this is proven, not just documented
+
+| Invariant | Test |
+|---|---|
+| This page matches `config/commands/*.def` byte for byte | `tools/lint/check_api_reference_generated.sh` (lint gate `check-api-reference-generated`) |
+| Catalog well-formed, every leaf has schemas/example, ready⇒handler, planned⇒no handler | `test_command_registry_catalog.c::test_catalog_wellformed`, `test_ready_leaves_bound`, `test_planned_fail_closed` |
+| Root menu stays in budget; branch menus stay shallow | `test_command_registry_catalog.c::test_root_menu_budget`, `test_branch_menus_shallow` |
+| **Every** branch menu lists only its own immediate children, fixed 5-field shape | `test_native_api_contract.c::test_every_branch_menu_lists_only_own_children` |
+| **Every** leaf's dotted path resolves 1:1 through its space-separated CLI words | `test_native_api_contract.c::test_every_leaf_dot_path_resolves_from_cli_words` |
+| Declared aliases resolve through the same grammar | `test_native_api_contract.c::test_root_and_discover_aliases_resolve` |
+| Search returns ≤5 ranked matches | `test_command_registry_catalog.c::test_search_bounded` |
+| Missing required input fails closed with a structured `zcl.result.v1` error, not a silent pass | `test_command_registry_catalog.c::test_ops_state_requires_subsystem`; `test_native_api_contract.c::test_missing_required_input_fails_closed_structured` |
+| `dev.*` leaves are release-`compat`, never falsely `ready` | `test_command_registry_catalog.c::test_dev_branch_leaves`, `test_dev_vcs_revert_release_stub`, `test_dev_vcs_seal_grant_release_stub` |
+| Every bridged `ready` leaf has exactly one dispatch binding (body fn XOR direct RPC) | `test_command_registry_catalog.c` bridge-binding coverage |
+| Release binary links no dev-mutation executor symbols | `tools/lint/check_release_no_dev_symbols.sh` |
