@@ -120,6 +120,14 @@ lint gate" is in `docs/CODEBASE_MAP.md`.
   library objects and does not link** — `src/main.c` and the binaries are never
   built, so it cannot catch a broken entry point, a missing symbol, or a link
   gap. Green here is not green.
+- Compile epochs are **toolchain+flags-keyed** (since 2026-07-27): a source
+  edit recompiles only the stale TUs (timestamp+depfile) inside the stable
+  `build/*/epochs/<epoch>/` dir — a one-line `.c` edit is ~2 compile
+  invocations (the TU + the identity TU `clientversion.o`, which always
+  rebuilds on a source-identity move via `BUILD_IDENTITY_STAMP`). Only a
+  Makefile/flags/toolchain edit re-keys the epoch and rebuilds everything;
+  that includes per-object CFLAGS override lines, which ride the
+  `BUILD_SYSTEM_ID` Makefile fingerprint.
 - `make -j$(nproc)` — full build (`zclassic23`, `test_zcl`, `zclassic-cli`).
 - `make test` / `make test-parallel` — the canonical test runner. **Use this, not `test_zcl`.**
 - `make t-fast ONLY=<substr>` — one focused run. `ONLY=` is a **substring**

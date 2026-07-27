@@ -84,7 +84,7 @@ and need a reconcile pass.
 
 | Branch | What it does | Why it is not in `main` |
 |---|---|---|
-| `perf/stable-objdir-and-gold-linker` | Stops relocating all 1883 objects on every edit; per-object attestation replaces the whole-tree key. **5x less CPU per edit, independently reproduced.** | Wall time got ~11% WORSE on a 32-core box — the wasted work was hiding in spare cores, and the new per-link verifier costs ~1s. Also: editing a per-object CFLAGS line in the Makefile changes no source file, so the toolkey does not move and a stale object survives — a real regression against the guarantee it replaces. And `check-build-epoch-integrity` can now report PASS while nothing ran (its cache key omits the two new scripts; copy-proven). |
+| `perf/stable-objdir-and-gold-linker` | Stops relocating all 1883 objects on every edit; per-object attestation replaces the whole-tree key. **5x less CPU per edit, independently reproduced.** | Wall time got ~11% WORSE on a 32-core box — the wasted work was hiding in spare cores, and the new per-link verifier costs ~1s. Also: editing a per-object CFLAGS line in the Makefile changes no source file, so the toolkey does not move and a stale object survives — a real regression against the guarantee it replaces. And `check-build-epoch-integrity` can now report PASS while nothing ran (its cache key omits the two new scripts; copy-proven). **Goal achieved differently 2026-07-27 (item 2 below): toolchain+flags epoch key + `BUILD_SYSTEM_ID`, no per-object verifier; all three defects closed. This branch is superseded.** |
 | `lane/testcache-soundness-phase0` | Fixes three live soundness bugs in the test skip-cache: `.def` files were absent from the key, the key bound the compiler but not the flags (an `-O1` pass was honoured by the `-O3` gate), and a fresh tree silently produced a header-free key. Toolkeys now differ per profile, proven by `strings` on the binaries. | One of its own new assertions passes on the unmodified code too, so it pins nothing. It also mutates `ZCL_STRESS_TESTS` without restoring it, which suppresses coverage in the sequential runner, and its Makefile-scanning helper reads only the first 256 KB of a 327 KB file. |
 | `lane/module-linkgraph-enforcement` | Measures the module graph from the linker (`nm`), declares the rank order in a `config/lib_module_order.def` that exists only on that branch, and adds two gates. Also fixes a real bug: the code index skipped `epochs/`, which is where 100% of live depfiles are, so its include graph was empty. | `check-no-cross-layer-extern` false-fails on a clean tree whenever the only warm object tree is a test tree — proven end-to-end with no env override. The gate docstrings also claim a full `make` arms them; it does not (a full `make` produces zero `.o` files). | <!-- doc-path-ok: config/lib_module_order.def exists only on that unmerged branch -->
 | `wf/measure` | Block-fold pipeline instrumentation. | Never reviewed: it wraps every stage, so it needs a deliberate overhead measurement before landing. Its profiling datadir copy (`~/.zclassic-c23-COPY-20260725-001046-fold-profile`, 17 GB) is intentionally left in place — delete it if this lane is abandoned. |
@@ -111,38 +111,79 @@ evidence and left deliberately, not forgotten.
    sends only headers. This affected **every** native read body, not just this
    leaf.
 
-   The 10 s latency on that command is a **third, still-open** defect and is
-   node-side, not command-side: `getbalance` and `listunspent` stall ~10 s in
-   bursts while `getblockcount` and `dumpstate` never do, i.e. it is node.db
-   contention, not the RPC server. `node.log` shows the cause — the SQLite
-   catchup service re-scans the same 2,829-block range in a write transaction
-   every ~13 s and its `COMMIT` fails with *"cannot commit transaction - SQL
-   statements in progress"* (a statement left open on the shared connection),
-   so it aborts, retries forever, and holds the write lock ~10 s each round
-   while everything else logs `database is locked`. Start at
-   `node_db_catchup_service_run` (`app/services/src/node_db_catchup_service.c`,
-   the `catchup: initial COMMIT failed — aborting` path). Not touched here: it
-   needs a copy-proven fixture, and the live node is mid-hold.
-2. **The compile epoch is the whole build-loop lever.** `zcl_compile_epoch`
-   (`Makefile:626`) keys the object directory on a whole-tree content hash, so
-   there is no per-TU incremental compile: any edit recompiles all 1,182 TUs.
-   Measured, one-line edits: `.c` ~8.7s, header ~9.0s — identical, because both
-   rebuild everything. Re-key the epoch on toolchain and flags only. Note this
-   kills a tempting design: an interface/implementation header hash split pays
-   **nothing** until the epoch changes, because the epoch, not the include
-   graph, is what triggers the rebuild.
+   The 10 s latency on that command was a **third defect — CLEARED by the
+   2026-07-27 05:36 process restart, root cause still unknown.** The previous
+   process ran poisoned from ≥2026-07-24 09:00 until the restart: every
+   catchup `COMMIT` failed *"cannot commit transaction - SQL statements in
+   progress"* (`catchup: initial COMMIT failed — aborting`, 13k+ consecutive
+   failures, every ~13–19 s) while other writers logged `database is locked`
+   in bursts. Since the restart: zero recurrences, catchup completes 1-block
+   passes, `getbalance`/`listunspent` answer in ~0.02 s (first call 3 s cold).
+
+   What is established: that exact error string is emitted only from the
+   `db->nVdbeWrite>0` COMMIT guard (`vendor/sqlite3.c:97501`) — i.e. a write <!-- doc-path-ok: vendored sqlite3 amalgamation exists on disk but is git-ignored -->
+   VM (INSERT/UPDATE/DELETE, incl. `…RETURNING`) was left in `VDBE_RUN_STATE`
+   on the shared node.db handle of the old process. It is **runtime-only
+   state**: a fresh boot on a crash copy of the same datadir
+   (`ZCL_DB_TXN_TRACE=1` probe, 170 s, isolated ports) showed zero busy
+   statements and a clean catchup; the poison is not in the datadir. A
+   100 %-persistent RUN write VM points to a thread parked mid-`sqlite3_step`
+   (or abandoned between step and reset) on the main handle — not found by
+   static audit; the only `RETURNING` writer (`db_app_event_save`,
+   `app/models/src/app_event.c:206`) finalizes correctly.
+
+   If it recurs: the process is poisoned until restart, and
+   **`ZCL_DB_TXN_TRACE=1` names the culprit** — a RUN write VM forces
+   `txn_state=WRITE`, so the tracer's busy-stmt walk fires every 3 s and logs
+   the exact SQL (`lib/util/src/db_txn_trace.c`). Enable it at the next
+   owner-gated deploy. **Live gdb is unblocked (2026-07-27):** commit
+   `f191bbf9c` was rebuilt byte-identical in
+   `~/github/zclassic23-dbg-f191bbf9c` (sha256
+   `63c8206c…df70d49d`, build-id match) and the matching
+   `zclassic23.debug` (CRC `0x5b202eb1`, verified against the live binary's
+   `.gnu_debuglink`) is installed at `~/.local/bin/zclassic23.debug` —
+   `gdb -p <live-pid>` now resolves full DWARF. Repro note for future
+   two-builder proofs: `make worktree-prime` copies `vendor/lib` but NOT
+   `vendor/include`; the 135 generated OpenSSL headers + `zconf.h`/`zlib.h`
+   must be copied too or `source-identity.sh` mints a different
+   `ZCL_BUILD_SOURCE_ID` (84-byte binary diff). Live binary facts: real Tor
+   (`vendor/tor` @ `b65701fe`), no `ZCL_WITH_RUST`, GCC 15.2.1.
+2. **DONE 2026-07-27 — the compile epoch is re-keyed on toolchain+flags; incremental rebuilds are incremental again.** `zcl_compile_epoch` (`Makefile`, `define zcl_compile_epoch`) no longer binds the whole-tree source id/mutation. The epoch key is now: compiler/toolchain fingerprint + profile name + effective compile flags + effective link flags + `BUILD_SYSTEM_ID` (new `build-epoch-key.sh build-system-id` mode: the root Makefile — every flag variable and per-object override — plus the four epoch driver scripts). A source edit recompiles only make's stale TUs in the STABLE epoch; a Makefile/flags/toolchain edit busts every epoch. Identity freshness is unchanged: every profile's `clientversion.o` depends on `$(BUILD_IDENTITY_STAMP)`, so a source-identity move rebuilds it and relinks every binary (proven: after a one-line edit the dev binary's baked `ZCL_BUILD_SOURCE_ID` updates in the stable epoch dir). Measured (`docs/BENCHMARKS_LOG.md` 2026-07-27): one-line `.c` edit 1199→2 compile invocations, header edit 1199→4, ~35s→~7s CPU per edit; wall ~7s→~6.3s (the floor is parse-time source capture, not compilation). The three defects that sank `perf/stable-objdir-and-gold-linker` are closed: per-object CFLAGS edits move `BUILD_SYSTEM_ID` (proven: dev epoch re-keys, all 1207 dev TUs scheduled); the `check-build-epoch-integrity` cache key now includes the cache driver itself plus every script the probes read (proven: editing an input forces a real ~12.7s rerun, no stale PASS); no per-object verifier was added — the win is make's normal timestamp+depfile incrementality. Known residual vs the old design: the ABA quarantine-by-namespace is gone (a compile racing an edit in the same seconds window can leave a newer-than-source object; publish-time verify-record still refuses the binary). `build-epoch-selftest.sh` was rewritten for the new semantics (stable namespace across A→B→A, all five key inputs bound, retired 7-arg derivation fail-closed, source-bound publish preserved).
 3. **A passing test can still be hollow.** The wallet plan bug survived because
    its test asserted on the in-memory reply struct, which was correct, while
    the serializer that the caller actually reads never emitted the field. The
    rewritten test (`lib/test/src/test_native_api_contract.c`) executes through
    `zcl_command_registry_execute_json` and asserts on rendered bytes. Any new
-   command test should do the same. Assume sibling command tests have the same
-   hole until checked.
-4. **One unexplained log line.** `test_native_api_contract` emits a single
-   `MISSING_ADDRESS` ERROR that was absent before the test rewrite. The test
-   passes and its assertions were proven non-hollow by deliberately breaking
-   them, and the handler is invoked exactly once — but the log's origin was
-   never run to ground. It is a loose thread, not a known-benign one.
+   command test should do the same. **Sibling sweep DONE 2026-07-27:** all 9
+   other test files that call `zcl_native_handle_*` directly were checked.
+   The architecture limits the blast radius — `serialize_reply`
+   (`lib/kernel/src/command_registry.c:1625`) copies `reply.data` wholesale,
+   so a per-field drop like the wallet bug is impossible by construction;
+   what a never-rendering test CANNOT see is whole-envelope failure
+   (`write_bounded_json` budget overflow, `next`-array self-name rejection —
+   the actual shipped bug). Narrow hole (never renders):
+   `test_offline_datadir_query.c` (top rewrite candidate — rows payload can
+   realistically exceed `ZCL_COMMAND_RESULT_BUDGET` → production
+   `EXECUTE_FAILED` while the test stays green), `test_code_capsule.c`
+   (largest payloads), `test_operator_ux.c` (5 success paths, zero
+   rendering), `test_code_impact.c` (minor — already budget-fit renders),
+   `test_vault_session.c` / `test_vault_dispatch.c` (low value — asserted
+   fields live in generically-serialized portions). Already render-through:
+   `test_code_merkle.c`, `test_code_emitter.c`. False alarm:
+   `test_rom_fetch.c` (error-only paths; `push_error` is generic).
+4. **RESOLVED 2026-07-27 — the `MISSING_ADDRESS` ERROR line is the handler's
+   own error-path logging, working as designed.** `test_native_api_contract`
+   step 5 deliberately drives `zcl_native_handle_wallet_transaction_send`
+   with an empty input object (`test_native_api_contract.c:911-924`) to
+   prove the missing-key path fails closed; the handler's `wnh_fail`
+   (`app/controllers/src/wallet_native_handlers.c:183`) calls
+   `LOG_ERROR(WNH_TAG, "%s: %s (%s)", code, …)` on *every* failure —
+   including this intentional one. The pre-rewrite test asserted on an
+   in-memory struct without executing the real handler, so it never
+   triggered the log. One ERROR line per negative test of an error path is
+   the defensive-coding contract doing its job, not a defect. (If the noise
+   ever bothers anyone, the fix would be a client-input-vs-internal
+   severity split in `wnh_fail` — a style decision, not a bug.)
 5. **ZNAM and market write verbs are unrouted.** They are registered `PLANNED`
    with NULL handlers, so the vault can report those classes but cannot act on
    them. The market class is additionally the one vault row graded
@@ -161,6 +202,148 @@ evidence and left deliberately, not forgotten.
    green). Three lane designs were returned and saved under
    `~/.claude/plans/`; worktrees `zclassic23-onto-{a,b,c}` exist with no
    commits. Nothing depends on it.
+8. **Boot crash-loop on corrupt block-index flat file — root-caused, fix
+   landed (ungated, uncommitted).** Evidence: 2026-07-27 04:19 the poisoned
+   2d13h process (item 1) was cleanly stopped; every boot for the next hour
+   then died to the 2-min systemd watchdog (8 SIGABRTs in `crash_log.txt`,
+   each a fresh PID in `main`→`sleep`). Mechanism: the flat file's tip hash
+   mapped to height −1 vs the SQLite store
+   (`Block index flat: tip hash maps to wrong height (-1 vs SQLite …)`), so
+   `rung_taint_load` (`config/src/boot_blkidx_ladder.c:115`) dropped `loaded`
+   and set `flat_union_tainted`, forcing the multi-minute blocks-table
+   hydrate / LevelDB reload — which pumped NO boot-liveness marker, so the
+   watchdog killed the boot at 2 min; the deliberate "healed map persisted
+   only at shutdown" guard then re-infected the next boot, sustaining the
+   loop until a warm-page-cache boot finally finished in time (~05:34, the
+   current healthy process). Fix: `boot_progress_note()` every 4096 rows in
+   the hydrate validate/insert/link passes
+   (`app/services/src/block_index_blocks_hydrate.c`) and in the LevelDB guts
+   walk (`lib/storage/src/block_index_db.c`) — the same primitive the flat
+   loader already pumps. The taint guard itself is untouched (persisting
+   the union mid-boot would launder the poison record). Regression test:
+   `test_block_index_loader.c` §15b asserts >4096 hydrate rows advance
+   `boot_progress_marker()`; a `test_chain.c` sibling asserts the same for
+   the LevelDB guts walk. Remaining: full
+   `make lint && make test-parallel` gate, then owner-gated deploy. If the
+   loop ever recurs pre-deploy, the escape is what happened on its own:
+   repeat boots until one completes inside the window.
+
+9. **C6 soak can never accrue on the current datadir — the blocker chain is
+   structural, not a flag to clear.** Diagnosed read-only 2026-07-27.
+   `mvp_gate.sh` hard-gates soak accrual on `security_posture_ok`
+   (`tools/mvp_gate.sh:339`): `review_required` → `NOT_MET` regardless of
+   uptime. The live posture is `review_required_bootstrap_trust` with
+   `next_action=finish_sovereign_refold_and_full_history_validation`
+   (`app/controllers/src/agent_security_posture.c:338`), i.e.
+   `trusted_state_present || !full_history_validation_complete`. Live
+   evidence (`dumpstate chain_evidence_controller`): `snapshot_anchor=-1`,
+   `snapshot_evidence.source_class="unknown"`, every verify flag false;
+   `dumpstate bg_validation`: `verified_height=-1`, idle, zero sigs/proofs.
+   Root cause: the datadir is snapshot-seeded
+   (`reducer_trusted_base_height=3195552` in `operatorsnapshot`) — block
+   bodies below the seed floor were never downloaded, so genesis-to-tip
+   full-history validation is impossible *on this datadir*, which is also
+   why the `address_index.below_snapshot_seed` / `txindex` blockers are
+   permanent there ("backfill cannot fold at height 0 … no source"). The
+   only clearing path is the sovereign cure itself (self-verified-tip-plan:
+   fold real bodies from genesis/anchor → CEC `FULLY_VALIDATED` with origin
+   `GENESIS_HISTORY` → `trusted_state_present` flips false). Consequences:
+   (a) C6's 168h clock has not started and cannot start pre-cure — do not
+   read uptime as soak progress; (b) the cure must run copy-proven on a
+   datadir copy per the runbook, then the soak window restarts on the
+   post-cure datadir; (c) any "just clear the flag" change is a
+   gate-weakening — refuse it.
+10. **First genuine wipe→tip stopwatch run: STALLED-NAMED at h=0 for the
+    full 606s (2026-07-27).** `make mvp-coldstart-to-tip-stopwatch` (empty
+    `/tmp` datadir, isolated `$HOME`, `-nolegacyimport`, no bundle/snapshot
+    flags, one synced peer) never made progress: H\*=0 against
+    network_tip=3195667 in every sample; exit 4. Artifact:
+    `build/c3-stopwatch/20260727T080317Z-3413759/`. Named blockers:
+    `bootstrap.no_state_source` ("the node is doing full from-genesis IBD"
+    — but it didn't), `proof_validate.stale_upstream_hash` (fired 312×:
+    holds until script_validate publishes a receipt for the selected
+    branch), `sync_rate_below_floor`, and two sticky-escalator rows.
+    **DIAGNOSED 2026-07-27 — two independent wedges, either alone pins
+    H\*=0 forever (both confirmed in code AND artifacts):**
+    **Wedge A (reducer-side):** the synthetic genesis `block_index` entry
+    is inserted with `nVersion=0` (never populated,
+    `app/services/src/block_index_loader.c:783-793`), so
+    `validate_headers_default_validator` terminal-fails height 0
+    (`version-too-low`, `validate_headers_validator.c:479-483`;
+    `stage-validate_headers.json`: `failed_total=1 first_failed_height=0`).
+    `body_fetch` skips h0, `script_validate` publishes `upstream_failed`,
+    and `proof_validate` dead-waits on a receipt that can never exist —
+    the `stale_upstream_hash` ×312. Fires even with a perfect network.
+    Fix: populate the real genesis header fields (the real ZCL genesis IS
+    v4 — the live node.db `blocks` row confirms version=4 at h=0), or
+    exempt the genesis hash from the version gate (mirroring existing
+    exemptions in `check_block.c:301`, `accept_block_header.c:221,319`).
+    **Wedge B (network-side, hits every snapshot-seeded SERVER):** the
+    hydrated in-memory index carries no Equihash `nSolution`
+    (`block_index_blocks_hydrate.c:441-478`), so
+    `headers_index_header_servable` (`lib/net/src/msg_headers.c:304-342`)
+    builds a header with `nSolutionSize=0` → `invalid-solution` → refuse;
+    the node.db `blocks` row HAS the full 1344-byte solution but the serve
+    path never consults it. Confirmed in the LIVE peer's own log at
+    08:03:26Z: `getheaders: refusing to serve header 0004b371… h=1
+    reason=invalid-solution`. Companions: the successor walk re-queries
+    the same failed h=1 entry 64× → 0-header reply
+    (`msg_headers.c:344-365`), and `msg_headers.c:334-335` sets
+    `BLOCK_FAILED_VALID` for what is a data-AVAILABILITY failure (watch
+    the persisted-FAILED reconcile on the live peer's next flat-cache
+    save). Fix: node.db-blocks fallback in the serve path (pattern:
+    `header_from_node_db_block`), no FAILED_VALID for availability, and a
+    successor walk that actually advances. The getheaders LOCATOR was NOT
+    the bug — `peer_start_h=3195667` is only the peer's advertised
+    starting_height for interval math; the wire locator was genesis
+    (`msg_headers.c:1213`). The `catchup: final commit missing tip hash`
+    loop is a downstream symptom (zero indexed blocks → NULL
+    last_indexed_tip), not a cause. **Measurement trap that
+    cost one wrong read:** `zclassic23 dumpstate` IGNORES the
+    `ZCL_DATADIR`/`ZCL_RPCPORT` env vars — a probe aimed at the stopwatch
+    node silently read the live node instead (reported H\*=tip, the live
+    node's value). Aim dumpstate probes with explicit flags, or read the
+    harness's own samples. The working form (verified against the live
+    node): `zclassic23 -datadir=DIR -rpcport=PORT dumpstate <sub>` — the
+    RPC cookie is per-datadir, so BOTH flags are needed; env vars only
+    affect the separate `zcl-rpc` binary.
+11. **DONE 2026-07-27 — stale `.failed` bundle markers now cleared on
+    successful install.** Found in the canonical datadir: a watchdog-killed
+    boot (the item-8 crash-loop morning) marked
+    `bundles/consensus-state-bundle-3056758.sqlite.failed` at 04:28; a later
+    boot installed the bundle successfully (05:37), but nothing cleared the
+    marker — and `boot_autodetect_consensus_bundle` skips marked bundles by
+    design, so every future autodetect scan (e.g. on a copy-prove datadir
+    copy, the recovery doctrine) would silently ignore the GOOD bundle. Fix:
+    `boot_auto_install_clear_failed_marker()` (new, exported per the
+    `boot_post_install_fold_span_check` testability precedent,
+    `config/src/boot_auto_install_bundle.c`) called at both install-success
+    branches (autodetect + install-on-next-boot request). Regression test:
+    `case_failed_marker_cleared_on_success` in
+    `test_consensus_state_install_runtime.c` (marked → skipped, cleared →
+    detectable, idempotent/NULL-safe). The live datadir's stale marker can
+    be removed by hand at the next owner-gated maintenance window
+    (`rm ~/.zclassic-c23/bundles/*.failed` — the bundle beside it is the
+    good 05:37 install).
+12. **`catalog.op_return_index.lag_exceeded` on the live node is the item-9
+    structural class wearing a misleading name.** The blocker says "cursor
+    frozen at -1 … backfill service is stalled and must resume" (87 fires,
+    age ~2.8h), but the mechanism is the same snapshot-seed floor as
+    `address_index.below_snapshot_seed` / `txindex.below_snapshot_seed`:
+    `op_return_backfill_run_once` (`app/services/src/
+    op_return_backfill_service.c:123`) walks from cursor+1=0 and dies on the
+    first height — `active_chain_at(0)` has no `BLOCK_HAVE_DATA` because
+    bodies below 3195552 were never downloaded. It can NEVER resume on this
+    datadir. Two honest options, not yet picked: (a) teach the backfill to
+    start at `reducer_trusted_base_height` on seeded datadirs — but the
+    index folds a running digest from genesis, so a mid-chain start
+    diverges from any from-genesis peer's digest (the fold is
+    order-committed; see the oversize-block comment at
+    op_return_backfill_service.c:150-155) — the digest contract must be
+    amended deliberately, not hacked; (b) give op_return_index the same
+    `below_snapshot_seed` typed blocker the other two indexes have, so the
+    live blocker board stops claiming a resumable stall. Until the
+    sovereign cure lands, (b) is the truth-preserving move.
 
 Standing pattern behind items 1, 5, and much of the above: **when one fact has
 two writable copies, fix it by deleting a copy, never by adding a
@@ -177,9 +360,10 @@ optimising anything here — two confident hypotheses died against these numbers
 - The bare link over 1883 objects is **0.90s** (`ld.bfd`) / **0.58s** (`ld.gold`).
   It is not the bottleneck, despite `ZCL_DEV_LINKER` resolving to empty on this
   host and the gating lane never referencing it. Both true, both worth ~0.3s.
-- The one-file rebuild cost is the compile-epoch churn: the object directory is
-  keyed on a whole-tree content-and-stat hash, so one edit — even `touch` with
-  no change — relocates every object and re-invokes every recipe.
+- ~~The one-file rebuild cost is the compile-epoch churn~~ **FIXED 2026-07-27**
+  (item 2 above): the epoch no longer re-keys on source edits, so one edit
+  recompiles only the stale TUs. The remaining per-edit wall floor is the
+  parse-time source-identity capture + session acquire (~6s), not compilation.
 - The remaining large lever is the ~36% of test objects that a node-header edit
   used to dirty; the header split took a real edit from 680 recompiles to 9.
 

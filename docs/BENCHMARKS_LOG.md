@@ -233,3 +233,38 @@ The one-file delta is therefore the compile-epoch churn: the object directory is
 keyed on a whole-tree content-and-stat hash, so a single edit relocates all 1883
 objects to a new `epochs/<hash>/` directory and Make re-invokes the compile
 recipe for every one, each spawning ~13 processes before reaching ccache.
+
+## 2026-07-27 — compile epoch re-keyed on toolchain+flags (incremental rebuilds restored)
+
+Host: 32 core / 93 GB, HEAD `e369ca3b4` + working-tree change, gcc, ccache enabled.
+`zcl_compile_epoch` no longer binds the whole-tree source id/mutation; it binds
+compiler fingerprint + profile + effective compile/link flags + BUILD_SYSTEM_ID
+(root Makefile + the four epoch driver scripts). Per-TU freshness rides make's
+timestamp+depfile graph; `clientversion.o` still rebuilds via
+`BUILD_IDENTITY_STAMP` on every source-identity move (identity proof below).
+Counts are compile-recipe invocations from `make build-only -n`; wall is the
+real `make -j32 build-only` run immediately after.
+
+| Probe | TUs recompiled (before → after) | Wall (before → after) |
+|---|---|---|
+| no change | 0 → 0 | 7.0s → 6.2–7.0s |
+| one-line `.c` edit (`src/main.c`*, `lib/net/src/addrman.c`) | 1199 → 2 (TU + `clientversion.o`) | 7.0s → 6.3s |
+| narrow header edit (3 dependents, `event_controller.h`) | 1199 → 4 (3 + `clientversion.o`) | 6.9s → 6.4s |
+| `BUILD_ONLY_CFLAGS` flags edit (reverted) | 1199 → 1199 (new epoch, by design) | — |
+| per-object `DEV_COMPILE_CFLAGS` override edit (reverted) | epoch did not move → dev epoch re-keys, all 1207 dev TUs scheduled | — |
+
+*`src/main.c` is node-entry, not in `build-only`'s object set — its "1 TU" run
+was the identity TU alone; the `addrman.c` row is the real per-TU proof.
+
+CPU per edit (user+sys): ~35s → ~7s. Remaining wall floor is parse-time source
+capture + session acquire (~6s no-change), not compilation.
+
+Identity freshness proof: one-line `addrman.c` edit → `make fast-rebuild` →
+`strings build/bin/zclassic23-dev` contains the NEW `capture-record` source id
+(2 hits), old id 0 hits — identity TU rebuilt and binary relinked inside the
+STABLE epoch dir.
+
+Integrity-cache proof: warm run prints cached PASS; after a one-line comment
+edit to `tools/dev/build-epoch-selftest.sh` (or to the cache driver itself —
+now a key input) the next run prints `cache MISS` and re-executes both probes
+for real (~12.7s), then re-caches.
