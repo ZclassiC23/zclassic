@@ -111,6 +111,19 @@ idempotent re-settle rejection; reorg of the settlement tx returns the window
 to the queue; estimator output is deterministic for fixed inputs and matches
 the per-action formulas.
 
+## Governance: none (owner correction 2026-07-27)
+
+ZClassic is pure PoW consensus — **there is no voting, and ZCODE does not
+add one.** An earlier draft of this section sketched token-weighted votes
+(pin lists, quota changes), a `ZGOV` OP_RETURN vote service, a ZNAM
+governance token, and GG20 threshold-signature ratification. All of that is
+cut: no voting machinery, no governance tokens, no threshold-MPC slice.
+ZCODE policy decisions (verifier-key set, scoring constants, quota defaults,
+pin lists) are made by the owner through the same reviewed plan/commit flow
+as rewards and badges. GG20-in-C23 remains a note here only as a possible
+future building block if a concrete multisig need ever appears; nothing is
+scheduled.
+
 ## Typed commands (one branch)
 
 `zcode package publish plan|commit`, `search|show|fetch|pin|unpin|peers|verify`;
