@@ -10,7 +10,26 @@ SELF_REL='tools/scripts/check_stable_publish_containment.sh'
 # JSON/TOML configuration, and named extensionless automation files. This is a
 # textual tripwire, not a parser or a proof against every bespoke transport;
 # the actual stable entrypoints are separately asserted hard-contained below.
-PATTERN='gh[[:space:]]+release[[:space:]]+(create|upload)|"gh"[[:space:]]*,[[:space:]]*"release"[[:space:]]*,[[:space:]]*"(create|upload)"|gh[[:space:]]+api.*(/releases|uploads\.github\.com)|hub[[:space:]]+release[[:space:]]+(create|edit)|glab[[:space:]]+release|git[[:space:]]+push.*(--tags|refs/tags|\$TAG)|actions/(create-release|upload-release-asset)|softprops/action-gh-release|ncipollo/release-action|uploads\.github\.com/[^[:space:]]*/releases|aws[[:space:]]+s3[[:space:]]+(cp|sync)|gsutil[[:space:]]+(cp|rsync)|python(.*)-m[[:space:]]+twine[[:space:]]+upload|scp[[:space:]].+[^[:space:]]:[^[:space:]]|rsync[[:space:]].+[^[:space:]]:[^[:space:]]|curl.*(--upload-file|-T[[:space:]]|-X[[:space:]]*(POST|PUT)|--request[[:space:]]*(POST|PUT)).*(release|upload|artifact|s3|gitlab)'
+PATTERN_PUBLISH='gh[[:space:]]+release[[:space:]]+(create|upload)|"gh"[[:space:]]*,[[:space:]]*"release"[[:space:]]*,[[:space:]]*"(create|upload)"|gh[[:space:]]+api.*(/releases|uploads\.github\.com)|hub[[:space:]]+release[[:space:]]+(create|edit)|glab[[:space:]]+release|git[[:space:]]+push.*(--tags|refs/tags|\$TAG)|actions/(create-release|upload-release-asset)|softprops/action-gh-release|ncipollo/release-action|uploads\.github\.com/[^[:space:]]*/releases|aws[[:space:]]+s3[[:space:]]+(cp|sync)|gsutil[[:space:]]+(cp|rsync)|python(.*)-m[[:space:]]+twine[[:space:]]+upload|curl.*(--upload-file|-T[[:space:]]|-X[[:space:]]*(POST|PUT)|--request[[:space:]]*(POST|PUT)).*(release|upload|artifact|s3|gitlab)'
+
+# Host-to-host file transfer, split out from the publication primitives above.
+#
+# Copying a file to a machine is not the same act as creating a release, and
+# conflating them made this gate refuse operator fleet deployment — installing
+# a binary the operator built onto a host the operator owns and already runs
+# the service on. That is the opposite of an unsigned artifact escaping to
+# third parties: nothing is published, nothing is advertised, and no consumer
+# can fetch it. The exemption is a SINGLE path (below), and PATTERN_PUBLISH is
+# still scanned in that path too, so the fleet-deploy tool cannot grow a
+# `gh release create` or an `aws s3 cp` without tripping. The self-test pins
+# both halves: a transfer outside the exempt path trips, and a publication
+# primitive inside the exempt path trips.
+PATTERN_TRANSFER='scp[[:space:]].+[^[:space:]]:[^[:space:]]|rsync[[:space:]].+[^[:space:]]:[^[:space:]]'
+
+# The one operator fleet-deploy entrypoint. Keep this list at exactly one entry
+# unless there is a reason a second tool must move bytes between owned hosts;
+# every addition widens what this gate stops seeing.
+TRANSFER_EXEMPT_REL='tools/ship.sh'
 
 resolve_scanner()
 {
@@ -52,7 +71,7 @@ containment_hits()
         --include='Jenkinsfile*' --include='Justfile' \
         --include='Taskfile' --include='*.service' --include='*.timer' \
         --exclude-dir=build --exclude-dir=vendor --exclude-dir=test-tmp \
-        -e "$PATTERN" "${paths[@]}"; } 2>&1)"
+        -e "$PATTERN_PUBLISH|$PATTERN_TRANSFER" "${paths[@]}"; } 2>&1)"
     rc=$?
     set -e
     if (( rc > 1 )); then
@@ -61,10 +80,28 @@ containment_hits()
         return 3
     fi
     [[ -n "$output" ]] || return 0
-    # Exclude only this gate's own pattern/self-test text.  awk has a useful
-    # zero-match exit status, unlike an unguarded rg-v pipeline under pipefail.
+    # Two exclusions, and only two:
+    #   1. this gate's own pattern/self-test text;
+    #   2. lines in the operator fleet-deploy tool that matched ONLY the
+    #      host-to-host transfer pattern. A line there that also matches a
+    #      publication primitive is re-tested and still reported, so the
+    #      exemption cannot be used to smuggle a release out.
+    # awk has a useful zero-match exit status, unlike an unguarded pipeline
+    # under pipefail.
     printf '%s\n' "$output" |
-        awk -v self="$SELF_REL:" 'index($0, self) != 1 { print }'
+        awk -v self="$SELF_REL:" 'index($0, self) != 1 { print }' |
+        while IFS= read -r line; do
+            case "$line" in
+                "$TRANSFER_EXEMPT_REL":*)
+                    body="${line#*:}"; body="${body#*:}"
+                    if printf '%s' "$body" | "$grep_bin" -qE "$PATTERN_PUBLISH"
+                    then
+                        printf '%s\n' "$line"
+                    fi
+                    ;;
+                *) printf '%s\n' "$line" ;;
+            esac
+        done
 }
 
 known_entrypoints_contained()
@@ -169,10 +206,26 @@ if [[ "${1:-}" == "--self-test" ]]; then
         'command = "aws s3 cp artifact s3://stable/releases/"'
     selftest_bad_fixture extensionless Dockerfile \
         'RUN gh release create forbidden'
+    # The transfer exemption is one path wide. A transfer from ANY other tool
+    # still trips, so the carve-out cannot spread by copy-paste.
+    selftest_bad_fixture transfer-elsewhere tools/other_deploy.sh \
+        'scp artifact host:/stable/releases/'
+    # And the exempt path is exempt from the TRANSFER pattern only: a genuine
+    # publication primitive inside it still trips. This is the assertion that
+    # keeps the carve-out from becoming a hole.
+    selftest_bad_fixture publish-inside-exempt "$TRANSFER_EXEMPT_REL" \
+        'gh release create v1 artifact'
+    selftest_bad_fixture s3-inside-exempt "$TRANSFER_EXEMPT_REL" \
+        'aws s3 cp artifact s3://stable/releases/'
 
     clean="$fixture/clean"
     mkdir -p "$clean/tools"
     printf '%s\n' $'safe:\n\t@echo local-only' > "$clean/Makefile"
+    # The positive case for the exemption: an operator transfer in the one
+    # exempt path must NOT trip, or the gate blocks fleet deployment outright
+    # (which is the failure this split exists to fix).
+    printf '%s\n' 'scp -q "$CANDIDATE" "$REMOTE_HOST:${svc_bin}.incoming"' \
+        > "$clean/$TRANSFER_EXEMPT_REL"
     if ZCL_CONTAINMENT_GREP=/definitely/missing/grep \
         bash "$0" --check-root "$clean" >/dev/null 2>&1; then
         printf '%s\n' 'FAIL: missing scanner fixture failed open' >&2
