@@ -200,12 +200,16 @@ ZCL_COMMAND_READY_READ(
     "Contributor profile for one publisher pubkey",
     "The profile for one 66-hex publisher key, projected at call time: the "
     "authoritative release facts (count, latest release, reward address — "
-    "from the signed envelopes via the rebuilt package index), a bounded "
-    "package_roots page (16, package_roots_truncated flags the rest), and "
-    "the ZNAM publisher-profile pointer when one claims this key, with its "
-    "binding proof (bound only when the name owner equals the key's "
-    "P2PKH). has_published=false means the key has no release in the local "
-    "store; the ZNAM section is always labelled a pointer, never identity.",
+    "from the signed envelopes via the rebuilt package index), the slice-8 "
+    "reward ledger facts (rewards: earned_score / queued / settled from the "
+    "durable reward-history ledger — earned_score and "
+    "token_rewards_received are separate SIMULATED facts, never balances), "
+    "a bounded package_roots page (16, package_roots_truncated flags the "
+    "rest), and the ZNAM publisher-profile pointer when one claims this "
+    "key, with its binding proof (bound only when the name owner equals "
+    "the key's P2PKH). has_published=false means the key has no release in "
+    "the local store; the ZNAM section is always labelled a pointer, never "
+    "identity.",
     ZCL_COMMAND_LIST_BUDGET,
     "zcode,contributor,show,profile,publisher,identity,znam",
     "zcl.zcode_contributor_show.input.v1",
@@ -271,8 +275,8 @@ ZCL_COMMAND_READY_READ(
  * belongs to slice 8. */
 
 ZCL_COMMAND_BRANCH("zcode.reward", "zcode",
-                   "Contribution scoring and reward eligibility (read-only; "
-                   "settlement is a later slice)",
+                   "Contribution scoring, eligibility, and SIMULATED "
+                   "reward settlement (placeholder token id only)",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_READ(
@@ -333,3 +337,113 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_reward_eligible)
+
+
+/* ── slice 8: SIMULATED reward settlement ──────────────────────────────
+ * The daily settlement queue and the reward-history ledger (durable wires
+ * under <datadir>/zcode/rewards, replayed on every call). SIMULATION
+ * ONLY: settlement marks entries settled under the configured PLACEHOLDER
+ * token id — the real ZCODE ZSLP token is never created, minted, or sent,
+ * and no on-chain payout exists in v1 (the owner-reviewed real transfer
+ * is slice 14). N payouts settle in ONE batched (simulated) send per
+ * settlement window, never one per reward. Manual-category claims queue
+ * with an evidence root but are blocked with owner-review-required. */
+
+ZCL_COMMAND_READY_READ(
+    "zcode.reward.queue", "zcode.reward", "",
+    "Inspect the daily reward settlement queue",
+    "Per-state tallies and a bounded page over the durable queue records "
+    "under <datadir>/zcode/rewards, replayed at call time: states "
+    "(queued, planned — derived from uncommitted plans, settled, rejected "
+    "with its named rule), kind (auto from slice-7 scoring, or claim with "
+    "its evidence root), category, points, release root, contributor. "
+    "Optional `state` filters one state; limit/offset page (32 cap). "
+    "corrupt_wires and store_truncated report replay health exactly.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,reward,queue,settlement,pending,claims,tallies",
+    "zcl.zcode_reward_queue.input.v1", "zcl.zcode_reward_queue.v1",
+    "state,limit,offset,datadir", "",
+    "zclassic23 zcode reward queue --input='{\"state\":\"queued\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_reward_queue)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.reward.plan", "zcode.reward", "",
+    "Assemble one settlement window batch (SIMULATED)",
+    "Assembles the batch for one settlement window — the explicit civil "
+    "`day` (required, so the same window re-planned over the same ledger "
+    "yields the byte-identical plan id) — from every eligible queued "
+    "entry, applying the slice-7 period caps (per contributor per week, "
+    "rewarded releases per day) against the durable reward-history ledger "
+    "batch-atomically. The output names every exclusion rule "
+    "(daily-release-cap, weekly-cap-exhausted, owner-review-required for "
+    "claims, duplicate-reward, batch-window-full), the planned batch with "
+    "requested/settled points and weekly_cap_clamped flags, recipients and "
+    "points_total. The ONLY mutation is the persisted plan id (idempotent: "
+    "already_persisted flags a re-plan); nothing settles here.",
+    0,
+    "zcode,reward,plan,settlement,window,batch,caps",
+    "zcl.zcode_reward_plan.input.v1", "zcl.zcode_reward_plan.v1",
+    "day,datadir", "day",
+    "zclassic23 zcode reward plan --input='{\"day\":20500}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_reward_plan)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.reward.commit", "zcode.reward", "",
+    "Settle a planned batch (SIMULATED, idempotent)",
+    "Settles one planned window batch SIMULATED under the placeholder "
+    "token id: re-validates every planned row against the CURRENT "
+    "reward-history ledger (staleness, duplicate-reward, exact cap "
+    "recomputation), writes durable ledger facts (what the period caps "
+    "read), transitions the queue records, and writes the commit record "
+    "LAST — the idempotence authority. Replay-safe: a crash between commit "
+    "and ledger write leaves a resumable partial state (resumed:true on "
+    "the finishing commit); re-settling the same plan id is rejected as "
+    "ALREADY_SETTLED — a duplicate, never a double-pay. UNKNOWN_PLAN, "
+    "STALE_PLAN, and CAPS_CHANGED name the other rejections. No ZSLP "
+    "transfer exists: the receipt is the evidence for the future "
+    "owner-reviewed slice-14 send.",
+    0,
+    "zcode,reward,commit,settle,batch,idempotent,simulated",
+    "zcl.zcode_reward_commit.input.v1", "zcl.zcode_reward_commit.v1",
+    "plan_id,datadir", "plan_id",
+    "zclassic23 zcode reward commit --input='{\"plan_id\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_reward_commit)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.reward.receipt", "zcode.reward", "",
+    "Durable receipt for a settled batch (SIMULATED)",
+    "The durable receipt for one settled settlement window: window day, "
+    "every entry with contributor, category, outcome (settled or rejected "
+    "with its named rule) and points, totals, and the placeholder token "
+    "id. This is the evidence the future owner-reviewed slice-14 ZSLP "
+    "transfer must reproduce — one send, these recipients, these amounts. "
+    "UNKNOWN_PLAN names an unknown plan id; NOT_SETTLED names a plan that "
+    "was never committed.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,reward,receipt,settled,batch,evidence,window",
+    "zcl.zcode_reward_receipt.input.v1", "zcl.zcode_reward_receipt.v1",
+    "plan_id,datadir", "plan_id",
+    "zclassic23 zcode reward receipt --input='{\"plan_id\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_reward_receipt)

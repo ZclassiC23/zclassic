@@ -5,9 +5,13 @@
  *
  *   zcode contributor show      profile for one publisher pubkey: the
  *                               authoritative release facts (from the
- *                               signed envelopes via the package index)
- *                               plus the ZNAM publisher-profile pointer
- *                               when one is bound
+ *                               signed envelopes via the package index),
+ *                               the slice-8 reward ledger facts (earned
+ *                               score / queued / settled — earned_score
+ *                               and token_rewards_received stay SEPARATE
+ *                               facts; no balances anywhere), plus the
+ *                               ZNAM publisher-profile pointer when one
+ *                               is bound
  *   zcode contributor packages  the published releases of one publisher
  *                               key, from the slice-3 index
  *   zcode package resolve       resolve a ZNAM package name to its
@@ -39,6 +43,7 @@
 #include "services/zcode_pointer.h"
 #include "vcs/package_contributor.h"
 #include "vcs/package_index.h"
+#include "vcs/package_reward.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -224,6 +229,62 @@ void zcl_native_handle_zcode_contributor_show(
         json_free(&roots_arr);
         (void)json_push_kv_bool(&reply->data, "package_roots_truncated",
                                 total > rendered);
+    }
+
+    /* The slice-8 reward ledger facts (replayed from the durable wires
+     * under <datadir>/zcode/rewards). earned_score and
+     * token_rewards_received are SEPARATE facts by owner directive — the
+     * ranking input and the simulated placeholder-token tally; neither is
+     * a balance (balances arrive with the real token in slice 14, and
+     * rankings must never use them). Emitted always, zeros included, so
+     * the schema is stable whether or not the key has published here. */
+    {
+        char zcode_dir[4400];
+        int zn = snprintf(zcode_dir, sizeof(zcode_dir), "%s/zcode", datadir);
+        if (zn > 0 && (size_t)zn < sizeof(zcode_dir)) {
+            struct vcs_reward_ledger *ledger =
+                vcs_reward_ledger_load(zcode_dir);
+            if (ledger) {
+                uint8_t pubkey_bytes[33];
+                struct vcs_reward_contributor_totals totals;
+                memset(&totals, 0, sizeof(totals));
+                if (vcs_reward_hex_decode33(pubkey_hex, pubkey_bytes))
+                    vcs_reward_contributor_totals(ledger, pubkey_bytes,
+                                                  &totals);
+                struct json_value rw;
+                json_init(&rw);
+                json_set_object(&rw);
+                (void)json_push_kv_int(&rw, "earned_score",
+                                       (int64_t)totals.earned_score);
+                (void)json_push_kv_int(
+                    &rw, "token_rewards_received",
+                    (int64_t)totals.token_rewards_received);
+                (void)json_push_kv_int(&rw, "settled_entries",
+                                       (int64_t)totals.settled_entries);
+                (void)json_push_kv_int(&rw, "queued_entries",
+                                       (int64_t)totals.queued_entries);
+                (void)json_push_kv_int(&rw, "queued_points",
+                                       (int64_t)totals.queued_points);
+                (void)json_push_kv_int(&rw, "rejected_entries",
+                                       (int64_t)totals.rejected_entries);
+                char token_hex[65];
+                vcs_reward_placeholder_token_id_hex(token_hex);
+                (void)json_push_kv_str(&rw, "placeholder_token_id",
+                                       token_hex);
+                (void)json_push_kv_bool(&rw, "simulated", true);
+                (void)json_push_kv_str(
+                    &rw, "note",
+                    "facts from the reward-history ledger: earned_score is "
+                    "settled score points (the ranking input); "
+                    "token_rewards_received is the SIMULATED "
+                    "placeholder-token tally — a separate fact, never a "
+                    "balance; queued_points are requested points awaiting "
+                    "settlement (caps apply at plan time)");
+                (void)json_push_kv(&reply->data, "rewards", &rw);
+                json_free(&rw);
+                vcs_reward_ledger_free(ledger);
+            }
+        }
     }
 
     /* The ZNAM publisher-profile pointer (a pointer, never identity). */

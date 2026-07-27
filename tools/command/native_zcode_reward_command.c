@@ -2,8 +2,8 @@
  *
  * Native handlers for the `zcode reward` read pair (slice 7: bounded
  * deterministic contribution scoring + the reward eligibility gate list;
- * queue/plan/commit settlement belongs to slice 8 and does not exist
- * here):
+ * the queue/plan/commit/receipt settlement leaves are slice 8 and live in
+ * native_zcode_reward_settle_command.c over lib/vcs/package_reward.*):
  *
  *   zcode reward score     compute the deterministic score breakdown for
  *                          one release root: category, semantic lines
@@ -627,8 +627,9 @@ void zcl_native_handle_zcode_reward_score(
     (void)json_push_kv_str(
         &reply->data, "settlement_note",
         "read-only scoring: accrual, weekly/daily cap enforcement against "
-        "reward history, and settlement belong to the slice-8 reward "
-        "queue");
+        "the reward-history ledger, and SIMULATED settlement are slice 8 — "
+        "zcode reward queue/plan/commit/receipt (placeholder token id "
+        "only; the real ZSLP transfer is slice 14)");
     vcs_score_set_free(&lineage);
     zr_target_free(&t);
 }

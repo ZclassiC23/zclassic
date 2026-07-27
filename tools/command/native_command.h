@@ -336,12 +336,32 @@ void zcl_native_handle_zcode_package_resolve(
  * reward eligibility gate list. score computes the semantic-line/lineage
  * breakdown from the persisted CAS bytes only (same bytes, same score);
  * eligible evaluates the frozen eight-gate list and names every failed
- * gate. Read-only: settlement belongs to slice 8. Bound by
- * config/commands/zcode.def. */
+ * gate. Read-only: settlement is the slice-8 settle handler set below.
+ * Bound by config/commands/zcode.def. */
 void zcl_native_handle_zcode_reward_score(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_reward_eligible(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
+/* zcode slice 8 — SIMULATED reward settlement (placeholder token id only;
+ * never the real ZCODE token, no on-chain payout in v1). queue inspects
+ * the daily settlement queue; plan assembles one capped settlement window
+ * batch (the only mutation is the plan id); commit settles SIMULATED with
+ * durable ledger facts, idempotent against replay (a duplicate is named,
+ * never a double-pay); receipt reads the durable evidence of a settled
+ * batch. Bound by config/commands/zcode.def. */
+void zcl_native_handle_zcode_reward_queue(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_reward_plan(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_reward_commit(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_reward_receipt(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 

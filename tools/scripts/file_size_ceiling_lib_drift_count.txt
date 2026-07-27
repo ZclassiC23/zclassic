@@ -267,3 +267,11 @@
 # handled set is now computed from the rules: new bits only when some rule
 # sets allow_execute/allow_create. Re-baselined in
 # file_size_ceiling_lib_baseline.txt (1422); count unchanged.
+#
+# 2026-07-27 (ZCODE slice 8, simulated reward settlement): package_reward.c
+# is a NEW 2112-line file (the reward-history ledger + daily settlement
+# queue: canonical wires, durable tmp+fsync+rename IO, load/replay, enqueue
+# validation, batch-atomic cap-aware planning, idempotent commit, and
+# receipts — one cohesive settlement module mirroring package_store.c's
+# one-file shape). Freshly baselined at its starting size (2112) so future
+# growth on it becomes visible; count unchanged.

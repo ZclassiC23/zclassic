@@ -60,7 +60,7 @@ JSON (JSON is display-only).
        verifier keys sign matching attestations before any reward)
 7. [x] Contribution scoring (bounded deterministic; semantic-line component ≤500/release,
        tests > source; caps per release/contributor-week/releases-day)
-8. [ ] Simulated ZCODE rewards (placeholder token ID only — never the real token in dev;
+8. [x] Simulated ZCODE rewards (placeholder token ID only — never the real token in dev;
        settlement accrues into a daily queue — see ZCL fuel economics below)
 9. [ ] Daily/weekly/monthly/all-time rankings (rank earned score, never token balance;
        store earned_score / token_rewards_received / current_token_balance separately)
