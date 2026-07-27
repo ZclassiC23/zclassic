@@ -2432,18 +2432,25 @@ static int test_wallet_shielded_reads_bound(void)
     return failures;
 }
 
-/* The ZCL application-feature leaves (config/commands/app_features.def) expose
- * a native read surface
- * (names resolve/list, tokens list, messaging inbox, market list/status, swap
- * chains/list) that is READY and bridge-dispatched; the destructive
- * commands (name register/update/transfer/renew/set-record/set-text, message
- * send/send-named/read, market offer/buy, swap initiate/participate) are
- * PLANNED and fail closed until the app-write plan/commit handshake lands. */
+/* The ZCL application-feature leaves (config/commands/app_features.def).
+ *
+ * Read surface (names resolve/list, tokens list, messaging inbox, market
+ * list/status, swap chains/list): READY and bridge-dispatched.
+ *
+ * Write surface, split on whether the backing RPC finishes its stated job:
+ *   READY  — the six ZNAM writes, messaging send/read, swap
+ *            initiate/participate. Each binds a dedicated handler in
+ *            app/controllers/src/app_write_native_handlers.c over a backing
+ *            RPC that really signs/broadcasts (ZNAM), writes to the peer
+ *            socket (ZMSG p2p), or mints and persists the contract (ZSWP).
+ *   PLANNED — messaging send-named (nothing drains the ZMSG store onto a
+ *            peer), market offer (no origin MSG_FILE_LIST announce exists),
+ *            market buy (no challenge, no payment tx). These fail closed. */
 static int test_app_features_leaves(void)
 {
     int failures = 0;
     const struct zcl_command_registry *reg = zcl_command_catalog();
-    TEST("app feature leaves: read surface READY+bridged, writes PLANNED closed") {
+    TEST("app feature leaves: reads bridged, finished writes READY, rest closed") {
         const char *branches[] = {
             "app.names", "app.tokens", "app.messaging", "app.market", "app.swap",
         };
@@ -2469,14 +2476,41 @@ static int test_app_features_leaves(void)
             ASSERT(zcl_native_bridge_rpc_for_path(s->path) == NULL);
         }
 
-        /* Destructive surface: PLANNED, no handler, honest reason, blocks with
-         * exit 3 rather than broadcasting. */
-        const char *writes[] = {
+        /* Executable write surface: READY with a dedicated (non-bridge)
+         * handler, and every value-moving one still gated by plan/commit so a
+         * bare invocation previews instead of broadcasting. */
+        const char *ready_writes[] = {
             "app.names.register", "app.names.update", "app.names.transfer",
             "app.names.renew", "app.names.set-record", "app.names.set-text",
-            "app.messaging.send", "app.messaging.send-named",
-            "app.messaging.read", "app.market.offer", "app.market.buy",
+            "app.messaging.send", "app.messaging.read",
             "app.swap.initiate", "app.swap.participate",
+        };
+        for (size_t i = 0;
+             i < sizeof(ready_writes) / sizeof(ready_writes[0]); i++) {
+            const struct zcl_command_spec *s = find_spec(reg, ready_writes[i]);
+            ASSERT(s != NULL);
+            ASSERT_EQ(s->availability, ZCL_COMMAND_READY);
+            ASSERT(s->handler != NULL);
+            ASSERT(s->handler != zcl_native_bridge_command);
+            ASSERT_EQ(s->effect, ZCL_COMMAND_EFFECT_MUTATE);
+            ASSERT_EQ(s->authority, ZCL_COMMAND_AUTH_OWNER);
+            /* A READY leaf carries no availability_reason — the reason field
+             * exists to explain a refusal, and there is none to explain. */
+            ASSERT(s->availability_reason && !s->availability_reason[0]);
+            /* Every plan/commit leaf must accept the reserved `confirm` key,
+             * or its commit half would be unreachable through the validator. */
+            if (s->confirmation == ZCL_COMMAND_CONFIRM_PLAN_COMMIT)
+                ASSERT(strstr(s->input_keys, "confirm") != NULL);
+        }
+        /* app.messaging.read is the one write with no funds and no network
+         * effect, so it is the one that does NOT demand a confirm round-trip. */
+        ASSERT_EQ(find_spec(reg, "app.messaging.read")->confirmation,
+                  ZCL_COMMAND_CONFIRM_NONE);
+
+        /* Still-closed surface: PLANNED, no handler, honest reason, blocks
+         * with exit 3 rather than reporting work the node never performs. */
+        const char *writes[] = {
+            "app.messaging.send-named", "app.market.offer", "app.market.buy",
         };
         char out[ZCL_COMMAND_RESULT_BUDGET + 1];
         for (size_t i = 0; i < sizeof(writes) / sizeof(writes[0]); i++) {
@@ -2486,6 +2520,11 @@ static int test_app_features_leaves(void)
             ASSERT(s->handler == NULL);
             ASSERT(s->availability_reason && s->availability_reason[0]);
             ASSERT_EQ(s->effect, ZCL_COMMAND_EFFECT_MUTATE);
+            /* The reason must name what is missing, not restate the status:
+             * a bare "not implemented"/"follow-up wave" placeholder is the
+             * exact dishonesty this leaf population was cleaned of. */
+            ASSERT(strstr(s->availability_reason, "needs ") != NULL);
+            ASSERT(strlen(s->availability_reason) > 120);
             enum zcl_command_exit code = ZCL_COMMAND_EXIT_OK;
             ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
             ASSERT_EQ(code, ZCL_COMMAND_EXIT_BLOCKED);

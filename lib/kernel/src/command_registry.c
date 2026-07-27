@@ -897,6 +897,19 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
             /* net census zero-based page index. */
             type_ok = value->type == JSON_INT && json_get_int(value) >= 0 &&
                       json_get_int(value) <= 1000000;
+        } else if (strcmp(key, "peer_id") == 0) {
+            /* app.messaging.send p2p recipient: a connected peer's numeric id
+             * as reported by core.network.peers.list. Without this rule the
+             * default branch would demand a string and reject `--peer_id=3`,
+             * which the CLI types as an integer. */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 0;
+        } else if (strcmp(key, "locktime_blocks") == 0) {
+            /* app.swap.{initiate,participate} lock DURATION in blocks from the
+             * current tip. Range mirrors swap_locktime_to_absolute()
+             * (app/controllers/src/swap_controller.c), which refuses anything
+             * outside 1..1000000. */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
+                      json_get_int(value) <= 1000000;
         } else if (strcmp(key, "timeout_ms") == 0) {
             type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
                       json_get_int(value) <= 300000;

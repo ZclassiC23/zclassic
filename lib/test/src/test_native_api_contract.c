@@ -933,6 +933,222 @@ static int test_wallet_mutating_native_e2e(void)
     return failures;
 }
 
+/* ── mutating app.* feature leaves: E2E over a stubbed app RPC ─────────────
+ * The ten promoted write leaves (config/commands/app_features.def) are
+ * dedicated handlers in app/controllers/src/app_write_native_handlers.c. Driven
+ * here with no live node through the ZCL_TESTING RPC hook, proving three things
+ * the catalog test cannot: the plan leg never reaches the RPC, the confirmed
+ * leg does exactly once, and a backing RPC that succeeds WITHOUT doing the job
+ * (a ZNAM write answering status="ready" because the node carries no wallet)
+ * is reported BLOCKED with mutated=false rather than PASSED. */
+static int g_app_name_register_calls;
+static int g_app_msg_send_calls;
+static bool g_app_name_degraded;
+
+static char *app_write_stub_rpc(const char *method, const char *params_json)
+{
+    (void)params_json;
+    if (method && strcmp(method, "name_register") == 0) {
+        g_app_name_register_calls++;
+        if (g_app_name_degraded)
+            return strdup("{\"name\":\"alice\",\"status\":\"ready\","
+                          "\"op_return_hex\":\"6a\"}");
+        return strdup("{\"name\":\"alice\",\"type\":\"z-address\","
+                      "\"txid\":\"aa11bb22cc33dd44ee55ff66aa77bb88"
+                      "cc99dd00ee11ff22aa33bb44cc55dd66\","
+                      "\"fee\":1000,\"status\":\"broadcast\"}");
+    }
+    if (method && strcmp(method, "msg_send") == 0) {
+        g_app_msg_send_calls++;
+        return strdup("{\"msg_id\":\"00112233445566778899aabbccddeeff"
+                      "00112233445566778899aabbccddeeff\","
+                      "\"peer_id\":7,\"status\":\"sent\"}");
+    }
+    if (method && strcmp(method, "swap_initiate") == 0)
+        return strdup("{\"swap_id\":\"stub\",\"role\":\"initiator\","
+                      "\"state\":\"pending\",\"p2sh_address\":\"t3Stub\"}");
+    return strdup("null");
+}
+
+static int test_app_write_native_e2e(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+
+    TEST("app.* write leaves execute plan/commit over a stubbed RPC") {
+        g_app_name_register_calls = 0;
+        g_app_msg_send_calls = 0;
+        g_app_name_degraded = false;
+        node_rpc_client_set_test_hook(app_write_stub_rpc);
+
+        const struct zcl_command_spec *reg_spec =
+            find_spec(reg, "app.names.register");
+        ASSERT(reg_spec != NULL);
+        ASSERT(reg_spec->availability == ZCL_COMMAND_READY);
+        ASSERT(reg_spec->confirmation == ZCL_COMMAND_CONFIRM_PLAN_COMMIT);
+
+        struct zcl_command_reply reply;
+
+        /* 1. plan leg: no RPC fires, nothing claims to have mutated, and the
+         *    emitted commit_input validates against this same leaf. */
+        struct json_value plan_in;
+        json_init(&plan_in);
+        json_set_object(&plan_in);
+        (void)json_push_kv_str(&plan_in, "name", "alice");
+        (void)json_push_kv_str(&plan_in, "type", "zaddr");
+        (void)json_push_kv_str(&plan_in, "value", "zs1stub");
+        struct zcl_command_request req_plan = {
+            .spec = reg_spec, .input = &plan_in, .view = "normal",
+        };
+        zcl_command_reply_init(&reply, reg_spec->output_schema);
+        zcl_native_handle_name_register(&req_plan, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")), "plan");
+        ASSERT(!reply.error.mutated);
+        ASSERT_EQ(g_app_name_register_calls, 0);
+        const char *commit_input =
+            json_get_str(json_get(&reply.data, "commit_input"));
+        ASSERT(commit_input && commit_input[0]);
+        struct json_value commit_next;
+        json_init(&commit_next);
+        ASSERT(json_read(&commit_next, commit_input, strlen(commit_input)));
+        char why[160] = {0};
+        ASSERT(zcl_command_registry_input_validate(reg_spec, &commit_next, why,
+                                                   sizeof(why)));
+        ASSERT(json_get_bool(json_get(&commit_next, "confirm")));
+        /* The plan must actually serialize through the real envelope. */
+        {
+            char rendered[8192];
+            enum zcl_command_exit rc = ZCL_COMMAND_EXIT_OK;
+            struct zcl_command_context sctx = {
+                .registry = reg,
+                .granted_capabilities = ~(uint64_t)0,
+                .authority_ceiling = ZCL_COMMAND_AUTH_OWNER,
+            };
+            size_t n = zcl_command_registry_execute_json(
+                reg, reg_spec, &sctx, &plan_in, false, reg_spec->path,
+                "normal", 0, 0, NULL, rendered, sizeof(rendered), &rc);
+            ASSERT(n > 0);
+            ASSERT_EQ(rc, ZCL_COMMAND_EXIT_OK);
+            ASSERT(strstr(rendered, "\"stage\":\"plan\"") != NULL);
+        }
+        zcl_command_reply_free(&reply);
+        json_free(&plan_in);
+
+        /* 2. commit leg: exactly one RPC, the broadcast txid surfaces. */
+        struct zcl_command_request req_commit = {
+            .spec = reg_spec, .input = &commit_next, .view = "normal",
+        };
+        zcl_command_reply_init(&reply, reg_spec->output_schema);
+        zcl_native_handle_name_register(&req_commit, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")),
+                      "committed");
+        ASSERT(reply.error.mutated);
+        ASSERT(json_get_str(json_get(&reply.data, "txid")) != NULL);
+        ASSERT_EQ(g_app_name_register_calls, 1);
+        zcl_command_reply_free(&reply);
+
+        /* 3. the DEGRADED success: name_register answered without a wallet, so
+         *    the OP_RETURN was built but never broadcast. A PASSED reply here
+         *    would be the exact lie this leaf population was cleaned of. */
+        g_app_name_degraded = true;
+        zcl_command_reply_init(&reply, reg_spec->output_schema);
+        zcl_native_handle_name_register(&req_commit, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_BLOCKED);
+        ASSERT_STR_EQ(reply.error.code, "NAME_WRITE_NOT_BROADCAST");
+        ASSERT(!reply.error.mutated);
+        ASSERT(strstr(reply.error.message, "ready") != NULL);
+        ASSERT_EQ(g_app_name_register_calls, 2);
+        zcl_command_reply_free(&reply);
+        g_app_name_degraded = false;
+        json_free(&commit_next);
+
+        /* 4. a missing required key fails closed before any RPC. */
+        struct json_value bad_in;
+        json_init(&bad_in);
+        json_set_object(&bad_in);
+        (void)json_push_kv_str(&bad_in, "name", "alice");
+        (void)json_push_kv_bool(&bad_in, "confirm", true);
+        struct zcl_command_request req_bad = {
+            .spec = reg_spec, .input = &bad_in, .view = "normal",
+        };
+        zcl_command_reply_init(&reply, reg_spec->output_schema);
+        zcl_native_handle_name_register(&req_bad, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(reply.error.code, "MISSING_INPUT");
+        ASSERT(!reply.error.mutated);
+        ASSERT_EQ(g_app_name_register_calls, 2);
+        zcl_command_reply_free(&reply);
+        json_free(&bad_in);
+
+        /* 5. messaging.send picks the recipient key its channel names: the p2p
+         *    channel demands peer_id and refuses before touching the node. */
+        const struct zcl_command_spec *send_spec =
+            find_spec(reg, "app.messaging.send");
+        ASSERT(send_spec != NULL);
+        ASSERT(send_spec->availability == ZCL_COMMAND_READY);
+        struct json_value nopeer;
+        json_init(&nopeer);
+        json_set_object(&nopeer);
+        (void)json_push_kv_str(&nopeer, "message", "hi");
+        (void)json_push_kv_bool(&nopeer, "confirm", true);
+        struct zcl_command_request req_nopeer = {
+            .spec = send_spec, .input = &nopeer, .view = "normal",
+        };
+        zcl_command_reply_init(&reply, send_spec->output_schema);
+        zcl_native_handle_message_send(&req_nopeer, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(reply.error.code, "MISSING_INPUT");
+        ASSERT_EQ(g_app_msg_send_calls, 0);
+        zcl_command_reply_free(&reply);
+        json_free(&nopeer);
+
+        struct json_value p2p;
+        json_init(&p2p);
+        json_set_object(&p2p);
+        (void)json_push_kv_str(&p2p, "message", "hi");
+        (void)json_push_kv_int(&p2p, "peer_id", 7);
+        (void)json_push_kv_bool(&p2p, "confirm", true);
+        struct zcl_command_request req_p2p = {
+            .spec = send_spec, .input = &p2p, .view = "normal",
+        };
+        zcl_command_reply_init(&reply, send_spec->output_schema);
+        zcl_native_handle_message_send(&req_p2p, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(reply.error.mutated);
+        ASSERT_EQ(g_app_msg_send_calls, 1);
+        ASSERT(json_get_str(json_get(&reply.data, "msg_id")) != NULL);
+        zcl_command_reply_free(&reply);
+        /* The same input WITHOUT confirm must plan, not send again. */
+        struct json_value p2p_plan;
+        json_init(&p2p_plan);
+        json_copy(&p2p_plan, &p2p);
+        json_free(&p2p);
+        json_init(&p2p);
+        json_set_object(&p2p);
+        (void)json_push_kv_str(&p2p, "message", "hi");
+        (void)json_push_kv_int(&p2p, "peer_id", 7);
+        struct zcl_command_request req_p2p_plan = {
+            .spec = send_spec, .input = &p2p, .view = "normal",
+        };
+        zcl_command_reply_init(&reply, send_spec->output_schema);
+        zcl_native_handle_message_send(&req_p2p_plan, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")), "plan");
+        ASSERT(!json_get_bool(json_get(&reply.data, "spends_funds")));
+        ASSERT_EQ(g_app_msg_send_calls, 1);
+        zcl_command_reply_free(&reply);
+        json_free(&p2p);
+        json_free(&p2p_plan);
+
+        node_rpc_client_set_test_hook(NULL);
+        PASS();
+    } _test_next:;
+    node_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
 /* ── a node that answers only PART of a reply must read as a slow node ─────
  * The node writes HTTP response headers before its handler blocks, so a
  * deadline that fires while the handler waits on the node.db write lock left
@@ -1070,6 +1286,7 @@ int test_native_api_contract(void)
     failures += test_dev_failure_native_api();
     failures += test_native_app_catalog_uses_strict_builtin_source();
     failures += test_wallet_mutating_native_e2e();
+    failures += test_app_write_native_e2e();
     failures += test_status_brief_body_schema_skew_tolerance();
     failures += test_status_brief_body_front_door_deadline();
     failures += test_partial_rpc_reply_names_the_timeout();

@@ -164,12 +164,12 @@ static bool swap_build_and_persist(const char *my_addr, const char *counter_addr
         LOG_FAIL("swap", "swap_participate: htlc_build_script failed");
     }
 
-    char p2sh_addr[64];
-    if (!htlc_p2sh_address(script, script_len, chain, p2sh_addr, sizeof(p2sh_addr))) {
-        if (strict_build_fail) {
-            json_set_str(result, "Failed to compute P2SH address");
-            return false;
-        }
+    /* Init: the snprintf below must never read indeterminate bytes. */
+    char p2sh_addr[64] = "";
+    if (!htlc_p2sh_address(script, script_len, chain, p2sh_addr,
+                           sizeof(p2sh_addr)) && strict_build_fail) {
+        json_set_str(result, "Failed to compute P2SH address");
+        return false;
     }
 
     struct swap_contract swap;

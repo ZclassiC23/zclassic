@@ -128,12 +128,15 @@ static const struct vault_route k_vault_routes[] = {
     { "names", "record", "node_rpc",
       "name_register,name_update,name_transfer,name_renew",
       "app/controllers/src/name_controller.c", "",
-      "the native app.names.* write leaves are PLANNED; the vault will not "
-      "mint a verb over a route whose native owner is not READY" },
+      "the ZNAM writes are reachable as their own typed leaves "
+      "(app names register/update/transfer/renew/set-record/set-text, each "
+      "plan/commit gated); the vault mints no second verb over them because "
+      "a name is a record, not a vault balance" },
     { "market", "record", "node_rpc", "zmarket_offer,zmarket_buy",
       "app/controllers/src/file_market_controller.c", "",
-      "app.market.* write leaves are PLANNED and on-chain settlement is not "
-      "wired end to end" },
+      "app.market.* write leaves are PLANNED: nothing announces a locally "
+      "created offer to peers, and no code path builds the purchase payment "
+      "transaction, so on-chain settlement is not wired end to end" },
     { "swaps", "contract", "node_rpc", "swap_redeem,swap_refund",
       "app/controllers/src/swap_controller.c",
       "vault.swap.redeem,vault.swap.refund",

@@ -714,6 +714,50 @@ void zcl_native_handle_wallet_address_by_label(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* Mutating app.* feature leaves
+ * (app/controllers/src/app_write_native_handlers.c). Each proxies one
+ * already-complete node RPC over the loopback client — the ZNAM writes
+ * (name_register/update/transfer/renew/set_record/set_text), the ZMSG writes
+ * (msg_send/msg_read) and the ZSWP contract mints
+ * (swap_initiate/swap_participate) — and renders one bounded JSON document.
+ * Every leaf that can move value honours the declared CONFIRM_PLAN_COMMIT
+ * contract: a first call with no `confirm:true` returns a non-mutating plan
+ * plus the exact commit input, and only a second call with `confirm:true`
+ * broadcasts. A backing RPC that succeeds without doing the job (a ZNAM write
+ * that answers status="ready" because the node carries no wallet) is reported
+ * BLOCKED with mutated=false, never PASSED. Bound in
+ * config/commands/app_features.def. */
+void zcl_native_handle_name_register(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_name_update(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_name_transfer(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_name_renew(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_name_set_record(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_name_set_text(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_message_send(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_message_read(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_swap_initiate(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_swap_participate(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* ROM-seed policy/ledger surface (app/controllers/src/rom_seed_controller.c)
  * — see config/commands/ops.def `ops.rom_seed.*` and docs/ROM_DELIVERY.md. */
 void zcl_native_handle_rom_seed_status(

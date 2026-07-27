@@ -48,23 +48,25 @@ dev.generation.rollback    exempt: dev generation store, contained
 dev.generation.compact     exempt: dev generation store, contained
 ops.recovery.rebuild       exempt: refold reset, gated by copy-prove doctrine
 
-# ZCL app-feature writes (config/commands/app_features.def). All PLANNED and
-# fail-closed (exit 3, no handler) until the app-write plan/commit handshake
-# lands; they install no privileged datadir artifact — the backing node RPC
-# owns each write. Promote to receipt: when a real native handler is wired.
-app.names.register         exempt: PLANNED fail-closed, no artifact install (name_register RPC owns the write)
-app.names.update           exempt: PLANNED fail-closed, no artifact install (name_update RPC owns the write)
-app.names.transfer         exempt: PLANNED fail-closed, no artifact install (name_transfer RPC owns the write)
-app.names.renew            exempt: PLANNED fail-closed, no artifact install (name_renew RPC owns the write)
-app.names.set-record       exempt: PLANNED fail-closed, no artifact install (name_set_record RPC owns the write)
-app.names.set-text         exempt: PLANNED fail-closed, no artifact install (name_set_text RPC owns the write)
-app.messaging.send         exempt: PLANNED fail-closed, no artifact install (msg_send RPC owns the write)
-app.messaging.send-named   exempt: PLANNED fail-closed, no artifact install (msg_send_named RPC owns the write)
-app.messaging.read         exempt: PLANNED fail-closed, no artifact install (msg_read RPC owns the read-state write)
-app.market.offer           exempt: PLANNED fail-closed, no artifact install (zmarket_offer RPC owns the write)
-app.market.buy             exempt: PLANNED fail-closed, no artifact install (zmarket_buy RPC owns the write)
-app.swap.initiate          exempt: PLANNED fail-closed, no artifact install (swap_initiate RPC owns the write)
-app.swap.participate       exempt: PLANNED fail-closed, no artifact install (swap_participate RPC owns the write)
+# ZCL app-feature writes (config/commands/app_features.def). None of them
+# installs a privileged datadir artifact, so every row stays `exempt` — the
+# disposition CLASS is unchanged, only the recorded rationale is refreshed
+# now that ten of the thirteen bind a real native handler
+# (app/controllers/src/app_write_native_handlers.c). The ZNAM rows are the
+# same class as core.wallet.transaction.send: sign + broadcast, no install.
+app.names.register         exempt: signs+broadcasts an OP_RETURN tx, no privileged datadir install
+app.names.update           exempt: signs+broadcasts an OP_RETURN tx, no privileged datadir install
+app.names.transfer         exempt: signs+broadcasts an OP_RETURN tx, no privileged datadir install
+app.names.renew            exempt: signs+broadcasts an OP_RETURN tx, no privileged datadir install
+app.names.set-record       exempt: signs+broadcasts an OP_RETURN tx, no privileged datadir install
+app.names.set-text         exempt: signs+broadcasts an OP_RETURN tx, no privileged datadir install
+app.messaging.send         exempt: peer-socket write (p2p) or shielded send (onchain), no artifact install
+app.messaging.send-named   exempt: PLANNED fail-closed, no artifact install (no outbound delivery path exists)
+app.messaging.read         exempt: flips one message's read bit, rebuildable projection
+app.market.offer           exempt: PLANNED fail-closed, no artifact install (no origin announce path exists)
+app.market.buy             exempt: PLANNED fail-closed, no artifact install (no payment leg exists)
+app.swap.initiate          exempt: mints a local HTLC contract row, broadcasts nothing
+app.swap.participate       exempt: mints a local HTLC contract row, broadcasts nothing
 ops.debug.rom_seed.enable  exempt: in-process policy flag flip + JSON persist, no artifact install
 ops.debug.rom_seed.disable exempt: in-process policy flag flip + JSON persist, no artifact install
 ops.debug.rom_fetch.bundle exempt: downloads+content-verifies a file into the datadir only; activation is the separate receipt-gated -install-consensus-bundle path
