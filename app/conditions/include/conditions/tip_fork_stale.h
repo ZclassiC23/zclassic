@@ -28,6 +28,13 @@ void tip_fork_stale_test_set_remedy_stubs(
     bool (*reb)(int));
 void tip_fork_stale_test_set_queue_body_stub(
     struct zcl_result (*queue_body)(int height, const char *reason));
+/* Override the live apply-candidate-anomaly hold reader (a unit test cannot run
+ * the real utxo_apply selection path). Return the height utxo_apply is held at,
+ * or -1 for "no live hold". */
+void tip_fork_stale_test_set_anomaly_hold_stub(int64_t (*hold)(void));
+/* The no-advance window detect() last applied — TIP_STALL_SECS (300) on the
+ * patient path, TIP_STALL_CORROBORATED_SECS (10) on the corroborated one. */
+int64_t tip_fork_stale_test_stall_window_at_detect(void);
 int tip_fork_stale_test_invalidate_calls(void);
 int tip_fork_stale_test_rebuild_calls(void);
 int tip_fork_stale_test_queue_body_calls(void);

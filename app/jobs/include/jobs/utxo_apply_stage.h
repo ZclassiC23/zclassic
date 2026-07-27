@@ -115,6 +115,20 @@ bool utxo_apply_stage_succeeded_at(int height);
 int64_t utxo_apply_stage_select_idle_height(void);
 bool utxo_apply_stage_select_idle_is_read_failure(void);
 
+/* The height utxo_apply is CURRENTLY held at by a genuine apply-candidate
+ * anomaly (the block map / durable-or-visible parent / on-disk body disagreeing
+ * with the ok-bound height-keyed verdict) — or -1 when no such hold is live.
+ *
+ * Unlike utxo_apply_stage_select_idle_height() above, which is a last-observed
+ * high-water reading that survives the hold ending, this reports LIVE state: the
+ * liveness comes from the `utxo_apply.apply_candidate_anomaly` blocker the hold
+ * itself publishes, and the selection path clears that blocker the instant a
+ * candidate resolves (utxo_apply_stage_fallback.c). Recovery Conditions consume
+ * it to distinguish "the fold is wedged right now, at this height" from "the
+ * fold is merely slow", which is otherwise indistinguishable from a tip that has
+ * simply not advanced yet. Atomic + in-memory registry reads; no I/O. */
+int64_t utxo_apply_stage_candidate_anomaly_hold_height(void);
+
 uint64_t utxo_apply_stage_verified_total(void);
 uint64_t utxo_apply_stage_spend_unknown_total(void);
 uint64_t utxo_apply_stage_utxo_collision_total(void);

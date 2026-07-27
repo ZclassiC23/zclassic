@@ -78,6 +78,18 @@ void utxo_apply_select_idle_blocker_clear(void)
     blocker_clear(UA_APPLY_ANOMALY_BLOCKER_ID);
 }
 
+/* See jobs/utxo_apply_stage.h. The blocker is the liveness fact — it is set on
+ * every anomaly tick and cleared the moment a candidate resolves — so its
+ * presence alone answers "is a hold live". The height it is held at is the one
+ * thing the blocker record does not carry, so that comes from the note's own
+ * atomic. Lives here because this file owns UA_APPLY_ANOMALY_BLOCKER_ID. */
+int64_t utxo_apply_stage_candidate_anomaly_hold_height(void)
+{
+    if (!blocker_exists(UA_APPLY_ANOMALY_BLOCKER_ID))
+        return -1; // raw-return-ok:sentinel-no-live-hold
+    return atomic_load(&g_ua_select_idle_height);
+}
+
 const char *utxo_apply_select_idle_reason_name(
         enum utxo_apply_select_idle_reason reason)
 {

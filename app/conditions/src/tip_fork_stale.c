@@ -11,9 +11,11 @@
  * (pindex_best_header has strictly more chainwork than the active tip).
  *
  * detect() fires TRUE only when ALL three hold:
- *   (a) the active tip has not advanced for a sustained window
- *       (TIP_STALL_SECS) — same tip-age signal block_failed_mask_at_tip
- *       uses;
+ *   (a) the active tip has not advanced for a sustained window — normally
+ *       TIP_STALL_SECS, the same tip-age signal block_failed_mask_at_tip
+ *       uses, but collapsed to TIP_STALL_CORROBORATED_SECS when the fold has
+ *       ALREADY named a live apply-candidate anomaly at tip+1 (see
+ *       stall_window_secs below);
  *   (b) a higher-work HEADER chain exists — pindex_best_header has
  *       strictly more nChainWork than the active tip (best_header is
  *       chainwork-ranked);
@@ -57,6 +59,7 @@
 #include "chain/chain.h"
 #include "core/arith_uint256.h"
 #include "core/uint256.h"
+#include "jobs/utxo_apply_stage.h"
 #include "platform/time_compat.h"
 #include "services/sync_monitor.h"
 #include "validation/chainstate.h"
@@ -71,6 +74,23 @@
  * Matches block_failed_mask_at_tip's 300 s — a normal block is ~75 s, so
  * 300 s with no advance and a higher-work header chain is clearly stuck. */
 #define TIP_STALL_SECS 300
+
+/* Corroborated window. TIP_STALL_SECS is pure PATIENCE: "the tip has not moved"
+ * cannot by itself tell a stale fork apart from slow blocks or a body still in
+ * flight, so the condition waits 300 s hoping the tip moves on its own. But when
+ * the fold has already NAMED the wedge — utxo_apply is held at tip+1 by a live
+ * apply-candidate anomaly, meaning the block map / durable parent / on-disk body
+ * actively DISAGREE with the ok-bound verdict — waiting adds nothing. That hold
+ * is published from the first selection attempt (utxo_apply_stage_fallback.c),
+ * so the information exists seconds into the wedge; patience only spends the
+ * external monitor's gap budget, which has real headroom of 2 blocks.
+ *
+ * This shortens PATIENCE only. Gates (b) and (c) below — a strictly higher-work
+ * header chain, and a target provably NOT on that chain — are untouched, so the
+ * set of blocks this condition is ever willing to invalidate does not grow by
+ * one block. A corroborated fire invalidates exactly what a 300 s fire would
+ * have invalidated, just sooner. */
+#define TIP_STALL_CORROBORATED_SECS 10
 
 static _Atomic int64_t g_tip_height_at_check = -1;
 static _Atomic int64_t g_tip_unchanged_since = 0;
@@ -100,6 +120,10 @@ typedef enum invalidate_result (*tfs_invalidate_fn)(
 typedef bool (*tfs_rebuild_fn)(int from_height);
 typedef struct zcl_result (*tfs_queue_body_fn)(int height,
                                                const char *reason);
+/* The live apply-candidate-anomaly hold height. A unit test cannot run the real
+ * utxo_apply selection path, so this is a seam like the three above; the
+ * production reader is the stage's own accessor. */
+typedef int64_t (*tfs_anomaly_hold_fn)(void);
 
 static enum invalidate_result tfs_default_invalidate(
     struct main_state *ms, const struct uint256 *hash,
@@ -119,9 +143,20 @@ static struct zcl_result tfs_default_queue_body(int height,
     return sync_monitor_queue_best_header_body(height, reason);
 }
 
+static int64_t tfs_default_anomaly_hold(void)
+{
+    return utxo_apply_stage_candidate_anomaly_hold_height();
+}
+
 static tfs_invalidate_fn g_invalidate_fn = tfs_default_invalidate;
 static tfs_rebuild_fn g_rebuild_fn = tfs_default_rebuild;
 static tfs_queue_body_fn g_queue_body_fn = tfs_default_queue_body;
+static tfs_anomaly_hold_fn g_anomaly_hold_fn = tfs_default_anomaly_hold;
+
+/* Last window detect() actually applied, for the remedy log line: an operator
+ * reading "fired after 12 s" must be able to see it was the corroborated path
+ * and not a shortened global timer. */
+static _Atomic int64_t g_stall_window_at_detect = TIP_STALL_SECS;
 
 #ifdef ZCL_TESTING
 static _Atomic int g_test_invalidate_calls;
@@ -195,6 +230,23 @@ static struct block_index *find_active_tip_child_with_data(
     return NULL;
 }
 
+/* How long the tip must have held still before gates (b)/(c) are consulted.
+ * TIP_STALL_CORROBORATED_SECS when the fold is held at tip+1 RIGHT NOW by an
+ * apply-candidate anomaly, TIP_STALL_SECS otherwise. tip+1 is the only height
+ * that matters: both stale shapes this condition repairs — a stale active tip
+ * whose canonical sibling's child cannot attach, and a stale data-bearing child
+ * at tip+1 — surface as selection failing at exactly tip+1. An anomaly hold
+ * anywhere else (a stale-script or coin-backfill replay rewinds the stage cursor
+ * to arbitrary earlier heights) is a different wedge with its own healer and
+ * must not shorten this one's patience. */
+static int64_t stall_window_secs(int64_t tip_h)
+{
+    int64_t hold_h = g_anomaly_hold_fn ? g_anomaly_hold_fn() : -1;
+    if (hold_h >= 0 && hold_h == tip_h + 1)
+        return TIP_STALL_CORROBORATED_SECS;
+    return TIP_STALL_SECS;
+}
+
 static bool detect_tip_fork_stale(void)
 {
     struct main_state *ms = ms_or_null();
@@ -220,8 +272,10 @@ static bool detect_tip_fork_stale(void)
         atomic_store(&g_tip_unchanged_since, now);
         return false;
     }
-    if (now - since < TIP_STALL_SECS)
+    int64_t window = stall_window_secs(tip_h);
+    if (now - since < window)
         return false;
+    atomic_store(&g_stall_window_at_detect, window);
 
     /* (b) a strictly higher-work HEADER chain exists. */
     struct block_index *bh = ms->pindex_best_header;
@@ -312,9 +366,10 @@ static enum condition_remedy_result remedy_tip_fork_stale(void)
     int64_t tip_now = current_tip_height(ms);
     LOG_WARN("condition",
         "[condition:tip_fork_stale] invalidated stale %s h=%lld, "
-        "rebuild_recent from=%d ok=%s tip %lld -> %lld",
+        "rebuild_recent from=%d ok=%s tip %lld -> %lld stall_window=%llds",
         kind_name, (long long)target_h, from_h, rebuilt ? "yes" : "no",
-        (long long)tip_at_detect, (long long)tip_now);
+        (long long)tip_at_detect, (long long)tip_now,
+        (long long)atomic_load(&g_stall_window_at_detect));
 
     if (!rebuilt) {
         if (target_h < 0 || target_h > INT32_MAX)
@@ -384,6 +439,8 @@ void tip_fork_stale_test_reset(void)
     g_invalidate_fn = tfs_default_invalidate;
     g_rebuild_fn = tfs_default_rebuild;
     g_queue_body_fn = tfs_default_queue_body;
+    g_anomaly_hold_fn = tfs_default_anomaly_hold;
+    atomic_store(&g_stall_window_at_detect, (int64_t)TIP_STALL_SECS);
     atomic_store(&g_test_invalidate_calls, 0);
     atomic_store(&g_test_rebuild_calls, 0);
     atomic_store(&g_test_queue_body_calls, 0);
@@ -417,6 +474,16 @@ void tip_fork_stale_test_set_queue_body_stub(
     struct zcl_result (*queue_body)(int height, const char *reason))
 {
     if (queue_body) g_queue_body_fn = queue_body;
+}
+
+void tip_fork_stale_test_set_anomaly_hold_stub(int64_t (*hold)(void))
+{
+    if (hold) g_anomaly_hold_fn = hold;
+}
+
+int64_t tip_fork_stale_test_stall_window_at_detect(void)
+{
+    return atomic_load(&g_stall_window_at_detect);
 }
 
 int tip_fork_stale_test_invalidate_calls(void)

@@ -80,6 +80,18 @@ static struct zcl_result stub_queue_body(int height, const char *reason)
     return ZCL_OK;
 }
 
+/* Stands in for utxo_apply_stage_candidate_anomaly_hold_height(): the height the
+ * fold is held at by a live apply-candidate anomaly, or -1 for no hold. The real
+ * accessor's own lifecycle (note -> blocker -> accessor -> clear) is proven
+ * separately in test_utxo_apply_stage.c. */
+static _Atomic int64_t g_stub_anomaly_hold = -1;
+
+static int64_t stub_anomaly_hold(void)
+{
+    return atomic_load(&g_stub_anomaly_hold);
+}
+
+
 /* Insert one block_index at height h with the given prev + chainwork. */
 static struct block_index *tfs_insert(struct main_state *ms,
                                       struct uint256 *hash, int salt,
@@ -119,6 +131,31 @@ static struct block_index *tfs_build_main(struct main_state *ms,
     }
     active_chain_move_window_tip(&ms->chain_active, prev);
     return prev;
+}
+
+/* Build the incident shape of 2026-07-27T01:41Z: a 1-block fork where the
+ * ACTIVE tip is a data-bearing same-height sibling of the canonical chain, and
+ * the canonical chain carries strictly more header chainwork. Returns the active
+ * (stale) tip; *out_best_header gets the higher-work header head. */
+static struct block_index *tfs_build_incident_shape(
+    struct main_state *ms, struct uint256 *hashes, struct uint256 *canon_hash,
+    struct uint256 *hdr_hashes, int tip_h, int salt,
+    struct block_index **out_best_header)
+{
+    struct block_index *tip = tfs_build_main(ms, hashes, tip_h);
+    struct block_index *canonical_tip = tfs_insert(ms, canon_hash, salt, tip_h,
+        tip ? tip->pprev : NULL, (uint64_t)(tip_h + 1000), BLOCK_VALID_TREE);
+    struct block_index *prev = canonical_tip;
+    struct block_index *best_header = canonical_tip;
+    for (int i = 1; i <= 5; i++) {
+        prev = tfs_insert(ms, &hdr_hashes[i], salt + i, tip_h + i, prev,
+                          (uint64_t)(tip_h + 1000 + i * 1000),
+                          BLOCK_VALID_TREE);
+        best_header = prev;
+    }
+    ms->pindex_best_header = best_header;
+    if (out_best_header) *out_best_header = best_header;
+    return tip;
 }
 
 int test_tip_fork_stale(void)
@@ -465,6 +502,193 @@ int test_tip_fork_stale(void)
         ok = ok && tip_fork_stale_test_invalidate_calls() == 0;
         TFS_CHECK("tip not stalled (no sustained window) -> detect false",
                   ok);
+
+        condition_engine_set_main_state(NULL);
+        condition_engine_reset_for_testing();
+        tip_fork_stale_test_reset();
+        main_state_free(&ms);
+    }
+
+    /* ── 7..10. The 2026-07-27T01:41Z incident: a 1-block fork where the
+     *      active tip is a stale same-height sibling. The wedge is fully
+     *      diagnosable from second one (utxo_apply is held at tip+1 by an
+     *      apply-candidate anomaly), yet the un-corroborated condition waits
+     *      out its full 300 s patience window before it will look. These four
+     *      cases pin the latency AND the safety envelope of the fast path.
+     *
+     *      SHORT_AGE models "15 s into the wedge". ────────────────────── */
+    const int64_t SHORT_AGE = 15;
+    {
+        /* 7. BEFORE-shape: 15 s in, no corroborating hold -> still silent.
+         *    This is exactly what the live node did for 4m45s. */
+        condition_engine_reset_for_testing();
+        tip_fork_stale_test_reset();
+        atomic_store(&g_stub_invalidate_calls, 0);
+        atomic_store(&g_stub_rebuild_calls, 0);
+        atomic_store(&g_stub_anomaly_hold, -1);
+
+        struct main_state ms;
+        main_state_init(&ms);
+        struct uint256 hashes[256], canon_hash, hdr_h[8];
+        struct block_index *best_header = NULL;
+        struct block_index *tip = tfs_build_incident_shape(
+            &ms, hashes, &canon_hash, hdr_h, TIP_H, 21, &best_header);
+
+        condition_engine_set_main_state(&ms);
+        register_tip_fork_stale();
+        tip_fork_stale_test_set_remedy_stubs(stub_invalidate, stub_rebuild);
+        tip_fork_stale_test_set_anomaly_hold_stub(stub_anomaly_hold);
+        tip_fork_stale_test_force_stall(TIP_H, SHORT_AGE);
+
+        condition_engine_tick();
+
+        bool ok = (tip != NULL && best_header != NULL);
+        ok = ok && condition_engine_get_active_count() == 0;
+        ok = ok && tip_fork_stale_test_invalidate_calls() == 0;
+        TFS_CHECK("incident shape, 15s in, NO anomaly hold -> still patient "
+                  "(300s window, the 4m45s the live node actually waited)",
+                  ok);
+
+        condition_engine_set_main_state(NULL);
+        condition_engine_reset_for_testing();
+        tip_fork_stale_test_reset();
+        main_state_free(&ms);
+    }
+
+    {
+        /* 8. AFTER: same 15 s, but the fold has NAMED the wedge at tip+1 ->
+         *    detect fires now, on the corroborated 10 s window. */
+        condition_engine_reset_for_testing();
+        tip_fork_stale_test_reset();
+        atomic_store(&g_stub_invalidate_calls, 0);
+        atomic_store(&g_stub_rebuild_calls, 0);
+        atomic_store(&g_stub_rebuild_ret, true);
+        atomic_store(&g_stub_anomaly_hold, (int64_t)TIP_H + 1);
+
+        struct main_state ms;
+        main_state_init(&ms);
+        struct uint256 hashes[256], canon_hash, hdr_h[8];
+        struct block_index *best_header = NULL;
+        struct block_index *tip = tfs_build_incident_shape(
+            &ms, hashes, &canon_hash, hdr_h, TIP_H, 31, &best_header);
+
+        condition_engine_set_main_state(&ms);
+        g_advance_ms = &ms;
+        g_advance_to = block_index_get_ancestor(best_header, TIP_H + 1);
+
+        register_tip_fork_stale();
+        tip_fork_stale_test_set_remedy_stubs(stub_invalidate, stub_rebuild);
+        tip_fork_stale_test_set_anomaly_hold_stub(stub_anomaly_hold);
+        tip_fork_stale_test_force_stall(TIP_H, SHORT_AGE);
+
+        condition_engine_tick();
+
+        bool ok = (tip != NULL && best_header != NULL);
+        ok = ok && tip_fork_stale_test_invalidate_calls() == 1;
+        /* Same target a 300 s fire would have picked: the stale active tip. */
+        ok = ok && tip_fork_stale_test_last_invalidate_height() == TIP_H;
+        ok = ok && tip_fork_stale_test_rebuild_calls() == 1;
+        ok = ok && tip_fork_stale_test_stall_window_at_detect() == 10;
+        ok = ok && condition_engine_get_active_count() == 0;
+        printf("tip_fork_stale: detection window %llds -> %llds "
+               "(fired at age=%llds)\n",
+               (long long)300, (long long)
+               tip_fork_stale_test_stall_window_at_detect(),
+               (long long)SHORT_AGE);
+        TFS_CHECK("incident shape, 15s in, anomaly hold AT tip+1 -> fires on "
+                  "the 10s corroborated window, same invalidate target", ok);
+
+        condition_engine_set_main_state(NULL);
+        g_advance_ms = NULL; g_advance_to = NULL;
+        condition_engine_reset_for_testing();
+        tip_fork_stale_test_reset();
+        main_state_free(&ms);
+    }
+
+    {
+        /* 9. SAFETY: an anomaly hold at an UNRELATED height (a stale-script or
+         *    coin-backfill replay rewinds the stage cursor far below the tip)
+         *    must NOT shorten this condition's patience. */
+        condition_engine_reset_for_testing();
+        tip_fork_stale_test_reset();
+        atomic_store(&g_stub_invalidate_calls, 0);
+        atomic_store(&g_stub_rebuild_calls, 0);
+        atomic_store(&g_stub_anomaly_hold, (int64_t)TIP_H - 40);
+
+        struct main_state ms;
+        main_state_init(&ms);
+        struct uint256 hashes[256], canon_hash, hdr_h[8];
+        struct block_index *best_header = NULL;
+        struct block_index *tip = tfs_build_incident_shape(
+            &ms, hashes, &canon_hash, hdr_h, TIP_H, 41, &best_header);
+
+        condition_engine_set_main_state(&ms);
+        register_tip_fork_stale();
+        tip_fork_stale_test_set_remedy_stubs(stub_invalidate, stub_rebuild);
+        tip_fork_stale_test_set_anomaly_hold_stub(stub_anomaly_hold);
+        tip_fork_stale_test_force_stall(TIP_H, SHORT_AGE);
+
+        condition_engine_tick();
+
+        bool ok = (tip != NULL && best_header != NULL);
+        ok = ok && condition_engine_get_active_count() == 0;
+        ok = ok && tip_fork_stale_test_invalidate_calls() == 0;
+        TFS_CHECK("anomaly hold at an unrelated height -> patience NOT "
+                  "shortened", ok);
+
+        condition_engine_set_main_state(NULL);
+        condition_engine_reset_for_testing();
+        tip_fork_stale_test_reset();
+        main_state_free(&ms);
+    }
+
+    {
+        /* 10. SAFETY, the load-bearing one: a corroborated hold at tip+1 does
+         *     NOT make the condition willing to invalidate a block that IS on
+         *     the best-header chain. Faster must not mean more willing to
+         *     delete — gate (c) still refuses. */
+        condition_engine_reset_for_testing();
+        tip_fork_stale_test_reset();
+        atomic_store(&g_stub_invalidate_calls, 0);
+        atomic_store(&g_stub_rebuild_calls, 0);
+        atomic_store(&g_stub_anomaly_hold, (int64_t)TIP_H + 1);
+
+        struct main_state ms;
+        main_state_init(&ms);
+        struct uint256 hashes[256];
+        struct block_index *tip = tfs_build_main(&ms, hashes, TIP_H);
+
+        /* The data-bearing tip+1 child IS the best-header chain's tip+1. */
+        struct uint256 child_h;
+        struct block_index *child = tfs_insert(&ms, &child_h, 51, TIP_H + 1,
+            tip, (uint64_t)(TIP_H + 2),
+            BLOCK_VALID_TRANSACTIONS | BLOCK_HAVE_DATA);
+        struct uint256 hdr_h[8];
+        struct block_index *prev = child;
+        struct block_index *best_header = child;
+        for (int i = 2; i <= 5; i++) {
+            prev = tfs_insert(&ms, &hdr_h[i], 51 + i, TIP_H + i, prev,
+                              (uint64_t)(TIP_H + 1 + i * 1000),
+                              BLOCK_VALID_TREE);
+            best_header = prev;
+        }
+        ms.pindex_best_header = best_header;
+
+        condition_engine_set_main_state(&ms);
+        register_tip_fork_stale();
+        tip_fork_stale_test_set_remedy_stubs(stub_invalidate, stub_rebuild);
+        tip_fork_stale_test_set_anomaly_hold_stub(stub_anomaly_hold);
+        /* Well past even the patient window: only gate (c) can refuse here. */
+        tip_fork_stale_test_force_stall(TIP_H, 400);
+
+        condition_engine_tick();
+
+        bool ok = (child != NULL && best_header != NULL);
+        ok = ok && block_index_get_ancestor(best_header, TIP_H + 1) == child;
+        ok = ok && condition_engine_get_active_count() == 0;
+        ok = ok && tip_fork_stale_test_invalidate_calls() == 0;
+        TFS_CHECK("corroborated hold + child ON best-header chain -> STILL no "
+                  "invalidate (faster != more willing to delete)", ok);
 
         condition_engine_set_main_state(NULL);
         condition_engine_reset_for_testing();

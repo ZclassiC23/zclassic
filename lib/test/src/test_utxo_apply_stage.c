@@ -2312,6 +2312,26 @@ int test_utxo_apply_stage(void)
         utxo_apply_select_idle_blocker_clear();
         UV_CHECK("candidate_anomaly: clear helper removes it",
                  !blocker_exists("utxo_apply.apply_candidate_anomaly"));
+
+        /* The LIVE hold accessor recovery Conditions read (tip_fork_stale's
+         * corroborated fast path). It must report the held height only while the
+         * hold is live, and -1 the instant it ends — the last-observed
+         * select_idle_height, which survives the hold, is not good enough. */
+        UV_CHECK("anomaly_hold: -1 once the hold is cleared",
+                 utxo_apply_stage_candidate_anomaly_hold_height() == -1);
+        utxo_apply_select_idle_note(3195364, UA_SELECT_IDLE_PARENT_MISMATCH,
+                                    NULL);
+        UV_CHECK("anomaly_hold: reports the held height while live "
+                 "(incident shape: parent_mismatch at tip+1)",
+                 utxo_apply_stage_candidate_anomaly_hold_height() == 3195364);
+        /* A legitimate wait-reason ends the hold; the stale last-observed height
+         * must not keep the accessor reporting a wedge. */
+        utxo_apply_select_idle_note(3195364, UA_SELECT_IDLE_NO_SCRIPT_HASH,
+                                    NULL);
+        UV_CHECK("anomaly_hold: -1 when the hold resolves to a plain wait, "
+                 "even at the same height",
+                 utxo_apply_stage_candidate_anomaly_hold_height() == -1 &&
+                 utxo_apply_stage_select_idle_height() == 3195364);
     }
 
     printf("utxo_apply_stage tests: %s\n", failures ? "FAILED" : "PASSED");
