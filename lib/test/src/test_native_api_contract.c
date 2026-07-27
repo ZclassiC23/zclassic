@@ -37,9 +37,11 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <netinet/in.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -931,6 +933,133 @@ static int test_wallet_mutating_native_e2e(void)
     return failures;
 }
 
+/* ── a node that answers only PART of a reply must read as a slow node ─────
+ * The node writes HTTP response headers before its handler blocks, so a
+ * deadline that fires while the handler waits on the node.db write lock left
+ * node_rpc_call returning the header fragment. Every caller parses that
+ * return value, so `core.wallet.utxo.list` reported TOOL_ERROR "RPC
+ * listunspent returned an unparseable body" — a body-shape complaint for what
+ * is really a busy node. rpc_client.c now names the truncation instead.
+ *
+ * Driven through zcl_command_registry_execute_json against a REAL socket (no
+ * test hook) and asserted on the RENDERED BYTES the caller receives, because
+ * that is the only layer where the wrong error text is visible. */
+struct partial_reply_server {
+    int listen_fd;
+    int accepted_fd;
+};
+
+static void *partial_reply_serve(void *arg)
+{
+    struct partial_reply_server *s = arg;
+    /* Send the response HEADERS and nothing else, then hold the connection
+     * open — exactly the shape a node produces when its handler blocks after
+     * the HTTP preamble is already on the wire. */
+    int fd = accept(s->listen_fd, NULL, NULL);
+    if (fd < 0)
+        return NULL;
+    s->accepted_fd = fd;
+    static const char hdr[] =
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+        "Content-Length: 64\r\nConnection: close\r\n\r\n";
+    (void)!write(fd, hdr, sizeof(hdr) - 1);
+    /* Park until the parent closes us out; never write the body. */
+    for (int i = 0; i < 200; i++) {
+        struct timespec ts = { .tv_sec = 0, .tv_nsec = 50 * 1000 * 1000 };
+        (void)nanosleep(&ts, NULL);
+        if (s->listen_fd < 0)
+            break;
+    }
+    return NULL;
+}
+
+static int test_partial_rpc_reply_names_the_timeout(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    char *dir = NULL;
+    pthread_t th = 0;
+    bool joined = false;
+    struct partial_reply_server srv = { .listen_fd = -1, .accepted_fd = -1 };
+    char *out = malloc(ZCL_COMMAND_LIST_BUDGET + 1);
+
+    TEST("core.wallet.utxo.list: a node that sends only the HTTP headers "
+        "before the deadline renders a named transport timeout, never "
+        "'unparseable body'") {
+        ASSERT(out != NULL);
+        node_rpc_client_set_test_hook(NULL);
+
+        srv.listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+        ASSERT(srv.listen_fd >= 0);
+        struct sockaddr_in addr = { 0 };
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = htons(0);
+        int reuse = 1;
+        setsockopt(srv.listen_fd, SOL_SOCKET, SO_REUSEADDR, &reuse,
+                   sizeof(reuse));
+        ASSERT(bind(srv.listen_fd, (struct sockaddr *)&addr,
+                    sizeof(addr)) == 0);
+        socklen_t alen = sizeof(addr);
+        ASSERT(getsockname(srv.listen_fd, (struct sockaddr *)&addr,
+                           &alen) == 0);
+        uint16_t port = ntohs(addr.sin_port);
+        ASSERT(listen(srv.listen_fd, 1) == 0);
+        ASSERT(pthread_create(&th, NULL, partial_reply_serve, &srv) == 0);
+
+        char dir_template[] = "/tmp/zcl-partial-reply-XXXXXX";
+        dir = strdup(mkdtemp(dir_template));
+        ASSERT(dir != NULL);
+        char cookie_path[320];
+        (void)snprintf(cookie_path, sizeof(cookie_path), "%s/.cookie", dir);
+        FILE *cf = fopen(cookie_path, "w");
+        ASSERT(cf != NULL);
+        (void)fprintf(cf, "dummyuser:dummypass\n");
+        (void)fclose(cf);
+        node_rpc_client_init(dir, (int)port);
+        ASSERT(setenv("ZCL_RPC_DEADLINE_MS", "400", 1) == 0);
+
+        const struct zcl_command_spec *s =
+            find_spec(reg, "core.wallet.utxo.list");
+        ASSERT(s != NULL);
+        enum zcl_command_exit code = ZCL_COMMAND_EXIT_OK;
+        bool dispatched = exec_leaf(reg, s, out,
+                                    ZCL_COMMAND_LIST_BUDGET + 1, &code);
+        (void)unsetenv("ZCL_RPC_DEADLINE_MS");
+        ASSERT(dispatched);
+
+        /* The rendered bytes are the contract: a busy node is named as one. */
+        ASSERT(strstr(out, "unparseable body") == NULL);
+        ASSERT(strstr(out, "truncated reply") != NULL);
+        ASSERT(strstr(out, "\"ok\":false") != NULL);
+        PASS();
+    } _test_next:;
+    if (srv.listen_fd >= 0) {
+        int lf = srv.listen_fd;
+        srv.listen_fd = -1;
+        if (th) {
+            (void)pthread_join(th, NULL);
+            joined = true;
+        }
+        if (srv.accepted_fd >= 0)
+            close(srv.accepted_fd);
+        close(lf);
+    }
+    if (th && !joined)
+        (void)pthread_join(th, NULL);
+    if (dir) {
+        char rmcmd[512];
+        (void)snprintf(rmcmd, sizeof(rmcmd), "rm -rf %s", dir);
+        (void)system(rmcmd);
+        free(dir);
+    }
+    free(out);
+    (void)unsetenv("ZCL_RPC_DEADLINE_MS");
+    node_rpc_client_init("", 0);
+    node_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
 int test_native_api_contract(void)
 {
     int failures = 0;
@@ -943,6 +1072,7 @@ int test_native_api_contract(void)
     failures += test_wallet_mutating_native_e2e();
     failures += test_status_brief_body_schema_skew_tolerance();
     failures += test_status_brief_body_front_door_deadline();
+    failures += test_partial_rpc_reply_names_the_timeout();
     printf("=== native_api_contract: %d failures ===\n", failures);
     return failures;
 }

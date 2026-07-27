@@ -375,7 +375,9 @@ static char *node_rpc_call_http_impl(const char *method,
 
     /* Extract "result" from {"result":...,"error":null,"id":1} */
     struct json_value v;
+    bool parsed = false;
     if (json_read(&v, buf, strlen(buf))) {
+        parsed = true;
         const struct json_value *res = json_get(&v, "result");
         const struct json_value *err = json_get(&v, "error");
         if (err && err->type != JSON_NULL) {
@@ -395,6 +397,24 @@ static char *node_rpc_call_http_impl(const char *method,
             return out;
         }
         json_free(&v);
+    }
+
+    /* A deadline that fired part-way through the reply leaves a TRUNCATED
+     * body — commonly just the HTTP headers, because the node writes those
+     * before its handler blocks. The fragment is not JSON, so every caller
+     * that parses this return value reports its own "unparseable body"
+     * (e.g. core.wallet.utxo.list -> TOOL_ERROR "RPC listunspent returned an
+     * unparseable body") and the operator learns nothing about the real
+     * cause. The `timed_out && len == 0` branch above already names the
+     * empty case; this names the partial one, so a slow node reads as a slow
+     * node at every layer. Only the unparseable path is redirected: a body
+     * that parsed is a real answer even if the FIN arrived late. */
+    if (timed_out && !parsed) {
+        free(buf);
+        return rpc_transport_error(
+            "node answered only partially before the deadline (truncated "
+            "reply) — the node is busy or wedged; retry, or inspect "
+            "`ops state --subsystem=supervisor`");
     }
     return buf;
 }
