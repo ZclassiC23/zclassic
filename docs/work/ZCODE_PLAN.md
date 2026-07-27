@@ -72,7 +72,7 @@ JSON (JSON is display-only).
 12. [x] Authenticated package swarm (wire package_swarm codec to authenticated transport
         only after signatures + storage are complete; rarest-first, bounded windows,
         timeouts/retries/cancel/disconnect-requeue/resume, per-peer offence accounting)
-13. [ ] Onion website (`/zcode*` routes, same models/projections as typed commands —
+13. [x] Onion website (`/zcode*` routes, same models/projections as typed commands —
         no second package truth)
 14. [ ] Owner-reviewed real ZCODE transfers (plan/commit; no automatic payout in v1;
         daily batched settlement — one ZSLP SEND per settlement window, not one per reward)

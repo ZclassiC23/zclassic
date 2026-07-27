@@ -914,6 +914,21 @@ size_t onion_service_handle_request(const char *method,
                                         response, response_max);
     }
 
+    /* ZCODE Library — packages, publishers, rankings, badges, downloads.
+     * Same handler is wired into the HTTPS dispatch chain, so the site
+     * reads identically over onion and HTTPS (the same lib/vcs read
+     * projections the zcode.* typed commands call — no second package
+     * truth). Read-only: no POST surface here. */
+    if (strncmp(path, "/zcode", 6) == 0 &&
+        (path[6] == 0 || path[6] == '/' || path[6] == '?') &&
+        onion_ctx()->datadir) {
+        extern size_t zcode_site_handle_request(const char *, const char *,
+            const uint8_t *, size_t, uint8_t *, size_t, const char *);
+        return zcode_site_handle_request(method, path, body, body_len,
+                                         response, response_max,
+                                         onion_ctx()->datadir);
+    }
+
     /* Blog MVC App. The same path handler is used by public HTTPS, so
      * zclnet.net/blog and a node's onion expose the same local projection. */
     if (strncmp(path, "/blog", 5) == 0 &&

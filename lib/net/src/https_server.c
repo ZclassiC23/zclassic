@@ -325,6 +325,37 @@ static void handle_https_client(SSL *ssl)
         return;
     }
 
+    /* ZCODE Library — packages, publishers, rankings, badges, downloads,
+     * the same handler the onion service uses so the site reads
+     * identically on both transports (datadir NULL → the handler resolves
+     * GetDataDir(true) itself, this listener carrying no datadir context).
+     * This listener is GET/HEAD-only (checked above) and the ZCODE site is
+     * a read-only surface, so every route is served here. */
+    if (strncmp(path, "/zcode", 6) == 0 &&
+        (path[6] == 0 || path[6] == '/' || path[6] == '?')) {
+        extern size_t zcode_site_handle_request(const char *, const char *,
+            const unsigned char *, size_t, unsigned char *, size_t,
+            const char *);
+        unsigned char *buf = zcl_malloc(HTTPS_RESPONSE_BUFFER_SIZE,
+                                        "https_zcode_buf");
+        if (!buf) return;
+        size_t n = zcode_site_handle_request(method, path, NULL, 0, buf,
+                                             HTTPS_RESPONSE_BUFFER_SIZE,
+                                             NULL);
+        if (n > 0) {
+            size_t written = 0;
+            while (written < n) {
+                size_t chunk = n - written;
+                if (chunk > 16384) chunk = 16384;
+                int w = SSL_write(ssl, buf + written, (int)chunk);
+                if (w <= 0) break;
+                written += (size_t)w;
+            }
+        }
+        free(buf);
+        return;
+    }
+
     extern const char *explorer_canonical_shortcut(const char *path);
 
     /* Explorer + API routes — call the explorer handler (which delegates /api/) */

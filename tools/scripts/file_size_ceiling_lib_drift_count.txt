@@ -307,3 +307,12 @@
 # hook call, and the hook-field NULLs; 2462 of it predates this slice on
 # this branch) — re-baselined at 2472, which also absorbs that restored
 # branch drift; count unchanged.
+#
+# 2026-07-27 (ZCODE slice 13, onion/HTTPS site): https_server.c grew
+# 951 -> 982 and onion_service.c grew 1021 -> 1031 wiring the /zcode*
+# prefix into both dispatch chains (one bounded handler call each, the
+# site controller living under app/controllers/). Both re-baselined in
+# file_size_ceiling_lib_baseline.txt (982, 1031); count unchanged.
+# Same lint run exposed one restored regression already committed on
+# this branch: package_service.c (1066 lines, 9f72e1d33) had never been
+# baselined. Freshly baselined at 1066; count unchanged (live 11).

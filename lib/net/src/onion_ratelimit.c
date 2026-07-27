@@ -59,6 +59,15 @@
  *   shortcuts (/stats,/tokens,/hodl,             and single-key indexed
  *   /events,/factoids,/market,                   lookups
  *   /swaps,/messages), /wallet
+ *   /zcode...                         CHEAP      bounded listing/lookup
+ *                                                 pages over the rebuildable
+ *                                                 ZCODE read projections (row
+ *                                                 caps mirror the zcode.*
+ *                                                 command render caps);
+ *                                                 /zcode/download serves one
+ *                                                 bounded CAS object with
+ *                                                 attachment semantics, no
+ *                                                 write, no scan, no mint
  *   the REST API prefix               UNREACHABLE onion dispatch only
  *                                                 forwards "/explorer" or
  *                                                 a canonical shortcut to
