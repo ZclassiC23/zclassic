@@ -241,7 +241,7 @@ ZCL_COMMAND_PLANNED_COMMAND(
     "delivery path exists; today the handler is unbound and fails closed with "
     "exit 3 rather than reporting a delivery that cannot happen.", 0,
     "messaging,zmsg,send,name", "zcl.app_message_send_named.input.v1",
-    "zcl.app_message_send_result.v1", "name,message", "name",
+    "zcl.app_message_send_result.v1", "name,message,confirm", "name",
     "zclassic23 app messaging send-named --input='{\"name\":\"alice\",\"message\":\"hi\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_APP_WRITE,
     ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
@@ -306,7 +306,7 @@ ZCL_COMMAND_PLANNED_COMMAND(
     "path exists; today the handler is unbound and fails closed with exit 3 "
     "rather than reporting an announcement no peer receives.", 0,
     "market,offer,sell", "zcl.app_market_offer.input.v1",
-    "zcl.app_market_offer_result.v1", "filepath,price_per_mb_zat", "",
+    "zcl.app_market_offer_result.v1", "filepath,price_per_mb_zat,confirm", "",
     "zclassic23 app market offer --input='{\"filepath\":\"/data/f\",\"price_per_mb_zat\":1000}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_APP_WRITE,
     ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
@@ -329,7 +329,7 @@ ZCL_COMMAND_PLANNED_COMMAND(
     "with exit 3, so no funds move and no half-started session is left "
     "behind.", 0,
     "market,buy,download", "zcl.app_market_buy.input.v1",
-    "zcl.app_market_buy_result.v1", "root_hash", "root_hash",
+    "zcl.app_market_buy_result.v1", "root_hash,confirm", "root_hash",
     "zclassic23 app market buy --input='{\"root_hash\":\"<64hex>\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
     ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
