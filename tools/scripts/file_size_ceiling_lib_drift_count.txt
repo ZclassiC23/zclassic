@@ -258,3 +258,12 @@
 # Freshly baselined at its starting size (845) so future growth on it
 # becomes visible; count unchanged.
 13
+#
+# 2026-07-27 (os_sandbox dynamic Landlock handled-set): os_sandbox_linux.c
+# grew 1415 -> 1422 — the slice-6 unconditional handled-set addition of
+# EXECUTE/MAKE_REG/MAKE_DIR/REMOVE_FILE/REMOVE_DIR denied those rights to
+# every pre-existing caller (node -confine profiles never set the new
+# flags; test_confine's confined file I/O + serving loops failed). The
+# handled set is now computed from the rules: new bits only when some rule
+# sets allow_execute/allow_create. Re-baselined in
+# file_size_ceiling_lib_baseline.txt (1422); count unchanged.

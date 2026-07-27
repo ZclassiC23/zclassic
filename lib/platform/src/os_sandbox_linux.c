@@ -421,17 +421,24 @@ struct zcl_result os_sandbox_landlock_restrict(
     /* Handle only the FS accesses this ABI knows about (forward-compatible).
      * ABI 1 introduced the file/dir bits; later ABIs add refer/truncate/net —
      * we do not enforce those here, so we do not need to handle them. The
-     * execute/make/remove bits are only granted when a rule asks for them
-     * (allow_execute / allow_create); handling them here costs nothing for
-     * rules that never set those flags. */
+     * execute/make/remove bits join the handled set ONLY when at least one
+     * rule asks for them (allow_execute / allow_create): a handled-but-
+     * ungranted right is DENIED everywhere, so handling them unconditionally
+     * silently revoked file creation/removal for every pre-existing caller
+     * (node -confine profiles never set those flags — test_confine caught
+     * this). */
     uint64_t handled = LANDLOCK_ACCESS_FS_READ_FILE |
                        LANDLOCK_ACCESS_FS_WRITE_FILE |
-                       LANDLOCK_ACCESS_FS_READ_DIR |
-                       LANDLOCK_ACCESS_FS_EXECUTE |
-                       LANDLOCK_ACCESS_FS_MAKE_REG |
+                       LANDLOCK_ACCESS_FS_READ_DIR;
+    for (size_t i = 0; i < n_rules; i++) {
+        if (rules[i].allow_execute)
+            handled |= LANDLOCK_ACCESS_FS_EXECUTE;
+        if (rules[i].allow_create)
+            handled |= LANDLOCK_ACCESS_FS_MAKE_REG |
                        LANDLOCK_ACCESS_FS_MAKE_DIR |
                        LANDLOCK_ACCESS_FS_REMOVE_FILE |
                        LANDLOCK_ACCESS_FS_REMOVE_DIR;
+    }
 
     struct landlock_ruleset_attr rattr = { .handled_access_fs = handled };
     int ruleset_fd = ll_create_ruleset(&rattr, sizeof(rattr), 0);
