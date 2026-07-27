@@ -1918,6 +1918,8 @@ int test_validate_headers_stage(void)
 
         struct block_index nongen = gen;
         nongen.hashBlock.data[0] ^= 0xff; /* same state, no longer genesis */
+        nongen.phashBlock = &nongen.hashBlock; /* repoint: the copy inherited
+                                                * gen's self-pointer */
         memset(reason, 0, sizeof(reason));
         VH_CHECK("genesis-exempt: v0 non-genesis still fails version-too-low",
                  !validate_headers_default_validator(&nongen, NULL, reason,
