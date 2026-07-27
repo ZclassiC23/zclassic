@@ -1520,6 +1520,85 @@ int test_tip_finalize_stage(void)
         reducer_frontier_test_set_compiled_anchor(-1); /* restore mainnet floor */
     }
 
+    /* Phase 0.3 — the O(1) H* fast path (tf_advance_provable_tip) can NEVER
+     * publish a height whose consensus receipts name a block other than the one
+     * being finalized. The fast path itself reads no rows: it bumps the
+     * watermark on the sole condition cached == next_h - 1. What makes that safe
+     * is the finalize gate ABOVE it — tip_finalize_full_evidence_at() requires
+     * header_admit.hash, validate_headers.hash, utxo_apply_delta.branch_hash,
+     * script_validate.block_hash and proof_validate.block_hash to ALL equal the
+     * selected block's hash, with ok=1 + VERIFIED evidence. That is a STRICTER
+     * binding than the fold's own C3 hash-agreement check (which only demands
+     * the rows agree with EACH OTHER, and exempts a NULL nullable witness).
+     *
+     * These are the 2026-07-27 one-block-fork shapes at h=3,195,363: a verdict
+     * row left hash-bound to the LOSING block while a different block is
+     * canonical. Each must hold the cursor AND the published height, and the
+     * cache must stay equal to the full recompute — proving the cheap path
+     * cannot report a height the node is refusing to apply. */
+    {
+        static const struct {
+            const char *tag;
+            const char *name;
+            const char *forge;      /* the losing-branch / weak-evidence row */
+        } k_refuse[] = {
+            { "coins_binding", "utxo_apply_delta.branch_hash names the loser",
+              "UPDATE utxo_apply_delta SET branch_hash="
+              "x'ee00000000000000000000000000000000000000000000000000000000000000' "
+              "WHERE height=4" },
+            { "proof_binding", "proof_validate verdict hash-bound to the loser",
+              "UPDATE proof_validate_log SET block_hash="
+              "x'ee00000000000000000000000000000000000000000000000000000000000000' "
+              "WHERE height=4" },
+            { "weak_evidence", "utxo_apply ok=1 without VERIFIED evidence",
+              "UPDATE utxo_apply_log SET status='checkpoint' WHERE height=4" },
+        };
+        for (size_t i = 0; i < sizeof(k_refuse) / sizeof(k_refuse[0]); i++) {
+            char dir[256]; struct main_state ms; struct synth_chain_tf sc;
+            char label[192];
+            reducer_frontier_test_set_compiled_anchor(0);
+            snprintf(label, sizeof(label), "fastpath_binding[%s]: setup",
+                     k_refuse[i].tag);
+            TF_CHECK(label, tf_setup(k_refuse[i].tag, 5, TF_FAIL_NONE, -1,
+                                     dir, sizeof(dir), &ms, &sc) == 0);
+            /* Finalize the clean prefix up to h=3 so the cache sits at exactly
+             * next_h - 1 == 3 — the ONE state that arms the fast path. */
+            snprintf(label, sizeof(label),
+                     "fastpath_binding[%s]: clean prefix finalizes 4 heights",
+                     k_refuse[i].tag);
+            TF_CHECK(label, tip_finalize_stage_drain(4) == 4);
+            snprintf(label, sizeof(label),
+                     "fastpath_binding[%s]: fast path ARMED (cache == next_h-1)",
+                     k_refuse[i].tag);
+            TF_CHECK(label, reducer_frontier_provable_tip_cached() == 3 &&
+                            tip_finalize_stage_cursor() == 4);
+
+            snprintf(label, sizeof(label), "fastpath_binding[%s]: forge %s",
+                     k_refuse[i].tag, k_refuse[i].name);
+            TF_CHECK(label, exec_sql(progress_store_db(), k_refuse[i].forge));
+
+            job_result_t r = tip_finalize_stage_step_once();
+            snprintf(label, sizeof(label),
+                     "fastpath_binding[%s]: step is BLOCKED, not ADVANCED",
+                     k_refuse[i].tag);
+            TF_CHECK(label, r == JOB_BLOCKED);
+            snprintf(label, sizeof(label),
+                     "fastpath_binding[%s]: cursor held at 4", k_refuse[i].tag);
+            TF_CHECK(label, tip_finalize_stage_cursor() == 4);
+            snprintf(label, sizeof(label),
+                     "fastpath_binding[%s]: published height NOT bumped to 4",
+                     k_refuse[i].tag);
+            TF_CHECK(label, reducer_frontier_provable_tip_cached() == 3);
+            snprintf(label, sizeof(label),
+                     "fastpath_binding[%s]: cache still == full recompute",
+                     k_refuse[i].tag);
+            TF_CHECK(label, reducer_frontier_provable_tip_cached() ==
+                            compute_hstar_now(progress_store_db()));
+            tf_teardown(dir, &ms, &sc);
+            reducer_frontier_test_set_compiled_anchor(-1);
+        }
+    }
+
     {
         char dir[256]; struct main_state ms; struct synth_chain_tf sc;
         TF_CHECK("precondition: setup",
