@@ -321,6 +321,24 @@ evidence and left deliberately, not forgotten.
     node): `zclassic23 -datadir=DIR -rpcport=PORT dumpstate <sub>` — the
     RPC cookie is per-datadir, so BOTH flags are needed; env vars only
     affect the separate `zcl-rpc` binary.
+    **RESOLVED 2026-07-27 — re-run PASS, 402s wiped-datadir-to-tip.**
+    Same harness, same machine, peer=`zclassicd` behind the harness relay
+    (`tools/scripts/c3_stopwatch_run_and_record.sh --peer=127.0.0.1:8034
+    --budget=1800`, run dir `build/c3-stopwatch/20260727T102606Z-2420093/`,
+    verdict pass, exit 0): wiped datadir reached network_tip=3195777 in
+    402s wall across 2 boots (one self-respawn by the tip watchdog),
+    provable sample to tip, readback clean. Path taken: bundle candidate
+    discovered from the peer (h=3056758), installed, projections folded,
+    then ~139k bodies ingested from zclassicd at ~800 blk/s. Wedge A
+    (genesis exemption) + Wedge B (getheaders node.db fallback) are what
+    moved this from STALLED-NAMED h=0 to PASS. Residual observed, not
+    blocking: near-tip the node adopted a short fork header branch,
+    briefly flipped at_tip→connecting, got 35 `notfound` replies for
+    fork-only hashes (neither byte order exists in the live node's
+    `blocks` table — verified via `core storage query`), and recovered
+    without operator input; one `no-header-solution-backfill-required`
+    on-demand validate refusal at the bundle checkpoint h=3056758 fired
+    during boot 1 and cleared on the watchdog respawn.
 11. **DONE 2026-07-27 — stale `.failed` bundle markers now cleared on
     successful install.** Found in the canonical datadir: a watchdog-killed
     boot (the item-8 crash-loop morning) marked
