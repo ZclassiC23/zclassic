@@ -32,6 +32,7 @@
 #include "models/database.h"
 #include "models/op_return_index.h"
 #include "primitives/block.h"
+#include "services/index_fold_guard.h"
 #include "storage/disk_block_io.h"
 #include "supervisors/domains.h"
 #include "util/log_macros.h"
@@ -125,6 +126,14 @@ int op_return_backfill_run_once(void)
         if (!bi || !bi->phashBlock ||
             !(block_index_status_load(bi) & BLOCK_HAVE_DATA)) {
             atomic_fetch_add(&g_backfill_holes, 1);
+            /* Name the floor (same pattern as address_index/txindex): below
+             * the snapshot-seed floor this is a structural DEPENDENCY
+             * (bodies never downloaded on a seeded datadir — the fold can
+             * never cross), above it a transient gap. Without this the only
+             * signal is catalog_lag_exceeded's "stalled and must resume",
+             * which is false on a seeded datadir. */
+            index_fold_note_absent_body("op_return_index", "op_return_index",
+                                        ndb->db, h);
             LOG_WARN("op_return_index",
                      "backfill: h=%d not readable yet (index/data missing) "
                      "— stopping this batch, retrying next tick", h);

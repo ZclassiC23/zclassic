@@ -89,6 +89,21 @@ static bool eval_over(const struct catalog_index_status *rows, size_t n)
     if (w->cursor > armed_cursor)
         return false;                 /* advancing — healthy backfill */
 
+    /* Frozen — but if the index's own fold guard has already named a
+     * STRUCTURAL floor ("<name>.below_snapshot_seed": bodies below the
+     * snapshot seed were never downloaded, the forward-only fold can never
+     * cross), "stalled and must resume" is a false claim. The structural
+     * blocker is the truthful naming; do not pile a misleading one on top.
+     * Observed live 2026-07-27: op_return_index frozen at -1 on the
+     * snapshot-seeded canonical datadir. */
+    {
+        char seed_id[BLOCKER_ID_MAX];
+        snprintf(seed_id, sizeof(seed_id), "%s.below_snapshot_seed",
+                 w->name ? w->name : "unknown");
+        if (blocker_exists(seed_id))
+            return false;
+    }
+
     atomic_store(&g_lagging_name, w->name);
     atomic_store(&g_cursor_at_detect, w->cursor);
     return true;                      /* frozen + sustained + over threshold */
@@ -171,6 +186,22 @@ static bool witness_catalog_lag_exceeded(int64_t target_at_detect)
             if (rows[i].enabled)
                 cursor_now = rows[i].cursor;
             break;
+        }
+    }
+    /* Superseded naming: if the index's fold guard has since named the
+     * STRUCTURAL floor (below_snapshot_seed), the lag blocker's "stalled and
+     * must resume" claim is false — the cursor cannot advance across the
+     * seed floor. Clear the lag blocker and let the structural one carry the
+     * truth. */
+    {
+        char seed_id[BLOCKER_ID_MAX];
+        snprintf(seed_id, sizeof(seed_id), "%s.below_snapshot_seed",
+                 name);
+        if (blocker_exists(seed_id)) {
+            char id[BLOCKER_ID_MAX];
+            lag_blocker_id(name, id, sizeof(id));
+            blocker_clear(id);
+            return true;
         }
     }
     bool advanced = cursor_now > atomic_load(&g_cursor_at_detect);

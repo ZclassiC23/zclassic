@@ -120,6 +120,39 @@ int test_catalog_lag_exceeded(void)
                  fnm && strcmp(fnm, "address_index") == 0);
     }
 
+    /* A frozen index whose fold guard has already named the STRUCTURAL
+     * snapshot-seed floor must NOT also collect the misleading "stalled and
+     * must resume" lag blocker (the 2026-07-27 live op_return_index case:
+     * frozen at -1 on a seeded datadir — it can never resume, and the
+     * below_snapshot_seed blocker is the truthful naming). */
+    catalog_lag_exceeded_test_reset();
+    blocker_reset_for_testing();
+    {
+        struct blocker_record sr;
+        CL_CHECK("seed-floor blocker raised for op_return_index",
+                 blocker_init(&sr, "op_return_index.below_snapshot_seed",
+                              "op_return_index", BLOCKER_DEPENDENCY,
+                              "test: structural seed floor") &&
+                     blocker_set(&sr));
+        struct catalog_index_status frz[1];
+        frz[0] = cl_row("op_return_index", -1, 3195000, 3195001, true);
+        CL_CHECK("frozen + seed-floor: pass 1 arms (no fire)",
+                 !catalog_lag_exceeded_test_feed(frz, 1));
+        CL_CHECK("frozen + seed-floor: pass 2 suppressed (structural named)",
+                 !catalog_lag_exceeded_test_feed(frz, 1));
+        CL_CHECK("frozen + seed-floor: pass 3 still suppressed",
+                 !catalog_lag_exceeded_test_feed(frz, 1));
+        CL_CHECK("no lag blocker raised alongside the structural one",
+                 !blocker_exists("catalog.op_return_index.lag_exceeded"));
+        /* Same freeze WITHOUT the seed blocker still fires (suppression is
+         * specific, not a blanket freeze amnesty). */
+        blocker_reset_for_testing();
+        CL_CHECK("frozen w/o seed-floor: pass re-arms",
+                 !catalog_lag_exceeded_test_feed(frz, 1));
+        CL_CHECK("frozen w/o seed-floor: fires (genuine stall)",
+                 catalog_lag_exceeded_test_feed(frz, 1));
+    }
+
     /* A DISABLED index over threshold never fires, no matter how many passes. */
     catalog_lag_exceeded_test_reset();
     {
