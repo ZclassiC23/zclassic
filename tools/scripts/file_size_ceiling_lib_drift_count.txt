@@ -250,4 +250,11 @@
 # file rules) so zclassic23-package-verify's build children can exec the
 # toolchain and create objects inside their confined build dir. Re-baselined
 # in file_size_ceiling_lib_baseline.txt (1415); count unchanged.
+#
+# 2026-07-27 (ZCODE slice 7, contribution scoring): package_score.c is a
+# NEW 845-line file (the semantic-line classifier + logical-statement
+# unitizer + lineage content diff + category/cap arithmetic — one
+# cohesive scoring module mirroring package_store.c's one-file shape).
+# Freshly baselined at its starting size (845) so future growth on it
+# becomes visible; count unchanged.
 13

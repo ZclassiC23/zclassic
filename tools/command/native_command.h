@@ -332,6 +332,19 @@ void zcl_native_handle_zcode_package_resolve(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* zcode slice 7 — bounded deterministic contribution scoring and the
+ * reward eligibility gate list. score computes the semantic-line/lineage
+ * breakdown from the persisted CAS bytes only (same bytes, same score);
+ * eligible evaluates the frozen eight-gate list and names every failed
+ * gate. Read-only: settlement belongs to slice 8. Bound by
+ * config/commands/zcode.def. */
+void zcl_native_handle_zcode_reward_score(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_reward_eligible(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* ops.state — generic subsystem state dump. Dispatches the `dumpstate` RPC
  * method directly. `subsystem` (required) selects the
  * owning module's *_dump_state_json; `key` is subsystem-specific (e.g. a

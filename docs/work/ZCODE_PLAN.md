@@ -58,7 +58,7 @@ JSON (JSON is display-only).
        no wallet, no datadir, read-only source, tmp build dir, CPU/RAM/proc/time limits,
        GCC+Clang, ASan+UBSan, delete binaries after attestation; ≥2 approved independent
        verifier keys sign matching attestations before any reward)
-7. [ ] Contribution scoring (bounded deterministic; semantic-line component ≤500/release,
+7. [x] Contribution scoring (bounded deterministic; semantic-line component ≤500/release,
        tests > source; caps per release/contributor-week/releases-day)
 8. [ ] Simulated ZCODE rewards (placeholder token ID only — never the real token in dev;
        settlement accrues into a daily queue — see ZCL fuel economics below)

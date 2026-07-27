@@ -259,3 +259,77 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_package_resolve)
+
+/* ── slice 7: contribution scoring + reward eligibility ────────────────
+ * Bounded DETERMINISTIC scoring over the persisted CAS bytes only (same
+ * bytes, same score — no wall-clock, no randomness): semantic units are
+ * logical statements (whitespace/brace style/line splits normalized away)
+ * diffed by content against the whole ancestor lineage, so moved,
+ * renamed, re-added, or duplicated code scores zero. Eligibility is the
+ * frozen eight-gate list; a release earns nothing until every gate
+ * passes. Both commands are read-only — queue/plan/commit settlement
+ * belongs to slice 8. */
+
+ZCL_COMMAND_BRANCH("zcode.reward", "zcode",
+                   "Contribution scoring and reward eligibility (read-only; "
+                   "settlement is a later slice)",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.reward.score", "zcode.reward", "",
+    "Deterministic contribution score breakdown for one release root",
+    "Computes the bounded deterministic ZCODE Score for the release "
+    "naming one 64-hex package `root`, purely from the persisted manifest "
+    "and CAS chunk bytes: the auto-derived category (new-package 500 / "
+    "package-update / test-contribution / none), per-line tallies "
+    "(semantic, blank, comment-only, brace-only), per-file rows with the "
+    "named exclusion reason (not-c-source, vendored-path, generated-path, "
+    "generated-marker, file-oversize), the lineage unit diff "
+    "(duplicate_within_release, already_rewarded, new_source/new_test — "
+    "tests earn 2 points per unit, source 1), the 500 line-point cap and "
+    "the 5000 per-release total cap with applied flags, the full "
+    "owner-directive scoring_table (manual categories marked "
+    "automatic:false), and the period-cap constants. Anti-gaming is by "
+    "construction: units are logical statements normalized of whitespace, "
+    "brace style, and line splits, content-compared against every "
+    "ancestor release, so whitespace-only edits, line splitting, "
+    "delete-and-re-add, renames, and copy-paste all score zero. "
+    "UNKNOWN_PACKAGE names a root no persisted release claims.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,reward,score,contribution,semantic,lineage,lines,caps",
+    "zcl.zcode_reward_score.input.v1", "zcl.zcode_reward_score.v1",
+    "root,datadir", "root",
+    "zclassic23 zcode reward score --input='{\"root\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_reward_score)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.reward.eligible", "zcode.reward", "",
+    "Reward eligibility gate list for one release root",
+    "Evaluates the frozen eight-gate eligibility list for the release "
+    "naming one 64-hex package `root`: package-root-verifies (manifest "
+    "root matches the envelope and every committed chunk re-verifies from "
+    "the CAS), release-signature-verifies, license-accepted (SPDX "
+    "allowlist + LICENSE file), parent-lineage-valid (parent release "
+    "hosted, verifies, same publisher key, sequence +1), "
+    "gcc-build-passes, clang-build-passes, tests-pass (all three read "
+    "from the counted quorum attestations — the node never compiles or "
+    "executes downloaded code), and verifier-quorum (2+ approved "
+    "independent verifier keys signed matching pass attestations, per the "
+    "local <datadir>/zcode/approved_verifiers allowlist). eligible is "
+    "true only when EVERY gate passes; gates[] reports all eight with "
+    "details and failed_gates[] names each failure. UNKNOWN_PACKAGE names "
+    "a root no persisted release claims.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,reward,eligible,eligibility,gates,quorum,license,lineage",
+    "zcl.zcode_reward_eligible.input.v1", "zcl.zcode_reward_eligible.v1",
+    "root,datadir", "root",
+    "zclassic23 zcode reward eligible --input='{\"root\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_reward_eligible)
