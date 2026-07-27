@@ -8,8 +8,10 @@
 #include "net/net.h"
 #include "net/download.h"
 #include "net/fast_sync.h"
+#include "net/peer_scoring.h"
 #include "storage/peers_projection.h"
 #include "storage/event_log_payloads.h"
+#include "util/blocker.h"
 #include "util/log_macros.h"
 
 #include <pthread.h>
@@ -668,6 +670,12 @@ void peer_lifecycle_note_handshake_complete(const struct p2p_node *node)
      * every completed handshake passes through (msg_version.c inbound + outbound
      * + verack). Idempotent + a no-op before connman_start(). */
     connman_note_first_handshaked_peer();
+
+    /* Honest witness for the bounded last-peer ban (peer_misbehaving() in
+     * net.c): a completed handshake IS the route back to the network, so the
+     * "we just banned our only peer" signage is now stale. Clearing on
+     * observed peer state, never on wall time. No-op when not raised. */
+    blocker_clear(PEER_LAST_PEER_BAN_BLOCKER_ID);
 
     if (node) {
         event_emitf(EV_PEER_HANDSHAKE_SUCCESS, (uint32_t)node->id,

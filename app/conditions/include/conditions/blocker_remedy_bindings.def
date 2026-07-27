@@ -114,6 +114,18 @@ ZCL_BLOCKER_REMEDY(reducer_frontier.upstream_log_hole,        reducer_frontier_r
 ZCL_BLOCKER_REMEDY(utxo_apply.anchor_backfill_gap,             sapling_anchor_frontier_unavailable)
 ZCL_BLOCKER_REMEDY(script_validate.prevout_unresolved,         reducer_frontier_reconcile_light)
 ZCL_BLOCKER_REMEDY(*.upstream_log_hole,                        reducer_frontier_reconcile_light)
+/* net.last_peer_ban is raised by peer_misbehaving() (lib/net/src/net.c) when
+ * a ban would leave the node with zero peers; it is cleared by the raiser's
+ * own subsystem at peer_lifecycle_note_handshake_complete()
+ * (lib/net/src/peer_lifecycle.c), the single choke point every completed
+ * handshake passes through. peer_floor_violated is what DRIVES that state:
+ * with healthy outbound below the floor its remedy drops stuck pre-handshake
+ * peers, clears every addnode backoff at zero-outbound, and kicks seed /
+ * onion-directory discovery — i.e. it produces the re-dial whose handshake
+ * fires the clear. Both sides read, same shape as the utxo_apply.apply_failed
+ * row above. The ban itself is bounded (ZCL_PEER_LAST_PEER_BAN_SECS, default
+ * 600s) so the peer becomes re-dialable on its own even with no remedy. */
+ZCL_BLOCKER_REMEDY(net.last_peer_ban,                          peer_floor_violated)
 
 /* ── OWNER — no auto-remedy condition exists in-tree (the visible debt).
  * `proof_validate.internal_error` (transient-held-permanent, backstopped by
