@@ -313,6 +313,13 @@ static bool zc4_commit_one(const char *dd, uint8_t key_seed, uint64_t seq,
         ok = r_hex && m_hex;
     }
     if (ok) {
+        /* The `day` input advances one ISO week per commit: the slice-11
+         * publish-frequency checkpoint (new user: 1 publication/week per
+         * publisher key) counts same-week commits, and this test commits
+         * several releases by one key to exercise contributor surfaces —
+         * never the frequency gate — so each commit lands in its own
+         * week. */
+        static unsigned zc4_week_seq = 0;
         struct zc4_cmd c;
         zc4_cmd_init(&c);
         (void)json_push_kv_str(&c.input, "datadir", dd);
@@ -320,6 +327,8 @@ static bool zc4_commit_one(const char *dd, uint8_t key_seed, uint64_t seq,
         (void)json_push_kv_str(&c.input, "manifest_hex", m_hex);
         (void)json_push_kv_str(&c.input, "recipe_hex", g_zc4_recipe_hex);
         (void)json_push_kv_str(&c.input, "dir", pkgdir);
+        (void)json_push_kv_int(&c.input, "day",
+                               20000 + 7 * (int64_t)zc4_week_seq++);
         zcl_native_handle_zcode_package_publish_commit(&c.request, &c.reply);
         ok = c.reply.status == ZCL_COMMAND_STATUS_PASSED;
         zc4_cmd_free(&c);

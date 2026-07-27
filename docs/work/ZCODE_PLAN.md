@@ -66,7 +66,7 @@ JSON (JSON is display-only).
        store earned_score / token_rewards_received / current_token_balance separately)
 10. [x] Simulated ZCODE badges (ZSLP-based, permanent, no double-issue per period,
         owner-reviewed plan/commit issuance in v1)
-11. [ ] Local P2P ratio + anti-spam policy (free allowance for new users; verified-bytes
+11. [x] Local P2P ratio + anti-spam policy (free allowance for new users; verified-bytes
         ratio is local credit; no global ZCODE mint for bandwidth; every rejection names
         the exact failed rule)
 12. [ ] Authenticated package swarm (wire package_swarm codec to authenticated transport

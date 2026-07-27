@@ -371,11 +371,17 @@ static void zp_cmd_free(struct zp_cmd *c)
 
 /* Standard publish input: release hex + manifest hex + recipe hex +
  * datadir (+dir). The recipe hex is the last zp_use_recipe() build — a
- * candidate without one now fails plan naming recipe-missing. */
+ * candidate without one now fails plan naming recipe-missing. The `day`
+ * input advances one ISO week per call: the slice-11 publish-frequency
+ * checkpoint (new user: 1 publication/week per publisher key) counts
+ * same-week commits, and these tests exercise validation, search, and
+ * acceptance — never the frequency gate — so each commit lands in its
+ * own week (plan ignores the key). */
 static void zp_publish_input(struct zp_cmd *c, const char *dd,
                              const char *release_hex,
                              const char *manifest_hex, const char *dir)
 {
+    static unsigned zp_week_seq = 0;
     zp_cmd_init(c);
     (void)json_push_kv_str(&c->input, "datadir", dd);
     (void)json_push_kv_str(&c->input, "release_hex", release_hex);
@@ -384,6 +390,8 @@ static void zp_publish_input(struct zp_cmd *c, const char *dd,
         (void)json_push_kv_str(&c->input, "recipe_hex", g_zp_recipe_hex);
     if (dir)
         (void)json_push_kv_str(&c->input, "dir", dir);
+    (void)json_push_kv_int(&c->input, "day",
+                           20000 + 7 * (int64_t)zp_week_seq++);
 }
 
 /* Rule string of failure i in a plan reply, or NULL. */

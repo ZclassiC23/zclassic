@@ -24,6 +24,18 @@
  *                                 the node reads attestations, it never
  *                                 compiles or executes downloaded code
  *
+ * Slice 11 adds the LOCAL publish-frequency policy checkpoint to commit:
+ * a FRESH release (acceptance OK — a redelivery classifying DUPLICATE
+ * skips the gate, so re-commit stays idempotent) is admitted only when
+ * the publisher key's tier allowance for the current ISO week is not
+ * exhausted (new user: 1 publication/week — the free allowance; the
+ * tier resolves from the reward ledger's earned score plus the local
+ * service book's verified-bytes ratio, lib/vcs/package_policy.*). A
+ * denial names the exact rule (publish-frequency-limit); a successful
+ * fresh publish records the publication event in the service book so the
+ * next commit counts it. The optional `day` input pins the window for
+ * deterministic tests; the host clock fills it when omitted.
+ *
  * Publication requires a declarative build recipe whose root equals the
  * release envelope's recipe_root (slice 5): a missing or invalid recipe is
  * a named plan failure / commit rejection (recipe-*). The recipe is
@@ -55,9 +67,14 @@
 #include "base/safe_alloc.h"
 #include "chain/chainparams.h"
 #include "json/json.h"
+#include "platform/time_compat.h"
 #include "vcs/package_attest.h"
 #include "vcs/package_index.h"
+#include "vcs/package_policy.h"
 #include "vcs/package_publish.h"
+#include "vcs/package_rank.h"
+#include "vcs/package_reward.h"
+#include "vcs/package_service.h"
 #include "vcs/package_store.h"
 #include "vcs/package_verify_policy.h"
 
@@ -564,6 +581,73 @@ void zcl_native_handle_zcode_package_publish_commit(
         zc_candidate_free(&cand);
         return;
     }
+
+    /* ── slice 11 policy checkpoint: publish frequency ─────────────────
+     * A FRESH release (acceptance OK) is admitted only within the
+     * publisher key's per-ISO-week tier allowance; a redelivery
+     * classifying DUPLICATE skips the gate, so re-commit stays
+     * idempotent. The tier resolves from the reward ledger's earned
+     * score plus the local service book's verified-bytes facts. */
+    const bool fresh_publish = report.accept == VCS_PACKAGE_ACCEPT_OK;
+    struct vcs_service_book *book = NULL;
+    enum vcs_policy_tier policy_tier = VCS_POLICY_TIER_NEW_USER;
+    int64_t policy_day = 0;
+    if (fresh_publish) {
+        const struct json_value *dv = json_get(request->input, "day");
+        if (dv)
+            policy_day = json_get_int(dv);
+        else
+            policy_day =
+                vcs_rank_day_from_unix(platform_time_wall_unix());
+        book = vcs_service_book_load(zcode_dir);
+        struct vcs_reward_ledger *ledger =
+            vcs_reward_ledger_load(zcode_dir);
+        if (!book || !ledger) {
+            vcs_service_book_free(book);
+            vcs_reward_ledger_free(ledger);
+            zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                                   ZCL_COMMAND_EXIT_INTERNAL,
+                                   "POLICY_LOAD", "validate", false, false,
+                                   "the policy facts (service book / reward "
+                                   "ledger) could not be replayed",
+                                   zcode_dir);
+            zc_candidate_free(&cand);
+            return;
+        }
+        struct vcs_reward_contributor_totals ct;
+        vcs_reward_contributor_totals(
+            ledger, cand.release.publisher_pubkey, &ct);
+        struct vcs_service_key_totals kt;
+        (void)vcs_service_key_totals(book, cand.release.publisher_pubkey,
+                                     policy_day, &kt);
+        policy_tier = vcs_policy_tier_for(ct.earned_score,
+                                          kt.verified_bytes_uploaded,
+                                          kt.verified_bytes_downloaded);
+        struct vcs_policy_decision decision =
+            vcs_policy_check_publish(policy_tier, kt.publishes_this_week);
+        vcs_reward_ledger_free(ledger);
+        if (!decision.allow) {
+            char evidence[256];
+            snprintf(evidence, sizeof(evidence),
+                     "rule=%s tier=%s publishes_this_week=%u allowance=%u "
+                     "(per ISO week, day=%lld)",
+                     decision.rule, vcs_policy_tier_string(policy_tier),
+                     kt.publishes_this_week,
+                     vcs_policy_limits_for(policy_tier)->publish_per_week,
+                     (long long)policy_day);
+            vcs_service_book_free(book);
+            zcl_command_reply_fail(
+                reply, ZCL_COMMAND_STATUS_FAILED,
+                ZCL_COMMAND_EXIT_INVALID, "PUBLISH_FREQUENCY_LIMIT",
+                "validate", false, false,
+                "publish-frequency-limit: the publisher key's tier "
+                "allowance for this ISO week is exhausted",
+                evidence);
+            zc_candidate_free(&cand);
+            return;
+        }
+    }
+
     struct vcs_package_store *store =
         vcs_package_store_open(datadir, vcs_package_store_quota_bytes());
     if (!store) {
@@ -571,6 +655,7 @@ void zcl_native_handle_zcode_package_publish_commit(
                                ZCL_COMMAND_EXIT_INTERNAL, "STORE_OPEN",
                                "persist", false, false,
                                "the package store failed to open", zcode_dir);
+        vcs_service_book_free(book);
         zc_candidate_free(&cand);
         return;
     }
@@ -580,6 +665,7 @@ void zcl_native_handle_zcode_package_publish_commit(
         store, cand.manifest_wire, cand.manifest_wire_len, root);
     if (sres != VCS_PACKAGE_STORE_OK) {
         vcs_package_store_close(store);
+        vcs_service_book_free(book);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INTERNAL,
                                vcs_package_store_result_string(sres),
@@ -596,6 +682,7 @@ void zcl_native_handle_zcode_package_publish_commit(
                                         cand.recipe_wire_len, NULL);
     if (sres != VCS_PACKAGE_STORE_OK) {
         vcs_package_store_close(store);
+        vcs_service_book_free(book);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INTERNAL,
                                vcs_package_store_result_string(sres),
@@ -608,6 +695,7 @@ void zcl_native_handle_zcode_package_publish_commit(
     uint8_t *buf = zcl_malloc(VCS_PACKAGE_CHUNK_BYTES, "zc_chunk_buf");
     if (!buf) {
         vcs_package_store_close(store);
+        vcs_service_book_free(book);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INTERNAL, "ALLOC",
                                "persist", false, false, "chunk buffer",
@@ -645,6 +733,7 @@ void zcl_native_handle_zcode_package_publish_commit(
     if (io_failed) {
         /* Staging survives: a later commit of the same candidate resumes. */
         vcs_package_store_close(store);
+        vcs_service_book_free(book);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INTERNAL,
                                "CHUNK_PERSIST", "persist", true, true,
@@ -660,6 +749,7 @@ void zcl_native_handle_zcode_package_publish_commit(
         sres = vcs_package_store_put_release(store, &cand.release, &ar);
         if (sres != VCS_PACKAGE_STORE_OK) {
             vcs_package_store_close(store);
+            vcs_service_book_free(book);
             zcl_command_reply_fail(
                 reply, ZCL_COMMAND_STATUS_FAILED,
                 ZCL_COMMAND_EXIT_INTERNAL,
@@ -671,6 +761,26 @@ void zcl_native_handle_zcode_package_publish_commit(
         }
     }
     vcs_package_store_close(store);
+
+    /* Slice 11: a successful FRESH publish records the publication event
+     * in the local service book (dedup by release id — a redelivered
+     * release id never mints a second event). A record failure degrades
+     * the frequency gate's history, never the publish itself; the reply
+     * says so honestly. */
+    bool policy_recorded = false;
+    uint32_t policy_week_usage = 0;
+    if (published && book) {
+        enum vcs_service_record_result rr = vcs_service_record_publish(
+            book, cand.release.publisher_pubkey, report.release_id,
+            policy_day);
+        policy_recorded = rr == VCS_SERVICE_RECORD_OK ||
+                          rr == VCS_SERVICE_RECORD_DUPLICATE;
+        struct vcs_service_key_totals kt2;
+        if (vcs_service_key_totals(book, cand.release.publisher_pubkey,
+                                   policy_day, &kt2))
+            policy_week_usage = kt2.publishes_this_week;
+    }
+    vcs_service_book_free(book);
 
     char hex[65];
     (void)json_push_kv_str(&reply->data, "stage", "commit");
@@ -690,6 +800,28 @@ void zcl_native_handle_zcode_package_publish_commit(
                            (int64_t)chunks_stored);
     (void)json_push_kv_int(&reply->data, "replayed_releases",
                            (int64_t)replayed);
+    if (published) {
+        struct json_value pol;
+        json_init(&pol);
+        json_set_object(&pol);
+        (void)json_push_kv_str(&pol, "tier",
+                               vcs_policy_tier_string(policy_tier));
+        (void)json_push_kv_int(
+            &pol, "publish_per_week",
+            (int64_t)vcs_policy_limits_for(policy_tier)->publish_per_week);
+        (void)json_push_kv_int(&pol, "publishes_this_week",
+                               (int64_t)policy_week_usage);
+        (void)json_push_kv_int(&pol, "day", policy_day);
+        (void)json_push_kv_bool(&pol, "policy_recorded", policy_recorded);
+        if (!policy_recorded)
+            (void)json_push_kv_str(
+                &pol, "policy_record_warning",
+                "the publication event could not be recorded in the local "
+                "service book; the publish-frequency gate's history is "
+                "degraded (the publish itself succeeded)");
+        (void)json_push_kv(&reply->data, "policy", &pol);
+        json_free(&pol);
+    }
     reply->error.mutated = published;
     zc_candidate_free(&cand);
 }

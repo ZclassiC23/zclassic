@@ -404,6 +404,22 @@ void zcl_native_handle_zcode_contributor_badges(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* zcode slice 11 — the LOCAL P2P ratio + anti-spam policy surfaces:
+ * per-contributor-key verified-bytes accounting and the local ratio
+ * (no global ZCODE mint for bandwidth), tier resolution from earned
+ * score + local ratio, the frozen policy table, and the store quota
+ * pools with the per-tier pin-allowance policy view. Every rejection
+ * names the exact rule. Bound by config/commands/zcode.def. */
+void zcl_native_handle_zcode_seed_status(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_seed_ratio(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_storage_status(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* ops.state — generic subsystem state dump. Dispatches the `dumpstate` RPC
  * method directly. `subsystem` (required) selects the
  * owning module's *_dump_state_json; `key` is subsystem-specific (e.g. a
