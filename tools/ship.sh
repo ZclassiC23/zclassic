@@ -277,4 +277,9 @@ for target in $TARGETS; do
     esac
 done
 echo
-say "shipped $(git rev-parse --short HEAD) to: $TARGETS"
+if [ "$DRY_RUN" -eq 1 ]; then
+    say "DRY RUN — nothing was built, installed, restarted, or pushed."
+    say "plan was: $(git rev-parse --short HEAD) -> $TARGETS"
+else
+    say "shipped $(git rev-parse --short HEAD) to: $TARGETS"
+fi
