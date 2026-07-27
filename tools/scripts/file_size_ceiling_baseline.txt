@@ -33,7 +33,11 @@ app/jobs/src/validate_headers_stage.c 1071
 app/models/src/block.c 853
 app/services/src/block_index_loader.c 857
 app/services/src/block_index_loader_rebuild.c 840
-app/services/src/node_db_catchup_service.c 886
+# 2026-07-27 (work/db-lock-fixes): node_db_catchup_service.c shed the
+# try-decrypt helper to node_db_catchup_decrypt.c (-111) and gained the
+# lock-contention seatbelts (commit cadence, BEGIN IMMEDIATE, BUSY_SNAPSHOT
+# restart call, abort-streak park) — net 886 -> 866; baseline tightened.
+app/services/src/node_db_catchup_service.c 866
 app/services/src/rolling_anchor_service.c 801
 
 app/services/src/sticky_escalator.c 1340

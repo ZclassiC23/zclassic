@@ -10,9 +10,12 @@
  * init, the main transaction/commit block-index loop (lean index +
  * wallet scan + witness advance), and turbo-mode teardown.
  *
- * The two block-level helpers it owns (sync_block_lean,
- * catchup_try_sapling_decrypt) are single-use orchestration details of
- * catchup and live here as statics. The shared sync-controller helpers
+ * The block-level helper it owns (sync_block_lean) is a single-use
+ * orchestration detail of catchup and lives here as a static; the
+ * Sapling try-decrypt helper moved to node_db_catchup_decrypt.c (E1
+ * file-size ratchet) and the lock-contention seatbelts (commit cadence,
+ * BUSY_SNAPSHOT restart, abort-streak park) live in
+ * node_db_catchup_lock_guard.c. The shared sync-controller helpers
  * it calls (turbo scope, job-status setters, wallet-tx checked write,
  * witness advance, block-file mmap) are defined in the sync controller
  * siblings and reached here by forward declaration — their definitions
@@ -30,6 +33,7 @@
 #include "platform/time_compat.h"
 #include "controllers/sync_controller.h"
 #include "services/node_db_catchup_service.h"
+#include "services/node_db_catchup_lock_guard.h"
 #include "node_db_catchup_internal.h"
 #include "util/boot_progress.h"
 #include "models/db_txn.h"
@@ -248,117 +252,9 @@ static bool catchup_set_sparse_projection_tip(struct node_db *ndb,
                                  (int64_t)height);
 }
 
-/* Try-decrypt Sapling outputs in a transaction and save to SQLite.
- * Returns number of notes found. */
-static int catchup_try_sapling_decrypt(struct node_db *ndb,
-                                        const struct transaction *tx,
-                                        const struct wallet *w,
-                                        int height,
-                                        bool *ok_out)
-{
-    if (!ndb || !tx || !w || tx->num_shielded_output == 0 ||
-        w->sapling_keys.num_keys == 0) {
-        if (ok_out)
-            *ok_out = true;
-        return 0;
-    }
-
-    int found = 0;
-    bool ok = true;
-    struct uint256 txid;
-    {
-        struct transaction *mtx = (struct transaction *)tx;
-        transaction_compute_hash(mtx);
-        txid = mtx->hash;
-    }
-
-    for (size_t oi = 0; oi < tx->num_shielded_output; oi++) {
-        const struct output_description *od = &tx->v_shielded_output[oi];
-
-        for (size_t ki = 0; ki < w->sapling_keys.num_keys; ki++) {
-            const struct sapling_key_entry *ke = &w->sapling_keys.keys[ki];
-            if (!ke->used)
-                continue;
-
-            uint8_t dhsecret[32];
-            if (!sapling_ka_agree(od->ephemeral_key.data, ke->ivk, dhsecret))
-                continue;
-
-            uint8_t dec_key[32];
-            if (!sapling_kdf(dec_key, dhsecret, od->ephemeral_key.data)) {
-                memory_cleanse(dhsecret, sizeof(dhsecret));
-                continue;
-            }
-            memory_cleanse(dhsecret, sizeof(dhsecret));
-
-            uint8_t plaintext[564];
-            if (!sapling_note_decrypt(dec_key, od->enc_ciphertext, 580,
-                                      plaintext)) {
-                memory_cleanse(dec_key, sizeof(dec_key));
-                continue;
-            }
-            memory_cleanse(dec_key, sizeof(dec_key));
-
-            if (plaintext[0] != 0x01)
-                continue;
-
-            uint8_t d[11];
-            memcpy(d, plaintext + 1, sizeof(d));
-            uint64_t value = 0;
-            for (int b = 0; b < 8; b++)
-                value |= ((uint64_t)plaintext[12 + b]) << (8 * b);
-            uint8_t rcm[32];
-            memcpy(rcm, plaintext + 20, sizeof(rcm));
-
-            uint8_t pk_d[32];
-            if (!sapling_ivk_to_pkd(ke->ivk, d, pk_d))
-                continue;
-
-            uint8_t cm[32];
-            if (!sapling_compute_cm(d, pk_d, value, rcm, cm))
-                continue;
-            if (memcmp(cm, od->cm.data, sizeof(cm)) != 0)
-                continue;
-
-            uint8_t ak[32], nk[32];
-            sapling_ask_to_ak(ke->xsk.expsk.ask, ak);
-            sapling_nsk_to_nk(ke->xsk.expsk.nsk, nk);
-
-            /* Position-0 placeholder nullifier. As in
-             * wallet_try_sapling_decrypt (lib/wallet/src/wallet.c), the note's
-             * absolute commitment-tree position is not available at decrypt
-             * time; the spec nf is (re)computed at witness-creation time in
-             * advance_wallet_witnesses() where position =
-             * incremental_tree_size(tree) - 1 is exact. A guessed position
-             * would be a WRONG nullifier, strictly worse than this non-blank
-             * placeholder. See BUG #7. */
-            uint8_t nf[32];
-            sapling_compute_nf(d, pk_d, value, rcm, ak, nk, 0, nf);
-
-            if (!node_db_sync_sapling_note(ndb, txid.data, (uint32_t)oi,
-                                          (int64_t)value, rcm,
-                                          plaintext + 52, 512,
-                                          ke->ivk, d, pk_d, cm, nf,
-                                          height)) {
-                ok = false;
-            } else {
-                found++;
-            }
-
-            memory_cleanse(plaintext, sizeof(plaintext));
-            if (!ok)
-                break;
-
-            break;
-        }
-
-        if (!ok)
-            break;
-    }
-    if (ok_out)
-        *ok_out = ok;
-    return found;
-}
+/* Try-decrypt Sapling outputs into SQLite moved to
+ * node_db_catchup_decrypt.c (E1 file-size ratchet); the walk calls
+ * node_db_catchup_try_sapling_decrypt via node_db_catchup_internal.h. */
 
 int node_db_catchup_service_run(struct node_db *ndb,
                                 const struct active_chain *chain,
@@ -376,6 +272,16 @@ int node_db_catchup_service_run(struct node_db *ndb,
 
     if (!ndb || !ndb->open || !chain)
         LOG_ERR("sync", "catchup: invalid args (ndb=%p, chain=%p)", (void *)ndb, (void *)chain);
+
+    /* Abort-streak park (node_db_catchup_lock_guard.c): after 8 consecutive
+     * failed passes the worker parks behind the named blocker
+     * "node_db_catchup.abort_storm" and every pass is a no-op until an
+     * operator clears it — a pass that always fails must not be re-run
+     * forever (the 2026-07-27 incident re-ran one 13k+ times, each pass
+     * burning the 10 s busy timeout). Single chokepoint placement: both
+     * call sites funnel through here. */
+    if (node_db_catchup_lock_guard_parked())
+        return 0;
 
     /* Skip the node.db catchup while a from-genesis refold runs.
      * The refold re-walks the frozen prefix and indexes ZERO readable blocks
@@ -429,16 +335,23 @@ int node_db_catchup_service_run(struct node_db *ndb,
     bool bulk_mode = (total > 50000);
     if (!sync_db_turbo_scope_begin(&turbo_mode, ndb, bulk_mode)) {
         fprintf(stderr, "catchup: failed to enter turbo mode\n");
+        node_db_catchup_lock_guard_note_outcome(true);
         sync_job_catchup_finish();
         return -1; // raw-return-ok:logged-above
     }
 
-    /* Verify connection works before starting */
-    if (!node_db_begin(ndb)) {
+    /* Verify connection works before starting. BEGIN IMMEDIATE (all three
+     * transaction opens in this run): the writer reservation is taken at
+     * BEGIN, where the 10 s busy handler CAN wait out a contender — a
+     * deferred BEGIN would only discover the contention at the first
+     * write, as SQLITE_BUSY_SNAPSHOT, which no busy-handler wait can cure
+     * (the 2026-07-27 catchup-poison drumbeat). */
+    if (!node_db_begin_immediate(ndb)) {
         LOG_WARN("catchup", "catchup: BEGIN failed — aborting");
         if (!sync_db_turbo_scope_end(&turbo_mode))
             fprintf(stderr, "catchup: failed to restore normal mode after BEGIN failure\n");
         restore_ok = false;
+        node_db_catchup_lock_guard_note_outcome(true);
         sync_job_catchup_finish();
         return -1; // raw-return-ok:logged-above
     }
@@ -449,6 +362,7 @@ int node_db_catchup_service_run(struct node_db *ndb,
         if (!sync_db_turbo_scope_end(&turbo_mode))
             fprintf(stderr, "catchup: failed to restore normal mode after initial COMMIT failure\n");
         restore_ok = false;
+        node_db_catchup_lock_guard_note_outcome(true);
         sync_job_catchup_finish();
         return -1; // raw-return-ok:logged-above
     }
@@ -456,7 +370,19 @@ int node_db_catchup_service_run(struct node_db *ndb,
 
     int indexed = 0;
     int wallet_hits = 0;
-    int batch_size = 100000;
+    /* Commit-cadence cap (node_db_catchup_lock_guard.c): the old
+     * 100000-block batch held the single WAL write lock across mmap disk
+     * reads for minutes — past every other writer's budget (wallet ~80 s,
+     * coins 30 s, this handle's own 10 s busy timeout) — producing
+     * "database is locked" bursts. Commit every batch_size blocks (2000)
+     * OR every NODE_DB_CATCHUP_COMMIT_BATCH_MAX_SECS, whichever first.
+     * Catchup is an idempotent projection re-run, so finer granularity
+     * changes only lock-hold time, never the final state. */
+    int batch_size = node_db_catchup_lock_guard_batch_size();
+    int64_t t_batch_start = (int64_t)platform_time_wall_time_t();
+    /* Set when the first failure of this pass carries the extended
+     * SQLITE_BUSY_SNAPSHOT code — see the restart seatbelt at the tail. */
+    bool busy_snapshot = false;
     int64_t t_start = (int64_t)platform_time_wall_time_t();
 
     /* mmap cache */
@@ -479,11 +405,12 @@ int node_db_catchup_service_run(struct node_db *ndb,
         }
     }
 
-    if (!node_db_begin(ndb)) {
+    if (!node_db_begin_immediate(ndb)) {
         LOG_WARN("catchup", "catchup: failed to open main transaction");
         if (!sync_db_turbo_scope_end(&turbo_mode))
             fprintf(stderr, "catchup: failed to restore normal mode after tx open failure\n");
         restore_ok = false;
+        node_db_catchup_lock_guard_note_outcome(true);
         sync_job_catchup_finish();
         return -1; // raw-return-ok:logged-above
     }
@@ -661,8 +588,8 @@ int node_db_catchup_service_run(struct node_db *ndb,
                 if (tx_is_ours)
                     wallet_hits++;
                 bool decrypt_ok = true;
-                catchup_try_sapling_decrypt(ndb, &blk.vtx[i], w, h,
-                                           &decrypt_ok);
+                node_db_catchup_try_sapling_decrypt(ndb, &blk.vtx[i], w, h,
+                                                    &decrypt_ok);
                 if (!decrypt_ok) {
                     LOG_WARN("catchup", "catchup: sapling decrypt failed at height %d " "(tx=%d)", h, (int)i);
                     block_free(&blk);
@@ -701,10 +628,29 @@ int node_db_catchup_service_run(struct node_db *ndb,
         last_indexed_tip = pindex;
         sync_job_catchup_progress(h);
 
-        if (indexed % batch_size == 0) {
+#ifdef ZCL_TESTING
+        /* Armed by node_db_catchup_lock_guard_test_force_snapshot_failures:
+         * fail this block exactly as a SQLITE_BUSY_SNAPSHOT write failure
+         * would, so the rollback + bounded whole-walk restart plumbing is
+         * exercised deterministically. */
+        if (node_db_catchup_lock_guard_test_consume_snapshot_failure()) {
+            LOG_WARN("catchup",
+                     "catchup: TEST-INJECTED SQLITE_BUSY_SNAPSHOT write "
+                     "failure at height %d", h);
+            failed = true;
+            busy_snapshot = true;
+            break;
+        }
+#endif
+
+        int64_t t_now = (int64_t)platform_time_wall_time_t();
+        if (indexed % batch_size == 0 ||
+            t_now - t_batch_start >= NODE_DB_CATCHUP_COMMIT_BATCH_MAX_SECS) {
             if (pindex->phashBlock) {
                 if (!node_db_sync_set_tip(ndb, pindex->phashBlock->data, h)) {
                     LOG_WARN("catchup", "catchup: failed to set tip at batch commit %d", h);
+                    if (node_db_catchup_lock_guard_busy_snapshot(ndb))
+                        busy_snapshot = true;
                     failed = true;
                     break;
                 }
@@ -715,12 +661,16 @@ int node_db_catchup_service_run(struct node_db *ndb,
             }
             if (!node_db_commit(ndb)) {
                 LOG_WARN("catchup", "catchup: batch COMMIT failed at height %d", h);
+                if (node_db_catchup_lock_guard_busy_snapshot(ndb))
+                    busy_snapshot = true;
                 node_db_rollback(ndb);
                 tx_open = false;
                 failed = true;
                 break;
             }
+            node_db_catchup_lock_guard_note_batch_commit();
             tx_open = false;
+            t_batch_start = t_now;
             last_committed_height = h;
             /* Persist the Sapling note-commitment frontier to the flat-file
              * checkpoint (rate-limited to every
@@ -738,7 +688,7 @@ int node_db_catchup_service_run(struct node_db *ndb,
             printf("SQLite: %d/%d blocks (height %d, %d blk/s, %d wallet txs)\n",
                    indexed, total, h, rate, wallet_hits);
             fflush(stdout);
-            if (!node_db_begin(ndb)) {
+            if (!node_db_begin_immediate(ndb)) {
                 LOG_WARN("catchup", "catchup: failed to reopen transaction after batch commit");
                 failed = true;
                 break;
@@ -748,6 +698,14 @@ int node_db_catchup_service_run(struct node_db *ndb,
     }
 
     if (cached_data) munmap(cached_data, cached_size);
+
+    /* Capture the snapshot class of the first write failure BEFORE any
+     * rollback (a successful ROLLBACK would clobber the handle errcode).
+     * No DB op runs between a failing write and this point on the break
+     * paths above. */
+    if (failed && !busy_snapshot &&
+        node_db_catchup_lock_guard_busy_snapshot(ndb))
+        busy_snapshot = true;
 
     if (failed) {
         if (tx_open && !node_db_rollback(ndb))
@@ -797,6 +755,8 @@ int node_db_catchup_service_run(struct node_db *ndb,
         if (!failed) {
             if (!node_db_commit(ndb)) {
                 LOG_WARN("catchup", "catchup: final COMMIT failed");
+                if (node_db_catchup_lock_guard_busy_snapshot(ndb))
+                    busy_snapshot = true;
                 if (!node_db_rollback(ndb))
                     LOG_WARN("catchup", "catchup: final ROLLBACK failed");
                 tx_open = false;
@@ -829,11 +789,31 @@ int node_db_catchup_service_run(struct node_db *ndb,
         restore_ok = false;
     }
 
+    /* BUSY_SNAPSHOT restart seatbelt (node_db_catchup_lock_guard.c): the
+     * rollback above unwound the poisoned transaction; the only cure for
+     * SQLITE_BUSY_SNAPSHOT is a fresh transaction, and the only safe
+     * granularity is the WHOLE walk — the in-memory Sapling tree/witness
+     * state is ahead of the rolled-back rows. Catchup is an idempotent
+     * projection re-run (tip/receipt/tree all re-derive from persisted
+     * state), so a bounded recursion is exact. With BEGIN IMMEDIATE this
+     * pass's own writes can no longer produce the class; this covers any
+     * residual/regressed deferred writer. */
+    if (node_db_catchup_lock_guard_restart_needed(failed, busy_snapshot)) {
+        sync_job_catchup_finish();
+        int r = node_db_catchup_service_run(ndb, chain, w, datadir);
+        node_db_catchup_lock_guard_restart_done();
+        return r;
+    }
+
     if (failed || !restore_ok) {
         sync_job_catchup_finish();
         LOG_ERR("sync", "catchup: aborting (failed=%d, restore_ok=%d, indexed=%d)",
                 failed, restore_ok, indexed);
     }
+
+    /* One logical pass = one outcome (the restart path above returns
+     * before this, so a restarted attempt never double-counts). */
+    node_db_catchup_lock_guard_note_outcome(failed || !restore_ok);
 
     int64_t elapsed = (int64_t)platform_time_wall_time_t() - t_start;
     printf("SQLite catchup %s: %d blocks in %llds (%d blk/s, tip=%d)\n",

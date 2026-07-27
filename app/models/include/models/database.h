@@ -168,8 +168,19 @@ bool node_db_begin(struct node_db *ndb);
  * writer connection whose caller must classify/retry BUSY before mutating any
  * rows; ordinary reducer batching continues to use node_db_begin(). */
 bool node_db_begin_immediate(struct node_db *ndb);
+/* COMMIT the open transaction. On the poisoned-handle failure class ("SQL
+ * statements in progress" — a write VM abandoned mid-step on this shared
+ * FULLMUTEX handle) the failure path walks the handle's statement list,
+ * logs the offending SQL, and resets the abandoned VM so the handle is
+ * usable again after the caller's ROLLBACK (still required — the open
+ * transaction is NOT committed). Returns false on any failure. */
 bool node_db_commit(struct node_db *ndb);
 bool node_db_rollback(struct node_db *ndb);
+
+#ifdef ZCL_TESTING
+/* See node_db_commit in database.c. */
+uint64_t node_db_test_commit_recovery_walks(void);
+#endif
 
 /* Set SQLite sync batch size (blocks per COMMIT).
  * 1 = safe default (per-block). 100+ = aggressive IBD mode. */

@@ -20,6 +20,7 @@
 #include "models/database_internal.h"
 #include "models/database_validators.h"
 #include <errno.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -670,8 +671,72 @@ bool node_db_begin_immediate(struct node_db *ndb)
 {
     return node_db_tx_op(ndb, "BEGIN IMMEDIATE", true);
 }
-bool node_db_commit(struct node_db *ndb) { return node_db_tx_op(ndb, "COMMIT", false); }
+
+/* Poisoned-COMMIT runtime recovery — the always-on seatbelt (the
+ * ZCL_DB_TXN_TRACE=1 detector in lib/util/src/db_txn_trace.c stays opt-in).
+ *
+ * If a write VM (INSERT/UPDATE/DELETE, incl. ...RETURNING) is abandoned in
+ * RUN state on this shared FULLMUTEX handle, every later COMMIT fails with
+ * "cannot commit transaction - SQL statements in progress" (the db->
+ * nVdbeWrite>0 guard) until process restart — the 2026-07-24→27 incident
+ * ran the live node poisoned for days (13k+ failed catchup COMMITs). The
+ * cure at runtime: walk the handle's statement list (the same
+ * sqlite3_next_stmt walk node_db_close() uses), LOG the offending SQL, and
+ * sqlite3_reset() the abandoned VM. RESET, never finalize: the cached
+ * ndb->stmt_* hot-path statements share this list and finalizing one would
+ * dangle its cached pointer. Only BUSY non-readonly VMs are touched — a
+ * mid-scan read cursor neither poisons COMMIT (the guard counts write VMs)
+ * nor may be restarted under a concurrent reader. */
+static _Atomic uint64_t g_commit_recovery_walks = 0;
+
+static int node_db_reset_abandoned_write_vms(struct node_db *ndb)
+{
+    int reset = 0;
+    for (sqlite3_stmt *s = sqlite3_next_stmt(ndb->db, NULL); s;
+         s = sqlite3_next_stmt(ndb->db, s)) {
+        if (!sqlite3_stmt_busy(s) || sqlite3_stmt_readonly(s))
+            continue;
+        const char *sql = sqlite3_sql(s);
+        LOG_WARN("db",
+                 "db: poisoned COMMIT — abandoned write VM in RUN state, "
+                 "resetting: %s", sql ? sql : "(null)");
+        sqlite3_reset(s);
+        reset++;
+    }
+    return reset;
+}
+
+bool node_db_commit(struct node_db *ndb)
+{
+    if (node_db_tx_op(ndb, "COMMIT", false))
+        return true;
+    /* The walk fires only on the exact poison class (the nVdbeWrite guard's
+     * own message) so an ordinary BUSY/LOCKED commit failure never disturbs
+     * a legitimately in-flight statement on this shared handle. Recovery
+     * leaves the open transaction to the caller: it must still ROLLBACK. */
+    const char *msg = ndb && ndb->db ? sqlite3_errmsg(ndb->db) : NULL;
+    if (msg && strstr(msg, "statements in progress")) {
+        int reset = node_db_reset_abandoned_write_vms(ndb);
+        if (reset > 0) {
+            atomic_fetch_add(&g_commit_recovery_walks, 1);
+            LOG_WARN("db",
+                     "db: COMMIT unpoisoned — reset %d abandoned write VM(s); "
+                     "caller must ROLLBACK this transaction", reset);
+        }
+    }
+    return false;
+}
+
 bool node_db_rollback(struct node_db *ndb) { return node_db_tx_op(ndb, "ROLLBACK", false); }
+
+#ifdef ZCL_TESTING
+/* Count of poisoned-COMMIT recovery walks that reset at least one abandoned
+ * write VM (test assertion surface for the seatbelt above). */
+uint64_t node_db_test_commit_recovery_walks(void)
+{
+    return atomic_load(&g_commit_recovery_walks);
+}
+#endif
 
 void node_db_set_sync_batch_size(struct node_db *ndb, int batch_size)
 {

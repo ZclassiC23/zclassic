@@ -615,6 +615,147 @@ static int t_failed_commit_rolls_back(void)
     return failures;
 }
 
+/* ── 18. BUSY_SNAPSHOT: deferred BEGIN + concurrent commit ──────── */
+
+/* A deferred-BEGIN writer whose read snapshot is invalidated by a
+ * concurrent commit fails its first write with the extended
+ * SQLITE_BUSY_SNAPSHOT code — the class the busy handler can never cure
+ * (the 2026-07-27 catchup-poison drumbeat). The only cure is ROLLBACK +
+ * a fresh BEGIN IMMEDIATE. Drives two real connections on one file-backed
+ * WAL db (the class cannot occur on a single connection). */
+static int t_busy_snapshot_rollback_rebegin(void)
+{
+    int failures = 0;
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "db_txn", "busy_snapshot");
+    char path[512];
+    snprintf(path, sizeof(path), "%s/node.db", dir);
+
+    struct node_db a;
+    memset(&a, 0, sizeof(a));
+    bool opened = node_db_open(&a, path);
+    /* Bound the (uncurable) busy wait so the assertion stays fast. */
+    if (opened)
+        sqlite3_busy_timeout(a.db, 1000);
+
+    sqlite3 *b = NULL;
+    bool b_open = opened &&
+        sqlite3_open_v2(path, &b, SQLITE_OPEN_READWRITE, NULL) == SQLITE_OK;
+    if (b_open)
+        sqlite3_busy_timeout(b, 30000);
+
+    /* A: deferred BEGIN + a SELECT to pin read snapshot S1. */
+    bool begun = b_open && node_db_begin(&a);
+    char buf[8];
+    size_t got = 0;
+    bool pinned = begun &&
+        !node_db_state_get(&a, "snap.nokey", buf, sizeof(buf), &got);
+
+    /* B: a concurrent writer commits, advancing the db past S1. */
+    bool b_committed = pinned &&
+        sqlite3_exec(b,
+            "BEGIN IMMEDIATE;"
+            "INSERT OR REPLACE INTO node_state(key,value) VALUES('snap.b', X'01');"
+            "COMMIT;", NULL, NULL, NULL) == SQLITE_OK;
+
+    /* A: its first write after B's commit fails as BUSY_SNAPSHOT. Driven
+     * with a raw write stmt so the extended code is read straight off the
+     * failing sqlite3_step, not through a wrapper's finalize. */
+    sqlite3_stmt *w = NULL;
+    bool prep = b_committed &&
+        sqlite3_prepare_v2(a.db,
+            "INSERT OR REPLACE INTO node_state(key,value) VALUES('snap.a', X'01')",
+            -1, &w, NULL) == SQLITE_OK;
+    int wrc = prep ? sqlite3_step(w) : SQLITE_OK;
+    int xrc = sqlite3_extended_errcode(a.db);
+    sqlite3_finalize(w);
+    bool snapshot_class = prep && wrc == SQLITE_BUSY &&
+                          xrc == SQLITE_BUSY_SNAPSHOT;
+    DT_RUN("dt: deferred write after concurrent commit is BUSY_SNAPSHOT",
+           snapshot_class);
+
+    /* The cure: ROLLBACK + BEGIN IMMEDIATE + write + COMMIT lands. */
+    bool cured = snapshot_class &&
+        node_db_rollback(&a) &&
+        node_db_begin_immediate(&a) &&
+        node_db_state_set(&a, "snap.a", "v", 1) &&
+        node_db_commit(&a);
+
+    bool visible = false;
+    if (cured) {
+        sqlite3_stmt *q = NULL;
+        visible = sqlite3_prepare_v2(b,
+                      "SELECT value FROM node_state WHERE key='snap.a'",
+                      -1, &q, NULL) == SQLITE_OK &&
+                  sqlite3_step(q) == SQLITE_ROW;
+        sqlite3_finalize(q);
+    }
+    DT_RUN("dt: ROLLBACK + BEGIN IMMEDIATE retry lands the write",
+           cured && visible);
+
+    if (b)
+        sqlite3_close(b);
+    if (opened)
+        node_db_close(&a);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+/* ── 19. Poisoned COMMIT: abandoned write VM recovery ───────────── */
+
+/* The 2026-07-24→27 live incident: a write VM abandoned in RUN state on
+ * the shared FULLMUTEX handle makes every COMMIT fail with "cannot commit
+ * transaction - SQL statements in progress" until process restart.
+ * node_db_commit's always-on seatbelt must walk the handle's statement
+ * list, log + reset the abandoned VM, and leave the handle usable after
+ * the caller's ROLLBACK — no restart required. */
+static int t_poisoned_commit_recovery(void)
+{
+    int failures = 0;
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    bool opened = node_db_open(&ndb, ":memory:");
+    uint64_t walks_before = node_db_test_commit_recovery_walks();
+
+    bool begun = opened && node_db_begin(&ndb);
+
+    /* Poison the handle: a write VM stepped into RUN state (the RETURNING
+     * row) and never reset — exactly the abandoned-mid-step shape. */
+    sqlite3_stmt *vm = NULL;
+    bool poisoned = begun &&
+        sqlite3_prepare_v2(ndb.db,
+            "INSERT INTO node_state(key,value) VALUES('poison.k', X'00')"
+            " RETURNING key",
+            -1, &vm, NULL) == SQLITE_OK &&
+        sqlite3_step(vm) == SQLITE_ROW;
+
+    bool commit_failed = poisoned && !node_db_commit(&ndb);
+    uint64_t walks_after = node_db_test_commit_recovery_walks();
+    sqlite3_finalize(vm);
+
+    DT_RUN("dt: poisoned COMMIT fails and the recovery walk fires",
+           commit_failed && walks_after == walks_before + 1);
+
+    /* After the caller's ROLLBACK the handle is healthy: a full
+     * BEGIN IMMEDIATE → write → COMMIT cycle lands. */
+    bool healthy = commit_failed &&
+        node_db_rollback(&ndb) &&
+        node_db_begin_immediate(&ndb) &&
+        node_db_state_set(&ndb, "poison.ok", "v", 1) &&
+        node_db_commit(&ndb);
+    char buf[8];
+    size_t got = 0;
+    bool visible = healthy &&
+        node_db_state_get(&ndb, "poison.ok", buf, sizeof(buf), &got) &&
+        got == 1 && memcmp(buf, "v", 1) == 0;
+    DT_RUN("dt: next COMMIT succeeds after recovery + rollback",
+           healthy && visible);
+
+    if (opened)
+        node_db_close(&ndb);
+    return failures;
+}
+
 /* ── Aggregator ─────────────────────────────────────────────── */
 
 int test_db_txn(void)
@@ -638,6 +779,8 @@ int test_db_txn(void)
     failures += t_rollback_on_induced_failure();
     failures += t_rollback_preserves_pre_existing_rows();
     failures += t_failed_commit_rolls_back();
+    failures += t_busy_snapshot_rollback_rebegin();
+    failures += t_poisoned_commit_recovery();
 
     event_clear_observers(EV_DB_TXN_BEGIN);
     event_clear_observers(EV_DB_TXN_COMMIT);

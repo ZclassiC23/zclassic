@@ -146,11 +146,25 @@ evidence and left deliberately, not forgotten.
    static audit; the only `RETURNING` writer (`db_app_event_save`,
    `app/models/src/app_event.c:206`) finalizes correctly.
 
-   If it recurs: the process is poisoned until restart, and
-   **`ZCL_DB_TXN_TRACE=1` names the culprit** — a RUN write VM forces
+   If it recurs on the CURRENT live binary: the process is poisoned until
+   restart, and **`ZCL_DB_TXN_TRACE=1` names the culprit** — a RUN write VM forces
    `txn_state=WRITE`, so the tracer's busy-stmt walk fires every 3 s and logs
    the exact SQL (`lib/util/src/db_txn_trace.c`). Enable it at the next
-   owner-gated deploy. **Live gdb is unblocked (2026-07-27):** commit
+   owner-gated deploy. On branch `work/db-lock-fixes` (committed there, NOT
+   on the live binary) the always-on seatbelt lands instead: a COMMIT
+   failing with this exact error class walks the handle's
+   `sqlite3_next_stmt` list, logs the offending SQL, and resets the
+   abandoned VM, so the caller's ROLLBACK and the next BEGIN/COMMIT work
+   without a process restart (`node_db_commit`,
+   `app/models/src/database.c`). The same branch caps the catchup batch at
+   2000 blocks / 5 s per COMMIT (was one 100k-block transaction holding
+   the WAL write lock for minutes), opens every catchup transaction with
+   BEGIN IMMEDIATE, restarts a `SQLITE_BUSY_SNAPSHOT` pass with a bound of
+   3 whole-walk retries, and parks the catchup worker behind the named
+   blocker `node_db_catchup.abort_storm` after 8 consecutive aborts
+   instead of re-running forever. The reset unpoisons the handle but does
+   not find the bug that abandoned the VM — the recovery's logged SQL (or
+   `ZCL_DB_TXN_TRACE=1`) still names it. **Live gdb is unblocked (2026-07-27):** commit
    `f191bbf9c` was rebuilt byte-identical in
    `~/github/zclassic23-dbg-f191bbf9c` (sha256
    `63c8206c…df70d49d`, build-id match) and the matching

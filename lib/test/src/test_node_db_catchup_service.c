@@ -2,8 +2,11 @@
 
 #include "test/test_core.h"
 #include "services/node_db_catchup_service.h"
+#include "services/node_db_catchup_lock_guard.h"
 #include "models/database.h"
+#include "models/block.h"
 #include "controllers/sync_controller.h"
+#include "util/blocker.h"
 #include "validation/chainstate.h"
 #include "chain/chain.h"
 #include "primitives/block.h"
@@ -247,6 +250,198 @@ int test_node_db_catchup_service(void)
         if (opened) node_db_close(&ndb);
         active_chain_free(&ac);
         test_cleanup_tmpdir(dir2);
+    }
+
+    /* ── Commit cadence / BUSY_SNAPSHOT restart / abort-streak park ────
+     * Five real on-disk blocks + active-chain slots drive three fresh
+     * node.db instances against one shared fixture datadir. */
+    {
+        enum { FIX_N = 5 };
+        char dirF[256], dirA[256], dirB[256], dirC[256];
+        test_make_tmpdir(dirF, sizeof(dirF), "node_db_catchup", "fix");
+        test_make_tmpdir(dirA, sizeof(dirA), "node_db_catchup", "batchA");
+        test_make_tmpdir(dirB, sizeof(dirB), "node_db_catchup", "batchB");
+        test_make_tmpdir(dirC, sizeof(dirC), "node_db_catchup", "snapC");
+        char blocksF[512];
+        snprintf(blocksF, sizeof(blocksF), "%s/blocks", dirF);
+        mkdir(blocksF, 0755);
+
+        struct disk_block_pos pos[FIX_N + 1];
+        struct uint256 hashes[FIX_N + 1];
+        unsigned char msg_start[4] = {0x24, 0xe9, 0x27, 0x64};
+        bool built = true;
+        for (int h = 1; h <= FIX_N && built; h++) {
+            struct block b;
+            block_init(&b);
+            b.header.nVersion = 4;
+            b.header.nTime = 1700000123u + (uint32_t)h;
+            b.header.nBits = 0x2000ffffu;
+            b.header.hashPrevBlock.data[0] = (uint8_t)h;
+            b.header.hashMerkleRoot.data[0] = (uint8_t)(0x40 + h);
+            b.num_vtx = 1;
+            b.vtx = calloc(1, sizeof(struct transaction)); // raw-alloc-ok:test-fixture
+            if (b.vtx) {
+                transaction_init(&b.vtx[0]);
+                transaction_alloc(&b.vtx[0], 1, 1);
+                b.vtx[0].vin[0].sequence = 0xffffffffu;
+                b.vtx[0].vout[0].value = 5000000000LL + h;
+            }
+            built = b.vtx &&
+                (disk_block_pos_init(&pos[h]),
+                 write_block_to_disk(&b, &pos[h], dirF, msg_start)) &&
+                (block_get_hash(&b, &hashes[h]), true);
+            block_free(&b);
+        }
+
+        struct block_index slots[FIX_N + 1];
+        struct active_chain ac;
+        active_chain_init(&ac);
+        for (int h = 1; h <= FIX_N && built; h++) {
+            memset(&slots[h], 0, sizeof(slots[h]));
+            slots[h].nHeight = h;
+            slots[h].nStatus = BLOCK_HAVE_DATA;
+            slots[h].nFile = pos[h].nFile;
+            slots[h].nDataPos = pos[h].nPos;
+            slots[h].phashBlock = &hashes[h];
+            built = active_chain_install_tip_slot(&ac, &slots[h]);
+        }
+        NDC_CHECK("five-block fixture builds and installs", built);
+
+        char pathA[512], pathB[512], pathC[512];
+        snprintf(pathA, sizeof(pathA), "%s/node.db", dirA);
+        snprintf(pathB, sizeof(pathB), "%s/node.db", dirB);
+        snprintf(pathC, sizeof(pathC), "%s/node.db", dirC);
+
+        /* (c1) Batch cap 2 over 5 blocks: commits at indexed=2 and 4 plus
+         * the final commit — multiple transactions, never one unbounded
+         * batch. */
+        struct node_db ndbA;
+        bool openA = built && node_db_open(&ndbA, pathA);
+        node_db_catchup_lock_guard_test_reset();
+        node_db_catchup_lock_guard_test_set_batch_size(2);
+        int resA = openA ? node_db_catchup_service_run(&ndbA, &ac, NULL, dirF) : -1;
+        int tipA = openA ? node_db_sync_get_tip_height(&ndbA) : -1;
+        int maxA = openA ? db_block_max_height(&ndbA) : -1;
+        int commitsA = node_db_catchup_lock_guard_test_batch_commits();
+        NDC_CHECK("batch cap 2 indexes all five blocks",
+                  resA == FIX_N && tipA == FIX_N && maxA == FIX_N);
+        NDC_CHECK("batch cap 2 commits mid-walk at 2 and 4",
+                  commitsA == 2);
+
+        /* (c2) Default cap (2000): one final commit only — and the final
+         * state is identical to the multi-transaction run. */
+        struct node_db ndbB;
+        bool openB = built && node_db_open(&ndbB, pathB);
+        node_db_catchup_lock_guard_test_reset();
+        int resB = openB ? node_db_catchup_service_run(&ndbB, &ac, NULL, dirF) : -1;
+        int tipB = openB ? node_db_sync_get_tip_height(&ndbB) : -1;
+        int maxB = openB ? db_block_max_height(&ndbB) : -1;
+        int commitsB = node_db_catchup_lock_guard_test_batch_commits();
+        int64_t treeA = -1, treeB = -1;
+        bool treeA_ok = openA &&
+            node_db_state_get_int(&ndbA, "sapling_tree_rebuild_height", &treeA);
+        bool treeB_ok = openB &&
+            node_db_state_get_int(&ndbB, "sapling_tree_rebuild_height", &treeB);
+        NDC_CHECK("default cap needs no mid-walk commit",
+                  resB == FIX_N && commitsB == 0);
+        NDC_CHECK("commit granularity never changes the final state",
+                  tipB == tipA && maxB == maxA &&
+                  treeA_ok && treeB_ok && treeA == treeB);
+
+        /* (b) Injected SQLITE_BUSY_SNAPSHOT write failure: the pass rolls
+         * back and restarts the whole walk once (bounded), then completes
+         * with the identical final state. */
+        struct node_db ndbC;
+        bool openC = built && node_db_open(&ndbC, pathC);
+        node_db_catchup_lock_guard_test_reset();
+        node_db_catchup_lock_guard_test_force_snapshot_failures(1);
+        int restarts_before = node_db_catchup_lock_guard_test_snapshot_restarts();
+        int resC = openC ? node_db_catchup_service_run(&ndbC, &ac, NULL, dirF) : -1;
+        int tipC = openC ? node_db_sync_get_tip_height(&ndbC) : -1;
+        int restarts_after = node_db_catchup_lock_guard_test_snapshot_restarts();
+        NDC_CHECK("BUSY_SNAPSHOT triggers exactly one whole-walk restart",
+                  restarts_after == restarts_before + 1);
+        NDC_CHECK("the restarted walk completes with identical state",
+                  resC == FIX_N && tipC == tipA);
+
+        /* (park) Eight consecutive failed passes name the
+         * node_db_catchup.abort_storm blocker and park the worker; a
+         * pending block stays unindexed until an operator clears the
+         * blocker (half-open), after which the next pass works. */
+        blocker_module_init();
+        blocker_reset_for_testing();
+        node_db_catchup_lock_guard_test_reset();
+        for (int i = 0; i < NODE_DB_CATCHUP_ABORT_STREAK_CAP; i++)
+            node_db_catchup_lock_guard_note_outcome(true);
+        NDC_CHECK("eight consecutive aborts raise the streak to the cap",
+                  node_db_catchup_lock_guard_test_abort_streak() ==
+                      NODE_DB_CATCHUP_ABORT_STREAK_CAP);
+        NDC_CHECK("the abort storm is a NAMED blocker",
+                  blocker_exists(NODE_DB_CATCHUP_ABORT_STREAK_BLOCKER_ID));
+        NDC_CHECK("the worker parks behind the named blocker",
+                  node_db_catchup_lock_guard_parked());
+
+        /* Real work pending (a 6th block) must stay undone while parked. */
+        {
+            struct disk_block_pos pos6;
+            struct uint256 hash6;
+            struct block b6;
+            block_init(&b6);
+            b6.header.nVersion = 4;
+            b6.header.nTime = 1700000123u + 6;
+            b6.header.nBits = 0x2000ffffu;
+            b6.header.hashPrevBlock.data[0] = 6;
+            b6.header.hashMerkleRoot.data[0] = 0x46;
+            b6.num_vtx = 1;
+            b6.vtx = calloc(1, sizeof(struct transaction)); // raw-alloc-ok:test-fixture
+            if (b6.vtx) {
+                transaction_init(&b6.vtx[0]);
+                transaction_alloc(&b6.vtx[0], 1, 1);
+                b6.vtx[0].vin[0].sequence = 0xffffffffu;
+                b6.vtx[0].vout[0].value = 5000000006LL;
+            }
+            bool sixth = b6.vtx &&
+                (disk_block_pos_init(&pos6),
+                 write_block_to_disk(&b6, &pos6, dirF, msg_start));
+            block_get_hash(&b6, &hash6);
+            block_free(&b6);
+            struct block_index slot6;
+            memset(&slot6, 0, sizeof(slot6));
+            slot6.nHeight = FIX_N + 1;
+            slot6.nStatus = BLOCK_HAVE_DATA;
+            slot6.nFile = pos6.nFile;
+            slot6.nDataPos = pos6.nPos;
+            slot6.phashBlock = &hash6;
+            sixth = sixth && active_chain_install_tip_slot(&ac, &slot6);
+            NDC_CHECK("sixth block extends the pending work", sixth);
+
+            int res_parked = sixth && openA
+                ? node_db_catchup_service_run(&ndbA, &ac, NULL, dirF) : -1;
+            int tip_parked = openA ? node_db_sync_get_tip_height(&ndbA) : -1;
+            NDC_CHECK("the parked worker does NOT re-run the failing pass",
+                      res_parked == 0 && tip_parked == FIX_N);
+
+            blocker_clear(NODE_DB_CATCHUP_ABORT_STREAK_BLOCKER_ID);
+            NDC_CHECK("operator clear half-opens the worker",
+                      !node_db_catchup_lock_guard_parked() &&
+                      node_db_catchup_lock_guard_test_abort_streak() == 0);
+            int res_halfopen = sixth && openA
+                ? node_db_catchup_service_run(&ndbA, &ac, NULL, dirF) : -1;
+            int tip_halfopen = openA ? node_db_sync_get_tip_height(&ndbA) : -1;
+            NDC_CHECK("the half-open pass resumes indexing",
+                      res_halfopen == 1 && tip_halfopen == FIX_N + 1);
+        }
+
+        node_db_catchup_lock_guard_test_reset();
+        blocker_reset_for_testing();
+        if (openA) node_db_close(&ndbA);
+        if (openB) node_db_close(&ndbB);
+        if (openC) node_db_close(&ndbC);
+        active_chain_free(&ac);
+        test_cleanup_tmpdir(dirF);
+        test_cleanup_tmpdir(dirA);
+        test_cleanup_tmpdir(dirB);
+        test_cleanup_tmpdir(dirC);
     }
 
     test_cleanup_tmpdir(dir);

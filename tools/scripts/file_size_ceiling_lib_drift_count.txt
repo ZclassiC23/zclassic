@@ -235,4 +235,11 @@
 # shed the deleted boot_wallet()/node_db_sync_wallet_keys() mirror call (-12)
 # and regained exactly those 12 lines for the STATE-G scrub wiring (boot.c had
 # zero baseline headroom) — size unchanged at its 1477 baseline.
+#
+# 2026-07-27 (node.db lock-contention fixes, work/db-lock-fixes): fast_sync.c
+# grew 1899 -> 1909 — fast_sync_apply_chunk's private READWRITE apply
+# connection gains a 30 s busy timeout (matching the read-only sibling) and
+# a BEGIN IMMEDIATE (the deferred BEGIN's first INSERT could fail instantly
+# with SQLITE_BUSY_SNAPSHOT against a concurrent catchup/coins commit).
+# Re-baselined in file_size_ceiling_lib_baseline.txt (1909); count unchanged.
 13

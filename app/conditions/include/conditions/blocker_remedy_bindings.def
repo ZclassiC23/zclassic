@@ -134,6 +134,13 @@ ZCL_BLOCKER_REMEDY(utxo_apply.nullifier_backfill_gap,          sapling_anchor_fr
 ZCL_BLOCKER_REMEDY(utxo_apply.apply_failed,                    reducer_frontier_reconcile_light) /* same class as script_validate.prevout_unresolved: a held apply pins H*, tip_age grows past the reconcile detect gate, the dry-run re-derives the hole and the apply's own blocker_clear() fires (utxo_apply_stage.c:228/583) */
 ZCL_BLOCKER_REMEDY(utxo_apply.fatal_store,                     OWNER)
 ZCL_BLOCKER_REMEDY(utxo_apply.commit_invariant_violation,      OWNER)
+/* work/db-lock-fixes: 8 consecutive aborted catchup passes park the
+ * projection-backfill worker. No in-tree condition can decide the abort
+ * cause is gone (the park exists precisely because retries stopped
+ * helping); the operator inspects the logged abort reason and clears the
+ * blocker, which half-opens one pass — a success self-resets the streak
+ * (node_db_catchup_lock_guard.c). OWNER is the honest binding. */
+ZCL_BLOCKER_REMEDY(node_db_catchup.abort_storm,                OWNER)
 ZCL_BLOCKER_REMEDY(utxo_apply.label_splice,                    reducer_frontier_reconcile_light) /* TRANSIENT: the height-keyed script_validate/proof_validate verdict row is hash-bound to a foreign block; the reconcile dry-run purges the non-canonical residue row + re-derives the correct verdict, so the next apply attempt matches and the raiser's own utxo_apply_label_splice_healed() blocker_clear() fires (utxo_apply_stage.c:354) — same self-clear class as utxo_apply.apply_failed */
 ZCL_BLOCKER_REMEDY(utxo_apply.apply_candidate_anomaly,         reducer_frontier_reconcile_light) /* Task A: a REAL apply-candidate-selection anomaly (block map / durable-or-visible parent / on-disk body disagreeing with the ok-bound height-keyed verdict) that HOLDS utxo_apply's cursor — same self-clear class as utxo_apply.apply_failed / .label_splice: the held apply pins H*, tip_age grows past the reconcile detect gate, the dry-run re-derives the contiguous frontier + re-drives selection, and the raiser's own utxo_apply_select_idle_blocker_clear() fires on the next resolved candidate (utxo_apply_stage_fallback.c) */
 ZCL_BLOCKER_REMEDY(utxo_apply.upstream_evidence_mode,          OWNER)

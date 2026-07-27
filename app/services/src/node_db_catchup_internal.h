@@ -26,4 +26,16 @@ int node_db_catchup_sparse_prefix_target(int indexed,
                                          bool proven_authority,
                                          int32_t proven_applied);
 
+struct node_db;
+struct transaction;
+struct wallet;
+
+/* Try-decrypt Sapling outputs in a transaction and save to SQLite
+ * (returns notes found). Defined in node_db_catchup_decrypt.c. */
+int node_db_catchup_try_sapling_decrypt(struct node_db *ndb,
+                                        const struct transaction *tx,
+                                        const struct wallet *w,
+                                        int height,
+                                        bool *ok_out);
+
 #endif /* ZCL_NODE_DB_CATCHUP_INTERNAL_H */

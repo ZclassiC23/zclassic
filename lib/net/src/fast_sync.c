@@ -731,9 +731,19 @@ bool fast_sync_apply_chunk(const char *datadir,
     if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK)
         LOG_FAIL("sync", "apply_chunk: failed to open db %s", db_path);
 
-    if (sqlite3_exec(db, "BEGIN", NULL, NULL, NULL) != SQLITE_OK) {
+    /* Match the read-only sibling (fast_sync_open_readonly_db): wait up to
+     * 30 s on a contended lock instead of failing instantly against a
+     * concurrent catchup/coins commit. BEGIN IMMEDIATE takes the writer
+     * reservation up front — under the busy handler, where a wait CAN
+     * succeed — instead of a deferred BEGIN whose first INSERT would fail
+     * with SQLITE_BUSY_SNAPSHOT (a class no busy-handler wait can cure)
+     * whenever another connection committed in between. */
+    sqlite3_busy_timeout(db, 30000);
+
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) {
         sqlite3_close(db);
-        LOG_FAIL("sync", "apply_chunk: BEGIN transaction failed");
+        LOG_FAIL("sync", "apply_chunk: BEGIN IMMEDIATE failed: %s",
+                 sqlite3_errmsg(db));
     }
 
     sqlite3_stmt *ins = NULL;
