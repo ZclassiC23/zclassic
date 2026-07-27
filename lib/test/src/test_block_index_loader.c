@@ -27,6 +27,7 @@
 #include "core/arith_uint256.h"
 #include "models/block.h"
 #include "util/blocker.h"
+#include "util/boot_phase.h"
 #include "util/log_throttle.h"
 #include <sqlite3.h>
 #include <stdio.h>
@@ -1329,6 +1330,49 @@ int test_block_index_loader(void)
                   size_ok && tip_ok);
         BIL_CHECK("bil: blocks-table hydrate clamps to header-only "
                   "(BLOCK_VALID_TREE, no HAVE_DATA)", valid_ok);
+
+        block_map_free(&ms.map_block_index);
+        if (ndb.db) sqlite3_close(ndb.db);
+        free(hashes);
+    }
+
+    /* ── 15b. blocks hydrate pumps the boot-liveness marker ──────────────
+     *
+     * Reproduces the 2026-07-27 canonical crash loop: a corrupt flat file
+     * (`tip hash maps to wrong height (-1 vs SQLite …)`) forced the
+     * multi-minute blocks-table hydrate on EVERY boot; it bumped no
+     * boot-progress marker, systemd's 2-min WatchdogSec killed each boot
+     * mid-load, and the shutdown-persisted heal never landed (8 SIGABRTs).
+     * The hydrate now pumps boot_progress_note() every 4096 rows in its
+     * validate/insert/link passes, so >4096 rows MUST advance the marker. */
+    {
+        const int N = 4096 + 64;
+        struct uint256 *hashes = malloc((size_t)N * sizeof(*hashes)); // raw-alloc-ok:test-fixture
+        bool ok = (hashes != NULL);
+
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+        ok = ok && (sqlite3_open(":memory:", &ndb.db) == SQLITE_OK);
+        ndb.open = ok;
+        ok = ok && bih_create_blocks_table(ndb.db);
+
+        struct uint256 zero;
+        memset(&zero, 0, sizeof(zero));
+        for (int h = 0; ok && h < N; h++) {
+            const struct uint256 *prev = (h == 0) ? &zero : &hashes[h - 1];
+            ok = bih_insert_header_row(ndb.db, h, prev, &hashes[h]);
+        }
+
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+
+        uint64_t marker_before = boot_progress_marker();
+        ok = ok && load_block_index_from_blocks_table(&ndb, &ms).ok;
+        BIL_CHECK("bil: blocks-table hydrate pumps boot-progress marker "
+                  "(>4096 rows, watchdog liveness)",
+                  ok && boot_progress_marker() > marker_before);
 
         block_map_free(&ms.map_block_index);
         if (ndb.db) sqlite3_close(ndb.db);

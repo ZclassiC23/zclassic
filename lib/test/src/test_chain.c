@@ -11,6 +11,7 @@
 #include "storage/coins_db.h"
 #include "validation/update_coins.h"
 #include "storage/block_index_db.h"
+#include "util/boot_phase.h"
 #include "crypto/equihash.h"
 #include "crypto/equihash_solver.h"
 #include "chain/equihash.h"
@@ -665,6 +666,50 @@ int test_chain(void)
             failures++;
         }
         chainstate_free(&loaded);
+        if (opened)
+            block_tree_db_close(&btdb);
+        test_cleanup_tmpdir(path);
+    }
+
+    printf("block_tree_db guts load pumps boot-liveness marker... ");
+    {
+        /* Reproduces the 2026-07-27 crash-loop hazard class: a multi-million
+         * row LevelDB index walk with no boot-progress pump outlives the
+         * 2-min systemd watchdog on a cold boot. The guts loop now pumps
+         * boot_progress_note() every 4096 rows, so >4096 rows MUST advance
+         * the marker. (Sibling of the blocks-table hydrate pump test in
+         * test_block_index_loader.c §15b.) */
+        const int N = 4096 + 16;
+        char path[256];
+        snprintf(path, sizeof(path), "/tmp/test_btdb_pump_%d", (int)getpid());
+        test_cleanup_tmpdir(path);
+
+        struct block_tree_db btdb;
+        bool opened = block_tree_db_open(&btdb, path, 1 << 20, false, true);
+        bool ok = opened;
+        for (int i = 0; ok && i < N; i++) {
+            struct disk_block_index d;
+            disk_block_index_init(&d);
+            d.nHeight = i;
+            d.nStatus = BLOCK_VALID_TRANSACTIONS;
+            d.nVersion = 4;
+            d.nTime = 1478414242 + (uint32_t)i; /* unique key per row */
+            d.nBits = 0x1f07ffff;
+            ok = block_tree_db_write_block_index(&btdb, &d);
+        }
+
+        struct chainstate loaded2;
+        chainstate_init(&loaded2);
+        uint64_t marker_before = boot_progress_marker();
+        if (ok)
+            ok = block_tree_db_load_block_index_guts(
+                &btdb, test_block_index_insert, &loaded2);
+        ok = ok && boot_progress_marker() > marker_before;
+
+        if (ok)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        chainstate_free(&loaded2);
         if (opened)
             block_tree_db_close(&btdb);
         test_cleanup_tmpdir(path);

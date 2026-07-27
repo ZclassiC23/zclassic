@@ -28,6 +28,7 @@
 
 #include "util/ar_step_readonly.h"
 #include "util/blocker.h"
+#include "util/boot_phase.h"
 #include "util/log_macros.h"
 #include "util/log_throttle.h"
 #include "util/safe_alloc.h"
@@ -291,8 +292,16 @@ struct zcl_result load_block_index_from_blocks_table(struct node_db *ndb,
     struct bhc_bad_row *bad = NULL;   /* lazily allocated on first bad row */
     int64_t bad_count = 0;
     int64_t validated = 0;
+    int64_t seen = 0;
     bool gross_corruption = false;
     while (AR_STEP_ROW_READONLY(sel) == SQLITE_ROW) {
+        /* 3.1M-row validate pass (full Equihash on the strided/above-
+         * checkpoint subset) outlives the 2-min systemd watchdog on a cold
+         * boot — pump the boot-liveness marker (the flat loader convention)
+         * so a progressing hydrate is never killed as a frozen boot. */
+        if (((++seen) & 0xFFF) == 0)
+            boot_progress_note("block_index.blocks_hydrate_validate",
+                               (uint64_t)seen, (uint64_t)row_count);
         const void *hb = sqlite3_column_blob(sel, BHC_HASH);
         int h = sqlite3_column_int(sel, BHC_HEIGHT);
         bool has_hash = (hb && sqlite3_column_bytes(sel, BHC_HASH) >= 32);
@@ -467,6 +476,9 @@ struct zcl_result load_block_index_from_blocks_table(struct node_db *ndb,
         bi->nStatus = level;   /* header-only: no HAVE bits, no FAILED bits */
 
         sorted[n++] = bi;
+        if ((n & 0xFFF) == 0)
+            boot_progress_note("block_index.blocks_hydrate_insert",
+                               (uint64_t)n, (uint64_t)validated);
     }
     sqlite3_finalize(sel);
     sel = NULL;
@@ -474,7 +486,11 @@ struct zcl_result load_block_index_from_blocks_table(struct node_db *ndb,
     /* ── Pass C: link pprev by prev_hash (both endpoints now in the map). */
     if (sqlite3_prepare_v2(ndb->db, "SELECT hash,prev_hash FROM blocks",
                            -1, &sel, NULL) == SQLITE_OK && sel) {
+        size_t linked = 0;
         while (AR_STEP_ROW_READONLY(sel) == SQLITE_ROW) {
+            if (((++linked) & 0xFFF) == 0)
+                boot_progress_note("block_index.blocks_hydrate_link",
+                                   (uint64_t)linked, (uint64_t)row_count);
             const void *h = sqlite3_column_blob(sel, 0);
             const void *ph = sqlite3_column_blob(sel, 1);
             if (!h || !ph)

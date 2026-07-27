@@ -7,6 +7,7 @@
 #include "storage/block_index_db.h"
 #include "core/hash.h"
 #include "primitives/block.h"
+#include "util/boot_phase.h"
 #include "util/log_macros.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -270,7 +271,14 @@ bool block_tree_db_load_block_index_guts(struct block_tree_db *btdb,
     db_iter_init(&it, &btdb->db);
     db_iter_seek(&it, seek_key, 33);
 
+    uint64_t loaded = 0;
     while (db_iter_valid(&it)) {
+        /* A multi-million-row LevelDB walk outlives the 2-min systemd
+         * watchdog on a cold boot; pump the boot-liveness marker (same
+         * convention as the flat loader's insert/link passes) so a
+         * progressing load is never killed as a frozen boot. */
+        if (((++loaded) & 0xFFF) == 0)
+            boot_progress_note("block_index.leveldb_load", loaded, 0);
         size_t key_len;
         const char *key_data = db_iter_key(&it, &key_len);
 
