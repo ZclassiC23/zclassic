@@ -63,9 +63,9 @@ zclassic23 discover schema <path> --side=input|output
 | Top-level roots | 9 |
 | Branches | 67 |
 | Leaves (dispatchable command paths) | 224 |
-| … `ready` (live handler in this build) | 172 |
+| … `ready` (live handler in this build) | 182 |
 | … `compat` (metadata only, names a fallback) | 17 |
-| … `planned` (fail-closed BLOCKED, exit 3) | 35 |
+| … `planned` (fail-closed BLOCKED, exit 3) | 25 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
 | Leaves with `effect=mutate` | 57 |
 | Leaves with `effect=destructive` | 4 |
@@ -339,12 +339,12 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `app names resolve` | ready | read / read / public · fast/low | **`name`** | `zcl.app_name_record.v1` | `zclassic23 app names resolve alice` | Resolve a ZCL Name to its target |
 | `app names list` | ready | read / read / public · fast/low | none | `zcl.app_name_index.v1` | `zclassic23 app names list` | List registered ZCL Names |
-| `app names register` | planned | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`name`**, `type`, `value` | `zcl.app_name_txresult.v1` | `zclassic23 app names register --input='{"name":"alice","type":"zaddr","value":"zs1.."}'` | Register a ZCL Name on-chain — *ZNAM write plan/commit handshake is a follow-up native wave; the name_register RPC remains available at the node RPC layer* |
-| `app names update` | planned | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`name`**, `type`, `value` | `zcl.app_name_txresult.v1` | `zclassic23 app names update --input='{"name":"alice","type":"zaddr","value":"zs1.."}'` | Replace a ZCL Name's primary target — *ZNAM write plan/commit handshake is a follow-up native wave; the name_update RPC remains available at the node RPC layer* |
-| `app names transfer` | planned | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`name`**, `new_owner` | `zcl.app_name_txresult.v1` | `zclassic23 app names transfer --input='{"name":"alice","new_owner":"t1.."}'` | Transfer ZCL Name ownership — *ZNAM write plan/commit handshake is a follow-up native wave; the name_transfer RPC remains available at the node RPC layer* |
-| `app names renew` | planned | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`name`** | `zcl.app_name_txresult.v1` | `zclassic23 app names renew alice` | Renew a ZCL Name registration term — *ZNAM write plan/commit handshake is a follow-up native wave; the name_renew RPC remains available at the node RPC layer* |
-| `app names set-record` | planned | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`name`**, `type`, `value` | `zcl.app_name_txresult.v1` | `zclassic23 app names set-record --input='{"name":"alice","type":"btc","value":"bc1.."}'` | Set a multi-coin address record — *ZNAM write plan/commit handshake is a follow-up native wave; the name_set_record RPC remains available at the node RPC layer* |
-| `app names set-text` | planned | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`name`**, `key`, `value` | `zcl.app_name_txresult.v1` | `zclassic23 app names set-text --input='{"name":"alice","key":"url","value":"https://.."}'` | Set a text record on a ZCL Name — *ZNAM write plan/commit handshake is a follow-up native wave; the name_set_text RPC remains available at the node RPC layer* |
+| `app names register` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`name`**, `type`, `value`, `confirm` | `zcl.app_name_txresult.v1` | `zclassic23 app names register --input='{"name":"alice","type":"zaddr","value":"zs1..","confirm":true}'` | Register a ZCL Name on-chain |
+| `app names update` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`name`**, `type`, `value`, `confirm` | `zcl.app_name_txresult.v1` | `zclassic23 app names update --input='{"name":"alice","type":"zaddr","value":"zs1..","confirm":true}'` | Replace a ZCL Name's primary target |
+| `app names transfer` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`name`**, `new_owner`, `confirm` | `zcl.app_name_txresult.v1` | `zclassic23 app names transfer --input='{"name":"alice","new_owner":"t1..","confirm":true}'` | Transfer ZCL Name ownership |
+| `app names renew` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`name`**, `confirm` | `zcl.app_name_txresult.v1` | `zclassic23 app names renew --input='{"name":"alice","confirm":true}'` | Renew a ZCL Name registration term |
+| `app names set-record` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`name`**, `type`, `value`, `confirm` | `zcl.app_name_txresult.v1` | `zclassic23 app names set-record --input='{"name":"alice","type":"btc","value":"bc1..","confirm":true}'` | Set a multi-coin address record |
+| `app names set-text` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`name`**, `key`, `value`, `confirm` | `zcl.app_name_txresult.v1` | `zclassic23 app names set-text --input='{"name":"alice","key":"url","value":"https://..","confirm":true}'` | Set a text record on a ZCL Name |
 
 #### `app.tokens` — Tokens
 
@@ -357,9 +357,9 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `app messaging inbox` | ready | read / read / **owner** · fast/low | none | `zcl.app_message_index.v1` | `zclassic23 app messaging inbox` | List inbox messages |
-| `app messaging send` | planned | mutate / app-write / **owner**, plan-commit · foreground/moderate | `message`, `channel`, `peer_id`, `to`, `from_address`, `reply_to` | `zcl.app_message_send_result.v1` | `zclassic23 app messaging send --input='{"channel":"p2p","peer_id":1,"message":"hi"}'` | Send a message — *ZMSG write plan/commit handshake is a follow-up native wave; the msg_send RPC remains available at the node RPC layer* |
-| `app messaging send-named` | planned | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`name`**, `message` | `zcl.app_message_send_result.v1` | `zclassic23 app messaging send-named --input='{"name":"alice","message":"hi"}'` | Send a message to a ZCL Name — *ZMSG write plan/commit handshake is a follow-up native wave; the msg_send_named RPC remains available at the node RPC layer* |
-| `app messaging read` | planned | mutate / app-write / **owner** · fast/low | **`msg_id`** | `zcl.app_message.v1` | `zclassic23 app messaging read --input='{"msg_id":"<64hex>"}'` | Mark a message read and return it — *ZMSG read-state mutation is a follow-up native wave; the msg_read RPC remains available at the node RPC layer* |
+| `app messaging send` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | `message`, `channel`, `peer_id`, `to`, `from_address`, `reply_to`, `confirm` | `zcl.app_message_send_result.v1` | `zclassic23 app messaging send --input='{"channel":"p2p","peer_id":1,"message":"hi","confirm":true}'` | Send a message |
+| `app messaging send-named` | planned | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`name`**, `message`, `confirm` | `zcl.app_message_send_result.v1` | `zclassic23 app messaging send-named --input='{"name":"alice","message":"hi"}'` | Send a message to a ZCL Name — *needs an outbound delivery path before it can be exposed natively: rpc_msg_send_named (messaging_controller.c) resolves the name, calls zmsg_store_add + db_zmsg_save, and answers status=queued, but nothing in the tree ever drains that store onto a peer socket — no writer sends MSG_ZMSG for a stored message, so the queue has no consumer and the message is never delivered. Use app messaging send with an explicit peer_id, whose write to the peer socket is real* |
+| `app messaging read` | ready | mutate / app-write / **owner** · fast/low | **`msg_id`** | `zcl.app_message_read_result.v1` | `zclassic23 app messaging read --input='{"msg_id":"<64hex>"}'` | Mark a message read |
 
 #### `app.market` — Market
 
@@ -367,8 +367,8 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `app market list` | ready | read / read / public · fast/low | none | `zcl.app_market_index.v1` | `zclassic23 app market list` | List files on the ZCL Market |
 | `app market status` | ready | read / read / operator · fast/low | none | `zcl.app_market_status.v1` | `zclassic23 app market status` | ZCL Market status |
-| `app market offer` | planned | mutate / app-write / **owner**, plan-commit · foreground/moderate | `filepath`, `price_per_mb_zat` | `zcl.app_market_offer_result.v1` | `zclassic23 app market offer --input='{"filepath":"/data/f","price_per_mb_zat":1000}'` | Announce a file for sale — *ZCL Market write plan/commit handshake is a follow-up native wave; the zmarket_offer RPC remains available at the node RPC layer* |
-| `app market buy` | planned | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`root_hash`** | `zcl.app_market_buy_result.v1` | `zclassic23 app market buy --input='{"root_hash":"<64hex>"}'` | Buy and download a market file — *ZCL Market purchase plan/commit handshake is a follow-up native wave; the zmarket_buy RPC remains available at the node RPC layer* |
+| `app market offer` | planned | mutate / app-write / **owner**, plan-commit · foreground/moderate | `filepath`, `price_per_mb_zat`, `confirm` | `zcl.app_market_offer_result.v1` | `zclassic23 app market offer --input='{"filepath":"/data/f","price_per_mb_zat":1000}'` | Announce a file for sale — *needs an origin-announce path before it can be exposed natively: rpc_zmarket_offer (file_market_controller.c) stats the file and calls file_market_add_offer + db_file_offer_save, then answers status=announced, but the only MSG_FILE_LIST writer in the tree is the re-gossip branch of handle_zfilelist (msgprocessor.c) — nothing ever announces a LOCALLY created offer, so no peer learns of it. Its root_hash is also SHA3(filepath:size), not a hash of the file contents* |
+| `app market buy` | planned | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`root_hash`**, `confirm` | `zcl.app_market_buy_result.v1` | `zclassic23 app market buy --input='{"root_hash":"<64hex>"}'` | Buy and download a market file — *needs the payment leg wired before a spend leaf can be exposed natively: rpc_zmarket_buy (file_market_controller.c) only calls file_market_start_download, which allocates an in-memory session in state FDL_CHALLENGING. No code path sends MSG_FILE_CHAL, and nothing builds or broadcasts the payment transaction whose mempool-verified txid handle_zfilepay (msgprocessor.c) requires to unlock chunks, so the session never advances and no funds move* |
 
 #### `app.swap` — Swaps
 
@@ -376,8 +376,8 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `app swap chains` | ready | read / read / operator · fast/low | none | `zcl.app_swap_chains.v1` | `zclassic23 app swap chains` | List supported atomic-swap chains |
 | `app swap list` | ready | read / read / operator · fast/low | **`state`** | `zcl.app_swap_index.v1` | `zclassic23 app swap list --input='{"state":"pending"}'` | List atomic-swap contracts |
-| `app swap initiate` | planned | mutate / wallet / **owner**, plan-commit · foreground/moderate | `my_address`, `counter_address`, `amount`, `locktime_blocks`, `chain` | `zcl.app_swap_contract.v1` | `zclassic23 app swap initiate --input='{"my_address":"t1..","counter_address":"t1..","amount":1,"locktime_blocks":20}'` | Initiate an atomic swap — *ZSWP write plan/commit handshake is a follow-up native wave; the swap_initiate RPC remains available at the node RPC layer* |
-| `app swap participate` | planned | mutate / wallet / **owner**, plan-commit · foreground/moderate | `my_address`, `counter_address`, `amount`, `locktime_blocks`, `secret_hash`, `chain` | `zcl.app_swap_contract.v1` | `zclassic23 app swap participate --input='{"my_address":"t1..","counter_address":"t1..","amount":1,"locktime_blocks":10,"secret_hash":"<64hex>"}'` | Participate in an atomic swap — *ZSWP write plan/commit handshake is a follow-up native wave; the swap_participate RPC remains available at the node RPC layer* |
+| `app swap initiate` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | `my_address`, `counter_address`, `amount`, `locktime_blocks`, `chain`, `confirm` | `zcl.app_swap_contract.v1` | `zclassic23 app swap initiate --input='{"my_address":"t1..","counter_address":"t1..","amount":1,"locktime_blocks":20,"confirm":true}'` | Initiate an atomic swap |
+| `app swap participate` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | `my_address`, `counter_address`, `amount`, `locktime_blocks`, `secret_hash`, `chain`, `confirm` | `zcl.app_swap_contract.v1` | `zclassic23 app swap participate --input='{"my_address":"t1..","counter_address":"t1..","amount":1,"locktime_blocks":10,"secret_hash":"<64hex>","confirm":true}'` | Participate in an atomic swap |
 
 #### `app.auth` — Public-key challenge/response login
 
