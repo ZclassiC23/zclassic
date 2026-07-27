@@ -5,12 +5,24 @@
 [![status](https://img.shields.io/badge/status-pre--v1-orange.svg)](docs/MVP.md)
 [![CI](https://img.shields.io/badge/CI-local%20make%20lint-success.svg)](docs/DEFENSIVE_CODING.md)
 
-**Run your own money, your own name, your own website, and your own private
-network service — from one binary you compiled yourself, on hardware you
-control, with nothing in the trust path but proof-of-work.**
+A single self-contained C23 binary implementing a complete **ZClassic (ZCL)
+node**: Equihash 200,9 proof-of-work, transparent and Sapling shielded
+transactions, consensus-compatible with `zclassicd` bit for bit.
 
-No hosting provider. No domain registrar. No certificate authority. No DNS. No
-API keys. No accounts. `make`, then run it.
+The same process — no extra daemons, no sidecars, no reverse proxy — also runs:
+
+| | |
+|---|---|
+| **Tor onion service** | in-process, so the node's HTTP surface is reachable with no domain name, no static IP, and no TLS certificate |
+| **Block explorer + REST API** | `/explorer` and `/api/v1`, served over the onion or over HTTPS |
+| **Wallet** | transparent and Sapling shielded keys, AES-256-GCM at rest |
+| **Name registry (ZNAM)** | on-chain names resolving to ZCL/BTC/LTC/DOGE addresses plus text records |
+| **Messaging** | Sapling-memo on-chain messages, and direct node-to-node messages |
+| **Command registry** | typed commands with declared input/output schemas, byte budgets and risk classes — the interface an AI agent uses to operate the node (`discover help` lists the live set) |
+
+It links only stock `libc` plus static archives built from pinned,
+SHA-256-verified sources. There is no runtime dependency to install, no
+configuration server to reach, no account, and no API key.
 
 ```bash
 git clone https://github.com/ZclassiC23/zclassic.git && cd zclassic
@@ -22,9 +34,9 @@ build/bin/zclassic23
 
 ## What you can do with it
 
-Each of these is a thing you own outright once the node is running.
+Every command below runs against your own node, on your own machine.
 
-### Hold and move money nobody can freeze
+### Hold and spend ZCL from your own node
 
 A full ZClassic node with a built-in wallet — transparent addresses and
 shielded Sapling addresses in the same binary. You are not asking a service for
@@ -41,7 +53,7 @@ transactions, works in the default build. *Sending* shielded value needs the
 Sapling prover: rebuild with `make ZCL_WITH_RUST=1`. Without it `z_sendmany`
 refuses with a typed error naming that flag — it never fails silently.
 
-### Publish a website that has no address to seize
+### Serve a site with no domain name and no certificate
 
 Build the bundled Tor and your node becomes a hidden service in-process — no
 SOCKS proxy, no second daemon, no port forwarding, no certificate. Your node
@@ -62,7 +74,7 @@ Prefer clearnet? Drop a certificate at `<datadir>/ssl/fullchain.pem` and
 tip. With no cert and no Tor, there is deliberately **no** public endpoint — the
 node is private by default.
 
-### Claim a name that is yours on-chain
+### Register an on-chain name
 
 ZNAM is a working on-chain registry. Names are 1–63 characters, first-come,
 and one name can carry addresses for ZCL, BTC, LTC and DOGE at once, plus
@@ -73,7 +85,7 @@ build/bin/zclassic-cli name_register "yourname"
 build/bin/zclassic-cli name_resolve  "yourname"
 ```
 
-### Browse the whole chain from your own machine
+### Browse the chain locally
 
 The node serves a block explorer at `/explorer` with a JSON API under `/api`,
 over your onion or over HTTPS. Start API discovery at `/api/v1`:
@@ -81,7 +93,7 @@ over your onion or over HTTPS. Start API discovery at `/api/v1`:
 construct. It is not on the RPC port — a plain `GET` to `18232` returns
 `405`, by design.
 
-### Send messages with no server in the middle
+### Send messages peer-to-peer
 
 On-chain messages ride inside the 512-byte encrypted Sapling memo field, so
 they are shielded and permanent. Off-chain messages go directly between
@@ -101,13 +113,12 @@ shielded; off-chain ones should be treated as postcards.
 Equihash 200,9, in the same binary, validating what it mines against the same
 rules as the rest of the network.
 
-### Hand the whole thing to an AI agent
+### Let an AI agent operate the node
 
-This is the part that does not exist anywhere else. The binary contains a typed
-native command registry — over a hundred commands with declared input and output
-schemas, byte budgets, auth levels and risk classes — so an agent operates your
-node directly. No curl, no log scraping, no separate server, no vendor SDK, no
-model lock-in.
+The binary contains a typed native command registry — over a hundred commands
+with declared input and output schemas, byte budgets, auth levels and risk
+classes — so an agent operates the node directly. No curl, no log scraping, no
+separate server process, no vendor SDK, no model lock-in.
 
 ```bash
 build/bin/zclassic23 status                 # height, peers, sync, health, one call
@@ -121,7 +132,7 @@ Every reply is self-describing and size-bounded, and no failure reply lacks a
 blocker is named. Full contract:
 [`docs/NATIVE_COMMAND_INTERFACE.md`](docs/NATIVE_COMMAND_INTERFACE.md).
 
-### Play with it
+### Measure peers, and play P2P games
 
 A P2P game framework rides the same network layer — peer latency in
 microseconds, and a working TicTacToe as the reference implementation.
@@ -203,35 +214,62 @@ in [`docs/BOOTSTRAPPING.md`](docs/BOOTSTRAPPING.md) and
 
 ---
 
-## Why you can trust it
+## Properties, and how to check them yourself
 
-- **Two things, and no third.** Every trust claim reduces to the binary you
-  compiled and the proof-of-work-heaviest header chain. No operator vouching,
-  no certificate authorities, no trusted registries.
-- **The consensus core is sealed.** `core/` — checkpoints, chain params,
-  consensus math — is pinned to a SHA3-256 manifest. Any byte change fails a
-  hard gate unless it goes through a documented owner ritual
-  ([`core/UNSEAL.md`](core/UNSEAL.md)). Your node cannot quietly disagree with
-  the network, and neither can an AI agent working on it.
-- **Consensus compatibility is inviolable.** ZClassic23 stays bit-for-bit
-  compatible with `zclassicd`; consensus-changing contributions are declined on
-  principle ([`docs/CONSENSUS_PARITY_DOCTRINE.md`](docs/CONSENSUS_PARITY_DOCTRINE.md)).
-- **It locks itself down as it boots.** `-sandbox=steady` applies
-  `no_new_privs`, Landlock datadir grants and a seccomp deny-list across
-  *every* running thread, as the last boot stage. Witness it with
-  `dumpstate sandbox`.
-- **No shell-outs anywhere.** Zero `system()`/`popen()` in shipped code,
-  lint-enforced.
-- **Your wallet is encrypted at rest.** AES-256-GCM for new wallets. An
-  existing plaintext wallet still loads, with a warning.
-- **Crash recovery is demonstrated, not asserted.**
-  `make test-crash-bootstrap` kill-9s a node mid-write and proves it folds back
-  to its tip with no manual repair.
-- **Gates run on your machine**, not in someone's cloud: `make lint`,
-  `make ci`.
+Don't take these on assertion — each one names the mechanism and the command
+that shows it.
 
-Details: [`docs/SECURITY_AND_INTEGRITY.md`](docs/SECURITY_AND_INTEGRITY.md).
-The gates that specifically stop an AI agent from claiming a victory it cannot
+**Inputs to a validity decision: two.** The binary you compiled, and the
+proof-of-work-heaviest header chain. There is no operator attestation, no
+certificate authority, and no registry lookup anywhere in a consensus path.
+
+**`core/` is byte-sealed.** Checkpoints, chain params and consensus math are
+pinned by `core/MANIFEST.sha3`. Any byte change fails the `check-core-seal`
+gate; changing it requires a recorded unseal ([`core/UNSEAL.md`](core/UNSEAL.md)).
+This binds an AI agent working on the code exactly as much as it binds you.
+
+```bash
+make lint                   # check-core-seal is one of the gates it runs
+```
+
+**Consensus stays bit-compatible with `zclassicd`.** Enforced by the
+`check-consensus-parity` gate plus a golden-value test group; consensus-changing
+contributions are declined
+([`docs/CONSENSUS_PARITY_DOCTRINE.md`](docs/CONSENSUS_PARITY_DOCTRINE.md)).
+
+```bash
+make t-fast ONLY=consensus_parity
+```
+
+**The process restricts itself before it reports ready.** `-sandbox=steady`
+applies `no_new_privs`, `PR_SET_DUMPABLE(0)`, Landlock datadir grants and a
+seccomp deny-list, installed with seccomp `TSYNC` so already-running P2P and
+validation threads are covered rather than only new ones.
+
+```bash
+build/bin/zclassic23 dumpstate sandbox      # per-thread coverage
+```
+
+**No subprocess execution.** Zero `system()` and `popen()` in shipped
+app/lib/config code, enforced by a lint gate rather than convention.
+
+**Wallet keys are AES-256-GCM at rest** for new wallets. An existing plaintext
+wallet still loads and warns — encryption is not yet retroactive, which is a
+real gap, not a rounding error.
+
+**Crash recovery is executed, not claimed.** `make test-crash-bootstrap` kill-9s
+a node mid-write on an isolated datadir and requires it to fold back to its tip
+with no manual repair.
+
+**Read-only queries are constrained by construction.**
+`zclassic23 core storage query` is SELECT-only, rejects semicolons, auto-LIMITs,
+carries a wall-clock budget, and denies wallet-secret tables by name.
+
+**The gates run on your machine**, not in a CI service you have to trust:
+`make lint`, `make ci`.
+
+Full boundary: [`docs/SECURITY_AND_INTEGRITY.md`](docs/SECURITY_AND_INTEGRITY.md).
+The gates that specifically stop an AI agent from claiming a result it cannot
 cite: [`docs/AI_SAFETY_GATES.md`](docs/AI_SAFETY_GATES.md).
 
 ---
