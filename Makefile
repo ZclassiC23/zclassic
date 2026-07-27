@@ -4296,6 +4296,20 @@ deploy: vendor-ready lint zclassic-cli tools/wal_checkpoint
 # boot — see tools/seed_anchor_snapshot.sh. Standalone so an operator can run it
 # without a full deploy: `make seed-anchor-snapshot`.
 #   ZCL_DATADIR=<dir> ZCL_ANCHOR_SNAPSHOT_SRC=<file> make seed-anchor-snapshot
+# Ship one production binary to every node in the fleet. `deploy` above installs
+# to THIS host only; `ship` builds one candidate, proves it, and puts those exact
+# bytes on each host, verifying every one against the source id its running
+# daemon reports and rolling that host back if it does not come back healthy.
+# Build-once/ship-many is deliberate: a per-host rebuild both costs a full
+# whole-program link per host and produces different bytes per host, which makes
+# "is the fleet running the same code" unanswerable by comparison.
+#   make ship                   # gate, build, then local + remote
+#   make ship SHIP_ARGS=--dry-run
+#   make ship SHIP_ARGS=--targets=remote
+.PHONY: ship
+ship:
+	@./tools/ship.sh $(SHIP_ARGS)
+
 .PHONY: seed-anchor-snapshot
 seed-anchor-snapshot:
 	@./tools/seed_anchor_snapshot.sh
