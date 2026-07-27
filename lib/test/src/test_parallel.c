@@ -255,7 +255,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(consensus_db_migrate) \
     X(consensus_db_flip) \
     X(coins_kv) X(coins_ram) \
-    X(seal_kv) X(sha3_sidecar_io) X(seal_ratify) X(vcs_core) X(vcs_release) X(vcs_accept) X(vcs_devloop) X(codeindex) X(testcache) \
+    X(seal_kv) X(sha3_sidecar_io) X(seal_ratify) X(vcs_core) X(vcs_release) X(vcs_accept) X(zcode_store) X(vcs_devloop) X(codeindex) X(testcache) \
     X(chain_segment) X(segment_sealer) X(segment_corruption) X(rom_dump) \
     X(golden_revert_roundtrip) X(golden_dev_cycle) \
     X(nullifier_kv) X(nullifier_backfill_service) \

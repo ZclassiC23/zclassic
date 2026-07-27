@@ -69,3 +69,4 @@ lib/util/src/supervisor.c 801
 lib/sync/src/stage.c 819
 src/main_cli_modes.c 3820
 lib/hotswap/src/hotswap_activate.c 948
+lib/vcs/src/package_store.c 901

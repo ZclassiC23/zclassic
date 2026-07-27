@@ -33,6 +33,7 @@
 #include "chain/chainparams.h"
 #include "keys/key_io.h"
 #include "script/standard.h"
+#include "vcs/package_store.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -356,6 +357,32 @@ static void boot_store_payment_stop(void *ctx)
         boot_join_payment_service(svc);
 }
 
+/* ZCODE package store (slice 2): local content-addressed store under
+ * <datadir>/zcode, disabled by default (-packagehost=1 enables). A failure
+ * to open is loud but never fatal — hosting simply stays off. */
+static bool boot_zcode_store_start(void *ctx)
+{
+    (void)ctx;
+    if (!GetBoolArg("-packagehost", false))
+        return true;
+    if (!vcs_package_store_open_global()) {
+        fprintf(stderr,
+                "WARNING: -packagehost=1 but the package store failed "
+                "to open; hosting disabled\n");
+        return true;
+    }
+    printf("ZCODE package store: hosting enabled (quota %llu bytes)\n",
+           (unsigned long long)vcs_package_store_quota_bytes());
+    return true;
+}
+
+static void boot_zcode_store_stop(void *ctx)
+{
+    (void)ctx;
+    if (vcs_package_store_global())
+        vcs_package_store_close_global();
+}
+
 /* Register every clearnet frontend service into svc->frontend_kernel.
  * Called once from app_init_services in boot_services.c before the kernel
  * is started. Returns false on the first registration failure. */
@@ -414,6 +441,13 @@ bool boot_register_frontend_services(struct boot_svc_ctx *svc)
             .name = "store_payment",
             .start = boot_store_payment_start,
             .stop = boot_store_payment_stop,
+            .ctx = svc,
+            .flags = ZCL_SERVICE_OPTIONAL,
+        },
+        {
+            .name = "zcode_store",
+            .start = boot_zcode_store_start,
+            .stop = boot_zcode_store_stop,
             .ctx = svc,
             .flags = ZCL_SERVICE_OPTIONAL,
         },

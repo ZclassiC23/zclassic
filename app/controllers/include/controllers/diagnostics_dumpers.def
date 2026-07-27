@@ -782,3 +782,14 @@
                  "Landlock, which a confined process cannot survive",
                  "lib/platform/src/os_sandbox_witness.c",
                  "lib/test/src/test_os_sandbox_hotswap_interaction.c"),
+    DIAG_ENTRY("zcode_store", vcs_package_store_dump_state_json,
+               "ZCODE package store (local, -packagehost): quota pool "
+               "budgets/usage for pins/hot/rare/staging, tracked packages, "
+               "CAS chunk count, evictions_total, gc_orphans_total, "
+               "quota_rejects_total; enabled=false when hosting is off",
+               "runtime", "runtime", "lib/vcs/src/package_store.c",
+               "in_process_snapshot", "cheap",
+               "64-hex package root, or empty for store-wide totals",
+               "9f91360a486a1291533cad369861c371d4b5bc0682748ee768755c730f574eba",
+               NULL,
+               "lib/test/src/test_zcode_store.c", false),

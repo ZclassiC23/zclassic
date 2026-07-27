@@ -56,6 +56,10 @@ void print_usage(const char *prog)
     printf("  -profile=<name>     Service profile: full, zclassic-only, explorer, onion-node, legacy-compat\n");
     printf("  -operator-lane=<name>  Operator lane: canonical, soak, dev, test, copy\n");
     printf("  -nolegacyimport     Do not auto-read/link ~/.zclassic during boot\n");
+    printf("  -packagehost=0|1    Host ZCODE package content from <datadir>/zcode\n");
+    printf("                      (default 0, hosting off; local store only)\n");
+    printf("  -packagequota=<n>   Package store quota in bytes (default 10737418240;\n");
+    printf("                      20%% pins / 40%% hot / 30%% rare / 10%% staging)\n");
     printf("  -confine            After boot reaches activation-ready, apply strict\n");
     printf("                      kernel confinement: Landlock (read+write under the\n");
     printf("                      datadir, read-only for the few extra paths the node\n");
@@ -153,6 +157,7 @@ static const char *const k_extra_getarg_flags[] = {
     "-loglevel",
     "-debug", "-nodebug",
     "-txindex", "-notxindex", /* also GetBoolArg'd in txindex_projection.c */
+    "-packagehost", "-nopackagehost", "-packagequota",
 };
 
 static bool main_flag_is_known_extra(const char *arg)

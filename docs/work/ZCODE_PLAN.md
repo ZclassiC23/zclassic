@@ -44,7 +44,7 @@ JSON (JSON is display-only).
 ## The 15 slices (build in this order; each lands green as its own commit)
 
 1. [x] Signed ZCODE package release envelope
-2. [ ] 10 GiB content-addressed package store (`-packagehost=0|1`, `-packagequota=10737418240`,
+2. [x] 10 GiB content-addressed package store (`-packagehost=0|1`, `-packagequota=10737418240`,
        disabled by default; 2 GiB pins / 4 GiB hot verified / 3 GiB rare / 1 GiB staging+quarantine;
        `<datadir>/zcode/{manifests,releases,attestations,badges,cas/sha3/aa/,staging/,pins/}`;
        verify-before-store, dedup, atomic rename, crash recovery, never evict pins,
