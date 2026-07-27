@@ -67,6 +67,7 @@ citation, `git log --follow -- docs/work/<name>.md` recovers older intent.
 | [`agent-protocol.md`](./agent-protocol.md) | LIVE | worker startup/completion protocol (this file's companion) |
 | [`test-result-cache.md`](./test-result-cache.md) | LIVE | content-addressed per-group test result cache |
 | [`stopwatch-gates.md`](./stopwatch-gates.md) | LIVE | the C3 / net-disruption wall-clock stopwatch gates |
+| [`coldstart-remote-peer-proof.md`](./coldstart-remote-peer-proof.md) | LIVE | the C3 stopwatch run against a REMOTE peer (`make mvp-coldstart-to-tip-remote`) and what it names |
 | [`mvp-ci-map.md`](./mvp-ci-map.md) | LIVE | each MVP criterion → its mechanical CI check |
 | [`mvp-live-gate.md`](./mvp-live-gate.md) | LIVE | `tools/mvp_gate.sh`, the live-node MVP probe companion to the CI map |
 | [`sim-phase2-plan.md`](./sim-phase2-plan.md) | LIVE | the in-memory simulation network reference |

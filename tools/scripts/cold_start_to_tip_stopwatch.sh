@@ -61,6 +61,10 @@
 #                        harness/setup error.
 #   2  SKIP           — prerequisite absent (binary not built / peer
 #                        unreachable). Not a verdict on C3 either way.
+#                        A peer that accepts the TCP connection and closes it
+#                        immediately is NOT a SKIP — it is labelled
+#                        peer_precheck=accept_close, warned about loudly, and
+#                        the run still reports the verdict the node earned.
 #   5  FRONTIER-BUSY-TIMEOUT — `dumpstate reducer_frontier` kept returning a
 #                        partial `{"snapshot_status":"progress_store_busy",
 #                        "retryable":true}` doc that carried no usable provable
@@ -101,6 +105,9 @@ ARTIFACT_ROOT="${ZCL_CS_ARTIFACT_ROOT:-$REPO_ROOT/build/c3-stopwatch}"
 # silently folding busy reads into "no forward progress" (see D6 / the
 # is_busy_response()/rpc_frontier() comment below).
 FRONTIER_BUSY_TIMEOUT_SECS="${ZCL_CS_FRONTIER_BUSY_TIMEOUT_SECS:-120}"
+# Classification of what the peer did with a bare TCP connect (see
+# peer_precheck below). Recorded in proof.json; never changes the verdict.
+PEER_PRECHECK="unknown"
 # Bounded number of supervised self-respawns this harness will FOLLOW before
 # calling it a runaway (see the respawn-seam handling in the main loop). A
 # clean self-exit carrying a self_respawn_* exit-reason breadcrumb is the node
@@ -258,6 +265,48 @@ classify_final_verdict() {
     printf 'silent-stall'
 }
 
+# classify_peer_precheck <probe-rc> — pure mapping from the peer_precheck()
+# probe's exit code to one token. Kept separate from the probe itself so its
+# precedence is unit-testable (see --selftest).
+#   unreachable  — TCP connect failed or the whole probe timed out.
+#   held_open    — the peer kept the socket open (or spoke first): the serving
+#                  shape. An outbound handshake can proceed (we send version).
+#   accept_close — the peer accepted the TCP connection and closed it
+#                  immediately, before a single byte could be exchanged. No
+#                  handshake is possible, so `network_tip` can never be read
+#                  and the PASS predicate is unreachable by construction.
+classify_peer_precheck() {
+    case "${1:-}" in
+        10|11) printf 'held_open' ;;
+        12)    printf 'accept_close' ;;
+        *)     printf 'unreachable' ;;
+    esac
+}
+
+# peer_precheck <host> <port> — connect and observe WITHOUT sending a byte.
+#
+# This exists because a bare "did TCP connect succeed" test is only a valid
+# serving-peer test on LOOPBACK. Against a remote peer, a serving node can
+# accept() and then immediately close — e.g. the per-IP inbound sybil cap in
+# lib/net/src/net.c ("too many inbound connections from same IP: count=%d",
+# max 3), which another node on the SAME host can have already saturated. The
+# connect still succeeds, so the old check reported "reachable" and the run
+# burned its entire budget against a peer that would never handshake.
+#
+# Deliberately ADVISORY: it labels the run, it never converts a verdict. A
+# refusing peer still produces the honest STALLED-NAMED/SEAM/FAIL class the
+# node actually earned — it is never rounded down to SKIP.
+peer_precheck() {
+    ZCL_PP_HOST="$1" ZCL_PP_PORT="$2" timeout 8 bash -c '
+        exec 3<>/dev/tcp/$ZCL_PP_HOST/$ZCL_PP_PORT || exit 9
+        if IFS= read -r -t 5 -n 1 -u 3 _b; then exit 10; fi
+        rc=$?
+        if [ "$rc" -gt 128 ]; then exit 11; fi
+        exit 12
+    ' >/dev/null 2>&1
+    classify_peer_precheck "$?"
+}
+
 # --selftest: hermetic classification self-check for is_busy_response() /
 # the "hstar" field detector rpc_frontier() uses — canned JSON fixtures,
 # no binary/network/mktemp touched. Exits before any real infra setup.
@@ -333,6 +382,17 @@ if [ "$SELFTEST" = "1" ]; then
     st_ps_check "genuinely flat, readable throughout, no blocker -> silent-stall (preserved)" \
         silent-stall "$(classify_final_verdict 0 3100000 3100000 1 false 0)"
 
+    # Peer-precheck classification. The headline case this fixes: a REMOTE
+    # serving peer whose per-IP inbound cap is already saturated accepts the
+    # TCP connection and closes it instantly — TCP-connect "reachable" but
+    # no handshake is possible. Loopback can never show this.
+    st_ps_check "connect refused/timed out -> unreachable" unreachable "$(classify_peer_precheck 9)"
+    st_ps_check "whole probe timed out -> unreachable" unreachable "$(classify_peer_precheck 124)"
+    st_ps_check "peer spoke first -> held_open" held_open "$(classify_peer_precheck 10)"
+    st_ps_check "peer kept the socket open waiting for our version -> held_open" held_open "$(classify_peer_precheck 11)"
+    st_ps_check "peer closed at accept, zero bytes -> accept_close" accept_close "$(classify_peer_precheck 12)"
+    st_ps_check "unknown probe rc -> unreachable (never silently held_open)" unreachable "$(classify_peer_precheck 77)"
+
     if [ "$st_fail" = 0 ]; then
         echo "cold-start-wipe-stopwatch: --selftest PASS"
         exit 0
@@ -360,7 +420,7 @@ fi
 capture_failure_bundle() {
     BUNDLE_CAPTURE_FAILED="false"
     FRONTIER_BUSY_AT_CAPTURE="false"
-    local got_frontier=0 got_drive=0 got_profile=0 got_stages=0 got_blocker=0 got_logs=0
+    local got_frontier=0 got_drive=0 got_profile=0 got_stages=0 got_blocker=0 got_logs=0 got_net=0
     if [ -n "${PID:-}" ] && kill -0 "$PID" 2>/dev/null && [ -x "${NODE_BIN:-}" ] && [ -n "${DATADIR:-}" ]; then
         # Frontier read goes through rpc_frontier (bounded retries + busy
         # handling) so a lock-contention blip during capture doesn't drop the
@@ -383,6 +443,21 @@ capture_failure_bundle() {
                 >"$ARTIFACT_DIR/stage-$stage_name.json" 2>/dev/null &&
                 [ -s "$ARTIFACT_DIR/stage-$stage_name.json" ] || got_stages=0
         done
+        # Network/peer capture. On a loopback run this is uninteresting (a
+        # local peer always handshakes), which is exactly why it was missing.
+        # On a REMOTE run it answers the first question any non-pass verdict
+        # raises — did we ever complete a P2P handshake at all, or did the peer
+        # refuse us pre-version? net-peer_lifecycle.json carries the
+        # attempted/connected/version_sent/verack_received/handshake_complete/
+        # pre_handshake_disconnects counters; net-connman.json carries the
+        # per-addnode dial ledger (tcp_failures vs protocol_failures, backoff);
+        # net-network.json carries the chain_view/census rollup.
+        got_net=1
+        for net_name in connman peer_lifecycle network; do
+            "$NODE_BIN" -rpcport="$RPC" -datadir="$DATADIR" dumpstate "$net_name" \
+                >"$ARTIFACT_DIR/net-$net_name.json" 2>/dev/null &&
+                [ -s "$ARTIFACT_DIR/net-$net_name.json" ] || got_net=0
+        done
         # Blocker read is retried too — it feeds the STALLED-NAMED verdict, so a
         # busy-window miss that empties it must not silently erase a real named
         # blocker.
@@ -396,8 +471,18 @@ capture_failure_bundle() {
     if [ "$got_logs" = 0 ] && [ -n "${DATADIR:-}" ] && [ -f "$DATADIR/node.log" ]; then
         tail -200 "$DATADIR/node.log" >"$ARTIFACT_DIR/ops.log.tail.txt" 2>/dev/null && got_logs=1
     fi
+    # The banlist is the one piece that is a FILE, not an RPC: copy it when the
+    # node wrote one so a "did we ban our only peer" question is answerable
+    # from the artifact alone. Absent is the normal case and is NOT a capture
+    # failure — banlist_present in proof.json records which it was.
+    BANLIST_PRESENT="false"
+    if [ -n "${DATADIR:-}" ] && [ -f "$DATADIR/banlist.dat" ] &&
+       cp -p -- "$DATADIR/banlist.dat" "$ARTIFACT_DIR/banlist.dat" 2>/dev/null; then
+        BANLIST_PRESENT="true"
+    fi
     [ "$got_frontier" = 1 ] && [ "$got_drive" = 1 ] && [ "$got_profile" = 1 ] &&
-        [ "$got_stages" = 1 ] && [ "$got_blocker" = 1 ] && [ "$got_logs" = 1 ] ||
+        [ "$got_stages" = 1 ] && [ "$got_blocker" = 1 ] && [ "$got_logs" = 1 ] &&
+        [ "$got_net" = 1 ] ||
         BUNDLE_CAPTURE_FAILED="true"
 }
 
@@ -409,6 +494,7 @@ write_artifact() {
     mkdir -p "$ARTIFACT_DIR" 2>/dev/null || return 0
     BUNDLE_CAPTURE_FAILED="false"
     FRONTIER_BUSY_AT_CAPTURE="false"
+    BANLIST_PRESENT="false"
     [ "$verdict" != "pass" ] && capture_failure_bundle
     NODE_LOG_CAPTURED="false"
     if [ -n "${DATADIR:-}" ] && [ -f "$DATADIR/node.log" ] &&
@@ -426,6 +512,7 @@ write_artifact() {
         printf '  "boots": %s,\n' "$(json_number_or_null "$boots")"
         printf '  "last_respawn_reason": %s,\n' "$(json_string "$last_respawn_reason")"
         printf '  "peer": %s,\n' "$(json_string "$PEER")"
+        printf '  "peer_precheck": %s,\n' "$(json_string "$PEER_PRECHECK")"
         printf '  "file_peer": %s,\n' "$(json_string "$FILE_PEER")"
         printf '  "header_source": %s,\n' "$(json_string "$HEADER_SOURCE")"
         printf '  "staged_bundle": %s,\n' "$(json_string "$BUNDLE_PATH")"
@@ -444,6 +531,7 @@ write_artifact() {
         printf '  "scratch_datadir_removed": true,\n'
         printf '  "node_log_captured": %s,\n' "$NODE_LOG_CAPTURED"
         printf '  "bundle_capture_failed": %s,\n' "$BUNDLE_CAPTURE_FAILED"
+        printf '  "banlist_present": %s,\n' "${BANLIST_PRESENT:-false}"
         printf '  "frontier_busy_at_capture": %s\n' "$FRONTIER_BUSY_AT_CAPTURE"
         printf '}\n'
     } >"$ARTIFACT_DIR/proof.json"
@@ -463,9 +551,25 @@ peer_host="${PEER%:*}"
 peer_port="${PEER##*:}"
 [ -n "$peer_host" ] && [ -n "$peer_port" ] && [ "$peer_host" != "$peer_port" ] \
     || skip "invalid peer address: $PEER"
-if ! timeout 3 bash -c "exec 3<>/dev/tcp/$peer_host/$peer_port" 2>/dev/null; then
+PEER_PRECHECK="$(peer_precheck "$peer_host" "$peer_port")"
+if [ "$PEER_PRECHECK" = "unreachable" ]; then
     skip "serving peer not reachable: $PEER"
 fi
+if [ "$PEER_PRECHECK" = "accept_close" ]; then
+    # ADVISORY, never a verdict: the peer accept()ed and closed before a byte
+    # moved, so no P2P handshake can complete, `network_tip` stays unreadable,
+    # and the PASS predicate is unreachable for the whole budget. Say so up
+    # front instead of leaving an operator to infer it from 600s of -1 rows.
+    # Most likely cause on a shared host: the peer's per-IP inbound sybil cap
+    # (lib/net/src/net.c, max 3 inbound per IP) is already consumed by another
+    # node on THIS machine. Check with:
+    #   ss -tn state established "dst $peer_host:$peer_port"
+    echo "cold-start-wipe-stopwatch: WARNING peer $PEER accepted the TCP connection and CLOSED IT IMMEDIATELY (zero bytes)."
+    echo "cold-start-wipe-stopwatch: WARNING no P2P handshake can complete, so network_tip will stay unreadable and PASS is unreachable this run."
+    echo "cold-start-wipe-stopwatch: WARNING likely the peer's per-IP inbound cap (max 3/IP, lib/net/src/net.c) — count local sockets with: ss -tn state established \"dst $PEER\""
+    echo "cold-start-wipe-stopwatch: WARNING continuing anyway — the run still reports the verdict the node genuinely earned, never a SKIP."
+fi
+echo "cold-start-wipe-stopwatch: peer_precheck=$PEER_PRECHECK"
 if [ -n "$FILE_PEER" ]; then
     file_peer_host="${FILE_PEER%:*}"
     file_peer_port="${FILE_PEER##*:}"

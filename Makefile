@@ -3581,6 +3581,49 @@ mvp-coldstart-to-tip-stopwatch: zclassic23
 	 fi; \
 	 exit $$rc'
 
+# ── mvp-coldstart-to-tip-remote (the SAME C3 stopwatch, REMOTE peer) ────────
+#
+# Identical harness to mvp-coldstart-to-tip-stopwatch above, with the peer
+# PINNED to a remote serving zclassic23 node instead of the loopback default
+# (127.0.0.1:8033). This is not a convenience alias. Every other sync proof in
+# this repo dials a peer on the SAME machine, and loopback is structurally
+# privileged on both sides of the wire:
+#   - client side: lib/net/src/net.c is_trusted_peer() exempts 127.0.0.0/8 and
+#     -whitelist peers from peer_misbehaving(), so a loopback run can never
+#     exercise the score-to-ban path a real remote client rides;
+#   - server side: the per-IP inbound sybil cap ("too many inbound connections
+#     from same IP", max 3) is only ever contended when several clients share
+#     one source IP — which is exactly the remote case, and never the
+#     one-node-per-loopback case.
+# Pinning the invocation keeps the remote run repeatable instead of folklore.
+#
+# ZCL_REMOTE_PEER=HOST:PORT retargets it; ZCL_BIN / ZCL_BUDGET_SECS /
+# ZCL_SAMPLE_SECS pass through. Same isolation as the sibling target (fresh
+# /tmp datadir, isolated $$HOME, ports 39170-39173, -listen=0, -nolegacyimport,
+# no bundle/snapshot/import flags) and the same read-only posture: it dials the
+# remote as a P2P CLIENT only and never writes to the peer's datadir or its
+# systemd. Same SKIP discipline: exit 2 -> 0 when the binary is absent or the
+# remote peer is unreachable. Exits 3 (SEAM), 4 (STALLED-NAMED), 5
+# (FRONTIER-BUSY-TIMEOUT) and 6 (READBACK-FAILED) are honest verdicts and
+# propagate as a failing recipe — a remote peer that refuses the handshake is
+# NOT laundered into a SKIP, it is labelled peer_precheck=accept_close in the
+# artifact and the run reports what the node actually earned.
+ZCL_REMOTE_PEER ?= 205.209.104.118:8033
+.PHONY: mvp-coldstart-to-tip-remote
+mvp-coldstart-to-tip-remote: zclassic23
+	@bash -c 'set -uo pipefail; \
+	 echo "══ MVP C3 STOPWATCH (REMOTE peer $(ZCL_REMOTE_PEER)): wiped datadir -> fold -> peer tip, real wall-clock ══"; \
+	 bash tools/scripts/cold_start_to_tip_stopwatch.sh \
+	     --peer=$(ZCL_REMOTE_PEER) \
+	     $(if $(ZCL_BIN),--bin=$(ZCL_BIN),) \
+	     $(if $(ZCL_BUDGET_SECS),--budget=$(ZCL_BUDGET_SECS),) \
+	     $(if $(ZCL_SAMPLE_SECS),--sample=$(ZCL_SAMPLE_SECS),); rc=$$?; \
+	 if [ "$$rc" -eq 2 ]; then \
+	     echo "mvp-coldstart-to-tip-remote: SKIP (binary absent / remote peer $(ZCL_REMOTE_PEER) unreachable)"; \
+	     exit 0; \
+	 fi; \
+	 exit $$rc'
+
 # ── mvp-netdisrupt-recovery-stopwatch (PROOF B: network-disruption recovery) ─
 #
 # The sibling wall-clock gate to mvp-coldstart-to-tip-stopwatch above, but
