@@ -115,6 +115,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(command_handler_snapshot) \
     X(metric_alerts) \
     X(db_validators) X(peer_scoring) X(peer_bandwidth) \
+    X(single_peer_ban_recovery) \
     X(peer_identity_hostkey) \
     X(secrets_hygiene) X(block_index_integrity) \
     X(block_map_grow_phashblock) \
