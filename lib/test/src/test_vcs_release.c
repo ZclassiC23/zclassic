@@ -96,7 +96,6 @@ static bool vr_fixture(struct vcs_package_release *r, uint8_t key_seed)
         r->package_root[i] = (uint8_t)i;
         r->parent_root[i]  = (uint8_t)(0x20 + i);
         r->recipe_root[i]  = (uint8_t)(0x40 + i);
-        r->manifest_root[i] = (uint8_t)(0x60 + i);
     }
     r->has_parent = true;
     memcpy(r->publisher_pubkey, pk.vch, COMPRESSED_PUBLIC_KEY_SIZE);
@@ -124,7 +123,7 @@ static size_t vr_znam_flag_offset(const struct vcs_package_release *r)
     return vr_parent_flag_offset(r) + 1u + 32u +
            VCS_PACKAGE_RELEASE_PUBKEY_BYTES + 8u +
            2u + strlen(r->reward_address) + 2u + strlen(r->license) +
-           32u + 32u;
+           32u;
 }
 
 /* ── 1/2/3: KAT, round-trip, signature acceptance ─────────────────── */
@@ -142,7 +141,7 @@ static int t_release_kat_roundtrip_verify(void)
     printf("  vcs_release: KAT release id = %s\n", id_hex);
     /* Frozen golden: fields of vr_fixture() under test key 0x11.... */
     static const char *want_id_hex =
-        "53ecb655795169a6539316aa3861041d769fbbd946a96057b1dd4595eb21d261";
+        "9f91360a486a1291533cad369861c371d4b5bc0682748ee768755c730f574eba";
     VR_CHECK("release: release id KAT", strcmp(id_hex, want_id_hex) == 0);
 
     VR_CHECK("release: valid envelope verifies",
@@ -173,7 +172,6 @@ static int t_release_kat_roundtrip_verify(void)
              strcmp(parsed.reward_address, r.reward_address) == 0 &&
              strcmp(parsed.license, r.license) == 0 &&
              memcmp(parsed.recipe_root, r.recipe_root, 32) == 0 &&
-             memcmp(parsed.manifest_root, r.manifest_root, 32) == 0 &&
              parsed.has_znam == r.has_znam &&
              strcmp(parsed.znam, r.znam) == 0 &&
              strcmp(parsed.chain_id, r.chain_id) == 0 &&
@@ -292,7 +290,6 @@ static int t_release_signature_rejections(void)
         { "reward", VCS_PACKAGE_RELEASE_ERR_SIG_VERIFY },
         { "license", VCS_PACKAGE_RELEASE_ERR_SIG_VERIFY },
         { "recipe root", VCS_PACKAGE_RELEASE_ERR_SIG_VERIFY },
-        { "manifest root", VCS_PACKAGE_RELEASE_ERR_SIG_VERIFY },
         { "znam", VCS_PACKAGE_RELEASE_ERR_SIG_VERIFY },
         { "znam presence", VCS_PACKAGE_RELEASE_ERR_SIG_VERIFY },
         { "chain id", VCS_PACKAGE_RELEASE_ERR_SIG_VERIFY },
@@ -321,8 +318,6 @@ static int t_release_signature_rejections(void)
             snprintf(r.license, sizeof(r.license), "MIT");
         else if (strcmp(cases[i].name, "recipe root") == 0)
             r.recipe_root[0] ^= 0x01u;
-        else if (strcmp(cases[i].name, "manifest root") == 0)
-            r.manifest_root[0] ^= 0x01u;
         else if (strcmp(cases[i].name, "znam") == 0)
             snprintf(r.znam, sizeof(r.znam), "other-name");
         else if (strcmp(cases[i].name, "znam presence") == 0)
@@ -472,8 +467,36 @@ static int t_release_field_grammars(void)
                      VCS_PACKAGE_RELEASE_ERR_SCHEMA_VERSION);
     }
 
+    /* cryptographic-field validity: zero roots and zero sequence are the
+     * "no object" sentinel, never real commitments */
+    {
+        struct vcs_package_release m = r;
+        memset(m.package_root, 0, 32);
+        VR_CHECK("grammar: all-zero package root rejected",
+                 vcs_package_release_validate(&m) ==
+                     VCS_PACKAGE_RELEASE_ERR_PACKAGE_ROOT);
+        m = r;
+        memset(m.recipe_root, 0, 32);
+        VR_CHECK("grammar: all-zero recipe root rejected",
+                 vcs_package_release_validate(&m) ==
+                     VCS_PACKAGE_RELEASE_ERR_RECIPE_ROOT);
+        m = r;
+        memset(m.parent_root, 0, 32);
+        VR_CHECK("grammar: flagged all-zero parent root rejected",
+                 vcs_package_release_validate(&m) ==
+                     VCS_PACKAGE_RELEASE_ERR_PARENT_ROOT);
+        m.has_parent = false;
+        VR_CHECK("grammar: absent parent may be all-zero",
+                 vcs_package_release_validate(&m) == VCS_PACKAGE_RELEASE_OK);
+        m = r;
+        m.publisher_sequence = 0;
+        VR_CHECK("grammar: zero publisher sequence rejected",
+                 vcs_package_release_validate(&m) ==
+                     VCS_PACKAGE_RELEASE_ERR_SEQUENCE);
+    }
+
     /* error strings are defined for every code */
-    for (int e = 0; e <= VCS_PACKAGE_RELEASE_ERR_WIRE_TRAILING; e++)
+    for (int e = 0; e <= VCS_PACKAGE_RELEASE_ERR_PARENT_ROOT; e++)
         VR_CHECK("grammar: error string defined",
                  vcs_package_release_error_string(
                      (enum vcs_package_release_error)e) != NULL);
@@ -570,6 +593,29 @@ static int t_release_wire_strictness(void)
     VR_CHECK("wire: non-compressed pubkey rejected",
              vcs_package_release_parse(bad, wire_len, &rejected) ==
                  VCS_PACKAGE_RELEASE_ERR_PUBKEY);
+
+    /* Zeroed cryptographic fields on the wire. */
+    memcpy(bad, wire, wire_len);
+    memset(bad + vr_parent_flag_offset(&r) - 32u, 0, 32);
+    VR_CHECK("wire: all-zero package root rejected",
+             vcs_package_release_parse(bad, wire_len, &rejected) ==
+                 VCS_PACKAGE_RELEASE_ERR_PACKAGE_ROOT);
+    memcpy(bad, wire, wire_len);
+    memset(bad + vr_parent_flag_offset(&r) + 1u, 0, 32);
+    VR_CHECK("wire: flagged all-zero parent root rejected",
+             vcs_package_release_parse(bad, wire_len, &rejected) ==
+                 VCS_PACKAGE_RELEASE_ERR_PARENT_ROOT);
+    memcpy(bad, wire, wire_len);
+    memset(bad + vr_parent_flag_offset(&r) + 1u + 32u +
+           VCS_PACKAGE_RELEASE_PUBKEY_BYTES, 0, 8);
+    VR_CHECK("wire: zero publisher sequence rejected",
+             vcs_package_release_parse(bad, wire_len, &rejected) ==
+                 VCS_PACKAGE_RELEASE_ERR_SEQUENCE);
+    memcpy(bad, wire, wire_len);
+    memset(bad + vr_znam_flag_offset(&r) - 32u, 0, 32);
+    VR_CHECK("wire: all-zero recipe root rejected",
+             vcs_package_release_parse(bad, wire_len, &rejected) ==
+                 VCS_PACKAGE_RELEASE_ERR_RECIPE_ROOT);
 
     /* Rejection zeroes the output struct. */
     {

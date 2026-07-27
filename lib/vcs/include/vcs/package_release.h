@@ -2,8 +2,9 @@
  *
  * package_release — the signed ZCODE package release envelope. One release
  * binds a publisher-namespaced package name, a semantic version, the
- * content.v2 package root (lib/vcs/package_manifest.*), a declarative C23
- * build recipe root, a source manifest root, publisher lineage (optional
+ * content.v2 package root (lib/vcs/package_manifest.* — one root commits
+ * to the manifest and, through it, every chunk), a declarative C23 build
+ * recipe root, publisher lineage (optional
  * parent release root + monotonic per-publisher sequence), a ZClassic chain
  * id, an SPDX license, an optional contributor reward address, an optional
  * ZNAM pointer name, and the publisher's secp256k1 key — all under one
@@ -22,12 +23,11 @@
  *   [1  parent_present (0|1)]
  *   [32 parent_root]                       only when parent_present = 1
  *   [33 publisher_pubkey]                  compressed secp256k1
- *   [8  publisher_sequence]                monotonic per publisher
+ *   [8  publisher_sequence]                monotonic per publisher, >= 1
  *   [2  reward_len][reward bytes]          contributor reward address,
  *                                          empty (len 0) = none
  *   [2  license_len][license bytes]        v1 SPDX allowlist, exact match
  *   [32 recipe_root]                       declarative C23 build recipe root
- *   [32 manifest_root]                     content.v2 source manifest root
  *   [1  znam_present (0|1)]
  *   [2  znam_len][znam bytes]              only when znam_present = 1;
  *                                          a pointer, never identity
@@ -49,6 +49,14 @@
  *              zeros, optional "-prerelease" and "+build" dot-separated
  *              identifiers of [0-9A-Za-z-] (numeric prerelease identifiers
  *              without leading zeros). No "v" prefix. Total <= 64.
+ *   roots    — package_root and recipe_root are SHA3-256 commitments and
+ *              must not be all-zero; parent_root, when present, must not
+ *              be all-zero either (an all-zero root is the "no object"
+ *              sentinel, never a real commitment).
+ *   sequence — publisher_sequence is >= 1 and monotonic per publisher
+ *              (the acceptance layer, lib/vcs/package_accept.*, enforces
+ *              the monotonicity and equivocation rules; the codec enforces
+ *              only >= 1).
  *   license  — exactly one of: 0BSD, MIT, Apache-2.0, BSD-2-Clause,
  *              BSD-3-Clause, ISC, Zlib. No compound ("MIT OR Apache-2.0"),
  *              no unknown, no empty.
@@ -93,7 +101,7 @@
      VCS_PACKAGE_RELEASE_PUBKEY_BYTES + 8u + \
      2u + VCS_PACKAGE_RELEASE_REWARD_MAX + \
      2u + VCS_PACKAGE_RELEASE_LICENSE_MAX + \
-     32u + 32u + \
+     32u + \
      1u + 2u + VCS_PACKAGE_RELEASE_ZNAM_MAX + \
      2u + VCS_PACKAGE_RELEASE_CHAIN_ID_MAX + \
      VCS_PACKAGE_RELEASE_SIGNATURE_BYTES)
@@ -120,6 +128,10 @@ enum vcs_package_release_error {
     VCS_PACKAGE_RELEASE_ERR_WIRE_OVERSIZE, /* exceeds MAX_WIRE_BYTES */
     VCS_PACKAGE_RELEASE_ERR_WIRE_TRUNCATED,/* a field runs past the end */
     VCS_PACKAGE_RELEASE_ERR_WIRE_TRAILING, /* bytes after the signature */
+    VCS_PACKAGE_RELEASE_ERR_PACKAGE_ROOT,  /* all-zero package root */
+    VCS_PACKAGE_RELEASE_ERR_RECIPE_ROOT,   /* all-zero recipe root */
+    VCS_PACKAGE_RELEASE_ERR_SEQUENCE,      /* publisher sequence 0 */
+    VCS_PACKAGE_RELEASE_ERR_PARENT_ROOT,   /* parent flagged but all-zero */
 };
 
 /* Value type: fixed-size buffers, no heap, no init/free needed. Zeroing the
@@ -136,7 +148,6 @@ struct vcs_package_release {
     char reward_address[VCS_PACKAGE_RELEASE_REWARD_MAX + 1u]; /* "" = none */
     char license[VCS_PACKAGE_RELEASE_LICENSE_MAX + 1u];    /* NUL-terminated */
     uint8_t recipe_root[32];
-    uint8_t manifest_root[32];
     bool has_znam;
     char znam[VCS_PACKAGE_RELEASE_ZNAM_MAX + 1u];          /* when has_znam */
     char chain_id[VCS_PACKAGE_RELEASE_CHAIN_ID_MAX + 1u];  /* NUL-terminated */

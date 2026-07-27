@@ -239,6 +239,15 @@ static size_t release_field_len(const char *field, size_t capacity)
     return strnlen(field, capacity);
 }
 
+/* An all-zero root is the "no object" sentinel, never a real commitment. */
+static bool release_root_zero(const uint8_t root[32])
+{
+    uint8_t acc = 0;
+    for (size_t i = 0; i < 32; i++)
+        acc |= root[i];
+    return acc == 0;
+}
+
 /* ── error strings ────────────────────────────────────────────────── */
 
 const char *vcs_package_release_error_string(
@@ -264,6 +273,10 @@ const char *vcs_package_release_error_string(
     case VCS_PACKAGE_RELEASE_ERR_WIRE_OVERSIZE: return "wire-oversize";
     case VCS_PACKAGE_RELEASE_ERR_WIRE_TRUNCATED: return "wire-truncated";
     case VCS_PACKAGE_RELEASE_ERR_WIRE_TRAILING: return "wire-trailing-bytes";
+    case VCS_PACKAGE_RELEASE_ERR_PACKAGE_ROOT: return "package-root-zero";
+    case VCS_PACKAGE_RELEASE_ERR_RECIPE_ROOT: return "recipe-root-zero";
+    case VCS_PACKAGE_RELEASE_ERR_SEQUENCE: return "publisher-sequence-zero";
+    case VCS_PACKAGE_RELEASE_ERR_PARENT_ROOT: return "parent-root-zero";
     }
     return "unknown-error";
 }
@@ -294,9 +307,20 @@ enum vcs_package_release_error vcs_package_release_validate(
         LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_SEMVER, "vcs.release",
                    "bad semantic version");
 
+    if (release_root_zero(release->package_root))
+        LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_PACKAGE_ROOT, "vcs.release",
+                   "all-zero package root");
+    if (release->has_parent && release_root_zero(release->parent_root))
+        LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_PARENT_ROOT, "vcs.release",
+                   "parent flagged but all-zero parent root");
+
     if (!release_pubkey_valid(release->publisher_pubkey))
         LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_PUBKEY, "vcs.release",
                    "publisher pubkey is not a compressed curve point");
+
+    if (release->publisher_sequence == 0)
+        LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_SEQUENCE, "vcs.release",
+                   "publisher sequence must be >= 1");
 
     size_t reward_len = release_field_len(release->reward_address,
                                           sizeof(release->reward_address));
@@ -309,6 +333,10 @@ enum vcs_package_release_error vcs_package_release_validate(
     if (!release_license_valid_n(release->license, license_len))
         LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_LICENSE, "vcs.release",
                    "license not on the v1 SPDX allowlist");
+
+    if (release_root_zero(release->recipe_root))
+        LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_RECIPE_ROOT, "vcs.release",
+                   "all-zero recipe root");
 
     if (release->has_znam) {
         size_t znam_len = release_field_len(release->znam,
@@ -341,7 +369,7 @@ static size_t release_body_bytes(const struct vcs_package_release *release)
            VCS_PACKAGE_RELEASE_PUBKEY_BYTES + 8u +
            2u + strlen(release->reward_address) +
            2u + strlen(release->license) +
-           32u + 32u +
+           32u +
            1u + (release->has_znam ? 2u + strlen(release->znam) : 0u) +
            2u + strlen(release->chain_id);
 }
@@ -397,8 +425,6 @@ static size_t release_body_encode(const struct vcs_package_release *release,
     off += license_len;
 
     memcpy(out + off, release->recipe_root, 32);
-    off += 32;
-    memcpy(out + off, release->manifest_root, 32);
     off += 32;
 
     out[off++] = release->has_znam ? 1u : 0u;
@@ -560,6 +586,9 @@ enum vcs_package_release_error vcs_package_release_parse(
                    "release wire truncated at package root/parent flag");
     memcpy(out->package_root, wire + off, 32);
     off += 32;
+    if (release_root_zero(out->package_root))
+        LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_PACKAGE_ROOT, "vcs.release",
+                   "release wire all-zero package root");
     uint8_t parent_flag = wire[off++];
     if (parent_flag > 1u)
         LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_PARENT_FLAG, "vcs.release",
@@ -572,6 +601,9 @@ enum vcs_package_release_error vcs_package_release_parse(
                        "release wire truncated at parent root");
         memcpy(out->parent_root, wire + off, 32);
         off += 32;
+        if (release_root_zero(out->parent_root))
+            LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_PARENT_ROOT, "vcs.release",
+                       "release wire parent flagged but all-zero root");
     }
 
     if (!release_wire_has(wire_len, off,
@@ -586,6 +618,9 @@ enum vcs_package_release_error vcs_package_release_parse(
                    "release wire pubkey is not a compressed curve point");
     out->publisher_sequence = vcs_rd_u64le(wire + off);
     off += 8;
+    if (out->publisher_sequence == 0)
+        LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_SEQUENCE, "vcs.release",
+                   "release wire publisher sequence 0");
 
     error = release_read_string(
         wire, wire_len, &off, VCS_PACKAGE_RELEASE_REWARD_MAX,
@@ -607,13 +642,14 @@ enum vcs_package_release_error vcs_package_release_parse(
         LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_LICENSE, "vcs.release",
                    "release wire license not on the v1 SPDX allowlist");
 
-    if (!release_wire_has(wire_len, off, 32u + 32u + 1u))
+    if (!release_wire_has(wire_len, off, 32u + 1u))
         LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_WIRE_TRUNCATED, "vcs.release",
-                   "release wire truncated at roots/znam flag");
+                   "release wire truncated at recipe root/znam flag");
     memcpy(out->recipe_root, wire + off, 32);
     off += 32;
-    memcpy(out->manifest_root, wire + off, 32);
-    off += 32;
+    if (release_root_zero(out->recipe_root))
+        LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_RECIPE_ROOT, "vcs.release",
+                   "release wire all-zero recipe root");
     uint8_t znam_flag = wire[off++];
     if (znam_flag > 1u)
         LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_ZNAM_FLAG, "vcs.release",

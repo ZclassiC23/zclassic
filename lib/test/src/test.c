@@ -1462,6 +1462,7 @@ int main(int argc, char **argv)
     { extern int test_seal_rewind(void); failures += test_seal_rewind(); }
     { extern int test_vcs_core(void); failures += test_vcs_core(); }
     { extern int test_vcs_release(void); failures += test_vcs_release(); }
+    { extern int test_vcs_accept(void); failures += test_vcs_accept(); }
     { extern int test_vcs_devloop(void); failures += test_vcs_devloop(); }
     { extern int test_testcache(void); failures += test_testcache(); }
     failures += test_nullifier_kv();
