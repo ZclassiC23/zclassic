@@ -675,6 +675,7 @@ add/remove a gate.
 - `check-vcs-no-git`
 - `check-vcs-no-sha1`
 - `check-command-contract`
+- `check-command-availability-truthful`
 - `check-privileged-transition-receipt`
 - `check-no-gnu-va-args`
 - `check-clang-portability`

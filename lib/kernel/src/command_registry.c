@@ -910,6 +910,16 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
              * outside 1..1000000. */
             type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
                       json_get_int(value) <= 1000000;
+        } else if (strcmp(key, "price_per_mb_zat") == 0) {
+            /* app.market.offer asking price per MB in ZATOSHIS (int64 in
+             * struct file_offer, lib/net/include/net/file_market.h). Without
+             * this rule the default branch demands a string and rejects the
+             * leaf's OWN declared example (`price_per_mb_zat:1000`), so the
+             * operator got INVALID_INPUT instead of the leaf's PLANNED
+             * refusal and never learned why it is closed. Capped at the
+             * 21M-ZCL supply so a nonsense price is refused up front. */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 0 &&
+                      json_get_int(value) <= 2100000000000000LL;
         } else if (strcmp(key, "timeout_ms") == 0) {
             type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
                       json_get_int(value) <= 300000;

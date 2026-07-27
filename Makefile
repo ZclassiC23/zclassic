@@ -5563,6 +5563,17 @@ check-command-contract:
 	@echo "══ LINT: command-contract semantics ══"
 	@./tools/lint/check_command_contract.sh
 
+# Gate — command-availability truthfulness (HARD). The `availability` a leaf
+# declares in config/commands/*.def must match what the catalog actually
+# binds: a READY leaf must bind a non-NULL handler (READY with no handler
+# advertises a command the engine cannot dispatch), and a PLANNED/COMPAT leaf
+# must state a non-empty availability_reason (a typed refusal with no stated
+# cause is a silent stall). Parses the macro grammar and aborts LOUD on arity
+# drift rather than reading the wrong argument slot.
+check-command-availability-truthful:
+	@echo "══ LINT: command-availability truthfulness ══"
+	@./tools/lint/check_command_availability_truthful.sh
+
 # Gate — no NEW repair rung without a write-time-invariant test (RATCHET for
 # TENACITY I3). A new repair/reconcile/backfill/heal file in app/ must cite a
 # write-time-invariant test (`// repair-rung-ok:<test>`) or be grandfathered in
@@ -6045,6 +6056,7 @@ LINT_GATES := \
     check-vcs-no-sha1 \
     check-vendor-provenance \
     check-command-contract \
+    check-command-availability-truthful \
     check-privileged-transition-receipt \
     check-no-gnu-va-args \
     check-clang-portability \
