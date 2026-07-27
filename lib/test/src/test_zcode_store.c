@@ -1212,6 +1212,27 @@ static int t_store_dump_state(void)
              json_get_int(json_get(&v, "cas_chunks")) == 1);
     json_free(&v);
 
+    /* Slice 3 publication state: a persisted release is counted and the
+     * last acceptance outcome is reported. */
+    chain_params_select(CHAIN_MAIN);
+    struct vcs_package_release r;
+    ZS_CHECK("dump: release fixture signs",
+             zs_release(&r, 0x22, 1u, "rhett/dump-pkg"));
+    enum vcs_package_accept_result ar = VCS_PACKAGE_ACCEPT_ERR_NULL;
+    ZS_CHECK("dump: release admitted",
+             vcs_package_store_put_release(s, &r, &ar) ==
+                 VCS_PACKAGE_STORE_OK && ar == VCS_PACKAGE_ACCEPT_OK);
+    json_init(&v);
+    ok = vcs_package_store_dump_state_json(&v, NULL);
+    ZS_CHECK("dump: publication state reported",
+             ok &&
+             json_get_int(json_get(&v, "releases_total")) == 1 &&
+             json_get_str(json_get(&v, "last_release_accept")) &&
+             strcmp(json_get_str(json_get(&v, "last_release_accept")),
+                    "accepted") == 0 &&
+             json_get(&v, "last_release_id") != NULL);
+    json_free(&v);
+
     json_init(&v);
     ok = vcs_package_store_dump_state_json(&v, p.root_hex);
     ZS_CHECK("dump: package-root key drills down",

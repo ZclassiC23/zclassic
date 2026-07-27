@@ -113,14 +113,14 @@ static int test_six_roots(void)
 {
     int failures = 0;
     const struct zcl_command_registry *reg = zcl_command_catalog();
-    TEST("root exposes exactly eight choices") {
+    TEST("root exposes exactly nine choices") {
         size_t roots = 0;
         for (size_t i = 0; i < reg->count; i++) {
             const char *p = reg->commands[i].parent;
             if (!p || !p[0])
                 roots++;
         }
-        ASSERT_EQ(roots, (size_t)8);
+        ASSERT_EQ(roots, (size_t)9);
         ASSERT(find_spec(reg, "status") != NULL);
         ASSERT(find_spec(reg, "core") != NULL);
         ASSERT(find_spec(reg, "app") != NULL);
@@ -129,6 +129,7 @@ static int test_six_roots(void)
         ASSERT(find_spec(reg, "discover") != NULL);
         ASSERT(find_spec(reg, "code") != NULL);
         ASSERT(find_spec(reg, "vault") != NULL);
+        ASSERT(find_spec(reg, "zcode") != NULL);
         PASS();
     } _test_next:;
     return failures;

@@ -401,6 +401,24 @@ static int store_pkg_root_cmp(const void *a, const void *b)
     return memcmp(pa->root, pb->root, 32);
 }
 
+uint32_t store_releases_count(const struct vcs_package_store *store)
+{
+    char dir[STORE_PATH_MAX];
+    int n = snprintf(dir, sizeof(dir), "%s/releases", store->root);
+    if (n < 0 || (size_t)n >= sizeof(dir))
+        return 0;
+    DIR *d = opendir(dir);
+    if (!d)
+        return 0;
+    uint32_t count = 0;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL)
+        if (store_name_is_hex64(de->d_name))
+            count++;
+    closedir(d);
+    return count;
+}
+
 struct store_package *store_record_add(struct vcs_package_store *store,
                                        const uint8_t *wire,
                                        size_t wire_len,

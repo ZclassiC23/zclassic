@@ -285,6 +285,24 @@ void zcl_native_handle_vault_session_revoke(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* zcode — ZCODE source-package hosting (slice 3: local publication and
+ * search). publish plan/commit validate a candidate release against every
+ * publication rule (each rejection names the rule) and commit persists
+ * through the lib/vcs store; search/show read the rebuildable package
+ * index projection. Bound by config/commands/zcode.def. */
+void zcl_native_handle_zcode_package_publish_plan(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_package_publish_commit(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_package_search(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_package_show(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* ops.state — generic subsystem state dump. Dispatches the `dumpstate` RPC
  * method directly. `subsystem` (required) selects the
  * owning module's *_dump_state_json; `key` is subsystem-specific (e.g. a

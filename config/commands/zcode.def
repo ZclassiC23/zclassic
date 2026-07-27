@@ -1,0 +1,121 @@
+/* ZCODE — decentralized C23 source-package hosting (docs/work/ZCODE_PLAN.md).
+ * This branch is the typed surface for the LOCAL publication half (slice 3):
+ * plan/commit publication into the content-addressed store plus local
+ * search/show over the rebuildable index projection. No P2P gossip, no
+ * reward credit, no install/build/execution of published content — later
+ * slices own those.
+ *
+ * THE INVARIANT OF THIS BRANCH: the CAS bytes under <datadir>/zcode are the
+ * only package truth. Handlers call lib/vcs (package_publish / package_index
+ * / package_store) directly; the index is rebuilt from the persisted wires
+ * on every call and acceptance state is replayed from persisted releases, so
+ * a one-shot CLI agrees with the node. Every rejection names the exact
+ * failed rule.
+ *
+ * Consumer defines ZCL_COMMAND_*; see config/src/command_catalog.c. */
+
+ZCL_COMMAND_BRANCH("zcode", "",
+                   "ZCODE source-package hosting: publish, search, host",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_BRANCH("zcode.package", "zcode",
+                   "Published packages: releases, manifests, chunks",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_BRANCH("zcode.package.publish", "zcode.package",
+                   "Publish a signed release into the local store (plan, "
+                   "then commit)",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.package.publish.plan", "zcode.package.publish", "",
+    "Validate a candidate release without persisting anything",
+    "A bounded validation report for the candidate named by release_hex "
+    "(signed envelope wire) + manifest_hex (content.v2 wire), with chunks "
+    "verified against the source `dir` when given: every failed rule is "
+    "named in `failures[]` (envelope/signature, SPDX license allowlist and "
+    "LICENSE file, package structure, 64 MiB cap, acceptance replay against "
+    "persisted releases, chunk hashes), or `valid:true` with a plan_token "
+    "(the release id — correlation only; commit re-validates). Nothing is "
+    "persisted; `chunks_checked` says whether source bytes were read.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,package,publish,plan,validate,release,manifest,license",
+    "zcl.zcode_publish_plan.input.v1", "zcl.zcode_publish_plan.v1",
+    "release_hex,manifest_hex,dir,datadir", "",
+    "zclassic23 zcode package publish plan --input='{\"release_hex\":\"..\",\"manifest_hex\":\"..\",\"dir\":\"/tmp/pkg\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_package_publish_plan)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.package.publish.commit", "zcode.package.publish", "",
+    "Re-validate and persist a candidate release into the local store",
+    "Runs the full publish-plan validation (naming the exact failed rule on "
+    "rejection), then persists: the manifest and every chunk from `dir` "
+    "into the content-addressed store (verify-before-store, dedup, atomic "
+    "rename — a crash mid-commit leaves resumable staging, never partial "
+    "visibility) and the release envelope into releases/. Idempotent: a "
+    "redelivered release id reports result=duplicate. `chunks_stored` "
+    "counts chunk admissions including dedup no-ops. v1 operator boundary: "
+    "do not run concurrently with a hosting node's own puts on the same "
+    "datadir (the open-time recovery sweep is not cross-process "
+    "coordinated).", 0,
+    "zcode,package,publish,commit,persist,release,store",
+    "zcl.zcode_publish_commit.input.v1", "zcl.zcode_publish_commit.v1",
+    "release_hex,manifest_hex,dir,datadir", "",
+    "zclassic23 zcode package publish commit --input='{\"release_hex\":\"..\",\"manifest_hex\":\"..\",\"dir\":\"/tmp/pkg\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_package_publish_commit)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.package.search", "zcode.package", "",
+    "Search locally published packages",
+    "Bounded rows over the package index — a projection rebuilt from the "
+    "persisted release/manifest wires at call time, never a second truth — "
+    "filtered by `publisher` (pubkey hex prefix), `name_prefix` "
+    "(publisher/package prefix), `license` (exact SPDX id), and/or "
+    "`keyword` (name substring), all ANDed. Rows are sorted by (name, "
+    "release id), capped at 16 (limit raises only within that cap), with "
+    "`total_matches` and `items_truncated` stating completeness. An empty "
+    "result means no persisted release matched, not that none were "
+    "checked: `packages_scanned` names the corpus size.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,package,search,find,publisher,license,keyword",
+    "zcl.zcode_package_search.input.v1", "zcl.zcode_package_search.v1",
+    "publisher,name_prefix,license,keyword,limit,datadir", "",
+    "zclassic23 zcode package search --input='{\"keyword\":\"ring\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_package_search)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.package.show", "zcode.package", "",
+    "Full release record and manifest summary for one package root",
+    "The complete persisted release record (publisher, sequence, license, "
+    "reward address, lineage, ZNAM pointer) plus the manifest summary "
+    "(file/byte/chunk counts, LICENSE presence, executable count) for one "
+    "64-hex package `root`, read from the rebuilt index projection at call "
+    "time, plus a bounded first page of up to 32 manifest files "
+    "(files_truncated flags the rest). UNKNOWN_PACKAGE names a root no "
+    "persisted release claims.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,package,show,detail,manifest,release,root",
+    "zcl.zcode_package_show.input.v1", "zcl.zcode_package_show.v1",
+    "root,datadir", "root",
+    "zclassic23 zcode package show --input='{\"root\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_package_show)

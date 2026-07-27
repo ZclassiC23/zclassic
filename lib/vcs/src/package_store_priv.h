@@ -51,6 +51,11 @@ struct vcs_package_store {
     size_t cas_count;
     size_t cas_cap;
     struct vcs_package_accept *accept;
+    /* Slice 3 diagnostics: the last put_release acceptance outcome (set on
+     * every put_release call, including rejections). */
+    bool last_accept_set;
+    enum vcs_package_accept_result last_accept;
+    uint8_t last_accept_id[32];
     uint64_t logical_clock;
     uint64_t evictions_total;
     uint64_t gc_orphans_total;
@@ -102,6 +107,10 @@ bool store_package_complete(const struct vcs_package_store *store,
  * manifests/<hex>, staging dir removed. Package must be complete. */
 bool store_package_commit(struct vcs_package_store *store,
                           struct store_package *pkg);
+
+/* Count persisted release envelopes (64-hex names under releases/).
+ * Best-effort for diagnostics: 0 when the directory is unreadable. */
+uint32_t store_releases_count(const struct vcs_package_store *store);
 
 /* Parse a manifest wire, verify its root equals expect_hex, build the
  * record (unique chunks, total bytes, pin marker), and append it to the

@@ -1,0 +1,1328 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * test_zcode_publish — the ZCODE publication + local search gate
+ * (lib/vcs/package_publish.*, lib/vcs/package_index.*, and the
+ * zcode.package.* native handlers in tools/command/native_zcode_command.c).
+ *
+ * Coverage:
+ *   1. publish plan happy path (with and without a chunk source dir) and
+ *      the plan-token == release-id correlation.
+ *   2. License policy: unknown/missing(compound) SPDX ids rejected at the
+ *      envelope layer naming "spdx-license"; a manifest without a LICENSE
+ *      file rejected naming "license-text-missing".
+ *   3. Package structure: traversal path, symlink mode, duplicate canonical
+ *      paths, oversized wire (manifest grammar); hidden executable payload;
+ *      over-64MiB package; release/manifest root mismatch.
+ *   4. Chunk checks: source missing, size mismatch, hash mismatch — each
+ *      names its rule and coordinates.
+ *   5. publish commit: roundtrip persists manifest + chunks + release;
+ *      idempotent recommit reports "duplicate"; commit of a release that
+ *      fails plan names the failed rule.
+ *   6. Acceptance replay: equivocation, stale sequence, namespace conflict
+ *      against persisted releases; a higher sequence commits.
+ *   7. search: publisher/name-prefix/license/keyword filters, miss,
+ *      bounds (limit + items_truncated), empty store.
+ *   8. show: full record + manifest summary + bounded file page;
+ *      UNKNOWN_PACKAGE and BAD_ROOT rejections.
+ *   9. Index rebuild: a fresh build from the persisted CAS bytes equals the
+ *      pre-"crash" build entry for entry (the index holds no truth).
+ *
+ * Handlers run in-process on ./test-tmp datadirs; CHAIN_MAIN is pinned so
+ * the chain-id and reward rules are deterministic. */
+
+#include "test/test_core.h"
+
+#include "command/native_command.h"
+
+#include "chain/chainparams.h"
+#include "core/uint256.h"
+#include "json/json.h"
+#include "kernel/command_registry.h"
+#include "keys/key.h"
+#include "keys/key_io.h"
+#include "keys/pubkey.h"
+#include "vcs/package_index.h"
+#include "vcs/package_publish.h"
+#include "vcs/package_store.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+
+#define ZP_CHECK(name, expr) do {                                     \
+    if (expr) { printf("  zcode_publish: %s... OK\n", (name)); }      \
+    else { printf("  zcode_publish: %s... FAIL\n", (name)); failures++; } \
+} while (0)
+
+/* ── fixtures ───────────────────────────────────────────────────────── */
+
+static void zp_hex32(const uint8_t in[32], char out[65])
+{
+    static const char hexd[] = "0123456789abcdef";
+    for (int i = 0; i < 32; i++) {
+        out[2 * i]     = hexd[(in[i] >> 4) & 0xf];
+        out[2 * i + 1] = hexd[in[i] & 0xf];
+    }
+    out[64] = '\0';
+}
+
+/* malloc'd hex of arbitrary bytes (release/manifest wires). */
+static char *zp_hex(const uint8_t *data, size_t len)
+{
+    static const char hexd[] = "0123456789abcdef";
+    char *out = malloc(2 * len + 1);
+    if (!out)
+        return NULL;
+    for (size_t i = 0; i < len; i++) {
+        out[2 * i]     = hexd[(data[i] >> 4) & 0xf];
+        out[2 * i + 1] = hexd[data[i] & 0xf];
+    }
+    out[2 * len] = '\0';
+    return out;
+}
+
+static bool zp_keypair(uint8_t seed, struct privkey *sk, struct pubkey *pk)
+{
+    memset(sk->vch, seed, 32);
+    sk->fValid = true;
+    sk->fCompressed = true;
+    return privkey_get_pubkey(sk, pk) &&
+           pk->size == COMPRESSED_PUBLIC_KEY_SIZE;
+}
+
+static bool zp_pubkey_hex(uint8_t seed, char out[67])
+{
+    static const char hexd[] = "0123456789abcdef";
+    struct privkey sk;
+    struct pubkey pk;
+    if (!zp_keypair(seed, &sk, &pk))
+        return false;
+    for (size_t i = 0; i < pk.size; i++) {
+        out[2 * i]     = hexd[(pk.vch[i] >> 4) & 0xf];
+        out[2 * i + 1] = hexd[pk.vch[i] & 0xf];
+    }
+    out[2 * pk.size] = '\0';
+    return true;
+}
+
+static bool zp_sign(struct vcs_package_release *r, struct privkey *sk)
+{
+    uint8_t id[VCS_PACKAGE_RELEASE_ID_BYTES];
+    if (vcs_package_release_id(r, id) != VCS_PACKAGE_RELEASE_OK)
+        return false;
+    struct uint256 hash;
+    memcpy(hash.data, id, 32);
+    unsigned char compact[COMPACT_SIGNATURE_SIZE];
+    if (!privkey_sign_compact(sk, &hash, compact))
+        return false;
+    memcpy(r->signature, compact + 1, VCS_PACKAGE_RELEASE_SIGNATURE_BYTES);
+    return true;
+}
+
+static bool zp_t1_reward(char *out, size_t out_size)
+{
+    const struct chain_params *params = chain_params_get();
+    if (!params)
+        return false;
+    size_t pubkey_len = 0;
+    size_t script_len = 0;
+    const unsigned char *pubkey_prefix =
+        chain_params_base58_prefix(params, B58_PUBKEY_ADDRESS, &pubkey_len);
+    const unsigned char *script_prefix =
+        chain_params_base58_prefix(params, B58_SCRIPT_ADDRESS, &script_len);
+    if (!pubkey_prefix || !script_prefix)
+        return false;
+    struct tx_destination dest;
+    dest.type = DEST_KEY_ID;
+    memset(dest.id.key.id.data, 0x33, 20);
+    return encode_destination(&dest, pubkey_prefix, pubkey_len,
+                              script_prefix, script_len, out, out_size);
+}
+
+/* A valid, signed release naming package_root. */
+static bool zp_release(struct vcs_package_release *r, uint8_t key_seed,
+                       uint64_t sequence, const char *name,
+                       const char *license, const uint8_t package_root[32])
+{
+    memset(r, 0, sizeof(*r));
+    struct privkey sk;
+    struct pubkey pk;
+    if (!zp_keypair(key_seed, &sk, &pk))
+        return false;
+    r->schema_version = VCS_PACKAGE_RELEASE_VERSION;
+    snprintf(r->name, sizeof(r->name), "%s", name);
+    snprintf(r->semver, sizeof(r->semver), "1.0.0");
+    memcpy(r->package_root, package_root, 32);
+    r->has_parent = false;
+    memcpy(r->publisher_pubkey, pk.vch, COMPRESSED_PUBLIC_KEY_SIZE);
+    r->publisher_sequence = sequence;
+    if (!zp_t1_reward(r->reward_address, sizeof(r->reward_address)))
+        return false;
+    snprintf(r->license, sizeof(r->license), "%s", license);
+    for (int i = 0; i < 32; i++)
+        r->recipe_root[i] = (uint8_t)(0x40 + i);
+    r->has_znam = false;
+    if (!vcs_package_accept_chain_id(r->chain_id, sizeof(r->chain_id)))
+        return false;
+    return zp_sign(r, &sk);
+}
+
+/* malloc'd canonical wire + hex for a release. */
+static char *zp_release_hex(const struct vcs_package_release *r,
+                            uint8_t **wire_out, size_t *wire_len_out)
+{
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    if (vcs_package_release_serialize(r, &wire, &wire_len) !=
+        VCS_PACKAGE_RELEASE_OK)
+        return NULL;
+    char *hex = zp_hex(wire, wire_len);
+    if (!hex) {
+        free(wire);
+        return NULL;
+    }
+    if (wire_out)
+        *wire_out = wire;
+    else
+        free(wire);
+    if (wire_len_out)
+        *wire_len_out = wire_len;
+    return hex;
+}
+
+struct zp_pkg {
+    struct vcs_package_manifest manifest;
+    uint8_t *wire;
+    size_t wire_len;
+    uint8_t root[32];
+    char root_hex[65];
+};
+
+static void zp_pkg_free(struct zp_pkg *p)
+{
+    vcs_package_manifest_free(&p->manifest);
+    free(p->wire);
+    p->wire = NULL;
+}
+
+/* Write <dir>/<path> (creating the single parent directory when the path
+ * has one), then add the file to the manifest with its real chunk hash. */
+static bool zp_add_file(struct zp_pkg *p, const char *dir, const char *path,
+                        const char *content, uint32_t mode)
+{
+    char full[1024];
+    snprintf(full, sizeof(full), "%s/%s", dir, path);
+    const char *slash = strrchr(path, '/');
+    if (slash) {
+        char parent[1024];
+        snprintf(parent, sizeof(parent), "%s/%.*s", dir,
+                 (int)(slash - path), path);
+        if (mkdir(parent, 0700) != 0) {
+            /* EEXIST is fine (a second file under the same parent). */
+        }
+    }
+    FILE *f = fopen(full, "wb");
+    if (!f)
+        return false;
+    size_t len = strlen(content);
+    bool wrote = fwrite(content, 1, len, f) == len;
+    fclose(f);
+    if (!wrote)
+        return false;
+    uint8_t hash[32];
+    if (!vcs_package_chunk_hash((const uint8_t *)content, len, hash))
+        return false;
+    return vcs_package_manifest_add(&p->manifest, path, mode, len, hash, 1);
+}
+
+/* The happy-path package: LICENSE + include/ring.h + src/ring.c. */
+static bool zp_make_package(struct zp_pkg *p, const char *dir)
+{
+    memset(p, 0, sizeof(*p));
+    vcs_package_manifest_init(&p->manifest);
+    mkdir(dir, 0700);
+    if (!zp_add_file(p, dir, "LICENSE",
+                     "MIT License\n\nPermission is hereby granted.\n",
+                     VCS_PACKAGE_MODE_FILE) ||
+        !zp_add_file(p, dir, "include/ring.h",
+                     "#pragma once\nstruct ring { unsigned head, tail; };\n",
+                     VCS_PACKAGE_MODE_FILE) ||
+        !zp_add_file(p, dir, "src/ring.c",
+                     "#include \"ring.h\"\nint ring_push(void) { return 0; }\n",
+                     VCS_PACKAGE_MODE_FILE))
+        return false;
+    if (!vcs_package_manifest_serialize(&p->manifest, &p->wire,
+                                        &p->wire_len))
+        return false;
+    if (!vcs_package_manifest_root(&p->manifest, p->root))
+        return false;
+    zp_hex32(p->root, p->root_hex);
+    return true;
+}
+
+/* Hand-encode a one- or two-file manifest wire with caller-chosen paths and
+ * modes — the only way to get a traversal path, a hostile mode, or a
+ * duplicate path past the builder. */
+static size_t zp_raw_wire(uint8_t *out, const char *path1, uint32_t mode1,
+                          const char *path2, uint32_t mode2)
+{
+    size_t n = 0;
+    memcpy(out + n, "ZCLPKG\r\n", 8); n += 8;
+    out[n++] = 1; out[n++] = 0;                          /* version */
+    out[n++] = 0; out[n++] = 0; out[n++] = 16; out[n++] = 0; /* 1 MiB */
+    uint32_t files = path2 ? 2u : 1u;
+    out[n++] = (uint8_t)files; out[n++] = 0; out[n++] = 0; out[n++] = 0;
+    for (uint32_t i = 0; i < files; i++) {
+        const char *path = i == 0 ? path1 : path2;
+        uint32_t mode = i == 0 ? mode1 : mode2;
+        uint16_t plen = (uint16_t)strlen(path);
+        out[n++] = (uint8_t)plen; out[n++] = (uint8_t)(plen >> 8);
+        memcpy(out + n, path, plen); n += plen;
+        out[n++] = (uint8_t)mode; out[n++] = (uint8_t)(mode >> 8);
+        out[n++] = (uint8_t)(mode >> 16); out[n++] = (uint8_t)(mode >> 24);
+        memset(out + n, 0, 8); n += 8;                   /* size = 0 */
+        memset(out + n, 0, 4); n += 4;                   /* chunks = 0 */
+    }
+    return n;
+}
+
+/* ── in-process command runner ──────────────────────────────────────── */
+
+struct zp_cmd {
+    struct json_value input;
+    struct zcl_command_request request;
+    struct zcl_command_reply reply;
+};
+
+static void zp_cmd_init(struct zp_cmd *c)
+{
+    json_init(&c->input);
+    json_set_object(&c->input);
+    memset(&c->request, 0, sizeof(c->request));
+    c->request.input = &c->input;
+    zcl_command_reply_init(&c->reply, "zcl.zcode_test.v1");
+}
+
+static void zp_cmd_free(struct zp_cmd *c)
+{
+    zcl_command_reply_free(&c->reply);
+    json_free(&c->input);
+}
+
+/* Standard publish input: release hex + manifest hex + datadir (+dir). */
+static void zp_publish_input(struct zp_cmd *c, const char *dd,
+                             const char *release_hex,
+                             const char *manifest_hex, const char *dir)
+{
+    zp_cmd_init(c);
+    (void)json_push_kv_str(&c->input, "datadir", dd);
+    (void)json_push_kv_str(&c->input, "release_hex", release_hex);
+    (void)json_push_kv_str(&c->input, "manifest_hex", manifest_hex);
+    if (dir)
+        (void)json_push_kv_str(&c->input, "dir", dir);
+}
+
+/* Rule string of failure i in a plan reply, or NULL. */
+static const char *zp_failure_rule(const struct zcl_command_reply *reply,
+                                   size_t i)
+{
+    const struct json_value *fails = json_get(&reply->data, "failures");
+    if (!fails)
+        return NULL;
+    const struct json_value *f = json_at(fails, i);
+    if (!f)
+        return NULL;
+    return json_get_str(json_get(f, "rule"));
+}
+
+static const char *zp_failure_detail(const struct zcl_command_reply *reply,
+                                     size_t i)
+{
+    const struct json_value *fails = json_get(&reply->data, "failures");
+    if (!fails)
+        return NULL;
+    const struct json_value *f = json_at(fails, i);
+    if (!f)
+        return NULL;
+    return json_get_str(json_get(f, "detail"));
+}
+
+/* The byte offset of the license field inside a canonical release wire
+ * (for the same-length tamper that keeps the wire decodable-length while
+ * breaking the license rule). */
+static size_t zp_license_offset(const uint8_t *wire)
+{
+    size_t off = 8 + 2;                          /* magic + schema */
+    uint16_t name_len = (uint16_t)(wire[off] | (wire[off + 1] << 8));
+    off += 2 + name_len;
+    uint16_t semver_len = (uint16_t)(wire[off] | (wire[off + 1] << 8));
+    off += 2 + semver_len + 32;                  /* + package_root */
+    bool parent = wire[off++] != 0;
+    if (parent)
+        off += 32;
+    off += 33 + 8;                               /* pubkey + sequence */
+    uint16_t reward_len = (uint16_t)(wire[off] | (wire[off + 1] << 8));
+    off += 2 + reward_len;
+    return off + 2;                              /* skip license_len */
+}
+
+/* ── 1: plan happy path ─────────────────────────────────────────────── */
+static int t_plan_happy(void)
+{
+    int failures = 0;
+    chain_params_select(CHAIN_MAIN);
+    char dd[256];
+    test_make_tmpdir(dd, sizeof(dd), "zcode_publish", "plan");
+    char pkgdir[512];
+    snprintf(pkgdir, sizeof(pkgdir), "%s/pkg", dd);
+
+    struct zp_pkg p;
+    ZP_CHECK("plan: package fixture builds", zp_make_package(&p, pkgdir));
+    struct vcs_package_release r;
+    ZP_CHECK("plan: release signs",
+             zp_release(&r, 0x11, 1u, "rhett/ring-buffer", "MIT", p.root));
+    char *release_hex = zp_release_hex(&r, NULL, NULL);
+    char *manifest_hex = zp_hex(p.wire, p.wire_len);
+    ZP_CHECK("plan: inputs encode", release_hex && manifest_hex);
+
+    struct zp_cmd c;
+    zp_publish_input(&c, dd, release_hex, manifest_hex, pkgdir);
+    zcl_native_handle_zcode_package_publish_plan(&c.request, &c.reply);
+    ZP_CHECK("plan: valid candidate passes",
+             c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
+             json_get_bool(json_get(&c.reply.data, "valid")));
+    uint8_t id[VCS_PACKAGE_RELEASE_ID_BYTES];
+    ZP_CHECK("plan: release id computes",
+             vcs_package_release_id(&r, id) == VCS_PACKAGE_RELEASE_OK);
+    char id_hex[65];
+    zp_hex32(id, id_hex);
+    ZP_CHECK("plan: plan token is the release id",
+             json_get_str(json_get(&c.reply.data, "plan_token")) &&
+             strcmp(json_get_str(json_get(&c.reply.data, "plan_token")),
+                    id_hex) == 0);
+    const struct json_value *pkg = json_get(&c.reply.data, "package");
+    ZP_CHECK("plan: all chunks verified",
+             pkg && json_get_bool(json_get(pkg, "chunks_checked")) &&
+             json_get_int(json_get(pkg, "chunks_verified")) == 3);
+    const struct json_value *rel = json_get(&c.reply.data, "release");
+    ZP_CHECK("plan: acceptance accepted, nothing replayed",
+             rel &&
+             strcmp(json_get_str(json_get(rel, "acceptance")),
+                    "accepted") == 0 &&
+             json_get_int(json_get(rel, "replayed_releases")) == 0);
+    ZP_CHECK("plan: no failures",
+             zp_failure_rule(&c.reply, 0) == NULL);
+    zp_cmd_free(&c);
+
+    /* Without dir the chunk check is honestly skipped, not failed. */
+    zp_publish_input(&c, dd, release_hex, manifest_hex, NULL);
+    zcl_native_handle_zcode_package_publish_plan(&c.request, &c.reply);
+    pkg = json_get(&c.reply.data, "package");
+    ZP_CHECK("plan: no dir skips chunk verification",
+             c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
+             json_get_bool(json_get(&c.reply.data, "valid")) &&
+             pkg && !json_get_bool(json_get(pkg, "chunks_checked")));
+    zp_cmd_free(&c);
+
+    free(release_hex);
+    free(manifest_hex);
+    zp_pkg_free(&p);
+    test_rm_rf_recursive(dd);
+    return failures;
+}
+
+/* ── 2: license policy ──────────────────────────────────────────────── */
+static int t_license_rules(void)
+{
+    int failures = 0;
+    chain_params_select(CHAIN_MAIN);
+    char dd[256];
+    test_make_tmpdir(dd, sizeof(dd), "zcode_publish", "license");
+    char pkgdir[512];
+    snprintf(pkgdir, sizeof(pkgdir), "%s/pkg", dd);
+    struct zp_pkg p;
+    ZP_CHECK("license: package fixture builds", zp_make_package(&p, pkgdir));
+    char *manifest_hex = zp_hex(p.wire, p.wire_len);
+
+    /* Unknown SPDX id: tamper the wire's license bytes in place (same
+     * length), so the wire reaches the parser and the parser names the
+     * license rule. "Apache-2.0" -> "Apache-2.9" is not on the allowlist. */
+    struct vcs_package_release r;
+    ZP_CHECK("license: release signs",
+             zp_release(&r, 0x11, 1u, "rhett/ring-buffer", "Apache-2.0",
+                        p.root));
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    char *release_hex = zp_release_hex(&r, &wire, &wire_len);
+    ZP_CHECK("license: wire encodes", release_hex && wire);
+    size_t loff = zp_license_offset(wire);
+    ZP_CHECK("license: tamper target located",
+             loff + 10 <= wire_len &&
+             memcmp(wire + loff, "Apache-2.0", 10) == 0);
+    wire[loff + 9] = '9';
+    char *bad_hex = zp_hex(wire, wire_len);
+    struct zp_cmd c;
+    zp_publish_input(&c, dd, bad_hex, manifest_hex, pkgdir);
+    zcl_native_handle_zcode_package_publish_plan(&c.request, &c.reply);
+    ZP_CHECK("license: unknown SPDX id rejected naming the license rule",
+             c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
+             !json_get_bool(json_get(&c.reply.data, "valid")) &&
+             zp_failure_rule(&c.reply, 0) &&
+             strcmp(zp_failure_rule(&c.reply, 0),
+                    "release-wire-not-canonical") == 0 &&
+             zp_failure_detail(&c.reply, 0) &&
+             strcmp(zp_failure_detail(&c.reply, 0), "spdx-license") == 0);
+    zp_cmd_free(&c);
+    free(bad_hex);
+
+    /* Compound license: "Apache-2.0" -> "MIT OR ISC" (10 bytes) — the
+     * allowlist takes exactly one id, never an expression. */
+    memcpy(wire + loff, "MIT OR ISC", 10);
+    bad_hex = zp_hex(wire, wire_len);
+    zp_publish_input(&c, dd, bad_hex, manifest_hex, pkgdir);
+    zcl_native_handle_zcode_package_publish_plan(&c.request, &c.reply);
+    ZP_CHECK("license: compound id rejected naming the license rule",
+             !json_get_bool(json_get(&c.reply.data, "valid")) &&
+             zp_failure_detail(&c.reply, 0) &&
+             strcmp(zp_failure_detail(&c.reply, 0), "spdx-license") == 0);
+    zp_cmd_free(&c);
+    free(bad_hex);
+    free(wire);
+    free(release_hex);
+
+    /* Missing license: blanked id -> same named rule. */
+    ZP_CHECK("license: blank release signs",
+             zp_release(&r, 0x11, 1u, "rhett/ring-buffer", "MIT", p.root));
+    wire = NULL;
+    release_hex = zp_release_hex(&r, &wire, &wire_len);
+    loff = zp_license_offset(wire);
+    memcpy(wire + loff, "   ", 3);
+    bad_hex = zp_hex(wire, wire_len);
+    zp_publish_input(&c, dd, bad_hex, manifest_hex, pkgdir);
+    zcl_native_handle_zcode_package_publish_plan(&c.request, &c.reply);
+    ZP_CHECK("license: blank id rejected naming the license rule",
+             !json_get_bool(json_get(&c.reply.data, "valid")) &&
+             zp_failure_detail(&c.reply, 0) &&
+             strcmp(zp_failure_detail(&c.reply, 0), "spdx-license") == 0);
+    zp_cmd_free(&c);
+    free(bad_hex);
+    free(wire);
+    free(release_hex);
+
+    /* License text absent: a manifest with no LICENSE file. */
+    char noldir[512];
+    snprintf(noldir, sizeof(noldir), "%s/nolicense", dd);
+    mkdir(noldir, 0700);
+    struct zp_pkg p2;
+    memset(&p2, 0, sizeof(p2));
+    vcs_package_manifest_init(&p2.manifest);
+    ZP_CHECK("license: no-LICENSE package builds",
+             zp_add_file(&p2, noldir, "src/only.c", "int x;\n",
+                         VCS_PACKAGE_MODE_FILE) &&
+             vcs_package_manifest_serialize(&p2.manifest, &p2.wire,
+                                            &p2.wire_len) &&
+             vcs_package_manifest_root(&p2.manifest, p2.root));
+    ZP_CHECK("license: no-LICENSE release signs",
+             zp_release(&r, 0x11, 1u, "rhett/no-license", "MIT", p2.root));
+    release_hex = zp_release_hex(&r, NULL, NULL);
+    char *manifest2_hex = zp_hex(p2.wire, p2.wire_len);
+    zp_publish_input(&c, dd, release_hex, manifest2_hex, noldir);
+    zcl_native_handle_zcode_package_publish_plan(&c.request, &c.reply);
+    ZP_CHECK("license: missing LICENSE file rejected naming the rule",
+             !json_get_bool(json_get(&c.reply.data, "valid")) &&
+             zp_failure_rule(&c.reply, 0) &&
+             strcmp(zp_failure_rule(&c.reply, 0),
+                    "license-text-missing") == 0);
+    zp_cmd_free(&c);
+
+    free(release_hex);
+    free(manifest2_hex);
+    free(manifest_hex);
+    zp_pkg_free(&p2);
+    zp_pkg_free(&p);
+    test_rm_rf_recursive(dd);
+    return failures;
+}
+
+/* ── 3: package structure rules ─────────────────────────────────────── */
+static int t_structure_rules(void)
+{
+    int failures = 0;
+    chain_params_select(CHAIN_MAIN);
+    char dd[256];
+    test_make_tmpdir(dd, sizeof(dd), "zcode_publish", "structure");
+    char pkgdir[512];
+    snprintf(pkgdir, sizeof(pkgdir), "%s/pkg", dd);
+    struct zp_pkg p;
+    ZP_CHECK("structure: package fixture builds",
+             zp_make_package(&p, pkgdir));
+    struct vcs_package_release r;
+    ZP_CHECK("structure: release signs",
+             zp_release(&r, 0x11, 1u, "rhett/ring-buffer", "MIT", p.root));
+    char *release_hex = zp_release_hex(&r, NULL, NULL);
+    struct zp_cmd c;
+
+    /* The grammar-level hostile wires all name the one manifest-grammar
+     * rule (the parse is the exact check; detail says why). */
+    struct {
+        const char *label;
+        const char *path1;
+        uint32_t mode1;
+        const char *path2;
+        uint32_t mode2;
+    } cases[] = {
+        { "traversal path", "../evil", VCS_PACKAGE_MODE_FILE, NULL, 0 },
+        { "absolute path", "/etc/passwd", VCS_PACKAGE_MODE_FILE, NULL, 0 },
+        { "symlink mode", "x", 0120777, NULL, 0 },
+        { "device mode", "x", 060666, NULL, 0 },
+        { "socket mode", "x", 0140777, NULL, 0 },
+        { "unknown mode", "x", 0600, NULL, 0 },
+        { "duplicate canonical paths", "src/a.c", VCS_PACKAGE_MODE_FILE,
+          "src/a.c", VCS_PACKAGE_MODE_FILE },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        uint8_t raw[2048];
+        size_t raw_len = zp_raw_wire(raw, cases[i].path1, cases[i].mode1,
+                                     cases[i].path2, cases[i].mode2);
+        char *raw_hex = zp_hex(raw, raw_len);
+        zp_publish_input(&c, dd, release_hex, raw_hex, NULL);
+        zcl_native_handle_zcode_package_publish_plan(&c.request, &c.reply);
+        char name[96];
+        snprintf(name, sizeof(name), "structure: %s rejected", cases[i].label);
+        ZP_CHECK(name,
+                 !json_get_bool(json_get(&c.reply.data, "valid")) &&
+                 zp_failure_rule(&c.reply, 0) &&
+                 strcmp(zp_failure_rule(&c.reply, 0),
+                        "manifest-grammar") == 0);
+        zp_cmd_free(&c);
+        free(raw_hex);
+    }
+
+    /* Oversized manifest wire: over the 1 MiB wire bound. */
+    size_t big_len = 2 * (VCS_PACKAGE_MANIFEST_MAX_WIRE_BYTES + 1) + 1;
+    char *big = malloc(big_len);
+    ZP_CHECK("structure: oversized hex allocates", big != NULL);
+    if (big) {
+        memset(big, 'a', big_len - 1);
+        big[big_len - 1] = '\0';
+        zp_publish_input(&c, dd, release_hex, big, NULL);
+        zcl_native_handle_zcode_package_publish_plan(&c.request, &c.reply);
+        ZP_CHECK("structure: oversized manifest rejected",
+                 !json_get_bool(json_get(&c.reply.data, "valid")) &&
+                 zp_failure_rule(&c.reply, 0) &&
+                 strcmp(zp_failure_rule(&c.reply, 0),
+                        "manifest-grammar") == 0);
+        zp_cmd_free(&c);
+        free(big);
+    }
+
+    /* Hidden executable payload: a canonical path under a dot segment with
+     * the executable mode — the grammar allows it, publication forbids it. */
+    struct zp_pkg hp;
+    memset(&hp, 0, sizeof(hp));
+    vcs_package_manifest_init(&hp.manifest);
+    uint8_t h1[32];
+    uint8_t h2[32];
+    ZP_CHECK("structure: hidden-exec hashes compute",
+             vcs_package_chunk_hash((const uint8_t *)"x", 1, h1) &&
+             vcs_package_chunk_hash((const uint8_t *)"y", 1, h2));
+    ZP_CHECK("structure: hidden-exec manifest builds",
+             vcs_package_manifest_add(&hp.manifest, "LICENSE",
+                                      VCS_PACKAGE_MODE_FILE, 1, h1, 1) &&
+             vcs_package_manifest_add(&hp.manifest, ".git/hooks/evil",
+                                      VCS_PACKAGE_MODE_EXECUTABLE, 1, h2,
+                                      1) &&
+             vcs_package_manifest_serialize(&hp.manifest, &hp.wire,
+                                            &hp.wire_len) &&
+             vcs_package_manifest_root(&hp.manifest, hp.root));
+    ZP_CHECK("structure: hidden-exec release signs",
+             zp_release(&r, 0x11, 1u, "rhett/hidden-exec", "MIT", hp.root));
+    char *hr_hex = zp_release_hex(&r, NULL, NULL);
+    char *hm_hex = zp_hex(hp.wire, hp.wire_len);
+    zp_publish_input(&c, dd, hr_hex, hm_hex, NULL);
+    zcl_native_handle_zcode_package_publish_plan(&c.request, &c.reply);
+    ZP_CHECK("structure: hidden executable payload rejected naming the rule",
+             !json_get_bool(json_get(&c.reply.data, "valid")) &&
+             zp_failure_rule(&c.reply, 0) &&
+             strcmp(zp_failure_rule(&c.reply, 0),
+                    "hidden-executable-payload") == 0 &&
+             zp_failure_detail(&c.reply, 0) &&
+             strcmp(zp_failure_detail(&c.reply, 0),
+                    ".git/hooks/evil") == 0);
+    zp_cmd_free(&c);
+    free(hr_hex);
+    free(hm_hex);
+    zp_pkg_free(&hp);
+
+    /* Over-64MiB package (sizes are manifest facts; no bytes needed). */
+    struct zp_pkg bp;
+    memset(&bp, 0, sizeof(bp));
+    vcs_package_manifest_init(&bp.manifest);
+    uint8_t fake[65 * 32];
+    memset(fake, 0x5a, sizeof(fake));
+    ZP_CHECK("structure: over-cap manifest builds",
+             vcs_package_manifest_add(&bp.manifest, "LICENSE",
+                                      VCS_PACKAGE_MODE_FILE, 1, h1, 1) &&
+             vcs_package_manifest_add(&bp.manifest, "big.bin",
+                                      VCS_PACKAGE_MODE_FILE,
+                                      VCS_PACKAGE_STORE_MAX_PACKAGE_BYTES + 1,
+                                      fake, 65) &&
+             vcs_package_manifest_serialize(&bp.manifest, &bp.wire,
+                                            &bp.wire_len) &&
+             vcs_package_manifest_root(&bp.manifest, bp.root));
+    ZP_CHECK("structure: over-cap release signs",
+             zp_release(&r, 0x11, 1u, "rhett/too-big", "MIT", bp.root));
+    hr_hex = zp_release_hex(&r, NULL, NULL);
+    hm_hex = zp_hex(bp.wire, bp.wire_len);
+    zp_publish_input(&c, dd, hr_hex, hm_hex, NULL);
+    zcl_native_handle_zcode_package_publish_plan(&c.request, &c.reply);
+    ZP_CHECK("structure: over-64MiB package rejected naming the rule",
+             !json_get_bool(json_get(&c.reply.data, "valid")) &&
+             zp_failure_rule(&c.reply, 0) &&
+             strcmp(zp_failure_rule(&c.reply, 0),
+                    "package-exceeds-64mib-cap") == 0);
+    zp_cmd_free(&c);
+    free(hr_hex);
+    free(hm_hex);
+    zp_pkg_free(&bp);
+
+    /* Release root != manifest root. */
+    uint8_t other_root[32];
+    memset(other_root, 0x77, 32);
+    ZP_CHECK("structure: mismatched release signs",
+             zp_release(&r, 0x11, 1u, "rhett/ring-buffer", "MIT",
+                        other_root));
+    hr_hex = zp_release_hex(&r, NULL, NULL);
+    hm_hex = zp_hex(p.wire, p.wire_len);
+    zp_publish_input(&c, dd, hr_hex, hm_hex, NULL);
+    zcl_native_handle_zcode_package_publish_plan(&c.request, &c.reply);
+    ZP_CHECK("structure: root mismatch rejected naming the rule",
+             !json_get_bool(json_get(&c.reply.data, "valid")) &&
+             zp_failure_rule(&c.reply, 0) &&
+             strcmp(zp_failure_rule(&c.reply, 0),
+                    "release-root-mismatch") == 0);
+    zp_cmd_free(&c);
+    free(hr_hex);
+    free(hm_hex);
+
+    free(release_hex);
+    zp_pkg_free(&p);
+    test_rm_rf_recursive(dd);
+    return failures;
+}
+
+/* ── 4: chunk checks ────────────────────────────────────────────────── */
+static int t_chunk_rules(void)
+{
+    int failures = 0;
+    chain_params_select(CHAIN_MAIN);
+    char dd[256];
+    test_make_tmpdir(dd, sizeof(dd), "zcode_publish", "chunks");
+    char pkgdir[512];
+    snprintf(pkgdir, sizeof(pkgdir), "%s/pkg", dd);
+    struct zp_pkg p;
+    ZP_CHECK("chunks: package fixture builds", zp_make_package(&p, pkgdir));
+    struct vcs_package_release r;
+    ZP_CHECK("chunks: release signs",
+             zp_release(&r, 0x11, 1u, "rhett/ring-buffer", "MIT", p.root));
+    char *release_hex = zp_release_hex(&r, NULL, NULL);
+    char *manifest_hex = zp_hex(p.wire, p.wire_len);
+    struct zp_cmd c;
+
+    /* Corrupt one source file (same length -> hash mismatch). */
+    char victim[512];
+    snprintf(victim, sizeof(victim), "%s/src/ring.c", pkgdir);
+    FILE *f = fopen(victim, "r+b");
+    ZP_CHECK("chunks: victim opens", f != NULL);
+    if (f) {
+        (void)fwrite("X", 1, 1, f);
+        fclose(f);
+    }
+    zp_publish_input(&c, dd, release_hex, manifest_hex, pkgdir);
+    zcl_native_handle_zcode_package_publish_plan(&c.request, &c.reply);
+    ZP_CHECK("chunks: hash mismatch names rule + coordinates",
+             !json_get_bool(json_get(&c.reply.data, "valid")) &&
+             zp_failure_rule(&c.reply, 0) &&
+             strcmp(zp_failure_rule(&c.reply, 0),
+                    "chunk-hash-mismatch") == 0 &&
+             zp_failure_detail(&c.reply, 0) &&
+             strcmp(zp_failure_detail(&c.reply, 0), "src/ring.c#0") == 0);
+    zp_cmd_free(&c);
+
+    /* Truncate it (size mismatch). */
+    f = fopen(victim, "wb");
+    ZP_CHECK("chunks: victim truncates", f != NULL);
+    if (f)
+        fclose(f);
+    zp_publish_input(&c, dd, release_hex, manifest_hex, pkgdir);
+    zcl_native_handle_zcode_package_publish_plan(&c.request, &c.reply);
+    ZP_CHECK("chunks: size mismatch names the rule",
+             !json_get_bool(json_get(&c.reply.data, "valid")) &&
+             zp_failure_rule(&c.reply, 0) &&
+             strcmp(zp_failure_rule(&c.reply, 0),
+                    "chunk-source-size-mismatch") == 0);
+    zp_cmd_free(&c);
+
+    /* Delete it (missing). */
+    ZP_CHECK("chunks: victim unlinks", remove(victim) == 0);
+    zp_publish_input(&c, dd, release_hex, manifest_hex, pkgdir);
+    zcl_native_handle_zcode_package_publish_plan(&c.request, &c.reply);
+    ZP_CHECK("chunks: missing source names the rule",
+             !json_get_bool(json_get(&c.reply.data, "valid")) &&
+             zp_failure_rule(&c.reply, 0) &&
+             strcmp(zp_failure_rule(&c.reply, 0),
+                    "chunk-source-missing") == 0);
+    zp_cmd_free(&c);
+
+    free(release_hex);
+    free(manifest_hex);
+    zp_pkg_free(&p);
+    test_rm_rf_recursive(dd);
+    return failures;
+}
+
+/* ── 5: commit roundtrip + idempotence + failed-plan commit ─────────── */
+static int t_commit_roundtrip(void)
+{
+    int failures = 0;
+    chain_params_select(CHAIN_MAIN);
+    char dd[256];
+    test_make_tmpdir(dd, sizeof(dd), "zcode_publish", "commit");
+    char pkgdir[512];
+    snprintf(pkgdir, sizeof(pkgdir), "%s/pkg", dd);
+    struct zp_pkg p;
+    ZP_CHECK("commit: package fixture builds", zp_make_package(&p, pkgdir));
+    struct vcs_package_release r;
+    ZP_CHECK("commit: release signs",
+             zp_release(&r, 0x11, 1u, "rhett/ring-buffer", "MIT", p.root));
+    char *release_hex = zp_release_hex(&r, NULL, NULL);
+    char *manifest_hex = zp_hex(p.wire, p.wire_len);
+    struct zp_cmd c;
+
+    zp_publish_input(&c, dd, release_hex, manifest_hex, pkgdir);
+    zcl_native_handle_zcode_package_publish_commit(&c.request, &c.reply);
+    ZP_CHECK("commit: valid candidate publishes",
+             c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
+             json_get_str(json_get(&c.reply.data, "result")) &&
+             strcmp(json_get_str(json_get(&c.reply.data, "result")),
+                    "published") == 0 &&
+             c.reply.error.mutated);
+    ZP_CHECK("commit: all chunks admitted",
+             json_get_int(json_get(&c.reply.data, "chunks_stored")) == 3);
+    zp_cmd_free(&c);
+
+    /* On-disk truth: manifest, release envelope, and the CAS chunk. */
+    char path[512];
+    snprintf(path, sizeof(path), "%s/zcode/manifests/%s", dd, p.root_hex);
+    struct stat st;
+    ZP_CHECK("commit: manifest persisted", stat(path, &st) == 0);
+    uint8_t id[VCS_PACKAGE_RELEASE_ID_BYTES];
+    ZP_CHECK("commit: release id computes",
+             vcs_package_release_id(&r, id) == VCS_PACKAGE_RELEASE_OK);
+    char id_hex[65];
+    zp_hex32(id, id_hex);
+    snprintf(path, sizeof(path), "%s/zcode/releases/%s", dd, id_hex);
+    ZP_CHECK("commit: release persisted", stat(path, &st) == 0);
+
+    /* A reopened store sees the package complete (CAS-derived). */
+    struct vcs_package_store *s = vcs_package_store_open(dd, 1000000u);
+    ZP_CHECK("commit: store reopens", s != NULL);
+    if (s) {
+        struct vcs_package_store_status pst;
+        ZP_CHECK("commit: package complete after reopen",
+                 vcs_package_store_package_status(s, p.root, &pst) &&
+                 pst.complete && pst.present_chunks == 3);
+        vcs_package_store_close(s);
+    }
+
+    /* Idempotent recommit: duplicate, not error, nothing mutated. */
+    zp_publish_input(&c, dd, release_hex, manifest_hex, pkgdir);
+    zcl_native_handle_zcode_package_publish_commit(&c.request, &c.reply);
+    ZP_CHECK("commit: recommit reports duplicate",
+             c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
+             json_get_str(json_get(&c.reply.data, "result")) &&
+             strcmp(json_get_str(json_get(&c.reply.data, "result")),
+                    "duplicate") == 0 &&
+             !c.reply.error.mutated);
+    zp_cmd_free(&c);
+
+    /* Plan after commit classifies as a duplicate, still valid. */
+    zp_publish_input(&c, dd, release_hex, manifest_hex, pkgdir);
+    zcl_native_handle_zcode_package_publish_plan(&c.request, &c.reply);
+    const struct json_value *rel = json_get(&c.reply.data, "release");
+    ZP_CHECK("commit: post-commit plan sees the replayed duplicate",
+             c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
+             json_get_bool(json_get(&c.reply.data, "valid")) && rel &&
+             strcmp(json_get_str(json_get(rel, "acceptance")),
+                    "duplicate-release") == 0 &&
+             json_get_int(json_get(rel, "replayed_releases")) == 1);
+    zp_cmd_free(&c);
+
+    /* Commit of a release that fails plan names the failed rule. */
+    char nodir[512];
+    snprintf(nodir, sizeof(nodir), "%s/nolicense", dd);
+    mkdir(nodir, 0700);
+    struct zp_pkg p2;
+    memset(&p2, 0, sizeof(p2));
+    vcs_package_manifest_init(&p2.manifest);
+    ZP_CHECK("commit: no-LICENSE package builds",
+             zp_add_file(&p2, nodir, "src/only.c", "int x;\n",
+                         VCS_PACKAGE_MODE_FILE) &&
+             vcs_package_manifest_serialize(&p2.manifest, &p2.wire,
+                                            &p2.wire_len) &&
+             vcs_package_manifest_root(&p2.manifest, p2.root));
+    struct vcs_package_release r2;
+    ZP_CHECK("commit: no-LICENSE release signs",
+             zp_release(&r2, 0x22, 1u, "bob/no-license", "ISC", p2.root));
+    char *r2_hex = zp_release_hex(&r2, NULL, NULL);
+    char *m2_hex = zp_hex(p2.wire, p2.wire_len);
+    zp_publish_input(&c, dd, r2_hex, m2_hex, nodir);
+    zcl_native_handle_zcode_package_publish_plan(&c.request, &c.reply);
+    ZP_CHECK("commit: plan of the bad candidate fails first",
+             !json_get_bool(json_get(&c.reply.data, "valid")));
+    zp_cmd_free(&c);
+    zp_publish_input(&c, dd, r2_hex, m2_hex, nodir);
+    zcl_native_handle_zcode_package_publish_commit(&c.request, &c.reply);
+    ZP_CHECK("commit: failed-plan commit names the rule",
+             c.reply.status == ZCL_COMMAND_STATUS_FAILED &&
+             strcmp(c.reply.error.code, "license-text-missing") == 0 &&
+             c.reply.error.evidence[0] != '\0');
+    zp_cmd_free(&c);
+    free(r2_hex);
+    free(m2_hex);
+    zp_pkg_free(&p2);
+
+    free(release_hex);
+    free(manifest_hex);
+    zp_pkg_free(&p);
+    test_rm_rf_recursive(dd);
+    return failures;
+}
+
+/* ── 6: acceptance replay (sequence + namespace) ────────────────────── */
+static int t_acceptance_replay(void)
+{
+    int failures = 0;
+    chain_params_select(CHAIN_MAIN);
+    char dd[256];
+    test_make_tmpdir(dd, sizeof(dd), "zcode_publish", "accept");
+    char pkgdir[512];
+    snprintf(pkgdir, sizeof(pkgdir), "%s/pkg", dd);
+    struct zp_pkg p;
+    ZP_CHECK("accept: package fixture builds", zp_make_package(&p, pkgdir));
+    char *manifest_hex = zp_hex(p.wire, p.wire_len);
+    struct vcs_package_release r;
+    struct zp_cmd c;
+
+    /* Commit seq 1 from key A. */
+    ZP_CHECK("accept: seq1 signs",
+             zp_release(&r, 0xaa, 1u, "rhett/pkg-one", "MIT", p.root));
+    char *r_hex = zp_release_hex(&r, NULL, NULL);
+    zp_publish_input(&c, dd, r_hex, manifest_hex, pkgdir);
+    zcl_native_handle_zcode_package_publish_commit(&c.request, &c.reply);
+    ZP_CHECK("accept: seq1 commits",
+             c.reply.status == ZCL_COMMAND_STATUS_PASSED);
+    zp_cmd_free(&c);
+    free(r_hex);
+
+    /* Equivocation: same key, same sequence, different content. */
+    ZP_CHECK("accept: equivocation signs",
+             zp_release(&r, 0xaa, 1u, "rhett/pkg-one-fork", "MIT", p.root));
+    r_hex = zp_release_hex(&r, NULL, NULL);
+    zp_publish_input(&c, dd, r_hex, manifest_hex, pkgdir);
+    zcl_native_handle_zcode_package_publish_plan(&c.request, &c.reply);
+    ZP_CHECK("accept: equivocation rejected naming the rule",
+             !json_get_bool(json_get(&c.reply.data, "valid")) &&
+             zp_failure_rule(&c.reply, 0) &&
+             strcmp(zp_failure_rule(&c.reply, 0),
+                    "release-acceptance-failed") == 0 &&
+             zp_failure_detail(&c.reply, 0) &&
+             strcmp(zp_failure_detail(&c.reply, 0),
+                    "publisher-equivocation") == 0);
+    zp_cmd_free(&c);
+    free(r_hex);
+
+    /* Stale: advance the cursor to 2, then a different seq-1 release. */
+    ZP_CHECK("accept: seq2 signs",
+             zp_release(&r, 0xaa, 2u, "rhett/pkg-two", "MIT", p.root));
+    r_hex = zp_release_hex(&r, NULL, NULL);
+    zp_publish_input(&c, dd, r_hex, manifest_hex, pkgdir);
+    zcl_native_handle_zcode_package_publish_commit(&c.request, &c.reply);
+    ZP_CHECK("accept: seq2 commits (cursor advances)",
+             c.reply.status == ZCL_COMMAND_STATUS_PASSED);
+    zp_cmd_free(&c);
+    free(r_hex);
+    ZP_CHECK("accept: stale signs",
+             zp_release(&r, 0xaa, 1u, "rhett/pkg-one-fork", "MIT", p.root));
+    r_hex = zp_release_hex(&r, NULL, NULL);
+    zp_publish_input(&c, dd, r_hex, manifest_hex, pkgdir);
+    zcl_native_handle_zcode_package_publish_plan(&c.request, &c.reply);
+    ZP_CHECK("accept: stale sequence rejected naming the rule",
+             !json_get_bool(json_get(&c.reply.data, "valid")) &&
+             zp_failure_detail(&c.reply, 0) &&
+             strcmp(zp_failure_detail(&c.reply, 0),
+                    "stale-publisher-sequence") == 0);
+    zp_cmd_free(&c);
+    free(r_hex);
+
+    /* Namespace: another key cannot publish under "rhett/". */
+    ZP_CHECK("accept: namespace squatter signs",
+             zp_release(&r, 0xbb, 1u, "rhett/pkg-squat", "MIT", p.root));
+    r_hex = zp_release_hex(&r, NULL, NULL);
+    zp_publish_input(&c, dd, r_hex, manifest_hex, pkgdir);
+    zcl_native_handle_zcode_package_publish_plan(&c.request, &c.reply);
+    ZP_CHECK("accept: namespace conflict rejected naming the rule",
+             !json_get_bool(json_get(&c.reply.data, "valid")) &&
+             zp_failure_detail(&c.reply, 0) &&
+             strcmp(zp_failure_detail(&c.reply, 0),
+                    "publisher-namespace-conflict") == 0);
+    zp_cmd_free(&c);
+    free(r_hex);
+
+    /* The same other key under its OWN namespace commits fine. */
+    ZP_CHECK("accept: other-namespace release signs",
+             zp_release(&r, 0xbb, 1u, "bob/pkg-squat", "Zlib", p.root));
+    r_hex = zp_release_hex(&r, NULL, NULL);
+    zp_publish_input(&c, dd, r_hex, manifest_hex, pkgdir);
+    zcl_native_handle_zcode_package_publish_commit(&c.request, &c.reply);
+    ZP_CHECK("accept: own-namespace commit passes",
+             c.reply.status == ZCL_COMMAND_STATUS_PASSED);
+    zp_cmd_free(&c);
+    free(r_hex);
+
+    free(manifest_hex);
+    zp_pkg_free(&p);
+    test_rm_rf_recursive(dd);
+    return failures;
+}
+
+/* ── 7: search ──────────────────────────────────────────────────────── */
+
+/* Commit one small package under the given key/name/license/sequence. The
+ * LICENSE text carries content_seed so every package root is distinct. */
+static bool zp_commit_one(const char *dd, uint8_t key_seed, uint64_t seq,
+                          const char *name, const char *license,
+                          int content_seed)
+{
+    char pkgdir[512];
+    snprintf(pkgdir, sizeof(pkgdir), "%s/src-%s", dd, name);
+    /* The name carries a '/', which mkdir treats as a separator — replace
+     * it for the scratch dir only. */
+    for (char *q = pkgdir; *q; q++)
+        if (*q == '/')
+            *q = '_';
+    mkdir(pkgdir, 0700);
+    struct zp_pkg p;
+    memset(&p, 0, sizeof(p));
+    vcs_package_manifest_init(&p.manifest);
+    char license_text[96];
+    snprintf(license_text, sizeof(license_text),
+             "%s\nsee the LICENSE file, variant %d\n", license,
+             content_seed);
+    char source[64];
+    snprintf(source, sizeof(source), "int x_%d;\n", content_seed);
+    if (!zp_add_file(&p, pkgdir, "LICENSE", license_text,
+                     VCS_PACKAGE_MODE_FILE) ||
+        !zp_add_file(&p, pkgdir, "src/x.c", source,
+                     VCS_PACKAGE_MODE_FILE) ||
+        !vcs_package_manifest_serialize(&p.manifest, &p.wire,
+                                        &p.wire_len) ||
+        !vcs_package_manifest_root(&p.manifest, p.root)) {
+        zp_pkg_free(&p);
+        test_rm_rf_recursive(pkgdir);
+        return false;
+    }
+    struct vcs_package_release r;
+    if (!zp_release(&r, key_seed, seq, name, license, p.root)) {
+        zp_pkg_free(&p);
+        test_rm_rf_recursive(pkgdir);
+        return false;
+    }
+    char *r_hex = zp_release_hex(&r, NULL, NULL);
+    char *m_hex = zp_hex(p.wire, p.wire_len);
+    struct zp_cmd c;
+    zp_publish_input(&c, dd, r_hex, m_hex, pkgdir);
+    zcl_native_handle_zcode_package_publish_commit(&c.request, &c.reply);
+    bool ok = c.reply.status == ZCL_COMMAND_STATUS_PASSED;
+    zp_cmd_free(&c);
+    free(r_hex);
+    free(m_hex);
+    zp_pkg_free(&p);
+    test_rm_rf_recursive(pkgdir);
+    return ok;
+}
+
+static void zp_search_input(struct zp_cmd *c, const char *dd,
+                            const char *key, const char *value)
+{
+    zp_cmd_init(c);
+    (void)json_push_kv_str(&c->input, "datadir", dd);
+    if (key && value)
+        (void)json_push_kv_str(&c->input, key, value);
+}
+
+static int t_search(void)
+{
+    int failures = 0;
+    chain_params_select(CHAIN_MAIN);
+    char dd[256];
+    test_make_tmpdir(dd, sizeof(dd), "zcode_publish", "search");
+    struct zp_cmd c;
+
+    /* Empty store: a PASSED empty result, not an error. */
+    zp_search_input(&c, dd, NULL, NULL);
+    zcl_native_handle_zcode_package_search(&c.request, &c.reply);
+    ZP_CHECK("search: empty store passes with zero rows",
+             c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
+             json_get_int(json_get(&c.reply.data, "total_matches")) == 0 &&
+             json_get_int(json_get(&c.reply.data, "packages_scanned")) == 0);
+    zp_cmd_free(&c);
+
+    ZP_CHECK("search: three packages commit",
+             zp_commit_one(dd, 0xaa, 1u, "rhett/ring-buffer", "MIT", 1) &&
+             zp_commit_one(dd, 0xaa, 2u, "rhett/json-lite", "Apache-2.0",
+                           2) &&
+             zp_commit_one(dd, 0xbb, 1u, "bob/ring-zlib", "Zlib", 3));
+
+    zp_search_input(&c, dd, NULL, NULL);
+    zcl_native_handle_zcode_package_search(&c.request, &c.reply);
+    ZP_CHECK("search: unfiltered finds all three, sorted by name",
+             json_get_int(json_get(&c.reply.data, "total_matches")) == 3 &&
+             json_get_int(json_get(&c.reply.data, "packages_scanned")) == 3);
+    const struct json_value *rows = json_get(&c.reply.data, "results");
+    const struct json_value *row0 = rows ? json_at(rows, 0) : NULL;
+    ZP_CHECK("search: first row is bob/ring-zlib (name order)",
+             row0 &&
+             strcmp(json_get_str(json_get(row0, "name")),
+                    "bob/ring-zlib") == 0 &&
+             json_get_bool(json_get(row0, "manifest_present")));
+    zp_cmd_free(&c);
+
+    zp_search_input(&c, dd, "keyword", "ring");
+    zcl_native_handle_zcode_package_search(&c.request, &c.reply);
+    ZP_CHECK("search: keyword narrows to two",
+             json_get_int(json_get(&c.reply.data, "total_matches")) == 2);
+    zp_cmd_free(&c);
+
+    zp_search_input(&c, dd, "keyword", "no-such-thing");
+    zcl_native_handle_zcode_package_search(&c.request, &c.reply);
+    ZP_CHECK("search: miss is a passed empty result",
+             c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
+             json_get_int(json_get(&c.reply.data, "total_matches")) == 0);
+    zp_cmd_free(&c);
+
+    zp_search_input(&c, dd, "license", "MIT");
+    zcl_native_handle_zcode_package_search(&c.request, &c.reply);
+    ZP_CHECK("search: license filter",
+             json_get_int(json_get(&c.reply.data, "total_matches")) == 1);
+    zp_cmd_free(&c);
+
+    zp_search_input(&c, dd, "name_prefix", "rhett/");
+    zcl_native_handle_zcode_package_search(&c.request, &c.reply);
+    ZP_CHECK("search: name prefix filter",
+             json_get_int(json_get(&c.reply.data, "total_matches")) == 2);
+    zp_cmd_free(&c);
+
+    char pub[67];
+    ZP_CHECK("search: publisher hex computes", zp_pubkey_hex(0xbb, pub));
+    pub[10] = '\0'; /* prefix match on the pubkey hex */
+    zp_search_input(&c, dd, "publisher", pub);
+    zcl_native_handle_zcode_package_search(&c.request, &c.reply);
+    ZP_CHECK("search: publisher prefix filter",
+             json_get_int(json_get(&c.reply.data, "total_matches")) == 1);
+    rows = json_get(&c.reply.data, "results");
+    row0 = rows ? json_at(rows, 0) : NULL;
+    ZP_CHECK("search: publisher row fields",
+             row0 &&
+             strcmp(json_get_str(json_get(row0, "name")),
+                    "bob/ring-zlib") == 0 &&
+             strcmp(json_get_str(json_get(row0, "license")), "Zlib") == 0 &&
+             json_get_int(json_get(row0, "files")) == 2);
+    zp_cmd_free(&c);
+
+    /* Bounds: limit 1 renders one row and flags the rest. */
+    zp_search_input(&c, dd, "limit", NULL);
+    (void)json_push_kv_int(&c.input, "limit", 1);
+    zcl_native_handle_zcode_package_search(&c.request, &c.reply);
+    ZP_CHECK("search: limit bounds rows and flags truncation",
+             json_get_int(json_get(&c.reply.data, "rendered")) == 1 &&
+             json_get_int(json_get(&c.reply.data, "total_matches")) == 3 &&
+             json_get_bool(json_get(&c.reply.data, "items_truncated")));
+    zp_cmd_free(&c);
+
+    test_rm_rf_recursive(dd);
+    return failures;
+}
+
+/* ── 8: show ────────────────────────────────────────────────────────── */
+static int t_show(void)
+{
+    int failures = 0;
+    chain_params_select(CHAIN_MAIN);
+    char dd[256];
+    test_make_tmpdir(dd, sizeof(dd), "zcode_publish", "show");
+    char pkgdir[512];
+    snprintf(pkgdir, sizeof(pkgdir), "%s/pkg", dd);
+    struct zp_pkg p;
+    ZP_CHECK("show: package fixture builds", zp_make_package(&p, pkgdir));
+    struct vcs_package_release r;
+    ZP_CHECK("show: release signs",
+             zp_release(&r, 0xaa, 7u, "rhett/ring-buffer", "MIT", p.root));
+    char *r_hex = zp_release_hex(&r, NULL, NULL);
+    char *m_hex = zp_hex(p.wire, p.wire_len);
+    struct zp_cmd c;
+    zp_publish_input(&c, dd, r_hex, m_hex, pkgdir);
+    zcl_native_handle_zcode_package_publish_commit(&c.request, &c.reply);
+    ZP_CHECK("show: package commits",
+             c.reply.status == ZCL_COMMAND_STATUS_PASSED);
+    zp_cmd_free(&c);
+
+    zp_cmd_init(&c);
+    (void)json_push_kv_str(&c.input, "datadir", dd);
+    (void)json_push_kv_str(&c.input, "root", p.root_hex);
+    zcl_native_handle_zcode_package_show(&c.request, &c.reply);
+    const struct json_value *rel = json_get(&c.reply.data, "release");
+    ZP_CHECK("show: full release record",
+             c.reply.status == ZCL_COMMAND_STATUS_PASSED && rel &&
+             strcmp(json_get_str(json_get(rel, "name")),
+                    "rhett/ring-buffer") == 0 &&
+             strcmp(json_get_str(json_get(rel, "license")), "MIT") == 0 &&
+             json_get_int(json_get(rel, "publisher_sequence")) == 7 &&
+             json_get_str(json_get(rel, "reward_address")) != NULL &&
+             json_get_str(json_get(rel, "publisher")) != NULL &&
+             json_get_str(json_get(rel, "chain_id")) != NULL);
+    ZP_CHECK("show: manifest summary",
+             json_get_bool(json_get(&c.reply.data, "manifest_present")) &&
+             json_get_int(json_get(&c.reply.data, "files")) == 3 &&
+             json_get_bool(json_get(&c.reply.data, "license_present")) &&
+             json_get_int(json_get(&c.reply.data, "bytes")) > 0 &&
+             json_get_int(json_get(&c.reply.data, "chunks")) == 3);
+    const struct json_value *page =
+        json_get(&c.reply.data, "files_page");
+    const struct json_value *f0 = page ? json_at(page, 0) : NULL;
+    ZP_CHECK("show: bounded file page, sorted paths",
+             f0 &&
+             strcmp(json_get_str(json_get(f0, "path")), "LICENSE") == 0 &&
+             !json_get_bool(json_get(&c.reply.data, "files_truncated")));
+    zp_cmd_free(&c);
+
+    /* Unknown root: FAILED naming UNKNOWN_PACKAGE. */
+    char unknown[65];
+    memset(unknown, '9', 64);
+    unknown[64] = '\0';
+    zp_cmd_init(&c);
+    (void)json_push_kv_str(&c.input, "datadir", dd);
+    (void)json_push_kv_str(&c.input, "root", unknown);
+    zcl_native_handle_zcode_package_show(&c.request, &c.reply);
+    ZP_CHECK("show: unknown root rejected",
+             c.reply.status == ZCL_COMMAND_STATUS_FAILED &&
+             strcmp(c.reply.error.code, "UNKNOWN_PACKAGE") == 0);
+    zp_cmd_free(&c);
+
+    /* Malformed root: FAILED naming BAD_ROOT. */
+    zp_cmd_init(&c);
+    (void)json_push_kv_str(&c.input, "datadir", dd);
+    (void)json_push_kv_str(&c.input, "root", "xyz");
+    zcl_native_handle_zcode_package_show(&c.request, &c.reply);
+    ZP_CHECK("show: bad root hex rejected",
+             c.reply.status == ZCL_COMMAND_STATUS_FAILED &&
+             strcmp(c.reply.error.code, "BAD_ROOT") == 0);
+    zp_cmd_free(&c);
+
+    free(r_hex);
+    free(m_hex);
+    zp_pkg_free(&p);
+    test_rm_rf_recursive(dd);
+    return failures;
+}
+
+/* ── 9: index rebuild from the CAS (simulated crash) ────────────────── */
+static int t_index_rebuild(void)
+{
+    int failures = 0;
+    chain_params_select(CHAIN_MAIN);
+    char dd[256];
+    test_make_tmpdir(dd, sizeof(dd), "zcode_publish", "rebuild");
+    ZP_CHECK("rebuild: two packages commit",
+             zp_commit_one(dd, 0xaa, 1u, "rhett/alpha", "MIT", 11) &&
+             zp_commit_one(dd, 0xbb, 1u, "bob/beta", "ISC", 12));
+
+    char zcode_dir[512];
+    snprintf(zcode_dir, sizeof(zcode_dir), "%s/zcode", dd);
+
+    /* Build, discard (the "crash": every in-memory copy is gone), rebuild
+     * from the persisted CAS bytes — the two projections must agree entry
+     * for entry, because the index holds no truth of its own. */
+    struct vcs_package_index *a = vcs_package_index_build(zcode_dir);
+    ZP_CHECK("rebuild: first build", a != NULL);
+    struct vcs_package_index *b = vcs_package_index_build(zcode_dir);
+    ZP_CHECK("rebuild: post-crash build", b != NULL);
+    if (a && b) {
+        ZP_CHECK("rebuild: same entry count",
+                 vcs_package_index_count(a) == 2 &&
+                 vcs_package_index_count(b) == 2);
+        bool same = vcs_package_index_count(a) ==
+                    vcs_package_index_count(b);
+        for (size_t i = 0;
+             same && i < vcs_package_index_count(a); i++) {
+            const struct vcs_package_index_entry *ea =
+                vcs_package_index_at(a, i);
+            const struct vcs_package_index_entry *eb =
+                vcs_package_index_at(b, i);
+            same = strcmp(ea->release_id_hex, eb->release_id_hex) == 0 &&
+                   strcmp(ea->name, eb->name) == 0 &&
+                   strcmp(ea->package_root_hex, eb->package_root_hex) == 0 &&
+                   ea->file_count == eb->file_count &&
+                   ea->total_bytes == eb->total_bytes &&
+                   ea->manifest_present == eb->manifest_present;
+        }
+        ZP_CHECK("rebuild: projections agree entry for entry", same);
+    }
+    vcs_package_index_free(a);
+    vcs_package_index_free(b);
+
+    /* find_root on the rebuilt index (search-by-root used by show). */
+    struct vcs_package_index *idx = vcs_package_index_build(zcode_dir);
+    ZP_CHECK("rebuild: third build", idx != NULL);
+    if (idx) {
+        const struct vcs_package_index_entry *e0 =
+            vcs_package_index_at(idx, 0);
+        uint8_t root[32];
+        bool decoded = false;
+        if (e0 && strlen(e0->package_root_hex) == 64) {
+            decoded = true;
+            for (size_t i = 0; i < 32; i++) {
+                unsigned v;
+                (void)sscanf(e0->package_root_hex + 2 * i, "%2x", &v);
+                root[i] = (uint8_t)v;
+            }
+        }
+        const struct vcs_package_index_entry *found =
+            decoded ? vcs_package_index_find_root(idx, root) : NULL;
+        ZP_CHECK("rebuild: find_root round-trips",
+                 found && e0 &&
+                 strcmp(found->release_id_hex, e0->release_id_hex) == 0);
+        vcs_package_index_free(idx);
+    }
+
+    test_rm_rf_recursive(dd);
+    return failures;
+}
+
+int test_zcode_publish(void)
+{
+    printf("\n=== zcode_publish: publication + local search ===\n");
+    int failures = 0;
+    failures += t_plan_happy();
+    failures += t_license_rules();
+    failures += t_structure_rules();
+    failures += t_chunk_rules();
+    failures += t_commit_roundtrip();
+    failures += t_acceptance_replay();
+    failures += t_search();
+    failures += t_show();
+    failures += t_index_rebuild();
+    printf("=== zcode_publish complete: %d failure(s) ===\n", failures);
+    return failures;
+}

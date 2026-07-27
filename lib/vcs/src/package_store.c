@@ -585,15 +585,26 @@ enum vcs_package_store_result vcs_package_store_put_release(
         vcs_package_accept(store->accept, release);
     if (accept_out)
         *accept_out = ar;
+    /* Slice 3 diagnostics: record the last acceptance outcome even when it
+     * rejects (the id is best-effort — an invalid envelope may have none). */
+    uint8_t id[VCS_PACKAGE_RELEASE_ID_BYTES];
+    bool have_id =
+        vcs_package_release_id(release, id) == VCS_PACKAGE_RELEASE_OK;
+    store->last_accept_set = true;
+    store->last_accept = ar;
+    if (have_id)
+        memcpy(store->last_accept_id, id, 32);
     if (ar != VCS_PACKAGE_ACCEPT_OK && ar != VCS_PACKAGE_ACCEPT_DUPLICATE) {
         pthread_mutex_unlock(&store->lock);
         return VCS_PACKAGE_STORE_ERR_ACCEPT;
     }
-    uint8_t id[VCS_PACKAGE_RELEASE_ID_BYTES];
+    if (!have_id) {
+        pthread_mutex_unlock(&store->lock);
+        return VCS_PACKAGE_STORE_ERR_ALLOC;
+    }
     uint8_t *wire = NULL;
     size_t wire_len = 0;
-    if (vcs_package_release_id(release, id) != VCS_PACKAGE_RELEASE_OK ||
-        vcs_package_release_serialize(release, &wire, &wire_len) !=
+    if (vcs_package_release_serialize(release, &wire, &wire_len) !=
             VCS_PACKAGE_RELEASE_OK) {
         pthread_mutex_unlock(&store->lock);
         return VCS_PACKAGE_STORE_ERR_ALLOC;
@@ -870,6 +881,20 @@ bool vcs_package_store_dump_state_json(struct json_value *out,
                      (int64_t)store->gc_orphans_total);
     json_push_kv_int(out, "quota_rejects_total",
                      (int64_t)store->quota_rejects_total);
+    /* Slice 3 publication state: persisted release envelopes on disk and
+     * the last acceptance outcome this store produced. */
+    json_push_kv_int(out, "releases_total",
+                     (int64_t)store_releases_count(store));
+    if (store->last_accept_set) {
+        json_push_kv_str(out, "last_release_accept",
+                         vcs_package_accept_result_string(
+                             store->last_accept));
+        char id_hex[65];
+        store_hex_encode(store->last_accept_id, id_hex);
+        json_push_kv_str(out, "last_release_id", id_hex);
+    } else {
+        json_push_kv_str(out, "last_release_accept", "none");
+    }
 
     if (key && key[0]) {
         uint8_t root[32];

@@ -49,7 +49,7 @@ JSON (JSON is display-only).
        `<datadir>/zcode/{manifests,releases,attestations,badges,cas/sha3/aa/,staging/,pins/}`;
        verify-before-store, dedup, atomic rename, crash recovery, never evict pins,
        no credit for unverified bytes, quota enforced before accepting; 64 MiB per-package v1 cap)
-3. [ ] Package publication and local search
+3. [x] Package publication and local search
 4. [ ] Contributor identity + ZNAM pointers
 5. [ ] Declarative C23 build recipe (bounded: public_headers/sources/test_sources/include_dirs/
        defines/allowed system libs = libc,libm,pthread/expected exit/max seconds/max bytes;

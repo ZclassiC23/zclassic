@@ -149,10 +149,10 @@ zclassic23
     └── schema
 ```
 
-The root has six choices: `status`, `core`, `app`, `dev`, `ops`, and
-`discover`. `help` and `search` remain convenience aliases for
-`discover help` and `discover search`, but are not extra ontology branches.
-All other operations live under their owner.
+The root has nine choices: `status`, `core`, `app`, `dev`, `ops`,
+`discover`, `code`, `vault`, and `zcode`. `help` and `search` remain
+convenience aliases for `discover help` and `discover search`, but are not
+extra ontology branches. All other operations live under their owner.
 
 ## 5. Core tree
 
