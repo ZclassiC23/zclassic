@@ -133,7 +133,7 @@ int test_catalog_lag_exceeded(void)
                  blocker_init(&sr, "op_return_index.below_snapshot_seed",
                               "op_return_index", BLOCKER_DEPENDENCY,
                               "test: structural seed floor") &&
-                     blocker_set(&sr));
+                     blocker_set(&sr) == 0);
         struct catalog_index_status frz[1];
         frz[0] = cl_row("op_return_index", -1, 3195000, 3195001, true);
         CL_CHECK("frozen + seed-floor: pass 1 arms (no fire)",
@@ -145,8 +145,11 @@ int test_catalog_lag_exceeded(void)
         CL_CHECK("no lag blocker raised alongside the structural one",
                  !blocker_exists("catalog.op_return_index.lag_exceeded"));
         /* Same freeze WITHOUT the seed blocker still fires (suppression is
-         * specific, not a blanket freeze amnesty). */
+         * specific, not a blanket freeze amnesty). Reset the arm state too:
+         * the suppression path above deliberately leaves the index armed,
+         * so without a reset the first feed here would fire immediately. */
         blocker_reset_for_testing();
+        catalog_lag_exceeded_test_reset();
         CL_CHECK("frozen w/o seed-floor: pass re-arms",
                  !catalog_lag_exceeded_test_feed(frz, 1));
         CL_CHECK("frozen w/o seed-floor: fires (genuine stall)",

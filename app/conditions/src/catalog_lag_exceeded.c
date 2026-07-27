@@ -100,8 +100,14 @@ static bool eval_over(const struct catalog_index_status *rows, size_t n)
         char seed_id[BLOCKER_ID_MAX];
         snprintf(seed_id, sizeof(seed_id), "%s.below_snapshot_seed",
                  w->name ? w->name : "unknown");
-        if (blocker_exists(seed_id))
+        if (blocker_exists(seed_id)) {
+            /* Suppressed = no stall observed — reset the sustain so a later
+             * genuine stall (seed floor crossed, then a real wedge) re-earns
+             * its two-pass confirmation instead of firing on one pass. */
+            atomic_store(&g_over_last_pass, false);
+            atomic_store(&g_armed_name, NULL);
             return false;
+        }
     }
 
     atomic_store(&g_lagging_name, w->name);
