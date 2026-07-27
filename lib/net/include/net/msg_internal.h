@@ -58,6 +58,28 @@ struct block_header;
 bool getheaders_try_append_header(struct byte_stream *body,
                                   const struct block_header *hdr);
 
+/* getheaders serve-path building blocks (msg_headers.c). Non-static so the
+ * offline serve-path regression test (test_getheaders_serve_fallback) can
+ * drive them without a live network; production callers are
+ * process_getheaders' serve loop only.
+ *
+ * getheaders_index_header_servable builds the servable header for `iter`:
+ * in-memory index first, then the flat block file, then the node.db
+ * `blocks` row (the store a snapshot-seeded node still has below its body
+ * floor). A false return names the refusal in the log; it is an
+ * availability/serve verdict, never a validity verdict (no status bits
+ * are mutated).
+ *
+ * getheaders_next_servable_successor walks FORWARD from `parent` past any
+ * unservable entries (guard-bounded) and returns the first servable
+ * successor, or NULL when the chain is exhausted or the guard trips. */
+bool getheaders_index_header_servable(struct msg_processor *mp,
+                                      struct block_index *iter,
+                                      struct block_header *hdr_out);
+struct block_index *getheaders_next_servable_successor(
+    struct msg_processor *mp,
+    struct block_index *parent);
+
 bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
                         struct byte_stream *s);
 bool process_headers(struct msg_processor *mp, struct p2p_node *node,

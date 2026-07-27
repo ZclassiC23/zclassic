@@ -419,6 +419,7 @@ int test_rpc_auth_hardening(void);
 int test_disk_block_io(void);
 int test_msg_handlers(void);
 int test_process_headers_adversarial(void);
+int test_getheaders_serve_fallback(void);
 int test_net_msg_dos(void);
 int test_net_handshake_adversarial(void);
 int test_net_ban_persistence(void);

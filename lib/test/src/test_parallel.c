@@ -203,6 +203,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(boot_coins_anchor_dual_store_recovery) X(make_lint_gates) X(multisig) \
     X(rpc_auth_hardening) \
     X(disk_block_io) X(msg_handlers) X(process_headers_adversarial) \
+    X(getheaders_serve_fallback) \
     X(net_msg_dos) \
     X(net_framing_dos) \
     X(net_handshake_adversarial) \

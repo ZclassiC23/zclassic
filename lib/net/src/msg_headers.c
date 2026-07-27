@@ -14,6 +14,7 @@
 #include "net/fast_sync.h"
 #include "sync/sync_planner.h"
 #include "storage/disk_block_io.h"
+#include "storage/node_db_runtime.h"
 #include "validation/check_block.h"
 #include "validation/process_block.h"
 #include "net/download.h"
@@ -181,15 +182,6 @@ static bool headers_fill_header_from_index(struct msg_processor *mp,
     return true;
 }
 
-static bool headers_reject_reason_permanent(const char *reason)
-{
-    return reason &&
-        (strcmp(reason, "invalid-solution") == 0 ||
-         strcmp(reason, "high-hash") == 0 ||
-         strcmp(reason, "bad-equihash-solution-size") == 0 ||
-         strcmp(reason, "version-too-low") == 0);
-}
-
 static const char *headers_servable_reject_reason(
     struct msg_processor *mp,
     const struct block_index *iter,
@@ -226,7 +218,7 @@ static const char *headers_servable_reject_reason(
     return NULL;
 }
 
-static bool headers_reject_reason_can_retry_disk(const char *reason)
+static bool headers_reject_reason_can_retry_store(const char *reason)
 {
     return reason &&
         (strcmp(reason, "invalid-solution") == 0 ||
@@ -301,16 +293,45 @@ static bool headers_try_disk_header(struct msg_processor *mp,
     return true;
 }
 
-static bool headers_index_header_servable(struct msg_processor *mp,
-                                          struct block_index *iter,
-                                          struct block_header *hdr_out)
+static bool headers_try_node_db_header(struct block_index *iter,
+                                       struct block_header *hdr_out)
+{
+    if (!iter || !hdr_out || !iter->phashBlock)
+        return false;
+
+    /* node.db `blocks` rows carry the full stored header — the 1344-byte
+     * Equihash nSolution included — even below the body floor of a
+     * snapshot-seeded node, whose hydrated in-memory index has no
+     * nSolution and whose flat block files are absent. The loader
+     * hash-binds the row to phashBlock (it recomputes the serialized
+     * header hash), so a true return is the real connected header — the
+     * same bytes the disk-file retry would have produced, from the one
+     * store a snapshot seed DOES have. Pattern follows
+     * header_from_node_db_block (app/jobs/src/validate_headers_validator.c);
+     * the port keeps lib/net from naming app/models directly. */
+    /* raw-return-ok: the caller (getheaders_index_header_servable) logs the
+     * named serve refusal; this guard only selects the fallback source. */
+    if (!node_db_runtime_load_header_by_hash_height(
+            iter->nHeight, iter->phashBlock->data, hdr_out))
+        return false;
+
+    /* Heal the in-memory entry so later serves of this header take the
+     * hot in-memory path instead of re-reading node.db. */
+    headers_refresh_index_from_header(iter, hdr_out);
+    return true;
+}
+
+/* See net/msg_internal.h. */
+bool getheaders_index_header_servable(struct msg_processor *mp,
+                                      struct block_index *iter,
+                                      struct block_header *hdr_out)
 {
     struct block_header hdr;
     if (!headers_fill_header_from_index(mp, iter, &hdr))
         return false;
 
     const char *reason = headers_servable_reject_reason(mp, iter, &hdr);
-    if (reason && headers_reject_reason_can_retry_disk(reason)) {
+    if (reason && headers_reject_reason_can_retry_store(reason)) {
         struct block_header disk_hdr;
         if (headers_try_disk_header(mp, iter, &disk_hdr)) {
             const char *disk_reason =
@@ -323,6 +344,19 @@ static bool headers_index_header_servable(struct msg_processor *mp,
             reason = disk_reason;
         }
     }
+    if (reason && headers_reject_reason_can_retry_store(reason)) {
+        struct block_header ndb_hdr;
+        if (headers_try_node_db_header(iter, &ndb_hdr)) {
+            const char *ndb_reason =
+                headers_servable_reject_reason(mp, iter, &ndb_hdr);
+            if (!ndb_reason) {
+                if (hdr_out)
+                    *hdr_out = ndb_hdr;
+                return true;
+            }
+            reason = ndb_reason;
+        }
+    }
     if (reason) {
         char hex[65] = {0};
         if (iter && iter->phashBlock)
@@ -331,8 +365,14 @@ static bool headers_index_header_servable(struct msg_processor *mp,
                  "getheaders: refusing to serve header %s h=%d reason=%s",
                  hex[0] ? hex : "(unknown)", iter ? iter->nHeight : -1,
                  reason);
-        if (iter && headers_reject_reason_permanent(reason))
-            iter->nStatus |= BLOCK_FAILED_VALID;
+        /* A serve refusal is NOT a validity verdict: every reason here can
+         * arise from data UNAVAILABILITY (a hydrated index entry with no
+         * nSolution and no reachable store yields "invalid-solution" for a
+         * perfectly valid block), so marking BLOCK_FAILED_VALID from this
+         * path poisons good index entries — and the persisted-FAILED
+         * reconcile then keeps them failed across reboots. Validity
+         * verdicts belong to the accept/validate paths; the serve path
+         * only names why it cannot serve. */
         return false;
     }
 
@@ -341,22 +381,31 @@ static bool headers_index_header_servable(struct msg_processor *mp,
     return true;
 }
 
-static struct block_index *headers_next_servable_successor(
+/* See net/msg_internal.h. */
+struct block_index *getheaders_next_servable_successor(
     struct msg_processor *mp,
     struct block_index *parent)
 {
     if (!mp || !parent)
         return NULL;
 
+    /* Walk FORWARD, never re-query the same parent: each iteration moves
+     * the cursor to the successor of the last unservable entry, so an
+     * unservable span (e.g. hydrated entries below the body floor whose
+     * node.db rows are also gone) is skipped up to the guard bound and
+     * the walk always makes progress toward the tip. Pre-fix the loop
+     * re-ran main_state_best_known_successor(parent) with an unchanged
+     * `parent`, so the same unservable entry came back every iteration
+     * and the serve ended with a 0-header reply. */
+    struct block_index *cursor = parent;
     for (int guard = 0; guard < 64; guard++) {
         struct block_index *next =
-            main_state_best_known_successor(mp->main_state, parent);
+            main_state_best_known_successor(mp->main_state, cursor);
         if (!next)
             return NULL;
-        if (headers_index_header_servable(mp, next, NULL))
+        if (getheaders_index_header_servable(mp, next, NULL))
             return next;
-        if (!(next->nStatus & BLOCK_FAILED_MASK))
-            return NULL;
+        cursor = next;
     }
     LOG_WARN("headers",
              "getheaders: successor guard exhausted at parent h=%d",
@@ -488,9 +537,10 @@ bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
 
     for (struct block_index *it = iter; it && count < max_headers; ) {
         struct block_header hdr;
-        if (!headers_index_header_servable(mp, it, &hdr)) {
+        if (!getheaders_index_header_servable(mp, it, &hdr)) {
             struct block_index *parent = it->pprev;
-            it = parent ? headers_next_servable_successor(mp, parent) : NULL;
+            it = parent ? getheaders_next_servable_successor(mp, parent)
+                        : NULL;
             continue;
         }
         if (!getheaders_try_append_header(&body, &hdr))
@@ -499,7 +549,7 @@ bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
         if (!uint256_is_null(&hash_stop) && it->phashBlock &&
             uint256_eq(it->phashBlock, &hash_stop))
             break;
-        it = headers_next_servable_successor(mp, it);
+        it = getheaders_next_servable_successor(mp, it);
     }
 
     struct byte_stream headers;

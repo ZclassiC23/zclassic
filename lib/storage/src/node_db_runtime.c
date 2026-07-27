@@ -56,3 +56,12 @@ int node_db_runtime_utxo_max_height(struct node_db *ndb)
         return 0;
     return p->utxo_max_height(ndb);
 }
+
+bool node_db_runtime_load_header_by_hash_height(
+    int height, const uint8_t hash[32], struct block_header *out)
+{
+    const struct node_db_runtime_port *p = port_get();
+    if (!p || !p->load_header_by_hash_height)
+        return false;
+    return p->load_header_by_hash_height(height, hash, out);
+}

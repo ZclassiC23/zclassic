@@ -1590,6 +1590,7 @@ int main(int argc, char **argv)
     failures += test_disk_block_io();
     failures += test_msg_handlers();
     failures += test_process_headers_adversarial();
+    failures += test_getheaders_serve_fallback();
     failures += test_net_handshake_adversarial();
     failures += test_net_ban_persistence();
     failures += test_net_census();

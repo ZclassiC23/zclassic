@@ -3,6 +3,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "config/runtime.h"
+#include "models/block.h"
 #include "models/database.h"
 #include "models/tx_index.h"
 #include "services/chain_activation_service.h"
@@ -113,6 +114,17 @@ int app_runtime_node_db_utxo_max_height(struct node_db *ndb)
     return max_height;
 }
 
+/* node_db_runtime_port.load_header_by_hash_height — the composition root's
+ * side of the header-by-(height,hash) read port. Delegates to the models
+ * loader, which hash-binds the stored row (recomputes the serialized
+ * header hash against `hash`) before returning it. */
+static bool app_runtime_load_header_by_hash_height(
+    int height, const uint8_t hash[32], struct block_header *out)
+{
+    return db_block_load_header_by_hash_height(app_runtime_node_db(),
+                                               height, hash, out);
+}
+
 bool app_runtime_node_db_tx_index_find(struct node_db *ndb,
                                        const uint8_t txid[32],
                                        struct app_runtime_tx_index_hit *out)
@@ -192,6 +204,7 @@ static const struct node_db_runtime_port g_node_db_runtime_port = {
     .handle_open = app_runtime_node_db_handle_open,
     .state_set = app_runtime_node_db_state_set,
     .utxo_max_height = app_runtime_node_db_utxo_max_height,
+    .load_header_by_hash_height = app_runtime_load_header_by_hash_height,
 };
 
 __attribute__((constructor))

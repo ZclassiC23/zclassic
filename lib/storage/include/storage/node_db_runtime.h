@@ -26,8 +26,10 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 struct node_db;
+struct block_header;
 
 /* Implementations supplied by the composition root. Every member may be
  * NULL; each accessor below degrades to its fail-closed answer. */
@@ -42,6 +44,17 @@ struct node_db_runtime_port {
                       const void *value, size_t len);
     /* MAX(height) over the utxos table, 0 when unavailable. */
     int (*utxo_max_height)(struct node_db *ndb);
+    /* The complete canonical header (fixed fields + Equihash solution) of
+     * the connected block at exactly (height, hash), hash-bound by the
+     * implementation: a true return means the stored row recomputes to
+     * `hash`. False when no usable row exists (no node.db, no connected
+     * row, empty/oversize solution column). Read-only; fetches the live
+     * handle itself. This is the serve/validate source for headers whose
+     * flat block file is absent (snapshot-seeded nodes below the body
+     * floor) but whose node.db `blocks` row still carries the full
+     * stored header. */
+    bool (*load_header_by_hash_height)(int height, const uint8_t hash[32],
+                                       struct block_header *out);
 };
 
 /* Install the port. `port` is borrowed and must have static storage
@@ -53,5 +66,7 @@ bool node_db_runtime_handle_open(const struct node_db *ndb);
 bool node_db_runtime_state_set(struct node_db *ndb, const char *key,
                                const void *value, size_t len);
 int node_db_runtime_utxo_max_height(struct node_db *ndb);
+bool node_db_runtime_load_header_by_hash_height(
+    int height, const uint8_t hash[32], struct block_header *out);
 
 #endif
