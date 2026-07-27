@@ -1895,6 +1895,36 @@ int test_validate_headers_stage(void)
         vh_teardown(dir, &ms, &sc);
     }
 
+    /* Genesis exemption: the loader's synthetic genesis entry (inserted on
+     * an empty index with nVersion=0 and no solution — block_index_loader.c)
+     * must PASS the validator by construction — its hash IS the consensus
+     * pin — while a non-genesis block in the exact same state must still
+     * fail version-too-low. Regression for the 2026-07-27 wipe-to-tip
+     * reducer wedge (validate_headers terminal-failed h=0, proof_validate
+     * dead-waited, H*=0 forever). */
+    {
+        const struct chain_params *cp = chain_params_get();
+        VH_CHECK("genesis-exempt: chain params available", cp != NULL);
+        struct block_index gen;
+        memset(&gen, 0, sizeof(gen));
+        gen.hashBlock = cp->consensus.hashGenesisBlock;
+        gen.phashBlock = &gen.hashBlock;
+        gen.nHeight = 0;
+        gen.nVersion = 0;                 /* the synthetic stub's poison */
+        char reason[VH_MAX_REASON] = {0};
+        VH_CHECK("genesis-exempt: v0 synthetic genesis validates",
+                 validate_headers_default_validator(&gen, NULL, reason,
+                                                  sizeof(reason), NULL));
+
+        struct block_index nongen = gen;
+        nongen.hashBlock.data[0] ^= 0xff; /* same state, no longer genesis */
+        memset(reason, 0, sizeof(reason));
+        VH_CHECK("genesis-exempt: v0 non-genesis still fails version-too-low",
+                 !validate_headers_default_validator(&nongen, NULL, reason,
+                                                     sizeof(reason), NULL) &&
+                     strcmp(reason, "version-too-low") == 0);
+    }
+
     printf("validate_headers_stage: %d failures\n", failures);
     return failures;
 }

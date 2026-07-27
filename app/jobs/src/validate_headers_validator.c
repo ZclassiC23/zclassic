@@ -476,18 +476,28 @@ bool validate_headers_default_validator(const struct block_index *bi,
         return false;
     }
 
+    /* (0) Genesis is exempt from contextual header checks — its validity is
+     * pinned by consensus.hashGenesisBlock itself (same exemption as
+     * check_block.c:301 and accept_block_header.c:221,319). Without this,
+     * the loader's synthetic genesis entry (inserted on an empty index with
+     * nVersion=0, app/services/src/block_index_loader.c) terminal-fails the
+     * version gate and the reducer dead-waits at H*=0 forever — the
+     * 2026-07-27 wipe-to-tip stall's reducer-side wedge. */
+    const struct chain_params *cp = chain_params_get();
+    if (!cp) {
+        snprintf(out_reason, out_reason_size, "no-chain-params");
+        return false;
+    }
+    if (uint256_eq(bi->phashBlock, &cp->consensus.hashGenesisBlock))
+        return true;
+
     /* (1) version. */
     if (bi->nVersion < MIN_BLOCK_VERSION) {
         snprintf(out_reason, out_reason_size, "version-too-low");
         return false;
     }
 
-    /* (2) PoW target. Cheap — no disk. */
-    const struct chain_params *cp = chain_params_get();
-    if (!cp) {
-        snprintf(out_reason, out_reason_size, "no-chain-params");
-        return false;
-    }
+    /* (2) PoW target. Cheap — no disk. (cp resolved at (0) above.) */
 
     /* (3) Header source resolution — ONE ordered resolver, five sources.
      * A source can produce a terminal PoW/Equihash verdict only after its
