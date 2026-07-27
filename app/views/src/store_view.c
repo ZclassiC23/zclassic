@@ -12,6 +12,8 @@
 
 #include "views/store_internal.h"
 #include "views/format_helpers.h"
+#include "views/site_css.h"
+#include "views/site_layout.h"
 #include "controllers/zslp_controller.h"
 #include "models/database.h"
 #include "models/store_blob.h"
@@ -212,48 +214,34 @@ const char *store_get_onion_address(void)
     return onion_service_get_address();
 }
 
-/* HTML body start (no HTTP headers — those are added by store_wrap_response) */
+/* HTML body start (no HTTP headers — those are added by store_wrap_response).
+ * Design-system head (site_css inlined — one round trip over the onion) +
+ * global site nav + the Store section subnav, which also carries this node's
+ * onion address when Tor has published one. Pages close with html_body_end. */
 int html_body_start(char *buf, size_t max, const char *title)
 {
     const char *onion = store_get_onion_address();
-    return snprintf(buf, max,
-        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-        "<title>%s</title><style>"
-        "body{font-family:monospace;background:#0a0a0a;color:#e0e0e0;"
-        "max-width:800px;margin:0 auto;padding:20px}"
-        "h1{color:#00ff88}h2{color:#00cc66}"
-        "a{color:#00aaff;text-decoration:none}"
-        ".header-nav{display:flex;align-items:center;gap:16px;"
-        "border-bottom:1px solid #333;padding-bottom:12px;margin-bottom:16px;"
-        "flex-wrap:wrap}"
-        ".header-nav a{font-size:13px}"
-        ".onion-id{font-size:11px;color:#666;word-break:break-all}"
-        ".product{background:#1a1a1a;padding:20px;margin:15px 0;"
-        "border-radius:8px;border-left:3px solid #00ff88}"
-        ".price{color:#00ff88;font-size:20px;font-weight:bold}"
-        ".btn{display:inline-block;background:#00ff88;color:#0a0a0a;"
-        "padding:10px 20px;border-radius:4px;font-weight:bold;margin-top:10px}"
-        ".addr{background:#111;padding:10px;border-radius:4px;word-break:break-all;"
-        "font-size:12px;margin:10px 0}"
-        ".status{padding:8px 16px;border-radius:4px;display:inline-block}"
-        ".pending{background:#333;color:#ff8800}"
-        ".paid{background:#1a3a1a;color:#00ff88}"
-        ".failed{background:#3a1a1a;color:#ff4444}"
-        "input{background:#1a1a1a;color:#e0e0e0;border:1px solid #333;"
-        "padding:8px;font-family:monospace;width:100%%;margin:5px 0;"
-        "box-sizing:border-box}"
-        "</style></head><body>"
-        "<div class='header-nav'>"
-        "<h1 style='margin:0'><a href='/store'>ZCL Store</a></h1>"
-        "<a href='/'>Home</a>"
+    size_t off = site_emit_head(buf, max, title, site_css, "measure");
+    off += site_emit_global_nav(buf + off, max - off, "store");
+    SITE_APPEND(off, buf, max,
+        "<nav class='nav' aria-label='Store sections'>"
         "<a href='/store/products'>Products</a>"
-        "<a href='/store/orders'>Orders</a>"
-        "%s%s%s"
-        "</div>",
-        title,
-        onion ? "<div class='onion-id'>" : "",
-        onion ? onion : "",
-        onion ? "</div>" : "");
+        "<a href='/store/orders'>Orders</a>");
+    if (onion)
+        SITE_APPEND(off, buf, max,
+            "<span class='meta mono' style='margin-left:auto'>%s</span>",
+            onion);
+    SITE_APPEND(off, buf, max, "</nav><main id='content'>");
+    return (int)off;
+}
+
+/* HTML body end: </main> + shared site footer. */
+int html_body_end(char *buf, size_t max)
+{
+    size_t off = 0;
+    SITE_APPEND(off, buf, max, "</main>");
+    off += site_emit_footer(buf + off, max - off, NULL);
+    return (int)off;
 }
 
 /* Wrap an HTML body with HTTP headers including Content-Length. */
@@ -381,13 +369,13 @@ size_t serve_order_index(sqlite3 *db, uint8_t *resp, size_t max)
 {
     struct node_db ndb = { .db = db, .open = true };
     struct db_store_order_summary orders[50];
-    char body[16384];
+    char body[32768];
     size_t off = 0;
     int n = html_body_start(body, sizeof(body), "Orders");
     if (n > 0) off = (size_t)n;
 
     n = snprintf(body + off, sizeof(body) - off,
-        "<h2>Recent Orders</h2>");
+        "<h1>Recent Orders</h1>");
     if (n > 0) off += (size_t)n;
 
     int count = db_store_order_list_recent(&ndb, orders,
@@ -412,11 +400,11 @@ size_t serve_order_index(sqlite3 *db, uint8_t *resp, size_t max)
 
     if (count == 0) {
         n = snprintf(body + off, sizeof(body) - off,
-            "<p style='color:#666'>No orders yet.</p>");
+            "<p class='muted'>No orders yet.</p>");
         if (n > 0) off += (size_t)n;
     }
 
-    n = snprintf(body + off, sizeof(body) - off, "</body></html>");
+    n = html_body_end(body + off, sizeof(body) - off);
     if (n > 0) off += (size_t)n;
     return store_html_response(body, off, resp, max);
 }
@@ -426,13 +414,13 @@ size_t serve_product_list(sqlite3 *db, uint8_t *resp, size_t max)
 {
     struct node_db ndb = { .db = db, .open = true };
     struct db_store_product products[64];
-    char body[16384];
+    char body[32768];
     size_t off = 0;
     int n = html_body_start(body, sizeof(body), "ZCL Store");
     if (n > 0) off = (size_t)n;
 
     n = snprintf(body + off, sizeof(body) - off,
-        "<h2>Products</h2>");
+        "<h1>Products</h1>");
     if (n > 0) off += (size_t)n;
 
     int count = db_store_product_list_active(&ndb, products,
@@ -457,12 +445,12 @@ size_t serve_product_list(sqlite3 *db, uint8_t *resp, size_t max)
 
     if (count == 0) {
         n = snprintf(body + off, sizeof(body) - off,
-            "<p style='color:#666'>No products yet. "
+            "<p class='muted'>No products yet. "
             "Add products to the SQLite database.</p>");
         if (n > 0) off += (size_t)n;
     }
 
-    n = snprintf(body + off, sizeof(body) - off, "</body></html>");
+    n = html_body_end(body + off, sizeof(body) - off);
     if (n > 0) off += (size_t)n;
 
     return store_html_response(body, off, resp, max);
@@ -490,10 +478,10 @@ size_t serve_product_detail(sqlite3 *db, int64_t product_id,
     html_escape(safe_token, sizeof(safe_token),
                 product.token_id[0] ? product.token_id : "TOKENS");
 
-    /* Sized for the base page plus the ~5 KB embedded PoW solver
-     * (STORE_ORDER_POW_JS) — the other product pages stay at the
-     * smaller 8192 shared elsewhere in this file. */
-    char body[16384];
+    /* Sized for the design-system CSS (~14 KB) plus the ~5 KB embedded PoW
+     * solver (STORE_ORDER_POW_JS) — the other product pages stay at the
+     * smaller shared buffers used elsewhere in this file. */
+    char body[40960];
     size_t off = 0;
     int n = html_body_start(body, sizeof(body), safe_name);
     if (n > 0) off = (size_t)n;
@@ -517,8 +505,8 @@ size_t serve_product_detail(sqlite3 *db, int64_t product_id,
     int64_t pow_ts = pow_ch.server_time;
 
     n = snprintf(body + off, sizeof(body) - off,
+        "<h1>%s</h1>"
         "<div class='product'>"
-        "<h2>%s</h2>"
         "<p>%s</p>"
         "<div class='price'>%s ZCL</div>"
         "<p>You will receive <b>%lld</b> %s tokens.</p>"
@@ -530,12 +518,12 @@ size_t serve_product_detail(sqlite3 *db, int64_t product_id,
         "<input type='hidden' name='csrf_token' value='%s'>"
         "<input type='hidden' name='pow_ts' value='%lld'>"
         "<input type='hidden' name='pow_nonce' id='pow_nonce_field' value=''>"
-        "<label>Your t-address (to receive tokens):</label>"
-        "<input type='text' name='customer_addr' placeholder='t1...' required>"
-        "<br><br>"
+        "<label for='orderAddr'>Your t-address (to receive tokens)</label>"
+        "<input type='text' id='orderAddr' name='customer_addr' placeholder='t1...' required>"
+        "<br>"
         "<button type='submit' class='btn' id='buyBtn'>Generate Payment Address</button>"
-        "<p id='powStatus' style='color:#888;font-size:12px'></p>"
-        "<noscript><p style='color:#f80'>JavaScript is required to solve "
+        "<p id='powStatus' class='meta'></p>"
+        "<noscript><p class='pill pill-warn'>JavaScript is required to solve "
         "the anti-flood proof-of-work puzzle in your browser. Scripted "
         "buyers may instead solve it directly: SHA3-256(seed || token || "
         "timestamp || nonce) must have %d leading zero bits, where "
@@ -546,8 +534,7 @@ size_t serve_product_detail(sqlite3 *db, int64_t product_id,
         "</form>"
         "</div>"
         "<p><a href='/store/products'>&larr; Back to store</a></p>"
-        "<script>%s%s</script>"
-        "</body></html>",
+        "<script>%s%s</script>",
         safe_name,
         safe_desc,
         detail_price,
@@ -565,6 +552,9 @@ size_t serve_product_detail(sqlite3 *db, int64_t product_id,
         pow_ch.token_hex,
         STORE_ORDER_POW_JS_1,
         STORE_ORDER_POW_JS_2);
+    if (n > 0) off += (size_t)n;
+
+    n = html_body_end(body + off, sizeof(body) - off);
     if (n > 0) off += (size_t)n;
 
     return store_html_response(body, off, resp, max);
@@ -585,7 +575,7 @@ size_t serve_order_status(sqlite3 *db, int64_t order_id,
                                      resp, max);
     }
 
-    char body[8192];
+    char body[24576];
     size_t off = 0;
     int n = html_body_start(body, sizeof(body), "Order Status");
     if (n > 0) off = (size_t)n;
@@ -611,7 +601,7 @@ size_t serve_order_status(sqlite3 *db, int64_t order_id,
     format_zcl_price(status_price, sizeof(status_price), order.amount_zatoshi);
 
     n = snprintf(body + off, sizeof(body) - off,
-        "<h2>Order #%lld</h2>"
+        "<h1>Order #%lld</h1>"
         "<div class='product'>"
         "<h3>%s</h3>"
         "<div class='status %s'>%s</div>"
@@ -621,7 +611,7 @@ size_t serve_order_status(sqlite3 *db, int64_t order_id,
         "%s%s%s%s%s%s"
         "<p><a href='/store/orders/%lld'>Refresh</a> | "
         "<a href='/store/orders'>&larr; Back to orders</a></p>"
-        "</div></body></html>",
+        "</div>",
         (long long)order_id,
         safe_product,
         store_order_status_class(order.status),
@@ -636,6 +626,9 @@ size_t serve_order_status(sqlite3 *db, int64_t order_id,
         order.mint_txid[0] ? safe_mtxid : "",
         order.mint_txid[0] ? "</code></p>" : "",
         (long long)order_id);
+    if (n > 0) off += (size_t)n;
+
+    n = html_body_end(body + off, sizeof(body) - off);
     if (n > 0) off += (size_t)n;
 
     return store_html_response(body, off, resp, max);
@@ -655,24 +648,23 @@ size_t serve_gated_content(sqlite3 *db, const char *customer_addr,
                 customer_addr ? customer_addr : "");
 
     if (!store_check_token_access(datadir, customer_addr, token_id, required)) {
-        char body[2048];
-        int blen = snprintf(body, sizeof(body),
-            "<!DOCTYPE html><html><head><style>"
-            "body{font-family:monospace;background:#0a0a0a;color:#e0e0e0;"
-            "max-width:800px;margin:0 auto;padding:40px}"
-            "h1{color:#ff4444}a{color:#00aaff;text-decoration:none}"
-            "</style></head><body>"
+        char body[24576];
+        size_t off = 0;
+        int n = html_body_start(body, sizeof(body), "Access Denied");
+        if (n > 0) off = (size_t)n;
+        n = snprintf(body + off, sizeof(body) - off,
             "<h1>Access Denied</h1>"
+            "<div class='card'>"
             "<p>This service requires %llu %s tokens.</p>"
             "<p>Your balance: %llu</p>"
-            "<p><a href='/store'>&larr; Get tokens</a> | "
-            "<a href='/'>Home</a></p>"
-            "</body></html>",
+            "<p><a href='/store'>&larr; Get tokens</a></p>"
+            "</div>",
             (unsigned long long)required, safe_token,
             (unsigned long long)balance);
-        if (blen < 0) blen = 0;
-        return store_error_response("403 Forbidden",
-            body, (size_t)blen, resp, max);
+        if (n > 0) off += (size_t)n;
+        n = html_body_end(body + off, sizeof(body) - off);
+        if (n > 0) off += (size_t)n;
+        return store_error_response("403 Forbidden", body, off, resp, max);
     }
 
     /* Customer holds the token. If the product behind this token attached
@@ -712,60 +704,52 @@ size_t serve_gated_content(sqlite3 *db, const char *customer_addr,
             char hex[2 * 32 + 1];
             for (int i = 0; i < 32; i++)
                 snprintf(hex + i * 2, 3, "%02x", product.content_hash[i]);
-            char big_body[2048];
-            int blen = snprintf(big_body, sizeof(big_body),
-                "<!DOCTYPE html><html><head><style>"
-                "body{font-family:monospace;background:#0a0a0a;color:#e0e0e0;"
-                "max-width:800px;margin:0 auto;padding:40px}"
-                "h1{color:#00ff88}a{color:#00aaff;text-decoration:none}"
-                ".card{background:#1a1a1a;padding:20px;margin:15px 0;"
-                "border-radius:8px;border-left:3px solid #00ff88}"
-                "code{word-break:break-all}"
-                "</style></head><body>"
+            char big_body[24576];
+            size_t boff = 0;
+            int bn = html_body_start(big_body, sizeof(big_body),
+                                     "Premium Content");
+            if (bn > 0) boff = (size_t)bn;
+            bn = snprintf(big_body + boff, sizeof(big_body) - boff,
                 "<h1>Premium Content</h1>"
                 "<div class='card'>"
                 "<p>Welcome, %s</p>"
                 "<p>This download is %lld bytes — too large to serve inline "
                 "over the onion path (max %d bytes). Chunked download is a "
                 "future extension.</p>"
-                "<p>Content hash (SHA3-256):<br><code>%s</code></p>"
+                "<p>Content hash (SHA3-256):</p><div class='addr'>%s</div>"
                 "</div>"
-                "<p><a href='/store'>&larr; Back to store</a> | "
-                "<a href='/'>Home</a></p>"
-                "</body></html>",
+                "<p><a href='/store'>&larr; Back to store</a></p>",
                 safe_addr,
                 (long long)blob_size,
                 STORE_BLOB_INLINE_MAX,
                 hex);
-            if (blen < 0) blen = 0;
-            return store_html_response(big_body, (size_t)blen, resp, max);
+            if (bn > 0) boff += (size_t)bn;
+            bn = html_body_end(big_body + boff, sizeof(big_body) - boff);
+            if (bn > 0) boff += (size_t)bn;
+            return store_html_response(big_body, boff, resp, max);
         }
         /* Product references a blob that isn't present — fall through to
          * the access-granted page rather than 500. */
     }
 
     /* No file payload — emit the existing "access granted" page. */
-    char body[2048];
-    int blen = snprintf(body, sizeof(body),
-        "<!DOCTYPE html><html><head><style>"
-        "body{font-family:monospace;background:#0a0a0a;color:#e0e0e0;"
-        "max-width:800px;margin:0 auto;padding:40px}"
-        "h1{color:#00ff88}a{color:#00aaff;text-decoration:none}"
-        ".card{background:#1a1a1a;padding:20px;margin:15px 0;border-radius:8px;"
-        "border-left:3px solid #00ff88}"
-        "</style></head><body>"
+    char body[24576];
+    size_t off = 0;
+    int n = html_body_start(body, sizeof(body), "Premium Service");
+    if (n > 0) off = (size_t)n;
+    n = snprintf(body + off, sizeof(body) - off,
         "<h1>Premium Service</h1>"
         "<div class='card'>"
         "<p>Welcome, %s</p>"
         "<p>Your token balance: %llu %s</p>"
         "<p>You have access to this service.</p>"
         "</div>"
-        "<p><a href='/store'>&larr; Back to store</a> | "
-        "<a href='/'>Home</a></p>"
-        "</body></html>",
+        "<p><a href='/store'>&larr; Back to store</a></p>",
         safe_addr,
         (unsigned long long)balance,
         safe_token);
-    if (blen < 0) blen = 0;
-    return store_html_response(body, (size_t)blen, resp, max);
+    if (n > 0) off += (size_t)n;
+    n = html_body_end(body + off, sizeof(body) - off);
+    if (n > 0) off += (size_t)n;
+    return store_html_response(body, off, resp, max);
 }

@@ -10,6 +10,8 @@
  * server-side, so a solution found here verifies there. */
 
 #include "views/name_view.h"
+#include "views/site_css.h"                 /* site_css (design system) */
+#include "views/site_layout.h"              /* shared head/nav/footer */
 #include "controllers/name_controller.h"   /* znam_type_name */
 #include "net/fast_sync.h"                  /* FAST_SYNC_POW_BITS */
 #include "util/template.h"                  /* html_escape */
@@ -194,40 +196,28 @@ size_t name_error_response(const char *status_code,
 
 /* ── Page shell ─────────────────────────────────────────────────── */
 
+/* Shared document open: design-system head (site_css inlined — one round
+ * trip over the onion) + global site nav + the Names section subnav.
+ * Pages close with name_body_end(). */
 static int name_body_start(char *buf, size_t max, const char *title)
 {
-    return snprintf(buf, max,
-        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        "<title>%s</title><style>"
-        "body{font-family:monospace;background:#0a0a0a;color:#e0e0e0;"
-        "max-width:800px;margin:0 auto;padding:20px}"
-        "h1{color:#00ff88}h2{color:#00cc66}"
-        "a{color:#00aaff;text-decoration:none}a:hover{color:#00ff88}"
-        ".header-nav{display:flex;align-items:center;gap:16px;"
-        "border-bottom:1px solid #333;padding-bottom:12px;margin-bottom:16px;"
-        "flex-wrap:wrap}.header-nav a{font-size:13px}"
-        ".card{background:#1a1a1a;padding:16px;margin:12px 0;border-radius:8px;"
-        "border-left:3px solid #00ff88}"
-        ".name{color:#00ff88;font-size:20px;font-weight:bold}"
-        ".kv{display:flex;gap:8px;margin:4px 0;font-size:13px}"
-        ".kv b{color:#888;min-width:120px;display:inline-block}"
-        ".val{word-break:break-all}"
-        "input{background:#1a1a1a;color:#e0e0e0;border:1px solid #333;"
-        "padding:8px;font-family:monospace;width:100%%;margin:5px 0;"
-        "box-sizing:border-box}select{background:#1a1a1a;color:#e0e0e0;"
-        "border:1px solid #333;padding:8px;font-family:monospace}"
-        ".btn{display:inline-block;background:#00ff88;color:#0a0a0a;"
-        "padding:10px 20px;border-radius:4px;font-weight:bold;margin-top:10px;"
-        "border:none;cursor:pointer;font-family:monospace}"
-        "</style></head><body>"
-        "<div class='header-nav'>"
-        "<h1 style='margin:0'><a href='/names'>ZCL Names</a></h1>"
-        "<a href='/'>Home</a>"
+    size_t off = site_emit_head(buf, max, title, site_css, "measure");
+    off += site_emit_global_nav(buf + off, max - off, "names");
+    SITE_APPEND(off, buf, max,
+        "<nav class='nav' aria-label='Names sections'>"
         "<a href='/names'>Browse</a>"
         "<a href='/names/register'>Register</a>"
-        "</div>",
-        title);
+        "</nav>"
+        "<main id='content'>");
+    return (int)off;
+}
+
+static int name_body_end(char *buf, size_t max)
+{
+    size_t off = 0;
+    SITE_APPEND(off, buf, max, "</main>");
+    off += site_emit_footer(buf + off, max - off, NULL);
+    return (int)off;
 }
 
 /* ── Index ──────────────────────────────────────────────────────── */
@@ -235,12 +225,13 @@ static int name_body_start(char *buf, size_t max, const char *title)
 size_t name_view_index(const struct znam_entry *entries, int count,
                        uint8_t *resp, size_t max)
 {
-    char body[16384];
+    char body[36864];
     size_t off = 0;
     int n = name_body_start(body, sizeof(body), "ZCL Names");
     if (n > 0) off = (size_t)n;
 
     n = snprintf(body + off, sizeof(body) - off,
+        "<h1>ZCL Names</h1>"
         "<p>%d registered name%s. A name is a sovereign identity for the "
         "sites this node hosts over onion + HTTPS. Visit "
         "<code>/n/&lt;name&gt;</code> to resolve one.</p>",
@@ -254,9 +245,9 @@ size_t name_view_index(const struct znam_entry *entries, int count,
         html_escape(safe_val, sizeof(safe_val), entries[i].target_value);
         n = snprintf(body + off, sizeof(body) - off,
             "<div class='card'>"
-            "<div class='name'><a href='/names/%s'>%s</a></div>"
-            "<div class='kv'><b>%s</b><span class='val'>%s</span></div>"
-            "<div class='kv'><b>owner</b><span class='val'>%s</span></div>"
+            "<h3><a href='/names/%s'>%s</a></h3>"
+            "<div class='kv'><b>%s</b><span class='val mono'>%s</span></div>"
+            "<div class='kv'><b>owner</b><span class='val mono'>%s</span></div>"
             "<div class='kv'><b>registered</b><span class='val'>h=%d</span></div>"
             "<a href='/n/%s'>open site &rarr;</a>"
             "</div>",
@@ -266,7 +257,7 @@ size_t name_view_index(const struct znam_entry *entries, int count,
         if (n > 0) off += (size_t)n;
     }
 
-    n = snprintf(body + off, sizeof(body) - off, "</body></html>");
+    n = name_body_end(body + off, sizeof(body) - off);
     if (n > 0) off += (size_t)n;
     return name_html_response(body, off, resp, max);
 }
@@ -278,7 +269,7 @@ size_t name_view_profile(const struct znam_entry *e,
                          const struct znam_addr_record *addr, int naddr,
                          uint8_t *resp, size_t max)
 {
-    char body[16384];
+    char body[24576];
     size_t off = 0;
     char safe_name[128];
     html_escape(safe_name, sizeof(safe_name), e->name);
@@ -297,10 +288,10 @@ size_t name_view_profile(const struct znam_entry *e,
         snprintf(expires, sizeof(expires), "never");
 
     n = snprintf(body + off, sizeof(body) - off,
+        "<h1>%s</h1>"
         "<div class='card'>"
-        "<div class='name'>%s</div>"
-        "<div class='kv'><b>primary %s</b><span class='val'>%s</span></div>"
-        "<div class='kv'><b>owner</b><span class='val'>%s</span></div>"
+        "<div class='kv'><b>primary %s</b><span class='val mono'>%s</span></div>"
+        "<div class='kv'><b>owner</b><span class='val mono'>%s</span></div>"
         "<div class='kv'><b>registered</b><span class='val'>h=%d</span></div>"
         "<div class='kv'><b>expires</b><span class='val'>%s</span></div>"
         "</div>",
@@ -317,7 +308,7 @@ size_t name_view_profile(const struct znam_entry *e,
             html_escape(sk, sizeof(sk), text[i].key);
             html_escape(sv, sizeof(sv), text[i].value);
             n = snprintf(body + off, sizeof(body) - off,
-                "<div class='kv'><b>%s</b><span class='val'>%s</span></div>",
+                "<div class='kv'><b>%s</b><span class='val mono'>%s</span></div>",
                 sk, sv);
             if (n > 0) off += (size_t)n;
         }
@@ -325,7 +316,7 @@ size_t name_view_profile(const struct znam_entry *e,
             char sv[280];
             html_escape(sv, sizeof(sv), addr[i].address);
             n = snprintf(body + off, sizeof(body) - off,
-                "<div class='kv'><b>%s</b><span class='val'>%s</span></div>",
+                "<div class='kv'><b>%s</b><span class='val mono'>%s</span></div>",
                 znam_type_name(addr[i].coin_type), sv);
             if (n > 0) off += (size_t)n;
         }
@@ -335,8 +326,10 @@ size_t name_view_profile(const struct znam_entry *e,
 
     n = snprintf(body + off, sizeof(body) - off,
         "<p><a href='/n/%s'>open site</a> &middot; "
-        "<a href='/names'>&larr; all names</a></p></body></html>",
+        "<a href='/names'>&larr; all names</a></p>",
         safe_name);
+    if (n > 0) off += (size_t)n;
+    n = name_body_end(body + off, sizeof(body) - off);
     if (n > 0) off += (size_t)n;
     return name_html_response(body, off, resp, max);
 }
@@ -346,14 +339,14 @@ size_t name_view_profile(const struct znam_entry *e,
 size_t name_view_register_form(const char *csrf_tok, int64_t pow_ts,
                                uint8_t *resp, size_t max)
 {
-    char body[20480];
+    char body[32768];
     size_t off = 0;
     int n = name_body_start(body, sizeof(body), "Register a ZCL Name");
     if (n > 0) off = (size_t)n;
 
     n = snprintf(body + off, sizeof(body) - off,
+        "<h1>Register a ZCL Name</h1>"
         "<div class='card'>"
-        "<h2>Register a name on-chain</h2>"
         "<p>A name (1-63 chars, lowercase letters, digits and hyphens) is "
         "registered by an OP_RETURN transaction broadcast from this node's "
         "wallet. First-come-first-served. Solving a one-time proof-of-work "
@@ -363,10 +356,10 @@ size_t name_view_register_form(const char *csrf_tok, int64_t pow_ts,
         "<input type='hidden' name='csrf_token' value='%s'>"
         "<input type='hidden' name='pow_ts' value='%lld'>"
         "<input type='hidden' name='pow_nonce' id='pow_nonce_field' value=''>"
-        "<label>Name:</label>"
-        "<input type='text' name='name' placeholder='alice' required>"
-        "<label>Target type:</label>"
-        "<select name='type'>"
+        "<label for='nameRegName'>Name</label>"
+        "<input type='text' id='nameRegName' name='name' placeholder='alice' required>"
+        "<label for='nameRegType'>Target type</label>"
+        "<select id='nameRegType' name='type'>"
         "<option value='onion'>onion (.onion site)</option>"
         "<option value='taddr'>taddr (t-address)</option>"
         "<option value='zaddr'>zaddr (z-address)</option>"
@@ -375,23 +368,25 @@ size_t name_view_register_form(const char *csrf_tok, int64_t pow_ts,
         "<option value='doge'>doge</option>"
         "<option value='content'>content (file-market hash)</option>"
         "</select>"
-        "<label>Target value:</label>"
-        "<input type='text' name='value' placeholder='abc123....onion' required>"
-        "<br><br>"
+        "<label for='nameRegValue'>Target value</label>"
+        "<input type='text' id='nameRegValue' name='value' placeholder='abc123....onion' required>"
+        "<br>"
         "<button type='submit' class='btn' id='regBtn'>Register</button>"
-        "<p id='powStatus' style='color:#888;font-size:12px'></p>"
-        "<noscript><p style='color:#f80'>JavaScript is required to solve the "
+        "<p id='powStatus' class='meta'></p>"
+        "<noscript><p class='pill pill-warn'>JavaScript is required to solve the "
         "anti-flood proof-of-work puzzle. Scripted clients may solve it "
         "directly: SHA3-256(peer_id || timestamp || nonce) must have %d "
         "leading zero bits, where peer_id=SHA3-256(\"znam:register:pow:\" || "
         "name) and timestamp is the pow_ts value; submit the winning nonce as "
         "pow_nonce.</p></noscript>"
         "</form></div>"
-        "<script>%s%s</script></body></html>",
+        "<script>%s%s</script>",
         (long long)pow_ts, FAST_SYNC_POW_BITS,
         csrf_tok, (long long)pow_ts,
         FAST_SYNC_POW_BITS,
         NAME_REG_POW_JS_1, NAME_REG_POW_JS_2);
+    if (n > 0) off += (size_t)n;
+    n = name_body_end(body + off, sizeof(body) - off);
     if (n > 0) off += (size_t)n;
     return name_html_response(body, off, resp, max);
 }
@@ -400,7 +395,7 @@ size_t name_view_register_result(const char *name, const char *value,
                                  const char *txid, const char *err,
                                  uint8_t *resp, size_t max)
 {
-    char body[8192];
+    char body[20480];
     size_t off = 0;
     int n = name_body_start(body, sizeof(body), "Registration");
     if (n > 0) off = (size_t)n;
@@ -413,43 +408,48 @@ size_t name_view_register_result(const char *name, const char *value,
         char safe_txid[80];
         html_escape(safe_txid, sizeof(safe_txid), txid);
         n = snprintf(body + off, sizeof(body) - off,
-            "<div class='card'><h2>Broadcast</h2>"
-            "<div class='kv'><b>name</b><span class='val'>%s</span></div>"
-            "<div class='kv'><b>value</b><span class='val'>%s</span></div>"
-            "<div class='kv'><b>txid</b><span class='val'>%s</span></div>"
+            "<h1>Registration</h1>"
+            "<div class='card'><h3>Broadcast <span class='pill pill-ok'>sent</span></h3>"
+            "<div class='kv'><b>name</b><span class='val mono'>%s</span></div>"
+            "<div class='kv'><b>value</b><span class='val mono'>%s</span></div>"
+            "<div class='kv'><b>txid</b><span class='val mono'>%s</span></div>"
             "<p>The registration confirms when the transaction is mined and "
             "the ZNAM projection folds it. Then <a href='/names/%s'>its "
-            "profile</a> and <code>/n/%s</code> resolve.</p></div>"
-            "</body></html>",
+            "profile</a> and <code>/n/%s</code> resolve.</p></div>",
             safe_name, safe_val, safe_txid, safe_name, safe_name);
     } else {
         char safe_err[512];
         html_escape(safe_err, sizeof(safe_err), err ? err : "unknown error");
         n = snprintf(body + off, sizeof(body) - off,
-            "<div class='card'><h2>Not registered</h2>"
-            "<p style='color:#ff8800'>%s</p>"
-            "<p><a href='/names/register'>&larr; try again</a></p></div>"
-            "</body></html>",
+            "<h1>Registration</h1>"
+            "<div class='card'><h3>Not registered <span class='pill pill-bad'>failed</span></h3>"
+            "<p class='bad'>%s</p>"
+            "<p><a href='/names/register'>&larr; try again</a></p></div>",
             safe_err);
     }
+    if (n > 0) off += (size_t)n;
+    n = name_body_end(body + off, sizeof(body) - off);
     if (n > 0) off += (size_t)n;
     return name_html_response(body, off, resp, max);
 }
 
 size_t name_view_not_found(const char *name, uint8_t *resp, size_t max)
 {
-    char body[2048];
+    char body[20480];
     size_t off = 0;
     int n = name_body_start(body, sizeof(body), "Name not found");
     if (n > 0) off = (size_t)n;
     char safe_name[128];
     html_escape(safe_name, sizeof(safe_name), name ? name : "");
     n = snprintf(body + off, sizeof(body) - off,
-        "<div class='card'><h2>No such name</h2>"
+        "<h1>Name not found</h1>"
+        "<div class='card'>"
         "<p><b>%s</b> is not registered.</p>"
         "<p><a href='/names/register'>Register it</a> &middot; "
-        "<a href='/names'>&larr; all names</a></p></div></body></html>",
+        "<a href='/names'>&larr; all names</a></p></div>",
         safe_name);
+    if (n > 0) off += (size_t)n;
+    n = name_body_end(body + off, sizeof(body) - off);
     if (n > 0) off += (size_t)n;
     return name_error_response("404 Not Found", body, off, resp, max);
 }

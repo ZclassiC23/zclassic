@@ -257,7 +257,7 @@ static int write_single_css_header(const char *src_path, const char *out_path,
 
     fprintf(out,
         "/* Auto-generated from %s -- do not edit.\n"
-        " * Regenerate: make explorer-css */\n\n"
+        " * Regenerate: make site-css */\n\n"
         "#ifndef %s\n"
         "#define %s\n\n",
         src_path, guard, guard);

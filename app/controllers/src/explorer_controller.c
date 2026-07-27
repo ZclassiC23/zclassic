@@ -52,7 +52,7 @@
 #include "controllers/explorer_internal.h"
 #include "util/template.h"
 #include "views/wallet_templates_gen.h"
-#include "views/explorer_css.h"
+#include "views/site_css.h"
 #include "views/explorer_main_view.h"
 #include "views/format_helpers.h"
 #include "explorer_controller_internal.h"
@@ -147,17 +147,17 @@ void load_css(void)
         }
     }
 
-    assets->css_len = strlen(explorer_css);
+    assets->css_len = strlen(site_css);
     if (assets->css_len >= sizeof(assets->css_cache))
         assets->css_len = sizeof(assets->css_cache) - 1;
-    memcpy(assets->css_cache, explorer_css, assets->css_len);
+    memcpy(assets->css_cache, site_css, assets->css_len);
     assets->css_cache[assets->css_len] = '\0';
 }
 
 static void init_default_templates(void)
 {
     ensure_explorer_dir();
-    write_default_file("style.css", explorer_css);
+    write_default_file("style.css", site_css);
     load_css();
 }
 

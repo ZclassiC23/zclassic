@@ -58,6 +58,10 @@ void format_zcl_price(char *out, size_t out_len, int64_t zatoshi);
  * page titled `title` into `buf`. Returns bytes written (snprintf len). */
 int html_body_start(char *buf, size_t max, const char *title);
 
+/* Write the closing HTML (</main> + site footer) for a store page.
+ * Returns bytes written. */
+int html_body_end(char *buf, size_t max);
+
 /* Wrap `body` as a 200 OK HTML HTTP response (with Content-Length) into
  * `resp`. Returns the total response length written. */
 size_t store_html_response(const char *body, size_t body_len,

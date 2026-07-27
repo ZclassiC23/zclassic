@@ -78,6 +78,104 @@ static int onion_discover_peers(struct onion_peer *out, size_t max)
     return kept;
 }
 
+/* ── Shared page chrome for the onion front door ──────────────
+ *
+ * Inline twin of the site design system's tokens (app/views/src/site.css).
+ * These pages live in lib/net — below the app/views layer — and the front
+ * door must render even when the explorer asset cache is not initialized,
+ * so they carry their own compact copy of the palette/type instead of
+ * linking /explorer/style.css or including an app/views header. Keep the
+ * values in lockstep with site.css's :root tokens (dark variant; both
+ * themes are declared via color-scheme so form controls follow the page).
+ * Single % everywhere: always substituted via a "%s" argument, never
+ * embedded in a printf format string. */
+static const char ONION_PAGE_CSS[] =
+    ":root{--bg:#0a0d12;--panel:#121722;--panel-2:#171d2a;--border:#232b3a;"
+    "--border-strong:#313b4e;--ink:#e9eef6;--ink-dim:#c3ccd9;--muted:#97a3b6;"
+    "--accent:#5ea8ff;--accent-ink:#b9d9ff;--ok:#3ddc97;--warn:#f0b44c;"
+    "--bad:#f2708a;color-scheme:dark light}"
+    "*{box-sizing:border-box}"
+    "body{margin:0 auto;max-width:860px;padding:16px 24px 40px;"
+    "background:var(--bg);color:var(--ink);font-family:-apple-system,"
+    "BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;"
+    "font-size:16px;line-height:1.6}"
+    "h1{font-size:28px;font-weight:720;letter-spacing:-0.015em;margin:0 0 12px}"
+    "h2{font-size:20px;font-weight:680;margin:28px 0 12px;padding-bottom:8px;"
+    "border-bottom:1px solid var(--border)}"
+    "a{color:var(--accent);text-decoration:none}"
+    "a:hover{color:var(--accent-ink);text-decoration:underline}"
+    "a:focus-visible,input:focus-visible,button:focus-visible{outline:3px "
+    "solid var(--ok);outline-offset:2px;border-radius:6px}"
+    ".site-top{display:flex;align-items:center;gap:4px 18px;flex-wrap:wrap;"
+    "padding:10px 0 14px;margin-bottom:18px;border-bottom:1px solid var(--border)}"
+    ".site-top .brand{display:flex;align-items:center;gap:10px;margin-right:auto;"
+    "font-weight:760;color:var(--ink)}"
+    ".site-top .brand:hover{text-decoration:none}"
+    ".site-top .brand .glyph{display:grid;place-items:center;width:30px;height:30px;"
+    "border-radius:9px;border:1px solid var(--border-strong);"
+    "background:linear-gradient(145deg,rgba(94,168,255,.13),rgba(167,139,250,.14));"
+    "color:var(--accent-ink);font-weight:800}"
+    ".site-top nav{display:flex;gap:2px;flex-wrap:wrap}"
+    ".site-top nav a{padding:6px 11px;border-radius:6px;border:1px solid transparent;"
+    "color:var(--muted);font-size:14px;font-weight:620;white-space:nowrap}"
+    ".site-top nav a:hover{color:var(--ink);background:var(--panel);"
+    "border-color:var(--border);text-decoration:none}"
+    ".card,.site{background:linear-gradient(180deg,var(--panel-2) 0,var(--panel) 100%);"
+    "border:1px solid var(--border);border-left:3px solid var(--accent);"
+    "border-radius:10px;padding:16px 20px;margin:12px 0}"
+    ".site a{font-size:16px}"
+    ".desc{color:var(--muted);font-size:13px;margin-top:5px;line-height:1.45}"
+    ".dashboard{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin:18px 0}"
+    ".stat{background:var(--panel);border:1px solid var(--border);border-radius:10px;"
+    "padding:16px;text-align:center}"
+    ".stat .val{color:var(--ok);font-size:24px;font-weight:700;"
+    "font-variant-numeric:tabular-nums}"
+    ".stat .label{color:var(--muted);font-size:12px;margin-top:4px;"
+    "text-transform:uppercase;letter-spacing:.05em}"
+    ".addr,.onion-addr{background:var(--bg);border:1px solid var(--border);"
+    "padding:10px 12px;border-radius:6px;word-break:break-all;"
+    "font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;"
+    "color:var(--accent);margin:10px 0;text-align:center}"
+    ".apps{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));"
+    "gap:12px;margin:20px 0}"
+    ".app{background:var(--panel);border:1px solid var(--border);border-radius:10px;"
+    "padding:14px}"
+    ".app a{font-size:16px;font-weight:640}"
+    "input[type=text]{background:var(--bg);color:var(--ink);"
+    "border:1px solid var(--border-strong);border-radius:6px;padding:10px 12px;"
+    "width:100%;font-size:15px;box-sizing:border-box}"
+    "table{width:100%;border-collapse:collapse;font-size:15px;background:var(--panel);"
+    "border:1px solid var(--border);border-radius:10px;overflow:hidden;margin:16px 0}"
+    "th{text-align:left;color:var(--muted);padding:10px 12px;"
+    "border-bottom:1px solid var(--border-strong);font-size:12px;"
+    "text-transform:uppercase;letter-spacing:.04em}"
+    "td{padding:9px 12px;border-bottom:1px solid var(--border)}"
+    ".self{border-left:3px solid var(--ok)}"
+    ".table-wrap{overflow-x:auto;max-width:100%}"
+    ".muted{color:var(--muted)}"
+    ".veil{min-height:70vh;display:flex;flex-direction:column;align-items:center;"
+    "justify-content:center;text-align:center}"
+    ".veil p{color:var(--muted);max-width:560px}"
+    "footer{text-align:center;color:var(--muted);font-size:13px;margin-top:40px;"
+    "padding:16px;border-top:1px solid var(--border)}"
+    "@media(max-width:640px){.dashboard{grid-template-columns:1fr}"
+    ".site-top{gap:4px 10px}}";
+
+/* The same global nav the app-side site_layout.h emits (kept in lockstep;
+ * duplicated here because lib/net sits below app/views). */
+#define ONION_GLOBAL_NAV \
+    "<header class='site-top'>" \
+    "<a class='brand' href='/'>" \
+    "<span class='glyph' aria-hidden='true'>Z</span>" \
+    "<span>ZClassic23</span></a>" \
+    "<nav aria-label='Site'>" \
+    "<a href='/explorer'>Explorer</a>" \
+    "<a href='/names'>Names</a>" \
+    "<a href='/store'>Store</a>" \
+    "<a href='/blog'>Blog</a>" \
+    "<a href='/directory'>Directory</a>" \
+    "</nav></header>"
+
 /* Request admission — cost-tiered budgets plus an adaptive client puzzle
  * on expensive routes under sustained pressure. See net/onion_ratelimit.h
  * for the route table, tier sizing, and escalation thresholds. Replaces a
@@ -146,47 +244,15 @@ static size_t serve_landing_page(uint8_t *response, size_t max)
     char body[32768];
     size_t off = 0;
     int n = snprintf(body, sizeof(body),
-        "<!DOCTYPE html><html><head>"
+        "<!DOCTYPE html><html lang='en'><head>"
         "<meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         "<title>ZClassic23 Node</title>"
-        "<style>"
-        "body{font-family:monospace;background:#0a0a0a;color:#e0e0e0;"
-        "max-width:800px;margin:0 auto;padding:20px}"
-        "h1{color:#00ff88;text-align:center;font-size:28px}"
-        "h2{color:#00cc66;border-bottom:1px solid #333;padding-bottom:8px}"
-        "input[type=text]{background:#1a1a1a;color:#e0e0e0;border:1px solid #333;"
-        "padding:10px;width:100%%;font-family:monospace;font-size:16px;"
-        "border-radius:4px;box-sizing:border-box}"
-        ".dashboard{display:grid;grid-template-columns:1fr 1fr 1fr;"
-        "gap:12px;margin:20px 0}"
-        ".stat{background:#1a1a1a;padding:16px;border-radius:8px;"
-        "text-align:center;border-top:2px solid #00ff88}"
-        ".stat .val{color:#00ff88;font-size:24px;font-weight:bold}"
-        ".stat .label{color:#888;font-size:12px;margin-top:4px}"
-        ".onion-addr{background:#111;padding:10px;border-radius:4px;"
-        "word-break:break-all;font-size:12px;text-align:center;"
-        "color:#00aaff;margin:10px 0}"
-        ".nav{display:flex;gap:12px;justify-content:center;margin:20px 0;"
-        "flex-wrap:wrap}"
-        ".nav a{background:#1a1a1a;color:#00aaff;padding:10px 20px;"
-        "border-radius:4px;text-decoration:none;border:1px solid #333}"
-        ".nav a:hover{border-color:#00ff88;color:#00ff88}"
-        ".apps{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));"
-        "gap:12px;margin:24px 0}"
-        ".app{background:#121212;padding:14px;border-radius:8px;border:1px solid #2a2a2a}"
-        ".app a{color:#00aaff;text-decoration:none;font-size:16px}"
-        ".app a:hover{color:#00ff88}"
-        ".app .desc{color:#888;font-size:13px;margin-top:6px;line-height:1.35}"
-        ".site{background:#1a1a1a;padding:15px;margin:10px 0;border-radius:8px;"
-        "border-left:3px solid #00ff88}"
-        ".site a{color:#00aaff;text-decoration:none;font-size:16px}"
-        ".site a:hover{text-decoration:underline}"
-        ".site .desc{color:#888;font-size:13px;margin-top:5px}"
-        ".tagline{text-align:center;color:#666;margin:10px 0}"
-        "footer{text-align:center;color:#333;margin-top:40px;font-size:11px}"
-        "</style></head><body>"
+        "<style>%s</style></head><body>"
+        ONION_GLOBAL_NAV
         "<h1>ZClassic23 Node</h1>"
-        "<p class='tagline'>A new internet. Tor-only. No DNS. No cloud.</p>");
+        "<p class='muted'>A new internet. Tor-only. No DNS. No cloud.</p>",
+        ONION_PAGE_CSS);
     if (n > 0) off = (size_t)n;
 
     /* Node .onion address */
@@ -211,22 +277,19 @@ static size_t serve_landing_page(uint8_t *response, size_t max)
     if (syncing) {
         n += snprintf(body + off + (n > 0 ? n : 0),
             sizeof(body) - off - (size_t)(n > 0 ? n : 0),
-            "<p style='text-align:center;color:#ffaa00;font-size:14px'>"
+            "<p class='muted' style='color:var(--warn)'>"
             "Node is syncing the blockchain. Stats will update as blocks are indexed."
             "</p>");
     }
     if (n > 0) off += (size_t)n;
 
-    /* Navigation */
+    /* Search bar */
     n = snprintf(body + off, sizeof(body) - off,
-        "<div class='nav'>"
-        "<a href='/explorer'>Explorer</a>"
-        "<a href='/store'>Store</a>"
-        "<a href='/blog'>Blog</a>"
-        "<a href='/search'>Search</a>"
-        "<a href='/directory'>Directory</a>"
-        "<a href='/status'>Status API</a>"
-        "</div>");
+        "<form action='/search' method='get'>"
+        "<label for='onion-q' class='muted' style='display:block;font-size:13px;"
+        "font-weight:640;margin:12px 0 4px'>Search the network</label>"
+        "<input type='text' id='onion-q' name='q' placeholder='Search .onion sites by hostname...'>"
+        "</form>");
     if (n > 0) off += (size_t)n;
 
     n = snprintf(body + off, sizeof(body) - off,
@@ -243,13 +306,6 @@ static size_t serve_landing_page(uint8_t *response, size_t max)
         "<div class='app'><a href='/status'>Status API</a>"
         "<div class='desc'>Machine-readable node, sync, and onion reachability status.</div></div>"
         "</div>");
-    if (n > 0) off += (size_t)n;
-
-    /* Search bar */
-    n = snprintf(body + off, sizeof(body) - off,
-        "<form action='/search' method='get'>"
-        "<input type='text' name='q' placeholder='Search .onion sites by hostname...'>"
-        "</form>");
     if (n > 0) off += (size_t)n;
 
     /* Peer directory */
@@ -316,30 +372,15 @@ static size_t serve_search(const char *query, uint8_t *response, size_t max)
     char body[16384];
     size_t off = 0;
     int n = snprintf(body, sizeof(body),
-        "<!DOCTYPE html><html><head>"
-        "<meta charset='utf-8'><title>Search: %s</title>"
-        "<style>body{font-family:monospace;background:#0a0a0a;color:#e0e0e0;"
-        "max-width:800px;margin:0 auto;padding:20px}"
-        "h1{color:#00ff88;text-align:center}a{color:#00aaff}"
-        ".nav{display:flex;gap:12px;justify-content:center;margin:20px 0;flex-wrap:wrap}"
-        ".nav a{background:#1a1a1a;color:#00aaff;padding:10px 20px;"
-        "border-radius:4px;text-decoration:none;border:1px solid #333}"
-        ".nav a:hover{border-color:#00ff88;color:#00ff88}"
-        ".site{background:#1a1a1a;padding:15px;margin:10px 0;border-radius:8px;"
-        "border-left:3px solid #00ff88}"
-        ".note{color:#666;font-size:13px;margin:15px 0}"
-        "</style></head><body>"
-        "<h1><a href='/' style='text-decoration:none;color:#00ff88'>ZClassic23</a></h1>"
-        "<div class='nav'>"
-        "<a href='/'>Home</a>"
-        "<a href='/explorer'>Explorer</a>"
-        "<a href='/store'>Store</a>"
-        "<a href='/blog'>Blog</a>"
-        "<a href='/directory'>Directory</a>"
-        "</div>"
-        "<h2 style='color:#00cc66'>Search</h2>"
+        "<!DOCTYPE html><html lang='en'><head>"
+        "<meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<title>Search: %s</title>"
+        "<style>%s</style></head><body>"
+        ONION_GLOBAL_NAV
+        "<h1>Search</h1>"
         "<p>Results for: <b>%s</b></p>",
-        safe_query, safe_query);
+        safe_query, ONION_PAGE_CSS, safe_query);
     if (n > 0) off = (size_t)n;
 
     int found = 0;
@@ -358,14 +399,15 @@ static size_t serve_search(const char *query, uint8_t *response, size_t max)
 
     if (found == 0) {
         n = snprintf(body + off, sizeof(body) - off,
-            "<p style='color:#666'>No results.</p>");
+            "<p class='muted'>No results.</p>");
         if (n > 0) off += (size_t)n;
     }
 
     n = snprintf(body + off, sizeof(body) - off,
-        "<p class='note'>Search matches against .onion hostnames registered "
+        "<p class='muted'>Search matches against .onion hostnames registered "
         "on-chain via ZSLP. Peer nodes do not yet broadcast titles or "
         "descriptions &mdash; only hostnames are searchable.</p>"
+        "<footer>ZClassic23 &mdash; one binary, one onion, one stack</footer>"
         "</body></html>");
     if (n > 0) off += (size_t)n;
 
@@ -580,38 +622,18 @@ static size_t serve_directory_html(uint8_t *response, size_t max)
     char body[65536];
     size_t off = 0;
     int n = snprintf(body, sizeof(body),
-        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         "<title>ZClassic23 Node Directory</title>"
-        "<style>"
-        "body{font-family:monospace;background:#0a0a0a;color:#e0e0e0;"
-        "max-width:900px;margin:0 auto;padding:20px}"
-        "h1{color:#00ff88;text-align:center}"
-        ".nav{display:flex;gap:12px;justify-content:center;margin:20px 0;flex-wrap:wrap}"
-        ".nav a{background:#1a1a1a;color:#00aaff;padding:10px 20px;"
-        "border-radius:4px;text-decoration:none;border:1px solid #333}"
-        ".nav a:hover{border-color:#00ff88;color:#00ff88}"
-        "table{width:100%%;border-collapse:collapse;margin:20px 0}"
-        "th{background:#1a1a1a;color:#00ff88;padding:10px;text-align:left}"
-        "td{padding:8px 10px;border-bottom:1px solid #222}"
-        "a{color:#00aaff;text-decoration:none}"
-        "a:hover{text-decoration:underline}"
-        ".self{background:#0a1a0a;border-left:3px solid #00ff88}"
-        ".count{text-align:center;color:#888;margin:10px 0}"
-        "footer{text-align:center;color:#333;margin-top:40px;font-size:11px}"
-        "</style></head><body>"
-        "<h1>ZClassic23 Node Directory</h1>"
-        "<div class='nav'>"
-        "<a href='/'>Home</a>"
-        "<a href='/explorer'>Explorer</a>"
-        "<a href='/store'>Store</a>"
-        "<a href='/blog'>Blog</a>"
-        "<a href='/search'>Search</a>"
-        "</div>"
-        "<p class='count'>Decentralized .onion network &mdash; every node is a server</p>");
+        "<style>%s</style></head><body>"
+        ONION_GLOBAL_NAV
+        "<h1>Node Directory</h1>"
+        "<p class='muted'>Decentralized .onion network &mdash; every node is a server</p>",
+        ONION_PAGE_CSS);
     if (n > 0) off = (size_t)n;
 
     off += (size_t)snprintf(body + off, sizeof(body) - off,
-        "<table><tr><th>.onion Address</th><th>Port</th>"
+        "<div class='table-wrap'><table><tr><th>.onion Address</th><th>Port</th>"
         "<th>Height</th><th>Last Seen</th><th>Version</th></tr>");
 
     sqlite3_stmt *s = NULL;
@@ -659,11 +681,11 @@ static size_t serve_directory_html(uint8_t *response, size_t max)
     sqlite3_close(db);
 
     off += (size_t)snprintf(body + off, sizeof(body) - off,
-        "</table>"
-        "<p class='count'>%d nodes in directory</p>"
-        "<p class='count'><a href='/directory.json'>JSON API</a> | "
+        "</table></div>"
+        "<p class='muted'>%d nodes in directory</p>"
+        "<p class='muted'><a href='/directory.json'>JSON API</a> | "
         "<a href='/'>Home</a></p>"
-        "<footer>ZClassic23 &mdash; Decentralized Internet</footer>"
+        "<footer>ZClassic23 &mdash; one binary, one onion, one stack</footer>"
         "</body></html>", count);
 
     return (size_t)snprintf((char *)response, max,
@@ -765,24 +787,16 @@ static size_t serve_rate_limited(uint8_t *response, size_t response_max)
         "HTTP/1.1 429 Too Many Requests\r\n"
         "Content-Type: text/html; charset=utf-8\r\nConnection: close\r\n"
         "Retry-After: 1\r\n\r\n"
-        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         "<title>429 Too Many Requests</title>"
-        "<style>"
-        "body{font-family:monospace;background:#0a0a0a;color:#e0e0e0;"
-        "display:flex;flex-direction:column;align-items:center;"
-        "justify-content:center;min-height:90vh;margin:0;padding:20px}"
-        "h1{color:#ffaa00;font-size:28px}"
-        "p{color:#888;font-size:16px;max-width:500px;text-align:center}"
-        "a{color:#00aaff;text-decoration:none}"
-        "a:hover{color:#00ff88}"
-        ".nav{display:flex;gap:12px;margin-top:30px}"
-        "</style></head><body>"
-        "<h1>429 Too Many Requests</h1>"
+        "<style>%s</style></head><body>"
+        "<div class='veil'>"
+        "<h1><span style='color:var(--warn)'>429</span> Too Many Requests</h1>"
         "<p>Too many requests. Please wait a moment and try again.</p>"
-        "<div class='nav'>"
-        "<a href='/'>Home</a> | "
-        "<a href='/explorer'>Explorer</a>"
-        "</div></body></html>");
+        "<p><a href='/'>Home</a> &middot; <a href='/explorer'>Explorer</a></p>"
+        "</div></body></html>",
+        ONION_PAGE_CSS);
 }
 
 /* 402 for an expensive route while the tier is escalated. The page is
@@ -796,23 +810,15 @@ static size_t serve_puzzle_required(const struct onion_pow_challenge *ch,
         "HTTP/1.1 402 Payment Required\r\n"
         "Content-Type: text/html; charset=utf-8\r\nConnection: close\r\n"
         "Cache-Control: no-store\r\nRetry-After: 1\r\n\r\n"
-        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         "<title>402 Proof of Work Required</title>"
         "<script type='application/json' id='pow-challenge'>"
         "{\"seed\":\"%s\",\"token\":\"%s\",\"bits\":%d,\"server_time\":%lld}"
         "</script>"
-        "<style>"
-        "body{font-family:monospace;background:#0a0a0a;color:#e0e0e0;"
-        "display:flex;flex-direction:column;align-items:center;"
-        "justify-content:center;min-height:90vh;margin:0;padding:20px}"
-        "h1{color:#ffaa00;font-size:28px}"
-        "p{color:#888;font-size:16px;max-width:620px;text-align:center}"
-        "code{color:#00aaff;word-break:break-all}"
-        "a{color:#00aaff;text-decoration:none}"
-        "a:hover{color:#00ff88}"
-        ".nav{display:flex;gap:12px;margin-top:30px}"
-        "</style></head><body>"
-        "<h1>402 Proof of Work Required</h1>"
+        "<style>%s</style></head><body>"
+        "<div class='veil'>"
+        "<h1><span style='color:var(--warn)'>402</span> Proof of Work Required</h1>"
         "<p>This node is under sustained load on this class of request and "
         "is temporarily pricing it with a small puzzle. Find a nonce such "
         "that SHA3-256(seed || token || ts || nonce), each of seed and "
@@ -825,9 +831,10 @@ static size_t serve_puzzle_required(const struct onion_pow_challenge *ch,
         "you hashed) and <code>pow_nonce</code> (decimal) as query "
         "parameters on a GET or form fields on a POST. One solution admits "
         "one request. This clears automatically once load drops.</p>"
-        "<div class='nav'><a href='/'>Home</a></div>"
-        "</body></html>",
+        "<p><a href='/'>Home</a></p>"
+        "</div></body></html>",
         ch->seed_hex, ch->token_hex, ch->bits, (long long)ch->server_time,
+        ONION_PAGE_CSS,
         ch->bits, ch->seed_hex, ch->token_hex, (long long)ch->server_time);
 }
 
@@ -932,29 +939,17 @@ size_t onion_service_handle_request(const char *method,
         "HTTP/1.1 404 Not Found\r\n"
         "Content-Type: text/html; charset=utf-8\r\n"
         "Connection: close\r\n\r\n"
-        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         "<title>404 Not Found</title>"
-        "<style>"
-        "body{font-family:monospace;background:#0a0a0a;color:#e0e0e0;"
-        "display:flex;flex-direction:column;align-items:center;"
-        "justify-content:center;min-height:90vh;margin:0;padding:20px}"
-        "h1{color:#ff4444;font-size:28px}"
-        "p{color:#888;font-size:16px}"
-        "a{color:#00aaff;text-decoration:none}"
-        "a:hover{color:#00ff88}"
-        ".nav{display:flex;gap:12px;margin-top:30px}"
-        ".nav a{background:#1a1a1a;color:#00aaff;padding:10px 20px;"
-        "border-radius:4px;border:1px solid #333}"
-        ".nav a:hover{border-color:#00ff88;color:#00ff88}"
-        "</style></head><body>"
-        "<h1>404 Not Found</h1>"
+        "<style>%s</style></head><body>"
+        "<div class='veil'>"
+        "<h1><span style='color:var(--bad)'>404</span> Not Found</h1>"
         "<p>The page you requested does not exist.</p>"
-        "<div class='nav'>"
-        "<a href='/'>Home</a>"
-        "<a href='/explorer'>Explorer</a>"
-        "<a href='/store'>Store</a>"
-        "<a href='/blog'>Blog</a>"
-        "</div></body></html>");
+        "<p><a href='/'>Home</a> &middot; <a href='/explorer'>Explorer</a> &middot; "
+        "<a href='/store'>Store</a> &middot; <a href='/blog'>Blog</a></p>"
+        "</div></body></html>",
+        ONION_PAGE_CSS);
 }
 
 /* ── Lifecycle ────────────────────────────────────────────── */

@@ -16,6 +16,7 @@
 #include <sqlite3.h>
 #include "util/log_macros.h"
 #include "views/format_helpers.h"
+#include "views/site_layout.h"
 
 #define ZCL_EXPLORER_GENESIS_TIME 1478403829LL
 /* INTERNAL == byte-reverse(DISPLAY): the little-endian value the `blocks`
@@ -64,8 +65,9 @@ struct explorer_history_validation {
     "<link rel='stylesheet' href='/explorer/style.css'>" \
     "</head><body>"
 
-/* Nav helper: emits <nav> with active class on the matching link.
- * Pass NULL for active to highlight nothing. */
+/* Nav helper: emits the global site nav (active "explorer") followed by the
+ * explorer section <nav> with active class on the matching link.
+ * Pass NULL for active to highlight nothing in the section nav. */
 static inline size_t explorer_emit_nav(char *buf, size_t max, const char *active)
 {
     static const struct { const char *href; const char *label; const char *id; } links[] = {
@@ -80,8 +82,8 @@ static inline size_t explorer_emit_nav(char *buf, size_t max, const char *active
         { "/explorer/market",   "Market",    "market"   },
         { "/explorer/swaps",    "Swaps",     "swaps"    },
     };
-    size_t off = 0;
-    APPEND(off, buf, max, "<nav class='nav'>");
+    size_t off = site_emit_global_nav(buf, max, "explorer");
+    APPEND(off, buf, max, "<nav class='nav' aria-label='Explorer sections'>");
     for (size_t i = 0; i < sizeof(links)/sizeof(links[0]); i++) {
         bool act = active && strcmp(active, links[i].id) == 0;
         APPEND(off, buf, max, "<a href='%s'%s>%s</a>",
@@ -100,7 +102,8 @@ static inline size_t explorer_emit_nav(char *buf, size_t max, const char *active
 /* Legacy EXPLORER_NAV macro — kept for error pages and one-shot snprintf.
  * Does not highlight any active link; use explorer_emit_nav() for that. */
 #define EXPLORER_NAV \
-    "<nav class='nav'>" \
+    SITE_GLOBAL_NAV \
+    "<nav class='nav' aria-label='Explorer sections'>" \
     "<a href='/explorer'>Blocks</a>" \
     "<a href='/explorer/stats'>Stats</a>" \
     "<a href='/explorer/hodl'>HODL Wave</a>" \
@@ -117,7 +120,7 @@ static inline size_t explorer_emit_nav(char *buf, size_t max, const char *active
     "</form></div></nav>"
 
 #define EXPLORER_FOOTER \
-    "<footer>ZClassic23 Block Explorer &mdash; Pure C23</footer>" \
+    "<footer>ZClassic23 Block Explorer &mdash; one binary, one onion, one stack</footer>" \
     "</body></html>"
 
 /* ── SQLite query helpers (DRY — one definition for all controllers) ──

@@ -55,7 +55,7 @@ static void cleanup_datadir(void)
  * name='csrf_token' hidden input.  Returns true on success. */
 static bool fetch_csrf_token(int64_t product_id, char *out, size_t outmax)
 {
-    uint8_t page[16384];
+    uint8_t page[65536];  /* design-system pages inline ~14 KB of CSS */
     char path[64];
     snprintf(path, sizeof(path), "/store/product/%lld", (long long)product_id);
     size_t n = store_handle_request("GET", path, NULL, 0,
@@ -102,7 +102,7 @@ static bool fetch_pow_attrs(int64_t product_id,
                             char seed_hex[65], char token_hex[65],
                             char ts_str[32], char bits_str[16])
 {
-    uint8_t page[16384];
+    uint8_t page[65536];  /* design-system pages inline ~14 KB of CSS */
     char path[64];
     snprintf(path, sizeof(path), "/store/product/%lld", (long long)product_id);
     size_t n = store_handle_request("GET", path, NULL, 0,
@@ -208,7 +208,7 @@ int test_store(void)
     g_store_test_rt.wallet = &g_store_test_wallet;
     app_runtime_set_current(&g_store_test_rt);
 
-    uint8_t resp[16384];
+    uint8_t resp[65536];  /* styled pages inline ~14 KB CSS */
 
     /* ── Product listing ──────────────────────────────────── */
 
@@ -1524,7 +1524,7 @@ int test_store(void)
             sqlite3_close(db2);
         }
         /* Trigger schema check via a store request */
-        uint8_t resp[8192];
+        uint8_t resp[65536];  /* styled listing inlines ~14 KB CSS */
         size_t n = store_handle_request("GET", "/store", NULL, 0,
             resp, sizeof(resp), test_datadir);
         resp[n < sizeof(resp) ? n : sizeof(resp) - 1] = '\0';

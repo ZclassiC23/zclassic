@@ -10,7 +10,7 @@
 #include "views/explorer_factoids_internal.h"
 #include "views/explorer_factoids_view.h"
 #include "views/explorer_dashboard_view.h"
-#include "views/explorer_css.h"
+#include "views/site_css.h"
 #include "views/explorer_pages_loading_view.h"
 #include "views/explorer_pages_view.h"
 #include "views/explorer_stats_internal.h"
@@ -667,7 +667,7 @@ int test_explorer(void)
 
     printf("explorer: compiled CSS includes full explorer stylesheet... ");
     {
-        const char *css = explorer_css;
+        const char *css = site_css;
         bool ok = css &&
              strstr(css, "color-scheme:dark") != NULL &&
              strstr(css, ".table-wrap") != NULL &&

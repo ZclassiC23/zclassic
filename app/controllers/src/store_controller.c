@@ -68,7 +68,7 @@ static size_t serve_create_order(sqlite3 *db, int64_t product_id,
     int64_t order_id = order.id;
 
     /* Show payment page */
-    char body[8192];
+    char body[24576];
     size_t off = 0;
     int n = html_body_start(body, sizeof(body), "Payment");
     if (n > 0) off = (size_t)n;
@@ -82,7 +82,7 @@ static size_t serve_create_order(sqlite3 *db, int64_t product_id,
     format_zcl_price(order_price, sizeof(order_price), product.price_zatoshi);
 
     n = snprintf(body + off, sizeof(body) - off,
-        "<h2>Order #%lld</h2>"
+        "<h1>Order #%lld</h1>"
         "<div class='product'>"
         "<p>Send exactly <span class='price'>%s ZCL</span> to:</p>"
         "<div class='addr'>%s</div>"
@@ -99,8 +99,7 @@ static size_t serve_create_order(sqlite3 *db, int64_t product_id,
         "<div class='addr'>%s</div>"
         "<p><a href='/store/orders/%lld'>Check payment status</a></p>"
         "</div>"
-        "<p><a href='/store/products'>&larr; Back to store</a></p>"
-        "</body></html>",
+        "<p><a href='/store/products'>&larr; Back to store</a></p>",
         (long long)order_id,
         order_price,
         safe_pay,
@@ -109,6 +108,9 @@ static size_t serve_create_order(sqlite3 *db, int64_t product_id,
         (long long)order_id,
         safe_cust,
         (long long)order_id);
+    if (n > 0) off += (size_t)n;
+
+    n = html_body_end(body + off, sizeof(body) - off);
     if (n > 0) off += (size_t)n;
 
     return store_html_response(body, off, resp, max);

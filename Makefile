@@ -98,7 +98,7 @@ endif
 # marker forces a parse restart whenever either generated header is missing or
 # stale, so the authoritative capture always observes the bytes actually used.
 VIEW_GEN_HEADERS_EARLY := app/views/include/views/wallet_templates_gen.h \
-	app/views/include/views/explorer_css.h
+	app/views/include/views/site_css.h
 VIEW_BOOTSTRAP_MK := build/identity/view-inputs-ready.mk
 ifneq ($(ZCL_STANDALONE_CLEAN),1)
 ifeq ($(strip $(MAKE_RESTARTS)),)
@@ -1145,8 +1145,8 @@ endif
 TMPL_GEN = app/views/include/views/wallet_templates_gen.h
 TMPL_SRC = $(wildcard app/views/templates/*.chtml) $(wildcard app/views/css/*.ccss)
 TMPL_TOOL = $(BIN_DIR)/gen_templates
-EXPLORER_CSS_GEN = app/views/include/views/explorer_css.h
-EXPLORER_CSS_SRC = app/views/src/explorer_css.css
+SITE_CSS_GEN = app/views/include/views/site_css.h
+SITE_CSS_SRC = app/views/src/site.css
 VIEW_GEN_HEADERS = $(VIEW_GEN_HEADERS_EARLY)
 
 $(TMPL_TOOL): tools/gen_templates.c lib/base/src/safe_alloc.c
@@ -1161,8 +1161,8 @@ $(BIN_DIR)/inspect_html: tools/inspect_html.c lib/base/src/safe_alloc.c
 $(TMPL_GEN): $(TMPL_SRC) $(TMPL_TOOL)
 	$(TMPL_TOOL) app/views/templates $@ app/views/css
 
-$(EXPLORER_CSS_GEN): $(EXPLORER_CSS_SRC) $(TMPL_TOOL)
-	$(TMPL_TOOL) --single-css $< $@ explorer_css EXPLORER_CSS_H
+$(SITE_CSS_GEN): $(SITE_CSS_SRC) $(TMPL_TOOL)
+	$(TMPL_TOOL) --single-css $< $@ site_css SITE_CSS_H
 
 # Included near the top of this file. Updating it after its generated-header
 # prerequisites makes GNU Make restart before any ordinary target recipe runs.
@@ -1178,8 +1178,9 @@ $(VIEW_BOOTSTRAP_MK): $(VIEW_GEN_HEADERS)
 .PHONY: templates
 templates: $(VIEW_GEN_HEADERS)
 
-.PHONY: explorer-css
-explorer-css: $(EXPLORER_CSS_GEN)
+.PHONY: site-css explorer-css
+site-css: $(SITE_CSS_GEN)
+explorer-css: site-css
 
 .PHONY: tools/gen_templates tools/inspect_html
 tools/gen_templates: $(TMPL_TOOL)
