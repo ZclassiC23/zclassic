@@ -119,7 +119,7 @@ review and tests.
 
 - [x] Canonical bounded `content.v2` manifest and SHA3 chunk verification.
 - [x] Pure bounded announce/want/data/cancel codec tied to package roots.
-- [ ] Signed release envelope using wallet-brokered secp256k1 keys.
+- [x] Signed release envelope using wallet-brokered secp256k1 keys.
 - [ ] Staging-only content-addressed store with quotas and atomic verified puts.
 - [ ] Durable resume bitmap and multi-peer rarest-first scheduler.
 - [ ] Peer inventory, backpressure, timeout, retry, and offence accounting.
