@@ -29,6 +29,11 @@ deployed**, and none of it is live until an owner-gated `make deploy`:
 
 | In `main`, not running | Where |
 |---|---|
+| ZCODE slices 1–13 (signed release envelope, 10 GiB CAS store, publish/search, contributor identity + ZNAM pointers, declarative recipe, external verifier `zclassic23-package-verify`, scoring, simulated rewards/rankings/badges, ratio + anti-spam policy, `zpkgswm` swarm, `/zcode*` site). Slices 14–15 (real ZSLP transfers/badges) remain, owner-gated — full handoff in `docs/work/ZCODE_PLAN.md` §"Current state" | `lib/vcs/`, `config/commands/zcode.def`, `tools/package_verify.c`, `app/controllers/src/zcode_site_controller.c` |
+| node.db lock-contention fix (catchup commit cadence, BEGIN IMMEDIATE, poisoned-COMMIT recovery, `node_db_catchup.abort_storm` blocker) | `5930d89fe` |
+| Wallet plaintext-mirror elimination (single writer, STATE-G boot scrub to WKS1 envelopes) | `d027c034b` |
+| op_return_backfill un-wedged on genesis's fake disk pos (fold zero rows when the body is unreadable; ~100k-line log loop ends on next deploy) | `57d6e6edc` |
+| Terminal human-presentation layer (TTY-only; pipes stay byte-identical typed JSON; `ZCL_HUMAN` override) | `tools/command/cli_render.{c,h}` |
 | Cost-tiered onion admission (STATIC/CHEAP/EXPENSIVE) + adaptive client puzzle; one admission primitive, the duplicate retired | `lib/net/src/onion_ratelimit.c`, `lib/net/src/puzzle.c` |
 | Wallet mutating commands bound to the RPC engine (address new/import/export-key, transaction send, shielded send, rescan, backup-now) and address labels | `docs/API_REFERENCE.md` marks these `ready` |
 | Groth16 comb-based verify speedup behind a differential parity oracle | `make check-groth16-parity`, `make bench-groth16-comb` |
