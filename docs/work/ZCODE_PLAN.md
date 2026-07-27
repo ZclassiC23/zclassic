@@ -62,7 +62,7 @@ JSON (JSON is display-only).
        tests > source; caps per release/contributor-week/releases-day)
 8. [x] Simulated ZCODE rewards (placeholder token ID only — never the real token in dev;
        settlement accrues into a daily queue — see ZCL fuel economics below)
-9. [ ] Daily/weekly/monthly/all-time rankings (rank earned score, never token balance;
+9. [x] Daily/weekly/monthly/all-time rankings (rank earned score, never token balance;
        store earned_score / token_rewards_received / current_token_balance separately)
 10. [ ] Simulated ZCODE badges (ZSLP-based, permanent, no double-issue per period,
         owner-reviewed plan/commit issuance in v1)

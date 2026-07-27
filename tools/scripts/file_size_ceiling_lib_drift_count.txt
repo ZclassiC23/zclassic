@@ -275,3 +275,9 @@
 # receipts — one cohesive settlement module mirroring package_store.c's
 # one-file shape). Freshly baselined at its starting size (2112) so future
 # growth on it becomes visible; count unchanged.
+#
+# 2026-07-27 (ZCODE slice 9, rankings): package_reward.c grew 2112 -> 2135
+# adding vcs_reward_ledger_fact_at() — the read-only settled-fact accessor
+# the rankings projection (lib/vcs/package_rank.c, a new 557-line module,
+# under the 800 ceiling) reads the ledger through. Re-baselined in
+# file_size_ceiling_lib_baseline.txt (2135); count unchanged.

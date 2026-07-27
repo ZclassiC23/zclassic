@@ -204,6 +204,9 @@ ZCL_COMMAND_READY_READ(
     "reward ledger facts (rewards: earned_score / queued / settled from the "
     "durable reward-history ledger — earned_score and "
     "token_rewards_received are separate SIMULATED facts, never balances), "
+    "the slice-9 current-period leaderboard positions (rankings: overall "
+    "rank per period from the same projection as the zcode leaderboard "
+    "leaves; `day` selects today, host clock when omitted), "
     "a bounded package_roots page (16, package_roots_truncated flags the "
     "rest), and the ZNAM publisher-profile pointer when one claims this "
     "key, with its binding proof (bound only when the name owner equals "
@@ -213,7 +216,7 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LIST_BUDGET,
     "zcode,contributor,show,profile,publisher,identity,znam",
     "zcl.zcode_contributor_show.input.v1",
-    "zcl.zcode_contributor_show.v1", "pubkey,datadir", "pubkey",
+    "zcl.zcode_contributor_show.v1", "pubkey,day,datadir", "pubkey",
     "zclassic23 zcode contributor show --input='{\"pubkey\":\"<66hex>\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
@@ -447,3 +450,101 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_reward_receipt)
+
+/* ── slice 9: the ZCODE Rankings ───────────────────────────────────────
+ * Daily/weekly/monthly/all-time leaderboards ranking EARNED ZCODE SCORE
+ * only — never a wallet token balance (no balance or transfer record
+ * kind exists anywhere in the reward ledger, so purchased or transferred
+ * ZCODE structurally cannot move rankings). The leaderboard is a
+ * REBUILDABLE PROJECTION over the slice-8 reward-history ledger, rebuilt
+ * on every call; period windows are exact civil-day ranges (UTC days,
+ * ISO-8601 weeks, calendar months) computed PURELY — the caller passes
+ * "today" via `day` (the host clock only when omitted). The two P2P
+ * categories (verified-bytes-served, distinct-package-users) are named
+ * unavailable and report zero honestly until slices 11-12. */
+
+ZCL_COMMAND_BRANCH("zcode.leaderboard", "zcode",
+                   "ZCODE Rankings: earned-score leaderboards (never "
+                   "token balances)",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.leaderboard.daily", "zcode.leaderboard", "",
+    "Daily ZCODE Ranking (earned score, never balances)",
+    "Ranked contributors for one UTC day, projected at call time from the "
+    "settled earned-score facts of the reward-history ledger: rank "
+    "(strict 1..N by points desc, contributor pubkey asc), contributor, "
+    "points in `category` (default overall), earned_score and "
+    "token_rewards_received as SEPARATE facts (current_token_balance is "
+    "unavailable in v1), an optional per-category breakdown, and the "
+    "explicit window (first/last civil day, year/month/day). `day` is a "
+    "civil day number (unix/86400; default: host today); limit/offset "
+    "page (32 cap). verified-bytes-served and distinct-package-users are "
+    "named unavailable (slices 11-12) and rank nobody — zero, honestly. "
+    "BAD_CATEGORY names an unknown category.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,leaderboard,ranking,daily,score,contributors",
+    "zcl.zcode_leaderboard.input.v1", "zcl.zcode_leaderboard.v1",
+    "category,day,limit,offset,breakdown,datadir", "",
+    "zclassic23 zcode leaderboard daily --input='{\"day\":20500,\"category\":\"security-fixes\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_leaderboard_daily)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.leaderboard.weekly", "zcode.leaderboard", "",
+    "Weekly ZCODE Ranking (ISO-8601 week, earned score)",
+    "Ranked contributors for one ISO-8601 week (Monday..Sunday; the "
+    "window names its iso_year/iso_week — a Gregorian year boundary can "
+    "sit mid-week), same projection, row shape, paging, category filter, "
+    "and unavailable-category honesty as zcode leaderboard daily. `day` "
+    "selects any day inside the week (default: host today).",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,leaderboard,ranking,weekly,iso,score,contributors",
+    "zcl.zcode_leaderboard.input.v1", "zcl.zcode_leaderboard.v1",
+    "category,day,limit,offset,breakdown,datadir", "",
+    "zclassic23 zcode leaderboard weekly --input='{\"day\":20500}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_leaderboard_weekly)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.leaderboard.monthly", "zcode.leaderboard", "",
+    "Monthly ZCODE Ranking (calendar month, earned score)",
+    "Ranked contributors for one calendar month (exact lengths, leap "
+    "years included; the window names its year/month and first/last "
+    "civil day), same projection, row shape, paging, category filter, "
+    "and unavailable-category honesty as zcode leaderboard daily. `day` "
+    "selects any day inside the month (default: host today).",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,leaderboard,ranking,monthly,score,contributors",
+    "zcl.zcode_leaderboard.input.v1", "zcl.zcode_leaderboard.v1",
+    "category,day,limit,offset,breakdown,datadir", "",
+    "zclassic23 zcode leaderboard monthly --input='{\"day\":20500}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_leaderboard_monthly)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.leaderboard.all", "zcode.leaderboard", "",
+    "All-time ZCODE Ranking (earned score)",
+    "The all-time table: every settled earned-score fact in the "
+    "reward-history ledger, same projection, row shape, paging, category "
+    "filter, and unavailable-category honesty as zcode leaderboard daily "
+    "(the window is unbounded, bounded:false).",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,leaderboard,ranking,alltime,score,contributors",
+    "zcl.zcode_leaderboard.input.v1", "zcl.zcode_leaderboard.v1",
+    "category,limit,offset,breakdown,datadir", "",
+    "zclassic23 zcode leaderboard all --input='{}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_leaderboard_all)

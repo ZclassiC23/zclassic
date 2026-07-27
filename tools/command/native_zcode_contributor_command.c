@@ -40,9 +40,11 @@
 #include "chain/chainparams.h"
 #include "json/json.h"
 #include "models/database.h"
+#include "platform/time_compat.h"
 #include "services/zcode_pointer.h"
 #include "vcs/package_contributor.h"
 #include "vcs/package_index.h"
+#include "vcs/package_rank.h"
 #include "vcs/package_reward.h"
 
 #include <stdio.h>
@@ -282,6 +284,85 @@ void zcl_native_handle_zcode_contributor_show(
                     "settlement (caps apply at plan time)");
                 (void)json_push_kv(&reply->data, "rewards", &rw);
                 json_free(&rw);
+
+                /* The slice-9 current-period ranks (overall category),
+                 * from the SAME rebuildable projection the zcode
+                 * leaderboard leaves serve — a pointer to the
+                 * contributor's leaderboard position, never a second
+                 * ranking truth. `day` (a civil day number) selects
+                 * "today"; the host clock only when omitted. */
+                {
+                    int64_t today = 0;
+                    const struct json_value *dv =
+                        json_get(request->input, "day");
+                    if (dv)
+                        today = json_get_int(dv);
+                    else
+                        today = vcs_rank_day_from_unix(
+                            platform_time_wall_unix());
+                    static const enum vcs_rank_period k_periods[4] = {
+                        VCS_RANK_PERIOD_DAILY, VCS_RANK_PERIOD_WEEKLY,
+                        VCS_RANK_PERIOD_MONTHLY, VCS_RANK_PERIOD_ALL_TIME,
+                    };
+                    struct json_value ranks;
+                    json_init(&ranks);
+                    json_set_object(&ranks);
+                    (void)json_push_kv_int(&ranks, "day", today);
+                    (void)json_push_kv_str(&ranks, "category", "overall");
+                    struct json_value periods;
+                    json_init(&periods);
+                    json_set_object(&periods);
+                    for (size_t pi = 0; pi < 4; pi++) {
+                        struct vcs_rank_window window;
+                        if (!vcs_rank_window_for(k_periods[pi], today,
+                                                 &window))
+                            continue;
+                        struct vcs_rank_projection *proj =
+                            vcs_rank_projection_build(ledger, &window);
+                        if (!proj)
+                            continue;
+                        struct vcs_rank_entry entry;
+                        bool ranked = vcs_rank_contributor(
+                            proj, VCS_RANK_CATEGORY_OVERALL, pubkey_bytes,
+                            &entry);
+                        size_t total_ranked = vcs_rank_table(
+                            proj, VCS_RANK_CATEGORY_OVERALL, NULL, 0);
+                        struct json_value po;
+                        json_init(&po);
+                        json_set_object(&po);
+                        (void)json_push_kv_bool(&po, "ranked", ranked);
+                        if (ranked) {
+                            (void)json_push_kv_int(&po, "rank",
+                                                   (int64_t)entry.rank);
+                            (void)json_push_kv_int(&po, "points",
+                                                   (int64_t)entry.points);
+                        }
+                        (void)json_push_kv_int(&po, "total_ranked",
+                                               (int64_t)total_ranked);
+                        if (window.bounded) {
+                            (void)json_push_kv_int(&po, "first_day",
+                                                   window.first_day);
+                            (void)json_push_kv_int(&po, "last_day",
+                                                   window.last_day);
+                        }
+                        (void)json_push_kv(
+                            &periods,
+                            vcs_rank_period_string(k_periods[pi]), &po);
+                        json_free(&po);
+                        vcs_rank_projection_free(proj);
+                    }
+                    (void)json_push_kv(&ranks, "periods", &periods);
+                    json_free(&periods);
+                    (void)json_push_kv_str(
+                        &ranks, "note",
+                        "current-period leaderboard positions (overall, "
+                        "earned score only) from the same projection as "
+                        "zcode leaderboard daily|weekly|monthly|all — "
+                        "ranked:false means no settled points inside the "
+                        "period window");
+                    (void)json_push_kv(&reply->data, "rankings", &ranks);
+                    json_free(&ranks);
+                }
                 vcs_reward_ledger_free(ledger);
             }
         }

@@ -365,6 +365,24 @@ void zcl_native_handle_zcode_reward_receipt(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* zcode slice 9 — the ZCODE Rankings: daily/weekly/monthly/all-time
+ * leaderboards ranking EARNED ZCODE SCORE only (never a balance — no
+ * balance or transfer record kind exists), a rebuildable projection over
+ * the slice-8 reward ledger with pure window arithmetic (the caller
+ * passes "today"). Bound by config/commands/zcode.def. */
+void zcl_native_handle_zcode_leaderboard_daily(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_leaderboard_weekly(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_leaderboard_monthly(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_leaderboard_all(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* ops.state — generic subsystem state dump. Dispatches the `dumpstate` RPC
  * method directly. `subsystem` (required) selects the
  * owning module's *_dump_state_json; `key` is subsystem-specific (e.g. a

@@ -374,6 +374,30 @@ enum vcs_reward_receipt_error vcs_reward_receipt_load(
     const struct vcs_reward_ledger *l, const uint8_t plan_id[32],
     struct vcs_reward_receipt *out);
 
+/* ── fact access (the slice-9 rankings projection reads these) ──────── */
+
+/* A read-only view of one SETTLED ledger fact. The fact carries NO
+ * balance and no transfer semantics: it is an earned-score record
+ * (contributor, category, settled points, settlement day) — the only
+ * input rankings may ever use. */
+struct vcs_reward_fact_view {
+    uint8_t entry_id[32];
+    uint8_t release_root[32];
+    uint8_t contributor[33];
+    enum vcs_reward_kind kind;
+    enum vcs_reward_category category;
+    uint32_t points; /* settled */
+    int64_t day;     /* the settlement window (civil day number) */
+    uint8_t facts_hash[32];
+    uint8_t plan_id[32];
+};
+
+/* Copy the fact at `index` (0..vcs_reward_ledger_fact_count) into `out`.
+ * False (logged) on NULL inputs or an out-of-range index. */
+bool vcs_reward_ledger_fact_at(const struct vcs_reward_ledger *l,
+                               size_t index,
+                               struct vcs_reward_fact_view *out);
+
 /* ── contributor totals (the zcode.contributor.show integration) ────── */
 
 struct vcs_reward_contributor_totals {

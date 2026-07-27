@@ -1151,6 +1151,29 @@ const struct vcs_reward_entry *vcs_reward_ledger_entry_at(
     return &l->entries[index];
 }
 
+bool vcs_reward_ledger_fact_at(const struct vcs_reward_ledger *l,
+                               size_t index,
+                               struct vcs_reward_fact_view *out)
+{
+    if (!l || !out)
+        LOG_FAIL(REWARD_LOG, "fact_at: NULL %s", !l ? "ledger" : "out");
+    if (index >= l->fact_count)
+        LOG_FAIL(REWARD_LOG, "fact_at: index %zu of %zu", index,
+                 l->fact_count);
+    const struct vcs_reward_fact *f = &l->facts[index];
+    memset(out, 0, sizeof(*out));
+    memcpy(out->entry_id, f->entry_id, 32);
+    memcpy(out->release_root, f->release_root, 32);
+    memcpy(out->contributor, f->contributor, 33);
+    out->kind = (enum vcs_reward_kind)f->kind;
+    out->category = (enum vcs_reward_category)f->category;
+    out->points = f->points;
+    out->day = f->day;
+    memcpy(out->facts_hash, f->facts_hash, 32);
+    memcpy(out->plan_id, f->plan_id, 32);
+    return true;
+}
+
 const struct vcs_reward_entry *vcs_reward_ledger_find(
     const struct vcs_reward_ledger *l, const uint8_t entry_id[32])
 {

@@ -1471,6 +1471,7 @@ int main(int argc, char **argv)
     { extern int test_zcode_verify(void); failures += test_zcode_verify(); }
     { extern int test_zcode_score(void); failures += test_zcode_score(); }
     { extern int test_zcode_reward(void); failures += test_zcode_reward(); }
+    { extern int test_zcode_rank(void); failures += test_zcode_rank(); }
     { extern int test_vcs_devloop(void); failures += test_vcs_devloop(); }
     { extern int test_testcache(void); failures += test_testcache(); }
     failures += test_nullifier_kv();
