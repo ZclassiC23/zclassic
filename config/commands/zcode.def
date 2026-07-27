@@ -548,3 +548,135 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_leaderboard_all)
+
+/* ── slice 10: SIMULATED ZCODE Badges ──────────────────────────────────
+ * Permanent achievement evidence, SIMULATED ZSLP-based assets in v1 (no
+ * real ZSLP mint, no wallet call, no on-chain asset — the owner-reviewed
+ * real issuance is slice 15). A badge commits to the badge type, the
+ * recipient contributor key, the achievement period, the evidence root,
+ * the issuing policy id, a unique per-issuer sequence, and the issuer
+ * key under one signature (canonical binary encoding + domain-separated
+ * SHA3 id — never signed JSON). A badge is PERMANENT: losing a
+ * leaderboard position never revokes it. Dedup (never the same badge
+ * twice for the same contributor + achievement period) is enforced at
+ * plan (excluded with duplicate-badge) and re-checked at issue against
+ * the current store. Eligibility derives from existing facts only
+ * (slice-8 ledger, slice-9 rankings, slice-3 publish history);
+ * popular-package and rare-package-seeder need P2P facts that arrive
+ * with slices 11-12 and are named unavailable, never faked. The issuer
+ * secret never enters lib/vcs — the issue handler signs through a
+ * callback. */
+
+ZCL_COMMAND_BRANCH("zcode.badge", "zcode",
+                   "ZCODE Badges: permanent achievement evidence "
+                   "(SIMULATED assets, plan/commit issuance)",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.badge.eligible", "zcode.badge", "",
+    "Which ZCODE Badges a contributor qualifies for right now",
+    "Evaluates all 13 v1 badge types for one 66-hex contributor `pubkey` "
+    "against existing facts only (the slice-8 reward ledger, the slice-9 "
+    "rankings, the slice-3 publish history), at `day` (a civil day "
+    "number; default: host today). Every row names available/eligible, "
+    "the evidence fact in `detail`, and — when eligible — the "
+    "achievement period, the evidence root, and already_issued (the "
+    "dedup check against the durable badge store under the configured "
+    "badge policy). popular-package and rare-package-seeder are named "
+    "unavailable (P2P facts arrive with slices 11-12) — honestly, never "
+    "faked. policy_present says whether <datadir>/zcode/badge_policy is "
+    "configured.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,badge,eligible,achievement,contributor,period",
+    "zcl.zcode_badge_eligible.input.v1", "zcl.zcode_badge_eligible.v1",
+    "pubkey,day,datadir", "pubkey",
+    "zclassic23 zcode badge eligible --input='{\"pubkey\":\"<66hex>\",\"day\":20500}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_badge_eligible)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.badge.plan", "zcode.badge", "",
+    "Assemble one dedup-checked badge issuance batch (SIMULATED)",
+    "Assembles the issuance batch for one 66-hex contributor `pubkey` at "
+    "`day` (default: host today): every badge type is evaluated from "
+    "current facts; eligible types not already issued for the same "
+    "contributor + achievement period (the dedup rule) become rows with "
+    "their evidence roots and unique per-issuer sequences; every "
+    "excluded type is named with its rule (duplicate-badge, "
+    "not-eligible, unavailable). Requires the configured badge policy "
+    "(<datadir>/zcode/badge_policy — NO_BADGE_POLICY names it missing). "
+    "The ONLY mutation is the persisted plan id (idempotent: "
+    "already_persisted flags a re-plan); nothing is issued here.",
+    0,
+    "zcode,badge,plan,issuance,batch,dedup,policy",
+    "zcl.zcode_badge_plan.input.v1", "zcl.zcode_badge_plan.v1",
+    "pubkey,day,datadir", "pubkey",
+    "zclassic23 zcode badge plan --input='{\"pubkey\":\"<66hex>\",\"day\":20500}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_badge_plan)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.badge.issue", "zcode.badge", "",
+    "Issue a planned badge batch (SIMULATED, idempotent)",
+    "Commits one planned badge batch SIMULATED: re-validates every "
+    "planned row against CURRENT facts (rebuilt at the plan's recorded "
+    "day) and the CURRENT badge store (dedup, sequence conflicts), signs "
+    "each fresh badge with `issuer_secret` (the 64-hex issuer secret — "
+    "it must be the configured policy issuer: ISSUER_KEY_MISMATCH names "
+    "the rule; the secret never enters lib/vcs), persists the signed "
+    "badge wires under <datadir>/zcode/badges, and writes the commit "
+    "record last. Replay-safe: a crash mid-issue leaves a resumable "
+    "partial state (resumed:true on the finishing issue); re-issuing a "
+    "completed plan is ALREADY_ISSUED — a named duplicate, never a "
+    "double-issue. UNKNOWN_PLAN, PLAN_CORRUPT, POLICY_MISMATCH, "
+    "STALE_PLAN (the offending row and rule named), SIGN_FAILURE, and "
+    "ISSUE_IO name the other rejections. No real ZSLP asset exists; the "
+    "owner-reviewed real issuance is slice 15.",
+    0,
+    "zcode,badge,issue,commit,sign,simulated,permanent",
+    "zcl.zcode_badge_issue.input.v1", "zcl.zcode_badge_issue.v1",
+    "plan_id,issuer_secret,datadir", "plan_id,issuer_secret",
+    "zclassic23 zcode badge issue --input='{\"plan_id\":\"<64hex>\",\"issuer_secret\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_badge_issue)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.contributor.badges", "zcode.contributor", "",
+    "Earned ZCODE Badges of one contributor (permanent evidence)",
+    "The badges one 66-hex contributor `pubkey` has earned, read from "
+    "the durable badge store (every signature re-verified at load) under "
+    "the configured badge policy, in issuance order: badge id, type, "
+    "achievement period, evidence root, sequence, issuer. PERMANENT "
+    "historical evidence: badges persist regardless of later rank "
+    "changes — losing a leaderboard position never revokes an earned "
+    "badge. limit/offset page (32 cap); an empty list means no badge was "
+    "issued to this key, not that the check was skipped. When no badge "
+    "policy is configured, policy_present is false and nothing can be "
+    "recognized as earned.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,contributor,badges,achievements,permanent",
+    "zcl.zcode_contributor_badges.input.v1",
+    "zcl.zcode_contributor_badges.v1", "pubkey,limit,offset,datadir",
+    "pubkey",
+    "zclassic23 zcode contributor badges --input='{\"pubkey\":\"<66hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_contributor_badges)

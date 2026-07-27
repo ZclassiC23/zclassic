@@ -383,6 +383,27 @@ void zcl_native_handle_zcode_leaderboard_all(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* zcode slice 10 — SIMULATED ZCODE Badges: permanent achievement
+ * evidence (canonical binary wire + domain-separated SHA3 id, issuer-
+ * signed; SIMULATED ZSLP-based assets only — no real mint, the
+ * owner-reviewed real issuance is slice 15). Eligibility derives from
+ * the slice-8 ledger, slice-9 rankings, and slice-3 publish history;
+ * issuance is plan/commit with the dedup rule (never the same badge
+ * twice for the same contributor + achievement period) enforced at plan
+ * and re-checked at issue. Bound by config/commands/zcode.def. */
+void zcl_native_handle_zcode_badge_eligible(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_badge_plan(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_badge_issue(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_contributor_badges(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* ops.state — generic subsystem state dump. Dispatches the `dumpstate` RPC
  * method directly. `subsystem` (required) selects the
  * owning module's *_dump_state_json; `key` is subsystem-specific (e.g. a

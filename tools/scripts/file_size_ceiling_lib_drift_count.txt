@@ -281,3 +281,14 @@
 # the rankings projection (lib/vcs/package_rank.c, a new 557-line module,
 # under the 800 ceiling) reads the ledger through. Re-baselined in
 # file_size_ceiling_lib_baseline.txt (2135); count unchanged.
+#
+# 2026-07-27 (ZCODE slice 10, simulated badges): package_badge.c is a NEW
+# 1339-line file (the badge wire codec + id + secp256k1 verify + policy lens
+# + durable badge/plan/commit store — one cohesive badge module mirroring
+# package_store.c's one-file shape) and package_badge_eligible.c is a NEW
+# 816-line file (the pure 13-type evaluator + facts builder + plan build +
+# two-pass issue). Both freshly baselined at their starting sizes (1339,
+# 816) so future growth on them becomes visible; count unchanged.
+# Same lint run exposed one restored regression already committed on this
+# branch: codeindex_merkle.c (1070 lines, be8471cf1) had never been
+# baselined. Freshly baselined at 1070; count unchanged.

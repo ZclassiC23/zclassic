@@ -64,7 +64,7 @@ JSON (JSON is display-only).
        settlement accrues into a daily queue — see ZCL fuel economics below)
 9. [x] Daily/weekly/monthly/all-time rankings (rank earned score, never token balance;
        store earned_score / token_rewards_received / current_token_balance separately)
-10. [ ] Simulated ZCODE badges (ZSLP-based, permanent, no double-issue per period,
+10. [x] Simulated ZCODE badges (ZSLP-based, permanent, no double-issue per period,
         owner-reviewed plan/commit issuance in v1)
 11. [ ] Local P2P ratio + anti-spam policy (free allowance for new users; verified-bytes
         ratio is local credit; no global ZCODE mint for bandwidth; every rejection names

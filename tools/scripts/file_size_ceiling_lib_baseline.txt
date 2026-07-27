@@ -72,3 +72,6 @@ lib/hotswap/src/hotswap_activate.c 948
 lib/vcs/src/package_store.c 964
 lib/vcs/src/package_score.c 845
 lib/vcs/src/package_reward.c 2135
+lib/codeindex/src/codeindex_merkle.c 1070
+lib/vcs/src/package_badge.c 1339
+lib/vcs/src/package_badge_eligible.c 816
