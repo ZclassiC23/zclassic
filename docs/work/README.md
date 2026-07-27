@@ -40,6 +40,8 @@ citation, `git log --follow -- docs/work/<name>.md` recovers older intent.
 | [`self-verified-tip-plan.md`](./self-verified-tip-plan.md) | PLAN | the `G-SOV` sovereignty-gate design + open hardening items; `G-SOV` is the active gate in `sovereignty_controller.c` |
 | [`SOVEREIGN-NETWORK-ROADMAP.md`](./SOVEREIGN-NETWORK-ROADMAP.md) | PLAN | durable Phase 0–6 hierarchy and promotion gates; ordering authority when other plans differ |
 | [`sovereign-cutover-runbook.md`](./sovereign-cutover-runbook.md) | PLAN/LIVE | owner-gated live cutover + revert procedure for the bundle install path |
+| [`ZCODE_PLAN.md`](./ZCODE_PLAN.md) | PLAN | owner's 15-slice build order for ZCODE (decentralized C23 source-package hosting) on top of `../P2P_SOURCE_HOSTING.md`; `lib/vcs/include/vcs/package_reward.h` cites its "ZCL fuel economics" section by name |
+| [`MARKETPLACE_PLAN.md`](./MARKETPLACE_PLAN.md) | PLAN | owner directive: on-chain P2P ZSLP/ZCL marketplace (same-chain single-tx swap + cross-chain HTLC) over the existing ZSWP/ZSLP primitives; application protocol only, no consensus surface |
 | [`shielded-history-importer.md`](./shielded-history-importer.md) | LIVE | reference for the shipped `-import-complete-shielded` operational cure; operational-vs-sovereign trust-mode split |
 | [`CONSENSUS-STATE-BUNDLE.md`](./CONSENSUS-STATE-BUNDLE.md) | LIVE | naming/ownership authority for `zcl.consensus_state_bundle.v1` |
 | [`never-stuck-plan.md`](./never-stuck-plan.md) | DESIGN | the wedge class this doc diagnosed is CURED; retained as the design record for the never-stuck hardening map + the per-height UTXO-ladder gap |
@@ -56,12 +58,15 @@ citation, `git log --follow -- docs/work/<name>.md` recovers older intent.
 | [`os/A1-authority-receipt-idiom.md`](./os/A1-authority-receipt-idiom.md) | DESIGN | the Law-7 privileged-transition authority-receipt idiom, cited by `tools/lint/check_privileged_transition_receipt.sh` |
 | [`os/A4-noise-transport-p1.md`](./os/A4-noise-transport-p1.md) | DESIGN | the Noise v2 P2P transport implementation contract |
 | [`os/A6-adaptive-client-puzzle.md`](./os/A6-adaptive-client-puzzle.md) | DESIGN | load-adaptive client-puzzle primitive design (not yet built) |
+| [`NAT_AND_ONION_TRANSPORT.md`](./NAT_AND_ONION_TRANSPORT.md) | DESIGN | onion-as-universal-rendezvous / clearnet-as-fast-path transport design notes (NAT traversal, onion hosting, package swarm); P2P-layer policy only, no consensus surface |
 | [`palace-design.md`](./palace-design.md) | DESIGN | code-legibility layer: file/group purpose, `code room`, the three P1/P2/P3 lint gates (§3 cited by `test_make_lint_gates.c`) |
 | [`service-result-convergence.md`](./service-result-convergence.md) | LIVE | `struct zcl_result` convergence ratchet inventory + lane plan for `app/services/`; gate is live, this is the shrinking-floor inventory |
 | [`secure-transport-design.md`](./secure-transport-design.md) | DESIGN | Noise_XX v2 transport protocol contract (implemented, default off) |
 | [`wire-next-wave-specs.md`](./wire-next-wave-specs.md) | DESIGN | next-wave `simnet_wire` lane specs (eclipse/partition, bandwidth/reorder, app-layer flows) |
 | [`session-substrate-probes.md`](./session-substrate-probes.md) | DESIGN | measured rootless-sandboxing capability probes for the multi-user-server program |
 | [`LLM-C23-APP-PLATFORM-CHECKLIST.md`](./LLM-C23-APP-PLATFORM-CHECKLIST.md) | DESIGN | future LLM/App platform execution checklist (Phases 3–5); not the current execution queue, cannot displace the sovereign cure |
+| [`agent-spend-policy-design.md`](./agent-spend-policy-design.md) | LIVE/RETAINED | scoped agent authority over digital assets — shipped as `agent_sessions` (migration v36) + `app/services/include/services/agent_spend_policy.h`; 16 `.c`/`.h`/test files cite its "Minting + presentation" and "Enforcement" sections by name, so keep those headings as-is |
+| [`UX_PLAN.md`](./UX_PLAN.md) | LIVE | the two-lane UX program (shared server-rendered design system + terminal presentation); both lanes have landed, `tools/command/cli_render.h`, `tools/command/native_command.c`, `src/main_cli_modes.c` and `lib/test/src/test_cli_render.c` cite its "terminal lane" by name |
 | [`HOTSWAP.md`](./HOTSWAP.md) | LIVE | the dev-only hot-swap mechanisms |
 | [`fast-path.md`](./fast-path.md) | LIVE | the information algorithm + fast inner-loop commands for any change |
 | [`agent-protocol.md`](./agent-protocol.md) | LIVE | worker startup/completion protocol (this file's companion) |
@@ -77,8 +82,41 @@ citation, `git log --follow -- docs/work/<name>.md` recovers older intent.
 | [`consensus-parity-supplemental-audit-2026-06-08.md`](./consensus-parity-supplemental-audit-2026-06-08.md) | RETAINED | superseded audit, retained — §2 item 5 cited by `docs/AGENT_TRAPS.md`; landed-fix summary condensed into `docs/CONSENSUS_PARITY_DOCTRINE.md` |
 | [`lint-gate-hollowness-audit.md`](./lint-gate-hollowness-audit.md) | RETAINED | the fail-loud-scan-floor lint-gate pattern, cited by `tools/lint/gate_lib.sh` and its self-test |
 
+This table covers **every** tracked file in this directory. Reconcile it after
+adding one — `git ls-files docs/work/` minus the paths linked above must be
+empty, and an index that does not list everything is an index that lies.
+
 Recover any prior version of a file in this directory with
 `git log --follow -- docs/work/<name>.md`.
+
+Before deleting anything here, clear all three: it is classified superseded
+above (PLAN / LIVE / DESIGN / RETAINED are not deletion candidates — DESIGN
+means still-open, RETAINED means deliberately kept for a by-name citation);
+`git grep -n "<name>.md" -- "*.c" "*.h"` is empty; and
+`git grep -n "<name>.md" -- "*.md"` is empty. A comment citation does not fail
+`check-error-doc-refs` (it only reads string literals) but it is still a
+load-bearing pointer for the next reader.
+
+That third check is not theoretical. Seven files already deleted from this
+directory are still named from code, tests, and other docs, and nothing fired:
+
+```sh
+git grep -ho 'docs/work/[A-Za-z0-9_./-]*\.md' -- '*.c' '*.h' '*.md' '*.sh' Makefile |
+  sort -u | while read -r p; do
+    git ls-files --error-unmatch "$p" >/dev/null 2>&1 || echo "DANGLING: $p"
+  done
+```
+
+At the time of writing that prints seven names — two under a since-removed
+`archive/` subdirectory (lb1-wiring-design, sovereign-service-roadmap) plus
+`coin-backfill-repair.md`, `parallel-state-compiler.md`,
+`sync-organism-map.md`, `worktree-cleanup-2026-07-16.md` and
+`wt-phase4c-block-index-projection.md` — cited from
+`app/jobs/src/stage_repair_coin_backfill*.c`,
+`app/jobs/include/jobs/psc_range_fold.h`,
+`lib/storage/include/storage/coins_kv.h`, `tools/scripts/worktree_gc.sh`,
+`docs/AGENT_TRAPS.md` and six test files. Run the check before deleting, and
+repoint or drop the citation in the same commit.
 
 ## Active control documents
 
