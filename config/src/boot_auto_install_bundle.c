@@ -164,6 +164,27 @@ static void csir_write_failed_marker(const char *bundle_path)
     (void)close(fd);
 }
 
+/* Clear a stale "<bundle_path>.failed" marker after the bundle installed
+ * successfully: without this, an earlier failed attempt at the same path
+ * (e.g. a watchdog-killed boot) permanently excludes the now-GOOD bundle
+ * from autodetect on every later scan (boot_autodetect_consensus_bundle
+ * skips marked bundles) — observed live 2026-07-27 on the canonical
+ * datadir (marker 04:28, good bundle 05:37). Best-effort: a remove()
+ * failure is loud but non-fatal, the install itself is durable.
+ * Contract: config/consensus_state_install_runtime.h. */
+void boot_auto_install_clear_failed_marker(const char *bundle_path)
+{
+    if (!bundle_path || !*bundle_path)
+        return;
+    char failp[PATH_MAX];
+    int n = snprintf(failp, sizeof(failp), "%s.failed", bundle_path);
+    if (n < 0 || (size_t)n >= sizeof(failp))
+        return;
+    if (remove(failp) != 0 && errno != ENOENT)
+        LOG_WARN(ICB_SUBSYS, "could not clear stale never-stuck marker %s: %s",
+                 failp, strerror(errno));
+}
+
 /* ── 1c — Durable "install-on-next-boot" request (mirror of boot_auto_refold_*) */
 
 static void ibr_path(const char *datadir, char *out, size_t n)
@@ -397,6 +418,7 @@ bool boot_maybe_auto_install_consensus_bundle(struct node_db *ndb,
             consensus_state_install_from_bundle(ndb, ms, req_path, datadir, &rr);
         if (r.ok) {
             boot_install_bundle_clear(datadir);
+            boot_auto_install_clear_failed_marker(req_path);
             installed = true;
             installed_height = rr.height;
             LOG_INFO(ICB_SUBSYS,
@@ -438,6 +460,7 @@ bool boot_maybe_auto_install_consensus_bundle(struct node_db *ndb,
             if (r.ok) {
                 installed = true;
                 installed_height = rr.height;
+                boot_auto_install_clear_failed_marker(auto_bundle);
                 LOG_INFO(ICB_SUBSYS, "autodetected consensus bundle installed %s "
                                      "(H*=%d)", auto_bundle, rr.hstar);
             } else if (rr.state_installed) {

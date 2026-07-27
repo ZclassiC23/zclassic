@@ -137,6 +137,17 @@ char *boot_autodetect_consensus_bundle(const char *datadir);
 void boot_post_install_fold_span_check(struct main_state *ms,
                                        int32_t installed_height);
 
+/* Clear a stale "<bundle_path>.failed" never-stuck marker after that bundle
+ * installed successfully (wired at both install success branches in
+ * config/src/boot_auto_install_bundle.c). Without this, an earlier failed
+ * attempt at the same path (e.g. a watchdog-killed boot) permanently
+ * excludes the now-GOOD bundle from autodetect on every later scan —
+ * boot_autodetect_consensus_bundle skips marked bundles by design.
+ * Best-effort: a remove() failure is logged, never fatal; a missing marker
+ * (ENOENT) is a silent no-op. Exposed as its own entry point so the wiring
+ * is directly unit-testable without a full bundle install. */
+void boot_auto_install_clear_failed_marker(const char *bundle_path);
+
 /* ── Durable "install-on-next-boot" request (mirror of boot_auto_refold_*) ──
  * Top-level sentinel <datadir>/install_bundle_request holding
  * "<attempts>\n<bundle_path>\n", NEVER part of any derived-state wipe set.

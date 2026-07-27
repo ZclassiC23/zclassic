@@ -163,6 +163,46 @@ static int case_autodetect(void)
     return failures;
 }
 
+/* (a2) A stale .failed marker cleared via the install-success wiring makes
+ * the bundle detectable again — the 2026-07-27 live trap: a watchdog-killed
+ * boot marked the bundle .failed at 04:28, a later boot installed it
+ * successfully at 05:37, and nothing cleared the marker, so autodetect kept
+ * skipping the GOOD bundle on every subsequent scan. */
+static int case_failed_marker_cleared_on_success(void)
+{
+    int failures = 0;
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "csir_clear_failed", "ok");
+
+    char bundles[320];
+    snprintf(bundles, sizeof(bundles), "%s/bundles", dir);
+    CSIR_CHECK("mkdir bundles/", mkdir(bundles, 0700) == 0);
+    CSIR_CHECK("touch bundle", csir_touch(bundles, "b-100.sqlite"));
+    CSIR_CHECK("touch stale .failed marker",
+               csir_touch(bundles, "b-100.sqlite.failed"));
+
+    char *p = boot_autodetect_consensus_bundle(dir);
+    CSIR_CHECK("marked bundle skipped by autodetect", p == NULL);
+    free(p);
+
+    char path[384];
+    snprintf(path, sizeof(path), "%s/bundles/b-100.sqlite", dir);
+    boot_auto_install_clear_failed_marker(path);
+
+    p = boot_autodetect_consensus_bundle(dir);
+    CSIR_CHECK("cleared marker -> bundle detectable again",
+               p != NULL && strstr(p, "b-100.sqlite") != NULL);
+    free(p);
+
+    /* Idempotent on a missing marker; benign on bad args. */
+    boot_auto_install_clear_failed_marker(path);
+    boot_auto_install_clear_failed_marker(NULL);
+    boot_auto_install_clear_failed_marker("");
+
+    test_rm_rf_recursive(dir);
+    return failures;
+}
+
 /* (b) The runtime entry is callable and RETURNS (no _exit) on a bogus bundle. */
 static int case_runtime_returns(void)
 {
@@ -719,6 +759,7 @@ int test_consensus_state_install_runtime(void)
     printf("\n=== consensus_state_install_runtime ===\n");
     int failures = 0;
     failures += case_autodetect();
+    failures += case_failed_marker_cleared_on_success();
     failures += case_runtime_returns();
     failures += case_durable_request();
     failures += case_post_install_fold_span_check();
