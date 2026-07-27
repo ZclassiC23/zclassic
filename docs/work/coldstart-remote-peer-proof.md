@@ -111,3 +111,46 @@ consumed (free a slot, use a different source IP, or `-whitelist` the client on
 the serving node), or a different serving peer. Until a run reaches
 `peer_precheck=held_open` and a completed handshake, no remote run can measure
 the reducer at all.
+
+## Code changes landed in response (lane B)
+
+The refusal is enforced by the **serving** node, so nothing in this tree can
+unblock a run against a peer that is already at its cap for our source IP
+without that peer also running the new code. What landed is the removal of the
+two structural reasons a single-peer node cannot be recovered:
+
+1. **The per-IP inbound cap is no longer a bare literal.** `accept_connection()`
+   (`lib/net/src/net.c`) now reads `peer_scoring_max_inbound_per_ip()` —
+   `ZCL_PEER_MAX_INBOUND_PER_IP`, default 3, clamped to `[1, 4096]`. An operator
+   serving a host that legitimately runs several nodes (or any NAT) can raise it
+   without a patch. The refusal log line now names the cap, the env var, and the
+   fact that the dialling node can only observe a zero-byte remote-close — the
+   serving side is the only side that knows why the socket died.
+
+2. **A ban can no longer strand a node that has exactly one peer.** The offence
+   weights and the ban threshold are untouched — `INVALID_BLOCK` /
+   `PROTOCOL_VIOLATION` still score 100 and still cross the threshold on the
+   first hit, the peer is still scored, still banned, still disconnected. What
+   `peer_misbehaving()` now bounds is the ban's **duration**, and only when the
+   ban would leave the manager with zero live peers: `ZCL_PEER_LAST_PEER_BAN_SECS`
+   (default 600, clamped to `[60, 86400]` so it can never be harsher than the
+   ordinary path) replaces `ZCL_PEER_BAN_HOURS` for that one case. With any
+   second peer connected the branch is not taken and behaviour is unchanged.
+   Taking it raises the typed blocker `net.last_peer_ban`, cleared at
+   `peer_lifecycle_note_handshake_complete()` — the single choke point every
+   completed handshake passes through, i.e. the honest witness that the route
+   back to the network exists again.
+
+The **peer-ban hypothesis was refuted for the 2026-07-27 run** and this record
+should not be read as fixing it: zero `peer_banned` lines were logged, no
+`banlist.dat` was written, and `peer_misbehaving()` was never entered because
+the connection died before the version exchange. Change 2 closes the hazard for
+the first run that *does* complete a handshake and then hits one
+misclassification.
+
+Also corrected: the comment above `peer_misbehaving()` claimed addnode peers
+were exempt from penalty. `is_trusted_peer()` checks localhost and whitelisted
+only — it never checked addnode. The exemption was **not** added (operator
+intent to dial an address is not evidence the address serves valid consensus
+data); the comment now states what the code does, and the stranding risk the
+false claim implicitly covered is handled by the bounded ban above.

@@ -18,10 +18,16 @@
 #define PEER_SCORING_DEFAULT_THRESHOLD 100
 #define PEER_SCORING_DEFAULT_BAN_HOURS 24
 #define PEER_SCORING_DEFAULT_DECAY     1   /* points per minute */
+#define PEER_SCORING_DEFAULT_MAX_INBOUND_PER_IP 3
+#define PEER_SCORING_DEFAULT_LAST_PEER_BAN_SECS 600
 
 static _Atomic int g_ban_threshold   = PEER_SCORING_DEFAULT_THRESHOLD;
 static _Atomic int g_ban_hours       = PEER_SCORING_DEFAULT_BAN_HOURS;
 static _Atomic int g_decay_per_min   = PEER_SCORING_DEFAULT_DECAY;
+static _Atomic int g_max_inbound_per_ip =
+    PEER_SCORING_DEFAULT_MAX_INBOUND_PER_IP;
+static _Atomic int g_last_peer_ban_secs =
+    PEER_SCORING_DEFAULT_LAST_PEER_BAN_SECS;
 
 static int read_env_int(const char *name, int fallback, int min, int max)
 {
@@ -50,9 +56,30 @@ void peer_scoring_init(void)
                              PEER_SCORING_DEFAULT_DECAY,
                              0, 10000);
 
+    /* Per-IP inbound admission cap. Was a bare `3` literal in
+     * accept_connection() with no override, which makes a legitimately
+     * multi-node source (one host running several nodes, or any NAT'd
+     * network) undiagnosably unreachable past the third socket: the server
+     * closes at accept() with zero bytes exchanged, so the client only ever
+     * sees "remote-close, state=connecting". Range [1, 4096] — 0 would
+     * refuse every inbound peer, which is what -listen=0 is for. */
+    int max_inbound_per_ip = read_env_int("ZCL_PEER_MAX_INBOUND_PER_IP",
+                                          PEER_SCORING_DEFAULT_MAX_INBOUND_PER_IP,
+                                          1, 4096);
+    /* Bounded ban applied instead of the full ban_hours when the ban would
+     * leave the node with no connected peer at all — see peer_misbehaving()
+     * in net.c. Range [60, 24h]: shorter than a minute is not a ban, and the
+     * ceiling is the normal default so this knob can never make the
+     * last-peer case HARSHER than the ordinary case. */
+    int last_peer_ban_secs = read_env_int("ZCL_PEER_LAST_PEER_BAN_SECS",
+                                          PEER_SCORING_DEFAULT_LAST_PEER_BAN_SECS,
+                                          60, 24 * 60 * 60);
+
     atomic_store(&g_ban_threshold, threshold);
     atomic_store(&g_ban_hours, hours);
     atomic_store(&g_decay_per_min, decay);
+    atomic_store(&g_max_inbound_per_ip, max_inbound_per_ip);
+    atomic_store(&g_last_peer_ban_secs, last_peer_ban_secs);
 }
 
 int peer_scoring_ban_threshold(void)
@@ -68,6 +95,16 @@ int peer_scoring_ban_hours(void)
 int peer_scoring_decay_rate(void)
 {
     return atomic_load(&g_decay_per_min);
+}
+
+int peer_scoring_max_inbound_per_ip(void)
+{
+    return atomic_load(&g_max_inbound_per_ip);
+}
+
+int peer_scoring_last_peer_ban_secs(void)
+{
+    return atomic_load(&g_last_peer_ban_secs);
 }
 
 int64_t peer_scoring_now_ms(void)
