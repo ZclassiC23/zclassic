@@ -43,6 +43,7 @@
 #include "keys/pubkey.h"
 #include "vcs/package_index.h"
 #include "vcs/package_publish.h"
+#include "vcs/package_recipe.h"
 #include "vcs/package_store.h"
 
 #include <stdio.h>
@@ -140,6 +141,65 @@ static bool zp_t1_reward(char *out, size_t out_size)
                               script_prefix, script_len, out, out_size);
 }
 
+/* ── declarative build recipe fixture (slice 5) ───────────────────────
+ * Every publish input must now carry a recipe whose root the envelope
+ * commits. zp_use_recipe derives the fixture recipe from a package's
+ * manifest: every .h a public header (its parent dir an include dir),
+ * every .c a source; one define, libc only, exit 0, 60 s, 64 MiB. The
+ * globals feed zp_release (the committed recipe_root) and
+ * zp_publish_input (the recipe wire hex). */
+static char *g_zp_recipe_hex;
+static uint8_t g_zp_recipe_root[32];
+
+static bool zp_use_recipe(const struct vcs_package_manifest *m)
+{
+    struct vcs_package_recipe r;
+    vcs_package_recipe_init(&r);
+    bool ok = true;
+    for (size_t i = 0; ok && i < m->count; i++) {
+        const char *path = m->files[i].path;
+        size_t len = strlen(path);
+        if (len > 2 && strcmp(path + len - 2, ".h") == 0) {
+            ok = vcs_package_recipe_add_header(&r, path, NULL);
+            const char *slash = strrchr(path, '/');
+            if (ok && slash) {
+                char dir[1024];
+                snprintf(dir, sizeof(dir), "%.*s", (int)(slash - path),
+                         path);
+                /* A repeat dir (second header) is fine. */
+                enum vcs_package_recipe_error rerr = VCS_PACKAGE_RECIPE_OK;
+                if (!vcs_package_recipe_add_include_dir(&r, dir, &rerr) &&
+                    rerr != VCS_PACKAGE_RECIPE_ERR_LIST_ORDER)
+                    ok = false;
+            }
+        } else if (len > 2 && strcmp(path + len - 2, ".c") == 0) {
+            ok = vcs_package_recipe_add_source(&r, path, NULL);
+        }
+    }
+    if (ok)
+        ok = vcs_package_recipe_add_define(&r, "ZCL_FIXTURE=1", NULL) &&
+             vcs_package_recipe_add_library(&r, VCS_PACKAGE_RECIPE_LIB_LIBC,
+                                            NULL);
+    vcs_package_recipe_set_test_limits(&r, 0, 60,
+                                       UINT64_C(64) * 1024u * 1024u);
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    if (ok)
+        ok = vcs_package_recipe_root(&r, g_zp_recipe_root) ==
+                 VCS_PACKAGE_RECIPE_OK &&
+             vcs_package_recipe_serialize(&r, &wire, &wire_len) ==
+                 VCS_PACKAGE_RECIPE_OK;
+    vcs_package_recipe_free(&r);
+    if (!ok) {
+        free(wire);
+        return false;
+    }
+    free(g_zp_recipe_hex);
+    g_zp_recipe_hex = zp_hex(wire, wire_len);
+    free(wire);
+    return g_zp_recipe_hex != NULL;
+}
+
 /* A valid, signed release naming package_root. */
 static bool zp_release(struct vcs_package_release *r, uint8_t key_seed,
                        uint64_t sequence, const char *name,
@@ -160,8 +220,7 @@ static bool zp_release(struct vcs_package_release *r, uint8_t key_seed,
     if (!zp_t1_reward(r->reward_address, sizeof(r->reward_address)))
         return false;
     snprintf(r->license, sizeof(r->license), "%s", license);
-    for (int i = 0; i < 32; i++)
-        r->recipe_root[i] = (uint8_t)(0x40 + i);
+    memcpy(r->recipe_root, g_zp_recipe_root, 32);
     r->has_znam = false;
     if (!vcs_package_accept_chain_id(r->chain_id, sizeof(r->chain_id)))
         return false;
@@ -310,7 +369,9 @@ static void zp_cmd_free(struct zp_cmd *c)
     json_free(&c->input);
 }
 
-/* Standard publish input: release hex + manifest hex + datadir (+dir). */
+/* Standard publish input: release hex + manifest hex + recipe hex +
+ * datadir (+dir). The recipe hex is the last zp_use_recipe() build — a
+ * candidate without one now fails plan naming recipe-missing. */
 static void zp_publish_input(struct zp_cmd *c, const char *dd,
                              const char *release_hex,
                              const char *manifest_hex, const char *dir)
@@ -319,6 +380,8 @@ static void zp_publish_input(struct zp_cmd *c, const char *dd,
     (void)json_push_kv_str(&c->input, "datadir", dd);
     (void)json_push_kv_str(&c->input, "release_hex", release_hex);
     (void)json_push_kv_str(&c->input, "manifest_hex", manifest_hex);
+    if (g_zp_recipe_hex)
+        (void)json_push_kv_str(&c->input, "recipe_hex", g_zp_recipe_hex);
     if (dir)
         (void)json_push_kv_str(&c->input, "dir", dir);
 }
@@ -379,6 +442,7 @@ static int t_plan_happy(void)
 
     struct zp_pkg p;
     ZP_CHECK("plan: package fixture builds", zp_make_package(&p, pkgdir));
+    ZP_CHECK("plan: recipe fixture builds", zp_use_recipe(&p.manifest));
     struct vcs_package_release r;
     ZP_CHECK("plan: release signs",
              zp_release(&r, 0x11, 1u, "rhett/ring-buffer", "MIT", p.root));
@@ -443,6 +507,7 @@ static int t_license_rules(void)
     snprintf(pkgdir, sizeof(pkgdir), "%s/pkg", dd);
     struct zp_pkg p;
     ZP_CHECK("license: package fixture builds", zp_make_package(&p, pkgdir));
+    ZP_CHECK("license: recipe fixture builds", zp_use_recipe(&p.manifest));
     char *manifest_hex = zp_hex(p.wire, p.wire_len);
 
     /* Unknown SPDX id: tamper the wire's license bytes in place (same
@@ -524,6 +589,7 @@ static int t_license_rules(void)
                                             &p2.wire_len) &&
              vcs_package_manifest_root(&p2.manifest, p2.root));
     ZP_CHECK("license: no-LICENSE release signs",
+             zp_use_recipe(&p2.manifest) &&
              zp_release(&r, 0x11, 1u, "rhett/no-license", "MIT", p2.root));
     release_hex = zp_release_hex(&r, NULL, NULL);
     char *manifest2_hex = zp_hex(p2.wire, p2.wire_len);
@@ -556,7 +622,7 @@ static int t_structure_rules(void)
     snprintf(pkgdir, sizeof(pkgdir), "%s/pkg", dd);
     struct zp_pkg p;
     ZP_CHECK("structure: package fixture builds",
-             zp_make_package(&p, pkgdir));
+             zp_make_package(&p, pkgdir) && zp_use_recipe(&p.manifest));
     struct vcs_package_release r;
     ZP_CHECK("structure: release signs",
              zp_release(&r, 0x11, 1u, "rhett/ring-buffer", "MIT", p.root));
@@ -723,6 +789,7 @@ static int t_chunk_rules(void)
     snprintf(pkgdir, sizeof(pkgdir), "%s/pkg", dd);
     struct zp_pkg p;
     ZP_CHECK("chunks: package fixture builds", zp_make_package(&p, pkgdir));
+    ZP_CHECK("chunks: recipe fixture builds", zp_use_recipe(&p.manifest));
     struct vcs_package_release r;
     ZP_CHECK("chunks: release signs",
              zp_release(&r, 0x11, 1u, "rhett/ring-buffer", "MIT", p.root));
@@ -793,6 +860,7 @@ static int t_commit_roundtrip(void)
     snprintf(pkgdir, sizeof(pkgdir), "%s/pkg", dd);
     struct zp_pkg p;
     ZP_CHECK("commit: package fixture builds", zp_make_package(&p, pkgdir));
+    ZP_CHECK("commit: recipe fixture builds", zp_use_recipe(&p.manifest));
     struct vcs_package_release r;
     ZP_CHECK("commit: release signs",
              zp_release(&r, 0x11, 1u, "rhett/ring-buffer", "MIT", p.root));
@@ -824,6 +892,10 @@ static int t_commit_roundtrip(void)
     zp_hex32(id, id_hex);
     snprintf(path, sizeof(path), "%s/zcode/releases/%s", dd, id_hex);
     ZP_CHECK("commit: release persisted", stat(path, &st) == 0);
+    char rc_hex[65];
+    zp_hex32(g_zp_recipe_root, rc_hex);
+    snprintf(path, sizeof(path), "%s/zcode/recipes/%s", dd, rc_hex);
+    ZP_CHECK("commit: recipe persisted", stat(path, &st) == 0);
 
     /* A reopened store sees the package complete (CAS-derived). */
     struct vcs_package_store *s = vcs_package_store_open(dd, 1000000u);
@@ -874,6 +946,7 @@ static int t_commit_roundtrip(void)
              vcs_package_manifest_root(&p2.manifest, p2.root));
     struct vcs_package_release r2;
     ZP_CHECK("commit: no-LICENSE release signs",
+             zp_use_recipe(&p2.manifest) &&
              zp_release(&r2, 0x22, 1u, "bob/no-license", "ISC", p2.root));
     char *r2_hex = zp_release_hex(&r2, NULL, NULL);
     char *m2_hex = zp_hex(p2.wire, p2.wire_len);
@@ -911,6 +984,7 @@ static int t_acceptance_replay(void)
     snprintf(pkgdir, sizeof(pkgdir), "%s/pkg", dd);
     struct zp_pkg p;
     ZP_CHECK("accept: package fixture builds", zp_make_package(&p, pkgdir));
+    ZP_CHECK("accept: recipe fixture builds", zp_use_recipe(&p.manifest));
     char *manifest_hex = zp_hex(p.wire, p.wire_len);
     struct vcs_package_release r;
     struct zp_cmd c;
@@ -1034,7 +1108,8 @@ static bool zp_commit_one(const char *dd, uint8_t key_seed, uint64_t seq,
         return false;
     }
     struct vcs_package_release r;
-    if (!zp_release(&r, key_seed, seq, name, license, p.root)) {
+    if (!zp_use_recipe(&p.manifest) ||
+        !zp_release(&r, key_seed, seq, name, license, p.root)) {
         zp_pkg_free(&p);
         test_rm_rf_recursive(pkgdir);
         return false;
@@ -1166,6 +1241,7 @@ static int t_show(void)
     snprintf(pkgdir, sizeof(pkgdir), "%s/pkg", dd);
     struct zp_pkg p;
     ZP_CHECK("show: package fixture builds", zp_make_package(&p, pkgdir));
+    ZP_CHECK("show: recipe fixture builds", zp_use_recipe(&p.manifest));
     struct vcs_package_release r;
     ZP_CHECK("show: release signs",
              zp_release(&r, 0xaa, 7u, "rhett/ring-buffer", "MIT", p.root));

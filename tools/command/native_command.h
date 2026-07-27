@@ -303,6 +303,13 @@ void zcl_native_handle_zcode_package_show(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* zcode slice 5 — the decoded declarative build recipe for one package
+ * root. Display-only JSON from the canonical recipe wire; the node never
+ * compiles or executes downloaded code. */
+void zcl_native_handle_zcode_package_recipe(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* zcode slice 4 — contributor identity + ZNAM pointers. The publisher key
  * is the only identity; ZNAM records resolve through the canonical model
  * with an explicit binding proof. Bound by config/commands/zcode.def. */

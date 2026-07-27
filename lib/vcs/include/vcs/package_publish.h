@@ -28,6 +28,12 @@
  *      exact manifest size and every chunk hashes to the committed value.
  *      Plan runs this WITHOUT persisting; commit re-runs it and persists
  *      through the store's verify-before-store discipline.
+ *   9. The build recipe (slice 5): a recipe wire is REQUIRED. It must
+ *      parse canonically, its fields must validate (the closed declarative
+ *      grammar — vcs/package_recipe.h), its root must equal the release
+ *      envelope's recipe_root, and every path it references must resolve
+ *      in the manifest. The recipe is declarative only: nothing here
+ *      compiles or executes anything.
  *
  * The release id is the plan token: it commits to the envelope and through
  * the package root to the manifest and every chunk. Commit re-validates
@@ -42,6 +48,7 @@
 
 #include "vcs/package_accept.h"
 #include "vcs/package_manifest.h"
+#include "vcs/package_recipe.h"
 #include "vcs/package_release.h"
 #include "vcs/package_store.h" /* VCS_PACKAGE_STORE_MAX_PACKAGE_BYTES */
 
@@ -69,6 +76,11 @@ enum vcs_package_publish_rule {
     VCS_PACKAGE_PUBLISH_RULE_CHUNK_SIZE,     /* source size != manifest size */
     VCS_PACKAGE_PUBLISH_RULE_CHUNK_HASH,     /* chunk bytes != committed hash */
     VCS_PACKAGE_PUBLISH_RULE_ACCEPT,         /* acceptance classification */
+    VCS_PACKAGE_PUBLISH_RULE_RECIPE_MISSING, /* no recipe given (required) */
+    VCS_PACKAGE_PUBLISH_RULE_RECIPE_PARSE,   /* recipe wire not canonical */
+    VCS_PACKAGE_PUBLISH_RULE_RECIPE_VALIDATE,/* recipe field grammar/bound */
+    VCS_PACKAGE_PUBLISH_RULE_RECIPE_ROOT_MATCH, /* recipe root != envelope's */
+    VCS_PACKAGE_PUBLISH_RULE_RECIPE_PATH,    /* recipe path not in manifest */
     VCS_PACKAGE_PUBLISH_RULE_IO,             /* filesystem failure */
     VCS_PACKAGE_PUBLISH_RULE_ALLOC,          /* allocation failure */
 };
@@ -98,6 +110,10 @@ struct vcs_package_publish_report {
     bool chunks_checked;     /* verify_chunks ran */
     /* Set by classification (rule 7), valid when release_ok: */
     enum vcs_package_accept_result accept;
+    /* Set when the recipe validated (rule 9): root equals the envelope's
+     * recipe_root and every referenced path resolves in the manifest. */
+    bool recipe_ok;
+    uint8_t recipe_root[32];
 };
 
 void vcs_package_publish_report_init(struct vcs_package_publish_report *r);
@@ -151,5 +167,16 @@ bool vcs_package_publish_load_releases(const char *zcode_dir,
 bool vcs_package_publish_replay(const char *zcode_dir,
                                 struct vcs_package_accept *accept,
                                 size_t *replayed_out);
+
+/* Rule 9 (field validation, root match, manifest membership) over a PARSED
+ * release + PARSED manifest + PARSED recipe. The recipe wire parse is the
+ * caller's step so the wire-level rejection is reported with the codec's
+ * own error string (rule RECIPE_PARSE), and a missing recipe is reported
+ * by the caller as RECIPE_MISSING. */
+void vcs_package_publish_validate_recipe(
+    const struct vcs_package_release *release,
+    const struct vcs_package_manifest *manifest,
+    const struct vcs_package_recipe *recipe,
+    struct vcs_package_publish_report *report);
 
 #endif /* ZCL_VCS_PACKAGE_PUBLISH_H */

@@ -13,6 +13,7 @@
 #include "base/safe_alloc.h"
 #include "json/json.h"
 #include "util/util.h"
+#include "vcs/package_recipe.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -40,6 +41,7 @@ const char *vcs_package_store_result_string(
     case VCS_PACKAGE_STORE_ERR_ACCEPT: return "release-acceptance-failed";
     case VCS_PACKAGE_STORE_ERR_ALLOC: return "allocation-failed";
     case VCS_PACKAGE_STORE_ERR_LIMIT: return "tracked-package-limit";
+    case VCS_PACKAGE_STORE_ERR_RECIPE: return "recipe-invalid";
     }
     return "unknown-result";
 }
@@ -615,6 +617,42 @@ enum vcs_package_store_result vcs_package_store_put_release(
     snprintf(path, sizeof(path), "%s/releases/%s", store->root, id_hex);
     bool ok = store_atomic_write(path, wire, wire_len);
     free(wire);
+    pthread_mutex_unlock(&store->lock);
+    return ok ? VCS_PACKAGE_STORE_OK : VCS_PACKAGE_STORE_ERR_IO;
+}
+
+/* ── admission: recipes (slice 5) ───────────────────────────────────── */
+
+enum vcs_package_store_result vcs_package_store_put_recipe(
+    struct vcs_package_store *store, const uint8_t *wire, size_t wire_len,
+    uint8_t root_out[32])
+{
+    if (!store || !wire)
+        LOG_RETURN(VCS_PACKAGE_STORE_ERR_NULL, STORE_LOG,
+                   "null store/wire");
+    pthread_mutex_lock(&store->lock);
+
+    struct vcs_package_recipe recipe;
+    enum vcs_package_recipe_error rerr =
+        vcs_package_recipe_parse(wire, wire_len, &recipe);
+    if (rerr != VCS_PACKAGE_RECIPE_OK) {
+        pthread_mutex_unlock(&store->lock);
+        return VCS_PACKAGE_STORE_ERR_RECIPE;
+    }
+    uint8_t root[32];
+    rerr = vcs_package_recipe_root(&recipe, root);
+    vcs_package_recipe_free(&recipe);
+    if (rerr != VCS_PACKAGE_RECIPE_OK) {
+        pthread_mutex_unlock(&store->lock);
+        return VCS_PACKAGE_STORE_ERR_RECIPE;
+    }
+    if (root_out)
+        memcpy(root_out, root, 32);
+    char root_hex[65];
+    store_hex_encode(root, root_hex);
+    char path[STORE_PATH_MAX];
+    snprintf(path, sizeof(path), "%s/recipes/%s", store->root, root_hex);
+    bool ok = store_atomic_write(path, wire, wire_len);
     pthread_mutex_unlock(&store->lock);
     return ok ? VCS_PACKAGE_STORE_OK : VCS_PACKAGE_STORE_ERR_IO;
 }

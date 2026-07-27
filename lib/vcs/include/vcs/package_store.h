@@ -9,6 +9,9 @@
  *   manifests/<root-hex>        committed content.v2 manifest wire; the
  *                               package's existence record
  *   releases/<release-id-hex>   accepted signed release envelope wire
+ *   recipes/<recipe-root-hex>   validated declarative build recipe wire
+ *                               (slice 5; committed by the envelope's
+ *                               recipe_root)
  *   attestations/  badges/      created empty; later slices fill them
  *   cas/sha3/<hh>/<hash-hex>    verified chunk bytes, named by SHA3-256
  *                               (<hh> is the hash's first byte, hex)
@@ -112,6 +115,7 @@ enum vcs_package_store_result {
     VCS_PACKAGE_STORE_ERR_ACCEPT,      /* release failed acceptance */
     VCS_PACKAGE_STORE_ERR_ALLOC,       /* allocation failed */
     VCS_PACKAGE_STORE_ERR_LIMIT,       /* tracked-package bound reached */
+    VCS_PACKAGE_STORE_ERR_RECIPE,      /* recipe grammar/parse failure */
 };
 
 enum vcs_package_store_class {
@@ -201,6 +205,17 @@ enum vcs_package_store_result vcs_package_store_put_release(
     struct vcs_package_store *store,
     const struct vcs_package_release *release,
     enum vcs_package_accept_result *accept_out);
+
+/* Admit a declarative build recipe wire (slice 5). Parses and validates it
+ * against the closed recipe grammar, computes the recipe root into
+ * root_out (when non-NULL), and persists the wire atomically under
+ * recipes/<recipe-root-hex>. Re-admitting an identical recipe is an
+ * idempotent OK. The release-envelope binding (recipe root ==
+ * release.recipe_root) is the publication layer's rule; the store checks
+ * the wire itself. */
+enum vcs_package_store_result vcs_package_store_put_recipe(
+    struct vcs_package_store *store, const uint8_t *wire, size_t wire_len,
+    uint8_t root_out[32]);
 
 /* Operator pin: pinned packages charge the PINS pool and are never
  * evicted. Pinning fails with ERR_QUOTA when the package's bytes do not

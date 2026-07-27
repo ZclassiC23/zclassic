@@ -120,6 +120,35 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_package_show)
 
+/* ── slice 5: declarative C23 build recipe ─────────────────────────────
+ * The recipe is declarative ONLY: the node never compiles or executes
+ * downloaded code; compilation belongs to the external verifier
+ * (zclassic23-package-verify, slice 6). */
+
+ZCL_COMMAND_READY_READ(
+    "zcode.package.recipe", "zcode.package", "",
+    "Decoded declarative build recipe for one package root",
+    "The declarative C23 build recipe (slice 5) committed by the release "
+    "envelope's recipe_root for one 64-hex package `root`, decoded from "
+    "the canonical recipe wire in the local store: public_headers, "
+    "sources, test_sources, include_dirs, preprocessor_defines (each "
+    "bounded at 32 entries with a per-list truncated flag), the v1 "
+    "allowed_system_libraries (libc/libm/pthread only), and the expected "
+    "test exit code / maximum test seconds / maximum memory bytes. JSON "
+    "is display-only — the canonical wire and its root stay the truth. "
+    "UNKNOWN_PACKAGE names a root no persisted release claims; "
+    "RECIPE_NOT_HOSTED names a recipe root with no recipe wire stored.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,package,recipe,build,declarative,sources,root",
+    "zcl.zcode_package_recipe.input.v1", "zcl.zcode_package_recipe.v1",
+    "root,datadir", "root",
+    "zclassic23 zcode package recipe --input='{\"root\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_package_recipe)
+
 /* ── slice 4: contributor identity + ZNAM pointers ─────────────────────
  * The secp256k1 publisher key is the only authoritative identity; ZNAM
  * records are mutable pointers resolved through the canonical ZNAM model

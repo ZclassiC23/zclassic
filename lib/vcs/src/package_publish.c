@@ -46,6 +46,16 @@ const char *vcs_package_publish_rule_string(
         return "chunk-hash-mismatch";
     case VCS_PACKAGE_PUBLISH_RULE_ACCEPT:
         return "release-acceptance-failed";
+    case VCS_PACKAGE_PUBLISH_RULE_RECIPE_MISSING:
+        return "recipe-missing";
+    case VCS_PACKAGE_PUBLISH_RULE_RECIPE_PARSE:
+        return "recipe-wire-not-canonical";
+    case VCS_PACKAGE_PUBLISH_RULE_RECIPE_VALIDATE:
+        return "recipe-field-invalid";
+    case VCS_PACKAGE_PUBLISH_RULE_RECIPE_ROOT_MATCH:
+        return "recipe-root-mismatch";
+    case VCS_PACKAGE_PUBLISH_RULE_RECIPE_PATH:
+        return "recipe-path-not-in-manifest";
     case VCS_PACKAGE_PUBLISH_RULE_IO:
         return "io-failure";
     case VCS_PACKAGE_PUBLISH_RULE_ALLOC:
@@ -152,6 +162,55 @@ void vcs_package_publish_validate(
         vcs_package_publish_fail(report,
                                  VCS_PACKAGE_PUBLISH_RULE_LICENSE_TEXT,
                                  "manifest has no top-level LICENSE file");
+}
+
+void vcs_package_publish_validate_recipe(
+    const struct vcs_package_release *release,
+    const struct vcs_package_manifest *manifest,
+    const struct vcs_package_recipe *recipe,
+    struct vcs_package_publish_report *report)
+{
+    if (!release || !manifest || !recipe || !report) {
+        vcs_package_publish_fail(report, VCS_PACKAGE_PUBLISH_RULE_ALLOC,
+                                 "null release/manifest/recipe/report");
+        return;
+    }
+
+    /* Field grammars and bounds (the closed declarative grammar). */
+    enum vcs_package_recipe_error rerr =
+        vcs_package_recipe_validate(recipe);
+    if (rerr != VCS_PACKAGE_RECIPE_OK) {
+        vcs_package_publish_fail(report,
+                                 VCS_PACKAGE_PUBLISH_RULE_RECIPE_VALIDATE,
+                                 vcs_package_recipe_error_string(rerr));
+        return;
+    }
+
+    /* The envelope commits the recipe by root. */
+    uint8_t root[32];
+    rerr = vcs_package_recipe_root(recipe, root);
+    if (rerr != VCS_PACKAGE_RECIPE_OK) {
+        vcs_package_publish_fail(report, VCS_PACKAGE_PUBLISH_RULE_ALLOC,
+                                 "recipe root unavailable after validate");
+        return;
+    }
+    if (memcmp(root, release->recipe_root, 32) != 0) {
+        vcs_package_publish_fail(
+            report, VCS_PACKAGE_PUBLISH_RULE_RECIPE_ROOT_MATCH,
+            "recipe root != release.recipe_root");
+        return;
+    }
+
+    /* Every referenced path resolves in the manifest. */
+    char detail[160];
+    if (!vcs_package_recipe_files_in_manifest(recipe, manifest, detail,
+                                              sizeof(detail))) {
+        vcs_package_publish_fail(report, VCS_PACKAGE_PUBLISH_RULE_RECIPE_PATH,
+                                 detail);
+        return;
+    }
+    memcpy(report->recipe_root, root, 32);
+    report->recipe_ok = true;
 }
 
 bool vcs_package_publish_read_chunk(

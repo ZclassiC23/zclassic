@@ -43,6 +43,7 @@
 #include "services/zcode_pointer.h"
 #include "vcs/package_index.h"
 #include "vcs/package_publish.h"
+#include "vcs/package_recipe.h"
 #include "vcs/package_store.h"
 
 #include <stdio.h>
@@ -65,6 +66,48 @@ static bool zc4_keypair(uint8_t seed, struct privkey *sk, struct pubkey *pk)
     sk->fCompressed = true;
     return privkey_get_pubkey(sk, pk) &&
            pk->size == COMPRESSED_PUBLIC_KEY_SIZE;
+}
+
+/* ── declarative build recipe fixture (slice 5) ───────────────────────
+ * Publication now requires a recipe whose root the envelope commits; the
+ * commit fixture packages are all LICENSE + src/x.c, so one canonical
+ * fixture recipe covers them. The globals feed zc4_release (the
+ * committed recipe_root) and zc4_commit_one (the recipe wire hex). */
+static char g_zc4_recipe_hex[2 * 1024 + 1];
+static uint8_t g_zc4_recipe_root[32];
+static bool g_zc4_recipe_ready;
+
+static bool zc4_use_recipe(void)
+{
+    struct vcs_package_recipe r;
+    vcs_package_recipe_init(&r);
+    bool ok = vcs_package_recipe_add_source(&r, "src/x.c", NULL) &&
+              vcs_package_recipe_add_define(&r, "ZCL_FIXTURE=1", NULL) &&
+              vcs_package_recipe_add_library(&r, VCS_PACKAGE_RECIPE_LIB_LIBC,
+                                             NULL);
+    vcs_package_recipe_set_test_limits(&r, 0, 60,
+                                       UINT64_C(64) * 1024u * 1024u);
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    if (ok)
+        ok = vcs_package_recipe_root(&r, g_zc4_recipe_root) ==
+                 VCS_PACKAGE_RECIPE_OK &&
+             vcs_package_recipe_serialize(&r, &wire, &wire_len) ==
+                 VCS_PACKAGE_RECIPE_OK;
+    vcs_package_recipe_free(&r);
+    if (!ok || !wire || 2 * wire_len + 1 > sizeof(g_zc4_recipe_hex)) {
+        free(wire);
+        return false;
+    }
+    static const char hexd[] = "0123456789abcdef";
+    for (size_t i = 0; i < wire_len; i++) {
+        g_zc4_recipe_hex[2 * i]     = hexd[(wire[i] >> 4) & 0xf];
+        g_zc4_recipe_hex[2 * i + 1] = hexd[wire[i] & 0xf];
+    }
+    g_zc4_recipe_hex[2 * wire_len] = '\0';
+    free(wire);
+    g_zc4_recipe_ready = true;
+    return true;
 }
 
 static bool zc4_pubkey_hex(uint8_t seed, char out[67])
@@ -147,8 +190,7 @@ static bool zc4_release(struct vcs_package_release *r, uint8_t key_seed,
     if (!zc4_t1_reward(r->reward_address, sizeof(r->reward_address)))
         return false;
     snprintf(r->license, sizeof(r->license), "%s", license);
-    for (int i = 0; i < 32; i++)
-        r->recipe_root[i] = (uint8_t)(0x40 + i);
+    memcpy(r->recipe_root, g_zc4_recipe_root, 32);
     r->has_znam = znam != NULL;
     if (znam)
         snprintf(r->znam, sizeof(r->znam), "%s", znam);
@@ -200,6 +242,8 @@ static bool zc4_commit_one(const char *dd, uint8_t key_seed, uint64_t seq,
                            int content_seed, const char *znam,
                            char root_hex_out[65])
 {
+    if (!g_zc4_recipe_ready && !zc4_use_recipe())
+        return false;
     char pkgdir[512];
     snprintf(pkgdir, sizeof(pkgdir), "%s/src-%d", dd, content_seed);
     mkdir(pkgdir, 0700);
@@ -274,6 +318,7 @@ static bool zc4_commit_one(const char *dd, uint8_t key_seed, uint64_t seq,
         (void)json_push_kv_str(&c.input, "datadir", dd);
         (void)json_push_kv_str(&c.input, "release_hex", r_hex);
         (void)json_push_kv_str(&c.input, "manifest_hex", m_hex);
+        (void)json_push_kv_str(&c.input, "recipe_hex", g_zc4_recipe_hex);
         (void)json_push_kv_str(&c.input, "dir", pkgdir);
         zcl_native_handle_zcode_package_publish_commit(&c.request, &c.reply);
         ok = c.reply.status == ZCL_COMMAND_STATUS_PASSED;

@@ -8,13 +8,21 @@
  *                                 chunk source WITHOUT persisting; the reply
  *                                 names every failed rule or the plan token
  *   zcode package publish commit  re-validate, then persist manifest +
- *                                 chunks into the CAS store and the release
- *                                 into releases/ (idempotent: a redelivered
- *                                 release id reports "duplicate")
+ *                                 recipe + chunks into the CAS store and the
+ *                                 release into releases/ (idempotent: a
+ *                                 redelivered release id reports "duplicate")
  *   zcode package search          bounded local search over the rebuildable
  *                                 package index projection
  *   zcode package show            one package's full release record +
  *                                 manifest summary
+ *   zcode package recipe          the decoded, bounded declarative build
+ *                                 recipe (slice 5) for one package root —
+ *                                 display JSON from the canonical wire
+ *
+ * Publication requires a declarative build recipe whose root equals the
+ * release envelope's recipe_root (slice 5): a missing or invalid recipe is
+ * a named plan failure / commit rejection (recipe-*). The recipe is
+ * declarative ONLY — nothing here compiles or executes downloaded code.
  *
  * Truth discipline: the CAS manifest/release bytes under <datadir>/zcode
  * are authoritative; the search index (lib/vcs/package_index.*) is a
@@ -126,14 +134,21 @@ struct zc_candidate {
     bool manifest_parsed;
     uint8_t *manifest_wire;
     size_t manifest_wire_len;
+    struct vcs_package_recipe recipe;
+    bool recipe_parsed;
+    uint8_t *recipe_wire;
+    size_t recipe_wire_len;
 };
 
 static void zc_candidate_free(struct zc_candidate *c)
 {
     /* The manifest is init'd at the top of zc_validate and parse re-inits
-     * on rejection, so this is always a balanced free. */
+     * on rejection, so this is always a balanced free. The recipe is
+     * init'd likewise (recipe parse re-inits on rejection). */
     vcs_package_manifest_free(&c->manifest);
+    vcs_package_recipe_free(&c->recipe);
     free(c->manifest_wire);
+    free(c->recipe_wire);
     memset(c, 0, sizeof(*c));
 }
 
@@ -152,6 +167,7 @@ static bool zc_validate(const struct zcl_command_request *request,
 {
     memset(cand, 0, sizeof(*cand));
     vcs_package_manifest_init(&cand->manifest);
+    vcs_package_recipe_init(&cand->recipe);
 
     const char *release_hex = zc_input_str(request->input, "release_hex");
     if (!release_hex || !release_hex[0]) {
@@ -222,10 +238,53 @@ static bool zc_validate(const struct zcl_command_request *request,
         cand->manifest_parsed = true;
     }
 
+    /* The declarative build recipe (slice 5): REQUIRED. A missing recipe
+     * is a plan failure rule (recipe-missing), never silently skipped. */
+    const char *recipe_hex = zc_input_str(request->input, "recipe_hex");
+    if (!recipe_hex || !recipe_hex[0]) {
+        vcs_package_publish_fail(
+            report, VCS_PACKAGE_PUBLISH_RULE_RECIPE_MISSING,
+            "no recipe_hex given (the declarative build recipe is "
+            "required; the node never compiles without one)");
+    } else {
+        cand->recipe_wire =
+            zcl_malloc(VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES, "zc_recipe_wire");
+        if (!cand->recipe_wire) {
+            zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                                   ZCL_COMMAND_EXIT_INTERNAL, "ALLOC",
+                                   "normalize", false, false,
+                                   "recipe wire buffer",
+                                   "zcode.package.publish");
+            return false;
+        }
+        enum vcs_package_recipe_error rcerr = VCS_PACKAGE_RECIPE_OK;
+        bool rc_decoded = zc_hex_decode(recipe_hex, cand->recipe_wire,
+                                        VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES,
+                                        &cand->recipe_wire_len);
+        if (rc_decoded)
+            rcerr = vcs_package_recipe_parse(cand->recipe_wire,
+                                             cand->recipe_wire_len,
+                                             &cand->recipe);
+        if (!rc_decoded || rcerr != VCS_PACKAGE_RECIPE_OK) {
+            vcs_package_publish_fail(
+                report, VCS_PACKAGE_PUBLISH_RULE_RECIPE_PARSE,
+                rc_decoded ? vcs_package_recipe_error_string(rcerr)
+                           : "recipe_hex is not bounded strict hex");
+            free(cand->recipe_wire);
+            cand->recipe_wire = NULL;
+            cand->recipe_wire_len = 0;
+        } else {
+            cand->recipe_parsed = true;
+        }
+    }
+
     if (!cand->release_parsed || !cand->manifest_parsed)
         return true; /* the report already names the failed rules */
 
     vcs_package_publish_validate(&cand->release, &cand->manifest, report);
+    if (cand->recipe_parsed)
+        vcs_package_publish_validate_recipe(&cand->release, &cand->manifest,
+                                            &cand->recipe, report);
     if (!report->release_ok || !report->manifest_ok)
         return true;
 
@@ -347,6 +406,49 @@ static void zc_summary_json(struct json_value *out,
                                    (int64_t)report->chunks_verified);
         (void)json_push_kv(out, "package", &pkg);
         json_free(&pkg);
+    }
+    if (cand->recipe_parsed) {
+        const struct vcs_package_recipe *r = &cand->recipe;
+        struct json_value rcp;
+        json_init(&rcp);
+        json_set_object(&rcp);
+        uint8_t rroot[32];
+        if (vcs_package_recipe_root(r, rroot) == VCS_PACKAGE_RECIPE_OK) {
+            zc_hex_encode(rroot, 32, hex);
+            (void)json_push_kv_str(&rcp, "recipe_root", hex);
+        }
+        (void)json_push_kv_bool(&rcp, "valid", report->recipe_ok);
+        (void)json_push_kv_int(&rcp, "public_headers",
+                               (int64_t)r->public_headers.count);
+        (void)json_push_kv_int(&rcp, "sources",
+                               (int64_t)r->sources.count);
+        (void)json_push_kv_int(&rcp, "test_sources",
+                               (int64_t)r->test_sources.count);
+        (void)json_push_kv_int(&rcp, "include_dirs",
+                               (int64_t)r->include_dirs.count);
+        (void)json_push_kv_int(&rcp, "defines",
+                               (int64_t)r->defines.count);
+        struct json_value libs;
+        json_init(&libs);
+        json_set_array(&libs);
+        for (size_t i = 0; i < r->library_count; i++) {
+            struct json_value lib;
+            json_init(&lib);
+            json_set_str(&lib, vcs_package_recipe_library_name(
+                                   r->libraries[i]));
+            (void)json_push_back(&libs, &lib);
+            json_free(&lib);
+        }
+        (void)json_push_kv(&rcp, "allowed_system_libraries", &libs);
+        json_free(&libs);
+        (void)json_push_kv_int(&rcp, "expected_test_exit_code",
+                               (int64_t)r->expected_test_exit_code);
+        (void)json_push_kv_int(&rcp, "maximum_test_seconds",
+                               (int64_t)r->maximum_test_seconds);
+        (void)json_push_kv_int(&rcp, "maximum_memory_bytes",
+                               (int64_t)r->maximum_memory_bytes);
+        (void)json_push_kv(out, "recipe", &rcp);
+        json_free(&rcp);
     }
 }
 
@@ -480,6 +582,21 @@ void zcl_native_handle_zcode_package_publish_commit(
         return;
     }
 
+    /* The declarative recipe persists beside the manifest (verify-before-
+     * store: the store re-parses the wire before writing it). */
+    sres = vcs_package_store_put_recipe(store, cand.recipe_wire,
+                                        cand.recipe_wire_len, NULL);
+    if (sres != VCS_PACKAGE_STORE_OK) {
+        vcs_package_store_close(store);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL,
+                               vcs_package_store_result_string(sres),
+                               "persist", false, true,
+                               "recipe admission failed", cand.release.name);
+        zc_candidate_free(&cand);
+        return;
+    }
+
     uint8_t *buf = zcl_malloc(VCS_PACKAGE_CHUNK_BYTES, "zc_chunk_buf");
     if (!buf) {
         vcs_package_store_close(store);
@@ -567,6 +684,212 @@ void zcl_native_handle_zcode_package_publish_commit(
                            (int64_t)replayed);
     reply->error.mutated = published;
     zc_candidate_free(&cand);
+}
+
+/* ── zcode package recipe ───────────────────────────────────────────── */
+
+/* Read one bounded file fully (allocates *out; caller frees). False when
+ * missing, unreadable, empty, or over cap (trailing bytes = not the exact
+ * object). */
+static bool zc_read_object(const char *path, size_t cap, uint8_t **out,
+                           size_t *out_len)
+{
+    *out = NULL;
+    *out_len = 0;
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return false;
+    uint8_t *buf = zcl_malloc(cap, "zc_read_object");
+    if (!buf) {
+        fclose(f);
+        return false;
+    }
+    size_t len = fread(buf, 1, cap, f);
+    bool ok = !ferror(f) && feof(f) && len > 0;
+    fclose(f);
+    if (!ok) {
+        free(buf);
+        return false;
+    }
+    *out = buf;
+    *out_len = len;
+    return true;
+}
+
+/* Render one bounded recipe string list (cap ZC_SHOW_MAX_FILES entries;
+ * sets <key>_truncated when the rest is elided). */
+static void zc_recipe_list_json(struct json_value *out, const char *key,
+                                const struct vcs_package_recipe_strings *list)
+{
+    size_t shown = list->count < ZC_SHOW_MAX_FILES ? list->count
+                                                   : ZC_SHOW_MAX_FILES;
+    struct json_value arr;
+    json_init(&arr);
+    json_set_array(&arr);
+    for (size_t i = 0; i < shown; i++) {
+        struct json_value item;
+        json_init(&item);
+        json_set_str(&item, list->items[i]);
+        (void)json_push_back(&arr, &item);
+        json_free(&item);
+    }
+    (void)json_push_kv(out, key, &arr);
+    json_free(&arr);
+    char trunc_key[64];
+    snprintf(trunc_key, sizeof(trunc_key), "%s_truncated", key);
+    (void)json_push_kv_bool(out, trunc_key, list->count > shown);
+}
+
+void zcl_native_handle_zcode_package_recipe(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply)
+{
+    if (!request || !reply)
+        return;
+    const char *datadir = zc_datadir(request);
+    if (!datadir) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "MISSING_DATADIR",
+                               "normalize", false, false,
+                               "no datadir given (input datadir or --datadir)",
+                               "zcode.package.recipe");
+        return;
+    }
+    const char *root_hex = zc_input_str(request->input, "root");
+    uint8_t root[32];
+    size_t root_len = 0;
+    if (!root_hex || !zc_hex_decode(root_hex, root, 32, &root_len) ||
+        root_len != 32) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "BAD_ROOT",
+                               "normalize", false, false,
+                               "root must be a 64-hex package root",
+                               root_hex ? root_hex : "");
+        return;
+    }
+    char zcode_dir[4400];
+    int n = snprintf(zcode_dir, sizeof(zcode_dir), "%s/zcode", datadir);
+    if (n < 0 || (size_t)n >= sizeof(zcode_dir)) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "DATADIR_TOO_LONG",
+                               "normalize", false, false,
+                               "datadir path too long", datadir);
+        return;
+    }
+    struct vcs_package_index *index = vcs_package_index_build(zcode_dir);
+    if (!index) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "INDEX_BUILD",
+                               "execute", false, false,
+                               "the package index could not be built",
+                               zcode_dir);
+        return;
+    }
+    const struct vcs_package_index_entry *e =
+        vcs_package_index_find_root(index, root);
+    if (!e) {
+        vcs_package_index_free(index);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "UNKNOWN_PACKAGE",
+                               "execute", false, false,
+                               "no published release names this package root",
+                               root_hex);
+        return;
+    }
+
+    /* The envelope commits the recipe root: read the persisted release to
+     * learn WHICH recipe this release names (identity from the signed
+     * bytes, never from a side index). */
+    char path[4400];
+    snprintf(path, sizeof(path), "%s/releases/%s", zcode_dir,
+             e->release_id_hex);
+    vcs_package_index_free(index);
+    uint8_t *release_wire = NULL;
+    size_t release_wire_len = 0;
+    struct vcs_package_release release;
+    if (!zc_read_object(path, VCS_PACKAGE_RELEASE_MAX_WIRE_BYTES,
+                        &release_wire, &release_wire_len) ||
+        vcs_package_release_parse(release_wire, release_wire_len,
+                                  &release) != VCS_PACKAGE_RELEASE_OK) {
+        free(release_wire);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "RELEASE_READ",
+                               "execute", false, false,
+                               "the persisted release envelope is unreadable",
+                               e->release_id_hex);
+        return;
+    }
+    free(release_wire);
+    char recipe_root_hex[65];
+    zc_hex_encode(release.recipe_root, 32, recipe_root_hex);
+
+    snprintf(path, sizeof(path), "%s/recipes/%s", zcode_dir,
+             recipe_root_hex);
+    uint8_t *recipe_wire = NULL;
+    size_t recipe_wire_len = 0;
+    if (!zc_read_object(path, VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES, &recipe_wire,
+                        &recipe_wire_len)) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "RECIPE_NOT_HOSTED",
+                               "execute", false, false,
+                               "the release names a recipe root with no "
+                               "recipe wire in the local store",
+                               recipe_root_hex);
+        return;
+    }
+    struct vcs_package_recipe recipe;
+    enum vcs_package_recipe_error rerr =
+        vcs_package_recipe_parse(recipe_wire, recipe_wire_len, &recipe);
+    free(recipe_wire);
+    if (rerr != VCS_PACKAGE_RECIPE_OK) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "RECIPE_PARSE",
+                               "execute", false, false,
+                               "the persisted recipe wire is not canonical",
+                               vcs_package_recipe_error_string(rerr));
+        return;
+    }
+
+    (void)json_push_kv_str(&reply->data, "name", release.name);
+    (void)json_push_kv_str(&reply->data, "semver", release.semver);
+    (void)json_push_kv_str(&reply->data, "recipe_root", recipe_root_hex);
+    (void)json_push_kv_str(&reply->data, "source",
+                           "canonical-recipe-wire");
+    struct json_value rcp;
+    json_init(&rcp);
+    json_set_object(&rcp);
+    zc_recipe_list_json(&rcp, "public_headers", &recipe.public_headers);
+    zc_recipe_list_json(&rcp, "sources", &recipe.sources);
+    zc_recipe_list_json(&rcp, "test_sources", &recipe.test_sources);
+    zc_recipe_list_json(&rcp, "include_dirs", &recipe.include_dirs);
+    zc_recipe_list_json(&rcp, "preprocessor_defines", &recipe.defines);
+    struct json_value libs;
+    json_init(&libs);
+    json_set_array(&libs);
+    for (size_t i = 0; i < recipe.library_count; i++) {
+        struct json_value lib;
+        json_init(&lib);
+        json_set_str(&lib, vcs_package_recipe_library_name(
+                               recipe.libraries[i]));
+        (void)json_push_back(&libs, &lib);
+        json_free(&lib);
+    }
+    (void)json_push_kv(&rcp, "allowed_system_libraries", &libs);
+    json_free(&libs);
+    (void)json_push_kv_int(&rcp, "expected_test_exit_code",
+                           (int64_t)recipe.expected_test_exit_code);
+    (void)json_push_kv_int(&rcp, "maximum_test_seconds",
+                           (int64_t)recipe.maximum_test_seconds);
+    (void)json_push_kv_int(&rcp, "maximum_memory_bytes",
+                           (int64_t)recipe.maximum_memory_bytes);
+    (void)json_push_kv(&reply->data, "recipe", &rcp);
+    json_free(&rcp);
+    vcs_package_recipe_free(&recipe);
+    (void)json_push_kv_str(
+        &reply->data, "execution_note",
+        "declarative only: the node never compiles or executes downloaded "
+        "code; compilation belongs to the external verifier "
+        "(zclassic23-package-verify)");
 }
 
 /* ── zcode package search ───────────────────────────────────────────── */

@@ -615,8 +615,8 @@ static bool store_commit_sweep(struct vcs_package_store *store)
 bool store_open_recover(struct vcs_package_store *store)
 {
     static const char *const k_dirs[] = {
-        "", "/manifests", "/releases", "/attestations", "/badges",
-        "/cas", "/cas/sha3", "/staging", "/pins",
+        "", "/manifests", "/releases", "/recipes", "/attestations",
+        "/badges", "/cas", "/cas/sha3", "/staging", "/pins",
     };
     for (size_t i = 0; i < sizeof(k_dirs) / sizeof(k_dirs[0]); i++) {
         char path[STORE_PATH_MAX];
