@@ -149,6 +149,66 @@ All replies bounded typed JSON; publishing/rewards/badges use plan/commit.
   reject absolute paths, traversal, symlinks, device files, sockets, hidden
   executable payloads, oversized manifests, unknown modes, duplicate paths.
 
+## Current state (2026-07-27, for the next developer)
+
+Slices 1–13 are merged to `main` and pushed. Everything below is live in
+the tree today:
+
+- **Library:** `lib/vcs/` — release envelope + node-bound acceptance,
+  `package_store` (10 GiB CAS, `-packagehost`/`-packagequota`, quota pools
+  20/40/30/10 pins/hot/rare/staging, 64 MiB package cap), `package_publish`
+  (license + manifest grammar), `package_index`, `package_contributor` +
+  `zcode_pointer` (ZNAM binding via P2PKH owner auth), `package_recipe`
+  (declarative C23 builds), `package_attest` + `package_verify_policy`
+  (≥2 approved-key quorum), `package_score` + `package_eligible`
+  (deterministic semantic-unit scoring, 8-gate eligibility),
+  `package_reward` (durable ledger + daily simulated settlement,
+  placeholder token id `zcode-placeholder-token-v1-sim!!`),
+  `package_rank` (UTC day / ISO week / calendar month / all-time),
+  `package_badge` (13 types, permanent, dedup per contributor+type+period),
+  `package_policy` + `package_service` (tiers, local ratio, offence
+  accounting), `package_swarm_node` (BitTorrent-like engine over the
+  `zpkgswm` wire, rarest-first, resume-after-restart).
+- **Verifier binary:** `build/bin/zclassic23-package-verify` — the only
+  program that compiles package code (gcc+clang × plain+ASan/UBSan,
+  Landlock+seccomp+rlimits, recipe-only input, binaries deleted after).
+  Approved verifier keys: `<datadir>/zcode/approved_verifiers` (one
+  compressed pubkey per line, local config only).
+- **Commands:** `zcode.package.{publish.plan,publish.commit,search,show,
+  recipe,verify,resolve,fetch,peers,pin,unpin}`, `zcode.contributor.{show,
+  packages,badges}`, `zcode.reward.{score,eligible,queue,plan,commit,
+  receipt}`, `zcode.leaderboard.{daily,weekly,monthly,all}`,
+  `zcode.badge.{eligible,plan,issue}`, `zcode.seed.{status,ratio}`,
+  `zcode.storage.status`. `discover help zcode` enumerates the live tree.
+- **Site:** `/zcode*` routes on both HTTPS and the onion service
+  (`app/controllers/src/zcode_site_controller.c` + `app/views/src/zcode_view*.c`,
+  shared `site.css`/layout, same projections as the commands).
+
+Remaining (both owner-gated by design — they move real value):
+
+- **Slice 14** — owner-reviewed real ZCODE transfers: wire auto-enqueue of
+  eligible releases into the reward queue, admit owner-approved claims,
+  settle the daily queue as ONE batched ZSLP SEND against the real
+  (post-simulation) ZCODE token; add the fee-preview arithmetic
+  (`estimated_fee_zcl`) the settlement plan deliberately omits today.
+- **Slice 15** — owner-reviewed real badge issuance: the simulated
+  `zcode.badge.issue` already signs and persists; slice 15 turns reviewed
+  batches into real ZSLP badge assets.
+
+Known honest gaps (named by the slice agents, none blocking):
+
+- Swarm rarity is package-level advertiser count (no per-chunk bitfield yet);
+  `zcode.package.fetch` on a non-`-packagehost` node only persists the
+  resume record; no diagnostics-registry dump for the swarm subsystem.
+- POPULAR_PACKAGE / RARE_PACKAGE_SEEDER badges and the verified-bytes /
+  distinct-users leaderboard categories report unavailable until slice-12
+  facts accumulate on a real network.
+- `lib/kernel/src/command_registry.c` gained `day` as an input key in the
+  slice-12 commit (repairs a pre-existing CLI-side rejection of
+  `zcode reward plan/commit --input='{"day":...}'`).
+- The reward ledger/service book start empty on pre-ZCODE datadirs
+  (fail-open history, by design).
+
 ## Process per slice
 
 Smallest complete feature → focused adversarial tests → `make build-only` +
