@@ -12,6 +12,7 @@
 #include "net/peer_eviction.h"
 #include "primitives/block.h"
 #include "platform/time_compat.h"
+#include "util/blocker.h"
 #include "util/log_json.h"
 #include "util/log_macros.h"
 #include "core/hash.h"
@@ -1165,7 +1166,15 @@ void ban_addr(struct net_manager *nm, const struct net_addr *addr,
 }
 
 /* Check if a peer is a trusted local node (localhost or whitelisted).
- * These peers are NEVER banned — they are our own infrastructure. */
+ * These peers are NEVER banned — they are our own infrastructure.
+ *
+ * Deliberately NARROW: an -addnode / -connect target is NOT trusted here.
+ * Operator intent to dial an address is not evidence the address serves
+ * valid consensus data, and exempting it would hand any peer that talks its
+ * way onto the addnode list a permanent licence to feed us invalid blocks.
+ * The stranding risk that exemption would have covered is handled instead by
+ * the bounded last-peer ban in peer_misbehaving() below, which keeps the
+ * penalty and bounds only its duration. */
 static bool is_trusted_peer(const struct p2p_node *node)
 {
     /* Localhost: 127.0.0.0/8 (IPv4-mapped: ::ffff:127.x.x.x) */
@@ -1178,13 +1187,81 @@ static bool is_trusted_peer(const struct p2p_node *node)
     return false;
 }
 
+/* Would banning `node` leave this manager with no connected peer at all?
+ *
+ * True only when `node` is REGISTERED in nm->nodes (so a caller holding a
+ * bare, unregistered p2p_node — every unit test that exercises scoring in
+ * isolation — takes the ordinary path unchanged) and every other registered
+ * node is already flagged for disconnect. A node with any other live peer
+ * gets the ordinary full-length ban: this predicate is false the moment a
+ * second peer exists.
+ *
+ * TRYLOCK, deliberately. peer_misbehaving() has a caller that is already
+ * holding cs_nodes while it walks the node table — the header-span timeout
+ * sweep in msg_headers.c (`peer_scoring_record(..., PEER_OFFENCE_TIMEOUT,
+ * "header span deadline missed")`) — so a blocking acquire here would
+ * self-deadlock the message thread the first time accumulated timeouts
+ * crossed the ban threshold. Failing to acquire yields `false`, i.e. the
+ * ORDINARY full-length ban: this function can only ever soften the outcome,
+ * never harden it, so a missed acquire is exactly the pre-change behaviour
+ * and never a new failure mode. */
+static bool ban_would_strand_us(struct net_manager *nm,
+                                const struct p2p_node *node)
+{
+    bool registered = false;
+    size_t others_alive = 0;
+
+    if (!zcl_mutex_trylock(&nm->cs_nodes))
+        return false;
+    for (size_t i = 0; i < nm->num_nodes; i++) {
+        const struct p2p_node *n = nm->nodes[i];
+        if (!n)
+            continue;
+        if (n == node) {
+            registered = true;
+            continue;
+        }
+        if (!n->disconnect)
+            others_alive++;
+    }
+    zcl_mutex_unlock(&nm->cs_nodes);
+
+    return registered && others_alive == 0;
+}
+
+/* Named, stable-reason blocker for the bounded last-peer ban (id declared in
+ * net/peer_scoring.h; cleared at the handshake-complete choke point in
+ * peer_lifecycle.c). The reason carries NO volatile data (no address, no
+ * score) because blocker.h keys fault identity on the reason text — the
+ * address goes to the peer_banned log line, which is where an operator reads
+ * it from. */
+static void raise_last_peer_ban_blocker(void)
+{
+    char reason[BLOCKER_REASON_MAX];
+    snprintf(reason, sizeof reason,
+             "the only connected peer crossed the ban threshold — a bounded "
+             "recovery ban was applied instead of the full ZCL_PEER_BAN_HOURS "
+             "so the node keeps a route back to the network; if this repeats, "
+             "either the peer is genuinely bad (give the node a second peer "
+             "source via -addnode) or our own validation is rejecting a valid "
+             "chain (see the peer_banned log lines for the address and "
+             "offence)");
+    /* The duration is deliberately absent from the reason: it is volatile
+     * config, and blocker.h folds the reason into fault identity. */
+    struct blocker_record rec;
+    if (!blocker_init(&rec, PEER_LAST_PEER_BAN_BLOCKER_ID, "net",
+                      BLOCKER_TRANSIENT, reason))
+        return; /* raw-return-ok:blocker-init-failed-already-logged */
+    (void)blocker_set(&rec);
+}
+
 void peer_misbehaving(struct net_manager *nm, struct p2p_node *node,
                       int howmuch, const char *reason)
 {
     if (!nm || !node || howmuch <= 0) return;
 
-    /* NEVER penalize trusted peers (localhost, whitelisted, addnode).
-     * These are our own infrastructure — banning them breaks sync. */
+    /* NEVER penalize trusted peers — see is_trusted_peer() above for exactly
+     * which peers that is (localhost and whitelisted; NOT addnode). */
     if (is_trusted_peer(node))
         return;
 
@@ -1198,6 +1275,24 @@ void peer_misbehaving(struct net_manager *nm, struct p2p_node *node,
     int threshold = peer_scoring_ban_threshold();
     int hours = peer_scoring_ban_hours();
     if (new_score >= threshold) {
+        /* Last-peer recovery. The offence weights and the threshold are a
+         * real DoS defence and are NOT relaxed: the peer is still scored,
+         * still banned, still disconnected. What is bounded is the ban's
+         * DURATION, and only in the one case where the full-length ban would
+         * leave the node with zero peers and therefore no route back to the
+         * network — a freshly-wiped node dialling a single -addnode is the
+         * live instance of that case, and one misclassified block would
+         * otherwise strand it for ZCL_PEER_BAN_HOURS across restarts
+         * (banlist.dat persists). With any second peer connected this branch
+         * is not taken and behaviour is byte-identical to before.
+         *
+         * ban_addr_ex() only ever EXTENDS an existing ban, so a peer that
+         * already earned a full-length ban keeps it. */
+        bool strand = ban_would_strand_us(nm, node);
+        int last_peer_secs = peer_scoring_last_peer_ban_secs();
+        int64_t ban_secs = strand ? (int64_t)last_peer_secs
+                                  : (int64_t)hours * 60 * 60;
+
         event_emitf(EV_PEER_BANNED, (uint32_t)node->id,
                     "score=%d %s", new_score,
                     reason ? reason : "threshold");
@@ -1208,12 +1303,25 @@ void peer_misbehaving(struct net_manager *nm, struct p2p_node *node,
                          reason ? reason : "threshold reached");
         log_jsonf(LOG_JSON_WARN, "peer_banned",
                   "\"addr\":\"%s\",\"score\":%d,\"reason\":\"%s\","
-                  "\"ban_hours\":%d",
-                  addr_safe, new_score, reason_safe, hours);
+                  "\"ban_hours\":%d,\"ban_secs\":%lld,\"last_peer\":%s",
+                  addr_safe, new_score, reason_safe, hours,
+                  (long long)ban_secs, strand ? "true" : "false");
         ban_addr_ex(nm, &node->addr.svc.addr,
-                   (int64_t)hours * 60 * 60, false,
+                   ban_secs, false,
                    new_score, reason ? reason : "threshold reached");
         node->disconnect = true;
+
+        if (strand) {
+            /* Say it out loud: a silent bounded ban would look identical to
+             * a healthy node with nothing to do. */
+            raise_last_peer_ban_blocker();
+            LOG_WARN("net",
+                     "peer %s was our ONLY peer — applied a bounded %ds "
+                     "recovery ban instead of %dh so the node can re-dial "
+                     "(blocker %s raised)",
+                     node->addr_name, last_peer_secs, hours,
+                     PEER_LAST_PEER_BAN_BLOCKER_ID);
+        }
     }
 }
 
@@ -1622,8 +1730,17 @@ bool accept_connection(struct net_manager *nm, const struct listen_socket *ls)
         LOG_FAIL("net", "rejected banned peer on accept");
     }
 
-    /* Per-IP inbound limit: max 3 connections from same IP.
-     * Prevents a single IP from consuming all inbound slots (sybil). */
+    /* Per-IP inbound limit — sybil defence: one IP must not be able to
+     * consume every inbound slot. Operator-configurable via
+     * ZCL_PEER_MAX_INBOUND_PER_IP (default 3, the historical literal).
+     *
+     * This is a source-IP heuristic, not an identity check: at accept()
+     * there is no peer identity yet, so several independent nodes behind
+     * one NAT — or co-located on one host — share a single budget. Past the
+     * cap we close before any bytes are exchanged, which the dialling node
+     * can only observe as "remote-close, state=connecting", so the refusal
+     * is logged loudly HERE (this side is the only side that knows why). */
+    int max_per_ip = peer_scoring_max_inbound_per_ip();
     int inbound_count = 0;
     int same_ip_count = 0;
     int max_inbound = nm->max_connections - MAX_OUTBOUND_CONNECTIONS;
@@ -1671,9 +1788,14 @@ bool accept_connection(struct net_manager *nm, const struct listen_socket *ls)
     }
     zcl_mutex_unlock(&nm->cs_nodes);
 
-    if (!is_whitelisted && same_ip_count >= 3) {
+    if (!is_whitelisted && same_ip_count >= max_per_ip) {
         close_socket(&sock);
-        LOG_FAIL("net", "too many inbound connections from same IP: count=%d", same_ip_count);
+        LOG_FAIL("net",
+                 "too many inbound connections from same IP: count=%d "
+                 "cap=%d (raise ZCL_PEER_MAX_INBOUND_PER_IP if this source "
+                 "legitimately runs several nodes); the dialling node sees "
+                 "only a zero-byte remote-close",
+                 same_ip_count, max_per_ip);
     }
 
     if (inbound_count >= max_inbound) {

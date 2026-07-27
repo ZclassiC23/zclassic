@@ -85,13 +85,46 @@ int peer_offence_weight(enum peer_offence offence);
  * Environment variables:
  *   ZCL_PEER_BAN_THRESHOLD      — integer, default 100
  *   ZCL_PEER_BAN_HOURS          — integer, default 24
- *   ZCL_PEER_SCORE_DECAY_PER_MIN — integer, default 1 (0 disables decay) */
+ *   ZCL_PEER_SCORE_DECAY_PER_MIN — integer, default 1 (0 disables decay)
+ *   ZCL_PEER_MAX_INBOUND_PER_IP — integer, default 3
+ *   ZCL_PEER_LAST_PEER_BAN_SECS — integer, default 600 */
 void peer_scoring_init(void);
 
 /* Accessors for the cached config. All thread-safe (atomic reads). */
 int peer_scoring_ban_threshold(void);
 int peer_scoring_ban_hours(void);
 int peer_scoring_decay_rate(void);
+
+/* Max simultaneous INBOUND connections admitted from one source IP.
+ * Enforced in accept_connection() (net.c) as sybil defence: one IP must
+ * not be able to consume every inbound slot.
+ *
+ * It is a source-IP heuristic, not an identity check — at accept() time
+ * there is no peer identity yet, so several legitimate nodes behind one
+ * NAT (or co-located on one host) share a single budget. Past the cap the
+ * server closes the socket before any bytes are exchanged, which the
+ * dialling node can only observe as "remote-close, state=connecting". The
+ * knob exists so an operator serving such a source can raise it instead of
+ * having to patch a literal. Default 3, clamped to [1, 4096]. */
+int peer_scoring_max_inbound_per_ip(void);
+
+/* Ban duration, in seconds, substituted for the full peer_scoring_ban_hours()
+ * when banning a peer would leave the node with no connected peer at all.
+ * The peer is still scored and still disconnected — only the ban's LENGTH is
+ * bounded, so a single misclassification cannot strand a node that has
+ * exactly one peer for peer_scoring_ban_hours(). Default 600, clamped to
+ * [60, 86400]; the ceiling means this can never be harsher than the
+ * ordinary path. See peer_misbehaving() in net.c. */
+int peer_scoring_last_peer_ban_secs(void);
+
+/* Typed blocker raised by peer_misbehaving() when it takes the bounded
+ * last-peer path, so a node that just banned its only route to the network
+ * says so instead of looking idle. Cleared by
+ * peer_lifecycle_note_handshake_complete() — the single choke point every
+ * completed handshake passes through — because a completed handshake IS the
+ * honest witness that the route is back. Remedy binding:
+ * app/conditions/include/conditions/blocker_remedy_bindings.def. */
+#define PEER_LAST_PEER_BAN_BLOCKER_ID "net.last_peer_ban"
 
 /* Record a typed offence. Equivalent to
  *   peer_misbehaving(nm, node, peer_offence_weight(offence), context)

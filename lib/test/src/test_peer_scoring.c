@@ -9,6 +9,8 @@
 #include "test/test_core.h"
 #include "net/peer_scoring.h"
 #include "net/net.h"
+#include "core/utiltime.h"
+#include "util/blocker.h"
 
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -464,6 +466,178 @@ static int test_decay_disabled(void)
     return failures;
 }
 
+/* ── Admission cap + last-peer recovery ────────────────── */
+
+static int test_inbound_cap_config(void)
+{
+    int failures = 0;
+    TEST("peer_scoring: per-IP inbound cap defaults to 3 and honours env") {
+        unsetenv("ZCL_PEER_MAX_INBOUND_PER_IP");
+        peer_scoring_init();
+        ASSERT_EQ(peer_scoring_max_inbound_per_ip(), 3);
+
+        setenv("ZCL_PEER_MAX_INBOUND_PER_IP", "16", 1);
+        peer_scoring_init();
+        ASSERT_EQ(peer_scoring_max_inbound_per_ip(), 16);
+
+        /* 0 would refuse every inbound peer — clamp back to the default
+         * rather than honour a value that silently disables listening. */
+        setenv("ZCL_PEER_MAX_INBOUND_PER_IP", "0", 1);
+        peer_scoring_init();
+        ASSERT_EQ(peer_scoring_max_inbound_per_ip(), 3);
+
+        setenv("ZCL_PEER_MAX_INBOUND_PER_IP", "garbage", 1);
+        peer_scoring_init();
+        ASSERT_EQ(peer_scoring_max_inbound_per_ip(), 3);
+
+        unsetenv("ZCL_PEER_MAX_INBOUND_PER_IP");
+        peer_scoring_init();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_last_peer_ban_secs_config(void)
+{
+    int failures = 0;
+    TEST("peer_scoring: last-peer ban seconds default 600, clamped to <=24h") {
+        unsetenv("ZCL_PEER_LAST_PEER_BAN_SECS");
+        peer_scoring_init();
+        ASSERT_EQ(peer_scoring_last_peer_ban_secs(), 600);
+
+        setenv("ZCL_PEER_LAST_PEER_BAN_SECS", "120", 1);
+        peer_scoring_init();
+        ASSERT_EQ(peer_scoring_last_peer_ban_secs(), 120);
+
+        /* Above the 24h ceiling: the recovery ban must never be able to be
+         * HARSHER than the ordinary ban, so fall back to the default. */
+        setenv("ZCL_PEER_LAST_PEER_BAN_SECS", "999999", 1);
+        peer_scoring_init();
+        ASSERT_EQ(peer_scoring_last_peer_ban_secs(), 600);
+
+        /* Below the 60s floor — a sub-minute "ban" is not a ban. */
+        setenv("ZCL_PEER_LAST_PEER_BAN_SECS", "5", 1);
+        peer_scoring_init();
+        ASSERT_EQ(peer_scoring_last_peer_ban_secs(), 600);
+
+        unsetenv("ZCL_PEER_LAST_PEER_BAN_SECS");
+        peer_scoring_init();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Register `node` in `nm->nodes` so peer_misbehaving() can see how many
+ * peers a ban would leave behind. Borrowed pointers — the caller owns the
+ * array and the nodes. */
+static void register_nodes(struct net_manager *nm, struct p2p_node **nodes,
+                           size_t count)
+{
+    nm->nodes = nodes;
+    nm->num_nodes = count;
+    nm->nodes_cap = count;
+}
+
+static int test_last_peer_ban_is_bounded(void)
+{
+    int failures = 0;
+    TEST("peer_scoring: banning our ONLY peer applies a bounded recovery ban") {
+        blocker_reset_for_testing();
+        unsetenv("ZCL_PEER_LAST_PEER_BAN_SECS");
+        unsetenv("ZCL_PEER_BAN_HOURS");
+        peer_scoring_init();
+
+        struct net_manager nm;
+        struct p2p_node node;
+        setup_manager(&nm);
+        setup_node(&node, "only_peer", false);
+        struct p2p_node *nodes[1] = { &node };
+        register_nodes(&nm, nodes, 1);
+
+        int64_t before = GetTime();
+        peer_scoring_record(&nm, &node, PEER_OFFENCE_INVALID_BLOCK, "bad block");
+
+        /* Still scored, still disconnected — the DoS defence is intact. */
+        ASSERT_EQ(atomic_load(&node.misbehavior), 100);
+        ASSERT(node.disconnect);
+        /* Still BANNED — only the duration is bounded. */
+        ASSERT_EQ((int)nm.num_banned, 1);
+        int64_t until = nm.banned[0].ban_until;
+        ASSERT(until > before);
+        ASSERT(until <= before + 600 + 5);
+        /* And it SAYS SO via the typed blocker mechanism. */
+        ASSERT(blocker_exists("net.last_peer_ban"));
+
+        free(nm.banned);
+        blocker_reset_for_testing();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_second_peer_keeps_full_ban(void)
+{
+    int failures = 0;
+    TEST("peer_scoring: with a second peer connected the ban stays full-length") {
+        blocker_reset_for_testing();
+        unsetenv("ZCL_PEER_LAST_PEER_BAN_SECS");
+        unsetenv("ZCL_PEER_BAN_HOURS");
+        peer_scoring_init();
+
+        struct net_manager nm;
+        struct p2p_node bad, good;
+        setup_manager(&nm);
+        setup_node(&bad, "bad_peer", false);
+        setup_node(&good, "good_peer", false);
+        good.addr.svc.addr.ip[15] = 9;   /* a distinct address */
+        struct p2p_node *nodes[2] = { &bad, &good };
+        register_nodes(&nm, nodes, 2);
+
+        int64_t before = GetTime();
+        peer_scoring_record(&nm, &bad, PEER_OFFENCE_INVALID_BLOCK, "bad block");
+
+        ASSERT_EQ((int)nm.num_banned, 1);
+        /* Full 24h, byte-identical to pre-change behaviour. */
+        ASSERT(nm.banned[0].ban_until >= before + 24 * 60 * 60);
+        ASSERT(!(blocker_exists("net.last_peer_ban")));
+
+        free(nm.banned);
+        blocker_reset_for_testing();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_unregistered_node_keeps_full_ban(void)
+{
+    int failures = 0;
+    TEST("peer_scoring: an unregistered node takes the ordinary ban path") {
+        blocker_reset_for_testing();
+        unsetenv("ZCL_PEER_LAST_PEER_BAN_SECS");
+        unsetenv("ZCL_PEER_BAN_HOURS");
+        peer_scoring_init();
+
+        /* nm->nodes is empty: the node was never published to the manager,
+         * so "this is our last peer" is not something we can conclude. */
+        struct net_manager nm;
+        struct p2p_node node;
+        setup_manager(&nm);
+        setup_node(&node, "detached_peer", false);
+
+        int64_t before = GetTime();
+        peer_scoring_record(&nm, &node, PEER_OFFENCE_INVALID_BLOCK, "bad block");
+
+        ASSERT_EQ((int)nm.num_banned, 1);
+        ASSERT(nm.banned[0].ban_until >= before + 24 * 60 * 60);
+        ASSERT(!(blocker_exists("net.last_peer_ban")));
+
+        free(nm.banned);
+        blocker_reset_for_testing();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Entry point ───────────────────────────────────────── */
 
 int test_peer_scoring(void);
@@ -502,6 +676,11 @@ int test_peer_scoring(void)
     failures += test_custom_threshold();
     failures += test_good_interaction();
     failures += test_decay_disabled();
+    failures += test_inbound_cap_config();
+    failures += test_last_peer_ban_secs_config();
+    failures += test_last_peer_ban_is_bounded();
+    failures += test_second_peer_keeps_full_ban();
+    failures += test_unregistered_node_keeps_full_ban();
 
     /* Restore env so other suites see the same state they started with. */
     if (saved_threshold) {
