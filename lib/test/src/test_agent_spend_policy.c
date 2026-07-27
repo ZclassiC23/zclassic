@@ -355,6 +355,72 @@ static int test_default_deny_surface(void)
     return failures;
 }
 
+/* ── 3b. a read whose REACH is spend authority is refused ────────────────── */
+
+/* `core.storage.query` is declared READ + CAP_CHAIN_READ, so the default-deny
+ * branch classified it as a plain read and let a bounded session run arbitrary
+ * SELECT over node.db. node.db holds material whose possession authorizes a
+ * spend: `agent_sessions.session_id` is a bearer grant, so a 0.01-ZCL session
+ * could read the 100-ZCL session's token and present it; `zswp_contracts.secret`
+ * is an HTLC preimage. A bound the bounded party can raise for itself is not a
+ * bound. Both the policy row here and the SQL-surface denylist
+ * (app/controllers/src/dbquery_controller.c) must hold — this test owns the
+ * policy half, lib/test/src/test_dbquery_secret_denylist.c owns the other. */
+static int test_arbitrary_sql_refused(void)
+{
+    int failures = 0;
+    struct asp_fixture f;
+    TEST("a bounded session may not run arbitrary SQL over node.db") {
+        ASSERT(asp_open(&f, "sql"));
+        struct db_agent_session s;
+        mk_session(&s, k_sid_a, 100000000, 100000000);
+        ASSERT(agent_session_save(&f.ndb, &s));
+
+        static const char *const sql_leaves[] = {
+            "core.storage.query",
+            "core.storage.query.offline",
+        };
+        for (size_t i = 0; i < sizeof(sql_leaves) / sizeof(sql_leaves[0]);
+             i++) {
+            const struct zcl_command_spec *sp = spec_for(sql_leaves[i]);
+            ASSERT(sp != NULL);
+            struct json_value in;
+            json_init(&in);
+            json_set_object(&in);
+            (void)json_push_kv_str(&in, "sql",
+                                   "SELECT session_id FROM agent_sessions");
+            struct agent_spend_policy_decision d;
+            agent_spend_policy_evaluate(k_sid_a, sp, &in, false, &d);
+            json_free(&in);
+            if (d.allowed)
+                printf("\n  sql leaf %s was NOT refused\n", sql_leaves[i]);
+            ASSERT(!d.allowed);
+            ASSERT_STR_EQ(d.code, "POLICY_UNBOUNDABLE");
+            /* The refusal names the grant that said no, redacted — never the
+             * bearer token the caller presented. */
+            ASSERT(strstr(d.evidence, "…") != NULL);
+            ASSERT(strcmp(d.evidence, k_sid_a) != 0);
+        }
+
+        /* The un-sessioned local operator keeps the same command: this is a
+         * narrowing of what a GRANT reaches, not a removal of a surface. */
+        struct json_value in;
+        json_init(&in);
+        json_set_object(&in);
+        (void)json_push_kv_str(&in, "sql", "SELECT 1");
+        struct agent_spend_policy_decision d;
+        agent_spend_policy_evaluate(NULL, spec_for("core.storage.query"), &in,
+                                    false, &d);
+        ASSERT(d.allowed);
+        json_free(&in);
+
+        ASSERT_EQ(spent_now(&f, k_sid_a), 0);
+        asp_close(&f);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── 4. understood wallet reads pass, free ───────────────────────────────── */
 
 static int test_wallet_reads_pass(void)
@@ -769,6 +835,7 @@ int test_agent_spend_policy(void)
     int failures = 0;
     failures += test_operator_exemption();
     failures += test_default_deny_surface();
+    failures += test_arbitrary_sql_refused();
     failures += test_wallet_reads_pass();
     failures += test_spend_caps();
     failures += test_allowlist_both_keys();

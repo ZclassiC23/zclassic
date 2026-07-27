@@ -15,7 +15,7 @@ The same process — no extra daemons, no sidecars, no reverse proxy — also ru
 |---|---|
 | **Tor onion service** | in-process, so the node's HTTP surface is reachable with no domain name, no static IP, and no TLS certificate |
 | **Block explorer + REST API** | `/explorer` and `/api/v1`, served over the onion or over HTTPS |
-| **Wallet** | transparent and Sapling shielded keys, AES-256-GCM at rest |
+| **Wallet** | transparent and Sapling shielded keys — see the encryption caveat below before storing value |
 | **Name registry (ZNAM)** | on-chain names resolving to ZCL/BTC/LTC/DOGE addresses plus text records |
 | **Messaging** | Sapling-memo on-chain messages, and direct node-to-node messages |
 | **Command registry** | typed commands with declared input/output schemas, byte budgets and risk classes — the interface an AI agent uses to operate the node (`discover help` lists the live set) |
@@ -253,9 +253,19 @@ build/bin/zclassic23 dumpstate sandbox      # per-thread coverage
 **No subprocess execution.** Zero `system()` and `popen()` in shipped
 app/lib/config code, enforced by a lint gate rather than convention.
 
-**Wallet keys are AES-256-GCM at rest** for new wallets. An existing plaintext
-wallet still loads and warns — encryption is not yet retroactive, which is a
-real gap, not a rounding error.
+**⚠ Wallet key encryption is incomplete — read this before storing value.**
+The keystore file path wraps keys in AES-256-GCM (PBKDF2-HMAC-SHA512, 200k
+iterations). But `wallet_keys` in `node.db` has a **second writer that persists
+private keys in cleartext**, and it runs at every boot
+(`node_db_sync_wallet_keys`, `config/src/boot_services.c:708` →
+`db_wallet_key_save`, `app/models/src/wallet_key.c:218`). Setting a passphrase
+does **not** change this: the model's before-save hook logs
+`wallet_key.passphrase_set_pending_encryption` and, in its own words, lets
+"the save proceed unencrypted (legacy behaviour) until the keystore wiring
+lands" (`app/models/src/wallet_key.c:55-67`). Treat the datadir as holding
+key material in the clear. This README previously claimed flat
+"AES-256-GCM at rest"; that was wrong, and the full picture is in
+[`docs/CUSTODY_MODEL.md`](docs/CUSTODY_MODEL.md).
 
 **Crash recovery is executed, not claimed.** `make test-crash-bootstrap` kill-9s
 a node mid-write on an isolated datadir and requires it to fold back to its tip

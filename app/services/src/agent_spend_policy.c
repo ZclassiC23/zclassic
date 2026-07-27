@@ -50,6 +50,9 @@
 enum asp_class {
     ASP_SPEND,       /* moves funds — gated on amount + recipient */
     ASP_WALLET_READ, /* reads wallet state, reveals no key material */
+    ASP_UNBOUNDABLE, /* a read whose REACH the policy cannot bound — listed so
+                      * the refusal is deliberate rather than a default-deny
+                      * accident, and so the operator keeps it unchanged. */
 };
 
 struct asp_surface {
@@ -104,6 +107,19 @@ static const struct asp_surface g_surface[] = {
     { "vault.list",                    ASP_WALLET_READ, NULL, NULL },
     { "vault.show",                    ASP_WALLET_READ, NULL, NULL },
     { "vault.encumbered",              ASP_WALLET_READ, NULL, NULL },
+    /* Arbitrary SQL. Declared READ + CAP_CHAIN_READ, so the default-deny
+     * branch below classifies it as a plain read and lets it through — but
+     * its REACH is every row in node.db, and node.db holds material whose
+     * possession authorizes a spend: another grant's `agent_sessions`
+     * bearer token, an HTLC preimage in `zswp_contracts`. A bounded session
+     * that can read the widest grant's token is not bounded. The row denies
+     * it explicitly so the reason is stated at the refusal rather than
+     * inferred from an absence. The un-sessioned local operator is exempt
+     * (this table is only consulted for a presented grant), and the same
+     * material is denied one layer down at the SQL surface itself
+     * (app/controllers/src/dbquery_controller.c, SECRET_TABLES). */
+    { "core.storage.query",         ASP_UNBOUNDABLE, NULL, NULL },
+    { "core.storage.query.offline", ASP_UNBOUNDABLE, NULL, NULL },
 };
 
 /* The grant surface: minting or revoking authority. A session presented on the
@@ -230,6 +246,14 @@ void agent_spend_policy_evaluate(const char *session_id,
     }
     if (s->klass == ASP_WALLET_READ) {
         asp_allow(out);
+        return;
+    }
+    if (s->klass == ASP_UNBOUNDABLE) {
+        asp_refuse(out, "POLICY_UNBOUNDABLE",
+                   "this leaf reads arbitrary node state, including material "
+                   "whose possession authorizes a spend, so a bounded session "
+                   "may not run it — run it as the local operator, with "
+                   "ZCL_AGENT_SESSION unset", spec->path);
         return;
     }
 

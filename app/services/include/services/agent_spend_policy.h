@@ -31,6 +31,11 @@
  *                                       names the amount and recipient keys
  *                                       per leaf, so nothing is guessed).
  *   understood wallet read           -> allowed, nothing debited.
+ *   arbitrary-SQL read               -> refused (POLICY_UNBOUNDABLE). Its
+ *                                       reach is every row in node.db, which
+ *                                       includes another grant's bearer token
+ *                                       and HTLC preimages — spend authority,
+ *                                       not facts.
  *   anything else that touches the
  *   wallet capability or mutates     -> refused (POLICY_NOT_UNDERSTOOD).
  *   everything else (plain reads)    -> allowed.
@@ -70,6 +75,11 @@ struct zcl_command_spec;
  *                           recipient is not in it
  *   POLICY_NO_GRANT_MINT  — the leaf mints/revokes grants; only the
  *                           un-sessioned local operator may
+ *   POLICY_UNBOUNDABLE    — the leaf is understood, and what it can REACH is
+ *                           the reason it is refused: it reads arbitrary node
+ *                           state, which includes material whose possession
+ *                           authorizes a spend (another grant's bearer token,
+ *                           an HTLC preimage)
  *   POLICY_NOT_UNDERSTOOD — the leaf touches the wallet or mutates state and
  *                           this policy has no rule for it, so it is refused
  *   POLICY_UNKNOWN_COMMAND— no spec was supplied (cannot classify -> refuse)

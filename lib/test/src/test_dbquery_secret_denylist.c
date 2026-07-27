@@ -195,6 +195,94 @@ static int t_obfuscation_denied(void)
     return failures;
 }
 
+/* 5. Authorizing material that is not a private key.
+ *
+ *    A spending key is not the only thing in node.db that authorizes a
+ *    spend. `agent_sessions.session_id` is a BEARER grant: presenting it in
+ *    ZCL_AGENT_SESSION is what makes a dispatch spend under that grant's
+ *    caps, so reading another grant's id is a spend authority, not a fact.
+ *    `zswp_contracts.secret` is the HTLC preimage: whoever holds it can
+ *    redeem the counterparty's locked output on the other chain.
+ *
+ *    Both tables were readable through this SELECT-only surface, which a
+ *    bounded agent session reaches (the policy classifies core.storage.query
+ *    as a plain read and allows it). A low-cap session could therefore read
+ *    a high-cap session's token and spend under it — a bound the bounded
+ *    party can raise. Redacted/aggregate views of both remain available:
+ *    `vault session list` for grants, `app swap list` for swaps. */
+static int t_authorizing_material_denied(struct ddt_fixture *f)
+{
+    int failures = 0;
+
+    /* Plant real authorizing material so the denial is proven against rows
+     * that exist: a grant token that would spend if presented, and an HTLC
+     * preimage that would redeem if published. */
+    (void)node_db_exec(&f->ndb,
+        "INSERT OR REPLACE INTO principals"
+        "(address,pubkey_hex,key_kind,znam_name,role,granted_capabilities,"
+        " created_at,last_login,status,sybil_proof_height)"
+        " VALUES('t1CustodyTestPrincipal','00',0,'','owner',0,1,0,'active',-1)");
+    (void)node_db_exec(&f->ndb,
+        "INSERT OR REPLACE INTO agent_sessions"
+        "(session_id,account,max_per_tx_zat,max_per_window_zat,window_seconds,"
+        " window_start_epoch,spent_in_window_zat,recipient_allowlist,"
+        " created_at,expires_at,revoked)"
+        " VALUES('deadbeefdeadbeefdeadbeefdeadbeef','t1CustodyTestPrincipal',"
+        " 100000000,100000000,3600,1,0,'',1,0,0)");
+    (void)node_db_exec(&f->ndb,
+        "INSERT OR REPLACE INTO zswp_contracts"
+        "(swap_id,role,state,chain,secret_hash,secret,amount,locktime,"
+        " my_address,counter_address,redeem_script,redeem_script_len,"
+        " p2sh_address,created_at)"
+        " VALUES('swap-custody-test',0,0,0,x'00',x'0badc0de',1,1,'a','b',"
+        " x'00',1,'p',1)");
+
+    static const struct { const char *sql; const char *label; } cases[] = {
+        { "SELECT session_id FROM agent_sessions",
+          "dbquery: agent grant token (session_id) denied" },
+        { "SELECT * FROM agent_sessions",
+          "dbquery: SELECT * FROM agent_sessions denied" },
+        { "SELECT session_id, max_per_tx_zat FROM agent_sessions "
+          "ORDER BY max_per_tx_zat DESC",
+          "dbquery: widest-grant token hunt denied" },
+        { "select SESSION_ID from Agent_Sessions",
+          "dbquery: agent grant token denied case-insensitively" },
+        { "SELECT * FROM (SELECT session_id FROM agent_sessions) t",
+          "dbquery: agent grant token denied inside a subquery" },
+        { "SELECT secret FROM zswp_contracts",
+          "dbquery: HTLC preimage (secret) denied" },
+        { "SELECT * FROM zswp_contracts",
+          "dbquery: SELECT * FROM zswp_contracts denied" },
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        struct json_value result;
+        bool rc = ddt_query(cases[i].sql, &result);
+        DDT_RUN(cases[i].label,
+                !rc && result.type == JSON_STR &&
+                strstr(json_get_str(&result), "secret") != NULL);
+        json_free(&result);
+    }
+
+    /* The denial must not swallow the neighbouring public tables: a swap's
+     * secret_hash is a public commitment, and principals/auth rows carry no
+     * spend authority. `secret_hash` must survive the `secret` word-boundary. */
+    struct json_value result;
+    bool rc = ddt_query("SELECT secret_hash FROM zswp_swaps_public_probe",
+                        &result);
+    DDT_RUN("dbquery: 'secret_hash' not caught by the 'secret' word",
+            !rc && result.type == JSON_STR &&
+            strstr(json_get_str(&result), "references secret") == NULL);
+    json_free(&result);
+
+    rc = ddt_query("SELECT address, role FROM principals LIMIT 1", &result);
+    DDT_RUN("dbquery: principals (public identity) still readable",
+            rc && result.type == JSON_OBJ);
+    json_free(&result);
+
+    return failures;
+}
+
 int test_dbquery_secret_denylist(void)
 {
     printf("\n=== dbquery secret denylist tests ===\n");
@@ -210,6 +298,7 @@ int test_dbquery_secret_denylist(void)
     failures += t_secret_column_denied();
     failures += t_normal_query_allowed();
     failures += t_obfuscation_denied();
+    failures += t_authorizing_material_denied(&f);
 
     ddt_fixture_tear_down(&f);
     return failures;

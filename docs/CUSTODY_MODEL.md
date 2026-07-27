@@ -1,0 +1,245 @@
+# Custody model
+
+What holds the keys, what authorizes a spend, and what an AI agent operating
+this node can and cannot do with them.
+
+This page states the boundary as the code enforces it. Where a control is a
+convention rather than a mechanism, it says so — a boundary you believe in and
+the code does not draw is worse than no boundary.
+
+---
+
+## 1. The one-sentence shape
+
+The node process holds every spending key in RAM in cleartext while it is
+unlocked; the disk copy is wrapped under a passphrase the operator supplies;
+and every typed command an agent issues is bounded by a grant the agent cannot
+mint for itself — but the grant is presented in the agent's own environment,
+so an agent that declines to cooperate is bounded only by the operating system,
+not by this code.
+
+---
+
+## 2. Where private keys live
+
+Five places. All five are inside the operator's own trust domain; none is
+network-reachable.
+
+| # | Location | Form | Encrypted at rest |
+|---|---|---|---|
+| 1 | `node.db` → `wallet_keys.privkey` (32 B secp256k1 scalar) | blob | WKS1 envelope when a passphrase is in force |
+| 2 | `node.db` → `wallet_sapling_keys.xsk` (169 B extended spending key) | blob | WKS1 envelope when a passphrase is in force |
+| 3 | `node.db` → `wallet_seed.seed` (32 B HD seed) | blob | WKS1 envelope when a passphrase is in force |
+| 4 | Process RAM — `wallet.keystore` and `wallet.sapling_keys` | cleartext | never; this is the working set |
+| 5 | Backup files written by the wallet backup service | verbatim copies of rows 1–3 | inherits row 1–3's state; a second layer if `WALLET_BACKUP_PASSWORD` is set |
+
+Row 4 is not a defect — a node that signs must hold the scalar. It is the
+reason a core dump, a debugger attach, or `/proc/<pid>/mem` read as the node's
+uid is a total compromise, and the reason confining the agent is an OS problem
+(§7).
+
+Row 5 copies exactly `wallet_keys`, `wallet_sapling_keys`, `wallet_seed`
+(`app/services/src/wallet_backup_service.c:78-80`) with `CREATE TABLE … AS
+SELECT *`, so a backup taken from an encrypted wallet contains encrypted
+blobs and a backup taken from a plaintext wallet contains raw keys. The two
+passphrases are **independent env vars**: `ZCL_WALLET_PASSPHRASE` wraps the
+rows, `WALLET_BACKUP_PASSWORD` wraps the backup file
+(`wallet_backup_service.c:210-242`, ChaCha20-Poly1305 over the whole file).
+Setting one does not set the other, and leaving `WALLET_BACKUP_PASSWORD` unset
+logs one warning and proceeds.
+
+**Export paths** (deliberate, OWNER-gated, plan/commit): `dumpprivkey` /
+`z_exportkey` over JSON-RPC, and `core.wallet.address.export-key` over the
+typed surface (`app/controllers/src/wallet_native_handlers.c:310-365`). The
+typed form refuses without `confirm:true`, warns in the plan body that commit
+reveals the key, and returns the WIF in `reply.data.privkey`. Neither path
+logs the key: `rpc_dumpprivkey` logs only the address on every failure branch
+(`app/controllers/src/wallet_controller_keys.c:29-54`).
+
+---
+
+## 3. What is encrypted, with what
+
+The primitive is `lib/wallet/src/wallet_keystore.c` — the **WKS1 envelope**:
+
+```
+magic "WKS1" | version u32be | kdf_iters u32be | reserved u32 | salt[16] | nonce[12] | tag[16] | ciphertext
+```
+
+PBKDF2-HMAC-SHA512 (200 000 iterations by default) from the passphrase, then
+AES-256-GCM with a fresh 12-byte nonce and a 16-byte tag, empty AAD. The
+header is 60 bytes; a wrong passphrase or a tampered byte fails the tag and
+returns false rather than plausible garbage.
+
+The persistence layer applies it. `lib/wallet/src/wallet_sqlite.c:134-183`
+wraps on write and unwraps on read; `is_wks1_blob()` (`:122`) sniffs the magic
+so a plaintext row still loads — this is the backwards-compatible path, and it
+is why a wallet can be **mixed**: some rows enveloped, some not.
+
+The passphrase is resolved in one place,
+`wallet_lock_effective_passphrase()` (`lib/wallet/src/wallet_lock.c`), in this
+order:
+
+1. force-locked (explicit `lock`) → NULL, wins over everything
+2. runtime passphrase (explicit `unlock`) → that value
+3. `ZCL_WALLET_PASSPHRASE` non-empty → the env value
+4. otherwise → NULL
+
+NULL means "no encryption": writes go out in cleartext and enveloped rows on
+disk fail to decrypt and are dropped with a counted warning
+(`g_read_keys_corrupt_rows`). A plaintext wallet is always "unlocked" because
+there is nothing to lock.
+
+**The README's claim, checked.** "AES-256-GCM for new wallets; an existing
+plaintext wallet still loads with a warning" is accurate for the
+`wallet_sqlite` path, which is the path the wallet itself uses.
+
+**It is not the whole truth, because `wallet_keys` has a second writer.**
+`app/models/src/wallet_key.c:218-238` (`db_wallet_key_save`) writes
+`privkey` as a raw 32-byte bind, and its `before_save` hook explicitly declines
+to encrypt — with a passphrase set it emits
+`wallet_key.passphrase_set_pending_encryption` and proceeds
+(`wallet_key.c:54-67`, and `:113-121` for the Sapling equivalent). That writer
+is live: `node_db_sync_wallet_keys` calls it at every boot
+(`config/src/boot_services.c:708`), after a legacy import
+(`app/services/src/legacy_import_service.c:595`), after a snapshot import
+(`app/controllers/src/snapshot_controller_import.c:610`), and from the
+`reindexdb` RPC (`app/controllers/src/wallet_diagnostic_repair.c:134`).
+
+It is narrow in practice — it skips keys that already have a row
+(`sync_controller_persistence.c:70`) and returns early when the DB already
+holds at least as many keys as RAM (`:54-56`) — so it writes only keys the
+`wallet_sqlite` flush has not yet persisted. But the honest statement is: **a
+wallet with a passphrase set can end up with plaintext key rows on disk, and
+nothing in the system reports which rows are which.** Neither
+`getwalletinfo.persistence` nor any dumper counts enveloped-vs-plaintext rows.
+This is the largest open gap in the model (§8).
+
+---
+
+## 4. Everything that can sign or move value
+
+| Path | Reached by | Gate |
+|---|---|---|
+| `sendtoaddress` / `sendmany` / `z_sendmany` JSON-RPC | loopback HTTP + `<datadir>/.cookie` Basic auth | cookie only |
+| `core.wallet.transaction.send`, `core.wallet.shielded.send` | typed CLI | kernel authority + capability + **agent spend policy** |
+| `vault.send`, `vault.send-shielded` | typed CLI | vault dispatch + **agent spend policy** |
+| `app.market.buy`, `app.swap.initiate`, `app.swap.participate` | typed CLI | same |
+| `vault.swap.redeem` / `.refund` | typed CLI | authority; **no amount to bound**, so the spend policy refuses them for a grant |
+| `dumpprivkey` / `core.wallet.address.export-key` | both | OWNER + plan/commit; hands over the key, after which no gate applies |
+| `importprivkey` / `core.wallet.address.import` | both | OWNER; installs a key the operator never saw |
+
+Two independent runtime gates sit under all of them:
+
+- **`wallet_lock_spend_guard()`** — a locked wallet cannot spend even when
+  trust permits (`lib/wallet/include/wallet/wallet_lock.h`).
+- **the sync-trust `WALLET_SPEND` capability** — spending is disabled until
+  the node's own state is self-verified.
+
+---
+
+## 5. What the agent grant bounds
+
+The grant is a row in `agent_sessions` (migration v36,
+`app/models/src/database_migrate_features2.c:200-224`), minted by
+`vault session create` for an existing principal, and presented per invocation
+as `ZCL_AGENT_SESSION=<32 hex chars>`
+(`tools/command/native_command.c:2735, 3173`).
+
+It bounds four things and nothing else:
+
+| bound | column | enforced in |
+|---|---|---|
+| amount per transaction | `max_per_tx_zat` | `agent_session_authorize` |
+| amount per rolling window | `max_per_window_zat` + `window_seconds` (≤ 1 year) | same |
+| destination | `recipient_allowlist` (exact CSV token, never a prefix) | same |
+| lifetime | `expires_at`, `revoked` | same |
+
+The check and the window debit are **one indivisible step** under a
+process-local mutex, with a targeted `UPDATE` of only the two window columns
+guarded by `revoked=0` — so concurrent invocations cannot jointly blow a cap,
+and a revocation landing mid-spend is not undone by the debit rewriting the
+row (`app/models/include/models/agent_session.h`, the
+`agent_session_authorize` contract).
+
+**Can the bounded party widen it?** Through the typed surface: no.
+
+- `vault.session.*` is refused outright for any presented grant, matched on the
+  branch prefix so a leaf added tomorrow is covered the day it is added
+  (`app/services/src/agent_spend_policy.c:asp_is_grant_surface`) →
+  `POLICY_NO_GRANT_MINT`.
+- The policy classifies the **leaf**, from its registry spec, not the input's
+  shape. A wallet-touching or mutating leaf it has no rule for is refused
+  (`POLICY_NOT_UNDERSTOOD`) — which is what stops `export-key`, `import`,
+  `backup.now` and `rescan`, none of which carries an amount.
+- A leaf whose *reach* cannot be bounded is refused by name
+  (`POLICY_UNBOUNDABLE`): `core.storage.query` and
+  `core.storage.query.offline` run arbitrary SELECT over `node.db`, and
+  `node.db` holds material whose possession authorizes a spend — another
+  grant's bearer token, an HTLC preimage.
+- The gate runs **after** the lane/authority/capability checks, because it is
+  the only one that writes; ahead of them, anyone who could reach it could
+  drain a session's window with commands that were then denied anyway
+  (`lib/kernel/src/command_registry.c:1740-1800`).
+- A plan-stage preview enforces the caps and debits nothing; a handler that
+  reports no mutation gets the debit released.
+
+Through the operating system: **yes** — see §7.
+
+---
+
+## 6. Where secrets are not allowed to appear
+
+| surface | rule | enforced in |
+|---|---|---|
+| `core storage query` (SELECT-only SQL) | `wallet_keys`, `wallet_sapling_keys`, `wallet_seed`, `agent_sessions`, `zswp_contracts` denied wholesale; `privkey`, `xsk`, `seed`, `session_id`, `secret`, … denied as columns | `app/controllers/src/dbquery_controller.c` |
+| refusal `evidence` in a reply | the **redacted** grant id (first 8 chars + `…`), never the bearer token | `agent_session_redact_id`, asserted on rendered bytes |
+| `vault session list` | redacted ids only; the full token crosses the service boundary exactly once, out of mint | `services/agent_session_service.h` |
+| `ops state --subsystem=agent_sessions` | count only with no key; with a key it echoes back the session the caller already named | `agent_session_dump_state_json` |
+| `node.log` | no path formats a private key, WIF, seed or extended spending key | `wallet_controller_keys.c` logs the address only |
+
+The denylist rule that actually holds is the **table** list, not the column
+list: `SELECT * FROM t` names no column, so a column-level rule cannot see it.
+A table whose row carries any authorizing value belongs on the table list.
+
+---
+
+## 7. What this does not bound — stated, not implied
+
+The grant is presented in the agent's own environment and the agent runs as the
+node's uid. Therefore an agent that does not cooperate can:
+
+- run `env -u ZCL_AGENT_SESSION zclassic23 …` and be the unbounded local
+  operator (`native_command.c:3159` — `granted_capabilities=~0`,
+  `authority_ceiling=OWNER`);
+- read `<datadir>/.cookie` and call `sendtoaddress` straight over JSON-RPC,
+  below the kernel and below this policy entirely
+  (`app/controllers/src/rpc_client.c:184`);
+- read `ZCL_WALLET_PASSPHRASE` out of its own environment;
+- read the node's memory, where every spending key is resident.
+
+Confining an agent is an **operating-system** job: a separate uid with no read
+access to the cookie or the datadir, or a wrapper binary that injects the grant
+and refuses to exec anything else. This layer is the bound a cooperating agent
+runs under and the audit trail of what it moved — every reply carries an
+`authority` block naming `policy: bounded|exempt`, the redacted grant, and what
+was debited, so the exemption is stated rather than inferred from an absence.
+
+---
+
+## 8. Known gaps
+
+1. **Mixed at-rest state is possible and invisible.** `db_wallet_key_save` /
+   `db_sapling_key_save` write cleartext key material with a passphrase set
+   (§3). Nothing counts enveloped-vs-plaintext rows, so an operator cannot
+   tell. Closing this needs the second writer routed through the same envelope
+   the `wallet_sqlite` path uses, plus a count surfaced on
+   `getwalletinfo.persistence`.
+2. **The secret denylist is hand-maintained.** A future table with a
+   spend-authorizing column is readable through `core storage query` until
+   someone remembers to list it. There is no mechanism tying `SECRET_TABLES`
+   to the schema.
+3. **JSON-RPC is outside the grant.** By design (§7), but it means the audit
+   trail is complete only for the typed surface.
+4. **`vault.swap.redeem` / `.refund` have no amount to bound**, so a grant
+   cannot use them at all — settlement is operator-only today.

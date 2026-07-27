@@ -87,6 +87,21 @@ static bool sql_has_word(const char *sql, const char *word)
  * authenticated loopback RPC caller, regardless of whether the wallet was
  * encrypted at rest.
  *
+ * The line the lists draw is AUTHORIZING MATERIAL, not "private key".
+ * Anything whose mere possession lets the holder move value belongs here
+ * even when it is not a key:
+ *
+ *   - `agent_sessions.session_id` is a bearer grant. Presenting it in
+ *     ZCL_AGENT_SESSION is what makes a dispatch spend under that grant's
+ *     caps (services/agent_spend_policy.h), so a bounded session that could
+ *     read the table could read a WIDER grant's token and spend under it —
+ *     a bound the bounded party raises for itself. `vault session list` is
+ *     the readable view; it redacts to the first 8 chars.
+ *   - `zswp_contracts.secret` is the HTLC preimage. Whoever holds it can
+ *     redeem the counterparty's locked output on the other chain
+ *     (lib/script/src/htlc.c). `app swap list` / `app swap status` are the
+ *     readable views.
+ *
  * These two lists are whole-word, case-insensitive substring checks
  * against the *entire raw query text* (not just the FROM clause), so
  * a hit inside a subquery, CTE, alias target, quoted/bracketed
@@ -98,27 +113,31 @@ static bool sql_has_word(const char *sql, const char *word)
  * tokens don't matter because the scan is a raw string walk, not a
  * tokenizer keyed on specific spacing.
  *
- * SECRET_TABLES are blocked wholesale — every column in these tables
- * is wallet key material (private keys, extended spending keys, the
- * HD seed), so there is no safe partial projection to carve out.
- * SECRET_COLUMNS is defense-in-depth against a same-named column
- * being added to an otherwise-public table later, or a query that
- * transplants a secret column through a join/alias.
+ * SECRET_TABLES are blocked WHOLESALE, and the table list — not the
+ * column list — is what actually holds: `SELECT * FROM t` names no
+ * column, so a column-level rule cannot see it. A table whose row
+ * carries any authorizing value goes on the table list; the column list
+ * only adds defense-in-depth for an explicit projection, a join that
+ * transplants the column, or a same-named column appearing in an
+ * otherwise-public table later.
  *
  * Update SECRET_TABLES/SECRET_COLUMNS whenever
- * app/models/src/database_schema.c gains new wallet secret material
- * (see the wallet_keys / wallet_sapling_keys / wallet_seed DDL). Fail
- * closed: if a query cannot be confidently proven secret-free, it is
- * rejected. */
+ * app/models/src/database_schema.c or the migrations in
+ * database_migrate_features*.c gain a table whose rows authorize a
+ * spend. Fail closed: if a query cannot be confidently proven
+ * secret-free, it is rejected. */
 static const char *const SECRET_TABLES[] = {
     "wallet_keys",          /* privkey (transparent) */
     "wallet_sapling_keys",  /* xsk (Sapling extended spending key) */
     "wallet_seed",          /* seed (HD wallet seed) */
+    "agent_sessions",       /* session_id (bearer spend grant) */
+    "zswp_contracts",       /* secret (HTLC redemption preimage) */
 };
 
 static const char *const SECRET_COLUMNS[] = {
     "privkey", "xsk", "seed", "hdseed", "spending_key",
     "spendingkey", "mnemonic", "master_key", "masterkey",
+    "session_id", "secret",
 };
 
 /* Returns the matched secret token, or NULL if the query is clean. */
@@ -188,8 +207,8 @@ bool dbquery_execute(sqlite3 *db, const char *sql_in, int64_t limit,
     const char *secret_hit = dbq_secret_hit(sql);
     if (secret_hit) {
         json_set_str(result,
-            "dbquery: query references secret wallet key material "
-            "and is denied");
+            "dbquery: query references secret or spend-authorizing "
+            "material and is denied");
         LOG_FAIL("diag", "dbquery: denied secret reference '%s'",
                  secret_hit);
     }
@@ -327,8 +346,9 @@ bool diag_rpc_dbquery(const struct json_value *params, bool help,
         "  - must start with SELECT (case-insensitive)\n"
         "  - no semicolons anywhere in the query\n"
         "  - DDL/DML keywords rejected (INSERT, UPDATE, DELETE, etc.)\n"
-        "  - wallet secret material denied (wallet_keys, "
-        "wallet_sapling_keys, wallet_seed, privkey/xsk/seed/etc.)\n"
+        "  - secret and spend-authorizing material denied (wallet_keys,\n"
+        "    wallet_sapling_keys, wallet_seed, agent_sessions,\n"
+        "    zswp_contracts, privkey/xsk/seed/session_id/secret/etc.)\n"
         "  - LIMIT auto-appended if missing\n"
         "  - 2 s wall-clock budget enforced\n"
         "  - 100-row hard cap regardless of LIMIT\n"
