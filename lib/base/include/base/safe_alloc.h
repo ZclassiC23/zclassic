@@ -24,6 +24,12 @@
  * with that exact label returns NULL once and clears the hook. The caller must
  * keep the label string alive until it fires or is cleared. */
 void zcl_alloc_fault_fail_next(const char *label);
+/* Fail the Nth (1-based) checked allocation carrying `label`, letting the
+ * first N-1 through, then clear the hook. zcl_alloc_fault_fail_next(l) is
+ * exactly zcl_alloc_fault_fail_nth(l, 1). This is what reaches a cleanup
+ * path that unwinds ALREADY-ALLOCATED siblings — failing the first
+ * allocation of a label only ever runs those unwind loops zero times. */
+void zcl_alloc_fault_fail_nth(const char *label, unsigned n);
 void zcl_alloc_fault_clear(void);
 const char *zcl_alloc_fault_armed_label(void);
 bool zcl_alloc_fault_should_fail(const char *label);
