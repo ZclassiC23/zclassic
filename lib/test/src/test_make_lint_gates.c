@@ -227,6 +227,7 @@ static const struct lint_gate_entry g_lint_gate_entries[] = {
     R_(t_git_hooks_gate_enforces_tracked_pre_push),  /* .git/hooks */
     R_(t_git_hooks_gate_rejects_noop_pre_push),      /* .git/hooks */
     R_(t_git_hooks_gate_rejects_noop_pre_commit),    /* .git/hooks */
+    S_(t_telemetry_ontology_gate),
     S_(t_e10_framework_shape_ratchet),
     S_(t_e10_no_raw_sqlite_ratchet),
     S_(t_gate22_framework_filename_suffix),

@@ -99,9 +99,12 @@ ZCL_COMMAND_READY_READ(
     "ops.state", "ops", "", "Subsystem state",
     "One subsystem's introspection snapshot from the running node's diagnostics "
     "registry (the dumpstate primitive); consistent for that subsystem at "
-    "capture time, shape varies per subsystem.", 0,
-    "state,subsystem,dump,dumpstate,introspect", "zcl.ops_state.input.v1",
-    "zcl.ops_state.v1", "subsystem,key", "subsystem",
+    "capture time, shape varies per subsystem. Pass explain=true on a "
+    "subsystem with a field ontology to have each field judged against its "
+    "healthy range instead of returned as a bare number.", 0,
+    "state,subsystem,dump,dumpstate,introspect,explain",
+    "zcl.ops_state.input.v1",
+    "zcl.ops_state.v1", "subsystem,key,explain", "subsystem",
     "zclassic23 ops state --subsystem=reducer_frontier",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
@@ -143,6 +146,30 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_ops_explain)
+
+ZCL_COMMAND_READY_READ(
+    "ops.debug.meaning", "ops.debug", "meaning,ops.meaning",
+    "What a telemetry field means, and which report answers a question",
+    "The field-level ontology for network telemetry read straight out of the "
+    "binary: per field its unit, a machine-evaluable healthy range, what an "
+    "unhealthy value implies and the next command; plus the question index "
+    "that routes an operator question to the one report that answers it. "
+    "Static build data, identical on every node, and answered with NO running "
+    "node — which is exactly the case where the meaning is needed most.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "meaning,ontology,field,semantics,healthy,range,units,question,ask,which,"
+    "telemetry,explain,handshake,peer,why",
+    "zcl.ops_meaning.input.v1", "zcl.ops_meaning.v1",
+    /* No positional key: all three inputs are genuinely optional (a bare call
+     * returns the whole table), and positional == handler-required in the
+     * generated contract. */
+    "subsystem,name,question", "",
+    "zclassic23 meaning --name=pre_handshake_disconnects",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_ops_meaning)
 
 ZCL_COMMAND_READY_READ(
     "ops.debug.profile", "ops.debug", "profile,ops.profile",

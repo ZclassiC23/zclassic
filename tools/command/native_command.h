@@ -495,6 +495,14 @@ void zcl_native_handle_ops_selftest(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* ops.debug.meaning — node-free field ontology + question index. Answers
+ * "what does this telemetry field mean, is this value bad, and which report
+ * answers my question" straight out of the binary's static tables, with no
+ * RPC and no node state, so it still works on a node that will not start. */
+void zcl_native_handle_ops_meaning(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* ops.debug.backtrace — dump a live backtrace for every thread of the running
  * node. Dispatches the `selfbacktrace` RPC method directly and
  * projects { path, thread_count }. Answers "what is every thread doing right

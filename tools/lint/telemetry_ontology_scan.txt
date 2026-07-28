@@ -1,0 +1,62 @@
+# Telemetry-ontology scan manifest — the declared coverage surface of
+# tools/lint/check_telemetry_ontology.sh.
+#
+# One row per (subsystem, owning .c file, emitting function, JSON target
+# variable) tuple. The gate slices each named function out of its file,
+# extracts every scalar field emission inside it
+# (json_push_kv_int / _str / _bool / _dbl / _uint), maps the emission's target
+# object variable to the JSON path prefix named here, and requires the
+# resulting `<subsystem>|<prefix><field>` key to carry a meaning row in
+# lib/util/include/util/telemetry_ontology.def.
+#
+# Two ways this bites:
+#   * a NEW field emitted inside a covered function with no ontology row
+#     -> UNANNOTATED FIELD (named, with file:line)
+#   * a NEW json target variable inside a covered function that this manifest
+#     does not map -> UNMAPPED EMISSION TARGET (the manifest must be extended
+#     before the field can ship)
+#
+# Columns: <subsystem> <file> <function> <objvar> <prefix>
+#   objvar  the literal first argument of the emission call ("out", "&pf", ...)
+#   prefix  the JSON path prefix that object sits at, or "-" for the dump root
+#           ("[]" in a prefix marks an array of objects)
+#
+# Covered subsystems are the six that answer the live peer/sync questions:
+# peer_lifecycle, connman, addrman, network, fast_sync, sync_rate.
+
+# ── peer_lifecycle (lib/net/src/peer_lifecycle.c) ────────────────────────
+peer_lifecycle lib/net/src/peer_lifecycle.c summary_to_json out summary.
+peer_lifecycle lib/net/src/peer_lifecycle.c entry_to_json out peers[].
+peer_lifecycle lib/net/src/peer_lifecycle.c append_sources_locked &entry sources[].
+peer_lifecycle lib/net/src/peer_lifecycle.c peer_lifecycle_dump_state_json &reactor reactor.
+
+# ── connman (app/controllers/src/diagnostics_connman.c) ──────────────────
+connman app/controllers/src/diagnostics_connman.c connman_diag_dump_state_json out -
+connman app/controllers/src/diagnostics_connman.c connman_diag_dump_state_json &outbound outbound.
+connman app/controllers/src/diagnostics_connman.c connman_diag_dump_state_json &inbound inbound.
+connman app/controllers/src/diagnostics_connman.c connman_diag_dump_state_json &addnode addnode.
+connman app/controllers/src/diagnostics_connman.c connman_diag_dump_state_json &reactor reactor.
+connman app/controllers/src/diagnostics_connman.c connman_diag_dump_state_json &v2j v2transport.
+connman app/controllers/src/diagnostics_connman.c connman_diag_dump_state_json &msg message_cycle.
+connman app/controllers/src/diagnostics_connman.c connman_diag_dump_state_json &am addrman_summary.
+connman app/controllers/src/diagnostics_connman.c push_connman_floor_json &pf floor.
+connman app/controllers/src/diagnostics_connman.c push_addnode_entries_json &e addnode.entries[].
+
+# ── addrman (app/controllers/src/diagnostics_connman.c) ──────────────────
+addrman app/controllers/src/diagnostics_connman.c addrman_diag_dump_state_json out -
+addrman app/controllers/src/diagnostics_connman.c addrman_diag_dump_state_json &buckets buckets.
+addrman app/controllers/src/diagnostics_connman.c addrman_diag_dump_state_json &index address_index.
+addrman app/controllers/src/diagnostics_connman.c addrman_diag_dump_state_json &candidates candidates.
+
+# ── network rollup (app/controllers/src/diagnostics_network.c) ───────────
+network app/controllers/src/diagnostics_network.c push_connman_json &obj connman.
+network app/controllers/src/diagnostics_network.c push_addnode_json &obj addnode.
+network app/controllers/src/diagnostics_network.c push_peer_floor_json &pf peer_floor.
+network app/controllers/src/diagnostics_network.c push_tip_comparison_json &tc tip_comparison.
+
+# ── fast_sync (lib/net/src/fast_sync.c) ──────────────────────────────────
+fast_sync lib/net/src/fast_sync.c fast_sync_dump_state_json &uc utxo_root_cache.
+fast_sync lib/net/src/fast_sync.c fast_sync_dump_state_json &sc snapshot_cache.
+
+# ── sync_rate (app/conditions/src/sync_rate_below_floor.c) ───────────────
+sync_rate app/conditions/src/sync_rate_below_floor.c sync_rate_below_floor_dump_state_json out -

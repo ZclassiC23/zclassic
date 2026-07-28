@@ -1,0 +1,4 @@
+# Known-bad extra scan row for check-telemetry-ontology's self-test. Appended
+# to the real manifest via ZCL_TELEMETRY_SCAN_EXTRA_MANIFEST so the trip path
+# runs against the REAL ontology and the REAL floors.
+peer_lifecycle tools/lint/fixtures/telemetry_unannotated_dump.c.fixture telemetry_fixture_dump_state_json out summary.

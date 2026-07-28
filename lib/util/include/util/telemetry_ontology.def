@@ -1,0 +1,971 @@
+/* Canonical FIELD-level meaning for network telemetry. Data only.
+ *
+ * The including translation unit defines TELEMETRY_FIELD, TELEMETRY_ALIAS and
+ * TELEMETRY_QUESTION. See util/telemetry_ontology.h for the row contract and
+ * tools/lint/check_telemetry_ontology.sh for the gate that keeps this file in
+ * step with what the dump functions actually emit.
+ *
+ * TELEMETRY_FIELD(subsystem, path, unit, rule, operand, threshold, severity,
+ *                 means, implies, next)
+ *   means    what the number counts. Required on every row.
+ *   implies  what an unhealthy value implies. Required unless rule==TFR_INFO.
+ *   next     the exact next command/field. Required unless rule==TFR_INFO.
+ *
+ * Thresholds for the ratio rules are PER MILLE of the operand field in the
+ * same dump, so a rule is evaluable without a second call.
+ */
+
+#ifndef TELEMETRY_FIELD
+#error "define TELEMETRY_FIELD / TELEMETRY_ALIAS / TELEMETRY_QUESTION first"
+#endif
+
+/* ════════════════════ peer_lifecycle ════════════════════════════════════
+ * The dial-to-handshake funnel. Read top to bottom: attempted -> connected ->
+ * version_sent -> version_received -> verack_received -> handshake_complete.
+ * The stage where the numbers collapse names the failure. */
+
+TELEMETRY_FIELD("peer_lifecycle", "summary.attempted",
+    TFU_COUNT_TOTAL, TFR_EXPECT_NONZERO, NULL, 0, TFS_CRITICAL,
+    "outbound dial attempts started since boot, summed over every address the "
+    "node has tried; the denominator for every other funnel field",
+    "zero means the dialer never ran at all — an empty address pool or a "
+    "connection manager that was never wired, not a peer problem",
+    "zclassic23 dumpstate addrman (candidates.live) then "
+    "zclassic23 dumpstate connman (wired)")
+TELEMETRY_FIELD("peer_lifecycle", "summary.connected",
+    TFU_COUNT_TOTAL, TFR_MIN_RATIO_OF, "summary.attempted", 100, TFS_CRITICAL,
+    "TCP connections that reached ESTABLISHED, inbound plus outbound; can "
+    "exceed attempted because inbound connections are counted here but were "
+    "never dialed by us",
+    "far below attempted means the sockets never open: egress is filtered, or "
+    "every candidate address in the pool is dead",
+    "zclassic23 dumpstate addrman (candidates.dead vs candidates.live)")
+TELEMETRY_FIELD("peer_lifecycle", "summary.version_sent",
+    TFU_COUNT_TOTAL, TFR_MIN_RATIO_OF, "summary.connected", 700, TFS_WARN,
+    "VERSION messages this node sent on an established connection — the first "
+    "protocol byte we emit",
+    "well below connected means we open sockets and then never speak: our own "
+    "send path or reactor is stalling, which is a local defect",
+    "zclassic23 dumpstate connman (message_cycle.send_calls, "
+    "message_cycle.idle_waits)")
+TELEMETRY_FIELD("peer_lifecycle", "summary.version_received",
+    TFU_COUNT_TOTAL, TFR_MIN_RATIO_OF, "summary.version_sent", 500,
+    TFS_CRITICAL,
+    "VERSION messages received back from a peer — the first evidence the far "
+    "side is willing to talk to us",
+    "well below version_sent means peers hang up or ignore us before "
+    "answering: a server-side per-IP connection cap, an address ban, or a "
+    "network-magic mismatch. This is the peer refusing us, not us refusing it",
+    "zclassic23 dumpstate peer_lifecycle incidents, then "
+    "peers[].last_reason on the addresses you dialed")
+TELEMETRY_FIELD("peer_lifecycle", "summary.verack_received",
+    TFU_COUNT_TOTAL, TFR_MIN_RATIO_OF, "summary.version_received", 400,
+    TFS_WARN,
+    "VERACK messages received: the peer read our VERSION and accepted it",
+    "well below version_received means peers see our VERSION and reject it — "
+    "an unsupported protocol version or a service-bit requirement we fail",
+    "compare peers[].subver across the peers array for the version the "
+    "network is actually running")
+TELEMETRY_FIELD("peer_lifecycle", "summary.handshake_complete",
+    TFU_COUNT_TOTAL, TFR_EXPECT_NONZERO, NULL, 0, TFS_CRITICAL,
+    "connections that finished the full VERSION/VERACK exchange and became "
+    "usable protocol peers",
+    "ZERO is decisive and terminal: the node has no peer it can ask for "
+    "headers or blocks, so its height cannot move no matter what height the "
+    "network reports. Every other sync symptom is downstream of this one",
+    "zclassic23 dumpstate peer_lifecycle (summary.pre_handshake_disconnects "
+    "vs summary.rejected) decides whether they refused us or we refused them")
+TELEMETRY_FIELD("peer_lifecycle", "summary.pre_handshake_disconnects",
+    TFU_COUNT_TOTAL, TFR_MAX_RATIO_OF, "summary.attempted", 400, TFS_CRITICAL,
+    "connections that reached TCP ESTABLISHED and were then closed before the "
+    "VERSION/VERACK handshake finished — the socket opened and zero usable "
+    "protocol bytes were exchanged",
+    "a high share of attempted means the far side is hanging up at accept: a "
+    "server-side per-IP connection cap, an address ban, or a network-magic "
+    "mismatch. When it EQUALS attempted and summary.handshake_complete is 0, "
+    "this is the entire failure — the peer is refusing us and nothing "
+    "downstream of it is a separate problem",
+    "compare with summary.rejected: nonzero rejected means WE refused the "
+    "peer, a high value here means THEY refused us")
+TELEMETRY_FIELD("peer_lifecycle", "summary.rejected",
+    TFU_COUNT_TOTAL, TFR_EXPECT_ZERO, NULL, 0, TFS_WARN,
+    "connections THIS node refused under its own admission policy: banned "
+    "address, misbehaviour score, or a full connection slot",
+    "nonzero means we are the side saying no — the direction of the refusal "
+    "is ours, so peer-side theories are the wrong branch to chase",
+    "zclassic23 dumpstate connman (reactor.configured_max_connections vs "
+    "reactor.npfds_high_water) for the slot-exhaustion case")
+TELEMETRY_FIELD("peer_lifecycle", "summary.timeout",
+    TFU_COUNT_TOTAL, TFR_MAX_RATIO_OF, "summary.attempted", 800, TFS_WARN,
+    "dial attempts abandoned on a connect or handshake timer with no response "
+    "at all from the far side",
+    "near attempted means we are dialing addresses that never answer — a dead "
+    "or stale address pool, or blocked egress. That is a different failure "
+    "from being actively hung up on (pre_handshake_disconnects)",
+    "zclassic23 dumpstate addrman (candidates.dead, candidates.live)")
+TELEMETRY_FIELD("peer_lifecycle", "summary.active",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "cumulative count of connections that became active; a lifetime total, "
+    "NOT the number of peers connected right now",
+    "", "")
+TELEMETRY_FIELD("peer_lifecycle", "summary.disconnected",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "cumulative connection teardowns of any kind, at any lifecycle stage",
+    "", "")
+TELEMETRY_FIELD("peer_lifecycle", "summary.cache_skipped",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "dial candidates skipped because the peer cache already held a live or "
+    "recently-failed entry for that address; normal dedup work, not a failure",
+    "", "")
+TELEMETRY_FIELD("peer_lifecycle", "summary.magicbean_handshakes",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "completed handshakes whose subver identifies legacy zclassicd (MagicBean)",
+    "", "")
+TELEMETRY_FIELD("peer_lifecycle", "summary.legacy_compatible_handshakes",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "same count as summary.magicbean_handshakes under the neutral name; kept "
+    "so callers need not know the legacy client's build nickname",
+    "", "")
+TELEMETRY_FIELD("peer_lifecycle", "summary.legacy_magicbean_handshakes",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "deprecated third spelling of summary.magicbean_handshakes, kept only for "
+    "older readers; prefer summary.legacy_compatible_handshakes",
+    "", "")
+TELEMETRY_FIELD("peer_lifecycle", "summary.zclassic23_handshakes",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "completed handshakes with a peer identified as zclassic23 by subver plus "
+    "service bits",
+    "", "")
+TELEMETRY_FIELD("peer_lifecycle", "summary.zclassic_c23_handshakes",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "same count as summary.zclassic23_handshakes under the older spelling",
+    "", "")
+
+/* peers[] — the same funnel per address. Per-element rows are documented but
+ * not auto-judged: the summary rollup above is what a verdict keys on. */
+TELEMETRY_FIELD("peer_lifecycle", "peers[].addr",
+    TFU_IDENTITY, TFR_INFO, NULL, 0, TFS_INFO,
+    "the peer address this row folds, host:port; the join key against connman "
+    "addnode entries and addrman", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].peer_id",
+    TFU_IDENTITY, TFR_INFO, NULL, 0, TFS_INFO,
+    "the node id of the most recent connection to this address, or -1 if no "
+    "connection is currently open", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].source",
+    TFU_ENUM, TFR_INFO, NULL, 0, TFS_INFO,
+    "where this dial candidate came from: inbound, addnode, addrman, "
+    "zcl23_db, manual or anchor", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].direction",
+    TFU_ENUM, TFR_INFO, NULL, 0, TFS_INFO,
+    "inbound, outbound, mixed or unknown, derived from the sources this "
+    "address has been seen through", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].attempted",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "dial attempts made to THIS address since boot", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].connected",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "TCP connections to this address that reached ESTABLISHED", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].version_sent",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "VERSION messages we sent to this address", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].version_received",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "VERSION messages this address sent us; zero alongside a nonzero "
+    "connected count is the signature of a peer that hangs up at accept",
+    "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].verack_received",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "VERACK messages this address sent us", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].handshake_complete",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "completed handshakes with this address since boot; the per-address form "
+    "of the decisive summary.handshake_complete", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].pre_handshake_disconnects",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "connections to this address closed after TCP connect and before the "
+    "handshake finished; equal to connected means this specific peer closes "
+    "every connection at accept", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].active",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "cumulative count of connections to this address that became active",
+    "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].disconnected",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "cumulative teardowns of connections to this address", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].timeout",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "dials to this address abandoned on a timer with no response", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].rejected",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "connections to this address that WE refused under our own admission "
+    "policy", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].cache_skipped",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "dials to this address suppressed by the peer-cache dedup", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].reconnects",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "times we reconnected to this address after an earlier connection ended; "
+    "a high count next to a short last_reconnect_interval_secs is a churn "
+    "loop, not progress", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].last_reconnect_at",
+    TFU_UNIX_TIME, TFR_INFO, NULL, 0, TFS_INFO,
+    "wall-clock unix time of the most recent reconnect to this address, 0 if "
+    "never", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].last_reconnect_interval_secs",
+    TFU_SECONDS, TFR_INFO, NULL, 0, TFS_INFO,
+    "seconds between the last two connections to this address; single digits "
+    "means a hot reconnect loop", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].connection_open",
+    TFU_BOOL, TFR_INFO, NULL, 0, TFS_INFO,
+    "true when a socket to this address is open right now, handshaked or not",
+    "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].current_connection_handshaked",
+    TFU_BOOL, TFR_INFO, NULL, 0, TFS_INFO,
+    "true when the CURRENTLY open connection finished its handshake; "
+    "connection_open true with this false is a socket that is open and mute",
+    "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].handshake_age_secs",
+    TFU_SECONDS, TFR_INFO, NULL, 0, TFS_INFO,
+    "seconds since the current connection finished its handshake, -1 when no "
+    "handshaked connection is open", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].handshake_duration_secs",
+    TFU_SECONDS, TFR_INFO, NULL, 0, TFS_INFO,
+    "seconds the last successful handshake took from TCP connect to VERACK",
+    "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].first_seen",
+    TFU_UNIX_TIME, TFR_INFO, NULL, 0, TFS_INFO,
+    "unix time this address first entered the lifecycle table", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].last_seen",
+    TFU_UNIX_TIME, TFR_INFO, NULL, 0, TFS_INFO,
+    "unix time of the most recent lifecycle event for this address", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].connected_at",
+    TFU_UNIX_TIME, TFR_INFO, NULL, 0, TFS_INFO,
+    "unix time the current or last TCP connection was established", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].handshake_complete_at",
+    TFU_UNIX_TIME, TFR_INFO, NULL, 0, TFS_INFO,
+    "unix time the last handshake with this address completed, 0 if never",
+    "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].last_reason",
+    TFU_ENUM, TFR_INFO, NULL, 0, TFS_INFO,
+    "the reason string recorded for the most recent disconnect from this "
+    "address; the single most useful per-peer field when a handshake never "
+    "completes", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].last_disconnect_reason",
+    TFU_ENUM, TFR_INFO, NULL, 0, TFS_INFO,
+    "same string as peers[].last_reason under an explicit name", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].services",
+    TFU_IDENTITY, TFR_INFO, NULL, 0, TFS_INFO,
+    "the raw service-bit bitmask this peer advertised in its VERSION", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].services_summary",
+    TFU_ENUM, TFR_INFO, NULL, 0, TFS_INFO,
+    "the service bitmask decoded into names (NETWORK, BLOOM, ...)", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].subver",
+    TFU_IDENTITY, TFR_INFO, NULL, 0, TFS_INFO,
+    "the peer's self-reported user agent string, e.g. /MagicBean:x.y.z/",
+    "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].startingheight",
+    TFU_HEIGHT, TFR_INFO, NULL, 0, TFS_INFO,
+    "the block height this peer advertised in its VERSION; peer-supplied and "
+    "unverified", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].advertised_height",
+    TFU_HEIGHT, TFR_INFO, NULL, 0, TFS_INFO,
+    "same value as peers[].startingheight under the name that says it is an "
+    "advertisement, not a verified height", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].advertised_height_trust",
+    TFU_ENUM, TFR_INFO, NULL, 0, TFS_INFO,
+    "how far the advertised height may be relied on, as a named trust level "
+    "rather than a bare number", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].advertised_height_trusted",
+    TFU_BOOL, TFR_INFO, NULL, 0, TFS_INFO,
+    "the boolean form of peers[].advertised_height_trust; false means treat "
+    "the height as a rumour, never as a sync target", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].bootstrap_readiness",
+    TFU_ENUM, TFR_INFO, NULL, 0, TFS_INFO,
+    "whether this peer is usable for bootstrap, and if not, the named reason "
+    "it is not", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].bootstrap_useful",
+    TFU_BOOL, TFR_INFO, NULL, 0, TFS_INFO,
+    "true when this peer is handshaked, serves NETWORK and advertises a "
+    "height we could sync toward", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].fast_sync_useful",
+    TFU_BOOL, TFR_INFO, NULL, 0, TFS_INFO,
+    "true when this peer can additionally serve the fast-sync surfaces "
+    "(snapshot and proof messages)", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].magicbean",
+    TFU_BOOL, TFR_INFO, NULL, 0, TFS_INFO,
+    "true when the subver identifies legacy zclassicd", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].legacy_compatible",
+    TFU_BOOL, TFR_INFO, NULL, 0, TFS_INFO,
+    "same value as peers[].magicbean under the neutral name", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].zclassic23",
+    TFU_BOOL, TFR_INFO, NULL, 0, TFS_INFO,
+    "true when subver plus service bits identify a zclassic23 peer", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "peers[].zclassic_c23",
+    TFU_BOOL, TFR_INFO, NULL, 0, TFS_INFO,
+    "same value as peers[].zclassic23 under the older spelling", "", "")
+
+TELEMETRY_FIELD("peer_lifecycle", "sources[].source",
+    TFU_ENUM, TFR_INFO, NULL, 0, TFS_INFO,
+    "which dial source this row folds: inbound, addnode, addrman, zcl23_db, "
+    "manual or anchor. The rest of the row is the summary field set restricted "
+    "to that source, so you can see WHICH source is producing the failures",
+    "", "")
+
+TELEMETRY_FIELD("peer_lifecycle", "reactor.npfds_high_water",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "the largest number of pollable file descriptors the reactor has held at "
+    "once since boot", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "reactor.reactor_max_fds",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "the reactor's hard descriptor capacity; npfds_high_water at this value "
+    "means new connections were dropped at the reactor, before any peer logic "
+    "ran", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "reactor.configured_max_connections",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "the configured connection-slot ceiling for this node", "", "")
+TELEMETRY_FIELD("peer_lifecycle", "reactor.configured_listen_sockets",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "how many listening sockets are configured; 0 means the node accepts no "
+    "inbound connections at all", "", "")
+
+/* ════════════════════ connman ═══════════════════════════════════════════ */
+
+TELEMETRY_FIELD("connman", "wired",
+    TFU_BOOL, TFR_EXPECT_TRUE, NULL, 0, TFS_CRITICAL,
+    "whether a connection manager instance exists in this process",
+    "false means networking was never constructed, so every other network "
+    "field in every other report is vacuous rather than bad",
+    "zclassic23 core status (the node may still be in boot)")
+TELEMETRY_FIELD("connman", "outbound.total",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "outbound connections held right now at any stage, including ones still "
+    "connecting or mid-handshake", "", "")
+TELEMETRY_FIELD("connman", "outbound.healthy",
+    TFU_GAUGE, TFR_MIN_ABS, NULL, 1, TFS_CRITICAL,
+    "outbound peers that are handshaked and usable right now — the number "
+    "that decides whether the node can fetch anything",
+    "zero means no usable outbound peer exists, so header and block download "
+    "cannot start regardless of what any height field says",
+    "zclassic23 dumpstate peer_lifecycle (summary.handshake_complete, "
+    "summary.pre_handshake_disconnects)")
+TELEMETRY_FIELD("connman", "outbound.connecting",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "outbound sockets in flight: dialed, not yet ESTABLISHED", "", "")
+TELEMETRY_FIELD("connman", "outbound.handshake_incomplete",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "outbound connections that are ESTABLISHED but have not finished the "
+    "handshake; a value that stays high while outbound.healthy stays 0 is a "
+    "handshake wall, not a connect problem", "", "")
+TELEMETRY_FIELD("connman", "outbound.ipv4_group_count",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "distinct IPv4 /16 groups across all outbound connections — the diversity "
+    "denominator for eclipse resistance", "", "")
+TELEMETRY_FIELD("connman", "outbound.ipv4_max_group_size",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "the largest number of outbound connections sharing one IPv4 /16 group",
+    "", "")
+TELEMETRY_FIELD("connman", "outbound.healthy_ipv4_group_count",
+    TFU_GAUGE, TFR_MIN_ABS, NULL, 2, TFS_WARN,
+    "distinct IPv4 /16 groups among the HANDSHAKED outbound peers — the "
+    "diversity that actually counts, since only handshaked peers serve data",
+    "1 or 0 means every usable peer sits behind one network group, so a single "
+    "operator or route can eclipse this node",
+    "zclassic23 dumpstate network_census (eclipse_suspected and its evidence)")
+TELEMETRY_FIELD("connman", "outbound.healthy_ipv4_max_group_size",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "the largest number of handshaked outbound peers sharing one IPv4 /16",
+    "", "")
+TELEMETRY_FIELD("connman", "inbound.total",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "inbound connections held right now at any stage; 0 is normal for a node "
+    "behind NAT and is never by itself a sync problem", "", "")
+TELEMETRY_FIELD("connman", "inbound.healthy",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "inbound peers that are handshaked and usable right now", "", "")
+TELEMETRY_FIELD("connman", "inbound.handshake_incomplete",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "inbound connections accepted but not yet handshaked; a large standing "
+    "value is inbound connection spam", "", "")
+TELEMETRY_FIELD("connman", "addnode.count",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "operator-pinned addnode targets currently in the dial ledger", "", "")
+TELEMETRY_FIELD("connman", "addnode.backoff_active",
+    TFU_GAUGE, TFR_MAX_RATIO_OF, "addnode.count", 500, TFS_WARN,
+    "addnode targets currently serving a backoff timer instead of being dialed",
+    "most or all of the pinned targets in backoff means the pinned set is "
+    "unreachable and the node is relying entirely on addrman discovery",
+    "zclassic23 dumpstate connman (addnode.entries[].tcp_failures and "
+    "addnode.entries[].protocol_failures)")
+TELEMETRY_FIELD("connman", "addnode.backoff_max_sec",
+    TFU_SECONDS, TFR_INFO, NULL, 0, TFS_INFO,
+    "the longest backoff currently armed across the addnode ledger; how long "
+    "until the next pinned retry at worst", "", "")
+TELEMETRY_FIELD("connman", "addnode.tcp_failures",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "lifetime addnode dial failures that never reached ESTABLISHED — the "
+    "network could not be crossed at all", "", "")
+TELEMETRY_FIELD("connman", "addnode.protocol_failures",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "lifetime addnode dials that connected and then failed in the protocol "
+    "handshake; nonzero here with tcp_failures at 0 means the route is fine "
+    "and the peer is refusing us", "", "")
+TELEMETRY_FIELD("connman", "addnode.retired_count",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "addnode entries currently retired out of dial rotation; they stay in the "
+    "ledger and revive on a manual dial success or an operator re-add", "", "")
+TELEMETRY_FIELD("connman", "addnode.retirements_total",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "lifetime addnode retirements since boot", "", "")
+TELEMETRY_FIELD("connman", "addnode.entries[].index",
+    TFU_IDENTITY, TFR_INFO, NULL, 0, TFS_INFO,
+    "the slot number of this entry in the addnode ledger", "", "")
+TELEMETRY_FIELD("connman", "addnode.entries[].address",
+    TFU_IDENTITY, TFR_INFO, NULL, 0, TFS_INFO,
+    "the pinned addnode target, host:port", "", "")
+TELEMETRY_FIELD("connman", "addnode.entries[].last_attempt",
+    TFU_UNIX_TIME, TFR_INFO, NULL, 0, TFS_INFO,
+    "unix time this target was last dialed, 0 if never", "", "")
+TELEMETRY_FIELD("connman", "addnode.entries[].backoff_sec",
+    TFU_SECONDS, TFR_INFO, NULL, 0, TFS_INFO,
+    "the backoff currently armed for this target; 0 means it is eligible for "
+    "the next dial round", "", "")
+TELEMETRY_FIELD("connman", "addnode.entries[].tcp_failures",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "dials to this target that never reached ESTABLISHED", "", "")
+TELEMETRY_FIELD("connman", "addnode.entries[].protocol_failures",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "dials to this target that connected and then failed in the handshake; "
+    "this is the per-target form of 'the peer closed it at accept'", "", "")
+TELEMETRY_FIELD("connman", "addnode.entries[].failure_streak_secs",
+    TFU_SECONDS, TFR_INFO, NULL, 0, TFS_INFO,
+    "seconds since this target's first failure in the current unbroken failure "
+    "run, -1 when it is not currently failing", "", "")
+TELEMETRY_FIELD("connman", "addnode.entries[].retired",
+    TFU_BOOL, TFR_INFO, NULL, 0, TFS_INFO,
+    "true when this target is excluded from dial rotation until a manual dial "
+    "success or an operator re-add revives it", "", "")
+TELEMETRY_FIELD("connman", "addnode.entries[].retired_at",
+    TFU_UNIX_TIME, TFR_INFO, NULL, 0, TFS_INFO,
+    "unix time this target was retired, 0 if it never was", "", "")
+TELEMETRY_FIELD("connman", "reactor.npfds_high_water",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "the largest number of pollable descriptors the reactor has held at once "
+    "since boot", "", "")
+TELEMETRY_FIELD("connman", "reactor.reactor_max_fds",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "the reactor's hard descriptor capacity; npfds_high_water at this value "
+    "means connections were dropped at the reactor before any peer logic ran",
+    "", "")
+TELEMETRY_FIELD("connman", "reactor.configured_max_connections",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "the configured connection-slot ceiling for this node", "", "")
+TELEMETRY_FIELD("connman", "reactor.configured_listen_sockets",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "how many listening sockets are configured; 0 means no inbound connection "
+    "can ever be accepted", "", "")
+TELEMETRY_FIELD("connman", "v2transport.advertising_now",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "connected peers advertising the Noise v2 encrypted transport right now; "
+    "observation only, the default stays off", "", "")
+TELEMETRY_FIELD("connman", "v2transport.handshaked_now",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "peers that actually completed a Noise v2 handshake right now", "", "")
+TELEMETRY_FIELD("connman", "v2transport.advertising_high_water",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "the most simultaneous v2-advertising peers seen since boot", "", "")
+TELEMETRY_FIELD("connman", "v2transport.advertising_observations_total",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "lifetime count of peer observations that advertised v2", "", "")
+TELEMETRY_FIELD("connman", "v2transport.samples_total",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "lifetime peer observations taken; the denominator for "
+    "advertising_observations_total", "", "")
+TELEMETRY_FIELD("connman", "v2transport.default_enabled",
+    TFU_BOOL, TFR_INFO, NULL, 0, TFS_INFO,
+    "whether this node offers v2 by default; false is the shipped posture, so "
+    "false here is not a finding", "", "")
+TELEMETRY_FIELD("connman", "message_cycle.cycles",
+    TFU_COUNT_TOTAL, TFR_EXPECT_NONZERO, NULL, 0, TFS_CRITICAL,
+    "iterations of the message loop since boot — the heartbeat of the "
+    "networking thread",
+    "zero means the message loop never ran, so no peer traffic is being "
+    "processed at all; that is a local thread failure, not a peer failure",
+    "zclassic23 dumpstate supervisor (the net domain children and their "
+    "last_tick_age_us)")
+TELEMETRY_FIELD("connman", "message_cycle.nodes_snapshotted",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "cumulative peer entries copied out per loop pass for lock-free servicing",
+    "", "")
+TELEMETRY_FIELD("connman", "message_cycle.send_calls",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "cumulative send attempts made by the loop", "", "")
+TELEMETRY_FIELD("connman", "message_cycle.process_calls",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "cumulative inbound-message processing passes", "", "")
+TELEMETRY_FIELD("connman", "message_cycle.recv_ready",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "cumulative loop passes that found readable peer data", "", "")
+TELEMETRY_FIELD("connman", "message_cycle.idle_waits",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "cumulative loop passes with nothing to do; near-equal to cycles while "
+    "outbound.healthy is 0 confirms the loop is alive and simply has no peer "
+    "to talk to", "", "")
+TELEMETRY_FIELD("connman", "message_cycle.wakes",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "cumulative explicit wakeups delivered to the loop", "", "")
+TELEMETRY_FIELD("connman", "floor.registered",
+    TFU_BOOL, TFR_EXPECT_TRUE, NULL, 0, TFS_WARN,
+    "whether the net.outbound_floor liveness contract is registered with the "
+    "root supervisor",
+    "false means nothing is watching the outbound peer floor, so a peerless "
+    "node would never raise a named blocker about it",
+    "zclassic23 dumpstate supervisor net")
+TELEMETRY_FIELD("connman", "floor.healthy_outbound",
+    TFU_GAUGE, TFR_MIN_ABS, NULL, 1, TFS_CRITICAL,
+    "the handshaked-outbound count as the supervisor contract last observed "
+    "it — the same quantity as outbound.healthy, read through the watchdog",
+    "zero means the watchdog itself agrees the node has no usable peer",
+    "zclassic23 dumpstate connman (outbound.healthy) to confirm the two "
+    "agree; a disagreement is a stale supervisor tick")
+TELEMETRY_FIELD("connman", "floor.last_tick_age_us",
+    TFU_MICROSECONDS, TFR_INFO, NULL, 0, TFS_INFO,
+    "microseconds since the outbound-floor contract last ticked, -1 when it "
+    "has never ticked; growing without bound means the watcher is wedged and "
+    "its numbers are stale", "", "")
+TELEMETRY_FIELD("connman", "floor.deadline_secs",
+    TFU_SECONDS, TFR_INFO, NULL, 0, TFS_INFO,
+    "the contract's stall deadline: how long without a tick before it fires",
+    "", "")
+TELEMETRY_FIELD("connman", "floor.ticks_run",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "how many times the outbound-floor contract has run since boot", "", "")
+TELEMETRY_FIELD("connman", "floor.stall_fires",
+    TFU_COUNT_TOTAL, TFR_EXPECT_ZERO, NULL, 0, TFS_WARN,
+    "how many times the outbound-floor contract has fired a stall since boot",
+    "nonzero means the node has already been observed below its outbound peer "
+    "floor; the fire count is the history, not the current state",
+    "zclassic23 dumpstate blocker_history (top entries by fire_count)")
+TELEMETRY_FIELD("connman", "addrman_summary.size",
+    TFU_GAUGE, TFR_EXPECT_NONZERO, NULL, 0, TFS_CRITICAL,
+    "addresses currently held by the address manager; the pointer copy of the "
+    "full breakdown under the addrman subsystem",
+    "zero means there is nothing left to dial, so the dial funnel is empty at "
+    "the source rather than failing at any peer",
+    "zclassic23 dumpstate addrman (candidates.live vs candidates.dead)")
+TELEMETRY_FIELD("connman", "addrman_summary.new_count",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "addresses in the new table: heard about, never successfully connected",
+    "", "")
+TELEMETRY_FIELD("connman", "addrman_summary.tried_count",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "addresses in the tried table: connected successfully at least once",
+    "", "")
+
+/* ════════════════════ addrman ═══════════════════════════════════════════ */
+
+TELEMETRY_FIELD("addrman", "wired",
+    TFU_BOOL, TFR_EXPECT_TRUE, NULL, 0, TFS_CRITICAL,
+    "whether an address manager instance exists in this process",
+    "false means no address book was constructed, so an empty dial pool is a "
+    "boot failure rather than an exhausted pool",
+    "zclassic23 core status")
+TELEMETRY_FIELD("addrman", "size",
+    TFU_GAUGE, TFR_EXPECT_NONZERO, NULL, 0, TFS_CRITICAL,
+    "total addresses held across the new and tried tables (peers.dat)",
+    "zero means the node has nowhere to dial: seeds never resolved, or "
+    "peers.dat was lost. No peer-side theory applies",
+    "zclassic23 dumpstate bbf_discovery (seed quorum outcome)")
+TELEMETRY_FIELD("addrman", "new_count",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "addresses heard about but never successfully connected to", "", "")
+TELEMETRY_FIELD("addrman", "tried_count",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "addresses that connected successfully at least once; a node that has "
+    "never handshaked anyone will show 0 here no matter how large size is",
+    "", "")
+TELEMETRY_FIELD("addrman", "id_count",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "highest allocated internal entry id; the walk bound for the live/dead "
+    "tally, not an address count", "", "")
+TELEMETRY_FIELD("addrman", "entries_cap",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "the entry-array capacity; size at this value means the address book is "
+    "full and new discoveries evict old ones", "", "")
+TELEMETRY_FIELD("addrman", "buckets.new_occupied",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "occupied slots across all new-table buckets", "", "")
+TELEMETRY_FIELD("addrman", "buckets.tried_occupied",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "occupied slots across all tried-table buckets", "", "")
+TELEMETRY_FIELD("addrman", "buckets.new_buckets_nonempty",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "how many new-table buckets hold at least one address; a low count next "
+    "to a large new_occupied means the address set is concentrated and easy "
+    "to poison", "", "")
+TELEMETRY_FIELD("addrman", "buckets.tried_buckets_nonempty",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "how many tried-table buckets hold at least one address", "", "")
+TELEMETRY_FIELD("addrman", "buckets.max_new_bucket_fill",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "the fullest single new-table bucket", "", "")
+TELEMETRY_FIELD("addrman", "buckets.max_tried_bucket_fill",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "the fullest single tried-table bucket", "", "")
+TELEMETRY_FIELD("addrman", "address_index.slots",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "hash slots in the address-to-id index that makes lookups constant time",
+    "", "")
+TELEMETRY_FIELD("addrman", "address_index.live",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "live entries in that index", "", "")
+TELEMETRY_FIELD("addrman", "address_index.tombstones",
+    TFU_GAUGE, TFR_MAX_RATIO_OF, "address_index.slots", 500, TFS_WARN,
+    "deleted-but-not-reclaimed slots in the index",
+    "past half the slots, lookups degrade toward a linear scan and dialing "
+    "gets slower for reasons that have nothing to do with the network",
+    "zclassic23 dumpstate addrman (address_index.live vs slots)")
+TELEMETRY_FIELD("addrman", "candidates.live",
+    TFU_GAUGE, TFR_EXPECT_NONZERO, NULL, 0, TFS_CRITICAL,
+    "addresses that are still worth dialing, by the address manager's own "
+    "terrible-entry test",
+    "zero with a nonzero size means the address book is full of addresses the "
+    "node has already given up on — the pool is stale, not empty, and it will "
+    "not recover by waiting",
+    "zclassic23 dumpstate bbf_discovery, then dumpstate connman "
+    "(addnode.entries[] for a pinned way back in)")
+TELEMETRY_FIELD("addrman", "candidates.dead",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "addresses the terrible-entry test now rejects: too many failures, or too "
+    "long since a success", "", "")
+TELEMETRY_FIELD("addrman", "candidates.total",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "live plus dead — every used entry the walk saw", "", "")
+
+/* ════════════════════ network (the rollup) ══════════════════════════════ */
+
+TELEMETRY_FIELD("network", "connman.wired",
+    TFU_BOOL, TFR_EXPECT_TRUE, NULL, 0, TFS_CRITICAL,
+    "whether networking exists in this process, read through the rollup",
+    "false makes every other field in this rollup vacuous rather than bad",
+    "zclassic23 core status")
+TELEMETRY_FIELD("network", "connman.connected_peers",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "peers connected right now at any stage, handshaked or not; a nonzero "
+    "value here with outbound_healthy at 0 means sockets are open and mute",
+    "", "")
+TELEMETRY_FIELD("network", "connman.outbound_healthy",
+    TFU_GAUGE, TFR_MIN_ABS, NULL, 1, TFS_CRITICAL,
+    "handshaked outbound peers right now — the single number that decides "
+    "whether this node can download anything",
+    "zero is the root cause of a stuck height: with no usable peer there is no "
+    "source for headers or blocks, and every sync-side symptom below it is a "
+    "consequence, not a separate problem",
+    "zclassic23 dumpstate peer_lifecycle (summary.handshake_complete, "
+    "summary.pre_handshake_disconnects, summary.rejected)")
+TELEMETRY_FIELD("network", "connman.addrman_size",
+    TFU_GAUGE, TFR_EXPECT_NONZERO, NULL, 0, TFS_CRITICAL,
+    "addresses available to dial, read through the rollup",
+    "zero means the dial funnel is empty at the source",
+    "zclassic23 dumpstate addrman")
+TELEMETRY_FIELD("network", "addnode.count",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "operator-pinned addnode targets in the dial ledger, -1 when networking "
+    "is not wired", "", "")
+TELEMETRY_FIELD("network", "addnode.backoff_active",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "pinned targets currently serving a backoff timer, -1 when not wired",
+    "", "")
+TELEMETRY_FIELD("network", "addnode.retired_count",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "pinned targets currently retired out of dial rotation, -1 when not wired",
+    "", "")
+TELEMETRY_FIELD("network", "addnode.retirements_total",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "lifetime addnode retirements, -1 when not wired", "", "")
+TELEMETRY_FIELD("network", "peer_floor.registered",
+    TFU_BOOL, TFR_EXPECT_TRUE, NULL, 0, TFS_WARN,
+    "whether the net.outbound_floor liveness contract is registered",
+    "false means no watchdog is holding the peer floor, so a peerless node "
+    "raises no named blocker about it",
+    "zclassic23 dumpstate supervisor net")
+TELEMETRY_FIELD("network", "peer_floor.healthy_outbound",
+    TFU_GAUGE, TFR_MIN_ABS, NULL, 1, TFS_CRITICAL,
+    "handshaked outbound peers as the supervisor contract last observed them",
+    "zero means the watchdog agrees there is no usable peer",
+    "zclassic23 dumpstate connman (outbound.healthy)")
+TELEMETRY_FIELD("network", "peer_floor.last_tick_age_us",
+    TFU_MICROSECONDS, TFR_INFO, NULL, 0, TFS_INFO,
+    "microseconds since the peer-floor contract last ticked, -1 if never; "
+    "unbounded growth means these numbers are stale", "", "")
+TELEMETRY_FIELD("network", "peer_floor.deadline_secs",
+    TFU_SECONDS, TFR_INFO, NULL, 0, TFS_INFO,
+    "how long without a tick before the contract declares a stall", "", "")
+TELEMETRY_FIELD("network", "peer_floor.ticks_run",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "how many times the peer-floor contract has run since boot", "", "")
+TELEMETRY_FIELD("network", "peer_floor.stall_fires",
+    TFU_COUNT_TOTAL, TFR_EXPECT_ZERO, NULL, 0, TFS_WARN,
+    "how many times the peer-floor contract has fired a stall since boot",
+    "nonzero is history, not current state: the node has been below its peer "
+    "floor at least once and may have recovered",
+    "zclassic23 dumpstate blocker_history")
+TELEMETRY_FIELD("network", "tip_comparison.our_height",
+    TFU_HEIGHT, TFR_INFO, NULL, 0, TFS_INFO,
+    "this node's own chain height as the chain view reports it, -1 when "
+    "unknown", "", "")
+TELEMETRY_FIELD("network", "tip_comparison.peer_modal_height",
+    TFU_HEIGHT, TFR_INFO, NULL, 0, TFS_INFO,
+    "the most common height among peers we are CONNECTED to; peer-advertised "
+    "and unverified", "", "")
+TELEMETRY_FIELD("network", "tip_comparison.peer_modal_delta",
+    TFU_BLOCKS, TFR_INFO, NULL, 0, TFS_INFO,
+    "how many blocks behind the connected-peer modal height we are", "", "")
+TELEMETRY_FIELD("network", "tip_comparison.network_modal_height",
+    TFU_HEIGHT, TFR_INFO, NULL, 0, TFS_INFO,
+    "the most common height across the crawled network census, which includes "
+    "nodes we are NOT connected to; this is why a node with zero peers can "
+    "still print a network height", "", "")
+TELEMETRY_FIELD("network", "tip_comparison.network_modal_delta",
+    TFU_BLOCKS, TFR_MAX_ABS, NULL, 100, TFS_WARN,
+    "how many blocks behind the whole-network modal height we are",
+    "a large and growing value means we are not downloading; the cause is "
+    "upstream in this same report — check connman.outbound_healthy first, "
+    "because a census height is observed by crawling and needs no peer of ours",
+    "zclassic23 dumpstate network (connman.outbound_healthy), then "
+    "zclassic23 dumpstate sync_rate")
+
+/* ════════════════════ fast_sync ═════════════════════════════════════════
+ * What this node can SERVE to others. None of it is a sync-inbound signal. */
+
+TELEMETRY_FIELD("fast_sync", "utxo_root_cache.valid",
+    TFU_BOOL, TFR_INFO, NULL, 0, TFS_INFO,
+    "whether this node currently holds a computed UTXO root it can offer to "
+    "peers; false on a node that has not finished building state, which is "
+    "expected during sync and is not a fault", "", "")
+TELEMETRY_FIELD("fast_sync", "utxo_root_cache.utxo_count",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "how many unspent outputs the cached root covers", "", "")
+TELEMETRY_FIELD("fast_sync", "utxo_root_cache.version",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "the cache generation the root was computed at; a version that never "
+    "advances while the chain does means the cache is not being refreshed",
+    "", "")
+TELEMETRY_FIELD("fast_sync", "utxo_root_cache.root",
+    TFU_IDENTITY, TFR_INFO, NULL, 0, TFS_INFO,
+    "the cached UTXO root as hex, present only when valid is true. A peer's "
+    "root proves consistency with that peer's own manifest and is not "
+    "consensus provenance", "", "")
+TELEMETRY_FIELD("fast_sync", "snapshot_cache.sha3_valid",
+    TFU_BOOL, TFR_INFO, NULL, 0, TFS_INFO,
+    "whether a pre-serialized UTXO snapshot with a SHA3 commitment is "
+    "published for peers to fetch", "", "")
+TELEMETRY_FIELD("fast_sync", "snapshot_cache.utxo_count",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "unspent outputs contained in the published snapshot", "", "")
+TELEMETRY_FIELD("fast_sync", "snapshot_cache.version",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "the cache generation the snapshot was built at", "", "")
+TELEMETRY_FIELD("fast_sync", "snapshot_cache.buf_resident",
+    TFU_BOOL, TFR_INFO, NULL, 0, TFS_INFO,
+    "whether the serialized snapshot bytes are held in RAM; false with "
+    "sha3_valid true means the metadata is published but a fetch would have to "
+    "rebuild the payload", "", "")
+TELEMETRY_FIELD("fast_sync", "snapshot_cache.buf_bytes",
+    TFU_BYTES, TFR_INFO, NULL, 0, TFS_INFO,
+    "size of the resident snapshot buffer", "", "")
+TELEMETRY_FIELD("fast_sync", "snapshot_cache.num_chunks",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "how many transfer chunks the snapshot is split into", "", "")
+TELEMETRY_FIELD("fast_sync", "snapshot_cache.sha3",
+    TFU_IDENTITY, TFR_INFO, NULL, 0, TFS_INFO,
+    "the SHA3-256 byte-integrity commitment over the snapshot payload, hex; "
+    "an integrity commitment over bytes, not a consensus proof", "", "")
+
+/* ════════════════════ sync_rate ═════════════════════════════════════════ */
+
+TELEMETRY_FIELD("sync_rate", "active",
+    TFU_BOOL, TFR_EXPECT_FALSE, NULL, 0, TFS_WARN,
+    "whether the sync-rate-below-floor condition is firing right now",
+    "true means fold throughput has stayed under the floor for the required "
+    "number of consecutive ticks while work was pending; read "
+    "dominant_blocker_id_at_detect before theorising, because the episode "
+    "snapshot already names what else was wrong at the moment it fired",
+    "zclassic23 dumpstate blocker (root_blocker_ids first, then "
+    "symptom_blocker_ids)")
+TELEMETRY_FIELD("sync_rate", "pending_work",
+    TFU_BOOL, TFR_INFO, NULL, 0, TFS_INFO,
+    "whether there was work available to fold at the last tick; the gate on "
+    "the whole condition. False means a low rate is idleness, not a stall, "
+    "and no blocker should fire", "", "")
+TELEMETRY_FIELD("sync_rate", "current_bps_x1000",
+    TFU_BPS_X1000, TFR_INFO, NULL, 0, TFS_INFO,
+    "fold throughput at the last tick in blocks per second times 1000, so "
+    "1500 means 1.5 blocks/s; -1 means not yet measured", "", "")
+TELEMETRY_FIELD("sync_rate", "current_floor_bps_x1000",
+    TFU_BPS_X1000, TFR_INFO, NULL, 0, TFS_INFO,
+    "the throughput floor in the same fixed-point units; the threshold "
+    "current_bps_x1000 is compared against", "", "")
+TELEMETRY_FIELD("sync_rate", "below_floor_streak",
+    TFU_GAUGE, TFR_MAX_RATIO_OF, "consecutive_ticks_required", 1000, TFS_WARN,
+    "consecutive ticks observed below the floor",
+    "at or past consecutive_ticks_required the blocker fires; between 1 and "
+    "that number the node is degrading but has not yet declared it",
+    "zclassic23 dumpstate sync_rate (dominant_blocker_id_at_detect)")
+TELEMETRY_FIELD("sync_rate", "consecutive_ticks_required",
+    TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
+    "how many consecutive below-floor ticks are required before the condition "
+    "fires; a fixed build constant, not a runtime value", "", "")
+TELEMETRY_FIELD("sync_rate", "observed_bps_x1000_at_detect",
+    TFU_BPS_X1000, TFR_INFO, NULL, 0, TFS_INFO,
+    "throughput frozen at the rising edge of the last episode, -1 if no "
+    "episode has fired since reset", "", "")
+TELEMETRY_FIELD("sync_rate", "floor_bps_x1000_at_detect",
+    TFU_BPS_X1000, TFR_INFO, NULL, 0, TFS_INFO,
+    "the floor as it stood at that rising edge, -1 if none", "", "")
+TELEMETRY_FIELD("sync_rate", "network_tip_at_detect",
+    TFU_HEIGHT, TFR_INFO, NULL, 0, TFS_INFO,
+    "the network tip height frozen at that rising edge, -1 if none", "", "")
+TELEMETRY_FIELD("sync_rate", "log_head_at_detect",
+    TFU_HEIGHT, TFR_INFO, NULL, 0, TFS_INFO,
+    "our own fold head frozen at that rising edge, -1 if none; the gap "
+    "against network_tip_at_detect is how far behind we were when it fired",
+    "", "")
+TELEMETRY_FIELD("sync_rate", "dominant_blocker_id_at_detect",
+    TFU_IDENTITY, TFR_INFO, NULL, 0, TFS_INFO,
+    "the blocker id that dominated at the moment the episode fired, empty if "
+    "none. This is the root-cause hint: a slow sync rate is almost always a "
+    "SYMPTOM of the blocker named here, so start there rather than at the "
+    "rate", "", "")
+TELEMETRY_FIELD("sync_rate", "last_fire_unix",
+    TFU_UNIX_TIME, TFR_INFO, NULL, 0, TFS_INFO,
+    "unix time the condition last fired, 0 if never", "", "")
+
+/* ── path prefixes that reuse a field set stated once above ────────────── */
+TELEMETRY_ALIAS("peer_lifecycle", "sources[].", "summary.",
+    "one element per dial source; every summary field appears again here "
+    "restricted to that source, so you can see WHICH source is failing")
+TELEMETRY_ALIAS("network", "peer_lifecycle.", "peer_lifecycle:",
+    "the network rollup embeds the peer_lifecycle dump verbatim; read those "
+    "fields under the peer_lifecycle subsystem, they are not recomputed here")
+TELEMETRY_ALIAS("connman", "dial_outcomes[].", "peer_lifecycle:sources[].",
+    "peer_lifecycle's per-source fold, copied verbatim into the connman dump")
+
+/* ── the discovery index: question -> the ONE command that answers it ──── */
+
+TELEMETRY_QUESTION("peer_connect_failing",
+    "Why is my connection to this peer failing?",
+    "peer connect connection failing fails refused handshake dial socket",
+    "zclassic23 dumpstate peer_lifecycle",
+    "peer_lifecycle",
+    "peers[].last_reason,peers[].connected,peers[].version_received,"
+    "peers[].pre_handshake_disconnects",
+    "Find the peers[] element with that addr. connected>0 with "
+    "version_received==0 means the socket opened and the far side sent "
+    "nothing: it closed at accept. pre_handshake_disconnects equal to "
+    "connected confirms it. connected==0 with timeout>0 is the different "
+    "failure of never reaching the host at all")
+TELEMETRY_QUESTION("who_refused",
+    "Is that the peer refusing me, or me refusing the peer?",
+    "refusing refused reject direction blame who ban cap",
+    "zclassic23 dumpstate peer_lifecycle",
+    "peer_lifecycle",
+    "summary.rejected,summary.pre_handshake_disconnects,summary.timeout",
+    "The two counters are on opposite sides. summary.rejected counts what WE "
+    "refused under our own admission policy. summary.pre_handshake_disconnects "
+    "counts connections THEY closed before the handshake finished, which is "
+    "what a server-side per-IP cap looks like. rejected==0 with "
+    "pre_handshake_disconnects high means the refusal is entirely theirs")
+TELEMETRY_QUESTION("any_handshake",
+    "Do I have any peer that completed a handshake?",
+    "handshake handshaked any peer usable connected zero none",
+    "zclassic23 dumpstate peer_lifecycle",
+    "peer_lifecycle",
+    "summary.handshake_complete,summary.attempted,summary.connected",
+    "summary.handshake_complete is the whole answer and it is decisive. Zero "
+    "means no peer can serve headers or blocks, so nothing downstream can "
+    "make progress. Read it as a fraction of summary.attempted: 0 of 8 is a "
+    "total refusal, 246 of 332 is a healthy funnel")
+TELEMETRY_QUESTION("network_height_mine_zero",
+    "I can see the network height but mine is 0 — why am I not downloading?",
+    "height zero stuck not downloading behind tip network height progress",
+    "zclassic23 dumpstate network",
+    "network",
+    "connman.outbound_healthy,connman.addrman_size,"
+    "tip_comparison.network_modal_height,tip_comparison.our_height",
+    "A network height needs no peer of ours: it comes from the crawled census, "
+    "so seeing one proves nothing about our own connectivity. Read "
+    "connman.outbound_healthy first. Zero there is the answer and everything "
+    "else is downstream. If it is nonzero, the peers exist and the problem is "
+    "in the fold, so continue at zclassic23 dumpstate sync_rate")
+TELEMETRY_QUESTION("which_blocker_is_root",
+    "Which of my problems is the ROOT and which are consequences?",
+    "root cause consequence downstream blocker blockers why order first",
+    "zclassic23 dumpstate blocker",
+    "blocker",
+    "root_blocker_ids,symptom_blocker_ids,orphaned_symptom_ids,"
+    "blockers[].caused_by,blockers[].cause_detail",
+    "The dump already classifies: root_blocker_ids are blockers that other "
+    "active blockers point at, symptom_blocker_ids carry a caused_by edge, "
+    "orphaned_symptom_ids name a cause that is no longer active and are stale. "
+    "CAVEAT worth knowing before you trust an empty classification: today only "
+    "the script-validate stage populates caused_by, so most blockers arrive "
+    "with no edge and land in none of the three lists. When the lists are "
+    "empty, fall back to the network funnel: a peer-side root cause in "
+    "peer_lifecycle explains every sync-side blocker above it")
+TELEMETRY_QUESTION("no_peers_at_all",
+    "I have no peers at all — where did the dialing stop?",
+    "no peers zero peers dial dialing pool addresses empty seeds",
+    "zclassic23 dumpstate peer_lifecycle",
+    "peer_lifecycle",
+    "summary.attempted,summary.connected,summary.version_received,"
+    "summary.handshake_complete",
+    "Read the funnel top to bottom and stop at the first collapse. attempted "
+    "0 means the dialer never ran, so look at addrman. connected 0 means the "
+    "network could not be crossed. version_received 0 means they hang up at "
+    "accept. handshake_complete 0 with the rest nonzero means the handshake "
+    "itself is being rejected")
+TELEMETRY_QUESTION("field_meaning",
+    "What does this telemetry field actually mean, and is this value bad?",
+    "meaning means field value healthy range bad unit what is",
+    "zclassic23 meaning --name=<field>",
+    "",
+    "",
+    "Every covered field carries what it counts, a machine-evaluable healthy "
+    "range, what an unhealthy value implies, and the next command to run. The "
+    "command is node-free: it answers from the binary's own table, which is "
+    "exactly what you need when the node you are debugging is dead")
+TELEMETRY_QUESTION("eclipsed",
+    "Are all my peers behind one operator or one route?",
+    "eclipse eclipsed diversity concentrated group operator route",
+    "zclassic23 dumpstate connman",
+    "connman",
+    "outbound.healthy_ipv4_group_count,outbound.healthy_ipv4_max_group_size,"
+    "outbound.healthy",
+    "Diversity only counts across HANDSHAKED peers, so read the healthy_ipv4_* "
+    "pair, not the plain ipv4_* pair. A healthy_ipv4_group_count of 1 means "
+    "every usable peer sits in one /16 and a single party can decide what "
+    "chain you see")
+TELEMETRY_QUESTION("pinned_peers_dead",
+    "My pinned addnode targets are not connecting — is it the route or the peer?",
+    "addnode pinned target backoff retired connect route peer",
+    "zclassic23 dumpstate connman",
+    "connman",
+    "addnode.entries[].tcp_failures,addnode.entries[].protocol_failures,"
+    "addnode.entries[].retired,addnode.backoff_active",
+    "The two failure counters separate the causes cleanly. tcp_failures "
+    "rising means the route never completes, so the host or the path is down. "
+    "protocol_failures rising with tcp_failures flat means the route is fine "
+    "and the peer is closing us in the handshake, which is the same refusal "
+    "that peer_lifecycle reports as a pre-handshake disconnect")
+TELEMETRY_QUESTION("sync_slow",
+    "Sync is slow — is that a real stall?",
+    "slow stall sync rate throughput blocks per second floor",
+    "zclassic23 dumpstate sync_rate",
+    "sync_rate",
+    "pending_work,active,current_bps_x1000,current_floor_bps_x1000,"
+    "dominant_blocker_id_at_detect",
+    "pending_work false means there was nothing to fold, so a low rate is "
+    "idleness and not a stall. When active is true, "
+    "dominant_blocker_id_at_detect names what else was wrong at the moment it "
+    "fired, and a slow rate is nearly always a symptom of that rather than a "
+    "cause")

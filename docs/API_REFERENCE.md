@@ -59,11 +59,13 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 291 |
+| Registry entries (branches + leaves) | 292 |
 | Top-level roots | 9 |
 | Branches | 67 |
 | Leaves (dispatchable command paths) | 224 |
 | … `ready` (live handler in this build) | 182 |
+| Leaves (dispatchable command paths) | 225 |
+| … `ready` (live handler in this build) | 173 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 25 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
@@ -79,7 +81,7 @@ Per source file:
 | `config/commands/core.def` | 84 | 21 | 63 |
 | `config/commands/apps.def` | 4 | 1 | 3 |
 | `config/commands/app_features.def` | 26 | 5 | 21 |
-| `config/commands/ops.def` | 42 | 8 | 34 |
+| `config/commands/ops.def` | 43 | 8 | 35 |
 | `config/commands/dev.def` | 45 | 11 | 34 |
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
@@ -502,7 +504,7 @@ represented by its children's sections.
 | `ops logs` | ready | read / read / operator · fast/low | **`pattern`**, `since_secs`, `max_lines`, `level` | `zcl.ops_logs.v1` | `zclassic23 ops logs --pattern='blocker'` | Log regex tail |
 | `ops timeline` | ready | read / read / operator · fast/low | none | `zcl.ops_timeline.v1` | `zclassic23 ops timeline` | Events |
 | `ops metrics` | ready | read / read / operator · fast/low | none | `zcl.ops_metrics.v1` | `zclassic23 ops metrics` | Metrics |
-| `ops state` | ready | read / read / operator · fast/low | **`subsystem`**, `key` | `zcl.ops_state.v1` | `zclassic23 ops state --subsystem=reducer_frontier` | Subsystem state |
+| `ops state` | ready | read / read / operator · fast/low | **`subsystem`**, `key`, `explain` | `zcl.ops_state.v1` | `zclassic23 ops state --subsystem=reducer_frontier` | Subsystem state |
 | `ops selftest` | ready | read / read / operator · fast/low | none | `zcl.ops_selftest.v1` | `zclassic23 ops selftest` | Self-test |
 
 #### `ops.jobs` — Job lifecycle
@@ -516,6 +518,7 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `ops debug explain` (aliases: `explain`, `ops.explain`) | ready | read / read / operator · fast/low | **`topic`** | `zcl.ops_explain.v1` | `zclassic23 explain sync` | Explain a subsystem in plain prose |
+| `ops debug meaning` (aliases: `meaning`, `ops.meaning`) | ready | read / read / operator · fast/low | `subsystem`, `name`, `question` | `zcl.ops_meaning.v1` | `zclassic23 meaning --name=pre_handshake_disconnects` | What a telemetry field means, and which report answers a question |
 | `ops debug profile` (aliases: `profile`, `ops.profile`) | ready | read / read / operator · foreground/moderate | **`seconds`**, `top_n` | `zcl.ops_profile.v1` | `zclassic23 profile 3` | Sample thread CPU + stage rates |
 | `ops debug producer` (aliases: `ops.producer.status`) | ready | read / read / operator · fast/low | **`datadir`** | `zcl.ops_producer_status.v1` | `zclassic23 ops producer status -datadir=/home/you/.zclassic-c23-mint` | Read a producer datadir's fold progress + receipt |
 | `ops debug rom` (aliases: `ops.rom`) | ready | read / read / operator · fast/low | none | `zcl.rom_compile.v1` | `zclassic23 ops rom` | ROM compilation fold progress |
@@ -718,6 +721,8 @@ Every alias resolves through the same grammar as its canonical path
 | `appprotocols` | `app.protocols` |
 | `explain` | `ops.debug.explain` |
 | `ops.explain` | `ops.debug.explain` |
+| `meaning` | `ops.debug.meaning` |
+| `ops.meaning` | `ops.debug.meaning` |
 | `profile` | `ops.debug.profile` |
 | `ops.profile` | `ops.debug.profile` |
 | `ops.producer.status` | `ops.debug.producer` |
