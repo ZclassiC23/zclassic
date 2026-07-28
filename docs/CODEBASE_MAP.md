@@ -29,7 +29,7 @@ deleting it is always safe and costs one full pass.
 
 ## 1. Where things live
 
-### The app shapes — `app/`, seven physical folders
+### The app shapes — `app/`, 7 shape folders
 
 Every `.c` under `app/` lives in exactly one shape folder, lint-enforced
 (`framework_shape_check.sh`). Filename suffix must match the shape
@@ -90,12 +90,16 @@ Framework, `platform/` (the ONLY clock/RNG source: `time_compat.h`,
 `validation`, `chain`, `consensus`, `keys`, `metrics`, `health`, JSON, kernel
 utils. Boot stage enum: `lib/util/include/util/boot_phase.h`.
 
-`lib/vcs/` owns ZVCS plus the pure `content.v2` package-manifest and source
-swarm codecs. Read [`ZVCS.md`](ZVCS.md) for internal source/version identity
-and [`P2P_SOURCE_HOSTING.md`](P2P_SOURCE_HOSTING.md) for the source-hosting
-trust boundary and remaining transport/CAS work. The current swarm layer is a
-codec only; it has no socket, install, execution, wallet, or publication
-authority.
+`lib/vcs/` owns ZVCS plus the `content.v2` package-manifest and source swarm.
+Read [`ZVCS.md`](ZVCS.md) for internal source/version identity and
+[`P2P_SOURCE_HOSTING.md`](P2P_SOURCE_HOSTING.md) for the source-hosting trust
+boundary and remaining CAS work. Split the swarm in two before reasoning about
+it: `package_swarm.c` is a pure codec with no socket, and `package_swarm_node.c`
+plus `config/src/boot_zcode_swarm.c` put its frames on a real P2P socket under
+the `zpkgswm` tag (slice 12, `833d7f398`). "Pure codec" describes the
+encoder/decoder module, never the subsystem's reach.
+<!-- claim: symbol-present p2p_node_begin_message config/src/boot_zcode_swarm.c # the swarm IS socket-wired -->
+<!-- claim: symbol-absent socket lib/vcs/src/package_swarm.c # the codec half stays pure -->
 
 ### Hexagonal seam — `ports/` + `adapters/`
 
@@ -113,11 +117,20 @@ page changing with it.
 <!--   port_interfaces      = ports/include/ports/*.h                                -->
 <!--   persistence_adapters = adapters/outbound/persistence/src/*.c                  -->
 <!--   condition_registrations = condition_register() calls in app/conditions/src    -->
+<!--   command_bundles      = config/commands/*.def                                  -->
+<!--   command_roots        = ZCL_COMMAND_BRANCH rows with an empty parent           -->
+<!--   dumpstate_subsystems = DIAG_* rows in diagnostics_dumpers.def                 -->
+<!--   app_shape_folders    = directories directly under app/                        -->
+<!-- Fix a mismatch with `tools/scripts/check_doc_counts.sh --fix`, never by hand.  -->
 
 test_groups: 781
 port_interfaces: 12
 persistence_adapters: 13
 condition_registrations: 50
+command_bundles: 10
+command_roots: 8
+dumpstate_subsystems: 139
+app_shape_folders: 7
 <!-- DOC-COUNTS-END -->
 
 ### Composition root — `config/src/`
@@ -209,10 +222,12 @@ Use `docs/AGENT_ARCHITECTURE.md` as the full checklist. The short path:
    witness/paging.
 
 ### Add a native command
-1. Declare the command in the matching `config/commands/*.def` bundle — eight
-   of them: `core`, `ops`, `dev`, `apps`, `app_features`, `accounts`, `code`,
-   `root`. Give it a name, transports (`ZCL_COMMAND_TRANSPORT_NATIVE`), and a
-   handler symbol.
+1. Declare the command in the matching `config/commands/*.def` bundle.
+   There are 10 command bundles; `ls config/commands/*.def` is the list — do
+   not work from a remembered one (docs said "eight" for months after `vault`
+   and `zcode` landed).
+   Give it a name, transports (`ZCL_COMMAND_TRANSPORT_NATIVE`), and a handler
+   symbol.
 2. Implement the handler in the matching
    `app/controllers/src/*_native_handlers.c`. Must set an error body on
    failure (never bare `return -1`).
@@ -283,9 +298,9 @@ bundles + `app/controllers/src/*_native_handlers.c`.
 
 | I need the list of… | Run |
 |---|---|
-| dumpstate subsystems (134 today) | `zclassic23 statecatalog` — name, owner file, accepted key forms, owning test. **Not** `ops state` with no `--subsystem`: that errors `MISSING_SUBSYSTEM`. |
-| test group names (one per line) | `make test_parallel && build/bin/test_parallel --list` — the underscore target is the only one that publishes the `build/bin/test_parallel` alias; `make test` / `make test-parallel` / `make t-fast` run an epoch candidate under `build/bin/test-strict/epochs/<epoch>/` and leave that alias absent |
-| registry commands | `zclassic23 discover help` (seven roots: `status`, `core`, `app`, `dev`, `ops`, `discover`, `code`), then `discover help <path>` to descend |
+| the 139 dumpstate subsystems | `zclassic23 statecatalog` — name, owner file, accepted key forms, owning test. **Not** `ops state` with no `--subsystem`: that errors `MISSING_SUBSYSTEM`. |
+| test group names (one per line) | `git grep -hoE 'X\([a-z_0-9]+\)' lib/test/src/test_parallel.c \| tr -d 'X()'` — instant, no build; `-h` matters or every name arrives glued to the filename. `make test_parallel && build/bin/test_parallel --list` gives the same list but costs a second link: `make -j$(nproc)` does **not** publish the `build/bin/test_parallel` alias, and `make test` / `make test-parallel` / `make t-fast` run an epoch candidate under `build/bin/test-strict/epochs/<epoch>/` and leave it absent |
+| registry commands | `zclassic23 discover help` — 8 command roots (`core`, `app`, `dev`, `ops`, `discover`, `code`, `vault`, `zcode`) plus the bare `status` leaf, so 9 top-level names — then `discover help <path>` to descend |
 | a command's exact input keys | `zclassic23 discover schema <leaf>` |
 | test groups a change touches | `zclassic23 agentimpact <files...>` |
 
@@ -630,13 +645,17 @@ Confirm the target before acting.
 2. Implement in the subsystem `.c` (caller does `json_set_object(out)` first;
    use `atomic_load` for thread-touched fields; don't allocate).
 3. Add **one descriptor row** to
-   `app/controllers/include/controllers/diagnostics_dumpers.def` — a
-   `DIAG_ENTRY` (~12 fields: name, dump fn, description, category,
+   `app/controllers/include/controllers/diagnostics_dumpers.def`. `DIAG_ENTRY`
+   is the long form (~12 fields: name, dump fn, description, category,
    state_class, owner `.c` path, freshness, cost, key form, two example keys,
-   owning test path, bool) or the shorter `DIAG_RUNTIME` / `DIAG_CONDITION`
-   forms. **Do not edit `app/controllers/src/diagnostics_registry.c`** — it
-   builds `g_dumpers[]` by `#include`-ing that `.def`; there is no editable
-   table in it.
+   owning test path, bool); nine row macros exist and most rows use a short
+   one. Pick by reading the `#define DIAG_*` block in
+   `app/controllers/src/diagnostics_registry.c` — it is the whole list, and
+   `DIAG_LOCAL` / `DIAG_SERVICE` (not `DIAG_ENTRY`) are the two most common.
+   **Do not edit `diagnostics_registry.c`'s table** — it builds `g_dumpers[]`
+   by `#include`-ing that `.def`; there is no editable table in it.
+   <!-- claim: symbol-present DIAG_LOCAL app/controllers/include/controllers/diagnostics_dumpers.def -->
+   <!-- claim: symbol-present DIAG_SERVICE app/controllers/include/controllers/diagnostics_dumpers.def -->
 
 Then `zclassic23 statecatalog` and `zclassic23 dumpstate <name>` expose it with
 owner file, accepted key forms, safety level, tests, and drill-down commands.
@@ -666,9 +685,11 @@ then exactly one of `ALL TESTS PASSED`, `ALL TESTS PASSED (CACHED)`, or
   and rejects the cached form.
 - Force a cold run: `make test-parallel TEST_PARALLEL_ARGS=--no-cache`.
 - `ONLY=` is a **substring** match, not a group name. `make t-fast ONLY=wallet`
-  runs every group whose name contains `wallet` (36 of them). List the exact
-  names with `make test_parallel && build/bin/test_parallel --list` — no other
-  test target publishes that alias.
+  runs every group whose name contains `wallet`. It is also not optional and
+  not validated: `make t-fast` with a literal `ONLY=<group>` copied out of a doc
+  compiles the whole test binary and *then* dies with
+  `sh: 1: Syntax error: end of file unexpected`. List real names first with
+  `git grep -hoE 'X\([a-z_0-9]+\)' lib/test/src/test_parallel.c | tr -d 'X()'`.
 
 | Command | Effect |
 |---------|--------|

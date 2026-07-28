@@ -62,6 +62,7 @@ you operate that host, and misleading otherwise.
 - [`HOW_THE_NODE_WORKS.md`](./HOW_THE_NODE_WORKS.md) — the node as a state machine: append-only log → reducer stages → projections → health.
 - [`ROM.md`](./ROM.md) — the L0-L3 trust machine: what the compiled checkpoint commits, what each layer guarantees, how to read `dumpstate rom`.
 - [`CODEBASE_MAP.md`](./CODEBASE_MAP.md) — where things live + how to do each thing.
+- [`EXTENSION_POINTS.md`](./EXTENSION_POINTS.md) — the three surfaces under active construction (vault ownership, big integers, the declarative service manifest): where each lives and how to extend it. Every claim on that page is gate-bound, so it fails the build rather than going stale.
 - [`AGENT_TRAPS.md`](./AGENT_TRAPS.md) — things that look broken but are intentional or already-done; read before "fixing" or re-proposing anything.
 - [`AGENT_ARCHITECTURE.md`](./AGENT_ARCHITECTURE.md) — the required feature-slice recipe: REST resources, ActiveRecord models, validations, relationships, schema, services, and native command surfaces.
 

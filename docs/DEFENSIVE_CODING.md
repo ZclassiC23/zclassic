@@ -645,8 +645,15 @@ deliberate, author-run command that scans an external tree while still
 resolving every predicate against this repository:
 
 ```sh
-tools/lint/check_doc_claims.sh --scan ~/.claude/plans
+make check-plan-claims            # same thing; PLANS=<dir> to point elsewhere
 ```
+
+Run it before dispatching work *from* a plan, not in CI — CI has no business
+reading a directory outside the checkout. Read its output carefully: with no
+annotated plans it reports `0 bound claim(s)` and says **ZERO COVERAGE, not a
+clean bill of health**, because the external mode deliberately drops the
+non-empty-claim floor (a plan directory legitimately starts with none). A plan
+only becomes checkable once its author binds an open item to a predicate.
 
 **Canonical lint-gate list (E11 source of truth).** This block is machine-checked
 against the Makefile `lint:` target. Keep it sorted; edit it whenever you

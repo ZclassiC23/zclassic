@@ -5817,6 +5817,20 @@ check-doc-claims:
 	@echo "══ LINT: bound doc claims (doc freshness) ══"
 	@./tools/lint/check_doc_claims.sh
 
+# The out-of-repo half, made one command instead of a remembered path.
+# ~/.claude/plans/*.md is where the motivating failure happened (a plan listed
+# a deletion as PENDING that had landed three days earlier, and three agents
+# were dispatched to redo it) and no repo gate can reach it: it is outside the
+# work tree, invisible to `git grep` and to `make lint`. This target does not
+# and must not run in CI — it is what an orchestrator runs before dispatching
+# work FROM a plan. It resolves every predicate against this repository.
+# PLANS=<dir> overrides the default location.
+PLANS ?= $(HOME)/.claude/plans
+.PHONY: check-plan-claims
+check-plan-claims:
+	@echo "══ CHECK: bound claims in out-of-repo plans ($(PLANS)) ══"
+	@./tools/lint/check_doc_claims.sh --scan "$(PLANS)"
+
 # A document path baked into an operator-facing C string literal must resolve
 # to a file that exists. Three wallet-path boot refusals pointed the operator
 # at WALLET_PERSISTENCE_RECOVERY.md, which had never existed — a dead pointer

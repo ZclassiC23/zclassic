@@ -439,6 +439,13 @@ if [ "${#violations[@]}" -ne 0 ]; then
 fi
 
 echo "check_doc_claims: clean — $claims_parsed bound claim(s) across ${#scan_files[@]} document(s) all hold; self-check fired as expected"
+if [ "$external" -eq 1 ] && [ "$claims_parsed" -eq 0 ]; then
+    echo "  ZERO COVERAGE, not a clean bill of health: none of the"
+    echo "  ${#scan_files[@]} scanned document(s) carries a claim annotation, so this pass"
+    echo "  examined nothing. An out-of-repo plan is only checked once its author"
+    echo "  binds an open item to a predicate, e.g. under a PENDING deletion:"
+    echo "      <!-- claim: gate-fails check-no-utxo-projection -->"
+fi
 if [ "$external" -eq 0 ]; then
     echo "  NOTE: tracked *.md only. Documents outside the repository (notably"
     echo "  ~/.claude/plans/*.md, where the motivating failure occurred) are NOT"
