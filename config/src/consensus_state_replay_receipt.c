@@ -12,6 +12,7 @@
 #include "config/consensus_state_replay_receipt.h"
 
 #include "config/consensus_state_snapshot_install.h"
+#include "base/serialize_le.h"
 #include "coins/utxo_commitment.h"
 #include "core/amount.h"
 #include "crypto/sha3.h"
@@ -87,20 +88,6 @@ static bool rr_fail(struct consensus_state_replay_result *out, const char *fmt,
     return false;
 }
 
-static void put_le64(uint8_t *p, uint64_t v)
-{
-    for (size_t i = 0; i < 8; i++)
-        p[i] = (uint8_t)(v >> (8u * i));
-}
-
-static uint64_t get_le64(const uint8_t *p)
-{
-    uint64_t v = 0;
-    for (size_t i = 0; i < 8; i++)
-        v |= (uint64_t)p[i] << (8u * i);
-    return v;
-}
-
 /* SHA3-256 of the running executable image — the race-free /proc/self/exe idiom
  * (matches consensus_state_producer_receipt.c's running_binary_digest).
  *
@@ -157,18 +144,18 @@ static void rr_receipt_digest(const struct rr_receipt *r, uint8_t out[32])
     sha3_256_write(&ctx, r->bundle_file_digest, 32);
     sha3_256_write(&ctx, r->artifact_digest, 32);
     sha3_256_write(&ctx, r->block_hash, 32);
-    put_le64(le, (uint64_t)r->height);
+    zcl_write_u64_le(le, (uint64_t)r->height);
     sha3_256_write(&ctx, le, 8);
     sha3_256_write(&ctx, r->utxo_root, 32);
-    put_le64(le, r->utxo_count);
+    zcl_write_u64_le(le, r->utxo_count);
     sha3_256_write(&ctx, le, 8);
-    put_le64(le, (uint64_t)r->total_supply);
+    zcl_write_u64_le(le, (uint64_t)r->total_supply);
     sha3_256_write(&ctx, le, 8);
     sha3_256_write(&ctx, r->anchor_digest, 32);
-    put_le64(le, r->anchor_count);
+    zcl_write_u64_le(le, r->anchor_count);
     sha3_256_write(&ctx, le, 8);
     sha3_256_write(&ctx, r->nullifier_digest, 32);
-    put_le64(le, r->nullifier_count);
+    zcl_write_u64_le(le, r->nullifier_count);
     sha3_256_write(&ctx, le, 8);
     sha3_256_write(&ctx, r->verifier_binary_digest, 32);
     sha3_256_finalize(&ctx, out);
@@ -182,14 +169,14 @@ static void rr_serialize(const struct rr_receipt *r, uint8_t buf[RR_PAYLOAD_BYTE
     memcpy(buf + RR_OFF_BUNDLE_FILE, r->bundle_file_digest, 32);
     memcpy(buf + RR_OFF_ARTIFACT, r->artifact_digest, 32);
     memcpy(buf + RR_OFF_BLOCK_HASH, r->block_hash, 32);
-    put_le64(buf + RR_OFF_HEIGHT, (uint64_t)r->height);
+    zcl_write_u64_le(buf + RR_OFF_HEIGHT, (uint64_t)r->height);
     memcpy(buf + RR_OFF_UTXO_ROOT, r->utxo_root, 32);
-    put_le64(buf + RR_OFF_UTXO_COUNT, r->utxo_count);
-    put_le64(buf + RR_OFF_SUPPLY, (uint64_t)r->total_supply);
+    zcl_write_u64_le(buf + RR_OFF_UTXO_COUNT, r->utxo_count);
+    zcl_write_u64_le(buf + RR_OFF_SUPPLY, (uint64_t)r->total_supply);
     memcpy(buf + RR_OFF_ANCHOR_DIG, r->anchor_digest, 32);
-    put_le64(buf + RR_OFF_ANCHOR_CNT, r->anchor_count);
+    zcl_write_u64_le(buf + RR_OFF_ANCHOR_CNT, r->anchor_count);
     memcpy(buf + RR_OFF_NF_DIG, r->nullifier_digest, 32);
-    put_le64(buf + RR_OFF_NF_CNT, r->nullifier_count);
+    zcl_write_u64_le(buf + RR_OFF_NF_CNT, r->nullifier_count);
     memcpy(buf + RR_OFF_VERIFIER, r->verifier_binary_digest, 32);
     memcpy(buf + RR_OFF_RECEIPT_DIG, r->receipt_digest, 32);
 }
@@ -208,14 +195,14 @@ static bool rr_deserialize(const uint8_t buf[RR_PAYLOAD_BYTES],
     memcpy(r->bundle_file_digest, buf + RR_OFF_BUNDLE_FILE, 32);
     memcpy(r->artifact_digest, buf + RR_OFF_ARTIFACT, 32);
     memcpy(r->block_hash, buf + RR_OFF_BLOCK_HASH, 32);
-    r->height = (int64_t)get_le64(buf + RR_OFF_HEIGHT);
+    r->height = (int64_t)zcl_read_u64_le(buf + RR_OFF_HEIGHT);
     memcpy(r->utxo_root, buf + RR_OFF_UTXO_ROOT, 32);
-    r->utxo_count = get_le64(buf + RR_OFF_UTXO_COUNT);
-    r->total_supply = (int64_t)get_le64(buf + RR_OFF_SUPPLY);
+    r->utxo_count = zcl_read_u64_le(buf + RR_OFF_UTXO_COUNT);
+    r->total_supply = (int64_t)zcl_read_u64_le(buf + RR_OFF_SUPPLY);
     memcpy(r->anchor_digest, buf + RR_OFF_ANCHOR_DIG, 32);
-    r->anchor_count = get_le64(buf + RR_OFF_ANCHOR_CNT);
+    r->anchor_count = zcl_read_u64_le(buf + RR_OFF_ANCHOR_CNT);
     memcpy(r->nullifier_digest, buf + RR_OFF_NF_DIG, 32);
-    r->nullifier_count = get_le64(buf + RR_OFF_NF_CNT);
+    r->nullifier_count = zcl_read_u64_le(buf + RR_OFF_NF_CNT);
     memcpy(r->verifier_binary_digest, buf + RR_OFF_VERIFIER, 32);
     memcpy(r->receipt_digest, buf + RR_OFF_RECEIPT_DIG, 32);
     uint8_t recomputed[32];

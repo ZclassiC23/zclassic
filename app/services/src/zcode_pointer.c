@@ -13,6 +13,7 @@
 
 #include "services/zcode_pointer.h"
 
+#include "base/hex.h"
 #include "base/log_macros.h"
 #include "base/safe_alloc.h"
 #include "chain/chainparams.h"
@@ -58,29 +59,6 @@ bool zcode_pointer_expected_owner(const uint8_t pubkey[33], char *out,
                               script_prefix, script_len, out, out_cap);
 }
 
-static bool zp_hex_decode33(const char *hex, uint8_t out[33])
-{
-    if (!hex || strlen(hex) != 66)
-        return false;
-    for (size_t i = 0; i < 33; i++) {
-        unsigned v = 0;
-        for (size_t j = 0; j < 2; j++) {
-            char ch = hex[2 * i + j];
-            v <<= 4;
-            if (ch >= '0' && ch <= '9')
-                v |= (unsigned)(ch - '0');
-            else if (ch >= 'a' && ch <= 'f')
-                v |= (unsigned)(ch - 'a' + 10);
-            else if (ch >= 'A' && ch <= 'F')
-                v |= (unsigned)(ch - 'A' + 10);
-            else
-                return false;
-        }
-        out[i] = (uint8_t)v;
-    }
-    return true;
-}
-
 static bool zp_text(struct node_db *ndb, const char *name, const char *key,
                     char *out, size_t out_cap)
 {
@@ -112,7 +90,7 @@ static void zp_fill_records(struct node_db *ndb, struct zcode_pointer *out)
 
     /* Binding proof: the claimed key must derive the owner address. */
     uint8_t pubkey[33];
-    out->pubkey_claimed = zp_hex_decode33(out->publisher_hex, pubkey);
+    out->pubkey_claimed = zcl_hex_decode(out->publisher_hex, pubkey, 33);
     out->bound = false;
     out->expected_owner[0] = '\0';
     if (out->pubkey_claimed &&

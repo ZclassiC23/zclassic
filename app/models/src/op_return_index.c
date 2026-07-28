@@ -8,6 +8,7 @@
 
 #include "models/op_return_index.h"
 
+#include "base/serialize_le.h"
 #include "crypto/sha3.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
@@ -114,19 +115,6 @@ bool op_return_index_extract(const uint8_t *script, size_t script_len,
     return true;
 }
 
-static void put_le64(uint8_t out[8], int64_t v)
-{
-    uint64_t u = (uint64_t)v;
-    for (int i = 0; i < 8; i++) out[i] = (uint8_t)(u >> (8 * i));
-}
-
-static int64_t get_le64(const uint8_t in[8])
-{
-    uint64_t u = 0;
-    for (int i = 7; i >= 0; i--) u = (u << 8) | in[i];
-    return (int64_t)u;
-}
-
 void op_return_index_make_base_digest(int32_t base_height,
                                       const uint8_t base_anchor_hash[32],
                                       uint8_t out_digest[32])
@@ -145,7 +133,7 @@ void op_return_index_make_base_digest(int32_t base_height,
     sha3_256_write(&ctx, (const uint8_t *)OP_RETURN_INDEX_BASE_TAG_V2,
                    sizeof(OP_RETURN_INDEX_BASE_TAG_V2) - 1);
     uint8_t le8[8];
-    put_le64(le8, (int64_t)base_height);
+    zcl_write_i64_le(le8, (int64_t)base_height);
     sha3_256_write(&ctx, le8, 8);
     sha3_256_write(&ctx, base_anchor_hash ? base_anchor_hash : zero32, 32);
     sha3_256_finalize(&ctx, out_digest);
@@ -168,32 +156,31 @@ void op_return_index_fold_block_digest(int32_t base_height,
     sha3_256_write(&ctx, (const uint8_t *)OP_RETURN_INDEX_FOLD_TAG_V2,
                    sizeof(OP_RETURN_INDEX_FOLD_TAG_V2) - 1);
     uint8_t base_le8[8];
-    put_le64(base_le8, (int64_t)base_height);
+    zcl_write_i64_le(base_le8, (int64_t)base_height);
     sha3_256_write(&ctx, base_le8, 8);
     sha3_256_write(&ctx, base_digest ? base_digest : zero32, 32);
     sha3_256_write(&ctx, prev_digest ? prev_digest : zero32, 32);
 
     uint8_t le8[8];
-    put_le64(le8, (int64_t)height);
+    zcl_write_i64_le(le8, (int64_t)height);
     sha3_256_write(&ctx, le8, 8);
     sha3_256_write(&ctx, block_hash ? block_hash : zero32, 32);
 
     uint8_t le4[4];
     uint32_t nrows32 = (uint32_t)n_rows;
-    for (int i = 0; i < 4; i++) le4[i] = (uint8_t)(nrows32 >> (8 * i));
+    zcl_write_u32_le(le4, nrows32);
     sha3_256_write(&ctx, le4, 4);
 
     for (size_t i = 0; i < n_rows; i++) {
         const struct op_return_index_row *r = &rows[i];
         sha3_256_write(&ctx, r->txid, 32);
         uint8_t vle[4];
-        for (int b = 0; b < 4; b++) vle[b] = (uint8_t)(r->vout_n >> (8 * b));
+        zcl_write_u32_le(vle, r->vout_n);
         sha3_256_write(&ctx, vle, 4);
         sha3_256_write(&ctx, &r->tag_len, 1);
         sha3_256_write(&ctx, r->tag, r->tag_len);
         uint8_t ple[4];
-        for (int b = 0; b < 4; b++)
-            ple[b] = (uint8_t)(r->payload_len >> (8 * b));
+        zcl_write_u32_le(ple, r->payload_len);
         sha3_256_write(&ctx, ple, 4);
         sha3_256_write(&ctx, r->payload_sha3, 32);
     }
@@ -386,9 +373,9 @@ bool op_return_index_get_cursor(struct node_db *ndb,
                  "get_cursor: v2 record vanished or malformed between "
                  "classify and decode");
 
-    out->base_height = (int32_t)get_le64(rec + 1);
+    out->base_height = (int32_t)zcl_read_i64_le(rec + 1);
     memcpy(out->base_digest, rec + 9, 32);
-    out->height = (int32_t)get_le64(rec + 41);
+    out->height = (int32_t)zcl_read_i64_le(rec + 41);
     memcpy(out->digest, rec + 49, 32);
     return true;
 }
@@ -406,9 +393,9 @@ bool op_return_index_set_cursor(struct node_db *ndb,
 
     uint8_t rec[OP_RETURN_INDEX_STATE_RECORD_LEN];
     rec[0] = OP_RETURN_INDEX_STATE_VERSION_BYTE;
-    put_le64(rec + 1, (int64_t)cur->base_height);
+    zcl_write_i64_le(rec + 1, (int64_t)cur->base_height);
     memcpy(rec + 9, cur->base_digest, 32);
-    put_le64(rec + 41, (int64_t)cur->height);
+    zcl_write_i64_le(rec + 41, (int64_t)cur->height);
     memcpy(rec + 49, cur->digest, 32);
 
     if (!node_db_state_set(ndb, OP_RETURN_INDEX_STATE_KEY_V2, rec,

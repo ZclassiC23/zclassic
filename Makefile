@@ -5118,6 +5118,18 @@ check-blob-read-bounds:
 	@echo "══ LINT: bounded sqlite blob reads in app models ══"
 	@bash tools/lint/check_blob_read_bounds.sh
 
+# Gate — ONE fixed-width byte-order codec. Packing or unpacking a
+# 16/32/64-bit integer at a byte address lives only in
+# lib/base/include/base/serialize_le.h; a private shift ladder anywhere else
+# fails (RATCHET at file granularity; tools/lint/byte_order_codec_baseline.txt
+# may only shrink). 23 hand-rolled helpers across 11 files existed when this
+# gate was written, despite a canonical set already sitting in
+# crypto/common.h that only seven files used.
+check-byte-order-codec-single:
+	@echo "══ LINT: one byte-order codec ══"
+	@./tools/lint/check_byte_order_codec_single.sh --selftest
+	@./tools/lint/check_byte_order_codec_single.sh
+
 check-coins-lookup-nullcheck:
 	@echo "══ LINT: guarded controller coin lookups ══"
 	@tools/scripts/check_coins_lookup_nullcheck.sh
@@ -5909,6 +5921,15 @@ docs-api-reference: $(API_REFERENCE_TOOL)
 binary-size:
 	@./tools/scripts/binary_size.sh
 
+# Gate — ONE hex codec. Base-16 encode/decode lives only in
+# lib/base/include/base/hex.h; a private copy anywhere else fails
+# (RATCHET at file granularity; tools/lint/hex_codec_baseline.txt may only
+# shrink). 56 disagreeing copies existed when this gate was written.
+check-hex-codec-single:
+	@echo "══ LINT: one hex codec ══"
+	@./tools/lint/check_hex_codec_single.sh --selftest
+	@./tools/lint/check_hex_codec_single.sh
+
 # Gate E2 — new service functions return struct zcl_result, not bare
 # bool/int (RATCHET at file granularity; baseline at
 # tools/scripts/one_result_type_baseline.txt may only shrink).
@@ -6124,6 +6145,7 @@ LINT_GATES := \
     check-scanner-immunity \
     check-git-hooks-installed \
     check-malloc \
+    check-byte-order-codec-single \
     check-hotswap-dev-only \
     check-hotswap-eligible-scope \
     check-hotswap-static-state \
@@ -6191,6 +6213,7 @@ LINT_GATES := \
     check-api-reference-generated \
     check-markdown-links \
     check-doc-inline-paths \
+    check-hex-codec-single \
     check-one-result-type \
     check-service-result-convergence \
     check-shape-includes-header \

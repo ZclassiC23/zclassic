@@ -9,6 +9,7 @@
 
 #include "package_store_priv.h"
 
+#include "base/hex.h"
 #include "base/log_macros.h"
 #include "base/safe_alloc.h"
 
@@ -24,41 +25,10 @@
 
 #define STORE_LOG "vcs.store"
 
-void store_hex_encode(const uint8_t in[32], char out[65])
-{
-    static const char hexd[] = "0123456789abcdef";
-    for (int i = 0; i < 32; i++) {
-        out[2 * i]     = hexd[(in[i] >> 4) & 0xf];
-        out[2 * i + 1] = hexd[in[i] & 0xf];
-    }
-    out[64] = '\0';
-}
-
-static int store_hex_nibble(char c)
-{
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    return -1;
-}
-
-bool store_hex_decode(const char *hex, uint8_t out[32])
-{
-    if (!hex || strlen(hex) != 64)
-        return false;
-    for (int i = 0; i < 32; i++) {
-        int hi = store_hex_nibble(hex[2 * i]);
-        int lo = store_hex_nibble(hex[2 * i + 1]);
-        if (hi < 0 || lo < 0)
-            return false;
-        out[i] = (uint8_t)((hi << 4) | lo);
-    }
-    return true;
-}
-
 bool store_name_is_hex64(const char *name)
 {
     uint8_t scratch[32];
-    return store_hex_decode(name, scratch);
+    return zcl_hex_decode_lower(name, scratch, 32);
 }
 
 bool store_mkdir_p(const char *path)
@@ -158,7 +128,7 @@ void store_cas_path(const struct vcs_package_store *store,
                     const uint8_t hash[32], char *out, size_t out_size)
 {
     char hex[65];
-    store_hex_encode(hash, hex);
+    zcl_hex_encode(hash, 32, hex);
     snprintf(out, out_size, "%s/cas/sha3/%.2s/%s", store->root, hex, hex);
 }
 
@@ -433,7 +403,7 @@ struct store_package *store_record_add(struct vcs_package_store *store,
         vcs_package_manifest_free(&pkg.manifest);
         LOG_NULL(STORE_LOG, "manifest %s has no root", expect_hex);
     }
-    store_hex_encode(pkg.root, pkg.root_hex);
+    zcl_hex_encode(pkg.root, 32, pkg.root_hex);
     if (strcmp(pkg.root_hex, expect_hex) != 0) {
         vcs_package_manifest_free(&pkg.manifest);
         LOG_NULL(STORE_LOG, "manifest at %s commits a different root %s",
@@ -572,7 +542,7 @@ static bool store_gc_cas(struct vcs_package_store *store)
         struct dirent *sent;
         while ((sent = readdir(sd)) != NULL) {
             uint8_t hash[32];
-            if (!store_hex_decode(sent->d_name, hash))
+            if (!zcl_hex_decode_lower(sent->d_name, hash, 32))
                 continue;
             char hex3[3] = { ent->d_name[0], ent->d_name[1], '\0' };
             if (strncmp(sent->d_name, hex3, 2) != 0)

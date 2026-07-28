@@ -79,7 +79,7 @@ static bool object_path(const char *repo_root, const uint8_t addr[32],
                         char *out, size_t cap)
 {
     char hex[65];
-    vcs_hex32(addr, hex);
+    zcl_hex_encode(addr, 32, hex);
     char suffix[80];
     int n = snprintf(suffix, sizeof(suffix), "objects/%c%c/%s",
                      hex[0], hex[1], hex + 2);
@@ -111,7 +111,7 @@ static bool object_write(const char *repo_root, const uint8_t addr[32],
         return true;  /* dedup */
 
     char hex[65];
-    vcs_hex32(addr, hex);
+    zcl_hex_encode(addr, 32, hex);
     char shard[80];
     int sn = snprintf(shard, sizeof(shard), "objects/%c%c", hex[0], hex[1]);
     if (sn <= 0 || (size_t)sn >= sizeof(shard))

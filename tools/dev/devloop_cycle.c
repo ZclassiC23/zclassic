@@ -4,6 +4,7 @@
 #include "devloop.h"
 #include "dev_failure_store.h"
 
+#include "base/hex.h"
 #include "crypto/sha3.h"
 #include "platform/time_compat.h"
 #include "vcs/vcs_devloop.h"
@@ -394,12 +395,7 @@ static bool source_identity_verify(const char *root,
 
 static void sha3_hex(const unsigned char digest[32], char out[65])
 {
-    static const char digits[] = "0123456789abcdef";
-    for (size_t i = 0; i < 32; i++) {
-        out[2 * i] = digits[digest[i] >> 4];
-        out[2 * i + 1] = digits[digest[i] & 15];
-    }
-    out[64] = 0;
+    zcl_hex_encode(digest, 32, out);
 }
 
 /* Resolve the exact Make-owned dev compile epoch without executing a compiler
@@ -611,16 +607,6 @@ static bool read_reload_generation(char out[65])
     return true;
 }
 
-/* Hex-encode a 32-byte commit id for the `"vcs_commit"` verdict field. */
-static void hex_encode32(const uint8_t in[32], char out[65])
-{
-    static const char digits[] = "0123456789abcdef";
-    for (size_t i = 0; i < 32; i++) {
-        out[2 * i]     = digits[(in[i] >> 4) & 0xf];
-        out[2 * i + 1] = digits[in[i] & 0xf];
-    }
-    out[64] = 0;
-}
 #endif
 
 /* ── Wave 3.2 native activation engine — dev-lane wiring (pure glue) ────
@@ -769,12 +755,7 @@ static void cycle_files_sha3(const char *const *files, size_t file_count,
         sha3_256_write(&ctx, &zero, 1);
     }
     sha3_256_finalize(&ctx, digest);
-    static const char digits[] = "0123456789abcdef";
-    for (size_t i = 0; i < sizeof(digest); i++) {
-        out[2 * i] = digits[digest[i] >> 4];
-        out[2 * i + 1] = digits[digest[i] & 15];
-    }
-    out[64] = 0;
+    zcl_hex_encode(digest, sizeof(digest), out);
 }
 
 static bool cycle_text_preview(const char *input, size_t max_bytes,
@@ -1006,7 +987,7 @@ static int finish_cycle(const struct zcl_devloop_plan *plan,
         vcsf.attempted = true;
         switch (ar.status) {
         case VCS_DEVLOOP_ANCHOR_OK:
-            hex_encode32(ar.commit_id, vcsf.commit_hex);
+            zcl_hex_encode(ar.commit_id, 32, vcsf.commit_hex);
             break;
         case VCS_DEVLOOP_ANCHOR_REFUSED:
             vcsf.sealed_refusal = true;

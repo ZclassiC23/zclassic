@@ -32,6 +32,7 @@
  * whose node is mid-write. CHAIN_MAIN is selected when nothing selected a
  * chain (the binding check derives chain P2PKH addresses). */
 
+#include "base/hex.h"
 #include "command/native_command.h"
 
 #include "kernel/command_registry.h"
@@ -250,7 +251,7 @@ void zcl_native_handle_zcode_contributor_show(
                 uint8_t pubkey_bytes[33];
                 struct vcs_reward_contributor_totals totals;
                 memset(&totals, 0, sizeof(totals));
-                if (vcs_reward_hex_decode33(pubkey_hex, pubkey_bytes))
+                if (zcl_hex_decode(pubkey_hex, pubkey_bytes, 33))
                     vcs_reward_contributor_totals(ledger, pubkey_bytes,
                                                   &totals);
                 struct json_value rw;
@@ -564,26 +565,7 @@ void zcl_native_handle_zcode_package_resolve(
     /* The pointer resolved; now the identity lookup — ALWAYS from the
      * signed release, never from the ZNAM record. */
     uint8_t root[32];
-    bool have_root = false;
-    if (strlen(pointer.package_root_hex) == 64) {
-        have_root = true;
-        for (size_t i = 0; i < 32; i++) {
-            unsigned v = 0;
-            for (size_t j = 0; j < 2; j++) {
-                char ch = pointer.package_root_hex[2 * i + j];
-                v <<= 4;
-                if (ch >= '0' && ch <= '9')
-                    v |= (unsigned)(ch - '0');
-                else if (ch >= 'a' && ch <= 'f')
-                    v |= (unsigned)(ch - 'a' + 10);
-                else if (ch >= 'A' && ch <= 'F')
-                    v |= (unsigned)(ch - 'A' + 10);
-                else
-                    have_root = false;
-            }
-            root[i] = (uint8_t)v;
-        }
-    }
+    bool have_root = zcl_hex_decode(pointer.package_root_hex, root, 32);
     if (!have_root) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INVALID, "BAD_POINTER_ROOT",

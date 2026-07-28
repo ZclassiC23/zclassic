@@ -74,6 +74,7 @@ gate_command() {
         check-raw-sqlite)                  echo 'tools/scripts/check_raw_sqlite.sh' ;;
         check-raw-malloc)                  echo 'tools/scripts/check_raw_malloc.sh' ;;
         check-blob-read-bounds)            echo 'bash tools/lint/check_blob_read_bounds.sh' ;;
+        check-byte-order-codec-single)     echo './tools/lint/check_byte_order_codec_single.sh --selftest && ./tools/lint/check_byte_order_codec_single.sh' ;;
         check-coins-lookup-nullcheck)      echo 'tools/scripts/check_coins_lookup_nullcheck.sh' ;;
         check-observability-pairing)       echo '"$ZCL_LINT_BIN_DIR/check_observability_pairing"' ;;
         check-silent-errors-services)      echo './tools/lint/check_silent_error_returns.sh app/services/src services service "use LOG_ERR/LOG_FAIL/LOG_RETURN, prev-line error log, or mark // raw-return-ok:<reason>"' ;;
@@ -133,6 +134,7 @@ gate_command() {
         check-api-reference-generated)     echo './tools/lint/check_api_reference_generated.sh' ;;
         check-markdown-links)              echo './tools/lint/check_markdown_links.sh .' ;;
         check-doc-inline-paths)            echo './tools/lint/check_doc_inline_paths.sh' ;;
+        check-hex-codec-single)            echo './tools/lint/check_hex_codec_single.sh --selftest && ./tools/lint/check_hex_codec_single.sh' ;;
         check-one-result-type)             echo './tools/scripts/check_one_result_type.sh' ;;
         check-service-result-convergence)  echo './tools/scripts/check_service_result_convergence.sh' ;;
         check-shape-includes-header)       echo './tools/scripts/check_shape_includes_header.sh' ;;

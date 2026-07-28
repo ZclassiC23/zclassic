@@ -11,6 +11,7 @@
 #include "vcs/package_badge.h"
 
 #include "crypto/sha3.h"
+#include "base/hex.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -121,51 +122,10 @@ bool vcs_badge_is_non_periodic(const struct vcs_badge *badge)
 
 /* ── small helpers ──────────────────────────────────────────────────── */
 
-void vcs_badge_hex_encode(const uint8_t *in, size_t len, char *out)
-{
-    static const char hexd[] = "0123456789abcdef";
-    for (size_t i = 0; i < len; i++) {
-        out[2 * i]     = hexd[(in[i] >> 4) & 0xf];
-        out[2 * i + 1] = hexd[in[i] & 0xf];
-    }
-    out[2 * len] = '\0';
-}
-
-static int badge_hex_nibble(char c)
-{
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    return -1;
-}
-
-static bool badge_hex_decode(const char *hex, uint8_t *out, size_t want)
-{
-    if (!hex || strlen(hex) != 2 * want)
-        return false;
-    for (size_t i = 0; i < want; i++) {
-        int hi = badge_hex_nibble(hex[2 * i]);
-        int lo = badge_hex_nibble(hex[2 * i + 1]);
-        if (hi < 0 || lo < 0)
-            return false;
-        out[i] = (uint8_t)((hi << 4) | lo);
-    }
-    return true;
-}
-
-bool vcs_badge_hex_decode32(const char *hex, uint8_t out[32])
-{
-    return badge_hex_decode(hex, out, 32);
-}
-
-bool vcs_badge_hex_decode33(const char *hex, uint8_t out[33])
-{
-    return badge_hex_decode(hex, out, 33);
-}
-
 static bool badge_name_is_hex64(const char *name)
 {
     uint8_t scratch[32];
-    return badge_hex_decode(name, scratch, 32);
+    return zcl_hex_decode_lower(name, scratch, 32);
 }
 
 static bool badge_is_zero(const uint8_t *bytes, size_t len)
@@ -440,8 +400,8 @@ bool vcs_badge_policy_load(const char *zcode_dir,
         count++;
     }
     fclose(f);
-    if (count != 2 || !badge_hex_decode(lines[0], out->policy_id, 32) ||
-        !badge_hex_decode(lines[1], out->issuer_pubkey, 33) ||
+    if (count != 2 || !zcl_hex_decode_lower(lines[0], out->policy_id, 32) ||
+        !zcl_hex_decode_lower(lines[1], out->issuer_pubkey, 33) ||
         badge_is_zero(out->policy_id, 32) ||
         !badge_pubkey_parses(out->issuer_pubkey)) {
         LOG_ERROR(BADGE_LOG,
@@ -729,7 +689,7 @@ static void badge_load_one(struct vcs_badge_store *s, const char *name,
         return;
     }
     uint8_t named[32];
-    (void)vcs_badge_hex_decode32(name, named);
+    (void)zcl_hex_decode_lower(name, named, 32);
     if (badge_id_cmp(named, id) != 0) {
         s->corrupt++;
         LOG_ERROR(BADGE_LOG,
@@ -751,7 +711,7 @@ static void badge_load_plan_id(struct vcs_badge_store *s, const char *name,
     (void)len; /* plan CONTENT is decoded on demand by vcs_badge_plan_read;
                   the load pass records the id set only */
     uint8_t id[32];
-    if (!vcs_badge_hex_decode32(name, id)) {
+    if (!zcl_hex_decode_lower(name, id, 32)) {
         s->corrupt++;
         return;
     }
@@ -768,7 +728,7 @@ static void badge_load_commit_id(struct vcs_badge_store *s,
     (void)wire;
     (void)len;
     uint8_t id[32];
-    if (!vcs_badge_hex_decode32(name, id)) {
+    if (!zcl_hex_decode_lower(name, id, 32)) {
         s->corrupt++;
         return;
     }
@@ -972,7 +932,7 @@ enum vcs_badge_persist_error vcs_badge_store_persist(
         return VCS_BADGE_PERSIST_IO;
     }
     char id_hex[65];
-    vcs_badge_hex_encode(id, 32, id_hex);
+    zcl_hex_encode(id, 32, id_hex);
     char path[4400];
     int n = snprintf(path, sizeof(path), "%s/%s", s->root, id_hex);
     if (n <= 0 || (size_t)n >= sizeof(path)) {
@@ -1170,7 +1130,7 @@ enum vcs_badge_plan_persist_error vcs_badge_plan_persist(
         return VCS_BADGE_PLAN_PERSIST_IO;
     }
     char id_hex[65];
-    vcs_badge_hex_encode(plan->plan_id, 32, id_hex);
+    zcl_hex_encode(plan->plan_id, 32, id_hex);
     char path[4400];
     int n = snprintf(path, sizeof(path), "%s/%s", dir, id_hex);
     if (n <= 0 || (size_t)n >= sizeof(path)) {
@@ -1208,7 +1168,7 @@ int vcs_badge_plan_read(const struct vcs_badge_store *s,
     if (!s || !plan_id || !out)
         return -1;
     char id_hex[65];
-    vcs_badge_hex_encode(plan_id, 32, id_hex);
+    zcl_hex_encode(plan_id, 32, id_hex);
     char path[4400];
     int n = snprintf(path, sizeof(path), "%s/plans/%s", s->root, id_hex);
     if (n <= 0 || (size_t)n >= sizeof(path))
@@ -1279,7 +1239,7 @@ bool vcs_badge_commit_record_write(struct vcs_badge_store *s,
         p += 32;
     }
     char id_hex[65];
-    vcs_badge_hex_encode(plan_id, 32, id_hex);
+    zcl_hex_encode(plan_id, 32, id_hex);
     char path[4400];
     int n = snprintf(path, sizeof(path), "%s/%s", dir, id_hex);
     bool ok = n > 0 && (size_t)n < sizeof(path) &&
@@ -1302,7 +1262,7 @@ size_t vcs_badge_commit_record_badges(const struct vcs_badge_store *s,
     if (!s || !plan_id)
         return 0;
     char id_hex[65];
-    vcs_badge_hex_encode(plan_id, 32, id_hex);
+    zcl_hex_encode(plan_id, 32, id_hex);
     char path[4400];
     int n = snprintf(path, sizeof(path), "%s/commits/%s", s->root, id_hex);
     if (n <= 0 || (size_t)n >= sizeof(path))

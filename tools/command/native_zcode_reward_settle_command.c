@@ -31,6 +31,7 @@
  * node. Claims (manual categories) queue with their evidence root but are
  * blocked from settlement with owner-review-required until slice 14. */
 
+#include "base/hex.h"
 #include "command/native_command.h"
 
 #include "json/json.h"
@@ -102,7 +103,7 @@ static bool zs8_plan_id_input(const struct zcl_command_request *request,
                               uint8_t plan_id[32])
 {
     const char *hex = zs8_input_str(request->input, "plan_id");
-    if (!hex || !vcs_reward_hex_decode32(hex, plan_id)) {
+    if (!hex || !zcl_hex_decode(hex, plan_id, 32)) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INVALID, "BAD_PLAN_ID",
                                "normalize", false, false,
@@ -141,11 +142,11 @@ static void zs8_push_entry_row(struct json_value *row,
                                const struct vcs_reward_entry *e)
 {
     char hex[67];
-    vcs_reward_hex_encode(e->entry_id, 32, hex);
+    zcl_hex_encode(e->entry_id, 32, hex);
     (void)json_push_kv_str(row, "entry_id", hex);
-    vcs_reward_hex_encode(e->release_root, 32, hex);
+    zcl_hex_encode(e->release_root, 32, hex);
     (void)json_push_kv_str(row, "release_root", hex);
-    vcs_reward_hex_encode(e->contributor, 33, hex);
+    zcl_hex_encode(e->contributor, 33, hex);
     (void)json_push_kv_str(row, "contributor", hex);
     (void)json_push_kv_str(row, "kind", vcs_reward_kind_string(e->kind));
     (void)json_push_kv_str(row, "category",
@@ -154,15 +155,15 @@ static void zs8_push_entry_row(struct json_value *row,
     (void)json_push_kv_str(row, "state",
                            vcs_reward_state_string(e->state));
     if (e->has_evidence_root) {
-        vcs_reward_hex_encode(e->evidence_root, 32, hex);
+        zcl_hex_encode(e->evidence_root, 32, hex);
         (void)json_push_kv_str(row, "evidence_root", hex);
     }
     if (e->state == VCS_REWARD_STATE_PLANNED) {
-        vcs_reward_hex_encode(e->planned_by, 32, hex);
+        zcl_hex_encode(e->planned_by, 32, hex);
         (void)json_push_kv_str(row, "planned_by", hex);
     }
     if (e->state == VCS_REWARD_STATE_SETTLED) {
-        vcs_reward_hex_encode(e->settled_by_plan, 32, hex);
+        zcl_hex_encode(e->settled_by_plan, 32, hex);
         (void)json_push_kv_str(row, "settled_by", hex);
         (void)json_push_kv_int(row, "settled_day",
                                (int64_t)e->settled_day);
@@ -335,7 +336,7 @@ void zcl_native_handle_zcode_reward_plan(
     }
 
     char hex[67];
-    vcs_reward_hex_encode(plan.plan_id, 32, hex);
+    zcl_hex_encode(plan.plan_id, 32, hex);
     (void)json_push_kv_str(&reply->data, "plan_id", hex);
     (void)json_push_kv_int(&reply->data, "day", (int64_t)plan.day);
     (void)json_push_kv_bool(&reply->data, "already_persisted",
@@ -388,10 +389,10 @@ void zcl_native_handle_zcode_reward_plan(
         struct json_value row;
         json_init(&row);
         json_set_object(&row);
-        vcs_reward_hex_encode(plan.rows[i].entry_id, 32, hex);
+        zcl_hex_encode(plan.rows[i].entry_id, 32, hex);
         (void)json_push_kv_str(&row, "entry_id", hex);
         if (e) {
-            vcs_reward_hex_encode(e->contributor, 33, hex);
+            zcl_hex_encode(e->contributor, 33, hex);
             (void)json_push_kv_str(&row, "contributor", hex);
             (void)json_push_kv_str(&row, "category",
                                    vcs_reward_category_string(e->category));
@@ -425,7 +426,7 @@ void zcl_native_handle_zcode_reward_plan(
         struct json_value row;
         json_init(&row);
         json_set_object(&row);
-        vcs_reward_hex_encode(plan.rows[i].entry_id, 32, hex);
+        zcl_hex_encode(plan.rows[i].entry_id, 32, hex);
         (void)json_push_kv_str(&row, "entry_id", hex);
         (void)json_push_kv_str(
             &row, "disposition",
@@ -480,7 +481,7 @@ void zcl_native_handle_zcode_reward_commit(
         return;
     }
     char plan_hex[65];
-    vcs_reward_hex_encode(plan_id, 32, plan_hex);
+    zcl_hex_encode(plan_id, 32, plan_hex);
 
     char detail[256];
     struct vcs_reward_commit_result result;
@@ -577,7 +578,7 @@ void zcl_native_handle_zcode_reward_receipt(
         return;
     }
     char plan_hex[65];
-    vcs_reward_hex_encode(plan_id, 32, plan_hex);
+    zcl_hex_encode(plan_id, 32, plan_hex);
 
     struct vcs_reward_receipt receipt;
     enum vcs_reward_receipt_error rerr =
@@ -608,7 +609,7 @@ void zcl_native_handle_zcode_reward_receipt(
     (void)json_push_kv_str(&reply->data, "plan_id", plan_hex);
     (void)json_push_kv_int(&reply->data, "day", (int64_t)receipt.day);
     char token_hex[65];
-    vcs_reward_hex_encode(receipt.token_id, 32, token_hex);
+    zcl_hex_encode(receipt.token_id, 32, token_hex);
     (void)json_push_kv_str(&reply->data, "placeholder_token_id", token_hex);
     (void)json_push_kv_int(&reply->data, "settled_count",
                            (int64_t)receipt.settled_count);
@@ -625,9 +626,9 @@ void zcl_native_handle_zcode_reward_receipt(
         json_init(&row);
         json_set_object(&row);
         char hex[67];
-        vcs_reward_hex_encode(r->entry_id, 32, hex);
+        zcl_hex_encode(r->entry_id, 32, hex);
         (void)json_push_kv_str(&row, "entry_id", hex);
-        vcs_reward_hex_encode(r->contributor, 33, hex);
+        zcl_hex_encode(r->contributor, 33, hex);
         (void)json_push_kv_str(&row, "contributor", hex);
         (void)json_push_kv_str(&row, "category",
                                vcs_reward_category_string(r->category));

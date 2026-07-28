@@ -25,6 +25,7 @@
  * engine's resume replay picks the record up at the next hosting boot.
  * Every rejection names the exact rule. */
 
+#include "base/hex.h"
 #include "command/native_command.h"
 
 #include "json/json.h"
@@ -89,7 +90,7 @@ static bool zw_root(const struct zcl_command_request *request,
                     uint8_t out[32])
 {
     const char *hex = zw_input_str(request->input, "root");
-    if (!hex || !vcs_reward_hex_decode32(hex, out)) {
+    if (!hex || !zcl_hex_decode(hex, out, 32)) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INVALID, "BAD_ROOT",
                                "normalize", false, false,
@@ -205,7 +206,7 @@ void zcl_native_handle_zcode_package_fetch(
     }
 
     char hex[65];
-    vcs_reward_hex_encode(root, 32, hex);
+    zcl_hex_encode(root, 32, hex);
     (void)json_push_kv_str(&reply->data, "package_root", hex);
     (void)json_push_kv_bool(&reply->data, "live", live);
     (void)json_push_kv_bool(&reply->data, "already_complete",
@@ -242,7 +243,7 @@ void zcl_native_handle_zcode_package_peers(
         return;
 
     char hex[65];
-    vcs_reward_hex_encode(root, 32, hex);
+    zcl_hex_encode(root, 32, hex);
     (void)json_push_kv_str(&reply->data, "package_root", hex);
 
     struct vcs_swarm_engine *engine = vcs_swarm_engine_global();
@@ -277,7 +278,7 @@ void zcl_native_handle_zcode_package_peers(
     for (size_t i = 0; i < count; i++) {
         const struct vcs_swarm_peer_info *p = &infos[i];
         char key_hex[67];
-        vcs_reward_hex_encode(p->key, 33, key_hex);
+        zcl_hex_encode(p->key, 33, key_hex);
         struct json_value row;
         json_init(&row);
         json_set_object(&row);
@@ -353,7 +354,7 @@ static void zw_handle_pin(const struct zcl_command_request *request,
     }
 
     char hex[65];
-    vcs_reward_hex_encode(root, 32, hex);
+    zcl_hex_encode(root, 32, hex);
     (void)json_push_kv_str(&reply->data, "package_root", hex);
     (void)json_push_kv_bool(&reply->data, "pinned", pinned);
     (void)json_push_kv_str(&reply->data, "result",

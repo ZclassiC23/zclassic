@@ -7,6 +7,7 @@
 
 #include "vcs/package_verify_policy.h"
 
+#include "base/hex.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -113,14 +114,6 @@ bool vcs_verifier_policy_contains(const struct vcs_verifier_policy *policy,
     return false;
 }
 
-static int policy_hex_nibble(char c)
-{
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
-
 bool vcs_verifier_policy_parse_text(struct vcs_verifier_policy *policy,
                                     const char *text, size_t text_len,
                                     enum vcs_verifier_policy_error *err_out,
@@ -155,8 +148,8 @@ bool vcs_verifier_policy_parse_text(struct vcs_verifier_policy *policy,
         }
         uint8_t key[33];
         for (size_t b = 0; b < 33; b++) {
-            int hi = policy_hex_nibble(text[start + 2 * b]);
-            int lo = policy_hex_nibble(text[start + 2 * b + 1]);
+            int hi = zcl_hex_nibble(text[start + 2 * b], true);
+            int lo = zcl_hex_nibble(text[start + 2 * b + 1], true);
             if (hi < 0 || lo < 0) {
                 if (err_out)
                     *err_out = VCS_VERIFIER_POLICY_ERR_KEY_GRAMMAR;

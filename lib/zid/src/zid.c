@@ -6,6 +6,7 @@
  * one on-chain ZANC anchor commits an unbounded batch. */
 
 #include "zid/zid.h"
+#include "base/serialize_le.h"
 #include "crypto/ed25519.h"
 #include "crypto/sha3.h"
 #include "base/log_macros.h"
@@ -16,20 +17,6 @@
  * body_len:2. The signature (64 bytes) follows the body. */
 #define ZID_PREFIX_LEN 51
 
-static void put_le64(uint8_t *p, uint64_t v)
-{
-    for (int i = 0; i < 8; i++)
-        p[i] = (uint8_t)(v >> (8 * i));
-}
-
-static uint64_t get_le64(const uint8_t *p)
-{
-    uint64_t v = 0;
-    for (int i = 7; i >= 0; i--)
-        v = (v << 8) | p[i];
-    return v;
-}
-
 void zid_blinded_key(uint8_t out[32], const uint8_t master_pubkey[32],
                      uint64_t period)
 {
@@ -37,7 +24,7 @@ void zid_blinded_key(uint8_t out[32], const uint8_t master_pubkey[32],
     uint8_t buf[4 + 32 + 8];
     memcpy(buf, "ZIDB", 4);
     memcpy(buf + 4, master_pubkey, 32);
-    put_le64(buf + 4 + 32, period);
+    zcl_write_u64_le(buf + 4 + 32, period);
     sha3_256(buf, sizeof(buf), out);
 }
 
@@ -50,9 +37,9 @@ static size_t zid_encode_prefix(uint8_t *out, const struct zid_doc *doc)
     out[n++] = ZID_DOC_VERSION;
     memcpy(out + n, doc->master_pubkey, 32);
     n += 32;
-    put_le64(out + n, doc->seq);
+    zcl_write_u64_le(out + n, doc->seq);
     n += 8;
-    put_le64(out + n, doc->expiry);
+    zcl_write_u64_le(out + n, doc->expiry);
     n += 8;
     out[n++] = (uint8_t)(doc->body_len & 0xff);
     out[n++] = (uint8_t)(doc->body_len >> 8);
@@ -101,8 +88,8 @@ bool zid_doc_decode(struct zid_doc *doc, const uint8_t *buf, size_t len)
                  len, body_len, ZID_PREFIX_LEN + (size_t)body_len + 64);
 
     memcpy(doc->master_pubkey, buf + 1, 32);
-    doc->seq = get_le64(buf + 33);
-    doc->expiry = get_le64(buf + 41);
+    doc->seq = zcl_read_u64_le(buf + 33);
+    doc->expiry = zcl_read_u64_le(buf + 41);
     doc->body_len = body_len;
     memcpy(doc->body, buf + ZID_PREFIX_LEN, body_len);
     memcpy(doc->signature, buf + ZID_PREFIX_LEN + body_len, 64);
@@ -472,9 +459,9 @@ size_t zid_proof_encode(uint8_t *out, size_t out_len, uint64_t index,
 
     size_t n = 0;
     out[n++] = ZID_PROOF_VERSION;
-    put_le64(out + n, index);
+    zcl_write_u64_le(out + n, index);
     n += 8;
-    put_le64(out + n, num_leaves);
+    zcl_write_u64_le(out + n, num_leaves);
     n += 8;
     out[n++] = (uint8_t)(proof_len & 0xff);
     out[n++] = (uint8_t)(proof_len >> 8);
@@ -510,8 +497,8 @@ bool zid_proof_decode(uint64_t *index, uint64_t *num_leaves,
                  "proof_decode: len %zu does not match proof_len %u (want exactly %zu)",
                  len, plen, ZID_PROOF_HDR_LEN + (size_t)plen * 32);
 
-    *index = get_le64(buf + 1);
-    *num_leaves = get_le64(buf + 9);
+    *index = zcl_read_u64_le(buf + 1);
+    *num_leaves = zcl_read_u64_le(buf + 9);
     *proof_len = plen;
     for (uint32_t i = 0; i < plen; i++)
         memcpy(proof_siblings[i], buf + ZID_PROOF_HDR_LEN + (size_t)i * 32, 32);

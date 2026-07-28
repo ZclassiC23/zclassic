@@ -24,6 +24,7 @@
  * only — same bytes, same score. These commands are read-only; nothing
  * here accrues, queues, or settles a reward. */
 
+#include "base/hex.h"
 #include "command/native_command.h"
 
 #include "base/safe_alloc.h"
@@ -61,46 +62,6 @@ static const char *zr_datadir(const struct zcl_command_request *request)
         return dd;
     dd = zcl_native_command_datadir();
     return (dd && dd[0]) ? dd : NULL;
-}
-
-static void zr_hex_encode(const uint8_t *in, size_t len, char *out)
-{
-    static const char hexd[] = "0123456789abcdef";
-    for (size_t i = 0; i < len; i++) {
-        out[2 * i]     = hexd[(in[i] >> 4) & 0xf];
-        out[2 * i + 1] = hexd[in[i] & 0xf];
-    }
-    out[2 * len] = '\0';
-}
-
-/* Strict hex decode: even length, 1..out_cap bytes. */
-static bool zr_hex_decode(const char *hex, uint8_t *out, size_t out_cap,
-                          size_t *out_len)
-{
-    if (!hex || !out)
-        return false;
-    size_t n = strlen(hex);
-    if (n == 0 || (n & 1u) != 0 || n / 2 > out_cap)
-        return false;
-    for (size_t i = 0; i < n / 2; i++) {
-        unsigned v = 0;
-        for (size_t j = 0; j < 2; j++) {
-            char ch = hex[2 * i + j];
-            v <<= 4;
-            if (ch >= '0' && ch <= '9')
-                v |= (unsigned)(ch - '0');
-            else if (ch >= 'a' && ch <= 'f')
-                v |= (unsigned)(ch - 'a' + 10);
-            else if (ch >= 'A' && ch <= 'F')
-                v |= (unsigned)(ch - 'A' + 10);
-            else
-                return false;
-        }
-        out[i] = (uint8_t)v;
-    }
-    if (out_len)
-        *out_len = n / 2;
-    return true;
 }
 
 /* Read one bounded file fully (allocates *out; caller frees). False when
@@ -169,7 +130,7 @@ static bool zr_target_load(const struct zcl_command_request *request,
     const char *root_hex = zr_input_str(request->input, "root");
     uint8_t root[32];
     size_t root_len = 0;
-    if (!root_hex || !zr_hex_decode(root_hex, root, 32, &root_len) ||
+    if (!root_hex || !zcl_hex_decode_n(root_hex, root, 32, &root_len) ||
         root_len != 32) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INVALID, "BAD_ROOT",
@@ -275,7 +236,7 @@ static bool zr_read_file_content(const char *zcode_dir,
     size_t off = 0;
     for (uint32_t c = 0; c < file->chunk_count; c++) {
         char hex[65];
-        zr_hex_encode(file->chunk_hashes + 32u * c, 32, hex);
+        zcl_hex_encode(file->chunk_hashes + 32u * c, 32, hex);
         char path[4400];
         int n = snprintf(path, sizeof(path), "%s/cas/sha3/%.2s/%s",
                          zcode_dir, hex, hex);
@@ -328,7 +289,7 @@ static bool zr_lineage_absorb(const struct zr_target *t,
             break;
         }
         char parent_hex[65];
-        zr_hex_encode(cur.parent_root, 32, parent_hex);
+        zcl_hex_encode(cur.parent_root, 32, parent_hex);
         char path[4400];
         snprintf(path, sizeof(path), "%s/releases/%s", t->zcode_dir,
                  parent_hex);
@@ -345,7 +306,7 @@ static bool zr_lineage_absorb(const struct zr_target *t,
         }
         free(wire);
         char proot_hex[65];
-        zr_hex_encode(parent.package_root, 32, proot_hex);
+        zcl_hex_encode(parent.package_root, 32, proot_hex);
         snprintf(path, sizeof(path), "%s/manifests/%s", t->zcode_dir,
                  proot_hex);
         wire = NULL;
@@ -474,7 +435,7 @@ void zcl_native_handle_zcode_reward_score(
     }
 
     char pub_hex[67];
-    zr_hex_encode(t.release.publisher_pubkey, 33, pub_hex);
+    zcl_hex_encode(t.release.publisher_pubkey, 33, pub_hex);
     (void)json_push_kv_str(&reply->data, "name", t.release.name);
     (void)json_push_kv_str(&reply->data, "semver", t.release.semver);
     (void)json_push_kv_str(&reply->data, "release_id", t.release_id_hex);
@@ -664,7 +625,7 @@ void zcl_native_handle_zcode_reward_eligible(
         in.chunks_total += f->chunk_count;
         for (uint32_t c = 0; c < f->chunk_count; c++) {
             char hex[65];
-            zr_hex_encode(f->chunk_hashes + 32u * c, 32, hex);
+            zcl_hex_encode(f->chunk_hashes + 32u * c, 32, hex);
             char path[4400];
             int n = snprintf(path, sizeof(path), "%s/cas/sha3/%.2s/%s",
                              t.zcode_dir, hex, hex);
@@ -708,7 +669,7 @@ void zcl_native_handle_zcode_reward_eligible(
                  "root release (no parent)");
     } else {
         char parent_hex[65];
-        zr_hex_encode(t.release.parent_root, 32, parent_hex);
+        zcl_hex_encode(t.release.parent_root, 32, parent_hex);
         char path[4400];
         snprintf(path, sizeof(path), "%s/releases/%s", t.zcode_dir,
                  parent_hex);
@@ -778,7 +739,7 @@ void zcl_native_handle_zcode_reward_eligible(
             while ((ent = readdir(dir)) != NULL) {
                 uint8_t scratch[32];
                 size_t scratch_len = 0;
-                if (!zr_hex_decode(ent->d_name, scratch, 32,
+                if (!zcl_hex_decode_n(ent->d_name, scratch, 32,
                                    &scratch_len) ||
                     scratch_len != 32)
                     continue;
@@ -812,7 +773,7 @@ void zcl_native_handle_zcode_reward_eligible(
     if (policy_loaded) {
         uint8_t root[32];
         size_t root_len = 0;
-        (void)zr_hex_decode(t.root_hex, root, 32, &root_len);
+        (void)zcl_hex_decode_n(t.root_hex, root, 32, &root_len);
         vcs_verify_evaluate(candidates, candidate_count, root,
                             t.release.recipe_root,
                             t.release.publisher_pubkey, &policy, &quorum);
@@ -847,7 +808,7 @@ void zcl_native_handle_zcode_reward_eligible(
     vcs_reward_eligibility_evaluate(&in, &elig);
 
     char pub_hex[67];
-    zr_hex_encode(t.release.publisher_pubkey, 33, pub_hex);
+    zcl_hex_encode(t.release.publisher_pubkey, 33, pub_hex);
     (void)json_push_kv_str(&reply->data, "name", t.release.name);
     (void)json_push_kv_str(&reply->data, "semver", t.release.semver);
     (void)json_push_kv_str(&reply->data, "release_id", t.release_id_hex);

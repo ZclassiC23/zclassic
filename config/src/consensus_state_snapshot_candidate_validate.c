@@ -5,6 +5,7 @@
 #include "consensus_state_snapshot_install_internal.h"
 #include "consensus_state_sqlite_text.h"
 
+#include "base/serialize_le.h"
 #include "coins/utxo_commitment.h"
 #include "core/amount.h"
 #include "core/serialize.h"
@@ -575,14 +576,6 @@ bool consensus_state_snapshot_destination_nullifiers_valid(
            memcmp(digest, m->nullifier_digest, 32) == 0;
 }
 
-static int64_t le64_decode(const uint8_t value[8])
-{
-    uint64_t decoded = 0;
-    for (size_t i = 0; i < 8; i++)
-        decoded |= (uint64_t)value[i] << (8u * i);
-    return (int64_t)decoded;
-}
-
 static bool candidate_meta_value(sqlite3 *db, const char *key,
                                  uint8_t *value, size_t capacity,
                                  size_t *size_out)
@@ -638,12 +631,12 @@ static bool candidate_reducer_state(
     (candidate_meta_value(db, (key), value, sizeof(value), &size) && \
      size == (length) && (expression))
     ok = META_EQ("coins_applied_height", 8,
-                 le64_decode(value) == (int64_t)m->height + 1) &&
+                 zcl_read_i64_le(value) == (int64_t)m->height + 1) &&
          META_EQ("coins_kv_migration_complete", 1, value[0] == 1) &&
          META_EQ("coins_kv_self_folded", 1, value[0] == 1) &&
          META_EQ(NULLIFIER_BACKFILL_ACTIVATION_KEY, 1, value[0] == '0') &&
          META_EQ(REDUCER_TRUSTED_BASE_HEIGHT_KEY, 8,
-                 le64_decode(value) == m->height) &&
+                 zcl_read_i64_le(value) == m->height) &&
          META_EQ(REDUCER_TRUSTED_BASE_HASH_KEY, 32,
                  memcmp(value, m->block_hash, 32) == 0);
 #undef META_EQ

@@ -26,6 +26,7 @@
  * permanent denial). Every policy constant in the replies is the frozen
  * table from lib/vcs/package_policy.*. */
 
+#include "base/hex.h"
 #include "command/native_command.h"
 
 #include "json/json.h"
@@ -103,7 +104,7 @@ static int zs_pubkey(const struct zcl_command_request *request,
     const char *hex = zs_input_str(request->input, "pubkey");
     if (!hex || !hex[0])
         return 0;
-    if (!vcs_reward_hex_decode33(hex, out)) {
+    if (!zcl_hex_decode(hex, out, 33)) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INVALID, "BAD_PUBKEY",
                                "normalize", false, false,
@@ -300,7 +301,7 @@ void zcl_native_handle_zcode_seed_status(
         if (!vcs_service_key_totals(book, key, day, &kt))
             continue;
         char hex[67];
-        vcs_reward_hex_encode(key, 33, hex);
+        zcl_hex_encode(key, 33, hex);
         enum vcs_policy_tier tier =
             vcs_policy_tier_for(ct.earned_score,
                                 kt.verified_bytes_uploaded,
@@ -433,7 +434,7 @@ void zcl_native_handle_zcode_seed_ratio(
         if (!vcs_service_key_totals(book, key, -1, &kt))
             continue;
         char hex[67];
-        vcs_reward_hex_encode(key, 33, hex);
+        zcl_hex_encode(key, 33, hex);
         struct json_value row;
         json_init(&row);
         json_set_object(&row);

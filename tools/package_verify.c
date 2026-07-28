@@ -88,6 +88,7 @@
 #include "vcs/package_recipe.h"
 #include "vcs/package_release.h"
 
+#include "base/hex.h"
 #include "platform/clock.h"
 #include "platform/os_sandbox.h"
 #include "support/cleanse.h"
@@ -168,35 +169,6 @@ static void pv_usage(FILE *out)
 }
 
 /* ── small utilities ────────────────────────────────────────────────── */
-
-static bool pv_hex_decode32(const char *hex, uint8_t out[32])
-{
-    if (!hex || strlen(hex) != 64)
-        return false;
-    for (size_t i = 0; i < 32; i++) {
-        unsigned v = 0;
-        for (size_t j = 0; j < 2; j++) {
-            char c = hex[2 * i + j];
-            v <<= 4;
-            if (c >= '0' && c <= '9') v |= (unsigned)(c - '0');
-            else if (c >= 'a' && c <= 'f') v |= (unsigned)(c - 'a' + 10);
-            else if (c >= 'A' && c <= 'F') v |= (unsigned)(c - 'A' + 10);
-            else return false;
-        }
-        out[i] = (uint8_t)v;
-    }
-    return true;
-}
-
-static void pv_hex_encode(const uint8_t *in, size_t len, char *out)
-{
-    static const char hexd[] = "0123456789abcdef";
-    for (size_t i = 0; i < len; i++) {
-        out[2 * i]     = hexd[(in[i] >> 4) & 0xf];
-        out[2 * i + 1] = hexd[in[i] & 0xf];
-    }
-    out[2 * len] = '\0';
-}
 
 static bool pv_mkdir_p(const char *path, mode_t mode)
 {
@@ -622,7 +594,7 @@ static bool pv_load_release(const char *store_dir,
     size_t scanned = 0;
     while ((ent = readdir(d)) != NULL && scanned < 4096) {
         uint8_t scratch[32];
-        if (!pv_hex_decode32(ent->d_name, scratch))
+        if (!zcl_hex_decode_lower(ent->d_name, scratch, 32))
             continue;
         scanned++;
         char path[4096];
@@ -828,7 +800,7 @@ int main(int argc, char **argv)
         return 2;
     }
     uint8_t package_root[32];
-    if (!pv_hex_decode32(root_hex, package_root)) {
+    if (!zcl_hex_decode(root_hex, package_root, 32)) {
         fprintf(stderr, "%s: bad package root (want 64 hex)\n", PV_LOG);
         return 2;
     }
@@ -903,7 +875,7 @@ int main(int argc, char **argv)
     key_hex[64] = '\0';
     free(key_text);
     uint8_t secret[32];
-    if (!pv_hex_decode32(key_hex, secret)) {
+    if (!zcl_hex_decode(key_hex, secret, 32)) {
         fprintf(stderr, "%s: key file is not 64 hex chars\n", PV_LOG);
         return 3;
     }
@@ -934,7 +906,7 @@ int main(int argc, char **argv)
         return 3;
     }
     char root_hex64[65];
-    pv_hex_encode(package_root, 32, root_hex64);
+    zcl_hex_encode(package_root, 32, root_hex64);
     int mn = snprintf(probe, sizeof(probe), "%s/manifests/%s", store_dir,
                       root_hex64);
     size_t manifest_wire_len = 0;
@@ -967,7 +939,7 @@ int main(int argc, char **argv)
         return 3;
     }
     char recipe_root_hex[65];
-    pv_hex_encode(release.recipe_root, 32, recipe_root_hex);
+    zcl_hex_encode(release.recipe_root, 32, recipe_root_hex);
     int rn = snprintf(probe, sizeof(probe), "%s/recipes/%s", store_dir,
                       recipe_root_hex);
     size_t recipe_wire_len = 0;
@@ -1019,7 +991,7 @@ int main(int argc, char **argv)
         const struct vcs_package_file *f = &manifest.files[i];
         for (uint32_t c = 0; c < f->chunk_count; c++) {
             char hex[65];
-            pv_hex_encode(f->chunk_hashes + (size_t)c * 32u, 32, hex);
+            zcl_hex_encode(f->chunk_hashes + (size_t)c * 32u, 32, hex);
             int cn = snprintf(probe, sizeof(probe), "%s/cas/sha3/%.2s/%s",
                               store_dir, hex, hex);
             if (cn < 0 || (size_t)cn >= sizeof(probe) ||
@@ -1105,7 +1077,7 @@ int main(int argc, char **argv)
         }
         for (uint32_t c = 0; c < f->chunk_count; c++) {
             char hex[65];
-            pv_hex_encode(f->chunk_hashes + (size_t)c * 32u, 32, hex);
+            zcl_hex_encode(f->chunk_hashes + (size_t)c * 32u, 32, hex);
             char chunk_path[4200];
             snprintf(chunk_path, sizeof(chunk_path), "%s/cas/sha3/%.2s/%s",
                      store_dir, hex, hex);
@@ -1597,7 +1569,7 @@ int main(int argc, char **argv)
         return 5;
     }
     char attest_id_hex[65];
-    pv_hex_encode(attest_id, 32, attest_id_hex);
+    zcl_hex_encode(attest_id, 32, attest_id_hex);
     char dest[4200];
     int dn = snprintf(dest, sizeof(dest), "%s/attestations/%s", store_dir,
                       attest_id_hex);

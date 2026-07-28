@@ -638,6 +638,8 @@ current green tree.
 | Gate | Mode | Intent / baseline / override |
 |------|------|------------------------------|
 | **E1: `check-file-size-ceiling`** | RATCHET | No `app/**/*.c` exceeds **800 lines** (caps mega-modules hiding behind many <500-LOC functions). Baseline `file_size_ceiling_baseline.txt` (`<path> <max-loc>`; may only shrink) IS the visible escape hatch — no inline override. |
+| **`check-hex-codec-single`** | RATCHET | Base-16 encode/decode lives only in `lib/base/include/base/hex.h` (`zcl_hex_encode`, `zcl_hex_decode`, `zcl_hex_decode_lower`, `zcl_hex_decode_n`, `zcl_hex_nibble`). Per-file shape detectors: a hex-digit table **plus** a high-nibble index (encoder), or nibble-ladder arithmetic / `sscanf("%2x")` (decoder). Baseline `tools/lint/hex_codec_baseline.txt` (one path per line; may only shrink, and a row that no longer matches must be deleted). `lib/base/` is the canonical home; `lib/test/` is excluded because a known-answer fixture must not parse its vectors with the implementation under test. No inline override — the fix is to call the codec. `--selftest` plants a fresh encoder and decoder and requires the scan to reject them. |
+| **`check-byte-order-codec-single`** | RATCHET | Packing/unpacking a fixed-width 16/32/64-bit integer at a byte address lives only in `lib/base/include/base/serialize_le.h` (`zcl_write_u{16,32,64}_le` / `zcl_read_u{16,32,64}_le`, the `i32`/`i64` forms, and the `u32`/`u64` big-endian pair); `crypto/common.h`'s `ReadLE`/`WriteLE` forward to it. Per-file shape detectors: an indexed shift loop (`>> (8 * i)` in either operand order), an unrolled ladder (a shift by 24 or 56 **plus** a byte-array subscript on the same line — a bare `>> 24` is ordinary bit work and does not match), or a hand-rolled byte-swap mask. Baseline `tools/lint/byte_order_codec_baseline.txt` (one path per line; may only shrink, and a row that no longer matches must be deleted). `lib/base/` is the canonical home; `lib/test/` is excluded because `test_byte_order_codec.c` deliberately keeps a verbatim copy of every replaced helper and asserts the canonical functions agree with it byte for byte; `core/` is excluded because it is byte-sealed. No inline override — the fix is to call the codec. `--selftest` plants each detected shape and requires rejection, plus innocent bit work and a canonical caller and requires acceptance. |
 | **E2: `check-one-result-type`** | RATCHET | New `app/services/src/*.c` reference `struct zcl_result` (§2) instead of bare bool/int. File-granularity. Baseline `one_result_type_baseline.txt` (empty; 9 originals migrated). Override `// one-result-type-ok:<tag>` (pure table/registry helper). |
 | **`check-service-result-convergence`** | RATCHET | Phase 3 sibling to E2: counts *exported* (non-static, top-level) bare-bool function DEFINITIONS per `app/services/src/*.c` file, so a file cannot stay E2-clean forever while still exporting legacy bool functions alongside its one `zcl_result` use. Baseline `service_result_convergence_baseline.txt` (`<path> <count>`; may only shrink; a file whose live count reaches 0, or that gains the `// one-result-type-ok:<tag>` marker, must be deleted from it). Same override marker as E2. Inventory + lane plan: `docs/work/service-result-convergence.md`. |
 | **E3: `check-shape-includes-header`** | HARD | A shape file must include its shape contract header: conditions → `"framework/condition.h"` or `"conditions/"`; models → a `"models/"` header (pulls AR lifecycle); supervisors → `"supervisors/"` or `"util/supervisor.h"`. `app/jobs/` skipped (no `job.h` yet). Override `// shape-include-ok:<tag>`. |
@@ -738,6 +740,7 @@ add/remove a gate.
 
 <!-- LINT-GATES-BEGIN -->
 - `check-blob-read-bounds`
+- `check-byte-order-codec-single`
 - `check-api-reference-generated`
 - `check-before-save-hooks`
 - `check-build-epoch-integrity`
@@ -792,6 +795,7 @@ add/remove a gate.
 - `check-no-stray-untracked-source`
 - `check-no-stray-root-files`
 - `check-observability-pairing`
+- `check-hex-codec-single`
 - `check-one-result-type`
 - `check-one-write-path`
 - `check-frontier-single-writer`

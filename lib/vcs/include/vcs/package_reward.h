@@ -416,10 +416,4 @@ void vcs_reward_contributor_totals(const struct vcs_reward_ledger *l,
                                    const uint8_t contributor[33],
                                    struct vcs_reward_contributor_totals *out);
 
-/* ── small helpers ──────────────────────────────────────────────────── */
-
-void vcs_reward_hex_encode(const uint8_t *in, size_t len, char *out);
-bool vcs_reward_hex_decode32(const char *hex, uint8_t out[32]);
-bool vcs_reward_hex_decode33(const char *hex, uint8_t out[33]);
-
 #endif /* ZCL_VCS_PACKAGE_REWARD_H */

@@ -9,6 +9,8 @@
 #ifndef ZCL_VIEWS_ZCODE_VIEW_INTERNAL_H
 #define ZCL_VIEWS_ZCODE_VIEW_INTERNAL_H
 
+#include "base/hex.h"
+
 #include "views/zcode_view.h"
 #include "views/site_css.h"    /* site_css (design system) */
 #include "views/site_layout.h" /* shared head/nav/footer */
@@ -40,17 +42,6 @@ static inline int zcode_body_end(char *buf, size_t max)
     SITE_APPEND(off, buf, max, "</main>");
     off += site_emit_footer(buf + off, max - off, NULL);
     return (int)off;
-}
-
-/* Lowercase hex encode (out is 2*len+1 bytes). */
-static inline void zcode_hex(const uint8_t *in, size_t len, char *out)
-{
-    static const char hexd[] = "0123456789abcdef";
-    for (size_t i = 0; i < len; i++) {
-        out[2 * i]     = hexd[(in[i] >> 4) & 0xf];
-        out[2 * i + 1] = hexd[in[i] & 0xf];
-    }
-    out[2 * len] = '\0';
 }
 
 #endif /* ZCL_VIEWS_ZCODE_VIEW_INTERNAL_H */

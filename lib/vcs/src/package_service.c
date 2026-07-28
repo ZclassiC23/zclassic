@@ -9,6 +9,7 @@
 
 #include "vcs/package_service.h"
 
+#include "base/hex.h"
 #include "base/log_macros.h"
 #include "base/safe_alloc.h"
 #include "crypto/sha3.h"
@@ -43,37 +44,10 @@ enum {
 
 /* ── small helpers ──────────────────────────────────────────────────── */
 
-static void svc_hex_enc(const uint8_t *in, size_t len, char *out)
-{
-    static const char hexd[] = "0123456789abcdef";
-    for (size_t i = 0; i < len; i++) {
-        out[2 * i]     = hexd[(in[i] >> 4) & 0xf];
-        out[2 * i + 1] = hexd[in[i] & 0xf];
-    }
-    out[2 * len] = '\0';
-}
-
-static bool svc_hex_decode(const char *hex, uint8_t *out, size_t want)
-{
-    for (size_t i = 0; i < want; i++) {
-        unsigned v;
-        if (sscanf(hex + 2 * i, "%2x", &v) != 1)
-            return false;
-        out[i] = (uint8_t)v;
-    }
-    return true;
-}
-
 static bool svc_name_is_hex64(const char *name)
 {
-    if (strlen(name) != 64)
-        return false;
-    for (size_t i = 0; i < 64; i++) {
-        char c = name[i];
-        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
-            return false;
-    }
-    return true;
+    uint8_t scratch[32];
+    return zcl_hex_decode_lower(name, scratch, 32);
 }
 
 static bool svc_is_zero(const uint8_t *bytes, size_t len)
@@ -639,7 +613,7 @@ struct vcs_service_book *vcs_service_book_load(const char *zcode_dir)
         uint8_t file_id[32], want_id[32];
         if (got != sizeof(wire) || extra != EOF ||
             !svc_wire_decode(wire, got, &e) ||
-            !svc_hex_decode(names[i], file_id, 32)) {
+            !zcl_hex_decode_lower(names[i], file_id, 32)) {
             LOG_WARN(SERVICE_LOG, "skipping corrupt event wire %.16s",
                      names[i]);
             book->corrupt++;
@@ -828,7 +802,7 @@ static bool svc_persist_event(struct vcs_service_book *book,
     if (!svc_mkdir_p(book->events_dir))
         return false; /* logged */
     char hex[65];
-    svc_hex_enc(id, 32, hex);
+    zcl_hex_encode(id, 32, hex);
     char path[4400];
     int pn = snprintf(path, sizeof(path), "%s/%s", book->events_dir, hex);
     if (pn <= 0 || (size_t)pn >= sizeof(path))
