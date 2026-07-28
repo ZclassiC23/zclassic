@@ -329,3 +329,17 @@
 # file_size_ceiling_lib_baseline.txt (1229); count unchanged. connman.c
 # gained ~60 lines walking the onion half of a peer directory response and
 # stays grandfathered at its existing WARN entry.
+#
+# 2026-07-28 (identity/directory wave, merge reconciliation):
+# Three entries BASELINED rather than raising the ceiling, so the recorded
+# count stays 13 and the net move is a tightening:
+#   lib/crypto/src/ed25519.c   993 — batch verification with the per-signature
+#       torsion screen (the cofactorless verifier makes the textbook batch
+#       construction unsound; the screen is the correctness fix, not padding).
+#   lib/util/src/blocker.c     836 — the named blockers the directory-safety
+#       work added; a blocker that cannot be named is the silent halt this
+#       project forbids.
+#   lib/net/src/onion_service.c 1229 -> 1235 — the six lines are the merge of
+#       two lanes' independent edits to the same discovery function, not new
+#       feature growth. The freshness ledger itself landed in the new
+#       under-ceiling lib/net/src/onion_directory.c.

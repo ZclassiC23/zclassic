@@ -21,6 +21,7 @@
 # Format: <relative-path> <max-loc>   (lines starting with # are comments)
 # Sorted by path.
 
+lib/crypto/src/ed25519.c 993
 lib/codeindex/src/codeindex_build.c 999
 lib/codeindex/src/codeindex_scan.c 1032
 lib/codeindex/src/codeindex_store.c 875
@@ -40,7 +41,7 @@ lib/net/src/msgprocessor.c 2472
 lib/net/src/msgprocessor_snapshot.c 2005
 lib/net/src/msgprocessor_snapshot_serve.c 1114
 lib/net/src/net.c 1666
-lib/net/src/onion_service.c 1229
+lib/net/src/onion_service.c 1235
 lib/net/src/peer_lifecycle.c 1779
 lib/net/src/rom_fetch.c 1709
 lib/net/src/rom_seed.c 1043
@@ -65,6 +66,7 @@ lib/validation/src/connect_block.c 896
 lib/wallet/src/wallet.c 1705
 lib/wallet/src/wallet_sqlite.c 1648
 lib/sim/src/simnet_chaos_faults.c 2684
+lib/util/src/blocker.c 836
 lib/util/src/supervisor.c 801
 lib/sync/src/stage.c 819
 src/main_cli_modes.c 3820
