@@ -69,12 +69,12 @@ volatile sig_atomic_t g_shutdown_requested = 0;
 
 #define TEST_LIST(X) \
     X(game) X(crypto) X(crypto_registry) X(encoding) X(test_str_money_codecs) X(chain) \
-    X(pprev_walk) X(chain_tip) X(checkpoint) X(keys) X(test_key_io_codec) \
+    X(pprev_walk) X(chain_tip) X(checkpoint) X(anchor_finality) X(keys) X(test_key_io_codec) \
     X(test_png_writer) X(shared_validators_zcl_address) \
     X(script) X(net) X(netbase_split_host_port) X(transaction) X(mempool) X(accept_to_mempool) X(rpc) X(sqlite) \
     X(activerecord) X(validation) X(sapling_lazy_init) X(sapling) X(sapling_crypto) \
     X(groth16_msm_parity) \
-    X(bn254) X(merkle_tree) X(merkle_malleability) X(slp) X(models) X(core) X(overlay) X(znam) X(znam_site) X(zanc) X(zid) X(zid_identity) X(identity_command) X(zdesc) X(proof_chain) X(htlc) \
+    X(bn254) X(merkle_tree) X(merkle_malleability) X(slp) X(models) X(core) X(overlay) X(znam) X(znam_site) X(zanc) X(zid) X(zid_identity) X(zid_seniority) X(identity_command) X(zdesc) X(proof_chain) X(htlc) \
     X(swap_settlement) \
     X(file_market) X(strong_params) X(json) X(robustness) X(wallet) \
     X(primitives) X(bloom) X(coins) X(store) X(blog) X(api) \
@@ -167,7 +167,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(rpc_timeout) X(wallet_keystore) X(wallet_sqlite_enc) \
     X(zcl_result) X(netaddr_classify) X(wallet_sqlite_open_errors) X(watch_only) \
     X(coin_selection) X(disk_monitor) X(binary_staleness) X(binary_ab_fallback) X(network_monitor) X(network_crawler) X(db_maintenance) \
-    X(mempool_limits) X(addrman_integrity) X(anchor_peers) X(ibd_throttle) \
+    X(mempool_limits) X(addrman_integrity) X(anchor_peers) X(zdir_selection) X(ibd_throttle) \
     X(consensus_reject_events) X(consensus_reject_index) X(blocker_history) \
     X(chain_rollback) X(alerts) X(ws_events) X(trace) X(phgr13_fix) \
     X(sprout_phgr13_kat) \

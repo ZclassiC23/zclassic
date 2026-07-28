@@ -132,7 +132,7 @@ page changing with it.
 <!--   app_shape_folders    = directories directly under app/                        -->
 <!-- Fix a mismatch with `tools/scripts/check_doc_counts.sh --fix`, never by hand.  -->
 
-test_groups: 791
+test_groups: 794
 port_interfaces: 12
 persistence_adapters: 13
 condition_registrations: 50
