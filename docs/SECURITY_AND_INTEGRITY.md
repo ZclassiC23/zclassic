@@ -58,10 +58,23 @@ does not mean.
   fold) path — `utxo_apply_check_and_insert_nullifiers()`
   (`app/jobs/src/utxo_apply_nullifiers.c`): a two-pass check rejects a nullifier
   reused against the durable set or within the same block, then inserts the
-  block's nullifiers only after it validates. The
-  `coins_view_cache_have_joinsplit_requirements()` stub
-  (`lib/coins/src/coins_view.c`, `return true`) is an **interface placeholder**;
-  it is not the enforcement point.
+  block's nullifiers only after it validates.
+- **Shielded anchor membership is enforced** on that same reducer fold path.
+  `coins_view_cache_check_shielded_requirements()`
+  (`lib/coins/src/coins_view.c`) is a real implementation — no longer the
+  `return true` placeholder earlier revisions of this doc described. It
+  resolves every JoinSplit and Sapling Spend anchor through
+  `coins_view_get_anchor()`, honors the empty-tree root as a per-pool
+  constant, and reproduces zclassicd's per-transaction `intermediates` map
+  (an anchor produced by an earlier JoinSplit of the *same* transaction is
+  valid; one produced by an earlier transaction of the same block is not yet
+  pushed). The enforcement point is `app/jobs/src/utxo_apply_anchors.c`;
+  `coins_view_cache_have_joinsplit_requirements()` is now a thin bool wrapper
+  over it. Pinned by `lib/test/src/test_parity_lockin_anchor_membership.c`,
+  registered in `TEST_LIST` as `X(parity_lockin_anchor_membership)`.
+  <!-- claim: symbol-present coins_view_get_anchor lib/coins/src/coins_view.c # membership really resolves anchors -->
+  <!-- claim: symbol-present coins_view_cache_check_shielded_requirements app/jobs/src/utxo_apply_anchors.c # and is really called on the fold path -->
+  <!-- claim: symbol-present parity_lockin_anchor_membership lib/test/src/test_parallel.c # the lock-in test actually runs -->
 - **Groth16 spend/output proofs, the binding signature, and the JoinSplit
   Ed25519 signature are checkpoint-gated ONLY in the legacy `connect_block()`
   path** (`lib/validation/src/connect_block.c`), equivalent to Bitcoin Core's

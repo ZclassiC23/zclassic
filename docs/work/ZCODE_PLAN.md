@@ -111,29 +111,62 @@ idempotent re-settle rejection; reorg of the settlement tx returns the window
 to the queue; estimator output is deterministic for fixed inputs and matches
 the per-action formulas.
 
-## Governance: REVERSED by the owner (2026-07-28) — this section is superseded
+## Governance: IN SCOPE again — owner reversal, 2026-07-28
 
-**Do not act on the paragraph below.** The owner has reversed the 2026-07-27
-"Governance: none" correction: token-weighted voting and GG20 threshold
-ratification are back on the table. Nothing here is scheduled yet and no
-design has been re-approved — treat both the cut and the reversal as owner
-direction, and confirm the current shape with the owner before building any
-governance slice.
+**The 2026-07-27 "Governance: none" cut is reversed.** Token-weighted voting
+and threshold signing are back in scope. The superseded paragraph is preserved
+at the end of this section as the record of what was cut; read it as history,
+never as current direction.
 
-This is a decision, not a code fact, so it carries no `check-doc-claims`
-binding; only the owner can refresh it. The paragraph is kept verbatim below
-as the record of what was cut, and of what the reversal puts back in scope.
+**The one invariant that did not change, and will not:** ZClassic stays pure
+PoW. Governance is an **application-layer signal over ZCODE policy** — the
+verifier-key set, scoring constants, quota defaults, pin lists. It never
+touches block or transaction validity, never gates mining, and never becomes
+an activation mechanism. A node that ignores every ZCODE vote still validates
+the same chain, byte for byte. Consensus parity is not negotiable here; see
+`docs/CONSENSUS_PARITY_DOCTRINE.md`.
 
-ZClassic is pure PoW consensus — **there is no voting, and ZCODE does not
-add one.** An earlier draft of this section sketched token-weighted votes
-(pin lists, quota changes), a `ZGOV` OP_RETURN vote service, a ZNAM
-governance token, and GG20 threshold-signature ratification. All of that is
-cut: no voting machinery, no governance tokens, no threshold-MPC slice.
-ZCODE policy decisions (verifier-key set, scoring constants, quota defaults,
-pin lists) are made by the owner through the same reviewed plan/commit flow
-as rewards and badges. GG20-in-C23 remains a note here only as a possible
-future building block if a concrete multisig need ever appears; nothing is
-scheduled.
+**Voting** returns as that application-layer signal. A vote records
+preference over ZCODE policy and is tallied by ZCODE, not by the consensus
+rules. Nothing about the earlier sketch (a `ZGOV` OP_RETURN service, a ZNAM
+governance token, weighting) is re-approved by this reversal — only the
+*subject* is back on the table. Confirm the shape with the owner before
+building.
+
+**Threshold signing is staged, in dependency order.** Do not start at GG20:
+
+1. **Collective custody first**, on the multisig **already in the consensus
+   script** — `OP_CHECKMULTISIG` is live in `core/consensus/src/script_interp.c`
+   today. Shared control of a ZCODE-owned key needs no new cryptography and no
+   consensus change; it is a wallet-and-policy slice over a primitive the chain
+   already validates.
+2. **GG20's primitives built behind that**, in dependency order, only once
+   collective custody is real and the need for off-chain threshold signing is
+   concrete. GG20 buys a signature indistinguishable from a single-signer one;
+   that is an optimization over step 1, not a prerequisite to it.
+
+Building GG20 before collective custody would be the classic inversion: the
+hard MPC protocol delivered before anyone can demonstrate the custody need it
+serves.
+<!-- claim: symbol-present OP_CHECKMULTISIG core/consensus/src/script_interp.c # stage 1 rides a primitive already in consensus -->
+
+Scheduling is owner-gated and this section carries no schedule. The
+in-scope/out-of-scope call is a *decision*, not a code fact, so it takes no
+`check-doc-claims` binding — only the owner can refresh it. The staging above
+is bound, because "GG20 first" is a mistake the tree can catch.
+
+> **Superseded — 2026-07-27, kept as the record of what was cut:**
+>
+> ZClassic is pure PoW consensus — **there is no voting, and ZCODE does not
+> add one.** An earlier draft of this section sketched token-weighted votes
+> (pin lists, quota changes), a `ZGOV` OP_RETURN vote service, a ZNAM
+> governance token, and GG20 threshold-signature ratification. All of that is
+> cut: no voting machinery, no governance tokens, no threshold-MPC slice.
+> ZCODE policy decisions (verifier-key set, scoring constants, quota defaults,
+> pin lists) are made by the owner through the same reviewed plan/commit flow
+> as rewards and badges. GG20-in-C23 remains a note here only as a possible
+> future building block if a concrete multisig need ever appears; nothing is
+> scheduled.
 
 ## Typed commands (one branch)
 

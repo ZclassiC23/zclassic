@@ -106,6 +106,7 @@ Dependency order (do these first, they unlock the boss): **Q7 → Q6 → Q2 → 
 ## Q5 — observability · 10 pts · ✓ DONE
 - Kept green by: all 3 stage dumpers use `progress_store_tx_trylock` (A2). Do
   not regress — any new dumper that touches the progress store must trylock.
+  <!-- claim: symbol-present progress_store_tx_trylock app/controllers/src # the non-blocking dumper discipline stays -->
 
 ## Q6 — no-silent-stall · 10 pts
 - **📍 now:** the Sapling-tree rebuild LIVELOCKS on the legacy path
@@ -119,6 +120,7 @@ Dependency order (do these first, they unlock the boss): **Q7 → Q6 → Q2 → 
   actually resolves (persist off the reducer connection, or a bounded persist
   window when the reducer returns to autocommit). Same class as memory
   `project_wallet_nodedb_busy_lock`.
+  <!-- claim: file-present app/controllers/src/sync_controller_sapling_tree_persist.c # the livelock site this quest names -->
 
 ## Q7 — no-O(chain)-boot · 10 pts
 - **📍 now:** the bundle install path can still trigger the boot-time Sapling
@@ -130,6 +132,7 @@ Dependency order (do these first, they unlock the boss): **Q7 → Q6 → Q2 → 
   bundle's Sapling frontier/tree so boot detects it present and does NOT arm
   `sapling_tree_rebuild_start_deferred`. Verify the bundle carries a v3
   shielded section (it does); wire the install to land it.
+  <!-- claim: symbol-present sapling_tree_rebuild_start_deferred config/src/boot.c # open while boot can still arm the O(chain) rebuild -->
 
 ## Q8 — enforcement gate · 0 pts, but it LOCKS Q2 · ✓ DONE
 - `tools/scripts/check_frontier_single_writer.sh` exists and is wired into
@@ -137,6 +140,8 @@ Dependency order (do these first, they unlock the boss): **Q7 → Q6 → Q2 → 
   `arch_frontier_owners.tsv` and fails the build if any frontier has a writer
   outside its owner. An executor cannot re-clone a ledger without tripping
   the gate.
+  <!-- claim: file-present tools/scripts/check_frontier_single_writer.sh # the Q8 gate exists -->
+  <!-- claim: gate-passes check-frontier-single-writer # ...and Q8 stays won -->
 
 ---
 

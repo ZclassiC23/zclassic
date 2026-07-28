@@ -246,10 +246,13 @@ detail).
     from `test` at `Makefile:1599`/`1647`). Add the grep security-gate the
     design doc calls for (`docs/work/io-harness-design.md:65-68`): CI-time
     `grep` over `lib/sim/src/simnet_wire*.c` + `tools/sim/*wire*` asserting
-    no `recv(`/`send(`/`socket(`/`connect(`/`bind(`/`getaddrinfo(` — this
-    gate does not exist yet for the wire harness (only the design doc
-    states the intent); add it as a `make check-*` target near the other
-    `check-*` gates.
+    no `recv(`/`send(`/`socket(`/`connect(`/`bind(`/`getaddrinfo(` — **this
+    gate now EXISTS and is wired**: `make check-wire-harness-security-gate`
+    (`tools/scripts/check_wire_harness_security_gate.sh`), in `LINT_GATES` and
+    in `run_lint.sh`. Nothing to add; extend its scan set if the harness grows
+    new files.
+    <!-- claim: file-present tools/scripts/check_wire_harness_security_gate.sh # the gate is built -->
+    <!-- claim: gate-passes check-wire-harness-security-gate # and the harness stays socket-free -->
   - `lib/sim/src/simnet_wire.c` (touch only if capsule replay needs a load
     path — check `seed_tape` API for a load/replay entry point before
     assuming one needs to be added; `lib/sim/src/seed_tape.c` likely already
