@@ -9,6 +9,7 @@
 #include "crypto/ed25519.h"
 #include "crypto/sha3.h"
 #include "base/log_macros.h"
+#include "support/cleanse.h"
 #include <string.h>
 
 /* Fixed wire prefix length: version:1 ‖ pubkey:32 ‖ seq:8 ‖ expiry:8 ‖
@@ -32,11 +33,11 @@ static uint64_t get_le64(const uint8_t *p)
 void zid_blinded_key(uint8_t out[32], const uint8_t master_pubkey[32],
                      uint64_t period)
 {
-    /* "zid-blind" ‖ master_pubkey ‖ period_le64 — 9 + 32 + 8 bytes. */
-    uint8_t buf[9 + 32 + 8];
-    memcpy(buf, "zid-blind", 9);
-    memcpy(buf + 9, master_pubkey, 32);
-    put_le64(buf + 9 + 32, period);
+    /* "ZIDB" ‖ master_pubkey ‖ period_le64 — 4 + 32 + 8 bytes. */
+    uint8_t buf[4 + 32 + 8];
+    memcpy(buf, "ZIDB", 4);
+    memcpy(buf + 4, master_pubkey, 32);
+    put_le64(buf + 4 + 32, period);
     sha3_256(buf, sizeof(buf), out);
 }
 
@@ -152,6 +153,7 @@ bool zid_doc_sign(struct zid_doc *doc, const uint8_t *body, uint16_t body_len,
     uint8_t prefix[ZID_PREFIX_LEN + ZID_BODY_MAX];
     size_t prefix_len = zid_encode_prefix(prefix, doc);
     ed25519_sign(doc->signature, prefix, prefix_len, sk, doc->master_pubkey);
+    memory_cleanse(sk, sizeof(sk)); /* seed copy — do not leave on stack */
     return true;
 }
 
@@ -445,5 +447,204 @@ bool zid_tree_verify(const uint8_t root[32], const uint8_t record_digest[32],
     if (diff != 0)
         LOG_FAIL("zid", "tree_verify: root mismatch (index %llu num_leaves %llu)",
                  (unsigned long long)index, (unsigned long long)num_leaves);
+    return true;
+}
+
+/* ── Canonical proof wire format ─────────────────────────────────── */
+
+#define ZID_PROOF_HDR_LEN 19 /* version:1 ‖ index:8 ‖ num_leaves:8 ‖ proof_len:2 */
+
+size_t zid_proof_encode(uint8_t *out, size_t out_len, uint64_t index,
+                        uint64_t num_leaves,
+                        const uint8_t proof_siblings[][32], uint32_t proof_len)
+{
+    if (!out || (!proof_siblings && proof_len > 0))
+        LOG_RETURN(0, "zid", "proof_encode: NULL argument (out=%p siblings=%p len=%u)",
+                   (void *)out, (const void *)proof_siblings, proof_len);
+    if (proof_len > ZID_TREE_MAX_PEAKS)
+        LOG_RETURN(0, "zid", "proof_encode: proof_len %u exceeds max %d",
+                   proof_len, ZID_TREE_MAX_PEAKS);
+    size_t total = ZID_PROOF_HDR_LEN + (size_t)proof_len * 32;
+    if (out_len < total)
+        LOG_RETURN(0, "zid",
+                   "proof_encode: out_len %zu too small (need %zu for proof_len %u)",
+                   out_len, total, proof_len);
+
+    size_t n = 0;
+    out[n++] = ZID_PROOF_VERSION;
+    put_le64(out + n, index);
+    n += 8;
+    put_le64(out + n, num_leaves);
+    n += 8;
+    out[n++] = (uint8_t)(proof_len & 0xff);
+    out[n++] = (uint8_t)(proof_len >> 8);
+    for (uint32_t i = 0; i < proof_len; i++) {
+        memcpy(out + n, proof_siblings[i], 32);
+        n += 32;
+    }
+    return n;
+}
+
+bool zid_proof_decode(uint64_t *index, uint64_t *num_leaves,
+                      uint8_t proof_siblings[][32], uint32_t *proof_len,
+                      const uint8_t *buf, size_t len)
+{
+    if (!index || !num_leaves || !proof_siblings || !proof_len || !buf)
+        LOG_FAIL("zid", "proof_decode: NULL argument");
+    if (len < ZID_PROOF_HDR_LEN)
+        LOG_FAIL("zid", "proof_decode: len %zu below header minimum %d",
+                 len, ZID_PROOF_HDR_LEN);
+    if (len > ZID_PROOF_WIRE_MAX)
+        LOG_FAIL("zid", "proof_decode: len %zu exceeds ZID_PROOF_WIRE_MAX %d",
+                 len, ZID_PROOF_WIRE_MAX);
+    if (buf[0] != ZID_PROOF_VERSION)
+        LOG_FAIL("zid", "proof_decode: unsupported version %u (want %d)",
+                 buf[0], ZID_PROOF_VERSION);
+
+    uint16_t plen = (uint16_t)buf[17] | ((uint16_t)buf[18] << 8);
+    if (plen > ZID_TREE_MAX_PEAKS)
+        LOG_FAIL("zid", "proof_decode: proof_len %u exceeds max %d",
+                 plen, ZID_TREE_MAX_PEAKS);
+    if (len != ZID_PROOF_HDR_LEN + (size_t)plen * 32)
+        LOG_FAIL("zid",
+                 "proof_decode: len %zu does not match proof_len %u (want exactly %zu)",
+                 len, plen, ZID_PROOF_HDR_LEN + (size_t)plen * 32);
+
+    *index = get_le64(buf + 1);
+    *num_leaves = get_le64(buf + 9);
+    *proof_len = plen;
+    for (uint32_t i = 0; i < plen; i++)
+        memcpy(proof_siblings[i], buf + ZID_PROOF_HDR_LEN + (size_t)i * 32, 32);
+    return true;
+}
+
+/* ── Release record codec ────────────────────────────────────────── */
+
+/* Printable ASCII 0x20..0x7E, no NUL games: len is a C-string bound and
+ * every byte must be in range. */
+static bool zid_release_str_valid(const char *s, size_t max_len, size_t *len_out)
+{
+    if (!s)
+        return false;
+    size_t len = strlen(s);
+    if (len == 0 || len > max_len)
+        return false;
+    for (size_t i = 0; i < len; i++) {
+        uint8_t c = (uint8_t)s[i];
+        if (c < 0x20 || c > 0x7e)
+            return false;
+    }
+    if (len_out)
+        *len_out = len;
+    return true;
+}
+
+size_t zid_release_encode_body(uint8_t *out, size_t out_len,
+                               const struct zid_release *rel)
+{
+    if (!out || !rel)
+        LOG_RETURN(0, "zid", "release_encode: NULL argument (out=%p rel=%p)",
+                   (void *)out, (const void *)rel);
+    size_t name_len, version_len;
+    if (!zid_release_str_valid(rel->name, ZID_RELEASE_NAME_MAX, &name_len))
+        LOG_RETURN(0, "zid",
+                   "release_encode: name must be 1..%d printable ASCII bytes",
+                   ZID_RELEASE_NAME_MAX);
+    if (!zid_release_str_valid(rel->version, ZID_RELEASE_VERSION_MAX,
+                               &version_len))
+        LOG_RETURN(0, "zid",
+                   "release_encode: version must be 1..%d printable ASCII bytes",
+                   ZID_RELEASE_VERSION_MAX);
+
+    size_t total = 4 + 1 + name_len + 1 + version_len + 32;
+    if (out_len < total)
+        LOG_RETURN(0, "zid",
+                   "release_encode: out_len %zu too small (need %zu)",
+                   out_len, total);
+
+    size_t n = 0;
+    memcpy(out + n, "ZIDR", 4);
+    n += 4;
+    out[n++] = (uint8_t)name_len;
+    memcpy(out + n, rel->name, name_len);
+    n += name_len;
+    out[n++] = (uint8_t)version_len;
+    memcpy(out + n, rel->version, version_len);
+    n += version_len;
+    memcpy(out + n, rel->manifest_root, 32);
+    n += 32;
+    return n;
+}
+
+bool zid_release_decode_body(struct zid_release *rel,
+                             const uint8_t *body, uint16_t body_len)
+{
+    if (!rel || !body)
+        LOG_FAIL("zid", "release_decode: NULL argument (rel=%p body=%p)",
+                 (void *)rel, (const void *)body);
+    if (body_len < 4 + 1 + 1 + 1 + 32)
+        LOG_FAIL("zid", "release_decode: body_len %u below minimum %d",
+                 body_len, 4 + 1 + 1 + 1 + 32);
+    if (body_len > ZID_RELEASE_BODY_MAX)
+        LOG_FAIL("zid", "release_decode: body_len %u exceeds max %d",
+                 body_len, ZID_RELEASE_BODY_MAX);
+    if (memcmp(body, "ZIDR", 4) != 0)
+        LOG_FAIL("zid", "release_decode: bad tag (want ZIDR)");
+
+    size_t name_len = body[4];
+    if (name_len == 0 || name_len > ZID_RELEASE_NAME_MAX)
+        LOG_FAIL("zid", "release_decode: name_len %zu out of range", name_len);
+    if ((size_t)body_len < 4 + 1 + name_len + 1)
+        LOG_FAIL("zid", "release_decode: truncated before version_len");
+    size_t version_len = body[4 + 1 + name_len];
+    if (version_len == 0 || version_len > ZID_RELEASE_VERSION_MAX)
+        LOG_FAIL("zid", "release_decode: version_len %zu out of range",
+                 version_len);
+    size_t want = 4 + 1 + name_len + 1 + version_len + 32;
+    if ((size_t)body_len != want)
+        LOG_FAIL("zid",
+                 "release_decode: body_len %u does not match fields (want exactly %zu)",
+                 body_len, want);
+
+    memset(rel, 0, sizeof(*rel));
+    memcpy(rel->name, body + 5, name_len);
+    memcpy(rel->version, body + 5 + name_len + 1, version_len);
+    memcpy(rel->manifest_root, body + 5 + name_len + 1 + version_len, 32);
+    /* Trailing NULs come from the memset; now prove the bytes are
+     * printable (a name/version with a control byte is a reject, not a
+     * silent sanitize). */
+    if (!zid_release_str_valid(rel->name, ZID_RELEASE_NAME_MAX, NULL))
+        LOG_FAIL("zid", "release_decode: name not printable ASCII");
+    if (!zid_release_str_valid(rel->version, ZID_RELEASE_VERSION_MAX, NULL))
+        LOG_FAIL("zid", "release_decode: version not printable ASCII");
+    return true;
+}
+
+bool zid_release_sign(struct zid_doc *doc, const struct zid_release *rel,
+                      uint64_t seq, uint64_t expiry, const uint8_t seed[32])
+{
+    if (!doc || !rel || !seed)
+        LOG_FAIL("zid", "release_sign: NULL argument");
+    uint8_t body[ZID_RELEASE_BODY_MAX];
+    size_t body_len = zid_release_encode_body(body, sizeof(body), rel);
+    if (body_len == 0)
+        LOG_FAIL("zid", "release_sign: body encode failed");
+    if (!zid_doc_sign(doc, body, (uint16_t)body_len, seq, expiry, seed))
+        LOG_FAIL("zid", "release_sign: doc sign failed");
+    return true;
+}
+
+bool zid_release_verify(const struct zid_doc *doc,
+                        struct zid_release *rel_out, uint64_t now_unix)
+{
+    if (!doc)
+        LOG_FAIL("zid", "release_verify: NULL doc");
+    if (!zid_doc_verify(doc, now_unix))
+        LOG_FAIL("zid", "release_verify: doc verify failed");
+    struct zid_release rel;
+    if (!zid_release_decode_body(&rel, doc->body, doc->body_len))
+        LOG_FAIL("zid", "release_verify: body is not a valid release record");
+    if (rel_out)
+        *rel_out = rel;
     return true;
 }

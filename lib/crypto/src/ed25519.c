@@ -41,6 +41,7 @@
 
 #include "crypto/ed25519.h"
 #include "crypto/sha512.h"
+#include "support/cleanse.h"
 #include "util/log_macros.h"
 #include <string.h>
 
@@ -462,6 +463,11 @@ void zcl_ed25519_keypair(uint8_t pk[32], uint8_t sk[32], const uint8_t seed[32])
     pack_point(pk, p);
 
     memcpy(sk, seed, 32); /* the RFC 8032 secret key IS the seed */
+
+    /* h holds the expanded secret (scalar half + nonce prefix); a is the
+     * clamped scalar. Neither may be left on the stack. */
+    memory_cleanse(h, sizeof(h));
+    memory_cleanse(a, sizeof(a));
 }
 
 void zcl_ed25519_sign(uint8_t sig[64], const uint8_t *msg, size_t msg_len,
@@ -509,4 +515,13 @@ void zcl_ed25519_sign(uint8_t sig[64], const uint8_t *msg, size_t msg_len,
         for (int j = 0; j < 32; j++)
             x[i + j] += (int64_t)(uint64_t)k[i] * (int64_t)(uint64_t)a[j];
     modL(sig + 32, x);
+
+    /* h = expanded secret (scalar + nonce prefix), a = clamped scalar,
+     * r = secret nonce, x = r + k*a intermediate. All secret: cleanse.
+     * (k is a hash of public values; cleansed anyway, costs nothing.) */
+    memory_cleanse(h, sizeof(h));
+    memory_cleanse(a, sizeof(a));
+    memory_cleanse(r, sizeof(r));
+    memory_cleanse(k, sizeof(k));
+    memory_cleanse(x, sizeof(x));
 }

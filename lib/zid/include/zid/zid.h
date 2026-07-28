@@ -36,9 +36,11 @@ struct zid_doc {
     uint8_t signature[64];
 };
 
-/* blinded = SHA3-256("zid-blind" ‖ master_pubkey ‖ period_le64) —
+/* blinded = SHA3-256("ZIDB" ‖ master_pubkey ‖ period_le64) —
  * anti-enumeration record key (Tor v3 blinded-pubkey pattern). Only
- * someone who already knows the master key can derive the record key. */
+ * someone who already knows the master key can derive the record key.
+ * "ZIDB" is the 4-byte lokad-style tag (same convention as the tree's
+ * "ZIDL" leaf tag and the on-chain lokads ZNAM/SLP\0/ZANC). */
 void zid_blinded_key(uint8_t out[32], const uint8_t master_pubkey[32],
                      uint64_t period);
 
@@ -110,5 +112,57 @@ bool   zid_tree_prove_from_leaves(const uint8_t leaves[][32],
 bool   zid_tree_verify(const uint8_t root[32], const uint8_t record_digest[32],
                        uint64_t index, uint64_t num_leaves,
                        const uint8_t proof_siblings[][32], uint32_t proof_len);
+
+/* ── Canonical proof wire format (swarm/P2P distribution) ──────────
+ *
+ * version:1 ‖ index:8 LE ‖ num_leaves:8 LE ‖ proof_len:2 LE ‖
+ * siblings:32×proof_len. The sibling layout is exactly what
+ * zid_tree_prove_from_leaves emits and zid_tree_verify consumes
+ * (bottom-up path, then the other peaks in bagging order). */
+#define ZID_PROOF_VERSION 1
+#define ZID_PROOF_WIRE_MAX (1 + 8 + 8 + 2 + 32 * ZID_TREE_MAX_PEAKS)
+
+/* Returns the encoded size (19 + 32×proof_len), or 0 on error. */
+size_t zid_proof_encode(uint8_t *out, size_t out_len, uint64_t index,
+                        uint64_t num_leaves,
+                        const uint8_t proof_siblings[][32], uint32_t proof_len);
+
+/* Bounds-strict decode: `len` must be exactly 19 + 32×proof_len, the
+ * version byte must be ZID_PROOF_VERSION, and proof_len must fit
+ * ZID_TREE_MAX_PEAKS. Does NOT verify the proof against any root. */
+bool   zid_proof_decode(uint64_t *index, uint64_t *num_leaves,
+                        uint8_t proof_siblings[][32], uint32_t *proof_len,
+                        const uint8_t *buf, size_t len);
+
+/* ── Release record (Sovereign Registry foundation) ────────────────
+ *
+ * The canonical zid_doc body binding a package release to an identity:
+ *   "ZIDR" ‖ name_len:1 ‖ name ‖ version_len:1 ‖ version ‖ manifest_root:32
+ * name/version are printable ASCII (0x20..0x7E), length-bounded. */
+#define ZID_RELEASE_NAME_MAX 64
+#define ZID_RELEASE_VERSION_MAX 32
+#define ZID_RELEASE_BODY_MAX \
+    (4 + 1 + ZID_RELEASE_NAME_MAX + 1 + ZID_RELEASE_VERSION_MAX + 32)
+
+struct zid_release {
+    char name[ZID_RELEASE_NAME_MAX + 1];
+    char version[ZID_RELEASE_VERSION_MAX + 1];
+    uint8_t manifest_root[32];
+};
+
+/* Returns the encoded body size, or 0 on error (NULL args, name/version
+ * empty/overlong/non-printable, undersized buffer). */
+size_t zid_release_encode_body(uint8_t *out, size_t out_len,
+                               const struct zid_release *rel);
+/* Bounds-strict: tag, exact length, printable name/version. */
+bool   zid_release_decode_body(struct zid_release *rel,
+                               const uint8_t *body, uint16_t body_len);
+/* Encode rel as the body and zid_doc_sign it. */
+bool   zid_release_sign(struct zid_doc *doc, const struct zid_release *rel,
+                        uint64_t seq, uint64_t expiry, const uint8_t seed[32]);
+/* zid_doc_verify against now_unix, then decode the release body into
+ * rel_out (may be NULL to verify without decoding). */
+bool   zid_release_verify(const struct zid_doc *doc,
+                          struct zid_release *rel_out, uint64_t now_unix);
 
 #endif /* ZCL_ZID_H */

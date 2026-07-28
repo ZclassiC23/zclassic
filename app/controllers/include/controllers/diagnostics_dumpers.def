@@ -466,6 +466,15 @@
                     "rows-by-known-tag counts (znam/zslp/zanc/other).",
                     "app/services/src/op_return_backfill_service.c",
                     "lib/test/src/test_op_return_index.c"),
+    DIAG_PROJECTION("zepoch", zepoch_status_dump_state_json,
+                    "epoch anchor status (Bounded Node keystone, v1: operator "
+                    "anchoring only, no service): catalog cursor height + "
+                    "digest, current epoch (height/1000) and its start, and "
+                    "whether a ZANC anchor labeled zepoch@<H> with H inside "
+                    "the current epoch already exists (anchor label/txid/"
+                    "height/digest + digest_match when anchored).",
+                    "app/services/src/op_return_backfill_service.c",
+                    "lib/test/src/test_op_return_index.c"),
     DIAG_PROJECTION("zslp_ledger", zslp_ledger_dump_state_json,
                     "ZSLP per-(token,outpoint) ledger: backfill cursor height "
                     "+ running digest, provable_tip, blocks_remaining, "

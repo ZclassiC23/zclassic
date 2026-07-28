@@ -67,6 +67,9 @@ void op_return_backfill_reset_for_test(void);
 
 struct json_value;
 bool op_return_index_dump_state_json(struct json_value *out, const char *key);
+/* `zclassic23 dumpstate zepoch` — epoch-anchor status snapshot (catalog
+ * cursor + digest, current epoch, anchored bool). */
+bool zepoch_status_dump_state_json(struct json_value *out, const char *key);
 
 #ifdef ZCL_TESTING
 struct node_db;

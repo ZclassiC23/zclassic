@@ -317,6 +317,16 @@ void zcl_native_handle_zcode_package_publish_commit(
 void zcl_native_handle_zcode_package_search(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+
+/* ── zcode.release.* — Sovereign Registry v1: sign/verify zid release
+ * records (tools/command/native_zcode_release_command.c). File-based,
+ * no DB, no swarm distribution. */
+void zcl_native_handle_zcode_release_sign(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_release_verify(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_package_show(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
@@ -634,6 +644,20 @@ size_t zcl_native_render_unknown_command(
  * This is the typed replacement for ss/ps/tail node.log boot watching. Bound
  * by config/src/command_catalog.c. */
 void zcl_native_handle_core_node_bootstatus(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
+/* ── core.epoch.* — the Bounded Node keystone: commit the OP_RETURN
+ * catalog digest-chain on-chain per epoch via a ZANC anchor
+ * (tools/command/native_epoch_command.c). v1: operator-triggered only, no
+ * background service, no auto-broadcast. */
+void zcl_native_handle_core_epoch_status(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_core_epoch_anchor(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_core_epoch_verify(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 void zcl_native_handle_core_node_bootwait(

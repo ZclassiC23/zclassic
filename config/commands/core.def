@@ -238,6 +238,81 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_core_sync_frontier_offline)
 
+/* ── epoch (Bounded Node keystone) ─────────────────────────────────
+ * The OP_RETURN catalog's incremental digest-chain commits every overlay
+ * record the chain has ever carried; one ZANC anchor per epoch commits
+ * the whole overlay state in ~40 bytes. v1: no service, no auto-broadcast
+ * — anchoring spends fees and stays an operator decision. Label semantics
+ * (shared with dumpstate zepoch): "zepoch@<H>", H = catalog cursor height
+ * the digest was read at; an anchor covers epoch E = tip/1000 when
+ * H >= E*1000. */
+ZCL_COMMAND_BRANCH("core.epoch", "core",
+                   "Epoch anchors: commit the overlay catalog digest on-chain",
+                   ZCL_COMMAND_LAYER_CORE)
+ZCL_COMMAND_READY_READ(
+    "core.epoch.status", "core.epoch", "",
+    "Catalog digest, epoch position, and anchor presence",
+    "The OP_RETURN catalog state read from the datadir's node.db at call "
+    "time (works on a stopped or copied datadir): tip (cursor) height, "
+    "catalog digest hex, catalog row count, the current epoch "
+    "(height/1000) and blocks into it, and whether a ZANC anchor labeled "
+    "zepoch@<H> with H inside the current epoch already exists (with its "
+    "label/txid/height/confirmations/digest and a digest_match flag). A "
+    "missing anchor comes with the exact next command to run.", 0,
+    "epoch,anchor,catalog,digest,status,zepoch",
+    "zcl.core_epoch_status.input.v1", "zcl.core_epoch_status.v1",
+    "datadir", "",
+    "zclassic23 core epoch status",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_OFFLINE_COPY,
+    ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_core_epoch_status)
+ZCL_COMMAND_READY_COMMAND(
+    "core.epoch.anchor", "core.epoch", "",
+    "Anchor the current catalog digest on-chain (spends a fee)",
+    "Builds a ZANC anchor (SHA3, label zepoch@<tip>) committing the "
+    "current OP_RETURN catalog digest. With a live node: dispatches the "
+    "wallet compose+broadcast through anchor_publish and returns the txid "
+    "(the node itself returns op_return_hex when no wallet is loaded). "
+    "With no live node: returns op_return_hex plus the exact next step. "
+    "Never runs on a timer — every anchor is an explicit operator "
+    "decision.", 0,
+    "epoch,anchor,commit,broadcast,zepoch,fee",
+    "zcl.core_epoch_anchor.input.v1", "zcl.core_epoch_anchor.v1",
+    "datadir", "",
+    "zclassic23 core epoch anchor",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_core_epoch_anchor)
+ZCL_COMMAND_READY_READ(
+    "core.epoch.verify", "core.epoch", "",
+    "Check the current epoch's anchor against the live digest",
+    "Without inputs: fresh-reads the tip catalog digest from the "
+    "datadir's node.db, looks up the latest zepoch@ anchor in the current "
+    "epoch, and reports anchored/txid/confirmations plus digest "
+    "match/mismatch (a mismatch means the catalog advanced past the "
+    "anchor — re-anchor). With --height=N: lookup-only for the exact "
+    "zepoch@<N> label — digest recompute is tip-only (the digest-chain "
+    "folds forward and cannot be re-derived at a historical height), and "
+    "the output says so.", 0,
+    "epoch,verify,anchor,digest,match,zepoch",
+    "zcl.core_epoch_verify.input.v1", "zcl.core_epoch_verify.v1",
+    "height,datadir", "",
+    "zclassic23 core epoch verify",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_OFFLINE_COPY,
+    ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_core_epoch_verify)
+
 /* ── consensus ─────────────────────────────────────────────────────── */
 ZCL_COMMAND_BRANCH("core.consensus", "core",
                    "Consensus reports, integrity, and mutation",

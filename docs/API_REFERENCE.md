@@ -59,15 +59,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 297 |
+| Registry entries (branches + leaves) | 304 |
 | Top-level roots | 9 |
-| Branches | 68 |
-| Leaves (dispatchable command paths) | 229 |
-| … `ready` (live handler in this build) | 187 |
+| Branches | 70 |
+| Leaves (dispatchable command paths) | 234 |
+| … `ready` (live handler in this build) | 192 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 25 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
-| Leaves with `effect=mutate` | 57 |
+| Leaves with `effect=mutate` | 59 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 56 |
 
@@ -76,7 +76,7 @@ Per source file:
 | `.def` file | Entries | Branches | Leaves |
 |---|---|---|---|
 | `config/commands/root.def` | 10 | 5 | 5 |
-| `config/commands/core.def` | 84 | 21 | 63 |
+| `config/commands/core.def` | 88 | 22 | 66 |
 | `config/commands/apps.def` | 9 | 2 | 7 |
 | `config/commands/app_features.def` | 26 | 5 | 21 |
 | `config/commands/ops.def` | 43 | 8 | 35 |
@@ -84,7 +84,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 14 | 3 | 11 |
-| `config/commands/zcode.def` | 39 | 9 | 30 |
+| `config/commands/zcode.def` | 42 | 10 | 32 |
 
 
 ## Column legend
@@ -201,6 +201,14 @@ represented by its children's sections.
 | `core sync blockers` | ready | read / read / public · fast/low | none | `zcl.blockers.v1` | `zclassic23 core sync blockers` | Active named sync blockers |
 | `core sync diagnose` | ready | read / read / operator · fast/moderate | none | `zcl.syncdiag.v1` | `zclassic23 core sync diagnose` | Diagnose why sync is not advancing |
 | `core sync frontier offline` | ready | read / read / operator · fast/low | `datadir` | `zcl.core_sync_frontier_offline.v1` | `zclassic23 core sync frontier offline --input='{"datadir":"/home/you/.zclassic-c23"}'` | H* (reducer frontier) of a STOPPED/COPIED datadir |
+
+#### `core.epoch` — Epoch anchors: commit the overlay catalog digest on-chain
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `core epoch status` | ready | read / read / operator · fast/low | `datadir` | `zcl.core_epoch_status.v1` | `zclassic23 core epoch status` | Catalog digest, epoch position, and anchor presence |
+| `core epoch anchor` | ready | mutate / wallet / operator · foreground/moderate | `datadir` | `zcl.core_epoch_anchor.v1` | `zclassic23 core epoch anchor` | Anchor the current catalog digest on-chain (spends a fee) |
+| `core epoch verify` | ready | read / read / operator · fast/low | `height`, `datadir` | `zcl.core_epoch_verify.v1` | `zclassic23 core epoch verify` | Check the current epoch's anchor against the live digest |
 
 #### `core.consensus` — Consensus reports, integrity, and mutation
 
@@ -711,6 +719,13 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `zcode storage status` | ready | read / read / operator · fast/low | `datadir` | `zcl.zcode_storage_status.v1` | `zclassic23 zcode storage status --input='{}'` | Store quota pools plus the pin-allowance policy view |
+
+#### `zcode.release` — Release records: sign/verify packages against a master key
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode release sign` | ready | mutate / app-write / operator · fast/low | `name`, `version`, `root`, `seed_file`, `seq`, `expiry`, `datadir` | `zcl.zcode_release_sign.v1` | `zclassic23 zcode release sign --input='{"name":"demo","version":"0.1","root":"<64hex>","seed_file":"/path/seed.hex"}'` | Sign a release record with a master seed |
+| `zcode release verify` | ready | read / read / public · fast/low | `doc`, `file` | `zcl.zcode_release_verify.v1` | `zclassic23 zcode release verify --input='{"doc":"<hex>"}'` | Verify a signed release record |
 
 
 ## Aliases

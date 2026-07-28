@@ -31,6 +31,7 @@
 #include "json/json.h"
 #include "models/database.h"
 #include "models/op_return_index.h"
+#include "models/zanc.h"
 #include "primitives/block.h"
 #include "services/index_fold_guard.h"
 #include "storage/disk_block_io.h"
@@ -383,5 +384,87 @@ bool op_return_index_dump_state_json(struct json_value *out, const char *key)
         json_push_kv_int(out, "zanc_rows", zanc);
         json_push_kv_int(out, "other_rows", other);
     }
+    return true;
+}
+
+/* ── `zclassic23 dumpstate zepoch` ──────────────────────────────────
+ *
+ * Epoch-anchor status snapshot (the Bounded Node keystone, v1: no
+ * background service, anchoring is an operator decision via
+ * `core epoch anchor`): the catalog cursor (height + digest), the current
+ * epoch (cursor/1000), and whether any ZANC anchor labeled zepoch@<H>
+ * with H inside the current epoch already exists. Label semantics match
+ * tools/command/native_epoch_command.c exactly. */
+
+/* Latest zepoch anchor at-or-above min_height, newest first. Labels are
+ * "zepoch@<H>" (H = the catalog cursor height the anchor committed). */
+static bool zepoch_find_anchor(struct node_db *ndb, int32_t min_height,
+                               struct zanc_anchor *out)
+{
+    struct zanc_anchor rows[100];
+    int n = db_zanc_list(ndb, rows, 100);
+    bool found = false;
+    int32_t best = -1;
+    for (int i = 0; i < n; i++) {
+        if (strncmp(rows[i].label, "zepoch@", 7) != 0)
+            continue;
+        const char *hstr = rows[i].label + 7;
+        if (!hstr[0])
+            continue;
+        char *end = NULL;
+        long h = strtol(hstr, &end, 10);
+        if (!end || *end != '\0' || h < min_height)
+            continue;
+        if (!found || h > best) {
+            best = (int32_t)h;
+            *out = rows[i];
+            found = true;
+        }
+    }
+    return found;
+}
+
+bool zepoch_status_dump_state_json(struct json_value *out, const char *key)
+{
+    (void)key;
+    if (!out) return false;
+    json_set_object(out);
+
+    struct node_db *ndb = backfill_ndb();
+    bool db_open = ndb && ndb->open;
+    json_push_kv_bool(out, "wired", db_open);
+
+    int32_t cursor = -1;
+    uint8_t digest[32] = {0};
+    bool have_cursor = db_open &&
+                       op_return_index_get_cursor(ndb, &cursor, digest);
+    json_push_kv_int(out, "tip_height", have_cursor ? cursor : -1);
+    char digest_hex[65] = {0};
+    if (have_cursor) HexStr(digest, 32, false, digest_hex, sizeof(digest_hex));
+    json_push_kv_str(out, "catalog_digest", digest_hex);
+
+    int64_t epoch = (have_cursor && cursor >= 0) ? cursor / 1000 : -1;
+    json_push_kv_int(out, "epoch", epoch);
+    json_push_kv_int(out, "epoch_start", epoch >= 0 ? epoch * 1000 : -1);
+
+    bool anchored = false;
+    if (db_open && epoch >= 0) {
+        struct zanc_anchor a;
+        if (zepoch_find_anchor(ndb, (int32_t)(epoch * 1000), &a)) {
+            anchored = true;
+            json_push_kv_str(out, "anchor_label", a.label);
+            char txid_hex[65];
+            HexStr(a.txid, 32, false, txid_hex, sizeof(txid_hex));
+            json_push_kv_str(out, "anchor_txid", txid_hex);
+            json_push_kv_int(out, "anchor_height", a.height);
+            char ad_hex[65];
+            HexStr(a.digest, 32, false, ad_hex, sizeof(ad_hex));
+            json_push_kv_str(out, "anchor_digest", ad_hex);
+            json_push_kv_bool(out, "digest_match",
+                              have_cursor &&
+                              memcmp(a.digest, digest, 32) == 0);
+        }
+    }
+    json_push_kv_bool(out, "anchored", anchored);
     return true;
 }

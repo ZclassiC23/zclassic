@@ -207,15 +207,15 @@ int test_zid(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    printf("zid_blinded_key: self-consistency vector (computed twice)... ");
+    printf("zid_blinded_key: self-consistency vector (ZIDB tag, period 42)... ");
     {
-        uint8_t k1[32], k2[32];
+        uint8_t k1[32], k2[32], want[32];
         zid_blinded_key(k1, doc.master_pubkey, 42);
         zid_blinded_key(k2, doc.master_pubkey, 42);
-        printf("(vector ");
-        for (int i = 0; i < 32; i++) printf("%02x", k1[i]);
-        printf(") ");
-        if (memcmp(k1, k2, 32) == 0) printf("OK\n");
+        hex_to_bytes("38d696445a7024f2e004b7a4fa425aa111b9131e79bd126f4274de6a2fd58adf",
+                     want, sizeof(want));
+        if (memcmp(k1, k2, 32) == 0 && memcmp(k1, want, 32) == 0)
+            printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 
@@ -454,6 +454,244 @@ int test_zid(void)
                 ok = false;
         }
         if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── Canonical proof wire format ─────────────────────────────── */
+
+    printf("\n=== ZID proof wire format ===\n");
+
+    /* Round-trip: prove → encode → decode → fields match → verify. */
+    const uint64_t wire_sizes[] = {1, 3, 8, 17};
+    for (size_t si = 0; si < sizeof(wire_sizes) / sizeof(wire_sizes[0]); si++) {
+        uint64_t n = wire_sizes[si];
+        printf("zid_proof: %llu leaves — encode→decode→verify round-trip... ",
+               (unsigned long long)n);
+        struct zid_tree t;
+        zid_tree_init(&t);
+        for (uint64_t i = 0; i < n; i++)
+            zid_tree_append(&t, leaves[i]);
+        uint8_t root[32];
+        zid_tree_root(&t, root);
+
+        bool ok = true;
+        for (uint64_t i = 0; ok && i < n; i++) {
+            uint8_t proof[ZID_TREE_MAX_PEAKS][32], pr[32];
+            uint32_t plen = 0;
+            if (!zid_tree_prove_from_leaves(leaves, n, i, proof, &plen, pr)) {
+                ok = false;
+                break;
+            }
+            uint8_t wire[ZID_PROOF_WIRE_MAX];
+            size_t wire_len = zid_proof_encode(wire, sizeof(wire),
+                                               i, n, proof, plen);
+            if (wire_len != 19 + (size_t)plen * 32) { ok = false; break; }
+
+            uint64_t d_index = 0, d_n = 0;
+            uint8_t d_proof[ZID_TREE_MAX_PEAKS][32];
+            uint32_t d_plen = 0;
+            if (!zid_proof_decode(&d_index, &d_n, d_proof, &d_plen,
+                                  wire, wire_len)) { ok = false; break; }
+            if (d_index != i || d_n != n || d_plen != plen ||
+                memcmp(d_proof, proof, (size_t)plen * 32) != 0) {
+                ok = false;
+                break;
+            }
+            if (!zid_tree_verify(root, leaves[i], d_index, d_n,
+                                 d_proof, d_plen)) { ok = false; break; }
+        }
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid_proof_decode: truncated buffer rejected... ");
+    {
+        uint8_t proof[ZID_TREE_MAX_PEAKS][32], pr[32];
+        uint32_t plen = 0;
+        zid_tree_prove_from_leaves(leaves, 17, 7, proof, &plen, pr);
+        uint8_t wire[ZID_PROOF_WIRE_MAX];
+        size_t wire_len = zid_proof_encode(wire, sizeof(wire), 7, 17, proof, plen);
+        uint64_t d_index, d_n;
+        uint32_t d_plen;
+        uint8_t d_proof[ZID_TREE_MAX_PEAKS][32];
+        if (!zid_proof_decode(&d_index, &d_n, d_proof, &d_plen,
+                              wire, wire_len - 1)) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid_proof_decode: wrong version rejected... ");
+    {
+        uint8_t proof[ZID_TREE_MAX_PEAKS][32], pr[32];
+        uint32_t plen = 0;
+        zid_tree_prove_from_leaves(leaves, 17, 7, proof, &plen, pr);
+        uint8_t wire[ZID_PROOF_WIRE_MAX];
+        size_t wire_len = zid_proof_encode(wire, sizeof(wire), 7, 17, proof, plen);
+        wire[0] = 2;
+        uint64_t d_index, d_n;
+        uint32_t d_plen;
+        uint8_t d_proof[ZID_TREE_MAX_PEAKS][32];
+        if (!zid_proof_decode(&d_index, &d_n, d_proof, &d_plen,
+                              wire, wire_len)) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid_proof_decode: proof_len field vs actual length mismatch rejected... ");
+    {
+        uint8_t proof[ZID_TREE_MAX_PEAKS][32], pr[32];
+        uint32_t plen = 0;
+        zid_tree_prove_from_leaves(leaves, 17, 7, proof, &plen, pr);
+        uint8_t wire[ZID_PROOF_WIRE_MAX];
+        size_t wire_len = zid_proof_encode(wire, sizeof(wire), 7, 17, proof, plen);
+        wire[17] ^= 0x01; /* proof_len LE low byte at offset 17 */
+        uint64_t d_index, d_n;
+        uint32_t d_plen;
+        uint8_t d_proof[ZID_TREE_MAX_PEAKS][32];
+        if (!zid_proof_decode(&d_index, &d_n, d_proof, &d_plen,
+                              wire, wire_len)) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid_proof_decode: oversize proof_len field rejected... ");
+    {
+        uint8_t wire[ZID_PROOF_WIRE_MAX];
+        memset(wire, 0, sizeof(wire));
+        wire[0] = ZID_PROOF_VERSION;
+        wire[17] = (uint8_t)(ZID_TREE_MAX_PEAKS + 1); /* 65 > 64 */
+        uint64_t d_index, d_n;
+        uint32_t d_plen;
+        uint8_t d_proof[ZID_TREE_MAX_PEAKS][32];
+        if (!zid_proof_decode(&d_index, &d_n, d_proof, &d_plen,
+                              wire, ZID_PROOF_WIRE_MAX)) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid_proof_encode: undersized output buffer rejected... ");
+    {
+        uint8_t proof[ZID_TREE_MAX_PEAKS][32], pr[32];
+        uint32_t plen = 0;
+        zid_tree_prove_from_leaves(leaves, 17, 7, proof, &plen, pr);
+        uint8_t wire[ZID_PROOF_WIRE_MAX];
+        size_t wire_len = zid_proof_encode(wire, sizeof(wire), 7, 17, proof, plen);
+        if (zid_proof_encode(wire, wire_len - 1, 7, 17, proof, plen) == 0)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── Release record codec ────────────────────────────────────── */
+
+    printf("\n=== ZID release record ===\n");
+
+    struct zid_release rel;
+    memset(&rel, 0, sizeof(rel));
+    snprintf(rel.name, sizeof(rel.name), "zclassic23");
+    snprintf(rel.version, sizeof(rel.version), "1.0.0");
+    memset(rel.manifest_root, 0x5C, 32);
+
+    printf("zid_release: body encode→decode round-trip... ");
+    {
+        uint8_t body[ZID_RELEASE_BODY_MAX];
+        size_t blen = zid_release_encode_body(body, sizeof(body), &rel);
+        struct zid_release back;
+        if (blen == 4 + 1 + 10 + 1 + 5 + 32 &&
+            zid_release_decode_body(&back, body, (uint16_t)blen) &&
+            strcmp(back.name, "zclassic23") == 0 &&
+            strcmp(back.version, "1.0.0") == 0 &&
+            memcmp(back.manifest_root, rel.manifest_root, 32) == 0)
+            printf("OK\n");
+        else { printf("FAIL (blen=%zu)\n", blen); failures++; }
+    }
+
+    printf("zid_release: sign→verify round-trip... ");
+    {
+        struct zid_doc rdoc;
+        struct zid_release out;
+        if (zid_release_sign(&rdoc, &rel, 7, now + 3600, seed) &&
+            zid_release_verify(&rdoc, &out, now) &&
+            strcmp(out.name, "zclassic23") == 0 &&
+            memcmp(out.manifest_root, rel.manifest_root, 32) == 0)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid_release_decode: bad name_len rejected... ");
+    {
+        uint8_t body[ZID_RELEASE_BODY_MAX];
+        size_t blen = zid_release_encode_body(body, sizeof(body), &rel);
+        body[4] = 200; /* name_len beyond ZID_RELEASE_NAME_MAX */
+        struct zid_release out;
+        if (!zid_release_decode_body(&out, body, (uint16_t)blen)) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid_release_decode: truncated body rejected... ");
+    {
+        uint8_t body[ZID_RELEASE_BODY_MAX];
+        size_t blen = zid_release_encode_body(body, sizeof(body), &rel);
+        struct zid_release out;
+        if (!zid_release_decode_body(&out, body, (uint16_t)(blen - 1)))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid_release_decode: wrong tag rejected... ");
+    {
+        uint8_t body[ZID_RELEASE_BODY_MAX];
+        size_t blen = zid_release_encode_body(body, sizeof(body), &rel);
+        body[0] = 'X';
+        struct zid_release out;
+        if (!zid_release_decode_body(&out, body, (uint16_t)blen)) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid_release_decode: non-printable name rejected... ");
+    {
+        struct zid_release bad = rel;
+        bad.name[2] = '\x01';
+        uint8_t body[ZID_RELEASE_BODY_MAX];
+        struct zid_release out;
+        if (zid_release_encode_body(body, sizeof(body), &bad) == 0 &&
+            !zid_release_decode_body(&out, (const uint8_t *)"ZIDR\x03" "a\x01" "b"
+                                     "\x01" "v" "00000000000000000000000000000000", 42))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid_release_verify: signature over wrong body rejected... ");
+    {
+        /* A validly-signed doc whose body is NOT this release record. */
+        struct zid_doc rdoc;
+        struct zid_release out;
+        const uint8_t other_body[] = "not a release record at all";
+        zid_doc_sign(&rdoc, other_body, sizeof(other_body) - 1, 1,
+                     now + 3600, seed);
+        if (!zid_release_verify(&rdoc, &out, now)) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid_release_verify: tampered signed body rejected... ");
+    {
+        struct zid_doc rdoc;
+        zid_release_sign(&rdoc, &rel, 7, now + 3600, seed);
+        rdoc.body[rdoc.body_len - 1] ^= 0x01; /* flip a manifest_root byte */
+        struct zid_release out;
+        if (!zid_release_verify(&rdoc, &out, now)) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid_release_verify: expired doc rejected... ");
+    {
+        struct zid_doc rdoc;
+        zid_release_sign(&rdoc, &rel, 7, now + 100, seed);
+        struct zid_release out;
+        if (!zid_release_verify(&rdoc, &out, now + 100)) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid_release_verify: NULL rel_out still verifies... ");
+    {
+        struct zid_doc rdoc;
+        zid_release_sign(&rdoc, &rel, 7, now + 3600, seed);
+        if (zid_release_verify(&rdoc, NULL, now)) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 
