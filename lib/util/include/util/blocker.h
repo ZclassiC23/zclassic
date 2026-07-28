@@ -201,9 +201,10 @@ int blocker_set_with_cause(const struct blocker_record *r,
                            const char *caused_by,
                            const char *cause_detail);
 
-/* Mark a retry attempt against a blocker. Increments retry_count.
- * If retry_count >= retry_budget (and budget > 0), emits EV_
- * BLOCKER_BUDGET_EXHAUSTED via supervisor sweep next tick. */
+/* Mark a retry attempt against a blocker. Increments retry_count. For a
+ * subsystem that retries on its OWN loop; blocker_supervisor_sweep already
+ * charges every escape dispatch it makes, so an escape-driven remedy must
+ * not double-count by calling this too. */
 void blocker_record_retry(const char *id);
 
 /* Remove a blocker. No-op if not present. */
@@ -384,10 +385,17 @@ bool blocker_resolve_handoff(const char *id, struct blocker_handoff *out);
  *      escape_deadline_us but no escape_action (nothing to dispatch) is
  *      re-armed up to BLOCKER_MAX_DEADLINE_REARMS times, then marked
  *      `escalated` instead of sitting with a growing-negative deadline.
- *   3. Escape dispatch (original behavior, unchanged): for each blocker
- *      whose escape_deadline_us has elapsed and whose escape has not yet
- *      fired in the current deadline crossing, with a registered
- *      escape_action, fire the escape. Edge-triggered.
+ *   3. Escape dispatch: for each blocker whose escape_deadline_us has
+ *      elapsed and whose escape has not yet fired in the current deadline
+ *      crossing, with a registered escape_action, fire the escape.
+ *      Edge-triggered — the per-crossing latch is re-armed by blocker_set
+ *      whenever it anchors a fresh deadline horizon, so a still-live
+ *      blocker keeps getting its remedy driven instead of dispatching once
+ *      per registry lifetime. Each dispatch CHARGES the record's retry
+ *      budget (retry_count++); a blocker with a finite budget
+ *      (retry_budget > 0) stops dispatching once it is spent. -1 is
+ *      unbounded and 0 means "no bound requested" (blocker_init's default
+ *      for non-PERMANENT), neither of which is charged against.
  * Returns the number of escapes dispatched (pass 3 only, unchanged
  * return contract). Intended for a supervisor child running ~1 Hz. */
 int blocker_supervisor_sweep(void);

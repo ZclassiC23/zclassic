@@ -247,6 +247,14 @@ ZCL_BLOCKER_REMEDY(seed.linkage_gate,                           OWNER)
 ZCL_BLOCKER_REMEDY(seed.torn_import,                            OWNER)
 ZCL_BLOCKER_REMEDY(importblockindex_row_quarantine,             OWNER)
 ZCL_BLOCKER_REMEDY(snapshot_sync.activation_unified_installer_required, OWNER)
+/* Two raise sites reached only through blocker_name_dependency() — the static
+ * inline wrapper in util/blocker.h. check_blocker_remedy.sh enumerates
+ * blocker_init / chain_linkage_hold_raise / sentinel_raise_blocker /
+ * name_dependency_blocker and not that one, so these two ids were raisable in
+ * production while resolving to no row at all (runtime remedy_kind: unknown).
+ * Found by tools/lint/check_blocker_handoff_declared.sh, which does scan it. */
+ZCL_BLOCKER_REMEDY(snapshot_sync.utxo_sha3_mismatch,            OWNER) /* lib/net/src/msgprocessor_snapshot.c: the applied swarm chunk range is untrusted; re-fetch vs. discard is a person's call */
+ZCL_BLOCKER_REMEDY(utxo.parity_bh_drift,                        OWNER) /* app/conditions/src/utxo_drift_detected.c: the remedy is a DELIBERATE no-op — a destructive wipe/reimport is never auto-run */
 ZCL_BLOCKER_REMEDY(coin_backfill.owner_gate,                    OWNER)
 ZCL_BLOCKER_REMEDY(sticky_escalator.resnapshot_no_base,         OWNER)
 ZCL_BLOCKER_REMEDY(sticky_escalator.resnapshot_no_consumer,     OWNER)

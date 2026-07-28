@@ -206,6 +206,16 @@ int blocker_set(const struct blocker_record *r)
                 s->escape_deadline_us = now + s->escape_span_us;
                 s->rearm_count = 0;
                 s->escalated = false;
+                /* A fresh horizon is a fresh EDGE. `escape_fired` is the
+                 * "already dispatched for THIS deadline crossing" latch; the
+                 * update path used to re-anchor the deadline and leave the
+                 * latch set, so an escape-armed blocker that kept re-firing
+                 * with a changing reason dispatched its remedy exactly ONCE
+                 * per registry lifetime and never again. Re-arming the latch
+                 * with the deadline it belongs to keeps the sweep
+                 * edge-triggered (no re-fire within one crossing — the
+                 * existing behaviour) while letting the next crossing fire. */
+                s->escape_fired = false;
             }
         } else {
             s->escape_deadline_us = 0;
@@ -650,6 +660,24 @@ int blocker_supervisor_sweep(void)
         if (s->escape_deadline_us <= 0) continue;
         if (now < s->escape_deadline_us) continue;
         if (s->escape_action[0] == '\0') continue;
+
+        /* Bounded retry budget (budget > 0 only; -1 = unbounded and 0 = the
+         * blocker_init default "no bound requested"). Dispatching an escape
+         * IS a retry attempt, so a budget that is never decremented is
+         * decoration: `blocker_record_retry` had zero production callers, so
+         * `retry_count` sat at 0 for every live blocker while the escape
+         * ladder fired. Charge the attempt here, and stop dispatching once
+         * the declared budget is spent rather than retrying forever against
+         * a budget the record claims is finite. */
+        if (s->retry_budget > 0 && s->retry_count >= s->retry_budget) {
+            fprintf(stderr,
+                    "[blocker] escape '%s' budget exhausted "
+                    "(retry_count=%d budget=%d id=%s) — not dispatching\n",
+                    s->escape_action, s->retry_count, s->retry_budget,
+                    s->id);  // obs-ok:blocker-escape-budget-exhausted
+            s->escape_fired = true;
+            continue;
+        }
         /* Look up function. */
         blocker_escape_fn fn = NULL;
         for (int k = 0; k < BLOCKER_ESCAPE_CAP; k++) {
@@ -667,6 +695,7 @@ int blocker_supervisor_sweep(void)
             s->escape_fired = true;
             continue;
         }
+        s->retry_count++;          /* the dispatch below IS the retry */
         fill_snapshot(&batch[batch_n].snap, s, now);
         batch[batch_n].fn = fn;
         batch_n++;

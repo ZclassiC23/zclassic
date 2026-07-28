@@ -5426,6 +5426,21 @@ check-blocker-remedy:
 	@echo "══ LINT: blocker remedy totality ══"
 	@./tools/scripts/check_blocker_remedy.sh
 
+# Gate — blocker HAND-OFF declaration (RATCHET, shrink-only baseline
+# tools/lint/blocker_handoff_baseline.txt). check-blocker-remedy above proves
+# every raisable id has SOME row; OWNER satisfies it. That answers "does
+# anything auto-heal this?" and stops — it never answers "what am I supposed
+# to do?". Measured on the canonical node 2026-07-27,
+# address_index.below_snapshot_seed had fired 11,666 times with
+# escape_action "" and retry_budget 0. This gate requires every id a
+# production site can raise with an EMPTY escape action to carry either an
+# automatic remedy (condition healer / ESCAPE(action)) or an explicit
+# ZCL_BLOCKER_DECISION row spelling out the decision the operator owns. The
+# baseline may only shrink; a stale entry fails too.
+check-blocker-handoff-declared:
+	@echo "══ LINT: blocker hand-off declaration ══"
+	@./tools/lint/check_blocker_handoff_declared.sh
+
 # Gate #18 graduated WARN → RATCHET (E10): fails on any new off-shape
 # app/ .c file (the allowlist is the baseline and is currently empty).
 check-framework-shape:
@@ -6071,6 +6086,7 @@ LINT_GATES := \
     check-typed-blocker \
     check-blocker-escape-registered \
     check-blocker-remedy \
+    check-blocker-handoff-declared \
     check-framework-shape \
     check-framework-filename-suffix \
     check-no-raw-clock-outside-platform \
