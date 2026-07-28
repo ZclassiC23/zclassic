@@ -248,8 +248,61 @@ assert green).
 | `check-log-macro-return-type` | HARD | Returning `LOG_*` macros match the enclosing function return type (`LOG_FAIL` only in bool-returning functions, `LOG_ERR` only in int-returning functions, `LOG_NULL` only in pointer-returning functions). |
 | `check-observability-pairing` | HARD | `fprintf(stderr,…)` pairs with an event emit / terminal propagation. Override `// obs-ok:<tag>`. |
 | `check-pthread-create` | HARD | Thread spawns go through the sanctioned registry, not raw `pthread_create`. |
+| `check-no-runtime-abort` | RATCHET | New runtime `assert(` / `abort(` in network-reachable modules. `_Static_assert` is NOT counted. Override `// abort-ok:<reason>`. |
 
 ### Detailed gates
+
+- **Gate: `check-no-runtime-abort`** (RATCHET, shrink-only baseline
+  `tools/lint/no_runtime_abort_baseline.txt`) — **`assert()` is live in this
+  build.** `-DNDEBUG` appears in exactly two places in the tree, both of them
+  the vendored LevelDB compile (`tools/scripts/build_vendor.sh`); the node's
+  own `CFLAGS` never define it. Every `assert()` compiled into the node is
+  therefore a live `abort()` on failure, and every `assert()` sitting where a
+  peer, an RPC argument, an explorer URL segment or a stored blob can reach it
+  is a remote process-kill primitive. The Base58 codec under every address,
+  WIF, extended key and explorer lookup was exactly that until 2026-07-28, as
+  were BIP32 public child derivation and extended-public-key serialization.
+  This gate stops the pile re-forming.
+
+  *Scan set* — named network-reachable roots only (`lib/{crypto,keys,script,
+  sapling,validation,net,sync,zid,znam,zslp,zdir,storage,mining}`,
+  `domain/{encoding,wallet}`, `core/{consensus,math,params,chainparams}`),
+  not the whole tree: a whole-tree baseline is dominated by boot-only code and
+  nobody reads it. `core/` is **counted and frozen** — its rows are byte-sealed
+  and only editable through the owner unseal ritual.
+
+  *Not counted* — `_Static_assert` / `static_assert` (compile-time, and the
+  CORRECT replacement for a runtime assertion about a layout or a constant);
+  anything inside a comment or a string literal. The gate carries a real
+  block-comment state machine, because the rationale comments in this repo are
+  multi-line and the word `assert()` lands on continuation lines that carry no
+  comment opener of their own.
+
+  *The fix* — reject the input the way every other rejection in this tree
+  does: return `false` / `-1`, log the reason with `LOG_FAIL`/`LOG_ERR`/
+  `LOG_NULL`, let the caller report it, and the node keeps running. Then lower
+  (or delete) the number in the baseline. Raising a number is not a fix.
+
+  *The escape hatch* — `// abort-ok:<reason>`, on the same line as the site,
+  for an abort that is CORRECT because continuing would be worse than
+  crashing. Unlike the single-token markers in §8 this one takes a **prose
+  reason** (minimum six characters; a bare `// abort-ok:` is rejected), same as
+  `// thread-supervision-ok:<reason>`. Annotating in place rather than
+  baselining is deliberate: the baseline must stay a list of genuine debt that
+  may only shrink, so nobody is ever pressured into "fixing" a correct abort to
+  lower a number. Current holders: `lib/sapling/src/note_encryption.c` (an
+  `esk` repeat would emit a two-time pad under the fixed zero nonce and leak
+  the note plaintext), `lib/keys/src/key.c` and `lib/keys/src/pubkey.c` (the
+  process-wide secp256k1 signing/verification context lifecycle, and the
+  entropy source feeding it — no external input reaches them, each runs once at
+  boot, and a node that carried on would silently mis-verify signatures or hand
+  out a guessable key), `lib/sapling/src/sapling.c` (a fixed Jubjub generator
+  that failed to derive, after which every scalar multiplication is garbage).
+
+  A baselined file with no sites left is a FAILURE, not a pass: a stale row
+  rusts the ratchet shut at a number the next regression can hide under.
+  Impl: `tools/lint/check_no_runtime_abort.sh`, with a mandatory `--selftest`
+  whose `_Static_assert` case is a negative control.
 
 - **Gate #11: `check-model-validation`** (HARD) — every `app/models/src/*.c`
   has at least one `validates_*` call (from
@@ -706,6 +759,7 @@ add/remove a gate.
 - `check-no-new-coin-backfill-caller`
 - `check-no-new-repair-rung`
 - `check-no-retired-agent-protocol`
+- `check-no-runtime-abort`
 - `check-no-stale-pinned-facts`
 - `check-no-uncited-victory`
 - `check-route-command-parity`
@@ -831,11 +885,18 @@ mechanically hold:
 | `// shape-include-ok:<tag>` | any line in a shape file (condition/model/supervisor) that is a genuine registry/aggregator and cannot include the shape header | `check-shape-includes-header` |
 | `// projection-cache-ok:<tag>` | line in a `*_projection.c` with a legitimate cache write outside the strict fold | `check-projections-pure` |
 | `// ram-state-ok:<tag>` | line with derived active-chain cache state that must stay non-authoritative | `check-no-authoritative-ram-state` |
+| `// abort-ok:<reason>` | line with an `assert(`/`abort(` in network-reachable code where continuing would be worse than crashing (a leaked plaintext, a forged key, a silently mis-verified signature) | `check-no-runtime-abort` |
 
-**Syntax (machine-enforced).** Every marker requires a non-empty single-token
-tag matching `[A-Za-z][A-Za-z0-9_-]+` immediately after the colon. The
-space-after-colon form (`// raw-sql-ok: state-kv …`) and the bare form
+**Syntax (machine-enforced).** Every `<tag>` marker requires a non-empty
+single-token tag matching `[A-Za-z][A-Za-z0-9_-]+` immediately after the colon.
+The space-after-colon form (`// raw-sql-ok: state-kv …`) and the bare form
 (`// raw-alloc-ok`) are rejected — hyphen-join multi-word tags instead.
+
+The two `<reason>` markers — `// thread-supervision-ok:<reason>` and
+`// abort-ok:<reason>` — take free prose instead, because a one-word tag cannot
+carry the argument they exist to make (why this thread needs no liveness
+contract; why crashing here beats continuing). They still refuse an empty
+reason; `check-no-runtime-abort` requires at least six characters.
 
 **Pairing rule.** A marker is a promise that the override is either:
 

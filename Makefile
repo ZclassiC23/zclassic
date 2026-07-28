@@ -5391,6 +5391,21 @@ check-test-registration:
 	@echo "══ LINT: test registration ══"
 	@./tools/scripts/check_test_registration.sh
 
+# Gate — no NEW runtime abort primitive in network-reachable code (RATCHET,
+# shrink-only baseline tools/lint/no_runtime_abort_baseline.txt). assert() is
+# LIVE in this build: -DNDEBUG is set only for the vendored LevelDB compile
+# (tools/scripts/build_vendor.sh), never in the node's own CFLAGS above. So an
+# assert() on a path a peer, an RPC argument, an explorer URL segment or a
+# stored blob can reach is a remote process-kill primitive — which is exactly
+# what the Base58 codec, BIP32 public child derivation and xpub serialization
+# were until they were converted to error returns. _Static_assert is
+# compile-time and is NOT counted. An abort that is correct (softening it would
+# leak plaintext or forge a key) is annotated in place with
+# `// abort-ok:<reason>` instead of being buried in the baseline.
+check-no-runtime-abort:
+	@echo "══ LINT: no runtime abort primitive ══"
+	@./tools/lint/check_no_runtime_abort.sh
+
 # Lint gate #16 — typed blocker primitive adoption (Round 6 C6).
 # Ratchets raw `char *_blocker[]` string fields / `lms_set_blocker(`
 # legacy setters / `last_blocker_code` mutations to the typed
@@ -6115,6 +6130,7 @@ LINT_GATES := \
     check-silent-errors-conditions \
     check-silent-errors-bool \
     check-log-macro-return-type \
+    check-no-runtime-abort \
     check-wallet-raw-prepare-log \
     check-before-save-hooks \
     check-pthread-create \

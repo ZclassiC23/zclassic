@@ -105,7 +105,7 @@ static void derive_fixed_generator(int idx, const char *name,
                 "find_group_hash failed for fixed generator '%s' — "
                 "refusing to run with zero-initialized generator\n",
                 __FILE__, __LINE__, __func__, name);
-        abort();
+        abort(); // abort-ok: a zero-initialized fixed generator makes every later scalar mul silently produce garbage commitments
     }
 }
 

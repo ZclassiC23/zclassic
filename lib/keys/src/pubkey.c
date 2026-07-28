@@ -181,14 +181,14 @@ bool ext_pubkey_derive(const struct ext_pubkey *epk,
  * would silently accept or reject signatures. */
 void ecc_verify_init(void)
 {
-    assert(secp256k1_ctx_verify == NULL);
+    assert(secp256k1_ctx_verify == NULL); // abort-ok: boot wiring, double init would leak the live verification context
     secp256k1_ctx_verify = secp256k1_context_create(SECP256K1_CONTEXT_VERIFY);
-    assert(secp256k1_ctx_verify != NULL);
+    assert(secp256k1_ctx_verify != NULL); // abort-ok: without a verification context every signature check is meaningless
 }
 
 void ecc_verify_destroy(void)
 {
-    assert(secp256k1_ctx_verify != NULL);
+    assert(secp256k1_ctx_verify != NULL); // abort-ok: shutdown ordering violation, the context was already torn down
     secp256k1_context_destroy(secp256k1_ctx_verify);
     secp256k1_ctx_verify = NULL;
 }

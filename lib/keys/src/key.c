@@ -25,7 +25,7 @@ void privkey_make_new(struct privkey *k, bool fCompressed)
 {
     do {
         if (!zcl_random_secret_bytes(k->vch, 32, "secp256k1_privkey"))
-            abort(); /* wrapper logged; void return makes propagation impossible */
+            abort(); // abort-ok: no entropy; wrapper logged, void return blocks propagation, and continuing hands out a guessable key
     } while (!secp256k1_ec_seckey_verify(secp256k1_ctx_sign, k->vch));
     k->fValid = true;
     k->fCompressed = fCompressed;
@@ -222,16 +222,22 @@ bool ecc_init_sanity_check(void)
     return privkey_verify_pubkey(&k, &pk);
 }
 
+/* The assertions in ecc_start guard the process-wide SIGNING context's
+ * lifecycle, not caller-supplied data — the same reasoning as
+ * ecc_verify_init/ecc_verify_destroy in pubkey.c. No external input reaches
+ * them, ecc_start runs exactly once at boot, and a node that carried on past
+ * a NULL or double-created context would sign with an unrandomized context
+ * or not at all. Failing loudly here is correct. */
 void ecc_start(void)
 {
-    assert(secp256k1_ctx_sign == NULL);
+    assert(secp256k1_ctx_sign == NULL); // abort-ok: boot wiring, double ecc_start would leak the live signing context
     secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
-    assert(ctx != NULL);
+    assert(ctx != NULL); // abort-ok: no signing context means no signature this node produces can be trusted
     unsigned char seed[32];
     if (!zcl_random_secret_bytes(seed, 32, "secp256k1_ctx_randomize"))
-        abort(); /* wrapper logged; void return makes propagation impossible */
+        abort(); // abort-ok: no entropy; wrapper logged, void return blocks propagation, and an unblinded context leaks key material via side channels
     bool ret = secp256k1_context_randomize(ctx, seed);
-    assert(ret);
+    assert(ret); // abort-ok: unrandomized signing context, side-channel blinding is not in force
     memset(seed, 0, sizeof(seed));
     secp256k1_ctx_sign = ctx;
 }
