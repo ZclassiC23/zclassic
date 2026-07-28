@@ -195,6 +195,17 @@ iso_init() {
 # dead sink so peer_count stays 0. -fsport is REQUIRED or the node binds
 # the hardcoded live FS port 18034. setsid puts the node in its own
 # group so the cleanup trap can kill the whole group atomically.
+#
+# -nofilesync is EQUALLY LOAD-BEARING and is NOT implied by -connect.
+# -connect isolates the P2P wire only. The instant-on bundle fetch builds
+# its OWN file-service peer set by stripping the port off -connect and
+# re-adding the compiled-in default FS port (bbf_add_peer_host_only,
+# config/src/boot_bundle_fetch_seeds.c), so -connect=127.0.0.1:39999
+# resolves to 127.0.0.1:18034 — the LIVE node's file service on a host
+# that runs one. Measured: a spawn without this flag pulled ~1.1 GB of
+# mainnet state into a "regtest" datadir and began re-serving it to the
+# swarm. A regtest harness never wants a mainnet bundle, so this is
+# unconditional rather than a per-caller opt-in.
 iso_spawn_node() {
     local extra="${1:-}"
     [ -n "$ISO_DD" ] || iso_die "iso_spawn_node called before iso_init"
@@ -207,7 +218,7 @@ iso_spawn_node() {
         -port="$ISO_PORT" -rpcport="$ISO_RPCPORT" \
         -fsport="$ISO_FSPORT" -httpsport="$ISO_HTTPSPORT" \
         -connect=127.0.0.1:"$ISO_CONNECT_SINK" \
-        -nobgvalidation -nolegacyimport -showmetrics=0 \
+        -nobgvalidation -nolegacyimport -nofilesync -showmetrics=0 \
         $extra \
         >"$ISO_DD/node.log" 2>&1 &
     ISO_NODE_PID=$!
