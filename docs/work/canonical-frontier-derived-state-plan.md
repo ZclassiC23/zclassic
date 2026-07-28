@@ -75,5 +75,12 @@ separate owner-gated action only after the copy reaches tip with byte-identical 
 - Enumerate all `update_header_tip=true` tip-commit callers; assert each supplies a
   `header_frontier_hint` or a `rollback_auth` (no above-frontier tip slips the gate).
 - Prove `block_index_loader` warm-boot tip == frontier on a clean datadir (no over-reject).
-- `data_integrity_compute` / `utxo_projection` shadow-seed: confirm non-consensus or repoint.
+- `data_integrity_compute` shadow-seed: confirm non-consensus or repoint. The
+  `utxo_projection` half of this question is CLOSED, not open — Program H1
+  (commit 9b5add018) deleted the event-log-fed projection and its view, and
+  `check-no-utxo-projection` now enforces that the copy stays dead.
+  <!-- claim: file-absent lib/storage/src/utxo_projection.c # deleted by Program H1, 9b5add018 -->
+  <!-- claim: gate-passes check-no-utxo-projection # the copy must stay dead -->
+  <!-- claim: symbol-absent coins_view_projection lib/storage # the view is gone -->
+
 - `reconcile_light`: shrink-vs-delete after the step-7 grep shows registration sites.
