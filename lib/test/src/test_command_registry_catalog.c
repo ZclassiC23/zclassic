@@ -2038,7 +2038,10 @@ static int test_ops_state_requires_subsystem(void)
         ASSERT(s != NULL);
         ASSERT_EQ(s->availability, ZCL_COMMAND_READY);
         ASSERT(s->handler != NULL);
-        ASSERT_STR_EQ(s->input_keys, "subsystem,key");
+        /* `explain` opts the reply into the telemetry-ontology verdicts
+         * (util/telemetry_ontology.h) instead of bare numbers; it is optional
+         * and off by default, so a routine dump is unchanged. */
+        ASSERT_STR_EQ(s->input_keys, "subsystem,key,explain");
         enum zcl_command_exit code = ZCL_COMMAND_EXIT_OK;
         ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
         ASSERT_EQ(code, ZCL_COMMAND_EXIT_INVALID);

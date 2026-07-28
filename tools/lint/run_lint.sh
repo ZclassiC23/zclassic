@@ -159,6 +159,7 @@ gate_command() {
         check-vcs-no-sha1)                 echo 'tools/scripts/check_vcs_no_sha1.sh && tools/dev/source-identity-selftest.sh' ;;
         check-vendor-provenance)           echo 'tools/scripts/test_vendor_provenance.sh' ;;
         check-command-contract)            echo './tools/lint/check_command_contract.sh' ;;
+        check-telemetry-ontology)          echo './tools/lint/check_telemetry_ontology.sh' ;;
         check-privileged-transition-receipt) echo './tools/lint/check_privileged_transition_receipt.sh' ;;
         check-no-trust-state-ordering)     echo './tools/scripts/check_no_trust_state_ordering.sh' ;;
         check-no-gnu-va-args)              echo './tools/lint/check_no_gnu_va_args.sh' ;;

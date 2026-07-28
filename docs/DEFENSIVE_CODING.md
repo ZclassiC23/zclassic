@@ -372,6 +372,24 @@ assert green).
   cure ACTIVATE gate, intentionally not rewired). Impl:
   `tools/lint/check_privileged_transition_receipt.sh`.
 
+- **Gate #50: `check-telemetry-ontology`** (HARD) — every network telemetry
+  field a covered `dumpstate` function emits must carry a machine-readable
+  meaning row in `lib/util/include/util/telemetry_ontology.def`: what it
+  counts, a machine-evaluable health rule, what an unhealthy value implies,
+  and the exact next command. The defect it closes is real —
+  `"pre_handshake_disconnects":27` on a healthy node and the same field at 8
+  on a node that cannot start are IDENTICAL IN SHAPE, and only the second is
+  the whole story. `tools/lint/telemetry_ontology_scan.txt` declares the
+  covered surface as (subsystem, file, function, json-target-variable,
+  path-prefix) rows; the gate slices each named function, extracts its scalar
+  emissions, and fails on an UNANNOTATED FIELD (named with `file:line`) or an
+  UNMAPPED EMISSION TARGET (a new JSON sub-object the manifest does not map,
+  so its fields could not be checked at all). Floors on manifest rows,
+  ontology rows, judged (non-info) rows and extracted fields make a hollow
+  scan exit 2 rather than pass. Self-test:
+  `lib/test/src/lint_gate_quality_selftests.c:t_telemetry_ontology_gate`.
+  Impl: `tools/lint/check_telemetry_ontology.sh`.
+
 - **Gate #16: `check-supervisor-registration`** (RATCHET) — flags any
   `app/services/src/*_service.c` that spawns work (`pthread_create`,
   `thread_registry_spawn`, `health_register_periodic`) but does NOT call
@@ -677,6 +695,7 @@ add/remove a gate.
 - `check-vcs-no-git`
 - `check-vcs-no-sha1`
 - `check-command-contract`
+- `check-telemetry-ontology`
 - `check-privileged-transition-receipt`
 - `check-no-gnu-va-args`
 - `check-clang-portability`

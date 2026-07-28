@@ -310,6 +310,20 @@
                "network-modal height), and peer_lifecycle connect/"
                "handshake/timeout/reject counters. Rolls up existing "
                "dumpers only — computes nothing new"),
+    DIAG_ENTRY("telemetry_ontology", telemetry_ontology_dump_state_json,
+               "field-level MEANING for the network telemetry the other "
+               "reports emit: per field, what it counts, a machine-evaluable "
+               "healthy range, what an unhealthy value implies, and the exact "
+               "next command — plus a question index that maps an operator "
+               "question ('do I have any peer that completed a handshake?') "
+               "to the one command that answers it. Static build data, so it "
+               "answers with no node state and is fetched separately from "
+               "values; the routine dumps do not carry it",
+               "diagnostic", "runtime", "lib/util/src/telemetry_ontology.c",
+               "static_build_constant", "cheap",
+               "a covered subsystem name, a bare field name, or 'questions'",
+               "peer_lifecycle", "pre_handshake_disconnects",
+               "lib/test/src/test_telemetry_ontology.c", false),
     DIAG_LOCAL("transport", net_transport_dump_state_json,
                "per-peer P2P transport: plaintext vs noise_xx (Noise_XX "
                "encrypted), handshake state, and frame counters; names + "

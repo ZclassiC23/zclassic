@@ -64,6 +64,39 @@ int t_markdown_links_gate(void)
     return failures;
 }
 
+/* check-telemetry-ontology — a network telemetry field that ships with no
+ * meaning row must FAIL the gate and be NAMED. Proven three ways, because a
+ * gate that only ever passes proves nothing:
+ *   1. the real tree is clean (exit 0);
+ *   2. the checked-in fixture (a dump function emitting
+ *      `field_that_ships_with_no_meaning`) trips it (exit 1, not 2 — a real
+ *      violation, not a scan error);
+ *   3. an empty scan manifest is exit 2, so a broken scan can never be
+ *      mistaken for a clean tree.
+ * The fixture is appended to the real manifest, so the trip runs against the
+ * real ontology and the real floors. */
+int t_telemetry_ontology_gate(void)
+{
+    int failures = 0;
+    int baseline_rc = run_gate_script(TELEMETRY_ONTOLOGY_SCRIPT_REL, NULL);
+    int trip_rc = run_gate_script_with_env(TELEMETRY_ONTOLOGY_SCRIPT_REL,
+                                           TELEMETRY_ONTOLOGY_EXTRA_ENV,
+                                           TELEMETRY_ONTOLOGY_EXTRA_REL);
+    int hollow_rc = run_gate_script_with_env(TELEMETRY_ONTOLOGY_SCRIPT_REL,
+                                             TELEMETRY_ONTOLOGY_MANIFEST_ENV,
+                                             "");
+    int recover_rc = run_gate_script(TELEMETRY_ONTOLOGY_SCRIPT_REL, NULL);
+    TEST("[lint-gate] telemetry-ontology: clean, trips an unannotated field, "
+         "exit 2 on a hollow scan, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(trip_rc == 1);
+        ASSERT(hollow_rc == 2);
+        ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* E10a — framework shape RATCHET: an off-shape app/.c file (not in the
  * allowlist) trips the gate in RATCHET mode; removing it restores green. */
 int t_e10_framework_shape_ratchet(void)
