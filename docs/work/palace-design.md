@@ -8,7 +8,7 @@ Four properties, each a lookup rather than a guess:
 
 | Property | Mechanism |
 |---|---|
-| Location predicts content | 8 shape folders, lint-enforced by `tools/lint/framework_shape_check.sh` + `tools/lint/check_framework_filename_suffix.sh`; shapes canonical in `lib/codeindex/src/codeindex_group.c` (`k_app_shapes[]`) |
+| Location predicts content | 7 shape folders (the Event shape has none), lint-enforced by `tools/lint/framework_shape_check.sh` + `tools/lint/check_framework_filename_suffix.sh`; shapes canonical in `lib/codeindex/src/codeindex_group.c` (`k_app_shapes[]`) |
 | Navigation is O(1) indexed | `lib/codeindex/` SQLite index + the `code` command branch (`config/commands/code.def`, `tools/command/native_code_command.c`) answer where-is/what-calls/what's-in-file without grep |
 | Impact is a lookup | `app/controllers/src/agent_impact_rules.c` (`agent_impact_apply_shared_rules`) maps a changed path → focused test groups, shared by native `agentimpact` and `make fast-ci` |
 | Content self-describes | every indexed file carries a `purpose` string, derived from the first substantive line of its top-of-file block comment (`ci_file_purpose()`, `lib/codeindex/src/codeindex_scan.c`); `code file`/`code group`/`code map` render it |

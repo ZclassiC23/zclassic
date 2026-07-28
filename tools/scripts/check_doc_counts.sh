@@ -64,9 +64,15 @@ test_groups_file=lib/test/src/test_parallel.c
 ports_glob='ports/include/ports/*.h'
 adapters_glob='adapters/outbound/persistence/src/*.c'
 conditions_glob='app/conditions/src/*.c'
+commands_glob='config/commands/*.def'
+dumpers_def=app/controllers/include/controllers/diagnostics_dumpers.def
 
 if [ ! -f "$test_groups_file" ]; then
     echo "FAIL: $test_groups_file not found (run from repo root)" >&2
+    exit 1
+fi
+if [ ! -f "$dumpers_def" ]; then
+    echo "FAIL: $dumpers_def not found (run from repo root)" >&2
     exit 1
 fi
 
@@ -77,7 +83,26 @@ code_adapters=$(ls $adapters_glob 2>/dev/null | wc -l)
 code_conditions=$(grep -RhoE 'condition_register[[:space:]]*\(' \
     $conditions_glob 2>/dev/null | wc -l)
 
-echo "code-measured: test_groups=$code_test_groups port_interfaces=$code_ports persistence_adapters=$code_adapters condition_registrations=$code_conditions"
+# Native command surface. `command_bundles` is one .def per catalog bundle;
+# `command_roots` is the branches declared with an EMPTY parent, i.e. the
+# top-level names `discover help` lists (plus the bare `status` leaf, which is
+# not a branch and is deliberately not counted here). Both drifted silently
+# when the vault and zcode bundles landed: every doc still said "seven roots"
+# and "eight .def bundles".
+code_command_bundles=$(ls $commands_glob 2>/dev/null | wc -l)
+code_command_roots=$(grep -h 'ZCL_COMMAND_BRANCH(' $commands_glob 2>/dev/null \
+    | sed 's/.*ZCL_COMMAND_BRANCH(//' \
+    | awk -F'"' '$4 == "" { n++ } END { print n + 0 }')
+
+# `dumpstate` subsystems: one DIAG_* row per subsystem in the .def the
+# diagnostics registry #includes to build g_dumpers[]. There are nine row
+# macros, not the three the docs used to name.
+code_dumpstate=$(grep -cE '^[[:space:]]*DIAG_[A-Z]+\(' "$dumpers_def")
+
+# Physical app shape folders (the Event shape deliberately has none).
+code_app_shapes=$(find app -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+
+echo "code-measured: test_groups=$code_test_groups port_interfaces=$code_ports persistence_adapters=$code_adapters condition_registrations=$code_conditions command_bundles=$code_command_bundles command_roots=$code_command_roots dumpstate_subsystems=$code_dumpstate app_shape_folders=$code_app_shapes"
 
 # --------------------------------------------------------------------------
 # (A) Canonical block in docs/CODEBASE_MAP.md must agree with the code.
@@ -95,6 +120,10 @@ if [ "${1:-}" = "--fix" ]; then
         -e "s/^\(port_interfaces[[:space:]]*:\).*/\1 $code_ports/" \
         -e "s/^\(persistence_adapters[[:space:]]*:\).*/\1 $code_adapters/" \
         -e "s/^\(condition_registrations[[:space:]]*:\).*/\1 $code_conditions/" \
+        -e "s/^\(command_bundles[[:space:]]*:\).*/\1 $code_command_bundles/" \
+        -e "s/^\(command_roots[[:space:]]*:\).*/\1 $code_command_roots/" \
+        -e "s/^\(dumpstate_subsystems[[:space:]]*:\).*/\1 $code_dumpstate/" \
+        -e "s/^\(app_shape_folders[[:space:]]*:\).*/\1 $code_app_shapes/" \
         "$DOC"
     echo "fixed: DOC-COUNTS block in $DOC rewritten from code-measured values"
 fi
@@ -114,24 +143,26 @@ get_declared() { # $1=key
     echo "${line##*:}" | tr -d '[:space:]'
 }
 
-dec_test_groups=$(get_declared test_groups)
-dec_ports=$(get_declared port_interfaces)
-dec_adapters=$(get_declared persistence_adapters)
-dec_conditions=$(get_declared condition_registrations)
+# check_one <key> <code-measured value>
+check_one() {
+    local key="$1" measured="$2" declared
+    declared=$(get_declared "$key")
+    if [ -z "$declared" ]; then
+        add_fail "$key not declared in $DOC DOC-COUNTS block"
+        return
+    fi
+    [ "$declared" = "$measured" ] || \
+        add_fail "$key MISMATCH — code=$measured doc-says=$declared (update the DOC-COUNTS block in $DOC)"
+}
 
-[ -n "$dec_test_groups" ] || add_fail "test_groups not declared in $DOC DOC-COUNTS block"
-[ -n "$dec_ports" ]       || add_fail "port_interfaces not declared in $DOC DOC-COUNTS block"
-[ -n "$dec_adapters" ]    || add_fail "persistence_adapters not declared in $DOC DOC-COUNTS block"
-[ -n "$dec_conditions" ]  || add_fail "condition_registrations not declared in $DOC DOC-COUNTS block"
-
-[ "${dec_test_groups:-_}" = "$code_test_groups" ] || \
-    add_fail "test_groups MISMATCH — code=$code_test_groups doc-says=${dec_test_groups:-<blank>} (update the DOC-COUNTS block in $DOC)"
-[ "${dec_ports:-_}" = "$code_ports" ] || \
-    add_fail "port_interfaces MISMATCH — code=$code_ports doc-says=${dec_ports:-<blank>} (update the DOC-COUNTS block in $DOC)"
-[ "${dec_adapters:-_}" = "$code_adapters" ] || \
-    add_fail "persistence_adapters MISMATCH — code=$code_adapters doc-says=${dec_adapters:-<blank>} (update the DOC-COUNTS block in $DOC)"
-[ "${dec_conditions:-_}" = "$code_conditions" ] || \
-    add_fail "condition_registrations MISMATCH — code=$code_conditions doc-says=${dec_conditions:-<blank>} (update the DOC-COUNTS block in $DOC)"
+check_one test_groups             "$code_test_groups"
+check_one port_interfaces         "$code_ports"
+check_one persistence_adapters    "$code_adapters"
+check_one condition_registrations "$code_conditions"
+check_one command_bundles         "$code_command_bundles"
+check_one command_roots           "$code_command_roots"
+check_one dumpstate_subsystems    "$code_dumpstate"
+check_one app_shape_folders       "$code_app_shapes"
 
 # --------------------------------------------------------------------------
 # (B) Prose number scan. Two matchers, both compound (number+unit) so a bare
@@ -152,6 +183,10 @@ derived_rules=(
     "port interfaces#$code_ports#port_interfaces"
     "(persistence adapters|sqlite impls)#$code_adapters#persistence_adapters"
     "(registered conditions|conditions registered)#$code_conditions#condition_registrations"
+    "command bundles#$code_command_bundles#command_bundles"
+    "command roots#$code_command_roots#command_roots"
+    "dumpstate subsystems#$code_dumpstate#dumpstate_subsystems"
+    "(app shape folders|shape folders)#$code_app_shapes#app_shape_folders"
 )
 
 denylist=(
@@ -228,12 +263,19 @@ at_least=$(( code_test_groups > 1 ? code_test_groups - 1 : 1 ))
     echo "There are $code_ports port interfaces and $code_adapters persistence adapters."
     echo "More than ${at_least}+ parallel groups run per CI pass."
     echo "Unrelated prose: 8 groups of peers, 3 ports, 12 conditions were met."
+    echo "The catalog is $code_command_bundles command bundles under $code_command_roots command roots."
+    echo "It exposes $code_dumpstate dumpstate subsystems across $code_app_shapes shape folders."
+    echo "Unrelated prose: 4 bundles arrived, 3 roots were pruned, 9 subsystems rebooted."
 } > "$selftest_dir/good.md"
 {
     echo "$((code_test_groups + 1)) parallel groups"
     echo "$((code_ports + 1)) port interfaces"
     echo "$((code_test_groups + 5))+ registered test groups"
     echo "1500+ tests"
+    echo "$((code_command_bundles + 1)) command bundles"
+    echo "$((code_command_roots - 1)) command roots"
+    echo "$((code_dumpstate - 5)) dumpstate subsystems"
+    echo "$((code_app_shapes + 1)) shape folders"
 } > "$selftest_dir/bad.md"
 {
     echo "$((code_test_groups + 1)) parallel groups <!-- doc-count-ok: fixture -->"
@@ -245,10 +287,11 @@ selftest_out=$(scan_prose "$selftest_dir/good.md" "$selftest_dir/bad.md" \
 selftest_n=$(printf '%s' "$selftest_out" | grep -c . || true)
 selftest_bad=$(printf '%s' "$selftest_out" | grep -c 'bad\.md' || true)
 
-if [ "$selftest_n" != "4" ] || [ "$selftest_bad" != "4" ]; then
+if [ "$selftest_n" != "8" ] || [ "$selftest_bad" != "8" ]; then
     echo "FAIL: check_doc_counts self-check broken — the prose matcher no longer" >&2
     echo "      behaves as specified, so a clean tree scan would prove nothing." >&2
-    echo "      expected 4 violations, all in bad.md; got $selftest_n total," >&2
+    echo "      expected 8 violations (one per derived rule, plus the denylist" >&2
+    echo "      phrase), all in bad.md; got $selftest_n total," >&2
     echo "      $selftest_bad in bad.md:" >&2
     printf '        %s\n' "$selftest_out" >&2
     exit 1
@@ -296,5 +339,5 @@ if [ "$fail" != "0" ]; then
     exit 1
 fi
 
-echo "check_doc_counts: clean — test_groups=$code_test_groups port_interfaces=$code_ports persistence_adapters=$code_adapters condition_registrations=$code_conditions; self-check fired as expected; ${#scan_files[@]} tracked *.md scanned, no stale count claims"
+echo "check_doc_counts: clean — test_groups=$code_test_groups port_interfaces=$code_ports persistence_adapters=$code_adapters condition_registrations=$code_conditions command_bundles=$code_command_bundles command_roots=$code_command_roots dumpstate_subsystems=$code_dumpstate app_shape_folders=$code_app_shapes; self-check fired as expected; ${#scan_files[@]} tracked *.md scanned, no stale count claims"
 exit 0

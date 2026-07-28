@@ -1,13 +1,24 @@
 # ZClassic23 — AI-Integrated Personal Sovereignty Stack
 
 <!-- FIRST-FIVE-BEGIN -->
+<!-- These five steps were followed cold on 2026-07-28 and every observation
+     below is from that transcript. The load-bearing facts are bound to
+     check-doc-claims predicates at the end of the block; the root and
+     subsystem counts are bound to check-doc-counts. Re-follow, do not
+     re-remember. -->
 ## First five commands in a fresh clone
 
-1. `make setup` — one-time: fetch and build the vendored dependencies, and arm this clone's local git hooks.
-2. `make -j"$(nproc)"` — build the binary at `build/bin/zclassic23`.
-3. `build/bin/zclassic23 discover help` — list every typed command. `discover search <query>` narrows it; `discover schema <command>` gives the exact input keys.
-4. `build/bin/zclassic23 code map` — the source tree's floor plan, from the navigator built into the binary.
-5. `make t-fast ONLY=<group>` — run one test group. `make test-parallel` runs the whole suite.
+1. `make setup` — one-time: fetch and build the vendored dependencies, and arm this clone's local git hooks. It ends by printing `Next: make doctor`; that is an optional environment check, not step 2.
+2. `make -j"$(nproc)"` — build `build/bin/zclassic23`. One whole-program LTO `cc` per binary, so this is minutes even warm.
+3. `build/bin/zclassic23 discover help` — the top of the command tree, not a flat list: it prints the 8 command roots plus the bare `status` leaf. Descend with `discover help <path>`, narrow with `discover search <query>` (query is **positional**), and get exact input keys with `discover schema <leaf>`. The whole catalog is `docs/API_REFERENCE.md`, generated from `config/commands/*.def`.
+4. `build/bin/zclassic23 code map` — the source tree's floor plan, from the navigator built into the binary. First call builds the index (~1.4 s, and it reports `budget_exceeded`); later calls are ~12 ms.
+5. `make t-fast ONLY=<substring>` — run the test groups whose names contain `<substring>`, e.g. `make t-fast ONLY=boot_phase`. `ONLY=` is mandatory and unvalidated: run it with the literal placeholder and you get a full test-binary compile followed by `sh: 1: Syntax error: end of file unexpected`. All 781 test groups by name, no build: `git grep -hoE 'X\([a-z_0-9]+\)' lib/test/src/test_parallel.c | tr -d 'X()'` (drop `-h` and you get the filename glued to every name). `make test-parallel` runs the whole suite.
+
+<!-- claim: symbol-present t-fast Makefile # step 5's target -->
+<!-- claim: symbol-present test-parallel Makefile # step 5's whole-suite target -->
+<!-- claim: symbol-present discover.schema config/commands/root.def # step 3's leaf -->
+<!-- claim: symbol-present code.map config/commands/code.def # step 4's leaf -->
+<!-- claim: file-present docs/API_REFERENCE.md # step 3's generated catalog -->
 
 Scope every text search with `git grep` (or `git ls-files | xargs grep`) — never `grep -r` or `find .` from the repository root. The root also contains untracked full checkouts under `.claude/worktrees/` and per-run scratch under `test-tmp/`, so an unscoped recursive search reads duplicate copies of the source and test debris instead of the tracked tree. The root `.ignore` file makes most search tools skip those by default; `git grep` is exact regardless.
 <!-- FIRST-FIVE-END -->
@@ -139,11 +150,11 @@ commit → repeat to 100. **Never edit the scorer to win.**
 
 Type **`continue zclassic23 development`**. The agent will:
 1. Run `pwd` to detect worktree ID (`main`, `wt2`, `wt3`, ...).
-2. For the one-page mental model, skim **[`docs/HOW_THE_NODE_WORKS.md`](./docs/HOW_THE_NODE_WORKS.md)** (append-only fact log in `consensus.db` → eight reducer stages, each advance-cursor-or-name-a-blocker → projections → health = `network_tip − log_head`). **[`docs/CODEBASE_MAP.md`](./docs/CODEBASE_MAP.md)** is where-things-live + how-to-do-each-thing; **[`docs/AGENT_ARCHITECTURE.md`](./docs/AGENT_ARCHITECTURE.md)** is the required feature-slice recipe for REST resources, ActiveRecord models, validations, relationships, database schema, services, and native command surfaces; **[`docs/AGENT_TRAPS.md`](./docs/AGENT_TRAPS.md)** lists things that look broken but are intentional or already-done — read it before "fixing" or re-proposing anything.
+2. For the one-page mental model, skim **[`docs/HOW_THE_NODE_WORKS.md`](./docs/HOW_THE_NODE_WORKS.md)** (append-only fact log in `consensus.db` → eight reducer stages, each advance-cursor-or-name-a-blocker → projections → health = `network_tip − log_head`). **[`docs/CODEBASE_MAP.md`](./docs/CODEBASE_MAP.md)** is where-things-live + how-to-do-each-thing; **[`docs/AGENT_ARCHITECTURE.md`](./docs/AGENT_ARCHITECTURE.md)** is the required feature-slice recipe for REST resources, ActiveRecord models, validations, relationships, database schema, services, and native command surfaces; **[`docs/AGENT_TRAPS.md`](./docs/AGENT_TRAPS.md)** lists things that look broken but are intentional or already-done — read it before "fixing" or re-proposing anything; **[`docs/EXTENSION_POINTS.md`](./docs/EXTENSION_POINTS.md)** is the one page for the surfaces under active construction (vault ownership, big integers, the declarative service manifest), and every claim on it is gate-bound.
 3. Read exactly two more: `docs/HANDOFF.md` (live state) and `docs/work/FORWARD_PLAN.md` (the ordered priority). `docs/MVP.md` (the v1 contract), `docs/ARCH_QUEST_BOARD.md`, `docs/ARCHITECTURE_NORTH_STAR.md`, and `docs/FRAMEWORK.md` are **reference — open on demand, not on arrival**. The sovereign-cure spine is `docs/work/self-verified-tip-plan.md`.
 4. Check the live node before trusting any doc: `zclassic23 status`, then
    `zclassic23 dumpstate reducer_frontier`. A doc can be stale; the node cannot.
-5. If worker → read `docs/work/wt<N>-*.md` and follow `docs/work/agent-protocol.md`. If orchestrator → review in-flight work in the status board, merge pushed branches, dispatch next assignments.
+5. If worker → read `docs/work/wt<N>-*.md` and follow `docs/work/agent-protocol.md`. If orchestrator → review in-flight work in the status board, merge pushed branches, dispatch next assignments. Before dispatching from a plan under `~/.claude/plans/`, run `make check-plan-claims`: those files are outside the repository, so `make lint` never sees them, and a plan that lists finished work as PENDING has already cost this project three agents.
 
 **[`docs/README.md`](./docs/README.md) is the curated documentation map** — use
 it to find anything not listed here. It splits public-contributor docs from
@@ -178,8 +189,10 @@ Key rules enforced by the compiler and CI:
 ## Agent interface — native commands
 
 The interface is the native command registry: `zclassic23 <command>` under
-seven roots — `status`, `core.*`, `app.*`, `dev.*`, `ops.*`, `discover.*`,
-`code.*`. Start with `zclassic23 status`;
+8 command roots — `core.*`, `app.*`, `dev.*`, `ops.*`, `discover.*`, `code.*`,
+`vault.*`, `zcode.*` — plus the bare `status` leaf. Never work from a
+remembered root list; `discover help` prints the live one.
+Start with `zclassic23 status`;
 enumerate with `discover help` / `discover search <q>`; three diagnostic
 primitives (`ops state --subsystem=<name>`, `ops logs`, and
 `core storage query` for SELECT-only SQL)
@@ -209,12 +222,12 @@ runtime state, follow the convention:
    owns the buffer).
 
 3. Add one descriptor row to
-   `app/controllers/include/controllers/diagnostics_dumpers.def` — a
-   `DIAG_ENTRY` (~12 fields: name, dump fn, description, category,
-   state_class, owner `.c` path, freshness, cost, key form, two example keys,
-   owning test path, bool) or the shorter `DIAG_RUNTIME` / `DIAG_CONDITION`.
-   **Do not edit `app/controllers/src/diagnostics_registry.c`** — it builds
-   `g_dumpers[]` by `#include`-ing that `.def` and has no editable table.
+   `app/controllers/include/controllers/diagnostics_dumpers.def`. `DIAG_ENTRY`
+   is the long form (~12 fields); nine row macros exist and most rows use a
+   short one — read the `#define DIAG_*` block in
+   `app/controllers/src/diagnostics_registry.c` and pick from it.
+   **Do not edit that file's table** — it builds `g_dumpers[]` by
+   `#include`-ing the `.def` and has no editable table.
 
 4. No edit to the state command handler is needed; its subsystem catalog is
    populated at runtime from the diagnostics registry. Update the native
