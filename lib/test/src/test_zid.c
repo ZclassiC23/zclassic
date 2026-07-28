@@ -383,6 +383,9 @@ static int test_zid_domain_store(void)
     }
 
     node_db_close(&ndb);
+    return failures;
+}
+
 /* ══ ed25519 batch verification ═══════════════════════════════════════
  *
  * `ed25519_verify_batch` must return EXACTLY the conjunction of the n
