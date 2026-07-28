@@ -187,6 +187,14 @@
  * without ZCL_LINT_PRODUCTION_SCAN, ignored by production/watch scans. */
 #define E10_SHAPE_FIXTURE_DST \
     "app/_e10_offshape_fixture_probe_tmp.c"
+/* check-telemetry-ontology: the fixture pair is CHECKED IN (a .fixture suffix
+ * keeps it out of every source glob), so the trip case runs against the REAL
+ * ontology and the REAL floors — a shrunken scan would trip for the wrong
+ * reason and prove nothing. */
+#define TELEMETRY_ONTOLOGY_SCRIPT_REL "tools/lint/check_telemetry_ontology.sh"
+#define TELEMETRY_ONTOLOGY_EXTRA_ENV "ZCL_TELEMETRY_SCAN_EXTRA_MANIFEST"
+#define TELEMETRY_ONTOLOGY_EXTRA_REL "tools/lint/fixtures/telemetry_scan_extra.txt"
+#define TELEMETRY_ONTOLOGY_MANIFEST_ENV "ZCL_TELEMETRY_SCAN_MANIFEST"
 #define E10_SQL_SCRIPT_REL "tools/lint/check_no_raw_sqlite_in_controllers.sh"
 #define E10_SQL_FIXTURE_DST "app/controllers/src/_e10_rawsql_fixture_tmp.c"
 #define E11_SCRIPT_REL   "tools/scripts/check_doc_accuracy.sh"
@@ -375,6 +383,7 @@ int t_fresh_boot_weld_prove_selftest(void);
 int t_e14_condition_cooldown_gate(void);
 int t_markdown_links_gate(void);
 int t_e10_framework_shape_ratchet(void);
+int t_telemetry_ontology_gate(void);
 int t_e10_no_raw_sqlite_ratchet(void);
 int t_gate22_framework_filename_suffix(void);
 int t_gate_p2_group_purpose(void);

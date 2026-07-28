@@ -5633,6 +5633,15 @@ check-command-availability-truthful:
 	@echo "══ LINT: command-availability truthfulness ══"
 	@./tools/lint/check_command_availability_truthful.sh
 
+# Gate — telemetry-ontology coverage. Every network telemetry field a covered
+# dumpstate function emits must carry a machine-readable meaning row (what it
+# counts, its health rule, what a bad value implies, what to read next) in
+# lib/util/include/util/telemetry_ontology.def. A new field with no meaning
+# fails here, named with its file:line.
+check-telemetry-ontology:
+	@echo "══ LINT: telemetry field ontology ══"
+	@./tools/lint/check_telemetry_ontology.sh
+
 # Gate — no NEW repair rung without a write-time-invariant test (RATCHET for
 # TENACITY I3). A new repair/reconcile/backfill/heal file in app/ must cite a
 # write-time-invariant test (`// repair-rung-ok:<test>`) or be grandfathered in
@@ -6145,6 +6154,7 @@ LINT_GATES := \
     check-vendor-provenance \
     check-command-contract \
     check-command-availability-truthful \
+    check-telemetry-ontology \
     check-privileged-transition-receipt \
     check-no-gnu-va-args \
     check-clang-portability \

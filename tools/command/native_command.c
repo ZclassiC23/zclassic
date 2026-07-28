@@ -51,6 +51,7 @@
 #include "command/rom_watch_loop.h"
 #include "command/cli_render.h"
 #include "controllers/rpc_client.h"
+#include "util/telemetry_ontology.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -74,8 +75,10 @@ bool zcl_native_command_is_root(const char *word)
         /* Operator-UX convenience roots: bare aliases of ops.explain /
          * ops.profile so `zclassic23 explain sync` / `zclassic23 profile`
          * work without the `ops` prefix (each leaf carries the matching
-         * alias in config/commands/ops.def). */
-        "explain", "profile",
+         * alias in config/commands/ops.def). `meaning` joins them because the
+         * field ontology is most needed by an operator who does not yet know
+         * which report — let alone which prefix — to reach for. */
+        "explain", "profile", "meaning",
     };
     for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++) {
         if (strcmp(word, roots[i]) == 0)
@@ -1111,6 +1114,29 @@ void zcl_native_handle_ops_state(const struct zcl_command_request *request,
     }
     /* Success: project the state body into the envelope (view/budget bounded). */
     zcl_native_bridge_project(request, &body, reply);
+
+    /* Values alone do not say whether they are good. When this subsystem has a
+     * field ontology, either attach the verdicts (--explain) or, at minimum,
+     * SAY that meaning exists — the failure this closes is an operator reading
+     * a number with no idea it could be explained at all. Off by default, so a
+     * routine dump does not grow. */
+    if (telemetry_subsystem_covered(sub)) {
+        const struct json_value *st = json_get(&body, "state");
+        if (json_get_bool(json_get(request->input, "explain")) && st) {
+            struct json_value meaning;
+            json_init(&meaning);
+            if (telemetry_ontology_annotate(sub, st, &meaning))
+                (void)json_push_kv(&reply->data, "meaning", &meaning);
+            json_free(&meaning);
+        } else {
+            (void)json_push_kv_bool(&reply->data, "meaning_available", true);
+            (void)zcl_command_reply_add_next(
+                reply, "ops.state",
+                "{\"subsystem\":\"<same>\",\"explain\":true}",
+                "re-run with explain to get each field judged against its "
+                "healthy range");
+        }
+    }
     json_free(&body);
 }
 
@@ -1246,6 +1272,131 @@ void zcl_native_handle_ops_selftest(const struct zcl_command_request *request,
                                 : ZCL_COMMAND_STATUS_FAILED;
     reply->exit_code = failed == 0 ? ZCL_COMMAND_EXIT_OK
                                    : ZCL_COMMAND_EXIT_FAILED;
+}
+
+/* ── ops.debug.meaning native leaf ─────────────────────────────────────────
+ * Node-free by construction: it reads the static telemetry ontology compiled
+ * into this binary and never touches the RPC client. That is deliberate — the
+ * operator who most needs to know what `pre_handshake_disconnects` counts and
+ * what 8-of-8 implies is the one whose node will not start. */
+static bool meaning_matches_question(const struct telemetry_question *q,
+                                     const char *needle)
+{
+    if (!needle || !needle[0])
+        return true;
+    char low[256];
+    size_t n = strlen(needle);
+    if (n >= sizeof(low))
+        n = sizeof(low) - 1;
+    for (size_t i = 0; i < n; i++)
+        low[i] = (char)tolower((unsigned char)needle[i]);
+    low[n] = '\0';
+    if (strstr(q->id, low) || strstr(q->keywords, low))
+        return true;
+    /* Word-wise: any word of the query that is a keyword counts as a hit, so
+     * a whole sentence routes as well as a single term. */
+    const char *p = low;
+    while (*p) {
+        while (*p && !isalnum((unsigned char)*p)) p++;
+        const char *w = p;
+        while (*p && isalnum((unsigned char)*p)) p++;
+        size_t wl = (size_t)(p - w);
+        if (wl >= 4) {
+            char word[64];
+            if (wl < sizeof(word)) {
+                memcpy(word, w, wl);
+                word[wl] = '\0';
+                if (strstr(q->keywords, word))
+                    return true;
+            }
+        }
+    }
+    return false;
+}
+
+void zcl_native_handle_ops_meaning(const struct zcl_command_request *request,
+                                   struct zcl_command_reply *reply)
+{
+    if (!request || !reply)
+        return;
+    const char *subsystem = json_get_str(json_get(request->input, "subsystem"));
+    /* `name`, not `field`: --field is a RESERVED CLI flag (output projection),
+     * so a leaf input key called `field` is unreachable from the command line. */
+    const char *field = json_get_str(json_get(request->input, "name"));
+    const char *question = json_get_str(json_get(request->input, "question"));
+
+    (void)json_push_kv_str(&reply->data, "schema",
+                           "zcl.telemetry_ontology.v1");
+    (void)json_push_kv_bool(&reply->data, "node_free", true);
+    (void)json_push_kv_str(&reply->data, "source",
+                           "lib/util/include/util/telemetry_ontology.def");
+
+    /* A question routes to a command; that is the whole point of the index. */
+    if (question && question[0]) {
+        struct json_value routes;
+        json_init(&routes);
+        json_set_array(&routes);
+        for (size_t i = 0; i < telemetry_question_count(); i++) {
+            const struct telemetry_question *q = telemetry_question_at(i);
+            if (!q || !meaning_matches_question(q, question))
+                continue;
+            struct json_value obj;
+            json_init(&obj);
+            json_set_object(&obj);
+            (void)json_push_kv_str(&obj, "question", q->question);
+            (void)json_push_kv_str(&obj, "run", q->command);
+            (void)json_push_kv_str(&obj, "subsystem", q->subsystem);
+            (void)json_push_kv_str(&obj, "decisive_fields", q->fields);
+            (void)json_push_kv_str(&obj, "how_to_read", q->how_to_read);
+            (void)json_push_back(&routes, &obj);
+            json_free(&obj);
+        }
+        (void)json_push_kv_int(&reply->data, "routes_matched",
+                               (int64_t)json_size(&routes));
+        (void)json_push_kv(&reply->data, "routes", &routes);
+        json_free(&routes);
+    }
+
+    const char *key = (field && field[0]) ? field
+                    : (subsystem && subsystem[0]) ? subsystem : NULL;
+    if (key || !(question && question[0])) {
+        struct json_value onto;
+        json_init(&onto);
+        if (!telemetry_ontology_json(&onto, key)) {
+            json_free(&onto);
+            zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                                   ZCL_COMMAND_EXIT_INTERNAL,
+                                   "ONTOLOGY_RENDER_FAILED", "render", false,
+                                   false, "could not render the field ontology",
+                                   "ops.debug.meaning");
+            return;
+        }
+        const struct json_value *fields = json_get(&onto, "fields");
+        size_t matched = fields ? json_size(fields) : 0;
+        if (key && matched == 0) {
+            json_free(&onto);
+            zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                                   ZCL_COMMAND_EXIT_INVALID, "NO_SUCH_FIELD",
+                                   "resolve", false, false,
+                                   "no covered subsystem or field by that name",
+                                   key);
+            (void)zcl_command_reply_add_next(reply, "ops.debug.meaning", "{}",
+                                             "list every covered field");
+            return;
+        }
+        (void)json_push_kv_int(&reply->data, "fields_matched",
+                               (int64_t)matched);
+        const char *carry[] = { "fields", "alias_prefixes",
+                                "covered_subsystems", "questions" };
+        for (size_t i = 0; i < sizeof(carry) / sizeof(carry[0]); i++) {
+            const struct json_value *v = json_get(&onto, carry[i]);
+            if (v)
+                (void)json_push_kv(&reply->data, carry[i], v);
+        }
+        (void)json_push_kv_int(&reply->data, "field_rows_total",
+                               (int64_t)telemetry_field_count());
+        json_free(&onto);
+    }
 }
 
 /* ── ops.debug.backtrace native leaf ───────────────────────────────────────

@@ -138,6 +138,7 @@
 #include "util/service_state.h"
 #include "util/reducer_stage_profile.h"
 #include "util/supervisor.h"
+#include "util/telemetry_ontology.h"
 #include "util/supervisor_backstop.h"
 #include "util/blocker.h"
 #include "util/db_txn_trace.h"
