@@ -23,6 +23,7 @@
 #include "util/safe_alloc.h"
 #include "util/util.h"
 
+#include <pthread.h>
 #include <sqlite3.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -87,6 +88,29 @@ static int ai_query(sqlite3 *db, const uint8_t sh[32], int64_t *balance,
     }
     json_free(&arr);
     return n;
+}
+
+/* Holds the progress-store lock on a NON-test thread. The mutex is RECURSIVE,
+ * so a same-thread hold would let the guard's trylock succeed and prove
+ * nothing. Announces acquisition, then waits to be told to release. */
+struct ai_seed_lock_helper {
+    pthread_mutex_t m;
+    pthread_cond_t  cv;
+    int             held;          /* 0 = not yet, 1 = held, 2 = please release */
+};
+
+static void *ai_seed_lock_holder(void *arg)
+{
+    struct ai_seed_lock_helper *h = (struct ai_seed_lock_helper *)arg;
+    progress_store_tx_lock();
+    pthread_mutex_lock(&h->m);
+    h->held = 1;
+    pthread_cond_signal(&h->cv);
+    while (h->held != 2)
+        pthread_cond_wait(&h->cv, &h->m);
+    pthread_mutex_unlock(&h->m);
+    progress_store_tx_unlock();
+    return NULL;
 }
 
 int test_address_index(void);
@@ -481,6 +505,65 @@ int test_address_index(void)
         index_fold_clear_seed_blocker("address_index");
         AI_CHECK("clear_seed_blocker removes it",
                  !blocker_exists("address_index.below_snapshot_seed"));
+
+        /* ── LOCK-ORDER LAW: the seed-floor read must YIELD, never block ──
+         *
+         * Regression for the 2026-07-27 crash loop. This read runs on the
+         * supervisor tick-runner thread, which dispatches every child
+         * synchronously and stamps its heartbeat only between rounds. When it
+         * took a BLOCKING progress-store lock it parked behind the reducer
+         * drive's fold commit (120-330 s at tip), the runner heartbeat froze,
+         * the systemd keepalive was withheld, and the node was SIGABRT'd at the
+         * 120 s limit — seven kills in forty minutes on a node that was folding
+         * blocks correctly the whole time.
+         *
+         * Completing at all proves non-blocking: against the pre-fix code this
+         * case DEADLOCKS (measured: killed at 300 s, signal 9). The yield
+         * counter proves the trylock path is the reason, with no timing
+         * assertion to go flaky under load. */
+        {
+            struct ai_seed_lock_helper h = {
+                PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, 0
+            };
+            pthread_t tid;
+            int rc = pthread_create(&tid, NULL, ai_seed_lock_holder, &h);
+            AI_CHECK("seed-yield: helper thread spawned", rc == 0);
+
+            if (rc == 0) {
+                pthread_mutex_lock(&h.m);
+                while (h.held == 0)
+                    pthread_cond_wait(&h.cv, &h.m);
+                pthread_mutex_unlock(&h.m);
+
+                /* The "reducer" (helper) owns the lock. This call MUST return. */
+                uint64_t y0 = index_fold_seed_floor_yields();
+                index_fold_note_absent_body("address_index", "address_index",
+                                            db, 500);
+                uint64_t y1 = index_fold_seed_floor_yields();
+
+                AI_CHECK("seed-yield: read yielded instead of blocking",
+                         y1 == y0 + 1);
+                /* A yield must be a NO-OP: it may not invent or clear state
+                 * from a floor it could not read. */
+                AI_CHECK("seed-yield: blocker state untouched by a yield",
+                         !blocker_exists("address_index.below_snapshot_seed"));
+
+                pthread_mutex_lock(&h.m);
+                h.held = 2;
+                pthread_cond_signal(&h.cv);
+                pthread_mutex_unlock(&h.m);
+                pthread_join(tid, NULL);
+
+                /* Lock free again: the very same call now reads the floor and
+                 * raises the blocker — proving the yield was the lock, not a
+                 * broken read path. */
+                index_fold_note_absent_body("address_index", "address_index",
+                                            db, 500);
+                AI_CHECK("seed-yield: same call works once the lock is free",
+                         blocker_exists("address_index.below_snapshot_seed"));
+                index_fold_clear_seed_blocker("address_index");
+            }
+        }
 
         blocker_reset_for_testing();
     }

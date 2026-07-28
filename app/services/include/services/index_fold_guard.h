@@ -60,4 +60,13 @@ void index_fold_clear_seed_blocker(const char *index_id);
  * restore the compiled INDEX_FOLD_MIN_FREE_BYTES default. */
 void index_fold_set_min_free_for_test(int64_t bytes);
 
+/* Ticks whose seed-floor read YIELDED rather than block behind the reducer
+ * drive's fold commit. The read runs on the supervisor tick-runner thread,
+ * where a blocking acquire freezes the runner heartbeat and gets the node
+ * SIGABRT'd by the systemd watchdog; it therefore try-locks and skips. A yield
+ * is a NO-OP (the blocker is left exactly as found, retried in ~2 s), so
+ * non-zero here is the guard WORKING. Unbounded growth alongside a frozen fold
+ * is not. */
+uint64_t index_fold_seed_floor_yields(void);
+
 #endif /* ZCL_SERVICES_INDEX_FOLD_GUARD_H */
