@@ -14,13 +14,25 @@
  *     non-OP_RETURN output; re-indexing the same block is idempotent.
  *  3. op_return_index_fold_block_digest (pure): deterministic given the
  *     same inputs, sensitive to height/rows, and folds height with
- *     zero rows too (so the digest also proves no height was skipped).
+ *     zero rows too (so the digest also proves no height was skipped);
+ *     plus the DECLARED RANGE — base_height/base_digest are part of every
+ *     preimage, so two different bases over the same heights and rows
+ *     produce different digests.
+ *  3b. The persisted cursor record: base_height/base_digest round-trip,
+ *     a cursor outside its declared range is refused, and a LEGACY v1
+ *     record is rejected LOUDLY (never reinterpreted as v2), with
+ *     truncate as the documented escape.
  *  4. The supervised backfill service end-to-end on real on-disk
  *     blocks: op_return_backfill_run_once folds the whole chain up to
  *     the (test-set) provable tip in one bounded batch, is idempotent
  *     once caught up, and op_return_index_truncate + a fresh backfill
  *     run reproduces the exact same row set and running digest
- *     ("rebuildable + integrity"). */
+ *     ("rebuildable + integrity").
+ *  5. DECLARED PARTIAL COVERAGE: on a snapshot-seeded datadir (bodies
+ *     below the seed floor structurally absent) the fold adopts the floor
+ *     as its base and fills forward from there instead of spinning below
+ *     it forever — the live defect this range-declaring digest exists
+ *     for. */
 
 #include "test/test_core.h"
 #include "validation/main_state.h"
@@ -44,6 +56,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -316,8 +329,8 @@ static int test_digest_pure(void)
     printf("fold_block_digest: deterministic given identical inputs... ");
     {
         uint8_t d1[32], d2[32];
-        op_return_index_fold_block_digest(zero, 5, bhash, rows, 2, d1);
-        op_return_index_fold_block_digest(zero, 5, bhash, rows, 2, d2);
+        op_return_index_fold_block_digest(0, zero, zero, 5, bhash, rows, 2, d1);
+        op_return_index_fold_block_digest(0, zero, zero, 5, bhash, rows, 2, d2);
         bool ok = memcmp(d1, d2, 32) == 0;
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
@@ -325,8 +338,8 @@ static int test_digest_pure(void)
     printf("fold_block_digest: sensitive to height... ");
     {
         uint8_t d1[32], d2[32];
-        op_return_index_fold_block_digest(zero, 5, bhash, rows, 2, d1);
-        op_return_index_fold_block_digest(zero, 6, bhash, rows, 2, d2);
+        op_return_index_fold_block_digest(0, zero, zero, 5, bhash, rows, 2, d1);
+        op_return_index_fold_block_digest(0, zero, zero, 6, bhash, rows, 2, d2);
         bool ok = memcmp(d1, d2, 32) != 0;
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
@@ -335,8 +348,9 @@ static int test_digest_pure(void)
     {
         struct op_return_index_row swapped[2] = { rows[1], rows[0] };
         uint8_t d1[32], d2[32];
-        op_return_index_fold_block_digest(zero, 5, bhash, rows, 2, d1);
-        op_return_index_fold_block_digest(zero, 5, bhash, swapped, 2, d2);
+        op_return_index_fold_block_digest(0, zero, zero, 5, bhash, rows, 2, d1);
+        op_return_index_fold_block_digest(0, zero, zero, 5, bhash, swapped, 2,
+                                          d2);
         bool ok = memcmp(d1, d2, 32) != 0;
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
@@ -345,18 +359,198 @@ static int test_digest_pure(void)
           "(no-OP_RETURN blocks are not skipped)... ");
     {
         uint8_t d_empty[32], d_prev_carried[32];
-        op_return_index_fold_block_digest(zero, 7, bhash, NULL, 0, d_empty);
+        op_return_index_fold_block_digest(0, zero, zero, 7, bhash, NULL, 0,
+                                          d_empty);
         /* Folding a DIFFERENT prev digest at the same (height, 0 rows)
          * must differ — proves prev_digest genuinely participates. */
         uint8_t other_prev[32];
         memset(other_prev, 0x99, 32);
-        op_return_index_fold_block_digest(other_prev, 7, bhash, NULL, 0,
-                                          d_prev_carried);
+        op_return_index_fold_block_digest(0, zero, other_prev, 7, bhash, NULL,
+                                          0, d_prev_carried);
         bool ok = memcmp(d_empty, zero, 32) != 0 &&
                   memcmp(d_empty, d_prev_carried, 32) != 0;
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
+    /* ── Declared range: the base is part of the commitment ─────────── */
+
+    printf("make_base_digest: genesis-rooted base (0, no anchor) is the "
+          "all-zero IV; a based chain is not... ");
+    {
+        uint8_t d0[32], d1[32];
+        op_return_index_make_base_digest(0, NULL, d0);
+        op_return_index_make_base_digest(3196557, NULL, d1);
+        bool ok = memcmp(d0, zero, 32) == 0 && memcmp(d1, zero, 32) != 0;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("make_base_digest: deterministic, and sensitive to base_height "
+          "and to the floor block hash... ");
+    {
+        uint8_t a[32], b[32], c[32], d[32];
+        op_return_index_make_base_digest(1000, bhash, a);
+        op_return_index_make_base_digest(1000, bhash, b);
+        op_return_index_make_base_digest(1001, bhash, c);
+        uint8_t other_hash[32];
+        memset(other_hash, 0x5C, 32);
+        op_return_index_make_base_digest(1000, other_hash, d);
+        bool ok = memcmp(a, b, 32) == 0 && memcmp(a, c, 32) != 0 &&
+                  memcmp(a, d, 32) != 0;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("fold_block_digest: TWO DIFFERENT BASES over the SAME heights and "
+          "rows produce DIFFERENT digests (a range digest can never be read "
+          "as a genesis-rooted one)... ");
+    {
+        uint8_t base_a[32], base_b[32];
+        op_return_index_make_base_digest(0, NULL, base_a);       /* genesis */
+        op_return_index_make_base_digest(1000, bhash, base_b);   /* based   */
+
+        /* Same prev, same height, same block hash, same rows — only the
+         * declared base differs. */
+        uint8_t da[32], db[32];
+        op_return_index_fold_block_digest(0, base_a, zero, 1005, bhash,
+                                          rows, 2, da);
+        op_return_index_fold_block_digest(1000, base_b, zero, 1005, bhash,
+                                          rows, 2, db);
+        bool ok = memcmp(da, db, 32) != 0;
+
+        /* And base_height alone is enough, even with an identical IV. */
+        uint8_t dc[32], dd[32];
+        op_return_index_fold_block_digest(0, base_a, zero, 1005, bhash,
+                                          rows, 2, dc);
+        op_return_index_fold_block_digest(7, base_a, zero, 1005, bhash,
+                                          rows, 2, dd);
+        ok = ok && memcmp(dc, dd, 32) != 0;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("fold_block_digest: a based chain still folds an EMPTY height "
+          "(the no-height-was-skipped property survives the base)... ");
+    {
+        uint8_t base_b[32];
+        op_return_index_make_base_digest(1000, bhash, base_b);
+        uint8_t d_empty[32], d_next[32];
+        op_return_index_fold_block_digest(1000, base_b, base_b, 1000, bhash,
+                                          NULL, 0, d_empty);
+        op_return_index_fold_block_digest(1000, base_b, d_empty, 1001, bhash,
+                                          NULL, 0, d_next);
+        bool ok = memcmp(d_empty, base_b, 32) != 0 &&
+                  memcmp(d_next, d_empty, 32) != 0;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    return failures;
+}
+
+/* ── (3b) Persisted cursor state: round-trip + version refusal ────── */
+
+static int test_cursor_state(void)
+{
+    int failures = 0;
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+
+    printf("cursor state: open in-memory node.db... ");
+    if (node_db_open(&ndb, ":memory:") && ndb.open) printf("OK\n");
+    else { printf("FAIL\n"); return 1; }
+
+    printf("cursor state: a fresh db reports EMPTY and the genesis-rooted "
+          "default (base=0, height=-1)... ");
+    {
+        struct op_return_index_cursor cur;
+        memset(&cur, 0xEE, sizeof(cur));
+        uint8_t zero[32] = {0};
+        bool ok = op_return_index_state_version(&ndb) ==
+                      OP_RETURN_INDEX_STATE_EMPTY &&
+                  op_return_index_get_cursor(&ndb, &cur) &&
+                  cur.base_height == 0 && cur.height == -1 &&
+                  memcmp(cur.base_digest, zero, 32) == 0 &&
+                  memcmp(cur.digest, zero, 32) == 0;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("cursor state: base_height/base_digest ROUND-TRIP through the "
+          "persisted v2 record... ");
+    {
+        struct op_return_index_cursor set;
+        memset(&set, 0, sizeof(set));
+        set.base_height = 3196557;
+        for (int i = 0; i < 32; i++) set.base_digest[i] = (uint8_t)(0xA0 + i);
+        set.height = 3196600;
+        for (int i = 0; i < 32; i++) set.digest[i] = (uint8_t)(0x10 + i);
+
+        struct op_return_index_cursor got;
+        memset(&got, 0, sizeof(got));
+        bool ok = op_return_index_set_cursor(&ndb, &set) &&
+                  op_return_index_state_version(&ndb) ==
+                      OP_RETURN_INDEX_STATE_V2 &&
+                  op_return_index_get_cursor(&ndb, &got) &&
+                  got.base_height == set.base_height &&
+                  got.height == set.height &&
+                  memcmp(got.base_digest, set.base_digest, 32) == 0 &&
+                  memcmp(got.digest, set.digest, 32) == 0;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("cursor state: set_cursor REFUSES a cursor outside its declared "
+          "range (height < base_height-1)... ");
+    {
+        struct op_return_index_cursor bad;
+        memset(&bad, 0, sizeof(bad));
+        bad.base_height = 100;
+        bad.height = 50;
+        bool ok = !op_return_index_set_cursor(&ndb, &bad);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    node_db_close(&ndb);
+
+    /* ── v1 refusal, on a db that only ever saw the legacy keys ───── */
+    memset(&ndb, 0, sizeof(ndb));
+    printf("cursor state: fresh db for the v1-refusal case... ");
+    if (node_db_open(&ndb, ":memory:") && ndb.open) printf("OK\n");
+    else { printf("FAIL\n"); return failures + 1; }
+
+    printf("cursor state: a LEGACY v1 record is classified legacy_v1 and "
+          "get_cursor REFUSES it (never reinterpreted as a v2 chain)... ");
+    {
+        uint8_t legacy_digest[32];
+        memset(legacy_digest, 0x3C, 32);
+        bool wrote =
+            node_db_state_set_int(&ndb, "op_return_index_cursor_height",
+                                  1234) &&
+            node_db_state_set(&ndb, "op_return_index_digest", legacy_digest,
+                              32);
+
+        struct op_return_index_cursor cur;
+        memset(&cur, 0, sizeof(cur));
+        cur.height = 999;
+        bool refused = !op_return_index_get_cursor(&ndb, &cur);
+        bool named = op_return_index_state_version(&ndb) ==
+                     OP_RETURN_INDEX_STATE_LEGACY_V1;
+        bool ok = wrote && refused && named &&
+                  strcmp(op_return_index_state_version_name(
+                             OP_RETURN_INDEX_STATE_LEGACY_V1),
+                         "legacy_v1") == 0;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("cursor state: truncate is the documented escape — it retires the "
+          "v1 record and the chain reads EMPTY again... ");
+    {
+        struct op_return_index_cursor cur;
+        memset(&cur, 0xEE, sizeof(cur));
+        bool ok = op_return_index_truncate(&ndb) &&
+                  op_return_index_state_version(&ndb) ==
+                      OP_RETURN_INDEX_STATE_V2 &&
+                  op_return_index_get_cursor(&ndb, &cur) &&
+                  cur.base_height == 0 && cur.height == -1;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    node_db_close(&ndb);
     return failures;
 }
 
@@ -487,13 +681,17 @@ static int test_backfill_e2e(void)
         else { printf("FAIL (got %d)\n", folded); failures++; }
     }
 
-    printf("backfill e2e: cursor advanced to H*=2... ");
+    printf("backfill e2e: cursor advanced to H*=2, base still genesis (0)... ");
     {
-        int32_t cursor = -1;
-        uint8_t digest[32];
-        op_return_index_get_cursor(&f.ndb, &cursor, digest);
-        if (cursor == OPRIDX_E2E_HEIGHTS - 1) printf("OK\n");
-        else { printf("FAIL (cursor=%d)\n", cursor); failures++; }
+        struct op_return_index_cursor cur;
+        memset(&cur, 0, sizeof(cur));
+        op_return_index_get_cursor(&f.ndb, &cur);
+        if (cur.height == OPRIDX_E2E_HEIGHTS - 1 && cur.base_height == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL (cursor=%d base=%d)\n", cur.height, cur.base_height);
+            failures++;
+        }
     }
 
     printf("backfill e2e: catalog has exactly 2 rows (h=1 ZNAM + h=2 ABCD; "
@@ -517,21 +715,24 @@ static int test_backfill_e2e(void)
         if (folded == 0) printf("OK\n"); else { printf("FAIL (got %d)\n", folded); failures++; }
     }
 
-    uint8_t digest_before[32];
-    int32_t cursor_before = -1;
-    op_return_index_get_cursor(&f.ndb, &cursor_before, digest_before);
+    struct op_return_index_cursor before;
+    memset(&before, 0, sizeof(before));
+    op_return_index_get_cursor(&f.ndb, &before);
+    int32_t cursor_before = before.height;
     int rows_before = count_rows(&f.ndb, "SELECT COUNT(*) FROM op_return_index");
 
     printf("backfill e2e: op_return_index_truncate resets cursor + rows... ");
     {
         bool ok = op_return_index_truncate(&f.ndb);
-        int32_t cursor_after = -2;
-        uint8_t digest_after[32];
-        op_return_index_get_cursor(&f.ndb, &cursor_after, digest_after);
+        struct op_return_index_cursor after;
+        memset(&after, 0xEE, sizeof(after));
+        op_return_index_get_cursor(&f.ndb, &after);
         int rows_after = count_rows(&f.ndb, "SELECT COUNT(*) FROM op_return_index");
         uint8_t zero[32] = {0};
-        ok = ok && cursor_after == -1 && rows_after == 0 &&
-             memcmp(digest_after, zero, 32) == 0;
+        ok = ok && after.height == -1 && after.base_height == 0 &&
+             rows_after == 0 &&
+             memcmp(after.digest, zero, 32) == 0 &&
+             memcmp(after.base_digest, zero, 32) == 0;
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
@@ -540,13 +741,15 @@ static int test_backfill_e2e(void)
     {
         int folded = op_return_backfill_run_once();
         int rows_after = count_rows(&f.ndb, "SELECT COUNT(*) FROM op_return_index");
-        int32_t cursor_after = -1;
-        uint8_t digest_after[32];
-        op_return_index_get_cursor(&f.ndb, &cursor_after, digest_after);
+        struct op_return_index_cursor after;
+        memset(&after, 0, sizeof(after));
+        op_return_index_get_cursor(&f.ndb, &after);
+        int32_t cursor_after = after.height;
         bool ok = folded == OPRIDX_E2E_HEIGHTS &&
                   rows_after == rows_before &&
                   cursor_after == cursor_before &&
-                  memcmp(digest_after, digest_before, 32) == 0;
+                  after.base_height == before.base_height &&
+                  memcmp(after.digest, before.digest, 32) == 0;
         if (ok) printf("OK\n");
         else {
             printf("FAIL (folded=%d rows=%d/%d cursor=%d/%d)\n", folded,
@@ -592,13 +795,13 @@ static int test_backfill_genesis_fake_pos(void)
           "(folds all 3 blocks, cursor reaches H*=2)... ");
     {
         int folded = op_return_backfill_run_once();
-        int32_t cursor = -1;
-        uint8_t digest[32];
-        op_return_index_get_cursor(&f.ndb, &cursor, digest);
-        if (folded == OPRIDX_E2E_HEIGHTS && cursor == OPRIDX_E2E_HEIGHTS - 1)
+        struct op_return_index_cursor cur;
+        memset(&cur, 0, sizeof(cur));
+        op_return_index_get_cursor(&f.ndb, &cur);
+        if (folded == OPRIDX_E2E_HEIGHTS && cur.height == OPRIDX_E2E_HEIGHTS - 1)
             printf("OK\n");
         else {
-            printf("FAIL (folded=%d cursor=%d)\n", folded, cursor);
+            printf("FAIL (folded=%d cursor=%d)\n", folded, cur.height);
             failures++;
         }
     }
@@ -616,6 +819,122 @@ static int test_backfill_genesis_fake_pos(void)
     return failures;
 }
 
+/* The live defect this whole change exists for: on a snapshot-seeded datadir
+ * the bodies below reducer_trusted_base_height were NEVER downloaded, so the
+ * from-genesis fold could never take its first step. The canonical node sat at
+ * total_rows=0, cursor_height=0, holes=2883, with
+ * op_return_index.below_snapshot_seed fired 2,877 times and remedy=OWNER.
+ *
+ * The fold must instead ADOPT the seed floor as its declared base and fill
+ * forward from there, with the coverage limit converted into a named standing
+ * declaration (index_fold_declare_partial_coverage) rather than a per-tick
+ * spin. Fixture: heights 0 and 1 have no body (below the seed floor of 1),
+ * height 2 does. */
+static int test_backfill_declared_partial_coverage(void)
+{
+    int failures = 0;
+    struct e2e_fixture f;
+
+    printf("declared partial coverage: fixture... ");
+    if (e2e_fixture_init(&f)) printf("OK\n");
+    else { printf("FAIL\n"); return 1; }
+
+    /* Bodies below the seed floor are structurally absent. */
+    f.blocks[0].nStatus &= ~(uint32_t)BLOCK_HAVE_DATA;
+    f.blocks[1].nStatus &= ~(uint32_t)BLOCK_HAVE_DATA;
+
+    g_op_return_backfill_test_ndb = &f.ndb;
+    g_op_return_backfill_test_ms = &f.ms;
+    g_op_return_backfill_test_datadir = f.datadir;
+    op_return_backfill_reset_for_test();
+    reducer_frontier_provable_tip_set(OPRIDX_E2E_HEIGHTS - 1);  /* H*=2 */
+    atomic_store(&g_op_return_backfill_test_seed_floor, 1);     /* seed=1 */
+
+    printf("declared partial coverage: the first run ADOPTS base_height=2 "
+          "(seed_floor+1) instead of spinning below the floor... ");
+    {
+        (void)op_return_backfill_run_once();
+        struct op_return_index_cursor cur;
+        memset(&cur, 0, sizeof(cur));
+        uint8_t zero[32] = {0};
+        bool got = op_return_index_get_cursor(&f.ndb, &cur);
+        /* "based, nothing folded yet" == base_height-1. */
+        bool ok = got && cur.base_height == 2 && cur.height == 1 &&
+                  memcmp(cur.base_digest, zero, 32) != 0;
+        if (ok) printf("OK\n");
+        else {
+            printf("FAIL (base=%d cursor=%d)\n", cur.base_height, cur.height);
+            failures++;
+        }
+    }
+
+    printf("declared partial coverage: the catalog then FILLS FORWARD from "
+          "the base (h=2 folds, its ABCD row lands)... ");
+    {
+        int folded = op_return_backfill_run_once();
+        struct op_return_index_cursor cur;
+        memset(&cur, 0, sizeof(cur));
+        op_return_index_get_cursor(&f.ndb, &cur);
+        int n = count_rows(&f.ndb, "SELECT COUNT(*) FROM op_return_index");
+        int abcd = count_rows(&f.ndb,
+            "SELECT COUNT(*) FROM op_return_index WHERE height=2 "
+            "AND tag_text='ABCD'");
+        bool ok = folded == 1 && cur.height == 2 && cur.base_height == 2 &&
+                  n == 1 && abcd == 1;
+        if (ok) printf("OK\n");
+        else {
+            printf("FAIL (folded=%d cursor=%d base=%d rows=%d abcd=%d)\n",
+                   folded, cur.height, cur.base_height, n, abcd);
+            failures++;
+        }
+    }
+
+    printf("declared partial coverage: once caught up it is IDLE, and the "
+          "base never re-adopts (a published range is not rewritten)... ");
+    {
+        struct op_return_index_cursor before;
+        memset(&before, 0, sizeof(before));
+        op_return_index_get_cursor(&f.ndb, &before);
+        int folded = op_return_backfill_run_once();
+        struct op_return_index_cursor after;
+        memset(&after, 0, sizeof(after));
+        op_return_index_get_cursor(&f.ndb, &after);
+        bool ok = folded == 0 && after.base_height == before.base_height &&
+                  after.height == before.height &&
+                  memcmp(after.base_digest, before.base_digest, 32) == 0 &&
+                  memcmp(after.digest, before.digest, 32) == 0;
+        if (ok) printf("OK\n"); else { printf("FAIL (folded=%d)\n", folded); failures++; }
+    }
+
+    printf("declared partial coverage: the based digest differs from the "
+          "genesis-rooted digest over the same height... ");
+    {
+        struct op_return_index_cursor cur;
+        memset(&cur, 0, sizeof(cur));
+        op_return_index_get_cursor(&f.ndb, &cur);
+        uint8_t zero[32] = {0};
+        /* Re-fold h=2 from a genesis-rooted base with the SAME prev IV. */
+        struct op_return_index_row rows[8];
+        size_t n = 0;
+        (void)rows; (void)n;
+        uint8_t genesis_rooted[32];
+        op_return_index_fold_block_digest(0, zero, cur.base_digest, 2,
+                                          f.hashes[2].data, NULL, 0,
+                                          genesis_rooted);
+        bool ok = memcmp(genesis_rooted, cur.digest, 32) != 0;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    atomic_store(&g_op_return_backfill_test_seed_floor, -1);
+    g_op_return_backfill_test_ndb = NULL;
+    g_op_return_backfill_test_ms = NULL;
+    g_op_return_backfill_test_datadir = NULL;
+    reducer_frontier_provable_tip_reset();
+    op_return_backfill_reset_for_test();
+    e2e_fixture_free(&f);
+    return failures;
+}
+
 /* ── Entry point ──────────────────────────────────────────────────── */
 
 int test_op_return_index(void)
@@ -625,7 +944,9 @@ int test_op_return_index(void)
     failures += test_extract_pure();
     failures += test_explorer_wiring();
     failures += test_digest_pure();
+    failures += test_cursor_state();
     failures += test_backfill_e2e();
     failures += test_backfill_genesis_fake_pos();
+    failures += test_backfill_declared_partial_coverage();
     return failures;
 }

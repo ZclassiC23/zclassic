@@ -80,6 +80,28 @@ ZCL_BLOCKER_DECISION(*.below_snapshot_seed,
     "op_return_index are rebuildable projections, never consensus state, and "
     "this blocker never holds the reducer frontier.")
 
+/* ── Declared partial coverage (app/services/src/index_fold_guard.c,
+ * index_fold_declare_partial_coverage). The successor to the spin above for
+ * op_return_index: the projection ADOPTS the seed floor as its declared base
+ * and folds forward from it, so it makes progress and its digest states the
+ * range it covers. Raised once per adoption, not per tick. ───────────── */
+ZCL_BLOCKER_DECISION(*.partial_coverage,
+    "Nothing is stuck; this is a standing coverage declaration a person owns. "
+    "The index adopted the snapshot-seed floor as its base and is folding "
+    "forward from it, and its running digest carries base_height/base_digest so "
+    "no verifier can mistake this range commitment for a whole-chain one. "
+    "OPTION A - accept it (the default, and what the node is doing now). The "
+    "index answers every height at or above the base and answers nothing below "
+    "it. Cost: pre-seed history is unqueryable through this index, and any "
+    "anchor published from this digest commits to the declared range only. "
+    "OPTION B - buy the history: backfill the pre-seed block bodies from peers, "
+    "then rebuild the index from genesis (`zclassic23 app oprindex rebuild`). "
+    "The base returns to 0 and this declaration retires. Cost: a full "
+    "historical body download, several GB of disk and hours of bandwidth "
+    "competing with tip sync. "
+    "Consensus is unaffected either way - these are rebuildable projections, "
+    "never consensus state, and this blocker never holds the reducer frontier.")
+
 /* ── Recovery-ladder escape hatches (app/services/src/sticky_escalator.c).
  * Both fired on a genuinely fresh node 2026-07-27: the two self-heal routes
  * ran and failed because the artifact they wanted did not exist. ─────── */

@@ -258,12 +258,18 @@ opret_check_window(struct node_db *ndb, struct main_state *ms,
                                              STATE_AUDITOR_OPRET_ROW_CAP);
         if (n_stored < 0) return AUDIT_TICK_SKIPPED;
 
+        /* Per-height A/B comparison, not a chain continuation: both sides use
+         * the SAME zero base and zero prev, so the only thing that can differ
+         * is the row set. The catalog's real declared base is irrelevant here
+         * and deliberately not read. */
         uint8_t zero_iv[32] = {0};
         uint8_t digest_extracted[32], digest_stored[32];
-        op_return_index_fold_block_digest(zero_iv, h, bi->phashBlock->data,
+        op_return_index_fold_block_digest(0, zero_iv, zero_iv, h,
+                                          bi->phashBlock->data,
                                           extracted, n_extracted,
                                           digest_extracted);
-        op_return_index_fold_block_digest(zero_iv, h, bi->phashBlock->data,
+        op_return_index_fold_block_digest(0, zero_iv, zero_iv, h,
+                                          bi->phashBlock->data,
                                           stored, (size_t)n_stored,
                                           digest_stored);
 
@@ -290,19 +296,24 @@ static void opret_leg_tick(struct node_db *ndb, struct main_state *ms,
     }
     atomic_fetch_add(&g_opret_ticks, 1);
 
-    int32_t cursor = -1;
-    uint8_t cursor_digest[32];
-    if (!op_return_index_get_cursor(ndb, &cursor, cursor_digest)) {
+    struct op_return_index_cursor oc;
+    if (!op_return_index_get_cursor(ndb, &oc)) {
         atomic_fetch_add(&g_opret_skipped, 1);
         return;
     }
+    int32_t cursor = oc.height;
+    /* The catalog covers [base, cursor], not [0, cursor], on a snapshot-seeded
+     * datadir. Auditing a height below the declared base would compare stored
+     * rows the catalog never claimed to hold against extracted rows and report
+     * a false mismatch. */
+    int32_t base = oc.base_height > 0 ? oc.base_height : 0;
 
     int32_t h_start, h_end;
     if (atomic_load(&g_opret_leg.investigating)) {
         h_start = atomic_load(&g_opret_leg.pinned_h_start);
         h_end = atomic_load(&g_opret_leg.pinned_h_end);
         if (h_end > cursor) h_end = cursor;
-        if (h_start < 0 || h_start > h_end) {
+        if (h_start < base || h_start > h_end) {
             /* The folded prefix shrank under us (should not happen —
              * op_return_index_truncate resets to -1, not a partial rewind).
              * Drop the investigation defensively rather than check a
@@ -314,7 +325,7 @@ static void opret_leg_tick(struct node_db *ndb, struct main_state *ms,
         }
     } else {
         const int32_t w = STATE_AUDITOR_OPRET_WINDOW_BLOCKS;
-        if (cursor + 1 < w) {
+        if (cursor - base + 1 < w) {
             atomic_fetch_add(&g_opret_skipped, 1);
             return; /* not enough folded history yet */
         }
@@ -323,7 +334,8 @@ static void opret_leg_tick(struct node_db *ndb, struct main_state *ms,
         uint64_t r;
         memcpy(&r, sh, sizeof(r));
         int32_t max_start = cursor - w + 1;
-        h_start = (int32_t)(r % (uint64_t)((int64_t)max_start + 1));
+        h_start = base + (int32_t)(r % (uint64_t)((int64_t)max_start -
+                                                  (int64_t)base + 1));
         h_end = h_start + w - 1;
     }
 

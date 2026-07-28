@@ -548,6 +548,10 @@ int test_address_index(void)
                 AI_CHECK("seed-yield: blocker state untouched by a yield",
                          !blocker_exists("address_index.below_snapshot_seed"));
 
+                int64_t f = 0;
+                AI_CHECK("seed-yield: snapshot_seed_floor reports unknown",
+                         !index_fold_snapshot_seed_floor(&f) && f == -1);
+
                 pthread_mutex_lock(&h.m);
                 h.held = 2;
                 pthread_cond_signal(&h.cv);

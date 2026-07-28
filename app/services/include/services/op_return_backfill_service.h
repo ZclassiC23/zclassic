@@ -79,6 +79,10 @@ struct main_state;
 extern struct node_db *g_op_return_backfill_test_ndb;
 extern struct main_state *g_op_return_backfill_test_ms;
 extern const char *g_op_return_backfill_test_datadir;
+/* Inject a snapshot-seed floor without a live progress_store, so the
+ * declared-partial-coverage adoption path is testable. -1 = ask the kernel
+ * authority (index_fold_snapshot_seed_floor), which is the production path. */
+extern _Atomic int64_t g_op_return_backfill_test_seed_floor;
 #endif
 
 #endif /* ZCL_SERVICES_OP_RETURN_BACKFILL_SERVICE_H */

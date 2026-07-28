@@ -87,13 +87,28 @@ static bool rpc_oprindex_status(const struct json_value *params, bool help,
     }
     json_push_kv_bool(result, "wired", true);
 
-    int32_t cursor = -1;
-    uint8_t digest[32] = {0};
-    op_return_index_get_cursor(g_oprindex_ndb, &cursor, digest);
-    json_push_kv_int(result, "cursor_height", cursor);
-    char digest_hex[65];
-    HexStr(digest, 32, false, digest_hex, sizeof(digest_hex));
+    struct op_return_index_cursor cur;
+    memset(&cur, 0, sizeof(cur));
+    cur.height = -1;
+    bool have_cursor = op_return_index_get_cursor(g_oprindex_ndb, &cur);
+    json_push_kv_str(result, "state_version",
+                     op_return_index_state_version_name(
+                         op_return_index_state_version(g_oprindex_ndb)));
+    json_push_kv_int(result, "cursor_height", have_cursor ? cur.height : -1);
+    char digest_hex[65] = {0};
+    if (have_cursor) HexStr(cur.digest, 32, false, digest_hex,
+                            sizeof(digest_hex));
     json_push_kv_str(result, "cursor_digest", digest_hex);
+    /* The digest commits to [base_height, cursor_height] — report the range
+     * beside it so no reader assumes a genesis-rooted catalog. */
+    json_push_kv_int(result, "base_height",
+                     have_cursor ? cur.base_height : -1);
+    char base_hex[65] = {0};
+    if (have_cursor) HexStr(cur.base_digest, 32, false, base_hex,
+                            sizeof(base_hex));
+    json_push_kv_str(result, "base_digest", base_hex);
+    json_push_kv_bool(result, "partial_coverage",
+                      have_cursor && cur.base_height > 0);
     json_push_kv_int(result, "provable_tip",
                      reducer_frontier_provable_tip_cached());
 

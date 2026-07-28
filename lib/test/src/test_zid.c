@@ -9,6 +9,9 @@
 #include "zid/zid.h"
 #include "crypto/ed25519.h"
 #include "crypto/sha3.h"
+#include "models/database.h"
+#include "models/zid_domain.h"
+#include <stdlib.h>
 #include <string.h>
 
 static size_t hex_to_bytes(const char *hex, uint8_t *out, size_t out_max)
@@ -62,6 +65,269 @@ static int test_rfc8032_vector(const char *label, const char *seed_hex,
         printf("OK\n");
     else { printf("FAIL\n"); failures++; }
 
+    return failures;
+}
+
+/* ── Durable anchor domains (models/zid_domain.h, schema v38) ───────
+ *
+ * The store exists so a batch proof cannot silently change meaning: the
+ * leaf set that produced a root is on disk next to it, instead of being
+ * re-derived by scanning a directory that may have changed. These cases
+ * pin exactly that contract — atomic leaf replacement, a root that is a
+ * pure function of the stored leaf set, a proof built from the table that
+ * verifies with zid_tree_verify, and two domains that never touch each
+ * other's rows. */
+
+struct zd_fixture {
+    uint8_t digests[4][32];
+    char labels[4][ZID_DOMAIN_LABEL_MAX + 1];
+    size_t n;
+};
+
+static int zd_digest_cmp(const void *a, const void *b)
+{
+    return memcmp(a, b, 32);
+}
+
+/* Sign n release docs for `pkg`, digest their canonical wire bytes, and
+ * return the digests in the SAME canonical byte-sorted order the anchor
+ * path uses. Labels are attached after the sort (label lookup is by
+ * digest, so it must survive re-ordering). */
+static void zd_build_fixture(struct zd_fixture *f, const char *pkg, size_t n,
+                             const uint8_t seed[32], uint64_t now)
+{
+    memset(f, 0, sizeof(*f));
+    f->n = n;
+    for (size_t i = 0; i < n; i++) {
+        struct zid_release r;
+        memset(&r, 0, sizeof(r));
+        snprintf(r.name, sizeof(r.name), "%s", pkg);
+        snprintf(r.version, sizeof(r.version), "0.%zu", i);
+        memset(r.manifest_root, (int)(0x40 + i), 32);
+        struct zid_doc d;
+        zid_release_sign(&d, &r, 1, now + 3600, seed);
+        uint8_t w[ZID_DOC_MAX];
+        size_t wlen = zid_doc_encode(w, sizeof(w), &d);
+        zid_record_digest(f->digests[i], w, wlen);
+    }
+    qsort(f->digests, n, 32, zd_digest_cmp);
+    for (size_t i = 0; i < n; i++)
+        snprintf(f->labels[i], sizeof(f->labels[i]), "%s@leaf%zu", pkg, i);
+}
+
+static void zd_fill_leaves(struct zid_domain_leaf *out,
+                           const struct zd_fixture *f, const char *domain,
+                           size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        memset(&out[i], 0, sizeof(out[i]));
+        snprintf(out[i].domain_name, sizeof(out[i].domain_name), "%s", domain);
+        out[i].leaf_index = (int64_t)i;
+        memcpy(out[i].record_digest, f->digests[i], 32);
+        snprintf(out[i].label, sizeof(out[i].label), "%s", f->labels[i]);
+    }
+}
+
+static int test_zid_domain_store(void)
+{
+    int failures = 0;
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+
+    printf("\n=== ZID anchor domain store ===\n");
+
+    printf("zid_domain: open in-memory node.db at schema v%d... ",
+           NODE_DB_MAX_SCHEMA);
+    if (node_db_open(&ndb, ":memory:") && ndb.open &&
+        node_db_schema_version(&ndb) == NODE_DB_MAX_SCHEMA)
+        printf("OK\n");
+    else { printf("FAIL\n"); return 1; }
+
+    uint8_t seed[32];
+    memset(seed, 0x5a, sizeof(seed));
+    uint64_t now = 1750000000ull;
+
+    struct zd_fixture code3;
+    zd_build_fixture(&code3, "demo", 3, seed, now);
+    struct zid_domain_leaf leaves[4];
+    zd_fill_leaves(leaves, &code3, "zcode", 3);
+
+    uint8_t root3[32];
+    zid_tree_root_from_digests((const uint8_t (*)[32])code3.digests, 3, root3);
+
+    printf("zid_domain: replace_leaves stores the batch + its root... ");
+    {
+        struct zid_domain d;
+        bool ok = zid_domain_replace_leaves(&ndb, "zcode", leaves, 3, root3,
+                                            NULL, now) &&
+                  zid_domain_get(&ndb, "zcode", &d) &&
+                  d.num_leaves == 3 &&
+                  memcmp(d.root, root3, 32) == 0 &&
+                  !d.anchored && d.anchored_height == -1 &&
+                  zid_domain_leaf_count(&ndb, "zcode") == 3;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid_domain: the same leaf set always folds to the same root... ");
+    {
+        /* Re-store the identical set, then re-fold from what the TABLE
+         * holds: a root read back out must be a pure function of the
+         * stored leaves, never of write order or of the releases dir. */
+        struct zid_domain_leaf again[4];
+        zd_fill_leaves(again, &code3, "zcode", 3);
+        struct zid_domain_leaf read_back[4];
+        uint8_t from_table[32];
+        struct zid_domain d;
+        bool ok = zid_domain_replace_leaves(&ndb, "zcode", again, 3, root3,
+                                            NULL, now + 1) &&
+                  zid_domain_get(&ndb, "zcode", &d) &&
+                  memcmp(d.root, root3, 32) == 0 &&
+                  zid_domain_leaves(&ndb, "zcode", read_back, 4) == 3;
+        if (ok) {
+            uint8_t digests[4][32];
+            for (int i = 0; i < 3; i++) {
+                if (read_back[i].leaf_index != i) ok = false;
+                memcpy(digests[i], read_back[i].record_digest, 32);
+            }
+            ok = ok &&
+                 zid_tree_root_from_digests((const uint8_t (*)[32])digests, 3,
+                                            from_table) &&
+                 memcmp(from_table, root3, 32) == 0;
+        }
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid_domain: a proof built from the table verifies... ");
+    {
+        struct zid_domain_leaf read_back[4];
+        struct zid_domain d;
+        int64_t idx = -1;
+        bool ok = zid_domain_get(&ndb, "zcode", &d) &&
+                  zid_domain_leaves(&ndb, "zcode", read_back, 4) == 3 &&
+                  zid_domain_leaf_index_by_digest(&ndb, "zcode",
+                                                  code3.digests[1], &idx) &&
+                  idx == 1;
+        if (ok) {
+            uint8_t digests[4][32];
+            for (int i = 0; i < 3; i++)
+                memcpy(digests[i], read_back[i].record_digest, 32);
+            uint8_t proof[ZID_TREE_MAX_PEAKS][32], pr[32];
+            uint32_t plen = 0;
+            ok = zid_tree_prove_from_leaves((const uint8_t (*)[32])digests, 3,
+                                            (uint64_t)idx, proof, &plen, pr) &&
+                 memcmp(pr, d.root, 32) == 0 &&
+                 zid_tree_verify(d.root, digests[idx], (uint64_t)idx, 3,
+                                 proof, plen) &&
+                 /* and the same proof must NOT verify a different leaf */
+                 !zid_tree_verify(d.root, digests[0], (uint64_t)idx, 3,
+                                  proof, plen);
+        }
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid_domain: set_anchor records txid+height; a same-root "
+           "re-fold keeps it... ");
+    {
+        uint8_t txid[32];
+        memset(txid, 0xC7, sizeof(txid));
+        struct zid_domain_leaf again[4];
+        zd_fill_leaves(again, &code3, "zcode", 3);
+        struct zid_domain d;
+        bool ok = zid_domain_set_anchor(&ndb, "zcode", txid, 3056758) &&
+                  zid_domain_get(&ndb, "zcode", &d) && d.anchored &&
+                  memcmp(d.anchored_txid, txid, 32) == 0 &&
+                  d.anchored_height == 3056758 &&
+                  zid_domain_replace_leaves(&ndb, "zcode", again, 3, root3,
+                                            NULL, now + 2) &&
+                  zid_domain_get(&ndb, "zcode", &d) && d.anchored &&
+                  d.anchored_height == 3056758;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid_domain: leaf replacement is atomic — a shorter set leaves "
+           "no stale leaf, and the anchor is cleared... ");
+    {
+        /* Two leaves instead of three: the dropped leaf must be GONE, the
+         * root must be the two-leaf root, and the anchor must not survive
+         * a meaning change. */
+        struct zid_domain_leaf shorter[4];
+        zd_fill_leaves(shorter, &code3, "zcode", 2);
+        uint8_t root2[32];
+        zid_tree_root_from_digests((const uint8_t (*)[32])code3.digests, 2,
+                                   root2);
+        struct zid_domain d;
+        int64_t gone = -1;
+        bool ok = zid_domain_replace_leaves(&ndb, "zcode", shorter, 2, root2,
+                                            NULL, now + 3) &&
+                  zid_domain_get(&ndb, "zcode", &d) &&
+                  d.num_leaves == 2 &&
+                  memcmp(d.root, root2, 32) == 0 &&
+                  zid_domain_leaf_count(&ndb, "zcode") == 2 &&
+                  !zid_domain_leaf_index_by_digest(&ndb, "zcode",
+                                                   code3.digests[2], &gone) &&
+                  !d.anchored && d.anchored_height == -1;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+        /* Restore the three-leaf batch for the coexistence case below. */
+        struct zid_domain_leaf full[4];
+        zd_fill_leaves(full, &code3, "zcode", 3);
+        zid_domain_replace_leaves(&ndb, "zcode", full, 3, root3, NULL, now + 4);
+    }
+
+    printf("zid_domain: two domains coexist without interfering... ");
+    {
+        struct zd_fixture desc;
+        zd_build_fixture(&desc, "zdesc", 4, seed, now + 99);
+        struct zid_domain_leaf dl[4];
+        zd_fill_leaves(dl, &desc, "zdesc", 4);
+        uint8_t droot[32];
+        zid_tree_root_from_digests((const uint8_t (*)[32])desc.digests, 4,
+                                   droot);
+        uint8_t txid[32];
+        memset(txid, 0xD5, sizeof(txid));
+
+        struct zid_domain a, b;
+        int64_t idx = -1;
+        bool ok = zid_domain_replace_leaves(&ndb, "zdesc", dl, 4, droot, NULL,
+                                            now + 5) &&
+                  zid_domain_set_anchor(&ndb, "zdesc", txid, 42) &&
+                  /* zcode is untouched by every zdesc write */
+                  zid_domain_get(&ndb, "zcode", &a) && a.num_leaves == 3 &&
+                  memcmp(a.root, root3, 32) == 0 && !a.anchored &&
+                  zid_domain_leaf_count(&ndb, "zcode") == 3 &&
+                  /* zdesc carries its own root, leaves and anchor */
+                  zid_domain_get(&ndb, "zdesc", &b) && b.num_leaves == 4 &&
+                  memcmp(b.root, droot, 32) == 0 && b.anchored &&
+                  b.anchored_height == 42 &&
+                  zid_domain_leaf_count(&ndb, "zdesc") == 4 &&
+                  /* digest lookup is scoped to its domain */
+                  zid_domain_leaf_index_by_digest(&ndb, "zdesc",
+                                                  desc.digests[3], &idx) &&
+                  idx == 3 &&
+                  !zid_domain_leaf_index_by_digest(&ndb, "zcode",
+                                                   desc.digests[3], &idx) &&
+                  zid_domain_count(&ndb) == 2;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid_domain: an unknown domain cannot be anchored, and a bad "
+           "name is refused... ");
+    {
+        uint8_t txid[32];
+        memset(txid, 0x11, sizeof(txid));
+        struct zid_domain bad;
+        memset(&bad, 0, sizeof(bad));
+        snprintf(bad.domain_name, sizeof(bad.domain_name), "Not A Domain");
+        memset(bad.root, 0x22, 32);
+        bad.updated_at = (int64_t)now;
+        struct zid_domain probe;
+        bool ok = !zid_domain_set_anchor(&ndb, "nosuch", txid, 7) &&
+                  !db_zid_domain_save(&ndb, &bad) &&
+                  !zid_domain_get(&ndb, "Not A Domain", &probe) &&
+                  zid_domain_count(&ndb) == 2;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    node_db_close(&ndb);
     return failures;
 }
 
@@ -805,6 +1071,8 @@ int test_zid(void)
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
+
+    failures += test_zid_domain_store();
 
     printf("=== ZID: %d failure(s) ===\n", failures);
     return failures;

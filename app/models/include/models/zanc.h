@@ -41,4 +41,23 @@ bool db_zanc_find_by_digest(struct node_db *ndb, uint8_t hash_type,
 /* Most recent anchors, newest height first. Returns the row count. */
 int db_zanc_list(struct node_db *ndb, struct zanc_anchor *out, size_t max);
 
+/* Anchors whose label STARTS WITH `prefix`, newest height first (then txid
+ * ascending, so the order is total and stable), with `offset` rows skipped.
+ * Returns the count written to `out` (<= max); a short return means the page
+ * is the last one.
+ *
+ * Why this exists: db_zanc_list returns the newest `max` anchors of ANY
+ * label. A caller looking for one labeled family (the epoch anchors,
+ * "zepoch@<H>") that reads a fixed window of the global list gets a SILENT
+ * WRONG ANSWER the moment `max` unrelated anchors are newer than the one it
+ * wants — it reports "not anchored" for an anchor that is on-chain. Filtering
+ * in SQL and paging removes the window entirely.
+ *
+ * `prefix` matches with substr(label,1,len)=prefix — a literal byte compare,
+ * NOT LIKE, so there are no wildcard characters to escape. An empty/NULL
+ * prefix matches every row. */
+int db_zanc_list_by_label_prefix(struct node_db *ndb, const char *prefix,
+                                 struct zanc_anchor *out, size_t max,
+                                 size_t offset);
+
 #endif /* ZCL_DB_MODEL_ZANC_H */

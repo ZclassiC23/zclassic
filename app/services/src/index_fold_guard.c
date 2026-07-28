@@ -267,6 +267,66 @@ void index_fold_note_absent_body(const char *index_id, const char *subsys,
     }
 }
 
+bool index_fold_snapshot_seed_floor(int64_t *floor_out)
+{
+    int64_t floor = -1;
+    bool found = false;
+    bool ok = read_seed_floor(progress_store_db(), &floor, &found);
+    if (floor_out) *floor_out = (ok && found) ? floor : -1;
+    return ok && found;
+}
+
+void index_fold_declare_partial_coverage(const char *index_id,
+                                         const char *subsys,
+                                         int64_t base_height,
+                                         int64_t seed_floor)
+{
+    if (!index_id || !subsys)
+        return;
+
+    char id[BLOCKER_ID_MAX];
+    /* blocker-id: *.partial_coverage */
+    mk_blocker_id(id, sizeof(id), index_id, "partial_coverage");
+
+    struct blocker_record r;
+    char reason[BLOCKER_REASON_MAX];
+    snprintf(reason, sizeof(reason),
+             "%s covers heights %lld and up ONLY. This datadir was seeded from "
+             "a UTXO snapshot at reducer_trusted_base_height=%lld, so bodies "
+             "below that floor were never downloaded and this projection has no "
+             "source for them. The index has adopted the floor as its declared "
+             "base (base_height/base_digest travel with the digest) and folds "
+             "forward normally — it is NOT stalled. A PERSON decides whether to "
+             "backfill the pre-seed bodies. See operator_decision.",
+             index_id, (long long)base_height, (long long)seed_floor);
+    /* No escape action and no retry budget, deliberately: the node cannot
+     * conjure bodies it never downloaded, and fabricating rows for them would
+     * be inventing data. The hand-off IS the remedy (OWNER-bound). */
+    if (blocker_init(&r, id, subsys, BLOCKER_DEPENDENCY, reason)) {
+        r.escape_deadline_secs = 0;
+        r.retry_budget = 0;
+        (void)blocker_set(&r);
+    }
+
+    /* The declaration supersedes the spin: one fact, one name. */
+    index_fold_clear_seed_blocker(index_id);
+
+    LOG_INFO("index_backfill",
+             "[%s] declared partial coverage: base_height=%lld "
+             "(snapshot seed floor %lld) — folding forward from the base; "
+             "pre-seed history is out of range by declaration.",
+             index_id, (long long)base_height, (long long)seed_floor);
+}
+
+void index_fold_clear_partial_coverage(const char *index_id)
+{
+    if (!index_id)
+        return;
+    char id[BLOCKER_ID_MAX];
+    mk_blocker_id(id, sizeof(id), index_id, "partial_coverage");
+    blocker_clear(id);
+}
+
 void index_fold_clear_seed_blocker(const char *index_id)
 {
     if (!index_id)

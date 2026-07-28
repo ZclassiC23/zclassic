@@ -228,6 +228,55 @@ int node_db_migrate_features2(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 38) {
+        /* v38: zid ANCHOR DOMAINS (zid_domains + zid_domain_leaves) — the
+         * durable record of WHAT a domain batch committed. Before this,
+         * `zcode release anchor` / `prove` rebuilt the domain tree by
+         * scanning every .zid under <datadir>/zcode/releases on every call,
+         * so adding
+         * or removing one file silently changed the domain root and a
+         * previously-issued inclusion proof quietly stopped matching with
+         * no record of what had been anchored. The leaf set is now stored
+         * in canonical sorted order alongside the root it folds to, and
+         * many domains (zcode, zdesc, zdir, third-party) coexist, each
+         * anchoring at its own cadence — see
+         * docs/spec/sovereign-identity-layer.md and models/zid_domain.h.
+         *
+         * Operator-owned, not a chain projection: rows are written by the
+         * anchor path, never rebuilt from block history, and never
+         * consulted by consensus. anchored_txid/anchored_height stay NULL
+         * until the domain root is committed on-chain. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS zid_domains ("
+            "domain_name TEXT PRIMARY KEY,"
+            "owner_pubkey BLOB CHECK(length(owner_pubkey)=32),"
+            "num_leaves INTEGER NOT NULL,"
+            "root BLOB NOT NULL CHECK(length(root)=32),"
+            "anchored_txid BLOB "
+            "  CHECK(anchored_txid IS NULL OR length(anchored_txid)=32),"
+            "anchored_height INTEGER,"
+            "updated_at INTEGER NOT NULL)");
+
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS zid_domain_leaves ("
+            "domain_name TEXT NOT NULL,"
+            "leaf_index INTEGER NOT NULL,"
+            "record_digest BLOB NOT NULL CHECK(length(record_digest)=32),"
+            "label TEXT,"
+            "PRIMARY KEY (domain_name, leaf_index)) WITHOUT ROWID");
+
+        /* "prove this digest" is a lookup, not a scan of the leaf set. */
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_zid_domain_leaves_digest "
+            "ON zid_domain_leaves(record_digest)");
+
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('038')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 38);
+        current_ver = 38;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }
