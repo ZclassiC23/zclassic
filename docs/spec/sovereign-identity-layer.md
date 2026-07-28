@@ -278,6 +278,28 @@ compactness** (one signature regardless of committee size). Phase
 placement: batch verify → Phase 2, FROST committees → Phase 3–4, BLS
 receipts → Phase 4.
 
+## Versioning doctrine (every layer, one rule set)
+
+Three versioned layers, three different mechanisms — never mix them:
+
+1. **Wire formats** carry a leading version byte (`zid_doc`, `zid_proof`,
+   ZANC, every lokad-framed overlay). Rules: a version's semantics are
+   frozen forever; decoders reject unknown versions loudly (never
+   silently skip); new version = new byte + new decode path, old paths
+   untouched. Strict decode, no trailing bytes.
+2. **Domain schemas** are versioned by convention in names and anchor
+   labels (`zepoch@<height>`, `zcode@<tip>`): a domain's record schema
+   changes only by bumping its convention tag, so old anchors remain
+   interpretable forever. Content freshness is **seq/expiry** (the
+   zid_doc monotonic rule), never format versioning.
+3. **Command schemas** follow the house pattern
+   (`zcl.<command>.input.v1` in `config/commands/*.def`): additive
+   optional keys within a version; any breaking input change bumps the
+   schema version.
+
+Algorithm agility is a wire-format concern: a future `zid_doc` v2 with
+an algorithm field is a *new version*, not a mutation of v1.
+
 ## Applications, in build order
 
 ### A1 — Onion service descriptors (flagship)
