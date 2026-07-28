@@ -13,6 +13,7 @@
 #ifndef ZCL_VCS_PRIV_H
 #define ZCL_VCS_PRIV_H
 
+#include "base/hex.h"
 #include "crypto/sha3.h"
 
 #include <stddef.h>
@@ -58,19 +59,6 @@ static inline uint64_t vcs_rd_u64le(const uint8_t *p)
     for (int i = 0; i < 8; i++)
         v |= (uint64_t)p[i] << (8 * i);
     return v;
-}
-
-/* ── fixed-width lowercase hex (32-byte hashes) ───────────────────── */
-
-/* Encode 32 bytes into 64 lowercase hex chars + NUL (out must hold 65). */
-static inline void vcs_hex32(const uint8_t in[32], char out[65])
-{
-    static const char hexd[] = "0123456789abcdef";
-    for (int i = 0; i < 32; i++) {
-        out[2 * i]     = hexd[(in[i] >> 4) & 0xf];
-        out[2 * i + 1] = hexd[in[i] & 0xf];
-    }
-    out[64] = '\0';
 }
 
 /* ── domain-tagged SHA3-256 helpers ───────────────────────────────── */

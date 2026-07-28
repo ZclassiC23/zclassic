@@ -7,6 +7,7 @@
 #include "vcs/vcs.h"
 #include "vcs/vcs_index.h"
 
+#include "base/hex.h"
 #include "platform/time_compat.h"
 #include "util/log_macros.h"
 
@@ -21,28 +22,9 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-static int hex_nibble(char c)
-{
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
-
 bool vcs_devloop_hex32_decode(const char *hex, uint8_t out[32])
 {
-    if (!hex || !out)
-        return false;
-    if (strlen(hex) != 64)
-        return false;
-    for (size_t i = 0; i < 32; i++) {
-        int hi = hex_nibble(hex[2 * i]);
-        int lo = hex_nibble(hex[2 * i + 1]);
-        if (hi < 0 || lo < 0)
-            return false;
-        out[i] = (uint8_t)((hi << 4) | lo);
-    }
-    return true;
+    return zcl_hex_decode(hex, out, 32);
 }
 
 static void anchor_cycle_sync(const char *repo_root,

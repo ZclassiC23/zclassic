@@ -12,9 +12,10 @@
 #include "vcs/package_service.h"
 #include "vcs/package_store.h"
 
-#include "package_store_priv.h" /* store_atomic_write/hex/mkdir/rm_rf */
+#include "package_store_priv.h" /* store_atomic_write/mkdir/rm_rf */
 #include "vcs_priv.h"
 
+#include "base/hex.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -1249,7 +1250,7 @@ static void resume_downloads(struct vcs_swarm_engine *engine)
         dl_reset(dl);
         dl->used = true;
         memcpy(dl->root, wire + 10, 32);
-        store_hex_encode(dl->root, dl->root_hex);
+        zcl_hex_encode(dl->root, 32, dl->root_hex);
         dl->created_day = (int64_t)vcs_rd_u64le(wire + 42);
         dl->state = VCS_SWARM_DL_WANT_MANIFEST;
         if (engine->store) {
@@ -1601,7 +1602,7 @@ enum vcs_swarm_fetch_result vcs_swarm_engine_fetch(
     dl_reset(dl);
     dl->used = true;
     memcpy(dl->root, package_root, 32);
-    store_hex_encode(dl->root, dl->root_hex);
+    zcl_hex_encode(dl->root, 32, dl->root_hex);
     dl->state = VCS_SWARM_DL_WANT_MANIFEST;
     dl->created_day = day;
     /* The resumable record lands FIRST — a crash after this point

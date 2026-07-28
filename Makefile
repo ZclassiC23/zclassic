@@ -5883,6 +5883,15 @@ docs-api-reference: $(API_REFERENCE_TOOL)
 binary-size:
 	@./tools/scripts/binary_size.sh
 
+# Gate — ONE hex codec. Base-16 encode/decode lives only in
+# lib/base/include/base/hex.h; a private copy anywhere else fails
+# (RATCHET at file granularity; tools/lint/hex_codec_baseline.txt may only
+# shrink). 56 disagreeing copies existed when this gate was written.
+check-hex-codec-single:
+	@echo "══ LINT: one hex codec ══"
+	@./tools/lint/check_hex_codec_single.sh --selftest
+	@./tools/lint/check_hex_codec_single.sh
+
 # Gate E2 — new service functions return struct zcl_result, not bare
 # bool/int (RATCHET at file granularity; baseline at
 # tools/scripts/one_result_type_baseline.txt may only shrink).
@@ -6164,6 +6173,7 @@ LINT_GATES := \
     check-api-reference-generated \
     check-markdown-links \
     check-doc-inline-paths \
+    check-hex-codec-single \
     check-one-result-type \
     check-service-result-convergence \
     check-shape-includes-header \

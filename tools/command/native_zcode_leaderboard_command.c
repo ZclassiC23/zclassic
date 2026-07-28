@@ -33,6 +33,7 @@
  * UNAVAILABLE until the slices 11-12 P2P facts exist — they report zero
  * honestly, never fake data. */
 
+#include "base/hex.h"
 #include "command/native_command.h"
 
 #include "base/safe_alloc.h"
@@ -285,7 +286,7 @@ static void zl_leaderboard(const struct zcl_command_request *request,
     for (size_t i = 0; i < rendered; i++) {
         const struct vcs_rank_entry *e = &page[offset + i];
         char pub_hex[67];
-        vcs_reward_hex_encode(e->contributor, 33, pub_hex);
+        zcl_hex_encode(e->contributor, 33, pub_hex);
         struct json_value row;
         json_init(&row);
         json_set_object(&row);

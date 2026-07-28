@@ -34,6 +34,7 @@
  * one-shot CLI agrees with a node. Every rejection names the exact
  * failed rule. */
 
+#include "base/hex.h"
 #include "command/native_command.h"
 
 #include "core/uint256.h"
@@ -101,7 +102,7 @@ static bool zb_pubkey_input(const struct zcl_command_request *request,
                             uint8_t pubkey[33])
 {
     const char *hex = zb_input_str(request->input, "pubkey");
-    if (!hex || !vcs_badge_hex_decode33(hex, pubkey)) {
+    if (!hex || !zcl_hex_decode(hex, pubkey, 33)) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INVALID, "BAD_PUBKEY",
                                "normalize", false, false,
@@ -242,7 +243,7 @@ void zcl_native_handle_zcode_badge_eligible(
         if (eval.eligible) {
             char hex[65];
             zb_push_period(&row, eval.period_first, eval.period_last);
-            vcs_badge_hex_encode(eval.evidence_root, 32, hex);
+            zcl_hex_encode(eval.evidence_root, 32, hex);
             (void)json_push_kv_str(&row, "evidence_root", hex);
             (void)json_push_kv_bool(&row, "already_issued", already);
         }
@@ -260,7 +261,7 @@ void zcl_native_handle_zcode_badge_eligible(
     json_free(&rows);
 
     char pub_hex[67];
-    vcs_badge_hex_encode(pubkey, 33, pub_hex);
+    zcl_hex_encode(pubkey, 33, pub_hex);
     (void)json_push_kv_str(&reply->data, "contributor", pub_hex);
     (void)json_push_kv_int(&reply->data, "day", today);
     (void)json_push_kv_int(&reply->data, "eligible_count",
@@ -346,7 +347,7 @@ void zcl_native_handle_zcode_badge_plan(
     }
 
     char hex[67];
-    vcs_badge_hex_encode(plan.plan_id, 32, hex);
+    zcl_hex_encode(plan.plan_id, 32, hex);
     (void)json_push_kv_str(&reply->data, "plan_id", hex);
     (void)json_push_kv_int(&reply->data, "planned_day",
                            (int64_t)plan.planned_day);
@@ -365,12 +366,12 @@ void zcl_native_handle_zcode_badge_plan(
         struct json_value row;
         json_init(&row);
         json_set_object(&row);
-        vcs_badge_hex_encode(r->contributor, 33, hex);
+        zcl_hex_encode(r->contributor, 33, hex);
         (void)json_push_kv_str(&row, "contributor", hex);
         (void)json_push_kv_str(&row, "type",
                                vcs_badge_type_string(r->type));
         zb_push_period(&row, r->period_first, r->period_last);
-        vcs_badge_hex_encode(r->evidence_root, 32, hex);
+        zcl_hex_encode(r->evidence_root, 32, hex);
         (void)json_push_kv_str(&row, "evidence_root", hex);
         (void)json_push_kv_int(&row, "sequence", (int64_t)r->sequence);
         (void)json_push_back(&rows, &row);
@@ -396,7 +397,7 @@ void zcl_native_handle_zcode_badge_plan(
     (void)json_push_kv(&reply->data, "exclusions", &excl);
     json_free(&excl);
 
-    vcs_badge_hex_encode(ctx.policy.policy_id, 32, hex);
+    zcl_hex_encode(ctx.policy.policy_id, 32, hex);
     (void)json_push_kv_str(&reply->data, "policy_id", hex);
     (void)json_push_kv_bool(&reply->data, "simulated", true);
     (void)json_push_kv_str(
@@ -454,7 +455,7 @@ void zcl_native_handle_zcode_badge_issue(
     }
     uint8_t plan_id[32];
     const char *plan_hex = zb_input_str(request->input, "plan_id");
-    if (!plan_hex || !vcs_badge_hex_decode32(plan_hex, plan_id)) {
+    if (!plan_hex || !zcl_hex_decode(plan_hex, plan_id, 32)) {
         zb_ctx_free(&ctx);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INVALID, "BAD_PLAN_ID",
@@ -467,7 +468,7 @@ void zcl_native_handle_zcode_badge_issue(
     struct zb_sign_ctx signer;
     memset(&signer, 0, sizeof(signer));
     if (!secret_hex ||
-        !vcs_badge_hex_decode32(secret_hex, signer.secret.vch)) {
+        !zcl_hex_decode(secret_hex, signer.secret.vch, 32)) {
         zb_ctx_free(&ctx);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INVALID, "BAD_ISSUER_SECRET",
@@ -590,13 +591,13 @@ void zcl_native_handle_zcode_badge_issue(
         json_init(&row);
         json_set_object(&row);
         char hex[67];
-        vcs_badge_hex_encode(badge_ids[i], 32, hex);
+        zcl_hex_encode(badge_ids[i], 32, hex);
         (void)json_push_kv_str(&row, "badge_id", hex);
         if (b) {
             (void)json_push_kv_str(&row, "type",
                                    vcs_badge_type_string(
                                        (enum vcs_badge_type)b->type));
-            vcs_badge_hex_encode(b->recipient, 33, hex);
+            zcl_hex_encode(b->recipient, 33, hex);
             (void)json_push_kv_str(&row, "recipient", hex);
             zb_push_period(&row, b->period_first_day,
                            b->period_last_day);
@@ -679,17 +680,17 @@ void zcl_native_handle_zcode_contributor_badges(
         char hex[67];
         uint8_t id[32];
         if (vcs_badge_id(b, id) == VCS_BADGE_OK) {
-            vcs_badge_hex_encode(id, 32, hex);
+            zcl_hex_encode(id, 32, hex);
             (void)json_push_kv_str(&row, "badge_id", hex);
         }
         (void)json_push_kv_str(&row, "type",
                                vcs_badge_type_string(
                                    (enum vcs_badge_type)b->type));
         zb_push_period(&row, b->period_first_day, b->period_last_day);
-        vcs_badge_hex_encode(b->evidence_root, 32, hex);
+        zcl_hex_encode(b->evidence_root, 32, hex);
         (void)json_push_kv_str(&row, "evidence_root", hex);
         (void)json_push_kv_int(&row, "sequence", (int64_t)b->sequence);
-        vcs_badge_hex_encode(b->issuer_pubkey, 33, hex);
+        zcl_hex_encode(b->issuer_pubkey, 33, hex);
         (void)json_push_kv_str(&row, "issuer", hex);
         (void)json_push_kv_bool(&row, "permanent", true);
         (void)json_push_back(&rows, &row);
@@ -699,7 +700,7 @@ void zcl_native_handle_zcode_contributor_badges(
     json_free(&rows);
 
     char pub_hex[67];
-    vcs_badge_hex_encode(pubkey, 33, pub_hex);
+    zcl_hex_encode(pubkey, 33, pub_hex);
     (void)json_push_kv_str(&reply->data, "contributor", pub_hex);
     (void)json_push_kv_int(&reply->data, "total_badges", (int64_t)total);
     (void)json_push_kv_int(&reply->data, "rendered", (int64_t)shown);

@@ -695,7 +695,7 @@ int vcs_revert(struct vcs_repo *r, const uint8_t target_commit[32],
     /* Record the restoration as a forward commit. */
     char taskref[64];
     char hex[65];
-    vcs_hex32(target_commit, hex);
+    zcl_hex_encode(target_commit, 32, hex);
     snprintf(taskref, sizeof(taskref), "revert:%.16s", hex);
     struct vcs_snapshot_meta meta = {0};
     meta.verdict_status = tc.verdict_status;

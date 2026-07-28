@@ -9,6 +9,7 @@
 
 #include "package_store_priv.h"
 
+#include "base/hex.h"
 #include "base/log_macros.h"
 #include "base/safe_alloc.h"
 #include "json/json.h"
@@ -386,7 +387,7 @@ enum vcs_package_store_result vcs_package_store_put_manifest(
         return VCS_PACKAGE_STORE_ERR_MANIFEST;
     }
     char root_hex[65];
-    store_hex_encode(root, root_hex);
+    zcl_hex_encode(root, 32, root_hex);
     uint64_t total_bytes = 0;
     for (size_t i = 0; i < manifest.count; i++)
         total_bytes += manifest.files[i].size;
@@ -612,7 +613,7 @@ enum vcs_package_store_result vcs_package_store_put_release(
         return VCS_PACKAGE_STORE_ERR_ALLOC;
     }
     char id_hex[65];
-    store_hex_encode(id, id_hex);
+    zcl_hex_encode(id, 32, id_hex);
     char path[STORE_PATH_MAX];
     snprintf(path, sizeof(path), "%s/releases/%s", store->root, id_hex);
     bool ok = store_atomic_write(path, wire, wire_len);
@@ -649,7 +650,7 @@ enum vcs_package_store_result vcs_package_store_put_recipe(
     if (root_out)
         memcpy(root_out, root, 32);
     char root_hex[65];
-    store_hex_encode(root, root_hex);
+    zcl_hex_encode(root, 32, root_hex);
     char path[STORE_PATH_MAX];
     snprintf(path, sizeof(path), "%s/recipes/%s", store->root, root_hex);
     bool ok = store_atomic_write(path, wire, wire_len);
@@ -1033,7 +1034,7 @@ bool vcs_package_store_dump_state_json(struct json_value *out,
                          vcs_package_accept_result_string(
                              store->last_accept));
         char id_hex[65];
-        store_hex_encode(store->last_accept_id, id_hex);
+        zcl_hex_encode(store->last_accept_id, 32, id_hex);
         json_push_kv_str(out, "last_release_id", id_hex);
     } else {
         json_push_kv_str(out, "last_release_accept", "none");
@@ -1042,7 +1043,7 @@ bool vcs_package_store_dump_state_json(struct json_value *out,
     if (key && key[0]) {
         uint8_t root[32];
         struct vcs_package_store_status st;
-        if (!store_hex_decode(key, root) ||
+        if (!zcl_hex_decode_lower(key, root, 32) ||
             !store_status_locked(store, root, &st)) {
             json_push_kv_str(out, "error",
                              "package not tracked (want a 64-hex root)");

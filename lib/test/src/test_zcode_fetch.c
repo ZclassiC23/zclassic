@@ -21,6 +21,8 @@
 
 #include "test/test_core.h"
 
+#include "base/hex.h"
+
 #include "command/native_command.h"
 
 #include "chain/chainparams.h"
@@ -95,7 +97,7 @@ static bool zf_make_package(struct zf_pkg *p, uint8_t seed)
         return false;
     if (!vcs_package_manifest_root(&p->manifest, p->root))
         return false;
-    vcs_reward_hex_encode(p->root, 32, p->root_hex);
+    zcl_hex_encode(p->root, 32, p->root_hex);
     return true;
 }
 

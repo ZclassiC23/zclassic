@@ -22,6 +22,7 @@
 #include "vcs/package_reward.h"
 
 #include "crypto/sha3.h"
+#include "base/hex.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "vcs/package_score.h"
@@ -66,57 +67,15 @@ const uint8_t *vcs_reward_placeholder_token_id(void)
     return id;
 }
 
-void vcs_reward_hex_encode(const uint8_t *in, size_t len, char *out)
-{
-    static const char hexd[] = "0123456789abcdef";
-    for (size_t i = 0; i < len; i++) {
-        out[2 * i]     = hexd[(in[i] >> 4) & 0xf];
-        out[2 * i + 1] = hexd[in[i] & 0xf];
-    }
-    out[2 * len] = '\0';
-}
-
 void vcs_reward_placeholder_token_id_hex(char out[65])
 {
-    vcs_reward_hex_encode(vcs_reward_placeholder_token_id(), 32, out);
-}
-
-static int reward_hex_nibble(char c)
-{
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
-
-static bool reward_hex_decode(const char *hex, uint8_t *out, size_t want)
-{
-    if (!hex || strlen(hex) != want * 2u)
-        return false;
-    for (size_t i = 0; i < want; i++) {
-        int hi = reward_hex_nibble(hex[2 * i]);
-        int lo = reward_hex_nibble(hex[2 * i + 1]);
-        if (hi < 0 || lo < 0)
-            return false;
-        out[i] = (uint8_t)((hi << 4) | lo);
-    }
-    return true;
-}
-
-bool vcs_reward_hex_decode32(const char *hex, uint8_t out[32])
-{
-    return reward_hex_decode(hex, out, 32);
-}
-
-bool vcs_reward_hex_decode33(const char *hex, uint8_t out[33])
-{
-    return reward_hex_decode(hex, out, 33);
+    zcl_hex_encode(vcs_reward_placeholder_token_id(), 32, out);
 }
 
 static bool reward_name_is_hex64(const char *name)
 {
     uint8_t scratch[32];
-    return reward_hex_decode(name, scratch, 32);
+    return zcl_hex_decode_lower(name, scratch, 32);
 }
 
 /* ── strings + bands ────────────────────────────────────────────────── */
@@ -863,7 +822,7 @@ static void reward_load_queue_dir(struct vcs_reward_ledger *l,
         }
         reward_entry_id(&e, e.entry_id);
         char id_hex[65];
-        vcs_reward_hex_encode(e.entry_id, 32, id_hex);
+        zcl_hex_encode(e.entry_id, 32, id_hex);
         if (strcmp(id_hex, ent->d_name) != 0) {
             /* The name must commit the content (rehash-on-read). */
             LOG_ERROR(REWARD_LOG, "queue wire %s commits a different id",
@@ -916,7 +875,7 @@ static void reward_load_fact_dir(struct vcs_reward_ledger *l, const char *dir)
             continue;
         }
         char id_hex[65];
-        vcs_reward_hex_encode(f.entry_id, 32, id_hex);
+        zcl_hex_encode(f.entry_id, 32, id_hex);
         if (strcmp(id_hex, ent->d_name) != 0) {
             LOG_ERROR(REWARD_LOG, "fact wire %s names a different entry",
                       ent->d_name);
@@ -974,7 +933,7 @@ static void reward_load_plan_dir(struct vcs_reward_ledger *l, const char *dir)
         }
         reward_plan_id(plan.day, plan.rows, plan.row_count, plan.plan_id);
         char id_hex[65];
-        vcs_reward_hex_encode(plan.plan_id, 32, id_hex);
+        zcl_hex_encode(plan.plan_id, 32, id_hex);
         if (strcmp(id_hex, ent->d_name) != 0) {
             LOG_ERROR(REWARD_LOG, "plan wire %s commits a different id",
                       ent->d_name);
@@ -1023,7 +982,7 @@ static void reward_load_commit_dir(struct vcs_reward_ledger *l,
     struct dirent *ent;
     while ((ent = readdir(d)) != NULL) {
         uint8_t id[32];
-        if (!reward_hex_decode(ent->d_name, id, 32))
+        if (!zcl_hex_decode_lower(ent->d_name, id, 32))
             continue;
         if (l->commit_count >= VCS_REWARD_MAX_COMMITS) {
             l->truncated = true;
@@ -1232,7 +1191,7 @@ static enum vcs_reward_enqueue_error reward_enqueue_finish(
         return VCS_REWARD_ENQUEUE_IO;
     }
     char id_hex[65];
-    vcs_reward_hex_encode(e->entry_id, 32, id_hex);
+    zcl_hex_encode(e->entry_id, 32, id_hex);
     char path[4400];
     int n = snprintf(path, sizeof(path), "%s/%s", dir, id_hex);
     if (n <= 0 || (size_t)n >= sizeof(path)) {
@@ -1553,7 +1512,7 @@ enum vcs_reward_plan_persist_error vcs_reward_plan_persist(
         return VCS_REWARD_PLAN_PERSIST_IO;
     }
     char id_hex[65];
-    vcs_reward_hex_encode(plan->plan_id, 32, id_hex);
+    zcl_hex_encode(plan->plan_id, 32, id_hex);
     char path[4400];
     int n = snprintf(path, sizeof(path), "%s/%s", dir, id_hex);
     if (n <= 0 || (size_t)n >= sizeof(path)) {
@@ -1625,7 +1584,7 @@ static struct vcs_reward_plan *reward_plan_read(
 {
     *corrupt_out = false;
     char id_hex[65];
-    vcs_reward_hex_encode(plan_id, 32, id_hex);
+    zcl_hex_encode(plan_id, 32, id_hex);
     char path[4400];
     int n = snprintf(path, sizeof(path), "%s/plans/%s", l->root, id_hex);
     if (n <= 0 || (size_t)n >= sizeof(path)) {
@@ -1666,7 +1625,7 @@ static bool reward_entry_rewrite(const struct vcs_reward_ledger *l,
                                  const struct vcs_reward_entry *e)
 {
     char id_hex[65];
-    vcs_reward_hex_encode(e->entry_id, 32, id_hex);
+    zcl_hex_encode(e->entry_id, 32, id_hex);
     char path[4400];
     int n = snprintf(path, sizeof(path), "%s/queue/%s", l->root, id_hex);
     if (n <= 0 || (size_t)n >= sizeof(path))
@@ -1684,7 +1643,7 @@ static bool reward_fact_write(const struct vcs_reward_ledger *l,
     if (!reward_mkdir_p(dir))
         LOG_FAIL(REWARD_LOG, "mkdir %s: %s", dir, strerror(errno));
     char id_hex[65];
-    vcs_reward_hex_encode(f->entry_id, 32, id_hex);
+    zcl_hex_encode(f->entry_id, 32, id_hex);
     char path[4400];
     int n = snprintf(path, sizeof(path), "%s/%s", dir, id_hex);
     if (n <= 0 || (size_t)n >= sizeof(path))
@@ -1757,7 +1716,7 @@ static bool reward_commit_record_write(const struct vcs_reward_ledger *l,
         return false;
     }
     char id_hex[65];
-    vcs_reward_hex_encode(plan->plan_id, 32, id_hex);
+    zcl_hex_encode(plan->plan_id, 32, id_hex);
     char path[4400];
     int n = snprintf(path, sizeof(path), "%s/%s", dir, id_hex);
     if (n <= 0 || (size_t)n >= sizeof(path)) {
@@ -1820,7 +1779,7 @@ enum vcs_reward_commit_error vcs_reward_commit(
             const struct vcs_reward_entry *e =
                 vcs_reward_ledger_find(l, r->entry_id);
             char id_hex[65];
-            vcs_reward_hex_encode(r->entry_id, 32, id_hex);
+            zcl_hex_encode(r->entry_id, 32, id_hex);
             if (!e) {
                 if (detail && detail_size > 0)
                     snprintf(detail, detail_size, "entry %s missing", id_hex);
@@ -2012,7 +1971,7 @@ enum vcs_reward_receipt_error vcs_reward_receipt_load(
     if (!l || !plan_id)
         return VCS_REWARD_RECEIPT_IO;
     char id_hex[65];
-    vcs_reward_hex_encode(plan_id, 32, id_hex);
+    zcl_hex_encode(plan_id, 32, id_hex);
     char path[4400];
     int n = snprintf(path, sizeof(path), "%s/commits/%s", l->root, id_hex);
     if (n <= 0 || (size_t)n >= sizeof(path)) {

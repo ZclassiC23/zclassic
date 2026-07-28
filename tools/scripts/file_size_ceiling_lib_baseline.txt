@@ -72,11 +72,11 @@ lib/util/src/supervisor.c 801
 lib/sync/src/stage.c 819
 src/main_cli_modes.c 3820
 lib/hotswap/src/hotswap_activate.c 948
-lib/vcs/src/package_store.c 1069
+lib/vcs/src/package_store.c 1070
 lib/vcs/src/package_score.c 845
-lib/vcs/src/package_reward.c 2135
+lib/vcs/src/package_reward.c 2094
 lib/codeindex/src/codeindex_merkle.c 1070
-lib/vcs/src/package_badge.c 1339
-lib/vcs/src/package_badge_eligible.c 816
-lib/vcs/src/package_swarm_node.c 1800
-lib/vcs/src/package_service.c 1066
+lib/vcs/src/package_badge.c 1299
+lib/vcs/src/package_badge_eligible.c 817
+lib/vcs/src/package_swarm_node.c 1801
+lib/vcs/src/package_service.c 1040

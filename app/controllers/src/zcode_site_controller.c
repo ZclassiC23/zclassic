@@ -16,6 +16,7 @@
 
 #include "views/zcode_view.h"
 
+#include "base/hex.h"
 #include "platform/time_compat.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -49,33 +50,6 @@ static bool zs_path_eq(const char *path, const char *want)
     return path && strcmp(path, want) == 0;
 }
 
-/* Strict hex decode: even length, exactly out_cap bytes. */
-static bool zs_hex_decode(const char *hex, uint8_t *out, size_t out_cap)
-{
-    if (!hex || !out)
-        return false;
-    size_t n = strlen(hex);
-    if (n == 0 || (n & 1u) != 0 || n / 2 != out_cap)
-        return false;
-    for (size_t i = 0; i < out_cap; i++) {
-        unsigned v = 0;
-        for (size_t j = 0; j < 2; j++) {
-            char ch = hex[2 * i + j];
-            v <<= 4;
-            if (ch >= '0' && ch <= '9')
-                v |= (unsigned)(ch - '0');
-            else if (ch >= 'a' && ch <= 'f')
-                v |= (unsigned)(ch - 'a' + 10);
-            else if (ch >= 'A' && ch <= 'F')
-                v |= (unsigned)(ch - 'A' + 10);
-            else
-                return false;
-        }
-        out[i] = (uint8_t)v;
-    }
-    return true;
-}
-
 /* Percent/`+` decode (the name_site_controller convention). */
 static void zs_url_decode(char *dst, size_t dstmax, const char *src,
                           size_t srclen)
@@ -87,12 +61,8 @@ static void zs_url_decode(char *dst, size_t dstmax, const char *src,
         char c = src[si];
         if (c == '%' && si + 2 < srclen) {
             char h1 = src[si + 1], h2 = src[si + 2];
-            int hi = (h1 >= '0' && h1 <= '9') ? h1 - '0' :
-                     (h1 >= 'a' && h1 <= 'f') ? h1 - 'a' + 10 :
-                     (h1 >= 'A' && h1 <= 'F') ? h1 - 'A' + 10 : -1;
-            int lo = (h2 >= '0' && h2 <= '9') ? h2 - '0' :
-                     (h2 >= 'a' && h2 <= 'f') ? h2 - 'a' + 10 :
-                     (h2 >= 'A' && h2 <= 'F') ? h2 - 'A' + 10 : -1;
+            int hi = zcl_hex_nibble(h1, true);
+            int lo = zcl_hex_nibble(h2, true);
             if (hi >= 0 && lo >= 0) {
                 dst[di++] = (char)((hi << 4) | lo);
                 si += 2;
@@ -244,7 +214,7 @@ static size_t zs_handle_package(const char *zcode_dir, const char *root_hex,
                                 uint8_t *resp, size_t max)
 {
     uint8_t root[32];
-    if (strlen(root_hex) != 64 || !zs_hex_decode(root_hex, root, 32))
+    if (!zcl_hex_decode(root_hex, root, 32))
         return zcode_view_package_not_found(root_hex, resp, max);
 
     struct vcs_package_index *index = vcs_package_index_build(zcode_dir);
@@ -305,8 +275,7 @@ static size_t zs_handle_package(const char *zcode_dir, const char *root_hex,
         struct dirent *ent;
         while ((ent = readdir(dir)) != NULL) {
             uint8_t scratch[32];
-            if (strlen(ent->d_name) != 64 ||
-                !zs_hex_decode(ent->d_name, scratch, 32))
+            if (!zcl_hex_decode_lower(ent->d_name, scratch, 32))
                 continue;
             if (attest_scanned == ZS_ATTEST_MAX_SCAN)
                 break;
@@ -370,7 +339,7 @@ static size_t zs_handle_publisher(const char *zcode_dir,
                                   size_t max)
 {
     uint8_t pubkey[33];
-    if (strlen(publisher_hex) != 66 || !zs_hex_decode(publisher_hex, pubkey, 33))
+    if (!zcl_hex_decode(publisher_hex, pubkey, 33))
         return zcode_view_publisher_not_found(publisher_hex, resp, max);
 
     struct vcs_package_index *index = vcs_package_index_build(zcode_dir);
@@ -620,12 +589,7 @@ static size_t zs_download_chunk(const char *zcode_dir, const char *root_hex,
 
     /* Read the CAS object named by the committed hash. */
     char hash_hex[65];
-    static const char hexd[] = "0123456789abcdef";
-    for (size_t i = 0; i < 32; i++) {
-        hash_hex[2 * i]     = hexd[(committed[i] >> 4) & 0xf];
-        hash_hex[2 * i + 1] = hexd[committed[i] & 0xf];
-    }
-    hash_hex[64] = '\0';
+    zcl_hex_encode(committed, 32, hash_hex);
     snprintf(path, sizeof(path), "%s/cas/sha3/%02x/%s", zcode_dir,
              committed[0], hash_hex);
     uint8_t *bytes = NULL;
@@ -678,7 +642,7 @@ static size_t zs_handle_download(const char *zcode_dir, const char *rest,
         *slash = '\0';
 
     uint8_t root[32];
-    if (strlen(root_hex) != 64 || !zs_hex_decode(root_hex, root, 32))
+    if (!zcl_hex_decode(root_hex, root, 32))
         return zcode_view_package_not_found(root_hex, resp, max);
 
     if (!slash)

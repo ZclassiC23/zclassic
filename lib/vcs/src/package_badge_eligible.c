@@ -13,6 +13,7 @@
 #include "vcs/package_badge_eligible.h"
 
 #include "crypto/sha3.h"
+#include "base/hex.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "vcs/package_rank.h"
@@ -74,7 +75,7 @@ static void belig_facts_publish(const uint8_t contributor[33],
     if (!index)
         return;
     char pub_hex[67];
-    vcs_badge_hex_encode(contributor, 33, pub_hex);
+    zcl_hex_encode(contributor, 33, pub_hex);
     size_t count = vcs_package_index_count(index);
     struct belig_pub_release *rels =
         zcl_calloc(count ? count : 1, sizeof(*rels), "belig_pub_releases");
@@ -89,7 +90,7 @@ static void belig_facts_publish(const uint8_t contributor[33],
         if (!e || strcmp(e->publisher_hex, pub_hex) != 0)
             continue;
         rels[n].sequence = e->publisher_sequence;
-        if (!vcs_badge_hex_decode32(e->package_root_hex, rels[n].root))
+        if (!zcl_hex_decode_lower(e->package_root_hex, rels[n].root, 32))
             continue;
         n++;
     }

@@ -44,8 +44,8 @@ static size_t zcode_emit_release_card(char *buf, size_t max,
     if (r) {
         char sig_hex[2 * VCS_PACKAGE_RELEASE_SIGNATURE_BYTES + 1];
         char recipe_hex[65];
-        zcode_hex(r->signature, VCS_PACKAGE_RELEASE_SIGNATURE_BYTES, sig_hex);
-        zcode_hex(r->recipe_root, 32, recipe_hex);
+        zcl_hex_encode(r->signature, VCS_PACKAGE_RELEASE_SIGNATURE_BYTES, sig_hex);
+        zcl_hex_encode(r->recipe_root, 32, recipe_hex);
         html_escape(safe_reward, sizeof(safe_reward), r->reward_address);
         html_escape(safe_chain, sizeof(safe_chain), r->chain_id);
         SITE_APPEND(off, buf, max,
@@ -68,7 +68,7 @@ static size_t zcode_emit_release_card(char *buf, size_t max,
         }
         if (r->has_parent) {
             char parent_hex[65];
-            zcode_hex(r->parent_root, 32, parent_hex);
+            zcl_hex_encode(r->parent_root, 32, parent_hex);
             SITE_APPEND(off, buf, max,
                 "<div class='kv'><b>parent root</b>"
                 "<span class='val mono'>%s</span></div>", parent_hex);
@@ -155,7 +155,7 @@ static size_t zcode_emit_attest_card(char *buf, size_t max,
         for (size_t i = 0; i < in->attest_shown && off < max - 512; i++) {
             const struct vcs_package_attest *a = &in->attestations[i];
             char verifier_hex[2 * VCS_PACKAGE_ATTEST_PUBKEY_BYTES + 1];
-            zcode_hex(a->verifier_pubkey, VCS_PACKAGE_ATTEST_PUBKEY_BYTES,
+            zcl_hex_encode(a->verifier_pubkey, VCS_PACKAGE_ATTEST_PUBKEY_BYTES,
                       verifier_hex);
             const char *cls =
                 vcs_package_attest_result_string(a->result_class);
@@ -455,7 +455,7 @@ size_t zcode_view_leaderboard(enum vcs_rank_period period,
         if (n > 0) off += (size_t)n;
         for (size_t i = 0; i < shown && off < sizeof(body) - 512; i++) {
             char pub_hex[67];
-            zcode_hex(rows[i].contributor, 33, pub_hex);
+            zcl_hex_encode(rows[i].contributor, 33, pub_hex);
             n = snprintf(body + off, sizeof(body) - off,
                 "<tr><td>#%llu</td>"
                 "<td class='mono'><a href='/zcode/publisher/%s'>%.16s"
@@ -524,7 +524,7 @@ size_t zcode_view_badges(const struct vcs_badge *badges, size_t shown,
         for (size_t i = 0; i < shown && off < sizeof(body) - 640; i++) {
             const struct vcs_badge *b = &badges[i];
             char recip_hex[2 * VCS_PACKAGE_BADGE_PUBKEY_BYTES + 1];
-            zcode_hex(b->recipient, VCS_PACKAGE_BADGE_PUBKEY_BYTES,
+            zcl_hex_encode(b->recipient, VCS_PACKAGE_BADGE_PUBKEY_BYTES,
                       recip_hex);
             char period_desc[64];
             if (vcs_badge_is_non_periodic(b))

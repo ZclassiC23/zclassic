@@ -65,8 +65,6 @@ struct vcs_package_store {
 
 /* ── shared small helpers (package_store_io.c) ────────────────────── */
 
-void store_hex_encode(const uint8_t in[32], char out[65]);
-bool store_hex_decode(const char *hex, uint8_t out[32]); /* 64-hex only */
 bool store_name_is_hex64(const char *name);
 
 /* mkdir -p (every component); false on failure (logged by caller). */

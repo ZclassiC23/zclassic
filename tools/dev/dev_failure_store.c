@@ -5,6 +5,7 @@
 #include "dev_failure_store.h"
 #include "devloop.h"
 
+#include "base/hex.h"
 #include "crypto/sha3.h"
 #include "json/json.h"
 #include "platform/rng.h"
@@ -90,16 +91,6 @@ static bool valid_phase(const char *phase)
                   "0123456789_.-") == strlen(phase);
 }
 
-static void hex_encode(const unsigned char digest[32], char out[65])
-{
-    static const char digits[] = "0123456789abcdef";
-    for (size_t i = 0; i < 32; i++) {
-        out[2 * i] = digits[digest[i] >> 4];
-        out[2 * i + 1] = digits[digest[i] & 15];
-    }
-    out[64] = 0;
-}
-
 static void hash_field(struct sha3_256_ctx *ctx, const char *name,
                        const char *value)
 {
@@ -115,7 +106,7 @@ static void digest_finish(struct sha3_256_ctx *ctx, char out[65])
 {
     unsigned char digest[32];
     sha3_256_finalize(ctx, digest);
-    hex_encode(digest, out);
+    zcl_hex_encode(digest, 32, out);
 }
 
 bool zcl_dev_failure_normalize_error(const char *input,
@@ -350,13 +341,8 @@ static bool unique_temp_name(const char *kind, char out[96])
     unsigned char random[16];
     if (!rng_fill(random, sizeof(random)))
         return false;
-    static const char digits[] = "0123456789abcdef";
     char suffix[sizeof(random) * 2 + 1];
-    for (size_t i = 0; i < sizeof(random); i++) {
-        suffix[2 * i] = digits[random[i] >> 4];
-        suffix[2 * i + 1] = digits[random[i] & 15];
-    }
-    suffix[sizeof(random) * 2] = 0;
+    zcl_hex_encode(random, sizeof(random), suffix);
     int n = snprintf(out, 96, ".%s.%s.tmp", kind, suffix);
     return n > 0 && n < 96;
 }

@@ -6,6 +6,7 @@
 
 #include "vcs/package_index.h"
 
+#include "base/hex.h"
 #include "base/log_macros.h"
 #include "base/safe_alloc.h"
 
@@ -19,37 +20,6 @@ struct vcs_package_index {
     struct vcs_package_index_entry *entries;
     size_t count;
 };
-
-static void index_hex(const uint8_t *in, size_t len, char *out)
-{
-    static const char hexd[] = "0123456789abcdef";
-    for (size_t i = 0; i < len; i++) {
-        out[2 * i]     = hexd[(in[i] >> 4) & 0xf];
-        out[2 * i + 1] = hexd[in[i] & 0xf];
-    }
-    out[2 * len] = '\0';
-}
-
-static bool index_hex_decode32(const char *hex, uint8_t out[32])
-{
-    if (!hex || strlen(hex) != 64)
-        return false;
-    for (size_t i = 0; i < 32; i++) {
-        unsigned v = 0;
-        for (size_t j = 0; j < 2; j++) {
-            char ch = hex[2 * i + j];
-            v <<= 4;
-            if (ch >= '0' && ch <= '9')
-                v |= (unsigned)(ch - '0');
-            else if (ch >= 'a' && ch <= 'f')
-                v |= (unsigned)(ch - 'a' + 10);
-            else
-                return false;
-        }
-        out[i] = (uint8_t)v;
-    }
-    return true;
-}
 
 /* Project one parsed manifest wire (read from <zcode_dir>/manifests/<root>)
  * into the entry's summary fields. Absent/unparseable manifests leave
@@ -92,7 +62,7 @@ static void index_fill_manifest_summary(const char *zcode_dir,
     free(wire);
     uint8_t expect[32];
     uint8_t root[32];
-    if (!index_hex_decode32(e->package_root_hex, expect) ||
+    if (!zcl_hex_decode_lower(e->package_root_hex, expect, 32) ||
         !vcs_package_manifest_root(&manifest, root) ||
         memcmp(expect, root, 32) != 0) {
         vcs_package_manifest_free(&manifest);
@@ -167,12 +137,12 @@ struct vcs_package_index *vcs_package_index_build(const char *zcode_dir)
             LOG_ERROR(INDEX_LOG, "persisted release %zu has no id", i);
             continue;
         }
-        index_hex(id, 32, e->release_id_hex);
-        index_hex(r->package_root, 32, e->package_root_hex);
+        zcl_hex_encode(id, 32, e->release_id_hex);
+        zcl_hex_encode(r->package_root, 32, e->package_root_hex);
         snprintf(e->name, sizeof(e->name), "%s", r->name);
         snprintf(e->semver, sizeof(e->semver), "%s", r->semver);
         snprintf(e->license, sizeof(e->license), "%s", r->license);
-        index_hex(r->publisher_pubkey, VCS_PACKAGE_RELEASE_PUBKEY_BYTES,
+        zcl_hex_encode(r->publisher_pubkey, VCS_PACKAGE_RELEASE_PUBKEY_BYTES,
                   e->publisher_hex);
         snprintf(e->chain_id, sizeof(e->chain_id), "%s", r->chain_id);
         snprintf(e->reward_address, sizeof(e->reward_address), "%s",
@@ -180,7 +150,7 @@ struct vcs_package_index *vcs_package_index_build(const char *zcode_dir)
         e->publisher_sequence = r->publisher_sequence;
         e->has_parent = r->has_parent;
         if (r->has_parent)
-            index_hex(r->parent_root, 32, e->parent_root_hex);
+            zcl_hex_encode(r->parent_root, 32, e->parent_root_hex);
         e->has_znam = r->has_znam;
         if (r->has_znam)
             snprintf(e->znam, sizeof(e->znam), "%s", r->znam);
@@ -220,7 +190,7 @@ const struct vcs_package_index_entry *vcs_package_index_find_root(
     if (!index || !package_root)
         return NULL;
     char root_hex[65];
-    index_hex(package_root, 32, root_hex);
+    zcl_hex_encode(package_root, 32, root_hex);
     for (size_t i = 0; i < index->count; i++)
         if (strcmp(index->entries[i].package_root_hex, root_hex) == 0)
             return &index->entries[i];

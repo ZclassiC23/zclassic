@@ -59,6 +59,7 @@
  * commit select CHAIN_MAIN when nothing selected a chain — the same
  * one-shot-CLI precedent as core.sync.frontier.offline. */
 
+#include "base/hex.h"
 #include "command/native_command.h"
 
 #include "kernel/command_registry.h"
@@ -108,46 +109,6 @@ static const char *zc_datadir(const struct zcl_command_request *request)
         return dd;
     dd = zcl_native_command_datadir();
     return (dd && dd[0]) ? dd : NULL;
-}
-
-static void zc_hex_encode(const uint8_t *in, size_t len, char *out)
-{
-    static const char hexd[] = "0123456789abcdef";
-    for (size_t i = 0; i < len; i++) {
-        out[2 * i]     = hexd[(in[i] >> 4) & 0xf];
-        out[2 * i + 1] = hexd[in[i] & 0xf];
-    }
-    out[2 * len] = '\0';
-}
-
-/* Strict hex decode: even length, 1..out_cap bytes. */
-static bool zc_hex_decode(const char *hex, uint8_t *out, size_t out_cap,
-                          size_t *out_len)
-{
-    if (!hex || !out)
-        return false;
-    size_t n = strlen(hex);
-    if (n == 0 || (n & 1u) != 0 || n / 2 > out_cap)
-        return false;
-    for (size_t i = 0; i < n / 2; i++) {
-        unsigned v = 0;
-        for (size_t j = 0; j < 2; j++) {
-            char ch = hex[2 * i + j];
-            v <<= 4;
-            if (ch >= '0' && ch <= '9')
-                v |= (unsigned)(ch - '0');
-            else if (ch >= 'a' && ch <= 'f')
-                v |= (unsigned)(ch - 'a' + 10);
-            else if (ch >= 'A' && ch <= 'F')
-                v |= (unsigned)(ch - 'A' + 10);
-            else
-                return false;
-        }
-        out[i] = (uint8_t)v;
-    }
-    if (out_len)
-        *out_len = n / 2;
-    return true;
 }
 
 /* ── candidate parsing + validation (shared by plan and commit) ────── */
@@ -213,7 +174,7 @@ static bool zc_validate(const struct zcl_command_request *request,
         return false;
     }
     size_t release_wire_len = 0;
-    bool decoded = zc_hex_decode(release_hex, release_wire,
+    bool decoded = zcl_hex_decode_n(release_hex, release_wire,
                                  VCS_PACKAGE_RELEASE_MAX_WIRE_BYTES,
                                  &release_wire_len);
     enum vcs_package_release_error perr = VCS_PACKAGE_RELEASE_OK;
@@ -249,7 +210,7 @@ static bool zc_validate(const struct zcl_command_request *request,
                                "zcode.package.publish");
         return false;
     }
-    if (!zc_hex_decode(manifest_hex, cand->manifest_wire,
+    if (!zcl_hex_decode_n(manifest_hex, cand->manifest_wire,
                        VCS_PACKAGE_MANIFEST_MAX_WIRE_BYTES,
                        &cand->manifest_wire_len) ||
         !vcs_package_manifest_parse(cand->manifest_wire,
@@ -283,7 +244,7 @@ static bool zc_validate(const struct zcl_command_request *request,
             return false;
         }
         enum vcs_package_recipe_error rcerr = VCS_PACKAGE_RECIPE_OK;
-        bool rc_decoded = zc_hex_decode(recipe_hex, cand->recipe_wire,
+        bool rc_decoded = zcl_hex_decode_n(recipe_hex, cand->recipe_wire,
                                         VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES,
                                         &cand->recipe_wire_len);
         if (rc_decoded)
@@ -396,13 +357,13 @@ static void zc_summary_json(struct json_value *out,
         struct json_value rel;
         json_init(&rel);
         json_set_object(&rel);
-        zc_hex_encode(report->release_id, 32, hex);
+        zcl_hex_encode(report->release_id, 32, hex);
         (void)json_push_kv_str(&rel, "release_id", hex);
         (void)json_push_kv_str(&rel, "name", cand->release.name);
         (void)json_push_kv_str(&rel, "semver", cand->release.semver);
         (void)json_push_kv_str(&rel, "license", cand->release.license);
         char pub[2 * VCS_PACKAGE_RELEASE_PUBKEY_BYTES + 1];
-        zc_hex_encode(cand->release.publisher_pubkey,
+        zcl_hex_encode(cand->release.publisher_pubkey,
                       VCS_PACKAGE_RELEASE_PUBKEY_BYTES, pub);
         (void)json_push_kv_str(&rel, "publisher", pub);
         (void)json_push_kv_int(&rel, "publisher_sequence",
@@ -419,7 +380,7 @@ static void zc_summary_json(struct json_value *out,
         struct json_value pkg;
         json_init(&pkg);
         json_set_object(&pkg);
-        zc_hex_encode(cand->release.package_root, 32, hex);
+        zcl_hex_encode(cand->release.package_root, 32, hex);
         (void)json_push_kv_str(&pkg, "package_root", hex);
         (void)json_push_kv_int(&pkg, "files", (int64_t)report->file_count);
         (void)json_push_kv_int(&pkg, "bytes", (int64_t)report->total_bytes);
@@ -439,7 +400,7 @@ static void zc_summary_json(struct json_value *out,
         json_set_object(&rcp);
         uint8_t rroot[32];
         if (vcs_package_recipe_root(r, rroot) == VCS_PACKAGE_RECIPE_OK) {
-            zc_hex_encode(rroot, 32, hex);
+            zcl_hex_encode(rroot, 32, hex);
             (void)json_push_kv_str(&rcp, "recipe_root", hex);
         }
         (void)json_push_kv_bool(&rcp, "valid", report->recipe_ok);
@@ -510,7 +471,7 @@ void zcl_native_handle_zcode_package_publish_plan(
     (void)json_push_kv_bool(&reply->data, "valid", valid);
     if (report.release_ok) {
         char token[65];
-        zc_hex_encode(report.release_id, 32, token);
+        zcl_hex_encode(report.release_id, 32, token);
         (void)json_push_kv_str(&reply->data, "plan_token", token);
     }
     zc_summary_json(&reply->data, &cand, &report, report.chunks_checked,
@@ -786,10 +747,10 @@ void zcl_native_handle_zcode_package_publish_commit(
     (void)json_push_kv_str(&reply->data, "stage", "commit");
     (void)json_push_kv_str(&reply->data, "result",
                            published ? "published" : "duplicate");
-    zc_hex_encode(report.release_id, 32, hex);
+    zcl_hex_encode(report.release_id, 32, hex);
     (void)json_push_kv_str(&reply->data, "release_id", hex);
     (void)json_push_kv_str(&reply->data, "plan_token", hex);
-    zc_hex_encode(root, 32, hex);
+    zcl_hex_encode(root, 32, hex);
     (void)json_push_kv_str(&reply->data, "package_root", hex);
     (void)json_push_kv_str(&reply->data, "name", cand.release.name);
     (void)json_push_kv_int(&reply->data, "files",
@@ -898,7 +859,7 @@ void zcl_native_handle_zcode_package_recipe(
     const char *root_hex = zc_input_str(request->input, "root");
     uint8_t root[32];
     size_t root_len = 0;
-    if (!root_hex || !zc_hex_decode(root_hex, root, 32, &root_len) ||
+    if (!root_hex || !zcl_hex_decode_n(root_hex, root, 32, &root_len) ||
         root_len != 32) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INVALID, "BAD_ROOT",
@@ -961,7 +922,7 @@ void zcl_native_handle_zcode_package_recipe(
     }
     free(release_wire);
     char recipe_root_hex[65];
-    zc_hex_encode(release.recipe_root, 32, recipe_root_hex);
+    zcl_hex_encode(release.recipe_root, 32, recipe_root_hex);
 
     snprintf(path, sizeof(path), "%s/recipes/%s", zcode_dir,
              recipe_root_hex);
@@ -1055,7 +1016,7 @@ void zcl_native_handle_zcode_package_verify(
     const char *root_hex = zc_input_str(request->input, "root");
     uint8_t root[32];
     size_t root_len = 0;
-    if (!root_hex || !zc_hex_decode(root_hex, root, 32, &root_len) ||
+    if (!root_hex || !zcl_hex_decode_n(root_hex, root, 32, &root_len) ||
         root_len != 32) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INVALID, "BAD_ROOT",
@@ -1167,7 +1128,7 @@ void zcl_native_handle_zcode_package_verify(
         while ((ent = readdir(dir)) != NULL) {
             uint8_t scratch[32];
             size_t scratch_len = 0;
-            if (!zc_hex_decode(ent->d_name, scratch, 32, &scratch_len) ||
+            if (!zcl_hex_decode_n(ent->d_name, scratch, 32, &scratch_len) ||
                 scratch_len != 32)
                 continue;
             if (candidate_count == ZC_VERIFY_MAX_SCAN) {
@@ -1210,7 +1171,7 @@ void zcl_native_handle_zcode_package_verify(
     (void)json_push_kv_str(&reply->data, "release_id", release_id_hex);
     (void)json_push_kv_str(&reply->data, "publisher", publisher_hex);
     char recipe_root_hex[65];
-    zc_hex_encode(release.recipe_root, 32, recipe_root_hex);
+    zcl_hex_encode(release.recipe_root, 32, recipe_root_hex);
     (void)json_push_kv_str(&reply->data, "recipe_root", recipe_root_hex);
     (void)json_push_kv_int(&reply->data, "approved_verifiers",
                            (int64_t)policy.count);
@@ -1244,7 +1205,7 @@ void zcl_native_handle_zcode_package_verify(
         json_set_object(&r);
         if (row->has_pubkey) {
             char pk_hex[67];
-            zc_hex_encode(row->verifier_pubkey, 33, pk_hex);
+            zcl_hex_encode(row->verifier_pubkey, 33, pk_hex);
             (void)json_push_kv_str(&r, "verifier", pk_hex);
         } else {
             (void)json_push_kv_str(&r, "verifier", "");
@@ -1386,7 +1347,7 @@ void zcl_native_handle_zcode_package_show(
     const char *root_hex = zc_input_str(request->input, "root");
     uint8_t root[32];
     size_t root_len = 0;
-    if (!root_hex || !zc_hex_decode(root_hex, root, 32, &root_len) ||
+    if (!root_hex || !zcl_hex_decode_n(root_hex, root, 32, &root_len) ||
         root_len != 32) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INVALID, "BAD_ROOT",

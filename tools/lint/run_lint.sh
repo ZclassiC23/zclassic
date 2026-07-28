@@ -132,6 +132,7 @@ gate_command() {
         check-api-reference-generated)     echo './tools/lint/check_api_reference_generated.sh' ;;
         check-markdown-links)              echo './tools/lint/check_markdown_links.sh .' ;;
         check-doc-inline-paths)            echo './tools/lint/check_doc_inline_paths.sh' ;;
+        check-hex-codec-single)            echo './tools/lint/check_hex_codec_single.sh --selftest && ./tools/lint/check_hex_codec_single.sh' ;;
         check-one-result-type)             echo './tools/scripts/check_one_result_type.sh' ;;
         check-service-result-convergence)  echo './tools/scripts/check_service_result_convergence.sh' ;;
         check-shape-includes-header)       echo './tools/scripts/check_shape_includes_header.sh' ;;

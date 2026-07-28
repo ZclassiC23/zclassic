@@ -386,10 +386,4 @@ size_t vcs_badge_commit_record_badges(const struct vcs_badge_store *s,
                                       const uint8_t plan_id[32],
                                       uint8_t (*out)[32], size_t cap);
 
-/* ── small helpers ──────────────────────────────────────────────────── */
-
-void vcs_badge_hex_encode(const uint8_t *in, size_t len, char *out);
-bool vcs_badge_hex_decode32(const char *hex, uint8_t out[32]);
-bool vcs_badge_hex_decode33(const char *hex, uint8_t out[33]);
-
 #endif /* ZCL_VCS_PACKAGE_BADGE_H */

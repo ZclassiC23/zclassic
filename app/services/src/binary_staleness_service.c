@@ -19,6 +19,7 @@
 #include "platform/time_compat.h"
 #include "services/binary_staleness_service.h"
 
+#include "base/hex.h"
 #include "crypto/sha3.h"
 #include "json/json.h"
 #include "platform/os_proc.h"
@@ -96,40 +97,6 @@ static struct bs_state g_bs = {
 };
 
 static struct liveness_contract g_bs_contract;
-
-/* ── Hex helpers ────────────────────────────────────────────── */
-
-static void bs_hex_encode(const unsigned char *digest, size_t len,
-                          char *out /* len*2 + 1 bytes */)
-{
-    static const char hexchars[] = "0123456789abcdef";
-    for (size_t i = 0; i < len; i++) {
-        out[i * 2]     = hexchars[(digest[i] >> 4) & 0xF];
-        out[i * 2 + 1] = hexchars[digest[i] & 0xF];
-    }
-    out[len * 2] = '\0';
-}
-
-#ifdef ZCL_TESTING
-static bool bs_hex_decode32(const char *hex, unsigned char out[32])
-{
-    if (!hex || strlen(hex) != 64)
-        return false;
-    for (int i = 0; i < 32; i++) {
-        unsigned v = 0;
-        for (int j = 0; j < 2; j++) {
-            char c = hex[i * 2 + j];
-            v <<= 4;
-            if (c >= '0' && c <= '9') v |= (unsigned)(c - '0');
-            else if (c >= 'a' && c <= 'f') v |= (unsigned)(c - 'a' + 10);
-            else if (c >= 'A' && c <= 'F') v |= (unsigned)(c - 'A' + 10);
-            else return false;
-        }
-        out[i] = (unsigned char)v;
-    }
-    return true;
-}
-#endif
 
 /* Trailing " (deleted)" is how the kernel marks a readlink(/proc/self/exe)
  * result whose original dentry no longer exists (unlinked, or replaced by
@@ -280,7 +247,7 @@ bool binary_staleness_capture_boot_stamp(void)
                  strerror(errno));
     }
     memcpy(g_bs.boot_digest, digest, sizeof(digest));
-    bs_hex_encode(digest, sizeof(digest), g_bs.boot_digest_hex);
+    zcl_hex_encode(digest, sizeof(digest), g_bs.boot_digest_hex);
 
     struct stat st;
     if (stat(g_bs.exe_path, &st) == 0) {
@@ -373,7 +340,7 @@ bool binary_staleness_check_now(void)
     g_bs.last_probe_size  = cur_size;
     g_bs.probed_once = true;
     memcpy(g_bs.last_disk_digest, probe_digest, sizeof(probe_digest));
-    bs_hex_encode(probe_digest, sizeof(probe_digest), g_bs.last_disk_digest_hex);
+    zcl_hex_encode(probe_digest, sizeof(probe_digest), g_bs.last_disk_digest_hex);
 
     bool new_stale = memcmp(probe_digest, g_bs.boot_digest,
                             sizeof(probe_digest)) != 0;
@@ -631,7 +598,7 @@ void binary_staleness_test_force_boot_stamp(const char *digest_hex,
                                             const char *path)
 {
     unsigned char digest[32];
-    if (!bs_hex_decode32(digest_hex, digest)) {
+    if (!zcl_hex_decode(digest_hex, digest, 32)) {
         LOG_WARN("binary_staleness",
                  "test_force_boot_stamp: invalid digest_hex (want 64 hex "
                  "chars): %s", digest_hex ? digest_hex : "(null)");
@@ -639,7 +606,7 @@ void binary_staleness_test_force_boot_stamp(const char *digest_hex,
     }
     pthread_mutex_lock(&g_bs.lock);
     memcpy(g_bs.boot_digest, digest, sizeof(digest));
-    bs_hex_encode(digest, sizeof(digest), g_bs.boot_digest_hex);
+    zcl_hex_encode(digest, sizeof(digest), g_bs.boot_digest_hex);
     g_bs.boot_mtime = mtime;
     g_bs.boot_size = size;
     g_bs.last_probe_mtime = mtime;
@@ -658,7 +625,7 @@ void binary_staleness_test_force_probe(const char *digest_hex,
                                        int64_t mtime, int64_t size)
 {
     unsigned char digest[32];
-    if (!bs_hex_decode32(digest_hex, digest)) {
+    if (!zcl_hex_decode(digest_hex, digest, 32)) {
         LOG_WARN("binary_staleness",
                  "test_force_probe: invalid digest_hex (want 64 hex "
                  "chars): %s", digest_hex ? digest_hex : "(null)");
