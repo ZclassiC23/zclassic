@@ -67,6 +67,7 @@ LIB_MODULE("overlay")
 LIB_MODULE("platform")
 LIB_MODULE("core")
 LIB_MODULE("crypto")
+LIB_MODULE("zid")
 LIB_MODULE("session")
 LIB_MODULE("bloom")
 

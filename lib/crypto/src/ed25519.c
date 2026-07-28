@@ -1,17 +1,27 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Ed25519 signature verification — pure C23 implementation.
+ * Ed25519 signatures (verify + keypair + sign) — pure C23 implementation.
  * Twisted Edwards curve: -x^2 + y^2 = 1 + d*x^2*y^2
  * Field: GF(2^255-19), TweetNaCl-style 16-limb representation.
  *
  * ── Constant-time audit ────────────────────────────────────
  *
- * This file is **verify-only**. There is no `ed25519_sign` in the tree
- * (consensus paths only need verify; JoinSplit/Sapling signing happens
- * via RedJubjub in lib/sapling). All inputs to ed25519_verify are
- * public — signature, message, public key — so the threat model that
- * makes Curve25519 DH and jub_scalar_mul timing-critical does not
- * apply here. The CT properties below are belt-and-suspenders.
+ * Verify path: all inputs to ed25519_verify are public — signature,
+ * message, public key — so the threat model that makes Curve25519 DH and
+ * jub_scalar_mul timing-critical does not apply there. The CT properties
+ * below are belt-and-suspenders for verify and load-bearing for sign.
+ *
+ * Sign path (added for off-chain identity documents, lib/zid — consensus
+ * paths only need verify; JoinSplit/Sapling signing happens via
+ * RedJubjub in lib/sapling): the secret scalar and nonce stay out of
+ * timing by construction:
+ *   - clamp is branch-free byte masking (& 248, & 127, | 64)
+ *   - the nonce r and scalar a are hashed/reduced through the same
+ *     fixed-loop reduce/modL as verify — no secret-dependent branches
+ *   - the [r]B / [a]B multiplications use the same cswap-driven ladder
+ *     as verify: every iteration runs the full point_add + point_add
+ *     sequence with sel25519 mask swaps, no conditional adds keyed on
+ *     secret bits, no table lookups
  *
  * Properties confirmed:
  *   - sel25519: branchless mask cswap (same as curve25519.c)
@@ -23,16 +33,11 @@
  * - S<L canonical-S check: byte-walked accumulator with mask
  *     selection; rejects malleable signatures pre-scalarmult
  *
- * Branches on data (acceptable, public values only):
+ * Branches on data (verify only; acceptable, public values only):
  *   - unpackneg: `if (neq25519(chk, num)) ...` — operates on the
  *     decompressed public key; leak is OK (pubkey is public)
  *   - LOG_FAIL early-returns: branches on verify outcomes (a public
- *     signature is either valid or not — observable from the result)
- *
- * **If a sign function is ever added** it MUST keep the secret nonce
- * out of timing: branch-free clamp, ladder/comb scalarmult, no
- * data-dependent table lookups, ed25519-donna or ref10 patterns. See
- * vendor/tor/src/ext/ed25519/{donna,ref10}/ for known-CT references. */
+ *     signature is either valid or not — observable from the result) */
 
 #include "crypto/ed25519.h"
 #include "crypto/sha512.h"
@@ -416,4 +421,92 @@ bool ed25519_verify(const uint8_t sig[64],
                  "signature verify: [S]B - [h]A != R (signature mismatch, msg_len=%zu)",
                  msg_len);
     return true;
+}
+
+/* Decompress the standard base point B (BASE_POINT encodes y=4/5 with
+ * positive-x parity; unpackneg returns the x-negated form, so negate X
+ * and T back). Cannot fail for this constant. */
+static void base_point(gep bp)
+{
+    /* unpackneg only fails on a non-canonical/non-curve encoding;
+     * BASE_POINT is a compile-time constant known to decompress. */
+    if (unpackneg(bp, BASE_POINT) != 0)
+        set_identity(bp); /* unreachable; keeps bp defined */
+    Z(bp[0], gf0, bp[0]);
+    Z(bp[3], gf0, bp[3]);
+}
+
+/* RFC 8032 §5.1.5 clamp of the low half of SHA-512(seed). Branch-free. */
+static void clamp_scalar(uint8_t a[32])
+{
+    a[0] &= 248;
+    a[31] &= 127;
+    a[31] |= 64;
+}
+
+void zcl_ed25519_keypair(uint8_t pk[32], uint8_t sk[32], const uint8_t seed[32])
+{
+    uint8_t h[64];
+    struct sha512_ctx hs;
+    sha512_init(&hs);
+    sha512_write(&hs, seed, 32);
+    sha512_finalize(&hs, h);
+
+    uint8_t a[32];
+    memcpy(a, h, 32);
+    clamp_scalar(a);
+
+    gep bp, p;
+    base_point(bp);
+    scalarmult(p, bp, a);
+    pack_point(pk, p);
+
+    memcpy(sk, seed, 32); /* the RFC 8032 secret key IS the seed */
+}
+
+void zcl_ed25519_sign(uint8_t sig[64], const uint8_t *msg, size_t msg_len,
+                      const uint8_t sk[32], const uint8_t pk[32])
+{
+    uint8_t h[64];
+    struct sha512_ctx hs;
+    sha512_init(&hs);
+    sha512_write(&hs, sk, 32);
+    sha512_finalize(&hs, h);
+
+    uint8_t a[32];
+    memcpy(a, h, 32);
+    clamp_scalar(a);
+    const uint8_t *prefix = h + 32;
+
+    /* r = SHA-512(prefix || M) mod L */
+    uint8_t r[64];
+    sha512_init(&hs);
+    sha512_write(&hs, prefix, 32);
+    sha512_write(&hs, msg, msg_len);
+    sha512_finalize(&hs, r);
+    reduce(r);
+
+    /* R = [r]B */
+    gep bp, rp;
+    base_point(bp);
+    scalarmult(rp, bp, r);
+    pack_point(sig, rp);
+
+    /* k = SHA-512(R || pk || M) mod L */
+    uint8_t k[64];
+    sha512_init(&hs);
+    sha512_write(&hs, sig, 32);
+    sha512_write(&hs, pk, 32);
+    sha512_write(&hs, msg, msg_len);
+    sha512_finalize(&hs, k);
+    reduce(k);
+
+    /* S = (r + k*a) mod L */
+    int64_t x[64] = {0};
+    for (int i = 0; i < 32; i++)
+        x[i] = (int64_t)(uint64_t)r[i];
+    for (int i = 0; i < 32; i++)
+        for (int j = 0; j < 32; j++)
+            x[i + j] += (int64_t)(uint64_t)k[i] * (int64_t)(uint64_t)a[j];
+    modL(sig + 32, x);
 }
