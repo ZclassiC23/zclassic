@@ -216,6 +216,30 @@ int blocker_set(const struct blocker_record *r)
                  * edge-triggered (no re-fire within one crossing — the
                  * existing behaviour) while letting the next crossing fire. */
                 s->escape_fired = false;
+            } else if (s->escape_fired && now >= s->escape_deadline_us &&
+                       (s->retry_budget < 0 ||
+                        s->retry_count < s->retry_budget)) {
+                /* Same-identity refire of a still-live fault whose remedy has
+                 * already run. The branch above only re-anchors when the
+                 * identity CHANGED, and identity keys on `reason` — so a
+                 * stable fault (the common shape: the reason text does not
+                 * move while the fault persists) left the deadline in the
+                 * past with the latch set, and `if (s->escape_fired) continue`
+                 * skipped it for the rest of the registry's life. The remedy
+                 * therefore ran exactly ONCE no matter what retry_budget
+                 * claimed, which made the budget decoration — the same defect
+                 * the comment above was written to close, fixed there only for
+                 * the identity-changed half.
+                 *
+                 * Re-anchor the horizon so the NEXT crossing can dispatch, and
+                 * only while the declared budget still has room (an exhausted
+                 * budget must stay quiet, which the dispatch pass enforces
+                 * separately). rearm_count/escalated are deliberately left
+                 * untouched: those drive the rule-2 escalation ladder for
+                 * blockers with NO escape action, and an escape-armed blocker
+                 * escalates by spending its budget, not by re-arming. */
+                s->escape_deadline_us = now + s->escape_span_us;
+                s->escape_fired = false;
             }
         } else {
             s->escape_deadline_us = 0;
