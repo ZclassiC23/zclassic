@@ -169,10 +169,10 @@ worst to quadratic Grover speedup. Consequences:
   SHA3-384 upgrade path (quantum collision on SHA3-256 ≈ 2^85 — fine
   today, marginal at century scale). The versioned tags make this
   switchable without a flag day.
-- **Recursive IVC STARK integration points** (owner's in-progress PQ
-  STARK work; hash-based, so PQ-native): (1) recursive chain-state
-  proofs — the Bounded Node endgame: live state + one proof, history
-  fully optional; (2) epoch-anchor validity proofs — upgrading
+- **Recursive IVC STARK integration points** (hash-based, so PQ-native;
+  integrate when a mature prover/verifier is available): (1) recursive
+  chain-state proofs — the Bounded Node endgame: live state + one proof,
+  history fully optional; (2) epoch-anchor validity proofs — upgrading
   attestation to math; (3) PQ ownership circuits — STARK-based shielded
   ownership, which also retires Groth16's trusted setup; (4) verifiable
   builds for the registry. `lib/crypto_registry` is the scheme-plugging
