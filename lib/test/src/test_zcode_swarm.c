@@ -35,6 +35,10 @@
  *      request-burst-limit (REQUEST_FLOOD); the per-tier weekly
  *      download allowance (free allowance honored) throttles our own
  *      pulling without offence.
+ *  11. Blob transfer (vcs/blob_store.h) with ZERO protocol change: a
+ *      one-file/one-chunk content.v2 package announces, is wanted, and
+ *      transfers between two real engines over the frozen 'zpkgswm'
+ *      codec, and the received bytes re-derive the same root.
  *
  * Every engine runs over a real store + real service book on ./test-tmp
  * datadirs; peers are driven through vcs_swarm_engine_handle_frame with
@@ -42,6 +46,7 @@
 
 #include "test/test_core.h"
 
+#include "vcs/blob_store.h"
 #include "vcs/package_service.h"
 #include "vcs/package_store.h"
 #include "vcs/package_swarm_node.h"
@@ -1305,6 +1310,117 @@ static int t_swarm_disconnect_threshold(void)
     return failures;
 }
 
+/* ── 11: content-addressed blob over the UNCHANGED swarm wire ─────── */
+
+/* Two real engines, two real stores, zero protocol change: the seeder
+ * puts a blob (a one-file/one-chunk content.v2 package), ANNOUNCEs it
+ * with the existing frame, and the leecher's vcs_blob_fetch_via drives
+ * the frozen WANT(manifest) -> WANT(chunk) -> DATA path to a verified
+ * copy. Nothing here knows a "blob" message exists, because none does. */
+static int t_swarm_blob_transfer(void)
+{
+    int failures = 0;
+    struct sw_node seed, leech;
+    const uint64_t peer_leech = 7;  /* leecher's handle on the seeder */
+    const uint64_t peer_seed = 9;   /* seeder's handle on the leecher */
+    uint8_t key_leech[33], key_seed[33];
+    sw_key(71, key_leech);
+    sw_key(72, key_seed);
+    if (!sw_node_open(&seed, "blobseed", sw_score_contributor) ||
+        !sw_node_open(&leech, "blobleech", sw_score_contributor)) {
+        printf("  zcode_swarm: blob fixture nodes... FAIL\n");
+        return failures + 1;
+    }
+
+    uint8_t blob[300];
+    for (size_t i = 0; i < sizeof(blob); i++)
+        blob[i] = (uint8_t)(i * 13u + 5u);
+    uint8_t root[32];
+    SW_CHECK("blob: seeder admits the blob",
+             vcs_blob_put_to(seed.store, blob, sizeof(blob), root) ==
+                 VCS_BLOB_OK);
+    struct vcs_package_store_status pst;
+    SW_CHECK("blob: seeded package is complete + single chunk",
+             vcs_package_store_package_status(seed.store, root, &pst) &&
+             pst.complete && pst.total_chunks == 1);
+    SW_CHECK("blob: leecher does not have it yet",
+             !vcs_package_store_package_status(leech.store, root, &pst));
+
+    SW_CHECK("blob: peers register on both engines",
+             vcs_swarm_engine_peer_add(seed.engine, peer_leech, key_leech) &&
+             vcs_swarm_engine_peer_add(leech.engine, peer_seed, key_seed));
+
+    /* ANNOUNCE over the existing frame: no new message type. */
+    size_t announced = vcs_blob_announce_via(seed.engine);
+    SW_CHECK("blob: announce queued on the existing wire", announced >= 1);
+    uint8_t frame[VCS_SWARM_OUTBOUND_FRAME_MAX];
+    size_t frame_len = 0;
+    uint64_t target = 0;
+    size_t delivered = 0;
+    while (vcs_swarm_engine_next_outbound(seed.engine, peer_leech, &target,
+                                          frame, &frame_len)) {
+        struct vcs_swarm_frame_result r = vcs_swarm_engine_handle_frame(
+            leech.engine, peer_seed, frame, frame_len, SW_DAY, 1);
+        free(r.reply);
+        if (r.penalty == VCS_SWARM_PENALTY_NONE)
+            delivered++;
+    }
+    SW_CHECK("blob: announce accepted unpenalized", delivered >= 1);
+    struct vcs_swarm_peer_info infos[VCS_SWARM_MAX_PEERS];
+    SW_CHECK("blob: leecher sees an advertiser for the root",
+             vcs_swarm_engine_peers_for(leech.engine, root, infos,
+                                        VCS_SWARM_MAX_PEERS) == 1);
+
+    SW_CHECK("blob: fetch by root accepted",
+             vcs_blob_fetch_via(leech.engine, root, SW_DAY, 2) ==
+                 VCS_BLOB_OK);
+
+    /* Drive: leecher WANT -> seeder engine DATA reply -> leecher. */
+    bool complete = false;
+    for (int round = 0; round < 32 && !complete; round++) {
+        vcs_swarm_engine_tick(leech.engine, SW_DAY, (uint64_t)(round + 3));
+        while (vcs_swarm_engine_next_outbound(leech.engine, peer_seed,
+                                              &target, frame, &frame_len)) {
+            struct vcs_swarm_frame_result served =
+                vcs_swarm_engine_handle_frame(seed.engine, peer_leech, frame,
+                                              frame_len, SW_DAY,
+                                              (uint64_t)(round + 3));
+            if (served.reply && served.reply_len > 0) {
+                struct vcs_swarm_frame_result got =
+                    vcs_swarm_engine_handle_frame(
+                        leech.engine, peer_seed, served.reply,
+                        served.reply_len, SW_DAY, (uint64_t)(round + 3));
+                free(got.reply);
+            }
+            free(served.reply);
+        }
+        struct vcs_swarm_download_status ds;
+        if (vcs_swarm_engine_download_status(leech.engine, root, &ds) &&
+            ds.state == VCS_SWARM_DL_COMPLETE)
+            complete = true;
+    }
+    SW_CHECK("blob: download completes over the unchanged wire", complete);
+
+    uint8_t out[sizeof(blob)];
+    size_t out_len = 0;
+    memset(out, 0, sizeof(out));
+    SW_CHECK("blob: leecher reads back the exact bytes",
+             vcs_blob_get_from(leech.store, root, out, sizeof(out),
+                               &out_len) == VCS_BLOB_OK &&
+             out_len == sizeof(blob) &&
+             memcmp(out, blob, sizeof(blob)) == 0);
+    uint8_t rederived[32];
+    SW_CHECK("blob: transferred bytes re-derive the same root",
+             vcs_blob_root(out, out_len, rederived) &&
+             memcmp(rederived, root, 32) == 0);
+
+    sw_node_close(&seed);
+    sw_node_close(&leech);
+    test_rm_rf_recursive(seed.datadir);
+    test_rm_rf_recursive(leech.datadir);
+    return failures;
+}
+
 int test_zcode_swarm(void)
 {
     int failures = 0;
@@ -1318,5 +1434,6 @@ int test_zcode_swarm(void)
     failures += t_swarm_resume();
     failures += t_swarm_serving_and_allowance();
     failures += t_swarm_disconnect_threshold();
+    failures += t_swarm_blob_transfer();
     return failures;
 }

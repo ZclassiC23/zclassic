@@ -991,6 +991,8 @@ int main(int argc, char **argv)
     { extern int test_zcode_release(void); failures += test_zcode_release(); }
     failures += test_zid_identity();
     failures += test_identity_command();
+    { extern int test_zdesc(void); failures += test_zdesc(); }
+    failures += test_proof_chain();
     { extern int test_znam_site(void); failures += test_znam_site(); }
     failures += test_htlc();
     failures += test_swap_settlement();

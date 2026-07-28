@@ -5,6 +5,7 @@
 
 #include "platform/time_compat.h"
 #include "net/onion_service.h"
+#include "net/onion_peer_merge.h"
 #include "net/onion_ratelimit.h"
 #include "net/tor_integration.h"
 #include "net/rom_seed.h"
@@ -26,6 +27,8 @@ struct onion_context {
     time_t start_time;
     onion_blog_serve_fn blog_serve;
     onion_peer_discover_fn peer_discover;
+    onion_signed_peer_source_fn signed_source;
+    void *signed_ctx;
 };
 
 static struct onion_context g_onion_ctx = {0};
@@ -43,38 +46,26 @@ void onion_service_set_app_handlers(onion_blog_serve_fn blog_serve,
     ctx->peer_discover = peer_discover;
 }
 
-/* On-chain hostnames are attacker-controlled. Only the exact Tor v3
- * shape (56 base32 [a-z2-7] chars + ".onion" = 62) may reach HTML,
- * JSON, or the peer_directory table. */
-static bool onion_hostname_valid(const char *h)
+void onion_service_set_signed_peer_source(onion_signed_peer_source_fn source,
+                                          void *ctx_arg)
 {
-    if (!h) return false;
-    if (strlen(h) != 62 || strcmp(h + 56, ".onion") != 0) return false;
-    for (size_t i = 0; i < 56; i++) {
-        char c = h[i];
-        if (!((c >= 'a' && c <= 'z') || (c >= '2' && c <= '7')))
-            return false;
-    }
-    return true;
+    struct onion_context *ctx = onion_ctx();
+    ctx->signed_source = source;
+    ctx->signed_ctx = ctx_arg;
 }
 
+/* Signed descriptors first, then the unsigned wallet scrape; the rule
+ * and the merge live in net/onion_peer_merge.h. */
 static int onion_discover_peers(struct onion_peer *out, size_t max)
 {
     struct onion_context *ctx = onion_ctx();
-    if (!ctx->datadir || !ctx->peer_discover)
-        return 0;
-    int found = ctx->peer_discover(ctx->datadir, out, max);
-    /* Drop malformed hostnames before they reach any sink. */
-    int kept = 0;
-    for (int i = 0; i < found; i++) {
-        if (!onion_hostname_valid(out[i].hostname))
-            continue;
-        if (kept != i) out[kept] = out[i];
-        kept++;
-    }
-    if (kept < found)
+    int rejected = 0;
+    int kept = onion_peers_collect(out, max, ctx->signed_source,
+                                   ctx->signed_ctx, ctx->peer_discover,
+                                   ctx->datadir, &rejected);
+    if (rejected > 0)
         log_jsonf(LOG_JSON_WARN, "onion_hostname_rejected",
-                  "\"dropped\":%d", found - kept);
+                  "\"dropped\":%d", rejected);
     return kept;
 }
 

@@ -1089,3 +1089,160 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_domain_status)
+/* ── Light-client proof chain (docs/spec/sovereign-identity-layer.md) ──
+ * The spec's chain — header PoW -> anchor tx inclusion -> ZANC anchor
+ * decode -> domain root -> record inclusion proof -> zid signature ->
+ * master-key anchor — as ONE read-only command over evidence the caller
+ * hands in. No node contact, no chain database. Each rung reports
+ * independently; `not_checked` always carries a reason and is rendered
+ * distinctly from `passed`.
+ * Rung 7 (identity_anchor) is ALWAYS not_checked in this build: the
+ * chain-anchored identity lookup (db_zid_identity_find) does not exist
+ * here yet, so nothing in this tree may claim full-chain verification. */
+ZCL_COMMAND_BRANCH("zcode.proof", "zcode",
+                   "Light-client proof-chain verification (node-free)",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.proof.walk", "zcode.proof", "",
+    "Walk a record's proof chain down to proof-of-work, rung by rung",
+    "A seven-rung report for one zid document: (1) header + Equihash PoW, "
+    "(2) the anchor tx's merkle inclusion in that header, (3) the first "
+    "OP_RETURN parsing as a ZANC anchor, (4) the domain root matching the "
+    "anchored digest, (5) record inclusion via zid_tree_verify, (6) the "
+    "zid signature and expiry, (7) the master key's on-chain identity "
+    "anchor. Every rung reports passed / failed / not_checked "
+    "INDEPENDENTLY and a not_checked rung always states why — it is never "
+    "counted as passing. `verified_prefix` counts only CONSECUTIVE passing "
+    "rungs from 1, so a later rung can never be lifted by a broken earlier "
+    "one, and `chain_complete` is true only when all seven pass. RUNG 7 IS "
+    "ALWAYS not_checked in this build (the chain-anchored identity lookup "
+    "db_zid_identity_find is not present), so this command NEVER reports "
+    "full-chain verification. A walk that ran returns status PASSED even "
+    "when rungs fail — the envelope drops `data` on any other status and "
+    "the report is the product; read `verdict`/`first_break`, never the "
+    "exit code. Only a missing/undecodable document (NO_DOCUMENT) fails "
+    "outright. Node-free: nothing is read from the chain, only the "
+    "evidence passed in.", 16384,
+    "zid,proof,chain,verify,light-client,anchor,zanc,pow,inclusion,walk",
+    "zcl.zcode_proof_walk.input.v1", "zcl.zcode_proof_walk.v1",
+    "doc,doc_file,proof,root,tx,header,headers,merkle_branch,merkle_index,now",
+    "",
+    "zclassic23 zcode proof walk --input='{\"doc\":\"<hex>\",\"proof\":"
+    "\"<hex>\",\"root\":\"<64hex>\",\"tx\":\"<hex>\",\"header\":\"<hex>\","
+    "\"merkle_index\":1,\"merkle_branch\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_proof_chain_walk)
+
+/* ── Signed onion-service descriptors (zdesc) ────────────────────────
+ * The flagship application of the sovereign identity layer: a service's
+ * introduction-point set becomes a SIGNED DOCUMENT distributed as
+ * content (a zid_doc with body tag "ZIDD", carried as a
+ * content-addressed blob over the existing package swarm) instead of a
+ * record handed to a directory authority. Addressed by the BLINDED
+ * record key for a time period — SHA3-256("ZIDB" | master_pubkey |
+ * period_le64), a whole UTC day — so only someone who already knows the
+ * master key can compute the address. Rotation is a new seq and a new
+ * signature: no transaction, no fee, no naming certificate authority.
+ *
+ * VERIFICATION STATUS: verify/resolve check the signature against a
+ * CALLER-SUPPLIED master pubkey. Nothing in this tree consults the
+ * chain, and every reply carries chain_anchored:false plus
+ * verified_against:"supplied_key".
+ * See docs/spec/sovereign-identity-layer.md and lib/zid/include/zid/zdesc.h. */
+ZCL_COMMAND_BRANCH("zcode.desc", "zcode",
+                   "Onion descriptors: publish/verify signed service records",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.desc.publish", "zcode.desc", "",
+    "Publish a signed onion-service descriptor",
+    "Builds the canonical ZIDD descriptor body (service onion, optional "
+    "intros of \"<onion>:<64hex auth_key>\" pairs (comma-separated, or "
+    "a JSON array of {onion, auth_key}), not_before), signs it as a zid doc "
+    "with the 32-byte master seed read from seed_file (exactly 64 hex "
+    "chars; perms must be 0600/0400 or it is refused with the chmod "
+    "hint; the seed is cleansed after use and never logged), stores the "
+    "canonical doc wire as a content-addressed blob under "
+    "<datadir>/zcode, and files it under the blinded record key for the "
+    "current period at <datadir>/zcode/descriptors/<record_key>.zid. "
+    "Returns doc_hex, root, master_pubkey, record_key and period. "
+    "Numeric inputs (seq, not_before, expiry, now) are taken as decimal "
+    "strings. seq is "
+    "monotonic per identity: a republish with a seq at or below the one "
+    "already held is refused STALE_SEQ and nothing is written. Defaults: "
+    "seq 1, not_before now, expiry not_before+3d. The record key rotates "
+    "every 86400 seconds, so a live service republishes each period. No "
+    "chain write and no fee — this signs and stores, it does not anchor "
+    "the identity.", 0,
+    "zcode,desc,descriptor,onion,publish,zid,blinded,rotation,swarm",
+    "zcl.zcode_desc_publish.input.v1", "zcl.zcode_desc_publish.v1",
+    "onion,intros,seed_file,seq,not_before,expiry,now,datadir", "onion",
+    "zclassic23 zcode desc publish --input='{\"onion\":\"<56base32>.onion\",\"seed_file\":\"/path/seed.hex\",\"intros\":\"<56base32>.onion:<64hex>\",\"seq\":\"1\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zdesc_publish)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.desc.verify", "zcode.desc", "",
+    "Check a descriptor's signature against a master key you supply",
+    "Decodes a descriptor from --doc=<hex> or --file=<path to a saved "
+    ".zid> and checks it against --pubkey=<64hex>: the signature, the "
+    "doc's expiry, and the body's not_before must all hold at --now (or "
+    "the wall clock). Prints the service onion, every introduction point "
+    "with its auth_key, the validity window, seq, and the record key the "
+    "descriptor would be filed under. Numeric inputs (now) are taken as "
+    "decimal strings. THE KEY IS YOURS TO SUPPLY: the "
+    "reply always carries chain_anchored:false and "
+    "verified_against:\"supplied_key\", because nothing here consults "
+    "the chain — a pass means \"signed by the key you named\", never "
+    "\"signed by a chain-anchored key\". Failures are hard and named: "
+    "KEY_MISMATCH (a different identity signed it), VERIFY_FAILED "
+    "(tampered, corrupted, or expired), NOT_A_DESCRIPTOR_BODY (signed "
+    "for something else, or not yet valid), DOC_DECODE_FAILED "
+    "(truncated hex).", 0,
+    "zcode,desc,descriptor,verify,signature,onion,zid,expiry",
+    "zcl.zcode_desc_verify.input.v1", "zcl.zcode_desc_verify.v1",
+    "doc,file,pubkey,now", "pubkey",
+    "zclassic23 zcode desc verify --input='{\"doc\":\"<hex>\",\"pubkey\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zdesc_verify)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.desc.resolve", "zcode.desc", "",
+    "Look up an identity's current descriptor by its blinded record key",
+    "Derives SHA3-256(\"ZIDB\" | pubkey | period_le64) for the current "
+    "period, reads the record filed under it in "
+    "<datadir>/zcode/descriptors/, verifies it against the same "
+    "--pubkey=<64hex>, and prints the service onion, the introduction "
+    "points, the validity window, and which period answered. Numeric "
+    "inputs (now) are taken as decimal strings. THE "
+    "BOUNDARY RULE is applied for you: on a miss the previous period is "
+    "tried too, so a publisher a few seconds the other side of midnight "
+    "is still findable, and previous_period_fallback reports when that "
+    "happened. Two periods on, a record stops being addressable and the "
+    "answer is DESCRIPTOR_ABSENT — the publisher must republish each "
+    "period. Verification is against the key you supply: the reply "
+    "carries chain_anchored:false and verified_against:\"supplied_key\". "
+    "Reading a record requires knowing the master key, which is the "
+    "whole anti-enumeration point — this cannot list services.", 0,
+    "zcode,desc,descriptor,resolve,onion,blinded,record-key,period,lookup",
+    "zcl.zcode_desc_resolve.input.v1", "zcl.zcode_desc_resolve.v1",
+    "pubkey,now,datadir", "pubkey",
+    "zclassic23 zcode desc resolve --input='{\"pubkey\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zdesc_resolve)

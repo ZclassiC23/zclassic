@@ -343,6 +343,31 @@ void zcl_native_handle_zcode_domain_list(
 void zcl_native_handle_zcode_domain_status(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+
+/* zcode.proof.walk — the light-client proof-chain walker
+ * (tools/command/native_proof_chain_command.c). Reports each rung of the
+ * spec's chain independently as passed/failed/not_checked; a walk that ran
+ * always returns PASSED because the envelope drops `data` on any other
+ * status and the seven-rung report IS the product. */
+void zcl_native_handle_proof_chain_walk(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
+/* ── zcode.desc.* — signed onion-service descriptors
+ * (tools/command/native_zdesc_command.c). Publish stores the signed doc
+ * as a content-addressed blob and files it under the BLINDED record key
+ * for the current period; verify/resolve check the signature against a
+ * CALLER-SUPPLIED master pubkey. Every reply carries
+ * chain_anchored:false — nothing here consults the chain. */
+void zcl_native_handle_zdesc_publish(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zdesc_verify(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zdesc_resolve(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_package_show(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
