@@ -101,6 +101,13 @@ bool boot_bundle_fetch_download(const char *datadir,
  * (P2P IBD). Returns true iff a verified bundle landed this boot. */
 bool boot_bundle_fetch_maybe(const char *datadir, const struct app_context *ctx);
 
+/* How many file-service seeds `ctx` assembles to (the exact set
+ * boot_bundle_fetch_maybe would use). ZERO means the fetch is structurally OFF
+ * — nothing was ever contacted — which the no_state_source blocker must report
+ * as `seeds_empty`, NOT as `no_seed` (seeds contacted, none served a usable
+ * manifest). Pure: no IO, no network, no side effects. `ctx` may be NULL. */
+size_t boot_bundle_fetch_seed_count(const struct app_context *ctx);
+
 /* See CLAUDE.md "Adding state introspection". Reentrant-safe. SELECT-only
  * peek at the last discovery outcome bbf_discover_from_peers() persisted:
  * "reached" | "degraded_single_seed" | "no_quorum_fell_open_to_ibd", plus

@@ -33,6 +33,13 @@ enum no_state_source_fetch_outcome {
     NO_STATE_SOURCE_FETCH_DOWNLOAD_FAILED,  /* a manifest was discovered
                                              * (bundles/directory.json present) but no
                                              * verified bundle landed */
+    NO_STATE_SOURCE_FETCH_SEEDS_EMPTY,      /* eligible, but the file-service seed set
+                                             * assembled to ZERO peers — nothing was ever
+                                             * contacted. DISTINCT from NO_SEED (which
+                                             * means seeds WERE contacted and none served
+                                             * a usable manifest): conflating the two made
+                                             * a structurally-off fetch read as a
+                                             * discovery miss. */
 };
 
 /* Whether a consensus bundle is present-but-unusable on this datadir. */

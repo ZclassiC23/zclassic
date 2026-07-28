@@ -9,8 +9,9 @@
 
 #include "config/boot_bundle_fetch.h"
 
+#include "boot_bundle_fetch_seeds_internal.h"    /* bbf_assemble_seeds/_add_peer */
+
 #include "config/boot.h"                       /* struct app_context */
-#include "config/bundle_fetch_seeds.h"          /* ZCL_BUNDLE_FETCH_CLEARNET_SEEDS */
 #include "config/boot_consensus_bundle_marker.h"
 #include "config/consensus_state_install_runtime.h" /* boot_autodetect_consensus_bundle */
 #include "chain/checkpoints.h"                 /* get_sha3_utxo_checkpoint */
@@ -289,42 +290,6 @@ bool boot_bundle_fetch_download(const char *datadir,
 
 /* ── Production entry: assemble seeds, read the manifest hint, download ──── */
 
-/* Append host[:port] to peers[] (default port FS_PORT). No-op when full or the
- * host does not fit rom_fetch_peer.addr. */
-static void bbf_add_peer(struct rom_fetch_peer *peers, size_t *np, size_t cap,
-                         const char *host_port)
-{
-    if (*np >= cap || !host_port || !host_port[0])
-        return;
-
-    char host[128];
-    snprintf(host, sizeof(host), "%s", host_port);
-    uint16_t port = FS_PORT;
-
-    /* A trailing ":<port>" overrides FS_PORT (operator/test convenience). Split
-     * on the LAST ':' only when the suffix is a pure decimal port. */
-    char *colon = strrchr(host, ':');
-    if (colon && colon[1]) {
-        char *end = NULL;
-        long p = strtol(colon + 1, &end, 10);
-        if (end && *end == '\0' && p >= 1 && p <= 65535) {
-            port = (uint16_t)p;
-            *colon = '\0';
-        }
-    }
-    if (!host[0] || strlen(host) >= sizeof(peers[0].addr))
-        return;
-
-    /* De-dup on (addr, port). */
-    for (size_t i = 0; i < *np; i++)
-        if (peers[i].port == port && strcmp(peers[i].addr, host) == 0)
-            return;
-
-    snprintf(peers[*np].addr, sizeof(peers[*np].addr), "%s", host);
-    peers[*np].port = port;
-    (*np)++;
-}
-
 /* Read up to `cap` bytes of a text file into a NUL-terminated malloc'd buffer.
  * Returns NULL when absent/empty/too-large (all non-fatal). */
 static char *bbf_read_text_file(const char *path, size_t cap)
@@ -464,36 +429,6 @@ static bool bbf_write_directory_hint(const char *datadir,
                  strerror(errno));
     }
     return true;
-}
-
-/* Assemble the file-service seed set from the SAME sources the node's other
- * cold-start file-sync path uses: the operator's -fileservice= peer first, then
- * the hardcoded clearnet file-service seeds (skipped in connect-only mode, where
- * all bootstrap data must come from the explicit peer set). The seeds are
- * unauthenticated transport — that is fine here: the download is content-verified
- * against the committed manifest and the install path binds the result to the
- * compiled checkpoint, so a MITM/forged seed can at worst fail the fetch or get
- * refused at install, never seed a forged UTXO set. Sets *out_explicit_first when
- * the operator's -fileservice peer actually took slot 0. Returns the peer count. */
-static size_t bbf_assemble_seeds(const struct app_context *ctx,
-                                 struct rom_fetch_peer *peers, size_t cap,
-                                 bool *out_explicit_first)
-{
-    size_t np = 0;
-    if (out_explicit_first)
-        *out_explicit_first = false;
-
-    if (ctx && ctx->file_service_peer && ctx->file_service_peer[0]) {
-        bbf_add_peer(peers, &np, cap, ctx->file_service_peer);
-        if (out_explicit_first && np == 1)
-            *out_explicit_first = true; /* the explicit peer took slot 0 */
-    }
-
-    if (!(ctx && ctx->connect_only)) {
-        for (int i = 0; ZCL_BUNDLE_FETCH_CLEARNET_SEEDS[i]; i++)
-            bbf_add_peer(peers, &np, cap, ZCL_BUNDLE_FETCH_CLEARNET_SEEDS[i]);
-    }
-    return np;
 }
 
 /* One discovered-manifest candidate and how many independent seeds served it.
@@ -815,9 +750,12 @@ bool boot_bundle_fetch_maybe(const char *datadir, const struct app_context *ctx)
     size_t np = bbf_assemble_seeds(ctx, peers, sizeof(peers) / sizeof(peers[0]),
                                    &explicit_first);
     if (np == 0) {
-        LOG_INFO(BBF_SUBSYS,
-                 "no file-service seeds available (connect-only with no "
-                 "-fileservice peer) — skipping instant-on fetch");
+        LOG_WARN(BBF_SUBSYS,
+                 "file-service seed set is EMPTY — the instant-on fetch was "
+                 "never attempted (connect-only with neither a -fileservice "
+                 "peer nor a usable -connect host). This is a wiring miss, not "
+                 "a discovery miss: see blocker bootstrap.no_state_source "
+                 "fetch=seeds_empty");
         return false;
     }
 
