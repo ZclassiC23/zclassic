@@ -378,6 +378,38 @@ int64_t zslp_ledger_balance(struct node_db *ndb, const uint8_t token_id[32],
         AR_BIND_BLOB(s, 2, address, 20));
 }
 
+/* ── as-of-height reads (the reproducible half of a token gate) ────────
+ *
+ * Every row already carries created_height and (once consumed) spent_height,
+ * so "what did this holder own at height H" is a pure filter over the same
+ * rows the live balance reads — no snapshot table, no second ledger, and no
+ * dependence on when the query runs. A row counts at H when it was created at
+ * or below H and was either never spent or spent strictly above H.
+ *
+ * The caller is responsible for one thing this query cannot know: the ledger
+ * must have folded past H (zslp_ledger_get_cursor) or the answer is merely
+ * "what has been indexed so far", not "what was true at H". Gate evaluators
+ * check the cursor and fail closed; see services/service_token_gate.h. */
+#define ZSLP_AS_OF_HEIGHT                                                    \
+    " AND created_height<=?"                                                 \
+    " AND (spent_height IS NULL OR spent_height>?)"
+
+int64_t zslp_ledger_balance_at_height(struct node_db *ndb,
+                                      const uint8_t token_id[32],
+                                      const uint8_t address[20],
+                                      int32_t height)
+{
+    if (!ndb || !ndb->open || !token_id || !address || height < 0) return 0;
+    sqlite3_stmt *s = NULL;
+    AR_QUERY_INT64_BOUND(ndb, s,
+        "SELECT COALESCE(SUM(amount),0) FROM zslp_ledger "
+        "WHERE token_id=? AND address=?" ZSLP_AS_OF_HEIGHT,
+        AR_BIND_BLOB(s, 1, token_id, 32);
+        AR_BIND_BLOB(s, 2, address, 20);
+        AR_BIND_INT(s, 3, (int64_t)height);
+        AR_BIND_INT(s, 4, (int64_t)height));
+}
+
 int64_t zslp_ledger_count(struct node_db *ndb)
 {
     if (!ndb || !ndb->open) return 0;
@@ -446,6 +478,20 @@ int64_t zslp_ledger_wallet_balance(struct node_db *ndb,
         "SELECT COALESCE(SUM(amount),0) FROM zslp_ledger"
         " WHERE token_id=? AND spent_by_txid IS NULL" ZSLP_WALLET_OWNS_ADDRESS,
         AR_BIND_BLOB(s, 1, token_id, 32));
+}
+
+int64_t zslp_ledger_wallet_balance_at_height(struct node_db *ndb,
+                                             const uint8_t token_id[32],
+                                             int32_t height)
+{
+    if (!ndb || !ndb->open || !token_id || height < 0) return 0;
+    sqlite3_stmt *s = NULL;
+    AR_QUERY_INT64_BOUND(ndb, s,
+        "SELECT COALESCE(SUM(amount),0) FROM zslp_ledger"
+        " WHERE token_id=?" ZSLP_AS_OF_HEIGHT ZSLP_WALLET_OWNS_ADDRESS,
+        AR_BIND_BLOB(s, 1, token_id, 32);
+        AR_BIND_INT(s, 2, (int64_t)height);
+        AR_BIND_INT(s, 3, (int64_t)height));
 }
 
 int64_t zslp_ledger_wallet_address_count(struct node_db *ndb)

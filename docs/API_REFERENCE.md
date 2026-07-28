@@ -59,11 +59,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 291 |
+| Registry entries (branches + leaves) | 296 |
 | Top-level roots | 9 |
-| Branches | 67 |
-| Leaves (dispatchable command paths) | 224 |
-| … `ready` (live handler in this build) | 182 |
+| Branches | 68 |
+| Leaves (dispatchable command paths) | 228 |
+| … `ready` (live handler in this build) | 186 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 25 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
@@ -77,7 +77,7 @@ Per source file:
 |---|---|---|---|
 | `config/commands/root.def` | 10 | 5 | 5 |
 | `config/commands/core.def` | 84 | 21 | 63 |
-| `config/commands/apps.def` | 4 | 1 | 3 |
+| `config/commands/apps.def` | 9 | 2 | 7 |
 | `config/commands/app_features.def` | 26 | 5 | 21 |
 | `config/commands/ops.def` | 42 | 8 | 34 |
 | `config/commands/dev.def` | 45 | 11 | 34 |
@@ -332,6 +332,15 @@ represented by its children's sections.
 | `app list` | ready | read / read / public · fast/low | none | `zcl.app_index.v1` | `zclassic23 app list` | List installed App manifests |
 | `app inspect` | ready | read / read / public · fast/low | **`app_id`** | `zcl.app_manifest_summary.v1` | `zclassic23 app inspect social` | Inspect one App manifest and bindings |
 | `app protocols` (aliases: `appprotocols`) | compat → `zclassic23 appprotocols` | read / read / public · fast/low | none | `zcl.app_protocols.v1` | `zclassic23 app protocols` | List App protocol contracts — *native adapter is not executable yet; use the compatibility target* |
+
+#### `app.service` — Token-gated services declared in the service catalog
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `app service list` | ready | read / read / public · instant/tiny | none | `zcl.service_binding_index.v1` | `zclassic23 app service list` | List declared services and their catalog identity |
+| `app service inspect` | ready | read / read / public · instant/tiny | **`service`** | `zcl.service_binding.v1` | `zclassic23 app service inspect reference` | Inspect one service binding: namespaces, token gate, isolation |
+| `app service access` | ready | read / read / public · fast/low | **`service`**, `address`, `datadir`, `tip_height` | `zcl.service_access_verdict.v1` | `zclassic23 app service access reference` | Evaluate one service's token gate and explain the verdict |
+| `app service status` | ready | read / read / public · instant/tiny | **`service`** | `zcl.service_lifecycle.v1` | `zclassic23 app service status` | Show each declared service's runtime lifecycle state |
 
 #### `app.names` — Names
 

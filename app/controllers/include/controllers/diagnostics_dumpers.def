@@ -72,6 +72,28 @@
                  "(boot/restore/reconcile/degraded_serving/syncing/"
                  "healthy/repairing) + last transition reason",
                  "lib/util/src/service_state.c", DIAG_TEST_DEFAULT),
+    DIAG_ENTRY("service_bindings", service_token_gate_dump_state_json,
+               "declared services (zcl.service_binding.v1): per-service ZSLP "
+               "token gate — genesis txid, whether it is the unminted "
+               "sentinel, min_balance threshold, snapshot rule "
+               "(confirmed_depth/fixed_height + param), and holder kind. "
+               "Declaration only; evaluating a gate is app.service.access",
+               "runtime", "config", "app/services/src/service_token_gate.c",
+               "static_declaration", "cheap",
+               "a declared service name, or omit for the whole catalog",
+               "reference", NULL,
+               "lib/test/src/test_service_binding.c", false),
+    DIAG_ENTRY("service_lifecycle", service_lifecycle_dump_state_json,
+               "declared-service lifecycle registry: per-service state "
+               "(declared/starting/ready/degraded/blocked/stopping/exited), "
+               "the blocker reason when blocked, and transition/fault "
+               "counters. In-memory, rebuilt from the compiled catalog each "
+               "boot",
+               "runtime", "runtime", "app/services/src/service_lifecycle.c",
+               "in_process_snapshot", "cheap",
+               "a declared service name, or omit for every service",
+               "reference", NULL,
+               "lib/test/src/test_service_binding.c", false),
     DIAG_LOCAL("block_index_load_rungs", boot_blkidx_rungs_dump_state_json,
                "boot block-index load ladder: per-rung fire counters "
                "(rebuild_from_log/flat/sqlite/kill9_projection/"
