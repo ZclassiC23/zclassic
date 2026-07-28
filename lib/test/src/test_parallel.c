@@ -82,7 +82,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(keystone_utxo_binding) X(self_folded_anchor) X(utxo_root_ladder) X(utxo_root_ladder_tripwire) \
     X(golden_staleness_canary) \
     X(flyclient) X(flyclient_chainwork_floor) X(test_zmsg_memo_codec) X(scan_util) X(tor) \
-    X(onion_bootstrap) X(cold_start_sync) X(kill9_recovery) \
+    X(onion_bootstrap) X(onion_directory) X(cold_start_sync) X(kill9_recovery) \
     X(shielded_payment_gate) X(simnet_shielded_wallet_e2e) X(store_e2e_gate) X(store_e2e_shielded) X(soak_harness) \
     X(event) X(download) X(body_coverage) X(consensus) X(consensus_parity) \
     X(rom_state_checkpoint) \
@@ -166,7 +166,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(wallet_flush_rollback) X(log_json) X(http_middleware) \
     X(rpc_timeout) X(wallet_keystore) X(wallet_sqlite_enc) \
     X(zcl_result) X(netaddr_classify) X(wallet_sqlite_open_errors) X(watch_only) \
-    X(coin_selection) X(disk_monitor) X(binary_staleness) X(binary_ab_fallback) X(network_monitor) X(network_crawler) X(db_maintenance) \
+    X(coin_selection) X(disk_monitor) X(binary_staleness) X(binary_ab_fallback) X(network_monitor) X(netsplit_detector) X(directory_influence_policy) X(network_crawler) X(db_maintenance) \
     X(mempool_limits) X(addrman_integrity) X(anchor_peers) X(ibd_throttle) \
     X(consensus_reject_events) X(consensus_reject_index) X(blocker_history) \
     X(chain_rollback) X(alerts) X(ws_events) X(trace) X(phgr13_fix) \

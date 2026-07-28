@@ -295,9 +295,73 @@ void connman_set_known_zcl23_peer_source(
     cm->known_zcl23_peers_ctx = ctx;
 }
 
-/* Fetch /directory.json from a .onion seed and add clearnet IPs */
+/* ── Onion-directory seed walk ──────────────────────────────────────
+ *
+ * A /directory.json response carries BOTH a clearnet endpoint and the
+ * advertising node's `onion` field. Consuming only the clearnet half means
+ * a node can never learn about an onion peer from another onion peer: the
+ * onion graph is never transitively walked, and an onion-only node is
+ * invisible to everyone it has not personally met. So we harvest both.
+ *
+ * Discipline (docs/work/NAT_AND_ONION_TRANSPORT.md): a directory record is
+ * a HINT about WHERE to look, never proof of WHO is there. Harvested
+ * onions are therefore recorded as ADVERTISED — never as contact — and are
+ * only promoted to REACHED when WE complete a fetch against them. The
+ * clearnet source is untouched and unnarrowed: the onion harvest is added
+ * beside it, so a regression here can only ever remove NEW peers.
+ *
+ * Bounded on every axis a hostile directory could inflate: one extra hop
+ * of depth, a total fetch budget per walk, and a visited set so a cycle
+ * (A lists B, B lists A) terminates. The fetch budget is a WALL-CLOCK
+ * bound as much as a fan-out one: this runs on the discovery thread and
+ * each fetch blocks up to 60 s, so a walk costs at most
+ * ONION_WALK_MAX_FETCHES * 60 s per seed. Keep it small — the seed list
+ * itself can already be dozens of entries. g_stop aborts between hops. */
+enum {
+    ONION_WALK_MAX_DEPTH   = 1,   /* seed + one hop of onion-graph walk */
+    ONION_WALK_MAX_FETCHES = 3,   /* total /directory.json fetches per walk */
+    ONION_WALK_MAX_VISITED = 32,  /* cycle-breaking visited set */
+};
+
+struct onion_seed_walk {
+    char visited[ONION_WALK_MAX_VISITED][64];
+    int  n_visited;
+    int  fetches;
+};
+
+static bool onion_walk_mark(struct onion_seed_walk *w, const char *host)
+{
+    if (!w || !host) return false;
+    for (int i = 0; i < w->n_visited; i++)
+        if (strcmp(w->visited[i], host) == 0) return false;
+    if (w->n_visited >= ONION_WALK_MAX_VISITED) return false;
+    snprintf(w->visited[w->n_visited], sizeof(w->visited[0]), "%s", host);
+    w->n_visited++;
+    return true;
+}
+
+static void onion_seed_fetch_walk(struct connman *cm, const char *onion,
+                                  struct onion_seed_walk *w, int depth);
+
+/* Fetch /directory.json from a .onion seed and add clearnet IPs. Entry
+ * point for every existing caller — signature unchanged; the walk state is
+ * per-call, so a seed list still fetches each seed independently. */
 static void try_onion_seed_fetch(struct connman *cm, const char *onion)
 {
+    struct onion_seed_walk walk = {0};
+    onion_seed_fetch_walk(cm, onion, &walk, 0);
+}
+
+static void onion_seed_fetch_walk(struct connman *cm, const char *onion,
+                                  struct onion_seed_walk *w, int depth)
+{
+    if (!cm || !onion || !w) return;
+    if (w->fetches >= ONION_WALK_MAX_FETCHES) return;
+    if (!onion_walk_mark(w, onion)) return;   /* already walked this hop */
+    w->fetches++;
+
+    const char *datadir = cm->onion_peer_datadir;
+
     printf("Onion seed: fetching /directory.json from %s...\n", onion);
     fflush(stdout);
 
@@ -307,9 +371,15 @@ static void try_onion_seed_fetch(struct connman *cm, const char *onion)
     if (rc < 0 || result.status != 200 || !result.body) {
         printf("Onion seed: fetch failed (rc=%d status=%d)\n",
                rc, result.status);
+        /* Bumps this row's failure count only; never inserts, never
+         * refreshes last_seen — a failed dial carries no identity. */
+        onion_directory_observe(datadir, onion, ONION_DIR_UNREACHABLE, 0);
         if (result.body) free(result.body);
         return;
     }
+
+    /* We reached it ourselves: this one IS contact, not hearsay. */
+    onion_directory_observe(datadir, onion, ONION_DIR_REACHED, 0);
 
     /* Fallback when a directory response omits/malforms clearnet_port —
      * the advertising node's OWN configured P2P port, not a literal that
@@ -365,7 +435,33 @@ static void try_onion_seed_fetch(struct connman *cm, const char *onion)
         }
     }
 
-    printf("Onion seed: added %d clearnet peers from %s\n", added, onion);
+    /* Second pass over the SAME body: the onion half of every record. */
+    const char *self_onion = tor_integration_get_onion_address();
+    const char *cursor = (const char *)result.body;
+    char host[64];
+    int onions_seen = 0, onions_walked = 0;
+    while (onion_directory_scan_next_onion(&cursor, host, sizeof(host))) {
+        if (!onion_hostname_is_valid_v3(host))
+            continue;                                  /* hostile/garbage */
+        if (self_onion && strcmp(host, self_onion) == 0)
+            continue;                                  /* ourselves */
+        onions_seen++;
+
+        /* Persist the hint so the graph survives this process, and so the
+         * node's own /directory + /search can surface a peer it has only
+         * ever heard about. */
+        onion_directory_observe(datadir, host, ONION_DIR_ADVERTISED, 0);
+
+        /* Transitive walk: one hop, budgeted, cycle-safe. */
+        if (depth < ONION_WALK_MAX_DEPTH &&
+            w->fetches < ONION_WALK_MAX_FETCHES && !g_stop) {
+            onion_seed_fetch_walk(cm, host, w, depth + 1);
+            onions_walked++;
+        }
+    }
+
+    printf("Onion seed: added %d clearnet peers, %d onion peers "
+           "(%d walked) from %s\n", added, onions_seen, onions_walked, onion);
     free(result.body);
 }
 

@@ -1076,6 +1076,8 @@ int main(int argc, char **argv)
     failures += test_tor();
     { extern int test_onion_bootstrap(void);
       failures += test_onion_bootstrap(); }
+    { extern int test_onion_directory(void);
+      failures += test_onion_directory(); }
     { extern int test_cold_start_sync(void);
       failures += test_cold_start_sync(); }
     { extern int test_kill9_recovery(void);
@@ -1269,6 +1271,8 @@ int main(int argc, char **argv)
     failures += test_binary_staleness();
     failures += test_binary_ab_fallback();
     { extern int test_network_monitor(void); failures += test_network_monitor(); }
+    { extern int test_netsplit_detector(void); failures += test_netsplit_detector(); }
+    { extern int test_directory_influence_policy(void); failures += test_directory_influence_policy(); }
     { extern int test_network_crawler(void); failures += test_network_crawler(); }
     failures += test_db_maintenance();
     failures += test_mempool_limits();

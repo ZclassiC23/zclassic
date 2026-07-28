@@ -316,3 +316,16 @@
 # Same lint run exposed one restored regression already committed on
 # this branch: package_service.c (1066 lines, 9f72e1d33) had never been
 # baselined. Freshly baselined at 1066; count unchanged (live 11).
+#
+# 2026-07-28 (onion directory: names in discovery + row freshness):
+# onion_service.c grew 1031 -> 1229 serving the ZNAM name beside every raw
+# .onion on /search, /directory and /directory.json, and filtering + dating
+# rows by age. The freshness LEDGER itself (the peer_directory table + its
+# first_seen/last_success/dial-count columns, the expiry sweep, the v3
+# hostname predicate, the /directory.json onion-field parser, and the
+# read-only ZNAM join) did NOT land in that file: it is the new 359-line
+# lib/net/src/onion_directory.c, under the 800 ceiling and unbaselined so
+# future growth on IT becomes visible. onion_service.c re-baselined in
+# file_size_ceiling_lib_baseline.txt (1229); count unchanged. connman.c
+# gained ~60 lines walking the onion half of a peer directory response and
+# stays grandfathered at its existing WARN entry.

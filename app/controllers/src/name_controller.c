@@ -24,6 +24,7 @@
  * instead of a broadcast tx the chain will silently drop. */
 
 #include "controllers/name_controller.h"
+#include "controllers/name_resolver.h"
 #include "models/znam.h"
 #include "api_controller_internal.h"
 #include "json/json.h"
@@ -93,24 +94,9 @@ const char *znam_type_name(uint8_t t)
     }
 }
 
-static uint8_t parse_type(const char *s)
-{
-    if (!s) return 0;
-    if (strcmp(s, "onion") == 0) return ZNAM_TYPE_ONION;
-    if (strcmp(s, "zaddr") == 0 || strcmp(s, "z-address") == 0)
-        return ZNAM_TYPE_ZADDR;
-    if (strcmp(s, "taddr") == 0 || strcmp(s, "t-address") == 0)
-        return ZNAM_TYPE_TADDR;
-    if (strcmp(s, "btc") == 0 || strcmp(s, "bitcoin") == 0)
-        return ZNAM_TYPE_BTC;
-    if (strcmp(s, "ltc") == 0 || strcmp(s, "litecoin") == 0)
-        return ZNAM_TYPE_LTC;
-    if (strcmp(s, "doge") == 0 || strcmp(s, "dogecoin") == 0)
-        return ZNAM_TYPE_DOGE;
-    if (strcmp(s, "content") == 0 || strcmp(s, "content-hash") == 0)
-        return ZNAM_TYPE_CONTENT;
-    return 0;
-}
+/* parse_type moved to name_resolver.c as znam_type_from_name() — one
+ * canonical parser, shared with the HTML site controller. */
+#define parse_type znam_type_from_name
 
 static void entry_to_json(const struct znam_entry *e, struct json_value *obj)
 {
@@ -121,9 +107,12 @@ static void entry_to_json(const struct znam_entry *e, struct json_value *obj)
     json_push_kv_str(obj, "type", znam_type_name(e->target_type));
     json_push_kv_str(obj, "value", e->target_value);
     json_push_kv_int(obj, "reg_height", e->reg_height);
+    json_push_kv_int(obj, "expiry_height", e->expiry_height);
     char hex[65];
     HexStr(e->reg_txid, 32, false, hex, sizeof(hex));
     json_push_kv_str(obj, "reg_txid", hex);
+    HexStr(e->last_update_txid, 32, false, hex, sizeof(hex));
+    json_push_kv_str(obj, "last_update_txid", hex);
 }
 
 #define ZNAM_API_LIST_LIMIT 100
@@ -177,44 +166,38 @@ static void entry_to_show_json(const struct znam_entry *e,
     entry_to_json(e, obj);
     json_push_kv_str(obj, "schema", "zcl.names.show.v1");
     append_name_verification(obj);
+    name_history_append_json(g_name_ndb, e, obj);
     append_name_crud_links(obj, e->name);
     api_name_append_records(g_name_ndb, e->name, obj);
 }
 
 /* ── name_resolve ───────────────────────────────────────────────── */
 
+/* Resolution answers with a NAMED verdict, never a shared "Name not
+ * found": absent, malformed, and registered-but-no-such-target are three
+ * different situations with three different fixes, and
+ * docs/spec/power-node-contract.md requires callers be able to tell them
+ * apart. The whole taxonomy lives in name_resolver.c. */
 static bool rpc_name_resolve(const struct json_value *params, bool help,
                              struct json_value *result)
 {
     if (help || !params || json_size(params) < 1) {
-        json_set_str(result,
-            "name_resolve \"name\"\n"
-            "\nResolve a ZCL Name to its target and resolver records.\n"
-            "\nArguments:\n"
-            "1. name (string, required) The name to resolve\n"
-            "\nResult: the name entry or null.\n");
+        json_set_str(result, NAME_RESOLVE_RPC_HELP);
         return true;
     }
 
-    const struct json_value *arg0 = json_at(params, 0);
-    const char *name = arg0 ? json_get_str(arg0) : NULL;
-    if (!name) {
-        json_set_str(result, "name required");
-        return false;
-    }
+    const char *name = json_get_str(json_at(params, 0));
+    const char *type_s = json_size(params) > 1
+                       ? json_get_str(json_at(params, 1)) : NULL;
+    struct name_resolution res;
 
-    struct znam_entry entry;
-    if (!g_name_ndb) {
-        LOG_WARN("controller", "name_resolve: name DB not initialized; cannot resolve '%s'", name);
-        json_set_str(result, "Name not found");
+    if (name_resolve_error_json(g_name_ndb, name, type_s, &res, result))
         return true;
-    }
-    if (!db_znam_find(g_name_ndb, name, &entry)) {
-        json_set_str(result, "Name not found");
-        return true;
-    }
 
-    entry_to_show_json(&entry, result);
+    entry_to_show_json(&res.entry, result);
+    json_push_kv_bool(result, "resolved", true);
+    json_push_kv_str(result, "resolved_type", znam_type_name(res.matched_type));
+    json_push_kv_str(result, "resolved_value", res.value);
     return true;
 }
 

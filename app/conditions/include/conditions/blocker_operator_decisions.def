@@ -146,3 +146,51 @@ ZCL_BLOCKER_DECISION(body_persist.body_unfetchable,
     "active tip so the height becomes requestable, and silently moving the tip "
     "to work around missing data is a chain-state mutation the node must not "
     "make on its own.")
+
+/* ── Deep-reorg refusal (app/jobs/src/utxo_apply_delta_reorg.c). Raised where
+ * the unwind is declined because the fork point is already final. The
+ * predicate is height_is_immutable / reorg_is_allowed
+ * (lib/validation/include/validation/checkpoint.h) over ZCL_FINALITY_DEPTH
+ * = 10 (lib/validation/include/validation/main_constants.h). ─────────── */
+ZCL_BLOCKER_DECISION(chain.reorg_refused_below_finality,
+    "A person must choose; the node deliberately will not. Some peer offered a "
+    "chain that branches away from ours BELOW the finality floor - more than 10 "
+    "blocks back. Following it would mean un-applying blocks this node already "
+    "treats as final, so it refused and is still following its own chain. That "
+    "refusal is correct behaviour, not a fault, but it does not resolve on its "
+    "own: past 10 blocks the two chains never reconverge, so one of them is "
+    "permanently not the one you are on. "
+    "FIRST, find out which side you are on: check whether independent peers, "
+    "block explorers and the wider network agree with this node's tip. Also "
+    "check `dumpstate blocker` for SUSPECTED_NETSPLIT, which fires when this "
+    "node already suspects it is on the minority side. "
+    "OPTION A - this node is on the chain the network accepts. Do nothing. "
+    "Clear the blocker; the deep branch was a stale or hostile peer and "
+    "refusing it is exactly what should have happened. Cost: none. "
+    "OPTION B - the network moved on without us and this node is the minority. "
+    "Re-sync from a height below the fork point, from block bodies, so the "
+    "node re-derives the majority chain itself. Cost: a re-fold from that "
+    "height, hours of bandwidth. "
+    "Never auto-attempted: an automatic escape would have to rewind final "
+    "state on the say-so of whichever peer shouted loudest, which is precisely "
+    "the attack the finality floor exists to stop. Money that can be un-spent "
+    "by a sufficiently patient stranger is not money.")
+
+/* ── Degraded mode (SUSPECTED_NETSPLIT, raised by
+ * app/services/src/directory_influence_policy.c and driven by
+ * app/conditions/src/netsplit_degraded_mode.c) deliberately has NO row here,
+ * and the absence is the honest answer rather than an oversight.
+ *
+ * blocker_handoff_lookup() only surfaces a decision for an id bound OWNER —
+ * "a decision only means anything for a hand-off". SUSPECTED_NETSPLIT has a
+ * real automatic remedy: the same condition that raises it folds the verdict
+ * in both directions on its poll cadence and clears it the moment the
+ * corroborated evidence stops standing. A row here would therefore never
+ * reach an operator, and writing decision text that nothing renders is
+ * exactly the "looks answered" failure this table was built to avoid.
+ *
+ * What the operator needs while it stands is carried where they will
+ * actually read it — the blocker's own `reason`, which names what is
+ * withheld (influence for directory entries finalized at or after the onset
+ * height) and, just as importantly, what is NOT (tip-following, relay, the
+ * block explorer, wallet viewing). ─────────────────────────────────────── */

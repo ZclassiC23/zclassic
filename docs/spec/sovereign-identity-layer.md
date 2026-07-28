@@ -395,9 +395,13 @@ the very PoW that secures it.
 
 ## Finality, forks, and netsplit monitoring
 
-`ZCL_FINALITY_DEPTH = 10` with deep-reorg refusal (`reorg_is_allowed` /
-`height_is_immutable`; `main_constants.h:33-34`) means a partition
-surviving >10 blocks on both sides **never reconverges**. Rules:
+`ZCL_FINALITY_DEPTH = 10`
+(`lib/validation/include/validation/main_constants.h:33`) with deep-reorg
+refusal (`reorg_is_allowed` / `height_is_immutable`,
+`lib/validation/include/validation/checkpoint.h:38,43`) means a partition
+surviving >10 blocks on both sides **never reconverges**. The refusal is not
+silent: both refusal paths in `app/jobs/src/utxo_apply_delta_reorg.c` raise
+the named blocker `chain.reorg_refused_below_finality`. Rules:
 
 - **Provisional < 10 confs ≤ final.** Anchors feed hints immediately but
   confer no influence until final — kills flapping from shallow reorgs.

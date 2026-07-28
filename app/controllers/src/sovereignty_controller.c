@@ -327,6 +327,11 @@ static const char *sov_cap_reason(enum sync_trust_state st,
         return "requires_self_derived";
     case SYNC_CAP_EXPORT_BUNDLE:
         return "requires_self_folded";
+    case SYNC_CAP_DIRECTORY_INFLUENCE:
+        /* Not a provenance rung: the provenance state table never grants this
+         * bit (see services/sync_trust_policy.h). The live answer comes from
+         * services/directory_influence_policy.h. */
+        return "requires_uncontested_network";
     case SYNC_CAP_NONE:
         break;
     }

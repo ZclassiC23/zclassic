@@ -51,11 +51,38 @@
  *   /store/orders (POST),             EXPENSIVE  MINTS a Sapling
  *   /store/buy/...                               z-address + writes an
  *                                                 `orders` row
+ *   /n/...                            EXPENSIVE  the ZCL Names gateway:
+ *                                                 with the operator opt-in
+ *                                                 ZCL_NAMES_ONION_GATEWAY
+ *                                                 on, this DIALS a
+ *                                                 third-party onion on an
+ *                                                 anonymous visitor's
+ *                                                 behalf and blocks the
+ *                                                 serving thread for up to
+ *                                                 NAME_GATEWAY_TIMEOUT_SECS.
+ *                                                 Classified EXPENSIVE
+ *                                                 unconditionally rather
+ *                                                 than "only when the flag
+ *                                                 is set": this file is
+ *                                                 lib/, it must not read
+ *                                                 app/ policy (gate #14
+ *                                                 layering), and
+ *                                                 over-limiting is the
+ *                                                 fail-safe direction for
+ *                                                 a DoS guard. With the
+ *                                                 gateway off the cost is
+ *                                                 a name redirect served
+ *                                                 from the 20/s budget
+ *                                                 instead of the 100/s
+ *                                                 one. /names (the browse
+ *                                                 and profile pages) is
+ *                                                 NOT this prefix and
+ *                                                 stays CHEAP.
  *   /search...                        EXPENSIVE  free-text scan over the
  *                                                 peer directory
  *   /explorer/search...               EXPENSIVE  free-text scan across
  *                                                 blocks/tx/address/token
- *   /explorer/..., /n/..., /names,    CHEAP      dashboards, listings,
+ *   /explorer/..., /names,            CHEAP      dashboards, listings,
  *   shortcuts (/stats,/tokens,/hodl,             and single-key indexed
  *   /events,/factoids,/market,                   lookups
  *   /swaps,/messages), /wallet
@@ -99,6 +126,15 @@ enum onion_route_class onion_route_classify(const char *method,
      * classification can never disagree with routing. */
     if (path_prefix(path, "/search", 7)) {
         if (route_key_out) snprintf(route_key_out, 32, "search-hostname");
+        return ONION_ROUTE_EXPENSIVE;
+    }
+
+    /* EXPENSIVE: the ZCL Names gateway — an outbound Tor dial chosen by an
+     * anonymous visitor, on a thread it holds while the circuit builds.
+     * Prefix-matches exactly the way onion_service_handle_request()
+     * dispatches "/n/", so classification cannot disagree with routing. */
+    if (path_prefix(path, "/n/", 3)) {
+        if (route_key_out) snprintf(route_key_out, 32, "name-gateway");
         return ONION_ROUTE_EXPENSIVE;
     }
 
