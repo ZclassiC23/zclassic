@@ -97,14 +97,21 @@ for target in $TARGETS; do
     esac
     ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" true 2>/dev/null || \
         die "remote $REMOTE_HOST is unreachable over ssh"
+    # libc version via awk, NOT `... | head -1 | grep ...`. head closes the pipe
+    # after one line, ldd takes SIGPIPE, and `set -o pipefail` turns that into a
+    # 141 exit that kills this script before a single host is touched. It is a
+    # RACE — it survives only when ldd's whole output lands in one write, which
+    # is why ship worked on 2026-07-27 and died here on 2026-07-28. awk consumes
+    # the stream to EOF, so there is no early close and no signal.
     remote_facts="$(ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" \
         'printf "%s|%s|%s\n" "$(uname -m)" \
              "$(grep -c -m1 avx2 /proc/cpuinfo)" \
-             "$(ldd --version | head -1 | grep -oE "[0-9]+\.[0-9]+$")"')"
+             "$(ldd --version 2>/dev/null | awk "NR==1 && match(\$0, /[0-9]+\.[0-9]+\$/) { print substr(\$0, RSTART, RLENGTH) }")"')"
     r_arch="${remote_facts%%|*}"; rest="${remote_facts#*|}"
     r_avx2="${rest%%|*}"; r_libc="${rest##*|}"
     l_arch="$(uname -m)"
-    l_libc="$(ldd --version | head -1 | grep -oE '[0-9]+\.[0-9]+$')"
+    l_libc="$(ldd --version 2>/dev/null |
+        awk 'NR==1 && match($0, /[0-9]+\.[0-9]+$/) { print substr($0, RSTART, RLENGTH) }')"
     [ "$r_arch" = "$l_arch" ] || \
         die "remote arch $r_arch != local $l_arch — cannot ship one binary to both"
     [ "$r_avx2" -ge 1 ] || \
