@@ -94,6 +94,7 @@
 #include "services/txindex_projection_service.h"
 #include "services/invariant_sentinel.h"
 #include "framework/condition.h"
+#include "conditions/blocker_handoff_registry.h"
 #include "conditions/reducer_drive_watchdog.h"
 #include "conditions/sync_rate_below_floor.h"
 #include "storage/block_index_projection.h"

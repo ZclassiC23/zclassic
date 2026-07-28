@@ -319,6 +319,63 @@ bool blocker_register_escape(const char *action_name, blocker_escape_fn fn);
 /* Look up the function registered for an action name. NULL if unknown. */
 blocker_escape_fn blocker_lookup_escape(const char *action_name);
 
+/* ── Hand-off resolution — "named" is only half of it ─────────────────
+ * Naming a blocker is necessary but not sufficient. A blocker with an
+ * empty `escape_action` and a zero `retry_budget` announces a problem and
+ * offers the reader nothing to do about it; repeated eleven thousand
+ * times that is a stuck horn, and a stuck horn trains an operator to
+ * ignore alarms — which destroys the value of the honest-failure design.
+ *
+ * The build already enforces that every raisable blocker id declares a
+ * remedy: app/conditions/include/conditions/blocker_remedy_bindings.def
+ * (gate tools/scripts/check_blocker_remedy.sh) binds each id/pattern to a
+ * condition-engine healer, an ESCAPE(action), or the honest token OWNER.
+ * That table was BUILD-time only — it never reached the operator reading
+ * `dumpstate blocker`. These three calls carry it to runtime.
+ *
+ * The primitive deliberately does not know the table (it lives in
+ * lib/util; the table lives in app/). The app layer installs a resolver at
+ * boot, exactly like `blocker_register_escape` installs escape functions.
+ * With no resolver installed every blocker resolves UNKNOWN, which is the
+ * pre-existing behaviour rendered honestly rather than silently.
+ *
+ * Strings returned by a resolver must be STATIC-lifetime (they alias the
+ * app-layer tables); the caller never frees them. */
+enum blocker_handoff_kind {
+    BLOCKER_HANDOFF_UNKNOWN   = 0, /* no resolver installed / id not bound */
+    BLOCKER_HANDOFF_AUTOMATIC = 1, /* a condition healer or a registered
+                                     * ESCAPE action attempts a cure */
+    BLOCKER_HANDOFF_HUMAN     = 2, /* OWNER: no auto-remedy exists; a person
+                                     * must decide. `decision` states what. */
+};
+
+const char *blocker_handoff_kind_name(enum blocker_handoff_kind k);
+
+struct blocker_handoff {
+    enum blocker_handoff_kind kind;
+    const char *remedy;    /* condition name / "ESCAPE(action)" / "OWNER"; "" */
+    const char *decision;  /* for HUMAN: the decision the operator must make,
+                             * spelled out with its tradeoff. "" when the id is
+                             * bound OWNER but no decision text is declared yet
+                             * — counted as visible debt, never hidden. */
+};
+
+typedef bool (*blocker_handoff_resolver_fn)(const char *id,
+                                            struct blocker_handoff *out);
+
+/* Install (or, with NULL, remove) the process-wide resolver. Idempotent. */
+void blocker_set_handoff_resolver(blocker_handoff_resolver_fn fn);
+
+/* Resolve `id`. Always fills `out` (UNKNOWN + empty strings when there is
+ * no resolver or the id is unbound). Returns true when a binding was
+ * found. Safe to call from any thread. */
+bool blocker_resolve_handoff(const char *id, struct blocker_handoff *out);
+
+/* A HUMAN-handoff blocker older than this has been handed off and is
+ * waiting on a person; the dump reports it as `standing` so a long-lived
+ * hand-off is visibly distinct from a fresh alarm. */
+#define BLOCKER_STANDING_AGE_SECS 3600
+
 /* Sweep registry once. Three passes, TRANSIENT-class only for the first
  * two (PERMANENT/DEPENDENCY/RESOURCE semantics are untouched):
  *   1. TTL retirement — a TRANSIENT blocker inactive past its TTL is

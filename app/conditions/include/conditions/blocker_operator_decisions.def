@@ -1,0 +1,127 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * blocker_operator_decisions — the OTHER half of a named blocker.
+ *
+ * Why this exists
+ * ----------------
+ * blocker_remedy_bindings.def already answers "does anything in the tree
+ * attempt a cure for this id?" — a condition healer, an ESCAPE(action), or
+ * the honest token OWNER. That table is a build-time ratchet and it works.
+ * What it cannot answer is the question the operator actually has when a
+ * blocker is bound OWNER: *what am I supposed to decide?*
+ *
+ * Measured on the canonical node 2026-07-27:
+ *
+ *   address_index.below_snapshot_seed   fire_count 11666  escape_action ""
+ *   txindex.below_snapshot_seed         fire_count 11662  escape_action ""
+ *
+ * Both reasons are honest and specific. Both offer the reader nothing to do.
+ * Announcing the same unactionable fact eleven thousand times is a stuck
+ * horn, and a stuck horn teaches an operator to ignore alarms — which
+ * destroys exactly the property this codebase is built around (a stall is
+ * always a named blocker, never a silent stop).
+ *
+ * So: every row here states, in plain words, the decision a person owns and
+ * the tradeoff between the options. It is deliberately NOT a place to
+ * invent an automatic repair. Several of these blockers genuinely require
+ * judgment — spending hours of bandwidth, or installing a state artifact
+ * this node has not independently verified — and a wrong automatic remedy
+ * on consensus-adjacent state is far worse than an honest hand-off.
+ *
+ * Row format
+ * ----------
+ *   ZCL_BLOCKER_DECISION(id_or_pattern, "text")
+ *
+ * `id_or_pattern` uses the SAME glob rule as blocker_remedy_bindings.def
+ * (`*` = any run of characters), matched by the one shared implementation,
+ * codeindex_emit_glob_match(). An exact id beats a pattern; among patterns
+ * the longest match wins, so `coin_backfill.unprovable.*` outranks
+ * `coin_backfill.*`.
+ *
+ * `text` is a static string literal rendered verbatim into
+ * `dumpstate blocker` as `operator_decision`. It should name the options
+ * and their costs; it must not restate the reason (the blocker already
+ * carries that, with the live heights filled in).
+ *
+ * This table is ADDITIVE and intentionally NOT a totality ratchet: a row is
+ * written when someone has actually read the raise site and can state the
+ * decision truthfully. An OWNER-bound blocker with no row here renders
+ * `needs_human: true` with an empty `operator_decision` and is counted in
+ * `undeclared_decision_count` — visible debt, never a silent gap. Inventing
+ * plausible-sounding decision text for a raise site nobody read would be
+ * worse than the empty string, because it would look answered.
+ *
+ * Rows are only meaningful for ids bound OWNER in blocker_remedy_bindings.
+ * def; an id with a real auto-remedy renders `remedy_kind: automatic` and
+ * needs no decision. */
+
+#ifndef ZCL_BLOCKER_DECISION
+#error "define ZCL_BLOCKER_DECISION(id_or_pattern, text) before including blocker_operator_decisions.def"
+#endif
+
+/* ── Projection index coverage floor (app/services/src/index_fold_guard.c,
+ * raised for address_index / txindex / op_return_index). Live on the
+ * canonical node since the snapshot seeding; 11k+ fires each. ─────────── */
+ZCL_BLOCKER_DECISION(*.below_snapshot_seed,
+    "A person must choose; the node will not choose for you. This datadir was "
+    "seeded from a UTXO snapshot, so block bodies BELOW the seed height were "
+    "never downloaded. This index folds forward only and has no source to read "
+    "across that floor, and no safe automatic repair exists: synthesizing index "
+    "rows for blocks the node cannot read would be fabricating data. "
+    "OPTION A - backfill the historical bodies below the seed floor from peers. "
+    "The blocker then clears on its own and the index covers the whole chain. "
+    "Cost: a full historical body download, several GB of disk and hours of "
+    "bandwidth competing with tip sync. "
+    "OPTION B - accept partial coverage. The index serves heights at or above "
+    "the seed floor and answers nothing below it; pass -<index>=0 to stop the "
+    "fold and retire this blocker entirely. Cost: pre-seed history is "
+    "unqueryable through this index. "
+    "Consensus is unaffected either way - address_index, txindex and "
+    "op_return_index are rebuildable projections, never consensus state, and "
+    "this blocker never holds the reducer frontier.")
+
+/* ── Recovery-ladder escape hatches (app/services/src/sticky_escalator.c).
+ * Both fired on a genuinely fresh node 2026-07-27: the two self-heal routes
+ * ran and failed because the artifact they wanted did not exist. ─────── */
+ZCL_BLOCKER_DECISION(sticky_escalator.resnapshot_no_base,
+    "A person must choose. The rewind-to-a-self-verified-base rung ran and "
+    "found nothing to rewind to: this node has minted no self-valid seal yet, "
+    "and the compiled SHA3 checkpoint is a proven HASH rather than loadable "
+    "STATE, so it only serves as a base when its snapshot artifact is present "
+    "on disk - it is not. Nothing running in the node produces that artifact; "
+    "it comes from the anchor mint/export path or a fetched checkpoint bundle. "
+    "OPTION A - supply the verified utxo-anchor.snapshot for the compiled "
+    "checkpoint height, after which this rung has a base and rewinds on the "
+    "next escalation. Cost: obtaining and validating an external artifact. "
+    "OPTION B - do nothing. The escalator already falls through to the durable "
+    "from-bodies rungs (reindex / self_mint_refold), which re-derive forward "
+    "over on-disk bodies and need no artifact. Cost: substantially slower. "
+    "Never auto-attempted: manufacturing a base would mean adopting state this "
+    "node has not verified, which is the one thing the cure path forbids.")
+
+ZCL_BLOCKER_DECISION(sticky_escalator.refold_no_anchor_artifact,
+    "A person must choose. The refold-from-anchor rung refused to arm because "
+    "the verified anchor snapshot - utxo-anchor.snapshot, bound to the compiled "
+    "SHA3 checkpoint - is not reachable from this datadir. Arming without it "
+    "would make the next boot FATAL-refuse at the reset, so refusing to arm is "
+    "the correct behaviour, not a fault. That artifact is produced by the "
+    "anchor mint/export path or fetched as a checkpoint bundle; no running "
+    "subsystem creates it. "
+    "OPTION A - place the SHA3-checkpoint-bound utxo-anchor.snapshot in the "
+    "datadir; the rung then arms itself on the next escalation cycle. "
+    "OPTION B - leave it absent and let the reindex rung re-derive from genesis "
+    "over on-disk bodies. Cost: a full re-fold instead of an anchor jump. "
+    "Never auto-fetched: a borrowed state artifact is installable only after "
+    "independent validation of its transparent and shielded contents - matching "
+    "a header height or hash is not enough.")
+
+ZCL_BLOCKER_DECISION(sticky_escalator.resnapshot_no_consumer,
+    "A person must decide, but this is a BUILD fact, not an operator toggle. A "
+    "self-verified rewind base IS reachable, yet no in-process rewind consumer "
+    "(stage_rederive_range, or the seal window_rebuild) is linked into this "
+    "binary, so the rung cannot use the base it found. "
+    "OPTION A - run a binary built with the rewind consumer linked. "
+    "OPTION B - accept the fall-through to the durable reindex/refold rungs, "
+    "which is what the escalator already does. "
+    "Nothing to auto-attempt: a symbol that is not linked cannot be supplied at "
+    "runtime.")

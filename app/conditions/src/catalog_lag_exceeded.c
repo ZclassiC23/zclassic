@@ -12,6 +12,8 @@
 #include "storage/catalog_completeness.h"
 #include "util/blocker.h"
 #include "util/log_macros.h"
+#include "util/log_throttle.h"
+#include "platform/time_compat.h"
 
 #include <stdatomic.h>
 #include <stdint.h>
@@ -22,6 +24,10 @@
  * generously so a normal catch-up burst (which the backfill services clear on
  * their own) never trips the condition — only a genuinely stuck index does. */
 #define CATALOG_LAG_EXCEEDED_BLOCKS 1000
+
+/* Minimum seconds between same-(index,cursor) keep-alive log lines from the
+ * remedy. The blocker itself is unthrottled — only the log line is. */
+#define CATALOG_LAG_KEEPALIVE_SECS 3600
 
 /* The sustain state: an over-threshold index must survive TWO consecutive
  * detect passes before the symptom is declared, so a single-pass blip during a
@@ -158,10 +164,29 @@ static enum condition_remedy_result remedy_catalog_lag_exceeded(void)
         (void)blocker_set(&r);
     }
 
-    LOG_INFO("condition",
-             "[condition:catalog_lag_exceeded] index=%s cursor=%lld raised "
-             "blocker %s",
-             name, (long long)cursor, id);
+    /* Rearm-forever is the right posture for an external-progress dependency
+     * (see the cooldown comment below), but it means this remedy re-raises the
+     * SAME blocker every cooldown for as long as the index stays frozen —
+     * 540 fires on the canonical node, 2026-07-27. Emit on first raise and on
+     * any change of (index, cursor), then one keep-alive per hour carrying the
+     * suppressed count, so the line never reads as new while the alarm stays
+     * visible and counted. */
+    {
+        static struct log_throttle t = LOG_THROTTLE_INIT;
+        uint64_t key = 1469598103934665603ULL;
+        for (const char *p = name; *p; p++)
+            key = (key ^ (uint64_t)(unsigned char)*p) * 1099511628211ULL;
+        key ^= (uint64_t)cursor * 1099511628211ULL;
+        uint64_t reps = 0;
+        if (log_throttle_should_emit(&t, key, platform_time_wall_unix(),
+                                     CATALOG_LAG_KEEPALIVE_SECS, &reps)) {
+            LOG_INFO("condition",
+                     "[condition:catalog_lag_exceeded] index=%s cursor=%lld "
+                     "raised blocker %s (%llu identical raise(s) suppressed "
+                     "since the last line)",
+                     name, (long long)cursor, id, (unsigned long long)reps);
+        }
+    }
 
 #ifdef ZCL_TESTING
     atomic_fetch_add(&g_test_remedy_calls, 1);

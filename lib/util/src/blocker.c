@@ -489,6 +489,48 @@ bool blocker_register_escape(const char *action_name, blocker_escape_fn fn)
     LOG_FAIL("blocker", "register_escape: full (cap=%d)", BLOCKER_ESCAPE_CAP);
 }
 
+/* ── Hand-off resolution (see "Hand-off resolution" in blocker.h) ───── */
+
+static _Atomic(blocker_handoff_resolver_fn) g_handoff_resolver = NULL;
+
+const char *blocker_handoff_kind_name(enum blocker_handoff_kind k)
+{
+    switch (k) {
+    case BLOCKER_HANDOFF_UNKNOWN:   return "unknown";
+    case BLOCKER_HANDOFF_AUTOMATIC: return "automatic";
+    case BLOCKER_HANDOFF_HUMAN:     return "human";
+    }
+    return "(invalid)";
+}
+
+void blocker_set_handoff_resolver(blocker_handoff_resolver_fn fn)
+{
+    atomic_store(&g_handoff_resolver, fn);
+}
+
+bool blocker_resolve_handoff(const char *id, struct blocker_handoff *out)
+{
+    if (!out) return false;
+    out->kind = BLOCKER_HANDOFF_UNKNOWN;
+    out->remedy = "";
+    out->decision = "";
+    if (!id || !id[0]) return false;
+
+    blocker_handoff_resolver_fn fn = atomic_load(&g_handoff_resolver);
+    if (!fn) return false;
+    if (!fn(id, out)) {
+        /* A resolver that answers "not bound" must not leave a half-filled
+         * record behind for the caller to render. */
+        out->kind = BLOCKER_HANDOFF_UNKNOWN;
+        out->remedy = "";
+        out->decision = "";
+        return false;
+    }
+    if (!out->remedy)   out->remedy = "";
+    if (!out->decision) out->decision = "";
+    return true;
+}
+
 blocker_escape_fn blocker_lookup_escape(const char *action_name)
 {
     if (!action_name) return NULL;

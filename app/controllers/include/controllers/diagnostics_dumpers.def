@@ -23,8 +23,16 @@
                  "lib/test/src/test_supervisor_backstop.c"),
     DIAG_CONDITION("blocker", blocker_dump_state_json,
                    "typed blocker registry: active blockers by class {permanent,transient,dependency,resource}, "
-                   "deadlines, escape actions, fire counts",
+                   "deadlines, escape actions, fire counts, and each blocker's hand-off "
+                   "(remedy / remedy_kind / needs_human / operator_decision / standing)",
                    "lib/util/src/blocker.c", DIAG_TEST_DEFAULT),
+    DIAG_CONDITION("blocker_handoff", blocker_handoff_dump_state_json,
+                   "blocker hand-off registry: the build-time remedy ratchet joined to the "
+                   "operator-decision table (key = a blocker id to resolve); reports "
+                   "owner_bound_rows, owner_rows_with_decision, and names every "
+                   "OWNER-bound pattern that still has no decision written down",
+                   "app/conditions/src/blocker_handoff_registry.c",
+                   "lib/test/src/test_blocker_handoff.c"),
     DIAG_CONDITION("blocker_history", blocker_history_dump_state_json,
                    "durable blocker/condition firing history over EV_OPERATOR_NEEDED "
                    "pages, bridged into the durable event log and folded incrementally: "

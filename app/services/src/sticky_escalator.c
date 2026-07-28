@@ -459,12 +459,12 @@ static enum sticky_rung_result rung_resnapshot_default(void)
          * seal; compiled checkpoint unusable because its artifact is absent).
          * FAIL-CLOSED — name the clue and defer to the durable from-bodies rungs
          * (reindex / self_mint_refold / refold_from_anchor). Never a faked
-         * "done": a missing verified base is a real blocker. */
-        name_dependency_blocker(
-            "sticky_escalator.resnapshot_no_base",
+         * "done": a missing base is real, and only an operator can supply one
+         * — hence the OWNER hand-off carrying the decision. */
+        name_dependency_blocker("sticky_escalator.resnapshot_no_base",
             "resnapshot: no self-verified rewind base reachable (no self-valid "
-            "seal, no verified compiled-anchor snapshot artifact) — deferring "
-            "to the durable reindex/refold re-derivation");
+            "seal, no verified utxo-anchor.snapshot artifact on disk) — deferring "
+            "to reindex/refold. A PERSON decides: see `dumpstate blocker`.");
         event_emitf(EV_RECOVERY_ACTION, 0,
                     "action=sticky-resnapshot-skip reason=no_verified_base");
         return STICKY_RUNG_FAILED;
@@ -649,8 +649,7 @@ static enum sticky_rung_result arm_refold_from_anchor(bool trigger_respawn,
 
     if (!already_pending) {
         /* GATE: a verified anchor snapshot must be reachable (else the boot
-         * reset FATAL-refuses) — name the missing clue, never arm a doomed
-         * refold. */
+         * reset FATAL-refuses) — name the clue, never arm a doomed refold. */
         int32_t anchor_h = -1;
         bool artifact =
             boot_refold_from_anchor_artifact_available(app_runtime_node_db(),
@@ -667,8 +666,9 @@ static enum sticky_rung_result arm_refold_from_anchor(bool trigger_respawn,
             char reason[BLOCKER_REASON_MAX];
             snprintf(reason, sizeof(reason),
                      "refold_from_anchor: no verified anchor snapshot reachable "
-                     "(anchor_h=%d) — provide the SHA3-checkpoint-bound "
-                     "utxo-anchor.snapshot", anchor_h);
+                     "(anchor_h=%d) — wanted the SHA3-checkpoint-bound "
+                     "utxo-anchor.snapshot, produced only by mint/export or a "
+                     "fetched bundle. A PERSON decides.", anchor_h);
             name_dependency_blocker(
                 "sticky_escalator.refold_no_anchor_artifact", reason);
             event_emitf(EV_RECOVERY_ACTION, 0,

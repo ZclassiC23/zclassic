@@ -20,6 +20,8 @@
 #include "storage/progress_store.h"
 #include "util/blocker.h"
 #include "util/log_macros.h"
+#include "util/log_throttle.h"
+#include "platform/time_compat.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -44,6 +46,41 @@ static void mk_blocker_id(char *out, size_t cap, const char *index_id,
                           const char *suffix)
 {
     snprintf(out, cap, "%s.%s", index_id, suffix);
+}
+
+/* ── Keep-alive, not a horn ───────────────────────────────────────────
+ * The seed floor is structural: every backfill tick re-observes it, so the
+ * blocker's fire_count climbs without bound (11,666 on the canonical node,
+ * 2026-07-27) while nothing about the situation changes. Historically this
+ * site logged NOTHING to avoid a per-tick storm, which left an operator
+ * tailing node.log with no trace of a condition that had been standing for
+ * days.
+ *
+ * Neither extreme is right. log_throttle gives the established middle: emit
+ * on first observation and on any CHANGE of (index, absent height, seed
+ * floor), then one keep-alive per hour carrying the suppressed-repeat count.
+ * The line therefore never reads as new, and the alarm is never silent.
+ *
+ * One throttle per index: the guard is shared by address_index, txindex and
+ * op_return_index, and a single throttle would see the key flip every pass
+ * and emit for all three every tick — worse than no throttle at all. The
+ * slot is chosen by a hash of the index id and the KEY also carries that
+ * hash, so a slot collision costs one extra emit, never a wrong claim. */
+#define INDEX_FOLD_SEED_KEEPALIVE_SECS 3600
+#define INDEX_FOLD_THROTTLE_SLOTS      4
+
+static struct log_throttle g_seed_throttle[INDEX_FOLD_THROTTLE_SLOTS] = {
+    LOG_THROTTLE_INIT, LOG_THROTTLE_INIT, LOG_THROTTLE_INIT, LOG_THROTTLE_INIT
+};
+
+static uint64_t fnv1a(const char *s)
+{
+    uint64_t h = 1469598103934665603ULL;
+    for (; s && *s; s++) {
+        h ^= (uint64_t)(unsigned char)*s;
+        h *= 1099511628211ULL;
+    }
+    return h;
 }
 
 bool index_fold_disk_ok(const char *index_id, const char *subsys,
@@ -147,6 +184,8 @@ void index_fold_note_absent_body(const char *index_id, const char *subsys,
          * transient/genuine gap the service's own coverage_blocked flag already
          * surfaces. Not a structural below-seed floor. */
         blocker_clear(id);
+        log_throttle_reset(
+            &g_seed_throttle[fnv1a(index_id) % INDEX_FOLD_THROTTLE_SLOTS]);
         return;
     }
 
@@ -160,14 +199,38 @@ void index_fold_note_absent_body(const char *index_id, const char *subsys,
              "%s backfill cannot fold at height %lld: the block body is absent "
              "at/below the snapshot-seed floor (reducer_trusted_base_height=%lld). "
              "Bodies below the seed were never downloaded on this snapshot-seeded "
-             "datadir, so this rebuildable index has no source to fold across the "
-             "floor. Not an error and not a consensus stall — it clears when the "
-             "historical bodies are backfilled below the seed, or stays a named "
-             "coverage floor. Opt out with -%s=0.",
+             "datadir, so this rebuildable index has no source. Not an error and "
+             "not a consensus stall. A PERSON decides: backfill the pre-seed "
+             "bodies (costs time+bandwidth) or accept partial coverage (-%s=0). "
+             "See operator_decision in `dumpstate blocker`.",
              index_id, (long long)absent_height, (long long)seed_floor,
              index_id);
-    if (blocker_init(&r, id, subsys, BLOCKER_DEPENDENCY, reason))
+    /* No escape action and no retry budget, deliberately and explicitly: there
+     * is nothing safe for the node to attempt. The hand-off is the remedy —
+     * `*.below_snapshot_seed` is bound OWNER in blocker_remedy_bindings.def and
+     * carries its decision text in blocker_operator_decisions.def, both of
+     * which `dumpstate blocker` now renders per blocker. */
+    if (blocker_init(&r, id, subsys, BLOCKER_DEPENDENCY, reason)) {
+        r.escape_deadline_secs = 0;
+        r.retry_budget = 0;
         (void)blocker_set(&r);
+    }
+
+    uint64_t idh = fnv1a(index_id);
+    struct log_throttle *t = &g_seed_throttle[idh % INDEX_FOLD_THROTTLE_SLOTS];
+    uint64_t key = idh ^ ((uint64_t)absent_height * 1099511628211ULL) ^
+                   ((uint64_t)seed_floor << 1);
+    uint64_t reps = 0;
+    if (log_throttle_should_emit(t, key, platform_time_wall_unix(),
+                                 INDEX_FOLD_SEED_KEEPALIVE_SECS, &reps)) {
+        LOG_INFO("index_backfill",
+                 "[%s] standing coverage floor: body absent at h=%lld, "
+                 "seed_floor=%lld — awaiting an operator decision (backfill "
+                 "pre-seed bodies, or accept partial coverage). %llu identical "
+                 "observation(s) suppressed since the last line.",
+                 index_id, (long long)absent_height, (long long)seed_floor,
+                 (unsigned long long)reps);
+    }
 }
 
 void index_fold_clear_seed_blocker(const char *index_id)
@@ -177,4 +240,8 @@ void index_fold_clear_seed_blocker(const char *index_id)
     char id[BLOCKER_ID_MAX];
     mk_blocker_id(id, sizeof(id), index_id, "below_snapshot_seed");
     blocker_clear(id);
+    /* The condition ENDED — re-arm so a later recurrence emits at once with a
+     * zeroed suppressed count instead of waiting out the keep-alive window. */
+    log_throttle_reset(
+        &g_seed_throttle[fnv1a(index_id) % INDEX_FOLD_THROTTLE_SLOTS]);
 }
