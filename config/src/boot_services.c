@@ -516,27 +516,27 @@ static void boot_register_core_liveness_and_reducer(
         (void)block_index_loader_seed_stages_from_cold_import(
             svc->state, boot_node_db(svc), progress_store_db());
 
-    /* Regtest fresh-genesis bootstrap (boot-time mirror of the on-demand ingest
-     * seed in reducer_ingest_service.c). A from-genesis regtest node — miner OR
-     * P2P follower — has no genesis ANCHOR, so the staged reducer tries to FOLD
-     * genesis through proof_validate, which chokes (genesis carries no
-     * script_validate receipt) and wedges the whole fold at height 0. The miner
-     * seeded this only inside its first generate ingest; a follower never
-     * ingests a block while proof_validate is wedged (a deadlock). Seed it here
-     * at boot exactly as the ingest does: every upstream cursor is stamped to 1
-     * so the pipeline folds from height 1 (fixes test-two-node-peer-tip /
-     * netdisrupt-stopwatch). The paired coins_applied_height=1 seed the mint
-     * guard needs is written by the frontier's single owner
-     * (utxo_apply_stage_init); this only stamps cursors + anchor rows, never the
-     * coins frontier (check-frontier-single-writer). fMineBlocksOnDemand-gated
-     * (regtest only; a no-op on main/testnet); fires only at genesis with an
-     * unseeded finalize cursor and nothing else seeded; idempotent. */
-    if (!armed_from_anchor && params && params->fMineBlocksOnDemand) {
+    /* Fresh-genesis bootstrap, EVERY network — boot-time mirror of the
+     * on-demand ingest seed in reducer_ingest_service.c. Without it the fold
+     * wedges at height 0 forever on ANY network: nothing ever writes the
+     * genesis BODY, and body_persist cannot advance past a body it cannot read
+     * and the network cannot re-serve. Seeding is the CORRECT verdict, not a
+     * skip — zclassicd's ConnectBlock special-cases genesis by HASH and returns
+     * before UpdateCoins (its coinbase is consensus-unspendable), so the
+     * genesis delta is EMPTY (the exemption utxo_apply_delta.c and
+     * psc_extract.c already mirror). The identity asserted is the compiled
+     * `consensus.hashGenesisBlock` from the byte-sealed core/ — the binary's
+     * own constant, never a peer's word — and the anchor row carries no UTXOs,
+     * anchors or nullifiers, so nothing borrowed is admitted. Stamps every
+     * upstream cursor to 1, never the coins frontier; inert on a node with real
+     * state. Seam analysis: docs/work/fresh-start-seam.md. */
+    if (!armed_from_anchor && params) {
         struct block_index *gtip = active_chain_tip(&svc->state->chain_active);
         if (gtip && gtip->phashBlock && gtip->nHeight == 0 &&
+            uint256_eq(gtip->phashBlock, &params->consensus.hashGenesisBlock) &&
             tip_finalize_stage_cursor() == 0)
             reducer_ingest_try_seed_anchor(0, gtip->phashBlock->data,
-                                           "regtest-genesis-boot");
+                                           "fresh-genesis-boot");
     }
 }
 

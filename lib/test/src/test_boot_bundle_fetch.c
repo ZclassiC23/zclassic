@@ -776,10 +776,70 @@ static int case_discovery_outcome_persists(void)
     return failures;
 }
 
+/* The seed set the weld is PERMITTED to contact (config/src/
+ * boot_bundle_fetch_seeds.c). The connect-only branch is the one that
+ * structurally disabled the whole weld on the 2026-07-27 bare cold start: with
+ * `-connect=` and no `-fileservice=` the set assembled to ZERO peers, nothing
+ * was ever contacted, and the miss was then reported as `fetch=no_seed` — the
+ * same token a genuine discovery miss produces. */
+static int case_seed_set(void)
+{
+    int failures = 0;
+    TEST("boot_bundle_fetch: seed set — connect-only uses the -connect hosts, "
+         "never an empty set") {
+        struct app_context ctx;
+
+        /* (1) No flags at all: the compiled clearnet seeds. */
+        memset(&ctx, 0, sizeof(ctx));
+        size_t open_seeds = boot_bundle_fetch_seed_count(&ctx);
+        ASSERT(open_seeds >= 2);
+
+        /* (2) connect-only with a -connect host and NO -fileservice: exactly
+         * that host, at the file service's own FS_PORT — the named P2P port is
+         * dropped. Compiled seeds stay OUT (containment is preserved). */
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.connect_only = true;
+        ctx.connect_peers[0] = "203.0.113.7:8033";
+        ctx.n_connect_peers = 1;
+        ASSERT(boot_bundle_fetch_seed_count(&ctx) == 1);
+
+        /* Two distinct -connect hosts naming the SAME P2P port still collapse
+         * to two file-service peers (de-dup is on (addr, port)). */
+        ctx.connect_peers[1] = "203.0.113.8:8033";
+        ctx.n_connect_peers = 2;
+        ASSERT(boot_bundle_fetch_seed_count(&ctx) == 2);
+
+        /* The SAME host twice de-dups to one. */
+        ctx.connect_peers[1] = "203.0.113.7:18033";
+        ASSERT(boot_bundle_fetch_seed_count(&ctx) == 1);
+
+        /* (3) connect-only with NO usable host: still zero — the honest
+         * "nothing was ever contacted" case nss_classify reports as
+         * seeds_empty, NOT as no_seed. */
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.connect_only = true;
+        ASSERT(boot_bundle_fetch_seed_count(&ctx) == 0);
+
+        /* (4) An explicit -fileservice peer is additive to the -connect hosts
+         * and takes slot 0. */
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.connect_only = true;
+        ctx.file_service_peer = "198.51.100.9";
+        ctx.connect_peers[0] = "203.0.113.7:8033";
+        ctx.n_connect_peers = 1;
+        ASSERT(boot_bundle_fetch_seed_count(&ctx) == 2);
+
+        /* (5) NULL ctx must not crash and must not silently disable the weld. */
+        ASSERT(boot_bundle_fetch_seed_count(NULL) == open_seeds);
+    } _test_next:;
+    return failures;
+}
+
 int test_boot_bundle_fetch(void)
 {
     printf("\n=== boot_bundle_fetch ===\n");
     int failures = 0;
+    failures += case_seed_set();
     failures += case_gate();
     failures += case_pick();
     failures += case_pick_kinds();

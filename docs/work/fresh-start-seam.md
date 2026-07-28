@@ -401,3 +401,47 @@ Then read, from the run's artifact directory:
 
 To separate the two seams, re-run with `--file-peer=<host>:18034`: that arms
 the weld (§1) and leaves only §4 in play.
+
+---
+## 8. What changed (current state of both seams)
+
+Both seams are closed in code. The bare-boot path now folds; it does **not**
+yet fast-start, because no reachable seed served a bundle manifest in the
+smoke run.
+
+**Seam B — closed.** `config/src/boot_services.c` seeds the genesis anchor on
+**every** network, not just regtest: when nothing else seeded this boot, the
+tip is at height 0, the tip hash equals the compiled
+`consensus.hashGenesisBlock`, and the finalize cursor is unseeded, it stamps
+every upstream cursor to 1. This is the correct fold verdict, not a skip —
+zclassicd's `ConnectBlock` special-cases the genesis block by hash and returns
+before `UpdateCoins` (its coinbase is consensus-unspendable), the exemption
+`app/jobs/src/utxo_apply_delta.c` and `app/jobs/src/psc_extract.c` already
+mirror. The identity asserted comes from the byte-sealed `core/`; the anchor
+row carries no UTXOs, anchors or nullifiers.
+
+**The §4 hold is now NAMED.** `app/jobs/src/body_persist_stage.c` arms a
+wall-clock hold when `requeue_body_for_refetch` fires and raises
+`body_persist.body_unfetchable` once the height has gone 60 s without a body,
+clearing on any cursor advance. A repeat *count* cannot work here: the requeue
+fires once and the `BLOCK_HAVE_DATA` gate then idles without re-reading, which
+is exactly why the wedge was invisible. `blocker_remedy_bindings.def` binds the
+new id to `OWNER` — a height at or below the active tip is not re-requestable,
+so no condition can honestly claim to remedy it.
+
+**Seam A — closed.** The file-service seed set moved to
+`config/src/boot_bundle_fetch_seeds.c`. Under `-connect=` with no
+`-fileservice=` it now assembles the operator's own `-connect` hosts at
+`FS_PORT` instead of assembling to zero. Containment is unchanged: no compiled
+seed, no gossiped address, nothing the operator did not name. `nss_classify`
+gained `NO_STATE_SOURCE_FETCH_SEEDS_EMPTY` (`fetch=seeds_empty`) so "the seed
+set was empty, nothing was contacted" can never again be reported as
+`no_seed`, which means "seeds were contacted and none served a usable
+manifest".
+
+**What is still missing.** The §3 timing wall is untouched: reaching the
+compiled checkpoint by P2P headers alone is still hours, so a bundle install
+still depends on the header-seed artifact landing first, and the header seed is
+still fail-open (a miss is a `LOG_WARN`, not a named blocker). A bare boot with
+no reachable file-service seed therefore does full from-genesis IBD — correct,
+self-verified, and very slow.

@@ -277,6 +277,13 @@ ZCL_BLOCKER_REMEDY(coin_backfill.unprovable.*,                  OWNER)
 ZCL_BLOCKER_REMEDY(coin_backfill.*,                             OWNER)
 ZCL_BLOCKER_REMEDY(simnet_byz.*,                                OWNER)
 ZCL_BLOCKER_REMEDY(*.body_read_failed,                          OWNER)
+/* body_persist cleared BLOCK_HAVE_DATA for a re-fetch that never produced a
+ * body. Self-clears the instant the stage advances past the height (the
+ * requeue_hold_disarm call on every JOB_ADVANCED path in
+ * app/jobs/src/body_persist_stage.c). No named ZCL_CONDITION drives it — a
+ * height at or below the active tip is not re-requestable by the header-driven
+ * body queue, so the honest binding is OWNER. */
+ZCL_BLOCKER_REMEDY(body_persist.body_unfetchable,               OWNER)
 ZCL_BLOCKER_REMEDY(worker.stall.*,                              OWNER)
 /* projection_backfill gave up repairing a hole (rewind budget spent, missing
  * connected block still absent). Self-clears via projection_backfill_clear_-

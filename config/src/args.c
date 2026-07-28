@@ -256,7 +256,16 @@ int args_parse_node_options(int argc, char **argv, struct app_context *ctx,
         else if (strncmp(argv[i], "-rpcpassword=", 13) == 0) ctx->rpc_password = argv[i]+13;
         else if (strcmp(argv[i], "-listen") == 0) ctx->listen = true;
         else if (strncmp(argv[i], "-addnode=", 9) == 0) { /* after init */ }
-        else if (strncmp(argv[i], "-connect=", 9) == 0) { ctx->connect_only = true; /* after init */ }
+        else if (strncmp(argv[i], "-connect=", 9) == 0) {
+            ctx->connect_only = true; /* peer wiring happens after init */
+            /* Record the peer host so the instant-on weld can use the ONLY
+             * peers a connect-only node is permitted to reach as its
+             * file-service seed set (see app_context.connect_peers). Excess
+             * peers past the cap are still wired for P2P below — only the
+             * bootstrap seed list is bounded. */
+            if (ctx->n_connect_peers < APP_CONNECT_PEERS_MAX)
+                ctx->connect_peers[ctx->n_connect_peers++] = argv[i] + 9;
+        }
         else if (strncmp(argv[i], "-mineraddress=", 14) == 0) ctx->miner_address = argv[i]+14;
         else if (strncmp(argv[i], "-genproclimit=", 14) == 0) ctx->gen_threads = atoi(argv[i]+14);
         else if (strncmp(argv[i], "-par=", 5) == 0) ctx->par_workers = atoi(argv[i]+5);

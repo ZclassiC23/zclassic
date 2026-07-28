@@ -44,6 +44,7 @@ static const char *fetch_token(enum no_state_source_fetch_outcome o)
     case NO_STATE_SOURCE_FETCH_SKIPPED:         return "skipped";
     case NO_STATE_SOURCE_FETCH_NO_SEED:         return "no_seed";
     case NO_STATE_SOURCE_FETCH_DOWNLOAD_FAILED: return "download_failed";
+    case NO_STATE_SOURCE_FETCH_SEEDS_EMPTY:     return "seeds_empty";
     }
     return "unknown";
 }

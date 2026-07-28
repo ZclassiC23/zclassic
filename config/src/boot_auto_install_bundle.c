@@ -559,9 +559,17 @@ static void nss_classify(struct app_context *ctx,
     memset(out, 0, sizeof(*out));
 
     if (!boot_bundle_fetch_should_run(ctx->datadir, ctx)) {
-        /* Not eligible — opt-out (-nofilesync / ZCL_NO_BUNDLE_FETCH) or
-         * connect-only with no explicit -fileservice peer. */
+        /* Not eligible — opt-out (-nofilesync / ZCL_NO_BUNDLE_FETCH). */
         out->fetch = NO_STATE_SOURCE_FETCH_SKIPPED;
+    } else if (boot_bundle_fetch_seed_count(ctx) == 0) {
+        /* Eligible, but the seed set assembled to ZERO peers, so the fetch was
+         * never ATTEMPTED. boot_bundle_fetch_should_run does not consult the
+         * seed set, so without this branch a structurally-off fetch reported
+         * `no_seed` — indistinguishable from "seeds were contacted and none
+         * served a usable manifest", which is what made the 2026-07-27 bare
+         * cold start read as a network/discovery problem when it was a wiring
+         * one. */
+        out->fetch = NO_STATE_SOURCE_FETCH_SEEDS_EMPTY;
     } else {
         /* Eligible + attempted, but nothing installable landed. A persisted
          * <datadir>/bundles/directory.json means a manifest reached quorum but

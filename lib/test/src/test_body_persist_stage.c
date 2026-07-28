@@ -375,6 +375,20 @@ int test_body_persist_stage(void)
                  body_persist_stage_step_once() == JOB_IDLE);
         BP_CHECK("read_failed: counter stays 1",
                  body_persist_stage_read_failed_total() == 1);
+        /* SILENT-HOLD GUARD. The requeue fires ONCE and the HAVE_DATA gate then
+         * idles without re-reading, so a repeat COUNT never grows: before the
+         * named blocker this hold was invisible (JOB_IDLE, blocked_count 0,
+         * nothing in `dumpstate blocker`) — exactly how the from-genesis wedge
+         * at height 0 stayed unnamed for 617 s on the 2026-07-27 bare cold
+         * start. Drive the hold clock to 0 so the naming asserts without a
+         * sleep. */
+        BP_CHECK("read_failed: hold not yet named (inside the 60s window)",
+                 !blocker_exists("body_persist.body_unfetchable"));
+        body_persist_stage_set_unfetchable_hold_secs_for_testing(0);
+        BP_CHECK("read_failed: still idle after the hold ages out",
+                 body_persist_stage_step_once() == JOB_IDLE);
+        BP_CHECK("read_failed: the hold is NAMED, not silent",
+                 blocker_exists("body_persist.body_unfetchable"));
         sc.fail_read_height = -1;
         sc.blocks[1].nStatus |= BLOCK_HAVE_DATA;
         BP_CHECK("read_failed: heals after re-fetch",
@@ -382,6 +396,9 @@ int test_body_persist_stage(void)
         BP_CHECK("read_failed: h=1 verified",
                  log_row_at(progress_store_db(), 1, &ok, src, sizeof(src)) &&
                  ok == 1 && strcmp(src, "verified") == 0);
+        BP_CHECK("read_failed: the named hold self-clears on advance",
+                 !blocker_exists("body_persist.body_unfetchable"));
+        body_persist_stage_set_unfetchable_hold_secs_for_testing(-1);
         bp_teardown(dir, &ms, &sc);
     }
 

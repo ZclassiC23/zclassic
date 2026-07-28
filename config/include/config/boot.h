@@ -210,6 +210,16 @@ struct app_context {
     bool no_services;          /* skip P2P, RPC, Tor — boot only (speedrun) */
     const char *file_service_peer; /* -fileservice=addr : download from this peer */
     bool connect_only;         /* -connect= mode: only connect to addnodes, no seeds */
+    /* The raw `-connect=HOST[:PORT]` values, in command-line order (argv-owned
+     * pointers; never freed). Used by the instant-on weld
+     * (config/src/boot_bundle_fetch.c) as the file-service seed set when
+     * connect_only is set and no explicit -fileservice peer was given: a
+     * connect-only node must still be able to fast-start, and the ONLY peers it
+     * may reach are these. The P2P port in the value is NOT reused — the file
+     * service listens on its own FS_PORT. */
+#define APP_CONNECT_PEERS_MAX 8
+    const char *connect_peers[APP_CONNECT_PEERS_MAX];
+    int n_connect_peers;
     bool no_file_sync;         /* -nofilesync : skip file service download, use P2P only */
     bool allow_clearnet_snapshot_fetch; /* -allow-clearnet-snapshot-fetch :
                                  * OPT-IN to auto-download a chainstate

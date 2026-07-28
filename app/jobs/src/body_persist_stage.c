@@ -67,6 +67,105 @@ static _Atomic int64_t  g_last_step_unix = 0;
 static _Atomic int64_t  g_last_blocked_unix = 0;
 static _Atomic int64_t  g_last_advance_height = -1;
 
+/* Unfetchable-body detector (silent-hold audit).
+ *
+ * requeue_body_for_refetch's remedy — "clear BLOCK_HAVE_DATA and let the normal
+ * !HAVE_DATA sync path re-download the body" — is only a remedy when the body
+ * IS re-requestable. It is NOT at every height: the header-driven body queue
+ * (lib/net/src/msg_headers.c) only ever walks heights strictly ABOVE the
+ * active-chain tip, so a height at or below the tip whose bytes are not on disk
+ * can never be re-requested and this stage idles on it forever. That is exactly
+ * the from-genesis wedge (height 0, where genesis IS the tip and no writer ever
+ * produced its body). The requeue fires ONCE and the HAVE_DATA gate then idles
+ * without re-reading, so a repeat COUNT never grows — the hold is invisible:
+ * JOB_IDLE, blocked_count 0, nothing in `dumpstate blocker`. Measured on a bare
+ * mainnet cold start 2026-07-27: read_failed_total 1, idle_count 26,545,
+ * cursor 0 for 617 s with no blocker naming height 0.
+ *
+ * So arm a WALL-CLOCK hold instead: remember (height, first requeue time) and,
+ * once the HAVE_DATA gate has been idling on that same height for longer than
+ * BODY_PERSIST_UNFETCHABLE_HOLD_SECS, NAME it. Cleared on any cursor advance
+ * and whenever the stage moves to a different height. */
+#define BODY_PERSIST_UNFETCHABLE_HOLD_SECS 60
+
+static _Atomic int64_t g_requeue_height = -1;   /* -1 = nothing armed */
+static _Atomic int64_t g_requeue_since_unix = 0;
+static _Atomic int     g_unfetchable_hold_secs = BODY_PERSIST_UNFETCHABLE_HOLD_SECS;
+
+#ifdef ZCL_TESTING
+void body_persist_stage_set_unfetchable_hold_secs_for_testing(int secs)
+{
+    atomic_store(&g_unfetchable_hold_secs,
+                 secs < 0 ? BODY_PERSIST_UNFETCHABLE_HOLD_SECS : secs);
+}
+#endif
+
+/* blocker-id: body_persist.body_unfetchable */
+#define BODY_UNFETCHABLE_BLOCKER_ID STAGE_NAME ".body_unfetchable"
+
+/* Disarm + clear: the stage advanced, or moved off the held height. */
+static void requeue_hold_disarm(void)
+{
+    if (atomic_exchange(&g_requeue_height, -1) >= 0)
+        blocker_clear(BODY_UNFETCHABLE_BLOCKER_ID);
+}
+
+/* Arm the hold clock for `height` (called from requeue_body_for_refetch). */
+static void requeue_hold_arm(int height)
+{
+    if (atomic_load(&g_requeue_height) == (int64_t)height)
+        return; /* already armed for this height — keep the original clock */
+    atomic_store(&g_requeue_height, (int64_t)height);
+    atomic_store(&g_requeue_since_unix, platform_time_wall_unix());
+    blocker_clear(BODY_UNFETCHABLE_BLOCKER_ID);
+}
+
+/* Called from the !BLOCK_HAVE_DATA idle branch. Names the hold once the
+ * re-fetch remedy has demonstrably failed to produce a body for this height. */
+static void requeue_hold_note_idle(int height, int tip_height)
+{
+    if (atomic_load(&g_requeue_height) != (int64_t)height)
+        return;
+    int64_t since = atomic_load(&g_requeue_since_unix);
+    int64_t now = platform_time_wall_unix();
+    if (since <= 0 || now - since < (int64_t)atomic_load(&g_unfetchable_hold_secs))
+        return;
+
+    char reason[BLOCKER_REASON_MAX];
+    if (height == 0)
+        snprintf(reason, sizeof(reason),
+                 "height=0: the GENESIS body is not on disk and can NEVER be "
+                 "re-fetched — the header-driven body queue only requests "
+                 "heights strictly above the active tip and genesis IS the "
+                 "tip. body_persist has held at cursor 0 for %llds; the fold "
+                 "cannot leave height 0. Cure: the boot-time genesis anchor "
+                 "seed (config/src/boot_services.c) stamps every upstream "
+                 "cursor to 1. If this blocker is up, that seed did not run or "
+                 "seed_integrity_gate refused it",
+                 (long long)(now - since));
+    else
+        snprintf(reason, sizeof(reason),
+                 "height=%d: BLOCK_HAVE_DATA was cleared for re-fetch %llds "
+                 "ago and no body arrived (active tip=%d). A height at or "
+                 "below the tip cannot be re-requested by the header-driven "
+                 "body queue, so this hold does not self-heal; inspect "
+                 "blk*.dat and the block_index (nFile,nDataPos) for this "
+                 "height",
+                 height, (long long)(now - since), tip_height);
+
+    struct blocker_record rec;
+    int set_rc = -1;
+    if (blocker_init(&rec, BODY_UNFETCHABLE_BLOCKER_ID, STAGE_NAME,
+                     BLOCKER_DEPENDENCY, reason))
+        set_rc = blocker_set(&rec);
+    if (set_rc == 0)
+        LOG_WARN(STAGE_NAME,
+                 "[body_persist] body re-fetch has not produced a body for "
+                 "height=%d in %llds — holding cursor, see blocker %s",
+                 height, (long long)(now - since),
+                 BODY_UNFETCHABLE_BLOCKER_ID);
+}
+
 static void profile_acquire(const struct block_parse_handle *h)
 {
     reducer_stage_profile_add(REDUCER_PROFILE_BODY_PERSIST,
@@ -138,6 +237,7 @@ static job_result_t requeue_body_for_refetch(struct block_index *bi,
     LOG_WARN(STAGE_NAME,
              "[body_persist] %s height=%d: cleared HAVE_DATA, holding cursor "
              "for body re-fetch", what, height);
+    requeue_hold_arm(height);
     return JOB_IDLE;
 }
 
@@ -181,6 +281,7 @@ static job_result_t step_persist(struct stage_step_ctx *c)
             return JOB_FATAL;
         atomic_fetch_add(&g_upstream_failed_total, 1);
         atomic_store(&g_last_advance_height, (int64_t)next_h);
+        requeue_hold_disarm();
         c->cursor_out = c->cursor_in + 1;
         return JOB_ADVANCED;
     }
@@ -189,6 +290,10 @@ static job_result_t step_persist(struct stage_step_ctx *c)
     if (!bi || !bi->phashBlock ||
         !(block_index_status_load(bi) & BLOCK_HAVE_DATA)) {
         atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
+        /* The body this stage requeued has still not arrived. Name it once the
+         * remedy has demonstrably failed (see requeue_hold_note_idle) — a
+         * height at or below the active tip is not re-requestable. */
+        requeue_hold_note_idle(next_h, active_chain_height(&ms->chain_active));
         return JOB_IDLE;
     }
 
@@ -288,6 +393,7 @@ static job_result_t step_persist(struct stage_step_ctx *c)
                                          phase_started));
     atomic_fetch_add(&g_verified_total, 1);
     atomic_store(&g_last_advance_height, (int64_t)next_h);
+    requeue_hold_disarm();
     c->cursor_out = c->cursor_in + 1;
     reducer_stage_profile_add(REDUCER_PROFILE_BODY_PERSIST, RPF_BLOCKS, 1);
     reducer_stage_profile_observe_us(
