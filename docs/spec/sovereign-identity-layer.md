@@ -80,6 +80,64 @@ the master key (i.e. knows the service) can derive the record key.
   `lib/script/include/script/op_return_push.h`, inside the 223-byte
   standardness cap (`lib/script/include/script/standard.h:33`).
 
+## Scaling to infinite services: anchor domains
+
+Flat anchoring (one tx per identity) grows linearly — a million identities
+is ~130 MB of chain and a million transactions. **Anchor domains** make the
+L1 footprint constant per batch instead of per record, which is what makes
+"any number of pluggable L2 services" an honest claim.
+
+An **anchor domain** is:
+
+- an **append-only MMR** (SHA3-256, domain-separated; codec in `lib/zid`)
+  of 32-byte record digests, owned by one zid identity;
+- **anchored on-chain via ZANC** — one ~40-byte OP_RETURN commits the
+  tree root (`lib/zanc`, lokad `ZANC`; its own doc lists "bind anchor to
+  identity" as future work — zid is that layer);
+- **served off-chain** — records and inclusion proofs move over the ZCODE
+  swarm, verified locally against the anchored root.
+
+**The scaling law:** L1 cost per domain is one anchor tx per batch cadence,
+independent of batch size. 1,000 domains × 1 anchor/day × ~150 B ≈ 55
+MB/year. The same million records anchored flat would cost ~130 MB and a
+million transactions. Constant per batch, not per record.
+
+**Nesting is the true "infinite":** a domain's root can itself be a record
+in a parent domain's tree, so one anchor tx can commit arbitrarily many
+sub-domains. Fractal scaling — an operator, a marketplace, or a whole
+ecosystem under a single on-chain footprint.
+
+**The plugin contract:** an L2 service is exactly four things — an identity
+(zid master key), a domain name, a record schema, and an anchor cadence.
+Third parties define new domains **permissionlessly**: no L1 change, no new
+lokad, no coordination. They publish a signed `zid_doc` declaring the
+domain; consumers who care, follow it. The domain registry is itself a
+domain.
+
+**Non-equivocation (CT-style):** the tree is append-only and anchor
+documents carry the codec's monotonic `seq`. Two different roots anchored
+for the same domain at the same seq are publicly attributable fraud —
+visible to every synced node, not to a committee.
+
+**Light-client proof chain, end to end:** FlyClient header proof → anchor
+tx's block inclusion → domain MMR root → record inclusion proof → zid
+signature → master-key anchor. Full authenticity for a descriptor, relay
+record, or package release **without the 10 GB chain** — the sovereignty
+story extended to light clients.
+
+**Hash conventions** (mirror `lib/chain/src/mmr.c`, with a zid-specific
+leaf tag that blocks cross-protocol proof replay):
+
+```
+Leaf:     SHA3-256(0x00 ‖ "ZIDL" ‖ record_digest)
+Internal: SHA3-256(0x01 ‖ left ‖ right)
+Root:     SHA3-256(0x02 ‖ peak_0 ‖ … ‖ peak_k)
+```
+
+First-party domains: `zdesc` (A1 onion descriptors), `zdir` (A3 relay
+endpoints), `zcode` (package releases). Each anchors at its own cadence;
+each is just a schema over the same four-part contract.
+
 ## Applications, in build order
 
 ### A1 — Onion service descriptors (flagship)
@@ -220,14 +278,15 @@ surviving >10 blocks on both sides **never reconverges**. Rules:
 
 1. **Phase 1 — `lib/zid` codec (pure library, no networking).** Blinded
    key derivation (`SHA3-256("zid-blind" ‖ pubkey ‖ period)`), signed
-   document encode/decode/verify with monotonic-seq rule, tests. No
-   behavior change anywhere.
+   document encode/decode/verify with monotonic-seq rule, anchor-domain
+   MMR (append/root/prove/**verify** — the verifier function everyone must
+   agree on forever), tests. No behavior change anywhere. **(done)**
 2. **Phase 2 — descriptor application.** ZNAM `zid` anchoring convention,
-   descriptor blob served/fetched via the ZCODE swarm, onion-site
-   surface, resolver UX for A2.
-3. **Phase 3 — ZDIR as application.** Registration anchoring, signed
-   endpoint gossip, seniority-capped per-client selection, netsplit
-   degraded mode.
+   the `zdesc` domain tree anchored via ZANC, descriptor blobs served/
+   fetched via the ZCODE swarm, onion-site surface, resolver UX for A2.
+3. **Phase 3 — ZDIR as application.** The `zdir` domain tree, registration
+   anchoring, signed endpoint gossip, seniority-capped per-client
+   selection, netsplit degraded mode.
 4. **Phase 4 — incentives.** Bandwidth receipts research, ZSLP credit
    token, batched settlement; gated on A1–A3.
 
@@ -243,8 +302,11 @@ Existing (built on): `lib/znam/include/znam/znam.h`,
 `lib/net/src/onion_ratelimit.c`, `lib/net/src/onion_service.c`,
 `lib/net/src/v2_transport.c` + `lib/session/src/noise_handshake.c`,
 `lib/validation/include/validation/main_constants.h` (fee/finality/size),
+`lib/zanc/include/zanc/zanc.h` (generic 32-byte on-chain anchor),
+`lib/chain/src/mmr.c` (MMR hash conventions the domain tree mirrors),
 `core/chainparams/src/checkpoints.c` (baked trust anchor),
 `docs/spec/power-node-contract.md` (ZClassicDNS + onion gateway).
 
-Proposed (Phase 1): `lib/zid/include/zid/zid.h`, `lib/zid/src/zid.c`,
-`lib/test/src/test_zid.c`.
+Built (Phase 1): `lib/zid/include/zid/zid.h`, `lib/zid/src/zid.c`,
+`lib/test/src/test_zid.c` — signed documents, blinded keys, anchor-domain
+MMR with inclusion proofs.
