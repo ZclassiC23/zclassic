@@ -235,6 +235,22 @@ is actually running. See `lib/util/include/util/supervisor.h` for the
 contract API and `DEFENSIVE_CODING.md` Gate #15 for the lint gate that
 ratchets adoption.
 
+**Running is not the same as achieving anything, and the dump separates
+the two.** `ticks_run` is activity; `progress_marker` is results, and
+`idle_ticks` is "ran, legitimately had nothing to do". Whether anything
+*checks* the results is `progress_policy` per child — `armed` (a frozen
+marker with no idle report raises `no_progress`), `exempt` (off on
+purpose, with `progress_exempt_reason` stating why), or `undeclared`
+(nobody chose; off, and counted in the root's
+`progress_undeclared_count`). A child must declare one, floor-gated
+shrink-only by `check-supervisor-progress-declared`. When arming a
+service, report `supervisor_progress_idle()` **only** where it has
+positively established there is no work — never on an error or
+not-wired path, which are the states the detector exists to catch;
+`app/services/src/op_return_backfill_service.c` is the worked example.
+The root also publishes `child_headroom`; at 0 the next subsystem to
+register runs unsupervised.
+
 For raw SQL inspection of node tables (blocks, utxos, mempool, etc),
 use `zclassic23 core storage query --sql='SELECT ...'`: SELECT-only,
 semicolon-rejected, auto-LIMIT, 2 s wall-clock budget, and a 100-row hard cap.

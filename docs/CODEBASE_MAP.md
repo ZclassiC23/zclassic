@@ -43,7 +43,7 @@ the concept actually lives).
 | Services | `app/services/` | orchestrate a workflow; return `zcl_result` (typed code + message) | `app/services/src/` |
 | Models | `app/models/` | ActiveRecord rows; own all reads (Law 5); save via `AR_*_SAVE` | `app/models/src/block.c` + `include/models/block.h` |
 | Jobs | `app/jobs/` | cursor-stamped idempotent stages; the 8 reducer stages live here; advance-or-block | `app/jobs/src/*_stage.c` |
-| Supervisors | `app/supervisors/` | liveness tree; children with `last_tick_age_us`, `progress_marker`, `deadline` | `app/supervisors/src/staged_sync_supervisor.c` |
+| Supervisors | `app/supervisors/` | liveness tree; children with `last_tick_age_us`, `progress_marker`, `deadline`, and a declared `progress_policy` (armed/exempt/undeclared) | `app/supervisors/src/staged_sync_supervisor.c` |
 | Conditions | `app/conditions/` | (detect, remedy, witness) healers; poll/backoff/page-on-exhaustion | `app/conditions/src/block_failed_mask_at_tip.c` |
 | Views | `app/views/` | read-only explorer templates; no persistence writes; served over HTTPS + onion | `app/views/src/explorer_dashboard_view.c` |
 
@@ -114,7 +114,7 @@ page changing with it.
 <!--   persistence_adapters = adapters/outbound/persistence/src/*.c                  -->
 <!--   condition_registrations = condition_register() calls in app/conditions/src    -->
 
-test_groups: 781
+test_groups: 782
 port_interfaces: 12
 persistence_adapters: 13
 condition_registrations: 50

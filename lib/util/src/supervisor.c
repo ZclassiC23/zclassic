@@ -120,6 +120,35 @@ const char *supervisor_stall_reason_name(enum supervisor_stall_reason r)
     return "(invalid)";
 }
 
+/* The policy an operator should be TOLD, which is not always the one a child
+ * declared. Three children (chain.coord_escalation, net.outbound_floor, and
+ * the staged-sync stages) arm detection by storing progress_max_quiet_us
+ * directly rather than through the setter. Reporting those as "undeclared"
+ * because they skipped the API would be a lie — the detector is genuinely
+ * live on them — and gating the sweep on the declared field would silently
+ * DISARM them, which is the exact class of regression this whole change
+ * exists to remove. So: an explicit EXEMPT wins, otherwise a positive window
+ * IS armed however it was set, otherwise nobody has chosen. */
+static enum supervisor_progress_policy
+effective_progress_policy(const struct liveness_contract *c)
+{
+    if (atomic_load(&c->progress_policy) == (int)SUPERVISOR_PROGRESS_EXEMPT)
+        return SUPERVISOR_PROGRESS_EXEMPT;
+    if (atomic_load(&c->progress_max_quiet_us) > 0)
+        return SUPERVISOR_PROGRESS_ARMED;
+    return SUPERVISOR_PROGRESS_UNDECLARED;
+}
+
+const char *supervisor_progress_policy_name(enum supervisor_progress_policy p)
+{
+    switch (p) {
+    case SUPERVISOR_PROGRESS_UNDECLARED: return "undeclared";
+    case SUPERVISOR_PROGRESS_ARMED:      return "armed";
+    case SUPERVISOR_PROGRESS_EXEMPT:     return "exempt";
+    }
+    return "(invalid)";
+}
+
 const char *supervisor_restart_policy_name(enum supervisor_restart_policy p)
 {
     switch (p) {
@@ -293,6 +322,21 @@ void supervisor_progress(supervisor_child_id id, int64_t marker)
     }
 }
 
+void supervisor_progress_idle(supervisor_child_id id)
+{
+    struct liveness_contract *c = contract_for(id);
+    if (!c) return;
+    if (atomic_load(&c->completed)) return;
+    atomic_fetch_add(&c->idle_ticks, 1u);
+    /* Refresh the quiet clock WITHOUT touching progress_marker: an idle run
+     * must not be able to masquerade as work, and must not be called stuck.
+     * Same rearm as real progress — a child that has caught up is healthy. */
+    atomic_store(&c->progress_changed_at_us, platform_time_monotonic_us());
+    int sr = atomic_load(&c->stall_reason);
+    if (sr == SUPERVISOR_STALL_NO_PROGRESS)
+        atomic_store(&c->stall_reason, SUPERVISOR_STALL_NONE);
+}
+
 void supervisor_report_stall(supervisor_child_id id,
                              enum supervisor_stall_reason r)
 {
@@ -341,6 +385,67 @@ void supervisor_set_progress_max_quiet(supervisor_child_id id,
         return;
     }
     atomic_store(&c->progress_max_quiet_us, microseconds);
+    /* A positive window is the ARMED declaration. Disarming returns the child
+     * to UNDECLARED rather than to a silent off — an operator reading the dump
+     * then sees debt, which is the truth, and the lint floor keeps counting it.
+     * Reset the quiet clock on arming so a child that arms late is measured
+     * from the arm, never retroactively stalled by the pre-arm quiet period. */
+    if (microseconds > 0) {
+        atomic_store(&c->progress_changed_at_us, platform_time_monotonic_us());
+        atomic_store(&c->progress_policy, (int)SUPERVISOR_PROGRESS_ARMED);
+    } else if (atomic_load(&c->progress_policy) ==
+               (int)SUPERVISOR_PROGRESS_ARMED) {
+        atomic_store(&c->progress_policy, (int)SUPERVISOR_PROGRESS_UNDECLARED);
+    }
+}
+
+void supervisor_set_progress_exempt(supervisor_child_id id,
+                                    const char *reason)
+{
+    struct liveness_contract *c = contract_for(id);
+    if (!c) {
+        fprintf(stderr,  // obs-ok:supervisor-invalid-child
+            "[supervisor] set_progress_exempt: invalid/unregistered "
+            "child_id=%d — ignored\n", (int)id);
+        return;
+    }
+    if (!reason || !reason[0]) {
+        /* Refuse rather than record a blank justification. The child stays
+         * UNDECLARED, which is counted debt — strictly more honest than an
+         * exemption with nothing behind it. */
+        fprintf(stderr,  // obs-ok:supervisor-invalid-child
+            "[supervisor] set_progress_exempt('%s'): empty reason refused — "
+            "child stays undeclared\n", c->name);
+        return;
+    }
+    size_t n = strnlen(reason, SUPERVISOR_EXEMPT_REASON_MAX - 1);
+    memcpy(c->progress_exempt_reason, reason, n);
+    c->progress_exempt_reason[n] = '\0';
+    atomic_store(&c->progress_max_quiet_us, (int64_t)0);
+    atomic_store(&c->progress_policy, (int)SUPERVISOR_PROGRESS_EXEMPT);
+}
+
+int supervisor_progress_undeclared_count(void)
+{
+    int n = 0;
+    pthread_mutex_lock(&g_lock);
+    for (int i = 0; i < g_contract_count; i++) {
+        struct liveness_contract *c = g_contracts[i];
+        if (!c) continue;
+        if (effective_progress_policy(c) == SUPERVISOR_PROGRESS_UNDECLARED)
+            n++;
+    }
+    pthread_mutex_unlock(&g_lock);
+    return n;
+}
+
+int supervisor_child_headroom(void)
+{
+    pthread_mutex_lock(&g_lock);
+    int used = g_contract_count;
+    pthread_mutex_unlock(&g_lock);
+    int left = SUPERVISOR_CAP - used;
+    return left > 0 ? left : 0;
 }
 
 void supervisor_set_restart_policy(supervisor_child_id id,
@@ -598,6 +703,10 @@ static void sweep_once(void)
             continue;
         }
 
+        /* ARMED (see effective_progress_policy). `progress_changed_at_us` is
+         * refreshed by real progress AND by an explicit idle report, so what
+         * this actually detects is "ran repeatedly, produced nothing, and did
+         * not claim to be idle" — stuck, as opposed to caught up. */
         if (quiet_us > 0) {
             int64_t changed = atomic_load(&c->progress_changed_at_us);
             if ((now - changed) >= quiet_us) {
@@ -915,7 +1024,13 @@ int supervisor_snapshot_all(struct supervisor_snapshot *out, int max)
         out[i].deadline_secs    = atomic_load(&c->deadline_secs);
         out[i].completed        = atomic_load(&c->completed);
         out[i].stall_reason     = atomic_load(&c->stall_reason);
+        out[i].progress_policy  = (int)effective_progress_policy(c);
+        out[i].progress_max_quiet_us =
+                                  atomic_load(&c->progress_max_quiet_us);
+        memcpy(out[i].progress_exempt_reason, c->progress_exempt_reason,
+               sizeof(out[i].progress_exempt_reason));
         out[i].ticks_run        = atomic_load(&c->ticks_run);
+        out[i].idle_ticks       = atomic_load(&c->idle_ticks);
         out[i].stall_fires      = atomic_load(&c->stall_fires);
         out[i].restart_count    = atomic_load(&c->restart_count);
         out[i].restart_policy   = atomic_load(&c->restart_policy);
@@ -948,6 +1063,16 @@ bool supervisor_dump_state_json(struct json_value *out, const char *key)
                       supervisor_tick_runner_last_hb_age_us());
     json_push_kv_int (out, "tick_runner_stall_fires",
                       (int64_t)atomic_load(&g_runner_contract.stall_fires));
+    /* Progress-policy debt, at the root where an operator reads it first:
+     * how many supervised children have no answer to "how would anyone know
+     * if this stopped achieving anything?". Floored (shrink-only) by
+     * tools/lint/check_supervisor_progress_declared.sh. */
+    json_push_kv_int (out, "progress_undeclared_count",
+                      (int64_t)supervisor_progress_undeclared_count());
+    /* Registry margin. 0 means the next subsystem to register runs
+     * UNSUPERVISED — see SUPERVISOR_CAP in util/supervisor.h. */
+    json_push_kv_int (out, "child_headroom",
+                      (int64_t)supervisor_child_headroom());
 
     if (key && key[0]) {
         pthread_mutex_lock(&g_lock);
@@ -1027,6 +1152,19 @@ static void push_contract_json(struct json_value *arr,
                           atomic_load(&c->stall_reason)));
     json_push_kv_int (&child, "ticks_run",
                       atomic_load(&c->ticks_run));
+    /* Results, not activity. `ticks_run` says it ran; these say whether it
+     * achieved anything, was legitimately idle, or is being watched at all.
+     * ticks_run - idle_ticks is the count of runs that were supposed to
+     * produce something. */
+    json_push_kv_int (&child, "idle_ticks",
+                      atomic_load(&c->idle_ticks));
+    json_push_kv_str (&child, "progress_policy",
+                      supervisor_progress_policy_name(
+                          effective_progress_policy(c)));
+    json_push_kv_int (&child, "progress_max_quiet_us",
+                      atomic_load(&c->progress_max_quiet_us));
+    json_push_kv_str (&child, "progress_exempt_reason",
+                      c->progress_exempt_reason);
     json_push_kv_int (&child, "stall_fires",
                       atomic_load(&c->stall_fires));
     json_push_kv_int (&child, "restart_count",

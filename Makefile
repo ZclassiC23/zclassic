@@ -5441,6 +5441,15 @@ check-blocker-handoff-declared:
 	@echo "══ LINT: blocker hand-off declaration ══"
 	@./tools/lint/check_blocker_handoff_declared.sh
 
+# Every supervised child must declare a progress policy — ARMED (a frozen
+# progress marker raises NO_PROGRESS) or EXEMPT with an operator-readable
+# reason. The zero-initialised field made "nobody decided" and "deliberately
+# off" the same value, which is how chain.op_return_backfill reached
+# ticks_run 13083 / blocks_folded 0 / stall_reason "none". Counts shrink only.
+check-supervisor-progress-declared:
+	@echo "══ LINT: supervisor progress-policy declaration ══"
+	@./tools/lint/check_supervisor_progress_declared.sh
+
 # Gate #18 graduated WARN → RATCHET (E10): fails on any new off-shape
 # app/ .c file (the allowlist is the baseline and is currently empty).
 check-framework-shape:
@@ -6096,6 +6105,7 @@ LINT_GATES := \
     check-blocker-escape-registered \
     check-blocker-remedy \
     check-blocker-handoff-declared \
+    check-supervisor-progress-declared \
     check-framework-shape \
     check-framework-filename-suffix \
     check-no-raw-clock-outside-platform \

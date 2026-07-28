@@ -52,8 +52,17 @@
  * fully-featured boot — cross-cutting infrastructure threads in lib/ and
  * config/ (health sweep, metrics, event dispatch, RPC-timeout, DB
  * worker/checkpoint — via util/thread_liveness.h) join the tree as ROOT
- * children on top of the ~30 chain/net/op-domain children. */
-#define SUPERVISOR_CAP      64
+ * children on top of the ~30 chain/net/op-domain children.
+ *
+ * Measured on the canonical node 2026-07-28: child_count was exactly 64
+ * against a cap of 64. A full registry does not drop a child *silently* (the
+ * register logs and returns SUPERVISOR_INVALID_ID), but every child-side
+ * helper then no-ops on that invalid id, so the next supervised subsystem to
+ * be added would have run entirely unsupervised. Headroom is cheap — the
+ * arrays are pointers — and running out of it defeats the whole point of the
+ * tree. `supervisor_child_headroom()` exposes the margin so a test can fail
+ * before an operator finds out the hard way. */
+#define SUPERVISOR_CAP      128
 #define SUPERVISOR_DOMAIN_CAP 16
 
 typedef int supervisor_child_id;
@@ -73,6 +82,58 @@ enum supervisor_stall_reason {
 };
 
 const char *supervisor_stall_reason_name(enum supervisor_stall_reason r);
+
+/* ── Progress policy: count RESULTS, not activity ──────────────────────
+ * A supervised child publishes two independent signals, and they mean
+ * different things:
+ *
+ *   supervisor_tick()     — "I ran."           (activity)
+ *   supervisor_progress() — "I got work done." (results)
+ *
+ * NO_PROGRESS detection is the only thing that reads the second one, and it
+ * is gated on `progress_max_quiet_us > 0`. That field zero-initializes, and 0
+ * means "detector off" — so "nobody thought about it" and "deliberately off"
+ * were the same value, and a child could tick forever having achieved nothing
+ * while reporting stall_reason=none.
+ *
+ * Measured on the canonical node 2026-07-28, chain.op_return_backfill:
+ *   ticks_run 13083   holes 13083   blocks_folded 0   stall_reason "none"
+ * Thirteen thousand runs, zero results, self-reported healthy. The index it
+ * fills held 0 rows.
+ *
+ * So the choice is now explicit and three-way, and UNDECLARED is the
+ * zero-initialized value — visible, counted debt rather than a silent off:
+ *
+ *   ARMED     — supervisor_set_progress_max_quiet(id, us) with us > 0.
+ *               A marker frozen for `us` with no idle report raises
+ *               SUPERVISOR_STALL_NO_PROGRESS.
+ *   EXEMPT    — supervisor_set_progress_exempt(id, "why"). Detection off, on
+ *               purpose, with a reason an operator can read in dumpstate.
+ *   UNDECLARED— nobody chose. Detection off (unchanged behaviour), counted in
+ *               `progress_undeclared_count`, and floor-gated by
+ *               tools/lint/check_supervisor_progress_declared.sh so the
+ *               population may only shrink.
+ *
+ * The third signal is what makes ARMED usable on a real service:
+ *
+ *   supervisor_progress_idle() — "I ran, and there was legitimately nothing
+ *                                 for me to do."
+ *
+ * A caught-up backfill and a wedged backfill both leave the marker frozen.
+ * Without a way to say "idle by design" the only safe policy is to arm
+ * nothing, which is exactly how we got here. An idle report refreshes the
+ * quiet clock (so no false stall) WITHOUT moving the marker (so it is never
+ * mistaken for work), and is counted separately in `idle_ticks`. A child that
+ * neither progresses nor declares itself idle is, by construction, stuck. */
+enum supervisor_progress_policy {
+    SUPERVISOR_PROGRESS_UNDECLARED = 0, /* zero-init: off, and counted as debt */
+    SUPERVISOR_PROGRESS_ARMED,          /* frozen marker ⇒ NO_PROGRESS stall */
+    SUPERVISOR_PROGRESS_EXEMPT,         /* off on purpose, reason recorded */
+};
+
+const char *supervisor_progress_policy_name(enum supervisor_progress_policy p);
+
+#define SUPERVISOR_EXEMPT_REASON_MAX 96
 
 /* Erlang/OTP-style restart policy for a supervised child. Default is
  * TEMPORARY (== 0, the zero-initialized value) so a child that does NOT opt
@@ -155,11 +216,25 @@ struct liveness_contract {
     _Atomic int64_t deadline_secs;     /* >0 ⇒ stall if last_tick lapses */
     _Atomic int64_t progress_max_quiet_us;
                                        /* >0 ⇒ stall if marker frozen */
+    /* enum supervisor_progress_policy. Zero-inits to UNDECLARED. Written by
+     * supervisor_set_progress_max_quiet (⇒ ARMED when us > 0) and
+     * supervisor_set_progress_exempt (⇒ EXEMPT). Read by the sweep, which
+     * checks a frozen marker ONLY under ARMED. */
+    _Atomic int     progress_policy;
+    /* Operator-readable justification for EXEMPT. Written once alongside the
+     * policy, before the child can be observed by anything but the sweep, and
+     * never mutated after; read as a plain string by the dumper. */
+    char            progress_exempt_reason[SUPERVISOR_EXEMPT_REASON_MAX];
     _Atomic bool    completed;         /* true ⇒ no tick or stall checks */
 
     /* status (supervisor-owned, atomic-readable from anywhere) */
     _Atomic int      stall_reason;     /* enum supervisor_stall_reason */
     _Atomic uint32_t ticks_run;
+    /* Ticks on which the child declared itself legitimately idle. Held apart
+     * from ticks_run because `ticks_run - idle_ticks` is the number of runs
+     * that were SUPPOSED to produce something — the denominator an operator
+     * needs to tell "caught up" from "wedged". Child-owned. */
+    _Atomic uint32_t idle_ticks;
     _Atomic uint32_t stall_fires;
     _Atomic uint32_t restart_count;
     _Atomic int64_t  last_restart_us;
@@ -268,6 +343,21 @@ void supervisor_tick(supervisor_child_id id);
  * value, the supervisor will note the change time for stall detection. */
 void supervisor_progress(supervisor_child_id id, int64_t marker);
 
+/* "I ran, and there was legitimately nothing for me to do."
+ *
+ * Refreshes the NO_PROGRESS quiet clock WITHOUT moving the progress marker,
+ * and counts the tick in `idle_ticks`. This is what lets a real service arm
+ * detection: a caught-up backfill stays quiet forever and must not be called
+ * stuck, but it must also not be able to claim credit for work it did not do.
+ *
+ * Call it ONLY on the path where the child has positively established there
+ * is no work — "caught up to the frontier", "queue empty", "feature disabled".
+ * Do NOT call it on an error path, a not-wired-yet path, or a "could not read
+ * my own cursor" path: those are exactly the states the detector exists to
+ * catch, and reporting them as idle re-creates the silent stall this API was
+ * added to remove. O(1) atomic stores. */
+void supervisor_progress_idle(supervisor_child_id id);
+
 /* Child signals it is stuck (used when the child itself notices a
  * deadlock before the supervisor's deadline fires). Edge-triggered. */
 void supervisor_report_stall(supervisor_child_id id,
@@ -276,8 +366,34 @@ void supervisor_report_stall(supervisor_child_id id,
 /* Runtime knobs (atomic). Pass 0 to disable a particular gate. */
 void supervisor_set_period(supervisor_child_id id,   int64_t secs);
 void supervisor_set_deadline(supervisor_child_id id, int64_t secs);
+
+/* Arm NO_PROGRESS detection: a marker frozen for `microseconds` with no idle
+ * report raises the stall. Sets the policy to ARMED. Passing 0 or less
+ * disarms and returns the policy to UNDECLARED — which is honest (nobody has
+ * chosen) rather than a hidden off-switch; use supervisor_set_progress_exempt
+ * when the off is deliberate. */
 void supervisor_set_progress_max_quiet(supervisor_child_id id,
                                        int64_t microseconds);
+
+/* Declare NO_PROGRESS detection deliberately OFF for this child, with a
+ * reason an operator reads verbatim in `dumpstate supervisor`. `reason` is
+ * copied (truncated to SUPERVISOR_EXEMPT_REASON_MAX-1) and must say WHY the
+ * child has no meaningful progress signal — e.g. "pure sampler: publishes a
+ * gauge, produces no work units". A NULL or empty reason is refused (the
+ * child stays UNDECLARED and is logged), because an exemption nobody can
+ * justify in one line is indistinguishable from one nobody considered. */
+void supervisor_set_progress_exempt(supervisor_child_id id,
+                                    const char *reason);
+
+/* How many children have made no progress-policy choice. This is deliberately
+ * a live count and not a constant: it is the debt figure the lint gate floors
+ * and the supervisor dump publishes. */
+int supervisor_progress_undeclared_count(void);
+
+/* Remaining registry slots (SUPERVISOR_CAP - registered). A full registry
+ * rejects the next child, which then runs unsupervised, so a test asserts a
+ * floor on this rather than waiting for an operator to discover it. */
+int supervisor_child_headroom(void);
 
 /* ── Restart policy (Erlang/OTP) ───────────────────────────────────── */
 
@@ -385,7 +501,11 @@ struct supervisor_snapshot {
     int64_t  deadline_secs;
     bool     completed;
     int      stall_reason;           /* enum supervisor_stall_reason */
+    int      progress_policy;        /* enum supervisor_progress_policy */
+    int64_t  progress_max_quiet_us;
+    char     progress_exempt_reason[SUPERVISOR_EXEMPT_REASON_MAX];
     uint32_t ticks_run;
+    uint32_t idle_ticks;
     uint32_t stall_fires;
     uint32_t restart_count;
     int      restart_policy;         /* enum supervisor_restart_policy */

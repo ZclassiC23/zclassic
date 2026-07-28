@@ -679,6 +679,7 @@ add/remove a gate.
 - `check-typed-blocker`
 - `check-blocker-escape-registered`
 - `check-blocker-handoff-declared`
+- `check-supervisor-progress-declared`
 - `check-blocker-remedy`
 - `check-vendor-provenance`
 - `check-doc-no-false-deleted`

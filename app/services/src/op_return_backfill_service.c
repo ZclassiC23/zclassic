@@ -89,25 +89,49 @@ static const char *backfill_datadir(void)
     return g_backfill_datadir;
 }
 
-/* ── One bounded batch ────────────────────────────────────────────── */
+/* ── One bounded batch ──────────────────────────────────────────────
+ *
+ * This function used to return a bare `int folded`, and returned 0 from FIVE
+ * structurally different states: not wired yet, cannot read my own cursor,
+ * caught up, allocation failed, and wanted to fold but could not. Only one of
+ * those (caught up) is healthy. The supervisor saw one number and could not
+ * tell them apart, which is how this service reached ticks_run 13083 with
+ * blocks_folded 0 while reporting stall_reason "none".
+ *
+ * `op_return_backfill_last_outcome()` publishes the distinction so the tick
+ * can report the RESULT rather than the activity. The bare-int entry point is
+ * kept byte-identical for its existing callers (tests + the manual re-run
+ * path) — it just forwards. */
+enum op_return_backfill_outcome {
+    OP_RETURN_BACKFILL_PROGRESSED = 0, /* folded >= 1 block this run */
+    OP_RETURN_BACKFILL_IDLE,           /* caught up: nothing to do, healthy */
+    OP_RETURN_BACKFILL_NOT_WIRED,      /* DB/chain not up yet (early boot) */
+    OP_RETURN_BACKFILL_BLOCKED,        /* wanted to fold and could not */
+};
 
-int op_return_backfill_run_once(void)
+static _Atomic int g_backfill_outcome = OP_RETURN_BACKFILL_NOT_WIRED;
+
+static enum op_return_backfill_outcome backfill_run_once_typed(int *folded_out)
 {
+    if (folded_out) *folded_out = 0;
+
     struct node_db *ndb = backfill_ndb();
     struct main_state *ms = backfill_main_state();
     const char *datadir = backfill_datadir();
     if (!ndb || !ndb->open || !ms || !datadir || !datadir[0])
-        return 0; /* not wired yet (early boot / unit tests) — benign */
+        return OP_RETURN_BACKFILL_NOT_WIRED; /* early boot / unit tests */
 
     int32_t cursor = -1;
     uint8_t digest[32];
     if (!op_return_index_get_cursor(ndb, &cursor, digest))
-        return 0;
+        /* Deliberately NOT idle: a service that cannot read its own cursor is
+         * broken, not caught up, and it is the detector's job to say so. */
+        return OP_RETURN_BACKFILL_BLOCKED;
 
     int32_t hstar = reducer_frontier_provable_tip_cached();
     if (hstar < 0) hstar = 0;
     if (cursor >= hstar)
-        return 0; /* fully caught up to the provable frontier */
+        return OP_RETURN_BACKFILL_IDLE; /* caught up to the provable frontier */
 
     int32_t target = cursor + OP_RETURN_BACKFILL_BATCH_BLOCKS;
     if (target > hstar) target = hstar;
@@ -117,7 +141,7 @@ int op_return_backfill_run_once(void)
         "op_return_backfill/rows");
     if (!rows) {
         LOG_WARN("op_return_index", "backfill: rows buffer alloc failed");
-        return 0;
+        return OP_RETURN_BACKFILL_BLOCKED;
     }
 
     int folded = 0;
@@ -214,6 +238,18 @@ int op_return_backfill_run_once(void)
     free(rows);
     if (folded > 0)
         atomic_fetch_add(&g_backfill_blocks_folded, (uint64_t)folded);
+    if (folded_out) *folded_out = folded;
+    /* Wanted to fold (cursor < frontier, proven above) and folded nothing:
+     * a hole, an unreadable body, or a failed cursor persist. Blocked. */
+    return folded > 0 ? OP_RETURN_BACKFILL_PROGRESSED
+                      : OP_RETURN_BACKFILL_BLOCKED;
+}
+
+int op_return_backfill_run_once(void)
+{
+    int folded = 0;
+    atomic_store(&g_backfill_outcome,
+                 (int)backfill_run_once_typed(&folded));
     return folded;
 }
 
@@ -222,14 +258,46 @@ int op_return_backfill_run_once(void)
 static struct liveness_contract g_backfill_contract;
 static _Atomic supervisor_child_id g_backfill_id = SUPERVISOR_INVALID_ID;
 
+/* How long a run of blocked/not-wired ticks is allowed to last before the
+ * supervisor calls this child stuck. The period is 2 s, so this is ~450
+ * consecutive fruitless runs — far past any legitimate transient (a body
+ * arriving late, the DB opening at boot) and far short of the 13083 the live
+ * node reached in silence. */
+#define OP_RETURN_BACKFILL_MAX_QUIET_US ((int64_t)15 * 60 * 1000 * 1000)
+
 static void backfill_tick(struct liveness_contract *c)
 {
     (void)c;
     (void)op_return_backfill_run_once();
     atomic_fetch_add(&g_backfill_ticks, 1);
-    supervisor_progress(atomic_load(&g_backfill_id),
-                        (int64_t)atomic_load(&g_backfill_blocks_folded));
-    supervisor_tick(atomic_load(&g_backfill_id));
+
+    supervisor_child_id id = atomic_load(&g_backfill_id);
+    switch ((enum op_return_backfill_outcome)
+                atomic_load(&g_backfill_outcome)) {
+    case OP_RETURN_BACKFILL_PROGRESSED:
+        supervisor_progress(id,
+                            (int64_t)atomic_load(&g_backfill_blocks_folded));
+        break;
+    case OP_RETURN_BACKFILL_IDLE:
+        /* Caught up to the frontier. Healthy, and must not be called stuck —
+         * but it does not move the marker, so it cannot claim credit either. */
+        supervisor_progress_idle(id);
+        break;
+    case OP_RETURN_BACKFILL_NOT_WIRED:
+    case OP_RETURN_BACKFILL_BLOCKED:
+        /* Report NEITHER. Leaving the quiet clock alone is the whole point:
+         * these are the states that must accumulate into a NO_PROGRESS stall.
+         * A backfill still unwired 15 minutes into a boot is as much a defect
+         * as one wedged on a missing body.
+         *
+         * No on_stall/blocker is wired here on purpose. This fact already has
+         * an operator-facing owner — catalog.op_return_index.lag_exceeded, and
+         * index_fold_note_absent_body's below_snapshot_seed for the structural
+         * case. A second name for one fact is the cloned-ledger anti-pattern;
+         * what was missing was the SUPERVISOR telling the truth about it. */
+        break;
+    }
+    supervisor_tick(id);
 }
 
 void op_return_backfill_register(void)
@@ -241,7 +309,6 @@ void op_return_backfill_register(void)
     atomic_store(&g_backfill_contract.period_secs,
                 (int64_t)OP_RETURN_BACKFILL_PERIOD_SECS);
     atomic_store(&g_backfill_contract.deadline_secs, (int64_t)0);
-    atomic_store(&g_backfill_contract.progress_max_quiet_us, (int64_t)0);
     g_backfill_contract.on_tick = backfill_tick;
     g_backfill_contract.on_stall = NULL;
     supervisor_child_id id =
@@ -249,6 +316,10 @@ void op_return_backfill_register(void)
     atomic_store(&g_backfill_id, id);
     if (id == SUPERVISOR_INVALID_ID)
         LOG_WARN("op_return_index", "backfill: supervisor register failed");
+    /* Count results, not activity: a run of fruitless ticks now becomes a
+     * NO_PROGRESS stall instead of a healthy-looking ticks_run counter. Armed
+     * AFTER register so the child id is valid. */
+    supervisor_set_progress_max_quiet(id, OP_RETURN_BACKFILL_MAX_QUIET_US);
 }
 
 void op_return_backfill_reset_for_test(void)

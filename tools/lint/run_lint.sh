@@ -102,6 +102,7 @@ gate_command() {
         check-blocker-escape-registered)   echo './tools/scripts/check_blocker_escape_registered.sh' ;;
         check-blocker-remedy)              echo './tools/scripts/check_blocker_remedy.sh' ;;
         check-blocker-handoff-declared)    echo './tools/lint/check_blocker_handoff_declared.sh' ;;
+        check-supervisor-progress-declared) echo './tools/lint/check_supervisor_progress_declared.sh' ;;
         check-framework-shape)             echo 'ZCL_LINT_MODE=RATCHET ./tools/lint/framework_shape_check.sh' ;;
         check-framework-filename-suffix)   echo './tools/lint/check_framework_filename_suffix.sh' ;;
         check-no-raw-clock-outside-platform) echo './tools/lint/check_no_raw_clock_outside_platform.sh' ;;
