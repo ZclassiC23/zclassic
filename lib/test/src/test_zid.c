@@ -8,6 +8,7 @@
 #include "test/test_core.h"
 #include "zid/zid.h"
 #include "crypto/ed25519.h"
+#include "crypto/sha3.h"
 #include <string.h>
 
 static size_t hex_to_bytes(const char *hex, uint8_t *out, size_t out_max)
@@ -246,6 +247,213 @@ int test_zid(void)
         alien.seq = doc.seq + 100;
         alien.master_pubkey[0] ^= 0x01;
         if (!zid_doc_supersedes(&alien, &doc)) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── Anchor-domain tree (MMR) ────────────────────────────────── */
+
+    printf("\n=== ZID anchor-domain tree ===\n");
+
+    /* Deterministic record digests: SHA3-256("zid-test-leaf" ‖ seed ‖ i). */
+    #define ZID_TEST_MAX_LEAVES 32
+    uint8_t leaves[ZID_TEST_MAX_LEAVES][32];
+    uint8_t leaves_b[ZID_TEST_MAX_LEAVES][32];
+    for (uint64_t i = 0; i < ZID_TEST_MAX_LEAVES; i++) {
+        uint8_t buf[13 + 1 + 8];
+        memcpy(buf, "zid-test-leaf", 13);
+        buf[13] = 0xA0;
+        for (int b = 0; b < 8; b++) buf[14 + b] = (uint8_t)(i >> (8 * b));
+        sha3_256(buf, sizeof(buf), leaves[i]);
+        buf[13] = 0xB0;
+        sha3_256(buf, sizeof(buf), leaves_b[i]);
+    }
+
+    /* Empty tree: zero root, prove/verify refuse. */
+    printf("zid_tree: empty tree root is zero, prove refuses... ");
+    {
+        struct zid_tree t;
+        zid_tree_init(&t);
+        uint8_t root[32], proof[ZID_TREE_MAX_PEAKS][32], pr[32];
+        uint32_t plen = 0;
+        zid_tree_root(&t, root);
+        uint8_t zero[32] = {0};
+        bool empty_ok = memcmp(root, zero, 32) == 0 &&
+            !zid_tree_prove_from_leaves(leaves, 0, 0, proof, &plen, pr) &&
+            !zid_tree_verify(root, leaves[0], 0, 0, proof, 0);
+        if (empty_ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* For each size: prove EVERY leaf from the leaf list, verify true,
+     * and cross-check the rebuilt root against the incremental
+     * zid_tree_append + zid_tree_root root. Peaks == popcount(n). */
+    const uint64_t sizes[] = {1, 2, 3, 5, 8, 17};
+    for (size_t si = 0; si < sizeof(sizes) / sizeof(sizes[0]); si++) {
+        uint64_t n = sizes[si];
+        printf("zid_tree: %llu leaves — prove+verify every leaf, roots agree... ",
+               (unsigned long long)n);
+        struct zid_tree t;
+        zid_tree_init(&t);
+        for (uint64_t i = 0; i < n; i++)
+            zid_tree_append(&t, leaves[i]);
+        uint8_t inc_root[32];
+        zid_tree_root(&t, inc_root);
+
+        bool ok = (t.num_peaks == (uint32_t)__builtin_popcountll(n));
+        uint8_t proof[ZID_TREE_MAX_PEAKS][32], pr[32];
+        for (uint64_t i = 0; ok && i < n; i++) {
+            uint32_t plen = 0;
+            if (!zid_tree_prove_from_leaves(leaves, n, i, proof, &plen, pr)) {
+                printf("\n  prove leaf %llu failed\n", (unsigned long long)i);
+                ok = false;
+                break;
+            }
+            if (memcmp(pr, inc_root, 32) != 0) {
+                printf("\n  rebuilt root != incremental root at leaf %llu\n",
+                       (unsigned long long)i);
+                ok = false;
+                break;
+            }
+            if (!zid_tree_verify(inc_root, leaves[i], i, n, proof, plen)) {
+                printf("\n  verify leaf %llu failed\n", (unsigned long long)i);
+                ok = false;
+                break;
+            }
+        }
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* Tamper battery on a 17-leaf tree, leaf 7. */
+    printf("zid_tree_verify: wrong root rejected... ");
+    {
+        uint8_t proof[ZID_TREE_MAX_PEAKS][32], root[32];
+        uint32_t plen = 0;
+        zid_tree_prove_from_leaves(leaves, 17, 7, proof, &plen, root);
+        root[0] ^= 0x01;
+        if (!zid_tree_verify(root, leaves[7], 7, 17, proof, plen)) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid_tree_verify: wrong index rejected... ");
+    {
+        uint8_t proof[ZID_TREE_MAX_PEAKS][32], root[32];
+        uint32_t plen = 0;
+        zid_tree_prove_from_leaves(leaves, 17, 7, proof, &plen, root);
+        if (!zid_tree_verify(root, leaves[8], 8, 17, proof, plen)) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid_tree_verify: wrong num_leaves rejected... ");
+    {
+        uint8_t proof[ZID_TREE_MAX_PEAKS][32], root[32];
+        uint32_t plen = 0;
+        zid_tree_prove_from_leaves(leaves, 17, 7, proof, &plen, root);
+        if (!zid_tree_verify(root, leaves[7], 7, 16, proof, plen)) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid_tree_verify: flipped sibling byte rejected... ");
+    {
+        uint8_t proof[ZID_TREE_MAX_PEAKS][32], root[32];
+        uint32_t plen = 0;
+        zid_tree_prove_from_leaves(leaves, 17, 7, proof, &plen, root);
+        proof[0][0] ^= 0x01;
+        if (!zid_tree_verify(root, leaves[7], 7, 17, proof, plen)) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid_tree_verify: digest from a different tree rejected... ");
+    {
+        uint8_t proof[ZID_TREE_MAX_PEAKS][32], root[32];
+        uint32_t plen = 0;
+        zid_tree_prove_from_leaves(leaves, 17, 7, proof, &plen, root);
+        if (!zid_tree_verify(root, leaves_b[7], 7, 17, proof, plen)) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid_tree_verify: truncated proof rejected... ");
+    {
+        uint8_t proof[ZID_TREE_MAX_PEAKS][32], root[32];
+        uint32_t plen = 0;
+        zid_tree_prove_from_leaves(leaves, 17, 7, proof, &plen, root);
+        if (plen > 0 &&
+            !zid_tree_verify(root, leaves[7], 7, 17, proof, plen - 1))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* Cross-tag isolation: fold the SAME record digest as a chain-mmr
+     * leaf (SHA3(0x00 ‖ digest), no "ZIDL") along the zid proof; the
+     * result must differ from the zid tree root. */
+    printf("zid_tree: chain-mmr-tagged leaf does not replay against zid root... ");
+    {
+        uint8_t proof[ZID_TREE_MAX_PEAKS][32], root[32];
+        uint32_t plen = 0;
+        zid_tree_prove_from_leaves(leaves, 17, 7, proof, &plen, root);
+
+        /* Manual chain-style fold: leaf = SHA3(0x00 ‖ digest), internals
+         * = SHA3(0x01 ‖ l ‖ r), same geometry (17 leaves → peaks 16+1,
+         * index 7 sits in the 16-leaf peak at position 7). */
+        uint8_t buf[65];
+        buf[0] = 0x00;
+        memcpy(buf + 1, leaves[7], 32);
+        uint8_t h[32];
+        sha3_256(buf, 33, h);
+        uint64_t pos = 7;
+        for (uint32_t i = 0; i < 4; i++) { /* 16-leaf peak: path length 4 */
+            uint8_t parent[32];
+            buf[0] = 0x01;
+            if ((pos & 1) == 0) {
+                memcpy(buf + 1, h, 32);
+                memcpy(buf + 33, proof[i], 32);
+            } else {
+                memcpy(buf + 1, proof[i], 32);
+                memcpy(buf + 33, h, 32);
+            }
+            sha3_256(buf, 65, parent);
+            memcpy(h, parent, 32);
+            pos >>= 1;
+        }
+        /* Bag chain-folded peak with the remaining zid proof peak. */
+        struct sha3_256_ctx ctx;
+        sha3_256_init(&ctx);
+        uint8_t tag = 0x02;
+        sha3_256_write(&ctx, &tag, 1);
+        sha3_256_write(&ctx, h, 32);
+        sha3_256_write(&ctx, proof[4], 32);
+        uint8_t chain_root[32];
+        sha3_256_finalize(&ctx, chain_root);
+
+        if (memcmp(chain_root, root, 32) != 0) printf("OK\n");
+        else { printf("FAIL (cross-tag replay succeeded)\n"); failures++; }
+    }
+
+    printf("zid_tree: root changes on append... ");
+    {
+        struct zid_tree t;
+        zid_tree_init(&t);
+        uint8_t r1[32], r2[32];
+        zid_tree_append(&t, leaves[0]);
+        zid_tree_root(&t, r1);
+        zid_tree_append(&t, leaves[1]);
+        zid_tree_root(&t, r2);
+        if (memcmp(r1, r2, 32) != 0) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid_tree: peak count == popcount(num_leaves)... ");
+    {
+        bool ok = true;
+        for (uint64_t n = 1; n <= 23 && ok; n++) {
+            struct zid_tree t;
+            zid_tree_init(&t);
+            for (uint64_t i = 0; i < n; i++)
+                zid_tree_append(&t, leaves[i % ZID_TEST_MAX_LEAVES]);
+            if (t.num_peaks != (uint32_t)__builtin_popcountll(n))
+                ok = false;
+        }
+        if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 

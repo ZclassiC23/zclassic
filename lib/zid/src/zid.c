@@ -1,7 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * ZID — sovereign identity document codec: blinded keys, encode/decode,
- * sign/verify, and the monotonic-seq supersede rule (no allocation). */
+ * sign/verify, and the monotonic-seq supersede rule (no allocation).
+ * Plus the anchor-domain tree: an append-only MMR over record digests so
+ * one on-chain ZANC anchor commits an unbounded batch. */
 
 #include "zid/zid.h"
 #include "crypto/ed25519.h"
@@ -162,4 +164,286 @@ bool zid_doc_supersedes(const struct zid_doc *candidate,
     if (memcmp(candidate->master_pubkey, current->master_pubkey, 32) != 0)
         return false; /* raw-return-ok: different identity, a predicate answer not an error */
     return candidate->seq > current->seq;
+}
+
+/* ── Anchor-domain tree (MMR over record digests) ──────────────────
+ *
+ * Same peak-merge geometry as lib/chain/src/mmr.c (self-contained here —
+ * lib/zid must not depend on lib/chain), with one deliberate difference:
+ * the leaf hash carries a "ZIDL" domain tag so a zid inclusion proof can
+ * never be replayed against the chain MMR or any other 0x00‖digest tree.
+ *
+ * MMR geometry: leaves are numbered 0..n-1; the peaks are the powers of
+ * two in n's binary decomposition, stored largest-first. Leaf `index`
+ * maps arithmetically to (peak, position within peak) with no stored
+ * metadata, so the verifier needs only (index, num_leaves, proof). */
+
+#define ZID_TREE_TAG_LEAF     0x00
+#define ZID_TREE_TAG_INTERNAL 0x01
+#define ZID_TREE_TAG_ROOT     0x02
+
+static void zid_tree_hash_leaf(const uint8_t record_digest[32], uint8_t out[32])
+{
+    uint8_t buf[1 + 4 + 32];
+    buf[0] = ZID_TREE_TAG_LEAF;
+    memcpy(buf + 1, "ZIDL", 4);
+    memcpy(buf + 5, record_digest, 32);
+    sha3_256(buf, sizeof(buf), out);
+}
+
+static void zid_tree_hash_internal(const uint8_t left[32],
+                                   const uint8_t right[32], uint8_t out[32])
+{
+    uint8_t buf[1 + 32 + 32];
+    buf[0] = ZID_TREE_TAG_INTERNAL;
+    memcpy(buf + 1, left, 32);
+    memcpy(buf + 33, right, 32);
+    sha3_256(buf, sizeof(buf), out);
+}
+
+/* Bag peaks: SHA3-256(0x02 ‖ peak_0 ‖ … ‖ peak_k). Caller handles the
+ * 0- and 1-peak edge cases (mirrors mmr.c: empty → zeros, one → itself). */
+static void zid_tree_bag_peaks(const uint8_t (*peaks)[32], uint32_t n,
+                               uint8_t out[32])
+{
+    struct sha3_256_ctx ctx;
+    sha3_256_init(&ctx);
+    uint8_t tag = ZID_TREE_TAG_ROOT;
+    sha3_256_write(&ctx, &tag, 1);
+    for (uint32_t i = 0; i < n; i++)
+        sha3_256_write(&ctx, peaks[i], 32);
+    sha3_256_finalize(&ctx, out);
+}
+
+static void zid_tree_root_from_peaks(const uint8_t (*peaks)[32], uint32_t n,
+                                     uint8_t out[32])
+{
+    if (n == 0) {
+        memset(out, 0, 32);
+        return;
+    }
+    if (n == 1) {
+        memcpy(out, peaks[0], 32);
+        return;
+    }
+    zid_tree_bag_peaks(peaks, n, out);
+}
+
+/* Peak sizes in leaves (powers of two in n's binary decomposition),
+ * largest first. Returns the count (= popcount(n)). */
+static uint32_t zid_tree_peak_sizes(uint64_t num_leaves,
+                                    uint64_t sizes[ZID_TREE_MAX_PEAKS])
+{
+    uint32_t k = 0;
+    uint64_t remaining = num_leaves;
+    for (int b = 63; b >= 0 && remaining != 0; b--) {
+        uint64_t s = 1ULL << b;
+        if (remaining & s) {
+            sizes[k++] = s;
+            remaining -= s;
+        }
+    }
+    return k;
+}
+
+/* Hash of the perfect subtree covering `count` (a power of two) record
+ * digests starting at leaves[0]. Recursion depth ≤ 64; no allocation. */
+static void zid_tree_subtree_hash(const uint8_t leaves[][32], uint64_t count,
+                                  uint8_t out[32])
+{
+    if (count == 1) {
+        zid_tree_hash_leaf(leaves[0], out);
+        return;
+    }
+    uint8_t left[32], right[32];
+    zid_tree_subtree_hash(leaves, count / 2, left);
+    zid_tree_subtree_hash(leaves + count / 2, count / 2, right);
+    zid_tree_hash_internal(left, right, out);
+}
+
+/* Locate the peak containing leaf `index`: fills *pi (peak position in
+ * bagging order), *peak_offset (first leaf of that peak), *peak_size.
+ * Caller guarantees 0 <= index < num_leaves. */
+static void zid_tree_locate(uint64_t num_leaves, uint64_t index,
+                            uint64_t sizes[ZID_TREE_MAX_PEAKS], uint32_t *k_out,
+                            uint32_t *pi, uint64_t *peak_offset,
+                            uint64_t *peak_size)
+{
+    uint32_t k = zid_tree_peak_sizes(num_leaves, sizes);
+    uint64_t offset = 0;
+    for (uint32_t j = 0; j < k; j++) {
+        if (index < offset + sizes[j]) {
+            *k_out = k;
+            *pi = j;
+            *peak_offset = offset;
+            *peak_size = sizes[j];
+            return;
+        }
+        offset += sizes[j];
+    }
+    /* Unreachable: index < num_leaves means some peak contains it. */
+    *k_out = k;
+    *pi = k;
+    *peak_offset = offset;
+    *peak_size = 0;
+}
+
+void zid_tree_init(struct zid_tree *t)
+{
+    memset(t, 0, sizeof(*t));
+}
+
+bool zid_tree_append(struct zid_tree *t, const uint8_t record_digest[32])
+{
+    if (!t || !record_digest)
+        LOG_FAIL("zid", "tree_append: NULL argument (t=%p digest=%p)",
+                 (void *)t, (const void *)record_digest);
+
+    uint8_t h[32];
+    zid_tree_hash_leaf(record_digest, h);
+
+    /* Merge with existing peaks while the new leaf completes a pair:
+     * count trailing 1-bits in (num_leaves + 1). */
+    uint64_t n = t->num_leaves + 1;
+    while (n % 2 == 0 && t->num_peaks > 0) {
+        uint8_t parent[32];
+        zid_tree_hash_internal(t->peaks[t->num_peaks - 1], h, parent);
+        memcpy(h, parent, 32);
+        t->num_peaks--;
+        n /= 2;
+    }
+
+    if (t->num_peaks >= ZID_TREE_MAX_PEAKS)
+        LOG_FAIL("zid", "tree_append: peak capacity %d exhausted",
+                 ZID_TREE_MAX_PEAKS);
+    memcpy(t->peaks[t->num_peaks], h, 32);
+    t->num_peaks++;
+    t->num_leaves++;
+    return true;
+}
+
+void zid_tree_root(const struct zid_tree *t, uint8_t out[32])
+{
+    zid_tree_root_from_peaks(t->peaks, t->num_peaks, out);
+}
+
+bool zid_tree_prove_from_leaves(const uint8_t leaves[][32],
+                                uint64_t num_leaves, uint64_t index,
+                                uint8_t proof_siblings[][32],
+                                uint32_t *proof_len, uint8_t root_out[32])
+{
+    if (!leaves || !proof_siblings || !proof_len || !root_out)
+        LOG_FAIL("zid", "tree_prove: NULL argument");
+    if (num_leaves == 0 || index >= num_leaves)
+        LOG_FAIL("zid", "tree_prove: index %llu out of range (num_leaves %llu)",
+                 (unsigned long long)index, (unsigned long long)num_leaves);
+
+    uint64_t sizes[ZID_TREE_MAX_PEAKS];
+    uint32_t k, pi;
+    uint64_t peak_offset, peak_size;
+    zid_tree_locate(num_leaves, index, sizes, &k, &pi,
+                    &peak_offset, &peak_size);
+
+    uint32_t n = 0;
+
+    /* Sibling path inside the peak, bottom-up. At level `width` the node
+     * covers `width` leaves; its sibling subtree starts at
+     * peak_offset + (pos ^ 1) * width. */
+    uint64_t pos = index - peak_offset;
+    for (uint64_t width = 1; width < peak_size; width *= 2) {
+        if (n >= ZID_TREE_MAX_PEAKS)
+            LOG_FAIL("zid", "tree_prove: proof exceeds %d-hash capacity",
+                     ZID_TREE_MAX_PEAKS);
+        uint64_t sib_pos = pos ^ 1;
+        zid_tree_subtree_hash(leaves + peak_offset + sib_pos * width, width,
+                              proof_siblings[n++]);
+        pos >>= 1;
+    }
+
+    /* The OTHER peaks, in bagging order. The verifier knows pi from
+     * (index, num_leaves) and re-inserts the computed peak there. */
+    uint64_t offset = 0;
+    for (uint32_t j = 0; j < k; j++) {
+        if (j != pi) {
+            if (n >= ZID_TREE_MAX_PEAKS)
+                LOG_FAIL("zid", "tree_prove: proof exceeds %d-hash capacity",
+                         ZID_TREE_MAX_PEAKS);
+            zid_tree_subtree_hash(leaves + offset, sizes[j],
+                                  proof_siblings[n++]);
+        }
+        offset += sizes[j];
+    }
+    *proof_len = n;
+
+    /* Bagged root over all peaks (recomputed from the same leaf list, so
+     * it matches the incremental zid_tree_append + zid_tree_root root). */
+    uint8_t peaks[ZID_TREE_MAX_PEAKS][32];
+    offset = 0;
+    for (uint32_t j = 0; j < k; j++) {
+        zid_tree_subtree_hash(leaves + offset, sizes[j], peaks[j]);
+        offset += sizes[j];
+    }
+    zid_tree_root_from_peaks(peaks, k, root_out);
+    return true;
+}
+
+bool zid_tree_verify(const uint8_t root[32], const uint8_t record_digest[32],
+                     uint64_t index, uint64_t num_leaves,
+                     const uint8_t proof_siblings[][32], uint32_t proof_len)
+{
+    if (!root || !record_digest || (!proof_siblings && proof_len > 0))
+        LOG_FAIL("zid", "tree_verify: NULL argument");
+    if (num_leaves == 0 || index >= num_leaves)
+        LOG_FAIL("zid", "tree_verify: index %llu out of range (num_leaves %llu)",
+                 (unsigned long long)index, (unsigned long long)num_leaves);
+
+    uint64_t sizes[ZID_TREE_MAX_PEAKS];
+    uint32_t k, pi;
+    uint64_t peak_offset, peak_size;
+    zid_tree_locate(num_leaves, index, sizes, &k, &pi,
+                    &peak_offset, &peak_size);
+
+    uint32_t path_len = 0;
+    for (uint64_t width = 1; width < peak_size; width *= 2)
+        path_len++;
+    if (proof_len != path_len + (k - 1))
+        LOG_FAIL("zid",
+                 "tree_verify: proof_len %u wrong (want %u path + %u peaks)",
+                 proof_len, path_len, k - 1);
+
+    /* Fold the sibling path to the peak, bottom-up. */
+    uint8_t h[32];
+    zid_tree_hash_leaf(record_digest, h);
+    uint64_t pos = index - peak_offset;
+    for (uint32_t i = 0; i < path_len; i++) {
+        uint8_t parent[32];
+        if ((pos & 1) == 0)
+            zid_tree_hash_internal(h, proof_siblings[i], parent);
+        else
+            zid_tree_hash_internal(proof_siblings[i], h, parent);
+        memcpy(h, parent, 32);
+        pos >>= 1;
+    }
+
+    /* Rebuild the full peak array: other peaks from the proof (bagging
+     * order), the computed peak inserted at position pi. */
+    uint8_t peaks[ZID_TREE_MAX_PEAKS][32];
+    uint32_t p = path_len;
+    for (uint32_t j = 0; j < k; j++) {
+        if (j == pi)
+            memcpy(peaks[j], h, 32);
+        else
+            memcpy(peaks[j], proof_siblings[p++], 32);
+    }
+
+    uint8_t computed[32];
+    zid_tree_root_from_peaks(peaks, k, computed);
+
+    int diff = 0;
+    for (int i = 0; i < 32; i++)
+        diff |= computed[i] ^ root[i];
+    if (diff != 0)
+        LOG_FAIL("zid", "tree_verify: root mismatch (index %llu num_leaves %llu)",
+                 (unsigned long long)index, (unsigned long long)num_leaves);
+    return true;
 }
