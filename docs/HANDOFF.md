@@ -176,7 +176,7 @@ the BOOT-ceremony `node_db_open()`, which runs snapshot-staging DELETEs — use
 branches are held back:
 
 **The reference service's table is created in
-`app/models/src/database_migrate_features2.c` — the central shared
+`app/models/src/database_migrate_features_v30_up.c` — the central shared
 migration.** So adding a service means editing core schema code, which is
 exactly the property ("add a service without editing the core") the workflow
 existed to establish. The contract, token gate and lifecycle are sound; the

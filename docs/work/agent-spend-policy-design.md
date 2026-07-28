@@ -32,7 +32,7 @@ two dispatch choke points.
   out of scope for v1 — documented, not silently unprotected: the policy is
   about bounding *agents*, and agents are expected at the typed surface.
 
-## Model (migration v36, `database_migrate_features2.c` after v35 :170-188)
+## Model (migration v36, `database_migrate_features_v30_up.c` after v35 :170-188)
 
 Table `agent_sessions` — one row per minted session grant:
 

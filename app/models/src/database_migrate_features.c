@@ -666,7 +666,7 @@ int node_db_migrate_features(struct node_db *ndb, int *version)
         applied++;
     }
 
-    int applied2 = node_db_migrate_features2(ndb, &current_ver);
+    int applied2 = node_db_migrate_features_v30_up(ndb, &current_ver);
     applied += applied2;
 
     *version = current_ver;

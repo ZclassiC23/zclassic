@@ -6,7 +6,7 @@
  * database_migrate_features.c (E1 file-size split; same idempotent
  * versioned-block pattern documented at the top of that file and in
  * database_migrate.c). node_db_migrate_features() hands off here at the
- * v30 boundary via node_db_migrate_features2().
+ * v30 boundary via node_db_migrate_features_v30_up().
  *
  * ar-validate-skip:connection-handle-not-a-row
  *   Same rationale as database_migrate_features.c: operates on the
@@ -16,7 +16,7 @@
 #include "models/database.h"
 #include "models/database_internal.h"
 
-int node_db_migrate_features2(struct node_db *ndb, int *version)
+int node_db_migrate_features_v30_up(struct node_db *ndb, int *version)
 {
     int applied = 0;
     int current_ver = *version;

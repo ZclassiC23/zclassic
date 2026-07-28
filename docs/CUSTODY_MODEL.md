@@ -147,7 +147,7 @@ Two independent runtime gates sit under all of them:
 ## 5. What the agent grant bounds
 
 The grant is a row in `agent_sessions` (migration v36,
-`app/models/src/database_migrate_features2.c:200-224`), minted by
+`app/models/src/database_migrate_features_v30_up.c:200-224`), minted by
 `vault session create` for an existing principal, and presented per invocation
 as `ZCL_AGENT_SESSION=<32 hex chars>`
 (`tools/command/native_command.c:2735, 3173`).

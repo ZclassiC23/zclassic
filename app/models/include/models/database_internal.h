@@ -41,9 +41,9 @@
 int node_db_migrate_features(struct node_db *ndb, int *version);
 
 /* Continuation of node_db_migrate_features() for schema v30+ (E1 file-size
- * split — database_migrate_features2.c). Same contract; called only by
+ * split — database_migrate_features_v30_up.c). Same contract; called only by
  * node_db_migrate_features() at the v30 handoff. */
-int node_db_migrate_features2(struct node_db *ndb, int *version);
+int node_db_migrate_features_v30_up(struct node_db *ndb, int *version);
 
 /* Execute `sql`, logging any error with `where` context. Returns the
  * sqlite3 rc so callers can make tolerance decisions. (Defined in
