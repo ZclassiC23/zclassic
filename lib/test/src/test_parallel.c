@@ -407,7 +407,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(chain_frontier_snapshot_service) \
     X(health_rollup) X(debug_bundle) X(operator_ux) X(cli_render) \
     X(op_return_index) X(rom_seed_policy) X(rom_seed_ledger) \
-    X(catalog_completeness) X(zslp_ledger) X(catalog_lag_exceeded) \
+    X(catalog_completeness) X(zslp_ledger) X(catalog_lag_exceeded) X(catalog_coverage) \
     X(parity_slo) X(state_auditor) \
     X(recovery_no_worse) X(vault_read) X(vault_dispatch) X(agent_session) \
     X(agent_spend_policy) X(vault_session)

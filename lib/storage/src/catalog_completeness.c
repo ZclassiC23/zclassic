@@ -68,6 +68,15 @@ extern int64_t db_view_integrity_max_height(struct node_db *ndb);
  * (controllers/sync_controller.h) */
 extern int node_db_sync_get_tip_height(struct node_db *ndb);
 
+/* app/jobs/src/reducer_frontier_trusted_base.c (jobs/reducer_frontier.h) —
+ * the ONE decoder of the durable snapshot-seed base height. Forward-declared
+ * rather than re-reading REDUCER_TRUSTED_BASE_HEIGHT_KEY with a locally
+ * duplicated key literal and a locally duplicated 8-byte LE decode: a second
+ * copy of one fact is exactly the drift this codebase keeps paying for. */
+extern bool reducer_frontier_trusted_base_height_read(sqlite3 *db,
+                                                      int32_t *height,
+                                                      bool *found);
+
 /* app/jobs/src/address_index.c (jobs/address_index.h) */
 extern bool address_index_enabled(void);
 extern bool address_index_get_cursor(sqlite3 *db, int64_t *cursor_out);
@@ -226,23 +235,99 @@ struct catalog_index_entry {
     const char *name;
     int64_t (*get_cursor)(void);
     bool always_on;
+    /* Does this row fold BLOCK BODIES forward from genesis? Only those are
+     * floored by the snapshot seed: with no bodies below the seed height
+     * there is nothing for them to read there, ever.
+     *
+     * The anchor/nullifier rows are false because they already encode their
+     * own prefix gap through the activation-cursor convention documented at
+     * the top of this file (a positive activation cursor makes them report
+     * cursor=0, "nothing from genesis is proven complete"). Applying the
+     * seed floor to them on top of that would credit them with coverage
+     * their own convention deliberately refuses to claim. */
+    bool body_folded;
 };
 
 static const struct catalog_index_entry g_catalog_indexes[] = {
-    { "op_return_index",     cc_get_op_return_cursor,          true  },
-    { "address_index",       cc_get_address_index_cursor,      false },
-    { "txindex",             cc_get_txindex_cursor,            false },
-    { "zslp_ledger",         cc_get_zslp_ledger_cursor,        false },
-    { "sprout_anchor",       cc_get_sprout_anchor_cursor,       true  },
-    { "sapling_anchor",      cc_get_sapling_anchor_cursor,      true  },
-    { "nullifier_history",   cc_get_nullifier_cursor,          true  },
-    { "view_integrity",      cc_get_view_integrity_cursor,      true  },
-    { "explorer_projection", cc_get_explorer_projection_cursor, true  },
+    { "op_return_index",     cc_get_op_return_cursor,          true,  true  },
+    { "address_index",       cc_get_address_index_cursor,      false, true  },
+    { "txindex",             cc_get_txindex_cursor,            false, true  },
+    { "zslp_ledger",         cc_get_zslp_ledger_cursor,        false, true  },
+    { "sprout_anchor",       cc_get_sprout_anchor_cursor,       true, false },
+    { "sapling_anchor",      cc_get_sapling_anchor_cursor,      true, false },
+    { "nullifier_history",   cc_get_nullifier_cursor,          true, false },
+    { "view_integrity",      cc_get_view_integrity_cursor,      true, true  },
+    { "explorer_projection", cc_get_explorer_projection_cursor, true, true  },
 };
 #define CATALOG_INDEX_COUNT \
     (sizeof(g_catalog_indexes) / sizeof(g_catalog_indexes[0]))
 
 /* ── public API ───────────────────────────────────────────────────────── */
+
+const char *catalog_coverage_name(enum catalog_coverage c)
+{
+    switch (c) {
+    case CATALOG_COVERAGE_UNKNOWN:  return "unknown";
+    case CATALOG_COVERAGE_NONE:     return "none";
+    case CATALOG_COVERAGE_PARTIAL:  return "partial";
+    case CATALOG_COVERAGE_COMPLETE: return "complete";
+    }
+    return "(invalid)";
+}
+
+bool catalog_index_emptiness_is_meaningful(
+    const struct catalog_index_status *row)
+{
+    return row && row->enabled &&
+           row->coverage == (int)CATALOG_COVERAGE_COMPLETE;
+}
+
+/* The durable snapshot-seed base height, or 0 when this datadir has none
+ * (a from-genesis node) and 0 on any read failure.
+ *
+ * Read ONCE per snapshot() rather than per row: it is a single durable
+ * value, and re-reading it nine times would make a diagnostic nine times
+ * more expensive for nine identical answers. Failure degrades to 0 — a
+ * floor of 0 understates nothing and can only make coverage look WORSE
+ * (the reachable range grows), so a read error can never manufacture a
+ * false claim of completeness. */
+static int64_t cc_seed_floor(void)
+{
+    sqlite3 *db = progress_store_db();
+    if (!db) return 0;
+    int32_t height = 0;
+    bool found = false;
+    if (!reducer_frontier_trusted_base_height_read(db, &height, &found)) {
+        LOG_WARN("catalog_completeness",
+                 "trusted-base height read failed — treating floor as 0 "
+                 "(coverage can only read pessimistic, never optimistic)");
+        return 0;
+    }
+    if (!found || height < 0) return 0;
+    return (int64_t)height;
+}
+
+/* Coverage of [floor, target] given how far this index has folded.
+ *
+ * `cursor` is the highest height folded CONTIGUOUSLY from genesis, so a
+ * cursor below the floor means the index has not yet reached the range
+ * where bodies exist at all — none of the reachable range is covered. That
+ * is the live case for zslp_ledger (cursor 2,881,792 against a floor of
+ * 3,196,425): it looks like millions of blocks of progress and is in fact
+ * zero coverage of anything readable. */
+static enum catalog_coverage cc_coverage(int64_t cursor, int64_t floor,
+                                         int64_t target)
+{
+    if (target < floor) {
+        /* Nothing is reachable yet (the node has not passed its own seed).
+         * Vacuously complete would be a lie dressed as a technicality:
+         * report unknown rather than let a caller conclude anything. */
+        return CATALOG_COVERAGE_UNKNOWN;
+    }
+    if (cursor >= target)  return CATALOG_COVERAGE_COMPLETE;
+    if (cursor <  floor)   return CATALOG_COVERAGE_NONE;
+    return CATALOG_COVERAGE_PARTIAL;
+}
 
 size_t catalog_completeness_snapshot(struct catalog_index_status *out,
                                      size_t max, int64_t target_height)
@@ -254,6 +339,8 @@ size_t catalog_completeness_snapshot(struct catalog_index_status *out,
         return 0;
     }
 
+    const int64_t seed_floor = cc_seed_floor();
+
     size_t n = CATALOG_INDEX_COUNT < max ? CATALOG_INDEX_COUNT : max;
     for (size_t i = 0; i < n; i++) {
         const struct catalog_index_entry *e = &g_catalog_indexes[i];
@@ -263,19 +350,29 @@ size_t catalog_completeness_snapshot(struct catalog_index_status *out,
         row->name = e->name;
         row->always_on = e->always_on;
         row->target = target_height;
+        row->coverage = (int)CATALOG_COVERAGE_UNKNOWN;
 
         int64_t cursor = e->get_cursor();
         if (cursor == CATALOG_CURSOR_UNAVAILABLE) {
             row->enabled = false;
             row->cursor = 0;
             row->lag = 0;
+            row->floor = 0;
             continue;
         }
 
         row->enabled = true;
         row->cursor = cursor;
+        /* `lag` semantics are UNCHANGED on purpose. catalog_lag_exceeded
+         * fires off this number, and quietly redefining it against the floor
+         * would relax a live alarm's threshold under cover of a readability
+         * change — the failure mode where an alarm stops firing and everyone
+         * calls it an improvement. The new fields ADD truth; they move no
+         * threshold. */
         int64_t lag = target_height - cursor;
         row->lag = lag > 0 ? lag : 0;
+        row->floor = e->body_folded ? seed_floor : 0;
+        row->coverage = (int)cc_coverage(cursor, row->floor, target_height);
     }
     return n;
 }

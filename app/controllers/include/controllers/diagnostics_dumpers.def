@@ -425,6 +425,18 @@
                     "counters, last_consumed_offset, last_catch_up_ms.",
                     "lib/storage/src/znam_projection.c",
                     "lib/test/src/test_znam_projection.c"),
+    DIAG_CONDITION("catalog_coverage", catalog_coverage_dump_state_json,
+                   "per-index coverage of the range it can actually reach "
+                   "[floor, target]: cursor, floor (the snapshot-seed height "
+                   "below which no body exists, so no forward fold can ever "
+                   "cover it), lag, coverage {none,partial,complete}, and "
+                   "emptiness_is_meaningful — true ONLY when coverage is "
+                   "complete, i.e. when finding zero rows in that index is "
+                   "evidence that nothing happened rather than the absence of "
+                   "evidence. Answers 'this table is empty, does that mean "
+                   "anything?' without a COUNT(*) (3.5 s on the live node).",
+                   "app/conditions/src/catalog_lag_exceeded.c",
+                   "lib/test/src/test_catalog_coverage.c"),
     DIAG_PROJECTION("op_return_index", op_return_index_dump_state_json,
                     "OP_RETURN catalog: backfill cursor height + running "
                     "digest, provable_tip, blocks_remaining, ticks/holes/"

@@ -52,18 +52,74 @@
  * an activation-derived proxy (>= 0), always far above INT64_MIN. */
 #define CATALOG_CURSOR_UNAVAILABLE INT64_MIN
 
+/* ── Is an empty index empty because nothing happened, or because it is
+ *    broken? ──────────────────────────────────────────────────────────
+ *
+ * `lag` alone cannot answer that, and answering it wrong is expensive.
+ * Measured on the canonical node 2026-07-28, at the front of the chain with
+ * 22 peers: op_return_index held 0 rows, zslp_ledger 0 rows, znam_names 0
+ * rows — and two subsystems gave CONTRADICTORY diagnoses of the same table.
+ * catalog_lag_exceeded said "its backfill service is stalled and must
+ * resume" (a defect, with an action). index_fold_guard said the bodies
+ * below the snapshot-seed floor were never downloaded, so the fold can never
+ * cross (structural, and "resume" cannot work). Both were reporting true
+ * facts about their own concern; neither could see the fact that reconciles
+ * them.
+ *
+ * That fact is COVERAGE: how much of the range this index can actually
+ * reach has it folded? The reachable range is [floor, target] — not
+ * [0, target] — because on a snapshot-seeded datadir there are no block
+ * bodies below the seed height, so no index that folds bodies forward can
+ * ever cover them.
+ *
+ * With coverage, an empty table finally means something:
+ *   COMPLETE  — covered everything reachable. An empty table is EVIDENCE:
+ *               nothing happened in that range.
+ *   PARTIAL   — covered some of it. An empty table proves nothing.
+ *   NONE      — covered none of it. An empty table proves nothing.
+ *
+ * Deliberately NOT a row count. COUNT(*) on op_return_index measured 3.5 s
+ * on the live node — far past any poll budget — and the count is not what
+ * makes emptiness meaningful anyway. Coverage is. A caller that wants the
+ * number can ask the index's own dumper, which already publishes it. */
+enum catalog_coverage {
+    CATALOG_COVERAGE_UNKNOWN = 0, /* not enabled / no cursor to read */
+    CATALOG_COVERAGE_NONE,        /* none of [floor,target] folded */
+    CATALOG_COVERAGE_PARTIAL,     /* some of it folded */
+    CATALOG_COVERAGE_COMPLETE,    /* all of it folded */
+};
+
+const char *catalog_coverage_name(enum catalog_coverage c);
+
 /* One row of the completeness report. */
 struct catalog_index_status {
     const char *name;   /* stable row name, e.g. "op_return_index" */
     int64_t cursor;      /* this index's live cursor (0 when !enabled) */
     int64_t target;      /* the target_height passed to snapshot() (H*) */
     int64_t lag;         /* max(0, target - cursor); 0 when !enabled */
+    /* Lowest height this index could EVER cover. 0 on a from-genesis
+     * datadir; the durable snapshot-seed base height
+     * (reducer_trusted_base_height) on a seeded one, for the rows that fold
+     * block bodies forward. A positive floor is not a fault — it is a
+     * permanent, structural statement that history below it is unreachable
+     * by this index and no amount of "resuming" will change that. */
+    int64_t floor;
+    int coverage;        /* enum catalog_coverage over [floor, target] */
     bool always_on;      /* true = expected running on every node (a
                            * disabled always_on row is worth flagging;
                            * false = legitimately opt-in, e.g. address_index) */
     bool enabled;         /* false = subsystem not linked/initialized/opted
                            * in for this process right now */
 };
+
+/* True only when this row's coverage is COMPLETE — i.e. when finding zero
+ * rows in the index is EVIDENCE that nothing happened, rather than merely
+ * the absence of evidence. Every caller that is about to conclude something
+ * from an empty index should ask this first; a token balance read at a
+ * snapshot height off an index with incomplete coverage is a guess wearing
+ * a number's clothes. */
+bool catalog_index_emptiness_is_meaningful(
+    const struct catalog_index_status *row);
 
 /* Upper bound on registered indexes — a compile-time static table, not a
  * dynamic registry (see the header comment above). Sized generously above

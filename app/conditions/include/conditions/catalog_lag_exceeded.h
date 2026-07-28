@@ -24,6 +24,14 @@
  *   persistently-behind index keeps nudging without permanently latching. */
 void register_catalog_lag_exceeded(void);
 
+/* See CLAUDE.md "Adding state introspection". Reentrant-safe.
+ * `zclassic23 dumpstate catalog_coverage` — per-index cursor, floor, target,
+ * lag, coverage over the reachable range, and the decisive
+ * `emptiness_is_meaningful` flag. `key` is unused (one dump returns all
+ * rows). */
+struct json_value;
+bool catalog_coverage_dump_state_json(struct json_value *out, const char *key);
+
 #ifdef ZCL_TESTING
 struct catalog_index_status;
 void catalog_lag_exceeded_test_reset(void);

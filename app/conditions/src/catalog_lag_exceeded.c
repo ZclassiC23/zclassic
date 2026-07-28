@@ -8,6 +8,7 @@
 #include "conditions/catalog_lag_exceeded.h"
 
 #include "framework/condition.h"
+#include "json/json.h"
 #include "jobs/reducer_frontier.h"
 #include "storage/catalog_completeness.h"
 #include "util/blocker.h"
@@ -265,6 +266,81 @@ static struct condition c_catalog_lag_exceeded = {
 void register_catalog_lag_exceeded(void)
 {
     (void)condition_register(&c_catalog_lag_exceeded);
+}
+
+/* ── `zclassic23 dumpstate catalog_coverage` ───────────────────────────
+ *
+ * The one place to answer: "this index is empty — does that mean anything?"
+ *
+ * catalog_completeness.h has said since it landed that "a later lane wires
+ * catalog_completeness_snapshot() into `zclassic23 ops state`". That lane
+ * never happened, so the only way to see this data was to infer it from a
+ * blocker message, one index at a time. Measured on the canonical node
+ * 2026-07-28: op_return_index, zslp_ledger and znam_names all read 0 rows,
+ * and there was no surface that said whether any of those zeros was
+ * evidence of anything.
+ *
+ * It lives HERE rather than in a new file because this condition already
+ * composes exactly these two reads — the live catalog and H* — to decide
+ * whether to fire. Exposing what it sees is a diagnostic OF this condition,
+ * not a new concern; a separate owner would be a second reader of one fact.
+ *
+ * Reentrant-safe, allocation-free, no store writes (catalog_completeness is
+ * REPORT ONLY). See CLAUDE.md "Adding state introspection". */
+bool catalog_coverage_dump_state_json(struct json_value *out, const char *key)
+{
+    (void)key;
+    if (!out) return false;
+    json_set_object(out);
+
+    struct catalog_index_status rows[CATALOG_COMPLETENESS_MAX_INDEXES];
+    int64_t hstar = (int64_t)reducer_frontier_provable_tip_cached();
+    size_t n = catalog_completeness_snapshot(rows, CATALOG_COMPLETENESS_MAX_INDEXES,
+                                             hstar);
+
+    json_push_kv_int(out, "target_height", hstar);
+    json_push_kv_int(out, "index_count", (int64_t)n);
+
+    /* The headline an operator needs first: of the indexes that are actually
+     * running, how many have covered everything they can reach? Only those
+     * can make an empty table mean anything. */
+    int64_t meaningful = 0, enabled = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (!rows[i].enabled) continue;
+        enabled++;
+        if (catalog_index_emptiness_is_meaningful(&rows[i])) meaningful++;
+    }
+    json_push_kv_int(out, "enabled_count", enabled);
+    json_push_kv_int(out, "complete_coverage_count", meaningful);
+
+    struct json_value arr;
+    json_init(&arr);
+    json_set_array(&arr);
+    for (size_t i = 0; i < n; i++) {
+        struct json_value row;
+        json_init(&row);
+        json_set_object(&row);
+        json_push_kv_str (&row, "name", rows[i].name ? rows[i].name : "");
+        json_push_kv_bool(&row, "enabled", rows[i].enabled);
+        json_push_kv_bool(&row, "always_on", rows[i].always_on);
+        json_push_kv_int (&row, "cursor", rows[i].cursor);
+        json_push_kv_int (&row, "floor", rows[i].floor);
+        json_push_kv_int (&row, "target", rows[i].target);
+        json_push_kv_int (&row, "lag", rows[i].lag);
+        json_push_kv_str (&row, "coverage",
+                          catalog_coverage_name(
+                              (enum catalog_coverage)rows[i].coverage));
+        /* The decisive field. False does NOT mean the index is broken — it
+         * means a zero row count from this index is not evidence of
+         * anything, so no caller may conclude "nothing happened" from it. */
+        json_push_kv_bool(&row, "emptiness_is_meaningful",
+                          catalog_index_emptiness_is_meaningful(&rows[i]));
+        json_push_back(&arr, &row);
+        json_free(&row);
+    }
+    json_push_kv(out, "indexes", &arr);
+    json_free(&arr);
+    return true;
 }
 
 #ifdef ZCL_TESTING

@@ -23,6 +23,26 @@ json_string_field() {
         head -1
 }
 
+# The BAKED source identity of a binary — its first `source_id_sha256`.
+#
+# `agentbuild` emits that key FOUR times on one line: once at the top level
+# (what this binary was compiled from) and again inside nested runtime blocks
+# that describe the dev lane as it exists right now. Because the payload is a
+# single line, a `sed 's/.*"key":"\(...\)".*/\1/'` is greedy and returns the
+# LAST occurrence — a runtime value — while `head -1` does nothing to help.
+# That is not hypothetical: json_string_field reported the live daemon and the
+# dev build as having identical identities on 2026-07-28, which is exactly the
+# false "everything matches" this doctor must never produce. Anchor on the
+# first occurrence and require 64 hex chars.
+baked_source_id() {
+    local bin="$1"
+    [ -x "$bin" ] || return 0
+    timeout 20 "$bin" agentbuild 2>/dev/null |
+        grep -oE '"source_id_sha256"[[:space:]]*:[[:space:]]*"[0-9a-f]{64}"' |
+        head -1 |
+        grep -oE '[0-9a-f]{64}' || true
+}
+
 json_number_field() {
     local json="$1" key="$2"
     printf '%s\n' "$json" |
@@ -56,9 +76,7 @@ build_json() {
         mtime="$(stat -c '%y' "$SRC_BIN" 2>/dev/null || true)"
         size="$(stat -c '%s' "$SRC_BIN" 2>/dev/null || true)"
         identity="$("$SRC_BIN" agentbuild 2>/dev/null || true)"
-        source_id="$(printf '%s\n' "$identity" |
-            sed -n 's/.*"source_id_sha256"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
-            head -1 || true)"
+        source_id="$(baked_source_id "$SRC_BIN")"
         build_commit="$(printf '%s\n' "$identity" |
             sed -n 's/.*"build_commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
             head -1 || true)"
@@ -130,12 +148,63 @@ next_action() {
     fi
 }
 
+# ── Is the CANONICAL live node running this tree? ───────────────────────
+#
+# Everything else this doctor reports is about the DEV lane. Nothing compared
+# the running canonical daemon against the checkout, and the cost of that gap
+# is measured, not theoretical: on 2026-07-28 two separate "live defects" were
+# diagnosed off this repo, written up, and were in fact already FIXED in the
+# tree and merely never shipped. The daemon was running source_id ff29f119…
+# from a binary built 04:19 UTC while the fix had landed at 08:42 UTC.
+#
+# Reading the repo and assuming the running node contains it is the single
+# most expensive mistake available here, and it is silent — the node behaves
+# exactly like a node with a real bug. One string compare removes it.
+#
+# Read-only and failure-tolerant by construction: the daemon binary may be
+# absent (a fresh clone), unreadable, or slow, and none of that may break a
+# doctor whose whole job is to be safe to run. Any failure degrades to
+# live="unknown", never to a false "matches".
+live_node_json() {
+    local bin="${ZCL_AGENT_LIVE_BIN:-$HOME/.local/bin/zclassic23-live}"
+    # Compare against the RELEASE artifact, because that is what ship.sh
+    # deploys. The dev binary is built with different flags and bakes a
+    # different id from the same tree, so comparing the live node against it
+    # would report a permanent, meaningless mismatch.
+    local rel="${ZCL_AGENT_RELEASE_BIN:-build/bin/zclassic23}"
+    local rel_id live_id state="unknown" matches="false"
+
+    rel_id="$(baked_source_id "$rel")"
+
+    if [ ! -x "$bin" ]; then
+        printf '{"binary":"%s","present":false,"state":"absent","source_id_sha256":"","tree_source_id_sha256":"%s","matches_tree":false}\n' \
+            "$(json_escape "$bin")" "$(json_escape "$rel_id")"
+        return 0
+    fi
+
+    live_id="$(baked_source_id "$bin")"
+
+    if [ -n "$live_id" ]; then
+        state="reporting"
+        # Both ids must be present AND equal. An empty release id means the
+        # tree has not been built, so nothing is known — never "matches".
+        if [ -n "$rel_id" ] && [ "$live_id" = "$rel_id" ]; then
+            matches="true"
+        fi
+    fi
+
+    printf '{"binary":"%s","present":true,"state":"%s","source_id_sha256":"%s","tree_source_id_sha256":"%s","matches_tree":%s}\n' \
+        "$(json_escape "$bin")" "$state" "$(json_escape "$live_id")" \
+        "$(json_escape "$rel_id")" "$matches"
+}
+
 emit_json() {
     local dev_json fast_json build fail_log fail_summary changed dev_next
-    local fast_next action
+    local fast_next action live_json
     dev_json="$(dev_status_json)"
     fast_json="$(fast_plan_json)"
     build="$(build_json)"
+    live_json="$(live_node_json)"
     fail_log="$(latest_failure_log || true)"
     fail_summary="$(failure_summary "$fail_log" || true)"
     changed="$(json_number_field "$fast_json" "changed_file_count")"
@@ -149,6 +218,7 @@ emit_json() {
     printf '  "status": "ok",\n'
     printf '  "build": %s,\n' "$build"
     printf '  "dev_status": %s,\n' "$dev_json"
+    printf '  "live_node": %s,\n' "$live_json"
     printf '  "fast_lane": %s,\n' "$fast_json"
     printf '  "changed_file_count": %s,\n' "$changed"
     printf '  "latest_failure_log": "%s",\n' "$(json_escape "$fail_log")"
@@ -166,6 +236,14 @@ emit_text() {
             " executable=" + (.build.executable|tostring) +
             " source_id=" + .build.source_id_sha256 +
             " commit_display=" + .build.build_commit,
+            "[agent-doctor] live_node=" + (.live_node.state // "unknown") +
+            " running_this_tree=" + ((.live_node.matches_tree // false)|tostring) +
+            (if (.live_node.matches_tree // false) then ""
+             else "  ⚠ THE LIVE NODE IS NOT RUNNING THIS TREE — do not diagnose"
+                  + " live behaviour from this checkout (running="
+                  + ((.live_node.source_id_sha256 // "")[0:12])
+                  + "… tree=" + ((.live_node.tree_source_id_sha256 // "")[0:12])
+                  + "…); ship first or read the deployed source" end),
             "[agent-doctor] dev=" + (.dev_status.service.active_state // "unknown") +
             " rpc=" + (.dev_status.rpc.status // "unknown") +
             " staged_matches_source=" + ((.dev_status.installed_matches_source // false)|tostring) +
