@@ -411,17 +411,28 @@ the very PoW that secures it.
 
 `ZCL_FINALITY_DEPTH = 10`
 (`lib/validation/include/validation/main_constants.h:33`) with deep-reorg
-refusal (`reorg_is_allowed` / `height_is_immutable`,
-`lib/validation/include/validation/checkpoint.h:38,43`) means a partition
+refusal (`reorg_is_allowed` / `height_is_immutable`, both declared in
+`lib/validation/include/validation/checkpoint.h:38,43` — NOT in
+`main_constants.h`, which holds only the constant) means a partition
 surviving >10 blocks on both sides **never reconverges**. The refusal is not
 silent: both refusal paths in `app/jobs/src/utxo_apply_delta_reorg.c` raise
 the named blocker `chain.reorg_refused_below_finality`. Rules:
 
-- **Provisional < 10 confs ≤ final.** Anchors feed hints immediately but
-  confer no influence until final — kills flapping from shallow reorgs.
-- **10 confs is anti-flapping, not trust.** An attacker with ~10 blocks of
-  private hashpower can rewrite the recent window; influence comes only
-  from seniority (hours–days), never recency.
+- **Provisional below 10 deep, final at or beyond.** Anchors feed hints
+  immediately but confer no influence until final — kills flapping from
+  shallow reorgs. "Depth" is blocks built *on top*
+  (`current_height - record_height`), which is the same boundary
+  `height_is_immutable` draws and the same one `reorg_is_allowed` enforces;
+  in wallet "confirmations" terms (which count the record's own block) that
+  is 11. Implemented as a pure, total predicate in
+  `lib/policy/include/policy/anchor_finality.h`
+  (`anchor_confers_influence`), with the withdrawal rail — a reorg that
+  drops a record below finality takes its weight back — in
+  `lib/policy/src/anchor_finality.c` and proven in
+  `lib/test/src/test_anchor_finality.c`.
+- **10 deep is anti-flapping, not trust.** It does not make anything safe.
+  An attacker with ~10 blocks of private hashpower can rewrite the recent
+  window; influence comes only from seniority (hours–days), never recency.
 - **Netsplit detection is directory-safety infrastructure**, wired into
   the existing `app/conditions` + supervisor liveness tree:
   1. peer tip disagreement at same-or-greater height,
@@ -486,7 +497,12 @@ Existing (built on): `lib/znam/include/znam/znam.h`,
 `lib/net/src/msgprocessor_zcode_swarm.c`,
 `lib/net/src/onion_ratelimit.c`, `lib/net/src/onion_service.c`,
 `lib/net/src/v2_transport.c` + `lib/session/src/noise_handshake.c`,
-`lib/validation/include/validation/main_constants.h` (fee/finality/size),
+`lib/validation/include/validation/main_constants.h` (fee/finality/size
+constants only),
+`lib/validation/include/validation/checkpoint.h` (`reorg_is_allowed` /
+`height_is_immutable` — the finality *predicates*),
+`lib/policy/include/policy/anchor_finality.h` (provisional-vs-final gate on
+directory influence, and the reorg withdrawal rail),
 `lib/zanc/include/zanc/zanc.h` (generic 32-byte on-chain anchor),
 `lib/chain/src/mmr.c` (MMR hash conventions the domain tree mirrors),
 `core/chainparams/src/checkpoints.c` (baked trust anchor),

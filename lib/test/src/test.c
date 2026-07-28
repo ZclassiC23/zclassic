@@ -953,6 +953,8 @@ int main(int argc, char **argv)
     { extern int test_pprev_walk(void); failures += test_pprev_walk(); }
     { extern int test_chain_tip(void); failures += test_chain_tip(); }
     { extern int test_checkpoint(void); failures += test_checkpoint(); }
+    { extern int test_anchor_finality(void);
+      failures += test_anchor_finality(); }
     failures += test_keys();
     { extern int test_test_key_io_codec(void);
       failures += test_test_key_io_codec(); }
@@ -990,6 +992,7 @@ int main(int argc, char **argv)
     { extern int test_epoch(void); failures += test_epoch(); }
     { extern int test_zcode_release(void); failures += test_zcode_release(); }
     failures += test_zid_identity();
+    failures += test_zid_seniority();
     failures += test_zdir();
     failures += test_identity_command();
     { extern int test_zdesc(void); failures += test_zdesc(); }
@@ -1285,6 +1288,7 @@ int main(int argc, char **argv)
     failures += test_db_maintenance();
     failures += test_mempool_limits();
     failures += test_addrman_integrity();
+    failures += test_zdir_selection();
     failures += test_ibd_throttle();
     failures += test_consensus_reject_events();
     failures += test_consensus_reject_index();

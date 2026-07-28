@@ -7,8 +7,11 @@
  * context: -addnode connection setup (app_add_node), the metrics thread
  * lifecycle (app_start_metrics / app_stop_metrics) with its injected external
  * gauge callback (boot_metrics_external_gauges), the Prometheus RPC-counter
- * source (app_wire_metrics_sources), and the async sync-state observer that
- * logs sync-pipeline transitions (boot_sync_state_logger).
+ * source (app_wire_metrics_sources), the async sync-state observer that logs
+ * sync-pipeline transitions (boot_sync_state_logger), and the single advisory
+ * peer-selection weight feed (boot_seed_addrman_reputation), which merges
+ * banked bandwidth reputation with on-chain seniority into ONE bounded,
+ * never-exclusive call to addrman_set_reputation_weight.
  *
  * This TU is the single place that reads live subsystem state on behalf of
  * lib/metrics. lib/metrics deliberately links against neither lib/net,
@@ -45,8 +48,14 @@
 #include "event/event.h"
 #include "net/connman.h"
 #include "net/addrman.h"
+#include "net/zdir_selection.h"
 #include "net/addnode_file.h"
 #include "storage/peers_projection.h"
+#include "models/zid_identity.h"
+#include "zid/zid_seniority.h"
+#include "crypto/sha3.h"
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
 #include <netdb.h>
 #include <stdio.h>
 #include <string.h>
@@ -249,34 +258,295 @@ void app_add_nodes_from_file(const char *path)
     addnode_file_load(path, app_add_node_from_file_cb, NULL);
 }
 
-/* NET-2 feed-read: fold one banked reputation row into an addrman dial-
- * preference weight (bandwidth_score 0..255 → bounded [1, MAX] multiplier;
- * a fast peer is selected more often, never exclusionary). Fail-open. */
+/* ── The ONE advisory influence path into peer selection ───────────
+ *
+ * Everything below feeds exactly one function: addrman_set_reputation_weight()
+ * (lib/net/include/net/addrman.h), which clamps to [1.0,
+ * ADDRMAN_REPUTATION_MAX_MULT] and STRUCTURALLY CANNOT exclude a peer — the
+ * bound is a property of the API, not of the caller's discipline. Hardcoded
+ * seeds, address gossip and -addnode stay independent discovery roots that
+ * nothing here can narrow.
+ *
+ * Two opinions arrive about the same address: banked bandwidth reputation
+ * (NET-2) and on-chain seniority (T5.2). They are merged into ONE value by
+ * zid_seniority_combine() and issued as ONE call per address. This is
+ * deliberate and load-bearing: two calls would be two influence paths in
+ * everything but name, with the later one silently clobbering the earlier.
+ * If a third signal ever appears, it joins the combine — it does not get its
+ * own call. */
+
+/* Per-client draw context: the epoch seed T5.1's derivation produced. */
+struct boot_seniority_draw_ctx {
+    uint8_t seed[32];
+};
+
+/* The per-client selection derivation is T5.1's (net/zdir_selection.h) and is
+ * NOT reimplemented here — this is the adapter that plugs it into the
+ * seniority weighting's zid_seniority_draw_fn seam. lib/zid sits below
+ * lib/net in the module order and cannot call into it, so the boot
+ * composition root is where the two meet.
+ *
+ * zdir_candidate_score is SHA3-256(0x02 ‖ "ZDIR" ‖ seed ‖ candidate_id) with
+ * the seed already bound to this node's client key and the epoch's block
+ * hash; the low 8 bytes are a uniform draw. */
+static bool boot_seniority_client_draw(void *vctx, const uint8_t relay_id[32],
+                                       uint64_t *draw_out)
+{
+    const struct boot_seniority_draw_ctx *ctx = vctx;
+    if (!ctx || !relay_id || !draw_out)
+        LOG_FAIL("boot_seniority", "draw: NULL ctx/relay/out");
+
+    uint8_t score[32];
+    if (!zdir_candidate_score(score, ctx->seed, relay_id))
+        LOG_FAIL("boot_seniority", "draw: zdir_candidate_score failed");
+
+    uint64_t d = 0;
+    for (int i = 0; i < 8; i++)
+        d |= (uint64_t)score[i] << (8 * i);
+    *draw_out = d;
+    return true;
+}
+
+/* Build the per-client, per-epoch seed the draw above is keyed on, entirely
+ * through T5.1's primitives: client_key from this node's addrman salt (durable
+ * across restarts, never on the wire), epoch seed from that key plus the block
+ * hash at the RANKING EPOCH height rather than at the tip — that is the update
+ * rate limit, so the favourite set rotates about every 6 hours instead of every
+ * block, and an attacker gets one grinding attempt per epoch instead of one per
+ * 150 seconds.
+ *
+ * When the epoch height is outside the in-memory active chain window (early
+ * boot, or a node still folding) the block hash stays all-zero. The seed is
+ * still per-client, because client_key alone already makes it so; the only
+ * thing missing is chain-binding of the rotation. Never an error, never a
+ * fallback to a shared ranking. */
+static bool boot_seniority_epoch_seed(const struct addr_man *am,
+                                      int32_t epoch_height, uint8_t seed[32])
+{
+    if (!am || !seed)
+        LOG_FAIL("boot_seniority", "epoch seed: NULL addrman/out");
+
+    uint8_t client_key[32];
+    if (!zdir_client_key(client_key, am->nKey.data))
+        LOG_FAIL("boot_seniority", "epoch seed: client key derivation failed");
+
+    uint8_t block_hash[32];
+    memset(block_hash, 0, sizeof(block_hash));
+
+    struct boot_svc_ctx *svc = boot_active_svc();
+    if (svc && svc->state && epoch_height > 0) {
+        zcl_mutex_lock(&svc->state->cs_main);
+        struct block_index *bi =
+            active_chain_at(&svc->state->chain_active, epoch_height);
+        if (bi)
+            memcpy(block_hash, bi->hashBlock.data, 32);
+        zcl_mutex_unlock(&svc->state->cs_main);
+    }
+
+    if (!zdir_epoch_seed(seed, block_hash, client_key))
+        LOG_FAIL("boot_seniority", "epoch seed: zdir_epoch_seed failed");
+    return true;
+}
+
+/* SEAM — resolve a dialable peer address to the anchored relay identity that
+ * registered it.
+ *
+ * DELIBERATELY UNWIRED, AND SAYING SO RATHER THAN FAKING IT. The ZID overlay
+ * anchors a master key to the chain (zid/zid_anchor.h) and the projection
+ * records who anchored it and at what height (models/zid_identity.h), but
+ * NOTHING on-chain yet binds that key to an IP or an onion — no ZID command
+ * publishes a relay's contact address. Inventing a binding here (matching a
+ * text record, or trusting a peer's self-reported identity in its version
+ * handshake) would be exactly the unauthenticated claim this layer exists to
+ * remove, and it would be worse than no binding at all: it would let anyone
+ * borrow someone else's seniority by asserting their key.
+ *
+ * So this returns false for every address today. Consequence, stated
+ * plainly: every address currently gets seniority multiplier 1.0, so the
+ * combined weight is identical to the bandwidth-only weight. The table above
+ * it is still built, scored, owner-capped and drawn — only this last hop is
+ * missing, and this function is the ONE place that changes when the on-chain
+ * address binding lands. */
+static bool boot_seniority_relay_for_addr(const uint8_t ip[16], uint16_t port,
+                                          uint8_t relay_id[32])
+{
+    (void)ip;
+    (void)port;
+    (void)relay_id;
+    return false;
+}
+
+/* Everything one address needs to be weighted. */
+struct boot_addrman_seed_ctx {
+    struct addr_man *am;
+    const struct zid_seniority_weight *seniority;  /* sorted by relay_id */
+    size_t seniority_n;
+};
+
+/* Feed-read: fold one address's banked bandwidth reputation and its on-chain
+ * seniority into a single bounded dial-preference weight. Neither signal can
+ * lower the other and neither can drop a peer below the unweighted baseline.
+ * Fail-open throughout. */
 static void boot_addrman_reputation_cb(const uint8_t ip[16], uint16_t port,
                                        const struct peer_reputation *rep,
                                        void *ctx)
 {
-    struct addr_man *am = ctx;
-    (void)port;
-    if (!am || !rep || rep->bandwidth_score == 0)
+    struct boot_addrman_seed_ctx *sc = ctx;
+    if (!sc || !sc->am || !rep)
         return;
-    double frac = (double)rep->bandwidth_score / 255.0;
-    if (frac > 1.0) frac = 1.0;
-    double weight = 1.0 + (ADDRMAN_REPUTATION_MAX_MULT - 1.0) * frac;
+
+    /* NET-2: bandwidth_score 0..255 → bounded [1, MAX] multiplier. */
+    double bandwidth_mult = 1.0;
+    if (rep->bandwidth_score > 0) {
+        double frac = (double)rep->bandwidth_score / 255.0;
+        if (frac > 1.0) frac = 1.0;
+        bandwidth_mult = 1.0 + (ADDRMAN_REPUTATION_MAX_MULT - 1.0) * frac;
+    }
+
+    /* T5.2: on-chain seniority, per-client and owner-capped. */
+    double seniority_mult = 1.0;
+    uint8_t relay_id[32];
+    if (sc->seniority_n &&
+        boot_seniority_relay_for_addr(ip, port, relay_id)) {
+        const struct zid_seniority_weight *w =
+            zid_seniority_find(sc->seniority, sc->seniority_n, relay_id);
+        if (w)
+            seniority_mult = w->multiplier;
+    }
+
+    double weight = zid_seniority_combine(bandwidth_mult, seniority_mult);
+    if (weight <= 1.0)
+        return;   /* no opinion — leave the address on the plain baseline */
+
     struct net_addr na;
     memset(&na, 0, sizeof(na));
     memcpy(na.ip, ip, 16);
-    (void)addrman_set_reputation_weight(am, &na, weight);
+    (void)addrman_set_reputation_weight(sc->am, &na, weight);
 }
 
-/* Seed addrman dial preference from the peers projection's banked reputation
- * (the projection is opened + caught up earlier in boot). Bounded, fail-open. */
+/* Build this node's seniority table from the on-chain identity projection.
+ *
+ * Reads anchor_height (how long the identity has been anchored) and
+ * owner_address (the P2PKH signer that anchored it, the same owner
+ * convention ZNAM uses) out of zid_identities, hashes the owner address into
+ * an opaque grouping key, and hands the set to zid_seniority_rank() — which
+ * applies the anti-Sybil age floor, the per-owner influence cap, and this
+ * node's own draw.
+ *
+ * Returns the entry count and sets *out_table to a heap table the caller
+ * frees, or 0 with *out_table NULL (no rows, no db, or allocation failure —
+ * all of which degrade to bandwidth-only weighting, never to an error). */
+static size_t boot_build_seniority_table(struct zid_seniority_weight **out_table,
+                                         const struct addr_man *am)
+{
+    if (!out_table)
+        return 0;
+    *out_table = NULL;
+
+    struct boot_svc_ctx *svc = boot_active_svc();
+    if (!svc || !svc->node_db || !svc->node_db->open)
+        return 0;
+
+    int64_t total = db_zid_identity_count(svc->node_db);
+    if (total <= 0)
+        return 0;   /* no anchored identities: nothing to weigh */
+    if (total > ZID_SENIORITY_MAX_RELAYS)
+        total = ZID_SENIORITY_MAX_RELAYS;   /* projection quota */
+
+    size_t n = (size_t)total;
+    struct zid_relay_registration *regs =
+        zcl_malloc(n * sizeof(*regs), "seniority_registrations");
+    struct zid_seniority_weight *tbl =
+        zcl_malloc(n * sizeof(*tbl), "seniority_weights");
+    if (!regs || !tbl) {
+        free(regs);
+        free(tbl);
+        return 0;
+    }
+
+    /* Page the projection in bounded chunks — the row struct is large and
+     * this runs on the boot thread's stack. */
+    struct zid_identity page[32];
+    size_t filled = 0;
+    int offset = 0;
+    while (filled < n) {
+        int got = db_zid_identity_list(svc->node_db, page,
+                                       (int)(sizeof(page) / sizeof(page[0])),
+                                       offset);
+        if (got <= 0)
+            break;
+        for (int i = 0; i < got && filled < n; i++) {
+            memset(&regs[filled], 0, sizeof(regs[filled]));
+            memcpy(regs[filled].relay_id, page[i].master_pubkey, 32);
+            regs[filled].registration_height = page[i].anchor_height;
+            /* owner_id is an opaque grouping key; an empty owner_address
+             * stays all-zero, which zid_seniority treats as "unknown owner"
+             * and pointedly does NOT pool with other unknowns. */
+            if (page[i].owner_address[0])
+                sha3_256((const unsigned char *)page[i].owner_address,
+                         strlen(page[i].owner_address), regs[filled].owner_id);
+            filled++;
+        }
+        offset += got;
+    }
+
+    size_t count = 0;
+    if (filled > 0) {
+        int32_t tip = reducer_frontier_provable_tip_cached();
+        struct boot_seniority_draw_ctx dctx;
+        memset(&dctx, 0, sizeof(dctx));
+        if (boot_seniority_epoch_seed(am, zid_seniority_epoch_height(tip),
+                                      dctx.seed)) {
+            int ranked = zid_seniority_rank(regs, filled, tip,
+                                            boot_seniority_client_draw, &dctx,
+                                            tbl, n);
+            if (ranked > 0)
+                count = (size_t)ranked;
+        }
+    }
+
+    free(regs);
+    if (count == 0) {
+        free(tbl);
+        return 0;
+    }
+    *out_table = tbl;
+    return count;
+}
+
+/* Seed addrman dial preference from banked bandwidth reputation (the peers
+ * projection is opened + caught up earlier in boot) combined with on-chain
+ * seniority. Bounded, one-shot, fail-open. */
 static void boot_seed_addrman_reputation(struct addr_man *am)
 {
     if (!am)
         return;
+
+    /* The table is derived per-client (through zdir_client_key over this
+     * node's durable addrman salt), never globally — see rule (1): a single
+     * deterministic ranking every client shares would be an anonymity
+     * monoculture, one ranking with one top relay for everyone to attack. */
+    struct zid_seniority_weight *table = NULL;
+    size_t table_n = boot_build_seniority_table(&table, am);
+
+    struct boot_addrman_seed_ctx sc;
+    memset(&sc, 0, sizeof(sc));
+    sc.am = am;
+    sc.seniority = table;
+    sc.seniority_n = table_n;
+
     (void)peers_projection_for_each_reputation_global(
-        4096, boot_addrman_reputation_cb, am);
+        4096, boot_addrman_reputation_cb, &sc);
+
+    if (table_n > 0)
+        LOG_INFO("boot_seniority",
+                 "ranked %zu anchored relay identities (epoch %d); no on-chain "
+                 "address binding yet, so no address consumes a seniority "
+                 "boost this boot",
+                 table_n, zid_seniority_epoch_height(
+                              reducer_frontier_provable_tip_cached()));
+
+    free(table);
 }
 
 void app_log_bootstrap_sources(const struct chain_params *params,
