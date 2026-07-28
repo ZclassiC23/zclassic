@@ -28,6 +28,38 @@ void equihash_params_init(struct equihash_params *p,
     p->solution_width = ((size_t)1 << K) * (p->collision_bit_length + 1) / 8;
 }
 
+bool equihash_params_supported(unsigned int N, unsigned int K)
+{
+    if (N == 0 || K == 0)
+        return false;
+    /* final_full_width / solution_width both compute (size_t)1 << K. */
+    if (K >= 32)
+        return false;
+    /* indices_per_hash_output = 512 / N must be at least one, and
+     * hash_output = indices_per_hash_output * N / 8 must be exact. */
+    if (N > 512)
+        return false;
+    size_t ipho = 512u / N;
+    if (ipho == 0 || (ipho * N) % 8 != 0)
+        return false;
+
+    size_t cbl = (size_t)N / ((size_t)K + 1);
+    /* The bit-packers (eh_expand_array / eh_compress_array) require
+     * bit_len >= 8 and 8 * sizeof(uint32_t) >= 7 + bit_len. The widest
+     * bit_len they are ever handed is collision_bit_length + 1 (the minimal
+     * solution packing in eh_get_indices_from_minimal), so the usable window
+     * is 8 <= collision_bit_length <= 24. All four consensus parameter sets
+     * land inside it: (48,5)=8, (96,5)=16, (200,9)=20, (192,7)=24. */
+    if (cbl < 8)
+        return false;
+    if (8 * sizeof(uint32_t) < 7 + (cbl + 1))
+        return false;
+    /* eh_get_indices_from_minimal packs each index into sizeof(eh_index). */
+    if (((cbl + 1) + 7) / 8 > sizeof(eh_index))
+        return false;
+    return true;
+}
+
 bool equihash_solution_params(size_t solution_len,
                               unsigned int *n, unsigned int *k)
 {
@@ -78,6 +110,29 @@ static void generate_hash(const struct blake2b_ctx *base_state,
     blake2b_final(&state, hash, hash_len);
 }
 
+/* The asserts in the two bit-packers below and in eh_get_*_from_* are
+ * DELIBERATELY left as asserts, unlike the hostile-input decoders elsewhere
+ * in the tree. They are not reachable with attacker-chosen widths:
+ *
+ *   - Both inbound (block-verification) paths resolve (N,K) from the
+ *     serialized solution LENGTH before anything else runs —
+ *     core/consensus/src/equihash.c:54 and
+ *     lib/crypto_registry/src/scheme_equihash_200_9.c:27 both call
+ *     equihash_solution_params() first, and that admits exactly four sizes:
+ *       1344 -> (200,9)  collision_bit_length 20
+ *        400 -> (192,7)  collision_bit_length 24
+ *         68 -> ( 96,5)  collision_bit_length 16
+ *         36 -> ( 48,5)  collision_bit_length  8
+ *     Every assert below holds for all four, so no peer-supplied block can
+ *     trip one.
+ *   - eh_compress_array is encode/mining side only (eh_get_minimal_from_
+ *     indices); it never sees network input.
+ *
+ * Converting them would mean void -> bool on two exported symbols plus new
+ * branches inside the PoW verifier — a consensus-divergence risk against
+ * zclassicd for no live risk reduction. The gap that IS real is a FUTURE
+ * chain-params (N,K) entry reaching the packer unchecked; that is closed by
+ * equihash_params_supported() below, called at the mining config seams. */
 void eh_expand_array(const unsigned char *in, size_t in_len,
                      unsigned char *out, size_t out_len,
                      size_t bit_len, size_t byte_pad)

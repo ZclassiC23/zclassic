@@ -49,12 +49,12 @@ int test_keys(void)
         pubkey_set(&epk.pubkey, data, 33);
 
         unsigned char code[BIP32_EXTKEY_SIZE];
-        ext_pubkey_encode(&epk, code);
+        bool encoded = ext_pubkey_encode(&epk, code);
 
         struct ext_pubkey decoded;
         ext_pubkey_decode(&decoded, code);
 
-        if (decoded.nDepth == 3 && decoded.nChild == 42 &&
+        if (encoded && decoded.nDepth == 3 && decoded.nChild == 42 &&
             decoded.pubkey.size == 33)
             printf("OK\n");
         else {

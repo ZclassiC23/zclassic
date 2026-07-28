@@ -45,6 +45,13 @@ static bool try_solve_equihash(struct block *blk,
     unsigned int n = chain_params_equihash_n(params, height);
     unsigned int k = chain_params_equihash_k(params, height);
 
+    /* Same refusal as mine_block_pow: an (N,K) outside the bit-packers'
+     * width assumptions must never reach them (their asserts are live in
+     * release builds). */
+    if (!equihash_params_supported(n, k))
+        LOG_FAIL("mining", "try_solve_equihash: unsupported equihash "
+                 "parameters N=%u K=%u at height %d", n, k, height);
+
     struct equihash_params ep;
     equihash_params_init(&ep, n, k);
 

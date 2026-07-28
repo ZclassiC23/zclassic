@@ -38,6 +38,18 @@ struct equihash_params {
 void equihash_params_init(struct equihash_params *p,
                           unsigned int N, unsigned int K);
 
+/* True iff this build's Equihash machinery can actually run (N,K): the
+ * derived collision_bit_length must land in the window the bit-packers
+ * (eh_expand_array / eh_compress_array) assert on — 8..24 — and the index
+ * packing must fit sizeof(eh_index). All four consensus parameter sets pass:
+ * (48,5), (96,5), (200,9), (192,7).
+ *
+ * Block VERIFICATION does not need this: equihash_solution_params() already
+ * admits only those four. It exists for the configuration seams that read
+ * (N,K) from chain params — today the miner — so that a future parameter set
+ * is refused with a message instead of reaching the bit-packers unchecked. */
+bool equihash_params_supported(unsigned int N, unsigned int K);
+
 /* Map a serialized Equihash solution length to its (N, K) parameter set.
  * Recognised sizes: 1344 -> (200,9), 400 -> (192,7), 68 -> (96,5),
  * 36 -> (48,5). Returns true on a recognised size (and writes *n and *k);

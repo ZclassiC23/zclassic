@@ -90,9 +90,21 @@ bool pubkey_derive(const struct pubkey *pk, struct pubkey *child,
                    struct uint256 *cc_child, unsigned int nChild,
                    const struct uint256 *cc)
 {
-    assert(pubkey_is_valid(pk));
-    assert((nChild >> 31) == 0);
-    assert(pk->size == COMPRESSED_PUBLIC_KEY_SIZE);
+    /* Total function on purpose: BIP32 derivation is reachable from
+     * watch-only xpub import and wallet address scanning, both of which
+     * carry externally-supplied parent keys and child indices. assert() is
+     * live in release builds (-DNDEBUG is not set for the node), so the old
+     * assert() trio let one bad xpub or one hardened index abort the whole
+     * node. All three now fail cleanly to the caller. */
+    if (!pubkey_is_valid(pk))
+        LOG_FAIL("keys", "pubkey_derive: parent key is empty");
+    if ((nChild >> 31) != 0)
+        LOG_FAIL("keys", "pubkey_derive: index %u is hardened; hardened "
+                 "children cannot be derived from a public key", nChild);
+    if (pk->size != COMPRESSED_PUBLIC_KEY_SIZE)
+        LOG_FAIL("keys", "pubkey_derive: parent key is %u bytes, BIP32 "
+                 "requires a %d-byte compressed key",
+                 pk->size, COMPRESSED_PUBLIC_KEY_SIZE);
     unsigned char out[64];
     bip32_hash(cc->data, nChild, pk->vch[0], pk->vch + 1, out);
     memcpy(cc_child->data, out + 32, 32);
@@ -120,15 +132,23 @@ bool pubkey_check_low_s(const unsigned char *sig, size_t siglen)
                                                  NULL, &esig);
 }
 
-void ext_pubkey_encode(const struct ext_pubkey *epk,
+/* Returns false (instead of the old live assert()) when the extended key
+ * does not hold a compressed public key: hd_serialize_xpub feeds this from
+ * wallet state that an uncompressed or empty key can reach, and the
+ * fixed-width BIP32 body has no encoding for anything else. */
+bool ext_pubkey_encode(const struct ext_pubkey *epk,
                        unsigned char code[BIP32_EXTKEY_SIZE])
 {
+    if (epk->pubkey.size != COMPRESSED_PUBLIC_KEY_SIZE)
+        LOG_FAIL("keys", "ext_pubkey_encode: key is %u bytes, the BIP32 "
+                 "extended-key body holds only a %d-byte compressed key",
+                 epk->pubkey.size, COMPRESSED_PUBLIC_KEY_SIZE);
     code[0] = epk->nDepth;
     memcpy(code + 1, epk->vchFingerprint, 4);
     WriteBE32(code + 5, epk->nChild);
     memcpy(code + 9, epk->chaincode.data, 32);
-    assert(epk->pubkey.size == COMPRESSED_PUBLIC_KEY_SIZE);
     memcpy(code + 41, epk->pubkey.vch, COMPRESSED_PUBLIC_KEY_SIZE);
+    return true;
 }
 
 void ext_pubkey_decode(struct ext_pubkey *epk,
@@ -152,6 +172,13 @@ bool ext_pubkey_derive(const struct ext_pubkey *epk,
                          nChild, &epk->chaincode);
 }
 
+/* The asserts in these two are DELIBERATELY left as asserts. Unlike every
+ * other check in this file they guard a process-wide singleton's lifecycle,
+ * not caller-supplied data: no external input can reach them, both are
+ * called exactly once (startup / shutdown), and a violation means the boot
+ * sequence itself is wired wrong. Failing loudly at that point is correct —
+ * a node that carries on with a NULL or double-created verification context
+ * would silently accept or reject signatures. */
 void ecc_verify_init(void)
 {
     assert(secp256k1_ctx_verify == NULL);
