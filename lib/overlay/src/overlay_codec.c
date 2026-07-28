@@ -130,6 +130,33 @@ bool overlay_read_bounded(struct overlay_reader *r, uint8_t *dst,
     return true;
 }
 
+bool overlay_try_read_fixed(struct overlay_reader *r, uint8_t *dst, size_t n)
+{
+    if (!r || !r->ok) {
+        if (r) r->ok = false;
+        return false;
+    }
+
+    /* Rewind point: a non-matching field is the END OF THE LIST, so the cursor
+     * must be left exactly where the caller can read whatever follows. */
+    const uint8_t *save = r->p;
+    const uint8_t *data = NULL;
+    size_t len = 0;
+    if (!overlay_read_field(r, &data, &len) || len != n) {
+        r->p = save;
+        r->ok = true;               /* not a parse error — see the header */
+        return false;
+    }
+    if (n) {
+        if (!dst) {
+            r->ok = false;
+            return false;
+        }
+        memcpy(dst, data, n);
+    }
+    return true;
+}
+
 bool overlay_reader_finish(struct overlay_reader *r)
 {
     if (!r || !r->ok) {
@@ -184,6 +211,19 @@ bool overlay_put_field(struct overlay_writer *w,
 bool overlay_put_u8(struct overlay_writer *w, uint8_t v)
 {
     return overlay_put_field(w, &v, 1);
+}
+
+bool overlay_put_empty_pushdata1(struct overlay_writer *w)
+{
+    if (!w || !w->ok) {
+        if (w) w->ok = false;
+        return false;
+    }
+    if (!push_empty_checked(w->out, &w->off, w->cap)) {
+        w->ok = false;
+        return false;
+    }
+    return true;
 }
 
 size_t overlay_writer_finish(struct overlay_writer *w)

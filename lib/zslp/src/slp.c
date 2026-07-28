@@ -10,9 +10,20 @@
  * All integer fields are big-endian. */
 
 #include "zslp/slp.h"
-#include "script/op_return_push.h"
+#include "overlay/overlay_codec.h"
 #include "util/log_macros.h"
 #include <string.h>
+
+/* Parsing and building run on the shared overlay cursors
+ * (overlay/overlay_codec.h). Two live-on-mainnet constraints shape how:
+ *
+ *  - No overlay_reader_finish. SLP shipped without a trailing-byte check, and
+ *    blog_build_node_announce deliberately appends a hostname after a complete
+ *    SEND; those transactions parse today and must keep parsing.
+ *  - Empty fields are written with overlay_put_empty_pushdata1 (0x4c 0x00),
+ *    which is what this builder has always emitted. The one-byte OP_0 that
+ *    overlay_put_field(len=0) produces would change the script bytes, and with
+ *    them the txid of every genesis/mint that omits an optional field. */
 
 /* Read a big-endian uint64 from data of given length (1-8 bytes). */
 static uint64_t be_to_u64(const uint8_t *data, size_t len)
@@ -59,74 +70,62 @@ bool slp_parse(const uint8_t *script, size_t script_len,
     memset(msg, 0, sizeof(*msg));
     msg->type = SLP_TX_INVALID;
 
-    if (!script || script_len == 0) return false;
-    const uint8_t *p = script;
-    const uint8_t *end = script + script_len;
-
-    /* Must start with OP_RETURN (0x6a) */
-    if (p >= end || *p != 0x6a) return false;
-    p++;
-
-    /* Field 0: lokad_id — must be "SLP\0" (4 bytes) */
-    const uint8_t *data; size_t len;
-    p = read_push(p, end, &data, &len);
-    if (!p || len != 4 || memcmp(data, SLP_LOKAD_BYTES, 4) != 0)
+    /* Field 0: lokad_id — must be "SLP\0" (4 bytes), after OP_RETURN. */
+    struct overlay_reader r;
+    if (!overlay_reader_begin(&r, script, script_len, SLP_LOKAD_BYTES))
         return false;
 
     /* Field 1: token_type — must be 1 (1-2 bytes) */
-    p = read_push(p, end, &data, &len);
-    if (!p || len < 1 || len > 2) return false;
+    const uint8_t *data = NULL;
+    size_t len = 0;
+    if (!overlay_read_field(&r, &data, &len)) return false;
+    if (len < 1 || len > 2) return false;
     msg->token_type = (uint8_t)be_to_u64(data, len);
     if (msg->token_type != SLP_TOKEN_TYPE_1) return false;
 
     /* Field 2: transaction_type */
-    p = read_push(p, end, &data, &len);
-    if (!p) return false;
+    if (!overlay_read_field(&r, &data, &len)) return false;
 
     if (len == 7 && memcmp(data, "GENESIS", 7) == 0) {
         msg->type = SLP_TX_GENESIS;
 
         /* Field 3: ticker */
-        p = read_push(p, end, &data, &len);
-        if (!p) return false;
+        if (!overlay_read_field(&r, &data, &len)) return false;
         slp_copy_str_field(data, len, msg->ticker, sizeof(msg->ticker), "ticker");
 
         /* Field 4: name */
-        p = read_push(p, end, &data, &len);
-        if (!p) return false;
+        if (!overlay_read_field(&r, &data, &len)) return false;
         slp_copy_str_field(data, len, msg->name, sizeof(msg->name), "name");
 
         /* Field 5: document_url */
-        p = read_push(p, end, &data, &len);
-        if (!p) return false;
+        if (!overlay_read_field(&r, &data, &len)) return false;
         slp_copy_str_field(data, len, msg->document_url, sizeof(msg->document_url),
                            "document_url");
 
         /* Field 6: document_hash (0 or 32 bytes) */
-        p = read_push(p, end, &data, &len);
-        if (!p) return false;
+        if (!overlay_read_field(&r, &data, &len)) return false;
         if (len == 32) {
             memcpy(msg->document_hash, data, 32);
             msg->has_document_hash = true;
         }
 
         /* Field 7: decimals (1 byte, 0-9) */
-        p = read_push(p, end, &data, &len);
-        if (!p || len != 1 || data[0] > 9) return false;
-        msg->decimals = data[0];
+        uint8_t decimals = 0;
+        if (!overlay_read_u8(&r, &decimals)) return false;
+        if (decimals > 9) return false;
+        msg->decimals = decimals;
 
         /* Field 8: mint_baton_vout (0 or 1 byte) */
-        p = read_push(p, end, &data, &len);
-        if (!p) return false;
+        if (!overlay_read_field(&r, &data, &len)) return false;
         if (len == 1) {
             if (data[0] < 2) return false; /* vout must be >= 2 */
             msg->mint_baton_vout = data[0];
         }
 
         /* Field 9: initial_token_mint_quantity (8 bytes) */
-        p = read_push(p, end, &data, &len);
-        if (!p || len != 8) return false;
-        msg->initial_quantity = be_to_u64(data, 8);
+        uint8_t qty[8];
+        if (!overlay_read_fixed(&r, qty, sizeof(qty))) return false;
+        msg->initial_quantity = be_to_u64(qty, sizeof(qty));
 
         return true;
 
@@ -134,22 +133,19 @@ bool slp_parse(const uint8_t *script, size_t script_len,
         msg->type = SLP_TX_MINT;
 
         /* Field 3: token_id (32 bytes) */
-        p = read_push(p, end, &data, &len);
-        if (!p || len != 32) return false;
-        memcpy(msg->token_id.data, data, 32);
+        if (!overlay_read_fixed(&r, msg->token_id.data, 32)) return false;
 
         /* Field 4: mint_baton_vout */
-        p = read_push(p, end, &data, &len);
-        if (!p) return false;
+        if (!overlay_read_field(&r, &data, &len)) return false;
         if (len == 1) {
             if (data[0] < 2) return false;
             msg->mint_baton_vout = data[0];
         }
 
         /* Field 5: additional_token_quantity (8 bytes) */
-        p = read_push(p, end, &data, &len);
-        if (!p || len != 8) return false;
-        msg->additional_quantity = be_to_u64(data, 8);
+        uint8_t qty[8];
+        if (!overlay_read_fixed(&r, qty, sizeof(qty))) return false;
+        msg->additional_quantity = be_to_u64(qty, sizeof(qty));
 
         return true;
 
@@ -157,21 +153,18 @@ bool slp_parse(const uint8_t *script, size_t script_len,
         msg->type = SLP_TX_SEND;
 
         /* Field 3: token_id (32 bytes) */
-        p = read_push(p, end, &data, &len);
-        if (!p || len != 32) return false;
-        memcpy(msg->token_id.data, data, 32);
+        if (!overlay_read_fixed(&r, msg->token_id.data, 32)) return false;
 
-        /* Fields 4+: output quantities (8 bytes each, 1-19 outputs) */
+        /* Fields 4+: output quantities (8 bytes each, 1-19 outputs). The list
+         * ends at the first field that is not an 8-byte push — which is a
+         * terminator, not a parse error, so it reads through
+         * overlay_try_read_fixed and leaves the cursor on that field. */
+        uint8_t qty[8];
         msg->num_outputs = 0;
-        while (msg->num_outputs < 19) {
-            const uint8_t *saved = p;
-            p = read_push(p, end, &data, &len);
-            if (!p || len != 8) {
-                p = saved; /* restore for check below */
-                break;
-            }
-            msg->output_quantities[msg->num_outputs++] = be_to_u64(data, 8);
-        }
+        while (msg->num_outputs < 19 &&
+               overlay_try_read_fixed(&r, qty, sizeof(qty)))
+            msg->output_quantities[msg->num_outputs++] =
+                be_to_u64(qty, sizeof(qty));
         if (msg->num_outputs < 1) return false;
 
         return true;
@@ -189,63 +182,52 @@ size_t slp_build_genesis(uint8_t *out, size_t out_len,
                           uint8_t decimals, uint8_t mint_baton_vout,
                           uint64_t initial_quantity)
 {
-    if (out_len < 1) return 0;
-    size_t off = 0;
-    out[off++] = 0x6a; /* OP_RETURN */
+    struct overlay_writer w;
+    overlay_writer_begin(&w, out, out_len, SLP_LOKAD_BYTES);
 
-    bool ok = true;
-    ok = ok && push_data_checked(out, &off, out_len,
-                                 (const uint8_t *)SLP_LOKAD_BYTES, 4);
-
-    uint8_t tt = 1;
-    ok = ok && push_data_checked(out, &off, out_len, &tt, 1);
-
-    ok = ok && push_data_checked(out, &off, out_len,
-                                 (const uint8_t *)"GENESIS", 7);
+    overlay_put_u8(&w, SLP_TOKEN_TYPE_1);
+    overlay_put_field(&w, (const uint8_t *)"GENESIS", 7);
 
     /* ticker */
     if (ticker && ticker[0])
-        ok = ok && push_data_checked(out, &off, out_len,
-                                     (const uint8_t *)ticker, strlen(ticker));
+        overlay_put_field(&w, (const uint8_t *)ticker, strlen(ticker));
     else
-        ok = ok && push_empty_checked(out, &off, out_len);
+        overlay_put_empty_pushdata1(&w);
 
     /* name */
     if (name && name[0])
-        ok = ok && push_data_checked(out, &off, out_len,
-                                     (const uint8_t *)name, strlen(name));
+        overlay_put_field(&w, (const uint8_t *)name, strlen(name));
     else
-        ok = ok && push_empty_checked(out, &off, out_len);
+        overlay_put_empty_pushdata1(&w);
 
     /* document_url */
     if (document_url && document_url[0])
-        ok = ok && push_data_checked(out, &off, out_len,
-                                     (const uint8_t *)document_url,
-                                     strlen(document_url));
+        overlay_put_field(&w, (const uint8_t *)document_url,
+                          strlen(document_url));
     else
-        ok = ok && push_empty_checked(out, &off, out_len);
+        overlay_put_empty_pushdata1(&w);
 
     /* document_hash */
     if (document_hash)
-        ok = ok && push_data_checked(out, &off, out_len, document_hash, 32);
+        overlay_put_field(&w, document_hash, 32);
     else
-        ok = ok && push_empty_checked(out, &off, out_len);
+        overlay_put_empty_pushdata1(&w);
 
     /* decimals */
-    ok = ok && push_data_checked(out, &off, out_len, &decimals, 1);
+    overlay_put_u8(&w, decimals);
 
     /* mint_baton_vout */
     if (mint_baton_vout >= 2)
-        ok = ok && push_data_checked(out, &off, out_len, &mint_baton_vout, 1);
+        overlay_put_u8(&w, mint_baton_vout);
     else
-        ok = ok && push_empty_checked(out, &off, out_len);
+        overlay_put_empty_pushdata1(&w);
 
     /* initial_quantity */
     uint8_t qty[8];
     u64_to_be(qty, initial_quantity);
-    ok = ok && push_data_checked(out, &off, out_len, qty, 8);
+    overlay_put_field(&w, qty, sizeof(qty));
 
-    return ok ? off : 0;
+    return overlay_writer_finish(&w);
 }
 
 size_t slp_build_mint(uint8_t *out, size_t out_len,
@@ -253,29 +235,23 @@ size_t slp_build_mint(uint8_t *out, size_t out_len,
                        uint8_t mint_baton_vout,
                        uint64_t additional_quantity)
 {
-    if (out_len < 1) return 0;
-    size_t off = 0;
-    out[off++] = 0x6a;
+    struct overlay_writer w;
+    overlay_writer_begin(&w, out, out_len, SLP_LOKAD_BYTES);
 
-    bool ok = true;
-    ok = ok && push_data_checked(out, &off, out_len,
-                                 (const uint8_t *)SLP_LOKAD_BYTES, 4);
-    uint8_t tt = 1;
-    ok = ok && push_data_checked(out, &off, out_len, &tt, 1);
-    ok = ok && push_data_checked(out, &off, out_len,
-                                 (const uint8_t *)"MINT", 4);
-    ok = ok && push_data_checked(out, &off, out_len, token_id->data, 32);
+    overlay_put_u8(&w, SLP_TOKEN_TYPE_1);
+    overlay_put_field(&w, (const uint8_t *)"MINT", 4);
+    overlay_put_field(&w, token_id->data, 32);
 
     if (mint_baton_vout >= 2)
-        ok = ok && push_data_checked(out, &off, out_len, &mint_baton_vout, 1);
+        overlay_put_u8(&w, mint_baton_vout);
     else
-        ok = ok && push_empty_checked(out, &off, out_len);
+        overlay_put_empty_pushdata1(&w);
 
     uint8_t qty[8];
     u64_to_be(qty, additional_quantity);
-    ok = ok && push_data_checked(out, &off, out_len, qty, 8);
+    overlay_put_field(&w, qty, sizeof(qty));
 
-    return ok ? off : 0;
+    return overlay_writer_finish(&w);
 }
 
 size_t slp_build_send(uint8_t *out, size_t out_len,
@@ -283,25 +259,19 @@ size_t slp_build_send(uint8_t *out, size_t out_len,
                        const uint64_t *quantities, int num_outputs)
 {
     if (num_outputs < 1 || num_outputs > 19) return 0;
-    if (out_len < 1) return 0;
 
-    size_t off = 0;
-    out[off++] = 0x6a;
+    struct overlay_writer w;
+    overlay_writer_begin(&w, out, out_len, SLP_LOKAD_BYTES);
 
-    bool ok = true;
-    ok = ok && push_data_checked(out, &off, out_len,
-                                 (const uint8_t *)SLP_LOKAD_BYTES, 4);
-    uint8_t tt = 1;
-    ok = ok && push_data_checked(out, &off, out_len, &tt, 1);
-    ok = ok && push_data_checked(out, &off, out_len,
-                                 (const uint8_t *)"SEND", 4);
-    ok = ok && push_data_checked(out, &off, out_len, token_id->data, 32);
+    overlay_put_u8(&w, SLP_TOKEN_TYPE_1);
+    overlay_put_field(&w, (const uint8_t *)"SEND", 4);
+    overlay_put_field(&w, token_id->data, 32);
 
     for (int i = 0; i < num_outputs; i++) {
         uint8_t qty[8];
         u64_to_be(qty, quantities[i]);
-        ok = ok && push_data_checked(out, &off, out_len, qty, 8);
+        overlay_put_field(&w, qty, sizeof(qty));
     }
 
-    return ok ? off : 0;
+    return overlay_writer_finish(&w);
 }

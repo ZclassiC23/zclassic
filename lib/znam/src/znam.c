@@ -4,12 +4,20 @@
  * Follows the same OP_RETURN encoding pattern as ZSLP. */
 
 #include "znam/znam.h"
-#include "script/op_return_push.h"
+#include "overlay/overlay_codec.h"
 #include "script/standard.h"
 #include <string.h>
 
-/* Script push helpers (read_push/push_data) live in
- * script/op_return_push.h — same encoding as ZSLP. */
+/* Parsing and building both run on the shared overlay cursors
+ * (overlay/overlay_codec.h), which wrap the same PUSH encoding ZSLP uses.
+ *
+ * One deliberate omission: this parser does NOT call overlay_reader_finish.
+ * ZNAM shipped without a trailing-byte check and its registrations are live on
+ * mainnet, so a script carrying bytes after the last field parses today.
+ * Rejecting those would change which on-chain records the node honours. */
+
+/* ZNAM version byte — field 1 of every record. */
+#define ZNAM_VERSION 1
 
 /* ── Name validation ────────────────────────────────────────────── */
 
@@ -37,37 +45,25 @@ bool znam_parse(const uint8_t *script, size_t script_len,
     memset(msg, 0, sizeof(*msg));
     msg->command = ZNAM_CMD_INVALID;
 
-    if (!script || script_len == 0) return false;
-    const uint8_t *p = script;
-    const uint8_t *end = script + script_len;
-
-    /* Must start with OP_RETURN (0x6a) */
-    if (p >= end || *p != 0x6a) return false;
-    p++;
-
-    /* Field 0: lokad_id — must be "ZNAM" (4 bytes) */
-    const uint8_t *data;
-    size_t len;
-    p = read_push(p, end, &data, &len);
-    if (!p || len != 4 || memcmp(data, ZNAM_LOKAD_BYTES, 4) != 0)
+    /* Field 0: lokad_id — must be "ZNAM" (4 bytes), after OP_RETURN. */
+    struct overlay_reader r;
+    if (!overlay_reader_begin(&r, script, script_len, ZNAM_LOKAD_BYTES))
         return false;
 
     /* Field 1: version — must be 1 */
-    p = read_push(p, end, &data, &len);
-    if (!p || len != 1 || data[0] != 1) return false;
+    if (!overlay_expect_u8(&r, ZNAM_VERSION)) return false;
 
     /* Field 2: command */
-    p = read_push(p, end, &data, &len);
-    if (!p || len != 1) return false;
-
-    uint8_t cmd = data[0];
+    uint8_t cmd = 0;
+    if (!overlay_read_u8(&r, &cmd)) return false;
     if (cmd < 1 || cmd > 6) return false;
     msg->command = (enum znam_command)cmd;
 
     /* Field 3: name (always present) */
-    p = read_push(p, end, &data, &len);
-    if (!p || len == 0 || len > ZNAM_NAME_MAX) return false;
-    memcpy(msg->name, data, len);
+    size_t len = 0;
+    if (!overlay_read_bounded(&r, (uint8_t *)msg->name, ZNAM_NAME_MAX, &len))
+        return false;
+    if (len == 0) return false;
     msg->name[len] = '\0';
 
     if (!znam_validate_name(msg->name)) {
@@ -78,25 +74,28 @@ bool znam_parse(const uint8_t *script, size_t script_len,
     switch (msg->command) {
     case ZNAM_CMD_REGISTER:
     case ZNAM_CMD_UPDATE:
-    case ZNAM_CMD_SET_RECORD:
+    case ZNAM_CMD_SET_RECORD: {
         /* Field 4: target_type */
-        p = read_push(p, end, &data, &len);
-        if (!p || len != 1) return false;
-        if (data[0] < 1 || data[0] > ZNAM_TYPE_CONTENT) return false;
-        msg->target_type = data[0];
+        uint8_t target_type = 0;
+        if (!overlay_read_u8(&r, &target_type)) return false;
+        if (target_type < 1 || target_type > ZNAM_TYPE_CONTENT) return false;
+        msg->target_type = target_type;
 
         /* Field 5: target_value */
-        p = read_push(p, end, &data, &len);
-        if (!p || len == 0 || len > ZNAM_VALUE_MAX) return false;
-        memcpy(msg->target_value, data, len);
+        if (!overlay_read_bounded(&r, (uint8_t *)msg->target_value,
+                                  ZNAM_VALUE_MAX, &len))
+            return false;
+        if (len == 0) return false;
         msg->target_value[len] = '\0';
         return true;
+    }
 
     case ZNAM_CMD_TRANSFER:
         /* Field 4: new_owner address */
-        p = read_push(p, end, &data, &len);
-        if (!p || len == 0 || len > 63) return false;
-        memcpy(msg->new_owner, data, len);
+        if (!overlay_read_bounded(&r, (uint8_t *)msg->new_owner,
+                                  sizeof(msg->new_owner) - 1, &len))
+            return false;
+        if (len == 0) return false;
         msg->new_owner[len] = '\0';
         return true;
 
@@ -106,15 +105,16 @@ bool znam_parse(const uint8_t *script, size_t script_len,
 
     case ZNAM_CMD_SET_TEXT:
         /* Field 4: text key */
-        p = read_push(p, end, &data, &len);
-        if (!p || len == 0 || len > ZNAM_TEXT_KEY_MAX) return false;
-        memcpy(msg->text_key, data, len);
+        if (!overlay_read_bounded(&r, (uint8_t *)msg->text_key,
+                                  ZNAM_TEXT_KEY_MAX, &len))
+            return false;
+        if (len == 0) return false;
         msg->text_key[len] = '\0';
 
-        /* Field 5: text value */
-        p = read_push(p, end, &data, &len);
-        if (!p || len > ZNAM_TEXT_VAL_MAX) return false;
-        memcpy(msg->text_value, data, len);
+        /* Field 5: text value (may be empty) */
+        if (!overlay_read_bounded(&r, (uint8_t *)msg->text_value,
+                                  ZNAM_TEXT_VAL_MAX, &len))
+            return false;
         msg->text_value[len] = '\0';
         return true;
 
@@ -125,26 +125,15 @@ bool znam_parse(const uint8_t *script, size_t script_len,
 
 /* ── Builders ───────────────────────────────────────────────────── */
 
-/* Emit the shared ZNAM OP_RETURN framing (lokad + version + command + name)
- * into out within the cap. Advances *off and returns true on success;
- * returns false (offset untouched at the failing push) on buffer overflow. */
-static bool znam_build_header(uint8_t *out, size_t *off, size_t cap,
-                              uint8_t command, const char *name)
+/* Emit the shared ZNAM OP_RETURN framing (OP_RETURN + lokad + version +
+ * command + name) and arm the writer. */
+static void znam_build_header(struct overlay_writer *w, uint8_t *out,
+                              size_t cap, uint8_t command, const char *name)
 {
-    if (cap < 1) return false;
-    out[(*off)++] = 0x6a; /* OP_RETURN */
-
-    if (!push_data_checked(out, off, cap,
-                           (const uint8_t *)ZNAM_LOKAD_BYTES, 4))
-        return false;
-
-    uint8_t version = 1;
-    if (!push_data_checked(out, off, cap, &version, 1)) return false;
-
-    if (!push_data_checked(out, off, cap, &command, 1)) return false;
-
-    return push_data_checked(out, off, cap,
-                             (const uint8_t *)name, strlen(name));
+    overlay_writer_begin(w, out, cap, ZNAM_LOKAD_BYTES);
+    overlay_put_u8(w, ZNAM_VERSION);
+    overlay_put_u8(w, command);
+    overlay_put_field(w, (const uint8_t *)name, strlen(name));
 }
 
 /* Every builder ends here. Standard relay policy caps an OP_RETURN script at
@@ -154,9 +143,10 @@ static bool znam_build_header(uint8_t *out, size_t *off, size_t cap,
  * 32-char key + 128-char value — encodes to 237 bytes. Refuse instead of
  * emitting it. Same shape as blog_anchor_script_build
  * (app/services/src/blog_publication.c). */
-static size_t znam_build_finish(size_t off, bool ok)
+static size_t znam_build_finish(struct overlay_writer *w)
 {
-    if (!ok || off > MAX_OP_RETURN_RELAY) return 0;
+    size_t off = overlay_writer_finish(w);
+    if (off > MAX_OP_RETURN_RELAY) return 0;
     return off;
 }
 
@@ -172,13 +162,11 @@ static size_t znam_build_targeted(uint8_t *out, size_t out_len,
     if (!znam_validate_name(name) || !target_value) return 0;
     if (target_type < 1 || target_type > ZNAM_TYPE_CONTENT) return 0;
 
-    size_t off = 0;
-    bool ok = znam_build_header(out, &off, out_len, command, name);
-    ok = ok && push_data_checked(out, &off, out_len, &target_type, 1);
-    ok = ok && push_data_checked(out, &off, out_len,
-                                 (const uint8_t *)target_value,
-                                 strlen(target_value));
-    return znam_build_finish(off, ok);
+    struct overlay_writer w;
+    znam_build_header(&w, out, out_len, command, name);
+    overlay_put_u8(&w, target_type);
+    overlay_put_field(&w, (const uint8_t *)target_value, strlen(target_value));
+    return znam_build_finish(&w);
 }
 
 size_t znam_build_register(uint8_t *out, size_t out_len,
@@ -202,12 +190,10 @@ size_t znam_build_transfer(uint8_t *out, size_t out_len,
 {
     if (!znam_validate_name(name) || !new_owner) return 0;
 
-    size_t off = 0;
-    bool ok = znam_build_header(out, &off, out_len, ZNAM_CMD_TRANSFER, name);
-    ok = ok && push_data_checked(out, &off, out_len,
-                                 (const uint8_t *)new_owner,
-                                 strlen(new_owner));
-    return znam_build_finish(off, ok);
+    struct overlay_writer w;
+    znam_build_header(&w, out, out_len, ZNAM_CMD_TRANSFER, name);
+    overlay_put_field(&w, (const uint8_t *)new_owner, strlen(new_owner));
+    return znam_build_finish(&w);
 }
 
 size_t znam_build_renew(uint8_t *out, size_t out_len,
@@ -215,9 +201,9 @@ size_t znam_build_renew(uint8_t *out, size_t out_len,
 {
     if (!znam_validate_name(name)) return 0;
 
-    size_t off = 0;
-    bool ok = znam_build_header(out, &off, out_len, ZNAM_CMD_RENEW, name);
-    return znam_build_finish(off, ok);
+    struct overlay_writer w;
+    znam_build_header(&w, out, out_len, ZNAM_CMD_RENEW, name);
+    return znam_build_finish(&w);
 }
 
 /* ENS-inspired: set additional address record for a coin type */
@@ -238,12 +224,13 @@ size_t znam_build_set_text(uint8_t *out, size_t out_len,
     if (strlen(key) > ZNAM_TEXT_KEY_MAX) return 0;
     if (value && strlen(value) > ZNAM_TEXT_VAL_MAX) return 0;
 
-    size_t off = 0;
-    bool ok = znam_build_header(out, &off, out_len, ZNAM_CMD_SET_TEXT, name);
-    ok = ok && push_data_checked(out, &off, out_len,
-                                 (const uint8_t *)key, strlen(key));
-    ok = ok && push_data_checked(out, &off, out_len,
-                                 (const uint8_t *)(value ? value : ""),
-                                 value ? strlen(value) : 0);
-    return znam_build_finish(off, ok);
+    struct overlay_writer w;
+    znam_build_header(&w, out, out_len, ZNAM_CMD_SET_TEXT, name);
+    overlay_put_field(&w, (const uint8_t *)key, strlen(key));
+    /* An absent value is the one-byte OP_0 empty push, matching what
+     * push_data(len=0) has always emitted here. ZSLP's 0x4c 0x00 spelling is
+     * NOT used by ZNAM. */
+    overlay_put_field(&w, (const uint8_t *)(value ? value : ""),
+                      value ? strlen(value) : 0);
+    return znam_build_finish(&w);
 }

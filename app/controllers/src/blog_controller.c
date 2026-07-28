@@ -10,6 +10,7 @@
 #include "models/wallet_tx.h"
 #include "net/onion_peer_merge.h"
 #include "zslp/slp.h"
+#include "script/op_return_push.h"
 #include "primitives/transaction.h"
 #include "core/uint256.h"
 #include "core/serialize.h"
@@ -229,29 +230,6 @@ size_t blog_build_node_announce(uint8_t *out, size_t out_len,
     return slp_len + 1 + hlen;
 }
 
-/* Helper: parse a Bitcoin script PUSH data field */
-static const uint8_t *read_push_field(const uint8_t *p, const uint8_t *end,
-                                       const uint8_t **data, size_t *len)
-{
-    if (p >= end) return NULL;
-    uint8_t opcode = *p++;
-    if (opcode >= 0x01 && opcode <= 0x4b) {
-        *len = opcode;
-    } else if (opcode == 0x4c) {
-        if (p >= end) return NULL;
-        *len = *p++;
-    } else if (opcode == 0x4d) {
-        if (p + 2 > end) return NULL;
-        *len = (size_t)p[0] | ((size_t)p[1] << 8);
-        p += 2;
-    } else {
-        return NULL;
-    }
-    if (p + *len > end) return NULL;
-    *data = p;
-    return p + *len;
-}
-
 /* SOURCE 2 of 2 — the WALLET SCRAPE. Deliberately still wired.
  *
  * This reads db_wallet_tx_recent_raw(): it can only ever see transactions
@@ -333,13 +311,14 @@ static int blog_discover_onion_peers_wallet(const char *datadir,
         const uint8_t *data;
         size_t len;
 
-        /* Skip: lokad_id, token_type, "SEND", token_id */
-        for (int i = 0; i < 4 && p; i++)
-            p = read_push_field(p, end, &data, &len);
+        /* Skip: lokad_id, token_type, "SEND", token_id — read_push refuses a
+         * NULL cursor, so a failed field short-circuits the rest. */
+        for (int i = 0; i < 4; i++)
+            p = read_push(p, end, &data, &len);
         /* Skip output quantities */
         for (int i = 0; i < 19 && p; i++) {
             const uint8_t *saved = p;
-            p = read_push_field(p, end, &data, &len);
+            p = read_push(p, end, &data, &len);
             if (!p || len != 8) { p = saved; break; }
         }
 

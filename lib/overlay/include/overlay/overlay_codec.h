@@ -26,7 +26,21 @@
  * overlay speaks one wire encoding. Pure: no clock, no RNG, no I/O, no alloc.
  *
  * The rebuildable-projection scaffold + the shared lokad registry / explorer-
- * ingestion seam live in overlay/overlay_projection.h. */
+ * ingestion seam live in overlay/overlay_projection.h.
+ *
+ * ADOPTION: all five on-chain overlays now parse and build through these
+ * cursors — ZANC (lib/zanc/src/zanc.c), ZDIR (lib/zdir/src/zdir.c),
+ * ZID (lib/zid/src/zid_anchor.c), ZNAM (lib/znam/src/znam.c) and
+ * ZSLP (lib/zslp/src/slp.c). No hand-rolled OP_RETURN PUSH walk is left.
+ * ZMSG is deliberately absent: it is a Sapling-memo codec (lib/net/src/zmsg.c),
+ * not a lokad-tagged OP_RETURN payload, so it has no PUSH sequence to share.
+ *
+ * ZNAM and ZSLP are already live on mainnet, which constrains this API in two
+ * ways a greenfield overlay would not — see overlay_try_read_fixed (an optional
+ * repeated field is not a parse error) and overlay_put_empty_pushdata1 (ZSLP
+ * encodes an empty field as OP_PUSHDATA1/0, not as OP_0). Neither may be
+ * "cleaned up": both describe bytes that already exist in blocks. New overlays
+ * should use overlay_put_field(w, NULL-or-data, 0) for an empty field. */
 
 #ifndef ZCL_OVERLAY_CODEC_H
 #define ZCL_OVERLAY_CODEC_H
@@ -86,9 +100,29 @@ bool overlay_expect_u8(struct overlay_reader *r, uint8_t expect);
 bool overlay_read_bounded(struct overlay_reader *r, uint8_t *dst,
                           size_t max_len, size_t *out_len);
 
+/* Try to read a PUSH of EXACTLY `n` bytes into dst. On a match the cursor
+ * advances and this returns true. On a malformed push, or a push of a
+ * different length, the cursor is REWOUND to where that field started, `ok` is
+ * left true, and this returns false.
+ *
+ * This is the one shape the straight-line sticky-error model cannot express: an
+ * OPTIONAL REPEATED field, where "the next field does not match" means the list
+ * ended here, not that the parse failed. ZSLP SEND carries 1..19 eight-byte
+ * output quantities terminated exactly that way, and those transactions are
+ * already in blocks — the terminator is wire format, not sloppiness. A cursor
+ * that had already failed stays failed and returns false. */
+bool overlay_try_read_fixed(struct overlay_reader *r, uint8_t *dst, size_t n);
+
 /* Finish a parse: succeeds only if the cursor never failed AND is positioned
  * exactly at end (no trailing bytes after the last field). Returns the final
- * verdict; call once at the end of every parse. */
+ * verdict; call once at the end of every parse.
+ *
+ * NOT every overlay may call this. ZNAM and ZSLP shipped without a trailing-
+ * byte check and are live on mainnet, so scripts with bytes after the last
+ * field parse as valid today — blog_build_node_announce (app/controllers/src/
+ * blog_controller.c) even appends a hostname after a complete ZSLP SEND on
+ * purpose. Adding the check there would reject records the chain already
+ * contains, which is a chain-interpretation change. New overlays call it. */
 bool overlay_reader_finish(struct overlay_reader *r);
 
 /* ── Bounded builder cursor ─────────────────────────────────────────────
@@ -115,6 +149,16 @@ bool overlay_put_field(struct overlay_writer *w,
 
 /* Append a 1-byte PUSH. Returns w->ok. */
 bool overlay_put_u8(struct overlay_writer *w, uint8_t v);
+
+/* Append an empty field encoded as OP_PUSHDATA1 with length 0 (0x4c 0x00) —
+ * two bytes, NOT the one-byte OP_0 that overlay_put_field(w, x, 0) emits.
+ *
+ * For ZSLP only. Its builders have always encoded an absent ticker / name /
+ * document_url / document_hash / mint baton this way, so those exact bytes are
+ * in mainnet transactions and their txids depend on them. Both encodings parse
+ * back to a zero-length field, so this is an encoder-side compatibility
+ * requirement, not a parser split. Do not use it in a new overlay. */
+bool overlay_put_empty_pushdata1(struct overlay_writer *w);
 
 /* Finish building: returns the total encoded length, or 0 if the cursor ever
  * overflowed. */
