@@ -466,6 +466,17 @@
                     "rows-by-known-tag counts (znam/zslp/zanc/other).",
                     "app/services/src/op_return_backfill_service.c",
                     "lib/test/src/test_op_return_index.c"),
+    DIAG_PROJECTION("zid_domains", zid_domain_dump_state_json,
+                    "zid anchor domains (the durable record of what a batch "
+                    "proof commits): db_open, the domain count, and a roster "
+                    "of up to 16 domains with domain_name, num_leaves, root, "
+                    "anchored + anchored_txid/anchored_height, updated_at and "
+                    "has_owner. Key form: a domain name (e.g. \"zcode\") for "
+                    "that one domain plus its stored_leaf_rows. Written by "
+                    "`zcode release anchor`, read by `zcode release prove` — "
+                    "never rebuilt from block history.",
+                    "app/models/src/zid_domain.c",
+                    "lib/test/src/test_zid.c"),
     DIAG_PROJECTION("zepoch", zepoch_status_dump_state_json,
                     "epoch anchor status (Bounded Node keystone, v1: operator "
                     "anchoring only, no service): catalog cursor height + "

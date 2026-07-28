@@ -987,6 +987,8 @@ int main(int argc, char **argv)
     failures += test_core();
     failures += test_znam();
     failures += test_zid();
+    { extern int test_epoch(void); failures += test_epoch(); }
+    { extern int test_zcode_release(void); failures += test_zcode_release(); }
     { extern int test_znam_site(void); failures += test_znam_site(); }
     failures += test_htlc();
     failures += test_swap_settlement();

@@ -128,6 +128,7 @@
 #include "models/principal.h"
 #include "models/agent_session.h"
 #include "models/auth_challenge.h"
+#include "models/zid_domain.h"
 #include "config/runtime.h"
 #include "net/peer_lifecycle.h"
 #include "net/https_server.h"

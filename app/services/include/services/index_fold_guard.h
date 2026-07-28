@@ -56,6 +56,46 @@ void index_fold_note_absent_body(const char *index_id, const char *subsys,
  * caught up to H*). No-op if not set. */
 void index_fold_clear_seed_blocker(const char *index_id);
 
+/* The durable snapshot-seed floor (REDUCER_TRUSTED_BASE_HEIGHT_KEY, read from
+ * the kernel authority progress_store_db()). Returns true and fills *floor_out
+ * only when a seed floor exists; false for a from-genesis datadir OR a read
+ * error, with *floor_out set to -1. Exported so a projection can ADOPT the
+ * floor as its declared base instead of spinning below it.
+ *
+ * Reads under progress_store_tx_trylock: when the reducer drive owns the
+ * progress store this YIELDS (returns false, *floor_out = -1) rather than
+ * blocking. Callers run on the supervisor tick-runner thread, where a
+ * blocking acquire freezes the runner heartbeat for the length of a fold
+ * commit and gets the node SIGABRT'd by the systemd watchdog. A false
+ * return is therefore "unknown right now, retry next tick", never "no
+ * floor" — treat it as no-op, exactly as index_fold_note_absent_body does. */
+bool index_fold_snapshot_seed_floor(int64_t *floor_out);
+
+/* Ticks that yielded rather than block behind the reducer drive. Non-zero is
+ * the yield WORKING, not a fault; unbounded growth with a frozen fold is not. */
+uint64_t index_fold_seed_floor_yields(void);
+
+/* DECLARED PARTIAL COVERAGE — the projection has adopted the snapshot-seed
+ * floor as its base and now folds forward from `base_height`. This is the
+ * successor to spinning on "<index_id>.below_snapshot_seed": the index makes
+ * progress AND the coverage limit stays a NAMED, operator-visible fact rather
+ * than being silently swallowed.
+ *
+ * Raises "<index_id>.partial_coverage" (BLOCKER_DEPENDENCY, remedy OWNER in
+ * blocker_remedy_bindings.def, decision text in blocker_operator_decisions.def,
+ * no escape action and no retry budget — there is nothing safe for the node to
+ * attempt on its own) and clears "<index_id>.below_snapshot_seed", which the
+ * declaration supersedes. Call it ONCE per adoption / once per process for an
+ * already-adopted base, not per tick: the fact is standing, not recurring. */
+void index_fold_declare_partial_coverage(const char *index_id,
+                                         const char *subsys,
+                                         int64_t base_height,
+                                         int64_t seed_floor);
+
+/* Retire the "<index_id>.partial_coverage" declaration (the index was rebuilt
+ * from genesis, or the pre-seed bodies arrived). No-op if not set. */
+void index_fold_clear_partial_coverage(const char *index_id);
+
 /* Test-only: override the free-space floor (bytes). Pass a negative value to
  * restore the compiled INDEX_FOLD_MIN_FREE_BYTES default. */
 void index_fold_set_min_free_for_test(int64_t bytes);

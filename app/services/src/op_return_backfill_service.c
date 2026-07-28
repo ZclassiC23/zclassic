@@ -52,6 +52,13 @@ static _Atomic uint64_t g_backfill_rows_seen      = 0;
 static _Atomic uint64_t g_backfill_holes          = 0;
 static _Atomic uint64_t g_backfill_oversize_blocks = 0;
 static _Atomic int64_t  g_backfill_last_height    = -1;
+/* Base adoptions this process. Counted into the supervisor progress marker:
+ * adopting a base IS state moving forward, and a tick that adopted one must
+ * not look like a tick that achieved nothing. */
+static _Atomic uint64_t g_backfill_base_seeds     = 0;
+/* Declared ONCE per process (the fact is standing, not recurring) — see
+ * index_fold_declare_partial_coverage. */
+static _Atomic bool     g_backfill_partial_declared = false;
 
 static const char *g_backfill_datadir = NULL; /* process-lifetime string */
 
@@ -59,6 +66,9 @@ static const char *g_backfill_datadir = NULL; /* process-lifetime string */
 struct node_db *g_op_return_backfill_test_ndb;
 struct main_state *g_op_return_backfill_test_ms;
 const char *g_op_return_backfill_test_datadir;
+/* -1 = "ask the kernel authority" (production path). >=0 injects a snapshot
+ * seed floor without a progress_store, so the adoption path is testable. */
+_Atomic int64_t g_op_return_backfill_test_seed_floor = -1;
 #endif
 
 void op_return_backfill_set_datadir(const char *datadir)
@@ -88,6 +98,60 @@ static const char *backfill_datadir(void)
     if (g_op_return_backfill_test_datadir) return g_op_return_backfill_test_datadir;
 #endif
     return g_backfill_datadir;
+}
+
+/* The snapshot-seed floor, or false when this datadir has none (from-genesis)
+ * or the kernel authority cannot be read. */
+static bool backfill_seed_floor(int64_t *floor_out)
+{
+    *floor_out = -1;
+#ifdef ZCL_TESTING
+    int64_t inj = atomic_load(&g_op_return_backfill_test_seed_floor);
+    if (inj >= 0) {
+        *floor_out = inj;
+        return true;
+    }
+#endif
+    return index_fold_snapshot_seed_floor(floor_out);
+}
+
+/* Adopt `seed_floor` as the catalog's declared base: the chain restarts at
+ * seed_floor+1 with a derived IV, rows outside the new range are pruned, and
+ * the coverage limit becomes a NAMED standing declaration instead of a
+ * per-tick spin. Returns true when the new state is durably persisted. */
+static bool backfill_adopt_base(struct node_db *ndb,
+                                struct op_return_index_cursor *cur,
+                                int64_t seed_floor,
+                                const uint8_t *floor_block_hash)
+{
+    struct op_return_index_cursor next;
+    memset(&next, 0, sizeof(next));
+    next.base_height = (int32_t)(seed_floor + 1);
+    op_return_index_make_base_digest(next.base_height, floor_block_hash,
+                                     next.base_digest);
+    /* "based, nothing folded yet" — the next fold is base_height itself. */
+    next.height = next.base_height - 1;
+    memcpy(next.digest, next.base_digest, 32);
+
+    if (!op_return_index_set_cursor(ndb, &next))
+        LOG_FAIL("op_return_index",
+                 "backfill: failed to persist adopted base_height=%d",
+                 next.base_height);
+
+    /* Rows below the new base are outside the declared range: the digest
+     * chain does not cover them and no verifier could reproduce them. */
+    if (!op_return_index_prune_below(ndb, next.base_height))
+        LOG_WARN("op_return_index",
+                 "backfill: prune below adopted base_height=%d failed — rows "
+                 "outside the declared range may linger",
+                 next.base_height);
+
+    *cur = next;
+    atomic_fetch_add(&g_backfill_base_seeds, 1);
+    index_fold_declare_partial_coverage("op_return_index", "op_return_index",
+                                        (int64_t)next.base_height, seed_floor);
+    atomic_store(&g_backfill_partial_declared, true);
+    return true;
 }
 
 /* ── One bounded batch ──────────────────────────────────────────────
@@ -122,12 +186,31 @@ static enum op_return_backfill_outcome backfill_run_once_typed(int *folded_out)
     if (!ndb || !ndb->open || !ms || !datadir || !datadir[0])
         return OP_RETURN_BACKFILL_NOT_WIRED; /* early boot / unit tests */
 
-    int32_t cursor = -1;
-    uint8_t digest[32];
-    if (!op_return_index_get_cursor(ndb, &cursor, digest))
+    struct op_return_index_cursor cur;
+    if (!op_return_index_get_cursor(ndb, &cur))
         /* Deliberately NOT idle: a service that cannot read its own cursor is
-         * broken, not caught up, and it is the detector's job to say so. */
+         * broken, not caught up, and it is the detector's job to say so. A
+         * REFUSED state version (a legacy v1 record) lands here too — it is a
+         * refusal that needs an operator, not a quiet no-op. */
         return OP_RETURN_BACKFILL_BLOCKED;
+
+    /* An already-adopted base is a STANDING fact: re-declare it once per
+     * process so a restart does not make the coverage limit invisible. */
+    if (cur.base_height > 0 &&
+        !atomic_load(&g_backfill_partial_declared)) {
+        int64_t floor = -1;
+        (void)backfill_seed_floor(&floor);
+        index_fold_declare_partial_coverage("op_return_index",
+                                            "op_return_index",
+                                            (int64_t)cur.base_height,
+                                            floor >= 0 ? floor
+                                                       : cur.base_height - 1);
+        atomic_store(&g_backfill_partial_declared, true);
+    }
+
+    int32_t cursor = cur.height;
+    uint8_t digest[32];
+    memcpy(digest, cur.digest, 32);
 
     int32_t hstar = reducer_frontier_provable_tip_cached();
     if (hstar < 0) hstar = 0;
@@ -146,11 +229,42 @@ static enum op_return_backfill_outcome backfill_run_once_typed(int *folded_out)
     }
 
     int folded = 0;
+    bool base_adopted = false;
     for (int32_t h = cursor + 1; h <= target; h++) {
         struct block_index *bi = active_chain_at(&ms->chain_active, h);
         if (!bi || !bi->phashBlock ||
             !(block_index_status_load(bi) & BLOCK_HAVE_DATA)) {
             atomic_fetch_add(&g_backfill_holes, 1);
+
+            /* Below the snapshot-seed floor the body was NEVER downloaded and
+             * never will be by this fold — the old behaviour (name a blocker
+             * and break) meant the catalog stayed empty forever and fired
+             * op_return_index.below_snapshot_seed on every tick, 2,877 times
+             * on the canonical node. The owner's decision is not to backfill
+             * pre-seed bodies, so the catalog DECLARES the range it covers
+             * instead: adopt the floor as the base, prune anything outside the
+             * new range, and keep the coverage limit named via
+             * *.partial_coverage. Guarded by base_height <= seed_floor so an
+             * already-adopted base can never re-adopt (that would rewrite a
+             * published digest chain from under a verifier). */
+            int64_t seed_floor = -1;
+            if (backfill_seed_floor(&seed_floor) && seed_floor >= 0 &&
+                (int64_t)h <= seed_floor &&
+                (int64_t)cur.base_height <= seed_floor) {
+                struct block_index *fbi =
+                    active_chain_at(&ms->chain_active, (int32_t)seed_floor);
+                const uint8_t *floor_hash =
+                    (fbi && fbi->phashBlock) ? fbi->phashBlock->data : NULL;
+                if (backfill_adopt_base(ndb, &cur, seed_floor, floor_hash)) {
+                    base_adopted = true;
+                    /* The batch window was computed from the OLD cursor; stop
+                     * here and let the next tick fold forward from the base. */
+                    break;
+                }
+                /* Persist failed — fall through to the named blocker below so
+                 * the condition stays visible rather than looking adopted. */
+            }
+
             /* Name the floor (same pattern as address_index/txindex): below
              * the snapshot-seed floor this is a structural DEPENDENCY
              * (bodies never downloaded on a seeded datadir — the fold can
@@ -181,10 +295,13 @@ static enum op_return_backfill_outcome backfill_run_once_typed(int *folded_out)
                  * the state auditor is preserved. Same fact pattern as
                  * bg_validation_service.c ("if (h == 0) continue;"). */
                 uint8_t genesis_digest[32];
-                op_return_index_fold_block_digest(digest, 0,
+                op_return_index_fold_block_digest(cur.base_height,
+                                                  cur.base_digest, digest, 0,
                                                   bi->phashBlock->data,
                                                   rows, 0, genesis_digest);
-                if (!op_return_index_set_cursor(ndb, 0, genesis_digest)) {
+                cur.height = 0;
+                memcpy(cur.digest, genesis_digest, 32);
+                if (!op_return_index_set_cursor(ndb, &cur)) {
                     LOG_WARN("op_return_index",
                              "backfill: cursor persist failed at h=0 (genesis)");
                     break;
@@ -222,9 +339,12 @@ static enum op_return_backfill_outcome backfill_run_once_typed(int *folded_out)
         }
 
         uint8_t new_digest[32];
-        op_return_index_fold_block_digest(digest, h, bi->phashBlock->data,
+        op_return_index_fold_block_digest(cur.base_height, cur.base_digest,
+                                          digest, h, bi->phashBlock->data,
                                           rows, n, new_digest);
-        if (!op_return_index_set_cursor(ndb, h, new_digest)) {
+        cur.height = h;
+        memcpy(cur.digest, new_digest, 32);
+        if (!op_return_index_set_cursor(ndb, &cur)) {
             block_free(&blk);
             LOG_WARN("op_return_index",
                      "backfill: cursor persist failed at h=%d", h);
@@ -240,6 +360,12 @@ static enum op_return_backfill_outcome backfill_run_once_typed(int *folded_out)
     if (folded > 0)
         atomic_fetch_add(&g_backfill_blocks_folded, (uint64_t)folded);
     if (folded_out) *folded_out = folded;
+    /* Adopting the declared base is real, durable, forward state movement —
+     * it is not "ran and achieved nothing". Reporting it as PROGRESSED is
+     * honest precisely because the marker (see backfill_progress_marker)
+     * counts base adoptions too, so it genuinely moves. */
+    if (base_adopted)
+        return OP_RETURN_BACKFILL_PROGRESSED;
     /* Wanted to fold (cursor < frontier, proven above) and folded nothing:
      * a hole, an unreadable body, or a failed cursor persist. Blocked. */
     return folded > 0 ? OP_RETURN_BACKFILL_PROGRESSED
@@ -266,6 +392,17 @@ static _Atomic supervisor_child_id g_backfill_id = SUPERVISOR_INVALID_ID;
  * node reached in silence. */
 #define OP_RETURN_BACKFILL_MAX_QUIET_US ((int64_t)15 * 60 * 1000 * 1000)
 
+/* Results, not activity. Blocks folded is the primary result; base adoptions
+ * are counted in because adopting the declared base advances durable state
+ * without folding a block, and a marker that ignored it would let a genuinely
+ * productive tick look frozen. Both components are monotone, so the marker is
+ * monotone. */
+static int64_t backfill_progress_marker(void)
+{
+    return (int64_t)atomic_load(&g_backfill_blocks_folded) +
+           (int64_t)atomic_load(&g_backfill_base_seeds);
+}
+
 static void backfill_tick(struct liveness_contract *c)
 {
     (void)c;
@@ -276,8 +413,7 @@ static void backfill_tick(struct liveness_contract *c)
     switch ((enum op_return_backfill_outcome)
                 atomic_load(&g_backfill_outcome)) {
     case OP_RETURN_BACKFILL_PROGRESSED:
-        supervisor_progress(id,
-                            (int64_t)atomic_load(&g_backfill_blocks_folded));
+        supervisor_progress(id, backfill_progress_marker());
         break;
     case OP_RETURN_BACKFILL_IDLE:
         /* Caught up to the frontier. Healthy, and must not be called stuck —
@@ -331,6 +467,9 @@ void op_return_backfill_reset_for_test(void)
     atomic_store(&g_backfill_holes, 0);
     atomic_store(&g_backfill_oversize_blocks, 0);
     atomic_store(&g_backfill_last_height, -1);
+    atomic_store(&g_backfill_base_seeds, 0);
+    atomic_store(&g_backfill_partial_declared, false);
+    index_fold_clear_partial_coverage("op_return_index");
 }
 
 /* ── `zclassic23 dumpstate op_return_index` ─────────────────────────── */
@@ -351,19 +490,43 @@ bool op_return_index_dump_state_json(struct json_value *out, const char *key)
                      (int64_t)atomic_load(&g_backfill_oversize_blocks));
     json_push_kv_int(out, "last_folded_height",
                      atomic_load(&g_backfill_last_height));
+    json_push_kv_int(out, "base_seeds",
+                     (int64_t)atomic_load(&g_backfill_base_seeds));
 
     struct node_db *ndb = backfill_ndb();
     bool db_open = ndb && ndb->open;
     json_push_kv_bool(out, "wired", db_open);
 
-    int32_t cursor = -1;
-    uint8_t digest[32] = {0};
-    bool have_cursor = db_open &&
-                       op_return_index_get_cursor(ndb, &cursor, digest);
-    json_push_kv_int(out, "cursor_height", have_cursor ? cursor : -1);
+    /* Name the persisted record shape: a REFUSED (legacy_v1/unknown) record
+     * is why cursor_height reads -1, and an operator must be able to see
+     * that without guessing. */
+    enum op_return_index_state_version sv =
+        db_open ? op_return_index_state_version(ndb)
+                : OP_RETURN_INDEX_STATE_UNKNOWN;
+    json_push_kv_str(out, "state_version",
+                     op_return_index_state_version_name(sv));
+
+    struct op_return_index_cursor cur;
+    memset(&cur, 0, sizeof(cur));
+    cur.height = -1;
+    bool have_cursor = db_open && op_return_index_get_cursor(ndb, &cur);
+    int32_t cursor = have_cursor ? cur.height : -1;
+    json_push_kv_int(out, "cursor_height", cursor);
     char digest_hex[65] = {0};
-    if (have_cursor) HexStr(digest, 32, false, digest_hex, sizeof(digest_hex));
+    if (have_cursor) HexStr(cur.digest, 32, false, digest_hex,
+                            sizeof(digest_hex));
     json_push_kv_str(out, "cursor_digest", digest_hex);
+
+    /* The declared range travels with the digest — an anchor built from
+     * cursor_digest commits to [base_height, cursor_height] and nothing
+     * else. */
+    json_push_kv_int(out, "base_height", have_cursor ? cur.base_height : -1);
+    char base_hex[65] = {0};
+    if (have_cursor) HexStr(cur.base_digest, 32, false, base_hex,
+                            sizeof(base_hex));
+    json_push_kv_str(out, "base_digest", base_hex);
+    json_push_kv_bool(out, "partial_coverage",
+                      have_cursor && cur.base_height > 0);
 
     int32_t hstar = reducer_frontier_provable_tip_cached();
     json_push_kv_int(out, "provable_tip", hstar);
@@ -434,14 +597,32 @@ bool zepoch_status_dump_state_json(struct json_value *out, const char *key)
     bool db_open = ndb && ndb->open;
     json_push_kv_bool(out, "wired", db_open);
 
-    int32_t cursor = -1;
-    uint8_t digest[32] = {0};
-    bool have_cursor = db_open &&
-                       op_return_index_get_cursor(ndb, &cursor, digest);
-    json_push_kv_int(out, "tip_height", have_cursor ? cursor : -1);
+    struct op_return_index_cursor cur;
+    memset(&cur, 0, sizeof(cur));
+    cur.height = -1;
+    bool have_cursor = db_open && op_return_index_get_cursor(ndb, &cur);
+    int32_t cursor = have_cursor ? cur.height : -1;
+    json_push_kv_int(out, "tip_height", cursor);
     char digest_hex[65] = {0};
-    if (have_cursor) HexStr(digest, 32, false, digest_hex, sizeof(digest_hex));
+    if (have_cursor) HexStr(cur.digest, 32, false, digest_hex,
+                            sizeof(digest_hex));
     json_push_kv_str(out, "catalog_digest", digest_hex);
+
+    /* An epoch anchor commits to the catalog digest, and that digest covers
+     * [base_height, tip_height] — never implicitly the whole chain. Publish
+     * the range next to the digest so a reader of the anchor is never left
+     * to assume genesis. */
+    json_push_kv_int(out, "base_height", have_cursor ? cur.base_height : -1);
+    char base_hex[65] = {0};
+    if (have_cursor) HexStr(cur.base_digest, 32, false, base_hex,
+                            sizeof(base_hex));
+    json_push_kv_str(out, "base_digest", base_hex);
+    json_push_kv_bool(out, "partial_coverage",
+                      have_cursor && cur.base_height > 0);
+    json_push_kv_str(out, "state_version",
+                     op_return_index_state_version_name(
+                         db_open ? op_return_index_state_version(ndb)
+                                 : OP_RETURN_INDEX_STATE_UNKNOWN));
 
     int64_t epoch = (have_cursor && cursor >= 0) ? cursor / 1000 : -1;
     json_push_kv_int(out, "epoch", epoch);
@@ -462,7 +643,7 @@ bool zepoch_status_dump_state_json(struct json_value *out, const char *key)
             json_push_kv_str(out, "anchor_digest", ad_hex);
             json_push_kv_bool(out, "digest_match",
                               have_cursor &&
-                              memcmp(a.digest, digest, 32) == 0);
+                              memcmp(a.digest, cur.digest, 32) == 0);
         }
     }
     json_push_kv_bool(out, "anchored", anchored);

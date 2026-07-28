@@ -298,10 +298,17 @@ ZCL_COMMAND_READY_READ(
     "datadir's node.db, looks up the latest zepoch@ anchor in the current "
     "epoch, and reports anchored/txid/confirmations plus digest "
     "match/mismatch (a mismatch means the catalog advanced past the "
-    "anchor — re-anchor). With --height=N: lookup-only for the exact "
-    "zepoch@<N> label — digest recompute is tip-only (the digest-chain "
-    "folds forward and cannot be re-derived at a historical height), and "
-    "the output says so.", 0,
+    "anchor — re-anchor). With --height=N: collects EVERY anchor labeled "
+    "zepoch@<N> and reports two independent things — whether those "
+    "anchors agree with each other (distinct_roots; >1 is a finding on "
+    "its own and exits non-zero as EPOCH_DIGEST_DISAGREEMENT) and "
+    "whether this node agrees with them (agree/disagree per anchor, only "
+    "when the catalog cursor sits exactly at N, since the digest chain "
+    "folds forward and is recomputable only at the cursor). A node whose "
+    "declared base_height is above N reports `incomparable`, never "
+    "`disagree` — digests over different declared ranges are supposed to "
+    "differ. Any state without a local digest is named in "
+    "local_digest_reason, never silently treated as a match.", 0,
     "epoch,verify,anchor,digest,match,zepoch",
     "zcl.core_epoch_verify.input.v1", "zcl.core_epoch_verify.v1",
     "height,datadir", "",

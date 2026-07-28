@@ -269,6 +269,10 @@ ZCL_BLOCKER_REMEDY(window.consistency,                          OWNER)
 ZCL_BLOCKER_REMEDY(stage_spin_*,                                OWNER)
 ZCL_BLOCKER_REMEDY(*.disk_low,                                  OWNER)
 ZCL_BLOCKER_REMEDY(*.below_snapshot_seed,                       OWNER)
+/* The DECLARED successor to below_snapshot_seed: the projection adopted the
+ * seed floor as its base and folds forward. Standing fact, not a stall — but
+ * still OWNER, because only a person can decide to buy the pre-seed history. */
+ZCL_BLOCKER_REMEDY(*.partial_coverage,                          OWNER)
 ZCL_BLOCKER_REMEDY(stage_stalled_*,                             OWNER)
 ZCL_BLOCKER_REMEDY(thread_stalled_*,                            OWNER)
 ZCL_BLOCKER_REMEDY(thread_restart_storm_*,                      OWNER)

@@ -319,9 +319,12 @@ void zcl_native_handle_zcode_package_search(
     struct zcl_command_reply *reply);
 
 /* ── zcode.release.* — Sovereign Registry v1: sign/verify zid release
- * records (tools/command/native_zcode_release_command.c). File-based,
- * no DB, no swarm distribution. anchor/prove fold the releases dir into
- * the zid anchor-domain tree (digest-sorted canonical order). */
+ * records (tools/command/native_zcode_release_command.c). Signing is
+ * file-based (no swarm distribution). anchor folds the releases dir into
+ * the zid anchor-domain tree (digest-sorted canonical order) and stores
+ * the leaf set + root in zid_domains/zid_domain_leaves; prove reads that
+ * stored leaf set, so a .zid added or removed later cannot silently
+ * change what an issued proof means. zcode.domain.* inspects the store. */
 void zcl_native_handle_zcode_release_sign(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
@@ -332,6 +335,12 @@ void zcl_native_handle_zcode_release_anchor(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_release_prove(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_domain_list(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_domain_status(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_package_show(

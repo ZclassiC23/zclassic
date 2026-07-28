@@ -14,11 +14,23 @@
  * sorted by bytes before appending so the same dir contents ALWAYS fold
  * to the same domain root — and anchors that root on-chain exactly like
  * core.epoch.anchor (anchor_publish RPC when a live node answers, else
- * op_return_hex + a next-step note). prove re-derives the same tree and
- * emits the zid_proof wire hex for one release; verify --proof=<hex>
- * --root=<hex> checks inclusion separately from signature validity.
- * The batch root is time-independent by construction: docs are digested
- * as wire bytes, never re-verified against the clock.
+ * op_return_hex + a next-step note). prove emits the zid_proof wire hex
+ * for one release; verify --proof=<hex> --root=<hex> checks inclusion
+ * separately from signature validity. The batch root is time-independent
+ * by construction: docs are digested as wire bytes, never re-verified
+ * against the clock.
+ *
+ * DURABLE DOMAINS (schema v38, models/zid_domain.h). anchor records the
+ * sorted leaf set + the root it folds to in zid_domains/zid_domain_leaves
+ * BEFORE any chain write, and prove reads that stored leaf set. Adding or
+ * deleting a .zid file therefore no longer silently changes what a
+ * previously-issued proof means: the anchored leaf set is on disk, and a
+ * re-fold to a different root visibly clears the domain's anchor rather
+ * than letting a new batch wear the old txid. Domains are named
+ * (--domain, default "zcode") so zdesc/zdir/third-party registries
+ * coexist, each anchoring at its own cadence. prove falls back to a
+ * directory fold ONLY for a domain that has never been anchored, and
+ * says so in `source`.
  *
  * Secret hygiene (sign): the seed file must be exactly 64 hex chars and
  * 0600/0400 perms (refused otherwise, with the chmod hint); the seed
@@ -31,6 +43,8 @@
 #include "controllers/rpc_client.h"
 #include "encoding/utilstrencodings.h"
 #include "json/json.h"
+#include "models/database.h"
+#include "models/zid_domain.h"
 #include "platform/time_compat.h"
 #include "support/cleanse.h"
 #include "zanc/zanc.h"
@@ -61,6 +75,58 @@ static const char *zr_datadir(const struct zcl_command_request *request)
         return dd;
     dd = zcl_native_command_datadir();
     return (dd && dd[0]) ? dd : NULL;
+}
+
+/* ── anchor domain (durable leaf set, models/zid_domain.h) ─────────── */
+
+#define ZR_DOMAIN_DEFAULT "zcode"
+
+/* Resolve --domain (default "zcode") and enforce the stored name shape:
+ * 1..ZID_DOMAIN_NAME_MAX lowercase alphanumerics and hyphens, the same
+ * rule db_zid_domain_validate applies. NULL on a rejected name. */
+static const char *zr_domain(const struct json_value *in)
+{
+    const char *d = zr_input_str(in, "domain");
+    if (!d || !d[0])
+        return ZR_DOMAIN_DEFAULT;
+    size_t n = strlen(d);
+    if (n > ZID_DOMAIN_NAME_MAX)
+        return NULL;
+    for (size_t i = 0; i < n; i++) {
+        char c = d[i];
+        bool ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-';
+        if (!ok)
+            return NULL;
+    }
+    return d;
+}
+
+/* Open <datadir>/node.db (creating + migrating it when absent, exactly
+ * like any other node.db consumer). Fills the reply and returns false on
+ * failure. */
+static bool zr_open_ndb(const char *datadir, struct node_db *ndb,
+                        struct zcl_command_reply *reply, const char *leaf)
+{
+    char path[1100];
+    int n = snprintf(path, sizeof(path), "%s/node.db", datadir);
+    if (n <= 0 || (size_t)n >= sizeof(path)) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "MISSING_DATADIR",
+                               "normalize", false, false,
+                               "datadir path too long", leaf);
+        return false;
+    }
+    memset(ndb, 0, sizeof(*ndb));
+    if (!node_db_open(ndb, path) || !ndb->open) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "DOMAIN_STORE",
+                               "execute", true, false,
+                               "node.db (the anchor-domain store) failed to "
+                               "open — check --datadir is writable, or boot "
+                               "the node once to create it", path);
+        return false;
+    }
+    return true;
 }
 
 /* ── seed loading ──────────────────────────────────────────────────── */
@@ -162,7 +228,9 @@ too_long:
 
 /* ── release batch (domain tree over the releases dir) ───────────── */
 
-#define ZR_BATCH_MAX 1024
+/* One batch is one domain leaf set, so the two caps are the same number
+ * by construction: a batch that loads always stores. */
+#define ZR_BATCH_MAX ZID_DOMAIN_LEAVES_MAX
 
 struct zr_batch_entry {
     uint8_t digest[32]; /* zid_record_digest of the doc's wire bytes */
@@ -745,6 +813,16 @@ void zcl_native_handle_zcode_release_anchor(
                                "zcode.release.anchor");
         return;
     }
+    const char *domain = zr_domain(request->input);
+    if (!domain) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "BAD_DOMAIN",
+                               "normalize", false, false,
+                               "domain must be 1..63 lowercase "
+                               "alphanumerics/hyphens (default \"zcode\")",
+                               "zcode.release.anchor");
+        return;
+    }
 
     struct zr_batch_entry *entries =
         zcl_malloc(ZR_BATCH_MAX * sizeof(*entries), "zcode_release.batch");
@@ -782,15 +860,59 @@ void zcl_native_handle_zcode_release_anchor(
     zid_tree_init(&t);
     for (size_t i = 0; i < count; i++)
         zid_tree_append(&t, entries[i].digest);
-    free(entries);
     uint8_t root[32];
     zid_tree_root(&t, root);
     char root_hex[65];
     HexStr(root, 32, false, root_hex, sizeof(root_hex));
 
+    /* Record the leaf set BEFORE any chain write. An anchor whose leaf
+     * set is not on disk is exactly the silent meaning-change this store
+     * exists to prevent, so a failure here refuses the anchor rather than
+     * committing a root nobody can reproduce. */
+    struct node_db ndb;
+    if (!zr_open_ndb(datadir, &ndb, reply, "zcode.release.anchor")) {
+        free(entries);
+        return;
+    }
+    struct zid_domain_leaf *leaves =
+        zcl_malloc(count * sizeof(*leaves), "zcode_release.leaves");
+    if (!leaves) {
+        free(entries);
+        node_db_close(&ndb);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "ALLOC",
+                               "execute", false, false,
+                               "domain leaf buffer", "zcode.release.anchor");
+        return;
+    }
+    for (size_t i = 0; i < count; i++) {
+        memset(&leaves[i], 0, sizeof(leaves[i]));
+        snprintf(leaves[i].domain_name, sizeof(leaves[i].domain_name), "%s",
+                 domain);
+        leaves[i].leaf_index = (int64_t)i;
+        memcpy(leaves[i].record_digest, entries[i].digest, 32);
+        snprintf(leaves[i].label, sizeof(leaves[i].label), "%s@%s",
+                 entries[i].name, entries[i].version);
+    }
+    bool stored = zid_domain_replace_leaves(&ndb, domain, leaves, count, root,
+                                            NULL, 0);
+    free(leaves);
+    free(entries);
+    if (!stored) {
+        node_db_close(&ndb);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "DOMAIN_STORE",
+                               "execute", false, false,
+                               "the domain leaf set failed to store — "
+                               "refusing to anchor a root whose leaves are "
+                               "not recorded (see node.log for the SQL "
+                               "failure)", domain);
+        return;
+    }
+
     int64_t tip = zr_anchor_tip(request->input);
     char label[ZANC_LABEL_MAX + 1];
-    snprintf(label, sizeof(label), "zcode@%lld", (long long)tip);
+    snprintf(label, sizeof(label), "%s@%lld", domain, (long long)tip);
 
     /* Live-node path: anchor_publish composes + broadcasts when the node
      * has a wallet loaded, and itself returns op_return_hex when not.
@@ -810,9 +932,24 @@ void zcl_native_handle_zcode_release_anchor(
         bool error_body = parsed &&
                           zr_rpc_body_error(&body, rpc_err, sizeof(rpc_err));
         if (parsed && body.type == JSON_OBJ && !error_body) {
+            /* Bind the broadcast txid to the stored root. anchored_height
+             * is the height the anchor was broadcast at (a lower bound for
+             * the lookup), not a confirmation depth. */
+            bool anchor_recorded = false;
+            const struct json_value *txv = json_get(&body, "txid");
+            const char *txid_hex = txv ? json_get_str(txv) : NULL;
+            uint8_t txid[32];
+            if (txid_hex && strlen(txid_hex) == 64 && IsHex(txid_hex) &&
+                ParseHex(txid_hex, txid, 32) == 32)
+                anchor_recorded = zid_domain_set_anchor(&ndb, domain, txid,
+                                                        tip);
+            node_db_close(&ndb);
             json_push_kv_str(&body, "via", "node_rpc anchor_publish");
             json_push_kv_int(&body, "releases", (int64_t)count);
+            json_push_kv_str(&body, "domain", domain);
             json_push_kv_str(&body, "domain_root", root_hex);
+            json_push_kv_bool(&body, "domain_stored", true);
+            json_push_kv_bool(&body, "anchor_recorded", anchor_recorded);
             json_push_kv_str(&body, "label", label);
             json_copy(&reply->data, &body);
             json_free(&body);
@@ -829,7 +966,10 @@ void zcl_native_handle_zcode_release_anchor(
         free(rpc_result);
     }
 
-    /* Offline / no-live-node path: build the same OP_RETURN locally. */
+    /* Offline / no-live-node path: build the same OP_RETURN locally. The
+     * leaf set is already recorded, so re-running this after the node is
+     * up re-folds to the same root and keeps the same stored batch. */
+    node_db_close(&ndb);
     uint8_t script[128];
     size_t script_len = zanc_build_anchor(script, sizeof(script),
                                           ZANC_HASH_SHA3_256, root, label);
@@ -842,7 +982,10 @@ void zcl_native_handle_zcode_release_anchor(
         return;
     }
     json_push_kv_int(&reply->data, "releases", (int64_t)count);
+    json_push_kv_str(&reply->data, "domain", domain);
     json_push_kv_str(&reply->data, "domain_root", root_hex);
+    json_push_kv_bool(&reply->data, "domain_stored", true);
+    json_push_kv_bool(&reply->data, "anchor_recorded", false);
     json_push_kv_str(&reply->data, "label", label);
     json_push_kv_str(&reply->data, "hash_type", "sha3");
     if (rpc_err[0])
@@ -862,6 +1005,181 @@ void zcl_native_handle_zcode_release_anchor(
 }
 
 /* ── zcode.release.prove ───────────────────────────────────────────── */
+
+/* Emit the inclusion proof for leaf `idx` of `digests`. On success fills
+ * the reply and returns true; on failure the reply already carries the
+ * named error. `source` names WHERE the leaf set came from — the stored
+ * domain ("domain_table") or a fold of the releases dir for a domain
+ * that has never been anchored ("release_dir"). */
+static bool zr_emit_proof(struct zcl_command_reply *reply,
+                          const uint8_t (*digests)[32], size_t count,
+                          size_t idx, const char *domain, const char *source,
+                          const char *name, const char *version)
+{
+    uint8_t proof[ZID_TREE_MAX_PEAKS][32];
+    uint32_t proof_len = 0;
+    uint8_t root[32];
+    if (!zid_tree_prove_from_leaves(digests, count, idx, proof, &proof_len,
+                                    root)) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "PROVE_FAILED",
+                               "execute", false, false,
+                               "zid_tree_prove_from_leaves failed",
+                               "zcode.release.prove");
+        return false;
+    }
+
+    uint8_t pwire[ZID_PROOF_WIRE_MAX];
+    size_t pwire_len = zid_proof_encode(pwire, sizeof(pwire), idx, count,
+                                        (const uint8_t (*)[32])proof,
+                                        proof_len);
+    if (pwire_len == 0) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "ENCODE_FAILED",
+                               "serialize", false, false,
+                               "zid_proof_encode failed",
+                               "zcode.release.prove");
+        return false;
+    }
+    char *proof_hex = zcl_malloc(pwire_len * 2 + 1, "zcode_release.proof_hex");
+    if (!proof_hex) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "ALLOC",
+                               "serialize", false, false,
+                               "proof hex buffer", "zcode.release.prove");
+        return false;
+    }
+    HexStr(pwire, pwire_len, false, proof_hex, pwire_len * 2 + 1);
+
+    char hex[65];
+    json_push_kv_str(&reply->data, "name", name);
+    json_push_kv_str(&reply->data, "version", version);
+    json_push_kv_str(&reply->data, "domain", domain);
+    json_push_kv_str(&reply->data, "source", source);
+    HexStr(digests[idx], 32, false, hex, sizeof(hex));
+    json_push_kv_str(&reply->data, "record_digest", hex);
+    json_push_kv_int(&reply->data, "index", (int64_t)idx);
+    json_push_kv_int(&reply->data, "num_leaves", (int64_t)count);
+    HexStr(root, 32, false, hex, sizeof(hex));
+    json_push_kv_str(&reply->data, "domain_root", hex);
+    json_push_kv_str(&reply->data, "proof", proof_hex);
+    json_push_kv_int(&reply->data, "proof_bytes", (int64_t)pwire_len);
+    free(proof_hex);
+    reply->status = ZCL_COMMAND_STATUS_PASSED;
+    reply->exit_code = ZCL_COMMAND_EXIT_OK;
+    return true;
+}
+
+/* Prove from the STORED leaf set — the durable path. Returns true when
+ * the reply is complete (proof emitted, or a named failure set); false
+ * means "this domain has never been anchored", and the caller falls back
+ * to folding the releases dir. */
+static bool zr_prove_from_domain(struct node_db *ndb, const char *domain,
+                                 const char *name, const char *version,
+                                 struct zcl_command_reply *reply)
+{
+    struct zid_domain dom;
+    if (!zid_domain_get(ndb, domain, &dom) || dom.num_leaves <= 0)
+        return false;
+
+    size_t n_want = (size_t)dom.num_leaves;
+    struct zid_domain_leaf *leaves =
+        zcl_malloc(n_want * sizeof(*leaves), "zcode_release.stored_leaves");
+    if (!leaves) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "ALLOC",
+                               "execute", false, false,
+                               "stored leaf buffer", "zcode.release.prove");
+        return true;
+    }
+    int got = zid_domain_leaves(ndb, domain, leaves, n_want);
+    if (got != (int)n_want) {
+        free(leaves);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "DOMAIN_STORE",
+                               "execute", false, false,
+                               "the stored leaf set is short of the domain's "
+                               "num_leaves — re-run `zcode release anchor` to "
+                               "rewrite it", domain);
+        return true;
+    }
+
+    char want[ZID_RELEASE_NAME_MAX + ZID_RELEASE_VERSION_MAX + 2];
+    snprintf(want, sizeof(want), "%s@%s", name, version);
+    size_t idx = n_want;
+    for (size_t i = 0; i < n_want; i++) {
+        if (strcmp(leaves[i].label, want) == 0) {
+            idx = i;
+            break;
+        }
+    }
+    if (idx == n_want) {
+        free(leaves);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_FAILED, "RELEASE_NOT_FOUND",
+                               "execute", false, false,
+                               "no release with this name+version in the "
+                               "anchored leaf set of this domain — re-run "
+                               "`zcode release anchor` if the doc was signed "
+                               "after the last anchor", want);
+        return true;
+    }
+
+    uint8_t(*digests)[32] = zcl_malloc(n_want * 32, "zcode_release.digests");
+    if (!digests) {
+        free(leaves);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "ALLOC",
+                               "execute", false, false,
+                               "digest array", "zcode.release.prove");
+        return true;
+    }
+    for (size_t i = 0; i < n_want; i++)
+        memcpy(digests[i], leaves[i].record_digest, 32);
+    free(leaves);
+
+    /* The stored leaves must re-fold to the stored root, or the proof
+     * would be against a root nobody anchored. */
+    uint8_t refold[32];
+    if (!zid_tree_root_from_digests((const uint8_t (*)[32])digests, n_want,
+                                    refold) ||
+        memcmp(refold, dom.root, 32) != 0) {
+        free(digests);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL,
+                               "DOMAIN_ROOT_MISMATCH", "execute", false, false,
+                               "the stored leaves do not re-fold to the "
+                               "stored root — the domain row and its leaves "
+                               "disagree; re-run `zcode release anchor`",
+                               domain);
+        return true;
+    }
+
+    bool ok = zr_emit_proof(reply, (const uint8_t (*)[32])digests, n_want, idx,
+                            domain, "domain_table", name, version);
+    free(digests);
+    if (!ok)
+        return true;
+
+    json_push_kv_bool(&reply->data, "anchored", dom.anchored);
+    if (dom.anchored) {
+        char hex[65];
+        HexStr(dom.anchored_txid, 32, false, hex, sizeof(hex));
+        json_push_kv_str(&reply->data, "anchored_txid", hex);
+        json_push_kv_int(&reply->data, "anchored_height", dom.anchored_height);
+    }
+    json_push_kv_str(&reply->data, "next",
+                     dom.anchored
+                         ? "anyone can confirm inclusion with `zclassic23 "
+                           "zcode release verify --doc=<hex> --proof=<proof> "
+                           "--root=<domain_root>` — domain_root is already "
+                           "anchored on-chain at anchored_txid"
+                         : "anyone can confirm inclusion with `zclassic23 "
+                           "zcode release verify --doc=<hex> --proof=<proof> "
+                           "--root=<domain_root>` once domain_root is "
+                           "anchored on-chain (`zcode release anchor`)");
+    return true;
+}
 
 void zcl_native_handle_zcode_release_prove(
     const struct zcl_command_request *request,
@@ -898,6 +1216,34 @@ void zcl_native_handle_zcode_release_prove(
         return;
     }
 
+
+    const char *domain = zr_domain(in);
+    if (!domain) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "BAD_DOMAIN",
+                               "normalize", false, false,
+                               "domain must be 1..63 lowercase "
+                               "alphanumerics/hyphens (default \"zcode\")",
+                               "zcode.release.prove");
+        return;
+    }
+
+    /* Durable path FIRST: prove against the leaf set that was stored when
+     * the domain was folded, so a .zid added or deleted since then cannot
+     * change what this proof means. */
+    struct node_db ndb;
+    if (!zr_open_ndb(datadir, &ndb, reply, "zcode.release.prove"))
+        return;
+    bool answered = zr_prove_from_domain(&ndb, domain, name, version, reply);
+    node_db_close(&ndb);
+    if (answered)
+        return;
+
+    /* Fallback: this domain has never been folded, so there is no stored
+     * leaf set to read. Fold the releases dir exactly as `anchor` would —
+     * same canonical byte-sorted order, same wire-byte digests, no clock
+     * re-check — and label the reply source "release_dir" so the caller
+     * knows the batch is not recorded yet. */
     struct zr_batch_entry *entries =
         zcl_malloc(ZR_BATCH_MAX * sizeof(*entries), "zcode_release.batch");
     if (!entries) {
@@ -950,73 +1296,183 @@ void zcl_native_handle_zcode_release_prove(
     }
 
     uint8_t(*digests)[32] = zr_batch_digests(entries, count);
+    free(entries);
     if (!digests) {
-        free(entries);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INTERNAL, "ALLOC",
                                "execute", false, false,
                                "digest array", "zcode.release.prove");
         return;
     }
-    uint8_t proof[ZID_TREE_MAX_PEAKS][32];
-    uint32_t proof_len = 0;
-    uint8_t root[32];
-    bool proved = zid_tree_prove_from_leaves(
-        (const uint8_t (*)[32])digests, count, idx, proof, &proof_len, root);
+    bool ok = zr_emit_proof(reply, (const uint8_t (*)[32])digests, count, idx,
+                            domain, "release_dir", name, version);
     free(digests);
-    if (!proved) {
-        free(entries);
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
-                               ZCL_COMMAND_EXIT_INTERNAL, "PROVE_FAILED",
-                               "execute", false, false,
-                               "zid_tree_prove_from_leaves failed",
-                               "zcode.release.prove");
+    if (!ok)
         return;
-    }
-
-    uint8_t pwire[ZID_PROOF_WIRE_MAX];
-    size_t pwire_len = zid_proof_encode(pwire, sizeof(pwire), idx, count,
-                                        (const uint8_t (*)[32])proof,
-                                        proof_len);
-    if (pwire_len == 0) {
-        free(entries);
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
-                               ZCL_COMMAND_EXIT_INTERNAL, "ENCODE_FAILED",
-                               "serialize", false, false,
-                               "zid_proof_encode failed",
-                               "zcode.release.prove");
-        return;
-    }
-
-    char *proof_hex = zcl_malloc(pwire_len * 2 + 1, "zcode_release.proof_hex");
-    if (!proof_hex) {
-        free(entries);
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
-                               ZCL_COMMAND_EXIT_INTERNAL, "ALLOC",
-                               "serialize", false, false,
-                               "proof hex buffer", "zcode.release.prove");
-        return;
-    }
-    HexStr(pwire, pwire_len, false, proof_hex, pwire_len * 2 + 1);
-
-    char hex[65];
-    json_push_kv_str(&reply->data, "name", entries[idx].name);
-    json_push_kv_str(&reply->data, "version", entries[idx].version);
-    HexStr(entries[idx].digest, 32, false, hex, sizeof(hex));
-    json_push_kv_str(&reply->data, "record_digest", hex);
-    free(entries);
-    json_push_kv_int(&reply->data, "index", (int64_t)idx);
-    json_push_kv_int(&reply->data, "num_leaves", (int64_t)count);
-    HexStr(root, 32, false, hex, sizeof(hex));
-    json_push_kv_str(&reply->data, "domain_root", hex);
-    json_push_kv_str(&reply->data, "proof", proof_hex);
-    json_push_kv_int(&reply->data, "proof_bytes", (int64_t)pwire_len);
+    json_push_kv_bool(&reply->data, "anchored", false);
     json_push_kv_str(&reply->data, "next",
-                     "anyone can confirm inclusion with `zclassic23 zcode "
-                     "release verify --doc=<hex> --proof=<proof> "
-                     "--root=<domain_root>` once domain_root is anchored "
-                     "on-chain (`zcode release anchor`)");
-    free(proof_hex);
+                     "this domain has no stored leaf set yet — run `zcode "
+                     "release anchor` to record it and commit domain_root "
+                     "on-chain, then anyone can confirm inclusion with "
+                     "`zclassic23 zcode release verify --doc=<hex> "
+                     "--proof=<proof> --root=<domain_root>`");
+}
+
+/* ── zcode.domain.list / zcode.domain.status ───────────────────────── */
+
+#define ZR_DOMAIN_LIST_MAX 64
+#define ZR_DOMAIN_LEAF_PREVIEW 50
+
+static void zr_domain_json(struct json_value *obj, const struct zid_domain *d)
+{
+    json_set_object(obj);
+    json_push_kv_str(obj, "domain", d->domain_name);
+    json_push_kv_int(obj, "num_leaves", d->num_leaves);
+    char hex[65];
+    HexStr(d->root, 32, false, hex, sizeof(hex));
+    json_push_kv_str(obj, "root", hex);
+    json_push_kv_bool(obj, "anchored", d->anchored);
+    if (d->anchored) {
+        HexStr(d->anchored_txid, 32, false, hex, sizeof(hex));
+        json_push_kv_str(obj, "anchored_txid", hex);
+    }
+    json_push_kv_int(obj, "anchored_height", d->anchored_height);
+    json_push_kv_int(obj, "updated_at", d->updated_at);
+    json_push_kv_bool(obj, "has_owner", d->has_owner);
+    if (d->has_owner) {
+        HexStr(d->owner_pubkey, 32, false, hex, sizeof(hex));
+        json_push_kv_str(obj, "owner_pubkey", hex);
+    }
+}
+
+void zcl_native_handle_zcode_domain_list(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply)
+{
+    if (!request || !reply)
+        return;
+    const char *datadir = zr_datadir(request);
+    if (!datadir) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "MISSING_DATADIR",
+                               "normalize", false, false,
+                               "no datadir given and no --datadir default",
+                               "zcode.domain.list");
+        return;
+    }
+    struct node_db ndb;
+    if (!zr_open_ndb(datadir, &ndb, reply, "zcode.domain.list"))
+        return;
+
+    struct zid_domain rows[ZR_DOMAIN_LIST_MAX];
+    int n = zid_domain_list(&ndb, rows, ZR_DOMAIN_LIST_MAX);
+    int64_t total = zid_domain_count(&ndb);
+    node_db_close(&ndb);
+
+    struct json_value arr = {0};
+    json_set_array(&arr);
+    for (int i = 0; i < n; i++) {
+        struct json_value obj;
+        zr_domain_json(&obj, &rows[i]);
+        json_push_back(&arr, &obj);
+        json_free(&obj);
+    }
+    json_push_kv(&reply->data, "domains", &arr);
+    json_free(&arr);
+    json_push_kv_int(&reply->data, "count", (int64_t)n);
+    json_push_kv_int(&reply->data, "total", total);
+    json_push_kv_int(&reply->data, "list_cap", ZR_DOMAIN_LIST_MAX);
+    json_push_kv_str(&reply->data, "next",
+                     "inspect one domain's stored leaf set with `zclassic23 "
+                     "zcode domain status --input='{\"domain\":\"zcode\"}'`");
+    reply->status = ZCL_COMMAND_STATUS_PASSED;
+    reply->exit_code = ZCL_COMMAND_EXIT_OK;
+}
+
+void zcl_native_handle_zcode_domain_status(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply)
+{
+    if (!request || !reply)
+        return;
+    const char *datadir = zr_datadir(request);
+    if (!datadir) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "MISSING_DATADIR",
+                               "normalize", false, false,
+                               "no datadir given and no --datadir default",
+                               "zcode.domain.status");
+        return;
+    }
+    const char *domain = zr_domain(request->input);
+    if (!domain) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "BAD_DOMAIN",
+                               "normalize", false, false,
+                               "domain must be 1..63 lowercase "
+                               "alphanumerics/hyphens (default \"zcode\")",
+                               "zcode.domain.status");
+        return;
+    }
+    struct node_db ndb;
+    if (!zr_open_ndb(datadir, &ndb, reply, "zcode.domain.status"))
+        return;
+
+    struct zid_domain d;
+    if (!zid_domain_get(&ndb, domain, &d)) {
+        node_db_close(&ndb);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_FAILED, "DOMAIN_NOT_FOUND",
+                               "execute", true, false,
+                               "no such anchor domain — fold one with `zcode "
+                               "release anchor`, or list what exists with "
+                               "`zcode domain list`", domain);
+        return;
+    }
+
+    int64_t leaf_rows = zid_domain_leaf_count(&ndb, domain);
+    size_t want = (size_t)(d.num_leaves > ZR_DOMAIN_LEAF_PREVIEW
+                               ? ZR_DOMAIN_LEAF_PREVIEW : d.num_leaves);
+    struct zid_domain_leaf preview[ZR_DOMAIN_LEAF_PREVIEW];
+    int shown = want > 0 ? zid_domain_leaves(&ndb, domain, preview, want) : 0;
+    node_db_close(&ndb);
+
+    struct json_value obj;
+    zr_domain_json(&obj, &d);
+    json_push_kv(&reply->data, "domain_row", &obj);
+    json_free(&obj);
+    json_push_kv_str(&reply->data, "domain", d.domain_name);
+    json_push_kv_int(&reply->data, "stored_leaf_rows", leaf_rows);
+    /* The one integrity question that matters: does the stored leaf set
+     * still re-fold to the stored root? A false here means the row and its
+     * leaves disagree and every proof against this root is suspect. */
+    json_push_kv_bool(&reply->data, "leaf_rows_match_num_leaves",
+                      leaf_rows == d.num_leaves);
+
+    struct json_value arr = {0};
+    json_set_array(&arr);
+    for (int i = 0; i < shown; i++) {
+        struct json_value leaf = {0};
+        json_set_object(&leaf);
+        json_push_kv_int(&leaf, "index", preview[i].leaf_index);
+        char hex[65];
+        HexStr(preview[i].record_digest, 32, false, hex, sizeof(hex));
+        json_push_kv_str(&leaf, "record_digest", hex);
+        json_push_kv_str(&leaf, "label", preview[i].label);
+        json_push_back(&arr, &leaf);
+        json_free(&leaf);
+    }
+    json_push_kv(&reply->data, "leaves", &arr);
+    json_free(&arr);
+    json_push_kv_int(&reply->data, "leaves_shown", (int64_t)shown);
+    json_push_kv_int(&reply->data, "leaf_preview_cap", ZR_DOMAIN_LEAF_PREVIEW);
+    json_push_kv_str(&reply->data, "next",
+                     d.anchored
+                         ? "prove one release's inclusion with `zclassic23 "
+                           "zcode release prove --input='{\"name\":\"<n>\","
+                           "\"version\":\"<v>\"}'`"
+                         : "this domain's root is not on-chain yet — commit "
+                           "it with `zclassic23 zcode release anchor`");
     reply->status = ZCL_COMMAND_STATUS_PASSED;
     reply->exit_code = ZCL_COMMAND_EXIT_OK;
 }

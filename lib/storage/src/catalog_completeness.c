@@ -55,10 +55,12 @@ struct node_db;
  * lib/, so naming a config/ symbol from here would close a layering cycle
  * rather than merely skip an include. */
 
-/* app/models/src/op_return_index.c (models/op_return_index.h) */
-extern bool op_return_index_get_cursor(struct node_db *ndb,
-                                       int32_t *out_height,
-                                       uint8_t out_digest[32]);
+/* app/models/src/op_return_index.c (models/op_return_index.h) — the
+ * scalar-only variant, because struct op_return_index_cursor is an app/
+ * type this layer cannot name without an include. */
+extern bool op_return_index_get_cursor_heights(struct node_db *ndb,
+                                               int32_t *out_height,
+                                               int32_t *out_base_height);
 
 /* app/models/src/explorer_index.c (models/explorer_index.h) — added
  * alongside this module for exactly this read (see that header). */
@@ -98,12 +100,19 @@ static int64_t cc_get_op_return_cursor(void)
 {
     struct node_db *ndb = node_db_runtime();
     if (!ndb) return CATALOG_CURSOR_UNAVAILABLE;
-    int32_t h = -1;
-    uint8_t digest[32];
-    if (!op_return_index_get_cursor(ndb, &h, digest)) {
-        LOG_WARN("catalog_completeness", "op_return_index_get_cursor failed");
+    int32_t h = -1, base = 0;
+    if (!op_return_index_get_cursor_heights(ndb, &h, &base)) {
+        LOG_WARN("catalog_completeness",
+                 "op_return_index_get_cursor_heights failed (refused or "
+                 "unreadable persisted state)");
         return CATALOG_CURSOR_UNAVAILABLE;
     }
+    /* A positive base_height is DECLARED partial coverage, not a hidden gap:
+     * the catalog states the range it covers, the limit is named by
+     * op_return_index.partial_coverage, and this row keeps measuring the only
+     * thing it can act on — catch-up distance to the target. Unlike the
+     * activation-cursor rows above, there is nothing to un-hide here. */
+    (void)base;
     return (int64_t)h;    /* -1 == "nothing folded yet", a legit low cursor */
 }
 

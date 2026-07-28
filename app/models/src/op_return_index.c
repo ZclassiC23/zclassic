@@ -15,10 +15,34 @@
 #include "util/log_macros.h"
 
 #include <sqlite3.h>
+#include <stdio.h>
 #include <string.h>
 
-#define OP_RETURN_INDEX_CURSOR_KEY "op_return_index_cursor_height"
-#define OP_RETURN_INDEX_DIGEST_KEY "op_return_index_digest"
+/* ── Persisted cursor state ─────────────────────────────────────────
+ *
+ * v1 (superseded) wrote TWO keys and declared no range: an int cursor
+ * height and a 32-byte running digest, implicitly rooted at genesis.
+ * v2 writes ONE key holding the whole record — version byte, base height,
+ * base digest, cursor height, cursor digest — so the range a digest covers
+ * travels with the digest and can never be inferred wrongly.
+ *
+ * The v1 keys are NEVER read. They are only PROBED, so a v1 record is
+ * refused loudly instead of being reinterpreted as a genesis-rooted v2
+ * chain (docs/spec/sovereign-identity-layer.md, "Versioning doctrine"). */
+#define OP_RETURN_INDEX_STATE_KEY_V2 "op_return_index_state.v2"
+#define OP_RETURN_INDEX_CURSOR_KEY_V1 "op_return_index_cursor_height"
+#define OP_RETURN_INDEX_DIGEST_KEY_V1 "op_return_index_digest"
+
+/* version(1) | base_height(8 LE) | base_digest(32) | height(8 LE) |
+ * digest(32) */
+#define OP_RETURN_INDEX_STATE_RECORD_LEN 81
+#define OP_RETURN_INDEX_STATE_VERSION_BYTE 2
+
+/* Domain-separation tag for the v2 digest preimage. A v1 digest can never
+ * collide with a v2 one: v1 hashed prev||height||hash||n||rows with no
+ * prefix at all. */
+static const char OP_RETURN_INDEX_FOLD_TAG_V2[] = "ZCL.op_return_index.fold.v2";
+static const char OP_RETURN_INDEX_BASE_TAG_V2[] = "ZCL.op_return_index.base.v2";
 
 DEFINE_MODEL_CALLBACKS(op_return_index)
 
@@ -90,21 +114,69 @@ bool op_return_index_extract(const uint8_t *script, size_t script_len,
     return true;
 }
 
-void op_return_index_fold_block_digest(const uint8_t prev_digest[32],
+static void put_le64(uint8_t out[8], int64_t v)
+{
+    uint64_t u = (uint64_t)v;
+    for (int i = 0; i < 8; i++) out[i] = (uint8_t)(u >> (8 * i));
+}
+
+static int64_t get_le64(const uint8_t in[8])
+{
+    uint64_t u = 0;
+    for (int i = 7; i >= 0; i--) u = (u << 8) | in[i];
+    return (int64_t)u;
+}
+
+void op_return_index_make_base_digest(int32_t base_height,
+                                      const uint8_t base_anchor_hash[32],
+                                      uint8_t out_digest[32])
+{
+    if (!out_digest) return;
+    static const uint8_t zero32[32] = {0};
+    /* A from-genesis chain keeps the natural all-zero IV so its digests
+     * stay the plain "everything from height 0" object; only a chain that
+     * genuinely starts above genesis carries a derived IV. */
+    if (base_height <= 0 && !base_anchor_hash) {
+        memset(out_digest, 0, 32);
+        return;
+    }
+    struct sha3_256_ctx ctx;
+    sha3_256_init(&ctx);
+    sha3_256_write(&ctx, (const uint8_t *)OP_RETURN_INDEX_BASE_TAG_V2,
+                   sizeof(OP_RETURN_INDEX_BASE_TAG_V2) - 1);
+    uint8_t le8[8];
+    put_le64(le8, (int64_t)base_height);
+    sha3_256_write(&ctx, le8, 8);
+    sha3_256_write(&ctx, base_anchor_hash ? base_anchor_hash : zero32, 32);
+    sha3_256_finalize(&ctx, out_digest);
+}
+
+void op_return_index_fold_block_digest(int32_t base_height,
+                                       const uint8_t base_digest[32],
+                                       const uint8_t prev_digest[32],
                                        int32_t height,
                                        const uint8_t block_hash[32],
                                        const struct op_return_index_row *rows,
                                        size_t n_rows, uint8_t out_digest[32])
 {
+    static const uint8_t zero32[32] = {0};
     struct sha3_256_ctx ctx;
     sha3_256_init(&ctx);
-    sha3_256_write(&ctx, prev_digest, 32);
+    /* Tag + declared range FIRST, then the running chain: the range a
+     * digest covers is part of every preimage, so no verifier can read a
+     * partial-coverage digest as a genesis-rooted one. */
+    sha3_256_write(&ctx, (const uint8_t *)OP_RETURN_INDEX_FOLD_TAG_V2,
+                   sizeof(OP_RETURN_INDEX_FOLD_TAG_V2) - 1);
+    uint8_t base_le8[8];
+    put_le64(base_le8, (int64_t)base_height);
+    sha3_256_write(&ctx, base_le8, 8);
+    sha3_256_write(&ctx, base_digest ? base_digest : zero32, 32);
+    sha3_256_write(&ctx, prev_digest ? prev_digest : zero32, 32);
 
     uint8_t le8[8];
-    uint64_t h64 = (uint64_t)(int64_t)height;
-    for (int i = 0; i < 8; i++) le8[i] = (uint8_t)(h64 >> (8 * i));
+    put_le64(le8, (int64_t)height);
     sha3_256_write(&ctx, le8, 8);
-    sha3_256_write(&ctx, block_hash, 32);
+    sha3_256_write(&ctx, block_hash ? block_hash : zero32, 32);
 
     uint8_t le4[4];
     uint32_t nrows32 = (uint32_t)n_rows;
@@ -212,36 +284,173 @@ bool op_return_index_apply_block_rows(struct node_db *ndb,
 
 /* ── Cursor / digest state ────────────────────────────────────────── */
 
-bool op_return_index_get_cursor(struct node_db *ndb, int32_t *out_height,
-                                uint8_t out_digest[32])
+const char *op_return_index_state_version_name(
+    enum op_return_index_state_version v)
 {
-    if (!ndb || !ndb->open) return false;
-    int64_t h = -1;
-    bool found = node_db_state_get_int(ndb, OP_RETURN_INDEX_CURSOR_KEY, &h);
-    if (out_height) *out_height = found ? (int32_t)h : -1;
-    if (out_digest) {
-        size_t len = 0;
-        if (!found ||
-            !node_db_state_get(ndb, OP_RETURN_INDEX_DIGEST_KEY, out_digest,
-                               32, &len) || len != 32)
-            memset(out_digest, 0, 32);
+    switch (v) {
+    case OP_RETURN_INDEX_STATE_EMPTY:     return "empty";
+    case OP_RETURN_INDEX_STATE_V2:        return "v2";
+    case OP_RETURN_INDEX_STATE_LEGACY_V1: return "legacy_v1";
+    case OP_RETURN_INDEX_STATE_UNKNOWN:   break;
     }
-    /* "nothing folded yet" is a valid state, not a failure. */
+    return "unknown";
+}
+
+/* Read the raw v2 blob. *present=false when the key is absent. Returns
+ * false when the key exists but is not a well-formed v2 record. */
+static bool read_v2_record(struct node_db *ndb,
+                           uint8_t rec[OP_RETURN_INDEX_STATE_RECORD_LEN],
+                           bool *present)
+{
+    *present = false;
+    /* One byte of slack so an OVER-long blob is detected rather than
+     * silently truncated to a plausible record (node_db_state_get clamps
+     * the copy to max_len and reports the clamped length). */
+    uint8_t buf[OP_RETURN_INDEX_STATE_RECORD_LEN + 1];
+    size_t len = 0;
+    if (!node_db_state_get(ndb, OP_RETURN_INDEX_STATE_KEY_V2, buf,
+                           sizeof(buf), &len))
+        return true;                       /* absent — not an error */
+    *present = true;
+    if (len != OP_RETURN_INDEX_STATE_RECORD_LEN)
+        return false;
+    if (buf[0] != OP_RETURN_INDEX_STATE_VERSION_BYTE)
+        return false;
+    memcpy(rec, buf, OP_RETURN_INDEX_STATE_RECORD_LEN);
     return true;
 }
 
-bool op_return_index_set_cursor(struct node_db *ndb, int32_t height,
-                                const uint8_t digest[32])
+enum op_return_index_state_version
+op_return_index_state_version(struct node_db *ndb)
 {
-    if (!ndb || !ndb->open || !digest)
+    if (!ndb || !ndb->open)
+        return OP_RETURN_INDEX_STATE_UNKNOWN;
+
+    uint8_t rec[OP_RETURN_INDEX_STATE_RECORD_LEN];
+    bool present = false;
+    if (!read_v2_record(ndb, rec, &present))
+        return OP_RETURN_INDEX_STATE_UNKNOWN;
+    if (present)
+        return OP_RETURN_INDEX_STATE_V2;
+
+    /* No v2 record. A v1 record left by an older binary is a DIFFERENT
+     * object (genesis-rooted, no declared range) — refuse, never adopt. */
+    int64_t legacy_h = 0;
+    uint8_t legacy_d[32];
+    size_t len = 0;
+    if (node_db_state_get_int(ndb, OP_RETURN_INDEX_CURSOR_KEY_V1, &legacy_h) ||
+        node_db_state_get(ndb, OP_RETURN_INDEX_DIGEST_KEY_V1, legacy_d,
+                          sizeof(legacy_d), &len))
+        return OP_RETURN_INDEX_STATE_LEGACY_V1;
+
+    return OP_RETURN_INDEX_STATE_EMPTY;
+}
+
+bool op_return_index_get_cursor(struct node_db *ndb,
+                                struct op_return_index_cursor *out)
+{
+    if (!ndb || !ndb->open)
+        LOG_FAIL("op_return_index", "get_cursor: db not open");
+    if (!out)
+        LOG_FAIL("op_return_index", "get_cursor: out is NULL");
+
+    memset(out, 0, sizeof(*out));
+    out->base_height = 0;
+    out->height = -1;
+
+    enum op_return_index_state_version v = op_return_index_state_version(ndb);
+    switch (v) {
+    case OP_RETURN_INDEX_STATE_EMPTY:
+        return true;                       /* fresh chain — valid state */
+    case OP_RETURN_INDEX_STATE_V2:
+        break;
+    case OP_RETURN_INDEX_STATE_LEGACY_V1:
+    case OP_RETURN_INDEX_STATE_UNKNOWN:
+        /* Loud refusal, never a silent reinterpretation: a v1 digest makes
+         * a genesis-rooted claim this binary cannot verify or extend. The
+         * operator's escape is `oprindex_rebuild` (op_return_index_
+         * truncate), which drops the v1 record and re-derives. */
+        LOG_FAIL("op_return_index",
+                 "get_cursor: REFUSING persisted state version '%s' — this "
+                 "binary writes op_return_index_state.v2 (range-declared "
+                 "base_height+base_digest) and will not reinterpret an older "
+                 "or unrecognized record as a v2 chain. Rebuild the catalog "
+                 "(`zclassic23 app oprindex rebuild`) to re-derive it.",
+                 op_return_index_state_version_name(v));
+    }
+
+    uint8_t rec[OP_RETURN_INDEX_STATE_RECORD_LEN];
+    bool present = false;
+    if (!read_v2_record(ndb, rec, &present) || !present)
+        LOG_FAIL("op_return_index",
+                 "get_cursor: v2 record vanished or malformed between "
+                 "classify and decode");
+
+    out->base_height = (int32_t)get_le64(rec + 1);
+    memcpy(out->base_digest, rec + 9, 32);
+    out->height = (int32_t)get_le64(rec + 41);
+    memcpy(out->digest, rec + 49, 32);
+    return true;
+}
+
+bool op_return_index_set_cursor(struct node_db *ndb,
+                                const struct op_return_index_cursor *cur)
+{
+    if (!ndb || !ndb->open || !cur)
         LOG_FAIL("op_return_index", "set_cursor: invalid args");
-    if (!node_db_state_set_int(ndb, OP_RETURN_INDEX_CURSOR_KEY,
-                               (int64_t)height))
+    if (cur->height < cur->base_height - 1)
         LOG_FAIL("op_return_index",
-                 "set_cursor: failed to persist height=%d", height);
-    if (!node_db_state_set(ndb, OP_RETURN_INDEX_DIGEST_KEY, digest, 32))
+                 "set_cursor: height=%d is below base_height=%d - 1 — the "
+                 "cursor may never sit outside its declared range",
+                 cur->height, cur->base_height);
+
+    uint8_t rec[OP_RETURN_INDEX_STATE_RECORD_LEN];
+    rec[0] = OP_RETURN_INDEX_STATE_VERSION_BYTE;
+    put_le64(rec + 1, (int64_t)cur->base_height);
+    memcpy(rec + 9, cur->base_digest, 32);
+    put_le64(rec + 41, (int64_t)cur->height);
+    memcpy(rec + 49, cur->digest, 32);
+
+    if (!node_db_state_set(ndb, OP_RETURN_INDEX_STATE_KEY_V2, rec,
+                           sizeof(rec)))
         LOG_FAIL("op_return_index",
-                 "set_cursor: failed to persist digest at height=%d", height);
+                 "set_cursor: failed to persist state base=%d height=%d",
+                 cur->base_height, cur->height);
+    return true;
+}
+
+bool op_return_index_get_cursor_heights(struct node_db *ndb,
+                                        int32_t *out_height,
+                                        int32_t *out_base_height)
+{
+    struct op_return_index_cursor cur;
+    if (!op_return_index_get_cursor(ndb, &cur)) {
+        if (out_height) *out_height = -1;
+        if (out_base_height) *out_base_height = -1;
+        return false;  // raw-return-ok:get_cursor already logged the refusal
+    }
+    if (out_height) *out_height = cur.height;
+    if (out_base_height) *out_base_height = cur.base_height;
+    return true;
+}
+
+bool op_return_index_prune_below(struct node_db *ndb, int32_t base_height)
+{
+    if (!ndb || !ndb->open)
+        LOG_FAIL("op_return_index", "prune_below: db not open");
+    if (base_height <= 0)
+        return true;                       /* nothing can be below height 0 */
+
+    /* Same shape as op_return_index_truncate's DELETE: node_db_exec, not a
+     * bound AR save — there is no record to validate or run hooks on, and
+     * the only interpolated value is a machine-derived int32_t. */
+    char sql[96];
+    snprintf(sql, sizeof(sql),
+             "DELETE FROM op_return_index WHERE height<%d", base_height);
+    if (!node_db_exec(ndb, sql))
+        LOG_FAIL("op_return_index",
+                 "prune_below: DELETE below base_height=%d failed",
+                 base_height);
     return true;
 }
 
@@ -251,11 +460,16 @@ bool op_return_index_truncate(struct node_db *ndb)
         LOG_FAIL("op_return_index", "truncate: db not open");
     if (!node_db_exec(ndb, "DELETE FROM op_return_index"))
         LOG_FAIL("op_return_index", "truncate: DELETE failed");
-    uint8_t zero[32] = {0};
-    if (!node_db_state_set_int(ndb, OP_RETURN_INDEX_CURSOR_KEY, -1))
-        LOG_FAIL("op_return_index", "truncate: failed to reset cursor");
-    if (!node_db_state_set(ndb, OP_RETURN_INDEX_DIGEST_KEY, zero, 32))
-        LOG_FAIL("op_return_index", "truncate: failed to reset digest");
+    struct op_return_index_cursor empty;
+    memset(&empty, 0, sizeof(empty));
+    empty.base_height = 0;
+    empty.height = -1;
+    if (!op_return_index_set_cursor(ndb, &empty))
+        LOG_FAIL("op_return_index", "truncate: failed to reset cursor state");
+    /* Retire any v1 record so the refusal above cannot survive a rebuild —
+     * this is the operator's documented escape from a legacy record. */
+    (void)node_db_state_delete(ndb, OP_RETURN_INDEX_CURSOR_KEY_V1);
+    (void)node_db_state_delete(ndb, OP_RETURN_INDEX_DIGEST_KEY_V1);
     return true;
 }
 

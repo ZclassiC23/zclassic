@@ -977,13 +977,20 @@ ZCL_COMMAND_READY_COMMAND(
     "compose+broadcast rides the anchor_publish RPC (via:\"node_rpc "
     "anchor_publish\"); offline the reply carries op_return_hex to "
     "include manually as vout[0] of any transaction. Anchoring spends a "
-    "fee, so it is operator-triggered only. Reports releases and "
-    "domain_root. NO_RELEASES names an empty releases dir (sign first "
-    "with `zcode release sign`); a *.zid file that does not decode as a "
-    "release doc fails BATCH_LOAD naming the file.", 0,
+    "fee, so it is operator-triggered only. The sorted leaf set and its "
+    "root are STORED in zid_domains/zid_domain_leaves (--domain, default "
+    "\"zcode\") BEFORE the chain write, so a later `zcode release prove` "
+    "proves against what was actually anchored rather than re-scanning a "
+    "directory that may have changed; a store failure refuses the anchor "
+    "with DOMAIN_STORE. Re-folding to a different root visibly clears the "
+    "domain's anchor. Reports releases, domain, domain_root, "
+    "domain_stored, and anchor_recorded. NO_RELEASES names an empty "
+    "releases dir (sign first with `zcode release sign`); a *.zid file "
+    "that does not decode as a release doc fails BATCH_LOAD naming the "
+    "file.", 0,
     "zcode,release,anchor,zid,registry,domain,batch,root,zanc",
     "zcl.zcode_release_anchor.input.v1", "zcl.zcode_release_anchor.v1",
-    "tip,datadir", "",
+    "tip,domain,datadir", "",
     "zclassic23 zcode release anchor --input='{}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE,
@@ -997,20 +1004,79 @@ ZCL_COMMAND_READY_COMMAND(
 ZCL_COMMAND_READY_READ(
     "zcode.release.prove", "zcode.release", "",
     "Emit the domain-batch inclusion proof for one release",
-    "Rebuilds the same canonical tree `zcode release anchor` folds "
-    "(digests sorted by bytes from <datadir>/zcode/releases) and emits "
-    "the zid_proof wire hex for the release named by name+version: "
-    "record_digest, index, num_leaves, domain_root, and proof. Anyone "
-    "can then confirm inclusion with `zcode release verify --doc=<hex> "
-    "--proof=<proof> --root=<domain_root>` against the on-chain anchored "
-    "root. RELEASE_NOT_FOUND names a name+version with no saved doc; "
+    "Emits the zid_proof wire hex for the release named by name+version: "
+    "record_digest, index, num_leaves, domain_root, proof, and source. "
+    "Reads the leaf set STORED by `zcode release anchor` (--domain, "
+    "default \"zcode\") — source \"domain_table\" — so a .zid added or "
+    "deleted since the anchor cannot silently change what the proof "
+    "means; the reply also carries anchored/anchored_txid. For a domain "
+    "that has never been anchored it falls back to folding "
+    "<datadir>/zcode/releases in the same canonical byte-sorted order and "
+    "says source \"release_dir\". Anyone can then confirm inclusion with "
+    "`zcode release verify --doc=<hex> --proof=<proof> "
+    "--root=<domain_root>` against the on-chain anchored root. "
+    "RELEASE_NOT_FOUND names a name+version that is not in the batch; "
     "NO_RELEASES names an empty releases dir.", 0,
     "zcode,release,prove,zid,registry,domain,batch,proof,inclusion",
     "zcl.zcode_release_prove.input.v1", "zcl.zcode_release_prove.v1",
-    "name,version,datadir", "name,version",
+    "name,version,domain,datadir", "name,version",
     "zclassic23 zcode release prove --input='{\"name\":\"demo\",\"version\":\"0.1\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_release_prove)
+
+/* ── Anchor domains: the durable record of what a batch committed ────
+ * `zcode release anchor` stores the sorted leaf set + the root it folds
+ * to in zid_domains/zid_domain_leaves (schema v38, models/zid_domain.h)
+ * BEFORE any chain write, and `zcode release prove` reads that stored
+ * leaf set — so adding or deleting a .zid file can no longer silently
+ * change what an already-issued inclusion proof means. These two read
+ * leaves make the store inspectable: what domains exist, what root each
+ * one carries, whether that root is on-chain, and what leaves are under
+ * it. Also exposed as `zclassic23 dumpstate zid_domains`. */
+ZCL_COMMAND_BRANCH("zcode.domain", "zcode",
+                   "Anchor domains: stored leaf sets behind batch proofs",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.domain.list", "zcode.domain", "",
+    "List the anchor domains stored in this datadir",
+    "Every domain in <datadir>/node.db's zid_domains table, name-ordered: "
+    "domain, num_leaves, root, anchored (plus anchored_txid and the height "
+    "the anchor was BROADCAST at when it is), updated_at, and has_owner. "
+    "Many domains coexist — zcode, zdesc, zdir, third-party registries — "
+    "each anchoring at its own cadence. An empty list means nothing has "
+    "been folded yet in this datadir, not an error; fold one with `zcode "
+    "release anchor`.", 0,
+    "zcode,domain,list,zid,registry,anchor,batch,root",
+    "zcl.zcode_domain_list.input.v1", "zcl.zcode_domain_list.v1",
+    "datadir", "",
+    "zclassic23 zcode domain list --input='{}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_domain_list)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.domain.status", "zcode.domain", "",
+    "Show one anchor domain's stored root, leaves, and anchor",
+    "One domain (--domain, default \"zcode\") from <datadir>/node.db: the "
+    "domain_row (num_leaves, root, anchored/anchored_txid/anchored_height, "
+    "updated_at, owner), stored_leaf_rows, the integrity answer "
+    "leaf_rows_match_num_leaves (false means the domain row and its leaf "
+    "table disagree and every proof against this root is suspect — re-run "
+    "`zcode release anchor`), and the first 50 leaves as index + "
+    "record_digest + label (\"<name>@<version>\"). DOMAIN_NOT_FOUND names "
+    "a domain that has never been folded.", 0,
+    "zcode,domain,status,zid,registry,anchor,batch,root,leaves,proof",
+    "zcl.zcode_domain_status.input.v1", "zcl.zcode_domain_status.v1",
+    "domain,datadir", "",
+    "zclassic23 zcode domain status --input='{\"domain\":\"zcode\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_domain_status)

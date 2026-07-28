@@ -125,24 +125,54 @@ bool index_fold_disk_ok(const char *index_id, const char *subsys,
     return true;
 }
 
+/* Count of ticks that yielded rather than block behind the reducer drive.
+ * Non-zero is HEALTHY (the yield is working), not an error. */
+static _Atomic uint64_t g_seed_floor_yields = 0;
+
+uint64_t index_fold_seed_floor_yields(void) { return atomic_load(&g_seed_floor_yields); }
+
 /* Read REDUCER_TRUSTED_BASE_HEIGHT_KEY (8-byte LE) from progress_meta.
  * Returns true on a clean read; *found=false when the key is absent (a
- * from-genesis datadir with no snapshot seed). */
+ * from-genesis datadir with no snapshot seed).
+ *
+ * LOCK-ORDER LAW — this MUST NOT take a blocking progress-store lock.
+ * Every caller runs on the supervisor tick-runner thread, which dispatches
+ * all children synchronously and stamps its heartbeat only BETWEEN rounds.
+ * progress_meta_get_blob_exact() acquires progress_store_tx_lock(), a plain
+ * blocking pthread mutex the reducer drive holds across a fold commit —
+ * routinely 120-330 s at tip. Blocking here freezes the runner heartbeat for
+ * that whole window, boot_sd_watchdog withholds the systemd keepalive, and
+ * systemd SIGABRTs the node at the 120 s WatchdogSec limit. That is the
+ * 2026-07-27 crash loop: seven kills in forty minutes on a node that was
+ * folding blocks correctly the entire time — the folder was fine, the
+ * OBSERVER jammed behind it.
+ *
+ * So: TRY, and yield the tick if the reducer owns the lock. The mutex is
+ * recursive, so holding it here is compatible with the inner acquire.
+ * Yielding is free — the caller leaves the blocker exactly as it found it
+ * and the next tick is 2 s away. Same discipline as
+ * reducer_drive_watchdog.c:442 ("NEVER a blocking coins/progress lock"). */
 static bool read_seed_floor(sqlite3 *db, int64_t *floor_out, bool *found)
 {
     *floor_out = -1;
     *found = false;
     if (!db)
         return false;
+    if (!progress_store_tx_trylock()) {
+        atomic_fetch_add(&g_seed_floor_yields, 1);
+        return false;                        /* reducer owns it — leave as-is */
+    }
     uint8_t blob[8] = {0};
     size_t n = 0;
     bool present = false;
     if (!progress_meta_get_blob_exact(db, REDUCER_TRUSTED_BASE_HEIGHT_KEY,
                                       blob, sizeof(blob), &n, &present)) {
+        progress_store_tx_unlock();
         LOG_WARN("index_backfill",
                  "trusted_base_height read failed — leaving seed blocker as-is");
         return false;
     }
+    progress_store_tx_unlock();      /* nothing below touches `db` */
     if (!present)
         return true;                         /* clean read, no seed floor */
     if (n != sizeof(blob)) {
@@ -231,6 +261,66 @@ void index_fold_note_absent_body(const char *index_id, const char *subsys,
                  index_id, (long long)absent_height, (long long)seed_floor,
                  (unsigned long long)reps);
     }
+}
+
+bool index_fold_snapshot_seed_floor(int64_t *floor_out)
+{
+    int64_t floor = -1;
+    bool found = false;
+    bool ok = read_seed_floor(progress_store_db(), &floor, &found);
+    if (floor_out) *floor_out = (ok && found) ? floor : -1;
+    return ok && found;
+}
+
+void index_fold_declare_partial_coverage(const char *index_id,
+                                         const char *subsys,
+                                         int64_t base_height,
+                                         int64_t seed_floor)
+{
+    if (!index_id || !subsys)
+        return;
+
+    char id[BLOCKER_ID_MAX];
+    /* blocker-id: *.partial_coverage */
+    mk_blocker_id(id, sizeof(id), index_id, "partial_coverage");
+
+    struct blocker_record r;
+    char reason[BLOCKER_REASON_MAX];
+    snprintf(reason, sizeof(reason),
+             "%s covers heights %lld and up ONLY. This datadir was seeded from "
+             "a UTXO snapshot at reducer_trusted_base_height=%lld, so bodies "
+             "below that floor were never downloaded and this projection has no "
+             "source for them. The index has adopted the floor as its declared "
+             "base (base_height/base_digest travel with the digest) and folds "
+             "forward normally — it is NOT stalled. A PERSON decides whether to "
+             "backfill the pre-seed bodies. See operator_decision.",
+             index_id, (long long)base_height, (long long)seed_floor);
+    /* No escape action and no retry budget, deliberately: the node cannot
+     * conjure bodies it never downloaded, and fabricating rows for them would
+     * be inventing data. The hand-off IS the remedy (OWNER-bound). */
+    if (blocker_init(&r, id, subsys, BLOCKER_DEPENDENCY, reason)) {
+        r.escape_deadline_secs = 0;
+        r.retry_budget = 0;
+        (void)blocker_set(&r);
+    }
+
+    /* The declaration supersedes the spin: one fact, one name. */
+    index_fold_clear_seed_blocker(index_id);
+
+    LOG_INFO("index_backfill",
+             "[%s] declared partial coverage: base_height=%lld "
+             "(snapshot seed floor %lld) — folding forward from the base; "
+             "pre-seed history is out of range by declaration.",
+             index_id, (long long)base_height, (long long)seed_floor);
+}
+
+void index_fold_clear_partial_coverage(const char *index_id)
+{
+    if (!index_id)
+        return;
+    char id[BLOCKER_ID_MAX];
+    mk_blocker_id(id, sizeof(id), index_id, "partial_coverage");
+    blocker_clear(id);
 }
 
 void index_fold_clear_seed_blocker(const char *index_id)

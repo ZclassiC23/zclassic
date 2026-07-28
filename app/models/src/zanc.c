@@ -116,3 +116,31 @@ int db_zanc_list(struct node_db *ndb, struct zanc_anchor *out, size_t max)
         AR_BIND_INT(s, 1, (int)max),
         if (!row_to_zanc(s, &out[count])) continue);
 }
+
+int db_zanc_list_by_label_prefix(struct node_db *ndb, const char *prefix,
+                                 struct zanc_anchor *out, size_t max,
+                                 size_t offset)
+{
+    if (!ndb || !ndb->open) return 0;
+    if (!out && max > 0)
+        LOG_RETURN(0, "zanc", "db_zanc_list_by_label_prefix: out is NULL");
+    if (max == 0) return 0;
+
+    const char *pfx = prefix ? prefix : "";
+    int pfx_len = (int)strnlen(pfx, ZANC_LABEL_MAX + 1);
+    if (pfx_len > ZANC_LABEL_MAX)
+        LOG_RETURN(0, "zanc",
+                   "db_zanc_list_by_label_prefix: prefix longer than a label");
+
+    sqlite3_stmt *s = NULL;
+    AR_QUERY_LIST(ndb, s,
+        "SELECT txid,height,hash_type,digest,label FROM zanc_anchors"
+        " WHERE substr(label,1,?)=?"
+        " ORDER BY height DESC, txid ASC LIMIT ? OFFSET ?",
+        out, max,
+        AR_BIND_INT(s, 1, pfx_len);
+        AR_BIND_TEXT(s, 2, pfx);
+        AR_BIND_INT(s, 3, (int)max);
+        AR_BIND_INT(s, 4, (int)offset),
+        if (!row_to_zanc(s, &out[count])) continue);
+}

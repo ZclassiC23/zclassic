@@ -89,31 +89,114 @@ bool op_return_index_apply_block_rows(struct node_db *ndb,
                                       size_t rows_cap,
                                       size_t *rows_count_out);
 
+/* ── Range-declared digest chain ────────────────────────────────────
+ *
+ * The chain used to be implicitly genesis-rooted: "cursor = highest folded
+ * height, contiguous from -1". That is a claim a snapshot-seeded node
+ * cannot honour — block bodies below reducer_trusted_base_height were
+ * never downloaded, so the fold has no source below the seed floor and the
+ * catalog stayed empty forever while a blocker fired every tick.
+ *
+ * The cursor therefore DECLARES the range it covers. `base_height` is the
+ * lowest height the chain folds; `base_digest` is the initialisation
+ * vector the chain starts from at that height. Both are folded into every
+ * block digest (op_return_index_fold_block_digest), so a range digest can
+ * never be mistaken for a genesis-rooted one even when the two cover the
+ * same heights.
+ *
+ * `height` is the highest folded height, contiguous UP from base_height;
+ * `height == base_height - 1` is the "based, nothing folded yet" state.
+ * The empty/genesis-rooted default is base_height=0, base_digest=0…0,
+ * height=-1, digest=0…0. */
+struct op_return_index_cursor {
+    int32_t base_height;       /* lowest height covered by the chain */
+    uint8_t base_digest[32];   /* chain IV at base_height */
+    int32_t height;            /* highest folded height (base_height-1=none) */
+    uint8_t digest[32];        /* running digest at `height` */
+};
+
+/* Which persisted record shape is on disk. Anything but EMPTY/V2 is a
+ * REFUSAL, never a reinterpretation — see the versioning doctrine in
+ * docs/spec/sovereign-identity-layer.md: decoders reject unknown versions
+ * loudly and never silently skip. A LEGACY_V1 record is a genesis-rooted
+ * digest with no declared base; silently reading it as v2 would publish a
+ * range commitment over a chain that never agreed to that range. */
+enum op_return_index_state_version {
+    OP_RETURN_INDEX_STATE_EMPTY = 0,     /* nothing persisted — fresh chain */
+    OP_RETURN_INDEX_STATE_V2,            /* current, range-declared */
+    OP_RETURN_INDEX_STATE_LEGACY_V1,     /* pre-range record — rejected */
+    OP_RETURN_INDEX_STATE_UNKNOWN,       /* future/corrupt record — rejected */
+};
+
+/* Classify the persisted record without decoding it. Never raises; pure
+ * read. Returns UNKNOWN when ndb is unusable (an unreadable record is not
+ * a usable one). */
+enum op_return_index_state_version
+op_return_index_state_version(struct node_db *ndb);
+
+/* Human name for a state version (for logs/JSON). Never NULL. */
+const char *op_return_index_state_version_name(
+    enum op_return_index_state_version v);
+
+/* Pure: derive the chain IV for a range starting at `base_height`.
+ * `base_anchor_hash` is the block hash of base_height-1 (the last height
+ * this node can NOT read) when known, else NULL for all-zero. A
+ * genesis-rooted chain is base_height==0 with a NULL anchor, which yields
+ * the all-zero IV — so a from-genesis node keeps the natural zero IV and
+ * only a truly based chain carries a non-zero one. */
+void op_return_index_make_base_digest(int32_t base_height,
+                                      const uint8_t base_anchor_hash[32],
+                                      uint8_t out_digest[32]);
+
 /* Pure: chain one block's extracted rows into the running catalog digest.
  * `rows` must be in the order op_return_index_apply_block_rows produced
  * them (ascending tx index, then ascending vout). Folds EVERY processed
  * height, including n_rows==0, so the digest also proves no height was
  * skipped, not just which tags were found. Two independently-indexing
- * nodes that walked the same blocks in the same order reach the same
- * digest. */
-void op_return_index_fold_block_digest(const uint8_t prev_digest[32],
+ * nodes that walked the same blocks in the same order FROM THE SAME BASE
+ * reach the same digest; two different bases over the same heights reach
+ * different digests by construction (base_height + base_digest are folded
+ * into every preimage under a v2 domain tag). */
+void op_return_index_fold_block_digest(int32_t base_height,
+                                       const uint8_t base_digest[32],
+                                       const uint8_t prev_digest[32],
                                        int32_t height,
                                        const uint8_t block_hash[32],
                                        const struct op_return_index_row *rows,
                                        size_t n_rows, uint8_t out_digest[32]);
 
-/* Cursor = highest height whose digest has been folded, contiguous from
- * -1 (nothing folded yet). Owned exclusively by the backfill service.
- * Always returns true (the "nothing folded yet" state is not a failure)
- * unless ndb itself is unusable. */
-bool op_return_index_get_cursor(struct node_db *ndb, int32_t *out_height,
-                                uint8_t out_digest[32]);
-bool op_return_index_set_cursor(struct node_db *ndb, int32_t height,
-                                const uint8_t digest[32]);
+/* Read/write the whole cursor record. Owned exclusively by the backfill
+ * service (writes) — readers are diagnostic surfaces.
+ *
+ * get: returns true and fills *out for EMPTY (the default record) and V2.
+ * Returns FALSE — after a hard LOG_FAIL naming the version — for a
+ * LEGACY_V1 or UNKNOWN record, and for an unusable ndb. A caller that gets
+ * false must NOT treat it as "nothing folded yet": it is a refusal.
+ * set: persists the full record (base + cursor) as one v2 blob. */
+bool op_return_index_get_cursor(struct node_db *ndb,
+                                struct op_return_index_cursor *out);
+bool op_return_index_set_cursor(struct node_db *ndb,
+                                const struct op_return_index_cursor *cur);
+
+/* Scalar-only read for callers that cannot see struct
+ * op_return_index_cursor (lib/ modules that reach app/ accessors by
+ * forward declaration — see lib/storage/src/catalog_completeness.c).
+ * Either out pointer may be NULL. Same refusal semantics as
+ * op_return_index_get_cursor. */
+bool op_return_index_get_cursor_heights(struct node_db *ndb,
+                                        int32_t *out_height,
+                                        int32_t *out_base_height);
+
+/* Delete every cataloged row strictly below `base_height` — rows outside
+ * the declared range, which the digest chain does not cover and no
+ * verifier can reproduce. Called when the base moves up. */
+bool op_return_index_prune_below(struct node_db *ndb, int32_t base_height);
 
 /* Drop-and-rederive: delete every catalog row and reset the cursor/digest
- * to the empty state. The backfill service re-derives the whole catalog
- * from block bodies, from height 0, on its next ticks. */
+ * to the empty (genesis-rooted, nothing-folded) state. Also deletes any
+ * legacy v1 record, so this is the operator's escape from a v1 refusal.
+ * The backfill service re-derives the catalog from block bodies on its
+ * next ticks, re-seeding the base if the datadir is snapshot-seeded. */
 bool op_return_index_truncate(struct node_db *ndb);
 
 int64_t op_return_index_count(struct node_db *ndb);
