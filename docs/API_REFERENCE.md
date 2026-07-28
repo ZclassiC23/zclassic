@@ -62,10 +62,8 @@ zclassic23 discover schema <path> --side=input|output
 | Registry entries (branches + leaves) | 292 |
 | Top-level roots | 9 |
 | Branches | 67 |
-| Leaves (dispatchable command paths) | 224 |
-| … `ready` (live handler in this build) | 182 |
 | Leaves (dispatchable command paths) | 225 |
-| … `ready` (live handler in this build) | 173 |
+| … `ready` (live handler in this build) | 183 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 25 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |

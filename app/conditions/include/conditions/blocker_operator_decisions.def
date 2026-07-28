@@ -125,3 +125,24 @@ ZCL_BLOCKER_DECISION(sticky_escalator.resnapshot_no_consumer,
     "which is what the escalator already does. "
     "Nothing to auto-attempt: a symbol that is not linked cannot be supplied at "
     "runtime.")
+
+ZCL_BLOCKER_DECISION(body_persist.body_unfetchable,
+    "A person must choose. body_persist needs the block body at a height AT OR "
+    "BELOW the active chain tip, and those bytes are not on disk. It cannot "
+    "ask the network for them: the header-driven body queue only ever requests "
+    "heights strictly ABOVE the tip, so this height is unreachable by re-fetch "
+    "and the stage will hold here indefinitely rather than advance past a body "
+    "it never validated. The usual cause is a truncated or removed blk*.dat, "
+    "or a datadir copied without its block files - genesis itself is seeded at "
+    "boot on every network and is no longer a source of this hold. "
+    "OPTION A - run with -reindex. The on-disk block files are rescanned and "
+    "the index re-derived from what is genuinely present, which lowers the tip "
+    "to the last body actually held so every missing height above it becomes "
+    "requestable again. Cost: a full rescan of the block files. "
+    "OPTION B - replace the datadir's block files from a source that has them, "
+    "then restart. Cost: obtaining and trusting an external copy; the bodies "
+    "are re-validated against their headers on the way in either way. "
+    "Never auto-attempted: the only automatic escape would be rewinding the "
+    "active tip so the height becomes requestable, and silently moving the tip "
+    "to work around missing data is a chain-state mutation the node must not "
+    "make on its own.")
