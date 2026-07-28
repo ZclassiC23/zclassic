@@ -5,6 +5,8 @@
  * Produces valid PNG files per ISO/IEC 15948 / RFC 2083. */
 
 #include "util/png_writer.h"
+
+#include "base/serialize_le.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,29 +53,13 @@ static uint32_t adler32(const uint8_t *data, size_t len)
     return (b << 16) | a;
 }
 
-/* ── Byte helpers ───────────────────────────────────────────── */
-
-static void put_be32(uint8_t *p, uint32_t v)
-{
-    p[0] = (uint8_t)(v >> 24);
-    p[1] = (uint8_t)(v >> 16);
-    p[2] = (uint8_t)(v >> 8);
-    p[3] = (uint8_t)(v);
-}
-
-static void put_le16(uint8_t *p, uint16_t v)
-{
-    p[0] = (uint8_t)(v);
-    p[1] = (uint8_t)(v >> 8);
-}
-
 /* ── PNG chunk writer ───────────────────────────────────────── */
 
 static bool write_chunk(FILE *f, const char type[4],
                         const uint8_t *data, uint32_t len)
 {
     uint8_t hdr[4];
-    put_be32(hdr, len);
+    zcl_write_u32_be(hdr, len);
     if (fwrite(hdr, 1, 4, f) != 4) return false;
     if (fwrite(type, 1, 4, f) != 4) return false;
 
@@ -84,7 +70,7 @@ static bool write_chunk(FILE *f, const char type[4],
     }
 
     uint8_t crc_buf[4];
-    put_be32(crc_buf, crc);
+    zcl_write_u32_be(crc_buf, crc);
     if (fwrite(crc_buf, 1, 4, f) != 4) return false;
     return true;
 }
@@ -144,8 +130,8 @@ static uint8_t *build_idat(const uint8_t *pixels, uint32_t w, uint32_t h,
         bool is_final = (blk == num_blocks - 1);
 
         idat[pos++] = is_final ? 0x01 : 0x00; /* BFINAL | BTYPE=00 */
-        put_le16(&idat[pos], (uint16_t)payload); pos += 2;
-        put_le16(&idat[pos], (uint16_t)(~payload & 0xFFFF)); pos += 2;
+        zcl_write_u16_le(&idat[pos], (uint16_t)payload); pos += 2;
+        zcl_write_u16_le(&idat[pos], (uint16_t)(~payload & 0xFFFF)); pos += 2;
 
         memcpy(&idat[pos], &filtered[src_pos], payload);
         pos += payload;
@@ -154,7 +140,7 @@ static uint8_t *build_idat(const uint8_t *pixels, uint32_t w, uint32_t h,
     }
 
     /* Adler32 checksum (big-endian) */
-    put_be32(&idat[pos], adler);
+    zcl_write_u32_be(&idat[pos], adler);
     pos += 4;
 
     free(filtered);
@@ -180,8 +166,8 @@ bool png_write_rgb(const char *path, const uint8_t *pixels,
     /* IHDR: width, height, bit_depth=8, color_type=2 (RGB),
      * compression=0, filter=0, interlace=0 */
     uint8_t ihdr[13];
-    put_be32(&ihdr[0], width);
-    put_be32(&ihdr[4], height);
+    zcl_write_u32_be(&ihdr[0], width);
+    zcl_write_u32_be(&ihdr[4], height);
     ihdr[8] = 8;   /* bit depth */
     ihdr[9] = 2;   /* color type: RGB */
     ihdr[10] = 0;  /* compression */

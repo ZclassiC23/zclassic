@@ -69,6 +69,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
 
 #define TEST_LIST(X) \
     X(hex_codec) \
+    X(byte_order_codec) \
     X(game) X(crypto) X(crypto_registry) X(encoding) X(test_str_money_codecs) X(chain) \
     X(pprev_walk) X(chain_tip) X(checkpoint) X(anchor_finality) X(keys) X(test_key_io_codec) \
     X(test_png_writer) X(shared_validators_zcl_address) \

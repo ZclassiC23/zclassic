@@ -2,6 +2,7 @@
 
 #include "controllers/agent_controller.h"
 
+#include "base/serialize_le.h"
 #include "chain/checkpoints.h"
 #include "controllers/agent_cure_status_helpers.h"
 #include "controllers/strong_params.h"
@@ -53,20 +54,6 @@ struct anchor_utxo_probe {
     const char *history_diagnosis;
     const char *next_action;
 };
-
-static uint32_t ale32_read(const uint8_t *p)
-{
-    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
-           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
-}
-
-static uint64_t ale64_read(const uint8_t *p)
-{
-    uint64_t v = 0;
-    for (int i = 0; i < 8; i++)
-        v |= ((uint64_t)p[i]) << (8 * i);
-    return v;
-}
 
 static bool anchor_sql_i64(sqlite3 *db, const char *sql, int64_t bind0,
                            bool bind, int64_t *out, bool *found_out)
@@ -429,9 +416,9 @@ static bool anchor_marker_matches(const uint8_t *marker, size_t len,
         return false;
     if (memcmp(marker, "ZAM1", 4) != 0)
         return false;
-    if ((int32_t)ale32_read(marker + 4) != cp->height)
+    if ((int32_t)zcl_read_u32_le(marker + 4) != cp->height)
         return false;
-    if (ale64_read(marker + 8) != cp->utxo_count)
+    if (zcl_read_u64_le(marker + 8) != cp->utxo_count)
         return false;
     return memcmp(marker + 16, cp->sha3_hash, 32) == 0;
 }
@@ -730,7 +717,7 @@ static bool anchor_status_read(const char *datadir, struct json_value *result)
                            &coins_height_present);
     int64_t coins_applied_height =
         (coins_height_present && height_len == 8)
-            ? (int64_t)ale64_read(height_blob) : -1;
+            ? (int64_t)zcl_read_u64_le(height_blob) : -1;
     int64_t durable_frontier = coins_applied_height >= 0
         ? coins_applied_height - 1 : -1;
 
@@ -741,7 +728,7 @@ static bool anchor_status_read(const char *datadir, struct json_value *result)
                            flush_blob, sizeof(flush_blob), &flush_len,
                            &flush_present);
     int64_t coins_ram_flushed_height =
-        (flush_present && flush_len == 8) ? (int64_t)ale64_read(flush_blob) : -1;
+        (flush_present && flush_len == 8) ? (int64_t)zcl_read_u64_le(flush_blob) : -1;
 
     int64_t refold_flag = 0;
     bool refold_present = false;

@@ -2,11 +2,12 @@
  *
  * Hermetic engine tests for the pure PNG encoder helpers in
  * lib/util/src/png_writer.c: CRC32 (crc32_init / crc32_update), Adler32,
- * the big-endian/little-endian byte writers (put_be32 / put_le16), the
+ * the big-endian/little-endian byte writers it now calls from the one
+ * codec in lib/base (zcl_write_u32_be / zcl_write_u16_le), the
  * PNG chunk framer (write_chunk), the stored-DEFLATE-in-zlib IDAT builder
  * (build_idat), and the public entry point png_write_rgb.
  *
- * Every helper under test is `static` inside png_writer.c, so this file
+ * Most helpers under test are `static` inside png_writer.c, so this file
  * gets white-box access the same way test_chaos_harness.c and
  * test_postmortem_to_scenario.c do: by #include-ing the .c file directly
  * instead of linking against it.
@@ -57,9 +58,9 @@
 } while (0)
 
 /* ── Independent (non-production) byte readers ─────────────────────
- * Deliberately NOT calling put_be32/put_le16 in reverse, so the chunk/
- * IDAT structural checks below aren't tautological with the writers
- * under test. */
+ * Deliberately NOT calling zcl_write_u32_be/zcl_write_u16_le in reverse,
+ * so the chunk/IDAT structural checks below aren't tautological with the
+ * writers under test. */
 static uint32_t pngw_rd_be32(const uint8_t *p)
 {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
@@ -209,32 +210,32 @@ int test_test_png_writer(void)
                    adler32(big, sizeof(big)) == 0xA49759EAu);
     }
 
-    /* ───────────────────────────── put_be32 / put_le16 ───────────────────────────── */
+    /* ─────────────────── zcl_write_u32_be / zcl_write_u16_le ─────────────────── */
     {
         uint8_t b4[4];
-        put_be32(b4, 0x11223344u);
+        zcl_write_u32_be(b4, 0x11223344u);
         PNGW_CHECK("put_be32: 0x11223344 -> {11,22,33,44}",
                    b4[0] == 0x11 && b4[1] == 0x22 && b4[2] == 0x33 &&
                        b4[3] == 0x44);
 
-        put_be32(b4, 0);
+        zcl_write_u32_be(b4, 0);
         PNGW_CHECK("put_be32: 0 -> all-zero bytes",
                    b4[0] == 0 && b4[1] == 0 && b4[2] == 0 && b4[3] == 0);
 
-        put_be32(b4, 0xFFFFFFFFu);
+        zcl_write_u32_be(b4, 0xFFFFFFFFu);
         PNGW_CHECK("put_be32: UINT32_MAX -> all-0xFF bytes",
                    b4[0] == 0xFF && b4[1] == 0xFF && b4[2] == 0xFF &&
                        b4[3] == 0xFF);
 
         uint8_t b2[2];
-        put_le16(b2, 0x1234u);
+        zcl_write_u16_le(b2, 0x1234u);
         PNGW_CHECK("put_le16: 0x1234 -> {34,12} (low byte first)",
                    b2[0] == 0x34 && b2[1] == 0x12);
 
-        put_le16(b2, 0);
+        zcl_write_u16_le(b2, 0);
         PNGW_CHECK("put_le16: 0 -> all-zero bytes", b2[0] == 0 && b2[1] == 0);
 
-        put_le16(b2, 0xFFFFu);
+        zcl_write_u16_le(b2, 0xFFFFu);
         PNGW_CHECK("put_le16: UINT16_MAX -> all-0xFF bytes",
                    b2[0] == 0xFF && b2[1] == 0xFF);
     }

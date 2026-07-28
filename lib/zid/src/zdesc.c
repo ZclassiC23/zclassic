@@ -7,26 +7,13 @@
 
 #include "zid/zdesc.h"
 
+#include "base/serialize_le.h"
 #include "zid/zid.h"
 #include "base/log_macros.h"
 
 #include <string.h>
 
 #define ZDESC_LOG "zid.desc"
-
-static void zdesc_put_le64(uint8_t *p, uint64_t v)
-{
-    for (int i = 0; i < 8; i++)
-        p[i] = (uint8_t)(v >> (8 * i));
-}
-
-static uint64_t zdesc_get_le64(const uint8_t *p)
-{
-    uint64_t v = 0;
-    for (int i = 7; i >= 0; i--)
-        v = (v << 8) | p[i];
-    return v;
-}
 
 bool zdesc_onion_valid(const char *host)
 {
@@ -75,7 +62,7 @@ size_t zdesc_encode_body(uint8_t *out, size_t out_len,
     n += 4;
     memcpy(out + n, desc->onion, ZDESC_ONION_LEN);
     n += ZDESC_ONION_LEN;
-    zdesc_put_le64(out + n, desc->not_before);
+    zcl_write_u64_le(out + n, desc->not_before);
     n += 8;
     out[n++] = desc->intro_count;
     for (uint8_t i = 0; i < desc->intro_count; i++) {
@@ -116,7 +103,7 @@ bool zdesc_decode_body(struct zdesc *desc, const uint8_t *body,
 
     memset(desc, 0, sizeof(*desc));
     memcpy(desc->onion, body + 4, ZDESC_ONION_LEN);
-    desc->not_before = zdesc_get_le64(body + 4 + ZDESC_ONION_LEN);
+    desc->not_before = zcl_read_u64_le(body + 4 + ZDESC_ONION_LEN);
     desc->intro_count = count;
     size_t at = ZDESC_BODY_MIN;
     for (uint8_t i = 0; i < count; i++) {

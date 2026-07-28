@@ -7,6 +7,7 @@
 
 #include "core/serialize.h"
 #include "core/uint256.h"
+#include "base/serialize_le.h"
 #include "crypto/sha3.h"
 #include "sapling/incremental_merkle_tree.h"
 #include "storage/anchor_kv.h"
@@ -17,16 +18,6 @@
 #include <sqlite3.h>
 #include <stdlib.h>
 #include <string.h>
-
-static void put_le32(uint8_t b[4], uint32_t v)
-{
-    b[0] = (uint8_t)v;         b[1] = (uint8_t)(v >> 8);
-    b[2] = (uint8_t)(v >> 16); b[3] = (uint8_t)(v >> 24);
-}
-static void put_le64(uint8_t b[8], uint64_t v)
-{
-    for (int i = 0; i < 8; i++) b[i] = (uint8_t)(v >> (8 * i));
-}
 
 /* Write `buf` to BOTH the file and the SHA3 sponge, so file bytes == hash
  * input.  On a short write returns false; the caller aborts the temp file. */
@@ -47,7 +38,7 @@ void snapshot_shielded_pack_nf(uint8_t rec[SNAPSHOT_NF_RECORD_BYTES],
 {
     rec[0] = pool;
     memcpy(rec + 1, nf, 32);
-    put_le64(rec + 33, (uint64_t)height);
+    zcl_write_u64_le(rec + 33, (uint64_t)height);
 }
 
 void snapshot_shielded_unpack_nf(const uint8_t rec[SNAPSHOT_NF_RECORD_BYTES],
@@ -57,9 +48,7 @@ void snapshot_shielded_unpack_nf(const uint8_t rec[SNAPSHOT_NF_RECORD_BYTES],
     if (pool) *pool = rec[0];
     if (nf)   memcpy(nf, rec + 1, 32);
     if (height) {
-        uint64_t v = 0;
-        for (int i = 0; i < 8; i++) v |= ((uint64_t)rec[33 + i]) << (8 * i);
-        *height = (int64_t)v;
+        *height = zcl_read_i64_le(rec + 33);
     }
 }
 
@@ -231,21 +220,21 @@ bool snapshot_shielded_write(FILE *out, struct sha3_256_ctx *ctx,
 
     uint8_t hdr[8];
     /* [u32 sapling_len][sapling] */
-    put_le32(hdr, s->sapling_len);
+    zcl_write_u32_le(hdr, s->sapling_len);
     if (!emit(out, ctx, hdr, 4) ||
         !emit(out, ctx, s->sapling, s->sapling_len)) {
         LOG_FAIL("snap_shielded", "write: sapling section failed");
         return false;
     }
     /* [u32 sprout_len][sprout] */
-    put_le32(hdr, s->sprout_len);
+    zcl_write_u32_le(hdr, s->sprout_len);
     if (!emit(out, ctx, hdr, 4) ||
         !emit(out, ctx, s->sprout, s->sprout_len)) {
         LOG_FAIL("snap_shielded", "write: sprout section failed");
         return false;
     }
     /* [u64 nf_count][records] */
-    put_le64(hdr, s->nf_count);
+    zcl_write_u64_le(hdr, s->nf_count);
     if (!emit(out, ctx, hdr, 8) ||
         !emit(out, ctx, s->nf_records,
               (size_t)s->nf_count * SNAPSHOT_NF_RECORD_BYTES)) {

@@ -7,6 +7,8 @@
 
 #include "config/consensus_state_snapshot_install.h"
 
+#include "base/serialize_le.h"
+
 #include "consensus_state_snapshot_install_internal.h"
 #include "jobs/reducer_frontier.h"
 #include "services/nullifier_backfill_service.h"
@@ -272,13 +274,6 @@ static bool candidate_copy_components(
     return true;
 }
 
-static void le64_encode(uint8_t out[8], int64_t value)
-{
-    uint64_t encoded = (uint64_t)value;
-    for (size_t i = 0; i < 8; i++)
-        out[i] = (uint8_t)(encoded >> (8u * i));
-}
-
 static bool insert_meta_blob(sqlite3 *db, const char *key,
                              const void *value, size_t value_size)
 {
@@ -359,8 +354,8 @@ static bool candidate_write_control(
     uint8_t applied_height[8], trusted_height[8];
     uint8_t one = 1;
     uint8_t zero_text = '0';
-    le64_encode(applied_height, (int64_t)manifest->height + 1);
-    le64_encode(trusted_height, manifest->height);
+    zcl_write_i64_le(applied_height, (int64_t)manifest->height + 1);
+    zcl_write_i64_le(trusted_height, manifest->height);
     ok = ok && candidate_exec(db,
         "INSERT INTO anchor_state VALUES(0,0),(1,0)",
         "candidate anchor completeness") &&
