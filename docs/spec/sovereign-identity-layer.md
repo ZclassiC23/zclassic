@@ -125,6 +125,20 @@ signature → master-key anchor. Full authenticity for a descriptor, relay
 record, or package release **without the 10 GB chain** — the sovereignty
 story extended to light clients.
 
+`zclassic23 zcode proof walk` executes that chain as one read-only,
+node-free command over evidence passed in, and reports each rung
+separately as passed / failed / not_checked-with-a-reason
+(`tools/command/native_proof_chain_command.c`, proven by the
+`proof_chain` test group). **It verifies rungs 1-6 — header + Equihash
+PoW, tx merkle inclusion, ZANC anchor decode, domain root, record
+inclusion via `zid_tree_verify`, zid signature. Rung 7 (is the master key
+itself anchored on-chain and still active?) is always reported
+`not_checked`**, because the chain-anchored identity lookup it needs does
+not exist yet. Until that lands, the walk is not full-chain
+verification, and the command says so on every run: `chain_complete` is
+false and `verified_prefix` counts only consecutive passing rungs from
+rung 1.
+
 **Hash conventions** (mirror `lib/chain/src/mmr.c`, with a zid-specific
 leaf tag that blocks cross-protocol proof replay). All zid domain
 separators are 4-byte uppercase lokad-style tags, same convention as the

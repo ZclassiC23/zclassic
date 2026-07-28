@@ -31,6 +31,47 @@ bool ed25519_verify(const uint8_t sig[64],
                     const uint8_t *msg, size_t msg_len,
                     const uint8_t pk[32]);
 
+/* Verify n independent Ed25519 signatures at once.
+ *
+ * Returns EXACTLY
+ *     ed25519_verify(sig[0], msg[0], len[0], pk[0]) && ... && (n-1)
+ * — same verdict as the loop, on every input including adversarial ones,
+ * never "true if most of them verify". A single bad signature anywhere in
+ * the set makes the whole call false.
+ *
+ * Arrays are parallel and all of length n: `msgs[i]` (may be NULL when
+ * `msg_lens[i]` is 0), `sigs[i]` (64 bytes), `pubkeys[i]` (32 bytes).
+ *
+ * n == 0 returns true — the empty conjunction, matching a zero-iteration
+ * verify loop. A caller that requires at least one signature must check n
+ * itself. n == 1 runs the same batch machinery (no special case) and is
+ * still faster than `ed25519_verify`, because the combined path uses
+ * windowed multiplication where the single path uses a bit-at-a-time
+ * ladder.
+ *
+ * Speed comes from one shared multi-scalar multiplication (Straus, with
+ * the doublings shared across the whole set) instead of n separate double
+ * scalar multiplications, randomised with 128-bit scalars drawn from the
+ * project CSPRNG. Exact agreement with the single path — including for
+ * small-order/8-torsion-crafted public keys, where the naive random-scalar
+ * batch equation would accept signatures that `ed25519_verify` rejects —
+ * comes from a per-signature torsion screen; the construction and its
+ * proof obligations are documented at the top of the batch section in
+ * lib/crypto/src/ed25519.c.
+ *
+ * Failure modes are handled, not papered over: if the CSPRNG refuses (a
+ * predictable randomiser is a forgery oracle) or the working buffer cannot
+ * be allocated, the call falls back to n independent `ed25519_verify`
+ * calls and returns the same verdict, more slowly.
+ *
+ * Pure scalar C23 — no intrinsics and no runtime CPU dispatch, so there is
+ * one code path on every target. */
+bool zcl_ed25519_verify_batch(const uint8_t *const *msgs,
+                              const size_t *msg_lens,
+                              const uint8_t *const *sigs,
+                              const uint8_t *const *pubkeys,
+                              size_t n);
+
 /* Derive an Ed25519 keypair from a 32-byte seed (RFC 8032 §5.1.5):
  * h = SHA-512(seed); the secret scalar a is h[0..31] clamped
  * (a[0] &= 248, a[31] &= 127, a[31] |= 64); pk = [a]B, compressed.
@@ -56,5 +97,6 @@ void zcl_ed25519_sign(uint8_t sig[64], const uint8_t *msg, size_t msg_len,
  * pattern as sha3_256 in crypto/sha3.h). Always use the macro names. */
 #define ed25519_keypair zcl_ed25519_keypair
 #define ed25519_sign zcl_ed25519_sign
+#define ed25519_verify_batch zcl_ed25519_verify_batch
 
 #endif

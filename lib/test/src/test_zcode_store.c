@@ -21,6 +21,11 @@
  *      pins never evicted + pins budget, pre-existing pin markers.
  *   7. Release envelope storage through the acceptance layer.
  *   8. dump_state_json: disabled shape, enabled totals, key drilldown.
+ *   9. Blob surface (vcs/blob_store.h): the FROZEN golden root vector,
+ *      root purity across independent constructions, length commitment,
+ *      put/get round-trip, idempotent re-put, the size ceiling refused by
+ *      name with nothing stored, absent-root and small-buffer failures,
+ *      and a CAS object corrupted on disk failing verification on read.
  *
  * Stores open on ./test-tmp dirs with explicit quotas; the only global
  * state touched (args + datadir, for the enabled-dump case) is restored
@@ -30,6 +35,7 @@
 
 #include "vcs/package_store.h"
 
+#include "vcs/blob_store.h"
 #include "vcs/package_manifest.h"
 
 #include "chain/chainparams.h"
@@ -1163,6 +1169,190 @@ static int t_store_releases(void)
     return failures;
 }
 
+/* ── 12: content-addressed blob surface (vcs/blob_store.h) ────────── */
+
+/* FROZEN GOLDEN VECTOR. The blob root is a wire contract: the SAME bytes
+ * must yield the SAME 32-byte root on every node, forever. This pins the
+ * whole derivation — the "blob" path, mode 0100644, the size/chunk_count
+ * fields, the SHA3-256 chunk hash, and the zcl.package_manifest.v1 root
+ * domain. If this ever changes, every already-published blob root breaks;
+ * a failure here is a CONSENSUS-OF-CONTENT regression, not a test nit. */
+#define ZS_BLOB_GOLDEN_INPUT "zcl.blob.golden.v1"
+#define ZS_BLOB_GOLDEN_ROOT \
+    "a407592f33b1ac781c69ac5bb0bf7f7635c320b17d2e5382bf93b5567af686e7"
+
+static int t_store_blob(void)
+{
+    int failures = 0;
+    char dd[1024];
+    struct vcs_package_store *s =
+        zs_open(dd, sizeof(dd), "blob", VCS_PACKAGE_STORE_DEFAULT_QUOTA_BYTES);
+    ZS_CHECK("blob: store opens", s != NULL);
+    if (!s)
+        return failures + 1;
+
+    /* ---- pure root: determinism across independent constructions ---- */
+    uint8_t a[256], b[256];
+    for (size_t i = 0; i < sizeof(a); i++)
+        a[i] = (uint8_t)(i * 7u + 11u);
+    memset(b, 0, sizeof(b));
+    for (size_t i = 0; i < sizeof(b); i++)
+        b[i] = (uint8_t)((i * 7u + 11u) & 0xffu);
+    uint8_t root_a[32], root_b[32];
+    bool ok_a = vcs_blob_root(a, sizeof(a), root_a);
+    bool ok_b = vcs_blob_root(b, sizeof(b), root_b);
+    ZS_CHECK("blob: root is a pure function of the bytes",
+             ok_a && ok_b && memcmp(root_a, root_b, 32) == 0);
+
+    /* Different bytes -> different root; same prefix, shorter -> different
+     * root (the length is committed, so truncation is not a collision). */
+    uint8_t c[256];
+    memcpy(c, a, sizeof(c));
+    c[100] ^= 0x01;
+    uint8_t root_c[32], root_short[32];
+    ZS_CHECK("blob: one flipped byte changes the root",
+             vcs_blob_root(c, sizeof(c), root_c) &&
+             memcmp(root_a, root_c, 32) != 0);
+    ZS_CHECK("blob: length is committed (prefix != whole)",
+             vcs_blob_root(a, sizeof(a) - 1u, root_short) &&
+             memcmp(root_a, root_short, 32) != 0);
+
+    /* ---- the frozen golden vector ---- */
+    uint8_t golden[32];
+    const char *gin = ZS_BLOB_GOLDEN_INPUT;
+    bool gok = vcs_blob_root((const uint8_t *)gin, strlen(gin), golden);
+    char ghex[65];
+    zs_hex32(golden, ghex);
+    printf("  zcode_store: blob golden root = %s\n", ghex);
+    ZS_CHECK("blob: FROZEN golden root vector holds",
+             gok && strcmp(ghex, ZS_BLOB_GOLDEN_ROOT) == 0);
+
+    /* ---- hostile input, refused by name, before anything is stored ---- */
+    uint8_t junk_root[32];
+    ZS_CHECK("blob: null bytes refused",
+             vcs_blob_root_of(NULL, 10, junk_root) == VCS_BLOB_ERR_NULL);
+    ZS_CHECK("blob: empty blob refused",
+             vcs_blob_root_of(a, 0, junk_root) == VCS_BLOB_ERR_EMPTY);
+    ZS_CHECK("blob: null store refused",
+             vcs_blob_put_to(NULL, a, sizeof(a), junk_root) ==
+                 VCS_BLOB_ERR_NO_STORE);
+
+    static uint8_t big[VCS_BLOB_MAX_BYTES + 64u];
+    for (size_t i = 0; i < sizeof(big); i++)
+        big[i] = (uint8_t)(i ^ 0x5au);
+    ZS_CHECK("blob: over the ceiling refused by name (root)",
+             vcs_blob_root_of(big, VCS_BLOB_MAX_BYTES + 1u, junk_root) ==
+                 VCS_BLOB_ERR_TOO_LARGE);
+    ZS_CHECK("blob: over the ceiling refused by name (put)",
+             vcs_blob_put_to(s, big, VCS_BLOB_MAX_BYTES + 1u, junk_root) ==
+                 VCS_BLOB_ERR_TOO_LARGE);
+    ZS_CHECK("blob: refused oversize stored nothing",
+             vcs_package_store_pool_usage(s, VCS_PACKAGE_STORE_POOL_RARE) ==
+                 0 &&
+             vcs_package_store_pool_usage(s,
+                                          VCS_PACKAGE_STORE_POOL_STAGING) ==
+                 0);
+    /* Exactly at the ceiling is admitted: the bound is a ceiling, not a
+     * fencepost bug. */
+    uint8_t edge_root[32];
+    ZS_CHECK("blob: exactly at the ceiling is accepted",
+             vcs_blob_put_to(s, big, VCS_BLOB_MAX_BYTES, edge_root) ==
+                 VCS_BLOB_OK);
+    ZS_CHECK("blob: ceiling blob is one chunk (never split)",
+             vcs_package_store_chunk_present(s, edge_root, 0, 0) &&
+             !vcs_package_store_chunk_present(s, edge_root, 0, 1) &&
+             !vcs_package_store_chunk_present(s, edge_root, 1, 0));
+
+    /* ---- put / get round trip ---- */
+    uint8_t root[32];
+    ZS_CHECK("blob: put admits manifest + chunk",
+             vcs_blob_put_to(s, a, sizeof(a), root) == VCS_BLOB_OK);
+    ZS_CHECK("blob: put root equals the pure root",
+             memcmp(root, root_a, 32) == 0);
+    struct vcs_package_store_status st;
+    ZS_CHECK("blob: stored package is complete and one-file",
+             vcs_package_store_package_status(s, root, &st) && st.complete &&
+             st.total_chunks == 1 && st.total_bytes == sizeof(a));
+
+    uint8_t out[512];
+    size_t out_len = 0;
+    memset(out, 0, sizeof(out));
+    ZS_CHECK("blob: get round-trips the exact bytes",
+             vcs_blob_get_from(s, root, out, sizeof(out), &out_len) ==
+                 VCS_BLOB_OK &&
+             out_len == sizeof(a) && memcmp(out, a, sizeof(a)) == 0);
+
+    /* Idempotent re-put of identical bytes. */
+    uint8_t root2[32];
+    ZS_CHECK("blob: re-put of identical bytes is idempotent",
+             vcs_blob_put_to(s, a, sizeof(a), root2) == VCS_BLOB_OK &&
+             memcmp(root, root2, 32) == 0);
+
+    /* ---- absent root fails cleanly (no crash, no partial write) ---- */
+    uint8_t absent[32];
+    memcpy(absent, root, 32);
+    absent[0] ^= 0xff;
+    ZS_CHECK("blob: get of an absent root fails cleanly",
+             vcs_blob_get_from(s, absent, out, sizeof(out), &out_len) ==
+                 VCS_BLOB_ERR_ABSENT && out_len == 0);
+    ZS_CHECK("blob: get with a null buffer refused",
+             vcs_blob_get_from(s, root, NULL, 16, &out_len) ==
+                 VCS_BLOB_ERR_NULL);
+    ZS_CHECK("blob: buffer smaller than the blob refused",
+             vcs_blob_get_from(s, root, out, sizeof(a) - 1u, &out_len) ==
+                 VCS_BLOB_ERR_CAPACITY);
+
+    /* ---- a corrupted CAS object must FAIL verification, not be served -- */
+    uint8_t chunk_hash[32];
+    ZS_CHECK("blob: chunk hash computes",
+             vcs_package_chunk_hash(a, sizeof(a), chunk_hash));
+    char hex[65];
+    zs_hex32(chunk_hash, hex);
+    char suffix[160];
+    char cas_path[1400];
+    snprintf(suffix, sizeof(suffix), "cas/sha3/%.2s/%s", hex, hex);
+    zs_store_path(cas_path, sizeof(cas_path), dd, suffix);
+    ZS_CHECK("blob: CAS object exists under its hash",
+             zs_path_exists(cas_path));
+    uint8_t tampered[256];
+    memcpy(tampered, a, sizeof(tampered));
+    tampered[7] ^= 0xff;
+    FILE *f = fopen(cas_path, "wb");
+    bool wrote = f && fwrite(tampered, 1, sizeof(tampered), f) ==
+                          sizeof(tampered);
+    if (f)
+        fclose(f);
+    ZS_CHECK("blob: CAS object tampered on disk", wrote);
+    ZS_CHECK("blob: corrupted chunk fails verification on read",
+             vcs_blob_get_from(s, root, out, sizeof(out), &out_len) ==
+                 VCS_BLOB_ERR_CORRUPT && out_len == 0);
+
+    /* ---- named results ---- */
+    ZS_CHECK("blob: result strings are named",
+             strcmp(vcs_blob_result_string(VCS_BLOB_OK), "ok") == 0 &&
+             strcmp(vcs_blob_result_string(VCS_BLOB_ERR_TOO_LARGE),
+                    "blob-too-large") == 0 &&
+             strcmp(vcs_blob_result_string(VCS_BLOB_ERR_CORRUPT),
+                    "blob-bytes-corrupt") == 0 &&
+             strcmp(vcs_blob_result_string((enum vcs_blob_result)999),
+                    "unknown") == 0);
+
+    /* ---- global accessors refuse cleanly with no global store open ---- */
+    ZS_CHECK("blob: global put refuses with no global store",
+             vcs_package_store_global() == NULL &&
+             !vcs_blob_put(a, sizeof(a), junk_root));
+    ZS_CHECK("blob: global get refuses with no global store",
+             vcs_blob_get(root, out, sizeof(out)) == -1);
+    ZS_CHECK("blob: fetch refuses with no engine",
+             vcs_blob_fetch_via(NULL, root, 20500, 1) ==
+                 VCS_BLOB_ERR_NO_ENGINE &&
+             vcs_blob_announce_via(NULL) == 0);
+
+    vcs_package_store_close(s);
+    test_rm_rf_recursive(dd);
+    return failures;
+}
+
 /* ── 11: dump_state_json ──────────────────────────────────────────── */
 static int t_store_dump_state(void)
 {
@@ -1273,6 +1463,7 @@ int test_zcode_store(void)
     failures += t_store_rare_eviction();
     failures += t_store_pins();
     failures += t_store_releases();
+    failures += t_store_blob();
     failures += t_store_dump_state();
     printf("=== zcode_store complete: %d failure(s) ===\n", failures);
     return failures;

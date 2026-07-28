@@ -7,8 +7,10 @@
 
 #include "test/test_core.h"
 #include "zid/zid.h"
+#include "base/log_level.h"
 #include "crypto/ed25519.h"
 #include "crypto/sha3.h"
+#include "platform/clock.h"
 #include <string.h>
 
 static size_t hex_to_bytes(const char *hex, uint8_t *out, size_t out_max)
@@ -65,6 +67,414 @@ static int test_rfc8032_vector(const char *label, const char *seed_hex,
     return failures;
 }
 
+/* ══ ed25519 batch verification ═══════════════════════════════════════
+ *
+ * `ed25519_verify_batch` must return EXACTLY the conjunction of the n
+ * individual `ed25519_verify` calls, on every input. Everything below is
+ * a differential test against that reference loop — the loop is also the
+ * implementation's own fallback path (taken when the CSPRNG refuses or
+ * the working buffer cannot be allocated), so "batch == loop" is
+ * simultaneously the correctness bar and the fallback-agreement bar.
+ * There is no SIMD/dispatch fast path to diverge from: the batch code is
+ * pure scalar C23 with one code path on every target.
+ *
+ * Everything here is deterministic — fixed seeds, an in-file xorshift64,
+ * no wall clock and no unseeded randomness — so a failure reproduces.
+ * (The batch randomisers z_i do come from the CSPRNG, but they can only
+ * change the verdict with probability <= 2^-128, and never in the
+ * accept-a-bad-set direction for the cases below.) */
+
+#define EDB_MAX 512
+#define EDB_MSG_MAX 40
+
+static uint8_t edb_sig[EDB_MAX][64];
+static uint8_t edb_pk[EDB_MAX][32];
+static uint8_t edb_msg[EDB_MAX][EDB_MSG_MAX];
+static const uint8_t *edb_msgs[EDB_MAX];
+static const uint8_t *edb_sigs[EDB_MAX];
+static const uint8_t *edb_pks[EDB_MAX];
+static size_t edb_lens[EDB_MAX];
+
+/* p = 2^255 - 19, little-endian. */
+static const uint8_t EDB_FIELD_P_LE[32] = {
+    0xed, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f
+};
+
+/* L = 2^252 + 27742317777372353535851937790883648493, little-endian. */
+static const uint8_t EDB_L_LE[32] = {
+    0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58,
+    0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0xde, 0x14,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10
+};
+
+static uint64_t edb_state = 1;
+
+static void edb_seed(uint64_t s)
+{
+    edb_state = s ? s : 1u;
+}
+
+static uint64_t edb_next(void)
+{
+    uint64_t x = edb_state;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    edb_state = x;
+    return x;
+}
+
+static void edb_bytes(uint8_t *b, size_t n)
+{
+    for (size_t i = 0; i < n; i++)
+        b[i] = (uint8_t)(edb_next() >> 32);
+}
+
+/* Deterministically fill slots [0, n) with fresh valid signatures and
+ * rebind the parallel pointer arrays. Callers then corrupt in place. */
+static void edb_build(size_t n, uint64_t seed)
+{
+    edb_seed(seed);
+    for (size_t i = 0; i < n; i++) {
+        uint8_t sd[32], sk[32];
+        edb_bytes(sd, 32);
+        ed25519_keypair(edb_pk[i], sk, sd);
+        edb_lens[i] = (size_t)(edb_next() % (EDB_MSG_MAX + 1));
+        if (edb_lens[i] > 0)
+            edb_bytes(edb_msg[i], edb_lens[i]);
+        ed25519_sign(edb_sig[i], edb_msg[i], edb_lens[i], sk, edb_pk[i]);
+        edb_msgs[i] = edb_msg[i];
+        edb_sigs[i] = edb_sig[i];
+        edb_pks[i] = edb_pk[i];
+    }
+}
+
+/* The reference verdict: n independent ed25519_verify calls. */
+static bool edb_serial(size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        if (!ed25519_verify(edb_sigs[i], edb_msgs[i], edb_lens[i], edb_pks[i]))
+            return false;
+    }
+    return true;
+}
+
+/* Returns 1 (and prints) when batch and reference loop disagree. */
+static int edb_diff(size_t n, const char *what)
+{
+    bool b = ed25519_verify_batch(edb_msgs, edb_lens, edb_sigs, edb_pks, n);
+    bool s = edb_serial(n);
+    if (b == s)
+        return 0;
+    printf("\n  DIVERGENCE n=%zu (%s): batch=%d serial=%d", n, what,
+           (int)b, (int)s);
+    return 1;
+}
+
+/* out = A + T where T = (0, -1) is the unique order-2 point of the curve.
+ * Twisted-Edwards addition with a = -1 gives (x, y) + (0, -1) = (-x, -y),
+ * so in compressed form: y' = p - y, and the sign bit (the parity of x)
+ * flips because p is odd and x != 0 for any real public key.
+ *
+ * This is the whole 8-torsion attack: publish A' = A + T, sign honestly
+ * with the secret for A, and the error point becomes e = [h]T. When h is
+ * odd, e = T != O — `ed25519_verify` rejects — yet e vanishes under both
+ * the textbook random-scalar batch equation (half the time, whenever the
+ * randomiser z is even) and under any cofactor-cleared batch equation
+ * (always, since [8]T = O). Only an explicit per-signature torsion screen
+ * makes the batch agree with the single verifier here. */
+static void edb_add_order2(uint8_t out[32], const uint8_t a[32])
+{
+    uint8_t y[32];
+    memcpy(y, a, 32);
+    unsigned sign = (unsigned)(y[31] >> 7);
+    y[31] &= 0x7fu;
+
+    int borrow = 0;
+    for (int i = 0; i < 32; i++) {
+        int d = (int)EDB_FIELD_P_LE[i] - (int)y[i] - borrow;
+        borrow = d < 0;
+        out[i] = (uint8_t)(d & 0xff);
+    }
+    out[31] = (uint8_t)((out[31] & 0x7fu) | ((1u - sign) << 7));
+}
+
+static int test_ed25519_batch(void)
+{
+    int failures = 0;
+    enum zcl_log_level saved = zcl_log_level_get();
+
+    /* ── Boundaries, explicitly decided ──────────────────────────
+     * n == 0 is the empty conjunction: true, matching a zero-iteration
+     * verify loop. A caller that needs "at least one signature" must
+     * check n itself. n == 1 takes the same batch path as n == 512 —
+     * there is no special case — and must agree with ed25519_verify. */
+    edb_build(4, 12345);
+
+    printf("ed25519 batch: n == 0 is the empty conjunction (true)... ");
+    if (ed25519_verify_batch(edb_msgs, edb_lens, edb_sigs, edb_pks, 0))
+        printf("OK\n");
+    else { printf("FAIL\n"); failures++; }
+
+    printf("ed25519 batch: n == 1 accepts a valid signature... ");
+    if (ed25519_verify_batch(edb_msgs, edb_lens, edb_sigs, edb_pks, 1))
+        printf("OK\n");
+    else { printf("FAIL\n"); failures++; }
+
+    printf("ed25519 batch: n == 1 rejects one flipped signature byte... ");
+    {
+        zcl_log_level_set(ZCL_LOG_OFF);
+        edb_sig[0][10] ^= 0x01;
+        bool b = ed25519_verify_batch(edb_msgs, edb_lens, edb_sigs, edb_pks, 1);
+        bool s = edb_serial(1);
+        zcl_log_level_set(saved);
+        if (!b && !s) printf("OK\n");
+        else { printf("FAIL (batch=%d serial=%d)\n", (int)b, (int)s); failures++; }
+    }
+
+    /* ── RFC 8032 §7.1 vectors through the batch path ────────────
+     * TEST 1 is the zero-length-message case and is passed as a NULL
+     * message pointer with length 0, exactly as the single path takes
+     * it. TEST 2 is the 1-byte case. Both are checked alone (batch of 1)
+     * and mixed in among freshly generated signatures. */
+    {
+        static const uint8_t rfc_msg2 = 0x72;
+        uint8_t pk1[32], sig1[64], pk2[32], sig2[64];
+        hex_to_bytes("d75a980182b10ab7d54bfed3c964073a"
+                     "0ee172f3daa62325af021a68f707511a", pk1, sizeof(pk1));
+        hex_to_bytes("e5564300c360ac729086e2cc806e828a"
+                     "84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e"
+                     "39701cf9b46bd25bf5f0595bbe24655141438e7a100b",
+                     sig1, sizeof(sig1));
+        hex_to_bytes("3d4017c3e843895a92b70aa74d1b7ebc"
+                     "9c982ccf2ec4968cc0cd55f12af4660c", pk2, sizeof(pk2));
+        hex_to_bytes("92a009a9f0d4cab8720e820b5f642540"
+                     "a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f"
+                     "3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00",
+                     sig2, sizeof(sig2));
+
+        printf("ed25519 batch: RFC 8032 TEST 1 (empty msg) in a batch of 1... ");
+        {
+            const uint8_t *m[1] = { NULL };
+            const uint8_t *g[1] = { sig1 };
+            const uint8_t *k[1] = { pk1 };
+            size_t l[1] = { 0 };
+            if (ed25519_verify_batch(m, l, g, k, 1)) printf("OK\n");
+            else { printf("FAIL\n"); failures++; }
+        }
+
+        printf("ed25519 batch: RFC 8032 TEST 2 in a batch of 1... ");
+        {
+            const uint8_t *m[1] = { &rfc_msg2 };
+            const uint8_t *g[1] = { sig2 };
+            const uint8_t *k[1] = { pk2 };
+            size_t l[1] = { 1 };
+            if (ed25519_verify_batch(m, l, g, k, 1)) printf("OK\n");
+            else { printf("FAIL\n"); failures++; }
+        }
+
+        printf("ed25519 batch: RFC 8032 vectors mixed into a batch of 6... ");
+        {
+            edb_build(4, 777);
+            /* Shift the four generated entries up and drop the vectors in
+             * at index 0 and 3 by rebinding the pointer arrays only. */
+            const uint8_t *m[6], *g[6], *k[6];
+            size_t l[6];
+            const size_t src[6] = { 0, 0, 1, 0, 2, 3 };
+            for (size_t i = 0; i < 6; i++) {
+                m[i] = edb_msgs[src[i]];
+                g[i] = edb_sigs[src[i]];
+                k[i] = edb_pks[src[i]];
+                l[i] = edb_lens[src[i]];
+            }
+            m[0] = NULL;  g[0] = sig1; k[0] = pk1; l[0] = 0;
+            m[3] = &rfc_msg2; g[3] = sig2; k[3] = pk2; l[3] = 1;
+            if (ed25519_verify_batch(m, l, g, k, 6)) printf("OK\n");
+            else { printf("FAIL\n"); failures++; }
+
+            printf("ed25519 batch: one tampered RFC vector poisons the batch... ");
+            zcl_log_level_set(ZCL_LOG_OFF);
+            uint8_t bad2[64];
+            memcpy(bad2, sig2, 64);
+            bad2[0] ^= 0x02;
+            g[3] = bad2;
+            bool b = ed25519_verify_batch(m, l, g, k, 6);
+            bool s = ed25519_verify(bad2, &rfc_msg2, 1, pk2);
+            zcl_log_level_set(saved);
+            if (!b && !s) printf("OK\n");
+            else { printf("FAIL (batch=%d single=%d)\n", (int)b, (int)s); failures++; }
+        }
+    }
+
+    /* ── The 8-torsion regression test ───────────────────────────
+     * Without a per-signature torsion screen this set is accepted by the
+     * batch and rejected by ed25519_verify — a forgery acceptance, not a
+     * rounding error. Measured on this code with the screen disabled:
+     * accepted 16/16. Both parities of h are covered: h odd gives
+     * e = T != O (must be rejected by BOTH paths), h even gives e = O
+     * (a genuinely valid signature under the cofactorless verifier, which
+     * BOTH paths must accept — the screen must not over-reject). */
+    printf("ed25519 batch: 8-torsion pubkey A+T agrees with the single verifier... ");
+    {
+        uint8_t seed[32], pk[32], sk[32], pkt[32];
+        for (int i = 0; i < 32; i++) seed[i] = (uint8_t)(i * 7 + 3);
+        ed25519_keypair(pk, sk, seed);
+        edb_add_order2(pkt, pk);
+
+        int rej_ctr = -1, acc_ctr = -1, diverged = 0;
+        zcl_log_level_set(ZCL_LOG_OFF);
+        for (int c = 0; c < 64 && (rej_ctr < 0 || acc_ctr < 0); c++) {
+            uint8_t msg[4] = { (uint8_t)c, 0xAA, 0xBB, (uint8_t)(c * 3) };
+            uint8_t sig[64];
+            ed25519_sign(sig, msg, sizeof(msg), sk, pkt);
+            const uint8_t *m[1] = { msg };
+            const uint8_t *g[1] = { sig };
+            const uint8_t *k[1] = { pkt };
+            size_t l[1] = { sizeof(msg) };
+            bool single = ed25519_verify(sig, msg, sizeof(msg), pkt);
+            bool batch = ed25519_verify_batch(m, l, g, k, 1);
+            if (single != batch) diverged++;
+            if (!single && rej_ctr < 0) rej_ctr = c;
+            if (single && acc_ctr < 0) acc_ctr = c;
+        }
+        /* Hammer the rejecting case: a batch that only probabilistically
+         * catches torsion would slip through with probability 2^-16. */
+        int accepted = 0;
+        if (rej_ctr >= 0) {
+            uint8_t msg[4] = { (uint8_t)rej_ctr, 0xAA, 0xBB,
+                               (uint8_t)(rej_ctr * 3) };
+            uint8_t sig[64];
+            ed25519_sign(sig, msg, sizeof(msg), sk, pkt);
+            const uint8_t *m[1] = { msg };
+            const uint8_t *g[1] = { sig };
+            const uint8_t *k[1] = { pkt };
+            size_t l[1] = { sizeof(msg) };
+            for (int r = 0; r < 16; r++)
+                if (ed25519_verify_batch(m, l, g, k, 1)) accepted++;
+        }
+        zcl_log_level_set(saved);
+
+        if (diverged == 0 && rej_ctr >= 0 && acc_ctr >= 0 && accepted == 0)
+            printf("OK (h-odd rejected, h-even accepted, 0/16 forgeries slipped)\n");
+        else {
+            printf("FAIL (diverged=%d rej_ctr=%d acc_ctr=%d forgeries_accepted=%d/16)\n",
+                   diverged, rej_ctr, acc_ctr, accepted);
+            failures++;
+        }
+    }
+
+    /* ── Differential fuzz ───────────────────────────────────────
+     * Fixed seeds; every corruption is applied at EVERY position of the
+     * set, and the batch verdict must equal the reference loop's. */
+    printf("ed25519 batch: differential fuzz vs the verify loop... ");
+    {
+        int diverged = 0;
+        zcl_log_level_set(ZCL_LOG_OFF);
+        for (uint64_t seed = 1; seed <= 8; seed++) {
+            size_t n = 1 + (size_t)(seed % 5);
+
+            edb_build(n, seed);
+            diverged += edb_diff(n, "clean");
+
+            for (size_t pos = 0; pos < n; pos++) {
+                edb_build(n, seed);
+                edb_sig[pos][(size_t)(seed * 7 + pos) % 64] ^= 0x01;
+                diverged += edb_diff(n, "signature bit flip");
+
+                edb_build(n, seed);
+                edb_sig[pos][63] |= 0x80; /* S >= L: non-canonical scalar */
+                diverged += edb_diff(n, "S high bit set");
+
+                edb_build(n, seed);
+                memcpy(edb_sig[pos] + 32, EDB_L_LE, 32); /* S == L exactly */
+                diverged += edb_diff(n, "S == L");
+
+                edb_build(n, seed);
+                if (edb_lens[pos] == 0) edb_lens[pos] = 1;
+                else edb_msg[pos][0] ^= 0x01;
+                diverged += edb_diff(n, "message tamper");
+
+                edb_build(n, seed);
+                edb_pk[pos][(size_t)(seed + pos) % 32] ^= 0x01;
+                diverged += edb_diff(n, "pubkey bit flip");
+
+                edb_build(n, seed);
+                memset(edb_pk[pos], 0, 32); /* identity pubkey */
+                diverged += edb_diff(n, "all-zero pubkey");
+
+                edb_build(n, seed);
+                memset(edb_sig[pos], 0, 32); /* R = y:0, an order-4 point */
+                diverged += edb_diff(n, "R zeroed");
+
+                edb_build(n, seed);
+                memcpy(edb_sig[pos], EDB_FIELD_P_LE, 32); /* y == p */
+                diverged += edb_diff(n, "R non-canonical (y == p)");
+
+                if (n >= 2) {
+                    size_t o = (pos + 1) % n;
+
+                    edb_build(n, seed);
+                    {
+                        uint8_t t[64];
+                        memcpy(t, edb_sig[pos], 64);
+                        memcpy(edb_sig[pos], edb_sig[o], 64);
+                        memcpy(edb_sig[o], t, 64);
+                    }
+                    diverged += edb_diff(n, "swapped signature pair");
+
+                    edb_build(n, seed);
+                    memcpy(edb_sig[o], edb_sig[pos], 64);
+                    memcpy(edb_pk[o], edb_pk[pos], 32);
+                    memcpy(edb_msg[o], edb_msg[pos], EDB_MSG_MAX);
+                    edb_lens[o] = edb_lens[pos];
+                    diverged += edb_diff(n, "duplicate entry");
+                }
+            }
+        }
+        zcl_log_level_set(saved);
+        if (diverged == 0) printf("OK\n");
+        else { printf("\n  %d divergence(s)\n", diverged); failures++; }
+    }
+
+    /* ── Benchmark (opt-in: ZCL_ED25519_BATCH_BENCH=1) ───────────
+     * Off by default so the group stays in the fast pool. Timed through
+     * platform/clock.h, never a raw clock_gettime. */
+    if (getenv("ZCL_ED25519_BATCH_BENCH")) {
+        const size_t sizes[3] = { 8, 64, 512 };
+        printf("\n  ed25519 batch benchmark\n");
+        printf("     n |  single ver/s |   batch ver/s | speedup\n");
+        for (int si = 0; si < 3; si++) {
+            size_t n = sizes[si];
+            edb_build(n, 999 + (uint64_t)si);
+            int reps = n >= 512 ? 2 : (n >= 64 ? 8 : 40);
+
+            int64_t t0 = clock_now_monotonic_ns();
+            for (int r = 0; r < reps; r++)
+                if (!edb_serial(n)) { printf("  bench serial FAILED\n"); failures++; }
+            int64_t t1 = clock_now_monotonic_ns();
+            for (int r = 0; r < reps; r++)
+                if (!ed25519_verify_batch(edb_msgs, edb_lens, edb_sigs,
+                                          edb_pks, n)) {
+                    printf("  bench batch FAILED\n");
+                    failures++;
+                }
+            int64_t t2 = clock_now_monotonic_ns();
+
+            double sps = (double)reps * (double)n * 1e9 / (double)(t1 - t0);
+            double bps = (double)reps * (double)n * 1e9 / (double)(t2 - t1);
+            printf("  %4zu | %13.1f | %13.1f | %6.2fx\n", n, sps, bps,
+                   bps / sps);
+        }
+        printf("\n");
+    }
+
+    return failures;
+}
+
 int test_zid(void)
 {
     int failures = 0;
@@ -89,6 +499,10 @@ int test_zid(void)
         &msg_r, 1,
         "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da"
         "085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00");
+
+    /* ── Batch verification == the verify loop, on every input ───── */
+
+    failures += test_ed25519_batch();
 
     /* ── Document sign → encode → decode → verify round-trip ─────── */
 

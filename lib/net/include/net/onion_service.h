@@ -24,6 +24,15 @@ typedef size_t (*onion_blog_serve_fn)(const char *datadir,
 void onion_service_set_app_handlers(onion_blog_serve_fn blog_serve,
                                     onion_peer_discover_fn peer_discover);
 
+/* Register the SIGNED discovery source (see net/onion_discovery.h).
+ * Additive: onion peer discovery asks this source first and fills the
+ * remaining capacity from the unsigned scraper, deduplicating by
+ * hostname. With no source registered — the default, and the state of
+ * any node until something publishes a descriptor — discovery behaves
+ * exactly as it did before. Pass NULL to unregister. */
+void onion_service_set_signed_peer_source(onion_signed_peer_source_fn source,
+                                          void *ctx);
+
 /* Initialize the onion service layer.
  * Called from app_init() after Tor is linked in.
  * datadir: path for persistent state
