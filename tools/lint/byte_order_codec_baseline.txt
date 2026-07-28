@@ -44,7 +44,6 @@ app/views/include/views/explorer_factoids_internal.h
 app/views/src/name_view.c
 app/views/src/store_view.c
 config/src/boot_block_file_scan.c
-config/src/boot_node_utilities.c
 config/src/boot_shutdown_marker.c
 config/src/boot_snapshot_install.c
 config/src/consensus_state_install_assisted_seam.c

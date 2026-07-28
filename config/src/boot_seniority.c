@@ -25,6 +25,7 @@
 #include "supervisors/domains.h"
 #include "validation/chainstate.h"
 
+#include "base/serialize_le.h"
 #include "crypto/sha3.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -300,10 +301,7 @@ static bool bsen_client_draw(void *vctx, const uint8_t relay_id[32],
     if (!zdir_candidate_score(score, ctx->seed, relay_id))
         LOG_FAIL(BSEN_LOG, "draw: zdir_candidate_score failed");
 
-    uint64_t d = 0;
-    for (int i = 0; i < 8; i++)
-        d |= (uint64_t)score[i] << (8 * i);
-    *draw_out = d;
+    *draw_out = zcl_read_u64_le(score);
     return true;
 }
 
