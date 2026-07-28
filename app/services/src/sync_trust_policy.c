@@ -96,6 +96,17 @@ const char *sync_trust_state_name(enum sync_trust_state st)
  * Capability formula (byte-identical to the sync_trust_caps() table for every
  * state's canonical evidence tuple — proven in test_sync_trust_policy):
  *   SERVE/RECEIVE = S || (proven && !X)   SPEND/MINE/SEED = S   EXPORT = X
+ *   DIRECTORY_INFLUENCE = network_uncontested
+ *
+ * DIRECTORY_INFLUENCE stands apart on purpose. It is the only bit whose
+ * formula names a NETWORK fact, and `network_uncontested` is the only fact
+ * that appears in exactly one formula. That is the degraded-mode contract:
+ * suspecting a netsplit removes the directory's influence and provably
+ * nothing else — no provenance fact changes, so tip-following, relay, the
+ * explorer, wallet viewing, spending, mining and export are untouched.
+ * `sync_evidence_for_state()` leaves it FALSE in every canonical tuple, so
+ * the provenance state table (sync_trust_caps) never grants it and the
+ * behavior-preservation guarantee above holds unchanged.
  */
 
 /* First-missing proven-base fact, as a stable reason token; NULL if proven. */
@@ -121,6 +132,15 @@ static const char *self_derived_denial(const struct sync_evidence *e)
         return "shielded_history_incomplete";
     if (!e->full_history_replayed)   return "full_history_not_replayed";
     return NULL;
+}
+
+/* Reason DIRECTORY_INFLUENCE is withheld; NULL when the network is
+ * uncontested. Deliberately a one-fact formula: this capability must be
+ * withholdable WITHOUT disturbing any other bit, so it may never consult the
+ * provenance facts. "network_contested" is the operator-facing token. */
+static const char *directory_influence_denial(const struct sync_evidence *e)
+{
+    return e->network_uncontested ? NULL : "network_contested";
 }
 
 /* Reason EXPORT is withheld; NULL if X holds. */
@@ -149,6 +169,7 @@ uint32_t sync_capabilities_from_evidence(const struct sync_evidence *e,
     const char *proven_why = proven_denial(e);
     const char *self_why = self_derived_denial(e);
     const char *export_why = export_denial(e);
+    const char *dir_why = directory_influence_denial(e);
     const bool proven = proven_why == NULL;
     const bool S = self_why == NULL;
     const bool X = export_why == NULL;
@@ -174,6 +195,7 @@ uint32_t sync_capabilities_from_evidence(const struct sync_evidence *e,
         { SYNC_CAP_MINE,                S,     self_why },
         { SYNC_CAP_EXPORT_BUNDLE,       X,     export_why },
         { SYNC_CAP_SEED_BUNDLE,         S,     self_why },
+        { SYNC_CAP_DIRECTORY_INFLUENCE, dir_why == NULL, dir_why },
     };
 
     for (size_t i = 0; i < sizeof(bits) / sizeof(bits[0]); i++) {
@@ -300,6 +322,21 @@ _Static_assert((ZCL_TRUST_MASK_ASSISTED &
 _Static_assert((SYNC_CAP_ALL & SYNC_CAP_EXPORT_BUNDLE) != 0u &&
                    (ZCL_TRUST_MASK_ARTIFACT & SYNC_CAP_EXPORT_BUNDLE) == 0u,
                "only SOVEREIGN combines EXPORT with the self-derived caps");
+/* DIRECTORY_INFLUENCE is a NETWORK capability, never a provenance one: no
+ * arm of the sync_trust_caps() table may grant it (SYNC_CAP_ALL is the widest
+ * arm, so excluding it there excludes it everywhere). */
+_Static_assert((SYNC_CAP_ALL & SYNC_CAP_DIRECTORY_INFLUENCE) == 0u,
+               "the provenance state table must never grant DIRECTORY_INFLUENCE");
+_Static_assert((ZCL_TRUST_MASK_ARTIFACT & SYNC_CAP_DIRECTORY_INFLUENCE) == 0u &&
+                   (ZCL_TRUST_MASK_ASSISTED &
+                    SYNC_CAP_DIRECTORY_INFLUENCE) == 0u,
+               "no trust state grants DIRECTORY_INFLUENCE");
+/* The denial array must have a slot for the highest defined bit. */
+_Static_assert(SYNC_CAP_DIRECTORY_INFLUENCE_BIT < SYNC_CAP_BIT_COUNT,
+               "SYNC_CAP_BIT_COUNT must cover every defined capability bit");
+_Static_assert((1u << SYNC_CAP_DIRECTORY_INFLUENCE_BIT) ==
+                   (unsigned)SYNC_CAP_DIRECTORY_INFLUENCE,
+               "SYNC_CAP_DIRECTORY_INFLUENCE_BIT must index its own bit");
 
 #undef ZCL_TRUST_MASK_ARTIFACT
 #undef ZCL_TRUST_MASK_ASSISTED

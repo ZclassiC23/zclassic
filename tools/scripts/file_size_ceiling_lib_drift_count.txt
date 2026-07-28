@@ -316,3 +316,49 @@
 # Same lint run exposed one restored regression already committed on
 # this branch: package_service.c (1066 lines, 9f72e1d33) had never been
 # baselined. Freshly baselined at 1066; count unchanged (live 11).
+#
+# 2026-07-28 (onion directory: names in discovery + row freshness):
+# onion_service.c grew 1031 -> 1229 serving the ZNAM name beside every raw
+# .onion on /search, /directory and /directory.json, and filtering + dating
+# rows by age. The freshness LEDGER itself (the peer_directory table + its
+# freshness columns, the expiry sweep, the v3 hostname predicate, the
+# /directory.json onion-field parser, and the read-only ZNAM join) did NOT
+# land in that file: it is the new lib/net/src/onion_directory.c.
+# onion_service.c re-baselined in file_size_ceiling_lib_baseline.txt (1229);
+# count unchanged. connman.c gained ~60 lines walking the onion half of a
+# peer directory response and stays grandfathered at its existing WARN entry.
+#
+# 2026-07-28 (identity/directory wave, merge reconciliation):
+# Three entries BASELINED rather than raising the ceiling, so the recorded
+# count stays 13 and the net move is a tightening:
+#   lib/crypto/src/ed25519.c   993 — batch verification with the per-signature
+#       torsion screen (the cofactorless verifier makes the textbook batch
+#       construction unsound; the screen is the correctness fix, not padding).
+#   lib/util/src/blocker.c     836 — the named blockers the directory-safety
+#       work added; a blocker that cannot be named is the silent halt this
+#       project forbids.
+#   lib/net/src/onion_service.c 1229 -> 1235 — the six lines are the merge of
+#       two lanes' independent edits to the same discovery function, not new
+#       feature growth. The freshness ledger itself landed in the new
+#       under-ceiling lib/net/src/onion_directory.c.
+#
+# 2026-07-28 (t4.3 directory freshness + onion graph, merged into the wave
+# above): two teams had independently built lib/net/src/onion_directory.c at
+# the same path. The merged file is ONE directory: the lifecycle half (the
+# table, the freshness rules, the supervised refresh round, the relay-hint
+# parser and follow budget, the census bridge) plus the name half (the
+# renderable-label guard, the /directory.json onion-field scanner, and the
+# read-only ZNAM name join). It also absorbed the second copy of the v3
+# hostname predicate — onion_hostname_is_valid_v3 is deleted and every call
+# site now holds the ONE onion_hostname_valid in onion_peer_merge.c, so the
+# two can no longer drift. Union size 865, past the 800 ceiling, so it is
+# BASELINED at 865 rather than left unlisted to trip the new-file WARN; that
+# keeps future growth on it visible without spending a ratchet slot.
+# onion_service.c settles at 1185 (BELOW main's 1235 entry — the merge moved
+# the directory writers out and kept only the front door and the two
+# serve_directory_* renderers), so its baseline is TIGHTENED 1235 -> 1185.
+# connman.c 2881 -> 2951 for the merged onion half of try_onion_seed_fetch
+# (scan the "onion" field, record every hint, follow a bounded few one hop —
+# and, per the cold-boot fix in the same change, follow only when we are
+# already above the healthy peer floor) — re-baselined at 2951.
+# Every entry here is a baseline, not a raise: the recorded count STAYS 13.

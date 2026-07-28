@@ -182,6 +182,20 @@ void explorer_index_apply_znam_zid_text(struct node_db *ndb,
                                         const char *value, const char *owner,
                                         int height);
 
+/* ── ZDIR node directory (models/explorer_index_zdir.c) ─────────────
+ *
+ * Project a confirmed `ZDIR` OP_RETURN into onion_directory — the node's ONLY
+ * chain-fed source of other nodes' .onion hostnames. Re-parses `script` with
+ * zdir_parse (the registry's decoupling contract). REGISTER is
+ * first-come-first-served on the hostname and then owner-locked; DEREGISTER is
+ * refused unless the tx's first-input signer matches the owner_address
+ * recorded on the existing row. Pure: no network, no clock. Returns true iff a
+ * row was written. */
+bool explorer_index_apply_zdir_overlay(struct node_db *ndb,
+                                       const struct transaction *tx,
+                                       const uint8_t *script,
+                                       size_t script_len, int height);
+
 /* Apply one parsed SLP Type-1 message (GENESIS/MINT/SEND) to the zslp_tokens
  * + zslp_transfers projection, given the live block's full transaction.
  * Implemented in explorer_index_zslp.c; called from index_op_return on the

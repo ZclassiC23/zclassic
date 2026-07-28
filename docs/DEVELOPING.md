@@ -164,7 +164,7 @@ The interface is the native registry: `zclassic23 <path>` under seven roots —
 `discover search <q>` (query is **positional** — the `--input='{"query":…}'`
 form its schema advertises returns `MISSING_QUERY`).
 
-**Enumerating the 145 dumpstate subsystems is `zclassic23 statecatalog`**, not
+**Enumerating the 147 dumpstate subsystems is `zclassic23 statecatalog`**, not
 `ops state` with no `--subsystem` — that errors `MISSING_SUBSYSTEM`.
 `statecatalog` returns each subsystem's owner `.c` file, accepted key forms,
 cost, and owning test path. Add one by appending a `DIAG_*` descriptor row to

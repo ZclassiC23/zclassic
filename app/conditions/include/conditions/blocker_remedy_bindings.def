@@ -100,6 +100,18 @@ ZCL_BLOCKER_REMEDY(memory-pressure,                            memory_pressure_h
 ZCL_BLOCKER_REMEDY(disk-full,                                  disk_full_pause)
 ZCL_BLOCKER_REMEDY(mirror.divergence_located,                  mirror_divergence_located)
 ZCL_BLOCKER_REMEDY(catalog.*.lag_exceeded,                     catalog_lag_exceeded)
+/* T6.2 degraded mode. netsplit_degraded_mode is the condition that raises this
+ * id (via directory_influence_observe) and the one that clears it: its detect
+ * pass folds the netsplit verdict into the directory-influence posture in BOTH
+ * directions on the poll cadence, so the true->false edge restores influence
+ * and calls blocker_clear itself. Same self-witnessing shape as
+ * net_partition_suspected above. It does not claim to CURE a network split —
+ * nothing in-tree can — it owns the node's posture while one is suspected, and
+ * retires the blocker the moment the corroborated evidence stops standing.
+ * No ZCL_BLOCKER_DECISION row, on purpose — see the note at the foot of
+ * blocker_operator_decisions.def; the operator-facing sentence rides in the
+ * blocker's own reason instead, where it is actually rendered. */
+ZCL_BLOCKER_REMEDY(SUSPECTED_NETSPLIT,                         netsplit_degraded_mode)
 ZCL_BLOCKER_REMEDY(state_auditor.*.mismatch,                   state_auditor_mismatch)
 
 /* ── Cross-condition remedies: a different condition's escalation ladder
@@ -228,6 +240,15 @@ ZCL_BLOCKER_REMEDY(tip_finalize.validation_evidence,            OWNER)
 ZCL_BLOCKER_REMEDY(tip_finalize.rewind_churn,                   OWNER)
 ZCL_BLOCKER_REMEDY(chain.coinbase_label_mismatch,               tip_label_divergence) /* window_rebuild seam wired: tip_label_divergence.c remedy re-derives [refuse_from_h, tip] via stage_rederive_range + releases the linkage holds; a persistent divergence re-raises at the first offending connect (witness reads still-present) */
 ZCL_BLOCKER_REMEDY(chain.linkage_violation,                     tip_label_divergence) /* same window_rebuild seam (both holds share the tip_label_divergence condition) */
+/* T6.2: the deep-reorg refusal in app/jobs/src/utxo_apply_delta_reorg.c. It
+ * was silent — a LOG_WARN plus EV_BLOCK_REJECTED and nothing typed — while
+ * being the one refusal that CANNOT resolve itself: with ZCL_FINALITY_DEPTH =
+ * 10, a partition surviving more than 10 blocks on both sides never
+ * reconverges. There is deliberately no auto-remedy: the only automatic
+ * "cure" would be to rewind final state, and rewinding below the finality
+ * floor because a peer asked is the one thing consensus forbids. OWNER, with
+ * a decision row stating what the person actually chooses between. */
+ZCL_BLOCKER_REMEDY(chain.reorg_refused_below_finality,          OWNER)
 ZCL_BLOCKER_REMEDY(authority_projection_divergence,             OWNER)
 ZCL_BLOCKER_REMEDY(self_heal.unsupervised,                      OWNER)
 /* Set by self_heal_on_stall when a condition remedy hangs past the runner's

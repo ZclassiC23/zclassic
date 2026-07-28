@@ -67,15 +67,35 @@ enum sync_capability {
     SYNC_CAP_MINE                = 1u << 3,
     SYNC_CAP_EXPORT_BUNDLE       = 1u << 4,
     SYNC_CAP_SEED_BUNDLE         = 1u << 5,
+    /* NETWORK-derived, not provenance-derived (see the note under
+     * SYNC_CAP_ALL): may a peer/name DIRECTORY influence what this node
+     * discovers, dials, or prefers? Withheld alone puts the node in degraded
+     * mode: tip-following, relay, the block explorer and wallet VIEWING are
+     * untouched, discovery falls back to the always-present roots (compiled
+     * seeds + addr gossip), and directory entries that were already final
+     * before the suspicion began keep working. */
+    SYNC_CAP_DIRECTORY_INFLUENCE = 1u << 6,
 };
 
-/* All six capabilities — the SOVEREIGN mask. */
+/* All six PROVENANCE capabilities — the SOVEREIGN mask.
+ *
+ * SYNC_CAP_DIRECTORY_INFLUENCE is deliberately NOT a member. The six bits
+ * above are functions of what this node has independently DERIVED; directory
+ * influence is a function of what the NETWORK currently looks like, which no
+ * `sync_trust_state` models. Adding it here would make every SOVEREIGN node
+ * grant it unconditionally and would silently entangle a network fact with the
+ * provenance table. The state table therefore never grants the bit — only
+ * `sync_capabilities_from_evidence` does, off the `network_uncontested` fact —
+ * and the exclusion is asserted at compile time in sync_trust_policy.c. */
 #define SYNC_CAP_ALL (SYNC_CAP_SERVE_VALIDATED_TIP | SYNC_CAP_WALLET_RECEIVE | \
                       SYNC_CAP_WALLET_SPEND | SYNC_CAP_MINE |                   \
                       SYNC_CAP_EXPORT_BUNDLE | SYNC_CAP_SEED_BUNDLE)
 
 /* Number of defined SYNC_CAP_* bits (bit index 0..SYNC_CAP_BIT_COUNT-1). */
-#define SYNC_CAP_BIT_COUNT 6
+#define SYNC_CAP_BIT_COUNT 7
+
+/* Bit index of the directory-influence capability, for denial-array lookup. */
+#define SYNC_CAP_DIRECTORY_INFLUENCE_BIT 6
 
 /* ── The evidence lattice ────────────────────────────────────────────────
  * Every capability grant reduces to a boolean formula over these named,
@@ -97,13 +117,25 @@ struct sync_evidence {
     bool full_history_replayed;       /* every block body replayed from checkpoint */
     bool export_root_rederived;       /* export root re-derived from bound content */
     bool active_tip_locally_validated;/* the served tip passed local validation */
+    /* The one NETWORK fact in an otherwise all-provenance tuple: no
+     * corroborated evidence that this node sits on the minority side of a
+     * split (app/services/include/services/network_monitor.h's
+     * network_monitor_netsplit_suspected()). It gates SYNC_CAP_DIRECTORY_
+     * INFLUENCE and NOTHING else — it appears in no other formula below, so
+     * withholding it can never take away tip-following, relay, the explorer,
+     * wallet viewing, spending, mining or export. False (the all-false floor)
+     * withholds directory influence, which is the safe direction: the
+     * directory is advisory and additive, so falling back to the compiled
+     * seeds + addr gossip costs reachability hints, never correctness. */
+    bool network_uncontested;
 };
 
 /* A stable denial reason per capability bit: reason[i] describes why the bit
  * (1u<<i) is WITHHELD, or NULL when that bit is granted. Reasons are stable
  * lowercase tokens (e.g. "missing_checkpoint_binding",
  * "shielded_history_incomplete", "state_not_self_derived",
- * "export_root_not_rederived") so callers/tests can key on them. */
+ * "export_root_not_rederived", "network_contested") so callers/tests can key
+ * on them. Operators key on these too — never rename one. */
 struct sync_capability_denials {
     const char *reason[SYNC_CAP_BIT_COUNT];
 };

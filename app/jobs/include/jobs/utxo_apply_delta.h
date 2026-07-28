@@ -179,4 +179,19 @@ bool utxo_apply_repair_value_overflow_hole(
     const struct block *blk,
     struct utxo_apply_value_overflow_repair_result *out);
 
+/* Name a deep-reorg refusal as the typed blocker
+ * `chain.reorg_refused_below_finality` (BLOCKER_PERMANENT). Called by BOTH
+ * refusal paths in utxo_apply_delta_reorg.c — the fork-walk exhaustion and
+ * the reorg_is_allowed gate — so a refusal can no longer be a stderr line
+ * that nothing typed. `tip_h` is the stage's tip (cursor-1) and `fork_h` the
+ * fork point (may be negative when the walk found none).
+ *
+ * Exported rather than static so the FIRING is directly testable: with
+ * ZCL_FINALITY_DEPTH = 10 this refusal never resolves itself, which makes it
+ * exactly the raise that must not be taken on trust. Pure apart from the
+ * blocker registry write — no DB, no clock beyond the registry's own.
+ * Remedy/decision rows: blocker_remedy_bindings.def /
+ * blocker_operator_decisions.def. */
+void utxo_apply_reorg_name_refusal_blocker(int tip_h, int fork_h);
+
 #endif /* ZCL_JOBS_UTXO_APPLY_DELTA_H */

@@ -414,7 +414,9 @@ the very PoW that secures it.
 refusal (`reorg_is_allowed` / `height_is_immutable`, both declared in
 `lib/validation/include/validation/checkpoint.h:38,43` — NOT in
 `main_constants.h`, which holds only the constant) means a partition
-surviving >10 blocks on both sides **never reconverges**. Rules:
+surviving >10 blocks on both sides **never reconverges**. The refusal is not
+silent: both refusal paths in `app/jobs/src/utxo_apply_delta_reorg.c` raise
+the named blocker `chain.reorg_refused_below_finality`. Rules:
 
 - **Provisional below 10 deep, final at or beyond.** Anchors feed hints
   immediately but confer no influence until final — kills flapping from

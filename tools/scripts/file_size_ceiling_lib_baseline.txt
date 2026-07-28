@@ -21,6 +21,7 @@
 # Format: <relative-path> <max-loc>   (lines starting with # are comments)
 # Sorted by path.
 
+lib/crypto/src/ed25519.c 993
 lib/codeindex/src/codeindex_build.c 999
 lib/codeindex/src/codeindex_scan.c 1032
 lib/codeindex/src/codeindex_store.c 875
@@ -29,7 +30,7 @@ lib/hotswap/src/hotswap_loader.c 809
 lib/kernel/src/command_registry.c 1761
 lib/metrics/src/prometheus_metrics.c 1100
 lib/net/src/addrman.c 1268
-lib/net/src/connman.c 2832
+lib/net/src/connman.c 2951
 lib/net/src/download.c 1385
 lib/net/src/fast_sync.c 1909
 lib/net/src/file_service.c 2255
@@ -40,7 +41,8 @@ lib/net/src/msgprocessor.c 2472
 lib/net/src/msgprocessor_snapshot.c 2005
 lib/net/src/msgprocessor_snapshot_serve.c 1114
 lib/net/src/net.c 1666
-lib/net/src/onion_service.c 1031
+lib/net/src/onion_directory.c 865
+lib/net/src/onion_service.c 1185
 lib/net/src/peer_lifecycle.c 1779
 lib/net/src/rom_fetch.c 1709
 lib/net/src/rom_seed.c 1043
@@ -65,6 +67,7 @@ lib/validation/src/connect_block.c 896
 lib/wallet/src/wallet.c 1705
 lib/wallet/src/wallet_sqlite.c 1648
 lib/sim/src/simnet_chaos_faults.c 2684
+lib/util/src/blocker.c 836
 lib/util/src/supervisor.c 801
 lib/sync/src/stage.c 819
 src/main_cli_modes.c 3820

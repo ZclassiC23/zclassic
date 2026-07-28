@@ -318,6 +318,18 @@
                "lib/test/src/test_syncdiag_operator.c"),
     DIAG_LOCAL("network_monitor", network_monitor_dump_state_json,
                "reachable-network chain view: modal tip, max height, our delta, fork clusters"),
+    DIAG_CHAIN("netsplit", network_monitor_netsplit_dump_state_json,
+               "SUSPECTED_NETSPLIT: are we on the minority side of a split? "
+               "Three signals — peer tip disagreement at our height with our "
+               "own tip injected (needs >= 2 DISTINCT address groups, so one "
+               "peer or one group can never raise it), block-arrival rate vs "
+               "the tip's nBits-implied difficulty (implied_hashrate_ratio_"
+               "milli; 1000 == arriving exactly as this chain's own difficulty "
+               "predicts), and tip staleness. The verdict needs the peer "
+               "signal AND a local corroborator — peer testimony alone is "
+               "never enough",
+               "app/services/src/network_monitor_netsplit.c",
+               "lib/test/src/test_netsplit_detector.c"),
     DIAG_SERVICE("network_census", network_crawler_dump_state_json,
                  "whole-network observatory (opt-in crawler): enabled/running, "
                  "addresses_known, census_rows, probed_last_round, reachable_count, "
@@ -503,6 +515,18 @@
                     "source, name, owner_address, updated_height}.",
                     "app/models/src/zid_identity.c",
                     "lib/test/src/test_zid_identity.c"),
+    DIAG_PROJECTION("onion_directory", onion_directory_dump_state_json,
+                    "on-chain node directory folded from confirmed ZDIR "
+                    "OP_RETURNs: total_rows plus active/retired row counts. "
+                    "With a key — a v3 onion hostname — resolves that one "
+                    "row's {hostname, txid, height (seniority), "
+                    "owner_address, master_pubkey (when bound), status, "
+                    "updated_height}. A row is a HINT about where to look, "
+                    "never proof of who is there: it only ever ADDS a peer "
+                    "candidate alongside DNS/fixed seeds, addrman and the "
+                    "signed-descriptor source, and can never exclude one.",
+                    "app/models/src/onion_directory.c",
+                    "lib/test/src/test_zdir.c"),
     DIAG_ENTRY("vault", vault_read_dump_state_json,
                "vault read model: one row per asset class the node can hold "
                "(transparent_zcl, shielded_zcl, zslp_tokens, znam_names, "

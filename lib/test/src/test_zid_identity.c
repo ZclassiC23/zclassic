@@ -611,8 +611,8 @@ static int test_overlay_registry_adopted(void)
     int failures = 0;
     const struct overlay_registry *reg = explorer_index_overlays();
 
-    printf("zid ingest: registry holds all four overlays... ");
-    { bool ok = reg != NULL && overlay_registry_count(reg) == 4;
+    printf("zid ingest: registry holds every overlay... ");
+    { bool ok = reg != NULL && overlay_registry_count(reg) == 5;
       if (ok) printf("OK\n");
       else { printf("FAIL (count=%zu)\n",
                     reg ? overlay_registry_count(reg) : (size_t)0);
