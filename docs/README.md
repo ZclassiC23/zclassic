@@ -114,6 +114,7 @@ history: <!-- doc-path-ok: recovered from git history, not present on disk -->
 - [`SECURITY_AND_INTEGRITY.md`](./SECURITY_AND_INTEGRITY.md) — operator safety boundary, security model, integrity controls, and reviewer checklist.
 - [`CUSTODY_MODEL.md`](./CUSTODY_MODEL.md) — what holds the keys, what authorizes a spend, what an agent grant bounds, and what it does not.
 - [`spec/power-node-contract.md`](./spec/power-node-contract.md) — stable architecture/observability contract for a power node.
+- [`spec/sovereign-identity-layer.md`](./spec/sovereign-identity-layer.md) — design draft: chain-anchored master keys ("write once, sign forever") — onion descriptors via swarm, ZNAM naming, ZDIR relay directory as an application.
 - [`validation/VALIDATION_MATRIX.md`](./validation/VALIDATION_MATRIX.md) — validation coverage matrix.
 
 ## Contributor docs
