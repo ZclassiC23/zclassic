@@ -390,6 +390,7 @@ int test_tx_property(void);
 int test_znam(void);
 int test_zid(void);
 int test_zid_identity(void);
+int test_zdir(void);
 int test_identity_command(void);
 int test_proof_chain(void);
 int test_htlc(void);

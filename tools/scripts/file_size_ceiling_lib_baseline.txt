@@ -30,7 +30,7 @@ lib/hotswap/src/hotswap_loader.c 809
 lib/kernel/src/command_registry.c 1761
 lib/metrics/src/prometheus_metrics.c 1100
 lib/net/src/addrman.c 1268
-lib/net/src/connman.c 2832
+lib/net/src/connman.c 2951
 lib/net/src/download.c 1385
 lib/net/src/fast_sync.c 1909
 lib/net/src/file_service.c 2255
@@ -41,7 +41,8 @@ lib/net/src/msgprocessor.c 2472
 lib/net/src/msgprocessor_snapshot.c 2005
 lib/net/src/msgprocessor_snapshot_serve.c 1114
 lib/net/src/net.c 1666
-lib/net/src/onion_service.c 1235
+lib/net/src/onion_directory.c 865
+lib/net/src/onion_service.c 1185
 lib/net/src/peer_lifecycle.c 1779
 lib/net/src/rom_fetch.c 1709
 lib/net/src/rom_seed.c 1043

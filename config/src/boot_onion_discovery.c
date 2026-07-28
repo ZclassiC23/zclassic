@@ -6,20 +6,37 @@
  * include it, so the dependency is inverted here — the same shape
  * net_runtime_port.h and node_db_runtime.h use.
  *
- * Each hostname comes from a descriptor whose signature, validity
- * window, and monotonic seq were checked when it was accepted
- * (vcs/zdesc_swarm.h) — against a caller-supplied master key, NOT
- * against a chain anchor. That binding is a separate, open seam
- * (lib/vcs/src/zdesc_swarm.c, CHAIN-BINDING SEAM); nothing here claims
- * these peers are chain-verified.
+ * THREE SOURCES, ALL ADDITIVE. Peer discovery is liveness-critical, so
+ * every source ADDS candidates and none may remove, filter, or rank
+ * down what another found:
  *
- * `height` is 0 because a descriptor carries no height; both consumers
- * treat it as display/storage only.
+ *   1. signed endpoint records (zid/zendp.h "ZIDE",
+ *      vcs/zendp_swarm.h) — signature over a validity window, a
+ *      monotonic seq, AND a signing key resolved to an ACTIVE on-chain
+ *      anchor. The strongest provenance that exists;
+ *   2. signed onion-service descriptors (vcs/zdesc_swarm.h) —
+ *      signature and window, verified against a caller-supplied key,
+ *      NOT chain-bound;
+ *   3. the unsigned wallet scrape, passed through to the onion service
+ *      unchanged — the only source on a node that has never seen a
+ *      signed document.
  *
- * On a node where nothing has published a descriptor, the directory is
- * empty and this returns 0 — zero behaviour change. */
+ * CAPACITY IS RESERVED, NOT RACED. Sources 1 and 2 share this one
+ * registered function and together may fill at most HALF of the
+ * caller's capacity: a flood of signed records must not be able to
+ * squeeze the unsigned scrape off the slate, because a record is a hint
+ * about where to look and the scrape is sometimes the only source there
+ * is. Within that half, endpoint records go first (chain-bound beats
+ * key-bound) and descriptors fill what is left.
+ *
+ * A RECORD IS A HINT. Even a chain-anchored record does not prove who
+ * answers at the address; that needs the Noise v2 transport, default
+ * OFF today. Nothing here narrows peer selection, and nothing here may
+ * grow into something that does. */
 
 #include "config/boot_onion_discovery.h"
+
+#include "config/boot_endpoint_records.h"
 
 #include "platform/time_compat.h"
 #include "vcs/zdesc_swarm.h"
@@ -37,21 +54,48 @@ static int boot_signed_onion_peers(void *unused_ctx, struct onion_peer *out,
     if (max > BOOT_SIGNED_PEERS_MAX)
         max = BOOT_SIGNED_PEERS_MAX;
 
+    /* Half the slate, rounded down, is the ceiling for every signed
+     * source combined. With max == 1 that is 0 and the unsigned scrape
+     * keeps the only slot — deliberately: discovery must degrade toward
+     * the source that always works. */
+    size_t budget = max / 2u;
+    if (budget == 0)
+        return 0;
+
+    /* Chain-anchored endpoint records first. */
+    int n = boot_endpoint_record_peers(NULL, out, budget);
+    if (n < 0)
+        n = 0;
+    if ((size_t)n >= budget)
+        return n;
+
+    /* Then signed descriptors, into whatever the records left. */
+    size_t room = budget - (size_t)n;
     char hosts[BOOT_SIGNED_PEERS_MAX][ZDESC_ONION_LEN + 1];
-    size_t n = zdesc_global_onions((uint64_t)platform_time_wall_unix(), hosts,
-                                   max);
-    for (size_t i = 0; i < n; i++) {
-        snprintf(out[i].hostname, sizeof(out[i].hostname), "%s", hosts[i]);
-        out[i].height = 0;
+    if (room > BOOT_SIGNED_PEERS_MAX)
+        room = BOOT_SIGNED_PEERS_MAX;
+    size_t d = zdesc_global_onions((uint64_t)platform_time_wall_unix(), hosts,
+                                   room);
+    for (size_t i = 0; i < d; i++) {
+        snprintf(out[n].hostname, sizeof(out[n].hostname), "%s", hosts[i]);
+        /* A descriptor carries no height; both consumers treat this as
+         * display/storage only. */
+        out[n].height = 0;
+        n++;
     }
-    return (int)n;
+    return n;
 }
 
 void boot_onion_discovery_register(onion_blog_serve_fn blog_serve,
                                    onion_peer_discover_fn peer_discover)
 {
+    /* Close the chain binding before anything can accept a record: with
+     * no lookup registered, vcs/zendp_swarm refuses every record by
+     * name (ZENDP_ERR_NO_ANCHOR_LOOKUP) rather than trusting one. */
+    boot_endpoint_records_register();
+
     onion_service_set_app_handlers(blog_serve, peer_discover);
-    /* Additive: signed descriptors are asked first, the unsigned scrape
+    /* Additive: signed sources are asked first, the unsigned scrape
      * still fills the remaining capacity. */
     onion_service_set_signed_peer_source(boot_signed_onion_peers, NULL);
 }

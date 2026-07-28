@@ -38,15 +38,10 @@ typedef int (*onion_peer_discover_fn)(const char *datadir,
 typedef int (*onion_signed_peer_source_fn)(void *ctx,
                                            struct onion_peer *out,
                                            size_t max);
-/* ── v3 hostname shape ──────────────────────────────────────────────
- *
- * Hostnames reaching this layer are attacker-controlled (on-chain
- * OP_RETURN payloads, peer-served directory JSON). Only the exact Tor v3
- * shape — 56 base32 [a-z2-7] chars + ".onion", 62 bytes total — may reach
- * HTML, JSON, the peer_directory table, or a fetch. Single definition
- * shared by the directory server and the connman seed walker so the two
- * can never drift apart. */
-bool onion_hostname_is_valid_v3(const char *h);
+/* The v3 hostname shape has ONE home: onion_hostname_valid(), declared
+ * in net/onion_peer_merge.h and implemented in lib/net/src/onion_peer_merge.c.
+ * Every consumer in this header — the scanner's callers, the directory
+ * table, the name join — holds hostnames to that single predicate. */
 
 /* Is `name` safe to render as a label for an endpoint (HTML page, JSON
  * document)? A RENDER guard only: bounded length, lowercase alphanumeric
@@ -70,58 +65,30 @@ bool onion_directory_scan_next_onion(const char **cursor,
 
 /* ── Directory freshness ledger ─────────────────────────────────────
  *
- * peer_directory rows carry an age. Rows we have never reached and have
- * not seen advertised for ONION_DIRECTORY_MAX_AGE_SECS are deleted; rows
- * that survive are served WITH their age so a consumer judges freshness
- * itself rather than trusting a bare list.
+ * The peer_directory table, its freshness columns, the expiry sweep and
+ * the supervised refresh round live in net/onion_service.h — ONE owner
+ * for the whole lifecycle. This header keeps only the pieces a consumer
+ * needs without taking on the lifecycle: the /directory.json scanner
+ * above and the name join below.
  *
- * A directory record is a HINT about WHERE to look, never proof of WHO is
- * there (docs/work/NAT_AND_ONION_TRANSPORT.md). The three observation
- * kinds keep that distinction in the data:
+ * A directory record is a HINT about WHERE to look, never proof of WHO
+ * is there (docs/work/NAT_AND_ONION_TRANSPORT.md), and the two write
+ * paths keep that distinction in the data:
  *
- *   ADVERTISED   — a peer's directory listed this onion. Creates the row
- *                  and refreshes last_seen. Never touches last_success:
- *                  being named by someone else is not contact.
- *   REACHED      — WE fetched /directory.json from it. Refreshes both
- *                  last_seen and last_success, bumps dial_success_count.
- *   UNREACHABLE  — our fetch failed. Bumps dial_fail_count on an EXISTING
- *                  row only; never inserts, never refreshes last_seen. A
- *                  failed dial carries no identity (the discipline
- *                  peers_projection's census fold already enforces).
- */
-enum onion_directory_observation {
-    ONION_DIR_ADVERTISED  = 0,
-    ONION_DIR_REACHED     = 1,
-    ONION_DIR_UNREACHABLE = 2,
-};
-
-/* Create peer_directory (and idempotently add its freshness columns) on an
- * already-open node.db handle. `sqlite3` is forward-declared so a consumer
- * of this contract does not have to include sqlite3.h. */
+ *   ADVERTISED  — a peer's directory listed this onion. Recorded with
+ *                 onion_service_directory_learn(): INSERT OR IGNORE, so
+ *                 hearsay creates a row but never overwrites one we
+ *                 measured, and never touches last_success.
+ *   MEASURED    — WE dialled it. Recorded with
+ *                 onion_service_directory_observe(): reachable=true
+ *                 refreshes last_seen + last_success and bumps
+ *                 dial_success_count; reachable=false bumps fail_count on
+ *                 an EXISTING row only, never inserts, and never
+ *                 refreshes last_seen. A failed dial carries no identity.
+ *
+ * `sqlite3` is forward-declared so a consumer of this contract does not
+ * have to include sqlite3.h. */
 struct sqlite3;
-void onion_directory_ensure_table(struct sqlite3 *db);
-
-/* Rows unseen this long are expired (72 h). */
-#define ONION_DIRECTORY_MAX_AGE_SECS 259200
-
-/* Minimum wall-clock gap between opportunistic expiry sweeps (10 min). */
-#define ONION_DIRECTORY_EXPIRE_INTERVAL_SECS 600
-
-/* Record one observation of `onion` into datadir's peer_directory. height
- * <= 0 leaves the stored height alone. Silently no-ops on a NULL datadir,
- * a hostname failing onion_hostname_is_valid_v3(), or an unopenable
- * database — discovery bookkeeping never fails a caller's dial path.
- * Opportunistically runs the expiry sweep, throttled to at most one per
- * ONION_DIRECTORY_EXPIRE_INTERVAL_SECS. */
-void onion_directory_observe(const char *datadir, const char *onion,
-                             enum onion_directory_observation obs,
-                             int height);
-
-/* Delete non-self rows whose last_seen is older than now_unix -
- * max_age_secs. Returns rows deleted, or -1 on error. The self row is
- * never expired: this node's own address does not go stale to itself. */
-int onion_directory_expire(const char *datadir, int64_t now_unix,
-                           int64_t max_age_secs);
 
 /* Resolve the ZNAM name registered on-chain for a .onion target (the
  * znam_names projection, target_type ZNAM_TYPE_ONION). Matches the stored
@@ -135,5 +102,91 @@ bool onion_directory_name_for(const char *datadir, const char *onion,
  * resolves a name per row and must not reopen the database each time. */
 bool onion_directory_name_for_db(struct sqlite3 *db, const char *onion,
                                  char *out, size_t out_len);
+
+/* ── the rich endpoint, alongside the narrow peer ───────────────────
+ *
+ * `struct onion_peer` is a hostname and a height: no port, no
+ * services, no expiry, no provenance. It stays exactly as it is —
+ * every existing producer and consumer keeps compiling and keeps
+ * behaving identically — and this richer type sits BESIDE it for the
+ * sources that actually know more.
+ *
+ * The one that does today is the signed endpoint record (zid/zendp.h,
+ * body tag "ZIDE"): a document the peer SIGNED, whose signing key is
+ * resolved against the on-chain identity projection
+ * (vcs/zendp_swarm.h). Such a record carries onion + clearnet
+ * addresses with real ports, a services bitmask, a claimed height, its
+ * own signed expiry, and the identity + anchor height that vouch for
+ * it.
+ *
+ * ── WHAT A RECORD IS, AND IS NOT ──────────────────────────────────
+ * A directory record is a HINT ABOUT WHERE TO LOOK, never proof of who
+ * is there (docs/work/NAT_AND_ONION_TRANSPORT.md). Even a fully
+ * verified, chain-anchored record does NOT prove that whoever answers
+ * at that address holds that key: binding the SESSION to a key needs
+ * the Noise v2 transport (-v2transport, net/connman.h), which is
+ * default OFF because every peer on the live network speaks v1 today.
+ *
+ * So the discipline, structurally: endpoints from records may only
+ * ever ADD a place to try. They must never remove, rank below, or
+ * exclude any peer from any other source. A poisoned record then costs
+ * at most one wasted connection attempt. The only sanctioned way for a
+ * directory to influence selection at all is
+ * addrman_set_reputation_weight (lib/net/src/addrman.c), which is
+ * bounded to a [1.0, 4.0] dial-chance multiplier and structurally
+ * cannot exclude. */
+
+enum onion_peer_provenance {
+    /* Wallet OP_RETURN scrape: unsigned, no expiry, no freshness. */
+    ONION_PROV_UNSIGNED = 0,
+    /* Signed document, verified against a key the CALLER supplied —
+     * fresh and authentic, but not bound to the chain (zdesc). */
+    ONION_PROV_SIGNED,
+    /* Signed document whose key resolved to an ACTIVE on-chain anchor
+     * (zendp). The strongest provenance that exists today, and still
+     * only a hint about where to look. */
+    ONION_PROV_ANCHORED,
+};
+
+const char *onion_peer_provenance_string(enum onion_peer_provenance p);
+
+struct onion_endpoint {
+    char     hostname[64];   /* "" when the record is clearnet-only */
+    uint16_t onion_port;
+    uint8_t  ipv4[4];        /* all-zero when absent */
+    uint16_t ipv4_port;
+    uint8_t  ipv6[16];       /* all-zero when absent */
+    uint16_t ipv6_port;
+    uint64_t services;       /* the P2P nServices bitmask the peer claims */
+    int      height;         /* best height the peer claims */
+    uint64_t expiry;         /* unix seconds; the record's OWN signed end */
+    uint64_t seq;            /* monotonic per identity; supersede authority */
+    uint8_t  master_pubkey[32]; /* all-zero when the source is unsigned */
+    int32_t  anchor_height;  /* height that anchored the key; 0 if none */
+    enum onion_peer_provenance provenance;
+};
+
+/* True when the endpoint is inside its own validity window and names at
+ * least one address. An endpoint with expiry == 0 has no signed window
+ * (an unsigned source) and is live by definition — freshness is
+ * per-record, and there is deliberately no global refresh clock. */
+bool onion_endpoint_live(const struct onion_endpoint *ep, uint64_t now_unix);
+
+/* Narrowing adapter: the rich endpoint as the old two-field peer, so
+ * every existing consumer keeps working unchanged. False when the
+ * endpoint names no valid v3 onion hostname — the clearnet half of a
+ * record cannot be expressed as an onion_peer and is dropped from this
+ * path (see the seam note in config/src/boot_endpoint_records.c). */
+bool onion_endpoint_to_peer(const struct onion_endpoint *ep,
+                            struct onion_peer *out);
+
+/* Bulk form: project `n` endpoints into out[0..max), skipping any that
+ * are not live and any whose hostname fails the v3 rule. *rejected_out,
+ * when non-NULL, receives the count dropped for being malformed or
+ * expired — an endpoint that is simply clearnet-only is not an error
+ * and is not counted. Returns how many were written. */
+int onion_endpoints_to_peers(const struct onion_endpoint *eps, int n,
+                             struct onion_peer *out, size_t max,
+                             uint64_t now_unix, int *rejected_out);
 
 #endif

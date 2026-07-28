@@ -43,6 +43,7 @@
 #include "znam/znam.h"
 #include "zanc/zanc.h"
 #include "zid/zid_anchor.h"
+#include "zdir/zdir.h"
 #include "util/log_macros.h"
 
 #include <pthread.h>
@@ -291,6 +292,15 @@ static bool ov_apply_zid(struct node_db *ndb, const struct transaction *tx,
                                             height);
 }
 
+static bool ov_apply_zdir(struct node_db *ndb, const struct transaction *tx,
+                          const uint8_t *script, size_t script_len,
+                          int height, void *ctx)
+{
+    (void)ctx;
+    return explorer_index_apply_zdir_overlay(ndb, tx, script, script_len,
+                                             height);
+}
+
 /* ── The registry ──────────────────────────────────────────────────── */
 
 static struct overlay_registry g_overlays;
@@ -319,6 +329,7 @@ static void build_registry(void)
     register_one(ZNAM_LOKAD_BYTES, "znam", ov_apply_znam);
     register_one(ZANC_LOKAD_BYTES, "zanc", ov_apply_zanc);
     register_one(ZID_ANCHOR_LOKAD_BYTES, "zid", ov_apply_zid);
+    register_one(ZDIR_LOKAD_BYTES, "zdir", ov_apply_zdir);
 }
 
 const struct overlay_registry *explorer_index_overlays(void)

@@ -5,8 +5,18 @@
  * the node's connman, performs a minimal version/verack handshake (Bitnodes
  * pattern), records {version, subver, services, best_height, latency}, then
  * disconnects immediately. It NEVER relays, syncs, or requests blocks; it
- * advertises no services and relay=false. Onion addresses need SOCKS/Tor this
- * direct dialer does not use, so they are recorded as known-but-unmeasured.
+ * advertises no services and relay=false.
+ *
+ * ONION targets are dialed too, through the embedded Tor
+ * (tor_integration_fetch_onion_blocking — dynhost, no SOCKS; the same call
+ * connman uses for onion seed fetches). Because dynhost speaks HTTP and not a
+ * raw stream, the onion measurement is "did the service answer /directory.json"
+ * rather than a version/verack handshake; a completed fetch also yields the
+ * peer's advertised height and version from its own directory row. Stated
+ * consequence: an onion peer that serves P2P but no HTTP surface measures as
+ * unreachable. When Tor is NOT built in or not bootstrapped, the onion row is
+ * recorded NOT_PROBED with a reason — never unreachable, because a false
+ * negative there feeds peer reputation and is worse than no data at all.
  *
  * Kept in its own TU (no sockets in the census fold, no fold logic here) so the
  * fold is unit-testable hermetically and this untested, public-network-dialing
@@ -26,10 +36,14 @@
 #include "core/hash.h"
 #include "core/serialize.h"
 #include "core/uint256.h"
+#include "crypto/sha3.h"
+#include "encoding/utilstrencodings.h"
 #include "net/netaddr.h"
 #include "net/netbase.h"
+#include "net/onion_peer_merge.h"
 #include "net/p2p_message.h"
 #include "net/protocol.h"
+#include "net/tor_integration.h"
 #include "net/version.h"
 #include "platform/time_compat.h"
 #include "util/log_macros.h"
@@ -37,6 +51,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #ifndef _WIN32
@@ -51,6 +66,23 @@
 #define NCRAWL_MAX_MSG_PAYLOAD  (1u << 20) /* 1 MiB cap on any handshake frame */
 #define NCRAWL_MAX_HANDSHAKE_MSGS 4        /* frames read while awaiting version */
 #define NCRAWL_USER_AGENT "/zclassic23-observatory:1/"
+
+/* Tor v3 hostname: 56 base32 chars + ".onion". */
+#define NCRAWL_ONION_HOST_LEN 62
+/* One /directory.json node object, copied out for bounded parsing. */
+#define NCRAWL_DIR_OBJ_MAX 768
+/* Never scan more than this much of a peer-supplied directory body. */
+#define NCRAWL_DIR_SCAN_MAX (256u * 1024u)
+
+/* Record `out` as NOT PROBED — no dial ran, so `reachable` carries no meaning
+ * and MUST NOT be read as a negative. Always a recordable result. */
+static bool ncrawl_not_probed(struct ncrawl_probe_result *out, const char *why)
+{
+    out->outcome = (uint8_t)NCRAWL_OUTCOME_NOT_PROBED;
+    out->reachable = false;
+    snprintf(out->reason, sizeof(out->reason), "%s", why ? why : "not probed");
+    return true;
+}
 
 static bool ncrawl_send_all(zcl_socket_t sock, const uint8_t *buf, size_t len)
 {
@@ -198,6 +230,217 @@ static bool ncrawl_read_version(zcl_socket_t sock,
     return false;
 }
 
+/* ── onion branch ────────────────────────────────────────────────────── */
+
+/* Derive the Tor v3 hostname from the 32-byte ed25519 key held in net_addr:
+ *   host = base32(pubkey || checksum || version) + ".onion"
+ *   checksum = SHA3-256(".onion checksum" || pubkey || version)[0..1]
+ *   version  = 0x03
+ * 35 bytes encode to exactly 56 base32 chars, so no padding is produced. */
+static bool ncrawl_onion_hostname(const struct net_addr *a, char *out,
+                                  size_t out_size)
+{
+    /* Every `false` here is a CLASSIFICATION — "not a renderable v3 onion
+     * address" — which the caller turns into a NOT_PROBED row carrying a
+     * reason. Logging per address would emit one line per crawled peer per
+     * round; the reason travels in the census row instead. */
+    if (!a || !out || out_size < NCRAWL_ONION_HOST_LEN + 1)
+        return false; // raw-return-ok:onion-address-shape-classified-by-caller
+    out[0] = '\0';
+    if (!a->has_torv3)
+        return false; // raw-return-ok:onion-address-shape-classified-by-caller
+
+    unsigned char pre[15 + TORV3_ADDR_SIZE + 1];
+    memcpy(pre, ".onion checksum", 15);
+    memcpy(pre + 15, a->torv3, TORV3_ADDR_SIZE);
+    pre[15 + TORV3_ADDR_SIZE] = 0x03;
+
+    unsigned char digest[SHA3_256_OUTPUT_SIZE];
+    sha3_256(pre, sizeof(pre), digest);
+
+    unsigned char blob[TORV3_ADDR_SIZE + 3];
+    memcpy(blob, a->torv3, TORV3_ADDR_SIZE);
+    blob[TORV3_ADDR_SIZE + 0] = digest[0];
+    blob[TORV3_ADDR_SIZE + 1] = digest[1];
+    blob[TORV3_ADDR_SIZE + 2] = 0x03;
+
+    char b32[NCRAWL_ONION_HOST_LEN + 8];
+    if (EncodeBase32(blob, sizeof(blob), b32, sizeof(b32)) != 56)
+        return false; // raw-return-ok:onion-address-shape-classified-by-caller
+    if (snprintf(out, out_size, "%s.onion", b32) != NCRAWL_ONION_HOST_LEN)
+        return false; // raw-return-ok:onion-address-shape-classified-by-caller
+    return onion_hostname_valid(out);
+}
+
+bool network_crawler_render_addr(const struct net_address *addr,
+                                 char *out, size_t out_size)
+{
+    if (!out || out_size == 0)
+        return false;
+    out[0] = '\0';
+    if (!addr)
+        return false;
+    if (net_addr_is_tor(&addr->svc.addr)) {
+        char host[NCRAWL_ONION_HOST_LEN + 1];
+        if (!ncrawl_onion_hostname(&addr->svc.addr, host, sizeof(host)))
+            return false; // raw-return-ok:unrenderable-onion-becomes-NOT_PROBED
+        return snprintf(out, out_size, "%s:%u", host, addr->svc.port) > 0 &&
+               out[0] != '\0';
+    }
+    net_service_to_string(&addr->svc, out, out_size);
+    return out[0] != '\0';
+}
+
+bool network_crawler_onion_probe_available(void)
+{
+    /* Bootstrapped embedded Tor is the ONLY thing that can carry an onion
+     * dial. The stub build (vendor/tor_stub.c) never reaches ready, so this
+     * stays false and every onion row is recorded NOT PROBED. */
+    return tor_integration_is_ready();
+}
+
+/* Copy the /directory.json node object that describes the onion we dialed —
+ * its own row, marked "self":true — into `obj` (NUL-terminated). Falls back to
+ * the FIRST node object when no self row is present. Bounded: the scan stops
+ * at NCRAWL_DIR_SCAN_MAX bytes and each object copy at NCRAWL_DIR_OBJ_MAX. */
+static bool ncrawl_dir_self_object(const char *body, size_t body_len,
+                                   char *obj, size_t obj_size)
+{
+    if (!body || !obj || obj_size == 0)
+        return false;
+    obj[0] = '\0';
+    if (body_len > NCRAWL_DIR_SCAN_MAX)
+        body_len = NCRAWL_DIR_SCAN_MAX;
+
+    const char *first = NULL, *first_end = NULL;
+    const char *p = body;
+    const char *limit = body + body_len;
+    while (p < limit) {
+        const char *start = strstr(p, "{\"onion\":\"");
+        if (!start || start >= limit)
+            break;
+        const char *end = strstr(start + 1, "{\"onion\":\"");
+        if (!end || end > limit)
+            end = limit;
+        size_t span = (size_t)(end - start);
+        if (span >= obj_size)
+            span = obj_size - 1;
+        if (!first) {
+            first = start;
+            first_end = start + span;
+        }
+        memcpy(obj, start, span);
+        obj[span] = '\0';
+        if (strstr(obj, "\"self\":true"))
+            return true;
+        p = start + 1;
+    }
+    if (!first)
+        return false;
+    size_t span = (size_t)(first_end - first);
+    if (span >= obj_size)
+        span = obj_size - 1;
+    memcpy(obj, first, span);
+    obj[span] = '\0';
+    return true;
+}
+
+/* "key":<int> inside a NUL-terminated object slice. */
+static bool ncrawl_dir_int(const char *obj, const char *key, int64_t *out)
+{
+    char pat[32];
+    if (snprintf(pat, sizeof(pat), "\"%s\":", key) <= 0)
+        return false;
+    const char *at = strstr(obj, pat);
+    if (!at)
+        return false;
+    at += strlen(pat);
+    if (*at != '-' && (*at < '0' || *at > '9'))
+        return false;
+    *out = strtoll(at, NULL, 10);
+    return true;
+}
+
+/* "key":"<string>" inside a NUL-terminated object slice; copied verbatim and
+ * truncated to cap (peer-supplied text is never trusted to be short). */
+static bool ncrawl_dir_str(const char *obj, const char *key, char *out,
+                           size_t cap)
+{
+    if (!out || cap == 0)
+        return false;
+    out[0] = '\0';
+    char pat[32];
+    if (snprintf(pat, sizeof(pat), "\"%s\":\"", key) <= 0)
+        return false;
+    const char *at = strstr(obj, pat);
+    if (!at)
+        return false;
+    at += strlen(pat);
+    const char *end = strchr(at, '"');
+    if (!end || end == at)
+        return false;
+    size_t n = (size_t)(end - at);
+    if (n >= cap)
+        n = cap - 1;
+    memcpy(out, at, n);
+    out[n] = '\0';
+    return true;
+}
+
+/* One bounded onion measurement. timeout_ms bounds the WHOLE dial: a dead or
+ * slow onion costs at most that, never an unbounded wait. */
+static bool ncrawl_probe_onion(const struct net_address *addr, int timeout_ms,
+                               struct ncrawl_probe_result *out)
+{
+    char host[NCRAWL_ONION_HOST_LEN + 1];
+    if (!ncrawl_onion_hostname(&addr->svc.addr, host, sizeof(host)))
+        return ncrawl_not_probed(out, "onion hostname unrenderable");
+
+    if (!network_crawler_onion_probe_available())
+        return ncrawl_not_probed(out, "tor unavailable (no circuit to dial)");
+
+    int timeout_secs = (timeout_ms + 999) / 1000;
+    if (timeout_secs < 1) timeout_secs = 1;
+    if (timeout_secs > 120) timeout_secs = 120;
+
+    struct onion_fetch_result res;
+    memset(&res, 0, sizeof(res));
+    int64_t t0 = platform_time_monotonic_us();
+    int rc = tor_integration_fetch_onion_blocking(host, "/directory.json", &res,
+                                                  timeout_secs);
+    int64_t elapsed = platform_time_monotonic_us() - t0;
+
+    if (rc < 0) {
+        /* The dial RAN and did not complete — a real measurement, not a gap. */
+        snprintf(out->reason, sizeof(out->reason), "onion dial failed");
+        if (res.body)
+            free(res.body);
+        return true;
+    }
+
+    /* The service answered over a live circuit: that IS reachability. */
+    out->reachable = true;
+    out->latency_us = elapsed;
+    snprintf(out->reason, sizeof(out->reason), "onion http %d", res.status);
+
+    if (res.body && res.body_len > 0) {
+        char obj[NCRAWL_DIR_OBJ_MAX];
+        if (ncrawl_dir_self_object((const char *)res.body, res.body_len, obj,
+                                   sizeof(obj))) {
+            int64_t h = -1, svc = 0;
+            if (ncrawl_dir_int(obj, "height", &h) && h >= 0)
+                out->best_height = h;
+            if (ncrawl_dir_int(obj, "services", &svc) && svc >= 0)
+                out->services = (uint64_t)svc;
+            (void)ncrawl_dir_str(obj, "version", out->subver,
+                                 sizeof(out->subver));
+        }
+    }
+    if (res.body)
+        free(res.body);
+    return true;
+}
+
 bool network_crawler_default_probe(const struct net_address *addr,
                                    int connect_timeout_ms,
                                    int handshake_timeout_ms,
@@ -207,28 +450,38 @@ bool network_crawler_default_probe(const struct net_address *addr,
         return false;
 
     memset(out, 0, sizeof(*out));
-    net_service_to_string(&addr->svc, out->addr, sizeof(out->addr));
     out->is_onion = net_addr_is_tor(&addr->svc.addr);
     out->reachable = false;
+    out->outcome = (uint8_t)NCRAWL_OUTCOME_MEASURED;
     out->best_height = -1;
     out->last_probe_us = platform_time_wall_unix();
-    if (!out->addr[0])
+    if (!network_crawler_render_addr(addr, out->addr, sizeof(out->addr)) ||
+        !out->addr[0])
         return false; /* could not render address → not recordable */
 
-    /* Onion needs SOCKS/Tor this direct dialer does not use: record it as a
-     * known node we could not measure over clearnet. */
-    if (out->is_onion)
-        return true;
+    /* Onion: dial through the embedded Tor. The crawler hands us the onion
+     * timeout in both slots; take the larger so a caller that only set one
+     * still gets the ceiling it meant. */
+    if (out->is_onion) {
+        int t = connect_timeout_ms > handshake_timeout_ms ? connect_timeout_ms
+                                                          : handshake_timeout_ms;
+        return ncrawl_probe_onion(addr, t, out);
+    }
 
     const struct chain_params *params = chain_params_get();
-    if (!params)
-        return true; /* recorded unreachable */
+    if (!params) {
+        /* No chain params → we structurally cannot frame a handshake. That is
+         * "we did not look", not "this node is down". */
+        return ncrawl_not_probed(out, "chain params not loaded");
+    }
 
     zcl_socket_t sock = ZCL_INVALID_SOCKET;
     int64_t t0 = platform_time_monotonic_us();
     if (!connect_socket_directly(&addr->svc, &sock, connect_timeout_ms) ||
-        sock == ZCL_INVALID_SOCKET)
-        return true; /* recorded unreachable */
+        sock == ZCL_INVALID_SOCKET) {
+        snprintf(out->reason, sizeof(out->reason), "tcp connect failed");
+        return true; /* MEASURED unreachable */
+    }
 
     struct timeval tv = millis_to_timeval(handshake_timeout_ms);
     (void)setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -239,6 +492,8 @@ bool network_crawler_default_probe(const struct net_address *addr,
         (void)ncrawl_send_framed(sock, params, "verack", NULL); /* best-effort */
         out->reachable = true;
         out->latency_us = platform_time_monotonic_us() - t0;
+    } else {
+        snprintf(out->reason, sizeof(out->reason), "version handshake failed");
     }
 
     close_socket(&sock);

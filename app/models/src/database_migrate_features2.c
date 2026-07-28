@@ -319,6 +319,49 @@ int node_db_migrate_features2(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 39) {
+        /* v39: the ON-CHAIN NODE DIRECTORY (onion_directory) — a rebuildable
+         * projection of confirmed `ZDIR` OP_RETURNs (zdir/zdir.h), folded by
+         * app/models/src/explorer_index_zdir.c during the same
+         * genesis-ascending walk that builds znam_names / zanc_anchors /
+         * zid_identities.
+         *
+         * This is what replaces the old "ZSLP chain scan": that path read
+         * db_wallet_tx_recent_raw(), so it could only ever see transactions
+         * already in the LOCAL WALLET table — a node with an empty wallet
+         * discovered nothing and no node ever saw another node's
+         * announcement.
+         *
+         * A row is a HINT ABOUT WHERE TO LOOK, never proof of who is there:
+         * the table only ADDS candidates alongside DNS seeds, fixed seeds,
+         * addrman and the signed-descriptor source, and has no path to
+         * exclude a peer. Never consulted by consensus; safe to drop and
+         * refold. hostname is CHECKed to the exact Tor v3 length here and to
+         * the full alphabet rule in db_onion_directory_validate. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS onion_directory ("
+            "hostname TEXT PRIMARY KEY CHECK(length(hostname)=62),"
+            "txid BLOB NOT NULL CHECK(length(txid)=32),"
+            "height INTEGER NOT NULL,"
+            "owner_address TEXT,"
+            "master_pubkey BLOB "
+            "  CHECK(master_pubkey IS NULL OR length(master_pubkey)=32),"
+            "status TEXT NOT NULL,"
+            "updated_height INTEGER NOT NULL) WITHOUT ROWID");
+
+        /* Peer discovery reads active rows newest-registration-first; the
+         * status filter and the height ordering are the whole query. */
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_onion_directory_status_height "
+            "ON onion_directory(status, height DESC)");
+
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('039')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 39);
+        current_ver = 39;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }

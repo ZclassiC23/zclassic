@@ -14,7 +14,9 @@
 #include "util/log_json.h"
 #include "util/log_macros.h"
 #include "util/path_check.h"
+#include "util/supervisor.h"
 #include "util/template.h"
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -399,7 +401,7 @@ static int search_hit_add(struct onion_search_hit *hits, int n, int cap,
                           const char *query)
 {
     if (n >= cap) return n;
-    if (!onion_hostname_is_valid_v3(host)) return n;
+    if (!onion_hostname_valid(host)) return n;
     if (query && query[0] &&
         !str_contains_ci(host, query) &&
         !(name && name[0] && str_contains_ci(name, query)))
@@ -561,93 +563,6 @@ static size_t serve_search(const char *query, uint8_t *response, size_t max)
         "%s", off, body);
 }
 
-/* ── Peer directory population ────────────────────────────── */
-
-/* Populate directory from chain scan (ZSLP .onion announcements) */
-static void populate_directory_from_chain(sqlite3 *db)
-{
-    struct onion_context *ctx = onion_ctx();
-    if (!ctx->datadir) return;
-
-    struct onion_peer peers[256];
-    int found = onion_discover_peers(peers, 256);
-
-    if (found <= 0) return;
-
-    sqlite3_stmt *ins = NULL;
-    if (sqlite3_prepare_v2(db,
-        "INSERT INTO peer_directory "
-        "(onion_address, height, last_seen, version, first_seen) "
-        "VALUES (?1, ?2, ?3, 'chain', ?3) "
-        "ON CONFLICT(onion_address) DO UPDATE SET last_seen=?3, "
-        "height=MAX(height, ?2)",
-        -1, &ins, NULL) != SQLITE_OK || !ins) {
-        LOG_WARN("net", "failed to prepare peer insert: %s", sqlite3_errmsg(db));
-        if (ins) sqlite3_finalize(ins);
-        return;
-    }
-
-    /* A chain scan is a fresh sighting, not a one-time seeding: refresh
-     * last_seen so an announcement that is still on-chain keeps its row
-     * alive through the expiry sweep. */
-    int64_t now = (int64_t)platform_time_wall_time_t();
-    for (int i = 0; i < found; i++) {
-        if (!peers[i].hostname[0]) continue;
-        sqlite3_reset(ins);
-        sqlite3_bind_text(ins, 1, peers[i].hostname, -1, SQLITE_STATIC);
-        sqlite3_bind_int(ins, 2, peers[i].height);
-        sqlite3_bind_int64(ins, 3, now);
-        (void)AR_STEP_WRITE(ins);
-    }
-    sqlite3_finalize(ins);
-
-    log_jsonf(LOG_JSON_INFO, "onion_directory_loaded",
-              "\"peers_loaded\":%d", found);
-}
-
-/* Register our own .onion address with clearnet IP if known */
-static void register_self(sqlite3 *db)
-{
-    struct onion_context *ctx = onion_ctx();
-    if (!ctx->address[0]) return;
-
-    /* Discover our public IP. Uses the REAL declaration from
-     * net/peer_strategy.h. This site previously carried a local `extern`
-     * declaring a void-returning function taking void* plus a hand-copied
-     * shadow struct — a return-type and parameter-type mismatch against the
-     * actual bool peer_strategy_discover_self(struct node_profile *,
-     * uint16_t), which is undefined behaviour, not a style nit, and goes
-     * silently wrong the moment either declaration drifts. */
-    struct node_profile profile = {0};
-    if (!peer_strategy_discover_self(&profile, 8033))
-        LOG_WARN("net", "self-register: reachability probe failed, "
-                        "registering without a clearnet endpoint");
-
-    char ip_str[64] = "";
-    if (profile.has_public_ip) {
-        snprintf(ip_str, sizeof(ip_str), "%u.%u.%u.%u",
-                 profile.public_ip[0], profile.public_ip[1],
-                 profile.public_ip[2], profile.public_ip[3]);
-    }
-
-    sqlite3_stmt *ins = NULL;
-    if (sqlite3_prepare_v2(db,
-        "INSERT OR REPLACE INTO peer_directory "
-        "(onion_address, port, services, height, last_seen, version, self,"
-        " clearnet_ip, clearnet_port) "
-        "VALUES (?, 8033, 1029, 0, strftime('%s','now'), '0.1.0', 1, ?, ?)",
-        -1, &ins, NULL) != SQLITE_OK || !ins) {
-        fprintf(stderr, "onion_service: failed to prepare self-register: %s\n",
-                sqlite3_errmsg(db));
-        return;
-    }
-    sqlite3_bind_text(ins, 1, ctx->address, -1, SQLITE_STATIC);
-    sqlite3_bind_text(ins, 2, ip_str[0] ? ip_str : "", -1, SQLITE_STATIC);
-    sqlite3_bind_int(ins, 3, ip_str[0] ? 8033 : 0);
-    (void)AR_STEP_WRITE(ins);
-    sqlite3_finalize(ins);
-}
-
 /* ── Directory endpoints ─────────────────────────────────── */
 
 static size_t serve_directory_json(uint8_t *response, size_t max)
@@ -669,30 +584,33 @@ static size_t serve_directory_json(uint8_t *response, size_t max)
     int n = snprintf(body, sizeof(body), "{\"nodes\":[");
     if (n > 0) off = (size_t)n;
 
-    /* Freshness is a served field, not a hidden filter: rows older than
-     * ONION_DIRECTORY_MAX_AGE_SECS are withheld (the expiry sweep deletes
-     * them on its own cadence; this makes the endpoint correct in between),
-     * and every row that IS served carries age_secs + last_success +
-     * dial counts so a consumer can judge it rather than trusting the list.
-     * The self row is never age-filtered. */
+    /* Freshness is a served field, not a hidden filter: rows past
+     * ONION_DIR_EXPIRE_SECS are withheld (the refresh round deletes them on
+     * its own cadence; this makes the endpoint correct in between), and
+     * every row that IS served carries its age, the policy constants, and
+     * both the hearsay stamp (last_seen) and the contact record
+     * (last_success + dial counts), so a consumer can judge it rather than
+     * trusting the list. The self row is never age-filtered. */
     int64_t now = (int64_t)platform_time_wall_time_t();
 
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db,
         "SELECT onion_address, port, services, height, last_seen, "
         "version, self, clearnet_ip, clearnet_port, "
-        "last_success, dial_success_count, dial_fail_count "
-        "FROM peer_directory WHERE self=1 OR last_seen >= ?1 "
-        "ORDER BY self DESC, last_seen DESC LIMIT 500",
+        "COALESCE(first_seen,0), COALESCE(last_probe,0), "
+        "COALESCE(probe_ok,0), COALESCE(fail_count,0), COALESCE(source,''), "
+        "COALESCE(last_success,0), COALESCE(dial_success_count,0) "
+        "FROM peer_directory "
+        "ORDER BY self DESC, last_seen DESC LIMIT " ONION_DIR_STR(ONION_DIR_SERVE_MAX),
         -1, &s, NULL) != SQLITE_OK || !s) {
         if (s) sqlite3_finalize(s);
         sqlite3_close(db);
         return 0;
     }
-    sqlite3_bind_int64(s, 1, now - ONION_DIRECTORY_MAX_AGE_SECS);
 
     int count = 0;
-    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && off + 640 < sizeof(body)) {
+    int skipped_expired = 0;
+    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && off + 900 < sizeof(body)) {
         const char *addr = (const char *)sqlite3_column_text(s, 0);
         int port = sqlite3_column_int(s, 1);
         int svc = sqlite3_column_int(s, 2);
@@ -702,16 +620,33 @@ static size_t serve_directory_json(uint8_t *response, size_t max)
         int self = sqlite3_column_int(s, 6);
         const char *cip = (const char *)sqlite3_column_text(s, 7);
         int cport = sqlite3_column_int(s, 8);
-        int64_t lsucc = sqlite3_column_int64(s, 9);
-        int64_t ok_n = sqlite3_column_int64(s, 10);
-        int64_t fail_n = sqlite3_column_int64(s, 11);
+        int64_t fs = sqlite3_column_int64(s, 9);
+        int64_t lp = sqlite3_column_int64(s, 10);
+        int probe_ok = sqlite3_column_int(s, 11);
+        int fails = sqlite3_column_int(s, 12);
+        const char *src = (const char *)sqlite3_column_text(s, 13);
+        int64_t lsucc = sqlite3_column_int64(s, 14);
+        int64_t ok_n = sqlite3_column_int64(s, 15);
 
         /* Rows stored by pre-validation binaries may be hostile. */
-        if (!onion_hostname_is_valid_v3(addr)) continue;
-        char addr_esc[160], ver_esc[96], cip_esc[96];
+        if (!onion_hostname_valid(addr)) continue;
+
+        /* Never hand out a row nothing has confirmed for a week. The
+         * refresh round deletes these; skipping them here keeps the
+         * served list honest even on a node whose refresh child never
+         * registered. */
+        enum onion_dir_freshness fresh =
+            onion_directory_freshness(ls, now, self != 0);
+        if (fresh == ONION_DIR_EXPIRED) {
+            skipped_expired++;
+            continue;
+        }
+
+        char addr_esc[160], ver_esc[96], cip_esc[96], src_esc[64];
         log_json_escape(addr_esc, sizeof(addr_esc), addr);
         log_json_escape(ver_esc, sizeof(ver_esc), ver);
         log_json_escape(cip_esc, sizeof(cip_esc), cip);
+        log_json_escape(src_esc, sizeof(src_esc), src);
 
         /* The on-chain name for this endpoint, when one is registered. The
          * name never replaces the address in the record — it is an extra
@@ -722,22 +657,25 @@ static size_t serve_directory_json(uint8_t *response, size_t max)
         (void)onion_directory_name_for_db(db, addr, name, sizeof(name));
         log_json_escape(name_esc, sizeof(name_esc), name);
 
-        int64_t age = now - ls;
-        if (age < 0) age = 0;
-
         if (count > 0) off += (size_t)snprintf(body + off, sizeof(body) - off, ",");
         off += (size_t)snprintf(body + off, sizeof(body) - off,
             "{\"onion\":\"%s\",\"name\":\"%s\",\"port\":%d,\"services\":%d,"
-            "\"height\":%d,\"last_seen\":%lld,\"age_secs\":%lld,"
+            "\"height\":%d,\"last_seen\":%lld,\"version\":\"%s\",\"self\":%s,"
+            "\"clearnet_ip\":\"%s\",\"clearnet_port\":%d,"
+            "\"age_secs\":%lld,\"stale\":%s,\"first_seen\":%lld,"
+            "\"last_probe\":%lld,\"probe_ok\":%s,\"fail_count\":%d,"
             "\"last_success\":%lld,\"dial_success_count\":%lld,"
-            "\"dial_fail_count\":%lld,"
-            "\"version\":\"%s\",\"self\":%s,"
-            "\"clearnet_ip\":\"%s\",\"clearnet_port\":%d}",
+            "\"source\":\"%s\"}",
             addr_esc, name_esc, port, svc, h,
-            (long long)ls, (long long)age, (long long)lsucc,
-            (long long)ok_n, (long long)fail_n, ver_esc,
+            (long long)ls, ver_esc,
             self ? "true" : "false",
-            cip_esc, cport);
+            cip_esc, cport,
+            (long long)onion_directory_age_secs(ls, now),
+            fresh == ONION_DIR_STALE ? "true" : "false",
+            (long long)fs, (long long)lp,
+            probe_ok ? "true" : "false", fails,
+            (long long)lsucc, (long long)ok_n,
+            src_esc);
         count++;
     }
     sqlite3_finalize(s);
@@ -751,11 +689,16 @@ static size_t serve_directory_json(uint8_t *response, size_t max)
     size_t an = rom_seed_directory_json(arts, sizeof(arts));
     const char *arts_body = (an > 0 && off + an + 64 < sizeof(body))
                                 ? arts : "[]";
+    /* The freshness policy travels WITH the list. A consumer that
+     * disagrees with our thresholds can re-judge every row from its own
+     * age_secs instead of taking our word for it. */
     off += (size_t)snprintf(body + off, sizeof(body) - off,
-        "],\"count\":%d,\"served_at\":%lld,\"max_age_secs\":%lld,"
-        "\"artifacts\":%s}",
-        count, (long long)now, (long long)ONION_DIRECTORY_MAX_AGE_SECS,
-        arts_body);
+        "],\"count\":%d,\"generated_at\":%lld,\"stale_after_secs\":%lld,"
+        "\"expire_after_secs\":%lld,\"refresh_secs\":%d,"
+        "\"skipped_expired\":%d,\"artifacts\":%s}",
+        count, (long long)now, (long long)ONION_DIR_STALE_SECS,
+        (long long)ONION_DIR_EXPIRE_SECS, ONION_DIR_REFRESH_SECS,
+        skipped_expired, arts_body);
 
     return (size_t)snprintf((char *)response, max,
         "HTTP/1.1 200 OK\r\n"
@@ -803,15 +746,15 @@ static size_t serve_directory_html(uint8_t *response, size_t max)
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db,
         "SELECT onion_address, port, height, last_seen, version, self, "
-        "last_success, dial_success_count, dial_fail_count "
-        "FROM peer_directory WHERE self=1 OR last_seen >= ?1 "
-        "ORDER BY self DESC, last_seen DESC LIMIT 500",
+        "COALESCE(last_success,0), COALESCE(dial_success_count,0), "
+        "COALESCE(fail_count,0) "
+        "FROM peer_directory ORDER BY self DESC, last_seen DESC LIMIT "
+        ONION_DIR_STR(ONION_DIR_SERVE_MAX),
         -1, &s, NULL) != SQLITE_OK || !s) {
         if (s) sqlite3_finalize(s);
         sqlite3_close(db);
         return 0;
     }
-    sqlite3_bind_int64(s, 1, now - ONION_DIRECTORY_MAX_AGE_SECS);
 
     int count = 0;
     while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && off + 900 < sizeof(body)) {
@@ -826,7 +769,14 @@ static size_t serve_directory_html(uint8_t *response, size_t max)
         int64_t fail_n = sqlite3_column_int64(s, 8);
 
         /* Rows stored by pre-validation binaries may be hostile. */
-        if (!onion_hostname_is_valid_v3(addr)) continue;
+        if (!onion_hostname_valid(addr)) continue;
+
+        /* Same freshness rule the JSON endpoint applies — one page must
+         * never show what the other refuses to serve. */
+        enum onion_dir_freshness fresh =
+            onion_directory_freshness(ls, now, self != 0);
+        if (fresh == ONION_DIR_EXPIRED) continue;
+
         char addr_esc[160], ver_esc[96];
         html_escape(addr_esc, sizeof(addr_esc), addr);
         html_escape(ver_esc, sizeof(ver_esc), ver);
@@ -840,9 +790,8 @@ static size_t serve_directory_html(uint8_t *response, size_t max)
         html_escape(name_esc, sizeof(name_esc), name);
 
         /* Format last_seen as relative time */
-        int64_t age = now - ls;
-        if (age < 0) age = 0;
-        char age_str[32];
+        int64_t age = onion_directory_age_secs(ls, now);
+        char age_str[48];
         if (age < 60) snprintf(age_str, sizeof(age_str), "%llds ago", (long long)age);
         else if (age < 3600) snprintf(age_str, sizeof(age_str), "%lldm ago", (long long)(age/60));
         else if (age < 86400) snprintf(age_str, sizeof(age_str), "%lldh ago", (long long)(age/3600));
@@ -862,14 +811,21 @@ static size_t serve_directory_html(uint8_t *response, size_t max)
                      (long long)(sage / 3600), (long long)ok_n);
         }
 
+        /* The name is a LABEL for the address, never a substitute: the raw
+         * .onion a visitor would actually connect to is always printed
+         * beneath it, and it is what the link resolves to. */
         off += (size_t)snprintf(body + off, sizeof(body) - off,
-            "<tr%s><td>%s%s<div class='desc'>%s</div></td>"
-            "<td>%d</td><td>%d</td><td>%s</td><td>%s</td><td>%s</td></tr>",
+            "<tr%s><td><a href='http://%s/'>%s</a>%s"
+            "<div class='desc'>%s</div></td>"
+            "<td>%d</td><td>%d</td><td>%s%s</td><td>%s</td><td>%s</td></tr>",
             self ? " class='self'" : "",
+            addr_esc,
             name[0] ? name_esc : addr_esc,
             self ? " (this node)" : "",
             addr_esc,
-            port, h, age_str, reach_str, ver_esc);
+            port, h, age_str,
+            fresh == ONION_DIR_STALE ? " (stale)" : "",
+            reach_str, ver_esc);
         count++;
     }
     sqlite3_finalize(s);
@@ -879,7 +835,7 @@ static size_t serve_directory_html(uint8_t *response, size_t max)
         "</table></div>"
         "<p class='muted'>%d nodes in directory (rows unseen for more than "
         "%lld hours are expired)</p>",
-        count, (long long)(ONION_DIRECTORY_MAX_AGE_SECS / 3600));
+        count, (long long)(ONION_DIR_EXPIRE_SECS / 3600));
     off += (size_t)snprintf(body + off, sizeof(body) - off,
         "<p class='muted'><a href='/directory.json'>JSON API</a> | "
         "<a href='/'>Home</a></p>"
@@ -1173,25 +1129,18 @@ const char *onion_service_start(const char *datadir)
     ctx->datadir = datadir;
     ctx->start_time = platform_time_wall_time_t();
 
-    /* Initialize peer directory from chain data */
+    /* Seed the peer directory, then hand it to the supervisor. The boot
+     * populate is now the FIRST round, not the only one: from here a
+     * refresh runs every ONION_DIR_REFRESH_SECS so the list this node
+     * serves keeps up with reality (onion_directory.c). */
     if (datadir) {
-        char db_path[1024];
-        zcl_node_db_path(db_path, sizeof(db_path), datadir);
-        sqlite3 *db = NULL;
-        if (sqlite3_open(db_path, &db) == SQLITE_OK) {
-            sqlite3_busy_timeout(db, 5000);
-            onion_directory_ensure_table(db);
-            populate_directory_from_chain(db);
-            if (ctx->address[0])
-                register_self(db);
-            sqlite3_close(db);
-        }
-        /* Age out rows nothing has seen since the last run, then let the
-         * probe cadence (onion_directory_observe) keep sweeping. Before
-         * this, a row written once at boot lived forever. */
-        (void)onion_directory_expire(datadir,
-                                     (int64_t)platform_time_wall_time_t(),
-                                     ONION_DIRECTORY_MAX_AGE_SECS);
+        /* The boot round seeds the table from the discovery sources,
+         * registers self, and ages out rows nothing has seen since the
+         * last run — before this, a row written once at boot lived
+         * forever. From here the supervised refresh child keeps sweeping
+         * on its own cadence. */
+        onion_directory_boot_round();
+        onion_service_directory_register_refresh();
     }
 
     return ctx->address[0] ? ctx->address : NULL;
@@ -1199,12 +1148,26 @@ const char *onion_service_start(const char *datadir)
 
 void onion_service_stop(void)
 {
+    /* Retire the refresh child before dropping the datadir, so it can
+     * never observe (and report) a directory that is unopenable purely
+     * because we just closed the service. */
+    onion_service_directory_unregister_refresh();
     onion_ctx()->datadir = NULL;
 }
 
 const char *onion_service_get_address(void)
 {
     return onion_ctx()->address[0] ? onion_ctx()->address : NULL;
+}
+
+const char *onion_service_datadir(void)
+{
+    return onion_ctx()->datadir;
+}
+
+int onion_service_discover_peers(struct onion_peer *out, size_t max)
+{
+    return onion_discover_peers(out, max);
 }
 
 void onion_service_set_address(const char *address)
@@ -1214,21 +1177,8 @@ void onion_service_set_address(const char *address)
         snprintf(ctx->address, sizeof(ctx->address), "%s", address);
 
         /* Register ourselves in the peer directory */
-        if (ctx->datadir) {
-            char db_path[1024];
-            zcl_node_db_path(db_path, sizeof(db_path), ctx->datadir);
-            sqlite3 *db = NULL;
-            if (sqlite3_open(db_path, &db) == SQLITE_OK) {
-                sqlite3_busy_timeout(db, 5000);
-                onion_directory_ensure_table(db);
-                register_self(db);
-                sqlite3_close(db);
-                char addr_safe[96];
-                log_json_escape(addr_safe, sizeof(addr_safe), address);
-                log_jsonf(LOG_JSON_INFO, "onion_self_registered",
-                          "\"address\":\"%s\"", addr_safe);
-            }
-        }
+        if (ctx->datadir)
+            onion_directory_register_self();
     } else {
         ctx->address[0] = '\0';
     }

@@ -6,6 +6,7 @@
 
 #include "net/peer_strategy.h"
 #include "net/nat.h"
+#include "net/onion_service.h"
 #include "net/tor_integration.h"
 #include "chain/chainparams.h"
 #include "util/log_macros.h"
@@ -86,6 +87,20 @@ bool peer_strategy_discover_self(struct node_profile *profile,
             profile->tor_available = true;
         }
     }
+
+    /* Publish the clearnet endpoint for the onion directory's refresh
+     * round. THE PRODUCER PUBLISHES: this function is the blocking probe
+     * (NAT-PMP, then UPnP SSDP + SOAP, then naked IP discovery), and the
+     * refresh round runs on the shared supervisor tick runner, whose
+     * liveness deadline is 30 s. The round used to call THIS function
+     * every 15 minutes, freezing every other supervised child for as long
+     * as the gateway ignored us — the same failure class the systemd
+     * watchdog has SIGABRT'd this node for. Now the round reads a cache
+     * and never dials, and the cache is written here rather than by a
+     * caller who has to remember to. A no-public-IP result publishes the
+     * absence, so the row simply carries no clearnet endpoint. */
+    onion_directory_set_self_clearnet(
+        profile->has_public_ip ? profile->public_ip : NULL, listen_port);
 
     return profile->has_public_ip || profile->tor_available;
 }

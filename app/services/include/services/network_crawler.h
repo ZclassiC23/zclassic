@@ -27,6 +27,27 @@
  *
  * The per-address dialer is behind an injectable probe_fn seam so the census
  * fold is unit-tested hermetically with synthetic results — no real sockets.
+ *
+ * BOTH HALVES OF THE NETWORK ARE DIALED. A clearnet row is measured on a
+ * short-lived TCP socket; an ONION row is measured through the embedded Tor
+ * (tor_integration_fetch_onion_blocking — dynhost, no SOCKS). Onion dials cost
+ * a circuit build, so they get their OWN budget: a per-round onion cap, a
+ * separate (much smaller) onion concurrency cap, a separate per-dial timeout,
+ * and a wall-clock budget for the whole onion phase. The clearnet phase always
+ * runs FIRST and to completion, so slow onions can never starve it.
+ *
+ * NOT PROBED IS NOT UNREACHABLE. When Tor is absent (the default build links
+ * vendor/tor_stub.c) or the onion budget ran out, the row is recorded with
+ * outcome=NCRAWL_OUTCOME_NOT_PROBED and a reason — never as a failed dial.
+ * A not-probed row is excluded from the reachable/unreachable fold and never
+ * emits a census failure into the durable ledger, because a false negative
+ * there would flow straight into peer reputation, which is worse than no data.
+ *
+ * ONION MEASUREMENT SEAM (stated, not hidden): the embedded Tor exposes
+ * HTTP-over-onion via dynhost — there is no raw-stream/SOCKS path — so the
+ * onion probe fetches /directory.json and treats "the service answered" as
+ * reachable. An onion peer that serves P2P but no HTTP surface therefore reads
+ * as measured-unreachable, not as a version handshake failure.
  */
 
 #ifndef ZCL_SERVICES_NETWORK_CRAWLER_H
@@ -36,6 +57,7 @@
 #include "util/result.h"
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 struct addr_man;
@@ -51,11 +73,32 @@ enum {
     NCRAWL_ADDR_MAX       = 96,   /* addr string cap */
     NCRAWL_SUBVER_MAX     = 128,  /* trimmed subver cap */
     NCRAWL_ECLIPSE_MIN    = 4,    /* reachable nodes before eclipse can fire */
+    NCRAWL_REASON_MAX     = 48,   /* short not-probed / failed-dial reason */
+    /* Onion budget — bounded SEPARATELY from clearnet because a circuit build
+     * costs seconds, not milliseconds. */
+    NCRAWL_MAX_ONION_PER_ROUND  = 8, /* HARD cap on onion dials per round */
+    NCRAWL_MAX_ONION_CONCURRENT = 2, /* HARD cap on concurrent onion dials */
 };
 
 #define NCRAWL_CONNECT_TIMEOUT_MS_DEFAULT   3000
 #define NCRAWL_HANDSHAKE_TIMEOUT_MS_DEFAULT 4000
 #define NCRAWL_ROUND_INTERVAL_SECS_DEFAULT  60
+/* Per-onion-dial timeout and the wall-clock ceiling on the whole onion phase.
+ * Worst case onion cost per round is budget + one in-flight dial timeout. */
+#define NCRAWL_ONION_TIMEOUT_MS_DEFAULT      20000
+#define NCRAWL_ONION_ROUND_BUDGET_MS_DEFAULT 25000
+
+/* Did we actually MEASURE this address this round?
+ *  MEASURED   — a dial ran; `reachable` is the verdict (true or false).
+ *  NOT_PROBED — no dial was attempted (Tor absent, onion budget spent,
+ *               unrenderable address). `reachable` is meaningless and MUST NOT
+ *               be read as a negative. `reason` says why.
+ * Zero-initializes to MEASURED so every pre-existing synthetic result keeps
+ * exactly the meaning it had. */
+enum ncrawl_probe_outcome {
+    NCRAWL_OUTCOME_MEASURED   = 0,
+    NCRAWL_OUTCOME_NOT_PROBED = 1,
+};
 
 /* One measured node in the census. reachable=false rows are retained too:
  * "we know this address, the last probe did not complete". */
@@ -63,6 +106,8 @@ struct ncrawl_probe_result {
     char     addr[NCRAWL_ADDR_MAX];
     bool     is_onion;
     bool     reachable;
+    uint8_t  outcome;         /* enum ncrawl_probe_outcome */
+    char     reason[NCRAWL_REASON_MAX];
     int32_t  version;
     char     subver[NCRAWL_SUBVER_MAX];
     uint64_t services;
@@ -84,6 +129,15 @@ struct network_census_view {
     int32_t reachable_count;     /* rows with reachable=true */
     int32_t onion_count;         /* reachable onion nodes */
     int32_t clearnet_count;      /* reachable clearnet nodes */
+
+    /* MEASURED vs NOT PROBED. not_probed rows contribute to NEITHER the
+     * reachable nor the unreachable side — they are the honest "we did not
+     * look" bucket, kept out of every reachability judgement. */
+    int32_t measured_count;
+    int32_t not_probed_count;
+    int32_t onion_measured_count;
+    int32_t onion_not_probed_count;
+    char    not_probed_reason[NCRAWL_REASON_MAX]; /* first non-empty reason */
 
     /* height distribution over reachable nodes advertising a best_height */
     int32_t heights_known;
@@ -122,12 +176,32 @@ typedef bool (*ncrawl_probe_fn)(const struct net_address *addr,
                                 int handshake_timeout_ms,
                                 struct ncrawl_probe_result *out);
 
-/* Default REAL dialer (network_crawler_probe.c): a short-lived clearnet socket
- * + version/verack handshake, then immediate disconnect. */
+/* Default REAL dialer (network_crawler_probe.c). Two branches:
+ *  - clearnet: a short-lived socket + version/verack handshake, then immediate
+ *    disconnect, using connect_timeout_ms / handshake_timeout_ms as named.
+ *  - onion: one HTTP-over-onion fetch through the embedded Tor. The crawler
+ *    passes the ONION timeout in BOTH timeout slots for onion addresses (the
+ *    seam signature is deliberately unchanged so every existing injected probe
+ *    still compiles); this branch uses max(connect,handshake) as its ceiling.
+ * Returns false only for an argument/address it cannot record at all. */
 bool network_crawler_default_probe(const struct net_address *addr,
                                    int connect_timeout_ms,
                                    int handshake_timeout_ms,
                                    struct ncrawl_probe_result *out);
+
+/* Render `addr` into its census key string: "<ip>:<port>" for clearnet, and the
+ * REAL "<56 base32>.onion:<port>" for a Tor v3 address. net_addr_to_string()
+ * renders every onion as the literal "[torv3]", which would collapse the whole
+ * onion half of the network into a single census row keyed "[torv3]:8033".
+ * Returns false when the address cannot be rendered (out is NUL-terminated
+ * empty in that case). */
+bool network_crawler_render_addr(const struct net_address *addr,
+                                 char *out, size_t out_size);
+
+/* True when the onion probe path can actually dial — i.e. the embedded Tor is
+ * built in AND bootstrapped. False means every onion target is recorded
+ * NOT_PROBED with a reason, never unreachable. */
+bool network_crawler_onion_probe_available(void);
 
 /* ── Runtime lifecycle ──────────────────────────────────────────────── */
 struct network_crawler_config {
@@ -137,6 +211,11 @@ struct network_crawler_config {
     int  max_concurrent;
     int  connect_timeout_ms;
     int  handshake_timeout_ms;
+    /* Onion phase — its own budget so a dead onion cannot eat the round. */
+    int  onion_max_per_round;    /* <= NCRAWL_MAX_ONION_PER_ROUND */
+    int  onion_max_concurrent;   /* <= NCRAWL_MAX_ONION_CONCURRENT */
+    int  onion_timeout_ms;       /* per-dial ceiling */
+    int  onion_round_budget_ms;  /* wall-clock ceiling on the whole phase */
 };
 void network_crawler_config_defaults(struct network_crawler_config *cfg);
 
@@ -162,6 +241,13 @@ void network_crawler_test_set_own_modal(int64_t h);
  * census and refold. Returns the number of addresses actually probed. */
 int  network_crawler_test_probe_round(const struct net_address *addrs, int n);
 int  network_crawler_test_census_count(void);
+/* Read back one census row by its rendered address; false when absent. */
+bool network_crawler_test_census_row(const char *addr,
+                                     struct ncrawl_probe_result *out);
+/* Override the onion sub-budget so the partition + budget-exhaustion paths are
+ * provable without waiting on real circuits. */
+void network_crawler_test_set_onion_limits(int per_round, int concurrent,
+                                           int timeout_ms, int budget_ms);
 /* Inject a folded census view (marks it ready) so the eclipse condition can be
  * unit-tested without a live crawl. */
 void network_crawler_test_set_view(const struct network_census_view *v);

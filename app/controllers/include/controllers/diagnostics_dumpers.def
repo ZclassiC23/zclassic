@@ -515,6 +515,18 @@
                     "source, name, owner_address, updated_height}.",
                     "app/models/src/zid_identity.c",
                     "lib/test/src/test_zid_identity.c"),
+    DIAG_PROJECTION("onion_directory", onion_directory_dump_state_json,
+                    "on-chain node directory folded from confirmed ZDIR "
+                    "OP_RETURNs: total_rows plus active/retired row counts. "
+                    "With a key — a v3 onion hostname — resolves that one "
+                    "row's {hostname, txid, height (seniority), "
+                    "owner_address, master_pubkey (when bound), status, "
+                    "updated_height}. A row is a HINT about where to look, "
+                    "never proof of who is there: it only ever ADDS a peer "
+                    "candidate alongside DNS/fixed seeds, addrman and the "
+                    "signed-descriptor source, and can never exclude one.",
+                    "app/models/src/onion_directory.c",
+                    "lib/test/src/test_zdir.c"),
     DIAG_ENTRY("vault", vault_read_dump_state_json,
                "vault read model: one row per asset class the node can hold "
                "(transparent_zcl, shielded_zcl, zslp_tokens, znam_names, "

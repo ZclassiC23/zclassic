@@ -86,6 +86,27 @@ bool peers_projection_emit_census_observed(const uint8_t ip[16], uint16_t port,
                                            int64_t reported_height,
                                            int64_t observed_unix);
 
+/* ── the UNMEASURED half of the census (peers_census_unprobed.c) ────────
+ * Note an address we KNOW but did NOT measure — the crawler could not dial it
+ * at all (no Tor circuit available for a .onion, the onion budget ran out, an
+ * unrenderable address).
+ *
+ * This is deliberately NOT a census observation. A not-probed address must
+ * never reach peers_projection_emit_census_observed(success=false), because
+ * that bumps dial_fail_count — laundering "we never looked" into "this peer
+ * failed" and feeding a false negative into peer reputation, which is strictly
+ * worse than having no data. So the unprobed population is accounted as a
+ * counter + last-reason only: no row is written, no ledger is appended, and no
+ * parallel store is created. The crawler's network_census dumper reports both.
+ *
+ * ip/reason may be NULL (the counter still moves); reason is truncated. Always
+ * returns true — this is bookkeeping, never a fallible write. */
+#define PEERS_CENSUS_UNPROBED_REASON_MAX 64
+bool peers_projection_note_census_unprobed(const uint8_t ip[16], uint16_t port,
+                                           const char *reason);
+uint64_t peers_projection_census_unprobed_total(void);
+void peers_projection_census_unprobed_reason(char *out, size_t cap);
+
 /* Durable per-peer reputation, folded from the session ledger. All fields are
  * 0 (bandwidth_score/latency) or the accumulated totals for a known address;
  * a missing/never-banked address reads all-zero via the `false` return. */
