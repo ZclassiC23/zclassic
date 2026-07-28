@@ -157,8 +157,16 @@ int db_onion_directory_list_active(struct node_db *ndb,
 
     sqlite3_stmt *s = NULL;
     AR_QUERY_LIST(ndb, s,
+        /* SENIORITY FIRST. `height` is the height that first REGISTERed the
+         * hostname (models/onion_directory.h), i.e. the seniority signal —
+         * so the senior row is the SMALLEST height, and this page must be
+         * ASC. It was DESC, which is newest-first: since the page is bounded
+         * (the peer-discovery read asks for 64) that handed the whole slate
+         * to whoever registered most recently and evicted every
+         * long-standing node, at the cost of one cheap OP_RETURN per slot.
+         * The header documents seniority; the query now agrees with it. */
         "SELECT " ONION_DIRECTORY_COLS " FROM onion_directory"
-        " WHERE status=? ORDER BY height DESC, hostname ASC"
+        " WHERE status=? ORDER BY height ASC, hostname ASC"
         " LIMIT ? OFFSET ?",
         out, (size_t)max,
         AR_BIND_TEXT(s, 1, ONION_DIRECTORY_STATUS_ACTIVE);

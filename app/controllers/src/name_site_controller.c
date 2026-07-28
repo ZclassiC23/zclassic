@@ -8,7 +8,7 @@
  * way the store is wired. It resolves a registered name to its hosted site
  * and serves the browse / profile / register surfaces:
  *
- *   GET  /n/<name>          resolve → 302 (onion > url) or profile page
+ *   GET  /n/<name>          resolve → gateway page (opt-in) / 302 / profile
  *   GET  /names             browse index
  *   GET  /names/register    on-chain register form (CSRF + PoW puzzle)
  *   POST /names/register    CSRF + PoW gate → compose REGISTER tx → result
@@ -25,9 +25,12 @@
 
 #include "controllers/name_site_controller.h"
 #include "controllers/name_controller.h"
+#include "controllers/name_resolver.h"
+#include "controllers/name_gateway_controller.h"
 #include "models/znam.h"
 #include "models/database.h"
 #include "views/name_view.h"
+#include "views/name_gateway_view.h"
 #include "json/json.h"
 
 #include "wallet/wallet.h"
@@ -42,6 +45,7 @@
 #include "core/random.h"
 #include "platform/time_compat.h"
 #include "util/log_macros.h"
+#include "base/safe_alloc.h"
 
 #include <pthread.h>
 #include <stdio.h>
@@ -272,19 +276,6 @@ static const char *parse_form_field(const char *body, size_t len,
     return out;
 }
 
-static uint8_t parse_type(const char *s)
-{
-    if (!s) return 0;
-    if (strcmp(s, "onion") == 0) return ZNAM_TYPE_ONION;
-    if (strcmp(s, "zaddr") == 0) return ZNAM_TYPE_ZADDR;
-    if (strcmp(s, "taddr") == 0) return ZNAM_TYPE_TADDR;
-    if (strcmp(s, "btc") == 0)   return ZNAM_TYPE_BTC;
-    if (strcmp(s, "ltc") == 0)   return ZNAM_TYPE_LTC;
-    if (strcmp(s, "doge") == 0)  return ZNAM_TYPE_DOGE;
-    if (strcmp(s, "content") == 0) return ZNAM_TYPE_CONTENT;
-    return 0;
-}
-
 /* ── CSRF (mirrors store_controller.c) ──────────────────────────── */
 
 static unsigned char s_csrf_key[32];
@@ -414,51 +405,123 @@ bool name_pow_verify_and_claim(const char *name, const char *pow_ts_str,
     return name_pow_claim_once(&pow);
 }
 
-/* ── resolution (precedence: onion > url > content/profile) ─────── */
+/* ── profile render (shared by /n/<name> fallback and /names/<name>) ── */
 
-/* Resolve `name` and write the response. onion record (text "onion" or a
- * primary ONION target) redirects to the onion site; a "url" text record
- * redirects to that URL; otherwise (content record, or nothing) the profile
- * page is rendered as the name's default hosted site. */
-static size_t name_resolve_site(struct node_db *ndb, const char *name,
-                                uint8_t *resp, size_t max)
+static size_t name_render_profile(struct node_db *ndb,
+                                  const struct znam_entry *e,
+                                  uint8_t *resp, size_t max)
 {
-    struct znam_entry e;
-    if (!ndb || !db_znam_find(ndb, name, &e))
-        return name_view_not_found(name, resp, max);
-
-    char val[256];
-
-    /* 1. onion — explicit text record wins, else a primary ONION target. */
-    if (db_znam_text_get(ndb, name, "onion", val, sizeof(val)) && val[0]) {
-        char loc[300];
-        if (strstr(val, "://")) snprintf(loc, sizeof(loc), "%s", val);
-        else                    snprintf(loc, sizeof(loc), "http://%s/", val);
-        return name_redirect(resp, max, loc);
-    }
-    if (e.target_type == ZNAM_TYPE_ONION && e.target_value[0]) {
-        char loc[300];
-        if (strstr(e.target_value, "://"))
-            snprintf(loc, sizeof(loc), "%s", e.target_value);
-        else
-            snprintf(loc, sizeof(loc), "http://%s/", e.target_value);
-        return name_redirect(resp, max, loc);
-    }
-
-    /* 2. url text record. */
-    if (db_znam_text_get(ndb, name, "url", val, sizeof(val)) && val[0]) {
-        char loc[300];
-        if (strstr(val, "://")) snprintf(loc, sizeof(loc), "%s", val);
-        else                    snprintf(loc, sizeof(loc), "http://%s", val);
-        return name_redirect(resp, max, loc);
-    }
-
-    /* 3. content record / anything else → profile page as the default site. */
     struct znam_text_record texts[NAME_RECORDS_LIMIT];
     struct znam_addr_record addrs[NAME_RECORDS_LIMIT];
-    int nt = db_znam_text_list(ndb, name, texts, NAME_RECORDS_LIMIT);
-    int na = db_znam_addr_list(ndb, name, addrs, NAME_RECORDS_LIMIT);
-    return name_view_profile(&e, texts, nt, addrs, na, resp, max);
+    struct name_history hist;
+    int nt = db_znam_text_list(ndb, e->name, texts, NAME_RECORDS_LIMIT);
+    int na = db_znam_addr_list(ndb, e->name, addrs, NAME_RECORDS_LIMIT);
+    name_history_load(ndb, e, &hist);
+    return name_view_profile(e, texts, nt, addrs, na, &hist, resp, max);
+}
+
+/* ── the onion gateway leg ──────────────────────────────────────── */
+
+/* An .onion target, with the gateway turned on: fetch it and serve it.
+ * With the gateway OFF (the default) this is never reached — the caller
+ * redirects exactly as it always has. Every failure still produces a real
+ * page carrying the direct link, so turning the gateway on can degrade a
+ * visit but can never break one. */
+static size_t name_serve_gateway(const char *name, const char *target,
+                                 uint8_t *resp, size_t max)
+{
+    struct name_gateway_result *g;
+    enum name_gateway_status st;
+    size_t out;
+
+    /* ~24 KiB of relayed body plus bookkeeping — heap, never the serving
+     * thread's stack. */
+    g = zcl_malloc(sizeof(*g), "name_gateway_result");
+    if (!g) {
+        LOG_WARN("name.gateway", "result alloc failed for '%s'", name);
+        return name_gateway_view_unavailable(name, target,
+            "GATEWAY_NO_MEMORY",
+            "This node could not allocate a relay buffer for that page.",
+            "503 Service Unavailable", resp, max);
+    }
+
+    st = name_gateway_fetch(target, g);
+    if (st != NAME_GATEWAY_OK) {
+        out = name_gateway_view_unavailable(name, target,
+                  name_gateway_status_code(st),
+                  name_gateway_status_message(st),
+                  st == NAME_GATEWAY_BAD_HOST ? "400 Bad Request"
+                                              : "502 Bad Gateway",
+                  resp, max);
+        free(g);
+        return out;
+    }
+
+    out = name_gateway_view_page(name, g->host, g->body, g->body_len,
+                                 g->http_status, g->truncated,
+                                 g->upstream_bytes, resp, max);
+    free(g);
+    /* A relayed page that would not fit the caller's response buffer is
+     * still a resolved name: fall back to the notice page rather than
+     * writing a truncated, length-lying response. */
+    if (out == 0)
+        return name_gateway_view_unavailable(name, target, "GATEWAY_TOO_LARGE",
+            "The relayed page did not fit this node's response buffer.",
+            "502 Bad Gateway", resp, max);
+    return out;
+}
+
+/* ── resolution (precedence: onion > url > content/profile) ─────── */
+
+/* Resolve `name` (optionally constrained to `want_type_str`) and write the
+ * response. An onion target either goes through the gateway (operator
+ * opt-in) or 302s as before; a "url" text record 302s; anything else
+ * renders the profile page as the name's default hosted site. Every
+ * non-resolution comes back as its own named verdict, never a shared
+ * "not found". */
+static size_t name_resolve_site(struct node_db *ndb, const char *name,
+                                const char *want_type_str,
+                                uint8_t *resp, size_t max)
+{
+    struct name_resolution res;
+    enum name_resolve_status st;
+    enum name_route_kind route;
+    uint8_t want = 0;
+    char target[300];
+    char loc[320];
+
+    if (want_type_str && want_type_str[0]) {
+        want = znam_type_from_name(want_type_str);
+        if (want == 0)
+            return name_view_resolve_error(name, NAME_RESOLVE_TYPE_UNKNOWN,
+                                           want_type_str, NULL, resp, max);
+    }
+
+    st = name_resolve(ndb, name, want, &res);
+    if (st != NAME_RESOLVE_OK)
+        return name_view_resolve_error(name, st, want_type_str,
+                                       res.have_entry ? &res.entry : NULL,
+                                       resp, max);
+
+    /* An explicit ?type= is a request for THAT record, not for the site:
+     * hand back the profile so the visitor sees the value in context. */
+    if (want != 0)
+        return name_render_profile(ndb, &res.entry, resp, max);
+
+    route = name_resolve_route(ndb, &res.entry, target, sizeof(target));
+    if (route == NAME_ROUTE_ONION) {
+        if (name_gateway_enabled())
+            return name_serve_gateway(name, target, resp, max);
+        if (strstr(target, "://")) snprintf(loc, sizeof(loc), "%s", target);
+        else snprintf(loc, sizeof(loc), "http://%s/", target);
+        return name_redirect(resp, max, loc);
+    }
+    if (route == NAME_ROUTE_URL) {
+        if (strstr(target, "://")) snprintf(loc, sizeof(loc), "%s", target);
+        else snprintf(loc, sizeof(loc), "http://%s", target);
+        return name_redirect(resp, max, loc);
+    }
+    return name_render_profile(ndb, &res.entry, resp, max);
 }
 
 /* ── register POST ──────────────────────────────────────────────── */
@@ -503,7 +566,7 @@ static size_t name_handle_register_post(const uint8_t *body, size_t body_len,
             "Invalid name (1-63 chars, lowercase letters, digits, hyphens).",
             resp, max);
 
-    uint8_t type = parse_type(type_s);
+    uint8_t type = znam_type_from_name(type_s);
     if (type == 0)
         return name_view_register_result(name, value, "",
             "Invalid target type.", resp, max);
@@ -546,17 +609,19 @@ size_t name_site_handle_request(const char *method, const char *path,
     if (!path || !response) return 0;
     struct node_db *ndb = site_ndb();
 
-    /* /n/<name> — resolve to the hosted site. */
+    /* /n/<name>[?type=<t>] — resolve to the hosted site. The optional
+     * ?type= is what makes "registered, but not for that" reachable over
+     * HTTP as its own verdict rather than folding into "not found". */
     if (strncmp(path, "/n/", 3) == 0) {
-        char name[128];
+        char name[128], type_q[32] = "";
+        const char *q = strchr(path, '?');
         snprintf(name, sizeof(name), "%s", path + 3);
-        char *slash = strchr(name, '/');
-        if (slash) *slash = '\0';
-        char *q = strchr(name, '?');
-        if (q) *q = '\0';
-        if (!znam_validate_name(name))
-            return name_view_not_found(name, response, response_max);
-        return name_resolve_site(ndb, name, response, response_max);
+        char *cut = strpbrk(name, "/?");
+        if (cut) *cut = '\0';
+        if (q)
+            parse_form_field(q + 1, strlen(q + 1), "type",
+                             type_q, sizeof(type_q));
+        return name_resolve_site(ndb, name, type_q, response, response_max);
     }
 
     /* /names/register (GET form, POST create). */
@@ -577,25 +642,20 @@ size_t name_site_handle_request(const char *method, const char *path,
         return name_view_index(entries, count, response, response_max);
     }
 
-    /* /names/<name> — profile (show). */
+    /* /names/<name> — profile (show), same taxonomy on failure. */
     if (strncmp(path, "/names/", 7) == 0) {
         char name[128];
+        struct name_resolution res;
+        enum name_resolve_status st;
         snprintf(name, sizeof(name), "%s", path + 7);
-        char *slash = strchr(name, '/');
-        if (slash) *slash = '\0';
-        char *q = strchr(name, '?');
-        if (q) *q = '\0';
-        if (!znam_validate_name(name))
-            return name_view_not_found(name, response, response_max);
-        struct znam_entry e;
-        if (!ndb || !db_znam_find(ndb, name, &e))
-            return name_view_not_found(name, response, response_max);
-        struct znam_text_record texts[NAME_RECORDS_LIMIT];
-        struct znam_addr_record addrs[NAME_RECORDS_LIMIT];
-        int nt = db_znam_text_list(ndb, name, texts, NAME_RECORDS_LIMIT);
-        int na = db_znam_addr_list(ndb, name, addrs, NAME_RECORDS_LIMIT);
-        return name_view_profile(&e, texts, nt, addrs, na,
-                                 response, response_max);
+        char *cut = strpbrk(name, "/?");
+        if (cut) *cut = '\0';
+        st = name_resolve(ndb, name, 0, &res);
+        if (st != NAME_RESOLVE_OK)
+            return name_view_resolve_error(name, st, NULL,
+                                           res.have_entry ? &res.entry : NULL,
+                                           response, response_max);
+        return name_render_profile(ndb, &res.entry, response, response_max);
     }
 
     /* Bare /names index fallback for any other /names… path. */

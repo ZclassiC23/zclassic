@@ -434,11 +434,16 @@ void blog_onion_discovery_counts(int *out_chain, int *out_wallet,
  * (onion_peers_collect, net/onion_peer_merge.h) — which is also what applies
  * onion_hostname_valid and de-duplicates a host that advertised through both.
  *
- * ADD, never replace: the wallet scrape keeps running behind the chain
- * projection, and neither source can remove a candidate the other found. This
- * function can only ever grow the peer set handed to connman; a poisoned or
- * squatted directory row costs one wasted connection attempt and nothing
- * else. */
+ * ADD, never replace, and never STARVE: the wallet scrape keeps running
+ * alongside the chain projection, neither source can remove a candidate the
+ * other found, and — the part that "never replace" alone did not buy —
+ * onion_peers_collect asks the scrape first into at most half the slate, so a
+ * chain projection with more rows than the slate is wide cannot consume all of
+ * it and leave the scrape uninvoked. Consuming all the capacity is the same
+ * outage as removing a source. An empty wallet still leaves the whole slate to
+ * the chain. This function can only ever grow the peer set handed to connman; a
+ * poisoned or squatted directory row costs one wasted connection attempt and
+ * nothing else. */
 int blog_discover_onion_peers(const char *datadir,
                               struct onion_peer *out, size_t max)
 {

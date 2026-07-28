@@ -453,20 +453,63 @@ int tor_integration_fetch_onion(const char *onion_address,
 }
 
 /* Callback for blocking fetch — sets result and signals completion */
+/* Hard ceiling on what one onion response may allocate here, regardless of
+ * what the far side claims. The remote is chosen from on-chain data or a
+ * peer's directory — never trusted — and every caller applies its own,
+ * tighter, purpose-specific cap on top of this one. This exists only so a
+ * hostile responder cannot pick our allocation size. */
+#define ONION_FETCH_BODY_MAX (1u << 20)   /* 1 MiB */
+
+/* The waiter's deadline and the fetch callback are independent: dynhost may
+ * complete AFTER we have given up. So the shared state is heap-owned and
+ * refcounted rather than being the caller's stack frame — the last of the
+ * two to let go frees it. Handing a stack address to a callback we cannot
+ * cancel is a use-after-free waiting for a slow remote to trigger it, and
+ * with the name gateway an anonymous visitor gets to choose that remote. */
+struct blocking_fetch_ctx {
+    _Atomic int refs;        /* waiter + callback; 0 => free */
+    _Atomic int complete;    /* 0=pending, 1=ok, -1=error */
+    int         status;
+    uint8_t    *body;
+    size_t      body_len;
+};
+
+static void blocking_fetch_release(struct blocking_fetch_ctx *c)
+{
+    if (atomic_fetch_sub(&c->refs, 1) == 1) {
+        free(c->body);
+        free(c);
+    }
+}
+
 static void blocking_fetch_cb(int status, const uint8_t *body,
                                 size_t body_len, void *ctx)
 {
-    struct onion_fetch_result *r = (struct onion_fetch_result *)ctx;
-    r->status = status;
+    struct blocking_fetch_ctx *c = (struct blocking_fetch_ctx *)ctx;
+    c->status = status;
+
+    if (body_len > ONION_FETCH_BODY_MAX) {
+        /* Refuse, never truncate: a caller cannot tell a clipped body from a
+         * short one, and half a document is the kind of input that gets
+         * parsed as if it were whole. */
+        LOG_WARN("tor", "onion response of %zu bytes exceeds the %u-byte "
+                        "ceiling — refused", body_len,
+                 (unsigned)ONION_FETCH_BODY_MAX);
+        atomic_store(&c->complete, -1);
+        blocking_fetch_release(c);
+        return;
+    }
+
     if (body && body_len > 0) {
-        r->body = zcl_malloc(body_len + 1, "onion_fetch_body");
-        if (r->body) {
-            memcpy(r->body, body, body_len);
-            r->body[body_len] = '\0';
-            r->body_len = body_len;
+        c->body = zcl_malloc(body_len + 1, "onion_fetch_body");
+        if (c->body) {
+            memcpy(c->body, body, body_len);
+            c->body[body_len] = '\0';
+            c->body_len = body_len;
         }
     }
-    atomic_store(&r->complete, status >= 200 ? 1 : -1);
+    atomic_store(&c->complete, status >= 200 ? 1 : -1);
+    blocking_fetch_release(c);
 }
 
 int tor_integration_fetch_onion_blocking(const char *onion_address,
@@ -477,23 +520,46 @@ int tor_integration_fetch_onion_blocking(const char *onion_address,
     if (!result) LOG_ERR("tor", "fetch_onion_blocking called with NULL result");
     memset(result, 0, sizeof(*result));
 
+    struct blocking_fetch_ctx *c =
+        zcl_malloc(sizeof(*c), "onion_fetch_ctx");
+    if (!c) LOG_ERR("tor", "onion fetch context allocation failed");
+    memset(c, 0, sizeof(*c));
+    atomic_init(&c->refs, 2);        /* one for us, one for the callback */
+    atomic_init(&c->complete, 0);
+
     int rc = tor_integration_fetch_onion(onion_address, path,
-                                          blocking_fetch_cb, result,
+                                          blocking_fetch_cb, c,
                                           timeout_secs);
     if (rc < 0) {
+        /* Dispatch failed, so the callback will never run and never release
+         * its reference — drop it on its behalf. */
+        blocking_fetch_release(c);
+        blocking_fetch_release(c);
         atomic_store(&result->complete, -1);
         LOG_ERR("tor", "fetch_onion failed for %s%s", onion_address, path);
     }
 
-    /* Poll for completion */
     int wait_ms = (timeout_secs > 0 ? timeout_secs : 60) * 1000;
     for (int elapsed = 0; elapsed < wait_ms; elapsed += 100) {
-        int c = atomic_load(&result->complete);
-        if (c != 0) return (c == 1) ? 0 : -1;
+        if (atomic_load(&c->complete) != 0) {
+            /* The callback is done touching the context, so the body can be
+             * handed to the caller outright rather than copied again. */
+            int ok = atomic_load(&c->complete) == 1;
+            result->status   = c->status;
+            result->body     = c->body;
+            result->body_len = c->body_len;
+            c->body = NULL;                     /* ownership transferred */
+            atomic_store(&result->complete, ok ? 1 : -1);
+            blocking_fetch_release(c);
+            return ok ? 0 : -1;
+        }
         usleep(100000); /* 100ms */
     }
 
-    /* Timeout */
+    /* Timed out. We let go; if the fetch lands later the callback writes to
+     * the heap context it still owns and frees it there. Nothing of ours
+     * outlives this frame. */
+    blocking_fetch_release(c);
     atomic_store(&result->complete, -1);
     LOG_ERR("tor", "fetch_onion_blocking timed out after %ds for %s%s",
             timeout_secs > 0 ? timeout_secs : 60, onion_address, path);

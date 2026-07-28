@@ -351,7 +351,7 @@ static int zdir_schema_and_model(void)
       ok = ok && db_onion_directory_count(&ndb) == before;
       if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; } }
 
-    printf("zdir: list_active skips retired rows, newest first... ");
+    printf("zdir: list_active skips retired rows, MOST SENIOR first... ");
     { struct db_onion_directory dead;
       mk_row(&dead, 'f', 5000, ONION_DIRECTORY_STATUS_RETIRED, NULL);
       struct db_onion_directory page[8];
@@ -359,11 +359,17 @@ static int zdir_schema_and_model(void)
       int n = 0;
       bool ok = db_onion_directory_save(&ndb, &dead);
       n = db_onion_directory_list_active(&ndb, page, 8, 0);
-      /* 'b' at h=900 and 'c' at h=100 are active; 'f' at h=5000 is not. */
-      ok = ok && n == 2 && page[0].height == 900 && page[1].height == 100;
-      ok = ok && db_onion_directory_list_active(&ndb, page, 1, 0) == 1;
-      ok = ok && db_onion_directory_list_active(&ndb, page, 8, 1) == 1 &&
+      /* 'b' at h=900 and 'c' at h=100 are active; 'f' at h=5000 is not.
+       * `height` is the REGISTRATION height, i.e. the seniority signal, so
+       * the senior row (h=100) comes first. This used to assert DESC —
+       * newest-first — which, on a bounded page the caller intends to dial,
+       * let a burst of cheap fresh registrations take every slot and evict
+       * every long-standing node. */
+      ok = ok && n == 2 && page[0].height == 100 && page[1].height == 900;
+      ok = ok && db_onion_directory_list_active(&ndb, page, 1, 0) == 1 &&
                  page[0].height == 100;
+      ok = ok && db_onion_directory_list_active(&ndb, page, 8, 1) == 1 &&
+                 page[0].height == 900;
       ok = ok && db_onion_directory_list_active(&ndb, page, 0, 0) == 0;
       ok = ok && db_onion_directory_list_active(&ndb, page, 8, -1) == 0;
       ok = ok && db_onion_directory_list_active(&ndb, NULL, 8, 0) == 0;
@@ -608,6 +614,108 @@ static int zdir_rebuildable(void)
     return failures;
 }
 
+/* ── (6a) the merge reserves capacity — a source is never STARVED ─── */
+
+/* Both synthetic sources are GREEDY: each fills every slot it is offered,
+ * which is exactly what the chain projection does on a node with more
+ * registered rows than the slate is wide (it returns up to 64 and connman
+ * asks for 64). Distinct alphabets so the merge cannot dedupe them
+ * together. */
+static int zd_greedy_signed(void *ctx, struct onion_peer *out, size_t max)
+{
+    (void)ctx;
+    for (size_t i = 0; i < max; i++) {
+        mk_host(out[i].hostname, sizeof(out[i].hostname),
+                (char)('a' + (int)(i % 13)));
+        /* Vary one more char so every entry is a DISTINCT valid host. */
+        out[i].hostname[0] = (char)('a' + (int)(i % 26));
+        out[i].hostname[1] = (char)('a' + (int)((i / 26) % 26));
+        out[i].height = 1;
+    }
+    return (int)max;
+}
+
+static int zd_greedy_unsigned(const char *datadir, struct onion_peer *out,
+                              size_t max)
+{
+    (void)datadir;
+    for (size_t i = 0; i < max; i++) {
+        mk_host(out[i].hostname, sizeof(out[i].hostname), 'n');
+        out[i].hostname[0] = (char)('n' + (int)(i % 13));
+        out[i].hostname[1] = (char)('n' + (int)((i / 13) % 13));
+        out[i].height = 2;
+    }
+    return (int)max;
+}
+
+static int zd_empty_unsigned(const char *datadir, struct onion_peer *out,
+                             size_t max)
+{
+    (void)datadir; (void)out; (void)max;
+    return 0;   /* the empty-wallet node: the common case */
+}
+
+static int zdir_collect_reservation(void)
+{
+    int failures = 0;
+    struct onion_peer peers[8];
+    int rejected = 0;
+
+    /* THE DEFECT: the signed slot used to be handed the full `max`, so a
+     * greedy signed source consumed the whole slate and the second source
+     * was never invoked at all. "Neither source can remove a candidate the
+     * other found" was true literally and false operationally — consuming
+     * all the capacity is the same outage. */
+    printf("zdir merge: a greedy signed source cannot starve the scrape... ");
+    { memset(peers, 0, sizeof(peers));
+      int kept = onion_peers_collect(peers, 8, zd_greedy_signed, NULL,
+                                     zd_greedy_unsigned, "/nonexistent",
+                                     &rejected);
+      int from_unsigned = 0;
+      for (int i = 0; i < kept; i++)
+          if (peers[i].height == 2) from_unsigned++;
+      bool ok = kept == 8 && from_unsigned >= 4;
+      if (ok) printf("OK\n");
+      else { printf("FAIL (kept=%d unsigned=%d)\n", kept, from_unsigned);
+             failures++; } }
+
+    /* The reservation must cost nothing when the scrape under-fills it —
+     * an empty wallet is the common case, and halving the slate for a
+     * source that returns 0 would be a regression of its own. */
+    printf("zdir merge: an empty scrape leaves the slate to the signed"
+           " source... ");
+    { memset(peers, 0, sizeof(peers));
+      int kept = onion_peers_collect(peers, 8, zd_greedy_signed, NULL,
+                                     zd_empty_unsigned, "/nonexistent",
+                                     &rejected);
+      bool ok = kept == 8;
+      if (ok) printf("OK\n");
+      else { printf("FAIL (kept=%d)\n", kept); failures++; } }
+
+    /* With no unsigned source registered there is nothing to reserve for. */
+    printf("zdir merge: with no scrape wired the signed source gets"
+           " everything... ");
+    { memset(peers, 0, sizeof(peers));
+      int kept = onion_peers_collect(peers, 8, zd_greedy_signed, NULL,
+                                     NULL, NULL, &rejected);
+      bool ok = kept == 8;
+      if (ok) printf("OK\n");
+      else { printf("FAIL (kept=%d)\n", kept); failures++; } }
+
+    /* Degenerate slate: one slot goes to the source that always works. */
+    printf("zdir merge: a one-slot slate degrades toward the scrape... ");
+    { memset(peers, 0, sizeof(peers));
+      int kept = onion_peers_collect(peers, 1, zd_greedy_signed, NULL,
+                                     zd_greedy_unsigned, "/nonexistent",
+                                     &rejected);
+      bool ok = kept == 1 && peers[0].height == 2;
+      if (ok) printf("OK\n");
+      else { printf("FAIL (kept=%d h=%d)\n", kept, peers[0].height);
+             failures++; } }
+
+    return failures;
+}
+
 /* ── (6) discovery: the chain source, merged ALONGSIDE the scrape ─── */
 
 static int zdir_discovery(void)
@@ -645,9 +753,10 @@ static int zdir_discovery(void)
     { struct onion_peer peers[8];
       memset(peers, 0, sizeof(peers));
       int n = blog_discover_onion_peers_chain(dir, peers, 8);
+      /* Seniority order: h1 registered at 200, h2 at 300. */
       bool ok = n == 2 &&
-                strcmp(peers[0].hostname, h2) == 0 && peers[0].height == 300 &&
-                strcmp(peers[1].hostname, h1) == 0 && peers[1].height == 200;
+                strcmp(peers[0].hostname, h1) == 0 && peers[0].height == 200 &&
+                strcmp(peers[1].hostname, h2) == 0 && peers[1].height == 300;
       if (ok) printf("OK\n");
       else { printf("FAIL (n=%d)\n", n); failures++; } }
 
@@ -662,7 +771,7 @@ static int zdir_discovery(void)
     { struct onion_peer peers[4];
       memset(peers, 0, sizeof(peers));
       int n = blog_discover_onion_peers_chain(dir, peers, 1);
-      bool ok = n == 1 && strcmp(peers[0].hostname, h2) == 0;
+      bool ok = n == 1 && strcmp(peers[0].hostname, h1) == 0;
       if (ok) printf("OK\n"); else { printf("FAIL (n=%d)\n", n); failures++; } }
 
     printf("zdir discovery: the merged source ADDS the chain rows, and the"
@@ -680,8 +789,8 @@ static int zdir_discovery(void)
        * exactly what it contributes on every node with an empty wallet. */
       bool ok = merged >= chain_only && merged == 2 &&
                 chain == 2 && wallet == 0 && rejected == 0 &&
-                strcmp(peers[0].hostname, h2) == 0 &&
-                strcmp(peers[1].hostname, h1) == 0;
+                strcmp(peers[0].hostname, h1) == 0 &&
+                strcmp(peers[1].hostname, h2) == 0;
       if (ok) printf("OK\n");
       else { printf("FAIL (merged=%d chain=%d wallet=%d rej=%d)\n",
                     merged, chain, wallet, rejected); failures++; } }
@@ -711,6 +820,7 @@ int test_zdir(void)
     failures += zdir_registry_adoption();
     failures += zdir_ingest();
     failures += zdir_rebuildable();
+    failures += zdir_collect_reservation();
     failures += zdir_discovery();
     return failures;
 }

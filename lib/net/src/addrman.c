@@ -4,10 +4,13 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "net/addrman.h"
+#include "net/directory_influence_port.h"
 #include "core/hash.h"
 #include "core/random.h"
 #include "core/serialize.h"
 #include "util/timedata.h"
+#include <stdatomic.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -143,6 +146,28 @@ bool addrman_set_reputation_weight(struct addr_man *am,
 {
     if (!am || !addr)
         return false;
+    /* DEGRADED MODE (net/directory_influence_port.h). While the node suspects
+     * it is on the minority side of a network split, directory-derived dial
+     * preference gains no new influence: this is the single point where the
+     * directory reaches addrman, and a bounded 1-4x multiplier learned from
+     * the split's own side is exactly the input that would pin us there. Any
+     * weight already banked on an existing entry is LEFT ALONE — pre-split
+     * preference keeps working — and selection itself is untouched, so
+     * discovery simply falls back to unweighted addrman plus the compiled
+     * seeds and addr gossip. Unregistered port = UNGOVERNED = admitted, so
+     * every binary that links lib/net without the composition root behaves
+     * exactly as before. */
+    if (!directory_influence_port_admits()) {
+        static _Atomic uint64_t withheld;
+        uint64_t n = atomic_fetch_add(&withheld, 1u) + 1u;
+        if (n == 1u || n % 1024u == 0u)
+            LOG_WARN("addrman",
+                     "reputation weight withheld (%.2fx): directory influence "
+                     "is suspended while SUSPECTED_NETSPLIT stands; existing "
+                     "weights keep working (withheld=%llu)",
+                     weight, (unsigned long long)n);
+        return false;
+    }
     if (weight < 1.0)
         weight = 1.0;
     if (weight > ADDRMAN_REPUTATION_MAX_MULT)

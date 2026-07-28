@@ -9,6 +9,8 @@
 #include "net/onion_ratelimit.h"
 #include "net/tor_integration.h"
 #include "net/rom_seed.h"
+#include "net/peer_strategy.h"
+#include "znam/znam.h"
 #include "util/log_json.h"
 #include "util/log_macros.h"
 #include "util/path_check.h"
@@ -353,11 +355,147 @@ static size_t serve_landing_page(uint8_t *response, size_t max)
 
 /* ── Search handler ───────────────────────────────────────── */
 
+/* One searchable directory row: the raw endpoint plus the on-chain name
+ * that resolves to it, if any. The name is a LABEL for the address, never
+ * a replacement — both are rendered, so a visitor always sees what they
+ * are actually connecting to. */
+struct onion_search_hit {
+    char host[64];
+    char name[ZNAM_NAME_MAX + 1];
+    int  height;
+};
+
+/* ASCII case-insensitive substring. ZNAM names are lowercase by
+ * construction; visitors are not. */
+static bool str_contains_ci(const char *hay, const char *needle)
+{
+    if (!hay || !needle) return false;
+    if (!needle[0]) return true;
+    size_t nlen = strlen(needle);
+    for (const char *p = hay; *p; p++) {
+        size_t i = 0;
+        while (i < nlen) {
+            unsigned char a = (unsigned char)p[i], b = (unsigned char)needle[i];
+            if (a >= 'A' && a <= 'Z') a = (unsigned char)(a - 'A' + 'a');
+            if (b >= 'A' && b <= 'Z') b = (unsigned char)(b - 'A' + 'a');
+            if (!a || a != b) break;
+            i++;
+        }
+        if (i == nlen) return true;
+    }
+    return false;
+}
+
+static bool search_hit_known(const struct onion_search_hit *hits, int n,
+                             const char *host)
+{
+    for (int i = 0; i < n; i++)
+        if (strcmp(hits[i].host, host) == 0) return true;
+    return false;
+}
+
+/* Append one hit if the query matches its host OR its name. Returns the
+ * new count. Bounded by cap; duplicates are dropped. */
+static int search_hit_add(struct onion_search_hit *hits, int n, int cap,
+                          const char *host, const char *name, int height,
+                          const char *query)
+{
+    if (n >= cap) return n;
+    if (!onion_hostname_valid(host)) return n;
+    if (query && query[0] &&
+        !str_contains_ci(host, query) &&
+        !(name && name[0] && str_contains_ci(name, query)))
+        return n;
+    if (search_hit_known(hits, n, host)) return n;
+    snprintf(hits[n].host, sizeof(hits[n].host), "%s", host);
+    snprintf(hits[n].name, sizeof(hits[n].name), "%s", name ? name : "");
+    hits[n].height = height;
+    return n + 1;
+}
+
 static size_t serve_search(const char *query, uint8_t *response, size_t max)
 {
+    struct onion_context *ctx = onion_ctx();
     struct onion_peer peers[64];
-    int num_peers = 0;
-    num_peers = onion_discover_peers(peers, 64);
+    int num_peers = onion_discover_peers(peers, 64);
+
+    /* Read-only handle for the two projections searched below. Absent or
+     * unopenable → the chain-scan source alone still answers, exactly as
+     * before: a search never regresses because a projection is missing. */
+    sqlite3 *db = NULL;
+    if (ctx->datadir) {
+        char db_path[1024];
+        zcl_node_db_path(db_path, sizeof(db_path), ctx->datadir);
+        if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+            if (db) sqlite3_close(db);
+            db = NULL;
+        } else {
+            sqlite3_busy_timeout(db, 5000);
+        }
+    }
+
+    struct onion_search_hit hits[64];
+    int nhits = 0;
+    char name_buf[ZNAM_NAME_MAX + 1];
+
+    /* Source 1 — on-chain .onion announcements (the pre-existing source;
+     * kept first and never narrowed). */
+    for (int i = 0; i < num_peers; i++) {
+        name_buf[0] = '\0';
+        if (db) (void)onion_directory_name_for_db(db, peers[i].hostname,
+                                                  name_buf, sizeof(name_buf));
+        nhits = search_hit_add(hits, nhits, 64, peers[i].hostname,
+                               name_buf, peers[i].height, query);
+    }
+
+    /* Source 2 — the peer_directory itself, so a node learned from a peer's
+     * directory (not from a chain scan) is searchable too. */
+    if (db) {
+        sqlite3_stmt *s = NULL;
+        if (sqlite3_prepare_v2(db,
+            "SELECT onion_address, height FROM peer_directory "
+            "ORDER BY self DESC, last_seen DESC LIMIT 256",
+            -1, &s, NULL) == SQLITE_OK && s) {
+            while (nhits < 64 && AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
+                const char *addr = (const char *)sqlite3_column_text(s, 0);
+                if (!addr) continue;
+                name_buf[0] = '\0';
+                (void)onion_directory_name_for_db(db, addr,
+                                                  name_buf, sizeof(name_buf));
+                nhits = search_hit_add(hits, nhits, 64, addr, name_buf,
+                                       sqlite3_column_int(s, 1), query);
+            }
+        }
+        if (s) sqlite3_finalize(s);
+    }
+
+    /* Source 3 — the ZNAM projection directly: a registered name resolves
+     * even when neither the chain scan nor the directory has met the host
+     * yet. Filtered in C (not via LIKE) so a query containing % or _ is
+     * matched literally rather than as a wildcard. */
+    if (db) {
+        sqlite3_stmt *s = NULL;
+        if (sqlite3_prepare_v2(db,
+            "SELECT name, target_value FROM znam_names "
+            "WHERE target_type=?1 ORDER BY reg_height DESC LIMIT 256",
+            -1, &s, NULL) == SQLITE_OK && s) {
+            sqlite3_bind_int(s, 1, ZNAM_TYPE_ONION);
+            while (nhits < 64 && AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
+                const char *nm = (const char *)sqlite3_column_text(s, 0);
+                const char *tv = (const char *)sqlite3_column_text(s, 1);
+                if (!nm || !tv || !onion_directory_label_is_renderable(nm)) continue;
+                char host[64];
+                if (strlen(tv) == 56)
+                    snprintf(host, sizeof(host), "%s.onion", tv);
+                else
+                    snprintf(host, sizeof(host), "%s", tv);
+                nhits = search_hit_add(hits, nhits, 64, host, nm, 0, query);
+            }
+        }
+        if (s) sqlite3_finalize(s);
+    }
+
+    if (db) sqlite3_close(db);
 
     char safe_query[512];
     html_escape(safe_query, sizeof(safe_query), query ? query : "");
@@ -377,15 +515,27 @@ static size_t serve_search(const char *query, uint8_t *response, size_t max)
     if (n > 0) off = (size_t)n;
 
     int found = 0;
-    for (int i = 0; i < num_peers && off + 256 < sizeof(body); i++) {
-        if (query && query[0] &&
-            !strstr(peers[i].hostname, query))
-            continue;
+    for (int i = 0; i < nhits && off + 640 < sizeof(body); i++) {
         char esc_host[384]; /* hostname[64] worst-case html-escaped */
-        html_escape(esc_host, sizeof(esc_host), peers[i].hostname);
+        char esc_name[256]; /* name[64] worst-case html-escaped */
+        html_escape(esc_host, sizeof(esc_host), hits[i].host);
+        html_escape(esc_name, sizeof(esc_name), hits[i].name);
+
+        char hstr[48] = "";
+        if (hits[i].height > 0)
+            snprintf(hstr, sizeof(hstr), "height %d", hits[i].height);
+
+        /* A registered name becomes the link text; the raw .onion always
+         * follows it in the description. Nameless hosts link by address, as
+         * before. */
+        bool named = hits[i].name[0] != '\0';
         n = snprintf(body + off, sizeof(body) - off,
-            "<div class='site'><a href='http://%s/'>%s</a></div>",
-            esc_host, esc_host);
+            "<div class='site'><a href='http://%s/'>%s</a>"
+            "<div class='desc'>%s%s%s</div></div>",
+            esc_host, named ? esc_name : esc_host,
+            named ? esc_host : "",
+            (named && hstr[0]) ? " &middot; " : "",
+            hstr);
         if (n > 0) off += (size_t)n;
         found++;
     }
@@ -397,9 +547,10 @@ static size_t serve_search(const char *query, uint8_t *response, size_t max)
     }
 
     n = snprintf(body + off, sizeof(body) - off,
-        "<p class='muted'>Search matches against .onion hostnames registered "
-        "on-chain via ZSLP. Peer nodes do not yet broadcast titles or "
-        "descriptions &mdash; only hostnames are searchable.</p>"
+        "<p class='muted'>Search matches .onion hostnames discovered on-chain "
+        "or through the peer directory, and ZNAM names registered on-chain for "
+        "those hosts. A name is a label for an address, not a substitute: the "
+        "raw .onion you would connect to is always shown with it.</p>"
         "<footer>ZClassic23 &mdash; one binary, one onion, one stack</footer>"
         "</body></html>");
     if (n > 0) off += (size_t)n;
@@ -433,23 +584,33 @@ static size_t serve_directory_json(uint8_t *response, size_t max)
     int n = snprintf(body, sizeof(body), "{\"nodes\":[");
     if (n > 0) off = (size_t)n;
 
+    /* Freshness is a served field, not a hidden filter: rows past
+     * ONION_DIR_EXPIRE_SECS are withheld (the refresh round deletes them on
+     * its own cadence; this makes the endpoint correct in between), and
+     * every row that IS served carries its age, the policy constants, and
+     * both the hearsay stamp (last_seen) and the contact record
+     * (last_success + dial counts), so a consumer can judge it rather than
+     * trusting the list. The self row is never age-filtered. */
+    int64_t now = (int64_t)platform_time_wall_time_t();
+
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db,
         "SELECT onion_address, port, services, height, last_seen, "
         "version, self, clearnet_ip, clearnet_port, "
         "COALESCE(first_seen,0), COALESCE(last_probe,0), "
-        "COALESCE(probe_ok,0), COALESCE(fail_count,0), COALESCE(source,'') "
+        "COALESCE(probe_ok,0), COALESCE(fail_count,0), COALESCE(source,''), "
+        "COALESCE(last_success,0), COALESCE(dial_success_count,0) "
         "FROM peer_directory "
         "ORDER BY self DESC, last_seen DESC LIMIT " ONION_DIR_STR(ONION_DIR_SERVE_MAX),
         -1, &s, NULL) != SQLITE_OK || !s) {
+        if (s) sqlite3_finalize(s);
         sqlite3_close(db);
         return 0;
     }
 
-    int64_t now = (int64_t)platform_time_wall_time_t();
     int count = 0;
     int skipped_expired = 0;
-    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && off + 768 < sizeof(body)) {
+    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && off + 900 < sizeof(body)) {
         const char *addr = (const char *)sqlite3_column_text(s, 0);
         int port = sqlite3_column_int(s, 1);
         int svc = sqlite3_column_int(s, 2);
@@ -464,6 +625,8 @@ static size_t serve_directory_json(uint8_t *response, size_t max)
         int probe_ok = sqlite3_column_int(s, 11);
         int fails = sqlite3_column_int(s, 12);
         const char *src = (const char *)sqlite3_column_text(s, 13);
+        int64_t lsucc = sqlite3_column_int64(s, 14);
+        int64_t ok_n = sqlite3_column_int64(s, 15);
 
         /* Rows stored by pre-validation binaries may be hostile. */
         if (!onion_hostname_valid(addr)) continue;
@@ -485,16 +648,25 @@ static size_t serve_directory_json(uint8_t *response, size_t max)
         log_json_escape(cip_esc, sizeof(cip_esc), cip);
         log_json_escape(src_esc, sizeof(src_esc), src);
 
+        /* The on-chain name for this endpoint, when one is registered. The
+         * name never replaces the address in the record — it is an extra
+         * field beside it, so a consumer that resolves by address keeps
+         * working and one that displays a name has the raw target too. */
+        char name[ZNAM_NAME_MAX + 1] = "";
+        char name_esc[160];
+        (void)onion_directory_name_for_db(db, addr, name, sizeof(name));
+        log_json_escape(name_esc, sizeof(name_esc), name);
+
         if (count > 0) off += (size_t)snprintf(body + off, sizeof(body) - off, ",");
         off += (size_t)snprintf(body + off, sizeof(body) - off,
-            "{\"onion\":\"%s\",\"port\":%d,\"services\":%d,"
-            "\"height\":%d,\"last_seen\":%lld,"
-            "\"version\":\"%s\",\"self\":%s,"
+            "{\"onion\":\"%s\",\"name\":\"%s\",\"port\":%d,\"services\":%d,"
+            "\"height\":%d,\"last_seen\":%lld,\"version\":\"%s\",\"self\":%s,"
             "\"clearnet_ip\":\"%s\",\"clearnet_port\":%d,"
             "\"age_secs\":%lld,\"stale\":%s,\"first_seen\":%lld,"
             "\"last_probe\":%lld,\"probe_ok\":%s,\"fail_count\":%d,"
+            "\"last_success\":%lld,\"dial_success_count\":%lld,"
             "\"source\":\"%s\"}",
-            addr_esc, port, svc, h,
+            addr_esc, name_esc, port, svc, h,
             (long long)ls, ver_esc,
             self ? "true" : "false",
             cip_esc, cport,
@@ -502,6 +674,7 @@ static size_t serve_directory_json(uint8_t *response, size_t max)
             fresh == ONION_DIR_STALE ? "true" : "false",
             (long long)fs, (long long)lp,
             probe_ok ? "true" : "false", fails,
+            (long long)lsucc, (long long)ok_n,
             src_esc);
         count++;
     }
@@ -564,58 +737,95 @@ static size_t serve_directory_html(uint8_t *response, size_t max)
     if (n > 0) off = (size_t)n;
 
     off += (size_t)snprintf(body + off, sizeof(body) - off,
-        "<div class='table-wrap'><table><tr><th>.onion Address</th><th>Port</th>"
-        "<th>Height</th><th>Last Seen</th><th>Version</th></tr>");
+        "<div class='table-wrap'><table><tr><th>Node</th><th>Port</th>"
+        "<th>Height</th><th>Last Seen</th><th>Reached</th>"
+        "<th>Version</th></tr>");
+
+    int64_t now = (int64_t)platform_time_wall_time_t();
 
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db,
-        "SELECT onion_address, port, height, last_seen, version, self "
+        "SELECT onion_address, port, height, last_seen, version, self, "
+        "COALESCE(last_success,0), COALESCE(dial_success_count,0), "
+        "COALESCE(fail_count,0) "
         "FROM peer_directory ORDER BY self DESC, last_seen DESC LIMIT "
         ONION_DIR_STR(ONION_DIR_SERVE_MAX),
         -1, &s, NULL) != SQLITE_OK || !s) {
+        if (s) sqlite3_finalize(s);
         sqlite3_close(db);
         return 0;
     }
 
     int count = 0;
-    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && off + 512 < sizeof(body)) {
+    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && off + 900 < sizeof(body)) {
         const char *addr = (const char *)sqlite3_column_text(s, 0);
         int port = sqlite3_column_int(s, 1);
         int h = sqlite3_column_int(s, 2);
         int64_t ls = sqlite3_column_int64(s, 3);
         const char *ver = (const char *)sqlite3_column_text(s, 4);
         int self = sqlite3_column_int(s, 5);
+        int64_t lsucc = sqlite3_column_int64(s, 6);
+        int64_t ok_n = sqlite3_column_int64(s, 7);
+        int64_t fail_n = sqlite3_column_int64(s, 8);
 
         /* Rows stored by pre-validation binaries may be hostile. */
         if (!onion_hostname_valid(addr)) continue;
 
         /* Same freshness rule the JSON endpoint applies — one page must
          * never show what the other refuses to serve. */
-        int64_t now_html = (int64_t)platform_time_wall_time_t();
         enum onion_dir_freshness fresh =
-            onion_directory_freshness(ls, now_html, self != 0);
+            onion_directory_freshness(ls, now, self != 0);
         if (fresh == ONION_DIR_EXPIRED) continue;
 
         char addr_esc[160], ver_esc[96];
         html_escape(addr_esc, sizeof(addr_esc), addr);
         html_escape(ver_esc, sizeof(ver_esc), ver);
 
+        /* On-chain name for this endpoint, shown as the heading WITH the
+         * raw .onion beneath it — a visitor always sees the address they
+         * would actually connect to. */
+        char name[ZNAM_NAME_MAX + 1] = "";
+        char name_esc[256];
+        (void)onion_directory_name_for_db(db, addr, name, sizeof(name));
+        html_escape(name_esc, sizeof(name_esc), name);
+
         /* Format last_seen as relative time */
-        int64_t age = onion_directory_age_secs(ls, now_html);
+        int64_t age = onion_directory_age_secs(ls, now);
         char age_str[48];
         if (age < 60) snprintf(age_str, sizeof(age_str), "%llds ago", (long long)age);
         else if (age < 3600) snprintf(age_str, sizeof(age_str), "%lldm ago", (long long)(age/60));
         else if (age < 86400) snprintf(age_str, sizeof(age_str), "%lldh ago", (long long)(age/3600));
         else snprintf(age_str, sizeof(age_str), "%lldd ago", (long long)(age/86400));
 
+        /* "Reached" is OUR contact record, kept distinct from "last seen"
+         * (which a mere advertisement refreshes). Never reached is stated,
+         * not blanked. */
+        char reach_str[64];
+        if (lsucc <= 0)
+            snprintf(reach_str, sizeof(reach_str), "never (%lld fail)",
+                     (long long)fail_n);
+        else {
+            int64_t sage = now - lsucc;
+            if (sage < 0) sage = 0;
+            snprintf(reach_str, sizeof(reach_str), "%lldh ago (%lld ok)",
+                     (long long)(sage / 3600), (long long)ok_n);
+        }
+
+        /* The name is a LABEL for the address, never a substitute: the raw
+         * .onion a visitor would actually connect to is always printed
+         * beneath it, and it is what the link resolves to. */
         off += (size_t)snprintf(body + off, sizeof(body) - off,
-            "<tr%s><td><a href='http://%s/'>%s</a>%s</td>"
-            "<td>%d</td><td>%d</td><td>%s%s</td><td>%s</td></tr>",
+            "<tr%s><td><a href='http://%s/'>%s</a>%s"
+            "<div class='desc'>%s</div></td>"
+            "<td>%d</td><td>%d</td><td>%s%s</td><td>%s</td><td>%s</td></tr>",
             self ? " class='self'" : "",
-            addr_esc, addr_esc,
+            addr_esc,
+            name[0] ? name_esc : addr_esc,
             self ? " (this node)" : "",
+            addr_esc,
             port, h, age_str,
-            fresh == ONION_DIR_STALE ? " (stale)" : "", ver_esc);
+            fresh == ONION_DIR_STALE ? " (stale)" : "",
+            reach_str, ver_esc);
         count++;
     }
     sqlite3_finalize(s);
@@ -623,11 +833,14 @@ static size_t serve_directory_html(uint8_t *response, size_t max)
 
     off += (size_t)snprintf(body + off, sizeof(body) - off,
         "</table></div>"
-        "<p class='muted'>%d nodes in directory</p>"
+        "<p class='muted'>%d nodes in directory (rows unseen for more than "
+        "%lld hours are expired)</p>",
+        count, (long long)(ONION_DIR_EXPIRE_SECS / 3600));
+    off += (size_t)snprintf(body + off, sizeof(body) - off,
         "<p class='muted'><a href='/directory.json'>JSON API</a> | "
         "<a href='/'>Home</a></p>"
         "<footer>ZClassic23 &mdash; one binary, one onion, one stack</footer>"
-        "</body></html>", count);
+        "</body></html>");
 
     return (size_t)snprintf((char *)response, max,
         "HTTP/1.1 200 OK\r\n"
@@ -921,6 +1134,11 @@ const char *onion_service_start(const char *datadir)
      * refresh runs every ONION_DIR_REFRESH_SECS so the list this node
      * serves keeps up with reality (onion_directory.c). */
     if (datadir) {
+        /* The boot round seeds the table from the discovery sources,
+         * registers self, and ages out rows nothing has seen since the
+         * last run — before this, a row written once at boot lived
+         * forever. From here the supervised refresh child keeps sweeping
+         * on its own cadence. */
         onion_directory_boot_round();
         onion_service_directory_register_refresh();
     }

@@ -38,6 +38,70 @@ typedef int (*onion_peer_discover_fn)(const char *datadir,
 typedef int (*onion_signed_peer_source_fn)(void *ctx,
                                            struct onion_peer *out,
                                            size_t max);
+/* The v3 hostname shape has ONE home: onion_hostname_valid(), declared
+ * in net/onion_peer_merge.h and implemented in lib/net/src/onion_peer_merge.c.
+ * Every consumer in this header — the scanner's callers, the directory
+ * table, the name join — holds hostnames to that single predicate. */
+
+/* Is `name` safe to render as a label for an endpoint (HTML page, JSON
+ * document)? A RENDER guard only: bounded length, lowercase alphanumeric
+ * and hyphen. Registry validity belongs to the on-chain ZNAM fold that
+ * writes znam_names and is NOT re-decided here — lib/net ranks below
+ * lib/znam, and a second answer to "is this a legal name" is a second
+ * truth waiting to drift. Kept at or tighter than the registry rule, so it
+ * can only ever withhold a label, never invent one. */
+bool onion_directory_label_is_renderable(const char *name);
+
+/* ── /directory.json onion-field scanner ────────────────────────────
+ *
+ * Advance *cursor past the next `"onion":"<host>"` field and copy <host>
+ * (NUL-terminated) into out. Malformed, over-long, or unterminated fields
+ * are SKIPPED, not fatal: one bad record from a hostile peer must not
+ * truncate the scan of the good ones. Returns false only when no further
+ * field exists. Shape validation is the CALLER's job — this is a parser,
+ * not a filter. */
+bool onion_directory_scan_next_onion(const char **cursor,
+                                     char *out, size_t out_len);
+
+/* ── Directory freshness ledger ─────────────────────────────────────
+ *
+ * The peer_directory table, its freshness columns, the expiry sweep and
+ * the supervised refresh round live in net/onion_service.h — ONE owner
+ * for the whole lifecycle. This header keeps only the pieces a consumer
+ * needs without taking on the lifecycle: the /directory.json scanner
+ * above and the name join below.
+ *
+ * A directory record is a HINT about WHERE to look, never proof of WHO
+ * is there (docs/work/NAT_AND_ONION_TRANSPORT.md), and the two write
+ * paths keep that distinction in the data:
+ *
+ *   ADVERTISED  — a peer's directory listed this onion. Recorded with
+ *                 onion_service_directory_learn(): INSERT OR IGNORE, so
+ *                 hearsay creates a row but never overwrites one we
+ *                 measured, and never touches last_success.
+ *   MEASURED    — WE dialled it. Recorded with
+ *                 onion_service_directory_observe(): reachable=true
+ *                 refreshes last_seen + last_success and bumps
+ *                 dial_success_count; reachable=false bumps fail_count on
+ *                 an EXISTING row only, never inserts, and never
+ *                 refreshes last_seen. A failed dial carries no identity.
+ *
+ * `sqlite3` is forward-declared so a consumer of this contract does not
+ * have to include sqlite3.h. */
+struct sqlite3;
+
+/* Resolve the ZNAM name registered on-chain for a .onion target (the
+ * znam_names projection, target_type ZNAM_TYPE_ONION). Matches the stored
+ * target with and without the ".onion" suffix. Returns true and fills out
+ * when a name exists; false (out set to "") otherwise, including when the
+ * projection table does not exist yet. */
+bool onion_directory_name_for(const char *datadir, const char *onion,
+                              char *out, size_t out_len);
+
+/* Same join against an already-open node.db handle — for a page that
+ * resolves a name per row and must not reopen the database each time. */
+bool onion_directory_name_for_db(struct sqlite3 *db, const char *onion,
+                                 char *out, size_t out_len);
 
 /* ── the rich endpoint, alongside the narrow peer ───────────────────
  *

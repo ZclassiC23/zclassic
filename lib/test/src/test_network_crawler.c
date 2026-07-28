@@ -622,6 +622,54 @@ int test_network_crawler(void)
         printf("done\n");
     }
 
+    /* ── 14b. a FULL census: unprobed rows never evict measurements ────── */
+    printf("  full census: not-probed never evicts a measured row... ");
+    {
+        network_crawler_test_reset();
+        network_crawler_test_set_probe_fn(onion_aware_probe);
+        onion_probe_counters_reset();
+        /* No onion dials at all this phase: everything onion banks NOT
+         * PROBED, which is the shape the defect needed (ncrawl_bank_unprobed
+         * stamps last_probe_us = now, so a fresh unprobed row is never the
+         * smallest-last_probe_us victim and a pure oldest-first eviction
+         * always took a real measurement instead). */
+        network_crawler_test_set_onion_limits(0, 1, 1000, 0);
+
+        /* Fill the bounded census to capacity with MEASURED clearnet rows. */
+        struct net_address batch[NCRAWL_MAX_PER_ROUND];
+        int rounds = NCRAWL_MAX_CENSUS / NCRAWL_MAX_PER_ROUND;
+        for (int r = 0; r < rounds; r++) {
+            for (int i = 0; i < NCRAWL_MAX_PER_ROUND; i++)
+                batch[i] = mk_addr((uint8_t)r, true, false, (uint8_t)i,
+                                   (uint16_t)(20000 + r * NCRAWL_MAX_PER_ROUND
+                                              + i));
+            NC_CHECK(network_crawler_test_probe_round(batch, NCRAWL_MAX_PER_ROUND)
+                     == NCRAWL_MAX_PER_ROUND);
+        }
+        NC_CHECK(network_crawler_test_census_count() == NCRAWL_MAX_CENSUS);
+        struct network_census_view full;
+        NC_CHECK(network_crawler_get_view(&full));
+        NC_CHECK(full.measured_count == NCRAWL_MAX_CENSUS);
+
+        /* Now push a full round of onions the crawler will NOT dial. Each
+         * one banks NOT PROBED with a fresh timestamp. */
+        struct net_address onions[NCRAWL_MAX_PER_ROUND];
+        for (int i = 0; i < NCRAWL_MAX_PER_ROUND; i++)
+            onions[i] = mk_onion((uint8_t)(0xC0 + i), (uint16_t)(21100 + i));
+        NC_CHECK(network_crawler_test_probe_round(onions, NCRAWL_MAX_PER_ROUND)
+                 == NCRAWL_MAX_PER_ROUND);
+
+        /* The aggregate invariant: not one measurement was displaced. */
+        struct network_census_view after;
+        NC_CHECK(network_crawler_get_view(&after));
+        NC_CHECK(network_crawler_test_census_count() == NCRAWL_MAX_CENSUS);
+        NC_CHECK(after.measured_count == NCRAWL_MAX_CENSUS);
+        NC_CHECK(after.not_probed_count == 0);
+
+        network_crawler_test_reset();
+        printf("done\n");
+    }
+
     /* ── 15. the REAL default probe degrades an onion to NOT PROBED ─────── */
     printf("  default probe: no Tor => onion NOT PROBED (never unreachable)... ");
     {

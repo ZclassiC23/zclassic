@@ -216,12 +216,22 @@ static void ncrawl_clamp(struct network_crawler_config *c)
 
 /* ── bounded census table ────────────────────────────────────────────── */
 
-/* Insert-or-update by addr; evict the oldest (smallest last_probe_us) row when
- * full. Caller holds g_ncrawl.lock.
+/* Insert-or-update by addr; evict when full. Caller holds g_ncrawl.lock.
  *
  * A NOT_PROBED row NEVER overwrites a row we actually measured — "we did not
  * look this round" must not erase "we measured it last round". It only ever
- * inserts an address we have no measurement for at all. */
+ * inserts an address we have no measurement for at all.
+ *
+ * That per-address rule is not enough on its own, and the AGGREGATE one is
+ * what this eviction order exists for. ncrawl_bank_unprobed() stamps
+ * last_probe_us = now on every row it banks, so a fresh NOT_PROBED row is
+ * never the smallest-last_probe_us victim — a pure oldest-first eviction
+ * therefore let up to onion_max_per_round unprobed rows per round push real
+ * measurements out of the bounded census, one round after another. So:
+ * evict a NOT_PROBED row before any MEASURED one, oldest-first inside each
+ * class, and refuse to insert a NOT_PROBED row at all when every seat is
+ * held by a measurement. A row we never looked at cannot displace a row we
+ * did. */
 static void ncrawl_census_ingest_locked(const struct ncrawl_probe_result *pr)
 {
     if (!pr || !pr->addr[0])
@@ -240,12 +250,27 @@ static void ncrawl_census_ingest_locked(const struct ncrawl_probe_result *pr)
         g_ncrawl.census[g_ncrawl.census_count++] = *pr;
         return;
     }
-    int oldest = 0;
-    for (int i = 1; i < g_ncrawl.census_count; i++)
+    int victim = 0;
+    bool victim_measured =
+        g_ncrawl.census[0].outcome == (uint8_t)NCRAWL_OUTCOME_MEASURED;
+    for (int i = 1; i < g_ncrawl.census_count; i++) {
+        bool measured =
+            g_ncrawl.census[i].outcome == (uint8_t)NCRAWL_OUTCOME_MEASURED;
+        if (victim_measured && !measured) {
+            victim = i;
+            victim_measured = false;
+            continue;
+        }
+        if (victim_measured != measured)
+            continue;                       /* keep the unprobed candidate */
         if (g_ncrawl.census[i].last_probe_us <
-            g_ncrawl.census[oldest].last_probe_us)
-            oldest = i;
-    g_ncrawl.census[oldest] = *pr;
+            g_ncrawl.census[victim].last_probe_us)
+            victim = i;
+    }
+    if (victim_measured &&
+        pr->outcome == (uint8_t)NCRAWL_OUTCOME_NOT_PROBED)
+        return;   /* full of measurements: the unprobed row waits a round */
+    g_ncrawl.census[victim] = *pr;
 }
 
 void ncrawl_census_ingest(const struct ncrawl_probe_result *pr)
@@ -455,6 +480,12 @@ bool network_crawler_get_view(struct network_census_view *out)
 {
     if (!out)
         return false;
+    /* Defined on every path. A false return means "no fold yet", and a
+     * caller that reads `out` anyway must see zeros, not whatever was on
+     * its stack — the census can now legitimately refuse a row (see the
+     * eviction order in ncrawl_census_ingest_locked), so "the answer is
+     * always there" is no longer a safe assumption anywhere. */
+    memset(out, 0, sizeof(*out));
     zcl_mutex_lock(&g_ncrawl.lock);
     bool ready = g_ncrawl.view.ready;
     if (ready)
@@ -678,6 +709,7 @@ bool network_crawler_test_census_row(const char *addr,
 {
     if (!addr || !out)
         return false;
+    memset(out, 0, sizeof(*out));   /* defined even when the row is absent */
     bool found = false;
     zcl_mutex_lock(&g_ncrawl.lock);
     for (int i = 0; i < g_ncrawl.census_count; i++) {

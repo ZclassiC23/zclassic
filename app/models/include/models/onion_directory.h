@@ -25,6 +25,23 @@
  *                   signer, when resolvable. A row with no recorded owner is
  *                   permanently immutable (fail-closed), exactly as
  *                   zid_identities treats an unresolvable signer.
+ *                   KNOWN, ACCEPTED, AND NAMED: that fail-closed choice is
+ *                   also a free denial of the UPDATE path. Anyone can
+ *                   register a hostname they do not operate from a
+ *                   non-P2PKH first input; explorer_index_apply_zdir_overlay
+ *                   then stores owner_address "", zdir_owner_matches()
+ *                   refuses every signer against it, and the true operator
+ *                   can never update or deregister that hostname — no key
+ *                   recovers it. The cost is bounded by what a row IS: a
+ *                   hint, never proof, that can only ever ADD a dial
+ *                   candidate. So a squatted row wastes one connection
+ *                   attempt and denies its rightful owner a directory
+ *                   entry; it cannot exclude that node from any other
+ *                   discovery source, and the node stays reachable. The
+ *                   fix is a signer rule that resolves more input forms
+ *                   (or an explicit unclaimed state), not opening the
+ *                   update path to an unproven signer — that would trade a
+ *                   denial for a takeover.
  *   master_pubkey   optional ed25519 zid master key the record bound to this
  *                   hostname (has_pubkey is the in-memory presence bit; the
  *                   column is NULL otherwise). NOT verified here — binding a
@@ -88,9 +105,14 @@ bool db_onion_directory_save(struct node_db *ndb,
 bool db_onion_directory_find(struct node_db *ndb, const char *hostname,
                              struct db_onion_directory *out);
 
-/* Newest-registration-first page of ACTIVE rows only — the peer-discovery
- * read. Returns the number of rows written to `out` (<= max). max<=0 or a
- * negative offset yields 0. */
+/* MOST-SENIOR-FIRST page of ACTIVE rows only — the peer-discovery read,
+ * ordered by ascending `height` (the registration height, i.e. the seniority
+ * signal documented above) and then hostname. The page is bounded and the
+ * callers ask for a slate they intend to dial, so newest-first would let a
+ * burst of fresh registrations take every slot and displace every
+ * long-standing node — the ordering is the anti-squatting property, not a
+ * cosmetic choice. Returns the number of rows written to `out` (<= max).
+ * max<=0 or a negative offset yields 0. */
 int db_onion_directory_list_active(struct node_db *ndb,
                                    struct db_onion_directory *out,
                                    int max, int offset);

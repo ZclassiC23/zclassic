@@ -69,17 +69,47 @@ int onion_peers_collect(struct onion_peer *out, size_t max,
 
     int kept = 0;
     int rejected = 0;
+    const bool have_unsigned = (discover && datadir);
 
-    /* Signed first: those entries prove freshness, so they are the ones
-     * worth keeping when capacity runs out. */
-    if (signed_source) {
-        int found = onion_clamp(signed_source(signed_ctx, out, max), max);
+    /* CAPACITY IS RESERVED, AND THE BOUNDED SOURCE GOES FIRST.
+     *
+     * The signed slot used to be handed the full `max` and run first. The
+     * chain projection wired behind it returns up to 64 rows and connman
+     * asks for exactly 64, so on any node with >= 64 registered rows the
+     * unsigned scrape was never invoked at all — not outranked, never
+     * called. Consuming all the capacity is the same outage as removing a
+     * source, and this call is the one place that can cause it.
+     *
+     * The fix is an order, not a second pass. The unsigned scrape runs
+     * FIRST into at most half the slate; the signed source then takes
+     * everything still free. That gives both properties at once and costs
+     * nothing in the common case:
+     *   - the scrape can never be squeezed out (it goes first), and it can
+     *     never squeeze the signed source out either (it is capped at
+     *     half);
+     *   - an empty wallet — the usual state — scrapes nothing, so the
+     *     signed source still gets the WHOLE slate. Re-asking a stable
+     *     source for the leftovers would not work: it returns the same
+     *     prefix, which the merge then drops as duplicates.
+     * Same rule, same reason, as the signed-source budget in
+     * config/src/boot_onion_discovery.c.
+     *
+     * With max == 1 there is nothing to split, and the slot goes to the
+     * source that always works. */
+    size_t unsigned_budget = max;
+    if (signed_source && max >= 2)
+        unsigned_budget = max / 2u;
+
+    if (have_unsigned && unsigned_budget > 0) {
+        int found = onion_clamp(discover(datadir, out, unsigned_budget),
+                                unsigned_budget);
         kept = onion_peers_merge(out, kept, 0, found, &rejected);
     }
 
-    if (discover && datadir && (size_t)kept < max) {
+    if (signed_source && (size_t)kept < max) {
         size_t room = max - (size_t)kept;
-        int found = onion_clamp(discover(datadir, out + kept, room), room);
+        int found = onion_clamp(signed_source(signed_ctx, out + kept, room),
+                                room);
         kept = onion_peers_merge(out, kept, kept, found, &rejected);
     }
 

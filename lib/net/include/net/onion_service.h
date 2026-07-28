@@ -155,6 +155,26 @@ void onion_directory_boot_round(void);
 /* Re-publish our own row after Tor hands us an address. */
 void onion_directory_register_self(void);
 
+/* ── Our own clearnet endpoint: published, never probed on a tick ────
+ *
+ * The refresh round runs on the SHARED supervisor tick runner (30 s
+ * liveness deadline). The public-IP probe it used to call
+ * (peer_strategy_discover_self) does NAT-PMP + UPnP SSDP/SOAP and its
+ * own comment records that it blocks for tens of seconds on a gateway
+ * that ignores it. Blocking there freezes every other supervised child,
+ * so the tick now READS what this setter published and never dials.
+ *
+ * THE PRODUCER PUBLISHES: peer_strategy_discover_self() calls this at the
+ * end of every probe it runs, so there is no caller who has to remember
+ * to. A NULL/all-zero ip or port 0 clears the cache, and an unpublished
+ * cache simply means our served row carries no clearnet endpoint (exactly
+ * what a failed probe produced before). Thread-safe. */
+void onion_directory_set_self_clearnet(const uint8_t ip[4], uint16_t port);
+
+/* Drop the cached endpoint (tests, and address changes that invalidate
+ * it). Idempotent. */
+void onion_directory_reset_self_clearnet(void);
+
 /* ── The onion graph (transitive discovery) ─────────────────────────
  *
  * A /directory.json response carries an "onion" field per node, and the

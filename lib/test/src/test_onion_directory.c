@@ -1,24 +1,37 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Directory freshness and the onion graph (lib/net/src/onion_service.c,
- * plus the transitive half of try_onion_seed_fetch in connman.c).
+ * test_onion_directory — one group over the ONE onion directory
+ * (lib/net/src/onion_directory.c + the transitive half of
+ * try_onion_seed_fetch in connman.c). Two teams built a directory at the
+ * same path for overlapping purposes; this file is the union of both
+ * their test suites, and every assertion from each is kept.
  *
- * Two defects are pinned here.
+ * FOUR contracts are pinned here.
  *
  *  1. The peer directory used to be written once at boot and never again:
  *     no refresh, no last_seen maintenance, no expiry, and
  *     /directory.json handed out up to 500 rows with nothing on them a
  *     reader could use to tell a minute-old row from a week-old one.
- *     Covered below: the pure freshness rule, expiry on a refresh round,
- *     census observations moving (or deliberately NOT moving) last_seen,
- *     and the age/policy fields on every served row.
+ *     Covered: the pure freshness rule, expiry on a refresh round, census
+ *     observations moving (or deliberately NOT moving) last_seen, and the
+ *     age/policy fields on every served row.
  *
  *  2. try_onion_seed_fetch string-scanned a fetched /directory.json for
  *     clearnet_ip and threw the "onion" field away, so an onion peer
- *     could never teach this node about another onion peer. Covered
- *     below: the parser for that field (validation, dedupe, self-skip,
- *     per-object field binding, the per-response cap) and the follow
+ *     could never teach this node about another onion peer. Covered: both
+ *     parsers for that field (validation, dedupe, self-skip, per-object
+ *     field binding, the per-response cap, and that ONE malformed record
+ *     cannot hide the honest records that follow it) and the follow
  *     budget that stops one response from dominating the pool.
+ *
+ *  3. serve_search matched only the raw .onion hostname, so a query for a
+ *     registered ZNAM name returned "No results" even with the row
+ *     folded. The name join is asserted both ways, and every page that
+ *     shows a name is asserted to show the RAW address beside it.
+ *
+ *  4. ONE v3 hostname predicate. onion_hostname_valid() is the single
+ *     definition in the tree; the shape assertions below run against it,
+ *     not against a second copy that could drift.
  *
  * The load-bearing property throughout: a directory record is a HINT
  * ABOUT WHERE TO LOOK, never proof of who is there. So every path here
@@ -32,11 +45,17 @@
 #include "test/test_core.h"
 
 #include "platform/time_compat.h"
+#include "net/onion_discovery.h"
 #include "net/onion_service.h"
 #include "net/onion_peer_merge.h"
+#include "net/onion_ratelimit.h"
 #include "util/path_check.h"
+#include "znam/znam.h"
 
 #include <sqlite3.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <string.h>
 
 /* Two well-formed v3 names (56 chars from [a-z2-7] + ".onion") and one
  * that fails the rule in the least obvious way — a '1', which is not in
@@ -49,6 +68,13 @@
     "cccccccccccccccccccccccccccccccccccccccccccccccccccccccf.onion"
 #define OD_HOST_BAD \
     "1111111111111111111111111111111111111111111111111111111a.onion"
+
+/* The second suite's own host set, kept distinct so the two halves never
+ * see each other's rows. */
+#define HOST_A "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion"
+#define HOST_B "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.onion"
+#define HOST_C "cccccccccccccccccccccccccccccccccccccccccccccccccccccccc.onion"
+#define HOST_SELF "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz.onion"
 
 #define OD_CHECK(label, cond) do { \
     printf("onion_directory: %s... ", (label)); \
@@ -470,15 +496,571 @@ static int od_durable_directory(void)
     return failures;
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+ * The second suite: names, the /directory.json scanner, and the
+ * observation semantics driven through the SAME lifecycle API above.
+ * Its own datadir and its own host set, so neither half can see the
+ * other's rows.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+/* ── fixture helpers ───────────────────────────────────────────── */
+
+static sqlite3 *od_open(const char *datadir)
+{
+    char path[512];
+    snprintf(path, sizeof(path), "%s/node.db", datadir);
+    sqlite3 *db = NULL;
+    if (sqlite3_open(path, &db) != SQLITE_OK) {
+        if (db) sqlite3_close(db);
+        return NULL;
+    }
+    sqlite3_busy_timeout(db, 5000);
+    return db;
+}
+
+static bool od_exec(sqlite3 *db, const char *sql)
+{
+    char *err = NULL;
+    int rc = sqlite3_exec(db, sql, NULL, NULL, &err);
+    if (rc != SQLITE_OK) {
+        printf("[sql: %s] ", err ? err : "?");
+        sqlite3_free(err);
+        return false;
+    }
+    return true;
+}
+
+/* Single-integer scalar query; returns `missing` when no row. */
+static int64_t od_scalar(sqlite3 *db, const char *sql, int64_t missing)
+{
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK || !s) {
+        if (s) sqlite3_finalize(s);
+        return missing;
+    }
+    int64_t v = missing;
+    if (sqlite3_step(s) == SQLITE_ROW)     // raw-sql-ok: test fixture readback
+        v = sqlite3_column_int64(s, 0);
+    sqlite3_finalize(s);
+    return v;
+}
+
+/* Create the ZNAM projection table the join reads and register one name. */
+static bool od_register_name(sqlite3 *db, const char *name,
+                             const char *target, int height)
+{
+    if (!od_exec(db,
+        "CREATE TABLE IF NOT EXISTS znam_names ("
+        "name TEXT PRIMARY KEY,"
+        "owner_address TEXT NOT NULL,"
+        "target_type INTEGER NOT NULL,"
+        "target_value TEXT NOT NULL,"
+        "reg_txid BLOB NOT NULL,"
+        "reg_height INTEGER NOT NULL,"
+        "last_update_txid BLOB NOT NULL)"))
+        return false;
+
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO znam_names "
+        "(name, owner_address, target_type, target_value, reg_txid,"
+        " reg_height, last_update_txid) "
+        "VALUES (?1,'t1owner',?2,?3,zeroblob(32),?4,zeroblob(32))",
+        -1, &s, NULL) != SQLITE_OK || !s) {
+        if (s) sqlite3_finalize(s);
+        return false;
+    }
+    sqlite3_bind_text(s, 1, name, -1, SQLITE_STATIC);
+    sqlite3_bind_int(s, 2, ZNAM_TYPE_ONION);
+    sqlite3_bind_text(s, 3, target, -1, SQLITE_STATIC);
+    sqlite3_bind_int(s, 4, height);
+    bool ok = sqlite3_step(s) == SQLITE_DONE;  // raw-sql-ok: test fixture write
+    sqlite3_finalize(s);
+    return ok;
+}
+
+/* ── 5. the ONE v3 hostname predicate ──────────────────────────── */
+
+/* These used to run against onion_hostname_is_valid_v3, a byte-identical
+ * second copy of onion_hostname_valid. The copy is gone; the assertions
+ * are not — they now hold the single surviving definition to exactly the
+ * same shape rule, which is the point of collapsing the two. */
+static int od_test_hostname_shape(void)
+{
+    int failures = 0;
+
+    OD_CHECK("valid v3 host accepted",
+             onion_hostname_valid(HOST_A));
+    OD_CHECK("NULL rejected", !onion_hostname_valid(NULL));
+    OD_CHECK("empty rejected", !onion_hostname_valid(""));
+    OD_CHECK("missing suffix rejected", !onion_hostname_valid(
+             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+    OD_CHECK("v2-length rejected", !onion_hostname_valid(
+             "abcdefghij234567.onion"));
+    OD_CHECK("uppercase rejected", !onion_hostname_valid(
+             "Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion"));
+    /* '1' and '8' are outside the base32 alphabet [a-z2-7]. */
+    OD_CHECK("out-of-alphabet digit rejected", !onion_hostname_valid(
+             "1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion"));
+    OD_CHECK("trailing garbage rejected", !onion_hostname_valid(
+             HOST_A "x"));
+    return failures;
+}
+
+/* ── 2. /directory.json onion-field scanner ────────────────────── */
+
+static int od_test_scan(void)
+{
+    int failures = 0;
+    char host[64];
+
+    /* A realistic response: two good records around one whose onion field
+     * is empty, one over-long, and clearnet fields interleaved. */
+    static const char BODY[] =
+        "{\"nodes\":["
+        "{\"onion\":\"" HOST_A "\",\"clearnet_ip\":\"1.2.3.4\"},"
+        "{\"onion\":\"\",\"clearnet_ip\":\"5.6.7.8\"},"
+        "{\"onion\":\"" /* 200 chars: over-long, must be skipped not fatal */
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        "aaaaaaaa\"},"
+        "{\"onion\":\"" HOST_B "\",\"clearnet_ip\":\"9.9.9.9\"}"
+        "],\"count\":4}";
+
+    const char *cur = BODY;
+    bool got_a = onion_directory_scan_next_onion(&cur, host, sizeof(host));
+    OD_CHECK("scan finds first onion", got_a && strcmp(host, HOST_A) == 0);
+
+    /* The empty and the over-long records must be SKIPPED, not fatal — a
+     * hostile peer cannot hide the honest records that follow its own. */
+    bool got_b = onion_directory_scan_next_onion(&cur, host, sizeof(host));
+    OD_CHECK("scan survives empty + over-long records",
+             got_b && strcmp(host, HOST_B) == 0);
+
+    OD_CHECK("scan terminates at end of body",
+             !onion_directory_scan_next_onion(&cur, host, sizeof(host)));
+
+    /* Unterminated field: no crash, no read past the NUL, returns false. */
+    static const char TRUNC[] = "{\"nodes\":[{\"onion\":\"aaaa";
+    cur = TRUNC;
+    OD_CHECK("unterminated field returns false",
+             !onion_directory_scan_next_onion(&cur, host, sizeof(host)));
+
+    /* A body with no onion field at all — the pre-change clearnet-only
+     * shape — must simply yield nothing. */
+    static const char NOONION[] = "{\"nodes\":[{\"clearnet_ip\":\"1.2.3.4\"}]}";
+    cur = NOONION;
+    OD_CHECK("clearnet-only body yields no onions",
+             !onion_directory_scan_next_onion(&cur, host, sizeof(host)));
+
+    /* Defensive arguments. */
+    cur = BODY;
+    OD_CHECK("NULL out rejected",
+             !onion_directory_scan_next_onion(&cur, NULL, sizeof(host)));
+    OD_CHECK("zero-length out rejected",
+             !onion_directory_scan_next_onion(&cur, host, 0));
+    OD_CHECK("NULL cursor rejected",
+             !onion_directory_scan_next_onion(NULL, host, sizeof(host)));
+    return failures;
+}
+
+/* ── 7. observation semantics + freshness columns ──────────────── */
+
+/* Ported onto the surviving lifecycle API. The dropped implementation
+ * had three entry points (ensure_table / observe / expire) that
+ * duplicated this file's; the SEMANTICS they asserted are what mattered
+ * and every one of them is kept here:
+ *   ADVERTISED  -> onion_service_directory_learn()   (INSERT OR IGNORE)
+ *   REACHED     -> onion_service_directory_observe(reachable = true)
+ *   UNREACHABLE -> onion_service_directory_observe(reachable = false)
+ * One assertion could not survive verbatim: "observe before node.db
+ * exists is a silent no-op" tested that the dropped writer opened
+ * READWRITE and never created the file. The surviving writer is gated on
+ * the SERVICE, not on the file — it refuses while no datadir is
+ * published — so that guard is asserted in its own terms below. */
+static int od_test_observe(const char *datadir)
+{
+    int failures = 0;
+
+    /* Nothing may reach the directory before the service publishes a
+     * datadir: a net-layer probe can never race the boot path. */
+    OD_CHECK("learn before the service has a datadir is refused",
+             !onion_service_directory_learn(HOST_A, 8033, 1234, 0));
+
+    onion_service_start(datadir);
+
+    /* ADVERTISED creates the row: heard about, never contacted. */
+    OD_CHECK("advertised creates a row",
+             onion_service_directory_learn(HOST_A, 8033, 1234, 0));
+    sqlite3 *db = od_open(datadir);
+    if (!db) { printf("onion_directory: cannot open fixture db\n"); return 1; }
+
+    OD_CHECK("advertised stored exactly one row",
+             od_scalar(db, "SELECT COUNT(*) FROM peer_directory "
+                           "WHERE onion_address='" HOST_A "'", -1) == 1);
+    OD_CHECK("advertised sets last_seen",
+             od_scalar(db, "SELECT last_seen FROM peer_directory "
+                           "WHERE onion_address='" HOST_A "'", 0) > 0);
+    OD_CHECK("advertised sets first_seen",
+             od_scalar(db, "SELECT first_seen FROM peer_directory "
+                           "WHERE onion_address='" HOST_A "'", 0) > 0);
+    OD_CHECK("advertised is NOT contact (last_success stays 0)",
+             od_scalar(db, "SELECT last_success FROM peer_directory "
+                           "WHERE onion_address='" HOST_A "'", -1) == 0);
+    OD_CHECK("advertised records the advertised height",
+             od_scalar(db, "SELECT height FROM peer_directory "
+                           "WHERE onion_address='" HOST_A "'", -1) == 1234);
+
+    struct onion_directory_observation obs;
+    struct onion_directory_refresh_stats st;
+
+    /* UNREACHABLE on an UNKNOWN host must not insert: a failed dial
+     * carries no identity. */
+    memset(&obs, 0, sizeof(obs));
+    snprintf(obs.hostname, sizeof(obs.hostname), "%s", HOST_C);
+    obs.reachable = false;
+    OD_CHECK("failed dial on unknown host inserts nothing",
+             onion_service_directory_observe(&obs, 1, &st) == 0 &&
+             st.unknown == 1 &&
+             od_scalar(db, "SELECT COUNT(*) FROM peer_directory "
+                           "WHERE onion_address='" HOST_C "'", -1) == 0);
+
+    /* UNREACHABLE on a KNOWN host bumps the failure counter only. */
+    int64_t seen_before = od_scalar(db, "SELECT last_seen FROM peer_directory "
+                                        "WHERE onion_address='" HOST_A "'", 0);
+    memset(&obs, 0, sizeof(obs));
+    snprintf(obs.hostname, sizeof(obs.hostname), "%s", HOST_A);
+    obs.reachable = false;
+    OD_CHECK("failed dial is applied to a known row",
+             onion_service_directory_observe(&obs, 1, &st) == 1 &&
+             st.failed == 1);
+    OD_CHECK("failed dial bumps fail_count",
+             od_scalar(db, "SELECT fail_count FROM peer_directory "
+                           "WHERE onion_address='" HOST_A "'", -1) == 1);
+    OD_CHECK("failed dial does NOT refresh last_seen",
+             od_scalar(db, "SELECT last_seen FROM peer_directory "
+                           "WHERE onion_address='" HOST_A "'", -1)
+                 == seen_before);
+
+    /* REACHED is our own contact: both stamps plus the success counter. */
+    memset(&obs, 0, sizeof(obs));
+    snprintf(obs.hostname, sizeof(obs.hostname), "%s", HOST_A);
+    obs.reachable = true;
+    obs.best_height = 0;
+    OD_CHECK("reached is applied",
+             onion_service_directory_observe(&obs, 1, &st) == 1 &&
+             st.refreshed == 1);
+    OD_CHECK("reached sets last_success",
+             od_scalar(db, "SELECT last_success FROM peer_directory "
+                           "WHERE onion_address='" HOST_A "'", 0) > 0);
+    OD_CHECK("reached bumps dial_success_count",
+             od_scalar(db, "SELECT dial_success_count FROM peer_directory "
+                           "WHERE onion_address='" HOST_A "'", -1) == 1);
+    OD_CHECK("reached clears the failure counter",
+             od_scalar(db, "SELECT fail_count FROM peer_directory "
+                           "WHERE onion_address='" HOST_A "'", -1) == 0);
+    OD_CHECK("reached never lowers a known height",
+             od_scalar(db, "SELECT height FROM peer_directory "
+                           "WHERE onion_address='" HOST_A "'", -1) == 1234);
+
+    /* Malformed hostnames never reach the table. */
+    OD_CHECK("malformed host is refused by learn",
+             !onion_service_directory_learn("not-an-onion", 8033, 1, 0) &&
+             !onion_service_directory_learn(NULL, 8033, 1, 0));
+    memset(&obs, 0, sizeof(obs));
+    snprintf(obs.hostname, sizeof(obs.hostname), "%s", "not-an-onion");
+    obs.reachable = true;
+    OD_CHECK("malformed host is refused by observe",
+             onion_service_directory_observe(&obs, 1, &st) == 0 &&
+             st.unknown == 1);
+    OD_CHECK("malformed host is never stored",
+             od_scalar(db, "SELECT COUNT(*) FROM peer_directory", -1) == 1);
+
+    sqlite3_close(db);
+    return failures;
+}
+
+/* ── 8. expiry ─────────────────────────────────────────────────── */
+
+/* The dropped onion_directory_expire(datadir, now, max_age) is gone; the
+ * surviving sweep runs inside onion_service_directory_refresh() against
+ * ONION_DIR_EXPIRE_SECS. Same three properties asserted: the stale
+ * non-self row goes, the SELF row survives however old it is, and a row
+ * inside the window is untouched. The two argument-validation assertions
+ * on the dropped signature become the equivalent guard on the survivor:
+ * a refresh with no published datadir fails rather than silently
+ * reporting success. */
+static int od_test_expiry(const char *datadir)
+{
+    int failures = 0;
+
+    sqlite3 *db = od_open(datadir);
+    if (!db) { printf("onion_directory: cannot open fixture db\n"); return 1; }
+
+    int64_t now = (int64_t)platform_time_wall_time_t();
+    char sql[512];
+
+    /* A stale peer row and a stale SELF row, both older than the cutoff. */
+    snprintf(sql, sizeof(sql),
+        "INSERT OR REPLACE INTO peer_directory "
+        "(onion_address, port, services, height, last_seen, version, self) "
+        "VALUES ('" HOST_B "',8033,0,0,%lld,'test',0)",
+        (long long)(now - ONION_DIR_EXPIRE_SECS - 86400));
+    OD_CHECK("stale peer row inserted", od_exec(db, sql));
+
+    snprintf(sql, sizeof(sql),
+        "INSERT OR REPLACE INTO peer_directory "
+        "(onion_address, port, services, height, last_seen, version, self) "
+        "VALUES ('" HOST_SELF "',8033,0,0,%lld,'test',1)",
+        (long long)(now - ONION_DIR_EXPIRE_SECS - 86400));
+    OD_CHECK("stale self row inserted", od_exec(db, sql));
+    sqlite3_close(db);
+
+    struct onion_directory_refresh_stats st;
+    OD_CHECK("the refresh round completes against a writable directory",
+             onion_service_directory_refresh(&st));
+    OD_CHECK("expire deletes exactly the stale non-self row", st.expired == 1);
+
+    db = od_open(datadir);
+    if (!db) { printf("onion_directory: cannot reopen fixture db\n"); return 1; }
+    OD_CHECK("stale peer row is gone",
+             od_scalar(db, "SELECT COUNT(*) FROM peer_directory "
+                           "WHERE onion_address='" HOST_B "'", -1) == 0);
+    OD_CHECK("self row survives expiry",
+             od_scalar(db, "SELECT COUNT(*) FROM peer_directory "
+                           "WHERE onion_address='" HOST_SELF "'", -1) == 1);
+    OD_CHECK("fresh row survives expiry",
+             od_scalar(db, "SELECT COUNT(*) FROM peer_directory "
+                           "WHERE onion_address='" HOST_A "'", -1) == 1);
+    sqlite3_close(db);
+    return failures;
+}
+
+/* ── 8b. the refresh round READS a cache; it never dials ───────── */
+
+/* The round runs on the shared supervisor tick runner (30 s liveness
+ * deadline) and used to call peer_strategy_discover_self() — NAT-PMP, then
+ * UPnP SSDP + SOAP, then naked IP discovery — every ONION_DIR_REFRESH_SECS.
+ * That function's own comment records that it blocks for tens of seconds on
+ * a gateway that ignores it. Freezing every other supervised child for that
+ * long, every 15 minutes, is the failure class the systemd watchdog has
+ * SIGABRT'd this node for. The endpoint is now PUBLISHED by the probe and
+ * the round only reads it, which is what these assertions pin: what lands
+ * in the self row is exactly what was published, and nothing else. */
+static int od_test_self_clearnet(const char *datadir)
+{
+    int failures = 0;
+    static const uint8_t IP[4] = { 203, 0, 113, 7 };
+
+    onion_directory_set_self_clearnet(IP, 8033);
+    onion_service_set_address(HOST_SELF);   /* re-publishes our own row */
+
+    sqlite3 *db = od_open(datadir);
+    if (!db) { printf("onion_directory: cannot open fixture db\n"); return 1; }
+    OD_CHECK("the self row carries the PUBLISHED clearnet endpoint",
+             od_scalar(db, "SELECT COUNT(*) FROM peer_directory WHERE "
+                           "onion_address='" HOST_SELF "' AND self=1 AND "
+                           "clearnet_ip='203.0.113.7' AND clearnet_port=8033",
+                       -1) == 1);
+    sqlite3_close(db);
+
+    /* Clearing the cache is published too: the next round drops the
+     * endpoint rather than dialing to find out whether it still holds. */
+    onion_directory_reset_self_clearnet();
+    struct onion_directory_refresh_stats st;
+    OD_CHECK("a round with no published endpoint still completes",
+             onion_service_directory_refresh(&st));
+
+    db = od_open(datadir);
+    if (!db) { printf("onion_directory: cannot reopen fixture db\n"); return 1; }
+    OD_CHECK("an unpublished endpoint leaves the self row without one",
+             od_scalar(db, "SELECT COUNT(*) FROM peer_directory WHERE "
+                           "onion_address='" HOST_SELF "' AND self=1 AND "
+                           "clearnet_ip='' AND clearnet_port=0", -1) == 1);
+    /* Publishing an all-zero address is an absence, not an endpoint. */
+    static const uint8_t ZERO[4] = { 0, 0, 0, 0 };
+    onion_directory_set_self_clearnet(ZERO, 8033);
+    OD_CHECK("an all-zero published address is treated as no endpoint",
+             onion_service_directory_refresh(&st) &&
+             od_scalar(db, "SELECT clearnet_port FROM peer_directory WHERE "
+                           "onion_address='" HOST_SELF "'", -1) == 0);
+    sqlite3_close(db);
+
+    onion_directory_reset_self_clearnet();
+    onion_service_set_address(NULL);
+    return failures;
+}
+
+/* ── 5. the ZNAM join ──────────────────────────────────────────── */
+
+static int od_test_name_join(const char *datadir)
+{
+    int failures = 0;
+    char name[80];
+
+    /* No registration yet → nameless, and that is not an error. */
+    OD_CHECK("unregistered host resolves to no name",
+             !onion_directory_name_for(datadir, HOST_A, name, sizeof(name)) &&
+             name[0] == '\0');
+
+    sqlite3 *db = od_open(datadir);
+    if (!db) { printf("onion_directory: cannot open fixture db\n"); return 1; }
+    /* Stored WITHOUT the ".onion" suffix — the bare-56 form. */
+    OD_CHECK("register alice -> HOST_A (bare form)",
+             od_register_name(db, "alice",
+                              "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                              "aaaaaaaaaaaaaaaa", 100));
+    /* Stored WITH the suffix — the full form. */
+    OD_CHECK("register bob -> HOST_SELF (full form)",
+             od_register_name(db, "bob", HOST_SELF, 200));
+    sqlite3_close(db);
+
+    OD_CHECK("bare-form registration resolves",
+             onion_directory_name_for(datadir, HOST_A, name, sizeof(name)) &&
+             strcmp(name, "alice") == 0);
+    OD_CHECK("full-form registration resolves",
+             onion_directory_name_for(datadir, HOST_SELF, name, sizeof(name)) &&
+             strcmp(name, "bob") == 0);
+    OD_CHECK("a host with no registration stays nameless",
+             !onion_directory_name_for(datadir, HOST_C, name, sizeof(name)));
+    OD_CHECK("malformed host resolves to no name",
+             !onion_directory_name_for(datadir, "bogus", name, sizeof(name)));
+    OD_CHECK("NULL datadir resolves to no name",
+             !onion_directory_name_for(NULL, HOST_A, name, sizeof(name)));
+    return failures;
+}
+
+/* ── 10. end-to-end through the real request handler ───────────── */
+
+static int od_test_served_pages(const char *datadir)
+{
+    int failures = 0;
+
+    /* Drive the REAL onion request router. onion_service_start only opens
+     * the database; no app handler is registered, so nothing dials. */
+    onion_service_start(datadir);
+    onion_ratelimit_test_reset();
+
+    static uint8_t resp[262144];
+
+    /* SEARCH BY NAME — the case that returned "No results" before. */
+    memset(resp, 0, sizeof(resp));
+    size_t n = onion_service_handle_request("GET", "/search?q=alice", NULL, 0,
+                                            resp, sizeof(resp) - 1);
+    resp[n < sizeof(resp) ? n : sizeof(resp) - 1] = 0;
+    const char *page = (const char *)resp;
+    OD_CHECK("search by name returns a page", n > 0);
+    OD_CHECK("search by name finds the registered name",
+             strstr(page, "alice") != NULL);
+    OD_CHECK("search by name shows the RAW address too",
+             strstr(page, HOST_A) != NULL);
+    OD_CHECK("search by name reports no 'No results'",
+             strstr(page, "No results") == NULL);
+
+    /* SEARCH BY ADDRESS — the pre-existing behaviour, not narrowed. */
+    onion_ratelimit_test_reset();
+    memset(resp, 0, sizeof(resp));
+    n = onion_service_handle_request("GET", "/search?q=aaaaaaaa", NULL, 0,
+                                     resp, sizeof(resp) - 1);
+    resp[n < sizeof(resp) ? n : sizeof(resp) - 1] = 0;
+    OD_CHECK("search by address prefix still works",
+             strstr((const char *)resp, HOST_A) != NULL);
+
+    /* A query matching nothing must still say so. */
+    onion_ratelimit_test_reset();
+    memset(resp, 0, sizeof(resp));
+    n = onion_service_handle_request("GET", "/search?q=zzzznomatch", NULL, 0,
+                                     resp, sizeof(resp) - 1);
+    resp[n < sizeof(resp) ? n : sizeof(resp) - 1] = 0;
+    OD_CHECK("non-matching query reports no results",
+             strstr((const char *)resp, "No results") != NULL);
+
+    /* DIRECTORY JSON — name beside the address, plus the age fields. */
+    onion_ratelimit_test_reset();
+    memset(resp, 0, sizeof(resp));
+    n = onion_service_handle_request("GET", "/directory.json", NULL, 0,
+                                     resp, sizeof(resp) - 1);
+    resp[n < sizeof(resp) ? n : sizeof(resp) - 1] = 0;
+    const char *js = (const char *)resp;
+    OD_CHECK("directory.json served", n > 0);
+    OD_CHECK("directory.json carries the on-chain name",
+             strstr(js, "\"name\":\"alice\"") != NULL);
+    OD_CHECK("directory.json still carries the raw onion",
+             strstr(js, "\"onion\":\"" HOST_A "\"") != NULL);
+    OD_CHECK("directory.json carries per-row age",
+             strstr(js, "\"age_secs\":") != NULL);
+    /* The contact record, under the surviving column names: last_success
+     * + dial_success_count for contact, fail_count for failures (the
+     * dropped table called that one dial_fail_count). */
+    OD_CHECK("directory.json carries the contact record",
+             strstr(js, "\"last_success\":") != NULL &&
+             strstr(js, "\"dial_success_count\":") != NULL &&
+             strstr(js, "\"fail_count\":") != NULL);
+    OD_CHECK("directory.json declares its freshness policy",
+             strstr(js, "\"expire_after_secs\":") != NULL &&
+             strstr(js, "\"stale_after_secs\":") != NULL);
+
+    /* DIRECTORY HTML — name as the heading, address still rendered. */
+    onion_ratelimit_test_reset();
+    memset(resp, 0, sizeof(resp));
+    n = onion_service_handle_request("GET", "/directory", NULL, 0,
+                                     resp, sizeof(resp) - 1);
+    resp[n < sizeof(resp) ? n : sizeof(resp) - 1] = 0;
+    const char *html = (const char *)resp;
+    OD_CHECK("directory html served", n > 0);
+    OD_CHECK("directory html shows the name", strstr(html, "alice") != NULL);
+    OD_CHECK("directory html still shows the raw address",
+             strstr(html, HOST_A) != NULL);
+    OD_CHECK("directory html reports our contact record",
+             strstr(html, "Reached") != NULL);
+
+    onion_service_stop();
+
+    /* The guard the dropped expire()'s NULL-datadir assertion tested, in
+     * the survivor's terms: with the service stopped there is no
+     * directory to refresh, and the round says so instead of reporting a
+     * silent success. */
+    struct onion_directory_refresh_stats st;
+    OD_CHECK("a refresh with no published datadir fails, never silently ok",
+             !onion_service_directory_refresh(&st));
+    return failures;
+}
+
 /* ── Entry point ──────────────────────────────────────────────────── */
 
 int test_onion_directory(void)
 {
     int failures = 0;
-    printf("\n=== Onion Directory Freshness + Onion Graph Tests ===\n");
+    printf("\n=== Onion Directory (freshness, names, onion-graph walk) ===\n");
+
+    /* The address singleton is process-global; the sequential runner
+     * shares it across groups. Snapshot and restore. */
+    const char *prev = onion_service_get_address();
+    char saved[128] = "";
+    if (prev) snprintf(saved, sizeof(saved), "%s", prev);
+    onion_service_set_address(NULL);
+
     failures += od_freshness_rule();
     failures += od_parse_relay_hints();
     failures += od_follow_budget();
     failures += od_durable_directory();
+
+    /* Static: onion_service_start() borrows this pointer for ctx->datadir. */
+    static char datadir[256];
+    test_make_tmpdir(datadir, sizeof(datadir), "onion_dir", "names");
+
+    failures += od_test_hostname_shape();
+    failures += od_test_scan();
+    failures += od_test_observe(datadir);
+    failures += od_test_expiry(datadir);
+    failures += od_test_self_clearnet(datadir);
+    failures += od_test_name_join(datadir);
+    failures += od_test_served_pages(datadir);
+
+    test_cleanup_tmpdir(datadir);
+    onion_service_set_address(saved[0] ? saved : NULL);
+
+    printf("=== Onion Directory: %d failure(s) ===\n", failures);
     return failures;
 }
