@@ -59,15 +59,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 309 |
+| Registry entries (branches + leaves) | 312 |
 | Top-level roots | 9 |
 | Branches | 71 |
-| Leaves (dispatchable command paths) | 238 |
-| … `ready` (live handler in this build) | 196 |
+| Leaves (dispatchable command paths) | 241 |
+| … `ready` (live handler in this build) | 199 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 25 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
-| Leaves with `effect=mutate` | 60 |
+| Leaves with `effect=mutate` | 63 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 56 |
 
@@ -76,7 +76,7 @@ Per source file:
 | `.def` file | Entries | Branches | Leaves |
 |---|---|---|---|
 | `config/commands/root.def` | 10 | 5 | 5 |
-| `config/commands/core.def` | 88 | 22 | 66 |
+| `config/commands/core.def` | 94 | 23 | 71 |
 | `config/commands/apps.def` | 9 | 2 | 7 |
 | `config/commands/app_features.def` | 26 | 5 | 21 |
 | `config/commands/ops.def` | 43 | 8 | 35 |
@@ -84,7 +84,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 14 | 3 | 11 |
-| `config/commands/zcode.def` | 47 | 11 | 36 |
+| `config/commands/zcode.def` | 44 | 10 | 34 |
 
 
 ## Column legend
@@ -332,6 +332,16 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `core node bootstatus` | ready | read / read / operator · fast/low | `datadir` | `zcl.core_bootstatus.v1` | `zclassic23 core node bootstatus -datadir=/home/you/.zclassic-c23` | Pre-RPC boot status |
 | `core node bootwait` | ready | read / read / operator · foreground/low | `datadir`, `timeout_ms`, `heartbeat_ms` | `zcl.core_bootstatus.v1` | `zclassic23 core node bootwait -datadir=/home/you/.zclassic-c23 --timeout_ms=120000` | Wait for boot to serve |
+
+#### `core.identity` — Sovereign identities: resolve and anchor master keys
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `core identity resolve` | ready | read / read / public · fast/low | **`pubkey`**, `name`, `datadir` | `zcl.core_identity_resolve.v1` | `zclassic23 core identity resolve --pubkey=<64hex>` | Resolve one master key by pubkey or ZNAM name |
+| `core identity anchor` | ready | mutate / wallet / operator · foreground/moderate | **`pubkey`**, `datadir` | `zcl.core_identity_anchor.v1` | `zclassic23 core identity anchor --pubkey=<64hex>` | Anchor a master key on-chain (spends a fee) |
+| `core identity rotate` | ready | mutate / wallet / operator · foreground/moderate | `pubkey`, `new_pubkey`, `datadir` | `zcl.core_identity_anchor.v1` | `zclassic23 core identity rotate --input='{"pubkey":"<64hex>","new_pubkey":"<64hex>"}'` | Rotate an anchored master key to a successor (spends a fee) |
+| `core identity revoke` | ready | mutate / wallet / operator · foreground/moderate | **`pubkey`**, `datadir` | `zcl.core_identity_anchor.v1` | `zclassic23 core identity revoke --pubkey=<64hex>` | Retire an anchored master key with no successor (spends a fee) |
+| `core identity list` | ready | read / read / public · fast/low | `limit`, `offset`, `datadir` | `zcl.core_identity_index.v1` | `zclassic23 core identity list --limit=25` | Page the anchored identities, newest anchor first |
 
 ### `app` — Capability-scoped sovereign applications
 
@@ -725,16 +735,9 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `zcode release sign` | ready | mutate / app-write / operator · fast/low | `name`, `version`, `root`, `seed_file`, `seq`, `expiry`, `datadir` | `zcl.zcode_release_sign.v1` | `zclassic23 zcode release sign --input='{"name":"demo","version":"0.1","root":"<64hex>","seed_file":"/path/seed.hex"}'` | Sign a release record with a master seed |
-| `zcode release verify` | ready | read / read / public · fast/low | `doc`, `file`, `proof`, `root` | `zcl.zcode_release_verify.v1` | `zclassic23 zcode release verify --input='{"doc":"<hex>"}'` | Verify a signed release record (optionally its batch inclusion) |
-| `zcode release anchor` | ready | mutate / wallet / operator · foreground/moderate | `tip`, `domain`, `datadir` | `zcl.zcode_release_anchor.v1` | `zclassic23 zcode release anchor --input='{}'` | Anchor the release batch's domain root on-chain |
-| `zcode release prove` | ready | read / read / operator · fast/low | **`name`**, **`version`**, `domain`, `datadir` | `zcl.zcode_release_prove.v1` | `zclassic23 zcode release prove --input='{"name":"demo","version":"0.1"}'` | Emit the domain-batch inclusion proof for one release |
-
-#### `zcode.domain` — Anchor domains: stored leaf sets behind batch proofs
-
-| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
-|---|---|---|---|---|---|---|
-| `zcode domain list` | ready | read / read / operator · fast/low | `datadir` | `zcl.zcode_domain_list.v1` | `zclassic23 zcode domain list --input='{}'` | List the anchor domains stored in this datadir |
-| `zcode domain status` | ready | read / read / operator · fast/low | `domain`, `datadir` | `zcl.zcode_domain_status.v1` | `zclassic23 zcode domain status --input='{"domain":"zcode"}'` | Show one anchor domain's stored root, leaves, and anchor |
+| `zcode release verify` | ready | read / read / public · fast/low | `doc`, `file`, `proof`, `root`, `anchored`, `datadir` | `zcl.zcode_release_verify.v1` | `zclassic23 zcode release verify --input='{"doc":"<hex>"}'` | Verify a signed release record (optionally its batch inclusion) |
+| `zcode release anchor` | ready | mutate / wallet / operator · foreground/moderate | `tip`, `datadir` | `zcl.zcode_release_anchor.v1` | `zclassic23 zcode release anchor --input='{}'` | Anchor the release batch's domain root on-chain |
+| `zcode release prove` | ready | read / read / operator · fast/low | **`name`**, **`version`**, `datadir` | `zcl.zcode_release_prove.v1` | `zclassic23 zcode release prove --input='{"name":"demo","version":"0.1"}'` | Emit the domain-batch inclusion proof for one release |
 
 
 ## Aliases
@@ -788,6 +791,7 @@ promise the same document shape.
 | `zcl.shielded_send.v1` | `core.wallet.shielded.send`, `vault.send-shielded` |
 | `zcl.storage_query.v1` | `core.storage.query`, `core.storage.query.offline` |
 | `zcl.core_bootstatus.v1` | `core.node.bootstatus`, `core.node.bootwait` |
+| `zcl.core_identity_anchor.v1` | `core.identity.anchor`, `core.identity.rotate`, `core.identity.revoke` |
 | `zcl.app_name_txresult.v1` | `app.names.register`, `app.names.update`, `app.names.transfer`, `app.names.renew`, `app.names.set-record`, `app.names.set-text` |
 | `zcl.app_message_send_result.v1` | `app.messaging.send`, `app.messaging.send-named` |
 | `zcl.app_swap_contract.v1` | `app.swap.initiate`, `app.swap.participate` |

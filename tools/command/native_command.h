@@ -676,6 +676,30 @@ void zcl_native_handle_core_epoch_anchor(
 void zcl_native_handle_core_epoch_verify(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+
+/* ── core.identity.* — sovereign master keys
+ * (tools/command/native_identity_command.c). resolve/list read the
+ * zid_identities projection straight out of <datadir>/node.db (READONLY,
+ * so a stopped or copied datadir answers too); anchor/rotate/revoke build
+ * the ZID\0 overlay and prefer the live node's identity_* RPCs, falling
+ * back to op_return_hex when nothing answers. Bound by
+ * config/commands/core.def. */
+void zcl_native_handle_core_identity_resolve(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_core_identity_list(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_core_identity_anchor(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_core_identity_rotate(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_core_identity_revoke(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 void zcl_native_handle_core_node_bootwait(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

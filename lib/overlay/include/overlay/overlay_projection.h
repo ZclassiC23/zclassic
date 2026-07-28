@@ -70,7 +70,10 @@ void overlay_registry_init(struct overlay_registry *reg);
 
 /* Register one overlay. Rejects a NULL/missing apply, a NULL/mis-sized name,
  * a duplicate lokad tag, or an overflow of OVERLAY_REGISTRY_MAX. The lokad tag
- * must be four non-NUL bytes. Returns true on success. */
+ * is 1-4 non-NUL bytes NUL-padded to four — trailing padding is what the chain
+ * carries for the SLP-lineage three-character tags ("SLP\0", "ZID\0"), while an
+ * EMBEDDED NUL (a leading NUL, or a NUL followed by a non-NUL) is refused.
+ * Returns true on success. */
 bool overlay_registry_add(struct overlay_registry *reg,
                           const struct overlay_descriptor *desc);
 

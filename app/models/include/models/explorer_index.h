@@ -125,6 +125,63 @@ bool db_tx_output_addr(struct node_db *ndb, const uint8_t txid[32],
  * node.db only. Returns false (logged) on the first DELETE failure. */
 bool db_explorer_index_truncate(struct node_db *ndb);
 
+/* ── The overlay registry (models/explorer_index_overlays.c) ────────
+ *
+ * index_op_return dispatches every OP_RETURN through ONE registry rather
+ * than a hand-rolled if-chain: peek the 4-byte lokad, find its descriptor,
+ * run its apply. Adding an overlay is a registration in
+ * explorer_index_overlays.c, not an edit to the dispatcher.
+ *
+ * The registry is process-wide, built once (pthread_once) on first use, and
+ * read-only thereafter — never rebuilt per block. Returns NULL only if the
+ * one-time build failed to register anything (logged). */
+struct overlay_registry;
+const struct overlay_registry *explorer_index_overlays(void);
+
+/* Encode a tx's first-input P2PKH signer as a t-address string. This is the
+ * ownership rule every OP_RETURN overlay authorizes against (ZNAM ownership =
+ * first input's P2PKH signer; znam.h). Resolves the spent prevout's
+ * address_hash from tx_outputs — already written because the catchup walk
+ * ascends heights. Returns false (→ the caller skips the op) when the first
+ * input is non-P2PKH, is a coinbase null prevout, or its prevout row is
+ * missing. */
+bool explorer_index_owner_address(struct node_db *ndb,
+                                  const struct transaction *tx,
+                                  char *out, size_t outsize);
+
+/* ── ZID identity feeds (models/explorer_index_zid.c) ───────────────
+ *
+ * The zid_identities projection has TWO on-chain feeds, per
+ * docs/spec/sovereign-identity-layer.md:
+ *
+ *   1. the ZNAM text convention — SET_TEXT key "zid", value a 64-hex
+ *      ed25519 master pubkey (source "znam_text", carries the name), and
+ *   2. the dedicated `ZID\0` OP_RETURN overlay — ANCHOR / ROTATE / REVOKE
+ *      (source "zid_overlay", unnamed).
+ *
+ * Both are rebuildable, idempotent, and never fatal: an unauthorized or
+ * malformed op is a logged no-op. */
+
+/* Feed 2: project a confirmed `ZID\0` OP_RETURN. Re-parses `script` with
+ * zid_anchor_parse (the registry's decoupling contract). ROTATE and REVOKE
+ * are refused unless the tx's first-input signer matches the owner_address
+ * recorded on the existing row. Returns true iff a row was written. */
+bool explorer_index_apply_zid_overlay(struct node_db *ndb,
+                                      const struct transaction *tx,
+                                      const uint8_t *script, size_t script_len,
+                                      int height);
+
+/* Feed 1: called from apply_znam's SET_TEXT case AFTER the upstream owner
+ * check and the db_znam_text_save. A key other than "zid", or a value that is
+ * not exactly 64 hex chars, is simply not an identity — the text record is
+ * stored as usual and nothing is projected. An empty value revokes.
+ * `owner` is the verified current owner of `name`. */
+void explorer_index_apply_znam_zid_text(struct node_db *ndb,
+                                        const struct transaction *tx,
+                                        const char *name, const char *key,
+                                        const char *value, const char *owner,
+                                        int height);
+
 /* Apply one parsed SLP Type-1 message (GENESIS/MINT/SEND) to the zslp_tokens
  * + zslp_transfers projection, given the live block's full transaction.
  * Implemented in explorer_index_zslp.c; called from index_op_return on the

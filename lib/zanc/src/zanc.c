@@ -8,6 +8,7 @@
 
 #include "zanc/zanc.h"
 #include "overlay/overlay_codec.h"
+#include "script/standard.h"
 #include <string.h>
 
 bool zanc_hash_type_valid(uint8_t t)
@@ -114,5 +115,14 @@ size_t zanc_build_anchor(uint8_t *out, size_t out_len, uint8_t hash_type,
     overlay_put_u8(&w, hash_type);
     overlay_put_field(&w, digest, ZANC_DIGEST_LEN);
     overlay_put_field(&w, (const uint8_t *)(label ? label : ""), label_len);
-    return overlay_writer_finish(&w);
+
+    size_t n = overlay_writer_finish(&w);
+    /* Standard relay policy caps an OP_RETURN script at MAX_OP_RETURN_RELAY
+     * (223) bytes; a longer script is non-standard and would never relay, so
+     * never hand one back. The ZANC grammar tops out at 76 bytes today, so
+     * this cannot fire — it is the explicit contract that keeps it true if
+     * the grammar ever grows a field. Same shape as blog_anchor_script_build
+     * (app/services/src/blog_publication.c). */
+    if (n > MAX_OP_RETURN_RELAY) return 0;
+    return n;
 }

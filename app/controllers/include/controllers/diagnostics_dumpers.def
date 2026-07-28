@@ -494,6 +494,15 @@
                     "balance sums a holder's unspent rows).",
                     "app/services/src/zslp_ledger_backfill_service.c",
                     "lib/test/src/test_zslp_ledger.c"),
+    DIAG_PROJECTION("zid_identities", zid_identity_dump_state_json,
+                    "sovereign-identity anchors: total_rows plus "
+                    "active/rotated/revoked row counts. With a key — a "
+                    "64-hex master ed25519 pubkey, or a ZNAM name — resolves "
+                    "that one identity's {master_pubkey, anchor_txid, "
+                    "anchor_height, status, successor_pubkey (rotated only), "
+                    "source, name, owner_address, updated_height}.",
+                    "app/models/src/zid_identity.c",
+                    "lib/test/src/test_zid_identity.c"),
     DIAG_ENTRY("vault", vault_read_dump_state_json,
                "vault read model: one row per asset class the node can hold "
                "(transparent_zcl, shielded_zcl, zslp_tokens, znam_names, "

@@ -64,8 +64,11 @@ bool zanc_parse(const uint8_t *script, size_t script_len,
 
 /* Build the ZANC OP_RETURN script into out. Requires a valid hash_type and a
  * non-NULL 32-byte digest; label may be NULL/empty and if present must pass
- * zanc_label_valid. Returns bytes written, or 0 on invalid input or if out is
- * too small. */
+ * zanc_label_valid. Returns bytes written, or 0 on invalid input, if out is
+ * too small, or if the script would exceed MAX_OP_RETURN_RELAY (223,
+ * script/standard.h) — a non-standard OP_RETURN is never emitted. The ZANC
+ * grammar tops out at 76 bytes, so the cap is a contract, not a live
+ * constraint. */
 size_t zanc_build_anchor(uint8_t *out, size_t out_len, uint8_t hash_type,
                          const uint8_t digest[ZANC_DIGEST_LEN],
                          const char *label);

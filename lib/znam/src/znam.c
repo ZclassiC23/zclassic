@@ -5,6 +5,7 @@
 
 #include "znam/znam.h"
 #include "script/op_return_push.h"
+#include "script/standard.h"
 #include <string.h>
 
 /* Script push helpers (read_push/push_data) live in
@@ -146,6 +147,19 @@ static bool znam_build_header(uint8_t *out, size_t *off, size_t cap,
                              (const uint8_t *)name, strlen(name));
 }
 
+/* Every builder ends here. Standard relay policy caps an OP_RETURN script at
+ * MAX_OP_RETURN_RELAY (223) bytes; a longer script is NON-STANDARD and will
+ * not relay, so a builder that hands one back has produced a transaction that
+ * can never confirm. That was reachable: a maximal SET_TEXT — 63-char name +
+ * 32-char key + 128-char value — encodes to 237 bytes. Refuse instead of
+ * emitting it. Same shape as blog_anchor_script_build
+ * (app/services/src/blog_publication.c). */
+static size_t znam_build_finish(size_t off, bool ok)
+{
+    if (!ok || off > MAX_OP_RETURN_RELAY) return 0;
+    return off;
+}
+
 /* Shared body for the REGISTER / UPDATE / SET_RECORD builders: they differ
  * only in the ZNAM_CMD_* code passed to znam_build_header. The literal-3
  * cap is lifted to ZNAM_TYPE_CONTENT so callers accept the multi-coin types
@@ -164,7 +178,7 @@ static size_t znam_build_targeted(uint8_t *out, size_t out_len,
     ok = ok && push_data_checked(out, &off, out_len,
                                  (const uint8_t *)target_value,
                                  strlen(target_value));
-    return ok ? off : 0;
+    return znam_build_finish(off, ok);
 }
 
 size_t znam_build_register(uint8_t *out, size_t out_len,
@@ -193,7 +207,7 @@ size_t znam_build_transfer(uint8_t *out, size_t out_len,
     ok = ok && push_data_checked(out, &off, out_len,
                                  (const uint8_t *)new_owner,
                                  strlen(new_owner));
-    return ok ? off : 0;
+    return znam_build_finish(off, ok);
 }
 
 size_t znam_build_renew(uint8_t *out, size_t out_len,
@@ -202,9 +216,8 @@ size_t znam_build_renew(uint8_t *out, size_t out_len,
     if (!znam_validate_name(name)) return 0;
 
     size_t off = 0;
-    if (!znam_build_header(out, &off, out_len, ZNAM_CMD_RENEW, name))
-        return 0;
-    return off;
+    bool ok = znam_build_header(out, &off, out_len, ZNAM_CMD_RENEW, name);
+    return znam_build_finish(off, ok);
 }
 
 /* ENS-inspired: set additional address record for a coin type */
@@ -232,5 +245,5 @@ size_t znam_build_set_text(uint8_t *out, size_t out_len,
     ok = ok && push_data_checked(out, &off, out_len,
                                  (const uint8_t *)(value ? value : ""),
                                  value ? strlen(value) : 0);
-    return ok ? off : 0;
+    return znam_build_finish(off, ok);
 }

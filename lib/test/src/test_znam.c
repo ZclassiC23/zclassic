@@ -646,6 +646,75 @@ int test_znam(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* ── Standard-relay cap (MAX_OP_RETURN_RELAY) ──────────────────
+     *
+     * A builder that emits more than 223 bytes has produced a NON-STANDARD
+     * OP_RETURN that will not relay, i.e. a transaction that can never
+     * confirm. SET_TEXT is the reachable case: 63-char name + 32-char key +
+     * 128-char value encodes to 237 bytes. It must return 0, not a script. */
+
+    printf("znam_build_set_text: max-length record refused (over 223 cap)... ");
+    {
+        char name[ZNAM_NAME_MAX + 1];
+        char key[ZNAM_TEXT_KEY_MAX + 1];
+        char val[ZNAM_TEXT_VAL_MAX + 1];
+        memset(name, 'a', ZNAM_NAME_MAX); name[ZNAM_NAME_MAX] = '\0';
+        memset(key, 'k', ZNAM_TEXT_KEY_MAX); key[ZNAM_TEXT_KEY_MAX] = '\0';
+        memset(val, 'v', ZNAM_TEXT_VAL_MAX); val[ZNAM_TEXT_VAL_MAX] = '\0';
+
+        uint8_t buf[512];
+        size_t len = znam_build_set_text(buf, sizeof(buf), name, key, val);
+        if (len == 0) printf("OK\n");
+        else { printf("FAIL (emitted %zu bytes)\n", len); failures++; }
+    }
+
+    printf("znam_build_set_text: shortened record still builds at/under cap... ");
+    {
+        char name[ZNAM_NAME_MAX + 1];
+        char key[ZNAM_TEXT_KEY_MAX + 1];
+        char val[ZNAM_TEXT_VAL_MAX + 1];
+        memset(name, 'a', 32); name[32] = '\0';
+        memset(key, 'k', 16); key[16] = '\0';
+        memset(val, 'v', 100); val[100] = '\0';
+
+        uint8_t buf[512];
+        struct znam_message msg;
+        size_t len = znam_build_set_text(buf, sizeof(buf), name, key, val);
+        if (len > 0 && len <= MAX_OP_RETURN_RELAY &&
+            znam_parse(buf, len, &msg) && msg.command == ZNAM_CMD_SET_TEXT)
+            printf("OK\n");
+        else { printf("FAIL (len=%zu)\n", len); failures++; }
+    }
+
+    printf("znam builders: every emitted script fits the 223-byte cap... ");
+    {
+        char name[ZNAM_NAME_MAX + 1];
+        char val[ZNAM_VALUE_MAX + 1];
+        char owner[64];
+        memset(name, 'a', ZNAM_NAME_MAX); name[ZNAM_NAME_MAX] = '\0';
+        memset(val, 'v', ZNAM_VALUE_MAX); val[ZNAM_VALUE_MAX] = '\0';
+        memset(owner, 'o', 63); owner[63] = '\0';
+
+        uint8_t buf[512];
+        size_t lens[4];
+        lens[0] = znam_build_register(buf, sizeof(buf), name,
+                                      ZNAM_TYPE_TADDR, val);
+        lens[1] = znam_build_update(buf, sizeof(buf), name,
+                                    ZNAM_TYPE_TADDR, val);
+        lens[2] = znam_build_transfer(buf, sizeof(buf), name, owner);
+        lens[3] = znam_build_renew(buf, sizeof(buf), name);
+
+        bool all_ok = true;
+        for (int i = 0; i < 4; i++)
+            if (lens[i] == 0 || lens[i] > MAX_OP_RETURN_RELAY) all_ok = false;
+        if (all_ok) printf("OK\n");
+        else {
+            printf("FAIL (%zu %zu %zu %zu)\n",
+                   lens[0], lens[1], lens[2], lens[3]);
+            failures++;
+        }
+    }
+
     printf("znam_build_transfer: reject null new_owner... ");
     {
         uint8_t buf[256];

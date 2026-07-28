@@ -32,8 +32,11 @@ seq=1 expiry=1893456000 valid=true
 
 Invalid docs are hard errors with named codes — `DOC_EXPIRED`,
 `BAD_SIGNATURE`, `NOT_A_RELEASE_BODY`, `DOC_DECODE_FAILED` — so the
-failure mode is always explicit. That is the whole trust model: the
-signature either chains to the publisher's key or it doesn't.
+failure mode is always explicit.
+
+That answers *"was this signed by the key it names?"* and nothing more.
+*"Should I trust that key?"* is a second, separate question, and Step 4
+answers it from the chain with `--anchored`.
 
 ## Step 1 — make your publisher key (one command, keep it secret)
 
@@ -58,10 +61,26 @@ build/bin/zclassic23 zcode release sign \
 ```
 
 Expected output: the signed doc hex, your `master_pubkey` (this is your
-publisher identity — share it, pin it in your README), and the path of the
-saved `<datadir>/zcode/releases/my-lib-0.1.0.zid`.
+publisher identity), and the path of the saved
+`<datadir>/zcode/releases/my-lib-0.1.0.zid`.
 
-Now anyone with the doc can run Step 0 against *your* release. New
+Now anchor that key on-chain, so nobody has to take your word for it:
+
+```bash
+build/bin/zclassic23 core identity anchor --pubkey=<your master_pubkey>
+build/bin/zclassic23 core identity resolve --pubkey=<your master_pubkey>
+```
+
+`anchor` broadcasts through the node wallet when one is loaded; with no
+wallet (or no running node) it prints `op_return_hex` for you to include
+in a transaction you sign yourself. Once it confirms, `resolve` answers
+from the chain: anchor height, txid, status, and the ZNAM name if you
+registered one. Rotating or retiring the key later is
+`core identity rotate --input='{"pubkey":"<old>","new_pubkey":"<new>"}'`
+and `core identity revoke --pubkey=<key>`; both prove ownership through
+the spending input, so only you can move your own identity.
+
+Anyone with the doc can now run Step 0 against *your* release. New
 version? Increment `--seq` — consumers reject out-of-order docs, so a
 replayed old release can't masquerade as the current one.
 
@@ -86,10 +105,31 @@ confirmation, disagreement is a named, visible problem.
 
 ## Step 4 — prove it to someone else
 
-Hand anyone three things: the `.zid` file, your `master_pubkey`, and the
-epoch anchor's txid. They verify the doc locally (Step 0), and the epoch
-anchor tells them the overlay state their node derives matches the one the
-network committed. No GitHub account, no CA, no keyserver, no CDN.
+Hand them one thing: the `.zid` file. Their own node answers the rest:
+
+```bash
+build/bin/zclassic23 zcode release verify --file=<release.zid> --anchored
+```
+
+`--anchored` resolves the doc's `master_pubkey` against the identity
+anchors their node folded out of the chain, and reports `anchored`,
+`anchor_height`, `anchor_txid`, `anchor_name`, and `anchor_status`. Two
+facts stay separate, and the output says both:
+
+- **signature valid** — the doc really was signed by the key it names;
+- **key anchored** — that key is published on-chain, by whoever spent the
+  anchoring input, at a height the verifier can see for themselves.
+
+Neither one rescues the other. A tampered doc under an anchored key is
+still `BAD_SIGNATURE`. A perfect signature under a key nobody anchored is
+`KEY_NOT_ANCHORED` — the verifier is told, in as many words, that they
+would be trusting the key on the publisher's say-so. A key you later
+retired is `KEY_REVOKED`; a key you rotated still verifies and reports its
+`successor`.
+
+Nothing is pinned out of band: no README, no GitHub account, no CA, no
+keyserver, no CDN. Add the epoch anchor's txid from Step 3 if you also
+want them to cross-check the whole overlay state their node derived.
 
 ## Where this goes next
 

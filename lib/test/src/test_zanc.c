@@ -8,6 +8,7 @@
 #include "models/database.h"
 #include "models/zanc.h"
 #include "zanc/zanc.h"
+#include "script/standard.h"
 #include "controllers/anchor_controller.h"
 #include "rpc/server.h"
 #include "json/json.h"
@@ -142,6 +143,22 @@ int test_zanc(void)
             zanc_build_anchor(buf, sizeof(buf), 3, digest, NULL) == 0)
             printf("OK\n");
         else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zanc_build: maximal anchor fits the 223-byte relay cap... ");
+    {
+        uint8_t digest[32]; mk_digest(digest, 0x33);
+        char label[ZANC_LABEL_MAX + 1];
+        memset(label, 'L', ZANC_LABEL_MAX);
+        label[ZANC_LABEL_MAX] = '\0';
+        uint8_t buf[512];
+        size_t len = zanc_build_anchor(buf, sizeof(buf), ZANC_HASH_SHA3_256,
+                                       digest, label);
+        struct zanc_message m;
+        if (len > 0 && len <= MAX_OP_RETURN_RELAY &&
+            zanc_parse(buf, len, &m) && m.label_len == ZANC_LABEL_MAX)
+            printf("OK\n");
+        else { printf("FAIL (len=%zu)\n", len); failures++; }
     }
 
     printf("zanc_parse: reject bad hash_type byte on-chain... ");
