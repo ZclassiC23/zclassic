@@ -138,6 +138,42 @@ First-party domains: `zdesc` (A1 onion descriptors), `zdir` (A3 relay
 endpoints), `zcode` (package releases). Each anchors at its own cadence;
 each is just a schema over the same four-part contract.
 
+## Threshold and aggregate signatures (crypto roadmap)
+
+Threshold crypto matters here — but the primitive has to match the job,
+and GG20 (threshold ECDSA) is the wrong one for a greenfield scheme.
+GG20 exists to fit chains that only verify ECDSA: it is multi-round and
+interactive, Paillier-based, and buys **no throughput** — the output is
+one ordinary ECDSA signature and verification cost is unchanged. zid
+controls its own signature scheme, so it takes the Schnorr family:
+
+- **t-of-n domain control (high-availability services): FROST** —
+  threshold Schnorr, two-round signing, one compact 64-byte signature
+  from any t of n operators. This is the Zcash ecosystem's own standard
+  (ZIP-312) and fits zid keys (ed25519/ristretto) or RedJubjub
+  (`lib/sapling/include/sapling/jubjub.h` ships in-tree). A service run
+  by n nodes keeps serving descriptors when any t are online; no single
+  offline master key.
+- **Massively aggregated attestations (A4 bandwidth receipts): BLS12-381**
+  — pairing code already in-tree (`lib/sapling/src/bls12_381.c`). n
+  measurement receipts aggregate to one 48-byte signature; the BWAuth
+  replacement settles one signature per epoch instead of n.
+- **Raw ingest performance: batch ed25519 verification** — multi-scalar
+  batch verify in `lib/crypto` (~2× per-signature throughput for nodes
+  consuming domain records). This is where "high performance" actually
+  comes from at the codec layer — not from threshold schemes.
+- **GG20's one real niche:** threshold custody of on-chain *transparent*
+  ZCL, because the chain itself speaks secp256k1 ECDSA. That is the
+  custody lane (`docs/CUSTODY_MODEL.md`), not the identity layer — and
+  even there the modern successor is CGGMP21, not GG20.
+
+Honest scoping: threshold signatures do not speed up anchoring — the MMR
+batching already made L1 cost constant. What they buy is **key
+availability** (no single key compromise/offline point) and **committee
+compactness** (one signature regardless of committee size). Phase
+placement: batch verify → Phase 2, FROST committees → Phase 3–4, BLS
+receipts → Phase 4.
+
 ## Applications, in build order
 
 ### A1 — Onion service descriptors (flagship)
