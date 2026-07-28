@@ -89,9 +89,10 @@ bool pubkey_is_fully_valid(const struct pubkey *pk);
 bool pubkey_decompress(struct pubkey *pk);
 
 /* BIP32 non-hardened public child derivation: produce child and its chaincode
- * from parent pk, chaincode cc, and non-hardened index nChild. Requires
- * (asserts) a valid compressed parent and an unhardened index. Returns false
- * if parsing or the EC point tweak fails. */
+ * from parent pk, chaincode cc, and non-hardened index nChild. Total on
+ * hostile input: returns false (never aborts) if pk is empty, if pk is not a
+ * 33-byte compressed key, if nChild is hardened (bit 31 set), or if parsing
+ * or the EC point tweak fails. */
 bool pubkey_derive(const struct pubkey *pk, struct pubkey *child,
                    struct uint256 *cc_child, unsigned int nChild,
                    const struct uint256 *cc);
@@ -102,8 +103,9 @@ bool pubkey_check_low_s(const unsigned char *sig, size_t siglen);
 
 /* Serialize / parse the 74-byte BIP32 extended-public-key body (depth, parent
  * fingerprint, child index, chaincode, and the 33-byte compressed key).
- * ext_pubkey_encode asserts the key is compressed. */
-void ext_pubkey_encode(const struct ext_pubkey *epk,
+ * ext_pubkey_encode returns false (it does not abort) if epk does not hold a
+ * 33-byte compressed key, leaving code[] untouched. */
+bool ext_pubkey_encode(const struct ext_pubkey *epk,
                        unsigned char code[BIP32_EXTKEY_SIZE]);
 void ext_pubkey_decode(struct ext_pubkey *epk,
                        const unsigned char code[BIP32_EXTKEY_SIZE]);

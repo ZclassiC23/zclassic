@@ -964,6 +964,20 @@ bool incremental_witness_deserialize(struct incremental_witness *w,
                                                       size_t, struct uint256 *),
                                       void (*uncommitted)(struct uint256 *))
 {
+    /* This is the ONLY function that takes a depth alongside a hostile byte
+     * stream, and it writes depth straight into w->tree.depth / w->cursor.depth
+     * without going through tree_init — so tree_init's assert(depth <=
+     * MAX_TREE_DEPTH) is bypassed here. An out-of-range depth would run the
+     * root fold past the ends of the fixed parents[]/has_parent[] arrays.
+     * Every current caller passes a compile-time constant
+     * (SAPLING_INCREMENTAL_MERKLE_TREE_DEPTH = 32, INCREMENTAL_MERKLE_TREE_DEPTH
+     * = 29), so this refuses nothing that works today; it stops the next
+     * caller from turning a stored witness blob into an overrun. */
+    if (depth == 0 || depth > MAX_TREE_DEPTH)
+        LOG_FAIL("incremental_merkle_tree",
+                 "witness_deserialize: depth=%zu out of range (1..%d)",
+                 depth, MAX_TREE_DEPTH);
+
     /* Initialize function pointers first. depth/combine/uncommitted are
      * root-affecting fields, so drop any memo carried over from a prior
      * use of *w (the deserializes below invalidate again, conservatively). */

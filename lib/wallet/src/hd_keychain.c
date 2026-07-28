@@ -154,7 +154,9 @@ bool hd_serialize_xpub(const struct ext_pubkey *epk,
     memcpy(data, version, 4);
 
     unsigned char payload[BIP32_EXTKEY_SIZE];
-    ext_pubkey_encode(epk, payload);
+    if (!ext_pubkey_encode(epk, payload))
+        LOG_FAIL(DOMAIN, "ext_pubkey_encode failed for xpub "
+                 "(key is not a 33-byte compressed public key)");
     memcpy(data + 4, payload, BIP32_EXTKEY_SIZE);
 
     size_t written = 0;

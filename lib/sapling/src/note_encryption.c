@@ -73,7 +73,7 @@ static void zcl_note_check_esk_unique(const uint8_t esk[32])
                 "would produce two-time-pad under the fixed zero_nonce. "
                 "Aborting rather than leaking plaintext.\n",
                 __FILE__, __LINE__, __func__, g_esk_ring_filled);
-            abort();
+            abort(); // abort-ok: returning here would emit a two-time pad under the fixed zero nonce and leak the note plaintext
         }
     }
     memcpy(g_esk_ring[g_esk_ring_next], esk, 32);

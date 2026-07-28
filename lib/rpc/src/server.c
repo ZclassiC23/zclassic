@@ -124,7 +124,7 @@ void rpc_table_must_append(struct rpc_table *t, const struct rpc_command *cmd)
             "FATAL: rpc_table_must_append(\"%s\") failed: %s (count=%zu/%d)\n",
             cmd->name ? cmd->name : "(null)", reason,
             t->num_commands, MAX_RPC_COMMANDS);
-    abort();
+    abort(); // abort-ok: a duplicate or overflowing command name at static registration is a build-time bug; a node serving a half-built RPC table is worse than one that refuses to start
 }
 
 const struct rpc_command *rpc_table_find(const struct rpc_table *t,
@@ -168,6 +168,15 @@ void set_rpc_warmup_finished(void)
 {
     ensure_warmup_mutex();
     zcl_mutex_lock(&cs_warmup);
+    /* DEBT (check-no-runtime-abort baseline, deliberately NOT abort-ok):
+     * this enforces "called exactly once" with a live abort, but the paired
+     * stop hook (boot_rpc_http_stop) never restores rpc_in_warmup, so the
+     * service kernel's own stop_all -> start_all cycle would kill the node
+     * here. Unreachable today only because the frontend kernel is started
+     * once and the process exits after shutdown; the test suite already
+     * routes around it (test_simnet_shielded_wallet_e2e.c guards the call).
+     * The fix is to make this idempotent or have the stop hook re-arm
+     * warmup, not to delete the check. */
     assert(rpc_in_warmup);
     rpc_in_warmup = false;
     zcl_mutex_unlock(&cs_warmup);

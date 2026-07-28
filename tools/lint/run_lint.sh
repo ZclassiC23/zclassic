@@ -82,6 +82,7 @@ gate_command() {
         check-silent-errors-conditions)    echo './tools/lint/check_silent_error_returns.sh app/conditions/src conditions condition "use LOG_ERR/LOG_FAIL/LOG_RETURN, prev-line error log, or mark // raw-return-ok:<reason>"' ;;
         check-silent-errors-bool)          echo 'ZCL_LINT_MODE=FAIL ./tools/lint/check_silent_bool_errors.sh' ;;
         check-log-macro-return-type)       echo './tools/lint/check_log_macro_return_type.sh' ;;
+        check-no-runtime-abort)            echo './tools/lint/check_no_runtime_abort.sh' ;;
         check-wallet-raw-prepare-log)      echo 'ZCL_LINT_MODE=FAIL ./tools/lint/check_wallet_raw_prepare_log.sh' ;;
         check-before-save-hooks)           echo './tools/lint/check_before_save_hooks.sh' ;;
         check-pthread-create)              echo './tools/lint/check_pthread_create.sh' ;;

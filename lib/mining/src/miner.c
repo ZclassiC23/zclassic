@@ -268,6 +268,13 @@ bool mine_block_pow(struct block *block, int height,
     unsigned int n = chain_params_equihash_n(params, height);
     unsigned int k = chain_params_equihash_k(params, height);
 
+    /* Refuse an (N,K) this build's bit-packers cannot represent BEFORE any
+     * of it reaches them — the packers assert on their width assumptions and
+     * assert is live in release builds. */
+    if (!equihash_params_supported(n, k))
+        LOG_FAIL("mining", "mine_block_pow: unsupported equihash parameters "
+                 "N=%u K=%u at height %d", n, k, height);
+
     struct equihash_params ep;
     equihash_params_init(&ep, n, k);
     if (ep.solution_width > MAX_SOLUTION_SIZE) {

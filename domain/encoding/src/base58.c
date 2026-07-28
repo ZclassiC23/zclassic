@@ -11,7 +11,6 @@
 #include "core/hash.h"
 #include "support/cleanse.h"
 
-#include <assert.h>
 #include <ctype.h>
 #include <string.h>
 
@@ -48,7 +47,17 @@ bool domain_encoding_base58_encode(const unsigned char *data, size_t data_len,
             b58[i - 1] = carry % 58;
             carry /= 58;
         }
-        assert(carry == 0);
+        /* Total function on purpose: every address, WIF, xpub/xprv and
+         * explorer URL segment the node accepts reaches this codec, and
+         * assert() is live in release builds (-DNDEBUG is not set for the
+         * node), so an assert here would let one malformed input abort the
+         * whole process. b58_size is derived from the input length, so a
+         * non-zero carry can only mean that derivation is wrong — fail the
+         * call instead of the node. */
+        if (carry != 0) {
+            memory_cleanse(b58, b58_size);
+            return false;
+        }
         pbegin++;
     }
 
@@ -114,7 +123,14 @@ bool domain_encoding_base58_decode(const char *psz,
             b256[i - 1] = carry % 256;
             carry /= 256;
         }
-        assert(carry == 0);
+        /* Same reasoning as the encode side: this is the decode path for
+         * every attacker-supplied address / key string, so a carry overflow
+         * fails the call (cleansing the partially decoded secret) rather
+         * than aborting the node under a live assert. */
+        if (carry != 0) {
+            memory_cleanse(b256, b256_size);
+            return false;
+        }
         p++;
     }
 

@@ -33,9 +33,15 @@
  *     pre-existing constraint and bounds every Bitcoin/Zclassic
  *     address family by a wide margin.
  *
- *   - Internal `assert(carry == 0)` invariants come from the
- *     algebraic invariants of base-58 long division; they cannot
- *     trip on any byte-string input. Kept as defensive guards.
+ *   - The internal `carry == 0` invariant comes from the algebraic
+ *     invariants of base-58 long division and cannot trip on any
+ *     byte-string input. It is checked as a guarded `return false`
+ *     (wiping the intermediate first) rather than an assert(): every
+ *     address, WIF, xpub/xprv and explorer URL segment the node
+ *     accepts reaches this codec, and assert() is live in the node's
+ *     release build, so an assert here would turn one malformed
+ *     input into a process abort. Both codecs are TOTAL: any input
+ *     either encodes/decodes or returns false.
  *
  * Layering: domain/encoding/ may #include from util/, core/, crypto/
  * — the only external dep is `core/hash.h::hash256` for the

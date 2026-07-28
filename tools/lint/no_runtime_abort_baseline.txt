@@ -1,0 +1,29 @@
+# check_no_runtime_abort baseline — files in network-reachable code that still
+# hold RUNTIME assert()/abort() sites. assert() is LIVE in this
+# build (-DNDEBUG is set only for vendored LevelDB), so each of
+# these is a process kill on a failed assumption.
+# Format: <path> <site-count>.  COUNTS MAY ONLY SHRINK.
+#
+# Fix a row by returning an error instead: fail the call, log the
+# reason with LOG_FAIL/LOG_ERR, and let the caller reject the
+# input — then lower (or delete) the number here. Adding a row is
+# not a fix. An assertion about a layout or a constant becomes
+# _Static_assert, which this gate deliberately does not count.
+#
+# An abort that is CORRECT (softening it would trade a crash for
+# a key compromise or a plaintext leak) does not belong here at
+# all — annotate it in place with // abort-ok:<reason>.
+#
+# core/ is byte-sealed: its rows are counted and frozen, and are
+# only editable through the owner unseal ritual (make core-unseal).
+# Regenerate: ZCL_LINT_MODE=UPDATE tools/lint/check_no_runtime_abort.sh
+core/chainparams/src/chainparams.c 2
+core/chainparams/src/chainparamsbase.c 2
+core/consensus/src/script_interp.c 2
+core/math/src/arith_uint256.c 2
+core/params/src/upgrades.c 3
+lib/crypto/src/equihash.c 8
+lib/keys/src/key.c 2
+lib/rpc/src/server.c 1
+lib/sapling/src/incremental_merkle_tree.c 1
+lib/storage/src/coins_ram.c 1
