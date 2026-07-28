@@ -59,15 +59,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 321 |
+| Registry entries (branches + leaves) | 324 |
 | Top-level roots | 9 |
-| Branches | 74 |
-| Leaves (dispatchable command paths) | 247 |
-| … `ready` (live handler in this build) | 205 |
+| Branches | 75 |
+| Leaves (dispatchable command paths) | 249 |
+| … `ready` (live handler in this build) | 207 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 25 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
-| Leaves with `effect=mutate` | 64 |
+| Leaves with `effect=mutate` | 66 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 56 |
 
@@ -76,7 +76,7 @@ Per source file:
 | `.def` file | Entries | Branches | Leaves |
 |---|---|---|---|
 | `config/commands/root.def` | 10 | 5 | 5 |
-| `config/commands/core.def` | 94 | 23 | 71 |
+| `config/commands/core.def` | 97 | 24 | 73 |
 | `config/commands/apps.def` | 9 | 2 | 7 |
 | `config/commands/app_features.def` | 26 | 5 | 21 |
 | `config/commands/ops.def` | 43 | 8 | 35 |
@@ -342,6 +342,13 @@ represented by its children's sections.
 | `core identity rotate` | ready | mutate / wallet / operator · foreground/moderate | `pubkey`, `new_pubkey`, `datadir` | `zcl.core_identity_anchor.v1` | `zclassic23 core identity rotate --input='{"pubkey":"<64hex>","new_pubkey":"<64hex>"}'` | Rotate an anchored master key to a successor (spends a fee) |
 | `core identity revoke` | ready | mutate / wallet / operator · foreground/moderate | **`pubkey`**, `datadir` | `zcl.core_identity_anchor.v1` | `zclassic23 core identity revoke --pubkey=<64hex>` | Retire an anchored master key with no successor (spends a fee) |
 | `core identity list` | ready | read / read / public · fast/low | `limit`, `offset`, `datadir` | `zcl.core_identity_index.v1` | `zclassic23 core identity list --limit=25` | Page the anchored identities, newest anchor first |
+
+#### `core.zdir` — On-chain node directory: announce and retire onion hostnames
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `core zdir register` | ready | mutate / wallet / operator · foreground/moderate | **`hostname`**, `pubkey`, `datadir` | `zcl.core_zdir_register.v1` | `zclassic23 core zdir register --hostname=<56 base32>.onion` | Announce a v3 onion hostname on-chain as a node (spends a fee) |
+| `core zdir deregister` | ready | mutate / wallet / operator · foreground/moderate | **`hostname`**, `datadir` | `zcl.core_zdir_register.v1` | `zclassic23 core zdir deregister --hostname=<56 base32>.onion` | Retire an onion hostname from the on-chain directory (spends a fee) |
 
 ### `app` — Capability-scoped sovereign applications
 
@@ -813,6 +820,7 @@ promise the same document shape.
 | `zcl.storage_query.v1` | `core.storage.query`, `core.storage.query.offline` |
 | `zcl.core_bootstatus.v1` | `core.node.bootstatus`, `core.node.bootwait` |
 | `zcl.core_identity_anchor.v1` | `core.identity.anchor`, `core.identity.rotate`, `core.identity.revoke` |
+| `zcl.core_zdir_register.v1` | `core.zdir.register`, `core.zdir.deregister` |
 | `zcl.app_name_txresult.v1` | `app.names.register`, `app.names.update`, `app.names.transfer`, `app.names.renew`, `app.names.set-record`, `app.names.set-text` |
 | `zcl.app_message_send_result.v1` | `app.messaging.send`, `app.messaging.send-named` |
 | `zcl.app_swap_contract.v1` | `app.swap.initiate`, `app.swap.participate` |

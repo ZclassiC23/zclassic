@@ -41,29 +41,29 @@
  * DEREGISTER by the current owner followed by REGISTER from the new one, and a
  * parsed-but-unhandled command would be a silent stub. zdir_parse REJECTS it.
  *
- * WHAT DOES NOT EXIST YET: THE WRITE PATH. Read this before assuming a node
- * can announce itself. This file is a CODEC and a PROJECTION FEED, and only
- * the READ half is wired end to end:
+ * BOTH HALVES ARE NOW WIRED. The read half was always here: zdir_parse +
+ * app/models/src/explorer_index_zdir.c fold any ZDIR OP_RETURN already in
+ * block history into the onion_directory projection, and
+ * blog_discover_onion_peers_chain dials from it.
  *
- *   - zdir_parse + app/models/src/explorer_index_zdir.c fold any ZDIR
- *     OP_RETURN that is already in block history into the onion_directory
- *     projection, and blog_discover_onion_peers_chain dials from it. That
- *     half works: a record on-chain IS discovered.
- *   - zdir_build_register / zdir_build_deregister have NO caller outside
- *     lib/zdir and lib/test. Nothing composes a transaction carrying one,
- *     nothing signs it, nothing broadcasts it. There is no RPC, no native
- *     command, and no auto-announce.
+ * The write half is app/controllers/src/zdir_controller.c (the zdir_register
+ * / zdir_deregister RPCs) and tools/command/native_zdir_command.c (`core zdir
+ * register` / `core zdir deregister`). They compose a transaction carrying
+ * the record, sign it and broadcast it through the node's wallet; with no
+ * wallet loaded, or no node running, they hand the operator op_return_hex to
+ * include themselves. Ownership on a mutation is the tx's SOLE input, built
+ * through zslp_command_build_owner_base_tx so the signer is provably the
+ * owner explorer_index_apply_zdir_overlay recorded.
  *
- * So on a network where no other tool writes ZDIR records, the projection
- * reads EMPTY forever and the chain source contributes nothing — which is
- * why the unsigned wallet scrape is still wired beside it
- * (net/onion_peer_merge.h) and why that fallback is not dead weight.
+ * It is an OPERATOR SURFACE, not an announcer. Nothing calls it from boot,
+ * from a timer, or from any background service, and there is no re-announce
+ * cadence: publishing spends a real UTXO, so it stays an explicit decision.
+ * register_zdir_rpc_commands has exactly one caller (config/src/
+ * boot_services.c) and that call only registers the verbs.
  *
- * Closing this is deliberately owner-gated, not a missing wire: a builder
- * that broadcasts spends a real UTXO, so it is a wallet-spending surface and
- * needs sign-off, a fee policy, and a re-announce cadence — not a quiet
- * addition. Until then the honest statement is the one above: the record
- * format is frozen and proven, and nothing in this binary can publish one.
+ * The unsigned wallet scrape beside it (net/onion_peer_merge.h) is still
+ * wired, and still not dead weight: the chain source only contributes what
+ * nodes have actually published, which on a young network is nothing yet.
  *
  * Pure: no clock, no RNG, no I/O, no alloc. */
 

@@ -1211,3 +1211,79 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_core_identity_list)
+
+/* ── core.zdir.* — the on-chain node directory, WRITE side ──────────
+ * A ZDIR record says one thing: "this v3 onion hostname is a node, and
+ * this t-address paid for saying so." Every node folds confirmed records
+ * out of block history into its onion_directory projection and may dial
+ * them, so this is how a node stops being invisible to strangers without
+ * asking any seed operator for permission. A row is a HINT ABOUT WHERE TO
+ * LOOK, never proof of who is there: the directory only ever ADDS dial
+ * candidates alongside DNS seeds, fixed seeds and addrman, and has no path
+ * to exclude a peer. With a live node these dispatch the wallet
+ * compose+broadcast through the zdir_* RPCs; with no live node (or no
+ * wallet) they return op_return_hex for the operator to include. There is
+ * no transfer leaf on purpose — ZDIR command byte 3 is reserved and
+ * zdir_parse rejects it, so handing a hostname to another operator is
+ * deregister by the current owner then register by the new one. Never on a
+ * timer — publishing spends a fee and stays an operator decision. */
+ZCL_COMMAND_BRANCH("core.zdir", "core",
+                   "On-chain node directory: announce and retire onion hostnames",
+                   ZCL_COMMAND_LAYER_CORE)
+ZCL_COMMAND_READY_COMMAND(
+    "core.zdir.register", "core.zdir", "",
+    "Announce a v3 onion hostname on-chain as a node (spends a fee)",
+    "Builds the ZDIR REGISTER OP_RETURN publishing --hostname=<56 base32 "
+    "chars>.onion as a node, optionally binding it to a ZID master key "
+    "with --pubkey=<64hex> (a binding is a claim, not a proof). With a "
+    "live node: dispatches the wallet compose+broadcast through the "
+    "zdir_register RPC and returns the txid (the node itself returns "
+    "op_return_hex when no wallet is loaded). With no live node: returns "
+    "op_return_hex plus the exact next step. The hostname is held to the "
+    "one Tor v3 rule the node has, so a v2 onion or a bare hostname is a "
+    "hard BAD_HOSTNAME. Re-registering your own hostname refreshes the "
+    "record and its key binding but never resets its registration height "
+    "— seniority is not free to fake. A row that records no owner is "
+    "permanently immutable and refused NOT_OWNER before any fee is spent. "
+    "Never runs on a timer — every registration is an explicit operator "
+    "decision.", 0,
+    "zdir,directory,onion,register,announce,publish,peer,discovery,broadcast,fee",
+    "zcl.core_zdir_register.input.v1", "zcl.core_zdir_register.v1",
+    "hostname,pubkey,datadir", "hostname",
+    "zclassic23 core zdir register --hostname=<56 base32>.onion",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_core_zdir_register)
+ZCL_COMMAND_READY_COMMAND(
+    "core.zdir.deregister", "core.zdir", "",
+    "Retire an onion hostname from the on-chain directory (spends a fee)",
+    "Builds the ZDIR DEREGISTER OP_RETURN retiring --hostname=<56 base32 "
+    "chars>.onion. The row stays on-chain — its registration height is "
+    "its seniority and its history — it just stops being dialed. "
+    "Pre-flight against the projection names the refusal before any fee "
+    "is spent: NOT_REGISTERED when no row exists, ALREADY_RETIRED when it "
+    "is already retired, NOT_OWNER when the row records no owner. The "
+    "chain-side ownership proof is the tx's sole input — the live path "
+    "composes it through zslp_command_build_owner_base_tx so the signer "
+    "is provably the recorded owner. To hand a hostname to another "
+    "operator, deregister it and let them register it; there is no "
+    "transfer command and there is not going to be a silent stub of one. "
+    "Never runs on a timer — every retirement is an explicit operator "
+    "decision.", 0,
+    "zdir,directory,onion,deregister,retire,withdraw,peer,discovery,broadcast,fee",
+    "zcl.core_zdir_deregister.input.v1", "zcl.core_zdir_register.v1",
+    "hostname,datadir", "hostname",
+    "zclassic23 core zdir deregister --hostname=<56 base32>.onion",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_core_zdir_deregister)

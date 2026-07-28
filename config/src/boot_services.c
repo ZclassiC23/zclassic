@@ -104,6 +104,7 @@
 #include "controllers/name_controller.h"
 #include "controllers/anchor_controller.h"
 #include "controllers/identity_controller.h"
+#include "controllers/zdir_controller.h"
 #include "controllers/op_return_index_controller.h"
 #include "services/op_return_backfill_service.h"
 #include "services/zslp_ledger_backfill_service.h"
@@ -1246,20 +1247,19 @@ bool app_init_services(struct app_context *ctx,
         register_market_rpc_commands(svc->rpc_table);
     }
 
-    /* ZCL Names — on-chain name registry */
+    /* On-chain overlays — ZCL Names, ZCL Anchors, identities (ZID), node
+     * directory (ZDIR). Wiring only; every write is an operator command. */
     rpc_name_set_state(boot_node_db(svc));
     rpc_name_set_wallet(svc->wallet, svc->mempool, svc->state, svc->coins_tip);
     register_name_rpc_commands(svc->rpc_table);
-
-    /* ZCL Anchors — on-chain software/package digest anchoring */
     rpc_anchor_set_state(boot_node_db(svc));
     rpc_anchor_set_wallet(svc->wallet, svc->mempool, svc->state, svc->coins_tip);
     register_anchor_rpc_commands(svc->rpc_table);
-
-    /* Sovereign identities — master-key anchor/rotate/revoke (ZID) */
     rpc_identity_set_state(boot_node_db(svc));
     rpc_identity_set_wallet(svc->wallet, svc->mempool, svc->state, svc->coins_tip);
     register_identity_rpc_commands(svc->rpc_table);
+    register_zdir_rpc_commands(svc->rpc_table, boot_node_db(svc), svc->wallet,
+                               svc->mempool, svc->state, svc->coins_tip);
 
     /* OP_RETURN catalog — every OP_RETURN output ever seen, by lokad tag */
     rpc_op_return_index_set_state(boot_node_db(svc));

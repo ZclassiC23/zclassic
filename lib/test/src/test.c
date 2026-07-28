@@ -993,7 +993,9 @@ int main(int argc, char **argv)
     { extern int test_zcode_release(void); failures += test_zcode_release(); }
     failures += test_zid_identity();
     failures += test_zid_seniority();
+    failures += test_zid_seniority_binding();
     failures += test_zdir();
+    failures += test_zdir_write_path();
     failures += test_identity_command();
     { extern int test_zdesc(void); failures += test_zdesc(); }
     { extern int test_zendp(void); failures += test_zendp(); }

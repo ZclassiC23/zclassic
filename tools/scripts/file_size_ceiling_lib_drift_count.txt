@@ -257,7 +257,7 @@
 # cohesive scoring module mirroring package_store.c's one-file shape).
 # Freshly baselined at its starting size (845) so future growth on it
 # becomes visible; count unchanged.
-13
+11
 #
 # 2026-07-27 (os_sandbox dynamic Landlock handled-set): os_sandbox_linux.c
 # grew 1415 -> 1422 — the slice-6 unconditional handled-set addition of
@@ -362,3 +362,14 @@
 # and, per the cold-boot fix in the same change, follow only when we are
 # already above the healthy peer floor) — re-baselined at 2951.
 # Every entry here is a baseline, not a raise: the recorded count STAYS 13.
+#
+# Paydown 2026-07-28 (ratchet re-tighten, no code change): the identity /
+# directory wave landed with every oversized file BASELINED rather than
+# grandfathered, so the live (new + grown) count settled at 11 while this
+# file still recorded 13 — and the gate FAILS on slack, not only on excess,
+# because unclaimed headroom is drift nobody has to justify. Measured 11 on
+# a pristine checkout of a69085f05 with no working-tree changes; lowered
+# 13 -> 11 to close it. No file was split, shrunk or re-baselined for this
+# note — it is bookkeeping catching up to a tightening that already
+# happened. A lane whose merge regrows the count past 11 gets the review
+# the ratchet exists to force.

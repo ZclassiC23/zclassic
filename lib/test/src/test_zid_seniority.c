@@ -92,7 +92,7 @@ static bool max_draw(void *vctx, const uint8_t relay_id[32],
 }
 
 /* THE PRODUCTION DRAW — a byte-for-byte mirror of the boot adapter
- * (config/src/boot_node_utilities.c, boot_seniority_client_draw): the low 8
+ * (config/src/boot_seniority.c, bsen_client_draw): the low 8
  * bytes of T5.1's per-candidate score, keyed on an epoch seed that is already
  * bound to this client's key. Kept here so the doctrine cases below can be
  * re-run against what actually ships, not only against a test double. */
