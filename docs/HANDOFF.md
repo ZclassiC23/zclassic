@@ -21,14 +21,69 @@ records canonical served height against `gap_vs_oracle`. Treat any
 "at tip" / "holding tip" claim as unverified until that ledger's most recent
 line confirms it.
 
-## `main` is ahead of the running binary
+**Deployed 2026-07-28 02:58 UTC** — `make ship --targets=local`, source_id
+`981a8d01e9a1fd35…` (was `ff29f119c4e8…`, a binary built 04:19 the previous
+day). The long "not deployed" backlog that used to live in this section is
+GONE — it shipped.
 
-The canonical node runs a binary built before the current `main`. Everything
-below is committed and gated (`make lint`, `make test-parallel`) but **not
-deployed**, and none of it is live until an owner-gated `make deploy`:
+Post-deploy health, from the external SLO ledger rather than from the node's
+own opinion of itself — `~/.local/state/zclassic23-slo/uptime-ledger.jsonl`,
+`ts=1785213131`:
 
-| In `main`, not running | Where |
+```json
+{"instance":"canonical","reachable":true,"unreachable_streak":0,
+ "served_height":3196636,"oracle_height":3196637,"gap_vs_oracle":1,
+ "latency_ms":8}
+```
+
+`gap_vs_oracle=1` against an independent oracle is the claim; the node's own
+`sync=at_tip` is not. Peers recovered to 21 and RSS settled back down from a
+2.7 GB warm-up spike. (The `dev` instance in that same ledger reads
+`reachable:false` with a long unreachable streak — that lane is simply not
+running, and is not evidence of anything about the canonical node.)
+
+**Check this before diagnosing anything live:**
+
+```bash
+make agent-doctor | sed -n 2p     # live_node=… running_this_tree=true|false
+```
+
+That line was added 2026-07-28 because the same mistake was made twice in one
+session: a defect was diagnosed from the checkout, written up, and turned out
+to be already fixed in `main` and merely never shipped. The node behaves
+exactly like a node with a real bug, so nothing about its behaviour reveals
+the gap. `running_this_tree=false` means **stop and ship, or read the
+deployed source** — do not reason about live behaviour from the checkout.
+
+Two instruments that were off or absent are worth knowing about:
+
+- **The systemd watchdog is still disabled** (`WatchdogSec=0` in
+  `~/.config/systemd/user/zclassic23.service.d/zzzzz-watchdog-incident.conf`).
+  It was turned off during the 2026-07-27 keepalive incident when systemd
+  SIGABRT'd a healthy node seven times. The deploy deliberately did NOT
+  re-enable it — one variable at a time — so whether that regression is gone
+  is still **unknown**. Turning it back on is the test. Delete the drop-in and
+  `systemctl --user daemon-reload` when someone is watching.
+- **A rollback copy of the pre-deploy binary** is at
+  `~/.local/bin/zclassic23-live.rollback-20260728-024526` (sha256
+  `63c8206c92bc…`). `make ship`'s local path installs, restarts and verifies
+  but does **not** roll back automatically — only the remote path does. Delete
+  the copy once the current binary has proven itself.
+
+## What shipped in the 2026-07-28 deploy
+
+Everything below had been sitting committed-and-gated but undeployed — in one
+case for eighteen hours while its absence was being misdiagnosed as a live
+defect. It is now RUNNING. Kept as the record of what that deploy carried;
+delete the table once it stops being useful history.
+
+| Shipped 2026-07-28 | Where |
 |---|---|
+| Supervisor counts RESULTS, not activity: `progress_policy` (armed/exempt/undeclared) per child, `supervisor_progress_idle()`, `idle_ticks`, `child_headroom`. `SUPERVISOR_CAP` 64→128 (the registry was exactly full — the next subsystem to register would have run unsupervised) | `lib/util/{src,include/util}/supervisor.c,h`, `check-supervisor-progress-declared` |
+| Per-index COVERAGE: `floor`, `coverage`, `catalog_index_emptiness_is_meaningful()`, `dumpstate catalog_coverage`. Answers "this index is empty — does that mean anything?" without a `COUNT(*)` (3.5 s on the live node) | `lib/storage/src/catalog_completeness.c`, `app/conditions/src/catalog_lag_exceeded.c` |
+| Live-node freshness in `make agent-doctor`, plus a fix to a greedy JSON extraction that had been reporting a nested runtime value as the build's own identity | `tools/dev/agent-doctor.sh` |
+| `check-doc-claims` — bind a prose claim to a machine predicate in an HTML comment; 52 bound claims across 135 docs. `check-doc-counts` widened from 4 tracked numbers to 8 | `tools/lint/check_doc_claims.sh` |
+| The declared service contract (`zcl.service_binding.v1`): manifest, ZSLP token gate on the CORRECT ledger with as-of-height semantics, lifecycle state machine, `app.service.*` commands | `lib/kernel/src/service_binding.c`, `app/services/src/service_token_gate.c` |
 | ZCODE slices 1–13 (signed release envelope, 10 GiB CAS store, publish/search, contributor identity + ZNAM pointers, declarative recipe, external verifier `zclassic23-package-verify`, scoring, simulated rewards/rankings/badges, ratio + anti-spam policy, `zpkgswm` swarm, `/zcode*` site). Slices 14–15 (real ZSLP transfers/badges) remain, owner-gated — full handoff in `docs/work/ZCODE_PLAN.md` §"Current state" | `lib/vcs/`, `config/commands/zcode.def`, `tools/package_verify.c`, `app/controllers/src/zcode_site_controller.c` |
 | node.db lock-contention fix (catchup commit cadence, BEGIN IMMEDIATE, poisoned-COMMIT recovery, `node_db_catchup.abort_storm` blocker) | `5930d89fe` |
 | Wallet plaintext-mirror elimination (single writer, STATE-G boot scrub to WKS1 envelopes) | `d027c034b` |
@@ -93,6 +148,45 @@ trailing window, so deploy when the escalator fires anyway, or after
   residue. The escalator's 600-block resnapshot refold self-cures it (crude,
   always-terminating). The merged in-place healer fixes the fault at the
   source; deploy it the next time this class fires.
+
+## Open branches from the 2026-07-28 foundation round
+
+Eleven agents across three workflows. Claims (3 lanes) and the services
+CONTRACT (1 lane) are merged and gated; seven branches are not. All seven
+forked from that session's start and need a reconcile pass — expect conflicts
+in exactly three places every time: `TEST_LIST` in
+`lib/test/src/test_parallel.c`, `LINT_GATES` in the `Makefile`, and the
+`<!-- DOC-COUNTS -->` block in `docs/CODEBASE_MAP.md`.
+
+| Branch | What it is | Status |
+|---|---|---|
+| `lane/crypto-harness` | secp256k1 differential oracle (3 layers), a constant-time work-ratio check, an ECDSA fuzz harness + 46 seeds | **Unreviewed.** Author's own caveat, worth keeping: layer 1 is near-tautological because candidate and reference both bottom out in the vendored archive. Layers 2 (frozen transcript digest) and 3 (external ground truth: scalar 1 → published base point, n−1 → its negation, homomorphism) are the ones with teeth. |
+| `lane/crypto-secp` | `lib/zsecp/` — our own field/group/scalar/ECDSA, ~1,800 lines | **Unreviewed, but verified SHADOWED.** Referenced only by the build-order file, a doc, and the code navigator. Touches nothing in `lib/crypto_registry`, `lib/keys`, `core/`, `vendor/`, `app/`, `config/src`. Every signature the node verifies still goes through the vendored archive. **Do not promote without full-history replay agreement.** | <!-- doc-path-ok: lib/zsecp/ exists only on the unmerged lane/crypto-secp branch -->
+| `lane/crypto-speed` | The measured gaps: ed25519 windowing, the `blake2b_avx2` OS-register check, `fr_avx512`/`bn254_accel` overclaims | **Unreviewed.** |
+| `lane/crypto-bignum` | Variable-width big integers (the missing primitive for later threshold work) | **Unreviewed.** |
+| `lane/services-b` | The `notes` worked reference service | **BLOCKED — see below.** |
+| `lane/services-c` | `check-service-contract` gate + isolation tests | **Blocked with b** (its gate is what found the blocker). |
+
+### Why the services reference is blocked
+
+`services-c`'s gate found three defects in `services-b`'s reference service.
+Two are trivial (a missing `SERVICE-TEST:` marker; a service command calling
+the BOOT-ceremony `node_db_open()`, which runs snapshot-staging DELETEs — use
+`node_db_open_runtime()`). The third is architectural and is the reason both
+branches are held back:
+
+**The reference service's table is created in
+`app/models/src/database_migrate_features2.c` — the central shared
+migration.** So adding a service means editing core schema code, which is
+exactly the property ("add a service without editing the core") the workflow
+existed to establish. The contract, token gate and lifecycle are sound; the
+state-ownership half is not demonstrated.
+
+Fix direction: the service creates its own table from its own source, so
+`table_is_own_state` in the gate can see a footprint it owns. Do **not**
+weaken the gate's collision check to make this pass — that check is derived
+from the real schema precisely because the previous hand-written
+reserved-prefix list had already gone stale.
 
 ## Open branches — work that is finished but did not pass review
 
