@@ -23,7 +23,12 @@
 
 #include "net/connman.h"
 #include "net/net.h"
+#include "net/netaddr.h"
 
+#include "chain/chain.h"
+#include "chain/chainparams.h"
+#include "consensus/params.h"
+#include "core/uint256.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 
@@ -250,8 +255,32 @@ void network_monitor_compute_view(const struct db_peer_chain_observation *obs,
 
 /* ── sampling ────────────────────────────────────────────────────────── */
 
-/* Snapshot current peers into obs[] (bounded). Returns the count. */
-static int nm_snapshot_peers(struct db_peer_chain_observation *obs, int max,
+/* Hex-encode a peer's address group (net_addr_get_group) into `out`. Onion
+ * and clearnet peers produce distinct group keys by construction — that is
+ * the property the netsplit fold leans on. Falls back to the empty string
+ * (the fold then keys on the addr string) when the group is unavailable. */
+static void nm_group_key_of(const struct p2p_node *node, nm_group_key_t out)
+{
+    out[0] = '\0';
+    if (!node)
+        return;
+    unsigned char g[NET_ADDR_GROUP_MAX];
+    size_t len = net_addr_get_group(&node->addr.svc.addr, g, sizeof(g));
+    if (len == 0 || len > sizeof(g))
+        return;
+    static const char hex[] = "0123456789abcdef";
+    size_t o = 0;
+    for (size_t i = 0; i < len && o + 2 < (size_t)NM_GROUP_KEY_MAX; i++) {
+        out[o++] = hex[(g[i] >> 4) & 0xf];
+        out[o++] = hex[g[i] & 0xf];
+    }
+    out[o] = '\0';
+}
+
+/* Snapshot current peers into obs[] (bounded), with each peer's address-group
+ * key in the parallel groups[] (may be NULL). Returns the count. */
+static int nm_snapshot_peers(struct db_peer_chain_observation *obs,
+                             nm_group_key_t *groups, int max,
                              int64_t now_unix)
 {
     struct connman *cm = sync_monitor_connman();
@@ -290,6 +319,8 @@ static int nm_snapshot_peers(struct db_peer_chain_observation *obs, int max,
                 o->best_height = v->height;
             snprintf(o->tip_hash, sizeof(o->tip_hash), "%s", v->hash_hex);
         }
+        if (groups)
+            nm_group_key_of(node, groups[count]);
         count++;
     }
     zcl_mutex_unlock(&cm->manager.cs_nodes);
@@ -305,12 +336,65 @@ static int64_t nm_our_height(void)
     return (int64_t)active_chain_height(&ms->chain_active);
 }
 
+/* Our active-chain tip hash + header timestamp. Returns false when the chain
+ * is not available (the partition fold then reports nothing). */
+static bool nm_our_tip(char out_hash[PEER_OBS_TIP_HEX + 1], int64_t *out_time)
+{
+    out_hash[0] = '\0';
+    if (out_time)
+        *out_time = -1;
+    struct main_state *ms = sync_monitor_main_state();
+    if (!ms)
+        return false;
+    struct block_index *tip = active_chain_tip(&ms->chain_active);
+    if (!tip || !tip->phashBlock)
+        return false;
+    char hex[65];
+    uint256_get_hex(tip->phashBlock, hex);
+    snprintf(out_hash, PEER_OBS_TIP_HEX + 1, "%s", hex);
+    if (out_time)
+        *out_time = (int64_t)tip->nTime;
+    return true;
+}
+
+/* Fill the arrival window (OLDEST FIRST) from the active chain, and report
+ * the consensus target spacing at the tip. Returns the number of samples. */
+static int nm_arrival_window(struct nm_arrival_sample *win, int max,
+                             int64_t *out_target_spacing_secs)
+{
+    if (out_target_spacing_secs)
+        *out_target_spacing_secs = 0;
+    struct main_state *ms = sync_monitor_main_state();
+    const struct chain_params *cp = chain_params_get();
+    if (!ms || !cp || !win || max <= 0)
+        return 0;
+    int tip_h = active_chain_height(&ms->chain_active);
+    if (tip_h < max)
+        return 0;
+    *out_target_spacing_secs =
+        consensus_pow_target_spacing(&cp->consensus, tip_h);
+
+    int count = 0;
+    for (int h = tip_h - max + 1; h <= tip_h; h++) {
+        struct block_index *bi = active_chain_at(&ms->chain_active, h);
+        if (!bi)
+            return 0; /* a reorg moved under us — judge nothing this round */
+        win[count].height = (int64_t)bi->nHeight;
+        win[count].time_unix = (int64_t)bi->nTime;
+        win[count].nbits = bi->nBits;
+        count++;
+    }
+    return count;
+}
+
 /* One full sample: snapshot peers, persist (best-effort), fold the view. */
 static void nm_sample_once(void)
 {
     static struct db_peer_chain_observation obs[NM_MAX_PEERS]; /* thread-owned */
+    static nm_group_key_t groups[NM_MAX_PEERS];                /* thread-owned */
     int64_t now = platform_time_wall_unix();
-    int n = nm_snapshot_peers(obs, NM_MAX_PEERS, now);
+    memset(groups, 0, sizeof(groups));
+    int n = nm_snapshot_peers(obs, groups, NM_MAX_PEERS, now);
     int64_t our_h = nm_our_height();
 
     /* Persist history (best-effort — a busy DB never blocks detection, which
@@ -330,9 +414,29 @@ static void nm_sample_once(void)
     struct network_consensus_view v;
     network_monitor_compute_view(obs, n, our_h, now, &v);
 
+    /* Partition (netsplit) fold — three signals, then the composite verdict.
+     * Observational: nothing below changes chain selection. */
+    struct network_partition_view pv;
+    memset(&pv, 0, sizeof(pv));
+    char our_tip[PEER_OBS_TIP_HEX + 1];
+    int64_t tip_time = -1;
+    bool have_tip = nm_our_tip(our_tip, &tip_time);
+    network_monitor_fold_tip_disagreement(obs, n, groups, our_h,
+                                          have_tip ? our_tip : NULL, &pv);
+
+    static struct nm_arrival_sample win[NM_ARRIVAL_MAX_WINDOW_BLOCKS];
+    int64_t spacing = 0;
+    int win_n = nm_arrival_window(win, NM_ARRIVAL_MAX_WINDOW_BLOCKS, &spacing);
+    network_monitor_fold_arrival_rate(win, win_n, spacing, &pv.arrival);
+
+    network_monitor_partition_verdict(tip_time >= 0 ? now - tip_time : -1,
+                                      now, &pv);
+
     /* Edge-triggered durable fork ledger: bank a NEW fork observation once
      * (height or either cluster hash changed since the last banked one), and
      * re-arm when the fork clears. Fail-open — no event log wired ⇒ no-op. */
+    network_monitor_netsplit_publish(&pv);
+
     bool emit_fork = false;
     zcl_mutex_lock(&g_nm.lock);
     g_nm.view = v;
@@ -373,7 +477,6 @@ bool network_monitor_get_view(struct network_consensus_view *out)
     return ready;
 }
 
-/* ── supervised sampler thread ───────────────────────────────────────── */
 
 static void nm_supervisor_heartbeat(void)
 {

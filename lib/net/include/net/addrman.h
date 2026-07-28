@@ -121,7 +121,13 @@ double addr_info_get_chance(const struct addr_info *info, int64_t nNow);
 /* Seed the durable reputation dial-preference weight for one address (bounded
  * and clamped into [1.0, ADDRMAN_REPUTATION_MAX_MULT]; a weight <= 1.0 clears
  * any boost). Fail-open: a missing address is a silent no-op. Returns true iff
- * the address was found and updated. */
+ * the address was found and updated.
+ *
+ * Returns false WITHOUT touching the entry when a registered directory-
+ * influence policy is withholding influence (net/directory_influence_port.h)
+ * — degraded mode while SUSPECTED_NETSPLIT stands. Weights already banked on
+ * existing entries are unaffected, and selection is never made exclusionary
+ * either way. */
 bool addrman_set_reputation_weight(struct addr_man *am,
                                    const struct net_addr *addr, double weight);
 

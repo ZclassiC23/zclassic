@@ -135,7 +135,7 @@ page changing with it.
 test_groups: 791
 port_interfaces: 12
 persistence_adapters: 13
-condition_registrations: 50
+condition_registrations: 51
 command_bundles: 10
 command_roots: 8
 dumpstate_subsystems: 145

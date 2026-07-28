@@ -26,6 +26,7 @@
 #include "storage/nullifier_kv.h"
 #include "storage/anchor_kv.h"
 #include "storage/progress_store.h"
+#include "util/blocker.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "util/stage.h"
@@ -308,6 +309,46 @@ bool utxo_apply_unwind_write_cursor(sqlite3 *db, uint64_t value)
     return true;
 }
 
+/* Name a deep-reorg refusal.
+ *
+ * Both refusal paths below used to be SILENT to the operator: a LOG_WARN and
+ * an EV_BLOCK_REJECTED, no typed blocker, no condition, nothing withheld — so
+ * `dumpstate blocker` showed a healthy node while it was permanently
+ * declining to follow the rest of the network. With ZCL_FINALITY_DEPTH = 10,
+ * a partition that survives more than 10 blocks on both sides never
+ * reconverges, which makes this exactly the class of refusal that must be
+ * named, not logged and forgotten.
+ *
+ * height_is_immutable() (validation/checkpoint.h) is the predicate that
+ * DEFINES the refusal — the fork point sits at or below tip - FINALITY_DEPTH,
+ * so every block above it is already final. It is READ here, never
+ * re-implemented and never redefined, and it picks the reason token: a
+ * refusal whose fork point is somehow not immutable is a different fault and
+ * must not borrow this name. Either way a blocker is raised; there is no path
+ * through this helper that stays quiet.
+ *
+ * BLOCKER_PERMANENT: a consensus refusal is never auto-retried. See the
+ * ZCL_BLOCKER_REMEDY / ZCL_BLOCKER_DECISION rows for
+ * `chain.reorg_refused_below_finality`. */
+void utxo_apply_reorg_name_refusal_blocker(int tip_h, int fork_h)
+{
+    const bool immutable = height_is_immutable(tip_h, fork_h);
+    char reason[BLOCKER_REASON_MAX];
+    snprintf(reason, sizeof(reason),
+             "%s: unwind REFUSED tip=%d fork=%d depth=%d > "
+             "ZCL_FINALITY_DEPTH=%d. Heights <= %d are final; this node keeps "
+             "its own chain and will not rewind them. A split this deep does "
+             "not reconverge on its own.",
+             immutable ? "reorg_below_finality" : "reorg_refused_unclassified",
+             tip_h, fork_h, tip_h - fork_h, ZCL_FINALITY_DEPTH,
+             tip_h - ZCL_FINALITY_DEPTH);
+
+    struct blocker_record b;
+    if (blocker_init(&b, "chain.reorg_refused_below_finality", "utxo_apply",
+                     BLOCKER_PERMANENT, reason))
+        (void)blocker_set(&b);
+}
+
 bool utxo_apply_reorg_unwind_if_needed(sqlite3 *db,
                                        struct stage *stage,
                                        struct main_state *ms,
@@ -400,6 +441,7 @@ bool utxo_apply_reorg_unwind_if_needed(sqlite3 *db,
         event_emitf(EV_BLOCK_REJECTED, 0,
                     "utxo_apply unwind_below_finality tip=%d fork=%d depth=%d",
                     C - 1, floor_h - 1, C - floor_h);
+        utxo_apply_reorg_name_refusal_blocker(C - 1, floor_h - 1);
         return false;
     }
     int fork_plus1 = fork + 1;  /* first height to disconnect (== 0 if F<0) */
@@ -424,6 +466,7 @@ bool utxo_apply_reorg_unwind_if_needed(sqlite3 *db,
             event_emitf(EV_BLOCK_REJECTED, 0,
                         "utxo_apply unwind_below_finality tip=%d fork=%d depth=%d",
                         C - 1, fork, (C - 1) - fork);
+            utxo_apply_reorg_name_refusal_blocker(C - 1, fork);
             return false;
         }
     }

@@ -220,6 +220,11 @@ static int name_body_end(char *buf, size_t max)
     return (int)off;
 }
 
+int name_view_body_end(char *buf, size_t max)
+{
+    return name_body_end(buf, max);
+}
+
 /* ── Index ──────────────────────────────────────────────────────── */
 
 size_t name_view_index(const struct znam_entry *entries, int count,
@@ -264,9 +269,63 @@ size_t name_view_index(const struct znam_entry *entries, int count,
 
 /* ── Profile / default site ─────────────────────────────────────── */
 
+/* The "this name changed at height N" card — the argument that beats a
+ * certificate authority. A CA can be quietly coerced into re-issuing and
+ * nobody outside sees it; every line here is a transaction at a height
+ * that anybody can go read for themselves, which is why each one links to
+ * the explorer rather than asking the visitor to take this node's word. */
+static size_t name_emit_history(char *buf, size_t max,
+                                const struct name_history *h)
+{
+    size_t off = 0;
+    if (!h) return 0;
+
+    SITE_APPEND(off, buf, max,
+        "<div class='card'><h2>On-chain history</h2>"
+        "<p class='meta'>Every change to this name is a transaction in the "
+        "ZClassic blockchain. A certificate authority can be quietly "
+        "pressured into re-issuing and nobody outside ever sees it; this "
+        "record cannot change without a new transaction at a new height, "
+        "in public, forever.</p>"
+        "<div class='kv'><b>registered</b><span class='val'>block %d &middot; "
+        "<a class='mono' href='/explorer/tx/%s'>%s</a></span></div>",
+        h->reg_height, h->reg_txid_hex, h->reg_txid_hex);
+
+    if (!h->changed) {
+        SITE_APPEND(off, buf, max,
+            "<div class='kv'><b>changes since</b>"
+            "<span class='val'>none — the registration is still the last "
+            "word on this name</span></div>");
+    } else if (h->last_change_height >= 0) {
+        SITE_APPEND(off, buf, max,
+            "<div class='kv'><b>last changed</b><span class='val'>block %d "
+            "&middot; <a class='mono' href='/explorer/tx/%s'>%s</a>"
+            "</span></div>",
+            h->last_change_height, h->last_change_txid_hex,
+            h->last_change_txid_hex);
+    } else {
+        /* Honest about the gap: this node knows WHICH transaction changed
+         * the name but not what height it landed at, because that tx is
+         * not in its transaction index. Never guess a height. */
+        SITE_APPEND(off, buf, max,
+            "<div class='kv'><b>last changed</b><span class='val'>"
+            "<a class='mono' href='/explorer/tx/%s'>%s</a> &middot; height "
+            "not known to this node (no transaction index)</span></div>",
+            h->last_change_txid_hex, h->last_change_txid_hex);
+    }
+
+    if (h->expiry_height > 0)
+        SITE_APPEND(off, buf, max,
+            "<div class='kv'><b>registration term ends</b>"
+            "<span class='val'>block %d</span></div>", h->expiry_height);
+    SITE_APPEND(off, buf, max, "</div>");
+    return off;
+}
+
 size_t name_view_profile(const struct znam_entry *e,
                          const struct znam_text_record *text, int ntext,
                          const struct znam_addr_record *addr, int naddr,
+                         const struct name_history *hist,
                          uint8_t *resp, size_t max)
 {
     char body[24576];
@@ -323,6 +382,8 @@ size_t name_view_profile(const struct znam_entry *e,
         n = snprintf(body + off, sizeof(body) - off, "</div>");
         if (n > 0) off += (size_t)n;
     }
+
+    off += name_emit_history(body + off, sizeof(body) - off, hist);
 
     n = snprintf(body + off, sizeof(body) - off,
         "<p><a href='/n/%s'>open site</a> &middot; "
@@ -433,23 +494,107 @@ size_t name_view_register_result(const char *name, const char *value,
     return name_html_response(body, off, resp, max);
 }
 
-size_t name_view_not_found(const char *name, uint8_t *resp, size_t max)
+/* ── Resolution failure (the error taxonomy) ────────────────────── */
+
+/* Headline per verdict. "Name not found" is deliberately gone: it was the
+ * one string that made three different situations look like one. */
+static const char *name_error_headline(enum name_resolve_status s)
+{
+    switch (s) {
+    case NAME_RESOLVE_MALFORMED:            return "That is not a name";
+    case NAME_RESOLVE_ABSENT:               return "Nobody has claimed this name";
+    case NAME_RESOLVE_NO_SUCH_TARGET:       return "Registered, but not for that";
+    case NAME_RESOLVE_TYPE_UNKNOWN:         return "No such target type";
+    case NAME_RESOLVE_REGISTRY_UNAVAILABLE: return "Cannot look that up right now";
+    case NAME_RESOLVE_OK:                   break;
+    }
+    return "Name";
+}
+
+/* Response wrapper carrying the machine-readable verdict as a header, so a
+ * scripted client never has to scrape the page to tell the cases apart. */
+static size_t name_coded_error_response(const char *status_code,
+                                        const char *code,
+                                        const char *body, size_t body_len,
+                                        uint8_t *resp, size_t max)
+{
+    int hn = snprintf((char *)resp, max,
+        "HTTP/1.1 %s\r\n"
+        "Content-Type: text/html; charset=utf-8\r\n"
+        "Content-Length: %zu\r\n"
+        "X-ZCL-Name-Error: %s\r\n"
+        "Cache-Control: no-store\r\n"
+        "Connection: close\r\n\r\n",
+        status_code, body_len, code);
+    if (hn <= 0 || (size_t)hn >= max) return 0;
+    if ((size_t)hn + body_len > max) return 0;
+    memcpy(resp + hn, body, body_len);
+    return (size_t)hn + body_len;
+}
+
+size_t name_view_resolve_error(const char *name,
+                               enum name_resolve_status status,
+                               const char *requested_type,
+                               const struct znam_entry *entry,
+                               uint8_t *resp, size_t max)
 {
     char body[20480];
+    char safe_name[128], safe_type[64];
     size_t off = 0;
-    int n = name_body_start(body, sizeof(body), "Name not found");
-    if (n > 0) off = (size_t)n;
-    char safe_name[128];
+    int n;
+
     html_escape(safe_name, sizeof(safe_name), name ? name : "");
+    html_escape(safe_type, sizeof(safe_type), requested_type ? requested_type : "");
+
+    n = name_body_start(body, sizeof(body), name_error_headline(status));
+    if (n > 0) off = (size_t)n;
+
     n = snprintf(body + off, sizeof(body) - off,
-        "<h1>Name not found</h1>"
+        "<h1>%s</h1>"
         "<div class='card'>"
-        "<p><b>%s</b> is not registered.</p>"
-        "<p><a href='/names/register'>Register it</a> &middot; "
-        "<a href='/names'>&larr; all names</a></p></div>",
-        safe_name);
+        "<div class='kv'><b>name</b><span class='val mono'>%s</span></div>"
+        "<div class='kv'><b>reason</b><span class='val mono'>%s</span></div>"
+        "<p>%s</p>",
+        name_error_headline(status), safe_name[0] ? safe_name : "(empty)",
+        name_resolve_status_code(status), name_resolve_status_message(status));
+    if (n > 0) off += (size_t)n;
+
+    if (safe_type[0]) {
+        n = snprintf(body + off, sizeof(body) - off,
+            "<div class='kv'><b>asked for</b><span class='val mono'>%s</span>"
+            "</div>", safe_type);
+        if (n > 0) off += (size_t)n;
+    }
+
+    /* Registered-but-wrong-type is the case with somebody to go ask, so it
+     * gets the owner and the record the name DOES carry. */
+    if (status == NAME_RESOLVE_NO_SUCH_TARGET && entry) {
+        char safe_owner[128], safe_val[280];
+        html_escape(safe_owner, sizeof(safe_owner), entry->owner_address);
+        html_escape(safe_val, sizeof(safe_val), entry->target_value);
+        n = snprintf(body + off, sizeof(body) - off,
+            "<div class='kv'><b>owner</b><span class='val mono'>%s</span></div>"
+            "<div class='kv'><b>does have</b><span class='val mono'>%s: %s"
+            "</span></div>"
+            "<p><a href='/names/%s'>See everything this name publishes</a>"
+            "</p>",
+            safe_owner, znam_type_name(entry->target_type), safe_val,
+            safe_name);
+        if (n > 0) off += (size_t)n;
+    } else if (status == NAME_RESOLVE_ABSENT) {
+        n = snprintf(body + off, sizeof(body) - off,
+            "<p><a href='/names/register'>Claim <b>%s</b></a> — it is "
+            "first-come-first-served.</p>", safe_name);
+        if (n > 0) off += (size_t)n;
+    }
+
+    n = snprintf(body + off, sizeof(body) - off,
+        "<p><a href='/names'>&larr; all names</a></p></div>");
     if (n > 0) off += (size_t)n;
     n = name_body_end(body + off, sizeof(body) - off);
     if (n > 0) off += (size_t)n;
-    return name_error_response("404 Not Found", body, off, resp, max);
+
+    return name_coded_error_response(name_resolve_status_http(status),
+                                     name_resolve_status_code(status),
+                                     body, off, resp, max);
 }
