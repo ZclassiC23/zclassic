@@ -94,6 +94,22 @@ bool zslp_ledger_truncate(struct node_db *ndb);
 int64_t zslp_ledger_balance(struct node_db *ndb, const uint8_t token_id[32],
                             const uint8_t address[20]);
 
+/* The same fold restricted to a stated height: rows created at or below
+ * `height` that were unspent as of `height` (never spent, or spent strictly
+ * above it). Reproducible by construction — the same ledger contents and the
+ * same height always yield the same number, whenever the query runs — which
+ * is what makes a token-derived access verdict auditable rather than
+ * whatever-the-balance-happened-to-be. Negative heights return 0.
+ *
+ * Reproducible does NOT mean authoritative on its own: if the ledger has not
+ * folded past `height` (zslp_ledger_get_cursor), the answer is a partial
+ * index, not history. Callers that gate on it must check the cursor and fail
+ * closed. */
+int64_t zslp_ledger_balance_at_height(struct node_db *ndb,
+                                      const uint8_t token_id[32],
+                                      const uint8_t address[20],
+                                      int32_t height);
+
 /* One ZSLP token this wallet holds, folded over EVERY address the wallet
  * owns rather than the single (token, address) pair zslp_ledger_balance
  * answers for. */
@@ -123,6 +139,12 @@ int zslp_ledger_wallet_tokens(struct node_db *ndb,
  * wallet holds none of it. */
 int64_t zslp_ledger_wallet_balance(struct node_db *ndb,
                                    const uint8_t token_id[32]);
+
+/* Wallet-wide fold at a stated height. Same reproducibility contract and
+ * same cursor caveat as zslp_ledger_balance_at_height. */
+int64_t zslp_ledger_wallet_balance_at_height(struct node_db *ndb,
+                                             const uint8_t token_id[32],
+                                             int32_t height);
 
 /* How many transparent addresses the two wallet-wide sweeps above fold
  * over (wallet_keys + wallet_watch_only, de-duplicated). 0 for a wallet

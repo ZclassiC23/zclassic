@@ -43,3 +43,84 @@ ZCL_COMMAND_COMPAT_READ(
 
 ZCL_COMMAND_BRANCH("app.invoke", "app", "Invoke a manifest-owned App route",
                    ZCL_COMMAND_LAYER_APP)
+
+/* Declared services (zcl.service_binding.v1). This branch is also the
+ * namespace root every service's own leaves live under: a service named `x`
+ * owns exactly `app.service.x` and `app.service.x.*`, which is why `list`,
+ * `inspect`, `access`, and `status` are reserved service names. Adding a
+ * service means appending to config/services/bindings.def and declaring its
+ * leaves in a config/commands .def — `discover` and the generated API
+ * reference then carry them with no further work. */
+ZCL_COMMAND_BRANCH("app.service", "app",
+                   "Token-gated services declared in the service catalog",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_READ(
+    "app.service.list", "app.service", "",
+    "List declared services and their catalog identity",
+    "Every service declared by config/services/bindings.def with its command "
+    "namespace, owned state prefix, host role, and the catalog's SHA3 root; a "
+    "complete compile-time snapshot, static until the binary changes.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "services,bindings,catalog,token", "zcl.command.empty_input.v1",
+    "zcl.service_binding_index.v1", "", "", "zclassic23 app service list",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_APP_MANIFEST_READ,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_service_list)
+
+ZCL_COMMAND_READY_READ(
+    "app.service.inspect", "app.service", "",
+    "Inspect one service binding: namespaces, token gate, isolation",
+    "One declared service's full binding — command prefix, owned state table "
+    "prefix, state schema, ZSLP token gate (genesis txid, threshold, snapshot "
+    "rule), the enforced isolation flag set, and its SHA3 identity; complete "
+    "for that service as compiled, with no node contact.", 0,
+    "service,binding,gate,isolation,digest", "zcl.service_ref_input.v1",
+    "zcl.service_binding.v1", "service", "service",
+    "zclassic23 app service inspect reference",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_APP_MANIFEST_READ,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_service_inspect)
+
+ZCL_COMMAND_READY_READ(
+    "app.service.access", "app.service", "",
+    "Evaluate one service's token gate and explain the verdict",
+    "A granted/denied verdict for one service's ZSLP token gate, read from "
+    "the debit-correct zslp_ledger at the binding's declared snapshot height "
+    "(never from the credit-only zslp_balances): the verdict, the named "
+    "reason, the snapshot height, the ledger's fold cursor, the balance, and "
+    "the threshold. Reproducible — the same ledger and height always answer "
+    "the same. Fails closed: an unreadable or under-folded ledger denies.", 0,
+    "service,token,access,zslp,gate,snapshot", "zcl.service_access_input.v1",
+    "zcl.service_access_verdict.v1", "service,address,datadir,tip_height",
+    "service", "zclassic23 app service access reference",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_CHAIN_READ,
+    ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_service_access)
+
+ZCL_COMMAND_READY_READ(
+    "app.service.status", "app.service", "",
+    "Show each declared service's runtime lifecycle state",
+    "Per-service lifecycle state (declared/starting/ready/degraded/blocked/"
+    "stopping/exited), the blocker reason when blocked, and transition and "
+    "fault counters, read from the in-process registry at call time; the "
+    "registry is rebuilt from the compiled catalog each boot, so every "
+    "service reads `declared` until something registers it.", 0,
+    "service,lifecycle,state,blocker", "zcl.service_ref_input.v1",
+    "zcl.service_lifecycle.v1", "service", "service",
+    "zclassic23 app service status",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_APP_MANIFEST_READ,
+    ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_service_status)

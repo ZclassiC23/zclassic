@@ -136,6 +136,24 @@ void zcl_native_handle_app_list(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* ── app.service.* — declared services (tools/command/native_service_command.c).
+ * `list` and `inspect` read the compile-time zcl.service_binding.v1 catalog
+ * and touch nothing else. `access` opens <datadir>/node.db read-only to
+ * evaluate one binding's ZSLP token gate at its declared snapshot height.
+ * `status` reads the in-process lifecycle registry. */
+void zcl_native_handle_service_list(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_service_inspect(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_service_access(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_service_status(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* ── code.* — the source-code navigator (tools/command/native_code_command.c).
  * Local, read-only, deterministic leaves backed by the in-binary lib/codeindex
  * index. Each renders one bounded JSON document (structured array + human
