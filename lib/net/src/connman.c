@@ -21,6 +21,7 @@
 #include "net/download.h"
 #include "net/fast_sync.h"
 #include "net/tor_integration.h"
+#include "net/onion_service.h"
 #include "core/random.h"
 #include "core/serialize.h"
 #include "net/netbase.h"
@@ -295,15 +296,33 @@ void connman_set_known_zcl23_peer_source(
     cm->known_zcl23_peers_ctx = ctx;
 }
 
+/* The onion graph: a directory response's "onion" entries are read too,
+ * strictly ALONGSIDE the clearnet half below (which is untouched and
+ * still runs first). A relayed hostname buys exactly one thing — one
+ * more place to look. Caps, parser and follow budget: onion_service.h.
+ * Depth-1 fetches get a shorter deadline than a configured seed. */
+#define ONION_RELAY_FETCH_TIMEOUT 20
+
+static void try_onion_seed_fetch_depth(struct connman *cm, const char *onion,
+                                       int depth);
+
 /* Fetch /directory.json from a .onion seed and add clearnet IPs */
 static void try_onion_seed_fetch(struct connman *cm, const char *onion)
 {
-    printf("Onion seed: fetching /directory.json from %s...\n", onion);
+    try_onion_seed_fetch_depth(cm, onion, 0);
+}
+
+static void try_onion_seed_fetch_depth(struct connman *cm, const char *onion,
+                                       int depth)
+{
+    printf("Onion seed: fetching /directory.json from %s (depth=%d)...\n",
+           onion, depth);
     fflush(stdout);
 
     struct onion_fetch_result result = {0};
-    int rc = tor_integration_fetch_onion_blocking(onion, "/directory.json",
-                                                    &result, 60);
+    int rc = tor_integration_fetch_onion_blocking(
+        onion, "/directory.json", &result,
+        depth == 0 ? 60 : ONION_RELAY_FETCH_TIMEOUT);
     if (rc < 0 || result.status != 200 || !result.body) {
         printf("Onion seed: fetch failed (rc=%d status=%d)\n",
                rc, result.status);
@@ -366,6 +385,36 @@ static void try_onion_seed_fetch(struct connman *cm, const char *onion)
     }
 
     printf("Onion seed: added %d clearnet peers from %s\n", added, onion);
+
+    /* ── Second, ADDITIVE pass: the onion half of the same response ──
+     * Runs after the clearnet loop above and cannot alter anything it
+     * did. Every hint is persisted into our own directory (INSERT OR
+     * IGNORE — hearsay never overwrites a row we measured) so the
+     * transitive knowledge survives a restart and is re-served, and a
+     * bounded few are followed one hop for their clearnet entries. */
+    struct onion_relay_hint hints[ONION_RELAY_PER_RESPONSE];
+    int nh = onion_directory_parse_relay_hints((const char *)result.body,
+                                               onion, hints,
+                                               ONION_RELAY_PER_RESPONSE);
+    int learned = 0, followed = 0;
+    for (int i = 0; i < nh; i++) {
+        if (onion_service_directory_learn(hints[i].hostname, hints[i].port,
+                                          hints[i].height, hints[i].last_seen))
+            learned++;
+    }
+    if (depth < ONION_RELAY_MAX_DEPTH) {
+        int64_t now = (int64_t)platform_time_wall_time_t();
+        for (int i = 0; i < nh && !g_stop; i++) {
+            if (!onion_directory_claim_relay_follow(hints[i].hostname, now))
+                continue;
+            followed++;
+            try_onion_seed_fetch_depth(cm, hints[i].hostname, depth + 1);
+        }
+    }
+    if (nh > 0)
+        printf("Onion seed: %d onion peers advertised by %s "
+               "(%d recorded, %d followed)\n", nh, onion, learned, followed);
+
     free(result.body);
 }
 
@@ -452,15 +501,15 @@ static void *thread_dns_seed(void *arg)
     if (!g_stop)
         dns_seed_resolve(cm);
 
-    /* ZSLP chain scan — discover .onion peers from on-chain token data.
-     * This is the Tor-native peer discovery: no DNS, no clearnet. */
+    /* Onion peer discovery, ADD-only: the ZDIR on-chain directory projection
+     * merged with the legacy wallet scrape (controllers/blog_controller.h). */
     if (!g_stop && cm->onion_peer_discover) {
         const char *datadir = cm->onion_peer_datadir;
         if (datadir) {
             struct onion_peer peers[64];
             int found = cm->onion_peer_discover(datadir, peers, 64);
             if (found > 0) {
-                printf("ZSLP chain scan: discovered %d .onion peers\n", found);
+                printf("onion discovery: %d .onion peers\n", found);
                 for (int i = 0; i < found; i++)
                     printf("  .onion peer: %s (h=%d)\n",
                            peers[i].hostname, peers[i].height);

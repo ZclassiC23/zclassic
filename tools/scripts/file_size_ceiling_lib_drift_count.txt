@@ -316,3 +316,16 @@
 # Same lint run exposed one restored regression already committed on
 # this branch: package_service.c (1066 lines, 9f72e1d33) had never been
 # baselined. Freshly baselined at 1066; count unchanged (live 11).
+#
+# 2026-07-28 (t4.3 directory freshness + onion graph): the peer directory
+# concern moved OUT of onion_service.c into the new lib/net/src/
+# onion_directory.c (660 lines, under the 800 ceiling, so no baseline
+# entry) — the table + freshness rules + supervised refresh round + the
+# relay-hint parser and follow budget. onion_service.c keeps the front
+# door (routing + page chrome + the two serve_directory_* renderers) and
+# SHRANK 1022 -> 967 despite gaining the age/stale/source fields on every
+# served row; its baseline is tightened 1031 -> 967. connman.c grew
+# 2832 -> 2881 for the additive onion half of try_onion_seed_fetch (parse
+# the "onion" field, record it, follow a bounded few one hop) —
+# re-baselined at 2881. Count unchanged: neither file is in the grown
+# list after this.

@@ -32,11 +32,39 @@ size_t blog_build_node_announce(uint8_t *out, size_t out_len,
                                  const uint8_t token_id[32],
                                  const char *onion_hostname);
 
-/* Scan the chain for ZCL23NODES token SEND txs.
- * Extracts .onion addresses for peer discovery.
- * Returns count of discovered addresses. */
+/* ── Onion peer discovery: TWO sources, merged, never narrowed ──────
+ *
+ * A directory record is a HINT ABOUT WHERE TO LOOK, never proof of who is
+ * there (docs/work/NAT_AND_ONION_TRANSPORT.md). Both sources below only ADD
+ * candidates; neither can exclude a peer, so the worst a poisoned record can
+ * do is waste one connection attempt. */
+
+/* SOURCE 1 — the on-chain node directory. Reads the onion_directory
+ * projection, which app/models/src/explorer_index_zdir.c folds from confirmed
+ * ZDIR OP_RETURNs (zdir/zdir.h) during the ordinary block-index walk. Sees
+ * every node's announcement regardless of what is in the local wallet.
+ * Read-only, bounded, no network call, no clock read. Returns the count. */
+int blog_discover_onion_peers_chain(const char *datadir,
+                                    struct onion_peer *out, size_t max);
+
+/* Both sources, chain first, merged and de-duplicated by onion_peers_collect
+ * (net/onion_peer_merge.h) with every hostname held to onion_hostname_valid.
+ * SOURCE 2 is the legacy wallet scrape — it reads db_wallet_tx_recent_raw(),
+ * so it can only ever see transactions already in the LOCAL WALLET table.
+ * It is deliberately still wired: it is the only source on a node whose
+ * datadir predates the onion_directory table, and peer discovery is
+ * liveness-critical. Returns the count of discovered addresses. */
 int blog_discover_onion_peers(const char *datadir,
                                struct onion_peer *out, size_t max);
+
+/* Per-source contribution of the LAST blog_discover_onion_peers() pass:
+ * rows the chain projection produced, rows the wallet scrape produced, and
+ * malformed hostnames the merge dropped. Diagnostic only — nothing branches
+ * on it. It is the evidence that lets the wallet scrape be retired later
+ * (a measured zero contribution) rather than deleted on a design argument.
+ * Any out pointer may be NULL. */
+void blog_onion_discovery_counts(int *out_chain, int *out_wallet,
+                                 int *out_rejected);
 
 /* Auto-announce .onion address on-chain via ZSLP SEND.
  * Returns true if a new announcement was created.

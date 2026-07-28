@@ -128,6 +128,7 @@
 #include "models/principal.h"
 #include "models/agent_session.h"
 #include "models/zid_identity.h"
+#include "models/onion_directory.h"
 #include "models/auth_challenge.h"
 #include "models/zid_domain.h"
 #include "config/runtime.h"

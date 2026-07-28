@@ -12,7 +12,9 @@
 #include "util/log_json.h"
 #include "util/log_macros.h"
 #include "util/path_check.h"
+#include "util/supervisor.h"
 #include "util/template.h"
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -410,107 +412,6 @@ static size_t serve_search(const char *query, uint8_t *response, size_t max)
         "%s", off, body);
 }
 
-/* ── Peer directory table ─────────────────────────────────── */
-
-static void ensure_directory_table(sqlite3 *db)
-{
-    char *err = NULL;
-    int rc = sqlite3_exec(db,
-        "CREATE TABLE IF NOT EXISTS peer_directory ("
-        "onion_address TEXT PRIMARY KEY,"
-        "port INTEGER NOT NULL DEFAULT 8033,"
-        "services INTEGER NOT NULL DEFAULT 0,"
-        "height INTEGER NOT NULL DEFAULT 0,"
-        "last_seen INTEGER NOT NULL,"
-        "version TEXT,"
-        "self INTEGER NOT NULL DEFAULT 0,"
-        "clearnet_ip TEXT DEFAULT '',"
-        "clearnet_port INTEGER DEFAULT 0"
-        ")", NULL, NULL, &err);
-    if (rc != SQLITE_OK) {
-        fprintf(stderr, "onion_service: failed to create directory table: %s\n",  // obs-ok:pre-existing-diagnostic
-                err ? err : "unknown");
-        sqlite3_free(err);
-    }
-    /* Add clearnet columns to existing databases */
-    sqlite3_exec(db, "ALTER TABLE peer_directory ADD COLUMN clearnet_ip TEXT DEFAULT ''",
-                 NULL, NULL, NULL);
-    sqlite3_exec(db, "ALTER TABLE peer_directory ADD COLUMN clearnet_port INTEGER DEFAULT 0",
-                 NULL, NULL, NULL);
-}
-
-/* Populate directory from chain scan (ZSLP .onion announcements) */
-static void populate_directory_from_chain(sqlite3 *db)
-{
-    struct onion_context *ctx = onion_ctx();
-    if (!ctx->datadir) return;
-
-    struct onion_peer peers[256];
-    int found = onion_discover_peers(peers, 256);
-
-    if (found <= 0) return;
-
-    sqlite3_stmt *ins = NULL;
-    if (sqlite3_prepare_v2(db,
-        "INSERT OR IGNORE INTO peer_directory "
-        "(onion_address, height, last_seen, version) "
-        "VALUES (?, ?, strftime('%s','now'), 'chain')",
-        -1, &ins, NULL) != SQLITE_OK || !ins) {
-        LOG_WARN("net", "failed to prepare peer insert: %s", sqlite3_errmsg(db));
-        return;
-    }
-
-    for (int i = 0; i < found; i++) {
-        if (!peers[i].hostname[0]) continue;
-        sqlite3_reset(ins);
-        sqlite3_bind_text(ins, 1, peers[i].hostname, -1, SQLITE_STATIC);
-        sqlite3_bind_int(ins, 2, peers[i].height);
-        (void)AR_STEP_WRITE(ins);
-    }
-    sqlite3_finalize(ins);
-
-    log_jsonf(LOG_JSON_INFO, "onion_directory_loaded",
-              "\"peers_loaded\":%d", found);
-}
-
-/* Register our own .onion address with clearnet IP if known */
-static void register_self(sqlite3 *db)
-{
-    struct onion_context *ctx = onion_ctx();
-    if (!ctx->address[0]) return;
-
-    /* Discover our public IP */
-    extern void peer_strategy_discover_self(void *profile, uint16_t port);
-    struct { bool has_public_ip; bool nat; bool upnp; bool tor;
-             uint8_t public_ip[4]; uint16_t public_port;
-             char onion_address[68]; } profile = {0};
-    peer_strategy_discover_self(&profile, 8033);
-
-    char ip_str[64] = "";
-    if (profile.has_public_ip) {
-        snprintf(ip_str, sizeof(ip_str), "%u.%u.%u.%u",
-                 profile.public_ip[0], profile.public_ip[1],
-                 profile.public_ip[2], profile.public_ip[3]);
-    }
-
-    sqlite3_stmt *ins = NULL;
-    if (sqlite3_prepare_v2(db,
-        "INSERT OR REPLACE INTO peer_directory "
-        "(onion_address, port, services, height, last_seen, version, self,"
-        " clearnet_ip, clearnet_port) "
-        "VALUES (?, 8033, 1029, 0, strftime('%s','now'), '0.1.0', 1, ?, ?)",
-        -1, &ins, NULL) != SQLITE_OK || !ins) {
-        fprintf(stderr, "onion_service: failed to prepare self-register: %s\n",
-                sqlite3_errmsg(db));
-        return;
-    }
-    sqlite3_bind_text(ins, 1, ctx->address, -1, SQLITE_STATIC);
-    sqlite3_bind_text(ins, 2, ip_str[0] ? ip_str : "", -1, SQLITE_STATIC);
-    sqlite3_bind_int(ins, 3, ip_str[0] ? 8033 : 0);
-    (void)AR_STEP_WRITE(ins);
-    sqlite3_finalize(ins);
-}
-
 /* ── Directory endpoints ─────────────────────────────────── */
 
 static size_t serve_directory_json(uint8_t *response, size_t max)
@@ -535,15 +436,20 @@ static size_t serve_directory_json(uint8_t *response, size_t max)
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db,
         "SELECT onion_address, port, services, height, last_seen, "
-        "version, self, clearnet_ip, clearnet_port FROM peer_directory "
-        "ORDER BY self DESC, last_seen DESC LIMIT 500",
+        "version, self, clearnet_ip, clearnet_port, "
+        "COALESCE(first_seen,0), COALESCE(last_probe,0), "
+        "COALESCE(probe_ok,0), COALESCE(fail_count,0), COALESCE(source,'') "
+        "FROM peer_directory "
+        "ORDER BY self DESC, last_seen DESC LIMIT " ONION_DIR_STR(ONION_DIR_SERVE_MAX),
         -1, &s, NULL) != SQLITE_OK || !s) {
         sqlite3_close(db);
         return 0;
     }
 
+    int64_t now = (int64_t)platform_time_wall_time_t();
     int count = 0;
-    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && off + 512 < sizeof(body)) {
+    int skipped_expired = 0;
+    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && off + 768 < sizeof(body)) {
         const char *addr = (const char *)sqlite3_column_text(s, 0);
         int port = sqlite3_column_int(s, 1);
         int svc = sqlite3_column_int(s, 2);
@@ -553,24 +459,50 @@ static size_t serve_directory_json(uint8_t *response, size_t max)
         int self = sqlite3_column_int(s, 6);
         const char *cip = (const char *)sqlite3_column_text(s, 7);
         int cport = sqlite3_column_int(s, 8);
+        int64_t fs = sqlite3_column_int64(s, 9);
+        int64_t lp = sqlite3_column_int64(s, 10);
+        int probe_ok = sqlite3_column_int(s, 11);
+        int fails = sqlite3_column_int(s, 12);
+        const char *src = (const char *)sqlite3_column_text(s, 13);
 
         /* Rows stored by pre-validation binaries may be hostile. */
         if (!onion_hostname_valid(addr)) continue;
-        char addr_esc[160], ver_esc[96], cip_esc[96];
+
+        /* Never hand out a row nothing has confirmed for a week. The
+         * refresh round deletes these; skipping them here keeps the
+         * served list honest even on a node whose refresh child never
+         * registered. */
+        enum onion_dir_freshness fresh =
+            onion_directory_freshness(ls, now, self != 0);
+        if (fresh == ONION_DIR_EXPIRED) {
+            skipped_expired++;
+            continue;
+        }
+
+        char addr_esc[160], ver_esc[96], cip_esc[96], src_esc[64];
         log_json_escape(addr_esc, sizeof(addr_esc), addr);
         log_json_escape(ver_esc, sizeof(ver_esc), ver);
         log_json_escape(cip_esc, sizeof(cip_esc), cip);
+        log_json_escape(src_esc, sizeof(src_esc), src);
 
         if (count > 0) off += (size_t)snprintf(body + off, sizeof(body) - off, ",");
         off += (size_t)snprintf(body + off, sizeof(body) - off,
             "{\"onion\":\"%s\",\"port\":%d,\"services\":%d,"
             "\"height\":%d,\"last_seen\":%lld,"
             "\"version\":\"%s\",\"self\":%s,"
-            "\"clearnet_ip\":\"%s\",\"clearnet_port\":%d}",
+            "\"clearnet_ip\":\"%s\",\"clearnet_port\":%d,"
+            "\"age_secs\":%lld,\"stale\":%s,\"first_seen\":%lld,"
+            "\"last_probe\":%lld,\"probe_ok\":%s,\"fail_count\":%d,"
+            "\"source\":\"%s\"}",
             addr_esc, port, svc, h,
             (long long)ls, ver_esc,
             self ? "true" : "false",
-            cip_esc, cport);
+            cip_esc, cport,
+            (long long)onion_directory_age_secs(ls, now),
+            fresh == ONION_DIR_STALE ? "true" : "false",
+            (long long)fs, (long long)lp,
+            probe_ok ? "true" : "false", fails,
+            src_esc);
         count++;
     }
     sqlite3_finalize(s);
@@ -584,8 +516,16 @@ static size_t serve_directory_json(uint8_t *response, size_t max)
     size_t an = rom_seed_directory_json(arts, sizeof(arts));
     const char *arts_body = (an > 0 && off + an + 64 < sizeof(body))
                                 ? arts : "[]";
+    /* The freshness policy travels WITH the list. A consumer that
+     * disagrees with our thresholds can re-judge every row from its own
+     * age_secs instead of taking our word for it. */
     off += (size_t)snprintf(body + off, sizeof(body) - off,
-        "],\"count\":%d,\"artifacts\":%s}", count, arts_body);
+        "],\"count\":%d,\"generated_at\":%lld,\"stale_after_secs\":%lld,"
+        "\"expire_after_secs\":%lld,\"refresh_secs\":%d,"
+        "\"skipped_expired\":%d,\"artifacts\":%s}",
+        count, (long long)now, (long long)ONION_DIR_STALE_SECS,
+        (long long)ONION_DIR_EXPIRE_SECS, ONION_DIR_REFRESH_SECS,
+        skipped_expired, arts_body);
 
     return (size_t)snprintf((char *)response, max,
         "HTTP/1.1 200 OK\r\n"
@@ -630,7 +570,8 @@ static size_t serve_directory_html(uint8_t *response, size_t max)
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db,
         "SELECT onion_address, port, height, last_seen, version, self "
-        "FROM peer_directory ORDER BY self DESC, last_seen DESC LIMIT 500",
+        "FROM peer_directory ORDER BY self DESC, last_seen DESC LIMIT "
+        ONION_DIR_STR(ONION_DIR_SERVE_MAX),
         -1, &s, NULL) != SQLITE_OK || !s) {
         sqlite3_close(db);
         return 0;
@@ -647,13 +588,21 @@ static size_t serve_directory_html(uint8_t *response, size_t max)
 
         /* Rows stored by pre-validation binaries may be hostile. */
         if (!onion_hostname_valid(addr)) continue;
+
+        /* Same freshness rule the JSON endpoint applies — one page must
+         * never show what the other refuses to serve. */
+        int64_t now_html = (int64_t)platform_time_wall_time_t();
+        enum onion_dir_freshness fresh =
+            onion_directory_freshness(ls, now_html, self != 0);
+        if (fresh == ONION_DIR_EXPIRED) continue;
+
         char addr_esc[160], ver_esc[96];
         html_escape(addr_esc, sizeof(addr_esc), addr);
         html_escape(ver_esc, sizeof(ver_esc), ver);
 
         /* Format last_seen as relative time */
-        int64_t age = (int64_t)platform_time_wall_time_t() - ls;
-        char age_str[32];
+        int64_t age = onion_directory_age_secs(ls, now_html);
+        char age_str[48];
         if (age < 60) snprintf(age_str, sizeof(age_str), "%llds ago", (long long)age);
         else if (age < 3600) snprintf(age_str, sizeof(age_str), "%lldm ago", (long long)(age/60));
         else if (age < 86400) snprintf(age_str, sizeof(age_str), "%lldh ago", (long long)(age/3600));
@@ -661,11 +610,12 @@ static size_t serve_directory_html(uint8_t *response, size_t max)
 
         off += (size_t)snprintf(body + off, sizeof(body) - off,
             "<tr%s><td><a href='http://%s/'>%s</a>%s</td>"
-            "<td>%d</td><td>%d</td><td>%s</td><td>%s</td></tr>",
+            "<td>%d</td><td>%d</td><td>%s%s</td><td>%s</td></tr>",
             self ? " class='self'" : "",
             addr_esc, addr_esc,
             self ? " (this node)" : "",
-            port, h, age_str, ver_esc);
+            port, h, age_str,
+            fresh == ONION_DIR_STALE ? " (stale)" : "", ver_esc);
         count++;
     }
     sqlite3_finalize(s);
@@ -966,19 +916,13 @@ const char *onion_service_start(const char *datadir)
     ctx->datadir = datadir;
     ctx->start_time = platform_time_wall_time_t();
 
-    /* Initialize peer directory from chain data */
+    /* Seed the peer directory, then hand it to the supervisor. The boot
+     * populate is now the FIRST round, not the only one: from here a
+     * refresh runs every ONION_DIR_REFRESH_SECS so the list this node
+     * serves keeps up with reality (onion_directory.c). */
     if (datadir) {
-        char db_path[1024];
-        zcl_node_db_path(db_path, sizeof(db_path), datadir);
-        sqlite3 *db = NULL;
-        if (sqlite3_open(db_path, &db) == SQLITE_OK) {
-            sqlite3_busy_timeout(db, 5000);
-            ensure_directory_table(db);
-            populate_directory_from_chain(db);
-            if (ctx->address[0])
-                register_self(db);
-            sqlite3_close(db);
-        }
+        onion_directory_boot_round();
+        onion_service_directory_register_refresh();
     }
 
     return ctx->address[0] ? ctx->address : NULL;
@@ -986,12 +930,26 @@ const char *onion_service_start(const char *datadir)
 
 void onion_service_stop(void)
 {
+    /* Retire the refresh child before dropping the datadir, so it can
+     * never observe (and report) a directory that is unopenable purely
+     * because we just closed the service. */
+    onion_service_directory_unregister_refresh();
     onion_ctx()->datadir = NULL;
 }
 
 const char *onion_service_get_address(void)
 {
     return onion_ctx()->address[0] ? onion_ctx()->address : NULL;
+}
+
+const char *onion_service_datadir(void)
+{
+    return onion_ctx()->datadir;
+}
+
+int onion_service_discover_peers(struct onion_peer *out, size_t max)
+{
+    return onion_discover_peers(out, max);
 }
 
 void onion_service_set_address(const char *address)
@@ -1001,21 +959,8 @@ void onion_service_set_address(const char *address)
         snprintf(ctx->address, sizeof(ctx->address), "%s", address);
 
         /* Register ourselves in the peer directory */
-        if (ctx->datadir) {
-            char db_path[1024];
-            zcl_node_db_path(db_path, sizeof(db_path), ctx->datadir);
-            sqlite3 *db = NULL;
-            if (sqlite3_open(db_path, &db) == SQLITE_OK) {
-                sqlite3_busy_timeout(db, 5000);
-                ensure_directory_table(db);
-                register_self(db);
-                sqlite3_close(db);
-                char addr_safe[96];
-                log_json_escape(addr_safe, sizeof(addr_safe), address);
-                log_jsonf(LOG_JSON_INFO, "onion_self_registered",
-                          "\"address\":\"%s\"", addr_safe);
-            }
-        }
+        if (ctx->datadir)
+            onion_directory_register_self();
     } else {
         ctx->address[0] = '\0';
     }

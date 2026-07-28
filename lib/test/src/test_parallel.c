@@ -74,7 +74,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(script) X(net) X(netbase_split_host_port) X(transaction) X(mempool) X(accept_to_mempool) X(rpc) X(sqlite) \
     X(activerecord) X(validation) X(sapling_lazy_init) X(sapling) X(sapling_crypto) \
     X(groth16_msm_parity) \
-    X(bn254) X(merkle_tree) X(merkle_malleability) X(slp) X(models) X(core) X(overlay) X(znam) X(znam_site) X(zanc) X(zid) X(zid_identity) X(identity_command) X(zdesc) X(proof_chain) X(htlc) \
+    X(bn254) X(merkle_tree) X(merkle_malleability) X(slp) X(models) X(core) X(overlay) X(znam) X(znam_site) X(zanc) X(zid) X(zid_identity) X(zdir) X(identity_command) X(zdesc) X(zendp) X(proof_chain) X(htlc) \
     X(swap_settlement) \
     X(file_market) X(strong_params) X(json) X(robustness) X(wallet) \
     X(primitives) X(bloom) X(coins) X(store) X(blog) X(api) \
@@ -82,7 +82,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(keystone_utxo_binding) X(self_folded_anchor) X(utxo_root_ladder) X(utxo_root_ladder_tripwire) \
     X(golden_staleness_canary) \
     X(flyclient) X(flyclient_chainwork_floor) X(test_zmsg_memo_codec) X(scan_util) X(tor) \
-    X(onion_bootstrap) X(cold_start_sync) X(kill9_recovery) \
+    X(onion_bootstrap) X(onion_directory) X(cold_start_sync) X(kill9_recovery) \
     X(shielded_payment_gate) X(simnet_shielded_wallet_e2e) X(store_e2e_gate) X(store_e2e_shielded) X(soak_harness) \
     X(event) X(download) X(body_coverage) X(consensus) X(consensus_parity) \
     X(rom_state_checkpoint) \

@@ -2,27 +2,33 @@
  *
  * network_crawler service — see services/network_crawler.h. A supervised worker
  * walks the full local address table (addrman_get_addr), dials a bounded,
- * rate-limited batch of addresses per round through SHORT-LIVED measurement
- * sockets OUTSIDE the node's connman (the injectable probe_fn seam), records a
- * bounded/pruned census, and folds it into a whole-network view: reachable
- * count, version histogram, height distribution, onion/clearnet split, and an
+ * rate-limited batch of addresses per round OUTSIDE the node's connman (the
+ * injectable probe_fn seam), records a bounded/pruned census, and folds it into
+ * a whole-network view: reachable count, version histogram, height
+ * distribution, onion/clearnet split, the measured/not-probed split, and an
  * eclipse signal (our connected-peer modal height vs the crawled network's
- * modal height). OPT-IN — off unless enabled; the worker still registers and
- * idles when disabled (named degradation). Observational only; never relays,
- * syncs, or touches chain selection.
+ * modal height). ON by default; the worker still registers and idles when
+ * disabled (named degradation). Observational only; never relays, syncs, or
+ * touches chain selection.
+ *
+ * Four TUs, one per concern:
+ *   network_crawler.c        this file — config, census table, worker, dumper
+ *   network_census_fold.c    the PURE fold (no globals, no clock, no I/O)
+ *   network_crawler_dial.c   the two-phase, separately-bounded probe waves
+ *   network_crawler_probe.c  the default REAL dialer (clearnet TCP + onion Tor)
  */
 
 // one-result-type-ok:network-crawler-query-accessors — the fallible service
 // surface (network_crawler_start) returns struct zcl_result; the remaining
-// bool exports (network_census_compute is void, get_view/dump/default_probe +
-// test helpers are pure predicates) are not fallible operations.
+// bool exports (get_view/dump + test helpers are pure predicates) are not
+// fallible operations.
 
-#include "services/network_crawler.h"
+#include "network_crawler_internal.h"
+
 #include "services/network_monitor.h"
 
 #include "net/addrman.h"
 #include "storage/peers_projection.h"
-#include "storage/event_log_payloads.h"
 
 #include "json/json.h"
 #include "platform/time_compat.h"
@@ -55,6 +61,10 @@ static struct {
     int max_concurrent;
     int connect_timeout_ms;
     int handshake_timeout_ms;
+    int onion_max_per_round;
+    int onion_max_concurrent;
+    int onion_timeout_ms;
+    int onion_round_budget_ms;
 
     /* bounded/pruned census (source of truth for the fold + dumper) */
     struct ncrawl_probe_result census[NCRAWL_MAX_CENSUS];
@@ -66,6 +76,7 @@ static struct {
     int probed_last_round;
     int64_t addresses_known;
     int64_t last_round_unix;
+    int not_probed_last_round;
 
     /* supervised worker */
     pthread_t thread;
@@ -100,6 +111,10 @@ void network_crawler_config_defaults(struct network_crawler_config *cfg)
     cfg->max_concurrent = NCRAWL_MAX_CONCURRENT;
     cfg->connect_timeout_ms = NCRAWL_CONNECT_TIMEOUT_MS_DEFAULT;
     cfg->handshake_timeout_ms = NCRAWL_HANDSHAKE_TIMEOUT_MS_DEFAULT;
+    cfg->onion_max_per_round = NCRAWL_MAX_ONION_PER_ROUND;
+    cfg->onion_max_concurrent = NCRAWL_MAX_ONION_CONCURRENT;
+    cfg->onion_timeout_ms = NCRAWL_ONION_TIMEOUT_MS_DEFAULT;
+    cfg->onion_round_budget_ms = NCRAWL_ONION_ROUND_BUDGET_MS_DEFAULT;
 }
 
 static bool ncrawl_env_truthy(const char *e)
@@ -148,6 +163,30 @@ static void ncrawl_config_from_env(struct network_crawler_config *cfg)
         if (v >= 1 && v <= NCRAWL_MAX_CONCURRENT)
             cfg->max_concurrent = v;
     }
+    const char *op = getenv("ZCL_NETCRAWL_ONION_PER_ROUND");
+    if (op && op[0]) {
+        int v = atoi(op);
+        if (v >= 0 && v <= NCRAWL_MAX_ONION_PER_ROUND)
+            cfg->onion_max_per_round = v;
+    }
+    const char *oc = getenv("ZCL_NETCRAWL_ONION_CONCURRENT");
+    if (oc && oc[0]) {
+        int v = atoi(oc);
+        if (v >= 1 && v <= NCRAWL_MAX_ONION_CONCURRENT)
+            cfg->onion_max_concurrent = v;
+    }
+    const char *ot = getenv("ZCL_NETCRAWL_ONION_TIMEOUT_MS");
+    if (ot && ot[0]) {
+        int v = atoi(ot);
+        if (v >= 100 && v <= 120000)
+            cfg->onion_timeout_ms = v;
+    }
+    const char *ob = getenv("ZCL_NETCRAWL_ONION_BUDGET_MS");
+    if (ob && ob[0]) {
+        int v = atoi(ob);
+        if (v >= 0 && v <= 240000)
+            cfg->onion_round_budget_ms = v;
+    }
 }
 
 /* Clamp every knob into its hard bound (defensive: env + cfg both untrusted). */
@@ -163,121 +202,36 @@ static void ncrawl_clamp(struct network_crawler_config *c)
     if (c->connect_timeout_ms > 60000) c->connect_timeout_ms = 60000;
     if (c->handshake_timeout_ms < 100) c->handshake_timeout_ms = 100;
     if (c->handshake_timeout_ms > 60000) c->handshake_timeout_ms = 60000;
-}
-
-/* ── pure census fold ────────────────────────────────────────────────── */
-
-void network_census_compute(const struct ncrawl_probe_result *r, int n,
-                            int64_t own_modal_height, int64_t now_unix,
-                            struct network_census_view *out)
-{
-    if (!out)
-        return;
-    memset(out, 0, sizeof(*out));
-    out->ready = true;
-    out->computed_at = now_unix;
-    out->modal_height = -1;
-    out->max_height = -1;
-    out->min_height = -1;
-    out->own_modal_height = own_modal_height;
-    out->network_modal_height = -1;
-    if (!r || n <= 0)
-        return;
-    if (n > NCRAWL_MAX_CENSUS)
-        n = NCRAWL_MAX_CENSUS;
-    out->probed = n;
-
-    /* version histogram + onion/clearnet split + height extremes (reachable) */
-    for (int i = 0; i < n; i++) {
-        if (!r[i].reachable)
-            continue;
-        out->reachable_count++;
-        if (r[i].is_onion)
-            out->onion_count++;
-        else
-            out->clearnet_count++;
-
-        const char *sv = r[i].subver[0] ? r[i].subver : "(unknown)";
-        int found = -1;
-        for (int k = 0; k < out->num_versions; k++)
-            if (strcmp(out->versions[k].subver, sv) == 0) {
-                found = k;
-                break;
-            }
-        if (found >= 0) {
-            out->versions[found].count++;
-        } else if (out->num_versions < NCRAWL_MAX_VERSIONS) {
-            struct ncrawl_version_bucket *b =
-                &out->versions[out->num_versions++];
-            snprintf(b->subver, sizeof(b->subver), "%s", sv);
-            b->count = 1;
-        }
-
-        if (r[i].best_height >= 0) {
-            out->heights_known++;
-            if (out->max_height < 0 || r[i].best_height > out->max_height)
-                out->max_height = r[i].best_height;
-            if (out->min_height < 0 || r[i].best_height < out->min_height)
-                out->min_height = r[i].best_height;
-        }
-    }
-    if (out->max_height >= 0 && out->min_height >= 0)
-        out->height_spread = out->max_height - out->min_height;
-
-    /* modal advertised height over reachable-with-height (bounded O(n^2)) */
-    int best_count = 0;
-    int64_t best_h = -1;
-    for (int i = 0; i < n; i++) {
-        if (!r[i].reachable || r[i].best_height < 0)
-            continue;
-        int c = 0;
-        for (int j = 0; j < n; j++)
-            if (r[j].reachable && r[j].best_height == r[i].best_height)
-                c++;
-        if (c > best_count ||
-            (c == best_count && r[i].best_height > best_h)) {
-            best_count = c;
-            best_h = r[i].best_height;
-        }
-    }
-    out->modal_height = best_h;
-    out->modal_height_count = best_count;
-    out->network_modal_height = best_h;
-
-    /* sort version histogram descending by count (bounded selection sort) */
-    for (int i = 0; i < out->num_versions; i++)
-        for (int j = i + 1; j < out->num_versions; j++)
-            if (out->versions[j].count > out->versions[i].count) {
-                struct ncrawl_version_bucket t = out->versions[i];
-                out->versions[i] = out->versions[j];
-                out->versions[j] = t;
-            }
-
-    /* whole-network eclipse signal: our connected peers cluster on a height
-     * that is a small minority (<1/3) of the wider crawled network. */
-    if (own_modal_height >= 0 && best_h >= 0) {
-        int at_own = 0;
-        for (int i = 0; i < n; i++)
-            if (r[i].reachable && r[i].best_height == own_modal_height)
-                at_own++;
-        out->network_count_at_own_modal = at_own;
-        out->eclipse_suspected =
-            out->reachable_count >= NCRAWL_ECLIPSE_MIN &&
-            own_modal_height != best_h &&
-            (int64_t)at_own * 3 < (int64_t)out->reachable_count;
-    }
+    if (c->onion_max_per_round < 0) c->onion_max_per_round = 0;
+    if (c->onion_max_per_round > NCRAWL_MAX_ONION_PER_ROUND)
+        c->onion_max_per_round = NCRAWL_MAX_ONION_PER_ROUND;
+    if (c->onion_max_concurrent < 1) c->onion_max_concurrent = 1;
+    if (c->onion_max_concurrent > NCRAWL_MAX_ONION_CONCURRENT)
+        c->onion_max_concurrent = NCRAWL_MAX_ONION_CONCURRENT;
+    if (c->onion_timeout_ms < 100) c->onion_timeout_ms = 100;
+    if (c->onion_timeout_ms > 120000) c->onion_timeout_ms = 120000;
+    if (c->onion_round_budget_ms < 0) c->onion_round_budget_ms = 0;
+    if (c->onion_round_budget_ms > 240000) c->onion_round_budget_ms = 240000;
 }
 
 /* ── bounded census table ────────────────────────────────────────────── */
 
 /* Insert-or-update by addr; evict the oldest (smallest last_probe_us) row when
- * full. Caller holds g_ncrawl.lock. */
+ * full. Caller holds g_ncrawl.lock.
+ *
+ * A NOT_PROBED row NEVER overwrites a row we actually measured — "we did not
+ * look this round" must not erase "we measured it last round". It only ever
+ * inserts an address we have no measurement for at all. */
 static void ncrawl_census_ingest_locked(const struct ncrawl_probe_result *pr)
 {
     if (!pr || !pr->addr[0])
         return;
     for (int i = 0; i < g_ncrawl.census_count; i++) {
         if (strcmp(g_ncrawl.census[i].addr, pr->addr) == 0) {
+            if (pr->outcome == (uint8_t)NCRAWL_OUTCOME_NOT_PROBED &&
+                g_ncrawl.census[i].outcome ==
+                    (uint8_t)NCRAWL_OUTCOME_MEASURED)
+                return;
             g_ncrawl.census[i] = *pr;
             return;
         }
@@ -292,6 +246,27 @@ static void ncrawl_census_ingest_locked(const struct ncrawl_probe_result *pr)
             g_ncrawl.census[oldest].last_probe_us)
             oldest = i;
     g_ncrawl.census[oldest] = *pr;
+}
+
+void ncrawl_census_ingest(const struct ncrawl_probe_result *pr)
+{
+    zcl_mutex_lock(&g_ncrawl.lock);
+    ncrawl_census_ingest_locked(pr);
+    zcl_mutex_unlock(&g_ncrawl.lock);
+}
+
+/* Snapshot every bound this round runs under. */
+static void ncrawl_limits_snapshot(struct ncrawl_round_limits *lim)
+{
+    zcl_mutex_lock(&g_ncrawl.lock);
+    lim->concurrent = g_ncrawl.max_concurrent;
+    lim->connect_timeout_ms = g_ncrawl.connect_timeout_ms;
+    lim->handshake_timeout_ms = g_ncrawl.handshake_timeout_ms;
+    lim->onion_per_round = g_ncrawl.onion_max_per_round;
+    lim->onion_concurrent = g_ncrawl.onion_max_concurrent;
+    lim->onion_timeout_ms = g_ncrawl.onion_timeout_ms;
+    lim->onion_round_budget_ms = g_ncrawl.onion_round_budget_ms;
+    zcl_mutex_unlock(&g_ncrawl.lock);
 }
 
 static void ncrawl_refold_locked(int64_t own_modal, int64_t now)
@@ -313,129 +288,6 @@ static int64_t ncrawl_own_modal(void)
     return -1; // raw-return-ok:sentinel-own-modal-unknown
 }
 
-/* ── bounded-concurrency probe wave ──────────────────────────────────── */
-
-struct ncrawl_work {
-    ncrawl_probe_fn fn;
-    const struct net_address *addr;
-    int connect_timeout_ms;
-    int handshake_timeout_ms;
-    struct ncrawl_probe_result out;
-    bool ok;
-};
-
-static void *ncrawl_worker_fn(void *arg)
-{
-    struct ncrawl_work *w = arg;
-    memset(&w->out, 0, sizeof(w->out));
-    w->ok = w->fn && w->fn(w->addr, w->connect_timeout_ms,
-                           w->handshake_timeout_ms, &w->out);
-    return NULL;
-}
-
-/* Dial addrs[0..n) through fn with at most `concurrent` (<=NCRAWL_MAX_CONCURRENT)
- * in-flight at once; ingest each recordable result into the bounded census.
- * Every REACHABLE result also feeds one topology-graph "self" edge (our own
- * node directly reached this address this round — the crawler-results half
- * of storage/topology_store.h's two edge sources; the other half is
- * addr-message ingestion in lib/net/src/msgprocessor_inv.c). The three
- * out-params (nullable) accumulate this round's sweep-summary counters:
- * out_reachable = count of REACHABLE results, out_edges_seen = count of
- * topology edges actually recorded, out_new_nodes = count of those edges
- * whose advertised address had never been seen in the topology graph before.
- * Returns the count of recorded probes (reachable + known-unreachable). */
-static int ncrawl_run_round(const struct net_address *addrs, int n,
-                            ncrawl_probe_fn fn, int concurrent,
-                            int ct_ms, int ht_ms, int *out_reachable,
-                            int *out_edges_seen, int *out_new_nodes)
-{
-    if (out_reachable) *out_reachable = 0;
-    if (out_edges_seen) *out_edges_seen = 0;
-    if (out_new_nodes) *out_new_nodes = 0;
-    if (!addrs || n <= 0 || !fn)
-        return 0;
-    if (n > NCRAWL_MAX_PER_ROUND)
-        n = NCRAWL_MAX_PER_ROUND;
-    if (concurrent < 1)
-        concurrent = 1;
-    if (concurrent > NCRAWL_MAX_CONCURRENT)
-        concurrent = NCRAWL_MAX_CONCURRENT;
-
-    int64_t topo_now = platform_time_wall_unix();
-    int probed = 0;
-    for (int base = 0; base < n; base += concurrent) {
-        int wave = n - base;
-        if (wave > concurrent)
-            wave = concurrent;
-
-        struct ncrawl_work items[NCRAWL_MAX_CONCURRENT];
-        pthread_t th[NCRAWL_MAX_CONCURRENT];
-        bool spawned[NCRAWL_MAX_CONCURRENT];
-
-        for (int t = 0; t < wave; t++) {
-            items[t].fn = fn;
-            items[t].addr = &addrs[base + t];
-            items[t].connect_timeout_ms = ct_ms;
-            items[t].handshake_timeout_ms = ht_ms;
-            memset(&items[t].out, 0, sizeof(items[t].out));
-            items[t].ok = false;
-            spawned[t] = false;
-            /* Bounded (<=NCRAWL_MAX_CONCURRENT) short-lived probe workers, all
-             * joined before this wave returns — not a long-running thread. */
-            // raw-pthread-ok: bounded, joined-per-wave short-lived crawler probe worker
-            if (pthread_create(&th[t], NULL, ncrawl_worker_fn, &items[t]) == 0)
-                spawned[t] = true;
-            else
-                ncrawl_worker_fn(&items[t]); /* inline fallback on spawn fail */
-        }
-        for (int t = 0; t < wave; t++)
-            if (spawned[t])
-                pthread_join(th[t], NULL);
-
-        for (int t = 0; t < wave; t++) {
-            if (items[t].ok && items[t].out.addr[0]) {
-                zcl_mutex_lock(&g_ncrawl.lock);
-                ncrawl_census_ingest_locked(&items[t].out);
-                zcl_mutex_unlock(&g_ncrawl.lock);
-
-                /* Bank the durable node-identity census from this crawler
-                 * contact (source = crawler), OUTSIDE the crawler lock (the
-                 * emit does event-log I/O). A reachable contact carries an
-                 * identity (success upsert); an unreachable one only bumps an
-                 * existing node's dial_fail_count. The emit fails closed on a
-                 * malformed user-agent and no-ops if no event log is wired. */
-                const struct net_addr *na = &items[t].addr->svc.addr;
-                uint8_t census_key[16];
-                if (na->has_torv3)
-                    memcpy(census_key, na->torv3, 16);
-                else
-                    memcpy(census_key, na->ip, 16);
-                int64_t obs = items[t].out.last_probe_us > 0
-                                  ? items[t].out.last_probe_us
-                                  : platform_time_wall_unix();
-                (void)peers_projection_emit_census_observed(
-                    census_key, items[t].addr->svc.port,
-                    EV_CENSUS_SOURCE_CRAWLER, items[t].out.reachable,
-                    items[t].out.subver, items[t].out.version,
-                    items[t].out.services, items[t].out.best_height, obs);
-                probed++;
-
-                if (items[t].out.reachable) {
-                    if (out_reachable) (*out_reachable)++;
-                    bool is_new = false;
-                    if (topology_store_record_self_edge(
-                            &items[t].addr->svc.addr, items[t].addr->svc.port,
-                            topo_now, &is_new)) {
-                        if (out_edges_seen) (*out_edges_seen)++;
-                        if (is_new && out_new_nodes) (*out_new_nodes)++;
-                    }
-                }
-            }
-        }
-    }
-    return probed;
-}
-
 /* One full crawl round: pull a bounded address batch from addrman, probe it,
  * refold. Worker-thread-only (the batch buffer is thread-owned). Each round
  * is also this crawler's "sweep boundary" for storage/topology_store.h's
@@ -453,22 +305,21 @@ static void ncrawl_do_round(void)
     size_t got = addrman_get_addr(am, batch, want);
     int n = (int)(got > NCRAWL_MAX_PER_ROUND ? NCRAWL_MAX_PER_ROUND : got);
 
+    struct ncrawl_round_limits lim;
+    ncrawl_limits_snapshot(&lim);
     int64_t sweep_started = platform_time_wall_unix();
-    int reachable = 0, edges_seen = 0, new_nodes = 0;
-    int probed = ncrawl_run_round(batch, n, g_ncrawl.probe_fn,
-                                  g_ncrawl.max_concurrent,
-                                  g_ncrawl.connect_timeout_ms,
-                                  g_ncrawl.handshake_timeout_ms, &reachable,
-                                  &edges_seen, &new_nodes);
+    struct ncrawl_round_stats st;
+    int probed = ncrawl_run_round(batch, n, g_ncrawl.probe_fn, &lim, &st);
     int64_t sweep_finished = platform_time_wall_unix();
     (void)topology_store_record_sweep(sweep_started, sweep_finished, n,
-                                      reachable, edges_seen, new_nodes);
+                                      st.reachable, st.edges_seen, st.new_nodes);
 
     int64_t now = sweep_finished;
     int64_t own = ncrawl_own_modal();
     zcl_mutex_lock(&g_ncrawl.lock);
     g_ncrawl.rounds_run++;
     g_ncrawl.probed_last_round = probed;
+    g_ncrawl.not_probed_last_round = st.not_probed;
     g_ncrawl.addresses_known = (int64_t)addrman_size(am);
     g_ncrawl.last_round_unix = now;
     ncrawl_refold_locked(own, now);
@@ -552,6 +403,10 @@ struct zcl_result network_crawler_start(const struct network_crawler_config *cfg
     g_ncrawl.max_concurrent = local.max_concurrent;
     g_ncrawl.connect_timeout_ms = local.connect_timeout_ms;
     g_ncrawl.handshake_timeout_ms = local.handshake_timeout_ms;
+    g_ncrawl.onion_max_per_round = local.onion_max_per_round;
+    g_ncrawl.onion_max_concurrent = local.onion_max_concurrent;
+    g_ncrawl.onion_timeout_ms = local.onion_timeout_ms;
+    g_ncrawl.onion_round_budget_ms = local.onion_round_budget_ms;
     if (!g_ncrawl.probe_fn)
         g_ncrawl.probe_fn = network_crawler_default_probe;
     atomic_store(&g_ncrawl.stop_requested, false);
@@ -631,6 +486,11 @@ bool network_crawler_dump_state_json(struct json_value *out, const char *key)
     int concurrent = g_ncrawl.max_concurrent;
     int ct_ms = g_ncrawl.connect_timeout_ms;
     int ht_ms = g_ncrawl.handshake_timeout_ms;
+    int onion_per = g_ncrawl.onion_max_per_round;
+    int onion_conc = g_ncrawl.onion_max_concurrent;
+    int onion_to = g_ncrawl.onion_timeout_ms;
+    int onion_budget = g_ncrawl.onion_round_budget_ms;
+    int not_probed_last = g_ncrawl.not_probed_last_round;
     zcl_mutex_unlock(&g_ncrawl.lock);
 
     json_push_kv_bool(out, "started", started);
@@ -646,7 +506,28 @@ bool network_crawler_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int(out, "addresses_known", known);
     json_push_kv_int(out, "census_rows", census_count);
     json_push_kv_int(out, "probed_last_round", probed_last);
+    json_push_kv_int(out, "not_probed_last_round", not_probed_last);
     json_push_kv_int(out, "last_round_unix", last_round);
+
+    /* The onion half of the network: its own budget, and whether we can dial
+     * it at all right now. onion_probe_available=false means every onion row
+     * reads NOT PROBED — the honest state, never "unreachable". */
+    json_push_kv_int(out, "onion_max_per_round", onion_per);
+    json_push_kv_int(out, "onion_max_concurrent", onion_conc);
+    json_push_kv_int(out, "onion_timeout_ms", onion_to);
+    json_push_kv_int(out, "onion_round_budget_ms", onion_budget);
+    json_push_kv_bool(out, "onion_probe_available",
+                      network_crawler_onion_probe_available());
+    /* Process-lifetime total of addresses we banked as unmeasured, straight
+     * from the durable-ledger side. Distinct from not_probed_count below,
+     * which is the CURRENT census snapshot. */
+    json_push_kv_int(out, "ledger_unprobed_notes_total",
+                     (int64_t)peers_projection_census_unprobed_total());
+    {
+        char why[PEERS_CENSUS_UNPROBED_REASON_MAX];
+        peers_projection_census_unprobed_reason(why, sizeof(why));
+        json_push_kv_str(out, "ledger_unprobed_last_reason", why);
+    }
 
     if (!v.ready) {
         diag_push_health(out, true,
@@ -659,6 +540,11 @@ bool network_crawler_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int(out, "reachable_count", v.reachable_count);
     json_push_kv_int(out, "onion_count", v.onion_count);
     json_push_kv_int(out, "clearnet_count", v.clearnet_count);
+    json_push_kv_int(out, "measured_count", v.measured_count);
+    json_push_kv_int(out, "not_probed_count", v.not_probed_count);
+    json_push_kv_int(out, "onion_measured_count", v.onion_measured_count);
+    json_push_kv_int(out, "onion_not_probed_count", v.onion_not_probed_count);
+    json_push_kv_str(out, "not_probed_reason", v.not_probed_reason);
     json_push_kv_int(out, "heights_known", v.heights_known);
     json_push_kv_int(out, "modal_height", v.modal_height);
     json_push_kv_int(out, "modal_height_count", v.modal_height_count);
@@ -721,6 +607,7 @@ void network_crawler_test_reset(void)
     memset(&g_ncrawl.view, 0, sizeof(g_ncrawl.view));
     g_ncrawl.rounds_run = 0;
     g_ncrawl.probed_last_round = 0;
+    g_ncrawl.not_probed_last_round = 0;
     g_ncrawl.addresses_known = 0;
     g_ncrawl.last_round_unix = 0;
     g_ncrawl.probe_fn = network_crawler_default_probe;
@@ -728,6 +615,10 @@ void network_crawler_test_reset(void)
     g_ncrawl.max_concurrent = NCRAWL_MAX_CONCURRENT;
     g_ncrawl.connect_timeout_ms = NCRAWL_CONNECT_TIMEOUT_MS_DEFAULT;
     g_ncrawl.handshake_timeout_ms = NCRAWL_HANDSHAKE_TIMEOUT_MS_DEFAULT;
+    g_ncrawl.onion_max_per_round = NCRAWL_MAX_ONION_PER_ROUND;
+    g_ncrawl.onion_max_concurrent = NCRAWL_MAX_ONION_CONCURRENT;
+    g_ncrawl.onion_timeout_ms = NCRAWL_ONION_TIMEOUT_MS_DEFAULT;
+    g_ncrawl.onion_round_budget_ms = NCRAWL_ONION_ROUND_BUDGET_MS_DEFAULT;
     atomic_store(&g_ncrawl.test_own_modal, INT64_MIN);
     zcl_mutex_unlock(&g_ncrawl.lock);
 }
@@ -756,20 +647,19 @@ void network_crawler_test_set_view(const struct network_census_view *v)
 
 int network_crawler_test_probe_round(const struct net_address *addrs, int n)
 {
+    struct ncrawl_round_limits lim;
+    ncrawl_limits_snapshot(&lim);
     int64_t sweep_started = platform_time_wall_unix();
-    int reachable = 0, edges_seen = 0, new_nodes = 0;
-    int probed = ncrawl_run_round(addrs, n, g_ncrawl.probe_fn,
-                                  g_ncrawl.max_concurrent,
-                                  g_ncrawl.connect_timeout_ms,
-                                  g_ncrawl.handshake_timeout_ms, &reachable,
-                                  &edges_seen, &new_nodes);
+    struct ncrawl_round_stats st;
+    int probed = ncrawl_run_round(addrs, n, g_ncrawl.probe_fn, &lim, &st);
     int64_t now = platform_time_wall_unix();
-    (void)topology_store_record_sweep(sweep_started, now, n, reachable,
-                                      edges_seen, new_nodes);
+    (void)topology_store_record_sweep(sweep_started, now, n, st.reachable,
+                                      st.edges_seen, st.new_nodes);
     int64_t own = ncrawl_own_modal();
     zcl_mutex_lock(&g_ncrawl.lock);
     g_ncrawl.rounds_run++;
     g_ncrawl.probed_last_round = probed;
+    g_ncrawl.not_probed_last_round = st.not_probed;
     ncrawl_refold_locked(own, now);
     zcl_mutex_unlock(&g_ncrawl.lock);
     return probed;
@@ -781,5 +671,41 @@ int network_crawler_test_census_count(void)
     int c = g_ncrawl.census_count;
     zcl_mutex_unlock(&g_ncrawl.lock);
     return c;
+}
+
+bool network_crawler_test_census_row(const char *addr,
+                                     struct ncrawl_probe_result *out)
+{
+    if (!addr || !out)
+        return false;
+    bool found = false;
+    zcl_mutex_lock(&g_ncrawl.lock);
+    for (int i = 0; i < g_ncrawl.census_count; i++) {
+        if (strcmp(g_ncrawl.census[i].addr, addr) == 0) {
+            *out = g_ncrawl.census[i];
+            found = true;
+            break;
+        }
+    }
+    zcl_mutex_unlock(&g_ncrawl.lock);
+    return found;
+}
+
+void network_crawler_test_set_onion_limits(int per_round, int concurrent,
+                                           int timeout_ms, int budget_ms)
+{
+    struct network_crawler_config c;
+    network_crawler_config_defaults(&c);
+    c.onion_max_per_round = per_round;
+    c.onion_max_concurrent = concurrent;
+    c.onion_timeout_ms = timeout_ms;
+    c.onion_round_budget_ms = budget_ms;
+    ncrawl_clamp(&c);
+    zcl_mutex_lock(&g_ncrawl.lock);
+    g_ncrawl.onion_max_per_round = c.onion_max_per_round;
+    g_ncrawl.onion_max_concurrent = c.onion_max_concurrent;
+    g_ncrawl.onion_timeout_ms = c.onion_timeout_ms;
+    g_ncrawl.onion_round_budget_ms = c.onion_round_budget_ms;
+    zcl_mutex_unlock(&g_ncrawl.lock);
 }
 #endif

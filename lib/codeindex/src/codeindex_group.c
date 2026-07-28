@@ -178,6 +178,7 @@ const char *ci_group_purpose(const char *group)
     if (strcmp(group, "lib/zslp") == 0) return "Simple Ledger Protocol (SLP) token support encoded in OP_RETURN outputs";
     if (strcmp(group, "lib/znam") == 0) return "ZCL Names (ZNAM) on-chain name registry protocol (ENS-inspired)";
     if (strcmp(group, "lib/zanc") == 0) return "ZCL Anchors (ZANC) on-chain SHA2/SHA3 software-package anchoring overlay";
+    if (strcmp(group, "lib/zdir") == 0) return "ZCL Directory (ZDIR) on-chain node directory overlay — .onion peer discovery folded from block history";
     if (strcmp(group, "lib/zid") == 0) return "sovereign identity Phase 1: signed identity documents + blinded record keys (ed25519/SHA3, pure codec)";
     if (strcmp(group, "lib/codeindex") == 0) return "the in-binary source-code navigator index: scan, store, query, the `code` CLI";
 

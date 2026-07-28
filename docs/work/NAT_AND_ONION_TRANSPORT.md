@@ -78,10 +78,31 @@ binding options, in order of preference:
    fast-path traffic is trusted (the `auth_challenges` machinery is the
    model).
 
-Directory records should eventually be SIGNED by the peer key (onion +
-clearnet endpoints + height + expiry), so a poisoned directory cannot
-reroute peers to attacker endpoints. Today they are self-asserted and
-treated as hints — that must stay explicit in the code that consumes them.
+Directory records are SIGNED by the peer key (onion + clearnet endpoints
++ port + services + height + expiry), so a poisoned directory cannot
+reroute peers to attacker endpoints. The record is a `zid_doc` with body
+tag `ZIDE` (`lib/zid/include/zid/zendp.h`), distributed as a blob over
+the already-frozen `zpkgswm` swarm codec (`lib/vcs/include/vcs/zendp_swarm.h`)
+— no new wire message. The signing key is resolved against the on-chain
+identity projection (`db_zid_identity_find`), and a key that was never
+anchored, was rotated away, or was revoked is refused with its own named
+error; with no chain lookup registered the module fails CLOSED.
+
+That does NOT make a record proof of who answers: binding the SESSION to
+the key needs the Noise v2 transport, which is default OFF because every
+peer on the live network speaks v1 today. So a record remains a HINT
+about where to look. It ADDS a place to try alongside the unsigned
+wallet scrape and the signed descriptor directory, and it can never
+remove, filter, or rank down a peer from any other source — the only
+sanctioned influence path is `addrman_set_reputation_weight`, bounded to
+a [1.0, 4.0] dial-chance multiplier. Signed sources together may fill at
+most half of any discovery slate, so a flood of records cannot squeeze
+out the source that always works. That discipline is explicit in
+`net/onion_discovery.h` and `config/src/boot_onion_discovery.c`.
+
+Still open on this record: the clearnet address + port it carries are
+verified and unused — feeding them in as addrman candidates (via the
+bounded weight above) is its own slice.
 
 ## ZNAM hosting
 
@@ -112,8 +133,11 @@ one.
 
 ## Suggested slice order (when this program is scheduled)
 
-1. Signed directory records (peer-key-signed endpoint attestations) +
-   consumer-side hint discipline.
+1. ~~Signed directory records (peer-key-signed endpoint attestations) +
+   consumer-side hint discipline.~~ DONE — `ZIDE` records over the blob
+   swarm, chain-anchored key check, wired as an additional discovery
+   source (`test_zendp`). The clearnet half of a record is carried and
+   verified but not yet an addrman candidate.
 2. Per-transport RTT/throughput stats wired into peer selection (the ping
    infrastructure already measures; persist and use it).
 3. Noise v2 default-ON rollout plan (identity across transports depends on

@@ -6,11 +6,14 @@
 #include "controllers/blog_controller.h"
 #include "models/database.h"
 #include "models/onion_announcement.h"
+#include "models/onion_directory.h"
 #include "models/wallet_tx.h"
+#include "net/onion_peer_merge.h"
 #include "zslp/slp.h"
 #include "primitives/transaction.h"
 #include "core/uint256.h"
 #include "core/serialize.h"
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,6 +22,17 @@
 #include "util/file_io.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+
+/* Last discovery pass's per-source contribution, published through
+ * blog_onion_discovery_counts(). Diagnostic only — nothing branches on these.
+ * They exist so the wallet scrape can be RETIRED WITH EVIDENCE (a measured
+ * zero contribution over real datadirs) instead of by assertion; peer
+ * discovery is liveness-critical and deleting a source on a design argument is
+ * how a node ends up with none. Written by the two source functions on the
+ * discovery thread, read by tests and diagnostics. */
+static _Atomic int g_last_chain_rows;
+static _Atomic int g_last_wallet_rows;
+static _Atomic int g_last_rejected;
 
 /* ── Static file server ─────────────────────────────────────── */
 
@@ -238,8 +252,25 @@ static const uint8_t *read_push_field(const uint8_t *p, const uint8_t *end,
     return p + *len;
 }
 
-int blog_discover_onion_peers(const char *datadir,
-                               struct onion_peer *out, size_t max)
+/* SOURCE 2 of 2 — the WALLET SCRAPE. Deliberately still wired.
+ *
+ * This reads db_wallet_tx_recent_raw(): it can only ever see transactions
+ * ALREADY IN THE LOCAL WALLET TABLE, and it recovers a hostname by parsing a
+ * zero-token_id ZSLP SEND and skipping push fields until something ends in
+ * ".onion". That is a scrape of your own wallet, not a protocol — a node with
+ * an empty wallet learns nothing here, and no node ever sees another node's
+ * announcement this way. Source 1 (the ZDIR chain projection, below) is the
+ * real replacement.
+ *
+ * It stays for now because peer discovery is liveness-critical and a source is
+ * only ever RETIRED WITH EVIDENCE, never on the strength of a better design:
+ * it is the only source on a node whose datadir predates the onion_directory
+ * table. Retire it when `ops state --subsystem=onion_directory` shows
+ * active_rows > 0 on a real datadir and the counters published by
+ * blog_onion_discovery_counts() show the wallet source contributing nothing
+ * the chain source did not already supply. */
+static int blog_discover_onion_peers_wallet(const char *datadir,
+                                            struct onion_peer *out, size_t max)
 {
     if (!datadir || !out || max == 0) return 0;
 
@@ -328,7 +359,113 @@ int blog_discover_onion_peers(const char *datadir,
     }
 
     node_db_close(&ndb);
+    atomic_store(&g_last_wallet_rows, found);
     return found;
+}
+
+/* ── The chain-fed directory source ─────────────────────────── */
+
+/* SOURCE 1 of 2 — the REAL chain projection.
+ *
+ * Reads onion_directory: one row per v3 onion hostname that a confirmed ZDIR
+ * OP_RETURN registered, folded out of BLOCK HISTORY by
+ * app/models/src/explorer_index_zdir.c during the ordinary genesis-ascending
+ * index walk. No wallet involvement: a node with an empty wallet sees every
+ * other node's announcement, which is the whole point.
+ *
+ * Read-only and bounded — a LIMIT-ed SELECT over an indexed (status, height)
+ * page, no network call and no clock read. Every hostname is re-validated with
+ * onion_hostname_valid before it leaves this function; the row was validated at
+ * parse and at save too, and it is checked again here because the value is
+ * about to be dialed. */
+int blog_discover_onion_peers_chain(const char *datadir,
+                                    struct onion_peer *out, size_t max)
+{
+    if (!datadir || !out || max == 0) return 0;
+
+    char db_path[1024];
+    snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
+
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    if (!node_db_open(&ndb, db_path))
+        LOG_RETURN(0, "blog", "discover_onion_peers_chain: cannot open %s",
+                   db_path);
+
+    struct db_onion_directory rows[64];
+    size_t want = max;
+    if (want > sizeof(rows) / sizeof(rows[0]))
+        want = sizeof(rows) / sizeof(rows[0]);
+
+    memset(rows, 0, sizeof(rows));
+    int row_count = db_onion_directory_list_active(&ndb, rows, (int)want, 0);
+    node_db_close(&ndb);
+
+    int found = 0;
+    for (int i = 0; i < row_count && (size_t)found < max; i++) {
+        if (!onion_hostname_valid(rows[i].hostname))
+            continue;   /* refuse, never sanitize — see the model header */
+        snprintf(out[found].hostname, sizeof(out[found].hostname), "%s",
+                 rows[i].hostname);
+        out[found].height = rows[i].height;
+        found++;
+    }
+    atomic_store(&g_last_chain_rows, found);
+    return found;
+}
+
+/* onion_peers_collect's signed-source signature takes an opaque ctx; the chain
+ * source takes a datadir. One adapter, no second copy of the merge. */
+static int blog_chain_peer_source(void *ctx, struct onion_peer *out,
+                                  size_t max)
+{
+    return blog_discover_onion_peers_chain((const char *)ctx, out, max);
+}
+
+void blog_onion_discovery_counts(int *out_chain, int *out_wallet,
+                                 int *out_rejected)
+{
+    if (out_chain)    *out_chain    = atomic_load(&g_last_chain_rows);
+    if (out_wallet)   *out_wallet   = atomic_load(&g_last_wallet_rows);
+    if (out_rejected) *out_rejected = atomic_load(&g_last_rejected);
+}
+
+/* BOTH sources, chain first, merged by the ONE merge the node has
+ * (onion_peers_collect, net/onion_peer_merge.h) — which is also what applies
+ * onion_hostname_valid and de-duplicates a host that advertised through both.
+ *
+ * ADD, never replace: the wallet scrape keeps running behind the chain
+ * projection, and neither source can remove a candidate the other found. This
+ * function can only ever grow the peer set handed to connman; a poisoned or
+ * squatted directory row costs one wasted connection attempt and nothing
+ * else. */
+int blog_discover_onion_peers(const char *datadir,
+                              struct onion_peer *out, size_t max)
+{
+    if (!datadir || !out || max == 0) return 0;
+
+    atomic_store(&g_last_chain_rows, 0);
+    atomic_store(&g_last_wallet_rows, 0);
+
+    /* The collect port hands the source an opaque void* ctx; the datadir is a
+     * const char*. A union keeps that a type pun and not a cast that discards
+     * const — the callee only ever reads it back through .cs. */
+    union { const char *cs; void *v; } ctx = { .cs = datadir };
+
+    int rejected = 0;
+    int kept = onion_peers_collect(out, max, blog_chain_peer_source, ctx.v,
+                                   blog_discover_onion_peers_wallet, datadir,
+                                   &rejected);
+    atomic_store(&g_last_rejected, rejected);
+
+    /* The attribution line that lets the wallet source be retired with
+     * evidence rather than by argument. */
+    if (kept > 0 || rejected > 0)
+        LOG_INFO("blog", "onion discovery: kept=%d chain=%d wallet=%d"
+                 " malformed_dropped=%d", kept,
+                 atomic_load(&g_last_chain_rows),
+                 atomic_load(&g_last_wallet_rows), rejected);
+    return kept;
 }
 
 /* ── Auto-announce .onion address on-chain ─────────────────── */

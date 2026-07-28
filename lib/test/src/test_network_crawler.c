@@ -9,20 +9,30 @@
  *      when we agree with the network or the sample is too small),
  *   2. the census table's bounds through the injectable probe_fn seam: addr
  *      dedup, per-round cap, and prune-when-full (never exceeds the cap),
- *   3. the network_census dumper surfaces the eclipse signal + evidence.
+ *   3. the network_census dumper surfaces the eclipse signal + evidence,
+ *   4. THE ONION HALF: address rendering (a real v3 hostname, not the
+ *      "[torv3]" placeholder that would collapse every onion into one row),
+ *      the separately-bounded onion dial phase (per-round cap + wall-clock
+ *      budget, clearnet never starved), and the NOT-PROBED discipline —
+ *      unprobed is its own bucket, never counted as unreachable, never
+ *      overwriting a real measurement, never emitted as a failed dial.
  *
- * NO real sockets: the dialer is replaced by a synthetic probe_fn that encodes
- * each node's measured properties in its address octets.
+ * NO real sockets and NO real circuits: the dialer is replaced by a synthetic
+ * probe_fn that encodes each node's measured properties in its address octets.
  */
 
 #include "test/test_core.h"
 
 #include "services/network_crawler.h"
 #include "conditions/net_eclipse_suspected.h"
-#include "net/netaddr.h"
 #include "json/json.h"
+#include "net/netaddr.h"
+#include "net/onion_peer_merge.h"
+#include "platform/time_compat.h"
+#include "storage/peers_projection.h"
 #include "util/blocker.h"
 
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -71,6 +81,75 @@ static bool synth_probe(const struct net_address *addr, int ct, int ht,
              (hc & 1) ? "/zclassic23:1/" : "/MagicBean:2.1.2/");
     out->latency_us = 1234;
     out->last_probe_us = 1000 + (int64_t)addr->svc.addr.ip[15];
+    return true;
+}
+
+/* A Tor v3 address whose 32-byte key is seeded from `seed`. */
+static struct net_address mk_onion(uint8_t seed, uint16_t port)
+{
+    struct net_address na;
+    net_address_init(&na);
+    na.svc.addr.has_torv3 = true;
+    for (int i = 0; i < TORV3_ADDR_SIZE; i++)
+        na.svc.addr.torv3[i] = (unsigned char)(seed + i);
+    /* Onions still carry a 16-byte ip[] key; make it unique per seed so the
+     * durable-census key does not collide either. */
+    memcpy(na.svc.addr.ip, na.svc.addr.torv3, 16);
+    na.svc.port = port;
+    return na;
+}
+
+/* Onion-aware synthetic probe: counts what it was asked to dial, with which
+ * timeouts, and can be told to sleep on the onion branch so the wall-clock
+ * budget is provable without a real circuit. */
+static _Atomic int g_clear_dials;
+static _Atomic int g_onion_dials;
+static _Atomic int g_onion_timeout_seen;
+static _Atomic int g_onion_sleep_ms;
+static _Atomic int g_onion_not_probed;   /* 1 => report NOT_PROBED */
+
+static void onion_probe_counters_reset(void)
+{
+    atomic_store(&g_clear_dials, 0);
+    atomic_store(&g_onion_dials, 0);
+    atomic_store(&g_onion_timeout_seen, 0);
+    atomic_store(&g_onion_sleep_ms, 0);
+    atomic_store(&g_onion_not_probed, 0);
+}
+
+static bool onion_aware_probe(const struct net_address *addr, int ct, int ht,
+                              struct ncrawl_probe_result *out)
+{
+    if (!addr || !out)
+        return false;
+    memset(out, 0, sizeof(*out));
+    out->is_onion = net_addr_is_tor(&addr->svc.addr);
+    out->best_height = -1;
+    out->last_probe_us = 4242;
+    if (!network_crawler_render_addr(addr, out->addr, sizeof(out->addr)))
+        return false;
+
+    if (!out->is_onion) {
+        atomic_fetch_add(&g_clear_dials, 1);
+        out->reachable = true;
+        out->best_height = 3000000;
+        snprintf(out->subver, sizeof(out->subver), "/clear/");
+        return true;
+    }
+
+    atomic_fetch_add(&g_onion_dials, 1);
+    atomic_store(&g_onion_timeout_seen, ct > ht ? ct : ht);
+    int nap = atomic_load(&g_onion_sleep_ms);
+    if (nap > 0)
+        platform_sleep_ms(nap);
+    if (atomic_load(&g_onion_not_probed)) {
+        out->outcome = (uint8_t)NCRAWL_OUTCOME_NOT_PROBED;
+        snprintf(out->reason, sizeof(out->reason), "tor unavailable (fake)");
+        return true;
+    }
+    out->reachable = true;
+    out->best_height = 3000000;
+    snprintf(out->subver, sizeof(out->subver), "/onion/");
     return true;
 }
 
@@ -343,6 +422,268 @@ int test_network_crawler(void)
         network_crawler_test_reset();
         printf("done\n");
     }
+
+    /* ── 9. onion address rendering: a REAL v3 hostname, never "[torv3]" ── */
+    printf("  onion addresses render to distinct real v3 hostnames... ");
+    {
+        struct net_address clear = mk_addr(1, true, false, 9, 8033);
+        char buf[NCRAWL_ADDR_MAX];
+        NC_CHECK(network_crawler_render_addr(&clear, buf, sizeof(buf)));
+        NC_CHECK(strcmp(buf, "10.1.1.9:8033") == 0);
+
+        struct net_address o1 = mk_onion(0x11, 8033);
+        struct net_address o2 = mk_onion(0x22, 8033);
+        char h1[NCRAWL_ADDR_MAX], h2[NCRAWL_ADDR_MAX];
+        NC_CHECK(network_crawler_render_addr(&o1, h1, sizeof(h1)));
+        NC_CHECK(network_crawler_render_addr(&o2, h2, sizeof(h2)));
+        /* "<56 base32>.onion:<port>" — 62 host chars, then ":8033". */
+        NC_CHECK(strlen(h1) == 62 + 5);
+        NC_CHECK(strstr(h1, ".onion:8033") != NULL);
+        NC_CHECK(strstr(h1, "[torv3]") == NULL);
+        /* Two different keys must NOT collapse to one census row. */
+        NC_CHECK(strcmp(h1, h2) != 0);
+        /* The rendered host passes lib/net's ONE hostname rule. */
+        char host[80];
+        snprintf(host, sizeof(host), "%.62s", h1);
+        NC_CHECK(onion_hostname_valid(host));
+        printf("done\n");
+    }
+
+    /* ── 10. NOT PROBED is its own bucket, not an unreachable ──────────── */
+    printf("  fold: not-probed rows counted apart from unreachable... ");
+    {
+        struct ncrawl_probe_result r[5];
+        r[0] = mk_res("a:8033", true,  false, 100, "/A/");
+        r[1] = mk_res("b:8033", true,  false, 100, "/A/");
+        r[2] = mk_res("c:8033", false, false, 0,   "/A/");   /* MEASURED down */
+        r[3] = mk_res("d.onion:8033", false, true, 0, "");   /* NOT PROBED */
+        r[4] = mk_res("e.onion:8033", false, true, 0, "");   /* NOT PROBED */
+        for (int i = 3; i < 5; i++) {
+            r[i].outcome = (uint8_t)NCRAWL_OUTCOME_NOT_PROBED;
+            snprintf(r[i].reason, sizeof(r[i].reason), "tor unavailable");
+        }
+        struct network_census_view v;
+        network_census_compute(r, 5, -1, 7, &v);
+        NC_CHECK(v.probed == 5);
+        NC_CHECK(v.measured_count == 3);
+        NC_CHECK(v.not_probed_count == 2);
+        NC_CHECK(v.onion_not_probed_count == 2);
+        NC_CHECK(v.onion_measured_count == 0);
+        /* The unprobed onions inflate NEITHER side of the reachability call. */
+        NC_CHECK(v.reachable_count == 2);
+        NC_CHECK(v.onion_count == 0);
+        NC_CHECK(v.clearnet_count == 2);
+        NC_CHECK(strcmp(v.not_probed_reason, "tor unavailable") == 0);
+        printf("done\n");
+    }
+
+    /* ── 11. onion phase is bounded SEPARATELY; clearnet is never starved ── */
+    printf("  onion phase: per-round cap + budget, clearnet runs first... ");
+    {
+        network_crawler_test_reset();
+        network_crawler_test_set_probe_fn(onion_aware_probe);
+        onion_probe_counters_reset();
+        /* cap 3 onions/round, 1 in flight, 5s per dial, no wall-clock budget */
+        network_crawler_test_set_onion_limits(3, 1, 5000, 0);
+
+        struct net_address mixed[10];
+        for (int i = 0; i < 4; i++)
+            mixed[i] = mk_addr(40, true, false, (uint8_t)i, (uint16_t)(12000 + i));
+        for (int i = 4; i < 10; i++)
+            mixed[i] = mk_onion((uint8_t)(0x40 + i), (uint16_t)(12000 + i));
+
+        int recorded = network_crawler_test_probe_round(mixed, 10);
+        /* every address is RECORDED (measured or not-probed) ... */
+        NC_CHECK(recorded == 10);
+        /* ... but only 4 clearnet + 3 onion were actually dialed. */
+        NC_CHECK(atomic_load(&g_clear_dials) == 4);
+        NC_CHECK(atomic_load(&g_onion_dials) == 3);
+        /* the onion branch got the ONION timeout, not the clearnet one */
+        NC_CHECK(atomic_load(&g_onion_timeout_seen) == 5000);
+
+        struct network_census_view v;
+        NC_CHECK(network_crawler_get_view(&v));
+        NC_CHECK(v.measured_count == 7);
+        NC_CHECK(v.not_probed_count == 3);      /* the 3 over the onion cap */
+        NC_CHECK(v.onion_not_probed_count == 3);
+        NC_CHECK(v.clearnet_count == 4);        /* clearnet fully measured */
+        NC_CHECK(v.onion_count == 3);
+
+        /* the census row for a capped-out onion says NOT PROBED with a why */
+        char capped[NCRAWL_ADDR_MAX];
+        NC_CHECK(network_crawler_render_addr(&mixed[9], capped, sizeof(capped)));
+        struct ncrawl_probe_result row;
+        NC_CHECK(network_crawler_test_census_row(capped, &row));
+        NC_CHECK(row.outcome == (uint8_t)NCRAWL_OUTCOME_NOT_PROBED);
+        NC_CHECK(row.reachable == false);
+        NC_CHECK(row.reason[0] != '\0');
+        printf("done\n");
+    }
+
+    /* ── 12. a slow onion costs a BOUNDED amount of time, never the round ── */
+    printf("  onion wall-clock budget cuts the phase off, bounded... ");
+    {
+        network_crawler_test_reset();
+        network_crawler_test_set_probe_fn(onion_aware_probe);
+        onion_probe_counters_reset();
+        atomic_store(&g_onion_sleep_ms, 120);   /* each onion dial is slow */
+        /* 6 onions allowed, 1 in flight, 100ms budget for the whole phase */
+        network_crawler_test_set_onion_limits(6, 1, 1000, 100);
+
+        struct net_address onions[6];
+        for (int i = 0; i < 6; i++)
+            onions[i] = mk_onion((uint8_t)(0x90 + i), (uint16_t)(13000 + i));
+
+        int64_t t0 = platform_time_monotonic_us();
+        int recorded = network_crawler_test_probe_round(onions, 6);
+        int64_t took_ms = (platform_time_monotonic_us() - t0) / 1000;
+
+        NC_CHECK(recorded == 6);
+        /* the budget stopped the phase well short of all six dials */
+        NC_CHECK(atomic_load(&g_onion_dials) < 6);
+        NC_CHECK(atomic_load(&g_onion_dials) >= 1);
+        /* bounded by budget + ONE in-flight dial, not 6 * 120ms */
+        NC_CHECK(took_ms < 600);
+
+        struct network_census_view v;
+        NC_CHECK(network_crawler_get_view(&v));
+        NC_CHECK(v.not_probed_count + v.measured_count == 6);
+        NC_CHECK(v.not_probed_count >= 1);
+        atomic_store(&g_onion_sleep_ms, 0);
+        printf("done\n");
+    }
+
+    /* ── 13. NOT PROBED never erases a real measurement ────────────────── */
+    printf("  not-probed never overwrites a measured census row... ");
+    {
+        network_crawler_test_reset();
+        network_crawler_test_set_probe_fn(onion_aware_probe);
+        onion_probe_counters_reset();
+        network_crawler_test_set_onion_limits(4, 1, 1000, 0);
+
+        struct net_address one[1] = { mk_onion(0x77, 14000) };
+        char key[NCRAWL_ADDR_MAX];
+        NC_CHECK(network_crawler_render_addr(&one[0], key, sizeof(key)));
+
+        /* round 1: a real measurement */
+        NC_CHECK(network_crawler_test_probe_round(one, 1) == 1);
+        struct ncrawl_probe_result row;
+        NC_CHECK(network_crawler_test_census_row(key, &row));
+        NC_CHECK(row.outcome == (uint8_t)NCRAWL_OUTCOME_MEASURED);
+        NC_CHECK(row.reachable == true);
+
+        /* round 2: Tor goes away — the row must KEEP its measurement */
+        atomic_store(&g_onion_not_probed, 1);
+        NC_CHECK(network_crawler_test_probe_round(one, 1) == 1);
+        NC_CHECK(network_crawler_test_census_row(key, &row));
+        NC_CHECK(row.outcome == (uint8_t)NCRAWL_OUTCOME_MEASURED);
+        NC_CHECK(row.reachable == true);
+        NC_CHECK(network_crawler_test_census_count() == 1);
+        atomic_store(&g_onion_not_probed, 0);
+        printf("done\n");
+    }
+
+    /* ── 14. the dumper reports the unmeasured half honestly ───────────── */
+    printf("  dumper reports not_probed + onion budget + availability... ");
+    {
+        network_crawler_test_reset();
+        network_crawler_test_set_probe_fn(onion_aware_probe);
+        onion_probe_counters_reset();
+        atomic_store(&g_onion_not_probed, 1);
+        network_crawler_test_set_onion_limits(2, 1, 7000, 0);
+
+        struct net_address mix[4];
+        mix[0] = mk_addr(80, true, false, 1, 15000);
+        for (int i = 1; i < 4; i++)
+            mix[i] = mk_onion((uint8_t)(0xB0 + i), (uint16_t)(15000 + i));
+        NC_CHECK(network_crawler_test_probe_round(mix, 4) == 4);
+
+        struct json_value out;
+        json_init(&out);
+        NC_CHECK(network_crawler_dump_state_json(&out, NULL));
+        const struct json_value *np = json_get(&out, "not_probed_count");
+        NC_CHECK(np != NULL && json_get_int(np) == 3);   /* 2 dialed + 1 capped */
+        const struct json_value *onp = json_get(&out, "onion_not_probed_count");
+        NC_CHECK(onp != NULL && json_get_int(onp) == 3);
+        const struct json_value *mc = json_get(&out, "measured_count");
+        NC_CHECK(mc != NULL && json_get_int(mc) == 1);
+        const struct json_value *why = json_get(&out, "not_probed_reason");
+        NC_CHECK(why != NULL && json_get_str(why) != NULL &&
+                 json_get_str(why)[0] != '\0');
+        const struct json_value *ot = json_get(&out, "onion_timeout_ms");
+        NC_CHECK(ot != NULL && json_get_int(ot) == 7000);
+        const struct json_value *avail = json_get(&out, "onion_probe_available");
+        NC_CHECK(avail != NULL && avail->type == JSON_BOOL);
+        const struct json_value *npl = json_get(&out, "not_probed_last_round");
+        NC_CHECK(npl != NULL && json_get_int(npl) == 3);
+        json_free(&out);
+        atomic_store(&g_onion_not_probed, 0);
+        network_crawler_test_reset();
+        printf("done\n");
+    }
+
+    /* ── 15. the REAL default probe degrades an onion to NOT PROBED ─────── */
+    printf("  default probe: no Tor => onion NOT PROBED (never unreachable)... ");
+    {
+        /* This binary links the Tor stub and never bootstraps a circuit, so
+         * the onion path structurally cannot dial. It must say so. */
+        NC_CHECK(network_crawler_onion_probe_available() == false);
+
+        struct net_address o = mk_onion(0x5A, 8033);
+        struct ncrawl_probe_result r;
+        NC_CHECK(network_crawler_default_probe(&o, 1000, 1000, &r) == true);
+        NC_CHECK(r.is_onion == true);
+        NC_CHECK(r.outcome == (uint8_t)NCRAWL_OUTCOME_NOT_PROBED);
+        NC_CHECK(r.reachable == false);
+        NC_CHECK(strstr(r.reason, "tor") != NULL);
+        NC_CHECK(strstr(r.addr, ".onion:8033") != NULL);
+        printf("done\n");
+    }
+
+    /* ── 16. unprobed is banked as a NOTE, never as a failed dial ───────── */
+    printf("  ledger notes unprobed addresses without a census failure... ");
+    {
+        uint64_t base = peers_projection_census_unprobed_total();
+        uint8_t ip[16] = {0};
+        ip[15] = 9;
+        NC_CHECK(peers_projection_note_census_unprobed(ip, 8033,
+                                                       "tor unavailable"));
+        NC_CHECK(peers_projection_note_census_unprobed(NULL, 8033, NULL));
+        NC_CHECK(peers_projection_census_unprobed_total() == base + 2);
+        char why[PEERS_CENSUS_UNPROBED_REASON_MAX];
+        peers_projection_census_unprobed_reason(why, sizeof(why));
+        NC_CHECK(strcmp(why, "tor unavailable") == 0);
+
+        /* and a real round's unprobed rows flow into the same counter */
+        network_crawler_test_reset();
+        network_crawler_test_set_probe_fn(onion_aware_probe);
+        onion_probe_counters_reset();
+        atomic_store(&g_onion_not_probed, 1);
+        network_crawler_test_set_onion_limits(2, 1, 1000, 0);
+        struct net_address on2[2];
+        for (int i = 0; i < 2; i++)
+            on2[i] = mk_onion((uint8_t)(0xE0 + i), (uint16_t)(16000 + i));
+        uint64_t pre = peers_projection_census_unprobed_total();
+        NC_CHECK(network_crawler_test_probe_round(on2, 2) == 2);
+        NC_CHECK(peers_projection_census_unprobed_total() == pre + 2);
+
+        /* the dumper reports the ledger-side total too */
+        struct json_value d;
+        json_init(&d);
+        NC_CHECK(network_crawler_dump_state_json(&d, NULL));
+        const struct json_value *lt =
+            json_get(&d, "ledger_unprobed_notes_total");
+        NC_CHECK(lt != NULL && (uint64_t)json_get_int(lt) == pre + 2);
+        const struct json_value *lr =
+            json_get(&d, "ledger_unprobed_last_reason");
+        NC_CHECK(lr != NULL && json_get_str(lr) != NULL &&
+                 json_get_str(lr)[0] != '\0');
+        json_free(&d);
+        atomic_store(&g_onion_not_probed, 0);
+        printf("done\n");
+    }
+
+    network_crawler_test_reset();
 
     if (failures == 0)
         printf("network_crawler: ALL PASS\n");
