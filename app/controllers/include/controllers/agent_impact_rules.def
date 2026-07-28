@@ -798,3 +798,10 @@ AGENT_IMPACT_RULE("lib/test/src/test_header_probe.c|app/services/src/header_prob
  * native leaves, the command spec and the projection fold all have to agree
  * byte for byte, so an edit to any of them re-runs the whole loop. */
 AGENT_IMPACT_RULE("app/controllers/src/zdir_controller.c|app/controllers/include/controllers/zdir_controller.h|tools/command/native_zdir_command.c|lib/zdir/src/zdir.c|lib/zdir/include/zdir/zdir.h|app/models/src/explorer_index_zdir.c|lib/test/src/test_zdir_write_path.c", "zdir_write_path zdir onion_directory explorer_index command_registry_catalog make_lint_gates")
+
+/* Seniority address binding: the composition-root slice that resolves a peer
+ * address to the identity that signed for it, weighs it, and rotates the
+ * per-client favourite set with the ranking epoch. The binding, the bound it
+ * lives inside and the rotation decision are one contract, so an edit to any
+ * of them re-runs the whole loop. */
+AGENT_IMPACT_RULE("config/src/boot_seniority.c|config/include/config/boot_seniority.h|config/src/boot_node_utilities.c|lib/zid/include/zid/zid_seniority.h|lib/net/src/zdir_selection.c|lib/test/src/test_zid_seniority_binding.c", "zid_seniority_binding zid_seniority zdir net make_lint_gates")

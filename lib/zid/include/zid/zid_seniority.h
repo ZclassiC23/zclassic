@@ -65,6 +65,27 @@
  *    If a weighting scheme ever wants more than 4x of dynamic range, the
  *    answer is that it does not get more.
  *
+ * 5. THE TABLE IS NO LONGER INERT. Until the address binding landed this
+ *    module was computed, scored, owner-capped, drawn and then discarded,
+ *    because nothing could say which dialable address an anchored identity
+ *    owned. It can now: a SIGNED ENDPOINT RECORD (vcs/zendp_swarm.h) is a
+ *    document the identity signed with its own master key, accepted only
+ *    when that key resolves to an ACTIVE anchor on-chain, and the binding is
+ *    built from those records by config/boot_seniority.h. Seniority cannot
+ *    be borrowed by asserting somebody else's key, because the claim is
+ *    signed by the key it names.
+ *
+ *    HONEST LIMIT, inherited whole from zendp_swarm.h: a verified record
+ *    proves the identity SAID "reach me here". It does not prove that the
+ *    party answering at that address IS that identity — binding the session
+ *    to the key needs the Noise v2 transport, which is default OFF because
+ *    the live network speaks v1. Until that flips, the worst a false
+ *    address claim buys is up to 4x the dial preference on an address the
+ *    claimant does not control, which cannot exclude anyone and cannot
+ *    exceed the bound in (4). A second limit worth naming: only an address
+ *    a signed record vouches for can earn anything at all, so on today's
+ *    network the overwhelming majority of peers still sit at exactly 1.0.
+ *
  * PURE. No clock, no RNG, no I/O, no allocation, no chain access, no
  * database. Caller buffers only. lib/zid is rank 10 in
  * config/lib_module_order.def, below net/storage/validation, and this file
@@ -136,15 +157,13 @@
  * a per-block reshuffle would churn connections continuously, and it would
  * hand an attacker a fresh grinding attempt every 150 s. 144 blocks ~ 6 h.
  *
- * NOT YET HONOURED AT RUNTIME. The only caller
- * (config/src/boot_node_utilities.c) builds the seniority table ONCE, at
- * boot, and never rebuilds it — so the epoch is frozen at whatever the tip
- * was during startup and no rotation happens. That is harmless only for as
- * long as boot_seniority_relay_for_addr() returns false and the whole table
- * is inert. The moment the on-chain address binding lands, a long-running
- * node would pin one favourite set forever, which is precisely the
- * grinding-and-churn tradeoff this constant exists to balance. Wiring a
- * periodic rebuild is a prerequisite of that binding, not a follow-up. */
+ * HONOURED AT RUNTIME. The caller (config/boot_seniority.h) runs a supervised
+ * worker that rebuilds the table when — and only when — this epoch rolls, so
+ * the favourite set rotates for the whole life of the process instead of
+ * being pinned to whatever the tip happened to be during startup. The
+ * decision is the pure boot_seniority_next_action(), so "rebuilds on a
+ * boundary, idles between boundaries" is asserted with numbers rather than
+ * asserted about a thread. */
 #define ZID_SENIORITY_EPOCH_BLOCKS 144
 
 /* ── BOUND (NOT policy — do not retune) ────────────────────────────
@@ -196,7 +215,7 @@ struct zid_relay_registration {
  *
  * The implementation lives in net/zdir_selection.h (zdir_client_key ->
  * zdir_epoch_seed -> zdir_candidate_score) and is plugged in by
- * config/src/boot_node_utilities.c. It is NOT visible from here and must not
+ * config/src/boot_seniority.c. It is NOT visible from here and must not
  * be: lib/zid is rank 10 and lib/net is rank 93 in
  * config/lib_module_order.def, so this typedef is the whole of the contract
  * between them and the composition root does the joining. */

@@ -392,6 +392,7 @@ int test_znam(void);
 int test_zid(void);
 int test_zid_identity(void);
 int test_zid_seniority(void);
+int test_zid_seniority_binding(void);
 int test_zdir(void);
 int test_zdir_write_path(void);
 int test_identity_command(void);
