@@ -36,15 +36,23 @@ parsing, and content.v2 verification. That translation unit is still a pure
 codec — no socket, filesystem, wallet, install, build, execution, or
 publication authority of its own.
 
-It is no longer unwired, though: slice 12 (commit 833d7f398) gave the swarm a
-real P2P socket. `lib/vcs/src/package_swarm_node.c` drives the peer state
-machine and `config/src/boot_zcode_swarm.c` puts its frames on the wire under
-the `zpkgswm` message tag via `p2p_node_begin_message()`. Read "pure codec" as
-a statement about the encoder/decoder module only, never as "this subsystem
-cannot reach the network".
+**The subsystem as a whole is socket-wired and has been since slice 12**
+(commit 833d7f398). `lib/vcs/src/package_swarm_node.c` is the swarm engine —
+the manifest-first, rarest-first, multi-peer scheduler plus serving and
+accounting decisions — and `config/src/boot_zcode_swarm.c` puts its frames on
+the real P2P wire under the `zpkgswm` message tag via
+`p2p_node_begin_message()`. Hosting is **off by default** and enabled with
+`-packagehost=1`; the boot glue returns early otherwise, so a default node
+neither serves nor pulls package bytes.
+
+Read "pure codec" as a statement about the two lower layers only
+(`package_swarm.c` and the engine, both of which stay free of sockets, threads,
+and wall clock — the caller drives them with explicit ticks), never as "this
+subsystem cannot reach the network".
 <!-- claim: symbol-present p2p_node_begin_message config/src/boot_zcode_swarm.c # the swarm IS socket-wired -->
 <!-- claim: file-present lib/vcs/src/package_swarm_node.c # the transport half exists -->
 <!-- claim: symbol-absent socket lib/vcs/src/package_swarm.c # the codec half stays pure -->
+<!-- claim: symbol-present packagehost config/src/boot_zcode_swarm.c # hosting stays flag-gated, default off -->
 
 
 Do not put source packages through the legacy file-market trust path. Its offer
@@ -84,9 +92,14 @@ until a separate explicit inspect/build/install transaction passes policy.
 6. An explicit operator action may inspect, build in containment, test, sign a
    local verdict, and publish/install atomically.
 
-HTTPS and onion are transport adapters over the same package/CAS contract.
-Noise XX (or a comparably authenticated session) should protect direct P2P;
-the existing public-UTXO-root-derived file-service key is not sufficient.
+HTTPS and onion are transport adapters over the same package/CAS contract;
+both are live as of slice 13. Direct P2P rides the node's existing
+unauthenticated transport: Noise v2 is deliberately **not** armed under the
+swarm, because chunk integrity comes from the content.v2 manifest rather than
+from the session. The existing public-UTXO-root-derived file-service key is
+not peer authentication and is not used here. Adding an authenticated session
+would improve reputation locality — it would not change what a peer can make
+you store.
 
 ## Ratio and optional ZCL burn credits
 
@@ -131,16 +144,45 @@ review and tests.
 - [x] Canonical bounded `content.v2` manifest and SHA3 chunk verification.
 - [x] Pure bounded announce/want/data/cancel codec tied to package roots.
 - [x] Signed release envelope using wallet-brokered secp256k1 keys.
-- [ ] Staging-only content-addressed store with quotas and atomic verified puts.
-- [ ] Durable resume bitmap and multi-peer rarest-first scheduler.
-- [ ] Peer inventory, backpressure, timeout, retry, and offence accounting.
-- [ ] Authenticated direct transport plus HTTPS and onion adapters.
-- [ ] Dual-signed verified-byte receipts and local ratio policy.
+- [x] Staging-only content-addressed store with quotas and atomic verified puts
+  — `lib/vcs/src/package_store.c`, `-packagequota` (default 10 GiB) split over
+  frozen pool fractions.
+- [x] Durable resume bitmap and multi-peer rarest-first scheduler —
+  `lib/vcs/src/package_swarm_node.c`; resume records persist under
+  `<zcode_dir>/downloads/<root-hex>` with temp + fsync + atomic rename.
+- [x] Peer inventory, backpressure, timeout, retry, and offence accounting —
+  same engine: bounded per-peer in-flight, fresh request id per retry,
+  tombstoned cancellations, and the slice-11 never-credit offence table.
+- [ ] Authenticated direct transport plus HTTPS and onion adapters. *Partly
+  done, and the remainder is a deliberate reframe rather than pending work.*
+  The HTTPS/onion side shipped in slice 13 (`/zcode*` routes,
+  `app/controllers/src/zcode_site_controller.c`). Noise v2 is **not** armed
+  under the swarm and is not planned to be: chunk bytes are authenticated
+  against the content.v2 manifest before they are ever stored, and the peer's
+  33-byte accounting key is an explicitly LOCAL session pseudo-key, not a
+  contributor identity claim. What is still open is transport-level peer
+  authentication, which today buys reputation locality, not chunk integrity.
+- [ ] Dual-signed verified-byte receipts. *Local ratio policy is done* —
+  `zcode seed ratio` / `zcode seed status` over the local service book. The
+  dual-signed, both-peer-attested receipt is the open half. (`package_reward.*`
+  "receipts" are the contributor-reward ledger, a different object; do not
+  mistake one for the other.)
 - [ ] Optional proof-of-burn parser/indexer and reorg-aware credit projection.
+  *Genuinely absent — no burn parser exists in `lib/vcs` or the ZCODE catalog.*
 - [ ] Explicit inspect/build/test/install transaction; downloads never execute.
-- [ ] End-to-end simulator: malicious manifest, bad chunk, replay, cancellation,
-  peer loss, resume, quota exhaustion, reorg, and deterministic seed replay.
+  *Genuinely absent — there is no `zcode.install` / `zcode.build` /
+  `zcode.inspect` branch in `config/commands/zcode.def`.*
+<!-- claim: symbol-absent zcode.install config/commands/zcode.def # no install surface yet -->
+- [ ] End-to-end simulator. *Substantially done, with named gaps.*
+  `lib/test/src/test_zcode_swarm_net.c` runs real `zpkgswm` frames between
+  independent engines behind real msg_processors (only socket syscalls elided)
+  and covers the golden path, malicious wrong-hash chunks, unrequested DATA,
+  restart-mid-download resume, and disconnect requeue. Still uncovered:
+  quota exhaustion, reorg, and deterministic seed replay.
+<!-- claim: file-present lib/test/src/test_zcode_swarm_net.c # the real-wire swarm harness exists -->
 
-The next code slice is the signed release envelope plus staging CAS. Runtime
-gossip should wait until those two foundations are fail-closed and independently
-tested.
+The foundations this section once gated on — signed release envelope, staging
+CAS, and runtime gossip — have all shipped. The next code slices are the two
+genuinely-absent rows above: the explicit inspect/build/install transaction
+(nothing downloaded may ever execute without it) and dual-signed verified-byte
+receipts. Proof-of-burn stays last and stays optional.

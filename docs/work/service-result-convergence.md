@@ -163,12 +163,29 @@ detail matters for a specific migration).
 - `syncsvc_should_request_headers`, `syncsvc_should_scan_block_files_after_
   headers`, `syncsvc_should_activate_after_block_file_scan`, `syncsvc_should_
   activate_after_header_processing`, `syncsvc_should_begin_blocks_download`,
-  `syncsvc_headers_chain_from_tip` — **no production call site found**
-  outside own TU/tests for these 6 (declared in `lib/sync/include/sync/
-  sync_planner.h`, exercised extensively in `lib/test/src/test_header_
-  sync.c` / `test_sync_service.c`, but not yet wired to a live caller —
-  verify before assuming dead; this file is mid-refactor per its own
-  comments).
+  `syncsvc_headers_chain_from_tip` — **4 of these 6 ARE production-reachable;
+  only 2 are genuinely unwired.** All are declared in `lib/sync/include/sync/
+  sync_planner.h` and defined in `app/services/src/header_sync_service.c`. The
+  original "no production call site" reading counted *direct* callers only and
+  missed one hop through the exported planners. Reachable, via a planner that
+  live P2P message handling calls:
+  - `syncsvc_should_request_headers` → `syncsvc_plan_periodic_getheaders` →
+    `lib/net/src/msgprocessor.c:2142`
+  - `syncsvc_should_scan_block_files_after_headers` →
+    `syncsvc_plan_header_processing` → `lib/net/src/msg_headers.c:791`
+  - `syncsvc_should_activate_after_block_file_scan` →
+    `syncsvc_build_block_file_scan_activation` → `lib/net/src/msg_headers.c:950`
+  - `syncsvc_should_activate_after_header_processing` →
+    `syncsvc_build_header_processing_activation` → `lib/net/src/msg_headers.c:1018`
+
+  Still unwired — their enclosing planners have no caller outside the defining
+  TU and tests, so these two remain live candidates for deletion or wiring:
+  `syncsvc_should_begin_blocks_download` (only reached by
+  `syncsvc_plan_header_download`) and `syncsvc_headers_chain_from_tip` (only
+  reached by `syncsvc_collect_needed_blocks`).
+  <!-- claim: symbol-present syncsvc_plan_periodic_getheaders lib/net/src/msgprocessor.c # live P2P caller, one hop up -->
+  <!-- claim: symbol-present syncsvc_plan_header_processing lib/net/src/msg_headers.c # live P2P caller, one hop up -->
+  <!-- claim: symbol-absent syncsvc_plan_header_download lib/net # still no live caller: the 2 unwired ones stay unwired -->
 - Cluster: **header-sync** — own lane (17 functions is a full lane by
   itself; its two production callers, `lib/net/src/msgprocessor.c` and
   `lib/net/src/msg_headers.c`, are not touched by any other baselined file).

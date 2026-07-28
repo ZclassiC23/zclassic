@@ -52,8 +52,13 @@ you operate that host, and misleading otherwise.
 - [`work/HOTSWAP.md`](./work/HOTSWAP.md) — Tier-1 hot-swap (`config/hotswap_eligible.def`) + the dev loop + ZVCS auto-anchor.
 - [`ZVCS.md`](./ZVCS.md) — in-binary VCS; `dev vcs revert` is a one-command
   source-tree revert. Relinking the *running binary* to the reverted
-  generation is not wired (`relink_generation=true` returns `VCS_ENOTIMPL`),
+  generation is not wired: `relink_generation=true` refuses **before** the
+  source revert, with status `BLOCKED` and error
+  `RUNTIME_PUBLICATION_CONTAINED` — not `VCS_ENOTIMPL`, which is a
+  `lib/vcs` error enum this path never returns,
   and the canonical/release binary refuses `dev.*` entirely
+  <!-- claim: symbol-present RUNTIME_PUBLICATION_CONTAINED tools/command/native_dev_command.c # the real refusal code -->
+  <!-- claim: symbol-absent VCS_ENOTIMPL tools/command # the revert handler does not use it -->
   (`DEV_BUILD_REQUIRED`) — live rollback of a running/canonical node is
   `make deploy` of a prior commit, not a ZVCS relink.
 

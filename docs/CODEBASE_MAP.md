@@ -90,12 +90,17 @@ Framework, `platform/` (the ONLY clock/RNG source: `time_compat.h`,
 `validation`, `chain`, `consensus`, `keys`, `metrics`, `health`, JSON, kernel
 utils. Boot stage enum: `lib/util/include/util/boot_phase.h`.
 
-`lib/vcs/` owns ZVCS plus the pure `content.v2` package-manifest and source
-swarm codecs. Read [`ZVCS.md`](ZVCS.md) for internal source/version identity
-and [`P2P_SOURCE_HOSTING.md`](P2P_SOURCE_HOSTING.md) for the source-hosting
-trust boundary and remaining transport/CAS work. The current swarm layer is a
-codec only; it has no socket, install, execution, wallet, or publication
-authority.
+`lib/vcs/` owns ZVCS plus the `content.v2` package-manifest and source swarm.
+Read [`ZVCS.md`](ZVCS.md) for internal source/version identity and
+[`P2P_SOURCE_HOSTING.md`](P2P_SOURCE_HOSTING.md) for the source-hosting trust
+boundary and the remaining work. `package_swarm.c` (wire codec) and
+`package_swarm_node.c` (scheduler/serving engine) are both pure — no socket,
+no thread, no wall clock — but the **subsystem is socket-wired**:
+`config/src/boot_zcode_swarm.c` carries their frames on the real P2P wire
+under the `zpkgswm` tag, gated behind `-packagehost=1` (default off). It still
+has no install, execution, wallet, or publication authority.
+<!-- claim: symbol-present p2p_node_begin_message config/src/boot_zcode_swarm.c # the swarm IS socket-wired -->
+<!-- claim: symbol-absent socket lib/vcs/src/package_swarm.c # the codec half stays pure -->
 
 ### Hexagonal seam — `ports/` + `adapters/`
 
