@@ -61,7 +61,7 @@ find a descriptor without knowing the address). Service-bound records are
 therefore keyed by a **blinded key**:
 
 ```
-blinded = SHA3-256("zid-blind" ‖ master_pubkey ‖ period)
+blinded = SHA3-256("ZIDB" ‖ master_pubkey ‖ period_le64)
 ```
 
 following Tor v3's blinded-pubkey pattern. Only someone who already knows
@@ -126,17 +126,121 @@ record, or package release **without the 10 GB chain** — the sovereignty
 story extended to light clients.
 
 **Hash conventions** (mirror `lib/chain/src/mmr.c`, with a zid-specific
-leaf tag that blocks cross-protocol proof replay):
+leaf tag that blocks cross-protocol proof replay). All zid domain
+separators are 4-byte uppercase lokad-style tags, same convention as the
+on-chain lokads (ZNAM, `SLP\0`, ZANC):
 
 ```
+Blinded:  SHA3-256("ZIDB" ‖ master_pubkey ‖ period_le64)
 Leaf:     SHA3-256(0x00 ‖ "ZIDL" ‖ record_digest)
 Internal: SHA3-256(0x01 ‖ left ‖ right)
 Root:     SHA3-256(0x02 ‖ peak_0 ‖ … ‖ peak_k)
 ```
 
+**Canonical wire formats** (everything that crosses the P2P/swarm boundary
+is versioned and bounds-strict; verifiers must pin these exactly):
+
+```
+zid_doc:    version:1 ‖ pubkey:32 ‖ seq:8 ‖ expiry:8 ‖ body_len:2 ‖ body ‖ sig:64
+zid_proof:  version:1 ‖ index:8 ‖ num_leaves:8 ‖ proof_len:2 ‖ siblings:32×n
+```
+
+**Efficiency contract:** `zid_tree_verify` is O(log n) hashes; proving is
+O(n) per proof at batch cadence (operator-side rebuild — fine for
+daily-scale anchors; all-leaves batch proving is a future operator
+optimization, never a verifier cost).
+
+## Post-quantum horizon (100-year asset security)
+
+Design doctrine, already load-bearing: **only hash-based structures are
+load-bearing on-chain.** Every signature scheme is disposable; every root
+is a 32-byte SHA3 digest. Discrete-log primitives (secp256k1, ed25519,
+X25519, Jubjub, BLS12-381) all fall to Shor; SHA3-256 commitments fall at
+worst to quadratic Grover speedup. Consequences:
+
+- **The anchor-domain pattern absorbs PQ signature size for free.** PQ
+  signatures are large (SPHINCS+ ~8 KB, STARK sigs larger); the chain
+  commits only roots, so migrating doc signing to any PQ scheme costs
+  the chain zero bytes. Migration is a `zid_doc` version bump with an
+  algorithm field, plus a hybrid period (ed25519 + PQ dual-signature)
+  during transition. Master keys become hash commitments to PQ
+  verification keys.
+- **For 100-year collision margin**, root digests have a planned
+  SHA3-384 upgrade path (quantum collision on SHA3-256 ≈ 2^85 — fine
+  today, marginal at century scale). The versioned tags make this
+  switchable without a flag day.
+- **Recursive IVC STARK integration points** (owner's in-progress PQ
+  STARK work; hash-based, so PQ-native): (1) recursive chain-state
+  proofs — the Bounded Node endgame: live state + one proof, history
+  fully optional; (2) epoch-anchor validity proofs — upgrading
+  attestation to math; (3) PQ ownership circuits — STARK-based shielded
+  ownership, which also retires Groth16's trusted setup; (4) verifiable
+  builds for the registry. `lib/crypto_registry` is the scheme-plugging
+  surface; provers are heavy, so these land at epoch/IVC cadences, never
+  per-message.
+- **Lane discipline:** migrating L1 transparent ownership (P2PKH/PQ
+  output types) is a consensus change and belongs to ZClassic network
+  governance (parity doctrine) — out of this repo. The overlay stack
+  (zid, domains, registry, descriptors, transport) can and should be
+  PQ-ready years ahead of Q-day, because assets must migrate into
+  hash-committed structures *before* quantum breaks discrete log, and
+  the destination must be battle-tested when it matters.
+- **Key rotation is a first-class ritual**, not an emergency path:
+  assume signature migration every ~20 years over a 100-year horizon.
+
 First-party domains: `zdesc` (A1 onion descriptors), `zdir` (A3 relay
 endpoints), `zcode` (package releases). Each anchors at its own cadence;
 each is just a schema over the same four-part contract.
+
+## Bounded storage: no byte is stuck forever
+
+A full node that must keep every byte it ever saw does not scale; one
+whose bytes are sorted by fate does. There are exactly three kinds:
+
+1. **Live state** (UTXO set, Sapling/Sprout frontiers, nullifiers,
+   overlay projections) — kept, committed, provable. The baked ROM
+   checkpoint (`core/chainparams/src/checkpoints.c`) already binds the
+   consensus-side half at h=3,056,758.
+2. **History** (block bodies) — re-derivable from peers; pruneable once
+   the state past them is verified (pruning machinery exists:
+   `MIN_BLOCKS_TO_KEEP` et al. in `main_constants.h`). What was missing
+   is the proof story for *overlay* state after pruning — the epoch
+   anchor below supplies it.
+3. **Content** (packages, descriptors, files) — content-addressed,
+   quota'd, garbage-collected, re-fetchable by hash (the swarm).
+
+**The epoch anchor** is the mechanism that makes overlay state provable
+without history. The OP_RETURN catalog projection
+(`app/models/src/op_return_index.c`) already maintains an incremental
+digest-chain over every OP_RETURN the chain has ever carried — every
+ZNAM name, ZSLP transfer, ZANC anchor, and future ZID record, in one
+digest. Anchoring that digest via ZANC (label `zepoch@<height>`) commits
+**the entire overlay state of the network in one ~40-byte transaction**:
+
+- **Cross-checking for free:** the catalog digest is a deterministic
+  function of chain data, so every honest node computes the same value.
+  Independent operators anchoring the same epoch either agree (public
+  confirmation) or disagree (publicly attributable fraud or bug).
+- **Pruned-node / light-client story:** FlyClient → epoch anchor →
+  catalog digest → per-record inclusion in the projections' digest
+  chain. Overlay authenticity without the 10 GB.
+- **Cadence is an operator decision.** Anchoring spends fees, so v1 is
+  commands only (`core epoch status/anchor/verify`) — no auto-broadcast.
+  A ~1000-block epoch (~1.7 days) costs ~15 anchors/month across the
+  whole network if every operator anchors; one is sufficient.
+- **Later:** the zid domain trees fold in as their own anchored domains;
+  committing the catalog digest into the sealed `core/` checkpoint is
+  the owner-gated Phase 4+ step that turns attestation into consensus.
+
+**Domain batching rule (registry at scale):** individual `ZIDR` release
+docs are self-verifying alone, but at volume they batch: each domain
+operator folds the day's release digests (`SHA3-256` of each canonical
+doc) into the domain MMR via `zid_tree_append`, and the domain root
+rides the epoch anchor as one catalog record. A verifier then needs only
+the epoch anchor + one `zid_proof` (~few hundred bytes) to confirm a
+release was in the committed batch — inclusion at scale, with the
+per-doc signature chain unchanged. Domains anchor at their own cadence;
+the epoch anchor is the shared metronome, not a requirement.
 
 ## Threshold and aggregate signatures (crypto roadmap)
 
@@ -313,18 +417,23 @@ surviving >10 blocks on both sides **never reconverges**. Rules:
 ## Phases
 
 1. **Phase 1 — `lib/zid` codec (pure library, no networking).** Blinded
-   key derivation (`SHA3-256("zid-blind" ‖ pubkey ‖ period)`), signed
+   key derivation (`SHA3-256("ZIDB" ‖ pubkey ‖ period)`), signed
    document encode/decode/verify with monotonic-seq rule, anchor-domain
    MMR (append/root/prove/**verify** — the verifier function everyone must
-   agree on forever), tests. No behavior change anywhere. **(done)**
-2. **Phase 2 — descriptor application.** ZNAM `zid` anchoring convention,
-   the `zdesc` domain tree anchored via ZANC, descriptor blobs served/
-   fetched via the ZCODE swarm, onion-site surface, resolver UX for A2.
-3. **Phase 3 — ZDIR as application.** The `zdir` domain tree, registration
-   anchoring, signed endpoint gossip, seniority-capped per-client
-   selection, netsplit degraded mode.
+   agree on forever), canonical proof wire format, release-record codec,
+   tests. No behavior change anywhere. **(done)**
+2. **Phase 2 — epoch anchor + Sovereign Registry.** `core epoch
+   status/anchor/verify` committing the OP_RETURN catalog digest per
+   epoch (Bounded Node keystone); `zcode release sign/verify` over the
+   release-record codec (the registry's first signed artifacts);
+   cookbook docs. **(in progress)**
+3. **Phase 3 — descriptor + directory applications.** The `zdesc` and
+   `zdir` domain trees anchored per epoch, descriptor blobs via the
+   swarm, ZNAM `zid` anchoring convention, signed endpoint gossip,
+   seniority-capped per-client selection, netsplit degraded mode.
 4. **Phase 4 — incentives.** Bandwidth receipts research, ZSLP credit
-   token, batched settlement; gated on A1–A3.
+   token, batched settlement, FROST domain committees, BLS receipt
+   aggregation; gated on earlier phases.
 
 ## Concrete files
 
