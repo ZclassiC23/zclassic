@@ -103,6 +103,7 @@
 #include "controllers/file_market_controller.h"
 #include "controllers/name_controller.h"
 #include "controllers/anchor_controller.h"
+#include "controllers/identity_controller.h"
 #include "controllers/op_return_index_controller.h"
 #include "services/op_return_backfill_service.h"
 #include "services/zslp_ledger_backfill_service.h"
@@ -1213,10 +1214,8 @@ bool app_init_services(struct app_context *ctx,
     rpc_misc_set_wallet(svc->wallet);
     register_misc_rpc_commands(svc->rpc_table);
     rpc_net_set_connman(svc->connman);
-    rpc_net_set_boot_context(ctx->datadir,
-                             ctx->load_snapshot_at_own_height);
-    block_source_policy_init(svc->connman, svc->state,
-                                   boot_node_db(svc));
+    rpc_net_set_boot_context(ctx->datadir, ctx->load_snapshot_at_own_height);
+    block_source_policy_init(svc->connman, svc->state, boot_node_db(svc));
     register_net_rpc_commands(svc->rpc_table);
 
     /* Game platform RPC — latency measurement, game types */
@@ -1224,13 +1223,11 @@ bool app_init_services(struct app_context *ctx,
     register_game_rpc_commands(svc->rpc_table);
 
     sync_monitor_init();
-    sync_monitor_set_context(svc->connman, msg_get_download_mgr(),
-                             svc->state);
+    sync_monitor_set_context(svc->connman, msg_get_download_mgr(), svc->state);
     sync_monitor_set_msg_processor(svc->msg_processor);
 
     /* Service health and sync detail RPCs */
-    rpc_health_set_state(svc->state, &svc->bg_validation,
-                         &svc->bg_hash_verify, svc->connman);
+    rpc_health_set_state(svc->state, &svc->bg_validation, &svc->bg_hash_verify, svc->connman);
     register_health_rpc_commands(svc->rpc_table);
 
     /* Diagnostics RPCs — dumpstate, getnodelog, dbquery */
@@ -1251,15 +1248,18 @@ bool app_init_services(struct app_context *ctx,
 
     /* ZCL Names — on-chain name registry */
     rpc_name_set_state(boot_node_db(svc));
-    rpc_name_set_wallet(svc->wallet, svc->mempool, svc->state,
-                        svc->coins_tip);
+    rpc_name_set_wallet(svc->wallet, svc->mempool, svc->state, svc->coins_tip);
     register_name_rpc_commands(svc->rpc_table);
 
     /* ZCL Anchors — on-chain software/package digest anchoring */
     rpc_anchor_set_state(boot_node_db(svc));
-    rpc_anchor_set_wallet(svc->wallet, svc->mempool, svc->state,
-                          svc->coins_tip);
+    rpc_anchor_set_wallet(svc->wallet, svc->mempool, svc->state, svc->coins_tip);
     register_anchor_rpc_commands(svc->rpc_table);
+
+    /* Sovereign identities — master-key anchor/rotate/revoke (ZID) */
+    rpc_identity_set_state(boot_node_db(svc));
+    rpc_identity_set_wallet(svc->wallet, svc->mempool, svc->state, svc->coins_tip);
+    register_identity_rpc_commands(svc->rpc_table);
 
     /* OP_RETURN catalog — every OP_RETURN output ever seen, by lokad tag */
     rpc_op_return_index_set_state(boot_node_db(svc));

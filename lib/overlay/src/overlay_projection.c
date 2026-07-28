@@ -18,12 +18,22 @@ void overlay_registry_init(struct overlay_registry *reg)
     memset(reg, 0, sizeof(*reg));
 }
 
-/* A well-formed lokad tag is four non-NUL bytes (matches the on-chain PUSH). */
+/* A well-formed lokad tag is 1-4 non-NUL bytes, NUL-padded to four (the
+ * on-chain PUSH is always four bytes wide). Trailing NUL padding is legal
+ * because it is what the chain actually carries: the SLP lineage spells a
+ * three-character tag with a NUL pad — ZSLP's tag is "SLP\0" and ZID's is
+ * "ZID\0". An EMBEDDED NUL is still refused: tag[0] must be non-NUL, and once
+ * a NUL is seen every later byte must be NUL too, so "ZF\0X" rejects. */
 static bool lokad_well_formed(const char tag[OVERLAY_LOKAD_LEN])
 {
-    if (!tag) return false;
-    for (int i = 0; i < OVERLAY_LOKAD_LEN; i++)
-        if (tag[i] == '\0') return false;
+    if (!tag || tag[0] == '\0') return false;
+    bool padding = false;
+    for (int i = 1; i < OVERLAY_LOKAD_LEN; i++) {
+        if (tag[i] == '\0')
+            padding = true;
+        else if (padding)
+            return false;              /* NUL followed by a non-NUL byte */
+    }
     return true;
 }
 

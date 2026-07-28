@@ -987,6 +987,8 @@ int main(int argc, char **argv)
     failures += test_core();
     failures += test_znam();
     failures += test_zid();
+    failures += test_zid_identity();
+    failures += test_identity_command();
     { extern int test_znam_site(void); failures += test_znam_site(); }
     failures += test_htlc();
     failures += test_swap_settlement();

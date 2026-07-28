@@ -31,11 +31,14 @@
 #include "controllers/rpc_client.h"
 #include "encoding/utilstrencodings.h"
 #include "json/json.h"
+#include "models/database.h"
+#include "models/zid_identity.h"
 #include "platform/time_compat.h"
 #include "support/cleanse.h"
 #include "zanc/zanc.h"
 #include "zid/zid.h"
 
+#include <sqlite3.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -502,6 +505,65 @@ void zcl_native_handle_zcode_release_sign(
     reply->exit_code = ZCL_COMMAND_EXIT_OK;
 }
 
+/* ── chain-rooted key trust (`--anchored`) ─────────────────────────── */
+
+/* True iff the flag is set: a bare `--anchored` arrives as JSON true, an
+ * explicit --anchored=true/1 as a bool or string. */
+static bool zr_flag_set(const struct json_value *input, const char *key)
+{
+    const struct json_value *v = json_get(input, key);
+    if (!v)
+        return false;
+    if (v->type == JSON_BOOL)
+        return json_get_bool(v);
+    if (v->type == JSON_INT)
+        return json_get_int(v) != 0;
+    if (v->type == JSON_STR) {
+        const char *s = json_get_str(v);
+        return s && (strcmp(s, "true") == 0 || strcmp(s, "1") == 0 ||
+                     strcmp(s, "yes") == 0 || s[0] == '\0');
+    }
+    return false;
+}
+
+/* Open <datadir>/node.db READONLY behind an ad-hoc node_db (the
+ * core.storage.query.offline pattern). Fills `reply` and returns false on
+ * failure, so a caller can `return` straight away. */
+static bool zr_open_identity_db(const char *datadir,
+                                struct zcl_command_reply *reply,
+                                sqlite3 **db_out, struct node_db *ndb_out)
+{
+    char path[1024];
+    int n = snprintf(path, sizeof(path), "%s/node.db", datadir);
+    if (n <= 0 || (size_t)n >= sizeof(path)) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID,
+                               "DATADIR_PATH_TOO_LONG", "normalize", false,
+                               false, "datadir path too long", datadir);
+        return false;
+    }
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+        if (db)
+            sqlite3_close(db);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
+                               ZCL_COMMAND_EXIT_BLOCKED,
+                               "NODE_DB_UNAVAILABLE", "execute", true, false,
+                               "node.db not found or unreadable at datadir — "
+                               "--anchored needs a node that has folded the "
+                               "chain; check --datadir, or boot the node "
+                               "once", path);
+        return false;
+    }
+    (void)sqlite3_exec(db, "PRAGMA query_only=ON", NULL, NULL, NULL);
+    sqlite3_busy_timeout(db, 2000);
+    *db_out = db;
+    memset(ndb_out, 0, sizeof(*ndb_out));
+    ndb_out->db = db;
+    ndb_out->open = true;
+    return true;
+}
+
 /* ── zcode.release.verify ──────────────────────────────────────────── */
 
 void zcl_native_handle_zcode_release_verify(
@@ -652,6 +714,88 @@ void zcl_native_handle_zcode_release_verify(
                                    "doc was tampered with or corrupted",
                                    "zcode.release.verify");
         return;
+    }
+
+    /* Chain-rooted key trust (optional `--anchored`). The signature above
+     * proves the doc was signed by the key it names — it says NOTHING
+     * about whether that key is anyone you should trust. Without this
+     * block a verifier has to take the publisher's key from a README:
+     * trust-on-first-use. With it, the verifier's OWN node answers
+     * whether the key is anchored on-chain, at what height, under which
+     * ZNAM name, and whether it is still live.
+     *
+     * The two facts stay SEPARATE, exactly like batch_included above: a
+     * valid signature by an unanchored key is a valid signature by an
+     * unanchored key, and the output says both. Nothing here can turn an
+     * invalid signature into a trusted one — this code only runs after
+     * the `valid` verdict has already passed. */
+    if (zr_flag_set(in, "anchored")) {
+        const char *datadir = zr_datadir(request);
+        if (!datadir) {
+            zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                                   ZCL_COMMAND_EXIT_INVALID,
+                                   "MISSING_DATADIR", "normalize", false,
+                                   false,
+                                   "--anchored resolves the doc's "
+                                   "master_pubkey against your node's "
+                                   "identity projection — pass --datadir",
+                                   "zcode.release.verify");
+            return;
+        }
+        sqlite3 *db = NULL;
+        struct node_db ndb;
+        if (!zr_open_identity_db(datadir, reply, &db, &ndb))
+            return;
+        struct zid_identity row;
+        bool anchored = db_zid_identity_find(&ndb, doc.master_pubkey, &row);
+        sqlite3_close(db);
+
+        json_push_kv_bool(&reply->data, "anchored", anchored);
+        if (!anchored) {
+            HexStr(doc.master_pubkey, 32, false, hex, sizeof(hex));
+            zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                                   ZCL_COMMAND_EXIT_FAILED,
+                                   "KEY_NOT_ANCHORED", "execute", false,
+                                   false,
+                                   "the signature checks out, but this "
+                                   "master key has no on-chain anchor this "
+                                   "node has folded — you would be trusting "
+                                   "the key on the publisher's word alone",
+                                   hex);
+            return;
+        }
+
+        json_push_kv_int(&reply->data, "anchor_height", row.anchor_height);
+        HexStr(row.anchor_txid, 32, false, hex, sizeof(hex));
+        json_push_kv_str(&reply->data, "anchor_txid", hex);
+        json_push_kv_str(&reply->data, "anchor_name", row.name);
+        json_push_kv_str(&reply->data, "anchor_status", row.status);
+        json_push_kv_str(&reply->data, "anchor_source", row.source);
+        json_push_kv_str(&reply->data, "anchor_owner_address",
+                         row.owner_address);
+        if (row.has_successor) {
+            HexStr(row.successor_pubkey, 32, false, hex, sizeof(hex));
+            json_push_kv_str(&reply->data, "successor", hex);
+        }
+
+        if (strcmp(row.status, ZID_IDENTITY_STATUS_REVOKED) == 0) {
+            HexStr(doc.master_pubkey, 32, false, hex, sizeof(hex));
+            zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                                   ZCL_COMMAND_EXIT_FAILED, "KEY_REVOKED",
+                                   "execute", false, false,
+                                   "the signature checks out, but the "
+                                   "publisher revoked this master key "
+                                   "on-chain — a revoked key has no "
+                                   "successor and nothing it signed is "
+                                   "current", hex);
+            return;
+        }
+        if (strcmp(row.status, ZID_IDENTITY_STATUS_ROTATED) == 0)
+            json_push_kv_str(&reply->data, "anchor_note",
+                             "this key was rotated on-chain — the doc is "
+                             "genuine and the key was live when signed, but "
+                             "`successor` is the key the publisher signs "
+                             "with now; ask for a doc signed by it");
     }
 
     /* Domain-batch inclusion (optional): the doc's record digest must be

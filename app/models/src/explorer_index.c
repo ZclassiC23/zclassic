@@ -17,17 +17,13 @@
 #include "models/activerecord.h"
 #include "models/op_return_index.h"
 #include "models/zslp_ledger.h"
-#include "models/znam.h"
 #include "primitives/transaction.h"
 #include "primitives/block.h"
 #include "chain/chain.h"
-#include "chain/chainparams.h"
 #include "script/standard.h"
-#include "keys/key_io.h"
 #include "crypto/sha3.h"
+#include "overlay/overlay_projection.h"
 #include "zslp/slp.h"
-#include "znam/znam.h"
-#include "models/zanc.h"
 #include "sapling/constants.h"
 #include "util/log_macros.h"
 #include <string.h>
@@ -341,6 +337,10 @@ bool db_explorer_index_truncate(struct node_db *ndb)
         "sprout_nullifiers", "view_integrity",
         "znam_names", "znam_text_records", "znam_addr_records",
         "zslp_tokens", "zslp_transfers", "zslp_balances",
+        /* Both ZID feeds are stateful the same way ZNAM FCFS is (a ROTATE
+         * reads the row its ANCHOR wrote), so a partial replay over surviving
+         * rows is not equivalent to the genesis..tip walk. Clear it. */
+        "zid_identities",
     };
     for (size_t i = 0; i < sizeof(tables) / sizeof(tables[0]); i++) {
         char sql[64];
@@ -360,192 +360,21 @@ bool db_explorer_index_truncate(struct node_db *ndb)
     return true;
 }
 
-/* ── ZNAM owner derivation ─────────────────────────────────────────── */
-
-/* Encode the spending tx's first-input P2PKH signer as a t-address string
- * (ZNAM ownership = first input's P2PKH signer; znam.h:19). Resolves the
- * spent prevout's address_hash from tx_outputs — already written because
- * the reindex walks heights ascending. Returns false (skip the ZNAM op)
- * when the input is non-P2PKH or the prevout row is missing. */
-static bool znam_owner_address(struct node_db *ndb,
-                               const struct transaction *tx,
-                               char *out, size_t outsize)
-{
-    if (tx->num_vin == 0 || outpoint_is_null(&tx->vin[0].prevout))
-        return false;
-    uint8_t addr20[20];
-    if (!db_tx_output_addr(ndb, tx->vin[0].prevout.hash.data,
-                           tx->vin[0].prevout.n, addr20))
-        return false;
-
-    struct tx_destination dest;
-    memset(&dest, 0, sizeof(dest));
-    dest.type = DEST_KEY_ID;
-    memcpy(dest.id.key.id.data, addr20, 20);
-
-    const struct chain_params *cp = chain_params_get();
-    if (!cp)
-        return false;
-    size_t pk_len = 0, sc_len = 0;
-    const unsigned char *pk_pfx =
-        chain_params_base58_prefix(cp, B58_PUBKEY_ADDRESS, &pk_len);
-    const unsigned char *sc_pfx =
-        chain_params_base58_prefix(cp, B58_SCRIPT_ADDRESS, &sc_len);
-    return encode_destination(&dest, pk_pfx, pk_len, sc_pfx, sc_len,
-                              out, outsize);
-}
-
-/* Apply one parsed ZNAM op into the node.db registry tables (path A).
- * Stateful commands (REGISTER FCFS, UPDATE, TRANSFER, RENEW, SET_RECORD,
- * SET_TEXT) are correct only under the genesis-ascending walk the catchup
- * driver guarantees. Every mutation of an existing name (UPDATE, TRANSFER,
- * SET_RECORD, SET_TEXT) is authorized against the current owner — the first
- * input's P2PKH signer — so only the owner can change a name's records.
- * RENEW is permissionless and only extends expiry_height. Failures are
- * logged and skipped — never fatal. */
-static void apply_znam(struct node_db *ndb, const struct transaction *tx,
-                       const struct znam_message *zm, int height)
-{
-    if (!znam_validate_name(zm->name))
-        return;
-
-    char owner[64] = "";
-    bool have_owner = znam_owner_address(ndb, tx, owner, sizeof(owner));
-
-    switch (zm->command) {
-    case ZNAM_CMD_REGISTER: {
-        if (!have_owner)
-            return;   /* owner unresolvable → reject (non-P2PKH input) */
-        struct znam_entry existing;
-        if (db_znam_find(ndb, zm->name, &existing))
-            return;   /* FCFS: name already taken */
-        struct znam_entry e;
-        memset(&e, 0, sizeof(e));
-        snprintf(e.name, sizeof(e.name), "%s", zm->name);
-        snprintf(e.owner_address, sizeof(e.owner_address), "%s", owner);
-        e.target_type = zm->target_type;
-        snprintf(e.target_value, sizeof(e.target_value), "%s",
-                 zm->target_value);
-        memcpy(e.reg_txid, tx->hash.data, 32);
-        e.reg_height = height;
-        memcpy(e.last_update_txid, tx->hash.data, 32);
-        e.expiry_height = height + ZNAM_REGISTRATION_TERM_BLOCKS;
-        if (!db_znam_save(ndb, &e))
-            LOG_WARN("explorer", "apply_znam: REGISTER %s save failed",
-                     zm->name);
-        break;
-    }
-    case ZNAM_CMD_UPDATE: {
-        struct znam_entry e;
-        if (!db_znam_find(ndb, zm->name, &e))
-            return;   /* name must exist */
-        if (!have_owner || strcmp(e.owner_address, owner) != 0)
-            return;   /* owner auth */
-        e.target_type = zm->target_type;
-        snprintf(e.target_value, sizeof(e.target_value), "%s",
-                 zm->target_value);
-        memcpy(e.last_update_txid, tx->hash.data, 32);
-        if (!db_znam_save(ndb, &e))
-            LOG_WARN("explorer", "apply_znam: UPDATE %s save failed",
-                     zm->name);
-        break;
-    }
-    case ZNAM_CMD_TRANSFER: {
-        struct znam_entry e;
-        if (!db_znam_find(ndb, zm->name, &e))
-            return;
-        if (!have_owner || strcmp(e.owner_address, owner) != 0)
-            return;   /* only current owner may transfer */
-        snprintf(e.owner_address, sizeof(e.owner_address), "%s",
-                 zm->new_owner);
-        memcpy(e.last_update_txid, tx->hash.data, 32);
-        if (!db_znam_save(ndb, &e))
-            LOG_WARN("explorer", "apply_znam: TRANSFER %s save failed",
-                     zm->name);
-        break;
-    }
-    case ZNAM_CMD_SET_RECORD: {
-        /* Records resolve the identity, so only the current owner may set
-         * them — same auth as UPDATE/TRANSFER. Without this guard anyone
-         * could post a coin address under any name (identity spoofing). */
-        struct znam_entry e;
-        if (!db_znam_find(ndb, zm->name, &e))
-            return;   /* name must exist */
-        if (!have_owner || strcmp(e.owner_address, owner) != 0)
-            return;   /* only the current owner may set records */
-        if (!db_znam_addr_save(ndb, zm->name, zm->target_type,
-                               zm->target_value))
-            LOG_WARN("explorer", "apply_znam: SET_RECORD %s save failed",
-                     zm->name);
-        break;
-    }
-    case ZNAM_CMD_SET_TEXT: {
-        /* Same owner authorization as SET_RECORD — text records (onion,
-         * pubkey, url, ...) are identity-bearing. */
-        struct znam_entry e;
-        if (!db_znam_find(ndb, zm->name, &e))
-            return;   /* name must exist */
-        if (!have_owner || strcmp(e.owner_address, owner) != 0)
-            return;   /* only the current owner may set text records */
-        if (!db_znam_text_save(ndb, zm->name, zm->text_key, zm->text_value))
-            LOG_WARN("explorer", "apply_znam: SET_TEXT %s save failed",
-                     zm->name);
-        break;
-    }
-    case ZNAM_CMD_RENEW: {
-        /* Extend the registration term. Renewal is permissionless
-         * (ENS-style): extending expiry can only benefit the owner, so no
-         * owner check — anyone may keep a name alive. Extend from the later
-         * of the current expiry or the anchor height, by one term. */
-        struct znam_entry e;
-        if (!db_znam_find(ndb, zm->name, &e))
-            return;   /* name must exist */
-        int32_t base = e.expiry_height > height ? e.expiry_height : height;
-        e.expiry_height = base + ZNAM_REGISTRATION_TERM_BLOCKS;
-        memcpy(e.last_update_txid, tx->hash.data, 32);
-        if (!db_znam_save(ndb, &e))
-            LOG_WARN("explorer", "apply_znam: RENEW %s save failed",
-                     zm->name);
-        break;
-    }
-    case ZNAM_CMD_INVALID:
-    default:
-        break;
-    }
-}
-
-/* Project one parsed ZANC anchor into zanc_anchors (rebuildable, never
- * authoritative). Anchoring is permissionless — no owner check. Idempotent:
- * INSERT OR REPLACE keyed on txid, so re-processing a block is a no-op.
- * Failures are logged and skipped, never fatal. */
-static void apply_zanc(struct node_db *ndb, const struct transaction *tx,
-                       const struct zanc_message *zm, int height)
-{
-    struct zanc_anchor a;
-    memset(&a, 0, sizeof(a));
-    memcpy(a.txid, tx->hash.data, 32);
-    a.height = height;
-    a.hash_type = zm->hash_type;
-    memcpy(a.digest, zm->digest, ZANC_DIGEST_LEN);
-    memcpy(a.label, zm->label, zm->label_len);
-    a.label[zm->label_len] = '\0';
-    if (!db_zanc_save(ndb, &a))
-        LOG_WARN("explorer", "apply_zanc: anchor save failed at h=%d", height);
-}
-
 /* ── op_return dispatch ────────────────────────────────────────────── */
 
-/* Persist the generic op_returns row (one per tx) and dispatch to the
- * on-chain OP_RETURN protocols: ZSLP (slp_parse → is_slp flag, then
- * explorer_index_apply_slp in explorer_index_zslp.c), ZNAM (znam_parse →
- * apply_znam), and ZANC (zanc_parse → apply_zanc). Called only for the FIRST
- * OP_RETURN output of the tx (op_returns PK is txid). */
+/* Persist the generic op_returns row (one per tx), then hand the script to
+ * the ONE overlay dispatcher. Called only for the FIRST OP_RETURN output of
+ * the tx (op_returns PK is txid). */
 static void index_op_return(struct node_db *ndb, const struct transaction *tx,
                             const struct tx_out *out, int height)
 {
     const uint8_t *script = out->script_pub_key.data;
     size_t len = out->script_pub_key.size;
 
+    /* The op_returns row carries an is_slp flag, so the SLP lokad is still
+     * probed here — the flag is needed BEFORE any overlay dispatch. The
+     * PROJECTION is the registry's job (its ZSLP apply re-parses, which is
+     * the registry's decoupling contract). */
     struct slp_message slpmsg;
     bool is_slp = slp_parse(script, len, &slpmsg);
 
@@ -553,20 +382,13 @@ static void index_op_return(struct node_db *ndb, const struct transaction *tx,
         LOG_WARN("explorer", "index_op_return: op_returns save failed at h=%d",
                  height);
 
-    if (is_slp) {
-        explorer_index_apply_slp(ndb, tx, &slpmsg, height);
-        /* Debit-correct per-outpoint ledger (rows only; the backfill
-         * service owns the cursor/digest). See models/zslp_ledger.h. */
-        (void)zslp_ledger_apply_slp_live(ndb, tx, &slpmsg, height);
-    }
-
-    struct znam_message zm;
-    if (znam_parse(script, len, &zm))
-        apply_znam(ndb, tx, &zm, height);
-
-    struct zanc_message am;
-    if (zanc_parse(script, len, &am))
-        apply_zanc(ndb, tx, &am, height);
+    /* Peek the lokad, find its overlay, apply it — ZSLP / ZNAM / ZANC / ZID
+     * and everything added later. Adding an overlay is a registration in
+     * explorer_index_overlays.c, not an edit here. A non-overlay OP_RETURN
+     * matches nothing and is a clean no-op; a projection failure is logged
+     * inside the apply and never gates the block. */
+    (void)overlay_ingest(explorer_index_overlays(), ndb, tx, script, len,
+                         height);
 }
 
 /* ── Per-tx projection writer ──────────────────────────────────────── */

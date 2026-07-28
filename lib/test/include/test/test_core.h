@@ -389,6 +389,8 @@ int test_rpc_error_envelope(void);
 int test_tx_property(void);
 int test_znam(void);
 int test_zid(void);
+int test_zid_identity(void);
+int test_identity_command(void);
 int test_htlc(void);
 int test_swap_settlement(void);
 int test_file_market(void);

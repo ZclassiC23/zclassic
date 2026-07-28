@@ -89,7 +89,13 @@ bool znam_validate_name(const char *name);
 
 /* Build OP_RETURN scripts for each command.
  * Caller provides the output buffer; all builders return the number of
- * bytes written, or 0 on invalid input or if the buffer is too small. */
+ * bytes written, or 0 on invalid input, if the buffer is too small, or if
+ * the script would exceed MAX_OP_RETURN_RELAY (223, script/standard.h) — a
+ * longer OP_RETURN is non-standard and will not relay, so it is never
+ * emitted. That last case is reachable: a maximal SET_TEXT (63-char name +
+ * 32-char key + 128-char value) encodes to 237 bytes and now returns 0.
+ * Callers that want the full text-record range must shorten the name, key,
+ * or value. */
 
 /* REGISTER: name + primary target. Requires znam_validate_name(name),
  * non-NULL target_value, and target_type in 1..ZNAM_TYPE_CONTENT (the

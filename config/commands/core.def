@@ -1082,3 +1082,125 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_core_node_bootwait)
+
+/* ── identity (sovereign master keys) ──────────────────────────────
+ * The chain-rooted answer to "whose key is this, and is it still live?".
+ * Reads resolve the zid_identities projection (app/models/src/
+ * zid_identity.c), fed from confirmed chain data by both identity feeds
+ * (app/models/src/explorer_index_zid.c): the dedicated ZID\0 OP_RETURN
+ * overlay and the ZNAM "zid" text-record convention. Writes build that
+ * same overlay: with a live node they dispatch the wallet compose +
+ * broadcast through the identity_* RPCs; with no live node (or no wallet)
+ * they return op_return_hex for the operator to include. Never on a
+ * timer — anchoring spends a fee and stays an operator decision. */
+ZCL_COMMAND_BRANCH("core.identity", "core",
+                   "Sovereign identities: resolve and anchor master keys",
+                   ZCL_COMMAND_LAYER_CORE)
+ZCL_COMMAND_READY_READ(
+    "core.identity.resolve", "core.identity", "",
+    "Resolve one master key by pubkey or ZNAM name",
+    "The identity row the chain says exists for a 32-byte ed25519 master "
+    "key, read from the datadir's node.db at call time (works on a "
+    "stopped or copied datadir): pubkey, name, anchor_txid, "
+    "anchor_height, updated_height, status (active/rotated/revoked), "
+    "successor (set exactly when rotated), owner_address, and source "
+    "(zid_overlay or znam_text). Select with --pubkey=<64hex> or "
+    "--name=<znam name>, never both. A key with no anchor row is a hard "
+    "KEY_NOT_ANCHORED and an unknown name a hard NAME_NOT_FOUND — an "
+    "unanchored key is a real answer, not an empty one.", 0,
+    "identity,zid,resolve,pubkey,anchor,master,key,name",
+    "zcl.core_identity_resolve.input.v1", "zcl.core_identity_resolve.v1",
+    "pubkey,name,datadir", "pubkey",
+    "zclassic23 core identity resolve --pubkey=<64hex>",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_OFFLINE_COPY,
+    ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_core_identity_resolve)
+ZCL_COMMAND_READY_COMMAND(
+    "core.identity.anchor", "core.identity", "",
+    "Anchor a master key on-chain (spends a fee)",
+    "Builds the ZID\\0 ANCHOR OP_RETURN binding --pubkey=<64hex> to the "
+    "chain. With a live node: dispatches the wallet compose+broadcast "
+    "through the identity_anchor RPC and returns the txid (the node "
+    "itself returns op_return_hex when no wallet is loaded). With no "
+    "live node: returns op_return_hex plus the exact next step. Refuses "
+    "an all-zero key and a key already anchored to another owner. Never "
+    "runs on a timer — every anchor is an explicit operator decision.", 0,
+    "identity,zid,anchor,publish,master,key,broadcast,fee",
+    "zcl.core_identity_anchor.input.v1", "zcl.core_identity_anchor.v1",
+    "pubkey,datadir", "pubkey",
+    "zclassic23 core identity anchor --pubkey=<64hex>",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_core_identity_anchor)
+ZCL_COMMAND_READY_COMMAND(
+    "core.identity.rotate", "core.identity", "",
+    "Rotate an anchored master key to a successor (spends a fee)",
+    "Builds the ZID\\0 ROTATE OP_RETURN superseding --pubkey=<64hex> with "
+    "--new_pubkey=<64hex>. Pre-flight against the projection names the "
+    "refusal before any fee is spent: KEY_NOT_ANCHORED when the old key "
+    "has no row, ALREADY_REVOKED when its row is dead, SELF_ROTATE when "
+    "old and new are the same key. The chain-side ownership proof is the "
+    "tx's sole input — the live path composes it through "
+    "zslp_command_build_owner_base_tx so the signer is provably the "
+    "recorded owner, and a non-owner is refused NOT_OWNER.", 0,
+    "identity,zid,rotate,successor,master,key,broadcast,fee",
+    "zcl.core_identity_rotate.input.v1", "zcl.core_identity_anchor.v1",
+    "pubkey,new_pubkey,datadir", "",
+    "zclassic23 core identity rotate --input='{\"pubkey\":\"<64hex>\",\"new_pubkey\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_core_identity_rotate)
+ZCL_COMMAND_READY_COMMAND(
+    "core.identity.revoke", "core.identity", "",
+    "Retire an anchored master key with no successor (spends a fee)",
+    "Builds the ZID\\0 REVOKE OP_RETURN retiring --pubkey=<64hex>. A "
+    "revoked key is dead, not superseded: nothing it ever signed verifies "
+    "as current afterwards and no later ANCHOR resurrects it, so this is "
+    "the one-way door. Pre-flight names KEY_NOT_ANCHORED (no row) and "
+    "ALREADY_REVOKED (idempotent no-op) before any fee is spent; the "
+    "live path proves ownership through the tx's sole input exactly like "
+    "rotate.", 0,
+    "identity,zid,revoke,retire,master,key,broadcast,fee",
+    "zcl.core_identity_revoke.input.v1", "zcl.core_identity_anchor.v1",
+    "pubkey,datadir", "pubkey",
+    "zclassic23 core identity revoke --pubkey=<64hex>",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_core_identity_revoke)
+ZCL_COMMAND_READY_READ(
+    "core.identity.list", "core.identity", "",
+    "Page the anchored identities, newest anchor first",
+    "One page of the zid_identities projection read from the datadir's "
+    "node.db, newest anchor height first: --limit (default 25, capped at "
+    "100) and --offset walk it. Each row carries the same fields as "
+    "resolve. The page header reports the total row count and the "
+    "active/rotated/revoked split, so a caller can see the whole "
+    "population without walking every page.", ZCL_COMMAND_LIST_BUDGET,
+    "identity,zid,list,index,page,anchors",
+    "zcl.core_identity_list.input.v1", "zcl.core_identity_index.v1",
+    "limit,offset,datadir", "",
+    "zclassic23 core identity list --limit=25",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_OFFLINE_COPY,
+    ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_core_identity_list)

@@ -7,9 +7,21 @@
 
 #include "test/test_core.h"
 #include "zid/zid.h"
+#include "zid/zid_anchor.h"
 #include "crypto/ed25519.h"
 #include "crypto/sha3.h"
+#include "script/standard.h"
 #include <string.h>
+
+/* lib/zid sits BELOW lib/script in config/lib_module_order.def, so
+ * zid_anchor.h keeps its own copy of the standard-relay ceiling. lib/test is
+ * above both and can see each definition, so this is where the copy is
+ * pinned: if MAX_OP_RETURN_RELAY ever moves, this fails to COMPILE rather
+ * than letting the ZID overlay silently emit a non-relayable script. */
+_Static_assert(ZID_ANCHOR_RELAY_MAX == MAX_OP_RETURN_RELAY,
+               "zid_anchor relay cap must track script/standard.h");
+_Static_assert(ZID_ANCHOR_SCRIPT_MAX <= ZID_ANCHOR_RELAY_MAX,
+               "the largest ZID anchor must fit the relay cap");
 
 static size_t hex_to_bytes(const char *hex, uint8_t *out, size_t out_max)
 {
@@ -21,6 +33,45 @@ static size_t hex_to_bytes(const char *hex, uint8_t *out, size_t out_max)
         out[i] = (uint8_t)v;
     }
     return n;
+}
+
+/* ── ZID on-chain anchor helpers ───────────────────────────────────
+ *
+ * Hand-assemble a ZID anchor OP_RETURN so each negative can be malformed in
+ * exactly ONE way (wrong lokad / wrong version / wrong command byte / wrong
+ * key length) instead of relying on byte-poking a built script. Every push
+ * in this grammar is short-form (len <= 0x4b), so the 1-byte prefix is
+ * always correct. */
+static size_t zid_anchor_push(uint8_t *out, size_t off,
+                              const uint8_t *d, size_t n)
+{
+    out[off++] = (uint8_t)n;
+    memcpy(out + off, d, n);
+    return off + n;
+}
+
+static size_t zid_anchor_handmade(uint8_t *out, const char lokad[4],
+                                  uint8_t version, uint8_t command,
+                                  const uint8_t *key, size_t key_len)
+{
+    size_t off = 0;
+    out[off++] = 0x6a;                                     /* OP_RETURN */
+    off = zid_anchor_push(out, off, (const uint8_t *)lokad, 4);
+    off = zid_anchor_push(out, off, &version, 1);
+    off = zid_anchor_push(out, off, &command, 1);
+    off = zid_anchor_push(out, off, key, key_len);
+    return off;
+}
+
+/* Byte-exact comparison against a FROZEN golden vector. These vectors are
+ * the wire contract: changing one is a protocol change, not a test edit. */
+static bool zid_anchor_golden_matches(const uint8_t *script, size_t len,
+                                      const char *want_hex)
+{
+    uint8_t want[ZID_ANCHOR_SCRIPT_MAX];
+    size_t want_len = hex_to_bytes(want_hex, want, sizeof(want));
+    return want_len > 0 && want_len == len &&
+           memcmp(script, want, want_len) == 0;
 }
 
 /* RFC 8032 §7.1 TEST 1 / TEST 2: derive the keypair from the seed, sign
@@ -802,6 +853,390 @@ int test_zid(void)
         /* Wrong leaf (digest of doc 0 at index 1) → reject. */
         ok = ok && !zid_tree_verify(root, batch_digests[0], 1, 3,
                                     proof, plen);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── ZID on-chain anchor overlay (lokad "ZID\0") ────────────────
+     *
+     * The on-chain half of the identity layer: ANCHOR / ROTATE / REVOKE of a
+     * 32-byte ed25519 master key inside a standard OP_RETURN. Round-trips,
+     * frozen wire vectors, pedantic negatives, and the relay cap. */
+
+    uint8_t anchor_key_a[ZID_ANCHOR_PUBKEY_LEN];
+    uint8_t anchor_key_b[ZID_ANCHOR_PUBKEY_LEN];
+    for (int i = 0; i < ZID_ANCHOR_PUBKEY_LEN; i++) {
+        anchor_key_a[i] = (uint8_t)(i + 1);      /* 01..20 */
+        anchor_key_b[i] = (uint8_t)(i + 0x21);   /* 21..40 */
+    }
+
+    printf("zid anchor: ANCHOR build+parse roundtrip... ");
+    {
+        uint8_t script[ZID_ANCHOR_SCRIPT_MAX];
+        size_t len = zid_anchor_build_anchor(script, sizeof(script),
+                                             anchor_key_a);
+        struct zid_anchor_message m;
+        bool ok = len == 43 && zid_anchor_parse(script, len, &m) &&
+                  m.version == ZID_ANCHOR_VERSION &&
+                  m.command == ZID_ANCHOR_CMD_ANCHOR &&
+                  !m.has_old_pubkey &&
+                  memcmp(m.pubkey, anchor_key_a, 32) == 0 &&
+                  strcmp(zid_anchor_command_name(m.command), "anchor") == 0;
+        if (ok) printf("OK\n");
+        else { printf("FAIL (len=%zu)\n", len); failures++; }
+    }
+
+    printf("zid anchor: ROTATE build+parse roundtrip (old -> new)... ");
+    {
+        uint8_t script[ZID_ANCHOR_SCRIPT_MAX];
+        size_t len = zid_anchor_build_rotate(script, sizeof(script),
+                                             anchor_key_a, anchor_key_b);
+        struct zid_anchor_message m;
+        bool ok = len == ZID_ANCHOR_SCRIPT_MAX &&
+                  zid_anchor_parse(script, len, &m) &&
+                  m.command == ZID_ANCHOR_CMD_ROTATE &&
+                  m.has_old_pubkey &&
+                  memcmp(m.old_pubkey, anchor_key_a, 32) == 0 &&
+                  memcmp(m.pubkey, anchor_key_b, 32) == 0 &&
+                  strcmp(zid_anchor_command_name(m.command), "rotate") == 0;
+        if (ok) printf("OK\n");
+        else { printf("FAIL (len=%zu)\n", len); failures++; }
+    }
+
+    printf("zid anchor: REVOKE build+parse roundtrip... ");
+    {
+        uint8_t script[ZID_ANCHOR_SCRIPT_MAX];
+        size_t len = zid_anchor_build_revoke(script, sizeof(script),
+                                             anchor_key_b);
+        struct zid_anchor_message m;
+        bool ok = len == 43 && zid_anchor_parse(script, len, &m) &&
+                  m.command == ZID_ANCHOR_CMD_REVOKE &&
+                  !m.has_old_pubkey &&
+                  memcmp(m.pubkey, anchor_key_b, 32) == 0 &&
+                  strcmp(zid_anchor_command_name(m.command), "revoke") == 0;
+        if (ok) printf("OK\n");
+        else { printf("FAIL (len=%zu)\n", len); failures++; }
+    }
+
+    /* ── FROZEN GOLDEN VECTORS ──────────────────────────────────────
+     *
+     * Byte-for-byte wire images for key_a = 01..20 and key_b = 21..40.
+     * Layout: 6a | 04 "ZID\0" | 01 01 | 01 <cmd> | 20 <key> [| 20 <key>].
+     * If one of these ever needs editing, the ZID wire format changed and
+     * every already-published anchor stopped parsing — that is a versioned
+     * protocol change, never a test fix. */
+
+    printf("zid anchor: ANCHOR matches frozen golden vector... ");
+    {
+        uint8_t script[ZID_ANCHOR_SCRIPT_MAX];
+        size_t len = zid_anchor_build_anchor(script, sizeof(script),
+                                             anchor_key_a);
+        if (zid_anchor_golden_matches(script, len,
+                "6a045a4944000101010120"
+                "0102030405060708090a0b0c0d0e0f10"
+                "1112131415161718191a1b1c1d1e1f20"))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid anchor: ROTATE matches frozen golden vector... ");
+    {
+        uint8_t script[ZID_ANCHOR_SCRIPT_MAX];
+        size_t len = zid_anchor_build_rotate(script, sizeof(script),
+                                             anchor_key_a, anchor_key_b);
+        if (zid_anchor_golden_matches(script, len,
+                "6a045a4944000101010220"
+                "0102030405060708090a0b0c0d0e0f10"
+                "1112131415161718191a1b1c1d1e1f20"
+                "20"
+                "2122232425262728292a2b2c2d2e2f30"
+                "3132333435363738393a3b3c3d3e3f40"))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid anchor: REVOKE matches frozen golden vector... ");
+    {
+        uint8_t script[ZID_ANCHOR_SCRIPT_MAX];
+        size_t len = zid_anchor_build_revoke(script, sizeof(script),
+                                             anchor_key_b);
+        if (zid_anchor_golden_matches(script, len,
+                "6a045a4944000101010320"
+                "2122232425262728292a2b2c2d2e2f30"
+                "3132333435363738393a3b3c3d3e3f40"))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid anchor: golden vectors parse back to their commands... ");
+    {
+        struct zid_anchor_message m;
+        uint8_t s[ZID_ANCHOR_SCRIPT_MAX];
+        size_t n = hex_to_bytes("6a045a4944000101010220"
+                                "0102030405060708090a0b0c0d0e0f10"
+                                "1112131415161718191a1b1c1d1e1f20"
+                                "20"
+                                "2122232425262728292a2b2c2d2e2f30"
+                                "3132333435363738393a3b3c3d3e3f40",
+                                s, sizeof(s));
+        bool ok = n == ZID_ANCHOR_SCRIPT_MAX && zid_anchor_parse(s, n, &m) &&
+                  m.command == ZID_ANCHOR_CMD_ROTATE &&
+                  memcmp(m.old_pubkey, anchor_key_a, 32) == 0 &&
+                  memcmp(m.pubkey, anchor_key_b, 32) == 0;
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── Pedantic negatives ─────────────────────────────────────────*/
+
+    printf("zid anchor: every truncation of a valid script rejects... ");
+    {
+        uint8_t script[ZID_ANCHOR_SCRIPT_MAX];
+        size_t len = zid_anchor_build_rotate(script, sizeof(script),
+                                             anchor_key_a, anchor_key_b);
+        bool all_reject = len == ZID_ANCHOR_SCRIPT_MAX;
+        for (size_t cut = 0; cut < len; cut++) {
+            struct zid_anchor_message m;
+            if (zid_anchor_parse(script, cut, &m)) { all_reject = false; break; }
+        }
+        if (all_reject) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid anchor: trailing byte after the last push rejects... ");
+    {
+        uint8_t script[ZID_ANCHOR_SCRIPT_MAX + 8];
+        size_t len = zid_anchor_build_anchor(script, ZID_ANCHOR_SCRIPT_MAX,
+                                             anchor_key_a);
+        struct zid_anchor_message m;
+        script[len] = 0x00;
+        bool ok = len > 0 && zid_anchor_parse(script, len, &m) &&
+                  !zid_anchor_parse(script, len + 1, &m) &&
+                  m.command == ZID_ANCHOR_CMD_INVALID &&
+                  m.version == 0;
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid anchor: wrong version byte rejects (dispatched first)... ");
+    {
+        struct zid_anchor_message m;
+        bool all_reject = true;
+        const uint8_t bad_versions[] = {0, 2, 3, 0x7f, 0xff};
+        for (size_t i = 0; i < sizeof(bad_versions); i++) {
+            uint8_t s[ZID_ANCHOR_SCRIPT_MAX];
+            size_t n = zid_anchor_handmade(s, "\x5a\x49\x44\x00",
+                                           bad_versions[i],
+                                           ZID_ANCHOR_CMD_ANCHOR,
+                                           anchor_key_a, 32);
+            if (zid_anchor_parse(s, n, &m)) { all_reject = false; break; }
+        }
+        /* Control: the same assembler with the right version DOES parse. */
+        uint8_t good[ZID_ANCHOR_SCRIPT_MAX];
+        size_t gn = zid_anchor_handmade(good, "\x5a\x49\x44\x00",
+                                        ZID_ANCHOR_VERSION,
+                                        ZID_ANCHOR_CMD_ANCHOR,
+                                        anchor_key_a, 32);
+        if (all_reject && zid_anchor_parse(good, gn, &m)) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid anchor: wrong lokad rejects (ZNAM/ZANC/ZID-no-NUL)... ");
+    {
+        struct zid_anchor_message m;
+        const char *bad[] = { "ZNAM", "ZANC", "ZIDX", "\x5a\x49\x44\x01",
+                              "\x00\x44\x49\x5a" };
+        bool all_reject = true;
+        for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+            uint8_t s[ZID_ANCHOR_SCRIPT_MAX];
+            size_t n = zid_anchor_handmade(s, bad[i], ZID_ANCHOR_VERSION,
+                                           ZID_ANCHOR_CMD_ANCHOR,
+                                           anchor_key_a, 32);
+            if (zid_anchor_parse(s, n, &m)) { all_reject = false; break; }
+        }
+        if (all_reject) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid anchor: unknown command byte rejects... ");
+    {
+        struct zid_anchor_message m;
+        const uint8_t bad_cmds[] = {0, 4, 5, 0x80, 0xff};
+        bool all_reject = true;
+        for (size_t i = 0; i < sizeof(bad_cmds); i++) {
+            uint8_t s[ZID_ANCHOR_SCRIPT_MAX];
+            size_t n = zid_anchor_handmade(s, "\x5a\x49\x44\x00",
+                                           ZID_ANCHOR_VERSION, bad_cmds[i],
+                                           anchor_key_a, 32);
+            if (zid_anchor_parse(s, n, &m) ||
+                zid_anchor_command_valid(bad_cmds[i])) {
+                all_reject = false;
+                break;
+            }
+        }
+        if (all_reject) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid anchor: wrong-length pubkey push rejects (31/33/0/64)... ");
+    {
+        struct zid_anchor_message m;
+        uint8_t big[64];
+        memcpy(big, anchor_key_a, 32);
+        memcpy(big + 32, anchor_key_b, 32);
+        const size_t bad_lens[] = {0, 1, 31, 33, 64};
+        bool all_reject = true;
+        for (size_t i = 0; i < sizeof(bad_lens) / sizeof(bad_lens[0]); i++) {
+            uint8_t s[ZID_ANCHOR_SCRIPT_MAX + 64];
+            size_t n = zid_anchor_handmade(s, "\x5a\x49\x44\x00",
+                                           ZID_ANCHOR_VERSION,
+                                           ZID_ANCHOR_CMD_ANCHOR,
+                                           big, bad_lens[i]);
+            if (zid_anchor_parse(s, n, &m)) { all_reject = false; break; }
+        }
+        if (all_reject) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid anchor: ROTATE missing its second key push rejects... ");
+    {
+        /* A ROTATE body carrying only ONE key is a truncated rotation; it
+         * must never be read as an ANCHOR of that key. */
+        struct zid_anchor_message m;
+        uint8_t s[ZID_ANCHOR_SCRIPT_MAX];
+        size_t n = zid_anchor_handmade(s, "\x5a\x49\x44\x00",
+                                       ZID_ANCHOR_VERSION,
+                                       ZID_ANCHOR_CMD_ROTATE,
+                                       anchor_key_a, 32);
+        if (!zid_anchor_parse(s, n, &m) &&
+            m.command == ZID_ANCHOR_CMD_INVALID)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid anchor: all-zero key rejects on build and on parse... ");
+    {
+        uint8_t zero[ZID_ANCHOR_PUBKEY_LEN] = {0};
+        uint8_t script[ZID_ANCHOR_SCRIPT_MAX];
+        struct zid_anchor_message m;
+        uint8_t s[ZID_ANCHOR_SCRIPT_MAX];
+        size_t n = zid_anchor_handmade(s, "\x5a\x49\x44\x00",
+                                       ZID_ANCHOR_VERSION,
+                                       ZID_ANCHOR_CMD_ANCHOR, zero, 32);
+        bool ok = zid_anchor_build_anchor(script, sizeof(script), zero) == 0 &&
+                  zid_anchor_build_revoke(script, sizeof(script), zero) == 0 &&
+                  zid_anchor_build_rotate(script, sizeof(script),
+                                          zero, anchor_key_a) == 0 &&
+                  zid_anchor_build_rotate(script, sizeof(script),
+                                          anchor_key_a, zero) == 0 &&
+                  !zid_anchor_parse(s, n, &m);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid anchor: self-ROTATE (old == new) rejects both ways... ");
+    {
+        uint8_t script[ZID_ANCHOR_SCRIPT_MAX];
+        size_t off = 0;
+        uint8_t s[ZID_ANCHOR_SCRIPT_MAX];
+        s[off++] = 0x6a;
+        off = zid_anchor_push(s, off, (const uint8_t *)"\x5a\x49\x44\x00", 4);
+        uint8_t v = ZID_ANCHOR_VERSION, c = ZID_ANCHOR_CMD_ROTATE;
+        off = zid_anchor_push(s, off, &v, 1);
+        off = zid_anchor_push(s, off, &c, 1);
+        off = zid_anchor_push(s, off, anchor_key_a, 32);
+        off = zid_anchor_push(s, off, anchor_key_a, 32);
+
+        struct zid_anchor_message m;
+        bool ok = zid_anchor_build_rotate(script, sizeof(script),
+                                          anchor_key_a, anchor_key_a) == 0 &&
+                  off == ZID_ANCHOR_SCRIPT_MAX &&
+                  !zid_anchor_parse(s, off, &m);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid anchor: NULL / empty-buffer arguments reject... ");
+    {
+        uint8_t script[ZID_ANCHOR_SCRIPT_MAX];
+        struct zid_anchor_message m;
+        bool ok = zid_anchor_build_anchor(NULL, 64, anchor_key_a) == 0 &&
+                  zid_anchor_build_anchor(script, 0, anchor_key_a) == 0 &&
+                  zid_anchor_build_anchor(script, sizeof(script), NULL) == 0 &&
+                  zid_anchor_build_revoke(script, sizeof(script), NULL) == 0 &&
+                  zid_anchor_build_rotate(script, sizeof(script),
+                                          NULL, anchor_key_b) == 0 &&
+                  zid_anchor_build_rotate(script, sizeof(script),
+                                          anchor_key_a, NULL) == 0 &&
+                  !zid_anchor_parse(NULL, 43, &m) &&
+                  !zid_anchor_parse(script, 0, &m) &&
+                  !zid_anchor_parse(script, 43, NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid anchor: non-OP_RETURN first byte rejects... ");
+    {
+        uint8_t script[ZID_ANCHOR_SCRIPT_MAX];
+        size_t len = zid_anchor_build_anchor(script, sizeof(script),
+                                             anchor_key_a);
+        struct zid_anchor_message m;
+        script[0] = 0x6b;
+        if (len > 0 && !zid_anchor_parse(script, len, &m)) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── Relay cap (MAX_OP_RETURN_RELAY = 223) ──────────────────────*/
+
+    printf("zid anchor: undersized output buffers refuse to emit... ");
+    {
+        bool all_refuse = true;
+        for (size_t cap = 1; cap < 43; cap++) {
+            uint8_t small[64];
+            if (zid_anchor_build_anchor(small, cap, anchor_key_a) != 0) {
+                all_refuse = false;
+                break;
+            }
+        }
+        for (size_t cap = 1; cap < ZID_ANCHOR_SCRIPT_MAX; cap++) {
+            uint8_t small[ZID_ANCHOR_SCRIPT_MAX];
+            if (zid_anchor_build_rotate(small, cap,
+                                        anchor_key_a, anchor_key_b) != 0) {
+                all_refuse = false;
+                break;
+            }
+        }
+        if (all_refuse) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid anchor: a huge buffer still emits at most 223 bytes... ");
+    {
+        uint8_t big[1024];
+        size_t a = zid_anchor_build_anchor(big, sizeof(big), anchor_key_a);
+        size_t r = zid_anchor_build_rotate(big, sizeof(big),
+                                           anchor_key_a, anchor_key_b);
+        size_t v = zid_anchor_build_revoke(big, sizeof(big), anchor_key_b);
+        bool ok = a > 0 && r > 0 && v > 0 &&
+                  a <= MAX_OP_RETURN_RELAY && r <= MAX_OP_RETURN_RELAY &&
+                  v <= MAX_OP_RETURN_RELAY &&
+                  r == ZID_ANCHOR_SCRIPT_MAX;   /* ROTATE is the largest form */
+        if (ok) printf("OK\n");
+        else { printf("FAIL (%zu %zu %zu)\n", a, r, v); failures++; }
+    }
+
+    printf("zid anchor: parse refuses a script over the 223-byte cap... ");
+    {
+        /* Well-formed prefix, padded past the standardness ceiling: an
+         * OP_RETURN that could never have relayed is not a ZID anchor. */
+        uint8_t over[ZID_ANCHOR_RELAY_MAX + 64];
+        memset(over, 0x00, sizeof(over));
+        size_t len = zid_anchor_build_anchor(over, ZID_ANCHOR_SCRIPT_MAX,
+                                             anchor_key_a);
+        struct zid_anchor_message m;
+        bool ok = len == 43 &&
+                  !zid_anchor_parse(over, ZID_ANCHOR_RELAY_MAX + 1, &m) &&
+                  !zid_anchor_parse(over, sizeof(over), &m);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

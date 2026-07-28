@@ -228,6 +228,48 @@ int node_db_migrate_features2(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 37) {
+        /* v37: zid_identities — the sovereign-identity projection. One
+         * rebuildable row per master ed25519 key that has been anchored
+         * on-chain, answering "is this 32-byte key anchored, by whom, at
+         * what height, and is it still valid?". Rows arrive from two
+         * sources: a ZNAM text record (source='znam_text', `name` set) or
+         * the zid overlay (source='zid_overlay'). status is
+         * 'active' | 'rotated' | 'revoked'; successor_pubkey is present
+         * exactly when status='rotated'. See models/zid_identity.h. Not
+         * consulted by consensus; rebuilt from block history. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS zid_identities ("
+            "master_pubkey BLOB NOT NULL CHECK(length(master_pubkey)=32) "
+            "  PRIMARY KEY,"
+            "anchor_txid BLOB NOT NULL CHECK(length(anchor_txid)=32),"
+            "anchor_height INTEGER NOT NULL,"
+            "status TEXT NOT NULL,"
+            "successor_pubkey BLOB "
+            "  CHECK(successor_pubkey IS NULL OR length(successor_pubkey)=32),"
+            "source TEXT NOT NULL,"
+            "name TEXT,"
+            "owner_address TEXT,"
+            "updated_height INTEGER NOT NULL) WITHOUT ROWID");
+
+        /* Name resolution (db_zid_identity_find_by_name) — every
+         * list/filter path a command exposes must have an index. */
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_zid_identities_name "
+            "ON zid_identities(name)");
+
+        /* Height-ordered listing / range filters. */
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_zid_identities_height "
+            "ON zid_identities(anchor_height)");
+
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('037')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 37);
+        current_ver = 37;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }

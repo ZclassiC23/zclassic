@@ -239,8 +239,7 @@ static bool name_index_to_json(const char *owner, struct json_value *result)
     json_set_array(&names);
     if (g_name_ndb) {
         if (owner_filter)
-            count = db_znam_list_by_owner(g_name_ndb, owner, entries,
-                                          ZNAM_API_LIST_LIMIT);
+            count = db_znam_list_by_owner(g_name_ndb, owner, entries, ZNAM_API_LIST_LIMIT);
         else
             count = db_znam_list(g_name_ndb, entries, ZNAM_API_LIST_LIMIT);
     }
@@ -882,11 +881,12 @@ static bool rpc_name_set_text(const struct json_value *params, bool help,
     }
 
     uint8_t script[512];
-    size_t script_len = znam_build_set_text(script, sizeof(script),
-                                            name, key, value);
+    size_t script_len = znam_build_set_text(script, sizeof(script), name, key, value);
     if (script_len == 0) {
         json_set_str(result,
-            "Failed to build OP_RETURN script (key 1-32 chars, value 0-128 chars)");
+            "Failed to build OP_RETURN script (key 1-32 chars, value 0-128 "
+            "chars, and name+key+value together within the 223-byte "
+            "standard OP_RETURN relay limit)");
         return false;
     }
 

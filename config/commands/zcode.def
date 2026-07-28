@@ -953,10 +953,19 @@ ZCL_COMMAND_READY_READ(
     "in the batch that produced root: batch_included is reported "
     "separately from signature validity, and a mismatch is a hard "
     "NOT_IN_BATCH (stale root, wrong batch, or a doc that was never "
-    "anchored).", 0,
-    "zcode,release,verify,zid,registry,signature,expiry,proof,batch",
+    "anchored). With --anchored (plus --datadir), additionally resolves "
+    "the doc's master_pubkey against this node's on-chain identity "
+    "projection and reports anchored, anchor_height, anchor_txid, "
+    "anchor_name, anchor_status and anchor_source — so key trust comes "
+    "from the chain instead of a key pinned in a README. That is a "
+    "SEPARATE fact from signature validity: a valid signature by an "
+    "unanchored key is a hard KEY_NOT_ANCHORED, a valid signature by a "
+    "revoked key a hard KEY_REVOKED, and a rotated key still verifies "
+    "while reporting its successor.", 0,
+    "zcode,release,verify,zid,registry,signature,expiry,proof,batch,"
+    "anchored,identity",
     "zcl.zcode_release_verify.input.v1", "zcl.zcode_release_verify.v1",
-    "doc,file,proof,root", "",
+    "doc,file,proof,root,anchored,datadir", "",
     "zclassic23 zcode release verify --input='{\"doc\":\"<hex>\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_PUBLIC,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,

@@ -199,6 +199,35 @@ static int test_registry(void)
         else { printf("FAIL\n"); f++; }
     }
 
+    /* The on-chain SLP lineage spells a THREE-character tag NUL-padded to
+     * four ("SLP\0", "ZID\0"), so trailing NUL padding must register. An
+     * embedded NUL (leading, or NUL-then-non-NUL) must still reject. */
+    printf("overlay_registry: NUL-padded tags register, embedded NUL rejects... ");
+    {
+        overlay_registry_init(&reg);
+        struct overlay_descriptor d = {
+            .name = "pad", .apply = zfix_apply, .ctx = &sink,
+        };
+        memcpy(d.lokad, "\x53\x4c\x50\x00", 4);                  /* "SLP\0" */
+        bool slp_ok = overlay_registry_add(&reg, &d);
+        memcpy(d.lokad, "\x5a\x49\x44\x00", 4);                  /* "ZID\0" */
+        bool zid_ok = overlay_registry_add(&reg, &d);
+        memcpy(d.lokad, "Z\0\0\0", 4);                     /* 1 char + pad */
+        bool one_ok = overlay_registry_add(&reg, &d);
+        memcpy(d.lokad, "\0ZID", 4);                           /* leading NUL */
+        bool lead_rejected = !overlay_registry_add(&reg, &d);
+        memcpy(d.lokad, "ZF\0X", 4);                          /* embedded NUL */
+        bool mid_rejected = !overlay_registry_add(&reg, &d);
+        memcpy(d.lokad, "Z\0I\0", 4);                    /* NUL-then-non-NUL */
+        bool gap_rejected = !overlay_registry_add(&reg, &d);
+        bool found = overlay_registry_find(&reg, "\x53\x4c\x50\x00") != NULL &&
+                     overlay_registry_find(&reg, "\x5a\x49\x44\x00") != NULL;
+        if (slp_ok && zid_ok && one_ok && lead_rejected && mid_rejected &&
+            gap_rejected && found && overlay_registry_count(&reg) == 3)
+            printf("OK\n");
+        else { printf("FAIL\n"); f++; }
+    }
+
     printf("overlay_registry: reject overflow past OVERLAY_REGISTRY_MAX... ");
     {
         overlay_registry_init(&reg);
