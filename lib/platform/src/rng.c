@@ -146,7 +146,7 @@ uint64_t rng_u64(void)
         fprintf(stderr,
             "[platform] %s:%d %s(): rng_fill failed; aborting\n",
             __FILE__, __LINE__, __func__);
-        abort();
+        abort(); // abort-ok: no entropy; the uint64_t return has no error value, so continuing means returning a predictable 0
     }
     return v;
 }
@@ -166,7 +166,7 @@ uint32_t rng_u32_range(uint32_t lo, uint32_t hi)
             fprintf(stderr,
                 "[platform] %s:%d %s(): rng_fill failed; aborting\n",
                 __FILE__, __LINE__, __func__);
-            abort();
+            abort(); // abort-ok: no entropy; the uint32_t return has no error value, so continuing means returning a predictable lo
         }
         if (r >= threshold) {
             return lo + (r % span);

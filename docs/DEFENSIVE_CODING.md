@@ -264,12 +264,17 @@ assert green).
   were BIP32 public child derivation and extended-public-key serialization.
   This gate stops the pile re-forming.
 
-  *Scan set* — named network-reachable roots only (`lib/{crypto,keys,script,
-  sapling,validation,net,sync,zid,znam,zslp,zdir,storage,mining}`,
-  `domain/{encoding,wallet}`, `core/{consensus,math,params,chainparams}`),
-  not the whole tree: a whole-tree baseline is dominated by boot-only code and
-  nobody reads it. `core/` is **counted and frozen** — its rows are byte-sealed
-  and only editable through the owner unseal ritual.
+  *Scan set* — named roots only (`lib/{crypto,keys,script,sapling,validation,
+  net,sync,zid,znam,zslp,zdir,storage,mining,core,platform,util,rpc}`,
+  `domain/{encoding,wallet}`, `core/{consensus,math,params,chainparams}`), not
+  the whole tree: a whole-tree baseline is dominated by tooling and nobody
+  reads it. The `lib/{core,platform,util,rpc}` roots hold no network parsers
+  but do hold the entropy sources, the boot-order state machine and the RPC
+  command table — the process-wide invariants whose violation must stay loud,
+  so the gate counts them to keep those aborts justified rather than merely
+  inherited. Note `lib/core/` is an ordinary subsystem; the byte-sealed
+  directory is top-level `core/`, whose rows are **counted and frozen** and
+  only editable through the owner unseal ritual.
 
   *Not counted* — `_Static_assert` / `static_assert` (compile-time, and the
   CORRECT replacement for a runtime assertion about a layout or a constant);
@@ -297,7 +302,26 @@ assert green).
   entropy source feeding it — no external input reaches them, each runs once at
   boot, and a node that carried on would silently mis-verify signatures or hand
   out a guessable key), `lib/sapling/src/sapling.c` (a fixed Jubjub generator
-  that failed to derive, after which every scalar multiplication is garbage).
+  that failed to derive, after which every scalar multiplication is garbage),
+  `lib/core/src/random.c` and `lib/platform/src/rng.c` (no entropy source, on
+  functions whose return type has no error value — continuing means handing
+  back a zero-filled buffer or a predictable integer, and every key minted from
+  it is guessable), `lib/util/src/boot_phase.c` (a backward or out-of-range
+  boot-stage move, which is the one thing that state machine exists to catch),
+  `lib/rpc/src/server.c` (a duplicate or overflowing command name at static
+  registration — a node serving a half-built RPC table is worse than one that
+  refuses to start).
+
+  *A hatch is a claim, and it is checkable.* `lib/rpc/src/server.c`'s other
+  site — `assert(rpc_in_warmup)` in `set_rpc_warmup_finished()` — is
+  deliberately **baselined rather than hatched**, and carries a comment saying
+  so. It enforces "called exactly once" with a live abort while the paired stop
+  hook never restores the flag, so the service kernel's own
+  `stop_all` → `start_all` cycle would kill the node there. It is unreachable
+  today only because the frontend kernel starts once and the process exits
+  after shutdown. That is debt with a real fix (make it idempotent, or re-arm
+  warmup in the stop hook), not a correct abort, so it stays on the list that
+  must shrink.
 
   A baselined file with no sites left is a FAILURE, not a pass: a stale row
   rusts the ratchet shut at a number the next regression can hide under.

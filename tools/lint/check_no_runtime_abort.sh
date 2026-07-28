@@ -98,6 +98,7 @@ BASELINE="${ZCL_NO_RUNTIME_ABORT_BASELINE:-tools/lint/no_runtime_abort_baseline.
 # file floor below rather than silently shrinking the scan.
 SCAN_ROOTS_DEFAULT="lib/crypto lib/keys lib/script lib/sapling lib/validation \
 lib/net lib/sync lib/zid lib/znam lib/zslp lib/zdir lib/storage lib/mining \
+lib/core lib/platform lib/util lib/rpc \
 domain/encoding domain/wallet \
 core/consensus core/math core/params core/chainparams"
 read -r -a SCAN_ROOTS <<< "${ZCL_NO_RUNTIME_ABORT_SCAN_ROOTS:-$SCAN_ROOTS_DEFAULT}"
@@ -207,7 +208,7 @@ collect_files() {
 }
 
 mapfile -t scan_files < <(collect_files | sort)
-gate_require_scanned "${#scan_files[@]}" "${ZCL_NO_RUNTIME_ABORT_FILE_FLOOR:-300}" "$GATE" \
+gate_require_scanned "${#scan_files[@]}" "${ZCL_NO_RUNTIME_ABORT_FILE_FLOOR:-400}" "$GATE" \
     "no production .c/.h under: ${SCAN_ROOTS[*]}"
 
 # ── Per-site scan ────────────────────────────────────────────────────────
@@ -277,7 +278,7 @@ scan_sites() {
 }
 
 mapfile -t ROWS < <(scan_sites)
-gate_require_scanned "${#ROWS[@]}" "${ZCL_NO_RUNTIME_ABORT_SITE_FLOOR:-10}" "$GATE" \
+gate_require_scanned "${#ROWS[@]}" "${ZCL_NO_RUNTIME_ABORT_SITE_FLOOR:-15}" "$GATE" \
     "no assert(/abort( sites found at all — the scan or the matcher moved"
 
 declare -A COUNTS=()

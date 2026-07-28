@@ -172,7 +172,7 @@ void boot_stage_advance_to(enum boot_stage next)
             "[boot-stage] FATAL invalid target stage %d (max %d)\n",
             (int)next, (int)BOOT_STAGE__MAX);
         fflush(stderr);
-        abort();
+        abort(); // abort-ok: a stage outside the enum is a caller bug, not input; the void return leaves no way to refuse it
     }
 
     if (next == g_boot_stage)
@@ -202,7 +202,7 @@ void boot_stage_advance_to(enum boot_stage next)
             "See BOOT_INVARIANTS.md.\n",
             boot_stage_name(g_boot_stage), boot_stage_name(next));
         fflush(stderr);
-        abort();
+        abort(); // abort-ok: catching a re-entered boot phase is this state machine's whole purpose; continuing runs stage work against the wrong guarantees
     }
 
     /* Forward by one is the normal step. */

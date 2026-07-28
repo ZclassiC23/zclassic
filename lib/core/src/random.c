@@ -69,7 +69,7 @@ void GetRandBytes(unsigned char *buf, size_t num)
             "— aborting to avoid zero-fill (num=%zu)\n",
             __FILE__, __LINE__, num);
         fflush(stderr);
-        abort();
+        abort(); // abort-ok: the fault injector exists to prove this path dies; returning would hand the caller a zero-filled buffer
     }
 #endif
 
@@ -81,7 +81,7 @@ void GetRandBytes(unsigned char *buf, size_t num)
         "— aborting to avoid silent zero-fill\n",
         __FILE__, __LINE__, num);
     fflush(stderr);
-    abort();
+    abort(); // abort-ok: no entropy and a void return; every caller would proceed on a zero-filled buffer and mint a guessable key
 }
 
 uint64_t GetRand(uint64_t nMax)
