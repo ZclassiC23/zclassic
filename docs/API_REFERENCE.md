@@ -59,15 +59,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 304 |
+| Registry entries (branches + leaves) | 306 |
 | Top-level roots | 9 |
 | Branches | 70 |
-| Leaves (dispatchable command paths) | 234 |
-| … `ready` (live handler in this build) | 192 |
+| Leaves (dispatchable command paths) | 236 |
+| … `ready` (live handler in this build) | 194 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 25 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
-| Leaves with `effect=mutate` | 59 |
+| Leaves with `effect=mutate` | 60 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 56 |
 
@@ -84,7 +84,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 14 | 3 | 11 |
-| `config/commands/zcode.def` | 42 | 10 | 32 |
+| `config/commands/zcode.def` | 44 | 10 | 34 |
 
 
 ## Column legend
@@ -725,7 +725,9 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `zcode release sign` | ready | mutate / app-write / operator · fast/low | `name`, `version`, `root`, `seed_file`, `seq`, `expiry`, `datadir` | `zcl.zcode_release_sign.v1` | `zclassic23 zcode release sign --input='{"name":"demo","version":"0.1","root":"<64hex>","seed_file":"/path/seed.hex"}'` | Sign a release record with a master seed |
-| `zcode release verify` | ready | read / read / public · fast/low | `doc`, `file` | `zcl.zcode_release_verify.v1` | `zclassic23 zcode release verify --input='{"doc":"<hex>"}'` | Verify a signed release record |
+| `zcode release verify` | ready | read / read / public · fast/low | `doc`, `file`, `proof`, `root` | `zcl.zcode_release_verify.v1` | `zclassic23 zcode release verify --input='{"doc":"<hex>"}'` | Verify a signed release record (optionally its batch inclusion) |
+| `zcode release anchor` | ready | mutate / wallet / operator · foreground/moderate | `tip`, `datadir` | `zcl.zcode_release_anchor.v1` | `zclassic23 zcode release anchor --input='{}'` | Anchor the release batch's domain root on-chain |
+| `zcode release prove` | ready | read / read / operator · fast/low | **`name`**, **`version`**, `datadir` | `zcl.zcode_release_prove.v1` | `zclassic23 zcode release prove --input='{"name":"demo","version":"0.1"}'` | Emit the domain-batch inclusion proof for one release |
 
 
 ## Aliases

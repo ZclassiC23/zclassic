@@ -165,4 +165,23 @@ bool   zid_release_sign(struct zid_doc *doc, const struct zid_release *rel,
 bool   zid_release_verify(const struct zid_doc *doc,
                           struct zid_release *rel_out, uint64_t now_unix);
 
+/* ── Domain batching (release digests → one domain root) ───────────
+ *
+ * The domain record digest convention: SHA3-256 of the canonical zid_doc
+ * wire bytes (exactly what zid_doc_encode produces). The digest is the
+ * leaf preimage for the anchor-domain tree; the bagged tree root is what
+ * rides an on-chain anchor, and verifiers confirm inclusion of one record
+ * with a single zid_proof. */
+
+/* Domain record digest of one doc's canonical wire bytes. */
+void zid_record_digest(uint8_t out[32], const uint8_t *doc_wire,
+                       size_t doc_wire_len);
+
+/* Fold n record digests into a fresh tree (in the given order) and emit
+ * the bagged root — zid_tree_init + n×zid_tree_append + zid_tree_root.
+ * The CALLER owns the leaf order: sort the digests first for a canonical
+ * batch root. false only on internal peak-capacity overflow. */
+bool zid_tree_root_from_digests(const uint8_t digests[][32], uint64_t n,
+                                uint8_t out[32]);
+
 #endif /* ZCL_ZID_H */

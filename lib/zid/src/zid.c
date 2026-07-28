@@ -648,3 +648,30 @@ bool zid_release_verify(const struct zid_doc *doc,
         *rel_out = rel;
     return true;
 }
+
+/* ── Domain batching ─────────────────────────────────────────────── */
+
+void zid_record_digest(uint8_t out[32], const uint8_t *doc_wire,
+                       size_t doc_wire_len)
+{
+    /* SHA3-256 of the canonical wire bytes, no tag — the "ZIDL" domain
+     * separation lives in the tree's leaf hash, not in the record
+     * digest itself. */
+    sha3_256(doc_wire, doc_wire_len, out);
+}
+
+bool zid_tree_root_from_digests(const uint8_t digests[][32], uint64_t n,
+                                uint8_t out[32])
+{
+    if (!out || (n > 0 && !digests))
+        LOG_FAIL("zid", "tree_root_from_digests: NULL argument");
+    struct zid_tree t;
+    zid_tree_init(&t);
+    for (uint64_t i = 0; i < n; i++)
+        if (!zid_tree_append(&t, digests[i]))
+            LOG_FAIL("zid",
+                     "tree_root_from_digests: append failed at leaf %llu",
+                     (unsigned long long)i);
+    zid_tree_root(&t, out);
+    return true;
+}

@@ -151,6 +151,37 @@ static void ep_anchor_json(const struct zanc_anchor *a, int32_t cursor,
     json_push_kv_str(obj, "digest", hex);
 }
 
+/* A node_rpc_call body that is an error, not a result: the transport's
+ * own {"error":{...}} envelope, the extracted JSON-RPC error value
+ * ({"code":int,"message":str}), or a bare string (the RPC handler's
+ * error message, e.g. anchor_publish's "Missing file or digest").
+ * Returns the best human message (into msg, when non-NULL). */
+static bool ep_rpc_body_error(const struct json_value *v, char *msg,
+                              size_t msg_size)
+{
+    const char *m = NULL;
+    if (v->type == JSON_STR) {
+        m = json_get_str(v);
+    } else if (v->type == JSON_OBJ) {
+        const struct json_value *err = json_get(v, "error");
+        if (err && err->type != JSON_NULL) {
+            const struct json_value *em =
+                err->type == JSON_OBJ ? json_get(err, "message") : NULL;
+            m = (em && em->type == JSON_STR) ? json_get_str(em)
+                                             : "node RPC error";
+        } else {
+            const struct json_value *code = json_get(v, "code");
+            const struct json_value *msg_v = json_get(v, "message");
+            if (code && code->type == JSON_INT && msg_v &&
+                msg_v->type == JSON_STR)
+                m = json_get_str(msg_v);
+        }
+    }
+    if (m && msg)
+        snprintf(msg, msg_size, "%s", m);
+    return m != NULL;
+}
+
 /* ── core.epoch.status ─────────────────────────────────────────────── */
 
 void zcl_native_handle_core_epoch_status(
@@ -274,16 +305,23 @@ void zcl_native_handle_core_epoch_anchor(
     snprintf(label, sizeof(label), "zepoch@%d", (int)cursor);
 
     /* Live-node path: anchor_publish composes + broadcasts when the node
-     * has a wallet loaded, and itself returns op_return_hex when not. */
-    char params[256];
+     * has a wallet loaded, and itself returns op_return_hex when not.
+     * params is a JSON-RPC array whose [0] is the --input-style object;
+     * only a JSON object result is a success — a string is the RPC's
+     * error message, surfaced as node_rpc_error on the offline reply. */
+    char params[320];
     snprintf(params, sizeof(params),
-             "{\"digest\":\"%s\",\"hash_type\":\"sha3\",\"label\":\"%s\"}",
+             "[{\"digest\":\"%s\",\"hash_type\":\"sha3\",\"label\":\"%s\"}]",
              digest_hex, label);
+    char rpc_err[256] = {0};
     zcl_native_bridge_ensure_rpc();
     char *rpc_result = node_rpc_call("anchor_publish", params);
     if (rpc_result) {
         struct json_value body;
-        if (json_read(&body, rpc_result, strlen(rpc_result))) {
+        bool parsed = json_read(&body, rpc_result, strlen(rpc_result));
+        bool error_body = parsed &&
+                          ep_rpc_body_error(&body, rpc_err, sizeof(rpc_err));
+        if (parsed && body.type == JSON_OBJ && !error_body) {
             json_push_kv_str(&body, "via", "node_rpc anchor_publish");
             json_push_kv_int(&body, "catalog_height", cursor);
             json_copy(&reply->data, &body);
@@ -293,6 +331,11 @@ void zcl_native_handle_core_epoch_anchor(
             reply->exit_code = ZCL_COMMAND_EXIT_OK;
             return;
         }
+        if (!error_body)
+            snprintf(rpc_err, sizeof(rpc_err), "%s",
+                     parsed ? "node RPC returned an unexpected body"
+                            : "node RPC returned an unparseable body");
+        json_free(&body);
         free(rpc_result);
     }
 
@@ -313,6 +356,8 @@ void zcl_native_handle_core_epoch_anchor(
     json_push_kv_str(&reply->data, "digest", digest_hex);
     json_push_kv_str(&reply->data, "label", label);
     json_push_kv_int(&reply->data, "catalog_height", cursor);
+    if (rpc_err[0])
+        json_push_kv_str(&reply->data, "node_rpc_error", rpc_err);
     char hex[257];
     HexStr(script, script_len, false, hex, sizeof(hex));
     json_push_kv_str(&reply->data, "op_return_hex", hex);

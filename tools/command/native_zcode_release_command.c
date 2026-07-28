@@ -8,6 +8,18 @@
  * no swarm distribution — sign writes <datadir>/zcode/releases/
  * <name>-<version>.zid, verify reads a doc from hex or file.
  *
+ * Domain batching: anchor folds every doc under the releases dir into
+ * the zid anchor-domain tree — the record digest of each doc is
+ * SHA3-256 of its canonical wire bytes (zid_record_digest), digests are
+ * sorted by bytes before appending so the same dir contents ALWAYS fold
+ * to the same domain root — and anchors that root on-chain exactly like
+ * core.epoch.anchor (anchor_publish RPC when a live node answers, else
+ * op_return_hex + a next-step note). prove re-derives the same tree and
+ * emits the zid_proof wire hex for one release; verify --proof=<hex>
+ * --root=<hex> checks inclusion separately from signature validity.
+ * The batch root is time-independent by construction: docs are digested
+ * as wire bytes, never re-verified against the clock.
+ *
  * Secret hygiene (sign): the seed file must be exactly 64 hex chars and
  * 0600/0400 perms (refused otherwise, with the chmod hint); the seed
  * buffer is memory_cleanse'd after use and is NEVER logged or echoed. */
@@ -15,15 +27,20 @@
 #include "command/native_command.h"
 
 #include "base/log_macros.h"
+#include "base/safe_alloc.h"
+#include "controllers/rpc_client.h"
 #include "encoding/utilstrencodings.h"
 #include "json/json.h"
 #include "platform/time_compat.h"
 #include "support/cleanse.h"
+#include "zanc/zanc.h"
 #include "zid/zid.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -141,6 +158,186 @@ static bool zr_write_doc_file(const char *datadir, const char *name,
 too_long:
     snprintf(err, err_size, "path too long under datadir");
     return false;
+}
+
+/* ── release batch (domain tree over the releases dir) ───────────── */
+
+#define ZR_BATCH_MAX 1024
+
+struct zr_batch_entry {
+    uint8_t digest[32]; /* zid_record_digest of the doc's wire bytes */
+    char name[ZID_RELEASE_NAME_MAX + 1];
+    char version[ZID_RELEASE_VERSION_MAX + 1];
+};
+
+static int zr_entry_cmp(const void *a, const void *b)
+{
+    return memcmp(((const struct zr_batch_entry *)a)->digest,
+                  ((const struct zr_batch_entry *)b)->digest, 32);
+}
+
+/* Scan <datadir>/zcode/releases for *.zid docs, decode each, and compute
+ * its record digest. Entries come back sorted by digest bytes — THE
+ * canonical order, so the same dir contents always fold to the same
+ * domain root. Docs are digested as wire bytes and NOT re-verified
+ * against the clock: the batch root must stay reproducible after a doc's
+ * expiry passes. A *.zid file that does not decode as a well-formed zid
+ * release doc is a hard error naming the file (the dir is managed by
+ * zcode.release.sign, which only writes valid docs); non-.zid entries
+ * are ignored. A missing releases dir is 0 releases, not an error.
+ * Returns the entry count, or (size_t)-1 with `err` filled. */
+static size_t zr_batch_load(const char *datadir,
+                            struct zr_batch_entry *entries, size_t cap,
+                            char *err, size_t err_size)
+{
+    char dir[1024];
+    int n = snprintf(dir, sizeof(dir), "%s/zcode/releases", datadir);
+    if (n <= 0 || (size_t)n >= sizeof(dir)) {
+        snprintf(err, err_size, "path too long under datadir");
+        return (size_t)-1;
+    }
+    DIR *d = opendir(dir);
+    if (!d) {
+        if (errno == ENOENT)
+            return 0;
+        snprintf(err, err_size, "opendir %s: %s", dir, strerror(errno));
+        return (size_t)-1;
+    }
+    size_t count = 0;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        const char *fn = ent->d_name;
+        size_t fl = strlen(fn);
+        if (fl < 5 || strcmp(fn + fl - 4, ".zid") != 0)
+            continue;
+        if (count == cap) {
+            snprintf(err, err_size,
+                     "more than %zu releases under %s — split the batch",
+                     cap, dir);
+            closedir(d);
+            return (size_t)-1;
+        }
+        char path[1200];
+        int pn = snprintf(path, sizeof(path), "%s/%s", dir, fn);
+        if (pn <= 0 || (size_t)pn >= sizeof(path)) {
+            snprintf(err, err_size, "path too long under %s", dir);
+            closedir(d);
+            return (size_t)-1;
+        }
+        int fd = open(path, O_RDONLY | O_CLOEXEC);
+        if (fd < 0) {
+            snprintf(err, err_size, "open %s: %s", path, strerror(errno));
+            closedir(d);
+            return (size_t)-1;
+        }
+        char hex[ZID_DOC_MAX * 2 + 2];
+        ssize_t rn = read(fd, hex, sizeof(hex) - 1);
+        close(fd);
+        if (rn <= 0) {
+            snprintf(err, err_size, "%s: empty or unreadable", path);
+            closedir(d);
+            return (size_t)-1;
+        }
+        while (rn > 0 && (hex[rn - 1] == '\n' || hex[rn - 1] == '\r' ||
+                          hex[rn - 1] == ' '))
+            rn--;
+        hex[rn] = '\0';
+        if ((rn & 1) != 0 || !IsHex(hex)) {
+            snprintf(err, err_size, "%s: not even-length hex", path);
+            closedir(d);
+            return (size_t)-1;
+        }
+        uint8_t wire[ZID_DOC_MAX];
+        size_t wire_len = (size_t)ParseHex(hex, wire, sizeof(wire));
+        struct zid_doc doc;
+        if (wire_len == 0 || !zid_doc_decode(&doc, wire, wire_len)) {
+            snprintf(err, err_size, "%s: not a well-formed zid doc", path);
+            closedir(d);
+            return (size_t)-1;
+        }
+        struct zr_batch_entry *e = &entries[count];
+        struct zid_release rel;
+        if (!zid_release_decode_body(&rel, doc.body, doc.body_len)) {
+            snprintf(err, err_size, "%s: doc body is not a ZIDR release "
+                     "record", path);
+            closedir(d);
+            return (size_t)-1;
+        }
+        zid_record_digest(e->digest, wire, wire_len);
+        snprintf(e->name, sizeof(e->name), "%s", rel.name);
+        snprintf(e->version, sizeof(e->version), "%s", rel.version);
+        count++;
+    }
+    closedir(d);
+    qsort(entries, count, sizeof(entries[0]), zr_entry_cmp);
+    return count;
+}
+
+/* Tip for the anchor label: explicit input `tip` wins (deterministic
+ * testing), else the live node's getblockcount, else 0 (offline — the
+ * label height is informational; the anchored digest is the truth). */
+static int64_t zr_anchor_tip(const struct json_value *in)
+{
+    const struct json_value *tv = json_get(in, "tip");
+    if (tv && tv->type == JSON_INT && json_get_int(tv) >= 0)
+        return json_get_int(tv);
+    zcl_native_bridge_ensure_rpc();
+    char *raw = node_rpc_call("getblockcount", NULL);
+    if (!raw)
+        return 0;
+    int64_t tip = 0;
+    struct json_value v;
+    if (json_read(&v, raw, strlen(raw))) {
+        if (v.type == JSON_INT && json_get_int(&v) >= 0)
+            tip = json_get_int(&v);
+        json_free(&v);
+    }
+    free(raw);
+    return tip;
+}
+
+/* A node_rpc_call body that is an error, not a result: the transport's
+ * own {"error":{...}} envelope, the extracted JSON-RPC error value
+ * ({"code":int,"message":str}), or a bare string (the RPC handler's
+ * error message, e.g. anchor_publish's "Missing file or digest").
+ * Returns the best human message (into msg, when non-NULL). */
+static bool zr_rpc_body_error(const struct json_value *v, char *msg,
+                              size_t msg_size)
+{
+    const char *m = NULL;
+    if (v->type == JSON_STR) {
+        m = json_get_str(v);
+    } else if (v->type == JSON_OBJ) {
+        const struct json_value *err = json_get(v, "error");
+        if (err && err->type != JSON_NULL) {
+            const struct json_value *em =
+                err->type == JSON_OBJ ? json_get(err, "message") : NULL;
+            m = (em && em->type == JSON_STR) ? json_get_str(em)
+                                             : "node RPC error";
+        } else {
+            const struct json_value *code = json_get(v, "code");
+            const struct json_value *msg_v = json_get(v, "message");
+            if (code && code->type == JSON_INT && msg_v &&
+                msg_v->type == JSON_STR)
+                m = json_get_str(msg_v);
+        }
+    }
+    if (m && msg)
+        snprintf(msg, msg_size, "%s", m);
+    return m != NULL;
+}
+
+/* Peel the contiguous digest array out of the sorted entries (the tree
+ * prove/root helpers take [][32]). */
+static uint8_t (*zr_batch_digests(const struct zr_batch_entry *entries,
+                                  size_t count))[32]
+{
+    uint8_t(*digests)[32] = zcl_malloc(count * 32, "zcode_release.digests");
+    if (!digests)
+        return NULL;
+    for (size_t i = 0; i < count; i++)
+        memcpy(digests[i], entries[i].digest, 32);
+    return digests;
 }
 
 /* ── zcode.release.sign ────────────────────────────────────────────── */
@@ -327,6 +524,24 @@ void zcl_native_handle_zcode_release_verify(
         return;
     }
 
+    /* Optional domain-batch inclusion check: --proof and --root must be
+     * given together (proof from `zcode release prove`, root from the
+     * on-chain anchored domain root). */
+    const char *proof_hex = zr_input_str(in, "proof");
+    const char *root_hex = zr_input_str(in, "root");
+    bool have_proof = proof_hex && proof_hex[0];
+    bool have_root = root_hex && root_hex[0];
+    if (have_proof != have_root) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "INCOMPLETE_PROOF",
+                               "normalize", false, false,
+                               "proof and root must be given together — "
+                               "proof from `zcode release prove`, root from "
+                               "the anchored domain root (`zcode release "
+                               "anchor`)", "zcode.release.verify");
+        return;
+    }
+
     char file_hex[ZID_DOC_MAX * 2 + 2];
     if (!doc_hex || !doc_hex[0]) {
         int fd = open(file, O_RDONLY | O_CLOEXEC);
@@ -438,6 +653,370 @@ void zcl_native_handle_zcode_release_verify(
                                    "zcode.release.verify");
         return;
     }
+
+    /* Domain-batch inclusion (optional): the doc's record digest must be
+     * leaf `index` of the tree that produced --root. Reported separately
+     * from signature validity; a mismatch is a hard NOT_IN_BATCH. */
+    if (have_proof) {
+        uint8_t batch_root[32];
+        if (strlen(root_hex) != 64 || !IsHex(root_hex) ||
+            ParseHex(root_hex, batch_root, 32) != 32) {
+            zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                                   ZCL_COMMAND_EXIT_INVALID, "BAD_ROOT",
+                                   "normalize", false, false,
+                                   "root must be the 64-hex domain root "
+                                   "from `zcode release anchor`",
+                                   "zcode.release.verify");
+            return;
+        }
+        size_t phex_len = strlen(proof_hex);
+        if ((phex_len & 1u) != 0 || phex_len > ZID_PROOF_WIRE_MAX * 2 ||
+            !IsHex(proof_hex)) {
+            zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                                   ZCL_COMMAND_EXIT_INVALID, "BAD_PROOF_HEX",
+                                   "normalize", false, false,
+                                   "proof must be even-length hex, at most "
+                                   "2*ZID_PROOF_WIRE_MAX chars — pass the "
+                                   "exact proof from `zcode release prove`",
+                                   "zcode.release.verify");
+            return;
+        }
+        uint8_t pwire[ZID_PROOF_WIRE_MAX];
+        size_t pwire_len = (size_t)ParseHex(proof_hex, pwire, sizeof(pwire));
+        uint64_t p_index = 0, p_num_leaves = 0;
+        uint8_t p_sibs[ZID_TREE_MAX_PEAKS][32];
+        uint32_t p_len = 0;
+        if (pwire_len == 0 ||
+            !zid_proof_decode(&p_index, &p_num_leaves, p_sibs, &p_len,
+                              pwire, pwire_len)) {
+            zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                                   ZCL_COMMAND_EXIT_INVALID, "BAD_PROOF",
+                                   "execute", false, false,
+                                   "not a well-formed zid proof wire "
+                                   "(version/layout) — check the hex was "
+                                   "not truncated", "zcode.release.verify");
+            return;
+        }
+        uint8_t rec[32];
+        zid_record_digest(rec, wire, wire_len);
+        bool included = zid_tree_verify(batch_root, rec, p_index,
+                                        p_num_leaves,
+                                        (const uint8_t (*)[32])p_sibs,
+                                        p_len);
+        HexStr(rec, 32, false, hex, sizeof(hex));
+        json_push_kv_str(&reply->data, "record_digest", hex);
+        HexStr(batch_root, 32, false, hex, sizeof(hex));
+        json_push_kv_str(&reply->data, "batch_root", hex);
+        json_push_kv_int(&reply->data, "batch_index", (int64_t)p_index);
+        json_push_kv_int(&reply->data, "batch_num_leaves",
+                         (int64_t)p_num_leaves);
+        json_push_kv_bool(&reply->data, "batch_included", included);
+        if (!included) {
+            zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                                   ZCL_COMMAND_EXIT_FAILED, "NOT_IN_BATCH",
+                                   "execute", false, false,
+                                   "the doc's record digest is NOT in the "
+                                   "batch that produced this root — the "
+                                   "proof is for a different batch, the "
+                                   "root is stale, or the doc is not the "
+                                   "one that was anchored",
+                                   "zcode.release.verify");
+            return;
+        }
+    }
+    reply->status = ZCL_COMMAND_STATUS_PASSED;
+    reply->exit_code = ZCL_COMMAND_EXIT_OK;
+}
+
+/* ── zcode.release.anchor ──────────────────────────────────────────── */
+
+void zcl_native_handle_zcode_release_anchor(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply)
+{
+    if (!request || !reply)
+        return;
+    const char *datadir = zr_datadir(request);
+    if (!datadir) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "MISSING_DATADIR",
+                               "normalize", false, false,
+                               "no datadir given and no --datadir default",
+                               "zcode.release.anchor");
+        return;
+    }
+
+    struct zr_batch_entry *entries =
+        zcl_malloc(ZR_BATCH_MAX * sizeof(*entries), "zcode_release.batch");
+    if (!entries) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "ALLOC",
+                               "execute", false, false,
+                               "batch buffer", "zcode.release.anchor");
+        return;
+    }
+    char err[512];
+    size_t count = zr_batch_load(datadir, entries, ZR_BATCH_MAX, err,
+                                 sizeof(err));
+    if (count == (size_t)-1) {
+        free(entries);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_FAILED, "BATCH_LOAD",
+                               "execute", false, false, err, datadir);
+        return;
+    }
+    if (count == 0) {
+        free(entries);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_FAILED, "NO_RELEASES",
+                               "execute", true, false,
+                               "no .zid release docs under "
+                               "<datadir>/zcode/releases — sign one first "
+                               "with `zcode release sign`",
+                               datadir);
+        return;
+    }
+
+    /* Canonical fold: digests are already byte-sorted by zr_batch_load. */
+    struct zid_tree t;
+    zid_tree_init(&t);
+    for (size_t i = 0; i < count; i++)
+        zid_tree_append(&t, entries[i].digest);
+    free(entries);
+    uint8_t root[32];
+    zid_tree_root(&t, root);
+    char root_hex[65];
+    HexStr(root, 32, false, root_hex, sizeof(root_hex));
+
+    int64_t tip = zr_anchor_tip(request->input);
+    char label[ZANC_LABEL_MAX + 1];
+    snprintf(label, sizeof(label), "zcode@%lld", (long long)tip);
+
+    /* Live-node path: anchor_publish composes + broadcasts when the node
+     * has a wallet loaded, and itself returns op_return_hex when not.
+     * params is a JSON-RPC array whose [0] is the --input-style object;
+     * only a JSON object result is a success — a string is the RPC's
+     * error message, surfaced as node_rpc_error on the offline reply. */
+    char params[384];
+    snprintf(params, sizeof(params),
+             "[{\"digest\":\"%s\",\"hash_type\":\"sha3\",\"label\":\"%s\"}]",
+             root_hex, label);
+    char rpc_err[256] = {0};
+    zcl_native_bridge_ensure_rpc();
+    char *rpc_result = node_rpc_call("anchor_publish", params);
+    if (rpc_result) {
+        struct json_value body;
+        bool parsed = json_read(&body, rpc_result, strlen(rpc_result));
+        bool error_body = parsed &&
+                          zr_rpc_body_error(&body, rpc_err, sizeof(rpc_err));
+        if (parsed && body.type == JSON_OBJ && !error_body) {
+            json_push_kv_str(&body, "via", "node_rpc anchor_publish");
+            json_push_kv_int(&body, "releases", (int64_t)count);
+            json_push_kv_str(&body, "domain_root", root_hex);
+            json_push_kv_str(&body, "label", label);
+            json_copy(&reply->data, &body);
+            json_free(&body);
+            free(rpc_result);
+            reply->status = ZCL_COMMAND_STATUS_PASSED;
+            reply->exit_code = ZCL_COMMAND_EXIT_OK;
+            return;
+        }
+        if (!error_body)
+            snprintf(rpc_err, sizeof(rpc_err), "%s",
+                     parsed ? "node RPC returned an unexpected body"
+                            : "node RPC returned an unparseable body");
+        json_free(&body);
+        free(rpc_result);
+    }
+
+    /* Offline / no-live-node path: build the same OP_RETURN locally. */
+    uint8_t script[128];
+    size_t script_len = zanc_build_anchor(script, sizeof(script),
+                                          ZANC_HASH_SHA3_256, root, label);
+    if (script_len == 0) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL,
+                               "OP_RETURN_BUILD_FAILED", "execute", false,
+                               false, "zanc_build_anchor rejected the root/"
+                               "label", label);
+        return;
+    }
+    json_push_kv_int(&reply->data, "releases", (int64_t)count);
+    json_push_kv_str(&reply->data, "domain_root", root_hex);
+    json_push_kv_str(&reply->data, "label", label);
+    json_push_kv_str(&reply->data, "hash_type", "sha3");
+    if (rpc_err[0])
+        json_push_kv_str(&reply->data, "node_rpc_error", rpc_err);
+    char hex[257];
+    HexStr(script, script_len, false, hex, sizeof(hex));
+    json_push_kv_str(&reply->data, "op_return_hex", hex);
+    json_push_kv_int(&reply->data, "op_return_size", (int64_t)script_len);
+    json_push_kv_str(&reply->data, "status", "ready");
+    json_push_kv_str(&reply->data, "note",
+                     "no live node answered — start the node and re-run "
+                     "`zcode release anchor` to compose+broadcast with the "
+                     "node wallet, or include this OP_RETURN manually as "
+                     "vout[0] of any transaction");
+    reply->status = ZCL_COMMAND_STATUS_PASSED;
+    reply->exit_code = ZCL_COMMAND_EXIT_OK;
+}
+
+/* ── zcode.release.prove ───────────────────────────────────────────── */
+
+void zcl_native_handle_zcode_release_prove(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply)
+{
+    if (!request || !reply)
+        return;
+    const struct json_value *in = request->input;
+    const char *datadir = zr_datadir(request);
+    if (!datadir) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "MISSING_DATADIR",
+                               "normalize", false, false,
+                               "no datadir given and no --datadir default",
+                               "zcode.release.prove");
+        return;
+    }
+    const char *name = zr_input_str(in, "name");
+    if (!name || !name[0]) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "MISSING_NAME",
+                               "normalize", false, false,
+                               "missing name — the release to prove "
+                               "inclusion for", "zcode.release.prove");
+        return;
+    }
+    const char *version = zr_input_str(in, "version");
+    if (!version || !version[0]) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "MISSING_VERSION",
+                               "normalize", false, false,
+                               "missing version — the release to prove "
+                               "inclusion for", "zcode.release.prove");
+        return;
+    }
+
+    struct zr_batch_entry *entries =
+        zcl_malloc(ZR_BATCH_MAX * sizeof(*entries), "zcode_release.batch");
+    if (!entries) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "ALLOC",
+                               "execute", false, false,
+                               "batch buffer", "zcode.release.prove");
+        return;
+    }
+    char err[512];
+    size_t count = zr_batch_load(datadir, entries, ZR_BATCH_MAX, err,
+                                 sizeof(err));
+    if (count == (size_t)-1) {
+        free(entries);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_FAILED, "BATCH_LOAD",
+                               "execute", false, false, err, datadir);
+        return;
+    }
+    if (count == 0) {
+        free(entries);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_FAILED, "NO_RELEASES",
+                               "execute", true, false,
+                               "no .zid release docs under "
+                               "<datadir>/zcode/releases — sign one first "
+                               "with `zcode release sign`",
+                               datadir);
+        return;
+    }
+
+    size_t idx = count;
+    for (size_t i = 0; i < count; i++) {
+        if (strcmp(entries[i].name, name) == 0 &&
+            strcmp(entries[i].version, version) == 0) {
+            idx = i;
+            break;
+        }
+    }
+    if (idx == count) {
+        free(entries);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_FAILED, "RELEASE_NOT_FOUND",
+                               "execute", false, false,
+                               "no release doc with this name+version under "
+                               "<datadir>/zcode/releases — check the saved "
+                               "files or re-sign with `zcode release sign`",
+                               name);
+        return;
+    }
+
+    uint8_t(*digests)[32] = zr_batch_digests(entries, count);
+    if (!digests) {
+        free(entries);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "ALLOC",
+                               "execute", false, false,
+                               "digest array", "zcode.release.prove");
+        return;
+    }
+    uint8_t proof[ZID_TREE_MAX_PEAKS][32];
+    uint32_t proof_len = 0;
+    uint8_t root[32];
+    bool proved = zid_tree_prove_from_leaves(
+        (const uint8_t (*)[32])digests, count, idx, proof, &proof_len, root);
+    free(digests);
+    if (!proved) {
+        free(entries);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "PROVE_FAILED",
+                               "execute", false, false,
+                               "zid_tree_prove_from_leaves failed",
+                               "zcode.release.prove");
+        return;
+    }
+
+    uint8_t pwire[ZID_PROOF_WIRE_MAX];
+    size_t pwire_len = zid_proof_encode(pwire, sizeof(pwire), idx, count,
+                                        (const uint8_t (*)[32])proof,
+                                        proof_len);
+    if (pwire_len == 0) {
+        free(entries);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "ENCODE_FAILED",
+                               "serialize", false, false,
+                               "zid_proof_encode failed",
+                               "zcode.release.prove");
+        return;
+    }
+
+    char *proof_hex = zcl_malloc(pwire_len * 2 + 1, "zcode_release.proof_hex");
+    if (!proof_hex) {
+        free(entries);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "ALLOC",
+                               "serialize", false, false,
+                               "proof hex buffer", "zcode.release.prove");
+        return;
+    }
+    HexStr(pwire, pwire_len, false, proof_hex, pwire_len * 2 + 1);
+
+    char hex[65];
+    json_push_kv_str(&reply->data, "name", entries[idx].name);
+    json_push_kv_str(&reply->data, "version", entries[idx].version);
+    HexStr(entries[idx].digest, 32, false, hex, sizeof(hex));
+    json_push_kv_str(&reply->data, "record_digest", hex);
+    free(entries);
+    json_push_kv_int(&reply->data, "index", (int64_t)idx);
+    json_push_kv_int(&reply->data, "num_leaves", (int64_t)count);
+    HexStr(root, 32, false, hex, sizeof(hex));
+    json_push_kv_str(&reply->data, "domain_root", hex);
+    json_push_kv_str(&reply->data, "proof", proof_hex);
+    json_push_kv_int(&reply->data, "proof_bytes", (int64_t)pwire_len);
+    json_push_kv_str(&reply->data, "next",
+                     "anyone can confirm inclusion with `zclassic23 zcode "
+                     "release verify --doc=<hex> --proof=<proof> "
+                     "--root=<domain_root>` once domain_root is anchored "
+                     "on-chain (`zcode release anchor`)");
+    free(proof_hex);
     reply->status = ZCL_COMMAND_STATUS_PASSED;
     reply->exit_code = ZCL_COMMAND_EXIT_OK;
 }

@@ -900,7 +900,14 @@ ZCL_COMMAND_READY_COMMAND(
 /* ── Sovereign Registry v1: zid release records ──────────────────────
  * Sign/verify release records that bind a package release (name, version,
  * manifest root) to an identity's master ed25519 key (lib/zid). File-based
- * only: no DB, no swarm distribution. See docs/spec/sovereign-identity-layer.md. */
+ * only: no DB, no swarm distribution. Domain batching: anchor folds every
+ * doc under <datadir>/zcode/releases into the zid anchor-domain tree
+ * (record digest = SHA3-256 of the canonical doc wire bytes; digests
+ * sorted by bytes so the same dir always folds to the same root) and
+ * commits the domain root on-chain; prove emits the zid_proof wire hex
+ * for one release; verify --proof/--root checks batch inclusion
+ * separately from signature validity.
+ * See docs/spec/sovereign-identity-layer.md. */
 ZCL_COMMAND_BRANCH("zcode.release", "zcode",
                    "Release records: sign/verify packages against a master key",
                    ZCL_COMMAND_LAYER_APP)
@@ -933,20 +940,77 @@ ZCL_COMMAND_READY_COMMAND(
 
 ZCL_COMMAND_READY_READ(
     "zcode.release.verify", "zcode.release", "",
-    "Verify a signed release record",
+    "Verify a signed release record (optionally its batch inclusion)",
     "Decodes a zid release doc from --doc=<hex> or --file=<path to a saved "
     ".zid> and verifies it against the current time: prints name, version, "
     "manifest_root, master_pubkey, seq, expiry, and valid. A failing "
     "verification is a hard error naming the reason — DOC_EXPIRED (ask the "
     "publisher for a re-signed doc with a higher seq), BAD_SIGNATURE "
     "(tampered or corrupted), NOT_A_RELEASE_BODY (signed for something "
-    "else), DOC_DECODE_FAILED (malformed/truncated hex).", 0,
-    "zcode,release,verify,zid,registry,signature,expiry",
+    "else), DOC_DECODE_FAILED (malformed/truncated hex). With --proof=<hex> "
+    "(from `zcode release prove`) and --root=<hex> (the anchored domain "
+    "root) given together, additionally checks the doc's record digest is "
+    "in the batch that produced root: batch_included is reported "
+    "separately from signature validity, and a mismatch is a hard "
+    "NOT_IN_BATCH (stale root, wrong batch, or a doc that was never "
+    "anchored).", 0,
+    "zcode,release,verify,zid,registry,signature,expiry,proof,batch",
     "zcl.zcode_release_verify.input.v1", "zcl.zcode_release_verify.v1",
-    "doc,file", "",
+    "doc,file,proof,root", "",
     "zclassic23 zcode release verify --input='{\"doc\":\"<hex>\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_PUBLIC,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_release_verify)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.release.anchor", "zcode.release", "",
+    "Anchor the release batch's domain root on-chain",
+    "Folds every release doc under <datadir>/zcode/releases into the zid "
+    "anchor-domain tree — each record digest is SHA3-256 of the doc's "
+    "canonical wire bytes, digests are sorted by bytes before appending "
+    "(the determinism contract: the same dir contents ALWAYS fold to the "
+    "same domain root) — and anchors the bagged domain root in a ZANC "
+    "OP_RETURN (hash_type sha3, label \"zcode@<tip>\": explicit `tip` "
+    "wins, else the live node's height, else 0). With a live node the "
+    "compose+broadcast rides the anchor_publish RPC (via:\"node_rpc "
+    "anchor_publish\"); offline the reply carries op_return_hex to "
+    "include manually as vout[0] of any transaction. Anchoring spends a "
+    "fee, so it is operator-triggered only. Reports releases and "
+    "domain_root. NO_RELEASES names an empty releases dir (sign first "
+    "with `zcode release sign`); a *.zid file that does not decode as a "
+    "release doc fails BATCH_LOAD naming the file.", 0,
+    "zcode,release,anchor,zid,registry,domain,batch,root,zanc",
+    "zcl.zcode_release_anchor.input.v1", "zcl.zcode_release_anchor.v1",
+    "tip,datadir", "",
+    "zclassic23 zcode release anchor --input='{}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_release_anchor)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.release.prove", "zcode.release", "",
+    "Emit the domain-batch inclusion proof for one release",
+    "Rebuilds the same canonical tree `zcode release anchor` folds "
+    "(digests sorted by bytes from <datadir>/zcode/releases) and emits "
+    "the zid_proof wire hex for the release named by name+version: "
+    "record_digest, index, num_leaves, domain_root, and proof. Anyone "
+    "can then confirm inclusion with `zcode release verify --doc=<hex> "
+    "--proof=<proof> --root=<domain_root>` against the on-chain anchored "
+    "root. RELEASE_NOT_FOUND names a name+version with no saved doc; "
+    "NO_RELEASES names an empty releases dir.", 0,
+    "zcode,release,prove,zid,registry,domain,batch,proof,inclusion",
+    "zcl.zcode_release_prove.input.v1", "zcl.zcode_release_prove.v1",
+    "name,version,datadir", "name,version",
+    "zclassic23 zcode release prove --input='{\"name\":\"demo\",\"version\":\"0.1\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_release_prove)

@@ -320,11 +320,18 @@ void zcl_native_handle_zcode_package_search(
 
 /* ── zcode.release.* — Sovereign Registry v1: sign/verify zid release
  * records (tools/command/native_zcode_release_command.c). File-based,
- * no DB, no swarm distribution. */
+ * no DB, no swarm distribution. anchor/prove fold the releases dir into
+ * the zid anchor-domain tree (digest-sorted canonical order). */
 void zcl_native_handle_zcode_release_sign(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_release_verify(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_release_anchor(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_release_prove(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_package_show(

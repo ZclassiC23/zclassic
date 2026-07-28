@@ -695,6 +695,117 @@ int test_zid(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* ── Domain batching (record digest → domain root) ───────────── */
+
+    printf("\n=== ZID domain batching ===\n");
+
+    /* The digest convention is pinned two ways: against a direct
+     * sha3_256 of the same wire bytes (no tag, no length prefix), and
+     * against a frozen golden hex so any drift in the doc wire layout
+     * or the hash fails loudly. */
+    printf("zid_record_digest: SHA3-256 of canonical wire bytes (convention)... ");
+    uint8_t batch_doc_wires[3][ZID_DOC_MAX];
+    size_t batch_doc_lens[3];
+    uint8_t batch_digests[3][32];
+    {
+        struct zid_doc rdoc;
+        zid_release_sign(&rdoc, &rel, 7, now + 3600, seed);
+        uint8_t w[ZID_DOC_MAX];
+        size_t wlen = zid_doc_encode(w, sizeof(w), &rdoc);
+        uint8_t d_helper[32], d_direct[32];
+        zid_record_digest(d_helper, w, wlen);
+        sha3_256(w, wlen, d_direct);
+        if (wlen > 0 && memcmp(d_helper, d_direct, 32) == 0)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid_record_digest: golden vector (frozen bytes)... ");
+    {
+        static const char *GOLDEN =
+            "8fb209208614b3bb2d6b34e10c71d7aded8466039476afef5dd1df0ef4474286";
+        struct zid_doc rdoc;
+        zid_release_sign(&rdoc, &rel, 7, now + 3600, seed);
+        uint8_t w[ZID_DOC_MAX];
+        size_t wlen = zid_doc_encode(w, sizeof(w), &rdoc);
+        uint8_t d[32], want[32];
+        zid_record_digest(d, w, wlen);
+        hex_to_bytes(GOLDEN, want, sizeof(want));
+        if (memcmp(d, want, 32) == 0) {
+            printf("OK\n");
+        } else {
+            printf("FAIL (got ");
+            for (int i = 0; i < 32; i++) printf("%02x", d[i]);
+            printf(")\n");
+            failures++;
+        }
+    }
+
+    /* Three distinct release docs → digests → root via the batch helper
+     * must equal the manual init/append/root fold. */
+    printf("zid_tree_root_from_digests: root from N docs == manual fold... ");
+    {
+        const char *names[3] = {"alpha", "beta", "gamma"};
+        bool built = true;
+        for (int i = 0; i < 3 && built; i++) {
+            struct zid_release r;
+            memset(&r, 0, sizeof(r));
+            snprintf(r.name, sizeof(r.name), "%s", names[i]);
+            snprintf(r.version, sizeof(r.version), "0.1");
+            memset(r.manifest_root, 0xA0 + i, 32);
+            struct zid_doc d;
+            if (!zid_release_sign(&d, &r, 1, now + 3600, seed)) {
+                built = false;
+                break;
+            }
+            batch_doc_lens[i] = zid_doc_encode(batch_doc_wires[i],
+                                               sizeof(batch_doc_wires[i]), &d);
+            if (batch_doc_lens[i] == 0) {
+                built = false;
+                break;
+            }
+            zid_record_digest(batch_digests[i], batch_doc_wires[i],
+                              batch_doc_lens[i]);
+        }
+        uint8_t root_helper[32], root_manual[32];
+        struct zid_tree t;
+        zid_tree_init(&t);
+        for (int i = 0; i < 3; i++)
+            zid_tree_append(&t, batch_digests[i]);
+        zid_tree_root(&t, root_manual);
+        if (built &&
+            zid_tree_root_from_digests((const uint8_t (*)[32])batch_digests,
+                                       3, root_helper) &&
+            memcmp(root_helper, root_manual, 32) == 0)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zid domain batch: prove + verify one doc's digest... ");
+    {
+        uint8_t root[32];
+        zid_tree_root_from_digests((const uint8_t (*)[32])batch_digests, 3,
+                                   root);
+        uint8_t proof[ZID_TREE_MAX_PEAKS][32], pr[32];
+        uint32_t plen = 0;
+        bool ok = zid_tree_prove_from_leaves(
+                      (const uint8_t (*)[32])batch_digests, 3, 1,
+                      proof, &plen, pr) &&
+                  memcmp(pr, root, 32) == 0 &&
+                  zid_tree_verify(root, batch_digests[1], 1, 3, proof, plen);
+        /* Wrong root → reject. */
+        uint8_t wrong_root[32];
+        memcpy(wrong_root, root, 32);
+        wrong_root[0] ^= 0x01;
+        ok = ok && !zid_tree_verify(wrong_root, batch_digests[1], 1, 3,
+                                    proof, plen);
+        /* Wrong leaf (digest of doc 0 at index 1) → reject. */
+        ok = ok && !zid_tree_verify(root, batch_digests[0], 1, 3,
+                                    proof, plen);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("=== ZID: %d failure(s) ===\n", failures);
     return failures;
 }
