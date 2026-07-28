@@ -725,6 +725,22 @@ void zcl_native_handle_core_identity_revoke(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* ── core.zdir.* — the on-chain node directory WRITE path
+ * (tools/command/native_zdir_command.c). register/deregister build the
+ * `ZDIR` OP_RETURN and prefer the live node's zdir_* RPCs, falling back to
+ * op_return_hex when nothing answers. Pre-flight reads the onion_directory
+ * projection out of <datadir>/node.db (READONLY) so an unownable or
+ * already-retired row is refused before a fee is spent. There is no
+ * transfer leaf: ZDIR command byte 3 is reserved and zdir_parse rejects it,
+ * so handing a hostname over is deregister-then-register. Bound by
+ * config/commands/core.def. */
+void zcl_native_handle_core_zdir_register(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_core_zdir_deregister(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 void zcl_native_handle_core_node_bootwait(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

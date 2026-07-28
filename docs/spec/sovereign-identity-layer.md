@@ -341,8 +341,20 @@ the onion site, docs, resolver UX. See the ZClassicDNS contract in
 
 A relay is a master key that signs endpoint announcements:
 
-- **On-chain:** REGISTER/DEREGISTER/TRANSFER anchor the relay's identity
-  key and owner (first-input P2PKH signer, ZNAM convention). Nothing else.
+- **On-chain:** REGISTER/DEREGISTER anchor the relay's identity key and
+  owner (first-input P2PKH signer, ZNAM convention). Nothing else.
+  Operators write these with `core zdir register` / `core zdir deregister`
+  (`tools/command/native_zdir_command.c` → the `zdir_*` RPCs in
+  `app/controllers/src/zdir_controller.c`), never on a timer.
+- **TRANSFER is not implemented and is not a gap.** Command byte 3 is
+  reserved for it and `zdir_parse` rejects it, because a parsed-but-
+  unhandled command would be a silent stub. Handing a hostname to a new
+  operator is DEREGISTER by the current owner followed by REGISTER from the
+  new one — two ordinary txs that the projection already authorizes
+  correctly, with no new opcode and no new authorization rule. The one
+  thing the two-step gives up is seniority: the new owner's row starts at
+  the re-registration height. That is a deliberate price, not an oversight
+  — a transferable seniority is a tradeable one.
 - **Off-chain:** endpoint and bandwidth updates are signed gossip
   announcements — exactly how Tor relays republish descriptors to the
   DirAuths today. Liveness never touches the chain; it comes from signed
@@ -373,7 +385,7 @@ with influence sought, not with existence.
 | Action | Frequency |
 |---|---|
 | ZNAM register / renew / transfer / set_text (incl. `zid` anchor) | per name event |
-| ZDIR register / deregister / transfer | per relay identity event |
+| ZDIR register / deregister (transfer = deregister + register) | per relay identity event |
 | ZSLP genesis / mint / send | settlement only — rewards batch to ~1 tx/day for all contributors |
 | Descriptor master-key anchor | once per service, ever |
 
