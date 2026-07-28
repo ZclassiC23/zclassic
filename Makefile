@@ -905,7 +905,7 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
         check-before-save-hooks check-pthread-create check-model-validation \
         check-long-functions check-rpc-registrar check-lag-slo-observable \
         check-file-size-ceiling check-framework-filename-suffix \
-        check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-no-stale-pinned-facts check-markdown-links check-doc-inline-paths \
+        check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-doc-claims check-no-stale-pinned-facts check-markdown-links check-doc-inline-paths \
         check-api-reference-generated \
         check-no-new-repair-rung \
         fuzz-ci-leaks \
@@ -5801,6 +5801,22 @@ check-no-uncited-victory:
 	@echo "══ LINT: no uncited victory claim (docs/HANDOFF.md) ══"
 	@./tools/scripts/check_no_uncited_victory.sh
 
+# Bound doc claims. An author binds ONE prose assertion to ONE machine-checkable
+# predicate with an invisible HTML comment next to it:
+#   <!-- claim: file-present|file-absent <path> -->
+#   <!-- claim: symbol-present|symbol-absent <symbol> <git-pathspec> -->
+#   <!-- claim: gate-passes|gate-fails <check-*-gate> -->
+# The gate fails when the predicate stops holding and names the file, the line,
+# the claim text and the contradicting reality. gate-fails turns the existing
+# check-no-* ratchets into freshness oracles for open items: an item that says
+# work is outstanding goes red the day the gate that watches it turns green.
+# Generalizes the two hardcoded rows in check-doc-no-false-deleted. Covers
+# tracked *.md; out-of-repo plans need the explicit
+# `tools/lint/check_doc_claims.sh --scan <dir>` invocation.
+check-doc-claims:
+	@echo "══ LINT: bound doc claims (doc freshness) ══"
+	@./tools/lint/check_doc_claims.sh
+
 # A document path baked into an operator-facing C string literal must resolve
 # to a file that exists. Three wallet-path boot refusals pointed the operator
 # at WALLET_PERSISTENCE_RECOVERY.md, which had never existed — a dead pointer
@@ -6119,6 +6135,7 @@ LINT_GATES := \
     check-doc-counts \
     check-no-stale-pinned-facts \
     check-no-uncited-victory \
+    check-doc-claims \
     check-error-doc-refs \
     check-api-reference-generated \
     check-markdown-links \

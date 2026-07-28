@@ -111,7 +111,18 @@ idempotent re-settle rejection; reorg of the settlement tx returns the window
 to the queue; estimator output is deterministic for fixed inputs and matches
 the per-action formulas.
 
-## Governance: none (owner correction 2026-07-27)
+## Governance: REVERSED by the owner (2026-07-28) — this section is superseded
+
+**Do not act on the paragraph below.** The owner has reversed the 2026-07-27
+"Governance: none" correction: token-weighted voting and GG20 threshold
+ratification are back on the table. Nothing here is scheduled yet and no
+design has been re-approved — treat both the cut and the reversal as owner
+direction, and confirm the current shape with the owner before building any
+governance slice.
+
+This is a decision, not a code fact, so it carries no `check-doc-claims`
+binding; only the owner can refresh it. The paragraph is kept verbatim below
+as the record of what was cut, and of what the reversal puts back in scope.
 
 ZClassic is pure PoW consensus — **there is no voting, and ZCODE does not
 add one.** An earlier draft of this section sketched token-weighted votes

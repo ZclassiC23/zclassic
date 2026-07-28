@@ -32,9 +32,20 @@ path order; caller insertion order is never a wire coordinate.
 The first network primitive is `lib/vcs/package_swarm.*`. It defines strict
 announce, want, data, and cancel frames with request/package binding, canonical
 little-endian encoding, a one-chunk-per-frame 1 MiB ceiling, exact-length
-parsing, and content.v2 verification. It is intentionally a pure codec: it has
-no socket, filesystem, wallet, install, build, execution, or publication
-authority.
+parsing, and content.v2 verification. That translation unit is still a pure
+codec — no socket, filesystem, wallet, install, build, execution, or
+publication authority of its own.
+
+It is no longer unwired, though: slice 12 (commit 833d7f398) gave the swarm a
+real P2P socket. `lib/vcs/src/package_swarm_node.c` drives the peer state
+machine and `config/src/boot_zcode_swarm.c` puts its frames on the wire under
+the `zpkgswm` message tag via `p2p_node_begin_message()`. Read "pure codec" as
+a statement about the encoder/decoder module only, never as "this subsystem
+cannot reach the network".
+<!-- claim: symbol-present p2p_node_begin_message config/src/boot_zcode_swarm.c # the swarm IS socket-wired -->
+<!-- claim: file-present lib/vcs/src/package_swarm_node.c # the transport half exists -->
+<!-- claim: symbol-absent socket lib/vcs/src/package_swarm.c # the codec half stays pure -->
+
 
 Do not put source packages through the legacy file-market trust path. Its offer
 root and possession/payment checks predate `content.v2`, and the fast file

@@ -580,6 +580,7 @@ current green tree.
 | **`check-error-doc-refs`** | HARD | A remedy the operator cannot follow is worse than none: three wallet-path boot refusals in `config/src/boot.c` said "see WALLET_PERSISTENCE_RECOVERY.md", a file that had never existed — and they fire exactly when private keys are already on disk and the node refuses to write over them. Scans every string literal in a tracked `.c`/`.h` for a token ending in `.md` and resolves it against the repo root, or by basename under `docs/` / `docs/work/`. Comments are ignored (only literals reach an operator); literals carrying a printf conversion or a shell/SQL glob are skipped, since the gate cannot know what they expand to. Complements `check-markdown-links`, which only covers `.md`-to-`.md`. Per-line override `// error-doc-ref-ok:<reason>` for a genuinely runtime-created path. Hermetic `--selftest`. Zero violations, no baseline. |
 | **`check-api-reference-generated`** | HARD | `docs/API_REFERENCE.md` is GENERATED output — `tools/gen_api_reference.c` expands the same `ZCL_COMMAND_*` X-macros `config/src/command_catalog.c` uses over the same `config/commands/*.def` catalogs, so the C preprocessor (not a hand-rolled parser) reads the table, and editorial prose is copied through from the template `docs/API_REFERENCE.md.in` at `<!-- ZCL-GEN:… -->` markers. The page previously said of itself that every row was "transcribed directly" — by hand — and drifted accordingly: it still claimed 106 leaves across 41 branches long after the catalog had more than doubled, i.e. it named commands as `ready` that were `planned`. The gate compiles the generator (`-Werror`), regenerates into a temp file, and `diff`s; any difference fails and prints the drift. Fix with `make docs-api-reference`, never by editing the generated page. Fail-loud floors on the `.def` scan set and on the emitted entry count, so an emptied catalog exits 2 instead of reporting clean. Hermetic `--selftest` plants a hand edit and proves the gate trips. No baseline, no override. |
 | **`check-no-uncited-victory`** | HARD | A progress claim without an external ledger line is not trustworthy — false "cured / at tip / fully synced" claims have repeatedly re-wedged without one. Splits the one live-state page `docs/HANDOFF.md` into blank-line paragraphs; a paragraph carrying a word-bounded VICTORY PHRASE (`at tip`, `at-tip`, `reaches tip`, `holds tip`, `fully synced`, `cured`, `unwedged`, `wedge cleared`/`closed`/`fixed`, `soak window open`/`running`, `proven live`, `live-proven`, `stable at tip`) FAILS unless the SAME paragraph carries a CITATION TOKEN (`uptime-ledger`, `slo-summary:`, `VERDICT=PASS`, `WALL_CLOCK_SECONDS`, `gap_vs_oracle`, a `ts=<digits>` stamp) or the explicit per-paragraph override `<!-- victory-ok: <reason> -->` (HISTORICAL narration only, never a current-state claim). Hollow-gate rule: `docs/HANDOFF.md` missing or < 10 lines FAILs. Hermetic `--selftest`. No baseline. |
+| **`check-doc-claims`** | HARD | Doc freshness, author-owned. Generalizes the two hardcoded rows in `check-doc-no-false-deleted` into an annotation any author can write: one HTML comment binds one prose assertion to one machine-checkable predicate — a path that must still exist or still be absent, a symbol that must still be present or absent under a `git` pathspec, or an existing `check-*` gate that must still pass or still FAIL. The gate names the file, the line, the claim text and the contradicting reality. The `gate-fails` form turns the existing `check-no-*` ratchets into freshness oracles: an item that says work is outstanding goes red the day the gate watching that work turns green — exactly the failure that cost three agents a re-run of commit `9b5add018`. Predicates resolve against the repo root wherever the document lives; annotations inside fenced code blocks are syntax documentation and are skipped. Fail-loud floors (`gate_require_scanned`) on both the tracked-`*.md` scan set and the parsed-claim count, and a self-check with known-good/known-bad fixtures runs BEFORE every tree scan, so "clean" is only printed after the evaluator has demonstrated it still fires. `--selftest`, `--list`. **Covers tracked `*.md` only** — out-of-repo plans (`~/.claude/plans/`) need the explicit `--scan <dir>` invocation, which `make lint` does not and cannot run. Syntax and worked example: the section below this table. No baseline. |
 | **E14: `check-condition-cooldown`** | HARD | Closes the multi-hour page-storm bug class: a `COND_CRITICAL` condition whose `detect()` calls a known peer/network-liveness primitive (`connman_max_peer_height`, `connman_get_node_count`, `sync_monitor_connman`, `sync_monitor_max_peer_height`) or the legacy `zclassicd` RPC oracle (`legacy_chain_rpc_*`) must set `.cooldown_secs > 0` (condition.c re-arms the remedy instead of latching permanently at `max_attempts`) or wire a `.progressing` callback (TL-1's alternate anti-latch mechanism, e.g. `reducer_frontier_reconcile_light.c`). Exemplar fix: `app/conditions/src/sync_violation_lag.c`. Self-tested against an isolated tmp dir (`ZCL_CONDITION_COOLDOWN_SELFTEST=1`), proven in `make test`/`make test-parallel` via `t_e14_condition_cooldown_gate()`. No baseline (structural, not a ratchet). |
 | **`check-no-gnu-va-args`** | HARD | Variadic macros use the C23 `__VA_OPT__(,) __VA_ARGS__`, never the GNU comma-swallowing `, ##__VA_ARGS__`. A GNU-only idiom is invisible while exactly one compiler ever reads the tree, and this one was load-bearing: twelve uses — ten in `lib/util/include/util/log_macros.h` and `lib/net/src/addrman.c`, two inside the sealed consensus tree — produced 7,141 diagnostics under `clang -std=c23 -pedantic`, enough to bury every real finding. The two spellings expand to an identical token stream for the zero-, one-, and n-argument cases; the sealed-tree conversion was proven by compiling both revisions to **identical object files**. Opt out with `// gnu-va-args-ok: <reason>` on the line or the line above (no site uses it today). |
 | **`check-clang-portability`** | RATCHET | Second-compiler portability: a whole-tree `clang -std=c23 -Wall -Wextra -Werror -pedantic -fsyntax-only` over the same source set the node binary is built from, ratcheted against `tools/lint/portability_baseline.clang.txt` (counts may only go DOWN). The node ships as one whole-program GCC build, so nothing had ever asked a second compiler whether the tree is even well-formed — and GCC-only spellings landed invisibly, including genuine undefined behaviour in `lib/net/src/p2p_game.c` where a `#undef` sat inside a function call's argument list (GCC tolerates it; clang rejects it and every use fails). Measured 3.0 s wall at 32 workers over 1174 translation units. **SKIP contract:** prints a loud SKIP and exits 0 when clang is absent, exactly like `check-ci-symbol-floor` without objdump — an outside contributor must never be blocked by a gate whose tool they do not have. |
@@ -588,6 +589,64 @@ current green tree.
 | **`check-standalone-tools-link`** | HARD | Every standalone tool rule in the Makefile must actually BUILD. `make lint`, `make test-parallel` and `make ci` between them build the node, the test runners, the fuzzers and two lint helpers — and nothing else, so every other `$(BIN_DIR)/<tool>` rule was reachable from no gate and rotted unobserved. When `lib/base` absorbed logging and allocation behind forwarding headers, SIX standalone rules broke at once (missing `-I` paths, missing `lib/base/src/log_level.c`, missing `lib/platform/src/clock.c`) and every gate stayed green through it. The tool list is DERIVED from the Makefile — both the literal `$(BIN_DIR)/<name>:` spelling and the `$(SOME_BIN):` spelling resolved through its `SOME_BIN = $(BIN_DIR)/<name>` definition — never hand-written, so a newly added tool is covered the day it lands and an unknown tool is NOT exempt (fail-closed). Per-epoch CANDIDATE staging paths are skipped. The exempt set is closed and carries a mandatory reason per entry: already built by lint/ci (`gen_templates`, `core_seal`, `check_observability_pairing`, the eight `fuzz_*`, `crash_recovery_test`, `zcl-rpc`), whole-program relinks (`zclassic23` + dev/asan/tsan variants, the test runners, `session`, `bot`), or outside the base toolchain (`zcl-blog` needs webkit2gtk). Covered tools are single-translation-unit builds: ~9 s warm, and a no-op once built. No baseline. |
 
 E10 = the WARN→RATCHET graduation of #18 and #20 (above).
+
+### Binding a document claim to a predicate (`check-doc-claims`)
+
+A document that asserts something the code contradicts costs more than no
+document, because a reader acts on it. The measured price in one session: a
+plan listed a deletion as PENDING that had landed on main three days earlier
+(commit `9b5add018`), and three agents were dispatched to redo finished work.
+
+`check-doc-no-false-deleted` already proved the shape — fire only when a doc
+says "gone" while the code is still present *and* wired — but its table of
+claims is hardcoded in the gate, so only a gate author can extend it.
+`check-doc-claims` inverts that: the author of a claim writes the predicate,
+inline, next to the claim, in an HTML comment that renders invisibly.
+
+```markdown
+- `data_integrity_compute` shadow-seed: confirm non-consensus or repoint. The
+  `utxo_projection` half of this question is CLOSED, not open — Program H1
+  deleted the event-log-fed projection and its view.
+  <!-- claim: file-absent lib/storage/src/utxo_projection.c # deleted by Program H1 -->
+  <!-- claim: gate-passes check-no-utxo-projection # the copy must stay dead -->
+```
+
+Six predicates, each resolved against the repository root no matter where the
+document lives:
+
+| Predicate | Arguments | Holds while |
+|---|---|---|
+| `file-present` | `<path>` | the path still exists |
+| `file-absent` | `<path>` | the path still does not exist |
+| `symbol-present` | `<symbol> <git-pathspec>` | `git grep -lwF` still matches a tracked file |
+| `symbol-absent` | `<symbol> <git-pathspec>` | it still matches nothing |
+| `gate-passes` | `<check-*-gate>` | that gate still exits 0 |
+| `gate-fails` | `<check-*-gate>` | that gate still exits non-zero |
+
+Text after `#` is a free-text note. Annotations inside fenced code blocks are
+syntax documentation, never live claims, and are skipped — which is why the
+example above is fenced.
+
+`gate-fails` is the highest-value form and the one that would have caught the
+failure above. Write it under an item that claims work is outstanding, naming
+the ratchet gate that watches that work: while the work is genuinely
+outstanding the oracle is red and the item is fresh; the day the work lands the
+oracle turns green and `check-doc-claims` turns RED, naming the plan file and
+the stale line. Every `check-no-*` ratchet already in `LINT_GATES` is usable as
+an oracle, so items they watch get freshness checking for free. Gates are
+resolved through the same `gate_command()` table `tools/lint/run_lint.sh` uses,
+run at most once per invocation, and a gate may not name itself.
+
+**Out-of-repo documents are NOT covered by `make lint`.** The motivating
+failure happened in `~/.claude/plans/*.md`, which sits outside the git
+repository: invisible to `git grep` and unreachable by any repo gate. The
+in-repo half (tracked `*.md`) is automatic; the out-of-repo half is a
+deliberate, author-run command that scans an external tree while still
+resolving every predicate against this repository:
+
+```sh
+tools/lint/check_doc_claims.sh --scan ~/.claude/plans
+```
 
 **Canonical lint-gate list (E11 source of truth).** This block is machine-checked
 against the Makefile `lint:` target. Keep it sorted; edit it whenever you
@@ -605,6 +664,7 @@ add/remove a gate.
 - `check-core-include-boundary`
 - `check-core-seal`
 - `check-doc-accuracy`
+- `check-doc-claims`
 - `check-doc-counts`
 - `check-doc-inline-paths`
 - `check-domain-purity`
