@@ -1025,6 +1025,7 @@ int main(int argc, char **argv)
     failures += test_zendp_records();
     { extern int test_zendp_revocation(void);
       failures += test_zendp_revocation(); }
+    { extern int test_zendp_window(void); failures += test_zendp_window(); }
     failures += test_proof_chain();
     { extern int test_znam_site(void); failures += test_znam_site(); }
     failures += test_htlc();
