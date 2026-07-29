@@ -3574,22 +3574,38 @@ mvp-coldstart-to-tip-local: zclassic23 zcl-rpc
 # Binary-path argument: ZCL_BIN=/path/to/zclassic23 make
 # mvp-coldstart-to-tip-stopwatch points the stopwatch at any built binary
 # (e.g. an orchestrator's freshly-integrated candidate) without editing this
-# file or the script. ZCL_PEER=HOST:PORT overrides the default local peer
-# (127.0.0.1:8033). Isolated /tmp datadir + non-live ports (39170-39173);
-# dials the peer as a read-only P2P client only — never touches its datadir
-# or systemd. SKIPs (exit 2 -> 0) when the binary is absent or no peer is
-# reachable; exit 3 (SEAM, real forward progress but budget expired) and
-# exit 4 (STALLED-NAMED, a named blocker explains a stall) are both honest
+# file or the script. ZCL_PEER=HOST:PORT names the serving peer, and it is
+# REQUIRED: there is deliberately no default. It used to default to
+# 127.0.0.1:8033 — the canonical node's own P2P port — so a bare
+# `make mvp-coldstart-to-tip-stopwatch` on an operator host quietly synced a
+# full chain off the live node nobody had asked it to touch. With no peer
+# stated the run SKIPs and says so. Point it at a stopwatch fixture peer
+# (the zcl-stopwatch-peer unit listens on 127.0.0.1:39070), or name the
+# canonical node explicitly if that is genuinely what you mean.
+# Isolated /tmp datadir + non-live ports (39170-39173); dials the peer as a
+# read-only P2P client only — never touches its datadir or systemd. SKIPs
+# (exit 2 -> 0) when the binary is absent, no peer is stated, or the stated
+# peer is unreachable; exit 3 (SEAM, real forward progress but budget expired)
+# and exit 4 (STALLED-NAMED, a named blocker explains a stall) are both honest
 # non-SKIP verdicts and propagate as a failing recipe, same discipline as
 # mvp-coldstart-to-tip-local's exit 3.
+#
+# The recipe runs the harness's own hermetic --selftest first (no binary, no
+# network, no datadir): it re-asserts the verdict-classification table AND the
+# no-implicit-peer guardrail above, so the proof lane cannot quietly regain a
+# default peer between runs.
 .PHONY: mvp-coldstart-to-tip-stopwatch
 mvp-coldstart-to-tip-stopwatch: zclassic23
 	@bash -c 'set -uo pipefail; \
 	 echo "══ MVP C3 STOPWATCH (real): wiped datadir -> checkpoint/fold -> peer tip, real wall-clock ══"; \
+	 if ! bash tools/scripts/cold_start_to_tip_stopwatch.sh --selftest >/dev/null 2>&1; then \
+	     echo "mvp-coldstart-to-tip-stopwatch: FAIL harness --selftest (run it directly to see which check broke)"; \
+	     exit 1; \
+	 fi; \
 	 bash tools/scripts/cold_start_to_tip_stopwatch.sh \
 	     $(if $(ZCL_BIN),--bin=$(ZCL_BIN),) $(if $(ZCL_PEER),--peer=$(ZCL_PEER),); rc=$$?; \
 	 if [ "$$rc" -eq 2 ]; then \
-	     echo "mvp-coldstart-to-tip-stopwatch: SKIP (binary absent / no reachable serving peer — run on a host with a synced zclassic23 peer)"; \
+	     echo "mvp-coldstart-to-tip-stopwatch: SKIP (binary absent / no serving peer stated or reachable — set ZCL_PEER=HOST:PORT and run on a host with a synced zclassic23 peer)"; \
 	     exit 0; \
 	 fi; \
 	 exit $$rc'

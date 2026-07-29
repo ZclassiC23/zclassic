@@ -36,6 +36,9 @@
 #   - dedicated non-live ports (39170-39173), -listen=0, -nolegacyimport,
 #   - dials the peer via -connect as a CLIENT only (read-only P2P — never
 #     writes to the peer's datadir, never touches systemd),
+#   - the serving peer has NO default and must be stated (ZCL_CS_PEER /
+#     --peer / ZCL_PEER= via make); with nothing set the run SKIPs rather
+#     than falling back to whatever is listening on the canonical port,
 #   - process-group SIGKILL teardown on every exit path.
 #
 # Usage:
@@ -59,8 +62,8 @@
 #   1  FAIL           — no forward progress AND no named blocker (the silent-
 #                        stall failure class), or the node process died, or a
 #                        harness/setup error.
-#   2  SKIP           — prerequisite absent (binary not built / peer
-#                        unreachable). Not a verdict on C3 either way.
+#   2  SKIP           — prerequisite absent (binary not built / no peer stated
+#                        / peer unreachable). Not a verdict on C3 either way.
 #                        A peer that accepts the TCP connection and closes it
 #                        immediately is NOT a SKIP — it is labelled
 #                        peer_precheck=accept_close, warned about loudly, and
@@ -93,7 +96,14 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 . "$REPO_ROOT/tools/scripts/stopwatch_json_lib.sh"
 
 NODE_BIN="${ZCL_CS_NODE_BIN:-$REPO_ROOT/build/bin/zclassic23}"
-PEER="${ZCL_CS_PEER:-127.0.0.1:8033}"
+# NO DEFAULT PEER, ON PURPOSE. This used to default to 127.0.0.1:8033 — the
+# canonical/live node's P2P port on an operator host — so a bare
+# `make mvp-coldstart-to-tip-stopwatch` silently pulled a full chain-data sync
+# off the operator's own node without anyone asking for it. The peer a proof
+# lane dials is part of the proof, so it must be stated, not inherited: with
+# nothing set the run SKIPs (exit 2) and names the variable. See the
+# no_peer_configured skip below.
+PEER="${ZCL_CS_PEER:-}"
 FILE_PEER="${ZCL_CS_FILE_PEER:-}"
 HEADER_SOURCE="${ZCL_CS_HEADER_SOURCE:-}"
 BUNDLE_PATH="${ZCL_CS_BUNDLE_PATH:-}"
@@ -393,6 +403,23 @@ if [ "$SELFTEST" = "1" ]; then
     st_ps_check "peer closed at accept, zero bytes -> accept_close" accept_close "$(classify_peer_precheck 12)"
     st_ps_check "unknown probe rc -> unreachable (never silently held_open)" unreachable "$(classify_peer_precheck 77)"
 
+    # No-implicit-peer guardrail. This harness once defaulted its serving peer
+    # to 127.0.0.1:8033 — the canonical node's own P2P port — so a bare
+    # `make mvp-coldstart-to-tip-stopwatch` quietly pulled a full chain sync off
+    # the operator's live node. The fix is a stated peer or a SKIP, and these
+    # three checks are what stop it from creeping back: the source must carry no
+    # `ZCL_CS_PEER` fallback value, must not hardcode the canonical port as the
+    # PEER default, and must still contain the refusal. Patterns are assembled
+    # from concatenated literals so they cannot match their own source lines.
+    st_pat_fallback='ZCL_CS_PEER'':-[^}]'
+    st_pat_port='^PEER=.*8033'
+    grep -qE "$st_pat_fallback" "${BASH_SOURCE[0]}"
+    st_check "source carries no ZCL_CS_PEER fallback value (peer must be stated)" 1 $?
+    grep -qE "$st_pat_port" "${BASH_SOURCE[0]}"
+    st_check "PEER is not defaulted to the canonical 8033 P2P port" 1 $?
+    grep -q 'no_peer_configured' "${BASH_SOURCE[0]}"
+    st_check "the empty-peer refusal is still wired" 0 $?
+
     if [ "$st_fail" = 0 ]; then
         echo "cold-start-wipe-stopwatch: --selftest PASS"
         exit 0
@@ -546,6 +573,18 @@ skip() { echo "cold-start-wipe-stopwatch: SKIP ($*)"; write_artifact "skip" 2 "$
 die()  { echo "cold-start-wipe-stopwatch: FAIL: $*" >&2; write_artifact "fail" 1 "$*"; exit 1; }
 
 [ -x "$NODE_BIN" ] || skip "node binary absent/not executable: $NODE_BIN"
+
+# ── the peer must be STATED (see the PEER assignment above) ──────────────────
+# A proof lane that inherits its serving peer from a default is a proof lane
+# that can be run by accident against whatever happens to be listening. The old
+# default was the canonical node's own P2P port, so `make
+# mvp-coldstart-to-tip-stopwatch` with no arguments dialled the operator's live
+# node and pulled chain data off it. Refuse instead: SKIP is already this
+# harness's "prerequisite absent" verdict (exit 2, which the Make wrapper turns
+# into a clean no-op), and it records an honest artifact naming what is missing.
+if [ -z "$PEER" ]; then
+    skip "no_peer_configured — set ZCL_CS_PEER=HOST:PORT (or pass --peer=HOST:PORT / ZCL_PEER= via make). This harness has NO default peer on purpose: it used to default to 127.0.0.1:8033, the operator's canonical node, so a bare run silently synced off it. Point it at a stopwatch fixture peer (e.g. 127.0.0.1:39070), or name the canonical node explicitly if that is genuinely what you mean."
+fi
 
 peer_host="${PEER%:*}"
 peer_port="${PEER##*:}"
