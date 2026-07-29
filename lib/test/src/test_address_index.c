@@ -396,7 +396,9 @@ int test_address_index(void)
         AI_CHECK("drop for perf fixture", address_index_drop(db));
         AI_CHECK("schema for perf fixture", address_index_ensure_schema(db));
         const int N = 400;          /* blocks */
-        const int OUTS = 4;         /* outputs per block */
+        /* enum, not `const int`: a const-qualified object is not a constant
+         * expression in C, so `int64_t vals[OUTS]` below would be a VLA. */
+        enum { OUTS = 4 };          /* outputs per block */
         uint8_t d[32]; memset(d, 0, 32);
         sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL);
         int64_t t0 = platform_time_monotonic_us();

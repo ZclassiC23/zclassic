@@ -33,6 +33,11 @@
  * default. Set ZCL_GOLDEN_TIMING_STRICT=1 for the manual demo / quality
  * linger run: `ZCL_GOLDEN_TIMING_STRICT=1 make t ONLY=golden_dev_cycle`. */
 
+/* realpath() needs __USE_MISC; -D_POSIX_C_SOURCE=200809L alone does not
+ * declare it. Without this the TU only builds by accident of the glibc
+ * fortify inline at -O3. */
+#define _DEFAULT_SOURCE
+
 #include "test/test_core.h"
 
 #include "dev_activation.h"

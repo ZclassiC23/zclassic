@@ -39,8 +39,16 @@ static size_t wallet_find_slot(const struct wallet *w, const struct uint256 *has
 static uint32_t spent_hash(const struct uint256 *txid, uint32_t vout)
 {
     uint32_t h = 0;
-    for (int i = 0; i < 8; i++)
-        h ^= ((const uint32_t *)txid->data)[i];
+    for (int i = 0; i < 8; i++) {
+        /* memcpy, not `((const uint32_t *)txid->data)[i]`. Alignment is fine
+         * (uint256::data is alignas(4)), but reading a uint8_t[32] object
+         * through a uint32_t lvalue violates strict aliasing, which -O3
+         * -flto=auto is entitled to act on. gcc lowers this memcpy to the
+         * same single 4-byte load — same bytes, same value, no UB. */
+        uint32_t w;
+        memcpy(&w, txid->data + (size_t)i * sizeof w, sizeof w);
+        h ^= w;
+    }
     h ^= vout * 2654435761u;
     return h % SPENT_SET_BUCKETS;
 }

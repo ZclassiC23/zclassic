@@ -500,9 +500,74 @@ ZCL_WARN_UNUSED_RESULT = -Wno-unused-result
 # suppression-ok: separate decision from the unused-result deletion; blockers are source sites, measured, not assumed
 ZCL_WARN_STRINGOP_OVERFLOW = -Wno-stringop-overflow
 
+# ── Warning gates BEYOND -Wall -Wextra -pedantic ────────────────────────────
+#
+# Every flag below was measured at ZERO warnings over BOTH -Werror-bearing
+# compile configurations in this tree — the 1298 node TUs at these CFLAGS, and
+# all 2116 TUs again at TEST_REL_CFLAGS (-DZCL_TESTING), which also keeps
+# -Werror. Adopting a flag that is already clean costs nothing today and turns
+# a whole defect class into a build failure from here on.
+#
+# Every flag here is one GCC reports as OFF under -Wall -Wextra -pedantic
+# (`cc -Wall -Wextra -pedantic -Q --help=warning`). Flags that merely restate
+# what -Wall/-Wextra already enable were deliberately left out rather than
+# listed for appearance: -Wpointer-arith, -Wenum-conversion, -Wenum-int-mismatch,
+# -Wcast-function-type, -Wformat-security, -Wcalloc-transposed-args,
+# -Wpacked-not-aligned, -Wmultistatement-macros, -Wshift-negative-value and
+# -Wbidi-chars=any are ALL already on. -Wold-style-definition is a no-op in
+# C23, where `f()` already means `f(void)`.
+#
+# Two entries raise a level rather than add a flag: -Wall gives
+# -Wshift-overflow=1, and the default is -Wattribute-alias=1.
+#
+# MEASURE MIDDLE-END WARNINGS WITH -c, NOT -fsyntax-only. -Wimplicit-fallthrough,
+# -Wunused-result, -Wnull-dereference, -Warray-bounds, -Wuse-after-free and the
+# -Wstringop-* family are emitted during gimplification, which -fsyntax-only
+# never reaches: a syntax-only screen reports ZERO for all of them and is not
+# evidence. Every flag in the list below was re-measured with a real `-c`
+# codegen pass over all 3414 TUs, not just the fast screen.
+#
+# -Wimplicit-fallthrough=5 was TRIED AND REJECTED, and it is the reason for the
+# paragraph above: the fast screen said 0, the codegen pass said 911 warnings
+# at 439 sites. Level 3 (what -Wextra gives) accepts a `/* fallthrough */`
+# COMMENT; level 5 accepts only the attribute. Raising it would mean annotating
+# 439 sites — and two of them are inside glibc's own
+# bits/string_fortified.h, which this tree cannot edit at all, so level 5 is
+# not reachable regardless of effort. Left at 3.
+#
+# -Walloc-zero was TRIED AND REJECTED for a subtler reason worth keeping:
+# MEASURE EVERY CANDIDATE IN THE NON-LTO CONFIGURATION TOO. It reports ZERO
+# across all 3414 TUs at these CFLAGS, because -flto=auto defers the inlining
+# that would expose a constant 0 — but TEST_REL_CFLAGS (Makefile:995) filters
+# -flto=auto OUT and keeps -Werror, and there the same flag reports 393
+# warnings, i.e. it would compile the node fine and then break
+# `make test-parallel`. All 393 are the same one line (the zcl_malloc wrapper
+# in lib/base/include/base/safe_alloc.h:49) re-reported once per inlined
+# caller, so they are one inlining artifact, not 393 defects. A flag whose
+# output depends on optimizer visibility is a poor permanent -Werror gate.
+#
+# -Wvla + -Walloca together close stack-exhaustion-by-runtime-length. The six
+# production VLAs (domain/encoding/src/{base58,bech32}.c) were already bounded
+# by a constant, so they became fixed arrays plus an explicit bounds check;
+# a VLA turns a weakened length check into stack exhaustion, a fixed array
+# turns it into a failed call.
+#
+# To re-derive (never trust a count typed here) — drop a flag from this list,
+# then compile every TU in $(ALL_SRCS) and $(TEST_SRCS) with `-fsyntax-only`
+# at these flags minus -Werror, once plain and once with -DZCL_TESTING.
+# Confirm the rig is armed before believing a zero: a deliberately bogus
+# -Wnot-a-real-flag must report one error per TU.
+ZCL_WARN_EXTRA_GATES = \
+	-Wundef -Wstrict-prototypes -Wdouble-promotion \
+	-Wduplicated-cond -Wduplicated-branches \
+	-Wshift-overflow=2 -Wattribute-alias=2 \
+	-Walloca -Wvla -Wtrampolines \
+	-Wflex-array-member-not-at-end
+
 CFLAGS = -std=c23 -g -O3 $(if $(ZCL_NATIVE),-march=native,-march=x86-64-v3) -flto=auto -Wall -Wextra -Werror -pedantic \
 	$(REPRO_CFLAGS) \
 	$(HARDEN_CFLAGS) \
+	$(ZCL_WARN_EXTRA_GATES) \
 	$(ZCL_WARN_STRINGOP_OVERFLOW) $(ZCL_WARN_UNUSED_RESULT) \
 	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(CORE_INCLUDES) $(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) $(ADAPTERS_INCLUDES) $(TOOLS_INCLUDES) $(DEVLOOP_INCLUDES) \
 	-Ilib/test/include \

@@ -1096,8 +1096,9 @@ int test_mint_skip_crypto(void)
     MSC_CHECK("fast crypto rows bind prepared epoch as checkpoint_fold",
               skip.profile_rows);
     MSC_CHECK("full fold counts all three verified stages",
-              full.script_verified == N && full.proof_verified == N &&
-              full.utxo_verified == N);
+              full.script_verified == (uint64_t)N &&
+              full.proof_verified == (uint64_t)N &&
+              full.utxo_verified == (uint64_t)N);
     MSC_CHECK("checkpoint fold never increments verified stage counters",
               skip.script_verified == 0 && skip.proof_verified == 0 &&
               skip.utxo_verified == 0);

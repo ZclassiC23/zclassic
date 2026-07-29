@@ -11,11 +11,36 @@
 #include "core/hash.h"
 #include "support/cleanse.h"
 
+#include <assert.h>
 #include <ctype.h>
 #include <string.h>
 
 static const char base58_chars[] =
     "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+/* Fixed bounds for the scratch buffers below.
+ *
+ * Each entry point already rejects over-long input, so the scratch sizes were
+ * always bounded — but spelling them as `unsigned char b58[b58_size]` made
+ * them variable-length arrays, i.e. a stack allocation whose size is a runtime
+ * value. That is the construct `-Wvla` exists to forbid: if any future edit
+ * moves or weakens the length check above, a VLA turns it straight into stack
+ * exhaustion, while a fixed array turns it into a bounds check that fails
+ * loudly. The static_asserts below bind each buffer to the cap that justifies
+ * it, so the two cannot drift apart silently. */
+#define B58_ENCODE_MAX_INPUT 1024u
+#define B58_ENCODE_BUF       (B58_ENCODE_MAX_INPUT * 138u / 100u + 1u)  /* 1414 */
+#define B58_DECODE_MAX_INPUT 1023u
+#define B58_DECODE_BUF       (B58_DECODE_MAX_INPUT * 733u / 1000u + 1u) /* 750 */
+#define B58_CHECK_MAX_INPUT  1020u
+#define B58_CHECK_BUF        (B58_CHECK_MAX_INPUT + 4u)                 /* 1024 */
+
+static_assert(B58_ENCODE_BUF >= B58_ENCODE_MAX_INPUT * 138u / 100u + 1u,
+              "base58 encode scratch must cover the encode input cap");
+static_assert(B58_DECODE_BUF >= B58_DECODE_MAX_INPUT * 733u / 1000u + 1u,
+              "base58 decode scratch must cover the decode input cap");
+static_assert(B58_CHECK_BUF >= B58_CHECK_MAX_INPUT + 4u,
+              "base58check scratch must cover payload + 4-byte checksum");
 
 bool domain_encoding_base58_encode(const unsigned char *data, size_t data_len,
                                    char *out, size_t out_size, size_t *out_len)
@@ -24,7 +49,7 @@ bool domain_encoding_base58_encode(const unsigned char *data, size_t data_len,
      * WIF keys, BIP32 extended keys) is tens of bytes; mirror the decode
      * side's 1023-char cap rather than let a caller-sized payload exhaust
      * the stack. */
-    if (data_len > 1024)
+    if (data_len > B58_ENCODE_MAX_INPUT)
         return false;
 
     const unsigned char *pbegin = data;
@@ -36,8 +61,10 @@ bool domain_encoding_base58_encode(const unsigned char *data, size_t data_len,
         zeroes++;
     }
 
-    size_t b58_size = (pend - pbegin) * 138 / 100 + 1;
-    unsigned char b58[b58_size];
+    size_t b58_size = (size_t)(pend - pbegin) * 138 / 100 + 1;
+    if (b58_size > B58_ENCODE_BUF)
+        return false; /* unreachable given the cap above; fail, never overflow */
+    unsigned char b58[B58_ENCODE_BUF];
     memset(b58, 0, b58_size);
 
     while (pbegin != pend) {
@@ -102,10 +129,12 @@ bool domain_encoding_base58_decode(const char *psz,
      * approaches this length, so a longer input is malformed — reject it
      * rather than let an attacker-sized string exhaust the stack (mirrors the
      * length cap in bech32_decode). */
-    if (input_len > 1023)
+    if (input_len > B58_DECODE_MAX_INPUT)
         return false;
     size_t b256_size = input_len * 733 / 1000 + 1;
-    unsigned char b256[b256_size];
+    if (b256_size > B58_DECODE_BUF)
+        return false; /* unreachable given the cap above; fail, never overflow */
+    unsigned char b256[B58_DECODE_BUF];
     memset(b256, 0, b256_size);
 
     const char *p = psz;
@@ -165,10 +194,10 @@ bool domain_encoding_base58check_encode(const unsigned char *data, size_t data_l
 {
     /* Same 1 KB stack-VLA bound as base58_encode (which would reject
      * data_len + 4 anyway); check here so the buf VLA is born bounded. */
-    if (data_len > 1020)
+    if (data_len > B58_CHECK_MAX_INPUT)
         return false;
 
-    unsigned char buf[data_len + 4];
+    unsigned char buf[B58_CHECK_BUF];
     memcpy(buf, data, data_len);
     unsigned char hash[32];
     hash256(data, data_len, hash);
