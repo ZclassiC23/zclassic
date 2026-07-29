@@ -822,3 +822,9 @@ AGENT_IMPACT_RULE("app/controllers/src/zdir_controller.c|app/controllers/include
  * lives inside and the rotation decision are one contract, so an edit to any
  * of them re-runs the whole loop. */
 AGENT_IMPACT_RULE("config/src/boot_seniority.c|config/include/config/boot_seniority.h|config/src/boot_node_utilities.c|lib/zid/include/zid/zid_seniority.h|lib/net/src/zdir_selection.c|lib/test/src/test_zid_seniority_binding.c", "zid_seniority_binding zid_seniority zdir net make_lint_gates")
+/* Signed endpoint records, publish and receive. The record body codec, the
+ * chain-bound swarm layer, the operator command surface, its spec, and the
+ * boot-time load that re-verifies filed records all have to agree on one
+ * question — "is this signing key ACTIVE on-chain right now" — so an edit to
+ * any of them re-runs the whole loop. */
+AGENT_IMPACT_RULE("tools/command/native_zendp_command.c|lib/vcs/src/zendp_swarm.c|lib/zid/src/zendp.c|config/src/boot_endpoint_records.c|config/src/boot_onion_discovery.c|lib/test/src/test_zendp_records.c", "zendp zendp_records zdesc command_registry_catalog make_lint_gates")

@@ -395,6 +395,7 @@ int test_zid_seniority(void);
 int test_zid_seniority_binding(void);
 int test_zdir(void);
 int test_zdir_write_path(void);
+int test_zendp_records(void);
 int test_identity_command(void);
 int test_proof_chain(void);
 int test_htlc(void);

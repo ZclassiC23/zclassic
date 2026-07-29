@@ -21,6 +21,7 @@
  * config/src/boot_onion_discovery.c. `blog_serve` is passed straight
  * through to the app handlers. */
 void boot_onion_discovery_register(onion_blog_serve_fn blog_serve,
-                                   onion_peer_discover_fn peer_discover);
+                                   onion_peer_discover_fn peer_discover,
+                                   const char *datadir);
 
 #endif

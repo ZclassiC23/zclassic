@@ -286,8 +286,8 @@ ZCL_COMMAND_READY_READ(
  * belongs to slice 8. */
 
 ZCL_COMMAND_BRANCH("zcode.reward", "zcode",
-                   "Contribution scoring, eligibility, and SIMULATED "
-                   "reward settlement (placeholder token id only)",
+                   "Contribution scoring and SIMULATED settlement "
+                   "(placeholder token only)",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_READ(
@@ -472,8 +472,7 @@ ZCL_COMMAND_READY_READ(
  * unavailable and report zero honestly until slices 11-12. */
 
 ZCL_COMMAND_BRANCH("zcode.leaderboard", "zcode",
-                   "ZCODE Rankings: earned-score leaderboards (never "
-                   "token balances)",
+                   "ZCODE Rankings: earned score, never token balances",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_READ(
@@ -576,8 +575,7 @@ ZCL_COMMAND_READY_READ(
  * callback. */
 
 ZCL_COMMAND_BRANCH("zcode.badge", "zcode",
-                   "ZCODE Badges: permanent achievement evidence "
-                   "(SIMULATED assets, plan/commit issuance)",
+                   "ZCODE Badges: achievement evidence (SIMULATED assets)",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_READ(
@@ -703,8 +701,7 @@ ZCL_COMMAND_READY_READ(
  * checkpoint is already wired into zcode package publish commit. */
 
 ZCL_COMMAND_BRANCH("zcode.seed", "zcode",
-                   "Local seeding facts: verified-bytes ratio, tiers, "
-                   "allowances",
+                   "Local seeding facts: verified-bytes ratio and tiers",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_READ(
@@ -909,7 +906,7 @@ ZCL_COMMAND_READY_COMMAND(
  * separately from signature validity.
  * See docs/spec/sovereign-identity-layer.md. */
 ZCL_COMMAND_BRANCH("zcode.release", "zcode",
-                   "Release records: sign/verify packages against a master key",
+                   "Release records: sign/verify against a master key",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_COMMAND(
@@ -1046,7 +1043,7 @@ ZCL_COMMAND_READY_READ(
  * one carries, whether that root is on-chain, and what leaves are under
  * it. Also exposed as `zclassic23 dumpstate zid_domains`. */
 ZCL_COMMAND_BRANCH("zcode.domain", "zcode",
-                   "Anchor domains: stored leaf sets behind batch proofs",
+                   "Anchor domains: leaf sets behind batch proofs",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_READ(
@@ -1100,7 +1097,7 @@ ZCL_COMMAND_READY_READ(
  * chain-anchored identity lookup (db_zid_identity_find) does not exist
  * here yet, so nothing in this tree may claim full-chain verification. */
 ZCL_COMMAND_BRANCH("zcode.proof", "zcode",
-                   "Light-client proof-chain verification (node-free)",
+                   "Light-client proof-chain verification",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_READ(
@@ -1154,7 +1151,7 @@ ZCL_COMMAND_READY_READ(
  * verified_against:"supplied_key".
  * See docs/spec/sovereign-identity-layer.md and lib/zid/include/zid/zdesc.h. */
 ZCL_COMMAND_BRANCH("zcode.desc", "zcode",
-                   "Onion descriptors: publish/verify signed service records",
+                   "Onion descriptors: signed service records",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_COMMAND(
@@ -1246,3 +1243,193 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zdesc_resolve)
+
+/* ── Signed endpoint records (zendp) ─────────────────────────────────
+ * The chain-bound twin of zcode.desc.*. A node's address stops being a
+ * bare string anyone can assert and becomes a document the node SIGNED
+ * (a zid_doc with body tag "ZIDE", carried as a content-addressed blob
+ * over the same frozen package swarm — no new message, no transaction,
+ * no fee). Addressed by SHA3-256("ZIDE" | blinded_key(pubkey, period)),
+ * its own address space beside the descriptor's.
+ *
+ * THE ONE DIFFERENCE FROM zcode.desc, AND IT IS THE POINT: no key is
+ * supplied by the caller on the verify side. The record carries its own
+ * master_pubkey and that key is resolved against the on-chain identity
+ * projection; an ACTIVE anchor is REQUIRED. Every reply here carries
+ * chain_anchored:true and verified_against:"chain_anchor". A record
+ * whose key was never anchored, was rotated away, or was revoked — or
+ * one offered while the chain cannot be asked at all — is DISCARDED: no
+ * file is written and nothing enters any directory. There is no
+ * "stored but untrusted" state.
+ *
+ * PUBLICATION IS OPERATOR-INVOKED, ALWAYS. Records are free to publish,
+ * but publishing binds a chain-anchored identity to a network location
+ * in durable signed bytes, which is a privacy decision belonging to the
+ * operator; auto-republish would also need the identity master seed
+ * resident for the process lifetime. Nothing here runs at startup, on a
+ * timer, or in the background, and no flag enables one.
+ *
+ * See lib/zid/include/zid/zendp.h and lib/vcs/include/vcs/zendp_swarm.h. */
+ZCL_COMMAND_BRANCH("zcode.endpoint", "zcode",
+                   "Signed node addresses, chain-anchored",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.endpoint.publish", "zcode.endpoint", "",
+    "Publish this node's signed endpoint record",
+    "Builds the canonical ZIDE record body from the transports you name "
+    "(onion + onion_port, ipv4 + ipv4_port, ipv6 + ipv6_port; at least "
+    "one is required and ports default to 8033), plus the services "
+    "bitmask, the best height you claim, and not_before. Signs it as a "
+    "zid doc with the 32-byte master seed read from seed_file (exactly "
+    "64 hex chars; perms must be 0600/0400 or it is refused with the "
+    "chmod hint; the seed is cleansed after use and never logged), "
+    "stores the canonical doc wire as a content-addressed blob under "
+    "<datadir>/zcode, and files it under the blinded record key at "
+    "<datadir>/zcode/endpoints/<record_key>.zid. Returns doc_hex, root, "
+    "master_pubkey, record_key, period and the anchor the chain "
+    "reported. NUMERIC INPUTS SPLIT TWO WAYS, because the registry "
+    "types some keys and not others: `height` must be a bare whole "
+    "number (\"height\":3196556), while onion_port, ipv4_port, "
+    "ipv6_port, services, seq, not_before, expiry and now are taken as "
+    "decimal STRINGS (\"seq\":\"1\"). seq is monotonic per identity: a "
+    "republish with a "
+    "seq at or below the one already filed is refused STALE_SEQ and "
+    "nothing is written. Defaults: seq 1, not_before now, expiry "
+    "not_before+3d. Publishing does NOT require the key to be anchored "
+    "yet — the anchor transaction may still be unconfirmed — but the "
+    "reply says discoverable:false when it is not, because only an "
+    "ACTIVE key is ever offered to peer discovery. No chain write and "
+    "no fee. The record key rotates every 86400 seconds and NOTHING "
+    "republishes for you: announcing this node is always your choice.",
+    0,
+    "zcode,endpoint,zendp,publish,onion,ipv4,ipv6,signed,anchor,swarm",
+    "zcl.zcode_endpoint_publish.input.v1", "zcl.zcode_endpoint_publish.v1",
+    "onion,onion_port,ipv4,ipv4_port,ipv6,ipv6_port,services,height,seed_file,seq,not_before,expiry,now,datadir",
+    "seed_file",
+    "zclassic23 zcode endpoint publish --input='{\"onion\":\"<56base32>.onion\",\"onion_port\":\"8033\",\"seed_file\":\"/path/seed.hex\",\"seq\":\"1\",\"height\":3196556}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zendp_publish)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.endpoint.accept", "zcode.endpoint", "",
+    "Verify a peer's endpoint record against the chain and file it",
+    "THE RECEIVING SIDE. Takes record bytes from --doc=<hex> or "
+    "--file=<path to a saved .zid> and runs the whole pipeline: decode, "
+    "signature, the document's validity window, the ZIDE body tag, the "
+    "record's own not_before, and then the chain — the master_pubkey the "
+    "record carries is resolved against the on-chain identity "
+    "projection and must be ACTIVE. Only on a full pass is the record "
+    "filed under <datadir>/zcode/endpoints/<record_key>.zid, which is "
+    "what this node loads and re-verifies at start. A record that fails "
+    "ANY rung is DISCARDED: no file is written, nothing enters a "
+    "directory, and there is no lesser 'stored but flagged' state to "
+    "read back later. The four chain outcomes stay four outcomes — "
+    "NO_CHAIN_LOOKUP (nothing could ask, fails closed), "
+    "CHAIN_UNAVAILABLE (asked, the lookup failed), KEY_NOT_ANCHORED "
+    "(never registered), KEY_ROTATED and KEY_REVOKED (retired) — "
+    "because 'the chain could not be asked' must never read the same as "
+    "'the chain said no'. An offered record whose seq does not "
+    "supersede the one already filed is refused STALE_SEQ and the file "
+    "is left unchanged. Numeric inputs (now) are taken as decimal "
+    "strings. Accepting a record is only ever ADDITIVE — it gives peer "
+    "discovery one more place to try and can never exclude a peer.",
+    0,
+    "zcode,endpoint,zendp,accept,verify,chain,anchor,peer,discovery",
+    "zcl.zcode_endpoint_accept.input.v1", "zcl.zcode_endpoint_accept.v1",
+    "doc,file,now,datadir", "doc",
+    "zclassic23 zcode endpoint accept --input='{\"doc\":\"<hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zendp_accept)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.endpoint.verify", "zcode.endpoint", "",
+    "Check an endpoint record against the chain without storing it",
+    "The read-only twin of accept: identical pipeline, including the "
+    "on-chain anchor check, into a directory nobody reads and with NO "
+    "file written. Decodes a record from --doc=<hex> or --file=<path> "
+    "and prints the endpoints it names, the validity window, seq, the "
+    "record key it would be filed under, and the anchor state and "
+    "height the chain reported. THE KEY IS NOT YOURS TO SUPPLY: it "
+    "comes from the record and is resolved against the chain, so the "
+    "reply carries chain_anchored:true and "
+    "verified_against:\"chain_anchor\" — a pass means the signing key is "
+    "anchored and ACTIVE, not merely that some key signed the bytes. "
+    "Numeric inputs (now) are taken as decimal strings. Use this to "
+    "inspect a record before deciding whether to accept it.",
+    0,
+    "zcode,endpoint,zendp,verify,signature,chain,anchor,dry-run",
+    "zcl.zcode_endpoint_verify.input.v1", "zcl.zcode_endpoint_verify.v1",
+    "doc,file,now,datadir", "doc",
+    "zclassic23 zcode endpoint verify --input='{\"doc\":\"<hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zendp_verify)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.endpoint.resolve", "zcode.endpoint", "",
+    "Look up a filed endpoint record by its blinded record key",
+    "Derives SHA3-256(\"ZIDE\" | blinded_key(pubkey, period)) for the "
+    "current period, reads the record filed under it in "
+    "<datadir>/zcode/endpoints/, and re-runs the WHOLE pipeline on the "
+    "bytes that came off disk — signature, window, body, and the "
+    "on-chain anchor — because a file is a witness, never the authority "
+    "for what a record says. Prints the endpoints, the window, seq and "
+    "the anchor. THE BOUNDARY RULE is applied for you: on a miss the "
+    "previous period is tried too, so a publisher a few seconds the "
+    "other side of midnight is still findable, and "
+    "previous_period_fallback reports when that happened. Two periods "
+    "on, a record stops being addressable and the answer is "
+    "ENDPOINT_ABSENT — the publisher must republish each period. "
+    "Numeric inputs (now) are taken as decimal strings. Reading a "
+    "record requires knowing the master key, which is the whole "
+    "anti-enumeration point — this cannot list identities.",
+    0,
+    "zcode,endpoint,zendp,resolve,blinded,record-key,period,lookup",
+    "zcl.zcode_endpoint_resolve.input.v1", "zcl.zcode_endpoint_resolve.v1",
+    "pubkey,now,datadir", "pubkey",
+    "zclassic23 zcode endpoint resolve --input='{\"pubkey\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zendp_resolve)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.endpoint.list", "zcode.endpoint", "",
+    "Show every filed endpoint record and whether the node will use it",
+    "Scans <datadir>/zcode/endpoints/ and re-verifies each record "
+    "against the chain right now — the same work the node does at "
+    "start. Each row reports usable:true with the endpoints it names, "
+    "or usable:false with the named reason it was discarded "
+    "(KEY_NOT_ANCHORED, KEY_ROTATED, KEY_REVOKED, an expired window, a "
+    "bad signature, or the chain being unreachable). Answers \"which of "
+    "these will my node actually use, and why not the rest\" without "
+    "restarting anything. Unlike resolve this needs no master key, "
+    "because it only reads files this operator already has — it is not "
+    "an enumeration of anyone else's identities. Numeric inputs (now) "
+    "are taken as decimal strings.",
+    0,
+    "zcode,endpoint,zendp,list,records,discovery,anchor,audit",
+    "zcl.zcode_endpoint_list.input.v1", "zcl.zcode_endpoint_list.v1",
+    "now,datadir", "",
+    "zclassic23 zcode endpoint list",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zendp_list)

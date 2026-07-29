@@ -773,7 +773,7 @@ bool app_init_services(struct app_context *ctx,
                                      blog_discover_onion_peers);
     connman_set_known_zcl23_peer_source(svc->connman,
                                         boot_known_zcl23_peers, svc);
-    boot_onion_discovery_register(blog_serve, blog_discover_onion_peers);
+    boot_onion_discovery_register(blog_serve, blog_discover_onion_peers, ctx->datadir);
 
     /* Load persisted peer addresses from previous session */
     connman_load_addrman(svc->connman);

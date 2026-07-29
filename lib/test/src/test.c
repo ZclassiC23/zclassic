@@ -999,6 +999,7 @@ int main(int argc, char **argv)
     failures += test_identity_command();
     { extern int test_zdesc(void); failures += test_zdesc(); }
     { extern int test_zendp(void); failures += test_zendp(); }
+    failures += test_zendp_records();
     failures += test_proof_chain();
     { extern int test_znam_site(void); failures += test_znam_site(); }
     failures += test_htlc();
