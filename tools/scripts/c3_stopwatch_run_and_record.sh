@@ -34,6 +34,29 @@
 #   and never allowed to fail the collect. These are ADDITIVE fields — every
 #   pre-existing field keeps its exact name/position/value, so older ledger
 #   consumers (the shared judge, `make c3-stopwatch-report`) are unaffected.
+#   skip_reason + peer_precheck + skip_class + skip_streak + no_pass_streak
+#   are likewise additive, and they exist because a `skip` used to be a dead
+#   end: the harness records WHY it skipped in its proof.json, but the ledger
+#   line carried neither the reason nor the precheck, so no ledger-only
+#   consumer could tell a week-dead fixture peer from a typo in a flag. Both
+#   are recorded now, plus the class that reason maps to (the shared table in
+#   app/services/include/services/stopwatch_skip_classes.def) and the trailing
+#   streaks. The streak fields are a CONVENIENCE for readers: every consumer
+#   that acts on them recomputes them from the verdict values rather than
+#   trusting the recorded number, so a forged field cannot silence anything.
+#
+# ALARM (stderr + syslog, never an exit code): after the append, a run of
+# consecutive skips whose class has a non-zero threshold prints one ALARM
+# line to stderr and to `logger -t stopwatch-gate`. This is the fix for the
+# defect where the C3 gate skipped every scheduled run from 2026-07-28 06:02
+# onward and nothing said so — the judge grades a skip as FAIL, but nothing
+# ran the judge, and the architecture scorer reads `tail -n 5`, so one old
+# pass held the number up for four consecutive skips (~30h). The alarm
+# REPORTS: it never changes this script's exit code (still 0 on a successful
+# append), it is never printed on stdout, and it carries no VERDICT= token,
+# so no grader can consume it. Benign skips (class not_configured, threshold
+# 0) never alarm — a detector that cries wolf on a benign skip gets ignored,
+# which recreates the bug it was built to fix.
 #
 # Env:
 #   ZCL_BIN               node binary to time (default $REPO_ROOT/build/bin/zclassic23)
@@ -81,6 +104,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 STOPWATCH="$SCRIPT_DIR/cold_start_to_tip_stopwatch.sh"
 
+# Skip classification + streak arithmetic, shared with the judge and with the
+# node's typed `ops state --subsystem=stopwatch_evidence` surface (all three
+# read one class table). Absence must never break the collect: without it the
+# line still gets appended, just without a class or an alarm.
+SKIP_CLASS_LIB="$SCRIPT_DIR/stopwatch_skip_class.sh"
+SKIP_CLASS_OK=0
+# shellcheck source=tools/scripts/stopwatch_skip_class.sh
+if [ -r "$SKIP_CLASS_LIB" ] && . "$SKIP_CLASS_LIB"; then
+    SKIP_CLASS_OK=1
+else
+    echo "c3-stopwatch-run: WARN skip classifier $SKIP_CLASS_LIB unreadable — the ledger line will carry no skip_class and no skip-streak alarm will fire" >&2
+fi
+
 ZCL_BIN="${ZCL_BIN:-$REPO_ROOT/build/bin/zclassic23}"
 ZCL_PEER="${ZCL_PEER:-127.0.0.1:39070}"
 if [ -z "${ZCL_CS_FILE_PEER+x}" ]; then
@@ -115,6 +151,17 @@ proof_num() {
     [ -f "$1" ] || return 0
     grep -oE "\"$2\"[[:space:]]*:[[:space:]]*-?[0-9]+" "$1" 2>/dev/null |
         head -n1 | grep -oE -- '-?[0-9]+$'
+}
+
+# proof_str <proof.json> <key> — first string value of "key" in the run's
+# proof.json. Echoes nothing when the file or field is absent. The whole
+# reason a skip used to be undiagnosable from the ledger alone: the harness
+# writes `"reason": "serving peer not reachable: 127.0.0.1:39070"` here and
+# nothing ever copied it out.
+proof_str() {
+    [ -f "$1" ] || return 0
+    grep -oE "\"$2\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$1" 2>/dev/null |
+        head -n1 | sed -E "s/.*:[[:space:]]*\"([^\"]*)\"/\1/"
 }
 
 # count_peer_rows <table> — best-effort read-only COUNT(*) of one hot table in
@@ -199,10 +246,54 @@ final_hstar="$(proof_num "$proof_json" final_hstar)"
 peer_block_index_rows="$(count_peer_rows blocks)"
 peer_tip_finalize_rows="$(count_peer_rows tip_finalize_log)"
 peer_utxo_rows="$(count_peer_rows utxos)"
+
+# Why this run skipped, straight out of the run's own proof.json. Empty for
+# every non-skip verdict, and empty for a skip that never reached the
+# harness's skip() at all (an argv error exits 2 without writing an artifact)
+# — that emptiness is itself the signal the classifier keys on.
+skip_reason=""
+peer_precheck=""
+if [ "$verdict" = "skip" ]; then
+    skip_reason="$(proof_str "$proof_json" reason)"
+fi
+peer_precheck="$(proof_str "$proof_json" peer_precheck)"
+
+# Trailing streaks, folded exactly the way every reader recomputes them: take
+# the streaks the ledger already carries, then apply THIS row. Recorded for
+# convenience only — the judge and the node both recompute from the verdict
+# values rather than trust these fields.
+skip_streak=0
+no_pass_streak=0
+skip_class=""
+skip_threshold=0
+prior_last_pass="-"
+if [ "$SKIP_CLASS_OK" = "1" ]; then
+    read -r prior_skip prior_nopass _prior_verdict prior_last_pass _prior_rows \
+        < <(stopwatch_skip_streaks "$HISTORY_FILE")
+    if [ "$verdict" = "pass" ]; then
+        skip_streak=0
+        no_pass_streak=0
+    else
+        no_pass_streak=$((prior_nopass + 1))
+        if [ "$verdict" = "skip" ]; then
+            skip_streak=$((prior_skip + 1))
+        else
+            skip_streak=0
+        fi
+    fi
+    if [ "$skip_streak" -gt 0 ]; then
+        reason_present=1
+        has_artifact=0
+        [ -n "${artifact_dir:-}" ] && has_artifact=1
+        read -r skip_class skip_threshold \
+            < <(stopwatch_skip_classify "$skip_reason" "$reason_present" \
+                                        "$has_artifact")
+    fi
+fi
 set -e
 
 ts="$(date +%s)"
-line="$(printf '{"ts":%s,"verdict":%s,"exit_code":%s,"wall_clock_seconds":%s,"boots":%s,"budget_seconds":%s,"peer":%s,"file_peer":%s,"node_bin":%s,"build_commit":%s,"artifact_dir":%s,"final_network_tip":%s,"final_hstar":%s,"peer_datadir":%s,"peer_block_index_rows":%s,"peer_tip_finalize_rows":%s,"peer_utxo_rows":%s}' \
+line="$(printf '{"ts":%s,"verdict":%s,"exit_code":%s,"wall_clock_seconds":%s,"boots":%s,"budget_seconds":%s,"peer":%s,"file_peer":%s,"node_bin":%s,"build_commit":%s,"artifact_dir":%s,"final_network_tip":%s,"final_hstar":%s,"peer_datadir":%s,"peer_block_index_rows":%s,"peer_tip_finalize_rows":%s,"peer_utxo_rows":%s,"skip_reason":%s,"peer_precheck":%s,"skip_class":%s,"skip_streak":%s,"no_pass_streak":%s}' \
     "$ts" "$(json_string "$verdict")" "$rc" "$(json_num_or_null "$wall_clock")" \
     "$(json_num_or_null "$boots")" \
     "$(json_num_or_null "$ZCL_CS_BUDGET_SECS")" "$(json_string "$ZCL_PEER")" \
@@ -212,7 +303,12 @@ line="$(printf '{"ts":%s,"verdict":%s,"exit_code":%s,"wall_clock_seconds":%s,"bo
     "$(json_string "$PEER_DATADIR")" \
     "$(json_num_or_null "$peer_block_index_rows")" \
     "$(json_num_or_null "$peer_tip_finalize_rows")" \
-    "$(json_num_or_null "$peer_utxo_rows")")"
+    "$(json_num_or_null "$peer_utxo_rows")" \
+    "$(json_string "$skip_reason")" \
+    "$(json_string "$peer_precheck")" \
+    "$(json_string "$skip_class")" \
+    "$(json_num_or_null "$skip_streak")" \
+    "$(json_num_or_null "$no_pass_streak")")"
 
 # flock-serialized append (same pattern as soak_evidence.sh cmd_collect):
 # a bounded lock acquire (-w 30) whose failure is EXPLICIT, so a missing
@@ -234,4 +330,31 @@ fi
 
 echo "c3-stopwatch-run: appended file=$HISTORY_FILE verdict=$verdict rc=$rc"
 echo "$line"
+
+# ── skip-streak alarm ───────────────────────────────────────────────────
+# STDERR + syslog only. Never stdout (the architecture scorer consumes the
+# report's stdout), never a VERDICT= token, never an exit code. It can only
+# ADD a line; there is no input under which it removes a FAIL, upgrades a
+# verdict, or extends a window.
+if [ "$skip_streak" -gt 0 ] && [ "$SKIP_CLASS_OK" = "1" ]; then
+    # Plain if/then, not `[ … ] && …`: errexit is ON from here down, and a
+    # false test in an && chain would take the whole collect with it.
+    if [ "$prior_last_pass" = "-" ]; then
+        last_pass_note="last_pass=never_in_ledger_tail"
+    else
+        last_pass_note="last_pass=$prior_last_pass"
+    fi
+    if [ "$skip_threshold" = "0" ]; then
+        # Benign by construction: the harness had nothing configured, so it
+        # had nothing to prove. Say so once, quietly, and do NOT alarm.
+        echo "c3-stopwatch-run: note class=$skip_class skip_streak=$skip_streak — benign (nothing configured, nothing to prove); no alarm" >&2
+    elif [ "$skip_streak" -ge "$skip_threshold" ]; then
+        alarm_msg="c3-stopwatch-run: ALARM class=$skip_class skip_streak=$skip_streak threshold=$skip_threshold no_pass_streak=$no_pass_streak $last_pass_note reason=\"$skip_reason\" — this proof could not run at all on the last $skip_streak consecutive scheduled attempts, so nothing has proven the claim; fix the named cause, do not wait for the score to move"
+        echo "$alarm_msg" >&2
+        command -v logger >/dev/null 2>&1 && \
+            logger -t stopwatch-gate "$alarm_msg" 2>/dev/null || true
+    else
+        echo "c3-stopwatch-run: WARN class=$skip_class skip_streak=$skip_streak threshold=$skip_threshold reason=\"$skip_reason\" — one more skipped run raises an alarm" >&2
+    fi
+fi
 exit 0

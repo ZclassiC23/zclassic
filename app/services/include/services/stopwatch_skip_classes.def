@@ -1,0 +1,111 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * stopwatch_skip_classes.def — the ONE table that says what a recorded
+ * stopwatch `skip` MEANS, and how many consecutive skips of that meaning it
+ * takes before the detector says so out loud.
+ *
+ * Why this table exists at all: a stopwatch harness exits 2 (SKIP) for two
+ * completely different reasons — "nothing is configured, there was nothing to
+ * prove" and "the fixture I need has been dead for days". Both land in the
+ * evidence ledger as the identical string `"verdict":"skip"`. Flattening them
+ * is how a proof coasts: the C3 gate recorded skip on every run from
+ * 2026-07-28 06:02 onward and nothing said a word, because the only consumer
+ * that looked at skips graded them and then moved on.
+ *
+ * TWO consumers read this file. Neither keeps a private copy:
+ *   - C     app/services/src/stopwatch_skip_watch.c #includes it. That is the
+ *           typed surface: `zclassic23 ops state --subsystem=stopwatch_evidence`.
+ *   - shell tools/scripts/stopwatch_skip_class.sh parses it with sed, and is
+ *           sourced by the collector (c3_stopwatch_run_and_record.sh) and by
+ *           the judge (stopwatch_evidence_judge.sh).
+ * Add a harness skip() site, add its row HERE and both consumers learn it.
+ *
+ * Rows (each ENTIRELY on one line — the shell parser is line-oriented):
+ *
+ *   STOPWATCH_SKIP_CLASS(class_name, threshold, match_substring)
+ *     match_substring is matched against the skip reason the harness wrote
+ *     into its proof.json and the collector copied into the ledger line's
+ *     skip_reason field. FIRST MATCHING ROW WINS — row order is precedence.
+ *
+ *   STOPWATCH_SKIP_FALLBACK(class_name, threshold)
+ *     structural classes, reached when no substring matched (see the C
+ *     classifier for exactly when each one is chosen).
+ *
+ * threshold = consecutive skips of this class before the alarm fires.
+ *   0  NEVER alarms. Reserved for the genuinely benign "nothing configured,
+ *      nothing to do" case. A detector that cries wolf on a benign skip gets
+ *      ignored, which recreates the bug it was built to fix.
+ *   1  fires on the FIRST occurrence: the condition can never self-heal, so
+ *      waiting a cycle buys no information (a malformed peer address produces
+ *      the identical skip forever).
+ *   2  fires once the condition has survived one full timer interval. At the
+ *      6h C3 cadence (deploy/examples/zcl-c3-stopwatch.timer,
+ *      OnCalendar=*-*-* 0/6:00:00) a single miss is indistinguishable from a
+ *      fixture bouncing; still absent 6h later it is gone, not bouncing. 2
+ *      also lands ~18h BEFORE the architecture score can move (arch_score.sh
+ *      reads tail -n 5, so five non-pass rows = 30h), which is the whole
+ *      point: the alarm must precede the number changing. And 2 sits strictly
+ *      inside the judge's own 24h staleness window, so the two rungs never
+ *      race — streak means "the collector ran and could not prove anything",
+ *      STALE means "the collector stopped running".
+ *   Do NOT inherit a threshold from another prober. node_slo_probe.sh uses 10
+ *   because it polls on a minutes cadence; 10 here would be 60 hours of
+ *   silence. Derive from elapsed time, never from a number someone else picked.
+ *
+ * This table only decides how LOUD a skip is. It never decides whether a run
+ * passed: no consumer of this file may change a verdict, a threshold on a
+ * verdict, or an evidence window.
+ */
+
+#ifndef STOPWATCH_SKIP_CLASS
+#error "define STOPWATCH_SKIP_CLASS before including stopwatch_skip_classes.def"
+#endif
+#ifndef STOPWATCH_SKIP_FALLBACK
+#error "define STOPWATCH_SKIP_FALLBACK before including stopwatch_skip_classes.def"
+#endif
+
+/* ── not_configured: benign. The optional input was simply not supplied, so
+ * the harness had nothing to prove. Only PROOF B can reach these — the C3
+ * collector always defaults ZCL_PEER to 127.0.0.1:39070, so "no peer
+ * configured" is not a reachable state there and every C3 skip is a defect in
+ * something. Listed first so the more general config rows below cannot
+ * swallow them. */
+STOPWATCH_SKIP_CLASS("not_configured", 0, "no valid --client-rpc")
+STOPWATCH_SKIP_CLASS("not_configured", 0, "no valid upstream PID")
+
+/* ── config_error: an input is wrong, absent, or unusable. This never
+ * self-heals; the next run produces the identical skip. Threshold 1. */
+STOPWATCH_SKIP_CLASS("config_error", 1, "binary absent/not executable")
+STOPWATCH_SKIP_CLASS("config_error", 1, "invalid peer address")
+STOPWATCH_SKIP_CLASS("config_error", 1, "invalid file-service peer address")
+STOPWATCH_SKIP_CLASS("config_error", 1, "header-source copy absent")
+STOPWATCH_SKIP_CLASS("config_error", 1, "bundle fixture absent")
+STOPWATCH_SKIP_CLASS("config_error", 1, "client datadir absent")
+STOPWATCH_SKIP_CLASS("config_error", 1, "upstream pid file unreadable")
+STOPWATCH_SKIP_CLASS("config_error", 1, "invalid --cut-secs")
+STOPWATCH_SKIP_CLASS("config_error", 1, "invalid --budget")
+STOPWATCH_SKIP_CLASS("config_error", 1, "invalid --sample")
+
+/* ── fixture_absent: the infrastructure the proof needs was not there. This
+ * CAN self-heal (a peer restarts), so one sample is not evidence; two
+ * consecutive are. This is the class the four live C3 skips fall into. */
+STOPWATCH_SKIP_CLASS("fixture_absent", 2, "serving peer not reachable")
+STOPWATCH_SKIP_CLASS("fixture_absent", 2, "file-service peer not reachable")
+STOPWATCH_SKIP_CLASS("fixture_absent", 2, "is not a live process")
+STOPWATCH_SKIP_CLASS("fixture_absent", 2, "client RPC not reachable")
+STOPWATCH_SKIP_CLASS("fixture_absent", 2, "client not AT TIP before the cut")
+
+/* ── harness_misuse: exit 2 without any artifact at all. The harnesses' argv
+ * loops `exit 2` on an unknown flag WITHOUT calling skip(), so no proof.json
+ * and no reason are written — yet the collector still records verdict=skip.
+ * An operator typo was therefore byte-indistinguishable in the ledger from a
+ * week-dead fixture. Structural, not reason-matched: rc 2 with no artifact
+ * dir IS the signature. Never self-heals, so threshold 1. */
+STOPWATCH_SKIP_FALLBACK("harness_misuse", 1)
+
+/* ── unclassified: a skip whose reason this table does not know, or a ledger
+ * row written before skip_reason was recorded at all. Deliberately loud-ish
+ * (2, the same as fixture_absent) rather than silent: an unknown skip is a
+ * gap in THIS table, and the honest response is to say so, not to assume it
+ * was benign. */
+STOPWATCH_SKIP_FALLBACK("unclassified", 2)

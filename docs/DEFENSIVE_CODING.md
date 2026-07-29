@@ -830,6 +830,7 @@ add/remove a gate.
 - `check-blocker-escape-registered`
 - `check-blocker-handoff-declared`
 - `check-supervisor-progress-declared`
+- `check-stopwatch-skip-detector`
 - `check-blocker-remedy`
 - `check-vendor-provenance`
 - `check-doc-no-false-deleted`

@@ -402,7 +402,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(sovereignty_guard) \
     X(snapshot_boot_seed) \
     X(replay_canary_verdict) \
-    X(canary_sentinel_watch) X(seed_torn_import_gate) \
+    X(canary_sentinel_watch) X(stopwatch_skip_watch) X(seed_torn_import_gate) \
     X(shielded_spend_slice) X(atomic_commit_ordering) \
     X(coldimport_restart_fragility) \
     X(wallet_funds_safety) \
