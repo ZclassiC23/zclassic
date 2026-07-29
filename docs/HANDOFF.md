@@ -21,10 +21,36 @@ records canonical served height against `gap_vs_oracle`. Treat any
 "at tip" / "holding tip" claim as unverified until that ledger's most recent
 line confirms it.
 
-**Deployed 2026-07-28 02:58 UTC** — `make ship --targets=local`, source_id
-`981a8d01e9a1fd35…` (was `ff29f119c4e8…`, a binary built 04:19 the previous
-day). The long "not deployed" backlog that used to live in this section is
-GONE — it shipped.
+**Running since 2026-07-28 11:11:07 UTC** — source_id
+`b3641f84dcc9ebda…`, artifact sha256 `d6139f80e7c3e74b…`, commit `75afb4361`,
+pinned as `rc-20260728-75afb4361` in `deploy/release-candidates.jsonl`.
+`NRestarts=0`.
+
+This corrects an earlier entry here that named source_id `981a8d01e9a1fd35…`
+as deployed at 02:58 UTC. That build is not running and the string resolves to
+nothing in this repository — not a commit, and not the identity of the live
+binary. How the correct value was determined, so it can be re-checked rather
+than believed:
+
+```bash
+# the identity of the inode the process is ACTUALLY executing
+sudo=; pid=$(systemctl --user show zclassic23 -p MainPID --value)
+/proc/$pid/exe agentbuild | grep -oE '"source_id_sha256":"[0-9a-f]{64}"' | head -1
+sha256sum /proc/$pid/exe
+```
+
+`/proc/<pid>/exe`, not `~/.local/bin/zclassic23-live`: the path can be
+overwritten under a live process, and then the file and the running node
+disagree until the next restart. The binary at that path happens to match today
+(both `d6139f80e7c3e74b…`), which is itself a checked fact rather than an
+assumption.
+
+`tools/scripts/build_drift_probe.sh report` now answers this on demand and
+`deploy/zclassic23-build-drift.timer` (prepared, **not installed**) answers it
+every 5 minutes into `~/.local/state/zclassic23-drift/build-drift-ledger.jsonl`.
+The running build is **82 commits behind** `main` as of 2026-07-29 — expected
+for a pinned proof-lane candidate, and recorded rather than inferred. See
+[`docs/RELEASE_CANDIDATE_PIN.md`](./RELEASE_CANDIDATE_PIN.md).
 
 Post-deploy health, from the external SLO ledger rather than from the node's
 own opinion of itself — `~/.local/state/zclassic23-slo/uptime-ledger.jsonl`,
