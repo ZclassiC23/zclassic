@@ -2436,7 +2436,7 @@ $(BIN_DIR)/rom_two_builder_compare: tools/rom_two_builder_compare.c \
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
-	    -Ilib/crypto/include -Ilib/support/include -Ivendor/include \
+	    -Ilib/crypto/include -Ilib/support/include -Ilib/base/include -Ivendor/include \
 	    -D_POSIX_C_SOURCE=200809L \
 	    -o $@ $^ -Lvendor/lib -l:libsqlite3.a -lpthread -lm
 
@@ -2473,7 +2473,7 @@ $(BIN_DIR)/rom_bundle_sha3: tools/rom_bundle_sha3.c \
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
-	    -Ilib/crypto/include -Ilib/support/include \
+	    -Ilib/crypto/include -Ilib/support/include -Ilib/base/include \
 	    -D_POSIX_C_SOURCE=200809L \
 	    -o $@ $^ -lm
 
@@ -5160,7 +5160,7 @@ tools/core_seal: $(BIN_DIR)/core_seal
 $(BIN_DIR)/core_seal: $(CORE_SEAL_SRCS)
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror \
-	    -Ilib/crypto/include -Ilib/support/include -o $@ $(CORE_SEAL_SRCS)
+	    -Ilib/crypto/include -Ilib/support/include -Ilib/base/include -o $@ $(CORE_SEAL_SRCS)
 
 # Freeze the seal: recompute and (re)write core/MANIFEST.sha3 over every tracked
 # file under core/ (excluding the manifest itself), and consume any active

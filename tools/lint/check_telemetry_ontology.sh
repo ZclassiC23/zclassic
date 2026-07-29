@@ -66,10 +66,24 @@ fi
 
 # ── 1. the ontology's declared keys ──────────────────────────────────────
 # TELEMETRY_FIELD("<subsystem>", "<path>", ...  -> "<subsystem>|<path>"
-ONTO_KEYS=$(sed -n \
+#
+# Held as a shell SET, not as a text blob re-scanned per field. The blob form
+# (`printf '%s\n' "$ONTO_KEYS" | grep -qxF "$key"`) spawned one pipeline per
+# emitted field, and under `set -o pipefail` that construct is a coin flip:
+# `grep -q` exits the moment it matches, so a match found in the reader's
+# first chunk closes the pipe while the writer still has bytes to push. The
+# writer then dies of SIGPIPE (141), pipefail promotes 141 to the pipeline's
+# status, and an ANNOTATED field gets reported as UNANNOTATED — naming a
+# random file nobody touched. Measured 209 false failures in 1000 runs at 32
+# concurrent invocations. Set membership needs no subprocess, so the whole
+# failure mode is gone rather than retried around.
+declare -A ONTO_SET=()
+while IFS= read -r _k; do
+    [ -n "$_k" ] && ONTO_SET["$_k"]=1
+done < <(sed -n \
     's/^[[:space:]]*TELEMETRY_FIELD("\([^"]*\)",[[:space:]]*"\([^"]*\)".*/\1|\2/p' \
     "$ONTOLOGY" | sort -u)
-ONTO_COUNT=$(printf "%s\n" "$ONTO_KEYS" | sed '/^$/d' | wc -l)
+ONTO_COUNT=${#ONTO_SET[@]}
 gate_require_scanned "$ONTO_COUNT" 150 "$GATE" \
     "ontology row population collapsed — $ONTOLOGY parsed as $ONTO_COUNT rows"
 
@@ -179,7 +193,7 @@ for key in "${!FUNCS[@]}"; do
         EXTRACTED=$((EXTRACTED + 1))
         path="${PREFIX_OF[$mapkey]}${field}"
         sub="${SUBSYS_OF[$mapkey]}"
-        if ! printf "%s\n" "$ONTO_KEYS" | grep -qxF "$sub|$path"; then
+        if [ -z "${ONTO_SET["$sub|$path"]+set}" ]; then
             UNANNOTATED="${UNANNOTATED}${file}:${ln}: ${sub}|${path}"$'\n'
         fi
     done <<< "$slice"
