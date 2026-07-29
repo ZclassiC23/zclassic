@@ -59,17 +59,17 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 330 |
+| Registry entries (branches + leaves) | 333 |
 | Top-level roots | 9 |
-| Branches | 76 |
-| Leaves (dispatchable command paths) | 254 |
-| … `ready` (live handler in this build) | 212 |
+| Branches | 77 |
+| Leaves (dispatchable command paths) | 256 |
+| … `ready` (live handler in this build) | 214 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 25 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
-| Leaves with `effect=mutate` | 68 |
+| Leaves with `effect=mutate` | 69 |
 | Leaves with `effect=destructive` | 4 |
-| Leaves requiring **owner** authority | 56 |
+| Leaves requiring **owner** authority | 57 |
 
 Per source file:
 
@@ -78,7 +78,7 @@ Per source file:
 | `config/commands/root.def` | 10 | 5 | 5 |
 | `config/commands/core.def` | 97 | 24 | 73 |
 | `config/commands/apps.def` | 9 | 2 | 7 |
-| `config/commands/app_features.def` | 26 | 5 | 21 |
+| `config/commands/app_features.def` | 29 | 6 | 23 |
 | `config/commands/ops.def` | 43 | 8 | 35 |
 | `config/commands/dev.def` | 45 | 11 | 34 |
 | `config/commands/code.def` | 16 | 2 | 14 |
@@ -403,6 +403,13 @@ represented by its children's sections.
 | `app market status` | ready | read / read / operator · fast/low | none | `zcl.app_market_status.v1` | `zclassic23 app market status` | ZCL Market status |
 | `app market offer` | planned | mutate / app-write / **owner**, plan-commit · foreground/moderate | `filepath`, `price_per_mb_zat`, `confirm` | `zcl.app_market_offer_result.v1` | `zclassic23 app market offer --input='{"filepath":"/data/f","price_per_mb_zat":1000}'` | Announce a file for sale — *needs an origin-announce path before it can be exposed natively: rpc_zmarket_offer (file_market_controller.c) stats the file and calls file_market_add_offer + db_file_offer_save, then answers status=announced, but the only MSG_FILE_LIST writer in the tree is the re-gossip branch of handle_zfilelist (msgprocessor.c) — nothing ever announces a LOCALLY created offer, so no peer learns of it. Its root_hash is also SHA3(filepath:size), not a hash of the file contents* |
 | `app market buy` | planned | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`root_hash`**, `confirm` | `zcl.app_market_buy_result.v1` | `zclassic23 app market buy --input='{"root_hash":"<64hex>"}'` | Buy and download a market file — *needs the payment leg wired before a spend leaf can be exposed natively: rpc_zmarket_buy (file_market_controller.c) only calls file_market_start_download, which allocates an in-memory session in state FDL_CHALLENGING. No code path sends MSG_FILE_CHAL, and nothing builds or broadcasts the payment transaction whose mempool-verified txid handle_zfilepay (msgprocessor.c) requires to unlock chunks, so the session never advances and no funds move* |
+
+#### `app.store` — Store
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `app store list-product` | ready | mutate / app-write / **owner** · fast/low | `datadir`, `name`, `description`, `price_zcl`, `price_zatoshi`, `token_id`, `tokens_per_purchase`, `content_path`, `content_type`, `content_filename` | `zcl.app_store_product.v1` | `zclassic23 app store list-product --input='{"name":"Field guide","token_id":"GUIDE","price_zcl":0.25,"content_path":"/srv/guide.pdf"}'` | List a product for sale in the store |
+| `app store products` | ready | read / read / operator · fast/low | `datadir` | `zcl.app_store_products.v1` | `zclassic23 app store products` | List the store's active products |
 
 #### `app.swap` — Swaps
 

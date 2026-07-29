@@ -65,6 +65,7 @@ app.messaging.send-named   exempt: PLANNED fail-closed, no artifact install (no 
 app.messaging.read         exempt: flips one message's read bit, rebuildable projection
 app.market.offer           exempt: PLANNED fail-closed, no artifact install (no origin announce path exists)
 app.market.buy             exempt: PLANNED fail-closed, no artifact install (no payment leg exists)
+app.store.list-product     exempt: app-local AR write (one products row + one content-addressed store_blobs row) into node.db; the payload is merchant-supplied storefront content the store re-hashes on every read, never an artifact the node executes or trusts
 app.swap.initiate          exempt: mints a local HTLC contract row, broadcasts nothing
 app.swap.participate       exempt: mints a local HTLC contract row, broadcasts nothing
 ops.debug.rom_seed.enable  exempt: in-process policy flag flip + JSON persist, no artifact install
