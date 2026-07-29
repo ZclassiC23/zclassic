@@ -109,11 +109,28 @@ struct wallet_recovery_report {
  * a created wallet hands out index 100 first, so a fixed 100 keys rebuilt
  * every address the user never saw and none of the one they published.
  *
+ * Both paths inspect an existing target through a READ-ONLY handle and
+ * refuse on anything but a clean open — never node_db_open(), whose failed
+ * quick_check renames the operator's node.db aside to node.db.corrupt-<ts>
+ * and installs an empty one. A write handle is opened only after the target
+ * is proven readable AND wallet-free.
+ *
+ * A committed run also obeys the SAME at-rest policy boot obeys
+ * (wallet_at_rest_creation_policy): no plaintext keys on disk without
+ * ZCL_WALLET_PASSPHRASE or an explicit ZCL_ALLOW_PLAINTEXT_WALLET opt-in,
+ * and node.db/-wal/-shm are tightened to 0600.
+ *
+ * A committed run holds <datadir>/wallet-recovery.lock exclusively across
+ * the whole check-then-write, so two concurrent recoveries cannot both pass
+ * the "already holds a wallet" check and both write.
+ *
  * Fills `out` on every path, including failures, so a refusal is still
  * informative. Returns ZCL_OK on success; on refusal the code is
- *   -60 invalid or missing phrase        -63 cannot open the target db
- *   -61 datadir held by a running node   -64 key derivation failed
- *   -62 datadir already holds a wallet   -65 flush failed
+ *   -60 invalid or missing phrase        -64 key derivation failed
+ *   -61 datadir held (a running node,    -65 flush failed
+ *       or another recovery writing it)  -66 target node.db unreadable
+ *   -62 datadir already holds a wallet       or damaged — NOT touched
+ *   -63 cannot open the target db        -67 at-rest policy refuses
  */
 struct zcl_result wallet_recovery_run(const struct wallet_recovery_request *req,
                                       struct wallet_recovery_report *out);

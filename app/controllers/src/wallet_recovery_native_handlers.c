@@ -316,12 +316,29 @@ void zcl_native_handle_wallet_recovery_restore(
         return;
     }
 
+    /* NO DEFAULT DATADIR ON THIS LEAF. `status` may fall back to the
+     * runtime's datadir because it only reads; this one installs spending
+     * keys and a master seed, and its fallback was the OPERATOR'S LIVE
+     * DATADIR. "Recovery" is precisely the word a person types when
+     * something is already wrong, and the cost of guessing the target
+     * wrong is a second wallet written into the live node. An explicit
+     * path is also the only thing a plan and its later commit can be
+     * checked to agree on. So: name it, or nothing happens. */
     char datadir[1024];
     const char *dd = json_get_str(json_get(request->input, "datadir"));
-    if (dd && dd[0])
-        snprintf(datadir, sizeof(datadir), "%s", dd);
-    else
-        wrp_default_datadir(datadir, sizeof(datadir));
+    if (!dd || !dd[0]) {
+        wnh_fail(reply, ZCL_COMMAND_EXIT_INVALID, "MISSING_DATADIR",
+                 "datadir is required and has no default here. This command "
+                 "writes a whole wallet — spending keys and the master seed "
+                 "they all descend from — and it will not guess where. Name "
+                 "an EMPTY directory to recover into, e.g. "
+                 "--input='{\"datadir\":\"/srv/zcl-recovered\"}'. It is "
+                 "deliberately NOT your running node's datadir: recover "
+                 "beside it, then move what you need",
+                 "core.wallet.recovery.restore");
+        return;
+    }
+    snprintf(datadir, sizeof(datadir), "%s", dd);
 
     bool confirm = json_get_bool_or(request->input, "confirm", false);
 
@@ -340,6 +357,12 @@ void zcl_native_handle_wallet_recovery_restore(
         if (r.code == -60) { code = "INVALID_PHRASE"; ex = ZCL_COMMAND_EXIT_INVALID; }
         else if (r.code == -61) { code = "DATADIR_LOCKED"; ex = ZCL_COMMAND_EXIT_BLOCKED; }
         else if (r.code == -62) { code = "WALLET_ALREADY_PRESENT"; ex = ZCL_COMMAND_EXIT_BLOCKED; }
+        /* Separate names because they are separate operator moves: one says
+         * "your database is damaged and I did not touch it", the other says
+         * "decide how these keys are stored first". Neither is a generic
+         * failure and neither ever reports ok. */
+        else if (r.code == -66) { code = "NODE_DB_UNREADABLE"; ex = ZCL_COMMAND_EXIT_BLOCKED; }
+        else if (r.code == -67) { code = "WALLET_AT_REST_UNDECIDED"; ex = ZCL_COMMAND_EXIT_BLOCKED; }
         /* r.message describes the shape of the failure and never quotes
          * the phrase; the evidence field carries the datadir, not the
          * words. */
@@ -349,6 +372,18 @@ void zcl_native_handle_wallet_recovery_restore(
 
     wrp_push_report(reply, &rep);
     wrp_push_scan(reply, &rep);
+    /* Said on every plan and every commit, because the failure it prevents
+     * is silent: a phrase from other wallet software validates here, opens
+     * a different empty wallet, and reports success. */
+    (void)json_push_kv_str(
+        &reply->data, "phrase_compatibility",
+        "these words work with THIS NODE ONLY. They are ordinary BIP39 "
+        "words, but this node builds its key from the first 32 bytes of the "
+        "standard 64-byte result while other wallets use all 64. A phrase "
+        "written down here restores nothing in other wallet software, and a "
+        "phrase from other software restores a different, EMPTY wallet "
+        "here — with no error, which is why it is worth saying out loud. "
+        "Keep the words labelled 'zclassic23'");
     (void)json_push_kv_str(
         &reply->data, "next_steps",
         "start the node on this datadir, then run 'core wallet rescan' to "

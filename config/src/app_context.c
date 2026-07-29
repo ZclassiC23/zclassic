@@ -182,7 +182,7 @@ const char *app_operator_lane_accepted_csv(void)
  * unattended: it must NOT hard-refuse on the first-run wallet gate or
  * re-baselining such a datadir would wedge. CANONICAL and UNKNOWN (the
  * default / interactive node) are NOT in this set — they keep REFUSE. */
-static bool operator_lane_is_automated_noncanonical(enum zcl_operator_lane lane)
+bool app_operator_lane_is_automated_noncanonical(enum zcl_operator_lane lane)
 {
     switch (lane) {
     case ZCL_OPERATOR_LANE_DEV:
@@ -229,7 +229,7 @@ wallet_at_rest_boot_decision(enum wallet_at_rest_policy policy,
     /* (2) A declared, non-canonical automated lane (dev/soak/test/copy)
      *     boots fresh datadirs unattended and must not wedge. Downgrade to
      *     the loud plaintext-opt-in behavior (proceed, warn every boot). */
-    if (operator_lane_is_automated_noncanonical(lane))
+    if (app_operator_lane_is_automated_noncanonical(lane))
         return WALLET_BOOT_CREATE_PLAINTEXT;
 
     /* Canonical, unknown, or the interactive default: keep REFUSE — the

@@ -1789,10 +1789,10 @@ bool app_init(struct app_context *ctx)
             /* No-spend: sync now (NAMED via EV_BOOT_PHASE), never a required flag. */
             event_emitf(EV_BOOT_PHASE, 0, "wallet_no_spend keyless_sync");
             printf("Wallet: NO-SPEND mode (0 keys) — syncing.\n");
-        } else if (!boot_wallet_create_new(
-                       &g_wallet, &g_wallet_sqlite, &g_node_db,
-                       act == WALLET_BOOT_CREATE_PLAINTEXT)) {
-            exit(1);
+        } else if (!boot_wallet_create_new(&g_wallet, &g_wallet_sqlite,
+                                           &g_node_db, act,
+                                           ctx->operator_lane)) {
+            exit(1);   /* refusal already NAMED its blocker in the beacon */
         }
     }
     printf("Wallet has %zu keys.\n", g_wallet.keystore.num_keys);

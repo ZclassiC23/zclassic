@@ -97,6 +97,82 @@ struct zcl_result wallet_restore_datadir_free(const char *datadir)
                    datadir, strerror(saved));
 }
 
+/* ── the WRITER's lock, held across check-then-write ─────────── */
+
+/* Its own file, deliberately not the node pidfile: a fresh recovery datadir
+ * has no pidfile, and minting one would look to every other tool like a
+ * running node. See the contract on wallet_restore_datadir_hold. */
+#define WRS_WRITE_LOCKFILE "wallet-recovery.lock"
+
+struct zcl_result wallet_restore_datadir_hold(
+    const char *datadir, struct wallet_restore_datadir_lock *lock)
+{
+    if (!lock) {
+        LOG_WARN(WRS_TAG, "datadir_hold: lock argument is required");
+        return ZCL_ERR(-55, "datadir_hold: lock argument is required");
+    }
+    lock->fd = -1;
+    lock->path[0] = '\0';
+    if (!datadir || !datadir[0]) {
+        LOG_WARN(WRS_TAG, "datadir_hold: datadir path is empty");
+        return ZCL_ERR(-55, "datadir path is empty");
+    }
+    int n = snprintf(lock->path, sizeof(lock->path), "%s/%s", datadir,
+                     WRS_WRITE_LOCKFILE);
+    if (n <= 0 || (size_t)n >= sizeof(lock->path)) {
+        lock->path[0] = '\0';
+        return ZCL_ERR(-55, "datadir path too long for a recovery lock");
+    }
+
+    /* 0600: this sits beside the wallet and names what is happening to it. */
+    int fd = open(lock->path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (fd < 0) {
+        LOG_WARN(WRS_TAG, "datadir_hold: cannot open %s: %s", lock->path,
+                 strerror(errno));
+        return ZCL_ERR(-56, "cannot take the recovery lock at %s: %s",
+                       lock->path, strerror(errno));
+    }
+    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        int saved = errno;
+        close(fd);
+        lock->path[0] = '\0';
+        LOG_WARN(WRS_TAG, "datadir_hold: %s is already held (%s)",
+                 datadir, strerror(saved));
+        return ZCL_ERR(-57,
+            "another wallet recovery is already writing %s. Only one may "
+            "run at a time: two that both checked an empty datadir would "
+            "both write, and leave one wallet holding keys from two "
+            "different seeds with no way to tell them apart. Wait for the "
+            "other one to finish, then look at what it left", datadir);
+    }
+    /* Who holds it, for the next operator to read. Best-effort: the flock,
+     * not this text, is the lock. */
+    {
+        char who[64];
+        int wn = snprintf(who, sizeof(who), "%ld\n", (long)getpid());
+        if (wn > 0) {
+            if (ftruncate(fd, 0) != 0 || pwrite(fd, who, (size_t)wn, 0) < 0)
+                LOG_WARN(WRS_TAG, "datadir_hold: could not stamp %s: %s",
+                         lock->path, strerror(errno));
+        }
+    }
+    lock->fd = fd;
+    return ZCL_OK;
+}
+
+void wallet_restore_datadir_release(struct wallet_restore_datadir_lock *lock)
+{
+    if (!lock || lock->fd < 0)
+        return;
+    /* close() drops the flock; the unlock is explicit so the intent is
+     * readable and so a future refactor that keeps the fd cannot silently
+     * keep the lock. The file itself stays: unlinking it would let a second
+     * writer create a NEW inode and lock that instead. */
+    (void)flock(lock->fd, LOCK_UN);
+    close(lock->fd);
+    lock->fd = -1;
+}
+
 /* ── helpers ────────────────────────────────────────────────── */
 
 static void wrs_warn(struct wallet_restore_report *rep, const char *what)

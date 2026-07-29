@@ -91,6 +91,37 @@ struct wallet_restore_report {
  * the pidfile and releases any flock it takes. */
 struct zcl_result wallet_restore_datadir_free(const char *datadir);
 
+/* ── the WRITER's lock, held across check-then-write ──────────────────
+ *
+ * wallet_restore_datadir_free() above answers a question and lets go. That
+ * is right for a read, and WRONG for a writer: two recoveries into the same
+ * empty datadir both asked "is a wallet already here?", both got no, and
+ * both wrote — leaving one datadir holding 480 keys from two different
+ * seeds under a single seed row, which is verbatim the state the refusal
+ * text says it exists to prevent (reproduced 3 times out of 3).
+ *
+ * So a writer takes an EXCLUSIVE lock on <datadir>/wallet-recovery.lock and
+ * holds it from before the "is a wallet already here?" read until after the
+ * flush. The second caller then either loses the lock race and is refused
+ * by name, or arrives afterwards and sees the first caller's keys.
+ *
+ * The lock file is its own file, not the node pidfile: the pidfile may not
+ * exist at all (a fresh recovery directory is the normal case) and minting
+ * one would look to every other tool like a node holding the datadir. The
+ * datadir must already exist. It is advisory flock(2), so it binds this
+ * node's writers, not a stray `cp`.
+ *
+ * hold_end() is safe on a zeroed or already-released guard, so the caller
+ * can release unconditionally on every exit path. */
+struct wallet_restore_datadir_lock {
+    int  fd;             /* -1 when not held */
+    char path[1200];
+};
+
+struct zcl_result wallet_restore_datadir_hold(
+    const char *datadir, struct wallet_restore_datadir_lock *lock);
+void wallet_restore_datadir_release(struct wallet_restore_datadir_lock *lock);
+
 /* Merge `req->backup_path` into `req->datadir`. Fills `out` (required) on
  * both success and failure — a failed run still reports whatever it learned
  * about the backup file, which is what the user needs to decide the next

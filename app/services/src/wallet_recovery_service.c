@@ -19,6 +19,7 @@
 #include "wallet/mnemonic.h"
 #include "wallet/sapling_keys.h"
 #include "wallet/wallet.h"
+#include "wallet/wallet_keystore.h"            /* the at-rest creation policy */
 #include "wallet/wallet_sqlite.h"
 
 #include <errno.h>
@@ -71,6 +72,69 @@ static struct zcl_result wrc_ensure_datadir(const char *datadir,
     if (!S_ISDIR(st.st_mode))
         return ZCL_ERR(-63, "%s is not a directory", datadir);
     return ZCL_OK;
+}
+
+/* ── at-rest policy: the SAME one boot obeys ──────────────────────────
+ *
+ * BOOT refuses to mint a spendable wallet whose private keys land on disk
+ * in the clear unless the operator said so (wallet_at_rest_boot_decision,
+ * config/src/app_context.c). This command installs exactly that — 240-odd
+ * spending keys AND the master seed every future key descends from — and
+ * used to write them plaintext with no passphrase, no opt-in and no
+ * warning. One command in the tree enforcing the policy while another
+ * ignores it means the policy is decoration, and the one that ignores it is
+ * the one a person reaches for after losing a machine.
+ *
+ * So the same env-driven policy decides here. The lane/mint context boot
+ * folds in does NOT apply: this is a one-shot offline CLI invocation, not a
+ * declared unattended lane, and there is nobody to wedge. */
+static struct zcl_result wrc_at_rest_gate(void)
+{
+    switch (wallet_at_rest_creation_policy()) {
+    case WALLET_AT_REST_ENCRYPTED:
+        /* wallet_sqlite_flush_r wraps every key and the seed in a WKS1
+         * envelope under this passphrase. Nothing further to do. */
+        return ZCL_OK;
+    case WALLET_AT_REST_PLAINTEXT_OPTIN:
+        LOG_WARN(WRC_TAG,
+            "recovering into a PLAINTEXT wallet: the spending keys and the "
+            "master seed the phrase derives will be written to node.db "
+            "unencrypted, and anyone who can read that file can spend every "
+            "coin the phrase controls. Proceeding because "
+            "ZCL_ALLOW_PLAINTEXT_WALLET is set");
+        return ZCL_OK;
+    case WALLET_AT_REST_REFUSE:
+    default:
+        return ZCL_ERR(-67,
+            "refusing to write this wallet's spending keys and master seed "
+            "to disk unencrypted. Recovering installs the whole wallet the "
+            "phrase controls, so it obeys the same rule the node obeys when "
+            "it creates one: set ZCL_WALLET_PASSPHRASE to encrypt the keys "
+            "at rest (recommended), or set ZCL_ALLOW_PLAINTEXT_WALLET=1 to "
+            "say plaintext is what you want here. Nothing was written");
+    }
+}
+
+/* Keys at rest are not a world-readable file, whatever the umask says.
+ * node_db_open creates node.db 0644 through SQLite, and -wal/-shm alongside
+ * it; on this path that file holds spending keys. Best-effort and never
+ * fatal — a tightened mode that could not be applied is worth a line in the
+ * log, not the loss of a recovery that otherwise worked. */
+static void wrc_tighten_modes(const char *db_path)
+{
+    static const char *const suffix[] = { "", "-wal", "-shm" };
+    for (size_t i = 0; i < sizeof(suffix) / sizeof(suffix[0]); i++) {
+        char p[1300];
+        int n = snprintf(p, sizeof(p), "%s%s", db_path, suffix[i]);
+        if (n <= 0 || (size_t)n >= sizeof(p))
+            continue;
+        struct stat st;
+        if (stat(p, &st) != 0)
+            continue;              /* -wal/-shm may legitimately be absent */
+        if (chmod(p, 0600) != 0)
+            LOG_WARN(WRC_TAG, "could not restrict %s to 0600: %s", p,
+                     strerror(errno));
+    }
 }
 
 /* ── "has this address been used?" — the gap scan's oracle ───────────
@@ -333,45 +397,108 @@ struct zcl_result wallet_recovery_run(const struct wallet_recovery_request *req,
         return ZCL_ERR(-61, "%s", lock_r.message);
     }
 
+    /* The at-rest decision, before a directory is created — a refusal that
+     * arrives after the datadir exists has already changed the disk. */
+    if (!req->dry_run) {
+        struct zcl_result pr = wrc_at_rest_gate();
+        if (!pr.ok) {
+            LOG_WARN(WRC_TAG, "refusing recovery: %s", pr.message);
+            return pr;
+        }
+    }
+
+    /* ── the WRITER's lock, held from here to the flush ──────────────
+     *
+     * wallet_restore_datadir_free() above answered "is a node holding
+     * this?" and let go. That is not enough for a writer: two recoveries
+     * into the same empty datadir both read "no wallet here" and both
+     * wrote, leaving 480 keys from two different seeds under one seed row.
+     * The exclusive lock below spans the check AND the write, so the second
+     * caller is refused by name instead of racing.
+     *
+     * A plan takes no lock: it writes nothing, so there is nothing to
+     * serialize, and taking one would mean a preview could block a real
+     * recovery. */
+    struct wallet_restore_datadir_lock wlock;
+    memset(&wlock, 0, sizeof(wlock));
+    wlock.fd = -1;
+    if (!req->dry_run) {
+        struct zcl_result dr = wrc_ensure_datadir(req->datadir, out);
+        if (!dr.ok)
+            return dr;
+        struct zcl_result hr =
+            wallet_restore_datadir_hold(req->datadir, &wlock);
+        if (!hr.ok) {
+            LOG_WARN(WRC_TAG, "refusing recovery: %s", hr.message);
+            return ZCL_ERR(-61, "%s", hr.message);
+        }
+    }
+
     struct stat st;
+    /* Stat AFTER the lock: a competing writer that got there first has
+     * already created node.db by now, and this is the read that sees it. */
     out->target_created = stat(out->target_db, &st) != 0;
 
-    /* ── open the target ─────────────────────────────────────────────
+    /* ── inspect the target, READ-ONLY, on both paths ─────────────────
      *
-     * A PLAN opens nothing for writing and creates nothing at all: no
-     * datadir, no node.db, no scratch database anywhere. Its whole promise
-     * to the caller is "nothing has been written yet", and the previous
-     * shape broke that promise while printing it — mkdir plus an 864 KB
-     * fresh node.db, on a preview. So the plan reads an EXISTING target
-     * read-only (which is also the only handle that can answer "is a
-     * wallet already here?"), and when there is no target yet it simply
-     * has nothing to read. */
+     * The plan half of this was already right and the commit half was not.
+     * The commit called node_db_open() — the datadir BOOT CEREMONY:
+     * READWRITE|CREATE, then PRAGMA quick_check and, on failure,
+     * db_quarantine_files(), which rename()s the user's node.db,
+     * node.db-wal and node.db-shm aside to node.db.corrupt-<ts> and puts a
+     * fresh empty database in their place. The "this datadir already holds
+     * a wallet" refusal then read that NEW EMPTY database, saw zero keys,
+     * and recovered over the top — answering ok:true, keys_before:0,
+     * wallet_already_present:false, with no mention of the rename. A
+     * damaged node.db is exactly the state a person reaches for a recovery
+     * command in.
+     *
+     * So BOTH paths now read an existing target through the read-only
+     * handle (SQLITE_OPEN_READONLY + PRAGMA query_only=ON, no CREATE, no
+     * migrate, no quarantine) and refuse on anything but OK. Nothing opens
+     * for write until the target is proven readable AND wallet-free. */
     struct node_db ndb;
     memset(&ndb, 0, sizeof(ndb));
     sqlite3 *ro_db = NULL;
     bool have_db = false;
+    bool ro_open = false;
 
-    if (req->dry_run) {
-        if (!out->target_created) {
-            char ro_path[1200];
-            enum zcl_node_db_ro_status ro = zcl_native_node_db_open_readonly(
-                req->datadir, &ro_db, &ndb, ro_path, sizeof(ro_path));
-            if (ro != ZCL_NODE_DB_RO_OK)
-                return ZCL_ERR(-63,
-                    "there is a node.db at %s but it cannot be read, so this "
-                    "plan cannot tell you whether recovering here would "
-                    "overwrite a wallet. Nothing was written",
-                    out->target_db);
-            have_db = true;
+    if (!out->target_created) {
+        char ro_path[1200];
+        enum zcl_node_db_ro_status ro = zcl_native_node_db_open_readonly(
+            req->datadir, &ro_db, &ndb, ro_path, sizeof(ro_path));
+        if (ro != ZCL_NODE_DB_RO_OK) {
+            wallet_restore_datadir_release(&wlock);
+            LOG_WARN(WRC_TAG, "refusing recovery: node.db at %s did not open "
+                     "read-only (status=%d)", out->target_db, (int)ro);
+            return ZCL_ERR(-66,
+                "there is a node.db at %s and it would not open for reading, "
+                "so this cannot tell whether recovering here would write "
+                "over a wallet. It has NOT been touched, renamed or "
+                "replaced. Take a copy of that datadir, then recover into a "
+                "NEW empty one", out->target_db);
         }
-    } else {
-        struct zcl_result dr = wrc_ensure_datadir(req->datadir, out);
-        if (!dr.ok)
-            return dr;
-        if (!node_db_open(&ndb, out->target_db))
-            return ZCL_ERR(-63, "cannot open target database %s",
-                           out->target_db);
         have_db = true;
+        ro_open = true;
+
+        /* The deeper read the write open would have done anyway. Running it
+         * HERE, on the read-only handle, is what turns "damaged database"
+         * into a refusal instead of a quarantine: if this fails, the write
+         * open would have renamed the file aside. Only paid when a node.db
+         * already exists, which on the disaster path it usually does not. */
+        if (sqlite3_exec(ro_db, "PRAGMA quick_check", NULL, NULL, NULL)
+            != SQLITE_OK) {
+            zcl_native_node_db_close_readonly(&ro_db, &ndb);
+            wallet_restore_datadir_release(&wlock);
+            LOG_WARN(WRC_TAG, "refusing recovery: quick_check failed on %s",
+                     out->target_db);
+            return ZCL_ERR(-66,
+                "the node.db at %s is damaged (its integrity check failed), "
+                "so this cannot tell whether recovering here would write "
+                "over a wallet. It has NOT been touched, renamed or "
+                "replaced. Take a copy of that datadir, then recover into a "
+                "NEW empty one", out->target_db);
+        }
     }
 
     struct wallet_sqlite ws;
@@ -379,8 +506,8 @@ struct zcl_result wallet_recovery_run(const struct wallet_recovery_request *req,
     if (have_db) {
         struct zcl_result wr = wallet_sqlite_open_r(&ws, ndb.db);
         if (!wr.ok) {
-            if (req->dry_run) zcl_native_node_db_close_readonly(&ro_db, &ndb);
-            else node_db_close(&ndb);
+            zcl_native_node_db_close_readonly(&ro_db, &ndb);
+            wallet_restore_datadir_release(&wlock);
             return ZCL_ERR(-63, "cannot open the wallet tables in %s: %s",
                            out->target_db, wr.message);
         }
@@ -400,8 +527,8 @@ struct zcl_result wallet_recovery_run(const struct wallet_recovery_request *req,
     /* Never write a second seed over a wallet that already has keys. */
     if (out->keys_before > 0 || out->seed_present_before) {
         if (have_ws) wallet_sqlite_close(&ws);
-        if (req->dry_run) zcl_native_node_db_close_readonly(&ro_db, &ndb);
-        else if (have_db) node_db_close(&ndb);
+        if (ro_open) zcl_native_node_db_close_readonly(&ro_db, &ndb);
+        wallet_restore_datadir_release(&wlock);
         LOG_WARN(WRC_TAG, "refusing recovery: %s already holds a wallet "
                  "(%lld keys, seed_state=%d)", out->target_db,
                  (long long)out->keys_before, (int)out->seed_state_before);
@@ -413,13 +540,42 @@ struct zcl_result wallet_recovery_run(const struct wallet_recovery_request *req,
             out->datadir, (long long)out->keys_before);
     }
 
+    /* Proven readable AND wallet-free. Only NOW may a write handle exist:
+     * swap the read-only handle for the real one, which is allowed to
+     * create the database when there is none. */
+    if (!req->dry_run) {
+        if (have_ws) { wallet_sqlite_close(&ws); have_ws = false; }
+        if (ro_open) {
+            zcl_native_node_db_close_readonly(&ro_db, &ndb);
+            ro_open = false;
+            have_db = false;
+        }
+        if (!node_db_open(&ndb, out->target_db)) {
+            wallet_restore_datadir_release(&wlock);
+            return ZCL_ERR(-63, "cannot open target database %s",
+                           out->target_db);
+        }
+        have_db = true;
+        /* Before a single key lands in it. */
+        wrc_tighten_modes(out->target_db);
+        struct zcl_result wr = wallet_sqlite_open_r(&ws, ndb.db);
+        if (!wr.ok) {
+            node_db_close(&ndb);
+            wallet_restore_datadir_release(&wlock);
+            return ZCL_ERR(-63, "cannot open the wallet tables in %s: %s",
+                           out->target_db, wr.message);
+        }
+        have_ws = true;
+    }
+
     /* Build the wallet the phrase describes. struct wallet is far too big
      * for the stack. */
     struct wallet *w = zcl_malloc(sizeof(*w), "wallet_recovery.wallet");
     if (!w) {
         if (have_ws) wallet_sqlite_close(&ws);
-        if (req->dry_run) zcl_native_node_db_close_readonly(&ro_db, &ndb);
+        if (ro_open) zcl_native_node_db_close_readonly(&ro_db, &ndb);
         else if (have_db) node_db_close(&ndb);
+        wallet_restore_datadir_release(&wlock);
         return ZCL_ERR(-64, "out of memory building the recovered wallet");
     }
     wallet_init(w);
@@ -458,12 +614,17 @@ struct zcl_result wallet_recovery_run(const struct wallet_recovery_request *req,
     out->keys_after = db_wallet_key_count(&ndb);
     out->seed_installed = true;
     node_db_wal_checkpoint(&ndb);
+    /* Again after the write: the checkpoint can recreate -wal/-shm, and
+     * those hold the same key bytes as the database they front. */
+    wrc_tighten_modes(out->target_db);
 
 done:
     wallet_free(w);
     free(w);
     if (have_ws) wallet_sqlite_close(&ws);
-    if (req->dry_run) zcl_native_node_db_close_readonly(&ro_db, &ndb);
+    if (ro_open) zcl_native_node_db_close_readonly(&ro_db, &ndb);
     else if (have_db) node_db_close(&ndb);
+    /* Last: the lock outlives every handle it protects. */
+    wallet_restore_datadir_release(&wlock);
     return rc;
 }

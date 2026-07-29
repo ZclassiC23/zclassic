@@ -198,6 +198,34 @@ ZCL_BLOCKER_DECISION(chain.reorg_refused_below_finality,
     "the attack the finality floor exists to stop. Money that can be un-spent "
     "by a sufficiently patient stranger is not money.")
 
+/* ── First-run wallet refused for want of a terminal
+ * (config/src/boot_wallet_phrase.c, raised from boot_wallet_create_new's
+ * REFUSE plan). Nothing has been created at the point this stands: no seed,
+ * no keys, no flush. ──────────────────────────────────────────────────── */
+ZCL_BLOCKER_DECISION(wallet_phrase_no_terminal,
+    "A person must choose, because every way forward is a statement about "
+    "money only the owner can make. This datadir has no wallet yet, and this "
+    "run's stdout is a log file rather than a screen, so the twelve words a "
+    "new wallet is born from could only be written into node.log - a file "
+    "that is rotated, copied into backups and readable by anyone who can read "
+    "the disk. Writing them there would hand over the whole wallet; creating "
+    "the wallet without them would leave the owner a balance whose only backup "
+    "they were never shown. "
+    "OPTION A - run the node once from a terminal. The words are printed one "
+    "time, the owner writes them down, and every later start finds the wallet "
+    "already there and never asks again. Cost: one interactive start. "
+    "OPTION B - declare what this node is for with -operator-lane=dev|soak|"
+    "test|copy|standby (or -mint-anchor). A wallet is created with NO recovery "
+    "phrase at all - the words are never generated, so they cannot leak - and "
+    "the node says so loudly at every start. Cost: this wallet cannot be "
+    "recovered from words; it is disposable by declaration. "
+    "OPTION C - -wallet-no-phrase-backup, the same bargain as OPTION B for a "
+    "lane you do not want to relabel: create it, no phrase, back up node.db "
+    "yourself or accept the loss. "
+    "Never auto-attempted: picking any of these on the owner's behalf either "
+    "prints their spending authority into a log or silently decides that their "
+    "money needs no backup.")
+
 /* ── Degraded mode (SUSPECTED_NETSPLIT, raised by
  * app/services/src/directory_influence_policy.c and driven by
  * app/conditions/src/netsplit_degraded_mode.c) deliberately has NO row here,

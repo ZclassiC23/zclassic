@@ -62,6 +62,13 @@ struct boot_status_snapshot {
     int64_t started_unix;    /* wall-clock boot start */
     int64_t updated_unix;    /* wall-clock of the last update */
     int64_t elapsed_s;       /* updated_unix - started_unix */
+    /* Why this boot stopped, when it stopped on purpose. Empty on every
+     * ordinary boot; the two fields are written only once a caller names a
+     * blocker, and they are what turns "phase=loading, stage=db_open, and
+     * then nothing, forever" into an answer. A boot that exits without
+     * naming one is the silent halt this project says is unreachable. */
+    char    blocker[64];         /* blocker id, e.g. wallet_phrase_no_terminal */
+    char    blocker_reason[256]; /* plain-English reason + the way out */
 };
 
 /* ── Writer (called from the boot path) ──────────────────────────────── */
@@ -80,6 +87,16 @@ void boot_status_note_stage(int stage);
 /* Record the best chain height (or -1 for unknown) and rewrite the beacon.
  * No-op when the writer is not armed. */
 void boot_status_set_height(int64_t height);
+
+/* Name the blocker this boot is stopping on, and rewrite the beacon, BEFORE
+ * exiting. A boot that refuses must leave the reason where a node-free
+ * reader can find it: without this the beacon keeps whatever stage the boot
+ * had reached (phase=loading, stage=db_open) and an operator staring at a
+ * unit that restarts forever has nothing to read. `id` is a stable
+ * machine-readable name; `reason` is the plain-English sentence, including
+ * what to do about it. Passing NULL/empty for `id` clears both fields.
+ * No-op when the writer is not armed. */
+void boot_status_set_blocker(const char *id, const char *reason);
 
 /* ── Reader (node-free; used by the native command + tests) ──────────── */
 

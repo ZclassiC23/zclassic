@@ -1730,10 +1730,28 @@ static int act4_recovery_phrase(void)
                  "would print", !found);
     }
 
+    /* Recovering installs the whole wallet the phrase controls — the
+     * spending keys AND the master seed — so it now obeys the same at-rest
+     * rule the node obeys when it creates a wallet: encrypt it, or say in
+     * as many words that this datadir may hold them in the clear. This
+     * drill is a local fixture with no passphrase, so it says so, exactly
+     * as an operator would. Without a decision the recovery is refused and
+     * nothing is written; that refusal is proven in its own group
+     * (wallet_recovery_safety), not here. */
+    setenv("ZCL_ALLOW_PLAINTEXT_WALLET", "1", 1);
+
     rr.dry_run = false;
     struct wallet_recovery_report rep;
     struct zcl_result cr = wallet_recovery_run(&rr, &rep);
     DR_CHECK("act4: RECOVERED from the phrase alone", cr.ok);
+    if (!cr.ok) {
+        /* Everything below reads the database this was supposed to write.
+         * Say why, once, and stop — a run that keeps going here dereferences
+         * a handle that was never opened and takes the whole group down with
+         * a signal, which hides the one line that explains it. */
+        printf("    recovery refused: code=%d %s\n", cr.code, cr.message);
+        return failures;
+    }
     DR_CHECK("act4: the recovered wallet has keys", rep.keys_after > 0);
     DR_CHECK("act4: recovery reports the seed installed", rep.seed_installed);
     /* Gap-limit floor, on both chains, and the shielded lookahead — not the
@@ -1855,6 +1873,10 @@ static int act4_recovery_phrase(void)
         DR_CHECK("act4: recovering over a wallet that is already there is "
                  "REFUSED", !ar.ok && ar.code == -62);
     }
+    /* The at-rest decision an operator makes for a node holds for as long
+     * as the node does; it is not re-made per command. Drop it here, where
+     * the recovery half of the drill ends, so nothing below inherits it. */
+    unsetenv("ZCL_ALLOW_PLAINTEXT_WALLET");
 
     /* ── status tells the truth about this wallet ───────────────── */
     {
