@@ -135,6 +135,45 @@ static inline bool script_is_unspendable(const struct script *s)
            (s->size > MAX_SCRIPT_SIZE);
 }
 
+/* Every cursor step below MUST advance `i` strictly, on every input. The
+ * loop's only exit is i >= s->size, and the bytes are peer-supplied: a step
+ * that computes an advance of zero spins forever inside consensus code
+ * (core/consensus/src/script_interp.c reads this for the P2SH push-only
+ * rule). Each branch adds a small constant to a push length, so the width
+ * that addition is performed at is what decides whether it can wrap to
+ * zero:
+ *
+ *   op < OP_PUSHDATA1  `1 + op`  — unsigned char promotes to int; op <= 75,
+ *                                  so the sum is at most 76.
+ *   OP_PUSHDATA1       `2 + d`   — unsigned char promotes to int; at most 257.
+ *   OP_PUSHDATA2       `3 + len` — uint16_t promotes to int; at most 65538.
+ *   OP_PUSHDATA4       `5 + len` — uint32_t does NOT promote to int. The
+ *                                  constant converts to unsigned int and the
+ *                                  sum is taken modulo 2^32 BEFORE it ever
+ *                                  reaches the 64-bit `i`.
+ *
+ * Only the last one has an operand as wide as the arithmetic, so only the
+ * last one can wrap — and the wrap is KEPT ON PURPOSE. For every length
+ * whose 32-bit advance is non-zero, that advance is what produces the
+ * verdict this function gives today, and four of them (0xFFFFFFFC through
+ * 0xFFFFFFFF) advance the cursor by 1..4 onto a length byte above OP_16
+ * and return false. Performing the addition at cursor width instead would
+ * carry all four past s->size and return true — accepting a scriptSig the
+ * reference implementation rejects, which is a fork, not a repair.
+ *
+ * Exactly one length, 0xFFFFFFFB, makes the 32-bit advance zero. It is the
+ * only input for which this function produces no verdict at all rather
+ * than a wrong one, so refusing it outright is the whole fix: every
+ * pre-existing answer is preserved bit-for-bit and the single missing one
+ * is supplied. false is also what the reference returns there, so the one
+ * newly decided case lands on parity rather than away from it.
+ *
+ * A push whose length runs past the end of the script leaves i >= s->size
+ * and yields true here, where the reference implementation's IsPushOnly
+ * yields false (its GetOp refuses the truncated push); 0xFFFFFFF9 and
+ * 0xFFFFFFFA are that case. The divergence is deliberate and untouched: it
+ * decides transaction validity, so closing it requires a full-history
+ * replay against the real chain first. */
 static inline bool script_is_push_only(const struct script *s)
 {
     size_t i = 0;
@@ -155,7 +194,10 @@ static inline bool script_is_push_only(const struct script *s)
             if (i + 4 >= s->size) return false;
             uint32_t len = (uint32_t)s->data[i+1] | ((uint32_t)s->data[i+2] << 8) |
                            ((uint32_t)s->data[i+3] << 16) | ((uint32_t)s->data[i+4] << 24);
-            i += 5 + len;
+            /* Deliberately 32-bit: preserves every pre-existing verdict. */
+            uint32_t adv = 5u + len;
+            if (adv == 0) return false;   /* the one input with no verdict */
+            i += adv;
         } else {
             i++;
         }

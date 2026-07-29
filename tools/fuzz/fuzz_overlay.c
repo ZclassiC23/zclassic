@@ -1,9 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * fuzz_overlay — libFuzzer harness for every overlay wire decoder that
- * reads attacker-chosen bytes: the three OP_RETURN parsers (ZSLP, ZNAM,
- * ZDIR) and the four zid record codecs (identity doc, release body,
- * inclusion proof, signed endpoint, service descriptor).
+ * reads attacker-chosen bytes: the five OP_RETURN parsers (ZSLP, ZNAM,
+ * ZANC, ZID anchor, ZDIR) and the four zid record codecs (identity doc,
+ * release body, inclusion proof, signed endpoint, service descriptor).
  *
  * THE REACH PATH. Anyone who can get a transaction into a block chooses
  * the bytes of an OP_RETURN output outright — there is no signature, no
@@ -11,9 +11,12 @@
  * payload, and every indexing node parses it:
  *
  *   peer block -> connect_block -> explorer index fold
- *     -> app/models/src/explorer_index_overlays.c
+ *     -> app/models/src/explorer_index_overlays.c — one dispatch table,
+ *        keyed on the four lokad bytes, five entries:
  *          slp_parse(tx->vout[0].script_pub_key.data, ...)
  *          znam_parse(script, script_len, ...)
+ *          zanc_parse(script, script_len, ...)
+ *          zid_anchor_parse(...) via explorer_index_apply_zid_overlay
  *     -> app/models/src/explorer_index_zdir.c:161
  *          zdir_parse(script, script_len, ...)
  *   and again on render, app/controllers/src/explorer_controller_block.c:220
@@ -26,11 +29,11 @@
  * zendp_decode_body. So the decoders below run on unauthenticated bytes
  * in every case; the signature, when there is one, is checked after.
  *
- * None of these seven functions allocates — they are pure codecs writing
- * into caller-owned structs (verified: slp/znam/zdir fill fixed-size
- * message structs via read_push/overlay_reader, which return pointers
- * INTO the input; lib/zid is documented "no allocation anywhere: caller
- * buffers only"). There is therefore nothing to free on either the
+ * None of these nine functions allocates — they are pure codecs writing
+ * into caller-owned structs (verified: slp/znam/zanc/zid_anchor/zdir fill
+ * fixed-size message structs via read_push/overlay_reader, which return
+ * pointers INTO the input; lib/zid is documented "no allocation anywhere:
+ * caller buffers only"). There is therefore nothing to free on either the
  * success or the failure branch, and no output buffer outlives an input.
  * What must hold is that not one of them reads past `size` or faults on
  * ANY input. Runs with -fsanitize=fuzzer,address,undefined under clang.
@@ -38,19 +41,28 @@
  * Byte 0 selects the decoder and the rest is the payload, so one binary
  * reaches all of them and libFuzzer learns the leading discriminator
  * within the first few hundred execs.
+ *
+ * Set ZCL_FUZZ_OVERLAY_ARM_STATS=1 in the environment to have the run
+ * print a per-arm execution count on exit. That is how you check that a
+ * newly added arm is actually being reached rather than merely present:
+ * an arm nothing ever runs reads as covered while testing nothing.
  */
 
 #include "chain/chainparams.h"
+#include "zanc/zanc.h"
 #include "zdir/zdir.h"
 #include "zid/zdesc.h"
 #include "zid/zendp.h"
 #include "zid/zid.h"
+#include "zid/zid_anchor.h"
 #include "znam/znam.h"
 #include "zslp/slp.h"
 
 #include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* Required by the dependency graph of the sources linked into this
@@ -59,9 +71,10 @@
  * here — same as fuzz_block.c and fuzz_tx_bundle.c. */
 volatile sig_atomic_t g_shutdown_requested = 0;
 
-/* Number of demux arms. Keep in sync with the switch below and with the
- * leading byte of every seed in lib/test/fuzz_seeds/overlay/. */
-#define FUZZ_OVERLAY_ARMS 7
+/* Number of demux arms. Keep in sync with the switch below. Byte 0 of
+ * every seed in lib/test/fuzz_seeds/overlay/ is the literal arm index, so
+ * adding an arm here does not silently re-route the existing corpus. */
+#define FUZZ_OVERLAY_ARMS 9
 
 /* Every record here is small: MAX_OP_RETURN_RELAY is 223, ZID_DOC_MAX is
  * 1139 and ZID_PROOF_WIRE_MAX is 2067. Cap well above the largest so the
@@ -72,10 +85,36 @@ volatile sig_atomic_t g_shutdown_requested = 0;
 int LLVMFuzzerInitialize(int *argc, char ***argv);
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
 
+/* Per-arm execution counts, reported at exit when the run asked for them
+ * (ZCL_FUZZ_OVERLAY_ARM_STATS=1). One increment per exec, no locking: a
+ * libFuzzer worker is single-threaded, and this is a reachability check,
+ * not a measurement anything depends on. */
+static unsigned long g_arm_hits[FUZZ_OVERLAY_ARMS];
+static bool g_arm_stats;
+
+static const char *const g_arm_names[FUZZ_OVERLAY_ARMS] = {
+    "slp_parse", "znam_parse", "zdir_parse", "zid_doc_decode",
+    "zendp_decode_body", "zdesc_decode_body", "zid_proof_decode",
+    "zanc_parse", "zid_anchor_parse",
+};
+
+static void fuzz_overlay_report_arms(void)
+{
+    if (!g_arm_stats) return;
+    for (unsigned i = 0; i < FUZZ_OVERLAY_ARMS; i++)
+        fprintf(stderr, "ARM_HITS %u %-18s %lu\n", i, g_arm_names[i],
+                g_arm_hits[i]);
+}
+
 int LLVMFuzzerInitialize(int *argc, char ***argv)
 {
     (void)argc; (void)argv;
     chain_params_select(CHAIN_MAIN);
+    const char *v = getenv("ZCL_FUZZ_OVERLAY_ARM_STATS");
+    if (v && v[0] == '1' && v[1] == '\0') {
+        g_arm_stats = true;
+        atexit(fuzz_overlay_report_arms);
+    }
     return 0;
 }
 
@@ -85,6 +124,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         return 0;  /* libFuzzer convention: return 0 means "keep going" */
 
     const uint8_t arm = (uint8_t)(data[0] % FUZZ_OVERLAY_ARMS);
+    g_arm_hits[arm]++;
     const uint8_t *payload = data + 1;
     const size_t payload_len = size - 1;
     /* Exact by the size cap above. */
@@ -152,6 +192,24 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         uint8_t siblings[ZID_TREE_MAX_PEAKS][32];
         (void)zid_proof_decode(&index, &num_leaves, siblings, &proof_len,
                                payload, payload_len);
+        break;
+    }
+    case 7: {
+        /* ZANC OP_RETURN — the software/package digest anchor. Same
+         * dispatch table as ZSLP/ZNAM/ZDIR above: fixed hash-type and
+         * digest fields, then a bounded UTF-8 label whose validator walks
+         * multi-byte sequences off a length the script chose. */
+        struct zanc_message msg;
+        (void)zanc_parse(payload, payload_len, &msg);
+        break;
+    }
+    case 8: {
+        /* ZID anchor OP_RETURN — the on-chain master-key binding
+         * (ANCHOR / ROTATE / REVOKE). The command byte selects how many
+         * 32-byte key pushes follow, so the field count itself is
+         * attacker-chosen. */
+        struct zid_anchor_message msg;
+        (void)zid_anchor_parse(payload, payload_len, &msg);
         break;
     }
     default:
