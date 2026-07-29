@@ -8,6 +8,19 @@
  * on disk. A user typing their twelve words into a rebuilt machine has no
  * node to talk to yet.
  *
+ * `status` is a READ leaf and is held to the read contract by construction:
+ * it opens <datadir>/node.db through zcl_native_node_db_open_readonly()
+ * (SQLITE_OPEN_READONLY + PRAGMA query_only=ON) and hands the handle to the
+ * service, which no longer opens anything. It must never call
+ * node_db_open(): that is the datadir BOOT CEREMONY — READWRITE|CREATE,
+ * create_schema(), node_db_migrate(), and on a failed quick_check a
+ * rename() of the operator's node.db to node.db.corrupt-<ts> followed by a
+ * fresh empty one — and `datadir` defaults to the LIVE datadir, so the
+ * documented invocation of a read command destroyed the wallet it was
+ * asked about. Gated by tools/lint/check_read_leaf_no_boot_ceremony.sh and
+ * proven on disk by lib/test/src/test_read_leaf_no_datadir_write.c.
+ * `restore` is a COMMAND and writes on purpose; it is not held to this.
+ *
  * There is deliberately NO leaf that prints an existing wallet's phrase.
  * That is not a gap. The node keeps only the 32-byte seed the words derive,
  * and a seed cannot be turned back into words — so no such command could
@@ -31,6 +44,7 @@
 #include "json/json.h"
 #include "kernel/command_registry.h"
 #include "command/native_command.h"
+#include "models/database.h"                   /* struct node_db (RO shim) */
 #include "services/wallet_recovery_service.h"
 #include "support/cleanse.h"
 #include "util/boot_phase.h"
@@ -106,13 +120,62 @@ void zcl_native_handle_wallet_recovery_status(
         wrp_default_datadir(datadir, sizeof(datadir));
 
     struct wallet_recovery_report rep;
-    struct zcl_result r = wallet_recovery_status(datadir, &rep);
-    if (!r.ok) {
-        bool held = r.code == -61;
+    struct zcl_result pre = wallet_recovery_status_preflight(datadir, &rep);
+    if (!pre.ok) {
+        bool held = pre.code == -61;
         wrp_push_report(reply, &rep);
         wnh_fail(reply,
                  held ? ZCL_COMMAND_EXIT_BLOCKED : ZCL_COMMAND_EXIT_FAILED,
-                 held ? "DATADIR_LOCKED" : "NO_WALLET", r.message, datadir);
+                 held ? "DATADIR_LOCKED" : "BAD_DATADIR", pre.message,
+                 datadir);
+        return;
+    }
+
+    /* READ leaf. The `datadir` input defaults to the operator's LIVE one,
+     * so this open is SQLITE_OPEN_READONLY + PRAGMA query_only=ON and
+     * nothing else — never node_db_open(), which is READWRITE|CREATE and
+     * would create_schema(), migrate, and on a failed quick_check rename
+     * the user's node.db aside to node.db.corrupt-<ts> and answer "ok".
+     * Every status EXCEPT OK is refused with its own named reason, and
+     * ABSENT is refused separately from UNREADABLE: "you have not made a
+     * wallet yet" and "I could not read your wallet" are opposite answers
+     * to the question this leaf is asked, and collapsing them would tell
+     * an operator with an unreadable wallet that they never had one. */
+    sqlite3 *db = NULL;
+    struct node_db ndb;
+    char ndb_path[1200];
+    enum zcl_node_db_ro_status ro_st = zcl_native_node_db_open_readonly(
+        datadir, &db, &ndb, ndb_path, sizeof(ndb_path));
+    if (ro_st == ZCL_NODE_DB_RO_ABSENT) {
+        wrp_push_report(reply, &rep);
+        (void)json_push_kv_str(&reply->data, "what_to_do",
+            "nothing here is broken — this datadir has no wallet database "
+            "yet. One is created, with its twelve words shown once, the "
+            "first time the node starts on it. Check --datadir if you "
+            "expected a wallet at this path");
+        wnh_fail(reply, ZCL_COMMAND_EXIT_BLOCKED, "NO_NODE_DB",
+                 "there is no node.db at this datadir, so there is no wallet "
+                 "to answer about — this is the normal state of a datadir "
+                 "the node has never booted on, not a fault", ndb_path);
+        return;
+    }
+    if (ro_st != ZCL_NODE_DB_RO_OK) {
+        wrp_push_report(reply, &rep);
+        /* Fills the reply with NODE_DB_UNREADABLE / MISSING_DATADIR /
+         * DATADIR_PATH_TOO_LONG and returns false; never "ok": true. */
+        (void)zcl_native_node_db_require_readonly(
+            datadir, reply,
+            "whether this wallet can be rebuilt from its recovery phrase",
+            &db, &ndb);
+        return;
+    }
+
+    struct zcl_result r = wallet_recovery_status(datadir, &ndb, &rep);
+    zcl_native_node_db_close_readonly(&db, &ndb);
+    if (!r.ok) {
+        wrp_push_report(reply, &rep);
+        wnh_fail(reply, ZCL_COMMAND_EXIT_FAILED, "NO_WALLET", r.message,
+                 datadir);
         return;
     }
 

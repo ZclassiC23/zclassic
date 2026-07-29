@@ -113,8 +113,8 @@ static bool wrc_fill_addresses(const uint8_t seed[32],
 
 /* ── status ──────────────────────────────────────────────────────── */
 
-struct zcl_result wallet_recovery_status(const char *datadir,
-                                         struct wallet_recovery_report *out)
+struct zcl_result wallet_recovery_status_preflight(
+    const char *datadir, struct wallet_recovery_report *out)
 {
     if (!out)
         return ZCL_ERR(-63, "report is NULL");
@@ -122,44 +122,51 @@ struct zcl_result wallet_recovery_status(const char *datadir,
     if (!datadir || !datadir[0])
         return ZCL_ERR(-63, "datadir path is empty");
 
-    struct stat st;
-    if (stat(out->target_db, &st) != 0)
-        return ZCL_ERR(-63, "no wallet database at %s", out->target_db);
-
-    /* Single-writer proof BEFORE opening anything, even though this call
-     * only reads. node_db_open() is not a read: it takes a write lock and
-     * runs any pending schema migration, so pointing this at a datadir a
-     * node is holding would put a SECOND writer on that node's node.db.
-     * The leaf defaults its datadir to the operator's live one when the
-     * caller names none, which is exactly how that mistake gets made. */
+    /* Single-writer proof BEFORE anything opens the datadir. The read
+     * itself cannot write any more — the caller opens node.db READ-ONLY —
+     * but a node that is mid-migration is rewriting the very wallet tables
+     * this answer is derived from, and the leaf aims at the operator's
+     * running node when the caller names no datadir, which is exactly when
+     * that would happen. */
     struct zcl_result lock_r = wallet_restore_datadir_free(datadir);
     if (!lock_r.ok) {
         LOG_WARN(WRC_TAG, "refusing to inspect a held datadir: %s",
                  lock_r.message);
         return ZCL_ERR(-61, "%s", lock_r.message);
     }
+    return ZCL_OK;
+}
+
+struct zcl_result wallet_recovery_status(const char *datadir,
+                                         struct node_db *ndb,
+                                         struct wallet_recovery_report *out)
+{
+    if (!out)
+        return ZCL_ERR(-63, "report is NULL");
+    if (!out->target_db[0])
+        wrc_reset(out, datadir);
+    if (!datadir || !datadir[0])
+        return ZCL_ERR(-63, "datadir path is empty");
+    /* The handle is the caller's, opened READ-ONLY. Nothing here opens,
+     * creates, migrates or closes a database — that is the whole point of
+     * taking it as a parameter rather than a path. */
+    if (!ndb || !ndb->open || !ndb->db)
+        return ZCL_ERR(-63, "no open node.db to read at %s", out->target_db);
 
     /* Offline entry point — the derivation below needs a signing context. */
     if (!ecc_start_once())
         return ZCL_ERR(-63, "no secp256k1 signing context; cannot check "
                             "whether this wallet descends from its seed");
 
-    struct node_db ndb;
-    memset(&ndb, 0, sizeof(ndb));
-    if (!node_db_open(&ndb, out->target_db))
-        return ZCL_ERR(-63, "cannot open %s", out->target_db);
-
     struct wallet_sqlite ws;
     {
-        struct zcl_result wr = wallet_sqlite_open_r(&ws, ndb.db);
-        if (!wr.ok) {
-            node_db_close(&ndb);
+        struct zcl_result wr = wallet_sqlite_open_r(&ws, ndb->db);
+        if (!wr.ok)
             return ZCL_ERR(-63, "cannot open the wallet tables in %s: %s",
                            out->target_db, wr.message);
-        }
     }
 
-    out->keys_before = db_wallet_key_count(&ndb);
+    out->keys_before = db_wallet_key_count(ndb);
     out->keys_after = out->keys_before;
 
     uint8_t seed[32];
@@ -173,7 +180,6 @@ struct zcl_result wallet_recovery_status(const char *datadir,
         if (!w) {
             memory_cleanse(seed, sizeof(seed));
             wallet_sqlite_close(&ws);
-            node_db_close(&ndb);
             return ZCL_ERR(-63, "out of memory loading the wallet");
         }
         wallet_init(w);
@@ -187,7 +193,6 @@ struct zcl_result wallet_recovery_status(const char *datadir,
             free(w);
             memory_cleanse(seed, sizeof(seed));
             wallet_sqlite_close(&ws);
-            node_db_close(&ndb);
             return ZCL_ERR(-63, "cannot read this wallet's keys, so whether "
                            "a phrase would bring them back is unknown: %s",
                            kr.message);
@@ -202,8 +207,9 @@ struct zcl_result wallet_recovery_status(const char *datadir,
     }
     memory_cleanse(seed, sizeof(seed));
 
+    /* The wallet_sqlite statement set is ours; the node_db handle under it
+     * is the caller's and stays open. */
     wallet_sqlite_close(&ws);
-    node_db_close(&ndb);
     return ZCL_OK;
 }
 

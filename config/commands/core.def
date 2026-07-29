@@ -1010,11 +1010,13 @@ ZCL_COMMAND_READY_READ(
     "recovery phrases answers false and is sent to file backup instead. "
     "Answering it reads and decrypts the wallet's keys, so on an "
     "encrypted-at-rest wallet this takes seconds, not milliseconds, and "
-    "reports budget_exceeded. Opening node.db takes a write lock and runs "
-    "any pending migration, so this refuses with DATADIR_LOCKED while a "
-    "node holds the datadir rather than becoming a second writer — and it "
-    "targets the running node's datadir when the caller names none, so "
-    "name one.", 0,
+    "reports budget_exceeded. node.db is opened strictly read-only, so this "
+    "cannot create, migrate or quarantine the datadir it is aimed at — and "
+    "it aims at the running node's datadir when the caller names none, so "
+    "name one. NO_NODE_DB (no wallet made here yet) and NODE_DB_UNREADABLE "
+    "are separate answers; neither is ever reported as ok. Still refuses "
+    "with DATADIR_LOCKED while a node holds the datadir, because a wallet "
+    "being migrated underneath is not a wallet to answer about.", 0,
     "wallet,recovery,phrase,seed,mnemonic,backup",
     "zcl.wallet_recovery_status.input.v1", "zcl.wallet_recovery_status.v1",
     "datadir", "",

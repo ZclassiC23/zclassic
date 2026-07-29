@@ -78,6 +78,7 @@
 #include "services/wallet_backup_service.h"
 #include "services/wallet_restore_service.h"
 #include "services/wallet_recovery_service.h"
+#include "command/native_command.h"   /* the READ leaf's read-only open */
 #include "config/boot_wallet_phrase.h"
 #include "wallet/bip44.h"
 #include "wallet/keystore.h"
@@ -1668,8 +1669,24 @@ static int act4_recovery_phrase(void)
 
     /* ── status tells the truth about this wallet ───────────────── */
     {
+        /* The shipped read path: the caller opens node.db READ-ONLY and
+         * hands the handle in. Exercised here exactly as the READ leaf
+         * does it, so the drill would notice the service growing an open
+         * of its own again. */
         struct wallet_recovery_report srep;
-        struct zcl_result sr = wallet_recovery_status(newdir, &srep);
+        struct zcl_result pre =
+            wallet_recovery_status_preflight(newdir, &srep);
+        DR_CHECK("act4: status preflight clears the recovered datadir",
+                 pre.ok);
+        sqlite3 *sdb = NULL;
+        struct node_db sndb;
+        char sndb_path[1200];
+        enum zcl_node_db_ro_status ro = zcl_native_node_db_open_readonly(
+            newdir, &sdb, &sndb, sndb_path, sizeof(sndb_path));
+        DR_CHECK("act4: status opens the recovered node.db read-only",
+                 ro == ZCL_NODE_DB_RO_OK);
+        struct zcl_result sr = wallet_recovery_status(newdir, &sndb, &srep);
+        zcl_native_node_db_close_readonly(&sdb, &sndb);
         DR_CHECK("act4: status reads the recovered wallet", sr.ok);
         DR_CHECK("act4: status says it IS recoverable from words",
                  srep.seed_installed);

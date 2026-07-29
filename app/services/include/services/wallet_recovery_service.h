@@ -46,6 +46,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+struct node_db;
+
 struct wallet_recovery_request {
     const char *phrase;    /* BIP39 recovery phrase; required. Never stored. */
     const char *datadir;   /* target datadir; required */
@@ -87,21 +89,44 @@ struct wallet_recovery_report {
 struct zcl_result wallet_recovery_run(const struct wallet_recovery_request *req,
                                       struct wallet_recovery_report *out);
 
-/* Report what a datadir's existing wallet can be recovered from, without a
- * phrase and without changing the wallet. This is the honest answer to "can
- * I restore this wallet from words?" — a wallet created before recovery
- * phrases has independently random transparent keys and the answer is no,
- * use a file backup.
+/* ── status: a strictly READ-ONLY question, in two halves ───────────
  *
- * Refuses (-61) while a node holds the datadir. Reading the answer means
- * opening node.db, and opening node.db takes a write lock and runs any
- * pending migration — so this is a second writer, not a reader, and the
- * pidfile proof applies to it exactly as it does to a recovery.
+ * `core.wallet.recovery.status` is declared a READ leaf, and its `datadir`
+ * defaults to the operator's LIVE one when the caller names none. So the
+ * answer has to come out of node.db without the file being able to change:
+ * the caller opens the database READ-ONLY itself
+ * (zcl_native_node_db_open_readonly, tools/command/native_node_db_ro.c —
+ * SQLITE_OPEN_READONLY + PRAGMA query_only=ON, no CREATE, no migrate, no
+ * quarantine) and hands the handle in. This service no longer opens
+ * anything, which is what keeps the boot ceremony — and its
+ * node.db.corrupt-<ts> rename — off a read path for good.
+ *
+ * Splitting the call in two is not decoration: the preflight has to run
+ * BEFORE anything opens the datadir, and the open belongs to the caller. */
+
+/* Half one — refuse before the datadir is opened at all. Resets `out` and
+ * fills its datadir/target_db paths, then proves no node holds the datadir
+ * (-61 if one does). Kept even though the read is now read-only: a node
+ * mid-migration is rewriting the very wallet tables this answer is read
+ * out of, and "your wallet cannot be rebuilt from words" is not a sentence
+ * to derive from a half-written schema. */
+struct zcl_result wallet_recovery_status_preflight(
+    const char *datadir, struct wallet_recovery_report *out);
+
+/* Half two — answer from an ALREADY-OPEN, read-only node.db. `ndb` must be
+ * open; this call writes nothing to it and does not close it.
+ *
+ * This is the honest answer to "can I restore this wallet from words?" — a
+ * wallet created before recovery phrases has independently random
+ * transparent keys and the answer is no, use a file backup.
  *
  * Fills `out`; `phrase_valid` is unused here.
  * `seed_installed` reports whether the wallet's keys descend from its seed,
- * i.e. whether a recovery phrase would bring them back. */
+ * i.e. whether a recovery phrase would bring them back.
+ *
+ * Codes: -63 no usable handle / unreadable wallet tables. */
 struct zcl_result wallet_recovery_status(const char *datadir,
+                                         struct node_db *ndb,
                                          struct wallet_recovery_report *out);
 
 #endif /* ZCL_SERVICES_WALLET_RECOVERY_SERVICE_H */
