@@ -27,6 +27,7 @@
 #include "controllers/wallet_native_handlers.h"
 
 #include "controllers/agent_controller.h"
+#include "controllers/rpc_params.h"
 #include "json/json.h"
 #include "kernel/command_registry.h"
 #include "command/native_command.h"
@@ -42,18 +43,6 @@
 
 #define WRN_TAG "native.wallet.restore"
 
-static void wrn_fail(struct zcl_command_reply *reply,
-                     enum zcl_command_exit exit_code, const char *code,
-                     const char *message, const char *evidence)
-{
-    enum zcl_command_status status =
-        exit_code == ZCL_COMMAND_EXIT_BLOCKED ? ZCL_COMMAND_STATUS_BLOCKED
-                                              : ZCL_COMMAND_STATUS_FAILED;
-    LOG_ERROR(WRN_TAG, "%s: %s (%s)", code, message,
-              evidence && evidence[0] ? evidence : "-");
-    zcl_command_reply_fail(reply, status, exit_code, code, "handle", false,
-                           false, message, evidence ? evidence : "");
-}
 
 /* Deterministic non-secret token binding a plan preview to its parameters,
  * mirroring wnh_plan_token in wallet_native_handlers.c. */
@@ -147,7 +136,7 @@ void zcl_native_handle_wallet_restore(
 {
     const char *from = json_get_str(json_get(request->input, "from"));
     if (!from || !from[0]) {
-        wrn_fail(reply, ZCL_COMMAND_EXIT_INVALID, "MISSING_FROM",
+        wnh_fail(reply, ZCL_COMMAND_EXIT_INVALID, "MISSING_FROM",
                  "from is required: the path of the backup file to restore",
                  "core.wallet.restore");
         return;
@@ -179,7 +168,7 @@ void zcl_native_handle_wallet_restore(
          * operator's next move is informed rather than guessed. */
         bool blocked = r.code == -34;   /* datadir held by a running node */
         wrn_push_report(reply, &rep);
-        wrn_fail(reply,
+        wnh_fail(reply,
                  blocked ? ZCL_COMMAND_EXIT_BLOCKED : ZCL_COMMAND_EXIT_FAILED,
                  blocked ? "DATADIR_LOCKED" : "RESTORE_REFUSED",
                  r.message, from);
@@ -229,7 +218,7 @@ void zcl_native_handle_wallet_backup_decrypt(
     const char *from = json_get_str(json_get(request->input, "from"));
     const char *to = json_get_str(json_get(request->input, "to"));
     if (!from || !from[0] || !to || !to[0]) {
-        wrn_fail(reply, ZCL_COMMAND_EXIT_INVALID, "MISSING_PATH",
+        wnh_fail(reply, ZCL_COMMAND_EXIT_INVALID, "MISSING_PATH",
                  "both from (encrypted backup) and to (output file) are "
                  "required", "core.wallet.backup.decrypt");
         return;
@@ -271,7 +260,7 @@ void zcl_native_handle_wallet_backup_decrypt(
     }
 
     if (!password || !password[0]) {
-        wrn_fail(reply, ZCL_COMMAND_EXIT_INVALID, "MISSING_PASSWORD",
+        wnh_fail(reply, ZCL_COMMAND_EXIT_INVALID, "MISSING_PASSWORD",
                  "set WALLET_BACKUP_PASSWORD or pass password: the backup is "
                  "encrypted under it", from);
         return;
@@ -279,7 +268,7 @@ void zcl_native_handle_wallet_backup_decrypt(
 
     struct zcl_result r = wallet_backup_decrypt_file(from, to, password);
     if (!r.ok) {
-        wrn_fail(reply, ZCL_COMMAND_EXIT_FAILED, "DECRYPT_FAILED", r.message,
+        wnh_fail(reply, ZCL_COMMAND_EXIT_FAILED, "DECRYPT_FAILED", r.message,
                  from);
         return;
     }
@@ -295,3 +284,105 @@ void zcl_native_handle_wallet_backup_decrypt(
     (void)json_push_kv_str(&reply->data, "plan_token", token);
     reply->error.mutated = true;
 }
+
+/* ── Rescan family ──────────────────────────────────────────────────────
+ * Moved here 2026-07-29 from wallet_native_handlers.c, which crossed its
+ * 800-line ceiling when the restore and store lanes landed together. This
+ * file already owns wallet recovery (restore, backup decrypt), and a rescan
+ * is the step that makes a restored wallet usable, so the family belongs
+ * together. wnh_fail/wnh_call_rpc moved to the shared header rather than
+ * being copied — wrn_fail was already a byte-for-byte duplicate of wnh_fail
+ * and is now deleted rather than joined by a third copy. */
+void zcl_native_handle_wallet_rescan(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    const struct json_value *sh = json_get(request->input, "start_height");
+    struct rpc_arg_builder p;
+    rpc_arg_builder_init(&p);
+    if (sh && sh->type == JSON_INT) {
+        if (json_get_int(sh) < 0) {
+            rpc_arg_builder_free(&p);
+            wnh_fail(reply, ZCL_COMMAND_EXIT_INVALID, "INVALID_START_HEIGHT",
+                     "start_height must be a non-negative integer",
+                     "core.wallet.rescan");
+            return;
+        }
+        rpc_arg_builder_push_int(&p, json_get_int(sh));
+    }
+    char *params = rpc_arg_builder_to_json(&p);
+    if (!params) {
+        wnh_fail(reply, ZCL_COMMAND_EXIT_INTERNAL, "ARG_BUILD_FAILED",
+                 "could not encode rescanblockchain params",
+                 "core.wallet.rescan");
+        return;
+    }
+    struct json_value body;
+    bool ok = wnh_call_rpc(reply, "rescanblockchain", params, &body);
+    free(params);
+    if (!ok)
+        return;
+
+    /* The scan is synchronous (see core.def: MODE_JOB is aspirational —
+     * rpc_rescanblockchain blocks until the scan completes), so by the time
+     * we are here it has FINISHED. Report what it actually covered and
+     * found; never an unconditional "started". */
+    const struct json_value *cov = json_get(&body, "coverage_ok");
+    const struct json_value *blk = json_get(&body, "blocker");
+    bool coverage_ok = !cov || cov->type != JSON_BOOL || json_get_bool(cov);
+
+    if (!coverage_ok) {
+        /* A rescan that could not read the blocks it was asked to scan is a
+         * failure, not a success with a small number in it. Surface the
+         * counts alongside the typed name so an agent can act without a
+         * second call. */
+        const char *code = (blk && blk->type == JSON_STR)
+                             ? json_get_str(blk) : "RESCAN_INCOMPLETE_COVERAGE";
+        char msg[384];
+        const struct json_value *scanned = json_get(&body, "blocks_scanned");
+        const struct json_value *indexed = json_get(&body, "blocks_indexed");
+        const struct json_value *missing = json_get(&body, "blocks_missing_data");
+        snprintf(msg, sizeof(msg),
+                 "rescan read %lld of %lld indexed blocks (%lld have no block "
+                 "body on this node); the result does NOT mean the wallet is "
+                 "empty — this node cannot see those blocks' transactions",
+                 scanned ? (long long)json_get_int(scanned) : 0LL,
+                 indexed ? (long long)json_get_int(indexed) : 0LL,
+                 missing ? (long long)json_get_int(missing) : 0LL);
+        (void)json_push_kv(&reply->data, "result", &body);
+        wnh_fail(reply, ZCL_COMMAND_EXIT_FAILED, code, msg,
+                 "core.wallet.rescan");
+        /* AFTER wnh_fail: zcl_command_reply_fail() overwrites `mutated`.
+         * A failed rescan still wrote — it advanced best_block_height and
+         * folded in whatever the blocks it COULD read contained. */
+        reply->error.mutated = true;
+        json_free(&body);
+        return;
+    }
+
+    (void)json_push_kv(&reply->data, "result", &body);
+    (void)json_push_kv_bool(&reply->data, "completed", true);
+    reply->error.mutated = true;
+    json_free(&body);
+}
+
+/* core.wallet.rescan-witnesses — rebuild the Sapling Merkle witnesses for
+ * every unspent note (rpc_rescanwitnesses, app/controllers/src/
+ * wallet_rescan_controller_witness.c). This existed as an RPC with no typed
+ * command and no mention in any document, which made it invisible at the
+ * one moment it matters: a restored shielded note has rows but no witness,
+ * and a note without a witness cannot be spent. The RPC verifies its final
+ * tree root against the block header before saving and refuses to persist a
+ * diverged tree, so a failure here is a real answer, not a silent one. */
+void zcl_native_handle_wallet_rescan_witnesses(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    (void)request;
+    struct json_value body;
+    if (!wnh_call_rpc(reply, "rescanwitnesses", NULL, &body))
+        return;
+    (void)json_push_kv(&reply->data, "result", &body);
+    (void)json_push_kv_bool(&reply->data, "completed", true);
+    reply->error.mutated = true;
+    json_free(&body);
+}
+

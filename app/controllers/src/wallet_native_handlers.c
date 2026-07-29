@@ -21,6 +21,7 @@
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
+#include <ctype.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -81,7 +82,7 @@ static bool wnh_body_is_error(const struct json_value *body,
 /* Call one wallet RPC method. On success returns true and fills *out (caller
  * json_free's it). On any failure sets a typed error body on `reply`, releases
  * its own scratch, and returns false — never leaves `reply` silent. */
-static bool wnh_call_rpc(struct zcl_command_reply *reply, const char *method,
+bool wnh_call_rpc(struct zcl_command_reply *reply, const char *method,
                          const char *params_json, struct json_value *out)
 {
     zcl_native_bridge_ensure_rpc();
@@ -173,7 +174,7 @@ static double wnh_amount_real(const struct json_value *amt, bool *ok)
     return 0.0;
 }
 
-static void wnh_fail(struct zcl_command_reply *reply,
+void wnh_fail(struct zcl_command_reply *reply,
                      enum zcl_command_exit exit_code, const char *code,
                      const char *message, const char *evidence)
 {
@@ -463,6 +464,32 @@ void zcl_native_handle_wallet_shielded_send(
     }
     const char *idem =
         json_get_str(json_get(request->input, "idempotency_key"));
+    /* Optional Sapling memo carried to a shielded recipient. `memo` is plain
+     * UTF-8 (zero-padded by z_sendmany); `memo_hex` is the raw-bytes form for
+     * a binary memo. Without this the typed path could not attach the store's
+     * ZCL23ORDER:<id> order binding, so an agent-driven buyer could pay but
+     * never be credited — the merchant's reconcile keys on the memo. */
+    const char *memo = json_get_str(json_get(request->input, "memo"));
+    const char *memo_hex = json_get_str(json_get(request->input, "memo_hex"));
+    if (memo && !memo[0]) memo = NULL;
+    if (memo_hex && !memo_hex[0]) memo_hex = NULL;
+    if (memo_hex) {
+        size_t hlen = strlen(memo_hex);
+        bool hex_ok = (hlen % 2 == 0) && hlen <= 1024;
+        for (size_t i = 0; hex_ok && i < hlen; i++)
+            hex_ok = isxdigit((unsigned char)memo_hex[i]) != 0;
+        if (!hex_ok) {
+            wnh_fail(reply, ZCL_COMMAND_EXIT_INVALID, "INVALID_MEMO_HEX",
+                     "memo_hex must be even-length hex, at most 1024 chars",
+                     "memo_hex");
+            return;
+        }
+    }
+    if (memo && strlen(memo) > 512) {
+        wnh_fail(reply, ZCL_COMMAND_EXIT_INVALID, "INVALID_MEMO",
+                 "memo must be at most 512 bytes", "memo");
+        return;
+    }
     bool confirm = json_get_bool_or(request->input, "confirm", false);
     char amtbuf[64];
     (void)snprintf(amtbuf, sizeof(amtbuf), "%.8f", amount);
@@ -476,6 +503,10 @@ void zcl_native_handle_wallet_shielded_send(
         (void)json_push_kv_str(&ci, "from", from);
         (void)json_push_kv_str(&ci, "to", to);
         (void)json_push_kv_real(&ci, "amount", amount);
+        if (memo)
+            (void)json_push_kv_str(&ci, "memo", memo);
+        if (memo_hex)
+            (void)json_push_kv_str(&ci, "memo_hex", memo_hex);
         if (idem && idem[0])
             (void)json_push_kv_str(&ci, "idempotency_key", idem);
         (void)json_push_kv_bool(&ci, "confirm", true);
@@ -490,8 +521,8 @@ void zcl_native_handle_wallet_shielded_send(
         return;
     }
 
-    /* z_sendmany takes [from, [{address, amount}]] — build the nested
-     * recipient array through the encoder so a quote in from/to cannot
+    /* z_sendmany takes [from, [{address, amount, memo?}]] — build the nested
+     * recipient array through the encoder so a quote in from/to/memo cannot
      * rewrite the params array. */
     struct rpc_arg_builder p;
     rpc_arg_builder_init(&p);
@@ -501,6 +532,10 @@ void zcl_native_handle_wallet_shielded_send(
     json_set_object(&recip);
     (void)json_push_kv_str(&recip, "address", to);
     (void)json_push_kv_real(&recip, "amount", amount);
+    if (memo_hex)
+        (void)json_push_kv_str(&recip, "memo_hex", memo_hex);
+    else if (memo)
+        (void)json_push_kv_str(&recip, "memo", memo);
     json_init(&recip_arr);
     json_set_array(&recip_arr);
     (void)json_push_back(&recip_arr, &recip);
@@ -532,102 +567,17 @@ void zcl_native_handle_wallet_shielded_send(
     (void)json_push_kv_str(&reply->data, "from", from);
     (void)json_push_kv_str(&reply->data, "to", to);
     (void)json_push_kv_real(&reply->data, "amount", amount);
+    /* Echo the memo actually attached so the caller can bind the send to
+     * whatever the memo means to it (a store order, a ZMSG frame). */
+    (void)json_push_kv_bool(&reply->data, "memo_attached",
+                            memo != NULL || memo_hex != NULL);
+    if (memo_hex)
+        (void)json_push_kv_str(&reply->data, "memo_hex", memo_hex);
+    else if (memo)
+        (void)json_push_kv_str(&reply->data, "memo", memo);
     if (idem && idem[0])
         (void)json_push_kv_str(&reply->data, "idempotency_key", idem);
     (void)json_push_kv_str(&reply->data, "plan_token", token);
-    reply->error.mutated = true;
-    json_free(&body);
-}
-
-void zcl_native_handle_wallet_rescan(
-    const struct zcl_command_request *request, struct zcl_command_reply *reply)
-{
-    const struct json_value *sh = json_get(request->input, "start_height");
-    struct rpc_arg_builder p;
-    rpc_arg_builder_init(&p);
-    if (sh && sh->type == JSON_INT) {
-        if (json_get_int(sh) < 0) {
-            rpc_arg_builder_free(&p);
-            wnh_fail(reply, ZCL_COMMAND_EXIT_INVALID, "INVALID_START_HEIGHT",
-                     "start_height must be a non-negative integer",
-                     "core.wallet.rescan");
-            return;
-        }
-        rpc_arg_builder_push_int(&p, json_get_int(sh));
-    }
-    char *params = rpc_arg_builder_to_json(&p);
-    if (!params) {
-        wnh_fail(reply, ZCL_COMMAND_EXIT_INTERNAL, "ARG_BUILD_FAILED",
-                 "could not encode rescanblockchain params",
-                 "core.wallet.rescan");
-        return;
-    }
-    struct json_value body;
-    bool ok = wnh_call_rpc(reply, "rescanblockchain", params, &body);
-    free(params);
-    if (!ok)
-        return;
-
-    /* The scan is synchronous (see core.def: MODE_JOB is aspirational —
-     * rpc_rescanblockchain blocks until the scan completes), so by the time
-     * we are here it has FINISHED. Report what it actually covered and
-     * found; never an unconditional "started". */
-    const struct json_value *cov = json_get(&body, "coverage_ok");
-    const struct json_value *blk = json_get(&body, "blocker");
-    bool coverage_ok = !cov || cov->type != JSON_BOOL || json_get_bool(cov);
-
-    if (!coverage_ok) {
-        /* A rescan that could not read the blocks it was asked to scan is a
-         * failure, not a success with a small number in it. Surface the
-         * counts alongside the typed name so an agent can act without a
-         * second call. */
-        const char *code = (blk && blk->type == JSON_STR)
-                             ? json_get_str(blk) : "RESCAN_INCOMPLETE_COVERAGE";
-        char msg[384];
-        const struct json_value *scanned = json_get(&body, "blocks_scanned");
-        const struct json_value *indexed = json_get(&body, "blocks_indexed");
-        const struct json_value *missing = json_get(&body, "blocks_missing_data");
-        snprintf(msg, sizeof(msg),
-                 "rescan read %lld of %lld indexed blocks (%lld have no block "
-                 "body on this node); the result does NOT mean the wallet is "
-                 "empty — this node cannot see those blocks' transactions",
-                 scanned ? (long long)json_get_int(scanned) : 0LL,
-                 indexed ? (long long)json_get_int(indexed) : 0LL,
-                 missing ? (long long)json_get_int(missing) : 0LL);
-        (void)json_push_kv(&reply->data, "result", &body);
-        wnh_fail(reply, ZCL_COMMAND_EXIT_FAILED, code, msg,
-                 "core.wallet.rescan");
-        /* AFTER wnh_fail: zcl_command_reply_fail() overwrites `mutated`.
-         * A failed rescan still wrote — it advanced best_block_height and
-         * folded in whatever the blocks it COULD read contained. */
-        reply->error.mutated = true;
-        json_free(&body);
-        return;
-    }
-
-    (void)json_push_kv(&reply->data, "result", &body);
-    (void)json_push_kv_bool(&reply->data, "completed", true);
-    reply->error.mutated = true;
-    json_free(&body);
-}
-
-/* core.wallet.rescan-witnesses — rebuild the Sapling Merkle witnesses for
- * every unspent note (rpc_rescanwitnesses, app/controllers/src/
- * wallet_rescan_controller_witness.c). This existed as an RPC with no typed
- * command and no mention in any document, which made it invisible at the
- * one moment it matters: a restored shielded note has rows but no witness,
- * and a note without a witness cannot be spent. The RPC verifies its final
- * tree root against the block header before saving and refuses to persist a
- * diverged tree, so a failure here is a real answer, not a silent one. */
-void zcl_native_handle_wallet_rescan_witnesses(
-    const struct zcl_command_request *request, struct zcl_command_reply *reply)
-{
-    (void)request;
-    struct json_value body;
-    if (!wnh_call_rpc(reply, "rescanwitnesses", NULL, &body))
-        return;
-    (void)json_push_kv(&reply->data, "result", &body);
-    (void)json_push_kv_bool(&reply->data, "completed", true);
     reply->error.mutated = true;
     json_free(&body);
 }

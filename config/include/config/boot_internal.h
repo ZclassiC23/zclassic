@@ -284,6 +284,7 @@ bool boot_loader_owns_seed(const struct app_context *ctx);
  * Called by the frontend api_cache / https_explorer starts and once directly
  * from app_init_services (boot_services.c). */
 void boot_configure_frontend_rpc(struct boot_svc_ctx *svc);
+void boot_register_store_buyer_rpc(struct boot_svc_ctx *svc);
 
 /* Register every clearnet frontend service into svc->frontend_kernel.
  * Called once from app_init_services before the frontend kernel starts. */

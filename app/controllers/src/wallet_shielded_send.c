@@ -11,6 +11,32 @@
 #include "wallet/wallet_lock.h"
 
 
+/* Sapling-vs-transparent routing for one address, against the ACTIVE chain's
+ * bech32 HRP rather than a hardcoded mainnet "zs1". Every network mints a
+ * different human-readable part (main "zs", testnet "ztestsapling", regtest
+ * "zregtestsapling"), and sapling_decode_payment_address() ignores the HRP
+ * entirely, so the prefix test here is the ONLY thing deciding which branch a
+ * recipient takes. With the literal, a regtest z-recipient fell into the
+ * transparent branch and z_sendmany died on "Invalid transparent address" —
+ * i.e. no shielded payment could be made on any isolated fixture.
+ *
+ * The trailing '1' is bech32's separator, so "zs" cannot swallow a
+ * hypothetical "zsfoo1..." address. Refusing (returning false) is always the
+ * safe direction: the address then has to decode as transparent or the send
+ * is refused outright. */
+bool wallet_addr_is_sapling(const char *addr)
+{
+    const struct chain_params *cp = chain_params_get();
+    if (!addr || !cp)
+        return false;
+    const char *hrp = cp->bech32HRPs[BECH32_SAPLING_PAYMENT_ADDRESS];
+    size_t hrp_len = hrp ? strlen(hrp) : 0;
+    if (hrp_len == 0)
+        return false;
+    return strncmp(addr, hrp, hrp_len) == 0 && addr[hrp_len] == '1';
+}
+
+
 bool rpc_z_sendmany(const struct json_value *params, bool help,
                              struct json_value *result)
 {
@@ -65,8 +91,9 @@ bool rpc_z_sendmany(const struct json_value *params, bool help,
         LOG_FAIL("wallet_shielded", "z_sendmany: invalid from_addr or recipients array");
     }
 
-    /* Check if from address is transparent (t1/t3) or shielded (zs1) */
-    bool from_is_shielded = (strncmp(from_addr, "zs1", 3) == 0);
+    /* Is the from address transparent or Sapling? Decided against the active
+     * chain's HRP (wallet_addr_is_sapling), not a mainnet literal. */
+    bool from_is_shielded = wallet_addr_is_sapling(from_addr);
 
     /* Verify we own the from address */
     const struct chain_params *cp = chain_params_get();
@@ -128,7 +155,7 @@ bool rpc_z_sendmany(const struct json_value *params, bool help,
         }
         total_amount += amount;
 
-        if (strncmp(addr, "zs1", 3) == 0) {
+        if (wallet_addr_is_sapling(addr)) {
             /* Sapling shielded output */
             if (!sapling_decode_payment_address(addr,
                     z_diversifiers[num_z_out], z_pk_ds[num_z_out])) {
@@ -157,10 +184,20 @@ bool rpc_z_sendmany(const struct json_value *params, bool help,
                 }
                 z_has_memo[num_z_out] = true;
             } else if (memo_val && json_get_str(memo_val)) {
+                /* A TEXT memo is zero-padded, not 0xF6-padded. 0xF6 is the
+                 * "no memo" sentinel (a memo of 0xF6 then zeros); for a UTF-8
+                 * memo the spec pads with 0x00, and every reader in this tree
+                 * treats 0x00 as the text terminator. Padding text with 0xF6
+                 * produced "<text>" immediately followed by 0xF6, which the
+                 * store's order-binding matcher (memo[len] must be NUL or ';',
+                 * db_store_received_payment_for_memo) rejects — so a buyer who
+                 * typed the memo exactly as the payment page instructs was
+                 * never credited. memo_hex is untouched: binary callers (the
+                 * on-chain ZMSG codec) own their own padding. */
                 const char *memo_str = json_get_str(memo_val);
                 size_t memo_len = strlen(memo_str);
                 if (memo_len > 512) memo_len = 512;
-                memset(z_memos[num_z_out], 0xF6, 512);
+                memset(z_memos[num_z_out], 0x00, 512);
                 memcpy(z_memos[num_z_out], memo_str, memo_len);
                 z_has_memo[num_z_out] = true;
             } else {

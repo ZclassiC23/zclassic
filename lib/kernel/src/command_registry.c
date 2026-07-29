@@ -920,6 +920,27 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
              * 21M-ZCL supply so a nonsense price is refused up front. */
             type_ok = value->type == JSON_INT && json_get_int(value) >= 0 &&
                       json_get_int(value) <= 2100000000000000LL;
+        } else if (strcmp(key, "price_zcl") == 0 ||
+                   strcmp(key, "price_zatoshi") == 0) {
+            /* app.store.list-product asking price, in whichever unit the key
+             * names. Typed like `amount` (number or numeric string) and left
+             * DELIBERATELY unrestricted beyond that: the handler owns the
+             * unit rules and answers with MISSING_PRICE / PRICE_CONFLICT /
+             * BAD_PRICE / PRICE_OUT_OF_RANGE, and a coarse range check here
+             * would collapse all four into one INVALID_INPUT that tells the
+             * merchant nothing about which one they hit. Without this rule
+             * the default branch demands a string and rejects the leaf's own
+             * declared example. */
+            type_ok = value->type == JSON_INT || value->type == JSON_REAL ||
+                      (value->type == JSON_STR && json_get_str(value) &&
+                       json_get_str(value)[0] &&
+                       strlen(json_get_str(value)) <= 64);
+        } else if (strcmp(key, "tokens_per_purchase") == 0) {
+            /* app.store.list-product tokens minted per purchase. Any
+             * non-negative integer reaches the handler, which enforces the
+             * real 1..10000 bound as BAD_TOKENS_PER_PURCHASE — so the same
+             * mistake reports the same code over every transport. */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 0;
         } else if (strcmp(key, "timeout_ms") == 0) {
             type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
                       json_get_int(value) <= 300000;

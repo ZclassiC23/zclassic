@@ -23,6 +23,7 @@
 #include "config/boot_zcode_swarm.h"
 #include "controllers/api_controller.h"
 #include "controllers/explorer_controller.h"
+#include "controllers/store_buyer_controller.h"
 #include "net/file_service.h"
 #include "net/rom_seed.h"
 #include "config/rom_bundle_admission.h"
@@ -354,6 +355,23 @@ static void boot_onion_tor_stop(void *ctx)
     (void)ctx;
     tor_integration_stop();
     onion_service_stop();
+}
+
+/* Store BUYER — the programmatic buying half of the store, gated on the same
+ * profile as the store itself.
+ *
+ * This is a plain command registration rather than a service spec because it
+ * must happen while the RPC table is still being built: app_init_services
+ * calls it alongside the wallet and ZSLP registrations, long before
+ * boot_rpc_http_start hands that table to the listener. It lives in this file
+ * because this file already owns the store's lifecycle (the payment processor
+ * below), not in boot_services.c, which is at its size ceiling. */
+void boot_register_store_buyer_rpc(struct boot_svc_ctx *svc)
+{
+    if (!svc || !svc->app_ctx || !boot_profile_has_store(svc->app_ctx))
+        return;
+    rpc_store_buyer_set_state(svc->app_ctx->datadir);
+    register_store_buyer_rpc_commands(svc->rpc_table);
 }
 
 static bool boot_store_payment_start(void *ctx)

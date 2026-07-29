@@ -65,6 +65,7 @@ app.messaging.send-named   exempt: PLANNED fail-closed, no artifact install (no 
 app.messaging.read         exempt: flips one message's read bit, rebuildable projection
 app.market.offer           exempt: PLANNED fail-closed, no artifact install (no origin announce path exists)
 app.market.buy             exempt: PLANNED fail-closed, no artifact install (no payment leg exists)
+app.store.list-product     exempt: app-local AR write (one products row + one content-addressed store_blobs row) into node.db; the payload is merchant-supplied storefront content the store re-hashes on every read, never an artifact the node executes or trusts
 app.swap.initiate          exempt: mints a local HTLC contract row, broadcasts nothing
 app.swap.participate       exempt: mints a local HTLC contract row, broadcasts nothing
 ops.debug.rom_seed.enable  exempt: in-process policy flag flip + JSON persist, no artifact install
@@ -102,3 +103,17 @@ core.wallet.address.export-key  exempt: reveals an existing key over the respons
 core.wallet.backup.decrypt      exempt: decrypts an operator-named backup FILE to an operator-named path; touches neither the datadir nor the running binary
 core.wallet.restore             exempt: merges wallet rows into node.db through the node's own schema path, in one transaction, and refuses while a node holds the datadir; a row merge, not an artifact install
 core.wallet.rescan-witnesses    exempt: rebuilds a DERIVED Sapling witness projection and refuses to save a tree whose final root does not match the block header; installs no artifact
+
+# app.store.* — the buying half of the store. None of the three installs a
+# privileged artifact over the datadir or the running binary.
+#   order   writes an app-layer purchase row (store_purchases) plus the
+#           merchant's own order row, both ordinary AR records in node.db.
+#   pay     moves value, but the spend is already covered by the node's
+#           sovereignty spend guard (sovereignty_guard_allow("wallet_spend"))
+#           and by z_sendmany's own path; this leaf adds no new authority.
+#   collect writes a buyer-chosen data file whose bytes are SHA3-256-bound to
+#           the product content hash BEFORE the write, and the write is
+#           atomic-by-rename — a mismatch leaves nothing behind at all.
+app.store.order            exempt: AR insert/update of a buyer purchase row; no artifact install
+app.store.pay              exempt: shielded spend already gated by the sovereignty spend guard; no artifact install
+app.store.collect          exempt: writes a content-hash-verified data file to an operator-chosen path; no artifact install

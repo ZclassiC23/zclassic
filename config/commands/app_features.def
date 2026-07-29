@@ -37,6 +37,7 @@ ZCL_COMMAND_BRANCH("app.names", "app", "Names", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.tokens", "app", "Tokens", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.messaging", "app", "Messaging", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.market", "app", "Market", ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("app.store", "app", "Store", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.swap", "app", "Swaps", ZCL_COMMAND_LAYER_APP)
 
 /* ── Names (ZNAM) ──────────────────────────────────────────────────── */
@@ -344,6 +345,59 @@ ZCL_COMMAND_PLANNED_COMMAND(
     "builds or broadcasts the payment transaction whose mempool-verified "
     "txid handle_zfilepay (msgprocessor.c) requires to unlock chunks, so the "
     "session never advances and no funds move")
+
+/* ── Store (the /store storefront) ───────────────────────────────────
+ *
+ * NOT the ZCL Market above. app.market.* gossips file offers over P2P and is
+ * PLANNED because nothing announces a locally created offer. app.store.* is
+ * the shipped storefront served at /store — per-order Sapling payment
+ * addresses, memo-bound reconciliation, token-gated download — and its
+ * merchant side is executable here.
+ *
+ * These leaves address `<datadir>/node.db` directly (input.datadir, else the
+ * process --datadir), exactly as the /store HTTP handler does on every
+ * request. That is why a product listed here needs no restart to appear, and
+ * why the command also works against a stopped node's datadir. */
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.store.list-product", "app.store", "",
+    "List a product for sale in the store",
+    "The product row as the store will serve it, re-read from the products "
+    "table after the write (not an echo of the request): its assigned id, "
+    "normalized token_id, price in both units, and — when a file was "
+    "attached — the SHA3-256 of the stored FILE BYTES. Refuses rather than "
+    "half-lists: an unreadable/empty/over-cap content_path or a token_id an "
+    "active product already holds writes nothing.", 0,
+    "store,product,sell,merchant,listing",
+    "zcl.app_store_list_product_input.v1", "zcl.app_store_product.v1",
+    "datadir,name,description,price_zcl,price_zatoshi,token_id,"
+    "tokens_per_purchase,content_path,content_type,content_filename", "",
+    "zclassic23 app store list-product --input='{\"name\":\"Field guide\","
+    "\"token_id\":\"GUIDE\",\"price_zcl\":0.25,"
+    "\"content_path\":\"/srv/guide.pdf\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_store_list_product)
+
+ZCL_COMMAND_READY_READ(
+    "app.store.products", "app.store", "", "List the store's active products",
+    "Every ACTIVE product the storefront will show, read from the products "
+    "table at call time — the same rows /store renders, whether they were "
+    "written by app.store.list-product, by the store/products.json loader, "
+    "or by the built-in demo seed. Inactive products are omitted.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "store,products,catalog,listing", "zcl.app_store_products_input.v1",
+    "zcl.app_store_products.v1", "datadir", "",
+    "zclassic23 app store products",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_store_products)
 
 /* ── Atomic swaps (ZSWP) ───────────────────────────────────────────── */
 

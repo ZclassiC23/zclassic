@@ -7,6 +7,7 @@
 #define ZCL_CONTROLLERS_WALLET_NATIVE_HANDLERS_H
 
 #include "controllers/native_handler_body.h"
+#include "kernel/command_registry.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -40,6 +41,20 @@ char *zcl_native_z_getbalance_body(const struct json_value *args,
  * shielded notes answers count=0 with an empty list, never a missing key. */
 char *zcl_native_z_listunspent_body(const struct json_value *args,
                                      struct zcl_native_body_err *err);
+
+/* Shared by every wallet native handler, published here rather than
+ * copied: wallet_restore_native_handlers.c carried a byte-for-byte
+ * duplicate of wnh_fail (wrn_fail), now deleted. One helper, one
+ * definition — a second copy is how the two drift apart. */
+void wnh_fail(struct zcl_command_reply *reply,
+              enum zcl_command_exit exit_code, const char *code,
+              const char *message, const char *evidence);
+
+/* Call a node RPC, publishing a typed BLOCKED failure into `reply` and
+ * returning false when the node does not answer. `out` is only
+ * initialised on true. */
+bool wnh_call_rpc(struct zcl_command_reply *reply, const char *method,
+                  const char *params_json, struct json_value *out);
 
 #ifdef __cplusplus
 }
