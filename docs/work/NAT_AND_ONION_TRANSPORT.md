@@ -94,7 +94,7 @@ peer on the live network speaks v1 today. So a record remains a HINT
 about where to look. It ADDS a place to try alongside the unsigned
 wallet scrape and the signed descriptor directory, and it can never
 remove, filter, or rank down a peer from any other source — the only
-sanctioned influence path is `addrman_set_reputation_weight`, bounded to
+sanctioned influence path is `addrman_publish_reputation_weights`, bounded to
 a [1.0, 4.0] dial-chance multiplier. Signed sources together may fill at
 most half of any discovery slate, so a flood of records cannot squeeze
 out the source that always works. That discipline is explicit in

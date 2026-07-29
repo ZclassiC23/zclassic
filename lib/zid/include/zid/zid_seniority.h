@@ -59,7 +59,7 @@
  *    is no value this module can return that lowers a peer's dial chance
  *    below the unweighted baseline, and none that removes a peer from
  *    consideration. The single sanctioned consumer is
- *    addrman_set_reputation_weight() (lib/net/include/net/addrman.h),
+ *    addrman_publish_reputation_weights() (lib/net/include/net/addrman.h),
  *    which clamps to the same bound in the callee, so the ceiling is
  *    enforced twice and by the shape of the API rather than by discipline.
  *    If a weighting scheme ever wants more than 4x of dynamic range, the
@@ -249,7 +249,7 @@ double zid_seniority_score(int32_t registration_height, int32_t tip_height);
 int32_t zid_seniority_epoch_height(int32_t tip_height);
 
 /* Combine an existing advisory multiplier with the seniority multiplier
- * into the ONE bounded value handed to addrman_set_reputation_weight().
+ * into the ONE bounded value handed to addrman_publish_reputation_weights().
  *
  * This exists so that seniority does not need a second influence path.
  * Bandwidth reputation and seniority are two opinions about the same

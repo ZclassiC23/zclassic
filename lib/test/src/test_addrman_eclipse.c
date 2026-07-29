@@ -547,7 +547,7 @@ int test_addrman_eclipse(void)
             double prev = 1.1;   /* > max possible chance (1.0) */
             for (int n = 0; n <= 8; n++) {
                 info.attempts = n;
-                double c = addr_info_get_chance(&info, now);
+                double c = addr_info_get_chance(NULL, &info, now);
                 sub_ok = sub_ok && c <= prev + 1e-12;
                 prev = c;
             }

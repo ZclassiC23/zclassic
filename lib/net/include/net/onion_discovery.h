@@ -132,7 +132,7 @@ bool onion_directory_name_for_db(struct sqlite3 *db, const char *onion,
  * exclude any peer from any other source. A poisoned record then costs
  * at most one wasted connection attempt. The only sanctioned way for a
  * directory to influence selection at all is
- * addrman_set_reputation_weight (lib/net/src/addrman.c), which is
+ * addrman_publish_reputation_weights (lib/net/src/addrman.c), which is
  * bounded to a [1.0, 4.0] dial-chance multiplier and structurally
  * cannot exclude. */
 

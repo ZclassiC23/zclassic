@@ -20,7 +20,7 @@
  * ADVISORY, NEVER EXCLUSIVE. Nothing in this header can express "do not
  * dial X". The only output that touches peer selection is a weight in
  * [ZDIR_WEIGHT_NEUTRAL_MILLI, ZDIR_WEIGHT_MAX_MILLI] = [1000, 4000], i.e. a
- * [1.0, 4.0] multiplier for addrman_set_reputation_weight(), which itself
+ * [1.0, 4.0] multiplier for addrman_publish_reputation_weights(), which itself
  * clamps to >= 1.0 and only ever RAISES a dial chance. A candidate the
  * directory dislikes, a candidate it has never heard of, and a candidate
  * excluded by the per-owner cap all receive exactly
@@ -170,7 +170,7 @@ uint16_t zdir_weight_milli(uint8_t bandwidth_score, uint32_t age_blocks,
 
 /* Convert to the addrman dial-chance multiplier. Clamped into
  * [1.0, ADDRMAN_REPUTATION_MAX_MULT]; the return value can never be < 1.0,
- * so feeding it to addrman_set_reputation_weight() cannot lower any peer's
+ * so feeding it to addrman_publish_reputation_weights() cannot lower any peer's
  * chance and cannot exclude a peer. */
 double zdir_weight_multiplier(uint16_t weight_milli);
 

@@ -15,7 +15,7 @@
  *
  * SEAM — deliberately not wired here: nothing in this tree yet calls
  * anchor_influence_weight_for() and pushes the result into
- * addrman_set_reputation_weight(). That wiring, and the live instance of
+ * addrman_publish_reputation_weights(). That wiring, and the live instance of
  * struct anchor_influence_set that would back a diagnostics dumper, belong to
  * the directory-seeding lane that owns lib/net/src/addrman.c and
  * config/src/boot_node_utilities.c. This module is the predicate plus the

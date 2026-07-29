@@ -23,7 +23,7 @@
  * ADDITIONAL source merged alongside DNS seeds, fixed seeds, addrman and the
  * signed-descriptor source (net/onion_peer_merge.h), and it has no path to
  * exclude a peer. Reputation weighting, if ever wired, is bounded to a
- * [1.0, 4.0] dial-chance multiplier (addrman_set_reputation_weight).
+ * [1.0, 4.0] dial-chance multiplier (addrman_publish_reputation_weights).
  *
  * Lokad ID: "ZDIR". OP_RETURN payload (PUSH fields after 0x6a):
  *   [PUSH "ZDIR"     (4)]   lokad id

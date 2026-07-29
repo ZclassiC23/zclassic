@@ -119,18 +119,24 @@ static void zsb_addrman_add(struct addr_man *am, const uint8_t ip[16],
     (void)addrman_add(am, &a, &src, 0);
 }
 
-/* Read back the weight addrman actually banked for `ip`, or -1.0 when the
- * address is absent. Scans `entries` directly: struct addr_man is public and
- * this is the only way to observe what the pass did without a live node. */
-static double zsb_weight_of(const struct addr_man *am, const uint8_t ip[16])
+/* The multiplier addrman actually PUBLISHES for `ip`. There is no third
+ * state: an address absent from the published table — or an addrman with no
+ * table published at all — reads exactly 1.0. */
+static double zsb_weight_of(struct addr_man *am, const uint8_t ip[16])
 {
-    for (int i = 0; i < am->id_count; i++) {
-        if (!am->entries[i].used)
-            continue;
-        if (memcmp(am->entries[i].addr.svc.addr.ip, ip, 16) == 0)
-            return am->entries[i].reputation_weight;
-    }
-    return -1.0;
+    struct net_addr na;
+    net_addr_init(&na);
+    memcpy(na.ip, ip, 16);
+    return addrman_reputation_weight(am, &na);
+}
+
+/* Publish whatever rows a pass built, the way boot_seniority_refresh_once
+ * does: as ONE table, replacing the previous one whole. */
+static bool zsb_publish(struct addr_man *am,
+                        const struct boot_seniority_pass *pass, int32_t epoch)
+{
+    return addrman_publish_reputation_weights(am, pass->rows, pass->rows_n,
+                                              epoch);
 }
 
 static const struct addr_info *zsb_entry_of(const struct addr_man *am,
@@ -276,6 +282,7 @@ static int zsb_case_selection(void)
     zsb_addrman_add(&am, ip_unbound, 8033);
     size_t before = addrman_size(&am);
 
+    struct addrman_weight_row rows[8];
     struct boot_seniority_pass pass;
     memset(&pass, 0, sizeof(pass));
     pass.am = &am;
@@ -283,6 +290,8 @@ static int zsb_case_selection(void)
     pass.table_n = wn;
     pass.bindings = bindings;
     pass.bindings_n = bn;
+    pass.rows = rows;
+    pass.rows_cap = sizeof(rows) / sizeof(rows[0]);
 
     /* IDENTICAL banked reputation for all three — zero. Any difference in
      * the outcome is therefore seniority and nothing else. */
@@ -291,6 +300,8 @@ static int zsb_case_selection(void)
     boot_seniority_weigh_address(&pass, ip_senior, 8033, &rep);
     boot_seniority_weigh_address(&pass, ip_fresh, 8033, &rep);
     boot_seniority_weigh_address(&pass, ip_unbound, 8033, &rep);
+    ZSB_CHECK("the pass publishes its table as one unit",
+              zsb_publish(&am, &pass, 0));
 
     double w_senior = zsb_weight_of(&am, ip_senior);
     double w_fresh = zsb_weight_of(&am, ip_fresh);
@@ -301,29 +312,30 @@ static int zsb_case_selection(void)
            w_senior, w_fresh, w_unbound,
            senior ? senior->seniority : 0.0, senior ? senior->mass : 0.0);
 
-    ZSB_CHECK("the bound senior address banks its seniority multiplier",
+    ZSB_CHECK("the bound senior address publishes its seniority multiplier",
               senior && fabs(w_senior - senior->multiplier) < 1e-9 &&
               w_senior > 1.0);
-    /* 0.0 is addrman's "unset", which behaves exactly as 1.0 — the point is
-     * that neither of these two got a boost. */
+    /* Absent from the published table reads exactly 1.0 — the baseline is a
+     * VALUE now, not a sentinel that some reader has to know to interpret. */
     ZSB_CHECK("the fresh relay's address is left on the plain baseline",
-              w_fresh == 0.0);
+              w_fresh == 1.0);
     ZSB_CHECK("an address no record vouches for is left on the baseline",
-              w_unbound == 0.0);
+              w_unbound == 1.0);
 
-    /* The end of the chain: a different banked weight is a different DIAL
+    /* The end of the chain: a different published weight is a different DIAL
      * CHANCE, which is what "changes peer selection" means. */
     const struct addr_info *e_senior = zsb_entry_of(&am, ip_senior);
     const struct addr_info *e_unbound = zsb_entry_of(&am, ip_unbound);
-    double c_senior = e_senior ? addr_info_get_chance(e_senior, 1000000) : 0.0;
-    double c_unbound = e_unbound ? addr_info_get_chance(e_unbound, 1000000)
+    double c_senior = e_senior ? addr_info_get_chance(&am, e_senior, 1000000)
+                               : 0.0;
+    double c_unbound = e_unbound ? addr_info_get_chance(&am, e_unbound, 1000000)
                                  : 0.0;
     printf("zid_seniority_binding:   dial chance senior=%.4f "
            "unbound=%.4f ratio=%.4f\n", c_senior, c_unbound,
            c_unbound > 0.0 ? c_senior / c_unbound : 0.0);
     ZSB_CHECK("the senior peer's dial chance is strictly higher",
               c_senior > c_unbound);
-    ZSB_CHECK("and higher by exactly the banked multiplier",
+    ZSB_CHECK("and higher by exactly the published multiplier",
               c_unbound > 0.0 &&
               fabs((c_senior / c_unbound) - w_senior) < 1e-9);
 
@@ -336,8 +348,8 @@ static int zsb_case_selection(void)
               zsb_entry_of(&am, ip_unbound));
     ZSB_CHECK("no address was pushed below the unweighted baseline",
               c_unbound > 0.0 &&
-              addr_info_get_chance(zsb_entry_of(&am, ip_fresh), 1000000) ==
-                  c_unbound);
+              addr_info_get_chance(&am, zsb_entry_of(&am, ip_fresh),
+                                   1000000) == c_unbound);
 
     addrman_free(&am);
     return failures;
@@ -379,20 +391,22 @@ static int zsb_case_clamp(void)
     addrman_init(&am);
     zsb_addrman_add(&am, ip, 8033);
 
-    (void)addrman_set_reputation_weight(&am, &(struct net_addr){
-        .ip = { 0,0,0,0,0,0,0,0,0,0,0xff,0xff,72,36,0,21 } }, 1e6);
+    struct addrman_weight_row hostile;
+    memcpy(hostile.ip, ip, 16);
+    hostile.multiplier = 1e6;
+    (void)addrman_publish_reputation_weights(&am, &hostile, 1, 0);
     double capped = zsb_weight_of(&am, ip);
     ZSB_CHECK("addrman clamps an absurd weight to exactly 4.0",
               capped == ADDRMAN_REPUTATION_MAX_MULT);
 
-    (void)addrman_set_reputation_weight(&am, &(struct net_addr){
-        .ip = { 0,0,0,0,0,0,0,0,0,0,0xff,0xff,72,36,0,21 } }, -5.0);
+    hostile.multiplier = -5.0;
+    (void)addrman_publish_reputation_weights(&am, &hostile, 1, 0);
     double floored = zsb_weight_of(&am, ip);
-    ZSB_CHECK("addrman clamps a negative weight up to exactly 1.0",
+    ZSB_CHECK("a negative weight is dropped, leaving exactly 1.0",
               floored == 1.0);
     const struct addr_info *e = zsb_entry_of(&am, ip);
     ZSB_CHECK("a clamped-to-baseline address keeps its plain dial chance",
-              e && addr_info_get_chance(e, 1000000) > 0.0);
+              e && addr_info_get_chance(&am, e, 1000000) > 0.0);
     ZSB_CHECK("and is still in addrman after the hostile weight",
               addrman_size(&am) == 1);
 
@@ -409,6 +423,7 @@ static int zsb_case_clamp(void)
     size_t bn = boot_relay_bindings_build(&v, 1, bindings,
                                           BOOT_RELAY_BINDINGS_MAX);
 
+    struct addrman_weight_row rows[4];
     struct boot_seniority_pass pass;
     memset(&pass, 0, sizeof(pass));
     pass.am = &am;
@@ -416,7 +431,10 @@ static int zsb_case_clamp(void)
     pass.table_n = 1;
     pass.bindings = bindings;
     pass.bindings_n = bn;
+    pass.rows = rows;
+    pass.rows_cap = sizeof(rows) / sizeof(rows[0]);
     boot_seniority_weigh_address(&pass, ip, 8033, NULL);
+    (void)zsb_publish(&am, &pass, 0);
     ZSB_CHECK("a lying seniority table still cannot exceed 4.0",
               zsb_weight_of(&am, ip) == ADDRMAN_REPUTATION_MAX_MULT);
 
@@ -506,6 +524,7 @@ static int zsb_case_one_call(void)
     addrman_init(&am);
     zsb_addrman_add(&am, ip_senior, 8033);
 
+    struct addrman_weight_row rows[8];
     struct boot_seniority_pass pass;
     memset(&pass, 0, sizeof(pass));
     pass.am = &am;
@@ -513,6 +532,8 @@ static int zsb_case_one_call(void)
     pass.table_n = wn;
     pass.bindings = bindings;
     pass.bindings_n = bn;
+    pass.rows = rows;
+    pass.rows_cap = sizeof(rows) / sizeof(rows[0]);
 
     /* The reputation feed covers the senior address. */
     struct peer_reputation rep;
@@ -523,11 +544,13 @@ static int zsb_case_one_call(void)
               after_feed == 1 && pass.boosted == 1);
 
     /* The sweep that follows must not weigh it again. The second binding
-     * (54.18.0.3) is not in addrman at all, which is the fail-open case: the
-     * call is made and returns false, so nothing is counted. */
+     * (54.18.0.3) is under the anti-Sybil age floor, so it earns nothing and
+     * emits no row. */
     size_t swept = boot_seniority_weigh_unseen_bindings(&pass);
     ZSB_CHECK("the directory sweep does not re-issue for a covered address",
               swept == 0 && pass.applied == after_feed);
+    ZSB_CHECK("one covered address means exactly one published row",
+              pass.rows_n == 1);
 
     /* A senior relay this node has NEVER dialled — no session row, so the
      * reputation feed never names it at all. Before the sweep existed, the
@@ -537,8 +560,9 @@ static int zsb_case_one_call(void)
     addrman_init(&am2);
     zsb_addrman_add(&am2, ip_senior, 8033);
     ZSB_CHECK("the never-dialled relay starts on the unweighted baseline",
-              zsb_weight_of(&am2, ip_senior) == 0.0);
+              zsb_weight_of(&am2, ip_senior) == 1.0);
 
+    struct addrman_weight_row rows2[8];
     struct boot_seniority_pass pass2;
     memset(&pass2, 0, sizeof(pass2));
     pass2.am = &am2;
@@ -546,7 +570,10 @@ static int zsb_case_one_call(void)
     pass2.table_n = wn;
     pass2.bindings = bindings;
     pass2.bindings_n = bn;
+    pass2.rows = rows2;
+    pass2.rows_cap = sizeof(rows2) / sizeof(rows2[0]);
     size_t reached = boot_seniority_weigh_unseen_bindings(&pass2);
+    (void)zsb_publish(&am2, &pass2, 0);
     printf("zid_seniority_binding:   sweep reached %zu address(es), "
            "never-dialled relay now at %.4fx\n",
            reached, zsb_weight_of(&am2, ip_senior));
