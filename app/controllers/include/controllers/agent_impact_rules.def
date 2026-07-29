@@ -798,3 +798,10 @@ AGENT_IMPACT_RULE("lib/test/src/test_header_probe.c|app/services/src/header_prob
  * native leaves, the command spec and the projection fold all have to agree
  * byte for byte, so an edit to any of them re-runs the whole loop. */
 AGENT_IMPACT_RULE("app/controllers/src/zdir_controller.c|app/controllers/include/controllers/zdir_controller.h|tools/command/native_zdir_command.c|lib/zdir/src/zdir.c|lib/zdir/include/zdir/zdir.h|app/models/src/explorer_index_zdir.c|lib/test/src/test_zdir_write_path.c", "zdir_write_path zdir onion_directory explorer_index command_registry_catalog make_lint_gates")
+
+/* Signed endpoint records, publish and receive. The record body codec, the
+ * chain-bound swarm layer, the operator command surface, its spec, and the
+ * boot-time load that re-verifies filed records all have to agree on one
+ * question — "is this signing key ACTIVE on-chain right now" — so an edit to
+ * any of them re-runs the whole loop. */
+AGENT_IMPACT_RULE("tools/command/native_zendp_command.c|lib/vcs/src/zendp_swarm.c|lib/zid/src/zendp.c|config/src/boot_endpoint_records.c|config/src/boot_onion_discovery.c|lib/test/src/test_zendp_records.c", "zendp zendp_records zdesc command_registry_catalog make_lint_gates")

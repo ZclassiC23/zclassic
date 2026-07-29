@@ -59,15 +59,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 324 |
+| Registry entries (branches + leaves) | 330 |
 | Top-level roots | 9 |
-| Branches | 75 |
-| Leaves (dispatchable command paths) | 249 |
-| … `ready` (live handler in this build) | 207 |
+| Branches | 76 |
+| Leaves (dispatchable command paths) | 254 |
+| … `ready` (live handler in this build) | 212 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 25 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
-| Leaves with `effect=mutate` | 66 |
+| Leaves with `effect=mutate` | 68 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 56 |
 
@@ -84,7 +84,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 14 | 3 | 11 |
-| `config/commands/zcode.def` | 53 | 13 | 40 |
+| `config/commands/zcode.def` | 59 | 14 | 45 |
 
 
 ## Column legend
@@ -696,7 +696,7 @@ represented by its children's sections.
 | `zcode contributor packages` | ready | read / read / operator · fast/low | **`pubkey`**, `datadir` | `zcl.zcode_contributor_packages.v1` | `zclassic23 zcode contributor packages --input='{"pubkey":"<66hex>"}'` | Published releases of one contributor key |
 | `zcode contributor badges` | ready | read / read / operator · fast/low | **`pubkey`**, `limit`, `offset`, `datadir` | `zcl.zcode_contributor_badges.v1` | `zclassic23 zcode contributor badges --input='{"pubkey":"<66hex>"}'` | Earned ZCODE Badges of one contributor (permanent evidence) |
 
-#### `zcode.reward` — Contribution scoring, eligibility, and SIMULATED reward settlement (placeholder token id only)
+#### `zcode.reward` — Contribution scoring and SIMULATED settlement (placeholder token only)
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
@@ -707,7 +707,7 @@ represented by its children's sections.
 | `zcode reward commit` | ready | mutate / app-write / operator · foreground/moderate | **`plan_id`**, `datadir` | `zcl.zcode_reward_commit.v1` | `zclassic23 zcode reward commit --input='{"plan_id":"<64hex>"}'` | Settle a planned batch (SIMULATED, idempotent) |
 | `zcode reward receipt` | ready | read / read / operator · fast/low | **`plan_id`**, `datadir` | `zcl.zcode_reward_receipt.v1` | `zclassic23 zcode reward receipt --input='{"plan_id":"<64hex>"}'` | Durable receipt for a settled batch (SIMULATED) |
 
-#### `zcode.leaderboard` — ZCODE Rankings: earned-score leaderboards (never token balances)
+#### `zcode.leaderboard` — ZCODE Rankings: earned score, never token balances
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
@@ -716,7 +716,7 @@ represented by its children's sections.
 | `zcode leaderboard monthly` | ready | read / read / operator · fast/low | `category`, `day`, `limit`, `offset`, `breakdown`, `datadir` | `zcl.zcode_leaderboard.v1` | `zclassic23 zcode leaderboard monthly --input='{"day":20500}'` | Monthly ZCODE Ranking (calendar month, earned score) |
 | `zcode leaderboard all` | ready | read / read / operator · fast/low | `category`, `limit`, `offset`, `breakdown`, `datadir` | `zcl.zcode_leaderboard.v1` | `zclassic23 zcode leaderboard all --input='{}'` | All-time ZCODE Ranking (earned score) |
 
-#### `zcode.badge` — ZCODE Badges: permanent achievement evidence (SIMULATED assets, plan/commit issuance)
+#### `zcode.badge` — ZCODE Badges: achievement evidence (SIMULATED assets)
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
@@ -724,7 +724,7 @@ represented by its children's sections.
 | `zcode badge plan` | ready | mutate / app-write / operator · foreground/moderate | **`pubkey`**, `day`, `datadir` | `zcl.zcode_badge_plan.v1` | `zclassic23 zcode badge plan --input='{"pubkey":"<66hex>","day":20500}'` | Assemble one dedup-checked badge issuance batch (SIMULATED) |
 | `zcode badge issue` | ready | mutate / app-write / operator · foreground/moderate | **`plan_id`**, **`issuer_secret`**, `datadir` | `zcl.zcode_badge_issue.v1` | `zclassic23 zcode badge issue --input='{"plan_id":"<64hex>","issuer_secret":"<64hex>"}'` | Issue a planned badge batch (SIMULATED, idempotent) |
 
-#### `zcode.seed` — Local seeding facts: verified-bytes ratio, tiers, allowances
+#### `zcode.seed` — Local seeding facts: verified-bytes ratio and tiers
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
@@ -737,7 +737,7 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `zcode storage status` | ready | read / read / operator · fast/low | `datadir` | `zcl.zcode_storage_status.v1` | `zclassic23 zcode storage status --input='{}'` | Store quota pools plus the pin-allowance policy view |
 
-#### `zcode.release` — Release records: sign/verify packages against a master key
+#### `zcode.release` — Release records: sign/verify against a master key
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
@@ -746,26 +746,36 @@ represented by its children's sections.
 | `zcode release anchor` | ready | mutate / wallet / operator · foreground/moderate | `tip`, `domain`, `datadir` | `zcl.zcode_release_anchor.v1` | `zclassic23 zcode release anchor --input='{}'` | Anchor the release batch's domain root on-chain |
 | `zcode release prove` | ready | read / read / operator · fast/low | **`name`**, **`version`**, `domain`, `datadir` | `zcl.zcode_release_prove.v1` | `zclassic23 zcode release prove --input='{"name":"demo","version":"0.1"}'` | Emit the domain-batch inclusion proof for one release |
 
-#### `zcode.domain` — Anchor domains: stored leaf sets behind batch proofs
+#### `zcode.domain` — Anchor domains: leaf sets behind batch proofs
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `zcode domain list` | ready | read / read / operator · fast/low | `datadir` | `zcl.zcode_domain_list.v1` | `zclassic23 zcode domain list --input='{}'` | List the anchor domains stored in this datadir |
 | `zcode domain status` | ready | read / read / operator · fast/low | `domain`, `datadir` | `zcl.zcode_domain_status.v1` | `zclassic23 zcode domain status --input='{"domain":"zcode"}'` | Show one anchor domain's stored root, leaves, and anchor |
 
-#### `zcode.proof` — Light-client proof-chain verification (node-free)
+#### `zcode.proof` — Light-client proof-chain verification
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `zcode proof walk` | ready | read / read / public · foreground/low | `doc`, `doc_file`, `proof`, `root`, `tx`, `header`, `headers`, `merkle_branch`, `merkle_index`, `now` | `zcl.zcode_proof_walk.v1` | `zclassic23 zcode proof walk --input='{"doc":"<hex>","proof":"<hex>","root":"<64hex>","tx":"<hex>","header":"<hex>","merkle_index":1,"merkle_branch":"<64hex>"}'` | Walk a record's proof chain down to proof-of-work, rung by rung |
 
-#### `zcode.desc` — Onion descriptors: publish/verify signed service records
+#### `zcode.desc` — Onion descriptors: signed service records
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `zcode desc publish` | ready | mutate / app-write / operator · fast/low | **`onion`**, `intros`, `seed_file`, `seq`, `not_before`, `expiry`, `now`, `datadir` | `zcl.zcode_desc_publish.v1` | `zclassic23 zcode desc publish --input='{"onion":"<56base32>.onion","seed_file":"/path/seed.hex","intros":"<56base32>.onion:<64hex>","seq":"1"}'` | Publish a signed onion-service descriptor |
 | `zcode desc verify` | ready | read / read / public · fast/low | `doc`, `file`, **`pubkey`**, `now` | `zcl.zcode_desc_verify.v1` | `zclassic23 zcode desc verify --input='{"doc":"<hex>","pubkey":"<64hex>"}'` | Check a descriptor's signature against a master key you supply |
 | `zcode desc resolve` | ready | read / read / public · fast/low | **`pubkey`**, `now`, `datadir` | `zcl.zcode_desc_resolve.v1` | `zclassic23 zcode desc resolve --input='{"pubkey":"<64hex>"}'` | Look up an identity's current descriptor by its blinded record key |
+
+#### `zcode.endpoint` — Signed node addresses, chain-anchored
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode endpoint publish` | ready | mutate / app-write / operator · fast/low | `onion`, `onion_port`, `ipv4`, `ipv4_port`, `ipv6`, `ipv6_port`, `services`, `height`, **`seed_file`**, `seq`, `not_before`, `expiry`, `now`, `datadir` | `zcl.zcode_endpoint_publish.v1` | `zclassic23 zcode endpoint publish --input='{"onion":"<56base32>.onion","onion_port":"8033","seed_file":"/path/seed.hex","seq":"1","height":3196556}'` | Publish this node's signed endpoint record |
+| `zcode endpoint accept` | ready | mutate / app-write / operator · fast/low | **`doc`**, `file`, `now`, `datadir` | `zcl.zcode_endpoint_accept.v1` | `zclassic23 zcode endpoint accept --input='{"doc":"<hex>"}'` | Verify a peer's endpoint record against the chain and file it |
+| `zcode endpoint verify` | ready | read / read / public · fast/low | **`doc`**, `file`, `now`, `datadir` | `zcl.zcode_endpoint_verify.v1` | `zclassic23 zcode endpoint verify --input='{"doc":"<hex>"}'` | Check an endpoint record against the chain without storing it |
+| `zcode endpoint resolve` | ready | read / read / public · fast/low | **`pubkey`**, `now`, `datadir` | `zcl.zcode_endpoint_resolve.v1` | `zclassic23 zcode endpoint resolve --input='{"pubkey":"<64hex>"}'` | Look up a filed endpoint record by its blinded record key |
+| `zcode endpoint list` | ready | read / read / public · fast/low | `now`, `datadir` | `zcl.zcode_endpoint_list.v1` | `zclassic23 zcode endpoint list` | Show every filed endpoint record and whether the node will use it |
 
 
 ## Aliases

@@ -87,12 +87,20 @@ static int boot_signed_onion_peers(void *unused_ctx, struct onion_peer *out,
 }
 
 void boot_onion_discovery_register(onion_blog_serve_fn blog_serve,
-                                   onion_peer_discover_fn peer_discover)
+                                   onion_peer_discover_fn peer_discover,
+                                   const char *datadir)
 {
     /* Close the chain binding before anything can accept a record: with
      * no lookup registered, vcs/zendp_swarm refuses every record by
      * name (ZENDP_ERR_NO_ANCHOR_LOOKUP) rather than trusting one. */
     boot_endpoint_records_register();
+
+    /* Then load what the operator has already accepted, re-verifying
+     * each record against the chain as it goes. On the BOOT THREAD, once
+     * — the discovery projection below runs on the shared supervisor
+     * tick runner, where a blocking node.db read is exactly the hazard
+     * that has had this node killed by its own watchdog. */
+    (void)boot_endpoint_records_load(datadir);
 
     onion_service_set_app_handlers(blog_serve, peer_discover);
     /* Additive: signed sources are asked first, the unsigned scrape

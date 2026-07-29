@@ -21,19 +21,30 @@
 
 #include "models/zid_identity.h"
 
+#include "encoding/utilstrencodings.h"
 #include "platform/time_compat.h"
 #include "vcs/zendp_swarm.h"
+#include "zid/zid.h"
 
 #include "base/log_macros.h"
 
+#include <dirent.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 #define BER_LOG "boot.endpoint_records"
 
 /* Bounded by the directory itself; a stack array of this size is one
  * page and the call is on the discovery path, never the hot path. */
 #define BER_RECORDS_MAX ZENDP_DIR_MAX
+
+/* A bound on the boot-time directory scan. The directory holds at most
+ * ZENDP_DIR_MAX live identities, so reading further cannot install more
+ * — this only stops a datadir full of stale files from turning start-up
+ * into an unbounded walk. */
+#define BER_SCAN_MAX 256
 
 /* Map one zid_identities row to the anchor verdict. The ONE place a
  * projection row becomes a chain answer.
@@ -43,16 +54,15 @@
  * means "no such identity" — that is a true return carrying
  * ZENDP_ANCHOR_ABSENT, and the two are reported by different names all
  * the way up. */
-static bool boot_endpoint_anchor_lookup(void *ctx, const uint8_t pubkey[32],
-                                        struct zendp_anchor *out)
+bool boot_endpoint_anchor_from_db(struct node_db *ndb,
+                                  const uint8_t pubkey[32],
+                                  struct zendp_anchor *out)
 {
-    (void)ctx;
     if (!pubkey || !out)
         LOG_FAIL(BER_LOG, "anchor lookup: NULL argument (pk=%p out=%p)",
                  (const void *)pubkey, (void *)out);
     memset(out, 0, sizeof(*out));
 
-    struct node_db *ndb = app_runtime_node_db();
     if (!ndb)
         LOG_FAIL(BER_LOG,
                  "anchor lookup: node.db is not open yet — the chain cannot "
@@ -81,9 +91,117 @@ static bool boot_endpoint_anchor_lookup(void *ctx, const uint8_t pubkey[32],
     return true;
 }
 
+/* The port's shape, over whichever node.db the process has. The mapping
+ * itself is NOT repeated here — the running node reads the runtime
+ * handle, the CLI opens its own read-only one, and both land on the one
+ * implementation above. */
+static bool boot_endpoint_anchor_lookup(void *ctx, const uint8_t pubkey[32],
+                                        struct zendp_anchor *out)
+{
+    (void)ctx;
+    return boot_endpoint_anchor_from_db(app_runtime_node_db(), pubkey, out);
+}
+
 void boot_endpoint_records_register(void)
 {
     zendp_set_anchor_lookup(boot_endpoint_anchor_lookup, NULL);
+}
+
+/* ── loading filed records at start ────────────────────────────────── */
+
+/* Read one <record_key>.zid file's hex into `wire`. Returns the byte
+ * count, or 0 for anything malformed — a file that is not even-length
+ * hex is not a record, and guessing at it is how a witness becomes an
+ * authority. */
+static size_t ber_read_record_file(const char *dir, const char *name,
+                                   uint8_t *wire, size_t wire_size)
+{
+    char path[1400];
+    int n = snprintf(path, sizeof(path), "%s/%s", dir, name);
+    if (n <= 0 || (size_t)n >= sizeof(path))
+        return 0;
+
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return 0;
+    static char hex[ZID_DOC_MAX * 2 + 2];
+    ssize_t r = read(fd, hex, sizeof(hex) - 1);
+    close(fd);
+    if (r <= 0)
+        return 0;
+    while (r > 0 && (hex[r - 1] == '\n' || hex[r - 1] == '\r' ||
+                     hex[r - 1] == ' '))
+        r--;
+    hex[r] = '\0';
+    if (r == 0 || (r & 1) != 0 || !IsHex(hex))
+        return 0;
+    int decoded = ParseHex(hex, wire, wire_size);
+    return decoded > 0 ? (size_t)decoded : 0;
+}
+
+int boot_endpoint_records_load(const char *datadir)
+{
+    if (!datadir || !datadir[0])
+        return 0;
+
+    char dir[1200];
+    int n = snprintf(dir, sizeof(dir), "%s/zcode/endpoints", datadir);
+    if (n <= 0 || (size_t)n >= sizeof(dir))
+        LOG_RETURN(0, BER_LOG, "load: path too long under datadir");
+
+    DIR *d = opendir(dir);
+    if (!d)
+        return 0; /* No records filed yet — the common, non-error case. */
+
+    struct zendp_directory *gdir = zendp_directory_global();
+    uint64_t now = (uint64_t)platform_time_wall_unix();
+
+    int installed = 0, discarded = 0, scanned = 0;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL && scanned < BER_SCAN_MAX) {
+        size_t len = strlen(de->d_name);
+        /* <64 hex chars>.zid — anything else is not one of ours. */
+        if (len != 68 || strcmp(de->d_name + 64, ".zid") != 0)
+            continue;
+        scanned++;
+
+        uint8_t wire[ZID_DOC_MAX];
+        size_t wire_len = ber_read_record_file(dir, de->d_name, wire,
+                                               sizeof(wire));
+        if (wire_len == 0) {
+            discarded++;
+            LOG_WARN(BER_LOG,
+                     "load: %s does not hold a well-formed record — "
+                     "discarded", de->d_name);
+            continue;
+        }
+
+        /* THE WHOLE PIPELINE, on the bytes that came off disk: decode,
+         * signature, both validity windows, the ZIDE body tag, and the
+         * chain. zendp_accept installs NOTHING unless every rung holds,
+         * so a discarded record leaves no trace in the directory and
+         * can never be projected to discovery. */
+        enum zendp_result r =
+            zendp_accept(gdir, wire, wire_len, now, NULL, NULL);
+        if (r != ZENDP_OK) {
+            discarded++;
+            LOG_WARN(BER_LOG,
+                     "load: discarded %s — %s. A record that does not "
+                     "resolve to an ACTIVE on-chain identity is dropped, "
+                     "not kept in a lesser state",
+                     de->d_name, zendp_result_string(r));
+            continue;
+        }
+        installed++;
+    }
+    closedir(d);
+
+    if (scanned > 0)
+        LOG_INFO(BER_LOG,
+                 "load: %d endpoint record(s) verified against the chain and "
+                 "loaded, %d discarded (of %d filed)",
+                 installed, discarded, scanned);
+    return installed;
 }
 
 int boot_endpoint_record_peers(void *ctx, struct onion_peer *out, size_t max)

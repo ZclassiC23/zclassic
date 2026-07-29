@@ -368,6 +368,31 @@ void zcl_native_handle_zdesc_verify(
 void zcl_native_handle_zdesc_resolve(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+
+/* ── zcode.endpoint.* — signed endpoint records
+ * (tools/command/native_zendp_command.c). The chain-bound twin of
+ * zcode.desc.*: no key is supplied by the caller on the verify side,
+ * the record carries its own and it is resolved against the on-chain
+ * identity projection, so every reply carries chain_anchored:true. A
+ * record that does not resolve to an ACTIVE anchor is DISCARDED — no
+ * file is written and nothing enters any directory. Publication is
+ * operator-invoked only: there is no timer, no background publisher,
+ * and no flag to enable one. */
+void zcl_native_handle_zendp_publish(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zendp_verify(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zendp_accept(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zendp_resolve(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zendp_list(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_package_show(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
