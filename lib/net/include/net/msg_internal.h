@@ -66,9 +66,11 @@ bool getheaders_try_append_header(struct byte_stream *body,
  * getheaders_index_header_servable builds the servable header for `iter`:
  * in-memory index first, then the flat block file, then the node.db
  * `blocks` row (the store a snapshot-seeded node still has below its body
- * floor). A false return names the refusal in the log; it is an
- * availability/serve verdict, never a validity verdict (no status bits
- * are mutated).
+ * floor). A true return always hash-binds: the header written to `hdr_out`
+ * serializes to `iter->phashBlock`, so it is byte-for-byte the header this
+ * node accepted under that hash. A false return names the refusal in the
+ * log; it is an availability/serve verdict, never a validity verdict (no
+ * status bits are mutated).
  *
  * getheaders_next_servable_successor walks FORWARD from `parent` past any
  * unservable entries (guard-bounded) and returns the first servable
@@ -79,6 +81,16 @@ bool getheaders_index_header_servable(struct msg_processor *mp,
 struct block_index *getheaders_next_servable_successor(
     struct msg_processor *mp,
     struct block_index *parent);
+
+/* Bytes of Equihash solution the serve path is currently keeping pinned on
+ * in-memory block_index entries. The serve path re-reads a missing solution
+ * from the flat block file or the node.db row and memoises it so the next
+ * serve is free; because `getheaders` needs only a completed handshake and
+ * index entries live for the process lifetime, that memoisation is capped.
+ * Past the cap headers are still loaded and served in full — only the
+ * caching stops. Exposed for the offline regression test and for operator
+ * diagnostics; nothing branches on it. */
+size_t getheaders_solution_cache_bytes(void);
 
 bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
                         struct byte_stream *s);

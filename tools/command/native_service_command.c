@@ -15,8 +15,20 @@
  *   app service status    the in-process lifecycle registry
  *
  * `list`, `inspect`, and `status` never open a database. `access` opens
- * <datadir>/node.db read-only, exactly like the zcode one-shot leaves: do not
- * point it at a datadir whose node is mid-write.
+ * <datadir>/node.db through zcl_native_node_db_require_readonly
+ * (command/native_command.h): SQLITE_OPEN_READONLY plus PRAGMA
+ * query_only=ON, so it creates, migrates and writes nothing. That is load-
+ * bearing, not incidental — `datadir` is caller-supplied and falls back to
+ * the CLI's resolved datadir, i.e. the operator's LIVE node when the leaf
+ * is run with no arguments. This comment previously CLAIMED a read-only
+ * open while the code called node_db_open(), the boot ceremony, which
+ * opens READWRITE|CREATE and then creates schema, migrates, quarantines
+ * the file by rename() on a failed quick_check, and DELETEs the
+ * snapshot_staging rows. node.db is WAL, so a running node holding it open
+ * blocked none of that.
+ *
+ * Pointing `access` at a datadir whose node is mid-write is safe for that
+ * datadir; the read may simply give up on a locked WAL rather than block.
  *
  * These four are the REGISTRY's own leaves. A service's own leaves live under
  * its command_prefix (app.service.<name>.*) and are declared in a
@@ -262,32 +274,14 @@ void zcl_native_handle_service_access(
     const char *datadir = svc_input_str(request, "datadir");
     if (!datadir || !datadir[0])
         datadir = zcl_native_command_datadir();
-    if (!datadir || !datadir[0]) {
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
-                               ZCL_COMMAND_EXIT_INVALID, "MISSING_DATADIR",
-                               "normalize", false, false,
-                               "no datadir resolved for the ledger read", "");
-        return;
-    }
-    char path[4400];
-    int n = snprintf(path, sizeof(path), "%s/node.db", datadir);
-    if (n < 0 || (size_t)n >= sizeof(path)) {
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
-                               ZCL_COMMAND_EXIT_INVALID, "DATADIR_TOO_LONG",
-                               "normalize", false, false,
-                               "datadir path too long", datadir);
-        return;
-    }
+    /* READ leaf: strictly read-only. node_db_open() here would create,
+     * migrate and clean the staging tables of whatever datadir the caller
+     * named — including the live one this leaf defaults to. */
+    sqlite3 *db = NULL;
     struct node_db ndb;
-    memset(&ndb, 0, sizeof(ndb));
-    if (!node_db_open(&ndb, path) || !ndb.open) {
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
-                               ZCL_COMMAND_EXIT_INTERNAL, "NODE_DB_OPEN",
-                               "execute", false, false,
-                               "node.db (the ZSLP ledger) failed to open",
-                               path);
+    if (!zcl_native_node_db_require_readonly(datadir, reply,
+                                             "the ZSLP ledger", &db, &ndb))
         return;
-    }
 
     /* An explicit tip pins the snapshot for a reproducible re-check; without
      * one, the highest fully validated block is the tip. */
@@ -302,7 +296,7 @@ void zcl_native_handle_service_access(
     struct service_gate_verdict verdict;
     struct zcl_result evaluated = service_token_gate_evaluate(
         &ndb, binding, tip_height, address_arg, &verdict);
-    node_db_close(&ndb);
+    zcl_native_node_db_close_readonly(&db, &ndb);
     if (!evaluated.ok) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INTERNAL, "GATE_EVAL",

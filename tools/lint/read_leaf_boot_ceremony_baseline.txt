@@ -1,0 +1,35 @@
+# Baseline for tools/lint/check_read_leaf_no_boot_ceremony.sh — SHRINK-ONLY.
+#
+# One line per grandfathered violation:  <leaf-path> <banned-symbol>
+#
+# These are OPEN DEFECTS, not exemptions. Each line is a leaf whose declared
+# effect is READ that still reaches a code path which writes the datadir it
+# was pointed at. They are listed here only so the gate can refuse the NEXT
+# one; deleting a line is the fix, and a line whose violation is gone FAILS
+# the gate until it is removed.
+
+# app.store.products is ZCL_COMMAND_READY_READ / AUTH_OPERATOR /
+# TRAIT_IDEMPOTENT and takes `datadir`, defaulting to the CLI's resolved
+# datadir (app/controllers/src/store_native_handlers.c:535 -> sn_open_db:118
+# -> node_db_open_runtime). node_db_open_runtime is READWRITE|CREATE and
+# still runs create_schema() and node_db_migrate(), so pointing this read
+# leaf at a datadir can rewrite that datadir's schema. sn_open_db's stat()
+# guard means it will not MINT a node.db where none exists, which is why
+# this is a smaller hole than the six the read-only helper closed — but it
+# is the same hole, and it is exactly the shape of the rejected
+# "just use node_db_open_runtime" fix. Fix: route it through
+# zcl_native_node_db_open_readonly().
+app.store.products node_db_open_impl
+
+# core.sync.frontier.offline is ZCL_COMMAND_READY_READ and its whole purpose
+# is inspecting a STOPPED or COPIED datadir (tools/command/
+# native_offline_query.c -> progress_store_open). progress_store_open runs
+# consensus_db_migrate_from_progress()'s rename migration, opens
+# consensus.db READWRITE|CREATE|FULLMUTEX, and on a failed integrity check
+# calls progress_store_quarantine_corrupt() and re-creates the file —
+# against the append-only fact log that is the authority for every stage
+# cursor. Unlike the node.db six, this leaf's `datadir` does not fall back
+# to the live one, which is the only reason it is a baseline line rather
+# than a stop-ship. Fix: a read-only consensus.db open, or redeclare the
+# leaf as a COMMAND.
+core.sync.frontier.offline progress_store_open

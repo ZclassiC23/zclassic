@@ -7,6 +7,7 @@
 #include "controllers/native_handler_body.h"
 
 #include <stdbool.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -589,6 +590,69 @@ void zcl_native_handle_network_graph(
  * captured by zcl_native_command_main, or "" when none was given). Read-only
  * accessor for handlers that open a datadir-relative store directly. */
 const char *zcl_native_command_datadir(void);
+
+/* ── the one read-only <datadir>/node.db open (native_node_db_ro.c) ───
+ *
+ * A leaf declared READY_READ must NEVER reach node_db_open(): that is the
+ * BOOT ceremony. It opens SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE (so a
+ * typo'd datadir mints a node.db instead of failing), then runs
+ * create_schema + node_db_migrate, quarantines the file by rename() when
+ * PRAGMA quick_check fails, and DELETEs the snapshot_staging rows. Every
+ * one of those is a write to a datadir the caller merely named — and
+ * `datadir` defaults to zcl_native_command_datadir(), i.e. the operator's
+ * LIVE node. node.db is WAL, so the running node holding it open blocks
+ * none of it. Read leaves use the helpers below instead.
+ *
+ * Contract: SQLITE_OPEN_READONLY only — never CREATE, never READWRITE —
+ * plus `PRAGMA query_only=ON` as a second, connection-wide refusal of any
+ * write that slips past the open flags, and a bounded busy timeout so a
+ * locked WAL gives up instead of parking a cursor. Nothing is created,
+ * migrated, schema-initialized, quarantined, renamed or deleted on any
+ * path. The `struct node_db` filled in is a borrowed-handle shim (db +
+ * open + path, no prepared statements); close it with
+ * zcl_native_node_db_close_readonly, never node_db_close. */
+
+/* Why a read-only open produced no handle.
+ *
+ * ABSENT and UNREADABLE are deliberately DISTINCT. A leaf may legitimately
+ * treat "this host has no folded chain" as an empty answer, but it must
+ * never give that same empty answer when node.db is present and could not
+ * be read. Collapsing the two is how "no rows" comes to mean "I could not
+ * look" — callers must branch on the status, not on a NULL handle alone. */
+enum zcl_node_db_ro_status {
+    ZCL_NODE_DB_RO_OK = 0,       /* opened; *db_out is live and read-only */
+    ZCL_NODE_DB_RO_NO_DATADIR,   /* no datadir was resolved at all */
+    ZCL_NODE_DB_RO_PATH_TOO_LONG,/* <datadir>/node.db does not fit the buffer */
+    ZCL_NODE_DB_RO_ABSENT,       /* nothing exists at <datadir>/node.db */
+    ZCL_NODE_DB_RO_UNREADABLE,   /* it exists and is not a readable database */
+};
+
+struct node_db;
+struct sqlite3;
+
+/* Open <datadir>/node.db strictly read-only. On ZCL_NODE_DB_RO_OK, *db_out
+ * is the handle and *ndb_out is the borrowed-handle shim; on every other
+ * status *db_out is NULL and *ndb_out is zeroed. `path_out` (optional)
+ * always receives the resolved path when it fit, so a caller can report
+ * exactly which file it could not read. Nothing is reported for the
+ * caller — use zcl_native_node_db_require_readonly for that. */
+enum zcl_node_db_ro_status zcl_native_node_db_open_readonly(
+    const char *datadir, struct sqlite3 **db_out, struct node_db *ndb_out,
+    char *path_out, size_t path_size);
+
+/* The same open, for a leaf where no database means no answer: on any
+ * non-OK status the reply is filled with a distinct error code
+ * (MISSING_DATADIR / DATADIR_PATH_TOO_LONG / NODE_DB_UNAVAILABLE /
+ * NODE_DB_UNREADABLE) naming the path, and false is returned so the caller
+ * can `return` straight away. `what` names what the leaf was going to read
+ * (e.g. "the ZSLP ledger") and appears in the message. */
+bool zcl_native_node_db_require_readonly(
+    const char *datadir, struct zcl_command_reply *reply, const char *what,
+    struct sqlite3 **db_out, struct node_db *ndb_out);
+
+/* Close a handle from either helper and clear the shim. Idempotent. */
+void zcl_native_node_db_close_readonly(struct sqlite3 **db,
+                                       struct node_db *ndb);
 
 /* ops.selftest — node-free registry self-test. Sweeps every catalog leaf for
  * the static

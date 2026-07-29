@@ -20,6 +20,7 @@
 #define PEER_SCORING_DEFAULT_DECAY     1   /* points per minute */
 #define PEER_SCORING_DEFAULT_MAX_INBOUND_PER_IP 3
 #define PEER_SCORING_DEFAULT_LAST_PEER_BAN_SECS 600
+#define PEER_SCORING_DEFAULT_LOOPBACK_INBOUND_MAX 24
 
 static _Atomic int g_ban_threshold   = PEER_SCORING_DEFAULT_THRESHOLD;
 static _Atomic int g_ban_hours       = PEER_SCORING_DEFAULT_BAN_HOURS;
@@ -100,6 +101,30 @@ int peer_scoring_decay_rate(void)
 int peer_scoring_max_inbound_per_ip(void)
 {
     return atomic_load(&g_max_inbound_per_ip);
+}
+
+/* See net/peer_scoring.h. Read straight from the environment rather than
+ * from a cached atomic: this is consulted once per accept(), it is not on
+ * any hot path, and reading it here keeps the hard floor and the operator
+ * knob in one place where a test can exercise both without booting a node.
+ */
+int peer_scoring_max_inbound_loopback(int max_inbound)
+{
+    if (max_inbound <= 0)
+        return 0;
+
+    int configured = read_env_int("ZCL_NET_LOOPBACK_INBOUND_MAX",
+                                  PEER_SCORING_DEFAULT_LOOPBACK_INBOUND_MAX,
+                                  0, 4096);
+
+    /* Hard floor: three quarters of inbound capacity is permanently
+     * reserved for non-loopback peers, whatever the operator asks for.
+     * This is what stops a local flood from owning every slot in the
+     * post-restart race. */
+    int ceiling = max_inbound - (3 * max_inbound) / 4;
+    if (ceiling < 0)
+        ceiling = 0;
+    return configured < ceiling ? configured : ceiling;
 }
 
 int peer_scoring_last_peer_ban_secs(void)

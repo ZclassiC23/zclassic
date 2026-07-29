@@ -101,6 +101,30 @@ bool net_addr_is_local(const struct net_addr *a)
     return false;
 }
 
+/* See net/netaddr.h. false is the strict answer here (apply the cap), so a
+ * NULL address can never widen an exemption.
+ *
+ * LOOPBACK ONLY, deliberately. RFC1918 was tried here and removed: on any
+ * hosted machine with provider private networking the other tenants are
+ * RFC1918 sources, so exempting 10/8, 172.16/12 and 192.168/16 hands an
+ * entire shared segment a relaxed admission cap while buying nothing —
+ * the problem being solved is several nodes on ONE host, and every one of
+ * those arrives from 127.0.0.1.
+ *
+ * net_addr_is_local() is NOT the predicate: it also answers true for
+ * 0.0.0.0/8 ("this network"), which is a spoofable source address and not
+ * a same-host peer. */
+bool net_addr_is_operator_local(const struct net_addr *a)
+{
+    if (!a || net_addr_is_tor(a))
+        return false;
+    if (net_addr_is_ipv4(a))
+        return net_addr_get_byte(a, 3) == 127;   /* 127.0.0.0/8 */
+    static const unsigned char pch_v6_loopback[16] =
+        {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1};
+    return memcmp(a->ip, pch_v6_loopback, 16) == 0;  /* ::1 */
+}
+
 bool net_addr_is_routable(const struct net_addr *a)
 {
     return net_addr_is_valid(a) &&

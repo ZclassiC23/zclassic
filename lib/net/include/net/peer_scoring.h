@@ -87,6 +87,8 @@ int peer_offence_weight(enum peer_offence offence);
  *   ZCL_PEER_BAN_HOURS          — integer, default 24
  *   ZCL_PEER_SCORE_DECAY_PER_MIN — integer, default 1 (0 disables decay)
  *   ZCL_PEER_MAX_INBOUND_PER_IP — integer, default 3
+ *   ZCL_NET_LOOPBACK_INBOUND_MAX — integer, default 24 (0 = no loopback
+ *                                  exemption at all)
  *   ZCL_PEER_LAST_PEER_BAN_SECS — integer, default 600 */
 void peer_scoring_init(void);
 
@@ -107,6 +109,30 @@ int peer_scoring_decay_rate(void);
  * knob exists so an operator serving such a source can raise it instead of
  * having to patch a literal. Default 3, clamped to [1, 4096]. */
 int peer_scoring_max_inbound_per_ip(void);
+
+/* Aggregate ceiling on inbound slots held by LOOPBACK sources at once,
+ * given this node's total inbound capacity `max_inbound` (125 total minus
+ * 8 reserved outbound = 117 on stock settings).
+ *
+ * Loopback needs a raised per-source cap so several nodes on one host can
+ * peer with each other, but a per-source number alone bounds nothing:
+ * 127.0.0.0/8 is 16.7M distinct 16-byte keys, so an unprivileged local
+ * process can dial from a fresh source address every time. This function
+ * is the real bound, and it is enforced across ALL loopback sources
+ * together.
+ *
+ * Value = min(ZCL_NET_LOOPBACK_INBOUND_MAX, max_inbound - 3*max_inbound/4).
+ * Default 24. The second term is a HARD FLOOR that no environment setting
+ * can raise past: at least three quarters of inbound capacity always stays
+ * available to non-loopback peers, so a local flood can never win the
+ * post-restart race for every slot. On stock settings that is 24 of 117
+ * for loopback and >= 93 of 117 permanently reserved for everyone else.
+ *
+ * Setting ZCL_NET_LOOPBACK_INBOUND_MAX=0 restores the pre-exemption
+ * behaviour exactly: loopback then gets no raised cap at all and is
+ * admitted under the ordinary peer_scoring_max_inbound_per_ip() budget.
+ * Range [0, 4096] before clamping; a non-positive `max_inbound` yields 0. */
+int peer_scoring_max_inbound_loopback(int max_inbound);
 
 /* Ban duration, in seconds, substituted for the full peer_scoring_ban_hours()
  * when banning a peer would leave the node with no connected peer at all.

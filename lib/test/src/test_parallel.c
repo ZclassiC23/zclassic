@@ -87,7 +87,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(flyclient) X(flyclient_chainwork_floor) X(test_zmsg_memo_codec) X(scan_util) X(tor) \
     X(onion_bootstrap) X(onion_directory) X(cold_start_sync) X(kill9_recovery) \
     X(shielded_payment_gate) X(simnet_shielded_wallet_e2e) X(store_e2e_gate) X(store_e2e_shielded) X(soak_harness) \
-    X(event) X(download) X(body_coverage) X(consensus) X(consensus_parity) \
+    X(event) X(download) X(body_coverage) X(body_history) X(consensus) X(consensus_parity) \
     X(rom_state_checkpoint) \
     X(policy) X(wallet_view) X(fast_sync) X(block_scan) \
     X(node_health_service) X(chain_state_repo) X(recovery_policy) \
@@ -284,6 +284,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(utxo_apply_stage) X(utxo_apply_crash_replay) X(commit_invariants) \
     X(tip_finalize_stage) X(tip_finalize_post_step) X(reducer_frontier) \
     X(reducer_frontier_self_anchor) X(offline_datadir_query) \
+    X(read_leaf_no_datadir_write) \
     X(hstar_integrity) \
     X(install_verb_warm) \
     X(always_sync_chaos) \

@@ -189,6 +189,7 @@ gate_command() {
         check-command-contract)            echo './tools/lint/check_command_contract.sh' ;;
         check-command-availability-truthful) echo './tools/lint/check_command_availability_truthful.sh' ;;
         check-command-input-keys)          echo './tools/lint/check_command_input_keys.sh' ;;
+        check-read-leaf-no-boot-ceremony)  echo './tools/lint/check_read_leaf_no_boot_ceremony.sh' ;;
         check-telemetry-ontology)          echo './tools/lint/check_telemetry_ontology.sh' ;;
         check-privileged-transition-receipt) echo './tools/lint/check_privileged_transition_receipt.sh' ;;
         check-no-trust-state-ordering)     echo './tools/scripts/check_no_trust_state_ordering.sh' ;;

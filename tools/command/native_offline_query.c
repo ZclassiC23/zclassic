@@ -28,6 +28,7 @@
 #include "jobs/reducer_frontier.h"
 #include "jobs/refold_progress.h"
 #include "json/json.h"
+#include "models/database.h"
 #include "storage/consensus_db.h"
 #include "storage/progress_store.h"
 
@@ -56,43 +57,24 @@ void zcl_native_handle_core_storage_query_offline(
     const char *sql = json_get_str(json_get(request->input, "sql"));
     int64_t limit = json_get_int_or(request->input, "limit", 10);
 
-    char path[1024];
-    int n = snprintf(path, sizeof(path), "%s/node.db", datadir);
-    if (n <= 0 || (size_t)n >= sizeof(path)) {
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
-                               ZCL_COMMAND_EXIT_INVALID,
-                               "DATADIR_PATH_TOO_LONG", "normalize", false,
-                               false, "datadir path too long", datadir);
-        return;
-    }
-
-    /* SQLITE_OPEN_READONLY (no CREATE): a missing node.db fails closed with
-     * SQLITE_CANTOPEN rather than silently creating one — same open mode
-     * tools/sqlq.c uses for this exact "copied fixture datadir" story. */
+    /* The shared read-only open (command/native_command.h): READONLY, no
+     * CREATE, so a missing node.db fails closed rather than silently
+     * creating one, plus PRAGMA query_only as a second refusal of any
+     * write — the same story tools/sqlq.c's xck_open_ro() serves. */
     sqlite3 *db = NULL;
-    int rc = sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL);
-    if (rc != SQLITE_OK) {
-        char evidence[512];
-        snprintf(evidence, sizeof(evidence), "%s: %s", path,
-                 db ? sqlite3_errmsg(db) : sqlite3_errstr(rc));
-        if (db)
-            sqlite3_close(db);
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
-                               ZCL_COMMAND_EXIT_BLOCKED,
-                               "NODE_DB_UNAVAILABLE", "execute", true, false,
-                               "node.db not found or unreadable at datadir",
-                               evidence);
+    struct node_db ndb;
+    if (!zcl_native_node_db_require_readonly(datadir, reply,
+                                             "this datadir's node.db",
+                                             &db, &ndb))
         return;
-    }
-    /* Belt-and-braces: refuse any accidental write on this handle (same
-     * PRAGMA tools/sqlq.c's sibling xck_open_ro() sets). */
-    (void)sqlite3_exec(db, "PRAGMA query_only=ON", NULL, NULL, NULL);
-    sqlite3_busy_timeout(db, 2000);
+    /* Copied BEFORE the close: the shim's path field is cleared with it. */
+    char path[sizeof(ndb.path)];
+    snprintf(path, sizeof(path), "%s", ndb.path);
 
     struct json_value result;
     json_init(&result);
     bool ok = dbquery_execute(db, sql, limit, &result);
-    sqlite3_close(db);
+    zcl_native_node_db_close_readonly(&db, &ndb);
 
     if (!ok) {
         const char *msg = json_get_str(&result);
