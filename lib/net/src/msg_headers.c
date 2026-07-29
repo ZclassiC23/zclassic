@@ -246,15 +246,48 @@ static const char *headers_servable_reject_reason(
     if (!hash_bound)
         return "header-hash-mismatch";
 
-    /* Hash-bound AND already marked at least BLOCK_VALID_TREE with no
-     * failure bit means accept_block_header() already ran the full
-     * Equihash check over exactly these bytes. Re-running it here costs
-     * ~113 us per header for the 200,9 span — minutes of the shared
-     * message-processing thread to answer one full header sync — and
-     * proves nothing the hash bind above has not already proved. Anything
-     * not already marked valid still takes the full check. */
-    if (!block_index_is_valid(iter, BLOCK_VALID_TREE) &&
-        !check_equihash_solution(hdr, mp->params))
+    /* FULL Equihash, on EVERY header this node serves — no status-bit
+     * shortcut. The hash bind above proves these bytes are the bytes filed
+     * under this entry's hash; it does NOT prove anyone ever solved
+     * Equihash over them, because in this codebase BLOCK_VALID_TREE does
+     * not witness an Equihash check. Four persisted-index loaders set it
+     * at sampled or zero PoW strength:
+     *
+     *   app/services/src/block_index_blocks_hydrate.c  — full_check is
+     *     (h % BLOCKS_HYDRATE_POW_STRIDE == 0) || h > rom_checkpoint,
+     *     i.e. one row in 10,000 below the ROM checkpoint;
+     *   app/services/src/block_index_loader.c          — calls
+     *     block_row_verify(..., hdr = NULL), which per block_row_verify.h
+     *     skips BOTH the hash bind and Equihash, leaving only
+     *     CheckProofOfWork on the CLAIMED hash;
+     *   config/src/boot_block_file_scan.c              — assigns
+     *     BLOCK_VALID_TREE unconditionally;
+     *   config/src/boot_header_seed_import.c           — CLAMPS a
+     *     peer-supplied artifact down to BLOCK_VALID_TREE, and says in
+     *     its own comment that bodies are fully re-validated later.
+     *
+     * The full-strength header pass does exist
+     * (app/jobs/src/validate_headers_validator.c, block_row_verify with
+     * check_equihash = true) but it records its verdict in a STAGE CURSOR,
+     * not in nStatus, so nStatus cannot proxy for it.
+     *
+     * Concretely: a hostile block_index.bin / node.db bundle can carry
+     * header rows below the ROM checkpoint at heights not divisible by
+     * 10,000 whose nSolution is garbage but whose serialized bytes still
+     * hash under target — one CheckProofOfWork-passing grind, not a mine.
+     * Those rows hash-bind and carry BLOCK_VALID_TREE. Skipping Equihash
+     * here would make this node re-broadcast them, which is header spam
+     * peers ban for. This check is the last full-PoW gate applied to a
+     * persisted row before it leaves the node, so it runs unconditionally.
+     *
+     * Cost, MEASURED on the dev host rather than estimated: 383-390 us per
+     * header for 200,9 and 36.7-36.9 us for 192,7 (192,7 is ~10x CHEAPER,
+     * the opposite of the earlier guess), so ~320 s of one thread to serve
+     * one peer the whole 3.19M-header chain. That is the cost this node has
+     * always paid here; recovering it needs a gate that actually witnesses
+     * an Equihash check — the validate_headers stage cursor — not a status
+     * bit. See lib/test/src/test_getheaders_serve_fallback.c case 7. */
+    if (!check_equihash_solution(hdr, mp->params))
         return "invalid-solution";
 
     if (!CheckProofOfWork(hash, hdr->nBits, &mp->params->consensus))

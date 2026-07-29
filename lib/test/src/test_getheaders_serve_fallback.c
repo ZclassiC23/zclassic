@@ -26,20 +26,37 @@
  *      BLOCK_FAILED_VALID and WITHOUT a fabricated solution;
  *   3. the successor walk ADVANCES past an unservable entry and returns
  *      the next servable one instead of re-querying the same parent;
- *   4. a healed entry serves again off the in-memory hot path — the path
- *      that skips the redundant Equihash re-verification because the
- *      bytes hash-bind and the entry is already BLOCK_VALID_TREE — and
- *      still produces exactly the accepted header;
+ *   4. a healed entry serves again off the in-memory hot path and still
+ *      produces exactly the accepted header;
  *   5. the pinned-solution cache is accounted (it is budget-capped so an
  *      unauthenticated peer's header walk cannot grow it without bound);
  *   6. a header that solves Equihash but is filed under the WRONG hash is
  *      REFUSED — a served header must hash-bind to the entry it is served
- *      under, which "the solution is valid" alone never proves.
+ *      under, which "the solution is valid" alone never proves;
+ *   7. a header that hash-binds AND is marked BLOCK_VALID_TREE but whose
+ *      Equihash solution is FORGED is REFUSED — the status bit is not a
+ *      witness that Equihash ever ran (four persisted-index loaders set
+ *      it at sampled or zero PoW strength), so the serve path re-verifies
+ *      unconditionally;
+ *   8. the serve-path solution cache stays inside its declared budget.
+ *
+ * Cost of (7), MEASURED on this host (32-core x86-64-v3, three runs,
+ * single-threaded, spread under 1.8%): check_equihash_solution() costs
+ * 383-390 us per header on the 200,9 span and 36.7-36.9 us on the 192,7
+ * span — 192,7 is ~10x CHEAPER, not dearer (128 indices vs 512, 24-byte
+ * rows vs 30). Serving one peer the whole 3.19M-header chain therefore
+ * costs ~320 s of one thread. That is real, and it is also exactly what
+ * main has always paid: an unconditional re-verify here is the status
+ * quo, and skipping it is what would be the change. If that cost is to
+ * be recovered it must be gated on something that actually witnesses an
+ * Equihash check (the validate_headers stage cursor), never on nStatus.
  */
 
 #include "test/test_core.h"
 
 #include "chain/chainparams.h"
+#include "chain/equihash.h"
+#include "chain/pow.h"
 #include "config/db_service.h"
 #include "config/runtime.h"
 #include "core/arith_uint256.h"
@@ -247,10 +264,8 @@ int test_getheaders_serve_fallback(void)
     }
 
     /* 4. The healed entry serves again off the in-memory hot path, still
-     *    hash-bound and still carrying the real solution. This is the path
-     *    that skips the redundant Equihash re-verification (the entry is
-     *    already BLOCK_VALID_TREE and the bytes hash-bind), so it must
-     *    still produce exactly the accepted header. */
+     *    hash-bound and still carrying the real solution — no re-read of
+     *    the store needed, and the same accepted header comes back. */
     {
         struct block_header out;
         block_header_init(&out);
@@ -333,6 +348,124 @@ int test_getheaders_serve_fallback(void)
             }
         }
     }
+
+    /* 7. F1 REGRESSION — a hash-bound header marked BLOCK_VALID_TREE whose
+     *    Equihash solution is GARBAGE must still be refused.
+     *
+     *    This is the whole reason the serve path re-verifies Equihash
+     *    unconditionally. BLOCK_VALID_TREE does not witness an Equihash
+     *    check in this codebase: block_index_blocks_hydrate.c full-checks
+     *    one row in 10,000 below the ROM checkpoint, block_index_loader.c
+     *    calls block_row_verify with a NULL header (which skips both the
+     *    hash bind and Equihash), boot_block_file_scan.c assigns the bit
+     *    unconditionally, and boot_header_seed_import.c clamps a
+     *    PEER-SUPPLIED artifact down to it. So a hostile bundle can carry
+     *    rows that hash-bind, carry the bit, pass CheckProofOfWork on the
+     *    claimed hash — and have never had Equihash run over them. Fixture
+     *    Y is exactly such a row.
+     *
+     *    Entry Y has no flat file and no node.db row, so no store retry
+     *    can rescue it: refusal is the only correct answer. A serve path
+     *    that trusts the status bit serves Y and re-broadcasts unmined
+     *    headers to the network. */
+    {
+        struct block_header hy = hb;
+        struct uint256 hash_y;
+        bool y_ready = false;
+        /* Corrupt the solution (same size, so the size check still
+         * passes), then search for a variant whose serialized bytes still
+         * satisfy CheckProofOfWork — that is the cheap grind a hostile
+         * bundle-builder does instead of mining. Regtest powLimit is
+         * 0x0f0f..., so this lands within a handful of tries. */
+        for (int attempt = 0; attempt < 4096 && !y_ready; attempt++) {
+            for (size_t i = 0; i < hy.nSolutionSize; i++)
+                hy.nSolution[i] = (uint8_t)(hb.nSolution[i] ^ 0xa5 ^
+                                            (uint8_t)attempt);
+            block_header_get_hash(&hy, &hash_y);
+            if (!CheckProofOfWork(hash_y, hy.nBits, &cp->consensus))
+                continue;
+            if (check_equihash_solution(&hy, cp))
+                continue;          /* astronomically unlikely; skip it */
+            y_ready = true;
+        }
+        GSF_CHECK("F1 fixture: forged header found (PoW passes, Equihash "
+                  "does not)", y_ready);
+
+        if (y_ready) {
+            GSF_CHECK("F1 fixture: forged solution really fails Equihash",
+                      !check_equihash_solution(&hy, cp));
+            GSF_CHECK("F1 fixture: forged header really passes "
+                      "CheckProofOfWork",
+                      CheckProofOfWork(hash_y, hy.nBits, &cp->consensus));
+            GSF_CHECK("F1 fixture: forged header is not one we mined",
+                      !uint256_eq(&hash_y, &hash_b));
+
+            struct block_index *bi_y =
+                chainstate_insert_block_index((struct chainstate *)&ms,
+                                              &hash_y);
+            GSF_CHECK("F1 fixture entry inserted", bi_y != NULL);
+            if (bi_y) {
+                bi_y->nHeight = 2;
+                bi_y->nVersion = hy.nVersion;
+                bi_y->hashMerkleRoot = hy.hashMerkleRoot;
+                bi_y->hashFinalSaplingRoot = hy.hashFinalSaplingRoot;
+                bi_y->nTime = hy.nTime;
+                bi_y->nBits = hy.nBits;
+                bi_y->nNonce = hy.nNonce;
+                bi_y->nStatus = BLOCK_VALID_TREE;   /* the hydrate/loader
+                                                     * strength, no more */
+                bi_y->pprev = bi_a;
+
+                uint8_t *ysol = zcl_malloc(hy.nSolutionSize,
+                                           "gsf_forged_sol");
+                GSF_CHECK("F1 fixture solution allocated", ysol != NULL);
+                if (ysol) {
+                    memcpy(ysol, hy.nSolution, hy.nSolutionSize);
+                    bi_y->nSolution = ysol;
+                    bi_y->nSolutionSize = hy.nSolutionSize;
+
+                    /* Sanity: this entry DOES hash-bind, so the refusal
+                     * below can only come from the Equihash check. */
+                    struct block_header rebuilt;
+                    block_header_init(&rebuilt);
+                    rebuilt.nVersion = bi_y->nVersion;
+                    rebuilt.hashPrevBlock = hash_a;
+                    rebuilt.hashMerkleRoot = bi_y->hashMerkleRoot;
+                    rebuilt.hashFinalSaplingRoot = bi_y->hashFinalSaplingRoot;
+                    rebuilt.nTime = bi_y->nTime;
+                    rebuilt.nBits = bi_y->nBits;
+                    rebuilt.nNonce = bi_y->nNonce;
+                    memcpy(rebuilt.nSolution, hy.nSolution, hy.nSolutionSize);
+                    rebuilt.nSolutionSize = hy.nSolutionSize;
+                    struct uint256 rebuilt_hash;
+                    block_header_get_hash(&rebuilt, &rebuilt_hash);
+                    GSF_CHECK("F1 fixture hash-binds to its index entry",
+                              uint256_eq(&rebuilt_hash, &hash_y));
+
+                    struct block_header out;
+                    block_header_init(&out);
+                    bool ok = getheaders_index_header_servable(&mp, bi_y,
+                                                               &out);
+                    GSF_CHECK("a BLOCK_VALID_TREE entry whose Equihash "
+                              "solution is forged is REFUSED", !ok);
+                    GSF_CHECK("that refusal is still not a validity verdict",
+                              !ok && bi_y->nStatus == BLOCK_VALID_TREE);
+                }
+            }
+        }
+    }
+
+    /* 8. F3 — the serve-path solution cache is BOUNDED, not merely
+     *    counted. 64 MiB mirrors HEADERS_SOLUTION_CACHE_MAX_BYTES in
+     *    lib/net/src/msg_headers.c; that constant is the whole worst case
+     *    an unauthenticated post-handshake peer can drive this cache to,
+     *    because every byte it accounts is reserved BEFORE the allocation
+     *    and rolled back on refusal, and the count is never decremented
+     *    (a freed-and-replaced buffer stays counted, which biases the
+     *    number high — the safe direction for a ceiling). */
+    GSF_CHECK("serve cache stays inside its 64 MiB budget",
+              getheaders_solution_cache_bytes() <=
+              (size_t)64 * 1024 * 1024);
 
     app_runtime_set_current(NULL);
     db_service_stop(&dbsvc);
