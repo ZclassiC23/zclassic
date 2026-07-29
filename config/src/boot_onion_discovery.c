@@ -102,6 +102,15 @@ void boot_onion_discovery_register(onion_blog_serve_fn blog_serve,
      * that has had this node killed by its own watchdog. */
     (void)boot_endpoint_records_load(datadir);
 
+    /* The load decides each record's chain verdict ONCE. This is what
+     * keeps deciding it: a supervised worker on its OWN thread that
+     * re-asks the chain whenever the fold reports an identity status
+     * change, so a key revoked while the node stays up stops being
+     * offered to peer discovery without waiting for the record's signed
+     * expiry or a restart. Its own thread, not the tick runner, for the
+     * same reason the load is boot-only. */
+    boot_endpoint_records_start_revalidation();
+
     onion_service_set_app_handlers(blog_serve, peer_discover);
     /* Additive: signed sources are asked first, the unsigned scrape
      * still fills the remaining capacity. */

@@ -113,6 +113,26 @@ static void zid_mark_revoked(struct zid_identity *row, int height)
     row->updated_height = height;
 }
 
+/* Save a row and publish the change. EVERY save in this TU writes a status —
+ * a fresh ACTIVE anchor, a ROTATED supersession, or a REVOKED retirement — so
+ * routing them all through here is what makes "the chain changed its mind"
+ * observable at all.
+ *
+ * The publish is a monotonic counter bump (models/zid_identity.h), and that is
+ * the WHOLE mechanism on purpose. A callback or subscriber list would run some
+ * other subsystem's work on this thread, and this thread is the block fold;
+ * the consumer that needed this signal is precisely the one that must never
+ * do a node.db read on a thread it does not own. A poller costs the fold two
+ * atomic stores and cannot block it. */
+static bool zid_save_and_publish(struct node_db *ndb,
+                                 const struct zid_identity *row, int height)
+{
+    if (!db_zid_identity_save(ndb, row))
+        return false;  // raw-return-ok:every caller logs the failure with the command that hit it -- a line here would double every save failure
+    zid_identity_note_status_change(height);
+    return true;
+}
+
 /* A key already claimed by a DIFFERENT signer may not be overwritten. Without
  * this, INSERT OR REPLACE would let anyone rotate their own key onto someone
  * else's row and take it over. A replay passes (same signer, same row). */
@@ -152,7 +172,7 @@ static bool zid_apply_anchor(struct node_db *ndb,
     struct zid_identity row;
     zid_fill_active(&row, msg->pubkey, txid, height,
                     ZID_IDENTITY_SOURCE_ZID_OVERLAY, NULL, owner);
-    if (!db_zid_identity_save(ndb, &row)) {
+    if (!zid_save_and_publish(ndb, &row, height)) {
         LOG_WARN("zid", "zid ANCHOR: save failed at h=%d", height);
         return false;
     }
@@ -186,7 +206,7 @@ static bool zid_apply_rotate(struct node_db *ndb,
     }
 
     zid_mark_rotated(&prev, msg->pubkey, height);
-    if (!db_zid_identity_save(ndb, &prev)) {
+    if (!zid_save_and_publish(ndb, &prev, height)) {
         LOG_WARN("zid", "zid ROTATE: old-key save failed at h=%d", height);
         return false;
     }
@@ -194,7 +214,7 @@ static bool zid_apply_rotate(struct node_db *ndb,
     struct zid_identity row;
     zid_fill_active(&row, msg->pubkey, txid, height,
                     ZID_IDENTITY_SOURCE_ZID_OVERLAY, NULL, owner);
-    if (!db_zid_identity_save(ndb, &row)) {
+    if (!zid_save_and_publish(ndb, &row, height)) {
         LOG_WARN("zid", "zid ROTATE: new-key save failed at h=%d", height);
         return false;
     }
@@ -217,7 +237,7 @@ static bool zid_apply_revoke(struct node_db *ndb,
     }
 
     zid_mark_revoked(&prev, height);
-    if (!db_zid_identity_save(ndb, &prev)) {
+    if (!zid_save_and_publish(ndb, &prev, height)) {
         LOG_WARN("zid", "zid REVOKE: save failed at h=%d", height);
         return false;
     }
@@ -286,7 +306,7 @@ void explorer_index_apply_znam_zid_text(struct node_db *ndb,
             return;
         }
         zid_mark_revoked(&prev, height);
-        if (!db_zid_identity_save(ndb, &prev))
+        if (!zid_save_and_publish(ndb, &prev, height))
             LOG_WARN("zid", "znam zid text: revoke save failed at h=%d",
                      height);
         return;
@@ -318,7 +338,7 @@ void explorer_index_apply_znam_zid_text(struct node_db *ndb,
     if (prev_found && !same_key &&
         strcmp(prev.status, ZID_IDENTITY_STATUS_REVOKED) != 0) {
         zid_mark_rotated(&prev, key32, height);
-        if (!db_zid_identity_save(ndb, &prev))
+        if (!zid_save_and_publish(ndb, &prev, height))
             LOG_WARN("zid", "znam zid text: rotate save failed at h=%d",
                      height);
     }
@@ -326,6 +346,6 @@ void explorer_index_apply_znam_zid_text(struct node_db *ndb,
     struct zid_identity row;
     zid_fill_active(&row, key32, tx->hash.data, height,
                     ZID_IDENTITY_SOURCE_ZNAM_TEXT, name, owner);
-    if (!db_zid_identity_save(ndb, &row))
+    if (!zid_save_and_publish(ndb, &row, height))
         LOG_WARN("zid", "znam zid text: anchor save failed at h=%d", height);
 }

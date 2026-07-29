@@ -113,6 +113,50 @@ int64_t db_zid_identity_count_by_status(struct node_db *ndb,
 /* Drop every row — the projection is rebuildable from block history. */
 bool db_zid_identity_truncate(struct node_db *ndb);
 
+/* ── The anchor-status change signal ───────────────────────────────
+ *
+ * A monotonic counter, bumped once per APPLIED status change: every
+ * ANCHOR, ROTATE and REVOKE the fold writes, from either on-chain feed
+ * (app/models/src/explorer_index_zid.c).
+ *
+ * WHY IT EXISTS. A consumer that cached an anchor verdict has no other
+ * way to learn the chain changed its mind. vcs/zendp_swarm.h records the
+ * verdict at acceptance and never re-asks — deliberately, because the
+ * discovery projection runs on the shared supervisor tick runner where a
+ * blocking node.db read has had this node killed by its own watchdog. So
+ * a key revoked while the process stayed alive kept being advertised
+ * until the record's own signed expiry, or until a restart.
+ *
+ * IT IS A COUNTER TO POLL, NOT A NOTIFICATION. There is no callback
+ * registry, no subscriber list, no fan-out, and deliberately so: a
+ * notification would run some other subsystem's work on the fold thread,
+ * which is the hazard the whole design exists to avoid. A reader
+ * compares the value it last acted on with the value now, and re-derives
+ * when they differ. It carries no identity — "something changed", not
+ * "which key changed" — because the set that could be affected is
+ * bounded by ZENDP_DIR_MAX and re-checking all of it is cheaper than any
+ * bookkeeping that could go stale.
+ *
+ * Reads are lock-free and safe from any thread. The value is monotone
+ * within a process and starts at 0; it does NOT persist across restarts,
+ * and does not need to, because a restart re-runs the whole pipeline. */
+uint64_t zid_identity_status_generation(void);
+
+/* Publish one applied status change at `height`. Called by the fold
+ * after a save that wrote a row's status, and by nothing else. */
+void zid_identity_note_status_change(int height);
+
+/* A coherent read of the signal for operators. `generation` is the
+ * counter above; `last_height` is the block height of the last applied
+ * change (-1 when none has been seen); `published_us` is the monotonic
+ * microsecond stamp of that change (0 when none). */
+struct zid_identity_status_signal {
+    uint64_t generation;
+    int64_t  last_height;
+    int64_t  published_us;
+};
+void zid_identity_status_signal_read(struct zid_identity_status_signal *out);
+
 /* See CLAUDE.md "Adding state introspection". Reentrant-safe.
  * key: NULL/"" for totals; a 64-hex master pubkey or a ZNAM name to
  * resolve one identity. */

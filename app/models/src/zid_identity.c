@@ -11,8 +11,11 @@
 #include "encoding/utilstrencodings.h"
 #include "json/json.h"
 #include "util/log_macros.h"
+#include "util/subsystem_snapshot.h"
 
+#include <pthread.h>
 #include <sqlite3.h>
+#include <stdatomic.h>
 #include <string.h>
 
 #define ZID_IDENTITY_COLS \
@@ -241,6 +244,59 @@ static void zid_push_row(struct json_value *out, const struct zid_identity *r)
     json_push_kv_str(out, "name", r->name);
     json_push_kv_str(out, "owner_address", r->owner_address);
     json_push_kv_int(out, "updated_height", r->updated_height);
+}
+
+/* ── The anchor-status change signal ───────────────────────────────
+ *
+ * See models/zid_identity.h for what this is for. The publish envelope is
+ * the shared seqlock (util/subsystem_snapshot.h) so the three fields read
+ * back coherently; the counter a poller actually watches is one atomic and
+ * needs no bracket at all.
+ *
+ * The seqlock's parity is only coherent with ONE writer in flight. The block
+ * fold is single-threaded, so that holds today — but it is enforced with a
+ * lock here rather than assumed of every future caller. The lock is held for
+ * two atomic stores and is never taken by a reader, so it cannot park the
+ * fold and cannot be the thing a poller blocks behind. */
+static pthread_mutex_t g_status_pub_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct zcl_snapshot_env g_status_env = ZCL_SNAPSHOT_ENV_INIT;
+
+uint64_t zid_identity_status_generation(void)
+{
+    return atomic_load(&g_status_env.generation);
+}
+
+void zid_identity_note_status_change(int height)
+{
+    pthread_mutex_lock(&g_status_pub_lock);
+    zcl_snapshot_publish_begin(&g_status_env);
+    zcl_snapshot_publish_end(&g_status_env, (int64_t)height);
+    pthread_mutex_unlock(&g_status_pub_lock);
+}
+
+void zid_identity_status_signal_read(struct zid_identity_status_signal *out)
+{
+    if (!out) {
+        LOG_WARN("zid_identity", "status_signal_read: out is NULL");
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    out->last_height = -1;
+
+    for (int i = 0; i < ZCL_SNAPSHOT_READ_MAX_RETRIES; i++) {
+        uint64_t seq = 0;
+        if (!zcl_snapshot_read_try(&g_status_env, &seq))
+            continue;
+        out->generation   = atomic_load(&g_status_env.generation);
+        out->last_height  = atomic_load(&g_status_env.last_height);
+        out->published_us = atomic_load(&g_status_env.published_us);
+        if (zcl_snapshot_read_ok(&g_status_env, seq))
+            return;
+    }
+    /* A writer kept intervening. The values just read may be torn, so they
+     * are reported as the last-known snapshot and the fallback is counted —
+     * never a spin, never an empty answer. */
+    zcl_snapshot_note_torn(&g_status_env);
 }
 
 bool zid_identity_dump_state_json(struct json_value *out, const char *key)

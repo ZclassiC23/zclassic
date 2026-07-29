@@ -22,7 +22,11 @@
 #include "models/zid_identity.h"
 
 #include "encoding/utilstrencodings.h"
+#include "json/json.h"
 #include "platform/time_compat.h"
+#include "supervisors/domains.h"
+#include "util/supervisor.h"
+#include "util/thread_registry.h"
 #include "vcs/zendp_swarm.h"
 #include "zid/zid.h"
 
@@ -30,8 +34,10 @@
 
 #include <dirent.h>
 #include <fcntl.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #define BER_LOG "boot.endpoint_records"
@@ -254,4 +260,220 @@ int boot_endpoint_record_peers(void *ctx, struct onion_peer *out, size_t max)
                  "discovery: dropped %d endpoint record(s) with a malformed "
                  "or expired onion hostname (%d kept)", rejected, kept);
     return kept;
+}
+
+/* ── revalidation: a key revoked mid-run stops being advertised ─────
+ *
+ * See config/boot_endpoint_records.h for the whole contract. The two
+ * facts that shape every line below:
+ *
+ *   1. The signal is a COUNTER THE FOLD BUMPS, and this end POLLS it.
+ *      Nothing is pushed. A callback from the fold would run the sweep
+ *      below — one node.db read per held identity — on the block-fold
+ *      thread.
+ *   2. The sweep runs on ITS OWN THREAD, never on the shared supervisor
+ *      tick runner. That runner also drives onion_directory_tick, which
+ *      reads the very directory the sweep writes; a blocking database
+ *      read there is how this node has been SIGABRT'd by its own
+ *      watchdog. boot_seniority.c is the in-tree precedent and this
+ *      follows it exactly.
+ */
+
+/* How often the worker asks whether an identity status changed. The
+ * question is one atomic load; only a moved counter costs a database
+ * read. Short because a revoked key should stop being advertised in
+ * seconds, not minutes. */
+#define BER_REVAL_POLL_SECS 5
+
+/* Heartbeat deadline. The sweep reads node.db and can queue behind a
+ * fold commit, which runs 120-330 s at tip on this chain — so a slow
+ * pass is a busy node, not a wedged worker. Well above that, so a
+ * TIME_DEADLINE stall means something is actually wrong. */
+#define BER_REVAL_DEADLINE_SECS 600
+
+/* NO_PROGRESS quiet window. Between status changes the worker reports
+ * itself idle every poll, which refreshes this clock without moving the
+ * marker — so quiet only accumulates while a status change is PENDING
+ * AND UNRESOLVABLE (records held that the chain cannot be asked about).
+ * Fifteen minutes of that is a defect worth a named blocker. */
+#define BER_REVAL_MAX_QUIET_US (15 * 60 * 1000000LL)
+
+/* The generation this node has already acted on. Starts at 0, which is
+ * also the counter's start: a node that has folded no status change
+ * since boot has nothing to re-derive, because the boot load already
+ * checked every record against the chain. */
+static _Atomic uint64_t g_reval_applied_gen;
+static _Atomic uint64_t g_reval_sweeps;        /* the progress marker */
+static _Atomic uint64_t g_reval_dropped;       /* records invalidated */
+static _Atomic uint64_t g_reval_checked;       /* definitive answers seen */
+static _Atomic uint64_t g_reval_unavailable;   /* passes the chain refused */
+static _Atomic int64_t  g_reval_last_us;       /* monotonic-us of last sweep */
+static _Atomic bool     g_reval_running;
+static _Atomic supervisor_child_id g_reval_sup_id = SUPERVISOR_INVALID_ID;
+static struct liveness_contract g_reval_contract;
+
+enum boot_endpoint_reval_outcome boot_endpoint_records_revalidate_once(void)
+{
+    /* Read the counter BEFORE the sweep and record THAT value after it,
+     * so a status change folded while the sweep was running leaves the
+     * generations unequal and is re-derived on the next pass rather than
+     * being swallowed. */
+    const uint64_t gen = zid_identity_status_generation();
+    if (gen == atomic_load(&g_reval_applied_gen))
+        return BOOT_ENDPOINT_REVAL_IDLE;
+
+    struct zendp_revalidation tally;
+    memset(&tally, 0, sizeof(tally));
+    enum zendp_result r = zendp_global_revalidate(&tally);
+
+    atomic_fetch_add(&g_reval_checked, (uint64_t)tally.checked);
+    atomic_fetch_add(&g_reval_dropped, (uint64_t)tally.dropped);
+    atomic_store(&g_reval_last_us, platform_time_monotonic_us());
+
+    if (r != ZENDP_OK) {
+        /* At least one held identity could not be resolved. The applied
+         * generation is deliberately NOT advanced: the change is still
+         * pending, and the next pass retries it. */
+        atomic_fetch_add(&g_reval_unavailable, 1);
+        LOG_WARN(BER_LOG,
+                 "revalidate: %d held record(s) could not be resolved against "
+                 "the chain (%s) — left in place and retried; a record is "
+                 "never dropped on a non-answer",
+                 tally.unavailable, zendp_result_string(r));
+        return BOOT_ENDPOINT_REVAL_UNAVAILABLE;
+    }
+
+    atomic_store(&g_reval_applied_gen, gen);
+    atomic_fetch_add(&g_reval_sweeps, 1);
+    return BOOT_ENDPOINT_REVAL_APPLIED;
+}
+
+static void *ber_reval_worker_main(void *arg)
+{
+    (void)arg;
+    supervisor_child_id id = atomic_load(&g_reval_sup_id);
+
+    while (atomic_load(&g_reval_running) &&
+           !thread_registry_shutdown_requested()) {
+        switch (boot_endpoint_records_revalidate_once()) {
+        case BOOT_ENDPOINT_REVAL_IDLE:
+            /* POSITIVELY established there is no work: no identity status
+             * has been folded since the last applied sweep, so every
+             * recorded verdict is still the chain's current answer.
+             * Refreshes the quiet clock without moving the marker. */
+            supervisor_progress_idle(id);
+            break;
+        case BOOT_ENDPOINT_REVAL_APPLIED:
+            supervisor_progress(id, (int64_t)atomic_load(&g_reval_sweeps));
+            break;
+        case BOOT_ENDPOINT_REVAL_UNAVAILABLE:
+            /* Report NEITHER progress NOR idle. A status change this node
+             * knows about and cannot resolve is exactly the state
+             * NO_PROGRESS exists to catch; calling it idle would rebuild
+             * the silent stall this whole slice is here to remove. */
+            break;
+        }
+        supervisor_tick(id);
+
+        for (int i = 0; i < BER_REVAL_POLL_SECS &&
+                        atomic_load(&g_reval_running) &&
+                        !thread_registry_shutdown_requested(); i++) {
+            struct timespec ts = { .tv_sec = 1, .tv_nsec = 0 };
+            nanosleep(&ts, NULL);
+        }
+    }
+    return NULL;
+}
+
+void boot_endpoint_records_start_revalidation(void)
+{
+    if (atomic_load(&g_reval_running))
+        return;
+
+    liveness_contract_init(&g_reval_contract, "net.endpoint_revalidate");
+    /* period_secs 0: the worker heartbeats itself. It must not be driven
+     * by the shared tick runner — the sweep reads node.db, and the same
+     * runner drives the discovery projection that reads this directory. */
+    atomic_store(&g_reval_contract.period_secs, (int64_t)0);
+    atomic_store(&g_reval_contract.deadline_secs,
+                 (int64_t)BER_REVAL_DEADLINE_SECS);
+    g_reval_contract.on_tick = NULL;
+    g_reval_contract.on_stall = NULL;
+    supervisor_domains_init();
+    supervisor_child_id id =
+        supervisor_register_in_domain(g_net_sup, &g_reval_contract);
+    atomic_store(&g_reval_sup_id, id);
+    if (id == SUPERVISOR_INVALID_ID) {
+        LOG_WARN(BER_LOG,
+                 "revalidation: supervisor register failed; a key revoked "
+                 "mid-run would keep being advertised until its record "
+                 "expires — not starting unsupervised");
+        return;
+    }
+    supervisor_tick(id);
+    /* Count RESULTS: one applied sweep per resolved status change. While
+     * nothing changes the worker reports idle, so a frozen marker means a
+     * change is pending AND failing, never merely "nothing to do". Armed
+     * AFTER register so the child id is valid. */
+    supervisor_set_progress_max_quiet(id, BER_REVAL_MAX_QUIET_US);
+    supervisor_progress(id, (int64_t)atomic_load(&g_reval_sweeps));
+
+    atomic_store(&g_reval_running, true);
+    /* supervised:net.endpoint_revalidate */
+    int rc = thread_registry_spawn("zcl_endp_reval", ber_reval_worker_main,
+                                   NULL, NULL);
+    if (rc != 0) {
+        atomic_store(&g_reval_running, false);
+        supervisor_child_complete(id);
+        LOG_WARN(BER_LOG,
+                 "revalidation: worker spawn failed (%d); accepted records "
+                 "keep their boot-time chain verdict until restart", rc);
+    }
+}
+
+bool boot_endpoint_records_dump_state_json(struct json_value *out,
+                                           const char *key)
+{
+    (void)key;
+    if (!out)
+        LOG_FAIL(BER_LOG, "dump_state_json: out is NULL");
+    json_set_object(out);
+
+    struct zid_identity_status_signal sig;
+    zid_identity_status_signal_read(&sig);
+    const uint64_t applied = atomic_load(&g_reval_applied_gen);
+
+    /* The signal, and whether this node has caught up with it. */
+    json_push_kv_int(out, "identity_status_generation",
+                     (int64_t)sig.generation);
+    json_push_kv_int(out, "identity_status_last_height", sig.last_height);
+    json_push_kv_int(out, "revalidated_generation", (int64_t)applied);
+    json_push_kv_bool(out, "revalidation_pending", sig.generation != applied);
+
+    /* What the worker has actually achieved, separated from whether it ran. */
+    json_push_kv_bool(out, "worker_running", atomic_load(&g_reval_running));
+    json_push_kv_int(out, "sweeps_applied",
+                     (int64_t)atomic_load(&g_reval_sweeps));
+    json_push_kv_int(out, "records_invalidated",
+                     (int64_t)atomic_load(&g_reval_dropped));
+    json_push_kv_int(out, "identities_checked",
+                     (int64_t)atomic_load(&g_reval_checked));
+    json_push_kv_int(out, "chain_unavailable_passes",
+                     (int64_t)atomic_load(&g_reval_unavailable));
+
+    const int64_t last_us = atomic_load(&g_reval_last_us);
+    json_push_kv_int(out, "last_sweep_age_us",
+                     last_us > 0 ? platform_time_monotonic_us() - last_us : -1);
+
+    /* How many records the discovery projection would offer right now.
+     * A locked in-memory snapshot — no database read on the reader's
+     * thread, whichever thread that turns out to be. */
+    struct zendp_record_view views[BER_RECORDS_MAX];
+    json_push_kv_int(out, "records_projected",
+                     (int64_t)zendp_global_records(
+                         (uint64_t)platform_time_wall_unix(), views,
+                         BER_RECORDS_MAX));
+    json_push_kv_bool(out, "anchor_lookup_registered",
+                      zendp_anchor_lookup_registered());
+    return true;
 }
