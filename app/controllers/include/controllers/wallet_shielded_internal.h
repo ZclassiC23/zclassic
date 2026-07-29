@@ -83,6 +83,9 @@ bool rpc_z_listallnotes(const struct json_value *params, bool help,
 /* wallet_shielded_send.c — z_sendmany (t/z spend + build + broadcast) */
 bool rpc_z_sendmany(const struct json_value *params, bool help,
                     struct json_value *result);
+/* wallet_addr_is_sapling() — chain-aware Sapling prefix test; declared in
+ * the public controllers/wallet_shielded_controller.h (included above) so
+ * the owning test group can assert it across all three networks. */
 
 /* wallet_shielded_send_shielded.c — z_sendmany shielded-spend branch.
  * Recipients are pre-parsed into the transparent/shielded output

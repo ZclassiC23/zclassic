@@ -21,6 +21,7 @@
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
+#include <ctype.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -463,6 +464,32 @@ void zcl_native_handle_wallet_shielded_send(
     }
     const char *idem =
         json_get_str(json_get(request->input, "idempotency_key"));
+    /* Optional Sapling memo carried to a shielded recipient. `memo` is plain
+     * UTF-8 (zero-padded by z_sendmany); `memo_hex` is the raw-bytes form for
+     * a binary memo. Without this the typed path could not attach the store's
+     * ZCL23ORDER:<id> order binding, so an agent-driven buyer could pay but
+     * never be credited — the merchant's reconcile keys on the memo. */
+    const char *memo = json_get_str(json_get(request->input, "memo"));
+    const char *memo_hex = json_get_str(json_get(request->input, "memo_hex"));
+    if (memo && !memo[0]) memo = NULL;
+    if (memo_hex && !memo_hex[0]) memo_hex = NULL;
+    if (memo_hex) {
+        size_t hlen = strlen(memo_hex);
+        bool hex_ok = (hlen % 2 == 0) && hlen <= 1024;
+        for (size_t i = 0; hex_ok && i < hlen; i++)
+            hex_ok = isxdigit((unsigned char)memo_hex[i]) != 0;
+        if (!hex_ok) {
+            wnh_fail(reply, ZCL_COMMAND_EXIT_INVALID, "INVALID_MEMO_HEX",
+                     "memo_hex must be even-length hex, at most 1024 chars",
+                     "memo_hex");
+            return;
+        }
+    }
+    if (memo && strlen(memo) > 512) {
+        wnh_fail(reply, ZCL_COMMAND_EXIT_INVALID, "INVALID_MEMO",
+                 "memo must be at most 512 bytes", "memo");
+        return;
+    }
     bool confirm = json_get_bool_or(request->input, "confirm", false);
     char amtbuf[64];
     (void)snprintf(amtbuf, sizeof(amtbuf), "%.8f", amount);
@@ -476,6 +503,10 @@ void zcl_native_handle_wallet_shielded_send(
         (void)json_push_kv_str(&ci, "from", from);
         (void)json_push_kv_str(&ci, "to", to);
         (void)json_push_kv_real(&ci, "amount", amount);
+        if (memo)
+            (void)json_push_kv_str(&ci, "memo", memo);
+        if (memo_hex)
+            (void)json_push_kv_str(&ci, "memo_hex", memo_hex);
         if (idem && idem[0])
             (void)json_push_kv_str(&ci, "idempotency_key", idem);
         (void)json_push_kv_bool(&ci, "confirm", true);
@@ -490,8 +521,8 @@ void zcl_native_handle_wallet_shielded_send(
         return;
     }
 
-    /* z_sendmany takes [from, [{address, amount}]] — build the nested
-     * recipient array through the encoder so a quote in from/to cannot
+    /* z_sendmany takes [from, [{address, amount, memo?}]] — build the nested
+     * recipient array through the encoder so a quote in from/to/memo cannot
      * rewrite the params array. */
     struct rpc_arg_builder p;
     rpc_arg_builder_init(&p);
@@ -501,6 +532,10 @@ void zcl_native_handle_wallet_shielded_send(
     json_set_object(&recip);
     (void)json_push_kv_str(&recip, "address", to);
     (void)json_push_kv_real(&recip, "amount", amount);
+    if (memo_hex)
+        (void)json_push_kv_str(&recip, "memo_hex", memo_hex);
+    else if (memo)
+        (void)json_push_kv_str(&recip, "memo", memo);
     json_init(&recip_arr);
     json_set_array(&recip_arr);
     (void)json_push_back(&recip_arr, &recip);
@@ -532,6 +567,14 @@ void zcl_native_handle_wallet_shielded_send(
     (void)json_push_kv_str(&reply->data, "from", from);
     (void)json_push_kv_str(&reply->data, "to", to);
     (void)json_push_kv_real(&reply->data, "amount", amount);
+    /* Echo the memo actually attached so the caller can bind the send to
+     * whatever the memo means to it (a store order, a ZMSG frame). */
+    (void)json_push_kv_bool(&reply->data, "memo_attached",
+                            memo != NULL || memo_hex != NULL);
+    if (memo_hex)
+        (void)json_push_kv_str(&reply->data, "memo_hex", memo_hex);
+    else if (memo)
+        (void)json_push_kv_str(&reply->data, "memo", memo);
     if (idem && idem[0])
         (void)json_push_kv_str(&reply->data, "idempotency_key", idem);
     (void)json_push_kv_str(&reply->data, "plan_token", token);
