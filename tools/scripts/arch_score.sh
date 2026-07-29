@@ -24,21 +24,35 @@ kpi() { # weight got slug note
   ROWS+=("$g/$w|$slug|$note")
 }
 
+# Every ledger-backed KPI below asks the ledger's JUDGE, never the ledger file.
+# Reading `history.jsonl` directly (the old `tail -n 5 | grep '"verdict":"pass"'`)
+# is a five-run sliding OR-gate: it has no freshness check, no thin-fixture check
+# and no lagging-fixture check, so a PASS recorded days ago against a
+# below-checkpoint peer kept scoring forever. stopwatch_evidence_judge.sh — which
+# `make c3-stopwatch-report` / `make netdisrupt-stopwatch-report` wrap, complete
+# with the FALSE-GREEN GUARD that fails the recipe if no VERDICT= line is printed
+# — applies all three. Asking it can only ever LOWER a score relative to the
+# grep, which is what ARCH_QUEST_BOARD.md rule 1 requires: "You win a point ONLY
+# by the real proof … never inflate an existing one."
+judge_pass() { # <make-target>
+  command -v make >/dev/null || return 1
+  make -s "$1" 2>/dev/null | grep -q 'VERDICT=PASS'
+}
+c3pass=0; judge_pass c3-stopwatch-report && c3pass=1
+
 # ── KPI 1 (20) — INSTANT-ON END TO END: a wiped node installs the bundle and
-#    reaches tip. THE outcome. Proof = a PASS line in the c3 stopwatch ledger. ─
-so1=0; n1="no PASS in c3-stopwatch ledger (D8: install defers → genesis fold)"
-LED="$HOME/.local/state/zclassic23-c3-stopwatch/history.jsonl"
-if [ -s "$LED" ] && tail -n 5 "$LED" | grep -q '"verdict":"pass"'; then
-  so1=20; n1="c3 stopwatch PASS recorded"
+#    reaches tip. THE outcome. Proof = a PASS from the c3 stopwatch JUDGE. ─────
+so1=0; n1="c3-stopwatch judge does not say PASS (D8: install defers → genesis fold)"
+if [ "$c3pass" = 1 ]; then
+  so1=20; n1="c3 stopwatch judge VERDICT=PASS"
 fi
 kpi 20 "$so1" "instant-on-e2e" "$n1"
 
 # ── KPI 2 (15) — STAY SYNCED: soak evidence + disruption recovery. ───────────
 so2=0; n2="no soak MET verdict + no netdisrupt PASS yet"
-if command -v make >/dev/null && make -s c3-stopwatch-report 2>/dev/null | grep -q 'VERDICT=PASS'; then
+if [ "$c3pass" = 1 ]; then
   ndp=0
-  ND="$HOME/.local/state/zclassic23-netdisrupt-stopwatch/history.jsonl"
-  [ -s "$ND" ] && tail -n 5 "$ND" | grep -q '"verdict":"pass"' && ndp=1
+  judge_pass netdisrupt-stopwatch-report && ndp=1
   if [ "$ndp" = 1 ]; then so2=15; n2="stopwatch report PASS + disruption recovery PASS"
   else so2=8; n2="stopwatch PASS but disruption recovery not yet proven"; fi
 fi
