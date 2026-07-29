@@ -125,19 +125,26 @@ signature → master-key anchor. Full authenticity for a descriptor, relay
 record, or package release **without the 10 GB chain** — the sovereignty
 story extended to light clients.
 
-`zclassic23 zcode proof walk` executes that chain as one read-only,
-node-free command over evidence passed in, and reports each rung
-separately as passed / failed / not_checked-with-a-reason
+`zclassic23 zcode proof walk` executes that chain as one read-only
+command over evidence passed in, and reports each rung separately as
+passed / failed / not_checked-with-a-reason
 (`tools/command/native_proof_chain_command.c`, proven by the
-`proof_chain` test group). **It verifies rungs 1-6 — header + Equihash
-PoW, tx merkle inclusion, ZANC anchor decode, domain root, record
-inclusion via `zid_tree_verify`, zid signature. Rung 7 (is the master key
-itself anchored on-chain and still active?) is always reported
-`not_checked`**, because the chain-anchored identity lookup it needs does
-not exist yet. Until that lands, the walk is not full-chain
-verification, and the command says so on every run: `chain_complete` is
-false and `verified_prefix` counts only consecutive passing rungs from
-rung 1.
+`proof_chain` test group). Rungs 1-6 — header + Equihash PoW, tx merkle
+inclusion, ZANC anchor decode, domain root, record inclusion via
+`zid_tree_verify`, zid signature — are **node-free**: every input is
+evidence in the caller's hand.
+
+Rung 7 asks whether the master key itself is anchored on-chain and still
+active, which no document can answer about itself, so it is **opt-in on
+`--datadir`**: given one, the walk resolves the key against that node's
+folded `zid_identities` projection (`db_zid_identity_find`, read-only)
+and passes only on an **active** anchor — a rotated key fails and names
+its successor, a revoked key fails, and a key with no row fails while
+saying the answer is scoped to what that node has folded. Without a
+`datadir` the rung stays `not_checked` and says what to pass. The report
+never overstates either case: `node_free` says whether a database was
+read, `chain_complete` is true only when all seven rungs passed, and
+`verified_prefix` counts only consecutive passing rungs from rung 1.
 
 **Hash conventions** (mirror `lib/chain/src/mmr.c`, with a zid-specific
 leaf tag that blocks cross-protocol proof replay). All zid domain

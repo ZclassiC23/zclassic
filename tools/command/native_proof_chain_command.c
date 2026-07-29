@@ -8,7 +8,15 @@
  * signature -> master-key anchor — existed only as prose, with each rung
  * verified by a different command in a different place, if at all. This
  * is that chain as ONE read-only command over evidence the caller hands
- * in: no node contact, no chain database, no 10 GB of blocks.
+ * in: no node contact, no 10 GB of blocks.
+ *
+ * Rungs 1-6 are node-free by construction — every input is evidence in
+ * the caller's hand. Rung 7 is the exception and cannot be otherwise:
+ * "is this key anchored on-chain and still active" is a question only a
+ * folded chain answers, and no document can carry its own answer to it.
+ * So rung 7 is opt-in on an explicit `datadir`, reads the zid_identities
+ * projection READONLY, and stays not_checked without one. `node_free` in
+ * the report says which of the two happened.
  *
  * THE OUTPUT IS THE PRODUCT. Each rung reports independently as
  * passed / failed / not_checked, and `not_checked` ALWAYS carries a
@@ -19,9 +27,10 @@
  *     lift the prefix past an earlier break — the mechanical encoding of
  *     "never report a later rung as passing on the strength of a broken
  *     earlier one".
- *   - `chain_complete` is true only when all seven rungs passed. Rung 7
- *     is structurally not_checked in this build (see the SEAM below), so
- *     it is false, and `chain_complete_reason` says why.
+ *   - `chain_complete` is true only when all seven rungs passed — which
+ *     requires the caller to have supplied a `datadir` for rung 7, since
+ *     without one that rung is not_checked. `chain_complete_reason` says
+ *     which.
  *   - `report[]` renders `PASS` / `FAIL` / `-- SKIP` so a skipped rung is
  *     never mistaken for a passing one at a glance.
  *
@@ -37,7 +46,8 @@
  * `chain_complete`, never the exit code, as the answer.
  *
  * Layering: this consumes lib/zid (rung 5-6), lib/zanc (rung 3),
- * lib/bloom + lib/primitives (rung 2) and core/chainparams (rung 1).
+ * lib/bloom + lib/primitives (rung 2), core/chainparams (rung 1) and
+ * app/models' zid_identities read API (rung 7).
  * lib/zid ranks BELOW bloom/chain/script in config/lib_module_order.def,
  * so a walker inside lib/zid would be an upward reference; tools/ sits at
  * the top of the graph and this is an operator diagnostic, so it lives
@@ -57,6 +67,8 @@
 #include "core/uint256.h"
 #include "encoding/utilstrencodings.h"
 #include "json/json.h"
+#include "models/database.h"
+#include "models/zid_identity.h"
 #include "platform/time_compat.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
@@ -64,6 +76,7 @@
 #include "zanc/zanc.h"
 #include "zid/zid.h"
 
+#include <sqlite3.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
@@ -122,6 +135,11 @@ struct pcw_walk {
     bool have_root;         /* an effective domain root is available */
     uint8_t root[32];
     bool root_from_chain;   /* the root byte-equals the on-chain anchor */
+
+    /* Set ONLY by rung 7, and only when it actually opened a node.db —
+     * `node_free` in the report is this bit inverted, never a constant, so
+     * the report cannot claim a property the walk did not have. */
+    bool used_db;
 };
 
 /* ── rung plumbing ─────────────────────────────────────────────────── */
@@ -794,27 +812,160 @@ static void pcw_rung6_signature(struct pcw_walk *w, int64_t now)
 
 /* ── rung 7: identity anchor ───────────────────────────────────────── */
 
-static void pcw_rung7_identity_anchor(struct pcw_walk *w)
+/* Open <datadir>/node.db READONLY behind an ad-hoc node_db — the same
+ * shape `zcode release verify --anchored` uses
+ * (zr_open_identity_db, tools/command/native_zcode_release_command.c).
+ * Query-only and busy-bounded, so pointing it at a RUNNING node's datadir
+ * cannot write, and a locked WAL gives up rather than parking a cursor on
+ * the shared connection. `why` explains any false return. */
+static bool pcw_open_identity_db(const char *datadir, sqlite3 **db_out,
+                                 struct node_db *ndb_out, char *why,
+                                 size_t why_size)
+{
+    char path[1024];
+    int n = snprintf(path, sizeof(path), "%s/node.db", datadir);
+    if (n <= 0 || (size_t)n >= sizeof(path)) {
+        (void)snprintf(why, why_size, "the datadir path is too long");
+        return false;
+    }
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+        if (db)
+            sqlite3_close(db);
+        (void)snprintf(why, why_size,
+                       "node.db is missing or unreadable under the given "
+                       "`datadir` — rung 7 reads the identity projection a "
+                       "node folded; check the path, or boot the node once");
+        return false;
+    }
+    (void)sqlite3_exec(db, "PRAGMA query_only=ON", NULL, NULL, NULL);
+    sqlite3_busy_timeout(db, 2000);
+    *db_out = db;
+    memset(ndb_out, 0, sizeof(*ndb_out));
+    ndb_out->db = db;
+    ndb_out->open = true;
+    return true;
+}
+
+/* Rung 7 is the ONE rung that cannot be answered from caller-supplied
+ * evidence: "is this key anchored on-chain, and is it still active" is a
+ * question only a folded chain can answer, and a document cannot carry
+ * its own answer to it — a self-asserted anchor is worth nothing.
+ *
+ * So it is EXPLICITLY opt-in on `datadir`, and only on `datadir` supplied
+ * as an input key: it deliberately does NOT fall back to the CLI's global
+ * --datadir the way zcode.release.verify does, because node-freeness is
+ * this command's headline property and a chain read must be something the
+ * caller asked for, never something that happened to be configured. With
+ * no `datadir` the rung stays not_checked and says exactly what to pass.
+ *
+ * NEVER infer this rung from rungs 1-6: a valid signature proves the
+ * document came from that key, not that the key is anchored on-chain or
+ * still active. `w->have_doc` alone gates it, so a document whose
+ * signature FAILED at rung 6 still gets an independent rung 7 verdict —
+ * `verified_prefix` is what refuses to carry a later pass over an earlier
+ * break, not this function.
+ *
+ * The verdict follows the rung's own contract, "the signing key itself is
+ * registered on-chain and has not been revoked or superseded":
+ *   active  -> passed;
+ *   rotated -> FAILED, naming the successor. This is deliberately STRICTER
+ *              than `zcode release verify --anchored`, which downgrades
+ *              rotation to a note: that command answers "is this document
+ *              genuine", which a rotated key still satisfies, while this
+ *              rung answers "is this key the current one", which it does
+ *              not. Both facts stay available — rung 6 is the authorship
+ *              verdict and is untouched by this.
+ *   revoked -> FAILED;
+ *   absent  -> FAILED, and the detail says the answer is scoped to what
+ *              THIS datadir has folded, so a behind node reads as an
+ *              honest "I have no anchor for this key" rather than a
+ *              proven "no anchor exists". */
+static void pcw_rung7_identity_anchor(struct pcw_walk *w,
+                                      const struct json_value *input)
 {
     struct pcw_rung *r = &w->rung[6];
 
-    /* ── SEAM: rung 7 (identity anchor) — DO NOT CLOSE HERE ───────────
-     * The one and only call site for the chain-anchored identity lookup.
-     * It does NOT exist in this tree: db_zid_identity_find() — master key
-     * -> anchor txid/height/status over the on-chain ZID anchor index — is
-     * being built in a separate lane and lands at merge. Until it does,
-     * this rung is not_checked with that reason.
-     * NEVER return `passed` here, and NEVER infer it from rungs 1-6: a
-     * valid signature proves the document came from that key, not that the
-     * key is anchored on-chain or still active. */
-    pcw_field_str(r, "needs", "db_zid_identity_find");
-    if (w->have_doc)
-        pcw_field_hash(r, "master_pubkey", w->doc.master_pubkey, 32);
-    pcw_set(r, PCW_NOT_CHECKED,
-            "needs the chain-anchored identity lookup "
-            "(db_zid_identity_find), which is not present in this build; a "
-            "valid signature at rung 6 proves authorship by that key, "
-            "never that the key is anchored on-chain or still active");
+    if (!w->have_doc) {
+        pcw_set(r, PCW_NOT_CHECKED,
+                "no document decoded, so there is no master_pubkey to "
+                "resolve against the chain");
+        return;
+    }
+    pcw_field_hash(r, "master_pubkey", w->doc.master_pubkey, 32);
+
+    const char *datadir = pcw_input_str(input, "datadir");
+    if (!datadir) {
+        pcw_set(r, PCW_NOT_CHECKED,
+                "no `datadir` supplied — this rung is the one that needs a "
+                "folded chain (the zid_identities projection); pass "
+                "--datadir=<node datadir> to have your OWN node say whether "
+                "this key is anchored and still active");
+        return;
+    }
+
+    sqlite3 *db = NULL;
+    struct node_db ndb;
+    char why[PCW_DETAIL_MAX];
+    if (!pcw_open_identity_db(datadir, &db, &ndb, why, sizeof(why))) {
+        pcw_set(r, PCW_NOT_CHECKED, "%s", why);
+        return;
+    }
+    w->used_db = true;
+
+    struct zid_identity row;
+    bool found = db_zid_identity_find(&ndb, w->doc.master_pubkey, &row);
+    sqlite3_close(db);
+
+    if (!found) {
+        pcw_set(r, PCW_FAILED,
+                "this master key has no anchor row in the identity "
+                "projection the node at the given datadir has folded — you "
+                "would be trusting the key on the publisher's word alone "
+                "(a node behind the anchor height reads the same way)");
+        return;
+    }
+
+    pcw_field_int(r, "anchor_height", (int64_t)row.anchor_height);
+    pcw_field_hash(r, "anchor_txid", row.anchor_txid, 32);
+    pcw_field_str(r, "anchor_status", row.status);
+    pcw_field_str(r, "anchor_source", row.source);
+    if (row.name[0])
+        pcw_field_str(r, "anchor_name", row.name);
+    if (row.owner_address[0])
+        pcw_field_str(r, "anchor_owner_address", row.owner_address);
+    if (row.has_successor)
+        pcw_field_hash(r, "successor", row.successor_pubkey, 32);
+
+    if (strcmp(row.status, ZID_IDENTITY_STATUS_REVOKED) == 0) {
+        pcw_set(r, PCW_FAILED,
+                "the publisher REVOKED this master key on-chain (height "
+                "%lld) — a revoked key has no successor and nothing it "
+                "signed is current",
+                (long long)row.updated_height);
+        return;
+    }
+    if (strcmp(row.status, ZID_IDENTITY_STATUS_ROTATED) == 0) {
+        pcw_set(r, PCW_FAILED,
+                "this master key was ROTATED on-chain (height %lld) — it is "
+                "anchored but superseded, so it is no longer the active "
+                "key; `successor` is the key the publisher signs with now "
+                "(rung 6 still stands: the document is genuine)",
+                (long long)row.updated_height);
+        return;
+    }
+    if (strcmp(row.status, ZID_IDENTITY_STATUS_ACTIVE) != 0) {
+        pcw_set(r, PCW_FAILED,
+                "the anchor row carries an unknown status '%s' — this "
+                "verifier only treats '%s' as active and refuses to guess",
+                row.status, ZID_IDENTITY_STATUS_ACTIVE);
+        return;
+    }
+    pcw_set(r, PCW_PASSED,
+            "the master key is anchored on-chain at height %lld and is "
+            "still active (source %s%s%s)",
+            (long long)row.anchor_height, row.source,
+            row.name[0] ? ", name " : "", row.name[0] ? row.name : "");
 }
 
 /* ── document intake ───────────────────────────────────────────────── */
@@ -905,7 +1056,9 @@ static void pcw_emit(const struct pcw_walk *w, struct json_value *data)
         }
     }
 
-    (void)json_push_kv_bool(data, "node_free", true);
+    /* Honest, not constant: true exactly when no rung opened a database.
+     * Only rung 7 ever can, and only when the caller passed `datadir`. */
+    (void)json_push_kv_bool(data, "node_free", !w->used_db);
     (void)json_push_kv_bool(data, "chain_complete", passed == PCW_RUNGS);
     (void)json_push_kv_str(data, "chain_complete_reason",
                            passed == PCW_RUNGS
@@ -913,9 +1066,9 @@ static void pcw_emit(const struct pcw_walk *w, struct json_value *data)
                                : "not every rung passed — `first_break` names "
                                  "the first rung that FAILED (null if none) "
                                  "and `first_gap` the first that was not "
-                                 "checked; rung 7 (identity_anchor) is never "
-                                 "checked in this build, so this can never be "
-                                 "true here");
+                                 "checked; rung 7 (identity_anchor) needs a "
+                                 "`datadir` to resolve the key's on-chain "
+                                 "anchor, so a node-free walk stops at 6");
 
     char verdict[192];
     if (failed > 0)
@@ -924,6 +1077,12 @@ static void pcw_emit(const struct pcw_walk *w, struct json_value *data)
                        "%d not checked",
                        first_break, w->rung[first_break - 1].id, passed,
                        failed, skipped);
+    else if (passed == PCW_RUNGS)
+        (void)snprintf(verdict, sizeof(verdict),
+                       "COMPLETE — all %d rungs passed: this record is bound "
+                       "to proof-of-work and signed by a key anchored and "
+                       "active on-chain",
+                       PCW_RUNGS);
     else
         (void)snprintf(verdict, sizeof(verdict),
                        "INCOMPLETE — %d/%d rungs passed, %d not checked "
@@ -1053,7 +1212,7 @@ void zcl_native_handle_proof_chain_walk(
     pcw_rung4_domain_root(&w, request->input);
     pcw_rung5_record_proof(&w, request->input);
     pcw_rung6_signature(&w, now);
-    pcw_rung7_identity_anchor(&w);
+    pcw_rung7_identity_anchor(&w, request->input);
 
     pcw_emit(&w, &reply->data);
     pcw_walk_free(&w);

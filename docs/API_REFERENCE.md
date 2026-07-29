@@ -757,7 +757,7 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `zcode proof walk` | ready | read / read / public · foreground/low | `doc`, `doc_file`, `proof`, `root`, `tx`, `header`, `headers`, `merkle_branch`, `merkle_index`, `now` | `zcl.zcode_proof_walk.v1` | `zclassic23 zcode proof walk --input='{"doc":"<hex>","proof":"<hex>","root":"<64hex>","tx":"<hex>","header":"<hex>","merkle_index":1,"merkle_branch":"<64hex>"}'` | Walk a record's proof chain down to proof-of-work, rung by rung |
+| `zcode proof walk` | ready | read / read / public · foreground/low | `doc`, `doc_file`, `proof`, `root`, `tx`, `header`, `headers`, `merkle_branch`, `merkle_index`, `now`, `datadir` | `zcl.zcode_proof_walk.v1` | `zclassic23 zcode proof walk --input='{"doc":"<hex>","proof":"<hex>","root":"<64hex>","tx":"<hex>","header":"<hex>","merkle_index":1,"merkle_branch":"<64hex>"}'` | Walk a record's proof chain down to proof-of-work, rung by rung |
 
 #### `zcode.desc` — Onion descriptors: signed service records
 

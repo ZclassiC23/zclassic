@@ -16,16 +16,25 @@
  *   3. `verified_prefix` — the count of CONSECUTIVE passing rungs from 1
  *      — stops at the break, so no later pass can lift it.
  *
- * Rung 7 (identity_anchor) is asserted `not_checked` in EVERY case and
- * never `passed`: the chain-anchored identity lookup does not exist in
- * this tree, so `chain_complete` must be false everywhere too.
+ * Rung 7 (identity_anchor) is the one rung that needs a folded chain, so
+ * it is opt-in on `datadir`. Cases 1-14 pass no datadir and therefore
+ * assert it `not_checked` with `chain_complete` false and `node_free`
+ * true. Cases 15-19 hand it a real on-disk zid_identities projection and
+ * walk the whole ladder: an ACTIVE anchor is the only way to
+ * verified_prefix 7 / chain_complete true, and rotated / revoked /
+ * unanchored / unreadable each get their own distinct verdict. That is
+ * the regression guard the ladder was missing — a rung 7 that silently
+ * reverted to "always not_checked", or one that started passing on a
+ * revoked key, now fails here.
  *
  * The fixture is hermetic and real: three signed zid release documents
  * folded into a real zid anchor-domain tree, a real ZANC OP_RETURN over
  * the bagged root, a real transaction carrying it, a real merkle path,
  * and two REAL Equihash-mined regtest headers (48,5 solves in << 1 ms).
  * Everything crosses the hex/wire boundary, so the wire path is what is
- * proven, not internal structs. No network, no node, no /tmp files. */
+ * proven, not internal structs. No network and no node: the rung-7 cases
+ * write their own throwaway node.db under ./test-tmp (the
+ * test_identity_command.c shape) and never touch a live datadir. */
 
 #include "test/test_core.h"
 
@@ -39,6 +48,8 @@
 #include "encoding/utilstrencodings.h"
 #include "json/json.h"
 #include "mining/miner.h"
+#include "models/database.h"
+#include "models/zid_identity.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "script/script.h"
@@ -48,6 +59,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #define PC_CHECK(name, expr) do {                                        \
     if (expr) { printf("  proof_chain: %s... OK\n", (name)); }            \
@@ -75,9 +87,15 @@ struct pc_fixture {
     char header_hex[4096];
     char ancestor_hex[4096];
     char branch_hex[65];
+    /* The target document's own signing key, captured at sign time — the
+     * rung-7 cases anchor exactly this key (or deliberately do not). */
+    uint8_t master_pubkey[32];
     uint64_t expiry;
     uint64_t index;
     uint64_t num_leaves;
+    /* Rung-7 opt-in: a datadir path, or "" to omit the key entirely and
+     * keep the walk node-free. */
+    char datadir[512];
     /* Dispatch knobs. A case copies the fixture and edits the copy — the
      * input object is built ONCE from it, because json_push_kv appends
      * and json_get returns the FIRST match, so "push again to override"
@@ -205,6 +223,8 @@ static bool pc_build_fixture(struct pc_fixture *f, enum pc_variant variant)
             return false;
         if (variant == PC_DOC_BAD_SIGNATURE && i == PC_TARGET)
             doc.signature[7] ^= 0x01; /* forged BEFORE the batch is folded */
+        if (i == PC_TARGET)
+            memcpy(f->master_pubkey, doc.master_pubkey, 32);
         wire_lens[i] = zid_doc_encode(wires[i], sizeof(wires[i]), &doc);
         if (wire_lens[i] == 0)
             return false;
@@ -370,6 +390,56 @@ static void pc_run_load(struct pc_run *r, const struct pc_fixture *f)
         (void)json_push_kv_str(&r->input, "merkle_branch", f->branch_hex);
     (void)json_push_kv_int(&r->input, "merkle_index", f->merkle_index);
     (void)json_push_kv_int(&r->input, "now", f->now);
+    if (f->datadir[0])
+        (void)json_push_kv_str(&r->input, "datadir", f->datadir);
+}
+
+/* ── rung-7 fixture: a throwaway datadir with a zid_identities row ─── */
+
+/* Create ./test-tmp/<tag>/ with a fresh node.db (schema from
+ * node_db_open). Returns false if the directory or db cannot be made. */
+static bool pc_mk_datadir(char *dir, size_t dir_size, const char *tag)
+{
+    test_fmt_tmpdir(dir, dir_size, "proof_chain", tag);
+    mkdir("./test-tmp", 0700);
+    mkdir(dir, 0700);
+    char path[640];
+    snprintf(path, sizeof(path), "%s/node.db", dir);
+    struct node_db ndb;
+    if (!node_db_open(&ndb, path))
+        return false;
+    node_db_close(&ndb);
+    return true;
+}
+
+/* Seed one zid_identities row through the model's own write API — never
+ * hand-rolled SQL, so the row the walker reads is the row the chain fold
+ * would have written. */
+static bool pc_anchor_key(const char *dir, const uint8_t key[32],
+                          int32_t height, const char *status,
+                          const uint8_t *successor)
+{
+    struct zid_identity row;
+    memset(&row, 0, sizeof(row));
+    memcpy(row.master_pubkey, key, 32);
+    memset(row.anchor_txid, 0x5a, 32);
+    row.anchor_height = height;
+    row.updated_height = height + 10;
+    snprintf(row.status, sizeof(row.status), "%s", status);
+    snprintf(row.source, sizeof(row.source), "%s",
+             ZID_IDENTITY_SOURCE_ZID_OVERLAY);
+    if (successor) {
+        memcpy(row.successor_pubkey, successor, 32);
+        row.has_successor = true;
+    }
+    char path[640];
+    snprintf(path, sizeof(path), "%s/node.db", dir);
+    struct node_db ndb;
+    if (!node_db_open(&ndb, path))
+        return false;
+    bool ok = db_zid_identity_save(&ndb, &row);
+    node_db_close(&ndb);
+    return ok;
 }
 
 /* The rung row for 1-based rung `n`, or NULL. */
@@ -418,18 +488,23 @@ static bool pc_reason_discipline(const struct zcl_command_reply *rep)
     return true;
 }
 
-/* Every case shares this floor: rung 7 is never passed, the chain is
- * never complete, the report line for each rung is tagged distinctly,
- * the envelope keeps `data` (status PASSED), and the report fits the
- * declared 16384-byte leaf budget. */
+/* Every case shares this floor, whatever rung 7 did: the report line for
+ * each rung is tagged distinctly, `chain_complete` agrees with the rung
+ * rows rather than being asserted independently, the envelope keeps
+ * `data` (status PASSED), and the report fits the declared 16384-byte
+ * leaf budget. */
 static bool pc_invariants(const struct zcl_command_reply *rep)
 {
     if (rep->status != ZCL_COMMAND_STATUS_PASSED)
         return false;
-    if (!pc_is(rep, 7, "not_checked"))
-        return false;
+    /* chain_complete is exactly "all seven rungs passed" — derived here
+     * from the rows themselves so the summary cannot drift from them. */
+    int all_passed = 1;
+    for (int n = 1; n <= 7; n++)
+        if (!pc_is(rep, n, "passed"))
+            all_passed = 0;
     const struct json_value *cc = json_get(&rep->data, "chain_complete");
-    if (!cc || cc->type != JSON_BOOL || json_get_bool(cc))
+    if (!cc || cc->type != JSON_BOOL || json_get_bool(cc) != (all_passed != 0))
         return false;
     if (!pc_reason_discipline(rep))
         return false;
@@ -451,6 +526,21 @@ static bool pc_invariants(const struct zcl_command_reply *rep)
      * `data`, and write_bounded_json truncates over budget — a truncated
      * report is a lie. Assert real headroom for the envelope. */
     return json_write(&rep->data, NULL, 0) < 14000;
+}
+
+/* The extra floor for the node-free cases (no `datadir`): rung 7 must be
+ * not_checked, the chain must be incomplete, and the report must SAY it
+ * read no database. */
+static bool pc_node_free(const struct zcl_command_reply *rep)
+{
+    if (!pc_is(rep, 7, "not_checked"))
+        return false;
+    const struct json_value *nf = json_get(&rep->data, "node_free");
+    if (!nf || nf->type != JSON_BOOL || !json_get_bool(nf))
+        return false;
+    const struct json_value *cc = json_get(&rep->data, "chain_complete");
+    return cc && cc->type == JSON_BOOL && !json_get_bool(cc) &&
+           pc_invariants(rep);
 }
 
 static int64_t pc_prefix(const struct zcl_command_reply *rep)
@@ -500,9 +590,9 @@ int test_proof_chain(void)
                      pc_is(&r.reply, 4, "passed") &&
                      pc_is(&r.reply, 5, "passed") &&
                      pc_is(&r.reply, 6, "passed"));
-        PC_CHECK("valid chain: rung 7 not_checked, never passed",
+        PC_CHECK("valid chain: rung 7 not_checked, and says what to pass",
                  pc_is(&r.reply, 7, "not_checked") &&
-                     pc_detail_has(&r.reply, 7, "db_zid_identity_find"));
+                     pc_detail_has(&r.reply, 7, "datadir"));
         PC_CHECK("valid chain: verified_prefix is 6",
                  pc_prefix(&r.reply) == 6);
         PC_CHECK("valid chain: no first_break",
@@ -510,7 +600,7 @@ int test_proof_chain(void)
                      json_get(&r.reply.data, "first_break")->type ==
                          JSON_NULL);
         PC_CHECK("valid chain: chain_complete stays false + invariants",
-                 pc_invariants(&r.reply));
+                 pc_node_free(&r.reply));
         PC_CHECK("valid chain: ancestor header linked",
                  json_get_int(json_get(pc_rung(&r.reply, 1),
                                        "headers_linked")) == 1);
@@ -542,7 +632,7 @@ int test_proof_chain(void)
                  pc_prefix(&r.reply) == 0);
         PC_CHECK("break 1: first_break is 1",
                  json_get_int(json_get(&r.reply.data, "first_break")) == 1);
-        PC_CHECK("break 1: invariants hold", pc_invariants(&r.reply));
+        PC_CHECK("break 1: invariants hold", pc_node_free(&r.reply));
         pc_run_free(&r);
     }
 
@@ -564,7 +654,7 @@ int test_proof_chain(void)
                      pc_is(&r.reply, 6, "passed"));
         PC_CHECK("break 2: verified_prefix stops at 1",
                  pc_prefix(&r.reply) == 1);
-        PC_CHECK("break 2: invariants hold", pc_invariants(&r.reply));
+        PC_CHECK("break 2: invariants hold", pc_node_free(&r.reply));
         pc_run_free(&r);
     }
 
@@ -592,7 +682,7 @@ int test_proof_chain(void)
                             "NOT confirmed") != NULL);
         PC_CHECK("break 3: verified_prefix stops at 2",
                  pc_prefix(&r.reply) == 2);
-        PC_CHECK("break 3: invariants hold", pc_invariants(&r.reply));
+        PC_CHECK("break 3: invariants hold", pc_node_free(&r.reply));
         pc_run_free(&r);
     }
 
@@ -620,7 +710,7 @@ int test_proof_chain(void)
                             "NOT confirmed") != NULL);
         PC_CHECK("break 4: verified_prefix stops at 3",
                  pc_prefix(&r.reply) == 3);
-        PC_CHECK("break 4: invariants hold", pc_invariants(&r.reply));
+        PC_CHECK("break 4: invariants hold", pc_node_free(&r.reply));
         pc_run_free(&r);
     }
 
@@ -637,7 +727,7 @@ int test_proof_chain(void)
         PC_CHECK("break 4b: rung 4 failed on the hash type",
                  pc_is(&r.reply, 4, "failed") &&
                      pc_detail_has(&r.reply, 4, "SHA3-256"));
-        PC_CHECK("break 4b: invariants hold", pc_invariants(&r.reply));
+        PC_CHECK("break 4b: invariants hold", pc_node_free(&r.reply));
         pc_run_free(&r);
     }
 
@@ -661,7 +751,7 @@ int test_proof_chain(void)
                  pc_is(&r.reply, 6, "passed"));
         PC_CHECK("break 5: verified_prefix stops at 4",
                  pc_prefix(&r.reply) == 4);
-        PC_CHECK("break 5: invariants hold", pc_invariants(&r.reply));
+        PC_CHECK("break 5: invariants hold", pc_node_free(&r.reply));
         pc_run_free(&r);
     }
 
@@ -683,7 +773,7 @@ int test_proof_chain(void)
                      pc_detail_has(&r.reply, 6, "expired"));
         PC_CHECK("break 6a: verified_prefix stops at 5",
                  pc_prefix(&r.reply) == 5);
-        PC_CHECK("break 6a: invariants hold", pc_invariants(&r.reply));
+        PC_CHECK("break 6a: invariants hold", pc_node_free(&r.reply));
         pc_run_free(&r);
     }
 
@@ -710,7 +800,7 @@ int test_proof_chain(void)
                      pc_detail_has(&r.reply, 6, "signature does not verify"));
         PC_CHECK("break 6b: verified_prefix stops at 5",
                  pc_prefix(&r.reply) == 5);
-        PC_CHECK("break 6b: invariants hold", pc_invariants(&r.reply));
+        PC_CHECK("break 6b: invariants hold", pc_node_free(&r.reply));
         pc_run_free(&r);
     }
 
@@ -729,7 +819,7 @@ int test_proof_chain(void)
                  pc_is(&r.reply, 1, "passed") && pc_is(&r.reply, 2, "passed") &&
                      pc_is(&r.reply, 3, "passed") &&
                      pc_is(&r.reply, 4, "passed"));
-        PC_CHECK("truncated proof: invariants hold", pc_invariants(&r.reply));
+        PC_CHECK("truncated proof: invariants hold", pc_node_free(&r.reply));
         pc_run_free(&r);
     }
 
@@ -747,7 +837,7 @@ int test_proof_chain(void)
                      pc_detail_has(&r.reply, 5, "version 2 is unknown") &&
                      pc_detail_has(&r.reply, 5, "never skipped"));
         PC_CHECK("unknown proof version: invariants hold",
-                 pc_invariants(&r.reply));
+                 pc_node_free(&r.reply));
         pc_run_free(&r);
     }
 
@@ -770,7 +860,7 @@ int test_proof_chain(void)
         PC_CHECK("bogus-index proof: rung 5 failed naming the leaf count",
                  pc_is(&r.reply, 5, "failed") &&
                      pc_detail_has(&r.reply, 5, "leaf 99 of a tree with only"));
-        PC_CHECK("bogus-index proof: invariants hold", pc_invariants(&r.reply));
+        PC_CHECK("bogus-index proof: invariants hold", pc_node_free(&r.reply));
         pc_run_free(&r);
     }
 
@@ -803,7 +893,7 @@ int test_proof_chain(void)
                                        "failed")) == 0 &&
                      json_get_int(json_get(json_get(&r.reply.data, "summary"),
                                            "not_checked")) == 6);
-        PC_CHECK("doc only: invariants hold", pc_invariants(&r.reply));
+        PC_CHECK("doc only: invariants hold", pc_node_free(&r.reply));
         pc_run_free(&r);
     }
 
@@ -829,6 +919,152 @@ int test_proof_chain(void)
         PC_CHECK("bad document: refused with a reason",
                  r.reply.status == ZCL_COMMAND_STATUS_FAILED &&
                      strcmp(r.reply.error.code, "NO_DOCUMENT") == 0);
+        pc_run_free(&r);
+    }
+
+    /* ── rung 7: the full ladder against a real identity projection ───
+     *
+     * Everything above walked six rungs and stopped. These cases hand the
+     * walker a datadir and drive the seventh, which is the only one that
+     * can take verified_prefix to 7. The key anchored is the TARGET
+     * document's own master_pubkey, captured at sign time, so nothing
+     * here can pass by anchoring the wrong key. */
+
+    /* 15. An ACTIVE anchor: all seven rungs pass, the prefix reaches 7,
+     *     chain_complete flips true for the first time, and node_free
+     *     goes false because a database really was read. */
+    {
+        char dir[512];
+        bool made = pc_mk_datadir(dir, sizeof(dir), "active") &&
+                    pc_anchor_key(dir, good.master_pubkey, 4211,
+                                  ZID_IDENTITY_STATUS_ACTIVE, NULL);
+        PC_CHECK("rung 7 fixture: datadir + active anchor row", made);
+        struct pc_fixture f = good;
+        snprintf(f.datadir, sizeof(f.datadir), "%s", dir);
+        struct pc_run r;
+        pc_run_init(&r);
+        pc_run_load(&r, &f);
+        zcl_native_handle_proof_chain_walk(&r.request, &r.reply);
+        PC_CHECK("anchored: rung 7 passes on an active anchor",
+                 made && pc_is(&r.reply, 7, "passed"));
+        PC_CHECK("anchored: rung 7 publishes the anchor height it read",
+                 json_get_int(json_get(pc_rung(&r.reply, 7),
+                                       "anchor_height")) == 4211);
+        PC_CHECK("anchored: verified_prefix reaches 7 — the whole ladder",
+                 pc_prefix(&r.reply) == 7);
+        PC_CHECK("anchored: chain_complete true and verdict says COMPLETE",
+                 json_get_bool(json_get(&r.reply.data, "chain_complete")) &&
+                     strncmp(json_get_str(json_get(&r.reply.data, "verdict")),
+                             "COMPLETE", 8) == 0);
+        PC_CHECK("anchored: node_free is now honestly false",
+                 !json_get_bool(json_get(&r.reply.data, "node_free")));
+        PC_CHECK("anchored: no first_gap, structural invariants hold",
+                 json_get(&r.reply.data, "first_gap") == NULL &&
+                     pc_invariants(&r.reply));
+        pc_run_free(&r);
+    }
+
+    /* 16. A REVOKED anchor: the key is on-chain, so this is a genuine
+     *     negative verdict, not a gap — rung 7 FAILS and the chain is
+     *     broken at 7 even though rungs 1-6 are untouched. */
+    {
+        char dir[512];
+        bool made = pc_mk_datadir(dir, sizeof(dir), "revoked") &&
+                    pc_anchor_key(dir, good.master_pubkey, 900,
+                                  ZID_IDENTITY_STATUS_REVOKED, NULL);
+        struct pc_fixture f = good;
+        snprintf(f.datadir, sizeof(f.datadir), "%s", dir);
+        struct pc_run r;
+        pc_run_init(&r);
+        pc_run_load(&r, &f);
+        zcl_native_handle_proof_chain_walk(&r.request, &r.reply);
+        PC_CHECK("revoked: rung 7 failed, naming the revocation",
+                 made && pc_is(&r.reply, 7, "failed") &&
+                     pc_detail_has(&r.reply, 7, "REVOKED"));
+        PC_CHECK("revoked: rungs 1-6 still report their own passes",
+                 pc_is(&r.reply, 6, "passed") && pc_prefix(&r.reply) == 6);
+        PC_CHECK("revoked: first_break is 7, chain incomplete",
+                 json_get_int(json_get(&r.reply.data, "first_break")) == 7 &&
+                     !json_get_bool(json_get(&r.reply.data,
+                                             "chain_complete")) &&
+                     pc_invariants(&r.reply));
+        pc_run_free(&r);
+    }
+
+    /* 17. A ROTATED anchor. The document is genuine (rung 6 passes) but
+     *     the key is superseded, which is exactly what rung 7 claims to
+     *     rule out — so it fails, and names the successor rather than
+     *     leaving the caller to guess. */
+    {
+        uint8_t successor[32];
+        memset(successor, 0xc7, 32);
+        char dir[512];
+        bool made = pc_mk_datadir(dir, sizeof(dir), "rotated") &&
+                    pc_anchor_key(dir, good.master_pubkey, 700,
+                                  ZID_IDENTITY_STATUS_ROTATED, successor);
+        struct pc_fixture f = good;
+        snprintf(f.datadir, sizeof(f.datadir), "%s", dir);
+        struct pc_run r;
+        pc_run_init(&r);
+        pc_run_load(&r, &f);
+        zcl_native_handle_proof_chain_walk(&r.request, &r.reply);
+        PC_CHECK("rotated: rung 7 failed, naming the rotation",
+                 made && pc_is(&r.reply, 7, "failed") &&
+                     pc_detail_has(&r.reply, 7, "ROTATED"));
+        PC_CHECK("rotated: the successor key is published, not guessed",
+                 json_get_str(json_get(pc_rung(&r.reply, 7), "successor")) &&
+                     strncmp(json_get_str(json_get(pc_rung(&r.reply, 7),
+                                                   "successor")),
+                             "c7c7c7c7", 8) == 0);
+        PC_CHECK("rotated: authorship (rung 6) is untouched",
+                 pc_is(&r.reply, 6, "passed") && pc_prefix(&r.reply) == 6 &&
+                     pc_invariants(&r.reply));
+        pc_run_free(&r);
+    }
+
+    /* 18. A datadir whose projection has no row for this key. The node
+     *     answered; the answer is "I hold no anchor for it". That is a
+     *     failure, and the detail must not overclaim it as proof that no
+     *     anchor exists anywhere. */
+    {
+        uint8_t stranger[32];
+        memset(stranger, 0x5e, 32);
+        char dir[512];
+        bool made = pc_mk_datadir(dir, sizeof(dir), "unanchored") &&
+                    pc_anchor_key(dir, stranger, 10,
+                                  ZID_IDENTITY_STATUS_ACTIVE, NULL);
+        struct pc_fixture f = good;
+        snprintf(f.datadir, sizeof(f.datadir), "%s", dir);
+        struct pc_run r;
+        pc_run_init(&r);
+        pc_run_load(&r, &f);
+        zcl_native_handle_proof_chain_walk(&r.request, &r.reply);
+        PC_CHECK("unanchored: rung 7 failed — another key's row is no help",
+                 made && pc_is(&r.reply, 7, "failed") &&
+                     pc_detail_has(&r.reply, 7, "no anchor row"));
+        PC_CHECK("unanchored: the detail scopes the answer to this node",
+                 pc_detail_has(&r.reply, 7, "behind the anchor height"));
+        PC_CHECK("unanchored: prefix stops at 6, invariants hold",
+                 pc_prefix(&r.reply) == 6 && pc_invariants(&r.reply));
+        pc_run_free(&r);
+    }
+
+    /* 19. A datadir with no node.db is NOT a failed anchor — nothing was
+     *     resolved, so it is a gap with a reason, and node_free stays
+     *     true because no database was opened. */
+    {
+        struct pc_fixture f = good;
+        snprintf(f.datadir, sizeof(f.datadir), "./test-tmp/proof-chain-absent");
+        struct pc_run r;
+        pc_run_init(&r);
+        pc_run_load(&r, &f);
+        zcl_native_handle_proof_chain_walk(&r.request, &r.reply);
+        PC_CHECK("no node.db: rung 7 is a gap with a reason, not a failure",
+                 pc_is(&r.reply, 7, "not_checked") &&
+                     pc_detail_has(&r.reply, 7, "node.db"));
+        PC_CHECK("no node.db: node_free stays true, prefix stops at 6",
+                 pc_node_free(&r.reply) && pc_prefix(&r.reply) == 6 &&
+                     json_get_int(json_get(&r.reply.data, "first_gap")) == 7);
         pc_run_free(&r);
     }
 

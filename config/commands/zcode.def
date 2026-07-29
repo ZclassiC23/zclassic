@@ -1090,12 +1090,14 @@ ZCL_COMMAND_READY_READ(
  * The spec's chain — header PoW -> anchor tx inclusion -> ZANC anchor
  * decode -> domain root -> record inclusion proof -> zid signature ->
  * master-key anchor — as ONE read-only command over evidence the caller
- * hands in. No node contact, no chain database. Each rung reports
- * independently; `not_checked` always carries a reason and is rendered
- * distinctly from `passed`.
- * Rung 7 (identity_anchor) is ALWAYS not_checked in this build: the
- * chain-anchored identity lookup (db_zid_identity_find) does not exist
- * here yet, so nothing in this tree may claim full-chain verification. */
+ * hands in. No node contact. Each rung reports independently;
+ * `not_checked` always carries a reason and is rendered distinctly from
+ * `passed`.
+ * Rungs 1-6 are node-free. Rung 7 (identity_anchor) cannot be — whether a
+ * key is anchored on-chain and still active is only answerable from a
+ * folded chain — so it is opt-in on an explicit `datadir`, reads the
+ * zid_identities projection READONLY via db_zid_identity_find, and stays
+ * not_checked without one. `node_free` in the report says which. */
 ZCL_COMMAND_BRANCH("zcode.proof", "zcode",
                    "Light-client proof-chain verification",
                    ZCL_COMMAND_LAYER_APP)
@@ -1112,18 +1114,21 @@ ZCL_COMMAND_READY_READ(
     "INDEPENDENTLY and a not_checked rung always states why — it is never "
     "counted as passing. `verified_prefix` counts only CONSECUTIVE passing "
     "rungs from 1, so a later rung can never be lifted by a broken earlier "
-    "one, and `chain_complete` is true only when all seven pass. RUNG 7 IS "
-    "ALWAYS not_checked in this build (the chain-anchored identity lookup "
-    "db_zid_identity_find is not present), so this command NEVER reports "
-    "full-chain verification. A walk that ran returns status PASSED even "
-    "when rungs fail — the envelope drops `data` on any other status and "
-    "the report is the product; read `verdict`/`first_break`, never the "
-    "exit code. Only a missing/undecodable document (NO_DOCUMENT) fails "
-    "outright. Node-free: nothing is read from the chain, only the "
-    "evidence passed in.", 16384,
+    "one, and `chain_complete` is true only when all seven pass. Rungs 1-6 "
+    "are node-free — only the evidence you pass in. Rung 7 asks a question "
+    "no document can answer about itself, so it is OPT-IN on `datadir`: "
+    "with one it resolves the master key against that node's folded "
+    "zid_identities projection (READONLY) and passes only on an ACTIVE "
+    "anchor — a rotated or revoked key FAILS and names its successor; "
+    "without one it stays not_checked and `node_free` is true. A walk that "
+    "ran returns status PASSED even when rungs fail — the envelope drops "
+    "`data` on any other status and the report is the product; read "
+    "`verdict`/`first_break`, never the exit code. Only a "
+    "missing/undecodable document (NO_DOCUMENT) fails outright.", 16384,
     "zid,proof,chain,verify,light-client,anchor,zanc,pow,inclusion,walk",
     "zcl.zcode_proof_walk.input.v1", "zcl.zcode_proof_walk.v1",
-    "doc,doc_file,proof,root,tx,header,headers,merkle_branch,merkle_index,now",
+    "doc,doc_file,proof,root,tx,header,headers,merkle_branch,merkle_index,"
+    "now,datadir",
     "",
     "zclassic23 zcode proof walk --input='{\"doc\":\"<hex>\",\"proof\":"
     "\"<hex>\",\"root\":\"<64hex>\",\"tx\":\"<hex>\",\"header\":\"<hex>\","
