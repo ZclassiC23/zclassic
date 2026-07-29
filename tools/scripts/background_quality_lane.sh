@@ -215,8 +215,23 @@ run_fuzz() {
         return "$rc"
     fi
 
+    # Every fuzz target, derived from the Makefile's own FUZZ_TARGETS so a new
+    # harness is covered the day its rule lands. This used to be the hand-typed
+    # list "block script p2p http" — four of nine — so compactblock, overlay,
+    # rom_manifest, snapshot and tx_bundle were fuzzed by nothing on this timer.
+    local kinds
+    kinds="$(sed -n 's/^FUZZ_TARGETS[[:space:]]*=//p' "$tree/Makefile" \
+             | tr ' ' '\n' | sed -n 's|^\$(BIN_DIR)/fuzz_||p' | tr '\n' ' ')"
+    if [ -z "${kinds// /}" ]; then
+        write_status "fuzz" "failed" "$started" "$(utc_now)" 0 2 "$log" \
+            "could not derive FUZZ_TARGETS from the Makefile" || true
+        echo "background_quality: fuzz FAILED — no targets derived from FUZZ_TARGETS" | tee -a "$log"
+        return 2
+    fi
+
     rc=0
-    for kind in block script p2p http; do
+    local failed_kinds=""
+    for kind in $kinds; do
         local bin="$tree/build/bin/fuzz_$kind"
         local seed_dir="$tree/lib/test/fuzz_seeds/$kind"
         local work_dir
@@ -232,9 +247,17 @@ run_fuzz() {
         local one_rc=${PIPESTATUS[0]}
         set -e
         rm -rf "$work_dir"
+        # Record the failure and KEEP GOING. This used to `break`, which is how
+        # the 2026-07-14 script hang silently switched off every target after
+        # it: script failed first, so p2p and http — the two remaining entries
+        # in the old hand-typed list — never ran again on this timer, and the
+        # p2p corpus went two weeks describing itself as "never audited". One
+        # target's bug must not become every later target's blind spot.
         if [ "$one_rc" -ne 0 ]; then
             rc="$one_rc"
-            break
+            failed_kinds="$failed_kinds $kind"
+            echo "background_quality: fuzz target '$kind' failed (rc=$one_rc) — continuing with the rest" \
+                | tee -a "$log"
         fi
     done
 
@@ -258,7 +281,8 @@ run_fuzz() {
     if [ "$rc" -eq 0 ]; then
         write_status "fuzz" "passed" "$started" "$finished" "$elapsed" 0 "$log" "all fuzz targets completed"
     else
-        write_status "fuzz" "failed" "$started" "$finished" "$elapsed" "$rc" "$log" "fuzzer failure or crash artifact emitted"
+        write_status "fuzz" "failed" "$started" "$finished" "$elapsed" "$rc" "$log" \
+            "fuzzer failure or crash artifact emitted:${failed_kinds:- unknown}"
     fi
     return "$rc"
 }
