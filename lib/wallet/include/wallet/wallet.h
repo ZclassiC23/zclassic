@@ -275,10 +275,42 @@ bool wallet_dump_key(const struct wallet *w, const struct key_id *keyid,
                       struct privkey *key_out);
 
 struct active_chain;
+
+/* Why a rescan found what it found.
+ *
+ * wallet_scan_block returns 0 both for "this block holds nothing of yours"
+ * and for "this block's body is not on disk", and for a long time nothing
+ * counted the difference. On a snapshot-bootstrapped node — where the
+ * importer deliberately clears BLOCK_HAVE_DATA because the source's block
+ * files were never copied — a rescan walked every height, read nothing, and
+ * reported "0 wallet outputs found". A user restoring a backup reads that as
+ * "the backup was empty". These counters are the difference, and every layer
+ * above (RPC, typed command) reports them.
+ *
+ * Same for shielded: trial-decryption only runs when the wallet holds at
+ * least one Sapling key, which is exactly what a seed-only restore does NOT
+ * have. `shielded_scan_ran` says whether it happened at all. */
+struct wallet_rescan_stats {
+    int  blocks_in_range;      /* stop - start + 1 */
+    int  blocks_scanned;       /* body read from disk and examined */
+    int  blocks_no_index;      /* no block_index at that height */
+    int  blocks_no_body;       /* index present, BLOCK_HAVE_DATA clear */
+    int  blocks_unreadable;    /* HAVE_DATA set, but the read failed */
+    int  outputs_found;
+    bool shielded_scan_ran;    /* wallet held >=1 Sapling key */
+    int  sapling_keys;
+};
+
 int wallet_scan_block(struct wallet *w, const struct block_index *pindex,
                       const char *datadir);
 int wallet_rescan(struct wallet *w, const struct active_chain *chain,
                   int start_height, int stop_height, const char *datadir);
+/* wallet_rescan plus the accounting above. `out` is required and is fully
+ * populated even when the range is empty. Returns outputs_found, or -1 on a
+ * bad argument. */
+int wallet_rescan_stats(struct wallet *w, const struct active_chain *chain,
+                        int start_height, int stop_height, const char *datadir,
+                        struct wallet_rescan_stats *out);
 int wallet_scan_blockfiles(struct wallet *w, const char *datadir);
 
 int wallet_tx_get_blocks_to_maturity(const struct wallet_tx *wtx);

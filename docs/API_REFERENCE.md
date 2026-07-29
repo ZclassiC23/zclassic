@@ -59,24 +59,24 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 330 |
+| Registry entries (branches + leaves) | 333 |
 | Top-level roots | 9 |
 | Branches | 76 |
-| Leaves (dispatchable command paths) | 254 |
-| … `ready` (live handler in this build) | 212 |
+| Leaves (dispatchable command paths) | 257 |
+| … `ready` (live handler in this build) | 215 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 25 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
-| Leaves with `effect=mutate` | 68 |
+| Leaves with `effect=mutate` | 72 |
 | Leaves with `effect=destructive` | 4 |
-| Leaves requiring **owner** authority | 56 |
+| Leaves requiring **owner** authority | 59 |
 
 Per source file:
 
 | `.def` file | Entries | Branches | Leaves |
 |---|---|---|---|
 | `config/commands/root.def` | 10 | 5 | 5 |
-| `config/commands/core.def` | 97 | 24 | 73 |
+| `config/commands/core.def` | 100 | 24 | 76 |
 | `config/commands/apps.def` | 9 | 2 | 7 |
 | `config/commands/app_features.def` | 26 | 5 | 21 |
 | `config/commands/ops.def` | 43 | 8 | 35 |
@@ -265,6 +265,8 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `core wallet status` | ready | read / read / operator · fast/low | none | `zcl.wallet_status.v1` | `zclassic23 core wallet status` | Wallet summary and key counts |
 | `core wallet balance` | ready | read / read / operator · fast/low | none | `zcl.wallet_balance.v1` | `zclassic23 core wallet balance` | Confirmed and total balance |
+| `core wallet restore` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`from`**, `datadir`, `password`, `confirm` | `zcl.wallet_restore.v1` | `zclassic23 core wallet restore --from=<backup.sqlite>` | Restore a wallet backup into a datadir |
+| `core wallet rescan-witnesses` | ready | mutate / wallet / **owner**, job · background/high | none | `zcl.wallet_rescan.v1` | `zclassic23 core wallet rescan-witnesses` | Rebuild Sapling witnesses for unspent notes |
 | `core wallet audit` | ready | read / read / operator · foreground/moderate | none | `zcl.wallet_audit.v1` | `zclassic23 core wallet audit` | Audit wallet key/UTXO consistency |
 | `core wallet rescan` | ready | mutate / wallet / **owner**, job · background/high | `start_height` | `zcl.wallet_rescan.v1` | `zclassic23 core wallet rescan` | Rescan the chain for wallet transactions |
 | `core wallet replay` | planned | mutate / wallet / **owner**, job · background/high | none | `zcl.wallet_replay.v1` | `zclassic23 core wallet replay` | Replay wallet state from chain — *wallet replay job binding is a Wave 2.2 deliverable* |
@@ -276,7 +278,7 @@ represented by its children's sections.
 | `core wallet address new` | ready | mutate / wallet / **owner** · fast/low | none | `zcl.wallet_address.v1` | `zclassic23 core wallet address new` | Derive and persist a new transparent address |
 | `core wallet address list` | ready | read / read / operator · fast/low | none | `zcl.wallet_addresses.v1` | `zclassic23 core wallet address list` | List transparent addresses |
 | `core wallet address import` | ready | mutate / wallet / **owner** · fast/low | **`address`** | `zcl.wallet_address.v1` | `zclassic23 core wallet address import --address=<addr>` | Import a watch-only address |
-| `core wallet address export-key` | ready | read / read / **owner**, plan-commit · fast/low | **`address`**, `confirm` | `zcl.wallet_privkey.v1` | `zclassic23 core wallet address export-key --address=<addr>` | Export the private key for an address |
+| `core wallet address export-key` | ready | mutate / wallet / **owner**, plan-commit · fast/low | **`address`**, `confirm` | `zcl.wallet_privkey.v1` | `zclassic23 core wallet address export-key --address=<addr>` | Export the private key for an address |
 | `core wallet address label` | ready | mutate / app-write / operator · fast/low | **`address`**, `label` | `zcl.wallet_label.v1` | `zclassic23 core wallet address label --input='{"address":"t1...","label":"friends"}'` | Set or clear the label on an address |
 | `core wallet address by-label` | ready | read / read / operator · fast/low | **`label`** | `zcl.wallet_by_label.v1` | `zclassic23 core wallet address by-label friends` | List addresses carrying a given label |
 
@@ -308,7 +310,8 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `core wallet backup status` | ready | read / read / operator · fast/low | none | `zcl.wallet_backup_status.v1` | `zclassic23 core wallet backup status` | Wallet backup freshness |
-| `core wallet backup now` | ready | mutate / wallet / **owner** · fast/low | none | `zcl.wallet_backup.v1` | `zclassic23 core wallet backup now` | Take a wallet backup now |
+| `core wallet backup now` | ready | mutate / wallet / **owner**, plan-commit · fast/low | `confirm` | `zcl.wallet_backup.v1` | `zclassic23 core wallet backup now` | Take a wallet backup now |
+| `core wallet backup decrypt` | ready | mutate / wallet / **owner**, plan-commit · foreground/low | **`from`**, `to`, `password`, `confirm` | `zcl.wallet_backup_decrypt.v1` | `zclassic23 core wallet backup decrypt --input='{"from":"~/wallet_backups/wallet_backup_1.sqlite.enc","to":"/tmp/wb.sqlite"}'` | Decrypt an encrypted wallet backup file |
 
 #### `core.storage` — Raw node storage
 
@@ -827,6 +830,7 @@ promise the same document shape.
 | `zcl.wallet_address.v1` | `core.wallet.address.new`, `core.wallet.address.import` |
 | `zcl.wallet_send.v1` | `core.wallet.transaction.send`, `vault.send` |
 | `zcl.shielded_send.v1` | `core.wallet.shielded.send`, `vault.send-shielded` |
+| `zcl.wallet_rescan.v1` | `core.wallet.rescan-witnesses`, `core.wallet.rescan` |
 | `zcl.storage_query.v1` | `core.storage.query`, `core.storage.query.offline` |
 | `zcl.core_bootstatus.v1` | `core.node.bootstatus`, `core.node.bootwait` |
 | `zcl.core_identity_anchor.v1` | `core.identity.anchor`, `core.identity.rotate`, `core.identity.revoke` |

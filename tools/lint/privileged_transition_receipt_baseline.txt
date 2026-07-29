@@ -90,3 +90,15 @@ vault.swap.refund          exempt: pure route to the swap_refund RPC, which owns
 # from the principal's role).
 vault.session.create       exempt: AR insert of an agent_sessions grant row; no artifact install
 vault.session.revoke       exempt: AR update marking an agent_sessions row revoked; no artifact install
+
+# Wallet key-disclosure and wallet-recovery leaves (config/commands/core.def).
+# None installs a privileged artifact over the datadir or the running binary.
+#
+# export-key was reclassified from EFFECT_READ/RISK_READ to
+# EFFECT_MUTATE/RISK_WALLET (it writes a raw spending key to the caller's
+# terminal, and the registry couples the two axes), which is why it appears
+# here at all. It reveals a key that already exists; it creates nothing.
+core.wallet.address.export-key  exempt: reveals an existing key over the response; builds, signs and installs nothing
+core.wallet.backup.decrypt      exempt: decrypts an operator-named backup FILE to an operator-named path; touches neither the datadir nor the running binary
+core.wallet.restore             exempt: merges wallet rows into node.db through the node's own schema path, in one transaction, and refuses while a node holds the datadir; a row merge, not an artifact install
+core.wallet.rescan-witnesses    exempt: rebuilds a DERIVED Sapling witness projection and refuses to save a tree whose final root does not match the block header; installs no artifact

@@ -1324,18 +1324,33 @@ int wallet_tx_get_blocks_to_maturity(const struct wallet_tx *wtx)
     return maturity > 0 ? maturity : 0;
 }
 
-int wallet_scan_block(struct wallet *w, const struct block_index *pindex,
-                      const char *datadir)
+/* The scanning half of wallet_scan_block, with the accounting the bare
+ * version cannot express. `st` may be NULL. A 0 return means one of three
+ * different things and the counters are how a caller tells them apart:
+ * no body on disk, a body that would not read, or a body with nothing of
+ * ours in it. */
+static int wallet_scan_block_counted(struct wallet *w,
+                                     const struct block_index *pindex,
+                                     const char *datadir,
+                                     struct wallet_rescan_stats *st)
 {
-    if (!pindex || !(pindex->nStatus & BLOCK_HAVE_DATA))
+    if (!pindex) {
+        if (st) st->blocks_no_index++;
         return 0;
+    }
+    if (!(pindex->nStatus & BLOCK_HAVE_DATA)) {
+        if (st) st->blocks_no_body++;
+        return 0;
+    }
 
     struct block b;
     block_init(&b);
     if (!read_block_from_disk_index(&b, pindex, datadir)) {
         block_free(&b);
+        if (st) st->blocks_unreadable++;
         return 0;
     }
+    if (st) st->blocks_scanned++;
 
     int found = 0;
     for (size_t i = 0; i < b.num_vtx; i++) {
@@ -1361,9 +1376,31 @@ int wallet_scan_block(struct wallet *w, const struct block_index *pindex,
     return found;
 }
 
+int wallet_scan_block(struct wallet *w, const struct block_index *pindex,
+                      const char *datadir)
+{
+    return wallet_scan_block_counted(w, pindex, datadir, NULL);
+}
+
 int wallet_rescan(struct wallet *w, const struct active_chain *chain,
                   int start_height, int stop_height, const char *datadir)
 {
+    struct wallet_rescan_stats st;
+    return wallet_rescan_stats(w, chain, start_height, stop_height, datadir,
+                               &st);
+}
+
+int wallet_rescan_stats(struct wallet *w, const struct active_chain *chain,
+                        int start_height, int stop_height, const char *datadir,
+                        struct wallet_rescan_stats *out)
+{
+    if (!out)
+        LOG_ERR("wallet", "wallet_rescan_stats: out is required");
+    memset(out, 0, sizeof(*out));
+    if (w)
+        out->sapling_keys = (int)w->sapling_keys.num_keys;
+    out->shielded_scan_ran = out->sapling_keys > 0;
+
     int tip = active_chain_height(chain);
     if (stop_height < 0 || stop_height > tip)
         stop_height = tip;
@@ -1371,6 +1408,7 @@ int wallet_rescan(struct wallet *w, const struct active_chain *chain,
         start_height = 0;
     if (start_height > stop_height)
         return 0;
+    out->blocks_in_range = stop_height - start_height + 1;
 
     LOG_INFO("wallet", "Rescanning blocks %d to %d...", start_height, stop_height);
     int64_t t_start = GetTime();
@@ -1383,10 +1421,7 @@ int wallet_rescan(struct wallet *w, const struct active_chain *chain,
 
     for (int h = start_height; h <= stop_height; h++) {
         struct block_index *pindex = active_chain_at(chain, h);
-        if (!pindex)
-            continue;
-
-        total_found += wallet_scan_block(w, pindex, datadir);
+        total_found += wallet_scan_block_counted(w, pindex, datadir, out);
 
         if (h - last_log >= 10000) {
             LOG_INFO("wallet", "rescan progress: height %d / %d (%.1f%%)",
@@ -1402,9 +1437,31 @@ int wallet_rescan(struct wallet *w, const struct active_chain *chain,
         w->best_block_height = stop_height;
     }
 
+    out->outputs_found = total_found;
+
     int64_t elapsed = GetTime() - t_start;
-    LOG_INFO("wallet", "Rescan complete: %d blocks scanned in %"PRId64"s, %d wallet outputs found.",
-             stop_height - start_height + 1, elapsed, total_found);
+    LOG_INFO("wallet",
+             "Rescan complete: %d of %d blocks had a body on disk, scanned in "
+             "%"PRId64"s, %d wallet outputs found.",
+             out->blocks_scanned, out->blocks_in_range, elapsed, total_found);
+
+    /* The two ways a rescan finds nothing for a reason that has nothing to do
+     * with the wallet. Both used to be invisible; both are the reason a user
+     * concludes their backup was empty. */
+    if (out->blocks_no_body > 0 || out->blocks_unreadable > 0)
+        LOG_WARN("wallet",
+                 "Rescan found NO BLOCK BODY for %d heights (%d unreadable). "
+                 "A snapshot-bootstrapped node has no block files, so this "
+                 "scan could not have found anything there — it is not "
+                 "evidence the wallet is empty. Sync full history (or import "
+                 "a block index) and rescan again.",
+                 out->blocks_no_body, out->blocks_unreadable);
+    if (!out->shielded_scan_ran)
+        LOG_WARN("wallet",
+                 "Rescan skipped SHIELDED trial-decryption entirely: the "
+                 "wallet holds 0 Sapling keys, so no shielded output could "
+                 "match. Restore or import the Sapling keys first, then "
+                 "rescan.");
 
     return total_found;
 }

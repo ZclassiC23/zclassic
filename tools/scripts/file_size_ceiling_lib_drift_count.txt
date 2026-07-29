@@ -373,3 +373,14 @@
 # note — it is bookkeeping catching up to a tightening that already
 # happened. A lane whose merge regrows the count past 11 gets the review
 # the ratchet exists to force.
+#
+# 2026-07-29 (wallet restore lane, rescan honesty): lib/wallet/src/wallet.c
+# grew 1736 -> 1793 adding struct wallet_rescan_stats and the counted scan
+# (wallet_scan_block_counted / wallet_rescan_stats). wallet_scan_block
+# returned 0 both for "this block holds nothing of yours" and for "this
+# block's body is not on disk", and nothing counted the difference — on a
+# snapshot-bootstrapped node a rescan walked every height, read nothing, and
+# reported "0 wallet outputs found", which a user restoring a backup reads
+# as an empty backup. Real defensive growth on the funds-visibility path.
+# BASELINED at 1793 in file_size_ceiling_lib_baseline.txt rather than
+# spending a ratchet slot; the recorded count STAYS 11.

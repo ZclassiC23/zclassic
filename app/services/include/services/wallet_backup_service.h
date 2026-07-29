@@ -31,10 +31,15 @@
  *     `wallet_sapling_notes`) via ATTACH + `CREATE TABLE AS
  *     SELECT` into a `wallet_backup_<unix_ts>.sqlite` file in
  *     `backup_dir`.
- *   - After each write the service reopens the copy, counts the
- *     rows it wrote, and verifies the count matches the source.
- *     Mismatch → EV_WALLET_BACKUP_FAILED and the file is left on
- *     disk for forensic inspection.
+ *   - After each write the service reopens the copy and verifies the
+ *     row count of EVERY wallet table against the source — not just
+ *     wallet_keys. A table the source did not have is recorded, not
+ *     skipped in silence. Every backup file also carries a
+ *     `wallet_backup_manifest` table (one row per wallet table: was it
+ *     in the source, how many rows landed) so a short copy stays
+ *     detectable long after the run. Mismatch →
+ *     EV_WALLET_BACKUP_FAILED and the file is left on disk for
+ *     forensic inspection.
  *   - Rotation: if the count of `wallet_backup_*.sqlite` files in
  *     `backup_dir` exceeds `max_versions`, the oldest is deleted.
  *     The newest is always kept.
@@ -120,6 +125,14 @@ struct wallet_backup_status {
     int64_t last_size_bytes;       /* size of last successful backup */
     int64_t last_key_count;        /* wallet_keys rows in last backup */
     int64_t last_duration_ms;      /* elapsed ms of the last run */
+    /* Verification breadth of the last run. The service compares row counts
+     * for EVERY wallet table, not just wallet_keys: last_tables_verified is
+     * how many matched the source, wallet_table_count is how many exist, and
+     * last_missing_tables is the comma-joined names the SOURCE did not have
+     * (nothing to copy — recorded, never silently skipped). */
+    int     last_tables_verified;
+    int     wallet_table_count;
+    char    last_missing_tables[256];
     char    last_path[512];        /* absolute path of last backup */
     char    last_error[256];       /* most recent failure reason */
 };
@@ -178,6 +191,14 @@ void wallet_backup_service_on_key_change(void);
  * point so tests can count each kind independently; currently
  * both share the same debounce and the same backup run. */
 void wallet_backup_service_on_keypool_topup(void);
+
+/* ── The wallet table set ───────────────────────────────────── */
+
+/* The wallet tables a backup captures — and therefore the exact set a
+ * restore merges back. ONE list, owned here, so backup and restore can
+ * never disagree about what a complete wallet is. Returns a pointer to
+ * static storage; *out_count (required) receives the length. */
+const char *const *wallet_backup_tables(size_t *out_count);
 
 /* ── Low-level primitive (testable) ─────────────────────────── */
 

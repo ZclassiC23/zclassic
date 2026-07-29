@@ -287,6 +287,7 @@ int test_script_interp_oproll_semantics(void);
 int test_script_interp_optuck_insert(void);
 int test_script_interp_overflow_boundary(void);
 int test_wallet_backup(void);
+int test_wallet_restore(void);
 int test_log_json(void);
 int test_http_middleware(void);
 int test_rpc_timeout(void);

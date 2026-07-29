@@ -629,8 +629,20 @@ static bool rpc_rescanblockchain(const struct json_value *params, bool help,
         "\nResult:\n"
         "{\n"
         "  \"start_height\": n,\n"
-        "  \"stop_height\": n\n"
-        "}\n");
+        "  \"stop_height\": n,\n"
+        "  \"blocks_in_range\": n,\n"
+        "  \"blocks_scanned\": n,        (bodies actually read from disk)\n"
+        "  \"blocks_no_body\": n,        (BLOCK_HAVE_DATA clear — nothing to scan)\n"
+        "  \"blocks_no_index\": n,\n"
+        "  \"blocks_unreadable\": n,\n"
+        "  \"outputs_found\": n,\n"
+        "  \"shielded_scan_ran\": bool,  (false when the wallet holds no Sapling key)\n"
+        "  \"sapling_keys\": n,\n"
+        "  \"complete\": bool            (every height in range had a body)\n"
+        "}\n"
+        "\nblocks_no_body > 0 means this node has no block files for those\n"
+        "heights (the usual cause is a snapshot bootstrap), so a zero\n"
+        "outputs_found there says nothing about the wallet's contents.\n");
 
     struct rpc_params p;
     rpc_params_init(&p, params);
@@ -661,12 +673,28 @@ static bool rpc_rescanblockchain(const struct json_value *params, bool help,
         LOG_FAIL("wallet", "rescanblockchain: start_height %d exceeds tip %d", start_height, tip);
     }
 
-    wallet_rescan(ctx->wallet, &ctx->main_state->chain_active,
-                  start_height, stop_height, ctx->datadir);
+    /* Report WHAT THE SCAN COULD SEE, not just that it ran. A rescan over
+     * heights whose bodies are not on disk finds nothing for a reason that
+     * has nothing to do with the wallet; returning only the height range let
+     * every layer above call that a success and let the user call it an empty
+     * backup. */
+    struct wallet_rescan_stats st;
+    wallet_rescan_stats(ctx->wallet, &ctx->main_state->chain_active,
+                        start_height, stop_height, ctx->datadir, &st);
 
     json_set_object(result);
     json_push_kv_int(result, "start_height", start_height);
     json_push_kv_int(result, "stop_height", stop_height);
+    json_push_kv_int(result, "blocks_in_range", st.blocks_in_range);
+    json_push_kv_int(result, "blocks_scanned", st.blocks_scanned);
+    json_push_kv_int(result, "blocks_no_body", st.blocks_no_body);
+    json_push_kv_int(result, "blocks_no_index", st.blocks_no_index);
+    json_push_kv_int(result, "blocks_unreadable", st.blocks_unreadable);
+    json_push_kv_int(result, "outputs_found", st.outputs_found);
+    json_push_kv_bool(result, "shielded_scan_ran", st.shielded_scan_ran);
+    json_push_kv_int(result, "sapling_keys", st.sapling_keys);
+    json_push_kv_bool(result, "complete",
+                      st.blocks_scanned == st.blocks_in_range);
     return true;
 }
 
