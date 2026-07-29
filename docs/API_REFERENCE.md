@@ -266,7 +266,7 @@ represented by its children's sections.
 | `core wallet status` | ready | read / read / operator · fast/low | none | `zcl.wallet_status.v1` | `zclassic23 core wallet status` | Wallet summary and key counts |
 | `core wallet balance` | ready | read / read / operator · fast/low | none | `zcl.wallet_balance.v1` | `zclassic23 core wallet balance` | Confirmed and total balance |
 | `core wallet restore` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`from`**, `datadir`, `password`, `confirm` | `zcl.wallet_restore.v1` | `zclassic23 core wallet restore --from=<backup.sqlite>` | Restore a wallet backup into a datadir |
-| `core wallet rescan-witnesses` | ready | mutate / wallet / **owner**, job · background/high | none | `zcl.wallet_rescan.v1` | `zclassic23 core wallet rescan-witnesses` | Rebuild Sapling witnesses for unspent notes |
+| `core wallet rescan-witnesses` | ready | mutate / wallet / **owner**, job · background/high | none | `zcl.wallet_rescan_witnesses.v1` | `zclassic23 core wallet rescan-witnesses` | Rebuild Sapling witnesses for unspent notes |
 | `core wallet audit` | ready | read / read / operator · foreground/moderate | none | `zcl.wallet_audit.v1` | `zclassic23 core wallet audit` | Audit wallet key/UTXO consistency |
 | `core wallet rescan` | ready | mutate / wallet / **owner** · background/high | `start_height` | `zcl.wallet_rescan.v2` | `zclassic23 core wallet rescan` | Rescan the chain for wallet transactions |
 | `core wallet replay` | planned | mutate / wallet / **owner**, job · background/high | none | `zcl.wallet_replay.v1` | `zclassic23 core wallet replay` | Replay wallet state from chain — *wallet replay job binding is a Wave 2.2 deliverable* |
@@ -830,7 +830,6 @@ promise the same document shape.
 | `zcl.wallet_address.v1` | `core.wallet.address.new`, `core.wallet.address.import` |
 | `zcl.wallet_send.v1` | `core.wallet.transaction.send`, `vault.send` |
 | `zcl.shielded_send.v1` | `core.wallet.shielded.send`, `vault.send-shielded` |
-| `zcl.wallet_rescan.v1` | `core.wallet.rescan-witnesses`, `core.wallet.rescan` |
 | `zcl.storage_query.v1` | `core.storage.query`, `core.storage.query.offline` |
 | `zcl.core_bootstatus.v1` | `core.node.bootstatus`, `core.node.bootwait` |
 | `zcl.core_identity_anchor.v1` | `core.identity.anchor`, `core.identity.rotate`, `core.identity.revoke` |

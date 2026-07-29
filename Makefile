@@ -3386,6 +3386,7 @@ ci-mvp-gates: test_zcl
 	$(call mvp_gate,MVP gate 4b: DURABLE receive — decrypt -> node.db -> reopen -> z-balance (hermetic),shielded_receive_persist,=== shielded_receive_persist subset complete:)
 	$(call mvp_gate,MVP forward-progress: N sequential blocks + heavier-fork reorg (hermetic),reducer_forward,=== reducer-forward subset complete:)
 	$(call mvp_gate,MVP gate 8 (slice): consensus-parity mismatch-detection machinery (hermetic fixture),parity_slice,=== parity_slice subset complete:)
+	$(call mvp_gate,MVP recovery: destroy the datadir -> restore from backup -> rescan -> SPEND (hermetic),destruction_drill,=== destruction_drill subset complete:)
 	@echo "══ MVP hermetic gates: ALL PASSED ══"
 
 # mvp-it-works: the single "you know your app works" proof — boots a fresh
