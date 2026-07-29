@@ -409,6 +409,52 @@ int test_script(void)
         } else { printf("FAIL (push-only failed)\n"); failures++; }
     }
 
+    /* The OP_PUSHDATA4 advance is computed at 32 bits and wraps. That wrap
+     * is load-bearing: it is what gives the last four lengths below their
+     * verdict, and this rule feeds the P2SH push-only check on scriptSig
+     * bytes supplied by whoever sent the transaction. So this pins the
+     * VERDICT for each length across the wrap boundary, not merely that the
+     * call returns — widening the addition would still return, and would
+     * silently turn all four false answers into true.
+     *
+     * 0xFFFFFFFB is the sole length whose advance is zero. It is the one
+     * input the cursor cannot answer at all, and it must answer false. On a
+     * cursor that does not refuse it, this test does not fail — it hangs. */
+    printf("script_is_push_only: pushdata4 verdicts across the wrap... ");
+    {
+        static const struct { uint32_t len; bool want; } cases[] = {
+            { 1000u,       true  },   /* ordinary oversize push        */
+            { 0xfffffff9u, true  },   /* advance 0xFFFFFFFE, past end  */
+            { 0xfffffffau, true  },   /* advance 0xFFFFFFFF, past end  */
+            { 0xfffffffbu, false },   /* advance 0 — refused outright  */
+            { 0xfffffffcu, false },   /* advance 1, lands on 0xFC      */
+            { 0xfffffffdu, false },   /* advance 2, lands on 0xFD      */
+            { 0xfffffffeu, false },   /* advance 3, lands on 0xFE      */
+            { 0xffffffffu, false },   /* advance 4, lands on 0xFF      */
+        };
+        bool ok = true;
+        for (size_t k = 0; k < sizeof(cases) / sizeof(cases[0]); k++) {
+            unsigned char raw[5] = {
+                OP_PUSHDATA4,
+                (unsigned char)(cases[k].len         & 0xff),
+                (unsigned char)((cases[k].len >>  8) & 0xff),
+                (unsigned char)((cases[k].len >> 16) & 0xff),
+                (unsigned char)((cases[k].len >> 24) & 0xff),
+            };
+            struct script s;
+            script_init(&s);
+            script_set(&s, raw, sizeof(raw));
+            if (script_is_push_only(&s) != cases[k].want) {
+                printf("FAIL (len=0x%08x want %s) ", cases[k].len,
+                       cases[k].want ? "true" : "false");
+                ok = false;
+            }
+        }
+        if (ok)
+            printf("OK\n");
+        else { printf("\n"); failures++; }
+    }
+
     printf("sigencoding valid DER... ");
     {
         unsigned char sig[70];
