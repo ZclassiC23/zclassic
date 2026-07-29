@@ -4,11 +4,21 @@
  * the address binding that finally makes it do something.
  *
  * Everything behind this header feeds exactly one function,
- * addrman_set_reputation_weight() (net/addrman.h), which clamps to
- * [1.0, ADDRMAN_REPUTATION_MAX_MULT] and STRUCTURALLY CANNOT exclude a peer.
- * Nothing here drops, bans, refuses or deprioritises an address: the worst a
- * hostile input can do is fail to earn a boost and leave the address on the
- * unweighted baseline it would have had if this file did not exist.
+ * addrman_publish_reputation_weights() (net/addrman.h), which clamps every
+ * row to [1.0, ADDRMAN_REPUTATION_MAX_MULT] and STRUCTURALLY CANNOT exclude a
+ * peer. Nothing here drops, bans, refuses or deprioritises an address: the
+ * worst a hostile input can do is fail to earn a boost and leave the address
+ * on the unweighted baseline it would have had if this file did not exist.
+ *
+ * A WEIGHT IS NOT STORED ON AN ADDRESS. Each rebuild computes the whole
+ * table and publishes it as one unit; an address that stops earning a boost
+ * simply stops appearing in it, and absence reads exactly 1.0. There is no
+ * "clear this address's weight" call to forget to make — which is precisely
+ * the bug the per-address setter had: a relay boosted to 2.5x that later
+ * recomputed to 1.0 hit the "no opinion, return early" branch and kept the
+ * dead 2.5x for the life of the process, and the rebuild never enumerated
+ * addrman, so an address that fell out of both input feeds was never even
+ * revisited.
  *
  * WHERE THE ADDRESS BINDING COMES FROM, AND WHERE IT DOES NOT.
  *
@@ -47,6 +57,7 @@
 #ifndef ZCL_CONFIG_BOOT_SENIORITY_H
 #define ZCL_CONFIG_BOOT_SENIORITY_H
 
+#include "net/addrman.h"
 #include "storage/peers_projection.h"
 #include "vcs/zendp_swarm.h"
 #include "zid/zid_seniority.h"
@@ -54,8 +65,6 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-
-struct addr_man;
 
 /* ── The address binding ───────────────────────────────────────────── */
 
@@ -101,9 +110,17 @@ bool boot_relay_binding_find(const struct boot_relay_binding *table, size_t n,
 
 /* ── The single weighting pass ─────────────────────────────────────── */
 
+/* Upper bound on rows one rebuild can emit: the banked-reputation sweep is
+ * capped at 4096 addresses and the directory sweep at one row per binding. */
+#define BOOT_SENIORITY_ROWS_MAX (4096u + BOOT_RELAY_BINDINGS_MAX)
+
 /* Everything one weighting pass needs. `seen` tracks which bindings the
  * reputation feed already covered so the directory sweep that follows cannot
- * issue a second call for the same address. Zero-initialise, then fill. */
+ * emit a second row for the same address. Zero-initialise, then fill.
+ *
+ * `rows`/`rows_cap` are the table being built. A pass with no row array is
+ * legal and computes nothing but the counters — that is how the arithmetic
+ * is proven without an addrman. */
 struct boot_seniority_pass {
     struct addr_man *am;
     const struct zid_seniority_weight *table;   /* sorted by relay_id */
@@ -111,14 +128,18 @@ struct boot_seniority_pass {
     const struct boot_relay_binding *bindings;  /* sorted by (ip, port) */
     size_t bindings_n;
     bool   seen[BOOT_RELAY_BINDINGS_MAX];
-    size_t applied;      /* addresses that received a weight above baseline */
+    struct addrman_weight_row *rows;   /* the table under construction */
+    size_t rows_cap;
+    size_t rows_n;
+    size_t applied;      /* rows emitted (a weight above baseline) */
     size_t boosted;      /* of those, how many consumed a seniority boost */
+    size_t dropped;      /* rows the capacity could not hold */
 };
 
 /* Weight ONE address: merge its banked bandwidth reputation with its on-chain
- * seniority into a single bounded value and issue at most one
- * addrman_set_reputation_weight call. `rep` may be NULL (no banked session).
- * Fail-open throughout — any missing input degrades to "no opinion". */
+ * seniority into a single bounded value and emit at most one row for it.
+ * `rep` may be NULL (no banked session). Fail-open throughout — any missing
+ * input degrades to "no opinion", which emits NO row, which reads 1.0. */
 void boot_seniority_weigh_address(struct boot_seniority_pass *pass,
                                   const uint8_t ip[16], uint16_t port,
                                   const struct peer_reputation *rep);
@@ -160,11 +181,23 @@ enum boot_seniority_action boot_seniority_next_action(int32_t tip_height,
  * call. */
 void boot_seniority_start(struct addr_man *am);
 
-/* Rebuild for `epoch_height` and re-seed addrman. True when the pass
- * completed (including the legitimate "no anchored identities" outcome);
- * false when it could not run at all — no addrman, or no open node.db. A
- * false return must never be reported to the supervisor as idle: "I could
- * not look" is the state the stall detector exists to catch. */
+/* Rebuild the whole weight table for `epoch_height` and publish it to
+ * addrman, replacing the previous epoch's table entirely. Every address that
+ * earned a boost last epoch and does not earn one now is back at exactly 1.0
+ * the moment this returns, because it is simply not in the new table.
+ *
+ * Both inputs are re-derived every time: the banked BANDWIDTH multiplier and
+ * the on-chain SENIORITY multiplier are merged by zid_seniority_combine into
+ * one value per address (see the top of this file for why they are never two
+ * calls), so a bandwidth-only peer keeps its boost across a seniority epoch
+ * roll and a seniority-only peer loses its when it leaves the ranking.
+ *
+ * True when the pass completed (including the legitimate "no anchored
+ * identities" outcome, and including a publish withheld by degraded mode —
+ * the node did look, and the previous table deliberately stands); false when
+ * it could not run at all — no addrman, or no open node.db. A false return
+ * must never be reported to the supervisor as idle: "I could not look" is
+ * the state the stall detector exists to catch. */
 bool boot_seniority_refresh_once(struct addr_man *am, int32_t epoch_height);
 
 /* The ranking epoch this node has actually applied, or INT32_MIN before the

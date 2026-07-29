@@ -116,11 +116,47 @@ bool addr_info_is_terrible(const struct addr_info *info, int64_t nNow)
     return false;
 }
 
-/* Defined below; used by addrman_set_reputation_weight() above its definition. */
-static struct addr_info *find_addr(struct addr_man *am,
-                                   const struct net_addr *addr, int *pnId);
+/* ── the published weight table ─────────────────────────────────────────
+ *
+ * See "the published weight table" in net/addrman.h for why the per-entry
+ * weight is gone. Here is only the mechanism: an immutable sorted array,
+ * allocated whole, swapped under `am->cs`, and freed the moment it is
+ * replaced — safe because every reader also holds `cs`, so a publisher that
+ * owns the lock knows nobody is still inside the outgoing table. */
+struct addrman_weights {
+    size_t  count;
+    int32_t epoch;
+    struct addrman_weight_row rows[];   /* ascending by ip */
+};
 
-double addr_info_get_chance(const struct addr_info *info, int64_t nNow)
+static int weight_row_cmp(const void *va, const void *vb)
+{
+    const struct addrman_weight_row *a = va, *b = vb;
+    return memcmp(a->ip, b->ip, 16);
+}
+
+/* The published multiplier for `ip`, or 1.0. Caller holds `cs`. */
+static double weights_lookup(const struct addrman_weights *w,
+                             const unsigned char ip[16])
+{
+    if (!w || w->count == 0)
+        return 1.0;
+    size_t lo = 0, hi = w->count;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        int c = memcmp(w->rows[mid].ip, ip, 16);
+        if (c < 0)
+            lo = mid + 1;
+        else if (c > 0)
+            hi = mid;
+        else
+            return w->rows[mid].multiplier;
+    }
+    return 1.0;   /* absent == baseline, by construction */
+}
+
+double addr_info_get_chance(const struct addr_man *am,
+                            const struct addr_info *info, int64_t nNow)
 {
     double fChance = 1.0;
     int64_t nSinceLastTry = nNow - info->last_try;
@@ -129,56 +165,122 @@ double addr_info_get_chance(const struct addr_info *info, int64_t nNow)
         fChance *= 0.01;
     int n = info->attempts < 8 ? info->attempts : 8;
     fChance *= pow(0.66, n);
-    /* NET-2: banked reputation raises (never lowers) the dial chance for a
-     * proven-fast peer. Bounded and fail-open — an unset weight (0.0) or any
-     * weight <= 1.0 leaves the classic behavior byte-identical. */
-    double w = info->reputation_weight;
-    if (w > 1.0) {
-        if (w > ADDRMAN_REPUTATION_MAX_MULT)
-            w = ADDRMAN_REPUTATION_MAX_MULT;
-        fChance *= w;
+    /* NET-2/T5.2: the published table raises (never lowers) the dial chance
+     * for a peer this epoch ranked. Bounded and fail-open — no table, or an
+     * address absent from it, leaves the classic behavior byte-identical. */
+    if (am) {
+        double w = weights_lookup(am->weights, info->addr.svc.addr.ip);
+        if (w > 1.0) {
+            if (w > ADDRMAN_REPUTATION_MAX_MULT)
+                w = ADDRMAN_REPUTATION_MAX_MULT;
+            fChance *= w;
+        }
     }
     return fChance;
 }
 
-bool addrman_set_reputation_weight(struct addr_man *am,
-                                   const struct net_addr *addr, double weight)
+bool addrman_publish_reputation_weights(struct addr_man *am,
+                                        const struct addrman_weight_row *rows,
+                                        size_t n, int32_t epoch)
 {
-    if (!am || !addr)
-        return false;
+    if (!am)
+        LOG_FAIL("addrman", "publish weights: NULL addrman");
+    if (n > 0 && !rows)
+        LOG_FAIL("addrman", "publish weights: %zu rows with NULL array", n);
     /* DEGRADED MODE (net/directory_influence_port.h). While the node suspects
      * it is on the minority side of a network split, directory-derived dial
      * preference gains no new influence: this is the single point where the
      * directory reaches addrman, and a bounded 1-4x multiplier learned from
-     * the split's own side is exactly the input that would pin us there. Any
-     * weight already banked on an existing entry is LEFT ALONE — pre-split
-     * preference keeps working — and selection itself is untouched, so
-     * discovery simply falls back to unweighted addrman plus the compiled
-     * seeds and addr gossip. Unregistered port = UNGOVERNED = admitted, so
-     * every binary that links lib/net without the composition root behaves
-     * exactly as before. */
+     * the split's own side is exactly the input that would pin us there. The
+     * table already published is LEFT ALONE — pre-split preference keeps
+     * working — and selection itself is untouched, so discovery simply falls
+     * back to the previous epoch's weights plus the compiled seeds and addr
+     * gossip. Unregistered port = UNGOVERNED = admitted, so every binary that
+     * links lib/net without the composition root behaves exactly as before. */
     if (!directory_influence_port_admits()) {
         static _Atomic uint64_t withheld;
-        uint64_t n = atomic_fetch_add(&withheld, 1u) + 1u;
-        if (n == 1u || n % 1024u == 0u)
+        uint64_t w = atomic_fetch_add(&withheld, 1u) + 1u;
+        if (w == 1u || w % 1024u == 0u)
             LOG_WARN("addrman",
-                     "reputation weight withheld (%.2fx): directory influence "
-                     "is suspended while SUSPECTED_NETSPLIT stands; existing "
-                     "weights keep working (withheld=%llu)",
-                     weight, (unsigned long long)n);
+                     "weight table withheld (%zu rows, epoch %d): directory "
+                     "influence is suspended while SUSPECTED_NETSPLIT stands; "
+                     "the previously published table keeps working "
+                     "(withheld=%llu)",
+                     n, epoch, (unsigned long long)w);
         return false;
     }
-    if (weight < 1.0)
-        weight = 1.0;
-    if (weight > ADDRMAN_REPUTATION_MAX_MULT)
-        weight = ADDRMAN_REPUTATION_MAX_MULT;
+
+    struct addrman_weights *next = zcl_malloc(
+        sizeof(*next) + n * sizeof(struct addrman_weight_row),
+        "addrman_weights");
+    if (!next)
+        LOG_FAIL("addrman", "publish weights: alloc failed for %zu rows", n);
+    next->count = 0;
+    next->epoch = epoch;
+
+    for (size_t i = 0; i < n; i++) {
+        double m = rows[i].multiplier;
+        if (m > ADDRMAN_REPUTATION_MAX_MULT)
+            m = ADDRMAN_REPUTATION_MAX_MULT;
+        if (!(m > 1.0))
+            continue;   /* absence already means 1.0; NaN lands here too */
+        memcpy(next->rows[next->count].ip, rows[i].ip, 16);
+        next->rows[next->count].multiplier = m;
+        next->count++;
+    }
+    if (next->count > 1) {
+        qsort(next->rows, next->count, sizeof(next->rows[0]), weight_row_cmp);
+        /* One address, one multiplier. A duplicate keeps the higher value —
+         * the table may only ever raise a candidate's standing. */
+        size_t w = 0;
+        for (size_t i = 1; i < next->count; i++) {
+            if (memcmp(next->rows[w].ip, next->rows[i].ip, 16) == 0) {
+                if (next->rows[i].multiplier > next->rows[w].multiplier)
+                    next->rows[w].multiplier = next->rows[i].multiplier;
+            } else {
+                next->rows[++w] = next->rows[i];
+            }
+        }
+        next->count = w + 1;
+    }
+
     zcl_mutex_lock(&am->cs);
-    struct addr_info *info = find_addr(am, addr, NULL);
-    bool found = info != NULL;
-    if (found)
-        info->reputation_weight = weight;
+    struct addrman_weights *prev = am->weights;
+    am->weights = next;
+    free(prev);   /* every reader holds cs; nobody is inside `prev` */
     zcl_mutex_unlock(&am->cs);
-    return found;
+    return true;
+}
+
+double addrman_reputation_weight(struct addr_man *am,
+                                 const struct net_addr *addr)
+{
+    if (!am || !addr)
+        return 1.0;
+    zcl_mutex_lock(&am->cs);
+    double w = weights_lookup(am->weights, addr->ip);
+    zcl_mutex_unlock(&am->cs);
+    return w;
+}
+
+size_t addrman_reputation_weight_count(struct addr_man *am)
+{
+    if (!am)
+        return 0;
+    zcl_mutex_lock(&am->cs);
+    size_t n = am->weights ? am->weights->count : 0;
+    zcl_mutex_unlock(&am->cs);
+    return n;
+}
+
+int32_t addrman_reputation_weight_epoch(struct addr_man *am)
+{
+    if (!am)
+        return INT32_MIN;
+    zcl_mutex_lock(&am->cs);
+    int32_t e = am->weights ? am->weights->epoch : INT32_MIN;
+    zcl_mutex_unlock(&am->cs);
+    return e;
 }
 
 static bool addrman_find_occupied_slot(const int *table,
@@ -378,6 +480,7 @@ void addrman_init(struct addr_man *am)
     am->id_count = 0;
     am->tried_count = 0;
     am->new_count = 0;
+    am->weights = NULL;   /* nothing published: every address reads 1.0 */
     am->random_order = NULL;
     am->random_size = 0;
     am->random_cap = 0;
@@ -402,6 +505,8 @@ void addrman_free(struct addr_man *am)
     free(am->random_order);
     free(am->entries);
     free(am->idx);
+    free(am->weights);
+    am->weights = NULL;
     am->random_order = NULL;
     am->entries = NULL;
     am->idx = NULL;
@@ -413,6 +518,10 @@ void addrman_free(struct addr_man *am)
 
 void addrman_clear(struct addr_man *am)
 {
+    /* The published weight table survives: it is the ranking epoch's
+     * publication, not addrman's data. Dropping every address does not
+     * un-rank the relays, and a re-learned address regains exactly the
+     * multiplier this epoch computed for it. */
     GetRandBytes(am->nKey.data, 32);
     am->id_count = 0;
     am->tried_count = 0;
@@ -858,7 +967,7 @@ bool addrman_select(struct addr_man *am, bool new_only,
                 continue;
             }
             struct addr_info *info = &am->entries[nId];
-            double chance = fChanceFactor * addr_info_get_chance(info, nNow);
+            double chance = fChanceFactor * addr_info_get_chance(am, info, nNow);
             if (GetRandInt(1 << 30) < chance * (double)(1 << 30)) {
                 *result = *info;
                 zcl_mutex_unlock(&am->cs);
@@ -889,7 +998,7 @@ bool addrman_select(struct addr_man *am, bool new_only,
                 continue;
             }
             struct addr_info *info = &am->entries[nId];
-            double chance = fChanceFactor * addr_info_get_chance(info, nNow);
+            double chance = fChanceFactor * addr_info_get_chance(am, info, nNow);
             if (GetRandInt(1 << 30) < chance * (double)(1 << 30)) {
                 *result = *info;
                 zcl_mutex_unlock(&am->cs);

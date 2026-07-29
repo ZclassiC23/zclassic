@@ -212,7 +212,7 @@ void boot_seniority_weigh_address(struct boot_seniority_pass *pass,
                                   const uint8_t ip[16], uint16_t port,
                                   const struct peer_reputation *rep)
 {
-    if (!pass || !pass->am || !ip)
+    if (!pass || !ip)
         return;
 
     /* NET-2: bandwidth_score 0..255 -> bounded [1, MAX] multiplier. */
@@ -240,13 +240,17 @@ void boot_seniority_weigh_address(struct boot_seniority_pass *pass,
 
     double weight = zid_seniority_combine(bandwidth_mult, seniority_mult);
     if (weight <= 1.0)
-        return;   /* no opinion — leave the address on the plain baseline */
+        return;   /* no opinion — emit NO row, which reads exactly 1.0 */
 
-    struct net_addr na;
-    memset(&na, 0, sizeof(na));
-    memcpy(na.ip, ip, 16);
-    if (!addrman_set_reputation_weight(pass->am, &na, weight))
-        return;   /* address not in addrman, or degraded mode — fail-open */
+    if (!pass->rows || pass->rows_n >= pass->rows_cap) {
+        if (pass->rows)
+            pass->dropped++;
+        return;
+    }
+
+    struct addrman_weight_row *row = &pass->rows[pass->rows_n++];
+    memcpy(row->ip, ip, 16);
+    row->multiplier = weight;
 
     pass->applied++;
     if (seniority_mult > 1.0)
@@ -255,7 +259,7 @@ void boot_seniority_weigh_address(struct boot_seniority_pass *pass,
 
 size_t boot_seniority_weigh_unseen_bindings(struct boot_seniority_pass *pass)
 {
-    if (!pass || !pass->am || !pass->bindings)
+    if (!pass || !pass->bindings)
         return 0;
 
     size_t before = pass->applied;
@@ -467,7 +471,11 @@ bool boot_seniority_refresh_once(struct addr_man *am, int32_t epoch_height)
 
     struct boot_seniority_pass *pass =
         zcl_malloc(sizeof(*pass), "seniority_pass");
-    if (!pass) {
+    struct addrman_weight_row *rows = zcl_malloc(
+        BOOT_SENIORITY_ROWS_MAX * sizeof(*rows), "seniority_rows");
+    if (!pass || !rows) {
+        free(pass);
+        free(rows);
         free(table);
         LOG_FAIL(BSEN_LOG, "refresh: pass allocation failed");
     }
@@ -475,6 +483,8 @@ bool boot_seniority_refresh_once(struct addr_man *am, int32_t epoch_height)
     pass->am = am;
     pass->table = table;
     pass->table_n = table_n;
+    pass->rows = rows;
+    pass->rows_cap = BOOT_SENIORITY_ROWS_MAX;
 
     struct zendp_record_view views[ZENDP_DIR_MAX];
     struct boot_relay_binding bindings[BOOT_RELAY_BINDINGS_MAX];
@@ -484,17 +494,33 @@ bool boot_seniority_refresh_once(struct addr_man *am, int32_t epoch_height)
     pass->bindings_n = boot_relay_bindings_build(views, n_views, bindings,
                                                  BOOT_RELAY_BINDINGS_MAX);
 
+    /* Both feeds are re-read in full every epoch. Neither carries forward:
+     * the table this builds is the ENTIRE opinion this node holds about
+     * dial preference, so an address that appears in neither feed this time
+     * is back at 1.0 by not being in it. */
     (void)peers_projection_for_each_reputation_global(4096, bsen_reputation_cb,
                                                       pass);
     (void)boot_seniority_weigh_unseen_bindings(pass);
 
+    bool published = addrman_publish_reputation_weights(am, pass->rows,
+                                                        pass->rows_n,
+                                                        epoch_height);
+
     LOG_INFO(BSEN_LOG,
              "epoch %d: ranked %zu anchored relay identities, %zu signed "
              "address bindings; %zu addresses weighted, %zu of them carrying "
-             "a seniority boost",
+             "a seniority boost; table %s",
              epoch_height, table_n, pass->bindings_n, pass->applied,
-             pass->boosted);
+             pass->boosted,
+             published ? "published" : "WITHHELD (degraded mode) — the "
+                                       "previous epoch's table still stands");
+    if (pass->dropped > 0)
+        LOG_WARN(BSEN_LOG,
+                 "epoch %d: %zu weighted address(es) exceeded the %u-row table "
+                 "capacity and were left on the baseline",
+                 epoch_height, pass->dropped, BOOT_SENIORITY_ROWS_MAX);
 
+    free(rows);
     free(pass);
     free(table);
     return true;

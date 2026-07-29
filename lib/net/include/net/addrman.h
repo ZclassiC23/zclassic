@@ -37,17 +37,52 @@ struct addr_info {
     bool in_tried;
     int random_pos;
     bool used;
-    /* NET-2: durable dial-preference boost seeded at boot from the peers
-     * projection's banked reputation. 0.0 means "unset" and behaves exactly
-     * like today (multiplier 1.0); a proven-fast peer carries a bounded
-     * [1.0, ADDRMAN_REPUTATION_MAX_MULT] weight applied in
-     * addr_info_get_chance(). Never exclusionary — only ever raises chance. */
-    double reputation_weight;
+    /* NO per-entry reputation weight. An address's dial-preference
+     * multiplier is NOT a property of its addrman entry — it lives in the
+     * published weight table below, and an address absent from that table
+     * reads exactly 1.0. See "the published weight table". */
 };
 
 /* Maximum dial-preference multiplier a banked-fast peer can earn (bounded so
  * reputation can nudge, never dominate, address selection). */
 #define ADDRMAN_REPUTATION_MAX_MULT 4.0
+
+/* ── the published weight table ─────────────────────────────────────────
+ *
+ * The advisory dial-preference multiplier used to be a `double` stored on
+ * each addr_info and written one address at a time. That made it a SECOND
+ * WRITABLE COPY of a fact whose only authority is the per-epoch weighting
+ * computation, and the two drifted: a peer boosted to 2.5x in one epoch that
+ * recomputed to 1.0 in the next was simply never written again (the producer
+ * returned early on "no opinion"), so it carried the dead 2.5x for the life
+ * of the process. Worse, the producer never enumerated addrman at all, so an
+ * address that stopped appearing in either input feed was never revisited.
+ *
+ * The copy is gone. The weighting computation publishes ONE immutable table
+ * per ranking epoch and it is swapped in whole. There is deliberately NO
+ * "clear one address's weight" entry point, because a clear path is exactly
+ * what rotted: an address ABSENT from the published table reads 1.0 BY
+ * CONSTRUCTION, so a weight disappears by not being republished.
+ *
+ * The table can only ever RAISE a candidate's dial chance (every multiplier
+ * is clamped into [1.0, ADDRMAN_REPUTATION_MAX_MULT]) and can never remove
+ * an address from selection.
+ *
+ * Concurrency: the table is immutable once published, and both the swap and
+ * every read happen under `am->cs`. That gives reclamation for free — a
+ * publisher holding `cs` knows no reader can still be inside the old table —
+ * so there is no publish list to grow and no snapshot to leak. */
+
+/* One published row: an address and the multiplier this epoch computed for
+ * it. `ip` is addrman's own 16-byte address identity (ports are not part of
+ * it — see net_addr_eq), IPv4 in its IPv4-mapped form. */
+struct addrman_weight_row {
+    uint8_t ip[16];
+    double  multiplier;
+};
+
+/* One epoch's publication: immutable, sorted, opaque. Defined in addrman.c. */
+struct addrman_weights;
 
 /* O(1) address→entry-id index slot. Defined privately in addrman.c;
  * struct addr_man holds only a pointer, so a forward declaration is
@@ -79,6 +114,11 @@ struct addr_man {
 
     int new_count;
     int vvNew[ADDRMAN_NEW_BUCKET_COUNT][ADDRMAN_BUCKET_SIZE];
+
+    /* The current epoch's published weight table, or NULL when nothing has
+     * been published — in which case every address reads exactly 1.0.
+     * Replaced whole under `cs`; never mutated in place. */
+    struct addrman_weights *weights;
 };
 
 void addrman_init(struct addr_man *am);
@@ -116,20 +156,47 @@ int addr_info_get_bucket_position(const struct addr_info *info,
                                   bool fNew, int nBucket);
 
 bool addr_info_is_terrible(const struct addr_info *info, int64_t nNow);
-double addr_info_get_chance(const struct addr_info *info, int64_t nNow);
 
-/* Seed the durable reputation dial-preference weight for one address (bounded
- * and clamped into [1.0, ADDRMAN_REPUTATION_MAX_MULT]; a weight <= 1.0 clears
- * any boost). Fail-open: a missing address is a silent no-op. Returns true iff
- * the address was found and updated.
+/* The dial chance for one entry, including its published weight multiplier.
  *
- * Returns false WITHOUT touching the entry when a registered directory-
- * influence policy is withholding influence (net/directory_influence_port.h)
- * — degraded mode while SUSPECTED_NETSPLIT stands. Weights already banked on
- * existing entries are unaffected, and selection is never made exclusionary
- * either way. */
-bool addrman_set_reputation_weight(struct addr_man *am,
-                                   const struct net_addr *addr, double weight);
+ * CALL WITH `am->cs` HELD — that is where addrman_select calls it from, and
+ * the published table is read under the same lock the publisher swaps it
+ * under. `am` may be NULL, which reads the plain unweighted chance; that is
+ * the form a caller scoring a detached struct addr_info uses. */
+double addr_info_get_chance(const struct addr_man *am,
+                            const struct addr_info *info, int64_t nNow);
+
+/* Publish this epoch's whole dial-preference table, replacing whatever was
+ * published before. `rows` is copied (the caller keeps ownership), clamped
+ * into [1.0, ADDRMAN_REPUTATION_MAX_MULT], sorted, and de-duplicated keeping
+ * the highest multiplier per address; rows at or below 1.0 are dropped
+ * because absence already means 1.0. `n == 0` publishes an empty table,
+ * which returns every address to the plain baseline — that is the intended
+ * way a boost expires, and the only one.
+ *
+ * `epoch` is recorded for observation only; nothing here interprets it.
+ *
+ * Returns false WITHOUT replacing the live table when a registered
+ * directory-influence policy is withholding influence
+ * (net/directory_influence_port.h) — degraded mode while SUSPECTED_NETSPLIT
+ * stands. The previously published table keeps working, exactly as before:
+ * the refusal denies NEW influence, never existing preference, and never
+ * makes selection exclusionary. Also false on an allocation failure, again
+ * leaving the live table untouched. */
+bool addrman_publish_reputation_weights(struct addr_man *am,
+                                        const struct addrman_weight_row *rows,
+                                        size_t n, int32_t epoch);
+
+/* The published multiplier for one address, or exactly 1.0 when the address
+ * is absent from the table or nothing has been published. Takes `cs`; do not
+ * call from a path that already holds it. */
+double addrman_reputation_weight(struct addr_man *am,
+                                 const struct net_addr *addr);
+
+/* Rows in the currently published table, and the epoch it was published for
+ * (INT32_MIN when nothing has been published). Both take `cs`. */
+size_t addrman_reputation_weight_count(struct addr_man *am);
+int32_t addrman_reputation_weight_epoch(struct addr_man *am);
 
 /* Verify internal consistency of bucket tables.
  * Returns 0 on success, negative on error.

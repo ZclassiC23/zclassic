@@ -9,7 +9,7 @@
  * narrow discovery path (struct onion_peer) has nowhere to put an IP.
  * Feeding the clearnet half in as an addrman candidate is a real next
  * step and it is not built here: the only sanctioned way for a
- * directory to influence peer selection is addrman_set_reputation_weight
+ * directory to influence peer selection is addrman_publish_reputation_weights
  * (lib/net/src/addrman.c), bounded to a [1.0, 4.0] dial-chance
  * multiplier that structurally cannot exclude a peer, and wiring it is
  * its own slice with its own proof. The clearnet fields are carried,

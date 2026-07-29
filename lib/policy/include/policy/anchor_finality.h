@@ -38,7 +38,7 @@
  * ── Advisory, never exclusive ─────────────────────────────────────────────
  *
  * The only sanctioned output is a dial-chance MULTIPLIER in [1.0, 4.0] destined
- * for addrman_set_reputation_weight (lib/net/src/addrman.c). 1.0 means "no
+ * for addrman_publish_reputation_weights (lib/net/src/addrman.c). 1.0 means "no
  * influence" — never "exclude". A record that is provisional, withdrawn, or
  * absent yields exactly 1.0, i.e. classic addrman behaviour byte-for-byte.
  * There is no code path in this module that can produce a value below 1.0, so
@@ -194,7 +194,7 @@ bool anchor_influence_lookup(const struct anchor_influence_set *set,
                              struct anchor_finality *finality_out,
                              double *mult_out);
 
-/* The advisory multiplier to hand to addrman_set_reputation_weight for `key`.
+/* The advisory multiplier to hand to addrman_publish_reputation_weights for `key`.
  * Always in [1.0, 4.0]; exactly 1.0 for an absent, provisional, unknown, or
  * withdrawn record. Never returns a value that could narrow selection. */
 double anchor_influence_weight_for(const struct anchor_influence_set *set,
