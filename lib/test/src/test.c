@@ -170,6 +170,15 @@ int main(int argc, char **argv)
         printf("\n=== kill9 subset complete: %d failure(s) ===\n", failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "destruction_drill") == 0) {
+        printf("[test] ZCL_TEST_ONLY=destruction_drill — running the wallet "
+               "destruction-and-restore drill only\n");
+        { extern int test_wallet_destruction_drill(void);
+          failures += test_wallet_destruction_drill(); }
+        printf("\n=== destruction_drill subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "chain_advance_atomicity") == 0) {
         printf("[test] ZCL_TEST_ONLY=chain_advance_atomicity — running Move 2 / A5 only\n");
         { extern int test_chain_advance_atomicity(void);

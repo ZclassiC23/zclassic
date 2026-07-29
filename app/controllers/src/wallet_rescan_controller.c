@@ -430,3 +430,30 @@ void register_wallet_rescan_rpc_commands(struct rpc_table *t)
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
         rpc_table_must_append(t, &cmds[i]);
 }
+
+/* ── rescan reply shape ───────────────────────────────────────────────
+ * See wallet_rescan_controller.h. Keeps the coverage accounting that
+ * rescanblockchain returns in one place. */
+void wallet_rescan_report_to_json(struct json_value *out,
+                                  const struct wallet_rescan_report *rep)
+{
+    if (!out || !rep)
+        return;
+    json_set_object(out);
+    json_push_kv_int(out, "start_height", rep->start_height);
+    json_push_kv_int(out, "stop_height", rep->stop_height);
+    json_push_kv_int(out, "blocks_in_range", rep->blocks_in_range);
+    json_push_kv_int(out, "blocks_indexed", rep->blocks_indexed);
+    json_push_kv_int(out, "blocks_scanned", rep->blocks_scanned);
+    json_push_kv_int(out, "blocks_no_index", rep->blocks_no_index);
+    json_push_kv_int(out, "blocks_missing_data", rep->blocks_missing_data);
+    json_push_kv_int(out, "blocks_read_failed", rep->blocks_read_failed);
+    json_push_kv_int(out, "outputs_found", rep->outputs_found);
+    json_push_kv_int(out, "shielded_notes_found", rep->shielded_notes_found);
+    json_push_kv_int(out, "shielded_txs_unscanned", rep->shielded_txs_unscanned);
+    json_push_kv_int(out, "sapling_key_count", (int64_t)rep->sapling_key_count);
+    json_push_kv_bool(out, "shielded_scan_skipped", rep->shielded_scan_skipped);
+    json_push_kv_bool(out, "coverage_ok", rep->coverage_ok);
+    if (!rep->coverage_ok)
+        json_push_kv_str(out, "blocker", rep->blocker);
+}

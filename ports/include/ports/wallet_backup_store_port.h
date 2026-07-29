@@ -31,10 +31,15 @@
  *                               and for each wallet table that exists in
  *                               the source run
  *                               "CREATE TABLE t AS SELECT * FROM src.t",
- *                               then DETACH + close. Reports which stage
+ *                               then write the per-table manifest and
+ *                               DETACH + close. Reports which stage
  *                               failed so the caller can preserve the
  *                               file-on-disk-for-forensics behaviour and
- *                               compose the same error messages.
+ *                               compose the same error messages. Also
+ *                               reports, per table, whether the SOURCE had
+ *                               it and how many rows it held — a table the
+ *                               source did not have is RECORDED, never
+ *                               silently skipped.
  *
  *   count_rows_in_file(...)     reopen a backup file READ-ONLY and count
  *                               rows in a table — the verify reopen. This
@@ -77,6 +82,29 @@ enum wallet_backup_store_status {
     WB_STORE_OPEN_DST_FAILED,   /* sqlite3_open_v2(dst) failed */
     WB_STORE_ATTACH_FAILED,     /* prepare/step ATTACH DATABASE failed */
     WB_STORE_COPY_FAILED,       /* a CREATE TABLE AS SELECT failed */
+    WB_STORE_MANIFEST_FAILED,   /* the per-table manifest could not be written */
+};
+
+/* Name of the per-table manifest table the snapshot writes into every
+ * backup file, and its columns. One row per wallet table the snapshot was
+ * ASKED to copy — including the ones the source did not have. Without it a
+ * short copy is indistinguishable from a wallet that genuinely had no
+ * shielded keys, which is exactly the confusion that loses funds. */
+#define WALLET_BACKUP_MANIFEST_TABLE "wallet_backup_manifest"
+#define WALLET_BACKUP_MANIFEST_DDL \
+    "CREATE TABLE " WALLET_BACKUP_MANIFEST_TABLE " (" \
+    "table_name TEXT PRIMARY KEY," \
+    "present_in_source INTEGER NOT NULL," \
+    "row_count INTEGER NOT NULL)"
+
+/* Longest wallet table name plus headroom; the manifest keys on this. */
+#define WALLET_BACKUP_TABLE_NAME_MAX 48
+
+/* What the snapshot found in the SOURCE for one requested table. */
+struct wallet_backup_table_stat {
+    char    table[WALLET_BACKUP_TABLE_NAME_MAX];
+    bool    present_in_source;  /* source had the table at all */
+    int64_t rows;               /* rows copied; -1 when absent from source */
 };
 
 struct wallet_backup_store_port {
@@ -100,18 +128,26 @@ struct wallet_backup_store_port {
     /* Core primitive. Opens `dst_path` as a fresh empty DB, ATTACHes the
      * bound source by `src_path` under alias "src", and for each of the
      * `n_tables` `tables[]` that exists in the source runs
-     * "CREATE TABLE t AS SELECT * FROM src.t". DETACHes and closes the dst
-     * connection before returning (even on copy failure, so the file is
-     * left on disk for forensics). On WB_STORE_COPY_FAILED, `out_copy_err`
-     * (if non-NULL) is filled with "copy <table>: <sqlite msg>". self may NOT
-     * be NULL (source path is supplied by the caller via `src_path`, but the
-     * method still needs a bound adapter). */
+     * "CREATE TABLE t AS SELECT * FROM src.t", then writes
+     * WALLET_BACKUP_MANIFEST_TABLE with one row per REQUESTED table.
+     * DETACHes and closes the dst connection before returning (even on copy
+     * failure, so the file is left on disk for forensics). On
+     * WB_STORE_COPY_FAILED, `out_copy_err` (if non-NULL) is filled with
+     * "copy <table>: <sqlite msg>". self may NOT be NULL (source path is
+     * supplied by the caller via `src_path`, but the method still needs a
+     * bound adapter).
+     *
+     * `out_stats`, when non-NULL, must point at `n_tables` entries; each is
+     * filled with the table name, whether the SOURCE had it, and the row
+     * count copied (-1 when absent). Entries for tables not reached because
+     * an earlier copy failed keep present_in_source=false / rows=-1. */
     enum wallet_backup_store_status (*write_snapshot)(
         void *self,
         const char *dst_path,
         const char *src_path,
         const char *const *tables,
         size_t n_tables,
+        struct wallet_backup_table_stat *out_stats,
         char *out_copy_err,
         size_t copy_err_cap);
 

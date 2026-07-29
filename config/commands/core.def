@@ -709,7 +709,18 @@ ZCL_COMMAND_READY_COMMAND(
     "zcl.core_addr_ref.input.v1", "zcl.wallet_privkey.v1", "address,confirm",
     "address",
     "zclassic23 core wallet address export-key --address=<addr>",
-    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_READ, ZCL_COMMAND_RISK_READ,
+    /* MUTATE/WALLET, not READ/READ. This leaf writes a raw spending key to
+     * the caller's terminal: one call and every balance cap, confirm gate
+     * and session bound below it is moot. It sat at the bottom rung —
+     * literally the same tier as `core wallet balance` — so any consumer
+     * keying on `risk` alone handed the key over; only a capability bit and
+     * the confirm gate stood in the way.
+     *
+     * The registry couples the two axes (EFFECT_READ demands RISK_READ, see
+     * zcl_command_registry_validate), so the risk cannot be raised without
+     * the effect. Calling an irreversible disclosure an "effect" is the far
+     * smaller inaccuracy of the two available ones. */
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
     ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
@@ -907,18 +918,90 @@ ZCL_COMMAND_READY_READ(
 ZCL_COMMAND_READY_COMMAND(
     "core.wallet.backup.now", "core.wallet.backup", "",
     "Take a wallet backup now",
-    "The outcome and path of an on-demand wallet backup written by the "
-    "running node's walletbackupnow at call time; created is true once "
-    "the backup file is on disk.", 0,
+    "Plan/commit: without confirm, a plan naming the exposure and "
+    "whether WALLET_BACKUP_PASSWORD is set, writing nothing; with "
+    "confirm:true, the outcome and path of an on-demand wallet backup "
+    "written by the running node's walletbackupnow at call time "
+    "(stage=committed, created true once the file is on disk).", 0,
     "wallet,backup,now",
-    "zcl.command.empty_input.v1", "zcl.wallet_backup.v1", "", "",
+    "zcl.core_confirm.input.v1", "zcl.wallet_backup.v1", "confirm", "",
     "zclassic23 core wallet backup now",
+    /* CONFIRM_PLAN_COMMIT, not CONFIRM_NONE. This exports EVERY key at once
+     * into a file that is plaintext unless WALLET_BACKUP_PASSWORD happens to
+     * be set — a strictly larger disclosure than export-key, which has
+     * always demanded confirmation for one key. The periodic background
+     * service is unaffected: it calls wallet_backup_now() directly. */
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
     ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
-    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW, ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_wallet_backup_now)
+ZCL_COMMAND_READY_COMMAND(
+    "core.wallet.backup.decrypt", "core.wallet.backup", "",
+    "Decrypt an encrypted wallet backup file",
+    "Plan/commit over the WBE1 decrypt that used to be reachable only "
+    "through the undocumented --decrypt-wallet-backup argv mode: "
+    "without confirm, the source and destination paths and whether a "
+    "password is available, writing nothing; with confirm:true, "
+    "decrypted is true once the plaintext SQLite file is on disk. Runs "
+    "in-process and needs no running node. The password comes from "
+    "the password input or WALLET_BACKUP_PASSWORD.", 0,
+    "wallet,backup,decrypt,restore,recovery",
+    "zcl.wallet_backup_decrypt.input.v1", "zcl.wallet_backup_decrypt.v1",
+    "from,to,password,confirm", "from",
+    "zclassic23 core wallet backup decrypt --input='{\"from\":"
+    "\"~/wallet_backups/wallet_backup_1.sqlite.enc\",\"to\":\"/tmp/wb.sqlite\"}'",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
+    ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_wallet_backup_decrypt)
+ZCL_COMMAND_READY_COMMAND(
+    "core.wallet.restore", "core.wallet", "",
+    "Restore a wallet backup into a datadir",
+    "Plan/commit merge of a backup file's wallet tables into "
+    "<datadir>/node.db. The plan half runs the whole merge in a "
+    "transaction and rolls it back, so its per-table counts (rows in "
+    "the backup, rows that would land, rows that would collide with an "
+    "existing row, rows the schema would reject) are exactly what the "
+    "commit does. Collision policy is keep-existing: a row whose "
+    "primary key is already in the target is never overwritten. "
+    "Refuses with DATADIR_LOCKED while a node holds the datadir. "
+    "Needs no running node; merging rows rebuilds no derived state, so "
+    "next_steps names the rescans that do.", ZCL_COMMAND_LIST_BUDGET,
+    "wallet,restore,recovery,backup,merge",
+    "zcl.wallet_restore.input.v1", "zcl.wallet_restore.v1",
+    "from,datadir,password,confirm", "from",
+    "zclassic23 core wallet restore --from=<backup.sqlite>",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
+    ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_wallet_restore)
+ZCL_COMMAND_READY_COMMAND(
+    "core.wallet.rescan-witnesses", "core.wallet", "",
+    "Rebuild Sapling witnesses for unspent notes",
+    "The rescanwitnesses result from the running node at call time "
+    "under result: it walks the chain rebuilding the Sapling "
+    "commitment tree, checks its final root against the block header, "
+    "and refuses to save a diverged tree. A restored shielded note has "
+    "rows but no witness and cannot be spent until this has run.", 0,
+    "wallet,rescan,witness,sapling,shielded,restore",
+    "zcl.command.empty_input.v1", "zcl.wallet_rescan_witnesses.v1", "", "",
+    "zclassic23 core wallet rescan-witnesses",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_JOB,
+    ZCL_COMMAND_LATENCY_BACKGROUND, ZCL_COMMAND_COST_HIGH,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_wallet_rescan_witnesses)
 ZCL_COMMAND_READY_READ(
     "core.wallet.audit", "core.wallet", "", "Audit wallet key/UTXO consistency",
     "Live consistency check between the wallet's key set and its "
@@ -934,14 +1017,19 @@ ZCL_COMMAND_READY_READ(
 ZCL_COMMAND_READY_COMMAND(
     "core.wallet.rescan", "core.wallet", "",
     "Rescan the chain for wallet transactions",
-    "The rescanblockchain result from the running node at call time "
-    "under result, rescanning from the given start_height (or genesis "
-    "when omitted); started is true once the scan has begun.", 0,
+    "The rescanblockchain result from the running node under result, "
+    "rescanning from the given start_height (or genesis when omitted). "
+    "The scan runs to completion before this returns: completed is true "
+    "and result carries blocks_scanned, blocks_missing_data, "
+    "outputs_found and shielded_notes_found. A rescan that could not "
+    "read the block bodies it was asked to scan FAILS with a typed "
+    "blocker (RESCAN_NO_BLOCK_DATA, RESCAN_INCOMPLETE_COVERAGE or "
+    "RESCAN_INCONCLUSIVE_ZERO) rather than reporting zero found.", 0,
     "wallet,rescan",
-    "zcl.core_wallet_rescan.input.v1", "zcl.wallet_rescan.v1", "start_height",
+    "zcl.core_wallet_rescan.input.v1", "zcl.wallet_rescan.v2", "start_height",
     "", "zclassic23 core wallet rescan",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
-    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_JOB,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
     ZCL_COMMAND_LATENCY_BACKGROUND, ZCL_COMMAND_COST_HIGH,
     ZCL_COMMAND_CONFIRM_NONE,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,

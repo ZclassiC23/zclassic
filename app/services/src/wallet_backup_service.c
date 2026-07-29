@@ -7,38 +7,19 @@
 
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Wallet Backup Service — see header for rationale.
+ * Wallet Backup Service — LIFECYCLE half: config, the background thread,
+ * the status snapshot, the diagnostics dumper, and the supervisor liveness
+ * contract. See the header for rationale.
  *
- * Implementation strategy
- * -----------------------
- *
- * SQLite's online backup API (sqlite3_backup_init) copies the
- * whole database. We want only the wallet tables, so instead we
- * open the destination file as a fresh DB, ATTACH the source
- * via its on-disk path, and `CREATE TABLE <name> AS SELECT * FROM
- * src.<name>` for each wallet table. That keeps the destination
- * file small (users typically have a handful of wallet rows, not
- * the full 3M-row blocks table) and avoids copying UTXO data
- * that would leak peer-observable chain state to the backup.
- *
- * The ATTACH path must be absolute — sqlite3_db_filename returns
- * it for an opened connection, so we read that off the source
- * handle at backup time instead of asking the caller to thread
- * it through the config.
- *
- * Row-count verification
- * ----------------------
- *
- * After the CREATE TABLE AS SELECT statements run, we reopen the
- * destination in a second connection and count wallet_keys rows.
- * That round-trip proves the file is readable, the schema is as
- * expected, and the same number of keys landed as we thought we
- * wrote. Mismatches set last_error and emit
- * EV_WALLET_BACKUP_FAILED; the file is NOT deleted — operators
- * need the bytes even when verification fails.
+ * The one-shot snapshot primitive and its all-seven-tables verification
+ * live in wallet_backup_run.c (declared in wallet_backup_internal.h);
+ * rotation/listing in wallet_backup_rotation.c; the WBE1 crypto in
+ * wallet_backup_crypto.c. The split happened when verification grew from
+ * one table to seven and this file passed the 800-line shape ceiling.
  */
 
 #include "platform/time_compat.h"
+#include "services/wallet_backup_internal.h"
 #include "services/wallet_backup_service.h"
 
 #include "event/event.h"
@@ -46,7 +27,6 @@
 #include "supervisors/domains.h"
 
 #include <errno.h>
-#include <fcntl.h>
 #include <inttypes.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -58,33 +38,11 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "adapters/outbound/persistence/wallet_backup_store_sqlite.h"
-#include "ports/wallet_backup_store_port.h"
-
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "util/supervisor.h"
 #include "util/thread_registry.h"
 
-/* The wallet-backup sqlite surface lives behind wallet_backup_store_port.
- * This service binds the default sqlite adapter to the source node_db
- * connection per call; sqlite is named only by the adapter. The header
- * comment's "ATTACH + CREATE TABLE AS SELECT" strategy is unchanged — it
- * now executes inside the adapter. */
-
-/* ── Wallet table list ──────────────────────────────────────── */
-
-static const char *const WALLET_TABLES[] = {
-    "wallet_keys",
-    "wallet_sapling_keys",
-    "wallet_seed",
-    "wallet_scripts",
-    "wallet_transactions",
-    "wallet_utxos",
-    "wallet_sapling_notes",
-};
-
-#define WALLET_TABLE_COUNT (sizeof(WALLET_TABLES) / sizeof(WALLET_TABLES[0]))
 #define WALLET_BACKUP_SUPERVISOR_DEADLINE_SEC 60
 
 /* ── Module state ───────────────────────────────────────────── */
@@ -105,6 +63,8 @@ struct wallet_backup_service_state {
     int64_t last_size_bytes;
     int64_t last_key_count;
     int64_t last_duration_ms;
+    int     last_tables_verified;
+    char    last_missing_tables[WBS_MISSING_TABLES_MAX];
     char    last_path[512];
     char    last_error[256];
 
@@ -122,7 +82,6 @@ static struct wallet_backup_service_state g_wbs = {
     .supervisor_id = SUPERVISOR_INVALID_ID,
 };
 
-static _Atomic int64_t g_wbs_last_backup_path_us = 0;
 
 static struct liveness_contract g_wbs_contract;
 
@@ -266,6 +225,12 @@ void wallet_backup_status_snapshot(struct wallet_backup_status *out)
     out->last_size_bytes  = g_wbs.last_size_bytes;
     out->last_key_count   = g_wbs.last_key_count;
     out->last_duration_ms = g_wbs.last_duration_ms;
+    out->last_tables_verified = g_wbs.last_tables_verified;
+    size_t n_tables = 0;
+    (void)wallet_backup_tables(&n_tables);
+    out->wallet_table_count = (int)n_tables;
+    snprintf(out->last_missing_tables, sizeof(out->last_missing_tables), "%s",
+             g_wbs.last_missing_tables);
     snprintf(out->last_path,  sizeof(out->last_path),  "%s", g_wbs.last_path);
     snprintf(out->last_error, sizeof(out->last_error), "%s", g_wbs.last_error);
     pthread_mutex_unlock(&g_wbs.lock);
@@ -289,183 +254,17 @@ bool wallet_backup_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int(out, "last_size_bytes", st.last_size_bytes);
     json_push_kv_int(out, "last_key_count", st.last_key_count);
     json_push_kv_int(out, "last_duration_ms", st.last_duration_ms);
+    /* Verification breadth. last_tables_verified counts the wallet tables
+     * whose backup row count matched the source on the last run; the rest
+     * are named in last_missing_tables (absent from the SOURCE, so nothing
+     * to copy — not a failure, but the operator is told rather than left to
+     * discover it at restore time). */
+    json_push_kv_int(out, "last_tables_verified", st.last_tables_verified);
+    json_push_kv_int(out, "wallet_table_count", st.wallet_table_count);
+    json_push_kv_str(out, "last_missing_tables", st.last_missing_tables);
     json_push_kv_str(out, "last_path", st.last_path);
     json_push_kv_str(out, "last_error", st.last_error);
     return true;
-}
-
-/* Create backup_dir with mode 0700 if missing. Returns true if the
- * directory exists on successful return. */
-static bool wbs_ensure_backup_dir(const char *dir)
-{
-    if (!dir || !*dir) LOG_FAIL("wallet_backup", "backup dir is NULL or empty");
-    struct stat st;
-    if (stat(dir, &st) == 0)
-        return S_ISDIR(st.st_mode);
-    if (mkdir(dir, 0700) != 0) {
-        fprintf(stderr, "wallet_backup: mkdir %s: %s\n",
-                dir, strerror(errno));
-        return false;
-    }
-    return true;
-}
-
-/* Bind the default sqlite adapter to the source node_db connection.
- * Returns true (filling ctx and port) when db has an open sqlite handle. */
-static bool wbs_bind_store(struct node_db *db,
-                           struct wallet_backup_store_sqlite_ctx *ctx,
-                           struct wallet_backup_store_port *port)
-{
-    if (!db || !db->open || !db->db || !ctx || !port)
-        return false;
-    return wallet_backup_store_sqlite_bind(ctx, db->db, port);
-}
-
-/* Write the on-disk path backing the source connection into `out`.
- * Returns false for memory databases (out untouched / empty). */
-static bool wbs_source_path(struct node_db *db, char *out, size_t cap)
-{
-    struct wallet_backup_store_sqlite_ctx ctx;
-    struct wallet_backup_store_port port = {0};
-    if (out && cap) out[0] = '\0';
-    if (!wbs_bind_store(db, &ctx, &port))
-        LOG_FAIL("wallet_backup", "source_path: NULL/closed db handle");
-    if (!port.source_path(port.self, out, cap))
-        LOG_FAIL("wallet_backup",
-                 "source_path: db has no file path (in-memory?)");
-    return true;
-}
-
-static int64_t wbs_unique_backup_timestamp_us(void)
-{
-    int64_t now = platform_time_realtime_us();
-    int64_t prev = atomic_load(&g_wbs_last_backup_path_us);
-    for (;;) {
-        int64_t next = now > prev ? now : prev + 1;
-        if (atomic_compare_exchange_weak(&g_wbs_last_backup_path_us,
-                                         &prev, next))
-            return next;
-    }
-}
-
-/* SHA-style filename: wallet_backup_<unix_ts>_<usec>.sqlite. The usec
- * component is monotonicized to disambiguate rapid successive runs (tests call
- * run_once several times back-to-back). */
-static void wbs_build_backup_path(const char *dir, char *out, size_t cap)
-{
-    int64_t now_us = wbs_unique_backup_timestamp_us();
-    snprintf(out, cap, "%s/%s%lld_%06ld%s",
-             dir,
-             WALLET_BACKUP_FILENAME_PREFIX,
-             (long long)(now_us / 1000000LL),
-             (long)(now_us % 1000000LL),
-             WALLET_BACKUP_FILENAME_SUFFIX);
-}
-
-/* ── Core primitive ─────────────────────────────────────────── */
-
-/* Copy a non-ok result's message into the caller's err_out buffer
- * (the legacy buffer-form diagnostic) and return the result. The
- * zcl_result is the source of truth; err_out is a convenience mirror. */
-#define WBS_FAIL(err_out, err_cap, code, ...) do {                       \
-    struct zcl_result _wbs_r = ZCL_ERR((code), __VA_ARGS__);             \
-    if ((err_out) && (err_cap))                                          \
-        snprintf((err_out), (err_cap), "%s", _wbs_r.message);            \
-    return _wbs_r;                                                       \
-} while (0)
-
-struct zcl_result wallet_backup_run_once(const char *backup_dir,
-                             struct node_db *db,
-                             char *out_path, size_t out_path_cap,
-                             int64_t *out_key_count,
-                             char *err_out, size_t err_cap)
-{
-    if (err_out && err_cap) err_out[0] = '\0';
-    if (out_path && out_path_cap) out_path[0] = '\0';
-    if (out_key_count) *out_key_count = -1;
-
-    if (!backup_dir || !db || !db->open || !db->db)
-        WBS_FAIL(err_out, err_cap, -1, "null arg or db not open");
-
-    if (!wbs_ensure_backup_dir(backup_dir))
-        WBS_FAIL(err_out, err_cap, -2, "cannot create backup_dir %s", backup_dir);
-
-    /* Bind the sqlite adapter to the source connection. All sqlite
-     * work below goes through the port. */
-    struct wallet_backup_store_sqlite_ctx store_ctx;
-    struct wallet_backup_store_port store = {0};
-    if (!wbs_bind_store(db, &store_ctx, &store))
-        WBS_FAIL(err_out, err_cap, -3, "cannot bind wallet backup store");
-
-    char src_path[1024];
-    if (!store.source_path(store.self, src_path, sizeof(src_path)))
-        WBS_FAIL(err_out, err_cap, -3, "source db has no file path (in-memory?)");
-
-    /* In-memory source is valid for tests: use the ATTACH TO
-     * "file::memory:?cache=shared" form only if the caller opened
-     * it with a real filename. Here we simply require a disk file
-     * — tests that want to exercise the primitive use a tmpdir. */
-
-    char dst_path[640];
-    wbs_build_backup_path(backup_dir, dst_path, sizeof(dst_path));
-
-    /* Open dst, ATTACH source, CREATE TABLE AS SELECT per wallet table,
-     * DETACH, close — all inside the adapter. The AS SELECT form copies
-     * both schema and rows; missing source tables are skipped (older
-     * databases may not have every table). */
-    char copy_err[ZCL_RESULT_MSG_MAX] = "";
-    enum wallet_backup_store_status status =
-        store.write_snapshot(store.self, dst_path, src_path,
-                             WALLET_TABLES, WALLET_TABLE_COUNT,
-                             copy_err, sizeof(copy_err));
-
-    if (status == WB_STORE_OPEN_DST_FAILED)
-        WBS_FAIL(err_out, err_cap, -4, "open dst failed: %s", dst_path);
-    if (status == WB_STORE_ATTACH_FAILED)
-        WBS_FAIL(err_out, err_cap, -5, "attach source failed: %s", src_path);
-
-    if (status == WB_STORE_COPY_FAILED) {
-        /* Leave the dst file on disk for forensics, but emit the
-         * failure event and bail out. */
-        struct stat st;
-        int64_t bytes = stat(dst_path, &st) == 0 ? (int64_t)st.st_size : -1;
-        struct zcl_result r = ZCL_ERR(-7, "%s", copy_err);
-        if (err_out) snprintf(err_out, err_cap, "%s", r.message);
-        event_emitf(EV_WALLET_BACKUP_FAILED, 0,
-                    "path=%s bytes=%lld reason=%s",
-                    dst_path, (long long)bytes, r.message);
-        return r;
-    }
-
-    /* Round-trip verification: reopen the backup file read-only,
-     * count the wallet_keys rows, and compare against the source.
-     * If the counts differ the file is left on disk but we return
-     * false so the caller knows the output is not usable. */
-    int64_t src_key_count = -1;
-    (void)store.count_rows(store.self, "wallet_keys", &src_key_count);
-    int64_t dst_key_count =
-        store.count_rows_in_file(store.self, dst_path, "wallet_keys");
-
-    if (dst_key_count < 0 || dst_key_count != src_key_count) {
-        struct zcl_result r = ZCL_ERR(-8,
-                "verify row count mismatch src=%lld dst=%lld",
-                (long long)src_key_count, (long long)dst_key_count);
-        if (err_out) snprintf(err_out, err_cap, "%s", r.message);
-        event_emitf(EV_WALLET_BACKUP_FAILED, 0,
-                    "path=%s reason=%s", dst_path, r.message);
-        return r;
-    }
-
-    struct stat st;
-    int64_t bytes = stat(dst_path, &st) == 0 ? (int64_t)st.st_size : -1;
-    event_emitf(EV_WALLET_BACKUP, 0,
-                "path=%s bytes=%lld keys=%lld",
-                dst_path, (long long)bytes, (long long)dst_key_count);
-
-    if (out_path) snprintf(out_path, out_path_cap, "%s", dst_path);
-    if (out_key_count) *out_key_count = dst_key_count;
-
-    return ZCL_OK;
 }
 
 /* Rotation / listing (wallet_backup_list, wallet_backup_rotate) live
@@ -479,12 +278,17 @@ static struct zcl_result wbs_run_one_locked(void)
     char path[512] = "";
     char err[256]  = "";
     int64_t key_count = -1;
-    struct zcl_result res = wallet_backup_run_once(g_wbs.cfg.backup_dir, g_wbs.db,
+    struct wbs_verify_out vout;
+    struct zcl_result res = wbs_run_once_impl(g_wbs.cfg.backup_dir, g_wbs.db,
                                       path, sizeof(path),
                                       &key_count,
-                                      err, sizeof(err));
+                                      err, sizeof(err), &vout);
     bool ok = res.ok;
     int64_t elapsed = platform_time_monotonic_ms() - started_ms;
+
+    g_wbs.last_tables_verified = vout.tables_verified;
+    snprintf(g_wbs.last_missing_tables, sizeof(g_wbs.last_missing_tables),
+             "%s", vout.missing);
 
     if (ok) {
         g_wbs.total_runs++;
@@ -666,7 +470,7 @@ struct zcl_result wallet_backup_start(const struct wallet_backup_config *cfg,
      * comparing the backup_dir to the directory containing the
      * source db file. */
     char src_path[1024];
-    if (wbs_source_path(db, src_path, sizeof(src_path))) {
+    if (wbs_source_path(db, src_path, sizeof(src_path)).ok) {
         char src_dir[1024];
         snprintf(src_dir, sizeof(src_dir), "%s", src_path);
         char *slash = strrchr(src_dir, '/');
@@ -679,9 +483,9 @@ struct zcl_result wallet_backup_start(const struct wallet_backup_config *cfg,
         }
     }
 
-    if (!wbs_ensure_backup_dir(cfg->backup_dir)) {
-        struct zcl_result r = ZCL_ERR(-22,
-                "start: cannot create backup dir %s", cfg->backup_dir);
+    struct zcl_result dir_r = wbs_ensure_backup_dir(cfg->backup_dir);
+    if (!dir_r.ok) {
+        struct zcl_result r = ZCL_ERR(-22, "start: %s", dir_r.message);
         pthread_mutex_unlock(&g_wbs.lock);
         return r;
     }

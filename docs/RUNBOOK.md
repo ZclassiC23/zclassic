@@ -235,24 +235,95 @@ with `compatibility_fallback=true` while preserving the
 
 **Symptoms:** `EV_WALLET_BACKUP_FAILED`. `zclassic23 core status` shows the wallet backup warning.
 
+Backups are written to **`$HOME/wallet_backups`**, NOT inside the datadir —
+the service refuses to back up into the source directory, because a copy that
+dies with the datadir is not a backup (`config/src/boot.c`, and
+`wallet_backup_start` returns `-21` on a same-directory config).
+
 **Diagnose:**
 ```bash
 build/bin/zclassic23 healthcheck full
 ls -la ~/.zclassic-c23/node.db
-# Check if backup destination is writable
-ls -la ~/.zclassic-c23/backups/
+# The real backup destination
+ls -lt ~/wallet_backups/wallet_backup_*.sqlite* | head
+# What the last run verified, and which tables the source did not have
+build/bin/zclassic23 ops state --subsystem=wallet_backup
 ```
 
+`ops state --subsystem=wallet_backup` reports `last_tables_verified` out of
+`wallet_table_count`: the service compares row counts for every wallet table,
+so a backup that dropped `wallet_sapling_keys` fails instead of reporting
+success. `last_missing_tables` names tables the SOURCE did not have — not a
+failure, but worth reading before you rely on that file.
+
 **Fix:**
-1. If backup directory doesn't exist: `mkdir -p ~/.zclassic-c23/backups`
-2. If permissions: `chmod 700 ~/.zclassic-c23/backups`
+1. If the backup directory doesn't exist: `mkdir -p -m 700 ~/wallet_backups`
+2. If permissions: `chmod 700 ~/wallet_backups`
 3. If disk full: see **Disk > 99% Full** above.
-4. Manual backup while node is running (SQLite online backup is safe):
+4. Force one now (plan/commit — the first call writes nothing):
    ```bash
-   sqlite3 ~/.zclassic-c23/node.db ".backup '~/.zclassic-c23/backups/node-$(date +%Y%m%d).db'"
+   build/bin/zclassic23 core wallet backup now
+   build/bin/zclassic23 core wallet backup now --input='{"confirm":true}'
    ```
 
 **Prevention:** The built-in backup service runs automatically. Verify after first boot by checking for `EV_WALLET_BACKUP` events.
+
+**Restoring one:** see [Wallet Restore](#wallet-restore) below.
+
+---
+
+## Wallet Restore
+
+**Symptoms:** node.db is gone, corrupt, or on a machine that no longer exists,
+and you have a file under `~/wallet_backups/`.
+
+**Stop the node first.** `<datadir>/zclassic23.pid` is the single-writer lock;
+`core wallet restore` refuses with `DATADIR_LOCKED` while a node holds it, and
+that refusal is protecting you.
+
+```bash
+systemctl --user stop zclassic23
+
+# 1. Rehearse. This runs the whole merge in a transaction, rolls it back, and
+#    prints exactly what a commit would do — per table, rows in the backup,
+#    rows that would land, rows that would collide, rows the schema rejects.
+build/bin/zclassic23 core wallet restore \
+  --input='{"from":"'"$HOME"'/wallet_backups/wallet_backup_<ts>.sqlite",
+            "datadir":"'"$HOME"'/.zclassic-c23"}'
+
+# 2. Commit it (copy commit_input from the plan, or add "confirm":true).
+build/bin/zclassic23 core wallet restore \
+  --input='{"from":"...","datadir":"...","confirm":true}'
+
+systemctl --user start zclassic23
+
+# 3. Rebuild what a row merge cannot: transparent history, then the Sapling
+#    witnesses. A restored shielded note CANNOT BE SPENT until step 3b runs.
+build/bin/zclassic23 core wallet rescan
+build/bin/zclassic23 core wallet rescan-witnesses
+```
+
+Encrypted backups (`*.sqlite.enc`) are handled in place — set
+`WALLET_BACKUP_PASSWORD` (or pass `"password"` in the input) and restore the
+`.enc` file directly. To get a readable copy instead:
+
+```bash
+build/bin/zclassic23 core wallet backup decrypt \
+  --input='{"from":"...enc","to":"/tmp/wb.sqlite","confirm":true}'
+```
+
+**Read the report, don't skim it.** `collision_policy` is `keep-existing`: a
+row whose primary key is already in the target is never overwritten, and is
+counted under `rows_collided`. `rows_rejected` above zero means the target's
+schema refused rows the backup held — a real integrity signal.
+`manifest_mismatches` above zero means the file holds fewer rows than the
+backup run recorded writing, i.e. it was truncated or damaged after the fact.
+
+**If `core wallet rescan` reports 0 outputs found on a snapshot-bootstrapped
+node, that is expected, not an empty wallet.** A snapshot import deliberately
+clears `BLOCK_HAVE_DATA`, so there are no block bodies on disk to scan. Sync
+full history (or import a `zclassicd` block index) before concluding anything
+about the restored wallet's balance.
 
 ---
 

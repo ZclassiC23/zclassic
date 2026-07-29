@@ -296,7 +296,10 @@ static int test_default_deny_surface(void)
             "core.wallet.address.export-key",
             "core.wallet.address.import",
             "core.wallet.backup.now",
+            "core.wallet.backup.decrypt",
+            "core.wallet.restore",
             "core.wallet.rescan",
+            "core.wallet.rescan-witnesses",
         };
         for (size_t i = 0; i < sizeof(denied) / sizeof(denied[0]); i++) {
             const struct zcl_command_spec *sp = spec_for(denied[i]);

@@ -112,8 +112,8 @@ has no install, execution, wallet, or publication authority.
 
 ### Hexagonal seam — `ports/` + `adapters/`
 
-Outbound-only by design: 12 port interfaces in `ports/include/ports/*_port.h`
-+ 13 sqlite/file write impls in `adapters/outbound/persistence/{src,include}/`.
+Outbound-only by design: 13 port interfaces in `ports/include/ports/*_port.h`
++ 14 sqlite/file write impls in `adapters/outbound/persistence/{src,include}/`.
 Reads are owned by Models (Law 5), so inbound repository ports are
 reserved-empty. Both counts are pinned by the `DOC-COUNTS` block below —
 `check_doc_counts.sh` fails if either directory changes shape without this
@@ -132,9 +132,9 @@ page changing with it.
 <!--   app_shape_folders    = directories directly under app/                        -->
 <!-- Fix a mismatch with `tools/scripts/check_doc_counts.sh --fix`, never by hand.  -->
 
-test_groups: 824
-port_interfaces: 12
-persistence_adapters: 13
+test_groups: 827
+port_interfaces: 13
+persistence_adapters: 14
 condition_registrations: 51
 command_bundles: 10
 command_roots: 8

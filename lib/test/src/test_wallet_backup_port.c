@@ -182,13 +182,31 @@ int test_wallet_backup_port(void)
     WBP_CHECK("count_rows missing table false", !cr_bad);
     WBP_CHECK("count_rows missing leaves out untouched", bogus == -123);
 
-    /* write_snapshot copies present tables, skips missing ones. */
+    /* write_snapshot copies present tables and RECORDS missing ones. */
     char copy_err[256] = {0};
+    struct wallet_backup_table_stat stats[WBP_TABLE_COUNT];
     enum wallet_backup_store_status st =
         port.write_snapshot(port.self, dst_path, resolved,
                             WBP_TABLES, WBP_TABLE_COUNT,
-                            copy_err, sizeof(copy_err));
+                            stats, copy_err, sizeof(copy_err));
     WBP_CHECK("write_snapshot WB_STORE_OK", st == WB_STORE_OK);
+
+    /* Every requested table gets a stat entry naming it, whether or not
+     * the source had it — the "silently skipped" behaviour is gone. */
+    bool stats_named = true;
+    for (size_t i = 0; i < WBP_TABLE_COUNT; i++)
+        if (strcmp(stats[i].table, WBP_TABLES[i]) != 0)
+            stats_named = false;
+    WBP_CHECK("write_snapshot names every requested table in stats",
+              stats_named);
+    WBP_CHECK("wallet_keys stat: present with 5 rows",
+              stats[0].present_in_source && stats[0].rows == 5);
+
+    /* The manifest lands in the backup file and describes all seven. */
+    int64_t manifest_rows = port.count_rows_in_file(
+        port.self, dst_path, WALLET_BACKUP_MANIFEST_TABLE);
+    WBP_CHECK("backup carries a manifest row per requested table",
+              manifest_rows == (int64_t)WBP_TABLE_COUNT);
 
     struct stat fst;
     WBP_CHECK("backup file exists, non-empty",
