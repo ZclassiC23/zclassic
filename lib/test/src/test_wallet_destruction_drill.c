@@ -331,12 +331,13 @@ static int act1_transparent(void)
     memset(&live_ndb, 0, sizeof(live_ndb));
     DR_CHECK("live: node_db_open", node_db_open(&live_ndb, livedb));
 
-    struct wallet live_w;
-    wallet_init(&live_w);
+    struct wallet *live_w = zcl_calloc(1, sizeof(*live_w), "dr_act1_live_wallet");
+    DR_CHECK("live: alloc wallet (heap)", live_w != NULL);
+    if (live_w) wallet_init(live_w);
     struct wallet_sqlite live_ws;
     DR_CHECK("live: wallet_sqlite_open", wallet_sqlite_open(&live_ws, live_ndb.db));
 
-    rpc_wallet_set_state(&live_w, NULL, livedir, &live_ws, NULL, NULL);
+    rpc_wallet_set_state(live_w, NULL, livedir, &live_ws, NULL, NULL);
     rpc_wallet_set_node_db(&live_ndb);
     rpc_wallet_set_coins_tip(NULL);
 
@@ -374,8 +375,8 @@ static int act1_transparent(void)
      * from here — it comes back out of the backup file. */
     struct privkey keyA_expected;
     privkey_init(&keyA_expected);
-    bool have_expected = decoded &&
-        wallet_dump_key(&live_w, &destA.id.key, &keyA_expected);
+    bool have_expected = decoded && live_w &&
+        wallet_dump_key(live_w, &destA.id.key, &keyA_expected);
     DR_CHECK("live: the funded address has a spending key in the wallet",
              have_expected && keyA_expected.fValid);
 
@@ -459,7 +460,7 @@ static int act1_transparent(void)
     /* ── DESTROY THE MACHINE ─────────────────────────────────────── */
     dr_clear_rpc_ctx();
     wallet_sqlite_close(&live_ws);
-    wallet_free(&live_w);
+    if (live_w) { wallet_free(live_w); free(live_w); live_w = NULL; }
     node_db_close(&live_ndb);
 
     dr_destroy_tree(livedir, 2);
@@ -540,19 +541,20 @@ static int act1_transparent(void)
     DR_CHECK("rebuilt: node_db_open on the restored database",
              node_db_open(&new_ndb, newdb));
 
-    struct wallet new_w;
-    wallet_init(&new_w);
+    struct wallet *new_w = zcl_calloc(1, sizeof(*new_w), "dr_act1_new_wallet");
+    DR_CHECK("rebuilt: alloc wallet (heap)", new_w != NULL);
+    if (new_w) wallet_init(new_w);
     struct wallet_sqlite new_ws;
     DR_CHECK("rebuilt: wallet_sqlite_open", wallet_sqlite_open(&new_ws, new_ndb.db));
 
     /* The keystore is loaded FROM THE RESTORED DATABASE — no import, no WIF,
      * nothing carried over in memory. */
     DR_CHECK("rebuilt: wallet_sqlite_read_keys loads the restored keys",
-             wallet_sqlite_read_keys(&new_ws, &new_w));
+             new_w && wallet_sqlite_read_keys(&new_ws, new_w));
     {
         struct privkey got;
         privkey_init(&got);
-        bool got_it = decoded && wallet_dump_key(&new_w, &destA.id.key, &got);
+        bool got_it = decoded && new_w && wallet_dump_key(new_w, &destA.id.key, &got);
         DR_CHECK("rebuilt: the restored private key is byte-identical",
                  got_it && have_expected && got.fValid &&
                  memcmp(got.vch, keyA_expected.vch, 32) == 0);
@@ -591,7 +593,7 @@ static int act1_transparent(void)
         eA->coins.is_coinbase = false;
     }
 
-    rpc_wallet_set_state(&new_w, &new_ms, newdir, &new_ws, &new_mempool, NULL);
+    rpc_wallet_set_state(new_w, &new_ms, newdir, &new_ws, &new_mempool, NULL);
     rpc_wallet_set_node_db(&new_ndb);
     rpc_wallet_set_coins_tip(&new_coins);
 
@@ -727,7 +729,7 @@ static int act1_transparent(void)
     free(new_ms.chain_active.chain);
     new_ms.chain_active.chain = NULL;
     wallet_sqlite_close(&new_ws);
-    wallet_free(&new_w);
+    if (new_w) { wallet_free(new_w); free(new_w); new_w = NULL; }
     node_db_close(&new_ndb);
     simnet_free(&s);
 
@@ -820,11 +822,13 @@ static int act2_bodyless_restore_must_fail_loud(void)
     memset(&snap_ndb, 0, sizeof(snap_ndb));
     DR_CHECK("act2: open the restored database", node_db_open(&snap_ndb, snapdb));
 
-    struct wallet snap_w;
-    wallet_init(&snap_w);
+    struct wallet *snap_w = zcl_calloc(1, sizeof(*snap_w), "dr_act2_snap_wallet");
+    DR_CHECK("act2: alloc wallet (heap)", snap_w != NULL);
+    if (snap_w) wallet_init(snap_w);
     struct wallet_sqlite snap_ws;
     DR_CHECK("act2: wallet_sqlite_open", wallet_sqlite_open(&snap_ws, snap_ndb.db));
-    DR_CHECK("act2: the restored keys load", wallet_sqlite_read_keys(&snap_ws, &snap_w));
+    DR_CHECK("act2: the restored keys load",
+             snap_w && wallet_sqlite_read_keys(&snap_ws, snap_w));
 
     /* THE SNAPSHOT STATE: every height is indexed, and every one of them has
      * BLOCK_HAVE_DATA CLEAR — snapshot_controller_import.c's header-only
@@ -865,7 +869,7 @@ static int act2_bodyless_restore_must_fail_loud(void)
     struct coins_view_cache snap_coins;
     coins_view_cache_init(&snap_coins, &null_view);
 
-    rpc_wallet_set_state(&snap_w, &snap_ms, snapdir, &snap_ws, &snap_mempool,
+    rpc_wallet_set_state(snap_w, &snap_ms, snapdir, &snap_ws, &snap_mempool,
                          NULL);
     rpc_wallet_set_node_db(&snap_ndb);
     rpc_wallet_set_coins_tip(&snap_coins);
@@ -914,11 +918,11 @@ static int act2_bodyless_restore_must_fail_loud(void)
 
     /* Same range, same wallet, bodies present ⇒ no blocker. Without this the
      * act above could pass with a rescan that fails unconditionally. */
-    if (bis && arr) {
+    if (bis && arr && snap_w) {
         struct wallet_rescan_report ctl;
         for (int h = 0; h <= RANGE_TOP; h++)
             bis[h].nStatus = BLOCK_HAVE_DATA;
-        (void)wallet_rescan_report(&snap_w, &snap_ms.chain_active, 0,
+        (void)wallet_rescan_report(snap_w, &snap_ms.chain_active, 0,
                                    RANGE_TOP, snapdir, &ctl);
         /* Bodies are FLAGGED present but the files are not there, so the
          * read fails — a different, equally loud failure. What must NOT
@@ -938,7 +942,7 @@ static int act2_bodyless_restore_must_fail_loud(void)
     snap_ms.chain_active.chain = NULL;
     free(bis);
     wallet_sqlite_close(&snap_ws);
-    wallet_free(&snap_w);
+    if (snap_w) { wallet_free(snap_w); free(snap_w); snap_w = NULL; }
     node_db_close(&snap_ndb);
 
     dr_destroy_tree(snapdir, 2);
@@ -1058,18 +1062,20 @@ static int act3_shielded(void)
     struct wallet_sqlite live_ws;
     DR_CHECK("act3: wallet_sqlite_open", wallet_sqlite_open(&live_ws, live_ndb.db));
 
-    struct wallet live_w;
-    wallet_init(&live_w);
-    DR_CHECK("act3: install the seed", sapling_keystore_set_seed(&live_w.sapling_keys, seed32));
+    struct wallet *live_w = zcl_calloc(1, sizeof(*live_w), "dr_act3_live_wallet");
+    DR_CHECK("act3: alloc wallet (heap)", live_w != NULL);
+    if (live_w) wallet_init(live_w);
+    DR_CHECK("act3: install the seed",
+             live_w && sapling_keystore_set_seed(&live_w->sapling_keys, seed32));
     DR_CHECK("act3: import the spending key",
-             sapling_keystore_import_xsk(&live_w.sapling_keys, &id.xsk));
+             live_w && sapling_keystore_import_xsk(&live_w->sapling_keys, &id.xsk));
     DR_CHECK("act3: persist the seed",
              wallet_sqlite_write_sapling_seed(&live_ws, seed32));
     DR_CHECK("act3: persist the Sapling key",
-             live_w.sapling_keys.num_keys >= 1 &&
+             live_w && live_w->sapling_keys.num_keys >= 1 &&
              wallet_sqlite_write_sapling_key(&live_ws,
-                 live_w.sapling_keys.keys[0].child_index,
-                 &live_w.sapling_keys.keys[0]));
+                 live_w->sapling_keys.keys[0].child_index,
+                 &live_w->sapling_keys.keys[0]));
 
     char zaddr[128] = "";
     DR_CHECK("act3: encode the z-address",
@@ -1204,7 +1210,7 @@ static int act3_shielded(void)
     if (encrypted) (void)unlink(plainpath);
 
     wallet_sqlite_close(&live_ws);
-    wallet_free(&live_w);
+    if (live_w) { wallet_free(live_w); free(live_w); live_w = NULL; }
     node_db_close(&live_ndb);
     dr_destroy_tree(livedir, 2);
     DR_CHECK("act3: DESTROY the datadir — the shielded key and note are gone",
@@ -1243,19 +1249,20 @@ static int act3_shielded(void)
     struct wallet_sqlite new_ws;
     DR_CHECK("act3: wallet_sqlite_open", wallet_sqlite_open(&new_ws, new_ndb.db));
 
-    struct wallet new_w;
-    wallet_init(&new_w);
+    struct wallet *new_w = zcl_calloc(1, sizeof(*new_w), "dr_act3_new_wallet");
+    DR_CHECK("act3: alloc wallet (heap)", new_w != NULL);
+    if (new_w) wallet_init(new_w);
     uint8_t restored_seed[32];
     memset(restored_seed, 0, sizeof(restored_seed));
     DR_CHECK("act3: the seed loads out of the restored database",
              wallet_sqlite_read_sapling_seed(&new_ws, restored_seed) &&
              memcmp(restored_seed, seed32, 32) == 0);
     DR_CHECK("act3: the Sapling keys load out of the restored database",
-             wallet_sqlite_read_sapling_keys(&new_ws, &new_w) &&
-             new_w.sapling_keys.num_keys >= 1);
+             new_w && wallet_sqlite_read_sapling_keys(&new_ws, new_w) &&
+             new_w->sapling_keys.num_keys >= 1);
 
-    const struct sapling_key_entry *restored_key =
-        sapling_keystore_find_by_ivk(&new_w.sapling_keys, id.ivk);
+    const struct sapling_key_entry *restored_key = new_w ?
+        sapling_keystore_find_by_ivk(&new_w->sapling_keys, id.ivk) : NULL;
     DR_CHECK("act3: the restored keystore holds the note's ivk", restored_key != NULL);
     DR_CHECK("act3: the restored SPENDING key is byte-identical",
              restored_key &&
@@ -1428,7 +1435,7 @@ static int act3_shielded(void)
     memory_cleanse(restored_seed, sizeof(restored_seed));
     memory_cleanse(&id, sizeof(id));
     wallet_sqlite_close(&new_ws);
-    wallet_free(&new_w);
+    if (new_w) { wallet_free(new_w); free(new_w); new_w = NULL; }
     node_db_close(&new_ndb);
     simnet_free(&s);
 
