@@ -1106,9 +1106,90 @@ static int test_bh_restored_cursor_survives_the_first_pass(void)
     return failures;
 }
 
+/* A verdict must EXPIRE. Everything above proves the census never certifies
+ * what it has not read; this proves it stops certifying what it read once and
+ * can no longer read.
+ *
+ * Without the demotion in body_history_census_fold's INDETERMINATE branch, a
+ * height measured on any earlier pass stayed measured for the life of the
+ * process. So the dangerous order is not "the index was always bad" — that
+ * case fails closed and is covered above — it is "the index was good, one
+ * clean sweep ran, and THEN the index went bad". Measured on the version
+ * without the demotion: 24,576 consecutive failed reads with the verdict
+ * still reading complete-and-proven.
+ *
+ * "I checked this an hour ago and cannot check it now" is not the same claim
+ * as "I have it", and a node that cannot tell them apart is back to the
+ * defect this whole module exists to remove. */
+static int test_bh_a_verdict_expires_when_the_index_goes_bad(void)
+{
+    int failures = 0;
+    TEST("a proven verdict expires once the index stops being readable") {
+        struct bh_fake_chain chain;
+        ASSERT(bh_fake_chain_init(&chain, 500));
+        /* Sweep one: a healthy node. Every height indexed and held. */
+        for (int64_t h = 0; h < 500; h++) {
+            chain.indexed[h] = 1;
+            chain.have_data[h] = 1;
+        }
+
+        struct body_coverage_map held, measured;
+        body_coverage_init(&held);
+        body_coverage_init(&measured);
+        struct body_history_census census;
+        body_history_census_init(&census);
+
+        ASSERT(bh_run_full_census(&census, &held, &measured, &chain, 499, 64,
+                                  NULL, NULL, 0, NULL) == 0);
+
+        struct body_history_verdict v;
+        ASSERT(body_history_evaluate(&held, &measured, 0, 499, &v));
+        ASSERT(v.status == BODY_HISTORY_COMPLETE);
+        ASSERT(body_history_verdict_is_proven(&v));
+        ASSERT(body_coverage_total_covered(&measured) == 500);
+
+        /* Now the block index becomes unreadable underneath a node that is
+         * already running — a truncated block_index.bin, a datadir restored
+         * over the top, pruning that did not update the record. Nothing
+         * about `held` changes: the coverage file still claims everything,
+         * which is exactly why it must not be the thing that certifies. */
+        for (int64_t h = 0; h < 500; h++)
+            chain.indexed[h] = 0;
+
+        struct body_history_census resweep;
+        body_history_census_init(&resweep);
+        ASSERT(bh_run_full_census(&resweep, &held, &measured, &chain, 499, 64,
+                                  NULL, NULL, 0, NULL) == 0);
+        ASSERT(resweep.heights_indeterminate == 500);
+        ASSERT(resweep.heights_examined == 0);
+
+        /* THE assertion: the earlier sweep's evidence is gone. */
+        ASSERT(body_coverage_total_covered(&measured) == 0);
+
+        /* `held` is deliberately untouched — an unreadable index entry is not
+         * evidence the body was deleted, and inventing a hole here would send
+         * the fetcher chasing 500 blocks that are probably on disk. */
+        ASSERT(body_coverage_total_covered(&held) == 500);
+
+        struct body_history_verdict after;
+        ASSERT(body_history_evaluate(&held, &measured, 0, 499, &after));
+        ASSERT(after.status == BODY_HISTORY_UNKNOWN);
+        ASSERT(!body_history_verdict_is_proven(&after));
+        ASSERT(after.unmeasured_count == 500);
+        ASSERT(after.missing_count == 0);   /* still no INVENTED hole */
+
+        bh_fake_chain_free(&chain);
+        body_coverage_free(&held);
+        body_coverage_free(&measured);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_body_history(void)
 {
     int failures = 0;
+    failures += test_bh_a_verdict_expires_when_the_index_goes_bad();
     failures += test_bh_census_descends_under_a_moving_tip();
     failures += test_bh_restored_cursor_survives_the_first_pass();
     failures += test_bh_block_acceptance_refuses_unproven_history();

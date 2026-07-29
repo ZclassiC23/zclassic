@@ -52,9 +52,26 @@ int body_backfill_pass(struct main_state *ms, struct download_manager *dm,
  * (the burst then ends only on its own bounds). */
 typedef bool (*body_backfill_abort_fn)(void *ctx);
 
-/* Boot catch-up burst: run census-only slices back-to-back until every
- * height in the window has been looked at once, then return and let the
- * caller go back to its slow tick.
+/* Catch-up burst: run census-only slices back-to-back until every height in
+ * the window has been read once, then return and let the caller go back to
+ * its slow tick.
+ *
+ * "Boot" is the case it was written for, not the only case it runs in. The
+ * window is [0, tip], so every new block extends it and the next tick bursts
+ * again over the new heights — and after the expiry rule in
+ * body_history_census_fold, any height whose index entry has since become
+ * unreadable is demoted back to unmeasured and re-walked too. This is a
+ * standing re-sweep, not a one-shot at startup. That is the behaviour we
+ * want; the name is just older than the behaviour.
+ *
+ * "Looked at" means READ THE INDEX ENTRY for a height, not read the block.
+ * The probe asks the in-memory chain whether a body is recorded present; it
+ * does not open the file. So this covers a datadir whose index and coverage
+ * record disagree — a partial backup, a truncated index, pruning that did
+ * not update the record — and does NOT cover a body whose index entry says
+ * present while the block file on disk is truncated or gone. That second
+ * case is app/conditions/src/have_data_unreadable.c's territory, and this
+ * module does not claim it.
  *
  * Why it exists: one slice per GAPFILL_TICK_SECS takes ~65 minutes to walk a
  * 3.2M-height window, and until the walk finishes the node can only publish

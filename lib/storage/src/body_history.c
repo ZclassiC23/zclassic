@@ -361,10 +361,31 @@ bool body_history_census_fold(struct body_history_census *c,
             res.examined += run;
             break;
         default:
-            /* INDETERMINATE: enters NEITHER map. This is the branch the
-             * previous attempt at this fix got wrong — an unreadable index
-             * must leave the height unmeasured, never silently "covered"
-             * and never silently "clean". */
+            /* INDETERMINATE: enters NEITHER map, and is REMOVED from
+             * `measured` if an earlier pass put it there. This is the branch
+             * the previous attempt at this fix got wrong — an unreadable
+             * index must leave the height unmeasured, never silently
+             * "covered" and never silently "clean".
+             *
+             * The removal is what makes the verdict expire. Without it a
+             * height measured once stayed measured for the life of the
+             * process, so a node that completed one good sweep and THEN lost
+             * its block index went on publishing "complete, proven" while
+             * every subsequent read failed — measured at 24,576 consecutive
+             * failed reads with the verdict unmoved. "I checked this once,
+             * an hour ago, and cannot check it now" is not the same claim as
+             * "I have it", and this module exists to keep those apart.
+             *
+             * Only `measured` is demoted, never `held`. `held` is the shared
+             * record of which bodies are on disk and drives what gets
+             * downloaded; an unreadable index entry is not evidence the body
+             * is gone. Clearing `measured` alone moves the height to
+             * unmeasured, which holds the verdict at UNKNOWN — the honest
+             * answer — without inventing a hole for the fetcher to chase. */
+            if (!body_coverage_remove(measured, rlo, rhi))
+                LOG_FAIL("body_history",
+                         "fold: demote unreadable [%lld..%lld] failed",
+                         (long long)rlo, (long long)rhi);
             res.indeterminate += run;
             break;
         }
