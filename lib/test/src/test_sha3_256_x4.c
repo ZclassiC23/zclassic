@@ -1,5 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
+ * ACCEL-ORACLE: lib/crypto/src/sha3_256_x4.c
+ *
  * Differential parity oracle + honest benchmark for the 4-way batched SHA3-256
  * primitive (lib/crypto/src/sha3_256_x4.c).
  *

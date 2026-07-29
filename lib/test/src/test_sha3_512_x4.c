@@ -1,5 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
+ * ACCEL-ORACLE: lib/crypto/src/sha3_avx512.c
+ *
  * Differential parity oracle + honest benchmark for the 4-way SHA3-512
  * keystream primitive (lib/crypto/src/sha3_avx512.c).
  *

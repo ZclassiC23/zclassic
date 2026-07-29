@@ -5417,7 +5417,7 @@ check-observability-pairing: tools/check_observability_pairing
 # in-tree FIPS-202 SHA3-256 + memory_cleanse) that reads the file list on stdin
 # (git ls-files -z) and writes/verifies core/MANIFEST.sha3. See tools/core_seal.c
 # and core/UNSEAL.md for the ritual.
-.PHONY: core-seal core-seal-check core-unseal check-core-seal check-core-include-boundary
+.PHONY: core-seal core-seal-check core-unseal check-core-seal check-core-include-boundary check-accel-oracle-pinned
 CORE_MANIFEST := core/MANIFEST.sha3
 CORE_UNSEAL_TOKEN := .core-unseal-token
 CORE_SEAL_SRCS := tools/core_seal.c lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/support/src/cleanse.c
@@ -5513,6 +5513,16 @@ check-core-seal: tools/core_seal
 check-core-include-boundary:
 	@echo "══ LINT: sealed consensus-core include boundary ══"
 	@./tools/scripts/check_core_include_boundary.sh
+
+# Accelerator-oracle pin: the core/ seal covers the TEXT of the consensus
+# predicates, not the ISA-dispatched arithmetic they call (SHA-256, batched
+# BLAKE2b for Equihash, BLS12-381/BN254 Montgomery multiply). Those files must
+# stay editable for speed, so they are pinned by property instead of by bytes:
+# each one carries a differential oracle proving it byte-identical to a
+# portable reference. Registry: tools/lint/accel_oracle_registry.txt
+check-accel-oracle-pinned:
+	@echo "══ LINT: accelerator differential-oracle pin (below the core seal) ══"
+	@./tools/lint/check_accel_oracle_pinned.sh
 
 check-silent-errors-services:
 	@echo "══ LINT: silent error returns in services ══"
@@ -6491,6 +6501,7 @@ LINT_GATES := \
     check-domain-purity \
     check-core-include-boundary \
     check-core-seal \
+    check-accel-oracle-pinned \
     check-supervisor-registration \
     check-test-registration \
     check-typed-blocker \

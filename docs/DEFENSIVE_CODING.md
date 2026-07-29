@@ -467,6 +467,28 @@ assert green).
   `lib/test/src/lint_gate_quality_selftests.c:t_telemetry_ontology_gate`.
   Impl: `tools/lint/check_telemetry_ontology.sh`.
 
+- **Gate #51: `check-accel-oracle-pinned`** (HARD) — the `core/` seal (Gate #47)
+  covers the TEXT of the consensus predicates, not the ISA-dispatched
+  arithmetic they call. `core/math/src/hash.c` and
+  `core/consensus/src/script_interp.c` call `lib/crypto/src/sha256.c`,
+  `core/consensus/src/equihash.c` calls the batched BLAKE2b in
+  `lib/crypto/src/blake2b_avx2.c`, and `coins/coins.h` reaches the BLS12-381 /
+  BN254 Montgomery multiplies in `lib/sapling/`. Editing any of those changes
+  which blocks are valid while `check-core-seal` stays green (proven: appending
+  a comment to `sha256.c` leaves `make lint` fully green). Freezing them is the
+  wrong answer — they exist to get faster — so this gate pins the PROPERTY
+  instead of the bytes: every ISA-dispatched file in the include-closure of
+  `core/` must carry a row in `tools/lint/accel_oracle_registry.txt` naming a
+  differential oracle that proves it byte-identical to a portable reference.
+  The gate recomputes the closure and the ISA set from source each run, so a
+  NEW accelerator or a new `#include` edge from `core/` that reaches one fails
+  HERE; it also fails on a stale row, a missing oracle, an oracle whose group
+  is absent from the `TEST_LIST` in `lib/test/src/test_parallel.c` (compiled
+  but never dispatched proves nothing), and an oracle that references no
+  symbol the implementation exports. Each oracle carries the marker
+  `ACCEL-ORACLE: <impl path>`. Impl:
+  `tools/lint/check_accel_oracle_pinned.sh`.
+
 - **Gate #16: `check-supervisor-registration`** (RATCHET) — flags any
   `app/services/src/*_service.c` that spawns work (`pthread_create`,
   `thread_registry_spawn`, `health_register_periodic`) but does NOT call
@@ -740,6 +762,7 @@ against the Makefile `lint:` target. Keep it sorted; edit it whenever you
 add/remove a gate.
 
 <!-- LINT-GATES-BEGIN -->
+- `check-accel-oracle-pinned`
 - `check-blob-read-bounds`
 - `check-byte-order-codec-single`
 - `check-api-reference-generated`

@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright 2026 Rhett Creighton
  *
+ * ACCEL-ORACLE: lib/crypto/src/sha256.c
+ *
  * Differential parity oracle for the two SHA-256 compression transforms in
  * lib/crypto/src/sha256.c: the portable C reference and the Intel SHA-NI
  * hardware transform.

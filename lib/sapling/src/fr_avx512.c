@@ -3,18 +3,26 @@
  * Hardware-accelerated field arithmetic for BLS12-381 Fr and Fp.
  *
  * Runtime CPUID detection with graceful degradation. Two tiers EXIST:
- *   Tier 1: BMI2 — MULX schoolbook Montgomery (target attribute, so it
- *           compiles into the x86-64-v3 baseline and is entered only after
- *           CPUID confirms support). Note it does NOT build ADCX/ADOX carry
- *           chains: every _addcarryx_u64 below takes a zero carry-in and the
- *           carry is folded by scalar adds, so ADX contributes nothing today.
+ *   Tier 1: BMI2+ADX — MULX with two REAL carry chains, ADCX on CF and ADOX on
+ *           OF, in inline asm (target attribute, so it compiles into the
+ *           x86-64-v3 baseline and is entered only after CPUID confirms
+ *           support). The CIOS core is shared with BN254 Fq in mont_adx.h,
+ *           which also explains why it must be asm and not intrinsics.
  *   Tier 2: Portable — __int128 fallback (always available)
  *
  * AVX-512 IFMA (VPMADD52) is DETECTED but not implemented — there is no
  * VPMADD52 code in this file. fr_accel_implementation() reports it as present-
  * and-unused rather than claiming a tier that has never executed.
  *
- * Detection runs once at first use. Binary works on any x86-64 CPU. */
+ * Detection runs once at first use. Binary works on any x86-64 CPU.
+ *
+ * HISTORY — read before "simplifying" this back to intrinsics. Tier 1 used to
+ * be _mulx_u64 + _addcarryx_u64 with a literal 0 carry-in everywhere, so GCC
+ * emitted plain ADC and the object disassembled to adcx=0, adox=0. It was
+ * SLOWER than the portable C it displaced on Zen 4: Fr 0.85x latency / 0.73x
+ * throughput, Fp 0.78x / 0.72x. Real dual carry chains are instead 1.09x /
+ * 1.07x (Fr) and 1.26x / 1.38x (Fp) FASTER than portable. See
+ * docs/CRYPTO_PERF.md for the method and the full table. */
 
 #include "sapling/fr.h"
 #include "sapling/fr_accel.h"
@@ -23,6 +31,10 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <immintrin.h>
+
+#if defined(__x86_64__) || defined(_M_X64)
+#include "mont_adx.h"
+#endif
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"
@@ -72,188 +84,21 @@ static void detect_cpu_features(void)
  * file, so an IFMA-capable host still runs the BMI2 path; saying otherwise made
  * `zclassic23`'s boot banner claim a tier that has never executed. IFMA is
  * still reported, as an unused capability, so the headroom stays visible.
- * The BMI2 path uses MULX but does not build ADCX/ADOX carry chains (every
- * _addcarryx_u64 there takes a zero carry-in), so ADX is not claimed either. */
+ * ADX is now claimed because the installed path genuinely builds two carry
+ * chains — `test_mont_adx_honest_string` re-derives this from the running
+ * binary's own disassembly rather than trusting this comment. */
 const char *fr_accel_implementation(void)
 {
     detect_cpu_features();
     if (cpu_has_bmi2 && cpu_has_adx)
         return cpu_has_avx512ifma
-            ? "BMI2 MULX (AVX-512 IFMA present, unimplemented)"
-            : "BMI2 MULX";
+            ? "BMI2+ADX (MULX+ADCX+ADOX) (AVX-512 IFMA present, unimplemented)"
+            : "BMI2+ADX (MULX+ADCX+ADOX)";
     return "portable (__int128)";
 }
 
 /* 52-bit radix mask for AVX-512 IFMA */
 #define RADIX52_MASK 0x000FFFFFFFFFFFFFULL
-
-/* ================================================================
- * Tier 2: Fr Montgomery multiply — BMI2+ADX (MULX+ADCX+ADOX)
- *
- * Compiled unconditionally with target attribute so the binary
- * runs on any CPU. The function is only called after CPUID confirms
- * BMI2+ADX support.
- * ================================================================ */
-
-__attribute__((target("bmi2,adx")))
-static void fr_mont_mul_bmi2(uint64_t r[4], const uint64_t a[4], const uint64_t b[4])
-{
-#if defined(__x86_64__) || defined(_M_X64)
-    /* Include intrinsics header for target-specific functions */
-    static const uint64_t P[4] = {
-        0xffffffff00000001ULL, 0x53bda402fffe5bfeULL,
-        0x3339d80809a1d805ULL, 0x73eda753299d7d48ULL
-    };
-    static const uint64_t INV = 0xfffffffeffffffffULL;
-
-    uint64_t t[5] = {0, 0, 0, 0, 0};
-
-    for (int i = 0; i < 4; i++) {
-        unsigned long long hi;
-        unsigned char cf;
-        uint64_t carry_mul;
-
-        /* t += a * b[i] */
-        uint64_t lo0 = _mulx_u64(a[0], b[i], &hi);
-        cf = _addcarryx_u64(0, t[0], lo0, (unsigned long long *)&t[0]);
-        carry_mul = hi;
-
-        uint64_t lo1 = _mulx_u64(a[1], b[i], &hi);
-        cf = _addcarryx_u64(cf, t[1], lo1, (unsigned long long *)&t[1]);
-        unsigned char cf2 = _addcarryx_u64(0, t[1], carry_mul, (unsigned long long *)&t[1]);
-        carry_mul = hi + cf2;
-
-        uint64_t lo2 = _mulx_u64(a[2], b[i], &hi);
-        cf = _addcarryx_u64(cf, t[2], lo2, (unsigned long long *)&t[2]);
-        cf2 = _addcarryx_u64(0, t[2], carry_mul, (unsigned long long *)&t[2]);
-        carry_mul = hi + cf2;
-
-        uint64_t lo3 = _mulx_u64(a[3], b[i], &hi);
-        cf = _addcarryx_u64(cf, t[3], lo3, (unsigned long long *)&t[3]);
-        cf2 = _addcarryx_u64(0, t[3], carry_mul, (unsigned long long *)&t[3]);
-        carry_mul = hi + cf2;
-
-        t[4] = carry_mul + cf;
-
-        /* Montgomery reduction */
-        uint64_t m = t[0] * INV;
-
-        lo0 = _mulx_u64(m, P[0], &hi);
-        cf = _addcarryx_u64(0, t[0], lo0, (unsigned long long *)&t[0]);
-        carry_mul = hi + cf;
-
-        lo1 = _mulx_u64(m, P[1], &hi);
-        cf = _addcarryx_u64(0, t[1], lo1, (unsigned long long *)&t[1]);
-        cf2 = _addcarryx_u64(0, t[1], carry_mul, (unsigned long long *)&t[0]);
-        carry_mul = hi + cf + cf2;
-
-        lo2 = _mulx_u64(m, P[2], &hi);
-        cf = _addcarryx_u64(0, t[2], lo2, (unsigned long long *)&t[2]);
-        cf2 = _addcarryx_u64(0, t[2], carry_mul, (unsigned long long *)&t[1]);
-        carry_mul = hi + cf + cf2;
-
-        lo3 = _mulx_u64(m, P[3], &hi);
-        cf = _addcarryx_u64(0, t[3], lo3, (unsigned long long *)&t[3]);
-        cf2 = _addcarryx_u64(0, t[3], carry_mul, (unsigned long long *)&t[2]);
-        carry_mul = hi + cf + cf2;
-
-        t[3] = t[4] + carry_mul;
-        t[4] = 0;
-    }
-
-    /* Final reduction */
-    bool ge = t[4] != 0;
-    if (!ge) {
-        for (int i = 3; i >= 0; i--) {
-            if (t[i] > P[i]) { ge = true; break; }
-            if (t[i] < P[i]) break;
-            if (i == 0) ge = true;
-        }
-    }
-
-    if (ge) {
-        unsigned char borrow = 0;
-        for (int i = 0; i < 4; i++)
-            borrow = _subborrow_u64(borrow, t[i], P[i], (unsigned long long *)&r[i]);
-    } else {
-        memcpy(r, t, 32);
-    }
-#else
-    (void)r; (void)a; (void)b;
-#endif
-}
-
-/* ================================================================
- * Tier 2: Fp Montgomery multiply — BMI2+ADX
- * ================================================================ */
-
-__attribute__((target("bmi2,adx")))
-static void fp_mont_mul_bmi2(uint64_t r[6], const uint64_t a[6], const uint64_t b[6])
-{
-#if defined(__x86_64__) || defined(_M_X64)
-    #include <immintrin.h>
-
-    static const uint64_t Q[6] = {
-        0xb9feffffffffaaabULL, 0x1eabfffeb153ffffULL,
-        0x6730d2a0f6b0f624ULL, 0x64774b84f38512bfULL,
-        0x4b1ba7b6434bacd7ULL, 0x1a0111ea397fe69aULL
-    };
-    static const uint64_t INV = 0x89f3fffcfffcfffdULL;
-
-    uint64_t t[7] = {0};
-
-    for (int i = 0; i < 6; i++) {
-        unsigned long long hi;
-        unsigned char cf;
-        uint64_t carry_mul = 0;
-
-        for (int j = 0; j < 6; j++) {
-            uint64_t lo = _mulx_u64(a[j], b[i], &hi);
-            cf = _addcarryx_u64(0, t[j], lo, (unsigned long long *)&t[j]);
-            unsigned char cf2 = _addcarryx_u64(0, t[j], carry_mul,
-                                                (unsigned long long *)&t[j]);
-            carry_mul = hi + cf + cf2;
-        }
-        t[6] = carry_mul;
-
-        uint64_t m = t[0] * INV;
-        carry_mul = 0;
-
-        uint64_t lo0 = _mulx_u64(m, Q[0], &hi);
-        cf = _addcarryx_u64(0, t[0], lo0, (unsigned long long *)&t[0]);
-        carry_mul = hi + cf;
-
-        for (int j = 1; j < 6; j++) {
-            uint64_t lo = _mulx_u64(m, Q[j], &hi);
-            cf = _addcarryx_u64(0, t[j], lo, (unsigned long long *)&t[j]);
-            unsigned char cf2 = _addcarryx_u64(0, t[j], carry_mul,
-                                                (unsigned long long *)&t[j - 1]);
-            carry_mul = hi + cf + cf2;
-        }
-        t[5] = t[6] + carry_mul;
-        t[6] = 0;
-    }
-
-    bool ge = t[6] != 0;
-    if (!ge) {
-        for (int i = 5; i >= 0; i--) {
-            if (t[i] > Q[i]) { ge = true; break; }
-            if (t[i] < Q[i]) break;
-            if (i == 0) ge = true;
-        }
-    }
-
-    if (ge) {
-        unsigned char borrow = 0;
-        for (int i = 0; i < 6; i++)
-            borrow = _subborrow_u64(borrow, t[i], Q[i], (unsigned long long *)&r[i]);
-    } else {
-        memcpy(r, t, 48);
-    }
-#else
-    (void)r; (void)a; (void)b;
-#endif
-}
 
 /* ================================================================
  * Tier 3: Portable Montgomery multiply (__int128)
@@ -373,6 +218,25 @@ static void fp_mont_mul_portable(uint64_t r[6], const uint64_t a[6], const uint6
         memcpy(r, t, 48);
 }
 
+/* ── TRUE dual carry chain (MULX + ADCX + ADOX) ────────────────────
+ * Shares the CIOS core in mont_adx.h with BN254 Fq; see that file for why it
+ * is inline asm and for the accumulator bound that makes one conditional
+ * subtraction sufficient. */
+
+#if defined(__x86_64__) || defined(_M_X64)
+__attribute__((target("bmi2,adx")))
+static void fr_mont_mul_adx(uint64_t r[4], const uint64_t a[4], const uint64_t b[4])
+{
+    mont_mul_adx4(r, a, b, FR_P_PORT, FR_INV_PORT);
+}
+
+__attribute__((target("bmi2,adx")))
+static void fp_mont_mul_adx(uint64_t r[6], const uint64_t a[6], const uint64_t b[6])
+{
+    mont_mul_adx6(r, a, b, FP_Q_PORT, FP_INV_PORT);
+}
+#endif
+
 /* ================================================================
  * Runtime dispatch — function pointers, set once at first call
  * ================================================================ */
@@ -388,8 +252,8 @@ static void init_dispatch(void)
     detect_cpu_features();
 #if defined(__x86_64__) || defined(_M_X64)
     if (cpu_has_bmi2 && cpu_has_adx) {
-        g_fr_mont_mul = fr_mont_mul_bmi2;
-        g_fp_mont_mul = fp_mont_mul_bmi2;
+        g_fr_mont_mul = fr_mont_mul_adx;
+        g_fp_mont_mul = fp_mont_mul_adx;
     } else
 #endif
     {
@@ -413,6 +277,34 @@ void fp_mont_mul_accel(uint64_t r[6], const uint64_t a[6], const uint64_t b[6])
     g_fp_mont_mul(r, a, b);
 }
 
+bool fr_accel_mont_mul_adx(uint64_t r[4], const uint64_t a[4], const uint64_t b[4])
+{
+#if defined(__x86_64__) || defined(_M_X64)
+    detect_cpu_features();
+    if (!cpu_has_bmi2 || !cpu_has_adx)
+        return false;
+    fr_mont_mul_adx(r, a, b);
+    return true;
+#else
+    (void)r; (void)a; (void)b;
+    return false;
+#endif
+}
+
+bool fp_accel_mont_mul_adx(uint64_t r[6], const uint64_t a[6], const uint64_t b[6])
+{
+#if defined(__x86_64__) || defined(_M_X64)
+    detect_cpu_features();
+    if (!cpu_has_bmi2 || !cpu_has_adx)
+        return false;
+    fp_mont_mul_adx(r, a, b);
+    return true;
+#else
+    (void)r; (void)a; (void)b;
+    return false;
+#endif
+}
+
 /* ── Per-tier hooks (differential oracle + benchmark) ─────────────
  *
  * Mirrors sapling/bn254_accel.h. These bypass the dispatcher entirely so a
@@ -426,37 +318,9 @@ void fr_accel_mont_mul_portable(uint64_t r[4], const uint64_t a[4], const uint64
     fr_mont_mul_portable(r, a, b);
 }
 
-bool fr_accel_mont_mul_bmi2(uint64_t r[4], const uint64_t a[4], const uint64_t b[4])
-{
-#if defined(__x86_64__) || defined(_M_X64)
-    detect_cpu_features();
-    if (!cpu_has_bmi2 || !cpu_has_adx)
-        return false;
-    fr_mont_mul_bmi2(r, a, b);
-    return true;
-#else
-    (void)r; (void)a; (void)b;
-    return false;
-#endif
-}
-
 void fp_accel_mont_mul_portable(uint64_t r[6], const uint64_t a[6], const uint64_t b[6])
 {
     fp_mont_mul_portable(r, a, b);
-}
-
-bool fp_accel_mont_mul_bmi2(uint64_t r[6], const uint64_t a[6], const uint64_t b[6])
-{
-#if defined(__x86_64__) || defined(_M_X64)
-    detect_cpu_features();
-    if (!cpu_has_bmi2 || !cpu_has_adx)
-        return false;
-    fp_mont_mul_bmi2(r, a, b);
-    return true;
-#else
-    (void)r; (void)a; (void)b;
-    return false;
-#endif
 }
 
 

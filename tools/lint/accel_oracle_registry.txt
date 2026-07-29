@@ -1,0 +1,38 @@
+# accel_oracle_registry.txt — every ISA-dispatched implementation file that the
+# sealed consensus core reaches, and the differential oracle that pins it to a
+# portable reference. Enforced by tools/lint/check_accel_oracle_pinned.sh
+# (make lint gate `check-accel-oracle-pinned`).
+#
+# WHY THIS FILE EXISTS
+# core/{consensus,chainparams,params,math} is byte-sealed by core/MANIFEST.sha3.
+# The seal covers the TEXT of the consensus predicates. It does not cover the
+# arithmetic underneath them: core/math/src/hash.c calls lib/crypto's SHA-256,
+# core/consensus/src/equihash.c calls lib/crypto's batched BLAKE2b, and the
+# Sapling commitment tree reached through coins/coins.h calls lib/sapling's
+# Montgomery multiply. Editing any of those changes what the sealed predicate
+# DOES without moving a byte inside core/, so check-core-seal stays green.
+#
+# Freezing them is the wrong answer — their whole purpose is to get faster.
+# What must hold instead is a PROPERTY: every such file is pinned, by a test in
+# the suite, to a portable reference implementation that produces the same
+# bytes. That is what the rows below assert and the gate verifies.
+#
+# FORMAT — one row per (implementation, oracle) pair, whitespace separated:
+#     <impl .c path>   <oracle test .c path>   <test_parallel group name>
+# An implementation may appear in more than one row; all listed oracles must
+# be present. The oracle file must carry the marker line
+#     ACCEL-ORACLE: <impl .c path>
+# and must reference at least one symbol the implementation exports, so a
+# renamed entry point cannot leave the oracle testing nothing.
+#
+# ADDING A ROW is the normal path when you write a new accelerator: the gate
+# fails until the oracle exists. Deleting a row is only correct when the
+# implementation itself is gone or is no longer reachable from core/; the gate
+# fails on a stale row too.
+
+lib/crypto/src/sha256.c          lib/test/src/test_sha256_isa_parity.c      sha256_isa_parity
+lib/crypto/src/blake2b_avx2.c    lib/test/src/test_blake2b_batch_parity.c   blake2b_batch_parity
+lib/crypto/src/sha3_256_x4.c     lib/test/src/test_sha3_256_x4.c            sha3_256_x4
+lib/crypto/src/sha3_avx512.c     lib/test/src/test_sha3_512_x4.c            sha3_512_x4
+lib/sapling/src/bn254_accel.c    lib/test/src/test_bn254_accel.c            bn254_accel
+lib/sapling/src/fr_avx512.c      lib/test/src/test_fr_mont_parity.c         fr_mont_parity

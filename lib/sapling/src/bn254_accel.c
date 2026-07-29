@@ -5,10 +5,7 @@
  * Fq is the 254-bit base field of BN254, the curve every Sprout Groth16
  * JoinSplit proof verifies over. In a from-genesis mint fold the early chain is
  * dense with Sprout proofs, and every tower/point op there bottoms out in this
- * one 4-limb Montgomery multiply — previously portable __uint128 schoolbook
- * only (bn254.c bn_fq_mont_mul), unlike BLS12-381 Fr which already ships a
- * BMI2+ADX path (fr_avx512.c). This adds the same runtime-dispatched
- * acceleration for BN254 Fq.
+ * one 4-limb Montgomery multiply (bn254.c bn_fq_mont_mul).
  *
  * SPEED path only: every implementation returns a BIT-IDENTICAL canonical
  * Montgomery product to the portable reference, so the accept/reject result of
@@ -16,9 +13,19 @@
  * every path vs portable over a large random corpus + boundary vectors).
  *
  * Runtime CPUID with graceful degradation:
- *   Tier 1: BMI2+ADX — MULX + dual ADCX/ADOX carry chains
+ *   Tier 1: BMI2+ADX — MULX with two REAL carry chains (ADCX on CF, ADOX on
+ *           OF), in inline asm; see mont_adx.h.
  *   Tier 2: portable — __uint128 schoolbook (always available)
- * Detection runs once at first use; the binary runs on any x86-64 CPU. */
+ * Detection runs once at first use; the binary runs on any x86-64 CPU.
+ *
+ * HISTORY — read before "simplifying" this back to intrinsics. Tier 1 used to
+ * be written with _mulx_u64 + _addcarryx_u64 and was named
+ * "BMI2+ADX (MULX+ADCX+ADOX)", but every _addcarryx_u64 took a literal 0
+ * carry-in and folded the carry with a scalar add, so GCC emitted plain ADC:
+ * the shipped object disassembled to mulx=64, adcx=0, adox=0. It was also
+ * SLOWER than the portable C it displaced — 0.82x latency / 0.81x throughput
+ * on Zen 4. The rewrite to real dual carry chains is 1.03x / 1.16x FASTER than
+ * portable instead. Numbers and method: docs/CRYPTO_PERF.md. */
 
 #include "sapling/bn254_accel.h"
 
@@ -28,6 +35,7 @@
 
 #if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
+#include "mont_adx.h"
 #endif
 
 /* BN254 Fq modulus (little-endian limbs) and -q^{-1} mod 2^64. Must match the
@@ -109,93 +117,16 @@ static void bn_fq_mont_mul_portable(uint64_t r[4], const uint64_t a[4],
     }
 }
 
-/* ── Tier 1: BMI2+ADX (MULX + ADCX/ADOX) ──────────────────────────── */
+/* ── Tier 1: BMI2+ADX — MULX with two real carry chains ─────────────
+ * The CIOS core, the reason it is inline asm, and the accumulator bound that
+ * makes one conditional subtraction sufficient all live in mont_adx.h. */
 
 #if defined(__x86_64__) || defined(_M_X64)
 __attribute__((target("bmi2,adx")))
-static void bn_fq_mont_mul_bmi2(uint64_t r[4], const uint64_t a[4],
-                                const uint64_t b[4])
+static void bn_fq_mont_mul_adx(uint64_t r[4], const uint64_t a[4],
+                               const uint64_t b[4])
 {
-    static const uint64_t Q[4] = {
-        0x3c208c16d87cfd47ULL, 0x97816a916871ca8dULL,
-        0xb85045b68181585dULL, 0x30644e72e131a029ULL
-    };
-    static const uint64_t INV = 0x87d20782e4866389ULL;
-
-    uint64_t t[5] = {0, 0, 0, 0, 0};
-
-    for (int i = 0; i < 4; i++) {
-        unsigned long long hi;
-        unsigned char cf;
-        uint64_t carry_mul;
-
-        /* t += a * b[i] */
-        uint64_t lo0 = _mulx_u64(a[0], b[i], &hi);
-        cf = _addcarryx_u64(0, t[0], lo0, (unsigned long long *)&t[0]);
-        carry_mul = hi;
-
-        uint64_t lo1 = _mulx_u64(a[1], b[i], &hi);
-        cf = _addcarryx_u64(cf, t[1], lo1, (unsigned long long *)&t[1]);
-        unsigned char cf2 =
-            _addcarryx_u64(0, t[1], carry_mul, (unsigned long long *)&t[1]);
-        carry_mul = hi + cf2;
-
-        uint64_t lo2 = _mulx_u64(a[2], b[i], &hi);
-        cf = _addcarryx_u64(cf, t[2], lo2, (unsigned long long *)&t[2]);
-        cf2 = _addcarryx_u64(0, t[2], carry_mul, (unsigned long long *)&t[2]);
-        carry_mul = hi + cf2;
-
-        uint64_t lo3 = _mulx_u64(a[3], b[i], &hi);
-        cf = _addcarryx_u64(cf, t[3], lo3, (unsigned long long *)&t[3]);
-        cf2 = _addcarryx_u64(0, t[3], carry_mul, (unsigned long long *)&t[3]);
-        carry_mul = hi + cf2;
-
-        t[4] = carry_mul + cf;
-
-        /* Montgomery reduction */
-        uint64_t m = t[0] * INV;
-
-        lo0 = _mulx_u64(m, Q[0], &hi);
-        cf = _addcarryx_u64(0, t[0], lo0, (unsigned long long *)&t[0]);
-        carry_mul = hi + cf;
-
-        lo1 = _mulx_u64(m, Q[1], &hi);
-        cf = _addcarryx_u64(0, t[1], lo1, (unsigned long long *)&t[1]);
-        cf2 = _addcarryx_u64(0, t[1], carry_mul, (unsigned long long *)&t[0]);
-        carry_mul = hi + cf + cf2;
-
-        lo2 = _mulx_u64(m, Q[2], &hi);
-        cf = _addcarryx_u64(0, t[2], lo2, (unsigned long long *)&t[2]);
-        cf2 = _addcarryx_u64(0, t[2], carry_mul, (unsigned long long *)&t[1]);
-        carry_mul = hi + cf + cf2;
-
-        lo3 = _mulx_u64(m, Q[3], &hi);
-        cf = _addcarryx_u64(0, t[3], lo3, (unsigned long long *)&t[3]);
-        cf2 = _addcarryx_u64(0, t[3], carry_mul, (unsigned long long *)&t[2]);
-        carry_mul = hi + cf + cf2;
-
-        t[3] = t[4] + carry_mul;
-        t[4] = 0;
-    }
-
-    /* Final reduction: subtract Q once if t >= Q (t[4] is a possible overflow
-     * limb). */
-    bool ge = t[4] != 0;
-    if (!ge) {
-        for (int i = 3; i >= 0; i--) {
-            if (t[i] > Q[i]) { ge = true; break; }
-            if (t[i] < Q[i]) break;
-            if (i == 0) ge = true;
-        }
-    }
-    if (ge) {
-        unsigned char borrow = 0;
-        for (int i = 0; i < 4; i++)
-            borrow = _subborrow_u64(borrow, t[i], Q[i],
-                                    (unsigned long long *)&r[i]);
-    } else {
-        memcpy(r, t, 32);
-    }
+    mont_mul_adx4(r, a, b, BN_Q, BN_INV);
 }
 #endif /* __x86_64__ */
 
@@ -211,7 +142,7 @@ static void bn_init_dispatch(void)
     bn_detect_cpu();
 #if defined(__x86_64__) || defined(_M_X64)
     if (g_cpu_bmi2 && g_cpu_adx)
-        g_bn_fq_mont_mul = bn_fq_mont_mul_bmi2;
+        g_bn_fq_mont_mul = bn_fq_mont_mul_adx;
     else
 #endif
         g_bn_fq_mont_mul = bn_fq_mont_mul_portable;
@@ -241,13 +172,33 @@ void bn254_accel_mont_mul_portable(uint64_t r[4], const uint64_t a[4],
     bn_fq_mont_mul_portable(r, a, b);
 }
 
-bool bn254_accel_mont_mul_bmi2(uint64_t r[4], const uint64_t a[4],
-                               const uint64_t b[4])
+const void *bn254_accel_adx_code(void)
 {
     bn_detect_cpu();
 #if defined(__x86_64__) || defined(_M_X64)
     if (g_cpu_bmi2 && g_cpu_adx) {
-        bn_fq_mont_mul_bmi2(r, a, b);
+        /* ISO C has no function-pointer-to-object-pointer conversion (a direct
+         * cast trips -Wpedantic), but the whole point here is to hand a test
+         * the address of the emitted code. A union does the reinterpretation
+         * without inventing a conversion the standard lacks. */
+        union {
+            void (*fn)(uint64_t *, const uint64_t *, const uint64_t *);
+            const void *p;
+        } u;
+        u.fn = bn_fq_mont_mul_adx;
+        return u.p;
+    }
+#endif
+    return NULL;
+}
+
+bool bn254_accel_mont_mul_adx(uint64_t r[4], const uint64_t a[4],
+                              const uint64_t b[4])
+{
+    bn_detect_cpu();
+#if defined(__x86_64__) || defined(_M_X64)
+    if (g_cpu_bmi2 && g_cpu_adx) {
+        bn_fq_mont_mul_adx(r, a, b);
         return true;
     }
 #endif

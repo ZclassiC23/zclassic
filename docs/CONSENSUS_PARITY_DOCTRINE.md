@@ -76,6 +76,38 @@ heights, protocol versions, pow constants, `powLimit`, genesis hash) to the
 golden zclassicd numbers. To change a value you must change zclassicd first and
 update this test in the same breath, deliberately.
 
+## What the `core/` seal does not cover
+
+`core/MANIFEST.sha3` (Gate #47, `check-core-seal`) freezes the *text* of the
+consensus predicates. It does not freeze the arithmetic those predicates call.
+Sealed code calls unsealed code on every block:
+
+| Sealed caller | Unsealed callee | What it decides |
+|---|---|---|
+| `core/math/src/hash.c` | `lib/crypto/src/sha256.c` | block hash, txid, merkle root |
+| `core/consensus/src/script_interp.c` | `lib/crypto/src/sha256.c` | `OP_SHA256` / `OP_HASH256` |
+| `core/consensus/src/equihash.c` | `lib/crypto/src/blake2b_avx2.c` | Equihash (200,9) PoW |
+| `core/` → `coins/coins.h` → `sapling/incremental_merkle_tree.h` | `lib/sapling/src/fr_avx512.c` | Sapling commitment-tree anchor, Groth16 verdicts |
+| same closure, via `sapling/bn254.h` | `lib/sapling/src/bn254_accel.c` | Sprout Groth16 JoinSplit verdicts |
+
+Editing any of those changes which blocks the node accepts without moving a
+byte inside `core/`, so `check-core-seal` stays green. That is by design and
+must stay that way: those files exist to get faster, and freezing them would
+put the owner unseal ritual in front of every optimisation.
+
+What covers them is **Gate #51 `check-accel-oracle-pinned`**. It recomputes,
+from source, the include-closure of `core/` over `lib/*/src`, keeps the members
+carrying a runtime ISA dispatch, and requires each one to be listed in
+`tools/lint/accel_oracle_registry.txt` against a differential oracle that runs
+in the test suite and proves it byte-identical to a portable reference. A new
+accelerator, a new `#include` edge from `core/` that reaches one, a deleted
+oracle, or an oracle that is compiled but not dispatched all fail the gate.
+
+Practical rule: **an accelerated primitive under `core/` is a parity change
+until an oracle says otherwise.** Write the oracle in the same commit as the
+accelerator, drive the same inputs through every tier, and compare bytes — not
+verdicts, not timings.
+
 ## Empirical oversize grandfather (live-behavior parity over text parity)
 
 The doctrine target is **the behavior of the running network**, not the
