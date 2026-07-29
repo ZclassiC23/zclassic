@@ -260,6 +260,12 @@ bool boot_profile_has_explorer(const struct app_context *ctx);
 bool boot_profile_has_store(const struct app_context *ctx);
 bool boot_profile_has_onion(const struct app_context *ctx);
 
+/* The rpc_http service spec as registered into the frontend kernel. Exported
+ * so the restart regression test (lib/test/src/test_rpc_service_restart.c)
+ * can cycle stop_all -> start_all over the REAL start/stop hooks in
+ * isolation. Its start hook clears RPC warmup; its stop hook re-arms it. */
+struct zcl_service_spec boot_frontend_rpc_http_spec(struct boot_svc_ctx *svc);
+
 /* FIX 1 (loader_owns_seed) — PURE seam for the daily-driver seed-clobber guard
  * at app_init_services (boot_services.c). When -load-snapshot-at-own-height is
  * set the loader at boot.c ALREADY re-seeded coins_kv from the body-digest-

@@ -139,6 +139,26 @@ static void boot_rpc_http_stop(void *ctx)
 {
     (void)ctx;
     rpc_http_stop();
+    /* Symmetry with boot_rpc_http_start's set_rpc_warmup_finished(). The
+     * service kernel supports stop_all -> start_all (and start_all's own
+     * partial-failure rollback stops this service mid-call), so leaving the
+     * flag disarmed would bring the node back up answering RPC as "ready"
+     * while it re-initialises — a wrong answer instead of a clear one. */
+    set_rpc_warmup_started("RPC server restarting");
+}
+
+/* The rpc_http frontend service spec. boot_register_frontend_services()
+ * installs exactly this value, so the restart regression test can drive a
+ * stop_all -> start_all cycle over the REAL hooks without also booting Tor,
+ * the explorer and the miner — and can never drift from what boots. */
+struct zcl_service_spec boot_frontend_rpc_http_spec(struct boot_svc_ctx *svc)
+{
+    return (struct zcl_service_spec){
+        .name = "rpc_http",
+        .start = boot_rpc_http_start,
+        .stop = boot_rpc_http_stop,
+        .ctx = svc,
+    };
 }
 
 /* Point the explorer + API cache backends at the local JSON-RPC endpoint,
@@ -413,12 +433,7 @@ bool boot_register_frontend_services(struct boot_svc_ctx *svc)
             .ctx = svc,
             .flags = ZCL_SERVICE_OPTIONAL,
         },
-        {
-            .name = "rpc_http",
-            .start = boot_rpc_http_start,
-            .stop = boot_rpc_http_stop,
-            .ctx = svc,
-        },
+        boot_frontend_rpc_http_spec(svc),
         {
             .name = "api_cache",
             .start = boot_api_cache_start,

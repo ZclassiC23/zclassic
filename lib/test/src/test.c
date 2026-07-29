@@ -1138,6 +1138,7 @@ int main(int argc, char **argv)
     failures += test_node_health_service();
     failures += test_syncdiag_rpc();
     failures += test_rpc_safety();
+    failures += test_rpc_service_restart();
     failures += test_chain_state_repo();
     failures += test_chain_evidence_controller();
     failures += test_chain_evidence_live_advance();

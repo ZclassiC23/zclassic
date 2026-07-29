@@ -24,6 +24,5 @@ core/math/src/arith_uint256.c 2
 core/params/src/upgrades.c 3
 lib/crypto/src/equihash.c 8
 lib/keys/src/key.c 2
-lib/rpc/src/server.c 1
 lib/sapling/src/incremental_merkle_tree.c 1
 lib/storage/src/coins_ram.c 1
