@@ -8,6 +8,14 @@
  * generation self-test succeeds. No generation code runs before its exported
  * manifest has passed the host ABI/capability/provenance/state contract. */
 
+/* realpath() is declared by <stdlib.h> only under __USE_MISC/__USE_XOPEN_EXTENDED,
+ * and the build's -D_POSIX_C_SOURCE=200809L sets neither. Without this the
+ * declaration reaches the TU only through the glibc fortify inline that
+ * -D_FORTIFY_SOURCE=2 pulls in at -O3 — so any -O0, -U_FORTIFY_SOURCE, or
+ * non-glibc build fails with "implicit declaration of realpath", which is a
+ * hard error in C23. Matches lib/net/src/connman.c and 26 other TUs. */
+#define _DEFAULT_SOURCE
+
 #include "hotswap/hotswap.h"
 #include "hotswap/hotswap_module.h"
 

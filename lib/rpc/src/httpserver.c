@@ -160,15 +160,36 @@ bool rpc_http_test_build_response_envelope(bool rpc_ok,
     return ok;
 }
 
+/* Both credential buffers in check_auth() below are 512 bytes and both strings
+ * are NUL-terminated inside them, so no live length can reach this bound. */
+#define RPC_AUTH_CT_BYTES 512u
+
 /* Constant-time comparison to prevent timing attacks on RPC credentials.
- * Always compares all bytes of the shorter string; returns 0 on match. */
+ * Returns 0 on match.
+ *
+ * The loop runs a FIXED RPC_AUTH_CT_BYTES iterations. It used to run
+ * min(alen, blen), which made the work — and so the response latency —
+ * proportional to the length of the configured credential: an attacker who
+ * walks the Basic-auth string from 1 byte upward sees the time stop growing
+ * exactly at strlen("user:password"), recovering the secret's length without
+ * ever guessing a byte of it. Leaking the length is a small win on its own,
+ * but it is precisely what a constant-time compare is supposed to deny, and it
+ * shrinks the search space for everything that follows.
+ *
+ * Reads past either string are replaced by 0 rather than skipped, so the
+ * iteration count depends on neither length. The `alen ^ blen` fold still
+ * makes any length difference a mismatch, so short-circuiting is unnecessary:
+ * both live lengths are < RPC_AUTH_CT_BYTES, hence equal lengths are always
+ * fully compared. */
 static int constant_time_strcmp(const char *a, size_t alen,
                                  const char *b, size_t blen)
 {
     unsigned int diff = (unsigned int)(alen ^ blen);
-    size_t n = alen < blen ? alen : blen;
-    for (size_t i = 0; i < n; i++)
-        diff |= (unsigned int)((unsigned char)a[i] ^ (unsigned char)b[i]);
+    for (size_t i = 0; i < RPC_AUTH_CT_BYTES; i++) {
+        unsigned char ca = i < alen ? (unsigned char)a[i] : 0u;
+        unsigned char cb = i < blen ? (unsigned char)b[i] : 0u;
+        diff |= (unsigned int)(ca ^ cb);
+    }
     return diff == 0 ? 0 : 1;
 }
 
@@ -187,6 +208,10 @@ static bool check_auth(const char *auth_header)
     decoded[dlen] = '\0';
 
     char expected[512];
+    /* constant_time_strcmp() reads a fixed RPC_AUTH_CT_BYTES from each side;
+     * bind that bound to the buffers so the two cannot drift apart. */
+    static_assert(sizeof decoded >= RPC_AUTH_CT_BYTES, "decoded too small");
+    static_assert(sizeof expected >= RPC_AUTH_CT_BYTES, "expected too small");
     pthread_mutex_lock(&g_cookie_mutex);
     snprintf(expected, sizeof(expected), "%s:%s", g_rpc_user, g_rpc_password);
     size_t elen = strlen(expected);

@@ -307,7 +307,9 @@ int test_validate_parallel_determinism(void)
 
     /* S5: big block, many inputs, one invalid deep — stresses the pool. */
     {
-        const int NT = 120, NI = 8;
+        /* enum, not `const int`: a const-qualified object is not a constant
+         * expression in C, so `int allok[NI]` below would be a VLA. */
+        enum { NT = 120, NI = 8 };
         struct block b; block_init(&b);
         b.num_vtx = (size_t)(NT + 1);
         b.vtx = zcl_calloc(b.num_vtx, sizeof(struct transaction), "vpd");
