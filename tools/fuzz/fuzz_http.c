@@ -54,18 +54,58 @@
 #include "net/onion_service.h"
 #include "chain/chainparams.h"
 
+#include <errno.h>
 #include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>     /* sscanf */
-#include <stdlib.h>
+#include <stdio.h>     /* sscanf, snprintf */
+#include <stdlib.h>    /* setenv */
 #include <string.h>
 #include <strings.h>   /* strncasecmp */
+#include <sys/stat.h>  /* mkdir */
+#include <sys/types.h>
+#include <unistd.h>    /* getpid */
 
 volatile sig_atomic_t g_shutdown_requested = 0;
 
 int LLVMFuzzerInitialize(int *argc, char ***argv);
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
+
+/* Point every $HOME-derived default at an empty directory nothing else uses.
+ *
+ * "The contexts are zero-initialised, so no datadir, so no DB access" was not
+ * true, and the cost of it being untrue was the whole harness. A NULL datadir
+ * is not "no datadir": lib/storage/src/census_read.c census_datadir() falls
+ * back to $HOME/.zclassic-c23, so `GET /explorer/network` opened the machine's
+ * REAL node store — on the dev host that is the operator's live node, a 3.8 MB
+ * topology.db plus peers_projection.db — and ran the census + topology
+ * queries against it. Twice per input, because onion_service_handle_request
+ * re-enters explorer_handle_request for /explorer paths.
+ *
+ * Measured 2026-07-29: that one request cost 13.95 s of CPU, tripped
+ * -timeout=1, and ended the run. With HOME pointed at an empty directory the
+ * same request is 0.064 s — a 218x drop, and the page still renders (it takes
+ * its documented "census empty" branch, which is what a fresh node shows).
+ *
+ * Two things were wrong and both are fixed by this: the harness was slow, and
+ * a fuzzer had its hands in the operator's live datadir. Fuzz targets must be
+ * hermetic — a harness whose speed and coverage depend on what happens to be
+ * in $HOME is also a harness that files spurious timeouts on a busy box, which
+ * is exactly how eight artifacts nobody could reproduce got into this corpus.
+ * Directory-mode 0700 and per-pid so parallel runs cannot collide. */
+static char g_fuzz_home[64];
+
+static void fuzz_http_isolate_home(void)
+{
+    snprintf(g_fuzz_home, sizeof(g_fuzz_home), "/tmp/zcl_fuzz_http_home_%d",
+             (int)getpid());
+    if (mkdir(g_fuzz_home, 0700) != 0 && errno != EEXIST) {
+        /* Fall back to a directory that exists and holds no node store, so we
+         * still never resolve to the live datadir. */
+        snprintf(g_fuzz_home, sizeof(g_fuzz_home), "/nonexistent");
+    }
+    setenv("HOME", g_fuzz_home, 1);
+}
 
 int LLVMFuzzerInitialize(int *argc, char ***argv)
 {
@@ -73,8 +113,9 @@ int LLVMFuzzerInitialize(int *argc, char ***argv)
     /* Several handlers consult chain params for formatting; select
      * mainnet so they behave as they would in production. The
      * explorer/onion contexts are left zero-initialised on purpose:
-     * with no datadir / main_state the handlers exercise pure string
-     * parsing and bail before any DB or network access. */
+     * with no main_state the handlers exercise request parsing and
+     * routing without a chain behind them. */
+    fuzz_http_isolate_home();
     chain_params_select(CHAIN_MAIN);
     return 0;
 }
