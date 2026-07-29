@@ -914,6 +914,18 @@ void zcl_native_handle_swap_participate(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* Store merchant surface (app/controllers/src/store_native_handlers.c) — the
+ * typed writer behind `app.store.list-product` and the catalog read behind
+ * `app.store.products`. Both address <datadir>/node.db the way the /store
+ * HTTP handler does, so a listing is live on the next request with no
+ * restart. Bound by config/commands/app_features.def. */
+void zcl_native_handle_store_list_product(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_store_products(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* ROM-seed policy/ledger surface (app/controllers/src/rom_seed_controller.c)
  * — see config/commands/ops.def `ops.rom_seed.*` and docs/ROM_DELIVERY.md. */
 void zcl_native_handle_rom_seed_status(
