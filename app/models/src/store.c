@@ -60,8 +60,16 @@ bool db_store_product_validate(const struct db_store_product *p,
     validates_custom(errors,
         model_string_is_printable(p->name),
         "name", "contains non-printable characters");
+    /* An ABSENT description is legal — the column is nullable, the storefront
+     * renders the card without one, and neither writer requires it. Only
+     * `name` is validates_string_present. model_string_is_printable("")
+     * returns false, so without the empty-string escape (the same one
+     * token_id already carries below) every product without a description
+     * was rejected as "contains non-printable characters": products.json
+     * entries with no description were silently dropped by the loader, and
+     * app.store.list-product refused them outright. */
     validates_custom(errors,
-        model_string_is_printable(p->description),
+        model_string_is_printable(p->description) || p->description[0] == '\0',
         "description", "contains non-printable characters");
     validates_custom(errors,
         model_string_is_printable(p->token_id) || p->token_id[0] == '\0',
