@@ -658,8 +658,7 @@ int t_service_result_convergence_ratchet(void)
     char *grown_out = NULL;
     int grown_read =
         (grown_rc >= 0 &&
-         repo_path(grown_out_path, sizeof(grown_out_path),
-                   "test-tmp/zcl_gate_lint.out") == 0)
+         lint_gate_out_path(grown_out_path, sizeof(grown_out_path)) == 0)
             ? read_entire_file(grown_out_path, &grown_out)
             : -1;
 
@@ -678,8 +677,7 @@ int t_service_result_convergence_ratchet(void)
     char *new_out = NULL;
     int new_read =
         (new_rc >= 0 &&
-         repo_path(new_out_path, sizeof(new_out_path),
-                   "test-tmp/zcl_gate_lint.out") == 0)
+         lint_gate_out_path(new_out_path, sizeof(new_out_path)) == 0)
             ? read_entire_file(new_out_path, &new_out)
             : -1;
 
@@ -699,8 +697,7 @@ int t_service_result_convergence_ratchet(void)
     char *stale_out = NULL;
     int stale_read =
         (stale_rc >= 0 &&
-         repo_path(stale_out_path, sizeof(stale_out_path),
-                   "test-tmp/zcl_gate_lint.out") == 0)
+         lint_gate_out_path(stale_out_path, sizeof(stale_out_path)) == 0)
             ? read_entire_file(stale_out_path, &stale_out)
             : -1;
 
@@ -723,8 +720,7 @@ int t_service_result_convergence_ratchet(void)
     char *clean_out = NULL;
     int clean_read =
         (clean_stale_rc >= 0 &&
-         repo_path(clean_out_path, sizeof(clean_out_path),
-                   "test-tmp/zcl_gate_lint.out") == 0)
+         lint_gate_out_path(clean_out_path, sizeof(clean_out_path)) == 0)
             ? read_entire_file(clean_out_path, &clean_out)
             : -1;
 
@@ -758,8 +754,7 @@ int t_service_result_convergence_ratchet(void)
     char *oneline_out = NULL;
     int oneline_read =
         (oneline_rc >= 0 &&
-         repo_path(oneline_out_path, sizeof(oneline_out_path),
-                   "test-tmp/zcl_gate_lint.out") == 0)
+         lint_gate_out_path(oneline_out_path, sizeof(oneline_out_path)) == 0)
             ? read_entire_file(oneline_out_path, &oneline_out)
             : -1;
 

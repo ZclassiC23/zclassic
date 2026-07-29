@@ -74,8 +74,7 @@ int t_long_functions_enforced_ratchet(void)
     char *grown_out = NULL;
     int grown_read =
         (grown_rc >= 0 &&
-         repo_path(grown_out_path, sizeof(grown_out_path),
-                   "test-tmp/zcl_gate_lint.out") == 0)
+         lint_gate_out_path(grown_out_path, sizeof(grown_out_path)) == 0)
             ? read_entire_file(grown_out_path, &grown_out)
             : -1;
 
@@ -92,8 +91,7 @@ int t_long_functions_enforced_ratchet(void)
     char *new_out = NULL;
     int new_read =
         (new_rc >= 0 &&
-         repo_path(new_out_path, sizeof(new_out_path),
-                   "test-tmp/zcl_gate_lint.out") == 0)
+         lint_gate_out_path(new_out_path, sizeof(new_out_path)) == 0)
             ? read_entire_file(new_out_path, &new_out)
             : -1;
 
@@ -181,8 +179,7 @@ int t_long_functions_lib_warn_tier(void)
     char *new_out = NULL;
     int new_read =
         (new_rc >= 0 &&
-         repo_path(new_out_path, sizeof(new_out_path),
-                   "test-tmp/zcl_gate_lint.out") == 0)
+         lint_gate_out_path(new_out_path, sizeof(new_out_path)) == 0)
             ? read_entire_file(new_out_path, &new_out)
             : -1;
 
@@ -202,8 +199,7 @@ int t_long_functions_lib_warn_tier(void)
     char *grown_out = NULL;
     int grown_read =
         (grown_rc >= 0 &&
-         repo_path(grown_out_path, sizeof(grown_out_path),
-                   "test-tmp/zcl_gate_lint.out") == 0)
+         lint_gate_out_path(grown_out_path, sizeof(grown_out_path)) == 0)
             ? read_entire_file(grown_out_path, &grown_out)
             : -1;
 
@@ -220,8 +216,7 @@ int t_long_functions_lib_warn_tier(void)
     char *recover_out = NULL;
     int recover_read =
         (recover_rc >= 0 &&
-         repo_path(recover_out_path, sizeof(recover_out_path),
-                   "test-tmp/zcl_gate_lint.out") == 0)
+         lint_gate_out_path(recover_out_path, sizeof(recover_out_path)) == 0)
             ? read_entire_file(recover_out_path, &recover_out)
             : -1;
 
@@ -277,8 +272,7 @@ int t_e1_file_size_ceiling(void)
     char *fail_out = NULL;
     char fail_path[PATH_MAX];
     int fail_read = (planted == 0 &&
-                     repo_path(fail_path, sizeof(fail_path),
-                               "test-tmp/zcl_gate_lint.out") == 0)
+                     lint_gate_out_path(fail_path, sizeof(fail_path)) == 0)
                         ? read_entire_file(fail_path, &fail_out)
                         : -1;
     unlink_rel(E1_FIXTURE_DST);
@@ -337,8 +331,7 @@ int t_e1_lib_warn_tier(void)
     char *warn_out = NULL;
     char warn_path[PATH_MAX];
     int warn_read = (planted == 0 &&
-                     repo_path(warn_path, sizeof(warn_path),
-                               "test-tmp/zcl_gate_lint.out") == 0)
+                     lint_gate_out_path(warn_path, sizeof(warn_path)) == 0)
                         ? read_entire_file(warn_path, &warn_out)
                         : -1;
     unlink_rel(E1_LIB_FIXTURE_DST);

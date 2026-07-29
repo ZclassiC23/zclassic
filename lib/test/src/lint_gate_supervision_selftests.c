@@ -74,8 +74,7 @@ int t_thread_supervision_ratchet(void)
     char *un_out = NULL;
     int un_read =
         (unaccounted_rc >= 0 &&
-         repo_path(un_out_path, sizeof(un_out_path),
-                   "test-tmp/zcl_gate_lint.out") == 0)
+         lint_gate_out_path(un_out_path, sizeof(un_out_path)) == 0)
             ? read_entire_file(un_out_path, &un_out)
             : -1;
 
@@ -121,8 +120,7 @@ int t_thread_supervision_ratchet(void)
     char *stale_out = NULL;
     int stale_read =
         (stale_rc >= 0 &&
-         repo_path(stale_out_path, sizeof(stale_out_path),
-                   "test-tmp/zcl_gate_lint.out") == 0)
+         lint_gate_out_path(stale_out_path, sizeof(stale_out_path)) == 0)
             ? read_entire_file(stale_out_path, &stale_out)
             : -1;
 
@@ -208,8 +206,7 @@ int t_supervisor_registration_widened_ratchet(void)
     char *un_out = NULL;
     int un_read =
         (unaccounted_rc >= 0 &&
-         repo_path(un_out_path, sizeof(un_out_path),
-                   "test-tmp/zcl_gate_lint.out") == 0)
+         lint_gate_out_path(un_out_path, sizeof(un_out_path)) == 0)
             ? read_entire_file(un_out_path, &un_out)
             : -1;
 

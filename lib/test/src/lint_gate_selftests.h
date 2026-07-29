@@ -104,6 +104,9 @@
 #define TRUST_ORDER_FIXTURE_DST \
     "app/services/src/_trust_order_fixture_tmp.c"
 #define GIT_HOOKS_PRE_PUSH_REL "tools/githooks/pre-push"
+/* Fixture path PREFIXES, not whole paths: these two checks live in the
+ * REALROOT lane, which runs inside the worker pool, so they are resolved
+ * through repo_path_pid() and carry the pid. */
 #define GIT_HOOKS_PRE_PUSH_FIXTURE_REL \
     "test-tmp/_pre_push_hook_fixture_tmp"
 #define GIT_HOOKS_PRECOMMIT_REL "tools/githooks/pre-commit"
@@ -304,6 +307,9 @@
 void repo_root_set_override(const char *path);
 const char *repo_root(void);
 int repo_path(char *out, size_t outsz, const char *rel);
+int repo_path_pid(char *out, size_t outsz, const char *rel_prefix,
+                  const char *suffix);
+int lint_gate_out_path(char *out, size_t outsz);
 int copy_file(const char *src, const char *dst);
 char *str_replace_once(const char *hay, const char *needle,
                               const char *repl);

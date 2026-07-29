@@ -57,8 +57,8 @@ int t_git_hooks_gate_rejects_noop_pre_push(void)
     char *orig = NULL;
     int resolved = repo_path(hook_path, sizeof(hook_path),
                              GIT_HOOKS_PRE_PUSH_REL);
-    int fixture_resolved = repo_path(fixture_path, sizeof(fixture_path),
-                                     GIT_HOOKS_PRE_PUSH_FIXTURE_REL);
+    int fixture_resolved = repo_path_pid(fixture_path, sizeof(fixture_path),
+                                         GIT_HOOKS_PRE_PUSH_FIXTURE_REL, "");
     int read_ok = (resolved == 0 && fixture_resolved == 0 &&
                    read_entire_file(hook_path, &orig) == 0);
     int planted_good = 0;
@@ -102,8 +102,8 @@ int t_git_hooks_gate_rejects_noop_pre_commit(void)
     char *orig = NULL;
     int resolved = repo_path(hook_path, sizeof(hook_path),
                              GIT_HOOKS_PRECOMMIT_REL);
-    int fixture_resolved = repo_path(fixture_path, sizeof(fixture_path),
-                                     GIT_HOOKS_PRECOMMIT_FIXTURE_REL);
+    int fixture_resolved = repo_path_pid(fixture_path, sizeof(fixture_path),
+                                         GIT_HOOKS_PRECOMMIT_FIXTURE_REL, "");
     int read_ok = (resolved == 0 && fixture_resolved == 0 &&
                    read_entire_file(hook_path, &orig) == 0);
     int planted_good = 0;

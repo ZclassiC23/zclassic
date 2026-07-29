@@ -1335,16 +1335,25 @@ test-parallel-fast-active: $(TEST_PARALLEL_FAST_CANDIDATE)
 	ulimit -s unlimited && $(TEST_PARALLEL_FAST_ACTIVE)
 
 .PHONY: test-parallel
-# Checkout-locked (see CHECKOUT_LOCK above): test_make_lint_gates and
-# test_consensus_state_snapshot_install plant/probe fixed, non-PID-namespaced
-# paths, so two concurrent test_parallel processes racing this run is a real
-# false-failure source, not just a build-object collision. Always foreground
-# (the watcher never calls this target — it runs test_parallel through
-# `make ff`, which is itself checkout-locked).
+# Checkout-locked (see CHECKOUT_LOCK above): the make_lint_gates exclusive lane
+# plants a fixture into the live worktree (app/services/src/ and the repo root)
+# and unlinks it, so two concurrent test_parallel processes racing this run
+# inside ONE checkout is a real false-failure source, not just a build-object
+# collision. It is per-checkout on purpose and that is sufficient: every path
+# involved is worktree-relative, so two different worktrees cannot collide.
+# Always foreground (the watcher never calls this target — it runs test_parallel
+# through `make ff`, which is itself checkout-locked).
+#
+# zclassic23-package-verify is a hard prerequisite because test_zcode_verify
+# execs it. Without it that group fails with a named "binary missing" error,
+# which makes the suite's verdict depend on which binaries the checkout happens
+# to have built rather than on the code — an environment-dependent red that has
+# already cost one wrong diagnosis. The acceptance gate builds what it tests.
+#
 # TEST_PARALLEL_ARGS is empty by default, so the canonical gate is byte-for-byte
 # the historical cold run; pass e.g. TEST_PARALLEL_ARGS=--cold-audit (verify the
 # content cache) or --no-cache (force cold with ZCL_TEST_CACHE set).
-test-parallel: $(TEST_PARALLEL_REL_CANDIDATE)
+test-parallel: $(TEST_PARALLEL_REL_CANDIDATE) $(BIN_DIR)/zclassic23-package-verify
 	@mkdir -p "$(BUILD_DIR)"
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
 	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_REL_ACTIVE) $(TEST_PARALLEL_ARGS)'
