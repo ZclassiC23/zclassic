@@ -54,7 +54,9 @@ Dependency order (do these first, they unlock the boss): **Q7 → Q6 → Q2 → 
 - **📍 now:** a wiped node autodetects the bundle, tries to install, then
   DEFERS FOREVER and folds from genesis (D8).
 - **🏁 win-proof:** `make mvp-coldstart-to-tip-stopwatch` emits a `pass` with a
-  real `WALL_CLOCK_SECONDS`, recorded in the c3 ledger.
+  real `WALL_CLOCK_SECONDS`, recorded in the c3 ledger, AND
+  `make c3-stopwatch-report` then says `VERDICT=PASS` — the scorer asks that
+  judge, not the ledger file, so a stale/thin/lagging `pass` scores nothing.
 - **🔧 move:** this boss falls once Q7 + Q3(D8) are done. Then: rebuild the
   fixture via bundle-install (`-nolegacyimport`, bundle staged in
   `<datadir>/bundles/`, headers imported), it installs + climbs to tip

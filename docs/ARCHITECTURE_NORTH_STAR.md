@@ -127,10 +127,10 @@ authority.
 
 | KPI | wt | proof |
 |---|---|---|
-| instant-on-e2e | 20 | a `pass` line in the c3-stopwatch ledger (wiped node → install → tip) |
+| instant-on-e2e | 20 | `make c3-stopwatch-report` says `VERDICT=PASS` (wiped node → install → tip) |
 | single-writer-per-frontier | 20 | 0 writers outside each frontier's canonical owner (`arch_frontier_owners.tsv`) |
 | readers-read-the-fold | 15 | tied to instant-on-e2e PASS (can't prove it any other way) |
-| stay-synced | 15 | c3 report PASS **and** disruption-recovery PASS |
+| stay-synced | 15 | `make c3-stopwatch-report` PASS **and** `make netdisrupt-stopwatch-report` PASS |
 | observability | 10 | all 3 stage dumpers use `progress_store_tx_trylock` |
 | no-silent-stall | 10 | the D7 Sapling-persist livelock raises a named blocker |
 | no-ochain-boot | 10 | bundle-installed shielded tree skips the boot rebuild |
