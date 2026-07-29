@@ -90,8 +90,9 @@
 #                   runs, and it is wired into `make ci` and into its own CI job.
 #                   Measured on the dev reference host with binaries prebuilt:
 #                   22 artifacts in 18.3 s at -P6 (85.4 s serial). Building the
-#                   nine sanitizer-instrumented binaries first is 5 min 45 s at
-#                   -j6, which is why this is not folded into `make lint`.
+#                   nine sanitizer-instrumented binaries first is 34 s cold at
+#                   -j6 (21 s after a header edit), which is still why this is
+#                   not folded into `make lint`.
 #
 #   --selftest      Plant / trip / recover proof that the gate still fires.
 #

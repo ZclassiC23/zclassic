@@ -765,7 +765,7 @@ $(DEV_TSAN_LEASE): FORCE
 # explicitly-known single goal.  Empty/default, mixed, and unknown goals keep
 # the conservative source-wide fallback so a new target cannot accidentally
 # lose header invalidation merely because this table was not updated.
-ZCL_DEPFILE_ALL_PROFILES := build-only dev test-fast test-strict coverage
+ZCL_DEPFILE_ALL_PROFILES := build-only dev test-fast test-strict coverage fuzz
 ZCL_DEPFILE_PROFILES := $(ZCL_DEPFILE_ALL_PROFILES)
 ifeq ($(ZCL_HOTSWAP_DEPFILE_LEAN_ONLY),1)
 # The hot-swap loop recipes (plus hotswap-module-so's own single-TU shell
@@ -793,6 +793,8 @@ else ifneq ($(filter dev-tsan zclassic23-dev-tsan,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := dev-tsan
 else ifneq ($(filter coverage coverage-locked,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := coverage
+else ifneq ($(filter fuzz fuzz-ci fuzz-ci-leaks fuzz-replay fuzz_block fuzz_script fuzz_p2p fuzz_http fuzz_compactblock fuzz_snapshot fuzz_tx_bundle fuzz_rom_manifest fuzz_overlay,$(ZCL_DEPFILE_SINGLE_GOAL)),)
+ZCL_DEPFILE_PROFILES := fuzz
 else ifneq ($(filter lint lint-fast watcher-safety-gates dev-failure-execution-id ff t-changed fast-changed-compile fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES :=
 endif
@@ -3813,8 +3815,38 @@ FUZZ_CFLAGS = -std=c23 -O1 -g -Wall -Wextra \
 FUZZ_LIBS = $(TOR_LIBS) $(LIBS)
 
 FUZZ_TARGETS = $(BIN_DIR)/fuzz_block $(BIN_DIR)/fuzz_script $(BIN_DIR)/fuzz_p2p $(BIN_DIR)/fuzz_http $(BIN_DIR)/fuzz_compactblock $(BIN_DIR)/fuzz_snapshot $(BIN_DIR)/fuzz_tx_bundle $(BIN_DIR)/fuzz_rom_manifest $(BIN_DIR)/fuzz_overlay
+# Keep the line above literal and keep one `$(BIN_DIR)/fuzz_<kind>:` rule per
+# harness below: check_fuzz_artifact_replay.sh derives the corpus<->binary map
+# from those rule lines, and background_quality_lane.sh derives its kind list
+# from this variable's text. Both are deliberate "a new harness is covered the
+# day its rule lands" scrapes; a `$(patsubst ...)` spelling blinds them.
+FUZZ_TARGET_NAMES = $(notdir $(FUZZ_TARGETS))
 FUZZ_CI_TIME ?= 60
 FUZZ_CI_WALL_TIME ?= 120
+
+# Per-TU object tree with -MD -MP depfiles — the same header-invalidation
+# mechanism every other profile in this Makefile uses (see the -include block
+# under ZCL_DEPFILE_PROFILES near the top).
+#
+# Before this, each harness was ONE whole-program clang whose prerequisites
+# were `tools/fuzz/<name>.c $(TMPL_GEN) $(ALL_SRCS)` — sources only, no
+# headers. A header-only fix therefore changed no listed prerequisite and
+# `make fuzz` was a no-op, so every fuzz gate kept running the binary from
+# before the fix. That is not hypothetical: on 2026-07-29 `make fuzz-replay`
+# reported 14 live script hangs against a build/bin/fuzz_script dated July 10
+# — nineteen days and one header-only fix (b8e6b35dc, script.h) stale. A
+# hand-written header list would rot the same way; the depfiles record the
+# real include closure the compiler actually opened.
+#
+# The nine harnesses share ONE object tree, so this also retires the 9x
+# redundant compile of $(ALL_SRCS) the old rules paid on every edit.
+FUZZ_OBJ_DIR = $(BUILD_DIR)/fuzz-obj
+FUZZ_HARNESS_SRCS = $(patsubst %,tools/fuzz/%.c,$(FUZZ_TARGET_NAMES))
+FUZZ_OBJS = $(patsubst %.c,$(FUZZ_OBJ_DIR)/%.o,$(ALL_SRCS))
+FUZZ_HARNESS_OBJS = $(patsubst %.c,$(FUZZ_OBJ_DIR)/%.o,$(FUZZ_HARNESS_SRCS))
+ifneq ($(filter fuzz,$(ZCL_DEPFILE_PROFILES)),)
+-include $(FUZZ_OBJS:.o=.d) $(FUZZ_HARNESS_OBJS:.o=.d)
+endif
 
 .PHONY: check-fuzz-toolchain check-fuzz-ci-tools fuzz fuzz-ci
 check-fuzz-toolchain:
@@ -3842,95 +3874,46 @@ fuzz_tx_bundle: $(BIN_DIR)/fuzz_tx_bundle
 fuzz_rom_manifest: $(BIN_DIR)/fuzz_rom_manifest
 fuzz_overlay: $(BIN_DIR)/fuzz_overlay
 
-$(BIN_DIR)/fuzz_block: tools/fuzz/fuzz_block.c $(TMPL_GEN) $(ALL_SRCS)
+# One object per TU, shared by all nine harnesses. -MD -MP writes the
+# per-object depfile imported above; that is what makes a header edit
+# invalidate exactly the objects that read it.
+$(FUZZ_OBJ_DIR)/%.o: %.c $(TMPL_GEN) $(VIEW_GEN_HEADERS) | check-fuzz-toolchain
 	@mkdir -p $(dir $@)
-	@if ! command -v $(FUZZ_CC) >/dev/null 2>&1; then \
-		echo "fuzz_block: ERROR: $(FUZZ_CC) not found (install clang/libFuzzer)"; \
-		exit 2; \
-	else \
-		echo "$(FUZZ_CC) ... -o $@"; \
-		$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ tools/fuzz/fuzz_block.c $(ALL_SRCS) $(FUZZ_LIBS); \
-	fi
+	@$(FUZZ_CC) $(FUZZ_CFLAGS) -MD -MP -c -o $@ $<
 
-$(BIN_DIR)/fuzz_script: tools/fuzz/fuzz_script.c $(TMPL_GEN) $(ALL_SRCS)
+# Shared link step. $< is the harness object; $(FUZZ_OBJS) is the node tree.
+define FUZZ_LINK
 	@mkdir -p $(dir $@)
-	@if ! command -v $(FUZZ_CC) >/dev/null 2>&1; then \
-		echo "fuzz_script: ERROR: $(FUZZ_CC) not found (install clang/libFuzzer)"; \
-		exit 2; \
-	else \
-		echo "$(FUZZ_CC) ... -o $@"; \
-		$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ tools/fuzz/fuzz_script.c $(ALL_SRCS) $(FUZZ_LIBS); \
-	fi
+	@echo "$(FUZZ_CC) ... -o $@"
+	@$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ $< $(FUZZ_OBJS) $(FUZZ_LIBS)
+endef
 
-$(BIN_DIR)/fuzz_p2p: tools/fuzz/fuzz_p2p.c $(TMPL_GEN) $(ALL_SRCS)
-	@mkdir -p $(dir $@)
-	@if ! command -v $(FUZZ_CC) >/dev/null 2>&1; then \
-		echo "fuzz_p2p: ERROR: $(FUZZ_CC) not found (install clang/libFuzzer)"; \
-		exit 2; \
-	else \
-		echo "$(FUZZ_CC) ... -o $@"; \
-		$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ tools/fuzz/fuzz_p2p.c $(ALL_SRCS) $(FUZZ_LIBS); \
-	fi
+$(BIN_DIR)/fuzz_block: $(FUZZ_OBJ_DIR)/tools/fuzz/fuzz_block.o $(FUZZ_OBJS) | check-fuzz-toolchain
+	$(FUZZ_LINK)
 
-$(BIN_DIR)/fuzz_http: tools/fuzz/fuzz_http.c $(TMPL_GEN) $(ALL_SRCS)
-	@mkdir -p $(dir $@)
-	@if ! command -v $(FUZZ_CC) >/dev/null 2>&1; then \
-		echo "fuzz_http: ERROR: $(FUZZ_CC) not found (install clang/libFuzzer)"; \
-		exit 2; \
-	else \
-		echo "$(FUZZ_CC) ... -o $@"; \
-		$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ tools/fuzz/fuzz_http.c $(ALL_SRCS) $(FUZZ_LIBS); \
-	fi
+$(BIN_DIR)/fuzz_script: $(FUZZ_OBJ_DIR)/tools/fuzz/fuzz_script.o $(FUZZ_OBJS) | check-fuzz-toolchain
+	$(FUZZ_LINK)
 
-$(BIN_DIR)/fuzz_compactblock: tools/fuzz/fuzz_compactblock.c $(TMPL_GEN) $(ALL_SRCS)
-	@mkdir -p $(dir $@)
-	@if ! command -v $(FUZZ_CC) >/dev/null 2>&1; then \
-		echo "fuzz_compactblock: ERROR: $(FUZZ_CC) not found (install clang/libFuzzer)"; \
-		exit 2; \
-	else \
-		echo "$(FUZZ_CC) ... -o $@"; \
-		$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ tools/fuzz/fuzz_compactblock.c $(ALL_SRCS) $(FUZZ_LIBS); \
-	fi
+$(BIN_DIR)/fuzz_p2p: $(FUZZ_OBJ_DIR)/tools/fuzz/fuzz_p2p.o $(FUZZ_OBJS) | check-fuzz-toolchain
+	$(FUZZ_LINK)
 
-$(BIN_DIR)/fuzz_snapshot: tools/fuzz/fuzz_snapshot.c $(TMPL_GEN) $(ALL_SRCS)
-	@mkdir -p $(dir $@)
-	@if ! command -v $(FUZZ_CC) >/dev/null 2>&1; then \
-		echo "fuzz_snapshot: ERROR: $(FUZZ_CC) not found (install clang/libFuzzer)"; \
-		exit 2; \
-	else \
-		echo "$(FUZZ_CC) ... -o $@"; \
-		$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ tools/fuzz/fuzz_snapshot.c $(ALL_SRCS) $(FUZZ_LIBS); \
-	fi
+$(BIN_DIR)/fuzz_http: $(FUZZ_OBJ_DIR)/tools/fuzz/fuzz_http.o $(FUZZ_OBJS) | check-fuzz-toolchain
+	$(FUZZ_LINK)
 
-$(BIN_DIR)/fuzz_tx_bundle: tools/fuzz/fuzz_tx_bundle.c $(TMPL_GEN) $(ALL_SRCS)
-	@mkdir -p $(dir $@)
-	@if ! command -v $(FUZZ_CC) >/dev/null 2>&1; then \
-		echo "fuzz_tx_bundle: ERROR: $(FUZZ_CC) not found (install clang/libFuzzer)"; \
-		exit 2; \
-	else \
-		echo "$(FUZZ_CC) ... -o $@"; \
-		$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ tools/fuzz/fuzz_tx_bundle.c $(ALL_SRCS) $(FUZZ_LIBS); \
-	fi
+$(BIN_DIR)/fuzz_compactblock: $(FUZZ_OBJ_DIR)/tools/fuzz/fuzz_compactblock.o $(FUZZ_OBJS) | check-fuzz-toolchain
+	$(FUZZ_LINK)
 
-$(BIN_DIR)/fuzz_rom_manifest: tools/fuzz/fuzz_rom_manifest.c $(TMPL_GEN) $(ALL_SRCS)
-	@mkdir -p $(dir $@)
-	@if ! command -v $(FUZZ_CC) >/dev/null 2>&1; then \
-		echo "fuzz_rom_manifest: ERROR: $(FUZZ_CC) not found (install clang/libFuzzer)"; \
-		exit 2; \
-	else \
-		echo "$(FUZZ_CC) ... -o $@"; \
-		$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ tools/fuzz/fuzz_rom_manifest.c $(ALL_SRCS) $(FUZZ_LIBS); \
-	fi
+$(BIN_DIR)/fuzz_snapshot: $(FUZZ_OBJ_DIR)/tools/fuzz/fuzz_snapshot.o $(FUZZ_OBJS) | check-fuzz-toolchain
+	$(FUZZ_LINK)
 
-$(BIN_DIR)/fuzz_overlay: tools/fuzz/fuzz_overlay.c $(TMPL_GEN) $(ALL_SRCS)
-	@mkdir -p $(dir $@)
-	@if ! command -v $(FUZZ_CC) >/dev/null 2>&1; then \
-		echo "fuzz_overlay: ERROR: $(FUZZ_CC) not found (install clang/libFuzzer)"; \
-		exit 2; \
-	else \
-		echo "$(FUZZ_CC) ... -o $@"; \
-		$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ tools/fuzz/fuzz_overlay.c $(ALL_SRCS) $(FUZZ_LIBS); \
-	fi
+$(BIN_DIR)/fuzz_tx_bundle: $(FUZZ_OBJ_DIR)/tools/fuzz/fuzz_tx_bundle.o $(FUZZ_OBJS) | check-fuzz-toolchain
+	$(FUZZ_LINK)
+
+$(BIN_DIR)/fuzz_rom_manifest: $(FUZZ_OBJ_DIR)/tools/fuzz/fuzz_rom_manifest.o $(FUZZ_OBJS) | check-fuzz-toolchain
+	$(FUZZ_LINK)
+
+$(BIN_DIR)/fuzz_overlay: $(FUZZ_OBJ_DIR)/tools/fuzz/fuzz_overlay.o $(FUZZ_OBJS) | check-fuzz-toolchain
+	$(FUZZ_LINK)
 
 fuzz-ci: check-fuzz-ci-tools $(FUZZ_TARGETS)
 	@set -e; \
@@ -3959,11 +3942,13 @@ fuzz-ci: check-fuzz-ci-tools $(FUZZ_TARGETS)
 # in lib/test/fuzz_seeds/ARTIFACT_VERDICTS.txt and names every disagreement.
 #
 # Why it is not part of `make lint`: measured on the dev reference host, the
-# replay itself is 18.3 s for 22 artifacts at -P6, but building the nine large sanitizer-instrumented
-# fuzz binaries it needs is 5 min 45 s at -j6 — one clang per binary over ~1174
-# TUs with no per-TU object cache, so any source edit re-pays it in full. `make
-# lint` runs the cheap half instead (check-fuzz-artifact-ledger, 21 ms: every
-# artifact has a live binary and a recorded verdict, no orphans).
+# replay itself is 18.3 s for 22 artifacts at -P6, and it needs the nine large
+# sanitizer-instrumented binaries built first. That build was 5 min 45 s at -j6
+# — one whole-program clang per binary over ~1300 TUs, nine times over, with no
+# per-TU object cache — until the shared $(FUZZ_OBJ_DIR) tree above; it is now
+# 34 s cold and 21 s after a header edit (607 of 1295 objects recompile).
+# `make lint` still runs the cheap half instead (check-fuzz-artifact-ledger,
+# 21 ms: every artifact has a live binary and a recorded verdict, no orphans).
 #
 # --selftest first, always: it plants an untriaged artifact and asserts the gate
 # still trips AND still names the file, so a "0 violations" line below can never
@@ -5594,7 +5579,7 @@ check-no-shellouts:
 # every saved finding under lib/test/fuzz_seeds/ has a live fuzz binary behind
 # it and a written verdict in ARTIFACT_VERDICTS.txt, with no orphan entries and
 # no untracked repro sitting uncommitted in the corpus. The replay itself needs
-# the nine fuzz binaries (5m45s to build), so it lives in `make fuzz-replay`,
+# the nine fuzz binaries (34 s to build cold at -j6), so it lives in `make fuzz-replay`,
 # which `make ci` and the fuzz-replay CI job run. A 2026-07-14 hang sat unread
 # for two weeks because no build ever read a fuzz verdict; this is the half of
 # that route that is cheap enough for the inner loop.
