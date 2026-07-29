@@ -644,7 +644,7 @@ for rel in "${selected[@]}"; do
     fi
 done
 
-n_clean=0; n_repro=0; accepted_live=()
+n_clean=0; n_repro=0; n_nobin=0; accepted_live=()
 for rel in "${selected[@]}"; do
     st="${STATE[$rel]:-}"
     v="${LEDGER_VERDICT[$rel]:-}"
@@ -653,6 +653,7 @@ for rel in "${selected[@]}"; do
 
     case "$st" in
     nobin)
+        n_nobin=$((n_nobin + 1))
         report "$SEED_ROOT/$rel [$BIN_DIR/fuzz_$corpus MISSING — cannot replay]"
         note "Build it:  make fuzz_$corpus"
         note "This is a FAILURE, not a skip: an artifact nobody replays is"
@@ -711,9 +712,24 @@ if (( ${#accepted_live[@]} > 0 )); then
     done
 fi
 
-echo "[$GATE] replayed ${#selected[@]}: $n_clean clean, $n_repro reproducing"
+echo "[$GATE] replayed ${#selected[@]}: $n_clean clean, $n_repro reproducing," \
+     "$n_nobin unreplayable"
 echo "[$GATE] $violations violation(s) found (mode: $MODE)"
-if (( violations > 0 )); then
+# Name the cause that actually fired. This trailer used to say "a saved fuzz
+# finding that still reproduces" on EVERY violation, including the case where
+# nothing was replayed at all because the binaries were not built — which is
+# what a fresh worktree looks like. Two reviewers read it, saw a claim that
+# did not match their tree, and concluded the whole red suite was
+# environmental noise. A gate that names the wrong cause teaches people to
+# ignore it, and this one guards real crashes. Same violations, same exit
+# code; only the advice is now true.
+if (( n_nobin > 0 )); then
+    echo "[$GATE] $n_nobin artifact(s) had NO BINARY to replay against. That is a"
+    echo "[$GATE] failure, not a skip — an artifact nobody replays is an artifact"
+    echo "[$GATE] nobody reads. Build them:  make fuzz"
+    echo "[$GATE] (a fresh worktree has none until you do; that is this case)"
+fi
+if (( violations > n_nobin )); then
     echo "[$GATE] A saved fuzz finding that still reproduces is a bug the node has"
     echo "[$GATE] TODAY, on a path a peer can reach. Fix it, or — if it is genuinely"
     echo "[$GATE] a non-bug — add a per-file 'accepted' line to $LEDGER"
