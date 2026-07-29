@@ -76,7 +76,19 @@ jobs:
           # distribution headers are equivalent and cost seconds, not the
           # from-source dependency build Job 2 pays for.
           sudo apt-get install -y --no-install-recommends \
-            clang zlib1g-dev libssl-dev
+            zlib1g-dev libssl-dev
+
+          # ubuntu-latest's default `clang` (18) rejects the "vaes"/"sha"
+          # __builtin_cpu_supports() feature strings that lib/util/src/hw_profile.c
+          # uses and that GCC — and clang 20 — both accept (this is the exact
+          # skew tools/lint/check_clang_portability.sh's own header comment
+          # already documents and SKIPs around). The portability ratchet
+          # baseline was recorded against clang 20.1.8, and clang-20 is in
+          # the Ubuntu 24.04 (noble) archive, so pin that instead of
+          # whatever `clang` happens to resolve to.
+          sudo apt-get install -y --no-install-recommends clang-20
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-20 100
+          sudo update-alternatives --set clang /usr/bin/clang-20
 
           if [ "${{ matrix.cc }}" = "gcc" ]; then
             # ubuntu-latest's default `gcc` (13) rejects -std=c23 outright
@@ -260,14 +272,22 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            build-essential perl clang
-          # Same fix as the other two jobs — see their comments.
-          sudo apt-get install -y --no-install-recommends gcc-14
+            build-essential perl
+          # Same fix as the other two jobs — see their comments. gcc-14 for
+          # -std=c23; clang-20 because `make lint` both runs the
+          # check-clang-portability ratchet (baselined against clang 20.1.8)
+          # and, inside check-standalone-tools-link, builds the fuzz targets
+          # with FUZZ_CC=clang — an older clang rejects builtins this tree
+          # uses.
+          sudo apt-get install -y --no-install-recommends gcc-14 clang-20
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100
           sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 100
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-20 100
           sudo update-alternatives --set gcc /usr/bin/gcc-14
           sudo update-alternatives --set cc /usr/bin/gcc-14
+          sudo update-alternatives --set clang /usr/bin/clang-20
           gcc --version
+          clang --version
 
       # Restore-only: JOB 2 is the sole writer (same key, same condition —
       # push to main only). This job never builds vendor from source when

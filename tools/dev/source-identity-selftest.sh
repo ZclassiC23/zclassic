@@ -33,6 +33,13 @@ printf 'submodule input\n' > _module-origin/sub.c
 git -C _module-origin add sub.c
 git -C _module-origin commit -qm base
 git -c protocol.file.allow=always submodule add -q ./_module-origin vendor/sub
+# The clone submodule-add just created is its own Git repository (separate
+# .git from the sandbox root and from _module-origin) and inherits neither
+# of the local identities configured above. Configure it too rather than
+# relying on an inherited global user.name/user.email — a bare CI runner has
+# none, and this self-test must be hermetic against the ambient environment.
+git -C vendor/sub config user.email source-identity-selftest@example.invalid
+git -C vendor/sub config user.name source-identity-selftest
 
 # Ignored archives selected by the build remain exact build inputs.
 mkdir -p vendor/lib
