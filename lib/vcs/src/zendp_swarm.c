@@ -40,6 +40,7 @@ const char *zendp_result_string(enum zendp_result r)
     case ZENDP_ERR_SHAPE:             return "record-shape-refused";
     case ZENDP_ERR_ENCODE:            return "encode-failed";
     case ZENDP_ERR_SIGN:              return "sign-refused";
+    case ZENDP_ERR_WINDOW_TOO_LONG:   return "window-exceeds-maximum";
     case ZENDP_ERR_BLOB:              return "blob-refused";
     case ZENDP_ERR_ABSENT:            return "no-local-witness";
     case ZENDP_ERR_DECODE:            return "doc-decode-failed";
@@ -183,6 +184,15 @@ static size_t dir_records_locked(const struct zendp_directory *dir,
          * refresh heartbeat anywhere in this design. */
         if (now_unix < e->ep.not_before || now_unix >= e->doc.expiry)
             continue;
+        /* And that window must be one this node would accept TODAY.
+         * Re-checked on the read path, not just at acceptance: the
+         * directory is a projection, so an entry installed by an older
+         * build (or before this rule existed) must not outlive the rule
+         * simply because it is already resident. No allocation, no I/O
+         * — this runs on the shared supervisor tick runner. */
+        if (zendp_window_check(e->ep.not_before, e->doc.expiry) !=
+            ZENDP_WINDOW_OK)
+            continue;
         /* And the chain's verdict, recorded at acceptance. Anything
          * short of ACTIVE is not projected to discovery. */
         if (e->anchor.state != ZENDP_ANCHOR_ACTIVE)
@@ -260,6 +270,23 @@ static enum zendp_result zendp_check_wire(const uint8_t *wire,
             LOG_RETURN(ZENDP_ERR_VERIFY, ZEP_LOG,
                        "record signature or validity window failed at "
                        "now=%llu", (unsigned long long)now_unix);
+        /* A third case, and it must not read as either of the two
+         * above: the signature is GOOD and the body is a real ZIDE, but
+         * the window it signed is longer than this node will honour.
+         * The publisher can fix that; nobody can fix a bad signature. */
+        struct zendp probe;
+        if (zendp_decode_body(&probe, doc.body, doc.body_len) &&
+            zendp_window_check(probe.not_before, doc.expiry) ==
+                ZENDP_WINDOW_TOO_LONG)
+            LOG_RETURN(ZENDP_ERR_WINDOW_TOO_LONG, ZEP_LOG,
+                       "record refused — the signed window is %llu seconds "
+                       "and the maximum is %llu (%llu days). The publisher "
+                       "must re-sign with a nearer expiry: a longer promise "
+                       "would keep advertising this key on a node that never "
+                       "sees it revoked",
+                       (unsigned long long)(doc.expiry - probe.not_before),
+                       (unsigned long long)ZENDP_MAX_WINDOW_SECONDS,
+                       (unsigned long long)(ZENDP_MAX_WINDOW_SECONDS / 86400u));
         LOG_RETURN(ZENDP_ERR_BODY, ZEP_LOG,
                    "doc verified but its body is not a ZIDE endpoint record "
                    "(or the window has not opened)");
@@ -464,6 +491,21 @@ enum zendp_result zendp_publish_to(struct vcs_package_store *store,
         LOG_RETURN(ZENDP_ERR_SHAPE, ZEP_LOG,
                    "publish: the record names no reachable endpoint or "
                    "carries a field its flags do not claim");
+
+    /* Ask the window rule ITSELF (never a second copy of it) so the
+     * refusal an operator sees names the actual cause. zendp_sign would
+     * refuse this too — this is here only to keep "your window is too
+     * long", which is fixable by re-signing, from arriving as the same
+     * generic sign-refused as "your seed is unusable". */
+    enum zendp_window w = zendp_window_check(ep->not_before, expiry);
+    if (w == ZENDP_WINDOW_TOO_LONG)
+        LOG_RETURN(ZENDP_ERR_WINDOW_TOO_LONG, ZEP_LOG,
+                   "publish: refused — the signed window is %llu seconds and "
+                   "the maximum is %llu (%llu days); re-sign with a nearer "
+                   "expiry",
+                   (unsigned long long)(expiry - ep->not_before),
+                   (unsigned long long)ZENDP_MAX_WINDOW_SECONDS,
+                   (unsigned long long)(ZENDP_MAX_WINDOW_SECONDS / 86400u));
 
     struct zid_doc doc;
     if (!zendp_sign(&doc, ep, seq, expiry, seed))

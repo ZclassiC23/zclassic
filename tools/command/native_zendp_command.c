@@ -158,6 +158,25 @@ static void zec_fail(struct zcl_command_reply *reply, const char *code,
                            false, message, evidence);
 }
 
+/* The ceiling is stated ONCE, in zid/zendp.h. This renders it for the
+ * operator rather than restating "30" here, so the sentence can never
+ * disagree with the rule that produced the refusal. */
+static const char *zec_window_too_long_message(void)
+{
+    static char msg[320];
+    if (msg[0] == '\0')
+        snprintf(msg, sizeof(msg),
+                 "the signed validity window is longer than this node will "
+                 "honour — the maximum is %llu seconds (%llu days) from "
+                 "not_before to expiry. Re-publish with a nearer expiry: a "
+                 "record keeps advertising its key until that expiry on any "
+                 "node that never sees the key revoked, so the window is the "
+                 "bound on how long a retired key stays reachable.",
+                 (unsigned long long)ZENDP_MAX_WINDOW_SECONDS,
+                 (unsigned long long)(ZENDP_MAX_WINDOW_SECONDS / 86400u));
+    return msg;
+}
+
 /* Every library refusal gets its own operator-facing code and sentence.
  * The four chain outcomes stay four outcomes: "the chain could not be
  * asked" must never read the same as "the chain said no". */
@@ -184,6 +203,10 @@ static void zec_fail_result(struct zcl_command_reply *reply,
         code = "SIGN_REFUSED";
         msg = "signing refused — the validity window never opens (expiry "
               "must be after not_before) or the seed is unusable";
+        break;
+    case ZENDP_ERR_WINDOW_TOO_LONG:
+        code = "WINDOW_TOO_LONG";
+        msg = zec_window_too_long_message();
         break;
     case ZENDP_ERR_BLOB:
         code = "BLOB_REFUSED";
@@ -772,14 +795,32 @@ void zcl_native_handle_zendp_publish(const struct zcl_command_request *request,
                  "every republish", cmd);
         return;
     }
-    int64_t expiry = zec_input_int(in, "expiry", 0);
-    if (expiry <= 0)
-        expiry = (int64_t)ep.not_before + ZEC_DEFAULT_VALIDITY_SECONDS;
-    if (expiry <= (int64_t)ep.not_before) {
+    int64_t expiry_in = zec_input_int(in, "expiry", 0);
+    /* The default is derived UNSIGNED. ep.not_before is operator input
+     * and can be as large as INT64_MAX, so
+     * `(int64_t)ep.not_before + ZEC_DEFAULT_VALIDITY_SECONDS` is a
+     * signed overflow — undefined behaviour, not a wrap you can reason
+     * about. ep.not_before is <= INT64_MAX by construction above, so the
+     * unsigned add below cannot wrap uint64_t. */
+    uint64_t expiry = expiry_in > 0
+                          ? (uint64_t)expiry_in
+                          : ep.not_before +
+                                (uint64_t)ZEC_DEFAULT_VALIDITY_SECONDS;
+    /* Both window rules come from zendp_window_check — the same function
+     * the signer and every verifier call. Nothing about the window is
+     * re-derived here; only the operator-facing wording is local. */
+    switch (zendp_window_check(ep.not_before, expiry)) {
+    case ZENDP_WINDOW_NEVER_OPENS:
         zec_fail(reply, "BAD_WINDOW", "normalize",
                  "expiry must be after not_before — a window that never "
                  "opens is a publisher bug, not a verifier's problem", cmd);
         return;
+    case ZENDP_WINDOW_TOO_LONG:
+        zec_fail(reply, "WINDOW_TOO_LONG", "normalize",
+                 zec_window_too_long_message(), cmd);
+        return;
+    case ZENDP_WINDOW_OK:
+        break;
     }
 
     const char *datadir = zec_datadir(request);
