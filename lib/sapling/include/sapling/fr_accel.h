@@ -33,5 +33,8 @@ void fr_accel_mont_mul_portable(uint64_t r[4], const uint64_t a[4], const uint64
 bool fr_accel_mont_mul_bmi2(uint64_t r[4], const uint64_t a[4], const uint64_t b[4]);
 void fp_accel_mont_mul_portable(uint64_t r[6], const uint64_t a[6], const uint64_t b[6]);
 bool fp_accel_mont_mul_bmi2(uint64_t r[6], const uint64_t a[6], const uint64_t b[6]);
+/* Same, for the TRUE dual-carry-chain (MULX+ADCX+ADOX) paths. */
+bool fr_accel_mont_mul_adx(uint64_t r[4], const uint64_t a[4], const uint64_t b[4]);
+bool fp_accel_mont_mul_adx(uint64_t r[6], const uint64_t a[6], const uint64_t b[6]);
 
 #endif /* ZCL_SAPLING_FR_ACCEL_H */

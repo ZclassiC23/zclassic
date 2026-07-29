@@ -37,7 +37,7 @@
 # bench-only comparison. Re-baseline (shrink only) on this host as we optimise.
 primitive,c_ns_baseline,rust_ns_baseline,gate_mode,rust_source,notes
 equihash-200-9,128000,160000,beat,"CITED zcashd C++ CheckEquihashSolution ~150-175us (no Rust equihash exists; librustzcash predates it)","check_equihash_solution on baked real 200,9 witness; obs 115.6-126.1us"
-bls12-381-fp-mul,60,45,behind,"CITED blst mul_fp ~40-45ns (hand asm mulx/adcx/adox)","fp_mul on canonical Fp fixtures; obs 56ns (pure C, mulx via -v3)"
+bls12-381-fp-mul,37,45,beat,"CITED blst mul_fp ~40-45ns (hand asm mulx/adcx/adox)","fp_mul on canonical Fp fixtures; obs 31.0-31.5ns over 3 runs after the real ADCX/ADOX dual carry chain (lib/sapling/src/mont_adx.h) replaced the MULX-only path that was slower than portable C"
 bls12-381-pairing,1900000,600000,behind,"CITED blst miller_loop+final_exp single pairing ~0.5-0.65ms","bls12_381_pairing on canonical G1/G2 generators; obs 1.79-1.87ms"
 secp256k1-ecdsa-verify,50000,90000,beat,"CITED RustCrypto k256 ecdsa verify ~85-95us (libsecp256k1 C bindings match ours)","pubkey_verify on locally-signed 32-byte hash; obs 47.9-49.1us (vendored libsecp256k1)"
 ed25519-verify,1500000,55000,behind,"CITED ed25519-dalek verify ~50-60us (wNAF + precomputed tables)","ed25519_verify on RFC 8032 Test 2; obs 1.47-1.49ms (pure C, no windowing — OPTIMIZE)"
