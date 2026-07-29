@@ -73,6 +73,46 @@
 #   error_detail     truncated raw RPC error/timeout text when unreachable,
 #                    "" otherwise
 #
+# Six further dimensions, added because an availability ledger that carries
+# only height cannot answer "was the node healthy while it was up". Each is
+# read through tools/scripts/lib/evidence_sources.sh — the ONE reader per
+# measurement in this repo — so this ledger can never disagree with
+# lane_health.sh / soak_evidence.sh about the same host at the same instant:
+#   peer_count       connected peers, counted client-side as the number of
+#                    "addr" keys in getpeerinfo (evidence_peer_count_from_json,
+#                    the definition lane_health.sh has always used). null
+#                    when the instance was unreachable — 0 peers and
+#                    "we could not ask" are different facts
+#   rss_kb           VmRSS of the unit's MainPID from /proc/<pid>/status,
+#                    the soak_harness-parity source (tools/soak/main.c)
+#   datadir_bytes    `du -sb <datadir>` (evidence_dir_bytes). Measured at
+#                    1 ms on the 18 GB canonical datadir (301 files), so it
+#                    runs every sample; bounded by timeout regardless
+#   nrestarts        systemd NRestarts for this instance's unit, or null.
+#                    NOTE: this counts AUTOMATIC restarts only and a manual
+#                    `systemctl restart` RESETS it — it is a hint here, not
+#                    the intervention record. The record is
+#                    tools/scripts/intervention_ledger.sh
+#   active_enter_ts  epoch of systemd ActiveEnterTimestamp, or null
+#   unit_active_state
+#                    systemd ActiveState ("active"/"failed"/...), or ""
+#
+# ...plus three NODE SELF-REPORT fields, labelled as such because unlike
+# everything above they are what the node says about itself rather than
+# what this prober observed from outside. They are read ONLY when the
+# client-viewpoint RPC already answered (asking a node that just refused a
+# connection to describe its own health is both pointless and a way to turn
+# one dead lane into a 10 s stall every minute):
+#   onion_enabled    dumpstate explorer .onion_enabled — Tor health, true
+#                    only when the embedded onion service is up
+#   onion_address    dumpstate explorer .onion_address, "" when no onion
+#   blocker_count    dumpstate blocker .active_count — the same call
+#                    slo_page_if_stalled.sh already makes when it pages
+#   blocker_primary  id of the first active blocker, "" when none
+#   node_state_ok    true iff both self-report calls answered; false when
+#                    the node was reachable for getblockchaininfo but could
+#                    not answer dumpstate (a real and interesting state)
+#
 # An unreachable instance is NOT a probe failure — it IS the data point
 # (same doctrine as soak_evidence.sh: a hole in the evidence is itself
 # evidence). This script never exits non-zero because a NODE didn't answer;
@@ -106,6 +146,20 @@
 #                           soak_evidence.sh's ZCL_SOAK_RPC_CMD); the
 #                           per-instance variable name is the 4th field of
 #                           that instance's INSTANCES row
+#   ZCL_SLO_CANON_PEERS_CMD / ZCL_SLO_DEV_PEERS_CMD
+#                           same, for the getpeerinfo call (derived name:
+#                           the row's command var with _CMD -> _PEERS_CMD)
+#   ZCL_SLO_SHOW_CMD        override the systemd read; runs with the unit
+#                           name exported as ZCL_SLO_UNIT
+#   ZCL_SLO_RSS_CMD         override the VmRSS read; ZCL_SLO_PID exported
+#   ZCL_SLO_DU_CMD          override the datadir size read; ZCL_SLO_DIR
+#                           exported
+#   ZCL_SLO_NODE_BIN        node binary used for the self-report dumpstate
+#                           calls; set to "" to disable them entirely
+#   ZCL_SLO_STATE_TIMEOUT_SEC
+#                           per-dumpstate timeout (default 5). Two calls
+#                           per REACHABLE instance, so this bounds the
+#                           self-report cost of a hung-but-listening node
 #
 # No python (banned), no jq (installed but unused by repo convention) —
 # bash + sed + flock only, same rule as soak_evidence.sh / replay_canary.sh.
@@ -116,24 +170,54 @@ export LC_ALL=C
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SELF="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
 
+# The ONE reader per measurement (peers, RSS, disk, systemd, node
+# self-report, JSON emission). Sourcing is MANDATORY and its failure is
+# fatal: silently losing six of this ledger's columns because a file moved
+# is precisely the "we thought we were measuring it" failure this collector
+# was extended to end.
+EVIDENCE_LIB="$SCRIPT_DIR/lib/evidence_sources.sh"
+if [ ! -r "$EVIDENCE_LIB" ]; then
+    echo "node-slo-probe: FATAL missing reader library $EVIDENCE_LIB" >&2
+    exit 3
+fi
+# shellcheck source=lib/evidence_sources.sh
+. "$EVIDENCE_LIB"
+
 LEDGER_DIR="${ZCL_SLO_LEDGER_DIR:-${HOME:-/root}/.local/state/zclassic23-slo}"
 LEDGER_FILE="$LEDGER_DIR/uptime-ledger.jsonl"
 STREAK_DIR="$LEDGER_DIR/streak"
 RPC_TIMEOUT_SEC="${ZCL_SLO_RPC_TIMEOUT_SEC:-8}"
 ROTATE_BYTES="${ZCL_SLO_ROTATE_BYTES:-52428800}"   # 50 MiB
 BLIND_STREAK="${ZCL_SLO_BLIND_STREAK:-10}"
+STATE_TIMEOUT_SEC="${ZCL_SLO_STATE_TIMEOUT_SEC:-5}"
+
+# Cap on every host-side reader (systemctl, du, sha256). Deliberately
+# tighter than the library default so this collector's WORST case stays
+# under its unit's TimeoutStartSec:
+#   per instance  = 8 (chaininfo) + 8 (peers) + 5 (systemctl) + 5 (du)
+#                   + 2x5 (dumpstate)                      = 36 s
+#   whole cycle   = 2 instances x 36 + 8 (oracle)          = 80 s
+# against TimeoutStartSec=150 in deploy/zclassic23-slo-probe.service.
+# Measured cost on a healthy box is ~0.25 s; these numbers exist so a
+# wedged host cannot turn a 60 s collector into an overlapping one.
+export ZCL_EVIDENCE_TIMEOUT_SEC="${ZCL_SLO_HOST_TIMEOUT_SEC:-5}"
 
 # ── instance table ────────────────────────────────────────────────────
 # ONE list, probed in order. Row format:
-#     name|rpcport|datadir|command-override-env-var
+#     name|rpcport|datadir|command-override-env-var|systemd-unit
+#
+# The 5th field is the systemd unit that owns the instance, and it is what
+# makes rss_kb / nrestarts / active_enter_ts / unit_active_state
+# attributable to a lane instead of to "the box". An empty 5th field means
+# "not managed by a unit here" and those columns come out null.
 # Membership rule: an instance belongs here only while it is DEPLOYED on
 # this host. Deleting a lane means deleting its row (and the ledger stops
 # carrying a permanently-null sample for it); installing a lane means adding
 # one. Everything downstream — the ledger schema, the summary reader, the
 # pager — is driven off whatever rows are here.
 INSTANCES=(
-    "canonical|18232|${HOME:-/root}/.zclassic-c23|ZCL_SLO_CANON_CMD"
-    "dev|18252|${HOME:-/root}/.zclassic-c23-dev|ZCL_SLO_DEV_CMD"
+    "canonical|18232|${HOME:-/root}/.zclassic-c23|ZCL_SLO_CANON_CMD|zclassic23.service"
+    "dev|18252|${HOME:-/root}/.zclassic-c23-dev|ZCL_SLO_DEV_CMD|zcl23-dev.service"
 )
 ORACLE_DATADIR="${HOME:-/root}/.zclassic"
 ORACLE_RPCPORT=8232
@@ -158,14 +242,39 @@ resolve_zcl_rpc_bin() {
 }
 ZCL_RPC_BIN="$(resolve_zcl_rpc_bin)"
 
-# ── helpers ────────────────────────────────────────────────────────────
+# Node binary for the two SELF-REPORT dumpstate calls (Tor health, typed
+# blocker). Same resolution ladder and the same "explicit override always
+# wins, even to empty" rule slo_page_if_stalled.sh uses, so setting
+# ZCL_SLO_NODE_BIN= turns the self-report columns off rather than making
+# them lie.
+resolve_node_bin() {
+    if [ -n "${ZCL_SLO_NODE_BIN+x}" ]; then printf '%s' "$ZCL_SLO_NODE_BIN"; return 0; fi
+    local candidates=(
+        "$SCRIPT_DIR/../../build/bin/zclassic23"
+        "${HOME:-/root}/.local/bin/zclassic23-live"
+    )
+    local c
+    for c in "${candidates[@]}"; do
+        [ -x "$c" ] && { printf '%s' "$c"; return 0; }
+    done
+    command -v zclassic23 2>/dev/null || printf ''
+}
+NODE_BIN="$(resolve_node_bin)"
 
-# jnum <value>: print the value, or JSON null when empty.
-jnum() { if [ -n "${1:-}" ]; then printf '%s' "$1"; else printf 'null'; fi; }
+# ── helpers ────────────────────────────────────────────────────────────
+# jnum/jstr/json_escape delegate to the shared readers so this ledger and
+# every other one in tools/scripts escape identically. The local names stay
+# because they are the vocabulary of the rest of this file.
+
+# jnum <value>: print the value, or JSON null when empty/non-numeric.
+jnum() { evidence_jnum "${1:-}"; }
 
 # jstr <value>: print a JSON string literal (escaped), "" on empty.
-json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
-jstr() { printf '"%s"' "$(json_escape "${1:-}")"; }
+json_escape() { evidence_json_escape "${1:-}"; }
+jstr() { evidence_jstr "${1:-}"; }
+
+# jbool <value>: JSON true/false, or null when the value was not measured.
+jbool() { evidence_jbool "${1:-}"; }
 
 # rpc_probe <default-cmd> <override-var-name>: run the (possibly overridden)
 # command, print "<served>\x1f<header>\x1f<latency_ms>\x1f<raw-tail>". Never
@@ -209,23 +318,112 @@ rotate_ledger_if_needed() {
 }
 
 # append_line <json-line>: flock-serialized append (bounded -w 30, explicit
-# failure) — same pattern as soak_evidence.sh so a timer run and an ad-hoc
+# failure) — the shared implementation, so a timer run and an ad-hoc
 # operator run can never interleave a torn line.
-append_line() {
-    local line="$1" append_rc=0
-    (
-        flock -x -w 30 9 || exit 9
-        printf '%s\n' "$line" >&9
-    ) 9>>"$LEDGER_FILE" || append_rc=$?
-    if [ "$append_rc" -ne 0 ]; then
-        if [ "$append_rc" -eq 9 ]; then
-            echo "node-slo-probe: FAIL could not acquire append lock on $LEDGER_FILE within 30s" >&2
-        else
-            echo "node-slo-probe: FAIL could not append to $LEDGER_FILE (rc=$append_rc)" >&2
-        fi
-        return 1
+append_line() { evidence_append_line "$LEDGER_FILE" "$1" "node-slo-probe"; }
+
+# ── per-instance host + node facts ─────────────────────────────────────
+# Everything below is measured through the shared readers. Nothing here can
+# fail a collect: an unreadable /proc, an absent unit, a missing node binary
+# each yield an empty string that becomes JSON null in the sample.
+
+# host_facts <unit> <datadir>: one systemctl round trip for four properties
+# plus the two filesystem reads, printed as
+#   <nrestarts>\x1f<aet_epoch>\x1f<active_state>\x1f<rss_kb>\x1f<datadir_bytes>
+# One round trip rather than four matters: at a 60 s cadence over two
+# instances, four extra `systemctl show` forks per sample is most of the
+# added cost of the whole extension.
+host_facts() {
+    local unit="$1" datadir="$2"
+    local show_out="" nrestarts="" aet_epoch="" active_state="" mainpid=""
+    local rss_kb="" dir_bytes=""
+
+    if [ -n "${ZCL_SLO_SHOW_CMD:-}" ]; then
+        show_out="$(ZCL_SLO_UNIT="$unit" bash -c "$ZCL_SLO_SHOW_CMD" 2>/dev/null || true)"
+    elif [ -n "$unit" ]; then
+        show_out="$(evidence_systemd_show "$unit" \
+            NRestarts ActiveEnterTimestamp ActiveState MainPID)"
     fi
-    return 0
+    if [ -n "$show_out" ]; then
+        nrestarts="$(evidence_systemd_field "$show_out" NRestarts)"
+        aet_epoch="$(evidence_ts_to_epoch \
+            "$(evidence_systemd_field "$show_out" ActiveEnterTimestamp)")"
+        active_state="$(evidence_systemd_field "$show_out" ActiveState)"
+        mainpid="$(evidence_systemd_field "$show_out" MainPID)"
+    fi
+    case "$nrestarts" in *[!0-9]*) nrestarts="" ;; esac
+
+    if [ -n "${ZCL_SLO_RSS_CMD:-}" ]; then
+        rss_kb="$(ZCL_SLO_PID="$mainpid" bash -c "$ZCL_SLO_RSS_CMD" 2>/dev/null || true)"
+    else
+        rss_kb="$(evidence_rss_kb "$mainpid")"
+    fi
+    case "$rss_kb" in *[!0-9]*) rss_kb="" ;; esac
+
+    if [ -n "${ZCL_SLO_DU_CMD:-}" ]; then
+        dir_bytes="$(ZCL_SLO_DIR="$datadir" bash -c "$ZCL_SLO_DU_CMD" 2>/dev/null || true)"
+    else
+        dir_bytes="$(evidence_dir_bytes "$datadir")"
+    fi
+    case "$dir_bytes" in *[!0-9]*) dir_bytes="" ;; esac
+
+    printf '%s\x1f%s\x1f%s\x1f%s\x1f%s' \
+        "$nrestarts" "$aet_epoch" "$active_state" "$rss_kb" "$dir_bytes"
+}
+
+# peer_count <default-cmd> <override-var>: connected peers as counted by
+# the ONE definition this repo uses (number of "addr" keys in getpeerinfo).
+# "" when the call produced no JSON at all — distinguishing "asked, got
+# nothing" from a genuine 0 peers, which is the difference between a broken
+# probe and an eclipsed node.
+peer_count() {
+    local default_cmd="$1" override_var="$2" cmd out n
+    cmd="${!override_var:-$default_cmd}"
+    out="$(bash -c "$cmd" 2>/dev/null || true)"
+    [ -n "$out" ] || { printf ''; return 0; }
+    case "$out" in *'"addr"'*) ;; *) printf ''; return 0 ;; esac
+    n="$(printf '%s' "$out" | evidence_peer_count_from_json)"
+    case "${n:-}" in '' | *[!0-9]*) printf '' ;; *) printf '%s' "$n" ;; esac
+}
+
+# node_self_report <datadir> <rpcport>: the two dumpstate calls, printed as
+#   <onion_enabled>\x1f<onion_address>\x1f<blocker_count>\x1f<blocker_primary>\x1f<ok>
+# NEVER called for an unreachable instance — see the header note.
+node_self_report() {
+    local datadir="$1" rpcport="$2"
+    local explorer_json="" blocker_json=""
+    local onion_enabled="" onion_address="" blocker_count="" blocker_primary=""
+    local ok="false"
+    if [ -n "$NODE_BIN" ]; then
+        explorer_json="$(ZCL_EVIDENCE_TIMEOUT_SEC="$STATE_TIMEOUT_SEC" \
+            evidence_node_dumpstate "$NODE_BIN" explorer "$datadir" "$rpcport")"
+        blocker_json="$(ZCL_EVIDENCE_TIMEOUT_SEC="$STATE_TIMEOUT_SEC" \
+            evidence_node_dumpstate "$NODE_BIN" blocker "$datadir" "$rpcport")"
+    fi
+    if [ -n "$explorer_json" ]; then
+        onion_enabled="$(evidence_json_bool "$explorer_json" onion_enabled)"
+        onion_address="$(evidence_json_str "$explorer_json" onion_address)"
+    fi
+    if [ -n "$blocker_json" ]; then
+        blocker_count="$(evidence_json_int "$blocker_json" active_count)"
+        # First id inside the "blockers" array — the whole point is which
+        # blocker is standing right now, not just how many there are.
+        # Done with parameter expansion rather than one sed: the dump also
+        # carries a "last_retired":{"id":...} object, and a greedy regex
+        # cheerfully reports the blocker that just went AWAY as the one
+        # standing. `#*"blockers":[` takes the SHORTEST prefix (so a later
+        # key cannot win) and `%%}*` clips to the first element only.
+        case "$blocker_json" in
+            *'"blockers":['*)
+                local barr="${blocker_json#*\"blockers\":[}"
+                barr="${barr%%\}*}"
+                blocker_primary="$(evidence_json_str "$barr" id)"
+                ;;
+        esac
+    fi
+    [ -n "$explorer_json" ] && [ -n "$blocker_json" ] && ok="true"
+    printf '%s\x1f%s\x1f%s\x1f%s\x1f%s' \
+        "$onion_enabled" "$onion_address" "$blocker_count" "$blocker_primary" "$ok"
 }
 
 # streak_read <instance>: consecutive-miss count carried over from previous
@@ -273,13 +471,23 @@ cmd_collect() {
 
     # Probe every row FIRST, then emit: max_height must be the max over the
     # whole cycle, so no line can be written before the last node answered.
-    local -a names=() ports=() dirs=() probes=()
-    local row name rpcport datadir var default_cmd
+    local -a names=() ports=() dirs=() units=() probes=() peers=()
+    local row name rpcport datadir var unit default_cmd peers_cmd peers_var
     for row in "${INSTANCES[@]}"; do
-        IFS='|' read -r name rpcport datadir var <<<"$row"
+        IFS='|' read -r name rpcport datadir var unit <<<"$row"
         default_cmd="ZCL_DATADIR=\"$datadir\" ZCL_RPCPORT=$rpcport timeout $RPC_TIMEOUT_SEC \"$ZCL_RPC_BIN\" getblockchaininfo"
-        names+=("$name"); ports+=("$rpcport"); dirs+=("$datadir")
+        names+=("$name"); ports+=("$rpcport"); dirs+=("$datadir"); units+=("$unit")
         probes+=("$(rpc_probe "$default_cmd" "$var")")
+        # Peers are only asked for when the cheap height call answered:
+        # a refused port refuses getpeerinfo too, and paying a second
+        # timeout per dead lane per minute buys nothing.
+        peers_var="${var%_CMD}_PEERS_CMD"
+        if [ -n "$(field "${probes[$((${#probes[@]} - 1))]}" 1)" ]; then
+            peers_cmd="ZCL_DATADIR=\"$datadir\" ZCL_RPCPORT=$rpcport timeout $RPC_TIMEOUT_SEC \"$ZCL_RPC_BIN\" getpeerinfo"
+            peers+=("$(peer_count "$peers_cmd" "$peers_var")")
+        else
+            peers+=("")
+        fi
     done
 
     local max_height serveds=("$oracle_served") i
@@ -288,7 +496,11 @@ cmd_collect() {
 
     local any_unreachable=0 any_blind=0
     emit_instance() {
-        local name="$1" rpcport="$2" datadir="$3" probe="$4"
+        # `peer_count` here is the already-measured VALUE, passed in from
+        # the probe loop. Bash keeps function and variable namespaces
+        # separate, so it does not shadow the peer_count() reader — but do
+        # not call that reader from in here expecting this name to mean it.
+        local name="$1" rpcport="$2" datadir="$3" probe="$4" unit="$5" peer_count="$6"
         local served header latency_ms detail reachable gap_max gap_oracle streak
         served="$(field "$probe" 1)"
         header="$(field "$probe" 2)"
@@ -307,12 +519,40 @@ cmd_collect() {
         gap_oracle=""
         [ -n "$served" ] && [ -n "$oracle_served" ] && gap_oracle=$((oracle_served - served))
 
+        # Host-side facts: always measured, including for an unreachable
+        # instance. "The RPC is dark AND the unit says active AND RSS is
+        # 40 GB" is a far more useful line than a bare reachable:false.
+        local hf nrestarts aet_epoch active_state rss_kb dir_bytes
+        hf="$(host_facts "$unit" "$datadir")"
+        nrestarts="$(field "$hf" 1)"
+        aet_epoch="$(field "$hf" 2)"
+        active_state="$(field "$hf" 3)"
+        rss_kb="$(field "$hf" 4)"
+        dir_bytes="$(field "$hf" 5)"
+
+        # Node self-report: only for a lane that already answered.
+        local nsr="" onion_enabled="" onion_address="" blocker_count=""
+        local blocker_primary="" node_state_ok=""
+        if [ "$reachable" = "true" ]; then
+            nsr="$(node_self_report "$datadir" "$rpcport")"
+            onion_enabled="$(field "$nsr" 1)"
+            onion_address="$(field "$nsr" 2)"
+            blocker_count="$(field "$nsr" 3)"
+            blocker_primary="$(field "$nsr" 4)"
+            node_state_ok="$(field "$nsr" 5)"
+        fi
+
         local line
-        line="$(printf '{"ts":%s,"instance":%s,"rpcport":%s,"datadir":%s,"reachable":%s,"unreachable_streak":%s,"served_height":%s,"header_height":%s,"latency_ms":%s,"oracle_height":%s,"max_height":%s,"gap_vs_max":%s,"gap_vs_oracle":%s,"error_detail":%s}' \
+        line="$(printf '{"ts":%s,"instance":%s,"rpcport":%s,"datadir":%s,"reachable":%s,"unreachable_streak":%s,"served_height":%s,"header_height":%s,"latency_ms":%s,"oracle_height":%s,"max_height":%s,"gap_vs_max":%s,"gap_vs_oracle":%s,"peer_count":%s,"rss_kb":%s,"datadir_bytes":%s,"nrestarts":%s,"active_enter_ts":%s,"unit_active_state":%s,"onion_enabled":%s,"onion_address":%s,"blocker_count":%s,"blocker_primary":%s,"node_state_ok":%s,"error_detail":%s}' \
             "$ts" "$(jstr "$name")" "$rpcport" "$(jstr "$datadir")" "$reachable" "$streak" \
             "$(jnum "$served")" "$(jnum "$header")" "$(jnum "$latency_ms")" \
             "$(jnum "$oracle_served")" "$(jnum "$max_height")" \
-            "$(jnum "$gap_max")" "$(jnum "$gap_oracle")" "$(jstr "$detail")")"
+            "$(jnum "$gap_max")" "$(jnum "$gap_oracle")" \
+            "$(jnum "$peer_count")" "$(jnum "$rss_kb")" "$(jnum "$dir_bytes")" \
+            "$(jnum "$nrestarts")" "$(jnum "$aet_epoch")" "$(jstr "$active_state")" \
+            "$(jbool "$onion_enabled")" "$(jstr "$onion_address")" \
+            "$(jnum "$blocker_count")" "$(jstr "$blocker_primary")" \
+            "$(jbool "$node_state_ok")" "$(jstr "$detail")")"
         append_line "$line" || return 1
         echo "$line"
         if [ "$reachable" != "true" ]; then
@@ -326,7 +566,8 @@ cmd_collect() {
 
     local rc=0
     for ((i = 0; i < ${#names[@]}; i++)); do
-        emit_instance "${names[$i]}" "${ports[$i]}" "${dirs[$i]}" "${probes[$i]}" || rc=1
+        emit_instance "${names[$i]}" "${ports[$i]}" "${dirs[$i]}" "${probes[$i]}" \
+            "${units[$i]}" "${peers[$i]}" || rc=1
     done
 
     echo "node-slo-probe: collect done file=$LEDGER_FILE instances=${#names[@]} oracle_height=$(jnum "$oracle_served") max_height=$(jnum "$max_height") any_unreachable=$any_unreachable any_blind=$any_blind"
@@ -353,6 +594,17 @@ cmd_list_instances() {
 cmd_selftest() {
     ST_TMP="$(mktemp -d /tmp/zcl-node-slo-probe-selftest.XXXXXX)"
     trap 'rm -rf "$ST_TMP"' EXIT
+
+    # Hermetic by default: every host/node reader is stubbed for the whole
+    # selftest so the cases below cannot read this box's real systemd,
+    # /proc, datadirs, or node. Cases that care about the new columns
+    # override these locally. A selftest that silently started measuring
+    # the live host would pass on the developer's machine and fail in a
+    # fresh clone, so this export block is load-bearing, not tidiness.
+    export ZCL_SLO_SHOW_CMD='true'
+    export ZCL_SLO_RSS_CMD='true'
+    export ZCL_SLO_DU_CMD='true'
+    export ZCL_SLO_NODE_BIN=''
 
     # A) every instance + the oracle reachable, dev lagging.
     (
@@ -470,6 +722,86 @@ cmd_selftest() {
     printf '%s' "$recover_out" | grep -q 'any_blind=0' \
         || { printf '%s\n' "$recover_out" >&2; st_fail "case=blind-streak recovery must clear any_blind"; }
     echo "selftest: ok case=blind-streak"
+
+    # G) the six added dimensions are actually recorded, from the shared
+    # readers, with the right shapes. Stubs stand in for systemd, /proc,
+    # du, getpeerinfo and the node so the case is hermetic.
+    local nodestub="$ST_TMP/nodestub"
+    cat >"$nodestub" <<'STUB'
+#!/usr/bin/env bash
+# Fixture node: answers the two self-report dumpstate calls the collector
+# makes, ignoring -datadir/-rpcport the way a real CLI would resolve them.
+for a in "$@"; do :; done
+sub="${!#}"
+case "$sub" in
+  explorer) echo '{"subsystem":"explorer","state":{"https_started":true,"onion_enabled":true,"onion_address":"abcxyz.onion"}}' ;;
+  blocker)  echo '{"subsystem":"blocker","state":{"active_count":4,"blockers":[{"id":"tip_finalize.slow","class":"dependency"},{"id":"other.thing"}]}}' ;;
+  *) exit 1 ;;
+esac
+STUB
+    chmod +x "$nodestub"
+    (
+        export ZCL_SLO_LEDGER_DIR="$ST_TMP/g"
+        export ZCL_SLO_CANON_CMD="echo '{\"result\":{\"blocks\":50,\"headers\":50}}'"
+        export ZCL_SLO_DEV_CMD="false"
+        export ZCL_SLO_ORACLE_CMD="echo '{\"result\":{\"blocks\":50,\"headers\":50}}'"
+        export ZCL_SLO_CANON_PEERS_CMD='echo "[{\"id\":1,\"addr\":\"1.2.3.4:8033\"},{\"id\":2,\"addr\":\"5.6.7.8:8033\"},{\"id\":3,\"addr\":\"9.9.9.9:8033\"}]"'
+        export ZCL_SLO_SHOW_CMD='printf "NRestarts=7\nActiveEnterTimestamp=Tue 2026-07-28 11:12:00 UTC\nActiveState=active\nMainPID=4242\n"'
+        export ZCL_SLO_RSS_CMD='echo 1234567'
+        export ZCL_SLO_DU_CMD='echo 18467158947'
+        export ZCL_SLO_NODE_BIN="$nodestub"
+        bash "$SELF" collect >/dev/null 2>&1
+    ) || st_fail "case=added-dimensions collect must exit 0"
+    f="$ST_TMP/g/uptime-ledger.jsonl"
+    grep -q '"instance":"canonical".*"peer_count":3,' "$f" \
+        || { cat "$f" >&2; st_fail "case=added-dimensions peer_count must come from the shared \"addr\" counter"; }
+    grep -q '"rss_kb":1234567,"datadir_bytes":18467158947,"nrestarts":7,' "$f" \
+        || { cat "$f" >&2; st_fail "case=added-dimensions rss/disk/restart columns missing"; }
+    grep -q '"unit_active_state":"active"' "$f" \
+        || { cat "$f" >&2; st_fail "case=added-dimensions unit_active_state missing"; }
+    grep -q '"active_enter_ts":17[0-9]*,' "$f" \
+        || { cat "$f" >&2; st_fail "case=added-dimensions ActiveEnterTimestamp must be parsed to an epoch"; }
+    grep -q '"onion_enabled":true,"onion_address":"abcxyz.onion"' "$f" \
+        || { cat "$f" >&2; st_fail "case=added-dimensions Tor columns missing"; }
+    grep -q '"blocker_count":4,"blocker_primary":"tip_finalize.slow","node_state_ok":true' "$f" \
+        || { cat "$f" >&2; st_fail "case=added-dimensions blocker columns missing/wrong"; }
+    echo "selftest: ok case=added-dimensions"
+
+    # H) the negative half, and the reason every added column is null-able:
+    # an UNREACHABLE instance must record host facts (systemd still knows
+    # things about a dark node) but must NOT fabricate peers or a node
+    # self-report. A monitor that prints peer_count:0 for a node it never
+    # managed to ask is worse than one that prints nothing.
+    grep -q '"instance":"dev".*"peer_count":null,' "$f" \
+        || { cat "$f" >&2; st_fail "case=unmeasured-is-null unreachable instance must have peer_count null, never 0"; }
+    grep -q '"instance":"dev".*"onion_enabled":null,"onion_address":"","blocker_count":null,"blocker_primary":"","node_state_ok":null' "$f" \
+        || { cat "$f" >&2; st_fail "case=unmeasured-is-null unreachable instance must not carry a node self-report"; }
+    grep -q '"instance":"dev".*"rss_kb":1234567,"datadir_bytes":18467158947' "$f" \
+        || { cat "$f" >&2; st_fail "case=unmeasured-is-null host facts must still be recorded for a dark node"; }
+    echo "selftest: ok case=unmeasured-is-null"
+
+    # I) every reader absent (no systemd, no /proc entry, no du, no node
+    # binary): the sample still appends, every added column is null, and
+    # the collect still exits 0. This is the fresh-clone / container shape.
+    (
+        export ZCL_SLO_LEDGER_DIR="$ST_TMP/i"
+        export ZCL_SLO_CANON_CMD="echo '{\"result\":{\"blocks\":1,\"headers\":1}}'"
+        export ZCL_SLO_DEV_CMD="echo '{\"result\":{\"blocks\":1,\"headers\":1}}'"
+        export ZCL_SLO_ORACLE_CMD="echo '{\"result\":{\"blocks\":1,\"headers\":1}}'"
+        export ZCL_SLO_CANON_PEERS_CMD='false'
+        export ZCL_SLO_DEV_PEERS_CMD='false'
+        export ZCL_SLO_SHOW_CMD='false'
+        export ZCL_SLO_RSS_CMD='false'
+        export ZCL_SLO_DU_CMD='false'
+        export ZCL_SLO_NODE_BIN=''
+        bash "$SELF" collect >/dev/null 2>&1
+    ) || st_fail "case=readers-absent collect must exit 0 when every host reader is missing"
+    f="$ST_TMP/i/uptime-ledger.jsonl"
+    [ "$(grep -c '"peer_count":null,"rss_kb":null,"datadir_bytes":null,"nrestarts":null,"active_enter_ts":null,"unit_active_state":""' "$f")" -eq 2 ] \
+        || { cat "$f" >&2; st_fail "case=readers-absent added columns must be null, not 0/false"; }
+    [ "$(grep -c '"reachable":true' "$f")" -eq 2 ] \
+        || { cat "$f" >&2; st_fail "case=readers-absent a missing host reader must not affect reachability"; }
+    echo "selftest: ok case=readers-absent"
 
     echo "selftest: PASS"
 }

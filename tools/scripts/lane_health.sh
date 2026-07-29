@@ -10,6 +10,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
+# The ONE reader per measurement (peers, RSS, disk bytes, systemd, node
+# self-report). Sourced so this script and every evidence ledger measure
+# the same host the same way — see tools/scripts/lib/evidence_sources.sh.
+. "$SCRIPT_DIR/lib/evidence_sources.sh"
+
 JSON=0
 STRICT=0
 while [ $# -gt 0 ]; do
@@ -252,9 +257,12 @@ rpc_call_timeout() {
     timeout "$timeout_s" "$ZCL_CLI" -datadir="$datadir" -rpcport="$rpcport" "$@" 2>/dev/null
 }
 
-peer_count_from_json() {
-    grep -o '"addr"[[:space:]]*:' 2>/dev/null | wc -l | tr -d ' '
-}
+# peer_count_from_json: stdin filter, delegating to the shared reader.
+# The counting rule ("addr" keys in a getpeerinfo response) moved to
+# lib/evidence_sources.sh when the SLO ledger started recording peers too —
+# two implementations of "how many peers" is exactly how a lane report and
+# a ledger come to disagree about the same instant.
+peer_count_from_json() { evidence_peer_count_from_json; }
 
 json_true_count() {
     local body="$1" key="$2"

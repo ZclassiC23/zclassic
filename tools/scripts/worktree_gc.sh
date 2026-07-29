@@ -40,6 +40,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# The ONE reader per measurement (peers, RSS, disk bytes, systemd, node
+# self-report). Sourced so this script and every evidence ledger measure
+# the same host the same way — see tools/scripts/lib/evidence_sources.sh.
+. "$SCRIPT_DIR/lib/evidence_sources.sh"
 MAIN_REF="${ZCL_GC_MAIN_REF:-main}"
 
 APPLY=0
@@ -117,8 +122,12 @@ fit() {
     fi
 }
 
+# dir_bytes: shared reader, with this script's own "0 rather than empty"
+# convention preserved — worktree_gc does arithmetic on the result, while
+# the evidence ledgers must record an unmeasured size as null.
 dir_bytes() {
-    du -sb -- "$1" 2>/dev/null | awk '{print $1}' || printf '0'
+    local v; v="$(evidence_dir_bytes "$1")"
+    printf '%s' "${v:-0}"
 }
 
 # The main checkout is always the first record of `git worktree list`.

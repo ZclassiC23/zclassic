@@ -130,6 +130,51 @@ trailing window, so deploy when the escalator fires anyway, or after
 | Anchor-refold rebuild applied, revert path kept | `~/.local/state/zclassic23-cure/verdict.jsonl`; backups under `~/.zclassic-c23-PREINSTALL-*` and `~/.zclassic-c23-PREPROMOTE-*` |
 | Tip-holding, externally confirmed | `~/.local/state/zclassic23-slo/uptime-ledger.jsonl` (`gap_vs_oracle`, `ts=`) |
 | 72h hold accrual toward `HOLD_PROVEN` | `~/.local/state/zclassic23-slo/hold-ledger.jsonl`; judge: `tools/scripts/slo_hold_judge.sh`; recorder: `zclassic23-hold-certifier.timer` (`make install-hold-certifier`) |
+| Peers, RSS, disk growth, Tor, standing blocker | `~/.local/state/zclassic23-slo/uptime-ledger.jsonl` — the same per-sample line now carries `peer_count`, `rss_kb`, `datadir_bytes`, `nrestarts`, `active_enter_ts`, `unit_active_state`, `onion_enabled`, `onion_address`, `blocker_count`, `blocker_primary` |
+| EXTERNAL availability (not a loopback dial) | `~/.local/state/zclassic23-public-smoke/availability-ledger.jsonl`; collector `tools/scripts/public_explorer_smoke.sh`; unit `deploy/zclassic23-public-smoke.{service,timer}` |
+| Operator interventions, declared and undeclared | `~/.local/state/zclassic23-intervention/intervention-ledger.jsonl`; detector `tools/scripts/intervention_ledger.sh`; declaration front door `tools/scripts/zcl_intervene.sh`; unit `deploy/zclassic23-intervention.{service,timer}` |
+
+### Reading the availability columns
+
+`reachable` in the uptime ledger is a **loopback** RPC dial from the same
+host as the node. It answers "the process is answering", never "a user can
+reach the service" — the port forward, TLS, the certificate, the route, and
+DNS are all downstream of it and always invisible to it. External
+availability is the public-smoke ledger and only that.
+
+`gap_vs_oracle` is a **height delta against the local sibling `zclassicd`**.
+It is one network view from one box, and it compares numbers, not blocks:
+nothing in this repo compares a block hash or a state root against an
+off-host peer at any cadence. Do not read it as parity.
+
+### Zero-intervention claims
+
+A claim that the node ran N days untouched is only checkable against
+`~/.local/state/zclassic23-intervention/intervention-ledger.jsonl`:
+
+```bash
+tools/scripts/intervention_ledger.sh summary            # whole record
+tools/scripts/intervention_ledger.sh summary <epoch>    # since a window start
+```
+
+The verdict line is explicit — `FALSE` when any detected change went
+undeclared, `UNPROVEN` when the window has neither events nor heartbeats
+(which means the detector may not have been running, not that nothing
+happened), and otherwise "no unattributed change observed".
+
+Anyone — human or agent — who restarts a unit, edits a drop-in, or replaces
+a binary declares it first:
+
+```bash
+zcl-intervene "why"                     # declare
+zcl-intervene "why" -- systemctl --user restart zclassic23   # declare + do
+```
+
+An undeclared change is recorded as `unattributed`, which is the whole
+point: it is the line that contradicts the claim. Note that `NRestarts`
+alone cannot support the claim — it counts automatic restarts only, a manual
+`systemctl restart` RESETS it, and it is blind to a config edit or a binary
+swap that does not restart the process.
 
 ## Open blockers
 
