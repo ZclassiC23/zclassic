@@ -887,6 +887,21 @@ void zcl_native_handle_wallet_backup_decrypt(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* The two OFFLINE recovery-phrase leaves
+ * (app/controllers/src/wallet_recovery_native_handlers.c). `status` says
+ * whether a datadir's wallet can be rebuilt from words at all — a wallet
+ * created before recovery phrases honestly answers no. `restore` rebuilds a
+ * wallet into an empty datadir from the phrase alone (CONFIRM_PLAN_COMMIT;
+ * the plan shows the addresses the words open without writing anything).
+ * There is no leaf that prints an existing wallet's phrase: only the
+ * derived seed is stored, and it cannot be turned back into words. */
+void zcl_native_handle_wallet_recovery_status(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_wallet_recovery_restore(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* core.wallet.address.label(.by-label) — the address-book / label surface
  * (app/controllers/src/wallet_label_controller.c). Direct handlers over
  * app_runtime_node_db(): no wallet keystore, no RPC context. `label`

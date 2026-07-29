@@ -23,6 +23,8 @@
 #include "config/boot_snapshot_import.h"
 #include "config/boot_snapshot_install.h"
 #include "config/boot_stale_locks.h"
+#include "config/boot_wallet_phrase.h"
+#include "support/cleanse.h"
 #include "net/snapshot_sync_contract.h"
 #include "services/chain_activation_service.h"
 #include "services/chain_restore_boot_snapshot.h"
@@ -1655,6 +1657,7 @@ bool app_init(struct app_context *ctx)
         wallet_sqlite_read_txs(&g_wallet_sqlite, &g_wallet);
         wallet_rebuild_spent_set(&g_wallet);
         wallet_sqlite_read_sapling_keys(&g_wallet_sqlite, &g_wallet);
+        boot_wallet_adopt_seed_if_it_governs(&g_wallet);
         wallet_sqlite_read_scripts(&g_wallet_sqlite, &g_wallet);
         wallet_sqlite_read_watch_only(&g_wallet_sqlite, &g_wallet);
         int saved_height = 0;
@@ -1786,38 +1789,10 @@ bool app_init(struct app_context *ctx)
             /* No-spend: sync now (NAMED via EV_BOOT_PHASE), never a required flag. */
             event_emitf(EV_BOOT_PHASE, 0, "wallet_no_spend keyless_sync");
             printf("Wallet: NO-SPEND mode (0 keys) — syncing.\n");
-        } else {
-        if (act == WALLET_BOOT_CREATE_PLAINTEXT)
-            event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
-                        "wallet_plaintext_created_optin");
-        wallet_top_up_key_pool(&g_wallet, DEFAULT_KEYPOOL_SIZE);
-        int64_t initial_pool_generation =
-            wallet_key_pool_generation_ceiling(&g_wallet);
-        if (g_wallet_sqlite.open) {
-            struct zcl_result _r = wallet_sqlite_flush_r(
-                &g_wallet_sqlite, &g_wallet);
-            if (!_r.ok) {
-                fprintf(stderr,
-                    "\nFATAL: initial keypool flush failed.\n"
-                    "       code=%d message=%s\n"
-                    "       source=%s:%d\n"
-                    "       REFUSING to proceed — fresh keys would be RAM-only.\n\n",
-                    _r.code, _r.message,
-                    _r.source_file ? _r.source_file : "?",
-                    _r.source_line);
-                event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
-                            "wallet_keypool_flush_failed code=%d", _r.code);
-                exit(1);
-            }
-            wallet_key_pool_mark_persisted_through(
-                &g_wallet, initial_pool_generation);
-        } else {
-            wallet_key_pool_mark_persisted_through(
-                &g_wallet, initial_pool_generation);
-        }
-        if (g_node_db.open)
-            node_db_wal_checkpoint(&g_node_db);
-        printf("New wallet created.\n");
+        } else if (!boot_wallet_create_new(
+                       &g_wallet, &g_wallet_sqlite, &g_node_db,
+                       act == WALLET_BOOT_CREATE_PLAINTEXT)) {
+            exit(1);
         }
     }
     printf("Wallet has %zu keys.\n", g_wallet.keystore.num_keys);

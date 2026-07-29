@@ -242,6 +242,14 @@ void ecc_start(void)
     secp256k1_ctx_sign = ctx;
 }
 
+bool ecc_start_once(void)
+{
+    if (secp256k1_ctx_sign)
+        return true;
+    ecc_start();
+    return secp256k1_ctx_sign != NULL;
+}
+
 void ecc_stop(void)
 {
     secp256k1_context *ctx = secp256k1_ctx_sign;

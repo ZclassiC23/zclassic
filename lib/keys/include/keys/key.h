@@ -108,4 +108,18 @@ bool ecc_init_sanity_check(void);
 void ecc_start(void);
 void ecc_stop(void);
 
+/* Idempotent ecc_start for OFFLINE entry points.
+ *
+ * ecc_start() is boot wiring and asserts if a context already exists — the
+ * right behaviour for boot, which runs it exactly once. But a CLI command
+ * that does key derivation without a node (recovering a wallet from its
+ * phrase, say) may be the first thing in the process to need a signing
+ * context, or may be running inside a node that already started one. This
+ * gives it a context either way and returns true when one is in force.
+ *
+ * Not thread-safe: call it from the single-threaded entry path, before any
+ * worker exists. Inside a running node it only ever observes the context
+ * boot already created and returns immediately. */
+bool ecc_start_once(void);
+
 #endif

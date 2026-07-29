@@ -59,24 +59,24 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 337 |
+| Registry entries (branches + leaves) | 340 |
 | Top-level roots | 9 |
-| Branches | 77 |
-| Leaves (dispatchable command paths) | 260 |
-| … `ready` (live handler in this build) | 218 |
+| Branches | 78 |
+| Leaves (dispatchable command paths) | 262 |
+| … `ready` (live handler in this build) | 220 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 25 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
-| Leaves with `effect=mutate` | 73 |
+| Leaves with `effect=mutate` | 74 |
 | Leaves with `effect=destructive` | 4 |
-| Leaves requiring **owner** authority | 60 |
+| Leaves requiring **owner** authority | 62 |
 
 Per source file:
 
 | `.def` file | Entries | Branches | Leaves |
 |---|---|---|---|
 | `config/commands/root.def` | 10 | 5 | 5 |
-| `config/commands/core.def` | 100 | 24 | 76 |
+| `config/commands/core.def` | 103 | 25 | 78 |
 | `config/commands/apps.def` | 9 | 2 | 7 |
 | `config/commands/app_features.def` | 29 | 6 | 23 |
 | `config/commands/ops.def` | 44 | 8 | 36 |
@@ -312,6 +312,13 @@ represented by its children's sections.
 | `core wallet backup status` | ready | read / read / operator · fast/low | none | `zcl.wallet_backup_status.v1` | `zclassic23 core wallet backup status` | Wallet backup freshness |
 | `core wallet backup now` | ready | mutate / wallet / **owner**, plan-commit · fast/low | `confirm` | `zcl.wallet_backup.v1` | `zclassic23 core wallet backup now` | Take a wallet backup now |
 | `core wallet backup decrypt` | ready | mutate / wallet / **owner**, plan-commit · foreground/low | **`from`**, `to`, `password`, `confirm` | `zcl.wallet_backup_decrypt.v1` | `zclassic23 core wallet backup decrypt --input='{"from":"~/wallet_backups/wallet_backup_1.sqlite.enc","to":"/tmp/wb.sqlite"}'` | Decrypt an encrypted wallet backup file |
+
+#### `core.wallet.recovery` — Recovery phrase (the twelve words)
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `core wallet recovery status` | ready | read / read / **owner** · foreground/moderate | `datadir` | `zcl.wallet_recovery_status.v1` | `zclassic23 core wallet recovery status` | Can this wallet be rebuilt from its words |
+| `core wallet recovery restore` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | `phrase`, `datadir`, `confirm` | `zcl.wallet_recovery_restore.v1` | `zclassic23 core wallet recovery restore --input='{"datadir":"/tmp/recovered"}'` | Rebuild a wallet from its recovery phrase |
 
 #### `core.storage` — Raw node storage
 

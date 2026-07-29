@@ -259,6 +259,56 @@ bool wallet_init_hd(struct wallet *w, const unsigned char *seed, size_t seed_len
 bool wallet_init_hd_from_mnemonic(struct wallet *w, const char *mnemonic,
                                    const char *passphrase);
 bool wallet_has_hd(const struct wallet *w);
+
+/* ── Recovery phrase ──────────────────────────────────────────────
+ *
+ * One phrase, one seed, both key trees. `phrase` is a BIP39 mnemonic;
+ * mnemonic_to_wallet_seed() turns it into the single 32-byte seed this
+ * wallet persists, and that seed is installed into BOTH the Sapling
+ * keystore (ZIP32 master) and the transparent HD chain (BIP32 master).
+ * Nothing stores the phrase — the seed is the only thing that lands on
+ * disk, and the phrase cannot be recovered from it.
+ *
+ * Call on a freshly wallet_init()'d wallet, BEFORE any key is minted, so
+ * every key the wallet grows descends from the phrase. Returns false on a
+ * phrase that fails BIP39 validation; the phrase is never logged, never
+ * echoed into an error, and the derived seed is cleansed before return. */
+bool wallet_init_from_recovery_phrase(struct wallet *w, const char *phrase);
+
+/* Adopt a seed that was just loaded from disk as this wallet's transparent
+ * HD master — but ONLY when this seed provably governs the keys already in
+ * the keystore.
+ *
+ * The test is derivation, not a stored flag: a wallet whose external key 0
+ * is the key this seed derives at m/44'/147'/0'/0/0 was grown from this
+ * seed, so its later keys must keep coming from it. A wallet created before
+ * recovery phrases has independently random transparent keys; index 0 will
+ * not be among them, and this function then leaves the wallet exactly as it
+ * found it — legacy random key generation, unchanged derivation, no
+ * migration. That is deliberate: silently re-pointing an existing wallet's
+ * key derivation is how money disappears.
+ *
+ * An empty keystore adopts unconditionally (a restore in progress).
+ *
+ * On adoption the external/internal counters are recovered by scanning
+ * forward from 0 for the first index whose key is NOT in the keystore, so
+ * the next address minted is the next unused one rather than a duplicate of
+ * an existing address. The counters are DERIVED from the keystore on every
+ * load; they are never a second stored copy of the same fact.
+ *
+ * Returns true when the seed was adopted, false when it was declined or on
+ * a NULL/derivation error. */
+bool wallet_hd_adopt_seed(struct wallet *w,
+                          const unsigned char seed[32]);
+
+/* Encode the transparent address at m/44'/147'/account'/change/index for
+ * `seed`, without touching any wallet state. `change` is BIP44_EXTERNAL
+ * (receiving) or BIP44_INTERNAL (change). This is how a caller shows the
+ * user which address a recovery phrase brings back, and how a test proves
+ * that a restored wallet's first address equals the created one's. */
+bool wallet_seed_address_at(const unsigned char seed[32], uint32_t account,
+                            uint32_t change, uint32_t index,
+                            char *addr_out, size_t addr_size);
 bool wallet_get_new_change_address(struct wallet *w, char *addr_out,
                                     size_t addr_size);
 

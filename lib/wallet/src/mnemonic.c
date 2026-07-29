@@ -98,3 +98,24 @@ bool mnemonic_to_seed(const char *phrase, const char *passphrase,
         LOG_FAIL(DOMAIN, "mnemonic_to_seed: %s", r.message);
     return true;
 }
+
+bool mnemonic_to_wallet_seed(const char *phrase, const char *passphrase,
+                             uint8_t seed_out[MNEMONIC_WALLET_SEED_SIZE])
+{
+    GUARD_NOT_NULL(phrase, DOMAIN, "phrase");
+    GUARD_NOT_NULL(seed_out, DOMAIN, "seed_out");
+
+    uint8_t full[MNEMONIC_SEED_SIZE];
+    struct zcl_result r = domain_wallet_mnemonic_to_seed(
+            phrase, passphrase, full, sizeof(full));
+    if (!r.ok) {
+        memory_cleanse(full, sizeof(full));
+        /* r.message describes the shape that was wrong (word count,
+         * checksum) and never contains the phrase itself. */
+        LOG_FAIL(DOMAIN, "mnemonic_to_wallet_seed: %s", r.message);
+    }
+
+    memcpy(seed_out, full, MNEMONIC_WALLET_SEED_SIZE);
+    memory_cleanse(full, sizeof(full));
+    return true;
+}

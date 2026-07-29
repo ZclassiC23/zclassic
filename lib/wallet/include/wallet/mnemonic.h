@@ -58,6 +58,30 @@ bool mnemonic_validate(const char *phrase);
 bool mnemonic_to_seed(const char *phrase, const char *passphrase,
                       uint8_t seed_out[MNEMONIC_SEED_SIZE]);
 
+/* Size of the wallet seed a recovery phrase determines. */
+#define MNEMONIC_WALLET_SEED_SIZE 32
+
+/* Derive THE wallet seed a recovery phrase determines: the first 32 bytes
+ * of the BIP39 512-bit seed above.
+ *
+ * Why 32 and not 64. This wallet persists exactly one seed per wallet, and
+ * that column is 32 bytes wide (`wallet_seed.seed`, app/models/src/
+ * database_schema.c) because ZIP32 — the Sapling key tree — takes a 32-byte
+ * seed. Both key trees this wallet grows hang off that one value: the
+ * shielded tree through zip32_xsk_master(seed, 32) and the transparent tree
+ * through hd_master_from_seed(seed, 32). Truncating BIP39's output here is
+ * what lets ONE recovery phrase reproduce BOTH, with no second copy of the
+ * secret stored anywhere.
+ *
+ * This mapping is a wire contract: change it and every phrase already
+ * written down stops restoring its wallet. It has exactly one definition,
+ * this function, and both the create side and the restore side call it.
+ *
+ * Returns false (and cleanses) on an invalid phrase or a NULL argument;
+ * never logs, echoes, or otherwise reproduces the phrase. */
+bool mnemonic_to_wallet_seed(const char *phrase, const char *passphrase,
+                             uint8_t seed_out[MNEMONIC_WALLET_SEED_SIZE]);
+
 /* ── Wordlist access ──────────────────────────────────────────────── */
 
 /* Get a word from the BIP39 English wordlist by index (0-2047).
