@@ -5,15 +5,16 @@
  *
  * Four independent Keccak states are interleaved across the low 4 of the 8
  * 64-bit slots of each __m512i, so theta/rho/pi/chi are entirely lane-parallel
- * — no cross-lane shuffle. Same geometry as sha3_256_x4.c, and the shape where
- * a double-pumped 512-bit unit genuinely pays (measured 1.65x on Zen 4).
+ * — no cross-lane shuffle. The permutation itself lives in
+ * keccak_x4_internal.h, shared with sha3_256_x4.c; this file is only the
+ * keystream geometry (absorb 72 bytes, two permutations, squeeze 64).
  *
- * The AVX-512 lane carries __attribute__((target("avx512f"))) so it compiles
- * into the shipped -march=x86-64-v3 baseline, and is reached only after
- * sha3_keccakf_avx512_available() confirms CPUID + OS (XCR0) support. The
- * scalar lane (four sequential sha3_512 hashes) is the always-available
- * reference AND the differential-oracle reference: test group `sha3_512_x4`
- * proves the two are byte-for-byte identical.
+ * The AVX-512 lane carries a target attribute so it compiles into the shipped
+ * -march=x86-64-v3 baseline, and is reached only after keccak_x4_available()
+ * confirms CPUID + OS (XCR0) support. The scalar lane (four sequential sha3_512
+ * hashes) is the always-available reference AND the differential-oracle
+ * reference: test group `sha3_512_x4` proves the two are byte-for-byte
+ * identical.
  *
  * Was: the whole vector body sat behind `#ifdef __AVX512F__`. The shipped
  * flags never define that macro, so every binary we ship carried only the
@@ -22,6 +23,7 @@
  * `uint64_t lanes[4]`, which -Wall -Wextra -Werror would have rejected.) */
 
 #include "crypto/sha3.h"
+#include "keccak_x4_internal.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -45,112 +47,16 @@ static void sha3_512_x4_scalar(const uint8_t key[32], const uint8_t nonce[32],
 
 #if defined(__x86_64__)
 
-#include <immintrin.h>
-
-/* 4-way parallel Keccak-f[1600]. st[25], each a __m512i whose low 4 uint64
- * slots are 4 independent Keccak instances (slots 4..7 are dead and never feed
- * an active lane). Every step is lane-parallel — the word index selects among
- * the 25 registers and rho is a fixed per-word rotate applied uniformly. */
-__attribute__((target("avx512f")))
-static void keccakf_4way(__m512i st[25])
-{
-    static const uint64_t RNDC[24] = {
-        0x0000000000000001, 0x0000000000008082, 0x800000000000808a, 0x8000000080008000,
-        0x000000000000808b, 0x0000000080000001, 0x8000000080008081, 0x8000000000008009,
-        0x000000000000008a, 0x0000000000000088, 0x0000000080008009, 0x000000008000000a,
-        0x000000008000808b, 0x800000000000008b, 0x8000000000008089, 0x8000000000008003,
-        0x8000000000008002, 0x8000000000000080, 0x000000000000800a, 0x800000008000000a,
-        0x8000000080008081, 0x8000000000008080, 0x0000000080000001, 0x8000000080008008
-    };
-
-    #define ROL4(x, n) _mm512_or_si512(_mm512_slli_epi64((x), (n)), \
-                                        _mm512_srli_epi64((x), 64-(n)))
-
-    for (int round = 0; round < 24; round++) {
-        /* θ step */
-        __m512i bc0 = _mm512_xor_si512(_mm512_xor_si512(st[0], st[5]),
-                      _mm512_xor_si512(st[10], _mm512_xor_si512(st[15], st[20])));
-        __m512i bc1 = _mm512_xor_si512(_mm512_xor_si512(st[1], st[6]),
-                      _mm512_xor_si512(st[11], _mm512_xor_si512(st[16], st[21])));
-        __m512i bc2 = _mm512_xor_si512(_mm512_xor_si512(st[2], st[7]),
-                      _mm512_xor_si512(st[12], _mm512_xor_si512(st[17], st[22])));
-        __m512i bc3 = _mm512_xor_si512(_mm512_xor_si512(st[3], st[8]),
-                      _mm512_xor_si512(st[13], _mm512_xor_si512(st[18], st[23])));
-        __m512i bc4 = _mm512_xor_si512(_mm512_xor_si512(st[4], st[9]),
-                      _mm512_xor_si512(st[14], _mm512_xor_si512(st[19], st[24])));
-
-        __m512i t;
-        t = _mm512_xor_si512(bc4, ROL4(bc1, 1));
-        st[0] = _mm512_xor_si512(st[0], t); st[5] = _mm512_xor_si512(st[5], t);
-        st[10] = _mm512_xor_si512(st[10], t); st[15] = _mm512_xor_si512(st[15], t);
-        st[20] = _mm512_xor_si512(st[20], t);
-        t = _mm512_xor_si512(bc0, ROL4(bc2, 1));
-        st[1] = _mm512_xor_si512(st[1], t); st[6] = _mm512_xor_si512(st[6], t);
-        st[11] = _mm512_xor_si512(st[11], t); st[16] = _mm512_xor_si512(st[16], t);
-        st[21] = _mm512_xor_si512(st[21], t);
-        t = _mm512_xor_si512(bc1, ROL4(bc3, 1));
-        st[2] = _mm512_xor_si512(st[2], t); st[7] = _mm512_xor_si512(st[7], t);
-        st[12] = _mm512_xor_si512(st[12], t); st[17] = _mm512_xor_si512(st[17], t);
-        st[22] = _mm512_xor_si512(st[22], t);
-        t = _mm512_xor_si512(bc2, ROL4(bc4, 1));
-        st[3] = _mm512_xor_si512(st[3], t); st[8] = _mm512_xor_si512(st[8], t);
-        st[13] = _mm512_xor_si512(st[13], t); st[18] = _mm512_xor_si512(st[18], t);
-        st[23] = _mm512_xor_si512(st[23], t);
-        t = _mm512_xor_si512(bc3, ROL4(bc0, 1));
-        st[4] = _mm512_xor_si512(st[4], t); st[9] = _mm512_xor_si512(st[9], t);
-        st[14] = _mm512_xor_si512(st[14], t); st[19] = _mm512_xor_si512(st[19], t);
-        st[24] = _mm512_xor_si512(st[24], t);
-
-        /* ρ and π steps */
-        t = st[1];
-        __m512i tmp;
-        tmp = st[10]; st[10] = ROL4(t, 1); t = tmp;
-        tmp = st[7];  st[7]  = ROL4(t, 3); t = tmp;
-        tmp = st[11]; st[11] = ROL4(t, 6); t = tmp;
-        tmp = st[17]; st[17] = ROL4(t, 10); t = tmp;
-        tmp = st[18]; st[18] = ROL4(t, 15); t = tmp;
-        tmp = st[3];  st[3]  = ROL4(t, 21); t = tmp;
-        tmp = st[5];  st[5]  = ROL4(t, 28); t = tmp;
-        tmp = st[16]; st[16] = ROL4(t, 36); t = tmp;
-        tmp = st[8];  st[8]  = ROL4(t, 45); t = tmp;
-        tmp = st[21]; st[21] = ROL4(t, 55); t = tmp;
-        tmp = st[24]; st[24] = ROL4(t, 2); t = tmp;
-        tmp = st[4];  st[4]  = ROL4(t, 14); t = tmp;
-        tmp = st[15]; st[15] = ROL4(t, 27); t = tmp;
-        tmp = st[23]; st[23] = ROL4(t, 41); t = tmp;
-        tmp = st[19]; st[19] = ROL4(t, 56); t = tmp;
-        tmp = st[13]; st[13] = ROL4(t, 8); t = tmp;
-        tmp = st[12]; st[12] = ROL4(t, 25); t = tmp;
-        tmp = st[2];  st[2]  = ROL4(t, 43); t = tmp;
-        tmp = st[20]; st[20] = ROL4(t, 62); t = tmp;
-        tmp = st[14]; st[14] = ROL4(t, 18); t = tmp;
-        tmp = st[22]; st[22] = ROL4(t, 39); t = tmp;
-        tmp = st[9];  st[9]  = ROL4(t, 61); t = tmp;
-        tmp = st[6];  st[6]  = ROL4(t, 20); t = tmp;
-        st[1] = ROL4(t, 44);
-
-        /* χ step */
-        for (int j = 0; j < 25; j += 5) {
-            __m512i s0 = st[j], s1 = st[j+1], s2 = st[j+2];
-            __m512i s3 = st[j+3], s4 = st[j+4];
-            st[j]   = _mm512_xor_si512(s0, _mm512_andnot_si512(s1, s2));
-            st[j+1] = _mm512_xor_si512(s1, _mm512_andnot_si512(s2, s3));
-            st[j+2] = _mm512_xor_si512(s2, _mm512_andnot_si512(s3, s4));
-            st[j+3] = _mm512_xor_si512(s3, _mm512_andnot_si512(s4, s0));
-            st[j+4] = _mm512_xor_si512(s4, _mm512_andnot_si512(s0, s1));
-        }
-
-        /* ι step */
-        st[0] = _mm512_xor_si512(st[0], _mm512_set1_epi64((long long)RNDC[round]));
-    }
-    #undef ROL4
-}
-
 /* Generate 4 SHA3-512 hashes in parallel.
  * Each input is: key(32) || nonce(32) || counter(8) = 72 bytes.
  * SHA3-512 rate = 72 bytes, so exactly one block per input.
- * Output: 4 × 64 = 256 bytes of keystream. */
-__attribute__((target("avx512f")))
+ * Output: 4 × 64 = 256 bytes of keystream.
+ *
+ * Target matches keccak_x4_permute's exactly, so the permutation inlines here
+ * instead of becoming a call that spills 25 zmm registers per block. The
+ * extra features over plain avx512f cost nothing: keccak_x4_available()
+ * already requires f+vl+dq before this function can be reached. */
+__attribute__((target("avx512f,avx512vl,avx512dq")))
 static void sha3_512_x4_avx512(const uint8_t key[32], const uint8_t nonce[32],
                                uint64_t counter_base, uint8_t out[256])
 {
@@ -187,11 +93,11 @@ static void sha3_512_x4_avx512(const uint8_t key[32], const uint8_t nonce[32],
      * sha3_512_finalize (sha3.c): permute the absorbed rate block, THEN absorb a
      * pad block (domain byte 0x06 at rate byte 0; pad10*1 terminator 0x80 at rate
      * byte 71 = word 8, bit 63) and permute again. */
-    keccakf_4way(st);  /* permute the full first (rate) block */
+    keccak_x4_permute(st);  /* permute the full first (rate) block */
     st[0] = _mm512_xor_si512(st[0], _mm512_set1_epi64(0x06));  /* domain sep, rate byte 0 */
     st[8] = _mm512_xor_si512(st[8],
                 _mm512_set1_epi64((long long)0x8000000000000000ULL));  /* pad terminator, rate byte 71 */
-    keccakf_4way(st);  /* permute the pad block */
+    keccak_x4_permute(st);  /* permute the pad block */
 
     /* Squeeze: extract first 8 words (64 bytes) from each lane */
     for (int w = 0; w < 8; w++) {
@@ -226,7 +132,7 @@ static int g_x4_inited = 0;
 static void x4_init_default(void)
 {
 #if defined(__x86_64__)
-    if (SHA3_512_X4_AVX512_DEFAULT_ENABLED && sha3_keccakf_avx512_available())
+    if (SHA3_512_X4_AVX512_DEFAULT_ENABLED && keccak_x4_available())
         g_x4 = sha3_512_x4_avx512;
     else
         g_x4 = sha3_512_x4_scalar;
@@ -245,7 +151,7 @@ int sha3_512_x4_select_impl(enum sha3_impl which)
         return SHA3_IMPL_SCALAR;
     case SHA3_IMPL_AVX512:
 #if defined(__x86_64__)
-        if (sha3_keccakf_avx512_available()) {
+        if (keccak_x4_available()) {
             g_x4 = sha3_512_x4_avx512;
             g_x4_inited = 1;
             return SHA3_IMPL_AVX512;
