@@ -25,7 +25,16 @@
  *   2. an entry with no reachable store is refused WITHOUT gaining
  *      BLOCK_FAILED_VALID and WITHOUT a fabricated solution;
  *   3. the successor walk ADVANCES past an unservable entry and returns
- *      the next servable one instead of re-querying the same parent.
+ *      the next servable one instead of re-querying the same parent;
+ *   4. a healed entry serves again off the in-memory hot path — the path
+ *      that skips the redundant Equihash re-verification because the
+ *      bytes hash-bind and the entry is already BLOCK_VALID_TREE — and
+ *      still produces exactly the accepted header;
+ *   5. the pinned-solution cache is accounted (it is budget-capped so an
+ *      unauthenticated peer's header walk cannot grow it without bound);
+ *   6. a header that solves Equihash but is filed under the WRONG hash is
+ *      REFUSED — a served header must hash-bind to the entry it is served
+ *      under, which "the solution is valid" alone never proves.
  */
 
 #include "test/test_core.h"
@@ -43,6 +52,7 @@
 #include "primitives/block.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
+#include "util/safe_alloc.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -234,6 +244,94 @@ int test_getheaders_serve_fallback(void)
                   next == bi_b);
         GSF_CHECK("walk skipped entry is still not FAILED-marked",
                   next == bi_b && bi_a->nStatus == BLOCK_VALID_TREE);
+    }
+
+    /* 4. The healed entry serves again off the in-memory hot path, still
+     *    hash-bound and still carrying the real solution. This is the path
+     *    that skips the redundant Equihash re-verification (the entry is
+     *    already BLOCK_VALID_TREE and the bytes hash-bind), so it must
+     *    still produce exactly the accepted header. */
+    {
+        struct block_header out;
+        block_header_init(&out);
+        bool ok = getheaders_index_header_servable(&mp, bi_b, &out);
+        struct uint256 served_hash;
+        block_header_get_hash(&out, &served_hash);
+        GSF_CHECK("healed entry serves again from the in-memory path", ok);
+        GSF_CHECK("second serve still hash-binds",
+                  ok && uint256_eq(&served_hash, &hash_b));
+        GSF_CHECK("second serve still carries the real solution",
+                  ok && out.nSolutionSize == hb.nSolutionSize &&
+                  memcmp(out.nSolution, hb.nSolution,
+                         hb.nSolutionSize) == 0);
+    }
+
+    /* 5. Serve-path solution cache accounting is wired: healing B pinned
+     *    exactly B's solution, and it is bounded (never unbounded growth
+     *    driven by an unauthenticated peer's header walk). */
+    GSF_CHECK("healed solution is counted against the serve cache budget",
+              getheaders_solution_cache_bytes() >= hb.nSolutionSize);
+
+    /* 6. A header that is internally VALID but is filed under the WRONG
+     *    hash must never be served. Entry X is keyed by a hash that is not
+     *    B's, yet reassembles byte-for-byte into B's header — same prev
+     *    (pprev = A), same fields, same real Equihash solution. So every
+     *    self-contained check passes: solution size is right, Equihash
+     *    verifies, PoW verifies, the timestamp is sane. The one thing
+     *    wrong is that these bytes are not the block X claims to be.
+     *
+     *    A serve path that only asks "does this solve Equihash?" hands the
+     *    peer B's header under X's announced hash, and the peer wires it
+     *    into its chain under the wrong identity. Requiring the serialized
+     *    header to hash to the entry's own phashBlock is what closes that,
+     *    and it is the STRICTLY stronger check: "these bytes are the block
+     *    we accepted" implies the solution is valid, never the reverse.
+     *    X has no flat file and no node.db row, so no retry can rescue it
+     *    — refusal is the only correct answer. */
+    {
+        struct uint256 hash_x = hash_b;
+        hash_x.data[0] ^= 0x5a;   /* not B, not A, not g */
+
+        struct block_index *bi_x =
+            chainstate_insert_block_index((struct chainstate *)&ms, &hash_x);
+        GSF_CHECK("wrong-hash fixture entry inserted", bi_x != NULL);
+        if (bi_x) {
+            bi_x->nHeight = 2;
+            bi_x->nVersion = hb.nVersion;
+            bi_x->hashMerkleRoot = hb.hashMerkleRoot;
+            bi_x->hashFinalSaplingRoot = hb.hashFinalSaplingRoot;
+            bi_x->nTime = hb.nTime;
+            bi_x->nBits = hb.nBits;
+            bi_x->nNonce = hb.nNonce;
+            bi_x->nStatus = BLOCK_VALID_TREE;
+            bi_x->pprev = bi_a;   /* reassembles to exactly hb */
+
+            uint8_t *sol = zcl_malloc(hb.nSolutionSize, "gsf_wrong_hash_sol");
+            GSF_CHECK("wrong-hash fixture solution allocated", sol != NULL);
+            if (sol) {
+                memcpy(sol, hb.nSolution, hb.nSolutionSize);
+                bi_x->nSolution = sol;
+                bi_x->nSolutionSize = hb.nSolutionSize;
+
+                /* Sanity: the assembled header really is valid on its own
+                 * terms, so a pass below cannot come from the fixture
+                 * being accidentally malformed. */
+                struct block_header rebuilt = hb;
+                struct uint256 rebuilt_hash;
+                block_header_get_hash(&rebuilt, &rebuilt_hash);
+                GSF_CHECK("wrong-hash fixture rebuilds a genuinely valid "
+                          "header", uint256_eq(&rebuilt_hash, &hash_b) &&
+                          !uint256_eq(&hash_x, &hash_b));
+
+                struct block_header out;
+                block_header_init(&out);
+                bool ok = getheaders_index_header_servable(&mp, bi_x, &out);
+                GSF_CHECK("a valid header filed under the wrong hash is "
+                          "refused", !ok);
+                GSF_CHECK("that refusal is still not a validity verdict",
+                          !ok && bi_x->nStatus == BLOCK_VALID_TREE);
+            }
+        }
     }
 
     app_runtime_set_current(NULL);
