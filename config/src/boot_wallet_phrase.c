@@ -14,6 +14,44 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
+
+bool boot_wallet_phrase_stdout_is_a_terminal(void)
+{
+    return isatty(STDOUT_FILENO) == 1;
+}
+
+/* The refusal. Says what happened, why it is not a bug, and the one thing
+ * to do about it — and never contains a word of the phrase, so it is safe
+ * on the very stdout it is refusing to trust. */
+static void boot_wallet_refuse_non_terminal(void)
+{
+    static const char *const msg =
+        "\n"
+        "================ WALLET NOT CREATED ================\n"
+        "\n"
+        "This node was about to create a new wallet and show you the\n"
+        "twelve words that ARE that wallet. Anyone who reads those words\n"
+        "can spend every coin in it, forever.\n"
+        "\n"
+        "This output is NOT going to a terminal. It is going to a file or\n"
+        "a pipe — under the shipped service that file is node.log, which\n"
+        "is rotated, copied into backups, and readable with\n"
+        "'zclassic23 ops logs'. Printing the words there would hand your\n"
+        "money to everything that ever reads that file.\n"
+        "\n"
+        "So nothing was created. There is no half-made wallet and no\n"
+        "phrase anywhere on this disk.\n"
+        "\n"
+        "To create the wallet, run the node ONCE from a terminal:\n"
+        "  zclassic23\n"
+        "write the twelve words on paper when they appear, stop it, and\n"
+        "start the service again as usual. The service will find the\n"
+        "wallet and never need to print anything.\n"
+        "====================================================\n\n";
+    fputs(msg, stderr);
+    fflush(stderr);
+}
 
 bool boot_wallet_mint_recovery_phrase(struct wallet *w, char *phrase_out,
                                       size_t cap)
@@ -41,6 +79,18 @@ void boot_wallet_show_recovery_phrase_once(const char *phrase)
 {
     if (!phrase || !phrase[0])
         return;
+
+    /* Last line of defence, and the reason this function has exactly one
+     * implementation: under the shipped systemd unit stdout IS node.log.
+     * A phrase printed there is the wallet's whole spending authority in a
+     * plaintext file that gets rotated, copied into backups, and read back
+     * by `zclassic23 ops logs`. boot_wallet_create_new refuses long before
+     * a phrase exists; this check is here so no future caller can reach
+     * the print without it. */
+    if (!boot_wallet_phrase_stdout_is_a_terminal()) {
+        boot_wallet_refuse_non_terminal();
+        return;
+    }
 
     /* stdout, never the log. node.log is copied, shipped and read by other
      * people; these words are the wallet. */
@@ -74,6 +124,22 @@ bool boot_wallet_create_new(struct wallet *w, struct wallet_sqlite *ws,
                             struct node_db *ndb, bool plaintext_optin)
 {
     GUARD_NOT_NULL(w, "wallet_phrase", "wallet");
+
+    /* FIRST, before a single byte is minted or written. A new wallet's only
+     * backup is the twelve words, they are shown exactly once, and this
+     * process's stdout is node.log whenever the node runs as the shipped
+     * service. Creating the wallet anyway would either put the words in
+     * that file or leave the user a wallet whose only backup they never
+     * saw. Refuse instead, while there is still nothing to clean up: no
+     * phrase has been drawn, no key minted, nothing flushed, and the caller
+     * (config/src/boot.c) turns this false into exit(1). */
+    if (!boot_wallet_phrase_stdout_is_a_terminal()) {
+        boot_wallet_refuse_non_terminal();
+        event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                    "wallet_creation_refused_stdout_not_a_terminal");
+        return false;
+    }
+
     if (plaintext_optin)
         event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
                     "wallet_plaintext_created_optin");

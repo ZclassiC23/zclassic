@@ -42,10 +42,21 @@ struct node_db;
 bool boot_wallet_mint_recovery_phrase(struct wallet *w, char *phrase_out,
                                       size_t cap);
 
+/* True when this process's stdout is a terminal a person is looking at,
+ * rather than a file or a pipe. The whole phrase story turns on it: under
+ * the shipped systemd unit stdout is redirected to node.log, and node.log
+ * is rotated, copied into backups and read back by `zclassic23 ops logs`,
+ * so a phrase printed there is the wallet's entire spending authority
+ * sitting in plaintext in a file nobody treats as a secret. */
+bool boot_wallet_phrase_stdout_is_a_terminal(void);
+
 /* Print the once-only phrase block to stdout: the words, what they are for,
  * and the fact that no command can ever show them again. Call ONLY after
  * the wallet's seed has been durably flushed — showing a phrase for a
- * wallet that did not persist would be a lie the user acts on. */
+ * wallet that did not persist would be a lie the user acts on.
+ *
+ * Prints NOTHING when stdout is not a terminal; it explains the refusal on
+ * stderr instead. That is a hard floor, not a preference. */
 void boot_wallet_show_recovery_phrase_once(const char *phrase);
 
 /* Create the first-run wallet: a fresh recovery phrase, both key trees
@@ -59,7 +70,14 @@ void boot_wallet_show_recovery_phrase_once(const char *phrase);
  * Returns false when the keypool could not be made durable, having already
  * printed the FATAL diagnostic and emitted the boot event; the caller must
  * refuse to continue, because the alternative is a node running on keys
- * that exist only in RAM. Never shows a phrase on that path. */
+ * that exist only in RAM. Never shows a phrase on that path.
+ *
+ * Also returns false, BEFORE creating anything at all, when stdout is not a
+ * terminal: the words could then only be written to a log file, and a
+ * wallet whose one backup went straight into node.log is worse than no
+ * wallet. Nothing is drawn, minted or flushed on that path, so there is no
+ * half-made wallet to clean up — see boot_wallet_phrase_stdout_is_a_terminal.
+ * The operator's move is to run the node once from a terminal. */
 bool boot_wallet_create_new(struct wallet *w, struct wallet_sqlite *ws,
                             struct node_db *ndb, bool plaintext_optin);
 
