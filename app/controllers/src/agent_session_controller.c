@@ -122,10 +122,24 @@ static bool ags_list(const struct json_value *in, struct json_value *result)
     json_init(&arr);
     json_set_array(&arr);
     for (int i = 0; i < n; i++) {
+        /* Redact the token here for the same reason the native leaf does
+         * (tools/command/native_vault_session_command.c): session_id is a
+         * BEARER grant — presenting it is the whole act that makes a spend
+         * run under that grant's caps, so listing sessions must never hand
+         * back a usable one. This surface used to return it in full while
+         * the native leaf redacted, which made the redaction cosmetic: two
+         * doors onto the same rows, one locked. The cookie holder is still
+         * outside the grant model by design (docs/CUSTODY_MODEL.md), so this
+         * closes an inconsistency rather than a hole — but a rule that holds
+         * on only one of two surfaces is not a rule. */
+        char redacted[24];
+        agent_session_redact_id(rows[i].session_id, redacted,
+                                sizeof(redacted));
         struct json_value o;
         json_init(&o);
         json_set_object(&o);
-        (void)json_push_kv_str(&o, "session_id", rows[i].session_id);
+        (void)json_push_kv_str(&o, "session_id", redacted);
+        (void)json_push_kv_bool(&o, "session_id_redacted", true);
         (void)json_push_kv_str(&o, "account", rows[i].account);
         (void)json_push_kv_int(&o, "max_per_tx_zat", rows[i].max_per_tx_zat);
         (void)json_push_kv_int(&o, "max_per_window_zat",
