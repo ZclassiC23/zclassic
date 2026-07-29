@@ -77,6 +77,23 @@ jobs:
           # from-source dependency build Job 2 pays for.
           sudo apt-get install -y --no-install-recommends \
             clang zlib1g-dev libssl-dev
+
+          if [ "${{ matrix.cc }}" = "gcc" ]; then
+            # ubuntu-latest's default `gcc` (13) rejects -std=c23 outright
+            # ("did you mean '-std=c2x'?") — GCC only accepted the `c23`
+            # spelling itself starting with GCC 14. This project is C23-only
+            # by policy, so the runner's compiler is what moves: gcc-14 is
+            # in the Ubuntu 24.04 (noble) archive already enabled on this
+            # image, and `update-alternatives` repoints the plain `cc`/`gcc`
+            # names the Makefile and every gate script invoke, so nothing
+            # downstream needs to know a non-default compiler is in play.
+            sudo apt-get install -y --no-install-recommends gcc-14
+            sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100
+            sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 100
+            sudo update-alternatives --set gcc /usr/bin/gcc-14
+            sudo update-alternatives --set cc /usr/bin/gcc-14
+          fi
+
           ${{ matrix.cc }} --version
 
       - name: Compute the changed-file scope (pull requests only)
@@ -157,6 +174,15 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             build-essential perl
+          # Same fix as the compile-check job: ubuntu-latest's default gcc
+          # (13) does not accept -std=c23, which every recipe in this
+          # Makefile passes. gcc-14 does. Repoint the plain `cc`/`gcc` names
+          # so `make vendor-ready` / `make build-only` need no CC= override.
+          sudo apt-get install -y --no-install-recommends gcc-14
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100
+          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 100
+          sudo update-alternatives --set gcc /usr/bin/gcc-14
+          sudo update-alternatives --set cc /usr/bin/gcc-14
           gcc --version
 
       # The first dependency build fetches pinned tarballs and compiles
