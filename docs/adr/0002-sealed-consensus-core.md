@@ -135,6 +135,39 @@ source-snapshot layer; it runs *after* the dev-loop's own publish step
 (advisory only at that integration point) — the dev-loop refusal above is
 the one that is load-bearing for blocking the running binary.
 
+### 5. What the seal covers, and what it does not
+
+The seal covers the **text of the consensus predicates**. It does not cover the
+arithmetic they call. Sealed code calls unsealed code on every block:
+`core/math/src/hash.c` and `core/consensus/src/script_interp.c` reach
+`lib/crypto/src/sha256.c` (block hash, txid, merkle root, `OP_SHA256`);
+`core/consensus/src/equihash.c` reaches the batched BLAKE2b in
+`lib/crypto/src/blake2b_avx2.c`; and the include-closure of `core/` through
+`coins/coins.h` reaches the Montgomery multiplies in
+`lib/sapling/src/fr_avx512.c` and `lib/sapling/src/bn254_accel.c`, which decide
+the Sapling anchor and every Groth16 verdict. Editing any of them changes which
+blocks are valid while `check-core-seal` reports clean.
+
+Widening the manifest to swallow `lib/crypto` and `lib/sapling` was rejected:
+those files exist to get faster, and sealing them would put the owner unseal
+ritual in front of every optimisation — turning a ritual that should mark a
+consensus decision into routine paperwork, which is how rituals stop being
+read. They are pinned by **property** instead of by bytes.
+
+`check-accel-oracle-pinned` (`tools/lint/check_accel_oracle_pinned.sh`,
+registry `tools/lint/accel_oracle_registry.txt`) recomputes the include-closure
+of `core/` from source, keeps the members carrying a runtime ISA dispatch, and
+requires each to be pinned by a differential oracle that runs in the suite and
+proves it byte-identical to a portable reference. It fails on a new accelerator,
+a new `#include` edge from `core/` that reaches one, a stale registry row, a
+missing oracle, an oracle whose test group is not dispatched, and an oracle that
+references no symbol the implementation exports.
+
+The gate is a property check, not a proof: it verifies an oracle exists and runs,
+not that the oracle's corpus is adequate. That is the same bar every other
+differential oracle in this tree is held to, and it is strictly more than the
+seal gave.
+
 ## Consequences
 
 **Positive:**

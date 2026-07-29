@@ -1,5 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
+ * ACCEL-ORACLE: lib/sapling/src/bn254_accel.c
+ *
  * Differential parity oracle for the BN254 Fq Montgomery-multiply accelerator
  * (lib/sapling/src/bn254_accel.c). BN254 Fq is consensus-frozen crypto — every
  * accelerated path (BMI2+ADX, and the runtime-dispatched entry) MUST return a
