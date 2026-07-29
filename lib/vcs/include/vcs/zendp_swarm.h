@@ -116,7 +116,9 @@ enum zendp_result {
     ZENDP_ERR_NULL,               /* null argument */
     ZENDP_ERR_SHAPE,              /* record fails zendp_valid */
     ZENDP_ERR_ENCODE,             /* doc/body would not encode */
-    ZENDP_ERR_SIGN,               /* zendp_sign refused (unusable seed) */
+    ZENDP_ERR_SIGN,               /* zendp_sign refused (never-opens window
+                                     or unusable seed) — an over-long window
+                                     is ZENDP_ERR_WINDOW_TOO_LONG, below */
     ZENDP_ERR_WINDOW_TOO_LONG,    /* window > ZENDP_MAX_WINDOW_SECONDS */
     ZENDP_ERR_BLOB,               /* blob put/get refused (named in the log) */
     ZENDP_ERR_ABSENT,             /* no local witness for the record key */
@@ -185,7 +187,18 @@ bool zendp_directory_find(const struct zendp_directory *dir,
                           const struct zendp_entry **out);
 
 /* Copy out every record that is (a) inside its own signed validity
- * window at now_unix and (b) backed by an ACTIVE on-chain anchor.
+ * window at now_unix, (b) claiming a window this node still honours
+ * (zendp_window_check — see ZENDP_MAX_WINDOW_SECONDS), and (c) backed by
+ * an ACTIVE on-chain anchor.
+ *
+ * (b) is not redundant with acceptance. The directory is a PROJECTION,
+ * so an entry can predate the rule: installed by an older build, or read
+ * back from a store written before the ceiling existed. Judging the
+ * window only on the way in would let exactly the records the ceiling
+ * exists to bound outlive it, because they are already resident. The
+ * check is pure arithmetic on two numbers already in the entry — no
+ * allocation and no I/O, which is what lets it run here at all.
+ *
  * Returns how many were written. Never allocates, never blocks on I/O,
  * never re-asks the chain — it reads the verdict last recorded for the
  * entry. This is the discovery projection, and it runs on the shared
