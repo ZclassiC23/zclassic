@@ -145,6 +145,7 @@ int test_tor(void);
 int test_game(void);
 int test_store(void);
 int test_store_listing(void);
+int test_store_buyer(void);
 int test_blog(void);
 int test_robustness(void);
 int test_api(void);

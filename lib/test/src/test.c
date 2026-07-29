@@ -1082,6 +1082,7 @@ int main(int argc, char **argv)
     failures += test_boot_memory_guard();
     failures += test_store();
     failures += test_store_listing();
+    failures += test_store_buyer();
     failures += test_blog();
     failures += test_api();
     failures += test_explorer();

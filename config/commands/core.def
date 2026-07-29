@@ -875,11 +875,15 @@ ZCL_COMMAND_READY_COMMAND(
     "Plan/commit shielded spend: without confirm, a non-mutating plan "
     "(from, to, amount) plus the commit next-action; with "
     "confirm:true, the async z_sendmany operation id "
-    "(stage=committed). idempotency_key correlates plan to commit; it "
+    "(stage=committed). memo attaches a UTF-8 Sapling memo to a "
+    "shielded recipient (memo_hex for raw bytes; memo_hex wins if both "
+    "are given) and is echoed back as memo_attached — this is how a "
+    "payment carries an application binding such as a store order id. "
+    "idempotency_key correlates plan to commit; it "
     "is not node-side deduplication.", 0,
-    "shielded,send,z_sendmany",
+    "shielded,send,z_sendmany,memo",
     "zcl.core_shielded_send.input.v1", "zcl.shielded_send.v1",
-    "from,to,amount,idempotency_key,confirm", "",
+    "from,to,amount,memo,memo_hex,idempotency_key,confirm", "",
     "zclassic23 core wallet shielded send --input='<obj>'",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
     ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_JOB,

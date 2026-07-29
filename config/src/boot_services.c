@@ -1289,7 +1289,7 @@ bool app_init_services(struct app_context *ctx,
 
     zslp_rpc_set_datadir(ctx->datadir);
     register_zslp_rpc_commands(svc->rpc_table);
-
+    boot_register_store_buyer_rpc(svc);
     if (!register_dev_native_hotswap_rpc(svc->rpc_table, ctx->datadir, ctx->rpc_port)) return false;
 
     /* Pre-compute fast sync snapshot offer in background */

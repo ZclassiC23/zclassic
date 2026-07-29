@@ -918,11 +918,36 @@ void zcl_native_handle_swap_participate(
  * typed writer behind `app.store.list-product` and the catalog read behind
  * `app.store.products`. Both address <datadir>/node.db the way the /store
  * HTTP handler does, so a listing is live on the next request with no
- * restart. Bound by config/commands/app_features.def. */
+ * restart. Bound by config/commands/store.def. */
 void zcl_native_handle_store_list_product(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 void zcl_native_handle_store_products(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
+/* app.store.* — the BUYING half of the store
+ * (app/controllers/src/store_buyer_native_handlers.c). Each proxies one
+ * storebuy_* RPC, because placing an order mints a one-time Sapling payment
+ * address and paying it spends, and a typed command runs in a process with
+ * neither a wallet nor an open database. The storebuy_* methods report a
+ * refusal as a successful call carrying {ok:false, code}; these handlers turn
+ * that code back into a typed status, so PROVER_UNAVAILABLE,
+ * PAYMENT_NOT_CONFIRMED and HASH_MISMATCH are distinguishable without reading
+ * prose. Bound in config/commands/store.def. */
+void zcl_native_handle_store_catalog(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_store_order(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_store_pay(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_store_purchases(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_store_collect(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 

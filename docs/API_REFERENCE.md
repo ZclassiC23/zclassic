@@ -301,7 +301,7 @@ represented by its children's sections.
 | `core wallet shielded address` | ready | mutate / wallet / **owner** · fast/low | none | `zcl.shielded_address.v1` | `zclassic23 core wallet shielded address` | Derive a new shielded address |
 | `core wallet shielded balance` | ready | read / read / operator · fast/low | **`address`** | `zcl.shielded_balance.v1` | `zclassic23 core wallet shielded balance --address=<zaddr>` | Shielded balance for one address |
 | `core wallet shielded notes` | ready | read / read / operator · fast/low | none | `zcl.shielded_notes.v1` | `zclassic23 core wallet shielded notes` | List spendable shielded notes |
-| `core wallet shielded send` | ready | mutate / wallet / **owner**, job, plan-commit · background/high | `from`, `to`, `amount`, `idempotency_key`, `confirm` | `zcl.shielded_send.v1` | `zclassic23 core wallet shielded send --input='<obj>'` | Send a shielded payment |
+| `core wallet shielded send` | ready | mutate / wallet / **owner**, job, plan-commit · background/high | `from`, `to`, `amount`, `memo`, `memo_hex`, `idempotency_key`, `confirm` | `zcl.shielded_send.v1` | `zclassic23 core wallet shielded send --input='<obj>'` | Send a shielded payment |
 
 #### `core.wallet.backup` — Wallet backup
 

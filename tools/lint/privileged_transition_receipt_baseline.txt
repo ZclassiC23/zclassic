@@ -91,3 +91,16 @@ vault.swap.refund          exempt: pure route to the swap_refund RPC, which owns
 # from the principal's role).
 vault.session.create       exempt: AR insert of an agent_sessions grant row; no artifact install
 vault.session.revoke       exempt: AR update marking an agent_sessions row revoked; no artifact install
+# app.store.* — the buying half of the store. None of the three installs a
+# privileged artifact over the datadir or the running binary.
+#   order   writes an app-layer purchase row (store_purchases) plus the
+#           merchant's own order row, both ordinary AR records in node.db.
+#   pay     moves value, but the spend is already covered by the node's
+#           sovereignty spend guard (sovereignty_guard_allow("wallet_spend"))
+#           and by z_sendmany's own path; this leaf adds no new authority.
+#   collect writes a buyer-chosen data file whose bytes are SHA3-256-bound to
+#           the product content hash BEFORE the write, and the write is
+#           atomic-by-rename — a mismatch leaves nothing behind at all.
+app.store.order            exempt: AR insert/update of a buyer purchase row; no artifact install
+app.store.pay              exempt: shielded spend already gated by the sovereignty spend guard; no artifact install
+app.store.collect          exempt: writes a content-hash-verified data file to an operator-chosen path; no artifact install
