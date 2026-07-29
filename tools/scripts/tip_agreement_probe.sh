@@ -93,6 +93,35 @@
 # three independent witnesses and minted an "agrees" from one machine. It is
 # one witness, the control refuses it, and the ledger says could-not-ask.
 #
+# HOW THE HOST KEY IS DERIVED, and why it is not a plain rtrim.
+# The first cut of this file used rtrim(rtrim(addr,'0-9'),':'), which strips
+# any trailing digits and then any trailing colons. That splits ONE machine
+# into TWO witnesses in two shapes this codebase actually produces, both
+# confirmed against the node's own SQLite:
+#   * an addr with no ":port" at all — rtrim eats the last IPv4 octet, so
+#     "205.209.104.118" keys as "205.209.104." while the same host's ported
+#     row keys as "205.209.104.118". Two keys, one machine.
+#   * IPv6 is rendered TWO different ways by two production paths. An
+#     -addnode dial goes through net_service_to_string (connman_dialer.c,
+#     connman_complete_dial) and BRACKETS the address: "[2001:...:0001]:8033".
+#     An addrman dial or any inbound peer goes through p2p_node_create's
+#     fallback (lib/net/src/net.c), which is net_addr_to_string + ":port" and
+#     does NOT bracket: "2001:...:0001:8033". Under plain rtrim those are two
+#     distinct keys, so one IPv6 machine reached both ways is two witnesses
+#     and can mint an "agrees" on its own.
+# The key below strips ":port" only when the trailing digits are actually
+# preceded by a colon, then removes brackets and lowercases. It can only ever
+# MERGE two spellings of one host, never split one host into two, so it can
+# only make the control harder to satisfy.
+#
+# One consequence is worth stating rather than hiding: net_addr_to_string
+# renders every torv3 peer as the literal "[torv3]", so ALL onion peers
+# collapse to the single host key "torv3". That is the safe direction (many
+# onion peers count as one witness, never the reverse), but it means a
+# Tor-only peer set can never reach the two-distinct-host bar and will
+# record could-not-ask forever. That is a real limit of rung 1 and the fix
+# is a per-peer identity in the observation row, not a looser key here.
+#
 # That measurement carries a second, larger finding, and this file is where
 # it is written down rather than smoothed over: the one host was
 # 205.209.104.118 — the operator's OWN second server. At a two-distinct-host
@@ -133,14 +162,27 @@
 #   modal_remote_peers    distinct remote hosts that reported it, or null
 #   modal_remote_groups   distinct address groups behind it, or null when
 #                         the (optional) host-listing query did not answer
-#   disagreeing_peers     remote witnesses at `height` holding a hash
-#                         DIFFERENT FROM OURS — the sum of the distinct-host
-#                         counts of every rival cluster at that height, or
-#                         null. A host that reported two different hashes at
-#                         one height inside the window is counted once per
-#                         cluster, which can only OVERSTATE disagreement,
-#                         never hide it
-#   disagreeing_hashes    array of {"hash":..,"peers":n} — what they said
+#   disagreeing_peers     remote witnesses at ANY height in the window
+#                         holding a hash different from the one WE hold at
+#                         that same height — the sum of the distinct-host
+#                         counts of every rival cluster, or null. A host that
+#                         reported two different hashes at one height inside
+#                         the window is counted once per cluster, which can
+#                         only OVERSTATE disagreement, never hide it
+#   contested_peers       the subset of disagreeing_peers coming from rival
+#                         clusters that themselves meet min_distinct_peers.
+#                         This is the number a judge may grade on: one peer
+#                         is an anecdote in BOTH directions, so a single
+#                         remote host must not be able to mint agreement OR
+#                         to hold the verdict red on its own
+#   disagreeing_hashes    array of {"height":h,"hash":..,"peers":n}
+#   rival_heights_unresolved
+#                         heights at or below our own tip that carried a
+#                         cluster we could NOT check, because our node would
+#                         not answer getblockhash there. Never folded into
+#                         "no rivals" — an unchecked height is unknown
+#   heights_above_tip     clusters at heights above our own tip. Being behind
+#                         is not disagreement; it is recorded, not counted
 #   peers_total           connected peers in the node's current fold, null
 #                         when dumpstate did not answer
 #   peers_with_height     peers advertising a height in that fold, or null
@@ -221,6 +263,21 @@ if [ "$MIN_DISTINCT_PEERS" -lt 1 ]; then
     exit 2
 fi
 
+# ── the host key ──────────────────────────────────────────────────────
+# The distinctness control's unit. See the "HOW THE HOST KEY IS DERIVED"
+# note above for the two one-machine-two-witnesses shapes a plain rtrim
+# admits. Strip ":port" only when the trailing digits are actually preceded
+# by a colon (so a portless "1.2.3.4" keeps its last octet), then drop any
+# trailing colon, unbracket, and lowercase.
+#   `replace()` is NOT available: `core storage query` blocks the REPLACE
+#   keyword outright (app/controllers/src/dbquery_controller.c), so bracket
+#   removal uses trim(X,'[]'), which is also what keeps this under the
+#   1024-byte DBQUERY_MAX_SQL_LEN when it appears twice in one statement.
+HOSTKEY="lower(trim(rtrim(CASE WHEN rtrim(addr,'0123456789')<>addr AND \
+substr(rtrim(addr,'0123456789'),-1)=':' \
+THEN substr(rtrim(addr,'0123456789'),1,length(rtrim(addr,'0123456789'))-1) \
+ELSE addr END,':'),'[]'))"
+
 # ── excluded-host filter ──────────────────────────────────────────────
 # Built once into a SQL fragment. Every host is sanitised to
 # [0-9A-Za-z.:_-] before it is interpolated: `core storage query` is
@@ -231,13 +288,13 @@ EXCLUDED_HOSTS=0
 if [ -n "${ZCL_PARITY_EXCLUDE_HOSTS:-}" ]; then
     _list=""
     while IFS= read -r _h; do
-        _h="$(printf '%s' "$_h" | tr -cd '0-9A-Za-z.:_-')"
+        _h="$(printf '%s' "$_h" | tr -cd '0-9A-Za-z.:_-' | tr 'A-Z' 'a-z')"
         [ -n "$_h" ] || continue
         _list="$_list,'$_h'"
         EXCLUDED_HOSTS=$((EXCLUDED_HOSTS + 1))
     done < <(printf '%s\n' "$ZCL_PARITY_EXCLUDE_HOSTS" | tr ',' '\n')
     if [ -n "$_list" ]; then
-        EXCLUDE_SQL=" AND rtrim(rtrim(addr,'0123456789'),':') NOT IN (${_list#,})"
+        EXCLUDE_SQL=" AND $HOSTKEY NOT IN (${_list#,})"
     fi
 fi
 
@@ -346,9 +403,26 @@ sql_rows() {
         awk 'NF'
 }
 
-f1() { printf '%s' "$1" | cut -d $'\x1f' -f1; }
-f2() { printf '%s' "$1" | cut -d $'\x1f' -f2; }
-f3() { printf '%s' "$1" | cut -d $'\x1f' -f3; }
+SEP=$'\x1f'
+f1() { printf '%s' "$1" | cut -d "$SEP" -f1; }
+f2() { printf '%s' "$1" | cut -d "$SEP" -f2; }
+f3() { printf '%s' "$1" | cut -d "$SEP" -f3; }
+
+# our_hash_at <height>: our own block hash at <height>, lowercased, or "" if
+# the node would not answer. "" means UNKNOWN and every caller treats it as
+# unknown — it is never folded into "no rival here".
+our_hash_at() {
+    local hh="$1" out=""
+    if [ -n "${ZCL_PARITY_HASH_CMD:-}" ]; then
+        out="$(ZCL_PARITY_HEIGHT="$hh" bash -c "$ZCL_PARITY_HASH_CMD" 2>&1)"
+    elif [ -n "$RPC_BIN" ]; then
+        out="$(ZCL_DATADIR="$SAMPLE_DATADIR" ZCL_RPCPORT="$SAMPLE_RPCPORT" \
+            timeout "$RPC_TIMEOUT_SEC" "$RPC_BIN" getblockhash "$hh" 2>&1)"
+    fi
+    printf '%s' "$out" |
+        sed -n 's/.*"result"[[:space:]]*:[[:space:]]*"\([0-9a-fA-F]\{64\}\)".*/\1/p' |
+        head -n1 | tr 'A-F' 'a-f'
+}
 
 # addr_group <host>: the address group used for modal_remote_groups.
 # IPv4 dotted quad -> first two octets (/16, the header_corroboration
@@ -389,6 +463,9 @@ sample_instance() {
     local outcome="could-not-ask" reason="" detail=""
     local our_height="" height="" our_hash="" modal_hash="" modal_peers=""
     local modal_groups="" disagree_peers="" disagree_json="[]"
+    # Left empty (-> JSON null) on every early return: a sample that never
+    # reached the rival scan has UNKNOWN rival counts, not zero ones.
+    local contested_peers="" rival_unresolved="" heights_above=""
     local peers_total="" peers_with_height="" peers_usable="" clusters_seen=""
 
     # (a) the node's own fold — context columns only. Its failure never
@@ -411,8 +488,8 @@ sample_instance() {
     # enough to survive the envelope pager; distinct hosts, not "ip:port",
     # so one remote node behind two connections is one witness.
     local clusters_env=""
-    clusters_env="$(run_sql "SELECT best_height AS h, tip_hash AS t, \
-COUNT(DISTINCT rtrim(rtrim(addr,'0123456789'),':')) AS n \
+    clusters_env="$(run_sql "SELECT best_height AS h, lower(tip_hash) AS t, \
+COUNT(DISTINCT $HOSTKEY) AS n \
 FROM peer_chain_observations \
 WHERE observed_at >= $t0 AND tip_hash <> ''$EXCLUDE_SQL \
 GROUP BY h, t ORDER BY n DESC, h DESC LIMIT 12")"
@@ -422,7 +499,8 @@ GROUP BY h, t ORDER BY n DESC, h DESC LIMIT 12")"
         emit_sample "$name" "$ts" "$outcome" "$reason" "$detail" \
             "$our_height" "$height" "$our_hash" "$modal_hash" "$modal_peers" \
             "$modal_groups" "$disagree_peers" "$disagree_json" \
-            "$peers_total" "$peers_with_height" "$peers_usable" "$clusters_seen"
+            "$peers_total" "$peers_with_height" "$peers_usable" "$clusters_seen" \
+            "$contested_peers" "$rival_unresolved" "$heights_above"
         return $?
     fi
 
@@ -435,7 +513,7 @@ GROUP BY h, t ORDER BY n DESC, h DESC LIMIT 12")"
     # (c) how many distinct remote hosts contributed ANY hash in the window
     # — the denominator. Optional: null when unmeasured, never 0.
     local usable_env
-    usable_env="$(run_sql "SELECT COUNT(DISTINCT rtrim(rtrim(addr,'0123456789'),':')) AS n \
+    usable_env="$(run_sql "SELECT COUNT(DISTINCT $HOSTKEY) AS n \
 FROM peer_chain_observations WHERE observed_at >= $t0 AND tip_hash <> ''$EXCLUDE_SQL")"
     if [ $? -eq 0 ]; then
         peers_usable="$(printf '%s' "$usable_env" | sql_rows | head -n1)"
@@ -463,17 +541,18 @@ FROM peer_chain_observations WHERE observed_at >= $t0 AND tip_hash <> ''$EXCLUDE
         emit_sample "$name" "$ts" "$outcome" "$reason" "$detail" \
             "$our_height" "$height" "$our_hash" "$modal_hash" "$modal_peers" \
             "$modal_groups" "$disagree_peers" "$disagree_json" \
-            "$peers_total" "$peers_with_height" "$peers_usable" "$clusters_seen"
+            "$peers_total" "$peers_with_height" "$peers_usable" "$clusters_seen" \
+            "$contested_peers" "$rival_unresolved" "$heights_above"
         return $?
     fi
     height="$best_h"; modal_hash="$best_t"; modal_peers="$best_n"
 
     # (e) address groups behind the winner — recorded, not enforced.
     local hosts_env
-    hosts_env="$(run_sql "SELECT DISTINCT rtrim(rtrim(addr,'0123456789'),':') AS host \
+    hosts_env="$(run_sql "SELECT DISTINCT $HOSTKEY AS host \
 FROM peer_chain_observations \
-WHERE observed_at >= $t0 AND best_height = $height AND tip_hash = '$modal_hash'$EXCLUDE_SQL \
-LIMIT 24")"
+WHERE observed_at >= $t0 AND best_height = $height \
+AND lower(tip_hash) = '$modal_hash'$EXCLUDE_SQL LIMIT 24")"
     if [ $? -eq 0 ]; then
         modal_groups="$(printf '%s' "$hosts_env" | sql_rows |
             while IFS= read -r hline; do
@@ -492,8 +571,14 @@ LIMIT 24")"
         hash_out="$(ZCL_DATADIR="$SAMPLE_DATADIR" ZCL_RPCPORT="$SAMPLE_RPCPORT" \
             timeout "$RPC_TIMEOUT_SEC" "$RPC_BIN" getblockhash "$height" 2>&1)"
     fi
+    # Lowercased on the way in. The extractor deliberately accepts [0-9a-fA-F]
+    # (an RPC that answered in upper case is still a real answer), but the
+    # comparison below is a byte compare and the SQL side is lower(tip_hash),
+    # so an upper-case reply would otherwise record a FALSE "disagrees" —
+    # a fabricated fork alarm.
     our_hash="$(printf '%s' "$hash_out" |
-        sed -n 's/.*"result"[[:space:]]*:[[:space:]]*"\([0-9a-fA-F]\{64\}\)".*/\1/p' | head -n1)"
+        sed -n 's/.*"result"[[:space:]]*:[[:space:]]*"\([0-9a-fA-F]\{64\}\)".*/\1/p' |
+        head -n1 | tr 'A-F' 'a-f')"
     if [ -z "$our_hash" ]; then
         reason="our_hash_unavailable_at_height_${height}"
         detail="$(printf '%s' "$hash_out" | tr '\n' ' ' | cut -c1-160)"
@@ -501,23 +586,77 @@ LIMIT 24")"
         emit_sample "$name" "$ts" "$outcome" "$reason" "$detail" \
             "$our_height" "$height" "$our_hash" "$modal_hash" "$modal_peers" \
             "$modal_groups" "$disagree_peers" "$disagree_json" \
-            "$peers_total" "$peers_with_height" "$peers_usable" "$clusters_seen"
+            "$peers_total" "$peers_with_height" "$peers_usable" "$clusters_seen" \
+            "$contested_peers" "$rival_unresolved" "$heights_above"
         return $?
     fi
 
-    # (g) what the peers at this height said that we do NOT hold.
-    local dp=0 parts=""
+    # (g) RIVAL WITNESSES AT EVERY HEIGHT IN THE WINDOW — not only at the
+    # winning one.
+    #
+    # This loop used to `continue` on every cluster whose height differed
+    # from the winner's. That produced the exact defect this whole ledger
+    # exists to prevent, and it was reproduced before this fix: with a
+    # 3-witness cluster at an already-settled height and a 2-witness cluster
+    # holding a DIFFERENT block at our own tip, the sample recorded
+    #     "outcome":"agrees","disagreeing_peers":0,"disagreeing_hashes":[]
+    # while two remote hosts were on another chain at the height we were
+    # actually on. Zero rivals "at the one height I happened to pick" printed
+    # as zero rivals, and the judge passed a window of them. An unexamined
+    # height must read as UNKNOWN, never as no-disagreement.
+    #
+    # So: resolve OUR hash at every distinct height that carries a cluster,
+    # and classify each one.
+    #   * height above our own tip     -> heights_above_tip. Being behind the
+    #                                     network is neither agreement nor
+    #                                     disagreement; it is recorded.
+    #   * height we could not answer   -> rival_heights_unresolved. We should
+    #                                     have had it; the judge refuses to
+    #                                     count such a sample as clean.
+    #   * hash differs from ours there -> a rival.
+    #
+    # Rivals are summed twice on purpose. `disagreeing_peers` counts every
+    # rival witness, so nothing is hidden. `contested_peers` counts only
+    # rivals whose own cluster meets min_distinct_peers, and that is what a
+    # judge grades: one peer is an anecdote in BOTH directions, so a single
+    # remote host must be unable to mint agreement AND unable to hold the
+    # verdict red by shouting one bad hash.
+    local dp=0 cp=0 parts="" unresolved=0 above=0
+    declare -A OUR_AT
+    OUR_AT["$height"]="$our_hash"
+    local hh oh
+    while IFS= read -r hh; do
+        [ -n "$hh" ] || continue
+        [ "$hh" = "$height" ] && continue
+        if [ -n "$our_height" ] && [ "$hh" -gt "$our_height" ]; then
+            above=$((above + 1)); continue
+        fi
+        oh="$(our_hash_at "$hh")"
+        if [ -z "$oh" ]; then unresolved=$((unresolved + 1)); continue; fi
+        OUR_AT["$hh"]="$oh"
+    done < <(printf '%s\n' "$rows" |
+             awk -F"$SEP" 'NF && $1 ~ /^[0-9]+$/ {print $1}' | sort -rn -u)
+
     while IFS= read -r line; do
         [ -n "$line" ] || continue
         local h t n
         h="$(f1 "$line")"; t="$(f2 "$line")"; n="$(f3 "$line")"
-        [ "$h" = "$height" ] || continue
-        [ "$t" != "$our_hash" ] || continue
-        case "$n" in '' | *[!0-9]*) continue ;; esac
+        case "$h$n" in '' | *[!0-9]*) continue ;; esac
+        [ -n "$t" ] || continue
+        t="$(printf '%s' "$t" | tr 'A-F' 'a-f')"
+        oh="${OUR_AT[$h]:-}"
+        # No hash of ours at this height: already counted as above-tip or
+        # unresolved. It must NOT fall through as "not a rival".
+        [ -n "$oh" ] || continue
+        [ "$t" != "$oh" ] || continue
         dp=$((dp + n))
-        parts="$parts,{\"hash\":$(jstr "$t"),\"peers\":$n}"
+        [ "$n" -ge "$MIN_DISTINCT_PEERS" ] && cp=$((cp + n))
+        parts="$parts,{\"height\":$h,\"hash\":$(jstr "$t"),\"peers\":$n}"
     done <<<"$rows"
     disagree_peers="$dp"
+    contested_peers="$cp"
+    rival_unresolved="$unresolved"
+    heights_above="$above"
     disagree_json="[${parts#,}]"
 
     if [ "$our_hash" = "$modal_hash" ]; then
@@ -531,7 +670,8 @@ LIMIT 24")"
     emit_sample "$name" "$ts" "$outcome" "$reason" "$detail" \
         "$our_height" "$height" "$our_hash" "$modal_hash" "$modal_peers" \
         "$modal_groups" "$disagree_peers" "$disagree_json" \
-        "$peers_total" "$peers_with_height" "$peers_usable" "$clusters_seen"
+        "$peers_total" "$peers_with_height" "$peers_usable" "$clusters_seen" \
+        "$contested_peers" "$rival_unresolved" "$heights_above"
 }
 
 emit_sample() {
@@ -540,6 +680,8 @@ emit_sample() {
     local modal_peers="${10}" modal_groups="${11}" disagree_peers="${12}"
     local disagree_json="${13}" peers_total="${14}" peers_with_height="${15}"
     local peers_usable="${16}" clusters_seen="${17}"
+    local contested_peers="${18}" rival_unresolved="${19}"
+    local heights_above="${20}"
 
     # Structural guard, not decoration: the only paths that may print
     # "agrees" are the two that compared two real 64-hex hashes. If the
@@ -562,13 +704,15 @@ emit_sample() {
     [ -n "$reason" ] || reason="unspecified"
 
     local line
-    line="$(printf '{"ts":%s,"instance":%s,"rpcport":%s,"datadir":%s,"window_secs":%s,"min_distinct_peers":%s,"our_height":%s,"height":%s,"our_tip_hash":%s,"modal_remote_hash":%s,"modal_remote_peers":%s,"modal_remote_groups":%s,"disagreeing_peers":%s,"disagreeing_hashes":%s,"peers_total":%s,"peers_with_height":%s,"peers_usable":%s,"clusters_seen":%s,"excluded_hosts":%s,"outcome":%s,"reason":%s,"error_detail":%s}' \
+    line="$(printf '{"ts":%s,"instance":%s,"rpcport":%s,"datadir":%s,"window_secs":%s,"min_distinct_peers":%s,"our_height":%s,"height":%s,"our_tip_hash":%s,"modal_remote_hash":%s,"modal_remote_peers":%s,"modal_remote_groups":%s,"disagreeing_peers":%s,"contested_peers":%s,"rival_heights_unresolved":%s,"heights_above_tip":%s,"disagreeing_hashes":%s,"peers_total":%s,"peers_with_height":%s,"peers_usable":%s,"clusters_seen":%s,"excluded_hosts":%s,"outcome":%s,"reason":%s,"error_detail":%s}' \
         "$ts" "$(jstr "$name")" "$SAMPLE_RPCPORT" "$(jstr "$SAMPLE_DATADIR")" \
         "$WINDOW_SECS" "$MIN_DISTINCT_PEERS" \
         "$(jnum "$our_height")" "$(jnum "$height")" \
         "$(jstr "$our_hash")" "$(jstr "$modal_hash")" \
         "$(jnum "$modal_peers")" "$(jnum "$modal_groups")" \
-        "$(jnum "$disagree_peers")" "${disagree_json:-[]}" \
+        "$(jnum "$disagree_peers")" "$(jnum "$contested_peers")" \
+        "$(jnum "$rival_unresolved")" "$(jnum "$heights_above")" \
+        "${disagree_json:-[]}" \
         "$(jnum "$peers_total")" "$(jnum "$peers_with_height")" \
         "$(jnum "$peers_usable")" "$(jnum "$clusters_seen")" \
         "$(jnum "$EXCLUDED_HOSTS")" \

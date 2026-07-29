@@ -162,6 +162,31 @@ Read its verdict, never the raw rows: `make tip-agreement-status`. On this
 host on 2026-07-29 that verdict was **`NO_EVIDENCE`** — see the standing
 finding below.
 
+**Read `clean_agrees`, not `agrees`.** A sample says `agrees` when our hash
+matched the winning cluster at the height it compared. That is not the same
+as "no remote host disagrees with us": the recorder also scans every OTHER
+height in its window, and a sample is CLEAN only when no rival cluster
+meeting the two-host control holds a different block than we do anywhere in
+that window, and no height at or below our own tip went unchecked. The
+judge grades `clean_agrees`; `contested` and `unverifiable` account for the
+difference on the same line. A window whose samples all said `agrees` while
+two remote hosts held another block at our tip grades **DISAGREE**, not
+PASS — that case is `R12`/`J15` in
+`tools/scripts/test_tip_agreement_evidence.sh`.
+
+Two further properties of the judge are enforced rather than merely
+documented: its knobs may only be moved in the TIGHTENING direction (a
+loosening flag exits 2 at the front door), and the clean samples must span
+at least `--min-span-secs` of wall clock, because counting six rows is not
+measuring a day.
+
+**Tor-only peer sets cannot satisfy this rung.** `net_addr_to_string`
+renders every torv3 peer as the literal `[torv3]`, so all onion peers
+collapse to one host key. That is the safe direction — many peers count as
+one witness, never the reverse — but it means an onion-only peer set stays
+at `could-not-ask` forever. Fixing that needs a per-peer identity in the
+observation row, not a looser key in the recorder.
+
 ### The peer table only carries our own second server
 
 Measured 2026-07-29, read-only, against the canonical node: inside a

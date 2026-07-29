@@ -146,9 +146,17 @@ recorder_cases() {
     # different /16s must read as 2 groups.
     grep -q '"modal_remote_groups":2,' "$L" \
         || { cat "$L" >&2; bad "R1 modal_remote_groups not derived from distinct hosts"; }
-    # An agreeing sample must not claim disagreement it did not see.
-    grep -q '"disagreeing_peers":0,"disagreeing_hashes":\[\]' "$L" \
-        || { cat "$L" >&2; bad "R1 agreeing sample must record zero disagreement at that height"; }
+    # The R1 fixture also carries a ONE-witness cluster holding a different
+    # hash at HEIGHT-1. It must be recorded honestly (disagreeing_peers 1),
+    # and it must NOT contest the sample: the distinct-peer control is
+    # symmetric, so one remote host can neither mint agreement nor hold the
+    # verdict red by shouting a hash nobody else reports.
+    if grep -q '"disagreeing_peers":1,"contested_peers":0,' "$L" &&
+       grep -q '"rival_heights_unresolved":0,"heights_above_tip":0,' "$L"; then
+        ok "a one-witness rival is recorded but does not contest (control is symmetric)"
+    else
+        cat "$L" >&2; bad "R1 one-witness rival accounting wrong"
+    fi
 
     # R2 — DISAGREEMENT. The same two remote hosts agree with each other on
     # HASH_THEM at HEIGHT; we hold HASH_OURS.
@@ -157,8 +165,8 @@ recorder_cases() {
     L="$(ledger_of "$d")"
     if grep -q '"outcome":"disagrees"' "$L" &&
        grep -q "\"our_tip_hash\":\"$HASH_OURS\",\"modal_remote_hash\":\"$HASH_THEM\"" "$L" &&
-       grep -q '"disagreeing_peers":2,' "$L" &&
-       grep -q "\"disagreeing_hashes\":\[{\"hash\":\"$HASH_THEM\",\"peers\":2}\]" "$L"; then
+       grep -q '"disagreeing_peers":2,"contested_peers":2,' "$L" &&
+       grep -q "\"disagreeing_hashes\":\[{\"height\":$HEIGHT,\"hash\":\"$HASH_THEM\",\"peers\":2}\]" "$L"; then
         ok "disagreement recorded as outcome=disagrees with both hashes and the rival count"
     else
         cat "$L" >&2; bad "R2 disagreement not recorded correctly"
@@ -310,6 +318,112 @@ STUB
         cat "$L" 2>/dev/null >&2; bad "R11 exclusion list sanitiser did not hold"
     fi
 
+    # R12 — THE MASKED TIP FORK. This is the defect that shipped in the
+    # first cut of the recorder and it is the reason contested_peers exists.
+    # A 3-witness cluster sits at an already-settled height (we match it, of
+    # course) while a 2-witness cluster holds a DIFFERENT block at our own
+    # tip. The old rival loop skipped every cluster whose height was not the
+    # winner's, so the line read
+    #     "outcome":"agrees","disagreeing_peers":0,"disagreeing_hashes":[]
+    # and a window of them graded PASS while we were on another chain.
+    d="$TMP/r12"; sql_stub "$TMP/r12.sh" \
+        "[[$((HEIGHT - 9)),\"$HASH_OURS\",3],[$HEIGHT,\"$HASH_THEM\",2]]" 2 false
+    run_probe "$d" "$TMP/r12.sh" "printf '{\"result\":\"$HASH_OURS\"}'"
+    L="$(ledger_of "$d")"
+    if grep -q "\"height\":$((HEIGHT - 9))," "$L" &&
+       grep -q '"disagreeing_peers":2,"contested_peers":2,' "$L" &&
+       grep -q "\"disagreeing_hashes\":\[{\"height\":$HEIGHT,\"hash\":\"$HASH_THEM\",\"peers\":2}\]" "$L"; then
+        ok "a rival at a DIFFERENT height than the winner is counted, not skipped"
+    else
+        cat "$L" >&2; bad "R12 rival at another height was not recorded (masked tip fork)"
+    fi
+
+    # R13 — OUR HASH IN UPPER CASE. The extractor accepts [0-9a-fA-F] on
+    # purpose, but the peer table is compared as lower(tip_hash) and the
+    # comparison is a byte compare, so an upper-case RPC reply used to record
+    # a FALSE "disagrees" — a fabricated fork alarm on a healthy node.
+    d="$TMP/r13"; sql_stub "$TMP/r13.sh" "[[$HEIGHT,\"$HASH_OURS\",2]]" 1 false
+    run_probe "$d" "$TMP/r13.sh" \
+        "printf '{\"result\":\"$(printf '%s' "$HASH_OURS" | tr 'a-f' 'A-F')\"}'"
+    L="$(ledger_of "$d")"
+    if grep -q '"outcome":"agrees"' "$L" && ! grep -q '"outcome":"disagrees"' "$L"; then
+        ok "an upper-case hash from our own RPC does not fabricate a disagreement"
+    else
+        cat "$L" >&2; bad "R13 hash case sensitivity produced a false disagreement"
+    fi
+
+    # R14 — A HEIGHT ABOVE OUR TIP. Peers ahead of us is the normal state of
+    # a syncing node. It is neither a rival nor an unresolved check: it is
+    # recorded as heights_above_tip so the sample stays clean.
+    # (the at-tip cluster carries more witnesses so IT is the winner; a tie
+    # would break to the higher height and make the above-tip cluster the
+    # thing being compared, which is a different case.)
+    d="$TMP/r14"; sql_stub "$TMP/r14.sh" \
+        "[[$HEIGHT,\"$HASH_OURS\",3],[$((HEIGHT + 3)),\"$HASH_THEM\",2]]" 2 false
+    run_probe "$d" "$TMP/r14.sh" "printf '{\"result\":\"$HASH_OURS\"}'"
+    L="$(ledger_of "$d")"
+    if grep -q '"contested_peers":0,"rival_heights_unresolved":0,"heights_above_tip":1,' "$L" &&
+       grep -q '"outcome":"agrees"' "$L"; then
+        ok "a cluster above our own tip is recorded as behind-ness, not as a rival"
+    else
+        cat "$L" >&2; bad "R14 above-tip cluster mis-classified"
+    fi
+
+    # R15 — A HEIGHT WE SHOULD HAVE AND CANNOT ANSWER. Below our tip, the
+    # node will not produce a hash. That is UNKNOWN and must be recorded as
+    # unresolved — never folded into "no rival at that height".
+    d="$TMP/r15"; sql_stub "$TMP/r15.sh" \
+        "[[$HEIGHT,\"$HASH_OURS\",2],[$((HEIGHT - 4)),\"$HASH_THEM\",2]]" 2 false
+    run_probe "$d" "$TMP/r15.sh" \
+        "if [ \"\$ZCL_PARITY_HEIGHT\" = \"$HEIGHT\" ]; then printf '{\"result\":\"$HASH_OURS\"}'; else printf '{\"result\":null,\"error\":{\"code\":-8}}'; fi"
+    L="$(ledger_of "$d")"
+    if grep -q '"disagreeing_peers":0,"contested_peers":0,"rival_heights_unresolved":1,' "$L"; then
+        ok "an unanswerable height at or below our tip records as unresolved, not as zero rivals"
+    else
+        cat "$L" >&2; bad "R15 unresolved height was folded into 'no rivals'"
+    fi
+
+    # R16 — THE HOST KEY REACHES SQL IN THE GUARDED FORM. The distinctness
+    # control is only as good as the expression that derives a host from an
+    # addr, and the naive rtrim(rtrim(addr,'0-9'),':') splits ONE machine
+    # into TWO witnesses twice over: it eats the last octet of a portless
+    # "1.2.3.4", and it keys the bracketed IPv6 that -addnode produces
+    # (net_service_to_string) differently from the unbracketed IPv6 that
+    # addrman and every inbound peer produce (p2p_node_create's fallback).
+    # Both were confirmed against the node's own SQLite. The port may only
+    # be stripped when those trailing digits are actually preceded by a
+    # colon, brackets must be removed, and the key must be lowercased.
+    d="$TMP/r16"
+    cat >"$TMP/r16.sh" <<'STUB'
+#!/usr/bin/env bash
+s="${ZCL_PARITY_SQL:-}"
+case "$s" in
+  *"rtrim(rtrim(addr,'0123456789'),':')"*)
+      echo "stub: naive host key reached SQL (splits one host into two): $s" >&2; exit 1 ;;
+esac
+case "$s" in
+  *"substr(rtrim(addr,'0123456789'),-1)=':'"*) ;;
+  *) echo "stub: host key is not guarded on a preceding colon: $s" >&2; exit 1 ;;
+esac
+case "$s" in
+  *"trim("*"'[]')"*) ;;
+  *) echo "stub: host key does not unbracket: $s" >&2; exit 1 ;;
+esac
+case "$s" in
+  *"lower("*) ;;
+  *) echo "stub: host key is not lowercased: $s" >&2; exit 1 ;;
+esac
+printf '%s' '{"schema":"zcl.result.v1","ok":true,"data":{"columns":["h","t","n"],"rows":[],"row_count":0,"truncated":false,"interrupted":false}}'
+STUB
+    chmod +x "$TMP/r16.sh"
+    run_probe "$d" "$TMP/r16.sh" "printf '{\"result\":\"$HASH_OURS\"}'"
+    L="$(ledger_of "$d")"
+    if [ -s "$L" ] && grep -q '"reason":"no_hash_with_min_distinct_peers_2"' "$L"; then
+        ok "the distinct-host key reaches SQL guarded, unbracketed and lowercased"
+    else
+        cat "$L" 2>/dev/null >&2; bad "R16 host key shape wrong (one machine could count as two witnesses)"
+    fi
+
     # R9 — the ledger is append-only across runs and every line is one
     # complete JSON object (the judge reads it line by line).
     d="$TMP/r9"; sql_stub "$TMP/r9.sh" "[[$HEIGHT,\"$HASH_OURS\",2]]" 1 false
@@ -330,13 +444,23 @@ STUB
 
 # ── judge cases ────────────────────────────────────────────────────────
 
-# jrow <ts> <outcome> [peers] [control]
+# jrow <ts> <outcome> [peers] [control] [contested] [unresolved]
 jrow() {
     local ts="$1" outcome="$2" peers="${3:-2}" ctl="${4:-2}"
+    local contested="${5:-0}" unres="${6:-0}"
     local pnum="$peers"
     case "$outcome" in could-not-ask) pnum="null" ;; esac
-    printf '{"ts":%s,"instance":"canonical","rpcport":18232,"datadir":"/x","window_secs":900,"min_distinct_peers":%s,"our_height":%s,"height":%s,"our_tip_hash":"%s","modal_remote_hash":"%s","modal_remote_peers":%s,"modal_remote_groups":2,"disagreeing_peers":0,"disagreeing_hashes":[],"peers_total":21,"peers_with_height":20,"peers_usable":9,"clusters_seen":2,"outcome":"%s","reason":"fixture","error_detail":""}\n' \
-        "$ts" "$ctl" "$HEIGHT" "$HEIGHT" "$HASH_OURS" "$HASH_OURS" "$pnum" "$outcome"
+    printf '{"ts":%s,"instance":"canonical","rpcport":18232,"datadir":"/x","window_secs":900,"min_distinct_peers":%s,"our_height":%s,"height":%s,"our_tip_hash":"%s","modal_remote_hash":"%s","modal_remote_peers":%s,"modal_remote_groups":2,"disagreeing_peers":%s,"contested_peers":%s,"rival_heights_unresolved":%s,"heights_above_tip":0,"disagreeing_hashes":[],"peers_total":21,"peers_with_height":20,"peers_usable":9,"clusters_seen":2,"outcome":"%s","reason":"fixture","error_detail":""}\n' \
+        "$ts" "$ctl" "$HEIGHT" "$HEIGHT" "$HASH_OURS" "$HASH_OURS" "$pnum" \
+        "$contested" "$contested" "$unres" "$outcome"
+}
+
+# jrow_legacy <ts> — a row in the pre-rival-scan shape: it says "agrees" and
+# carries no contested_peers / rival_heights_unresolved keys at all. A
+# recorder that never looked for rivals cannot testify that there were none,
+# so the judge must refuse to count it.
+jrow_legacy() {
+    printf '{"ts":%s,"min_distinct_peers":2,"modal_remote_peers":2,"disagreeing_peers":0,"outcome":"agrees","reason":"legacy"}\n' "$1"
 }
 
 # jcase <name> <ledger> <want-token> <want-rc> [judge flags...]
@@ -446,6 +570,56 @@ judge_cases() {
             "printf '{\"result\":\"$HASH_OURS\"}'" "$((NOW - i * 600))"
     done
     jcase "prober-written ledger judged end to end" "$(ledger_of "$d")" PASS 0
+
+    # J15 — a window of samples that each said "agrees" while remote hosts
+    # meeting the control held a different block at some height. Before
+    # contested_peers existed this window was a clean PASS.
+    f="$TMP/j_contested.jsonl"; : >"$f"
+    for i in $(seq 1 10); do jrow "$((NOW - i * 600))" agrees 3 2 2 >>"$f"; done
+    jcase "agreement carrying contesting remote hosts is DISAGREE" "$f" DISAGREE 1
+
+    # J16 — ROW COUNT IS NOT DURATION. Eight agreeing samples one second
+    # apart satisfied --min-agree 6 before --min-span-secs existed, so one
+    # moment sampled eight times graded as a day of repeated agreement.
+    f="$TMP/j_burst.jsonl"; : >"$f"
+    for i in $(seq 1 8); do jrow "$((NOW - i))" agrees >>"$f"; done
+    jcase "8 agreeing samples one second apart is THIN_EVIDENCE, not a day" \
+        "$f" THIN_EVIDENCE 1
+
+    # J17 — the knobs may only TIGHTEN. Each of these was accepted before,
+    # and --window-hours/--max-age-secs together turned an almost year-old
+    # ledger into PASS.
+    f="$TMP/j_pass.jsonl"
+    jcase "--window-hours above the shipped 24 is refused"  "$f" "" 2 --window-hours=87600
+    jcase "--max-age-secs above the shipped 1800 is refused" "$f" "" 2 --max-age-secs=999999999
+    jcase "--max-disagree above the shipped 0 is refused"    "$f" "" 2 --max-disagree=1000
+    jcase "--min-agree below the shipped 6 is refused"       "$f" "" 2 --min-agree=1
+    jcase "--min-span-secs below the shipped 2700 is refused" "$f" "" 2 --min-span-secs=0
+    # and tightening is still allowed
+    jcase "tightening the window is accepted"                "$f" PASS 0 --window-hours=24 --min-agree=8
+
+    # J18 — a ledger written by a recorder that never looked for rivals.
+    # Its "agrees" rows carry no contested_peers key; absence is UNKNOWN, so
+    # they cannot prove there was no disagreement and cannot mint a PASS.
+    f="$TMP/j_legacy.jsonl"; : >"$f"
+    for i in $(seq 1 10); do jrow_legacy "$((NOW - i * 600))" >>"$f"; done
+    jcase "a pre-rival-scan ledger cannot pass (missing key is unknown, not zero)" \
+        "$f" NO_EVIDENCE 1
+
+    # J19 — a SPLICED line: a torn append that a later append landed on top
+    # of, so one physical line carries two outcome keys. Reading the first
+    # and grading the rest is how a Frankenstein row becomes evidence.
+    f="$TMP/j_splice.jsonl"; : >"$f"
+    for i in $(seq 1 10); do jrow "$((NOW - i * 600))" agrees >>"$f"; done
+    printf '{"ts":%s,"instance":"cano' "$((NOW - 300))" >>"$f"
+    jrow "$((NOW - 60))" agrees >>"$f"
+    jcase "a spliced (torn + overwritten) line is MALFORMED" "$f" MALFORMED 1
+
+    # J20 — samples the recorder could not fully check do not count toward
+    # the accrual claim, and a window made only of them is not agreement.
+    f="$TMP/j_unres.jsonl"; : >"$f"
+    for i in $(seq 1 10); do jrow "$((NOW - i * 600))" agrees 2 2 0 1 >>"$f"; done
+    jcase "a window of unverifiable agreements is NO_EVIDENCE" "$f" NO_EVIDENCE 1
 
     # J14 — the same end-to-end path with an unusable source: the prober
     # writes could-not-ask, the judge refuses. This is the pair the whole
