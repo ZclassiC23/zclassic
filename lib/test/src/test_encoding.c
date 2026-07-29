@@ -438,42 +438,53 @@ int test_encoding(void)
         }
     }
 
+    /* Both blocks below used a FIXED /tmp path. GetDataDir() and SetDataDir()
+     * mkdir() their argument unconditionally (lib/util/src/util.c), so each
+     * run left a permanent directory behind under /tmp — and shared that one
+     * absolute path with every other checkout on the machine. The assertion is
+     * about the returned STRING, not the directory, so a per-process path
+     * under ./test-tmp/ proves exactly the same thing and cleans up. */
     printf("GetDataDir cache invalidates on ParseParameters... ");
     {
         char before[1024];
         char after[1024];
+        char datadir[512];
+        char datadir_arg[600];
+        test_make_tmpdir(datadir, sizeof(datadir), "encoding_datadir", "cache");
+        snprintf(datadir_arg, sizeof(datadir_arg), "-datadir=%s", datadir);
         const char *empty_argv[] = { "test" };
-        const char *datadir_argv[] = {
-            "test",
-            "-datadir=/tmp/zclassic23-test-datadir-cache"
-        };
+        const char *datadir_argv[] = { "test", datadir_arg };
 
         ParseParameters(1, empty_argv);
         GetDataDir(false, before, sizeof(before));
         ParseParameters(2, datadir_argv);
         GetDataDir(false, after, sizeof(after));
 
-        if (strcmp(after, "/tmp/zclassic23-test-datadir-cache") == 0 &&
+        if (strcmp(after, datadir) == 0 &&
             strcmp(before, after) != 0)
             printf("OK\n");
         else {
             printf("FAIL: before=%s after=%s\n", before, after);
             failures++;
         }
+        (void)test_rm_rf_recursive(datadir);
     }
 
     printf("SetDataDir overrides cached default... ");
     {
         char before[1024];
         char after[1024];
+        char datadir[512];
+        test_make_tmpdir(datadir, sizeof(datadir), "encoding_datadir",
+                         "selected");
         const char *empty_argv[] = { "test" };
 
         ParseParameters(1, empty_argv);
         GetDataDir(false, before, sizeof(before));
-        SetDataDir("/tmp/zclassic23-test-selected-datadir");
+        SetDataDir(datadir);
         GetDataDir(false, after, sizeof(after));
 
-        if (strcmp(after, "/tmp/zclassic23-test-selected-datadir") == 0 &&
+        if (strcmp(after, datadir) == 0 &&
             strcmp(before, after) != 0)
             printf("OK\n");
         else {
@@ -483,6 +494,7 @@ int test_encoding(void)
 
         ParseParameters(1, empty_argv);
         ClearDataDirCache();
+        (void)test_rm_rf_recursive(datadir);
     }
 
     printf("GetNumCores... ");

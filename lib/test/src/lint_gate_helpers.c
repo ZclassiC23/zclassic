@@ -17,6 +17,33 @@
 
 #include "lint_gate_selftests.h"
 
+/* Per-process scratch path under the (possibly sandboxed) repo root.
+ *
+ * Anything the REALROOT lane writes has to be pid-unique. The sandbox lane
+ * gets isolation for free — repo_path() resolves into a private hardlink tree
+ * — but the real-worktree checks now run inside the 32-worker pool, so two of
+ * them sharing one fixed filename would truncate each other's file mid-read.
+ * Everything still lands under ./test-tmp/, which check-no-stray-root-files
+ * requires. */
+int repo_path_pid(char *out, size_t outsz, const char *rel_prefix,
+                  const char *suffix)
+{
+    if (!rel_prefix || !suffix) return -1;
+    char rel[256];
+    if (snprintf(rel, sizeof(rel), "%s_%ld%s", rel_prefix, (long)getpid(),
+                 suffix) >= (int)sizeof(rel))
+        return -1;
+    return repo_path(out, outsz, rel);
+}
+
+/* The stdout+stderr sink every gate-script run redirects into. One fixed
+ * "test-tmp/zcl_gate_lint.out" was safe only while this family ran as a single
+ * exclusive group; the shards and the realroot lane run concurrently now. */
+int lint_gate_out_path(char *out, size_t outsz)
+{
+    return repo_path_pid(out, outsz, "test-tmp/zcl_gate_lint", ".out");
+}
+
 int copy_file(const char *src, const char *dst)
 {
     FILE *in = fopen(src, "rb");
@@ -292,8 +319,7 @@ int run_gate_script(const char *script_rel, const char *mode)
         return -1;
 
     char out_path[PATH_MAX];
-    if (repo_path(out_path, sizeof(out_path),
-                  "test-tmp/zcl_gate_lint.out") != 0)
+    if (lint_gate_out_path(out_path, sizeof(out_path)) != 0)
         return -1;
 
     struct sigaction old_chld;
@@ -361,8 +387,7 @@ int run_gate_script_with_worker_files(const char *script_rel,
         return -1;
 
     char out_path[PATH_MAX];
-    if (repo_path(out_path, sizeof(out_path),
-                  "test-tmp/zcl_gate_lint.out") != 0)
+    if (lint_gate_out_path(out_path, sizeof(out_path)) != 0)
         return -1;
 
     struct sigaction old_chld;
@@ -426,8 +451,7 @@ int run_gate_script_with_env(const char *script_rel,
         return -1;
 
     char out_path[PATH_MAX];
-    if (repo_path(out_path, sizeof(out_path),
-                  "test-tmp/zcl_gate_lint.out") != 0)
+    if (lint_gate_out_path(out_path, sizeof(out_path)) != 0)
         return -1;
 
     struct sigaction old_chld;
@@ -491,8 +515,7 @@ int run_gate_script_with_env2(const char *script_rel,
         return -1;
 
     char out_path[PATH_MAX];
-    if (repo_path(out_path, sizeof(out_path),
-                  "test-tmp/zcl_gate_lint.out") != 0)
+    if (lint_gate_out_path(out_path, sizeof(out_path)) != 0)
         return -1;
 
     struct sigaction old_chld;
@@ -557,8 +580,7 @@ int run_gate_script_timeout(const char *script_rel,
         return -1;
 
     char out_path[PATH_MAX];
-    if (repo_path(out_path, sizeof(out_path),
-                  "test-tmp/zcl_gate_lint.out") != 0)
+    if (lint_gate_out_path(out_path, sizeof(out_path)) != 0)
         return -1;
 
     struct sigaction old_chld;

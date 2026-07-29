@@ -1,13 +1,14 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * The `make_lint_gates` test group: it runs the self-test of every lint gate.
+ * The `make_lint_gates` self-test family: it runs the self-test of every lint
+ * gate.
  *
  * Problem: a lint gate is the only thing stopping a whole class of bug from
  * coming back — `check-raw-sqlite`, for one, is all that stops new raw
  * `sqlite3_step` calls from reintroducing a UTXO-wipe. If someone loosens a
  * gate's pattern ("oh, it's annoying on this PR, let me add another
  * exemption"), the gate silently stops catching violations. Every check in
- * this group prevents that, in the same shape:
+ * this family prevents that, in the same shape:
  *
  *   1. Copy a known-bad fixture into the scanned tree under a unique temp name
  *      so the gate's scan actually sees it.
@@ -17,10 +18,39 @@
  *
  * The checks themselves live in the sibling lint_gate_*.c files, grouped by
  * the gate family they guard; lint_gate_selftests.h is the map and the shared
- * surface. This file owns the entry table (g_lint_gate_entries — the single
- * list of every check, and whether it needs the real worktree), the internal
- * parallel runner, and the repo-root resolution the runner overrides per
- * sandbox worker.
+ * surface. This file owns the entry table (g_lint_gate_entries — the ONE list
+ * of every check and the lane it belongs to), the partition that hands each
+ * entry to exactly one registered test group, and the per-lane runners.
+ *
+ * ── Why this is split across several registered groups ────────────────────
+ * Every check either plants a fixture into a scanned tree or execs a gate
+ * script, so historically the whole family ran as ONE group, and that group
+ * was marked exclusive (run_group_exclusive in test_parallel.c) because its
+ * fixtures were planted into the LIVE source tree where another group's scan
+ * could readdir them mid-unlink. Exclusive means the parallel pool is EMPTY
+ * while it runs: measured on a 32-worker box this one group was ~95s of a
+ * ~130s suite, with 31 workers idle for all of it.
+ *
+ * The fix is the lane split below. Each entry declares what it actually needs:
+ *
+ *   LINT_LANE_SANDBOX    plants fixtures, but runs entirely inside a private
+ *                        `cp -al` hardlink copy of the worktree, so nothing it
+ *                        does is visible outside its own tree. Pool-eligible;
+ *                        spread over LINT_GATE_SHARD_COUNT shard groups.
+ *   LINT_LANE_REALROOT   needs the real .git (git grep / git ls-files /
+ *                        .git/hooks) or is hermetic (its own mktemp sandbox),
+ *                        but never mutates a tracked path. Pool-eligible.
+ *   LINT_LANE_EXCLUSIVE  genuinely plants into the REAL worktree. Only two
+ *                        checks qualify. This lane keeps the historic group
+ *                        name `make_lint_gates` and stays the exclusive
+ *                        pre-pass — which also guarantees the tree is quiet
+ *                        while the shards build their sandboxes.
+ *
+ * The group name `make_lint_gates` is deliberately KEPT and the shards are
+ * named `make_lint_gates_shard_NN`, because --only is a substring match
+ * (test_parallel.c) — so `make t ONLY=make_lint_gates` still runs the whole
+ * family, and the agent_impact_rules.def rows plus agent_controller.c that
+ * name `make_lint_gates` keep resolving with no edit.
  *
  * Gated by `ZCL_TESTING` so the shell-out + make invocation only fires when
  * the suite is built by `make test`; standalone compilations of test_zcl
@@ -30,20 +60,43 @@
 
 #include "test/test_core.h"
 
+#include <string.h>
+
+/* How many pool-eligible shard groups the sandbox lane is spread over. Each
+ * one is a registered TEST_LIST row (see LINT_SHARD_LIST below) and builds its
+ * own sandbox, so this is also the number of concurrent `cp -al` copies. */
+#define LINT_GATE_SHARD_COUNT 8
+
+/* Which of this family's registered group names must run alone.
+ *
+ * The scheduler (test_parallel.c) asks this file rather than pattern-matching
+ * the name itself, so the policy lives next to the table that makes it true.
+ * The match is EXACT on purpose: a prefix or substring test here would mark
+ * every shard exclusive too, silently re-serialising the whole split and
+ * handing back every second it bought. test_make_lint_gates_partition asserts
+ * this predicate in both directions so that regression cannot land quietly.
+ *
+ * Defined outside ZCL_TESTING: the scheduler links against it either way. */
+bool lint_gates_group_is_exclusive(const char *group_name)
+{
+    if (!group_name) return false;
+    if (strncmp(group_name, "test_", 5) == 0) group_name += 5;
+    return strcmp(group_name, "make_lint_gates") == 0;
+}
+
 #ifdef ZCL_TESTING
 
 #include "lint_gate_selftests.h"
+#include "platform/time_compat.h"
 
-/* Per-process sandbox-root override for the internal parallel runner. When a
- * pool worker (a fork()ed child) runs a gate in its OWN hardlink sandbox, it
- * calls repo_root_set_override() with the sandbox path; from then on every
- * repo_path()/run_gate_script()/fixture-plant in that child resolves INTO the
- * sandbox (fixtures planted there, and the sandbox's own copy of the gate
- * script is exec'd, so `dirname $0/../..` roots the scan at the sandbox). This
- * is what isolates concurrent fixture planting/unlinking so the group can run
- * its ~100 checks through a bounded worker pool without racing each other's
- * scans. Set once per child, never in the parent; checked BEFORE the cache so
- * it wins over an inherited (real-root) cached value. */
+/* Per-process sandbox-root override. A shard group chdir()s into its own
+ * hardlink sandbox and calls repo_root_set_override() with that path; from
+ * then on every repo_path()/run_gate_script()/fixture-plant in that process
+ * resolves INTO the sandbox (fixtures planted there, and the sandbox's own
+ * copy of the gate script is exec'd, so `dirname $0/../..` roots the scan at
+ * the sandbox). That is what makes the shards safe to run concurrently with
+ * each other and with the rest of the pool. Checked BEFORE the cache so it
+ * wins over an already-cached real-root value. */
 static char g_repo_root_override[PATH_MAX];
 static int g_repo_root_override_set = 0;
 
@@ -114,40 +167,34 @@ int repo_path(char *out, size_t outsz, const char *rel)
     return snprintf(out, outsz, "%s/%s", root, rel) >= (int)outsz ? -1 : 0;
 }
 
-/* ── Internal parallel runner for the make_lint_gates group ───────────────
- * Historically these ~100+ checks ran strictly serially, and the group ran
- * as an exclusive serial PRE-PASS (see group_requires_exclusive_repo in
- * test_parallel.c) because each check plants a fixture .c file into a shared
- * source path and then unlink()s it — a concurrent scanner in ANOTHER group
- * could readdir a transient fixture and race the unlink (grep exits 2 =>
- * FATAL). Both costs stacked: this one group was ~140s warm / ~270s cold, the
- * long pole of the whole suite (~80%).
- *
- * The runner below keeps the group exclusive but makes it INTERNALLY parallel.
- * Every check that only needs a plain file tree ("sandbox" entries) runs in a
- * bounded pool of worker processes, each pinned to its OWN hardlink copy of
- * the source tree (built with `cp -al` in ~0.1s). A worker calls
- * repo_root_set_override() so its fixture plants AND its gate-script exec
- * resolve INTO its sandbox — the sandbox's own copy of the gate script is
- * exec'd, so `dirname $0/../..` roots the scan at the sandbox. Concurrent
- * planting/unlinking therefore can never race another worker's scan, and the
- * per-worker fixture path is private. The handful of checks that depend on the
- * real .git (git grep/ls-files, .git/hooks) or run a heavier selftest stay on
- * the real worktree and run serially.
- *
- * On ANY sandbox-setup failure the runner falls back to a fully serial run in
- * the real worktree (lint_run_all_serial) — byte-identical to the historical
- * behavior — so the optimization can never trade away correctness. */
+/* ── The one entry table ──────────────────────────────────────────────────
+ * Every check appears here exactly once, tagged with the lane it needs. The
+ * partition below is a pure function of this table, so adding a check is a
+ * one-line edit and it lands in a shard automatically. */
 
 typedef int (*lint_gate_fn)(void);
 
-struct lint_gate_entry {
-    lint_gate_fn fn;
-    int          real_serial; /* 1 => needs real .git / real worktree */
+enum lint_lane {
+    LINT_LANE_SANDBOX = 0,
+    LINT_LANE_REALROOT,
+    /* Real-root-safe like REALROOT, but slow enough that sharing a group with
+     * anything else makes that group the suite's critical path. Measured
+     * standalone: fresh-boot-weld 45.8s, import-copy-prove 25.2s — together
+     * they were a 106s serial lane, i.e. the whole reason the old runner took
+     * ~95s. Each gets its own registered group. */
+    LINT_LANE_HEAVY,
+    LINT_LANE_EXCLUSIVE,
 };
 
-#define S_(f) { (f), 0 }
-#define R_(f) { (f), 1 }
+struct lint_gate_entry {
+    lint_gate_fn   fn;
+    enum lint_lane lane;
+};
+
+#define S_(f) { (f), LINT_LANE_SANDBOX }
+#define N_(f) { (f), LINT_LANE_REALROOT }
+#define H_(f) { (f), LINT_LANE_HEAVY }
+#define X_(f) { (f), LINT_LANE_EXCLUSIVE }
 static const struct lint_gate_entry g_lint_gate_entries[] = {
     S_(t_baseline_passes),
     S_(t_fixture_trips_gate),
@@ -164,7 +211,7 @@ static const struct lint_gate_entry g_lint_gate_entries[] = {
     S_(t_raw_malloc_gate_recovers),
     S_(t_service_tip_mutation_gate),
     S_(t_legacy_candidate_source_has_no_override_scope),
-    R_(t_deprecated_tools_z_is_absent),          /* git grep */
+    N_(t_deprecated_tools_z_is_absent),          /* git grep, read-only */
     S_(t_canonical_operator_diagnostics_contract),
     S_(t_canonical_deploy_proof_binding_contract),
     S_(t_dev_lane_deploy_contract),
@@ -220,20 +267,23 @@ static const struct lint_gate_entry g_lint_gate_entries[] = {
     S_(t_e9_operator_needed_sink),
     S_(t_systemd_memory_budget),
     S_(t_quality_job_guard),
-    R_(t_import_copy_prove_selftest),            /* selftest under `timeout` */
-    R_(t_fresh_boot_weld_prove_selftest),        /* selftest under `timeout` */
+    /* Hermetic: each driver fakes its inputs inside its own `mktemp -d`
+     * sandbox and touches nothing in the worktree. HEAVY, so one group each
+     * — heavy_01 and heavy_02 in table order. */
+    H_(t_import_copy_prove_selftest),
+    H_(t_fresh_boot_weld_prove_selftest),
     S_(t_e14_condition_cooldown_gate),
-    R_(t_markdown_links_gate),                   /* git ls-files */
-    R_(t_git_hooks_gate_enforces_tracked_pre_push),  /* .git/hooks */
-    R_(t_git_hooks_gate_rejects_noop_pre_push),      /* .git/hooks */
-    R_(t_git_hooks_gate_rejects_noop_pre_commit),    /* .git/hooks */
+    N_(t_markdown_links_gate),                   /* git ls-files, read-only */
+    N_(t_git_hooks_gate_enforces_tracked_pre_push),  /* reads .git/hooks */
+    N_(t_git_hooks_gate_rejects_noop_pre_push),      /* writes only test-tmp/ */
+    N_(t_git_hooks_gate_rejects_noop_pre_commit),    /* writes only test-tmp/ */
     S_(t_telemetry_ontology_gate),
     S_(t_e10_framework_shape_ratchet),
     S_(t_e10_no_raw_sqlite_ratchet),
     S_(t_gate22_framework_filename_suffix),
     S_(t_gate_p2_group_purpose),
     S_(t_gate_p1_file_purpose),
-    R_(t_gate_p3_orphan_placement),              /* git ls-files baseline */
+    N_(t_gate_p3_orphan_placement),   /* judges a path list, nothing on disk */
     S_(t_e13_consensus_parity_fixture),
     S_(t_silent_errors_bool_fixture),
     S_(t_log_macro_return_type_gate),
@@ -259,31 +309,163 @@ static const struct lint_gate_entry g_lint_gate_entries[] = {
     S_(t_hotswap_static_state_covers_swappable),
     S_(t_privileged_transition_receipt_gate),
     S_(t_blocker_escape_registered_gate),
-    R_(t_no_trust_state_ordering_gate),          /* git grep --untracked */
+    /* Plants app/services/src/_trust_order_fixture_tmp.c into the REAL tree
+     * (the gate greps --untracked, which needs the real .git). */
+    X_(t_no_trust_state_ordering_gate),
     S_(t_lint_gates_fail_loud_on_empty_scan),
     S_(t_no_dev_history_in_contracts),
     S_(t_no_uncited_victory),
-    R_(t_no_stray_root_files),                   /* git ls-files + real root */
+    /* Plants a stray file at the REAL repo root. */
+    X_(t_no_stray_root_files),
 };
 #undef S_
-#undef R_
+#undef N_
+#undef H_
+#undef X_
 #define LINT_GATE_ENTRY_COUNT \
     (sizeof(g_lint_gate_entries) / sizeof(g_lint_gate_entries[0]))
 
-/* Fully serial fallback: run every entry in the real worktree, in order.
- * Identical to the historical runner; used when parallel setup fails. */
-static int lint_run_all_serial(void)
+/* ── Partition ────────────────────────────────────────────────────────────
+ * Owner of every entry: a shard index in [0, LINT_GATE_SHARD_COUNT) for the
+ * sandbox lane, or one of the two negative tags. Pure function of the table,
+ * so every process computes the SAME partition and
+ * test_make_lint_gates_partition can prove it total and disjoint. */
+
+#define LINT_OWNER_REALROOT   (-1)
+#define LINT_OWNER_EXCLUSIVE  (-2)
+#define LINT_OWNER_NONE       (-3)
+/* Heavy lane owners are LINT_OWNER_HEAVY_BASE + k for the k-th HEAVY entry in
+ * table order, so heavy_01 owns the first and heavy_02 the second. */
+#define LINT_OWNER_HEAVY_BASE (100)
+#define LINT_GATE_HEAVY_COUNT (2)
+
+/* Per-check cost in milliseconds, used to balance the shards.
+ *
+ * These are MEASURED, not guessed: run the family under ZCL_LINT_GATE_TIMING=1
+ * and read the `[lint-gate-timing] ... ms=` lines. They are taken with the
+ * whole family running concurrently, so they carry the contention every shard
+ * actually experiences in the pool; they only need to RANK correctly.
+ *
+ * The previous hand-estimated table was badly wrong in both directions and
+ * produced shards of 7s and 60s: t_agent_fast_ci_contract was weighted 10 and
+ * measures ~26s, t_gate22_framework_filename_suffix was 10 and measures ~12s,
+ * while t_gate_p1_file_purpose was weighted 600 and does not even reach the
+ * 500ms floor. Anything not listed is sub-500ms noise. */
+static int lint_entry_weight(lint_gate_fn fn)
 {
-    int failures = 0;
+    if (fn == t_silent_errors_bool_fixture)              return 59651;
+    if (fn == t_no_dev_history_in_contracts)             return 51629;
+    if (fn == t_agent_fast_ci_contract)                  return 26287;
+    if (fn == t_lint_gates_fail_loud_on_empty_scan)      return 21827;
+    if (fn == t_gate22_framework_filename_suffix)        return 12435;
+    if (fn == t_e1_file_size_ceiling)                    return 10960;
+    if (fn == t_e1_lib_warn_tier)                        return 7211;
+    if (fn == t_long_functions_enforced_ratchet)         return 5180;
+    if (fn == t_baseline_passes)                         return 4893;
+    if (fn == t_gate_recovers_after_removal)             return 4889;
+    if (fn == t_node_db_exec_fixture_trips_gate)         return 4889;
+    if (fn == t_fixture_trips_gate)                      return 4885;
+    if (fn == t_supervisor_registration_widened_ratchet) return 4749;
+    if (fn == t_log_macro_return_type_gate)              return 3728;
+    if (fn == t_long_functions_lib_warn_tier)            return 3608;
+    if (fn == t_e12_honest_witness)                      return 2202;
+    if (fn == t_blocker_escape_registered_gate)          return 2198;
+    if (fn == t_shape_include_direction)                 return 1874;
+    if (fn == t_e14_condition_cooldown_gate)             return 1654;
+    if (fn == t_e2_one_result_type)                      return 1582;
+    if (fn == t_systemd_memory_budget)                   return 1412;
+    if (fn == t_e3_shape_includes_header)                return 1153;
+    if (fn == t_privileged_transition_receipt_gate)      return 1030;
+    if (fn == t_e5_stage_advances_or_blocks)             return 754;
+    if (fn == t_no_uncited_victory)                      return 607;
+    if (fn == t_hotswap_swappable_shape_gate)            return 540;
+    if (fn == t_hotswap_swappable_leaf_contract_gate)    return 519;
+    return 100;
+}
+
+/* Longest-processing-time-first bin packing: walk the sandbox entries
+ * heaviest-first and drop each into the currently lightest shard. Recomputed
+ * per query (a hundred-odd entries over 8 bins is nothing) so there is no
+ * cached state to drift out of sync with the table. */
+static int lint_owner_of(size_t idx)
+{
+    if (idx >= LINT_GATE_ENTRY_COUNT) return LINT_OWNER_NONE;
+    switch (g_lint_gate_entries[idx].lane) {
+    case LINT_LANE_REALROOT:  return LINT_OWNER_REALROOT;
+    case LINT_LANE_EXCLUSIVE: return LINT_OWNER_EXCLUSIVE;
+    case LINT_LANE_HEAVY: {
+        int k = 0;
+        for (size_t i = 0; i < idx; i++)
+            if (g_lint_gate_entries[i].lane == LINT_LANE_HEAVY) k++;
+        /* A third HEAVY entry with no group to run it would silently vanish;
+         * the partition test asserts the count instead of letting that pass. */
+        if (k >= LINT_GATE_HEAVY_COUNT) return LINT_OWNER_NONE;
+        return LINT_OWNER_HEAVY_BASE + k;
+    }
+    case LINT_LANE_SANDBOX:   break;
+    }
+
+    int order[LINT_GATE_ENTRY_COUNT];
+    int n = 0;
     for (size_t i = 0; i < LINT_GATE_ENTRY_COUNT; i++)
+        if (g_lint_gate_entries[i].lane == LINT_LANE_SANDBOX)
+            order[n++] = (int)i;
+
+    for (int a = 1; a < n; a++) {   /* stable insertion sort, weight DESC */
+        int cur = order[a];
+        int cw = lint_entry_weight(g_lint_gate_entries[cur].fn);
+        int b = a - 1;
+        while (b >= 0 &&
+               lint_entry_weight(g_lint_gate_entries[order[b]].fn) < cw) {
+            order[b + 1] = order[b];
+            b--;
+        }
+        order[b + 1] = cur;
+    }
+
+    long load[LINT_GATE_SHARD_COUNT];
+    for (int b = 0; b < LINT_GATE_SHARD_COUNT; b++) load[b] = 0;
+
+    int owner = LINT_OWNER_NONE;
+    for (int k = 0; k < n; k++) {
+        int lightest = 0;
+        for (int b = 1; b < LINT_GATE_SHARD_COUNT; b++)
+            if (load[b] < load[lightest]) lightest = b;
+        load[lightest] += lint_entry_weight(g_lint_gate_entries[order[k]].fn);
+        if ((size_t)order[k] == idx) owner = lightest;
+    }
+    return owner;
+}
+
+/* ── Runners ──────────────────────────────────────────────────────────── */
+
+/* Run every entry this owner owns, in table order. Under
+ * ZCL_LINT_GATE_TIMING=1 each check's wall time is reported on stderr; that is
+ * the data lint_entry_weight() above is derived from. */
+static int lint_run_owned(int owner)
+{
+    const char *timing = getenv("ZCL_LINT_GATE_TIMING");
+    int report = (timing && *timing && strcmp(timing, "0") != 0);
+    int failures = 0;
+
+    for (size_t i = 0; i < LINT_GATE_ENTRY_COUNT; i++) {
+        if (lint_owner_of(i) != owner) continue;
+        int64_t t0 = clock_now_monotonic_ns();
         failures += g_lint_gate_entries[i].fn();
+        if (report) {
+            long long ms =
+                (long long)((clock_now_monotonic_ns() - t0) / 1000000);
+            fprintf(stderr, "[lint-gate-timing] owner=%d entry=%zu ms=%lld\n",
+                    owner, i, ms);
+        }
+    }
     return failures;
 }
 
 /* Build a hardlink copy ("sandbox") of the worktree at sb_root. Everything
  * except build/.git/.cache/test-tmp/.claude is `cp -al`'d (metadata-only, so
- * ~0.1s for the whole tree); test-tmp is created fresh so gate scratch output
- * never writes through a shared inode. Returns 0 on success. */
+ * fast even for the whole tree); test-tmp is created fresh so gate scratch
+ * output never writes through a shared inode. Returns 0 on success. */
 static int lint_sandbox_build(const char *real_root, const char *sb_root)
 {
     pid_t pid = fork();
@@ -318,62 +500,14 @@ static int lint_sandbox_build(const char *real_root, const char *sb_root)
     return (WIFEXITED(st) && WEXITSTATUS(st) == 0) ? 0 : -1;
 }
 
-/* Run one entry with its stdout captured to out_path and its failure count
- * written to rc_path. Any repo_root override must already be set. */
-static void lint_run_one_captured(const struct lint_gate_entry *e,
-                                  const char *out_path, const char *rc_path)
-{
-    fflush(stdout);
-    int saved = dup(STDOUT_FILENO);
-    int outfd = open(out_path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
-    if (outfd >= 0) {
-        (void)dup2(outfd, STDOUT_FILENO);
-        close(outfd);
-    }
-    int failures = e->fn();
-    fflush(stdout);
-    if (saved >= 0) {
-        (void)dup2(saved, STDOUT_FILENO);
-        close(saved);
-    }
-    FILE *rf = fopen(rc_path, "w");
-    if (rf) {
-        fprintf(rf, "%d\n", failures);
-        fclose(rf);
-    }
-}
-
-/* Rough per-check cost hint (relative units) used to dispatch the slowest
- * checks FIRST (longest-processing-time-first). Without it the ~33s silent-
- * bool check sits near the end of the table, starts late, and pushes out the
- * makespan; started at t=0 it overlaps everything else. Values are derived
- * from measured warm gate times x the check's baseline/trip/recover run count;
- * they only need to rank, not be exact. */
-static int lint_entry_weight(lint_gate_fn fn)
-{
-    if (fn == t_silent_errors_bool_fixture)             return 3300;
-    if (fn == t_no_dev_history_in_contracts)            return 2400;
-    if (fn == t_gate_p1_file_purpose)                   return 600;
-    if (fn == t_lint_gates_fail_loud_on_empty_scan)     return 400;
-    if (fn == t_fixture_trips_gate ||
-        fn == t_node_db_exec_fixture_trips_gate ||
-        fn == t_baseline_passes ||
-        fn == t_gate_recovers_after_removal)            return 300;
-    if (fn == t_long_functions_enforced_ratchet ||
-        fn == t_long_functions_lib_warn_tier)           return 250;
-    if (fn == t_thread_supervision_ratchet)             return 200;
-    if (fn == t_e1_file_size_ceiling ||
-        fn == t_e1_lib_warn_tier)                       return 150;
-    if (fn == t_supervisor_registration_widened_ratchet) return 130;
-    return 10;
-}
-
-/* Remove any sandbox bases left by a PREVIOUS run that was killed (SIGKILL/
+/* Remove sandbox bases left by a PREVIOUS run that was killed (SIGKILL/
  * SIGTERM) before its own teardown could run — the normal path rm -rf's its
- * base, but a hard kill leaks it. Best-effort: scan the worktree's parent for
- * "<worktree>.lint_sb_*" siblings and delete them. Only this group ever
- * creates that name, and only one instance runs at a time, so nothing live is
- * ever matched. */
+ * base, but a hard kill leaks it.
+ *
+ * Only bases whose owning process is GONE are reaped. The shards run
+ * concurrently now, so an unconditional sweep would delete a live sibling's
+ * sandbox out from under it mid-scan. Called from the exclusive lane, which
+ * runs alone before any shard starts. */
 static void lint_purge_stale_sandboxes(const char *real_root)
 {
     char tmp[PATH_MAX];
@@ -396,6 +530,15 @@ static void lint_purge_stale_sandboxes(const char *real_root)
     struct dirent *e;
     while ((e = readdir(d)) != NULL) {
         if (strncmp(e->d_name, prefix, plen) != 0) continue;
+
+        const char *pidstr = e->d_name + plen;
+        char *end = NULL;
+        long owner_pid = strtol(pidstr, &end, 10);
+        if (end == pidstr || !end || *end != '\0' || owner_pid <= 0) continue;
+        /* Alive — or alive but owned by another user (EPERM) — leave it be. */
+        errno = 0;
+        if (kill((pid_t)owner_pid, 0) == 0 || errno != ESRCH) continue;
+
         char victim[PATH_MAX];
         if (snprintf(victim, sizeof(victim), "%s/%s", parent, e->d_name) <
             (int)sizeof(victim))
@@ -404,17 +547,10 @@ static void lint_purge_stale_sandboxes(const char *real_root)
     closedir(d);
 }
 
-/* Shared work dispenser handed the sandbox worker pool via MAP_SHARED. */
-struct lint_dispenser {
-    atomic_int next;
-};
-
-int test_make_lint_gates(void)
+/* Resolve the real repo root, or print the historic SKIP. Returns 0 when the
+ * caller should proceed and -1 when it should return 0 failures. */
+static int lint_resolve_real_root(char *out, size_t outsz)
 {
-    printf("\n=== make_lint_gates tests ===\n");
-
-    /* Resolve against the built test binary location so later tests can
-     * change cwd without breaking these shell-outs. */
     struct stat st;
     char fixture_src[PATH_MAX];
     char makefile[PATH_MAX];
@@ -422,220 +558,277 @@ int test_make_lint_gates(void)
         repo_path(makefile, sizeof(makefile), "Makefile") != 0 ||
         stat(fixture_src, &st) != 0 || stat(makefile, &st) != 0) {
         printf("[lint-gate] SKIP: repo root not discoverable from test_zcl path\n");
+        return -1;
+    }
+    const char *root = repo_root();
+    if (!root) {
+        printf("[lint-gate] SKIP: repo root not discoverable from test_zcl path\n");
+        return -1;
+    }
+    if (snprintf(out, outsz, "%s", root) >= (int)outsz) {
+        printf("[lint-gate] SKIP: repo root path too long\n");
+        return -1;
+    }
+    return 0;
+}
+
+/* One shard: build a private sandbox, run this shard's slice inside it, tear
+ * the sandbox down.
+ *
+ * On ANY sandbox failure this FAILS LOUD rather than falling back to the real
+ * worktree. The old single-group runner could fall back safely because it held
+ * the tree exclusively; a shard cannot — planting fixtures into the live tree
+ * while ~800 other groups run is exactly the flake this split exists to avoid.
+ * A named failure is the honest outcome. */
+static int lint_run_shard(int shard)
+{
+    char real_root[PATH_MAX];
+    if (lint_resolve_real_root(real_root, sizeof(real_root)) != 0)
         return 0;
-    }
 
-    const char *real_root = repo_root();
-    if (!real_root)
-        return lint_run_all_serial();
+    printf("\n=== make_lint_gates shard %d tests ===\n", shard);
 
-    /* Reap any sandbox base leaked by a hard-killed prior run before we make
-     * ours (best-effort; only this group ever creates that sibling name). */
-    lint_purge_stale_sandboxes(real_root);
-
-    /* Sandbox base lives OUTSIDE the worktree (a sibling, same filesystem so
-     * hardlinks work) so a real-worktree `git grep --untracked` can never see
-     * a worker's planted fixture. */
-    char sb_base[PATH_MAX];
+    char sb_base[PATH_MAX], sb_root[PATH_MAX];
     if (snprintf(sb_base, sizeof(sb_base), "%s.lint_sb_%d",
-                 real_root, (int)getpid()) >= (int)sizeof(sb_base))
-        return lint_run_all_serial();
-
-    char out_dir[PATH_MAX];
-    if (snprintf(out_dir, sizeof(out_dir), "%s/out", sb_base) >=
-        (int)sizeof(out_dir)) {
-        return lint_run_all_serial();
+                 real_root, (int)getpid()) >= (int)sizeof(sb_base) ||
+        snprintf(sb_root, sizeof(sb_root), "%s/w%d", sb_base, shard) >=
+            (int)sizeof(sb_root)) {
+        printf("[lint-gate] FAIL: shard %d sandbox path too long\n", shard);
+        return 1;
     }
-
-    /* Worker count: half the cores, clamped to leave headroom (this group
-     * runs as an exclusive pre-pass, so the machine is otherwise idle). Only
-     * a few workers are needed to hide every check under the single slowest
-     * one (~30s), but a few extra warm the shared page cache faster. */
-    long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
-    int workers = (ncpu > 0) ? (int)(ncpu / 4) : 4;
-    if (workers < 4) workers = 4;
-    if (workers > 12) workers = 12;
-    const char *workers_env = getenv("ZCL_LINT_GATE_WORKERS");
-    if (workers_env && *workers_env) {
-        int w = atoi(workers_env);
-        if (w >= 1 && w <= 64) workers = w;
-    }
-
-    /* Collect the sandbox-eligible entry indices, then reorder them
-     * longest-job-first so the slowest checks start immediately. */
-    int sb_idx[LINT_GATE_ENTRY_COUNT];
-    int n_sb = 0;
-    for (size_t i = 0; i < LINT_GATE_ENTRY_COUNT; i++)
-        if (!g_lint_gate_entries[i].real_serial)
-            sb_idx[n_sb++] = (int)i;
-    for (int a = 1; a < n_sb; a++) {   /* stable insertion sort, weight DESC */
-        int cur = sb_idx[a];
-        int cw = lint_entry_weight(g_lint_gate_entries[cur].fn);
-        int b = a - 1;
-        while (b >= 0 &&
-               lint_entry_weight(g_lint_gate_entries[sb_idx[b]].fn) < cw) {
-            sb_idx[b + 1] = sb_idx[b];
-            b--;
-        }
-        sb_idx[b + 1] = cur;
-    }
-    if (workers > n_sb) workers = n_sb > 0 ? n_sb : 1;
 
     if (mkdir(sb_base, 0700) != 0 && errno != EEXIST) {
-        fprintf(stderr, "[lint-gate] mkdir sandbox base failed: %s\n",
-                strerror(errno));
-        return lint_run_all_serial();
+        printf("[lint-gate] FAIL: shard %d could not create sandbox base %s "
+               "(%s)\n", shard, sb_base, strerror(errno));
+        return 1;
     }
-    if (mkdir(out_dir, 0700) != 0 && errno != EEXIST) {
+    if (lint_sandbox_build(real_root, sb_root) != 0) {
+        printf("[lint-gate] FAIL: shard %d could not build its sandbox at %s "
+               "— refusing to plant fixtures into the live worktree\n",
+               shard, sb_root);
         (void)test_rm_rf_recursive(sb_base);
-        return lint_run_all_serial();
+        return 1;
     }
 
-    /* Build one sandbox per worker up front (reused across the worker's
-     * queue of checks). Any failure => tear down and fall back to serial. */
-    char (*sb_root)[PATH_MAX] = calloc((size_t)workers, sizeof(*sb_root));
-    if (!sb_root) {
+    /* Enter the sandbox: repo_root_set_override makes repo_path() resolve into
+     * it, and chdir() makes cwd match so the checks that use RELATIVE paths
+     * (long-function keep/baseline files, gate scratch output) land in the
+     * SAME tree the gate scans. */
+    if (chdir(sb_root) != 0) {
+        printf("[lint-gate] FAIL: shard %d could not enter its sandbox %s "
+               "(%s)\n", shard, sb_root, strerror(errno));
         (void)test_rm_rf_recursive(sb_base);
-        return lint_run_all_serial();
+        return 1;
     }
-    int setup_ok = 1;
-    for (int w = 0; w < workers && setup_ok; w++) {
-        if (snprintf(sb_root[w], PATH_MAX, "%s/w%d", sb_base, w) >= PATH_MAX ||
-            lint_sandbox_build(real_root, sb_root[w]) != 0)
-            setup_ok = 0;
-    }
-    if (!setup_ok) {
-        free(sb_root);
-        (void)test_rm_rf_recursive(sb_base);
-        fprintf(stderr,
-                "[lint-gate] sandbox setup failed — running serially\n");
-        return lint_run_all_serial();
-    }
+    repo_root_set_override(sb_root);
+    unlink_lint_fixtures();          /* defensive clean start in this sandbox */
 
-    struct lint_dispenser *disp = mmap(NULL, sizeof(*disp),
-                                       PROT_READ | PROT_WRITE,
-                                       MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-    if (disp == MAP_FAILED) {
-        free(sb_root);
-        (void)test_rm_rf_recursive(sb_base);
-        return lint_run_all_serial();
-    }
-    atomic_store(&disp->next, 0);
+    int failures = lint_run_owned(shard);
 
-    /* Flush the header before forking so children don't re-emit it. */
-    fflush(stdout);
-
-    /* ── Sandbox worker pool: each worker owns sandbox sb_root[w], pulls the
-     * next sandbox-entry index from the shared dispenser, and runs it in its
-     * private tree. Dynamic dispensing balances the ~30s slowest check
-     * against the many sub-second ones. */
-    for (int w = 0; w < workers; w++) {
-        pid_t pid = fork();
-        if (pid < 0) {
-            /* A partial pool is still correct — remaining indices are picked
-             * up by the workers that did start; if none started, the parent
-             * serial pass below covers nothing and rc files are missing =>
-             * counted as failures. Keep going. */
-            continue;
-        }
-        if (pid == 0) {
-            /* Enter the sandbox: repo_root_set_override makes repo_path()
-             * absolute-resolve into the sandbox, and chdir() makes cwd match
-             * so the handful of checks that write/read RELATIVE paths (the
-             * long-function keep/baseline files, the gate scratch out) land in
-             * the SAME tree the gate scans. In the historical serial run cwd
-             * and repo_root were both the real worktree; the sandbox must keep
-             * that invariant. */
-            if (chdir(sb_root[w]) != 0) {
-                fprintf(stderr, "[lint-gate] worker chdir(%s) failed: %s\n",
-                        sb_root[w], strerror(errno));
-                _exit(0); /* leave rc files absent => counted as failures */
-            }
-            repo_root_set_override(sb_root[w]);
-            for (;;) {
-                int k = atomic_fetch_add_explicit(&disp->next, 1,
-                                                  memory_order_relaxed);
-                if (k >= n_sb) break;
-                int gi = sb_idx[k];
-                /* Defensive clean start in this sandbox (no-op if already
-                 * clean); every check also cleans up after itself. */
-                unlink_lint_fixtures();
-                char op[PATH_MAX], rp[PATH_MAX];
-                snprintf(op, sizeof(op), "%s/f%d.out", out_dir, gi);
-                snprintf(rp, sizeof(rp), "%s/f%d.rc", out_dir, gi);
-                lint_run_one_captured(&g_lint_gate_entries[gi], op, rp);
-            }
-            _exit(0);
-        }
-    }
-
-    /* ── Real-worktree serial pass, run CONCURRENTLY with the sandbox pool.
-     * These git/.git-dependent checks operate on the real worktree (and their
-     * own /tmp scratch); the pool workers operate only on their sandboxes, so
-     * the two never touch the same tree. Overlapping them hides the ~30s
-     * hermetic import-copy-prove selftest under the pool's makespan instead of
-     * tacking it on afterward. No repo-root override here (parent stays on the
-     * real worktree); each runs one at a time (some plant into the real tree).
-     * run_gate_script uses targeted waitpid(), so it never reaps a pool
-     * worker; the workers are reaped by the wait() loop below. */
-    for (size_t i = 0; i < LINT_GATE_ENTRY_COUNT; i++) {
-        if (!g_lint_gate_entries[i].real_serial) continue;
-        char op[PATH_MAX], rp[PATH_MAX];
-        snprintf(op, sizeof(op), "%s/f%zu.out", out_dir, i);
-        snprintf(rp, sizeof(rp), "%s/f%zu.rc", out_dir, i);
-        lint_run_one_captured(&g_lint_gate_entries[i], op, rp);
-    }
-
-    for (int w = 0; w < workers; w++) {
-        int st2 = 0;
-        while (wait(&st2) < 0 && errno == EINTR) { /* reap all workers */ }
-    }
-
-    /* ── Collect: replay captured output in original order, sum failures. A
-     * missing rc file means the worker died mid-check => count as a failure
-     * so the group can never green over a crashed check. */
-    int failures = 0;
-    for (size_t i = 0; i < LINT_GATE_ENTRY_COUNT; i++) {
-        char op[PATH_MAX], rp[PATH_MAX];
-        snprintf(op, sizeof(op), "%s/f%zu.out", out_dir, i);
-        snprintf(rp, sizeof(rp), "%s/f%zu.rc", out_dir, i);
-
-        FILE *of = fopen(op, "r");
-        if (of) {
-            char buf[8192];
-            size_t n;
-            while ((n = fread(buf, 1, sizeof(buf), of)) > 0)
-                fwrite(buf, 1, n, stdout);
-            fclose(of);
-        }
-        FILE *rf = fopen(rp, "r");
-        if (rf) {
-            int fc = 0;
-            if (fscanf(rf, "%d", &fc) == 1)
-                failures += fc;
-            else
-                failures += 1;
-            fclose(rf);
-        } else {
-            printf("[lint-gate] FAIL: check #%zu produced no result "
-                   "(worker crashed?)\n", i);
-            failures += 1;
-        }
-    }
-    fflush(stdout);
-
-    (void)munmap(disp, sizeof(*disp));
-    free(sb_root);
+    repo_root_set_override(NULL);
+    if (chdir(real_root) != 0)
+        fprintf(stderr, "[lint-gate] shard %d: chdir back to %s failed: %s\n",
+                shard, real_root, strerror(errno));
     (void)test_rm_rf_recursive(sb_base);
+    return failures;
+}
+
+/* ── Registered entry points ──────────────────────────────────────────────
+ * The shard bodies are macro-generated from ONE list so adding or removing a
+ * shard is a single edit here plus the matching X() row in TEST_LIST
+ * (test_parallel.c). check-test-registration only treats a FILENAME-matching
+ * `int test_<name>(void)` as an entry point, so these generated definitions
+ * are invisible to it while the X() rows still bind name -> symbol. */
+
+#define LINT_SHARD_LIST(X) \
+    X(01, 0) X(02, 1) X(03, 2) X(04, 3) \
+    X(05, 4) X(06, 5) X(07, 6) X(08, 7)
+
+#define LINT_SHARD_ENTRY(tag, idx) \
+    int test_make_lint_gates_shard_##tag(void) { return lint_run_shard(idx); }
+LINT_SHARD_LIST(LINT_SHARD_ENTRY)
+#undef LINT_SHARD_ENTRY
+
+/* The real-worktree read-only lane: git grep / git ls-files / .git/hooks
+ * probes. Mutates no tracked path, so it is pool-eligible. */
+int test_make_lint_gates_realroot(void)
+{
+    char real_root[PATH_MAX];
+    if (lint_resolve_real_root(real_root, sizeof(real_root)) != 0)
+        return 0;
+    printf("\n=== make_lint_gates real-worktree tests ===\n");
+    return lint_run_owned(LINT_OWNER_REALROOT);
+}
+
+/* One group per HEAVY check. heavy_01 is the import-copy-prove driver
+ * selftest (~25s), heavy_02 the fresh-boot-weld one (~46s); both hermetic. */
+int test_make_lint_gates_heavy_01(void)
+{
+    char real_root[PATH_MAX];
+    if (lint_resolve_real_root(real_root, sizeof(real_root)) != 0)
+        return 0;
+    printf("\n=== make_lint_gates heavy 1 tests ===\n");
+    return lint_run_owned(LINT_OWNER_HEAVY_BASE + 0);
+}
+
+int test_make_lint_gates_heavy_02(void)
+{
+    char real_root[PATH_MAX];
+    if (lint_resolve_real_root(real_root, sizeof(real_root)) != 0)
+        return 0;
+    printf("\n=== make_lint_gates heavy 2 tests ===\n");
+    return lint_run_owned(LINT_OWNER_HEAVY_BASE + 1);
+}
+
+/* The exclusive lane — the two checks that genuinely plant into the live
+ * worktree. Keeps the historic group name, so `--only=make_lint_gates` (a
+ * substring match) still selects this plus every shard, and every impact rule
+ * naming `make_lint_gates` keeps resolving. */
+int test_make_lint_gates(void)
+{
+    char real_root[PATH_MAX];
+    if (lint_resolve_real_root(real_root, sizeof(real_root)) != 0)
+        return 0;
+
+    printf("\n=== make_lint_gates tests ===\n");
+
+    /* Reap any sandbox base leaked by a hard-killed prior run. Safe here and
+     * only here: this lane runs alone, before any shard exists. */
+    lint_purge_stale_sandboxes(real_root);
+
+    return lint_run_owned(LINT_OWNER_EXCLUSIVE);
+}
+
+/* ── The coverage proof ───────────────────────────────────────────────────
+ * Sharding a test is exactly how coverage silently disappears, so the
+ * partition is itself a registered test. It executes no gate (milliseconds).
+ * Drop an entry from the table, mis-tag a lane, or widen
+ * lint_gates_group_is_exclusive, and one of these fails. */
+
+static int t_partition_covers_every_check(void)
+{
+    int failures = 0;
+    unsigned char seen[LINT_GATE_ENTRY_COUNT];
+    memset(seen, 0, sizeof(seen));
+
+    int owned_total = 0, bad_owner = 0;
+    for (size_t i = 0; i < LINT_GATE_ENTRY_COUNT; i++) {
+        int owner = lint_owner_of(i);
+        if ((owner >= 0 && owner < LINT_GATE_SHARD_COUNT) ||
+            (owner >= LINT_OWNER_HEAVY_BASE &&
+             owner < LINT_OWNER_HEAVY_BASE + LINT_GATE_HEAVY_COUNT) ||
+            owner == LINT_OWNER_REALROOT || owner == LINT_OWNER_EXCLUSIVE) {
+            seen[i]++;
+            owned_total++;
+        } else {
+            bad_owner++;
+        }
+    }
+
+    int uncovered = 0, doubled = 0;
+    for (size_t i = 0; i < LINT_GATE_ENTRY_COUNT; i++) {
+        if (seen[i] == 0) uncovered++;
+        if (seen[i] > 1) doubled++;
+    }
+
+    TEST("[lint-gate] partition owns every check exactly once") {
+        /* Fail-loud floor: a table that shrank to nothing must not report a
+         * clean partition. Mirrors the >=100 floors the gate scripts use. */
+        ASSERT(LINT_GATE_ENTRY_COUNT >= 100);
+        ASSERT(bad_owner == 0);
+        ASSERT(uncovered == 0);
+        ASSERT(doubled == 0);
+        ASSERT(owned_total == (int)LINT_GATE_ENTRY_COUNT);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_partition_shards_all_carry_work(void)
+{
+    int failures = 0;
+    int shard_counts[LINT_GATE_SHARD_COUNT];
+    for (int s = 0; s < LINT_GATE_SHARD_COUNT; s++) shard_counts[s] = 0;
+    int heavy_counts[LINT_GATE_HEAVY_COUNT];
+    for (int h = 0; h < LINT_GATE_HEAVY_COUNT; h++) heavy_counts[h] = 0;
+    int realroot_count = 0, exclusive_count = 0, heavy_lane_entries = 0;
+
+    for (size_t i = 0; i < LINT_GATE_ENTRY_COUNT; i++) {
+        if (g_lint_gate_entries[i].lane == LINT_LANE_HEAVY) heavy_lane_entries++;
+        int owner = lint_owner_of(i);
+        if (owner >= 0 && owner < LINT_GATE_SHARD_COUNT) shard_counts[owner]++;
+        else if (owner >= LINT_OWNER_HEAVY_BASE &&
+                 owner < LINT_OWNER_HEAVY_BASE + LINT_GATE_HEAVY_COUNT)
+            heavy_counts[owner - LINT_OWNER_HEAVY_BASE]++;
+        else if (owner == LINT_OWNER_REALROOT) realroot_count++;
+        else if (owner == LINT_OWNER_EXCLUSIVE) exclusive_count++;
+    }
+
+    int empty_shards = 0;
+    for (int s = 0; s < LINT_GATE_SHARD_COUNT; s++)
+        if (shard_counts[s] == 0) empty_shards++;
+    int empty_heavy = 0;
+    for (int h = 0; h < LINT_GATE_HEAVY_COUNT; h++)
+        if (heavy_counts[h] != 1) empty_heavy++;
+
+    TEST("[lint-gate] every group carries work; both planters stay exclusive") {
+        ASSERT(empty_shards == 0);
+        /* Every heavy group owns exactly one check, and there is a group for
+         * every HEAVY entry — tag a third one without adding its group and
+         * lint_owner_of() returns NONE, which the coverage test above catches
+         * and this makes legible. */
+        ASSERT(empty_heavy == 0);
+        ASSERT(heavy_lane_entries == LINT_GATE_HEAVY_COUNT);
+        /* Exactly the two checks that write into the live worktree. If a new
+         * check starts planting into the real tree, tag it X_ and bump this. */
+        ASSERT(exclusive_count == 2);
+        ASSERT(realroot_count >= 1);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_partition_only_base_group_is_exclusive(void)
+{
+    int failures = 0;
+    TEST("[lint-gate] only the base group is scheduled exclusively") {
+        ASSERT(lint_gates_group_is_exclusive("test_make_lint_gates"));
+        ASSERT(lint_gates_group_is_exclusive("make_lint_gates"));
+        ASSERT(!lint_gates_group_is_exclusive("test_make_lint_gates_shard_01"));
+        ASSERT(!lint_gates_group_is_exclusive("test_make_lint_gates_shard_08"));
+        ASSERT(!lint_gates_group_is_exclusive("test_make_lint_gates_realroot"));
+        ASSERT(!lint_gates_group_is_exclusive("test_make_lint_gates_heavy_01"));
+        ASSERT(!lint_gates_group_is_exclusive("test_make_lint_gates_heavy_02"));
+        ASSERT(!lint_gates_group_is_exclusive("test_make_lint_gates_partition"));
+        ASSERT(!lint_gates_group_is_exclusive(NULL));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+int test_make_lint_gates_partition(void)
+{
+    printf("\n=== make_lint_gates partition tests ===\n");
+    int failures = 0;
+    failures += t_partition_covers_every_check();
+    failures += t_partition_shards_all_carry_work();
+    failures += t_partition_only_base_group_is_exclusive();
     return failures;
 }
 
 #else  /* !ZCL_TESTING */
 
-int test_make_lint_gates(void)
-{
-    /* No-op when the lint-gate integration test is disabled. */
-    return 0;
-}
+/* No-ops when the lint-gate integration test is disabled. */
+int test_make_lint_gates(void) { return 0; }
+int test_make_lint_gates_realroot(void) { return 0; }
+int test_make_lint_gates_heavy_01(void) { return 0; }
+int test_make_lint_gates_heavy_02(void) { return 0; }
+int test_make_lint_gates_partition(void) { return 0; }
+
+#define LINT_SHARD_STUB(tag) \
+    int test_make_lint_gates_shard_##tag(void) { return 0; }
+LINT_SHARD_STUB(01) LINT_SHARD_STUB(02) LINT_SHARD_STUB(03) LINT_SHARD_STUB(04)
+LINT_SHARD_STUB(05) LINT_SHARD_STUB(06) LINT_SHARD_STUB(07) LINT_SHARD_STUB(08)
+#undef LINT_SHARD_STUB
 
 #endif /* ZCL_TESTING */

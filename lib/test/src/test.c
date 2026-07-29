@@ -9,6 +9,29 @@
 /* Required by process_block.c (normally in main.c) */
 volatile sig_atomic_t g_shutdown_requested = 0;
 
+/* The lint-gate self-tests are split across several parallel groups (see
+ * lib/test/src/test_make_lint_gates.c). test_make_lint_gates() alone is now
+ * just the exclusive lane — two checks — so this serial runner would silently
+ * cover 2 of ~116 if it kept calling it directly. Run the whole family. */
+static int test_make_lint_gates_family(void)
+{
+    int failures = 0;
+    failures += test_make_lint_gates();
+    failures += test_make_lint_gates_realroot();
+    failures += test_make_lint_gates_heavy_01();
+    failures += test_make_lint_gates_heavy_02();
+    failures += test_make_lint_gates_shard_01();
+    failures += test_make_lint_gates_shard_02();
+    failures += test_make_lint_gates_shard_03();
+    failures += test_make_lint_gates_shard_04();
+    failures += test_make_lint_gates_shard_05();
+    failures += test_make_lint_gates_shard_06();
+    failures += test_make_lint_gates_shard_07();
+    failures += test_make_lint_gates_shard_08();
+    failures += test_make_lint_gates_partition();
+    return failures;
+}
+
 int main(int argc, char **argv)
 {
     setbuf(stdout, NULL); /* Unbuffered for test progress visibility */
@@ -326,7 +349,7 @@ int main(int argc, char **argv)
         failures += test_coins_best_derivation();
         { extern int test_boot_coins_anchor_dual_store_recovery(void);
           failures += test_boot_coins_anchor_dual_store_recovery(); }
-        failures += test_make_lint_gates();
+        failures += test_make_lint_gates_family();
         failures += test_wallet_sqlite_enc();
         failures += test_wallet_keystore();
         { extern int test_wallet_persistence_cycle(void);
@@ -508,7 +531,7 @@ int main(int argc, char **argv)
     if (only && strcmp(only, "rpc_safety") == 0) {
         printf("[test] ZCL_TEST_ONLY=rpc_safety — running RPC safety subset\n");
         failures += test_rpc_safety();
-        failures += test_make_lint_gates();
+        failures += test_make_lint_gates_family();
         printf("\n=== RPC safety subset complete: %d failure(s) ===\n",
                failures);
         return failures ? 1 : 0;
@@ -622,7 +645,7 @@ int main(int argc, char **argv)
     }
     if (only && strcmp(only, "make_lint_gates") == 0) {
         printf("[test] ZCL_TEST_ONLY=make_lint_gates — running lint gate subset\n");
-        failures += test_make_lint_gates();
+        failures += test_make_lint_gates_family();
         printf("\n=== make_lint_gates subset complete: %d failure(s) ===\n",
                failures);
         return failures ? 1 : 0;
@@ -1624,7 +1647,7 @@ int main(int argc, char **argv)
     failures += test_bg_hash_verify_store_port();
     failures += test_bg_validation_store_port();
     failures += test_zslp_store_port();
-    failures += test_make_lint_gates();
+    failures += test_make_lint_gates_family();
     failures += test_multisig();
     failures += test_rpc_auth_hardening();
     failures += test_disk_block_io();

@@ -424,7 +424,29 @@ int test_coins_view_atomicity(void);
 int test_coins_anchor_reconcile_all(void);
 int test_coins_best_derivation(void);
 int test_chain_stall_repro(void);
+/* The make_lint_gates family — see lib/test/src/test_make_lint_gates.c for the
+ * lane split. test_make_lint_gates() is the exclusive lane; the shards and the
+ * realroot lane are pool-eligible; the partition group proves every check is
+ * owned by exactly one of them. */
 int test_make_lint_gates(void);
+int test_make_lint_gates_shard_01(void);
+int test_make_lint_gates_shard_02(void);
+int test_make_lint_gates_shard_03(void);
+int test_make_lint_gates_shard_04(void);
+int test_make_lint_gates_shard_05(void);
+int test_make_lint_gates_shard_06(void);
+int test_make_lint_gates_shard_07(void);
+int test_make_lint_gates_shard_08(void);
+int test_make_lint_gates_realroot(void);
+int test_make_lint_gates_heavy_01(void);
+int test_make_lint_gates_heavy_02(void);
+int test_make_lint_gates_partition(void);
+
+/* Scheduler policy owned by test_make_lint_gates.c: true only for the group
+ * name whose checks plant into the live worktree and therefore must run
+ * alone. test_parallel.c's group_requires_exclusive_repo() delegates here. */
+bool lint_gates_group_is_exclusive(const char *group_name);
+
 int test_multisig(void);
 int test_rpc_auth_hardening(void);
 int test_disk_block_io(void);

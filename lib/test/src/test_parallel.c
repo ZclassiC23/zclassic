@@ -416,7 +416,19 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(parity_slo) X(state_auditor) \
     X(recovery_no_worse) X(vault_read) X(vault_dispatch) X(agent_session) \
     X(agent_spend_policy) X(vault_session) \
-    X(epoch) X(zcode_release)
+    X(epoch) X(zcode_release) \
+    /* The make_lint_gates family. The bare make_lint_gates row above is the
+     * exclusive lane (the two checks that plant into the live worktree);
+     * these are the pool-eligible ones. --only is a substring match, so
+     * `--only=make_lint_gates` still selects the whole family. The partition
+     * that assigns every check to exactly one of these lives in
+     * test_make_lint_gates.c and is itself proven by the partition group. */ \
+    X(make_lint_gates_shard_01) X(make_lint_gates_shard_02) \
+    X(make_lint_gates_shard_03) X(make_lint_gates_shard_04) \
+    X(make_lint_gates_shard_05) X(make_lint_gates_shard_06) \
+    X(make_lint_gates_shard_07) X(make_lint_gates_shard_08) \
+    X(make_lint_gates_realroot) X(make_lint_gates_partition) \
+    X(make_lint_gates_heavy_01) X(make_lint_gates_heavy_02)
 
 #define SPEC_LIST(X) \
     X(wallet_dashboard) X(wallet_send) X(wallet_receive) \
@@ -591,28 +603,29 @@ static int count_skip_markers(const char *path)
     return n;
 }
 
-/* test_make_lint_gates plants real *.c fixture files into the live source
- * tree at fixed paths (app/jobs/src/, domain/consensus/src/, ...) and then
- * unlink()s them. Two of those paths sit INSIDE other groups' lint scan
- * surfaces (the E5 fixture under app/jobs, the domain-purity fixture under
- * domain/consensus), so if any other group's gate script greps/finds the
- * tree concurrently it can readdir a fixture and then have open() race the
- * unlink — grep exits 2, the gate treats >=2 as FATAL. The cure is to run
- * this group ALONE (run_group_exclusive, a synchronous pre-pass) before the
- * parallel pool dispatches anything, so no concurrent scanner can ever
- * observe a transient fixture.
+/* Two lint-gate self-tests plant a real file into the LIVE worktree — one
+ * under app/services/src/, one at the repo root — and then unlink() it. Those
+ * paths sit inside other groups' lint scan surfaces, so a concurrent scanner
+ * can readdir a fixture and then have open() race the unlink (grep exits 2,
+ * which the gate treats as FATAL). The cure is to run the group that owns
+ * those two checks ALONE (run_group_exclusive, a synchronous pre-pass) before
+ * the parallel pool dispatches anything.
  *
- * The group's stored name carries the ROW_TEST "test_" prefix
- * ("test_make_lint_gates"), so compare on the SUFFIX after that prefix —
- * a bare strcmp against "make_lint_gates" silently never matched and left
- * the guard dead (the group ran in the 32-worker pool and flaked the
- * suite). Stripping the prefix here keeps the predicate matching whether
- * the caller passes the stored name or the bare group name. */
+ * That group is `make_lint_gates`. Its ~114 sibling checks live in
+ * `make_lint_gates_shard_NN` and `make_lint_gates_realroot`, which never touch
+ * the real tree and MUST stay pool-eligible — the whole point of the split.
+ * The pre-pass ordering is also what lets the shards build their `cp -al`
+ * sandboxes from a quiet tree.
+ *
+ * The policy itself lives in test_make_lint_gates.c next to the entry table
+ * that makes it true, and is asserted in both directions by the
+ * make_lint_gates_partition group. Do not re-implement it here: an earlier
+ * bare strcmp against the un-prefixed name silently never matched and left
+ * the guard dead, and a match too WIDE would drag every shard back into the
+ * serial pre-pass and undo the split just as silently. */
 static bool group_requires_exclusive_repo(const char *name)
 {
-    if (!name) return false;
-    if (strncmp(name, "test_", 5) == 0) name += 5;
-    return strcmp(name, "make_lint_gates") == 0;
+    return lint_gates_group_is_exclusive(name);
 }
 
 /* Params-heavy opt-in gate. These groups load the multi-MB Sapling Groth16
