@@ -650,6 +650,21 @@
                    "condition_active",
                    "app/services/src/canary_sentinel_watch.c",
                    DIAG_TEST_DEFAULT),
+    DIAG_ENTRY("stopwatch_evidence", stopwatch_evidence_dump_state_json,
+               "REPORTER ONLY — the C3 / PROOF B wall-clock stopwatch "
+               "evidence ledgers on disk: per ledger, last_verdict, "
+               "skip_streak and no_pass_streak, the CLASS of the trailing "
+               "skip run (not_configured is benign and never alarms; "
+               "fixture_absent / config_error / harness_misuse are defects), "
+               "its alarm threshold and whether that is crossed. Answers "
+               "'has a scheduled proof been quietly skipping?' — it grades "
+               "nothing, clears nothing, and feeds no score",
+               "diagnostic", "service",
+               "app/services/src/stopwatch_skip_watch.c",
+               "filesystem_snapshot", "bounded_lookup",
+               "ledger name, or empty for every ledger",
+               "c3", "netdisrupt",
+               "lib/test/src/test_stopwatch_skip_watch.c", false),
     DIAG_SERVICE("bg_validation", bg_validation_dump_state_json,
                  "background historical-proof re-verification: state, "
                  "verified/chain height, sigs+proofs verified, "
