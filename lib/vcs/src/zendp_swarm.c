@@ -360,6 +360,92 @@ size_t zendp_global_records(uint64_t now_unix, struct zendp_record_view *out,
     return n;
 }
 
+/* ── revalidation ──────────────────────────────────────────────────── */
+
+enum zendp_result zendp_directory_revalidate(struct zendp_directory *dir,
+                                             struct zendp_revalidation *out)
+{
+    struct zendp_revalidation tally;
+    memset(&tally, 0, sizeof(tally));
+    if (out)
+        *out = tally;
+    if (!dir)
+        LOG_RETURN(ZENDP_ERR_NULL, ZEP_LOG, "revalidate: NULL directory");
+
+    /* Snapshot the held identities under the lock, then RELEASE it before
+     * asking the chain about a single one of them.
+     *
+     * Two reasons, both fatal if ignored. First, zendp_anchor_check takes
+     * g_lock itself to read the port, so holding it here is an immediate
+     * self-deadlock on a non-recursive mutex. Second, and the one that
+     * matters operationally: the lookup behind that port reads node.db and
+     * can park for as long as the fold holds its write batch — 120-330 s at
+     * tip on this chain. Holding g_lock across it would stall
+     * zendp_global_records(), which IS the discovery projection and DOES run
+     * on the shared supervisor tick runner. That is the exact shape that has
+     * had this node SIGABRT'd by its own watchdog. */
+    uint8_t keys[ZENDP_DIR_MAX][32];
+    size_t n = 0;
+    pthread_mutex_lock(&g_lock);
+    for (size_t i = 0; i < ZENDP_DIR_MAX; i++) {
+        if (dir->e[i].used)
+            memcpy(keys[n++], dir->e[i].master_pubkey, 32);
+    }
+    pthread_mutex_unlock(&g_lock);
+
+    enum zendp_result unanswered = ZENDP_OK;
+    for (size_t i = 0; i < n; i++) {
+        struct zendp_anchor a;
+        /* NO LOCK HELD. This is the call that can block. */
+        enum zendp_result r = zendp_anchor_check(keys[i], &a);
+        if (r == ZENDP_ERR_NO_ANCHOR_LOOKUP ||
+            r == ZENDP_ERR_ANCHOR_UNAVAILABLE) {
+            tally.unavailable++;
+            unanswered = r;
+            continue;
+        }
+        tally.checked++;
+
+        pthread_mutex_lock(&g_lock);
+        /* Re-find rather than reuse an index: an accept may have landed
+         * while the lock was down. */
+        struct zendp_entry *e = dir_by_pubkey_locked(dir, keys[i]);
+        if (e) {
+            if (a.state == ZENDP_ANCHOR_ACTIVE) {
+                e->anchor = a;
+            } else {
+                memset(e, 0, sizeof(*e));   /* used = false: no residue */
+                if (dir->count > 0)
+                    dir->count--;
+                tally.dropped++;
+            }
+        }
+        pthread_mutex_unlock(&g_lock);
+    }
+
+    if (tally.dropped > 0)
+        LOG_INFO(ZEP_LOG,
+                 "revalidate: dropped %d endpoint record(s) whose signing key "
+                 "the chain no longer calls active — they stop being offered "
+                 "to peer discovery immediately, without a restart "
+                 "(%d checked, %d unavailable)",
+                 tally.dropped, tally.checked, tally.unavailable);
+    if (out)
+        *out = tally;
+    if (unanswered != ZENDP_OK)
+        LOG_RETURN(unanswered, ZEP_LOG,
+                   "revalidate: %d of %zu held identities could not be "
+                   "resolved against the chain (%s) — those entries were left "
+                   "untouched rather than dropped on a non-answer",
+                   tally.unavailable, n, zendp_result_string(unanswered));
+    return ZENDP_OK;
+}
+
+enum zendp_result zendp_global_revalidate(struct zendp_revalidation *out)
+{
+    return zendp_directory_revalidate(zendp_directory_global(), out);
+}
+
 /* ── publish ───────────────────────────────────────────────────────── */
 
 enum zendp_result zendp_publish_to(struct vcs_package_store *store,

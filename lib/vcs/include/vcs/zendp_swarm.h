@@ -44,6 +44,11 @@
  * ITS OWN signed window is open and its seq is the highest we have
  * seen. An entry whose window has closed simply stops being projected.
  *
+ * THE CHAIN'S VERDICT IS NOT PART OF THAT WINDOW, and that is a
+ * separate question with a separate answer: see
+ * zendp_directory_revalidate below. A key revoked after its record was
+ * accepted does not wait for the record to expire.
+ *
  * PERIOD ADDRESSING. A record is addressable at the period it was
  * published in and the one after (zdesc's period contract, shared
  * unchanged), so a publisher republishes each period. */
@@ -170,8 +175,11 @@ bool zendp_directory_find(const struct zendp_directory *dir,
 /* Copy out every record that is (a) inside its own signed validity
  * window at now_unix and (b) backed by an ACTIVE on-chain anchor.
  * Returns how many were written. Never allocates, never blocks on I/O,
- * never re-asks the chain — the anchor verdict was recorded when the
- * record was accepted. This is the discovery projection. */
+ * never re-asks the chain — it reads the verdict last recorded for the
+ * entry. This is the discovery projection, and it runs on the shared
+ * supervisor tick runner, which is exactly why it may not touch a
+ * database. Keeping that recorded verdict current is
+ * zendp_directory_revalidate's job, on a thread that may block. */
 size_t zendp_directory_records(const struct zendp_directory *dir,
                                uint64_t now_unix,
                                struct zendp_record_view *out, size_t max);
@@ -180,6 +188,51 @@ size_t zendp_directory_records(const struct zendp_directory *dir,
 struct zendp_directory *zendp_directory_global(void);
 size_t zendp_global_records(uint64_t now_unix, struct zendp_record_view *out,
                             size_t max);
+
+/* ── revalidation: the chain is allowed to change its mind ──────────
+ *
+ * zendp_directory_records() never re-asks the chain, and that is not an
+ * oversight — it runs on the shared supervisor tick runner, where a
+ * blocking node.db read has had this node killed by its own watchdog.
+ * The price of that choice is a real hole: a key REVOKED or ROTATED
+ * after its record was accepted kept being projected to peer discovery
+ * until the record's own signed expiry, or until a restart.
+ *
+ * This closes the hole from the other side. A caller on a thread that
+ * MAY block re-asks the chain about every held identity and applies the
+ * answer. An entry the chain no longer calls ACTIVE is DROPPED, not
+ * flagged — the same thing acceptance does with the same record today,
+ * and for the same reason: a lesser state is something a later reader
+ * could mistake for a usable peer hint. An entry that is still ACTIVE
+ * has its recorded heights refreshed and keeps its slot.
+ *
+ * A NON-ANSWER CHANGES NOTHING. An identity whose key could not be
+ * asked about — no lookup registered, node.db unreadable — is left
+ * exactly as it was and counted in `unavailable`. Acceptance fails
+ * CLOSED on a non-answer because it is deciding whether to start
+ * trusting something; revalidation must not, because emptying peer
+ * discovery on a transient read failure is a self-inflicted outage. The
+ * non-answer is returned BY NAME so the caller can decline to claim
+ * progress and try again.
+ *
+ * NEVER CALL THIS FROM A TICK-RUNNER CALLBACK. It performs one chain
+ * lookup per held identity. The directory lock is released across every
+ * one of those lookups, so a concurrent zendp_global_records() on the
+ * tick runner never waits on the database — but the CALLING thread does,
+ * and it must be one that can afford to.
+ *
+ * Returns ZENDP_OK when every held identity got a definitive answer,
+ * else the named non-answer (ZENDP_ERR_NO_ANCHOR_LOOKUP /
+ * ZENDP_ERR_ANCHOR_UNAVAILABLE). `out` may be NULL. */
+struct zendp_revalidation {
+    int checked;      /* identities that got a definitive chain answer */
+    int dropped;      /* of those, entries the chain no longer calls ACTIVE */
+    int unavailable;  /* identities the chain could not be asked about */
+};
+
+enum zendp_result zendp_directory_revalidate(struct zendp_directory *dir,
+                                             struct zendp_revalidation *out);
+enum zendp_result zendp_global_revalidate(struct zendp_revalidation *out);
 
 /* ── publish ───────────────────────────────────────────────────────── */
 

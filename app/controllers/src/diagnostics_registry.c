@@ -109,6 +109,7 @@
 #include "storage/projection_store.h"
 #include "config/boot.h"
 #include "config/boot_blkidx_ladder.h"
+#include "config/boot_endpoint_records.h"
 #include "config/boot_bundle_fetch.h"
 #include "config/boot_flight_recorder.h"
 #include "config/bundle_exporter.h"

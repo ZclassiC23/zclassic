@@ -515,6 +515,23 @@
                     "source, name, owner_address, updated_height}.",
                     "app/models/src/zid_identity.c",
                     "lib/test/src/test_zid_identity.c"),
+    DIAG_SERVICE("endpoint_revalidate",
+                 boot_endpoint_records_dump_state_json,
+                 "signed endpoint records: whether the chain's verdict on "
+                 "each accepted record is still current. "
+                 "identity_status_generation is the counter the block fold "
+                 "bumps on every applied ANCHOR/ROTATE/REVOKE; "
+                 "revalidated_generation is how far the worker has caught "
+                 "up, and revalidation_pending is the two disagreeing. "
+                 "sweeps_applied counts resolved changes and "
+                 "records_invalidated counts records dropped because their "
+                 "signing key is no longer active — the result, as opposed "
+                 "to identities_checked, which is only work done. "
+                 "chain_unavailable_passes counts passes that found held "
+                 "records the chain could not be asked about; those are "
+                 "left in place, never dropped on a non-answer.",
+                 "config/src/boot_endpoint_records.c",
+                 "lib/test/src/test_zendp_revocation.c"),
     DIAG_PROJECTION("onion_directory", onion_directory_dump_state_json,
                     "on-chain node directory folded from confirmed ZDIR "
                     "OP_RETURNs: total_rows plus active/retired row counts. "
