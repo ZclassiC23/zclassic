@@ -370,12 +370,23 @@ static int test_is_local(void)
 }
 
 /* ── net_addr_is_operator_local ───────────────────────────────────
- * operator_local := !is_tor && (is_local || rfc1918). It is the ONLY
- * exemption from the per-source-IP inbound admission cap in
- * accept_connection(), so this test is the boundary of that exemption:
- * every "does not match" line below is an address class that still gets
- * the cap. Widening this predicate widens a sybil-defence hole — a
- * failure here is a security signal, not a style nit. */
+ * operator_local := !is_tor && (IPv4 127.0.0.0/8 || IPv6 ::1). LOOPBACK
+ * ONLY. It is the only address class that gets a RAISED per-source
+ * inbound admission cap in accept_connection(), so this test is the
+ * boundary of that relaxation: every "does not match" line below is an
+ * address class that still gets the ordinary cap of 3. Widening this
+ * predicate widens a sybil-defence hole — a failure here is a security
+ * signal, not a style nit.
+ *
+ * The RFC1918 lines are the F2 regression. RFC1918 was briefly inside
+ * this predicate; it is not, and must not be. On any hosted machine with
+ * provider private networking the neighbouring tenants are RFC1918
+ * sources, so including 10/8, 172.16/12 and 192.168/16 hands a whole
+ * shared segment a relaxed cap. The problem this predicate exists for is
+ * several nodes on ONE host, and every one of those arrives on 127.0.0.1.
+ *
+ * 0.0.0.0/8 is excluded too: net_addr_is_local() answers true for it, but
+ * it is a spoofable source address, not a same-host peer. */
 
 static int test_is_operator_local(void)
 {
@@ -386,20 +397,8 @@ static int test_is_operator_local(void)
     NC_CHECK("operator_local: 127.0.0.1 matches",
              net_addr_is_operator_local(&a));
 
-    addr_ipv4(&a, 10, 4, 5, 6);
-    NC_CHECK("operator_local: 10/8 matches",
-             net_addr_is_operator_local(&a));
-
-    addr_ipv4(&a, 192, 168, 1, 7);
-    NC_CHECK("operator_local: 192.168/16 matches",
-             net_addr_is_operator_local(&a));
-
-    addr_ipv4(&a, 172, 16, 0, 1);
-    NC_CHECK("operator_local: 172.16/12 low edge matches",
-             net_addr_is_operator_local(&a));
-
-    addr_ipv4(&a, 172, 31, 255, 254);
-    NC_CHECK("operator_local: 172.31 high edge matches",
+    addr_ipv4(&a, 127, 3, 2, 1);
+    NC_CHECK("operator_local: 127/8 elsewhere matches",
              net_addr_is_operator_local(&a));
 
     {
@@ -409,7 +408,27 @@ static int test_is_operator_local(void)
                  net_addr_is_operator_local(&a));
     }
 
-    /* Everything below stays SUBJECT to the per-IP cap. */
+    /* Everything below stays SUBJECT to the ordinary per-IP cap. */
+    addr_ipv4(&a, 10, 4, 5, 6);
+    NC_CHECK("operator_local: 10/8 does NOT match (F2)",
+             !net_addr_is_operator_local(&a));
+
+    addr_ipv4(&a, 192, 168, 1, 7);
+    NC_CHECK("operator_local: 192.168/16 does NOT match (F2)",
+             !net_addr_is_operator_local(&a));
+
+    addr_ipv4(&a, 172, 16, 0, 1);
+    NC_CHECK("operator_local: 172.16/12 low edge does NOT match (F2)",
+             !net_addr_is_operator_local(&a));
+
+    addr_ipv4(&a, 172, 31, 255, 254);
+    NC_CHECK("operator_local: 172.31 high edge does NOT match (F2)",
+             !net_addr_is_operator_local(&a));
+
+    addr_ipv4(&a, 0, 1, 2, 3);
+    NC_CHECK("operator_local: 0.0.0.0/8 does NOT match (F2)",
+             !net_addr_is_operator_local(&a));
+
     addr_ipv4(&a, 8, 8, 8, 8);
     NC_CHECK("operator_local: public IPv4 does not match",
              !net_addr_is_operator_local(&a));

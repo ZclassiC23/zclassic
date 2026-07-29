@@ -133,18 +133,26 @@ bool net_addr_is_rfc4843(const struct net_addr *a);
 bool net_addr_is_local(const struct net_addr *a);
 bool net_addr_is_routable(const struct net_addr *a);
 
-/* True only for a peer address that cannot have come from the public
- * internet: IPv4/IPv6 loopback, or RFC1918 private space. Never true for a
- * Tor address, and NULL reads as false (deny).
+/* True ONLY for a same-host peer: IPv4 127.0.0.0/8 or IPv6 ::1. Never true
+ * for a Tor address, never true for RFC1918 or any other private range, and
+ * NULL reads as false (deny).
  *
  * Sole use is the per-source-IP INBOUND ADMISSION cap in
- * accept_connection(): that cap exists so one *internet* source cannot
- * consume every inbound slot, and neither of these classes is an internet
- * source — an attacker who can open a loopback socket already owns the
- * host, and an RFC1918 source is on the operator's own LAN. It is NOT a
- * trust decision and grants nothing else: the global inbound cap
- * (evict-not-reject) and the reserved outbound slots still apply to these
- * peers exactly as they do to every other peer. */
+ * accept_connection(). Several nodes on one machine all arrive as
+ * 127.0.0.1 and share one 16-byte key, so the default cap of 3 refuses the
+ * fourth of them by construction — which is exactly the local multi-node
+ * topology a cold-start sync proof is made of. Loopback answers that
+ * completely; RFC1918 does not appear here on purpose, because on a hosted
+ * machine with provider private networking the neighbouring tenants are
+ * RFC1918 sources.
+ *
+ * This is NOT a trust decision and it is NOT an exemption from any bound.
+ * Loopback gets a RAISED per-source cap and, on top of that, an AGGREGATE
+ * ceiling on how many inbound slots all loopback sources together may hold
+ * (peer_scoring_max_inbound_loopback()) — 127.0.0.0/8 is 16M distinct
+ * source keys, so a per-IP number alone would bound nothing. The global
+ * inbound cap and the reserved outbound slots still apply as they do to
+ * every other peer. */
 bool net_addr_is_operator_local(const struct net_addr *a);
 
 #define NET_ADDR_GROUP_MAX 5

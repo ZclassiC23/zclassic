@@ -497,6 +497,53 @@ static int test_inbound_cap_config(void)
     return failures;
 }
 
+/* F2 REGRESSION — the loopback relaxation is a RAISED cap, never an
+ * unlimited one, and it can never take more than a quarter of inbound
+ * capacity. Stock settings are 125 total connections minus 8 reserved
+ * outbound = 117 inbound slots; the numbers below are asserted as exact
+ * slot counts out of that 117, because "the code path exists" is not the
+ * property that matters here — the numeric ceiling is. */
+static int test_loopback_inbound_ceiling(void)
+{
+    int failures = 0;
+    TEST("peer_scoring: loopback inbound ceiling is bounded at 24 of 117") {
+        const int max_inbound = 117;   /* 125 - 8 reserved outbound */
+
+        unsetenv("ZCL_NET_LOOPBACK_INBOUND_MAX");
+        ASSERT_EQ(peer_scoring_max_inbound_loopback(max_inbound), 24);
+
+        /* At least three quarters of inbound capacity is reserved for
+         * non-loopback peers no matter what the operator asks for. */
+        ASSERT(max_inbound -
+                    peer_scoring_max_inbound_loopback(max_inbound) >= 93);
+
+        /* An operator can raise it, but only up to the hard floor:
+         * 117 - (3*117)/4 = 117 - 87 = 30. */
+        setenv("ZCL_NET_LOOPBACK_INBOUND_MAX", "4096", 1);
+        ASSERT_EQ(peer_scoring_max_inbound_loopback(max_inbound), 30);
+        ASSERT(peer_scoring_max_inbound_loopback(max_inbound)
+                    < max_inbound);
+
+        setenv("ZCL_NET_LOOPBACK_INBOUND_MAX", "8", 1);
+        ASSERT_EQ(peer_scoring_max_inbound_loopback(max_inbound), 8);
+
+        /* 0 restores the pre-exemption behaviour: no raised cap at all. */
+        setenv("ZCL_NET_LOOPBACK_INBOUND_MAX", "0", 1);
+        ASSERT_EQ(peer_scoring_max_inbound_loopback(max_inbound), 0);
+
+        setenv("ZCL_NET_LOOPBACK_INBOUND_MAX", "garbage", 1);
+        ASSERT_EQ(peer_scoring_max_inbound_loopback(max_inbound), 24);
+
+        unsetenv("ZCL_NET_LOOPBACK_INBOUND_MAX");
+        ASSERT_EQ(peer_scoring_max_inbound_loopback(0), 0);
+        ASSERT_EQ(peer_scoring_max_inbound_loopback(-1), 0);
+        /* Tiny capacity: the floor dominates, loopback gets almost none. */
+        ASSERT_EQ(peer_scoring_max_inbound_loopback(4), 1);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_last_peer_ban_secs_config(void)
 {
     int failures = 0;
@@ -677,6 +724,7 @@ int test_peer_scoring(void)
     failures += test_good_interaction();
     failures += test_decay_disabled();
     failures += test_inbound_cap_config();
+    failures += test_loopback_inbound_ceiling();
     failures += test_last_peer_ban_secs_config();
     failures += test_last_peer_ban_is_bounded();
     failures += test_second_peer_keeps_full_ban();

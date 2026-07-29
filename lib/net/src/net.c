@@ -1741,23 +1741,33 @@ bool accept_connection(struct net_manager *nm, const struct listen_socket *ls)
      * can only observe as "remote-close, state=connecting", so the refusal
      * is logged loudly HERE (this side is the only side that knows why).
      *
-     * Loopback and RFC1918 sources are EXEMPT. The threat this cap answers
-     * is an internet source filling every inbound slot; neither class can
-     * be one (loopback means the attacker already owns the host, RFC1918
-     * means the operator's own LAN). Without the exemption several nodes
-     * on one host — every peer 127.0.0.1, one shared 16-byte key — hit the
-     * cap by construction at the fourth socket, which is exactly the
-     * local multi-node topology a cold-start sync proof is made of. The
-     * exemption removes no absolute bound: the global inbound cap below
-     * still applies to these peers (evict-not-reject), and the reserved
-     * outbound slots are untouched, so an inbound flood from any source
-     * still cannot eclipse this node's view of the chain. */
-    bool ip_cap_exempt = is_whitelisted ||
-                         net_addr_is_operator_local(&addr.svc.addr);
+     * LOOPBACK sources get a RAISED cap, never an unlimited one. Several
+     * nodes on one host all arrive as 127.0.0.1 sharing one 16-byte key,
+     * so the default cap of 3 refuses the fourth by construction — exactly
+     * the local multi-node topology a cold-start sync proof is made of.
+     * But "loopback" is not "trusted": opening a loopback socket needs no
+     * privilege at all, so any unprivileged local process or any container
+     * sharing this network namespace can do it, and 127.0.0.0/8 gives it
+     * 16.7M distinct source keys to spread across. So the real bound is
+     * the AGGREGATE one below — peer_scoring_max_inbound_loopback() slots
+     * across ALL loopback sources together, 24 of 117 on stock settings,
+     * with at least three quarters of inbound capacity permanently
+     * reserved for non-loopback peers so a local flood cannot win the
+     * post-restart race for every slot. Set ZCL_NET_LOOPBACK_INBOUND_MAX=0
+     * to restore the pre-exemption behaviour exactly.
+     *
+     * RFC1918 is deliberately NOT exempt: on a hosted machine with
+     * provider private networking the neighbouring tenants are RFC1918
+     * sources, and loopback already solves the same-host problem. */
     int max_per_ip = peer_scoring_max_inbound_per_ip();
     int inbound_count = 0;
     int same_ip_count = 0;
+    int loopback_inbound_count = 0;
     int max_inbound = nm->max_connections - MAX_OUTBOUND_CONNECTIONS;
+    bool src_loopback = net_addr_is_operator_local(&addr.svc.addr);
+    int max_loopback = peer_scoring_max_inbound_loopback(max_inbound);
+    bool ip_cap_exempt = is_whitelisted ||
+                         (src_loopback && max_loopback > 0);
     /* Evict-not-reject: when the inbound cap is hit, free a slot by
      * disconnecting the least-valuable existing inbound peer instead of
      * refusing the new one (peer_eviction_select() never picks outbound/
@@ -1774,6 +1784,9 @@ bool accept_connection(struct net_manager *nm, const struct listen_socket *ls)
         if (nm->nodes[i]->inbound &&
             memcmp(nm->nodes[i]->addr.svc.addr.ip, addr.svc.addr.ip, 16) == 0)
             same_ip_count++;
+        if (nm->nodes[i]->inbound &&
+            net_addr_is_operator_local(&nm->nodes[i]->addr.svc.addr))
+            loopback_inbound_count++;
     }
     if (inbound_count >= max_inbound) {
         struct peer_eviction_candidate cand[PEER_EVICTION_MAX_CANDIDATES];
@@ -1810,6 +1823,23 @@ bool accept_connection(struct net_manager *nm, const struct listen_socket *ls)
                  "legitimately runs several nodes); the dialling node sees "
                  "only a zero-byte remote-close",
                  same_ip_count, max_per_ip);
+    }
+
+    /* Aggregate loopback ceiling. This, not the per-IP number, is what
+     * bounds a local source: 127.0.0.0/8 is 16.7M distinct keys, so the
+     * per-IP cap alone would bound nothing. Whitelisted listeners are
+     * still exempt (an explicit operator decision), everything else on
+     * loopback shares this budget. */
+    if (!is_whitelisted && src_loopback && max_loopback > 0 &&
+        loopback_inbound_count >= max_loopback) {
+        close_socket(&sock);
+        LOG_FAIL("net",
+                 "loopback inbound ceiling reached: count=%d cap=%d of "
+                 "max_inbound=%d (raise ZCL_NET_LOOPBACK_INBOUND_MAX, or "
+                 "whitelist the listener, if this host legitimately runs "
+                 "more local nodes); the dialling node sees only a "
+                 "zero-byte remote-close",
+                 loopback_inbound_count, max_loopback, max_inbound);
     }
 
     if (inbound_count >= max_inbound) {
