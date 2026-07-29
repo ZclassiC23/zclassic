@@ -6275,6 +6275,34 @@ lint: tools/core_seal tools/check_observability_pairing
 	@echo "══ LINT: all checks passed ══"
 endif
 
+# ── Result-cached lint (inner loop only) ─────────────────────────────────
+# `make lint` above stays COLD, always, so the canonical gate and the
+# pre-push path never accept a cached verdict. These two are the opt-ins:
+#
+#   make lint-cached      skip any gate whose entire scannable input is
+#                         byte-identical to the last time it passed. Re-running
+#                         on an unchanged tree is the case this exists for; a
+#                         run where you edited anything gets no benefit,
+#                         because the key covers the whole tree.
+#   make lint-cold-audit  run every gate FRESH and assert that every gate
+#                         carrying a stored PASS at its current key also
+#                         passed the fresh run. This is what makes the cache
+#                         trustworthy; run it after any change to the gate set
+#                         or to tools/lint/lint_cache.sh. Warm the cache first
+#                         (make lint-cached) or it has nothing to verify.
+#
+# 15 of the 116 gates are NEVER cached — they build binaries, run compilers,
+# read build output, git config, /proc, or untracked worktree state. Each
+# carries its reason in tools/lint/lint_cache.sh, and each always runs.
+.PHONY: lint-cached lint-cold-audit
+lint-cached: tools/core_seal tools/check_observability_pairing
+	@tools/lint/run_lint.sh --cache --jobs "$(ZCL_LINT_JOBS)" --bin-dir "$(BIN_DIR)" $(LINT_GATES)
+	@echo "══ LINT: all checks passed (cached where inputs were unchanged) ══"
+
+lint-cold-audit: tools/core_seal tools/check_observability_pairing
+	@tools/lint/run_lint.sh --cold-audit --jobs "$(ZCL_LINT_JOBS)" --bin-dir "$(BIN_DIR)" $(LINT_GATES)
+	@echo "══ LINT: all checks passed, every cache hit verified against a fresh run ══"
+
 # CI runs the PER-PROCESS isolated test runner (test_parallel), not the
 # monolith (test_zcl). Both build from the same TEST_SRCS and cover the same
 # groups; test_parallel forks each group into its own process so a global
