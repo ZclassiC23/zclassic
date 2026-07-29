@@ -26,6 +26,15 @@
  *      UNKNOWN_PACKAGE and BAD_ROOT rejections.
  *   9. Index rebuild: a fresh build from the persisted CAS bytes equals the
  *      pre-"crash" build entry for entry (the index holds no truth).
+ *  10. THE CLI PATH (t_registry_path): the same publication driven through
+ *      the catalog the way `zclassic23 zcode package publish ...` drives it
+ *      — zcl_command_registry_input_validate() first, then the handler the
+ *      leaf BINDS. Cases 1-9 call the handler symbol directly, which skips
+ *      input_validate entirely; that blind spot shipped a plan leaf that
+ *      REQUIRED recipe_hex and never declared it, so passing the key was
+ *      INVALID_INPUT and omitting it was RECIPE_MISSING and the command was
+ *      uncallable in every build. Direct-handler coverage cannot see that,
+ *      by construction: this case exists to cross the layer that rejected it.
  *
  * Handlers run in-process on ./test-tmp datadirs; CHAIN_MAIN is pinned so
  * the chain-id and reward rules are deterministic. */
@@ -35,6 +44,7 @@
 #include "command/native_command.h"
 
 #include "chain/chainparams.h"
+#include "config/command_catalog.h"
 #include "core/uint256.h"
 #include "json/json.h"
 #include "kernel/command_registry.h"
@@ -1394,6 +1404,180 @@ static int t_index_rebuild(void)
     return failures;
 }
 
+/* ── 10: the CLI path — input_validate, then the BOUND handler ────────
+ *
+ * Every other case in this file calls the handler symbol directly, which is
+ * exactly the hole that let `zcode package publish plan` ship uncallable:
+ * the kernel rejects any input key the leaf does not declare
+ * (zcl_command_registry_input_validate, lib/kernel/src/command_registry.c),
+ * and a direct call never reaches that check. This case builds the operator's
+ * real input object, runs it through input_validate FIRST, and only then
+ * dispatches through spec->handler — the same two steps the CLI takes. It
+ * asserts three things a direct call cannot:
+ *   - the exact input the handler REQUIRES is accepted by the leaf;
+ *   - the handler the leaf BINDS is the one the direct tests exercise;
+ *   - an undeclared key is still refused (the check is real, not bypassed).
+ */
+static const struct zcl_command_spec *zp_leaf(const char *path)
+{
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    if (!reg)
+        return NULL;
+    for (size_t i = 0; i < reg->count; i++)
+        if (strcmp(reg->commands[i].path, path) == 0)
+            return &reg->commands[i];
+    return NULL;
+}
+
+/* Run one leaf the way the CLI does: validate the input against the leaf's
+ * declared contract, then call the handler the leaf binds. `why` carries the
+ * validator's refusal text so a failure names the rejected key. */
+static bool zp_registry_run(const struct zcl_command_spec *spec,
+                            struct zp_cmd *c, char *why, size_t why_size)
+{
+    if (!spec || !spec->handler)
+        return false;
+    if (!zcl_command_registry_input_validate(spec, &c->input, why, why_size))
+        return false;
+    c->request.spec = spec;
+    c->request.invoked_name = spec->path;
+    spec->handler(&c->request, &c->reply);
+    return true;
+}
+
+static int t_registry_path(void)
+{
+    int failures = 0;
+    chain_params_select(CHAIN_MAIN);
+    char dd[256];
+    test_make_tmpdir(dd, sizeof(dd), "zcode_publish", "registry");
+    char pkgdir[512];
+    snprintf(pkgdir, sizeof(pkgdir), "%s/pkg", dd);
+
+    struct zp_pkg p;
+    ZP_CHECK("registry: package fixture builds", zp_make_package(&p, pkgdir));
+    ZP_CHECK("registry: recipe fixture builds", zp_use_recipe(&p.manifest));
+    struct vcs_package_release r;
+    ZP_CHECK("registry: release signs",
+             zp_release(&r, 0x5a, 1u, "rhett/ring-cli", "MIT", p.root));
+    char *release_hex = zp_release_hex(&r, NULL, NULL);
+    char *manifest_hex = zp_hex(p.wire, p.wire_len);
+    ZP_CHECK("registry: inputs encode",
+             release_hex && manifest_hex && g_zp_recipe_hex);
+
+    const struct zcl_command_spec *plan = zp_leaf("zcode.package.publish.plan");
+    const struct zcl_command_spec *commit =
+        zp_leaf("zcode.package.publish.commit");
+    ZP_CHECK("registry: both publish leaves are registered", plan && commit);
+    ZP_CHECK("registry: both publish leaves bind a handler",
+             plan && commit && plan->handler && commit->handler);
+    /* The CLI path and the direct-handler path must be the same code, or
+     * cases 1-9 prove nothing about what an operator can actually run. */
+    ZP_CHECK("registry: plan binds the handler the direct tests call",
+             plan &&
+             plan->handler == zcl_native_handle_zcode_package_publish_plan);
+    ZP_CHECK("registry: commit binds the handler the direct tests call",
+             commit &&
+             commit->handler ==
+                 zcl_native_handle_zcode_package_publish_commit);
+
+    char why[192] = {0};
+    struct zp_cmd c;
+
+    /* plan — the operator's exact input, through input_validate. */
+    zp_cmd_init(&c);
+    (void)json_push_kv_str(&c.input, "datadir", dd);
+    (void)json_push_kv_str(&c.input, "release_hex", release_hex);
+    (void)json_push_kv_str(&c.input, "manifest_hex", manifest_hex);
+    (void)json_push_kv_str(&c.input, "recipe_hex", g_zp_recipe_hex);
+    (void)json_push_kv_str(&c.input, "dir", pkgdir);
+    bool plan_ran = zp_registry_run(plan, &c, why, sizeof(why));
+    ZP_CHECK("registry: plan accepts the input the handler requires",
+             plan_ran);
+    if (!plan_ran)
+        printf("    validator refused: %s\n", why);
+    ZP_CHECK("registry: plan validates the candidate through the CLI path",
+             plan_ran && c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
+             json_get_bool(json_get(&c.reply.data, "valid")));
+    zp_cmd_free(&c);
+
+    /* recipe_hex is REQUIRED by the handler: dropping it must reach the
+     * handler and be named there, not be swallowed by the validator. */
+    zp_cmd_init(&c);
+    (void)json_push_kv_str(&c.input, "datadir", dd);
+    (void)json_push_kv_str(&c.input, "release_hex", release_hex);
+    (void)json_push_kv_str(&c.input, "manifest_hex", manifest_hex);
+    (void)json_push_kv_str(&c.input, "dir", pkgdir);
+    bool norecipe_ran = zp_registry_run(plan, &c, why, sizeof(why));
+    ZP_CHECK("registry: plan without recipe_hex still reaches the handler",
+             norecipe_ran);
+    ZP_CHECK("registry: plan without recipe_hex names recipe-missing",
+             norecipe_ran &&
+             !json_get_bool(json_get(&c.reply.data, "valid")) &&
+             zp_failure_rule(&c.reply, 0) &&
+             strcmp(zp_failure_rule(&c.reply, 0), "recipe-missing") == 0);
+    zp_cmd_free(&c);
+
+    /* The validator is real, not bypassed: an undeclared key is refused. */
+    zp_cmd_init(&c);
+    (void)json_push_kv_str(&c.input, "datadir", dd);
+    (void)json_push_kv_str(&c.input, "release_hex", release_hex);
+    (void)json_push_kv_str(&c.input, "manifest_hex", manifest_hex);
+    (void)json_push_kv_str(&c.input, "recipe_hex", g_zp_recipe_hex);
+    (void)json_push_kv_str(&c.input, "not_a_publish_key", "x");
+    why[0] = 0;
+    ZP_CHECK("registry: an undeclared key is refused by input_validate",
+             plan && !zcl_command_registry_input_validate(plan, &c.input, why,
+                                                          sizeof(why)) &&
+             strstr(why, "not_a_publish_key") != NULL);
+    zp_cmd_free(&c);
+
+    /* `day` is a commit-only window pin: the plan handler never reads it, so
+     * the plan leaf must not advertise it (and the commit leaf must). */
+    zp_cmd_init(&c);
+    (void)json_push_kv_str(&c.input, "datadir", dd);
+    (void)json_push_kv_str(&c.input, "release_hex", release_hex);
+    (void)json_push_kv_str(&c.input, "manifest_hex", manifest_hex);
+    (void)json_push_kv_str(&c.input, "recipe_hex", g_zp_recipe_hex);
+    (void)json_push_kv_int(&c.input, "day", 20100);
+    why[0] = 0;
+    ZP_CHECK("registry: plan refuses day (it reads none)",
+             plan && !zcl_command_registry_input_validate(plan, &c.input, why,
+                                                          sizeof(why)));
+    ZP_CHECK("registry: commit accepts day (it reads it)",
+             commit && zcl_command_registry_input_validate(commit, &c.input,
+                                                           why, sizeof(why)));
+    zp_cmd_free(&c);
+
+    /* commit — the full operator input, through input_validate, persisting
+     * into this case's own throwaway datadir. */
+    zp_cmd_init(&c);
+    (void)json_push_kv_str(&c.input, "datadir", dd);
+    (void)json_push_kv_str(&c.input, "release_hex", release_hex);
+    (void)json_push_kv_str(&c.input, "manifest_hex", manifest_hex);
+    (void)json_push_kv_str(&c.input, "recipe_hex", g_zp_recipe_hex);
+    (void)json_push_kv_str(&c.input, "dir", pkgdir);
+    (void)json_push_kv_int(&c.input, "day", 20100);
+    why[0] = 0;
+    bool commit_ran = zp_registry_run(commit, &c, why, sizeof(why));
+    ZP_CHECK("registry: commit accepts the input the handler requires",
+             commit_ran);
+    if (!commit_ran)
+        printf("    validator refused: %s\n", why);
+    ZP_CHECK("registry: commit persists through the CLI path",
+             commit_ran && c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
+             json_get_str(json_get(&c.reply.data, "result")) &&
+             strcmp(json_get_str(json_get(&c.reply.data, "result")),
+                    "published") == 0);
+    zp_cmd_free(&c);
+
+    free(release_hex);
+    free(manifest_hex);
+    zp_pkg_free(&p);
+    test_rm_rf_recursive(dd);
+    return failures;
+}
+
 int test_zcode_publish(void)
 {
     printf("\n=== zcode_publish: publication + local search ===\n");
@@ -1407,6 +1591,7 @@ int test_zcode_publish(void)
     failures += t_search();
     failures += t_show();
     failures += t_index_rebuild();
+    failures += t_registry_path();
     printf("=== zcode_publish complete: %d failure(s) ===\n", failures);
     return failures;
 }
