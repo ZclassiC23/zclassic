@@ -238,6 +238,51 @@ int db_utxo_list_for_address(struct node_db *ndb,
         out[count].is_coinbase = AR_COL_INT(s, 5) != 0);
 }
 
+/* Two probes, cheapest first. Contract (and the "false means not found
+ * here" warning) is on the declaration in models/utxo.h. A missing or
+ * unprepared table makes AR_QUERY_INT64_BOUND yield 0, i.e. "no history" —
+ * the safe direction: the gap scan's floor still derives the standard
+ * lookahead, it just cannot extend past it. */
+static int64_t utxo_addr_probe(struct node_db *ndb, const char *sql,
+                               const uint8_t address_hash[20])
+{
+    sqlite3_stmt *s = NULL;
+    AR_QUERY_INT64_BOUND(ndb, s, sql,
+        AR_BIND_BLOB(s, 1, address_hash, 20));
+}
+
+bool db_address_has_chain_history(struct node_db *ndb,
+                                  const uint8_t address_hash[20])
+{
+    if (!ndb || !ndb->open || !address_hash)
+        return false;
+    if (utxo_addr_probe(ndb,
+            "SELECT 1 FROM utxos WHERE address_hash=? LIMIT 1",
+            address_hash) != 0)
+        return true;
+    return utxo_addr_probe(ndb,
+            "SELECT 1 FROM tx_outputs WHERE address_hash=? LIMIT 1",
+            address_hash) != 0;
+}
+
+static int64_t utxo_any_row(struct node_db *ndb, const char *sql)
+{
+    sqlite3_stmt *s = NULL;
+    AR_QUERY_INT64_BOUND(ndb, s, sql, (void)0);
+}
+
+bool db_address_index_populated(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open)
+        return false;
+    if (utxo_any_row(ndb,
+            "SELECT 1 FROM utxos WHERE address_hash IS NOT NULL LIMIT 1") != 0)
+        return true;
+    return utxo_any_row(ndb,
+            "SELECT 1 FROM tx_outputs WHERE address_hash IS NOT NULL LIMIT 1")
+           != 0;
+}
+
 int64_t db_utxo_count(struct node_db *ndb)
 {
     if (!ndb->open) return 0;

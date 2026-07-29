@@ -67,7 +67,65 @@ enum domain_wallet_mnemonic_err {
     DOMAIN_WALLET_MNEMONIC_ERR_CHECKSUM       = 1310,
     DOMAIN_WALLET_MNEMONIC_ERR_PHRASE_LEN     = 1311,
     DOMAIN_WALLET_MNEMONIC_ERR_BAD_RANGE      = 1312,
+    DOMAIN_WALLET_MNEMONIC_ERR_NON_ASCII      = 1313,
 };
+
+/* ── Canonical form ───────────────────────────────────────────────── */
+
+/* Normalise a mnemonic into the ONE form every derivation in this tree
+ * runs on: words separated by exactly one ASCII space, no leading or
+ * trailing whitespace.
+ *
+ * Why this exists. BIP39 derives the seed by running PBKDF2 over the
+ * phrase BYTES. So "  abandon  abandon" and "abandon abandon" are
+ * different inputs and derive different seeds — and because the word
+ * tokeniser skips runs of spaces, the sloppy one still passes checksum
+ * validation. A user pasting their words out of a text file, a chat
+ * message or a photo transcription therefore got a valid-looking, empty,
+ * WRONG wallet and was told it worked. Collapsing the whitespace first,
+ * in one place both validation and derivation go through, is what closes
+ * that.
+ *
+ * What is normalised: leading/trailing ASCII whitespace is dropped and
+ * every internal run of ASCII whitespace (space, tab, newline, carriage
+ * return, vertical tab, form feed) collapses to a single space.
+ *
+ * What is NOT normalised, deliberately:
+ *
+ *   - UNICODE. BIP39 specifies NFKD over UTF-8, which needs the Unicode
+ *     decomposition tables; this tree ships no Unicode library and takes
+ *     no external dependency to get one, so NFKD is NOT implemented. It
+ *     is also not needed for what this node accepts: the BIP39 English
+ *     wordlist is pure lowercase ASCII, and NFKD is the identity on
+ *     ASCII. Rather than half-implement it, any phrase carrying a byte
+ *     ≥ 0x80 is REFUSED with ERR_NON_ASCII — a loud "this node cannot
+ *     normalise that phrase" instead of a silent derivation from
+ *     un-normalised bytes, which is the failure this whole function
+ *     exists to prevent. A non-English wordlist would need real NFKD
+ *     before it could be accepted.
+ *
+ *   - CASE. The seed is defined over the literal phrase, so folding case
+ *     here would silently deviate from BIP39. It costs nothing to leave
+ *     alone: every phrase this node emits is lowercase, and a
+ *     capitalised word fails the wordlist lookup loudly (ERR_UNKNOWN_WORD)
+ *     rather than deriving a wrong seed.
+ *
+ * `out` is NUL-terminated on success and *written_out (optional) carries
+ * the length excluding the NUL. An all-whitespace or empty phrase
+ * normalises to the empty string and is left for the word-count check to
+ * refuse.
+ *
+ * Errors:
+ *   ERR_NULL_PHRASE     phrase == NULL
+ *   ERR_NULL_BUF        out == NULL or out_size == 0
+ *   ERR_BUF_TOO_SMALL   the normalised phrase does not fit in out_size
+ *   ERR_NON_ASCII       a byte ≥ 0x80 (see above)
+ *
+ * Pure. */
+struct zcl_result domain_wallet_mnemonic_normalize(const char *phrase,
+                                                   char *out,
+                                                   size_t out_size,
+                                                   size_t *written_out);
 
 /* ── Wordlist (BIP39 English) ─────────────────────────────────────── */
 
@@ -149,8 +207,18 @@ struct zcl_result domain_wallet_mnemonic_validate(const char *phrase);
 
 /* Derive a 512-bit BIP39 seed from a mnemonic phrase and optional
  * passphrase. Uses PBKDF2-HMAC-SHA512, 2048 rounds, salt =
- * "mnemonic" || passphrase (UTF-8 bytes as-given, no NFKD normalization
- * here — callers that need NFKD normalization should do it upstream).
+ * "mnemonic" || passphrase.
+ *
+ * The PHRASE is run through domain_wallet_mnemonic_normalize() first, so
+ * a phrase with a leading space, a trailing newline, doubled spaces or
+ * tab separators derives the SAME seed as the canonical spelling instead
+ * of a different, valid-looking, empty wallet. Read that function's
+ * contract for exactly what is and is not normalised — in particular,
+ * full NFKD is not implemented and a non-ASCII phrase is refused.
+ *
+ * The PASSPHRASE is used as-given: it is an arbitrary secret string, not
+ * a list of words, and collapsing whitespace in it would change a
+ * deliberate secret.
  *
  *   phrase: NUL-terminated mnemonic phrase.
  *   passphrase: NUL-terminated; NULL is treated as "".
@@ -161,7 +229,9 @@ struct zcl_result domain_wallet_mnemonic_validate(const char *phrase);
  *   ERR_NULL_PHRASE     phrase == NULL
  *   ERR_NULL_SEED       seed_out == NULL
  *   ERR_BUF_TOO_SMALL   seed_capacity < 64
- *   ERR_PHRASE_LEN      passphrase length pushes the salt past the cap
+ *   ERR_PHRASE_LEN      passphrase length pushes the salt past the cap,
+ *                       or the phrase exceeds DOMAIN_WALLET_BIP39_PHRASE_MAX
+ *   ERR_NON_ASCII       the phrase carries a byte ≥ 0x80
  *
  * Pure: the BIP39 spec defines this as derivation, not generation. */
 struct zcl_result domain_wallet_mnemonic_to_seed(

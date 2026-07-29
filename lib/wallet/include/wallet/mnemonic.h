@@ -77,6 +77,16 @@ bool mnemonic_to_seed(const char *phrase, const char *passphrase,
  * written down stops restoring its wallet. It has exactly one definition,
  * this function, and both the create side and the restore side call it.
  *
+ * The phrase is normalised before derivation
+ * (domain_wallet_mnemonic_normalize, one place, no caller can bypass it):
+ * leading and trailing whitespace dropped, internal whitespace runs
+ * collapsed to one space. So a phrase pasted out of a text file with a
+ * trailing newline, doubled spaces or tab separators derives the SAME
+ * seed as the canonical spelling rather than a valid-looking empty
+ * wallet. Unicode NFKD is NOT implemented; a phrase carrying a byte
+ * ≥ 0x80 is refused outright rather than derived from un-normalised
+ * bytes. See the domain header for the full rationale.
+ *
  * Returns false (and cleanses) on an invalid phrase or a NULL argument;
  * never logs, echoes, or otherwise reproduces the phrase. */
 bool mnemonic_to_wallet_seed(const char *phrase, const char *passphrase,

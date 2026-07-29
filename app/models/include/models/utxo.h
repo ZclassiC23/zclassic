@@ -46,6 +46,31 @@ int db_utxo_list_for_address(struct node_db *ndb,
                              const uint8_t address_hash[20],
                              struct db_utxo *out, size_t max);
 
+/* Has this address ever appeared on the chain THIS database holds?
+ *
+ * The "used" oracle behind the BIP44 gap-limit scan a wallet recovery runs
+ * (wallet_derive_gap_limited, wallet/wallet.h). Two indexed EXISTS probes,
+ * LIMIT 1 each: an unspent output in `utxos`, or any output ever, spent or
+ * not, in `tx_outputs`. Both columns are indexed on address_hash, so this
+ * is a b-tree seek per address, not a scan.
+ *
+ * FALSE MEANS "NOT FOUND HERE", NOT "NEVER USED". A datadir with no chain
+ * synced, or one whose tx_outputs index was never built, answers false for
+ * every address — which is why the gap scan carries an unconditional floor
+ * and why its caller reports whether a chain was actually consulted. This
+ * function must not be read as proof an address is unused. */
+bool db_address_has_chain_history(struct node_db *ndb,
+                                  const uint8_t address_hash[20]);
+
+/* Is there any address-indexed chain data here at all — i.e. can
+ * db_address_has_chain_history() distinguish "unused" from "unknown"?
+ *
+ * Asked BEFORE a gap scan so a caller can say which of the two it is
+ * working with. On an empty datadir this is false, every address probe
+ * would answer false for the same uninformative reason, and the honest
+ * report is "no chain consulted", not "no history found". */
+bool db_address_index_populated(struct node_db *ndb);
+
 /* Count total UTXOs in the set. */
 int64_t db_utxo_count(struct node_db *ndb);
 

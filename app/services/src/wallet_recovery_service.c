@@ -6,8 +6,10 @@
 #include "services/wallet_recovery_service.h"
 
 #include "chain/chainparams.h"
+#include "command/native_command.h"            /* the ONE read-only db open */
 #include "keys/key.h"                          /* ecc_start_once */
 #include "models/database.h"
+#include "models/utxo.h"                       /* gap-scan history oracle */
 #include "models/wallet_key.h"
 #include "services/wallet_restore_service.h"   /* datadir single-writer proof */
 #include "support/cleanse.h"
@@ -68,6 +70,56 @@ static struct zcl_result wrc_ensure_datadir(const char *datadir,
     }
     if (!S_ISDIR(st.st_mode))
         return ZCL_ERR(-63, "%s is not a directory", datadir);
+    return ZCL_OK;
+}
+
+/* ── "has this address been used?" — the gap scan's oracle ───────────
+ *
+ * Answered from the chain THIS datadir already holds. A restore into a
+ * datadir that has synced can therefore walk past the standard lookahead
+ * and rebuild every address the user actually handed out. A restore into
+ * an empty datadir has nothing to consult, gets a NULL oracle, and derives
+ * the floor — which is stated in the report rather than glossed as full
+ * coverage. See wallet_derive_gap_limited in wallet/wallet.h. */
+static bool wrc_address_used(const struct key_id *id, void *ctx)
+{
+    struct node_db *ndb = (struct node_db *)ctx;
+    if (!id || !ndb || !ndb->open)
+        return false;
+    return db_address_has_chain_history(ndb, id->id.data);
+}
+
+/* Rebuild the key material the phrase determines, into an already-rooted
+ * wallet. `chain` may be NULL (no history oracle available). */
+static struct zcl_result wrc_rebuild_keys(struct wallet *w,
+                                          struct node_db *chain,
+                                          struct wallet_recovery_report *out)
+{
+    struct wallet_gap_scan scan;
+    if (!wallet_derive_gap_limited(w, chain ? wrc_address_used : NULL,
+                                   chain, &scan))
+        return ZCL_ERR(-64, "could not derive the address keys from the "
+                            "phrase");
+
+    out->receiving_keys = scan.external_derived;
+    out->change_keys = scan.internal_derived;
+    out->receiving_keys_used = scan.external_used;
+    out->change_keys_used = scan.internal_used;
+    out->chain_history_consulted = scan.oracle_consulted;
+    out->transparent_scan_truncated = scan.ceiling_hit;
+
+    /* The shielded side: a fixed lookahead, not a scan — there is no cheap
+     * offline oracle for shielded use. See WALLET_RECOVERY_SHIELDED_LOOKAHEAD. */
+    for (uint32_t i = 0; i < (uint32_t)WALLET_RECOVERY_SHIELDED_LOOKAHEAD; i++) {
+        uint8_t div[ZC_DIVERSIFIER_SIZE];
+        uint8_t pk_d[32];
+        if (!sapling_keystore_new_address(&w->sapling_keys, div, pk_d))
+            return ZCL_ERR(-64, "could not derive shielded address %u of %d",
+                           i, WALLET_RECOVERY_SHIELDED_LOOKAHEAD);
+        out->shielded_children = i + 1;
+    }
+
+    out->keys_minted = (int)w->keystore.num_keys;
     return ZCL_OK;
 }
 
@@ -170,12 +222,25 @@ struct zcl_result wallet_recovery_status(const char *datadir,
     out->keys_after = out->keys_before;
 
     uint8_t seed[32];
-    out->seed_present_before = wallet_sqlite_read_sapling_seed(&ws, seed);
+    memset(seed, 0, sizeof(seed));
+    /* Three different facts, three different answers. "No seed row" and "a
+     * seed row I cannot decrypt" used to be the same false here, and that
+     * told the owner of an encrypted, phrase-backed wallet that their
+     * wallet predates recovery phrases and their money could only come back
+     * from a file. It can come back from their words; they have to unlock
+     * it first. The caller renders LOCKED as its own answer. */
+    out->seed_state_before = wallet_sqlite_sapling_seed_state(&ws, seed);
+    out->seed_present_before =
+        wallet_seed_state_row_present(out->seed_state_before);
+    bool seed_readable = (out->seed_state_before == WALLET_SEED_PLAINTEXT ||
+                          out->seed_state_before == WALLET_SEED_UNLOCKED);
 
     /* "Would a recovery phrase bring these keys back?" is answered by
      * derivation, exactly as boot answers it: load the wallet and ask
-     * wallet_hd_adopt_seed whether this seed governs key 0. */
-    if (out->seed_present_before) {
+     * wallet_hd_adopt_seed whether this seed governs key 0. A LOCKED seed
+     * cannot be asked that question at all — which is precisely why it must
+     * not be answered "no". */
+    if (seed_readable) {
         struct wallet *w = zcl_malloc(sizeof(*w), "wallet_recovery.status");
         if (!w) {
             memory_cleanse(seed, sizeof(seed));
@@ -257,17 +322,13 @@ struct zcl_result wallet_recovery_run(const struct wallet_recovery_request *req,
         memory_cleanse(seed, sizeof(seed));
         return ZCL_ERR(-64, "could not derive addresses from the phrase");
     }
+    memory_cleanse(seed, sizeof(seed));
 
-    struct zcl_result dr = wrc_ensure_datadir(req->datadir, out);
-    if (!dr.ok) {
-        memory_cleanse(seed, sizeof(seed));
-        return dr;
-    }
-
-    /* Single-writer proof BEFORE anything opens the datadir. */
+    /* Single-writer proof BEFORE anything opens the datadir, on both paths.
+     * A datadir that does not exist yet cannot be held, so this is safe to
+     * run before the directory is created. */
     struct zcl_result lock_r = wallet_restore_datadir_free(req->datadir);
     if (!lock_r.ok) {
-        memory_cleanse(seed, sizeof(seed));
         LOG_WARN(WRC_TAG, "refusing recovery: %s", lock_r.message);
         return ZCL_ERR(-61, "%s", lock_r.message);
     }
@@ -275,38 +336,75 @@ struct zcl_result wallet_recovery_run(const struct wallet_recovery_request *req,
     struct stat st;
     out->target_created = stat(out->target_db, &st) != 0;
 
+    /* ── open the target ─────────────────────────────────────────────
+     *
+     * A PLAN opens nothing for writing and creates nothing at all: no
+     * datadir, no node.db, no scratch database anywhere. Its whole promise
+     * to the caller is "nothing has been written yet", and the previous
+     * shape broke that promise while printing it — mkdir plus an 864 KB
+     * fresh node.db, on a preview. So the plan reads an EXISTING target
+     * read-only (which is also the only handle that can answer "is a
+     * wallet already here?"), and when there is no target yet it simply
+     * has nothing to read. */
     struct node_db ndb;
     memset(&ndb, 0, sizeof(ndb));
-    if (!node_db_open(&ndb, out->target_db)) {
-        memory_cleanse(seed, sizeof(seed));
-        return ZCL_ERR(-63, "cannot open target database %s", out->target_db);
+    sqlite3 *ro_db = NULL;
+    bool have_db = false;
+
+    if (req->dry_run) {
+        if (!out->target_created) {
+            char ro_path[1200];
+            enum zcl_node_db_ro_status ro = zcl_native_node_db_open_readonly(
+                req->datadir, &ro_db, &ndb, ro_path, sizeof(ro_path));
+            if (ro != ZCL_NODE_DB_RO_OK)
+                return ZCL_ERR(-63,
+                    "there is a node.db at %s but it cannot be read, so this "
+                    "plan cannot tell you whether recovering here would "
+                    "overwrite a wallet. Nothing was written",
+                    out->target_db);
+            have_db = true;
+        }
+    } else {
+        struct zcl_result dr = wrc_ensure_datadir(req->datadir, out);
+        if (!dr.ok)
+            return dr;
+        if (!node_db_open(&ndb, out->target_db))
+            return ZCL_ERR(-63, "cannot open target database %s",
+                           out->target_db);
+        have_db = true;
     }
+
     struct wallet_sqlite ws;
-    {
+    bool have_ws = false;
+    if (have_db) {
         struct zcl_result wr = wallet_sqlite_open_r(&ws, ndb.db);
         if (!wr.ok) {
-            node_db_close(&ndb);
-            memory_cleanse(seed, sizeof(seed));
+            if (req->dry_run) zcl_native_node_db_close_readonly(&ro_db, &ndb);
+            else node_db_close(&ndb);
             return ZCL_ERR(-63, "cannot open the wallet tables in %s: %s",
                            out->target_db, wr.message);
         }
-    }
+        have_ws = true;
 
-    out->keys_before = db_wallet_key_count(&ndb);
-    out->keys_after = out->keys_before;
-    uint8_t existing_seed[32];
-    out->seed_present_before =
-        wallet_sqlite_read_sapling_seed(&ws, existing_seed);
-    memory_cleanse(existing_seed, sizeof(existing_seed));
+        out->keys_before = db_wallet_key_count(&ndb);
+        out->keys_after = out->keys_before;
+        /* The ROW question, not the readability one. A LOCKED seed is a
+         * seed: recovering over it would put a second seed on a wallet
+         * whose first one is merely shut, and the owner would have no way
+         * to tell which keys came from which. */
+        out->seed_state_before = wallet_sqlite_sapling_seed_state(&ws, NULL);
+        out->seed_present_before =
+            wallet_seed_state_row_present(out->seed_state_before);
+    }
 
     /* Never write a second seed over a wallet that already has keys. */
     if (out->keys_before > 0 || out->seed_present_before) {
-        wallet_sqlite_close(&ws);
-        node_db_close(&ndb);
-        memory_cleanse(seed, sizeof(seed));
+        if (have_ws) wallet_sqlite_close(&ws);
+        if (req->dry_run) zcl_native_node_db_close_readonly(&ro_db, &ndb);
+        else if (have_db) node_db_close(&ndb);
         LOG_WARN(WRC_TAG, "refusing recovery: %s already holds a wallet "
-                 "(%lld keys, seed=%d)", out->target_db,
-                 (long long)out->keys_before, (int)out->seed_present_before);
+                 "(%lld keys, seed_state=%d)", out->target_db,
+                 (long long)out->keys_before, (int)out->seed_state_before);
         return ZCL_ERR(-62,
             "%s already holds a wallet (%lld keys). Recovering here would "
             "leave a wallet whose keys came from two different seeds and no "
@@ -319,34 +417,30 @@ struct zcl_result wallet_recovery_run(const struct wallet_recovery_request *req,
      * for the stack. */
     struct wallet *w = zcl_malloc(sizeof(*w), "wallet_recovery.wallet");
     if (!w) {
-        wallet_sqlite_close(&ws);
-        node_db_close(&ndb);
-        memory_cleanse(seed, sizeof(seed));
+        if (have_ws) wallet_sqlite_close(&ws);
+        if (req->dry_run) zcl_native_node_db_close_readonly(&ro_db, &ndb);
+        else if (have_db) node_db_close(&ndb);
         return ZCL_ERR(-64, "out of memory building the recovered wallet");
     }
     wallet_init(w);
-    memory_cleanse(seed, sizeof(seed));
 
     struct zcl_result rc = ZCL_OK;
     if (!wallet_init_from_recovery_phrase(w, req->phrase)) {
         rc = ZCL_ERR(-64, "could not root the wallet on the recovery phrase");
         goto done;
     }
-    if (!wallet_top_up_key_pool(w, DEFAULT_KEYPOOL_SIZE)) {
-        rc = ZCL_ERR(-64, "could not derive the address keys from the phrase");
+    /* Same scan on both paths, against the same chain, so the plan's
+     * numbers are the commit's numbers. An open node.db is not by itself a
+     * chain: a freshly created one has the tables and no rows, and every
+     * address probe against it answers false for a reason that has nothing
+     * to do with the address. Pass the oracle only when there is something
+     * to ask, so "no history found" is never printed for "nothing to look
+     * in". */
+    struct node_db *chain =
+        (have_db && db_address_index_populated(&ndb)) ? &ndb : NULL;
+    rc = wrc_rebuild_keys(w, chain, out);
+    if (!rc.ok)
         goto done;
-    }
-    /* One shielded address too, so the recovered wallet can receive on both
-     * sides without a second command. */
-    {
-        uint8_t div[ZC_DIVERSIFIER_SIZE];
-        uint8_t pk_d[32];
-        if (!sapling_keystore_new_address(&w->sapling_keys, div, pk_d)) {
-            rc = ZCL_ERR(-64, "could not derive the shielded address");
-            goto done;
-        }
-    }
-    out->keys_minted = (int)w->keystore.num_keys;
 
     if (req->dry_run) {
         out->keys_after = out->keys_before;
@@ -368,7 +462,8 @@ struct zcl_result wallet_recovery_run(const struct wallet_recovery_request *req,
 done:
     wallet_free(w);
     free(w);
-    wallet_sqlite_close(&ws);
-    node_db_close(&ndb);
+    if (have_ws) wallet_sqlite_close(&ws);
+    if (req->dry_run) zcl_native_node_db_close_readonly(&ro_db, &ndb);
+    else if (have_db) node_db_close(&ndb);
     return rc;
 }

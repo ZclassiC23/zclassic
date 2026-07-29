@@ -958,10 +958,10 @@ bool wallet_sqlite_write_sapling_seed(struct wallet_sqlite *ws,
     return true;
 }
 
-bool wallet_sqlite_read_sapling_seed(struct wallet_sqlite *ws,
-                                       uint8_t seed[32])
+enum wallet_seed_state wallet_sqlite_sapling_seed_state(
+        struct wallet_sqlite *ws, uint8_t seed[32])
 {
-    if (!ws || !ws->open) return false;
+    if (!ws || !ws->open) return WALLET_SEED_UNREADABLE;
 
     /* Copy the row out, then reset the cursor IMMEDIATELY and unconditionally.
      * A cached SELECT left parked on SQLITE_ROW keeps an implicit read
@@ -986,33 +986,42 @@ bool wallet_sqlite_read_sapling_seed(struct wallet_sqlite *ws,
     }
     sqlite3_reset(ws->stmt_seed_read);
 
+    /* No row is the ONLY "never had a seed"; every state below HAS one. */
     if (!have_row) {
         memory_cleanse(blob, sizeof(blob));
-        return false;
+        return WALLET_SEED_ABSENT;
     }
 
-    bool ok = false;
+    enum wallet_seed_state st = WALLET_SEED_MALFORMED;
     if (is_wks1_blob(blob, blob_len)) {
         uint8_t *plain = NULL;
         size_t plain_len = 0;
         if (wallet_decrypt_blob(blob, blob_len, &plain, &plain_len) &&
             plain_len >= 32) {
-            memcpy(seed, plain, 32);
-            ok = true;
+            if (seed) memcpy(seed, plain, 32);
+            st = WALLET_SEED_UNLOCKED;
         } else {
-            /* Encrypted seed present but undecryptable — almost always a
-             * wrong/missing ZCL_WALLET_PASSPHRASE.  Surface it so the
-             * operator doesn't see a silent empty-wallet. */
+            /* Undecryptable — almost always a wrong/missing
+             * ZCL_WALLET_PASSPHRASE. LOCKED, never ABSENT: telling an owner
+             * they have no recovery phrase because we could not open their
+             * seed is how a recoverable wallet gets written off. */
             LOG_WARN("wallet_sqlite",
                      "read_sapling_seed: decrypt failed (wrong passphrase?)");
+            st = WALLET_SEED_LOCKED;
         }
         if (plain) { memory_cleanse(plain, plain_len); free(plain); }
-    } else {
-        memcpy(seed, blob, 32);
-        ok = true;
+    } else if (blob_len >= 32) {
+        if (seed) memcpy(seed, blob, 32);
+        st = WALLET_SEED_PLAINTEXT;
     }
     memory_cleanse(blob, sizeof(blob));
-    return ok;
+    return st;
+}
+
+bool wallet_sqlite_read_sapling_seed(struct wallet_sqlite *ws, uint8_t seed[32])
+{
+    enum wallet_seed_state st = wallet_sqlite_sapling_seed_state(ws, seed);
+    return st == WALLET_SEED_PLAINTEXT || st == WALLET_SEED_UNLOCKED;
 }
 
 bool wallet_sqlite_write_sapling_key(struct wallet_sqlite *ws,

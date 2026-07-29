@@ -206,6 +206,48 @@ bool wallet_sqlite_read_scan_height(struct wallet_sqlite *ws, int *height);
 
 bool wallet_sqlite_write_sapling_seed(struct wallet_sqlite *ws,
                                         const uint8_t seed[32]);
+
+/* ── Seed presence, told apart from seed readability ────────────────
+ *
+ * wallet_sqlite_read_sapling_seed() answers bool, and that collapsed two
+ * opposite facts into one value: "this wallet has no seed" and "this
+ * wallet has a seed I cannot decrypt" both came back false. A caller
+ * asking "can this wallet be rebuilt from its recovery phrase?" then told
+ * the owner of an ENCRYPTED, phrase-backed wallet that their wallet
+ * predates recovery phrases and their money can only be restored from a
+ * file — when the truth was that they needed to unlock it first. The same
+ * collapse also let a recovery overwrite the seed row of a locked wallet,
+ * because "no seed present" is the condition that permits the write.
+ *
+ * Use this when the difference matters. LOCKED is not an empty result and
+ * must never be reported as one. */
+enum wallet_seed_state {
+    WALLET_SEED_ABSENT = 0,   /* no wallet_seed row: no seed was ever stored */
+    WALLET_SEED_PLAINTEXT,    /* row present, stored unencrypted, read out */
+    WALLET_SEED_UNLOCKED,     /* row present, encrypted, decrypted fine */
+    WALLET_SEED_LOCKED,       /* row present, encrypted, WRONG/NO passphrase */
+    WALLET_SEED_MALFORMED,    /* row present but not a usable 32-byte seed */
+    WALLET_SEED_UNREADABLE,   /* the wallet_sqlite handle is not open */
+};
+
+/* True when the seed row exists at all — i.e. everything except ABSENT and
+ * UNREADABLE. This, not "did the read succeed", is the question a writer
+ * must ask before installing a seed over an existing wallet. */
+static inline bool wallet_seed_state_row_present(enum wallet_seed_state s)
+{
+    return s == WALLET_SEED_PLAINTEXT || s == WALLET_SEED_UNLOCKED
+        || s == WALLET_SEED_LOCKED || s == WALLET_SEED_MALFORMED;
+}
+
+/* Read the seed row and say exactly what was found. `seed` is written only
+ * on PLAINTEXT and UNLOCKED; on every other state it is left untouched, so
+ * the caller cannot mistake a stale buffer for a recovered seed. */
+enum wallet_seed_state wallet_sqlite_sapling_seed_state(
+        struct wallet_sqlite *ws, uint8_t seed[32]);
+
+/* Legacy shape: true exactly when the state is PLAINTEXT or UNLOCKED.
+ * Prefer wallet_sqlite_sapling_seed_state() anywhere the answer is shown
+ * to a user or gates a write. */
 bool wallet_sqlite_read_sapling_seed(struct wallet_sqlite *ws,
                                        uint8_t seed[32]);
 bool wallet_sqlite_write_sapling_key(struct wallet_sqlite *ws,

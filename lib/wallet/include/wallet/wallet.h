@@ -309,6 +309,94 @@ bool wallet_hd_adopt_seed(struct wallet *w,
 bool wallet_seed_address_at(const unsigned char seed[32], uint32_t account,
                             uint32_t change, uint32_t index,
                             char *addr_out, size_t addr_size);
+
+/* ── Gap-limit recovery scan ──────────────────────────────────────
+ *
+ * The problem this solves. A wallet created by this node mints
+ * DEFAULT_KEYPOOL_SIZE keys at indices 0..99 and leaves its HD counter at
+ * 100 — so the FIRST address it ever hands a user is index 100, one past
+ * the end of that range. A recovery that re-mints the same fixed 100 keys
+ * therefore rebuilds every index the user never saw and NOT the one they
+ * published, and then recommends a rescan that structurally cannot find
+ * their coins. Deriving to a gap limit instead of a fixed count is what
+ * makes the addresses that were actually in use come back.
+ *
+ * The convention (BIP44 §"Address gap limit"): walk indices upward and
+ * stop after WALLET_GAP_LIMIT consecutive addresses with no history. It
+ * needs an oracle for "has history", which the caller supplies —
+ * `used(key_id, ctx)`.
+ *
+ * The three bounds, and what happens at each:
+ *
+ *   FLOOR (WALLET_RECOVERY_MIN_LOOKAHEAD = 120). The scan never stops
+ *   below this index, whatever the oracle says. It is DEFAULT_KEYPOOL_SIZE
+ *   + WALLET_GAP_LIMIT, so the first address a created wallet hands out —
+ *   index 100 — is always inside the recovered range even when there is no
+ *   chain to consult at all (an offline restore into an empty datadir,
+ *   where `used` is NULL and every index looks unused).
+ *
+ *   GAP (WALLET_GAP_LIMIT = 20). Past the floor, the scan stops once this
+ *   many consecutive indices come back unused.
+ *
+ *   CEILING (WALLET_RECOVERY_MAX_LOOKAHEAD = 1000 per chain). A hostile
+ *   or broken oracle that answers "used" forever cannot make this run
+ *   without end or allocate without bound: the scan stops at the ceiling
+ *   and sets `ceiling_hit`, and the caller MUST tell the user that the
+ *   scan was truncated and that addresses beyond index 1000 on that chain
+ *   were not rebuilt. 1000 external + 1000 internal is well inside
+ *   MAX_KEYSTORE_KEYS (4096), so the keystore cannot overflow first.
+ *
+ * `used` may be NULL, which means "no usable history oracle here" — every
+ * index counts as unused and the scan derives exactly the floor. That is
+ * the honest offline answer, not a silent best guess.
+ *
+ * Call on a wallet whose HD master is installed and whose counters are at
+ * 0 (i.e. straight after wallet_init_from_recovery_phrase). Keys are added
+ * to the keystore and the HD counters end at the number derived, so the
+ * next address handed out is the first one past the scan. */
+#define WALLET_GAP_LIMIT 20
+#define WALLET_RECOVERY_MIN_LOOKAHEAD (DEFAULT_KEYPOOL_SIZE + WALLET_GAP_LIMIT)
+#define WALLET_RECOVERY_MAX_LOOKAHEAD 1000
+
+/* The shielded side, stated honestly. ZIP32 children are recovered as a
+ * FIXED lookahead of this many, not by a gap scan, because there is no
+ * cheap oracle for "this shielded address was used": Sapling addresses are
+ * unlinkable by design, and establishing use means trial-decrypting every
+ * Sapling output on the chain with the wallet's incoming viewing key —
+ * that is the rescan-witnesses job, not an offline restore's. So the rule
+ * here is the same floor logic as the transparent side without the scan:
+ * derive WALLET_GAP_LIMIT children, which covers every shielded address a
+ * wallet handed out up to that count (children are issued from 0 upward,
+ * so unlike the transparent chain the FIRST one is child 0). A wallet that
+ * issued more shielded addresses than this needs them re-derived after the
+ * restore; the recovery output says so rather than implying full coverage. */
+#define WALLET_RECOVERY_SHIELDED_LOOKAHEAD WALLET_GAP_LIMIT
+
+/* Mint the next key on one BIP44 chain (`change` is BIP44_EXTERNAL or
+ * BIP44_INTERNAL): derive at that chain's HD counter, add it to the
+ * keystore, and advance the counter — read, derive, add and increment as
+ * one step under w->cs, so two callers can never take the same index and
+ * hand out the same address twice. Requires w->has_master_key. `pk_out`
+ * may be NULL. This is the single place a wallet's HD index advances;
+ * wallet_generate_new_key and both new-address paths are callers. */
+bool wallet_mint_next_hd_key(struct wallet *w, uint32_t change,
+                             struct pubkey *pk_out);
+
+/* Does this key have any history worth continuing the scan for? */
+typedef bool (*wallet_address_used_fn)(const struct key_id *id, void *ctx);
+
+struct wallet_gap_scan {
+    uint32_t external_derived;   /* indices 0..n-1 minted, receiving chain */
+    uint32_t internal_derived;   /* indices 0..n-1 minted, change chain */
+    uint32_t external_used;      /* how many of them the oracle called used */
+    uint32_t internal_used;
+    bool     oracle_consulted;   /* false when `used` was NULL */
+    bool     ceiling_hit;        /* a chain stopped at the ceiling, truncated */
+};
+
+bool wallet_derive_gap_limited(struct wallet *w, wallet_address_used_fn used,
+                               void *ctx, struct wallet_gap_scan *out);
+
 bool wallet_get_new_change_address(struct wallet *w, char *addr_out,
                                     size_t addr_size);
 

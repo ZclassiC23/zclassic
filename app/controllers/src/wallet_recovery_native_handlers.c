@@ -108,6 +108,54 @@ static void wrp_push_report(struct zcl_command_reply *reply,
                                rep->first_shielded_address);
 }
 
+/* What kind of seed the target wallet holds, in one word, so a caller never
+ * has to infer "locked" from a false. */
+static const char *wrp_seed_state_name(enum wallet_seed_state s)
+{
+    switch (s) {
+    case WALLET_SEED_ABSENT:     return "none";
+    case WALLET_SEED_PLAINTEXT:  return "present";
+    case WALLET_SEED_UNLOCKED:   return "present-encrypted-unlocked";
+    case WALLET_SEED_LOCKED:     return "present-encrypted-locked";
+    case WALLET_SEED_MALFORMED:  return "present-unusable";
+    case WALLET_SEED_UNREADABLE: return "unreadable";
+    }
+    return "unknown";
+}
+
+/* How far the rebuild reached. Printed on both the plan and the commit, so
+ * "recovered" is never a bare true with no scope attached. */
+static void wrp_push_scan(struct zcl_command_reply *reply,
+                          const struct wallet_recovery_report *rep)
+{
+    (void)json_push_kv_int(&reply->data, "receiving_addresses_rebuilt",
+                           rep->receiving_keys);
+    (void)json_push_kv_int(&reply->data, "change_addresses_rebuilt",
+                           rep->change_keys);
+    (void)json_push_kv_int(&reply->data, "shielded_addresses_rebuilt",
+                           rep->shielded_children);
+    (void)json_push_kv_bool(&reply->data, "chain_history_consulted",
+                            rep->chain_history_consulted);
+    if (rep->chain_history_consulted)
+        (void)json_push_kv_int(&reply->data, "addresses_with_history_found",
+                               (int64_t)rep->receiving_keys_used +
+                               (int64_t)rep->change_keys_used);
+    else
+        (void)json_push_kv_str(&reply->data, "address_coverage",
+            "this datadir has no chain to check against, so the rebuild "
+            "derived the standard lookahead rather than following your "
+            "history. That covers every address a wallet hands out before "
+            "it has been used a lot. If you gave out more addresses than "
+            "that, recover into a datadir that has already synced and the "
+            "scan will follow them");
+    if (rep->transparent_scan_truncated)
+        (void)json_push_kv_str(&reply->data, "coverage_warning",
+            "the address scan stopped at its safety ceiling with your "
+            "history still running past it: addresses beyond that point "
+            "were NOT rebuilt. Coins on them are not lost — the seed still "
+            "derives them — but this datadir does not hold their keys yet");
+}
+
 void zcl_native_handle_wallet_recovery_status(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
@@ -182,6 +230,50 @@ void zcl_native_handle_wallet_recovery_status(
     wrp_push_report(reply, &rep);
     (void)json_push_kv_bool(&reply->data, "recoverable_from_phrase",
                             rep.seed_installed);
+    (void)json_push_kv_str(&reply->data, "seed_state",
+                           wrp_seed_state_name(rep.seed_state_before));
+
+    /* LOCKED is answered on its own, BEFORE the recoverable/not fork.
+     * An encrypted wallet that does have a phrase-backed seed used to fall
+     * through to the "created before recovery phrases" branch below and be
+     * told its money could only come back from a file — the error path and
+     * the empty result returning the same value, the defect family this
+     * tree keeps paying for. "Locked, unlock and ask again" and "there is
+     * no phrase for this wallet" are opposite answers and now read that
+     * way. */
+    if (rep.seed_state_before == WALLET_SEED_LOCKED) {
+        (void)json_push_kv_str(&reply->data, "meaning",
+            "this wallet IS seed-backed — the seed is right there in "
+            "node.db — but it is encrypted and could not be decrypted "
+            "here, so whether your twelve words rebuild it cannot be "
+            "checked yet. This is not the same as having no recovery "
+            "phrase");
+        (void)json_push_kv_str(&reply->data, "what_to_do",
+            "unlock the wallet and ask again: set ZCL_WALLET_PASSPHRASE to "
+            "the passphrase you encrypted it with and re-run this command. "
+            "Do not treat this as 'no phrase' and do not recover over this "
+            "datadir");
+        wnh_fail(reply, ZCL_COMMAND_EXIT_BLOCKED, "WALLET_LOCKED",
+                 "the wallet seed at this datadir is encrypted and could "
+                 "not be decrypted, so this command cannot say whether your "
+                 "recovery phrase rebuilds it — unlock it and ask again",
+                 datadir);
+        return;
+    }
+    if (rep.seed_state_before == WALLET_SEED_MALFORMED) {
+        (void)json_push_kv_str(&reply->data, "meaning",
+            "there is a seed row in this wallet, but it is not a usable "
+            "seed. That is damage, not the absence of a recovery phrase");
+        (void)json_push_kv_str(&reply->data, "what_to_do",
+            "do not recover over this datadir. Take a copy of it first, "
+            "then rebuild into a NEW empty datadir — from your twelve words "
+            "('core wallet recovery restore') or from a wallet backup file");
+        wnh_fail(reply, ZCL_COMMAND_EXIT_FAILED, "WALLET_SEED_UNUSABLE",
+                 "the wallet seed stored at this datadir is not a usable "
+                 "seed", datadir);
+        return;
+    }
+
     if (rep.seed_installed) {
         (void)json_push_kv_str(&reply->data, "meaning",
             "this wallet's keys all descend from its recovery phrase, so the "
@@ -256,6 +348,7 @@ void zcl_native_handle_wallet_recovery_restore(
     }
 
     wrp_push_report(reply, &rep);
+    wrp_push_scan(reply, &rep);
     (void)json_push_kv_str(
         &reply->data, "next_steps",
         "start the node on this datadir, then run 'core wallet rescan' to "
@@ -275,11 +368,15 @@ void zcl_native_handle_wallet_recovery_restore(
         (void)json_push_kv_str(&reply->data, "stage", "plan");
         (void)json_push_kv_str(&reply->data, "action", "recovery-restore");
         (void)json_push_kv_bool(&reply->data, "committed", false);
+        /* This sentence is a promise, and the service now keeps it: the
+         * plan path creates no datadir and no node.db, and reads an
+         * existing target through a read-only handle only. */
         (void)json_push_kv_str(
             &reply->data, "confirm_hint",
             "the addresses above are what these words open — check the first "
             "one against what you remember, then re-run with confirm true to "
-            "write the wallet. Nothing has been written yet");
+            "write the wallet. Nothing has been written yet: no directory, "
+            "no database, no file anywhere");
         (void)json_push_kv_str(&reply->data, "commit_input", commit);
         (void)json_push_kv_str(&reply->data, "phrase_in_commit_input",
             "no — retype your own words; they are deliberately not echoed "

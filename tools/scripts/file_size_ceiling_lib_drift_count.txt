@@ -384,3 +384,18 @@
 # as an empty backup. Real defensive growth on the funds-visibility path.
 # BASELINED at 1793 in file_size_ceiling_lib_baseline.txt rather than
 # spending a ratchet slot; the recorded count STAYS 11.
+#
+# 2026-07-29 (recovery-phrase lane, three money defects): the gap-limit scan
+# that replaces recovery's fixed-100-key rebuild did NOT land in wallet.c —
+# it is the new lib/wallet/src/wallet_gap_scan.c (115 lines, well under the
+# 800 ceiling, so nothing to baseline). Moving it out took wallet.c back to
+# 1787, BELOW its 1793 entry, which is TIGHTENED to 1787 rather than left
+# holding slack. wallet_sqlite.c grew 1648 -> 1657 for
+# wallet_sqlite_sapling_seed_state(): the bool read collapsed "this wallet
+# has no seed" and "this wallet has a seed I could not decrypt" into the
+# same false, which told the owner of an encrypted, phrase-backed wallet
+# that their money could only come back from a file — and let a recovery
+# write a second seed over the first. The nine lines are the enum-returning
+# reader plus the legacy bool wrapper over it. BASELINED at 1657 rather
+# than spending a ratchet slot; net across the two files is -6 lines and
+# the recorded count STAYS 11.

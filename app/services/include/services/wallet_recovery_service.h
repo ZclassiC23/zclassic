@@ -41,6 +41,7 @@
 #define ZCL_SERVICES_WALLET_RECOVERY_SERVICE_H
 
 #include "util/result.h"
+#include "wallet/wallet_sqlite.h"   /* enum wallet_seed_state */
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -65,20 +66,48 @@ struct wallet_recovery_report {
     int64_t keys_before;          /* wallet_keys rows in the target */
     int64_t keys_after;
     bool    seed_present_before;  /* target already had a wallet_seed row */
+    /* WHICH kind of seed row, so "there is none" is never confused with "I
+     * could not decrypt it". seed_present_before is the ROW question and is
+     * true for LOCKED and MALFORMED too — those must block a write exactly
+     * as a readable seed does. */
+    enum wallet_seed_state seed_state_before;
     bool    seed_installed;       /* the phrase's seed is now on disk */
     /* PUBLIC addresses the phrase reproduces — safe to print, and the one
      * thing a user can check against what they remember. */
     char    first_address[128];
     char    first_shielded_address[160];
     int     keys_minted;
+
+    /* ── Gap-limit scan (wallet_derive_gap_limited) ────────────────
+     * How far the rebuild actually reached, so the caller can tell the
+     * user what was and was not recovered instead of implying "all of it".
+     * transparent_scan_truncated means the per-chain ceiling stopped the
+     * scan with history still showing — addresses past it are NOT back. */
+    uint32_t receiving_keys;        /* external chain indices 0..n-1 */
+    uint32_t change_keys;           /* internal chain indices 0..n-1 */
+    uint32_t receiving_keys_used;   /* of those, seen on the local chain */
+    uint32_t change_keys_used;
+    uint32_t shielded_children;     /* ZIP32 children 0..n-1 */
+    bool     chain_history_consulted; /* a chain was available to scan */
+    bool     transparent_scan_truncated;
 };
 
 /* Recover a wallet from `req->phrase` into `req->datadir`.
  *
- * A dry run derives the addresses and reports every refusal it would hit,
- * writing nothing — so the plan a caller shows is exactly what the commit
- * will do. A committed run mints the standard keypool from the phrase's
- * seed and flushes it through the wallet's single writer.
+ * A dry run writes NOTHING — not the datadir, not node.db, not a scratch
+ * file. It derives the addresses, reads the target through a READ-ONLY
+ * handle if one already exists, and reports every refusal it would hit, so
+ * the plan a caller shows is exactly what the commit will do and the
+ * sentence "nothing has been written yet" is true when it is printed. (It
+ * was not: the plan path used to mkdir the datadir and leave an 864 KB
+ * node.db behind while saying so.)
+ *
+ * A committed run rebuilds the keys with the BIP44 gap-limit scan —
+ * wallet_derive_gap_limited(), using this datadir's own chain as the "has
+ * this address been used" oracle where one exists — and flushes them
+ * through the wallet's single writer. It does NOT mint a fixed keypool:
+ * a created wallet hands out index 100 first, so a fixed 100 keys rebuilt
+ * every address the user never saw and none of the one they published.
  *
  * Fills `out` on every path, including failures, so a refusal is still
  * informative. Returns ZCL_OK on success; on refusal the code is
@@ -123,6 +152,11 @@ struct zcl_result wallet_recovery_status_preflight(
  * Fills `out`; `phrase_valid` is unused here.
  * `seed_installed` reports whether the wallet's keys descend from its seed,
  * i.e. whether a recovery phrase would bring them back.
+ *
+ * `seed_state_before` is the part a caller must not flatten. An encrypted
+ * wallet whose seed cannot be decrypted here comes back WALLET_SEED_LOCKED
+ * with seed_installed=false — that is "unlock it and ask again", NOT "this
+ * wallet has no recovery phrase", and the two get different answers.
  *
  * Codes: -63 no usable handle / unreadable wallet tables. */
 struct zcl_result wallet_recovery_status(const char *datadir,
