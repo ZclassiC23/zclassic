@@ -26,7 +26,7 @@
  * binary on every CPU that has the instruction — silently, with no warning and
  * no runtime signal. The per-function `target("sha,sse4.1")` attribute is what
  * permits the SHA-NI opcodes to be emitted from a baseline translation unit;
- * blake2b_avx2.c, keccak_avx512.c and sha3_256_x4.c all use this same shape.
+ * blake2b_avx2.c, sha3_avx512.c and sha3_256_x4.c all use this same shape.
  *
  * Do not narrow this back to a compile-time predicate. Two properties depend on
  * runtime dispatch: the binary stays byte-identical across build hosts

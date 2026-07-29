@@ -58,7 +58,7 @@ static void detect_features(void)
     }
     /* AVX-512 additionally requires the OS to have enabled ZMM state, else the
      * first vmovdqa64 raises #UD. Every other ZMM entry point in this tree
-     * (keccak_avx512.c, fr_avx512.c) checks XCR0; this one did not. */
+     * (sha3_avx512.c, fr_avx512.c) checks XCR0; this one did not. */
     if (avx512f) {
         unsigned int xcr0_lo, xcr0_hi;
         __asm__ volatile("xgetbv" : "=a"(xcr0_lo), "=d"(xcr0_hi) : "c"(0));
