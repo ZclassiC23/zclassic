@@ -21,7 +21,9 @@
 #include "validation/chainstate.h"
 #include "chain/chain.h"
 #include "net/download.h"
+#include "services/body_backfill_service.h"
 #include "storage/body_coverage.h"
+#include "storage/body_history.h"
 #include "storage/progress_store.h"
 #include "jobs/body_fetch_stage.h"
 #include "jobs/validate_headers_stage.h"
@@ -312,6 +314,14 @@ static void gap_fill_wake_dispatcher(const char *reason)
                 (unsigned long long)total);
 }
 
+/* Wake hook handed to the below-tip backfill so it can nudge the dispatcher
+ * through gap_fill's existing bridge instead of reaching into connman. */
+static void gap_fill_body_backfill_wake(void *ctx)
+{
+    (void)ctx;
+    gap_fill_wake_dispatcher("body_backfill");
+}
+
 bool gap_fill_wake_dispatch_if_idle(struct download_manager *dm,
                                     const char *reason)
 {
@@ -382,6 +392,7 @@ static void gap_fill_persist_coverage(void)
     body_coverage_global_lock();
     (void)body_coverage_save(body_coverage_global_map(), db);
     body_coverage_global_unlock();
+    (void)body_history_save(db);
 }
 
 /* One pass: scan [tip+1, best_header] for missing data, queue
@@ -571,6 +582,11 @@ static void *gap_fill_thread_main(void *arg)
     gap_fill_supervisor_heartbeat();
     while (!atomic_load(&g_gf.stop_requested)) {
         int n = gap_fill_pass();
+        /* The below-tip census runs every pass so the coverage verdict is
+         * never stale; its backfill only enqueues on a pass where the
+         * above-tip window had nothing to do. */
+        (void)body_backfill_pass(g_gf.ms, g_gf.dm, n > 0,
+                                 gap_fill_body_backfill_wake, NULL);
         pthread_mutex_lock(&g_gf.mu);
         g_gf.stats.passes++;
         if (n > 0) {
@@ -639,6 +655,11 @@ struct zcl_result gap_fill_start(struct main_state *ms, struct download_manager 
             body_coverage_global_lock();
             (void)body_coverage_load(body_coverage_global_map(), db);
             body_coverage_global_unlock();
+            /* Resumes the census CURSOR and the measured map only. The
+             * verdict is deliberately not restored: a node that has just
+             * booted has established nothing yet, so it starts UNKNOWN and
+             * has to earn "complete" again. */
+            (void)body_history_load(db);
         }
     }
     atomic_store(&g_gf.stop_requested, false);

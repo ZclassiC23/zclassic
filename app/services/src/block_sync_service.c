@@ -210,7 +210,8 @@ void syncsvc_plan_periodic_tip_state(
     size_t peer_count,
     uint64_t queued,
     uint64_t in_flight,
-    uint64_t intake_pending)
+    uint64_t intake_pending,
+    enum body_history_status body_history)
 {
     struct sync_tip_state_evaluation empty = {
         .target_height = -1,
@@ -247,10 +248,21 @@ void syncsvc_plan_periodic_tip_state(
     result->served_gap = target > served_height ? target - served_height : 0;
     result->local_gap = target > local_height ? target - local_height : 0;
 
-    /* A one-block gap is the reducer's normal lookahead/finality shape.  Do
-     * not flip modes while body work is still queued or in flight: AT_TIP
-     * changes block intake and relay policy, so the queue must first drain. */
+    /* Height agreement is necessary and NOT sufficient. A node can match the
+     * network's height while missing the bodies for almost every block below
+     * its own tip — that is exactly the state this gate was added for. So the
+     * body-history census has to have positively established full coverage.
+     *
+     * BODY_HISTORY_UNKNOWN blocks the transition just as hard as
+     * BODY_HISTORY_INCOMPLETE does. A node that has not measured its own
+     * coverage is not a proven-complete node, and "I could not look" must
+     * never buy the same answer as "I looked and it was fine". Written as an
+     * equality against COMPLETE, never as `!= INCOMPLETE`, so a new status
+     * value can never leak through. */
+    bool history_proven = (body_history == BODY_HISTORY_COMPLETE);
+
     result->should_set_at_tip =
+        history_proven &&
         result->served_gap <= 1 && result->local_gap <= 1 &&
         queued == 0 && in_flight == 0 && intake_pending == 0;
 }

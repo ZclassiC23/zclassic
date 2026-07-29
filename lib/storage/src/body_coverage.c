@@ -226,6 +226,40 @@ int64_t body_coverage_total_covered(const struct body_coverage_map *m)
     return total;
 }
 
+int64_t body_coverage_covered_in_window(const struct body_coverage_map *m,
+                                        int64_t lo, int64_t hi)
+{
+    if (!m || lo < 0 || lo > hi)
+        return 0;
+    int64_t total = 0;
+    for (size_t i = 0; i < m->count; i++) {
+        int64_t rlo = m->ranges[i].lo;
+        int64_t rhi = m->ranges[i].hi;
+        if (rhi < lo)
+            continue;
+        if (rlo > hi)
+            break; /* sorted: nothing further can overlap */
+        if (rlo < lo)
+            rlo = lo;
+        if (rhi > hi)
+            rhi = hi;
+        total += rhi - rlo + 1;
+    }
+    return total;
+}
+
+bool body_coverage_union_into(struct body_coverage_map *dst,
+                              const struct body_coverage_map *src)
+{
+    if (!dst || !src)
+        LOG_FAIL("body_coverage", "union_into: null dst or src");
+    for (size_t i = 0; i < src->count; i++) {
+        if (!body_coverage_insert(dst, src->ranges[i].lo, src->ranges[i].hi))
+            LOG_FAIL("body_coverage", "union_into: insert %zu failed", i);
+    }
+    return true;
+}
+
 size_t body_coverage_range_count(const struct body_coverage_map *m)
 {
     return m ? m->count : 0;
@@ -274,10 +308,11 @@ size_t body_coverage_scan_window(struct body_coverage_map *m,
 #define BC_BLOB_MAGIC   0x42434f56u /* "BCOV" */
 #define BC_BLOB_VERSION 1u
 
-bool body_coverage_save(const struct body_coverage_map *m, struct sqlite3 *db)
+bool body_coverage_save_key(const struct body_coverage_map *m,
+                            struct sqlite3 *db, const char *key)
 {
-    if (!m || !db)
-        LOG_FAIL("body_coverage", "save: null map or db");
+    if (!m || !db || !key)
+        LOG_FAIL("body_coverage", "save: null map, db or key");
 
     size_t n = m->count;
     if (n > BODY_COVERAGE_PERSIST_MAX_RANGES) {
@@ -306,22 +341,23 @@ bool body_coverage_save(const struct body_coverage_map *m, struct sqlite3 *db)
         off += sizeof(int64_t);
     }
 
-    bool ok = progress_meta_set(db, BODY_COVERAGE_META_KEY, buf, total);
+    bool ok = progress_meta_set(db, key, buf, total);
     free(buf);
     if (!ok)
         LOG_FAIL("body_coverage", "save: progress_meta_set failed");
     return true;
 }
 
-bool body_coverage_load(struct body_coverage_map *m, struct sqlite3 *db)
+bool body_coverage_load_key(struct body_coverage_map *m,
+                            struct sqlite3 *db, const char *key)
 {
-    if (!m || !db)
-        LOG_FAIL("body_coverage", "load: null map or db");
+    if (!m || !db || !key)
+        LOG_FAIL("body_coverage", "load: null map, db or key");
     body_coverage_reset(m);
 
     size_t blob_len = 0;
     bool found = false;
-    if (!progress_meta_get(db, BODY_COVERAGE_META_KEY, NULL, 0,
+    if (!progress_meta_get(db, key, NULL, 0,
                            &blob_len, &found))
         LOG_FAIL("body_coverage", "load: progress_meta_get(len) failed");
     if (!found)
@@ -336,7 +372,7 @@ bool body_coverage_load(struct body_coverage_map *m, struct sqlite3 *db)
         LOG_FAIL("body_coverage", "load: alloc %zu failed", blob_len);
     size_t got = 0;
     bool found2 = false;
-    if (!progress_meta_get(db, BODY_COVERAGE_META_KEY, buf, blob_len,
+    if (!progress_meta_get(db, key, buf, blob_len,
                            &got, &found2) || !found2 || got != blob_len) {
         free(buf);
         LOG_FAIL("body_coverage", "load: progress_meta_get(read) short/failed");
@@ -375,6 +411,16 @@ bool body_coverage_load(struct body_coverage_map *m, struct sqlite3 *db)
     }
     free(buf);
     return true;
+}
+
+bool body_coverage_save(const struct body_coverage_map *m, struct sqlite3 *db)
+{
+    return body_coverage_save_key(m, db, BODY_COVERAGE_META_KEY);
+}
+
+bool body_coverage_load(struct body_coverage_map *m, struct sqlite3 *db)
+{
+    return body_coverage_load_key(m, db, BODY_COVERAGE_META_KEY);
 }
 
 /* ── Gap-fill scheduler ─────────────────────────────────────────── */

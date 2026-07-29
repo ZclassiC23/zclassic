@@ -8,6 +8,7 @@
 #include "core/uint256.h"
 #include "event/event.h"
 #include "primitives/block.h"
+#include "storage/body_history.h"
 #include "sync/sync_state.h"
 #include "util/result.h"
 #include <stdbool.h>
@@ -432,7 +433,13 @@ void syncsvc_plan_periodic_tip_state(
     size_t peer_count,
     uint64_t queued,
     uint64_t in_flight,
-    uint64_t intake_pending);
+    uint64_t intake_pending,
+    /* Three-state body-history verdict (storage/body_history.h). Only
+     * BODY_HISTORY_COMPLETE permits the AT_TIP edge: matching the network's
+     * HEIGHT while missing the BODIES below your own tip is not being at
+     * tip, and neither is being unable to tell. Passing UNKNOWN (the zero
+     * value) is always safe — it simply refuses the transition. */
+    enum body_history_status body_history);
 void syncsvc_collect_progress(struct sync_progress_snapshot *snapshot,
                               struct download_manager *dm,
                               enum sync_state sync_state,

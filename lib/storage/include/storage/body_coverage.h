@@ -100,6 +100,18 @@ bool body_coverage_find_first_hole(const struct body_coverage_map *m,
 /* Sum of covered heights across all ranges. */
 int64_t body_coverage_total_covered(const struct body_coverage_map *m);
 
+/* Sum of covered heights inside the closed window [lo, hi]. 0 for an empty
+ * or invalid window. The windowed counterpart of total_covered; needed by
+ * storage/body_history.h to say how much of a specific span is held. */
+int64_t body_coverage_covered_in_window(const struct body_coverage_map *m,
+                                        int64_t lo, int64_t hi);
+
+/* Merge every range of `src` into `dst`. Returns false only on allocation
+ * failure, in which case `dst` may hold a partial union — callers that need
+ * all-or-nothing must union into a scratch map. */
+bool body_coverage_union_into(struct body_coverage_map *dst,
+                              const struct body_coverage_map *src);
+
 /* Number of disjoint ranges (hole count within any window is derivable
  * via find_first_hole; this is the fragmentation measure). */
 size_t body_coverage_range_count(const struct body_coverage_map *m);
@@ -139,6 +151,15 @@ bool body_coverage_save(const struct body_coverage_map *m, struct sqlite3 *db);
  * the map and returns true (a fresh datadir has no coverage yet). Returns
  * false on a malformed blob (the map is left cleared, fail-closed). */
 bool body_coverage_load(struct body_coverage_map *m, struct sqlite3 *db);
+
+/* Same blob format under a caller-chosen progress_meta key, so a second
+ * coverage-shaped fact (e.g. body_history's "heights I have definitively
+ * probed" map) persists through this one codec instead of growing a
+ * parallel one. `key` must be a stable NUL-terminated literal. */
+bool body_coverage_save_key(const struct body_coverage_map *m,
+                            struct sqlite3 *db, const char *key);
+bool body_coverage_load_key(struct body_coverage_map *m,
+                            struct sqlite3 *db, const char *key);
 
 /* ── Gap-fill scheduler ─────────────────────────────────────────── */
 
