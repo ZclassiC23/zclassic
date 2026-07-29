@@ -8,9 +8,30 @@
 # windowed 168h judge, a stopwatch run is a point-in-time proof, not an
 # accrual claim, so there is no window to cover, only freshness to check.
 #
-# Prints exactly one line:
+# Prints exactly one VERDICT line:
 #   stopwatch-judge: VERDICT=PASS|FAIL|STALE|THIN_FIXTURE|LAGGING_FIXTURE reason=... artifact=<dir>
 # and exits 0 (PASS) / 1 (FAIL/THIN_FIXTURE/LAGGING_FIXTURE) / 2 (STALE).
+#
+# It also prints ONE separate SKIP_STREAK report line on stdout, and on a
+# threshold crossing ONE ALARM line on stderr. Both are strictly additive
+# reporting and cannot move the gate:
+#   - the VERDICT token, the reason, and the exit code all come from the
+#     unchanged code path below; the 9 pre-existing --selftest cases are the
+#     regression proof, and the new cases assert (token, rc) is byte-identical
+#     with and without an ALARM;
+#   - the SKIP_STREAK line is its OWN line, so anything grepping the VERDICT
+#     line is untouched;
+#   - the ALARM line goes to stderr, which every scoring path discards at the
+#     source (tools/scripts/arch_score.sh runs
+#     `make -s c3-stopwatch-report 2>/dev/null | grep -q VERDICT=PASS`, and
+#     the Makefile recipe captures stdout only), and it deliberately contains
+#     no "VERDICT=" token so it can never be read as one.
+# Why it exists: the C3 gate recorded verdict=skip on every scheduled run from
+# 2026-07-28 06:02 onward. This judge said FAIL the whole time — but nothing
+# ran it, and the architecture scorer reads `tail -n 5` of the ledger, so one
+# surviving old pass held the number at 85 for four consecutive skips (~30h).
+# The defect was the SILENCE, so the fix is a louder report, never a stricter
+# gate.
 #
 #   PASS  — the last recorded run's verdict field is "pass", it is fresh
 #           (age <= --max-age-secs), AND it survives the fixture-integrity
@@ -79,6 +100,20 @@
 
 set -uo pipefail
 export LC_ALL=C
+
+# Skip classification + streak arithmetic, shared with the collector and with
+# the node's typed `ops state --subsystem=stopwatch_evidence` surface (all
+# three read ONE class table,
+# app/services/include/services/stopwatch_skip_classes.def). Absence is never
+# fatal: the verdict path below does not depend on it, so a checkout without
+# it still judges exactly as before, just without the streak report.
+_SW_JUDGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SKIP_CLASS_LIB="$_SW_JUDGE_DIR/stopwatch_skip_class.sh"
+SKIP_CLASS_OK=0
+# shellcheck source=tools/scripts/stopwatch_skip_class.sh
+if [ -r "$SKIP_CLASS_LIB" ] && . "$SKIP_CLASS_LIB"; then
+    SKIP_CLASS_OK=1
+fi
 
 # fld_num/fld_str <json_line> <key> — first matching "key":value extraction.
 # Deliberately simple (single-line JSON, no nesting) — matches the
@@ -261,6 +296,114 @@ if [ "${1:-}" = "--selftest" ]; then
     run_case "seam verdict reads FAIL (not PASS, not upgraded)" "$seam_line" FAIL 1 \
         "ZCL_STOPWATCH_SLO_LEDGER=$st_tmp/does-not-exist.jsonl"
 
+    # ── skip-streak reporting (additive; must not move any verdict) ─────
+    # run_report <name> <ledger> <want_tok> <want_rc> <present|-> <absent|->
+    # asserts the VERDICT token AND exit code are exactly what they were
+    # before this feature existed, while also asserting what the new report
+    # lines do and do not say. The (token, rc) columns are the containment
+    # proof: they are identical in the alarm and no-alarm cases below.
+    run_report() {
+        local name="$1" ledger="$2" want_tok="$3" want_rc="$4"
+        local want_present="$5" want_absent="$6"; shift 6
+        local out rc tok bad=""
+        out="$(env ZCL_STOPWATCH_JUDGE_NOW="$NOW" \
+               ZCL_STOPWATCH_SLO_LEDGER="$st_tmp/does-not-exist.jsonl" "$@" \
+               bash "$SELF" "$ledger" --max-age-secs=1000000 2>&1)"
+        rc=$?
+        tok="$(printf '%s' "$out" | sed -n 's/.*VERDICT=\([A-Z_]*\).*/\1/p' |
+               head -n1)"
+        [ "$tok" = "$want_tok" ] || bad="tok='$tok' want='$want_tok'"
+        [ "$rc" = "$want_rc" ] || bad="$bad rc=$rc want=$want_rc"
+        if [ "$want_present" != "-" ] && \
+           ! printf '%s' "$out" | grep -qF -- "$want_present"; then
+            bad="$bad missing='$want_present'"
+        fi
+        if [ "$want_absent" != "-" ] && \
+           printf '%s' "$out" | grep -qF -- "$want_absent"; then
+            bad="$bad unexpected='$want_absent'"
+        fi
+        if [ -z "$bad" ]; then
+            echo "  ok: $name -> $tok (rc=$rc)"
+        else
+            echo "  FAIL: $name -> $bad"
+            echo "        out: $out"
+            st_fail=1
+        fi
+    }
+
+    DEAD_PEER="serving peer not reachable: 127.0.0.1:39070"
+    sw_skip_row() { # <file> <ts> <reason> <artifact>
+        printf '{"ts":%s,"verdict":"skip","exit_code":2,"artifact_dir":"%s","skip_reason":"%s"}\n' \
+            "$2" "$4" "$3" >>"$1"
+    }
+
+    # 10. ONE fixture-absent skip: quiet. A single miss is a fixture bouncing,
+    #     not evidence — and the verdict is FAIL either way, as before.
+    one_skip="$st_tmp/streak_one.jsonl"
+    : >"$one_skip"; sw_skip_row "$one_skip" "$NOW" "$DEAD_PEER" /a/1
+    run_report "one fixture_absent skip: report, no ALARM" "$one_skip" \
+        FAIL 1 "SKIP_STREAK skip_streak=1" "ALARM"
+
+    # 11. TWO consecutive: the alarm fires — and the VERDICT token and exit
+    #     code are byte-identical to case 10. That is the whole containment.
+    two_skip="$st_tmp/streak_two.jsonl"
+    : >"$two_skip"
+    sw_skip_row "$two_skip" "$((NOW - 21600))" "$DEAD_PEER" /a/1
+    sw_skip_row "$two_skip" "$NOW" "$DEAD_PEER" /a/2
+    run_report "two fixture_absent skips: ALARM, verdict unchanged" \
+        "$two_skip" FAIL 1 "ALARM class=fixture_absent skip_streak=2" "-"
+
+    # 12. The ALARM line must not carry a VERDICT token, so no grader and no
+    #     false-green guard can ever read it as one.
+    alarm_only="$(env ZCL_STOPWATCH_JUDGE_NOW="$NOW" \
+                  ZCL_STOPWATCH_SLO_LEDGER="$st_tmp/nope.jsonl" \
+                  bash "$SELF" "$two_skip" --max-age-secs=1000000 2>&1 >/dev/null)"
+    if printf '%s' "$alarm_only" | grep -q 'ALARM' && \
+       ! printf '%s' "$alarm_only" | grep -q 'VERDICT'; then
+        echo "  ok: ALARM is stderr-only and carries no VERDICT token"
+    else
+        echo "  FAIL: ALARM containment -> stderr was: $alarm_only"
+        st_fail=1
+    fi
+
+    # 13. A pass clears the streak: no alarm, and the pass still passes.
+    cleared="$st_tmp/streak_cleared.jsonl"
+    : >"$cleared"
+    sw_skip_row "$cleared" "$((NOW - 43200))" "$DEAD_PEER" /a/1
+    sw_skip_row "$cleared" "$((NOW - 21600))" "$DEAD_PEER" /a/2
+    printf '{"ts":%s,"verdict":"pass","exit_code":0,"wall_clock_seconds":42,"final_network_tip":%s,"artifact_dir":"/a/p"}\n' \
+        "$NOW" "$GOOD_TIP" >>"$cleared"
+    run_report "a pass clears the streak and still PASSes" "$cleared" \
+        PASS 0 "SKIP_STREAK skip_streak=0" "ALARM"
+
+    # 14. A BENIGN skip run never alarms, however long. "Nothing configured,
+    #     nothing to prove" must not look like "the peer is dead" — a
+    #     detector that cries wolf here gets ignored.
+    benign="$st_tmp/streak_benign.jsonl"
+    : >"$benign"
+    for _i in 1 2 3 4 5; do
+        sw_skip_row "$benign" "$NOW" \
+            "no valid --client-rpc / ZCL_ND_CLIENT_RPCPORT given" /a/b
+    done
+    run_report "five benign not_configured skips never alarm" "$benign" \
+        FAIL 1 "class=not_configured threshold=0" "ALARM"
+
+    # 15. A config error alarms on the FIRST skip — it can never self-heal.
+    cfg="$st_tmp/streak_config.jsonl"
+    : >"$cfg"
+    sw_skip_row "$cfg" "$NOW" \
+        "node binary absent/not executable: /nope/zclassic23" /a/c
+    run_report "one config_error skip alarms immediately" "$cfg" \
+        FAIL 1 "ALARM class=config_error skip_streak=1" "-"
+
+    # 16. A legacy row with no skip_reason field is unclassified, not benign,
+    #     and one of them is still quiet (threshold 2).
+    legacy_skip="$st_tmp/streak_legacy.jsonl"
+    printf '{"ts":%s,"verdict":"skip","exit_code":2,"artifact_dir":"/a/l"}\n' \
+        "$NOW" >"$legacy_skip"
+    run_report "legacy skip row is unclassified and quiet at 1" \
+        "$legacy_skip" FAIL 1 "class=unclassified threshold=2" "ALARM"
+
     if [ "$st_fail" = 0 ]; then
         echo "selftest: PASS"
         exit 0
@@ -310,6 +453,46 @@ ts="$(fld_num "$last_line" ts)"
 verdict="$(fld_str "$last_line" verdict)"
 artifact="$(fld_str "$last_line" artifact_dir)"
 [ -z "$artifact" ] && artifact="-"
+
+# ── skip-streak report (stdout, its own line) + alarm (stderr) ──────────
+# Emitted HERE, before any VERDICT line, so every exit path below carries it.
+# It describes evidence that already exists; it changes nothing about how a
+# pass is earned. Streaks are RECOMPUTED from the ledger's verdict values —
+# the collector also records skip_streak/no_pass_streak fields, but a
+# detector that trusts the thing it is detecting is not a detector, and rows
+# written before those fields existed carry none.
+#
+# There is deliberately NO env knob to raise a threshold. The thresholds live
+# in the shared class table and are derived from the timer cadence; an
+# override would be a supported way to silence this, which is the defect.
+if [ "$SKIP_CLASS_OK" = "1" ]; then
+    read -r sw_skip_streak sw_no_pass_streak sw_last_verdict sw_last_pass \
+            sw_rows < <(stopwatch_skip_streaks "$HISTORY_FILE")
+    sw_class="-"
+    sw_threshold=0
+    if [ "$sw_skip_streak" -gt 0 ]; then
+        sw_reason="$(fld_str "$last_line" skip_reason)"
+        sw_reason_present=0
+        printf '%s' "$last_line" | grep -q '"skip_reason":' && \
+            sw_reason_present=1
+        sw_has_artifact=0
+        [ "$artifact" != "-" ] && [ -n "$artifact" ] && sw_has_artifact=1
+        read -r sw_class sw_threshold \
+            < <(stopwatch_skip_classify "$sw_reason" "$sw_reason_present" \
+                                        "$sw_has_artifact")
+    fi
+    sw_last_pass_age="none"
+    if [ "$sw_last_pass" != "-" ]; then
+        sw_last_pass_age=$((now - sw_last_pass))
+    fi
+    echo "stopwatch-judge: SKIP_STREAK skip_streak=$sw_skip_streak no_pass_streak=$sw_no_pass_streak class=$sw_class threshold=$sw_threshold last_pass_age=$sw_last_pass_age rows_scanned=$sw_rows"
+    if [ "$sw_skip_streak" -gt 0 ] && [ "$sw_threshold" -gt 0 ] && \
+       [ "$sw_skip_streak" -ge "$sw_threshold" ]; then
+        # No "VERDICT=" token in this line, on purpose: even a consumer that
+        # merged stderr into stdout cannot read it as a verdict.
+        echo "stopwatch-judge: ALARM class=$sw_class skip_streak=$sw_skip_streak threshold=$sw_threshold last_pass_age=$sw_last_pass_age reason=\"${sw_reason:-}\" — $sw_skip_streak scheduled runs in a row could not run this proof at all; nothing has been proven since the last pass" >&2
+    fi
+fi
 
 if [ -z "$ts" ]; then
     echo "stopwatch-judge: VERDICT=STALE reason=malformed_last_line_no_ts artifact=$artifact"

@@ -20,6 +20,13 @@
 #   c3_stopwatch_run_and_record.sh's for one shared judge script.
 #   verdict is one of pass|fail|skip|seam|stalled-named|frontier-busy-timeout|
 #   error, mapped from the underlying script's exit code (0/1/2/3/4/5/other).
+#   ADDITIVE fields skip_reason, skip_class, skip_streak, no_pass_streak
+#   mirror the C3 collector's: a skip used to be a dead end in the ledger,
+#   indistinguishable from any other skip. PROOF B is the ONLY harness that
+#   can produce a genuinely BENIGN skip (class not_configured — no
+#   --client-rpc and no upstream pid means there was nothing to prove), which
+#   is exactly why its reason has to be recorded: without it the benign class
+#   could never be told apart from a dead fixture in production.
 #
 # Env (forwarded straight through to network_disruption_recovery_stopwatch.sh):
 #   ZCL_ND_NODE_BIN            client CLI binary (default $REPO_ROOT/build/bin/zclassic23)
@@ -44,6 +51,18 @@ export LC_ALL=C
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 STOPWATCH="$SCRIPT_DIR/network_disruption_recovery_stopwatch.sh"
+
+# Shared skip classifier + streak arithmetic (see the C3 collector). Absence
+# must never break the collect: the line is still appended, just without a
+# class or an alarm.
+SKIP_CLASS_LIB="$SCRIPT_DIR/stopwatch_skip_class.sh"
+SKIP_CLASS_OK=0
+# shellcheck source=tools/scripts/stopwatch_skip_class.sh
+if [ -r "$SKIP_CLASS_LIB" ] && . "$SKIP_CLASS_LIB"; then
+    SKIP_CLASS_OK=1
+else
+    echo "netdisrupt-stopwatch-run: WARN skip classifier $SKIP_CLASS_LIB unreadable — the ledger line will carry no skip_class and no skip-streak alarm will fire" >&2
+fi
 
 NODE_BIN="${ZCL_ND_NODE_BIN:-$REPO_ROOT/build/bin/zclassic23}"
 UPSTREAM_PID_FILE="${ZCL_ND_UPSTREAM_PID_FILE:-}"
@@ -90,11 +109,45 @@ wall_clock="$(printf '%s\n' "$out" | sed -n 's/^WALL_CLOCK_SECONDS=\([0-9][0-9]*
 artifact_dir="$(printf '%s\n' "$out" | sed -n 's/^netdisrupt-stopwatch: artifact=\(.*\)$/\1/p' | tail -1)"
 peer_desc="127.0.0.1:${CLIENT_RPCPORT:-0}"
 
+# Why this run skipped, and where that puts the trailing streak. Best-effort
+# enrichment under `set +e` like the C3 collector's — a grep that finds
+# nothing may never abort the append.
+set +e
+skip_reason=""
+if [ "$verdict" = "skip" ] && [ -n "${artifact_dir:-}" ] &&
+   [ -f "$artifact_dir/proof.json" ]; then
+    skip_reason="$(grep -oE '"reason"[[:space:]]*:[[:space:]]*"[^"]*"' \
+                   "$artifact_dir/proof.json" 2>/dev/null | head -n1 |
+                   sed -E 's/.*:[[:space:]]*"([^"]*)"/\1/')"
+fi
+skip_streak=0
+no_pass_streak=0
+skip_class=""
+skip_threshold=0
+prior_last_pass="-"
+if [ "$SKIP_CLASS_OK" = "1" ]; then
+    read -r prior_skip prior_nopass _prior_verdict prior_last_pass _prior_rows \
+        < <(stopwatch_skip_streaks "$HISTORY_FILE")
+    if [ "$verdict" != "pass" ]; then
+        no_pass_streak=$((prior_nopass + 1))
+        [ "$verdict" = "skip" ] && skip_streak=$((prior_skip + 1))
+    fi
+    if [ "$skip_streak" -gt 0 ]; then
+        has_artifact=0
+        [ -n "${artifact_dir:-}" ] && has_artifact=1
+        read -r skip_class skip_threshold \
+            < <(stopwatch_skip_classify "$skip_reason" 1 "$has_artifact")
+    fi
+fi
+set -e
+
 ts="$(date +%s)"
-line="$(printf '{"ts":%s,"verdict":%s,"exit_code":%s,"wall_clock_seconds":%s,"budget_seconds":%s,"cut_seconds":%s,"peer":%s,"node_bin":%s,"build_commit":%s,"artifact_dir":%s}' \
+line="$(printf '{"ts":%s,"verdict":%s,"exit_code":%s,"wall_clock_seconds":%s,"budget_seconds":%s,"cut_seconds":%s,"peer":%s,"node_bin":%s,"build_commit":%s,"artifact_dir":%s,"skip_reason":%s,"skip_class":%s,"skip_streak":%s,"no_pass_streak":%s}' \
     "$ts" "$(json_string "$verdict")" "$rc" "$(json_num_or_null "$wall_clock")" \
     "$(json_num_or_null "$BUDGET")" "$(json_num_or_null "$CUT_SECS")" "$(json_string "$peer_desc")" \
-    "$(json_string "$NODE_BIN")" "$(json_string "$build_commit")" "$(json_string "${artifact_dir:-}")")"
+    "$(json_string "$NODE_BIN")" "$(json_string "$build_commit")" "$(json_string "${artifact_dir:-}")" \
+    "$(json_string "$skip_reason")" "$(json_string "$skip_class")" \
+    "$(json_num_or_null "$skip_streak")" "$(json_num_or_null "$no_pass_streak")")"
 
 append_rc=0
 (
@@ -112,4 +165,28 @@ fi
 
 echo "netdisrupt-stopwatch-run: appended file=$HISTORY_FILE verdict=$verdict rc=$rc"
 echo "$line"
+
+# ── skip-streak alarm — stderr + syslog only, never stdout, never the exit
+# code, never a VERDICT= token. See the C3 collector for the containment
+# argument. PROOF B is the harness that can legitimately be UNCONFIGURED, so
+# the benign branch below is not decoration: without it this alarm would fire
+# on every host that simply never set up a network-disruption fixture, and an
+# alarm that fires on nothing gets ignored.
+if [ "$skip_streak" -gt 0 ] && [ "$SKIP_CLASS_OK" = "1" ]; then
+    if [ "$prior_last_pass" = "-" ]; then
+        last_pass_note="last_pass=never_in_ledger_tail"
+    else
+        last_pass_note="last_pass=$prior_last_pass"
+    fi
+    if [ "$skip_threshold" = "0" ]; then
+        echo "netdisrupt-stopwatch-run: note class=$skip_class skip_streak=$skip_streak — benign (nothing configured, nothing to prove); no alarm" >&2
+    elif [ "$skip_streak" -ge "$skip_threshold" ]; then
+        alarm_msg="netdisrupt-stopwatch-run: ALARM class=$skip_class skip_streak=$skip_streak threshold=$skip_threshold no_pass_streak=$no_pass_streak $last_pass_note reason=\"$skip_reason\" — this proof could not run at all on the last $skip_streak consecutive scheduled attempts, so nothing has proven the claim; fix the named cause"
+        echo "$alarm_msg" >&2
+        command -v logger >/dev/null 2>&1 && \
+            logger -t stopwatch-gate "$alarm_msg" 2>/dev/null || true
+    else
+        echo "netdisrupt-stopwatch-run: WARN class=$skip_class skip_streak=$skip_streak threshold=$skip_threshold reason=\"$skip_reason\" — one more skipped run raises an alarm" >&2
+    fi
+fi
 exit 0

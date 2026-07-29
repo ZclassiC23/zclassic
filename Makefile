@@ -907,6 +907,7 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
         check-before-save-hooks check-pthread-create check-model-validation \
         check-long-functions check-rpc-registrar check-lag-slo-observable \
         check-file-size-ceiling check-framework-filename-suffix \
+        check-stopwatch-skip-detector \
         check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-doc-claims check-no-stale-pinned-facts check-markdown-links check-doc-inline-paths \
         check-api-reference-generated \
         check-no-new-repair-rung \
@@ -5843,6 +5844,15 @@ check-doc-counts:
 	@echo "══ LINT: doc counts vs code ══"
 	@./tools/scripts/check_doc_counts.sh
 
+# Gate — the stopwatch skip-streak detector's SHELL halves. The C half is
+# covered by the test_stopwatch_skip_watch group; the shell half (the shared
+# class-table parser both stopwatch scripts source, plus the judge's report
+# line and ALARM) had no automatic guard, and a detector whose own proof
+# nobody runs is the exact defect it exists to fix.
+check-stopwatch-skip-detector:
+	@echo "══ LINT: stopwatch skip-streak detector selftests ══"
+	@./tools/lint/check_stopwatch_skip_detector.sh
+
 # Anti-stale forbid gate: no hand-pinned rot-prone facts in the docs. Two
 # classes — a "<N> MB … binary" size claim (HARD; the size has a live source,
 # tools/scripts/binary_size.sh — de-pin to size-agnostic prose) and a live-state
@@ -6203,6 +6213,7 @@ LINT_GATES := \
     check-blocker-remedy \
     check-blocker-handoff-declared \
     check-supervisor-progress-declared \
+    check-stopwatch-skip-detector \
     check-framework-shape \
     check-framework-filename-suffix \
     check-no-raw-clock-outside-platform \
