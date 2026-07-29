@@ -63,7 +63,22 @@ bool rpc_table_execute(const struct rpc_table *t, const char *method,
                        struct json_value *result);
 
 
+/* ── RPC warmup: a lifecycle, not a one-shot latch ───────────────────
+ * While warmup is armed, rpc_table_execute() refuses every method with
+ * RPC_IN_WARMUP plus the reason string, so a client gets "still starting
+ * up" instead of an answer computed from half-built state.
+ *
+ * Both edges are needed because the frontend service kernel genuinely
+ * supports stop_all -> start_all: the rpc_http start hook disarms, and its
+ * paired stop hook re-arms, so a restarted node re-enters warmup instead of
+ * coming back up still claiming ready. Both calls are idempotent. */
+
+/* Arm warmup and set the reason clients will be told. NULL/empty status
+ * falls back to a generic "RPC server starting". */
+void set_rpc_warmup_started(const char *status);
+/* Replace the reason without changing whether warmup is armed. */
 void set_rpc_warmup_status(const char *status);
+/* Disarm warmup; methods start answering. */
 void set_rpc_warmup_finished(void);
 bool rpc_is_in_warmup(char *status_out, size_t status_size);
 

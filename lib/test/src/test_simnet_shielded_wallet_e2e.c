@@ -614,7 +614,7 @@ static int part_b_wallet_rpc(void)
     wsql_open = true;
 
     register_wallet_rpc_commands(&tbl);
-    { char st[64]; if (rpc_is_in_warmup(st, sizeof(st))) set_rpc_warmup_finished(); }
+    set_rpc_warmup_finished();
     rpc_wallet_set_state(wallet, &ms, tmpdir, &wsql, &mempool, NULL);
     rpc_wallet_set_node_db(&ndb);
     rpc_wallet_set_coins_tip(&ctip);

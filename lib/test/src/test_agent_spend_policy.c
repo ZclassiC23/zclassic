@@ -174,11 +174,9 @@ static int asp_open(struct asp_fixture *f, const char *tag)
     app_runtime_set_current(&f->runtime);
     rpc_table_init(&f->tbl);
     register_agent_session_rpc_commands(&f->tbl);
-    /* rpc_table_execute refuses while the server reports warmup, and
-     * set_rpc_warmup_finished asserts it is only called once — so leave it
-     * alone if a previous fixture (or group) already cleared it. */
-    if (rpc_is_in_warmup(NULL, 0))
-        set_rpc_warmup_finished();
+    /* rpc_table_execute refuses every method while the server reports
+     * warmup, so this fixture has to declare the server ready. */
+    set_rpc_warmup_finished();
     g_fixture = f;
     g_sendtoaddress_result = NULL;
     g_commit_calls = 0;

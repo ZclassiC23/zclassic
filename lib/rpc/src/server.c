@@ -11,7 +11,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-#include <assert.h>
 #include <inttypes.h>
 
 static bool rpc_in_warmup = true;
@@ -164,20 +163,27 @@ void set_rpc_warmup_status(const char *status)
     zcl_mutex_unlock(&cs_warmup);
 }
 
+/* Arm/disarm are a matched pair and both are idempotent — see the contract
+ * in rpc/server.h. This used to enforce "finished exactly once" with a live
+ * assert(), which killed the process on the second start: the frontend
+ * kernel's stop_all -> start_all cycle re-runs boot_rpc_http_start, and its
+ * paired stop hook left the flag disarmed. Idempotence removes the crash;
+ * the stop hook re-arming (config/src/boot_frontend_services.c) is what
+ * keeps a restarted node from reporting ready while it re-initialises. */
+void set_rpc_warmup_started(const char *status)
+{
+    ensure_warmup_mutex();
+    zcl_mutex_lock(&cs_warmup);
+    rpc_in_warmup = true;
+    snprintf(warmup_status, sizeof(warmup_status), "%s",
+             (status && status[0]) ? status : "RPC server starting");
+    zcl_mutex_unlock(&cs_warmup);
+}
+
 void set_rpc_warmup_finished(void)
 {
     ensure_warmup_mutex();
     zcl_mutex_lock(&cs_warmup);
-    /* DEBT (check-no-runtime-abort baseline, deliberately NOT abort-ok):
-     * this enforces "called exactly once" with a live abort, but the paired
-     * stop hook (boot_rpc_http_stop) never restores rpc_in_warmup, so the
-     * service kernel's own stop_all -> start_all cycle would kill the node
-     * here. Unreachable today only because the frontend kernel is started
-     * once and the process exits after shutdown; the test suite already
-     * routes around it (test_simnet_shielded_wallet_e2e.c guards the call).
-     * The fix is to make this idempotent or have the stop hook re-arm
-     * warmup, not to delete the check. */
-    assert(rpc_in_warmup);
     rpc_in_warmup = false;
     zcl_mutex_unlock(&cs_warmup);
 }
