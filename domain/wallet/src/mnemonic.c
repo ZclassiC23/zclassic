@@ -2355,8 +2355,14 @@ static struct zcl_result mnemonic_decode_core(
         }
         int idx = domain_wallet_mnemonic_wordlist_find(token);
         if (idx < 0) {
+            /* The POSITION, never the word. This message reaches node.log,
+             * and a word out of someone's recovery phrase — even a mistyped
+             * one — narrows a search over the phrase for anyone who reads
+             * the file later. A position is just as useful to the person
+             * fixing their typo and useless to everyone else. */
             result = ZCL_ERR(DOMAIN_WALLET_MNEMONIC_ERR_UNKNOWN_WORD,
-                             "mnemonic decode: unknown word: %s", token);
+                             "mnemonic decode: word %d is not in the "
+                             "wordlist", word_count + 1);
             goto cleanup;
         }
         indices[word_count++] = idx;
