@@ -159,6 +159,7 @@ trailing window, so deploy when the escalator fires anyway, or after
 | Peers, RSS, disk growth, Tor, standing blocker | `~/.local/state/zclassic23-slo/uptime-ledger.jsonl` — the same per-sample line now carries `peer_count`, `rss_kb`, `datadir_bytes`, `nrestarts`, `active_enter_ts`, `unit_active_state`, `onion_enabled`, `onion_address`, `blocker_count`, `blocker_primary` |
 | EXTERNAL availability (not a loopback dial) | `~/.local/state/zclassic23-public-smoke/availability-ledger.jsonl`; collector `tools/scripts/public_explorer_smoke.sh`; unit `deploy/zclassic23-public-smoke.{service,timer}` |
 | Operator interventions, declared and undeclared | `~/.local/state/zclassic23-intervention/intervention-ledger.jsonl`; detector `tools/scripts/intervention_ledger.sh`; declaration front door `tools/scripts/zcl_intervene.sh`; unit `deploy/zclassic23-intervention.{service,timer}` |
+| Our tip HASH vs genuinely remote peers (off-host block identity) | `~/.local/state/zclassic23-parity/agreement-ledger.jsonl`; recorder `tools/scripts/tip_agreement_probe.sh`; judge `tools/scripts/tip_agreement_judge.sh`; unit `deploy/zclassic23-tip-agreement.{service,timer}` (`make install-tip-agreement`) |
 
 ### Reading the availability columns
 
@@ -170,8 +171,63 @@ availability is the public-smoke ledger and only that.
 
 `gap_vs_oracle` is a **height delta against the local sibling `zclassicd`**.
 It is one network view from one box, and it compares numbers, not blocks:
-nothing in this repo compares a block hash or a state root against an
-off-host peer at any cadence. Do not read it as parity.
+nothing in the uptime ledger compares a block hash or a state root against
+an off-host peer at any cadence. Do not read it as parity.
+
+Block-hash comparison against genuinely remote peers is a **separate**
+ledger — `~/.local/state/zclassic23-parity/agreement-ledger.jsonl`, written
+by `tools/scripts/tip_agreement_probe.sh` and graded by
+`tools/scripts/tip_agreement_judge.sh`. It compares our block hash at a
+height against the hash reported there by at least two DISTINCT remote
+hosts, and records `agrees` / `disagrees` / `could-not-ask` as three
+different states. It does not make `gap_vs_oracle` mean more than it does,
+and it is still only the FIRST rung: per-height tip hash, nothing about the
+UTXO set root, shielded frontiers, or any state a header does not commit.
+
+Read its verdict, never the raw rows: `make tip-agreement-status`. On this
+host on 2026-07-29 that verdict was **`NO_EVIDENCE`** — see the standing
+finding below.
+
+**Read `clean_agrees`, not `agrees`.** A sample says `agrees` when our hash
+matched the winning cluster at the height it compared. That is not the same
+as "no remote host disagrees with us": the recorder also scans every OTHER
+height in its window, and a sample is CLEAN only when no rival cluster
+meeting the two-host control holds a different block than we do anywhere in
+that window, and no height at or below our own tip went unchecked. The
+judge grades `clean_agrees`; `contested` and `unverifiable` account for the
+difference on the same line. A window whose samples all said `agrees` while
+two remote hosts held another block at our tip grades **DISAGREE**, not
+PASS — that case is `R12`/`J15` in
+`tools/scripts/test_tip_agreement_evidence.sh`.
+
+Two further properties of the judge are enforced rather than merely
+documented: its knobs may only be moved in the TIGHTENING direction (a
+loosening flag exits 2 at the front door), and the clean samples must span
+at least `--min-span-secs` of wall clock, because counting six rows is not
+measuring a day.
+
+**Tor-only peer sets cannot satisfy this rung.** `net_addr_to_string`
+renders every torv3 peer as the literal `[torv3]`, so all onion peers
+collapse to one host key. That is the safe direction — many peers count as
+one witness, never the reverse — but it means an onion-only peer set stays
+at `could-not-ask` forever. Fixing that needs a per-peer identity in the
+observation row, not a looser key in the recorder.
+
+### The peer table only carries our own second server
+
+Measured 2026-07-29, read-only, against the canonical node: inside a
+15-minute window exactly **one** remote host was surfacing a learnable tip
+hash at all, and it was `205.209.104.118` — the operator's own second
+server — on three separate connections. A recorder counting distinct
+`ip:port` would have called that three independent witnesses; the recorder
+counts distinct HOSTS, so it is one, it is below the two-witness control,
+and every sample records `could-not-ask`.
+
+So the honest state today is: **off-host tip-hash agreement is not provable
+on this host**, and the instrument now says so out loud instead of a number
+that looks like parity. The fix is more peers surfacing tip hashes, never a
+lower bar. `ZCL_PARITY_EXCLUDE_HOSTS` exists to discard operator-owned
+peers explicitly; it can only make the gate harder.
 
 ### Zero-intervention claims
 
