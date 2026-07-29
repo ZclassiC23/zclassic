@@ -59,11 +59,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 330 |
+| Registry entries (branches + leaves) | 331 |
 | Top-level roots | 9 |
 | Branches | 76 |
-| Leaves (dispatchable command paths) | 254 |
-| … `ready` (live handler in this build) | 212 |
+| Leaves (dispatchable command paths) | 255 |
+| … `ready` (live handler in this build) | 213 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 25 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
@@ -79,7 +79,7 @@ Per source file:
 | `config/commands/core.def` | 97 | 24 | 73 |
 | `config/commands/apps.def` | 9 | 2 | 7 |
 | `config/commands/app_features.def` | 26 | 5 | 21 |
-| `config/commands/ops.def` | 43 | 8 | 35 |
+| `config/commands/ops.def` | 44 | 8 | 36 |
 | `config/commands/dev.def` | 45 | 11 | 34 |
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
@@ -537,6 +537,7 @@ represented by its children's sections.
 | `ops timeline` | ready | read / read / operator · fast/low | none | `zcl.ops_timeline.v1` | `zclassic23 ops timeline` | Events |
 | `ops metrics` | ready | read / read / operator · fast/low | none | `zcl.ops_metrics.v1` | `zclassic23 ops metrics` | Metrics |
 | `ops state` | ready | read / read / operator · fast/low | **`subsystem`**, `key`, `explain` | `zcl.ops_state.v1` | `zclassic23 ops state --subsystem=reducer_frontier` | Subsystem state |
+| `ops statecatalog` | ready | read / read / operator · fast/low | `subsystem`, `limit`, `page` | `zcl.ops_statecatalog.v1` | `zclassic23 ops statecatalog` | State subsystem catalog |
 | `ops selftest` | ready | read / read / operator · fast/low | none | `zcl.ops_selftest.v1` | `zclassic23 ops selftest` | Self-test |
 
 #### `ops.jobs` — Job lifecycle

@@ -112,6 +112,35 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_ops_state)
 
+/* The discovery half of ops.state. ops.state requires a subsystem name and
+ * fails MISSING_SUBSYSTEM without one, so an agent that does not already know
+ * the names had no typed way to learn them — only the legacy flat
+ * `zclassic23 statecatalog` shim, or reading diagnostics_dumpers.def out of a
+ * source tree a release binary does not carry. Same catalog, one renderer
+ * (diag_rpc_statecatalog); node-free, because the registry is compiled in. */
+ZCL_COMMAND_READY_READ(
+    "ops.statecatalog", "ops", "", "State subsystem catalog",
+    "Every subsystem `ops state` accepts, from the in-binary diagnostics "
+    "registry. With no input: `count` and the COMPLETE `names` list, which "
+    "is what you need to call ops state at all and is never truncated. Add "
+    "subsystem=<name> for that one descriptor in full (description, owner "
+    "file, state class, freshness, cost, accepted key forms, owning test), "
+    "or limit (default 5, max 5) with a zero-based page for a window of "
+    "descriptors — a window drops `names`, since the whole catalog cannot "
+    "fit one response and a silently clipped catalog would read as 'that "
+    "subsystem does not exist'. Node-free — the registry is compiled into "
+    "the binary, so this answers with the node stopped, unlike ops state.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "statecatalog,subsystems,catalog,dumpstate,discover,state,list",
+    "zcl.ops_statecatalog.input.v1", "zcl.ops_statecatalog.v1",
+    "subsystem,limit,page", "",
+    "zclassic23 ops statecatalog",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_ops_statecatalog)
+
 ZCL_COMMAND_READY_READ(
     "ops.selftest", "ops", "", "Self-test",
     "A node-free sweep of the in-binary command catalog for static "
