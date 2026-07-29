@@ -918,7 +918,8 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
         test-two-node-peer-tip chaos chaos-clean \
         replay-canary-anchor replay-canary-genesis \
         soak-evidence-report soak-evidence-selftest \
-        install-slo-probe slo-probe-status slo-probe-selftest
+        install-slo-probe slo-probe-status slo-probe-selftest \
+        install-tip-agreement tip-agreement-status tip-agreement-selftest
 
 CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c lib/encoding/src/utilstrencodings.c lib/base/src/log_level.c
 all: test_zcl zclassic23 zclassic-cli zcl-rpc zclassic23-package-verify
@@ -4644,6 +4645,40 @@ slo-probe-selftest:
 	 fi; \
 	 echo "slo-probe-selftest: PASS"'
 
+# ── off-host tip-hash agreement ───────────────────────────────────────
+# The first evidence in this repository that compares a BLOCK HASH against
+# genuinely REMOTE peers, rather than a height number against the sibling
+# zclassicd on this same box. Recorder: tools/scripts/tip_agreement_probe.sh
+# (external process, ledger under ~/.local/state). Judge:
+# tools/scripts/tip_agreement_judge.sh (windowed, fails closed).
+install-tip-agreement:
+	@install -d "$(HOME)/.config/systemd/user"
+	@install -m 644 deploy/zclassic23-tip-agreement.service "$(HOME)/.config/systemd/user/zclassic23-tip-agreement.service"
+	@install -m 644 deploy/zclassic23-tip-agreement.timer "$(HOME)/.config/systemd/user/zclassic23-tip-agreement.timer"
+	@systemctl --user daemon-reload
+	@systemctl --user enable --now zclassic23-tip-agreement.timer
+	@echo "installed off-host tip-hash agreement recorder: zclassic23-tip-agreement.timer (every 10 min)"
+	@echo "ledger:  $(HOME)/.local/state/zclassic23-parity/agreement-ledger.jsonl"
+	@echo "verdict: make tip-agreement-status"
+
+tip-agreement-status:
+	@systemctl --user list-timers zclassic23-tip-agreement.timer --no-pager 2>/dev/null || true
+	@tail -n 5 "$(HOME)/.local/state/zclassic23-parity/agreement-ledger.jsonl" 2>/dev/null || echo "no agreement ledger yet"
+	@./tools/scripts/tip_agreement_judge.sh "$(HOME)/.local/state/zclassic23-parity/agreement-ledger.jsonl" || true
+
+# tip-agreement-selftest: hermetic regression guard for the recorder AND the
+# judge. Fixture node readers, no live node, no network. Gates on the PASS
+# token, not on an exit code alone.
+tip-agreement-selftest:
+	@bash -c 'set -uo pipefail; \
+	 set +e; out=$$(bash tools/scripts/test_tip_agreement_evidence.sh 2>&1); rc=$$?; set -e; \
+	 echo "$$out"; \
+	 if [ "$$rc" != "0" ] || ! echo "$$out" | grep -q "^selftest: PASS"; then \
+	     echo "tip-agreement-selftest: FAIL (rc=$$rc; no selftest: PASS line)"; \
+	     exit 1; \
+	 fi; \
+	 echo "tip-agreement-selftest: PASS"'
+
 # evidence-selftest: hermetic regression guard for the three evidence
 # dimensions that were absent until the ledgers below existed —
 #   * intervention_ledger.sh  the manual-intervention record. Without it,
@@ -6522,6 +6557,15 @@ ci: vendor-ready lint bench-regress zclassic23 $(TEST_PARALLEL_REL_CANDIDATE)
 	@# availability probe. Hermetic, <2s, no node and no network.
 	@echo "══ CI: evidence-selftest (intervention + external availability ledgers) ══"
 	$(MAKE) evidence-selftest
+	@echo ""
+	@# The only evidence in this repo that compares a block HASH against
+	@# genuinely remote peers instead of a height number against the
+	@# sibling zclassicd on this box. Covers all three recorded outcomes,
+	@# including the one that matters: an unreachable or interrupted source
+	@# records could-not-ask and the judge does not pass on it. Hermetic,
+	@# <5s, no node and no network.
+	@echo "══ CI: tip-agreement-selftest (off-host tip-hash agreement ledger + judge) ══"
+	$(MAKE) tip-agreement-selftest
 	@echo ""
 	@echo "══ CI: test-crash ══"
 	$(MAKE) test-crash
