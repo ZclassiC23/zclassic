@@ -72,64 +72,99 @@ bool body_history_evaluate(const struct body_coverage_map *held,
     out->window_hi = hi;
     out->window_heights = hi - lo + 1;
 
-    /* "Definitively probed" is measured OR held: the above-tip gap-fill feed
-     * writes coverage without going through the census, and holding a body
-     * is itself proof somebody looked. Union into scratch so neither input
-     * map is mutated by a read-only question. */
-    struct body_coverage_map probed;
-    body_coverage_init(&probed);
-    if (!body_coverage_union_into(&probed, measured) ||
-        !body_coverage_union_into(&probed, held)) {
-        body_coverage_free(&probed);
-        /* Allocation failure: we genuinely do not know. Leave UNKNOWN. */
-        bh_verdict_reset(out);
-        return false;
-    }
+    /* "Definitively probed" is `measured`, and ONLY `measured`.
+     *
+     * This used to union `held` in as well, on the premise that "holding a
+     * body is itself proof somebody looked". That premise holds for a `held`
+     * map built by probes during THIS boot. It is false for the map the node
+     * actually has: body_coverage_load() restores `held` from progress.kv at
+     * boot, so a datadir whose progress.kv claims coverage the block index
+     * can no longer corroborate — a partial backup, a truncated or lost
+     * block_index.bin, a prune that removed bodies without updating coverage
+     * — published COMPLETE after zero successful probes. That is verbatim
+     * the fail-open defect this module exists to remove, one level up:
+     * "an unreadable block index publishes as 'no hole'".
+     *
+     * So probe evidence has exactly one writer (body_history_census_fold)
+     * and exactly one lifetime (this boot; body_history_load restores the
+     * resume cursor, never the evidence). `held` is now read for one thing
+     * only: whether a height the census DID probe has its body. A height
+     * that nobody probed this boot is unmeasured no matter what `held` says
+     * about it.
+     *
+     * The walk below is a single linear merge of the two maps' range arrays.
+     * It allocates nothing — the scratch union it replaces was a third copy
+     * of the same ledger, built and thrown away on every census pass. */
+    int64_t probed_in_w = 0;
+    int64_t held_in_w = 0;
+    int64_t cursor = lo;      /* first window height not yet accounted for */
+    size_t h_idx = 0;         /* monotone cursor into held->ranges */
 
-    int64_t held_in_w = body_coverage_covered_in_window(held, lo, hi);
-    int64_t probed_in_w = body_coverage_covered_in_window(&probed, lo, hi);
+    for (size_t i = 0; i < measured->count; i++) {
+        int64_t rlo = measured->ranges[i].lo;
+        int64_t rhi = measured->ranges[i].hi;
+        if (rhi < lo)
+            continue;
+        if (rlo > hi)
+            break;            /* sorted: nothing further can overlap */
+        if (rlo < lo) rlo = lo;
+        if (rhi > hi) rhi = hi;
+
+        /* Everything between the previous measured range and this one was
+         * never probed. */
+        if (rlo > cursor && out->lowest_unmeasured < 0)
+            out->lowest_unmeasured = cursor;
+
+        probed_in_w += rhi - rlo + 1;
+
+        /* Intersect [rlo, rhi] with `held`. A gap here is a height the
+         * census looked at and found no body for — a KNOWN missing body,
+         * as opposed to a height nobody looked at. */
+        while (h_idx < held->count && held->ranges[h_idx].hi < rlo)
+            h_idx++;
+        int64_t hcur = rlo;
+        for (size_t j = h_idx; j < held->count; j++) {
+            int64_t hlo = held->ranges[j].lo;
+            int64_t hhi = held->ranges[j].hi;
+            if (hlo > rhi)
+                break;
+            if (hhi < hcur)
+                continue;
+            if (hlo > hcur && out->lowest_missing < 0)
+                out->lowest_missing = hcur;
+            int64_t a = hlo > rlo ? hlo : rlo;
+            int64_t b = hhi < rhi ? hhi : rhi;
+            if (b >= a)
+                held_in_w += b - a + 1;
+            if (hhi + 1 > hcur)
+                hcur = hhi + 1;
+        }
+        if (hcur <= rhi && out->lowest_missing < 0)
+            out->lowest_missing = hcur;
+
+        if (rhi + 1 > cursor)
+            cursor = rhi + 1;
+    }
+    if (cursor <= hi && out->lowest_unmeasured < 0)
+        out->lowest_unmeasured = cursor;
 
     out->held_count = held_in_w;
     out->missing_count = probed_in_w - held_in_w;
     out->unmeasured_count = out->window_heights - probed_in_w;
 
-    /* held is unioned into probed, so probed_in_w >= held_in_w and
-     * probed_in_w <= window_heights by construction. A negative here would
-     * mean the range algebra broke; refuse to publish a verdict over it. */
+    /* held_in_w counts only heights inside probed ranges, and probed ranges
+     * are clipped to the window, so both counts are non-negative by
+     * construction. A negative here would mean the range algebra broke;
+     * refuse to publish a verdict over it. */
     if (out->missing_count < 0 || out->unmeasured_count < 0) {
         LOG_WARN("body_history",
                  "evaluate: inconsistent counts window=[%lld..%lld] "
                  "held=%lld probed=%lld — reporting unknown",
                  (long long)lo, (long long)hi,
                  (long long)held_in_w, (long long)probed_in_w);
-        body_coverage_free(&probed);
         bh_verdict_reset(out);
         return false;
     }
-
-    /* Lowest unmeasured: the first height in the window nobody has probed. */
-    struct bc_range hole;
-    if (body_coverage_find_first_hole(&probed, lo, hi, &hole))
-        out->lowest_unmeasured = hole.lo;
-
-    /* Lowest KNOWN missing: the first hole in `held` that falls inside a
-     * probed range. Walking probed's ranges keeps this exact — a hole in
-     * `held` that nobody probed is unmeasured, not missing. */
-    for (size_t i = 0; i < probed.count && out->lowest_missing < 0; i++) {
-        int64_t rlo = probed.ranges[i].lo;
-        int64_t rhi = probed.ranges[i].hi;
-        if (rhi < lo)
-            continue;
-        if (rlo > hi)
-            break;
-        if (rlo < lo) rlo = lo;
-        if (rhi > hi) rhi = hi;
-        struct bc_range mh;
-        if (body_coverage_find_first_hole(held, rlo, rhi, &mh))
-            out->lowest_missing = mh.lo;
-    }
-
-    body_coverage_free(&probed);
 
     /* Order matters and is deliberate:
      *   a positively-found hole is the strongest, most actionable fact;
@@ -461,6 +496,15 @@ bool body_history_is_proven(void)
     return body_history_verdict_is_proven(&v);
 }
 
+bool body_history_window_fully_measured(void)
+{
+    struct body_history_verdict v;
+    if (!body_history_get_verdict(&v))
+        return false;   /* nothing published == nothing established */
+    /* A window of zero heights has not been measured, it has been skipped. */
+    return v.window_heights > 0 && v.unmeasured_count == 0;
+}
+
 enum body_history_status body_history_status_now(void)
 {
     struct body_history_verdict v;
@@ -483,6 +527,19 @@ void body_history_reset(void)
 
 /* ── Durable resume ─────────────────────────────────────────────── */
 
+/* Only ONE thing survives a restart: the descending resume cursor, which is
+ * a work pointer, not evidence. Neither the verdict nor the `measured` map
+ * is persisted.
+ *
+ * The measured map used to be. That made the boot-time promise below true
+ * of the verdict FLAG only: the flag started UNKNOWN, but the evidence it
+ * would be recomputed from came straight back off disk, so the very first
+ * pass could republish COMPLETE having probed 4096 heights out of 3.2M. A
+ * restored cursor cannot do that — wherever it points, the census still has
+ * to walk the whole window before unmeasured_count reaches zero.
+ *
+ * (A datadir written by an older build may still hold an orphaned
+ * `body_history_measured` blob in progress.kv. Nothing reads it.) */
 bool body_history_save(struct sqlite3 *db)
 {
     if (!db)
@@ -491,11 +548,7 @@ bool body_history_save(struct sqlite3 *db)
 
     zcl_mutex_lock(&g_bh_lock);
     int64_t cursor = g_bh_census.cursor_valid ? g_bh_census.cursor : -1;
-    bool ok = body_coverage_save_key(&g_bh_measured, db,
-                                     BODY_HISTORY_MEASURED_META_KEY);
     zcl_mutex_unlock(&g_bh_lock);
-    if (!ok)
-        LOG_FAIL("body_history", "save: measured map persist failed");
 
     if (!progress_meta_set(db, BODY_HISTORY_CURSOR_META_KEY,
                            &cursor, sizeof(cursor)))
@@ -510,19 +563,11 @@ bool body_history_load(struct sqlite3 *db)
     bh_global_init_once();
 
     zcl_mutex_lock(&g_bh_lock);
-    bool ok = body_coverage_load_key(&g_bh_measured, db,
-                                     BODY_HISTORY_MEASURED_META_KEY);
-    if (!ok) {
-        /* A malformed blob means we do not know what was measured. Clear
-         * it: an empty measured map reads as "nothing established", which
-         * is exactly right, and the census rebuilds it. */
-        body_coverage_reset(&g_bh_measured);
-        body_history_census_init(&g_bh_census);
-        bh_verdict_reset(&g_bh_verdict);
-        g_bh_verdict_published = false;
-        zcl_mutex_unlock(&g_bh_lock);
-        LOG_FAIL("body_history", "load: measured map read failed");
-    }
+    /* Probe evidence does not survive a restart. Clearing it here (rather
+     * than trusting the caller to have reset first) is what makes "a
+     * restarted node has established nothing until it runs a pass" a
+     * property of the code and not of a comment. */
+    body_coverage_reset(&g_bh_measured);
 
     int64_t cursor = -1;
     size_t got = 0;

@@ -101,14 +101,22 @@ bool body_coverage_find_first_hole(const struct body_coverage_map *m,
 int64_t body_coverage_total_covered(const struct body_coverage_map *m);
 
 /* Sum of covered heights inside the closed window [lo, hi]. 0 for an empty
- * or invalid window. The windowed counterpart of total_covered; needed by
- * storage/body_history.h to say how much of a specific span is held. */
+ * or invalid window. The windowed counterpart of total_covered. */
 int64_t body_coverage_covered_in_window(const struct body_coverage_map *m,
                                         int64_t lo, int64_t hi);
 
 /* Merge every range of `src` into `dst`. Returns false only on allocation
  * failure, in which case `dst` may hold a partial union — callers that need
- * all-or-nothing must union into a scratch map. */
+ * all-or-nothing must union into a scratch map.
+ *
+ * Currently unused, and there is one union in particular NOT to reach for
+ * it to rebuild: storage/body_history.h used to union this map (what the
+ * node claims to hold, restored from progress.kv at boot) into its
+ * `measured` map (what the census probed this boot) and treat the result as
+ * "definitively probed". That turns a FILE into a look, and it let a node
+ * whose block index had gone unreadable publish "no hole" after zero
+ * successful probes. Coverage is a projection and a claim; it is never
+ * evidence that anything was checked. */
 bool body_coverage_union_into(struct body_coverage_map *dst,
                               const struct body_coverage_map *src);
 

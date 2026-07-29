@@ -575,6 +575,21 @@ static int gap_fill_pass(void)
     return enqueued;
 }
 
+/* Shutdown predicate + heartbeat the census catch-up burst calls between
+ * slices, so a burst yields to `gap_fill_stop` and keeps the supervisor
+ * child ticking without body_backfill_service reaching into g_gf. */
+static bool gap_fill_burst_should_abort(void *ctx)
+{
+    (void)ctx;
+    return atomic_load(&g_gf.stop_requested);
+}
+
+static void gap_fill_burst_heartbeat(void *ctx)
+{
+    (void)ctx;
+    gap_fill_supervisor_heartbeat();
+}
+
 static void *gap_fill_thread_main(void *arg)
 {
     (void)arg;
@@ -582,11 +597,17 @@ static void *gap_fill_thread_main(void *arg)
     gap_fill_supervisor_heartbeat();
     while (!atomic_load(&g_gf.stop_requested)) {
         int n = gap_fill_pass();
-        /* The below-tip census runs every pass so the coverage verdict is
+        /* The below-tip census runs every tick so the coverage verdict is
          * never stale; its backfill only enqueues on a pass where the
          * above-tip window had nothing to do. */
-        (void)body_backfill_pass(g_gf.ms, g_gf.dm, n > 0,
+        (void)body_backfill_pass(g_gf.ms, g_gf.dm, n > 0, false,
                                  gap_fill_body_backfill_wake, NULL);
+        /* ...and then, until the whole window has been looked at once this
+         * boot, keep running census slices back-to-back rather than waiting
+         * 5 s for the next one. See body_backfill_catch_up. */
+        (void)body_backfill_catch_up(g_gf.ms, g_gf.dm, n > 0,
+                                     gap_fill_burst_should_abort, NULL,
+                                     gap_fill_burst_heartbeat, NULL);
         pthread_mutex_lock(&g_gf.mu);
         g_gf.stats.passes++;
         if (n > 0) {
@@ -655,10 +676,14 @@ struct zcl_result gap_fill_start(struct main_state *ms, struct download_manager 
             body_coverage_global_lock();
             (void)body_coverage_load(body_coverage_global_map(), db);
             body_coverage_global_unlock();
-            /* Resumes the census CURSOR and the measured map only. The
-             * verdict is deliberately not restored: a node that has just
-             * booted has established nothing yet, so it starts UNKNOWN and
-             * has to earn "complete" again. */
+            /* Restores the census CURSOR and nothing else. The map loaded
+             * just above is a CLAIM about what is on disk; it is not
+             * evidence that anything looked, and body_history_evaluate no
+             * longer treats it as any. Neither the verdict nor the measured
+             * map comes back, so a node that has just booted has
+             * established nothing and has to earn "complete" again by
+             * probing every height — which the catch-up burst in
+             * gap_fill_thread_main does within the first tick. */
             (void)body_history_load(db);
         }
     }

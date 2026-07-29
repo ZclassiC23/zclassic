@@ -1,11 +1,13 @@
-// one-result-type-ok:body-backfill-pass-returns-a-count — the single exported
-// function returns the NUMBER of bodies it handed to the download manager,
-// which is a measurement, not a status. It has no failure return to carry a
-// reason in: every path that could not do its job publishes the fail-closed
-// BODY_HISTORY_UNKNOWN verdict (storage/body_history.h) and logs, which is a
-// louder and longer-lived signal than a zcl_result the caller would discard.
-// The fallible surfaces it calls (body_history_census_fold, body_history_save)
-// route through LOG_FAIL in lib/storage/src/body_history.c.
+// one-result-type-ok:body-backfill-pass-returns-a-count — both exported
+// functions return a COUNT, not a status: body_backfill_pass returns the
+// number of bodies it handed to the download manager, body_backfill_catch_up
+// the number of census slices it ran. Both are measurements. Neither has a
+// failure return to carry a reason in: every path that could not do its job
+// publishes the fail-closed BODY_HISTORY_UNKNOWN verdict
+// (storage/body_history.h) and logs, which is a louder and longer-lived
+// signal than a zcl_result the caller would discard. The fallible surfaces
+// they call (body_history_census_fold, body_history_save) route through
+// LOG_FAIL in lib/storage/src/body_history.c.
 //
 // repair-rung-ok:test_bh_at_tip_requires_proven_history — this is a backfill
 // rung and there is no writer to fix instead. The missing bodies were never
@@ -37,6 +39,7 @@
 
 #include "services/body_backfill_service.h"
 
+#include "platform/time_compat.h"
 #include "chain/chain.h"
 #include "core/uint256.h"
 #include "event/event.h"
@@ -101,11 +104,12 @@ static enum body_history_probe bb_probe(int64_t height,
 /* One bounded census pass over [0, tip], plus a rate-limited enqueue of the
  * missing bodies it found. `tip_work_pending` is true when the above-tip
  * pass still has work; the census still RUNS (the report must stay fresh)
- * but the backfill holds off so live sync keeps the queue.
+ * but the backfill holds off so live sync keeps the queue. `census_only`
+ * does the same for the boot catch-up burst, which runs slices back-to-back.
  *
  * Returns the number of below-tip bodies handed to the download manager. */
 int body_backfill_pass(struct main_state *ms, struct download_manager *dm,
-                       bool tip_work_pending,
+                       bool tip_work_pending, bool census_only,
                        body_backfill_wake_fn wake, void *wake_ctx)
 {
     if (!ms || !dm) {
@@ -185,7 +189,7 @@ int body_backfill_pass(struct main_state *ms, struct download_manager *dm,
     body_history_publish((folded && evaluated) ? &verdict : NULL);
 
     int enqueued = 0;
-    if (folded && res.missing > 0 && !tip_work_pending) {
+    if (folded && res.missing > 0 && !tip_work_pending && !census_only) {
         uint64_t in_flight = 0, queued = 0;
         dl_get_stats(dm, NULL, NULL, NULL, &in_flight, &queued);
         if (queued <= BODY_HISTORY_QUEUE_HEADROOM &&
@@ -241,5 +245,63 @@ int body_backfill_pass(struct main_state *ms, struct download_manager *dm,
     free(classes);
     free(hashes);
     return enqueued;
+}
+
+/* Snapshot what the census has actually DONE: passes folded, heights walked
+ * (definite answers AND indeterminate ones — "looked at", not
+ * "established"), and how wide the window it is walking is. The burst uses
+ * it for its made-no-progress and one-window-per-burst bounds. */
+static void bb_census_progress(uint64_t *passes, uint64_t *walked,
+                               int64_t *window_heights)
+{
+    body_history_global_lock();
+    const struct body_history_census *c = body_history_global_census();
+    if (passes)
+        *passes = c->passes;
+    if (walked)
+        *walked = c->heights_examined + c->heights_indeterminate;
+    if (window_heights)
+        *window_heights = (c->window_lo >= 0 && c->window_hi >= c->window_lo)
+                              ? c->window_hi - c->window_lo + 1
+                              : 0;
+    body_history_global_unlock();
+}
+
+int body_backfill_catch_up(struct main_state *ms, struct download_manager *dm,
+                           bool tip_work_pending,
+                           body_backfill_abort_fn should_abort, void *abort_ctx,
+                           body_backfill_wake_fn heartbeat, void *hb_ctx)
+{
+    int64_t deadline_us =
+        platform_time_monotonic_us() + BODY_HISTORY_CENSUS_BURST_MS * 1000;
+    uint64_t passes = 0, walked_at_start = 0, walked = 0;
+    int64_t window = 0;
+    bb_census_progress(&passes, &walked_at_start, &window);
+
+    int slices = 0;
+    while (!body_history_window_fully_measured() &&
+           !(should_abort && should_abort(abort_ctx)) &&
+           platform_time_monotonic_us() < deadline_us) {
+        (void)body_backfill_pass(ms, dm, tip_work_pending, true, NULL, NULL);
+        slices++;
+
+        uint64_t passes_now = 0;
+        bb_census_progress(&passes_now, &walked, &window);
+        /* A pass that folded nothing (no chain yet, unusable window,
+         * allocation failure) will fold nothing on the next call either.
+         * Stop rather than spin the thread against the deadline. */
+        if (passes_now == passes)
+            break;
+        passes = passes_now;
+        /* Once the burst has walked a whole window's worth of heights and
+         * coverage is STILL not fully measured, more slices add nothing —
+         * the shortfall is unreadable index entries, not un-run passes.
+         * Leave it to the next tick and to the named blocker. */
+        if (window > 0 && (int64_t)(walked - walked_at_start) >= window)
+            break;
+        if (heartbeat)
+            heartbeat(hb_ctx);
+    }
+    return slices;
 }
 

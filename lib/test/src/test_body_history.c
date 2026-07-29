@@ -14,7 +14,15 @@
  *   test_bh_unreadable_index_is_not_no_hole  — every height indeterminate
  *      must land on UNKNOWN with unmeasured_count == the whole window, and
  *      must NOT report COMPLETE, must NOT report proven, and must not be
- *      distinguishable-only-by-a-zero from a clean node.
+ *      distinguishable-only-by-a-zero from a clean node. Fresh-node shape:
+ *      the coverage map starts empty.
+ *   test_bh_restored_coverage_is_a_claim_not_a_look — the same window on a
+ *      RESTARTED node, where progress.kv hands back a coverage map claiming
+ *      everything. The claim is a file, not a look, and it must not certify
+ *      anything. This is the case the census got wrong: it published
+ *      status=complete after zero successful probes.
+ *   test_bh_persistence_never_restores_a_verdict — the durable half of the
+ *      same rule: a restart resumes the census cursor and nothing else.
  *   test_bh_partial_read_does_not_certify    — half the window readable and
  *      fully held still is not COMPLETE.
  *   test_bh_at_tip_requires_proven_history   — the AT_TIP planner refuses
@@ -167,10 +175,16 @@ static int64_t bh_run_full_census(struct body_history_census *census,
 
 /* ── 1. The rejected defect: unreadable index != no hole ────────── */
 
+/* Scope note, because the title used to overclaim: this pins the FRESH-node
+ * shape, where `held` starts empty. It passed on the parent commit while the
+ * node could still publish "no hole" from an unreadable index — it just
+ * needed a restored coverage map to do it, which a fresh node does not have.
+ * test_bh_restored_coverage_is_a_claim_not_a_look above is the restarted-node
+ * half, and it is the one that was failing. */
 static int test_bh_unreadable_index_is_not_no_hole(void)
 {
     int failures = 0;
-    TEST("unreadable index reports could-not-determine, never 'no hole'") {
+    TEST("unreadable index on a fresh node reports could-not-determine") {
         struct bh_fake_chain chain;
         ASSERT(bh_fake_chain_init(&chain, 500));
         /* The WHOLE window is unreadable — the exact case that must not
@@ -227,6 +241,109 @@ static int test_bh_unreadable_index_is_not_no_hole(void)
         ASSERT(good.unmeasured_count != v.unmeasured_count);
         body_coverage_free(&full_held);
         body_coverage_free(&full_measured);
+
+        body_coverage_free(&held);
+        body_coverage_free(&measured);
+        bh_fake_chain_free(&chain);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* ── 1b. The same defect wearing the restored-coverage costume ───── */
+
+/* The version of test 1 above only holds while `held` is EMPTY, which is the
+ * shape a FRESH node has. The node that matters is the restarted one:
+ * body_coverage_load() restores `held` from progress.kv at boot, so `held`
+ * arrives already claiming coverage that nothing in this process has
+ * verified. body_history_evaluate() used to union `held` into "definitively
+ * probed" — "holding a body is itself proof somebody looked" — and that turns
+ * a FILE into a look.
+ *
+ * The setup here is the whole bug in three lines: progress.kv claims 0..999,
+ * this boot has probed nothing, and every probe comes back INDETERMINATE
+ * because the block index cannot be read. On the parent commit this reported
+ *
+ *     status=complete held=1000 missing=0 unmeasured=0 probe_successes=0
+ *
+ * and body_history_verdict_is_proven() said true, so both at-tip gates let
+ * the claim through. That is the rejected defect verbatim, one level up: an
+ * unreadable block index publishing as "no hole". */
+static int test_bh_restored_coverage_is_a_claim_not_a_look(void)
+{
+    int failures = 0;
+    TEST("a coverage map restored from disk is a claim, never a probe") {
+        struct bh_fake_chain chain;
+        ASSERT(bh_fake_chain_init(&chain, 1000));
+        /* The block index is unreadable end to end. */
+        for (int64_t h = 0; h < 1000; h++)
+            chain.indexed[h] = 0;
+
+        struct body_coverage_map held, measured;
+        body_coverage_init(&held);
+        body_coverage_init(&measured);
+        /* What body_coverage_load() hands back at boot: a full claim. */
+        ASSERT(body_coverage_insert(&held, 0, 999));
+        /* What this boot has actually established: nothing. */
+        ASSERT(body_coverage_total_covered(&measured) == 0);
+
+        struct body_history_census census;
+        body_history_census_init(&census);
+        int64_t missing = bh_run_full_census(&census, &held, &measured,
+                                             &chain, 999, 64,
+                                             NULL, NULL, 0, NULL);
+        ASSERT(missing == 0);
+        ASSERT(census.heights_examined == 0);          /* zero successful */
+        ASSERT(census.heights_indeterminate == 1000);  /* probes */
+        ASSERT(body_coverage_total_covered(&measured) == 0);
+        /* An indeterminate probe must not evict the claim either — "I could
+         * not look" is not "it is gone". */
+        ASSERT(body_coverage_total_covered(&held) == 1000);
+
+        struct body_history_verdict v;
+        ASSERT(body_history_evaluate(&held, &measured, 0, 999, &v));
+
+        /* THE assertions. Zero successful probes cannot certify anything. */
+        ASSERT(v.status != BODY_HISTORY_COMPLETE);
+        ASSERT(!body_history_verdict_is_proven(&v));
+        ASSERT(v.status == BODY_HISTORY_UNKNOWN);
+        ASSERT(v.unmeasured_count == 1000);
+        ASSERT(v.lowest_unmeasured == 0);
+        ASSERT(v.missing_count == 0);
+        ASSERT(v.lowest_missing == -1);
+        /* held_count is what this boot PROVED it holds, not what the file
+         * says. The restored claim buys exactly zero. */
+        ASSERT(v.held_count == 0);
+
+        /* And both at-tip edges refuse it, which is the consequence that
+         * actually matters to an operator. */
+        struct sync_tip_state_evaluation eval;
+        syncsvc_plan_periodic_tip_state(&eval, SYNC_BLOCKS_DOWNLOAD, true,
+                                        1000, 1000, 1000, 1000, 3, 0, 0, 0,
+                                        v.status);
+        ASSERT(!eval.should_set_at_tip);
+        struct sync_block_acceptance acc;
+        struct p2p_node node;
+        memset(&node, 0, sizeof(node));
+        node.starting_height = 100;
+        node.state = PEER_SYNCING_BLOCKS;
+        syncsvc_note_valid_block(&acc, &node, SYNC_BLOCKS_DOWNLOAD,
+                                 100, 100, 0, 0, v.status);
+        ASSERT(!acc.should_set_sync_state);
+
+        /* One readable height changes the answer for that height ONLY — the
+         * evidence map is per-height, so a partial recovery cannot certify
+         * the window either. */
+        chain.indexed[999] = 1;
+        body_history_census_init(&census);
+        (void)bh_run_full_census(&census, &held, &measured, &chain, 999, 64,
+                                 NULL, NULL, 0, NULL);
+        struct body_history_verdict v2;
+        ASSERT(body_history_evaluate(&held, &measured, 0, 999, &v2));
+        ASSERT(v2.status == BODY_HISTORY_UNKNOWN);
+        ASSERT(!body_history_verdict_is_proven(&v2));
+        ASSERT(v2.held_count == 1);          /* the one height we looked at */
+        ASSERT(v2.unmeasured_count == 999);
 
         body_coverage_free(&held);
         body_coverage_free(&measured);
@@ -613,10 +730,17 @@ static int test_bh_singleton_defaults_to_unknown(void)
     return failures;
 }
 
+/* The other half of "a restored file is not a look": body_history_load()
+ * used to bring the `measured` evidence map back off disk alongside the
+ * cursor. That made the boot-time promise true of the verdict FLAG only —
+ * the flag started UNKNOWN, but the evidence it gets recomputed from arrived
+ * pre-loaded, so the first pass after a restart could republish COMPLETE
+ * having probed 4096 heights out of 3.2M. The cursor is a work pointer and
+ * survives; the evidence does not. */
 static int test_bh_persistence_never_restores_a_verdict(void)
 {
     int failures = 0;
-    TEST("a restart resumes the cursor but must re-earn 'complete'") {
+    TEST("a restart resumes the cursor but must re-earn every probe") {
         char dir[256];
         test_make_tmpdir(dir, sizeof(dir), "body_history", "main");
         ASSERT(progress_store_open(dir));
@@ -648,12 +772,93 @@ static int test_bh_persistence_never_restores_a_verdict(void)
             body_history_global_measured());
         int64_t cursor = body_history_global_census()->cursor;
         body_history_global_unlock();
-        ASSERT(measured == 900);   /* the measured map came back ... */
-        ASSERT(cursor == 555);     /* ... and so did the cursor ... */
-        ASSERT(!body_history_is_proven()); /* ... but NOT the verdict */
+        ASSERT(cursor == 555);     /* the work pointer came back ... */
+        ASSERT(measured == 0);     /* ... the evidence did NOT ... */
+        ASSERT(!body_history_is_proven()); /* ... and neither did the verdict */
+
+        /* Load must clear stale in-memory evidence too, not merely decline to
+         * add to it: a restart that skipped body_history_reset() must not
+         * inherit the previous run's probes. */
+        body_history_global_lock();
+        ASSERT(body_coverage_insert(body_history_global_measured(), 0, 4095));
+        body_history_global_unlock();
+        ASSERT(body_history_load(db));
+        body_history_global_lock();
+        measured = body_coverage_total_covered(
+            body_history_global_measured());
+        body_history_global_unlock();
+        ASSERT(measured == 0);
 
         body_history_reset();
         progress_store_close();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* The boot catch-up burst runs census slices back-to-back until this returns
+ * true, so if it ever returned true early the burst would stop before the
+ * window was walked and the node would go back to one slice per 5 s tick
+ * with coverage still unestablished. It answers "has this boot LOOKED at
+ * every height", which is a strictly weaker question than "are the bodies
+ * there" — an INCOMPLETE window is fully measured and must end the burst. */
+static int test_bh_fully_measured_is_looked_not_proven(void)
+{
+    int failures = 0;
+    TEST("fully-measured means every height was looked at, not that it is ok") {
+        body_history_reset();
+        /* Nothing published: a node that has run no census has looked at
+         * nothing, so the burst must keep going. */
+        ASSERT(!body_history_window_fully_measured());
+        ASSERT(!body_history_is_proven());
+
+        /* Published, but part of the window is still unprobed. */
+        struct body_history_verdict partial;
+        memset(&partial, 0, sizeof(partial));
+        partial.status = BODY_HISTORY_UNKNOWN;
+        partial.window_lo = 0;
+        partial.window_hi = 3196956;
+        partial.window_heights = 3196957;
+        partial.unmeasured_count = 3155842;
+        body_history_publish(&partial);
+        ASSERT(!body_history_window_fully_measured());
+
+        /* Every height looked at, and holes found. The burst is DONE — the
+         * measurement succeeded; its answer was just bad news. */
+        struct body_history_verdict inc = partial;
+        inc.status = BODY_HISTORY_INCOMPLETE;
+        inc.unmeasured_count = 0;
+        inc.missing_count = 3155842;
+        body_history_publish(&inc);
+        ASSERT(body_history_window_fully_measured());
+        ASSERT(!body_history_is_proven());   /* looked != proven */
+
+        /* Every height looked at and every body present. */
+        struct body_history_verdict comp = inc;
+        comp.status = BODY_HISTORY_COMPLETE;
+        comp.missing_count = 0;
+        comp.held_count = 3196957;
+        body_history_publish(&comp);
+        ASSERT(body_history_window_fully_measured());
+        ASSERT(body_history_is_proven());
+
+        /* A zero-height window has not been measured, it has been skipped —
+         * otherwise a node with no chain would end its burst claiming a
+         * completed measurement. */
+        struct body_history_verdict empty;
+        memset(&empty, 0, sizeof(empty));
+        empty.window_lo = -1;
+        empty.window_hi = -1;
+        body_history_publish(&empty);
+        ASSERT(!body_history_window_fully_measured());
+
+        /* Publishing ignorance retracts it too. */
+        body_history_publish(&comp);
+        ASSERT(body_history_window_fully_measured());
+        body_history_publish(NULL);
+        ASSERT(!body_history_window_fully_measured());
+
+        body_history_reset();
         PASS();
     } _test_next:;
     return failures;
@@ -908,6 +1113,7 @@ int test_body_history(void)
     failures += test_bh_restored_cursor_survives_the_first_pass();
     failures += test_bh_block_acceptance_refuses_unproven_history();
     failures += test_bh_unreadable_index_is_not_no_hole();
+    failures += test_bh_restored_coverage_is_a_claim_not_a_look();
     failures += test_bh_null_probe_leaves_everything_unmeasured();
     failures += test_bh_partial_read_does_not_certify();
     failures += test_bh_evaluate_failure_paths_are_unknown();
@@ -917,6 +1123,7 @@ int test_body_history(void)
     failures += test_bh_at_tip_requires_proven_history();
     failures += test_bh_singleton_defaults_to_unknown();
     failures += test_bh_persistence_never_restores_a_verdict();
+    failures += test_bh_fully_measured_is_looked_not_proven();
     failures += test_bh_dump_state_json_separates_the_three();
     return failures;
 }

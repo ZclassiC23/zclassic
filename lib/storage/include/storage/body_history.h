@@ -29,14 +29,28 @@
  * Two range maps, both plain `struct body_coverage_map` (this module adds
  * no second range algebra — it reuses storage/body_coverage.h):
  *
- *     held      heights whose body is on disk (BLOCK_HAVE_DATA)
- *     measured  heights the census actually LOOKED AT and got a definite
- *               answer for, whether the answer was have or missing
+ *     held      heights whose body is on disk (BLOCK_HAVE_DATA). Restored
+ *               from progress.kv at boot, so it is a CLAIM, never evidence.
+ *     measured  heights the census actually LOOKED AT this boot and got a
+ *               definite answer for, whether the answer was have or missing.
+ *               Never restored from disk. The only evidence there is.
  *
  * From those two, over a closed window [lo, hi]:
  *
- *     missing    = (measured u held) n window, minus held n window
- *     unmeasured = window, minus (measured u held) n window
+ *     missing    = measured n window, minus (measured n held) n window
+ *     unmeasured = window, minus measured n window
+ *
+ * `measured` alone decides what counts as probed. An earlier version of this
+ * file unioned `held` in too — "holding a body is itself proof somebody
+ * looked" — which is true of a map built by probes and false of the map the
+ * node actually has, because `held` comes back off disk at boot. A datadir
+ * whose progress.kv claimed coverage the block index could no longer
+ * corroborate (a partial backup, a truncated block_index.bin, a prune that
+ * did not update coverage) therefore published COMPLETE after zero
+ * successful probes — the same fail-open defect one level up. Three
+ * different files can disagree here (the window comes from tip_finalize_log,
+ * the probe from block_index.bin, the restored claim from progress.kv), so
+ * the evidence ledger has exactly one writer and exactly one lifetime.
  *
  * A height is only ever entered into `measured` on a DEFINITE probe result.
  * An unreadable index entry, a NULL active-chain slot, a missing block hash
@@ -62,8 +76,9 @@
  * reports which. */
 #define BODY_HISTORY_UNPROVEN_BLOCKER "chain.body_history_unproven"
 
-/* progress_meta keys for the resumable census. */
-#define BODY_HISTORY_MEASURED_META_KEY "body_history_measured"
+/* progress_meta key for the resumable census. The resume CURSOR is the only
+ * thing that persists — it is a work pointer, not evidence. Neither the
+ * verdict nor the `measured` map is written or read here. */
 #define BODY_HISTORY_CURSOR_META_KEY   "body_history_cursor"
 
 /* ── The three-outcome verdict ──────────────────────────────────── */
@@ -90,7 +105,11 @@ struct body_history_verdict {
     int64_t window_hi;
     int64_t window_heights;   /* hi - lo + 1, or 0 for an unusable window */
 
-    int64_t held_count;       /* heights in window whose body is on disk */
+    /* Heights this boot's census probed AND found the body for. NOT the
+     * whole of `held` n window: a height nobody probed contributes to
+     * unmeasured_count, never to held_count, however loudly the restored
+     * coverage map claims it. */
+    int64_t held_count;
     int64_t missing_count;    /* probed, definite, and absent */
     int64_t lowest_missing;   /* -1 when none known */
 
@@ -100,14 +119,16 @@ struct body_history_verdict {
 
 /* Derive the verdict for the closed window [lo, hi].
  *
- * Returns false — leaving *out at the UNKNOWN default — on any argument or
- * allocation problem. A false return is itself "could not determine": the
- * caller must publish *out as-is, never substitute a cheerier answer.
+ * Returns false — leaving *out at the UNKNOWN default — on any argument
+ * problem. A false return is itself "could not determine": the caller must
+ * publish *out as-is, never substitute a cheerier answer.
  *
- * `measured` may legitimately omit heights present in `held` (the above-tip
- * gap-fill feed writes coverage without going through the census), so the
- * two are unioned internally; the union is what "definitively probed"
- * means. */
+ * `measured` is the sole definition of "definitively probed". Heights that
+ * `held` claims but `measured` does not cover are UNMEASURED, not held —
+ * including the ones the above-tip gap-fill feed noted into coverage without
+ * going through the census. They cost the census one probe each, which is
+ * ~13 ns of array indexing, and they buy the guarantee that no restored file
+ * can stand in for a look. Allocates nothing and mutates neither input. */
 bool body_history_evaluate(const struct body_coverage_map *held,
                            const struct body_coverage_map *measured,
                            int64_t lo, int64_t hi,
@@ -137,12 +158,36 @@ enum body_history_probe {
 typedef enum body_history_probe (*body_history_probe_fn)(
         int64_t height, struct uint256 *out_hash, void *ctx);
 
-/* Bound on how many heights one census pass examines. The walk must never
- * stall the node: 4096 probes is a few hundred microseconds of array
- * indexing and flag reads, and a full 3.2M-height sweep completes in ~780
- * passes (~65 minutes at the 5 s gap-fill cadence) while never holding
- * cs_main for more than one window. */
+/* Bound on how many heights one census pass examines. It exists to bound
+ * how long cs_main is held per slice — NOT because the work is expensive.
+ *
+ * Measured on this tree (see the bench note below), 3,196,957 heights,
+ * 781 slices of 4096:
+ *
+ *   probe loop, block_index laid out in height order    19 ms whole sweep
+ *   probe loop, block_index pointers fully shuffled     41 ms whole sweep
+ *   slowest single 4096-height slice (the cs_main hold)  0.08 ms
+ *   fold + evaluate, live-node map shape (2 ranges)      ~1 ms whole sweep
+ *   fold + evaluate, 32k-range pathological map     430-630 ms whole sweep
+ *
+ * So a full census sweep of the owner's chain costs tens of milliseconds of
+ * CPU, and the lock is held for under a tenth of a millisecond at a time.
+ * The "~65 minutes per sweep" figure this file used to quote was 781 slices
+ * x the 5 s gap-fill tick — a CADENCE artifact, not a cost. */
 #define BODY_HISTORY_CENSUS_BUDGET 4096
+
+/* Wall-clock ceiling on the boot catch-up burst: how long the gap-fill
+ * worker may spend running census slices back-to-back within one tick,
+ * before it goes back to sleep and lets the above-tip pass have the thread.
+ *
+ * At the measured cost, one 250 ms burst covers the whole 3.2M-height window
+ * several times over, so a node establishes its real coverage within the
+ * first gap-fill tick instead of spending 65 minutes reporting UNKNOWN. The
+ * ceiling is a hard backstop for the pathological (heavily fragmented map)
+ * case, and it is 5% of one GAPFILL_TICK_SECS, so the census can never be
+ * the reason block download waits. Burst slices are census-only: they never
+ * enqueue, so a burst is a measurement and cannot become a download surge. */
+#define BODY_HISTORY_CENSUS_BURST_MS 250
 
 /* Bound on how many missing bodies one pass hands to the download manager.
  * The queue is height-sorted and below-tip work sorts AHEAD of tip-chasing
@@ -273,6 +318,14 @@ bool body_history_get_verdict(struct body_history_verdict *out);
  * on a node with no chain, safe from any thread. */
 bool body_history_is_proven(void);
 
+/* True when the last published verdict covered a non-empty window and left
+ * NO height in it unmeasured — i.e. this boot has looked at every height at
+ * least once. Says nothing about whether the bodies were there; that is
+ * body_history_is_proven(). Used by the census driver to decide when the
+ * boot catch-up burst is done and the slow steady-state cadence can take
+ * over. */
+bool body_history_window_fully_measured(void);
+
 /* The last published status, or BODY_HISTORY_UNKNOWN when nothing has been
  * published. Pass this straight into any gate that must refuse an at-tip /
  * complete claim: an unmeasured node returns the same value a node with a
@@ -282,8 +335,12 @@ enum body_history_status body_history_status_now(void);
 /* Reset to the pristine UNKNOWN state (test + boot use). */
 void body_history_reset(void);
 
-/* Durable resume so a restart does not rescan 3.2M heights. Best-effort:
- * a failure leaves the in-memory state UNKNOWN, which is correct. */
+/* Durable resume of the descending census CURSOR — a work pointer, nothing
+ * else. The verdict and the `measured` evidence map are deliberately not
+ * persisted: a restarted node has established nothing until it runs a pass,
+ * and wherever the restored cursor points, the census still has to walk the
+ * whole window before unmeasured_count can reach zero. Best-effort: a
+ * failure leaves the in-memory state UNKNOWN, which is correct. */
 struct sqlite3;
 bool body_history_save(struct sqlite3 *db);
 bool body_history_load(struct sqlite3 *db);
