@@ -44,6 +44,17 @@
  * ITS OWN signed window is open and its seq is the highest we have
  * seen. An entry whose window has closed simply stops being projected.
  *
+ * AND THAT WINDOW IS BOUNDED — ZENDP_MAX_WINDOW_SECONDS, thirty days,
+ * enforced in zid/zendp.h at BOTH ends and re-checked on every read of
+ * the directory here. Because the freshness rule above is per-record
+ * and self-asserted, an unbounded window would let a publisher decide
+ * unilaterally how long a revoked key keeps being advertised to a
+ * reader that never sees the revocation. A record asking for more is
+ * ZENDP_ERR_WINDOW_TOO_LONG — named separately from
+ * ZENDP_ERR_VERIFY, because "you signed a promise that is too long" is
+ * a publisher error an operator can fix, and "this signature does not
+ * hold" is not.
+ *
  * THE CHAIN'S VERDICT IS NOT PART OF THAT WINDOW, and that is a
  * separate question with a separate answer: see
  * zendp_directory_revalidate below. A key revoked after its record was
@@ -105,7 +116,10 @@ enum zendp_result {
     ZENDP_ERR_NULL,               /* null argument */
     ZENDP_ERR_SHAPE,              /* record fails zendp_valid */
     ZENDP_ERR_ENCODE,             /* doc/body would not encode */
-    ZENDP_ERR_SIGN,               /* zendp_sign refused (bad window/seed) */
+    ZENDP_ERR_SIGN,               /* zendp_sign refused (never-opens window
+                                     or unusable seed) — an over-long window
+                                     is ZENDP_ERR_WINDOW_TOO_LONG, below */
+    ZENDP_ERR_WINDOW_TOO_LONG,    /* window > ZENDP_MAX_WINDOW_SECONDS */
     ZENDP_ERR_BLOB,               /* blob put/get refused (named in the log) */
     ZENDP_ERR_ABSENT,             /* no local witness for the record key */
     ZENDP_ERR_DECODE,             /* bytes are not a well-formed zid doc */
@@ -173,7 +187,18 @@ bool zendp_directory_find(const struct zendp_directory *dir,
                           const struct zendp_entry **out);
 
 /* Copy out every record that is (a) inside its own signed validity
- * window at now_unix and (b) backed by an ACTIVE on-chain anchor.
+ * window at now_unix, (b) claiming a window this node still honours
+ * (zendp_window_check — see ZENDP_MAX_WINDOW_SECONDS), and (c) backed by
+ * an ACTIVE on-chain anchor.
+ *
+ * (b) is not redundant with acceptance. The directory is a PROJECTION,
+ * so an entry can predate the rule: installed by an older build, or read
+ * back from a store written before the ceiling existed. Judging the
+ * window only on the way in would let exactly the records the ceiling
+ * exists to bound outlive it, because they are already resident. The
+ * check is pure arithmetic on two numbers already in the entry — no
+ * allocation and no I/O, which is what lets it run here at all.
+ *
  * Returns how many were written. Never allocates, never blocks on I/O,
  * never re-asks the chain — it reads the verdict last recorded for the
  * entry. This is the discovery projection, and it runs on the shared

@@ -205,18 +205,74 @@ bool zendp_decode_body(struct zendp *ep, const uint8_t *body,
     return true;
 }
 
+/* THE WINDOW RULE — the only place the two signed numbers are judged
+ * against each other, called by both the mint end and the verify end so
+ * they cannot drift.
+ *
+ * ARITHMETIC. The ordering test runs FIRST and returns, so by the time
+ * the width is measured expiry > not_before is established and
+ * `expiry - not_before` is exact, at least 1, and cannot underflow. The
+ * subtraction is deliberate: the algebraically equivalent
+ * `expiry > not_before + ZENDP_MAX_WINDOW_SECONDS` is the form that
+ * WRAPS — a not_before within 30 days of UINT64_MAX makes the sum
+ * overflow to a small number and turns a lawful one-second window into
+ * a refusal. Subtracting the smaller unsigned from the larger has no
+ * such case. */
+enum zendp_window zendp_window_check(uint64_t not_before, uint64_t expiry)
+{
+    if (expiry <= not_before)
+        return ZENDP_WINDOW_NEVER_OPENS;
+    if (expiry - not_before > ZENDP_MAX_WINDOW_SECONDS)
+        return ZENDP_WINDOW_TOO_LONG;
+    return ZENDP_WINDOW_OK;
+}
+
+const char *zendp_window_string(enum zendp_window w)
+{
+    switch (w) {
+    case ZENDP_WINDOW_OK:          return "ok";
+    case ZENDP_WINDOW_NEVER_OPENS: return "window-never-opens";
+    case ZENDP_WINDOW_TOO_LONG:    return "window-exceeds-maximum";
+    }
+    return "unknown";
+}
+
+/* Both ends refuse with the same sentence, so an operator who sees it on
+ * publish recognises it when a peer's record is dropped. */
+static void zendp_log_window(const char *side, enum zendp_window w,
+                             uint64_t not_before, uint64_t expiry)
+{
+    if (w == ZENDP_WINDOW_NEVER_OPENS) {
+        LOG_ERROR(ZENDP_LOG,
+                  "%s: expiry %llu is not after not_before %llu — the "
+                  "validity window never opens",
+                  side, (unsigned long long)expiry,
+                  (unsigned long long)not_before);
+        return;
+    }
+    LOG_ERROR(ZENDP_LOG,
+              "%s: validity window is %llu seconds (not_before %llu, expiry "
+              "%llu) — the maximum is %llu seconds (%llu days). A record is "
+              "a promise that a key is reachable until its expiry, and that "
+              "promise outlives an on-chain revocation on every reader that "
+              "did not see it; re-sign with a shorter expiry and republish",
+              side, (unsigned long long)(expiry - not_before),
+              (unsigned long long)not_before, (unsigned long long)expiry,
+              (unsigned long long)ZENDP_MAX_WINDOW_SECONDS,
+              (unsigned long long)(ZENDP_MAX_WINDOW_SECONDS / 86400u));
+}
+
 bool zendp_sign(struct zid_doc *doc, const struct zendp *ep, uint64_t seq,
                 uint64_t expiry, const uint8_t seed[32])
 {
     if (!doc || !ep || !seed)
         LOG_FAIL(ZENDP_LOG, "sign: NULL argument (doc=%p ep=%p seed=%p)",
                  (void *)doc, (const void *)ep, (const void *)seed);
-    if (expiry <= ep->not_before)
-        LOG_FAIL(ZENDP_LOG,
-                 "sign: expiry %llu is not after not_before %llu — the "
-                 "validity window never opens",
-                 (unsigned long long)expiry,
-                 (unsigned long long)ep->not_before);
+    enum zendp_window w = zendp_window_check(ep->not_before, expiry);
+    if (w != ZENDP_WINDOW_OK) {
+        zendp_log_window("sign", w, ep->not_before, expiry);
+        LOG_FAIL(ZENDP_LOG, "sign: refused — %s", zendp_window_string(w));
+    }
     uint8_t body[ZENDP_BODY_MAX];
     size_t body_len = zendp_encode_body(body, sizeof(body), ep);
     if (body_len == 0)
@@ -242,6 +298,15 @@ bool zendp_verify(const struct zid_doc *doc, struct zendp *ep_out,
                  "verify: record not yet valid (now %llu < not_before %llu)",
                  (unsigned long long)now_unix,
                  (unsigned long long)ep.not_before);
+    /* The SAME rule the mint end applied, re-run on every read. Both
+     * numbers are signed, so an over-long claim is permanent: judging it
+     * once at acceptance would let a record signed before this rule
+     * existed stay live for as long as it asked for. */
+    enum zendp_window w = zendp_window_check(ep.not_before, doc->expiry);
+    if (w != ZENDP_WINDOW_OK) {
+        zendp_log_window("verify", w, ep.not_before, doc->expiry);
+        LOG_FAIL(ZENDP_LOG, "verify: refused — %s", zendp_window_string(w));
+    }
     if (ep_out)
         *ep_out = ep;
     return true;

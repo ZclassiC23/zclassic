@@ -32,6 +32,11 @@
  * is already signed. Carrying it twice would be two writable copies of
  * one fact — the same reason zdesc carries not_before only.
  *
+ * THE SIGNED WINDOW IS BOUNDED AT BOTH ENDS. not_before (this body) and
+ * expiry (the doc around it) together are a promise: "reach me here
+ * until then". A promise with no ceiling is the problem — see
+ * ZENDP_MAX_WINDOW_SECONDS below.
+ *
  * WHY EVERY TRANSPORT IS OPTIONAL, AND WHY "NONE" IS NOT. Clearnet-only
  * nodes, onion-only nodes, and dual nodes are all first-class, so each
  * block is flag-gated. A record with flags == 0 names no way to reach
@@ -88,6 +93,54 @@ struct zid_doc;
 #define ZENDP_BODY_MAX \
     (ZENDP_BODY_MIN + ZENDP_ONION_WIRE + ZENDP_IPV4_WIRE + ZENDP_IPV6_WIRE)
 
+/* ── THE SIGNED-WINDOW CEILING ──────────────────────────────────────
+ *
+ * The longest validity window a record may claim: expiry - not_before,
+ * in seconds. THIRTY DAYS.
+ *
+ * WHY A CEILING EXISTS AT ALL. A record says "this key is reachable at
+ * this address until <expiry>", and that sentence is only as good as
+ * the reader's knowledge of the key. A key REVOKED on-chain stops being
+ * advertised within seconds on any node that SEES the revocation
+ * (vcs/zendp_swarm.h, zendp_directory_revalidate). The window is what
+ * bounds the nodes that do NOT: one that was offline for the revoking
+ * block, a client that fetched the bytes and cached them, a peer whose
+ * chain state is older than the record. For those readers the signed
+ * window is the ONLY expiry that exists, so an unbounded window is an
+ * unbounded advertisement of a key that may already be dead.
+ *
+ * WHY THIRTY AND NOT SOMETHING ELSE. It is 10x the publish default of
+ * three days (ZEC_DEFAULT_VALIDITY_SECONDS, the operator command), so
+ * ordinary publishing is nowhere near it, and it is far above the
+ * 86400-second record-key period a publisher already has to republish
+ * on (ZDESC_PERIOD_SECONDS) — a node keeping its record addressable is
+ * signing fresh bytes every day regardless. Thirty days is therefore
+ * the worst case for a reader who never learns anything again, not a
+ * limit anyone should meet in normal use.
+ *
+ * THE BOUNDARY IS INCLUSIVE. A window of EXACTLY
+ * ZENDP_MAX_WINDOW_SECONDS is ACCEPTED; one second more is REFUSED.
+ * "Maximum" means the maximum is allowed. Mint and verify do not
+ * each re-derive this — they both call zendp_window_check(), so the
+ * two ends cannot drift apart and a node can never mint a record it
+ * would then refuse to accept from itself. */
+#define ZENDP_MAX_WINDOW_SECONDS UINT64_C(2592000)   /* 30 * 86400 */
+
+enum zendp_window {
+    ZENDP_WINDOW_OK = 0,
+    ZENDP_WINDOW_NEVER_OPENS, /* expiry <= not_before */
+    ZENDP_WINDOW_TOO_LONG,    /* window > ZENDP_MAX_WINDOW_SECONDS */
+};
+
+/* The window rule, in ONE place, used by zendp_sign and zendp_verify
+ * and by every layer above that wants to name the refusal itself. Pure:
+ * no clock, no allocation — it judges the two signed numbers against
+ * each other and nothing else. */
+enum zendp_window zendp_window_check(uint64_t not_before, uint64_t expiry);
+
+/* A stable, operator-readable name for a verdict. Never NULL. */
+const char *zendp_window_string(enum zendp_window w);
+
 struct zendp {
     uint8_t  flags;
     uint64_t services;
@@ -125,15 +178,24 @@ size_t zendp_encode_body(uint8_t *out, size_t out_len, const struct zendp *ep);
 bool zendp_decode_body(struct zendp *ep, const uint8_t *body,
                        uint16_t body_len);
 
-/* Encode ep as the body and zid_doc_sign it. Refuses expiry <=
- * ep->not_before (a window that never opens is a publisher bug, not a
- * verifier's problem). */
+/* Encode ep as the body and zid_doc_sign it. Refuses any window
+ * zendp_window_check refuses: expiry <= ep->not_before (a window that
+ * never opens is a publisher bug, not a verifier's problem), and a
+ * window longer than ZENDP_MAX_WINDOW_SECONDS. Refusing at the MINT end
+ * as well as the verify end is the point — a node must not be able to
+ * sign bytes it would itself reject. */
 bool zendp_sign(struct zid_doc *doc, const struct zendp *ep, uint64_t seq,
                 uint64_t expiry, const uint8_t seed[32]);
 
 /* zid_doc_verify (signature + version + expiry) against now_unix, then
- * decode the ZIDE body, then enforce now_unix >= not_before. ep_out may
- * be NULL to verify without decoding.
+ * decode the ZIDE body, then enforce now_unix >= not_before, then the
+ * SAME zendp_window_check the mint end applies. ep_out may be NULL to
+ * verify without decoding.
+ *
+ * The window rule is re-run here and not trusted from acceptance: the
+ * two numbers are inside the signature, so a record that claims an
+ * over-long window claims it forever and must be refused every time it
+ * is read, not once when it first arrived.
  *
  * The key checked is doc->master_pubkey — whatever the doc CARRIES.
  * Whether that key is anchored on-chain is NOT asked here; see

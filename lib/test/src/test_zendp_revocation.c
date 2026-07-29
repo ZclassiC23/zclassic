@@ -10,8 +10,9 @@
  * at acceptance, and cached for the life of the process — vcs/zendp_swarm.h
  * said so outright ("never re-asks the chain"). So a key REVOKED while the
  * node stayed up kept being handed to peer discovery until the record's own
- * signed expiry (the publish default is three days, and no maximum window is
- * enforced anywhere) or until somebody restarted the node.
+ * signed expiry (the publish default is three days, and the ceiling on how
+ * long a record may ask for is thirty — test_zendp_window.c) or until
+ * somebody restarted the node.
  *
  * THE PROPERTY PROVEN HERE, on the real path and in one process:
  *
