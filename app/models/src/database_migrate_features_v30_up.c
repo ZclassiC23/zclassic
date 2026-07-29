@@ -362,6 +362,60 @@ int node_db_migrate_features_v30_up(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 40) {
+        /* v40: store_purchases — the BUYER's side of a store transaction
+         * (models/store_purchase.h). `orders` is the merchant's row; this is
+         * the row the buyer needs to finish a purchase it already paid for.
+         *
+         * It exists because a purchase is not one instant: place order, send
+         * a shielded payment, wait for confirmations, download the file. A
+         * buyer that stops between paying and collecting has spent money and
+         * has nothing on disk, and without a persisted row that state has no
+         * name and no way back. stage + last_error give it both.
+         *
+         * order_id is UNIQUE: one buyer row per merchant order, so retrying
+         * "start this order" resumes instead of minting a second payment
+         * obligation. content_hash is the expected SHA3-256 of the payload,
+         * checked before any byte is written to output_path.
+         *
+         * App-layer projection: never read by consensus, safe to drop. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS store_purchases ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "order_id INTEGER NOT NULL,"
+            "product_id INTEGER NOT NULL,"
+            "product_name TEXT NOT NULL DEFAULT '',"
+            "token_id TEXT NOT NULL DEFAULT '',"
+            "payment_addr TEXT NOT NULL,"
+            "customer_addr TEXT NOT NULL DEFAULT '',"
+            "memo TEXT NOT NULL,"
+            "amount_zatoshi INTEGER NOT NULL,"
+            "content_hash BLOB "
+            "  CHECK(content_hash IS NULL OR length(content_hash)=32),"
+            "output_path TEXT NOT NULL DEFAULT '',"
+            "operation_id TEXT NOT NULL DEFAULT '',"
+            "stage INTEGER NOT NULL,"
+            "last_error TEXT NOT NULL DEFAULT '',"
+            "created_at INTEGER NOT NULL,"
+            "updated_at INTEGER NOT NULL)");
+
+        node_db_exec(ndb,
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_store_purchases_order "
+            "ON store_purchases(order_id)");
+
+        /* The resume path asks exactly one question — what is unfinished —
+         * so it is an index lookup, not a scan of every purchase ever made. */
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_store_purchases_stage "
+            "ON store_purchases(stage, id)");
+
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('040')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 40);
+        current_ver = 40;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }
