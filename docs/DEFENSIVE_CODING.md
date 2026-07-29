@@ -847,6 +847,7 @@ add/remove a gate.
 - `check-vcs-no-sha1`
 - `check-command-contract`
 - `check-command-availability-truthful`
+- `check-command-input-keys`
 - `check-telemetry-ontology`
 - `check-privileged-transition-receipt`
 - `check-no-gnu-va-args`
