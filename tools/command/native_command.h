@@ -624,7 +624,7 @@ enum zcl_node_db_ro_status {
     ZCL_NODE_DB_RO_NO_DATADIR,   /* no datadir was resolved at all */
     ZCL_NODE_DB_RO_PATH_TOO_LONG,/* <datadir>/node.db does not fit the buffer */
     ZCL_NODE_DB_RO_ABSENT,       /* nothing exists at <datadir>/node.db */
-    ZCL_NODE_DB_RO_UNREADABLE,   /* it exists and would not open read-only */
+    ZCL_NODE_DB_RO_UNREADABLE,   /* it exists and is not a readable database */
 };
 
 struct node_db;

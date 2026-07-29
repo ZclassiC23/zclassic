@@ -1345,19 +1345,30 @@ void zcl_native_handle_zcode_release_prove(
     /* Durable path FIRST: prove against the leaf set that was stored when
      * the domain was folded, so a .zid added or deleted since then cannot
      * change what this proof means. */
-    /* READ leaf: strictly read-only. Required, not optional — falling
-     * through to the release-dir fold on an unreadable node.db would answer
-     * "not anchored yet" when the truth is "I could not read the store". */
+    /* READ leaf: strictly read-only, and ABSENT is the one status we may
+     * walk past. A machine that has never folded a domain has no node.db at
+     * all, and the release-dir fold below is the whole answer for it — that
+     * is the offline case this command is for. Every other status must
+     * refuse: falling through on an UNREADABLE node.db would answer "not
+     * anchored yet" when the truth is "I could not read the store", and the
+     * caller cannot tell those apart from the reply. */
     sqlite3 *db = NULL;
     struct node_db ndb;
-    if (!zcl_native_node_db_require_readonly(datadir, reply,
-                                             "the stored anchor domain",
-                                             &db, &ndb))
+    char ndb_path[1200];
+    enum zcl_node_db_ro_status ro_st = zcl_native_node_db_open_readonly(
+        datadir, &db, &ndb, ndb_path, sizeof(ndb_path));
+    if (ro_st != ZCL_NODE_DB_RO_OK && ro_st != ZCL_NODE_DB_RO_ABSENT) {
+        (void)zcl_native_node_db_require_readonly(
+            datadir, reply, "the stored anchor domain", &db, &ndb);
         return;
-    bool answered = zr_prove_from_domain(&ndb, domain, name, version, reply);
-    zcl_native_node_db_close_readonly(&db, &ndb);
-    if (answered)
-        return;
+    }
+    if (ro_st == ZCL_NODE_DB_RO_OK) {
+        bool answered =
+            zr_prove_from_domain(&ndb, domain, name, version, reply);
+        zcl_native_node_db_close_readonly(&db, &ndb);
+        if (answered)
+            return;
+    }
 
     /* Fallback: this domain has never been folded, so there is no stored
      * leaf set to read. Fold the releases dir exactly as `anchor` would —

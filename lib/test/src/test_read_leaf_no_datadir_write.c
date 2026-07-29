@@ -258,6 +258,68 @@ static bool rlw_seed_node_db(const char *dir, const char *db_path)
 
 /* ── leaf invocation ───────────────────────────────────────────────── */
 
+/* Same call, but hands back whether the leaf DISCLOSED that the read did not
+ * happen. Not writing to a corrupt database is only half the contract; the
+ * other half is that the caller is told. A leaf that opens a 47-byte text
+ * file, gets nothing back, and answers "no results" has damaged nothing and
+ * still told a lie — and two fee-spending pre-flights key on exactly that
+ * distinction, so the lie costs money.
+ *
+ * There are two honest shapes, and which one is right depends on whether the
+ * chain read is the leaf's payload or an optional enrichment:
+ *   - refuse outright (error code set), for the leaves whose whole answer
+ *     comes out of node.db; or
+ *   - answer the rest and mark the section "read": false with a reason, for
+ *     zcode.contributor.show, where the package index is the real payload
+ *     and the ZNAM pointer is a garnish. Degrading is fine. Degrading
+ *     silently is not: "read": true with "found": false over a database
+ *     nobody could open is indistinguishable from "nobody claims this key".
+ * Both count as disclosure. A bare empty answer counts as neither. */
+static bool rlw_invoke_refused(const struct rlw_leaf *lf, const char *datadir,
+                               char *code_out, size_t code_size)
+{
+    struct json_value input;
+    json_init(&input);
+    json_set_object(&input);
+    (void)json_push_kv_str(&input, "datadir", datadir);
+    if (lf->k1)
+        (void)json_push_kv_str(&input, lf->k1, lf->v1);
+    if (lf->k2)
+        (void)json_push_kv_str(&input, lf->k2, lf->v2);
+
+    struct zcl_command_request request = { .input = &input };
+    struct zcl_command_reply reply;
+    zcl_command_reply_init(&reply, "zcl.read_leaf_probe.v1");
+    lf->fn(&request, &reply);
+    bool refused = reply.exit_code != 0 || reply.error.code[0] != '\0';
+    /* The degrade-and-disclose shape: any section that carries an explicit
+     * "read": false is a leaf saying, in the reply body, that it did not
+     * look. Walk the top-level sections rather than naming one, so a leaf
+     * that grows a second optional chain read is covered without editing
+     * this test. */
+    if (!refused && reply.data.type == JSON_OBJ) {
+        for (size_t i = 0; i < reply.data.num_children && !refused; i++) {
+            const struct json_value *sec = &reply.data.children[i];
+            if (sec->type != JSON_OBJ)
+                continue;
+            const struct json_value *r = json_get(sec, "read");
+            if (r && r->type == JSON_BOOL && !json_get_bool(r) &&
+                json_get(sec, "reason"))
+                refused = true;
+        }
+    }
+    if (code_out && code_size)
+        snprintf(code_out, code_size, "%s",
+                 reply.error.code[0]      ? reply.error.code
+                 : refused                ? "read:false+reason"
+                                          : "-");
+    printf("    [%s] status=%d exit=%d code=%s\n", lf->path, (int)reply.status,
+           (int)reply.exit_code, reply.error.code[0] ? reply.error.code : "-");
+    zcl_command_reply_free(&reply);
+    json_free(&input);
+    return refused;
+}
+
 static void rlw_invoke(const struct rlw_leaf *lf, const char *datadir)
 {
     struct json_value input;
@@ -429,6 +491,45 @@ static int t_garbage_node_db_is_not_quarantined(void)
     return failures;
 }
 
+/* ── case 4: a corrupt node.db must REFUSE, not answer empty ───────── */
+
+/* sqlite3_open_v2 is lazy — it does not read the header, so a non-database
+ * opens with SQLITE_OK and only fails at the first statement. A helper that
+ * returned OK there would hand every caller a live-looking handle over a
+ * file it had never read, and each caller's own "no rows" path would then
+ * report an empty answer. Absent and unreadable would be the same answer
+ * again, which is the entire thing this module exists to prevent. */
+static int t_garbage_node_db_is_refused_not_empty(void)
+{
+    int failures = 0;
+    char dir[256];
+    rlw_mkfixture(dir, sizeof(dir), "refuse");
+    char db_path[1200];
+    snprintf(db_path, sizeof(db_path), "%s/node.db", dir);
+
+    static const char *const junk =
+        "this is an operator file, not a SQLite database\n";
+    FILE *f = fopen(db_path, "wb");
+    bool wrote = f && fwrite(junk, 1, strlen(junk), f) == strlen(junk);
+    if (f)
+        fclose(f);
+    RLW_CHECK("refuse: fixture node.db written", wrote);
+
+    for (int i = 0; i < RLW_LEAF_COUNT; i++) {
+        char code[64] = { 0 };
+        bool refused = rlw_invoke_refused(&g_rlw_leaves[i], dir, code,
+                                          sizeof(code));
+        char what[192];
+        snprintf(what, sizeof(what),
+                 "refuse: %s answers a refusal over an unreadable node.db "
+                 "(got code=%s)", g_rlw_leaves[i].path, code);
+        RLW_CHECK(what, refused);
+    }
+
+    test_rm_rf(dir);
+    return failures;
+}
+
 int test_read_leaf_no_datadir_write(void)
 {
     printf("\n=== read leaf writes nothing to the datadir ===\n");
@@ -437,6 +538,7 @@ int test_read_leaf_no_datadir_write(void)
     failures += t_absent_node_db_is_not_created();
     failures += t_present_node_db_is_not_mutated();
     failures += t_garbage_node_db_is_not_quarantined();
+    failures += t_garbage_node_db_is_refused_not_empty();
 
     return failures;
 }

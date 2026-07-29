@@ -82,6 +82,28 @@ enum zcl_node_db_ro_status zcl_native_node_db_open_readonly(
     (void)sqlite3_exec(db, "PRAGMA query_only=ON", NULL, NULL, NULL);
     sqlite3_busy_timeout(db, ZCL_NODE_DB_RO_BUSY_MS);
 
+    /* Third, TOUCH THE FILE. sqlite3_open_v2 is lazy: it does not read the
+     * header, so a 47-byte text file, a truncated database, or any other
+     * non-database opens with SQLITE_OK and only fails later, at the first
+     * statement — by which point the caller has already been told OK and is
+     * inside its own query path, where "it did not open" and "it opened and
+     * held nothing" are the same shape. That is the exact confusion this
+     * whole helper exists to remove, so pay one page read here.
+     *
+     * This matters beyond tidiness: zcl_native_node_db_require_readonly's
+     * callers include two pre-flights that spend a fee (core.identity.anchor,
+     * the zdir register path). They treat ABSENT as "proceed, this is a
+     * legitimate first anchor" and anything else as fatal. A corrupt node.db
+     * returning OK made the revocation lookup fail, read as "not revoked",
+     * and spent the fee on a check that never ran. */
+    if (sqlite3_exec(db, "PRAGMA schema_version", NULL, NULL, NULL)
+        != SQLITE_OK) {
+        LOG_ERROR("cmd", "node.db present but not a readable database: %s: %s",
+                  path, sqlite3_errmsg(db));
+        sqlite3_close(db);
+        return ZCL_NODE_DB_RO_UNREADABLE;
+    }
+
     *db_out = db;
     ndb_out->db = db;
     ndb_out->open = true;
