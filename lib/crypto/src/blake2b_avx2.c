@@ -17,27 +17,61 @@
 
 #include "crypto/blake2b.h"
 #include <string.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <cpuid.h>
 #include <immintrin.h>
 
 /* ── Runtime CPU feature detection ───────────────────────────── */
 
-static bool g_has_avx2 = false;
-static bool g_has_avx512f = false;
-static bool g_detected = false;
+/* Two layers, deliberately separate:
+ *   g_cap_*  — what CPUID says this host CAN do. Never overridden.
+ *   g_use_*  — what finalize_states() actually dispatches on. Equal to the
+ *              capability under AUTO; narrowed by
+ *              equihash_blake2b_batch_select_impl() so a bench/oracle can time
+ *              and compare a lower tier on a capable host.
+ * A force can only ever turn a tier OFF, so it can never make the code execute
+ * an instruction the CPU lacks.
+ *
+ * All five are _Atomic and g_detected is published LAST with release ordering,
+ * matching sha256.c's `_Atomic int sha_ni_available`. The previous code set
+ * g_detected before writing the feature flags, so a second thread could
+ * observe "detection done" with both tiers still false and silently fall back
+ * to scalar for the life of the process — on the Equihash PoW path, which runs
+ * on both the reducer ingest thread and background validation. Correctness was
+ * never at risk (scalar is the reference); the accelerator was. */
+static _Atomic bool g_cap_avx2 = false;
+static _Atomic bool g_cap_avx512f = false;
+static _Atomic bool g_use_avx2 = false;
+static _Atomic bool g_use_avx512f = false;
+static _Atomic bool g_detected = false;
 
 static void detect_features(void)
 {
-    if (g_detected) return;
-    g_detected = true;
+    if (atomic_load_explicit(&g_detected, memory_order_acquire)) return;
 #if defined(__x86_64__) || defined(_M_X64)
     unsigned int eax, ebx, ecx, edx;
+    bool avx2 = false, avx512f = false;
     if (__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) {
-        g_has_avx2   = (ebx >> 5) & 1;   /* EBX bit 5 */
-        g_has_avx512f = (ebx >> 16) & 1;  /* EBX bit 16 */
+        avx2    = (ebx >> 5) & 1;   /* EBX bit 5  */
+        avx512f = (ebx >> 16) & 1;  /* EBX bit 16 */
     }
+    /* AVX-512 additionally requires the OS to have enabled ZMM state, else the
+     * first vmovdqa64 raises #UD. Every other ZMM entry point in this tree
+     * (keccak_avx512.c, fr_avx512.c) checks XCR0; this one did not. */
+    if (avx512f) {
+        unsigned int xcr0_lo, xcr0_hi;
+        __asm__ volatile("xgetbv" : "=a"(xcr0_lo), "=d"(xcr0_hi) : "c"(0));
+        (void)xcr0_hi;
+        /* bit 5 opmask, bit 6 ZMM_hi256, bit 7 Hi16_ZMM */
+        if ((xcr0_lo & 0xE0) != 0xE0) avx512f = false;
+    }
+    atomic_store_explicit(&g_cap_avx2, avx2, memory_order_relaxed);
+    atomic_store_explicit(&g_cap_avx512f, avx512f, memory_order_relaxed);
+    atomic_store_explicit(&g_use_avx2, avx2, memory_order_relaxed);
+    atomic_store_explicit(&g_use_avx512f, avx512f, memory_order_relaxed);
 #endif
+    atomic_store_explicit(&g_detected, true, memory_order_release);
 }
 
 /* ── Constants ───────────────────────────────────────────────── */
@@ -246,7 +280,7 @@ static void finalize_states(const struct blake2b_ctx *base,
         states[i].f[0] = (uint64_t)-1;
     }
 
-    if (n == 8 && g_has_avx512f) {
+    if (n == 8 && atomic_load_explicit(&g_use_avx512f, memory_order_relaxed)) {
         struct blake2b_ctx *cp[8];
         const uint8_t *bp[8];
         for (int i = 0; i < 8; i++) { cp[i] = &states[i]; bp[i] = blocks[i]; }
@@ -256,7 +290,7 @@ static void finalize_states(const struct blake2b_ctx *base,
         return;
     }
 
-    if (n >= 4 && g_has_avx2) {
+    if (n >= 4 && atomic_load_explicit(&g_use_avx2, memory_order_relaxed)) {
         struct blake2b_ctx *cp[4] = {&states[0],&states[1],&states[2],&states[3]};
         const uint8_t *bp[4] = {blocks[0],blocks[1],blocks[2],blocks[3]};
         blake2b_compress_4way(cp, bp);
@@ -327,4 +361,52 @@ void equihash_generate_hash_batch8(
             blake2b_final(&s, hashes[i], hash_len);
         }
     }
+}
+
+/* ── Tier selection (differential oracle + benchmark) ─────────── */
+
+int equihash_blake2b_batch_select_impl(enum blake2b_batch_impl which)
+{
+    detect_features();
+
+    const bool cap512 = atomic_load_explicit(&g_cap_avx512f, memory_order_relaxed);
+    const bool cap256 = atomic_load_explicit(&g_cap_avx2, memory_order_relaxed);
+
+    /* A request is narrowed to what the host can actually execute, never
+     * widened. Returning the INSTALLED tier (not the requested one) is what
+     * lets a caller skip rather than mis-report on a host that lacks it. */
+    bool use512 = false, use256 = false;
+    switch (which) {
+    case BLAKE2B_BATCH_IMPL_SCALAR:
+        break;
+    case BLAKE2B_BATCH_IMPL_AVX2:
+        use256 = cap256;
+        break;
+    case BLAKE2B_BATCH_IMPL_AVX512:
+        use512 = cap512;
+        use256 = cap256;   /* n<8 batches still take the widest legal path */
+        break;
+    case BLAKE2B_BATCH_IMPL_AUTO:
+    default:
+        use512 = cap512;
+        use256 = cap256;
+        break;
+    }
+
+    atomic_store_explicit(&g_use_avx512f, use512, memory_order_relaxed);
+    atomic_store_explicit(&g_use_avx2, use256, memory_order_relaxed);
+
+    if (use512) return BLAKE2B_BATCH_IMPL_AVX512;
+    if (use256) return BLAKE2B_BATCH_IMPL_AVX2;
+    return BLAKE2B_BATCH_IMPL_SCALAR;
+}
+
+const char *equihash_blake2b_batch_implementation(void)
+{
+    detect_features();
+    if (atomic_load_explicit(&g_use_avx512f, memory_order_relaxed))
+        return "AVX-512 (8-way)";
+    if (atomic_load_explicit(&g_use_avx2, memory_order_relaxed))
+        return "AVX2 (4-way)";
+    return "scalar";
 }
