@@ -741,9 +741,25 @@ enum vcs_package_store_result vcs_package_store_get_chunk_at(
         pthread_mutex_unlock(&store->lock);
         return VCS_PACKAGE_STORE_ERR_CHUNK_COORD;
     }
+    /* files[].path is heap memory owned by the record, and an eviction on
+     * another thread can free it (and relocate the record itself) the
+     * moment this lock is dropped — get_chunk re-locks and re-resolves, so
+     * it must be handed a path that outlives the gap. Copy it out under
+     * the lock, the same way get_manifest_wire copies its payload below.
+     * Parse rejects any path longer than VCS_PACKAGE_PATH_MAX, so an
+     * over-long one here means a corrupt record, not a legal coordinate. */
     const char *path = pkg->manifest.files[file_index].path;
+    char path_copy[VCS_PACKAGE_PATH_MAX + 1];
+    size_t path_len = path ? strnlen(path, sizeof(path_copy)) : sizeof(path_copy);
+    if (path_len >= sizeof(path_copy)) {
+        pthread_mutex_unlock(&store->lock);
+        LOG_RETURN(VCS_PACKAGE_STORE_ERR_CHUNK_COORD, STORE_LOG,
+                   "manifest path for file %u is absent or exceeds %u bytes",
+                   file_index, VCS_PACKAGE_PATH_MAX);
+    }
+    memcpy(path_copy, path, path_len + 1u);
     pthread_mutex_unlock(&store->lock);
-    return vcs_package_store_get_chunk(store, package_root, path,
+    return vcs_package_store_get_chunk(store, package_root, path_copy,
                                        chunk_index, out, out_len);
 }
 
