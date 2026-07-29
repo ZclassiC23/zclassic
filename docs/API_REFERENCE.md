@@ -266,7 +266,7 @@ represented by its children's sections.
 | `core wallet status` | ready | read / read / operator · fast/low | none | `zcl.wallet_status.v1` | `zclassic23 core wallet status` | Wallet summary and key counts |
 | `core wallet balance` | ready | read / read / operator · fast/low | none | `zcl.wallet_balance.v1` | `zclassic23 core wallet balance` | Confirmed and total balance |
 | `core wallet audit` | ready | read / read / operator · foreground/moderate | none | `zcl.wallet_audit.v1` | `zclassic23 core wallet audit` | Audit wallet key/UTXO consistency |
-| `core wallet rescan` | ready | mutate / wallet / **owner**, job · background/high | `start_height` | `zcl.wallet_rescan.v1` | `zclassic23 core wallet rescan` | Rescan the chain for wallet transactions |
+| `core wallet rescan` | ready | mutate / wallet / **owner** · background/high | `start_height` | `zcl.wallet_rescan.v2` | `zclassic23 core wallet rescan` | Rescan the chain for wallet transactions |
 | `core wallet replay` | planned | mutate / wallet / **owner**, job · background/high | none | `zcl.wallet_replay.v1` | `zclassic23 core wallet replay` | Replay wallet state from chain — *wallet replay job binding is a Wave 2.2 deliverable* |
 
 #### `core.wallet.address` — Transparent addresses

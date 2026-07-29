@@ -275,8 +275,73 @@ bool wallet_dump_key(const struct wallet *w, const struct key_id *keyid,
                       struct privkey *key_out);
 
 struct active_chain;
+
+/* Minimum share of the INDEXED heights in a rescan range whose bodies must
+ * actually be read off disk before the scan's "found N" is allowed to mean
+ * anything. Justification, from the three non-test sites that ever clear
+ * BLOCK_HAVE_DATA — this codebase has no block-file pruning (no fPruneMode /
+ * nPruneTarget anywhere), so a cleared flag is never a routine, expected
+ * state:
+ *   1. snapshot_controller_import.c (header_only) strips it across the WHOLE
+ *      imported range — the fast-sync bootstrap, i.e. no bodies at all;
+ *   2. boot.c clears it only ABOVE the tip (outside any rescan range);
+ *   3. boot_services.c clears it for entries pointing at empty/missing
+ *      block files — again a genuine "the body is not here".
+ * All three mean the node cannot see those transactions. The one benign
+ * cause of a small shortfall is a ragged tail of blocks still in flight
+ * during body download, which is bounded and transient; 1% leaves room for
+ * that while still catching a snapshot-bootstrapped node (~100% missing). */
+#define WALLET_RESCAN_MIN_COVERAGE_PCT 99
+
+/* Coverage + yield accounting for one rescan.
+ *
+ * This exists because wallet_scan_block() returns a bare 0 for BOTH "this
+ * block holds nothing of yours" and "this node has no body for that block",
+ * which let a rescan over a body-less range report "0 wallet outputs found"
+ * and look like a definitive answer. Every counter below is filled by
+ * wallet_rescan_report(); `blocker` is set to a typed, stable name whenever
+ * the scan's result must NOT be read as "you have no funds". */
+struct wallet_rescan_report {
+    int      start_height;
+    int      stop_height;
+    int64_t  blocks_in_range;        /* stop - start + 1 */
+    int64_t  blocks_indexed;         /* active_chain_at() returned an entry */
+    int64_t  blocks_scanned;         /* body read off disk AND folded in */
+    int64_t  blocks_no_index;        /* active_chain_at() returned NULL */
+    int64_t  blocks_missing_data;    /* !(nStatus & BLOCK_HAVE_DATA) */
+    int64_t  blocks_read_failed;     /* read_block_from_disk_index() failed */
+    int64_t  outputs_found;          /* transparent outputs that are ours */
+    int64_t  shielded_notes_found;   /* Sapling notes trial-decrypted */
+    int64_t  shielded_txs_unscanned; /* txs with shielded outputs we could
+                                      * not even try (no Sapling keys) */
+    size_t   sapling_key_count;      /* Sapling keys held at scan time */
+    bool     shielded_scan_skipped;  /* advisory: shielded outputs went
+                                      * untried because the wallet holds no
+                                      * Sapling key — the seed-only-restore
+                                      * state. Never on its own a blocker: a
+                                      * transparent-only wallet is a normal,
+                                      * legitimate configuration. */
+    bool     coverage_ok;            /* false whenever blocker[0] is set */
+    char     blocker[48];            /* "" when coverage_ok */
+};
+
+/* Typed blocker names published in `blocker`. Stable strings — an operator
+ * and an agent both key off these. */
+#define WALLET_RESCAN_BLOCKER_NO_BLOCK_DATA   "RESCAN_NO_BLOCK_DATA"
+#define WALLET_RESCAN_BLOCKER_INCOMPLETE      "RESCAN_INCOMPLETE_COVERAGE"
+#define WALLET_RESCAN_BLOCKER_INCONCLUSIVE    "RESCAN_INCONCLUSIVE_ZERO"
+
 int wallet_scan_block(struct wallet *w, const struct block_index *pindex,
                       const char *datadir);
+/* Rescan [start_height, stop_height] and fill `out` with the coverage and
+ * yield accounting. Returns the number of wallet outputs + shielded notes
+ * found, identical to wallet_rescan(). `out` may be NULL. Inspect
+ * out->coverage_ok / out->blocker before treating a 0 return as "no funds". */
+int wallet_rescan_report(struct wallet *w, const struct active_chain *chain,
+                         int start_height, int stop_height,
+                         const char *datadir,
+                         struct wallet_rescan_report *out);
+/* Thin wrapper over wallet_rescan_report() that discards the report. */
 int wallet_rescan(struct wallet *w, const struct active_chain *chain,
                   int start_height, int stop_height, const char *datadir);
 int wallet_scan_blockfiles(struct wallet *w, const char *datadir);
