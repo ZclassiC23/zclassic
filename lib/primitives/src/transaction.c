@@ -70,6 +70,41 @@ void transaction_free(struct transaction *tx)
     tx->num_joinsplit = 0;
 }
 
+/* Negative = production: element arrays are left indeterminate outside the
+ * fields the per-element initializers write. See transaction.h. */
+static int g_alloc_poison = -1;
+
+int transaction_alloc_poison_set(int fill_byte)
+{
+    int prev = g_alloc_poison;
+    g_alloc_poison = fill_byte;
+    return prev;
+}
+
+/* Shared body of tx_in_array_alloc / tx_out_array_alloc. `count` is bounded
+ * by MAX_TX_INPUTS / MAX_TX_OUTPUTS (65536) at every call site and elem_size
+ * is ~10 KB, so count*elem_size tops out near 660 MB and cannot overflow. */
+static void *tx_array_alloc(size_t count, size_t elem_size, const char *label)
+{
+    if (count == 0)
+        return NULL;   /* no 1-byte stub — see transaction_alloc */
+    size_t bytes = count * elem_size;
+    void *p = zcl_malloc(bytes, label);
+    if (p && g_alloc_poison >= 0)
+        memset(p, g_alloc_poison, bytes);
+    return p;
+}
+
+struct tx_in *tx_in_array_alloc(size_t count, const char *label)
+{
+    return tx_array_alloc(count, sizeof(struct tx_in), label);
+}
+
+struct tx_out *tx_out_array_alloc(size_t count, const char *label)
+{
+    return tx_array_alloc(count, sizeof(struct tx_out), label);
+}
+
 bool transaction_alloc(struct transaction *tx, size_t num_vin, size_t num_vout)
 {
     if (num_vin > MAX_TX_INPUTS || num_vout > MAX_TX_OUTPUTS)
@@ -80,15 +115,18 @@ bool transaction_alloc(struct transaction *tx, size_t num_vin, size_t num_vout)
      * unique 1-byte pointer that must be freed; callers that later replace
      * tx->vin/tx->vout with a fresh allocation (e.g. transaction_deserialize
      * partial paths) would silently leak that stub. Treat zero as "no
-     * array" and leave the pointer NULL so transaction_free is a no-op. */
-    tx->vin  = num_vin  ? zcl_calloc(num_vin,  sizeof(struct tx_in),  "tx_vin")  : NULL;
-    tx->vout = num_vout ? zcl_calloc(num_vout, sizeof(struct tx_out), "tx_vout") : NULL;
+     * array" and leave the pointer NULL so transaction_free is a no-op.
+     *
+     * Not zero-filled: the tx_in_init / tx_out_set_null loops below define
+     * every field, and the script tail past `.size` is never read. */
+    tx->vin  = tx_in_array_alloc(num_vin,  "tx_vin");
+    tx->vout = tx_out_array_alloc(num_vout, "tx_vout");
     if ((num_vin && !tx->vin) || (num_vout && !tx->vout)) {
         free(tx->vin);
         free(tx->vout);
         tx->vin = NULL;
         tx->vout = NULL;
-        LOG_FAIL("tx", "calloc failed: vin=%zu (%zu MB) vout=%zu",
+        LOG_FAIL("tx", "alloc failed: vin=%zu (%zu MB) vout=%zu",
                  num_vin, num_vin * sizeof(struct tx_in) / (1024*1024), num_vout);
     }
     tx->num_vin = num_vin;
@@ -255,10 +293,17 @@ bool tx_in_deserialize(struct tx_in *in, struct byte_stream *s)
     if (script_len > MAX_SCRIPT_SIZE)
         LOG_FAIL("tx", "input script_sig too large: %llu > MAX_SCRIPT_SIZE(%d)",
                  (unsigned long long)script_len, MAX_SCRIPT_SIZE);
-    in->script_sig.size = (size_t)script_len;
-    if (in->script_sig.size > 0 &&
-        !stream_read_bytes(s, in->script_sig.data, in->script_sig.size))
+    /* Set .size only AFTER the bytes are in. A short stream must not leave a
+     * script claiming `size` bytes over buffer content that was never
+     * written — the element arrays are no longer zero-filled, so that would
+     * be a window of indeterminate bytes behind a non-zero length. The
+     * accept/reject decision is unchanged either way (it is driven by the
+     * read failing, never by content); this only keeps the rejected object
+     * describing itself honestly. */
+    if (script_len > 0 &&
+        !stream_read_bytes(s, in->script_sig.data, (size_t)script_len))
         return false;
+    in->script_sig.size = (size_t)script_len;
     return stream_read_u32_le(s, &in->sequence);
 }
 
@@ -280,10 +325,11 @@ bool tx_out_deserialize(struct tx_out *out, struct byte_stream *s)
     if (script_len > MAX_SCRIPT_SIZE)
         LOG_FAIL("tx", "output script_pub_key too large: %llu > MAX_SCRIPT_SIZE(%d)",
                  (unsigned long long)script_len, MAX_SCRIPT_SIZE);
+    /* .size after the read, for the reason given in tx_in_deserialize. */
+    if (script_len > 0 &&
+        !stream_read_bytes(s, out->script_pub_key.data, (size_t)script_len))
+        return false;
     out->script_pub_key.size = (size_t)script_len;
-    if (out->script_pub_key.size > 0)
-        return stream_read_bytes(s, out->script_pub_key.data,
-                                 out->script_pub_key.size);
     return true;
 }
 
@@ -533,9 +579,9 @@ bool transaction_deserialize(struct transaction *tx, struct byte_stream *s)
     if (num_vout * 9 > stream_remaining(s))
         LOG_FAIL("tx", "num_vout %llu exceeds remaining bytes %zu (>=9/vout)",
                  (unsigned long long)num_vout, stream_remaining(s));
-    tx->vout = zcl_calloc((size_t)num_vout, sizeof(struct tx_out), "tx_vout");
+    tx->vout = tx_out_array_alloc((size_t)num_vout, "tx_vout");
     if (num_vout > 0 && !tx->vout)
-        LOG_FAIL("tx", "calloc failed for %llu tx_vout entries",
+        LOG_FAIL("tx", "alloc failed for %llu tx_vout entries",
                  (unsigned long long)num_vout);
     tx->num_vout = (size_t)num_vout;
     for (size_t i = 0; i < tx->num_vout; i++) {

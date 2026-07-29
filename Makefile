@@ -4091,6 +4091,47 @@ $(BIN_DIR)/simd_bench: $(SIMD_BENCH_SRCS)
 bench-simd: $(BIN_DIR)/simd_bench
 	@$(BIN_DIR)/simd_bench $(if $(CPU),--cpu=$(CPU)) $(if $(REPS),--reps=$(REPS))
 
+# Block-body deserialization microbenchmark (tools/serial_bench.c). Drives the
+# SAME real chain bytes through the parser once per allocation variant —
+# "zero-filled" reproduces the exact pre-change calloc behavior, so BEFORE and
+# AFTER are measured in ONE process on ONE input rather than by diffing two
+# builds against two moods of the machine. It asserts every variant derives a
+# BIT-IDENTICAL digest (block hash + merkle root + every txid + the full
+# re-serialized wire bytes) and only then reports median + p90, pinned to one
+# core with the CCD named. Exits 2 on any divergence: a parser that is faster
+# because it read uninitialized memory into a consensus hash is a chain split,
+# not a win.
+#
+# Built at the SHIPPED CFLAGS (-O3 -march=x86-64-v3, no LTO) on purpose.
+#
+# CORPUS= points at a file of raw block hex, one per line, e.g. from
+#   for h in ...; do zclassic-cli getblock $$(zclassic-cli getblockhash $$h) 0; done
+# With no CORPUS it falls back to a synthetic block and labels it as such.
+SERIAL_BENCH_SRCS = tools/serial_bench.c \
+	lib/primitives/src/transaction.c lib/primitives/src/block.c \
+	lib/bloom/src/merkle.c \
+	core/math/src/serialize.c core/math/src/uint256.c core/math/src/hash.c \
+	lib/crypto/src/sha256.c lib/crypto/src/sha512.c lib/crypto/src/ripemd160.c \
+	lib/crypto/src/hmac_sha512.c lib/encoding/src/utilstrencodings.c \
+	lib/support/src/cleanse.c lib/base/src/safe_alloc.c lib/base/src/log_level.c
+
+.PHONY: serial_bench
+serial_bench: $(BIN_DIR)/serial_bench
+$(BIN_DIR)/serial_bench: $(SERIAL_BENCH_SRCS)
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O3 $(if $(ZCL_NATIVE),-march=native,-march=x86-64-v3) \
+	    -Wall -Wextra -Werror -pedantic \
+	    -Ilib/primitives/include -Ilib/script/include -Ilib/bloom/include \
+	    -Ilib/crypto/include -Ilib/encoding/include -Ilib/base/include \
+	    -Ilib/util/include -Ilib/support/include -Ilib/sapling/include \
+	    -Ilib/keys/include -Ilib/core/include $(CORE_INCLUDES) \
+	    -D_POSIX_C_SOURCE=200809L -o $@ $^
+
+.PHONY: bench-serial
+bench-serial: $(BIN_DIR)/serial_bench
+	@$(BIN_DIR)/serial_bench $(if $(CORPUS),--corpus=$(CORPUS)) \
+	    $(if $(CPU),--cpu=$(CPU)) $(if $(REPS),--reps=$(REPS))
+
 bench: zclassic23
 	@ZCL_BENCH_COMMIT="$(BUILD_COMMIT)" $(ZCLASSIC23_BIN) -bench
 

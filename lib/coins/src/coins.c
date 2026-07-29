@@ -35,7 +35,12 @@ void coins_free(struct coins *c)
 
 bool coins_alloc(struct coins *c, size_t num_outputs)
 {
-    c->vout = zcl_calloc(num_outputs, sizeof(struct tx_out), "coins_vout");
+    /* Not zero-filled: the tx_out_set_null loop below defines every field of
+     * every element, and the script tail past `.size` is never read. See
+     * primitives/transaction.h and the test_script_tail_poison group. This is
+     * the UTXO read path, so it runs once per coin lookup at 10016 bytes per
+     * output. */
+    c->vout = tx_out_array_alloc(num_outputs, "coins_vout");
     if (num_outputs && !c->vout) {
         /* OOM: leave an empty (num_vout=0, vout=NULL) record and return
          * false BEFORE the null-init loop so we never deref the NULL
@@ -43,7 +48,7 @@ bool coins_alloc(struct coins *c, size_t num_outputs)
          * the return value (false == failure, not "pruned").  Set
          * num_vout=0 before LOG_FAIL, which itself returns false. */
         c->num_vout = 0;
-        LOG_FAIL("coins", "zcl_calloc failed for num_outputs=%zu",
+        LOG_FAIL("coins", "tx_out_array_alloc failed for num_outputs=%zu",
                  num_outputs);
     }
     c->num_vout = num_outputs;
