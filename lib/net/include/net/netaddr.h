@@ -133,6 +133,20 @@ bool net_addr_is_rfc4843(const struct net_addr *a);
 bool net_addr_is_local(const struct net_addr *a);
 bool net_addr_is_routable(const struct net_addr *a);
 
+/* True only for a peer address that cannot have come from the public
+ * internet: IPv4/IPv6 loopback, or RFC1918 private space. Never true for a
+ * Tor address, and NULL reads as false (deny).
+ *
+ * Sole use is the per-source-IP INBOUND ADMISSION cap in
+ * accept_connection(): that cap exists so one *internet* source cannot
+ * consume every inbound slot, and neither of these classes is an internet
+ * source — an attacker who can open a loopback socket already owns the
+ * host, and an RFC1918 source is on the operator's own LAN. It is NOT a
+ * trust decision and grants nothing else: the global inbound cap
+ * (evict-not-reject) and the reserved outbound slots still apply to these
+ * peers exactly as they do to every other peer. */
+bool net_addr_is_operator_local(const struct net_addr *a);
+
 #define NET_ADDR_GROUP_MAX 5
 
 size_t net_addr_get_group(const struct net_addr *a, unsigned char *out,

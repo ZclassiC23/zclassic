@@ -101,6 +101,15 @@ bool net_addr_is_local(const struct net_addr *a)
     return false;
 }
 
+/* See net/netaddr.h. false is the strict answer here (apply the cap), so a
+ * NULL address can never widen an exemption. */
+bool net_addr_is_operator_local(const struct net_addr *a)
+{
+    if (!a || net_addr_is_tor(a))
+        return false;
+    return net_addr_is_local(a) || net_addr_is_rfc1918(a);
+}
+
 bool net_addr_is_routable(const struct net_addr *a)
 {
     return net_addr_is_valid(a) &&

@@ -1,8 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Hermetic unit tests for the pure address-classification predicates in
- * lib/net/src/netaddr.c (RFC-special-use detection, routability, address
- * grouping for peer-diversity bucketing, and the two to-string formatters).
+ * lib/net/src/netaddr.c (RFC-special-use detection, routability, the
+ * per-IP-inbound-cap exemption class, address grouping for peer-diversity
+ * bucketing, and the two to-string formatters).
  * Every predicate here is a pure function of a `struct net_addr` /
  * `struct net_service` value — no network, no clock, no live DB, no
  * allocation. Fixtures are built in-line with net_addr_init() +
@@ -368,6 +369,77 @@ static int test_is_local(void)
     return failures;
 }
 
+/* ── net_addr_is_operator_local ───────────────────────────────────
+ * operator_local := !is_tor && (is_local || rfc1918). It is the ONLY
+ * exemption from the per-source-IP inbound admission cap in
+ * accept_connection(), so this test is the boundary of that exemption:
+ * every "does not match" line below is an address class that still gets
+ * the cap. Widening this predicate widens a sybil-defence hole — a
+ * failure here is a security signal, not a style nit. */
+
+static int test_is_operator_local(void)
+{
+    int failures = 0;
+    struct net_addr a;
+
+    addr_ipv4(&a, 127, 0, 0, 1);
+    NC_CHECK("operator_local: 127.0.0.1 matches",
+             net_addr_is_operator_local(&a));
+
+    addr_ipv4(&a, 10, 4, 5, 6);
+    NC_CHECK("operator_local: 10/8 matches",
+             net_addr_is_operator_local(&a));
+
+    addr_ipv4(&a, 192, 168, 1, 7);
+    NC_CHECK("operator_local: 192.168/16 matches",
+             net_addr_is_operator_local(&a));
+
+    addr_ipv4(&a, 172, 16, 0, 1);
+    NC_CHECK("operator_local: 172.16/12 low edge matches",
+             net_addr_is_operator_local(&a));
+
+    addr_ipv4(&a, 172, 31, 255, 254);
+    NC_CHECK("operator_local: 172.31 high edge matches",
+             net_addr_is_operator_local(&a));
+
+    {
+        unsigned char ip[16] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1};
+        addr_ipv6(&a, ip);
+        NC_CHECK("operator_local: ::1 matches",
+                 net_addr_is_operator_local(&a));
+    }
+
+    /* Everything below stays SUBJECT to the per-IP cap. */
+    addr_ipv4(&a, 8, 8, 8, 8);
+    NC_CHECK("operator_local: public IPv4 does not match",
+             !net_addr_is_operator_local(&a));
+
+    addr_ipv4(&a, 172, 15, 0, 1);
+    NC_CHECK("operator_local: 172.15 (just below RFC1918) does not match",
+             !net_addr_is_operator_local(&a));
+
+    addr_ipv4(&a, 172, 32, 0, 1);
+    NC_CHECK("operator_local: 172.32 (just above RFC1918) does not match",
+             !net_addr_is_operator_local(&a));
+
+    addr_ipv4(&a, 169, 254, 1, 1);
+    NC_CHECK("operator_local: link-local does not match",
+             !net_addr_is_operator_local(&a));
+
+    addr_ipv4(&a, 100, 64, 0, 1);
+    NC_CHECK("operator_local: CGNAT does not match",
+             !net_addr_is_operator_local(&a));
+
+    addr_tor(&a);
+    NC_CHECK("operator_local: tor does not match",
+             !net_addr_is_operator_local(&a));
+
+    NC_CHECK("operator_local: NULL denies the exemption",
+             !net_addr_is_operator_local(NULL));
+
+    return failures;
+}
+
 /* ── net_addr_is_routable ─────────────────────────────────────────
  * routable := is_valid && !(rfc1918 || rfc2544 || rfc3927 || rfc4862 ||
  *             rfc6598 || rfc5737 || (rfc4193 && !is_tor) || rfc4843 ||
@@ -588,6 +660,7 @@ int test_netaddr_classify(void)
     failures += test_rfc6145();
     failures += test_rfc4843();
     failures += test_is_local();
+    failures += test_is_operator_local();
     failures += test_is_routable();
     failures += test_get_group();
     failures += test_to_string();

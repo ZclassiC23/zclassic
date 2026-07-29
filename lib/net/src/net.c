@@ -1739,7 +1739,21 @@ bool accept_connection(struct net_manager *nm, const struct listen_socket *ls)
      * one NAT — or co-located on one host — share a single budget. Past the
      * cap we close before any bytes are exchanged, which the dialling node
      * can only observe as "remote-close, state=connecting", so the refusal
-     * is logged loudly HERE (this side is the only side that knows why). */
+     * is logged loudly HERE (this side is the only side that knows why).
+     *
+     * Loopback and RFC1918 sources are EXEMPT. The threat this cap answers
+     * is an internet source filling every inbound slot; neither class can
+     * be one (loopback means the attacker already owns the host, RFC1918
+     * means the operator's own LAN). Without the exemption several nodes
+     * on one host — every peer 127.0.0.1, one shared 16-byte key — hit the
+     * cap by construction at the fourth socket, which is exactly the
+     * local multi-node topology a cold-start sync proof is made of. The
+     * exemption removes no absolute bound: the global inbound cap below
+     * still applies to these peers (evict-not-reject), and the reserved
+     * outbound slots are untouched, so an inbound flood from any source
+     * still cannot eclipse this node's view of the chain. */
+    bool ip_cap_exempt = is_whitelisted ||
+                         net_addr_is_operator_local(&addr.svc.addr);
     int max_per_ip = peer_scoring_max_inbound_per_ip();
     int inbound_count = 0;
     int same_ip_count = 0;
@@ -1788,7 +1802,7 @@ bool accept_connection(struct net_manager *nm, const struct listen_socket *ls)
     }
     zcl_mutex_unlock(&nm->cs_nodes);
 
-    if (!is_whitelisted && same_ip_count >= max_per_ip) {
+    if (!ip_cap_exempt && same_ip_count >= max_per_ip) {
         close_socket(&sock);
         LOG_FAIL("net",
                  "too many inbound connections from same IP: count=%d "
