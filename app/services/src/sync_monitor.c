@@ -215,7 +215,7 @@ struct zcl_result sync_monitor_evaluate_tip_state(void)
     syncsvc_plan_periodic_tip_state(
         &eval, observed, reducer_frontier_provable_tip_is_published(),
         served_height, local_height, header_height, peer_height, peer_count,
-        queued, in_flight, intake_pending);
+        queued, in_flight, intake_pending, body_history_status_now());
 
     atomic_fetch_add(&g_tip_state_evaluations, 1);
     atomic_store(&g_tip_eval_served_height, served_height);

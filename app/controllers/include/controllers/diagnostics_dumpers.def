@@ -596,6 +596,18 @@
                     "holes, fill_rate_per_sec, no-source blocker)",
                     "lib/storage/src/body_coverage.c",
                     "lib/test/src/test_body_coverage.c"),
+    DIAG_PROJECTION("body_history",
+                    body_history_dump_state_json,
+                    "body_history: can this node prove it holds the block "
+                    "bodies for its own history BELOW the tip? status is "
+                    "one of complete / incomplete / unknown — unknown means "
+                    "coverage could not be established, which is NOT the "
+                    "same as no holes and blocks the at-tip claim just as "
+                    "hard. Carries missing_count, lowest_missing, "
+                    "unmeasured_count, lowest_unmeasured, and the bounded "
+                    "resumable census cursor",
+                    "lib/storage/src/body_history.c",
+                    "lib/test/src/test_body_history.c"),
     DIAG_ENTRY("validation_pack", invariant_sentinel_dump_state_json,
                "fail-loud validation pack: HOLD latch, per-connect "
                "linkage + coinbase-label checks, authority-pair "

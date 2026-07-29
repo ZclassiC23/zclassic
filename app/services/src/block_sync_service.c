@@ -146,7 +146,8 @@ void syncsvc_note_valid_block(struct sync_block_acceptance *result,
                               int new_tip_height,
                               int best_header_height,
                               uint32_t new_tip_time,
-                              int max_peer_height)
+                              int max_peer_height,
+                              enum body_history_status body_history)
 {
     struct sync_block_acceptance empty = {0};
     bool headers_caught_up = false;
@@ -181,7 +182,28 @@ void syncsvc_note_valid_block(struct sync_block_acceptance *result,
     headers_caught_up =
         (best_header_height >= 0 && best_header_height <= new_tip_height + 1);
     result->reached_peer_tip = true;
-    if ((headers_caught_up || tip_is_recent) &&
+
+    /* This is the at-tip edge that actually fires on a live node:
+     * msg_blocks.c turns it into sync_set_state(SYNC_AT_TIP, "caught up to
+     * peer") on every accepted block, and sync_get_state() is what
+     * `zclassic23 status` prints as sync=at_tip. Gating only the timer-driven
+     * evaluator in syncsvc_plan_periodic_tip_state would leave the claim
+     * exactly as sayable as it was before this whole census existed.
+     *
+     * Same rule as there, and for the same reason: equality against
+     * COMPLETE, so BODY_HISTORY_UNKNOWN — "I could not establish my own
+     * coverage" — is refused exactly as hard as a known hole, and a status
+     * this code has never heard of is refused too. Reaching the peer's
+     * height while missing the bodies below your own tip is not being at
+     * tip.
+     *
+     * Everything that is NOT a completeness claim still happens: peer state
+     * still advances to PEER_ACTIVE below, and the node keeps syncing,
+     * relaying and serving. What it loses is the right to say it is done. */
+    bool history_proven = (body_history == BODY_HISTORY_COMPLETE);
+
+    if (history_proven &&
+        (headers_caught_up || tip_is_recent) &&
         (sync_state == SYNC_BLOCKS_DOWNLOAD ||
          sync_state == SYNC_CONNECTING_BLOCKS ||
          sync_state == SYNC_REORG)) {
@@ -210,7 +232,8 @@ void syncsvc_plan_periodic_tip_state(
     size_t peer_count,
     uint64_t queued,
     uint64_t in_flight,
-    uint64_t intake_pending)
+    uint64_t intake_pending,
+    enum body_history_status body_history)
 {
     struct sync_tip_state_evaluation empty = {
         .target_height = -1,
@@ -247,10 +270,21 @@ void syncsvc_plan_periodic_tip_state(
     result->served_gap = target > served_height ? target - served_height : 0;
     result->local_gap = target > local_height ? target - local_height : 0;
 
-    /* A one-block gap is the reducer's normal lookahead/finality shape.  Do
-     * not flip modes while body work is still queued or in flight: AT_TIP
-     * changes block intake and relay policy, so the queue must first drain. */
+    /* Height agreement is necessary and NOT sufficient. A node can match the
+     * network's height while missing the bodies for almost every block below
+     * its own tip — that is exactly the state this gate was added for. So the
+     * body-history census has to have positively established full coverage.
+     *
+     * BODY_HISTORY_UNKNOWN blocks the transition just as hard as
+     * BODY_HISTORY_INCOMPLETE does. A node that has not measured its own
+     * coverage is not a proven-complete node, and "I could not look" must
+     * never buy the same answer as "I looked and it was fine". Written as an
+     * equality against COMPLETE, never as `!= INCOMPLETE`, so a new status
+     * value can never leak through. */
+    bool history_proven = (body_history == BODY_HISTORY_COMPLETE);
+
     result->should_set_at_tip =
+        history_proven &&
         result->served_gap <= 1 && result->local_gap <= 1 &&
         queued == 0 && in_flight == 0 && intake_pending == 0;
 }

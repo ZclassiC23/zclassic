@@ -21,6 +21,7 @@
  * the snapshot/sync engine. They're each <200 lines. */
 
 #include "platform/time_compat.h"
+#include "storage/body_history.h"
 #include "msgprocessor_internal.h"
 #include "net/addrman.h"
 #include "net/checkpoint_header_fetch.h"
@@ -1666,7 +1667,6 @@ void msg_processor_plan_valid_block_acceptance(
 {
     struct msg_block_acceptance empty = {0};
     struct sync_block_acceptance acceptance;
-    int header_height;
 
     if (!out)
         return;
@@ -1674,14 +1674,14 @@ void msg_processor_plan_valid_block_acceptance(
     if (!mp || !mp->main_state || !node || !new_tip)
         return;
 
-    header_height = mp->main_state->pindex_best_header
+    int header_height = mp->main_state->pindex_best_header
         ? mp->main_state->pindex_best_header->nHeight
         : new_tip->nHeight;
     syncsvc_note_valid_block(&acceptance, node, sync_get_state(),
-                             new_tip->nHeight, header_height,
-                             new_tip->nTime,
+                             new_tip->nHeight, header_height, new_tip->nTime,
                              msg_processor_acceptance_peer_height(
-                                 mp, node, new_tip->nHeight));
+                                 mp, node, new_tip->nHeight),
+                             body_history_status_now());
 
     out->reached_peer_tip = acceptance.reached_peer_tip;
     out->should_emit_tip_updated = acceptance.should_emit_tip_updated;

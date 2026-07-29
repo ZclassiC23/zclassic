@@ -1578,7 +1578,7 @@ static int test_sync_service_valid_block_transition(void)
         node.state = PEER_SYNCING_BLOCKS;
         node.starting_height = 100;
 
-        syncsvc_note_valid_block(&result, &node, SYNC_BLOCKS_DOWNLOAD, 100, 100, 0, 0);
+        syncsvc_note_valid_block(&result, &node, SYNC_BLOCKS_DOWNLOAD, 100, 100, 0, 0, BODY_HISTORY_COMPLETE);
         ASSERT(result.reached_peer_tip);
         ASSERT(result.should_emit_tip_updated);
         ASSERT(result.should_set_sync_state);
@@ -1606,7 +1606,7 @@ static int test_sync_service_valid_block_waits_for_headers(void)
         node.state = PEER_SYNCING_BLOCKS;
         node.starting_height = 100;
 
-        syncsvc_note_valid_block(&result, &node, SYNC_BLOCKS_DOWNLOAD, 100, 125, 0, 0);
+        syncsvc_note_valid_block(&result, &node, SYNC_BLOCKS_DOWNLOAD, 100, 125, 0, 0, BODY_HISTORY_COMPLETE);
         ASSERT(result.reached_peer_tip);
         ASSERT(!result.should_set_sync_state);
         ASSERT(!result.should_emit_tip_updated);
@@ -1896,7 +1896,7 @@ static int test_sync_service_false_at_tip_peer_far_ahead(void)
         node.starting_height = 3078009;
 
         syncsvc_note_valid_block(&result, &node, SYNC_BLOCKS_DOWNLOAD,
-                                 2016354, 2016354, 0, 3078009);
+                                 2016354, 2016354, 0, 3078009, BODY_HISTORY_COMPLETE);
         /* Node hasn't reached peer starting_height, so reached_peer_tip
          * should be false and no AT_TIP transition should happen. */
         ASSERT(!result.reached_peer_tip);
@@ -1922,7 +1922,7 @@ static int test_sync_service_genuinely_at_tip(void)
         node.starting_height = 3078009;
 
         syncsvc_note_valid_block(&result, &node, SYNC_BLOCKS_DOWNLOAD,
-                                 3078009, 3078010, 0, 3078009);
+                                 3078009, 3078010, 0, 3078009, BODY_HISTORY_COMPLETE);
         ASSERT(result.reached_peer_tip);
         ASSERT(result.should_set_sync_state);
         ASSERT(result.next_sync_state == SYNC_AT_TIP);
@@ -1949,7 +1949,7 @@ static int test_sync_service_recent_tip_bypasses_headers(void)
         /* Tip time is 60 seconds ago — recent enough to bypass header check */
         uint32_t recent_time = (uint32_t)(platform_time_wall_time_t() - 60);
         syncsvc_note_valid_block(&result, &node, SYNC_BLOCKS_DOWNLOAD,
-                                 3078000, 1000, recent_time, 3078009);
+                                 3078000, 1000, recent_time, 3078009, BODY_HISTORY_COMPLETE);
         ASSERT(result.should_set_sync_state);
         ASSERT(result.next_sync_state == SYNC_AT_TIP);
         PASS();
@@ -1969,7 +1969,8 @@ static int test_sync_service_periodic_tip_evaluator(void)
         syncsvc_plan_periodic_tip_state(
             &result, SYNC_BLOCKS_DOWNLOAD, true,
             /*served*/99, /*local*/100, /*header*/100, /*peer*/98,
-            /*peers*/23, /*queued*/0, /*in_flight*/0, /*intake*/0);
+            /*peers*/23, /*queued*/0, /*in_flight*/0, /*intake*/0,
+            BODY_HISTORY_COMPLETE);
         ASSERT(result.should_set_at_tip);
         ASSERT(result.target_height == 100);
         ASSERT(result.served_gap == 1);
@@ -1978,44 +1979,44 @@ static int test_sync_service_periodic_tip_evaluator(void)
         /* Unpublished evidence and a wider served gap are not at-tip. */
         syncsvc_plan_periodic_tip_state(
             &result, SYNC_BLOCKS_DOWNLOAD, false,
-            100, 100, 100, 100, 3, 0, 0, 0);
+            100, 100, 100, 100, 3, 0, 0, 0, BODY_HISTORY_COMPLETE);
         ASSERT(!result.should_set_at_tip);
         syncsvc_plan_periodic_tip_state(
             &result, SYNC_BLOCKS_DOWNLOAD, true,
-            98, 100, 100, 100, 3, 0, 0, 0);
+            98, 100, 100, 100, 3, 0, 0, 0, BODY_HISTORY_COMPLETE);
         ASSERT(!result.should_set_at_tip);
         ASSERT(result.served_gap == 2);
 
         /* Isolation and pending body work keep the state in catch-up. */
         syncsvc_plan_periodic_tip_state(
             &result, SYNC_BLOCKS_DOWNLOAD, true,
-            99, 100, 100, 100, 0, 0, 0, 0);
+            99, 100, 100, 100, 0, 0, 0, 0, BODY_HISTORY_COMPLETE);
         ASSERT(!result.should_set_at_tip);
         syncsvc_plan_periodic_tip_state(
             &result, SYNC_BLOCKS_DOWNLOAD, true,
-            99, 100, 100, 100, 3, 1, 0, 0);
+            99, 100, 100, 100, 3, 1, 0, 0, BODY_HISTORY_COMPLETE);
         ASSERT(!result.should_set_at_tip);
         syncsvc_plan_periodic_tip_state(
             &result, SYNC_BLOCKS_DOWNLOAD, true,
-            99, 100, 100, 100, 3, 0, 1, 0);
+            99, 100, 100, 100, 3, 0, 1, 0, BODY_HISTORY_COMPLETE);
         ASSERT(!result.should_set_at_tip);
         syncsvc_plan_periodic_tip_state(
             &result, SYNC_BLOCKS_DOWNLOAD, true,
-            99, 100, 100, 100, 3, 0, 0, 1);
+            99, 100, 100, 100, 3, 0, 0, 1, BODY_HISTORY_COMPLETE);
         ASSERT(!result.should_set_at_tip);
 
         /* A reorg owner or an internally inconsistent frontier view wins. */
         syncsvc_plan_periodic_tip_state(
             &result, SYNC_REORG, true,
-            99, 100, 100, 100, 3, 0, 0, 0);
+            99, 100, 100, 100, 3, 0, 0, 0, BODY_HISTORY_COMPLETE);
         ASSERT(!result.should_set_at_tip);
         syncsvc_plan_periodic_tip_state(
             &result, SYNC_BLOCKS_DOWNLOAD, true,
-            99, 100, 99, 100, 3, 0, 0, 0);
+            99, 100, 99, 100, 3, 0, 0, 0, BODY_HISTORY_COMPLETE);
         ASSERT(!result.should_set_at_tip);
         syncsvc_plan_periodic_tip_state(
             &result, SYNC_BLOCKS_DOWNLOAD, true,
-            101, 100, 100, 100, 3, 0, 0, 0);
+            101, 100, 100, 100, 3, 0, 0, 0, BODY_HISTORY_COMPLETE);
         ASSERT(!result.should_set_at_tip);
         PASS();
     } _test_next:;

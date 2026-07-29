@@ -21,7 +21,9 @@
 #include "validation/chainstate.h"
 #include "chain/chain.h"
 #include "net/download.h"
+#include "services/body_backfill_service.h"
 #include "storage/body_coverage.h"
+#include "storage/body_history.h"
 #include "storage/progress_store.h"
 #include "jobs/body_fetch_stage.h"
 #include "jobs/validate_headers_stage.h"
@@ -312,6 +314,14 @@ static void gap_fill_wake_dispatcher(const char *reason)
                 (unsigned long long)total);
 }
 
+/* Wake hook handed to the below-tip backfill so it can nudge the dispatcher
+ * through gap_fill's existing bridge instead of reaching into connman. */
+static void gap_fill_body_backfill_wake(void *ctx)
+{
+    (void)ctx;
+    gap_fill_wake_dispatcher("body_backfill");
+}
+
 bool gap_fill_wake_dispatch_if_idle(struct download_manager *dm,
                                     const char *reason)
 {
@@ -382,6 +392,7 @@ static void gap_fill_persist_coverage(void)
     body_coverage_global_lock();
     (void)body_coverage_save(body_coverage_global_map(), db);
     body_coverage_global_unlock();
+    (void)body_history_save(db);
 }
 
 /* One pass: scan [tip+1, best_header] for missing data, queue
@@ -564,6 +575,21 @@ static int gap_fill_pass(void)
     return enqueued;
 }
 
+/* Shutdown predicate + heartbeat the census catch-up burst calls between
+ * slices, so a burst yields to `gap_fill_stop` and keeps the supervisor
+ * child ticking without body_backfill_service reaching into g_gf. */
+static bool gap_fill_burst_should_abort(void *ctx)
+{
+    (void)ctx;
+    return atomic_load(&g_gf.stop_requested);
+}
+
+static void gap_fill_burst_heartbeat(void *ctx)
+{
+    (void)ctx;
+    gap_fill_supervisor_heartbeat();
+}
+
 static void *gap_fill_thread_main(void *arg)
 {
     (void)arg;
@@ -571,6 +597,17 @@ static void *gap_fill_thread_main(void *arg)
     gap_fill_supervisor_heartbeat();
     while (!atomic_load(&g_gf.stop_requested)) {
         int n = gap_fill_pass();
+        /* The below-tip census runs every tick so the coverage verdict is
+         * never stale; its backfill only enqueues on a pass where the
+         * above-tip window had nothing to do. */
+        (void)body_backfill_pass(g_gf.ms, g_gf.dm, n > 0, false,
+                                 gap_fill_body_backfill_wake, NULL);
+        /* ...and then, until the whole window has been looked at once this
+         * boot, keep running census slices back-to-back rather than waiting
+         * 5 s for the next one. See body_backfill_catch_up. */
+        (void)body_backfill_catch_up(g_gf.ms, g_gf.dm, n > 0,
+                                     gap_fill_burst_should_abort, NULL,
+                                     gap_fill_burst_heartbeat, NULL);
         pthread_mutex_lock(&g_gf.mu);
         g_gf.stats.passes++;
         if (n > 0) {
@@ -639,6 +676,15 @@ struct zcl_result gap_fill_start(struct main_state *ms, struct download_manager 
             body_coverage_global_lock();
             (void)body_coverage_load(body_coverage_global_map(), db);
             body_coverage_global_unlock();
+            /* Restores the census CURSOR and nothing else. The map loaded
+             * just above is a CLAIM about what is on disk; it is not
+             * evidence that anything looked, and body_history_evaluate no
+             * longer treats it as any. Neither the verdict nor the measured
+             * map comes back, so a node that has just booted has
+             * established nothing and has to earn "complete" again by
+             * probing every height — which the catch-up burst in
+             * gap_fill_thread_main does within the first tick. */
+            (void)body_history_load(db);
         }
     }
     atomic_store(&g_gf.stop_requested, false);
