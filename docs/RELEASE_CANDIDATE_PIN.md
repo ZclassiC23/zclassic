@@ -77,13 +77,32 @@ tools/scripts/build_drift_probe.sh collect   # append one ledger line
 tools/scripts/build_drift_probe.sh assert    # exit 1 on drift, for a pager
 ```
 
-It reports **three** verdicts rather than one, because they fail independently:
+It reports **four** verdicts rather than one, because they fail independently:
 
 - `match` — the expectation the running process was STARTED with
   (`ZCL_AGENT_EXPECT_SOURCE_ID` from `/proc/<pid>/environ`) vs what it is running.
 - `pin_match` — the checked-in candidate vs what it is running.
 - `artifact_path_matches_running` — the file at `~/.local/bin/zclassic23-live`
   vs the inode the process is executing.
+- `pending_restart` — the unit's *configured* `ExecStart` vs the running argv,
+  reported as `pending_restart_flags` (configured but not running) and
+  `stale_running_flags` (running but no longer configured).
+
+That fourth verdict exists because editing a drop-in and reloading changes what
+the unit *will* run without changing what it *is* running, and `systemctl show`
+displays only the new value with no hint that the live process predates it. The
+identity checks cannot see it — the binary is byte-identical on both sides.
+Observed on this host at 2026-07-29 06:27:
+
+```
+"pending_restart":true,
+"pending_restart_flags":"-operator-lane=canonical",
+"stale_running_flags":"-load-snapshot-at-own-height=…/utxo-seed-3155842.snapshot"
+```
+
+`stale_running_flags` is the more dangerous direction: a flag *removed* from the
+unit stays in effect until the restart, so an operator who deletes it and
+reloads can believe it is gone while the node is still acting on it.
 
 That last one is the one a path-based check cannot answer. `make agent-doctor`
 fingerprints the file at the path, which is correct for "is my tree deployed"

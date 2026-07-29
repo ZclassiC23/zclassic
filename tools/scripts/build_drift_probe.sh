@@ -165,6 +165,72 @@ pin_line() {
     fi
 }
 
+# pending_restart_tokens <pid> — configured ExecStart flags that the running
+# process does NOT have.
+#
+# Editing a drop-in + `systemctl daemon-reload` changes what the unit WILL run
+# without changing what it IS running, and systemd reports the new value with
+# no hint that the live process predates it. That gap is invisible to every
+# identity check in this file, because the binary can be byte-identical on both
+# sides — 2026-07-29 06:27 produced exactly that state on this host: the unit
+# gained -operator-lane=canonical and lost -load-snapshot-at-own-height while
+# the running process kept the old argv, and `systemctl show` displayed only
+# the new one.
+#
+# Tokens beginning with `$` are skipped: systemd shows them unexpanded in
+# ExecStart but the kernel shows them expanded in /proc/<pid>/cmdline, so they
+# would mismatch forever and train the reader to ignore this field.
+pending_restart_tokens() {
+    local pid="$1" cfg running tok out=""
+    [ -n "$pid" ] && [ "$pid" != "0" ] && [ -r "/proc/$pid/cmdline" ] || return 0
+    cfg="$(systemctl --user show "$UNIT" -p ExecStart --value 2>/dev/null |
+           sed -n 's/.*argv\[\]=\([^;]*\);.*/\1/p' | head -1)"
+    [ -n "$cfg" ] || return 0
+    running=" $(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
+    for tok in $cfg; do
+        case "$tok" in
+            \$*) continue ;;
+        esac
+        case "$running" in
+            *" $tok "*) ;;
+            *) out="$out${out:+,}$tok" ;;
+        esac
+    done
+    printf '%s' "$out"
+}
+
+# stale_running_flags <pid> — flags the running process HAS that the configured
+# ExecStart no longer does. The mirror of pending_restart_tokens, and the more
+# dangerous direction: a flag REMOVED from the unit is still in effect until a
+# restart, so an operator who deletes a flag and reloads can believe it is gone
+# while the node is still acting on it. On 2026-07-29 that flag was
+# -load-snapshot-at-own-height, the v1 seed loader — removed from the unit,
+# still live in the running node. Only `-flag` tokens are compared; addnode /
+# externalip values arrive through $ZCL_* expansion and are not comparable.
+stale_running_flags() {
+    local pid="$1" cfg running tok out=""
+    [ -n "$pid" ] && [ "$pid" != "0" ] && [ -r "/proc/$pid/cmdline" ] || return 0
+    cfg=" $(systemctl --user show "$UNIT" -p ExecStart --value 2>/dev/null |
+            sed -n 's/.*argv\[\]=\([^;]*\);.*/\1/p' | head -1) "
+    [ -n "${cfg// /}" ] || return 0
+    running="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
+    for tok in $running; do
+        case "$tok" in
+            -*) ;;
+            *) continue ;;
+        esac
+        # Flags whose value comes from $ZCL_* expansion are not comparable.
+        case "$tok" in
+            -externalip=*|-addnode=*) continue ;;
+        esac
+        case "$cfg" in
+            *" $tok "*) ;;
+            *) out="$out${out:+,}$tok" ;;
+        esac
+    done
+    printf '%s' "$out"
+}
+
 probe() {
     local pid exe_target running_id running_sha path_bin path_sha
     local expect_id expect_commit pin pin_tag pin_id pin_commit pin_sha
@@ -230,6 +296,12 @@ probe() {
         "$(json_escape "$path_bin")" "$(json_escape "$path_sha")" "$path_matches"
     printf ',"tree_distance_commits":%s,"repo_head":"%s"' \
         "$tree_distance" "$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    local pending stale
+    pending="$(pending_restart_tokens "$pid")"
+    stale="$(stale_running_flags "$pid")"
+    printf ',"pending_restart":%s,"pending_restart_flags":"%s","stale_running_flags":"%s"' \
+        "$([ -n "$pending$stale" ] && echo true || echo false)" \
+        "$(json_escape "$pending")" "$(json_escape "$stale")"
     printf ',"error_detail":"%s"}' "$(json_escape "$detail")"
     printf '\n'
 }

@@ -8,6 +8,49 @@ edited to produce this page; every value below was read with
 Evidence date: 2026-07-29. Canonical node PID 2509104, started
 2026-07-28 11:11:07 UTC, `NRestarts=0`.
 
+## 0. SUPERSEDED IN PART — another actor applied changes at 06:27 UTC
+
+**Sections 1-6 below describe the unit as it was at 06:07-06:20 UTC. Between
+06:27 and 06:28, while this page's gates were running, something else on this
+host rewrote four drop-ins and reloaded systemd.** Not this lane — no unit file
+was written here. A sibling worktree `zcl-w13-evidence` exists on the same
+evidence family; the change is consistent with a parallel lane applying its own
+reconciliation despite the same prepare-only constraint.
+
+What changed on disk:
+
+| file | before | after |
+|---|---|---|
+| `95-cure-boot.conf` | 396 B, `ExecStart` reset (overridden, dead) | 2025 B, now the **sole** `ExecStart` owner; adds `-operator-lane=canonical`, drops `-load-snapshot-at-own-height` |
+| `stopgap-loader.conf` | 919 B, `ExecStart` reset | 1251 B, `ExecStart` removed — now comment-only |
+| `zzzz-canonical-port.conf` | 643 B, the winning `ExecStart` | 935 B, `ExecStart` removed — now comment-only |
+| `latency-guard.conf` | `OOMScoreAdjust=200` | `OOMScoreAdjust=0` |
+
+Effective now: `OOMScoreAdjust=0` (was 200; tracked is -800), `MemoryMin=2G`
+restored, `WatchdogUSec=0` **unchanged — still disabled**, three of the four
+`ExecStart` resets collapsed to one owner. The three `.bak` footguns and
+`legacy-sync.conf` are **still present**.
+
+**The node has NOT been restarted.** `MainPID=2509104`, `ActiveEnterTimestamp`
+still 2026-07-28 11:12:32, `NRestarts=0`. So the unit and the running process
+now disagree, and will keep disagreeing until someone restarts:
+
+```
+pending_restart_flags : -operator-lane=canonical          # configured, NOT running
+stale_running_flags   : -load-snapshot-at-own-height=…    # running, NO LONGER configured
+```
+
+The v1 seed loader that §3 flagged is still live in the running process. The
+deploy guard is still blind. Both are now *pending* fixes rather than applied
+ones, and `systemctl show` displays only the new values — which is precisely how
+this state stays invisible. `tools/scripts/build_drift_probe.sh` was extended to
+report it (`pending_restart` / `stale_running_flags`) after observing it here.
+
+Still outstanding regardless of the 06:27 change: **`WatchdogSec=0`** (§5),
+`OOMScoreAdjust` is 0 rather than a protective negative, the three `.bak` files,
+`legacy-sync.conf`, and the A/B launcher bypass (§5, fourth item — the new
+`95-cure-boot.conf` deliberately keeps it bypassed and says why).
+
 ## 1. What is actually running
 
 ```
