@@ -42,13 +42,14 @@ cd "$REPO_ROOT"
 REMOTE_HOST="${ZCL_SHIP_REMOTE:-205.209.104.118}"
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15)
 TARGETS="local remote"
+TARGETS_EXPLICIT=0
 DRY_RUN=0
 SKIP_GATE=0
 GATE_CACHE_DIR="${HOME}/.cache/zcl-ship"
 
 for arg in "$@"; do
     case "$arg" in
-        --targets=*) TARGETS="${arg#*=}"; TARGETS="${TARGETS//,/ }" ;;
+        --targets=*) TARGETS="${arg#*=}"; TARGETS="${TARGETS//,/ }"; TARGETS_EXPLICIT=1 ;;
         --dry-run)   DRY_RUN=1 ;;
         --skip-gate) SKIP_GATE=1 ;;
         -h|--help)   sed -n '2,35p' "$0"; exit 0 ;;
@@ -62,6 +63,47 @@ die()  { printf '\033[1;31mship: REFUSE:\033[0m %s\n' "$*" >&2; exit 1; }
 
 is_sha256() { case "$1" in [0-9a-f]) return 1 ;; esac; [ "${#1}" -eq 64 ] && \
               case "$1" in *[!0-9a-f]*) return 1 ;; *) return 0 ;; esac; }
+
+# ── 0. The proof server is not a deploy target ──────────────────────────────
+# $REMOTE_HOST holds one immutable tagged release candidate and records the
+# evidence that the candidate stayed up. Restarting it destroys the very thing
+# it exists to measure: an uptime and zero-intervention record is only worth
+# something if nothing quietly resets it.
+#
+# Until 2026-07-29 this script did exactly that. `remote` was in the DEFAULT
+# target list and the deploy step ran an unconditional `systemctl --user restart
+# zclassic23` on it, so a bare `tools/ship.sh` — the documented everyday
+# invocation — restarted the box that must not be restarted. The tooling and
+# the operating rule were in direct opposition and nothing said so.
+#
+# Two different refusals on purpose, because the two mistakes are different:
+#   - Bare `ship.sh`: the operator asked to ship, not to touch the proof
+#     server. Drop `remote`, say so loudly, ship local. Refusing the whole run
+#     would punish the common case for a target the operator never named.
+#   - Explicit `--targets=...remote`: the operator DID name it. Silently
+#     dropping it there would be worse than failing — they would believe the
+#     proof server had been updated. Refuse outright, non-zero.
+#
+# Promotion is a deliberate act: ZCL_SHIP_ALLOW_PROOF_SERVER=1 and re-tag.
+case " $TARGETS " in *" remote "*)
+    if [ "${ZCL_SHIP_ALLOW_PROOF_SERVER:-0}" != "1" ]; then
+        if [ "$TARGETS_EXPLICIT" -eq 1 ]; then
+            die "--targets names 'remote', but $REMOTE_HOST is the immutable proof
+       server: it runs one tagged candidate and records the evidence that the
+       candidate held. Deploying restarts it and resets that record.
+       Promoting a new candidate is deliberate:
+           ZCL_SHIP_ALLOW_PROOF_SERVER=1 tools/ship.sh --targets=remote
+       and re-tag the candidate afterwards so the tag still names what runs."
+        fi
+        TARGETS="${TARGETS//remote/}"
+        TARGETS="$(printf '%s' "$TARGETS" | tr -s ' ' | sed 's/^ *//; s/ *$//')"
+        say "skipping 'remote' — $REMOTE_HOST is the immutable proof server."
+        say "  to promote a candidate there: ZCL_SHIP_ALLOW_PROOF_SERVER=1 tools/ship.sh --targets=remote"
+        [ -n "$TARGETS" ] || die "no targets left to ship to"
+    else
+        say "ZCL_SHIP_ALLOW_PROOF_SERVER=1 — the proof server WILL be restarted and its evidence window reset"
+    fi
+;; esac
 
 # ── 1. Preflight ────────────────────────────────────────────────────────────
 # Everything that can refuse cheaply refuses BEFORE the 200-second build, so a
