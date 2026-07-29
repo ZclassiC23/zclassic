@@ -278,8 +278,12 @@ jobs:
           # check-clang-portability ratchet (baselined against clang 20.1.8)
           # and, inside check-standalone-tools-link, builds the fuzz targets
           # with FUZZ_CC=clang — an older clang rejects builtins this tree
-          # uses.
-          sudo apt-get install -y --no-install-recommends gcc-14 clang-20
+          # uses. libclang-rt-20-dev is the separate package that carries
+          # the sanitizer/fuzzer runtime archives (libclang_rt.fuzzer.a,
+          # libclang_rt.asan*.a) those fuzz targets link against — the
+          # `clang-20` compiler package alone does not include them.
+          sudo apt-get install -y --no-install-recommends \
+            gcc-14 clang-20 libclang-rt-20-dev
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100
           sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 100
           sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-20 100
