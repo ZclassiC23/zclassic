@@ -32,9 +32,44 @@ volatile sig_atomic_t g_shutdown_requested = 0;
 int LLVMFuzzerInitialize(int *argc, char ***argv);
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
 
+/* Per-iteration setup hoisted to init — see the two comments below for why
+ * each one was costing the run.
+ *
+ *  g_manifest_out  a 128 KB (ROM_SEED_MAX_CHUNKS * 32) output slab. It was
+ *                  malloc'd and freed inside the callback; under ASan that is
+ *                  a secondary-allocator mmap/munmap pair plus shadow
+ *                  poisoning on every single input. The parser only ever
+ *                  writes into it, never reads it back across calls, so one
+ *                  allocation for the process is exactly equivalent.
+ *
+ *  g_journal_path  the on-disk journal fixture. Section (3) has to write real
+ *                  bytes to a real file — that is the point of the target,
+ *                  since rom_journal_open's job is to survive attacker-chosen
+ *                  on-disk content. What it does NOT need is to survive the
+ *                  platter: rom_journal_open's discard-and-rewrite branch ends
+ *                  in fdatasync(), and the fuzzed bitmap bytes take that
+ *                  branch on nearly every input, so every iteration blocked on
+ *                  a real NVMe flush next to a live node's write load.
+ *                  Preferring a tmpfs (/dev/shm) keeps every syscall the code
+ *                  makes — open, pread, pwrite, ftruncate, fdatasync, unlink,
+ *                  and every error path through them — and drops only the disk
+ *                  round trip. /tmp remains the fallback where /dev/shm is not
+ *                  a usable directory, so the target still runs anywhere. */
+static uint8_t (*g_manifest_out)[32];
+static char g_journal_path[128];
+
 int LLVMFuzzerInitialize(int *argc, char ***argv)
 {
     (void)argc; (void)argv;
+
+    g_manifest_out = zcl_malloc((size_t)ROM_SEED_MAX_CHUNKS * 32,
+                                "fuzz_rom_manifest_out");
+
+    const char *dir = "/dev/shm";
+    if (access(dir, W_OK | X_OK) != 0)
+        dir = "/tmp";
+    snprintf(g_journal_path, sizeof(g_journal_path),
+             "%s/zcl_fuzz_rom_journal_%d.tmp", dir, (int)getpid());
     return 0;
 }
 
@@ -52,13 +87,11 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         memset(chunk_root, 0, sizeof(chunk_root));
         if (size >= 32)
             memcpy(chunk_root, data, 32);
-        uint8_t (*out)[32] = zcl_malloc((size_t)ROM_SEED_MAX_CHUNKS * 32,
-                                        "fuzz_rom_manifest_out");
-        if (out) {
+        if (g_manifest_out) {
             uint32_t nc = 0;
-            (void)rom_fetch_parse_manifest_blob(data, size, chunk_root, out,
+            (void)rom_fetch_parse_manifest_blob(data, size, chunk_root,
+                                                g_manifest_out,
                                                 ROM_SEED_MAX_CHUNKS, &nc);
-            free(out);
         }
     }
 
@@ -84,9 +117,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         const uint32_t chunk_size = 4u * 1024u * 1024u;
         const uint32_t num_chunks = 1u + (uint32_t)(size ? (data[0] % 64) : 7);
 
-        char path[256];
-        snprintf(path, sizeof(path), "/tmp/zcl_fuzz_rom_journal_%d.tmp",
-                 (int)getpid());
+        const char *path = g_journal_path;
         int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
         if (fd >= 0) {
             struct rom_journal_header h;

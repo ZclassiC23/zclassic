@@ -3864,6 +3864,31 @@ FUZZ_HARNESS_OBJS = $(patsubst %.c,$(FUZZ_OBJ_DIR)/%.o,$(FUZZ_HARNESS_SRCS))
 ifneq ($(filter fuzz,$(ZCL_DEPFILE_PROFILES)),)
 -include $(FUZZ_OBJS:.o=.d) $(FUZZ_HARNESS_OBJS:.o=.d)
 endif
+# How much fuzzing each 60-second slot actually buys, and the floor under it.
+#
+# FUZZ_CI_PRINT_FUNCS turns off libFuzzer's NEW_FUNC log lines. Those lines are
+# symbolized, and symbolizing against an 82 MB -g whole-program binary means
+# spawning llvm-symbolizer and blocking in poll() for hundreds of milliseconds
+# per line. Measured 2026-07-29 on this tree, same 60 s slot, nothing else
+# changed: fuzz_block 25 -> 697,333 executions, fuzz_p2p 11 -> 595,993,
+# fuzz_script 83 -> 359,075. Coverage collection, corpus growth and crash
+# reporting are all unaffected — a crash still prints a symbolized file:line
+# stack trace. Set FUZZ_CI_PRINT_FUNCS=2 for one run if you want the lines.
+#
+# FUZZ_CI_MIN_EXEC_PER_SEC is the under-covered floor the runner enforces after
+# the loop, and the reason the runner prints a rate table at all: a green run
+# that names its own weak harnesses is worth more than a green run that does
+# not. Measured on this tree 2026-07-29, all nine harnesses landed between
+# 5,202/s (fuzz_script, the slowest) and 40,826/s (fuzz_overlay). The floor is
+# set at a fifth of the slowest — low enough that a loaded box cannot flake it,
+# three to four orders of magnitude above the collapse it exists to catch (the
+# five harnesses this fixed were running at 0.1 to 1.5 executions per second).
+# It is a collapse detector, not a regression detector: the printed rate is
+# what a reader uses to spot a harness that merely got slower. Raising the
+# floor is fine; lowering it to make a slow harness pass is the one move that
+# is not — the number has to rise because the harness got faster.
+FUZZ_CI_PRINT_FUNCS ?= 0
+FUZZ_CI_MIN_EXEC_PER_SEC ?= 1000
 
 .PHONY: check-fuzz-toolchain check-fuzz-ci-tools fuzz fuzz-ci
 check-fuzz-toolchain:
@@ -3933,19 +3958,8 @@ $(BIN_DIR)/fuzz_overlay: $(FUZZ_OBJ_DIR)/tools/fuzz/fuzz_overlay.o $(FUZZ_OBJS) 
 	$(FUZZ_LINK)
 
 fuzz-ci: check-fuzz-ci-tools $(FUZZ_TARGETS)
-	@set -e; \
-	for t in $(FUZZ_TARGETS); do \
-		echo "=== $$t ($(FUZZ_CI_TIME)s) ==="; \
-		base=$$(basename "$$t"); kind="$${base#fuzz_}"; \
-		seed_dir="lib/test/fuzz_seeds/$$kind"; \
-		work_dir="/tmp/zcl_fuzz_$$kind"; \
-		rm -rf "$$work_dir"; mkdir -p "$$work_dir"; \
-		timeout $(FUZZ_CI_WALL_TIME)s env ASAN_OPTIONS=detect_leaks=0 \
-			$$t -max_total_time=$(FUZZ_CI_TIME) \
-			-timeout=1 -print_final_stats=1 \
-			-artifact_prefix="$$work_dir/" "$$work_dir" "$$seed_dir"; \
-		rm -rf "$$work_dir"; \
-	done
+	@./tools/fuzz/run_fuzz_ci.sh $(FUZZ_CI_TIME) $(FUZZ_CI_WALL_TIME) \
+		$(FUZZ_CI_MIN_EXEC_PER_SEC) $(FUZZ_CI_PRINT_FUNCS) 0 $(FUZZ_TARGETS)
 
 # Replay every SAVED finding and fail on any that still reproduces.
 #
@@ -3980,18 +3994,8 @@ fuzz-replay: check-fuzz-ci-tools $(FUZZ_TARGETS)
 # green while known-pre-existing leaks are being triaged; developers
 # and Wave 4+ commits that fix leaks opt into this stricter run.
 fuzz-ci-leaks: check-fuzz-ci-tools $(FUZZ_TARGETS)
-	@set -e; \
-	for t in $(FUZZ_TARGETS); do \
-		echo "=== $$t ($(FUZZ_CI_TIME)s, leak detection ON) ==="; \
-		base=$$(basename "$$t"); kind="$${base#fuzz_}"; \
-		seed_dir="lib/test/fuzz_seeds/$$kind"; \
-		work_dir="/tmp/zcl_fuzz_$${kind}_leaks"; \
-		rm -rf "$$work_dir"; mkdir -p "$$work_dir"; \
-		timeout $(FUZZ_CI_WALL_TIME)s $$t -max_total_time=$(FUZZ_CI_TIME) \
-			-timeout=1 -print_final_stats=1 \
-			-artifact_prefix="$$work_dir/" "$$work_dir" "$$seed_dir"; \
-		rm -rf "$$work_dir"; \
-	done
+	@./tools/fuzz/run_fuzz_ci.sh $(FUZZ_CI_TIME) $(FUZZ_CI_WALL_TIME) \
+		$(FUZZ_CI_MIN_EXEC_PER_SEC) $(FUZZ_CI_PRINT_FUNCS) 1 $(FUZZ_TARGETS)
 
 # ── P11.6 — 7-day soak runner ─────────────────────────────────
 #
