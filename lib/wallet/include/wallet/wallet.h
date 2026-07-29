@@ -235,6 +235,25 @@ struct zcl_result wallet_rollback_transaction(
 void wallet_sync_transaction(struct wallet *w, const struct transaction *tx,
                               const struct block_index *pindex);
 
+/* Advance every stored confirmation depth after the chain tip moved FORWARD,
+ * and republish w->best_block_height as `new_best_height`.
+ *
+ * wallet_sync_transaction() stamps wtx->confirms once, when the transaction's
+ * block is connected, and nothing ever raises it again — so a coinbase mined
+ * at the tip keeps confirms=1 forever and
+ * wallet_tx_get_blocks_to_maturity() never reaches 0: the coins can never be
+ * spent by the in-RAM coin selector no matter how far the chain advances.
+ * Call this on each forward tip advance, BEFORE syncing the new block's
+ * transactions, so the freshly-connected ones are stamped against the correct
+ * best height.
+ *
+ * Only a strictly forward move does anything: a lower or equal
+ * `new_best_height` (a reorg, or a replayed height) leaves every depth
+ * untouched, so a depth can never be inflated past the real chain. Returns the
+ * number of transactions whose depth was raised, 0 when there was nothing to
+ * do, or -1 on a NULL wallet. */
+int wallet_advance_confirmations(struct wallet *w, int new_best_height);
+
 /* HD wallet initialization */
 bool wallet_init_hd(struct wallet *w, const unsigned char *seed, size_t seed_len);
 bool wallet_init_hd_from_mnemonic(struct wallet *w, const char *mnemonic,

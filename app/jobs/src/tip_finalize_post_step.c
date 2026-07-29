@@ -17,6 +17,7 @@
 #include "utxo_root_ladder_tripwire.h"   /* OBSERVE-ONLY golden ladder caller */
 
 #include "chain/chain.h"
+#include "chain/chainparams.h"           /* fMineBlocksOnDemand regtest gate */
 #include "chain/mmb.h"
 #include "chain/sha3_windows.h"          /* golden-window corroboration table */
 #include "config/runtime.h"
@@ -259,7 +260,28 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
     {
         struct wallet *wallet = app_runtime_wallet();
         struct node_db *ndb = app_runtime_node_db();
+        const struct chain_params *cp_regtest = chain_params_get();
+        const bool regtest_on_demand =
+            cp_regtest && cp_regtest->fMineBlocksOnDemand;
+
         if (wallet) {
+            /* REGTEST ONLY — raise every stored confirmation depth by the tip
+             * advance BEFORE stamping this block's transactions.
+             *
+             * wallet_sync_transaction() stamps confirms once and nothing ever
+             * raises it, so a coinbase mined at the tip keeps confirms=1 and
+             * wallet_tx_get_blocks_to_maturity() never reaches 0 — the in-RAM
+             * coin selector behind sendtoaddress can never spend it, however
+             * many blocks follow. Doing it here also fixes the stamp itself:
+             * best_block_height was previously published AFTER the loop, so
+             * every new transaction was stamped at depth 0 and clamped to 1.
+             *
+             * Gated on fMineBlocksOnDemand — true ONLY for regtest — so the
+             * mainnet/testnet wallet keeps exactly the depth bookkeeping it
+             * had before. */
+            if (regtest_on_demand)
+                (void)wallet_advance_confirmations(wallet, pindex_new->nHeight);
+
             for (size_t i = 0; i < blk->num_vtx; i++) {
                 const struct transaction *tx = &blk->vtx[i];
                 wallet_sync_transaction(wallet, tx, pindex_new);
@@ -304,6 +326,44 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
             zcl_mutex_lock(&wallet->cs);
             wallet->best_block_height = pindex_new->nHeight;
             zcl_mutex_unlock(&wallet->cs);
+
+            /* REGTEST ONLY — feed the node.db wallet projection for the block
+             * we just connected.
+             *
+             * getbalance / listunspent / the spend coin-selector all read
+             * `wallet_utxos`, and mature a coinbase against
+             * `SELECT MAX(height) FROM blocks`. Nothing writes either table at
+             * block-connect time, so on a regtest chain — where on-demand
+             * mining is the ONLY way coins can enter a wallet, with no peer to
+             * receive from and no restart rescan in a throwaway datadir — a
+             * mined coinbase stayed invisible to getbalance forever and no
+             * transaction could ever be funded. wallet_sync_transaction above
+             * only updates the in-RAM wallet, whose `confirms` is frozen at 1
+             * on the block it was mined in and never advances, so the RAM
+             * fallback cannot mature it either.
+             *
+             * Gated on fMineBlocksOnDemand — true ONLY for regtest — so the
+             * mainnet/testnet tip-finalize path performs exactly the work it
+             * did before, byte for byte. The same projection gap on a live
+             * network is deliberately left alone here: closing it there adds
+             * per-block SQLite writes to the hot fold path and is an owner
+             * decision, not a side effect of a regtest fix. */
+            if (ndb) {
+                if (regtest_on_demand) {
+                    if (!node_db_sync_connect_block(ndb, blk, pindex_new))
+                        LOG_WARN("tip_finalize",
+                                 "regtest projection: connect_block sync "
+                                 "failed at height %d", pindex_new->nHeight);
+                    for (size_t i = 0; i < blk->num_vtx; i++) {
+                        if (!node_db_sync_wallet_tx(ndb, &blk->vtx[i], wallet,
+                                                    pindex_new->nHeight))
+                            LOG_WARN("tip_finalize",
+                                     "regtest projection: wallet_tx sync "
+                                     "failed at height %d tx %zu",
+                                     pindex_new->nHeight, i);
+                    }
+                }
+            }
         }
     }
 
