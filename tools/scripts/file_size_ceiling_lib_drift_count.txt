@@ -405,17 +405,28 @@
 #       1.08x after (noise), with 3,001,156 differential comparisons
 #       confirming the verdict is unchanged for every input.
 #
-# 2026-07-29 (recovery-phrase lane, three money defects): the gap-limit scan
-# that replaces recovery's fixed-100-key rebuild did NOT land in wallet.c —
-# it is the new lib/wallet/src/wallet_gap_scan.c (115 lines, well under the
-# 800 ceiling, so nothing to baseline). Moving it out took wallet.c back to
-# 1787, BELOW its 1793 entry, which is TIGHTENED to 1787 rather than left
-# holding slack. wallet_sqlite.c grew 1648 -> 1657 for
-# wallet_sqlite_sapling_seed_state(): the bool read collapsed "this wallet
-# has no seed" and "this wallet has a seed I could not decrypt" into the
-# same false, which told the owner of an encrypted, phrase-backed wallet
-# that their money could only come back from a file — and let a recovery
-# write a second seed over the first. The nine lines are the enum-returning
-# reader plus the legacy bool wrapper over it. BASELINED at 1657 rather
-# than spending a ratchet slot; net across the two files is -6 lines and
-# the recorded count STAYS 11.
+# 2026-07-29 (recovery-phrase lane): NONE of the recovery-phrase code lives
+# in wallet.c. The gap-limit scan that replaces recovery's fixed-100-key
+# rebuild is lib/wallet/src/wallet_gap_scan.c, and the seed itself — install
+# from a phrase, adopt one read off disk, preview the address at an index —
+# is lib/wallet/src/wallet_recovery_seed.c. Both are new files well under
+# the 800 ceiling, so neither is baselined. wallet.c therefore ends this
+# lane at 1659, exactly where main left it, and its entry is TIGHTENED
+# 1793 -> 1659 rather than left holding 134 lines of slack.
+#
+# wallet_sqlite.c is RAISED 1648 -> 1657, deliberately and with no way to
+# move the lines out. wallet_sqlite_read_sapling_seed() answered bool, which
+# collapsed "this wallet has no seed" and "this wallet has a seed I could
+# not decrypt" into the same false: an encrypted, phrase-backed wallet was
+# told its money could only come back from a file, and a recovery was
+# allowed to write a second seed over the first. The fix widens that
+# EXISTING function's return into enum wallet_seed_state (+9 lines: the six
+# states, the LOCKED-is-not-ABSENT comment, and a bool wrapper for the
+# callers that only need yes/no). It is not a separable feature — it reads
+# ws->stmt_seed_read under this file's cached-cursor reset discipline and
+# calls is_wks1_blob()/wallet_decrypt_blob(), two file-private helpers with
+# five other call sites here. Extracting it would mean exporting the
+# wallet's at-rest decryption primitives to buy nine lines, which is a worse
+# trade than the raise. The drift COUNT is unaffected either way and STAYS
+# 11: wallet.c shrinks off the grown list and wallet_sqlite.c never joins
+# it.

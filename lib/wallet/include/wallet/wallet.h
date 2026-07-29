@@ -260,6 +260,14 @@ bool wallet_init_hd_from_mnemonic(struct wallet *w, const char *mnemonic,
                                    const char *passphrase);
 bool wallet_has_hd(const struct wallet *w);
 
+/* Encode one public key as this chain's transparent address, using the
+ * active chain_params base58 prefixes. The single place a pubkey becomes an
+ * address string for this wallet — every new-address path and the recovery
+ * preview below go through it, so a wallet and a restore of that wallet can
+ * never disagree about how an address is spelled. */
+bool wallet_pubkey_to_addr(const struct pubkey *pk, char *addr_out,
+                           size_t addr_size);
+
 /* ── Recovery phrase ──────────────────────────────────────────────
  *
  * One phrase, one seed, both key trees. `phrase` is a BIP39 mnemonic;
