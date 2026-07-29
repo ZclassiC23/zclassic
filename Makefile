@@ -4055,6 +4055,41 @@ $(BIN_DIR)/bench_fresh_sync: tools/bench_fresh_sync.c \
 	$(CC) -O2 -Ilib/platform/include -Ilib/base/include -Ilib/util/include \
 	    -D_DEFAULT_SOURCE -o $@ $^
 
+# Per-ISA-tier crypto microbenchmark (tools/simd_bench.c). Drives the SAME
+# input through EVERY ISA tier of each primitive (generic / SHA-NI / AVX2 /
+# AVX-512 / BMI2), asserts every tier is BIT-IDENTICAL to the generic one, and
+# only then reports median + p90 ns/op pinned to one core, with the CCD named.
+#
+# Built at the SHIPPED CFLAGS on purpose (-O3 -march=x86-64-v3, no LTO): the
+# whole question it answers is "does the accelerated path beat what the
+# compiler already emits for the generic path at the flags we actually ship",
+# so building it at anything else would answer a question nobody asked.
+# Exits 2 if any tier diverges — a faster path returning different bytes is a
+# chain split, not a win.
+SIMD_BENCH_SRCS = tools/simd_bench.c \
+	lib/crypto/src/sha256.c lib/crypto/src/sha3.c lib/crypto/src/keccak_avx512.c \
+	lib/crypto/src/sha3_avx512.c lib/crypto/src/sha3_256_x4.c \
+	lib/crypto/src/blake2b.c lib/crypto/src/blake2b_avx2.c \
+	lib/sapling/src/bn254_accel.c lib/sapling/src/fr_avx512.c \
+	lib/support/src/cleanse.c lib/base/src/log_level.c
+
+.PHONY: simd_bench
+simd_bench: $(BIN_DIR)/simd_bench
+$(BIN_DIR)/simd_bench: $(SIMD_BENCH_SRCS)
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O3 $(if $(ZCL_NATIVE),-march=native,-march=x86-64-v3) \
+	    -Wall -Wextra -Werror -pedantic \
+	    -Ilib/crypto/include -Ilib/sapling/include -Ilib/base/include \
+	    -Ilib/util/include -Ilib/platform/include -Ilib/support/include \
+	    -D_POSIX_C_SOURCE=200809L -o $@ $^
+
+# Run it. REPS= and CPU= override the defaults; CPU picks which CCD you land on
+# (this host class is asymmetric: one CCD has 3D V-Cache, the other clocks
+# higher), so quote the CPU alongside any number you record.
+.PHONY: bench-simd
+bench-simd: $(BIN_DIR)/simd_bench
+	@$(BIN_DIR)/simd_bench $(if $(CPU),--cpu=$(CPU)) $(if $(REPS),--reps=$(REPS))
+
 bench: zclassic23
 	@ZCL_BENCH_COMMIT="$(BUILD_COMMIT)" $(ZCLASSIC23_BIN) -bench
 
