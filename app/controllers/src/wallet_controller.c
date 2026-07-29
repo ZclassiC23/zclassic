@@ -629,8 +629,21 @@ static bool rpc_rescanblockchain(const struct json_value *params, bool help,
         "\nResult:\n"
         "{\n"
         "  \"start_height\": n,\n"
-        "  \"stop_height\": n\n"
-        "}\n");
+        "  \"stop_height\": n,\n"
+        "  \"blocks_scanned\": n,        (bodies actually read off disk)\n"
+        "  \"blocks_missing_data\": n,   (indexed but no block body here)\n"
+        "  \"blocks_read_failed\": n,\n"
+        "  \"blocks_no_index\": n,\n"
+        "  \"outputs_found\": n,\n"
+        "  \"shielded_notes_found\": n,\n"
+        "  \"shielded_txs_unscanned\": n,\n"
+        "  \"sapling_key_count\": n,\n"
+        "  \"shielded_scan_skipped\": bool,\n"
+        "  \"coverage_ok\": bool,\n"
+        "  \"blocker\": \"NAME\"          (only when coverage_ok is false)\n"
+        "}\n"
+        "\nA zero outputs_found with coverage_ok=false does NOT mean the\n"
+        "wallet is empty — this node could not read those blocks.\n");
 
     struct rpc_params p;
     rpc_params_init(&p, params);
@@ -661,12 +674,10 @@ static bool rpc_rescanblockchain(const struct json_value *params, bool help,
         LOG_FAIL("wallet", "rescanblockchain: start_height %d exceeds tip %d", start_height, tip);
     }
 
-    wallet_rescan(ctx->wallet, &ctx->main_state->chain_active,
-                  start_height, stop_height, ctx->datadir);
-
-    json_set_object(result);
-    json_push_kv_int(result, "start_height", start_height);
-    json_push_kv_int(result, "stop_height", stop_height);
+    struct wallet_rescan_report rep;
+    wallet_rescan_report(ctx->wallet, &ctx->main_state->chain_active,
+                         start_height, stop_height, ctx->datadir, &rep);
+    wallet_rescan_report_to_json(result, &rep);
     return true;
 }
 

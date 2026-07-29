@@ -567,8 +567,46 @@ void zcl_native_handle_wallet_rescan(
     free(params);
     if (!ok)
         return;
+
+    /* The scan is synchronous (see core.def: MODE_JOB is aspirational —
+     * rpc_rescanblockchain blocks until the scan completes), so by the time
+     * we are here it has FINISHED. Report what it actually covered and
+     * found; never an unconditional "started". */
+    const struct json_value *cov = json_get(&body, "coverage_ok");
+    const struct json_value *blk = json_get(&body, "blocker");
+    bool coverage_ok = !cov || cov->type != JSON_BOOL || json_get_bool(cov);
+
+    if (!coverage_ok) {
+        /* A rescan that could not read the blocks it was asked to scan is a
+         * failure, not a success with a small number in it. Surface the
+         * counts alongside the typed name so an agent can act without a
+         * second call. */
+        const char *code = (blk && blk->type == JSON_STR)
+                             ? json_get_str(blk) : "RESCAN_INCOMPLETE_COVERAGE";
+        char msg[384];
+        const struct json_value *scanned = json_get(&body, "blocks_scanned");
+        const struct json_value *indexed = json_get(&body, "blocks_indexed");
+        const struct json_value *missing = json_get(&body, "blocks_missing_data");
+        snprintf(msg, sizeof(msg),
+                 "rescan read %lld of %lld indexed blocks (%lld have no block "
+                 "body on this node); the result does NOT mean the wallet is "
+                 "empty — this node cannot see those blocks' transactions",
+                 scanned ? (long long)json_get_int(scanned) : 0LL,
+                 indexed ? (long long)json_get_int(indexed) : 0LL,
+                 missing ? (long long)json_get_int(missing) : 0LL);
+        (void)json_push_kv(&reply->data, "result", &body);
+        wnh_fail(reply, ZCL_COMMAND_EXIT_FAILED, code, msg,
+                 "core.wallet.rescan");
+        /* AFTER wnh_fail: zcl_command_reply_fail() overwrites `mutated`.
+         * A failed rescan still wrote — it advanced best_block_height and
+         * folded in whatever the blocks it COULD read contained. */
+        reply->error.mutated = true;
+        json_free(&body);
+        return;
+    }
+
     (void)json_push_kv(&reply->data, "result", &body);
-    (void)json_push_kv_bool(&reply->data, "started", true);
+    (void)json_push_kv_bool(&reply->data, "completed", true);
     reply->error.mutated = true;
     json_free(&body);
 }

@@ -934,14 +934,19 @@ ZCL_COMMAND_READY_READ(
 ZCL_COMMAND_READY_COMMAND(
     "core.wallet.rescan", "core.wallet", "",
     "Rescan the chain for wallet transactions",
-    "The rescanblockchain result from the running node at call time "
-    "under result, rescanning from the given start_height (or genesis "
-    "when omitted); started is true once the scan has begun.", 0,
+    "The rescanblockchain result from the running node under result, "
+    "rescanning from the given start_height (or genesis when omitted). "
+    "The scan runs to completion before this returns: completed is true "
+    "and result carries blocks_scanned, blocks_missing_data, "
+    "outputs_found and shielded_notes_found. A rescan that could not "
+    "read the block bodies it was asked to scan FAILS with a typed "
+    "blocker (RESCAN_NO_BLOCK_DATA, RESCAN_INCOMPLETE_COVERAGE or "
+    "RESCAN_INCONCLUSIVE_ZERO) rather than reporting zero found.", 0,
     "wallet,rescan",
-    "zcl.core_wallet_rescan.input.v1", "zcl.wallet_rescan.v1", "start_height",
+    "zcl.core_wallet_rescan.input.v1", "zcl.wallet_rescan.v2", "start_height",
     "", "zclassic23 core wallet rescan",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
-    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_JOB,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
     ZCL_COMMAND_LATENCY_BACKGROUND, ZCL_COMMAND_COST_HIGH,
     ZCL_COMMAND_CONFIRM_NONE,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
