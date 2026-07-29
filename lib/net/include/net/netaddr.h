@@ -133,6 +133,28 @@ bool net_addr_is_rfc4843(const struct net_addr *a);
 bool net_addr_is_local(const struct net_addr *a);
 bool net_addr_is_routable(const struct net_addr *a);
 
+/* True ONLY for a same-host peer: IPv4 127.0.0.0/8 or IPv6 ::1. Never true
+ * for a Tor address, never true for RFC1918 or any other private range, and
+ * NULL reads as false (deny).
+ *
+ * Sole use is the per-source-IP INBOUND ADMISSION cap in
+ * accept_connection(). Several nodes on one machine all arrive as
+ * 127.0.0.1 and share one 16-byte key, so the default cap of 3 refuses the
+ * fourth of them by construction — which is exactly the local multi-node
+ * topology a cold-start sync proof is made of. Loopback answers that
+ * completely; RFC1918 does not appear here on purpose, because on a hosted
+ * machine with provider private networking the neighbouring tenants are
+ * RFC1918 sources.
+ *
+ * This is NOT a trust decision and it is NOT an exemption from any bound.
+ * Loopback gets a RAISED per-source cap and, on top of that, an AGGREGATE
+ * ceiling on how many inbound slots all loopback sources together may hold
+ * (peer_scoring_max_inbound_loopback()) — 127.0.0.0/8 is 16M distinct
+ * source keys, so a per-IP number alone would bound nothing. The global
+ * inbound cap and the reserved outbound slots still apply as they do to
+ * every other peer. */
+bool net_addr_is_operator_local(const struct net_addr *a);
+
 #define NET_ADDR_GROUP_MAX 5
 
 size_t net_addr_get_group(const struct net_addr *a, unsigned char *out,

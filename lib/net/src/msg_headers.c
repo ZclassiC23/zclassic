@@ -52,6 +52,35 @@ static _Atomic uint64_t g_headers_total_rejected = 0;
 static _Atomic uint64_t g_headers_newly_added = 0;
 static _Atomic uint64_t g_headers_already_known = 0;
 
+/* ── getheaders serve-path solution cache budget ────────────────────
+ *
+ * The in-memory block index deliberately drops nSolution to save RAM
+ * (lib/storage/src/block_index_db.c: "Don't store solution in
+ * block_index to save RAM"), so a header served off a disk-loaded index
+ * has to re-read its Equihash solution from the flat block file or from
+ * the node.db `blocks` row. headers_refresh_index_from_header() pins
+ * that solution back onto the index entry so the next serve of the same
+ * header is free — but block_index entries live for the whole process
+ * lifetime, and `getheaders` needs nothing but a completed handshake.
+ * One unauthenticated peer walking the entire header chain would
+ * otherwise pin ~1.8 GB (585318 x 1344 + ~2.6M x 400 bytes), exactly
+ * undoing the RAM decision above.
+ *
+ * So the CACHE is bounded, never the SERVE: past the budget the header
+ * is still loaded from the store and still served in full, it is simply
+ * not memoised. Bytes are counted only when this file allocates them and
+ * are never returned (index entries outlive every serve), which biases
+ * the count high — the safe direction for a cap. */
+#define HEADERS_SOLUTION_CACHE_MAX_BYTES ((size_t)64 * 1024 * 1024)
+static _Atomic size_t g_headers_solution_cache_bytes = 0;
+static _Atomic bool g_headers_solution_cache_full_logged = false;
+
+/* See net/msg_internal.h. */
+size_t getheaders_solution_cache_bytes(void)
+{
+    return atomic_load(&g_headers_solution_cache_bytes);
+}
+
 /* ── getheaders continuation-suppression counters ──────────────────
  *
  * push_getheaders_from() has two guards that used to `return;` silently:
@@ -204,11 +233,63 @@ static const char *headers_servable_reject_reason(
             return "bad-equihash-solution-size";
     }
 
+    /* The header we are about to serve must BE the entry we are serving it
+     * under. nSolution is part of the serialized header, so an equal hash
+     * proves these are byte-for-byte the accepted bytes — a strictly
+     * stronger statement than "this solution satisfies Equihash", which
+     * says nothing about WHICH header the bytes belong to. A mismatch is
+     * retryable (the ordinary cause is a hydrated index entry carrying no
+     * nSolution, which the flat-file / node.db fallback repairs). */
+    struct uint256 hash;
+    block_header_get_hash(hdr, &hash);
+    bool hash_bound = iter->phashBlock && uint256_eq(&hash, iter->phashBlock);
+    if (!hash_bound)
+        return "header-hash-mismatch";
+
+    /* FULL Equihash, on EVERY header this node serves — no status-bit
+     * shortcut. The hash bind above proves these bytes are the bytes filed
+     * under this entry's hash; it does NOT prove anyone ever solved
+     * Equihash over them, because in this codebase BLOCK_VALID_TREE does
+     * not witness an Equihash check. Four persisted-index loaders set it
+     * at sampled or zero PoW strength:
+     *
+     *   app/services/src/block_index_blocks_hydrate.c  — full_check is
+     *     (h % BLOCKS_HYDRATE_POW_STRIDE == 0) || h > rom_checkpoint,
+     *     i.e. one row in 10,000 below the ROM checkpoint;
+     *   app/services/src/block_index_loader.c          — calls
+     *     block_row_verify(..., hdr = NULL), which per block_row_verify.h
+     *     skips BOTH the hash bind and Equihash, leaving only
+     *     CheckProofOfWork on the CLAIMED hash;
+     *   config/src/boot_block_file_scan.c              — assigns
+     *     BLOCK_VALID_TREE unconditionally;
+     *   config/src/boot_header_seed_import.c           — CLAMPS a
+     *     peer-supplied artifact down to BLOCK_VALID_TREE, and says in
+     *     its own comment that bodies are fully re-validated later.
+     *
+     * The full-strength header pass does exist
+     * (app/jobs/src/validate_headers_validator.c, block_row_verify with
+     * check_equihash = true) but it records its verdict in a STAGE CURSOR,
+     * not in nStatus, so nStatus cannot proxy for it.
+     *
+     * Concretely: a hostile block_index.bin / node.db bundle can carry
+     * header rows below the ROM checkpoint at heights not divisible by
+     * 10,000 whose nSolution is garbage but whose serialized bytes still
+     * hash under target — one CheckProofOfWork-passing grind, not a mine.
+     * Those rows hash-bind and carry BLOCK_VALID_TREE. Skipping Equihash
+     * here would make this node re-broadcast them, which is header spam
+     * peers ban for. This check is the last full-PoW gate applied to a
+     * persisted row before it leaves the node, so it runs unconditionally.
+     *
+     * Cost, MEASURED on the dev host rather than estimated: 383-390 us per
+     * header for 200,9 and 36.7-36.9 us for 192,7 (192,7 is ~10x CHEAPER,
+     * the opposite of the earlier guess), so ~320 s of one thread to serve
+     * one peer the whole 3.19M-header chain. That is the cost this node has
+     * always paid here; recovering it needs a gate that actually witnesses
+     * an Equihash check — the validate_headers stage cursor — not a status
+     * bit. See lib/test/src/test_getheaders_serve_fallback.c case 7. */
     if (!check_equihash_solution(hdr, mp->params))
         return "invalid-solution";
 
-    struct uint256 hash;
-    block_header_get_hash(hdr, &hash);
     if (!CheckProofOfWork(hash, hdr->nBits, &mp->params->consensus))
         return "high-hash";
 
@@ -223,6 +304,7 @@ static bool headers_reject_reason_can_retry_store(const char *reason)
     return reason &&
         (strcmp(reason, "invalid-solution") == 0 ||
          strcmp(reason, "bad-equihash-solution-size") == 0 ||
+         strcmp(reason, "header-hash-mismatch") == 0 ||
          strcmp(reason, "high-hash") == 0);
 }
 
@@ -240,9 +322,40 @@ static void headers_refresh_index_from_header(struct block_index *iter,
     iter->nNonce = hdr->nNonce;
 
     if (hdr->nSolutionSize > 0) {
+        /* Already holding a same-sized buffer: refresh in place. No new
+         * allocation, so the budget does not move — and no free(), so a
+         * concurrent reader of this entry cannot see a dangling pointer. */
+        if (iter->nSolution && iter->nSolutionSize == hdr->nSolutionSize) {
+            memcpy(iter->nSolution, hdr->nSolution, hdr->nSolutionSize);
+            return;
+        }
+
+        /* Reserve first, roll back on refusal — two serve threads must not
+         * both read "under budget" and both allocate. */
+        size_t before = atomic_fetch_add(&g_headers_solution_cache_bytes,
+                                         hdr->nSolutionSize);
+        if (before + hdr->nSolutionSize > HEADERS_SOLUTION_CACHE_MAX_BYTES) {
+            atomic_fetch_sub(&g_headers_solution_cache_bytes,
+                             hdr->nSolutionSize);
+            /* Not an error and not a serve refusal: the caller already
+             * holds the full header and serves it. Log once so the
+             * operator can tell "cold cache" from "capped cache". */
+            if (!atomic_exchange(&g_headers_solution_cache_full_logged, true))
+                LOG_WARN("headers",
+                         "getheaders: serve-path solution cache reached its "
+                         "%zu-byte budget at h=%d — headers are still served "
+                         "in full, they are just re-read from the store "
+                         "instead of being kept in RAM",
+                         (size_t)HEADERS_SOLUTION_CACHE_MAX_BYTES,
+                         iter->nHeight);
+            return;
+        }
+
         uint8_t *sol = zcl_malloc(hdr->nSolutionSize,
                                   "headers_refresh_solution");
         if (!sol) {
+            atomic_fetch_sub(&g_headers_solution_cache_bytes,
+                             hdr->nSolutionSize);
             LOG_WARN("headers",
                      "getheaders: solution refresh alloc failed h=%d size=%zu",
                      iter->nHeight, hdr->nSolutionSize);
