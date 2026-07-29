@@ -75,63 +75,29 @@ static const char *zidc_datadir(const struct zcl_command_request *request)
     return (dd && dd[0]) ? dd : NULL;
 }
 
-/* Open <datadir>/node.db READONLY (no CREATE) behind an ad-hoc node_db.
- * On failure the reply is already filled and false is returned. */
-static bool zidc_open_db(const char *datadir, struct zcl_command_reply *reply,
-                         sqlite3 **db_out, struct node_db *ndb_out)
+/* The read-only open lives in tools/command/native_node_db_ro.c; these
+ * leaves call zcl_native_node_db_require_readonly directly.
+ *
+ * The one caller that still needs a local wrapper is the anchor preflight:
+ * a missing node.db is NOT an error there, because anchoring a brand new
+ * key on a host with no folded chain is a legitimate offline operation.
+ * That is a decision about ABSENT only — an UNREADABLE node.db is still a
+ * failure to look, and must not be silently treated as "the key has no
+ * prior anchor". Returns the handle, or NULL with *fatal_out set when the
+ * caller must refuse rather than proceed. */
+static sqlite3 *zidc_open_db_preflight(const char *datadir,
+                                       struct node_db *ndb_out,
+                                       bool *fatal_out)
 {
-    char path[1024];
-    int n = snprintf(path, sizeof(path), "%s/node.db", datadir);
-    if (n <= 0 || (size_t)n >= sizeof(path)) {
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
-                               ZCL_COMMAND_EXIT_INVALID,
-                               "DATADIR_PATH_TOO_LONG", "normalize", false,
-                               false, "datadir path too long", datadir);
-        return false;
-    }
     sqlite3 *db = NULL;
-    if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
-        if (db)
-            sqlite3_close(db);
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
-                               ZCL_COMMAND_EXIT_BLOCKED,
-                               "NODE_DB_UNAVAILABLE", "execute", true, false,
-                               "node.db not found or unreadable at datadir — "
-                               "check --datadir, or boot the node once to "
-                               "create it", path);
-        return false;
-    }
-    (void)sqlite3_exec(db, "PRAGMA query_only=ON", NULL, NULL, NULL);
-    sqlite3_busy_timeout(db, 2000);
-    *db_out = db;
-    memset(ndb_out, 0, sizeof(*ndb_out));
-    ndb_out->db = db;
-    ndb_out->open = true;
-    return true;
-}
-
-/* Same open, but for callers where a missing node.db is not an error (a
- * first anchor on a host with no folded chain is legitimate). Returns the
- * handle or NULL; nothing is reported either way. */
-static sqlite3 *zidc_open_db_quiet(const char *datadir,
-                                   struct node_db *ndb_out)
-{
-    char path[1024];
-    int n = snprintf(path, sizeof(path), "%s/node.db", datadir);
-    if (n <= 0 || (size_t)n >= sizeof(path))
-        return NULL;  // raw-return-ok:optional-preflight-open
-    sqlite3 *db = NULL;
-    if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
-        if (db)
-            sqlite3_close(db);
-        return NULL;  // raw-return-ok:optional-preflight-open
-    }
-    (void)sqlite3_exec(db, "PRAGMA query_only=ON", NULL, NULL, NULL);
-    sqlite3_busy_timeout(db, 2000);
-    memset(ndb_out, 0, sizeof(*ndb_out));
-    ndb_out->db = db;
-    ndb_out->open = true;
-    return db;
+    *fatal_out = false;
+    enum zcl_node_db_ro_status st =
+        zcl_native_node_db_open_readonly(datadir, &db, ndb_out, NULL, 0);
+    if (st == ZCL_NODE_DB_RO_OK)
+        return db;
+    if (st != ZCL_NODE_DB_RO_ABSENT)
+        *fatal_out = true;
+    return NULL;  // raw-return-ok:optional-preflight-open
 }
 
 /* Exactly 64 hex chars decoding to a non-zero 32-byte key. */
@@ -353,13 +319,15 @@ void zcl_native_handle_core_identity_resolve(
         return;
     sqlite3 *db = NULL;
     struct node_db ndb;
-    if (!zidc_open_db(datadir, reply, &db, &ndb))
+    if (!zcl_native_node_db_require_readonly(datadir, reply,
+                                             "the identity projection",
+                                             &db, &ndb))
         return;
 
     struct zid_identity row;
     bool found = have_pubkey ? db_zid_identity_find(&ndb, key, &row)
                              : db_zid_identity_find_by_name(&ndb, name, &row);
-    sqlite3_close(db);
+    zcl_native_node_db_close_readonly(&db, &ndb);
 
     if (!found) {
         if (have_pubkey)
@@ -414,7 +382,9 @@ void zcl_native_handle_core_identity_list(
         return;
     sqlite3 *db = NULL;
     struct node_db ndb;
-    if (!zidc_open_db(datadir, reply, &db, &ndb))
+    if (!zcl_native_node_db_require_readonly(datadir, reply,
+                                             "the identity projection",
+                                             &db, &ndb))
         return;
 
     struct zid_identity rows[ZID_CMD_LIST_CAP];
@@ -426,7 +396,7 @@ void zcl_native_handle_core_identity_list(
         &ndb, ZID_IDENTITY_STATUS_ROTATED);
     int64_t revoked = db_zid_identity_count_by_status(
         &ndb, ZID_IDENTITY_STATUS_REVOKED);
-    sqlite3_close(db);
+    zcl_native_node_db_close_readonly(&db, &ndb);
 
     json_push_kv_str(&reply->data, "datadir", datadir);
     json_push_kv_int(&reply->data, "limit", limit);
@@ -468,12 +438,27 @@ void zcl_native_handle_core_identity_anchor(
 
     /* Pre-flight: a dead or superseded key is never re-anchored, and
      * finding that out costs nothing while broadcasting costs a fee.
-     * A datadir we cannot open is NOT fatal here — anchoring a brand new
-     * key on a host with no node.db is a legitimate offline operation. */
+     * An ABSENT node.db is NOT fatal here — anchoring a brand new key on a
+     * host with no folded chain is a legitimate offline operation. An
+     * UNREADABLE one IS fatal: skipping the preflight because the lookup
+     * failed would spend a fee re-anchoring a key that may already be
+     * revoked, on the strength of a check that never ran. */
     const char *datadir = zidc_datadir(request);
     if (datadir) {
         struct node_db ndb;
-        sqlite3 *db = zidc_open_db_quiet(datadir, &ndb);
+        bool db_fatal = false;
+        sqlite3 *db = zidc_open_db_preflight(datadir, &ndb, &db_fatal);
+        if (db_fatal) {
+            zcl_command_reply_fail(
+                reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_BLOCKED,
+                "NODE_DB_UNREADABLE", "execute", true, false,
+                "node.db is present at this datadir but would not open "
+                "read-only, so the already-revoked pre-flight could not "
+                "run — refusing rather than spending a fee on an unchecked "
+                "anchor; check permissions, or pass a datadir you can read",
+                datadir);
+            return;
+        }
         if (db) {
             struct zid_identity prev;
             memset(&prev, 0, sizeof(prev));
@@ -482,7 +467,7 @@ void zcl_native_handle_core_identity_anchor(
                                ZID_IDENTITY_STATUS_ACTIVE) != 0;
             char status[ZID_IDENTITY_STATUS_MAX];
             snprintf(status, sizeof(status), "%s", prev.status);
-            sqlite3_close(db);
+            zcl_native_node_db_close_readonly(&db, &ndb);
             if (dead) {
                 zcl_command_reply_fail(
                     reply, ZCL_COMMAND_STATUS_FAILED,
@@ -554,11 +539,13 @@ void zcl_native_handle_core_identity_rotate(
         return;
     sqlite3 *db = NULL;
     struct node_db ndb;
-    if (!zidc_open_db(datadir, reply, &db, &ndb))
+    if (!zcl_native_node_db_require_readonly(datadir, reply,
+                                             "the identity projection",
+                                             &db, &ndb))
         return;
     struct zid_identity prev;
     bool found = db_zid_identity_find(&ndb, old_key, &prev);
-    sqlite3_close(db);
+    zcl_native_node_db_close_readonly(&db, &ndb);
 
     if (!found) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
@@ -634,11 +621,13 @@ void zcl_native_handle_core_identity_revoke(
         return;
     sqlite3 *db = NULL;
     struct node_db ndb;
-    if (!zidc_open_db(datadir, reply, &db, &ndb))
+    if (!zcl_native_node_db_require_readonly(datadir, reply,
+                                             "the identity projection",
+                                             &db, &ndb))
         return;
     struct zid_identity prev;
     bool found = db_zid_identity_find(&ndb, key, &prev);
-    sqlite3_close(db);
+    zcl_native_node_db_close_readonly(&db, &ndb);
 
     if (!found) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,

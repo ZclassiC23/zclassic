@@ -850,6 +850,7 @@ add/remove a gate.
 - `check-command-contract`
 - `check-command-availability-truthful`
 - `check-command-input-keys`
+- `check-read-leaf-no-boot-ceremony`
 - `check-telemetry-ontology`
 - `check-privileged-transition-receipt`
 - `check-no-gnu-va-args`

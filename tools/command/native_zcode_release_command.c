@@ -103,9 +103,16 @@ static const char *zr_domain(const struct json_value *in)
     return d;
 }
 
-/* Open <datadir>/node.db (creating + migrating it when absent, exactly
- * like any other node.db consumer). Fills the reply and returns false on
- * failure. */
+/* WRITE path — `zcode.release.anchor` (ZCL_COMMAND_READY_COMMAND) ONLY.
+ *
+ * node_db_open() is the BOOT ceremony: READWRITE|CREATE, then create_schema
+ * + node_db_migrate, a rename() quarantine of node.db when PRAGMA
+ * quick_check fails, and the snapshot_staging DELETEs. `anchor` stores the
+ * folded leaf set, so it legitimately needs a writable store and accepts
+ * that ceremony. A READ leaf must NOT come here — `datadir` is
+ * caller-supplied and falls back to the operator's live node, so a read
+ * leaf run with no arguments would perform every one of those writes on it.
+ * Read leaves use zcl_native_node_db_require_readonly instead. */
 static bool zr_open_ndb(const char *datadir, struct node_db *ndb,
                         struct zcl_command_reply *reply, const char *leaf)
 {
@@ -593,44 +600,6 @@ static bool zr_flag_set(const struct json_value *input, const char *key)
     return false;
 }
 
-/* Open <datadir>/node.db READONLY behind an ad-hoc node_db (the
- * core.storage.query.offline pattern). Fills `reply` and returns false on
- * failure, so a caller can `return` straight away. */
-static bool zr_open_identity_db(const char *datadir,
-                                struct zcl_command_reply *reply,
-                                sqlite3 **db_out, struct node_db *ndb_out)
-{
-    char path[1024];
-    int n = snprintf(path, sizeof(path), "%s/node.db", datadir);
-    if (n <= 0 || (size_t)n >= sizeof(path)) {
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
-                               ZCL_COMMAND_EXIT_INVALID,
-                               "DATADIR_PATH_TOO_LONG", "normalize", false,
-                               false, "datadir path too long", datadir);
-        return false;
-    }
-    sqlite3 *db = NULL;
-    if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
-        if (db)
-            sqlite3_close(db);
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
-                               ZCL_COMMAND_EXIT_BLOCKED,
-                               "NODE_DB_UNAVAILABLE", "execute", true, false,
-                               "node.db not found or unreadable at datadir — "
-                               "--anchored needs a node that has folded the "
-                               "chain; check --datadir, or boot the node "
-                               "once", path);
-        return false;
-    }
-    (void)sqlite3_exec(db, "PRAGMA query_only=ON", NULL, NULL, NULL);
-    sqlite3_busy_timeout(db, 2000);
-    *db_out = db;
-    memset(ndb_out, 0, sizeof(*ndb_out));
-    ndb_out->db = db;
-    ndb_out->open = true;
-    return true;
-}
-
 /* ── zcode.release.verify ──────────────────────────────────────────── */
 
 void zcl_native_handle_zcode_release_verify(
@@ -811,11 +780,13 @@ void zcl_native_handle_zcode_release_verify(
         }
         sqlite3 *db = NULL;
         struct node_db ndb;
-        if (!zr_open_identity_db(datadir, reply, &db, &ndb))
+        if (!zcl_native_node_db_require_readonly(
+                datadir, reply, "the identity projection --anchored reads",
+                &db, &ndb))
             return;
         struct zid_identity row;
         bool anchored = db_zid_identity_find(&ndb, doc.master_pubkey, &row);
-        sqlite3_close(db);
+        zcl_native_node_db_close_readonly(&db, &ndb);
 
         json_push_kv_bool(&reply->data, "anchored", anchored);
         if (!anchored) {
@@ -1374,13 +1345,30 @@ void zcl_native_handle_zcode_release_prove(
     /* Durable path FIRST: prove against the leaf set that was stored when
      * the domain was folded, so a .zid added or deleted since then cannot
      * change what this proof means. */
+    /* READ leaf: strictly read-only, and ABSENT is the one status we may
+     * walk past. A machine that has never folded a domain has no node.db at
+     * all, and the release-dir fold below is the whole answer for it — that
+     * is the offline case this command is for. Every other status must
+     * refuse: falling through on an UNREADABLE node.db would answer "not
+     * anchored yet" when the truth is "I could not read the store", and the
+     * caller cannot tell those apart from the reply. */
+    sqlite3 *db = NULL;
     struct node_db ndb;
-    if (!zr_open_ndb(datadir, &ndb, reply, "zcode.release.prove"))
+    char ndb_path[1200];
+    enum zcl_node_db_ro_status ro_st = zcl_native_node_db_open_readonly(
+        datadir, &db, &ndb, ndb_path, sizeof(ndb_path));
+    if (ro_st != ZCL_NODE_DB_RO_OK && ro_st != ZCL_NODE_DB_RO_ABSENT) {
+        (void)zcl_native_node_db_require_readonly(
+            datadir, reply, "the stored anchor domain", &db, &ndb);
         return;
-    bool answered = zr_prove_from_domain(&ndb, domain, name, version, reply);
-    node_db_close(&ndb);
-    if (answered)
-        return;
+    }
+    if (ro_st == ZCL_NODE_DB_RO_OK) {
+        bool answered =
+            zr_prove_from_domain(&ndb, domain, name, version, reply);
+        zcl_native_node_db_close_readonly(&db, &ndb);
+        if (answered)
+            return;
+    }
 
     /* Fallback: this domain has never been folded, so there is no stored
      * leaf set to read. Fold the releases dir exactly as `anchor` would —
@@ -1503,14 +1491,20 @@ void zcl_native_handle_zcode_domain_list(
                                "zcode.domain.list");
         return;
     }
+    /* READ leaf: strictly read-only. An unreadable store must NOT come back
+     * as an empty domain list — "no domains" and "I could not look" are
+     * different answers. */
+    sqlite3 *db = NULL;
     struct node_db ndb;
-    if (!zr_open_ndb(datadir, &ndb, reply, "zcode.domain.list"))
+    if (!zcl_native_node_db_require_readonly(datadir, reply,
+                                             "the anchor-domain store",
+                                             &db, &ndb))
         return;
 
     struct zid_domain rows[ZR_DOMAIN_LIST_MAX];
     int n = zid_domain_list(&ndb, rows, ZR_DOMAIN_LIST_MAX);
     int64_t total = zid_domain_count(&ndb);
-    node_db_close(&ndb);
+    zcl_native_node_db_close_readonly(&db, &ndb);
 
     struct json_value arr = {0};
     json_set_array(&arr);
@@ -1557,13 +1551,19 @@ void zcl_native_handle_zcode_domain_status(
                                "zcode.domain.status");
         return;
     }
+    /* READ leaf: strictly read-only. Required — an unreadable store must
+     * not be reported as DOMAIN_NOT_FOUND, which claims a fact about the
+     * store's contents that was never actually read. */
+    sqlite3 *db = NULL;
     struct node_db ndb;
-    if (!zr_open_ndb(datadir, &ndb, reply, "zcode.domain.status"))
+    if (!zcl_native_node_db_require_readonly(datadir, reply,
+                                             "the anchor-domain store",
+                                             &db, &ndb))
         return;
 
     struct zid_domain d;
     if (!zid_domain_get(&ndb, domain, &d)) {
-        node_db_close(&ndb);
+        zcl_native_node_db_close_readonly(&db, &ndb);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_FAILED, "DOMAIN_NOT_FOUND",
                                "execute", true, false,
@@ -1578,7 +1578,7 @@ void zcl_native_handle_zcode_domain_status(
                                ? ZR_DOMAIN_LEAF_PREVIEW : d.num_leaves);
     struct zid_domain_leaf preview[ZR_DOMAIN_LEAF_PREVIEW];
     int shown = want > 0 ? zid_domain_leaves(&ndb, domain, preview, want) : 0;
-    node_db_close(&ndb);
+    zcl_native_node_db_close_readonly(&db, &ndb);
 
     struct json_value obj;
     zr_domain_json(&obj, &d);

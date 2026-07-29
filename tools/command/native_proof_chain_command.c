@@ -812,39 +812,43 @@ static void pcw_rung6_signature(struct pcw_walk *w, int64_t now)
 
 /* ── rung 7: identity anchor ───────────────────────────────────────── */
 
-/* Open <datadir>/node.db READONLY behind an ad-hoc node_db — the same
- * shape `zcode release verify --anchored` uses
- * (zr_open_identity_db, tools/command/native_zcode_release_command.c).
- * Query-only and busy-bounded, so pointing it at a RUNNING node's datadir
- * cannot write, and a locked WAL gives up rather than parking a cursor on
- * the shared connection. `why` explains any false return. */
+/* The read-only open itself is zcl_native_node_db_open_readonly
+ * (command/native_command.h): SQLITE_OPEN_READONLY + PRAGMA query_only +
+ * a bounded busy timeout, so pointing it at a RUNNING node's datadir
+ * cannot write and a locked WAL gives up rather than parking a cursor on
+ * the shared connection. This wrapper only turns the status into rung 7's
+ * `why` sentence, and it says WHICH failure it was — "no node.db here" and
+ * "node.db is there and I could not read it" are different facts, and
+ * neither may be reported as a rung-7 verdict. */
 static bool pcw_open_identity_db(const char *datadir, sqlite3 **db_out,
                                  struct node_db *ndb_out, char *why,
                                  size_t why_size)
 {
-    char path[1024];
-    int n = snprintf(path, sizeof(path), "%s/node.db", datadir);
-    if (n <= 0 || (size_t)n >= sizeof(path)) {
-        (void)snprintf(why, why_size, "the datadir path is too long");
+    enum zcl_node_db_ro_status st = zcl_native_node_db_open_readonly(
+        datadir, db_out, ndb_out, NULL, 0);
+    switch (st) {
+    case ZCL_NODE_DB_RO_OK:
+        return true;
+    case ZCL_NODE_DB_RO_NO_DATADIR:
+    case ZCL_NODE_DB_RO_PATH_TOO_LONG:
+        (void)snprintf(why, why_size, "the datadir path is missing or "
+                                      "too long");
         return false;
-    }
-    sqlite3 *db = NULL;
-    if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
-        if (db)
-            sqlite3_close(db);
+    case ZCL_NODE_DB_RO_ABSENT:
         (void)snprintf(why, why_size,
-                       "node.db is missing or unreadable under the given "
-                       "`datadir` — rung 7 reads the identity projection a "
-                       "node folded; check the path, or boot the node once");
+                       "there is no node.db under the given `datadir` — "
+                       "rung 7 reads the identity projection a node folded; "
+                       "check the path, or boot the node once");
+        return false;
+    case ZCL_NODE_DB_RO_UNREADABLE:
+    default:
+        (void)snprintf(why, why_size,
+                       "node.db exists under the given `datadir` but would "
+                       "not open read-only, so the identity projection was "
+                       "NOT consulted — check permissions; this is not the "
+                       "same as the key being unanchored");
         return false;
     }
-    (void)sqlite3_exec(db, "PRAGMA query_only=ON", NULL, NULL, NULL);
-    sqlite3_busy_timeout(db, 2000);
-    *db_out = db;
-    memset(ndb_out, 0, sizeof(*ndb_out));
-    ndb_out->db = db;
-    ndb_out->open = true;
-    return true;
 }
 
 /* Rung 7 is the ONE rung that cannot be answered from caller-supplied

@@ -5830,6 +5830,19 @@ check-command-input-keys:
 	@echo "══ LINT: command input_keys vs. handler reads ══"
 	@./tools/lint/check_command_input_keys.sh
 
+# Gate — a leaf declared READ may not reach the datadir BOOT CEREMONY.
+# `app service access` was READY_READ/AUTH_PUBLIC/IDEMPOTENT and called
+# node_db_open(): READWRITE|CREATE, quarantine-rename on a failed
+# quick_check, create_schema, node_db_migrate, and DELETE FROM
+# snapshot_staging_utxos — against a datadir that DEFAULTS to the operator's
+# live node. Five more leaves were wrong the same way, in three different
+# files, which is why this gate follows the CALL GRAPH from the declaration
+# instead of policing one source file. node_db_open_runtime does not escape
+# it: the closure walks on to create_schema.
+check-read-leaf-no-boot-ceremony:
+	@echo "══ LINT: read leaf must not reach the boot ceremony ══"
+	@./tools/lint/check_read_leaf_no_boot_ceremony.sh
+
 # Gate — telemetry-ontology coverage. Every network telemetry field a covered
 # dumpstate function emits must carry a machine-readable meaning row (what it
 # counts, its health rule, what a bad value implies, what to read next) in
@@ -6406,6 +6419,7 @@ LINT_GATES := \
     check-command-contract \
     check-command-availability-truthful \
     check-command-input-keys \
+    check-read-leaf-no-boot-ceremony \
     check-telemetry-ontology \
     check-privileged-transition-receipt \
     check-no-gnu-va-args \
