@@ -765,7 +765,7 @@ $(DEV_TSAN_LEASE): FORCE
 # explicitly-known single goal.  Empty/default, mixed, and unknown goals keep
 # the conservative source-wide fallback so a new target cannot accidentally
 # lose header invalidation merely because this table was not updated.
-ZCL_DEPFILE_ALL_PROFILES := build-only dev test-fast test-strict
+ZCL_DEPFILE_ALL_PROFILES := build-only dev test-fast test-strict coverage
 ZCL_DEPFILE_PROFILES := $(ZCL_DEPFILE_ALL_PROFILES)
 ifeq ($(ZCL_HOTSWAP_DEPFILE_LEAN_ONLY),1)
 # The hot-swap loop recipes (plus hotswap-module-so's own single-TU shell
@@ -791,6 +791,8 @@ else ifneq ($(filter t-tsan test-tsan tsan-ci,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := test-tsan
 else ifneq ($(filter dev-tsan zclassic23-dev-tsan,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := dev-tsan
+else ifneq ($(filter coverage coverage-locked,$(ZCL_DEPFILE_SINGLE_GOAL)),)
+ZCL_DEPFILE_PROFILES := coverage
 else ifneq ($(filter lint lint-fast watcher-safety-gates dev-failure-execution-id ff t-changed fast-changed-compile fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES :=
 endif
@@ -4892,11 +4894,16 @@ $(COV_BUILD_DIR)/%.o: %.c $(VIEW_GEN_HEADERS) $(BUILD_EPOCH_OBJECT_TOOL) | $(COV
 
 $(COV_BUILD_DIR)/lib/util/src/clientversion.o: $(BUILD_IDENTITY_STAMP)
 
-# The coverage depfile graph is unused by the hot-swap loop goals (or
-# hotswap-module-so, which compiles its one TU via a direct shell $(CC) call);
-# keep its import unconditional for every other goal (it predates the profile
-# table).
-ifneq ($(ZCL_HOTSWAP_DEPFILE_LEAN_ONLY),1)
+# The coverage depfile graph now joins the profile table above instead of
+# importing on every goal. It never held dependency information for anything
+# but a coverage build: unless `make coverage` has run in this checkout the
+# import resolves to zero files and costs one failed open per coverage object
+# per -I directory (8372 of them here), which measured 0.8-1.6 s of pure
+# parse-time waste on EVERY make invocation, including `lint`, `ff` and
+# `build-only`. The conservative fallback still selects `coverage` for any
+# unrecognized or multi-goal invocation, which is what the nested
+# `$(COV_TEST_CANDIDATE)` goal inside `coverage-locked` relies on.
+ifneq ($(filter coverage,$(ZCL_DEPFILE_PROFILES)),)
 -include $(COV_OBJS:.o=.d)
 endif
 

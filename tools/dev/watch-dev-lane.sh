@@ -624,11 +624,21 @@ run_check_command()
     if [ -n "$CHECK_COMMAND" ]; then
         (cd "$ROOT" && /bin/sh -c "$CHECK_COMMAND")
     elif [ "$MODE" = "verify" ]; then
-        # ZCL_DEV_WATCH_LANE selects the checkout lock's non-blocking,
-        # defer-on-contention side (tools/dev/checkout-lock.sh via the `ff`
-        # target) instead of racing a foreground build/test run; exit 99
-        # means deferred, not failed. See CHECKOUT_LOCK in the Makefile.
-        (cd "$ROOT" && ZCL_DEV_WATCH_LANE=1 make --no-print-directory \
+        # Take the checkout lock DIRECTLY here rather than through the `ff`
+        # target's own wrapper. The lock tool reports "a foreground build
+        # holds this" as exit 99, but GNU make reports *any* failed recipe as
+        # exit 2, so reaching the lock through `make ff` collapsed every
+        # deferral into a generic failure and left the rc == 99 branch in
+        # run_cycle() unreachable from this — the default — mode. With sibling
+        # lanes compiling in other checkouts that turned routine, expected
+        # contention into a stream of false `rejected` verdicts.
+        # checkout-lock.sh exports ZCL_CHECKOUT_LOCK_HELD=1 around the command
+        # it runs, so the inner make's own wrapper execs straight through
+        # instead of re-acquiring (and self-deadlocking). This mirrors the
+        # non-verify branch below, which always had the nesting right.
+        (cd "$ROOT" && tools/dev/checkout-lock.sh watcher \
+            "$ROOT/build/.checkout.lock" -- \
+            env ZCL_DEV_WATCH_LANE=1 make --no-print-directory \
             BUILD_SOURCE_RECORD="$source_record" ff)
     else
         (cd "$ROOT" && tools/dev/checkout-lock.sh watcher \
