@@ -39,6 +39,7 @@
 #include "controllers/status_native_handlers.h"
 #include "controllers/chain_native_handlers.h"
 #include "controllers/wallet_native_handlers.h"
+#include "controllers/diagnostics_controller.h"
 #include "controllers/diagnostics_native_handlers.h"
 #include "controllers/net_native_handlers.h"
 #include "controllers/app_native_handlers.h"
@@ -1195,6 +1196,176 @@ void zcl_native_handle_network_chain_view(
     }
     zcl_native_bridge_project(request, &body, reply);
     json_free(&body);
+}
+
+/* ── ops.statecatalog ────────────────────────────────────────────────
+ *
+ * The discovery half of `ops state`. `ops state` demands a subsystem name
+ * and errors MISSING_SUBSYSTEM without one, so until this leaf existed an
+ * agent could only learn the names by reading
+ * app/controllers/include/controllers/diagnostics_dumpers.def out of the
+ * source tree — which is not shipped in a release binary. The catalog was
+ * already reachable as the flat legacy `zclassic23 statecatalog` shim,
+ * but flat shims carry no typed envelope, no declared risk/authority, and
+ * no `discover` entry, so from the typed registry the 148-plus subsystems
+ * were undiscoverable.
+ *
+ * There is no second catalog here. diag_rpc_statecatalog() renders the
+ * one built from diagnostics_dumpers.def; this leaf calls it and pages
+ * the result. Node-free: the registry is compiled in, so this answers
+ * with the node stopped — unlike `ops state`, which needs a live one.
+ *
+ * WHY THE DEFAULT IS NAMES ONLY. The full catalog is ~150 entries of
+ * rich metadata — far past the 8192-byte envelope the argv path can
+ * serialize (the CLI's own out buffer is ZCL_COMMAND_LIST_BUDGET + 1, so
+ * a leaf that declares more simply fails RESPONSE_BUDGET_EXCEEDED rather
+ * than truncating). A silently truncated catalog would be worse than an
+ * error — an agent would conclude a subsystem does not exist. So the
+ * default answer is the COMPLETE name list, which is the thing you need
+ * to call `ops state` at all and is the one part that must never be
+ * clipped. Metadata is opt-in and bounded two ways: `subsystem=<name>`
+ * for one descriptor in full, or `limit`/`page` for a small window of
+ * descriptors — and asking for a window drops `names` from the response,
+ * because a caller paging descriptors already has them. `count` is the
+ * true total in every mode. */
+
+#define NC_CATALOG_PAGE_DEFAULT 5
+#define NC_CATALOG_PAGE_MAX     5
+
+void zcl_native_handle_ops_statecatalog(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply)
+{
+    if (!request || !reply)
+        return;
+
+    struct json_value catalog;
+    json_init(&catalog);
+    if (!diag_rpc_statecatalog(NULL, false, &catalog)) {
+        json_free(&catalog);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "CATALOG_UNAVAILABLE",
+                               "execute", false, false,
+                               "the diagnostics registry did not render a "
+                               "catalog", "ops.statecatalog");
+        return;
+    }
+    const struct json_value *subs = json_get(&catalog, "subsystems");
+    if (!subs || subs->type != JSON_ARR) {
+        json_free(&catalog);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "CATALOG_MALFORMED",
+                               "serialize", false, false,
+                               "the diagnostics catalog carried no subsystems "
+                               "array", "ops.statecatalog");
+        return;
+    }
+    size_t total = json_size(subs);
+
+    (void)json_push_kv_str(&reply->data, "source",
+                           json_get_str(json_get(&catalog, "source")));
+    (void)json_push_kv_str(&reply->data, "catalog_schema",
+                           json_get_str(json_get(&catalog, "schema")));
+    (void)json_push_kv_int(&reply->data, "count", (int64_t)total);
+    (void)json_push_kv_bool(&reply->data, "node_free", true);
+
+    /* One named subsystem: its whole descriptor, unpaged and untrimmed. */
+    const char *want = json_get_str(json_get(request->input, "subsystem"));
+    if (want && want[0]) {
+        for (size_t i = 0; i < total; i++) {
+            const struct json_value *e = json_at(subs, i);
+            const char *name = e ? json_get_str(json_get(e, "name")) : NULL;
+            if (name && strcmp(name, want) == 0) {
+                (void)json_push_kv(&reply->data, "subsystem", e);
+                json_free(&catalog);
+                reply->status = ZCL_COMMAND_STATUS_PASSED;
+                reply->exit_code = ZCL_COMMAND_EXIT_OK;
+                return;
+            }
+        }
+        json_free(&catalog);
+        /* No `next` action pointing back at this leaf: push_next_array
+         * rejects a self-referential next and drops the WHOLE envelope to
+         * RESPONSE_BUDGET_EXCEEDED when it does. The message carries the
+         * instruction instead, and serialize_reply still attaches the
+         * describe-next automatically. */
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "UNKNOWN_SUBSYSTEM",
+                               "resolve", false, false,
+                               "no dumpstate subsystem by that name — re-run "
+                               "this command with no `subsystem` to get the "
+                               "complete `names` list", want);
+        return;
+    }
+
+    const struct json_value *lv = json_get(request->input, "limit");
+    const struct json_value *pv = json_get(request->input, "page");
+    bool want_rows = lv != NULL || pv != NULL;
+
+    /* Default mode: every name, complete, in one call. This is the
+     * discovery answer and it is never paged away. */
+    if (!want_rows) {
+        struct json_value names;
+        json_init(&names);
+        json_set_array(&names);
+        for (size_t i = 0; i < total; i++) {
+            const struct json_value *e = json_at(subs, i);
+            const char *name = e ? json_get_str(json_get(e, "name")) : NULL;
+            if (!name)
+                continue;
+            struct json_value nv;
+            json_init(&nv);
+            json_set_str(&nv, name);
+            (void)json_push_back(&names, &nv);
+            json_free(&nv);
+        }
+        (void)json_push_kv(&reply->data, "names", &names);
+        json_free(&names);
+        (void)json_push_kv_str(&reply->data, "detail",
+                               "add subsystem=<name> for one descriptor in "
+                               "full, or limit/page for a window of them");
+        json_free(&catalog);
+        reply->status = ZCL_COMMAND_STATUS_PASSED;
+        reply->exit_code = ZCL_COMMAND_EXIT_OK;
+        return;
+    }
+
+    int64_t page_size = NC_CATALOG_PAGE_DEFAULT;
+    if (lv && lv->type == JSON_INT)
+        page_size = json_get_int(lv);
+    if (page_size > NC_CATALOG_PAGE_MAX)
+        page_size = NC_CATALOG_PAGE_MAX;
+    if (page_size < 1)
+        page_size = 1;
+    int64_t page = 0;
+    if (pv && pv->type == JSON_INT)
+        page = json_get_int(pv);
+    if (page < 0)
+        page = 0;
+
+    int64_t pages = total == 0 ? 0
+                               : ((int64_t)total + page_size - 1) / page_size;
+    size_t start = (size_t)(page * page_size);
+    (void)json_push_kv_int(&reply->data, "page", page);
+    (void)json_push_kv_int(&reply->data, "page_size", page_size);
+    (void)json_push_kv_int(&reply->data, "pages", pages);
+    (void)json_push_kv_bool(&reply->data, "has_more",
+                            (int64_t)start + page_size < (int64_t)total);
+
+    struct json_value rows;
+    json_init(&rows);
+    json_set_array(&rows);
+    for (size_t i = start; i < total && (int64_t)(i - start) < page_size; i++) {
+        const struct json_value *e = json_at(subs, i);
+        if (e)
+            (void)json_push_back(&rows, e);
+    }
+    (void)json_push_kv(&reply->data, "subsystems", &rows);
+    json_free(&rows);
+    json_free(&catalog);
+
+    reply->status = ZCL_COMMAND_STATUS_PASSED;
+    reply->exit_code = ZCL_COMMAND_EXIT_OK;
 }
 
 void zcl_native_handle_ops_selftest(const struct zcl_command_request *request,

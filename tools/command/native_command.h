@@ -542,6 +542,17 @@ void zcl_native_handle_ops_state(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* ops.statecatalog — the discovery half of ops.state: every dumpstate
+ * subsystem the diagnostics registry holds, with its owner file, cost,
+ * accepted key forms and owning test. Renders the SAME catalog as the
+ * `statecatalog` RPC (diag_rpc_statecatalog) rather than a second copy,
+ * and is node-free — the registry is compiled in. `names` is always
+ * complete; per-entry metadata is paged by `limit`/`page`, or fetched
+ * whole for one `subsystem`. Bound by config/src/command_catalog.c. */
+void zcl_native_handle_ops_statecatalog(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* core.network.chain_view — the reachable-network chain view (modal tip, max
  * advertised height, our delta, fork clusters) from the node's network_monitor.
  * Reads the running node's network_monitor dumpstate over the read-only RPC.

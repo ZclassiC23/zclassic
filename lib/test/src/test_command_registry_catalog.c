@@ -13,6 +13,7 @@
 #include "kernel/command_registry.h"
 #include "command/native_command.h"
 #include "json/json.h"
+#include "controllers/diagnostics_internal.h"
 #include "controllers/rpc_client.h"
 
 #include <string.h>
@@ -2617,10 +2618,213 @@ static int test_handler_index_known_symbol_maps_to_path(void)
     return failures;
 }
 
+/* ── ops.statecatalog: the typed leaf and the registry cannot drift ───
+ *
+ * The leaf exists so an agent can learn the dumpstate subsystem names
+ * without reading diagnostics_dumpers.def out of a source tree. That is
+ * only true while it reports EVERY name the registry holds, so this
+ * drives the leaf through the real registry path — argv-shaped JSON in,
+ * bounded envelope out, input_validate included — and checks each name in
+ * diagnostics_dumper_at() against the emitted `names` array. Add a row to
+ * the .def without the leaf seeing it and this fails.
+ *
+ * The registry path matters: calling the handler directly would skip
+ * zcl_command_registry_input_validate, which is exactly how a leaf ends
+ * up declaring input keys its handler does not accept (or the reverse)
+ * and nobody notices. */
+static int test_ops_statecatalog_matches_registry(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    /* Deliberately larger than the leaf's declared budget so the assert
+     * below proves the response fits the BUDGET, not merely the buffer.
+     * The argv path serves this leaf out of ZCL_COMMAND_LIST_BUDGET + 1,
+     * so anything over that would fail RESPONSE_BUDGET_EXCEEDED there. */
+    static char out[131072];
+    struct zcl_command_context ctx = {
+        .registry = reg, .granted_capabilities = ~(uint64_t)0,
+        .authority_ceiling = ZCL_COMMAND_AUTH_OWNER,
+    };
+
+    TEST("ops.statecatalog names every diagnostics-registry subsystem") {
+        const struct zcl_command_spec *s = find_spec(reg, "ops.statecatalog");
+        ASSERT(s != NULL);
+        ASSERT_EQ(s->availability, ZCL_COMMAND_READY);
+        ASSERT_EQ(s->effect, ZCL_COMMAND_EFFECT_READ);
+
+        struct json_value input;
+        json_init(&input);
+        json_set_object(&input);
+        enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+        size_t n = zcl_command_registry_execute_json(
+            reg, s, &ctx, &input, false, "ops.statecatalog", "normal", 0, 0,
+            NULL, out, sizeof(out), &code);
+        json_free(&input);
+        ASSERT(n > 0);
+        ASSERT_EQ(code, ZCL_COMMAND_EXIT_OK);
+        /* Fits its own declared budget: a truncated catalog would read as
+         * "that subsystem does not exist", which is worse than an error. */
+        ASSERT(n <= ZCL_COMMAND_LIST_BUDGET);
+
+        struct json_value env;
+        ASSERT(json_read(&env, out, n));
+        const struct json_value *data = json_get(&env, "data");
+        ASSERT(data != NULL && data->type == JSON_OBJ);
+        const struct json_value *names = json_get(data, "names");
+        ASSERT(names != NULL && names->type == JSON_ARR);
+
+        size_t registry_count = diagnostics_dumper_count();
+        ASSERT(registry_count > 0);
+        ASSERT(json_size(names) == registry_count);
+        ASSERT(json_get_int(json_get(data, "count")) ==
+               (int64_t)registry_count);
+        /* Node-free by construction — the registry is compiled in, so
+         * this leaf must never be the one that needs a running node. */
+        ASSERT(json_get_bool(json_get(data, "node_free")));
+
+        /* Every registry row appears by name. Not count==count. */
+        for (size_t i = 0; i < registry_count; i++) {
+            const struct diagnostics_dump_entry *e = diagnostics_dumper_at(i);
+            ASSERT(e != NULL && e->name != NULL);
+            bool found = false;
+            for (size_t j = 0; j < json_size(names) && !found; j++) {
+                const char *got = json_get_str(json_at(names, j));
+                found = got && strcmp(got, e->name) == 0;
+            }
+            ASSERT(found);
+        }
+        json_free(&env);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* The paged half: `subsystem=` returns one full descriptor, an unknown
+ * name fails closed with a next action, and walking the pages visits
+ * every entry exactly once (so paging can never hide a subsystem the
+ * `names` list promised). */
+static int test_ops_statecatalog_paging_and_lookup(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    static char out[131072];
+    struct zcl_command_context ctx = {
+        .registry = reg, .granted_capabilities = ~(uint64_t)0,
+        .authority_ceiling = ZCL_COMMAND_AUTH_OWNER,
+    };
+    const struct zcl_command_spec *s = find_spec(reg, "ops.statecatalog");
+
+    TEST("ops.statecatalog resolves one subsystem and refuses an unknown") {
+        ASSERT(s != NULL);
+        const struct diagnostics_dump_entry *first = diagnostics_dumper_at(0);
+        ASSERT(first != NULL);
+
+        struct json_value input;
+        json_init(&input);
+        json_set_object(&input);
+        (void)json_push_kv_str(&input, "subsystem", first->name);
+        enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+        size_t n = zcl_command_registry_execute_json(
+            reg, s, &ctx, &input, false, "ops.statecatalog", "normal", 0, 0,
+            NULL, out, sizeof(out), &code);
+        json_free(&input);
+        ASSERT(n > 0);
+        ASSERT_EQ(code, ZCL_COMMAND_EXIT_OK);
+        struct json_value env;
+        ASSERT(json_read(&env, out, n));
+        const struct json_value *one =
+            json_get(json_get(&env, "data"), "subsystem");
+        ASSERT(one != NULL && one->type == JSON_OBJ);
+        ASSERT_STR_EQ(json_get_str(json_get(one, "name")), first->name);
+        /* The full descriptor, not a trimmed row — owner_file is the
+         * field that makes the catalog worth reading. */
+        ASSERT_STR_EQ(json_get_str(json_get(one, "owner_file")),
+                      first->owner_file);
+        json_free(&env);
+
+        json_init(&input);
+        json_set_object(&input);
+        (void)json_push_kv_str(&input, "subsystem", "no_such_subsystem_xyz");
+        code = ZCL_COMMAND_EXIT_OK;
+        n = zcl_command_registry_execute_json(
+            reg, s, &ctx, &input, false, "ops.statecatalog", "normal", 0, 0,
+            NULL, out, sizeof(out), &code);
+        json_free(&input);
+        ASSERT(n > 0);
+        ASSERT(code != ZCL_COMMAND_EXIT_OK);
+        ASSERT(strstr(out, "UNKNOWN_SUBSYSTEM") != NULL);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_ops_statecatalog_paging_covers_all(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    static char out[131072];
+    struct zcl_command_context ctx = {
+        .registry = reg, .granted_capabilities = ~(uint64_t)0,
+        .authority_ceiling = ZCL_COMMAND_AUTH_OWNER,
+    };
+    const struct zcl_command_spec *s = find_spec(reg, "ops.statecatalog");
+
+    TEST("ops.statecatalog paging visits every entry exactly once") {
+        ASSERT(s != NULL);
+        size_t registry_count = diagnostics_dumper_count();
+        /* The leaf clamps `limit` to its own max (8); asking for exactly
+         * that keeps the absolute-index check below honest. Walking EVERY
+         * page also proves no window of descriptors blows the leaf budget:
+         * the largest catalog entries are ~1.3 KB and a page must still
+         * serialize inside ZCL_COMMAND_LIST_BUDGET. */
+        const int64_t page_size = 5;
+        size_t seen = 0;
+        for (int64_t page = 0; page * page_size < (int64_t)registry_count;
+             page++) {
+            struct json_value input;
+            json_init(&input);
+            json_set_object(&input);
+            (void)json_push_kv_int(&input, "limit", page_size);
+            (void)json_push_kv_int(&input, "page", page);
+            enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+            size_t n = zcl_command_registry_execute_json(
+                reg, s, &ctx, &input, false, "ops.statecatalog", "normal", 0,
+                0, NULL, out, sizeof(out), &code);
+            json_free(&input);
+            ASSERT(n > 0);
+            ASSERT_EQ(code, ZCL_COMMAND_EXIT_OK);
+            ASSERT(n <= ZCL_COMMAND_LIST_BUDGET);
+            struct json_value env;
+            ASSERT(json_read(&env, out, n));
+            const struct json_value *rows =
+                json_get(json_get(&env, "data"), "subsystems");
+            ASSERT(rows != NULL && rows->type == JSON_ARR);
+            /* Each row must be the registry entry at its absolute index —
+             * proves the page window, not just the row count. */
+            for (size_t k = 0; k < json_size(rows); k++) {
+                size_t abs = (size_t)(page * page_size) + k;
+                const struct diagnostics_dump_entry *e =
+                    diagnostics_dumper_at(abs);
+                ASSERT(e != NULL);
+                ASSERT_STR_EQ(json_get_str(json_get(json_at(rows, k), "name")),
+                              e->name);
+            }
+            seen += json_size(rows);
+            json_free(&env);
+        }
+        ASSERT(seen == registry_count);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_command_registry_catalog(void)
 {
     int failures = 0;
     failures += test_catalog_wellformed();
+    failures += test_ops_statecatalog_matches_registry();
+    failures += test_ops_statecatalog_paging_and_lookup();
+    failures += test_ops_statecatalog_paging_covers_all();
     failures += test_handler_index_matches_catalog();
     failures += test_handler_index_known_symbol_maps_to_path();
     failures += test_app_features_leaves();
