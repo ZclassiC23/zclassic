@@ -83,7 +83,7 @@ static void rand_fq(uint64_t v[4], uint64_t *s)
 /* Assert every accel path agrees with portable for a*b. Returns 1 on mismatch
  * (and prints the offending vector), 0 on agreement. */
 static int check_pair(const uint64_t a[4], const uint64_t b[4],
-                      bool bmi2_available)
+                      bool adx_available)
 {
     uint64_t ref[4], disp[4];
     bn254_accel_mont_mul_portable(ref, a, b);
@@ -95,14 +95,14 @@ static int check_pair(const uint64_t a[4], const uint64_t b[4],
                (unsigned long long)ref[0], (unsigned long long)disp[0]);
         return 1;
     }
-    if (bmi2_available) {
-        uint64_t bmi[4] = {0};
-        bool ran = bn254_accel_mont_mul_bmi2(bmi, a, b);
-        if (ran && memcmp(ref, bmi, 32) != 0) {
-            printf("\n  MISMATCH bmi2 vs portable: "
-                   "a=%016llx.. b=%016llx.. ref[0]=%016llx bmi[0]=%016llx\n",
+    if (adx_available) {
+        uint64_t adx[4] = {0};
+        bool ran = bn254_accel_mont_mul_adx(adx, a, b);
+        if (ran && memcmp(ref, adx, 32) != 0) {
+            printf("\n  MISMATCH adx vs portable: "
+                   "a=%016llx.. b=%016llx.. ref[0]=%016llx adx[0]=%016llx\n",
                    (unsigned long long)a[0], (unsigned long long)b[0],
-                   (unsigned long long)ref[0], (unsigned long long)bmi[0]);
+                   (unsigned long long)ref[0], (unsigned long long)adx[0]);
             return 1;
         }
     }
@@ -120,7 +120,7 @@ int test_bn254_accel(void)
     /* Probe BMI2+ADX availability once: a false return means the host lacks it
      * (the differential test then covers portable+dispatch only). */
     uint64_t probe[4] = {0};
-    bool bmi2 = bn254_accel_mont_mul_bmi2(probe, R, R);
+    bool adx = bn254_accel_mont_mul_adx(probe, R, R);
 
     /* ── Boundary vectors ─────────────────────────────────────────── */
     printf("boundary vectors... ");
@@ -135,7 +135,7 @@ int test_bn254_accel(void)
         int bad = 0;
         for (int i = 0; i < nv; i++)
             for (int j = 0; j < nv; j++)
-                bad += check_pair(vecs[i], vecs[j], bmi2);
+                bad += check_pair(vecs[i], vecs[j], adx);
         if (bad) { failures += bad; printf("FAIL (%d)\n", bad); }
         else printf("OK\n");
     }
@@ -149,7 +149,7 @@ int test_bn254_accel(void)
             uint64_t a[4], b[4];
             rand_fq(a, &s);
             rand_fq(b, &s);
-            bad += check_pair(a, b, bmi2);
+            bad += check_pair(a, b, adx);
             if (bad >= 4) break;   /* stop spamming once clearly broken */
         }
         if (bad) { failures += bad; printf("FAIL (%d)\n", bad); }
@@ -164,7 +164,7 @@ int test_bn254_accel(void)
         for (int k = 0; k < 50000; k++) {
             uint64_t a[4];
             rand_fq(a, &s);
-            bad += check_pair(a, a, bmi2);
+            bad += check_pair(a, a, adx);
             if (bad >= 4) break;
         }
         if (bad) { failures += bad; printf("FAIL (%d)\n", bad); }

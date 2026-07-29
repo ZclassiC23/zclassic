@@ -47,15 +47,15 @@ SRCS=(
     "$ROOT/lib/sapling/src/bls12_381.c"
     "$ROOT/lib/sapling/src/fr_avx512.c"
     "$ROOT/lib/crypto/src/blake2b.c"
-    "$ROOT/lib/util/src/safe_alloc.c"
-    "$ROOT/lib/util/src/log_level.c"
+    "$ROOT/lib/base/src/safe_alloc.c"
+    "$ROOT/lib/base/src/log_level.c"
 )
 CFLAGS=(
     -std=c23 -O2 -march=x86-64-v3 -DZCL_TESTING
     -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE
     -I"$HERE"
     -I"$ROOT/lib/sapling/include" -I"$ROOT/lib/crypto/include"
-    -I"$ROOT/lib/util/include"
+    -I"$ROOT/lib/util/include" -I"$ROOT/lib/base/include"
 )
 
 cc "${CFLAGS[@]}" "${SRCS[@]}" -o "$BIN"

@@ -65,7 +65,7 @@ Rust numbers are **CITED** published reference points (no Rust is linked); see
 | BLAKE2b-512 (1 KiB) | ~0.85k | 1.1k (blake2b scalar) | 0.78 | **BEAT** |
 | SHA256 (1 KiB) | ~0.47k | 0.68k (SHA-NI) | 0.70 | **BEAT** |
 | SHA3-256 (1 KiB) | ~1.7k | 2.0k (keccak scalar) | 0.83 | behind* (slim) |
-| BLS12-381 Fp mul | ~56 | 45 (blst asm) | 1.23 | behind |
+| BLS12-381 Fp mul | ~31 | 45 (blst asm) | 0.69 | **BEAT** |
 | groth16 BLS12-381 output verify | ~7.7M | 3.0M (librustzcash) | 2.57 | behind |
 | BLS12-381 Ate pairing | ~1.83M | 0.6M (blst) | 3.05 | behind |
 | ed25519 verify | ~1.49M | 55k (ed25519-dalek) | 27.0 | behind (no windowing) |
@@ -144,7 +144,7 @@ lane-parallel `sha3_256_x4.c` and `sha3_avx512.c` (`sha3_512_x4`) are default
 **on** and measure ~1.7–2×. A measured loss left off is not a compiled-out
 path.
 
-Three gaps are known, still open, and each needs its own job:
+One gap is known, still open, and needs its own job:
 
 * **`blake2b_avx2.c` gates on CPUID alone.** `detect_features()` reads leaf-7
   EBX bits 5 and 16 with no XCR0 check, unlike every other ZMM entry point in
@@ -153,21 +153,57 @@ Three gaps are known, still open, and each needs its own job:
   supported Linux, but this is a live dispatch predicate on the Equihash
   verification path, so tightening it is a consensus-adjacent change and needs
   its own gate.
-* **`fr_avx512.c` and `bn254_accel.c` claim ADX carry chains they do not
-  build.** `fp_mont_mul_bmi2` passes a literal `0` carry-in to every
-  `_addcarryx_u64` and folds the carry back with an ordinary add, so zero
-  carry chains exist; `fr_mont_mul_bmi2` and `bn_fq_mont_mul_bmi2` thread one
-  chain through the `lo` adds and still use a literal `0` for the `carry_mul`
-  adds. `target("bmi2,adx")` therefore buys MULX and nothing else. Any fix is
-  Fp/Fr Montgomery arithmetic on the BLS12-381 pairing path and must clear
-  `make check-groth16-parity` on the full frozen corpus first.
-* **`bn254_accel.c` still advertises `"BMI2+ADX (MULX+ADCX+ADOX)"`** in its
-  header tier list and from `bn254_accel_implementation()`. That is a naming
-  overclaim per the point above. `fr_accel_implementation()` has already been
-  corrected to report the tier `init_dispatch()` installs — `"BMI2 MULX
-  (AVX-512 IFMA present, unimplemented)"` — because reporting a *detected*
-  capability as the *running* one is the exact mechanism that kept the
-  compiled-out SHA-256 path invisible.
+
+### Closed: the ADX overclaim (and the slowdown behind it)
+
+`fr_avx512.c` and `bn254_accel.c` used to name a tier
+`"BMI2+ADX (MULX+ADCX+ADOX)"` that built **no carry chains at all**. Every
+`_addcarryx_u64` took a literal `0` carry-in and folded the carry with an
+ordinary scalar add, so GCC lowered all of them to plain `ADC`; the shipped
+object disassembled to `mulx=64, adcx=0, adox=0`. `target("bmi2,adx")` bought
+MULX and nothing else.
+
+It was also **slower than the portable C it displaced**, in all six measured
+cases — so the tier cost speed *and* told the operator a false story about why.
+
+The fix was to write the thing the name promised: a real CIOS dual carry chain
+in inline asm (`lib/sapling/src/mont_adx.h`), ADCX on CF and ADOX on OF. Asm and
+not intrinsics because C has no way to keep two carry chains in two flag bits —
+that is *why* the intrinsic version degraded, and it will degrade again for the
+next person who "simplifies" it back.
+
+Measured with `taskset -c 8 build/bin/simd_bench --cpu=8 --reps=101` on the
+baseline 7950X3D at 1-minute load 2.4-2.9, p90/median 1.00-1.02x on every row (the
+old MULX column is from the same harness before the rewrite):
+
+| workload | portable | old "ADX" (MULX only) | real ADCX/ADOX | old vs portable | new vs portable |
+|---|--:|--:|--:|--:|--:|
+| BN254 Fq (Sprout), latency | 23.26 ns | 28.32 ns | 22.51 ns | 0.82× | **1.03×** |
+| BN254 Fq (Sprout), throughput | 18.05 ns | 22.37 ns | 15.59 ns | 0.81× | **1.16×** |
+| BLS12-381 Fr, latency | 24.48 ns | 29.19 ns | 22.52 ns | 0.85× | **1.09×** |
+| BLS12-381 Fr, throughput | 16.78 ns | 23.06 ns | 15.68 ns | 0.73× | **1.07×** |
+| BLS12-381 Fp, latency | 42.32 ns | 54.83 ns | 33.60 ns | 0.78× | **1.26×** |
+| BLS12-381 Fp, throughput | 38.16 ns | 52.95 ns | 27.75 ns | 0.72× | **1.38×** |
+
+The decision rule applied here is the one the `keccak_avx512` deletion set: a
+tier that is not measurably faster than portable does not get left switched off,
+it gets deleted. The MULX-only bodies are gone — not disabled — and portable is
+the only fallback. Had the rewrite failed to beat portable, the whole tier would
+have been deleted instead, and that would also have been a ~1.2–1.4× win.
+
+Bit-identity is proven three ways, because this is a consensus path: the
+`bn254_accel` and `fr_accel` differential oracles (boundary vectors 0/1/p-1/p-2
+and their cross products, plus 100k–200k random vectors per field, reduced into
+`[0, p)`), `simd_bench`'s per-tier check (which exits 2 on divergence and whose
+`--self-test` proves it can fail), and `make check-groth16-parity` on the frozen
+corpus.
+
+Two guards keep it closed. `test_fr_accel` is the Fr/Fp differential oracle that
+did not exist before — only BN254 Fq had one, even though every Sapling proof
+verifies through Fr and Fp. `test_mont_adx_honest` reads the **compiled bytes**
+of the installed multiply and fails if the reported implementation string claims
+ADCX/ADOX that the machine code does not contain; it is the check that would
+have caught the original overclaim on day one, and it fails on the parent commit.
 
 ## Optimizing safely
 

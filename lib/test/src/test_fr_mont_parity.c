@@ -15,7 +15,7 @@
  * sapling/fr.h. A single differing limb changes an anchor or flips a proof
  * verdict, which forks the node off the network permanently.
  *
- * fr_accel.h exposes fr_accel_mont_mul_portable / fr_accel_mont_mul_bmi2 (and
+ * fr_accel.h exposes fr_accel_mont_mul_portable / fr_accel_mont_mul_adx (and
  * the Fp pair) expressly "so a caller can drive the SAME input through every
  * path and assert byte-identical output". Until this file, nothing in the test
  * suite did; only the out-of-suite `zclassic23-simd-bench` did.
@@ -33,7 +33,7 @@
  *   5. Teeth — the comparator must catch a planted one-limb difference, and
  *      the multiply must not be the identity/zero function.
  *
- * On a host without BMI2 the *_bmi2 entry points return false and leave the
+ * On a host without ADX the *_adx entry points return false and leave the
  * output untouched; that leg is REPORTED as skipped, never counted as passing.
  */
 
@@ -129,25 +129,25 @@ struct field {
     int         limbs;
     const uint64_t *p;
     void (*portable)(uint64_t *, const uint64_t *, const uint64_t *);
-    bool (*bmi2)(uint64_t *, const uint64_t *, const uint64_t *);
+    bool (*adx)(uint64_t *, const uint64_t *, const uint64_t *);
     void (*dispatch)(uint64_t *, const uint64_t *, const uint64_t *);
 };
 
 static void fr_port(uint64_t *r, const uint64_t *a, const uint64_t *b)
 { fr_accel_mont_mul_portable(r, a, b); }
-static bool fr_bmi(uint64_t *r, const uint64_t *a, const uint64_t *b)
-{ return fr_accel_mont_mul_bmi2(r, a, b); }
+static bool fr_adx(uint64_t *r, const uint64_t *a, const uint64_t *b)
+{ return fr_accel_mont_mul_adx(r, a, b); }
 static void fr_disp(uint64_t *r, const uint64_t *a, const uint64_t *b)
 { fr_mont_mul_accel(r, a, b); }
 static void fp_port(uint64_t *r, const uint64_t *a, const uint64_t *b)
 { fp_accel_mont_mul_portable(r, a, b); }
-static bool fp_bmi(uint64_t *r, const uint64_t *a, const uint64_t *b)
-{ return fp_accel_mont_mul_bmi2(r, a, b); }
+static bool fp_adx(uint64_t *r, const uint64_t *a, const uint64_t *b)
+{ return fp_accel_mont_mul_adx(r, a, b); }
 static void fp_disp(uint64_t *r, const uint64_t *a, const uint64_t *b)
 { fp_mont_mul_accel(r, a, b); }
 
 /* Returns the number of failures for this (a,b) pair. */
-static int compare_one(const struct field *f, bool bmi2_present,
+static int compare_one(const struct field *f, bool adx_present,
                        const uint64_t *a, const uint64_t *b, const char *where)
 {
     uint64_t ref[6] = {0}, acc[6] = {0}, dsp[6] = {0};
@@ -164,12 +164,12 @@ static int compare_one(const struct field *f, bool bmi2_present,
         bad++;
     }
 
-    if (bmi2_present) {
-        if (f->bmi2(acc, a, b)) {
+    if (adx_present) {
+        if (f->adx(acc, a, b)) {
             if (memcmp(ref, acc, (size_t)n * 8) != 0) {
-                printf("\n  MISMATCH %s bmi2 vs portable at %s\n", f->name, where);
+                printf("\n  MISMATCH %s adx vs portable at %s\n", f->name, where);
                 dump("a   ", a, n); dump("b   ", b, n);
-                dump("port", ref, n); dump("bmi2", acc, n);
+                dump("port", ref, n); dump("adx", acc, n);
                 bad++;
             }
         }
@@ -190,12 +190,12 @@ static int run_field(const struct field *f)
     int n = f->limbs;
     int failures = 0;
 
-    /* BMI2 probe: the *_bmi2 entry returns false on a host without it. */
+    /* ADX probe: the *_adx entry returns false on a host without it. */
     uint64_t probe[6] = {0}, one[6] = {0};
     one[0] = 1;
-    bool bmi2 = f->bmi2(probe, one, one);
-    printf("  %s: bmi2 path %s\n", f->name,
-           bmi2 ? "available" : "NOT available on this host (leg skipped)");
+    bool adx = f->adx(probe, one, one);
+    printf("  %s: adx path %s\n", f->name,
+           adx ? "available" : "NOT available on this host (leg skipped)");
 
     /* ── Leg 1: boundary vectors ──────────────────────────────────────── */
     uint64_t zero[6] = {0};
@@ -213,7 +213,7 @@ static int run_field(const struct field *f)
 
     for (int i = 0; i < nv; i++)
         for (int j = 0; j < nv; j++)
-            failures += compare_one(f, bmi2, vecs[i], vecs[j], "boundary");
+            failures += compare_one(f, adx, vecs[i], vecs[j], "boundary");
     printf("  %s: %d boundary cross-product(s) checked\n", f->name, nv * nv);
 
     /* ── Leg 2: deterministic random corpus ───────────────────────────── */
@@ -223,7 +223,7 @@ static int run_field(const struct field *f)
         uint64_t a[6], b[6];
         mp_rand_below(a, f->p, n, &s);
         mp_rand_below(b, f->p, n, &s);
-        failures += compare_one(f, bmi2, a, b, "random");
+        failures += compare_one(f, adx, a, b, "random");
         if (failures > 8) { printf("  (aborting %s corpus after 8 failures)\n",
                                    f->name); break; }
     }
@@ -261,8 +261,8 @@ int test_fr_mont_parity(void)
     printf("\n=== BLS12-381 Fr/Fp Montgomery accel differential oracle ===\n");
     printf("selected impl: %s\n", fr_accel_implementation());
 
-    const struct field fr = { "Fr", 4, FR_P, fr_port, fr_bmi, fr_disp };
-    const struct field fp = { "Fp", 6, FP_Q, fp_port, fp_bmi, fp_disp };
+    const struct field fr = { "Fr", 4, FR_P, fr_port, fr_adx, fr_disp };
+    const struct field fp = { "Fp", 6, FP_Q, fp_port, fp_adx, fp_disp };
 
     int failures = run_field(&fr) + run_field(&fp);
 

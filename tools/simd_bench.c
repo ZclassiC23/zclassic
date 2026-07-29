@@ -664,7 +664,7 @@ static void bn254_body(long inner, void *vctx)
     for (long i = 0; i < inner; i += c->chains) {
         for (int k = 0; k < c->chains; k++) {
             if (c->tier == 0) bn254_accel_mont_mul_portable(r[k], r[k], c->b);
-            else              (void)bn254_accel_mont_mul_bmi2(r[k], r[k], c->b);
+            else              (void)bn254_accel_mont_mul_adx(r[k], r[k], c->b);
         }
     }
     for (int k = 0; k < c->chains; k++) g_sink += r[k][0];
@@ -682,7 +682,7 @@ static void bench_bn254(int chains)
         .ntiers = 2,
     };
     b.tier[0].name = "generic (portable)";
-    b.tier[1].name = "BMI2 (MULX)";
+    b.tier[1].name = "BMI2+ADX (MULX+ADCX+ADOX)";
 
     /* Two arbitrary field elements, both < q. */
     const uint64_t a[4] = { 0x1234567890abcdefULL, 0x0fedcba987654321ULL,
@@ -695,7 +695,7 @@ static void bench_bn254(int chains)
     b.tier[0].available = true;
     b.tier[0].verified = true;
 
-    b.tier[1].available = bn254_accel_mont_mul_bmi2(out[1], a, bb);
+    b.tier[1].available = bn254_accel_mont_mul_adx(out[1], a, bb);
     if (b.tier[1].available) {
         if (memcmp(out[1], out[0], 32) != 0) {
             parity_fail(b.primitive, b.tier[1].name, out[1], out[0], 32);
@@ -729,7 +729,7 @@ static void fr_body(long inner, void *vctx)
     for (long i = 0; i < inner; i += c->chains) {
         for (int k = 0; k < c->chains; k++) {
             if (c->tier == 0) fr_accel_mont_mul_portable(r[k], r[k], c->b);
-            else              (void)fr_accel_mont_mul_bmi2(r[k], r[k], c->b);
+            else              (void)fr_accel_mont_mul_adx(r[k], r[k], c->b);
         }
     }
     for (int k = 0; k < c->chains; k++) g_sink += r[k][0];
@@ -747,7 +747,7 @@ static void bench_fr(int chains)
         .ntiers = 2,
     };
     b.tier[0].name = "generic (portable)";
-    b.tier[1].name = "BMI2 (MULX)";
+    b.tier[1].name = "BMI2+ADX (MULX+ADCX+ADOX)";
 
     const uint64_t a[4] = { 0x0123456789abcdefULL, 0x00fedcba98765432ULL,
                             0x0011223344556677ULL, 0x0033445566778899ULL };
@@ -759,7 +759,7 @@ static void bench_fr(int chains)
     b.tier[0].available = true;
     b.tier[0].verified = true;
 
-    b.tier[1].available = fr_accel_mont_mul_bmi2(out[1], a, bb);
+    b.tier[1].available = fr_accel_mont_mul_adx(out[1], a, bb);
     if (b.tier[1].available) {
         if (memcmp(out[1], out[0], 32) != 0) {
             parity_fail(b.primitive, b.tier[1].name, out[1], out[0], 32);
@@ -790,7 +790,7 @@ static void fp_body(long inner, void *vctx)
     for (long i = 0; i < inner; i += c->chains) {
         for (int k = 0; k < c->chains; k++) {
             if (c->tier == 0) fp_accel_mont_mul_portable(r[k], r[k], c->b);
-            else              (void)fp_accel_mont_mul_bmi2(r[k], r[k], c->b);
+            else              (void)fp_accel_mont_mul_adx(r[k], r[k], c->b);
         }
     }
     for (int k = 0; k < c->chains; k++) g_sink += r[k][0];
@@ -808,7 +808,7 @@ static void bench_fp(int chains)
         .ntiers = 2,
     };
     b.tier[0].name = "generic (portable)";
-    b.tier[1].name = "BMI2 (MULX)";
+    b.tier[1].name = "BMI2+ADX (MULX+ADCX+ADOX)";
 
     const uint64_t a[6] = { 0x0123456789abcdefULL, 0x00fedcba98765432ULL,
                             0x0011223344556677ULL, 0x0033445566778899ULL,
@@ -822,7 +822,7 @@ static void bench_fp(int chains)
     b.tier[0].available = true;
     b.tier[0].verified = true;
 
-    b.tier[1].available = fp_accel_mont_mul_bmi2(out[1], a, bb);
+    b.tier[1].available = fp_accel_mont_mul_adx(out[1], a, bb);
     if (b.tier[1].available) {
         if (memcmp(out[1], out[0], 48) != 0) {
             parity_fail(b.primitive, b.tier[1].name, out[1], out[0], 48);

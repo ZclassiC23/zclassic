@@ -26,12 +26,19 @@ const char *fr_accel_implementation(void);
 
 /* Differential-oracle / benchmark hooks (test-only): force a specific
  * implementation so a caller can drive the SAME input through every path and
- * assert byte-identical output. The bmi2 variants return false (leaving r
- * untouched) on a host without BMI2, so the caller can skip rather than
- * mis-assert. */
+ * assert byte-identical output. The accelerated variants return false (leaving
+ * r untouched) on a host without the instructions, so the caller can skip
+ * rather than mis-assert.
+ *
+ * There is deliberately no _bmi2 pair here. A MULX-only tier used to exist and
+ * measured SLOWER than the portable code it displaced, so it was deleted rather
+ * than left switched off; _adx is the dual-carry-chain path that replaced it and
+ * is genuinely faster. Two declarations for the deleted pair outlived it here
+ * with no definition anywhere in the tree, which turned a rename into a
+ * link-time failure for the one test that still called them. */
 void fr_accel_mont_mul_portable(uint64_t r[4], const uint64_t a[4], const uint64_t b[4]);
-bool fr_accel_mont_mul_bmi2(uint64_t r[4], const uint64_t a[4], const uint64_t b[4]);
 void fp_accel_mont_mul_portable(uint64_t r[6], const uint64_t a[6], const uint64_t b[6]);
-bool fp_accel_mont_mul_bmi2(uint64_t r[6], const uint64_t a[6], const uint64_t b[6]);
+bool fr_accel_mont_mul_adx(uint64_t r[4], const uint64_t a[4], const uint64_t b[4]);
+bool fp_accel_mont_mul_adx(uint64_t r[6], const uint64_t a[6], const uint64_t b[6]);
 
 #endif /* ZCL_SAPLING_FR_ACCEL_H */
