@@ -63,35 +63,33 @@
 # script, so this is a remote denial of service, not a local fixture bug.
 # Site: lib/script/include/script/script.h script_is_push_only()
 # Harness call site: tools/fuzz/fuzz_script.c script_is_push_only(&script)
-# Owner: lane/w6-fuzz holds lib/script/include/script/script.h. These 14 stay
-# `open` — and this gate stays red — until that fix lands. Confirmed still
-# reproducing 2026-07-29 on this branch: all 14 trip -timeout=5 at ~6.06 s each.
+# Site: lib/script/include/script/script.h script_is_push_only()
 #
-# ⚠ ON MERGE WITH main: the fix has LANDED there (b8e6b35dc, a one-line
-# refusal in script_is_push_only). The moment this branch sits on top of it,
-# all 14 replay CLEAN, and `open` becomes a lie in the other direction — the
-# gate will fail with "ledger says 'open' but it no longer reproduces", which
-# is the anti-rot half working as designed. Whoever does that merge must flip
-# all 14 lines in one edit, to:
-#
-#   <file>  regression-seed  <merge date>  # OP_PUSHDATA4 len=0xfffffffb no longer spins; fixed by b8e6b35dc in script_is_push_only
+# ✅ FIXED AND MERGED 2026-07-29 (b8e6b35dc): script_is_push_only now refuses
+# the single length whose 32-bit advance is zero. All 14 flipped to
+# `regression-seed` in that merge, exactly as this block instructed while the
+# fix was still in flight — the flip was the anti-rot half doing its job, since
+# leaving them `open` would have failed the gate in the other direction
+# ("ledger says 'open' but it no longer reproduces").
 #
 # Do not delete them. They are the regression seeds for a remote denial of
-# service, and they cost ~60 ms each to prove the fix is still in place.
-script/timeout-0c0700b56ea64fc814a44f80396d29a5677a32e4.bin  open  2026-07-14  # OP_PUSHDATA4 len=0xfffffffb wraps 5+len in uint32 -> script_is_push_only spins forever
-script/timeout-458ea903cfa9ebf1bb8969d237a2b578f5fb911a.bin  open  2026-07-14  # OP_PUSHDATA4 len=0xfffffffb wraps 5+len in uint32 -> script_is_push_only spins forever
-script/timeout-5fac4625d53fbc7c4a663096021fac551ce631c1.bin  open  2026-07-14  # OP_PUSHDATA4 len=0xfffffffb wraps 5+len in uint32 -> script_is_push_only spins forever
-script/timeout-5fc78e9ff48d3270cc59b7d2ea9bbd1a9c8b3a9d.bin  open  2026-07-14  # OP_PUSHDATA4 len=0xfffffffb wraps 5+len in uint32 -> script_is_push_only spins forever
-script/timeout-689f73ac89dc1264744711de8383742b90c892b0.bin  open  2026-07-14  # the 5-byte original: 4e fb ff ff ff, nothing else. Smallest reproducer of the wrap
-script/timeout-74ec5f085921f40f21bfecedfe7c7a6ee85e43b2.bin  open  2026-07-14  # OP_PUSHDATA4 len=0xfffffffb wraps 5+len in uint32 -> script_is_push_only spins forever
-script/timeout-7a7f9c9b1d7ec0af1a288c7fbfb0fde7556a601e.bin  open  2026-07-14  # OP_PUSHDATA4 len=0xfffffffb wraps 5+len in uint32 -> script_is_push_only spins forever
-script/timeout-961cc0712c2793eb292d77c6dd281786d6a66301.bin  open  2026-07-14  # OP_PUSHDATA4 len=0xfffffffb wraps 5+len in uint32 -> script_is_push_only spins forever
-script/timeout-b0d06ea4d355154970829bc4c8e9f1760315a4a9.bin  open  2026-07-14  # OP_PUSHDATA4 len=0xfffffffb wraps 5+len in uint32 -> script_is_push_only spins forever
-script/timeout-b441d6aa01d3c3bb0b5bcf5222d9ebbbb74ed47e.bin  open  2026-07-14  # OP_PUSHDATA4 len=0xfffffffb wraps 5+len in uint32 -> script_is_push_only spins forever
-script/timeout-bd4c463e8eb16ea3c3b6be054cbc4a7faf5590f5.bin  open  2026-07-14  # OP_PUSHDATA4 len=0xfffffffb wraps 5+len in uint32 -> script_is_push_only spins forever
-script/timeout-cbdd0849f1559acf1262b7e7cdd40339008c9753.bin  open  2026-07-14  # OP_PUSHDATA4 len=0xfffffffb wraps 5+len in uint32 -> script_is_push_only spins forever
-script/timeout-d037da9fb247f081cf0701dd6ceb459f8c1cb0b8.bin  open  2026-07-14  # OP_PUSHDATA4 len=0xfffffffb wraps 5+len in uint32 -> script_is_push_only spins forever
-script/timeout-edd2bd2cabf991d0bc6718be668167829ebab10c.bin  open  2026-07-14  # OP_PUSHDATA4 len=0xfffffffb wraps 5+len in uint32 -> script_is_push_only spins forever
+# service, and they cost ~60 ms each to prove the fix is still in place. The
+# fix was verified across all 2^32 declared push lengths: the verdict sequence
+# hashes identically before and after, so no transaction's validity changed.
+script/timeout-0c0700b56ea64fc814a44f80396d29a5677a32e4.bin  regression-seed  2026-07-29  # OP_PUSHDATA4 len=0xfffffffb no longer spins; fixed by b8e6b35dc in script_is_push_only
+script/timeout-458ea903cfa9ebf1bb8969d237a2b578f5fb911a.bin  regression-seed  2026-07-29  # OP_PUSHDATA4 len=0xfffffffb no longer spins; fixed by b8e6b35dc in script_is_push_only
+script/timeout-5fac4625d53fbc7c4a663096021fac551ce631c1.bin  regression-seed  2026-07-29  # OP_PUSHDATA4 len=0xfffffffb no longer spins; fixed by b8e6b35dc in script_is_push_only
+script/timeout-5fc78e9ff48d3270cc59b7d2ea9bbd1a9c8b3a9d.bin  regression-seed  2026-07-29  # OP_PUSHDATA4 len=0xfffffffb no longer spins; fixed by b8e6b35dc in script_is_push_only
+script/timeout-689f73ac89dc1264744711de8383742b90c892b0.bin  regression-seed  2026-07-29  # the 5-byte original 4e fb ff ff ff; smallest reproducer, no longer spins, fixed by b8e6b35dc
+script/timeout-74ec5f085921f40f21bfecedfe7c7a6ee85e43b2.bin  regression-seed  2026-07-29  # OP_PUSHDATA4 len=0xfffffffb no longer spins; fixed by b8e6b35dc in script_is_push_only
+script/timeout-7a7f9c9b1d7ec0af1a288c7fbfb0fde7556a601e.bin  regression-seed  2026-07-29  # OP_PUSHDATA4 len=0xfffffffb no longer spins; fixed by b8e6b35dc in script_is_push_only
+script/timeout-961cc0712c2793eb292d77c6dd281786d6a66301.bin  regression-seed  2026-07-29  # OP_PUSHDATA4 len=0xfffffffb no longer spins; fixed by b8e6b35dc in script_is_push_only
+script/timeout-b0d06ea4d355154970829bc4c8e9f1760315a4a9.bin  regression-seed  2026-07-29  # OP_PUSHDATA4 len=0xfffffffb no longer spins; fixed by b8e6b35dc in script_is_push_only
+script/timeout-b441d6aa01d3c3bb0b5bcf5222d9ebbbb74ed47e.bin  regression-seed  2026-07-29  # OP_PUSHDATA4 len=0xfffffffb no longer spins; fixed by b8e6b35dc in script_is_push_only
+script/timeout-bd4c463e8eb16ea3c3b6be054cbc4a7faf5590f5.bin  regression-seed  2026-07-29  # OP_PUSHDATA4 len=0xfffffffb no longer spins; fixed by b8e6b35dc in script_is_push_only
+script/timeout-cbdd0849f1559acf1262b7e7cdd40339008c9753.bin  regression-seed  2026-07-29  # OP_PUSHDATA4 len=0xfffffffb no longer spins; fixed by b8e6b35dc in script_is_push_only
+script/timeout-d037da9fb247f081cf0701dd6ceb459f8c1cb0b8.bin  regression-seed  2026-07-29  # OP_PUSHDATA4 len=0xfffffffb no longer spins; fixed by b8e6b35dc in script_is_push_only
+script/timeout-edd2bd2cabf991d0bc6718be668167829ebab10c.bin  regression-seed  2026-07-29  # OP_PUSHDATA4 len=0xfffffffb no longer spins; fixed by b8e6b35dc in script_is_push_only
 
 # ── block — 5 artifacts, all lane noise ─────────────────────────────────────
 # Audited 2026-07-29, and the verdict is "never reproduced", not "fixed since".
