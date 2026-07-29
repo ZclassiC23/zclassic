@@ -76,7 +76,36 @@ jobs:
           # distribution headers are equivalent and cost seconds, not the
           # from-source dependency build Job 2 pays for.
           sudo apt-get install -y --no-install-recommends \
-            clang zlib1g-dev libssl-dev
+            zlib1g-dev libssl-dev
+
+          # ubuntu-latest's default `clang` (18) rejects the "vaes"/"sha"
+          # __builtin_cpu_supports() feature strings that lib/util/src/hw_profile.c
+          # uses and that GCC — and clang 20 — both accept (this is the exact
+          # skew tools/lint/check_clang_portability.sh's own header comment
+          # already documents and SKIPs around). The portability ratchet
+          # baseline was recorded against clang 20.1.8, and clang-20 is in
+          # the Ubuntu 24.04 (noble) archive, so pin that instead of
+          # whatever `clang` happens to resolve to.
+          sudo apt-get install -y --no-install-recommends clang-20
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-20 100
+          sudo update-alternatives --set clang /usr/bin/clang-20
+
+          if [ "${{ matrix.cc }}" = "gcc" ]; then
+            # ubuntu-latest's default `gcc` (13) rejects -std=c23 outright
+            # ("did you mean '-std=c2x'?") — GCC only accepted the `c23`
+            # spelling itself starting with GCC 14. This project is C23-only
+            # by policy, so the runner's compiler is what moves: gcc-14 is
+            # in the Ubuntu 24.04 (noble) archive already enabled on this
+            # image, and `update-alternatives` repoints the plain `cc`/`gcc`
+            # names the Makefile and every gate script invoke, so nothing
+            # downstream needs to know a non-default compiler is in play.
+            sudo apt-get install -y --no-install-recommends gcc-14
+            sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100
+            sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 100
+            sudo update-alternatives --set gcc /usr/bin/gcc-14
+            sudo update-alternatives --set cc /usr/bin/gcc-14
+          fi
+
           ${{ matrix.cc }} --version
 
       - name: Compute the changed-file scope (pull requests only)
@@ -112,14 +141,6 @@ jobs:
           # violation, so a mis-built flag set cannot report a hollow pass.
           tools/lint/check_clang_portability.sh --self-test
           tools/lint/check_clang_portability.sh
-
-      # The lint umbrella is compiler-independent, so it runs on exactly one
-      # matrix leg rather than twice. It needs no vendored dependency: its two
-      # tool binaries (core_seal, check_observability_pairing) are single-file
-      # compiles. Measured 12.7 s wall at 8 jobs on the dev reference host.
-      - name: Lint umbrella (make lint)
-        if: matrix.cc == 'gcc'
-        run: make lint
 
   # ── JOB 2 — the fuller build, on cached dependencies ───────────────────
   # SCOPE, and what is deliberately NOT here:
@@ -157,6 +178,15 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             build-essential perl
+          # Same fix as the compile-check job: ubuntu-latest's default gcc
+          # (13) does not accept -std=c23, which every recipe in this
+          # Makefile passes. gcc-14 does. Repoint the plain `cc`/`gcc` names
+          # so `make vendor-ready` / `make build-only` need no CC= override.
+          sudo apt-get install -y --no-install-recommends gcc-14
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100
+          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 100
+          sudo update-alternatives --set gcc /usr/bin/gcc-14
+          sudo update-alternatives --set cc /usr/bin/gcc-14
           gcc --version
 
       # The first dependency build fetches pinned tarballs and compiles
@@ -200,3 +230,98 @@ jobs:
 
       - name: Compile every node translation unit
         run: make build-only -j"$(nproc)"
+
+  # ── JOB 3 — the lint umbrella, on its own honest budget ────────────────
+  # Used to be a step inside JOB 1 on the strength of "12.7 s wall at 8 jobs
+  # on the dev reference host" for the umbrella as a whole. That number is
+  # real but hid an extreme skew: measured on the dev host (2026-07-29,
+  # ZCL_LINT_VERBOSE=1), one gate — check-standalone-tools-link — is 93% of
+  # the umbrella's wall time on its own:
+  #
+  #     227851 ms  check-standalone-tools-link   <- 93% of the 245591 ms run
+  #      21031 ms  check-silent-errors-bool
+  #      19984 ms  check-build-epoch-integrity
+  #      ...
+  #
+  # Why that one gate is different in kind, not just slow: every other gate
+  # is a text/AST scan. This one compiles-and-links every standalone tool
+  # binary the Makefile knows how to build, to catch a rule that rotted (see
+  # the header comment in tools/lint/check_standalone_tools_link.sh for the
+  # incident that motivated it). It is deliberately build-dependent — that
+  # is the entire point of the check — so it cannot be made fast the way the
+  # other 115 gates are fast, and folding it into JOB 1's tight budget meant
+  # one compile-heavy gate was dragging 115 free text scans behind it and, on a
+  # cold hosted runner with no vendored dependency and no ccache, blew
+  # straight through a 15-minute job timeout without printing a verdict at
+  # all (confirmed on this branch: cancelled at the timeout, only this one
+  # gate of 116 still in flight).
+  #
+  # Fix: give it a separate job with vendored deps restored from the SAME
+  # cache JOB 2 populates (never rebuilt from source twice) and a timeout
+  # sized off the measurement above, not a guess.
+  lint:
+    name: lint (make lint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential perl
+          # Same fix as the other two jobs — see their comments. gcc-14 for
+          # -std=c23; clang-20 because `make lint` both runs the
+          # check-clang-portability ratchet (baselined against clang 20.1.8)
+          # and, inside check-standalone-tools-link, builds the fuzz targets
+          # with FUZZ_CC=clang — an older clang rejects builtins this tree
+          # uses. libclang-rt-20-dev is the separate package that carries
+          # the sanitizer/fuzzer runtime archives (libclang_rt.fuzzer.a,
+          # libclang_rt.asan*.a) those fuzz targets link against — the
+          # `clang-20` compiler package alone does not include them.
+          sudo apt-get install -y --no-install-recommends \
+            gcc-14 clang-20 libclang-rt-20-dev
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100
+          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 100
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-20 100
+          sudo update-alternatives --set gcc /usr/bin/gcc-14
+          sudo update-alternatives --set cc /usr/bin/gcc-14
+          sudo update-alternatives --set clang /usr/bin/clang-20
+          gcc --version
+          clang --version
+
+      # Restore-only: JOB 2 is the sole writer (same key, same condition —
+      # push to main only). This job never builds vendor from source when
+      # JOB 2 has already populated the cache for this pin set; on a cache
+      # miss `make lint` self-repairs it via the same vendor-ready path JOB 2
+      # uses (see that job's comment), just without a cache to save it back to.
+      - name: Restore vendored dependencies
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            vendor/lib
+            vendor/include
+            vendor/provenance
+          key: vendor-${{ runner.os }}-${{ hashFiles('tools/scripts/build_vendor.sh', 'vendor/patches/**') }}
+
+      - name: make lint
+        env:
+          ZCL_LINT_VERBOSE: "1"
+          # check-systemd-memory-budget sums the deploy/*.service MemoryMax
+          # caps and fails if they reach/exceed a percentage of REAL host
+          # memory — a fact about the actual deploy target (rhett.dev, the
+          # 32-core/93 GB box cited as the "dev reference host" throughout
+          # this repo's docs and this very workflow's comments), not about
+          # whatever RAM a given hosted CI runner happens to have. Reading
+          # the runner's own /proc/meminfo here would make the verdict
+          # depend on GitHub's instance size instead of the box these units
+          # actually deploy to — the same class of environment mismatch the
+          # clang-portability gate already documents and sidesteps for
+          # compiler version skew. Pin the real target's MemTotal instead.
+          # Re-measure with `awk '/MemTotal/{print $2*1024}' /proc/meminfo`
+          # on the deploy host if this ever needs updating.
+          ZCL_SYSTEMD_MEMORY_BUDGET_MEMTOTAL_BYTES: "100300546048"
+        run: make lint
