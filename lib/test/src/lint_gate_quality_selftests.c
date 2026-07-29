@@ -42,6 +42,79 @@ int t_e14_condition_cooldown_gate(void)
     return failures;
 }
 
+/* check-fuzz-artifact-ledger — every saved fuzz finding under
+ * lib/test/fuzz_seeds/ carries a written verdict in ARTIFACT_VERDICTS.txt.
+ *
+ * This gate exists because a real hang sat unread for two weeks: on 2026-07-14
+ * a fuzzer found that a five-byte script from any peer spins the node forever,
+ * the bytes were committed to the corpus, and no build ever read the verdict —
+ * three separate mechanisms had already replayed them and already gone red.
+ * The regression this test protects against is that gate quietly losing the
+ * ability to fail, which would restore the original silence exactly.
+ *
+ * Proof, all four steps inside the script's own --selftest:
+ * (1) the clean tree passes; (2) an untriaged artifact planted into a real
+ * corpus dir trips it; (3) the failure output NAMES that exact file (a red
+ * build must not send anyone hunting); (4) removing it recovers green.
+ * Then here: (5) the gate is wired into the Makefile LINT_GATES list and
+ * documented in DEFENSIVE_CODING.md's canonical block.
+ *
+ * The replay half (make fuzz-replay) is deliberately NOT exercised here — it
+ * needs the nine libFuzzer binaries, which are a 5m45s build. */
+int t_fuzz_artifact_ledger_gate(void)
+{
+    int failures = 0;
+    char path[PATH_MAX];
+    char *makefile_buf = NULL;
+    char *doc_buf = NULL;
+
+    int baseline_rc = run_gate_script_with_env(
+        FUZZ_ARTIFACT_REPLAY_SCRIPT_REL, "ZCL_FUZZ_REPLAY_LEDGER_ONLY", "1");
+    int selftest_rc = run_gate_script_with_env(
+        FUZZ_ARTIFACT_REPLAY_SCRIPT_REL, "ZCL_FUZZ_REPLAY_SELFTEST", "1");
+
+    int makefile_wired = 0;
+    if (repo_path(path, sizeof(path), "Makefile") == 0 &&
+        read_entire_file(path, &makefile_buf) == 0) {
+        makefile_wired =
+            strstr(makefile_buf, "check-fuzz-artifact-ledger:") != NULL &&
+            strstr(makefile_buf, "check-fuzz-artifact-ledger \\") != NULL &&
+            /* The replay half must stay reachable from `make ci`, or the
+             * verdict has nowhere to go again. */
+            strstr(makefile_buf, "fuzz-replay:") != NULL &&
+            strstr(makefile_buf, "$(MAKE) fuzz-replay") != NULL;
+    }
+    int doc_wired = 0;
+    if (repo_path(path, sizeof(path), "docs/DEFENSIVE_CODING.md") == 0 &&
+        read_entire_file(path, &doc_buf) == 0) {
+        doc_wired = strstr(doc_buf, "check-fuzz-artifact-ledger") != NULL;
+    }
+
+    /* The ledger itself must exist and be non-trivial: an empty or deleted
+     * ARTIFACT_VERDICTS.txt is the shape this whole lane exists to prevent. */
+    char *ledger_buf = NULL;
+    int ledger_present = 0;
+    if (repo_path(path, sizeof(path),
+                  "lib/test/fuzz_seeds/ARTIFACT_VERDICTS.txt") == 0 &&
+        read_entire_file(path, &ledger_buf) == 0) {
+        ledger_present = strstr(ledger_buf, "regression-seed") != NULL;
+    }
+
+    TEST("[lint-gate] check-fuzz-artifact-ledger: clean passes, planted "
+         "artifact trips and is named, recovers, wired into lint + ci") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(selftest_rc == 0);
+        ASSERT(makefile_wired);
+        ASSERT(doc_wired);
+        ASSERT(ledger_present);
+        PASS();
+    } _test_next:;
+    free(makefile_buf);
+    free(doc_buf);
+    free(ledger_buf);
+    return failures;
+}
+
 /* Local Markdown target gate: production scans the tracked repository and the
  * script's isolated Git fixtures prove valid targets pass, missing targets
  * fail with source context, outbound symlinks fail containment, untracked

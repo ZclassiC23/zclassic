@@ -77,6 +77,7 @@ SERIAL_PROLOGUE=" check-git-hooks-installed "
 # entry is a LOUD driver error (exit 2), never a silent skip.
 gate_command() {
     case "$1" in
+        check-fuzz-artifact-ledger)        echo './tools/lint/check_fuzz_artifact_replay.sh --ledger-only' ;;
         check-no-retired-agent-protocol)   echo './tools/lint/check_no_retired_agent_protocol.sh' ;;
         check-build-epoch-integrity)       echo 'tools/dev/build-epoch-integrity-cached.sh' ;;
         check-checkout-lock)               echo 'tools/dev/checkout-lock-selftest.sh' ;;

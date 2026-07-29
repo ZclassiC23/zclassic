@@ -159,6 +159,8 @@ lint_cache_never_reason() {
             echo "its entire job is reading untracked and ignored worktree state; also the always-fresh backstop" ;;
         check-no-stray-root-files)
             echo "'ls -A .' reads the real root directory listing, ignored entries included" ;;
+        check-fuzz-artifact-ledger)
+            echo "enumerates UNTRACKED repro files left in lib/test/fuzz_seeds/ and resolves each corpus to a build/bin/fuzz_* target" ;;
         *)
             case " $(echo $LINT_CACHE_OK_GATES) " in
                 *" $1 "*) return 1 ;;   # classified cacheable

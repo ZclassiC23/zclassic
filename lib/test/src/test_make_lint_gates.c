@@ -273,6 +273,7 @@ static const struct lint_gate_entry g_lint_gate_entries[] = {
     H_(t_import_copy_prove_selftest),
     H_(t_fresh_boot_weld_prove_selftest),
     S_(t_e14_condition_cooldown_gate),
+    S_(t_fuzz_artifact_ledger_gate),  /* plants a fixture in lib/test/fuzz_seeds */
     N_(t_markdown_links_gate),                   /* git ls-files, read-only */
     N_(t_git_hooks_gate_enforces_tracked_pre_push),  /* reads .git/hooks */
     N_(t_git_hooks_gate_rejects_noop_pre_push),      /* writes only test-tmp/ */
