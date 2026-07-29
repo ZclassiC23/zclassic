@@ -155,6 +155,46 @@ void transaction_free(struct transaction *tx);
  * no-op — callers that later swap in a fresh array do not leak. */
 bool transaction_alloc(struct transaction *tx, size_t num_vin, size_t num_vout);
 
+/* ── Element arrays: allocated, NOT zero-filled ──────────────────────
+ *
+ * A struct tx_in is 10056 bytes and a struct tx_out 10016, because each
+ * embeds a full MAX_SCRIPT_SIZE (10000-byte) script buffer inline. A real
+ * scriptSig is ~107 bytes and a real scriptPubKey 25, so a 2954-byte block
+ * off this chain allocates ~119 KB of element array — a 41x amplification,
+ * and zero-filling it was 86% of the cost of deserializing that block.
+ *
+ * These two allocate WITHOUT the zero fill. Every caller must run
+ * tx_in_init() / tx_out_set_null() over each element before use, which
+ * defines every field including `.size = 0`. What is left indeterminate is
+ * ONLY the script bytes at data[.size .. MAX_SCRIPT_SIZE), and nothing
+ * reads those: every serializer, comparator and classifier in the tree is
+ * bounded by `.size`. That property is not asserted here, it is PROVED —
+ * see transaction_alloc_poison_set() and the test_script_tail_poison group.
+ *
+ * Return NULL for count 0 (no 1-byte stub) and on OOM.
+ *
+ * `label` is the allocation label, and it is a PARAMETER rather than a
+ * constant on purpose: zcl_alloc_fault_should_fail() targets allocations by
+ * label, so the chaos harness can only reach a caller's OOM-unwind path if
+ * that caller keeps its own label. Folding every caller onto one shared
+ * label silently removes "coins_vout" from the fault injector's reach — it
+ * is caught by test_coins, but only because that test exists. Pass the
+ * label this call site is known by. */
+struct tx_in  *tx_in_array_alloc(size_t count, const char *label);
+struct tx_out *tx_out_array_alloc(size_t count, const char *label);
+
+/* Fill byte for every array handed out by tx_in_array_alloc /
+ * tx_out_array_alloc; negative (the default) means "leave indeterminate",
+ * which is what production runs.
+ *
+ * This exists so a test can drive one corpus twice under two DIFFERENT fill
+ * bytes and compare every derived output — txid, block merkle root,
+ * re-serialized wire bytes, script classification. Identical output under
+ * two different fills is a direct proof that no consumer reads a script byte
+ * past `.size`; it is what licenses skipping the zero fill at all. Returns
+ * the previous value. Single-threaded test facility, not thread-safe. */
+int transaction_alloc_poison_set(int fill_byte);
+
 /* Deep copy: dst is re-initialized, then vin/vout/shielded/joinsplit arrays
  * are freshly allocated and copied (scripts copied by their .size only).
  * Returns false on any allocation failure with dst already freed to an empty
