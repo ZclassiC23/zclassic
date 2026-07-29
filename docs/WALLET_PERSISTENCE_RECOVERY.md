@@ -72,13 +72,79 @@ damaged `node.db` is not the only copy:
 ls -lt ~/wallet_backups/wallet_backup_*.sqlite | head
 ```
 
-Each file is a standalone SQLite database holding the wallet tables as of that
-run. When `WALLET_BACKUP_PASSWORD` was set, backups are encrypted and are
-decrypted with the same variable:
+Each file is a standalone SQLite database holding the seven wallet tables as of
+that run, plus a `wallet_backup_manifest` table recording, per wallet table,
+whether the source had it and how many rows were written. The service verifies
+every one of the seven against the source before calling a backup good; a run
+that dropped `wallet_sapling_keys` fails loudly instead of reporting success.
+Check what the last run saw:
 
 ```sh
-WALLET_BACKUP_PASSWORD=... zclassic23 --decrypt-wallet-backup <src.enc> <dst.sqlite>
+zclassic23 ops state --subsystem=wallet_backup
+# last_tables_verified / wallet_table_count / last_missing_tables
 ```
+
+When `WALLET_BACKUP_PASSWORD` was set, backups are encrypted (`*.sqlite.enc`).
+`core wallet restore` decrypts them in place, so a separate decrypt step is only
+needed when you want a readable copy:
+
+```sh
+zclassic23 core wallet backup decrypt \
+  --input='{"from":"<src.enc>","to":"<dst.sqlite>","confirm":true}'
+```
+
+(The legacy argv form `zclassic23 --decrypt-wallet-backup <src.enc> <dst.sqlite>`
+still works and reads the same environment variable.)
+
+## 4a. Restoring one
+
+`core wallet restore` merges a backup file's wallet tables into
+`<datadir>/node.db`. **Stop the node first** — `<datadir>/zclassic23.pid` is the
+single-writer lock and the command refuses with `DATADIR_LOCKED` while it is
+held.
+
+```sh
+systemctl --user stop zclassic23
+
+# Rehearsal: runs the real merge in a transaction, rolls it back, and reports
+# per table what a commit would do.
+zclassic23 core wallet restore \
+  --input='{"from":"'"$HOME"'/wallet_backups/wallet_backup_<ts>.sqlite",
+            "datadir":"'"$HOME"'/.zclassic-c23"}'
+
+# Commit (use the plan's commit_input, or add "confirm":true).
+zclassic23 core wallet restore --input='{"from":"...","datadir":"...","confirm":true}'
+
+systemctl --user start zclassic23
+zclassic23 core wallet rescan             # transparent history
+zclassic23 core wallet rescan-witnesses   # REQUIRED before spending a shielded note
+```
+
+What the report means:
+
+| field | meaning |
+|---|---|
+| `collision_policy` | always `keep-existing` — a row whose primary key is already in the target is never overwritten |
+| `rows_inserted` | rows that landed |
+| `rows_collided` | rows the target already had (its row wins) |
+| `rows_rejected` | rows the target's schema refused — a real integrity signal, not noise |
+| `manifest_mismatches` | the file holds fewer rows than the backup run recorded writing: it was truncated or damaged afterwards |
+
+The restore merges into the schema-correct tables on purpose. Do **not** copy a
+backup file into place as `node.db`: the backup's tables are built with
+`CREATE TABLE t AS SELECT * FROM src.t`, which copies values but drops primary
+keys, CHECK constraints and indexes, and installing that makes the damage
+permanent.
+
+Restoring rows does not rebuild derived state. In particular, a restored
+Sapling note has no Merkle witness and **cannot be spent** until
+`core wallet rescan-witnesses` has run and verified its final tree root against
+the block header.
+
+If `core wallet rescan` reports `complete: false`, this node has no block body
+for some heights in the range (the usual cause is a snapshot bootstrap, which
+clears `BLOCK_HAVE_DATA`). A zero result there says nothing about the wallet —
+sync full history first, then rescan again.
 
 ## 5. What not to do
 

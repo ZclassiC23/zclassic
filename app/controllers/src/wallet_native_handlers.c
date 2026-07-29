@@ -611,15 +611,70 @@ void zcl_native_handle_wallet_rescan(
     json_free(&body);
 }
 
-void zcl_native_handle_wallet_backup_now(
+/* core.wallet.rescan-witnesses — rebuild the Sapling Merkle witnesses for
+ * every unspent note (rpc_rescanwitnesses, app/controllers/src/
+ * wallet_rescan_controller_witness.c). This existed as an RPC with no typed
+ * command and no mention in any document, which made it invisible at the
+ * one moment it matters: a restored shielded note has rows but no witness,
+ * and a note without a witness cannot be spent. The RPC verifies its final
+ * tree root against the block header before saving and refuses to persist a
+ * diverged tree, so a failure here is a real answer, not a silent one. */
+void zcl_native_handle_wallet_rescan_witnesses(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
     (void)request;
     struct json_value body;
+    if (!wnh_call_rpc(reply, "rescanwitnesses", NULL, &body))
+        return;
+    (void)json_push_kv(&reply->data, "result", &body);
+    (void)json_push_kv_bool(&reply->data, "completed", true);
+    reply->error.mutated = true;
+    json_free(&body);
+}
+
+void zcl_native_handle_wallet_backup_now(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    bool confirm = json_get_bool_or(request->input, "confirm", false);
+    char token[17];
+    wnh_plan_token(token, "backup-now", "", "");
+
+    /* CONFIRM_PLAN_COMMIT. A wallet backup exports EVERY key at once, into
+     * a file that is plaintext unless WALLET_BACKUP_PASSWORD is set — a
+     * strictly larger disclosure than export-key, which has always demanded
+     * a confirm for ONE key. The plan half names the exposure and writes
+     * nothing. (The periodic background service is unaffected: it calls
+     * wallet_backup_now() directly, not through this leaf.) */
+    if (!confirm) {
+        const char *pw = getenv("WALLET_BACKUP_PASSWORD");
+        bool encrypted = pw && pw[0];
+        struct json_value ci;
+        json_init(&ci);
+        json_set_object(&ci);
+        (void)json_push_kv_bool(&ci, "confirm", true);
+        char commit[128];
+        wnh_commit_input(&ci, commit, sizeof(commit));
+        json_free(&ci);
+        (void)json_push_kv_bool(&reply->data, "encrypted", encrypted);
+        (void)json_push_kv_str(
+            &reply->data, "warning",
+            encrypted
+                ? "commit writes every wallet key to a backup file, "
+                  "encrypted under WALLET_BACKUP_PASSWORD"
+                : "commit writes every wallet key to a backup file IN THE "
+                  "CLEAR (WALLET_BACKUP_PASSWORD is not set)");
+        wnh_emit_plan(reply, request->spec->path, "backup-now", token, commit);
+        return;
+    }
+
+    struct json_value body;
     if (!wnh_call_rpc(reply, "walletbackupnow", NULL, &body))
         return;
     (void)json_push_kv(&reply->data, "backup", &body);
+    (void)json_push_kv_str(&reply->data, "stage", "committed");
+    (void)json_push_kv_bool(&reply->data, "committed", true);
     (void)json_push_kv_bool(&reply->data, "created", true);
+    (void)json_push_kv_str(&reply->data, "plan_token", token);
     reply->error.mutated = true;
     json_free(&body);
 }

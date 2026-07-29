@@ -856,6 +856,25 @@ void zcl_native_handle_wallet_rescan(
 void zcl_native_handle_wallet_backup_now(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+/* core.wallet.rescan-witnesses — rebuilds the Sapling witnesses a restored
+ * shielded note needs before it can be spent (rpc_rescanwitnesses). */
+void zcl_native_handle_wallet_rescan_witnesses(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
+/* The two OFFLINE recovery leaves
+ * (app/controllers/src/wallet_restore_native_handlers.c). Unlike every
+ * other wallet leaf these call their service in-process instead of a
+ * running node, because a user restoring onto a rebuilt machine has no
+ * node yet. `core.wallet.restore` merges a backup file into a datadir and
+ * REFUSES while a node holds it; `core.wallet.backup.decrypt` turns a
+ * WBE1 file back into a readable one. Both are CONFIRM_PLAN_COMMIT. */
+void zcl_native_handle_wallet_restore(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_wallet_backup_decrypt(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 
 /* core.wallet.address.label(.by-label) — the address-book / label surface
  * (app/controllers/src/wallet_label_controller.c). Direct handlers over

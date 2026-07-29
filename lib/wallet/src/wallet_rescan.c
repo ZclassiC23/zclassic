@@ -141,6 +141,8 @@ int wallet_rescan_report(struct wallet *w, const struct active_chain *chain,
     if (!w || !chain) {
         r->coverage_ok = false;
         snprintf(r->blocker, sizeof(r->blocker), "RESCAN_NO_WALLET");
+        /* LOG_ERR returns -1 — which it must, since every line below
+         * dereferences both `w` and `chain`. */
         LOG_ERR("wallet", "rescan called with %s NULL",
                 !w ? "wallet" : "chain");
     }

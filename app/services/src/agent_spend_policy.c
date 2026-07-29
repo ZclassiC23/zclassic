@@ -71,7 +71,14 @@ struct asp_surface {
  *   core.wallet.address.import      — installs a key the operator never saw.
  *   core.wallet.backup.now          — writes a wallet backup file the agent
  *                                     can read as the same user.
- *   core.wallet.rescan / .replay    — whole-chain work, not an agent's job.
+ *   core.wallet.backup.decrypt      — writes every key to a path the agent
+ *                                     chooses, in the clear.
+ *   core.wallet.restore             — merges an operator-chosen file into a
+ *                                     datadir; no amount to bound, and the
+ *                                     file it reads is not one the session
+ *                                     granted.
+ *   core.wallet.rescan / .replay /
+ *   .rescan-witnesses               — whole-chain work, not an agent's job.
  *   vault.swap.redeem / .refund     — custody settlement with no amount to
  *                                     bound; an unbounded action is not a
  *                                     bounded one.
