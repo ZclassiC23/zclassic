@@ -1437,7 +1437,7 @@ t-asan: $(TEST_ASAN_CANDIDATE)
 # finding print yet stay green); ASan already halts by default. Every group
 # in the default set is verified clean under this posture — a red asan-ci
 # run is a real finding to fix, never an expected failure.
-ASAN_CI_GROUPS ?= test_bloom test_json test_parse_num test_zcl_result test_supervisor test_encoding
+ASAN_CI_GROUPS ?= test_bloom test_json test_parse_num test_zcl_result test_supervisor test_encoding test_zcode_site
 asan-ci: $(TEST_ASAN_CANDIDATE)
 	@mkdir -p "$(BUILD_DIR)"
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \

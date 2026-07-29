@@ -361,6 +361,15 @@ static size_t zs_handle_publisher(const char *zcode_dir,
                                                  ZCODE_VIEW_MAX_ROWS);
     size_t pkgs_shown = pkgs_total < ZCODE_VIEW_MAX_ROWS
         ? pkgs_total : ZCODE_VIEW_MAX_ROWS;
+    /* The search hands back pointers INTO the index's entry array, which
+     * the free below releases — take value copies first, the same way
+     * zs_handle_package does. The entry struct is fixed arrays and scalars
+     * with no owned pointers, so assignment is a complete copy. */
+    struct vcs_package_index_entry pkg_rows[ZCODE_VIEW_MAX_ROWS];
+    for (size_t i = 0; i < pkgs_shown; i++) {
+        pkg_rows[i] = *pkgs[i];
+        pkgs[i] = &pkg_rows[i];
+    }
     vcs_package_index_free(index);
 
     /* ZCODE Score: the settled reward-ledger totals (a separate fact from

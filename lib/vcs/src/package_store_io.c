@@ -571,8 +571,11 @@ static bool store_gc_cas(struct vcs_package_store *store)
 /* Commit every CAS-complete staged package, ascending root hex. */
 static bool store_commit_sweep(struct vcs_package_store *store)
 {
-    qsort(store->pkgs, store->pkg_count, sizeof(*store->pkgs),
-          store_pkg_root_cmp);
+    /* pkgs stays NULL until the first staged package, and qsort declares
+     * its base argument non-null even for a zero count. */
+    if (store->pkg_count > 1)
+        qsort(store->pkgs, store->pkg_count, sizeof(*store->pkgs),
+              store_pkg_root_cmp);
     for (size_t i = 0; i < store->pkg_count; i++) {
         struct store_package *pkg = &store->pkgs[i];
         if (!pkg->committed && store_package_complete(store, pkg) &&

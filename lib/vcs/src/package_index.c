@@ -158,8 +158,11 @@ struct vcs_package_index *vcs_package_index_build(const char *zcode_dir)
         index->count++;
     }
     free(releases);
-    qsort(index->entries, index->count, sizeof(*index->entries),
-          index_entry_cmp);
+    /* entries stays NULL for an empty store, and qsort declares its base
+     * argument non-null even for a zero count. */
+    if (index->count > 1)
+        qsort(index->entries, index->count, sizeof(*index->entries),
+              index_entry_cmp);
     return index;
 }
 
