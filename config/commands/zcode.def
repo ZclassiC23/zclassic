@@ -31,18 +31,21 @@ ZCL_COMMAND_READY_READ(
     "zcode.package.publish.plan", "zcode.package.publish", "",
     "Validate a candidate release without persisting anything",
     "A bounded validation report for the candidate named by release_hex "
-    "(signed envelope wire) + manifest_hex (content.v2 wire), with chunks "
+    "(signed envelope wire) + manifest_hex (content.v2 wire) + recipe_hex "
+    "(the REQUIRED declarative build recipe, whose root must equal the "
+    "envelope's recipe_root), with chunks "
     "verified against the source `dir` when given: every failed rule is "
     "named in `failures[]` (envelope/signature, SPDX license allowlist and "
-    "LICENSE file, package structure, 64 MiB cap, acceptance replay against "
+    "LICENSE file, package structure, 64 MiB cap, recipe presence and "
+    "grammar, acceptance replay against "
     "persisted releases, chunk hashes), or `valid:true` with a plan_token "
     "(the release id — correlation only; commit re-validates). Nothing is "
     "persisted; `chunks_checked` says whether source bytes were read.",
     ZCL_COMMAND_LIST_BUDGET,
-    "zcode,package,publish,plan,validate,release,manifest,license",
+    "zcode,package,publish,plan,validate,release,manifest,recipe,license",
     "zcl.zcode_publish_plan.input.v1", "zcl.zcode_publish_plan.v1",
-    "release_hex,manifest_hex,dir,datadir", "",
-    "zclassic23 zcode package publish plan --input='{\"release_hex\":\"..\",\"manifest_hex\":\"..\",\"dir\":\"/tmp/pkg\"}'",
+    "release_hex,manifest_hex,recipe_hex,dir,datadir", "",
+    "zclassic23 zcode package publish plan --input='{\"release_hex\":\"..\",\"manifest_hex\":\"..\",\"recipe_hex\":\"..\",\"dir\":\"/tmp/pkg\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -53,7 +56,8 @@ ZCL_COMMAND_READY_READ(
 ZCL_COMMAND_READY_COMMAND(
     "zcode.package.publish.commit", "zcode.package.publish", "",
     "Re-validate and persist a candidate release into the local store",
-    "Runs the full publish-plan validation (naming the exact failed rule on "
+    "Runs the full publish-plan validation over release_hex + manifest_hex + "
+    "recipe_hex (naming the exact failed rule on "
     "rejection), then persists: the manifest and every chunk from `dir` "
     "into the content-addressed store (verify-before-store, dedup, atomic "
     "rename — a crash mid-commit leaves resumable staging, never partial "
@@ -71,10 +75,10 @@ ZCL_COMMAND_READY_COMMAND(
     "do not run concurrently with a hosting node's own puts on the same "
     "datadir (the open-time recovery sweep is not cross-process "
     "coordinated).", 0,
-    "zcode,package,publish,commit,persist,release,store",
+    "zcode,package,publish,commit,persist,release,recipe,store",
     "zcl.zcode_publish_commit.input.v1", "zcl.zcode_publish_commit.v1",
-    "release_hex,manifest_hex,dir,day,datadir", "",
-    "zclassic23 zcode package publish commit --input='{\"release_hex\":\"..\",\"manifest_hex\":\"..\",\"dir\":\"/tmp/pkg\"}'",
+    "release_hex,manifest_hex,recipe_hex,dir,day,datadir", "",
+    "zclassic23 zcode package publish commit --input='{\"release_hex\":\"..\",\"manifest_hex\":\"..\",\"recipe_hex\":\"..\",\"dir\":\"/tmp/pkg\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
