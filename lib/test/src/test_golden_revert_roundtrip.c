@@ -38,6 +38,11 @@
  * and a token-authorized case still succeeds exactly as vcs_snapshot's own
  * (consuming) guard would allow it. */
 
+/* realpath() needs __USE_MISC; -D_POSIX_C_SOURCE=200809L alone does not
+ * declare it. Without this the TU only builds by accident of the glibc
+ * fortify inline at -O3. */
+#define _DEFAULT_SOURCE
+
 #include "test/test_core.h"
 
 #include "dev_activation.h"

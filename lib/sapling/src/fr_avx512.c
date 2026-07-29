@@ -17,6 +17,7 @@
  * Detection runs once at first use. Binary works on any x86-64 CPU. */
 
 #include "sapling/fr.h"
+#include "sapling/fr_accel.h"
 #include <string.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -410,6 +411,52 @@ void fp_mont_mul_accel(uint64_t r[6], const uint64_t a[6], const uint64_t b[6])
     if (__builtin_expect(!g_fp_mont_mul, 0))
         init_dispatch();
     g_fp_mont_mul(r, a, b);
+}
+
+/* ── Per-tier hooks (differential oracle + benchmark) ─────────────
+ *
+ * Mirrors sapling/bn254_accel.h. These bypass the dispatcher entirely so a
+ * caller can drive one input through BOTH tiers in a single process and assert
+ * the products are byte-identical — the only way to prove the BMI2 path is a
+ * pure speed change. The bmi2 entry points report false rather than executing
+ * an unsupported instruction. */
+
+void fr_accel_mont_mul_portable(uint64_t r[4], const uint64_t a[4], const uint64_t b[4])
+{
+    fr_mont_mul_portable(r, a, b);
+}
+
+bool fr_accel_mont_mul_bmi2(uint64_t r[4], const uint64_t a[4], const uint64_t b[4])
+{
+#if defined(__x86_64__) || defined(_M_X64)
+    detect_cpu_features();
+    if (!cpu_has_bmi2 || !cpu_has_adx)
+        return false;
+    fr_mont_mul_bmi2(r, a, b);
+    return true;
+#else
+    (void)r; (void)a; (void)b;
+    return false;
+#endif
+}
+
+void fp_accel_mont_mul_portable(uint64_t r[6], const uint64_t a[6], const uint64_t b[6])
+{
+    fp_mont_mul_portable(r, a, b);
+}
+
+bool fp_accel_mont_mul_bmi2(uint64_t r[6], const uint64_t a[6], const uint64_t b[6])
+{
+#if defined(__x86_64__) || defined(_M_X64)
+    detect_cpu_features();
+    if (!cpu_has_bmi2 || !cpu_has_adx)
+        return false;
+    fp_mont_mul_bmi2(r, a, b);
+    return true;
+#else
+    (void)r; (void)a; (void)b;
+    return false;
+#endif
 }
 
 

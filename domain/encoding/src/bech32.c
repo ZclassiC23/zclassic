@@ -10,6 +10,18 @@
 
 #include <string.h>
 
+/* Both entry points cap the whole string at 1023/1024 chars, so the checksum
+ * scratch below was always bounded — but spelling it `uint8_t buf[total]` made
+ * it a variable-length array, a stack allocation sized by a runtime value.
+ * That is the construct `-Wvla` exists to forbid: if a future edit moves or
+ * weakens the length check, a VLA becomes stack exhaustion while a fixed array
+ * becomes a bounds check that fails loudly.
+ *
+ * Worst case for the expanded buffer is hrp_len*2 + 1 + values_len + 6 with
+ * hrp_len + values_len <= 1022 and hrp_len maximal, i.e. 2051. */
+#define BECH32_MAX_STRING 1024u
+#define BECH32_SCRATCH    (2u * BECH32_MAX_STRING + 8u) /* 2056 */
+
 static const char CHARSET[] = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
 
 static const int8_t CHARSET_REV[128] = {
@@ -48,19 +60,22 @@ static size_t expand_hrp(const char *hrp, size_t hrp_len, uint8_t *out)
     return hrp_len * 2 + 1;
 }
 
-static void create_checksum(const char *hrp, size_t hrp_len,
+static bool create_checksum(const char *hrp, size_t hrp_len,
                              const uint8_t *values, size_t values_len,
                              uint8_t checksum[6])
 {
     size_t exp_len = hrp_len * 2 + 1;
     size_t total = exp_len + values_len + 6;
-    uint8_t buf[total];
+    if (total > BECH32_SCRATCH)
+        return false; /* unreachable given the caller's cap; never overflow */
+    uint8_t buf[BECH32_SCRATCH];
     expand_hrp(hrp, hrp_len, buf);
     memcpy(buf + exp_len, values, values_len);
     memset(buf + exp_len + values_len, 0, 6);
     uint32_t mod = polymod(buf, total) ^ 1;
     for (size_t i = 0; i < 6; i++)
         checksum[i] = (mod >> (5 * (5 - i))) & 31;
+    return true;
 }
 
 static bool verify_checksum(const char *hrp, size_t hrp_len,
@@ -68,7 +83,9 @@ static bool verify_checksum(const char *hrp, size_t hrp_len,
 {
     size_t exp_len = hrp_len * 2 + 1;
     size_t total = exp_len + values_len;
-    uint8_t buf[total];
+    if (total > BECH32_SCRATCH)
+        return false; /* unreachable given the caller's cap; never overflow */
+    uint8_t buf[BECH32_SCRATCH];
     expand_hrp(hrp, hrp_len, buf);
     memcpy(buf + exp_len, values, values_len);
     return polymod(buf, total) == 1;
@@ -82,13 +99,14 @@ bool domain_encoding_bech32_encode(char *out, size_t out_size,
     /* Symmetric with the 1023-char cap in bech32_decode: a string our own
      * decoder would reject is not worth building, and the cap bounds the
      * create_checksum stack VLA below (~2 KB worst case). */
-    if (needed > 1024)
+    if (needed > BECH32_MAX_STRING)
         return false;
     if (needed > out_size)
         return false;
 
     uint8_t checksum[6];
-    create_checksum(hrp, hrp_len, values, values_len, checksum);
+    if (!create_checksum(hrp, hrp_len, values, values_len, checksum))
+        return false;
 
     size_t pos = 0;
     memcpy(out, hrp, hrp_len);
@@ -139,8 +157,10 @@ bool domain_encoding_bech32_decode(char *hrp_out, size_t hrp_size,
 
     if (hrp_len + 1 > hrp_size)
         return false;
+    if (vals_len > BECH32_MAX_STRING)
+        return false; /* unreachable given the 1023-char cap; never overflow */
 
-    uint8_t values[vals_len];
+    uint8_t values[BECH32_MAX_STRING];
     for (size_t i = 0; i < vals_len; i++) {
         unsigned char c = str[sep + 1 + i];
         if (c < 33 || c > 126) return false;

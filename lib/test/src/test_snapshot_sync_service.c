@@ -365,7 +365,9 @@ static void *offer_churn_worker(void *arg)
 static int test_snapshot_sync_service_offer_churn(void)
 {
     int failures = 0;
-    const int threads = 4;
+    /* enum, not `const int`: a const-qualified object is not a constant
+     * expression in C, so `pthread_t tids[threads]` below would be a VLA. */
+    enum { threads = 4 };
     const int rounds = 120;
     struct snapshot_sync_service svc;
     pthread_t tids[threads];

@@ -425,7 +425,6 @@ static bool group_reads_external_inputs(const char *name)
         "boot_self_respawn",
         "canary_sentinel_watch",
         "confine",
-        "keccak_avx512",
         "os_sandbox",
         "sha3_256_x4",
         /* --- asserts on wall-clock timing (host load, not the tree) --- */

@@ -1,6 +1,11 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Atomic promotion tests for external zcl.consensus_state_bundle.v1 files. */
 
+/* realpath() needs __USE_MISC; -D_POSIX_C_SOURCE=200809L alone does not
+ * declare it. Without this the TU only builds by accident of the glibc
+ * fortify inline at -O3. */
+#define _DEFAULT_SOURCE
+
 #include "test/test_core.h"
 
 #include "coins/utxo_commitment.h"

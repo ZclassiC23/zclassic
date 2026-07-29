@@ -385,6 +385,26 @@
 # BASELINED at 1793 in file_size_ceiling_lib_baseline.txt rather than
 # spending a ratchet slot; the recorded count STAYS 11.
 #
+# 2026-07-29 (warning-gate lane, UB + constant-time fixes): two files grew,
+# both BASELINED rather than spending a ratchet slot; the count STAYS 11.
+#   lib/hotswap/src/hotswap_loader.c  809 -> 817 — `#define _DEFAULT_SOURCE`
+#       plus the comment explaining it. realpath() is declared by <stdlib.h>
+#       only under __USE_MISC/__USE_XOPEN_EXTENDED, and the build's
+#       -D_POSIX_C_SOURCE=200809L sets neither, so the declaration reached
+#       this TU ONLY through the glibc fortify inline that -D_FORTIFY_SOURCE=2
+#       pulls in at -O3. Any -O0, -U_FORTIFY_SOURCE or non-glibc build failed
+#       with "implicit declaration of realpath" — a hard error in C23, and
+#       undefined behaviour wherever it is not. Not padding: the file did not
+#       legitimately compile before.
+#   lib/rpc/src/httpserver.c         1320 -> 1345 — constant_time_strcmp now
+#       runs a FIXED 512 iterations instead of min(alen, blen). The old loop
+#       made RPC auth latency proportional to the length of the configured
+#       credential, so an attacker walking the Basic-auth string from 1 byte
+#       up saw the time stop growing exactly at strlen("user:password").
+#       Measured on this host: 5.57x spread over secret length before,
+#       1.08x after (noise), with 3,001,156 differential comparisons
+#       confirming the verdict is unchanged for every input.
+#
 # 2026-07-29 (recovery-phrase lane, three money defects): the gap-limit scan
 # that replaces recovery's fixed-100-key rebuild did NOT land in wallet.c —
 # it is the new lib/wallet/src/wallet_gap_scan.c (115 lines, well under the

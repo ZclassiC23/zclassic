@@ -6,6 +6,11 @@
  * Both helpers are pure: deterministic, no I/O, no global state. So
  * tests are simple table-driven assertions. */
 
+/* realpath() needs __USE_MISC; -D_POSIX_C_SOURCE=200809L alone does not
+ * declare it. Without this the TU only builds by accident of the glibc
+ * fortify inline at -O3. */
+#define _DEFAULT_SOURCE
+
 #include "test/test_core.h"
 #include "net/https_server.h"
 #include "util/file_io.h"

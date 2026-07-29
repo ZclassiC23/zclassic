@@ -97,46 +97,22 @@ void sha3_keccakf_scalar(uint64_t st[25])
     }
 }
 
-/* ── Permutation dispatch ──────────────────────────────────────────
+/* There is ONE single-stream permutation, and it is the scalar one above.
  *
- * The permutation is selected once; every sha3_*_write/finalize routes
- * through g_keccakf. The scalar path (sha3_keccakf_scalar) is the always-safe
- * default and — per measured benchmarks on this class of host (Zen 4
- * double-pumps 512-bit ops, and single-stream Keccak-f is dominated by the
- * cross-lane π gather) — also the fastest, so AUTO stays on scalar. The
- * machinery lets a future host that measures AVX-512 faster flip the default
- * in one place, and lets the parity oracle / bench force either path. Setting
- * a function pointer is not torn on any supported target; do not call
- * sha3_select_impl concurrently with active hashing. */
-#ifndef SHA3_AVX512_DEFAULT_ENABLED
-#define SHA3_AVX512_DEFAULT_ENABLED 0  /* measured: scalar is fastest on Zen 4 */
-#endif
-
-static void (*g_keccakf)(uint64_t[25]) = sha3_keccakf_scalar;
-
-int sha3_select_impl(enum sha3_impl which)
-{
-    switch (which) {
-    case SHA3_IMPL_SCALAR:
-        g_keccakf = sha3_keccakf_scalar;
-        return SHA3_IMPL_SCALAR;
-    case SHA3_IMPL_AVX512:
-        if (sha3_keccakf_avx512_available()) {
-            g_keccakf = sha3_keccakf_avx512;
-            return SHA3_IMPL_AVX512;
-        }
-        g_keccakf = sha3_keccakf_scalar;
-        return SHA3_IMPL_SCALAR;
-    case SHA3_IMPL_AUTO:
-    default:
-        if (SHA3_AVX512_DEFAULT_ENABLED && sha3_keccakf_avx512_available()) {
-            g_keccakf = sha3_keccakf_avx512;
-            return SHA3_IMPL_AVX512;
-        }
-        g_keccakf = sha3_keccakf_scalar;
-        return SHA3_IMPL_SCALAR;
-    }
-}
+ * An AVX-512 single-stream Keccak-f used to live beside it behind a function
+ * pointer and a default-off switch. It was measured at 0.70x the scalar path it
+ * would have replaced (`make bench-simd`, Zen 4: 10047 ns vs 7012 ns for a 4 KiB
+ * SHA3-256) and, being default-off, was reached by nothing but its own test. A
+ * permutation that is both slower and unreachable is not an accelerator, so it
+ * was deleted rather than carried; the function pointer went with it, and every
+ * sha3_*_write/finalize now calls sha3_keccakf_scalar directly.
+ *
+ * The reason it lost is structural, not a tuning miss: a single Keccak state
+ * spread across the lanes of one register makes pi a cross-lane gather, and the
+ * gather costs more than the vector width saves. Batching INDEPENDENT streams
+ * has no such gather and does win — that is sha3_256_x4 / sha3_512_x4 (2.2x /
+ * 2.5x), sharing one permutation in keccak_x4_internal.h. If a future host
+ * wants more SHA3 throughput, widen the batch there; do not resurrect this. */
 
 void sha3_256_init(struct sha3_256_ctx *ctx)
 {
@@ -154,7 +130,7 @@ void sha3_256_write(struct sha3_256_ctx *ctx, const unsigned char *data, size_t 
         ctx->state[ctx->pos++] ^= ReadLE64(ctx->buffer);
         ctx->bufsize = 0;
         if (ctx->pos == SHA3_256_RATE_BUFFERS) {
-            g_keccakf(ctx->state);
+            sha3_keccakf_scalar(ctx->state);
             ctx->pos = 0;
         }
     }
@@ -163,7 +139,7 @@ void sha3_256_write(struct sha3_256_ctx *ctx, const unsigned char *data, size_t 
         data += 8;
         len -= 8;
         if (ctx->pos == SHA3_256_RATE_BUFFERS) {
-            g_keccakf(ctx->state);
+            sha3_keccakf_scalar(ctx->state);
             ctx->pos = 0;
         }
     }
@@ -179,7 +155,7 @@ void sha3_256_finalize(struct sha3_256_ctx *ctx, unsigned char *output)
     ctx->buffer[ctx->bufsize] ^= 0x06;
     ctx->state[ctx->pos] ^= ReadLE64(ctx->buffer);
     ctx->state[SHA3_256_RATE_BUFFERS - 1] ^= 0x8000000000000000ull;
-    g_keccakf(ctx->state);
+    sha3_keccakf_scalar(ctx->state);
     for (unsigned i = 0; i < 4; ++i) {
         WriteLE64(output + 8 * i, ctx->state[i]);
     }
@@ -203,7 +179,7 @@ void sha3_512_write(struct sha3_512_ctx *ctx, const unsigned char *data, size_t 
         ctx->state[ctx->pos++] ^= ReadLE64(ctx->buffer);
         ctx->bufsize = 0;
         if (ctx->pos == SHA3_512_RATE_BUFFERS) {
-            g_keccakf(ctx->state);
+            sha3_keccakf_scalar(ctx->state);
             ctx->pos = 0;
         }
     }
@@ -212,7 +188,7 @@ void sha3_512_write(struct sha3_512_ctx *ctx, const unsigned char *data, size_t 
         data += 8;
         len -= 8;
         if (ctx->pos == SHA3_512_RATE_BUFFERS) {
-            g_keccakf(ctx->state);
+            sha3_keccakf_scalar(ctx->state);
             ctx->pos = 0;
         }
     }
@@ -228,7 +204,7 @@ void sha3_512_finalize(struct sha3_512_ctx *ctx, unsigned char output[64])
     ctx->buffer[ctx->bufsize] ^= 0x06;
     ctx->state[ctx->pos] ^= ReadLE64(ctx->buffer);
     ctx->state[SHA3_512_RATE_BUFFERS - 1] ^= 0x8000000000000000ull;
-    g_keccakf(ctx->state);
+    sha3_keccakf_scalar(ctx->state);
     for (unsigned i = 0; i < 8; ++i)
         WriteLE64(output + 8 * i, ctx->state[i]);
 }

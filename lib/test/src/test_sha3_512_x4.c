@@ -82,7 +82,7 @@ static void x4_reference(const uint8_t key[32], const uint8_t nonce[32],
 int test_sha3_512_x4(void)
 {
     int failures = 0;
-    const bool have_avx = sha3_keccakf_avx512_available();
+    const bool have_avx = keccak_x4_available();
 
     printf("\n=== sha3_512_x4 (4-way SHA3-512 keystream parity oracle) ===\n");
     printf("sha3_512_x4: AVX-512 4-lane Keccak available on host... %s\n",

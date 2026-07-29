@@ -69,6 +69,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
 
 #define TEST_LIST(X) \
     X(hex_codec) \
+    X(script_tail_poison) \
     X(byte_order_codec) \
     X(game) X(crypto) X(crypto_registry) X(encoding) X(test_str_money_codecs) X(chain) \
     X(equihash_oom) \
@@ -81,7 +82,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(swap_settlement) \
     X(file_market) X(strong_params) X(json) X(robustness) X(wallet) \
     X(primitives) X(bloom) X(coins) X(store) X(store_listing) X(store_buyer) X(blog) X(api) \
-    X(explorer) X(explorer_rpc_call) X(explorer_index) X(format_helpers_codec) X(mining) X(utxo_commitment) X(mmr) X(mmb) X(sha3_windows) X(keccak_avx512) X(sha3_256_x4) X(sha3_512_x4) X(sha256_isa_parity) \
+    X(explorer) X(explorer_rpc_call) X(explorer_index) X(format_helpers_codec) X(mining) X(utxo_commitment) X(mmr) X(mmb) X(sha3_windows) X(sha3_stream) X(sha3_256_x4) X(sha3_512_x4) X(sha256_isa_parity) \
     X(keystone_utxo_binding) X(self_folded_anchor) X(utxo_root_ladder) X(utxo_root_ladder_tripwire) \
     X(golden_staleness_canary) \
     X(flyclient) X(flyclient_chainwork_floor) X(test_zmsg_memo_codec) X(scan_util) X(tor) \

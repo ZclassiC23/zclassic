@@ -500,9 +500,74 @@ ZCL_WARN_UNUSED_RESULT = -Wno-unused-result
 # suppression-ok: separate decision from the unused-result deletion; blockers are source sites, measured, not assumed
 ZCL_WARN_STRINGOP_OVERFLOW = -Wno-stringop-overflow
 
+# ── Warning gates BEYOND -Wall -Wextra -pedantic ────────────────────────────
+#
+# Every flag below was measured at ZERO warnings over BOTH -Werror-bearing
+# compile configurations in this tree — the 1298 node TUs at these CFLAGS, and
+# all 2116 TUs again at TEST_REL_CFLAGS (-DZCL_TESTING), which also keeps
+# -Werror. Adopting a flag that is already clean costs nothing today and turns
+# a whole defect class into a build failure from here on.
+#
+# Every flag here is one GCC reports as OFF under -Wall -Wextra -pedantic
+# (`cc -Wall -Wextra -pedantic -Q --help=warning`). Flags that merely restate
+# what -Wall/-Wextra already enable were deliberately left out rather than
+# listed for appearance: -Wpointer-arith, -Wenum-conversion, -Wenum-int-mismatch,
+# -Wcast-function-type, -Wformat-security, -Wcalloc-transposed-args,
+# -Wpacked-not-aligned, -Wmultistatement-macros, -Wshift-negative-value and
+# -Wbidi-chars=any are ALL already on. -Wold-style-definition is a no-op in
+# C23, where `f()` already means `f(void)`.
+#
+# Two entries raise a level rather than add a flag: -Wall gives
+# -Wshift-overflow=1, and the default is -Wattribute-alias=1.
+#
+# MEASURE MIDDLE-END WARNINGS WITH -c, NOT -fsyntax-only. -Wimplicit-fallthrough,
+# -Wunused-result, -Wnull-dereference, -Warray-bounds, -Wuse-after-free and the
+# -Wstringop-* family are emitted during gimplification, which -fsyntax-only
+# never reaches: a syntax-only screen reports ZERO for all of them and is not
+# evidence. Every flag in the list below was re-measured with a real `-c`
+# codegen pass over all 3414 TUs, not just the fast screen.
+#
+# -Wimplicit-fallthrough=5 was TRIED AND REJECTED, and it is the reason for the
+# paragraph above: the fast screen said 0, the codegen pass said 911 warnings
+# at 439 sites. Level 3 (what -Wextra gives) accepts a `/* fallthrough */`
+# COMMENT; level 5 accepts only the attribute. Raising it would mean annotating
+# 439 sites — and two of them are inside glibc's own
+# bits/string_fortified.h, which this tree cannot edit at all, so level 5 is
+# not reachable regardless of effort. Left at 3.
+#
+# -Walloc-zero was TRIED AND REJECTED for a subtler reason worth keeping:
+# MEASURE EVERY CANDIDATE IN THE NON-LTO CONFIGURATION TOO. It reports ZERO
+# across all 3414 TUs at these CFLAGS, because -flto=auto defers the inlining
+# that would expose a constant 0 — but TEST_REL_CFLAGS (Makefile:995) filters
+# -flto=auto OUT and keeps -Werror, and there the same flag reports 393
+# warnings, i.e. it would compile the node fine and then break
+# `make test-parallel`. All 393 are the same one line (the zcl_malloc wrapper
+# in lib/base/include/base/safe_alloc.h:49) re-reported once per inlined
+# caller, so they are one inlining artifact, not 393 defects. A flag whose
+# output depends on optimizer visibility is a poor permanent -Werror gate.
+#
+# -Wvla + -Walloca together close stack-exhaustion-by-runtime-length. The six
+# production VLAs (domain/encoding/src/{base58,bech32}.c) were already bounded
+# by a constant, so they became fixed arrays plus an explicit bounds check;
+# a VLA turns a weakened length check into stack exhaustion, a fixed array
+# turns it into a failed call.
+#
+# To re-derive (never trust a count typed here) — drop a flag from this list,
+# then compile every TU in $(ALL_SRCS) and $(TEST_SRCS) with `-fsyntax-only`
+# at these flags minus -Werror, once plain and once with -DZCL_TESTING.
+# Confirm the rig is armed before believing a zero: a deliberately bogus
+# -Wnot-a-real-flag must report one error per TU.
+ZCL_WARN_EXTRA_GATES = \
+	-Wundef -Wstrict-prototypes -Wdouble-promotion \
+	-Wduplicated-cond -Wduplicated-branches \
+	-Wshift-overflow=2 -Wattribute-alias=2 \
+	-Walloca -Wvla -Wtrampolines \
+	-Wflex-array-member-not-at-end
+
 CFLAGS = -std=c23 -g -O3 $(if $(ZCL_NATIVE),-march=native,-march=x86-64-v3) -flto=auto -Wall -Wextra -Werror -pedantic \
 	$(REPRO_CFLAGS) \
 	$(HARDEN_CFLAGS) \
+	$(ZCL_WARN_EXTRA_GATES) \
 	$(ZCL_WARN_STRINGOP_OVERFLOW) $(ZCL_WARN_UNUSED_RESULT) \
 	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(CORE_INCLUDES) $(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) $(ADAPTERS_INCLUDES) $(TOOLS_INCLUDES) $(DEVLOOP_INCLUDES) \
 	-Ilib/test/include \
@@ -2402,7 +2467,7 @@ $(BIN_DIR)/zcl-portfwd: tools/zcl_portfwd.c
 tools/gen_sha3_windows: $(BIN_DIR)/gen_sha3_windows
 $(BIN_DIR)/gen_sha3_windows: tools/gen_sha3_windows.c \
 		lib/chain/src/sha3_windows.c \
-		lib/crypto/src/sha3.c lib/crypto/src/keccak_avx512.c lib/encoding/src/utilstrencodings.c \
+		lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/encoding/src/utilstrencodings.c \
 		lib/json/src/json.c lib/platform/src/clock.c \
 		lib/base/src/safe_alloc.c lib/support/src/cleanse.c
 	@mkdir -p $(dir $@)
@@ -2427,7 +2492,7 @@ $(BIN_DIR)/gen_sha3_windows: tools/gen_sha3_windows.c \
 .PHONY: tools/gen_utxo_root_ladder
 tools/gen_utxo_root_ladder: $(BIN_DIR)/gen_utxo_root_ladder
 $(BIN_DIR)/gen_utxo_root_ladder: tools/gen_utxo_root_ladder.c \
-		lib/chain/src/mmb.c lib/crypto/src/sha3.c lib/crypto/src/keccak_avx512.c lib/support/src/cleanse.c \
+		lib/chain/src/mmb.c lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/support/src/cleanse.c \
 		lib/base/src/log_level.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
@@ -2447,7 +2512,7 @@ $(BIN_DIR)/gen_utxo_root_ladder: tools/gen_utxo_root_ladder.c \
 .PHONY: tools/rom_two_builder_compare
 tools/rom_two_builder_compare: $(BIN_DIR)/rom_two_builder_compare
 $(BIN_DIR)/rom_two_builder_compare: tools/rom_two_builder_compare.c \
-		lib/crypto/src/sha3.c lib/crypto/src/keccak_avx512.c lib/support/src/cleanse.c
+		lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/support/src/cleanse.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
@@ -2468,7 +2533,7 @@ $(BIN_DIR)/rom_two_builder_compare: tools/rom_two_builder_compare.c \
 tools/checkpoint_rung_export: $(BIN_DIR)/checkpoint_rung_export
 $(BIN_DIR)/checkpoint_rung_export: tools/checkpoint_rung_export.c \
 		lib/storage/src/checkpoint_rung.c lib/base/src/log_level.c \
-		lib/crypto/src/sha3.c lib/crypto/src/keccak_avx512.c lib/support/src/cleanse.c
+		lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/support/src/cleanse.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
@@ -2485,7 +2550,7 @@ $(BIN_DIR)/checkpoint_rung_export: tools/checkpoint_rung_export.c \
 .PHONY: tools/rom_bundle_sha3
 tools/rom_bundle_sha3: $(BIN_DIR)/rom_bundle_sha3
 $(BIN_DIR)/rom_bundle_sha3: tools/rom_bundle_sha3.c \
-		lib/crypto/src/sha3.c lib/crypto/src/keccak_avx512.c lib/support/src/cleanse.c
+		lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/support/src/cleanse.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
@@ -4056,6 +4121,82 @@ $(BIN_DIR)/bench_fresh_sync: tools/bench_fresh_sync.c \
 	$(CC) -O2 -Ilib/platform/include -Ilib/base/include -Ilib/util/include \
 	    -D_DEFAULT_SOURCE -o $@ $^
 
+# Per-ISA-tier crypto microbenchmark (tools/simd_bench.c). Drives the SAME
+# input through EVERY ISA tier of each primitive (generic / SHA-NI / AVX2 /
+# AVX-512 / BMI2), asserts every tier is BIT-IDENTICAL to the generic one, and
+# only then reports median + p90 ns/op pinned to one core, with the CCD named.
+#
+# Built at the SHIPPED CFLAGS on purpose (-O3 -march=x86-64-v3, no LTO): the
+# whole question it answers is "does the accelerated path beat what the
+# compiler already emits for the generic path at the flags we actually ship",
+# so building it at anything else would answer a question nobody asked.
+# Exits 2 if any tier diverges — a faster path returning different bytes is a
+# chain split, not a win.
+SIMD_BENCH_SRCS = tools/simd_bench.c \
+	lib/crypto/src/sha256.c lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c \
+	lib/crypto/src/sha3_avx512.c lib/crypto/src/sha3_256_x4.c \
+	lib/crypto/src/blake2b.c lib/crypto/src/blake2b_avx2.c \
+	lib/sapling/src/bn254_accel.c lib/sapling/src/fr_avx512.c \
+	lib/support/src/cleanse.c lib/base/src/log_level.c
+
+.PHONY: simd_bench
+simd_bench: $(BIN_DIR)/simd_bench
+$(BIN_DIR)/simd_bench: $(SIMD_BENCH_SRCS)
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O3 $(if $(ZCL_NATIVE),-march=native,-march=x86-64-v3) \
+	    -Wall -Wextra -Werror -pedantic \
+	    -Ilib/crypto/include -Ilib/sapling/include -Ilib/base/include \
+	    -Ilib/util/include -Ilib/platform/include -Ilib/support/include \
+	    -D_POSIX_C_SOURCE=200809L -o $@ $^
+
+# Run it. REPS= and CPU= override the defaults; CPU picks which CCD you land on
+# (this host class is asymmetric: one CCD has 3D V-Cache, the other clocks
+# higher), so quote the CPU alongside any number you record.
+.PHONY: bench-simd
+bench-simd: $(BIN_DIR)/simd_bench
+	@$(BIN_DIR)/simd_bench $(if $(CPU),--cpu=$(CPU)) $(if $(REPS),--reps=$(REPS))
+
+# Block-body deserialization microbenchmark (tools/serial_bench.c). Drives the
+# SAME real chain bytes through the parser once per allocation variant —
+# "zero-filled" reproduces the exact pre-change calloc behavior, so BEFORE and
+# AFTER are measured in ONE process on ONE input rather than by diffing two
+# builds against two moods of the machine. It asserts every variant derives a
+# BIT-IDENTICAL digest (block hash + merkle root + every txid + the full
+# re-serialized wire bytes) and only then reports median + p90, pinned to one
+# core with the CCD named. Exits 2 on any divergence: a parser that is faster
+# because it read uninitialized memory into a consensus hash is a chain split,
+# not a win.
+#
+# Built at the SHIPPED CFLAGS (-O3 -march=x86-64-v3, no LTO) on purpose.
+#
+# CORPUS= points at a file of raw block hex, one per line, e.g. from
+#   for h in ...; do zclassic-cli getblock $$(zclassic-cli getblockhash $$h) 0; done
+# With no CORPUS it falls back to a synthetic block and labels it as such.
+SERIAL_BENCH_SRCS = tools/serial_bench.c \
+	lib/primitives/src/transaction.c lib/primitives/src/block.c \
+	lib/bloom/src/merkle.c \
+	core/math/src/serialize.c core/math/src/uint256.c core/math/src/hash.c \
+	lib/crypto/src/sha256.c lib/crypto/src/sha512.c lib/crypto/src/ripemd160.c \
+	lib/crypto/src/hmac_sha512.c lib/encoding/src/utilstrencodings.c \
+	lib/support/src/cleanse.c lib/base/src/safe_alloc.c lib/base/src/log_level.c
+
+.PHONY: serial_bench
+serial_bench: $(BIN_DIR)/serial_bench
+$(BIN_DIR)/serial_bench: $(SERIAL_BENCH_SRCS)
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O3 $(if $(ZCL_NATIVE),-march=native,-march=x86-64-v3) \
+	    -Wall -Wextra -Werror -pedantic \
+	    -Ilib/primitives/include -Ilib/script/include -Ilib/bloom/include \
+	    -Ilib/crypto/include -Ilib/encoding/include -Ilib/base/include \
+	    -Ilib/util/include -Ilib/support/include -Ilib/sapling/include \
+	    -Ilib/keys/include -Ilib/core/include $(CORE_INCLUDES) \
+	    -D_POSIX_C_SOURCE=200809L -o $@ $^
+
+.PHONY: bench-serial
+bench-serial: $(BIN_DIR)/serial_bench
+	@$(BIN_DIR)/serial_bench $(if $(CORPUS),--corpus=$(CORPUS)) \
+	    $(if $(CPU),--cpu=$(CPU)) $(if $(REPS),--reps=$(REPS))
+
 bench: zclassic23
 	@ZCL_BENCH_COMMIT="$(BUILD_COMMIT)" $(ZCLASSIC23_BIN) -bench
 
@@ -5279,7 +5420,7 @@ check-observability-pairing: tools/check_observability_pairing
 .PHONY: core-seal core-seal-check core-unseal check-core-seal check-core-include-boundary
 CORE_MANIFEST := core/MANIFEST.sha3
 CORE_UNSEAL_TOKEN := .core-unseal-token
-CORE_SEAL_SRCS := tools/core_seal.c lib/crypto/src/sha3.c lib/crypto/src/keccak_avx512.c lib/support/src/cleanse.c
+CORE_SEAL_SRCS := tools/core_seal.c lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/support/src/cleanse.c
 
 .PHONY: tools/core_seal
 tools/core_seal: $(BIN_DIR)/core_seal

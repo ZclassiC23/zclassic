@@ -79,4 +79,27 @@ void equihash_generate_hash_batch8(
     unsigned char *hashes[8],
     size_t hash_len);
 
+/* Force the batch compression tier. AVX2/AVX512 are REQUESTS: each falls back
+ * to the next tier the host actually supports, so the returned value is the
+ * tier actually installed — never a claim about a path that cannot run here.
+ * SCALAR always succeeds. AUTO restores CPUID-driven selection.
+ *
+ * Every tier produces byte-identical digests by construction; this only ever
+ * changes speed. It exists so a differential oracle can drive the SAME input
+ * through all three tiers, and so `zclassic23-simd-bench` can time them
+ * separately — without it there is no way to prove the 8-way AVX-512 Equihash
+ * path is faster (or even correct) than the scalar one it replaces.
+ * Not thread-safe against concurrent batch hashing. */
+enum blake2b_batch_impl {
+    BLAKE2B_BATCH_IMPL_AUTO   = -1,
+    BLAKE2B_BATCH_IMPL_SCALAR = 0,
+    BLAKE2B_BATCH_IMPL_AVX2   = 1,
+    BLAKE2B_BATCH_IMPL_AVX512 = 2
+};
+int equihash_blake2b_batch_select_impl(enum blake2b_batch_impl which);
+
+/* Name of the tier currently installed ("AVX-512 (8-way)", "AVX2 (4-way)",
+ * or "scalar"). */
+const char *equihash_blake2b_batch_implementation(void);
+
 #endif
