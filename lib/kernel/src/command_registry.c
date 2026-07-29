@@ -7,6 +7,13 @@
 #include "services/agent_spend_policy.h"  // lib-layer-ok:agent-spend-policy-gate
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+/* Included for the *_MAX_WIRE_BYTES constants only — no lib/vcs symbol is
+ * referenced, so this adds no link edge. The include is what makes the
+ * package input bounds below DERIVED rather than restated: change a wire's
+ * own limit and the input validator follows it in the same build. */
+#include "vcs/package_manifest.h"
+#include "vcs/package_recipe.h"
+#include "vcs/package_release.h"
 
 #include <ctype.h>
 #include <stdatomic.h>
@@ -823,6 +830,93 @@ const struct zcl_command_spec *zcl_command_registry_resolve_words(
     return best;
 }
 
+/* ── Per-key input value bounds ──────────────────────────────────────────
+ *
+ * WHY THE DEFAULT IS 4096, AND WHAT IT PROTECTS. The default branch of
+ * zcl_command_registry_input_validate() types every key the chain does not
+ * name as a string and refuses one longer than ZCL_COMMAND_INPUT_STR_MAX.
+ * That number is not protecting a parser (lib/json bounds nesting depth, not
+ * string length), a log line (no dispatch path logs an input value), or the
+ * reply frame (replies are built from handler output, never echoed input).
+ * It is the "no input key is unbounded" floor: it caps how much a caller can
+ * make the process hold and hash for ONE argument, and it keeps a typical
+ * document inside the shared command frame. It is a property of the DEFAULT
+ * — of not knowing what the key carries — not a property of any key.
+ *
+ * So it is exactly wrong for a key whose value is a hex-encoded wire object
+ * that already has a published maximum. A package manifest is bounded by
+ * VCS_PACKAGE_MANIFEST_MAX_WIRE_BYTES (1 MiB); hex doubles that to 2 MiB of
+ * characters. Capping it at 4096 capped a publishable manifest at ~2 KB of
+ * wire — roughly three files — so `zcode package publish` worked only for
+ * toy packages. Raising the default instead would hand every other key the
+ * same 2 MiB, which is the opposite of a bound.
+ *
+ * Each entry below is DERIVED from the constant that already governs that
+ * key's wire, doubled for hex. This function is the single source of truth
+ * for "how long may this key be": the validator calls it (it is not restated
+ * inline anywhere) and zcl_command_registry_input_budget_bytes() calls it to
+ * size the read frame, so validator and reader cannot drift apart. */
+#define ZCL_COMMAND_INPUT_STR_MAX 4096u
+/* `files` is an ARRAY key, so its bound is two numbers rather than one.
+ * Defined here, consumed by the array branch of the validator and by the
+ * budget sum — neither restates a literal. */
+#define ZCL_COMMAND_INPUT_FILES_MAX_ITEMS 256u
+#define ZCL_COMMAND_INPUT_FILES_PATH_MAX 1024u
+
+size_t zcl_command_registry_input_str_max(const char *key)
+{
+    if (!key || !key[0])
+        return ZCL_COMMAND_INPUT_STR_MAX;
+    /* Hex of a canonical package-release envelope (zcode.package.publish.*). */
+    if (strcmp(key, "release_hex") == 0)
+        return 2u * (size_t)VCS_PACKAGE_RELEASE_MAX_WIRE_BYTES;
+    /* Hex of a content.v2 package manifest — the key that made this whole
+     * bound load-bearing: one entry per file, up to VCS_PACKAGE_MAX_FILES. */
+    if (strcmp(key, "manifest_hex") == 0)
+        return 2u * (size_t)VCS_PACKAGE_MANIFEST_MAX_WIRE_BYTES;
+    /* Hex of a declarative build recipe (zcode.package.recipe wire). */
+    if (strcmp(key, "recipe_hex") == 0)
+        return 2u * (size_t)VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES;
+    return ZCL_COMMAND_INPUT_STR_MAX;
+}
+
+/* Bytes one JSON member costs at its bound: `"key":<value>,`. Strings add
+ * two quotes; the trailing comma is charged to every member (one member
+ * overpays by a byte, which is slack, not drift). */
+static size_t input_member_budget(const char *key, size_t key_len)
+{
+    size_t value_max;
+    if (key_len == 5 && memcmp(key, "files", 5) == 0)
+        value_max = 2u + ZCL_COMMAND_INPUT_FILES_MAX_ITEMS *
+                             (ZCL_COMMAND_INPUT_FILES_PATH_MAX + 3u);
+    else
+        value_max = 2u + zcl_command_registry_input_str_max(key);
+    return key_len + 4u + value_max;
+}
+
+size_t zcl_command_registry_input_budget_bytes(
+    const struct zcl_command_spec *spec)
+{
+    size_t total = 3; /* '{', '}', NUL */
+    const char *csv = spec ? spec->input_keys : NULL;
+    char token[128];
+    while (csv && *csv) {
+        const char *end = strchr(csv, ',');
+        size_t len = end ? (size_t)(end - csv) : strlen(csv);
+        if (len > 0 && len < sizeof(token)) {
+            memcpy(token, csv, len);
+            token[len] = 0;
+            total += input_member_budget(token, len);
+        }
+        if (!end)
+            break;
+        csv = end + 1;
+    }
+    /* Floor, never ceiling: a leaf whose keys are all small keeps the frame
+     * it has always had, so this change can only widen, never tighten. */
+    return total < ZCL_COMMAND_MAX_INPUT ? ZCL_COMMAND_MAX_INPUT : total;
+}
+
 bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
                                          const struct json_value *input,
                                          char *why, size_t why_size)
@@ -854,12 +948,13 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
         const struct json_value *value = &input->children[i];
         bool type_ok = false;
         if (strcmp(key, "files") == 0) {
-            type_ok = value->type == JSON_ARR && value->num_children <= 256;
+            type_ok = value->type == JSON_ARR &&
+                      value->num_children <= ZCL_COMMAND_INPUT_FILES_MAX_ITEMS;
             for (size_t j = 0; type_ok && j < value->num_children; j++) {
                 const struct json_value *item = &value->children[j];
                 const char *text = json_get_str(item);
                 type_ok = item->type == JSON_STR && text && text[0] &&
-                          strlen(text) <= 1024;
+                          strlen(text) <= ZCL_COMMAND_INPUT_FILES_PATH_MAX;
             }
         } else if (strcmp(key, "verbose") == 0 ||
                    strcmp(key, "confirm") == 0 ||
@@ -971,9 +1066,12 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
             type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
                       json_get_int(value) <= 32;
         } else {
+            /* Type and length decided in the same breath: the bound comes
+             * from zcl_command_registry_input_str_max(), which is the ONLY
+             * place a per-key string length is written down. */
             const char *text = json_get_str(value);
             type_ok = value->type == JSON_STR && text && text[0] &&
-                      strlen(text) <= 4096;
+                      strlen(text) <= zcl_command_registry_input_str_max(key);
             if (type_ok && strcmp(key, "side") == 0)
                 type_ok = strcmp(text, "input") == 0 ||
                           strcmp(text, "output") == 0;
@@ -983,8 +1081,19 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
                           strcmp(text, "full") == 0;
         }
         if (!type_ok) {
-            if (why) snprintf(why, why_size,
-                              "invalid type or range for input key '%s'", key);
+            /* An over-long string is the one failure an operator cannot
+             * diagnose from "invalid type or range" — the value looks
+             * perfectly well-typed. Say the length and the bound, so the
+             * refusal names the rule that fired. */
+            const char *text = json_get_str(value);
+            size_t str_max = zcl_command_registry_input_str_max(key);
+            if (why && value->type == JSON_STR && text && strlen(text) > str_max)
+                snprintf(why, why_size,
+                         "input key '%s' is %zu characters, over its %zu limit",
+                         key, strlen(text), str_max);
+            else if (why)
+                snprintf(why, why_size,
+                         "invalid type or range for input key '%s'", key);
             return false;
         }
     }

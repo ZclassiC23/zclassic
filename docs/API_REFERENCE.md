@@ -695,8 +695,8 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `zcode package publish plan` | ready | read / read / operator · foreground/moderate | `release_hex`, `manifest_hex`, `dir`, `datadir` | `zcl.zcode_publish_plan.v1` | `zclassic23 zcode package publish plan --input='{"release_hex":"..","manifest_hex":"..","dir":"/tmp/pkg"}'` | Validate a candidate release without persisting anything |
-| `zcode package publish commit` | ready | mutate / app-write / operator · foreground/moderate | `release_hex`, `manifest_hex`, `dir`, `day`, `datadir` | `zcl.zcode_publish_commit.v1` | `zclassic23 zcode package publish commit --input='{"release_hex":"..","manifest_hex":"..","dir":"/tmp/pkg"}'` | Re-validate and persist a candidate release into the local store |
+| `zcode package publish plan` | ready | read / read / operator · foreground/moderate | `release_hex`, `manifest_hex`, `recipe_hex`, `dir`, `datadir` | `zcl.zcode_publish_plan.v1` | `zclassic23 zcode package publish plan --input='{"release_hex":"..","manifest_hex":"..","recipe_hex":"..","dir":"/tmp/pkg"}'` | Validate a candidate release without persisting anything |
+| `zcode package publish commit` | ready | mutate / app-write / operator · foreground/moderate | `release_hex`, `manifest_hex`, `recipe_hex`, `dir`, `day`, `datadir` | `zcl.zcode_publish_commit.v1` | `zclassic23 zcode package publish commit --input='{"release_hex":"..","manifest_hex":"..","recipe_hex":"..","dir":"/tmp/pkg"}'` | Re-validate and persist a candidate release into the local store |
 
 #### `zcode.contributor` — Contributors: secp256k1 publisher-key identities
 

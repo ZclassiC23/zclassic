@@ -443,6 +443,32 @@ descriptions, and transport metadata.
 `loop events` and jobs emit JSON Lines. A heartbeat is small and periodic; unchanged
 state is not re-emitted.
 
+### Input budgets
+
+Input is bounded per key, not globally. `zcl_command_registry_input_str_max()`
+(`lib/kernel/src/command_registry.c`) is the single source of truth: a string
+key nobody has ruled on may carry 4,096 characters, and a key that carries a
+hex-encoded wire object gets twice that wire's own maximum, so the two can
+never disagree.
+
+| Input key | Maximum characters | Derived from |
+|---|---:|---|
+| `manifest_hex` | 2,097,152 | `2 × VCS_PACKAGE_MANIFEST_MAX_WIRE_BYTES` |
+| `recipe_hex` | 524,288 | `2 × VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES` |
+| `release_hex` | 2 × the release envelope maximum | `VCS_PACKAGE_RELEASE_MAX_WIRE_BYTES` |
+| any other string key | 4,096 | the default — no key is unbounded |
+
+The whole `--input` document is read against
+`zcl_command_registry_input_budget_bytes()`, which sums the leaf's own
+declared keys and never drops below 16,384 bytes. A leaf that declares only
+short keys therefore keeps the small frame it has always had. Over-limit input
+is refused before any side effect: `INVALID_INPUT` naming the key, its length,
+and its limit for a single oversized value, `BAD_INPUT` naming the leaf's byte
+budget for an oversized document.
+
+Linux caps one argv string at 128 KiB, so a document past that size must be
+piped in as `--input=-` rather than passed as `--input='{…}'`.
+
 ## 10. Output modes
 
 - Non-TTY default: compact JSON.

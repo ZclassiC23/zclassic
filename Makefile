@@ -5779,6 +5779,17 @@ check-command-availability-truthful:
 	@echo "══ LINT: command-availability truthfulness ══"
 	@./tools/lint/check_command_availability_truthful.sh
 
+# Gate — declared input_keys vs. the keys the handler actually READS. The
+# kernel rejects any input key a leaf does not declare, so a key the C
+# consumes but the .def omits is unreachable from the real CLI and the
+# command is uncallable (zcode.package.publish.plan required recipe_hex and
+# never declared it: pass it -> INVALID_INPUT, omit it -> RECIPE_MISSING).
+# Reads the .def AND the C it binds; check-command-contract is a different
+# predicate (see that script's header) and neither subsumes the other.
+check-command-input-keys:
+	@echo "══ LINT: command input_keys vs. handler reads ══"
+	@./tools/lint/check_command_input_keys.sh
+
 # Gate — telemetry-ontology coverage. Every network telemetry field a covered
 # dumpstate function emits must carry a machine-readable meaning row (what it
 # counts, its health rule, what a bad value implies, what to read next) in
@@ -6344,6 +6355,7 @@ LINT_GATES := \
     check-vendor-provenance \
     check-command-contract \
     check-command-availability-truthful \
+    check-command-input-keys \
     check-telemetry-ontology \
     check-privileged-transition-receipt \
     check-no-gnu-va-args \

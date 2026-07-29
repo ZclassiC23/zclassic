@@ -45,6 +45,12 @@ extern "C" {
 #define ZCL_COMMAND_SEARCH_LIMIT 5U
 #define ZCL_COMMAND_MAX_NEXT 3U
 #define ZCL_COMMAND_MAX_PATH 128U
+/* FLOOR on the bytes a single `--input` document may occupy, not the ceiling.
+ * The real per-leaf ceiling is zcl_command_registry_input_budget_bytes(),
+ * which sums the declared keys' own value bounds; this constant only keeps a
+ * leaf whose keys are all small from being handed a frame so tight that a
+ * previously-accepted document would start being refused. Never compare an
+ * input length against this directly — ask the budget function. */
 #define ZCL_COMMAND_MAX_INPUT 16384U
 
 enum zcl_command_layer {
@@ -347,6 +353,18 @@ const struct zcl_command_spec *zcl_command_registry_resolve_words(
 bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
                                          const struct json_value *input,
                                          char *why, size_t why_size);
+/* Maximum characters a STRING value for `key` may carry. This is the same
+ * answer zcl_command_registry_input_validate() enforces — it calls this
+ * function — so a caller sizing a buffer or a frame can never disagree with
+ * the validator. Unknown/NULL keys get the conservative default. */
+size_t zcl_command_registry_input_str_max(const char *key);
+/* Largest `--input` document `spec` can legally carry, in bytes: the sum of
+ * its declared keys' own value bounds plus JSON punctuation, floored at
+ * ZCL_COMMAND_MAX_INPUT. This is the read/parse bound for every transport;
+ * it exists so a reader can never truncate a document the validator would
+ * have accepted, and can never buffer one the validator would refuse. */
+size_t zcl_command_registry_input_budget_bytes(
+    const struct zcl_command_spec *spec);
 void zcl_command_registry_digest(const struct zcl_command_registry *registry,
                                  char out[72]);
 
