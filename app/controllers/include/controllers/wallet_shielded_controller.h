@@ -6,8 +6,20 @@
 #include <stdbool.h>
 
 struct rpc_table;
+struct json_value;
 
 void register_wallet_shielded_rpc_commands(struct rpc_table *t);
+
+/* z_sendmany, callable in-process by another RPC handler in the same node.
+ * The store buyer needs this: paying an order is one step of a purchase the
+ * node performs on the caller's behalf, and routing it back out through the
+ * loopback socket only to re-enter the same process would put a crash window
+ * between "value left the wallet" and "the purchase row knows". Same
+ * contract as the dispatched call — params is the JSON array
+ * [from, [{address, amount, memo|memo_hex}, ...]]; false means refused,
+ * with the reason written into `result`. */
+bool rpc_z_sendmany(const struct json_value *params, bool help,
+                    struct json_value *result);
 
 /* True when `addr` is a Sapling payment address on the ACTIVE chain.
  * The human-readable part is read from chain_params_get() — mainnet

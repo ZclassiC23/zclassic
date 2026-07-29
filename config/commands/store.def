@@ -1,0 +1,125 @@
+/* Store BUYER leaves, mounted under the `app` root. These are the buying
+ * half of the store: browse what a store sells, place an order, pay it with
+ * a shielded payment carrying the order's memo, watch it, and collect the
+ * file. Until these existed the only possible buyer was a person with a
+ * browser, because the order form carries a CSRF token and an anti-abuse
+ * puzzle that JavaScript solved.
+ *
+ * Every leaf proxies one already-complete node RPC (storebuy_*, bound in
+ * app/controllers/src/store_buyer_controller.c, doing its work in
+ * app/services/src/store_buyer.c). The work has to happen inside the node:
+ * placing an order mints a one-time Sapling payment address and paying it
+ * spends, and a CLI process has neither a wallet nor an open database.
+ *
+ * Handlers: app/controllers/src/store_buyer_native_handlers.c.
+ * Consumer defines ZCL_COMMAND_*. */
+
+/* Terse one-word summary for the same reason the other app.* branches use
+ * one: this renders inside the `app` branch menu, which is bounded by
+ * ZCL_COMMAND_BRANCH_BUDGET. */
+ZCL_COMMAND_BRANCH("app.store", "app", "Store", ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_READ(
+    "app.store.catalog", "app.store", "", "List what the store sells",
+    "Every active product this node's store offers, read live at call time: "
+    "id, name, access token, price in zatoshi, tokens minted per purchase, "
+    "and whether a downloadable file is attached. has_file false means a "
+    "purchase of it can never be collected as bytes.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "store,catalog,products,buy",
+    "zcl.command.empty_input.v1", "zcl.store_catalog.v1", "", "",
+    "zclassic23 app store catalog",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_store_catalog)
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.store.order", "app.store", "", "Place an order for a product",
+    "The placed order's purchase id, merchant order id, one-time payment "
+    "z-address, the memo that binds a payment to it, and the amount owed. "
+    "Goes through the store's real order route, so the CSRF token, the "
+    "proof-of-work puzzle and the pending-order caps all apply; refused by "
+    "name on mainnet or for an unknown product. Placing the same order twice "
+    "returns the existing purchase rather than a second obligation.", 0,
+    "store,order,buy,purchase",
+    "zcl.store_order.input.v1", "zcl.store_order.v1",
+    "product_id,customer_address,output_path", "",
+    "zclassic23 app store order --input='{\"product_id\":1,"
+    "\"customer_address\":\"t1...\",\"output_path\":\"/tmp/bought.bin\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_store_order)
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.store.pay", "app.store", "", "Pay a placed order",
+    "Plan/commit shielded payment for one purchase: without confirm, a "
+    "non-mutating plan naming the purchase, amount and funding address plus "
+    "the commit next-action; with confirm:true, the submitted operation id. "
+    "The payment carries the order memo, which is what lets the merchant "
+    "bind it to this order and no other. Refused by name, before any value "
+    "moves, on mainnet, with no Sapling proving backend, when the node's "
+    "spend guard is closed, when funds cannot cover it, and when the "
+    "purchase was already paid.", 0,
+    "store,pay,shielded,purchase",
+    "zcl.store_pay.input.v1", "zcl.store_pay.v1",
+    "purchase_id,from_address,confirm", "",
+    "zclassic23 app store pay --input='{\"purchase_id\":1,"
+    "\"from_address\":\"t1...\",\"confirm\":true}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_HIGH,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_store_pay)
+
+ZCL_COMMAND_READY_READ(
+    "app.store.purchases", "app.store", "",
+    "Show purchases and what is still owed",
+    "With purchase_id: that one purchase, re-checked against the merchant's "
+    "current view — its stage advances to paid once the merchant credits the "
+    "order — plus the confirmed amount, the tip height it was measured at, "
+    "and whether it is ready to collect. Without one: every purchase this "
+    "node has made, newest first, and how many are still unfinished. A "
+    "purchase paid but not collected shows here rather than disappearing.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "store,purchases,orders,status",
+    "zcl.store_purchases.input.v1", "zcl.store_purchases.v1",
+    "purchase_id", "purchase_id",
+    "zclassic23 app store purchases",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_store_purchases)
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.store.collect", "app.store", "", "Download a purchase you paid for",
+    "The written path, byte count and verified SHA3-256 of a paid "
+    "purchase's file, fetched through the store's token gate. The bytes are "
+    "hashed against the product's content hash BEFORE anything is written: "
+    "a mismatch is reported as HASH_MISMATCH and writes nothing at all, and "
+    "a verified file lands by rename so an interrupted download never leaves "
+    "a partial file behind. Re-polls the merchant first, so a purchase paid "
+    "before a restart collects without a separate status call.", 0,
+    "store,collect,download,file",
+    "zcl.store_collect.input.v1", "zcl.store_collect.v1",
+    "purchase_id,output_path", "purchase_id",
+    "zclassic23 app store collect --input='{\"purchase_id\":1,"
+    "\"output_path\":\"/tmp/bought.bin\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_store_collect)

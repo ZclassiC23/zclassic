@@ -95,6 +95,7 @@
 #include "controllers/explorer_controller.h"
 #include "controllers/wallet_controller.h"
 #include "controllers/zslp_controller.h"
+#include "controllers/store_buyer_controller.h"
 #include "controllers/sync_controller.h"
 #include "controllers/event_controller.h"
 #include "controllers/snapshot_controller.h"
@@ -1289,6 +1290,14 @@ bool app_init_services(struct app_context *ctx,
 
     zslp_rpc_set_datadir(ctx->datadir);
     register_zslp_rpc_commands(svc->rpc_table);
+
+    /* Store BUYER — the programmatic buying half of the store. Gated on the
+     * same profile as the store itself, and registered here (after the
+     * wallet) because paying an order calls z_sendmany in this process. */
+    if (boot_profile_has_store(ctx)) {
+        rpc_store_buyer_set_state(ctx->datadir);
+        register_store_buyer_rpc_commands(svc->rpc_table);
+    }
 
     if (!register_dev_native_hotswap_rpc(svc->rpc_table, ctx->datadir, ctx->rpc_port)) return false;
 
