@@ -2333,19 +2333,36 @@ static bool nc_parse_size_control(const char *value, size_t minimum,
     return true;
 }
 
-static char *nc_read_stdin(void)
+/* Read the whole `--input=-` document, refusing anything past `max_bytes`.
+ * `max_bytes` is the caller's per-leaf budget from
+ * zcl_command_registry_input_budget_bytes(), NOT a constant: a leaf that
+ * declares a 1 MiB manifest key must be able to receive 2 MiB of hex, and a
+ * leaf that declares only short keys must not. `*oversize` distinguishes
+ * "the document is bigger than this leaf can take" from "the read failed",
+ * so the CLI can name the rule instead of reporting a generic parse error. */
+static char *nc_read_stdin(size_t max_bytes, bool *oversize)
 {
+    if (oversize)
+        *oversize = false;
+    if (max_bytes < 2)
+        max_bytes = 2;
+    /* One byte past the budget so an OVER-limit document is detected by
+     * actually reading the extra byte, never inferred from a full buffer —
+     * a document of exactly max_bytes must be accepted, not refused. */
+    const size_t hard_cap = max_bytes + 2; /* +1 sentinel, +1 NUL */
     size_t cap = 4096, len = 0;
+    if (cap > hard_cap)
+        cap = hard_cap;
     char *buf = (char *)zcl_malloc(cap, "native_command.stdin");
     if (!buf)
         return NULL;
     for (;;) {
         if (len + 1 >= cap) {
-            if (cap >= ZCL_COMMAND_MAX_INPUT) {
-                free(buf);
-                return NULL;
-            }
+            if (cap >= hard_cap)
+                break; /* read the sentinel byte; length check below rules */
             size_t ncap = cap * 2;
+            if (ncap > hard_cap)
+                ncap = hard_cap;
             char *nb = (char *)zcl_realloc(buf, ncap, "native_command.stdin");
             if (!nb) {
                 free(buf);
@@ -2356,12 +2373,20 @@ static char *nc_read_stdin(void)
         }
         ssize_t r = read(STDIN_FILENO, buf + len, cap - len - 1);
         if (r < 0) {
+            if (errno == EINTR)
+                continue;
             free(buf);
             return NULL;
         }
         if (r == 0)
             break;
         len += (size_t)r;
+    }
+    if (len > max_bytes) {
+        if (oversize)
+            *oversize = true;
+        free(buf);
+        return NULL;
     }
     buf[len] = 0;
     return buf;
@@ -3196,22 +3221,52 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
     /* A leaf: build the one JSON input object. */
     struct json_value input;
     json_init(&input);
+    /* Both spellings of --input are read against the SAME per-leaf budget the
+     * validator's per-key limits imply, so neither can accept a document the
+     * other would refuse, and neither truncates one the validator would take.
+     * NOTE for large inputs: Linux caps a single argv string at
+     * MAX_ARG_STRLEN (128 KiB), so a multi-megabyte document must arrive on
+     * `--input=-` (stdin) — the argv form fails in execve long before here. */
+    const size_t input_budget = zcl_command_registry_input_budget_bytes(spec);
     if (input_flag) {
         if (strcmp(input_flag, "-") == 0) {
-            char *raw = nc_read_stdin();
+            bool oversize = false;
+            char *raw = nc_read_stdin(input_budget, &oversize);
             bool ok = raw && json_read(&input, raw, strlen(raw)) &&
                       input.type == JSON_OBJ;
             free(raw);
             if (!ok) {
                 json_free(&input);
                 json_free(&flags);
+                char detail[192];
+                if (oversize)
+                    (void)snprintf(detail, sizeof(detail),
+                                   "stdin --input=- is over this command's %zu "
+                                   "byte input budget",
+                                   input_budget);
+                else
+                    (void)snprintf(detail, sizeof(detail),
+                                   "stdin --input=- must be one JSON object");
                 nc_print_error_next_string(
                     spec->path, "BAD_INPUT", "normalize",
-                    "stdin --input=- must be one JSON object", spec->path,
+                    detail, spec->path,
                     "discover.schema", "path", spec->path,
                     "inspect the input schema");
                 return ZCL_COMMAND_EXIT_INVALID;
             }
+        } else if (strlen(input_flag) > input_budget) {
+            json_free(&input);
+            json_free(&flags);
+            char detail[192];
+            (void)snprintf(detail, sizeof(detail),
+                           "--input is %zu bytes, over this command's %zu byte "
+                           "input budget",
+                           strlen(input_flag), input_budget);
+            nc_print_error_next_string(
+                spec->path, "BAD_INPUT", "normalize", detail, spec->path,
+                "discover.schema", "path", spec->path,
+                "inspect the input schema");
+            return ZCL_COMMAND_EXIT_INVALID;
         } else if (!json_read(&input, input_flag, strlen(input_flag)) ||
                    input.type != JSON_OBJ) {
             json_free(&input);

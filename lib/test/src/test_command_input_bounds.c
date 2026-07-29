@@ -1,0 +1,280 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * test_command_input_bounds — the per-key length rule in
+ * zcl_command_registry_input_validate() and the per-leaf read frame it
+ * implies (zcl_command_registry_input_budget_bytes()).
+ *
+ * THE BUG THIS PINS (2026-07-29): the validator's default branch typed every
+ * unlisted key as a string of at most 4096 characters. The zcode publish
+ * leaves carry their payloads as HEX, so that capped a package manifest wire
+ * at 2 KB — about three files — while VCS_PACKAGE_MANIFEST_MAX_WIRE_BYTES is
+ * 1 MiB. Publishing worked for toy packages only, and the refusal read
+ * "invalid type or range", which points at the type, not at the length.
+ *
+ * The fix is a per-key bound derived from each wire's own constant, with the
+ * bound living where the type lives. These cases hold BOTH edges of three
+ * differently-limited keys, so a future "just raise the default" or "just
+ * drop the bound" is caught:
+ *
+ *   manifest_hex  2 * VCS_PACKAGE_MANIFEST_MAX_WIRE_BYTES  (2 MiB chars)
+ *   recipe_hex    2 * VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES    (512 KiB chars)
+ *   release_hex   2 * VCS_PACKAGE_RELEASE_MAX_WIRE_BYTES
+ *   everything else                     4096 chars, unchanged
+ *
+ * and the read frame each leaf gets, because a validator that accepts 2 MiB
+ * in front of a reader that stops at 16 KiB is not a fix. */
+
+#include "test/test_core.h"
+
+#include "config/command_catalog.h"
+#include "json/json.h"
+#include "kernel/command_registry.h"
+
+#include "vcs/package_manifest.h"
+#include "vcs/package_recipe.h"
+#include "vcs/package_release.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define CIB_CHECK(name, expr) do {                                         \
+    if (expr) { printf("  command_input_bounds: %s... OK\n", (name)); }     \
+    else { printf("  command_input_bounds: %s... FAIL\n", (name));          \
+           failures++; }                                                    \
+} while (0)
+
+/* A malloc'd run of `len` 'a' characters. */
+static char *cib_fill(size_t len)
+{
+    char *s = malloc(len + 1);
+    if (!s)
+        return NULL;
+    memset(s, 'a', len);
+    s[len] = 0;
+    return s;
+}
+
+/* Validate `{key: <len chars>}` against `path`. `why` receives the refusal. */
+static bool cib_accepts(const char *path, const char *key, size_t len,
+                        char *why, size_t why_size)
+{
+    const struct zcl_command_spec *spec =
+        zcl_command_registry_find(zcl_command_catalog(), path, NULL);
+    if (!spec)
+        return false;
+    char *value = cib_fill(len);
+    if (!value)
+        return false;
+    struct json_value input;
+    json_init(&input);
+    json_set_object(&input);
+    (void)json_push_kv_str(&input, key, value);
+    if (why && why_size)
+        why[0] = 0;
+    bool ok = zcl_command_registry_input_validate(spec, &input, why, why_size);
+    json_free(&input);
+    free(value);
+    return ok;
+}
+
+/* ── 1. Both edges of three differently-limited keys ─────────────────── */
+
+static int t_key_edges(void)
+{
+    int failures = 0;
+    const char *plan = "zcode.package.publish.plan";
+    char why[192];
+
+    struct {
+        const char *key;
+        size_t max;
+        const char *label;
+    } cases[] = {
+        { "manifest_hex", 2u * (size_t)VCS_PACKAGE_MANIFEST_MAX_WIRE_BYTES,
+          "manifest_hex" },
+        { "recipe_hex", 2u * (size_t)VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES,
+          "recipe_hex" },
+        { "release_hex", 2u * (size_t)VCS_PACKAGE_RELEASE_MAX_WIRE_BYTES,
+          "release_hex" },
+        /* `dir` is on the same leaf and takes the unchanged default — proof
+         * that the raise is per key, not a global loosening. */
+        { "dir", 4096u, "dir (default bound)" },
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char name[128];
+
+        snprintf(name, sizeof(name), "%s: the stated maximum is exactly the "
+                 "advertised bound", cases[i].label);
+        CIB_CHECK(name,
+                  zcl_command_registry_input_str_max(cases[i].key) ==
+                      cases[i].max);
+
+        snprintf(name, sizeof(name), "%s: a value AT the bound is accepted",
+                 cases[i].label);
+        bool at = cib_accepts(plan, cases[i].key, cases[i].max, why,
+                              sizeof(why));
+        CIB_CHECK(name, at);
+        if (!at)
+            printf("    refused at the bound: %s\n", why);
+
+        snprintf(name, sizeof(name), "%s: one character OVER is refused",
+                 cases[i].label);
+        bool over = cib_accepts(plan, cases[i].key, cases[i].max + 1, why,
+                                sizeof(why));
+        CIB_CHECK(name, !over);
+
+        /* The refusal must name the length rule. An over-long string is
+         * perfectly well-typed, so "invalid type or range" sends the
+         * operator hunting the wrong problem. */
+        snprintf(name, sizeof(name), "%s: the refusal names length, not type",
+                 cases[i].label);
+        CIB_CHECK(name, !over && strstr(why, cases[i].key) != NULL &&
+                            strstr(why, "characters") != NULL &&
+                            strstr(why, "limit") != NULL);
+    }
+
+    /* The default is a property of not knowing the key, so a key nobody has
+     * ruled on must still get 4096 — never the largest per-key bound. */
+    CIB_CHECK("an unruled key keeps the 4096 default",
+              zcl_command_registry_input_str_max("no_such_key_at_all") == 4096u);
+    CIB_CHECK("a NULL key is answered, not dereferenced",
+              zcl_command_registry_input_str_max(NULL) == 4096u);
+
+    /* The package bounds must stay DERIVED. If someone edits a wire's own
+     * maximum, the input bound has to move with it in the same build; a
+     * hand-copied number would fail this the moment the two disagree. */
+    CIB_CHECK("manifest bound tracks VCS_PACKAGE_MANIFEST_MAX_WIRE_BYTES",
+              zcl_command_registry_input_str_max("manifest_hex") ==
+                  2u * (size_t)VCS_PACKAGE_MANIFEST_MAX_WIRE_BYTES);
+    CIB_CHECK("recipe bound tracks VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES",
+              zcl_command_registry_input_str_max("recipe_hex") ==
+                  2u * (size_t)VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES);
+    return failures;
+}
+
+/* ── 2. The read frame follows the per-key bounds ────────────────────── */
+
+static int t_frame_budget(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    const struct zcl_command_spec *plan =
+        zcl_command_registry_find(reg, "zcode.package.publish.plan", NULL);
+    const struct zcl_command_spec *query =
+        zcl_command_registry_find(reg, "core.storage.query", NULL);
+
+    CIB_CHECK("both fixture leaves resolve", plan && query);
+    if (!plan || !query)
+        return failures;
+
+    size_t plan_budget = zcl_command_registry_input_budget_bytes(plan);
+    size_t query_budget = zcl_command_registry_input_budget_bytes(query);
+
+    /* A reader that stopped before the validator's ceiling would truncate a
+     * legal document — the exact second wall this change had to clear. */
+    size_t declared = 2u * (size_t)VCS_PACKAGE_MANIFEST_MAX_WIRE_BYTES +
+                      2u * (size_t)VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES +
+                      2u * (size_t)VCS_PACKAGE_RELEASE_MAX_WIRE_BYTES;
+    CIB_CHECK("the publish frame holds every declared key at its bound",
+              plan_budget > declared);
+
+    /* ...and a leaf that declares only default-bounded keys keeps the frame
+     * it always had. Widening is per leaf, not global. */
+    CIB_CHECK("a small leaf keeps the ZCL_COMMAND_MAX_INPUT floor",
+              query_budget == ZCL_COMMAND_MAX_INPUT);
+    CIB_CHECK("the floor is a floor, never a ceiling",
+              plan_budget > ZCL_COMMAND_MAX_INPUT);
+
+    /* NULL is answered with the floor rather than a crash or a zero frame
+     * (a zero frame would refuse every input on an unresolved leaf). */
+    CIB_CHECK("a NULL spec yields the floor",
+              zcl_command_registry_input_budget_bytes(NULL) ==
+                  ZCL_COMMAND_MAX_INPUT);
+
+    /* Every leaf in the live catalog must get a frame at least as large as
+     * its own largest single key, or that key is undeliverable by any
+     * transport — the failure mode this whole group exists to prevent. */
+    size_t checked = 0, undeliverable = 0;
+    for (size_t i = 0; i < reg->count; i++) {
+        const struct zcl_command_spec *spec = &reg->commands[i];
+        if (!spec->input_keys || !spec->input_keys[0])
+            continue;
+        size_t budget = zcl_command_registry_input_budget_bytes(spec);
+        const char *at = spec->input_keys;
+        char token[128];
+        while (*at) {
+            const char *end = strchr(at, ',');
+            size_t len = end ? (size_t)(end - at) : strlen(at);
+            if (len > 0 && len < sizeof(token)) {
+                memcpy(token, at, len);
+                token[len] = 0;
+                checked++;
+                if (zcl_command_registry_input_str_max(token) >= budget)
+                    undeliverable++;
+            }
+            if (!end)
+                break;
+            at = end + 1;
+        }
+    }
+    CIB_CHECK("the catalog declares input keys to walk", checked > 0);
+    CIB_CHECK("no catalog key is larger than its own leaf's frame",
+              undeliverable == 0);
+    return failures;
+}
+
+/* ── 3. The raise did not loosen anything else ───────────────────────── */
+
+static int t_no_collateral_loosening(void)
+{
+    int failures = 0;
+    const struct zcl_command_spec *query =
+        zcl_command_registry_find(zcl_command_catalog(), "core.storage.query",
+                                  NULL);
+    CIB_CHECK("core.storage.query resolves", query != NULL);
+    if (!query)
+        return failures;
+
+    char why[192];
+    /* `sql` is arbitrary operator SQL — it must keep the default bound even
+     * though it sits one catalog row away from the raised keys. */
+    CIB_CHECK("sql at 4096 is accepted",
+              cib_accepts("core.storage.query", "sql", 4096, why,
+                          sizeof(why)));
+    CIB_CHECK("sql at 4097 is refused",
+              !cib_accepts("core.storage.query", "sql", 4097, why,
+                           sizeof(why)));
+    CIB_CHECK("the sql refusal names the 4096 limit",
+              strstr(why, "4096") != NULL);
+
+    /* An empty string is still not a value, at any bound. */
+    CIB_CHECK("an empty string is still refused",
+              !cib_accepts("zcode.package.publish.plan", "manifest_hex", 0,
+                           why, sizeof(why)));
+
+    /* A key nothing declares is still unknown, however long or short. */
+    struct json_value input;
+    json_init(&input);
+    json_set_object(&input);
+    (void)json_push_kv_str(&input, "manifest_hex", "aa");
+    why[0] = 0;
+    bool leaked = zcl_command_registry_input_validate(query, &input, why,
+                                                      sizeof(why));
+    json_free(&input);
+    CIB_CHECK("a raised key is still unknown on a leaf that never declared it",
+              !leaked && strstr(why, "unknown input key") != NULL);
+    return failures;
+}
+
+int test_command_input_bounds(void)
+{
+    printf("\n=== command_input_bounds: per-key input length rules ===\n");
+    int failures = 0;
+    failures += t_key_edges();
+    failures += t_frame_budget();
+    failures += t_no_collateral_loosening();
+    printf("=== command_input_bounds complete: %d failure(s) ===\n", failures);
+    return failures;
+}
