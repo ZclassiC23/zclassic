@@ -388,64 +388,18 @@ static void bench_sha256(unsigned char *msg)
     report(&b);
 }
 
-/* ═══════════════════════════════════════════════════════════════════
- * Primitive 2 — SHA3-256 single stream (scalar vs AVX-512 Keccak-f)
- *
- * This is the tier the tree DISABLES BY DEFAULT
- * (SHA3_AVX512_DEFAULT_ENABLED 0 in sha3.c) on the claim that scalar measured
- * faster on Zen 4. This bench exists to confirm or refute that claim.
+/* There is no single-stream SHA3-256 row here any more, and that is a result,
+ * not an omission. This harness measured the tree's AVX-512 single-stream
+ * Keccak-f at 0.70x the scalar path it would have replaced (10047 ns vs
+ * 7012 ns, 4 KiB message, 101 reps, ccd0) — a cross-lane pi gather that costs
+ * more than the vector width saves. It was also default-off, so nothing but
+ * its own test ever ran it. It has been deleted, leaving one permutation and
+ * nothing to compare. SHA3 vectorization pays only across INDEPENDENT streams,
+ * which is what the next two rows measure.
  * ═══════════════════════════════════════════════════════════════════ */
 
-#define SHA3_MSG_BYTES 4096
-
-struct sha3_ctx_bench { const unsigned char *msg; };
-
-static void sha3_256_body(long inner, void *vctx)
-{
-    struct sha3_ctx_bench *c = vctx;
-    unsigned char out[32];
-    for (long i = 0; i < inner; i++) {
-        sha3_256(c->msg, SHA3_MSG_BYTES, out);
-        g_sink += out[0];
-    }
-}
-
-static void bench_sha3_256(unsigned char *msg)
-{
-    struct bench b = {
-        .primitive = "SHA3-256 single stream (4 KiB message)",
-        .unit = "hashes",
-        .inner = 4000,
-        .bytes_per_op = SHA3_MSG_BYTES,
-        .ntiers = 2,
-    };
-    b.tier[0].name = "generic (scalar)";
-    b.tier[1].name = "AVX-512 Keccak-f";
-
-    struct sha3_ctx_bench ctx = { .msg = msg };
-    unsigned char digest[2][32];
-
-    const enum sha3_impl want[2] = { SHA3_IMPL_SCALAR, SHA3_IMPL_AVX512 };
-    for (int i = 0; i < 2; i++) {
-        int got = sha3_select_impl(want[i]);
-        b.tier[i].available = (i == 0) || (got == SHA3_IMPL_AVX512);
-        if (!b.tier[i].available) continue;
-
-        sha3_256(msg, SHA3_MSG_BYTES, digest[i]);
-        if (i > 0 && memcmp(digest[i], digest[0], 32) != 0) {
-            parity_fail(b.primitive, b.tier[i].name, digest[i], digest[0], 32);
-            b.tier[i].verified = false;
-            continue;
-        }
-        b.tier[i].verified = true;
-        time_tier(&b.tier[i], &b, sha3_256_body, &ctx);
-    }
-    sha3_select_impl(SHA3_IMPL_AUTO);
-    report(&b);
-}
-
 /* ═══════════════════════════════════════════════════════════════════
- * Primitive 3 — sha3_256_x4 (4 independent messages, scalar vs AVX-512)
+ * Primitive 2 — sha3_256_x4 (4 independent messages, scalar vs AVX-512)
  * Used by the snapshot manifest / merkle combine (lib/net/src/fast_sync.c).
  * ═══════════════════════════════════════════════════════════════════ */
 
@@ -978,10 +932,8 @@ int main(int argc, char **argv)
 
         printf("\n  detected: sha256=%s  blake2b-batch=%s\n",
                sha256_implementation(), equihash_blake2b_batch_implementation());
-        printf("            keccak-avx512 available=%s (AUTO uses %s)\n",
-               sha3_keccakf_avx512_available() ? "yes" : "no",
-               sha3_select_impl(SHA3_IMPL_AUTO) == SHA3_IMPL_AVX512
-                   ? "AVX-512" : "scalar");
+        printf("            keccak-x4 (avx512f+vl+dq, XCR0) available=%s\n",
+               keccak_x4_available() ? "yes" : "no");
         printf("            bn254=%s\n            bls12-381=%s\n",
                bn254_accel_implementation(), fr_accel_implementation());
     } else {
@@ -995,7 +947,6 @@ int main(int argc, char **argv)
         buf[i] = (unsigned char)(i * 131 + 17);
 
     bench_sha256(buf);
-    bench_sha3_256(buf);
     bench_sha3_256_x4(buf);
     bench_sha3_512_x4(buf);
     bench_equihash_blake2b();

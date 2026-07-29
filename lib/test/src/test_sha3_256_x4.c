@@ -69,7 +69,7 @@ static double now_s(void)
 int test_sha3_256_x4(void)
 {
     int failures = 0;
-    const bool have_avx = sha3_keccakf_avx512_available();
+    const bool have_avx = keccak_x4_available();
 
     printf("sha3_256_x4: AVX-512 4-lane Keccak available on host... %s\n",
            have_avx ? "YES" : "no (parity runs scalar-vs-scalar)");
@@ -199,7 +199,6 @@ int test_sha3_256_x4(void)
                 uint8_t out4[4][32], out1[32];
 
                 /* Reference: 4x scalar one-shot sha3_256 (the current consumer). */
-                sha3_select_impl(SHA3_IMPL_SCALAR);
                 for (int w = 0; w < 8; ++w)
                     for (int i = 0; i < 4; ++i) sha3_256(msgs[i], insz, out1);
                 double t0 = now_s();
@@ -229,7 +228,6 @@ int test_sha3_256_x4(void)
 
     /* Restore shipped defaults for any subsequent in-process hashing. */
     sha3_256_x4_select_impl(SHA3_IMPL_AUTO);
-    (void)sha3_select_impl(SHA3_IMPL_AUTO);
 
     printf("sha3_256_x4: %d failure(s)\n", failures);
     return failures;

@@ -102,8 +102,7 @@ static const uint8_t SIGMA[12][16] = {
  *  AVX-512F: 8-way parallel BLAKE2b compression
  * ══════════════════════════════════════════════════════════════ */
 
-#define ROTR64_512(x, n) \
-    _mm512_or_si512(_mm512_srli_epi64(x, n), _mm512_slli_epi64(x, 64-(n)))
+#define ROTR64_512(x, n) _mm512_ror_epi64((x), (n))
 
 #define G8(r, i, a, b, c, d, m) do { \
     a = _mm512_add_epi64(a, _mm512_add_epi64(b, m[SIGMA[r][2*(i)]])); \
@@ -185,8 +184,15 @@ static void blake2b_compress_8way(
  *  AVX2: 4-way parallel BLAKE2b compression
  * ══════════════════════════════════════════════════════════════ */
 
-#define ROTR64_256(x, n) \
+#define ROTR64_256_GEN(x, n) \
     _mm256_or_si256(_mm256_srli_epi64(x, n), _mm256_slli_epi64(x, 64-(n)))
+/* BLAKE2b uses exactly four rotation amounts. Three of them are whole-byte
+ * rotates that AVX2 does in ONE instruction; only 63 needs the shift pair. */
+#define ROTR64_256_32(x) _mm256_shuffle_epi32((x), 0xB1)
+#define ROTR64_256_24(x) _mm256_shuffle_epi8((x), ROT24_MASK)
+#define ROTR64_256_16(x) _mm256_shuffle_epi8((x), ROT16_MASK)
+#define ROTR64_256_63(x) ROTR64_256_GEN((x), 63)
+#define ROTR64_256(x, n) ROTR64_256_##n(x)
 
 #define G4(r, i, a, b, c, d, m) do { \
     a = _mm256_add_epi64(a, _mm256_add_epi64(b, m[SIGMA[r][2*(i)]])); \
@@ -214,6 +220,14 @@ __attribute__((target("avx2")))
 static void blake2b_compress_4way(
     struct blake2b_ctx *c[4], const uint8_t *b[4])
 {
+    /* Byte-rotate masks for ROTR64_256_24 / _16: within each 8-byte lane,
+     * result byte i = source byte (i + k) mod 8, for k = 3 and k = 2. */
+    const __m256i ROT24_MASK = _mm256_setr_epi8(
+        3, 4, 5, 6, 7, 0, 1, 2,  11,12,13,14,15, 8, 9,10,
+        3, 4, 5, 6, 7, 0, 1, 2,  11,12,13,14,15, 8, 9,10);
+    const __m256i ROT16_MASK = _mm256_setr_epi8(
+        2, 3, 4, 5, 6, 7, 0, 1,  10,11,12,13,14,15, 8, 9,
+        2, 3, 4, 5, 6, 7, 0, 1,  10,11,12,13,14,15, 8, 9);
     __m256i m[16], v[16];
 
     for (int i = 0; i < 16; i++) {
@@ -291,23 +305,33 @@ static void finalize_states(const struct blake2b_ctx *base,
     }
 
     if (n >= 4 && atomic_load_explicit(&g_use_avx2, memory_order_relaxed)) {
-        struct blake2b_ctx *cp[4] = {&states[0],&states[1],&states[2],&states[3]};
-        const uint8_t *bp[4] = {blocks[0],blocks[1],blocks[2],blocks[3]};
-        blake2b_compress_4way(cp, bp);
-        for (int i = 0; i < 4; i++)
-            memcpy(hashes[i], states[i].h, hash_len);
-
-        if (n > 4) {
-            /* Handle remaining 4 with AVX2 */
-            struct blake2b_ctx *cp2[4] = {&states[4],
-                n>5?&states[5]:&states[4], n>6?&states[6]:&states[4],
-                n>7?&states[7]:&states[4]};
-            const uint8_t *bp2[4] = {blocks[4],
-                n>5?blocks[5]:blocks[4], n>6?blocks[6]:blocks[4],
-                n>7?blocks[7]:blocks[4]};
-            blake2b_compress_4way(cp2, bp2);
-            for (int i = 4; i < n; i++)
+        /* Whole groups of 4 go through the vector unit; any remainder (< 4)
+         * goes through the scalar reference below.
+         *
+         * The remainder used to be padded up to 4 by repeating &states[4] in
+         * the spare slots. That is not a harmless pad: blake2b_compress_4way
+         * finishes with `c[j]->h[i] ^= out[j]` for j=0..3, so four aliases of
+         * one context XOR four different lane results into the SAME state and
+         * it comes out garbage. It was unreachable only because the two public
+         * entry points pass exactly 4 and 8 -- a 5..7 caller would have
+         * silently produced wrong Equihash hashes. Splitting on the group
+         * boundary removes the aliasing rather than relying on nobody ever
+         * passing the wrong n. */
+        int done = 0;
+        while (n - done >= 4) {
+            struct blake2b_ctx *cp[4] = {&states[done],   &states[done+1],
+                                         &states[done+2], &states[done+3]};
+            const uint8_t *bp[4] = {blocks[done],   blocks[done+1],
+                                    blocks[done+2], blocks[done+3]};
+            blake2b_compress_4way(cp, bp);
+            for (int i = done; i < done + 4; i++)
                 memcpy(hashes[i], states[i].h, hash_len);
+            done += 4;
+        }
+        for (int i = done; i < n; i++) {
+            struct blake2b_ctx s = *base;
+            blake2b_update(&s, &indices[i], sizeof(uint32_t));
+            blake2b_final(&s, hashes[i], hash_len);
         }
         return;
     }
