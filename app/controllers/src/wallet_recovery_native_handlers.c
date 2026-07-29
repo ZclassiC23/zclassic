@@ -108,9 +108,11 @@ void zcl_native_handle_wallet_recovery_status(
     struct wallet_recovery_report rep;
     struct zcl_result r = wallet_recovery_status(datadir, &rep);
     if (!r.ok) {
+        bool held = r.code == -61;
         wrp_push_report(reply, &rep);
-        wnh_fail(reply, ZCL_COMMAND_EXIT_FAILED, "NO_WALLET", r.message,
-                 datadir);
+        wnh_fail(reply,
+                 held ? ZCL_COMMAND_EXIT_BLOCKED : ZCL_COMMAND_EXIT_FAILED,
+                 held ? "DATADIR_LOCKED" : "NO_WALLET", r.message, datadir);
         return;
     }
 

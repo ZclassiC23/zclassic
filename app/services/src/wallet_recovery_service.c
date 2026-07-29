@@ -126,6 +126,19 @@ struct zcl_result wallet_recovery_status(const char *datadir,
     if (stat(out->target_db, &st) != 0)
         return ZCL_ERR(-63, "no wallet database at %s", out->target_db);
 
+    /* Single-writer proof BEFORE opening anything, even though this call
+     * only reads. node_db_open() is not a read: it takes a write lock and
+     * runs any pending schema migration, so pointing this at a datadir a
+     * node is holding would put a SECOND writer on that node's node.db.
+     * The leaf defaults its datadir to the operator's live one when the
+     * caller names none, which is exactly how that mistake gets made. */
+    struct zcl_result lock_r = wallet_restore_datadir_free(datadir);
+    if (!lock_r.ok) {
+        LOG_WARN(WRC_TAG, "refusing to inspect a held datadir: %s",
+                 lock_r.message);
+        return ZCL_ERR(-61, "%s", lock_r.message);
+    }
+
     /* Offline entry point — the derivation below needs a signing context. */
     if (!ecc_start_once())
         return ZCL_ERR(-63, "no secp256k1 signing context; cannot check "

@@ -88,10 +88,17 @@ struct zcl_result wallet_recovery_run(const struct wallet_recovery_request *req,
                                       struct wallet_recovery_report *out);
 
 /* Report what a datadir's existing wallet can be recovered from, without a
- * phrase and without writing anything. This is the honest answer to "can I
- * restore this wallet from words?" — a wallet created before recovery
+ * phrase and without changing the wallet. This is the honest answer to "can
+ * I restore this wallet from words?" — a wallet created before recovery
  * phrases has independently random transparent keys and the answer is no,
- * use a file backup. Fills `out`; `phrase_valid` is unused here.
+ * use a file backup.
+ *
+ * Refuses (-61) while a node holds the datadir. Reading the answer means
+ * opening node.db, and opening node.db takes a write lock and runs any
+ * pending migration — so this is a second writer, not a reader, and the
+ * pidfile proof applies to it exactly as it does to a recovery.
+ *
+ * Fills `out`; `phrase_valid` is unused here.
  * `seed_installed` reports whether the wallet's keys descend from its seed,
  * i.e. whether a recovery phrase would bring them back. */
 struct zcl_result wallet_recovery_status(const char *datadir,

@@ -1010,7 +1010,11 @@ ZCL_COMMAND_READY_READ(
     "recovery phrases answers false and is sent to file backup instead. "
     "Answering it reads and decrypts the wallet's keys, so on an "
     "encrypted-at-rest wallet this takes seconds, not milliseconds, and "
-    "reports budget_exceeded.", 0,
+    "reports budget_exceeded. Opening node.db takes a write lock and runs "
+    "any pending migration, so this refuses with DATADIR_LOCKED while a "
+    "node holds the datadir rather than becoming a second writer — and it "
+    "targets the running node's datadir when the caller names none, so "
+    "name one.", 0,
     "wallet,recovery,phrase,seed,mnemonic,backup",
     "zcl.wallet_recovery_status.input.v1", "zcl.wallet_recovery_status.v1",
     "datadir", "",
