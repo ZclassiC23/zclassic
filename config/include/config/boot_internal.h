@@ -331,6 +331,21 @@ bool boot_canary_watch_register(struct boot_svc_ctx *svc);
  * boot_register_runtime_services() (boot_services.c spec table); they operate
  * only on the boot_svc_ctx passed as ctx — no file-statics — and are NOT part
  * of the SIGTERM shutdown sequence. */
+/* THE network predicate for every service that dials a co-located zclassicd.
+ * Returns NULL when this node is on mainnet, otherwise the network's name
+ * ("regtest" / "testnet" / whatever chainparams calls it) — so a caller both
+ * decides and NAMES its skip from one place.
+ *
+ * Exists because that decision was being made three different ways, and one of
+ * the three was not being made at all: on 2026-07-28 a sealed `-regtest`
+ * fixture polled the operator's LIVE zclassicd on 127.0.0.1:8232, three log
+ * lines after the legacy mirror had correctly skipped for exactly that reason.
+ * The zclassicd on 8232 is a MAINNET daemon; comparing a non-mainnet node
+ * against it is a guaranteed false compare AND an outbound dial out of a
+ * fixture that was supposed to be sealed. Implemented in
+ * boot_runtime_sync_services.c. */
+const char *boot_nonmain_network_name(const struct boot_svc_ctx *svc);
+
 bool boot_header_probe_start(void *ctx);     /* init probe + register poll Job */
 void boot_header_probe_stop(void *ctx);      /* header_probe runtime stop */
 bool boot_legacy_mirror_start(void *ctx);    /* always-on legacy mirror sync */

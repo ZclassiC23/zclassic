@@ -35,6 +35,24 @@
 #include "net/download.h"
 #include "chain/chainparams.h"  /* fMineBlocksOnDemand (regtest legacy-mirror skip) */
 #include <stdio.h>
+#include <string.h>
+
+/* See config/boot_internal.h for why this predicate is shared rather than
+ * re-derived per service. app_ctx is the authority — boot_step_select_chain_
+ * and_datadir derives the selected chain from exactly these two fields — with
+ * chainparams as the fallback for a ctx-less caller. */
+const char *boot_nonmain_network_name(const struct boot_svc_ctx *svc)
+{
+    if (!svc)
+        return NULL;
+    if (svc->app_ctx && svc->app_ctx->regtest)
+        return "regtest";
+    if (svc->app_ctx && svc->app_ctx->testnet)
+        return "testnet";
+    if (svc->params && strcmp(svc->params->strNetworkID, "main") != 0)
+        return svc->params->strNetworkID;
+    return NULL;
+}
 
 /* Initialize header_probe and register its supervised poll Job (runtime svc). */
 bool boot_header_probe_start(void *ctx)
@@ -57,7 +75,21 @@ bool boot_header_probe_start(void *ctx)
     /* Register the polling cadence as a supervised Job in the network
      * domain. Same 30 s cadence, same RPC, same accept_block_header path;
      * the supervisor owns liveness so `zclassic23 dumpstate supervisor`
-     * exposes last_tick_age_us and ticks_run for the poll. */
+     * exposes last_tick_age_us and ticks_run for the poll.
+     *
+     * MAINNET-ONLY, because that RPC is a co-located zclassicd on
+     * 127.0.0.1:8232 and it is a MAINNET daemon — this poll would feed mainnet
+     * headers into a regtest chain every 30 s, and it is an outbound dial into
+     * the operator's live daemon from a fixture that was supposed to be sealed.
+     * Measured: two dials in a 75 s `-regtest` fixture run. The init above
+     * stays on every network (it dials nothing; it keeps the RPC + dumpstate
+     * introspection available); only the polling dial is gated. */
+    const char *net = boot_nonmain_network_name(svc);
+    if (net) {
+        printf("[header-probe] poll Job skipped on %s (it polls a mainnet "
+               "zclassicd; a non-mainnet node must not dial it)\n", net);
+        return true;
+    }
     header_probe_poll_register();
     if (header_probe_poll_is_registered()) {
         printf("[header-probe] poll Job registered with net supervisor\n");
@@ -143,10 +175,22 @@ void boot_gap_fill_stop(void *ctx)
     gap_fill_stop();
 }
 
-/* Start the external zclassicd height oracle (runtime svc). */
+/* Start the external zclassicd height oracle (runtime svc).
+ *
+ * MAINNET-ONLY. This service polls a co-located zclassicd on 127.0.0.1:8232 in
+ * the background, and it used to ignore its ctx entirely — so a `-regtest`
+ * fixture with a deliberately dead `-connect` sink still dialed the operator's
+ * live daemon. A mainnet daemon's height is meaningless to a regtest or testnet
+ * node anyway; the only thing the dial could produce was the leak. */
 bool boot_zclassicd_oracle_start(void *ctx)
 {
-    (void)ctx;
+    struct boot_svc_ctx *svc = ctx;
+    const char *net = boot_nonmain_network_name(svc);
+    if (net) {
+        printf("[oracle] zclassicd height oracle skipped on %s (the oracle is "
+               "a mainnet daemon; a non-mainnet node must not dial it)\n", net);
+        return true;
+    }
     if (zclassicd_oracle_start().ok)
         printf("[oracle] zclassicd oracle service started\n");
     return true;
