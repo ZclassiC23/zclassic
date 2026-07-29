@@ -185,6 +185,7 @@
  * hollow-scan) stays/becomes clean. */
 #define CONDITION_COOLDOWN_SCRIPT_REL "tools/scripts/check_condition_cooldown.sh"
 #define MARKDOWN_LINK_SCRIPT_REL "tools/lint/check_markdown_links.sh"
+#define FUZZ_ARTIFACT_REPLAY_SCRIPT_REL "tools/lint/check_fuzz_artifact_replay.sh"
 #define E10_SHAPE_SCRIPT_REL "tools/lint/framework_shape_check.sh"
 /* Same direct-selftest convention as NODE_DB_EXEC_FIXTURE_DST_REL: visible
  * without ZCL_LINT_PRODUCTION_SCAN, ignored by production/watch scans. */
@@ -388,6 +389,7 @@ int t_import_copy_prove_selftest(void);
 int t_fresh_boot_weld_prove_selftest(void);
 int t_e14_condition_cooldown_gate(void);
 int t_markdown_links_gate(void);
+int t_fuzz_artifact_ledger_gate(void);
 int t_e10_framework_shape_ratchet(void);
 int t_telemetry_ontology_gate(void);
 int t_e10_no_raw_sqlite_ratchet(void);

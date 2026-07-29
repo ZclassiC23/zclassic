@@ -60,6 +60,9 @@ for arg in "$@"; do
     esac
 done
 
+# After the arg loop: --seed-root= may have moved SEED_ROOT.
+LEDGER="$SEED_ROOT/ARTIFACT_VERDICTS.txt"
+
 if [ ! -d "$ARTIFACT_DIR" ]; then
     echo "promote-fuzz-artifacts: no artifact dir ($ARTIFACT_DIR) — nothing to triage"
     exit 0
@@ -69,9 +72,13 @@ mkdir -p "$SEED_ROOT" 2>/dev/null || { echo "promote-fuzz-artifacts: cannot crea
 
 # ── Known libFuzzer artifact "kind" markers ─────────────────────────
 # The prefix before the FIRST of these (with its own trailing '-') is the
-# harness name. "slow-unit" itself contains a '-', so it must be checked
-# before a naive single-token split would misparse it.
-KIND_MARKERS="crash timeout oom slow-unit leak"
+# harness name. "slow-unit" and "minimized-from" themselves contain a '-', so
+# they must be checked before a naive single-token split would misparse them.
+# Kept in step with ARTIFACT_RE in tools/lint/check_fuzz_artifact_replay.sh:
+# these are the six prefixes libFuzzer writes. "minimized-from" is what
+# `-minimize_crash=1` produces — the natural next step after a crash- lands,
+# and until 2026-07-29 neither this script nor the gate could name it.
+KIND_MARKERS="crash timeout oom slow-unit leak minimized-from"
 
 derive_harness_and_kind() {  # $1 = basename -> prints "harness kind" or "" on no match
     local base="$1" marker rest
@@ -149,6 +156,28 @@ for f in "$ARTIFACT_DIR"/*; do
     SEEN_HASH["$hash"]="$dest"
     promoted=$((promoted + 1))
     PROMOTED_BY_HARNESS["$harness"]=$(( ${PROMOTED_BY_HARNESS["$harness"]:-0} + 1 ))
+
+    # File an UNAUDITED verdict line alongside the bytes.
+    #
+    # Promotion used to be the end of the story: the artifact landed in the
+    # corpus on the strength of its filename prefix alone, nothing re-ran it,
+    # and nothing downstream could fail over it. That produced both halves of
+    # this corpus's problem — a real remote hang that sat unread for two weeks,
+    # and eight artifacts that were never bugs at all (spurious -timeout=2 trips
+    # on a contended box) diluting the eight that mattered.
+    #
+    # An `unaudited` line is deliberately NOT a verdict. check-fuzz-artifact-
+    # ledger rejects it, so a promoted artifact arrives already failing the
+    # build until a human replays it and writes down what they decided. That is
+    # the opposite of the old behaviour, where arriving silently was the default.
+    if [ "$DRY_RUN" -eq 0 ] && [ -f "$LEDGER" ]; then
+        if ! grep -q "^$harness/${kind}-${digest}.bin[[:space:]]" "$LEDGER" 2>/dev/null; then
+            printf '%s/%s-%s.bin  unaudited  %s  # auto-filed by promote_fuzz_artifacts.sh; nobody has replayed this yet\n' \
+                "$harness" "$kind" "$digest" "$(date -u +%Y-%m-%d)" >> "$LEDGER"
+            echo "promote-fuzz-artifacts: filed an 'unaudited' verdict for ${dest#"$REPO_ROOT"/}"
+            echo "promote-fuzz-artifacts:   -> replay it and replace that line, or the build stays red"
+        fi
+    fi
 done
 
 echo "promote-fuzz-artifacts: SUMMARY promoted=$promoted duplicate=$dup oversize=$oversize unparsed=$unparsed"

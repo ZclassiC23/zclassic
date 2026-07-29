@@ -248,10 +248,10 @@ jobs:
   # binary the Makefile knows how to build, to catch a rule that rotted (see
   # the header comment in tools/lint/check_standalone_tools_link.sh for the
   # incident that motivated it). It is deliberately build-dependent — that
-  # is the entire point of the check — so it cannot be made fast the way the
-  # other 115 gates are fast, and folding it into JOB 1's tight budget meant
-  # one compile-heavy gate was dragging 115 free text scans behind it and, on a
-  # cold hosted runner with no vendored dependency and no ccache, blew
+  # is the entire point of the check — so it cannot be made fast the way every
+  # other gate in LINT_GATES is fast, and folding it into JOB 1's tight budget
+  # meant one compile-heavy gate was dragging every free text scan behind it
+  # and, on a cold hosted runner with no vendored dependency and no ccache, blew
   # straight through a 15-minute job timeout without printing a verdict at
   # all (confirmed on this branch: cancelled at the timeout, only this one
   # gate of 116 still in flight).
@@ -325,3 +325,59 @@ jobs:
           # on the deploy host if this ever needs updating.
           ZCL_SYSTEMD_MEMORY_BUDGET_MEMTOTAL_BYTES: "100300546048"
         run: make lint
+
+  # ── JOB 4 — saved fuzz findings must not still reproduce ───────────────
+  # Why this is a job and not a lint gate. On 2026-07-14 a fuzzer found that a
+  # five-byte script from any peer hangs the node forever. The bytes were
+  # committed to lib/test/fuzz_seeds/script/ and read by nobody for two weeks.
+  # Three mechanisms had already replayed them and already gone red — `make
+  # fuzz-ci`, the hourly background quality lane, and the artifact promoter —
+  # and not one of them could fail a build. `make fuzz-ci` in particular is
+  # reachable only from `make ci`, which this workflow deliberately excludes as
+  # a whole (see JOB 2's comment) and which no hook or timer runs either. So the
+  # capability was never missing; the verdict had nowhere to go. This job is
+  # where it goes.
+  #
+  # Cost, measured on the dev reference host: the replay is 18.3 s for 22
+  # artifacts at -P6, but the nine libFuzzer+ASan binaries it needs are 5 min
+  # 45 s at -j6 — one clang per binary over ~1174 TUs, no per-TU object cache,
+  # and 742 MB of output. That build is the entire cost, which is exactly why
+  # this cannot ride along in JOB 3's budget and why `make lint` runs only the
+  # 21 ms ledger half (check-fuzz-artifact-ledger).
+  #
+  # Same toolchain as JOB 3: clang-20 plus libclang-rt-20-dev, which carries the
+  # libclang_rt.fuzzer/asan archives the targets link against. Vendor cache is
+  # restore-only — JOB 2 is the sole writer.
+  fuzz-replay:
+    name: fuzz-replay (saved findings)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential perl gcc-14 clang-20 libclang-rt-20-dev
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100
+          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 100
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-20 100
+          sudo update-alternatives --set gcc /usr/bin/gcc-14
+          sudo update-alternatives --set cc /usr/bin/gcc-14
+          sudo update-alternatives --set clang /usr/bin/clang-20
+          clang --version
+
+      - name: Restore vendored dependencies
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            vendor/lib
+            vendor/include
+            vendor/provenance
+          key: vendor-${{ runner.os }}-${{ hashFiles('tools/scripts/build_vendor.sh', 'vendor/patches/**') }}
+
+      - name: Build the fuzz targets and replay every saved artifact
+        run: make fuzz-replay -j"$(nproc)"

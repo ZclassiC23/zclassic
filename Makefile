@@ -3793,6 +3793,13 @@ mvp: test_zcl zclassic23 zcl-rpc
 # latent crashes without chasing exhaustive coverage. Fuzz CI must
 # never false-green without the toolchain: install clang/libFuzzer or
 # opt out explicitly with `make ci SKIP_FUZZ=1`.
+#
+# -artifact_prefix is not optional. Without it libFuzzer writes a repro unit
+# to CWD, which for these rules is the repository root: a run that found
+# anything dropped a bare `timeout-<sha1>` file into the tree, where
+# check-no-stray-root-files then failed on it and nothing routed the finding
+# anywhere. Both loops point it at the per-target /tmp work dir they already
+# create and delete.
 FUZZ_CC ?= clang
 FUZZ_CFLAGS = -std=c23 -O1 -g -Wall -Wextra \
 	-Wno-deprecated-declarations \
@@ -3935,9 +3942,37 @@ fuzz-ci: check-fuzz-ci-tools $(FUZZ_TARGETS)
 		rm -rf "$$work_dir"; mkdir -p "$$work_dir"; \
 		timeout $(FUZZ_CI_WALL_TIME)s env ASAN_OPTIONS=detect_leaks=0 \
 			$$t -max_total_time=$(FUZZ_CI_TIME) \
-			-timeout=1 -print_final_stats=1 "$$work_dir" "$$seed_dir"; \
+			-timeout=1 -print_final_stats=1 \
+			-artifact_prefix="$$work_dir/" "$$work_dir" "$$seed_dir"; \
 		rm -rf "$$work_dir"; \
 	done
+
+# Replay every SAVED finding and fail on any that still reproduces.
+#
+# fuzz-ci above already executes the checked-in corpus (libFuzzer runs the seed
+# dir before it mutates), and it has been red since 2026-07-14 over a five-byte
+# script that hangs the node forever. Nobody saw it, because fuzz-ci is
+# reachable only from `make ci` — which no hook, timer or workflow runs — and
+# because a libFuzzer corpus run stops at the first bad unit and tells you
+# nothing about the other 72. This target is the verdict route that was missing:
+# it replays each artifact-prefixed seed individually against a written verdict
+# in lib/test/fuzz_seeds/ARTIFACT_VERDICTS.txt and names every disagreement.
+#
+# Why it is not part of `make lint`: measured on the dev reference host, the
+# replay itself is 18.3 s for 22 artifacts at -P6, but building the nine large sanitizer-instrumented
+# fuzz binaries it needs is 5 min 45 s at -j6 — one clang per binary over ~1174
+# TUs with no per-TU object cache, so any source edit re-pays it in full. `make
+# lint` runs the cheap half instead (check-fuzz-artifact-ledger, 21 ms: every
+# artifact has a live binary and a recorded verdict, no orphans).
+#
+# --selftest first, always: it plants an untriaged artifact and asserts the gate
+# still trips AND still names the file, so a "0 violations" line below can never
+# be a gate that has quietly stopped being able to fail.
+.PHONY: fuzz-replay
+fuzz-replay: check-fuzz-ci-tools $(FUZZ_TARGETS)
+	@echo "══ FUZZ-REPLAY: every saved finding, replayed against its verdict ══"
+	@./tools/lint/check_fuzz_artifact_replay.sh --selftest
+	@./tools/lint/check_fuzz_artifact_replay.sh
 
 # Same binaries with leak detection ON. Separate target so CI stays
 # green while known-pre-existing leaks are being triaged; developers
@@ -3951,7 +3986,8 @@ fuzz-ci-leaks: check-fuzz-ci-tools $(FUZZ_TARGETS)
 		work_dir="/tmp/zcl_fuzz_$${kind}_leaks"; \
 		rm -rf "$$work_dir"; mkdir -p "$$work_dir"; \
 		timeout $(FUZZ_CI_WALL_TIME)s $$t -max_total_time=$(FUZZ_CI_TIME) \
-			-timeout=1 -print_final_stats=1 "$$work_dir" "$$seed_dir"; \
+			-timeout=1 -print_final_stats=1 \
+			-artifact_prefix="$$work_dir/" "$$work_dir" "$$seed_dir"; \
 		rm -rf "$$work_dir"; \
 	done
 
@@ -5554,6 +5590,18 @@ check-no-shellouts:
 	@echo "→ Gate: no_shellouts (os-substrate Rung 0)"
 	@./tools/lint/check_no_shellouts.sh
 
+# The cheap half of the fuzz-artifact replay contract (21 ms, text + git only):
+# every saved finding under lib/test/fuzz_seeds/ has a live fuzz binary behind
+# it and a written verdict in ARTIFACT_VERDICTS.txt, with no orphan entries and
+# no untracked repro sitting uncommitted in the corpus. The replay itself needs
+# the nine fuzz binaries (5m45s to build), so it lives in `make fuzz-replay`,
+# which `make ci` and the fuzz-replay CI job run. A 2026-07-14 hang sat unread
+# for two weeks because no build ever read a fuzz verdict; this is the half of
+# that route that is cheap enough for the inner loop.
+check-fuzz-artifact-ledger:
+	@echo "→ Gate: fuzz_artifact_ledger (every saved finding has a verdict)"
+	@./tools/lint/check_fuzz_artifact_replay.sh --ledger-only
+
 # Every standalone tool rule in this file must actually build. lint/
 # test-parallel/ci build the node, the test runners, the fuzzers and two lint
 # helpers — nothing else — so every other $(BIN_DIR)/<tool> rule was reachable
@@ -6270,6 +6318,7 @@ LINT_GATES := \
     check-result-discard \
     check-no-trust-state-ordering \
     check-no-warning-suppression \
+    check-fuzz-artifact-ledger \
     check-standalone-tools-link
 
 # The driver execs gate scripts directly, so the two gates backed by a built
@@ -6300,7 +6349,7 @@ endif
 #                         or to tools/lint/lint_cache.sh. Warm the cache first
 #                         (make lint-cached) or it has nothing to verify.
 #
-# 15 of the 116 gates are NEVER cached — they build binaries, run compilers,
+# 16 of the 117 gates are NEVER cached — they build binaries, run compilers,
 # read build output, git config, /proc, or untracked worktree state. Each
 # carries its reason in tools/lint/lint_cache.sh, and each always runs.
 .PHONY: lint-cached lint-cold-audit
@@ -6429,8 +6478,11 @@ ci: vendor-ready lint bench-regress zclassic23 $(TEST_PARALLEL_REL_CANDIDATE)
 		echo "══ CI: fuzz-ci ══"; \
 		$(MAKE) fuzz-ci || exit 1; \
 		echo ""; \
+		echo "══ CI: fuzz-replay (saved findings must not still reproduce) ══"; \
+		$(MAKE) fuzz-replay || exit 1; \
+		echo ""; \
 	else \
-		echo "══ CI: fuzz-ci (SKIPPED — SKIP_FUZZ=1) ══"; \
+		echo "══ CI: fuzz-ci + fuzz-replay (SKIPPED — SKIP_FUZZ=1) ══"; \
 	fi
 	@if [ "$(SKIP_COV)" != "1" ]; then \
 		echo "══ CI: coverage ══"; \
