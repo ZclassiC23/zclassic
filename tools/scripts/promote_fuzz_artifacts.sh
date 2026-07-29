@@ -72,9 +72,13 @@ mkdir -p "$SEED_ROOT" 2>/dev/null || { echo "promote-fuzz-artifacts: cannot crea
 
 # ── Known libFuzzer artifact "kind" markers ─────────────────────────
 # The prefix before the FIRST of these (with its own trailing '-') is the
-# harness name. "slow-unit" itself contains a '-', so it must be checked
-# before a naive single-token split would misparse it.
-KIND_MARKERS="crash timeout oom slow-unit leak"
+# harness name. "slow-unit" and "minimized-from" themselves contain a '-', so
+# they must be checked before a naive single-token split would misparse them.
+# Kept in step with ARTIFACT_RE in tools/lint/check_fuzz_artifact_replay.sh:
+# these are the six prefixes libFuzzer writes. "minimized-from" is what
+# `-minimize_crash=1` produces — the natural next step after a crash- lands,
+# and until 2026-07-29 neither this script nor the gate could name it.
+KIND_MARKERS="crash timeout oom slow-unit leak minimized-from"
 
 derive_harness_and_kind() {  # $1 = basename -> prints "harness kind" or "" on no match
     local base="$1" marker rest

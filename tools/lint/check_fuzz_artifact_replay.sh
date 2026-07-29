@@ -26,7 +26,8 @@
 # that could fail a build ever read the answer. This gate is that route.
 #
 # WHAT IT CHECKS. Every artifact-prefixed seed under lib/test/fuzz_seeds/
-# (timeout- / crash- / leak- / oom- / slow-unit-, the prefixes libFuzzer writes)
+# (crash- / timeout- / oom- / leak- / slow-unit- / minimized-from-, the six
+# prefixes libFuzzer writes — see ARTIFACT_RE below for where each comes from)
 # must carry exactly one verdict line in lib/test/fuzz_seeds/ARTIFACT_VERDICTS.txt,
 # and that verdict must still be TRUE of what the artifact does today:
 #
@@ -45,10 +46,38 @@
 #
 # THE ONLY WAY TO PASS WHILE REPRODUCING is `accepted`: per-file, dated,
 # reason >= 30 chars, and re-printed by name on every single run. There is no
-# directory-wide exemption and no "skip" outcome anywhere in this script —
-# a silent skip is precisely how the hole opened, so every path that cannot
-# reach a verdict is a FAILURE instead. That includes a missing fuzz binary,
-# a corpus with no binary behind it, and a binary with no corpus.
+# directory-wide exemption.
+#
+# WHAT A GREEN RUN ACTUALLY GUARANTEES. An earlier version of this comment
+# claimed "no skip path anywhere". That was a wish, not a property, and on
+# 2026-07-29 an adversarial review collected the exit-0 receipts: one artifact
+# whose filename contained a single quote aborted `xargs` mid-stream, 14 live
+# hangs went unreplayed, and the run printed "0 clean, 0 reproducing / 0
+# violations". Nothing was checking that the number of results equalled the
+# number of artifacts. The honest statement of what is enforced now, each
+# clause backed by a specific line below:
+#
+#   * Every artifact selected for replay produces exactly one of three
+#     verdicts — clean, reproduces, nobin — and that is ASSERTED by count
+#     after the replay stage, not assumed from it. A selected artifact with no
+#     result is exit 2, named. This is the invariant that matters: an artifact
+#     that did not produce a verdict is a FAILURE, never a nothing.
+#   * The replay stage's own exit status is captured and checked, so a broken
+#     stage (bad -P value, a name xargs chokes on, an OOM-killed child) is
+#     exit 2 rather than an empty result set that reads as clean.
+#   * The selection is never allowed to be empty, and --corpus= only accepts
+#     names that have a fuzz target, so a typo cannot replay nothing quietly.
+#   * A file that LOOKS like a saved finding but misses the canonical spelling
+#     (CRASH-, crash_, hang-, ...) is refused by name instead of being filed
+#     away as an ordinary hand-written seed.
+#   * A missing fuzz binary, a corpus with no binary behind it, a binary with
+#     no corpus, and an artifact that git tracks but that is absent from disk
+#     are each their own failure.
+#
+# What it still does NOT guarantee: that the corpus contains every finding the
+# fuzzer has ever produced (only `promote_fuzz_artifacts.sh` feeds it), and
+# that an `accepted` verdict is true — that one is a human judgement, which is
+# why it is reprinted by name on every run.
 #
 # TWO MODES, because the build dominates the cost by 4-20x:
 #
@@ -104,10 +133,44 @@ SEED_ROOT="lib/test/fuzz_seeds"
 LEDGER="$SEED_ROOT/ARTIFACT_VERDICTS.txt"
 GATE="check_fuzz_artifact_replay"
 
-# libFuzzer's artifact filename prefixes. An artifact is a finding the fuzzer
-# SAVED because it went wrong; a plain seed is hand-authored input. Only the
-# former carries a verdict.
-ARTIFACT_RE='^(timeout|crash|leak|oom|slow-unit)-'
+# libFuzzer's artifact filename prefixes — the COMPLETE set, read off
+# compiler-rt/lib/fuzzer rather than remembered. An artifact is a finding the
+# fuzzer SAVED because a run went wrong; a plain seed is hand-authored input.
+# Only the former carries a verdict.
+#
+#   crash-           FuzzerLoop.cpp CrashCallback / DeathCallback /
+#                    ExitCallback / HandleMalloc — any deadly signal, any
+#                    sanitizer report, -error_exitcode.
+#   timeout-         FuzzerLoop.cpp AlarmCallback — the -timeout= wall.
+#   oom-             FuzzerLoop.cpp RssLimitCallback and the malloc-limit
+#                    path — -rss_limit_mb / -malloc_limit_mb.
+#   leak-            FuzzerLoop.cpp TryDetectingAMemoryLeak — LSan.
+#   slow-unit-       FuzzerLoop.cpp ExecuteCallback — a unit slower than
+#                    -report_slow_units.
+#   minimized-from-  FuzzerDriver.cpp MinimizeCrashInput — what
+#                    `-minimize_crash=1` writes. This one was MISSING until
+#                    2026-07-29, which meant the natural next step after a
+#                    crash- lands (minimize it, commit the small one) produced
+#                    a finding this gate could not see.
+#
+# Those six are all of them: they are every literal that reaches
+# WriteUnitToFileWithPrefix(), plus the one ArtifactPrefix concatenation in
+# the crash minimizer. Deliberately not in the list: `-cleanse_crash` writes
+# no prefixed name (it REQUIRES -exact_artifact_path and refuses to run
+# without it), and -merge / the output-corpus writer emit a bare content hash,
+# which is a seed, not a finding.
+ARTIFACT_RE='^(crash|timeout|oom|leak|slow-unit|minimized-from)-'
+
+# Names that are TRYING to be an artifact but are not one of the six: wrong
+# case, an underscore where libFuzzer writes a hyphen, or a hand-invented word
+# like "hang-". Each is a file somebody saved because something went wrong,
+# and each would otherwise be enumerated as an ordinary hand-authored seed and
+# never replayed — the original bug in miniature. Matched against the
+# lowercased basename, so CRASH- and Crash- land here too, and reported as a
+# violation that says what to rename it to. If a legitimate hand-written seed
+# ever needs one of these words, rename the seed: the cost of a false positive
+# is one rename, the cost of a false negative is an unread finding.
+NEARMISS_RE='^(crash|crashes|timeout|timeouts|oom|ooms|leak|leaks|slow-unit|slow_unit|slowunit|minimized-from|minimized_from|minimized|hang|hangs|repro|abort|assert)[-_]'
 
 REPLAY_TIMEOUT="${ZCL_FUZZ_REPLAY_TIMEOUT:-5}"
 CONFIRM_TIMEOUT="${ZCL_FUZZ_REPLAY_CONFIRM_TIMEOUT:-15}"
@@ -236,8 +299,37 @@ done < "$LEDGER"
 # So an untracked artifact is enumerated, replayed, AND reported as its own
 # violation: commit it with a verdict, or delete it.
 artifacts=()
-declare -A UNTRACKED=()
+nearmiss=()
+declare -A UNTRACKED=() ENUMERATED=()
 scanned=0
+
+# Classify one repo-relative path found under $SEED_ROOT. Shared by all three
+# enumerators below so the artifact / near-miss / plain-seed decision is made
+# in exactly one place and cannot drift between them.
+#   $1 = path (repo-relative)   $2 = "tracked" | "untracked"
+consider_path() {
+    local p="$1" origin="$2" base rel lc
+    [[ -z "$p" ]] && return 0
+    base="${p##*/}"
+    rel="${p#"$SEED_ROOT"/}"
+    [[ "$rel" == */* ]] || return 0          # corpus-dir-relative only
+    # `git ls-files` repeats a path that has unmerged index stages, and the
+    # tracked and untracked passes could in principle both name one. Counting
+    # it twice would inflate `scanned` and replay it twice; first sighting wins.
+    [[ -n "${ENUMERATED[$rel]:-}" ]] && return 0
+    ENUMERATED["$rel"]=1
+    if [[ "$base" =~ $ARTIFACT_RE ]]; then
+        artifacts+=("$rel")
+        if [[ "$origin" == untracked ]]; then UNTRACKED["$rel"]=1; fi
+        scanned=$((scanned + 1))
+        return 0
+    fi
+    lc="${base,,}"
+    if [[ "$lc" =~ $NEARMISS_RE ]]; then
+        nearmiss+=("$rel")
+    fi
+    return 0
+}
 
 # git is the preferred enumerator because it can tell a committed finding from
 # an uncommitted one. It is not always available: the lint-gate selftest runs
@@ -246,40 +338,26 @@ scanned=0
 # SAY SO — the artifacts still all get replayed, only the tracked/untracked
 # split goes unchecked. A silent degrade here would be the same class of
 # problem as the hole this gate closes, so it is announced, not assumed.
+# All three enumerators are NUL-delimited (`git ls-files -z`, `find -print0`).
+# Line-delimited git output is not safe here: with the default core.quotePath
+# git RENAMES a path containing a quote or a non-ASCII byte into a C-quoted
+# string, and a path containing a newline becomes two lines. Either turns one
+# artifact into a name that does not exist on disk, which is a skip.
 if git rev-parse --git-dir >/dev/null 2>&1; then
-    while IFS= read -r p; do
-        [[ -z "$p" ]] && continue
-        base="${p##*/}"
-        [[ "$base" =~ $ARTIFACT_RE ]] || continue
-        rel="${p#"$SEED_ROOT"/}"
-        [[ "$rel" == */* ]] || continue        # corpus-dir-relative only
-        artifacts+=("$rel")
-        scanned=$((scanned + 1))
-    done < <( { git ls-files "$SEED_ROOT" 2>/dev/null || true; } | sort -u )
+    while IFS= read -r -d '' p; do
+        consider_path "$p" tracked
+    done < <( git ls-files -z "$SEED_ROOT" 2>/dev/null || true )
 
-    while IFS= read -r p; do
-        [[ -z "$p" ]] && continue
-        base="${p##*/}"
-        [[ "$base" =~ $ARTIFACT_RE ]] || continue
-        rel="${p#"$SEED_ROOT"/}"
-        [[ "$rel" == */* ]] || continue
-        artifacts+=("$rel")
-        UNTRACKED["$rel"]=1
-        scanned=$((scanned + 1))
-    done < <( { git ls-files --others --exclude-standard "$SEED_ROOT" 2>/dev/null || true; } | sort -u )
+    while IFS= read -r -d '' p; do
+        consider_path "$p" untracked
+    done < <( git ls-files -z --others --exclude-standard "$SEED_ROOT" 2>/dev/null || true )
 else
     echo "[$GATE] no git here — enumerating with find; every artifact is still"
     echo "[$GATE] replayed and still needs a verdict, but the tracked vs"
     echo "[$GATE] uncommitted distinction is NOT being checked on this run."
-    while IFS= read -r p; do
-        [[ -z "$p" ]] && continue
-        base="${p##*/}"
-        [[ "$base" =~ $ARTIFACT_RE ]] || continue
-        rel="${p#"$SEED_ROOT"/}"
-        [[ "$rel" == */* ]] || continue
-        artifacts+=("$rel")
-        scanned=$((scanned + 1))
-    done < <(find "$SEED_ROOT" -mindepth 2 -maxdepth 2 -type f 2>/dev/null | sort -u)
+    while IFS= read -r -d '' p; do
+        consider_path "$p" tracked
+    done < <(find "$SEED_ROOT" -mindepth 2 -maxdepth 2 -type f -print0 2>/dev/null)
 fi
 
 gate_require_scanned "$scanned" 20 "$GATE" \
@@ -290,6 +368,22 @@ echo "[$GATE] $scanned saved artifact(s); $ledger_lines ledger line(s); ${kind_c
 # ── (1) Structural checks — the cheap half, always run ───────────────────
 VALID_VERDICTS=" regression-seed open accepted "
 
+# A file that is trying to be a finding but is not spelled like one. It would
+# otherwise be filed as an ordinary hand-written seed: never replayed against a
+# verdict, never demanded of the ledger, invisible. `minimized-from-` was
+# exactly this until 2026-07-29 — a real libFuzzer prefix the regex missed —
+# so the near-miss list is deliberately wider than the six canonical prefixes.
+for rel in "${nearmiss[@]}"; do
+    report "$SEED_ROOT/$rel [NOT A LIBFUZZER ARTIFACT NAME — nothing will ever replay it]"
+    note "This reads as a saved finding but does not match any prefix"
+    note "libFuzzer writes, so the gate would file it as a hand-authored seed"
+    note "and never demand a verdict for it."
+    note "Rename it to one of: crash- timeout- oom- leak- slow-unit- minimized-from-"
+    note "(hyphen, lowercase, then the hash), then add its verdict line to"
+    note "$LEDGER. If it really is a hand-written"
+    note "seed, give it a name that does not start with a finding word."
+done
+
 for rel in "${artifacts[@]}"; do
     corpus="${rel%%/*}"
     LEDGER_SEEN["$rel"]=1
@@ -299,6 +393,19 @@ for rel in "${artifacts[@]}"; do
         note "A finding nobody committed is a finding nobody reads. Either"
         note "'git add' it and record a verdict in $LEDGER,"
         note "or delete it if it was local debris."
+    fi
+
+    # Tracked by git but gone from the working tree. The replay half would
+    # hand libFuzzer a path that does not exist, get a non-zero exit, and
+    # report the artifact as "reproduces" — a true-looking red for a false
+    # reason, and in --ledger-only it was not visible at all.
+    if [[ ! -f "$SEED_ROOT/$rel" ]]; then
+        report "$SEED_ROOT/$rel [MISSING FROM DISK — git tracks it, the file is not there]"
+        note "A deleted artifact is not a triaged one. Restore it"
+        note "('git checkout -- $SEED_ROOT/$rel'), or 'git rm' it AND delete"
+        note "its line from $LEDGER so the record"
+        note "says the finding left the corpus on purpose."
+        continue
     fi
 
     if [[ -z "${BIN_KIND[$corpus]:-}" ]]; then
@@ -384,13 +491,20 @@ fi
 work="$(mktemp -d "${TMPDIR:-/tmp}/zcl-fuzz-replay.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 
-# One artifact -> "<rel> <state>" on stdout. state is clean | reproduces | nobin.
-# Runs with CWD inside $work so nothing libFuzzer writes can reach the repo.
+# One artifact -> one NUL-terminated "<state>\t<rel>" record on stdout. state
+# is clean | reproduces | nobin. Runs with CWD inside $work so nothing
+# libFuzzer writes can reach the repo.
+#
+# State FIRST and tab-separated, NUL-terminated: the old "<rel> <state>" form
+# was parsed with `read -r rel st`, which mangles any artifact name containing
+# a space and cannot represent one containing a newline. The state token is a
+# fixed word with no separators in it, so putting it first makes the record
+# unambiguous whatever the filename is.
 replay_one() {
     local rel="$1" tmo="$2"
     local corpus="${rel%%/*}"
     local bin="$ROOT/$BIN_DIR/fuzz_$corpus"
-    if [[ ! -x "$bin" ]]; then echo "$rel nobin"; return 0; fi
+    if [[ ! -x "$bin" ]]; then printf '%s\t%s\0' nobin "$rel"; return 0; fi
     local rc=0
     ( cd "$work" && \
       ASAN_OPTIONS=detect_leaks=0:symbolize=0 \
@@ -400,10 +514,31 @@ replay_one() {
         -timeout_exitcode=70 -error_exitcode=77 \
         -artifact_prefix="$work/" \
         "$ROOT/$SEED_ROOT/$rel" >/dev/null 2>&1 ) || rc=$?
-    if [[ "$rc" -eq 0 ]]; then echo "$rel clean"; else echo "$rel reproduces"; fi
+    if [[ "$rc" -eq 0 ]]; then printf '%s\t%s\0' clean "$rel"
+    else printf '%s\t%s\0' reproduces "$rel"; fi
 }
 export -f replay_one
 export ROOT work BIN_DIR SEED_ROOT
+
+# ── Selection. A filter that selects nothing is not a clean run ──────────
+# `--corpus=blockk` used to replay 0 artifacts and exit 0: a one-character typo
+# turned the gate into a no-op that still printed a pass. Both halves of that
+# are now refused — an unknown corpus name, and an empty selection however it
+# arose.
+if [[ -n "$ONLY_CORPORA" ]]; then
+    IFS=',' read -r -a want_corpora <<< "$ONLY_CORPORA"
+    for c in "${want_corpora[@]}"; do
+        [[ -z "$c" ]] && continue
+        if [[ -z "${BIN_KIND[$c]:-}" ]]; then
+            echo "$GATE: FATAL — --corpus='$c' names no fuzz target." >&2
+            echo "  The Makefile has no \$(BIN_DIR)/fuzz_$c rule, so this run" >&2
+            echo "  would replay nothing and report clean. A typo in a filter" >&2
+            echo "  is not allowed to look like an audited corpus." >&2
+            echo "  Known corpora: $(printf '%s ' "${!BIN_KIND[@]}" | tr ' ' '\n' | sort | tr '\n' ' ')" >&2
+            exit 2
+        fi
+    done
+fi
 
 selected=()
 for rel in "${artifacts[@]}"; do
@@ -413,14 +548,70 @@ for rel in "${artifacts[@]}"; do
     selected+=("$rel")
 done
 
+if (( ${#selected[@]} == 0 )); then
+    echo "$GATE: FATAL — nothing was selected for replay." >&2
+    echo "  $scanned artifact(s) were enumerated${ONLY_CORPORA:+, then --corpus=$ONLY_CORPORA filtered them all out}." >&2
+    echo "  A replay run that replays nothing has proved nothing, so it does" >&2
+    echo "  not get to exit 0. Widen or drop the --corpus filter." >&2
+    exit 2
+fi
+
 echo "[$GATE] replaying ${#selected[@]} artifact(s) at -timeout=${REPLAY_TIMEOUT}s, ${JOBS} at a time"
 
+# ── The replay stage, which is not allowed to fail quietly ───────────────
+# Two things used to make it do exactly that, and both were demonstrated:
+#
+#   * `xargs` without -0 does quote processing, so ONE artifact named with a
+#     single quote aborted xargs mid-stream. Everything after it never ran.
+#     Planting lib/test/fuzz_seeds/script/crash-'x.bin took a run from
+#     "RC=1, 14 live hangs named" to "RC=0, 0 clean, 0 reproducing".
+#   * the whole pipeline sat inside `done < <( ... )`, whose exit status bash
+#     discards. ZCL_FUZZ_REPLAY_JOBS=notanumber -> "xargs: invalid number" ->
+#     zero results -> exit 0. The quote was one instance of the class; ANY
+#     failure of this stage produced the same clean green.
+#
+# So: NUL-delimited both directions, the stage's status captured through a
+# real pipeline (pipefail is on) instead of a process substitution, and the
+# per-artifact accounting asserted below rather than assumed.
+replay_out="$work/replay.records"
+replay_rc=0
+printf '%s\0' "${selected[@]}" \
+    | xargs -0 -P "$JOBS" -I{} bash -c 'replay_one "$@"' _ {} "$REPLAY_TIMEOUT" \
+    > "$replay_out" || replay_rc=$?
+if (( replay_rc != 0 )); then
+    echo "$GATE: FATAL — the replay stage exited $replay_rc." >&2
+    echo "  Not one artifact's result can be trusted, so this run reports" >&2
+    echo "  nothing rather than reporting clean. Check ZCL_FUZZ_REPLAY_JOBS" >&2
+    echo "  (currently '$JOBS'), and check the stderr above this line." >&2
+    exit 2
+fi
+
 declare -A STATE=()
-while read -r rel st; do
+while IFS=$'\t' read -r -d '' st rel; do
     [[ -z "$rel" ]] && continue
     STATE["$rel"]="$st"
-done < <(printf '%s\n' "${selected[@]}" \
-         | xargs -P "$JOBS" -I{} bash -c 'replay_one "$@"' _ {} "$REPLAY_TIMEOUT")
+done < "$replay_out"
+
+# ── THE ACCOUNTING ASSERTION ─────────────────────────────────────────────
+# An artifact that did not produce a verdict is a FAILURE, never a nothing.
+# This is the assertion whose absence let a single quote hide 14 live remote
+# denial-of-service hangs behind a green build. It is independent of the -0
+# fix above on purpose: -0 closes the one hole that was found, this closes
+# every hole of that shape, including the next one nobody has thought of.
+unaccounted=()
+for rel in "${selected[@]}"; do
+    [[ -n "${STATE[$rel]:-}" ]] || unaccounted+=("$rel")
+done
+if (( ${#unaccounted[@]} > 0 )); then
+    echo "$GATE: FATAL — ${#unaccounted[@]} of ${#selected[@]} selected artifact(s) came back with no result." >&2
+    echo "  The replay stage exited 0 but did not account for every artifact" >&2
+    echo "  it was given. A missing result is not a pass: these were never" >&2
+    echo "  run, so nothing is known about them." >&2
+    for rel in "${unaccounted[@]}"; do
+        printf '    %s\n' "$SEED_ROOT/$rel" >&2
+    done
+    exit 2
+fi
 
 # Anti-flake confirmation: re-run ONCE, serially, on a longer clock — but ONLY
 # where a hit would be a NEW accusation. Under -P6 on a busy box a genuinely
@@ -437,7 +628,14 @@ for rel in "${selected[@]}"; do
     case "${LEDGER_VERDICT[$rel]:-}" in
         open|accepted) continue ;;   # expected to reproduce; nothing to confirm
     esac
-    read -r _ st < <(replay_one "$rel" "$CONFIRM_TIMEOUT")
+    st=""
+    IFS=$'\t' read -r -d '' st _ < <(replay_one "$rel" "$CONFIRM_TIMEOUT") || true
+    if [[ -z "$st" ]]; then
+        echo "$GATE: FATAL — the confirmation re-run of $rel produced no result." >&2
+        echo "  Same rule as the first pass: an artifact with no verdict is a" >&2
+        echo "  failure, not a nothing. Refusing to guess which it was." >&2
+        exit 2
+    fi
     STATE["$rel"]="$st"
     if [[ "$st" == "clean" ]]; then
         echo "[$GATE] $rel tripped ${REPLAY_TIMEOUT}s under load but is clean at" \
@@ -487,6 +685,18 @@ for rel in "${selected[@]}"; do
             note "${LEDGER_REASON[$rel]:-}"
             note "Reproduce it:  $repro_cmd" ;;
         esac ;;
+    *)
+        # Unreachable while the accounting assertion above holds — which is
+        # exactly why it is here. This `case` used to have no default arm, so
+        # an artifact with no state fell through it silently and was counted
+        # as neither clean nor reproducing. Belt and braces: if a state token
+        # ever appears that replay_one does not emit, it is a violation with a
+        # name on it, not a gap in the summary.
+        report "$SEED_ROOT/$rel [UNACCOUNTED — replay state '${st:-<empty>}' is not a verdict]"
+        note "Every replayed artifact must come back clean, reproduces or"
+        note "nobin. Anything else means this file's result was lost, and a"
+        note "lost result is an unread finding — the whole incident."
+        ;;
     esac
 done
 

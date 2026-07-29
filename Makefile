@@ -3793,6 +3793,13 @@ mvp: test_zcl zclassic23 zcl-rpc
 # latent crashes without chasing exhaustive coverage. Fuzz CI must
 # never false-green without the toolchain: install clang/libFuzzer or
 # opt out explicitly with `make ci SKIP_FUZZ=1`.
+#
+# -artifact_prefix is not optional. Without it libFuzzer writes a repro unit
+# to CWD, which for these rules is the repository root: a run that found
+# anything dropped a bare `timeout-<sha1>` file into the tree, where
+# check-no-stray-root-files then failed on it and nothing routed the finding
+# anywhere. Both loops point it at the per-target /tmp work dir they already
+# create and delete.
 FUZZ_CC ?= clang
 FUZZ_CFLAGS = -std=c23 -O1 -g -Wall -Wextra \
 	-Wno-deprecated-declarations \
@@ -3935,7 +3942,8 @@ fuzz-ci: check-fuzz-ci-tools $(FUZZ_TARGETS)
 		rm -rf "$$work_dir"; mkdir -p "$$work_dir"; \
 		timeout $(FUZZ_CI_WALL_TIME)s env ASAN_OPTIONS=detect_leaks=0 \
 			$$t -max_total_time=$(FUZZ_CI_TIME) \
-			-timeout=1 -print_final_stats=1 "$$work_dir" "$$seed_dir"; \
+			-timeout=1 -print_final_stats=1 \
+			-artifact_prefix="$$work_dir/" "$$work_dir" "$$seed_dir"; \
 		rm -rf "$$work_dir"; \
 	done
 
@@ -3978,7 +3986,8 @@ fuzz-ci-leaks: check-fuzz-ci-tools $(FUZZ_TARGETS)
 		work_dir="/tmp/zcl_fuzz_$${kind}_leaks"; \
 		rm -rf "$$work_dir"; mkdir -p "$$work_dir"; \
 		timeout $(FUZZ_CI_WALL_TIME)s $$t -max_total_time=$(FUZZ_CI_TIME) \
-			-timeout=1 -print_final_stats=1 "$$work_dir" "$$seed_dir"; \
+			-timeout=1 -print_final_stats=1 \
+			-artifact_prefix="$$work_dir/" "$$work_dir" "$$seed_dir"; \
 		rm -rf "$$work_dir"; \
 	done
 

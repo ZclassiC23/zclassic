@@ -7,11 +7,22 @@
 # already gone red; none of them could fail a build, so the finding was a file.
 #
 # This ledger is what makes that impossible to repeat. Every artifact-prefixed
-# seed in this corpus (timeout- / crash- / leak- / oom- / slow-unit-) MUST have
-# exactly one line here, and tools/lint/check_fuzz_artifact_replay.sh compares
-# every line against what the artifact actually does today. There is no silent
-# pass and no directory-wide exemption: an artifact nobody has triaged fails the
-# build, and so does a line that has stopped being true.
+# seed in this corpus MUST have exactly one line here, and
+# tools/lint/check_fuzz_artifact_replay.sh compares every line against what the
+# artifact actually does today. There is no directory-wide exemption: an
+# artifact nobody has triaged fails the build, and so does a line that has
+# stopped being true.
+#
+# The six prefixes that make a file an artifact are the six libFuzzer writes:
+#
+#   crash-  timeout-  oom-  leak-  slow-unit-  minimized-from-
+#
+# `minimized-from-` is what `-minimize_crash=1` produces, i.e. the file you
+# make immediately after finding a crash. It was missing from the gate's regex
+# until 2026-07-29, so for a while the normal way to shrink a finding also made
+# it invisible. A file named nearly-but-not-quite like one of the six
+# (CRASH-..., crash_..., hang-...) is now refused by name rather than filed as
+# an ordinary seed.
 #
 #   FORMAT   <corpus>/<basename>   <verdict>   <YYYY-MM-DD>   # reason
 #
@@ -54,7 +65,19 @@
 # Harness call site: tools/fuzz/fuzz_script.c script_is_push_only(&script)
 # Owner: lane/w6-fuzz holds lib/script/include/script/script.h. These 14 stay
 # `open` — and this gate stays red — until that fix lands. Confirmed still
-# reproducing 2026-07-29: all 14 trip -timeout=5 at ~6.06 s each.
+# reproducing 2026-07-29 on this branch: all 14 trip -timeout=5 at ~6.06 s each.
+#
+# ⚠ ON MERGE WITH main: the fix has LANDED there (b8e6b35dc, a one-line
+# refusal in script_is_push_only). The moment this branch sits on top of it,
+# all 14 replay CLEAN, and `open` becomes a lie in the other direction — the
+# gate will fail with "ledger says 'open' but it no longer reproduces", which
+# is the anti-rot half working as designed. Whoever does that merge must flip
+# all 14 lines in one edit, to:
+#
+#   <file>  regression-seed  <merge date>  # OP_PUSHDATA4 len=0xfffffffb no longer spins; fixed by b8e6b35dc in script_is_push_only
+#
+# Do not delete them. They are the regression seeds for a remote denial of
+# service, and they cost ~60 ms each to prove the fix is still in place.
 script/timeout-0c0700b56ea64fc814a44f80396d29a5677a32e4.bin  open  2026-07-14  # OP_PUSHDATA4 len=0xfffffffb wraps 5+len in uint32 -> script_is_push_only spins forever
 script/timeout-458ea903cfa9ebf1bb8969d237a2b578f5fb911a.bin  open  2026-07-14  # OP_PUSHDATA4 len=0xfffffffb wraps 5+len in uint32 -> script_is_push_only spins forever
 script/timeout-5fac4625d53fbc7c4a663096021fac551ce631c1.bin  open  2026-07-14  # OP_PUSHDATA4 len=0xfffffffb wraps 5+len in uint32 -> script_is_push_only spins forever
