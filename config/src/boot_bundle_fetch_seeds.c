@@ -11,10 +11,13 @@
 #include "config/bundle_fetch_seeds.h"         /* ZCL_BUNDLE_FETCH_CLEARNET_SEEDS */
 #include "net/file_service.h"                  /* FS_PORT default */
 #include "net/rom_fetch.h"
+#include "util/log_macros.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#define BBFS_SUBSYS "boot_bundle_fetch"
 
 /* Append host[:port] to peers[] (default port FS_PORT). No-op when full or the
  * host does not fit rom_fetch_peer.addr. */
@@ -52,26 +55,56 @@ void bbf_add_peer(struct rom_fetch_peer *peers, size_t *np, size_t cap,
     (*np)++;
 }
 
-/* Append host[:port] with the named port STRIPPED, so a `-connect=HOST:8033`
- * value is contacted on the file service's own FS_PORT rather than the P2P port
- * it names. Same split rule as bbf_add_peer (LAST ':' + pure decimal port), so
- * a bare IPv6 literal keeps its final group and the bracketed form splits. */
-static void bbf_add_peer_host_only(struct rom_fetch_peer *peers, size_t *np,
-                                   size_t cap, const char *host_port)
+/* Does this value NAME a port? Same split rule as bbf_add_peer (LAST ':' + a
+ * pure decimal 1..65535 suffix), so the two agree on what a port is. */
+static bool bbf_names_a_port(const char *host_port)
 {
     if (!host_port || !host_port[0])
-        return;
-    char host[128];
-    snprintf(host, sizeof(host), "%s", host_port);
-    char *colon = strrchr(host, ':');
-    if (colon && colon[1]) {
-        char *end = NULL;
-        long p = strtol(colon + 1, &end, 10);
-        if (end && *end == '\0' && p >= 1 && p <= 65535)
-            *colon = '\0';
+        return false;
+    const char *colon = strrchr(host_port, ':');
+    if (!colon || !colon[1])
+        return false;
+    char *end = NULL;
+    long p = strtol(colon + 1, &end, 10);
+    return end && *end == '\0' && p >= 1 && p <= 65535;
+}
+
+/* Derive a file-service seed from ONE `-connect=` value.
+ *
+ * `-connect` means EXACTLY the address the operator named. This used to accept
+ * the value with its port STRIPPED and refilled with FS_PORT, so
+ * `-connect=127.0.0.1:39099` — a deliberately DEAD sink, chosen so a fixture is
+ * sealed — was contacted as 127.0.0.1:18034, a different and very much LIVE
+ * address. On 2026-07-28 that pulled ~1 GB of real mainnet chain state off the
+ * operator's live node into a sealed regtest fixture. A dead sink whose
+ * deadness lives in the port number is not a dead sink if the port is the one
+ * field we discard.
+ *
+ * So the rule is: a value that names NO port still seeds the file service at
+ * FS_PORT (the operator named a host, not a port — nothing is overridden, and
+ * this is the case the seam was built for). A value that NAMES a port is
+ * REFUSED, loudly and by name; an operator who wants a file-service seed says
+ * `-fileservice=HOST[:PORT]`, which is honoured verbatim by bbf_add_peer.
+ * Refusing is the safe direction: the worst case is an empty seed set, which
+ * nss_classify already reports as `seeds_empty`. Returns false when refused. */
+static bool bbf_add_connect_seed(struct rom_fetch_peer *peers, size_t *np,
+                                 size_t cap, const char *host_port)
+{
+    if (!host_port || !host_port[0])
+        return false;
+    if (bbf_names_a_port(host_port)) {
+        LOG_WARN(BBFS_SUBSYS,
+                 "-connect=%s names a PORT, so it is NOT usable as a "
+                 "file-service seed: contacting that host on the file "
+                 "service's own port would be a different address than the one "
+                 "you named. Refusing to substitute a port. Pass "
+                 "-fileservice=HOST[:PORT] to name a file-service seed "
+                 "explicitly.",
+                 host_port);
+        return false;
     }
-    if (host[0])
-        bbf_add_peer(peers, np, cap, host);
+    bbf_add_peer(peers, np, cap, host_port);
+    return true;
 }
 
 size_t bbf_assemble_seeds(const struct app_context *ctx,
@@ -90,7 +123,7 @@ size_t bbf_assemble_seeds(const struct app_context *ctx,
 
     if (ctx && ctx->connect_only) {
         for (int i = 0; i < ctx->n_connect_peers; i++)
-            bbf_add_peer_host_only(peers, &np, cap, ctx->connect_peers[i]);
+            (void)bbf_add_connect_seed(peers, &np, cap, ctx->connect_peers[i]);
     } else {
         for (int i = 0; ZCL_BUNDLE_FETCH_CLEARNET_SEEDS[i]; i++)
             bbf_add_peer(peers, &np, cap, ZCL_BUNDLE_FETCH_CLEARNET_SEEDS[i]);

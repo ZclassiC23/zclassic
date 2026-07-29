@@ -22,6 +22,13 @@
 # ALWAYS SIGCONT'd on exit (EXIT/INT/TERM trap) — this harness must never
 # leave a peer parked STOPped, even on a hard failure or a Ctrl-C.
 #
+# SAFETY: the upstream pid arrives as a bare number from an env var or a pid
+# file, and this harness FREEZES it. A refuse-guard in the preflight (search
+# for "REFUSE-GUARD") reads the target's own /proc argv and refuses, loudly and
+# non-zero, unless it names a -datadir under /tmp. A process with no -datadir
+# in argv is running on the DEFAULT datadir — that is the operator's live node,
+# and it is a refusal, not a pass.
+#
 # Inputs:
 #   --bin=PATH                | ZCL_ND_NODE_BIN     (default $REPO_ROOT/build/bin/zclassic23;
 #                                the CLI binary used ONLY to issue read-only
@@ -270,6 +277,30 @@ case "$UPSTREAM_PID" in
     ''|*[!0-9]*) skip "no valid upstream PID (--upstream-pid-file= / ZCL_ND_UPSTREAM_PID)" ;;
 esac
 kill -0 "$UPSTREAM_PID" 2>/dev/null || skip "upstream PID $UPSTREAM_PID is not a live process"
+
+# ── REFUSE-GUARD: never signal anything that is not a /tmp fixture ─────────
+# This script SIGSTOPs the pid it is handed, and it is handed a bare number
+# from an env var or a pid file. A stale pid file, a copy-pasted command or a
+# reused pid is enough to freeze whatever owns that number instead — and on an
+# operator's workstation the likeliest victim is their LIVE node. So a pid is
+# only signallable here if its OWN argv names a -datadir under /tmp.
+#
+# No -datadir in argv is a REFUSAL, not a pass: that is precisely the process
+# running on the default datadir (~/.zclassic-c23), i.e. the live node. Same
+# rule as every other fixture in tools/scripts — /tmp datadir or nothing.
+upstream_datadir_of() {  # $1=pid -> echoes its -datadir= value ('' if none)
+    tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null | sed -n 's/^-datadir=//p' | head -n 1
+}
+UPSTREAM_DATADIR="$(upstream_datadir_of "$UPSTREAM_PID")"
+case "$UPSTREAM_DATADIR" in
+    /tmp/*/*|/tmp/*)
+        : ;;
+    '')
+        die "REFUSING to signal pid $UPSTREAM_PID: its argv names no -datadir, so it is running on the DEFAULT datadir. This drill freezes the process it is given; it only ever does that to a fixture node under /tmp." ;;
+    *)
+        die "REFUSING to signal pid $UPSTREAM_PID: its datadir is '$UPSTREAM_DATADIR', which is not under /tmp. This drill freezes the process it is given; it only ever does that to a fixture node under /tmp." ;;
+esac
+echo "netdisrupt-stopwatch: upstream pid $UPSTREAM_PID cleared the /tmp-fixture refuse-guard (datadir=$UPSTREAM_DATADIR)"
 
 rpc() { "$NODE_BIN" -rpcport="$CLIENT_RPCPORT" -datadir="$CLIENT_DATADIR" "$@" 2>/dev/null; }
 

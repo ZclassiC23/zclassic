@@ -196,16 +196,21 @@ iso_init() {
 # the hardcoded live FS port 18034. setsid puts the node in its own
 # group so the cleanup trap can kill the whole group atomically.
 #
-# -nofilesync is EQUALLY LOAD-BEARING and is NOT implied by -connect.
-# -connect isolates the P2P wire only. The instant-on bundle fetch builds
-# its OWN file-service peer set by stripping the port off -connect and
-# re-adding the compiled-in default FS port (bbf_add_peer_host_only,
-# config/src/boot_bundle_fetch_seeds.c), so -connect=127.0.0.1:39999
-# resolves to 127.0.0.1:18034 — the LIVE node's file service on a host
-# that runs one. Measured: a spawn without this flag pulled ~1.1 GB of
-# mainnet state into a "regtest" datadir and began re-serving it to the
-# swarm. A regtest harness never wants a mainnet bundle, so this is
-# unconditional rather than a per-caller opt-in.
+# -nofilesync is BELT-AND-BRACES, kept on purpose. -connect isolates the
+# P2P wire only; it never implied anything about the instant-on bundle
+# fetch, which builds its OWN file-service peer set. That set used to be
+# built by STRIPPING the port off -connect and re-adding the compiled-in
+# default FS port, so -connect=127.0.0.1:39999 became 127.0.0.1:18034 —
+# the LIVE node's file service on a host that runs one. Measured twice:
+# ~1.1 GB and ~1 GB of mainnet state pulled into a "regtest" datadir,
+# which then began re-serving it to the swarm.
+#
+# Both node-side causes are now fixed and regression-tested (see
+# lib/test/src/test_boot_bundle_fetch.c case_network_gate /
+# case_seed_set): boot_bundle_fetch_should_run is mainnet-only, and
+# bbf_add_connect_seed refuses to substitute a port the operator named.
+# The flag stays anyway — a harness must not depend on a node-side gate
+# staying correct, and this is the layer that fails safe.
 iso_spawn_node() {
     local extra="${1:-}"
     [ -n "$ISO_DD" ] || iso_die "iso_spawn_node called before iso_init"

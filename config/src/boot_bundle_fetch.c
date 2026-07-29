@@ -40,11 +40,55 @@
 
 /* ── Gate ───────────────────────────────────────────────────────────────── */
 
+/* MAINNET-ONLY. The artifact this weld downloads is bound at install to the
+ * compiled CHECKPOINT_ROM, and that checkpoint is a MAINNET one (see
+ * boot_bundle_pick_manifest's fallback to get_sha3_utxo_checkpoint()->height).
+ * A regtest or testnet node therefore has nothing to gain from the fetch and
+ * everything to leak by attempting it: on 2026-07-28 a `-regtest` fixture that
+ * named a deliberately dead `-connect` sink still ran this weld, reached the
+ * operator's LIVE node on its file-service port, and pulled ~1 GB of real
+ * mainnet chain state into what was supposed to be an empty regtest datadir.
+ * The gate is "is mainnet", not "is not regtest": a testnet node must not pull
+ * a mainnet bundle either.
+ *
+ * ctx is THE authority, deliberately, and chain_params_get() is not consulted:
+ * boot_step_select_chain_and_datadir (config/src/boot.c) derives the selected
+ * chain from exactly these two ctx fields, so ctx is the same answer one step
+ * earlier — and chain_params_get() asserts when no chain has been selected yet,
+ * which a unit-test caller has every right not to have done. A NULL ctx means
+ * "no argv context", which is mainnet, matching every other gate in this
+ * function. */
+static bool bbf_network_is_mainnet(const struct app_context *ctx)
+{
+    return !(ctx && (ctx->regtest || ctx->testnet));
+}
+
+/* Name the skip once per process. Never silent: a fetch that does not happen
+ * has to say so, or the next fixture leak reads as "the gate worked". */
+static void bbf_log_network_skip(const char *what,
+                                 const struct app_context *ctx)
+{
+    static bool logged = false;
+    if (logged)
+        return;
+    logged = true;
+    LOG_INFO(BBF_SUBSYS,
+             "%s SKIPPED: network=%s is not mainnet, and the checkpoint bundle "
+             "(plus the CHECKPOINT_ROM authority that installs it) is "
+             "mainnet-only. No file-service peer was contacted.",
+             what, (ctx && ctx->regtest) ? "regtest" : "testnet");
+}
+
 bool boot_bundle_fetch_should_run(const char *datadir,
                                   const struct app_context *ctx)
 {
     if (!datadir || !datadir[0])
         return false;
+    /* Network first: a non-mainnet node must not reach out at all. */
+    if (!bbf_network_is_mainnet(ctx)) {
+        bbf_log_network_skip("instant-on checkpoint-bundle acquisition", ctx);
+        return false;
+    }
     /* -nofilesync already means "do not reach out to file-service downloads". */
     if (ctx && ctx->no_file_sync)
         return false;
@@ -717,6 +761,12 @@ static bool bbf_header_seed_needed(const char *datadir,
 {
     if (!datadir || !datadir[0])
         return false;
+    /* Same mainnet-only rule as the bundle gate: the header-chain seed is the
+     * mainnet header chain, and fetching it is the same outbound dial. */
+    if (!bbf_network_is_mainnet(ctx)) {
+        bbf_log_network_skip("header-chain seed acquisition", ctx);
+        return false;
+    }
     if (ctx && ctx->no_file_sync)
         return false;
     if (getenv("ZCL_NO_BUNDLE_FETCH"))

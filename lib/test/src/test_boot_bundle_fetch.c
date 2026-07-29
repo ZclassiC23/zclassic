@@ -138,6 +138,64 @@ static int case_gate(void)
     return failures;
 }
 
+/* A REGTEST (or testnet) node must never attempt to acquire mainnet bundle
+ * state. The gate did not exist until 2026-07-29: `-regtest` isolated the P2P
+ * wire and nothing else, so a sealed fixture ran the instant-on weld, reached
+ * the operator's LIVE node on its file-service port and pulled ~1 GB of real
+ * mainnet chain into an empty regtest datadir — twice. The artifact is bound at
+ * install to the compiled CHECKPOINT_ROM, which is a MAINNET checkpoint, so a
+ * non-mainnet node has nothing to gain from the fetch and a live node to leak
+ * into by attempting it. */
+static int case_network_gate(void)
+{
+    int failures = 0;
+    TEST("boot_bundle_fetch: non-mainnet never attempts bundle acquisition") {
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "bbf_netgate", "ok");
+
+        struct app_context ctx;
+
+        /* Baseline: a fresh mainnet datadir IS eligible, so the assertions
+         * below are proving the network gate and not an unrelated skip. */
+        memset(&ctx, 0, sizeof(ctx));
+        ASSERT(boot_bundle_fetch_should_run(dir, &ctx));
+
+        /* -regtest → never. */
+        ctx.regtest = true;
+        ASSERT(!boot_bundle_fetch_should_run(dir, &ctx));
+
+        /* -testnet → never either. The gate is "is mainnet", not
+         * "is not regtest": a testnet node must not pull a mainnet bundle. */
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.testnet = true;
+        ASSERT(!boot_bundle_fetch_should_run(dir, &ctx));
+
+        /* Both flags together (nonsense argv) still refuses. */
+        ctx.regtest = true;
+        ASSERT(!boot_bundle_fetch_should_run(dir, &ctx));
+
+        /* Back to mainnet → eligible again, so the gate is the only thing that
+         * changed hands here. */
+        memset(&ctx, 0, sizeof(ctx));
+        ASSERT(boot_bundle_fetch_should_run(dir, &ctx));
+
+        /* End to end: the whole weld is a no-op on regtest even when a
+         * -connect peer is present. The peer names a port, so fix (b) already
+         * assembles ZERO seeds — a regression in EITHER gate alone still
+         * cannot produce an outbound dial from this assertion. */
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.regtest = true;
+        ctx.connect_only = true;
+        ctx.connect_peers[0] = "127.0.0.1:39099";
+        ctx.n_connect_peers = 1;
+        ASSERT(boot_bundle_fetch_seed_count(&ctx) == 0);
+        ASSERT(!boot_bundle_fetch_maybe(dir, &ctx));
+
+        test_rm_rf_recursive(dir);
+    } _test_next:;
+    return failures;
+}
+
 /* ── (b) Manifest pick from a /directory.json body ──────────────────────── */
 
 static int case_pick(void)
@@ -794,23 +852,42 @@ static int case_seed_set(void)
         size_t open_seeds = boot_bundle_fetch_seed_count(&ctx);
         ASSERT(open_seeds >= 2);
 
-        /* (2) connect-only with a -connect host and NO -fileservice: exactly
-         * that host, at the file service's own FS_PORT — the named P2P port is
-         * dropped. Compiled seeds stay OUT (containment is preserved). */
+        /* (2) connect-only with a -connect host that NAMES A PORT and no
+         * -fileservice: REFUSED, zero seeds. This used to strip the port and
+         * refill it with FS_PORT, which is how `-connect=127.0.0.1:39099` (a
+         * deliberately dead sink that seals a fixture) became a dial to
+         * 127.0.0.1:18034 — the operator's LIVE node — and pulled ~1 GB of
+         * mainnet chain state into a regtest datadir. -connect means the
+         * address it names; a port is never substituted. */
         memset(&ctx, 0, sizeof(ctx));
         ctx.connect_only = true;
         ctx.connect_peers[0] = "203.0.113.7:8033";
         ctx.n_connect_peers = 1;
-        ASSERT(boot_bundle_fetch_seed_count(&ctx) == 1);
+        ASSERT(boot_bundle_fetch_seed_count(&ctx) == 0);
 
-        /* Two distinct -connect hosts naming the SAME P2P port still collapse
-         * to two file-service peers (de-dup is on (addr, port)). */
+        /* The dead-sink shape every isolated fixture on this box uses. */
+        ctx.connect_peers[0] = "127.0.0.1:39099";
+        ASSERT(boot_bundle_fetch_seed_count(&ctx) == 0);
+
+        /* More port-naming hosts are still zero — refusal is per value. */
         ctx.connect_peers[1] = "203.0.113.8:8033";
         ctx.n_connect_peers = 2;
-        ASSERT(boot_bundle_fetch_seed_count(&ctx) == 2);
+        ASSERT(boot_bundle_fetch_seed_count(&ctx) == 0);
 
-        /* The SAME host twice de-dups to one. */
-        ctx.connect_peers[1] = "203.0.113.7:18033";
+        /* (2b) A -connect value that names NO port is unchanged: the operator
+         * named a host, so nothing is being overridden, and it seeds the file
+         * service at FS_PORT. This is the case the seam was built for. */
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.connect_only = true;
+        ctx.connect_peers[0] = "203.0.113.7";
+        ctx.n_connect_peers = 1;
+        ASSERT(boot_bundle_fetch_seed_count(&ctx) == 1);
+
+        /* Two distinct bare hosts → two seeds; the same host twice de-dups. */
+        ctx.connect_peers[1] = "203.0.113.8";
+        ctx.n_connect_peers = 2;
+        ASSERT(boot_bundle_fetch_seed_count(&ctx) == 2);
+        ctx.connect_peers[1] = "203.0.113.7";
         ASSERT(boot_bundle_fetch_seed_count(&ctx) == 1);
 
         /* (3) connect-only with NO usable host: still zero — the honest
@@ -820,14 +897,19 @@ static int case_seed_set(void)
         ctx.connect_only = true;
         ASSERT(boot_bundle_fetch_seed_count(&ctx) == 0);
 
-        /* (4) An explicit -fileservice peer is additive to the -connect hosts
-         * and takes slot 0. */
+        /* (4) An explicit -fileservice peer is honoured VERBATIM, port and all,
+         * and is additive to any usable -connect host. It takes slot 0. This is
+         * the supported way to name a file-service seed on a specific port. */
         memset(&ctx, 0, sizeof(ctx));
         ctx.connect_only = true;
-        ctx.file_service_peer = "198.51.100.9";
-        ctx.connect_peers[0] = "203.0.113.7:8033";
+        ctx.file_service_peer = "198.51.100.9:19034";
+        ctx.connect_peers[0] = "203.0.113.7";
         ctx.n_connect_peers = 1;
         ASSERT(boot_bundle_fetch_seed_count(&ctx) == 2);
+
+        /* ...and a port-naming -connect alongside it adds nothing. */
+        ctx.connect_peers[0] = "203.0.113.7:8033";
+        ASSERT(boot_bundle_fetch_seed_count(&ctx) == 1);
 
         /* (5) NULL ctx must not crash and must not silently disable the weld. */
         ASSERT(boot_bundle_fetch_seed_count(NULL) == open_seeds);
@@ -841,6 +923,7 @@ int test_boot_bundle_fetch(void)
     int failures = 0;
     failures += case_seed_set();
     failures += case_gate();
+    failures += case_network_gate();
     failures += case_pick();
     failures += case_pick_kinds();
     failures += case_e2e();

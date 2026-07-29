@@ -31,6 +31,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 /* Caller-owned backing store for the (dormant-by-default) zclassicd reference.
  * Static lifetime so the vtable's `self` pointer outlives the service. */
@@ -77,6 +78,22 @@ static bool boot_utxo_parity_start(void *ctx)
 
     if (boot_utxo_parity_opt_out()) {
         printf("[utxo-parity] dormant (ZCL_PARITY_ORACLE=0 opt-out)\n");
+        return true;
+    }
+
+    /* MAINNET-ONLY, on the one shared predicate (boot_nonmain_network_name,
+     * config/boot_internal.h). The co-located reference daemon this service
+     * resolves on the loopback RPC port above is a MAINNET one: comparing a
+     * regtest or testnet node against it is a guaranteed false compare — and,
+     * worse, an outbound dial into the operator's live daemon from a fixture
+     * that was supposed to be sealed. A `-regtest` fixture was observed polling
+     * it every 60 s on 2026-07-28, three log lines after the legacy mirror
+     * correctly skipped. The cheap local finalization observer above stays
+     * installed on every network; only the reference dial is gated. */
+    const char *net = boot_nonmain_network_name(svc);
+    if (net) {
+        printf("[utxo-parity] dormant (network=%s — the zclassicd oracle is a "
+               "mainnet daemon; a non-mainnet node must not dial it)\n", net);
         return true;
     }
 
