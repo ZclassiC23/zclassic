@@ -421,7 +421,19 @@ void syncsvc_note_valid_block(struct sync_block_acceptance *result,
                               int new_tip_height,
                               int best_header_height,
                               uint32_t new_tip_time,
-                              int max_peer_height);
+                              int max_peer_height,
+                              /* Three-state body-history verdict
+                               * (storage/body_history.h). This is the at-tip
+                               * edge msg_blocks.c fires on every accepted
+                               * block, so it carries the same gate as
+                               * syncsvc_plan_periodic_tip_state: only
+                               * BODY_HISTORY_COMPLETE permits the AT_TIP
+                               * transition, and UNKNOWN — the zero value —
+                               * refuses it just as hard as a known hole.
+                               * reached_peer_tip and the peer-state update
+                               * are unaffected; only the completeness claim
+                               * is gated. */
+                              enum body_history_status body_history);
 void syncsvc_plan_periodic_tip_state(
     struct sync_tip_state_evaluation *result,
     enum sync_state sync_state,

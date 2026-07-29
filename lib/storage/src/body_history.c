@@ -172,17 +172,32 @@ bool body_history_census_plan(struct body_history_census *c,
     if (window_lo < 0 || window_lo > window_hi || budget <= 0)
         return false;
 
-    /* Re-anchor when the window moved (the tip advanced) or on first use.
-     * A grown window restarts the sweep from the new top; the measured map
-     * is retained, so re-probing already-established heights is cheap and
-     * is how a pruned or lost body gets noticed. */
-    if (!c->cursor_valid || c->window_hi != window_hi ||
-        c->window_lo != window_lo) {
-        c->window_lo = window_lo;
-        c->window_hi = window_hi;
+    /* Re-anchor ONLY when there is no cursor to keep, or when the one we
+     * have no longer lies inside the window (a reorg that shortened the
+     * chain, or a floor that moved up past it).
+     *
+     * A window whose TOP simply grew must not restart the walk. The tip
+     * advances every ~75 s; a full sweep of a 3.2M-height chain needs ~65
+     * minutes. Re-anchoring on tip advance therefore pins the cursor to the
+     * top band forever: measured at 4096 heights per 5 s pass, the census
+     * gets ~61,700 heights below the tip and then jumps back to the top,
+     * having completed zero sweeps, so the history this module exists to
+     * measure is never looked at. Heights added at the top while the sweep
+     * is descending are picked up when it wraps, and stay counted as
+     * unmeasured until then — which is the fail-closed answer, not a
+     * reason to abandon the walk.
+     *
+     * Keeping a cursor that is merely inside the window is also what makes
+     * body_history_load()'s restored cursor mean anything: window_lo /
+     * window_hi are not persisted, so a "restart resumes where it stopped"
+     * that compared them would throw the restored cursor away on the first
+     * pass after every boot. */
+    if (!c->cursor_valid) {
         c->cursor = window_hi;
         c->cursor_valid = true;
     }
+    c->window_lo = window_lo;
+    c->window_hi = window_hi;
     if (c->cursor < window_lo || c->cursor > window_hi)
         c->cursor = window_hi;
 
@@ -292,11 +307,20 @@ bool body_history_census_fold(struct body_history_census *c,
         case BODY_HISTORY_PROBE_MISSING:
             /* Measured — we looked and it was definitively absent. The body
              * is NOT inserted into `held`; if a stale entry claims it is
-             * held, remove it so the two maps stop disagreeing. */
-            if (!body_coverage_insert(measured, rlo, rhi) ||
-                !body_coverage_remove(held, rlo, rhi))
+             * held, remove it so the two maps stop disagreeing.
+             *
+             * REMOVE FIRST, then insert. Either call can fail on allocation
+             * (a remove splits a range, an insert grows the array) and this
+             * function returns without unwinding. Doing it the other way
+             * round leaves a half-applied fold in which the height is in
+             * BOTH maps, i.e. "probed and held" — the census would report a
+             * body it had just proved absent as present. This order fails to
+             * "removed from held, not yet in measured", which reads as
+             * unmeasured, which holds the verdict at UNKNOWN. */
+            if (!body_coverage_remove(held, rlo, rhi) ||
+                !body_coverage_insert(measured, rlo, rhi))
                 LOG_FAIL("body_history",
-                         "fold: insert missing [%lld..%lld] failed",
+                         "fold: record missing [%lld..%lld] failed",
                          (long long)rlo, (long long)rhi);
             res.missing += run;
             res.examined += run;

@@ -146,7 +146,8 @@ void syncsvc_note_valid_block(struct sync_block_acceptance *result,
                               int new_tip_height,
                               int best_header_height,
                               uint32_t new_tip_time,
-                              int max_peer_height)
+                              int max_peer_height,
+                              enum body_history_status body_history)
 {
     struct sync_block_acceptance empty = {0};
     bool headers_caught_up = false;
@@ -181,7 +182,28 @@ void syncsvc_note_valid_block(struct sync_block_acceptance *result,
     headers_caught_up =
         (best_header_height >= 0 && best_header_height <= new_tip_height + 1);
     result->reached_peer_tip = true;
-    if ((headers_caught_up || tip_is_recent) &&
+
+    /* This is the at-tip edge that actually fires on a live node:
+     * msg_blocks.c turns it into sync_set_state(SYNC_AT_TIP, "caught up to
+     * peer") on every accepted block, and sync_get_state() is what
+     * `zclassic23 status` prints as sync=at_tip. Gating only the timer-driven
+     * evaluator in syncsvc_plan_periodic_tip_state would leave the claim
+     * exactly as sayable as it was before this whole census existed.
+     *
+     * Same rule as there, and for the same reason: equality against
+     * COMPLETE, so BODY_HISTORY_UNKNOWN — "I could not establish my own
+     * coverage" — is refused exactly as hard as a known hole, and a status
+     * this code has never heard of is refused too. Reaching the peer's
+     * height while missing the bodies below your own tip is not being at
+     * tip.
+     *
+     * Everything that is NOT a completeness claim still happens: peer state
+     * still advances to PEER_ACTIVE below, and the node keeps syncing,
+     * relaying and serving. What it loses is the right to say it is done. */
+    bool history_proven = (body_history == BODY_HISTORY_COMPLETE);
+
+    if (history_proven &&
+        (headers_caught_up || tip_is_recent) &&
         (sync_state == SYNC_BLOCKS_DOWNLOAD ||
          sync_state == SYNC_CONNECTING_BLOCKS ||
          sync_state == SYNC_REORG)) {

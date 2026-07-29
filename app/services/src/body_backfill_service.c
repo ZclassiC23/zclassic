@@ -172,8 +172,17 @@ int body_backfill_pass(struct main_state *ms, struct download_manager *dm,
     body_history_global_unlock();
 
     /* Publish outside the bracket (body_history_publish takes the lock).
-     * A fold or evaluate that failed publishes UNKNOWN, never silence. */
-    body_history_publish(evaluated ? &verdict : NULL);
+     * A fold OR an evaluate that failed publishes UNKNOWN, never silence and
+     * never the verdict.
+     *
+     * `folded` has to be in this condition, not just `evaluated`. A fold that
+     * failed part-way (an allocation failure inside a range insert or split)
+     * leaves the two maps holding a partially applied pass, and evaluating
+     * those maps still succeeds — it would publish a confident verdict
+     * derived from state the node knows is half-written. "The measurement
+     * aborted" is a could-not-determine, exactly like a probe that could not
+     * read the index. */
+    body_history_publish((folded && evaluated) ? &verdict : NULL);
 
     int enqueued = 0;
     if (folded && res.missing > 0 && !tip_work_pending) {

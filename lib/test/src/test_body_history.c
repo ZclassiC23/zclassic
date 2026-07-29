@@ -31,6 +31,8 @@
 #include "storage/progress_store.h"
 #include "sync/sync_planner.h"
 #include "net/download.h"
+#include "net/net.h"
+#include "platform/time_compat.h"
 #include "json/json.h"
 #include "core/uint256.h"
 
@@ -730,9 +732,181 @@ static int test_bh_dump_state_json_separates_the_three(void)
     return failures;
 }
 
+/* ── 6. Adversarial: a MOVING tip must not restart the sweep ────── */
+
+/* The census only ever reports a hole it has actually walked to. On a live
+ * chain the tip advances while the sweep is running, so re-anchoring the
+ * cursor on every tip advance pins the walk to the top band forever and the
+ * node never looks at — let alone reports or refetches — the history it is
+ * actually missing. */
+static int test_bh_census_descends_under_a_moving_tip(void)
+{
+    int failures = 0;
+    TEST("a tip that advances mid-sweep must not restart the census") {
+        struct body_history_census c;
+        body_history_census_init(&c);
+
+        /* The owner's chain and the real cadence: one census pass per
+         * gap-fill tick (5 s), one new block roughly every 75 s, so the tip
+         * advances about once every 15 passes. */
+        int64_t tip = 3196956;
+        int64_t lo = 0, hi = 0;
+        int64_t lowest = tip;
+        for (int pass = 0; pass < 4000; pass++) {
+            if (pass > 0 && pass % 15 == 0)
+                tip++;
+            ASSERT(body_history_census_plan(&c, 0, tip,
+                                            BODY_HISTORY_CENSUS_BUDGET,
+                                            &lo, &hi));
+            body_history_census_advance(&c, lo, hi);
+            if (lo < lowest)
+                lowest = lo;
+        }
+
+        /* 4000 passes x 4096 heights is 16.4M height-probes over a
+         * 3.2M-height chain — five sweeps' worth of budget. Anything that
+         * cannot finish one sweep in that has not been slowed down, it has
+         * been stopped. */
+
+        ASSERT(lowest == 0);
+        ASSERT(c.sweeps_completed >= 1);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* ── 7. Adversarial: the OTHER at-tip edge ──────────────────────── */
+
+/* syncsvc_plan_periodic_tip_state is the timer-driven at-tip edge.
+ * syncsvc_note_valid_block is the one that actually fires on a live node:
+ * msg_blocks.c calls sync_set_state(SYNC_AT_TIP, "caught up to peer") from
+ * it on every accepted block. Gating one and not the other leaves the claim
+ * exactly as sayable as it was before. */
+static int test_bh_block_acceptance_refuses_unproven_history(void)
+{
+    int failures = 0;
+    TEST("the block-acceptance at-tip edge also refuses unproven history") {
+        struct sync_block_acceptance result;
+        struct p2p_node node;
+        memset(&node, 0, sizeof(node));
+        node.starting_height = 100;
+        node.state = PEER_SYNCING_BLOCKS;
+
+        /* Proven coverage: the edge is allowed. */
+        syncsvc_note_valid_block(&result, &node, SYNC_BLOCKS_DOWNLOAD,
+                                 100, 100, 0, 0, BODY_HISTORY_COMPLETE);
+        ASSERT(result.reached_peer_tip);
+        ASSERT(result.should_set_sync_state);
+        ASSERT(result.next_sync_state == SYNC_AT_TIP);
+
+        /* A known hole below the tip: refused. */
+        syncsvc_note_valid_block(&result, &node, SYNC_BLOCKS_DOWNLOAD,
+                                 100, 100, 0, 0, BODY_HISTORY_INCOMPLETE);
+        ASSERT(result.reached_peer_tip);
+        ASSERT(!result.should_set_sync_state);
+
+        /* Could not determine: refused exactly as hard. */
+        syncsvc_note_valid_block(&result, &node, SYNC_BLOCKS_DOWNLOAD,
+                                 100, 100, 0, 0, BODY_HISTORY_UNKNOWN);
+        ASSERT(result.reached_peer_tip);
+        ASSERT(!result.should_set_sync_state);
+
+        /* The zero value is the fail-closed default: a caller that forgot
+         * to pass the argument gets a refusal, not a free pass. */
+        enum body_history_status defaulted = 0;
+        syncsvc_note_valid_block(&result, &node, SYNC_BLOCKS_DOWNLOAD,
+                                 100, 100, 0, 0, defaulted);
+        ASSERT(!result.should_set_sync_state);
+
+        /* Peer bookkeeping is NOT a completeness claim and must still
+         * happen, so an unproven node keeps syncing and serving normally.
+         * It loses the right to say it is done, nothing else. */
+        ASSERT(result.should_update_peer_state);
+        ASSERT(result.next_peer_state == PEER_ACTIVE);
+
+        /* The recent-tip bypass (b) is a HEIGHT heuristic — it must not
+         * become a second way around the coverage gate. */
+        uint32_t recent = (uint32_t)(platform_time_wall_time_t() - 60);
+        syncsvc_note_valid_block(&result, &node, SYNC_BLOCKS_DOWNLOAD,
+                                 100, 100000, recent, 0,
+                                 BODY_HISTORY_UNKNOWN);
+        ASSERT(!result.should_set_sync_state);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* ── 8. Adversarial: the restored cursor must SURVIVE the next pass ── */
+
+/* body_history_load() puts the persisted cursor back, and
+ * test_bh_persistence_never_restores_a_verdict checks it is there. That is
+ * not the claim that matters. window_lo / window_hi are NOT persisted, so a
+ * plan() that re-anchors on a window-bounds mismatch throws the restored
+ * cursor away on the very first pass after boot and the sweep silently
+ * restarts from the tip every time the node is restarted. The resume has to
+ * survive being USED. */
+static int test_bh_restored_cursor_survives_the_first_pass(void)
+{
+    int failures = 0;
+    TEST("a restored cursor still points where it did after one pass") {
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "body_history_resume", "main");
+        ASSERT(progress_store_open(dir));
+        sqlite3 *db = progress_store_db();
+        ASSERT(db != NULL);
+        ASSERT(progress_meta_table_ensure(db));
+
+        body_history_reset();
+        body_history_global_lock();
+        body_history_global_census()->cursor = 1000000;
+        body_history_global_census()->cursor_valid = true;
+        body_history_global_unlock();
+        ASSERT(body_history_save(db));
+
+        /* Restart: fresh singleton, then load. */
+        body_history_reset();
+        ASSERT(body_history_load(db));
+
+        /* The first census pass after boot. The window bounds are whatever
+         * the live tip is — they were never persisted. */
+        int64_t lo = 0, hi = 0;
+        body_history_global_lock();
+        bool planned = body_history_census_plan(body_history_global_census(),
+                                                0, 3196956,
+                                                BODY_HISTORY_CENSUS_BUDGET,
+                                                &lo, &hi);
+        body_history_global_unlock();
+        ASSERT(planned);
+
+        /* It must carry on from 1,000,000 — not leap back to the tip. */
+        ASSERT(hi == 1000000);
+        ASSERT(lo == 1000000 - BODY_HISTORY_CENSUS_BUDGET + 1);
+
+        /* A cursor that no longer lies inside the window is still refused
+         * and re-anchored: fail-closed on a reorg that shortened the chain. */
+        body_history_global_lock();
+        body_history_global_census()->cursor = 9000000;
+        planned = body_history_census_plan(body_history_global_census(),
+                                           0, 3196956,
+                                           BODY_HISTORY_CENSUS_BUDGET,
+                                           &lo, &hi);
+        body_history_global_unlock();
+        ASSERT(planned);
+        ASSERT(hi == 3196956);
+
+        body_history_reset();
+        progress_store_close();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_body_history(void)
 {
     int failures = 0;
+    failures += test_bh_census_descends_under_a_moving_tip();
+    failures += test_bh_restored_cursor_survives_the_first_pass();
+    failures += test_bh_block_acceptance_refuses_unproven_history();
     failures += test_bh_unreadable_index_is_not_no_hole();
     failures += test_bh_null_probe_leaves_everything_unmeasured();
     failures += test_bh_partial_read_does_not_certify();

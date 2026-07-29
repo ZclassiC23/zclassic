@@ -693,12 +693,12 @@ static int test_integrity_valid_block_at_tip(void)
 
         /* Not yet at peer tip */
         syncsvc_note_valid_block(&result, &node, SYNC_BLOCKS_DOWNLOAD,
-                                 999, 1500, 0, 0);
+                                 999, 1500, 0, 0, BODY_HISTORY_COMPLETE);
         ASSERT(!result.reached_peer_tip);
 
         /* At peer tip, headers caught up */
         syncsvc_note_valid_block(&result, &node, SYNC_BLOCKS_DOWNLOAD,
-                                 1000, 1001, 0, 0);
+                                 1000, 1001, 0, 0, BODY_HISTORY_COMPLETE);
         ASSERT(result.reached_peer_tip);
         ASSERT(result.should_set_sync_state);
         ASSERT(result.next_sync_state == SYNC_AT_TIP);
