@@ -42,6 +42,18 @@ static bool try_solve_equihash(struct block *blk,
                                 const struct chain_params *params,
                                 int height)
 {
+    /* Regtest (fMineBlocksOnDemand) delegates to the ONE real solver,
+     * mine_block_pow(), which calls equihash_basic_solve() and actually SETS
+     * header.nSolution before testing the hash against the target. The
+     * brute-force nonce loop further down never set a solution at all, so
+     * every block this thread "found" on regtest was rejected
+     * `invalid-solution` by check_block() at intake and the tip never moved.
+     *
+     * Gated on fMineBlocksOnDemand — true ONLY for regtest — so mainnet and
+     * testnet block production takes exactly the path it took before. */
+    if (params->fMineBlocksOnDemand)
+        return mine_block_pow(blk, height, params, 0);
+
     unsigned int n = chain_params_equihash_n(params, height);
     unsigned int k = chain_params_equihash_k(params, height);
 
@@ -119,8 +131,13 @@ static bool try_solve_equihash(struct block *blk,
         }
         eh_solver_free(solver);
     } else {
-        /* Regtest / small params: brute-force random nonces.
-         * The equihash solution is trivial at low difficulty. */
+        /* Mainnet/testnet (200,9) fallback, unchanged and unreached by
+         * regtest (handled by the fMineBlocksOnDemand delegate above). It
+         * searches nonces WITHOUT producing an Equihash witness, so a hit
+         * here still carries an empty nSolution — kept byte-for-byte as it
+         * was rather than altering mainnet block production. In-process
+         * (200,9) mining is not a supported path; real miners use
+         * getblocktemplate + submitblock. */
         for (unsigned int attempt = 0; attempt < 1000000; attempt++) {
             for (int b = 0; b < 32; b++)
                 blk->header.nNonce.data[b] = (unsigned char)(GetRand(256));

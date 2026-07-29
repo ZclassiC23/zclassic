@@ -137,7 +137,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(domain_consensus_pow_seal_malformed_paths)    X(domain_consensus_pow_seal_deterministic) \
     X(checkpoints_progress_boundary_crossover)    X(checkpoints_progress_zero_defenses) \
     X(checkpoints_progress_sigcheck_factor)    X(checkpoints_progress_regression_seal) \
-    X(regtest_generate) \
+    X(regtest_generate)    X(generatetoaddress) \
     X(equihash_null_guards)    X(equihash_solution_size_demux) \
     X(equihash_blake2b_state_seal)    X(equihash_serialization_matches_independent_rebuild) \
     X(equihash_legacy_wrapper_regression_seal)    X(coins_amount_codec_roundtrip) \

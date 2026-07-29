@@ -18,9 +18,11 @@
 #include "encoding/utilstrencodings.h"
 #include "jobs/reducer_frontier.h"
 #include "json/json.h"
+#include "keys/key_io.h"                      /* decode_destination */
 #include "mining/miner.h"
 #include "primitives/block.h"
 #include "script/script.h"
+#include "script/standard.h"                  /* script_for_destination */
 #include "validation/chainstate.h"
 #include "validation/process_block.h"
 #include "services/chain_activation_service.h"
@@ -143,64 +145,63 @@ static bool rpc_getmininginfo(const struct json_value *params, bool help,
     return true;
 }
 
-static bool rpc_generate(const struct json_value *params, bool help,
-                          struct json_value *result)
+/* Shared admission check for both on-demand mint entry points (`generate`
+ * and `generatetoaddress`). Two conditions, in this order:
+ *
+ *   1. Sovereign guard (docs/work/shielded-history-importer.md §5.3):
+ *      refuse to mint on a borrowed-and-not-self-folded (release_assisted)
+ *      shielded history. This gates the MINT action only — tip-following
+ *      (rpc_submitblock accepting a block relayed/mined by someone else, the
+ *      reducer's own forward fold) is never touched here.
+ *   2. On-demand mining is a regtest facility. On mainnet/testnet the
+ *      Equihash parameters make an in-process solve impractical (and mining
+ *      goes through real workers/peers), so we refuse — matching zcashd's
+ *      "regtest mode only" contract via fMineBlocksOnDemand.
+ *
+ * Sets an explanatory error body in `result` and returns false on refusal. */
+static bool mining_on_demand_allowed(const char *rpc_name,
+                                     struct json_value *result)
 {
-    struct mining_context *ctx = mining_ctx();
-    RPC_HELP(help, result,
-        "generate numblocks\n"
-        "Mine blocks immediately (regtest only).\n"
-        "Arguments:\n"
-        "1. numblocks (numeric, required) How many blocks to generate");
-
-    /* Sovereign guard (docs/work/shielded-history-importer.md §5.3):
-     * refuse to mint on a borrowed-and-not-self-folded (release_assisted)
-     * shielded history. This gates the MINT action only — tip-following
-     * (rpc_submitblock accepting a block relayed/mined by someone else, the
-     * reducer's own forward fold) is never touched here. */
-    {
-        char sov_reason[96] = {0};
-        if (!sovereignty_guard_allow("mint", sov_reason, sizeof(sov_reason))) {
-            json_set_str(result, "Error: mint refused — tip is "
-                                 "release_assisted (borrowed shielded "
-                                 "history, not self-folded)");
-            LOG_FAIL("mining", "generate: refused — %s", sov_reason);
-        }
-    }
-
-    struct rpc_params p;
-    rpc_params_init(&p, params);
-    int64_t num_blocks = rpc_require_int(&p, 0, "numblocks");
-    if (rpc_params_invalid(&p)) {
-        rpc_params_error(&p, result);
-        return false;
-    }
-    if (num_blocks <= 0 || num_blocks > 1000) {
-        json_set_str(result, "Invalid number of blocks");
-        return false;
+    char sov_reason[96] = {0};
+    if (!sovereignty_guard_allow("mint", sov_reason, sizeof(sov_reason))) {
+        json_set_str(result, "Error: mint refused — tip is "
+                             "release_assisted (borrowed shielded "
+                             "history, not self-folded)");
+        LOG_FAIL("mining", "%s: refused — %s", rpc_name, sov_reason);
     }
 
     const struct chain_params *cp = chain_params_get();
-
-    /* generate is an on-demand miner for regtest. On mainnet/testnet the
-     * Equihash parameters make an in-process solve impractical (and mining
-     * goes through real workers/peers), so we refuse — matching zcashd's
-     * "regtest mode only" contract via fMineBlocksOnDemand. */
     if (!cp->fMineBlocksOnDemand) {
-        json_set_str(result,
-                     "Error: generate is for regtest only "
-                     "(this network is not mine-blocks-on-demand)");
-        return false;
+        char msg[160];
+        snprintf(msg, sizeof(msg),
+                 "Error: %s is for regtest only "
+                 "(this network is not mine-blocks-on-demand)", rpc_name);
+        json_set_str(result, msg);
+        LOG_FAIL("mining", "%s: refused — chain %s is not "
+                 "mine-blocks-on-demand", rpc_name, cp->strNetworkID);
     }
 
-    struct script coinbase_script;
-    coinbase_script.size = 0;
+    return true;
+}
+
+/* Mine `num_blocks` blocks on demand, paying every coinbase to
+ * `coinbase_script`, and push each accepted block hash into `result` (which
+ * this sets to an array). Shared by `generate` and `generatetoaddress` — the
+ * ONLY difference between the two RPCs is which script the subsidy pays to.
+ *
+ * Caller must have passed mining_on_demand_allowed() first. */
+static bool mining_generate_to_script(const struct script *coinbase_script,
+                                      int64_t num_blocks,
+                                      struct json_value *result)
+{
+    struct mining_context *ctx = mining_ctx();
+    const struct chain_params *cp = chain_params_get();
 
     json_set_array(result);
 
     for (int64_t i = 0; i < num_blocks; i++) {
         struct block_template *tmpl = create_new_block(
-            &coinbase_script, ctx->main_state, ctx->coins_tip, ctx->mempool, cp);
+            coinbase_script, ctx->main_state, ctx->coins_tip, ctx->mempool, cp);
         if (!tmpl) break;
 
         struct block_index *tip = active_chain_tip(&ctx->main_state->chain_active);
@@ -234,6 +235,121 @@ static bool rpc_generate(const struct json_value *params, bool help,
     }
 
     return true;
+}
+
+/* Shared numblocks argument decode for both mint entry points. Returns -1 and
+ * sets an error body on a missing/out-of-range count. */
+static int64_t mining_require_numblocks(const struct json_value *params,
+                                        struct rpc_params *p,
+                                        struct json_value *result)
+{
+    rpc_params_init(p, params);
+    int64_t num_blocks = rpc_require_int(p, 0, "numblocks");
+    if (rpc_params_invalid(p)) {
+        rpc_params_error(p, result);
+        LOG_RETURN(-1, "mining", "numblocks argument missing or not an integer");
+    }
+    if (num_blocks <= 0 || num_blocks > 1000) {
+        json_set_str(result, "Invalid number of blocks");
+        LOG_RETURN(-1, "mining", "numblocks %lld outside 1..1000",
+                   (long long)num_blocks);
+    }
+    return num_blocks;
+}
+
+static bool rpc_generate(const struct json_value *params, bool help,
+                          struct json_value *result)
+{
+    RPC_HELP(help, result,
+        "generate numblocks\n"
+        "Mine blocks immediately (regtest only).\n"
+        "The coinbase pays to an EMPTY script, so the subsidy is not\n"
+        "spendable by anyone — use this only to advance the chain height.\n"
+        "To mine SPENDABLE coins, use generatetoaddress.\n"
+        "Arguments:\n"
+        "1. numblocks (numeric, required) How many blocks to generate");
+
+    if (!mining_on_demand_allowed("generate", result))
+        return false;  // raw-return-ok:callee set the error body and logged the refusal
+
+
+    struct rpc_params p;
+    int64_t num_blocks = mining_require_numblocks(params, &p, result);
+    if (num_blocks < 0)
+        return false;
+
+    /* Height-only mining: no payee. Kept as-is so the existing regtest
+     * harnesses that only need the tip to advance are unaffected. */
+    struct script coinbase_script;
+    script_init(&coinbase_script);
+    coinbase_script.size = 0;
+
+    return mining_generate_to_script(&coinbase_script, num_blocks, result);
+}
+
+static bool rpc_generatetoaddress(const struct json_value *params, bool help,
+                                   struct json_value *result)
+{
+    RPC_HELP(help, result,
+        "generatetoaddress numblocks \"address\"\n"
+        "Mine blocks immediately, paying each coinbase to address (regtest only).\n"
+        "Unlike generate, the subsidy lands on a real scriptPubKey, so the\n"
+        "coinbase output is spendable once it is COINBASE_MATURITY (100)\n"
+        "blocks deep. Pair it with getnewaddress to fund a local wallet.\n"
+        "Arguments:\n"
+        "1. numblocks (numeric, required) How many blocks to generate\n"
+        "2. \"address\" (string, required) Transparent address to pay\n"
+        "Result:\n"
+        "[ \"blockhash\", ... ]  hashes of the blocks that were accepted");
+
+    if (!mining_on_demand_allowed("generatetoaddress", result))
+        return false;  // raw-return-ok:callee set the error body and logged the refusal
+
+
+    struct rpc_params p;
+    int64_t num_blocks = mining_require_numblocks(params, &p, result);
+    if (num_blocks < 0)
+        return false;
+
+    const char *addr = rpc_require_str(&p, 1, "address");
+    if (rpc_params_invalid(&p)) {
+        rpc_params_error(&p, result);
+        return false;
+    }
+
+    /* Decode with the ACTIVE chain's base58 prefixes — the same pair every
+     * other address surface uses — so a mainnet address cannot be paid on
+     * regtest (or vice versa) by accident. */
+    const struct chain_params *cp = chain_params_get();
+    size_t pk_pfx_len = 0, sc_pfx_len = 0;
+    const unsigned char *pk_pfx =
+        chain_params_base58_prefix(cp, B58_PUBKEY_ADDRESS, &pk_pfx_len);
+    const unsigned char *sc_pfx =
+        chain_params_base58_prefix(cp, B58_SCRIPT_ADDRESS, &sc_pfx_len);
+
+    struct tx_destination dest;
+    if (!decode_destination(addr, pk_pfx, pk_pfx_len,
+                            sc_pfx, sc_pfx_len, &dest) ||
+        !tx_destination_is_valid(&dest)) {
+        json_set_str(result,
+                     "Error: invalid address for this network "
+                     "(expected a transparent P2PKH or P2SH address)");
+        LOG_FAIL("mining", "generatetoaddress: decode_destination rejected "
+                 "the supplied address on chain %s", cp->strNetworkID);
+    }
+
+    struct script coinbase_script;
+    script_init(&coinbase_script);
+    script_for_destination(&coinbase_script, &dest);
+    if (coinbase_script.size == 0) {
+        json_set_str(result,
+                     "Error: could not build a coinbase script for that "
+                     "address");
+        LOG_FAIL("mining", "generatetoaddress: script_for_destination "
+                 "produced an empty script (dest type %d)", (int)dest.type);
+    }
+
+    return mining_generate_to_script(&coinbase_script, num_blocks, result);
 }
 
 static bool rpc_submitblock(const struct json_value *params, bool help,
@@ -463,6 +579,7 @@ void register_mining_rpc_commands(struct rpc_table *t)
     struct rpc_command cmds[] = {
         { "mining", "getmininginfo",     rpc_getmininginfo,    true },
         { "mining", "generate",          rpc_generate,         true },
+        { "mining", "generatetoaddress", rpc_generatetoaddress, true },
         { "mining", "submitblock",       rpc_submitblock,      true },
         { "mining", "getblocktemplate",  rpc_getblocktemplate, true },
         { "mining", "getblocksubsidy",   rpc_getblocksubsidy,  true },

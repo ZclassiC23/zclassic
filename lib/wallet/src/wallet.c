@@ -1188,6 +1188,37 @@ struct zcl_result wallet_rollback_transaction(
     return ZCL_OK;
 }
 
+int wallet_advance_confirmations(struct wallet *w, int new_best_height)
+{
+    if (!w)
+        LOG_ERR("wallet", "advance_confirmations: NULL wallet");
+
+    zcl_mutex_lock(&w->cs);
+
+    int delta = new_best_height - w->best_block_height;
+    if (delta <= 0) {
+        /* Not a forward move (reorg, replay, or first block before the height
+         * is known). Never lower a depth and never inflate one — leave every
+         * stored depth exactly as it is. */
+        zcl_mutex_unlock(&w->cs);
+        return 0;
+    }
+
+    int raised = 0;
+    for (size_t i = 0; i < MAX_WALLET_TX; i++) {
+        struct wallet_tx *wtx = &w->map_wallet[i];
+        if (!wtx->used || wtx->confirms < 1)
+            continue;   /* unconfirmed (mempool) entries have no depth yet */
+        wtx->confirms += delta;
+        wallet_mark_dirty(wtx);
+        raised++;
+    }
+
+    w->best_block_height = new_best_height;
+    zcl_mutex_unlock(&w->cs);
+    return raised;
+}
+
 void wallet_sync_transaction(struct wallet *w, const struct transaction *tx,
                               const struct block_index *pindex)
 {

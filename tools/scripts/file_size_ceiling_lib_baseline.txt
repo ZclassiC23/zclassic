@@ -64,13 +64,13 @@ lib/storage/src/coins_ram.c 1406
 lib/storage/src/coins_view_sqlite.c 1247
 lib/validation/src/chainstate.c 936
 lib/validation/src/connect_block.c 896
-lib/wallet/src/wallet.c 1705
+lib/wallet/src/wallet.c 1736
 lib/wallet/src/wallet_sqlite.c 1648
 lib/sim/src/simnet_chaos_faults.c 2684
 lib/util/src/blocker.c 836
 lib/util/src/supervisor.c 801
 lib/sync/src/stage.c 819
-src/main_cli_modes.c 3820
+src/main_cli_modes.c 4104
 lib/hotswap/src/hotswap_activate.c 948
 lib/vcs/src/package_store.c 1070
 lib/vcs/src/package_score.c 845
