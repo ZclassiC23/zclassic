@@ -18,10 +18,15 @@ After=zclassic23.service
 [Service]
 Type=oneshot
 ExecStart=%h/github/zclassic23/tools/scripts/node_slo_probe.sh collect
-# 4 bounded RPC calls (canonical/soak/dev/oracle), each capped at
-# ZCL_SLO_RPC_TIMEOUT_SEC (default 8s) — tens of seconds worst case.
-# Generous margin for a loaded box.
-TimeoutStartSec=90
+# Per REACHABLE instance: getblockchaininfo + getpeerinfo (each capped at
+# ZCL_SLO_RPC_TIMEOUT_SEC, default 8s), one `systemctl show` and one
+# `du -sb` (each capped at ZCL_SLO_HOST_TIMEOUT_SEC, default 5s), and two
+# `dumpstate` self-report calls (each capped at ZCL_SLO_STATE_TIMEOUT_SEC,
+# default 5s) = 36s worst case. Two instances plus the oracle RPC = 80s
+# worst case. Measured cost on a healthy box is ~0.25s for the whole
+# cycle; the 150s budget exists so a WEDGED host cannot produce
+# overlapping runs of a 60s collector.
+TimeoutStartSec=150
 Nice=10
 IOSchedulingClass=idle
 StandardOutput=journal

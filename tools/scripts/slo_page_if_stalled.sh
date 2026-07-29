@@ -124,6 +124,9 @@ set -euo pipefail
 export LC_ALL=C
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# The ONE reader per measurement — see tools/scripts/lib/evidence_sources.sh.
+. "$SCRIPT_DIR/lib/evidence_sources.sh"
 SELF="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
 
 LEDGER_DIR="${ZCL_SLO_LEDGER_DIR:-${HOME:-/root}/.local/state/zclassic23-slo}"
@@ -181,34 +184,15 @@ jtok() {
 # append_line <file> <json-line>: flock-serialized append (bounded -w 30,
 # explicit failure) — copied from node_slo_probe.sh so a timer run and an
 # ad-hoc operator run can never interleave a torn line into pages.jsonl.
-append_line() {
-    local file="$1" line="$2" append_rc=0
-    (
-        flock -x -w 30 9 || exit 9
-        printf '%s\n' "$line" >&9
-    ) 9>>"$file" || append_rc=$?
-    if [ "$append_rc" -ne 0 ]; then
-        if [ "$append_rc" -eq 9 ]; then
-            echo "slo-page: FAIL could not acquire append lock on $file within 30s" >&2
-        else
-            echo "slo-page: FAIL could not append to $file (rc=$append_rc)" >&2
-        fi
-        return 1
-    fi
-    return 0
-}
+append_line() { evidence_append_line "$1" "$2" "slo-page"; }
 
 # enrich_blocker: best-effort typed blocker snapshot, single-line, <=400 bytes,
 # NEVER fatal. Prints "" on any absence/timeout/failure. The 5 s timeout and
 # the executable guard keep a wedged or missing node from ever stalling or
 # aborting the pager.
 enrich_blocker() {
-    local bin="$NODE_BIN" out=""
-    [ -n "$bin" ] || { printf ''; return 0; }
-    [ -x "$bin" ] || { printf ''; return 0; }
-    out="$(timeout 5 "$bin" dumpstate blocker 2>/dev/null | head -c 400 || true)"
-    out="$(printf '%s' "$out" | tr '\n\r\t' '   ')"
-    printf '%s' "$out"
+    ZCL_EVIDENCE_TIMEOUT_SEC=5 \
+        evidence_node_dumpstate "$NODE_BIN" blocker | head -c 400 || true
     return 0
 }
 

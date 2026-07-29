@@ -4643,6 +4643,37 @@ slo-probe-selftest:
 	 fi; \
 	 echo "slo-probe-selftest: PASS"'
 
+# evidence-selftest: hermetic regression guard for the three evidence
+# dimensions that were absent until the ledgers below existed —
+#   * intervention_ledger.sh  the manual-intervention record. Without it,
+#     "zero operator intervention" is an UNFALSIFIABLE claim: nothing on
+#     this host recorded a config edit or a binary swap, and the closest
+#     thing (soak_evidence.sh) only INFERS restarts hourly from NRestarts.
+#     Its positive cases cover a binary swapped with NO restart and a
+#     drop-in edited with NO restart — both invisible to that inference.
+#   * zcl_intervene.sh        the human/agent declaration front door, whose
+#     ABSENCE around a detected change is what marks it `unattributed`.
+#   * public_explorer_smoke.sh  the only EXTERNAL availability evidence;
+#     its case=outage-is-recorded is the guard that a FAILED check still
+#     writes its ledger line instead of exiting first, which is how the
+#     script behaved for its whole prior life.
+# All fixture-driven: no live nodes, no systemd units, no network.
+.PHONY: evidence-selftest
+evidence-selftest:
+	@bash -c 'set -uo pipefail; rc_all=0; \
+	 for s in tools/scripts/intervention_ledger.sh \
+	          tools/scripts/zcl_intervene.sh \
+	          tools/scripts/public_explorer_smoke.sh; do \
+	   set +e; out=$$(bash "$$s" --selftest 2>&1); rc=$$?; set -e; \
+	   echo "$$out"; \
+	   if [ "$$rc" != "0" ] || ! echo "$$out" | grep -q "^selftest: PASS"; then \
+	     echo "evidence-selftest: FAIL $$s (rc=$$rc; no selftest: PASS line)"; \
+	     rc_all=1; \
+	   fi; \
+	 done; \
+	 if [ "$$rc_all" != "0" ]; then exit 1; fi; \
+	 echo "evidence-selftest: PASS"'
+
 # ── Warm-standby serving lane + scripted atomic cutover ─────────────────────
 # The canonical serving identity (ports 8033/18232, ~/.zclassic-c23) had no
 # failover. install-standby installs the always-warm understudy unit; cutover
@@ -6471,6 +6502,13 @@ ci: vendor-ready lint bench-regress zclassic23 $(TEST_PARALLEL_REL_CANDIDATE)
 	@# now CI-protected, not the soak claim itself.
 	@echo "══ CI: soak-evidence-selftest (hermetic C6 verdict-judge guard) ══"
 	$(MAKE) soak-evidence-selftest
+	@echo ""
+	@# The evidence ledgers that make an operational claim checkable: the
+	@# intervention record (a config edit or binary swap with NO restart is
+	@# an event), the declaration front door, and the only EXTERNAL
+	@# availability probe. Hermetic, <2s, no node and no network.
+	@echo "══ CI: evidence-selftest (intervention + external availability ledgers) ══"
+	$(MAKE) evidence-selftest
 	@echo ""
 	@echo "══ CI: test-crash ══"
 	$(MAKE) test-crash

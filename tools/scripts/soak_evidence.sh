@@ -118,6 +118,11 @@ export LC_ALL=C
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# The ONE reader per measurement (peers, RSS, disk bytes, systemd, node
+# self-report). Sourced so this script and every evidence ledger measure
+# the same host the same way — see tools/scripts/lib/evidence_sources.sh.
+. "$SCRIPT_DIR/lib/evidence_sources.sh"
 SELF="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
 
 EVIDENCE_DIR="${ZCL_SOAK_EVIDENCE_DIR:-${HOME:-/root}/.local/state/zclassic23-soak-evidence}"
@@ -206,13 +211,16 @@ cmd_collect() {
 
     # RSS: VmRSS from /proc/<MainPID>/status — the soak_harness-parity
     # source (tools/soak/main.c rss_bytes_for parses exactly this).
+    # The injection seam still yields a raw VmRSS LINE (fixtures depend on
+    # that shape); the live path now goes through the shared reader, which
+    # parses the same /proc field the same way.
     local rss_line="" rss_kb=""
     if [ -n "${ZCL_SOAK_RSS_CMD:-}" ]; then
         rss_line="$(bash -c "$ZCL_SOAK_RSS_CMD" 2>/dev/null || true)"
-    elif [ -n "$mainpid" ] && [ "$mainpid" != "0" ] && [ -r "/proc/$mainpid/status" ]; then
-        rss_line="$(grep VmRSS "/proc/$mainpid/status" 2>/dev/null || true)"
+        rss_kb="$(printf '%s' "$rss_line" | sed -n 's/.*VmRSS:[[:space:]]*\([0-9][0-9]*\)[[:space:]]*kB.*/\1/p' | head -n1)"
+    else
+        rss_kb="$(evidence_rss_kb "$mainpid")"
     fi
-    rss_kb="$(printf '%s' "$rss_line" | sed -n 's/.*VmRSS:[[:space:]]*\([0-9][0-9]*\)[[:space:]]*kB.*/\1/p' | head -n1)"
 
     local line
     line="$(printf '{"ts":%s,"soak_height":%s,"zd_height":%s,"gap":%s,"nrestarts":%s,"active_enter_ts":%s,"rss_kb":%s,"mainpid":%s,"security_review_required":%s,"security_posture_ok":%s,"window_eligible":%s,"ok":%s}' \
