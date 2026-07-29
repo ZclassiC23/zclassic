@@ -735,21 +735,13 @@ static bool zec_open_chain(const char *datadir)
         return true;
     if (!datadir || !datadir[0])
         return false;
-    char path[1024];
-    int n = snprintf(path, sizeof(path), "%s/node.db", datadir);
-    if (n <= 0 || (size_t)n >= sizeof(path))
-        return false;
+    /* Read-only open (command/native_command.h): this is an optional chain
+     * consult, so a false return is never reported as an answer — the
+     * caller proceeds and the library names the refusal itself. */
     sqlite3 *db = NULL;
-    if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
-        if (db)
-            sqlite3_close(db);
+    if (zcl_native_node_db_open_readonly(datadir, &db, &g_cli_ndb, NULL, 0) !=
+        ZCL_NODE_DB_RO_OK)
         return false;
-    }
-    (void)sqlite3_exec(db, "PRAGMA query_only=ON", NULL, NULL, NULL);
-    sqlite3_busy_timeout(db, 2000);
-    memset(&g_cli_ndb, 0, sizeof(g_cli_ndb));
-    g_cli_ndb.db = db;
-    g_cli_ndb.open = true;
     zendp_set_anchor_lookup(zec_cli_anchor_lookup, NULL);
     return true;
 }
@@ -757,9 +749,7 @@ static bool zec_open_chain(const char *datadir)
 static void zec_close_chain(void)
 {
     zendp_set_anchor_lookup(NULL, NULL);
-    if (g_cli_ndb.db)
-        sqlite3_close(g_cli_ndb.db);
-    memset(&g_cli_ndb, 0, sizeof(g_cli_ndb));
+    zcl_native_node_db_close_readonly(NULL, &g_cli_ndb);
 }
 
 /* ── zcode.endpoint.publish ────────────────────────────────────────── */

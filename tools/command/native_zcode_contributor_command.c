@@ -95,32 +95,12 @@ static void zc4_lower(char *s)
             *s = (char)(*s - 'A' + 'a');
 }
 
-/* Open <datadir>/node.db read-mostly (the canonical ZNAM model) or fail
- * the reply. */
-static bool zc4_open_ndb(const char *datadir, struct node_db *ndb,
-                         struct zcl_command_reply *reply,
-                         const char *evidence)
-{
-    char path[4400];
-    int n = snprintf(path, sizeof(path), "%s/node.db", datadir);
-    if (n < 0 || (size_t)n >= sizeof(path)) {
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
-                               ZCL_COMMAND_EXIT_INVALID, "DATADIR_TOO_LONG",
-                               "normalize", false, false,
-                               "datadir path too long", datadir);
-        return false;
-    }
-    memset(ndb, 0, sizeof(*ndb));
-    if (!node_db_open(ndb, path) || !ndb->open) {
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
-                               ZCL_COMMAND_EXIT_INTERNAL, "NODE_DB_OPEN",
-                               "execute", false, false,
-                               "node.db (the ZNAM model) failed to open",
-                               evidence);
-        return false;
-    }
-    return true;
-}
+/* Both leaves in this file are READY_READ, so neither opens node.db
+ * itself: they go through zcl_native_node_db_{open,require}_readonly
+ * (command/native_command.h). The helper this file used to carry called
+ * node_db_open(), which is the boot ceremony — READWRITE|CREATE, then
+ * create_schema + node_db_migrate + the snapshot_staging DELETEs — against
+ * a caller-supplied datadir that defaults to the live node's. */
 
 /* Build the rebuilt package index over <datadir>/zcode or fail the reply. */
 static struct vcs_package_index *zc4_build_index(
@@ -369,9 +349,33 @@ void zcl_native_handle_zcode_contributor_show(
         }
     }
 
-    /* The ZNAM publisher-profile pointer (a pointer, never identity). */
+    /* The ZNAM publisher-profile pointer (a pointer, never identity).
+     * READ leaf: the chain is opened strictly read-only. The chain read is
+     * OPTIONAL here — the package index and reward ledger above are the
+     * leaf's real payload — so a missing node.db degrades this one section
+     * rather than failing the leaf. It therefore MUST say so: "read":false
+     * plus a reason, never a silent absence that reads identically to
+     * "nobody claims this key". */
+    sqlite3 *zdb = NULL;
     struct node_db ndb;
-    if (zc4_open_ndb(datadir, &ndb, reply, pubkey_hex)) {
+    char zpath[1200];
+    enum zcl_node_db_ro_status zst = zcl_native_node_db_open_readonly(
+        datadir, &zdb, &ndb, zpath, sizeof(zpath));
+    if (zst != ZCL_NODE_DB_RO_OK) {
+        struct json_value zp;
+        json_init(&zp);
+        json_set_object(&zp);
+        (void)json_push_kv_bool(&zp, "read", false);
+        (void)json_push_kv_str(
+            &zp, "reason",
+            zst == ZCL_NODE_DB_RO_ABSENT
+                ? "no node.db at this datadir — the ZNAM pointer was NOT "
+                  "looked up; this is not the same as 'no claimants'"
+                : "node.db could not be opened read-only — the ZNAM pointer "
+                  "was NOT looked up; this is not the same as 'no claimants'");
+        (void)json_push_kv(&reply->data, "znam_profile", &zp);
+        json_free(&zp);
+    } else {
         struct zcode_pointer pointer;
         size_t claimants =
             zcode_pointer_find_publisher_profiles(&ndb, pubkey_hex,
@@ -379,6 +383,7 @@ void zcl_native_handle_zcode_contributor_show(
         struct json_value zp;
         json_init(&zp);
         json_set_object(&zp);
+        (void)json_push_kv_bool(&zp, "read", true);
         (void)json_push_kv_bool(&zp, "found", claimants > 0);
         (void)json_push_kv_int(&zp, "claimant_names",
                                (int64_t)claimants);
@@ -417,7 +422,7 @@ void zcl_native_handle_zcode_contributor_show(
                                "the identity");
         (void)json_push_kv(&reply->data, "znam_profile", &zp);
         json_free(&zp);
-        node_db_close(&ndb);
+        zcl_native_node_db_close_readonly(&zdb, &ndb);
     }
     vcs_package_index_free(index);
 }
@@ -520,12 +525,18 @@ void zcl_native_handle_zcode_package_resolve(
     }
     chain_params_select(CHAIN_MAIN);
 
+    /* READ leaf: strictly read-only, and REQUIRED — the whole answer is the
+     * on-chain pointer, so an unreadable node.db must fail loudly rather
+     * than fall through to UNKNOWN_NAME, which would say "no such name"
+     * when the truth is "I could not look". */
+    sqlite3 *db = NULL;
     struct node_db ndb;
-    if (!zc4_open_ndb(datadir, &ndb, reply, name))
+    if (!zcl_native_node_db_require_readonly(datadir, reply,
+                                             "the ZNAM registry", &db, &ndb))
         return;
     struct zcode_pointer pointer;
     bool registered = zcode_pointer_resolve(&ndb, name, &pointer);
-    node_db_close(&ndb);
+    zcl_native_node_db_close_readonly(&db, &ndb);
     if (!registered) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INVALID, "UNKNOWN_NAME",

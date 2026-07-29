@@ -71,41 +71,14 @@ static const char *ep_datadir(const struct zcl_command_request *request)
     return (dd && dd[0]) ? dd : NULL;
 }
 
-/* Open <datadir>/node.db READONLY (no CREATE) + ad-hoc node_db wrapper.
- * On failure, reply is filled and false returned. */
+/* The read-only open is zcl_native_node_db_require_readonly
+ * (command/native_command.h); this only names what these leaves read. */
 static bool ep_open_catalog(const char *datadir,
                             struct zcl_command_reply *reply,
                             sqlite3 **db_out, struct node_db *ndb_out)
 {
-    char path[1024];
-    int n = snprintf(path, sizeof(path), "%s/node.db", datadir);
-    if (n <= 0 || (size_t)n >= sizeof(path)) {
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
-                               ZCL_COMMAND_EXIT_INVALID,
-                               "DATADIR_PATH_TOO_LONG", "normalize", false,
-                               false, "datadir path too long", datadir);
-        return false;
-    }
-    sqlite3 *db = NULL;
-    int rc = sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL);
-    if (rc != SQLITE_OK) {
-        if (db)
-            sqlite3_close(db);
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
-                               ZCL_COMMAND_EXIT_BLOCKED,
-                               "NODE_DB_UNAVAILABLE", "execute", true, false,
-                               "node.db not found or unreadable at datadir — "
-                               "check --datadir, or boot the node once to "
-                               "create it", path);
-        return false;
-    }
-    (void)sqlite3_exec(db, "PRAGMA query_only=ON", NULL, NULL, NULL);
-    sqlite3_busy_timeout(db, 2000);
-    *db_out = db;
-    memset(ndb_out, 0, sizeof(*ndb_out));
-    ndb_out->db = db;
-    ndb_out->open = true;
-    return true;
+    return zcl_native_node_db_require_readonly(
+        datadir, reply, "the OP_RETURN epoch catalog", db_out, ndb_out);
 }
 
 /* Current catalog state: declared range (base) + cursor height + digest +
@@ -326,7 +299,7 @@ void zcl_native_handle_core_epoch_status(
 
     json_push_kv_str(&reply->data, "datadir", datadir);
     if (!have) {
-        sqlite3_close(db);
+        zcl_native_node_db_close_readonly(&db, &ndb);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
                                ZCL_COMMAND_EXIT_BLOCKED,
                                "CATALOG_CURSOR_UNREADABLE", "execute", true,
@@ -377,7 +350,7 @@ void zcl_native_handle_core_epoch_status(
                          "catalog digest on-chain (operator decision; "
                          "spends a fee)");
     }
-    sqlite3_close(db);
+    zcl_native_node_db_close_readonly(&db, &ndb);
     reply->status = ZCL_COMMAND_STATUS_PASSED;
     reply->exit_code = ZCL_COMMAND_EXIT_OK;
 }
@@ -412,7 +385,7 @@ void zcl_native_handle_core_epoch_anchor(
     memset(&opcur, 0, sizeof(opcur));
     opcur.height = -1;
     bool have = ep_read_catalog(&ndb, &cursor, digest, &rows, &opcur);
-    sqlite3_close(db);
+    zcl_native_node_db_close_readonly(&db, &ndb);
 
     if (!have || cursor < 0) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
@@ -760,12 +733,12 @@ void zcl_native_handle_core_epoch_verify(
     if (want_height >= 0 && want_height <= INT32_MAX) {
         ep_verify_at_height(&ndb, (int32_t)want_height, have, cursor, digest,
                             &opcur, reply);
-        sqlite3_close(db);
+        zcl_native_node_db_close_readonly(&db, &ndb);
         return;
     }
 
     if (!have || cursor < 0) {
-        sqlite3_close(db);
+        zcl_native_node_db_close_readonly(&db, &ndb);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
                                ZCL_COMMAND_EXIT_BLOCKED,
                                "CATALOG_EMPTY", "execute", true, false,
@@ -813,7 +786,7 @@ void zcl_native_handle_core_epoch_verify(
                          "no zepoch anchor in the current epoch — run "
                          "`zclassic23 core epoch anchor` to commit");
     }
-    sqlite3_close(db);
+    zcl_native_node_db_close_readonly(&db, &ndb);
     reply->status = ZCL_COMMAND_STATUS_PASSED;
     reply->exit_code = ZCL_COMMAND_EXIT_OK;
 }

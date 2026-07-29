@@ -284,6 +284,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(utxo_apply_stage) X(utxo_apply_crash_replay) X(commit_invariants) \
     X(tip_finalize_stage) X(tip_finalize_post_step) X(reducer_frontier) \
     X(reducer_frontier_self_anchor) X(offline_datadir_query) \
+    X(read_leaf_no_datadir_write) \
     X(hstar_integrity) \
     X(install_verb_warm) \
     X(always_sync_chaos) \

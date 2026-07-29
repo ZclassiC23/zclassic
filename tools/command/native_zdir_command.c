@@ -68,28 +68,27 @@ static const char *zdc_datadir(const struct zcl_command_request *request)
     return (dd && dd[0]) ? dd : NULL;
 }
 
-/* Open <datadir>/node.db READONLY (no CREATE) behind an ad-hoc node_db.
- * A missing node.db is NOT an error here: registering a hostname on a host
- * with no folded chain is a legitimate offline operation. Returns the handle
- * or NULL; nothing is reported either way. */
-static sqlite3 *zdc_open_db_quiet(const char *datadir, struct node_db *ndb_out)
+/* The read-only open is zcl_native_node_db_{open,require}_readonly
+ * (command/native_command.h). This wrapper exists only for the register
+ * pre-flight, where an ABSENT node.db is NOT an error: a first
+ * registration from a host with no folded chain is legitimate. That
+ * licence covers ABSENT alone — an UNREADABLE node.db is a failure to
+ * look, and skipping the pre-flight on it would spend a fee against a row
+ * that was never actually checked. Returns the handle, or NULL with
+ * *fatal_out set when the caller must refuse instead of proceeding. */
+static sqlite3 *zdc_open_db_preflight(const char *datadir,
+                                      struct node_db *ndb_out,
+                                      bool *fatal_out)
 {
-    char path[1024];
-    int n = snprintf(path, sizeof(path), "%s/node.db", datadir);
-    if (n <= 0 || (size_t)n >= sizeof(path))
-        return NULL;  // raw-return-ok:optional-preflight-open
     sqlite3 *db = NULL;
-    if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
-        if (db)
-            sqlite3_close(db);
-        return NULL;  // raw-return-ok:optional-preflight-open
-    }
-    (void)sqlite3_exec(db, "PRAGMA query_only=ON", NULL, NULL, NULL);
-    sqlite3_busy_timeout(db, 2000);
-    memset(ndb_out, 0, sizeof(*ndb_out));
-    ndb_out->db = db;
-    ndb_out->open = true;
-    return db;
+    *fatal_out = false;
+    enum zcl_node_db_ro_status st =
+        zcl_native_node_db_open_readonly(datadir, &db, ndb_out, NULL, 0);
+    if (st == ZCL_NODE_DB_RO_OK)
+        return db;
+    if (st != ZCL_NODE_DB_RO_ABSENT)
+        *fatal_out = true;
+    return NULL;  // raw-return-ok:optional-preflight-open
 }
 
 /* Exactly 64 hex chars decoding to a non-zero 32-byte key. */
@@ -272,7 +271,19 @@ void zcl_native_handle_core_zdir_register(
     bool known = false;
     if (datadir) {
         struct node_db ndb;
-        sqlite3 *db = zdc_open_db_quiet(datadir, &ndb);
+        bool db_fatal = false;
+        sqlite3 *db = zdc_open_db_preflight(datadir, &ndb, &db_fatal);
+        if (db_fatal) {
+            zcl_command_reply_fail(
+                reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_BLOCKED,
+                "NODE_DB_UNREADABLE", "execute", true, false,
+                "node.db is present at this datadir but would not open "
+                "read-only, so the ownership pre-flight could not run — "
+                "refusing rather than spending a fee on an unchecked "
+                "registration; check permissions, or pass a readable datadir",
+                datadir);
+            return;
+        }
         if (db) {
             struct db_onion_directory prev;
             memset(&prev, 0, sizeof(prev));
@@ -281,7 +292,7 @@ void zcl_native_handle_core_zdir_register(
                 snprintf(owner, sizeof(owner), "%s", prev.owner_address);
                 snprintf(status, sizeof(status), "%s", prev.status);
             }
-            sqlite3_close(db);
+            zcl_native_node_db_close_readonly(&db, &ndb);
             if (known && owner[0] == '\0') {
                 zcl_command_reply_fail(
                     reply, ZCL_COMMAND_STATUS_FAILED,
@@ -353,21 +364,20 @@ void zcl_native_handle_core_zdir_deregister(
                                "to know who owns it", path);
         return;
     }
+    /* Required, not optional: deregister must read the row to learn who
+     * owns it, so an unreadable node.db must not fall through to
+     * NOT_REGISTERED — that would claim the hostname has no row when the
+     * truth is that no row was ever read. */
+    sqlite3 *db = NULL;
     struct node_db ndb;
-    sqlite3 *db = zdc_open_db_quiet(datadir, &ndb);
-    if (!db) {
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
-                               ZCL_COMMAND_EXIT_BLOCKED,
-                               "NODE_DB_UNAVAILABLE", "execute", true, false,
-                               "node.db not found or unreadable at datadir — "
-                               "check --datadir, or boot the node once to "
-                               "create it", datadir);
+    if (!zcl_native_node_db_require_readonly(datadir, reply,
+                                             "the onion directory row",
+                                             &db, &ndb))
         return;
-    }
     struct db_onion_directory prev;
     memset(&prev, 0, sizeof(prev));
     bool found = db_onion_directory_find(&ndb, hostname, &prev);
-    sqlite3_close(db);
+    zcl_native_node_db_close_readonly(&db, &ndb);
 
     if (!found) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
