@@ -203,6 +203,13 @@ void sapling_value_commit_randomness_generator(struct fr *x, struct fr *y)
     jub_get_y(y, &fixed_generators[GEN_VALUE_COMMITMENT_RANDOMNESS]);
 }
 
+void sapling_note_commit_randomness_generator(struct fr *x, struct fr *y)
+{
+    ensure_fixed_generators();
+    jub_get_x(x, &fixed_generators[GEN_NOTE_COMMITMENT_RANDOMNESS]);
+    jub_get_y(y, &fixed_generators[GEN_NOTE_COMMITMENT_RANDOMNESS]);
+}
+
 void sapling_crh_ivk(const uint8_t ak[32], const uint8_t nk[32], uint8_t ivk[32])
 {
     struct blake2s_ctx ctx;
@@ -295,40 +302,44 @@ static void pedersen_note_commitment(const uint8_t *data, size_t data_len,
     pedersen_hash_bits(bits, pos, result);
 }
 
-bool sapling_compute_cm(const uint8_t diversifier[11], const uint8_t pk_d[32],
-                         uint64_t value, const uint8_t rcm[32],
-                         uint8_t cm[32])
+bool sapling_note_commitment_point(const uint8_t diversifier[11],
+                                    const uint8_t pk_d[32],
+                                    uint64_t value, const uint8_t rcm[32],
+                                    struct jub_point *cm_out)
 {
+    if (!cm_out)
+        LOG_FAIL("sapling", "note_commitment_point: NULL output point");
     ensure_fixed_generators();
 
     /* Note contents: value(8 LE) || g_d(32) || pk_d(32) = 72 bytes */
     uint8_t note_contents[72];
-
-    /* value as 8 bytes LE */
     for (int i = 0; i < 8; i++)
         note_contents[i] = (uint8_t)(value >> (i * 8));
-
-    /* g_d = compressed point from diversifier */
     struct jub_point g_d;
     if (!sapling_diversifier_to_gd(&g_d, diversifier))
-        LOG_FAIL("sapling", "compute_cm: diversifier_to_gd failed (invalid d)");
+        LOG_FAIL("sapling",
+                 "note_commitment_point: diversifier_to_gd failed (invalid d)");
     jub_to_bytes(note_contents + 8, &g_d);
-
-    /* pk_d */
     memcpy(note_contents + 40, pk_d, 32);
 
-    /* hash_of_contents = PedersenHash(NoteCommitment, note_contents as bits) */
-    struct jub_point hash_pt;
+    /* cm_full = PedersenHash(NoteCommitment, contents) + [rcm] G_rcm */
+    struct jub_point hash_pt, rcm_point;
     pedersen_note_commitment(note_contents, 72, &hash_pt);
+    jub_scalar_mul(&rcm_point,
+                   &fixed_generators[GEN_NOTE_COMMITMENT_RANDOMNESS], rcm);
+    jub_add(cm_out, &hash_pt, &rcm_point);
+    return true;
+}
 
-    /* cm_full_point = hash_pt + rcm * NoteCommitmentRandomness */
-    struct jub_point rcm_point;
-    jub_scalar_mul(&rcm_point, &fixed_generators[GEN_NOTE_COMMITMENT_RANDOMNESS], rcm);
-    jub_add(&hash_pt, &rcm_point, &hash_pt);
-
-    /* cm = x-coordinate of cm_full_point */
-    struct fr x_coord;
-    jub_get_x(&x_coord, &hash_pt);
+bool sapling_compute_cm(const uint8_t diversifier[11], const uint8_t pk_d[32],
+                         uint64_t value, const uint8_t rcm[32],
+                         uint8_t cm[32])
+{
+    struct jub_point cm_pt;
+    if (!sapling_note_commitment_point(diversifier, pk_d, value, rcm, &cm_pt))
+        LOG_FAIL("sapling", "compute_cm: note_commitment_point failed");
+    struct fr x_coord;                  /* cm == cm_full.x, the tree leaf */
+    jub_get_x(&x_coord, &cm_pt);
     fr_to_bytes(cm, &x_coord);
     return true;
 }
@@ -341,23 +352,12 @@ bool sapling_compute_nf(const uint8_t diversifier[11], const uint8_t pk_d[32],
     ensure_fixed_generators();
     (void)ak_bytes; /* ak used only for viewing key construction, nf needs nk */
 
-    /* First compute cm_full_point (same as in compute_cm but keep the point) */
-    uint8_t note_contents[72];
-    for (int i = 0; i < 8; i++)
-        note_contents[i] = (uint8_t)(value >> (i * 8));
-
-    struct jub_point g_d;
-    if (!sapling_diversifier_to_gd(&g_d, diversifier))
-        LOG_FAIL("sapling", "compute_nf: diversifier_to_gd failed (invalid d)");
-    jub_to_bytes(note_contents + 8, &g_d);
-    memcpy(note_contents + 40, pk_d, 32);
-
+    /* The note-commitment point — the same body sapling_compute_cm() publishes
+     * the x-coordinate of, so the nullifier can never be computed over a
+     * different note than the commitment the tree stores. */
     struct jub_point cm_pt;
-    pedersen_note_commitment(note_contents, 72, &cm_pt);
-
-    struct jub_point rcm_point;
-    jub_scalar_mul(&rcm_point, &fixed_generators[GEN_NOTE_COMMITMENT_RANDOMNESS], rcm);
-    jub_add(&cm_pt, &rcm_point, &cm_pt);
+    if (!sapling_note_commitment_point(diversifier, pk_d, value, rcm, &cm_pt))
+        LOG_FAIL("sapling", "compute_nf: note_commitment_point failed");
 
     /* rho = cm_full_point + position * NullifierPosition */
     uint8_t pos_bytes[32] = {0};

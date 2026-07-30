@@ -4,28 +4,30 @@
  * Spend::synthesize (librustzcash 06da3b9ac8f278e5d4ae13088cf0a4c03d2c13f5),
  * 7 public inputs / 98777 constraints when complete.
  *
- * PORT STATUS. Sections 1..16 are ported faithfully in the exact synthesis
+ * PORT STATUS. Sections 1..21 are ported faithfully in the exact synthesis
  * order (variable-allocation order is load-bearing for QAP alignment against
  * the trusted-setup proving key). For that prefix: the cumulative constraint
  * counts match the reference trace's per-section boundaries, every emitted
  * constraint is satisfied by the honest witness (A*B==C — the coefficient-level
  * check), sections 8/9/15/16 reproduce librustzcash's compressed point
- * encodings bit for bit, section 10's 256 digest bits reproduce CRH^ivk, and
- * section 13's pk_d wire equals the out-of-circuit [ivk] g_d. All of it is
- * gated by the `groth16_selfverify` test group. Sections 17..20 (the note
- * commitment), 22..28 (g^position, the twin blake2s for nf and the nullifier
- * packing) remain to be ported, so the circuit below is a faithful PARTIAL
- * prefix (30679/98777 constraints) and does not yet round-trip against the
- * trusted-setup proving key.
+ * encodings bit for bit, section 10's 256 digest bits reproduce CRH^ivk,
+ * section 13's pk_d wire equals the out-of-circuit [ivk] g_d, section 20's cm
+ * wire equals the out-of-circuit sapling_compute_cm() note commitment, and
+ * section 21's anchor wire equals an out-of-circuit fold of the same witnessed
+ * path over that same commitment. All of it is gated by the
+ * `groth16_selfverify` test group. Sections 22..28 (conditional root
+ * enforcement, the anchor inputize, g^position, the twin blake2s for nf and the
+ * nullifier packing) remain to be ported, so the circuit below is a faithful
+ * PARTIAL prefix (76893/98777 constraints) and does not yet round-trip against
+ * the trusted-setup proving key.
  *
  * Section 21 — the 32-level Merkle authentication path, 44224 constraints and
- * the largest section in the circuit — IS ported: the gadget lives in
- * sapling/circuit_merkle.h and its cost, its anchor value against an
- * out-of-circuit fold, its swap sensitivity and its wire boundness are gated by
- * lib/test/src/groth16_merkle_path.c. It consumes section 20's cm.x, so the
- * call site below stays behind a one-line seam until sections 17..20 land;
- * recording it out of position would make the parity oracle diff its boundary
- * against section 17's.
+ * the largest section in the circuit — lives in sapling/circuit_merkle.h. Its
+ * cost, its anchor value against an out-of-circuit fold, its swap sensitivity
+ * and its wire boundness are gated by lib/test/src/groth16_merkle_path.c. It
+ * consumes section 20's cm.x directly, so the note commitment now flows into
+ * the tree fold in ONE synthesis pass rather than the two isolated proofs the
+ * sections had while 17..20 were unported.
  *
  * Section 10 was the architectural fork, and it is resolved rather than worked
  * around: blake2s is built on bellman's Boolean/UInt32/multieq stack, where a
@@ -51,6 +53,7 @@
 #include "sapling/circuit_bits.h"
 #include "sapling/circuit_gadgets.h"
 #include "sapling/circuit_merkle.h"
+#include "sapling/pedersen_hash.h"
 #include "sapling/sapling.h"
 #include "base/serialize_le.h"
 #include "support/cleanse.h"
@@ -232,6 +235,9 @@ static void probe_reset(struct spend_wire_probe *probe)
     probe->gd_x = probe->gd_y = SIZE_MAX;
     probe->pkd_x = probe->pkd_y = SIZE_MAX;
     probe->cv_x = probe->cv_y = SIZE_MAX;
+    probe->note_hash_x = probe->note_hash_y = SIZE_MAX;
+    probe->cm_x = probe->cm_y = SIZE_MAX;
+    probe->anchor = SIZE_MAX;
     for (size_t i = 0; i < 256; i++) {
         probe->ak_repr[i] = probe->nk_repr[i] = SIZE_MAX;
         probe->gd_repr[i] = probe->pkd_repr[i] = SIZE_MAX;
@@ -265,15 +271,34 @@ bool sapling_spend_synthesize_traced(struct constraint_system *cs,
     struct fr anchor_fr;
     fr_from_bytes(&anchor_fr, pub->anchor);
 
+    /* The nullifier's two packed scalars. multipack_bytes_to_fr writes PLAIN
+     * integer limbs — the representation the VERIFIER wants (sapling.c pairs it
+     * with jub_to_affine_raw/bytes_le_to_fr_raw for exactly that reason) —
+     * whereas `struct fr` is Montgomery form. So the limbs are serialized back
+     * to little-endian bytes and converted, the same way anchor above goes
+     * through fr_from_bytes. A straight memcpy into fr.d stores value * R^-1:
+     * for a packed scalar of 1 the witness would hold R^-1 mod r instead of 1.
+     * Nothing reads these slots until section 28 binds nf to them, and
+     * cs_is_satisfied() cannot see it either, so the mistake would have
+     * surfaced later as an apparent nullifier-PACKING bug — far from its cause.
+     * Each packed scalar is at most BLS12_381_FR_CAPACITY = 253 bits, so it is
+     * always canonical and fr_from_bytes cannot reject it. */
     uint64_t nf_packed[2][4];
     size_t nf_count = 0;
     multipack_bytes_to_fr(nf_packed, &nf_count, pub->nullifier, 32);
     struct fr nf0, nf1;
-    memcpy(nf0.d, nf_packed[0], 32);
-    if (nf_count > 1)
-        memcpy(nf1.d, nf_packed[1], 32);
-    else
-        fr_zero(&nf1);
+    fr_zero(&nf0);
+    fr_zero(&nf1);
+    for (size_t s = 0; s < 2 && s < nf_count; s++) {
+        uint8_t le[32];
+        for (size_t limb = 0; limb < 4; limb++)
+            zcl_write_u64_le(le + limb * 8, nf_packed[s][limb]);
+        if (!fr_from_bytes(s == 0 ? &nf0 : &nf1, le))
+            LOG_FAIL("circuit_spend",
+                     "spend: packed nullifier scalar %zu is not a canonical Fr "
+                     "encoding (multipack emits <= 253 bits, so this cannot "
+                     "happen without a multipack change)", s);
+    }
 
     size_t in_rk_x = cs_alloc_input(cs, &rk_x);  /* input 1: rk.x */
     size_t in_rk_y = cs_alloc_input(cs, &rk_y);  /* input 2: rk.y */
@@ -461,16 +486,71 @@ bool sapling_spend_synthesize_traced(struct constraint_system *cs,
                    "16:representation of pk_d");
 
     /* note_contents is now the complete 576-bit note: value || repr(g_d) ||
-     * repr(pk_d). Section 17 Pedersen-hashes it into the note commitment. */
-    (void)note_contents;
+     * repr(pk_d). Sections 17..20 turn it into the note commitment. */
 
-    /* ════ Sections 17..20: note commitment (982 + 252 + 750 + 6) ════
-     * Pedersen-hash note_contents, booleanize rcm, multiply the note-commitment
-     * randomness generator and add — producing cm, whose x-coordinate section 21
-     * folds up the tree. Not yet ported; while cm_x_var is SIZE_MAX section 21
-     * below is not synthesized, because recording it out of position would make
-     * the parity oracle diff its boundary against section 17's. */
-    size_t cm_x_var = SIZE_MAX;
+    /* ════ Section 17: note content hash (982) ════
+     * PedersenHash(NoteCommitment, note_contents) — bellman's windowed Pedersen
+     * hash over 6 constant personalization bits plus the 576 note wires, i.e.
+     * 194 three-bit windows spread over 4 of the 6 Pedersen segments.
+     * 982 = 386 window lookups + 570 in-segment Montgomery additions
+     * + 8 Montgomery->Edwards conversions + 18 cross-segment Edwards additions.
+     * The 386 is not 194*2: windows 0 and 1 are made entirely of the constant
+     * personalization bits, so their AND(bit0, bit1) folds away for free.
+     * The input wires are the SAME wires sections 14/15/16 produced — the note
+     * is opened once, never re-derived. */
+    bool note_pers[PEDERSEN_PERSONALIZATION_BITS];
+    gadget_pedersen_personalization_note_commitment(note_pers);
+    size_t note_hash_x, note_hash_y;
+    gadget_pedersen_hash_pers(cs, note_pers, note_contents,
+                              SPEND_NOTE_CONTENT_BITS,
+                              &note_hash_x, &note_hash_y);
+    if (note_hash_x >= cs->num_vars || note_hash_y >= cs->num_vars)
+        LOG_FAIL("circuit_spend",
+                 "spend: section 17 note content hash produced no point "
+                 "(x=%zu y=%zu num_vars=%zu)",
+                 note_hash_x, note_hash_y, cs->num_vars);
+    if (probe) { probe->note_hash_x = note_hash_x;
+                 probe->note_hash_y = note_hash_y; }
+    section_record(cs, sections, max_sections, &nsec, "17:note content hash");
+
+    /* ════ Section 18: rcm into 252 boolean bits (252) ════
+     * The same boolean-only decomposition sections 2, 6 and 14 use — rcm is
+     * consumed only as bits by the fixed-base multiplication below, so there is
+     * no packing constraint back to a field element. */
+    struct fr rcm_fr;
+    fr_from_bytes(&rcm_fr, wit->rcm);
+    size_t rcm_bits[252];
+    boolean_vec_le(cs, rcm_bits, 252, &rcm_fr);
+    memory_cleanse(&rcm_fr, sizeof(rcm_fr));
+    section_record(cs, sections, max_sections, &nsec, "18:rcm bits");
+
+    /* ════ Section 19: [rcm] NoteCommitmentRandomness (750) ════
+     * Identical shape to sections 3 and 7: 84 windows over 252 bits, so
+     * 84*3 + 83*6 = 750. The generator MUST be the canonical
+     * find_group_hash(b"r", "Zcash_PH") point sapling_compute_cm() uses out of
+     * circuit, or the circuit commits to a different note than the wallet. */
+    struct fr grcm_x, grcm_y;
+    sapling_note_commit_randomness_generator(&grcm_x, &grcm_y);
+    size_t rcm_pt_x, rcm_pt_y;
+    gadget_fixed_base_mul(cs, rcm_bits, 252, &grcm_x, &grcm_y,
+                          &rcm_pt_x, &rcm_pt_y);
+    section_record(cs, sections, max_sections, &nsec,
+                   "19:commitment randomness");
+
+    /* ════ Section 20: cm = note_hash + [rcm] G_rcm (6) ════
+     * One Edwards addition. A Pedersen hash is not itself a hiding commitment,
+     * so this is the step that makes cm hide the note contents. */
+    size_t cm_x_var, cm_y_var;
+    gadget_edwards_add(cs, note_hash_x, note_hash_y, rcm_pt_x, rcm_pt_y,
+                       &cm_x_var, &cm_y_var);
+    if (cm_x_var >= cs->num_vars || cm_y_var >= cs->num_vars)
+        LOG_FAIL("circuit_spend",
+                 "spend: section 20 cm wires out of range "
+                 "(x=%zu y=%zu num_vars=%zu)", cm_x_var, cm_y_var,
+                 cs->num_vars);
+    if (probe) { probe->cm_x = cm_x_var; probe->cm_y = cm_y_var; }
+    section_record(cs, sections, max_sections, &nsec,
+                   "20:randomization of note commitment");
 
     /* ════ Section 21: 32-level Merkle authentication path (44224) ════
      * The single largest section of the circuit — 45% of all 98777 constraints.
@@ -479,24 +559,29 @@ bool sapling_spend_synthesize_traced(struct constraint_system *cs,
      * two non-strict 255-bit decompositions and a Pedersen hash under
      * Personalization::MerkleTree(depth) — 1382 each, over 32 levels. Its cost,
      * its anchor value against an out-of-circuit fold, its swap sensitivity and
-     * its wire boundness are gated by lib/test/src/groth16_merkle_path.c. */
+     * its wire boundness are gated by lib/test/src/groth16_merkle_path.c.
+     *
+     * The leaf is section 20's cm.x — the note commitment, straight off the wire
+     * that section computed. The reference takes only the x-coordinate here and
+     * loses nothing by it: Jubjub's x determines the point up to sign and the
+     * tree stores exactly this value (the protocol's `cmu`). */
     size_t anchor_var = SIZE_MAX;
     size_t position_bits[SAPLING_MERKLE_DEPTH];
-    if (cm_x_var != SIZE_MAX) {
-        if (!gadget_merkle_auth_path(cs, cm_x_var, wit->auth_path,
-                                     wit->auth_path_bits, &anchor_var,
-                                     position_bits))
-            LOG_FAIL("circuit_spend",
-                     "spend: section 21 Merkle authentication path failed");
-        section_record(cs, sections, max_sections, &nsec,
-                       "21:merkle tree hash 0..31");
-    }
+    if (!gadget_merkle_auth_path(cs, cm_x_var, wit->auth_path,
+                                 wit->auth_path_bits, &anchor_var,
+                                 position_bits))
+        LOG_FAIL("circuit_spend",
+                 "spend: section 21 Merkle authentication path failed");
+    if (probe)
+        probe->anchor = anchor_var;
+    section_record(cs, sections, max_sections, &nsec,
+                   "21:merkle tree hash 0..31");
     (void)anchor_var;     /* sections 22/23 bind it to public input 5 */
     (void)position_bits;  /* section 24 multiplies g^position by these */
 
-    /* Sections 17..20 and 22..28 remain to be ported (see the port-status note
-     * above). The prefix synthesized here is deterministic and shape-matched to
-     * the reference for sections 1..16. */
+    /* Sections 22..28 remain to be ported (see the port-status note above).
+     * The prefix synthesized here is deterministic and shape-matched to the
+     * reference for sections 1..21. */
 
     if (n_sections_out)
         *n_sections_out = nsec;
@@ -572,6 +657,26 @@ static bool build_probe_witness(struct sapling_spend_witness *wit,
     wit->value = UINT64_C(12345);
     wit->rcv[0] = 0x2f;
     wit->rcv[1] = 0x91;
+    /* Section 18 booleanizes rcm and section 19 multiplies by it; a zero rcm
+     * would still synthesize, but every window would select the table's
+     * identity slot and the probe would exercise none of the arithmetic. */
+    wit->rcm[0] = 0x5c;
+    wit->rcm[1] = 0x23;
+    /* Section 21 decomposes each sibling with a NON-strict 255-bit
+     * decomposition, so a sibling only has to be a canonical Fr encoding.
+     * Taking each from a Pedersen Merkle hash guarantees that: the output is a
+     * Jubjub point's x-coordinate, hence an Fr element by construction. A
+     * memset-zero path would synthesize too, but every level would hash the
+     * same sibling and a depth-indexing bug would be invisible. */
+    for (size_t d = 0; d < SAPLING_MERKLE_DEPTH; d++) {
+        uint8_t a[32] = {0}, b[32] = {0};
+        a[0] = (uint8_t)(0x10u + d);
+        a[1] = 0x5b;
+        b[0] = (uint8_t)(d * 7u);
+        b[3] = 0x11;
+        pedersen_merkle_hash(0, a, b, wit->auth_path[d]);
+        wit->auth_path_bits[d] = (((d * 5u) + (d / 3u)) & 1u) != 0u;
+    }
 
     bool have_d = false;
     for (unsigned i = 0; i < 256 && !have_d; i++) {

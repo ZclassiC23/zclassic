@@ -23,6 +23,17 @@ void pedersen_merkle_hash(size_t depth,
 void pedersen_hash_bits(const uint8_t *bits, int nbits,
                          struct jub_point *result);
 
+/* Number of Pedersen segment generators; each covers 63 three-bit windows. */
+#define PEDERSEN_SEGMENT_GENERATORS 6
+
+/* The `index`-th Pedersen segment generator, find_group_hash("Zcash_PH", index).
+ * Exposed so the IN-CIRCUIT Pedersen gadget (circuit_pedersen.c) multiplies the
+ * exact same six points this out-of-circuit hash does. It used to keep its own
+ * second cache of the same derivation, and two caches of one set of points are
+ * two things that can silently drift apart. Returns false (logged) when `index`
+ * is out of range or `out` is NULL. */
+bool pedersen_segment_generator(size_t index, struct jub_point *out);
+
 /* Sapling tree uncommitted value: Fr::one() = 1 as 32 bytes LE */
 void sapling_uncommitted(uint8_t out[32]);
 

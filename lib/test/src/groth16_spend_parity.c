@@ -68,6 +68,7 @@
 
 #include "sapling/sapling.h"
 #include "sapling/sapling_circuit.h"
+#include "sapling/pedersen_hash.h"
 #include "sapling/fr.h"
 
 #include <stdbool.h>
@@ -192,6 +193,30 @@ static void build_corpus_witness(struct parity_witness *pw, unsigned idx)
         w->rcv[0] = (uint8_t)(idx * 11u + 3u);
         w->rcv[1] = (uint8_t)(idx * 2u);
     }
+    /* Note commitment randomness (sections 18/19/20). Kept small so it is a
+     * canonical Fs scalar: the in-circuit decomposition keeps 252 bits and the
+     * out-of-circuit jub_scalar_mul reads all 256, so a scalar with a bit above
+     * 252 set would make the two disagree for a reason that is not a bug. A
+     * zero rcm would synthesize but select the identity slot in every window,
+     * exercising none of section 19's arithmetic. */
+    w->rcm[0] = (uint8_t)(idx * 13u + 0x5cu);
+    w->rcm[1] = (uint8_t)(idx * 3u + 0x23u);
+
+    /* The authentication path section 21 folds cm.x up (32 siblings + 32
+     * position bits). Each sibling is taken from a Pedersen Merkle hash so it is
+     * a canonical Fr encoding by construction — the in-circuit 255-bit
+     * decomposition and the out-of-circuit reference must read the same number.
+     * The position bits deliberately are NOT a function of depth parity alone;
+     * a swapped-every-level bug would be invisible against that pattern. */
+    for (size_t d = 0; d < SAPLING_MERKLE_DEPTH; d++) {
+        uint8_t a[32] = {0}, b[32] = {0};
+        a[0] = (uint8_t)(0x10u + d);
+        a[1] = (uint8_t)(0x5bu + idx);
+        b[0] = (uint8_t)(d * 7u);
+        b[3] = 0x11;
+        pedersen_merkle_hash(0, a, b, w->auth_path[d]);
+        w->auth_path_bits[d] = ((((d * 5u) + (d / 3u)) ^ idx) & 1u) != 0u;
+    }
 
     /* Section 11 witnesses g_d = GH("Zcash_gd", d) and section 12 asserts it is
      * not small order, so the diversifier has to be one that actually hashes to
@@ -232,6 +257,58 @@ static bool decode_xy(const uint8_t comp[32], struct fr *x, struct fr *y)
     jub_get_x(x, &p);
     jub_get_y(y, &p);
     return true;
+}
+
+/* Reference section-17 note-content hash: the table-driven Pedersen hash
+ * (lib/sapling/src/pedersen_hash.c — Edwards coordinates, precomputed chunk
+ * multiples) over the 6 NoteCommitment personalization bits plus
+ * value(64) || repr(g_d) || repr(pk_d). The circuit synthesizes the same point
+ * through 194 Montgomery-coordinate window lookups, four Montgomery->Edwards
+ * conversions and three Edwards additions, so agreement is a differential
+ * between two genuinely different algorithms, not a restatement.
+ * Section 20's reference is the PRODUCTION sapling_note_commitment_point(). */
+static void reference_note_content_hash(uint64_t value,
+                                        const uint8_t gd[32],
+                                        const uint8_t pkd[32],
+                                        struct jub_point *hash_out)
+{
+    uint8_t contents[72];
+    for (size_t i = 0; i < 8; i++)
+        contents[i] = (uint8_t)(value >> (i * 8));
+    memcpy(contents + 8, gd, 32);
+    memcpy(contents + 40, pkd, 32);
+
+    uint8_t bits[6 + 576];
+    size_t n = 0;
+    for (size_t i = 0; i < 6; i++)
+        bits[n++] = 1;              /* Personalization::NoteCommitment == 63 */
+    for (size_t i = 0; i < 576; i++)
+        bits[n++] = (uint8_t)((contents[i / 8] >> (i % 8)) & 1u);
+
+    pedersen_hash_bits(bits, (int)n, hash_out);
+}
+
+/* Reference section-21 anchor: fold the SAME witnessed authentication path over
+ * the SAME leaf with the out-of-circuit pedersen_merkle_hash. `leaf` is the note
+ * commitment's x-coordinate — sections 17..20's own output, which is the point
+ * of doing this in one pass: it checks the value the circuit committed to is the
+ * value that entered the tree, not merely that each half is internally right. */
+static void reference_anchor(const uint8_t leaf[32],
+                             const uint8_t path[SAPLING_MERKLE_DEPTH][32],
+                             const bool bits[SAPLING_MERKLE_DEPTH],
+                             uint8_t out[32])
+{
+    uint8_t cur[32];
+    memcpy(cur, leaf, 32);
+    for (size_t d = 0; d < SAPLING_MERKLE_DEPTH; d++) {
+        uint8_t next[32];
+        if (bits[d])
+            pedersen_merkle_hash(d, path[d], cur, next);
+        else
+            pedersen_merkle_hash(d, cur, path[d], next);
+        memcpy(cur, next, 32);
+    }
+    memcpy(out, cur, 32);
 }
 
 #define PARITY_CHECK(name, expr) do {                 \
@@ -394,7 +471,7 @@ int groth16_spend_parity_oracle(void)
                  "corpus[%u]: in-circuit rk wire == ak + [ar]G (section 4)", c);
         PARITY_CHECK(label, rk_wire_ok);
 
-        /* Sections 11/13/14: the note-content points, per witness. pk_d is the
+        /* Sections 11/13/14/17/20: the note-content points, per witness. pk_d is the
          * output of the circuit's only VARIABLE-base multiplication, so it is
          * the one section whose gadget the fixed-base checks above cannot
          * exercise; cv is additionally the first public input past rk that the
@@ -414,16 +491,38 @@ int groth16_spend_parity_oracle(void)
                    && sapling_value_commit(pw.wit.value, pw.wit.rcv, cv_ref);
         }
 
+        /* Sections 17/20: the note-content Pedersen hash and the randomized
+         * note commitment, from the out-of-circuit table-driven Pedersen hash +
+         * plain Jubjub scalar mul. Compressed here so they join the same
+         * table-driven comparison as the points above. */
+        uint8_t note_hash_ref[32] = {0}, cm_ref[32] = {0};
+        struct jub_point cm_ref_pt;
+        if (refs_ok) {
+            struct jub_point hash_pt;
+            reference_note_content_hash(pw.wit.value, gd_ref, pkd_ref,
+                                        &hash_pt);
+            jub_to_bytes(note_hash_ref, &hash_pt);
+            refs_ok = sapling_note_commitment_point(pw.wit.diversifier, pkd_ref,
+                                                    pw.wit.value, pw.wit.rcm,
+                                                    &cm_ref_pt);
+            if (refs_ok)
+                jub_to_bytes(cm_ref, &cm_ref_pt);
+        }
+
         const struct { const char *what; const uint8_t *want;
-                       size_t x_var, y_var; } note_points[3] = {
+                       size_t x_var, y_var; } note_points[5] = {
             { "g_d wire == GH(\"Zcash_gd\", d) (section 11)",
               gd_ref,  probe.gd_x,  probe.gd_y },
             { "pk_d wire == reference [ivk] g_d (section 13)",
               pkd_ref, probe.pkd_x, probe.pkd_y },
             { "cv wire == [value]G_v + [rcv]G_rcv (section 14)",
               cv_ref,  probe.cv_x,  probe.cv_y },
+            { "note hash wire == PedersenHash(NoteCommitment, note) (section 17)",
+              note_hash_ref, probe.note_hash_x, probe.note_hash_y },
+            { "cm wire == note hash + [rcm] G_rcm (section 20)",
+              cm_ref,  probe.cm_x,  probe.cm_y },
         };
-        for (size_t np = 0; np < 3; np++) {
+        for (size_t np = 0; np < 5; np++) {
             struct fr wx, wy;
             bool ok = refs_ok && decode_xy(note_points[np].want, &wx, &wy)
                    && note_points[np].x_var < cs.num_vars
@@ -437,6 +536,63 @@ int groth16_spend_parity_oracle(void)
             }
             snprintf(label, sizeof(label), "corpus[%u]: in-circuit %s",
                      c, note_points[np].what);
+            PARITY_CHECK(label, ok);
+        }
+
+        /* Section 20, tied to the PRODUCTION note-commitment API rather than to
+         * a reference this file assembled: sapling_compute_cm() is what the
+         * wallet and the output-proof path commit with, and the protocol's `cmu`
+         * is exactly this x-coordinate. If the circuit's cm.x wire and
+         * sapling_compute_cm() ever disagree, a spend proof would be over a note
+         * the tree does not contain. */
+        uint8_t cm_api[32];
+        bool cm_api_ok = refs_ok
+               && sapling_compute_cm(pw.wit.diversifier, pkd_ref,
+                                     pw.wit.value, pw.wit.rcm, cm_api);
+        {
+            struct fr cm_api_fr;
+            bool ok = cm_api_ok
+                   && fr_from_bytes(&cm_api_fr, cm_api)
+                   && probe.cm_x < cs.num_vars
+                   && fr_eq(&cs.witness[probe.cm_x], &cm_api_fr);
+            if (!ok && !flagged) {
+                flagged = true;
+                printf("  >> FIRST DIVERGENCE: corpus[%u] in-circuit cm.x wire "
+                       "!= sapling_compute_cm() (section 20)\n", c);
+            }
+            snprintf(label, sizeof(label),
+                     "corpus[%u]: in-circuit cm.x == sapling_compute_cm() "
+                     "(section 20)", c);
+            PARITY_CHECK(label, ok);
+        }
+
+        /* Sections 17..21 END TO END, the assertion neither half can make alone:
+         * fold the witnessed authentication path out of circuit starting from
+         * sapling_compute_cm()'s OWN leaf, and require the circuit's anchor wire
+         * to match. Section 20 proven correct and section 21 proven correct do
+         * not between them prove the commitment section 20 computed is what
+         * section 21 folded — an off-by-one in the handover would leave both
+         * halves green. This is what opening that seam has to buy. */
+        {
+            uint8_t anchor_ref[32];
+            struct fr anchor_ref_fr;
+            bool ok = cm_api_ok;
+            if (ok) {
+                reference_anchor(cm_api, pw.wit.auth_path,
+                                 pw.wit.auth_path_bits, anchor_ref);
+                ok = fr_from_bytes(&anchor_ref_fr, anchor_ref)
+                  && probe.anchor < cs.num_vars
+                  && fr_eq(&cs.witness[probe.anchor], &anchor_ref_fr);
+            }
+            if (!ok && !flagged) {
+                flagged = true;
+                printf("  >> FIRST DIVERGENCE: corpus[%u] in-circuit anchor "
+                       "!= out-of-circuit fold over sapling_compute_cm()'s cm.x "
+                       "(sections 17..21 handover)\n", c);
+            }
+            snprintf(label, sizeof(label),
+                     "corpus[%u]: in-circuit anchor == out-of-circuit fold over "
+                     "the circuit's own cm.x (sections 17..21)", c);
             PARITY_CHECK(label, ok);
         }
 

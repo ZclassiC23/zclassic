@@ -74,18 +74,35 @@ void gadget_synth_coeffs(size_t window_size, const struct fr *constants,
 /* ── Jubjub Montgomery-form constants ───────────────────────────── */
 
 /* The two constants that turn a Jubjub twisted-Edwards point into the
- * Montgomery form the Pedersen hash gadget accumulates in, exposed so a test
- * can pin them ALGEBRAICALLY rather than trusting a byte blob:
+ * Montgomery form the Pedersen hash gadget accumulates in:
  *   A     == 40962         == 2(a+d)/(a-d)
  *   scale == sqrt(-40964)  == sqrt(4/(a-d))
- * Only scale^2 reaches the Montgomery addition, so a wrong-magnitude scale
- * leaves a single-window hash round-tripping while corrupting every multi-window
- * one — a failure a constraint count cannot see. Either out-param may be NULL. */
+ * `scale` is DERIVED with fr_sqrt in circuit_pedersen.c, not read from a byte
+ * blob — a blob that did not square to -40964 once shipped here undetected,
+ * because only scale^2 reaches the Montgomery addition and a single-window hash
+ * therefore still round-trips while every multi-window one is wrong.
+ *
+ * Exposed anyway, because deriving it is not sufficient. Both constants are
+ * literal COEFFICIENTS inside the emitted constraints, and -scale is an equally
+ * valid square root that computes the identical hash (the negation cancels
+ * through the Montgomery addition and the conversion back to Edwards) over a
+ * DIFFERENT coefficient matrix — same witness, same constraint count, different
+ * QAP, so a proof would not verify against the Sapling trusted setup. Only a
+ * test that pins the specific root against librustzcash's published value can
+ * see that; lib/test/src/groth16_merkle_path.c is that test. Either out-param
+ * may be NULL. */
 void gadget_jubjub_montgomery_params(struct fr *a_out, struct fr *scale_out);
 
 /* ── Pedersen Hash Gadget (in-circuit) ──────────────────────────────
  * Implemented in circuit_pedersen.c together with the Montgomery-form
  * arithmetic it is the only consumer of. */
+
+/* Width of the personalization prefix bellman prepends to every windowed
+ * Pedersen hash input. bellman's `Personalization` is exactly a 6-bit
+ * little-endian value: MerkleTree(depth) encodes the depth (0..62) and
+ * NoteCommitment is the reserved all-ones value 63, which is why the MerkleTree
+ * accessor below asserts depth < 63. */
+#define PEDERSEN_PERSONALIZATION_BITS 6u
 
 /* bellman `Personalization::get_bits` — the six CONSTANT bits that prefix every
  * Pedersen preimage. NoteCommitment is six 1 bits; MerkleTree(depth) is the six

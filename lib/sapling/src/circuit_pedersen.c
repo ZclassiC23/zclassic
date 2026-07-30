@@ -190,43 +190,82 @@ static void gadget_montgomery_add(struct constraint_system *cs,
     }
 }
 
-/* Montgomery to Edwards conversion (2 constraints):
- * Edwards (u, v) from Montgomery (x, y):
- *   u = scale * x / y
- *   v = (x - 1) / (x + 1)
- * where scale = sqrt(-40964) (the Jubjub "scale" parameter) */
+/* sapling-crypto `JubjubBls12::scale` — the factor that normalizes the
+ * Montgomery curve's B coefficient to 1:
+ *
+ *   Jubjub twisted Edwards:  a*x^2 + y^2 = 1 + d*x^2*y^2, a = -1,
+ *                            d = -10240/10241
+ *   Montgomery:              B*v^2 = u^3 + A*u^2 + u
+ *                            A = 2(a+d)/(a-d) = 40962
+ *                            B = 4/(a-d)      = -40964
+ *
+ * so scale = sqrt(4/(a-d)) = sqrt(-40964) mod r, and the reference's value is
+ * the decimal
+ *   17814886934372412843466061268024708274627479829237077604635722030778476050649
+ *
+ * DERIVED, not a literal. A hardcoded blob used to supply this, and that blob
+ * did not square to -40964 — nothing structural could see the error, because
+ * only scale^2 enters the Montgomery ADDITION (through lambda^2). A
+ * wrong-magnitude scale therefore leaves a SINGLE-window hash round-tripping
+ * while corrupting every multi-window one: identical constraint count, and the
+ * honest witness still satisfies every emitted constraint because the witness
+ * was computed by the same wrong formula the constraints encode. It only
+ * surfaced when a per-wire differential against the out-of-circuit Pedersen hash
+ * finally ran. Computing the factor from its defining equation removes the class
+ * of failure rather than pinning one instance of it.
+ *
+ * WHICH ROOT is still load-bearing, and NOT for the reason a first reading
+ * suggests. Negating scale negates every Montgomery y (the window tables, every
+ * lambda, every y3) and gadget_montgomery_to_edwards divides scale*x by y, so
+ * the negation cancels and the Edwards OUTPUT of both roots is identical — the
+ * hash computes the same function either way. But `scale` also appears as a
+ * literal COEFFICIENT, in this file's window-table constants and in the
+ * conversion's `y*u = scale*x` constraint, so the two roots are two different
+ * R1CS instances: same witness values, same count, different A/B/C matrices,
+ * hence a different QAP and a proof that does not verify against the Sapling
+ * trusted setup's proving key. So the root is pinned by the gate in
+ * lib/test/src/groth16_merkle_path.c against librustzcash's published decimal,
+ * not merely against its own square. fr_sqrt happens to return exactly that
+ * root today (measured, not assumed); the pin is what keeps it that way if
+ * Tonelli-Shanks internals ever shift.
+ *
+ * On a derivation failure the factor stays ZERO, so the conversion divides by
+ * zero and synthesis fails loudly rather than hashing to a wrong point. */
+static struct fr s_mont_scale;
+static pthread_once_t s_mont_scale_once = PTHREAD_ONCE_INIT;
+
+static void load_montgomery_scale(void)
+{
+    uint8_t bytes[32] = {0};
+    bytes[0] = 0x04;                        /* 40964 = 0xA004, little-endian */
+    bytes[1] = 0xA0;
+    struct fr neg_b, root, check;
+    fr_zero(&s_mont_scale);
+    if (!fr_from_bytes(&neg_b, bytes)) {
+        LOG_ERROR("circuit_gadgets",
+                  "montgomery_scale: 40964 is not a valid Fr encoding");
+        return;
+    }
+    fr_neg(&neg_b, &neg_b);                 /* -40964 == B == 4/(a-d) */
+    if (!fr_sqrt(&root, &neg_b)) {
+        LOG_ERROR("circuit_gadgets",
+                  "montgomery_scale: -40964 is not a quadratic residue in Fr "
+                  "— Jubjub would have no Montgomery form");
+        return;
+    }
+    fr_sq(&check, &root);
+    if (!fr_eq(&check, &neg_b)) {
+        LOG_ERROR("circuit_gadgets",
+                  "montgomery_scale: sqrt(-40964) failed its own square check");
+        return;
+    }
+    s_mont_scale = root;
+}
+
 static void montgomery_scale(struct fr *s)
 {
-    /* sapling-crypto `JubjubBls12::scale` — the factor that normalizes the
-     * Montgomery curve's B coefficient to 1:
-     *
-     *   Jubjub twisted Edwards:  a*x^2 + y^2 = 1 + d*x^2*y^2, a = -1,
-     *                            d = -10240/10241
-     *   Montgomery:              B*v^2 = u^3 + A*u^2 + u
-     *                            A = 2(a+d)/(a-d) = 40962
-     *                            B = 4/(a-d)      = -40964
-     *
-     * so scale = sqrt(4/(a-d)) = sqrt(-40964) mod r, and the reference's value
-     * is the decimal
-     *   17814886934372412843466061268024708274627479829237077604635722030778476050649
-     * little-endian below.
-     *
-     * The SIGN is load-bearing in two different ways. Value-wise, only scale^2
-     * enters the Montgomery ADDITION (through lambda^2), so a wrong-magnitude
-     * scale corrupts every within-segment addition while a single-window hash
-     * still round-trips — which is why the bad constant this replaced survived:
-     * nothing compared the in-circuit Pedersen output against the
-     * out-of-circuit one until lib/test/src/groth16_merkle_path.c did.
-     * Constraint-wise, scale appears as a literal coefficient in
-     * gadget_montgomery_to_edwards, so even the other legitimate square root
-     * would yield a different QAP than the trusted setup's. */
-    static const uint8_t SCALE_BYTES[32] = {
-        0xD9,0xB8,0x82,0xCF,0xF7,0x35,0x45,0x8F,
-        0xBD,0x8A,0xA8,0x3D,0x70,0x69,0x40,0xCE,
-        0xE5,0x64,0xD7,0x77,0x1E,0x34,0xDE,0x31,
-        0x5E,0x64,0x62,0xE8,0x61,0xDE,0x62,0x27
-    };
-    fr_from_bytes(s, SCALE_BYTES);
+    pthread_once(&s_mont_scale_once, load_montgomery_scale);
+    *s = s_mont_scale;
 }
 
 void gadget_jubjub_montgomery_params(struct fr *a_out, struct fr *scale_out)
@@ -237,6 +276,13 @@ void gadget_jubjub_montgomery_params(struct fr *a_out, struct fr *scale_out)
         montgomery_scale(scale_out);
 }
 
+/* Montgomery to Edwards conversion (2 constraints). Edwards (u, v) from
+ * Montgomery (x, y):
+ *   u = scale * x / y
+ *   v = (x - 1) / (x + 1)
+ * `scale` is the derived sqrt(-40964) above; it enters the first constraint as a
+ * literal coefficient, which is why its exact root and not just its square is
+ * pinned by a test. */
 static void gadget_montgomery_to_edwards(struct constraint_system *cs,
                                            /* Montgomery point as LC terms */
                                            size_t mx_nterms,
@@ -352,10 +398,9 @@ static void gadget_montgomery_to_edwards(struct constraint_system *cs,
  * a second copy of this function. */
 
 #define PEDERSEN_CHUNKS_PER_GEN 63
-#define PEDERSEN_NUM_GEN 6
+#define PEDERSEN_NUM_GEN PEDERSEN_SEGMENT_GENERATORS
 #define PEDERSEN_WINDOW_SLOTS 4
 
-static struct jub_point ph_generators_cache[PEDERSEN_NUM_GEN];
 /* Per-window Montgomery coordinates of {1,2,3,4} * (16^window) * G_segment —
  * bellman `generate_pedersen_circuit_generators`, precomputed once because each
  * entry costs two field inversions and the Merkle path asks for 172 windows per
@@ -396,18 +441,20 @@ static void edwards_to_montgomery(struct fr *mx, struct fr *my,
 
 static void ph_load_windows(void)
 {
-    const uint8_t pers[8] = {'Z','c','a','s','h','_','P','H'};
     for (size_t i = 0; i < PEDERSEN_NUM_GEN; i++) {
-        /* find_group_hash: 4-byte LE segment index, then a counter byte until
-         * the hash lands on a curve point. */
-        uint8_t tag[5] = {0};
-        tag[0] = (uint8_t)(i & 0xff);
-        for (int c = 0; c < 256; c++) {
-            tag[4] = (uint8_t)c;
-            if (group_hash(&ph_generators_cache[i], tag, 5, pers))
-                break;
+        /* The segment generators come from pedersen_hash.c, the out-of-circuit
+         * hash's own cache. This file used to re-run find_group_hash into a
+         * second cache of the same six points, and two caches of one set of
+         * points are two things that can drift apart — with the in-circuit and
+         * out-of-circuit hashes then committing to different notes while every
+         * constraint count stayed right. One derivation, one cache. */
+        struct jub_point gen;
+        if (!pedersen_segment_generator(i, &gen)) {
+            LOG_ERROR("circuit_gadgets",
+                      "pedersen windows: segment generator %zu unavailable", i);
+            return;
         }
-        struct jub_point base = ph_generators_cache[i];
+        struct jub_point base = gen;
         for (size_t w = 0; w < PEDERSEN_CHUNKS_PER_GEN; w++) {
             struct jub_point pts[PEDERSEN_WINDOW_SLOTS];
             pts[0] = base;                       /* 1 * base */

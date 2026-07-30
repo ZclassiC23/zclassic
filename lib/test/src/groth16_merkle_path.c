@@ -348,12 +348,14 @@ int groth16_merkle_path_gate(void)
            "authentication path ---\n");
     int failures = 0;
 
-    /* The Montgomery-form constants, pinned algebraically. Both are literal
-     * coefficients inside the Pedersen gadget's constraints, and the `scale`
-     * that shipped before this section landed was NOT a square root of -40964:
-     * only scale^2 reaches the Montgomery addition, so single-window hashes
-     * round-tripped and every real Pedersen hash was wrong. Checking the
-     * defining equation costs nothing and names that failure directly. */
+    /* The Montgomery-form constants. Both are literal coefficients inside the
+     * Pedersen gadget's constraints, and the `scale` that shipped before this
+     * section landed was NOT a square root of -40964: only scale^2 reaches the
+     * Montgomery addition, so single-window hashes round-tripped and every real
+     * multi-window Pedersen hash was wrong. Production now DERIVES scale with
+     * fr_sqrt instead of carrying a blob, so a value that is not a square root
+     * can no longer ship at all — but that is only half of what has to hold, and
+     * this gate covers the other half. */
     {
         struct fr mont_a, scale, want_a, sq, want_sq;
         gadget_jubjub_montgomery_params(&mont_a, &scale);
@@ -372,6 +374,34 @@ int groth16_merkle_path_gate(void)
         fr_neg(&want_sq, &want_sq);
         MERKLE_CHECK("Jubjub Montgomery scale^2 == -40964 == 4/(a-d)",
                      b_ok && fr_eq(&sq, &want_sq));
+
+        /* WHICH of the two square roots, pinned against sapling-crypto's
+         * published `JubjubBls12::scale`:
+         *   17814886934372412843466061268024708274627479829237077604635722030778476050649
+         * little-endian below.
+         *
+         * The defining equation above CANNOT catch a wrong choice here, and
+         * neither can anything else this suite runs. Negating scale negates every
+         * Montgomery y — the window tables, every lambda, every y3 — and the
+         * conversion back to Edwards divides scale*x by y, so the negation
+         * cancels and both roots compute the IDENTICAL hash. Same output, same
+         * constraint count, same satisfied witness. What differs is that scale
+         * appears as a literal COEFFICIENT in those constraints, so the two roots
+         * are two different A/B/C matrices — a different QAP, and a proof that
+         * the Sapling trusted setup's verifying key rejects. fr_sqrt returns this
+         * root today; a Tonelli-Shanks change that returned the other one would
+         * be invisible without this line. */
+        static const uint8_t REF_SCALE_LE[32] = {
+            0xD9,0xB8,0x82,0xCF,0xF7,0x35,0x45,0x8F,
+            0xBD,0x8A,0xA8,0x3D,0x70,0x69,0x40,0xCE,
+            0xE5,0x64,0xD7,0x77,0x1E,0x34,0xDE,0x31,
+            0x5E,0x64,0x62,0xE8,0x61,0xDE,0x62,0x27
+        };
+        struct fr want_scale;
+        MERKLE_CHECK("Jubjub Montgomery scale == sapling-crypto's published "
+                     "root (not the other one — same hash, different QAP)",
+                     fr_from_bytes(&want_scale, REF_SCALE_LE)
+                     && fr_eq(&scale, &want_scale));
     }
 
     struct merkle_fixture f;
