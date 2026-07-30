@@ -48,7 +48,7 @@ SOAK_LAG_WARN="${ZCL_SOAK_LAG_WARN:-$LAG_WARN}"
 # shellcheck source=tools/scripts/stopwatch_json_lib.sh
 . "$REPO_ROOT/tools/scripts/stopwatch_json_lib.sh"  # json_escape
 # shellcheck source=tools/scripts/source_identity_lib.sh
-. "$REPO_ROOT/tools/scripts/source_identity_lib.sh"  # zcl_json_first_string
+. "$REPO_ROOT/tools/scripts/source_identity_lib.sh"  # zcl_json_first_string, zcl_is_sha256
 
 json_bool() {
     if [ "$1" = "1" ]; then
@@ -78,10 +78,6 @@ is_number() {
         ''|*[!0-9]*) return 1 ;;
         *) return 0 ;;
     esac
-}
-
-is_source_id_sha256() {
-    [[ "${1:-}" =~ ^[0-9a-f]{64}$ ]]
 }
 
 is_safe_arith_number() {
@@ -150,11 +146,11 @@ lane_health_selftest() {
         echo "lane-health selftest: expected nested readiness=true" >&2
         return 1
     }
-    is_source_id_sha256 "$source_id" || {
+    zcl_is_sha256 "$source_id" || {
         echo "lane-health selftest: expected valid source_id_sha256" >&2
         return 1
     }
-    if is_source_id_sha256 "195a636c6173736963205369676e6564204d657373"; then
+    if zcl_is_sha256 "195a636c6173736963205369676e6564204d657373"; then
         echo "lane-health selftest: Git/SHA-1-sized identity was trusted" >&2
         return 1
     fi
@@ -386,7 +382,7 @@ report_lane() {
         if [ "$agent_rpc_state" = "ok" ]; then
             agent_source_id_sha256="$(zcl_json_first_string "$agent_json" "source_id_sha256")"
             agent_build_commit="$(zcl_json_first_string "$agent_json" "build_commit")"
-            if is_source_id_sha256 "$agent_source_id_sha256"; then
+            if zcl_is_sha256 "$agent_source_id_sha256"; then
                 agent_contract_trusted=1
                 agent_contract_trust_reason="valid_source_id_sha256"
             elif [ -n "$agent_source_id_sha256" ]; then

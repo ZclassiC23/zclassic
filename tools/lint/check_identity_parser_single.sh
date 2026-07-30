@@ -7,16 +7,38 @@
 # with `is_sha256`/`is_hex64`/`json_first_string_field` each redefined
 # several times over — and the copies had DIVERGED: a greedy `sed
 # 's/.*"key":"\(...\)".*/\1/'` returns the LAST occurrence of a repeated
-# JSON key, not the first, and `agentbuild` emits `source_id_sha256` FOUR
-# times on one line (once baked, three times in nested runtime blocks).
-# That produced a false "the live daemon and the dev build have identical
-# identities" on 2026-07-28. tools/scripts/source_identity_lib.sh is now
-# the one canonical reader (anchored on the FIRST occurrence); this gate
-# is the anti-rot check that keeps a new copy from being pasted back in.
+# JSON key, not the first, and `agentbuild` emits `source_id_sha256`
+# SEVERAL times on one line (8 on one build measured 2026-07-30; the exact
+# count is build- and lane-state-dependent — once baked, the rest in
+# nested runtime blocks). That produced a false "the live daemon and the
+# dev build have identical identities" on 2026-07-28.
+# tools/scripts/source_identity_lib.sh is now the one canonical reader
+# (anchored on the FIRST occurrence); this gate is the anti-rot check
+# that keeps a new copy from being pasted back in.
 #
 # Two things counted, per scanned *.sh file:
-#   A. a local re-definition of one of the duplicated helper names:
-#      is_sha256, is_hex64, json_first_string_field, is_source_id_sha256
+#   A. A local re-definition of the 64-lowercase-hex validator, caught
+#      TWO ways so a rename cannot dodge it:
+#        A1. exact name: json_first_string_field (the JSON-field-extractor
+#            helper — no rename exploit has been demonstrated against this
+#            one, so it stays name-matched).
+#        A2. STRUCTURAL, name-independent: any short function (at most
+#            BODY_LIMIT substantive body lines) whose body performs a
+#            64-lowercase-hex validity check — `=~ ^[0-9a-f]{64}$`, a quiet
+#            (`-q`) grep on that pattern, or the `*[!0-9a-f]*` case-pattern
+#            rejection idiom. This is what closes the exploit the verifier
+#            proved on 2026-07-30: a file containing only
+#            `is_sha256_hex() { ... }` (a name that matches none of the
+#            fixed A1-style list) passed this gate silently. Matching the
+#            SHAPE of the validator rather than a name list means a rename
+#            cannot dodge it. The body-line cap keeps this from over-firing
+#            on unrelated multi-purpose functions that happen to touch a
+#            64-hex value for a different reason entirely (a UTXO
+#            commitment reader, a compiler-id cache key, a generation
+#            manifest reader that also does its own JSON extraction) —
+#            see scan_counts() for the exact gating and why grep -oE
+#            (extraction) is deliberately NOT treated as the same shape as
+#            grep -Eq / `=~` (a boolean test).
 #   B. an inline grep/sed extraction of the "source_id_sha256" JSON key —
 #      the copy-pasted one-liner the library replaces. Plain JSON
 #      construction (`printf '"source_id_sha256":"%s"'`) does NOT count:
@@ -29,10 +51,16 @@
 # recorded count; once it reaches zero the row is STALE and must be
 # deleted, or the ratchet rusts shut at a number nobody is paying down.
 #
-# RATCHET_CEILING below is the total measured across the baseline the day
-# this gate was introduced (2026-07-30) — 15, across 11 files (see the
-# baseline header). It may only go DOWN as rows are migrated and deleted;
-# summing the baseline and refusing to exceed this ceiling is what stops
+# RATCHET_CEILING below is the total measured across the baseline —
+# 16, across 11 files (see the baseline header). It moved from 15 to 16
+# once (2026-07-30, same day this gate was introduced): broadening Class-A
+# detection from an exact name list to also catch the validator SHAPE
+# (see the file header) surfaced two real, previously-invisible copies —
+# tools/agent_fast_ci.sh and tools/repro_on_copy.sh's own is_sha256_hex()
+# — that the exact-name list had never seen. That is a detection fix
+# surfacing pre-existing debt, not new debt being introduced; the ceiling
+# still may only go DOWN from here as rows are migrated and deleted.
+# Summing the baseline and refusing to exceed this ceiling is what stops
 # someone from quietly bumping a baseline number up to cover new debt while
 # leaving the total unchanged elsewhere — raising the ceiling itself is a
 # one-line diff in code review, not a silent runtime edit.
@@ -42,7 +70,11 @@
 # cannot source a local library file that only exists in this checkout.
 # Each is marked in-place with a `zcl-identity-parser-allow:` comment
 # within a few lines of the match, and this gate treats that marker as a
-# full exemption rather than counting it as debt.
+# full exemption rather than counting it as debt — but an unbounded marker
+# is itself a hole (any future copy anywhere could be exempted forever by
+# pasting the same comment near it), so MARKER_CEILING below bounds the
+# marker count the same shrink-only way, and MARKER_ALLOWED_FILES bounds
+# WHICH files may carry one at all: today, only tools/ship.sh.
 #
 # --selftest plants a fresh inline copy of both classes in a sandboxed
 # tools/ tree, proves the gate FAILS on it, then removes it and proves
@@ -56,7 +88,16 @@ cd "$ROOT"
 source tools/lint/gate_lib.sh
 
 GATE=check_identity_parser_single
-RATCHET_CEILING=15
+RATCHET_CEILING=16
+# See the file header. Bounds the `zcl-identity-parser-allow:` exemption
+# mechanism itself: without a ceiling, any new copy anywhere under
+# $SCAN_ROOT could dodge the ratchet forever just by pasting the same
+# comment near it — an unbounded bypass in a gate whose entire job is
+# catching the tenth copy. MARKER_ALLOWED_FILES is the second half: WHICH
+# files may carry the marker at all, so a marker planted in a file that
+# was never named here fails regardless of the count.
+MARKER_CEILING=2
+MARKER_ALLOWED_FILES=(tools/ship.sh)
 
 # ── --selftest ───────────────────────────────────────────────────────────
 if [ "${1:-}" = "--selftest" ]; then
@@ -73,6 +114,21 @@ $1
 EOF
     }
 
+    # A second, DIFFERENT file in the sandbox tree, used only by the
+    # marker-allowlist tests below: it is never named in
+    # ZCL_IDENTITY_PARSER_MARKER_ALLOWED, so a marker planted here proves
+    # the "wrong file" half of the marker bound (blocker: a marker must
+    # name its file, not just stay under a count).
+    plant_other() { # $1 = extra line to append (may be empty)
+        cat > "$tmp/tools/scripts/other_copy.sh" <<EOF
+#!/usr/bin/env bash
+# a second fixture consumer, not a real tool
+echo hello2
+$1
+EOF
+    }
+    rm -f "$tmp/tools/scripts/other_copy.sh"
+
     self="$PWD/tools/lint/$GATE.sh"
     : > "$tmp/empty_baseline.txt"
 
@@ -81,6 +137,8 @@ EOF
         ZCL_IDENTITY_PARSER_BASELINE="$tmp/empty_baseline.txt" \
         ZCL_IDENTITY_PARSER_CEILING=0 \
         ZCL_IDENTITY_PARSER_FILE_FLOOR=1 \
+        ZCL_IDENTITY_PARSER_MARKER_CEILING="${SANDBOX_MARKER_CEILING:-1}" \
+        ZCL_IDENTITY_PARSER_MARKER_ALLOWED="$tmp/tools/scripts/selftest_copy.sh" \
         ZCL_LINT_MODE=FAIL \
         bash "$self" >/dev/null 2>&1
     }
@@ -98,7 +156,13 @@ EOF
     }
 
     class_a_copy="$(cat <<'FIXTURE'
-is_sha256() { [ "${#1}" -eq 64 ]; }
+is_sha256() { [[ "${1:-}" =~ ^[0-9a-f]{64}$ ]]; }
+FIXTURE
+)"
+    class_a_renamed_copy="$(cat <<'FIXTURE'
+totally_unrelated_name_not_on_any_list() {
+    [[ "${1:-}" =~ ^[0-9a-f]{64}$ ]]
+}
 FIXTURE
 )"
     class_b_copy="$(cat <<'FIXTURE'
@@ -112,17 +176,56 @@ FIXTURE
 )"
 
     expect pass "a clean consumer with no copy was reported as a violation" ""
-    expect fail "an inline is_sha256() definition (class A) did not fail the gate" \
+    expect fail "an inline is_sha256() definition (class A, named) did not fail the gate" \
         "$class_a_copy"
     expect pass "reverting the class-A copy did not clear the violation" ""
+    expect fail "a RENAMED validator (class A, structural — no name on any list) did not fail the gate; the name-list dodge is not closed" \
+        "$class_a_renamed_copy"
+    expect pass "reverting the renamed structural copy did not clear the violation" ""
     expect fail "an inline grep/sed source_id_sha256 extraction (class B) did not fail the gate" \
         "$class_b_copy"
     expect pass "reverting the class-B copy did not clear the violation" ""
-    # A marked (allowlisted) copy must NOT count as debt.
-    expect pass "a zcl-identity-parser-allow-marked copy was still counted as debt" \
+    # A marked (allowlisted) copy in the NAMED file must NOT count as debt.
+    expect pass "a zcl-identity-parser-allow-marked copy in the allowed file was still counted as debt" \
         "$class_b_marked"
+    expect pass "reverting left a stray marker violation" ""
 
-    echo "[$GATE] SELFTEST PASS (clean passes; class-A and class-B copies fail; reverted copies pass; marked/allowlisted copy does not count)"
+    # The marker bound, second half: the SAME marked copy, but planted in a
+    # file that is NOT in ZCL_IDENTITY_PARSER_MARKER_ALLOWED, must fail —
+    # a marker cannot exempt a copy in a file nobody named.
+    plant_other "$class_b_marked"
+    rc=0; run_sandbox || rc=$?
+    plant_other ""
+    if [ "$rc" -eq 0 ]; then
+        echo "$GATE: SELFTEST FAILED — a zcl-identity-parser-allow marker in an unauthorized file was not caught" >&2
+        exit 2
+    fi
+    rc=0; run_sandbox || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo "$GATE: SELFTEST FAILED — reverting the unauthorized marker did not clear the violation" >&2
+        exit 2
+    fi
+
+    # The marker bound, count half: two markers in the ALLOWED file, with
+    # MARKER_CEILING pinned to 1, must fail even though the file itself is
+    # on the allowlist.
+    two_markers="$(cat <<'FIXTURE'
+# zcl-identity-parser-allow: fixture A
+a=1
+# zcl-identity-parser-allow: fixture B
+b=2
+FIXTURE
+)"
+    SANDBOX_MARKER_CEILING=1
+    plant "$two_markers"
+    rc=0; run_sandbox || rc=$?
+    plant ""
+    if [ "$rc" -eq 0 ]; then
+        echo "$GATE: SELFTEST FAILED — exceeding MARKER_CEILING in the allowed file was not caught" >&2
+        exit 2
+    fi
+
+    echo "[$GATE] SELFTEST PASS (clean passes; named and renamed class-A copies fail; class-B copies fail; reverted copies pass; an allowlisted+in-budget marker does not count; a marker in an unauthorized file, or over MARKER_CEILING, fails)"
     exit 0
 fi
 
@@ -131,6 +234,12 @@ MODE="${ZCL_LINT_MODE:-FAIL}"
 BASELINE="${ZCL_IDENTITY_PARSER_BASELINE:-tools/lint/identity_parser_baseline.txt}"
 SCAN_ROOT="${ZCL_IDENTITY_PARSER_SCAN_ROOT:-tools}"
 CEILING="${ZCL_IDENTITY_PARSER_CEILING:-$RATCHET_CEILING}"
+MARKER_CEIL="${ZCL_IDENTITY_PARSER_MARKER_CEILING:-$MARKER_CEILING}"
+if [ -n "${ZCL_IDENTITY_PARSER_MARKER_ALLOWED:-}" ]; then
+    IFS=' ' read -r -a MARKER_ALLOWED <<< "$ZCL_IDENTITY_PARSER_MARKER_ALLOWED"
+else
+    MARKER_ALLOWED=("${MARKER_ALLOWED_FILES[@]}")
+fi
 
 # The canonical library and this gate itself are excluded: they are the
 # thing every other file is compared against (and this file's own header
@@ -146,15 +255,30 @@ gate_require_scanned "${#scan_files[@]}" "${ZCL_IDENTITY_PARSER_FILE_FLOOR:-5}" 
 # ── Per-file counts ──────────────────────────────────────────────────────
 # Emits: path<TAB>count
 #
-# Class A: a local definition (start-of-line, ignoring indent) of one of
-# the duplicated helper names.
+# Class A1 (name): a local definition (start-of-line, ignoring indent) of
+# json_first_string_field — the one duplicated-helper name left on an
+# exact list (see the file header for why the validator names moved to A2).
+#
+# Class A2 (structural, name-independent): a short function — at most
+# BODY_LIMIT substantive body lines, one-liner bodies included — whose body
+# performs a 64-lowercase-hex validity check. This is what stops a rename
+# from dodging Class A entirely (proven exploitable 2026-07-30: a fresh
+# file containing only `is_sha256_hex() { ... }` passed this gate). See
+# has_sig() below for exactly what counts as the check, and why a plain
+# `grep -oE` extraction of a 64-hex value (a different job — reading a
+# UTXO commitment root, say — done by unrelated scripts elsewhere in this
+# tree) does NOT count: only a boolean test does.
+#
 # Class B: a line containing the literal JSON-key pattern
 # "source_id_sha256"[:space:]*: (plain or backslash-escaped quotes, so a
 # copy embedded in a heredoc/ssh command string is still counted) AND
 # invoking grep or sed on the same line — plain JSON construction
 # (printf '"source_id_sha256":"%s"') is excluded on purpose.
 # A `zcl-identity-parser-allow` marker within the previous 8 lines exempts
-# a class-B match entirely (the two ship.sh remote-side sites).
+# a class-B match entirely (the two ship.sh remote-side sites) — bounded
+# separately below by count_markers(), since an unbounded marker is its
+# own hole in the ratchet (any future copy anywhere could be exempted
+# forever by pasting the same comment near it).
 scan_counts() {
     # The class-B needle is built from sprintf("%c") rather than typed as a
     # quoted/backslashed literal: the data being searched is shell SOURCE
@@ -169,19 +293,87 @@ scan_counts() {
             bs = sprintf("%c", 92); q = sprintf("%c", 34)
             plain_needle = q "source_id_sha256" q "[[:space:]]*:"
             esc_needle   = bs q "source_id_sha256" bs q "[[:space:]]*:"
+            hex_a = "[0-9a-f]{64}"
+            hex_b = "[!0-9a-f]"
+            BODY_LIMIT = 5
         }
-        FNR == 1 { if (NR > 1) emit(); path = FILENAME; count = 0; last_allow = -1000 }
+        function has_sig(l) {
+            # hex_b (a negated-hex-class case-pattern, e.g. *[!0-9a-f]*) is
+            # inherently a boolean branch — it cannot print/extract a
+            # value — so it needs no further gating.
+            if (index(l, hex_b) > 0) return 1
+            # hex_a ("[0-9a-f]{64}") alone is ambiguous: `grep -oE
+            # '"'"'[0-9a-f]{64}'"'"'` EXTRACTS a value (e.g. a UTXO
+            # commitment reader elsewhere in this tree) and is not a
+            # validator copy. Require it appear in an actual boolean test:
+            # bash'"'"'s =~ operator, or a quiet (-q) grep.
+            if (index(l, hex_a) > 0) {
+                if (index(l, "=~") > 0) return 1
+                if (l ~ /grep[ \t]+-[A-Za-z]*q/) return 1
+            }
+            return 0
+        }
+        FNR == 1 {
+            if (NR > 1) emit()
+            path = FILENAME; count = 0; last_allow = -1000
+            infunc = 0; pending_open = 0; brace_depth = 0
+            body_lines = 0; body_has_sig = 0; too_long = 0
+        }
         {
             line = $0
-            if (line ~ /^[ \t]*(is_sha256|is_hex64|json_first_string_field|is_source_id_sha256)[ \t]*\(\)/) {
+            trimmed = line
+            gsub(/^[ \t]+/, "", trimmed); gsub(/[ \t]+$/, "", trimmed)
+
+            if (line ~ /^[ \t]*json_first_string_field[ \t]*\(\)/) {
                 count++
             }
+
             if (line ~ /zcl-identity-parser-allow/) last_allow = FNR
 
             has_needle = (index(line, plain_needle) > 0 || index(line, esc_needle) > 0)
             has_tool = (index(line, "grep") > 0 || index(line, "sed") > 0)
             if (has_needle && has_tool) {
                 if (FNR - last_allow > 8) count++
+            }
+
+            # ---- Class A2: structural, name-independent (see has_sig) ----
+            if (!infunc && !pending_open) {
+                if (trimmed ~ /^[A-Za-z_][A-Za-z0-9_]*\(\)[ \t]*\{.*$/) {
+                    body_text = trimmed
+                    sub(/^[A-Za-z_][A-Za-z0-9_]*\(\)[ \t]*\{/, "", body_text)
+                    if (body_text ~ /\}[ \t]*;?[ \t]*$/) {
+                        one = body_text
+                        sub(/\}[ \t]*;?[ \t]*$/, "", one)
+                        if (has_sig(one)) count++
+                    } else {
+                        infunc = 1; brace_depth = 1
+                        body_lines = 0; body_has_sig = 0; too_long = 0
+                        if (has_sig(body_text)) body_has_sig = 1
+                        if (body_text ~ /[^ \t]/) body_lines++
+                    }
+                } else if (trimmed ~ /^[A-Za-z_][A-Za-z0-9_]*\(\)[ \t]*$/) {
+                    pending_open = 1
+                }
+            } else if (pending_open) {
+                if (trimmed == "{") {
+                    infunc = 1; pending_open = 0; brace_depth = 1
+                    body_lines = 0; body_has_sig = 0; too_long = 0
+                } else {
+                    pending_open = 0
+                }
+            } else if (infunc) {
+                tmp = line; opens = gsub(/\{/, "{", tmp)
+                tmp2 = line; closes = gsub(/\}/, "}", tmp2)
+                newdepth = brace_depth + opens - closes
+                if (newdepth <= 0) {
+                    if (!too_long && body_lines <= BODY_LIMIT && body_has_sig) count++
+                    infunc = 0; brace_depth = 0
+                } else {
+                    if (trimmed ~ /[^ \t]/) body_lines++
+                    if (has_sig(line)) body_has_sig = 1
+                    if (body_lines > BODY_LIMIT) too_long = 1
+                    brace_depth = newdepth
+                }
             }
         }
         END { emit() }
@@ -229,12 +421,15 @@ for path in "${!BASELINED[@]}"; do
     [ -z "${HIT[$path]+x}" ] && stale+=("$path (baseline says ${BASELINED[$path]}, actual 0)")
 done
 
-# The ceiling check: the baseline FILE's own recorded total may never
-# exceed the ceiling this gate was introduced with. Bumping an individual
-# row up while deleting/lowering another to compensate still trips this if
-# the sum grows past the original honest count; the only way to legitimately
-# raise a row is by lowering the ceiling constant in this script, which is a
-# visible source diff, not a data-file edit.
+# The ceiling check: the baseline FILE's own recorded SUM may never exceed
+# the ceiling this gate was introduced with. This does NOT prevent one row
+# rising while another falls within the same sum — that is a judgment call
+# for code review to catch by reading the diff, same as any other data-file
+# edit in this repo, not something a single integer comparison can settle.
+# What it DOES prevent is the sum itself creeping upward silently: the only
+# way to raise the CEILING (and so legitimately allow the total to grow) is
+# a change to the constant in this script, which is a visible source diff,
+# not a data-file edit.
 if [ "$baseline_sum" -gt "$CEILING" ]; then
     echo ""
     echo "[$GATE] baseline sum ($baseline_sum) exceeds the ratchet ceiling ($CEILING)"
@@ -243,6 +438,50 @@ if [ "$baseline_sum" -gt "$CEILING" ]; then
     echo "        and legitimately grown (a change that belongs in code review,"
     echo "        not a quiet data-file edit)."
     violations+=("$BASELINE — baseline sum $baseline_sum exceeds ceiling $CEILING")
+fi
+
+# ── Marker bound ─────────────────────────────────────────────────────────
+# The `zcl-identity-parser-allow:` marker (see scan_counts()) fully exempts
+# a Class-B match from debt. Left unbounded, ANY future copy anywhere under
+# $SCAN_ROOT could dodge the ratchet forever just by pasting that comment
+# near it — a hole in a gate whose entire job is catching the next copy.
+# Bound it two ways, same shrink-only shape as the baseline sum:
+#   1. the total marker count may not exceed MARKER_CEIL.
+#   2. a marker may only appear in a file named in MARKER_ALLOWED — today
+#      that is tools/ship.sh's two remote-fleet-host sites, and nowhere
+#      else. A marker anywhere else is a violation regardless of the
+#      count, because it exempts a copy this gate was never told about.
+declare -A marker_file_count=()
+marker_total=0
+for f in "${scan_files[@]}"; do
+    n=$(grep -c 'zcl-identity-parser-allow' "$f" 2>/dev/null || true)
+    n="${n:-0}"
+    [ "$n" -gt 0 ] || continue
+    marker_file_count["$f"]=$n
+    marker_total=$(( marker_total + n ))
+done
+
+is_marker_allowed_file() {
+    local f="$1" a
+    for a in "${MARKER_ALLOWED[@]}"; do
+        [ "$f" = "$a" ] && return 0
+    done
+    return 1
+}
+
+for f in "${!marker_file_count[@]}"; do
+    if ! is_marker_allowed_file "$f"; then
+        violations+=("$f — carries a zcl-identity-parser-allow marker but is not on MARKER_ALLOWED_FILES (only ${MARKER_ALLOWED[*]} may exempt a copy this way)")
+    fi
+done
+
+if [ "$marker_total" -gt "$MARKER_CEIL" ]; then
+    echo ""
+    echo "[$GATE] zcl-identity-parser-allow marker count ($marker_total) exceeds"
+    echo "        MARKER_CEILING ($MARKER_CEIL) — a new marker exempts a copy from"
+    echo "        the ratchet invisibly; raising MARKER_CEILING is a visible"
+    echo "        source diff in this script, not a comment nobody reviews."
+    violations+=("marker count $marker_total exceeds MARKER_CEILING $MARKER_CEIL")
 fi
 
 if [ "$MODE" = "UPDATE" ]; then
@@ -291,4 +530,4 @@ if [ "$fail" != "0" ] && [ "$MODE" = "FAIL" ]; then
     exit 1
 fi
 
-echo "[$GATE] PASS (${#scan_files[@]} *.sh files scanned, ${#COUNT_ROWS[@]} carrying a copy, $total_copies total, $baseline_count baselined file(s) summing to $baseline_sum/$CEILING, ${#tolerated[@]} tolerated)"
+echo "[$GATE] PASS (${#scan_files[@]} *.sh files scanned, ${#COUNT_ROWS[@]} carrying a copy, $total_copies total, $baseline_count baselined file(s) summing to $baseline_sum/$CEILING, ${#tolerated[@]} tolerated, $marker_total/$MARKER_CEIL allow-marker(s))"

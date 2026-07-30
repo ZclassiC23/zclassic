@@ -6,8 +6,10 @@
 #
 # WHY THIS EXISTS — read before touching any function below.
 #
-# `zclassic23 agentbuild` emits the key `source_id_sha256` FOUR times on a
-# SINGLE line: once at the top level (the source this binary was actually
+# `zclassic23 agentbuild` emits the key `source_id_sha256` SEVERAL times on a
+# SINGLE line (8 on one build measured 2026-07-30 — the exact count is build-
+# and lane-state-dependent, so treat it as "more than one," not a fixed
+# number): once at the top level (the source this binary was actually
 # compiled from) and again inside nested runtime blocks describing the dev
 # lane as it exists right now. Because the payload is one line, a naive
 # extraction of the form
@@ -29,11 +31,22 @@
 # tools/dev/ in-tree reference and NOT migrated here — see the lane's
 # handoff notes) for the sibling implementation this library generalizes.
 #
-# Sourcing contract: resolves its own path (safe to source from tools/,
-# tools/scripts/, or tools/dev/ regardless of the sourcing script's cwd),
-# side-effect-free (defines functions only), and idempotent (safe to source
-# twice — a second source is a no-op). All functions are prefixed `zcl_` to
-# avoid colliding with a caller's own locals.
+# Sourcing contract: THE CALLER resolves this file's own path before sourcing
+# it — this library does not locate itself. That is deliberate, not an
+# oversight: `deploy_verify.sh` runs under `sh` (dash), which has no
+# `${BASH_SOURCE[0]}`, so a self-locating library would need a bash-only
+# mechanism the plainest caller can't use — the caller-resolves form is the
+# one shape that works identically under both shells. Each of the four
+# callers uses the one-line form appropriate to how it already finds its own
+# directory:
+#   sh (deploy_verify.sh):    . "$SCRIPT_DIR/scripts/source_identity_lib.sh"
+#   bash (ship.sh, lane_health.sh — both already compute $REPO_ROOT):
+#                             . "$REPO_ROOT/tools/scripts/source_identity_lib.sh"
+#   bash (proof_server_pin.sh, sourced by its own dirname):
+#                             . "$SELF_DIR/source_identity_lib.sh"
+# Otherwise: side-effect-free (defines functions only), and idempotent (safe
+# to source twice — a second source is a no-op). All functions are prefixed
+# `zcl_` to avoid colliding with a caller's own locals.
 
 if [ -n "${ZCL_SOURCE_IDENTITY_LIB_SOURCED:-}" ]; then
     return 0 2>/dev/null || exit 0

@@ -28,7 +28,7 @@ set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=tools/scripts/source_identity_lib.sh
-. "$SCRIPT_DIR/scripts/source_identity_lib.sh"  # zcl_json_first_string
+. "$SCRIPT_DIR/scripts/source_identity_lib.sh"  # zcl_json_first_string, zcl_is_sha256
 
 RPC_TOOL="${1:-./build/bin/zclassic-cli}"
 TIMEOUT="${2:-${ZCL_DEPLOY_VERIFY_TIMEOUT:-600}}"
@@ -133,10 +133,6 @@ if [ "${ZCL_DEPLOY_VERIFY_SELFTEST:-0}" = "1" ]; then
     exit 0
 fi
 
-is_sha256_hex() {
-    printf '%s\n' "$1" | grep -Eq '^[0-9a-f]{64}$'
-}
-
 fatal_binding() {
     echo "deploy_verify: FATAL — $*" >&2
     exit 2
@@ -148,10 +144,10 @@ fatal_binding() {
 EXPECT_SOURCE_ID="${ZCL_DEPLOY_EXPECT_SOURCE_ID:-}"
 EXPECT_ARTIFACT_SHA256="${ZCL_DEPLOY_EXPECT_ARTIFACT_SHA256:-}"
 
-if ! is_sha256_hex "$EXPECT_SOURCE_ID"; then
+if ! zcl_is_sha256 "$EXPECT_SOURCE_ID"; then
     fatal_binding "ZCL_DEPLOY_EXPECT_SOURCE_ID must be 64 lowercase hex"
 fi
-if ! is_sha256_hex "$EXPECT_ARTIFACT_SHA256"; then
+if ! zcl_is_sha256 "$EXPECT_ARTIFACT_SHA256"; then
     fatal_binding "ZCL_DEPLOY_EXPECT_ARTIFACT_SHA256 must be 64 lowercase hex"
 fi
 
@@ -607,7 +603,7 @@ verify_contract() {
     # Git commit metadata is deliberately excluded from both decisions.
     running_source_id=$(extract_source_id_sha256 "$health" || true)
     running_commit=$(extract_build_commit "$health" || true)
-    if ! is_sha256_hex "$running_source_id"; then
+    if ! zcl_is_sha256 "$running_source_id"; then
         last_err="STALE DEPLOY: running daemon exposes no valid source_id_sha256"
         return 1
     fi
@@ -621,7 +617,7 @@ verify_contract() {
     mainpid_owns_rpc_listener ||
         { last_err="canonical MainPID lost ownership of RPC listener port $RPCPORT"; return 1; }
     running_artifact_sha256=$(running_service_artifact_sha256 || true)
-    if ! is_sha256_hex "$running_artifact_sha256"; then
+    if ! zcl_is_sha256 "$running_artifact_sha256"; then
         last_err="STALE DEPLOY: could not hash the running zclassic23 MainPID executable"
         return 1
     fi

@@ -1,18 +1,28 @@
 # check_identity_parser_single baseline — files still carrying an inline
-# copy of the source-identity JSON parser (a local is_sha256/is_hex64/
-# json_first_string_field/is_source_id_sha256 definition, or an inline
-# grep/sed extraction of the "source_id_sha256" JSON key) instead of
-# sourcing tools/scripts/source_identity_lib.sh.
+# copy of the source-identity JSON parser: a local re-definition of the
+# 64-lowercase-hex validator (by exact name, or by shape — see the gate's
+# header for why a rename can no longer dodge this), or an inline grep/sed
+# extraction of the "source_id_sha256" JSON key, instead of sourcing
+# tools/scripts/source_identity_lib.sh.
 #
 # Format: <path> <count>.  COUNTS MAY ONLY SHRINK.
 #
-# These are the tools/dev/ dev-loop scripts (and two other one-off callers)
-# deliberately left unmigrated by the lane that introduced the shared
-# library (2026-07-30): each carries its own selftest and is a separate,
-# later migration — see the library's header for why the anchored-first
-# extraction form is the one that matters, and dev_lib.sh's
-# baked_source_id() for the sibling implementation this library
-# generalizes but does not replace here.
+# Most of these are the tools/dev/ dev-loop scripts deliberately left
+# unmigrated by the lane that introduced the shared library (2026-07-30):
+# each carries its own selftest and is a separate, later migration — see
+# the library's header for why the anchored-first extraction form is the
+# one that matters, and dev_lib.sh's baked_source_id() for the sibling
+# implementation this library generalizes but does not replace here.
+#
+# tools/agent_fast_ci.sh and tools/repro_on_copy.sh's rows are NEW as of
+# the same date: the gate's Class-A detection used to be an exact name
+# list and missed both files' own is_sha256_hex() (a verifier-proven
+# 2026-07-30 exploit — a renamed validator function was invisible to this
+# gate). Broadening detection to catch the SHAPE of a validator, not just
+# its name, surfaced this pre-existing, previously-invisible debt; it was
+# not introduced by broadening the gate. Migrating these two is a
+# separate, later cleanup, same as the tools/dev/ rows above — neither
+# file is in the four-consumer migration this lane performed.
 #
 # Fix a row by switching the file to source tools/scripts/source_identity_lib.sh
 # (zcl_is_sha256 / zcl_json_first_string / zcl_json_first_sha256 /
@@ -21,6 +31,7 @@
 # no baseline entry may carry zero copies.
 #
 # Regenerate: ZCL_LINT_MODE=UPDATE tools/lint/check_identity_parser_single.sh
+tools/agent_fast_ci.sh 1
 tools/dev/agent-dev-status.sh 3
 tools/dev/build-epoch-key.sh 1
 tools/dev/build-epoch-session.sh 1
@@ -29,6 +40,5 @@ tools/dev/deploy-dev-lane.sh 2
 tools/dev/dev_lib.sh 1
 tools/dev/publish-build-alias.sh 1
 tools/dev/recover-dev-lane.sh 2
-tools/repro_on_copy.sh 1
-tools/scripts/lane_health.sh 1
+tools/repro_on_copy.sh 2
 tools/scripts/replay_canary.sh 1
