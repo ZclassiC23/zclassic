@@ -93,56 +93,41 @@ enum {
 static struct jub_point fixed_generators[GEN_MAX];
 static bool fixed_generators_loaded = false;
 
-/* Derive a single fixed generator or abort: these are hard-coded inputs with
+/* One row per GEN_* generator: the name that appears in the abort message, the
+ * find_group_hash message, and the 8-byte personalization. Designated
+ * initializers key each row to its own enum index, so a row cannot silently
+ * drift onto the wrong generator and a seventh generator is one new row. */
+static const struct {
+    const char *name;     /* appears in the abort message */
+    const char *tag;      /* "" or a single byte, per the Zcash spec */
+    const char *personal; /* exactly 8 bytes */
+} FIXED_GENERATOR_SPEC[GEN_MAX] = {
+    [GEN_PROOF_GENERATION_KEY]        = { "ProofGenerationKey",        "",  "Zcash_H_" },
+    [GEN_NOTE_COMMITMENT_RANDOMNESS]  = { "NoteCommitmentRandomness",  "r", "Zcash_PH" },
+    [GEN_NULLIFIER_POSITION]          = { "NullifierPosition",         "",  "Zcash_J_" },
+    [GEN_VALUE_COMMITMENT_VALUE]      = { "ValueCommitmentValue",      "v", "Zcash_cv" },
+    [GEN_VALUE_COMMITMENT_RANDOMNESS] = { "ValueCommitmentRandomness", "r", "Zcash_cv" },
+    [GEN_SPENDING_KEY]                = { "SpendingKey",               "",  "Zcash_G_" },
+};
+
+/* Derive every fixed generator or abort: these are hard-coded inputs with
  * hard-coded personalizations; failure means the Jubjub group_hash machinery
  * is broken and every subsequent scalar mul would silently produce garbage. */
-static void derive_fixed_generator(int idx, const char *name,
-                                    const uint8_t *m, size_t m_len,
-                                    const uint8_t personalization[8])
-{
-    if (!find_group_hash(&fixed_generators[idx], m, m_len, personalization)) {
-        fprintf(stderr, "[sapling] %s:%d %s(): "  // obs-ok:helper-context-logged
-                "find_group_hash failed for fixed generator '%s' — "
-                "refusing to run with zero-initialized generator\n",
-                __FILE__, __LINE__, __func__, name);
-        abort(); // abort-ok: a zero-initialized fixed generator makes every later scalar mul silently produce garbage commitments
-    }
-}
-
 static void ensure_fixed_generators(void)
 {
     if (fixed_generators_loaded) return;
-
-    derive_fixed_generator(GEN_PROOF_GENERATION_KEY,
-                           "ProofGenerationKey",
-                           (const uint8_t *)"", 0,
-                           (const uint8_t *)"Zcash_H_");
-
-    derive_fixed_generator(GEN_NOTE_COMMITMENT_RANDOMNESS,
-                           "NoteCommitmentRandomness",
-                           (const uint8_t *)"r", 1,
-                           (const uint8_t *)"Zcash_PH");
-
-    derive_fixed_generator(GEN_NULLIFIER_POSITION,
-                           "NullifierPosition",
-                           (const uint8_t *)"", 0,
-                           (const uint8_t *)"Zcash_J_");
-
-    derive_fixed_generator(GEN_VALUE_COMMITMENT_VALUE,
-                           "ValueCommitmentValue",
-                           (const uint8_t *)"v", 1,
-                           (const uint8_t *)"Zcash_cv");
-
-    derive_fixed_generator(GEN_VALUE_COMMITMENT_RANDOMNESS,
-                           "ValueCommitmentRandomness",
-                           (const uint8_t *)"r", 1,
-                           (const uint8_t *)"Zcash_cv");
-
-    derive_fixed_generator(GEN_SPENDING_KEY,
-                           "SpendingKey",
-                           (const uint8_t *)"", 0,
-                           (const uint8_t *)"Zcash_G_");
-
+    for (size_t i = 0; i < GEN_MAX; i++) {
+        const char *tag = FIXED_GENERATOR_SPEC[i].tag;
+        if (find_group_hash(&fixed_generators[i], (const uint8_t *)tag,
+                            strlen(tag),
+                            (const uint8_t *)FIXED_GENERATOR_SPEC[i].personal))
+            continue;
+        fprintf(stderr, "[sapling] %s:%d %s(): "  // obs-ok:helper-context-logged
+                "find_group_hash failed for fixed generator '%s' — "
+                "refusing to run with zero-initialized generator\n",
+                __FILE__, __LINE__, __func__, FIXED_GENERATOR_SPEC[i].name);
+        abort(); // abort-ok: a zero-initialized fixed generator makes every later scalar mul silently produce garbage commitments
+    }
     fixed_generators_loaded = true;
 }
 
@@ -202,6 +187,20 @@ void sapling_proof_gen_key_generator(struct fr *x, struct fr *y)
     ensure_fixed_generators();
     jub_get_x(x, &fixed_generators[GEN_PROOF_GENERATION_KEY]);
     jub_get_y(y, &fixed_generators[GEN_PROOF_GENERATION_KEY]);
+}
+
+void sapling_value_commit_value_generator(struct fr *x, struct fr *y)
+{
+    ensure_fixed_generators();
+    jub_get_x(x, &fixed_generators[GEN_VALUE_COMMITMENT_VALUE]);
+    jub_get_y(y, &fixed_generators[GEN_VALUE_COMMITMENT_VALUE]);
+}
+
+void sapling_value_commit_randomness_generator(struct fr *x, struct fr *y)
+{
+    ensure_fixed_generators();
+    jub_get_x(x, &fixed_generators[GEN_VALUE_COMMITMENT_RANDOMNESS]);
+    jub_get_y(y, &fixed_generators[GEN_VALUE_COMMITMENT_RANDOMNESS]);
 }
 
 void sapling_crh_ivk(const uint8_t ak[32], const uint8_t nk[32], uint8_t ivk[32])

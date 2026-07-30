@@ -5,6 +5,7 @@
  * Montgomery-based Pedersen hash, strict bit decomposition. */
 
 #include "sapling/circuit_gadgets.h"
+#include "sapling/circuit_bits.h"
 #include "sapling/pedersen_hash.h"
 #include "sapling/sapling.h"
 #include "crypto/blake2s.h"
@@ -12,9 +13,19 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "util/safe_alloc.h"
+#include "util/log_macros.h"
 #include "support/cleanse.h"
 
 #define CS_ONE 0
+
+/* Append every term of `src` onto `dst` — bellman's `|_| lc + &other` closure:
+ * a condition that arrives as an LC gets spliced into A/B/C, not re-derived. */
+static void lc_append(struct linear_combination *dst,
+                      const struct linear_combination *src)
+{
+    for (size_t i = 0; i < src->num_terms; i++)
+        lc_add_term(dst, src->terms[i].var, &src->terms[i].coeff);
+}
 
 /* ── Boolean Gadgets ────────────────────────────────────────────── */
 
@@ -615,8 +626,6 @@ void gadget_lookup3_xy(struct constraint_system *cs,
 {
     struct fr one_val;
     fr_one(&one_val);
-    struct fr neg_one;
-    fr_neg(&neg_one, &one_val);
 
     /* Compute precomp = b1 AND b2 (1 constraint) */
     struct fr b1v = cs->witness[b1];
@@ -705,13 +714,9 @@ void gadget_fixed_base_mul(struct constraint_system *cs,
                            const struct fr *base_x, const struct fr *base_y,
                            size_t *x_out, size_t *y_out)
 {
-    /* Reconstruct the Jubjub base point */
+    /* Reconstruct the Jubjub base point from its (x, y) coordinates */
     struct jub_point gen;
     {
-        uint8_t bx[32], by[32];
-        fr_to_bytes(bx, base_x);
-        fr_to_bytes(by, base_y);
-        /* Build point from x,y coordinates */
         struct fr gx, gy, gz, gt;
         gx = *base_x;
         gy = *base_y;
@@ -1514,46 +1519,56 @@ void gadget_assert_not_small_order(struct constraint_system *cs,
 
 /* ── Conditionally Select Point (2 constraints) ──────────────── */
 
+void gadget_conditionally_select_point_lc(struct constraint_system *cs,
+                                          const struct linear_combination *cond_lc,
+                                          bool cond_value,
+                                          size_t px, size_t py,
+                                          size_t *rx, size_t *ry)
+{
+    struct fr one_val, neg_one;
+    fr_one(&one_val);
+    fr_neg(&neg_one, &one_val);
+    struct linear_combination la, lb, lc;
+
+    /* x' = cond ? x : 0, as `x * cond = x'`. */
+    struct fr rx_val;
+    if (cond_value) rx_val = cs->witness[px]; else fr_zero(&rx_val);
+    *rx = cs_alloc_aux(cs, &rx_val);
+    lc_init(&la); lc_add_term(&la, px, &one_val);
+    lc_init(&lb); lc_append(&lb, cond_lc);
+    lc_init(&lc); lc_add_term(&lc, *rx, &one_val);
+    cs_enforce(cs, &la, &lb, &lc);
+    lc_free(&la); lc_free(&lb); lc_free(&lc);
+
+    /* y' = cond ? y : 1, as `(y - 1) * cond = y' - 1`. Written around the
+     * neutral element's y = 1 rather than around 0: that is what makes cond=0
+     * land on the Edwards identity, not on the non-curve pair (0, 0). */
+    struct fr ry_val;
+    if (cond_value) ry_val = cs->witness[py]; else fr_one(&ry_val);
+    *ry = cs_alloc_aux(cs, &ry_val);
+    lc_init(&la);
+    lc_add_term(&la, py, &one_val);
+    lc_add_term(&la, CS_ONE, &neg_one);
+    lc_init(&lb); lc_append(&lb, cond_lc);
+    lc_init(&lc);
+    lc_add_term(&lc, *ry, &one_val);
+    lc_add_term(&lc, CS_ONE, &neg_one);
+    cs_enforce(cs, &la, &lb, &lc);
+    lc_free(&la); lc_free(&lb); lc_free(&lc);
+}
+
 void gadget_conditionally_select_point(struct constraint_system *cs,
                                          size_t cond, size_t px, size_t py,
                                          size_t *rx, size_t *ry)
 {
-    struct fr cond_val = cs->witness[cond];
-    struct fr px_val = cs->witness[px];
-    struct fr py_val = cs->witness[py];
-    struct fr one_val, neg_one;
+    struct fr one_val;
     fr_one(&one_val);
-    fr_neg(&neg_one, &one_val);
-
-    struct fr rx_val;
-    fr_mul(&rx_val, &cond_val, &px_val);
-    *rx = cs_alloc_aux(cs, &rx_val);
-    {
-        struct linear_combination la, lb, lc;
-        lc_init(&la); lc_add_term(&la, px, &one_val);
-        lc_init(&lb); lc_add_term(&lb, cond, &one_val);
-        lc_init(&lc); lc_add_term(&lc, *rx, &one_val);
-        cs_enforce(cs, &la, &lb, &lc);
-        lc_free(&la); lc_free(&lb); lc_free(&lc);
-    }
-
-    struct fr py_minus_1;
-    fr_sub(&py_minus_1, &py_val, &one_val);
-    struct fr ry_val;
-    fr_mul(&ry_val, &cond_val, &py_minus_1);
-    fr_add(&ry_val, &ry_val, &one_val);
-    *ry = cs_alloc_aux(cs, &ry_val);
-    {
-        struct linear_combination la, lb, lc;
-        lc_init(&la); lc_add_term(&la, py, &one_val);
-        lc_init(&lb); lc_add_term(&lb, cond, &one_val);
-        lc_init(&lc);
-        lc_add_term(&lc, *ry, &one_val);
-        lc_add_term(&lc, cond, &neg_one);
-        lc_add_term(&lc, CS_ONE, &neg_one);
-        cs_enforce(cs, &la, &lb, &lc);
-        lc_free(&la); lc_free(&lb); lc_free(&lc);
-    }
+    struct linear_combination cond_lc;
+    lc_init(&cond_lc);
+    lc_add_term(&cond_lc, cond, &one_val);
+    gadget_conditionally_select_point_lc(
+        cs, &cond_lc, !fr_is_zero(&cs->witness[cond]), px, py, rx, ry);
+    lc_free(&cond_lc);
 }
 
 /* ── Variable-Base Scalar Multiplication ───────────────────────── */
@@ -1563,35 +1578,20 @@ void gadget_variable_base_mul(struct constraint_system *cs,
                                 const size_t *scalar_bits, size_t n_bits,
                                 size_t *out_x, size_t *out_y)
 {
-    size_t cur_x = base_x, cur_y = base_y;
-    size_t acc_x = SIZE_MAX, acc_y = SIZE_MAX;
-
-    for (size_t i = 0; i < n_bits; i++) {
-        if (i > 0) {
-            size_t dbl_x, dbl_y;
-            gadget_edwards_double(cs, cur_x, cur_y, &dbl_x, &dbl_y);
-            cur_x = dbl_x;
-            cur_y = dbl_y;
-        }
-
-        size_t sel_x, sel_y;
-        gadget_conditionally_select_point(cs, scalar_bits[i],
-                                           cur_x, cur_y, &sel_x, &sel_y);
-
-        if (acc_x == SIZE_MAX) {
-            acc_x = sel_x;
-            acc_y = sel_y;
-        } else {
-            size_t new_x, new_y;
-            gadget_edwards_add(cs, acc_x, acc_y, sel_x, sel_y,
-                               &new_x, &new_y);
-            acc_x = new_x;
-            acc_y = new_y;
-        }
+    *out_x = SIZE_MAX;
+    *out_y = SIZE_MAX;
+    struct cbit *views = (n_bits > 0)
+        ? zcl_malloc(n_bits * sizeof(*views), "vbm_bit_views") : NULL;
+    if (!views) {
+        LOG_ERROR("circuit_gadgets", "variable_base_mul: no bit views for "
+                  "n_bits=%zu (empty scalar, or the allocation failed)", n_bits);
+        return;
     }
-
-    *out_x = acc_x;
-    *out_y = acc_y;
+    for (size_t i = 0; i < n_bits; i++)
+        views[i] = cbit_from_var(cs, scalar_bits[i]);
+    gadget_variable_base_mul_cbits(cs, base_x, base_y, views, n_bits,
+                                   out_x, out_y);
+    free(views);
 }
 
 /* ── Point Inputize (2 constraints) ────────────────────────────── */

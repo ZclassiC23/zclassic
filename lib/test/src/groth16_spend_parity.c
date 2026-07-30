@@ -177,6 +177,8 @@ static void build_corpus_witness(struct parity_witness *pw, unsigned idx)
         memcpy(ask, SPEND_ORACLE_KAT_ASK, 32);
         memcpy(w->nsk, SPEND_ORACLE_KAT_NSK, 32);
         w->ar[0] = 0x03;
+        w->rcv[0] = 0x71;
+        w->rcv[1] = 0x0d;
     } else {
         /* Distinct, canonical, small scalars — deterministic per index. */
         ask[0] = (uint8_t)(0x11 + idx);
@@ -187,19 +189,37 @@ static void build_corpus_witness(struct parity_witness *pw, unsigned idx)
         w->nsk[2] = 0x5A;
         w->ar[0]  = (uint8_t)(idx + 1u);
         w->ar[1]  = (uint8_t)(idx * 3u);
+        w->rcv[0] = (uint8_t)(idx * 11u + 3u);
+        w->rcv[1] = (uint8_t)(idx * 2u);
     }
+
+    /* Section 11 witnesses g_d = GH("Zcash_gd", d) and section 12 asserts it is
+     * not small order, so the diversifier has to be one that actually hashes to
+     * a point — group_hash misses on roughly half of them. Deterministic scan
+     * from d = 0, per witness. */
+    bool have_d = false;
+    for (unsigned i = 0; i < 256 && !have_d; i++) {
+        memset(w->diversifier, 0, sizeof(w->diversifier));
+        w->diversifier[0] = (uint8_t)((i + idx) & 0xFF);
+        have_d = sapling_check_diversifier(w->diversifier);
+    }
+    if (!have_d)
+        return;                         /* pw->ok stays false */
 
     uint8_t ak[32];
     sapling_ask_to_ak(ask, ak);
     memcpy(w->ak, ak, 32);
-    memcpy(w->pk_d, ak, 32);           /* any valid Jubjub point (bound later) */
+    memcpy(w->pk_d, ak, 32);           /* unused by Spend: pk_d is DERIVED in 13 */
     w->value = UINT64_C(54321) + idx;
 
     uint8_t rk[32];
     if (!sapling_compute_rk(ak, w->ar, rk))
         return;                         /* pw->ok stays false */
     memcpy(pw->pub.rk, rk, 32);
-    memcpy(pw->pub.cv, ak, 32);         /* any valid point (bound later) */
+    /* cv is bound to public inputs 3/4 by section 14, so the real value
+     * commitment is the only cv an honest witness can carry. */
+    if (!sapling_value_commit(w->value, w->rcv, pw->pub.cv))
+        return;                         /* pw->ok stays false */
     pw->ok = true;
 }
 
@@ -373,6 +393,52 @@ int groth16_spend_parity_oracle(void)
         snprintf(label, sizeof(label),
                  "corpus[%u]: in-circuit rk wire == ak + [ar]G (section 4)", c);
         PARITY_CHECK(label, rk_wire_ok);
+
+        /* Sections 11/13/14: the note-content points, per witness. pk_d is the
+         * output of the circuit's only VARIABLE-base multiplication, so it is
+         * the one section whose gadget the fixed-base checks above cannot
+         * exercise; cv is additionally the first public input past rk that the
+         * circuit constrains. Reference values come from the independent scalar
+         * implementations (group_hash / ivk_to_pkd / value_commit), not from the
+         * circuit — so this is a differential, not a restatement. */
+        uint8_t nk_for_ivk[32], ivk_ref[32];
+        sapling_nsk_to_nk(pw.wit.nsk, nk_for_ivk);
+        sapling_crh_ivk(pw.wit.ak, nk_for_ivk, ivk_ref);
+
+        struct jub_point gd_ref_pt;
+        uint8_t gd_ref[32], pkd_ref[32], cv_ref[32];
+        bool refs_ok = sapling_diversifier_to_gd(&gd_ref_pt, pw.wit.diversifier);
+        if (refs_ok) {
+            jub_to_bytes(gd_ref, &gd_ref_pt);
+            refs_ok = sapling_ivk_to_pkd(ivk_ref, pw.wit.diversifier, pkd_ref)
+                   && sapling_value_commit(pw.wit.value, pw.wit.rcv, cv_ref);
+        }
+
+        const struct { const char *what; const uint8_t *want;
+                       size_t x_var, y_var; } note_points[3] = {
+            { "g_d wire == GH(\"Zcash_gd\", d) (section 11)",
+              gd_ref,  probe.gd_x,  probe.gd_y },
+            { "pk_d wire == reference [ivk] g_d (section 13)",
+              pkd_ref, probe.pkd_x, probe.pkd_y },
+            { "cv wire == [value]G_v + [rcv]G_rcv (section 14)",
+              cv_ref,  probe.cv_x,  probe.cv_y },
+        };
+        for (size_t np = 0; np < 3; np++) {
+            struct fr wx, wy;
+            bool ok = refs_ok && decode_xy(note_points[np].want, &wx, &wy)
+                   && note_points[np].x_var < cs.num_vars
+                   && note_points[np].y_var < cs.num_vars
+                   && fr_eq(&cs.witness[note_points[np].x_var], &wx)
+                   && fr_eq(&cs.witness[note_points[np].y_var], &wy);
+            if (!ok && !flagged) {
+                flagged = true;
+                printf("  >> FIRST DIVERGENCE: corpus[%u] %s\n",
+                       c, note_points[np].what);
+            }
+            snprintf(label, sizeof(label), "corpus[%u]: in-circuit %s",
+                     c, note_points[np].what);
+            PARITY_CHECK(label, ok);
+        }
 
         /* Sections 8/9: the EdwardsPoint::repr bit wires. Jubjub's compressed
          * encoding is y with x's low bit in the top bit, so repr's 256 bits

@@ -11,6 +11,7 @@
  * a cost will turn that gate red. */
 
 #include "sapling/circuit_bits.h"
+#include "sapling/circuit_gadgets.h"
 #include "base/serialize_le.h"
 #include "util/log_macros.h"
 
@@ -534,4 +535,71 @@ bool gadget_blake2s(struct constraint_system *cs,
             out[i * 32u + j] = h[i].bits[j];
 
     return true;
+}
+
+/* ── Boolean-driven Jubjub scalar multiplication ─────────────────── */
+
+void gadget_conditionally_select_point_cbit(struct constraint_system *cs,
+                                            struct cbit cond,
+                                            size_t px, size_t py,
+                                            size_t *rx, size_t *ry)
+{
+    struct fr one_val;
+    fr_one(&one_val);
+    struct linear_combination cond_lc;
+    lc_init(&cond_lc);
+    cbit_lc_add(&cond_lc, cond, &one_val);
+    gadget_conditionally_select_point_lc(cs, &cond_lc, cbit_value(cond),
+                                        px, py, rx, ry);
+    lc_free(&cond_lc);
+}
+
+void gadget_variable_base_mul_cbits(struct constraint_system *cs,
+                                    size_t base_x, size_t base_y,
+                                    const struct cbit *scalar_bits,
+                                    size_t n_bits,
+                                    size_t *out_x, size_t *out_y)
+{
+    *out_x = SIZE_MAX;
+    *out_y = SIZE_MAX;
+    if (!scalar_bits || n_bits == 0) {
+        LOG_ERROR("circuit_bits",
+                  "variable_base_mul_cbits: empty scalar (bits=%p n_bits=%zu) "
+                  "— refusing to return a point",
+                  (const void *)scalar_bits, n_bits);
+        return;
+    }
+
+    /* `cur` walks 1*P, 2*P, 4*P, ...; `acc` accumulates the selected multiples.
+     * bellman skips the doubling on bit 0 and the addition on the first
+     * selected point — that is where the -11 in 13n-11 comes from. */
+    size_t cur_x = base_x, cur_y = base_y;
+    size_t acc_x = SIZE_MAX, acc_y = SIZE_MAX;
+
+    for (size_t i = 0; i < n_bits; i++) {
+        if (i > 0) {
+            size_t dbl_x, dbl_y;
+            gadget_edwards_double(cs, cur_x, cur_y, &dbl_x, &dbl_y);
+            cur_x = dbl_x;
+            cur_y = dbl_y;
+        }
+
+        size_t sel_x, sel_y;
+        gadget_conditionally_select_point_cbit(cs, scalar_bits[i],
+                                              cur_x, cur_y, &sel_x, &sel_y);
+
+        if (acc_x == SIZE_MAX) {
+            acc_x = sel_x;
+            acc_y = sel_y;
+        } else {
+            size_t new_x, new_y;
+            gadget_edwards_add(cs, acc_x, acc_y, sel_x, sel_y,
+                               &new_x, &new_y);
+            acc_x = new_x;
+            acc_y = new_y;
+        }
+    }
+
+    *out_x = acc_x;
+    *out_y = acc_y;
 }

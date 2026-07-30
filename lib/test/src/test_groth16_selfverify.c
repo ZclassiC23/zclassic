@@ -30,10 +30,10 @@
     else { printf("FAIL\n"); failures++; }     \
 } while (0)
 
-/* Both statics below are used only by the prover-backed section at the bottom
- * of this file, which the default Rust-free build skips; guarding them keeps
- * -Werror=unused-function honest instead of suppressed. */
-#ifdef ZCL_WITH_RUST
+/* First diversifier whose group_hash lands on a Jubjub point. group_hash is
+ * probabilistic (~50% of tags miss), so a hard-coded diversifier is a coin
+ * flip; spend section 11 witnesses g_d and section 12 asserts it is not small
+ * order, both of which need a real point. */
 static bool find_diversifier(uint8_t d[11])
 {
     memset(d, 0, 11);
@@ -45,6 +45,10 @@ static bool find_diversifier(uint8_t d[11])
     return false;
 }
 
+/* The static below is used only by the prover-backed section at the bottom of
+ * this file, which the default Rust-free build skips; guarding it keeps
+ * -Werror=unused-function honest instead of suppressed. */
+#ifdef ZCL_WITH_RUST
 /* ── Native C23 Groth16 prover baseline (H1 harness) ──────────────────
  *
  * NON-GATING diagnostic. The production/gated prover is librustzcash (the
@@ -179,7 +183,7 @@ static void native_circuit_baseline(void)
  *
  * The spend circuit is ported gadget-by-gadget in bellman's Spend::synthesize
  * order. This gate is params-free (pure R1CS synthesis, no proving key) and
- * pins the ported prefix (sections 1..10) against ground truth:
+ * pins the ported prefix (sections 1..16) against ground truth:
  *   (1) cumulative constraint counts per section == the reference trace's
  *       cumulative boundaries (exact, verified by the salvage-plan legs);
  *   (2) the in-circuit nk / rk wires carry the reference-correct Jubjub points,
@@ -199,12 +203,19 @@ static void native_circuit_baseline(void)
  *       free digest wire would let a prover choose its own ivk. Mutation-tested
  *       by making the XOR constraint vacuous — count, digest value and
  *       satisfaction all stay green and only this check fires;
+ *  (2d) sections 11..16 — the note-content half. g_d is the witnessed
+ *       GH("Zcash_gd", d) point; pk_d is the reference [ivk] g_d, which is the
+ *       FIRST variable-base multiplication in the circuit, so its 3252-constraint
+ *       count means nothing without the value check next to it;
+ *       repr(g_d)/repr(pk_d) reproduce those points' compressed encodings; and
+ *       cv is BOUND to public input 3/4, so the honest witness must carry the
+ *       real [value]G_v + [rcv]G_rcv or the R1CS-satisfaction check below fails;
  *   (3) synthesis is deterministic (identical inputs => byte-identical witness).
- * Sections 11..28 are not yet ported, so this is a PARTIAL-prefix gate, not a
+ * Sections 17..28 are not yet ported, so this is a PARTIAL-prefix gate, not a
  * spend round-trip. Returns the number of failures (0 == green). */
 static int spend_circuit_shape_gate(void)
 {
-    printf("\n--- H3: Sapling SPEND circuit port shape gate (sections 1-10) ---\n");
+    printf("\n--- H3: Sapling SPEND circuit port shape gate (sections 1-16) ---\n");
     int failures = 0;
 
     /* Fixed witness — reuses the H2 KAT scalars so the nk wire ties to the
@@ -219,29 +230,41 @@ static int spend_circuit_shape_gate(void)
     wit.ar[0] = 0x03;               /* small fixed re-randomization scalar */
     memcpy(wit.pk_d, ak, 32);
     wit.value = UINT64_C(54321);
+    wit.rcv[0] = 0x71;              /* small canonical Fs scalar (< 2^252) */
+    wit.rcv[1] = 0x0d;
+    PROVER_CHECK("found a diversifier whose group_hash is a Jubjub point",
+                 find_diversifier(wit.diversifier));
 
     uint8_t rk_bytes[32];
     bool rk_ok = sapling_compute_rk(ak, wit.ar, rk_bytes);
     PROVER_CHECK("compute_rk produced rk for the fixed witness", rk_ok);
 
+    /* cv is a PUBLIC INPUT the circuit now binds (section 14), so it has to be
+     * the real value commitment. A placeholder point makes the R1CS
+     * unsatisfiable — that is the intended behaviour, not a fixture quirk. */
+    uint8_t cv_bytes[32];
+    bool cv_ok = sapling_value_commit(wit.value, wit.rcv, cv_bytes);
+    PROVER_CHECK("value_commit produced cv for the fixed witness", cv_ok);
+
     struct sapling_spend_inputs pub;
     memset(&pub, 0, sizeof pub);
     memcpy(pub.rk, rk_bytes, 32);
-    memcpy(pub.cv, ak, 32);         /* any valid Jubjub point (bound later) */
+    memcpy(pub.cv, cv_bytes, 32);
 
-    struct spend_section_shape sections[11];
+    struct spend_section_shape sections[17];
     size_t nsec = 0;
     struct spend_wire_probe probe;
     struct constraint_system cs;
     cs_init(&cs);
     bool synth_ok = sapling_spend_synthesize_traced(
-        &cs, &wit, &pub, sections, 11, &nsec, &probe);
+        &cs, &wit, &pub, sections, 17, &nsec, &probe);
     PROVER_CHECK("traced spend synthesis succeeded", synth_ok);
 
     /* (1) Per-section cumulative constraint counts vs the reference trace. */
-    static const size_t REF_CUM[10] =
-        {20, 272, 1022, 1028, 1030, 1282, 2032, 2808, 3584, 24590};
-    static const char *REF_NAME[10] = {
+    static const size_t REF_CUM[16] =
+        {20, 272, 1022, 1028, 1030, 1282, 2032, 2808, 3584, 24590,
+         24594, 24610, 27862, 29127, 29903, 30679};
+    static const char *REF_NAME[16] = {
         "S1 ak witness/on-curve/not-small-order (cum 20)",
         "S2 ar bits (cum 272)",
         "S3 randomization of signing key (cum 1022)",
@@ -252,21 +275,47 @@ static int spend_circuit_shape_gate(void)
         "S8 representation of ak (cum 2808)",
         "S9 representation of nk (cum 3584)",
         "S10 computation of ivk — in-circuit blake2s (cum 24590)",
+        "S11 witness g_d (cum 24594)",
+        "S12 g_d not small order (cum 24610)",
+        "S13 pk_d = [ivk] g_d — variable-base mul (cum 27862)",
+        "S14 value commitment + cv inputize (cum 29127)",
+        "S15 representation of g_d (cum 29903)",
+        "S16 representation of pk_d (cum 30679)",
     };
-    PROVER_CHECK("synthesized all 10 ported sections", nsec == 10);
-    for (size_t i = 0; i < 10 && i < nsec; i++)
+    PROVER_CHECK("synthesized all 16 ported sections", nsec == 16);
+    for (size_t i = 0; i < 16 && i < nsec; i++)
         PROVER_CHECK(REF_NAME[i], sections[i].num_constraints == REF_CUM[i]);
     PROVER_CHECK("7 public inputs allocated (bellman-faithful low indices)",
                  cs.num_inputs == 7);
-    PROVER_CHECK("ported-prefix constraint count == 24590",
-                 cs.num_constraints == 24590);
+    PROVER_CHECK("ported-prefix constraint count == 30679",
+                 cs.num_constraints == 30679);
+    /* Per-section DELTAS, not only cumulative totals — a compensating pair of
+     * errors in adjacent sections cancels in the running total but not here.
+     * 3252 = 13*251 - 11 is double-and-add over the 251 truncated ivk bits;
+     * 1265 = 64 + 191 + 252 + 750 + 6 + 2 is expose_value_commitment. */
+    if (nsec == 16) {
+        static const size_t REF_DELTA[6] = {4, 16, 3252, 1265, 776, 776};
+        static const char *REF_DELTA_NAME[6] = {
+            "S11 delta == 4 (EdwardsPoint::witness on-curve check)",
+            "S12 delta == 16 (assert_not_small_order)",
+            "S13 delta == 3252 (13*251 - 11, variable-base mul)",
+            "S14 delta == 1265 (expose_value_commitment)",
+            "S15 delta == 776 (EdwardsPoint::repr)",
+            "S16 delta == 776 (EdwardsPoint::repr)",
+        };
+        for (size_t i = 0; i < 6; i++)
+            PROVER_CHECK(REF_DELTA_NAME[i],
+                         sections[10 + i].num_constraints
+                             - sections[9 + i].num_constraints
+                                 == REF_DELTA[i]);
+    }
     /* Section 10 alone must cost exactly what the reference's blake2s costs for
      * a 512-bit all-allocated input. bellman's own blake2s test asserts 21518
      * constraints for that shape, of which 512 are the input AllocatedBit::alloc
      * constraints the caller pays — leaving 21006 for the hash itself, which is
      * exactly the reference spend trace's section-10 delta. */
     PROVER_CHECK("S10 delta == 21006 (bellman blake2s, 512-bit input)",
-                 nsec == 10 && sections[9].num_constraints
+                 nsec >= 10 && sections[9].num_constraints
                              - sections[8].num_constraints == 21006);
 
     /* (2) Value gate: in-circuit wires carry reference-correct points; nk is
@@ -370,18 +419,20 @@ static int spend_circuit_shape_gate(void)
      *      output, where a free bit is directly exploitable) and a deterministic
      *      stride across every wire section 10 allocated (its internal
      *      round state, carries and XOR results). */
-    size_t sec10_first_var = (nsec == 10) ? sections[8].num_vars : 0;
-    size_t sec10_last_var  = (nsec == 10) ? sections[9].num_vars : 0;
+    size_t sec10_first_var = (nsec >= 10) ? sections[8].num_vars : 0;
+    size_t sec10_last_var  = (nsec >= 10) ? sections[9].num_vars : 0;
     size_t flips_tried = 0, flips_detected = 0;
     size_t digest_tried = 0, digest_detected = 0;
-    if (synth_ok && nsec == 10 && sec10_last_var > sec10_first_var) {
+    if (synth_ok && nsec >= 10 && sec10_last_var > sec10_first_var) {
         struct fr zero_fr;
         fr_zero(&zero_fr);
         size_t ignored = SIZE_MAX;
 
         /* Sanity: the honest witness satisfies the system before any mutation,
-         * otherwise "flip detected" would be vacuous. */
-        PROVER_CHECK("honest witness satisfies the 24590-constraint prefix",
+         * otherwise "flip detected" would be vacuous. This is also what proves
+         * the cv public input is the real value commitment — section 14 binds
+         * it, so a placeholder cv shows up here as an unsatisfiable system. */
+        PROVER_CHECK("honest witness satisfies the 30679-constraint prefix",
                      cs_is_satisfied(&cs, &ignored));
 
         for (size_t b = 0; b < 256; b++) {
@@ -422,6 +473,101 @@ static int spend_circuit_shape_gate(void)
     PROVER_CHECK("every probed section-10 internal wire is bound (no free "
                  "wire = no under-constrained gadget)",
                  flips_tried > 0 && flips_detected == flips_tried);
+
+    /* (2d) Sections 11..16 VALUE gate. Every one of these is a point or a bit
+     *      string with an out-of-circuit ground truth, so none of them is
+     *      accepted on its constraint count alone:
+     *
+     *        11  g_d          == GH("Zcash_gd", d)
+     *        13  pk_d         == sapling_ivk_to_pkd(ivk, d)  (the reference
+     *                            variable-base multiplication — this is the one
+     *                            new GADGET the six sections introduce)
+     *        14  cv           == sapling_value_commit(value, rcv), and the 64
+     *                            value bits are the note's value little-endian
+     *        15  repr(g_d)    == compressed g_d, bit for bit
+     *        16  repr(pk_d)   == compressed pk_d, bit for bit
+     *
+     *      Sections 12 and 16's cv/pk_d bindings are additionally covered by the
+     *      satisfaction check above: assert_not_small_order and the cv copy
+     *      constraint can only be satisfied by a witness that really holds. */
+    uint8_t gd_bytes[32], pkd_bytes[32];
+    struct jub_point gd_pt;
+    bool gd_derived = sapling_diversifier_to_gd(&gd_pt, wit.diversifier);
+    if (gd_derived)
+        jub_to_bytes(gd_bytes, &gd_pt);
+    else
+        memset(gd_bytes, 0, sizeof gd_bytes);
+    bool pkd_derived = gd_derived
+        && sapling_ivk_to_pkd(ivk_truncated, wit.diversifier, pkd_bytes);
+    if (!pkd_derived)
+        memset(pkd_bytes, 0, sizeof pkd_bytes);
+    PROVER_CHECK("reference g_d and pk_d = [ivk] g_d derived out of circuit",
+                 gd_derived && pkd_derived);
+
+    /* One helper for all three point-wire diffs (g_d, pk_d, cv): decode the
+     * reference encoding and compare both coordinate wires. */
+    struct point_wire_case {
+        const char *label;
+        const uint8_t *want;
+        size_t x_var, y_var;
+    };
+    const struct point_wire_case point_cases[3] = {
+        { "in-circuit g_d wire == GH(\"Zcash_gd\", d) (section 11)",
+          gd_bytes,  probe.gd_x,  probe.gd_y },
+        { "in-circuit pk_d wire == reference [ivk] g_d (section 13)",
+          pkd_bytes, probe.pkd_x, probe.pkd_y },
+        { "in-circuit cv wire == [value]G_v + [rcv]G_rcv (section 14)",
+          cv_bytes,  probe.cv_x,  probe.cv_y },
+    };
+    for (size_t i = 0; i < 3; i++) {
+        struct jub_point p;
+        struct fr px, py;
+        bool ok = synth_ok && jub_from_bytes(&p, point_cases[i].want);
+        if (ok) {
+            jub_get_x(&px, &p);
+            jub_get_y(&py, &p);
+            ok = point_cases[i].x_var < cs.num_vars
+              && point_cases[i].y_var < cs.num_vars
+              && fr_eq(&cs.witness[point_cases[i].x_var], &px)
+              && fr_eq(&cs.witness[point_cases[i].y_var], &py);
+        }
+        PROVER_CHECK(point_cases[i].label, ok);
+    }
+
+    /* repr(g_d) / repr(pk_d): Jubjub's compressed encoding is y with x's low
+     * bit in the top bit, so repr's 256 little-endian bits ARE the bits of the
+     * 32-byte encoding. Same shape as the section 8/9 checks — they share the
+     * gadget, so they share the ground truth too. */
+    const struct { const char *label; const uint8_t *want; const size_t *bits; }
+    repr_cases[2] = {
+        { "repr(g_d) 256 bits == compressed g_d (section 15)",
+          gd_bytes,  probe.gd_repr },
+        { "repr(pk_d) 256 bits == compressed pk_d (section 16)",
+          pkd_bytes, probe.pkd_repr },
+    };
+    for (size_t i = 0; i < 2; i++) {
+        bool ok = synth_ok;
+        for (size_t b = 0; b < 256 && ok; b++) {
+            const size_t v = repr_cases[i].bits[b];
+            bool want = ((repr_cases[i].want[b / 8] >> (b % 8)) & 1) == 1;
+            ok = v < cs.num_vars
+              && fr_eq(&cs.witness[v], &one_fr) == want;
+        }
+        PROVER_CHECK(repr_cases[i].label, ok);
+    }
+
+    /* Section 14's 64 value bits, little-endian — the order section 17 hashes
+     * them in, so a reversed decomposition would be silent until then. */
+    {
+        bool ok = synth_ok;
+        for (size_t b = 0; b < 64 && ok; b++) {
+            const size_t v = probe.value_bit[b];
+            bool want = ((wit.value >> b) & 1) == 1;
+            ok = v < cs.num_vars && fr_eq(&cs.witness[v], &one_fr) == want;
+        }
+        PROVER_CHECK("64 value bits == note value little-endian (section 14)",
+                     ok);
+    }
 
     /* (3) Determinism: identical inputs => byte-identical witness. */
     struct constraint_system cs2;

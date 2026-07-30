@@ -105,11 +105,34 @@ void gadget_assert_not_small_order(struct constraint_system *cs,
                                      size_t x, size_t y);
 
 /* ── Conditionally Select Point ────────────────────────────────── */
+
+/* bellman ecc::EdwardsPoint::conditionally_select — result = cond ? p : O,
+ * where O is the Edwards neutral element (0, 1). Two constraints:
+ *       x * cond = x'          (cond=0 forces x' = 0)
+ *   (y - 1) * cond = y' - 1    (cond=0 forces y' = 1)
+ *
+ * The condition enters only as a LINEAR COMBINATION, which is why this is the
+ * form the whole gadget layer shares: a bare boolean wire, a bellman
+ * `Boolean::Not` view and a folded constant all produce a different `cond_lc`
+ * over the same two constraints. `cond_value` is the condition's logical value,
+ * used to fill the witness. Callers should prefer one of the two wrappers
+ * below or `gadget_conditionally_select_point_cbit` (circuit_bits.h). */
+void gadget_conditionally_select_point_lc(struct constraint_system *cs,
+                                          const struct linear_combination *cond_lc,
+                                          bool cond_value,
+                                          size_t px, size_t py,
+                                          size_t *rx, size_t *ry);
+
+/* The bare-wire condition. `cond` must already be boolean-constrained. */
 void gadget_conditionally_select_point(struct constraint_system *cs,
                                          size_t cond, size_t px, size_t py,
                                          size_t *rx, size_t *ry);
 
 /* ── Variable-Base Scalar Multiplication ───────────────────────── */
+
+/* bellman ecc::EdwardsPoint::mul over `n_bits` bare boolean wires (LSB first).
+ * Thin wrapper over gadget_variable_base_mul_cbits (circuit_bits.h) — there is
+ * exactly ONE double-and-add body in the tree. 13*n_bits - 11 constraints. */
 void gadget_variable_base_mul(struct constraint_system *cs,
                                 size_t base_x, size_t base_y,
                                 const size_t *scalar_bits, size_t n_bits,
