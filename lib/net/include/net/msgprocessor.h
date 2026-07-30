@@ -450,6 +450,23 @@ struct msg_headers_stats {
     uint64_t push_getheaders_span_suppressed_snapshot;
     uint64_t push_getheaders_span_alloc_fail;
     uint64_t getheaders_deferred_snapshot_serving;
+    /* Serve-side accounting — what OTHER peers cost this node.
+     *
+     * getheaders_served_requests counts `getheaders` requests this node
+     * ANSWERED (a request deferred while a snapshot transfer owns the wire
+     * is counted by getheaders_deferred_snapshot_serving instead, not
+     * here); headers_served_total counts the headers those replies
+     * actually carried.
+     *
+     * The pair is the amplification ratio, and without it the serve path
+     * is unmeasurable: requests is what a stranger spends, headers is what
+     * it gets back. requests climbing while headers stands still is a peer
+     * grinding empty replies — cheap for it, work for us. Every header in
+     * headers_served_total costs one full Equihash verification (383-390 us
+     * at 200,9), so headers_served_total is also, to within the refusals,
+     * the serve path's PoW bill. */
+    uint64_t headers_served_total;
+    uint64_t getheaders_served_requests;
 };
 
 void msg_headers_get_stats(struct msg_headers_stats *out);

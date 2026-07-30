@@ -256,7 +256,7 @@ int test_getheaders_serve_fallback(void)
      *    0-header reply to the peer). */
     {
         struct block_index *next =
-            getheaders_next_servable_successor(&mp, bi_g);
+            getheaders_next_servable_successor(&mp, bi_g, NULL);
         GSF_CHECK("walk advances past the unservable entry",
                   next == bi_b);
         GSF_CHECK("walk skipped entry is still not FAILED-marked",
