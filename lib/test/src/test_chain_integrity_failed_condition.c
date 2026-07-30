@@ -8,6 +8,7 @@
 #include "services/chain_restore_integrity.h"
 #include "util/blocker.h"
 #include "util/supervisor.h"
+#include "util/util.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 
@@ -103,6 +104,28 @@ int test_chain_integrity_failed_condition(void)
 {
     printf("\n=== chain_integrity_failed condition tests ===\n");
     int failures = 0;
+
+    /* Isolate GetDataDir() to a hermetic tmp directory for this whole test.
+     * remedy_chain_integrity_failed() (app/conditions/src/chain_integrity_
+     * failed.c) resolves GetDataDir(true, ...) unconditionally on every
+     * remedy call and, when classification is UNRECOVERABLE, hands that path
+     * to chain_restore_finalize() -> chain_restore_quarantine_synthetic_tip(),
+     * which walks tip->pprev looking for a consensus-backed ancestor and, at
+     * height 0 (genesis has no pprev-presence gate — see chain_restore_
+     * backing.c), attempts a real pread() of "<datadir>/blocks/blk00000.dat"
+     * even though this test's synthetic genesis block_index has no real
+     * on-disk position (nFile=nDataPos=0, only BLOCK_HAVE_DATA is set).
+     * Without SetDataDir here, GetDataDir() resolves to the operator's real
+     * default datadir (~/.zclassic-c23): on a host with a live node running
+     * there, that file exists and gets opened, silently weakening this test
+     * into reading real, unrelated block bytes; on a hosted CI runner with no
+     * node, the open legitimately fails ("cannot open .../blk00000.dat").
+     * Neither behavior is intended — pin datadir to an empty, hermetic tmp
+     * dir so the read consistently and honestly misses on every host. */
+    char cif_datadir[256];
+    test_make_tmpdir(cif_datadir, sizeof(cif_datadir),
+                     "chain_integrity_failed_condition", "datadir");
+    SetDataDir(cif_datadir);
 
     {
         struct main_state ms;
@@ -352,6 +375,9 @@ int test_chain_integrity_failed_condition(void)
         CIF_CHECK("restore watchdog names+clears a blocker past deadline", ok);
         cleanup_cif(&ms);
     }
+
+    SetDataDir(""); ClearDataDirCache();
+    test_rm_rf(cif_datadir);
 
     return failures;
 }
