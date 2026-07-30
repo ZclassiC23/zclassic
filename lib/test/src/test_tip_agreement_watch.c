@@ -650,6 +650,53 @@ int test_tip_agreement_watch(void)
             ok = ok && rep.height == 3400004;
         }
 
+        /* (g5) AN EMBEDDED NUL IN ONE ROW MUST NOT COST THE NEXT ROW.
+         * A torn append does not always end the file — the filesystem can
+         * allocate the block and lose the data, so the row reads back with a
+         * NUL in the middle of otherwise perfect JSON and its newline still
+         * on the end. The scanner used to find its row boundaries with
+         * strlen(), which stops at that NUL: the line looked unterminated, so
+         * the reader armed its consume-the-rest-of-the-line state even though
+         * fgets() had already eaten the newline, and the NEXT line — a
+         * complete, valid, uncorrupted row — was swallowed as that phantom
+         * tail. One NUL cost two rows and the second loss was counted in
+         * neither counter (reproduced: 1 row scanned, incomplete=1, third row
+         * gone silently). Row boundaries are byte-counted now, so a NUL
+         * disqualifies its own row and reaches no further. */
+        {
+            char corrupt[2048];
+            row(corrupt, sizeof(corrupt), 1785394060LL, "agrees", 2, 3500002,
+                HASH_A, HASH_A, 4, 0, "nul_fixture");
+            size_t clen = strlen(corrupt);       /* includes the newline */
+            ok = ok && clen > 40 && corrupt[clen - 1] == '\n';
+            /* mid-content, nowhere near the terminator */
+            corrupt[clen / 2] = '\0';
+
+            FILE *f = fopen(path, "wb");
+            ok = ok && f != NULL;
+            if (f) {
+                ok = ok && write_row_of_len(f, 1785394000LL, 3500001,
+                                            SHORT_ROW, true);
+                ok = ok && fwrite(corrupt, 1, clen, f) == clen;
+                ok = ok && write_row_of_len(f, 1785394120LL, 3500003,
+                                            SHORT_ROW, true);
+                fclose(f);
+            }
+            ok = ok && tip_agreement_read_ledger(path, &rep);
+            ok = ok && rep.present;
+            /* the two intact rows, and only those two */
+            ok = ok && rep.rows_scanned == 2;
+            /* THE ACCEPTANCE BAR: the row after the corrupt one survived and
+             * is the sample, so a lost NUL cannot silently freeze this report
+             * on the row before the corruption. */
+            ok = ok && rep.height == 3500003;
+            ok = ok && rep.last_ts == 1785394120LL;
+            /* the corrupt row is counted, and counted as what it is: a write
+             * that did not all land, not a foreign row shape */
+            ok = ok && rep.incomplete_rows == 1;
+            ok = ok && rep.malformed_rows == 0;
+        }
+
         unlink(path);
         rmdir(dir);
         TAW_CHECK("the tail read keeps every real row and no invented one", ok);

@@ -616,7 +616,18 @@ const char *zcl_native_command_datadir(void);
  * reasoning, and the measurement behind it, is the block comment at the top
  * of tools/command/native_node_db_ro.c. The `struct node_db` filled in is a
  * borrowed-handle shim (db + open + path, no prepared statements); close it
- * with zcl_native_node_db_close_readonly, never node_db_close. */
+ * with zcl_native_node_db_close_readonly, never node_db_close.
+ *
+ * AND THE FRESHNESS CONTRACT OUTLIVES THE OPEN. On the one path that reads a
+ * quiescent WAL database as an immutable snapshot, sqlite does not consult a
+ * write-ahead log, so a writer attaching after the handle was returned would
+ * leave it answering from the database's past. A guard on the connection
+ * re-checks that premise at every statement: if the database is written to, or
+ * grows a wal-index or a log, further statements FAIL (SQLITE_AUTH, or
+ * SQLITE_INTERRUPT for one already in flight) with the reason named in
+ * node.log. So a caller gets a fresh answer or an error — never a stale answer
+ * that looks fresh. A statement that had already completed was answered before
+ * the change and stays valid. */
 
 /* Why a read-only open produced no handle.
  *

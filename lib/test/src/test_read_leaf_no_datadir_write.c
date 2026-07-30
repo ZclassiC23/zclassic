@@ -1233,6 +1233,150 @@ static int t_wal_datadir_with_live_writer(void)
     return failures;
 }
 
+/* ── case 9: a writer that attaches AFTER the read-only open ────────────
+ *
+ * Case 7 pins the writer-was-already-there half. This is the other half, and
+ * it is the one the open-time check cannot see: the handle is returned to a
+ * leaf that queries it AFTERWARDS, so "no wal-index means no writer is
+ * attached" has to hold for the handle's whole life, not just for the instant
+ * it was checked.
+ *
+ * Reproduced on the vendored sqlite 3.49.0 before the fix, with this exact
+ * ordering — open the immutable snapshot, THEN attach a writer and commit,
+ * THEN query the handle: it answered the pre-commit row count, with no error
+ * and no log line. That is the one failure this file cannot ship, because
+ * these leaves default to the operator's LIVE node and a diagnostic that
+ * quietly reports a running node's past is worse than one that refuses.
+ *
+ * The bar is deliberately either/or: the handle may report the FRESH state, or
+ * it may refuse. What it must never do is report the stale count as if it were
+ * current. */
+static int t_wal_snapshot_writer_arrives_after_open(void)
+{
+    int failures = 0;
+    char dir[256];
+    rlw_mkfixture(dir, sizeof(dir), "walrace");
+    char db_path[1200];
+    snprintf(db_path, sizeof(db_path), "%s/node.db", dir);
+
+    RLW_CHECK("walrace: fixture node.db seeded",
+              rlw_seed_node_db(dir, db_path));
+    /* The premise of the whole case: a quiescent WAL database, which is the
+     * state that takes the immutable open. */
+    RLW_CHECK("walrace: fixture node.db really is in WAL mode",
+              rlw_is_wal(db_path));
+    RLW_CHECK("walrace: fixture starts with no node.db-wal/-shm",
+              rlw_count_entries(dir, "node.db-") == 0);
+
+    /* rlw_scalar() is deliberately NOT used to check the starting count: a
+     * plain READONLY open of a quiescent WAL database is exactly what
+     * materializes the two sidecars, so measuring the fixture that way would
+     * destroy the state this case needs. The count is read through the handle
+     * under test instead, which also proves the guard does not false-positive
+     * on an untouched database. */
+    const char *const count_sql =
+        "SELECT COUNT(*) FROM snapshot_staging_utxos";
+
+    /* 1. the read-only open, exactly as a read leaf gets it */
+    sqlite3 *ro = NULL;
+    struct node_db ro_shim;
+    char ro_path[1200];
+    enum zcl_node_db_ro_status st = zcl_native_node_db_open_readonly(
+        dir, &ro, &ro_shim, ro_path, sizeof(ro_path));
+    RLW_CHECK("walrace: the read-only open succeeds on a quiescent WAL db",
+              st == ZCL_NODE_DB_RO_OK && ro != NULL);
+    RLW_CHECK("walrace: no sidecar was created by the read-only open",
+              rlw_count_entries(dir, "node.db-") == 0);
+
+    /* 1b. it answers, and answers correctly, while nothing has changed */
+    if (ro) {
+        sqlite3_stmt *stmt = NULL;
+        int64_t seen = -1;
+        if (sqlite3_prepare_v2(ro, count_sql, -1, &stmt, NULL) == SQLITE_OK &&
+            sqlite3_step(stmt) == SQLITE_ROW)
+            seen = sqlite3_column_int64(stmt, 0);
+        sqlite3_finalize(stmt);
+        RLW_CHECK("walrace: the untouched snapshot answers its 2 seeded rows",
+                  seen == 2);
+    }
+
+    /* 2. and only NOW does the writer arrive, commit, and stay attached —
+     *    which is what keeps its wal-index on disk with the commit in it.
+     *
+     *    A bare READWRITE connection, NOT node_db_open(): the boot ceremony
+     *    node_db_open() runs would DELETE the seeded snapshot_staging rows on
+     *    its way in, so the count this case measures would move for a reason
+     *    that has nothing to do with the race. Case 7 wants the ceremony
+     *    because it models a node booting on the datadir; this case wants
+     *    exactly one committed row and no other change. */
+    sqlite3 *live = NULL;
+    bool live_open = st == ZCL_NODE_DB_RO_OK &&
+                     sqlite3_open_v2(db_path, &live, SQLITE_OPEN_READWRITE,
+                                     NULL) == SQLITE_OK;
+    RLW_CHECK("walrace: a writer attaches after the read-only open", live_open);
+    if (live_open)
+        RLW_CHECK("walrace: the writer commits a third row",
+                  sqlite3_exec(live,
+                               "INSERT OR REPLACE INTO snapshot_staging_utxos"
+                               "(txid,vout,value,script,script_type,"
+                               "address_hash,height,is_coinbase)"
+                               " VALUES(x'33', 2, 7000, x'76a914', 0, NULL,"
+                               " 700002, 0)",
+                               NULL, NULL, NULL) == SQLITE_OK);
+
+    /* 3. the query the leaf would have run. Either answer is acceptable;
+     *    "2" is not. */
+    if (live_open && ro) {
+        sqlite3_stmt *stmt = NULL;
+        int rc = sqlite3_prepare_v2(ro, count_sql, -1, &stmt, NULL);
+        int64_t answered = -1;
+        int step_rc = SQLITE_OK;
+        if (rc == SQLITE_OK) {
+            step_rc = sqlite3_step(stmt);
+            if (step_rc == SQLITE_ROW)
+                answered = sqlite3_column_int64(stmt, 0);
+        }
+        sqlite3_finalize(stmt);
+
+        bool refused = rc != SQLITE_OK || step_rc == SQLITE_INTERRUPT ||
+                       (step_rc != SQLITE_ROW && step_rc != SQLITE_DONE);
+        bool fresh = answered == 3;
+        if (!refused && !fresh)
+            printf("    read-only handle answered %lld (prepare rc=%d, step "
+                   "rc=%d) where the committed truth is 3\n",
+                   (long long)answered, rc, step_rc);
+        RLW_CHECK("walrace: the handle reports the fresh state or refuses — "
+                  "never the pre-commit count",
+                  refused || fresh);
+        /* And the fresh truth really is 3, so a refusal above was a refusal to
+         * report 2 and not a refusal to see a row that was never committed. A
+         * plain READONLY open is safe to use for this NOW — the writer's own
+         * wal-index is already on disk, so there is nothing left to create. */
+        RLW_CHECK("walrace: the committed truth on disk is 3 rows",
+                  rlw_scalar(db_path, count_sql) == 3);
+    }
+
+    zcl_native_node_db_close_readonly(&ro, &ro_shim);
+
+    /* The read must not have damaged or wedged anything: the writer's own
+     * sidecars are its business, but nothing may be quarantined and the writer
+     * must still be able to commit. */
+    RLW_CHECK("walrace: nothing was quarantined",
+              rlw_count_entries(dir, "node.db.corrupt") == 0);
+    if (live_open) {
+        RLW_CHECK("walrace: the writer can still write afterwards",
+                  sqlite3_exec(live,
+                               "INSERT OR REPLACE INTO node_state(key,value)"
+                               " VALUES('rlw_race_after','1')",
+                               NULL, NULL, NULL) == SQLITE_OK);
+    }
+    if (live)
+        sqlite3_close(live);
+
+    test_rm_rf(dir);
+    return failures;
+}
+
 /* ── case 8: the population comes from the registry, not from memory ──
  *
  * The defect this case exists to catch is the one that hit this very file:
@@ -1397,6 +1541,7 @@ int test_read_leaf_no_datadir_write(void)
     failures += t_garbage_node_db_is_refused_not_empty();
     failures += t_wal_datadir_file_set_is_unchanged();
     failures += t_wal_datadir_with_live_writer();
+    failures += t_wal_snapshot_writer_arrives_after_open();
 
     return failures;
 }

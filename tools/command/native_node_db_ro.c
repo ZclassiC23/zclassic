@@ -15,7 +15,9 @@
  *
  * Nothing here creates, migrates, schema-initializes, quarantines, renames
  * or deletes. The only sqlite3 calls are open_v2(READONLY), the query_only
- * pragma, busy_timeout, and close.
+ * pragma, busy_timeout, close, and — on the immutable path only — the three
+ * read-side hooks that arm the snapshot guard (see struct zcl_ro_guard). None
+ * of them writes, and the guard itself only stats.
  *
  * AND SQLITE_OPEN_READONLY IS NOT ENOUGH ON ITS OWN. Both stores under a
  * datadir are WAL-mode (app/models/src/database.c sets journal_mode=WAL for
@@ -57,7 +59,10 @@
  *                       writer holds one open for the whole life of its
  *                       connection, so its absence means no writer is
  *                       attached and no committed frame is waiting in a log
- *                       for immutable=1 to miss.
+ *                       for immutable=1 to miss. That premise is an INSTANT,
+ *                       not a guarantee, so this branch alone also arms the
+ *                       snapshot guard that keeps re-checking it for as long
+ *                       as the handle lives.
  *
  * immutable=1 is deliberately NOT the blanket answer, and the measurement is
  * why: pointed at a database a writer WAS attached to, an immutable=1 read
@@ -77,11 +82,13 @@
 
 #include "base/hex.h"
 #include "base/log_macros.h"
+#include "base/safe_alloc.h"
 #include "models/database.h"
 #include "storage/consensus_db.h"
 
 #include <sqlite3.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -146,6 +153,200 @@ static void zcl_ro_probe_sidecars(const char *path,
     n = snprintf(side, sizeof(side), "%s-shm", path);
     if (n > 0 && (size_t)n < sizeof(side) && stat(side, &st) == 0)
         out->shm = true;
+}
+
+/* ── the immutable snapshot's guard ────────────────────────────────────
+ *
+ * The open-time reasoning above ("no wal-index means no writer is attached")
+ * is true at the instant it is checked and NOT DURABLE. The handle outlives
+ * that instant: it goes back to a leaf that prepares its own statements
+ * afterwards, and immutable=1 does not consult a write-ahead log. Measured on
+ * the vendored sqlite 3.49.0, with the writer arriving AFTER the open returned:
+ * the handle answered 1 where the truth was 2, with no error and no log line
+ * — the exact silently-stale read this file exists to refuse.
+ *
+ * So the premise is re-checked on the connection itself, at every statement,
+ * for as long as the handle lives. Two facts are pinned at open:
+ *
+ *   the sidecars — a WAL writer creates <db>-wal and <db>-shm and holds them
+ *                  for the life of its connection, so either one appearing (or
+ *                  the log growing) is a writer that attached under this read;
+ *   the main file's identity (dev/inode/size/mtime) — because a writer that
+ *                  attached, committed, checkpointed and CLOSED again takes
+ *                  its sidecars with it. That leaves no sidecar to see, and
+ *                  measurement says it leaves no header trace either: in WAL
+ *                  mode the change counter does NOT move across a commit, so
+ *                  the rewritten main file is only visible as a stat change.
+ *
+ * Either one drifting is a named refusal, never a quiet stale answer. The
+ * check reads two directory entries and one inode; it creates nothing, so the
+ * guard cannot break the no-datadir-write guarantee it is defending. */
+struct zcl_ro_guard {
+    char path[1200];
+    struct zcl_ro_sidecars at_open;
+    dev_t dev;
+    ino_t ino;
+    long long size;
+    long long mtime_sec;
+    long mtime_nsec;
+    /* One log line per handle: the authorizer fires per statement and a
+     * drifted snapshot stays drifted, so without this a refused read would
+     * repeat itself down the log. */
+    bool reported;
+};
+
+/* True while the database still looks exactly as it did when the immutable
+ * snapshot was justified.
+ *
+ * The two sidecar tests that CAN be stated absolutely are stated absolutely,
+ * and not as "unchanged since the baseline", on purpose: the baseline is taken
+ * a few instructions after the probe that chose the immutable open, so a writer
+ * landing in that gap would be captured in the baseline as if it had always
+ * been there and every later check would then read its footprint as normal. A
+ * wal-index beside an immutable read is never normal — that is the whole
+ * premise of the branch — so it is refused on its own terms, whatever the
+ * baseline says. */
+static bool zcl_ro_guard_intact(struct zcl_ro_guard *g)
+{
+    struct zcl_ro_sidecars now;
+    zcl_ro_probe_sidecars(g->path, &now);
+    const char *why = NULL;
+    if (now.shm)
+        why = "a wal-index (<db>-shm) is beside it";
+    else if (now.wal && now.wal_bytes > 0)
+        why = "it carries a non-empty write-ahead log";
+    else if (now.wal != g->at_open.wal)
+        why = "a write-ahead log (<db>-wal) appeared beside it";
+    else if (now.wal_bytes != g->at_open.wal_bytes)
+        why = "its write-ahead log changed length";
+
+    if (!why) {
+        struct stat st;
+        if (stat(g->path, &st) != 0)
+            why = "it can no longer be stat'ed";
+        else if (st.st_dev != g->dev || st.st_ino != g->ino)
+            why = "it was replaced by a different file";
+        else if ((long long)st.st_size != g->size)
+            why = "its length changed";
+        else if ((long long)st.st_mtim.tv_sec != g->mtime_sec ||
+                 st.st_mtim.tv_nsec != g->mtime_nsec)
+            why = "it was written to";
+    }
+    if (!why)
+        return true;
+
+    if (!g->reported) {
+        g->reported = true;
+        LOG_ERROR("cmd",
+                  "%s changed while a read-only snapshot of it was open (%s), "
+                  "and an immutable snapshot does not consult a write-ahead "
+                  "log: refusing every further statement on this handle rather "
+                  "than answering from the database's pre-change state. Retry "
+                  "the read once the owning node is attached (the read then "
+                  "goes through its wal-index) or once the datadir is quiet",
+                  g->path, why);
+    }
+    return false;
+}
+
+/* Fires at every statement preparation. Restricted to the two authorizer ops a
+ * query_only READONLY handle can produce as a statement ROOT — SQLITE_READ
+ * fires once per column, and paying three directory lookups per column would
+ * make the guard the cost of the read. */
+static int zcl_ro_guard_authorize(void *arg, int op, const char *a,
+                                  const char *b, const char *c, const char *d)
+{
+    (void)a;
+    (void)b;
+    (void)c;
+    (void)d;
+    if (op != SQLITE_SELECT && op != SQLITE_PRAGMA)
+        return SQLITE_OK;
+    return zcl_ro_guard_intact((struct zcl_ro_guard *)arg) ? SQLITE_OK
+                                                           : SQLITE_DENY;
+}
+
+/* And during execution, for the window the authorizer cannot see: a statement
+ * prepared while the snapshot was still good and stepped after a writer
+ * arrived. Best-effort by construction — sqlite counts VDBE instructions, so a
+ * statement that finishes inside one interval is never sampled — which is why
+ * it is the second line of defence and not the first. The interval is coarse
+ * on purpose: it is a long table scan this is here to interrupt, and those
+ * sample many times over. */
+#define ZCL_RO_GUARD_VDBE_OPS 4096
+
+static int zcl_ro_guard_progress(void *arg)
+{
+    return zcl_ro_guard_intact((struct zcl_ro_guard *)arg) ? 0 : 1;
+}
+
+/* Never called: registering a function is how the guard's lifetime is tied to
+ * the CONNECTION's. Callers close these handles with a bare sqlite3_close()
+ * (the kernel-store handle has no shim to close through), so there is no
+ * caller-side hook to free the guard in — but sqlite runs a function's
+ * destructor when the connection goes away, however it goes away. */
+static void zcl_ro_guard_marker(sqlite3_context *ctx, int argc,
+                                sqlite3_value **argv)
+{
+    (void)argc;
+    (void)argv;
+    sqlite3_result_null(ctx);
+}
+
+static void zcl_ro_guard_destroy(void *arg)
+{
+    free(arg);
+}
+
+/* Arm the guard on an immutable handle. `at_open` is the sidecar state the
+ * immutable open was justified by, already re-probed by the caller. */
+static enum zcl_node_db_ro_status zcl_ro_guard_arm(
+    sqlite3 *db, const char *path, const struct zcl_ro_sidecars *at_open)
+{
+    struct stat st;
+    if (stat(path, &st) != 0)
+        LOG_RETURN(ZCL_NODE_DB_RO_UNREADABLE, "cmd",
+                   "cannot stat %s to pin the read-only snapshot it was just "
+                   "opened from", path);
+
+    struct zcl_ro_guard *g = zcl_calloc(1, sizeof(*g), "ro_snapshot_guard");
+    if (!g)
+        LOG_RETURN(ZCL_NODE_DB_RO_UNREADABLE, "cmd",
+                   "out of memory pinning the read-only snapshot of %s — "
+                   "refusing rather than handing back a handle that could go "
+                   "stale unnoticed", path);
+    size_t n = strlen(path);
+    if (n >= sizeof(g->path)) {
+        free(g);
+        LOG_RETURN(ZCL_NODE_DB_RO_PATH_TOO_LONG, "cmd",
+                   "database path does not fit the snapshot guard: %s", path);
+    }
+    memcpy(g->path, path, n + 1);
+    g->at_open = *at_open;
+    g->dev = st.st_dev;
+    g->ino = st.st_ino;
+    g->size = (long long)st.st_size;
+    g->mtime_sec = (long long)st.st_mtim.tv_sec;
+    g->mtime_nsec = st.st_mtim.tv_nsec;
+
+    /* The destructor registration comes FIRST: once it is in place the guard
+     * is owned by the connection and cannot leak, whatever the next call
+     * does. */
+    if (sqlite3_create_function_v2(db, "zcl_ro_snapshot_guard", 0,
+                                   SQLITE_UTF8, g, zcl_ro_guard_marker, NULL,
+                                   NULL, zcl_ro_guard_destroy) != SQLITE_OK) {
+        free(g);
+        LOG_RETURN(ZCL_NODE_DB_RO_UNREADABLE, "cmd",
+                   "could not arm the read-only snapshot guard on %s: %s",
+                   path, sqlite3_errmsg(db));
+    }
+    if (sqlite3_set_authorizer(db, zcl_ro_guard_authorize, g) != SQLITE_OK)
+        LOG_RETURN(ZCL_NODE_DB_RO_UNREADABLE, "cmd",
+                   "could not arm the read-only snapshot authorizer on %s: %s",
+                   path, sqlite3_errmsg(db));
+    sqlite3_progress_handler(db, ZCL_RO_GUARD_VDBE_OPS, zcl_ro_guard_progress,
+                             g);
+    return ZCL_NODE_DB_RO_OK;
 }
 
 /* A file: URI over an arbitrary datadir path. A datadir may legitimately hold
@@ -307,6 +508,7 @@ static enum zcl_node_db_ro_status zcl_ro_open_existing(const char *path,
             st = zcl_ro_attach(path, SQLITE_OPEN_READONLY, path, &db);
             if (st != ZCL_NODE_DB_RO_OK)
                 return st;
+            immutable = false;  /* reading through a live wal-index now */
         } else if (now.wal && now.wal_bytes > 0) {
             sqlite3_close(db);
             LOG_RETURN(ZCL_NODE_DB_RO_UNRECOVERED_LOG, "cmd",
@@ -315,6 +517,19 @@ static enum zcl_node_db_ro_status zcl_ro_open_existing(const char *path,
                        "be missing its commits: refusing rather than answering "
                        "from the database's pre-log state",
                        path, now.wal_bytes);
+        }
+
+        /* Fifth: AND THE FOURTH CHECK IS STILL ONLY ONE INSTANT. The handle
+         * goes back to a leaf that queries it afterwards, so the "no writer is
+         * attached" premise has to hold for the handle's whole life, not just
+         * for the open. Arm the guard that re-checks it at every statement —
+         * see the block comment on struct zcl_ro_guard. */
+        if (immutable) {
+            st = zcl_ro_guard_arm(db, path, &now);
+            if (st != ZCL_NODE_DB_RO_OK) {
+                sqlite3_close(db);
+                return st;
+            }
         }
     }
 
