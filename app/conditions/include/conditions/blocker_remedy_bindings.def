@@ -138,6 +138,16 @@ ZCL_BLOCKER_REMEDY(*.upstream_log_hole,                        reducer_frontier_
  * row above. The ban itself is bounded (ZCL_PEER_LAST_PEER_BAN_SECS, default
  * 600s) so the peer becomes re-dialable on its own even with no remedy. */
 ZCL_BLOCKER_REMEDY(net.last_peer_ban,                          peer_floor_violated)
+/* net.block_intake_body_dropped is raised in msg_processor_enqueue_p2p_block()
+ * (lib/net/src/msgprocessor.c) when a block body arrives with no free slot in
+ * the fixed intake ring and is destroyed. The raiser's own caller re-queues the
+ * hash at priority (msg_blocks.c::msg_block_requeue_after_intake_backpressure)
+ * and the getdata window is now bounded by the ring's free space, so the state
+ * clears itself once intake drains. It is bound to sync_rate_below_floor
+ * because that is the condition that DETECTS the consequence: sustained body
+ * loss is exactly a fold rate at or near zero while peers are connected and
+ * work is pending, and its remedy kicks the recovery ladder. */
+ZCL_BLOCKER_REMEDY(net.block_intake_body_dropped,              sync_rate_below_floor)
 
 /* ── OWNER — no auto-remedy condition exists in-tree (the visible debt).
  * `proof_validate.internal_error` (transient-held-permanent, backstopped by

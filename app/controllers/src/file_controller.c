@@ -641,7 +641,7 @@ static bool rpc_getfilemanifest(const struct json_value *params, bool help,
     json_push_kv_int(result, "total_bytes", (int64_t)manifest.total_bytes);
 
     /* Chunk list */
-    struct json_value chunks_arr;
+    struct json_value chunks_arr = {0};
     json_set_array(&chunks_arr);
     for (uint32_t i = 0; i < manifest.num_chunks; i++) {
         struct json_value chunk_obj = {0};

@@ -94,6 +94,7 @@ gate_command() {
         check-stable-publish-contained)    echo 'bash tools/scripts/check_stable_publish_containment.sh --self-test && bash tools/scripts/check_stable_publish_containment.sh' ;;
         check-raw-sqlite)                  echo 'tools/scripts/check_raw_sqlite.sh' ;;
         check-raw-malloc)                  echo 'tools/scripts/check_raw_malloc.sh' ;;
+        check-json-value-init)             echo 'bash tools/scripts/check_json_value_init.sh --self-test && bash tools/scripts/check_json_value_init.sh' ;;
         check-blob-read-bounds)            echo 'bash tools/lint/check_blob_read_bounds.sh' ;;
         check-byte-order-codec-single)     echo './tools/lint/check_byte_order_codec_single.sh --selftest && ./tools/lint/check_byte_order_codec_single.sh' ;;
         check-coins-lookup-nullcheck)      echo 'tools/scripts/check_coins_lookup_nullcheck.sh' ;;

@@ -12,6 +12,9 @@
 #include "crypto/sha3.h"
 #include "models/database.h"
 #include "models/zid_domain.h"
+#include "config/db_service.h"
+#include "config/runtime.h"
+#include "json/json.h"
 #include <stdlib.h>
 #include "script/standard.h"
 #include "base/log_level.h"
@@ -181,6 +184,18 @@ static void zd_fill_leaves(struct zid_domain_leaf *out,
         memcpy(out[i].record_digest, f->digests[i], 32);
         snprintf(out[i].label, sizeof(out[i].label), "%s", f->labels[i]);
     }
+}
+
+/* Fill the frame a sibling call will reuse with 0xCD — what an uninitialised
+ * `struct json_value` local looks like when json_free() walks it: type is not
+ * JSON_STR (no free of val.s) but num_children/children are both huge, so the
+ * child walk dereferences 0xCDCD... and faults. volatile + a byte loop so no
+ * optimiser can drop it. NOT called by production code. */
+static void zd_poison_frame(void)
+{
+    volatile unsigned char pad[16384];
+    for (size_t i = 0; i < sizeof(pad); i++)
+        pad[i] = 0xCD;
 }
 
 static int test_zid_domain_store(void)
@@ -379,6 +394,46 @@ static int test_zid_domain_store(void)
                   !db_zid_domain_save(&ndb, &bad) &&
                   !zid_domain_get(&ndb, "Not A Domain", &probe) &&
                   zid_domain_count(&ndb) == 2;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    /* zid_domain_dump_state_json ran json_set_array()/json_set_object() on
+     * uninitialised stack locals. Those setters json_free() the value first
+     * (json.h lifecycle note), so the free walked whatever the previous frame
+     * left there. On the C3 stopwatch's serving fixture peer that was a
+     * SIGSEGV every ~15 minutes, inside stopwatch runs, killing the only peer
+     * the syncing client had:
+     *   json_free+0x43 <- zid_domain_dump_state_json+0x1b9 <- debug_bundle_write
+     * Poison the frame the dumper is about to occupy, then call it for real. */
+    printf("zid_domain: dump_state_json survives a poisoned caller frame... ");
+    {
+        struct db_service dbsvc;
+        struct app_runtime_context runtime;
+        memset(&runtime, 0, sizeof(runtime));
+        db_service_init(&dbsvc);
+        bool wired = db_service_attach(&dbsvc, &ndb) &&
+                     db_service_start(&dbsvc);
+        if (wired) {
+            runtime.db_service = &dbsvc;
+            app_runtime_set_current(&runtime);
+        }
+        zd_poison_frame();
+        struct json_value out = {0};
+        json_set_object(&out);
+        bool ok = wired && zid_domain_dump_state_json(&out, NULL) &&
+                  json_get(&out, "roster") != NULL;
+        json_free(&out);
+        /* Keyed form too: it has its own uninitialised local. */
+        zd_poison_frame();
+        struct json_value one = {0};
+        json_set_object(&one);
+        ok = ok && zid_domain_dump_state_json(&one, "zcode") &&
+             json_get(&one, "domain") != NULL;
+        json_free(&one);
+        if (wired) {
+            app_runtime_set_current(NULL);
+            db_service_stop(&dbsvc);
+        }
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 

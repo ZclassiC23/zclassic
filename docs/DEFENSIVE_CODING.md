@@ -242,6 +242,7 @@ assert green).
 | `check-blob-read-bounds` | HARD | Fixed-size SQLite blob reads in app models use `AR_READ_BLOB` or prove `sqlite3_column_bytes` before `memcpy`. |
 | `check-malloc`, `check-raw-malloc` | HARD | Raw malloc/calloc/realloc outside `zcl_*` wrappers (§3). Override `// raw-alloc-ok:<tag>`. |
 | `check-raw-sqlite` | HARD | Raw `sqlite3_step` outside `AR_STEP_*` (§1). Override `// raw-sql-ok:<tag>`. |
+| `check-json-value-init` | HARD | A `struct json_value` local reaches `json_set_*()`/`json_free()` without `= {0}` or `json_init()`. Those calls free the value's previous contents first, so on an uninitialised local they free/walk stack garbage — this is what segfaulted a serving fixture node every ~15 min through `zid_domain_dump_state_json`. No override: initialise it. |
 | `check-silent-errors-services` (+ `-controllers`/`-jobs`/`-conditions`/`-bool`) | HARD | Bare `return -1;` with no error-level log (§4/§5). Override `// raw-return-ok:<tag>`. |
 | `check-before-save-hooks` | HARD | `utxo`/`block`/`wallet_key`/`wallet_tx` keep before/after-save hooks (§6). |
 | `check-coins-lookup-nullcheck` | HARD | Coins lookups null-check the returned coin before use. |
@@ -832,6 +833,7 @@ add/remove a gate.
 - `check-operator-needed-sink`
 - `check-projections-pure`
 - `check-pthread-create`
+- `check-json-value-init`
 - `check-raw-malloc`
 - `check-raw-sqlite`
 - `check-rpc-registrar`

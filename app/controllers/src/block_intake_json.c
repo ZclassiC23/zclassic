@@ -30,6 +30,15 @@ void controller_json_set_block_intake_stats(struct json_value *obj)
     json_push_kv_int(obj, "retryable", (int64_t)st.retryable);
     json_push_kv_int(obj, "rejected", (int64_t)st.rejected);
     json_push_kv_int(obj, "dropped", (int64_t)st.dropped);
+    /* dropped/(dropped+enqueued) is the share of already-downloaded bodies
+     * destroyed for want of a ring slot — the number that showed the getdata
+     * window was wider than the absorber (measured 560 permille). Reported so
+     * a reader does not have to do the division to see the bound is holding. */
+    json_push_kv_int(obj, "dropped_permille_of_received",
+                     (st.dropped + st.enqueued) > 0
+                         ? (int64_t)((st.dropped * 1000u) /
+                                     (st.dropped + st.enqueued))
+                         : 0);
     json_push_kv_int(obj, "clone_failed", (int64_t)st.clone_failed);
     json_push_kv_int(obj, "spawn_failed", (int64_t)st.spawn_failed);
     json_push_kv_int(obj, "last_enqueue_unix", st.last_enqueue_unix);

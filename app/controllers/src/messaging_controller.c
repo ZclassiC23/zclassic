@@ -133,7 +133,7 @@ static bool msg_send_onchain(const char *to_addr, const char *body,
     HexStr(memo, ZMSG_MEMO_LEN, false, memohex, sizeof(memohex));
 
     /* Compose z_sendmany: ["<from>", [{address,amount,memo_hex}]]. */
-    struct json_value zparams;
+    struct json_value zparams = {0};
     json_set_array(&zparams);
     struct json_value jfrom = {0};
     json_set_str(&jfrom, from_addr);

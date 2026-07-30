@@ -1275,7 +1275,12 @@ capture_run_bundle() {
         # keeps the raw reading next to the delta computed from it, so a reader
         # can check the arithmetic instead of trusting it.
         got_net=1
-        for net_name in connman peer_lifecycle network sync_monitor; do
+        # block_intake is in this list because download_requested vs
+        # download_received in sync_monitor cannot distinguish "the peer never
+        # sent it" from "we received it and threw it away because the 128-slot
+        # intake ring was full". Only block_intake.dropped separates those two,
+        # and they have opposite fixes.
+        for net_name in connman peer_lifecycle network sync_monitor block_intake; do
             "$NODE_BIN" -rpcport="$RPC" -datadir="$DATADIR" dumpstate "$net_name" \
                 >"$ARTIFACT_DIR/net-$net_name.json" 2>/dev/null &&
                 [ -s "$ARTIFACT_DIR/net-$net_name.json" ] || got_net=0

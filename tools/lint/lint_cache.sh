@@ -86,7 +86,7 @@ LINT_CACHE_OK_GATES="
 check-no-retired-agent-protocol check-scanner-immunity check-malloc
 check-hotswap-dev-only check-hotswap-eligible-scope check-hotswap-static-state
 check-hotswap-swappable-shape check-stable-publish-contained check-raw-sqlite
-check-raw-malloc check-blob-read-bounds check-byte-order-codec-single
+check-raw-malloc check-json-value-init check-blob-read-bounds check-byte-order-codec-single
 check-coins-lookup-nullcheck check-silent-errors-services
 check-silent-errors-controllers check-silent-errors-jobs
 check-silent-errors-conditions check-silent-errors-bool

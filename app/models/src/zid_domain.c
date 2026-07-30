@@ -375,8 +375,12 @@ static void zd_hex32(const uint8_t b[32], char out[65])
     out[64] = '\0';
 }
 
+/* json_init FIRST: json_set_object() frees whatever *obj held, so an
+ * uninitialised caller local would be freed as if it were live (json.h
+ * lifecycle note). Same order as core/math/src/core_io.c. */
 static void zd_push_domain(struct json_value *obj, const struct zid_domain *d)
 {
+    json_init(obj);
     json_set_object(obj);
     json_push_kv_str(obj, "domain_name", d->domain_name);
     json_push_kv_int(obj, "num_leaves", d->num_leaves);
@@ -415,7 +419,7 @@ bool zid_domain_dump_state_json(struct json_value *out, const char *key)
         json_push_kv_bool(out, "found", found);
         json_push_kv_str(out, "domain_name", key);
         if (found) {
-            struct json_value obj;
+            struct json_value obj = {0};
             zd_push_domain(&obj, &d);
             json_push_kv_int(&obj, "stored_leaf_rows",
                              zid_domain_leaf_count(ndb, key));
@@ -428,10 +432,10 @@ bool zid_domain_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int(out, "domains", zid_domain_count(ndb));
     struct zid_domain rows[16];
     int n = zid_domain_list(ndb, rows, 16);
-    struct json_value arr;
+    struct json_value arr = {0};
     json_set_array(&arr);
     for (int i = 0; i < n; i++) {
-        struct json_value obj;
+        struct json_value obj = {0};
         zd_push_domain(&obj, &rows[i]);
         json_push_back(&arr, &obj);
         json_free(&obj);
