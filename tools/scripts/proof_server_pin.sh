@@ -20,12 +20,16 @@
 # Three modes:
 #
 #   record <commit-sha> <source_id> <artifact_sha256> <host>
-#       Creates a LOCAL annotated tag proof-server/<UTC timestamp> pointing at
-#       <commit-sha>, with a machine-greppable key=value message. Validates
-#       every argument before writing anything — a failed validation leaves
-#       no tag behind. Never pushes (publish policy: origin holds only main;
-#       these are local evidence tags, same as the operator's tag namespace
-#       for other things this repo does not push).
+#       Creates a LOCAL annotated tag
+#       proof-server/<UTC timestamp>-<short commit>-<short source_id>
+#       (falling back to a numeric suffix on an exact-name collision)
+#       pointing at <commit-sha>, with a machine-greppable key=value message.
+#       Validates every argument before writing anything — a failed
+#       validation leaves no tag behind. Never overwrites or reuses an
+#       existing tag — these are evidence records. Never pushes (publish
+#       policy: origin holds only main; these are local evidence tags, same
+#       as the operator's tag namespace for other things this repo does not
+#       push).
 #
 #   check [host]
 #       Finds the newest proof-server/* tag, dials the host READ-ONLY with
@@ -56,6 +60,32 @@ is_hex64() {
     printf '%s' "$1" | grep -Eq '^[0-9a-f]{64}$'
 }
 
+# choose_tag_name — pick a proof-server/* tag name that does not exist yet.
+#
+# The timestamp alone (second granularity) is not a unique key: two
+# promotions inside the same wall-clock second would otherwise collide on
+# `git tag -a`, and evidence tags must NEVER be silently overwritten or
+# reused. So the base name also carries the short commit and short source_id
+# — two promotions of genuinely different values almost never collide even
+# within the same second — and if the exact base still exists (e.g. a
+# byte-for-byte re-promotion, or two calls with identical commit+source_id
+# in the same second), a numeric suffix is appended until a free name is
+# found, bounded so this can never loop forever.
+choose_tag_name() {
+    local ts="$1" commit="$2" source_id="$3"
+    local base="proof-server/${ts}-${commit:0:8}-${source_id:0:8}"
+    local tagname="$base" n=0
+    while git rev-parse -q --verify "refs/tags/${tagname}" >/dev/null 2>&1; do
+        n=$((n + 1))
+        if [ "$n" -gt 99 ]; then
+            return 1
+        fi
+        tagname="${base}-${n}"
+    done
+    printf '%s\n' "$tagname"
+    return 0
+}
+
 # ── record ───────────────────────────────────────────────────────────────
 cmd_record() {
     if [ "$#" -ne 4 ]; then
@@ -83,7 +113,10 @@ cmd_record() {
 
     local ts tagname msg
     ts="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
-    tagname="proof-server/${ts}"
+    if ! tagname="$(choose_tag_name "$ts" "$resolved_commit" "$source_id")"; then
+        echo "proof_server_pin: refuse — could not find a free proof-server/* tag name after 99 attempts (timestamp ${ts}, commit ${resolved_commit:0:8}, source_id ${source_id:0:8})" >&2
+        return 1
+    fi
     msg="proof server pin — source_id is the authority (what the running
 binary reports of itself); commit is the source it was built from.
 
@@ -256,26 +289,69 @@ run_self_test() {
         printf '%s\n' "$body" | grep -qE '^recorded_utc=[0-9TZ-]+$' || selftest_note "tag message missing a well-formed recorded_utc= line"
     fi
 
-    # (3) refusals: each must exit non-zero AND leave no new tag behind.
-    local before after
+    # (3) refusals: each must exit non-zero, leave no new tag behind, AND
+    #     print EXACTLY the one expected refusal message — not merely
+    #     "contains" it. Exit-code-plus-tag-count alone is too weak: a
+    #     disabled validator that happens to fail for an UNRELATED reason
+    #     downstream (e.g. `git tag` itself refusing a bad ref) still trips
+    #     "non-zero" and "no new tag," so it would pass a weaker check while
+    #     the actual validation never ran. An exact stderr match catches
+    #     that: if the specific refusal echo does not fire (or something
+    #     else prints alongside it), the comparison fails.
+    local before after stderr_got stderr_want
 
     before="$(selftest_tag_count "$tmp")"
     rc="$(selftest_run "$tmp" record "$commit" "not-64-hex" "$art" "example-host")"
     after="$(selftest_tag_count "$tmp")"
+    stderr_got="$(cat "$tmp/.selftest_err" 2>/dev/null)"
+    stderr_want="proof_server_pin: refuse — source_id 'not-64-hex' is not 64 lowercase hex characters"
     [ "$rc" != "0" ] || selftest_note "record with a malformed source_id should refuse (got exit 0)"
     [ "$before" = "$after" ] || selftest_note "record with a malformed source_id left a tag behind ($before -> $after)"
+    [ "$stderr_got" = "$stderr_want" ] || selftest_note "record with a malformed source_id: stderr was '$stderr_got', expected exactly '$stderr_want' — the source_id validator may not actually be running"
 
     before="$(selftest_tag_count "$tmp")"
     rc="$(selftest_run "$tmp" record "0000000000000000000000000000000000000000" "$src" "$art" "example-host")"
     after="$(selftest_tag_count "$tmp")"
+    stderr_got="$(cat "$tmp/.selftest_err" 2>/dev/null)"
+    stderr_want="proof_server_pin: refuse — '0000000000000000000000000000000000000000' does not resolve to a commit in this repo"
     [ "$rc" != "0" ] || selftest_note "record with a non-existent commit should refuse (got exit 0)"
     [ "$before" = "$after" ] || selftest_note "record with a non-existent commit left a tag behind ($before -> $after)"
+    [ "$stderr_got" = "$stderr_want" ] || selftest_note "record with a non-existent commit: stderr was '$stderr_got', expected exactly '$stderr_want' — the commit validator may not actually be running"
 
     before="$(selftest_tag_count "$tmp")"
     rc="$(selftest_run "$tmp" record "$commit" "$src" "$art" "")"
     after="$(selftest_tag_count "$tmp")"
+    stderr_got="$(cat "$tmp/.selftest_err" 2>/dev/null)"
+    stderr_want="proof_server_pin: refuse — host must be non-empty"
     [ "$rc" != "0" ] || selftest_note "record with an empty host should refuse (got exit 0)"
     [ "$before" = "$after" ] || selftest_note "record with an empty host left a tag behind ($before -> $after)"
+    [ "$stderr_got" = "$stderr_want" ] || selftest_note "record with an empty host: stderr was '$stderr_got', expected exactly '$stderr_want' — the host validator may not actually be running"
+
+    # (4) same-second collision: two `record` calls with DIFFERENT valid
+    #     values, issued back to back (in practice landing in the same
+    #     wall-clock second — a fresh shell invocation is well under a
+    #     second), must both succeed and produce TWO DISTINCT tags. This is
+    #     the regression proof for choose_tag_name()'s discriminator: with
+    #     only a second-granularity timestamp, the second call would collide
+    #     on `git tag -a` and fail (this was the original bug — see the
+    #     header of this script's commit history).
+    local src2="3333333333333333333333333333333333333333333333333333333333333333"
+    src2="${src2:0:64}"
+    local art2="4444444444444444444444444444444444444444444444444444444444444444"
+    art2="${art2:0:64}"
+    local src3="5555555555555555555555555555555555555555555555555555555555555555"
+    src3="${src3:0:64}"
+    local art3="6666666666666666666666666666666666666666666666666666666666666666"
+    art3="${art3:0:64}"
+
+    before="$(selftest_tag_count "$tmp")"
+    local rc_a rc_b
+    rc_a="$(selftest_run "$tmp" record "$commit" "$src3" "$art3" "example-host")"
+    rc_b="$(selftest_run "$tmp" record "$commit" "$src2" "$art2" "example-host")"
+    after="$(selftest_tag_count "$tmp")"
+    [ "$rc_a" = "0" ] || selftest_note "same-second collision case: first record should succeed (got exit $rc_a)"
+    [ "$rc_b" = "0" ] || selftest_note "same-second collision case: second record (different source_id) should succeed (got exit $rc_b; stderr: $(cat "$tmp/.selftest_err" 2>/dev/null))"
+    [ "$after" -ge "$((before + 2))" ] || selftest_note "same-second collision case: expected at least 2 new tags, got $((after - before))"
 
     rm -rf "$tmp"
     trap - EXIT HUP INT TERM
