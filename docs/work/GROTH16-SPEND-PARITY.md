@@ -14,7 +14,7 @@ and what is pending.
 | Lane | File | What it proves |
 |------|------|----------------|
 | H2 | `lib/test/src/groth16_spend_oracle.c` | Native `nsk_to_nk` / `crh_ivk` / `ivk_to_pkd` / `compute_cm` / `compute_nf` == librustzcash, byte-for-byte, for one pinned KAT witness. |
-| H3 | `lib/sapling/src/sapling_circuit.c` + shape gate in `test_groth16_selfverify.c` | Ported spend sections **1..9** synthesize with per-section cumulative constraint counts equal to the reference trace; in-circuit `nk`/`rk` wires carry reference-correct points; synthesis deterministic. Single witness. |
+| H3 | `lib/sapling/src/sapling_circuit.c` + `circuit_bits.c` + shape gate in `test_groth16_selfverify.c` | Ported spend sections **1..10** synthesize with per-section cumulative constraint counts equal to the reference trace; in-circuit `nk`/`rk` wires carry reference-correct points; §10's blake2s digest bits equal `CRH^ivk`; every §10 wire is bound (single-bit witness flips break the R1CS); synthesis deterministic. Single witness. |
 | H4 | `lib/test/src/groth16_spend_parity.c` | **Standing** differential parity oracle over a **corpus** of witnesses — generalizes H2+H3 and auto-tightens as H3 ports more sections. |
 | **H5** | `lib/test/src/groth16_spend_adversarial.c` | Adversarial + negative-control gate over the **active production proving path** (reference-oracle prover -> native C23 verifier) — the only lane that runs a real prove/verify round-trip and tries to break it. Requires `~/.zcash-params` (SKIPs cleanly when absent, same convention as the rest of the self-test block). |
 
@@ -107,20 +107,41 @@ The coefficient row is the reason (E) exists: before it was added, a one-bit
 coefficient flip in section 1's on-curve check passed the entire gate green
 while making that constraint unsatisfiable by the honest witness.
 
+Section 10 added two more columns to the H3 gate, and its mutation table shows
+why neither is redundant. **(V)** is the digest-value differential against
+`CRH^ivk`; **(B)** is the wire-binding probe (flip one section-10 wire 0↔1 and
+require the R1CS to become unsatisfiable):
+
+| Planted defect in the blake2s gadget | Counts | (V) value | (E) satisfaction | (B) binding |
+|---|---|---|---|---|
+| `CBIT_FR_CAPACITY` 254 → 200 (MultiEq flush schedule) | **RED** (24608) | — | — | — |
+| `Is ^ Not` result view allocated instead of negated | **RED** (24840) | — | — | — |
+| BLAKE2s rotation `R1` 16 → 15 | ok | **RED** | ok | ok |
+| XOR constraint replaced by a vacuous `0*0=0` | ok | ok | ok | **RED** (0/256 digest wires bound) |
+
+The last two rows are the point. A wrong rotation constant is free in constraint
+terms, so counts and satisfaction both stay green and only (V) sees it. A
+vacuous constraint keeps the count, the digest value *and* satisfaction green —
+because all three only ever read the honest witness — and only (B) sees that a
+prover could then choose its own `ivk`. Under-constraint, not over-constraint,
+is the soundness-relevant failure mode here.
+
 ## Coverage — PROVEN vs PENDING
 
-- **PROVEN at parity:** reference sections **1..9** — cumulative **3584 / 98777**
-  constraints (~3.6%), **3579** aux. ak on-curve/not-small-order, ar/nsk bit
+- **PROVEN at parity:** reference sections **1..10** — cumulative
+  **24590 / 98777** constraints (~24.9%). ak on-curve/not-small-order, ar/nsk bit
   decompositions, the two fixed-base multiplications (`[ar]SpendAuthGenerator`,
-  `[nsk]ProofGenerationKeyGenerator`), `rk = ak + [ar]G`, rk inputize, and the
+  `[nsk]ProofGenerationKeyGenerator`), `rk = ak + [ar]G`, rk inputize, the
   strict `EdwardsPoint::repr` of ak and nk (§8/§9, 388 constraints per field
-  element) — all byte-identical to the reference trace across the whole corpus,
-  with the `nk` wire and `repr(nk)` bits pinned to librustzcash, and every
-  constraint satisfied by the honest witness.
-- **PENDING (H3 port):** sections **10..28** — the two blake2s hashes (`ivk` §10
-  and `nf` §27, 21006 constraints each), variable-base `pk_d` (§13), value
+  element), and the in-circuit **blake2s for `ivk`** (§10, 21006 constraints) —
+  all byte-identical to the reference trace across the whole corpus, with the
+  `nk` wire and `repr(nk)` bits pinned to librustzcash, §10's 256 digest bits
+  pinned to `CRH^ivk` (and its 251 truncated bits to the librustzcash `ivk` KAT
+  vector), and every constraint satisfied by the honest witness.
+- **PENDING (H3 port):** sections **11..28** — variable-base `pk_d` (§13), value
   commitment (§14), note-commitment Pedersen hash (§17), the 32-level Merkle
-  path (§21, 44224 constraints), and nullifier packing (§28).
+  path (§21, 44224 constraints), the twin blake2s for `nf` (§27, the same 21006
+  gadget over the 256-bit nf preimage), and nullifier packing (§28).
   Target: **98777** constraints, **98638** aux, **8** inputs (7 public + ONE).
   The `98638` aux figure is independently corroborated by the trusted-setup
   proving key itself: bellman's private-input query length `pk.l_len` for
@@ -130,24 +151,46 @@ The oracle re-reports this scoreboard (`parity coverage: N/28 sections,
 C/98777 constraints`) on every run, so the number moves the moment H3 lands the
 next section — no edit to H4 required. It also prints the **named** next
 unimplemented section as a typed blocker line (currently
-`10:computation of ivk`), so the seam is legible, never a silent gap.
+`11:witness g_d`), so the seam is legible, never a silent gap.
 
-### The next section is an architectural fork, not more of the same
+### The architectural fork at section 10 — resolved, not worked around
 
 Sections 1..9 needed only two kinds of circuit bit: an ordinary allocated
 boolean and a conditionally-allocated one. Section 10 (blake2s for `ivk`, and
 its twin §27 for `nf` — together **42012 constraints, 42.5% of the whole
 circuit**) is built on bellman's `Boolean` / `UInt32` / `multieq` stack, where a
 bit is `Constant(bool) | Is(AllocatedBit) | Not(AllocatedBit)` and both constant
-folding and negation cost **zero** constraints. This gadget layer represents
+folding and negation cost **zero** constraints. `circuit_gadgets.h` represents
 every wire as a bare `size_t` variable index and can express neither, so a
-blake2s written against it will miss 21006 by thousands, and no amount of
-tuning will close the gap — only the faithful structure hits the number.
-`gadget_pedersen_hash` already hand-rolls the constant-vs-variable distinction
-inline, which is the same problem solved ad hoc. Whether to generalize that
-into a real `Boolean` type or keep hand-rolling per gadget is the decision to
-make **before** starting section 10, with `boolean.rs` / `uint32.rs` /
-`multieq.rs` open — it is cheap to defer and expensive to retrofit.
+blake2s written against it misses 21006 by thousands and no amount of tuning
+closes the gap.
+
+That stack is now ported as its own module —
+**`lib/sapling/include/sapling/circuit_bits.h`**
++ `lib/sapling/src/circuit_bits.c`: `struct cbit` (Boolean),
+`struct cu32` (UInt32), `struct multieq` (MultiEq), and `gadget_blake2s`. Every
+function carries its exact reference constraint cost in its doc comment. Three
+numbers are load-bearing and mutation-tested:
+
+- **`CBIT_FR_CAPACITY` = 254** (`Fr::CAPACITY` = NUM_BITS − 1). MultiEq packs
+  successive 33/34-bit equalities at disjoint bit offsets and flushes when the
+  next one will not fit, so this constant sets the flush schedule. Setting it to
+  200 yields 24608 instead of 24590. (Setting it to 253 changes nothing — the
+  straddled sums 235 and 268 fall the same side of both — so it is the
+  *schedule*, not the literal, that is pinned.)
+- **Negation is free.** Emitting a real constraint for the `Is ^ Not` result view
+  instead of taking `Not(c)` yields 24840.
+- **Constant folding is free.** For a 512-bit all-*allocated* preimage, the
+  `all_constants` short-circuit inside `addmany` is never reached (every sum has
+  at least one allocated operand), so that branch is exercised by an
+  all-constant input only — bellman's `test_blake2s_constant_constraints`
+  shape. The folding that *is* load-bearing here is in `cbit_xor`, which keeps
+  round 0 cheaper than rounds 1..9 and the final `h ^ v[i]` free.
+
+Why 21006 is the right target: bellman's own `test_blake2s_constraints` asserts
+**21518** constraints for a 512-bit input, of which **512** are the caller's
+`AllocatedBit::alloc` booleanity constraints — leaving **21006** for the hash,
+exactly the reference spend trace's §10 delta. §27 reuses the gadget unchanged.
 
 ### Adjacent, tracked, not fixed here
 
@@ -170,8 +213,8 @@ first unported section), with `roundtrip_ready = false` while the port is a
 partial prefix. The production prover self-test (`self_test_bundle` in
 `sapling_prover_c23.c`) reads it and emits a **non-gating** honest line:
 
-> native C23 spend prover NOT yet sovereign: 9/28 sections, 3584/98777
-> constraints ported; next blocker: 10:computation of ivk; this self-test's
+> native C23 spend prover NOT yet sovereign: 10/28 sections, 24590/98777
+> constraints ported; next blocker: 11:witness g_d; this self-test's
 > spend proof uses the reference oracle (librustzcash), the verifier is native C23
 
 This makes the sovereignty gap first-class and typed at the self-test surface —

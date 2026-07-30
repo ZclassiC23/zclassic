@@ -10,6 +10,7 @@
  *   Proves correct note commitment and ephemeral key derivation. */
 
 #include "sapling/sapling_circuit.h"
+#include "sapling/circuit_bits.h"
 #include "sapling/circuit_gadgets.h"
 #include "sapling/pedersen_hash.h"
 #include "sapling/sapling.h"
@@ -46,28 +47,27 @@ static bool point_to_xy(struct fr *x, struct fr *y, const uint8_t compressed[32]
 
 /* ── Spend Circuit Synthesis ────────────────────────────────────── */
 
-/* Port status (H3 lane): sections 1..9 of bellman's Spend::synthesize are
+/* Port status (H3 lane): sections 1..10 of bellman's Spend::synthesize are
  * ported faithfully in the exact synthesis order (variable-allocation order is
  * load-bearing for QAP alignment). Cumulative constraint counts match the
  * reference trace's per-section boundaries, every emitted constraint is
- * satisfied by the honest witness (A*B==C — the coefficient-level check), and
- * the section 8/9 output bits reproduce librustzcash's compressed point
- * encodings; all three are gated by the `groth16_selfverify` test group.
- * Sections 10..28 (the two blake2s hashes ivk/nf at 21006 constraints each,
- * variable-base pk_d, value commitment, note commitment, the 32-level Merkle
- * path, and the nullifier packing) remain to be ported — the circuit below is
- * therefore a faithful PARTIAL prefix (3584/98777 constraints) and does not yet
- * round-trip against the trusted-setup proving key.
+ * satisfied by the honest witness (A*B==C — the coefficient-level check), the
+ * section 8/9 output bits reproduce librustzcash's compressed point encodings,
+ * and section 10's 256 digest bits reproduce CRH^ivk; all of it is gated by the
+ * `groth16_selfverify` test group. Sections 11..28 (variable-base pk_d, value
+ * commitment, note commitment, the 32-level Merkle path, the twin blake2s for
+ * nf, and the nullifier packing) remain to be ported — the circuit below is
+ * therefore a faithful PARTIAL prefix (24590/98777 constraints) and does not
+ * yet round-trip against the trusted-setup proving key.
  *
- * The next section is the architectural fork, not more of the same: blake2s is
- * built on bellman's Boolean/UInt32/multieq stack, where a circuit bit is
- * `Constant(bool) | Is(AllocatedBit) | Not(AllocatedBit)` so that constant
- * folding and negation cost ZERO constraints. This gadget layer represents
- * every wire as a bare variable index and cannot express either, so section 10
- * will miss 21006 by thousands until that abstraction exists. Sections 1..9
- * did not need it (they allocate only ordinary and conditional bits); section
- * 10 does. Decide it deliberately before starting, with boolean.rs / uint32.rs
- * / multieq.rs open — do not discover it mid-port.
+ * Section 10 was the architectural fork, and it is now resolved rather than
+ * worked around: blake2s is built on bellman's Boolean/UInt32/multieq stack,
+ * where a circuit bit is `Constant(bool) | Is(AllocatedBit) | Not(AllocatedBit)`
+ * so that constant folding and negation cost ZERO constraints. This gadget
+ * layer represents every wire as a bare variable index and can express neither,
+ * so that stack was ported as its own module — `sapling/circuit_bits.h` — and
+ * section 10 lands on 21006 exactly. Section 27 (nf) is the same gadget over
+ * the 256-bit nf preimage and reuses it unchanged.
  *
  * The seven public inputs are allocated up front (indices 1..7) in bellman's
  * input order (rk.x, rk.y, cv.x, cv.y, anchor, nf[0], nf[1]). Under this
@@ -138,8 +138,11 @@ bool sapling_spend_synthesize_traced(struct constraint_system *cs,
         probe->ak_x = probe->ak_y = SIZE_MAX;
         probe->rk_x = probe->rk_y = SIZE_MAX;
         probe->nk_x = probe->nk_y = SIZE_MAX;
-        for (size_t i = 0; i < 256; i++)
+        for (size_t i = 0; i < 256; i++) {
             probe->ak_repr[i] = probe->nk_repr[i] = SIZE_MAX;
+            probe->ivk_bit[i] = SIZE_MAX;
+            probe->ivk_bit_negated[i] = false;
+        }
     }
 
     /* ── Public inputs 1..7 (allocated up front — see header note) ── */
@@ -246,11 +249,44 @@ bool sapling_spend_synthesize_traced(struct constraint_system *cs,
     if (probe)
         memcpy(probe->nk_repr, &ivk_preimage[256], sizeof(probe->nk_repr));
     section_record(cs, sections, max_sections, &nsec, "9:representation of nk");
-    (void)nf_preimage; /* consumed by section 27 once blake2s lands */
+    (void)nf_preimage; /* consumed by section 27, the twin blake2s */
 
-    /* Sections 10..28 remain to be ported (see the port-status note above).
+    /* ════ Section 10: computation of ivk (21006) ════
+     * ivk = BLAKE2s-256("Zcashivk", repr(ak) || repr(nk)), in-circuit. The 512
+     * preimage bits are the WIRES sections 8 and 9 produced — shared, never
+     * re-derived — wrapped as bellman `Boolean::Is` views (they are already
+     * boolean-constrained by gadget_point_repr, so wrapping costs nothing). */
+    struct cbit ivk_pre[512];
+    for (size_t i = 0; i < 512; i++)
+        ivk_pre[i] = cbit_from_var(cs, ivk_preimage[i]);
+
+    static const uint8_t CRH_IVK_PERSONALIZATION[8] =
+        { 'Z', 'c', 'a', 's', 'h', 'i', 'v', 'k' };
+    struct cbit ivk_bits[256];
+    if (!gadget_blake2s(cs, ivk_pre, 512, CRH_IVK_PERSONALIZATION, ivk_bits)) {
+        memory_cleanse(ivk_pre, sizeof(ivk_pre));
+        LOG_FAIL("sapling_circuit",
+                 "spend: in-circuit blake2s(CRH^ivk) synthesis failed");
+    }
+    if (probe) {
+        for (size_t i = 0; i < 256; i++) {
+            probe->ivk_bit[i] = (ivk_bits[i].kind == CBIT_CONSTANT)
+                                ? SIZE_MAX : ivk_bits[i].var;
+            probe->ivk_bit_negated[i] = (ivk_bits[i].kind == CBIT_NOT);
+        }
+    }
+    /* bellman: `ivk.truncate(Fs::CAPACITY)` — drop the top 5 bits so the digest
+     * is a valid Jubjub scalar. A Vec truncate: zero constraints, and the
+     * dropped wires stay constrained inside blake2s. */
+    memory_cleanse(ivk_pre, sizeof(ivk_pre));
+    section_record(cs, sections, max_sections, &nsec, "10:computation of ivk");
+    /* Consumed by section 13 ([ivk] g_d) once that lands; the truncation point
+     * is named here so the seam is not rediscovered later. */
+    (void)SPEND_IVK_TRUNCATED_BITS;
+
+    /* Sections 11..28 remain to be ported (see the port-status note above).
      * The prefix synthesized here is deterministic and shape-matched to the
-     * reference for sections 1..9. */
+     * reference for sections 1..10. */
 
     if (n_sections_out)
         *n_sections_out = nsec;

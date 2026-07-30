@@ -15,6 +15,8 @@
 #include "sapling/sapling_circuit.h"
 #include "sapling/sapling_prover.h"
 #include "sapling/groth16_prover.h"
+#include "sapling/fr.h"
+#include "crypto/blake2s.h"
 #include "test/groth16_spend_oracle_kat.h"
 
 #include <stdint.h>
@@ -177,19 +179,32 @@ static void native_circuit_baseline(void)
  *
  * The spend circuit is ported gadget-by-gadget in bellman's Spend::synthesize
  * order. This gate is params-free (pure R1CS synthesis, no proving key) and
- * pins the ported prefix (sections 1..9) against ground truth:
+ * pins the ported prefix (sections 1..10) against ground truth:
  *   (1) cumulative constraint counts per section == the reference trace's
  *       cumulative boundaries (exact, verified by the salvage-plan legs);
  *   (2) the in-circuit nk / rk wires carry the reference-correct Jubjub points,
  *       with nk additionally pinned to the librustzcash reference vector (the
  *       H2 KAT) — validating the in-circuit fixed-base multiplication against
  *       ground truth end to end;
+ *  (2b) section 10's 256 in-circuit blake2s digest bits == the out-of-circuit
+ *       CRH^ivk over the same preimage, and its 251 truncated bits == the
+ *       pinned librustzcash ivk. A matching constraint COUNT cannot see a wrong
+ *       rotation constant or SIGMA row: mutation-testing confirms a wrong
+ *       BLAKE2s rotation leaves the count at 24590 and the whole system
+ *       satisfied, with only this check going red;
+ *  (2c) every section-10 wire is BOUND — flipping any one of them (0<->1, which
+ *       keeps booleanity intact) must make the R1CS unsatisfiable. Counts and
+ *       values both read only the honest witness, so neither can see an
+ *       UNDER-constrained gadget, which is the soundness-relevant failure: a
+ *       free digest wire would let a prover choose its own ivk. Mutation-tested
+ *       by making the XOR constraint vacuous — count, digest value and
+ *       satisfaction all stay green and only this check fires;
  *   (3) synthesis is deterministic (identical inputs => byte-identical witness).
- * Sections 8..28 are not yet ported, so this is a PARTIAL-prefix gate, not a
+ * Sections 11..28 are not yet ported, so this is a PARTIAL-prefix gate, not a
  * spend round-trip. Returns the number of failures (0 == green). */
 static int spend_circuit_shape_gate(void)
 {
-    printf("\n--- H3: Sapling SPEND circuit port shape gate (sections 1-9) ---\n");
+    printf("\n--- H3: Sapling SPEND circuit port shape gate (sections 1-10) ---\n");
     int failures = 0;
 
     /* Fixed witness — reuses the H2 KAT scalars so the nk wire ties to the
@@ -214,19 +229,19 @@ static int spend_circuit_shape_gate(void)
     memcpy(pub.rk, rk_bytes, 32);
     memcpy(pub.cv, ak, 32);         /* any valid Jubjub point (bound later) */
 
-    struct spend_section_shape sections[10];
+    struct spend_section_shape sections[11];
     size_t nsec = 0;
     struct spend_wire_probe probe;
     struct constraint_system cs;
     cs_init(&cs);
     bool synth_ok = sapling_spend_synthesize_traced(
-        &cs, &wit, &pub, sections, 10, &nsec, &probe);
+        &cs, &wit, &pub, sections, 11, &nsec, &probe);
     PROVER_CHECK("traced spend synthesis succeeded", synth_ok);
 
     /* (1) Per-section cumulative constraint counts vs the reference trace. */
-    static const size_t REF_CUM[9] =
-        {20, 272, 1022, 1028, 1030, 1282, 2032, 2808, 3584};
-    static const char *REF_NAME[9] = {
+    static const size_t REF_CUM[10] =
+        {20, 272, 1022, 1028, 1030, 1282, 2032, 2808, 3584, 24590};
+    static const char *REF_NAME[10] = {
         "S1 ak witness/on-curve/not-small-order (cum 20)",
         "S2 ar bits (cum 272)",
         "S3 randomization of signing key (cum 1022)",
@@ -236,14 +251,23 @@ static int spend_circuit_shape_gate(void)
         "S7 nk = [nsk] ProofGenerationKey (cum 2032)",
         "S8 representation of ak (cum 2808)",
         "S9 representation of nk (cum 3584)",
+        "S10 computation of ivk — in-circuit blake2s (cum 24590)",
     };
-    PROVER_CHECK("synthesized all 9 ported sections", nsec == 9);
-    for (size_t i = 0; i < 9 && i < nsec; i++)
+    PROVER_CHECK("synthesized all 10 ported sections", nsec == 10);
+    for (size_t i = 0; i < 10 && i < nsec; i++)
         PROVER_CHECK(REF_NAME[i], sections[i].num_constraints == REF_CUM[i]);
     PROVER_CHECK("7 public inputs allocated (bellman-faithful low indices)",
                  cs.num_inputs == 7);
-    PROVER_CHECK("ported-prefix constraint count == 3584",
-                 cs.num_constraints == 3584);
+    PROVER_CHECK("ported-prefix constraint count == 24590",
+                 cs.num_constraints == 24590);
+    /* Section 10 alone must cost exactly what the reference's blake2s costs for
+     * a 512-bit all-allocated input. bellman's own blake2s test asserts 21518
+     * constraints for that shape, of which 512 are the input AllocatedBit::alloc
+     * constraints the caller pays — leaving 21006 for the hash itself, which is
+     * exactly the reference spend trace's section-10 delta. */
+    PROVER_CHECK("S10 delta == 21006 (bellman blake2s, 512-bit input)",
+                 nsec == 10 && sections[9].num_constraints
+                             - sections[8].num_constraints == 21006);
 
     /* (2) Value gate: in-circuit wires carry reference-correct points; nk is
      *     pinned to the librustzcash reference (H2 KAT). */
@@ -272,6 +296,132 @@ static int spend_circuit_shape_gate(void)
         && fr_eq(&cs.witness[probe.rk_y], &rk_y);
     PROVER_CHECK("in-circuit rk wire == ak + [ar] SpendAuthGenerator",
                  rk_wire_ok);
+
+    /* (2b) Section 10 VALUE gate. A matching constraint COUNT says nothing
+     *      about what the gadget computes, so read the digest back off the
+     *      circuit's own wires and diff it against ground truth twice:
+     *
+     *        - all 256 bits vs the out-of-circuit C23 BLAKE2s over the same
+     *          preimage (the scalar implementation, KAT-pinned elsewhere), and
+     *        - the 251 bits bellman keeps after `truncate(Fs::CAPACITY)` vs the
+     *          checked-in librustzcash `SPEND_ORACLE_KAT_IVK` vector.
+     *
+     *      bellman's blake2s returns Booleans that may be NEGATED views of a
+     *      wire, so the probe's negation flag has to be applied — reading the
+     *      raw wire would invert bits and fail for the wrong reason. */
+    uint8_t ivk_full[32];
+    {
+        struct blake2s_ctx bctx;
+        blake2s_init_personal(&bctx, 32, (const uint8_t *)"Zcashivk");
+        blake2s_update(&bctx, ak, 32);
+        blake2s_update(&bctx, nk_bytes, 32);
+        blake2s_final(&bctx, ivk_full, 32);
+    }
+    uint8_t ivk_truncated[32];
+    sapling_crh_ivk(ak, nk_bytes, ivk_truncated);
+    PROVER_CHECK("out-of-circuit CRH^ivk == pinned librustzcash ivk (H2 KAT)",
+                 memcmp(ivk_truncated, SPEND_ORACLE_KAT_IVK, 32) == 0);
+
+    struct fr one_fr;
+    fr_one(&one_fr);
+    bool ivk_bits_ok = synth_ok;
+    bool ivk_trunc_ok = synth_ok;
+    size_t first_bad_ivk_bit = SIZE_MAX;
+    for (size_t b = 0; b < 256; b++) {
+        const size_t v = probe.ivk_bit[b];
+        if (v >= cs.num_vars) { ivk_bits_ok = false; ivk_trunc_ok = false;
+                                if (first_bad_ivk_bit == SIZE_MAX)
+                                    first_bad_ivk_bit = b;
+                                continue; }
+        bool wire = fr_eq(&cs.witness[v], &one_fr);
+        bool got = probe.ivk_bit_negated[b] ? !wire : wire;
+        bool want_full = ((ivk_full[b / 8] >> (b % 8)) & 1) == 1;
+        if (got != want_full) {
+            ivk_bits_ok = false;
+            if (first_bad_ivk_bit == SIZE_MAX)
+                first_bad_ivk_bit = b;
+        }
+        if (b < SPEND_IVK_TRUNCATED_BITS) {
+            bool want_trunc =
+                ((SPEND_ORACLE_KAT_IVK[b / 8] >> (b % 8)) & 1) == 1;
+            if (got != want_trunc)
+                ivk_trunc_ok = false;
+        }
+    }
+    if (!ivk_bits_ok && first_bad_ivk_bit != SIZE_MAX)
+        printf("  >> section 10 digest bit %zu diverges from "
+               "BLAKE2s(\"Zcashivk\", repr(ak)||repr(nk))\n", first_bad_ivk_bit);
+    PROVER_CHECK("in-circuit blake2s digest (256 bits) == out-of-circuit "
+                 "CRH^ivk preimage hash", ivk_bits_ok);
+    PROVER_CHECK("in-circuit ivk truncated to 251 bits == pinned "
+                 "librustzcash ivk", ivk_trunc_ok);
+
+    /* (2c) ADVERSARIAL: are section 10's wires actually BOUND, or merely
+     *      present? A count gate and a value gate both pass for an
+     *      UNDER-constrained gadget — the dangerous failure here — because both
+     *      only ever look at the honest witness. So mutate the witness: flip one
+     *      section-10 wire at a time from 0 to 1 (or back), which keeps every
+     *      booleanity constraint satisfied, and require the system to become
+     *      UNSATISFIED. A wire that can be flipped freely is a soundness hole:
+     *      it would let a prover choose a digest bit, and CRH^ivk is what binds
+     *      the spend to its viewing key.
+     *
+     *      Two populations are probed: the 256 digest wires (the gadget's
+     *      output, where a free bit is directly exploitable) and a deterministic
+     *      stride across every wire section 10 allocated (its internal
+     *      round state, carries and XOR results). */
+    size_t sec10_first_var = (nsec == 10) ? sections[8].num_vars : 0;
+    size_t sec10_last_var  = (nsec == 10) ? sections[9].num_vars : 0;
+    size_t flips_tried = 0, flips_detected = 0;
+    size_t digest_tried = 0, digest_detected = 0;
+    if (synth_ok && nsec == 10 && sec10_last_var > sec10_first_var) {
+        struct fr zero_fr;
+        fr_zero(&zero_fr);
+        size_t ignored = SIZE_MAX;
+
+        /* Sanity: the honest witness satisfies the system before any mutation,
+         * otherwise "flip detected" would be vacuous. */
+        PROVER_CHECK("honest witness satisfies the 24590-constraint prefix",
+                     cs_is_satisfied(&cs, &ignored));
+
+        for (size_t b = 0; b < 256; b++) {
+            const size_t v = probe.ivk_bit[b];
+            if (v >= cs.num_vars)
+                continue;
+            struct fr saved = cs.witness[v];
+            cs.witness[v] = fr_eq(&saved, &one_fr) ? zero_fr : one_fr;
+            digest_tried++;
+            if (!cs_is_satisfied(&cs, &ignored))
+                digest_detected++;
+            cs.witness[v] = saved;
+        }
+
+        const size_t span = sec10_last_var - sec10_first_var;
+        const size_t stride = (span / 96) ? (span / 96) : 1;
+        for (size_t v = sec10_first_var; v < sec10_last_var; v += stride) {
+            struct fr saved = cs.witness[v];
+            cs.witness[v] = fr_eq(&saved, &one_fr) ? zero_fr : one_fr;
+            flips_tried++;
+            if (!cs_is_satisfied(&cs, &ignored))
+                flips_detected++;
+            cs.witness[v] = saved;
+        }
+
+        /* Restoring must return the system to satisfied — proves the probe
+         * itself did not corrupt the witness it was measuring. */
+        PROVER_CHECK("witness restored after mutation probe",
+                     cs_is_satisfied(&cs, &ignored));
+    }
+    printf("  section 10 wires %zu..%zu; single-bit flips detected: "
+           "%zu/%zu digest, %zu/%zu strided internal\n",
+           sec10_first_var, sec10_last_var,
+           digest_detected, digest_tried, flips_detected, flips_tried);
+    PROVER_CHECK("every section-10 digest wire is bound (a flipped digest bit "
+                 "breaks the R1CS)",
+                 digest_tried == 256 && digest_detected == 256);
+    PROVER_CHECK("every probed section-10 internal wire is bound (no free "
+                 "wire = no under-constrained gadget)",
+                 flips_tried > 0 && flips_detected == flips_tried);
 
     /* (3) Determinism: identical inputs => byte-identical witness. */
     struct constraint_system cs2;
