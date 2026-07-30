@@ -14,6 +14,7 @@
 #include "controllers/agent_resources.h"
 #include "controllers/agent_security_posture.h"
 #include "controllers/network_controller.h"
+#include "controllers/operator_needed_policy.h"
 #include "controllers/strong_params.h"
 #include "controllers/sync_controller.h"
 #include "services/operator_peer_snapshot_service.h"
@@ -643,78 +644,67 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
     bool material_gap = health.gap > ZCL_NODE_HEALTH_LAG_WARN_BLOCKS;
     bool material_index_gap = health.index_gap > ZCL_NODE_HEALTH_LAG_WARN_BLOCKS;
 
-    const char *status = "healthy", *primary = "none", *next = "none";
-    const char *summary = "node healthy at served frontier";
-    bool operator_needed = false;
+    const char *primary = "none", *next = "none";
+    /* This chain only picks WHICH reason applies, from what the bounded
+     * agent_fast_snapshot can observe (four signals more than the public REST
+     * status endpoint sees). status/summary/operator_needed all come back from
+     * the one policy table (controllers/operator_needed_policy.def) so the two
+     * surfaces cannot answer "does an operator need to act" differently. */
+    enum node_status_reason reason = ZCL_STATUS_REASON_NONE;
 
     if (health.hard_typed_blocker) {
-        status = "blocked";
+        reason = ZCL_STATUS_REASON_TYPED_BLOCKER;
         primary = health.dominant_blocker_id[0]
             ? health.dominant_blocker_id : "typed_blocker_operator_needed";
         next = "zclassic23 dumpstate blocker";
-        summary = "node is held by an authoritative typed blocker";
-        operator_needed = true;
     } else if (posture.review_required) {
-        status = "blocked";
+        reason = ZCL_STATUS_REASON_POSTURE_REVIEW;
         primary = posture.status;
         next = posture.next_action;
-        summary = "consensus-state trust posture requires review";
-        operator_needed = true;
     } else if (health.operator_action_required) {
-        status = "blocked";
+        reason = ZCL_STATUS_REASON_HEALTH_BLOCKER;
         primary = health.blocking_reason[0] ? health.blocking_reason
                                             : "operator_needed";
         next = "zclassic23 healthcheck";
-        summary = "node has an active health blocker";
-        operator_needed = true;
     } else if (!health.peer_snapshot_available) {
-        status = "degraded";
+        reason = ZCL_STATUS_REASON_PEER_SNAPSHOT_BUSY;
         primary = "peer_snapshot_unavailable";
         next = "zclassic23 getpeerinfo";
-        summary = "node peer telemetry is temporarily busy";
     } else if (!health.has_peers) {
-        status = "blocked";
+        reason = ZCL_STATUS_REASON_NO_PEERS;
         primary = "no_peers";
         next = "zclassic23 getpeerinfo";
-        summary = "node has no connected peers";
-        operator_needed = true;
     } else if (material_gap && health.catchup_stalled) {
-        status = "degraded";
+        reason = ZCL_STATUS_REASON_CATCHUP_STALLED;
         primary = "catchup_stalled";
         next = "zclassic23 getsyncdiag";
-        summary = "node is behind and catch-up has not advanced recently";
-        operator_needed = true;
     } else if (material_gap && health.download_dispatch_stalled) {
-        status = "degraded";
+        reason = ZCL_STATUS_REASON_DOWNLOAD_DISPATCH_IDLE;
         primary = "download_dispatch_idle";
         next = "zclassic23 getsyncdiag";
-        summary = "node has queued block downloads but no in-flight requests";
-        operator_needed = true;
     } else if (material_gap &&
                (health.in_flight > 0 || health.queued > 0)) {
-        status = "catching_up";
+        reason = ZCL_STATUS_REASON_CHAIN_GAP_DOWNLOADING;
         primary = "chain_gap";
         next = "zclassic23 downloadstats";
-        summary = "node is downloading blocks toward the best known tip";
     } else if (material_gap) {
-        status = "degraded";
+        reason = ZCL_STATUS_REASON_DOWNLOAD_QUEUE_IDLE;
         primary = "download_queue_idle";
         next = "zclassic23 getsyncdiag";
-        summary = "node is behind the best known tip without active downloads";
-        operator_needed = true;
     } else if (material_index_gap) {
-        status = "degraded";
+        reason = ZCL_STATUS_REASON_PROJECTION_LAG;
         primary = "projection_lag";
         next = "zclassic23 dumpstate chain_advance_coordinator";
-        summary = "node block projection is behind the served frontier";
     } else if (!health.healthy) {
-        status = "degraded";
+        reason = ZCL_STATUS_REASON_HEALTHCHECK_UNHEALTHY;
         primary = health.blocking_reason[0] ? health.blocking_reason
                                             : "healthcheck_unhealthy";
         next = "zclassic23 healthcheck";
-        summary = "node health checks are degraded";
-        operator_needed = health.warning_count > 0;
     }
+    const char *status = node_status_reason_status(reason);
+    const char *summary = node_status_reason_summary(reason);
+    bool operator_needed = node_status_reason_operator_needed(
+        reason, (int64_t)health.warning_count);
     bool public_serving = health.serving && !operator_needed &&
         agent_security_posture_allows_public_serving(&posture);
 

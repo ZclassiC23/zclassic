@@ -979,6 +979,7 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
         check-promotion-receipt-chain \
         check-verification-coverage \
         check-identity-parser-single \
+        check-status-reason-single \
         check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-doc-claims check-no-stale-pinned-facts check-markdown-links check-doc-inline-paths \
         check-api-reference-generated check-describe-budget \
         check-no-new-repair-rung \
@@ -6244,6 +6245,21 @@ check-identity-parser-single:
 	@./tools/lint/check_identity_parser_single.sh --selftest
 	@./tools/lint/check_identity_parser_single.sh
 
+# Anti-rot ratchet: exactly ONE place decides whether a node status reason
+# means an operator has to intervene. Two operator surfaces (the public REST
+# /api/status endpoint and the agent first-call summary) each carried their own
+# inline if/else-if ladder assigning `operator_needed` plus their own copies of
+# every rung's status/summary wording, and the two had already drifted — the
+# node could give two different answers to "does a human need to act".
+# app/controllers/include/controllers/operator_needed_policy.def is now that
+# one place. This gate matches the ladder by SHAPE, not by any variable or
+# function name (a name-keyed gate is dodged by one rename), over a shrink-only
+# baseline at tools/lint/status_reason_baseline.txt.
+check-status-reason-single:
+	@echo "══ LINT: the operator-needed ladder stays single ══"
+	@./tools/lint/check_status_reason_single.sh --selftest
+	@./tools/lint/check_status_reason_single.sh
+
 # Anti-stale forbid gate: no hand-pinned rot-prone facts in the docs. Two
 # classes — a "<N> MB … binary" size claim (HARD; the size has a live source,
 # tools/scripts/binary_size.sh — de-pin to size-agnostic prose) and a live-state
@@ -6624,6 +6640,7 @@ LINT_GATES := \
     check-promotion-receipt-chain \
     check-verification-coverage \
     check-identity-parser-single \
+    check-status-reason-single \
     check-framework-shape \
     check-framework-filename-suffix \
     check-no-raw-clock-outside-platform \
