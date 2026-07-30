@@ -61,13 +61,66 @@ size_t gadget_alloc_mul(struct constraint_system *cs, size_t a, size_t b);
 size_t gadget_select(struct constraint_system *cs,
                      size_t condition, size_t a, size_t b);
 
-/* ── Pedersen Hash Gadget (in-circuit) ──────────────────────────── */
+/* bellman's Möbius/subset-sum window interpolation: given constants[0..2^w-1],
+ * produce assignment[0..2^w-1] with
+ *   constants[index] == sum of assignment[j] over every j whose set bits are a
+ *                       subset of index's.
+ * Both window lookups in the circuit share this one body — the fixed-base mul's
+ * 3-bit windows here, and the Pedersen hash's 2-bit windows in
+ * circuit_pedersen.c. Both arrays must hold 2^window_size elements. */
+void gadget_synth_coeffs(size_t window_size, const struct fr *constants,
+                         struct fr *assignment);
 
-/* Pedersen hash of bits using Jubjub generators.
- * Input: boolean variables representing the hash input bits.
- * Output: (x, y) coordinates of the Pedersen hash point.
- * The hash processes 3-bit windows via Jubjub scalar multiplication
- * with pre-computed generators. */
+/* ── Jubjub Montgomery-form constants ───────────────────────────── */
+
+/* The two constants that turn a Jubjub twisted-Edwards point into the
+ * Montgomery form the Pedersen hash gadget accumulates in, exposed so a test
+ * can pin them ALGEBRAICALLY rather than trusting a byte blob:
+ *   A     == 40962         == 2(a+d)/(a-d)
+ *   scale == sqrt(-40964)  == sqrt(4/(a-d))
+ * Only scale^2 reaches the Montgomery addition, so a wrong-magnitude scale
+ * leaves a single-window hash round-tripping while corrupting every multi-window
+ * one — a failure a constraint count cannot see. Either out-param may be NULL. */
+void gadget_jubjub_montgomery_params(struct fr *a_out, struct fr *scale_out);
+
+/* ── Pedersen Hash Gadget (in-circuit) ──────────────────────────────
+ * Implemented in circuit_pedersen.c together with the Montgomery-form
+ * arithmetic it is the only consumer of. */
+
+/* bellman `Personalization::get_bits` — the six CONSTANT bits that prefix every
+ * Pedersen preimage. NoteCommitment is six 1 bits; MerkleTree(depth) is the six
+ * little-endian bits of depth. They are the ONLY difference between the note
+ * commitment hash and the 32 Merkle-level hashes, which is why the hash below
+ * takes them as a parameter instead of existing twice.
+ * The MerkleTree form returns false (logged) for depth >= 63. */
+void gadget_pedersen_personalization_note_commitment(bool bits_out[6]);
+bool gadget_pedersen_personalization_merkle_tree(size_t depth,
+                                                 bool bits_out[6]);
+
+/* sapling-crypto `circuit::pedersen_hash::pedersen_hash`. Hashes the 6
+ * personalization bits followed by `n_bits` boolean-constrained input wires
+ * (which the caller must already have constrained) and returns the resulting
+ * Jubjub point as two wires.
+ *
+ * Constraint cost is a pure function of the bit count — 3-bit windows, 63
+ * windows per segment generator, 2 constraints per window (1 when the window's
+ * bits are all constant), 3 per within-segment Montgomery addition, 2 per
+ * segment Edwards conversion and 6 per cross-segment Edwards addition. For the
+ * Merkle path's 510-bit preimage that is exactly 867 constraints; for the
+ * 576-bit note contents, 982.
+ *
+ * On a malformed request it logs and writes SIZE_MAX to both outputs rather
+ * than a plausible-looking point — callers MUST check. */
+void gadget_pedersen_hash_pers(struct constraint_system *cs,
+                               const bool pers_bits[6],
+                               const size_t *input_bits, size_t n_bits,
+                               size_t *x_out, size_t *y_out);
+
+/* Legacy entry point of the above, used by the non-parity circuits in
+ * sapling_circuit.c. Recognizes only the string "Zcash_PH" and maps it to that
+ * path's historical 6-bit prefix, which is NOT bellman's NoteCommitment
+ * personalization. New code calls gadget_pedersen_hash_pers with an explicit
+ * personalization from one of the two accessors above. */
 void gadget_pedersen_hash(struct constraint_system *cs,
                           const size_t *input_bits, size_t n_bits,
                           const char *personalization,

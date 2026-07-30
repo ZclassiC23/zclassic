@@ -12,11 +12,20 @@
  * check), sections 8/9/15/16 reproduce librustzcash's compressed point
  * encodings bit for bit, section 10's 256 digest bits reproduce CRH^ivk, and
  * section 13's pk_d wire equals the out-of-circuit [ivk] g_d. All of it is
- * gated by the `groth16_selfverify` test group. Sections 17..28 (the note
- * commitment, the 32-level Merkle path, g^position, the twin blake2s for nf and
- * the nullifier packing) remain to be ported, so the circuit below is a
- * faithful PARTIAL prefix (30679/98777 constraints) and does not yet round-trip
- * against the trusted-setup proving key.
+ * gated by the `groth16_selfverify` test group. Sections 17..20 (the note
+ * commitment), 22..28 (g^position, the twin blake2s for nf and the nullifier
+ * packing) remain to be ported, so the circuit below is a faithful PARTIAL
+ * prefix (30679/98777 constraints) and does not yet round-trip against the
+ * trusted-setup proving key.
+ *
+ * Section 21 — the 32-level Merkle authentication path, 44224 constraints and
+ * the largest section in the circuit — IS ported: the gadget lives in
+ * sapling/circuit_merkle.h and its cost, its anchor value against an
+ * out-of-circuit fold, its swap sensitivity and its wire boundness are gated by
+ * lib/test/src/groth16_merkle_path.c. It consumes section 20's cm.x, so the
+ * call site below stays behind a one-line seam until sections 17..20 land;
+ * recording it out of position would make the parity oracle diff its boundary
+ * against section 17's.
  *
  * Section 10 was the architectural fork, and it is resolved rather than worked
  * around: blake2s is built on bellman's Boolean/UInt32/multieq stack, where a
@@ -41,6 +50,7 @@
 #include "sapling/sapling_circuit.h"
 #include "sapling/circuit_bits.h"
 #include "sapling/circuit_gadgets.h"
+#include "sapling/circuit_merkle.h"
 #include "sapling/sapling.h"
 #include "base/serialize_le.h"
 #include "support/cleanse.h"
@@ -454,9 +464,39 @@ bool sapling_spend_synthesize_traced(struct constraint_system *cs,
      * repr(pk_d). Section 17 Pedersen-hashes it into the note commitment. */
     (void)note_contents;
 
-    /* Sections 17..28 remain to be ported (see the port-status note above).
-     * The prefix synthesized here is deterministic and shape-matched to the
-     * reference for sections 1..16. */
+    /* ════ Sections 17..20: note commitment (982 + 252 + 750 + 6) ════
+     * Pedersen-hash note_contents, booleanize rcm, multiply the note-commitment
+     * randomness generator and add — producing cm, whose x-coordinate section 21
+     * folds up the tree. Not yet ported; while cm_x_var is SIZE_MAX section 21
+     * below is not synthesized, because recording it out of position would make
+     * the parity oracle diff its boundary against section 17's. */
+    size_t cm_x_var = SIZE_MAX;
+
+    /* ════ Section 21: 32-level Merkle authentication path (44224) ════
+     * The single largest section of the circuit — 45% of all 98777 constraints.
+     * The whole body is gadget_merkle_auth_path (sapling/circuit_merkle.h): per
+     * level a position bit, a witnessed sibling, bellman's conditionally_reverse,
+     * two non-strict 255-bit decompositions and a Pedersen hash under
+     * Personalization::MerkleTree(depth) — 1382 each, over 32 levels. Its cost,
+     * its anchor value against an out-of-circuit fold, its swap sensitivity and
+     * its wire boundness are gated by lib/test/src/groth16_merkle_path.c. */
+    size_t anchor_var = SIZE_MAX;
+    size_t position_bits[SAPLING_MERKLE_DEPTH];
+    if (cm_x_var != SIZE_MAX) {
+        if (!gadget_merkle_auth_path(cs, cm_x_var, wit->auth_path,
+                                     wit->auth_path_bits, &anchor_var,
+                                     position_bits))
+            LOG_FAIL("circuit_spend",
+                     "spend: section 21 Merkle authentication path failed");
+        section_record(cs, sections, max_sections, &nsec,
+                       "21:merkle tree hash 0..31");
+    }
+    (void)anchor_var;     /* sections 22/23 bind it to public input 5 */
+    (void)position_bits;  /* section 24 multiplies g^position by these */
+
+    /* Sections 17..20 and 22..28 remain to be ported (see the port-status note
+     * above). The prefix synthesized here is deterministic and shape-matched to
+     * the reference for sections 1..16. */
 
     if (n_sections_out)
         *n_sections_out = nsec;

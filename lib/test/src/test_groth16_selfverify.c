@@ -597,6 +597,14 @@ int groth16_spend_reference_oracle(void);
  * H3 port advances. Lives in lib/test/src/groth16_spend_parity.c. */
 int groth16_spend_parity_oracle(void);
 
+/* Section 21: the 32-level Merkle authentication path — 44224 constraints, the
+ * largest section of the spend circuit. Gated out of line (constraint count,
+ * per-level breakdown, anchor value against an out-of-circuit fold, swap
+ * sensitivity and wire boundness) because it sits after sections 17..20 in
+ * synthesis order and cannot be recorded in the traced prefix until those land.
+ * Params-free. Lives in lib/test/src/groth16_merkle_path.c. */
+int groth16_merkle_path_gate(void);
+
 /* H5 lane: adversarial + negative-control gate over the production SPEND
  * prove (reference oracle) -> verify (native C23) round-trip, plus a
  * proving-key-parser fuzz spot-check and zeroization spot-checks. Requires
@@ -613,6 +621,7 @@ int test_groth16_selfverify(void)
     failures += groth16_spend_reference_oracle();
     failures += spend_circuit_shape_gate();
     failures += groth16_spend_parity_oracle();
+    failures += groth16_merkle_path_gate();
 
 #ifndef ZCL_WITH_RUST
     /* The DEFAULT build links no proving backend (see ZCL_WITH_RUST at the top
