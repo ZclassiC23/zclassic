@@ -70,17 +70,34 @@ const char *tip_agreement_independence_name(enum tip_agreement_independence i)
 
 /* ── the derived contract ────────────────────────────────────────────── */
 
+int64_t tip_agreement_required_distinct_peers(int64_t min_distinct_peers)
+{
+    /* A control we cannot read is not a control. This is deliberately NOT
+     * defaulted to the shipped floor: a row that never recorded which floor
+     * was in force cannot testify that any floor was. */
+    if (min_distinct_peers < 1)
+        return -1; // raw-return-ok:unreadable-control-sentinel-not-an-error
+    /* THE FLOOR. `min_distinct_peers` is a field of the row being graded, so
+     * grading against it alone lets the row set its own bar: a ledger written
+     * with ZCL_PARITY_MIN_DISTINCT_PEERS=1 (or copied in, or crafted) would
+     * report control=1, be backed by its single peer, and grade SUFFICIENT —
+     * one host manufacturing agreement, the precise failure this module
+     * exists to prevent. So the row may only ever RAISE the bar. */
+    if (min_distinct_peers < TIP_AGREEMENT_MIN_DISTINCT_PEERS)
+        return TIP_AGREEMENT_MIN_DISTINCT_PEERS;
+    return min_distinct_peers;
+}
+
 enum tip_agreement_independence
 tip_agreement_classify_independence(int64_t modal_remote_peers,
                                     int64_t min_distinct_peers)
 {
-    /* A control we cannot read is not a control. This is deliberately NOT
-     * defaulted to the shipped 2: a row that never recorded which floor was
-     * in force cannot testify that any floor was. */
-    if (min_distinct_peers < 1)
+    int64_t required =
+        tip_agreement_required_distinct_peers(min_distinct_peers);
+    if (required < 1)
         return TIP_AGREEMENT_INDEPENDENCE_UNKNOWN;
     /* -1 is "the recorder did not count". Nobody counted is not enough. */
-    if (modal_remote_peers < min_distinct_peers)
+    if (modal_remote_peers < required)
         return TIP_AGREEMENT_INDEPENDENCE_INSUFFICIENT;
     return TIP_AGREEMENT_INDEPENDENCE_SUFFICIENT;
 }
@@ -154,13 +171,19 @@ const char *tip_agreement_summary_text(const struct tip_agreement_report *r,
      * anything that could read as a verdict, so a sample backed by one
      * non-independent peer can never print "agrees". */
     if (r->independence != TIP_AGREEMENT_INDEPENDENCE_SUFFICIENT) {
+        /* `required` is the bar that was actually applied — the row's recorded
+         * control raised to TIP_AGREEMENT_MIN_DISTINCT_PEERS — not the number
+         * the row asked to be judged by. Printing the row's own number here
+         * would tell an operator a weakened control had been honoured. */
         snprintf(buf, cap,
                  "%s independence=%s backed_by=%lld required=%lld "
-                 "peers_usable=%lld height=%lld recorded_outcome=%s "
-                 "— no agreement verdict from this sample",
+                 "control_recorded=%lld peers_usable=%lld height=%lld "
+                 "recorded_outcome=%s — no agreement verdict from this sample",
                  TIP_AGREEMENT_INSUFFICIENT_TOKEN,
                  tip_agreement_independence_name(r->independence),
                  (long long)r->modal_remote_peers,
+                 (long long)tip_agreement_required_distinct_peers(
+                     r->min_distinct_peers),
                  (long long)r->min_distinct_peers,
                  (long long)r->peers_usable, (long long)r->height,
                  tip_agreement_outcome_name(r->outcome));
@@ -193,9 +216,12 @@ const char *tip_agreement_summary_text(const struct tip_agreement_report *r,
     if (tip_agreement_reports_agreement(r)) {
         snprintf(buf, cap,
                  "agrees height=%lld hash=%s backed_by=%lld distinct remote "
-                 "hosts (control %lld) groups=%lld contested_peers=%lld",
+                 "hosts (required %lld, control_recorded %lld) groups=%lld "
+                 "contested_peers=%lld",
                  (long long)r->height, theirs,
                  (long long)r->modal_remote_peers,
+                 (long long)tip_agreement_required_distinct_peers(
+                     r->min_distinct_peers),
                  (long long)r->min_distinct_peers,
                  (long long)r->modal_remote_groups,
                  (long long)r->contested_peers);
@@ -342,8 +368,13 @@ bool tip_agreement_read_ledger(const char *path,
     scan_init(out);
     if (!path || !path[0])
         LOG_FAIL("tip_agreement", "ledger path is NULL/empty");
+    /* Overlong rows count as malformed; a line with no newline at EOF is
+     * counted SEPARATELY and never handed over as a sample — a torn append
+     * must not be able to become the last row scanned, which is the row every
+     * per-sample field comes from. */
     if (!evidence_ledger_scan_tail(path, TIP_AGREEMENT_TAIL_BYTES, scan_row,
-                                   out, &out->malformed_rows))
+                                   out, &out->malformed_rows,
+                                   &out->incomplete_rows))
         LOG_FAIL("tip_agreement", "ledger tail read rejected path '%s'", path);
     scan_finish(out);
     return true;
@@ -384,6 +415,12 @@ static void push_last_sample(struct json_value *parent,
     json_push_kv_int(&obj, "contested_peers", r->contested_peers);
     json_push_kv_int(&obj, "peers_usable", r->peers_usable);
     json_push_kv_int(&obj, "min_distinct_peers_control", r->min_distinct_peers);
+    /* The bar actually applied: the recorded control raised to
+     * TIP_AGREEMENT_MIN_DISTINCT_PEERS. Published next to the recorded value so
+     * a weakened control is visible as weakened rather than as honoured. */
+    json_push_kv_int(&obj, "min_distinct_peers_required",
+                     tip_agreement_required_distinct_peers(
+                         r->min_distinct_peers));
     json_push_kv_int(&obj, "excluded_hosts", r->excluded_hosts);
     json_push_kv_str(&obj, "recorded_outcome",
                      tip_agreement_outcome_name(r->outcome));
@@ -402,6 +439,7 @@ static void push_rollup(struct json_value *parent,
     json_set_object(&obj);
     json_push_kv_int(&obj, "rows_scanned", r->rows_scanned);
     json_push_kv_int(&obj, "malformed_rows", r->malformed_rows);
+    json_push_kv_int(&obj, "incomplete_rows", r->incomplete_rows);
     json_push_kv_int(&obj, "unknown_outcome_rows", r->unknown_outcome_rows);
     json_push_kv_int(&obj, "agrees", r->agrees);
     json_push_kv_int(&obj, "disagrees", r->disagrees);

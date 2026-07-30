@@ -267,6 +267,44 @@ int test_stopwatch_skip_watch(void)
         SSW_CHECK("an empty ledger is absence, never an alarm", ok);
     }
 
+    /* ── A TORN APPEND MUST NOT SILENCE A REAL ALARM ─────────────────
+     * The collector appends under flock, so a line with no trailing newline
+     * means a run was caught mid-write. That half-line used to be handed to
+     * the row scanner anyway: here its `verdict":"pass"` had already landed on
+     * disk while the rest had not, so a partial write RESET a four-deep skip
+     * streak and cleared the alarm (reproduced — skip_streak 4 -> 0,
+     * alarm true -> false). An incomplete line is now dropped and counted
+     * separately, so the streak it did not really break survives. */
+    {
+        char dir[] = "/tmp/zcl-stopwatch-torn.XXXXXX";
+        bool ok = mkdtemp(dir) != NULL;
+        char path[PATH_MAX];
+        snprintf(path, sizeof(path), "%s/history.jsonl", dir);
+
+        text[0] = '\0';
+        for (int i = 0; i < 4; i++) {
+            row_skip(row, sizeof(row), 1000 + i, REASON_PEER_DEAD, "/a/x");
+            append(text, sizeof(text), row);
+        }
+        /* caught mid-append: the verdict landed, the rest did not */
+        append(text, sizeof(text),
+               "{\"ts\":2000,\"verdict\":\"pass\",\"exit_code\":0,"
+               "\"artifact_dir\":\"/a/p");
+        ok = ok && write_file(path, text);
+
+        ok = ok && stopwatch_skip_read_ledger(path, &rep);
+        ok = ok && rep.rows_scanned == 4;
+        ok = ok && rep.incomplete_rows == 1;
+        ok = ok && rep.malformed_rows == 0;   /* torn is not malformed */
+        ok = ok && rep.skip_streak == 4;
+        ok = ok && rep.alarm;
+        ok = ok && rep.last_pass_ts == -1;    /* that "pass" never happened */
+
+        unlink(path);
+        rmdir(dir);
+        SSW_CHECK("a torn final line cannot clear a streak or an alarm", ok);
+    }
+
     /* ── file + env + typed-dump path, all under a private tmp dir ──── */
     {
         char dir[] = "/tmp/zcl-stopwatch-skip-test.XXXXXX";

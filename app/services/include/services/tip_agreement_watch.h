@@ -52,9 +52,17 @@
  *
  * So a sample is graded here in this ORDER, and the order is the contract:
  *   1. independence FIRST. Fewer distinct remote hosts behind the modal hash
- *      than the control the recorder had in force (`min_distinct_peers`, and
- *      an unreadable control counts as unreadable, never as satisfied) ⇒
- *      TIP_AGREEMENT_INSUFFICIENT_TOKEN. No verdict, in either direction.
+ *      than REQUIRED ⇒ TIP_AGREEMENT_INSUFFICIENT_TOKEN. No verdict, in either
+ *      direction. What is required is the HIGHER of two numbers, and that is
+ *      the load-bearing part: the control the recorder had in force
+ *      (`min_distinct_peers`) and TIP_AGREEMENT_MIN_DISTINCT_PEERS, the floor
+ *      this build will not go below. The floor exists because the recorded
+ *      control is a field of the row being graded — a row written with
+ *      ZCL_PARITY_MIN_DISTINCT_PEERS=1, copied in from elsewhere, or crafted,
+ *      would otherwise get to set its own bar and pass at one backing peer,
+ *      which is the exact failure this module was built to make impossible.
+ *      An unreadable control (< 1) still counts as unreadable, never as
+ *      satisfied. A control STRONGER than the floor is honoured as written.
  *   2. hash equality SECOND, checked against the recorded bytes rather than
  *      trusted from the recorded `outcome`. A row whose outcome says "agrees"
  *      while its our_tip_hash and modal_remote_hash differ is a CONTRADICTION
@@ -103,6 +111,14 @@
  * thousands of rows — far more than the judge's 24h window. */
 #define TIP_AGREEMENT_TAIL_BYTES (256u * 1024u)
 
+/* THE FLOOR on distinct remote hosts behind the modal hash, below which this
+ * build will not grade a sample independent no matter what the row says about
+ * itself. Same number as DEF_MIN_DISTINCT_PEERS in
+ * tools/scripts/tip_agreement_judge.sh, and for the same stated reason: one
+ * peer must never be able to manufacture agreement. May be raised, never
+ * lowered. */
+#define TIP_AGREEMENT_MIN_DISTINCT_PEERS 2
+
 /* The exact refusal tokens. Asserted verbatim by
  * lib/test/src/test_tip_agreement_watch.c: a refusal that fires for an
  * unrelated downstream reason has already fooled this project once, so the
@@ -136,7 +152,13 @@ enum tip_agreement_independence {
 struct tip_agreement_report {
     bool     present;             /* >= 1 usable row found */
     unsigned rows_scanned;        /* usable rows in the scanned tail */
-    unsigned malformed_rows;      /* rows with no `outcome` field at all */
+    unsigned malformed_rows;      /* rows with no `outcome` field at all, plus
+                                   * rows too long to be an evidence row */
+    unsigned incomplete_rows;     /* lines that ended with no newline: a torn
+                                   * append, dropped rather than folded in as
+                                   * the last sample. Not malformed — the bytes
+                                   * may be a good row that is not all there
+                                   * yet. Only the tail read can see these. */
     unsigned unknown_outcome_rows;/* outcome present but unrecognised */
 
     /* Rollup over the scanned tail. Recomputed every call from the `outcome`
@@ -169,10 +191,22 @@ struct tip_agreement_report {
                                    * (case-insensitive hex) */
 };
 
+/* How many distinct remote hosts a sample recording `min_distinct_peers` must
+ * actually have behind its modal hash: the HIGHER of that recorded control and
+ * TIP_AGREEMENT_MIN_DISTINCT_PEERS. Returns -1 when the recorded control is
+ * unreadable (< 1), because a row that never said which floor was in force
+ * cannot testify that any floor was — that case refuses rather than borrowing
+ * the shipped number. Never returns 0, and never returns less than the floor
+ * for a readable control. */
+int64_t tip_agreement_required_distinct_peers(int64_t min_distinct_peers);
+
 /* Independence of one sample. `modal_remote_peers` < 0 means the recorder did
  * not count (null) and is INSUFFICIENT, never a pass. `min_distinct_peers`
  * < 1 or unknown (< 0) is INDEPENDENCE_UNKNOWN — which
- * tip_agreement_reports_agreement() also refuses. */
+ * tip_agreement_reports_agreement() also refuses. Otherwise SUFFICIENT needs
+ * `modal_remote_peers` >= tip_agreement_required_distinct_peers(): the row's
+ * own recorded control CANNOT lower the bar below
+ * TIP_AGREEMENT_MIN_DISTINCT_PEERS, only raise it. */
 enum tip_agreement_independence
 tip_agreement_classify_independence(int64_t modal_remote_peers,
                                     int64_t min_distinct_peers);

@@ -12,14 +12,22 @@
  * BOUNDED TAIL READ:
  *
  *   - after a mid-file seek the first line is a FRAGMENT and must be dropped,
- *     never folded as a row (folding it invents a sample);
+ *     never folded as a row (folding it invents a sample) — and dropping it
+ *     must not cost the NEXT line, even when the fragment is long enough to
+ *     fill the row buffer;
  *   - a row longer than the row buffer must have its tail CONSUMED, not
- *     folded as a second phantom row;
+ *     folded as a second phantom row — while a row that FITS must not be
+ *     mistaken for one that did not, which is a question about the missing
+ *     newline and the data length, not about the buffer being exactly full;
+ *   - a line with no newline at end of file is INCOMPLETE, not a sample. Every
+ *     reader here takes the last row it was handed as authoritative for the
+ *     per-sample fields, so handing over a torn append lets half a row become
+ *     "the" current sample;
  *   - a missing or unreadable ledger is DATA (nothing scanned), never an
  *     error a caller branches on — a host that never installed a recorder
  *     looks exactly like that.
  *
- * Getting any of those three wrong fabricates evidence, so there is one
+ * Getting any of those wrong fabricates evidence, so there is one
  * implementation and both readers call it.
  *
  * THE ROW SHAPE this supports, deliberately narrow: flat, single-line,
@@ -36,9 +44,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* One ledger row is a flat JSON object well under 1 KiB; 4 KiB is generous.
- * A row longer than this is not an evidence row — see the overlong note in
- * evidence_ledger_scan_tail(). */
+/* The longest row this reader accepts, in DATA bytes with the newline
+ * excluded. One ledger row is a flat JSON object well under 1 KiB; 4 KiB is
+ * generous. A row longer than this is not an evidence row — see the overlong
+ * note in evidence_ledger_scan_tail(). A row of exactly this length IS a row:
+ * the read buffer carries two spare bytes for the newline and the NUL so the
+ * boundary is decided by the data length, never by the buffer filling up. */
 #define EVIDENCE_ROW_MAX 4096
 
 /* Bounded, NUL-terminating copy of `len` bytes. A NULL/zero-cap dst is a
@@ -67,24 +78,42 @@ bool evidence_row_int(const char *row, size_t len, const char *key,
 typedef void (*evidence_row_fn)(const char *row, size_t len, void *ctx);
 
 /* Split an in-memory ledger (newline-separated rows) and hand each row to
- * `fn`. Pure: no IO, no clock. Returns false only on bad arguments. */
+ * `fn`. Pure: no IO, no clock. Returns false only on bad arguments.
+ *
+ * Unlike the tail read below there is no incomplete-line case here, and that
+ * is not an oversight: the CALLER chose where this buffer ends, so a final
+ * segment without a newline is a row the caller handed over deliberately, not
+ * a write caught half-finished on disk. */
 bool evidence_ledger_scan_text(const char *text, size_t len,
                               evidence_row_fn fn, void *ctx);
 
 /* Read the trailing `tail_bytes` of `path` and hand each COMPLETE row to
- * `fn`, streaming so peak memory is one row rather than one tail.
+ * `fn`, streaming so peak memory is one row rather than one tail. A COMPLETE
+ * row is one that ended in a newline and is no longer than EVIDENCE_ROW_MAX
+ * data bytes; nothing else ever reaches `fn`.
  *
  * A missing / empty / unreadable file is NOT a failure: `fn` is simply never
  * called and the call returns true. Returns false only on bad arguments.
  *
- * `out_overlong` (may be NULL) is INCREMENTED once per row that did not fit
- * EVIDENCE_ROW_MAX. Such a row is dropped whole — its continuation bytes are
- * consumed rather than folded as a second row. Callers count it as malformed.
+ * The two drop counters are separate BECAUSE THEY MEAN DIFFERENT THINGS. Both
+ * may be NULL; both are INCREMENTED, never assigned:
+ *   `out_overlong`   a row longer than EVIDENCE_ROW_MAX data bytes — corrupt
+ *                    or foreign content. Callers count it as malformed.
+ *   `out_incomplete` a line that ended without a newline: the recorder's
+ *                    append was caught mid-write, or the file is truncated.
+ *                    NOT malformed (the bytes may be a perfectly good row that
+ *                    is not all there yet) and NOT a sample — it is dropped,
+ *                    so a torn line can never become the last row scanned.
+ * Either way the rest of that physical line is consumed, never folded as a
+ * second row.
  *
- * The first line after a mid-file seek is a fragment and is dropped. */
+ * The first line after a mid-file seek is a fragment and is dropped, without
+ * counting toward either counter (its true length is unknown, so calling it
+ * malformed would invent a defect) and without costing the line after it. */
 bool evidence_ledger_scan_tail(const char *path, size_t tail_bytes,
                               evidence_row_fn fn, void *ctx,
-                              unsigned *out_overlong);
+                              unsigned *out_overlong,
+                              unsigned *out_incomplete);
 
 /* Resolve "<dir>/<file>" where dir is $<dir_env> when set and non-empty,
  * else "$HOME/<home_rel_dir>". Returns false (and empties `out`) when there
