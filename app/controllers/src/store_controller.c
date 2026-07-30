@@ -5,6 +5,14 @@
 
 #include "controllers/store_controller_internal.h"
 #include "controllers/zslp_controller.h"
+/* store_confirmed_payment tells a shielded order address from a transparent
+ * one (wallet_addr_is_sapling), and turns a t-address into the hash160 that
+ * wallet_utxos keys on (wallet_decode_address). */
+#include "controllers/wallet_shielded_controller.h"
+#include "controllers/wallet_helpers.h"
+/* wallet_direct_getnewaddress — the one-time t-address a transparent order
+ * binds to, persisted before it is handed out. */
+#include "controllers/wallet_controller.h"
 
 /* Forward declarations (helpers that stay static to this file) */
 static bool store_csrf_verify(const char *context, const char *provided);
@@ -17,11 +25,18 @@ static bool store_mark_order_paid(const char *datadir,
 
 
 /* POST /store/buy/:id — create order. This is a request action (it mints a
- * payment z-address and writes the order row), so it lives in the controller;
- * it calls the store view's render helpers to build the response page. */
+ * one-time payment address and writes the order row), so it lives in the
+ * controller; it calls the store view's render helpers to build the response
+ * page.
+ *
+ * `transparent` picks which kind of one-time address the order binds to. Both
+ * are one-time and neither is ever reused: the shielded order is bound by the
+ * payment memo, the transparent order by the address itself, so a reused
+ * transparent address would silently merge two orders' payments. */
 static size_t serve_create_order(sqlite3 *db, int64_t product_id,
                                   const char *customer_addr,
                                   const char *datadir,
+                                  bool transparent,
                                   uint8_t *resp, size_t max)
 {
     struct node_db ndb = { .db = db, .open = true };
@@ -34,14 +49,32 @@ static size_t serve_create_order(sqlite3 *db, int64_t product_id,
             "Connection: close\r\n\r\n<h1>Product not found</h1>");
     }
 
-    /* Generate a unique Sapling z-address for this payment.
+    /* Generate the unique payment address for this order.
      * NEVER fall back to a fake address — that loses user funds. */
     char payment_addr[128];
-    if (!zslp_generate_payment_address(datadir, payment_addr,
-                                        sizeof(payment_addr))) {
-        printf("store: CRITICAL — z-address generation failed for product %lld\n",
-               (long long)product_id);
-        fflush(stdout);
+    bool minted;
+    if (transparent) {
+        char mint_err[256] = "";
+        minted = wallet_direct_getnewaddress(payment_addr,
+                                             sizeof(payment_addr),
+                                             mint_err, sizeof(mint_err));
+        if (!minted) {
+            printf("store: CRITICAL — t-address generation failed for "
+                   "product %lld: %s\n",
+                   (long long)product_id,
+                   mint_err[0] ? mint_err : "(no reason given)");
+            fflush(stdout);
+        }
+    } else {
+        minted = zslp_generate_payment_address(datadir, payment_addr,
+                                               sizeof(payment_addr));
+        if (!minted) {
+            printf("store: CRITICAL — z-address generation failed for "
+                   "product %lld\n", (long long)product_id);
+            fflush(stdout);
+        }
+    }
+    if (!minted) {
         return (size_t)snprintf((char *)resp, max,
             "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/html\r\n"
             "Connection: close\r\n\r\n"
@@ -449,6 +482,7 @@ size_t store_handle_request(const char *method, const char *path,
         char csrf[64] = "";
         char pow_ts[32] = "";
         char pow_nonce[32] = "";
+        char pay_kind[16] = "";
         if (body && body_len > 0) {
             parse_form_field((const char *)body, body_len,
                              "customer_addr", addr, sizeof(addr));
@@ -458,7 +492,13 @@ size_t store_handle_request(const char *method, const char *path,
                              "pow_ts", pow_ts, sizeof(pow_ts));
             parse_form_field((const char *)body, body_len,
                              "pow_nonce", pow_nonce, sizeof(pow_nonce));
+            /* Absent ⇒ shielded, so every existing caller and the HTML form
+             * keep the shielded default. Only the exact string "transparent"
+             * opts in; anything else is shielded rather than a guess. */
+            parse_form_field((const char *)body, body_len,
+                             "payment_kind", pay_kind, sizeof(pay_kind));
         }
+        bool want_transparent = (strcmp(pay_kind, "transparent") == 0);
         if (path_has_prefix(path, "/store/buy/")) {
             if (!parse_positive_path_id(path, &id))
                 id = -1;
@@ -542,6 +582,7 @@ size_t store_handle_request(const char *method, const char *path,
                     err_body, strlen(err_body), response, response_max);
             } else {
                 result = serve_create_order(db, id, addr, datadir,
+                                              want_transparent,
                                               response, response_max);
             }
         }
@@ -578,6 +619,33 @@ size_t store_handle_request(const char *method, const char *path,
     return result;
 }
 
+int64_t store_confirmed_payment(struct node_db *ndb, const char *pay_addr,
+                                int64_t order_id, int64_t max_height)
+{
+    struct tx_destination dest;
+
+    if (!ndb || !pay_addr || !pay_addr[0])
+        return 0;
+
+    if (wallet_addr_is_sapling(pay_addr))
+        return db_store_received_payment_for_memo(ndb, pay_addr, order_id,
+                                                  max_height);
+
+    /* Transparent: the order bind is the one-time address itself, so the
+     * hash160 is the whole key. Refuse anything that is not a plain
+     * pay-to-pubkey-hash destination rather than guessing — a script
+     * destination here would mean the order was minted by a path that does
+     * not exist yet, and crediting it would be crediting an unknown. */
+    if (!wallet_decode_address(pay_addr, &dest) || dest.type != DEST_KEY_ID) {
+        LOG_WARN("store", "reconcile: order %lld payment address is neither a "
+                 "shielded address nor a p2pkh t-address — not crediting",
+                 (long long)order_id);
+        return 0;
+    }
+    return db_store_received_payment_taddr(ndb, dest.id.key.id.data,
+                                           max_height);
+}
+
 /* Background payment processor — called periodically from boot.c.
  * Checks pending orders for payments, mints tokens when paid. */
 void store_process_payments(const char *datadir)
@@ -609,19 +677,18 @@ void store_process_payments(const char *datadir)
         if (!pay_addr[0] || !cust_addr[0] || !token_id[0])
             continue;
 
-        /* Credit only payments whose recovered Sapling memo binds them to
-         * THIS order (prefix "ZCL23ORDER:<order_id>", which the payment page
-         * instructs the buyer to include). This closes the hole that an
-         * unrelated same-amount note at the same one-time address could
-         * satisfy the order: the legacy address-only finder counts any note
-         * at the address, the memo-bound finder counts only this order's.
+        /* Credit only payments BOUND to THIS order — by the recovered Sapling
+         * memo ("ZCL23ORDER:<order_id>") for a shielded order, or by the
+         * one-time address itself for a transparent one. Either way an
+         * unrelated same-amount payment cannot satisfy this order, which the
+         * legacy address-only finder over a REUSED address would.
          * Require minimum 3 confirmations to prevent reorg-based double-spend
          * (payment reversed but tokens already minted). */
         int64_t tip_height = db_store_chain_tip_height(&ndb);
         int64_t min_height = tip_height - 3; /* 3 confirmations */
 
-        int64_t received = db_store_received_payment_for_memo(&ndb, pay_addr,
-                                                              order_id, min_height);
+        int64_t received = store_confirmed_payment(&ndb, pay_addr, order_id,
+                                                   min_height);
 
         if (received >= expected) {
             /* Payment confirmed — mint tokens FIRST, then update status.

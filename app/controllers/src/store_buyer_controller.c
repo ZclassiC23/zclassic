@@ -7,6 +7,10 @@
 
 #include "controllers/store_buyer_controller.h"
 #include "controllers/wallet_shielded_controller.h"
+/* wallet_direct_sendtoaddress — the transparent spend, in-process for the same
+ * reason z_sendmany is: no crash window between "value left the wallet" and
+ * "the purchase row knows". */
+#include "controllers/wallet_controller.h"
 #include "services/store_buyer.h"
 #include "json/json.h"
 #include "rpc/server.h"
@@ -261,17 +265,48 @@ static bool rpc_storebuy_pay(const struct json_value *params, bool help,
         return sbc_refuse(result, r.code, r.message);
     }
 
-    struct json_value send_params, send_result;
-    json_init(&send_params);
+    /* Two spends, one per order-address type, and the ORDER picks which:
+     *
+     *   z-address -> z_sendmany carrying the order memo (needs a prover)
+     *   t-address -> a plain signed t->t spend, bound by the one-time address
+     *
+     * A transparent output has nowhere to put a memo, which is exactly why the
+     * merchant mints a fresh address per transparent order — see
+     * store_confirmed_payment. Both callees run the node's spend guard and
+     * broadcast; both hand back an identifier we persist before answering. */
+    struct json_value send_result;
+    char tx_txid[80] = "";
+    char tx_error[256] = "";
+    const char *opid = NULL;
+    const char *why = NULL;
+    bool sent;
+
     json_init(&send_result);
-    sbc_build_send_params(&send_params, &pay);
-    bool sent = rpc_z_sendmany(&send_params, false, &send_result);
-    json_free(&send_params);
+    if (wallet_addr_is_sapling(pay.to_addr)) {
+        struct json_value send_params;
+        json_init(&send_params);
+        sbc_build_send_params(&send_params, &pay);
+        sent = rpc_z_sendmany(&send_params, false, &send_result);
+        json_free(&send_params);
+        /* z_sendmany answers with a bare string: txid on success, reason on
+         * refusal. */
+        if (sent)
+            opid = json_get_str(&send_result);
+        else
+            why = json_get_str(&send_result);
+    } else {
+        sent = wallet_direct_sendtoaddress(pay.to_addr, pay.amount_zatoshi,
+                                           tx_txid, sizeof(tx_txid),
+                                           tx_error, sizeof(tx_error));
+        if (sent)
+            opid = tx_txid;
+        else
+            why = tx_error;
+    }
 
     if (!sent) {
-        const char *why = json_get_str(&send_result);
         enum store_buyer_status mapped = sbc_classify_send_error(why);
-        LOG_WARN(SBC_TAG, "pay: purchase %lld — z_sendmany refused: %s",
+        LOG_WARN(SBC_TAG, "pay: purchase %lld — send refused: %s",
                  (long long)purchase_id, why ? why : "(no reason given)");
         ZCL_IGNORE_RESULT(store_buyer_fail(datadir, purchase_id, mapped, why),
                           "the send refusal is already being returned to the "
@@ -282,18 +317,17 @@ static bool rpc_storebuy_pay(const struct json_value *params, bool help,
         return refused;
     }
 
-    /* z_sendmany answers with a bare operation id string. */
-    const char *opid = json_get_str(&send_result);
     struct zcl_result rec =
         store_buyer_record_payment(datadir, purchase_id, opid);
     if (!rec.ok) {
         /* The payment WAS submitted. Say so loudly rather than reporting a
          * clean failure: the money is gone and the row did not record it,
-         * and the merchant's memo-bound reconcile will still credit the
-         * order, so a later status call recovers the purchase. */
+         * and the merchant's reconcile will still credit the order — by memo
+         * for a shielded one, by the one-time address for a transparent one —
+         * so a later status call recovers the purchase. */
         LOG_WARN(SBC_TAG, "pay: purchase %lld submitted operation %s but the "
                  "purchase row would not persist — the order will still be "
-                 "credited by memo; re-run status to recover it",
+                 "credited by its order bind; re-run status to recover it",
                  (long long)purchase_id, opid ? opid : "(none)");
     }
 

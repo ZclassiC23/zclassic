@@ -29,4 +29,13 @@ bool wallet_direct_sendtoaddress(const char *address, int64_t amount_sat,
                                   char *txid_out, size_t txid_out_size,
                                   char *error_out, size_t error_out_size);
 
+/* Mint a fresh transparent receive address, persisted BEFORE it is returned.
+ * Same implementation as getnewaddress — the store's transparent order path
+ * needs an address it can bind an order to, and one that is not durable would
+ * lose the buyer's payment on the next restart. `addr_out` must be >= 80
+ * bytes. On refusal returns false with the reason in `err_out` and an empty
+ * `addr_out`; never returns an address it could not persist. */
+bool wallet_direct_getnewaddress(char *addr_out, size_t addr_max,
+                                 char *err_out, size_t err_max);
+
 #endif

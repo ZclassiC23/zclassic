@@ -30,6 +30,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+struct node_db;
+
 /* Handle a store request. Returns HTTP response bytes written. */
 size_t store_handle_request(const char *method, const char *path,
                              const uint8_t *body, size_t body_len,
@@ -45,5 +47,19 @@ bool store_check_token_access(const char *datadir,
                                const char *customer_addr,
                                const char *token_id,
                                uint64_t required);
+
+/* Confirmed value credited to order `order_id` at its one-time payment
+ * address, under the order binding that the address type implies:
+ *
+ *   z-address -> Sapling memo bind (db_store_received_payment_for_memo)
+ *   t-address -> address bind      (db_store_received_payment_taddr)
+ *
+ * THE reconcile for a store order. Both the merchant's payment processor and
+ * the buyer's status poll go through this one function on purpose: if they
+ * each picked their own matcher, a buyer could believe an order paid that the
+ * merchant will never credit. `max_height` is the confirmation ceiling
+ * (tip - 3 at both call sites). Returns 0 on any error. */
+int64_t store_confirmed_payment(struct node_db *ndb, const char *pay_addr,
+                                int64_t order_id, int64_t max_height);
 
 #endif

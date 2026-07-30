@@ -13,6 +13,7 @@
 
 #include "controllers/store_controller.h" // shape-layer-ok:buyer-is-a-store-client
 #include "controllers/sovereignty_controller.h" // shape-layer-ok:buyer-asks-the-spend-guard
+#include "controllers/wallet_shielded_controller.h" // shape-layer-ok:buyer-classifies-an-address
 #include "chain/chainparams.h"
 #include "config/runtime.h"
 #include "crypto/sha3.h"
@@ -41,27 +42,6 @@ static bool sb_network_allows_spend(void)
 {
     const struct chain_params *cp = chain_params_get();
     return cp && strcmp(cp->strNetworkID, "main") != 0;
-}
-
-/* Which balance pool a funding address draws on. Asks the CHAIN for the
- * Sapling human-readable prefix rather than testing a hardcoded "zs1" — that
- * literal is the mainnet HRP, and on regtest (zregtestsapling) or testnet
- * (ztestsapling) it silently classifies every shielded address as
- * transparent. The bech32 separator must be present too, so a t-address
- * that merely starts with the letters cannot pass. */
-static bool sb_addr_is_sapling(const char *addr)
-{
-    const struct chain_params *cp = chain_params_get();
-    const char *hrp;
-    size_t hrp_len;
-
-    if (!addr || !cp)
-        return false;
-    hrp = cp->bech32HRPs[BECH32_SAPLING_PAYMENT_ADDRESS];
-    if (!hrp || !hrp[0])
-        return false;
-    hrp_len = strlen(hrp);
-    return strncmp(addr, hrp, hrp_len) == 0 && addr[hrp_len] == '1';
 }
 
 /* Whether a refusal means "stuck" (retrying cannot change the answer without
@@ -119,8 +99,15 @@ struct zcl_result store_buyer_prepare_payment(const char *datadir,
 
     /* No proving backend ⇒ no shielded output can be built at all. Refuse
      * here, loudly and by name, rather than letting the send fail hundreds
-     * of lines later inside coin selection — and never silently no-op. */
-    if (!zclassic_sapling_prover_is_ready()) {
+     * of lines later inside coin selection — and never silently no-op.
+     *
+     * Only a SHIELDED order address needs it. A transparent order is paid by
+     * an ordinary signed t->t spend with no zk-proof anywhere in it, so
+     * demanding a prover for one would refuse a payment this build can
+     * actually make. The order's address type is the merchant's choice, not
+     * the buyer's, so this asks the address rather than a flag. */
+    if (wallet_addr_is_sapling(purchase.payment_addr) &&
+        !zclassic_sapling_prover_is_ready()) {
         LOG_WARN(SB_TAG, "pay: refusing purchase %lld — no Sapling proving "
                  "backend (backend=%s status=%s); build with ZCL_WITH_RUST=1 "
                  "and install the Sapling parameters",
@@ -152,7 +139,9 @@ struct zcl_result store_buyer_prepare_payment(const char *datadir,
     {
         const struct wallet *w = app_runtime_wallet();
         if (w) {
-            int64_t pool = sb_addr_is_sapling(from_addr)
+            /* Which balance pool the FUNDING address draws on (t->z and z->z
+             * are both allowed; this only picks the floor to check). */
+            int64_t pool = wallet_addr_is_sapling(from_addr)
                                ? wallet_get_sapling_balance(w)
                                : wallet_get_balance(w);
             if (pool < purchase.amount_zatoshi) {
@@ -299,12 +288,12 @@ struct zcl_result store_buyer_refresh(const char *datadir,
     if (out->merchant_order_found)
         out->merchant_order_status = order_view.status;
 
-    /* The SAME memo-bound matcher the merchant's reconcile uses. There is
-     * deliberately no second payment finder here: the address-and-amount
-     * finder credits a payment that names a different order, and the whole
-     * point of the memo bind is that it does not. Confirmation depth
-     * mirrors the merchant's (tip - 3). */
-    out->confirmed_zatoshi = db_store_received_payment_for_memo(
+    /* The SAME reconcile the merchant's payment processor uses — one function,
+     * so a buyer can never believe an order paid that the merchant will never
+     * credit. It picks the memo bind or the address bind from the order
+     * address type; there is deliberately no second payment finder here.
+     * Confirmation depth mirrors the merchant's (tip - 3). */
+    out->confirmed_zatoshi = store_confirmed_payment(
         &ndb, purchase.payment_addr, purchase.order_id, out->tip_height - 3);
 
     /* Advance the stage on the merchant's verdict, never on our own opinion

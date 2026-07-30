@@ -181,4 +181,24 @@ int64_t db_store_received_payment_for_memo(struct node_db *ndb,
                                            int64_t order_id,
                                            int64_t max_height);
 
+/* Transparent counterpart of db_store_received_payment_for_memo: sums the
+ * confirmed, unspent, non-coinbase transparent value the wallet holds at
+ * `address_hash` (the 20-byte hash160 of a one-time order t-address).
+ *
+ * A transparent output carries no Sapling memo, so the order binding here is
+ * the ADDRESS ITSELF: the merchant mints a fresh t-address per order and uses
+ * it for that order only, so "value at this address" and "value paid for this
+ * order" are the same set. That is exactly as tight as the memo bind — order 1
+ * cannot be satisfied by a payment to order 12's address — and it is why this
+ * must never be pointed at a reused or wallet-default address.
+ *
+ * Callers pass the hash160 rather than the address text because wallet_utxos
+ * keys on address_hash, and decoding an address is a controller-layer concern
+ * (wallet_decode_address) that the model deliberately does not depend on.
+ * Returns 0 on any error / no matching row. App-layer only (no consensus
+ * path). */
+int64_t db_store_received_payment_taddr(struct node_db *ndb,
+                                        const uint8_t address_hash[20],
+                                        int64_t max_height);
+
 #endif
