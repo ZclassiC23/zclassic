@@ -51,14 +51,11 @@
 # be a false record — the honest state is "unpinned," and `check` says so.
 set -euo pipefail
 
-SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SELF="$SELF_DIR/$(basename "${BASH_SOURCE[0]}")"
 
-is_hex64() {
-    case "$1" in
-        "") return 1 ;;
-    esac
-    printf '%s' "$1" | grep -Eq '^[0-9a-f]{64}$'
-}
+# shellcheck source=tools/scripts/source_identity_lib.sh
+. "$SELF_DIR/source_identity_lib.sh"  # zcl_is_sha256, zcl_json_first_sha256
 
 # choose_tag_name — pick a proof-server/* tag name that does not exist yet.
 #
@@ -98,11 +95,11 @@ cmd_record() {
         echo "proof_server_pin: refuse — '$commit' does not resolve to a commit in this repo" >&2
         return 1
     fi
-    if ! is_hex64 "$source_id"; then
+    if ! zcl_is_sha256 "$source_id"; then
         echo "proof_server_pin: refuse — source_id '$source_id' is not 64 lowercase hex characters" >&2
         return 1
     fi
-    if ! is_hex64 "$artifact_sha"; then
+    if ! zcl_is_sha256 "$artifact_sha"; then
         echo "proof_server_pin: refuse — artifact_sha256 '$artifact_sha' is not 64 lowercase hex characters" >&2
         return 1
     fi
@@ -156,7 +153,7 @@ EOF
     pinned_source="$(printf '%s\n' "$contents" | sed -n 's/^source_id=//p' | head -1)"
     pinned_host="$(printf '%s\n' "$contents" | sed -n 's/^host=//p' | head -1)"
 
-    if [ -z "$pinned_commit" ] || ! is_hex64 "$pinned_source"; then
+    if [ -z "$pinned_commit" ] || ! zcl_is_sha256 "$pinned_source"; then
         echo "proof_server_pin: refuse — tag ${tag} is malformed (missing/bad commit= or source_id= line)" >&2
         return 3
     fi
@@ -178,12 +175,10 @@ EOF
     esac
 
     local running_source
-    running_source="$(ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" \
-        "timeout 20 '${svc_bin}' agentbuild" 2>/dev/null | \
-        grep -oE '"source_id_sha256"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | \
-        sed -E 's/.*"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')"
+    running_source="$(zcl_json_first_sha256 "$(ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" \
+        "timeout 20 '${svc_bin}' agentbuild" 2>/dev/null)" source_id_sha256)"
 
-    if ! is_hex64 "$running_source"; then
+    if ! zcl_is_sha256 "$running_source"; then
         echo "proof_server_pin: UNREACHABLE — ${host} did not report a usable source_id_sha256" >&2
         return 3
     fi

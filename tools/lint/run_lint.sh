@@ -129,6 +129,7 @@ gate_command() {
         check-supervisor-progress-declared) echo './tools/lint/check_supervisor_progress_declared.sh' ;;
         check-stopwatch-skip-detector)     echo './tools/lint/check_stopwatch_skip_detector.sh' ;;
         check-proof-server-pin)            echo './tools/lint/check_proof_server_pin.sh' ;;
+        check-identity-parser-single)      echo './tools/lint/check_identity_parser_single.sh --selftest && ./tools/lint/check_identity_parser_single.sh' ;;
         check-framework-shape)             echo 'ZCL_LINT_MODE=RATCHET ./tools/lint/framework_shape_check.sh' ;;
         check-framework-filename-suffix)   echo './tools/lint/check_framework_filename_suffix.sh' ;;
         check-no-raw-clock-outside-platform) echo './tools/lint/check_no_raw_clock_outside_platform.sh' ;;

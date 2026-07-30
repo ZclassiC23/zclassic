@@ -39,6 +39,9 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# shellcheck source=tools/scripts/source_identity_lib.sh
+. "$REPO_ROOT/tools/scripts/source_identity_lib.sh"  # zcl_is_sha256, zcl_json_first_sha256
+
 REMOTE_HOST="${ZCL_SHIP_REMOTE:-205.209.104.118}"
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15)
 TARGETS="local remote"
@@ -60,9 +63,6 @@ done
 say()  { printf '\033[1mship:\033[0m %s\n' "$*"; }
 step() { printf '\n\033[1m── %s\033[0m\n' "$*"; }
 die()  { printf '\033[1;31mship: REFUSE:\033[0m %s\n' "$*" >&2; exit 1; }
-
-is_sha256() { case "$1" in [0-9a-f]) return 1 ;; esac; [ "${#1}" -eq 64 ] && \
-              case "$1" in *[!0-9a-f]*) return 1 ;; *) return 0 ;; esac; }
 
 # ── 0. The proof server is not a deploy target ──────────────────────────────
 # $REMOTE_HOST holds one immutable tagged release candidate and records the
@@ -175,7 +175,7 @@ done
 step "Gate"
 
 SOURCE_ID="$(tools/dev/source-identity.sh capture 2>/dev/null || true)"
-is_sha256 "$SOURCE_ID" || SOURCE_ID=""
+zcl_is_sha256 "$SOURCE_ID" || SOURCE_ID=""
 gate_stamp="${GATE_CACHE_DIR}/${SOURCE_ID:-unknown}.passed"
 
 if [ "$SKIP_GATE" -eq 1 ] && [ -n "$SOURCE_ID" ] && [ -f "$gate_stamp" ]; then
@@ -219,17 +219,15 @@ else
     trap 'rm -f "$CANDIDATE"' EXIT HUP INT TERM
     install -m 755 build/bin/zclassic23 "$CANDIDATE"
     ARTIFACT_SHA="$(sha256sum < "$CANDIDATE" | awk '{print $1}')"
-    is_sha256 "$ARTIFACT_SHA" || die "could not hash the frozen candidate"
+    zcl_is_sha256 "$ARTIFACT_SHA" || die "could not hash the frozen candidate"
 
     # Ask the candidate itself what source it was built from. A binary that
     # cannot answer is not shippable, because nothing downstream could then
     # prove which code a node is running.
     agentbuild="$(timeout 30 "$CANDIDATE" agentbuild 2>&1)" || \
         die "frozen candidate failed its agentbuild preflight"
-    CAND_SOURCE_ID="$(printf '%s\n' "$agentbuild" | \
-        grep -oE '"source_id_sha256"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | \
-        sed -E 's/.*"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')"
-    is_sha256 "$CAND_SOURCE_ID" || \
+    CAND_SOURCE_ID="$(zcl_json_first_sha256 "$agentbuild" source_id_sha256)"
+    zcl_is_sha256 "$CAND_SOURCE_ID" || \
         die "frozen candidate reports no valid source_id_sha256"
     say "candidate  source_id ${CAND_SOURCE_ID:0:16}…  sha256 ${ARTIFACT_SHA:0:16}…  $(du -h "$CANDIDATE" | cut -f1)"
 fi
@@ -273,6 +271,11 @@ svc_bin="$1"; want_sha="$2"; want_src="$3"
 got="$(sha256sum < "${svc_bin}.incoming" | awk '{print $1}')"
 [ "$got" = "$want_sha" ] || { echo "remote: transferred bytes differ from candidate" >&2; exit 1; }
 chmod 755 "${svc_bin}.incoming"
+# zcl-identity-parser-allow: this heredoc runs on the REMOTE host verbatim
+# (bash -s -- ... <<'REMOTE_SCRIPT') and cannot `source` a local library file
+# that only exists in this checkout — the inline grep/sed pair is the only
+# option here. See tools/scripts/source_identity_lib.sh for why it is
+# anchored on the FIRST occurrence rather than greedy.
 got_src="$(timeout 30 "${svc_bin}.incoming" agentbuild 2>&1 | \
     grep -oE '"source_id_sha256"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | \
     sed -E 's/.*"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')"
@@ -288,6 +291,11 @@ REMOTE_SCRIPT
     local deadline running_src ok=0
     deadline=$(( $(date +%s) + 300 ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
+        # zcl-identity-parser-allow: the whole pipeline (agentbuild | grep |
+        # sed) is one double-quoted string handed to the REMOTE shell over
+        # ssh, so it executes on that host, which cannot source a local
+        # library file from this checkout — the inline extraction is the
+        # only option here.
         running_src="$(ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" \
             "timeout 15 '$svc_bin' agentbuild 2>/dev/null | grep -oE '\"source_id_sha256\"[[:space:]]*:[[:space:]]*\"[^\"]*\"' | head -1 | sed -E 's/.*\"[[:space:]]*:[[:space:]]*\"([^\"]*)\".*/\\1/'" 2>/dev/null || true)"
         if [ "$running_src" = "$CAND_SOURCE_ID" ] && \

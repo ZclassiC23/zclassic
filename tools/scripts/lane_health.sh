@@ -47,6 +47,8 @@ SOAK_LAG_WARN="${ZCL_SOAK_LAG_WARN:-$LAG_WARN}"
 
 # shellcheck source=tools/scripts/stopwatch_json_lib.sh
 . "$REPO_ROOT/tools/scripts/stopwatch_json_lib.sh"  # json_escape
+# shellcheck source=tools/scripts/source_identity_lib.sh
+. "$REPO_ROOT/tools/scripts/source_identity_lib.sh"  # zcl_json_first_string, zcl_is_sha256
 
 json_bool() {
     if [ "$1" = "1" ]; then
@@ -78,10 +80,6 @@ is_number() {
     esac
 }
 
-is_source_id_sha256() {
-    [[ "${1:-}" =~ ^[0-9a-f]{64}$ ]]
-}
-
 is_safe_arith_number() {
     is_number "$1" && [ "${#1}" -le 18 ]
 }
@@ -91,16 +89,6 @@ json_string_field() {
     printf '%s\n' "$body" \
         | sed -n "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" \
         | head -1
-}
-
-json_first_string_field() {
-    local body="$1" key="$2" token
-    token="$(printf '%s\n' "$body" \
-        | grep -o "\"${key}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" 2>/dev/null \
-        | head -1 || true)"
-    [ -n "$token" ] || return 0
-    printf '%s\n' "$token" \
-        | sed -n "s/^\"${key}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\"$/\1/p"
 }
 
 json_int_field() {
@@ -138,10 +126,10 @@ lane_health_selftest() {
     local sample op blocked detail ready source_id
     sample='{"schema":"zcl.public_status.v2","source_id_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","build_commit":"display-only","status":"blocked","operator_needed":true,"primary_blocker":"operator_needed:window.consistency","restart_watchdog":{"operator_needed":false},"readiness":{"chain_serving_ready":true},"reducer":{"validation_pack_ok":false,"validation_pack_detail":"window.consistency"}}'
     op="$(json_first_bool_field "$sample" "operator_needed")"
-    blocked="$(json_first_string_field "$sample" "status")"
-    detail="$(json_first_string_field "$sample" "validation_pack_detail")"
+    blocked="$(zcl_json_first_string "$sample" "status")"
+    detail="$(zcl_json_first_string "$sample" "validation_pack_detail")"
     ready="$(json_first_bool_field "$sample" "chain_serving_ready")"
-    source_id="$(json_first_string_field "$sample" "source_id_sha256")"
+    source_id="$(zcl_json_first_string "$sample" "source_id_sha256")"
     [ "$op" = "1" ] || {
         echo "lane-health selftest: expected first operator_needed=true" >&2
         return 1
@@ -158,11 +146,11 @@ lane_health_selftest() {
         echo "lane-health selftest: expected nested readiness=true" >&2
         return 1
     }
-    is_source_id_sha256 "$source_id" || {
+    zcl_is_sha256 "$source_id" || {
         echo "lane-health selftest: expected valid source_id_sha256" >&2
         return 1
     }
-    if is_source_id_sha256 "195a636c6173736963205369676e6564204d657373"; then
+    if zcl_is_sha256 "195a636c6173736963205369676e6564204d657373"; then
         echo "lane-health selftest: Git/SHA-1-sized identity was trusted" >&2
         return 1
     fi
@@ -392,9 +380,9 @@ report_lane() {
         fi
         agent_contract_trust_reason="agent_rpc_${agent_rpc_state}"
         if [ "$agent_rpc_state" = "ok" ]; then
-            agent_source_id_sha256="$(json_first_string_field "$agent_json" "source_id_sha256")"
-            agent_build_commit="$(json_first_string_field "$agent_json" "build_commit")"
-            if is_source_id_sha256 "$agent_source_id_sha256"; then
+            agent_source_id_sha256="$(zcl_json_first_string "$agent_json" "source_id_sha256")"
+            agent_build_commit="$(zcl_json_first_string "$agent_json" "build_commit")"
+            if zcl_is_sha256 "$agent_source_id_sha256"; then
                 agent_contract_trusted=1
                 agent_contract_trust_reason="valid_source_id_sha256"
             elif [ -n "$agent_source_id_sha256" ]; then
@@ -402,12 +390,12 @@ report_lane() {
             else
                 agent_contract_trust_reason="missing_source_id_sha256"
             fi
-            agent_status="$(json_first_string_field "$agent_json" "status")"
+            agent_status="$(zcl_json_first_string "$agent_json" "status")"
             agent_operator_needed="$(json_first_bool_field "$agent_json" "operator_needed")"
-            agent_primary_blocker="$(json_first_string_field "$agent_json" "primary_blocker")"
-            agent_next="$(json_first_string_field "$agent_json" "next")"
+            agent_primary_blocker="$(zcl_json_first_string "$agent_json" "primary_blocker")"
+            agent_next="$(zcl_json_first_string "$agent_json" "next")"
             agent_validation_pack_ok="$(json_first_bool_field "$agent_json" "validation_pack_ok")"
-            agent_validation_pack_detail="$(json_first_string_field "$agent_json" "validation_pack_detail")"
+            agent_validation_pack_detail="$(zcl_json_first_string "$agent_json" "validation_pack_detail")"
             agent_chain_serving_ready="$(json_first_bool_field "$agent_json" "chain_serving_ready")"
             agent_work_ready="$(json_first_bool_field "$agent_json" "agent_work_ready")"
         fi
