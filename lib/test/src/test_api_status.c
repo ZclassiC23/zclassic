@@ -299,7 +299,7 @@ int api_status_focused_tests(void)
         json_init(&root);
         ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
         ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
-                          "zcl.public_status.v2") == 0;
+                          "zcl.public_status.v3") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "build_commit")),
                           zcl_build_commit()) == 0;
         ok = ok && api_test_expect_freshness(&root, "served_tip",
@@ -347,7 +347,7 @@ int api_status_focused_tests(void)
         json_init(&root);
         ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
         ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
-                          "zcl.public_status.v2") == 0;
+                          "zcl.public_status.v3") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "api_version")),
                           "v1") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "build_commit")),
@@ -481,7 +481,7 @@ int api_status_focused_tests(void)
         json_init(&root);
         ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
         ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
-                          "zcl.public_status.v2") == 0;
+                          "zcl.public_status.v3") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "build_commit")),
                           zcl_build_commit()) == 0;
         ok = ok && strcmp(json_get_str(json_get(&root,
@@ -495,7 +495,7 @@ int api_status_focused_tests(void)
         json_init(&root);
         ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
         ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
-                          "zcl.public_status.v2") == 0;
+                          "zcl.public_status.v3") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "build_commit")),
                           zcl_build_commit()) == 0;
         ok = ok && strcmp(json_get_str(json_get(&root,

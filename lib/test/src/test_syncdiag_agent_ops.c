@@ -623,7 +623,7 @@ int syncdiag_cases_agent_ops(void)
                    "zclassic23 agent") == 0;
         ok = ok && lane_status_cmd &&
             strcmp(json_get_str(json_get(lane_status_cmd, "schema")),
-                   "zcl.public_status.v2") == 0;
+                   "zcl.public_status.v3") == 0;
         ok = ok && lane_topology_cmd &&
             strcmp(json_get_str(json_get(lane_topology_cmd, "method")),
                    "agentlanes") == 0;

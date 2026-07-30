@@ -83,7 +83,7 @@ int api_route_table_focused_tests(void)
                    "agent_cached_summary_with_fallbacks") == 0;
         ok = ok && live && (live_full_agent || live_agent_fallback);
         ok = ok && strcmp(json_get_str(json_get(live, "source_schema")),
-                          "zcl.public_status.v2") == 0;
+                          "zcl.public_status.v3") == 0;
         ok = ok && json_get_bool(json_get(live,
                                           "agent_summary_available"));
         ok = ok && json_get_bool(json_get(live, "agent_fields_complete")) ==

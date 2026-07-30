@@ -13,8 +13,10 @@
  */
 
 #include "controllers/status_native_handlers.h"
+#include "controllers/agent_operator_contracts.h"
 #include "controllers/native_handler_body.h"
 #include "controllers/status_native_helpers.h"
+#include "status_brief_readiness_read.h"
 
 #include "json/json.h"
 #include "controllers/rpc_client.h"
@@ -36,14 +38,34 @@ static bool status_schema_is(const struct json_value *obj,
     return schema && expected && strcmp(schema, expected) == 0;
 }
 
-#define ZCL_PUBLIC_STATUS_SCHEMA_FAMILY "zcl.public_status."
+/* The two versions this handler validates STRICTLY: the current one it
+ * produces (v3) and the previous one it still fully reads (v2). The v3
+ * additions are optional on the read side, so one SCHECK() chain serves both
+ * — a v2 document from an older node still yields a complete brief, minus
+ * only the v3 readiness facts. */
+static bool status_schema_is_strictly_read(const struct json_value *obj)
+{
+    return status_schema_is(obj, ZCL_PUBLIC_STATUS_SCHEMA) ||
+           status_schema_is(obj, ZCL_PUBLIC_STATUS_SCHEMA_V2);
+}
+
+/* Name the contract version the document actually declared, so a v2 node's
+ * strict-validation error says v2 and not the version this build happens to
+ * target. Only ever echoes a version this build strictly reads — never
+ * arbitrary text from the response — so the message stays a fixed token. */
+static const char *status_schema_seen(const struct json_value *obj)
+{
+    if (status_schema_is(obj, ZCL_PUBLIC_STATUS_SCHEMA_V2))
+        return ZCL_PUBLIC_STATUS_SCHEMA_V2;
+    return ZCL_PUBLIC_STATUS_SCHEMA;
+}
 
 /* True for any schema string in the known zcl.public_status.* family that is
- * NOT the exact version this handler validates strictly (e.g. an older
- * node's "zcl.public_status.v1", or a newer node's "...v3"). This is the
+ * NOT one of the versions this handler validates strictly (e.g. an older
+ * node's "zcl.public_status.v1", or a future "...v4"). This is the
  * present-but-different-version case: a real document from a real status
- * producer, just not the one the CLI's strict validator was written
- * against. See status_brief_build_schema_skew_body(). */
+ * producer, just not one the CLI's strict validator was written against.
+ * See status_brief_build_schema_skew_body(). */
 static bool status_schema_known_family_mismatch(const struct json_value *obj,
                                                  const char **schema_out)
 {
@@ -51,7 +73,7 @@ static bool status_schema_known_family_mismatch(const struct json_value *obj,
         ? json_get_str(json_get(obj, "schema")) : NULL;
     if (!schema || !schema[0])
         return false;
-    if (strcmp(schema, "zcl.public_status.v2") == 0)
+    if (status_schema_is_strictly_read(obj))
         return false;
     if (strncmp(schema, ZCL_PUBLIC_STATUS_SCHEMA_FAMILY,
                strlen(ZCL_PUBLIC_STATUS_SCHEMA_FAMILY)) != 0)
@@ -296,6 +318,7 @@ struct status_brief_fields {
     int64_t tip_advance_age_seconds; bool tip_age_known;
     struct status_brief_blocker_registry registry;
     struct status_brief_trust_tier trust_tier;
+    struct status_brief_readiness_facts readiness;
     /* NULL on the strict-v2 path; the mismatched schema string on the
      * degraded schema-skew path — adds `partial_result`/`schema_skew` to
      * the emitted body so the operator/AI can tell "old/new but fine"
@@ -367,6 +390,23 @@ static char *status_brief_compose_body(const struct status_brief_fields *f,
     if (f->trust_tier.capabilities_locked)
         json_push_kv_str(&root, "capabilities_locked",
                          f->trust_tier.capabilities_locked);
+    /* The v3 readiness facts, each emitted separately and only when the
+     * producer actually reported it. They are never combined into a single
+     * verdict here — that collapse is the bug this surface exists to fix. */
+    if (f->readiness.tip_follow_known)
+        json_push_kv_bool(&root, "tip_follow", f->readiness.tip_follow);
+    if (f->readiness.wallet_view_known)
+        json_push_kv_bool(&root, "wallet_view_ready",
+                          f->readiness.wallet_view_ready);
+    if (f->readiness.wallet_spend_known)
+        json_push_kv_bool(&root, "wallet_spend_allowed",
+                          f->readiness.wallet_spend_allowed);
+    if (f->readiness.archive_complete)
+        json_push_kv_str(&root, "archive_complete",
+                         f->readiness.archive_complete);
+    if (f->readiness.full_replay_known)
+        json_push_kv_bool(&root, "full_replay_verified",
+                          f->readiness.full_replay_verified);
     if (f->schema_skew) {
         json_push_kv_bool(&root, "partial_result", true);
         json_push_kv_str(&root, "schema_skew", f->schema_skew);
@@ -436,6 +476,7 @@ static char *status_brief_build_schema_skew_body(
     status_brief_blocker_registry_read(agent, &f.registry);
     status_brief_trust_tier_read(agent, json_get(agent, "security_posture"),
                                  &f.trust_tier);
+    status_brief_readiness_facts_read(agent, &f.readiness);
     f.schema_skew = schema;
 
     return status_brief_compose_body(&f, err);
@@ -509,7 +550,7 @@ char *zcl_native_status_brief_body(const struct json_value *args,
     struct status_validate v = {0};
     bool valid = parsed &&
         SCHECK(&v, "schema", status_key_missing(&agent, "schema"),
-              status_schema_is(&agent, "zcl.public_status.v2")) &&
+              status_schema_is_strictly_read(&agent)) &&
         SCHECK(&v, "served_height_known",
               status_key_missing(&agent, "served_height") ||
                   status_key_missing(&agent, "served_height_known"),
@@ -653,7 +694,7 @@ char *zcl_native_status_brief_body(const struct json_value *args,
              * connect refused/timed out, response deadline exceeded, cookie
              * unreadable). Surface the transport reason verbatim when we have
              * one -- that is the honest "no live node / node busy" answer the
-             * operator needs, not "invalid zcl.public_status.v2". */
+             * operator needs, not "invalid zcl.public_status.vN". */
             const char *rpc_err = NULL;
             if (agent.type == JSON_OBJ) {
                 const struct json_value *e = json_get(&agent, "error");
@@ -669,13 +710,13 @@ char *zcl_native_status_brief_body(const struct json_value *args,
                               "unparsable response");
         } else if (v.version_skew) {
             (void)snprintf(err->message, sizeof(err->message),
-                          "invalid zcl.public_status.v2: node binary "
+                          "invalid %s: node binary "
                           "predates the CLI contract (missing field %s)",
-                          v.field);
+                          status_schema_seen(&agent), v.field);
         } else {
             (void)snprintf(err->message, sizeof(err->message),
-                          "invalid zcl.public_status.v2: missing/invalid "
-                          "field %s", v.field);
+                          "invalid %s: missing/invalid "
+                          "field %s", status_schema_seen(&agent), v.field);
         }
         /* err->message now owns a copy of any rpc_err text, so the source
          * document is safe to release before LOG_NULL returns NULL. */
@@ -715,6 +756,9 @@ char *zcl_native_status_brief_body(const struct json_value *args,
      * an older node missing either sub-object does not fail validation. */
     status_brief_blocker_registry_read(&agent, &f.registry);
     status_brief_trust_tier_read(&agent, security, &f.trust_tier);
+    /* v3 facts, OPTIONAL: a strictly-valid v2 document omits all five and
+     * still produces a complete brief — that is the retained v2 reader. */
+    status_brief_readiness_facts_read(&agent, &f.readiness);
 
     char *out = status_brief_compose_body(&f, err);
     json_free(&agent);

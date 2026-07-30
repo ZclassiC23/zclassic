@@ -89,7 +89,41 @@ command rows into `src/main.c` usage text.
 `zclassic23 status` is the registry-owned native first check. It emits a
 `zcl.result.v1` envelope with `zcl.core_status_brief.v1` data. The larger
 `zclassic23 agent` / `GET /api/v1/agent` document uses the distinct
-`zcl.public_status.v2` contract.
+`zcl.public_status.v3` contract.
+
+**v3 names four readiness facts apart.** "Are you ready?" was one blurry
+verdict answering four different operator questions, so `zcl.public_status.v3`
+reports them separately (flat keys on the `agent` document, flattened onto
+`zclassic23 status`):
+
+| key | meaning |
+| --- | --- |
+| `tip_follow` | keeping up with the network tip (proven height vs tip, **not** the sync FSM's `at_tip` flag) |
+| `wallet_view_ready` | wallet readable — keys loaded, canary passed |
+| `wallet_spend_allowed` | wallet may spend; false in NO-SPEND mode (no passphrase, no plaintext opt-in) and on borrowed, not-yet-self-folded state |
+| `archive_complete` | `complete` \| `incomplete` \| `unknown` — whether every old block body is held |
+| `full_replay_verified` | history verified by replay |
+
+Two rules about these:
+
+- **`archive_complete` never gates `tip_follow`.** A complete archive is
+  ~13 GB; a 600-second cold sync over 100 Mbps can move ~7.5 GB and needs only
+  ~242 MB of it to reach the tip. Making archive completeness a precondition
+  for tip-following would turn a reachable target into an arithmetically
+  impossible one. `archive_complete: incomplete` alongside `tip_follow: true`
+  is the normal shape of a freshly synced node, not a fault.
+- **`unknown` is a real value, not a fallback.** It means a census has not
+  established an answer. It is never quietly upgraded to `complete`.
+
+Producers (`event_agent_summary.c`, `api_controller_status.c`) emit v3;
+`zcl.public_status.v2` remains **fully readable** — the five v3 keys are
+optional on the read side, so an older node's document still validates
+strictly and still yields a complete brief, just without these facts. Both
+versions live in one place, `ZCL_PUBLIC_STATUS_SCHEMA` /
+`ZCL_PUBLIC_STATUS_SCHEMA_V2` in
+`app/controllers/include/controllers/agent_operator_contracts.h`, shared by
+every producer and by the CLI reader that validates them.
+
 First-call recommendation arrays should use
 `agent_push_contract_native_command_json()` for registry-owned command names;
 keep only parameterized, composite, or subsystem-local commands inline.
@@ -652,8 +686,8 @@ diagnostic objects for the node authority posture.
 
 `milestone` (`zcl.milestone_status.v2`) is the v1 progress view, not a second
 health authority. Its `live` block is derived from the bounded
-`zcl.public_status.v2` agent summary when available and names that with
-`live.source="agent_cached_summary"` / `live.source_schema="zcl.public_status.v2"`.
+`zcl.public_status.v3` agent summary when available and names that with
+`live.source="agent_cached_summary"` / `live.source_schema="zcl.public_status.v3"`.
 When the agent packet is available, `live.agent_fields_complete=true` means the
 milestone live fields are copied from that same agent contract and are regression
 tested against a direct `/api/v1/agent` read. If any required first-call field is
@@ -1207,7 +1241,7 @@ This is a C23 project, so the edit loop should compile only what changed.
   native linger-service probe when the service is available. Repeated identical
   green inputs hit `.cache/zcl-agent-fast-ci/` and skip the repeated proven
   source-wide lint/build/test scope while still refreshing the live probe. The live probe trusts the
-  native `zcl.public_status.v2` health contract instead of duplicating height
+  native `zcl.public_status.v3` health contract instead of duplicating height
   gap policy in shell, and prints compact status JSON when it fails.
 - Focused test routing is DRY: both native `zclassic23 agentimpact` and
   `tools/agent_fast_ci.sh` read

@@ -202,6 +202,7 @@ int test_hotswap_module(void);
 int test_hotswap_module_v2(void);
 int test_dev_platform(void);
 int test_command_registry_catalog(void);
+int test_status_readiness_truth(void);
 int test_native_api_contract(void);
 int test_metric_alerts(void);
 int test_db_validators(void);

@@ -79,7 +79,7 @@ static const struct agent_contract_command_surface g_agent_command_surfaces[] = 
       "C-native deploy/restart allow-refuse decision"),
     DIRECT_COMMAND("agentmap.commands.core", 13, "full_compatibility_status",
       "zclassic23 agent",
-      "full zcl.public_status.v2 compatibility view"),
+      "full zcl.public_status.v3 compatibility view"),
     DIRECT_COMMAND("agentmap.commands.core", 14, "background_quality",
       "make quality-linger-status",
       "latest background fuzz/coverage lane verdicts"),

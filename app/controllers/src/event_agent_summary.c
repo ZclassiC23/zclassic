@@ -622,7 +622,7 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
         "\nReturn the compact first-check node summary used by REST "
         "/api/v1/agent and the native agent command.\n"
         "\nResult:\n"
-        "  { \"schema\":\"zcl.public_status.v2\", \"status\":\"healthy\", "
+        "  { \"schema\":\"zcl.public_status.v3\", \"status\":\"healthy\", "
         "\"build_commit\":\"...\", \"height\":N, \"gap\":0, "
         "\"primary_blocker\":\"none\" }\n");
     int64_t first_call_started_us = agent_first_call_start_us();
@@ -719,7 +719,7 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
         agent_security_posture_allows_public_serving(&posture);
 
     json_set_object(result);
-    json_push_kv_str(result, "schema", "zcl.public_status.v2");
+    json_push_kv_str(result, "schema", ZCL_PUBLIC_STATUS_SCHEMA);
     json_push_kv_str(result, "api_version", "v1");
     json_push_kv_str(result, "result_completeness", "bounded");
     /* Never serve stale posture silently: when the DB was busy and the
@@ -823,7 +823,7 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
     agent_push_readiness_contract_json(
         result, "readiness", public_serving, health.has_peers, operator_needed,
         health.validation_pack_ok, health.gap, health.index_gap,
-        health.log_head_gap);
+        health.log_head_gap, &posture);
     json_push_kv_int(result, "height", health.served_height);
     json_push_kv_int(result, "served_height", health.served_height);
     json_push_kv_bool(result, "served_height_known",

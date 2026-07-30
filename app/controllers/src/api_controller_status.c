@@ -483,7 +483,7 @@ void api_milestone_status_json(struct json_value *result)
                          : agent_ok ? "agent_cached_summary_with_fallbacks"
                                     : "node_health_collect_fallback");
     json_push_kv_str(&live, "source_schema",
-                     agent_ok ? "zcl.public_status.v2"
+                     agent_ok ? ZCL_PUBLIC_STATUS_SCHEMA
                               : "zcl.node_health_snapshot");
     json_push_kv_bool(&live, "agent_summary_available", agent_ok);
     json_push_kv_bool(&live, "agent_fields_complete",
@@ -821,7 +821,7 @@ size_t api_serve_node_summary(uint8_t *response, size_t response_max)
     agent_push_readiness_contract_json(
         &body, "readiness", public_serving, health.has_peers,
         operator_needed, health.validation_pack_ok, (int)gap,
-        (int)index_gap, health.log_head_gap);
+        (int)index_gap, health.log_head_gap, &posture);
     json_push_kv_int(&body, "height", height);
     api_freshness_push_json(&body, &freshness);
     json_push_kv_int(&body, "header_height", health.header_height);

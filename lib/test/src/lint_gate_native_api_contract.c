@@ -388,7 +388,7 @@ int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_summary_buf, "api_version\", \"v1\"") != NULL);
         ASSERT(strstr(event_buf, "#include \"event_agent_summary.h\"") != NULL);
         ASSERT(strstr(event_buf, "rpc_agent_summary") != NULL);
-        ASSERT(strstr(agent_summary_buf, "zcl.public_status.v2") != NULL);
+        ASSERT(strstr(agent_summary_buf, "zcl.public_status.v3") != NULL);
         ASSERT(strstr(agent_summary_buf, "agent_push_first_call_simple_json")
                != NULL);
         ASSERT(strstr(agent_summary_buf,
@@ -548,7 +548,7 @@ int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_contracts_def_buf, "anchorstatus") != NULL);
         ASSERT(strstr(agent_contracts_buf, "zcl.agent_contracts.v2") != NULL);
         ASSERT(strstr(agent_contracts_def_buf, "AGENT_CONTRACT") != NULL);
-        ASSERT(strstr(agent_contracts_def_buf, "zcl.public_status.v2")
+        ASSERT(strstr(agent_contracts_def_buf, "zcl.public_status.v3")
                != NULL);
         ASSERT(strstr(agent_contracts_def_buf, "runtime_status_alias")
                == NULL);

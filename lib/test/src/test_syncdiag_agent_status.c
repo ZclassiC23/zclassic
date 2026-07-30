@@ -57,7 +57,7 @@ int syncdiag_cases_agent_status(void)
         bool ok = blocker_ready && expected_source_fixture_ok && executed &&
             result.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
-                          "zcl.public_status.v2") == 0;
+                          "zcl.public_status.v3") == 0;
         const struct json_value *first_call =
             json_get(&result, "first_call");
         ok = ok && first_call && first_call->type == JSON_OBJ;
@@ -401,7 +401,7 @@ int syncdiag_cases_agent_status(void)
         bool exec_live = rpc_table_execute(&tbl, "agent", &p0, &live);
         bool ok = exec_live && live.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&live, "schema")),
-                          "zcl.public_status.v2") == 0;
+                          "zcl.public_status.v3") == 0;
         ok = ok && strcmp(json_get_str(json_get(&live, "source")),
                           "live") == 0;
         ok = ok && json_get(&live, "db_maintenance") == NULL;
@@ -429,7 +429,7 @@ int syncdiag_cases_agent_status(void)
         ok = ok && exec_busy && busy.type == JSON_OBJ;
         ok = ok && answer_ms < 2000;   /* bounded: proves it did not block */
         ok = ok && strcmp(json_get_str(json_get(&busy, "schema")),
-                          "zcl.public_status.v2") == 0;
+                          "zcl.public_status.v3") == 0;
         ok = ok && strcmp(json_get_str(json_get(&busy, "source")),
                           "snapshot") == 0;
         ok = ok && json_get(&busy, "age_ms") != NULL &&
@@ -515,7 +515,7 @@ int syncdiag_cases_agent_status(void)
         bool ok = rpc_table_execute(&tbl, "status", &params, &result);
         ok = ok && result.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
-                          "zcl.public_status.v2") == 0;
+                          "zcl.public_status.v3") == 0;
         ok = ok && strcmp(json_get_str(json_get(&result,
                                                 "api_version")),
                           "v1") == 0;

@@ -528,7 +528,7 @@ int syncdiag_cases_health(void)
         ok = ok && json_get(ca, "block_source_status_cached") != NULL;
         ok = ok && agent && agent->type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(agent, "schema")),
-                          "zcl.public_status.v2") == 0;
+                          "zcl.public_status.v3") == 0;
 
         if (ok) printf("OK\n");
         else    { printf("FAIL\n"); failures++; }
