@@ -140,7 +140,8 @@ static bool rpc_storebuy_order(const struct json_value *params, bool help,
 {
     if (help || !params || json_size(params) < 2) {
         json_set_str(result,
-            "storebuy_order product_id \"customer_address\" [\"output_path\"]\n"
+            "storebuy_order product_id \"customer_address\" [\"output_path\"]"
+            " [\"payment_kind\"]\n"
             "\nPlace an order through the store's real order route: CSRF\n"
             "token, proof-of-work puzzle and pending-order caps all apply.\n"
             "\nArguments:\n"
@@ -149,6 +150,11 @@ static bool rpc_storebuy_order(const struct json_value *params, bool help,
             "                    mints access tokens to\n"
             "3. output_path      (string, optional) where the purchased file\n"
             "                    will be written when it is collected\n"
+            "4. payment_kind     (string, optional) \"shielded\" (default) or\n"
+            "                    \"transparent\". A transparent order is the\n"
+            "                    only kind a build with no Sapling proving\n"
+            "                    backend can pay, and is bound by its\n"
+            "                    one-time address instead of a memo\n"
             "\nResult: {ok, purchase_id, order_id, payment_address, memo,\n"
             "         amount_zatoshi}\n");
         return help;
@@ -161,10 +167,16 @@ static bool rpc_storebuy_order(const struct json_value *params, bool help,
     const char *addr = json_get_str(json_at(params, 1));
     const char *out_path = json_size(params) >= 3
                                ? json_get_str(json_at(params, 2)) : NULL;
+    const char *kind = json_size(params) >= 4
+                           ? json_get_str(json_at(params, 3)) : NULL;
+    /* Only the exact word opts in; anything else stays shielded rather than
+     * guessing what an unrecognised kind meant. */
+    bool transparent = kind && strcmp(kind, "transparent") == 0;
 
     struct store_buyer_order placed;
     struct zcl_result r =
-        store_buyer_order(datadir, product_id, addr, out_path, &placed);
+        store_buyer_order(datadir, product_id, addr, out_path, transparent,
+                          &placed);
     if (!r.ok)
         return sbc_refuse(result, r.code, r.message);
 
