@@ -42,22 +42,52 @@
 # against a real check-run attached to commit df752afce on origin/main (run
 # 30509201499, all five success).
 #
-# The `tests` row is NEWLY hosted and is NOT yet confirmed by any successful
-# check-run. `hosted=yes` here means only what the gate can check — that a job
-# with that key exists in build.yml and this file claims it. It does NOT mean
-# the job has ever gone green. The job is a deliberate first measurement of two
-# things nobody in this repo has measured: whether a hosted runner can carry
-# this suite at all, and how much of the corpus silently assumes the maintainer
-# host (a live node, a legacy zclassicd datadir, a populated ~/.zclassic-c23 —
-# a runner has none of them).
+# The `tests` row is hosted and RED. `hosted=yes` here means only what the gate
+# can check — that a job with that key exists in build.yml and this file claims
+# it. It does NOT mean the job goes green, and right now it does not. Anyone
+# reading a commit on GitHub should treat the suite as hosted-but-failing until
+# this paragraph says otherwise.
 #
-# If that first run comes back red or times out, the honest resolutions are to
-# fix the coupling, or to declare a smaller hosted scope in this file and say
-# what is excluded and why. The dishonest resolutions — which this project has
-# already been burned by and which are therefore ruled out here — are trimming
-# the corpus until it passes, gating on a narrow tail/grep instead of the full
-# output, or leaving this paragraph asserting a confirmation that never happened.
-# Replace this block with a run id and a verdict once one exists either way.
+# First hosted run: 30516674384, commit be432065d, 2026-07-30. The other five
+# jobs succeeded. `tests` FAILED in 10m52s — not a timeout; the job limit is 120
+# minutes, so a hosted runner carries this suite comfortably. Its own verdict
+# line: groups_total=846 groups_ran=842 groups_gated=4 groups_failed=6
+# self_skips=25, 308.2s wall, 4 workers.
+#
+# Six groups failed, in three classes. This is what the job was built to find.
+#
+#  1. READS THE DEFAULT DATADIR — a real defect, not a runner quirk.
+#     test_chain_integrity_failed_condition never calls SetDataDir, so it
+#     resolves to ~/.zclassic-c23 and the runner logged
+#     `cannot open /home/runner/.zclassic-c23/blocks/blk00000.dat`. On the
+#     maintainer host that path is the LIVE NODE and is populated, so the test
+#     has been passing by reading the live node's block files: silently
+#     weakened, and touching a datadir no test may touch. An independent
+#     machine proved it; the maintainer host structurally cannot.
+#
+#  2. REQUIRES THE SAPLING PARAMETERS — test_proof_validate_stage (joinsplit_sig
+#     case) and test_pv_lookahead. `read_file failed for sapling-spend.params`.
+#     These need a ~770 MB artifact that is not in the repository and is not
+#     fetched by CI, and unlike the params_missing case in the same file — which
+#     passes, because it is written for absent params — they do not self-skip.
+#
+#  3. UNDIAGNOSED, possibly real ordering bugs. test_block_status_event_restart_proof
+#     (2 assertions: `boundary height never falsely reported complete`,
+#     `fixture fully folded`), test_zcode_policy (`corrupt wires skipped and
+#     counted, facts intact`), and test_make_lint_gates_shard_08 (`P1-3 systemd
+#     memory budget: baseline and selftest pass`, baseline_rc != 0). No error is
+#     printed for the first two; they may be assumptions about scheduling or
+#     readdir order that only hold on the maintainer host. Nothing here has been
+#     root-caused yet and none of it is claimed to be environmental.
+#
+# The permitted resolutions are unchanged: fix the coupling (classes 1 and 3),
+# or declare a smaller hosted scope IN THIS FILE naming exactly what is excluded
+# and why (class 2, where the blocker is an artifact nobody ships). Class 2 may
+# self-skip only if the skip is loud and counted — a skip that coasts silently
+# has already cost this project a week of hollow green. The dishonest
+# resolutions, ruled out: trimming the corpus until it passes, gating on a
+# narrow tail/grep instead of the full output, or editing this paragraph to
+# assert a confirmation that did not happen.
 
 gcc|yes|compile-check|compile-check (gcc)|-
 clang|yes|compile-check|compile-check (clang)|-
