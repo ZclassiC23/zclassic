@@ -211,6 +211,20 @@ make lint
 make check-doc-accuracy
 ```
 
+### Algorithmic-cost measurement (`simnet_perf`)
+
+Everything above measures CORRECTNESS. `lib/sim/src/simnet_perf.c` +
+`tools/sim/simperf.c` (`make sim-perf`) measure COST: they replay a fixed
+mint/spend workload through the same real `connect_block()` fold at 1x/2x/4x
+size and gate on how much per-transaction CPU cost GROWS across that span, which
+catches an algorithmic-complexity regression on the UTXO path. The gated metric
+is a dimensionless ratio, so it holds on any machine; absolute nanoseconds are
+reported for humans only. It is explicitly NOT a wall-clock sync measurement —
+there is no disk, network, real PoW, or real script/proof verification on this
+path. The detector ships with a proven-failing direction
+(`make sim-perf-teeth`, `make t ONLY=simnet_perf`). Full contract:
+[`SIMNET_PERF.md`](./SIMNET_PERF.md).
+
 ## Reproducing a failure
 
 `tools/sim/wire_sweep.c` (`make wire-sweep SEEDS=N`) sweeps `simnet_wire`

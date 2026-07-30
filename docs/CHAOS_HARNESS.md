@@ -328,6 +328,16 @@ stack, `zclassic23-chaos` is now built the same whole-program-LTO way as
 `wire_sweep`/`test_parallel` (`$(ALL_SRCS)`), not a hand-picked file list —
 expect a longer first build, same as any other `ALL_SRCS`-linked tool.
 
+## Cost assertions live next door, not in a scenario
+
+The scenario DSL asserts CORRECTNESS metrics. Cost assertions — "did this code
+path get algorithmically slower?" — live in `make sim-perf`
+(`tools/sim/simperf.c`), which reuses this file's `expect METRIC OP VALUE`
+grammar verbatim on the command line but runs its own multi-size workload ladder
+instead of a single-pass scenario. `make chaos` stays machine-independent as a
+result. See [`SIMNET_PERF.md`](./SIMNET_PERF.md), including why a `.scenario`
+command was the rejected alternative.
+
 ## Adding Fault Injection
 
 Add the production hook first, defaulting to inactive and cheap on the hot path.
