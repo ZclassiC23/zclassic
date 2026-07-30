@@ -344,18 +344,39 @@ consider_path() {
 }
 
 # git is the preferred enumerator because it can tell a committed finding from
-# an uncommitted one. It is not always available: the lint-gate selftest runs
-# every sandbox-lane gate inside a `cp -al` hardlink copy that deliberately
-# omits .git, and a tarball checkout has none either. Fall back to `find` and
-# SAY SO — the artifacts still all get replayed, only the tracked/untracked
-# split goes unchecked. A silent degrade here would be the same class of
-# problem as the hole this gate closes, so it is announced, not assumed.
+# an uncommitted one. It is not always safe to trust: the lint-gate selftest
+# runs every sandbox-lane gate inside a `cp -al` hardlink copy that
+# deliberately omits .git (so a tarball checkout would look the same), but
+# that copy typically lives under a runtime directory (e.g.
+# .claude/worktrees/<name>.lint_sb_<pid>/w<n>) that is itself nested inside a
+# REAL git worktree/repo one or more levels up. `git rev-parse --git-dir`
+# walks UP the directory tree looking for a .git, so from inside the
+# git-less sandbox it does not fail — it keeps climbing past the sandbox and
+# finds the outer repo's real .git, and happily reports success. That is a
+# genuine repo, just not the one this script's $SEED_ROOT is meant to be
+# read from: $ROOT (this script's own directory two levels up) is the
+# sandbox copy, but git's resolved top-level is the ancestor repo, so
+# `git ls-files "$SEED_ROOT"` is asking for a path relative to the WRONG
+# tree. Measured 2026-07-30: inside the sandbox, `git rev-parse
+# --show-toplevel` printed the outer repo's root while $ROOT was the
+# sandbox path underneath it — and since .claude/worktrees/ is itself
+# gitignored there, both the tracked and the --others --exclude-standard
+# passes came back with nothing, silently reporting 0 artifacts scanned
+# instead of erroring or falling back. So "git is available" is not the
+# right test; "git resolves to THIS tree" is. Compare --show-toplevel
+# against $ROOT and only trust git when they match. Fall back to `find` and
+# SAY SO whenever they don't (deliberately git-less sandbox, tarball
+# checkout, or — this case — git present but pointed at an ancestor repo) —
+# the artifacts still all get replayed, only the tracked/untracked split
+# goes unchecked. A silent degrade here would be the same class of problem
+# as the hole this gate closes, so it is announced, not assumed.
 # All three enumerators are NUL-delimited (`git ls-files -z`, `find -print0`).
 # Line-delimited git output is not safe here: with the default core.quotePath
 # git RENAMES a path containing a quote or a non-ASCII byte into a C-quoted
 # string, and a path containing a newline becomes two lines. Either turns one
 # artifact into a name that does not exist on disk, which is a skip.
-if git rev-parse --git-dir >/dev/null 2>&1; then
+GIT_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [[ -n "$GIT_TOPLEVEL" && "$GIT_TOPLEVEL" == "$ROOT" ]]; then
     while IFS= read -r -d '' p; do
         consider_path "$p" tracked
     done < <( git ls-files -z "$SEED_ROOT" 2>/dev/null || true )
@@ -364,7 +385,12 @@ if git rev-parse --git-dir >/dev/null 2>&1; then
         consider_path "$p" untracked
     done < <( git ls-files -z --others --exclude-standard "$SEED_ROOT" 2>/dev/null || true )
 else
-    echo "[$GATE] no git here — enumerating with find; every artifact is still"
+    if [[ -z "$GIT_TOPLEVEL" ]]; then
+        echo "[$GATE] no git here — enumerating with find; every artifact is still"
+    else
+        echo "[$GATE] git resolved to '$GIT_TOPLEVEL', not this tree ('$ROOT') —" \
+             "enumerating with find instead; every artifact is still"
+    fi
     echo "[$GATE] replayed and still needs a verdict, but the tracked vs"
     echo "[$GATE] uncommitted distinction is NOT being checked on this run."
     while IFS= read -r -d '' p; do
