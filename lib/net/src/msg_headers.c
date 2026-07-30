@@ -27,6 +27,9 @@
 #include "chain/equihash.h"
 #include "chain/pow.h"
 #include "chain/checkpoints.h"
+#include "crypto/sha256.h"
+#include "util/clientversion.h"
+#include "base/serialize_le.h"
 #include "core/arith_uint256.h"
 #include "net/netaddr.h"
 #include "net/header_corroboration.h"
@@ -43,6 +46,7 @@ extern volatile sig_atomic_t g_shutdown_requested;
  * This file handles the receive-side header processing. */
 
 #include <stdatomic.h>
+#include <pthread.h>
 
 /* ── Sync diagnostic counters ──────────────────────────────────── */
 
@@ -98,6 +102,203 @@ static _Atomic uint64_t g_headers_serve_pow_checks = 0;
 uint64_t getheaders_serve_pow_checks(void)
 {
     return atomic_load(&g_headers_serve_pow_checks);
+}
+
+/* ── serve-path verification receipts ───────────────────────────────
+ *
+ * The dedup above is WITHIN one lookup: resolve which bytes are
+ * authoritative, then verify those bytes once. It does nothing across
+ * lookups. A peer that re-sends the same `getheaders` locator gets the same
+ * page re-proved from scratch every time — 2000 headers x 383-390 us = 0.78 s
+ * of a core per request, for a 61-byte request the peer can repeat forever.
+ * That is the amplification this table closes: proof already DONE is not
+ * re-done, and proof never done is never skipped.
+ *
+ * A receipt says exactly one thing: "this process, this build, these
+ * consensus parameters, already ran the full serve-path verification over
+ * the header whose hash is H, and it PASSED." It is not a status bit and
+ * cannot degrade into one, for four structural reasons:
+ *
+ *   1. MINTED ONLY BY SUCCESS. The only write is at the bottom of
+ *      headers_verify_bound_header, after check_equihash_solution,
+ *      CheckProofOfWork and the timestamp check have all passed. There is no
+ *      other writer, no loader, no persisted form, and nothing an operator
+ *      or a peer can pre-seed. A slot can therefore only ever hold a hash
+ *      this process itself proved.
+ *   2. HASH-BOUND, AND THE BIND IS SELF-ENFORCED. nSolution is part of the
+ *      serialized header, so a header hash uniquely determines every byte
+ *      the verification read; two different byte strings cannot share a
+ *      receipt. headers_verify_bound_header re-derives the hash from the
+ *      bytes in front of it rather than trusting its caller's `hash`, so the
+ *      key is a property of this function, not a contract with the caller.
+ *   3. GENERATION-BOUND. Each slot stores the generation tag that was
+ *      current when it was minted (build source id + genesis hash +
+ *      powLimit). Lookup compares tags, so a verdict minted under a
+ *      different build or different consensus parameters is a MISS, not a
+ *      hit — nothing is honoured across a change that could alter what the
+ *      verdict means. Stale slots need no sweeping: they simply stop
+ *      matching.
+ *   4. A MISS COSTS FULL VERIFICATION. Every path that is not an
+ *      exact hash+generation match falls through to the unconditional
+ *      three-check sequence. Eviction, a cold table, a generation change
+ *      and a bucket collision all degrade to "verify it again" — never to
+ *      "assume it passed".
+ *
+ * SUCCESSES ONLY; FAILURES ARE NEVER CACHED. Not caution — the verdict is
+ * not symmetric. A PASS is monotone: Equihash over fixed bytes is
+ * deterministic, CheckProofOfWork over fixed bytes and a fixed powLimit is
+ * deterministic, and `nTime > now + 2h` can only stop being true as the
+ * clock advances. So a PASS stays true for as long as the generation holds.
+ * A FAIL is NOT monotone, and concretely so: a header refused right now for
+ * time-too-new becomes servable a few minutes later. Caching that refusal
+ * would make this node permanently refuse to serve headers it is willing to
+ * serve — a peer feeding us a valid chain slightly ahead of our clock could
+ * poison the serve path against that chain for the process lifetime. The
+ * expensive verdict is the one worth keeping and the safe one to keep.
+ *
+ * BOUNDED BY CONSTRUCTION. A fixed static array, direct-mapped on the low
+ * bits of the header hash. No allocation, so there is no allocation-failure
+ * path at insert to get wrong, and no growth for a flood to drive: a peer
+ * offering unlimited distinct headers churns slots at a constant 320 KB.
+ * Colliding into an occupied slot overwrites it, which is the eviction
+ * policy — the loser is re-verified next time it is served. An attacker can
+ * grind hashes into one bucket to force that, but each such header costs
+ * them a real Equihash mine and buys them only the behaviour this node had
+ * before the table existed. 8192 slots is sized off the workload the
+ * amplification actually uses: the serve loop caps one reply at `max_headers`
+ * — 2000 for a fast-sync peer, 160 otherwise — so a peer replaying whole
+ * maximum-size pages stays resident with room for four of them.
+ *
+ * The lock is what keeps a receipt honest under two serve threads. A slot is
+ * 40 bytes and cannot be read or written atomically, and a torn read
+ * pairing one header's hash prefix with another's suffix is exactly the
+ * false HIT this whole design exists to make impossible. A 32-byte compare
+ * under a mutex against 383-390 us of Equihash is not a cost worth
+ * optimising. */
+#define HEADERS_VERIFY_RECEIPT_SLOTS 8192u
+
+struct headers_verify_receipt {
+    struct uint256 hash;      /* the header this process proved */
+    uint64_t generation;      /* tag it was proved under; 0 = empty slot */
+};
+
+static struct headers_verify_receipt
+    g_headers_verify_receipts[HEADERS_VERIFY_RECEIPT_SLOTS];
+static pthread_mutex_t g_headers_verify_receipt_lock =
+    PTHREAD_MUTEX_INITIALIZER;
+static _Atomic uint64_t g_headers_verify_receipt_hits = 0;
+static _Atomic uint64_t g_headers_verify_receipt_mints = 0;
+static _Atomic uint64_t g_headers_verify_receipt_evictions = 0;
+
+/* See net/msg_internal.h. */
+void getheaders_verify_receipt_stats(struct getheaders_receipt_stats *out)
+{
+    if (!out)
+        return;
+    out->slots = HEADERS_VERIFY_RECEIPT_SLOTS;
+    out->bytes = sizeof(g_headers_verify_receipts);
+    out->hits = atomic_load(&g_headers_verify_receipt_hits);
+    out->mints = atomic_load(&g_headers_verify_receipt_mints);
+    out->evictions = atomic_load(&g_headers_verify_receipt_evictions);
+
+    size_t used = 0;
+    pthread_mutex_lock(&g_headers_verify_receipt_lock);
+    for (size_t i = 0; i < HEADERS_VERIFY_RECEIPT_SLOTS; i++) {
+        if (g_headers_verify_receipts[i].generation != 0)
+            used++;
+    }
+    pthread_mutex_unlock(&g_headers_verify_receipt_lock);
+    out->occupied = used;
+}
+
+/* The generation tag: everything outside the header bytes that could change
+ * what "this header verified" means. Recomputed on every lookup rather than
+ * memoised against the params pointer — a params-pointer cache would go
+ * stale if a struct were ever revised in place, and one SHA256 over ~100
+ * bytes is ~0.3% of the Equihash verification it is guarding, so buying a
+ * whole class of cache-invalidation bug for that is a bad trade.
+ *
+ * Inputs, and why each is here:
+ *   - the build's source id: a different binary may verify differently, so
+ *     its verdicts are not ours to honour;
+ *   - hashGenesisBlock: identifies the network, and with it the height
+ *     schedule the caller's Equihash size screen reads;
+ *   - powLimit: the one consensus value the cached sequence actually reads
+ *     (CheckProofOfWork). check_equihash_solution ignores its params
+ *     argument entirely, so Equihash validity is a pure function of the
+ *     header bytes the hash already binds.
+ * Returns 0 when the tag cannot be established, which callers treat as
+ * "no receipts" — verify, and mint nothing. */
+static uint64_t headers_verify_generation(const struct chain_params *params)
+{
+    if (!params)
+        return 0;
+    const char *src = zcl_build_source_id_sha256();
+    if (!src || !src[0])
+        return 0;
+
+    struct sha256_ctx ctx;
+    sha256_init(&ctx);
+    static const char domain[] = "zcl-getheaders-verify-receipt-v1";
+    sha256_write(&ctx, (const unsigned char *)domain, sizeof(domain) - 1);
+    sha256_write(&ctx, (const unsigned char *)src, strlen(src));
+    sha256_write(&ctx, params->consensus.hashGenesisBlock.data, 32);
+    sha256_write(&ctx, params->consensus.powLimit.data, 32);
+    unsigned char out[SHA256_OUTPUT_SIZE];
+    sha256_finalize(&ctx, out);
+
+    uint64_t gen = zcl_read_u64_be(out);
+    /* 0 is the empty-slot marker, so it must never be a live tag. */
+    return gen ? gen : 1;
+}
+
+/* Direct-mapped on the LOW bytes of the hash. A valid header hash is under
+ * target, so its high bytes are zeros and carry no information; the low
+ * bytes are the only ones that spread. */
+static size_t headers_verify_receipt_slot(const struct uint256 *hash)
+{
+    uint32_t v = zcl_read_u32_le(hash->data);
+    return (size_t)(v & (HEADERS_VERIFY_RECEIPT_SLOTS - 1u));
+}
+
+/* True only for an exact hash AND generation match. Every other outcome is
+ * false, and false means "verify it". */
+static bool headers_verify_receipt_present(const struct uint256 *hash,
+                                           uint64_t generation)
+{
+    if (!hash || generation == 0)
+        return false;
+
+    size_t slot = headers_verify_receipt_slot(hash);
+    pthread_mutex_lock(&g_headers_verify_receipt_lock);
+    const struct headers_verify_receipt *r = &g_headers_verify_receipts[slot];
+    bool hit = r->generation == generation && uint256_eq(&r->hash, hash);
+    pthread_mutex_unlock(&g_headers_verify_receipt_lock);
+
+    if (hit)
+        atomic_fetch_add(&g_headers_verify_receipt_hits, 1);
+    return hit;
+}
+
+/* Mint. The ONLY writer, and its one caller is the success tail of
+ * headers_verify_bound_header. */
+static void headers_verify_receipt_record(const struct uint256 *hash,
+                                          uint64_t generation)
+{
+    if (!hash || generation == 0)
+        return;
+
+    size_t slot = headers_verify_receipt_slot(hash);
+    pthread_mutex_lock(&g_headers_verify_receipt_lock);
+    struct headers_verify_receipt *r = &g_headers_verify_receipts[slot];
+    bool displaced = r->generation != 0 && !uint256_eq(&r->hash, hash);
+    r->hash = *hash;
+    r->generation = generation;
+    pthread_mutex_unlock(&g_headers_verify_receipt_lock);
+
+    atomic_fetch_add(&g_headers_verify_receipt_mints, 1);
+    if (displaced)
+        atomic_fetch_add(&g_headers_verify_receipt_evictions, 1);
 }
 
 /* ── getheaders continuation-suppression counters ──────────────────
@@ -288,14 +489,22 @@ static const char *headers_candidate_bind_reason(
 /* ── BIND, then VERIFY: the expensive half, run at most once ─────────
  *
  * `hdr` MUST already have passed headers_candidate_bind_reason (so `hash`
- * is its real hash and equals iter->phashBlock). Exactly one
+ * is its real hash and equals iter->phashBlock). At most one
  * check_equihash_solution call per invocation, counted so the cost is
  * measurable.
  *
- * FULL Equihash, on EVERY header this node serves — no status-bit
- * shortcut, and no "we checked this earlier" flag. The hash bind proves
- * these bytes are the bytes filed under this entry's hash; it does NOT
- * prove anyone ever solved Equihash over them, because in this codebase
+ * FULL Equihash on every header this node serves, ONCE PER HEADER PER
+ * PROCESS — no status-bit shortcut, and no persisted "already valid" flag.
+ * The only thing that can stand in for re-running the check is a receipt
+ * this same process minted by actually running it and watching it pass, over
+ * byte-identical bytes, under the same build and the same consensus
+ * parameters; see the receipt note above. A header this process has not
+ * proved is always proved here, and a receipt cannot be created anywhere
+ * except the success tail of this function.
+ *
+ * What must NEVER stand in for the check is a status bit. The hash bind
+ * proves these bytes are the bytes filed under this entry's hash; it does
+ * NOT prove anyone ever solved Equihash over them, because in this codebase
  * BLOCK_VALID_TREE does not witness an Equihash check. Four persisted-index
  * loaders set it at sampled or zero PoW strength:
  *
@@ -330,18 +539,41 @@ static const char *headers_candidate_bind_reason(
  * header for 200,9 and 36.7-36.9 us for 192,7 (192,7 is ~10x CHEAPER,
  * the opposite of the earlier guess), so ~320 s of one thread to serve
  * one peer the whole 3.19M-header chain. What is NOT acceptable is paying
- * that bill more than once for the same header, which is what the caller's
- * resolve-then-verify structure exists to prevent. Recovering the cost
- * itself needs a gate that actually witnesses an Equihash check — the
- * validate_headers stage cursor — never a status bit. See
- * lib/test/src/test_getheaders_serve_fallback.c case 7 and
- * lib/test/src/test_getheaders_serve_pow_dedup.c. */
+ * that bill more than once for the same header: the caller's
+ * resolve-then-verify structure stops that within one lookup, and the
+ * receipt stops it across lookups, so the bill is once per header per
+ * process however often a peer asks. Recovering the FIRST payment — serving
+ * a header this process has never proved without proving it — is a different
+ * problem, and it still needs a gate that actually witnesses an Equihash
+ * check (the validate_headers stage cursor), never a status bit. See
+ * lib/test/src/test_getheaders_serve_fallback.c case 7,
+ * lib/test/src/test_getheaders_serve_pow_dedup.c and
+ * lib/test/src/test_getheaders_serve_receipt.c. */
 static const char *headers_verify_bound_header(struct msg_processor *mp,
                                                const struct block_header *hdr,
                                                const struct uint256 *hash)
 {
     if (!mp || !hdr || !hash)
         return "invalid-args";
+
+    /* Re-derive the key from the bytes actually in front of us. The caller
+     * has already hash-bound these, so this agrees every time in practice —
+     * but a receipt keyed on a hash the CALLER supplied would only be as
+     * hash-bound as the caller's discipline, and the whole strength of the
+     * receipt rests on the key naming these exact bytes. One SHA256d over
+     * ~1.5 KB makes that a property of this function. */
+    struct uint256 own_hash;
+    block_header_get_hash(hdr, &own_hash);
+    if (!uint256_eq(&own_hash, hash))
+        return "verify-hash-unbound";
+
+    /* A receipt this process minted over THESE bytes under THIS generation
+     * means the three checks below already ran and passed. Anything else —
+     * cold slot, evicted slot, different bytes, different build, different
+     * consensus parameters — falls through and pays in full. */
+    uint64_t generation = headers_verify_generation(mp->params);
+    if (headers_verify_receipt_present(&own_hash, generation))
+        return NULL;
 
     atomic_fetch_add(&g_headers_serve_pow_checks, 1);
     if (!check_equihash_solution(hdr, mp->params))
@@ -353,6 +585,10 @@ static const char *headers_verify_bound_header(struct msg_processor *mp,
     if (block_header_get_time(hdr) > GetAdjustedTime() + 2 * 60 * 60)
         return "time-too-new";
 
+    /* Full verification SUCCEEDED — the one and only point a receipt is
+     * created. No failure path reaches here, so no refusal is ever cached;
+     * see the "successes only" note at the table. */
+    headers_verify_receipt_record(&own_hash, generation);
     return NULL;
 }
 

@@ -107,6 +107,37 @@ size_t getheaders_solution_cache_bytes(void);
  * for that test and for operator diagnostics; nothing branches on it. */
 uint64_t getheaders_serve_pow_checks(void);
 
+/* Serve-path verification receipts — the bound on how often a peer can make
+ * this node REDO an Equihash verification it has already done.
+ *
+ * The dedup behind getheaders_serve_pow_checks holds within one lookup. This
+ * holds ACROSS lookups: a header this process already proved, under this
+ * build and these consensus parameters, is not proved again. A receipt is
+ * minted only where full verification succeeded, is keyed on the header's own
+ * hash (re-derived from the verified bytes, so it can never be honoured for
+ * different bytes), carries the generation tag it was minted under, and lives
+ * in a fixed static table — so every miss, eviction, collision, build change
+ * and parameter change falls through to full verification. Failures are never
+ * cached: a time-too-new refusal un-fails as the clock advances, and caching
+ * it would poison the serve path against a valid chain. See the long note in
+ * msg_headers.c and lib/test/src/test_getheaders_serve_receipt.c.
+ *
+ * Exposed for that test and for operator diagnostics; nothing branches on it.
+ *   slots/bytes — the structural cap, constants;
+ *   occupied    — slots currently holding a receipt (<= slots, always);
+ *   hits        — verifications skipped because proof was already done;
+ *   mints       — receipts created, i.e. verifications that SUCCEEDED;
+ *   evictions   — mints that displaced a different header from its slot. */
+struct getheaders_receipt_stats {
+    size_t   slots;
+    size_t   bytes;
+    size_t   occupied;
+    uint64_t hits;
+    uint64_t mints;
+    uint64_t evictions;
+};
+void getheaders_verify_receipt_stats(struct getheaders_receipt_stats *out);
+
 bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
                         struct byte_stream *s);
 bool process_headers(struct msg_processor *mp, struct p2p_node *node,
