@@ -181,6 +181,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(rescanwitnesses_diverge_guard) \
     X(gap_fill_frontier_window) \
     X(groth16_selfverify) \
+    X(groth16_r1cs_oracle) \
     X(snark_kat) \
     X(bls12_381_adversarial) \
     X(verify_bench_selftest) \

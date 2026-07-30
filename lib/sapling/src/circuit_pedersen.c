@@ -1,5 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
+ * Ported from librustzcash / bellman / sapling-crypto (The Zcash developers /
+ * Electric Coin Company), pinned 06da3b9ac8f278e5d4ae13088cf0a4c03d2c13f5,
+ * MIT / Apache-2.0. Reimplemented in C23; no reference code is linked in.
+ *
  * The in-circuit Pedersen hash and the Jubjub Montgomery-form arithmetic it is
  * built on, split out of circuit_gadgets.c: this is the single hash body behind
  * BOTH the note commitment (section 17) and all 32 Merkle-level hashes
@@ -580,13 +584,12 @@ static struct ph_lc ph_lc_wire(size_t var)
 /* bellman `lookup3_xy_with_conditional_negation`: a 2-bit table lookup on
  * (b0, b1) with b2 selecting the point's negation. The x coordinate comes back
  * as a free linear combination and the y coordinate as one allocated wire.
- *
  * 2 constraints when all three bits are allocated (the b0&b1 AND, then the y
- * computation); 1 when the AND folds away. bellman's exact A*B=C split is
- * kept — `y_lc * (1 - 2*b2) = y` — rather than the algebraically equivalent
- * `2*y_lc * b2 = y_lc - y`: an equivalent relation with a different A/B/C
- * split satisfies the same witness but produces a DIFFERENT QAP, so it would
- * not verify against the trusted-setup proving key. */
+ * computation); 1 when the AND folds away. bellman's exact A*B=C split is kept:
+ * `2*y_lc * b2 = y_lc - y`, NOT the equivalent `y_lc * (1 - 2*b2) = y` — same
+ * witness, different QAP, so the latter cannot verify against the trusted setup.
+ * (This comment asserted the opposite and the code matched the comment rather
+ * than the reference; test_groth16_r1cs_oracle settled it.) */
 static void ph_lookup3_cond_neg(struct constraint_system *cs,
                                 struct ph_bit b0, struct ph_bit b1,
                                 struct ph_bit b2,
@@ -598,41 +601,48 @@ static void ph_lookup3_cond_neg(struct constraint_system *cs,
     gadget_synth_coeffs(2, coords_x, xc);
     gadget_synth_coeffs(2, coords_y, yc);
 
-    struct ph_bit precomp = ph_and(cs, b0, b1);   /* 0 or 1 constraint */
-
-    ph_synth_lc(x_out, xc, b0, b1, precomp);
-    struct ph_lc y_lc;
-    ph_synth_lc(&y_lc, yc, b0, b1, precomp);
-
+    /* ALLOCATION ORDER IS LOAD-BEARING: the reference allocates y BEFORE
+     * Boolean::and's `precomp`. Swapping them permutes two aux indices in every
+     * window with an allocated AND — same A*B==C, different QAP. Constraint
+     * order is unaffected. Pinned by test_groth16_r1cs_oracle. */
     const size_t idx = (b0.value ? 1u : 0u) | (b1.value ? 2u : 0u);
     struct fr y_val = coords_y[idx];
     if (b2.value)
         fr_neg(&y_val, &y_val);
     *y_out = cs_alloc_aux(cs, &y_val);
 
-    struct fr one_val, neg_two;
-    fr_one(&one_val);
-    fr_add(&neg_two, &one_val, &one_val);
-    fr_neg(&neg_two, &neg_two);
+    struct ph_bit precomp = ph_and(cs, b0, b1);   /* 0 or 1 constraint */
+    ph_synth_lc(x_out, xc, b0, b1, precomp);
+    struct ph_lc y_lc;
+    ph_synth_lc(&y_lc, yc, b0, b1, precomp);
 
+    struct fr one_val, neg_one;
+    fr_one(&one_val);
+    fr_neg(&neg_one, &one_val);
+
+    /* A = y_lc added to ITSELF (every coefficient doubles), B = the selector bit
+     * alone, C = y_lc - y. See the note above this function. */
     struct linear_combination la, lb, lc;
     lc_init(&la);
-    for (size_t i = 0; i < y_lc.nterms; i++)
+    for (size_t i = 0; i < y_lc.nterms; i++) {
         lc_add_term(&la, y_lc.vars[i], &y_lc.coeffs[i]);
+        lc_add_term(&la, y_lc.vars[i], &y_lc.coeffs[i]);
+    }
 
     lc_init(&lb);
     if (b2.is_const) {
-        struct fr k = one_val;
         if (b2.value)
-            fr_add(&k, &k, &neg_two);            /* 1 - 2 = -1 */
-        lc_add_term(&lb, CS_ONE, &k);
+            lc_add_term(&lb, CS_ONE, &one_val);
+        /* Constant(false) contributes no term at all, exactly as
+         * Boolean::Constant(false).lc() returns the zero combination. */
     } else {
-        lc_add_term(&lb, CS_ONE, &one_val);
-        lc_add_term(&lb, b2.var, &neg_two);
+        lc_add_term(&lb, b2.var, &one_val);
     }
 
     lc_init(&lc);
-    lc_add_term(&lc, *y_out, &one_val);
+    for (size_t i = 0; i < y_lc.nterms; i++)
+        lc_add_term(&lc, y_lc.vars[i], &y_lc.coeffs[i]);
+    lc_add_term(&lc, *y_out, &neg_one);
     cs_enforce(cs, &la, &lb, &lc);
     lc_free(&la); lc_free(&lb); lc_free(&lc);
 }
