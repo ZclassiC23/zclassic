@@ -214,6 +214,28 @@ LAST_CPU_SECONDS="-1"
 LAST_RSS_KB="-1"
 LAST_DISK_READ_BYTES="-1"
 LAST_DISK_WRITE_BYTES="-1"
+# Block-body payload bytes, read as a DELTA across the window this harness
+# brackets itself. The source is the node's own download manager
+# (lib/net/src/download.c total_bytes_received) surfaced by
+# `dumpstate sync_monitor` as download_bytes_received.
+#
+# WHY A DELTA AND NOT THE RAW READING. That counter lives in the in-memory
+# struct download_manager and dl_init() memsets it, so it is cumulative PER
+# PROCESS and restarts at 0 on every boot — exactly like the /proc counters
+# above. A raw close-of-window reading would therefore silently report only the
+# LAST boot's bytes while being labelled as the whole run's. So both ends of the
+# window are read, each end records the boot ordinal it was read on, and the
+# difference is only emitted when both ends came from the SAME boot. A boot
+# boundary inside the window makes the difference meaningless, and the honest
+# answer there is the -1 never-measured sentinel plus a named reason, never a
+# number computed across a reset.
+BYTES_OPEN=-1             # download_bytes_received at window open (-1 = unread)
+BYTES_OPEN_BOOT=-1        # boot ordinal the open reading was taken on
+BYTES_OPEN_UNIX=-1        # date +%s of the open reading that actually landed
+BYTES_CLOSE=-1            # download_bytes_received at window close (-1 = unread)
+BYTES_CLOSE_BOOT=-1       # boot ordinal the close reading was taken on
+BYTES_DELTA=-1            # close-open, same boot only; -1 = never measured
+BYTES_UNAVAIL_REASON=""   # why BYTES_DELTA is -1 (empty iff it is a real value)
 # getconf values are constants for the life of the process; read once.
 CLK_TCK="$(getconf CLK_TCK 2>/dev/null || echo 100)"
 case "$CLK_TCK" in ''|*[!0-9]*) CLK_TCK=100 ;; esac
@@ -290,6 +312,89 @@ refresh_process_counters() {
     return 0
 }
 
+# ── block-body payload bytes: read at both ends of the bracketed window ─────
+#
+# WHAT THIS NUMBER IS, EXACTLY. `dumpstate sync_monitor` →
+# download_bytes_received is fed by dl_add_bytes_received()
+# (lib/net/src/download.c), whose only two production call sites are
+# msg_blocks.c (the `block` P2P message payload length, s->size) and
+# msgprocessor_snapshot.c (each serialized block inside a `zblkdata` batch).
+# Both are reached only AFTER the oversize reject and AFTER block_deserialize()
+# succeeds. So it counts SUCCESSFULLY-PARSED BLOCK-BODY MESSAGE PAYLOAD bytes,
+# aggregated over all peers, and it counts NOTHING ELSE: no `headers` messages,
+# no version/verack handshake, no inv/getdata/getheaders, no tx relay, no addr,
+# no compact blocks (process_cmpctblock never calls it), not the 24-byte
+# per-message header, and no TCP/IP framing. That is why this is NOT called
+# network_bytes — see the phases[].network_bytes structural omission row, which
+# stays, because total wire bytes still have no source in this tree.
+#
+# bytes_reading_from_json <sync_monitor-doc> — the counter, or -1 if the doc
+# does not carry it (a dumpstate miss, a mock node, or a build whose dumper
+# lacks the key). Shape-validated: a non-numeric or over-wide value is -1, not a
+# number bash arithmetic would silently mangle. The C field is uint64; bash math
+# is int64, so anything wider than 18 digits is refused rather than wrapped.
+bytes_reading_from_json() {
+    local v
+    v="$(jget "${1:-}" download_bytes_received)"
+    case "$v" in
+        ''|*[!0-9]*) printf '%s' -1; return 0 ;;
+    esac
+    [ "${#v}" -le 18 ] || { printf '%s' -1; return 0; }
+    printf '%s' "$v"
+}
+
+# bytes_delta_compute — set BYTES_DELTA + BYTES_UNAVAIL_REASON from the two
+# recorded window ends. FAILS CLOSED: every path that cannot prove the delta
+# spans exactly one process lifetime yields -1 with a named reason. Pure (reads
+# only the BYTES_* vars) so --selftest can drive it through every branch.
+bytes_delta_compute() {
+    BYTES_DELTA=-1
+    BYTES_UNAVAIL_REASON=""
+    if [ "${BYTES_OPEN:--1}" = "-1" ]; then
+        BYTES_UNAVAIL_REASON="the window-open read of dumpstate sync_monitor never landed (no tick in the whole run returned a download_bytes_received key), so there is no baseline to subtract"
+        return 0
+    fi
+    if [ "${BYTES_CLOSE:--1}" = "-1" ]; then
+        BYTES_UNAVAIL_REASON="the window-close read of dumpstate sync_monitor returned no download_bytes_received key (most often: the node process had already exited by capture time)"
+        return 0
+    fi
+    if [ "${BYTES_OPEN_BOOT:--1}" != "${BYTES_CLOSE_BOOT:--1}" ]; then
+        BYTES_UNAVAIL_REASON="the node respawned inside the window (open reading taken on boot ${BYTES_OPEN_BOOT}, close reading on boot ${BYTES_CLOSE_BOOT}). download_bytes_received is cumulative PER PROCESS and dl_init() resets it to 0, so the difference across that boundary is not a byte count in either direction"
+        return 0
+    fi
+    if [ "$BYTES_CLOSE" -lt "$BYTES_OPEN" ] 2>/dev/null; then
+        BYTES_UNAVAIL_REASON="the counter DECREASED within one boot (open=${BYTES_OPEN} close=${BYTES_CLOSE}), which download_bytes_received cannot legitimately do — it only ever accumulates. Treated as an unexplained instrument fault rather than reported as negative or clamped to 0"
+        return 0
+    fi
+    BYTES_DELTA=$(( BYTES_CLOSE - BYTES_OPEN ))
+    return 0
+}
+
+# bytes_window_open_try — take the window-open reading if it has not landed yet.
+# Called at sample-loop entry AND on each tick until it succeeds, because the
+# RPC server is not necessarily answering at loop entry (the node was launched
+# moments earlier). Whichever tick lands records its own unix time and boot
+# ordinal, so the emitted window states the span it actually measured instead of
+# implying it covered the whole observed-sync window.
+bytes_window_open_try() {
+    [ "${BYTES_OPEN:--1}" = "-1" ] || return 0
+    local v
+    v="$(bytes_reading_from_json "$(rpc dumpstate sync_monitor)")"
+    [ "$v" = "-1" ] && return 0
+    BYTES_OPEN="$v"
+    BYTES_OPEN_BOOT="$boots"
+    BYTES_OPEN_UNIX="$(date +%s)"
+    return 0
+}
+
+# bytes_window_close — take the window-close reading and resolve the delta.
+bytes_window_close() {
+    BYTES_CLOSE="$(bytes_reading_from_json "$(rpc dumpstate sync_monitor)")"
+    BYTES_CLOSE_BOOT="$boots"
+    bytes_delta_compute
+    return 0
+}
+
 # samples_tsv_init — create the per-tick sink and write its header row. Called
 # once, before the sample loop, so the trace survives even a SIGKILLed harness.
 # The rows were previously printf-to-stdout ONLY and were lost with the
@@ -325,12 +430,25 @@ samples_tsv_row() {
 # to a number nobody measured.
 #
 # Deliberately NOT emitted, because nothing in this tree sources them per phase:
-#   * network bytes — no dumpstate subsystem exposes a peer/socket byte counter
-#     (`network`, `connman`, `peer_lifecycle` carry connection and handshake
-#     counts, not bytes), and /proc has no per-process network accounting. The
-#     download manager's total_bytes_received exists in C
-#     (lib/net/src/download.c) but reaches no diagnostics dumper, so this
-#     harness cannot read it.
+#   * TOTAL network bytes — /proc has no per-process network accounting and no
+#     dumper counts wire bytes. What IS available, and IS now emitted on the
+#     harness-bracketed phase, is `block_body_payload_bytes_received`: the delta
+#     of `dumpstate sync_monitor` → download_bytes_received across the window,
+#     which counts successfully-parsed block-body message payload and nothing
+#     else. It is a lower bound on wire bytes and is named for the subset it is,
+#     so phases[].network_bytes stays on the structural-omission list.
+#     (Historical note kept deliberately: this comment used to assert that
+#     download_bytes_received "reaches no diagnostics dumper". That was false —
+#     sync_monitor_dump_state_json has emitted it all along, registered at
+#     diagnostics_dumpers.def. The error came from checking only the three net
+#     dumpers this harness happened to capture and generalising from them. A
+#     wrong reason in an omitted-field explanation is the same defect class the
+#     instrument exists to prevent, so the correction is recorded, not silently
+#     overwritten.)
+#   * BYTES PER BOOT-LEVEL PHASE — download_bytes_received has no phase
+#     segmentation at all; it is one process-lifetime total. Only a window
+#     bracketed by two reads can be honest, which is why the byte figure hangs
+#     off harness.observed_sync and never off a boot marker.
 #   * per-phase CPU / disk for the BOOT phases — boot.c's markers carry a
 #     duration and nothing else, and /proc counters are only sampled once the
 #     harness's own loop is running (boot has already finished by the first
@@ -453,7 +571,15 @@ harness_phases_json() {
         out="$out,\"disk_read_bytes\":$(json_number_or_null "$LAST_DISK_READ_BYTES")"
         out="$out,\"disk_write_bytes\":$(json_number_or_null "$LAST_DISK_WRITE_BYTES")"
         out="$out,\"counters_source\":\"/proc/<pid>/stat utime+stime over CLK_TCK and rss pages; /proc/<pid>/io read_bytes and write_bytes (block layer)\""
-        out="$out,\"counters_scope\":\"cumulative for the FINAL node process only — a followed self-respawn starts a new pid and resets these; see samples.tsv boot column\"}"
+        out="$out,\"counters_scope\":\"cumulative for the FINAL node process only — a followed self-respawn starts a new pid and resets these; see samples.tsv boot column\""
+        out="$out,\"block_body_payload_bytes_received\":$(json_number_or_null "$BYTES_DELTA")"
+        out="$out,\"block_body_payload_bytes_source\":\"delta of download_bytes_received between two reads of \`dumpstate sync_monitor\` (app/services/src/sync_monitor.c), fed by dl_add_bytes_received() in lib/net/src/download.c\""
+        out="$out,\"block_body_payload_bytes_scope\":\"successfully-parsed block-body message payload ONLY, summed over all peers: the \`block\` message payload length plus each block inside a \`zblkdata\` batch. EXCLUDES headers messages, version/verack handshake, inv/getdata/getheaders, tx relay, addr, compact blocks, the 24-byte per-message header, and all TCP/IP framing. It is therefore a LOWER BOUND on wire bytes and must not be read as total network bytes\""
+        out="$out,\"block_body_payload_bytes_window\":\"open read at unix $BYTES_OPEN_UNIX on boot $BYTES_OPEN_BOOT (value $BYTES_OPEN), close read on boot $BYTES_CLOSE_BOOT (value $BYTES_CLOSE); a delta is emitted only when both ends came from the same boot, because the counter resets to 0 per process\""
+        if [ "${BYTES_DELTA:--1}" = "-1" ]; then
+            out="$out,\"block_body_payload_bytes_unavailable_reason\":$(json_string "$BYTES_UNAVAIL_REASON")"
+        fi
+        out="$out}"
     fi
     printf '%s' "$out"
     return 0
@@ -490,8 +616,8 @@ omitted_fields_json() {
     }
     # ── structural: nothing in this tree sources these ──────────────────────
     _of_row "phases[].network_bytes" "structural" \
-        "no diagnostics dumper exposes a peer/socket byte counter (network, connman and peer_lifecycle carry connection and handshake COUNTS, not bytes), and /proc has no per-process network accounting. lib/net/src/download.c does track total_bytes_received in C but it reaches no dumper, so this harness has nothing to read." \
-        "none. Bytes are UNMEASURED this run — do not infer them from wall-clock time."
+        "TOTAL WIRE BYTES have no source in this tree. Nothing counts them: /proc has no per-process network accounting, and the only byte counter the node keeps (download_bytes_received, via dl_add_bytes_received in lib/net/src/download.c) counts ONLY successfully-parsed block-body message payload — it excludes headers messages, the version/verack handshake, inv/getdata/getheaders, tx relay, addr, compact blocks, the 24-byte per-message header, and all TCP/IP framing. An earlier revision of this row claimed that counter reached no dumper at all; that was WRONG (dumpstate sync_monitor has exposed it all along) and the correction is why this row is now scoped to total wire bytes rather than to bytes in general." \
+        "harness.observed_sync.block_body_payload_bytes_received — a real measurement of the block-body payload subset, named for the subset it is. It is a LOWER BOUND on wire bytes; do not present it as the total, and do not infer the total from wall-clock time."
     _of_row "phases[].cpu_seconds (boot-level phases)" "structural" \
         "config/src/boot.c boot_topmark/boot_submark emit a phase NAME and a DURATION and nothing else. The harness's own /proc sampling only starts once its sample loop is running, by which time boot has already finished, so there is no window it genuinely bracketed." \
         "harness.observed_sync carries cpu_seconds for the window the harness DID bracket; samples.tsv carries the per-tick series."
@@ -534,6 +660,17 @@ omitted_fields_json() {
             "/proc/<pid>/stat or /proc/<pid>/io was unreadable at capture (most often: the node process had already exited). Reported as -1, which is the never-measured sentinel and is deliberately distinguishable from a real zero." \
             "samples.tsv, whose earlier rows may carry a reading from while the process was alive."
     done
+    # The byte delta has a source (dumpstate sync_monitor), so a lost reading is
+    # a this_run loss, never a structural one — and a respawn inside the window
+    # is one of the ways it is lost. bytes_delta_compute() has already named
+    # which way; this row carries that reason verbatim rather than restating a
+    # generic one, because "we could not read it" and "we read it across a
+    # counter reset" are different failures with different fixes.
+    if [ "${BYTES_DELTA:--1}" = "-1" ]; then
+        _of_row "harness.observed_sync.block_body_payload_bytes_received" "this_run" \
+            "${BYTES_UNAVAIL_REASON:-no reason was recorded, which is itself a defect — bytes_delta_compute() must name every -1}" \
+            "none for this window. Do NOT substitute wall-clock time, block count, or disk_write_bytes for bytes moved: block bodies are written after validation, so disk writes are a different quantity."
+    fi
     unset -f _of_row
     printf '%s' "$out"
     return 0
@@ -890,6 +1027,9 @@ cancelled_write_bytes: 0'
     : >"$ARTIFACT_DIR/node.log"
     LAST_CPU_SECONDS="9.50"; LAST_RSS_KB="262144"
     LAST_DISK_READ_BYTES="4096000"; LAST_DISK_WRITE_BYTES="8192000"
+    BYTES_OPEN=1000; BYTES_OPEN_BOOT=1; BYTES_OPEN_UNIX=1
+    BYTES_CLOSE=5000; BYTES_CLOSE_BOOT=1
+    bytes_delta_compute
     st_of_best="$(omitted_fields_json)"
     st_ps_check "omitted_fields: the 6 structural rows are present even when EVERYTHING measurable was measured" \
         6 "$(printf '%s' "$st_of_best" | grep -o '"scope":"structural"' | wc -l | tr -d ' ')"
@@ -897,6 +1037,16 @@ cancelled_write_bytes: 0'
         0 "$(printf '%s' "$st_of_best" | grep -o '"scope":"this_run"' | wc -l | tr -d ' ')"
     st_ps_check "omitted_fields: network bytes are named as omitted, never emitted as 0" \
         1 "$(printf '%s' "$st_of_best" | grep -c 'phases\[\].network_bytes' | tr -d ' ')"
+    # The row STAYS (total wire bytes really are unsourced) but its reason had to
+    # change: it used to claim download_bytes_received reached no dumper, which
+    # was false. A wrong reason in an omitted-field explanation is the same
+    # defect class as a fabricated value, so the corrected scoping is pinned.
+    st_ps_check "omitted_fields: the network_bytes row is scoped to TOTAL wire bytes, not to bytes in general" \
+        1 "$(printf '%s' "$st_of_best" | grep -c 'TOTAL WIRE BYTES have no source' | tr -d ' ')"
+    st_ps_check "omitted_fields: the network_bytes row no longer claims the counter reaches no dumper" \
+        0 "$(printf '%s' "$st_of_best" | grep -c 'reaches no dumper' | tr -d ' ')"
+    st_ps_check "omitted_fields: the network_bytes row points at the measured block-body subset as its substitute" \
+        1 "$(printf '%s' "$st_of_best" | grep -c 'block_body_payload_bytes_received' | tr -d ' ')"
     st_ps_check "omitted_fields: every row carries a reason" \
         6 "$(printf '%s' "$st_of_best" | grep -o '"reason":"' | wc -l | tr -d ' ')"
     st_ps_check "omitted_fields: every row carries a nearest_honest_substitute" \
@@ -909,6 +1059,11 @@ cancelled_write_bytes: 0'
     rm -f "$ARTIFACT_DIR/node.log"
     LAST_CPU_SECONDS="-1"; LAST_RSS_KB="-1"
     LAST_DISK_READ_BYTES="-1"; LAST_DISK_WRITE_BYTES="-1"
+    # Lose the byte delta the way a real run loses it: a respawn inside the
+    # window. That is the branch most likely to be papered over with a plausible
+    # number, so it is the one the worst-case fixture drives.
+    BYTES_OPEN=1000; BYTES_OPEN_BOOT=1; BYTES_CLOSE=1500; BYTES_CLOSE_BOOT=2
+    bytes_delta_compute
     st_of_worst="$(omitted_fields_json)"
     st_ps_check "omitted_fields: an unidentifiable binary is NAMED as unmeasured, not silently null" \
         1 "$(printf '%s' "$st_of_worst" | grep -c 'measured_identity.node_bin_source_id_sha256' | tr -d ' ')"
@@ -916,16 +1071,99 @@ cancelled_write_bytes: 0'
         1 "$(printf '%s' "$st_of_worst" | grep -o '"field":"samples.tsv"' | wc -l | tr -d ' ')"
     st_ps_check "omitted_fields: an absent node.log names the lost boot phases" \
         1 "$(printf '%s' "$st_of_worst" | grep -c 'phases\[\] boot-level elements' | tr -d ' ')"
+    # Pinned to the four /proc names EXPLICITLY, not to a `[a-z_]*` wildcard on
+    # the harness.observed_sync prefix. The wildcard form silently counted any
+    # future observed_sync field too, so adding one (the byte delta) would have
+    # made this assertion pass for the wrong reason — 5 fields matching a check
+    # whose name says four. Each counter is now named.
     st_ps_check "omitted_fields: all four unreadable /proc counters are named individually" \
-        4 "$(printf '%s' "$st_of_worst" | grep -o '"field":"harness.observed_sync\.[a-z_]*"' | wc -l | tr -d ' ')"
+        4 "$(printf '%s' "$st_of_worst" | grep -oE '"field":"harness\.observed_sync\.(cpu_seconds|rss_kb|disk_read_bytes|disk_write_bytes)"' | wc -l | tr -d ' ')"
     st_ps_check "omitted_fields: the structural rows survive the worst case too" \
         6 "$(printf '%s' "$st_of_worst" | grep -o '"scope":"structural"' | wc -l | tr -d ' ')"
     st_ps_check "omitted_fields: the worst case names strictly MORE fields than the best case" \
         1 "$([ "$(st_of_names "$st_of_worst" | wc -l)" -gt "$(st_of_names "$st_of_best" | wc -l)" ] && echo 1 || echo 0)"
     st_ps_check "omitted_fields: no field name is reported twice" \
         "" "$(st_of_names "$st_of_worst" | uniq -d)"
+    st_ps_check "omitted_fields: a lost byte delta is named as a this_run loss, not a structural one" \
+        1 "$(printf '%s' "$st_of_worst" | grep -c '"field":"harness.observed_sync.block_body_payload_bytes_received","scope":"this_run"' | tr -d ' ')"
+    st_ps_check "omitted_fields: the lost-byte row carries the SPECIFIC reason (respawn), not a generic one" \
+        1 "$(printf '%s' "$st_of_worst" | grep -c 'respawned inside the window' | tr -d ' ')"
+    # Scoped to the ROW, not the bare name: the name legitimately also appears in
+    # the structural network_bytes row's nearest_honest_substitute, so a bare-name
+    # count would be 1 here for an honest reason and this check would be hollow.
+    st_ps_check "omitted_fields: a measured byte delta produces NO this_run byte row" \
+        0 "$(printf '%s' "$st_of_best" | grep -c '"field":"harness.observed_sync.block_body_payload_bytes_received"' | tr -d ' ')"
+    st_ps_check "omitted_fields: the byte row never offers wall clock or disk writes as a substitute" \
+        1 "$(printf '%s' "$st_of_worst" | grep -c 'Do NOT substitute wall-clock time' | tr -d ' ')"
     rm -rf "$ARTIFACT_DIR"
     ARTIFACT_DIR=""; NODE_BIN_SOURCE_ID=""; SAMPLES_TSV=""
+
+    # ── block-body payload bytes: the reading, and the delta's fail-closed set ─
+    # The defect class here is a byte figure that looks measured but spans a
+    # counter reset, or one defaulted to 0 so it reads as "moved nothing" when
+    # nothing measured it. Every branch below must yield the -1 sentinel WITH a
+    # reason; only a same-boot non-decreasing pair may yield a number.
+    st_sm_doc='{"last_recovery":"NONE","download_requested":1961,"download_bytes_received":1761346,"download_mbps_avg":1.15e-05}'
+    st_ps_check "bytes: the counter is read out of a real sync_monitor doc" \
+        1761346 "$(bytes_reading_from_json "$st_sm_doc")"
+    st_ps_check "bytes: a doc WITHOUT the key yields -1, never 0" \
+        -1 "$(bytes_reading_from_json '{"download_requested":1961}')"
+    st_ps_check "bytes: the mock/catch-all dumpstate reply yields -1, never 0" \
+        -1 "$(bytes_reading_from_json '{"mock_dumpstate":"sync_monitor","ok":true}')"
+    st_ps_check "bytes: an empty response yields -1, never 0" -1 "$(bytes_reading_from_json '')"
+    st_ps_check "bytes: a value too wide for int64 shell math is refused, not wrapped" \
+        -1 "$(bytes_reading_from_json '{"download_bytes_received":99999999999999999999}')"
+    st_ps_check "bytes: a genuine zero reading is preserved as 0, not confused with the sentinel" \
+        0 "$(bytes_reading_from_json '{"download_bytes_received":0}')"
+
+    st_bd() {  # open, open_boot, close, close_boot -> "<delta>|<has_reason>"
+        BYTES_OPEN="$1"; BYTES_OPEN_BOOT="$2"; BYTES_CLOSE="$3"; BYTES_CLOSE_BOOT="$4"
+        bytes_delta_compute
+        printf '%s|%s' "$BYTES_DELTA" "$([ -n "$BYTES_UNAVAIL_REASON" ] && echo reason || echo none)"
+    }
+    st_ps_check "bytes delta: a same-boot non-decreasing pair yields the difference and NO reason" \
+        "4000|none" "$(st_bd 1000 1 5000 1)"
+    st_ps_check "bytes delta: a same-boot pair that moved nothing yields a real 0, not the sentinel" \
+        "0|none" "$(st_bd 5000 1 5000 1)"
+    # THE respawn case. Without the boot guard this returns 500 — a positive,
+    # entirely plausible-looking number that is not a byte count of anything,
+    # because the counter restarted at 0 on boot 2. Fail closed.
+    st_ps_check "bytes delta: a respawn inside the window yields -1 + a reason, NOT the plausible 500" \
+        "-1|reason" "$(st_bd 1000 1 1500 2)"
+    st_ps_check "bytes delta: a respawn where the counter came back LOWER is also -1, not negative" \
+        "-1|reason" "$(st_bd 1000 1 500 2)"
+    st_ps_check "bytes delta: a decrease within ONE boot is an instrument fault, not a negative byte count" \
+        "-1|reason" "$(st_bd 5000 1 4000 1)"
+    st_ps_check "bytes delta: an unread open end yields -1 + a reason" \
+        "-1|reason" "$(st_bd -1 -1 5000 1)"
+    st_ps_check "bytes delta: an unread close end yields -1 + a reason" \
+        "-1|reason" "$(st_bd 1000 1 -1 1)"
+    st_ps_check "bytes delta: BOTH ends unread yields -1 + a reason" \
+        "-1|reason" "$(st_bd -1 -1 -1 -1)"
+    unset -f st_bd
+    BYTES_OPEN=-1; BYTES_OPEN_BOOT=-1; BYTES_OPEN_UNIX=-1
+    BYTES_CLOSE=-1; BYTES_CLOSE_BOOT=-1; BYTES_DELTA=-1; BYTES_UNAVAIL_REASON=""
+
+    # Source-text pins. The byte figure is only as good as the capture that feeds
+    # it and the name it is emitted under, and both are one edit away from
+    # regressing silently. Anchored on the line that does the work, per the
+    # lesson recorded above the samples_tsv_row/boot_timings pins.
+    grep -qE '^ {8}for net_name in .*\bsync_monitor\b' "${BASH_SOURCE[0]}"
+    st_check "sync_monitor (the ONLY dumper carrying a byte counter) is in the capture loop" 0 $?
+    grep -qE '^ {4}bytes_window_open_try$' "${BASH_SOURCE[0]}"
+    st_check "the byte window is opened from inside the sample loop (retried until it lands)" 0 $?
+    grep -qE '^ {4}bytes_window_close$' "${BASH_SOURCE[0]}"
+    st_check "the byte window is closed at artifact capture" 0 $?
+    # The name must state the subset. `network_bytes` would claim total wire
+    # bytes, which this counter is not — that overstatement is the exact defect
+    # this field was added to avoid, so the honest name is pinned.
+    grep -q '"block_body_payload_bytes_received\\":' "${BASH_SOURCE[0]}"
+    st_check "the emitted field is named block_body_payload_bytes_received (states the subset it counts)" 0 $?
+    st_pat_broad='out,\\"network_by''tes\\":'
+    grep -qE "$st_pat_broad" "${BASH_SOURCE[0]}"
+    st_check "no phase emits a broad network_bytes field (it would overstate a block-body-only counter)" 1 $?
+    grep -q 'EXCLUDES headers messages' "${BASH_SOURCE[0]}"
+    st_check "the emitted scope string names what the counter EXCLUDES, not just what it counts" 0 $?
 
     # The artifact must NAME its own omitted set — a proof.json that emits
     # phases[] but no omitted_fields[] is back to silent absence.
@@ -1012,8 +1250,15 @@ capture_run_bundle() {
         # pre_handshake_disconnects counters; net-connman.json carries the
         # per-addnode dial ledger (tcp_failures vs protocol_failures, backoff);
         # net-network.json carries the chain_view/census rollup.
+        # sync_monitor is in this list for a reason beyond tidiness: it is the
+        # ONLY dumper that carries a byte counter (download_bytes_received). An
+        # earlier revision captured only the three below, found no bytes in
+        # them, and concluded no dumper anywhere exposed bytes — a false premise
+        # that got written into the omitted-fields explanation. Capturing it
+        # keeps the raw reading next to the delta computed from it, so a reader
+        # can check the arithmetic instead of trusting it.
         got_net=1
-        for net_name in connman peer_lifecycle network; do
+        for net_name in connman peer_lifecycle network sync_monitor; do
             "$NODE_BIN" -rpcport="$RPC" -datadir="$DATADIR" dumpstate "$net_name" \
                 >"$ARTIFACT_DIR/net-$net_name.json" 2>/dev/null &&
                 [ -s "$ARTIFACT_DIR/net-$net_name.json" ] || got_net=0
@@ -1063,6 +1308,9 @@ write_artifact() {
     # Refresh the process counters one last time so the harness.observed_sync
     # phase reports the counters as of capture, not as of the last sample tick.
     refresh_process_counters
+    # Close the byte window at the same instant, so the delta and the /proc
+    # counters describe the same bracket.
+    bytes_window_close
     NODE_LOG_CAPTURED="false"
     if [ -n "${DATADIR:-}" ] && [ -f "$DATADIR/node.log" ] &&
        cp -p -- "$DATADIR/node.log" "$ARTIFACT_DIR/node.log" 2>/dev/null; then
@@ -1091,7 +1339,7 @@ write_artifact() {
     else
         PHASES_JSON="$_ph_harness$_ph_boot"
     fi
-    PHASES_PROVENANCE="harness.* elements: this harness bracketed the window itself (date +%s on both sides). Boot elements: parsed from the node's own [boot] boot_topmark/boot_submark markers in node.log, median_ms joined from dumpstate boot_timings. OMITTED for lack of an honest source: network bytes (no diagnostics dumper exposes a byte counter and /proc has no per-process network accounting), per-boot-phase cpu/disk (boot.c markers carry only a duration), exact per-boot-phase wall-clock start (the markers carry no timestamp and the top-level marks do not tile the boot) — start_ts_lower_bound is given instead and is a bound, not a start."
+    PHASES_PROVENANCE="harness.* elements: this harness bracketed the window itself (date +%s on both sides). Boot elements: parsed from the node's own [boot] boot_topmark/boot_submark markers in node.log, median_ms joined from dumpstate boot_timings. Bytes: harness.observed_sync carries block_body_payload_bytes_received, the delta of dumpstate sync_monitor download_bytes_received across the bracketed window, counting successfully-parsed block-body message payload ONLY (no headers, handshake, inv/getdata, tx relay, compact blocks, per-message header, or TCP/IP framing) — a lower bound on wire bytes, emitted only when both window ends were read on the same boot because the counter resets per process. OMITTED for lack of an honest source: TOTAL network bytes (nothing in this tree counts wire bytes), bytes per boot-level phase (the counter has no phase segmentation), per-boot-phase cpu/disk (boot.c markers carry only a duration), exact per-boot-phase wall-clock start (the markers carry no timestamp and the top-level marks do not tile the boot) — start_ts_lower_bound is given instead and is a bound, not a start."
 
     {
         printf '{\n'
@@ -1387,6 +1635,11 @@ if [ -d "$ARTIFACT_DIR" ]; then
     samples_tsv_init
 fi
 LOOP_START_UNIX=$(date +%s)
+# Open the byte window here, at the same instant the observed-sync clock starts.
+# It usually MISSES on this first attempt — the node launched seconds ago and the
+# RPC server may not be answering yet — which is why the sample loop retries it
+# until it lands and records the boot/time of the attempt that did.
+bytes_window_open_try
 
 printf '%-8s %-10s %-10s %-10s %-8s %s\n' "t(s)" "hstar" "prov" "net_tip" "tip_ok" "blockers"
 printf '%-8s %-10s %-10s %-10s %-8s %s\n' "----" "-----" "----" "-------" "------" "--------"
@@ -1453,6 +1706,8 @@ while :; do
     # counters alongside it. stdout is for the operator watching; samples.tsv is
     # the record the next optimization pass reads.
     refresh_process_counters
+    # Retry the window-open byte reading until one lands. No-op once it has.
+    bytes_window_open_try
     samples_tsv_row "$elapsed" "$hs" "$ps" "$nt" \
         "$([ -n "$nt_ok" ] && printf yes || printf no)" \
         "$FRONTIER_LAST_BUSY" "$bc" "$bids"
