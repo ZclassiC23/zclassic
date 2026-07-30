@@ -1,5 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
+ * Ported from librustzcash / bellman / sapling-crypto
+ * (The Zcash developers / Electric Coin Company), pinned commit
+ * 06da3b9ac8f278e5d4ae13088cf0a4c03d2c13f5, MIT / Apache-2.0. Reimplemented in
+ * C23; no reference code is linked into the production binary.
+ *
  * R1CS circuit gadgets for Sapling spend and output circuits.
  * Boolean constraints, field arithmetic, Pedersen hash, Blake2s,
  * Jubjub curve operations, and Merkle tree authentication paths. */

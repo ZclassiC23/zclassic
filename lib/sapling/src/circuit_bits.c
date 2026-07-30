@@ -1,5 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
+ * Ported from librustzcash / bellman / sapling-crypto
+ * (The Zcash developers / Electric Coin Company), pinned commit
+ * 06da3b9ac8f278e5d4ae13088cf0a4c03d2c13f5, MIT / Apache-2.0. Reimplemented in
+ * C23; no reference code is linked into the production binary.
+ *
  * Faithful C23 port of bellman/sapling-crypto's Boolean / UInt32 / MultiEq
  * bit algebra and the blake2s circuit built on top of it (librustzcash commit
  * 06da3b9ac8f278e5d4ae13088cf0a4c03d2c13f5). See circuit_bits.h for why this
@@ -168,9 +173,29 @@ struct cbit cbit_xor(struct constraint_system *cs, struct cbit a, struct cbit b)
     /* Both allocated. bellman normalizes `Is ^ Not` to `Is ^ Is` and then
      * negates the RESULT view, so exactly one allocated constraint is emitted
      * whatever the mix of views: (Is,Is) and (Not,Not) give Is(c),
-     * (Is,Not) and (Not,Is) give Not(c). */
+     * (Is,Not) and (Not,Is) give Not(c).
+     *
+     * THE NORMALIZATION ALSO REORDERS THE OPERANDS, and that is not cosmetic.
+     * bellman's mixed-view arm is
+     *
+     *     (is @ &Is(_), not @ &Not(_)) | (not @ &Not(_), is @ &Is(_))
+     *         => Boolean::xor(cs, is, &not.not())?.not()
+     *
+     * so the `Is` operand always becomes the FIRST argument of the recursive
+     * call. For an original `(Not, Is)` pair that swaps the two operands before
+     * they reach AllocatedBit::xor — and AllocatedBit::xor is asymmetric in the
+     * MATRICES it writes: it emits `(a + a) * b = a + b - c`, putting the
+     * doubled term in A and the bare term in B. A*B is commutative, so swapping
+     * the operands leaves every A*B==C check satisfied while writing a
+     * different pair of QAP matrices, which cannot verify against the Sapling
+     * trusted setup. Pinned by test_groth16_r1cs_oracle.
+     *
+     * (Is,Is) and (Not,Not) hit bellman's other arm, which preserves the order,
+     * and (Is,Not) already binds is=a, so only (Not,Is) needs the swap. */
     const bool negate_result = (a.kind != b.kind);
-    struct cbit r = alloc_bit_xor(cs, a, b);
+    const bool swap_operands = (a.kind == CBIT_NOT && b.kind == CBIT_IS);
+    struct cbit r = swap_operands ? alloc_bit_xor(cs, b, a)
+                                  : alloc_bit_xor(cs, a, b);
     return negate_result ? cbit_not(r) : r;
 }
 

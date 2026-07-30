@@ -1,5 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
+ * Ported from librustzcash / bellman / sapling-crypto
+ * (The Zcash developers / Electric Coin Company), pinned commit
+ * 06da3b9ac8f278e5d4ae13088cf0a4c03d2c13f5, MIT / Apache-2.0. Reimplemented in
+ * C23; no reference code is linked into the production binary.
+ *
  * Section 21 of the Sapling spend circuit: the 32-level Merkle authentication
  * path. Faithful C23 port of the auth-path loop in sapling-crypto
  * `circuit::sapling::Spend::synthesize` (librustzcash

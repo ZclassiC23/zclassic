@@ -1,5 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
+ * Ported from librustzcash / bellman / sapling-crypto
+ * (The Zcash developers / Electric Coin Company), pinned commit
+ * 06da3b9ac8f278e5d4ae13088cf0a4c03d2c13f5, MIT / Apache-2.0. Reimplemented in
+ * C23; no reference code is linked into the production binary.
+ *
  * Sapling SPEND circuit synthesis — the C23 port of bellman's
  * Spend::synthesize (librustzcash 06da3b9ac8f278e5d4ae13088cf0a4c03d2c13f5),
  * 7 public inputs / 98777 constraints when complete.
@@ -101,16 +106,30 @@ static void boolean_vec_le(struct constraint_system *cs,
     memory_cleanse(bytes, sizeof(bytes));
 }
 
-/* Copy constraint `src * 1 = dst` — bellman inputize's equality enforcement,
- * applied against a pre-allocated input slot. One constraint. */
-static void enforce_equal(struct constraint_system *cs, size_t src, size_t dst)
+/* Copy constraint binding a computed wire to a pre-allocated public-input slot
+ * — bellman AllocatedNum::inputize's equality enforcement. One constraint.
+ *
+ * WHICH SIDE IS WHICH MATTERS. bellman emits
+ *
+ *     cs.enforce(|lc| lc + input, |lc| lc + CS::one(), |lc| lc + self.variable)
+ *
+ * i.e. A = the INPUT variable, B = ONE, C = the COMPUTED wire. Emitting the
+ * mirror image (`computed * 1 = input`) satisfies exactly the same A*B==C check
+ * on exactly the same witness, but it moves a coefficient between the A and C
+ * matrices. Groth16's proving key is built per variable from which matrix its
+ * coefficients sit in, so the mirrored form is a DIFFERENT QAP and cannot
+ * verify against the Sapling trusted setup. Pinned by
+ * test_groth16_r1cs_oracle, which diffs the A/B/C matrices row by row against
+ * the reference transcript; cs_is_satisfied() is blind to it by construction. */
+static void enforce_equal(struct constraint_system *cs,
+                          size_t computed, size_t input_slot)
 {
     struct linear_combination la, lb, lc;
     struct fr one_val;
     fr_one(&one_val);
-    lc_init(&la); lc_add_term(&la, src, &one_val);
+    lc_init(&la); lc_add_term(&la, input_slot, &one_val);
     lc_init(&lb); lc_add_term(&lb, CS_ONE, &one_val);
-    lc_init(&lc); lc_add_term(&lc, dst, &one_val);
+    lc_init(&lc); lc_add_term(&lc, computed, &one_val);
     cs_enforce(cs, &la, &lb, &lc);
     lc_free(&la); lc_free(&lb); lc_free(&lc);
 }

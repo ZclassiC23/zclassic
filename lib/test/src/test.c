@@ -210,6 +210,14 @@ int main(int argc, char **argv)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "groth16_r1cs_oracle") == 0) {
+        printf("[test] ZCL_TEST_ONLY=groth16_r1cs_oracle — running the "
+               "canonical R1CS transcript oracle only\n");
+        failures += test_groth16_r1cs_oracle();
+        printf("\n=== groth16_r1cs_oracle subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "block_source_policy") == 0) {
         printf("[test] ZCL_TEST_ONLY=block_source_policy — running source policy only\n");
         failures += test_block_source_policy();
@@ -1012,6 +1020,7 @@ int main(int argc, char **argv)
     failures += test_sapling();
     failures += test_sapling_crypto();
     failures += test_groth16_msm_parity();
+    failures += test_groth16_r1cs_oracle();
     failures += test_sapling_tree();
     failures += test_bn254();
     failures += test_merkle_tree();

@@ -1,5 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
+ * Ported from librustzcash / bellman / sapling-crypto
+ * (The Zcash developers / Electric Coin Company), pinned commit
+ * 06da3b9ac8f278e5d4ae13088cf0a4c03d2c13f5, MIT / Apache-2.0. Reimplemented in
+ * C23; no reference code is linked into the production binary.
+ *
  * R1CS circuit gadgets matching Zcash bellman/sapling-crypto exactly.
  * Edwards add (6 constraints), double (5), windowed fixed-base mul,
  * strict bit decomposition. The Pedersen hash and the Jubjub Montgomery
@@ -631,10 +636,29 @@ void gadget_lookup3_xy(struct constraint_system *cs,
     struct fr one_val;
     fr_one(&one_val);
 
-    /* Compute precomp = b1 AND b2 (1 constraint) */
     struct fr b1v = cs->witness[b1];
     struct fr b2v = cs->witness[b2];
     struct fr b0v = cs->witness[b0];
+
+    /* ALLOCATION ORDER IS LOAD-BEARING. sapling-crypto's lookup3_xy allocates
+     * res_x, then res_y, and only then the `precomp` wire that Boolean::and
+     * introduces — so the window's three aux variables are (x, y, precomp), in
+     * that order. Allocating precomp first is algebraically identical and
+     * satisfies every A*B==C check, but it PERMUTES three aux indices per
+     * window; the Groth16 proving key is indexed per variable, so the permuted
+     * circuit is a different QAP and cannot verify against the Sapling trusted
+     * setup. Only a matrix-level transcript diff sees this
+     * (test_groth16_r1cs_oracle). The CONSTRAINT order is unchanged: the AND
+     * comes first, then the x and y lookups. */
+    int idx = 0;
+    if (!fr_is_zero(&b0v)) idx |= 1;
+    if (!fr_is_zero(&b1v)) idx |= 2;
+    if (!fr_is_zero(&b2v)) idx |= 4;
+
+    *rx = cs_alloc_aux(cs, &coords_x[idx]);
+    *ry = cs_alloc_aux(cs, &coords_y[idx]);
+
+    /* Compute precomp = b1 AND b2 (1 constraint) */
     struct fr precomp_val;
     fr_mul(&precomp_val, &b1v, &b2v);
     size_t precomp = cs_alloc_aux(cs, &precomp_val);
@@ -644,15 +668,6 @@ void gadget_lookup3_xy(struct constraint_system *cs,
     struct fr xc[8], yc[8];
     gadget_synth_coeffs(3, coords_x, xc);
     gadget_synth_coeffs(3, coords_y, yc);
-
-    /* Determine index and allocate result */
-    int idx = 0;
-    if (!fr_is_zero(&b0v)) idx |= 1;
-    if (!fr_is_zero(&b1v)) idx |= 2;
-    if (!fr_is_zero(&b2v)) idx |= 4;
-
-    *rx = cs_alloc_aux(cs, &coords_x[idx]);
-    *ry = cs_alloc_aux(cs, &coords_y[idx]);
 
     /* x-coordinate constraint (1 constraint):
      * (xc[001] + b1*xc[011] + b2*xc[101] + precomp*xc[111]) * b0
@@ -781,21 +796,38 @@ void gadget_fixed_base_mul(struct constraint_system *cs,
 
             /* Simplified constraints based on which bits are constant */
             if (!b0_const && b1_const && b2_const) {
-                /* Only b0 is variable. x = x0 + b0*(x1-x0), y = y0 + b0*(y1-y0) */
-                /* x constraint: b0 * (x1-x0) = wx - x0 */
+                /* Only b0 is variable. x = x0 + b0*(x1-x0), y = y0 + b0*(y1-y0).
+                 *
+                 * The reference has no special case at all here: it calls the
+                 * same lookup3_xy with Boolean::constant(false) padding, and the
+                 * constant operands simply contribute nothing to any linear
+                 * combination (and Boolean::and of two constants folds to a
+                 * constant, costing no wire and no constraint). What survives is
+                 *
+                 *     A = xc[001] * ONE          (the synth coefficient, which
+                 *                                 for a 3-bit window is exactly
+                 *                                 x1 - x0)
+                 *     B = b0
+                 *     C = wx - xc[000] * ONE
+                 *
+                 * so the CONSTANT lands in A and the bit in B. Emitting it the
+                 * other way round is algebraically identical — A*B is
+                 * commutative — but writes the two coefficients into the wrong
+                 * QAP matrices, which cannot verify against the Sapling trusted
+                 * setup. Pinned by test_groth16_r1cs_oracle. */
                 struct fr one_val; fr_one(&one_val);
                 struct linear_combination la, lb, lc;
                 struct fr dx; fr_sub(&dx, &coords_x[1], &coords_x[0]);
-                lc_init(&la); lc_add_term(&la, b0, &one_val);
-                lc_init(&lb); lc_add_term(&lb, CS_ONE, &dx);
+                lc_init(&la); lc_add_term(&la, CS_ONE, &dx);
+                lc_init(&lb); lc_add_term(&lb, b0, &one_val);
                 struct fr neg_x0; fr_neg(&neg_x0, &coords_x[0]);
                 lc_init(&lc); lc_add_term(&lc, wx, &one_val); lc_add_term(&lc, CS_ONE, &neg_x0);
                 cs_enforce(cs, &la, &lb, &lc);
                 lc_free(&la); lc_free(&lb); lc_free(&lc);
 
                 struct fr dy; fr_sub(&dy, &coords_y[1], &coords_y[0]);
-                lc_init(&la); lc_add_term(&la, b0, &one_val);
-                lc_init(&lb); lc_add_term(&lb, CS_ONE, &dy);
+                lc_init(&la); lc_add_term(&la, CS_ONE, &dy);
+                lc_init(&lb); lc_add_term(&lb, b0, &one_val);
                 struct fr neg_y0; fr_neg(&neg_y0, &coords_y[0]);
                 lc_init(&lc); lc_add_term(&lc, wy, &one_val); lc_add_term(&lc, CS_ONE, &neg_y0);
                 cs_enforce(cs, &la, &lb, &lc);
@@ -930,19 +962,32 @@ void gadget_conditionally_select_point_lc(struct constraint_system *cs,
     cs_enforce(cs, &la, &lb, &lc);
     lc_free(&la); lc_free(&lb); lc_free(&lc);
 
-    /* y' = cond ? y : 1, as `(y - 1) * cond = y' - 1`. Written around the
-     * neutral element's y = 1 rather than around 0: that is what makes cond=0
-     * land on the Edwards identity, not on the non-curve pair (0, 0). */
+    /* y' = cond ? y : 1. bellman writes this as
+     *
+     *     y * cond = y' - (1 - cond)
+     *
+     * so A = y, B = cond, C = y' - ONE + cond (because not(cond) is always the
+     * linear combination ONE - cond, for every Boolean view). Still written
+     * around the neutral element's y = 1 rather than around 0, so cond = 0
+     * lands on the Edwards identity and not on the non-curve pair (0, 0).
+     *
+     * The tempting rearrangement `(y - 1) * cond = y' - 1` is the SAME identity
+     * and is satisfied by the SAME witness, but it moves the constant term from
+     * C into A. Groth16's proving key is per variable and per matrix, so that
+     * form is a different QAP and will not verify against the Sapling trusted
+     * setup. It was the native circuit's form until test_groth16_r1cs_oracle
+     * diffed the matrices against the reference; A*B==C cannot see it, which is
+     * exactly why that oracle exists. */
     struct fr ry_val;
     if (cond_value) ry_val = cs->witness[py]; else fr_one(&ry_val);
     *ry = cs_alloc_aux(cs, &ry_val);
     lc_init(&la);
     lc_add_term(&la, py, &one_val);
-    lc_add_term(&la, CS_ONE, &neg_one);
     lc_init(&lb); lc_append(&lb, cond_lc);
     lc_init(&lc);
     lc_add_term(&lc, *ry, &one_val);
     lc_add_term(&lc, CS_ONE, &neg_one);
+    lc_append(&lc, cond_lc);
     cs_enforce(cs, &la, &lb, &lc);
     lc_free(&la); lc_free(&lb); lc_free(&lc);
 }
@@ -995,19 +1040,30 @@ void gadget_point_inputize(struct constraint_system *cs, size_t x, size_t y)
     struct fr one_val;
     fr_one(&one_val);
 
+    /* bellman AllocatedNum::inputize emits A = the INPUT variable, B = ONE,
+     * C = the COMPUTED wire:
+     *
+     *     cs.enforce(|lc| lc + input, |lc| lc + CS::one(), |lc| lc + self.variable)
+     *
+     * The mirror image satisfies the same A*B==C check but writes a coefficient
+     * into the wrong QAP matrix, so it cannot verify against the trusted setup.
+     * The spend circuit's equivalent (circuit_spend.c enforce_equal) is pinned
+     * against the reference transcript by test_groth16_r1cs_oracle; this entry
+     * point serves the OUTPUT circuit, which has no transcript oracle yet, so it
+     * is corrected here by direct reading of the reference rather than proven. */
     {
         struct linear_combination la, lb, lc;
-        lc_init(&la); lc_add_term(&la, x, &one_val);
+        lc_init(&la); lc_add_term(&la, ix, &one_val);
         lc_init(&lb); lc_add_term(&lb, CS_ONE, &one_val);
-        lc_init(&lc); lc_add_term(&lc, ix, &one_val);
+        lc_init(&lc); lc_add_term(&lc, x, &one_val);
         cs_enforce(cs, &la, &lb, &lc);
         lc_free(&la); lc_free(&lb); lc_free(&lc);
     }
     {
         struct linear_combination la, lb, lc;
-        lc_init(&la); lc_add_term(&la, y, &one_val);
+        lc_init(&la); lc_add_term(&la, iy, &one_val);
         lc_init(&lb); lc_add_term(&lb, CS_ONE, &one_val);
-        lc_init(&lc); lc_add_term(&lc, iy, &one_val);
+        lc_init(&lc); lc_add_term(&lc, y, &one_val);
         cs_enforce(cs, &la, &lb, &lc);
         lc_free(&la); lc_free(&lb); lc_free(&lc);
     }
