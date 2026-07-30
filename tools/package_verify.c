@@ -446,7 +446,7 @@ static struct pv_run pv_run_child(const char *const argv[],
         (void)setenv("LC_ALL", "C", 1);
         if (env_pairs)
             for (size_t i = 0; env_pairs[i]; i++) {
-                char *eq = strchr(env_pairs[i], '=');
+                const char *eq = strchr(env_pairs[i], '=');
                 if (!eq)
                     continue;
                 char name[64];

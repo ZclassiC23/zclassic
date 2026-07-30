@@ -143,15 +143,16 @@ int test_block_log_file(void)
         ZCL_TEST_SETUP(block_log_file_open(dir, &h, &p));
 
         struct block_hash hash_a; fill_hash(&hash_a, 0xaa);
-        uint8_t bytes_a[16] = "hello block log!";
-        ZCL_TEST_SETUP(p.append(p.self, 5, &hash_a, bytes_a, sizeof bytes_a));
+        static const uint8_t bytes_a[] = "hello block log!";
+        ZCL_TEST_SETUP(p.append(p.self, 5, &hash_a, bytes_a,
+                                sizeof bytes_a - 1));
         struct zcl_result r = p.append(p.self, 5, &hash_a, bytes_a,
-                                        sizeof bytes_a);
+                                        sizeof bytes_a - 1);
         BLF_CHECK("re-append same hash+bytes -> OK", r.ok);
 
         /* Different bytes for same hash -> CORRUPT. */
-        uint8_t bytes_b[16] = "DIFFERENT bytes!";
-        r = p.append(p.self, 5, &hash_a, bytes_b, sizeof bytes_b);
+        static const uint8_t bytes_b[] = "DIFFERENT bytes!";
+        r = p.append(p.self, 5, &hash_a, bytes_b, sizeof bytes_b - 1);
         BLF_CHECK("re-append same hash diff bytes -> ERR_CORRUPT",
                   !r.ok && r.code == BLOCK_LOG_ERR_CORRUPT);
 
@@ -219,8 +220,9 @@ int test_block_log_file(void)
         ZCL_TEST_SETUP(block_log_file_open(dir, &h, &p));
 
         struct block_hash ha; fill_hash(&ha, 0x77);
-        uint8_t payload[12] = "crashA-data!";
-        ZCL_TEST_SETUP(p.append(p.self, 100, &ha, payload, sizeof payload));
+        static const uint8_t payload[] = "crashA-data!";
+        ZCL_TEST_SETUP(p.append(p.self, 100, &ha, payload,
+                                sizeof payload - 1));
         block_log_file_close(h);
 
         /* Wipe blocks.idx — simulates a power-cut between log fsync
@@ -236,8 +238,8 @@ int test_block_log_file(void)
         const uint8_t *out = NULL; size_t outlen = 0;
         r = p.read_by_hash(p.self, &ha, &out, &outlen);
         BLF_CHECK("crashA: read_by_hash recovers via scan",
-                  r.ok && outlen == sizeof payload &&
-                  memcmp(out, payload, sizeof payload) == 0);
+                  r.ok && outlen == sizeof payload - 1 &&
+                  memcmp(out, payload, sizeof payload - 1) == 0);
 
         block_log_file_close(h);
         test_rm_rf(dir);

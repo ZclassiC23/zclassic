@@ -1169,11 +1169,8 @@ static int test_dl_concurrent(void)
             pthread_join(threads[i], NULL);
 
         /* Verify all threads completed */
-        int total_ops = 0;
-        for (int i = 0; i < DL_NUM_THREADS; i++) {
+        for (int i = 0; i < DL_NUM_THREADS; i++)
             ASSERT(ctxs[i].ops_done > 0);
-            total_ops += ctxs[i].ops_done;
-        }
 
         /* Verify stats are consistent: received <= requested, no negative */
         uint64_t req, recv, tout, inflight, queued;

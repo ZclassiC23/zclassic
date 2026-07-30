@@ -574,7 +574,7 @@ static void ph_synth_lc(struct ph_lc *out, const struct fr c[4],
 /* A one-term LC holding a single wire with coefficient 1. */
 static struct ph_lc ph_lc_wire(size_t var)
 {
-    struct ph_lc out;
+    struct ph_lc out = {0};
     out.nterms = 1;
     out.vars[0] = var;
     fr_one(&out.coeffs[0]);
@@ -797,4 +797,3 @@ void gadget_pedersen_hash(struct constraint_system *cs,
     }
     gadget_pedersen_hash_pers(cs, pers_bits, input_bits, n_bits, x_out, y_out);
 }
-

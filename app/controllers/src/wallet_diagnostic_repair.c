@@ -70,7 +70,14 @@ bool rpc_scanblockfiles(const struct json_value *params, bool help,
 
     ENSURE_WALLET(result);
 
-    const char *dir = ctx->datadir ? ctx->datadir : "/home/bob/.zclassic-c23";
+    char default_dir[4096];
+    const char *dir = ctx->datadir;
+    if (!dir || !dir[0]) {
+        const char *home = getenv("HOME");
+        (void)snprintf(default_dir, sizeof(default_dir), "%s/.zclassic-c23",
+                       home && home[0] ? home : ".");
+        dir = default_dir;
+    }
     int found = wallet_scan_blockfiles(ctx->wallet, dir);
 
     /* Also persist wallet updates */

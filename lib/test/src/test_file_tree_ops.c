@@ -56,11 +56,12 @@ static bool fto_read(const char *path, char *out, size_t out_size)
     return true;
 }
 
-/* Recursive FNV-1a fold over (relative-name, size, mtime_ns) of every regular
- * file and directory under `root`. Two equal signatures across a copy prove
- * the copy preserved names, sizes and mtime_ns — the same structural proof
- * chainstate_dir_signature() uses, extended to recurse. Symlinks are ignored
- * (the walker refuses them, so they never appear in a valid copy). */
+/* Recursive, order-independent fold over (relative-name, size, mtime_ns) of
+ * every regular file and directory under `root`. readdir() order is not a
+ * filesystem contract, so hash each entry independently and XOR the entry
+ * hashes into the tree signature. Two equal signatures across a copy prove
+ * the copy preserved names, sizes and mtime_ns. Symlinks are ignored (the
+ * walker refuses them, so they never appear in a valid copy). */
 static void fto_sig_walk(const char *root, const char *rel, uint64_t *sig)
 {
     DIR *d = opendir(root);
@@ -82,17 +83,22 @@ static void fto_sig_walk(const char *root, const char *rel, uint64_t *sig)
             continue;
         /* Fold the RELATIVE path so both trees hash to the same value even
          * though their absolute roots differ. */
+        uint64_t entry_sig = 14695981039346656037ULL;
         const char *c = rp;
-        while (*c) { *sig ^= (uint8_t)*c++; *sig *= 1099511628211ULL; }
+        while (*c) {
+            entry_sig ^= (uint8_t)*c++;
+            entry_sig *= 1099511628211ULL;
+        }
         uint64_t fields[4] = { (uint64_t)st.st_size,
                                (uint64_t)st.st_mtim.tv_sec,
                                (uint64_t)st.st_mtim.tv_nsec,
                                (uint64_t)(S_ISDIR(st.st_mode) ? 1 : 0) };
         const uint8_t *b = (const uint8_t *)fields;
         for (size_t i = 0; i < sizeof(fields); i++) {
-            *sig ^= b[i];
-            *sig *= 1099511628211ULL;
+            entry_sig ^= b[i];
+            entry_sig *= 1099511628211ULL;
         }
+        *sig ^= entry_sig;
         if (S_ISDIR(st.st_mode))
             fto_sig_walk(fp, rp, sig);
     }
@@ -101,7 +107,7 @@ static void fto_sig_walk(const char *root, const char *rel, uint64_t *sig)
 
 static uint64_t fto_signature(const char *root)
 {
-    uint64_t sig = 14695981039346656037ULL;
+    uint64_t sig = 0;
     fto_sig_walk(root, "", &sig);
     return sig;
 }

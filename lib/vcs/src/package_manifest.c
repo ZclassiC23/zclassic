@@ -63,10 +63,12 @@ bool vcs_package_path_valid(const char *path)
 {
     if (!path)
         return false;
-    const char *end = memchr(path, '\0', VCS_PACKAGE_PATH_MAX + 1u);
-    if (!end)
+    size_t len = 0;
+    while (len <= VCS_PACKAGE_PATH_MAX && path[len] != '\0')
+        len++;
+    if (len > VCS_PACKAGE_PATH_MAX)
         return false;
-    return package_path_valid_n((const uint8_t *)path, (size_t)(end - path));
+    return package_path_valid_n((const uint8_t *)path, len);
 }
 
 static bool package_expected_chunks(uint64_t size, uint32_t *out)

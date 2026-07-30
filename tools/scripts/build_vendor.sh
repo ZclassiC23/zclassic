@@ -97,7 +97,7 @@ RECIPE_SQLITE="sqlite-r2"
 RECIPE_ZLIB="zlib-r2"
 RECIPE_OPENSSL="openssl-r3"
 RECIPE_LIBEVENT="libevent-r5"
-RECIPE_LEVELDB="leveldb-r4"
+RECIPE_LEVELDB="leveldb-r5"
 RECIPE_RUSTZCASH="rustzcash-r3"
 
 # --- logging (to stderr; stdout is reserved for fetch() to echo a path) -----
@@ -595,6 +595,9 @@ build_leveldb() {      # FETCHED: LevelDB -> libleveldb.a
                 -DBUILD_SHARED_LIBS=OFF \
                 -DLEVELDB_BUILD_TESTS=OFF \
                 -DLEVELDB_BUILD_BENCHMARKS=OFF \
+                -DHAVE_CRC32C=0 \
+                -DHAVE_SNAPPY=0 \
+                -DHAVE_TCMALLOC=0 \
                 -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
                 && cmake --build build_static -j"$JOBS" --target leveldb \
             ) >"$cmake_log" 2>&1; then

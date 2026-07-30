@@ -176,8 +176,20 @@ static sqlite3 *na_fresh_db(int *failures)
 {
     sqlite3 *db = NULL;
     int rc = sqlite3_open(":memory:", &db);
-    NA_CHECK("open fresh :memory: nullifier db", rc == SQLITE_OK && db != NULL);
-    NA_CHECK("nullifier_kv schema", db && nullifier_kv_ensure_schema(db));
+    printf("  open fresh :memory: nullifier db... ");
+    if (rc == SQLITE_OK && db != NULL)
+        printf("OK\n");
+    else {
+        printf("FAIL\n");
+        (*failures)++;
+    }
+    printf("  nullifier_kv schema... ");
+    if (db && nullifier_kv_ensure_schema(db))
+        printf("OK\n");
+    else {
+        printf("FAIL\n");
+        (*failures)++;
+    }
     return db;
 }
 
