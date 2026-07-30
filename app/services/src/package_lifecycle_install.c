@@ -18,6 +18,7 @@
 #include "base/result.h"
 #include "base/safe_alloc.h"
 #include "crypto/sha3.h"
+#include "platform/os_proc.h"
 #include "util/spawn.h"
 #include "vcs/package_store.h"
 
@@ -44,14 +45,14 @@
 static struct zcl_result pkgl_worker_path(char *out, size_t cap)
 {
     char exe[PKGL_PATH_MAX];
-    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1u);
-    if (n <= 0)
-        return ZCL_ERR(-1, "cannot resolve /proc/self/exe: %s",
-                       strerror(errno));
-    exe[n] = '\0';
+    if (!os_proc_exe_path(exe, sizeof(exe)))
+        return ZCL_ERR(-1, "cannot resolve own executable path");
+    char *deleted = strstr(exe, " (deleted)");
+    if (deleted)
+        *deleted = '\0';
     char *slash = strrchr(exe, '/');
     if (!slash)
-        return ZCL_ERR(-1, "/proc/self/exe has no directory");
+        return ZCL_ERR(-1, "resolved executable path has no directory component");
     *slash = '\0';
     int w = snprintf(out, cap, "%s/%s", exe, PKGL_WORKER_NAME);
     if (w <= 0 || (size_t)w >= cap)

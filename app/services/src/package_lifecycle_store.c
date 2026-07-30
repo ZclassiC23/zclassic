@@ -105,7 +105,7 @@ static int pkgl_semver_cmp(const char *a, const char *b)
     unsigned long av[3] = { 0, 0, 0 };
     unsigned long bv[3] = { 0, 0, 0 };
     if (sscanf(a, "%lu.%lu.%lu", &av[0], &av[1], &av[2]) != 3)
-        return -1;
+        return -1;  // raw-return-ok:comparator result (a sorts first), not an error
     if (sscanf(b, "%lu.%lu.%lu", &bv[0], &bv[1], &bv[2]) != 3)
         return 1;
     for (size_t i = 0; i < 3; i++) {
