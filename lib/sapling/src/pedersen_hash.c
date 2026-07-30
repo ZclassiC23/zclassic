@@ -12,13 +12,14 @@
 #include "sapling/fr.h"
 #include <pthread.h>
 #include <string.h>
+#include "util/log_macros.h"
 
 #ifdef ZCL_TESTING
 #include <stdatomic.h>
 #endif
 
 #define PEDERSEN_CHUNKS_PER_GENERATOR 63
-#define PEDERSEN_NUM_GENERATORS 6
+#define PEDERSEN_NUM_GENERATORS PEDERSEN_SEGMENT_GENERATORS
 /* Per-chunk window magnitude values: the (a,b,c) encoding yields
  * v = ±(1 + a + 2b), so m spans 1..4 (4 table slots per chunk). */
 #define PEDERSEN_TABLE_SLOTS 4
@@ -121,6 +122,17 @@ static void load_chunk_tables(void)
 static void ensure_chunk_tables(void)
 {
     pthread_once(&s_tables_once, load_chunk_tables);
+}
+
+bool pedersen_segment_generator(size_t index, struct jub_point *out)
+{
+    if (!out || index >= PEDERSEN_NUM_GENERATORS)
+        LOG_FAIL("pedersen",
+                 "segment_generator: index %zu out of range (max %d) or NULL out",
+                 index, PEDERSEN_NUM_GENERATORS - 1);
+    ensure_generators();
+    *out = cached_generators[index];
+    return true;
 }
 
 /* Core Pedersen hash over pre-assembled bits (personalization already included) */

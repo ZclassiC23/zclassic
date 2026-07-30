@@ -57,6 +57,16 @@ void sapling_proof_gen_key_generator(struct fr *x, struct fr *y);
 void sapling_value_commit_value_generator(struct fr *x, struct fr *y);
 void sapling_value_commit_randomness_generator(struct fr *x, struct fr *y);
 
+/* The generator the note commitment is randomized over:
+ *   cm = PedersenHash(NoteCommitment, note) + [rcm] G_rcm
+ * as (x, y) field coordinates, so spend section 19's in-circuit fixed-base
+ * multiplication uses the IDENTICAL point sapling_compute_cm() uses out of
+ * circuit. find_group_hash(b"r", "Zcash_PH") — the URS-counter-iterated
+ * derivation, NOT the single-shot group_hash() the legacy output circuit
+ * reached for; those are different points and the note commitments would
+ * disagree. */
+void sapling_note_commit_randomness_generator(struct fr *x, struct fr *y);
+
 /* CRH^ivk(ak, nk) = BLAKE2s("Zcashivk", ak || nk) with top 5 bits dropped */
 void sapling_crh_ivk(const uint8_t ak[32], const uint8_t nk[32], uint8_t ivk[32]);
 
@@ -84,6 +94,20 @@ bool sapling_ka_derivepublic(const uint8_t diversifier[11], const uint8_t esk[32
 bool sapling_compute_cm(const uint8_t diversifier[11], const uint8_t pk_d[32],
                          uint64_t value, const uint8_t rcm[32],
                          uint8_t cm[32]);
+
+/* The full note-commitment POINT rather than only its x-coordinate:
+ *   cm_full = PedersenHash(NoteCommitment, value || g_d || pk_d) + [rcm] G_rcm
+ * This is the ONE body behind both sapling_compute_cm() (which publishes the
+ * x-coordinate — the protocol's `cmu`, the note-commitment tree leaf) and
+ * sapling_compute_nf() (which needs the whole point to build rho), so a
+ * nullifier can never be computed over a different note than the commitment.
+ * It is also what an in-circuit section-20 wire pair is diffed against, since a
+ * matching x with a mismatched y is a point that is not the commitment.
+ * Returns false only if `diversifier` is invalid (g_d would be the identity). */
+bool sapling_note_commitment_point(const uint8_t diversifier[11],
+                                    const uint8_t pk_d[32],
+                                    uint64_t value, const uint8_t rcm[32],
+                                    struct jub_point *cm_out);
 
 /* Compute the Sapling nullifier that double-spend protection keys on:
  *   nf = BLAKE2s-256("Zcash_nf", nk || rho)

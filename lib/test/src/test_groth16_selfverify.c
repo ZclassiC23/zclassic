@@ -15,6 +15,7 @@
 #include "sapling/sapling_circuit.h"
 #include "sapling/sapling_prover.h"
 #include "sapling/groth16_prover.h"
+#include "sapling/pedersen_hash.h"
 #include "sapling/fr.h"
 #include "crypto/blake2s.h"
 #include "test/groth16_spend_oracle_kat.h"
@@ -183,7 +184,7 @@ static void native_circuit_baseline(void)
  *
  * The spend circuit is ported gadget-by-gadget in bellman's Spend::synthesize
  * order. This gate is params-free (pure R1CS synthesis, no proving key) and
- * pins the ported prefix (sections 1..16) against ground truth:
+ * pins the ported prefix (sections 1..21) against ground truth:
  *   (1) cumulative constraint counts per section == the reference trace's
  *       cumulative boundaries (exact, verified by the salvage-plan legs);
  *   (2) the in-circuit nk / rk wires carry the reference-correct Jubjub points,
@@ -210,12 +211,26 @@ static void native_circuit_baseline(void)
  *       repr(g_d)/repr(pk_d) reproduce those points' compressed encodings; and
  *       cv is BOUND to public input 3/4, so the honest witness must carry the
  *       real [value]G_v + [rcv]G_rcv or the R1CS-satisfaction check below fails;
+ *  (2e) sections 17..20 — the note commitment. The 982-constraint windowed
+ *       Pedersen hash is the largest single gadget after blake2s, and a window
+ *       lookup with the wrong table or the wrong personalization hits the same
+ *       count while committing to a different note. So both the section-17 hash
+ *       point and the section-20 commitment point are diffed, x AND y, against
+ *       the out-of-circuit table-driven Pedersen hash + Jubjub scalar mul, and
+ *       cm.x is additionally tied to the production sapling_compute_cm() — the
+ *       protocol's `cmu`, i.e. the leaf the note-commitment tree stores;
+ *  (2f) sections 17..21 END TO END. Section 21 folds the note commitment 32
+ *       levels up to the anchor, and it now takes its leaf straight off section
+ *       20's cm.x wire. Checking each half on its own would not establish that
+ *       the commitment the circuit computed is the value that entered the fold,
+ *       so the anchor wire is diffed against an out-of-circuit fold seeded from
+ *       sapling_compute_cm()'s OWN output over the same witnessed path;
  *   (3) synthesis is deterministic (identical inputs => byte-identical witness).
- * Sections 17..28 are not yet ported, so this is a PARTIAL-prefix gate, not a
+ * Sections 22..28 are not yet ported, so this is a PARTIAL-prefix gate, not a
  * spend round-trip. Returns the number of failures (0 == green). */
 static int spend_circuit_shape_gate(void)
 {
-    printf("\n--- H3: Sapling SPEND circuit port shape gate (sections 1-16) ---\n");
+    printf("\n--- H3: Sapling SPEND circuit port shape gate (sections 1-21) ---\n");
     int failures = 0;
 
     /* Fixed witness — reuses the H2 KAT scalars so the nk wire ties to the
@@ -232,6 +247,21 @@ static int spend_circuit_shape_gate(void)
     wit.value = UINT64_C(54321);
     wit.rcv[0] = 0x71;              /* small canonical Fs scalar (< 2^252) */
     wit.rcv[1] = 0x0d;
+    wit.rcm[0] = 0x5c;              /* note commitment randomness (sections 18-20) */
+    wit.rcm[1] = 0x23;
+    /* The 32 authentication-path siblings section 21 folds cm.x through. Each
+     * comes from a Pedersen Merkle hash so it is a canonical Fr encoding by
+     * construction, and the position bits are not a function of depth parity
+     * alone — a swapped-every-level bug has to be visible. */
+    for (size_t d = 0; d < SAPLING_MERKLE_DEPTH; d++) {
+        uint8_t pa[32] = {0}, pb[32] = {0};
+        pa[0] = (uint8_t)(0x10u + d);
+        pa[1] = 0x5b;
+        pb[0] = (uint8_t)(d * 7u);
+        pb[3] = 0x11;
+        pedersen_merkle_hash(0, pa, pb, wit.auth_path[d]);
+        wit.auth_path_bits[d] = (((d * 5u) + (d / 3u)) & 1u) != 0u;
+    }
     PROVER_CHECK("found a diversifier whose group_hash is a Jubjub point",
                  find_diversifier(wit.diversifier));
 
@@ -251,20 +281,21 @@ static int spend_circuit_shape_gate(void)
     memcpy(pub.rk, rk_bytes, 32);
     memcpy(pub.cv, cv_bytes, 32);
 
-    struct spend_section_shape sections[17];
+    struct spend_section_shape sections[22];
     size_t nsec = 0;
     struct spend_wire_probe probe;
     struct constraint_system cs;
     cs_init(&cs);
     bool synth_ok = sapling_spend_synthesize_traced(
-        &cs, &wit, &pub, sections, 17, &nsec, &probe);
+        &cs, &wit, &pub, sections, 22, &nsec, &probe);
     PROVER_CHECK("traced spend synthesis succeeded", synth_ok);
 
     /* (1) Per-section cumulative constraint counts vs the reference trace. */
-    static const size_t REF_CUM[16] =
+    static const size_t REF_CUM[21] =
         {20, 272, 1022, 1028, 1030, 1282, 2032, 2808, 3584, 24590,
-         24594, 24610, 27862, 29127, 29903, 30679};
-    static const char *REF_NAME[16] = {
+         24594, 24610, 27862, 29127, 29903, 30679, 31661, 31913, 32663, 32669,
+         76893};
+    static const char *REF_NAME[21] = {
         "S1 ak witness/on-curve/not-small-order (cum 20)",
         "S2 ar bits (cum 272)",
         "S3 randomization of signing key (cum 1022)",
@@ -281,29 +312,42 @@ static int spend_circuit_shape_gate(void)
         "S14 value commitment + cv inputize (cum 29127)",
         "S15 representation of g_d (cum 29903)",
         "S16 representation of pk_d (cum 30679)",
+        "S17 note content hash — windowed Pedersen hash (cum 31661)",
+        "S18 rcm bits (cum 31913)",
+        "S19 [rcm] NoteCommitmentRandomness (cum 32663)",
+        "S20 randomization of note commitment (cum 32669)",
+        "S21 merkle tree hash 0..31 (cum 76893)",
     };
-    PROVER_CHECK("synthesized all 16 ported sections", nsec == 16);
-    for (size_t i = 0; i < 16 && i < nsec; i++)
+    PROVER_CHECK("synthesized all 21 ported sections", nsec == 21);
+    for (size_t i = 0; i < 21 && i < nsec; i++)
         PROVER_CHECK(REF_NAME[i], sections[i].num_constraints == REF_CUM[i]);
     PROVER_CHECK("7 public inputs allocated (bellman-faithful low indices)",
                  cs.num_inputs == 7);
-    PROVER_CHECK("ported-prefix constraint count == 30679",
-                 cs.num_constraints == 30679);
+    PROVER_CHECK("ported-prefix constraint count == 76893",
+                 cs.num_constraints == 76893);
     /* Per-section DELTAS, not only cumulative totals — a compensating pair of
      * errors in adjacent sections cancels in the running total but not here.
      * 3252 = 13*251 - 11 is double-and-add over the 251 truncated ivk bits;
-     * 1265 = 64 + 191 + 252 + 750 + 6 + 2 is expose_value_commitment. */
-    if (nsec == 16) {
-        static const size_t REF_DELTA[6] = {4, 16, 3252, 1265, 776, 776};
-        static const char *REF_DELTA_NAME[6] = {
+     * 1265 = 64 + 191 + 252 + 750 + 6 + 2 is expose_value_commitment;
+     * 44224 = 32 * 1382 is the whole Merkle fold. */
+    if (nsec == 21) {
+        static const size_t REF_DELTA[11] =
+            {4, 16, 3252, 1265, 776, 776, 982, 252, 750, 6, 44224};
+        static const char *REF_DELTA_NAME[11] = {
             "S11 delta == 4 (EdwardsPoint::witness on-curve check)",
             "S12 delta == 16 (assert_not_small_order)",
             "S13 delta == 3252 (13*251 - 11, variable-base mul)",
             "S14 delta == 1265 (expose_value_commitment)",
             "S15 delta == 776 (EdwardsPoint::repr)",
             "S16 delta == 776 (EdwardsPoint::repr)",
+            "S17 delta == 982 (386 windows + 570 montgomery add + 8 "
+            "into_edwards + 18 edwards add)",
+            "S18 delta == 252 (field_into_boolean_vec_le, Fs::NUM_BITS)",
+            "S19 delta == 750 (84*3 + 83*6, fixed-base mul over 252 bits)",
+            "S20 delta == 6 (one Edwards addition)",
+            "S21 delta == 44224 (32 levels * 1382)",
         };
-        for (size_t i = 0; i < 6; i++)
+        for (size_t i = 0; i < 11; i++)
             PROVER_CHECK(REF_DELTA_NAME[i],
                          sections[10 + i].num_constraints
                              - sections[9 + i].num_constraints
@@ -432,7 +476,7 @@ static int spend_circuit_shape_gate(void)
          * otherwise "flip detected" would be vacuous. This is also what proves
          * the cv public input is the real value commitment — section 14 binds
          * it, so a placeholder cv shows up here as an unsatisfiable system. */
-        PROVER_CHECK("honest witness satisfies the 30679-constraint prefix",
+        PROVER_CHECK("honest witness satisfies the 76893-constraint prefix",
                      cs_is_satisfied(&cs, &ignored));
 
         for (size_t b = 0; b < 256; b++) {
@@ -567,6 +611,123 @@ static int spend_circuit_shape_gate(void)
         }
         PROVER_CHECK("64 value bits == note value little-endian (section 14)",
                      ok);
+    }
+
+    /* (2e) Sections 17 and 20 — the note commitment. The 982-constraint window
+     *      lookups can land on the reference count while hashing the wrong
+     *      table, the wrong personalization or the wrong bit order, so read the
+     *      two points back off the circuit's own wires:
+     *
+     *        section 17  note_hash == PedersenHash(NoteCommitment,
+     *                                 value(64) || repr(g_d) || repr(pk_d))
+     *        section 20  cm        == note_hash + [rcm] G_rcm
+     *
+     *      Both references come from sapling_note_commitment_point() — the same
+     *      body the wallet's sapling_compute_cm() and sapling_compute_nf() use
+     *      out of circuit, over Edwards coordinates and a precomputed chunk
+     *      table, which is a different algorithm from the in-circuit Montgomery
+     *      windows. x AND y are compared: a matching x with a mismatched y is a
+     *      point that is not the commitment. */
+    uint8_t cm_api[32];
+    bool cm_api_ok = synth_ok && pkd_derived
+        && sapling_compute_cm(wit.diversifier, pkd_bytes, wit.value, wit.rcm,
+                              cm_api);
+    {
+        struct jub_point cm_ref_pt;
+        bool cm_ref_ok = pkd_derived
+            && sapling_note_commitment_point(wit.diversifier, pkd_bytes,
+                                             wit.value, wit.rcm, &cm_ref_pt);
+        PROVER_CHECK("reference note commitment derived out of circuit",
+                     cm_ref_ok);
+
+        struct fr cm_x, cm_y;
+        bool cm_wire_ok = synth_ok && cm_ref_ok;
+        if (cm_wire_ok) {
+            jub_get_x(&cm_x, &cm_ref_pt);
+            jub_get_y(&cm_y, &cm_ref_pt);
+            cm_wire_ok = probe.cm_x < cs.num_vars && probe.cm_y < cs.num_vars
+                      && fr_eq(&cs.witness[probe.cm_x], &cm_x)
+                      && fr_eq(&cs.witness[probe.cm_y], &cm_y);
+        }
+        PROVER_CHECK("in-circuit cm wire == note hash + [rcm] G_rcm "
+                     "(section 20)", cm_wire_ok);
+
+        /* The protocol's `cmu` — the leaf the note-commitment tree stores — is
+         * exactly this x-coordinate, so tie the wire to the production API a
+         * wallet calls, not only to a point this test assembled. */
+        struct fr cm_api_fr;
+        bool cm_api_wire_ok = cm_api_ok
+            && fr_from_bytes(&cm_api_fr, cm_api)
+            && probe.cm_x < cs.num_vars
+            && fr_eq(&cs.witness[probe.cm_x], &cm_api_fr);
+        PROVER_CHECK("in-circuit cm.x == sapling_compute_cm() `cmu` "
+                     "(section 20)", cm_api_wire_ok);
+
+        /* Section 17's own wire pair must be a real curve point carrying the
+         * hash: subtract [rcm] G_rcm from the reference commitment and compare.
+         * Doing it by subtraction rather than by re-hashing keeps ONE reference
+         * for both sections, so a wrong section-19 generator cannot cancel out
+         * of both sides at once. */
+        struct fr grcm_x, grcm_y;
+        sapling_note_commit_randomness_generator(&grcm_x, &grcm_y);
+        bool hash_wire_ok = synth_ok && cm_ref_ok;
+        if (hash_wire_ok) {
+            uint8_t grcm_comp[32], grcm_xb[32];
+            fr_to_bytes(grcm_comp, &grcm_y);
+            fr_to_bytes(grcm_xb, &grcm_x);
+            hash_wire_ok = (grcm_comp[31] & 0x80u) == 0;
+            if (hash_wire_ok) {
+                grcm_comp[31] |= (uint8_t)((grcm_xb[0] & 1u) << 7);
+                struct jub_point g_rcm, rcm_pt, hash_pt;
+                hash_wire_ok = jub_from_bytes(&g_rcm, grcm_comp);
+                if (hash_wire_ok) {
+                    jub_scalar_mul(&rcm_pt, &g_rcm, wit.rcm);
+                    jub_neg(&rcm_pt, &rcm_pt);
+                    jub_add(&hash_pt, &cm_ref_pt, &rcm_pt);
+                    struct fr hx, hy;
+                    jub_get_x(&hx, &hash_pt);
+                    jub_get_y(&hy, &hash_pt);
+                    hash_wire_ok = probe.note_hash_x < cs.num_vars
+                                && probe.note_hash_y < cs.num_vars
+                                && fr_eq(&cs.witness[probe.note_hash_x], &hx)
+                                && fr_eq(&cs.witness[probe.note_hash_y], &hy);
+                }
+            }
+        }
+        PROVER_CHECK("in-circuit note hash wire == "
+                     "PedersenHash(NoteCommitment, note) (section 17)",
+                     hash_wire_ok);
+    }
+
+    /* (2f) Sections 17..21 END TO END — the assertion that only exists once the
+     *      seam between them is open. Fold the witnessed authentication path out
+     *      of circuit starting from sapling_compute_cm()'s OWN cm.x, and require
+     *      the circuit's anchor wire to equal it. Section 20 correct plus section
+     *      21 correct does not imply the commitment section 20 produced is the
+     *      value section 21 folded; a wrong handover leaves both halves green and
+     *      only this check red. */
+    {
+        uint8_t anchor_ref[32];
+        struct fr anchor_ref_fr;
+        bool ok = cm_api_ok;
+        if (ok) {
+            uint8_t cur[32];
+            memcpy(cur, cm_api, 32);
+            for (size_t d = 0; d < SAPLING_MERKLE_DEPTH; d++) {
+                uint8_t next[32];
+                if (wit.auth_path_bits[d])
+                    pedersen_merkle_hash(d, wit.auth_path[d], cur, next);
+                else
+                    pedersen_merkle_hash(d, cur, wit.auth_path[d], next);
+                memcpy(cur, next, 32);
+            }
+            memcpy(anchor_ref, cur, 32);
+            ok = fr_from_bytes(&anchor_ref_fr, anchor_ref)
+              && probe.anchor < cs.num_vars
+              && fr_eq(&cs.witness[probe.anchor], &anchor_ref_fr);
+        }
+        PROVER_CHECK("in-circuit anchor == out-of-circuit fold seeded from the "
+                     "circuit's own cm.x (sections 17..21)", ok);
     }
 
     /* (3) Determinism: identical inputs => byte-identical witness. */

@@ -411,7 +411,7 @@ void jub_mul_by_cofactor(struct jub_point *r, const struct jub_point *p)
 /* Square root mod p using Tonelli-Shanks.
  * p - 1 = 2^32 * q where q = (p-1)/2^32
  * Returns false if no square root exists. */
-static bool fr_sqrt(struct fr *r, const struct fr *a)
+bool fr_sqrt(struct fr *r, const struct fr *a)
 {
     if (fr_is_zero(a)) { fr_zero(r); return true; }
 

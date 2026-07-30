@@ -81,6 +81,18 @@ struct spend_wire_probe {
     size_t gd_x, gd_y;   /* witnessed g_d = GH("Zcash_gd", d) (section 11) */
     size_t pkd_x, pkd_y; /* pk_d = [ivk] g_d (section 13) */
     size_t cv_x, cv_y;   /* cv = [value] G_v + [rcv] G_rcv (section 14) */
+    /* The windowed Pedersen hash of the 576 note-content bits (section 17) and
+     * the note commitment that randomizes it, cm = note_hash + [rcm] G_rcm
+     * (section 20). Both are full Jubjub points, so a reader can diff x AND y
+     * against the out-of-circuit sapling_compute_cm() path; the protocol's
+     * `cmu` is just this point's x-coordinate. */
+    size_t note_hash_x, note_hash_y; /* PedersenHash(NoteCommitment, note) (17) */
+    size_t cm_x, cm_y;               /* cm = note_hash + [rcm] G_rcm    (20) */
+    /* The anchor section 21 folds cm.x up to. Published so ONE synthesis run
+     * can be checked end to end — the note commitment the circuit computed is
+     * the same value that entered the tree fold, which two separately-proven
+     * sections cannot establish between them. */
+    size_t anchor;                   /* Merkle root over cm.x           (21) */
     /* The 64 little-endian value bits section 14 booleanizes; they also open
      * the note in section 17, so a wrong bit order there is a silent divergence
      * this makes visible. SIZE_MAX-filled when not yet synthesized. */

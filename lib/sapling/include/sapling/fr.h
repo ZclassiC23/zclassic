@@ -26,6 +26,15 @@ void fr_mul(struct fr *r, const struct fr *a, const struct fr *b);
 void fr_sq(struct fr *r, const struct fr *a);
 void fr_inv(struct fr *r, const struct fr *a);
 
+/* Square root mod r (Tonelli-Shanks; r - 1 = 2^32 * odd, so the shortcut
+ * exponentiations do not apply). Returns false when `a` is not a quadratic
+ * residue, leaving `*r` untouched. WHICH of the two roots comes back is
+ * deterministic but arbitrary — it falls out of the Tonelli-Shanks walk, not
+ * out of any sign convention. A caller that needs a specific root must pin it
+ * itself; see circuit_pedersen.c's montgomery_scale for why the in-circuit
+ * Pedersen hash is such a caller. */
+bool fr_sqrt(struct fr *r, const struct fr *a);
+
 /* Convert 32 bytes (little-endian) to Montgomery form */
 bool fr_from_bytes(struct fr *r, const uint8_t s[32]);
 
