@@ -36,13 +36,32 @@
 #                 non-empty; `-` when hosted=yes. An item that is not hosted and
 #                 does not say who vouches for it is an unverified claim.
 #
-# Every hosted=yes row below was confirmed against a real check-run attached to
-# commit df752afce on origin/main (run 30509201499, all five success). The
-# hosted=no row is confirmed by the absence of any test job in build.yml.
+# CONFIRMATION STATUS — read this before quoting any row as verified.
+#
+# The gcc, clang, lint, fuzz-replay and compile-all-tus rows were each confirmed
+# against a real check-run attached to commit df752afce on origin/main (run
+# 30509201499, all five success).
+#
+# The `tests` row is NEWLY hosted and is NOT yet confirmed by any successful
+# check-run. `hosted=yes` here means only what the gate can check — that a job
+# with that key exists in build.yml and this file claims it. It does NOT mean
+# the job has ever gone green. The job is a deliberate first measurement of two
+# things nobody in this repo has measured: whether a hosted runner can carry
+# this suite at all, and how much of the corpus silently assumes the maintainer
+# host (a live node, a legacy zclassicd datadir, a populated ~/.zclassic-c23 —
+# a runner has none of them).
+#
+# If that first run comes back red or times out, the honest resolutions are to
+# fix the coupling, or to declare a smaller hosted scope in this file and say
+# what is excluded and why. The dishonest resolutions — which this project has
+# already been burned by and which are therefore ruled out here — are trimming
+# the corpus until it passes, gating on a narrow tail/grep instead of the full
+# output, or leaving this paragraph asserting a confirmation that never happened.
+# Replace this block with a run id and a verdict once one exists either way.
 
 gcc|yes|compile-check|compile-check (gcc)|-
 clang|yes|compile-check|compile-check (clang)|-
 lint|yes|lint|lint (make lint)|-
 fuzz-replay|yes|fuzz-replay|fuzz-replay (saved findings)|-
 compile-all-tus|yes|build|build (cached dependencies)|-
-tests|no|-|(no hosted check exists)|`make test-parallel` on the maintainer host: by a person before a merge, and by tools/ship.sh (which token-gates on ALL TESTS PASSED) before it will deploy. NEITHER IS BOUND TO A COMMIT — no per-commit attestation exists, so a reader of any commit on GitHub cannot tell whether the suite passed on that source. The pre-push hook does NOT close this: it runs `make pre-push-ci` (focused tests for changed files only) and is overridable via ZCL_PREPUSH_CMD / ZCL_SKIP_PREPUSH=1.
+tests|yes|tests|tests (make test-parallel)|-

@@ -415,3 +415,99 @@ jobs:
 
       - name: Build the fuzz targets and replay every saved artifact
         run: make fuzz-replay -j"$(nproc)"
+
+  # ── JOB 5 — the test suite, bound to the commit ────────────────────────
+  # WHY THIS EXISTS. Until this job, four green checks on a commit did not
+  # include the test suite, and .github/verification-coverage.txt had to carry
+  # `tests|no` with the honest note that the suite runs only on a maintainer
+  # host, bound to no commit — so a reader who does not trust this machine had
+  # no way to tell whether any given commit's tests passed. That is the gap.
+  #
+  # JOB 2's comment excluded the suite for years on the strength of a reason
+  # that had gone stale (it called the suite a whole-program LTO link, which it
+  # stopped being when test_parallel moved to a per-TU, depfile-tracked,
+  # non-LTO object tree). That comment also named the one thing still genuinely
+  # unknown — hosted runner capacity, and how much of the corpus assumes the
+  # maintainer host — and told the next person to MEASURE it rather than
+  # inherit an answer. This job is that measurement, run in the open where its
+  # result is a check attached to a commit.
+  #
+  # Two things to expect, and to read honestly rather than paper over:
+  #   * TIME. The dev reference host runs the suite in ~15 min at 32 workers.
+  #     A 4-vCPU runner compiles ~1400 translation units first, so the budget
+  #     here is sized generously; if it times out, the honest fix is a smaller
+  #     hosted scope declared in verification-coverage.txt, NOT a quietly
+  #     reduced corpus.
+  #   * ENVIRONMENT. Parts of this corpus were written on a host that has a
+  #     live node, a legacy zclassicd datadir, and a populated ~/.zclassic-c23.
+  #     A hosted runner has none of those. Groups that self-skip here are
+  #     reporting a real coverage difference between the two environments —
+  #     that difference belongs in verification-coverage.txt, not hidden.
+  #
+  # The verdict is token-gated, not exit-code-gated: `make test-parallel` is
+  # required to print ALL TESTS PASSED and to NOT print SOME TESTS FAILED,
+  # checked over the FULL captured output. A narrow tail/grep has produced a
+  # false green in this project before.
+  tests:
+    name: tests (make test-parallel)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential perl gcc-14
+          # Same -std=c23 reason as every other job here: ubuntu-latest's
+          # default gcc (13) rejects the `c23` spelling outright.
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100
+          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 100
+          sudo update-alternatives --set gcc /usr/bin/gcc-14
+          sudo update-alternatives --set cc /usr/bin/gcc-14
+          gcc --version
+
+      # Restore-only: JOB 2 is the sole writer (same key, same push-to-main
+      # condition). On a miss the suite's own vendor-ready path self-repairs.
+      - name: Restore vendored dependencies
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            vendor/lib
+            vendor/include
+            vendor/provenance
+          key: vendor-${{ runner.os }}-${{ hashFiles('tools/scripts/build_vendor.sh', 'vendor/patches/**') }}
+
+      - name: make test-parallel
+        run: |
+          set -o pipefail
+          make test-parallel -j"$(nproc)" 2>&1 | tee /tmp/suite.log
+
+      - name: Gate on the verdict token, over the full output
+        run: |
+          set -eu
+          # Both directions matter. Presence of the pass token alone is not
+          # enough: a partial run can print a per-group pass line while the
+          # suite as a whole failed elsewhere in the output.
+          if ! grep -q 'ALL TESTS PASSED' /tmp/suite.log; then
+            echo "FAIL: 'ALL TESTS PASSED' absent from the full suite output"
+            exit 1
+          fi
+          if grep -q 'SOME TESTS FAILED' /tmp/suite.log; then
+            echo "FAIL: 'SOME TESTS FAILED' present in the full suite output"
+            grep -n 'SOME TESTS FAILED' /tmp/suite.log
+            exit 1
+          fi
+          grep -E 'SUITE VERDICT' /tmp/suite.log || true
+          echo "verdict tokens agree: PASSED present, FAILED absent"
+
+      - name: Publish the suite log as an artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-parallel-log-${{ github.sha }}
+          path: /tmp/suite.log
+          retention-days: 14
