@@ -142,15 +142,39 @@ int t_git_hooks_gate_rejects_noop_pre_commit(void)
 
 /* P1-3 — systemd memory budget: the live repo units must fit under the host
  * budget, and the script's parser self-test covers over-budget, infinity,
- * invalid-size, absent-cap, and drop-in override behavior. */
+ * invalid-size, absent-cap, and drop-in override behavior.
+ *
+ * The baseline run checks the REAL committed deploy service units against
+ * a REAL host's memory — that is the whole point of this gate (see
+ * check_systemd_memory_budget.sh's own header). Left to its default, the
+ * script reads /proc/meminfo of whatever machine happens to run this test,
+ * which is only meaningful when that machine's RAM matches the actual
+ * deploy target. That coincidentally holds on the maintainer's dev host
+ * (rhett.dev-class hardware — see docs/HANDOFF.md), so it passed there
+ * silently, but a hosted CI runner's RAM (a few GB) is nowhere near the
+ * ~93 GiB deploy target, so the SAME finite MemoryMax sum that legitimately
+ * fits the real host reads as over-budget there — not a real regression,
+ * just this test reading the wrong machine's memory. .github/workflows/
+ * build.yml's lint job already pins ZCL_SYSTEMD_MEMORY_BUDGET_MEMTOTAL_BYTES
+ * to the real deploy target for exactly this reason (see that job's own
+ * comment); pin the SAME value here so this test verifies the same real
+ * invariant identically on every host, never the ambient host's own RAM. */
+/* rhett.dev, ~93 GiB — keep numerically identical to build.yml's
+ * ZCL_SYSTEMD_MEMORY_BUDGET_MEMTOTAL_BYTES. */
+#define ZCL_TEST_DEPLOY_TARGET_MEMTOTAL_BYTES "100300546048"
 int t_systemd_memory_budget(void)
 {
     int failures = 0;
-    int baseline_rc = run_gate_script(SYSMEM_SCRIPT_REL, NULL);
+    int base_env_rc = setenv("ZCL_SYSTEMD_MEMORY_BUDGET_MEMTOTAL_BYTES",
+                             ZCL_TEST_DEPLOY_TARGET_MEMTOTAL_BYTES, 1);
+    int baseline_rc = base_env_rc == 0
+        ? run_gate_script(SYSMEM_SCRIPT_REL, NULL) : -1;
+    (void)unsetenv("ZCL_SYSTEMD_MEMORY_BUDGET_MEMTOTAL_BYTES");
     int env_rc = setenv("ZCL_SYSTEMD_MEMORY_BUDGET_SELFTEST", "1", 1);
     int selftest_rc = env_rc == 0 ? run_gate_script(SYSMEM_SCRIPT_REL, NULL) : -1;
     (void)unsetenv("ZCL_SYSTEMD_MEMORY_BUDGET_SELFTEST");
     TEST("[lint-gate] P1-3 systemd memory budget: baseline and selftest pass") {
+        ASSERT(base_env_rc == 0);
         ASSERT(baseline_rc == 0);
         ASSERT(env_rc == 0);
         ASSERT(selftest_rc == 0);
