@@ -621,10 +621,21 @@ static int t_book(void)
         snprintf(evdir, sizeof(evdir), "%s/service/events", zcode_dir);
         ZPY_CHECK("book: events dir exists",
                   zpy_mkdir_p(evdir));
+        /* The two literal junk names below are exactly 64 characters — the
+         * same length as a real event's SHA3-256 hex id — but never a real
+         * id themselves (a real hash landing on 64 repeated 'a's or 'b's is
+         * a 1-in-16^64 event). Keep them as named constants so the
+         * "which file is real" logic below can compare by EXACT name
+         * instead of a "starts with 'a'/'b'" heuristic — a real hash id is
+         * built from 16 possible hex digits per position, so roughly 1 in
+         * 8 real ids legitimately starts with 'a' or 'b', and treating
+         * those as junk was a second, compounding bug (see below). */
+        static const char junk_name_a[] =
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        static const char junk_name_b[] =
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
         char junk_path[4400];
-        snprintf(junk_path, sizeof(junk_path),
-                 "%s/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                 "aaaaaaaaaaaa", evdir);
+        snprintf(junk_path, sizeof(junk_path), "%s/%s", evdir, junk_name_a);
         uint8_t junk[VCS_SERVICE_WIRE_BYTES];
         memset(junk, 0x5a, sizeof(junk));
         FILE *jf = fopen(junk_path, "wb");
@@ -636,12 +647,56 @@ static int t_book(void)
         ZPY_CHECK("book: junk wire counted corrupt on the way",
                   tmp != NULL && vcs_service_book_corrupt_count(tmp) == 1);
         vcs_service_book_free(tmp);
-        snprintf(junk_path, sizeof(junk_path),
-                 "%s/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-                 "bbbbbbbbbbbb", evdir);
+        snprintf(junk_path, sizeof(junk_path), "%s/%s", evdir, junk_name_b);
         uint8_t other_key[33], other_req[32];
         zpy_pub(0x77, other_key);
         zpy_root(0x78, other_req);
+
+        /* Snapshot every real event filename already on disk BEFORE
+         * planting the new one below. readdir() enumeration order is NOT
+         * creation order — ext4's htree directory index hashes names with
+         * a per-filesystem random seed set at mkfs time, so "the last
+         * 64-char match seen while iterating" is whichever pre-existing
+         * event that filesystem's hash happens to enumerate last, not
+         * necessarily the file this block is about to write. By this
+         * point in t_book() there are already ~15 other real event files
+         * on disk (key_a's upload, offences, no-credit facts, the Sybil
+         * pair's events, publishes, downloads), so that host-dependent
+         * pick was never guaranteed to be the intended one — it could
+         * rename away a DIFFERENT, already-counted real event instead,
+         * silently dropping it from the book's totals depending on the
+         * filesystem's hash seed. Find the newly planted file by set
+         * difference instead, which is correct regardless of enumeration
+         * order.
+         *
+         * Only the two EXACT junk_name_a/junk_name_b strings are excluded
+         * — not "any name starting with 'a' or 'b'". A real event id is a
+         * SHA3-256 hex digest: any of its 16 hex digits is equally likely
+         * in the first position, so roughly 1 in 8 genuine ids legitimately
+         * start with 'a' or 'b'. An earlier revision of this fix filtered
+         * by first character and silently misclassified those genuine ids
+         * as junk, which broke the very set-difference it was trying to
+         * make reliable. */
+        enum { ZPY_MAX_EVENT_NAMES = 4096 };
+        static char before_names[ZPY_MAX_EVENT_NAMES][65];
+        size_t before_count = 0;
+        {
+            DIR *ed0 = opendir(evdir);
+            struct dirent *ent0;
+            while (ed0 && (ent0 = readdir(ed0)) != NULL &&
+                   before_count < ZPY_MAX_EVENT_NAMES) {
+                if (strlen(ent0->d_name) == 64 &&
+                    strcmp(ent0->d_name, junk_name_a) != 0 &&
+                    strcmp(ent0->d_name, junk_name_b) != 0) {
+                    snprintf(before_names[before_count], 65, "%s",
+                             ent0->d_name);
+                    before_count++;
+                }
+            }
+            if (ed0)
+                closedir(ed0);
+        }
+
         struct vcs_service_book *plant = vcs_service_book_load(zcode_dir);
         /* Record a real event, then RENAME its file to a wrong name. */
         ZPY_CHECK("book: plant event",
@@ -650,16 +705,31 @@ static int t_book(void)
                       VCS_SERVICE_CREDIT_OK);
         vcs_service_book_free(plant);
         char real_path[4400] = "";
-        DIR *ed = opendir(evdir);
-        struct dirent *ent;
-        while (ed && (ent = readdir(ed)) != NULL) {
-            if (strlen(ent->d_name) == 64 && ent->d_name[0] != 'a' &&
-                ent->d_name[0] != 'b')
-                snprintf(real_path, sizeof(real_path), "%s/%s", evdir,
-                         ent->d_name);
+        {
+            DIR *ed = opendir(evdir);
+            struct dirent *ent;
+            while (ed && (ent = readdir(ed)) != NULL) {
+                if (strlen(ent->d_name) != 64 ||
+                    strcmp(ent->d_name, junk_name_a) == 0 ||
+                    strcmp(ent->d_name, junk_name_b) == 0)
+                    continue;
+                bool was_before = false;
+                for (size_t i = 0; i < before_count; i++) {
+                    if (strcmp(before_names[i], ent->d_name) == 0) {
+                        was_before = true;
+                        break;
+                    }
+                }
+                if (!was_before) {
+                    snprintf(real_path, sizeof(real_path), "%s/%s", evdir,
+                             ent->d_name);
+                    break; /* the one new name — deterministic regardless
+                            * of enumeration order */
+                }
+            }
+            if (ed)
+                closedir(ed);
         }
-        if (ed)
-            closedir(ed);
         ZPY_CHECK("book: real event file found", real_path[0] != '\0');
         ZPY_CHECK("book: id-mismatch planted",
                   rename(real_path, junk_path) == 0);
