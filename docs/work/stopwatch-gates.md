@@ -181,6 +181,57 @@ selftests with a false-green guard and cross-checks that the shell parser
 sees exactly the class rows in the `.def`. The C half is the
 `stopwatch_skip_watch` test group.
 
+## What a C3 run records, and what it admits it cannot
+
+Every C3 run leaves the SAME evidence set whatever its verdict — pass, seam,
+stalled-named, readback-failed, skip. Capture used to be gated behind
+`verdict != pass`, so a successful run left three files and threw away the
+per-stage cost split that is the whole point of measuring; the one real PASS
+artifact on disk (`build/c3-stopwatch/20260728T000207Z-2102851/`) is exactly
+that shape. A baseline that only exists on failure is not a baseline.
+
+Each artifact dir now carries, on every verdict:
+
+- `samples.tsv` — the per-tick climb trace (t, unix, boot ordinal, H*,
+  provable sample, network_tip, tip_ok, frontier_busy, blocker count/ids, and
+  the node process's cumulative CPU/RSS/disk from `/proc`). Written DURING the
+  run, so a harness killed at t=550s of a 600s budget still leaves the trace.
+- `proof.json` → `phases[]` — one element per phase, each naming the source of
+  its duration: `harness.*` elements are windows this harness bracketed itself,
+  boot elements come from the node's own `[boot]` markers with `median_ms`
+  joined from `dumpstate boot_timings`.
+- `proof.json` → `measured_identity` — the binary's baked `source_id_sha256`
+  (read through `tools/scripts/source_identity_lib.sh`, the one canonical
+  reader), the peer dialled, the precheck class, and the peer's advertised tip.
+- `proof.json` → `omitted_fields[]` — every field the measurement brief asked
+  for that the run did NOT record, **by name**, with the reason and the nearest
+  honest substitute. `scope=structural` means nothing in this tree can source it
+  (per-phase network bytes, per-boot-phase CPU/disk/start/blocker/H*);
+  `scope=this_run` means a source exists but this run lost the reading. Silent
+  absence would read as "measured, and fine", which is how a baseline acquires
+  a number nobody took.
+- the full diagnostic bundle: `frontier.json`, `reducer_drive.json`,
+  `reducer_stage_profile.json`, `boot_timings.json`, `stage-*.json`,
+  `blocker.json`, `net-*.json`, `ops.log.tail.txt`, `node.log`.
+
+### Proving the symmetry
+
+`tools/scripts/stopwatch_artifact_symmetry_check.sh` drives the real harness
+twice against a mock node it writes itself — once forced to PASS, once forced
+to a non-pass — and compares the two artifact sets file by file and field by
+field. It refuses a pass-vs-pass comparison, so the proof cannot go hollow.
+
+```bash
+make stopwatch-symmetry-selftest   # hermetic: mutation-tests the comparison, no node/network
+make stopwatch-symmetry-prove      # end-to-end: two real harness runs vs a mock node
+```
+
+`--selftest` is the mutation matrix: it breaks each thing the comparison claims
+to check and requires the comparison to go red, plus an untouched control that
+must stay green. It also runs as a pre-flight inside
+`mvp-coldstart-to-tip-stopwatch`, so the proof lane cannot quietly regain the
+asymmetry between runs.
+
 ## Running the reports
 
 ```bash
