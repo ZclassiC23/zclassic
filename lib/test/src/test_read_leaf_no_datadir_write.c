@@ -28,7 +28,7 @@
  *
  * WHAT IS ASSERTED HERE — the property, not the implementation. Each leaf
  * is invoked against a FIXTURE datadir (never a live one; always an
- * explicit `datadir` input) in three states, and the only thing checked is
+ * explicit `datadir` input) in four states, and the only thing checked is
  * what the leaf left behind on disk:
  *
  *   absent    — an empty datadir. Afterwards NO file whose name begins
@@ -37,10 +37,27 @@
  *               Afterwards the file's byte length and FNV-1a content hash
  *               must be identical, both staging row counts must be
  *               identical, and no node.db.corrupt-* may exist. (Catches
- *               create_schema, node_db_migrate, and the two DELETEs.)
+ *               node_db_migrate and the two DELETEs.)
+ *   foreign   — a real SQLite database that is NOT a node database: an
+ *               operator's own file that happens to sit at node.db.
+ *               Afterwards it must hold the same tables. (Catches
+ *               create_schema, which the present case CANNOT see: forty
+ *               CREATE TABLE IF NOT EXISTS statements against an
+ *               already-migrated database change no bytes, which is why
+ *               app.store.products reached node_db_open_runtime for months
+ *               with the present case green.)
  *   garbage   — a node.db that is not a SQLite file at all. Afterwards it
  *               must still be there, byte-identical, under its own name.
  *               (Catches db_quarantine_files' rename.)
+ *
+ * node.db is not the only database a read leaf can be pointed at, so the
+ * absent/present/garbage states are asserted for the KERNEL store too —
+ * <datadir>/consensus.db, the append-only fact log that is the authority
+ * for every stage cursor. progress_store_open() opens it READWRITE|CREATE, runs a
+ * rename migration, ensures its schema, and on a failed integrity check
+ * rename()s it aside to consensus.db.corrupt-<ts> and installs a fresh
+ * empty one. core.sync.frontier.offline reached exactly that, and while
+ * this file watched only node.db* it would not have seen the damage.
  *
  * The reply is deliberately NOT asserted on: a read leaf is free to answer
  * "blocked, no node.db here" or to answer with data. The contract under
@@ -51,7 +68,7 @@
  * leaf to take a `datadir` (core.wallet.recovery.status) was added, called
  * node_db_open(), renamed a user's node.db to node.db.corrupt-<ts> while
  * answering "ok": true, and this file said nothing. A hand list cannot
- * catch the leaf nobody remembered to add to it. So case 5 walks the
+ * catch the leaf nobody remembered to add to it. So case 6 walks the
  * compiled command registry (zcl_command_catalog()) and requires that
  * EVERY READY, non-branch, READ-effect leaf whose declared input keys
  * include `datadir` is either exercised here or named in g_rlw_uncovered
@@ -71,6 +88,7 @@
 #include "json/json.h"
 #include "kernel/command_registry.h"
 #include "models/database.h"
+#include "storage/consensus_db.h"
 
 #include <dirent.h>
 #include <sqlite3.h>
@@ -119,6 +137,11 @@ struct rlw_leaf {
 #define RLW_PUBKEY \
     "02b4632d08485ff1df2db55b9dafd23347d1c47a457072a1e87be26896549a8737"
 
+/* core.identity.resolve wants a bare 32-byte key (64 hex, not all-zero),
+ * not the 33-byte compressed form above. */
+#define RLW_ZID_PUBKEY \
+    "b4632d08485ff1df2db55b9dafd23347d1c47a457072a1e87be26896549a8737"
+
 static const struct rlw_leaf g_rlw_leaves[] = {
     { "app.service.access",     zcl_native_handle_service_access,
       "service", "reference",   NULL, NULL },
@@ -142,6 +165,50 @@ static const struct rlw_leaf g_rlw_leaves[] = {
     { "core.wallet.recovery.status",
       zcl_native_handle_wallet_recovery_status,
       NULL, NULL,               NULL, NULL },
+    /* The two leaves this file used to only NAME as open defects.
+     *
+     * app.store.products reached node_db_open_runtime — READWRITE|CREATE,
+     * create_schema(), node_db_migrate() — so pointing this read leaf at a
+     * datadir rewrote that datadir's schema. It now opens through
+     * zcl_native_node_db_require_readonly().
+     *
+     * core.sync.frontier.offline reached progress_store_open, which opens
+     * <datadir>/consensus.db READWRITE|CREATE, runs a rename migration,
+     * ensures its schema, and QUARANTINES it — rename()s the append-only
+     * fact log aside and installs a fresh empty one — on a failed integrity
+     * check. It now opens through zcl_native_kernel_store_open_readonly(),
+     * and the kernel-store observations below watch consensus.db the same
+     * way the node.db ones watch node.db. */
+    { "app.store.products",     zcl_native_handle_store_products,
+      NULL, NULL,               NULL, NULL },
+    { "core.sync.frontier.offline",
+      zcl_native_handle_core_sync_frontier_offline,
+      NULL, NULL,               NULL, NULL },
+    /* Six of the pre-existing gaps, moved off the uncovered list because
+     * they now have an on-disk proof rather than a promise. All six already
+     * opened correctly; what was missing was anyone checking. They are
+     * exercised with real inputs on purpose — a leaf that refuses before it
+     * reaches the datadir proves nothing about the datadir, so
+     * core.identity.resolve gets a selector and core.storage.query.offline
+     * gets a statement it will actually run. */
+    { "core.epoch.status",      zcl_native_handle_core_epoch_status,
+      NULL, NULL,               NULL, NULL },
+    { "core.epoch.verify",      zcl_native_handle_core_epoch_verify,
+      NULL, NULL,               NULL, NULL },
+    { "core.identity.list",     zcl_native_handle_core_identity_list,
+      NULL, NULL,               NULL, NULL },
+    { "core.identity.resolve",  zcl_native_handle_core_identity_resolve,
+      "pubkey", RLW_ZID_PUBKEY, NULL, NULL },
+    { "core.storage.query.offline",
+      zcl_native_handle_core_storage_query_offline,
+      "sql", "SELECT 1",        NULL, NULL },
+    /* Narrower than the five above, and stated so: bootstatus reads
+     * <datadir>/boot_status.json and never opens a database at all, so what
+     * is proven here is only that it creates nothing and quarantines
+     * nothing. That is the whole of its exposure, but do not read its
+     * presence in this table as database coverage. */
+    { "core.node.bootstatus",   zcl_native_handle_core_node_bootstatus,
+      NULL, NULL,               NULL, NULL },
 };
 
 #define RLW_LEAF_COUNT ((int)(sizeof(g_rlw_leaves) / sizeof(g_rlw_leaves[0])))
@@ -155,10 +222,10 @@ static const struct rlw_leaf g_rlw_leaves[] = {
  * a line here and saying why. The count is ceilinged (RLW_UNCOVERED_MAX)
  * and shrink-only — this list can get shorter, never longer.
  *
- * Most of these are the pre-existing gap: the hand table only ever named
- * six leaves, so 36 others were absent and nothing said so. Deriving the
- * population from the registry is what made them visible; covering them is
- * follow-on work, one entry deleted per leaf exercised. */
+ * These are the pre-existing gap: the hand table only ever named six
+ * leaves, so the rest of the derived population was absent and nothing said
+ * so. Deriving the population from the registry is what made them visible;
+ * covering them is follow-on work, one entry deleted per leaf exercised. */
 #define RLW_UNCOVERED_REASON_PREEXISTING                                 \
     "pre-existing gap: declared READ, takes datadir, never exercised "   \
     "here. Made visible by the registry-derived coverage check; delete "  \
@@ -170,27 +237,7 @@ struct rlw_uncovered {
 };
 
 static const struct rlw_uncovered g_rlw_uncovered[] = {
-    /* Two OPEN DEFECTS, already carried as shrink-only lines in
-     * tools/lint/read_leaf_boot_ceremony_baseline.txt. They would FAIL the
-     * on-disk cases below today; naming them here records the gap instead
-     * of hiding it, and both lines go when the baseline lines go. */
-    { "app.store.products",
-      "OPEN DEFECT (baselined): sn_open_db -> node_db_open_runtime is "
-      "READWRITE|CREATE and still runs create_schema + node_db_migrate, so "
-      "it can rewrite the schema of the datadir it is pointed at" },
-    { "core.sync.frontier.offline",
-      "OPEN DEFECT (baselined): progress_store_open on consensus.db "
-      "creates, runs a rename migration, and quarantines on a failed "
-      "integrity check — and this file only watches node.db*, so it would "
-      "not even see the damage" },
-
-    { "core.epoch.status",            RLW_UNCOVERED_REASON_PREEXISTING },
-    { "core.epoch.verify",            RLW_UNCOVERED_REASON_PREEXISTING },
-    { "core.storage.query.offline",   RLW_UNCOVERED_REASON_PREEXISTING },
-    { "core.node.bootstatus",         RLW_UNCOVERED_REASON_PREEXISTING },
     { "core.node.bootwait",           RLW_UNCOVERED_REASON_PREEXISTING },
-    { "core.identity.resolve",        RLW_UNCOVERED_REASON_PREEXISTING },
-    { "core.identity.list",           RLW_UNCOVERED_REASON_PREEXISTING },
     { "ops.debug.producer",           RLW_UNCOVERED_REASON_PREEXISTING },
     { "zcode.package.publish.plan",   RLW_UNCOVERED_REASON_PREEXISTING },
     { "zcode.package.search",         RLW_UNCOVERED_REASON_PREEXISTING },
@@ -225,7 +272,7 @@ static const struct rlw_uncovered g_rlw_uncovered[] = {
 
 /* SHRINK-ONLY ceiling. Raising it is the one edit that would turn this
  * whole coverage check back into the hand list it replaced. */
-#define RLW_UNCOVERED_MAX 36
+#define RLW_UNCOVERED_MAX 28
 
 /* Anti-vacuous floor on the derived population itself: a coverage check
  * over an empty registry passes every assertion and proves nothing. Sits
@@ -340,6 +387,48 @@ static void rlw_mkfixture(char *dir, size_t n, const char *tag)
     char zdir[1200];
     snprintf(zdir, sizeof(zdir), "%s/zcode", dir);
     mkdir(zdir, 0700);
+}
+
+/* The byte pattern used for every "this is not a database" fixture. Chosen
+ * to be something an operator could plausibly have left in the datadir, so
+ * the failure reads as data loss rather than as a fuzz artefact. */
+static const char *const g_rlw_junk =
+    "this is an operator file, not a SQLite database\n";
+
+static bool rlw_write_junk(const char *path)
+{
+    size_t len = strlen(g_rlw_junk);
+    FILE *f = fopen(path, "wb");
+    bool ok = f && fwrite(g_rlw_junk, 1, len, f) == len;
+    if (f)
+        fclose(f);
+    return ok;
+}
+
+/* ── kernel-store (consensus.db) fixture ───────────────────────────────
+ *
+ * A VALID but otherwise empty SQLite file at <datadir>/consensus.db. Empty
+ * on purpose: there is nothing to migrate and nothing to read, so any byte
+ * that changes afterwards is DDL the leaf itself wrote (progress_store_open
+ * ensures the kernel schema). One real table, not a zero-byte placeholder,
+ * so the file has a genuine SQLite header and passes an integrity check —
+ * a quarantine after this would be unambiguous damage, not a rescue. */
+static bool rlw_seed_kernel_store(const char *dir, char *path_out,
+                                  size_t path_size)
+{
+    snprintf(path_out, path_size, "%s/%s", dir, CONSENSUS_DB_FILENAME);
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(path_out, &db,
+                        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL)
+        != SQLITE_OK) {
+        if (db)
+            sqlite3_close(db);
+        return false;
+    }
+    bool ok = sqlite3_exec(db, "CREATE TABLE rlw_fixture(x INTEGER)", NULL,
+                           NULL, NULL) == SQLITE_OK;
+    sqlite3_close(db);
+    return ok;
 }
 
 /* A migrated node.db carrying rows in exactly the two places the boot
@@ -486,12 +575,21 @@ static int t_absent_node_db_is_not_created(void)
         rlw_invoke(lf, dir);
 
         int left = rlw_count_entries(dir, "node.db");
-        if (left != 0)
+        /* Same question for the kernel store, under both the current name
+         * and the legacy one consensus_db_kernel_store_path() falls back
+         * to: an empty datadir must not gain a fact log either. */
+        int kleft = rlw_count_entries(dir, CONSENSUS_DB_FILENAME);
+        int pleft = rlw_count_entries(dir, CONSENSUS_DB_LEGACY_KERNEL_FILENAME);
+        if (left != 0 || kleft != 0 || pleft != 0)
             rlw_list_dir(lf->path, dir);
         snprintf(name, sizeof(name),
                  "%s: read leaf created no node.db* in an empty datadir",
                  lf->path);
         RLW_CHECK(name, left == 0);
+        snprintf(name, sizeof(name),
+                 "%s: read leaf created no kernel store in an empty datadir",
+                 lf->path);
+        RLW_CHECK(name, kleft == 0 && pleft == 0);
 
         test_rm_rf(dir);
     }
@@ -510,6 +608,15 @@ static int t_present_node_db_is_not_mutated(void)
 
     RLW_CHECK("present: fixture node.db seeded",
               rlw_seed_node_db(dir, db_path));
+
+    char kernel_path[1200];
+    RLW_CHECK("present: fixture consensus.db seeded",
+              rlw_seed_kernel_store(dir, kernel_path, sizeof(kernel_path)));
+    int64_t kernel_size_before = -1;
+    uint64_t kernel_hash_before = rlw_file_hash(kernel_path,
+                                               &kernel_size_before);
+    RLW_CHECK("present: consensus.db readable before the calls",
+              kernel_hash_before != 0 && kernel_size_before > 0);
 
     static const char *const q_utxos =
         "SELECT COUNT(*) FROM snapshot_staging_utxos";
@@ -563,11 +670,114 @@ static int t_present_node_db_is_not_mutated(void)
     RLW_CHECK("present: nothing was quarantined to node.db.corrupt-*",
               quarantined == 0);
 
+    int64_t kernel_size_after = -1;
+    uint64_t kernel_hash_after = rlw_file_hash(kernel_path,
+                                              &kernel_size_after);
+    int kernel_quarantined = rlw_count_entries(dir, "consensus.db.corrupt");
+    if (kernel_hash_after != kernel_hash_before || kernel_quarantined != 0) {
+        printf("    consensus.db size %lld -> %lld, hash %016llx -> %016llx\n",
+               (long long)kernel_size_before, (long long)kernel_size_after,
+               (unsigned long long)kernel_hash_before,
+               (unsigned long long)kernel_hash_after);
+        rlw_list_dir("present", dir);
+    }
+    RLW_CHECK("present: consensus.db byte length unchanged",
+              kernel_size_after == kernel_size_before &&
+              kernel_size_after > 0);
+    RLW_CHECK("present: consensus.db content hash unchanged",
+              kernel_hash_after == kernel_hash_before &&
+              kernel_hash_after != 0);
+    RLW_CHECK("present: nothing was quarantined to consensus.db.corrupt-*",
+              kernel_quarantined == 0);
+
     test_rm_rf(dir);
     return failures;
 }
 
-/* ── case 3: a node.db that is not a database must not be renamed ──── */
+/* ── case 3: a valid database that is not a NODE database ───────────────
+ *
+ * The byte-identity case above cannot see the smaller half of the ceremony.
+ * create_schema() is `CREATE TABLE IF NOT EXISTS` forty times over and
+ * node_db_migrate() is a no-op at the current version, so re-running both
+ * against an already-migrated node.db and closing it leaves the file
+ * byte-identical — app.store.products reached node_db_open_runtime for
+ * months and the present case stayed green throughout.
+ *
+ * What that path actually does is INSTALL A SCHEMA into whatever file it
+ * was handed. So point every read leaf at a real SQLite database that is
+ * not a node database — an operator's own file that happens to sit at
+ * <datadir>/node.db — and require that it comes back with the same tables
+ * it went in with. A read leaf may find nothing there; it may not fix
+ * that by writing the tables it wanted to read. */
+
+static int64_t rlw_table_count(const char *db_path)
+{
+    return rlw_scalar(db_path,
+                      "SELECT COUNT(*) FROM sqlite_master WHERE type='table'");
+}
+
+static int t_foreign_node_db_gets_no_schema(void)
+{
+    int failures = 0;
+    char dir[256];
+    rlw_mkfixture(dir, sizeof(dir), "foreign");
+    char db_path[1200];
+    snprintf(db_path, sizeof(db_path), "%s/node.db", dir);
+
+    sqlite3 *seed = NULL;
+    bool made = sqlite3_open_v2(db_path, &seed,
+                                SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
+                                NULL) == SQLITE_OK &&
+                sqlite3_exec(seed,
+                             "CREATE TABLE operator_notes(note TEXT);"
+                             "INSERT INTO operator_notes VALUES('mine');",
+                             NULL, NULL, NULL) == SQLITE_OK;
+    if (seed)
+        sqlite3_close(seed);
+    RLW_CHECK("foreign: fixture is a real SQLite file, not a node database",
+              made);
+
+    int64_t tables_before = rlw_table_count(db_path);
+    /* Anti-vacuous: one table, so any schema install is a visible jump. */
+    RLW_CHECK("foreign: fixture holds exactly its own 1 table",
+              tables_before == 1);
+    int64_t size_before = -1;
+    uint64_t hash_before = rlw_file_hash(db_path, &size_before);
+    RLW_CHECK("foreign: fixture readable before the calls",
+              hash_before != 0 && size_before > 0);
+
+    for (int i = 0; i < RLW_LEAF_COUNT; i++)
+        rlw_invoke(&g_rlw_leaves[i], dir);
+
+    int64_t tables_after = rlw_table_count(db_path);
+    int64_t size_after = -1;
+    uint64_t hash_after = rlw_file_hash(db_path, &size_after);
+    int quarantined = rlw_count_entries(dir, "node.db.corrupt");
+
+    if (tables_after != tables_before || hash_after != hash_before ||
+        quarantined != 0) {
+        printf("    tables %lld -> %lld, size %lld -> %lld, "
+               "hash %016llx -> %016llx\n",
+               (long long)tables_before, (long long)tables_after,
+               (long long)size_before, (long long)size_after,
+               (unsigned long long)hash_before,
+               (unsigned long long)hash_after);
+        rlw_list_dir("foreign", dir);
+    }
+
+    RLW_CHECK("foreign: no schema was installed into the operator's file",
+              tables_after == tables_before && tables_after == 1);
+    RLW_CHECK("foreign: the file is still byte-identical",
+              size_after == size_before && hash_after == hash_before &&
+              hash_after != 0);
+    RLW_CHECK("foreign: nothing was quarantined to node.db.corrupt-*",
+              quarantined == 0);
+
+    test_rm_rf(dir);
+    return failures;
+}
+
+/* ── case 4: a node.db that is not a database must not be renamed ──── */
 
 static int t_garbage_node_db_is_not_quarantined(void)
 {
@@ -577,18 +787,29 @@ static int t_garbage_node_db_is_not_quarantined(void)
     char db_path[1200];
     snprintf(db_path, sizeof(db_path), "%s/node.db", dir);
 
-    static const char *const junk =
-        "this is an operator file, not a SQLite database\n";
-    FILE *f = fopen(db_path, "wb");
-    bool wrote = f && fwrite(junk, 1, strlen(junk), f) == strlen(junk);
-    if (f)
-        fclose(f);
-    RLW_CHECK("garbage: fixture node.db written", wrote);
+    RLW_CHECK("garbage: fixture node.db written", rlw_write_junk(db_path));
+
+    /* Same fixture for the kernel store. This is the one that used to be
+     * silently destroyed: progress_store_open's integrity check fails on a
+     * non-database, and its recovery is to rename the file to
+     * consensus.db.corrupt-<ts> and install a fresh empty fact log. */
+    char kernel_path[1200];
+    snprintf(kernel_path, sizeof(kernel_path), "%s/%s", dir,
+             CONSENSUS_DB_FILENAME);
+    RLW_CHECK("garbage: fixture consensus.db written",
+              rlw_write_junk(kernel_path));
 
     int64_t size_before = -1;
     uint64_t hash_before = rlw_file_hash(db_path, &size_before);
     RLW_CHECK("garbage: fixture readable before the calls",
-              hash_before != 0 && size_before == (int64_t)strlen(junk));
+              hash_before != 0 &&
+              size_before == (int64_t)strlen(g_rlw_junk));
+    int64_t kernel_size_before = -1;
+    uint64_t kernel_hash_before = rlw_file_hash(kernel_path,
+                                               &kernel_size_before);
+    RLW_CHECK("garbage: consensus.db fixture readable before the calls",
+              kernel_hash_before != 0 &&
+              kernel_size_before == (int64_t)strlen(g_rlw_junk));
 
     for (int i = 0; i < RLW_LEAF_COUNT; i++)
         rlw_invoke(&g_rlw_leaves[i], dir);
@@ -596,8 +817,13 @@ static int t_garbage_node_db_is_not_quarantined(void)
     int64_t size_after = -1;
     uint64_t hash_after = rlw_file_hash(db_path, &size_after);
     int quarantined = rlw_count_entries(dir, "node.db.corrupt");
+    int64_t kernel_size_after = -1;
+    uint64_t kernel_hash_after = rlw_file_hash(kernel_path,
+                                              &kernel_size_after);
+    int kernel_quarantined = rlw_count_entries(dir, "consensus.db.corrupt");
 
-    if (hash_after != hash_before || quarantined != 0)
+    if (hash_after != hash_before || quarantined != 0 ||
+        kernel_hash_after != kernel_hash_before || kernel_quarantined != 0)
         rlw_list_dir("garbage", dir);
 
     RLW_CHECK("garbage: node.db still exists under its own name",
@@ -607,12 +833,20 @@ static int t_garbage_node_db_is_not_quarantined(void)
               hash_after != 0);
     RLW_CHECK("garbage: no node.db.corrupt-* rename happened",
               quarantined == 0);
+    RLW_CHECK("garbage: consensus.db still exists under its own name",
+              access(kernel_path, F_OK) == 0);
+    RLW_CHECK("garbage: consensus.db still byte-identical",
+              kernel_size_after == kernel_size_before &&
+              kernel_hash_after == kernel_hash_before &&
+              kernel_hash_after != 0);
+    RLW_CHECK("garbage: no consensus.db.corrupt-* rename happened",
+              kernel_quarantined == 0);
 
     test_rm_rf(dir);
     return failures;
 }
 
-/* ── case 4: a corrupt node.db must REFUSE, not answer empty ───────── */
+/* ── case 5: a corrupt node.db must REFUSE, not answer empty ───────── */
 
 /* sqlite3_open_v2 is lazy — it does not read the header, so a non-database
  * opens with SQLITE_OK and only fails at the first statement. A helper that
@@ -628,13 +862,15 @@ static int t_garbage_node_db_is_refused_not_empty(void)
     char db_path[1200];
     snprintf(db_path, sizeof(db_path), "%s/node.db", dir);
 
-    static const char *const junk =
-        "this is an operator file, not a SQLite database\n";
-    FILE *f = fopen(db_path, "wb");
-    bool wrote = f && fwrite(junk, 1, strlen(junk), f) == strlen(junk);
-    if (f)
-        fclose(f);
-    RLW_CHECK("refuse: fixture node.db written", wrote);
+    RLW_CHECK("refuse: fixture node.db written", rlw_write_junk(db_path));
+
+    /* The kernel store is unreadable here too, so a leaf whose payload
+     * comes out of consensus.db has the same duty to say so. */
+    char kernel_path[1200];
+    snprintf(kernel_path, sizeof(kernel_path), "%s/%s", dir,
+             CONSENSUS_DB_FILENAME);
+    RLW_CHECK("refuse: fixture consensus.db written",
+              rlw_write_junk(kernel_path));
 
     for (int i = 0; i < RLW_LEAF_COUNT; i++) {
         char code[64] = { 0 };
@@ -651,7 +887,7 @@ static int t_garbage_node_db_is_refused_not_empty(void)
     return failures;
 }
 
-/* ── case 5: the population comes from the registry, not from memory ──
+/* ── case 6: the population comes from the registry, not from memory ──
  *
  * The defect this case exists to catch is the one that hit this very file:
  * a seventh read leaf was added, took a `datadir`, opened it with the boot
@@ -810,6 +1046,7 @@ int test_read_leaf_no_datadir_write(void)
     failures += t_registry_coverage();
     failures += t_absent_node_db_is_not_created();
     failures += t_present_node_db_is_not_mutated();
+    failures += t_foreign_node_db_gets_no_schema();
     failures += t_garbage_node_db_is_not_quarantined();
     failures += t_garbage_node_db_is_refused_not_empty();
 

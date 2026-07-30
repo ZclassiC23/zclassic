@@ -111,51 +111,53 @@ void zcl_native_handle_core_sync_frontier_offline(
         return;
     }
 
-    char kernel_path[PROGRESS_STORE_PATH_MAX];
-    if (!consensus_db_kernel_store_path(datadir, kernel_path,
-                                        sizeof(kernel_path))) {
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
-                               ZCL_COMMAND_EXIT_INVALID,
-                               "DATADIR_PATH_TOO_LONG", "normalize", false,
-                               false, "datadir path too long", datadir);
-        return;
-    }
-
-    /* Fail closed BEFORE progress_store_open(): that call opens
-     * consensus.db READWRITE|CREATE, so pointed at a directory with no
-     * kernel store it would silently CREATE a fresh empty one and report a
-     * meaningless H*=0 instead of "wrong path". consensus_db_kernel_store_
-     * path() above resolves to consensus.db OR the legacy progress.kv
-     * *name*, whichever exists — but doesn't itself require existence, so
-     * confirm the file is actually there first. */
-    if (access(kernel_path, F_OK) != 0) {
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
-                               ZCL_COMMAND_EXIT_BLOCKED,
-                               "KERNEL_STORE_NOT_FOUND", "execute", true,
-                               false,
-                               "no consensus.db/progress.kv at this datadir",
-                               kernel_path);
-        return;
-    }
-
-    if (!progress_store_open(datadir)) {
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
-                               ZCL_COMMAND_EXIT_BLOCKED,
-                               "KERNEL_STORE_UNAVAILABLE", "execute", true,
-                               false,
-                               "failed to open the kernel store at datadir",
-                               kernel_path);
-        return;
-    }
-    sqlite3 *db = progress_store_db();
-    if (!db) {
-        progress_store_close();
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
-                               ZCL_COMMAND_EXIT_INTERNAL,
-                               "KERNEL_STORE_UNAVAILABLE", "execute", false,
-                               false, "kernel store opened but handle is NULL",
-                               kernel_path);
-        return;
+    /* The shared read-only kernel-store open (command/native_command.h).
+     *
+     * This leaf used to call progress_store_open(datadir), which is
+     * READWRITE|CREATE, runs the progress.kv rename migration, ensures the
+     * kernel schema, and — on a failed integrity check — rename()s
+     * consensus.db aside to consensus.db.corrupt-<ts> and installs a fresh
+     * empty one. So a question about a copied datadir ("what is H* here?")
+     * could answer by DESTROYING the append-only fact log it was asked
+     * about, and an operator file that merely happened to sit at that path
+     * was quarantined outright. Read-only closes all of it: no CREATE (a
+     * mistyped datadir fails instead of minting an empty store and reporting
+     * a meaningless H*=0), no migration, no schema ensure, no quarantine —
+     * and no claim on the process singleton either. */
+    sqlite3 *db = NULL;
+    char kernel_path[1200];
+    enum zcl_node_db_ro_status ro_st = zcl_native_kernel_store_open_readonly(
+        datadir, &db, kernel_path, sizeof(kernel_path));
+    if (ro_st != ZCL_NODE_DB_RO_OK) {
+        switch (ro_st) {
+        case ZCL_NODE_DB_RO_PATH_TOO_LONG:
+            zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                                   ZCL_COMMAND_EXIT_INVALID,
+                                   "DATADIR_PATH_TOO_LONG", "normalize", false,
+                                   false, "datadir path too long", datadir);
+            return;
+        case ZCL_NODE_DB_RO_ABSENT:
+            zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
+                                   ZCL_COMMAND_EXIT_BLOCKED,
+                                   "KERNEL_STORE_NOT_FOUND", "execute", true,
+                                   false,
+                                   "no consensus.db/progress.kv at this "
+                                   "datadir", kernel_path);
+            return;
+        case ZCL_NODE_DB_RO_UNREADABLE:
+        case ZCL_NODE_DB_RO_NO_DATADIR:
+        default:
+            /* Distinct from NOT_FOUND on purpose: the file IS there and
+             * would not open read-only, which is never the same answer as
+             * "this datadir has no kernel store". */
+            zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
+                                   ZCL_COMMAND_EXIT_BLOCKED,
+                                   "KERNEL_STORE_UNAVAILABLE", "execute", true,
+                                   false,
+                                   "the kernel store at this datadir exists "
+                                   "but would not open read-only", kernel_path);
+            return;
+        }
     }
 
     /* A one-shot native CLI process has no app_init(): reducer_frontier_
@@ -176,12 +178,16 @@ void zcl_native_handle_core_sync_frontier_offline(
     (void)refold_progress_refresh(db);
 
     int32_t hstar = 0, served_floor = 0;
+    /* reducer_frontier_compute_hstar's documented contract is that the caller
+     * holds this lock; honoured even though `db` is this call's own private
+     * handle and not the singleton, so the contract cannot rot if the fold
+     * ever reaches a helper that assumes it. */
     progress_store_tx_lock();
     bool ok = reducer_frontier_compute_hstar(db, &hstar, &served_floor);
     progress_store_tx_unlock();
 
     if (!ok) {
-        progress_store_close();
+        sqlite3_close(db);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INTERNAL,
                                "HSTAR_COMPUTE_FAILED", "execute", false,
@@ -199,7 +205,7 @@ void zcl_native_handle_core_sync_frontier_offline(
                            REDUCER_FRONTIER_TRUSTED_ANCHOR);
     (void)json_push_kv_bool(&reply->data, "refold_in_progress",
                             refold_in_progress());
-    progress_store_close();
+    sqlite3_close(db);
     reply->status = ZCL_COMMAND_STATUS_PASSED;
     reply->exit_code = ZCL_COMMAND_EXIT_OK;
 }

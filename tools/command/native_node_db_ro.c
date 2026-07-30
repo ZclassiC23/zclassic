@@ -22,6 +22,7 @@
 
 #include "base/log_macros.h"
 #include "models/database.h"
+#include "storage/consensus_db.h"
 
 #include <sqlite3.h>
 #include <stdio.h>
@@ -31,6 +32,66 @@
 /* A locked WAL must give up rather than park a cursor on a connection the
  * live node is writing through (see the wallet write-wedge post-mortem). */
 #define ZCL_NODE_DB_RO_BUSY_MS 2000
+
+/* The read-only open itself, over a path the caller has already resolved.
+ *
+ * Everything that makes this safe lives in ONE function so a second store
+ * cannot drift from the first: there are two databases under a datadir that
+ * read leaves are pointed at — node.db and the consensus.db kernel store —
+ * and the whole reason both had a boot-ceremony hole is that each open was
+ * written out longhand at its own call site. Adding a store means adding a
+ * path resolver below, never a second copy of this. */
+static enum zcl_node_db_ro_status zcl_ro_open_existing(const char *path,
+                                                       sqlite3 **db_out)
+{
+    /* Absent vs unreadable are answered BEFORE the open, because
+     * sqlite3_open_v2 collapses both into SQLITE_CANTOPEN and a caller that
+     * may proceed on "absent" must never proceed on "unreadable". F_OK only
+     * stats; it creates nothing. */
+    if (access(path, F_OK) != 0)
+        return ZCL_NODE_DB_RO_ABSENT;
+
+    sqlite3 *db = NULL;
+    /* READONLY only: no CREATE (a typo'd datadir must fail, never mint a
+     * database) and no READWRITE (this handle answers a read leaf). */
+    int rc = sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL);
+    if (rc != SQLITE_OK) {
+        LOG_ERROR("cmd", "database present but not readable: %s: %s", path,
+                  db ? sqlite3_errmsg(db) : sqlite3_errstr(rc));
+        if (db)
+            sqlite3_close(db);
+        return ZCL_NODE_DB_RO_UNREADABLE;
+    }
+    /* Second, connection-wide refusal of any write that the open flags
+     * somehow let through (an ATTACHed db, a temp-table INSERT). */
+    (void)sqlite3_exec(db, "PRAGMA query_only=ON", NULL, NULL, NULL);
+    sqlite3_busy_timeout(db, ZCL_NODE_DB_RO_BUSY_MS);
+
+    /* Third, TOUCH THE FILE. sqlite3_open_v2 is lazy: it does not read the
+     * header, so a 47-byte text file, a truncated database, or any other
+     * non-database opens with SQLITE_OK and only fails later, at the first
+     * statement — by which point the caller has already been told OK and is
+     * inside its own query path, where "it did not open" and "it opened and
+     * held nothing" are the same shape. That is the exact confusion this
+     * whole helper exists to remove, so pay one page read here.
+     *
+     * This matters beyond tidiness: zcl_native_node_db_require_readonly's
+     * callers include two pre-flights that spend a fee (core.identity.anchor,
+     * the zdir register path). They treat ABSENT as "proceed, this is a
+     * legitimate first anchor" and anything else as fatal. A corrupt node.db
+     * returning OK made the revocation lookup fail, read as "not revoked",
+     * and spent the fee on a check that never ran. */
+    if (sqlite3_exec(db, "PRAGMA schema_version", NULL, NULL, NULL)
+        != SQLITE_OK) {
+        LOG_ERROR("cmd", "present but not a readable database: %s: %s", path,
+                  sqlite3_errmsg(db));
+        sqlite3_close(db);
+        return ZCL_NODE_DB_RO_UNREADABLE;
+    }
+
+    *db_out = db;
+    return ZCL_NODE_DB_RO_OK;
+}
 
 enum zcl_node_db_ro_status zcl_native_node_db_open_readonly(
     const char *datadir, sqlite3 **db_out, struct node_db *ndb_out,
@@ -59,56 +120,58 @@ enum zcl_node_db_ro_status zcl_native_node_db_open_readonly(
         memcpy(path_out, path, (size_t)n + 1);
     }
 
-    /* Absent vs unreadable are answered BEFORE the open, because
-     * sqlite3_open_v2 collapses both into SQLITE_CANTOPEN and a caller that
-     * may proceed on "absent" must never proceed on "unreadable". F_OK only
-     * stats; it creates nothing. */
-    if (access(path, F_OK) != 0)
-        return ZCL_NODE_DB_RO_ABSENT;
-
     sqlite3 *db = NULL;
-    /* READONLY only: no CREATE (a typo'd datadir must fail, never mint a
-     * database) and no READWRITE (this handle answers a read leaf). */
-    int rc = sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL);
-    if (rc != SQLITE_OK) {
-        LOG_ERROR("cmd", "node.db present but not readable: %s: %s", path,
-                  db ? sqlite3_errmsg(db) : sqlite3_errstr(rc));
-        if (db)
-            sqlite3_close(db);
-        return ZCL_NODE_DB_RO_UNREADABLE;
-    }
-    /* Second, connection-wide refusal of any write that the open flags
-     * somehow let through (an ATTACHed db, a temp-table INSERT). */
-    (void)sqlite3_exec(db, "PRAGMA query_only=ON", NULL, NULL, NULL);
-    sqlite3_busy_timeout(db, ZCL_NODE_DB_RO_BUSY_MS);
-
-    /* Third, TOUCH THE FILE. sqlite3_open_v2 is lazy: it does not read the
-     * header, so a 47-byte text file, a truncated database, or any other
-     * non-database opens with SQLITE_OK and only fails later, at the first
-     * statement — by which point the caller has already been told OK and is
-     * inside its own query path, where "it did not open" and "it opened and
-     * held nothing" are the same shape. That is the exact confusion this
-     * whole helper exists to remove, so pay one page read here.
-     *
-     * This matters beyond tidiness: zcl_native_node_db_require_readonly's
-     * callers include two pre-flights that spend a fee (core.identity.anchor,
-     * the zdir register path). They treat ABSENT as "proceed, this is a
-     * legitimate first anchor" and anything else as fatal. A corrupt node.db
-     * returning OK made the revocation lookup fail, read as "not revoked",
-     * and spent the fee on a check that never ran. */
-    if (sqlite3_exec(db, "PRAGMA schema_version", NULL, NULL, NULL)
-        != SQLITE_OK) {
-        LOG_ERROR("cmd", "node.db present but not a readable database: %s: %s",
-                  path, sqlite3_errmsg(db));
-        sqlite3_close(db);
-        return ZCL_NODE_DB_RO_UNREADABLE;
-    }
+    enum zcl_node_db_ro_status st = zcl_ro_open_existing(path, &db);
+    if (st != ZCL_NODE_DB_RO_OK)
+        return st;
 
     *db_out = db;
     ndb_out->db = db;
     ndb_out->open = true;
     snprintf(ndb_out->path, sizeof(ndb_out->path), "%s", path);
     return ZCL_NODE_DB_RO_OK;
+}
+
+/* The kernel store — <datadir>/consensus.db, or the legacy progress.kv name
+ * when that is what the datadir still carries.
+ *
+ * The write-side open is progress_store_open(): READWRITE|CREATE, a rename
+ * migration from progress.kv, a schema ensure, and — on a failed integrity
+ * check — progress_store_quarantine_corrupt(), which rename()s the
+ * append-only fact log that is the authority for every stage cursor aside to
+ * consensus.db.corrupt-<ts> and installs a fresh empty one. That is the
+ * right behaviour for a BOOTING node, which can re-derive the store from the
+ * snapshot and the anchor. It is data destruction when a read leaf does it to
+ * a copied datadir the operator asked a question about, so a read leaf gets
+ * this instead. It also takes no part in the process singleton: an
+ * offline-copy read must not become the process's one open kernel store. */
+enum zcl_node_db_ro_status zcl_native_kernel_store_open_readonly(
+    const char *datadir, sqlite3 **db_out, char *path_out, size_t path_size)
+{
+    if (path_out && path_size)
+        path_out[0] = '\0';
+    if (db_out)
+        *db_out = NULL;
+
+    if (!db_out)
+        LOG_RETURN(ZCL_NODE_DB_RO_NO_DATADIR, "cmd",
+                   "read-only kernel store open called without a handle");
+    if (!datadir || !datadir[0])
+        return ZCL_NODE_DB_RO_NO_DATADIR;
+
+    char path[1200];
+    if (!consensus_db_kernel_store_path(datadir, path, sizeof(path)))
+        return ZCL_NODE_DB_RO_PATH_TOO_LONG;
+    size_t n = strlen(path);
+    /* Reported even when the file turns out to be absent, so the caller can
+     * name exactly which path it looked at. */
+    if (path_out && path_size) {
+        if (path_size <= n)
+            return ZCL_NODE_DB_RO_PATH_TOO_LONG;
+        memcpy(path_out, path, n + 1);
+    }
+
+    return zcl_ro_open_existing(path, db_out);
 }
 
 bool zcl_native_node_db_require_readonly(
