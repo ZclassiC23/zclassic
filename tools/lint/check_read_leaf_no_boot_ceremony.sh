@@ -473,8 +473,17 @@ END {
 }
 ')
 
-if printf '%s\n' "$REPORT" | grep -q '^FATAL'; then
-    printf '%s\n' "$REPORT" | grep '^FATAL' >&2
+# Decide on the extracted string, not on a pipeline's exit status: under
+# pipefail a matching `grep -q '^FATAL'` can surface printf's SIGPIPE 141
+# rather than grep's 0, which reads a real non-convergence as clean.
+# MEASURED 2026-07-30: on a clean tree $REPORT is 21 bytes / 1 line, so the
+# inversion is NOT reachable here today — a shape fix, not a live-bug fix. It
+# is still worth making: the report grows one record per finding and nothing
+# bounds it, so today's safety is an accident of a clean tree.
+# Same regex, and the second grep that re-scanned the report is folded in.
+FATAL_RECORDS=$(printf '%s\n' "$REPORT" | grep '^FATAL' || true)
+if [ -n "$FATAL_RECORDS" ]; then
+    printf '%s\n' "$FATAL_RECORDS" >&2
     echo "check_read_leaf_no_boot_ceremony: FATAL — analysis did not converge." >&2
     exit 2
 fi

@@ -118,8 +118,19 @@ if [ -x "$BIN" ] && [ "$BIN" -nt src/main.c ] && [ "$BIN" -nt Makefile ]; then
         echo "NOTE: nm -D exported no symbols from $BIN (unexpected for -rdynamic);" >&2
         echo "      relying on the structural proof above." >&2
     else
+        # The verdict is a string test on the EXTRACTED match, never the exit
+        # status of a `printf | gate_grep -qx` pipeline. `$syms` is the whole
+        # .dynsym name list — measured 555 KB / 21,859 lines on this tree —
+        # so under `set -o pipefail` a `-qx` that MATCHED exited at the first
+        # hit, printf took SIGPIPE, and the pipeline reported 141 instead of 0.
+        # `if 141` is false, so a release binary that really did export a
+        # dev-only mutation symbol was read as clean: measured 20/20 hollow
+        # PASSes with a forbidden symbol planted on line 6 of the real nm
+        # output. Dropping `-q` makes grep consume all of stdin, so printf
+        # always completes; the regex itself is unchanged.
         for sym in "${FORBIDDEN[@]}"; do
-            if printf '%s\n' "$syms" | gate_grep -qx "$sym" >/dev/null; then
+            sym_hit="$(printf '%s\n' "$syms" | gate_grep -x "$sym" || true)"
+            if [ -n "$sym_hit" ]; then
                 echo "FAIL: release binary $BIN exports dev-only symbol '$sym'" >&2
                 rc=1
             fi

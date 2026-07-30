@@ -1,0 +1,63 @@
+# check_pipefail_status_pipe baseline — scripts still deciding something on the exit
+# status of a `printf | grep -q` / `echo | grep -q` pipeline while
+# pipefail is set. Under pipefail a MATCH can report printf's SIGPIPE
+# 141 instead of grep's 0, so the decision can silently invert.
+#
+# Format: <path> <count>.  COUNTS MAY ONLY SHRINK.
+#
+# Fix a row: use str_contains/str_lacks from tools/scripts/sh_str.sh, or
+# extract the match into a variable (drop -q, so grep drains stdin) and
+# test the STRING. Then lower or delete the number here. Adding a row
+# for a NEW file is not a fix — a file with no row may carry ZERO.
+#
+# Regenerate: ZCL_LINT_MODE=UPDATE tools/lint/check_pipefail_status_pipe.sh
+deploy/migrate-role-names-selftest.sh 3
+deploy/zclassic23-bundle-export.sh 2
+deploy/zclassic23-cutover-selftest.sh 10
+tools/agent_fast_ci.sh 11
+tools/deploy_guard.sh 2
+tools/dev/agent-dev-status.sh 4
+tools/dev/agent-doctor.sh 1
+tools/dev/deploy-dev-lane.sh 12
+tools/dev/hotswap-module-fast.sh 2
+tools/dev/recover-dev-lane.sh 3
+tools/lint/check_hotswap_eligible_scope.sh 1
+tools/lint/check_hotswap_swappable_shape.sh 2
+tools/lint/check_no_stale_pinned_facts.sh 1
+tools/lint/check_release_no_dev_symbols.sh 1
+tools/lint/check_silent_error_returns.sh 1
+tools/lint/check_thread_supervision.sh 1
+tools/lint/selftest_scanner_immunity.sh 1
+tools/mvp_gate.sh 6
+tools/scripts/check_condition_cooldown.sh 1
+tools/scripts/check_core_include_boundary.sh 1
+tools/scripts/check_domain_purity.sh 1
+tools/scripts/check_lib_layering.sh 1
+tools/scripts/check_model_ar_lifecycle.sh 1
+tools/scripts/check_no_authoritative_ram_state.sh 1
+tools/scripts/check_no_secret_printf.sh 1
+tools/scripts/check_no_silent_ready.sh 1
+tools/scripts/check_no_uncited_victory.sh 1
+tools/scripts/check_one_write_path.sh 1
+tools/scripts/check_projections_pure.sh 1
+tools/scripts/check_reproducible_build.sh 1
+tools/scripts/check_shape_include_direction.sh 1
+tools/scripts/ci_install_gate.sh 2
+tools/scripts/ci_install_linger_gate.sh 1
+tools/scripts/cold_start_to_tip_probe.sh 3
+tools/scripts/cold_start_to_tip_stopwatch.sh 3
+tools/scripts/intervention_ledger.sh 14
+tools/scripts/lane_recover.sh 1
+tools/scripts/mvp_scoreboard.sh 2
+tools/scripts/network_disruption_recovery_stopwatch.sh 3
+tools/scripts/node_slo_probe.sh 5
+tools/scripts/promotion_receipt.sh 8
+tools/scripts/proof_server_pin.sh 5
+tools/scripts/pr_security_scan.sh 4
+tools/scripts/slo_hold_judge.sh 13
+tools/scripts/slo_ledger_summary.sh 9
+tools/scripts/soak_evidence.sh 4
+tools/scripts/stopwatch_skip_class.sh 1
+tools/scripts/worktree_gc.sh 3
+tools/scripts/zcl_intervene.sh 2
+tools/scripts/zcl-portfwd-setup.sh 1

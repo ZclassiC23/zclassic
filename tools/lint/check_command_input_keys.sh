@@ -503,8 +503,20 @@ END {
 }
 ')
 
-if printf '%s\n' "$REPORT" | grep -q '^FATAL'; then
-    printf '%s\n' "$REPORT" | grep '^FATAL' >&2
+# Extract the FATAL records and decide on the STRING, not on a pipeline's exit
+# status. Under `set -o pipefail` a `printf | grep -q '^FATAL'` that MATCHED
+# exits at the first hit, printf takes SIGPIPE, and the pipeline reports 141
+# instead of grep's 0 — so a found non-convergence reads as "converged fine".
+# MEASURED 2026-07-30: on a clean tree $REPORT is 310 bytes / 5 lines, well
+# inside the 64 KB pipe buffer, so the inversion is NOT reachable here today —
+# this is a shape fix, not a live-bug fix, and it is worth making because the
+# report is finding-proportional (a record per UNREAD/STALE/MISS key) and
+# nothing bounds it, so the safety here is an accident of a clean tree.
+# grep without -q drains stdin, so printf always completes; the regex is
+# unchanged, and this also folds in the second grep that re-scanned the report.
+FATAL_RECORDS=$(printf '%s\n' "$REPORT" | grep '^FATAL' || true)
+if [ -n "$FATAL_RECORDS" ]; then
+    printf '%s\n' "$FATAL_RECORDS" >&2
     echo "check_command_input_keys: FATAL — analysis did not converge." >&2
     exit 2
 fi

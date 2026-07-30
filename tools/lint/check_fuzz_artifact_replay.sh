@@ -129,6 +129,11 @@ ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$ROOT"
 # shellcheck source=tools/lint/gate_lib.sh
 source "$SCRIPT_DIR/gate_lib.sh"
+# Pipeline-free substring predicates. FATAL if missing: the --selftest verdict
+# below depends on one, and a gate that silently loses its detector is exactly
+# the hollow PASS this file exists to prevent. See tools/scripts/sh_str.sh.
+# shellcheck source=tools/scripts/sh_str.sh
+. "$ROOT/tools/scripts/sh_str.sh" || { echo "$0: cannot source tools/scripts/sh_str.sh" >&2; exit 2; }
 
 SEED_ROOT="lib/test/fuzz_seeds"
 LEDGER="$SEED_ROOT/ARTIFACT_VERDICTS.txt"
@@ -233,7 +238,13 @@ if (( SELFTEST )); then
         echo "$GATE --selftest: FAIL — a planted untriaged artifact did NOT trip the gate" >&2
         exit 1
     fi
-    if ! printf '%s' "$trip_out" | grep -qF "$fixture"; then
+    # str_lacks, not `printf | grep -qF`: under pipefail a MATCH could come
+    # back as printf's SIGPIPE 141, i.e. "the gate never named the file" when
+    # it had. MEASURED 2026-07-30: `$trip_out` is 423 bytes, so the inversion
+    # is NOT reachable at that size — a shape fix, not a live-bug fix, kept
+    # because the transcript grows with findings. Fixed string in, fixed string
+    # out: str_contains quotes the needle, so this is identical to grep -qF.
+    if str_lacks "$trip_out" "$fixture"; then
         echo "$GATE --selftest: FAIL — the gate tripped but never named $fixture" >&2
         echo "  Naming the exact file is the point: a red build must not send" >&2
         echo "  anyone hunting for which artifact broke." >&2
