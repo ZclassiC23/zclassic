@@ -85,7 +85,23 @@ struct spend_wire_probe {
      * rather than merely counted. SIZE_MAX-filled when not yet synthesized. */
     size_t ak_repr[256]; /* representation of ak  (section 8) */
     size_t nk_repr[256]; /* representation of nk  (section 9) */
+
+    /* blake2s(CRH^ivk) output bit wires (section 10), 256 little-endian bits.
+     * bellman's blake2s returns `Boolean`s, which may be a NEGATED view of a
+     * wire — so a reader MUST apply `ivk_bit_negated[i]` to the wire's
+     * assignment to recover the logical bit:
+     *     bit = ivk_bit_negated[i] ? !witness[ivk_bit[i]] : witness[ivk_bit[i]]
+     * Ignoring the flag silently inverts bits and the differential fails for a
+     * reason that has nothing to do with the circuit. SIZE_MAX-filled when the
+     * section has not been synthesized. */
+    size_t ivk_bit[256];
+    bool   ivk_bit_negated[256];
 };
+
+/* bellman truncates the 256-bit blake2s digest to Jubjub `Fs::CAPACITY` bits
+ * before using it as a scalar ("drop_5" — 256 - 251), so only the low 251 bits
+ * of section 10's output feed section 13. The truncation costs no constraints. */
+#define SPEND_IVK_TRUNCATED_BITS 251u
 
 /* Traced synthesis. `sections`/`probe` may be NULL. Writes at most
  * `max_sections` checkpoints and the count reached via `n_sections_out`. */
