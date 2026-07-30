@@ -70,6 +70,37 @@ int t_fuzz_artifact_ledger_gate(void)
 
     int baseline_rc = run_gate_script_with_env(
         FUZZ_ARTIFACT_REPLAY_SCRIPT_REL, "ZCL_FUZZ_REPLAY_LEDGER_ONLY", "1");
+    /* A bare ASSERT(baseline_rc == 0) below gives no way to tell a real gate
+     * violation (script printed a named finding, exit 1) from a harness-level
+     * fork() failure (fork_with_retry() exhausted its retries under load,
+     * exit -1) apart from the numeric value, which the TEST()/ASSERT() macros
+     * do not print. On any baseline failure, capture+print the script's own
+     * output NOW: the out file is a fixed per-pid name
+     * (lint_gate_out_path()) and the very next call overwrites it, so this
+     * has to happen before that call, not after. This is what makes a future
+     * occurrence of this flake (see t_fuzz_artifact_ledger_gate history,
+     * 2026-07-30) diagnosable straight from the captured
+     * test-tmp/test_parallel_*.log instead of needing another investigation
+     * to add the same instrumentation again. */
+    if (baseline_rc != 0) {
+        char diag_out_path[PATH_MAX];
+        char *diag_buf = NULL;
+        fprintf(stderr,
+                "[lint-gate] check-fuzz-artifact-ledger baseline_rc=%d "
+                "(pid=%ld)\n", baseline_rc, (long)getpid());
+        if (lint_gate_out_path(diag_out_path, sizeof(diag_out_path)) == 0 &&
+            read_entire_file(diag_out_path, &diag_buf) == 0) {
+            fprintf(stderr,
+                    "[lint-gate] baseline script captured output (%s):\n%s\n"
+                    "[lint-gate] --- end captured output ---\n",
+                    diag_out_path, diag_buf);
+            free(diag_buf);
+        } else {
+            fprintf(stderr,
+                    "[lint-gate] could not read captured output at %s "
+                    "(errno=%d %s)\n", diag_out_path, errno, strerror(errno));
+        }
+    }
     int selftest_rc = run_gate_script_with_env(
         FUZZ_ARTIFACT_REPLAY_SCRIPT_REL, "ZCL_FUZZ_REPLAY_SELFTEST", "1");
 

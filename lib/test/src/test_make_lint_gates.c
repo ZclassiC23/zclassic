@@ -466,10 +466,17 @@ static int lint_run_owned(int owner)
 /* Build a hardlink copy ("sandbox") of the worktree at sb_root. Everything
  * except build/.git/.cache/test-tmp/.claude is `cp -al`'d (metadata-only, so
  * fast even for the whole tree); test-tmp is created fresh so gate scratch
- * output never writes through a shared inode. Returns 0 on success. */
+ * output never writes through a shared inode. Returns 0 on success.
+ *
+ * Uses fork_with_retry(), not a bare fork(): this runs once per shard (up to
+ * LINT_GATE_SHARD_COUNT times concurrently) from the same large test_zcl
+ * process the run_gate_script* family forks from, so it is exposed to the
+ * exact same transient EAGAIN/ENOMEM under 32-worker load that
+ * fork_with_retry's own comment (lint_gate_helpers.c) documents — a bare
+ * fork() here was the weaker link, since it had *zero* retry margin. */
 static int lint_sandbox_build(const char *real_root, const char *sb_root)
 {
-    pid_t pid = fork();
+    pid_t pid = fork_with_retry();
     if (pid < 0) {
         fprintf(stderr, "[lint-gate] lint_sandbox_build: fork failed: %s\n",
                 strerror(errno));
