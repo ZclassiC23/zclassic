@@ -654,6 +654,27 @@ bool zcl_native_node_db_require_readonly(
 void zcl_native_node_db_close_readonly(struct sqlite3 **db,
                                        struct node_db *ndb);
 
+/* The same read-only contract for the OTHER database under a datadir: the
+ * KERNEL STORE, <datadir>/consensus.db (or the legacy progress.kv name, when
+ * that is what the datadir still carries — the resolution is
+ * consensus_db_kernel_store_path's).
+ *
+ * Use this, never progress_store_open(), from a leaf declared READ.
+ * progress_store_open is READWRITE|CREATE, runs the progress.kv rename
+ * migration, ensures the kernel schema, and on a failed integrity check
+ * rename()s the append-only fact log aside to consensus.db.corrupt-<ts> and
+ * installs a fresh empty one. A booting node can re-derive from that; a read
+ * leaf pointed at a copied datadir has simply destroyed the thing it was
+ * asked about. This open also takes NO part in the process singleton, so an
+ * offline-copy read cannot become the process's one open kernel store.
+ *
+ * `path_out` (optional) receives the resolved path whenever it fits, INCLUDING
+ * on ZCL_NODE_DB_RO_ABSENT, so a caller can name the file it did not find.
+ * The caller owns *db_out on OK and closes it with sqlite3_close(). */
+enum zcl_node_db_ro_status zcl_native_kernel_store_open_readonly(
+    const char *datadir, struct sqlite3 **db_out, char *path_out,
+    size_t path_size);
+
 /* ops.selftest — node-free registry self-test. Sweeps every catalog leaf for
  * the static
  * well-formedness the registry guarantees (READY ⇒ dispatchable handler +

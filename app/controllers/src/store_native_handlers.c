@@ -56,6 +56,7 @@
 
 #include <errno.h>
 #include <math.h>
+#include <sqlite3.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -531,8 +532,26 @@ void zcl_native_handle_store_products(
                 "no datadir given and no --datadir default", "datadir");
         return;
     }
+    /* READ-ONLY, and not sn_open_db.
+     *
+     * This leaf is declared ZCL_COMMAND_READY_READ and its `datadir` falls
+     * back to the CLI's resolved one — the operator's LIVE node when nobody
+     * passed a path. It used to open through sn_open_db -> node_db_open_
+     * runtime, which is SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE and then
+     * runs create_schema() and node_db_migrate(). The stat() guard there
+     * meant it would not MINT a node.db, but pointed at any real SQLite file
+     * sitting at <datadir>/node.db it installed the node's 67 tables into it
+     * and answered "returned": 0 — a listing command rewriting the schema of
+     * a file it was only asked to read. Listing products needs SELECT and
+     * nothing else, so it gets a handle that can do nothing else:
+     * SQLITE_OPEN_READONLY plus PRAGMA query_only=ON, no CREATE, no schema,
+     * no migrate. app.store.list-product is a declared writer and keeps
+     * sn_open_db. See test_read_leaf_no_datadir_write.c. */
+    sqlite3 *db = NULL;
     struct node_db ndb;
-    if (!sn_open_db(datadir, reply, &ndb, "store.products"))
+    if (!zcl_native_node_db_require_readonly(datadir, reply,
+                                             "the store's product list",
+                                             &db, &ndb))
         return;
 
     struct db_store_product rows[SN_PRODUCT_LIST_MAX];
@@ -556,7 +575,9 @@ void zcl_native_handle_store_products(
         (void)json_push_back(&arr, &item);
         json_free(&item);
     }
-    node_db_close(&ndb);
+    /* The read-only shim borrows the handle and owns no prepared statements,
+     * so it is closed with its own closer, never node_db_close(). */
+    zcl_native_node_db_close_readonly(&db, &ndb);
 
     (void)json_push_kv_int(&reply->data, "returned", n);
     (void)json_push_kv(&reply->data, "products", &arr);
