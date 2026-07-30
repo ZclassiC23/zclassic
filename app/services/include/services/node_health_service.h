@@ -165,6 +165,31 @@ struct node_health_snapshot {
 void node_health_collect(struct node_health_snapshot *snapshot,
                          struct node_db *ndb,
                          const struct main_state *ms);
+/* Does the block-source policy consider us to be at the chain tip?
+ *
+ * This is a HEIGHT-and-source-health question over one bsp_decision: the
+ * source we picked is available/healthy/selectable and its target is no more
+ * than one block above us. It is NOT the question "am I synced", and it is not
+ * permission to publish an at-tip claim.
+ *
+ * That distinction was the bug. node_health_collect() used to let a true
+ * answer here overwrite the sync FSM's verdict with an unconditional
+ * SYNC_AT_TIP + synced=true. The FSM refuses at-tip while the node cannot
+ * prove it holds the block bodies for its own history, so a node with a hole
+ * below its tip had that refusal overturned in the health snapshot, and the
+ * manufactured claim then went out on /api/status, /api/node/summary,
+ * /api/v1/health, `healthcheck full`, and the starter-bundle mint gate — a
+ * second, ungated answer to a question that already had a gated one.
+ *
+ * So the UPGRADE in node_health_collect() now also requires
+ * body_history_is_proven() (storage/body_history.h — "the single question
+ * every at-tip gate asks"), which is fail-closed: false for a known hole AND
+ * false for a node that has never measured. The DOWNGRADE stays unconditional,
+ * because only ever weakening a claim never needs permission.
+ *
+ * Kept pure — a predicate over its argument, no globals — so the E2
+ * one-result-type override at the top of node_health_service.c stays true. The
+ * archive gate lives at the call site, not in here. */
 bool node_health_chain_advance_synced(const struct bsp_decision *decision);
 
 /* Pure resolution of the Prime-Directive "network tip" used for the health lag

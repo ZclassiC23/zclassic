@@ -198,6 +198,12 @@ int api_health_gate_focused_tests(void)
         if (ok) {
             (void)node;
             reducer_frontier_provable_tip_set(served);
+            /* A green public status means the node is synced, and being synced
+             * requires it to have proven it holds the bodies for its own
+             * history. This case is about the served-gap threshold, so state
+             * the archive fact rather than depend on the health snapshot
+             * upgrading itself unconditionally. */
+            ok = body_history_test_publish_proven(target);
             node_health_test_set_log_head_override(target);
             node_health_test_set_chain_advance_decision_override(&decision);
             sync_set_state(SYNC_IDLE, "api status reset");
@@ -210,7 +216,7 @@ int api_health_gate_focused_tests(void)
             const char *body = api_test_body(resp, n, sizeof(resp));
             struct json_value root;
             json_init(&root);
-            ok = n > 0 && body && json_read(&root, body, strlen(body));
+            ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
             ok = ok && strcmp(json_get_str(json_get(&root, "status")),
                               "healthy") == 0;
             ok = ok && json_get_bool(json_get(&root, "healthy"));
@@ -439,6 +445,10 @@ int api_health_gate_focused_tests(void)
         if (ok) {
             (void)node;
             reducer_frontier_provable_tip_set(served);
+            /* This case grades the SERVED GAP, so hold the archive fact
+             * constant — an unproven archive would degrade the status for its
+             * own reason and stop testing the gap. */
+            ok = body_history_test_publish_proven(target);
             node_health_test_set_log_head_override(target);
             node_health_test_set_chain_advance_decision_override(&decision);
             sync_set_state(SYNC_IDLE, "api status reset");
@@ -451,7 +461,7 @@ int api_health_gate_focused_tests(void)
             const char *body = api_test_body(resp, n, sizeof(resp));
             struct json_value root;
             json_init(&root);
-            ok = n > 0 && body && json_read(&root, body, strlen(body));
+            ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
             ok = ok && strcmp(json_get_str(json_get(&root, "status")),
                               "degraded") == 0;
             ok = ok && json_get_bool(json_get(&root, "operator_needed"));
@@ -523,6 +533,10 @@ int api_health_gate_focused_tests(void)
         if (ok) {
             (void)node;
             reducer_frontier_provable_tip_reset();
+            /* This case is about which TIP the status document reports before
+             * H* is published, not about archive completeness — so state the
+             * archive fact and let the tip assertions be the subject. */
+            ok = body_history_test_publish_proven(3);
             node_health_test_set_log_head_override(-2);
             node_health_test_set_chain_advance_decision_override(&decision);
             sync_set_state(SYNC_IDLE, "api status durable reset");
@@ -535,7 +549,7 @@ int api_health_gate_focused_tests(void)
             const char *body = api_test_body(resp, n, sizeof(resp));
             struct json_value root;
             json_init(&root);
-            ok = n > 0 && body && json_read(&root, body, strlen(body));
+            ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
             ok = ok && strcmp(json_get_str(json_get(&root, "status")),
                               "healthy") == 0;
             ok = ok && json_get_int(json_get(&root, "height")) == 2;

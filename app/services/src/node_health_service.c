@@ -39,6 +39,7 @@
 #include "net/peer_identity.h"
 #include "net/tor_integration.h"
 #include "net/version.h"
+#include "storage/body_history.h"
 #include "adapters/outbound/persistence/node_health_store_sqlite.h"
 #include "ports/node_health_store_port.h"
 #include <stdio.h>
@@ -448,7 +449,8 @@ void node_health_collect(struct node_health_snapshot *snapshot,
         {
             block_source_policy_get_status(&decision);
         }
-        if (node_health_chain_advance_synced(&decision)) {
+        if (node_health_chain_advance_synced(&decision) && /* heights only; */
+            body_history_is_proven()) { /* UPGRADE needs the archive. Header. */
             snapshot->synced = true;
             snapshot->sync_state = SYNC_AT_TIP;
         } else if (snapshot->sync_state == SYNC_AT_TIP &&
