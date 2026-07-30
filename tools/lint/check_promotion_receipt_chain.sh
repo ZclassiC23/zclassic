@@ -76,7 +76,15 @@ else
     out=""
     rc=0
     out="$(bash "$TOOL" --self-test 2>&1)" || rc=$?
-    if [ "$rc" != "0" ] || ! printf '%s' "$out" | grep -q '^PROMOTION RECEIPT SELF-TEST: PASS$'; then
+    # The verdict is the extracted PASS line, not a pipeline's exit status:
+    # under pipefail a matching `printf | grep -q` can report printf's SIGPIPE
+    # 141 instead of grep's 0, turning a genuine PASS into "no PASS line".
+    # MEASURED 2026-07-30: a passing transcript is 33 bytes, so the inversion
+    # is NOT reachable at this size — a shape fix, not a live-bug fix. Kept
+    # because the transcript is unbounded on failure and nobody re-measures.
+    # Regex unchanged; without -q grep drains stdin so printf completes.
+    pass_line="$(printf '%s\n' "$out" | grep '^PROMOTION RECEIPT SELF-TEST: PASS$' || true)"
+    if [ "$rc" != "0" ] || [ -z "$pass_line" ]; then
         echo "FAIL: $TOOL --self-test (rc=$rc; no 'PROMOTION RECEIPT SELF-TEST: PASS' line)"
         printf '%s\n' "$out"
         fail=1

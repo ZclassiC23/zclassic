@@ -47,7 +47,15 @@ else
     out=""
     rc=0
     out="$(bash "$PIN_SCRIPT" --self-test 2>&1)" || rc=$?
-    if [ "$rc" != "0" ] || ! printf '%s' "$out" | grep -q '^PROOF SERVER PIN SELF-TEST: PASS$'; then
+    # Decide on the extracted PASS line, not on the pipeline's exit status:
+    # under pipefail a matching `printf | grep -q` can surface printf's SIGPIPE
+    # 141 instead of grep's 0, which reads a genuine PASS as a missing PASS
+    # line. MEASURED 2026-07-30: a passing transcript is 32 bytes, so the
+    # inversion is NOT reachable at this size — a shape fix, not a live-bug
+    # fix, kept because a failing transcript is unbounded and nobody
+    # re-measures. Same regex; without -q grep drains stdin.
+    pass_line="$(printf '%s\n' "$out" | grep '^PROOF SERVER PIN SELF-TEST: PASS$' || true)"
+    if [ "$rc" != "0" ] || [ -z "$pass_line" ]; then
         echo "FAIL: $PIN_SCRIPT --self-test (rc=$rc; no 'PROOF SERVER PIN SELF-TEST: PASS' line)"
         printf '%s\n' "$out"
         fail=1

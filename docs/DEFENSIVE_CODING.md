@@ -861,6 +861,7 @@ add/remove a gate.
 - `check-verification-coverage`
 - `check-identity-parser-single`
 - `check-status-reason-single`
+- `check-pipefail-status-pipe`
 - `check-blocker-remedy`
 - `check-vendor-provenance`
 - `check-doc-no-false-deleted`

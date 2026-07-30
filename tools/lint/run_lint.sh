@@ -133,6 +133,7 @@ gate_command() {
         check-verification-coverage)       echo './tools/lint/check_verification_coverage.sh' ;;
         check-identity-parser-single)      echo './tools/lint/check_identity_parser_single.sh --selftest && ./tools/lint/check_identity_parser_single.sh' ;;
         check-status-reason-single)        echo './tools/lint/check_status_reason_single.sh --selftest && ./tools/lint/check_status_reason_single.sh' ;;
+        check-pipefail-status-pipe)        echo './tools/lint/check_pipefail_status_pipe.sh --selftest && ./tools/lint/check_pipefail_status_pipe.sh' ;;
         check-framework-shape)             echo 'ZCL_LINT_MODE=RATCHET ./tools/lint/framework_shape_check.sh' ;;
         check-framework-filename-suffix)   echo './tools/lint/check_framework_filename_suffix.sh' ;;
         check-no-raw-clock-outside-platform) echo './tools/lint/check_no_raw_clock_outside_platform.sh' ;;

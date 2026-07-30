@@ -41,7 +41,16 @@ run_selftest() {
     out="$(bash "$script" --selftest 2>&1)"
     rc=$?
     set -e
-    if [ "$rc" != "0" ] || ! printf '%s' "$out" | grep -q '^selftest: PASS'; then
+    # Decide on the extracted PASS line, not on the pipeline's exit status:
+    # under pipefail a matching `printf | grep -q` can report printf's SIGPIPE
+    # 141 instead of grep's 0, so a self-test that really printed its PASS line
+    # reads as if it had not. MEASURED 2026-07-30: the two transcripts are 699
+    # and 1249 bytes, so the inversion is NOT reachable at that size — a shape
+    # fix, not a live-bug fix, kept because a failing transcript is unbounded.
+    # Same regex; without -q grep drains stdin so printf completes.
+    local pass_line
+    pass_line="$(printf '%s\n' "$out" | grep '^selftest: PASS' || true)"
+    if [ "$rc" != "0" ] || [ -z "$pass_line" ]; then
         echo "FAIL: $script --selftest (rc=$rc; no 'selftest: PASS' line)"
         printf '%s\n' "$out"
         fail=1

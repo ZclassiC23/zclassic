@@ -6260,6 +6260,21 @@ check-status-reason-single:
 	@./tools/lint/check_status_reason_single.sh --selftest
 	@./tools/lint/check_status_reason_single.sh
 
+# Anti-rot ratchet: no NEW decision made on the exit status of a
+# `printf | grep -q` / `echo | grep -q` pipeline in a script that sets pipefail.
+# grep -q exits at the first match, printf then takes SIGPIPE, and pipefail
+# reports printf's 141 instead of grep's 0 — so a MATCH becomes
+# indistinguishable from a miss and the decision inverts. For a lint gate that
+# is a hollow PASS: check_release_no_dev_symbols.sh read the release binary as
+# clean in 20/20 runs with a forbidden dev-only symbol planted in it. Fix with
+# str_contains/str_lacks (tools/scripts/sh_str.sh) or by extracting the match
+# into a variable and testing the string. Shrink-only baseline at
+# tools/lint/pipefail_status_pipe_baseline.txt; no allow-comment escape hatch.
+check-pipefail-status-pipe:
+	@echo "══ LINT: no status-carrying printf|grep -q under pipefail ══"
+	@./tools/lint/check_pipefail_status_pipe.sh --selftest
+	@./tools/lint/check_pipefail_status_pipe.sh
+
 # Anti-stale forbid gate: no hand-pinned rot-prone facts in the docs. Two
 # classes — a "<N> MB … binary" size claim (HARD; the size has a live source,
 # tools/scripts/binary_size.sh — de-pin to size-agnostic prose) and a live-state
@@ -6641,6 +6656,7 @@ LINT_GATES := \
     check-verification-coverage \
     check-identity-parser-single \
     check-status-reason-single \
+    check-pipefail-status-pipe \
     check-framework-shape \
     check-framework-filename-suffix \
     check-no-raw-clock-outside-platform \
