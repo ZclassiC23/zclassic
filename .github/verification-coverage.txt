@@ -1,0 +1,48 @@
+# What hosted CI actually checks, and what it does not.
+#
+# WHY THIS FILE EXISTS. .github/workflows/build.yml produces five green checks
+# on every commit to main. A reader who sees five green checks reasonably
+# concludes the commit was fully verified. It was not: the test suite never runs
+# hosted. Nothing anywhere said so in a form a machine could check, so the gap
+# was invisible to exactly the person the checks exist to inform — someone who
+# does not trust this machine and is reading the commit on GitHub.
+#
+# This file is the declared coverage, and tools/lint/check_verification_coverage.sh
+# holds it to the workflow. It cannot drift: every item claiming to be hosted
+# must name a job key that really exists in build.yml, and every job in build.yml
+# must be claimed by some item. Adding a job without declaring what it verifies
+# fails lint; claiming an item is hosted when its job was renamed or deleted
+# fails lint.
+#
+# THE FIVE ITEMS ARE NOT NEGOTIABLE HERE. The gate hard-codes the required item
+# list (gcc, clang, lint, tests, fuzz-replay) in its own file, so the gap cannot
+# be closed by deleting a row. That two files must agree is the point — the same
+# discipline check_promotion_receipt_chain.sh prong 6 documents, added there
+# after a mutation reworded a message and a same-file self-test still passed.
+#
+# Format — five `|`-separated fields, one item per line:
+#
+#   item | hosted | job_key | display_name | attested_by
+#
+#   item          short name of the verification item.
+#   hosted        exactly `yes` or `no`. Nothing else parses.
+#   job_key       the YAML key under `jobs:` in build.yml when hosted=yes;
+#                 exactly `-` when hosted=no. NOT the display name: matrix job
+#                 names are templated (`compile-check (${{ matrix.cc }})`) and
+#                 never appear literally in the file, so a display-name match
+#                 would be checking a string that is not there.
+#   display_name  the check name a reader sees on GitHub, for humans only.
+#   attested_by   where the verdict comes from when hosted=no. Must be
+#                 non-empty; `-` when hosted=yes. An item that is not hosted and
+#                 does not say who vouches for it is an unverified claim.
+#
+# Every hosted=yes row below was confirmed against a real check-run attached to
+# commit df752afce on origin/main (run 30509201499, all five success). The
+# hosted=no row is confirmed by the absence of any test job in build.yml.
+
+gcc|yes|compile-check|compile-check (gcc)|-
+clang|yes|compile-check|compile-check (clang)|-
+lint|yes|lint|lint (make lint)|-
+fuzz-replay|yes|fuzz-replay|fuzz-replay (saved findings)|-
+compile-all-tus|yes|build|build (cached dependencies)|-
+tests|no|-|(no hosted check exists)|`make test-parallel` on the maintainer host: by a person before a merge, and by tools/ship.sh (which token-gates on ALL TESTS PASSED) before it will deploy. NEITHER IS BOUND TO A COMMIT — no per-commit attestation exists, so a reader of any commit on GitHub cannot tell whether the suite passed on that source. The pre-push hook does NOT close this: it runs `make pre-push-ci` (focused tests for changed files only) and is overridable via ZCL_PREPUSH_CMD / ZCL_SKIP_PREPUSH=1.
