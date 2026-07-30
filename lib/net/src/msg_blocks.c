@@ -104,6 +104,28 @@ bool process_getblocks(struct msg_processor *mp, struct p2p_node *node,
     return true;
 }
 
+/* Flush up to 64 not-found items as one wire "notfound" message. Called
+ * mid-loop (batch full) and once more at the end (remainder) from
+ * process_getdata below — multiple notfound messages per getdata is valid
+ * protocol, so batching here never has to drop anything. */
+static void send_notfound_batch(struct msg_processor *mp, struct p2p_node *node,
+                                struct inv_item *items, size_t count)
+{
+    if (count == 0)
+        return;
+
+    struct byte_stream nf;
+    stream_init(&nf, count * 36 + 8);
+    stream_write_compact_size(&nf, count);
+    for (size_t i = 0; i < count; i++)
+        inv_item_serialize(&items[i], &nf);
+
+    p2p_node_begin_message(node, "notfound", mp->params->pchMessageStart);
+    p2p_node_write_message_data(node, nf.data, nf.size);
+    p2p_node_end_message(node);
+    stream_free(&nf);
+}
+
 bool process_getdata(struct msg_processor *mp, struct p2p_node *node,
                      struct byte_stream *s)
 {
@@ -211,25 +233,27 @@ bool process_getdata(struct msg_processor *mp, struct p2p_node *node,
             transaction_free(&tx);
         }
 
-        if (!sent && not_found_count < 64)
+        if (!sent) {
+            /* A single getdata can legally request up to MAX_INV_SZ (50000)
+             * items, and a contiguous unservable span (missing data below
+             * a body floor, a corrupted local range, ...) can easily exceed
+             * 64 of them. The old fixed-size array capped at 64 and simply
+             * stopped recording once full — every item past the 64th got
+             * no notfound reply at all. The requester's download manager
+             * (net/download.h::dl_mark_notfound) only re-queues a block
+             * promptly when notfound actually arrives; silently dropping
+             * the reply forces it to sit out the full per-block timeout
+             * instead, precisely when the unservable span is long enough
+             * to matter. Flush a batch instead of dropping once one fills. */
             not_found[not_found_count++] = inv;
+            if (not_found_count == 64) {
+                send_notfound_batch(mp, node, not_found, not_found_count);
+                not_found_count = 0;
+            }
+        }
     }
 
-    /* Send notfound for items we couldn't serve */
-    if (not_found_count > 0) {
-        struct byte_stream nf;
-        stream_init(&nf, not_found_count * 36 + 8);
-        stream_write_compact_size(&nf, not_found_count);
-        for (size_t i = 0; i < not_found_count; i++)
-            inv_item_serialize(&not_found[i], &nf);
-
-        p2p_node_begin_message(node, "notfound",
-                               mp->params->pchMessageStart);
-        p2p_node_write_message_data(node, nf.data, nf.size);
-        p2p_node_end_message(node);
-        stream_free(&nf);
-    }
-
+    send_notfound_batch(mp, node, not_found, not_found_count);
     return true;
 }
 

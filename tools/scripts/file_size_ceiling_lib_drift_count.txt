@@ -430,3 +430,13 @@
 # trade than the raise. The drift COUNT is unaffected either way and STAYS
 # 11: wallet.c shrinks off the grown list and wallet_sqlite.c never joins
 # it.
+#
+# 2026-07-30 (getdata notfound-batch fix): msg_blocks.c grew 878 -> 902 adding
+# send_notfound_batch() and switching process_getdata()'s not-found
+# accumulation to flush in batches of 64 instead of silently dropping every
+# item past the 64th slot of a fixed-size stack array. A getdata batch can
+# legally request up to MAX_INV_SZ (50000) items; a requester whose download
+# manager only re-queues an unservable item on receiving an actual notfound
+# reply never got one past the 64th ask, so those items sat stuck until
+# their own stall timeout instead of being retried promptly. Re-baselined in
+# file_size_ceiling_lib_baseline.txt (902); count STAYS 11.

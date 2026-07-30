@@ -35,7 +35,7 @@ lib/net/src/download.c 1385
 lib/net/src/fast_sync.c 1909
 lib/net/src/file_service.c 2255
 lib/net/src/https_server.c 982
-lib/net/src/msg_blocks.c 878
+lib/net/src/msg_blocks.c 902
 lib/net/src/msg_headers.c 1148
 lib/net/src/msgprocessor.c 2472
 lib/net/src/msgprocessor_snapshot.c 2005

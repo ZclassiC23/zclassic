@@ -46,10 +46,20 @@
  *      every field that followed). H2 covers the same field but with a
  *      declared length that exceeds the actual remaining message bytes
  *      ("claimed > actual").
+ *   I. getdata requesting more unservable blocks than the notfound
+ *      reply-batch size (64) in one message -> every one of them still
+ *      gets a notfound reply, split across multiple notfound messages.
+ *      Before the fix, process_getdata's not_found accumulator was a
+ *      fixed 64-slot array that silently stopped recording past the
+ *      64th miss — a legal single getdata (up to MAX_INV_SZ=50000 items)
+ *      requesting a longer unservable span got no reply at all for the
+ *      items past the 64th, so the requester's download manager sat out
+ *      its full per-block timeout instead of the prompt notfound-driven
+ *      requeue (net/download.h::dl_mark_notfound).
  *
  * Sections A/B/E/F/H/H2 use a stack p2p_node + memset (mirrors
  * test_process_headers_adversarial.c) since the code paths under test
- * return before touching any node mutex. Sections C/D/G touch
+ * return before touching any node mutex. Sections C/D/G/I touch
  * mutex-guarded node/dispatch machinery and use a heap node from
  * p2p_node_create (properly mutex-initialized). */
 
@@ -674,6 +684,70 @@ int test_net_msg_dos(void)
                      atomic_load(&node.misbehavior) == 0 &&
                      !node.disconnect);
             stream_free(&s);
+        }
+    }
+
+    /* ── I. getdata: 70 unservable blocks in ONE message -> notfound
+     *      covers all 70, batched (64 + 6), never silently dropped. ── */
+    {
+        struct net_address iaddr;
+        net_address_init(&iaddr);
+        unsigned char iip[4] = {203, 0, 113, 78};
+        net_addr_set_ipv4(&iaddr.svc.addr, iip);
+        iaddr.svc.port = 8033;
+
+        struct p2p_node *node = p2p_node_create(&nm, ZCL_INVALID_SOCKET,
+                                                &iaddr, "notfound-batch", true);
+        DOS_CHECK("getdata 70-miss: node created", node != NULL);
+        if (node) {
+            enum { NOTFOUND_TEST_COUNT = 70 };
+            struct byte_stream s;
+            stream_init(&s, NOTFOUND_TEST_COUNT * 36 + 8);
+            stream_write_compact_size(&s, NOTFOUND_TEST_COUNT);
+            for (int i = 0; i < NOTFOUND_TEST_COUNT; i++) {
+                struct uint256 fake_hash;
+                memset(fake_hash.data, 0, sizeof(fake_hash.data));
+                /* Distinct, all-unknown-to-block_map hashes. */
+                fake_hash.data[0] = (uint8_t)(i & 0xff);
+                fake_hash.data[1] = (uint8_t)((i >> 8) & 0xff);
+                struct inv_item inv;
+                inv_item_init_typed(&inv, MSG_BLOCK, &fake_hash);
+                inv_item_serialize(&inv, &s);
+            }
+
+            bool ret = process_getdata(&mp, node, &s);
+            DOS_CHECK("getdata 70-miss: handler returns true", ret == true);
+
+            /* Walk the queued send_segments and sum the item count declared
+             * in each notfound message's payload (skip the fixed wire
+             * header, then read the compact-size count) — proves every one
+             * of the 70 misses got a reply, none silently dropped past the
+             * old 64-item cap. */
+            size_t total_notfound_items = 0;
+            size_t segment_count = 0;
+            for (struct send_segment *seg = node->send_head; seg;
+                seg = seg->next) {
+                segment_count++;
+                DOS_CHECK("getdata 70-miss: segment longer than header",
+                         seg->size > MSG_HEADER_SIZE);
+                struct byte_stream payload;
+                stream_init_from_data(&payload, seg->data + MSG_HEADER_SIZE,
+                                      seg->size - MSG_HEADER_SIZE);
+                uint64_t item_count = 0;
+                bool got_count = stream_read_compact_size(&payload, &item_count);
+                DOS_CHECK("getdata 70-miss: segment count field readable",
+                         got_count);
+                total_notfound_items += item_count;
+                stream_free(&payload);
+            }
+            DOS_CHECK("getdata 70-miss: batched into more than one notfound "
+                     "message (64-item batch cap actually exercised)",
+                     segment_count >= 2);
+            DOS_CHECK("getdata 70-miss: all 70 misses replied, none dropped",
+                     total_notfound_items == NOTFOUND_TEST_COUNT);
+
+            stream_free(&s);
+            p2p_node_free(node);
         }
     }
 
