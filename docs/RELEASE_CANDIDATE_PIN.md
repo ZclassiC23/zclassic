@@ -64,6 +64,17 @@ git tag -a rc-20260728-75afb4361 -m 'proof lane candidate' 75afb4361
 
 A row is a record of what was observed, never a wish. Do not hand-write one.
 
+## Promotions have their own ledger
+
+This page's ledger says which build is *under proof*. The separate, signed,
+hash-chained ledger `deploy/promotion-receipts.jsonl` records the act of
+*promoting* one to the proof server — see
+[`PROMOTION_RECEIPTS.md`](./PROMOTION_RECEIPTS.md). It is written by
+`tools/scripts/promotion_receipt.sh` from `tools/ship.sh`, never by hand, and it
+is the authority a local `proof-server/*` git tag never could be: tracked, so it
+replicates; chained, so a rewrite is detectable; signed, so a third party can
+check authorship offline.
+
 ## The probe
 
 `tools/scripts/build_drift_probe.sh` compares the pin against reality every 5

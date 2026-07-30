@@ -85,10 +85,14 @@ die()  { printf '\033[1;31mship: REFUSE:\033[0m %s\n' "$*" >&2; exit 1; }
 #     proof server had been updated. Refuse outright, non-zero.
 #
 # Promotion is a deliberate act: ZCL_SHIP_ALLOW_PROOF_SERVER=1. A successful
-# promotion records a proof-server/<timestamp> tag automatically (step 4
-# below, right after the running daemon proves it took the candidate) —
-# `tools/scripts/proof_server_pin.sh check` reports whether the box still
-# runs what was pinned.
+# promotion records itself twice in step 4 below, right after the running
+# daemon proves it took the candidate: a signed, hash-chained line in the
+# TRACKED ledger deploy/promotion-receipts.jsonl (the authority — it replicates
+# to origin and cannot be rewritten undetected), plus a local
+# proof-server/<timestamp> tag as a convenience index.
+# `tools/scripts/promotion_receipt.sh verify` checks the chain offline;
+# `tools/scripts/proof_server_pin.sh check` dials the box to see whether it
+# still runs what was pinned.
 case " $TARGETS " in *" remote "*)
     if [ "${ZCL_SHIP_ALLOW_PROOF_SERVER:-0}" != "1" ]; then
         if [ "$TARGETS_EXPLICIT" -eq 1 ]; then
@@ -97,9 +101,11 @@ case " $TARGETS " in *" remote "*)
        candidate held. Deploying restarts it and resets that record.
        Promoting a new candidate is deliberate:
            ZCL_SHIP_ALLOW_PROOF_SERVER=1 tools/ship.sh --targets=remote
-       A successful promotion records a proof-server/<timestamp> tag
-       automatically; run 'tools/scripts/proof_server_pin.sh check' afterwards
-       to confirm the box still runs what was pinned."
+       A successful promotion appends a signed receipt to the tracked ledger
+       deploy/promotion-receipts.jsonl automatically (verify it any time with
+       'tools/scripts/promotion_receipt.sh verify', then COMMIT it so it
+       replicates); run 'tools/scripts/proof_server_pin.sh check' afterwards to
+       confirm the box still runs what was pinned."
         fi
         TARGETS="${TARGETS//remote/}"
         TARGETS="$(printf '%s' "$TARGETS" | tr -s ' ' | sed 's/^ *//; s/ *$//')"
@@ -320,6 +326,23 @@ REMOTE_SCRIPT
     # deploy — report it loudly and move on.
     tools/scripts/proof_server_pin.sh record "$HEAD_SHA" "$CAND_SOURCE_ID" "$ARTIFACT_SHA" "$REMOTE_HOST" || \
         say "WARNING: could not record the proof-server pin for $HEAD_SHA / ${CAND_SOURCE_ID:0:16}… on $REMOTE_HOST — the deploy itself succeeded; re-run by hand: tools/scripts/proof_server_pin.sh record $HEAD_SHA $CAND_SOURCE_ID $ARTIFACT_SHA $REMOTE_HOST"
+
+    # The tag above is a local convenience index. THIS is the record that
+    # matters: a signed, hash-chained line appended to a TRACKED ledger, so it
+    # replicates to origin on the next push of main and cannot be rewritten
+    # afterwards without breaking the chain. Same failure policy as the pin —
+    # a recording failure must never undo an already-successful deploy.
+    #
+    # It needs ZCL_RECEIPT_KEY in the environment (a key whose only job is
+    # signing promotion evidence — never a login/push key) and refuses loudly
+    # without one rather than reaching for a default. See "Owner setup" in
+    # docs/PROMOTION_RECEIPTS.md; the chain must also have been started with
+    # `promotion_receipt.sh init` before the first append can land.
+    if tools/scripts/promotion_receipt.sh append "$HEAD_SHA" "$CAND_SOURCE_ID" "$ARTIFACT_SHA" "$REMOTE_HOST"; then
+        say "commit deploy/promotion-receipts.jsonl — until it is committed the receipt exists on this disk only, and ship's clean-tree preflight will refuse the next run"
+    else
+        say "WARNING: could not append the promotion receipt for $HEAD_SHA / ${CAND_SOURCE_ID:0:16}… on $REMOTE_HOST — the deploy itself succeeded; re-run by hand: tools/scripts/promotion_receipt.sh append $HEAD_SHA $CAND_SOURCE_ID $ARTIFACT_SHA $REMOTE_HOST"
+    fi
 }
 
 for target in $TARGETS; do
