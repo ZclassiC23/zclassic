@@ -227,9 +227,14 @@ bool stopwatch_skip_read_ledger(const char *path,
 
     /* Bounded tail read, fragment/overlong handling and "absent ledger is
      * data" all live in evidence_ledger_scan_tail(). An overlong row counts
-     * as malformed here, exactly as it did when this loop was local. */
+     * as malformed here, exactly as it did when this loop was local. A line
+     * with no newline at EOF is counted separately and never scanned: the
+     * collector appends under flock, so a torn tail means a run caught
+     * mid-write, and folding it in would let half a row set the trailing
+     * streaks this report exists to publish. */
     if (!evidence_ledger_scan_tail(path, STOPWATCH_SKIP_TAIL_BYTES, sw_row_cb,
-                                   &c, &out->malformed_rows))
+                                   &c, &out->malformed_rows,
+                                   &out->incomplete_rows))
         LOG_FAIL("stopwatch", "ledger tail read rejected path '%s'", path);
     return scan_finish(out, &c.st);
 }
@@ -340,6 +345,7 @@ static void push_ledger_json(struct json_value *parent, const char *which)
     json_push_kv_bool(&obj, "present", rep.present);
     json_push_kv_int(&obj, "rows_scanned", rep.rows_scanned);
     json_push_kv_int(&obj, "malformed_rows", rep.malformed_rows);
+    json_push_kv_int(&obj, "incomplete_rows", rep.incomplete_rows);
     json_push_kv_str(&obj, "last_verdict",
                      rep.last_verdict[0] ? rep.last_verdict : "-");
     json_push_kv_int(&obj, "last_ts", rep.last_ts);

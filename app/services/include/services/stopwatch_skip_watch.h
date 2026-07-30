@@ -76,7 +76,12 @@
 struct stopwatch_skip_report {
     bool     present;        /* ledger file existed and carried >=1 usable row */
     unsigned rows_scanned;   /* usable rows in the scanned tail */
-    unsigned malformed_rows; /* rows with no verdict field (torn/foreign) */
+    unsigned malformed_rows; /* rows with no verdict field (foreign), plus rows
+                              * too long to be an evidence row */
+    unsigned incomplete_rows;/* lines that ended with no newline: an append
+                              * caught mid-write. Dropped, never scanned, so
+                              * half a row cannot set the streaks below. Only
+                              * the tail read can see these. */
 
     /* Trailing streaks, recomputed from the `verdict` values every call. The
      * collector also RECORDS these on the ledger line, but a recorded number

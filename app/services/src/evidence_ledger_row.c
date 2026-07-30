@@ -142,7 +142,7 @@ bool evidence_ledger_scan_text(const char *text, size_t len,
 
 bool evidence_ledger_scan_tail(const char *path, size_t tail_bytes,
                               evidence_row_fn fn, void *ctx,
-                              unsigned *out_overlong)
+                              unsigned *out_overlong, unsigned *out_incomplete)
 {
     if (!fn)
         LOG_FAIL("evidence_ledger", "row callback is NULL");
@@ -170,34 +170,70 @@ bool evidence_ledger_scan_tail(const char *path, size_t tail_bytes,
         }
     }
 
-    char row[EVIDENCE_ROW_MAX];
+    /* ONE BYTE OF HEADROOM PER TERMINATOR, and the count is the whole point.
+     * fgets() stores at most sizeof(row)-1 data bytes, so a buffer of exactly
+     * EVIDENCE_ROW_MAX could hold a row of EVIDENCE_ROW_MAX-1 bytes at most:
+     * a legal row followed by '\n' came back buffer-full with no newline in
+     * sight and was indistinguishable from a genuinely overlong one, so it was
+     * dropped and counted malformed (reproduced at 4095 bytes). +2 leaves room
+     * for the newline AND the NUL, which makes "the newline is missing AND the
+     * data is longer than a row may be" the actual overlong test. */
+    char row[EVIDENCE_ROW_MAX + 2];
     bool first = true;
-    bool overlong = false;
+    /* Consuming the remaining bytes of a physical line we have already
+     * dropped — an overlong row, a post-seek fragment, or a torn line. Its
+     * tail is swallowed, never folded as a second phantom row. */
+    bool skipping = false;
     while (fgets(row, sizeof(row), f)) {
         size_t rlen = strlen(row);
         bool complete = rlen > 0 && row[rlen - 1] == '\n';
         if (complete)
             rlen--;
-        if (overlong) {
-            /* Continuation of a row that did not fit — consumed, never
-             * folded as a second row. */
-            overlong = !complete;
+
+        if (skipping) {
+            skipping = !complete;
             continue;
         }
-        if (!complete && rlen == sizeof(row) - 1) {
-            overlong = true;
-            if (out_overlong)
-                (*out_overlong)++;
-            continue;
-        }
+
+        /* `first` is cleared BEFORE any drop decision, unconditionally. When
+         * it was cleared only on the path that reaches the bottom of the loop,
+         * a post-seek fragment long enough to fill the buffer left `first`
+         * true, and the next line — a real, complete row — was dropped in its
+         * place (reproduced). */
+        bool is_fragment = false;
         if (first) {
             first = false;
             /* The first line after a mid-file seek is a fragment; dropping it
              * is the difference between describing evidence and inventing a
-             * sample. */
-            if (partial_head)
-                continue;
+             * sample. It is not counted overlong: its true length is unknown,
+             * so calling it a malformed row would invent a defect. */
+            is_fragment = partial_head;
         }
+        if (is_fragment) {
+            skipping = !complete;
+            continue;
+        }
+
+        if (!complete) {
+            /* No newline. Two very different things, and they must not be
+             * counted as one:
+             *   - longer than a row is allowed to be  -> overlong, malformed;
+             *   - shorter, so the read ended early    -> an INCOMPLETE line
+             *     (a torn append caught mid-write, or an embedded NUL). It is
+             *     not a sample and must never reach `fn`: every reader here
+             *     treats the last row it was handed as authoritative for the
+             *     per-sample fields, so handing over a truncated line lets a
+             *     half-written row become "the" current sample. */
+            skipping = true;
+            if (rlen > EVIDENCE_ROW_MAX) {
+                if (out_overlong)
+                    (*out_overlong)++;
+            } else if (out_incomplete) {
+                (*out_incomplete)++;
+            }
+            continue;
+        }
+
         if (rlen > 0)
             fn(row, rlen, ctx);
     }

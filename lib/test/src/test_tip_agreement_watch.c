@@ -38,6 +38,7 @@
 #include "test/test_core.h"
 
 #include "json/json.h"
+#include "services/evidence_ledger_row.h"
 #include "services/tip_agreement_watch.h"
 
 #include <stdio.h>
@@ -86,6 +87,50 @@ static void row(char *buf, size_t cap, long long ts, const char *outcome,
 static bool scan_text(const char *text, struct tip_agreement_report *rep)
 {
     return tip_agreement_scan(text, strlen(text), rep);
+}
+
+/* An ordinary short row for write_row_of_len(): comfortably above the fixed
+ * part of that row (319 bytes with two 64-char hashes in it) and nowhere near
+ * EVIDENCE_ROW_MAX, so it is unambiguously "a normal row". */
+#define SHORT_ROW 400
+
+/* Append one syntactically fine row whose DATA length (newline excluded) is
+ * exactly `data_len` bytes, padded with a filler field. `terminate` false
+ * leaves it with no trailing newline — a torn append. Written straight to the
+ * file because the interesting lengths are far past any stack buffer.
+ *
+ * Returns false rather than writing a row of some OTHER length when data_len
+ * cannot be honoured — a fixture that quietly writes a different row than the
+ * one being asserted about is worse than no fixture. */
+static bool write_row_of_len(FILE *f, long long ts, long long height,
+                            size_t data_len, bool terminate)
+{
+    char head[512];
+    int hn = snprintf(head, sizeof(head),
+                      "{\"ts\":%lld,\"min_distinct_peers\":2,"
+                      "\"our_height\":%lld,\"height\":%lld,"
+                      "\"our_tip_hash\":\"" HASH_A "\","
+                      "\"modal_remote_hash\":\"" HASH_A "\","
+                      "\"modal_remote_peers\":4,\"outcome\":\"agrees\","
+                      "\"reason\":\"len_fixture\",\"pad\":\"",
+                      ts, height, height);
+    const char *tail = "\"}";
+    /* A truncated head would silently make the row a different length than
+     * asked for, which is the one thing these fixtures must not do. */
+    if (hn <= 0 || hn >= (int)sizeof(head))
+        return false;
+    if (data_len < (size_t)hn + strlen(tail))
+        return false;
+    if (fputs(head, f) == EOF)
+        return false;
+    for (size_t i = 0; i < data_len - (size_t)hn - strlen(tail); i++)
+        if (fputc('x', f) == EOF)
+            return false;
+    if (fputs(tail, f) == EOF)
+        return false;
+    if (terminate && fputc('\n', f) == EOF)
+        return false;
+    return true;
 }
 
 /* Summarise a report into caller storage. */
@@ -427,6 +472,187 @@ int test_tip_agreement_watch(void)
         unlink(path);
         rmdir(dir);
         TAW_CHECK("the typed dump reports the refusal and the raw sample", ok);
+    }
+
+    /* ── (f) THE ROW CANNOT SET ITS OWN BAR ────────────────────────────
+     * min_distinct_peers is a field of the row being graded. Grading only
+     * against it let a row that reported control=1 and carried exactly one
+     * backing peer grade itself SUFFICIENT and publish agreement — one host
+     * manufacturing agreement, which is the failure (a) above exists to make
+     * impossible. Reproduced before this block existed:
+     *   control=1 peers=1 -> independence=sufficient agreement_reported=TRUE
+     * Anyone can produce such a row: ZCL_PARITY_MIN_DISTINCT_PEERS=1 on the
+     * recorder, an old ledger copied in, or a hand-written line. So the
+     * recorded control may only ever RAISE the bar above
+     * TIP_AGREEMENT_MIN_DISTINCT_PEERS, never lower it. */
+    {
+        bool ok = true;
+        row(text, sizeof(text), 1785386039LL, "agrees", 1, 3198906, HASH_A,
+            HASH_A, 1, 0, "weakened_control_one_peer");
+        ok = ok && scan_text(text, &rep);
+        ok = ok && rep.min_distinct_peers == 1;   /* the row's own claim */
+        ok = ok && rep.modal_remote_peers == 1;
+        ok = ok && rep.hashes_match;              /* bytes DO match */
+        ok = ok && rep.outcome == TIP_AGREEMENT_OUTCOME_AGREES;
+        ok = ok && rep.independence ==
+                       TIP_AGREEMENT_INDEPENDENCE_INSUFFICIENT;
+        ok = ok && !tip_agreement_reports_agreement(&rep);
+        summary_of(&rep, summary, sizeof(summary));
+        ok = ok && strstr(summary, TIP_AGREEMENT_INSUFFICIENT_TOKEN) != NULL;
+        /* the bar REPORTED is the one applied, not the one the row asked for */
+        ok = ok && strstr(summary, "required=2") != NULL;
+        ok = ok && strstr(summary, "control_recorded=1") != NULL;
+        ok = ok && strstr(summary, "agrees height=") == NULL;
+
+        /* The floor is a floor, not a replacement: a genuinely adequate peer
+         * count still grades SUFFICIENT, and a control STRONGER than the floor
+         * is still honoured as written. */
+        ok = ok && tip_agreement_required_distinct_peers(1) ==
+                       TIP_AGREEMENT_MIN_DISTINCT_PEERS;
+        ok = ok && tip_agreement_required_distinct_peers(2) == 2;
+        ok = ok && tip_agreement_required_distinct_peers(9) == 9;
+        /* an unreadable control does not borrow the floor either */
+        ok = ok && tip_agreement_required_distinct_peers(0) == -1;
+        ok = ok && tip_agreement_required_distinct_peers(-1) == -1;
+
+        ok = ok && tip_agreement_classify_independence(1, 1) ==
+                       TIP_AGREEMENT_INDEPENDENCE_INSUFFICIENT;
+        ok = ok && tip_agreement_classify_independence(2, 1) ==
+                       TIP_AGREEMENT_INDEPENDENCE_SUFFICIENT;
+        ok = ok && tip_agreement_classify_independence(9, 9) ==
+                       TIP_AGREEMENT_INDEPENDENCE_SUFFICIENT;
+        ok = ok && tip_agreement_classify_independence(8, 9) ==
+                       TIP_AGREEMENT_INDEPENDENCE_INSUFFICIENT;
+
+        row(text, sizeof(text), 1785386099LL, "agrees", 1, 3198906, HASH_A,
+            HASH_A, 4, 0, "weakened_control_four_peers");
+        ok = ok && scan_text(text, &rep);
+        ok = ok && rep.independence == TIP_AGREEMENT_INDEPENDENCE_SUFFICIENT;
+        ok = ok && tip_agreement_reports_agreement(&rep);
+        summary_of(&rep, summary, sizeof(summary));
+        ok = ok && strncmp(summary, "agrees ", 7) == 0;
+        /* even then the weakened control stays VISIBLE, not honoured */
+        ok = ok && strstr(summary, "required 2") != NULL;
+        ok = ok && strstr(summary, "control_recorded 1") != NULL;
+        TAW_CHECK("a row's own control cannot lower the independence floor",
+                  ok);
+    }
+
+    /* ── (g) the bounded tail read drops nothing real and invents nothing ──
+     * All three defects below were live in evidence_ledger_scan_tail() and
+     * every one of them corrupted the honesty of this report, because
+     * malformed_rows is published and the LAST row scanned supplies every
+     * per-sample field. Both readers over that scanner (this one and
+     * services/stopwatch_skip_watch.h) were affected. */
+    {
+        bool ok = true;
+        char dir[] = "/tmp/zcl-taw-tail-XXXXXX";
+        ok = ok && mkdtemp(dir) != NULL;
+        char path[512];
+        snprintf(path, sizeof(path), "%s/agreement-ledger.jsonl", dir);
+
+        /* (g1) A row that FITS must not be mistaken for one that did not.
+         * fgets() over a buffer of exactly EVIDENCE_ROW_MAX returns a
+         * 4095-byte row buffer-full with no newline visible, which the old
+         * check read as overlong: the row was dropped and counted malformed
+         * (reproduced at both 4095 and 4096). */
+        for (size_t len = EVIDENCE_ROW_MAX - 1; len <= EVIDENCE_ROW_MAX;
+             len++) {
+            FILE *f = fopen(path, "wb");
+            ok = ok && f != NULL;
+            if (!f)
+                break;
+            ok = ok && write_row_of_len(f, 1785390000LL, 3100001, len, true);
+            ok = ok && write_row_of_len(f, 1785390060LL, 3100002, SHORT_ROW,
+                                        true);
+            fclose(f);
+            ok = ok && tip_agreement_read_ledger(path, &rep);
+            ok = ok && rep.rows_scanned == 2;
+            ok = ok && rep.malformed_rows == 0;
+            ok = ok && rep.incomplete_rows == 0;
+            ok = ok && rep.height == 3100002;    /* the LAST row won */
+        }
+
+        /* (g2) A post-seek fragment long enough to fill the row buffer used to
+         * cost the row AFTER it: the overlong branch returned before `first`
+         * was cleared, so the next line — a real, complete row — was dropped
+         * as if IT were the fragment. The file must exceed
+         * TIP_AGREEMENT_TAIL_BYTES for the seek to happen at all. */
+        {
+            FILE *f = fopen(path, "wb");
+            ok = ok && f != NULL;
+            if (f) {
+                ok = ok && write_row_of_len(f, 1785391000LL, 3200001,
+                                            TIP_AGREEMENT_TAIL_BYTES + 20000,
+                                            true);
+                ok = ok && write_row_of_len(f, 1785391060LL, 3200002, SHORT_ROW,
+                                            true);
+                fclose(f);
+            }
+            ok = ok && tip_agreement_read_ledger(path, &rep);
+            /* was present=false: nothing at all was scanned */
+            ok = ok && rep.present;
+            ok = ok && rep.rows_scanned == 1;
+            ok = ok && rep.height == 3200002;    /* the real row survived */
+            ok = ok && rep.last_ts == 1785391060LL;
+            /* the fragment is a fragment, not a malformed row: its true length
+             * is unknown, so counting it would invent a defect */
+            ok = ok && rep.malformed_rows == 0;
+            ok = ok && rep.incomplete_rows == 0;
+        }
+
+        /* (g3) A torn final line must never become "the" sample. It used to
+         * reach the callback, so a half-written append silently supplied the
+         * height, the hashes and the outcome of the current sample. */
+        {
+            FILE *f = fopen(path, "wb");
+            ok = ok && f != NULL;
+            if (f) {
+                ok = ok && write_row_of_len(f, 1785392000LL, 3300001, SHORT_ROW,
+                                            true);
+                /* caught mid-append: no trailing newline */
+                ok = ok && write_row_of_len(f, 1785392060LL, 3300002,
+                                            SHORT_ROW, false);
+                fclose(f);
+            }
+            ok = ok && tip_agreement_read_ledger(path, &rep);
+            ok = ok && rep.rows_scanned == 1;
+            ok = ok && rep.height == 3300001;    /* the COMPLETE row */
+            ok = ok && rep.last_ts == 1785392000LL;
+            /* counted, and counted honestly: not malformed, not a sample */
+            ok = ok && rep.incomplete_rows == 1;
+            ok = ok && rep.malformed_rows == 0;
+        }
+
+        /* (g4) AND THE LENGTH CHECK DID NOT GO SOFT. A row genuinely longer
+         * than EVIDENCE_ROW_MAX is still refused and still counted malformed,
+         * and its tail is still consumed rather than folded in as a second
+         * phantom row. */
+        {
+            FILE *f = fopen(path, "wb");
+            ok = ok && f != NULL;
+            if (f) {
+                ok = ok && write_row_of_len(f, 1785393000LL, 3400001, SHORT_ROW,
+                                            true);
+                ok = ok && write_row_of_len(f, 1785393060LL, 3400002,
+                                            EVIDENCE_ROW_MAX + 1, true);
+                ok = ok && write_row_of_len(f, 1785393120LL, 3400003, 9000,
+                                            true);
+                ok = ok && write_row_of_len(f, 1785393180LL, 3400004, SHORT_ROW,
+                                            true);
+                fclose(f);
+            }
+            ok = ok && tip_agreement_read_ledger(path, &rep);
+            ok = ok && rep.rows_scanned == 2;    /* only the two short rows */
+            /* one just over the bound, one far over */
+            ok = ok && rep.malformed_rows == 2;
+            ok = ok && rep.incomplete_rows == 0;
+            ok = ok && rep.height == 3400004;
+        }
+
+        unlink(path);
+        rmdir(dir);
+        TAW_CHECK("the tail read keeps every real row and no invented one", ok);
     }
 
     return failures;
