@@ -388,7 +388,24 @@ bytes_window_open_try() {
 }
 
 # bytes_window_close — take the window-close reading and resolve the delta.
+#
+# THERE MAY BE NO NODE TO ASK. write_artifact() calls this on EVERY verdict, and
+# the earliest verdicts — skip "no peer stated", skip "serving peer not
+# reachable", skip "node binary absent" — fire before a datadir is made, before
+# a node is launched, and (textually) before rpc() is even defined further down
+# this file. Calling rpc there put `line 392: rpc: command not found` into the
+# run log of every skipped scheduled run and asked a nonexistent node for a byte
+# count. Both ends of the window are already required to be real readings, so
+# the honest thing on that path is to take no reading at all and let
+# bytes_delta_compute name the never-measured reason. Guarding on DATADIR+PID is
+# what makes "there was no node" different from "the node did not answer".
 bytes_window_close() {
+    if [ -z "${DATADIR:-}" ] || [ -z "${PID:-}" ]; then
+        BYTES_CLOSE=-1
+        BYTES_CLOSE_BOOT=-1
+        bytes_delta_compute
+        return 0
+    fi
     BYTES_CLOSE="$(bytes_reading_from_json "$(rpc dumpstate sync_monitor)")"
     BYTES_CLOSE_BOOT="$boots"
     bytes_delta_compute

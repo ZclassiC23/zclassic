@@ -66,8 +66,15 @@ static bool process_notfound(struct msg_processor *mp, struct p2p_node *node,
             char hex[65];
             uint256_get_hex(&inv.hash, hex);
             printf("Peer %s: notfound block %s\n", node->addr_name, hex);
-            /* Re-queue so another peer can try */
-            dl_peer_disconnected(dm, (uint32_t)node->id);
+            /* Re-queue JUST this block so another peer can try. This used to
+             * call dl_peer_disconnected(), which is a whole-peer action: it
+             * orphaned and re-queued every in-flight request to this peer and
+             * marked it inactive, once per missing block. See
+             * net/download.h::dl_mark_notfound for the measured cost (50% of
+             * all C3 stopwatch block requests settled as orphaned, ~483 per
+             * notfound message) and why a single-peer client had nothing to
+             * gain from it. */
+            dl_mark_notfound(dm, (uint32_t)node->id, &inv.hash);
         }
     }
     return true;

@@ -388,6 +388,65 @@ static int test_dl_peer_disconnected(void)
     return failures;
 }
 
+/* `notfound` names ONE block. It must not cost the peer its whole in-flight
+ * window, which is what routing notfound through dl_peer_disconnected() did:
+ * on the C3 cold-start stopwatch (one serving peer, 600 s) that turned 35
+ * notfound messages into 16899 orphaned requests — 50% of every block request
+ * the run made, ~483 per notfound. A single-peer client has no "another peer"
+ * to re-ask, so the collateral requeue bought nothing at all. */
+static int test_dl_mark_notfound_settles_only_named_block(void)
+{
+    int failures = 0;
+    TEST("notfound requeues only the named block, not the peer's whole window") {
+        struct download_manager dm;
+        dl_init(&dm);
+
+        struct uint256 h1 = make_hash(1);
+        struct uint256 h2 = make_hash(2);
+        struct uint256 h3 = make_hash(3);
+
+        dl_mark_requested(&dm, &h1, 100, 1);
+        dl_mark_requested(&dm, &h2, 101, 1);
+        dl_mark_requested(&dm, &h3, 102, 1);
+
+        /* Peer 1 does not have h2. h1 and h3 stay in flight to peer 1 — the
+         * regression this guards is exactly them being thrown away too. */
+        ASSERT(dl_mark_notfound(&dm, 1, &h2) == 1);
+        ASSERT(dl_is_in_flight(&dm, &h1));
+        ASSERT(!dl_is_in_flight(&dm, &h2));
+        ASSERT(dl_is_in_flight(&dm, &h3));
+
+        uint64_t req, recv, tout, inflight, queued;
+        dl_get_stats(&dm, &req, &recv, &tout, &inflight, &queued);
+        ASSERT(inflight == 2);
+        ASSERT(queued == 1);
+
+        /* Settled exactly once, so requested-vs-settled stays balanced. */
+        struct dl_diagnostics diag;
+        dl_get_diagnostics(&dm, &diag);
+        ASSERT(diag.total_orphaned == 1);
+        ASSERT(diag.accounting_drift == 0);
+
+        /* A notfound naming a block this peer does not hold changes nothing —
+         * a stale or hostile notfound must not cancel a live request. */
+        ASSERT(dl_mark_notfound(&dm, 2, &h1) == 0);
+        ASSERT(dl_is_in_flight(&dm, &h1));
+        /* Nor may a repeat of an already-settled block double-count it. */
+        ASSERT(dl_mark_notfound(&dm, 1, &h2) == 0);
+        dl_get_diagnostics(&dm, &diag);
+        ASSERT(diag.total_orphaned == 1);
+        ASSERT(diag.accounting_drift == 0);
+
+        /* The one missing block is re-queued and reassignable to another peer. */
+        struct uint256 out[4];
+        ASSERT(dl_assign_to_peer(&dm, 9, out, 4) == 1);
+
+        dl_free(&dm);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* Every path that takes a request out of flight must settle it (received,
  * timed_out, or orphaned) — a leaked request once satisfied the old
  * requested>settled arm of download_queue_starved forever at tip. */
@@ -1585,6 +1644,7 @@ int test_download(void)
     failures += test_dl_assignment_parking_is_per_peer();
     failures += test_dl_assignment_peer_cache_capacity_and_reuse();
     failures += test_dl_peer_disconnected();
+    failures += test_dl_mark_notfound_settles_only_named_block();
     failures += test_dl_settle_accounting();
     failures += test_dl_check_timeouts();
     failures += test_dl_last_forced_settle_time_initial();

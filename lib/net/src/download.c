@@ -816,6 +816,48 @@ size_t dl_peer_disconnected(struct download_manager *dm, uint32_t peer_id)
     return requeued;
 }
 
+/* One-block counterpart to dl_peer_disconnected — see the rationale and the
+ * measured orphan numbers on the declaration in net/download.h. Settles ONLY
+ * the named hash and leaves the rest of this peer's in-flight window alone;
+ * the peer's dl_peer_stats stays active, because "does not have this one
+ * block" is not "is gone". */
+size_t dl_mark_notfound(struct download_manager *dm, uint32_t peer_id,
+                        const struct uint256 *hash)
+{
+    if (!dm || !hash)
+        return 0;
+
+    zcl_mutex_lock(&dm->cs);
+
+    struct dl_in_flight *s = find_slot(dm, hash, false);
+    /* Only the peer we actually asked may settle the slot. A notfound from a
+     * peer that does not hold this request is either stale (the slot was
+     * already reassigned after a timeout) or hostile, and must not be able to
+     * cancel another peer's live request. */
+    if (!s || !s->active || s->peer_id != peer_id) {
+        zcl_mutex_unlock(&dm->cs);
+        return 0;
+    }
+
+    int64_t avoid_until =
+        dl_peer_avoid_deadline((int64_t)platform_time_wall_time_t());
+    dl_queue_push(dm, &s->hash, s->height, peer_id, avoid_until);
+    s->active = false;
+    dm->num_active--;
+    /* Settle the request exactly once (see the invariant on the stats
+     * fields): the requeued block increments total_requested again when it is
+     * re-assigned, so the original must not be left open. */
+    dm->total_orphaned++;
+
+    event_emitf(EV_BLOCK_REQUESTED, peer_id,
+                "notfound h=%d: 1 block requeued", s->height);
+    dl_generation_advance(&dm->queue_generation);
+    dl_generation_advance(&dm->capacity_generation);
+
+    zcl_mutex_unlock(&dm->cs);
+    return 1;
+}
+
 uint32_t dl_peer_bandwidth_score(struct download_manager *dm, uint32_t peer_id)
 {
     if (!dm) return 0;

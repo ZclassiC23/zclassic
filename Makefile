@@ -3710,6 +3710,20 @@ mvp-coldstart-to-tip-local: zclassic23 zcl-rpc
 # network, no datadir): it re-asserts the verdict-classification table AND the
 # no-implicit-peer guardrail above, so the proof lane cannot quietly regain a
 # default peer between runs.
+#
+# ZCL_FILE_PEER=HOST:PORT names the bundle/file-service peer and forwards to
+# the harness's --file-peer (env ZCL_CS_FILE_PEER). It is OPTIONAL and has no
+# default, on purpose — same no-implicit-peer discipline as ZCL_PEER. It is
+# exposed here because this target previously had no way to state one, while
+# the evidence collector tools/scripts/c3_stopwatch_run_and_record.sh DOES
+# default ZCL_CS_FILE_PEER=127.0.0.1:39072. That asymmetry meant the
+# documented `make mvp-coldstart-to-tip-stopwatch ZCL_PEER=…` command and the
+# recorded C3 ledger were measuring two different lanes: with no
+# -fileservice peer the node has no state source, reports the named blocker
+# bootstrap.no_state_source (NO_STATE_SOURCE_FETCH_SKIPPED, "connect-only
+# with no -fileservice peer"), and does a from-genesis IBD instead of the
+# bundle-then-fold path the ledger's numbers came from. Measured here
+# 2026-07-30: without it, H* pinned at 0 for the whole 600 s budget.
 .PHONY: mvp-coldstart-to-tip-stopwatch
 mvp-coldstart-to-tip-stopwatch: zclassic23
 	@bash -c 'set -uo pipefail; \
@@ -3723,9 +3737,57 @@ mvp-coldstart-to-tip-stopwatch: zclassic23
 	     exit 1; \
 	 fi; \
 	 bash tools/scripts/cold_start_to_tip_stopwatch.sh \
-	     $(if $(ZCL_BIN),--bin=$(ZCL_BIN),) $(if $(ZCL_PEER),--peer=$(ZCL_PEER),); rc=$$?; \
+	     $(if $(ZCL_BIN),--bin=$(ZCL_BIN),) $(if $(ZCL_PEER),--peer=$(ZCL_PEER),) \
+	     $(if $(ZCL_FILE_PEER),--file-peer=$(ZCL_FILE_PEER),); rc=$$?; \
 	 if [ "$$rc" -eq 2 ]; then \
 	     echo "mvp-coldstart-to-tip-stopwatch: SKIP (binary absent / no serving peer stated or reachable — set ZCL_PEER=HOST:PORT and run on a host with a synced zclassic23 peer)"; \
+	     exit 0; \
+	 fi; \
+	 exit $$rc'
+
+# ── mvp-coldstart-to-tip-triple (the stopwatch, N TIMES, HASH-CONFIRMED) ────
+#
+# mvp-coldstart-to-tip-stopwatch above times ONE genuinely-wiped run and gates
+# on H* reaching network_tip. Two things that leaves open, and this target
+# closes exactly those two without re-measuring anything:
+#
+#   1. network_tip is a HEIGHT the peer advertised. "H* == network_tip" says the
+#      client counted to the same number as the peer, not that both mean the
+#      same chain by it. This target reads the peer's own `core chain tip`
+#      (height AND hash) at both ends of every run and polls the CLIENT's tip
+#      while it runs, so the verdict can state hash agreement at equal height —
+#      or say plainly that it could not read one side. The client's scratch
+#      datadir is deleted on the way out, so the client hash must be sampled
+#      DURING the run; there is no way to recover it afterwards.
+#
+#   2. One run is an anecdote. The 600s bar is a claim about the general case,
+#      so the smallest honest form of it is N wiped runs back to back with the
+#      peer's tip recorded around each.
+#
+# ZCL_PEER=HOST:PORT is REQUIRED, same discipline and same reason as the
+# single-run target: with nothing stated the run SKIPs and names the variable.
+# ZCL_RUNS (default 3), ZCL_BIN, ZCL_FILE_PEER (see the single-run target above
+# for why it exists and what its absence measures instead), and
+# ZCL_BUDGET_SECS pass through. Read-only
+# toward the peer (its own RPC port; never its datadir or its systemd unit) and
+# fully isolated on the client side, because the client side IS the single-run
+# harness. Exit 1 means at least one run missed the bar or could not be
+# hash-confirmed; the printed table names which run and why.
+ZCL_RUNS ?= 3
+.PHONY: mvp-coldstart-to-tip-triple
+mvp-coldstart-to-tip-triple: zclassic23
+	@bash -c 'set -uo pipefail; \
+	 echo "══ MVP C3 STOPWATCH x$(ZCL_RUNS) (real): wiped -> peer tip, hash-confirmed, per run ══"; \
+	 if ! bash tools/scripts/c3_stopwatch_triple_run.sh --selftest >/dev/null 2>&1; then \
+	     echo "mvp-coldstart-to-tip-triple: FAIL driver --selftest (run tools/scripts/c3_stopwatch_triple_run.sh --selftest to see which check broke)"; \
+	     exit 1; \
+	 fi; \
+	 bash tools/scripts/c3_stopwatch_triple_run.sh --runs=$(ZCL_RUNS) \
+	     $(if $(ZCL_BIN),--bin=$(ZCL_BIN),) $(if $(ZCL_PEER),--peer=$(ZCL_PEER),) \
+	     $(if $(ZCL_FILE_PEER),--file-peer=$(ZCL_FILE_PEER),) \
+	     $(if $(ZCL_BUDGET_SECS),--budget=$(ZCL_BUDGET_SECS),); rc=$$?; \
+	 if [ "$$rc" -eq 2 ]; then \
+	     echo "mvp-coldstart-to-tip-triple: SKIP (binary absent / no serving peer stated or reachable — set ZCL_PEER=HOST:PORT and run on a host with a synced zclassic23 peer)"; \
 	     exit 0; \
 	 fi; \
 	 exit $$rc'
