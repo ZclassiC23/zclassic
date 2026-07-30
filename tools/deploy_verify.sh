@@ -26,6 +26,10 @@
 # Usage: ./tools/deploy_verify.sh [rpc_tool] [timeout_seconds]
 set -eu
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=tools/scripts/source_identity_lib.sh
+. "$SCRIPT_DIR/scripts/source_identity_lib.sh"  # zcl_json_first_string
+
 RPC_TOOL="${1:-./build/bin/zclassic-cli}"
 TIMEOUT="${2:-${ZCL_DEPLOY_VERIFY_TIMEOUT:-600}}"
 RPC_CALL_TIMEOUT="${ZCL_DEPLOY_RPC_TIMEOUT:-20}"
@@ -381,10 +385,7 @@ extract_build_commit() {
 }
 
 extract_source_id_sha256() {
-    printf '%s\n' "$1" |
-        grep -oE '"source_id_sha256"[[:space:]]*:[[:space:]]*"[^"]*"' |
-        head -1 |
-        sed -E 's/.*"source_id_sha256"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/'
+    zcl_json_first_string "$1" source_id_sha256
 }
 
 sha256_file() {

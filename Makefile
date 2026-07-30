@@ -976,6 +976,7 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
         check-file-size-ceiling check-framework-filename-suffix \
         check-stopwatch-skip-detector \
         check-proof-server-pin \
+        check-identity-parser-single \
         check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-doc-claims check-no-stale-pinned-facts check-markdown-links check-doc-inline-paths \
         check-api-reference-generated check-describe-budget \
         check-no-new-repair-rung \
@@ -6158,6 +6159,17 @@ check-proof-server-pin:
 	@echo "══ LINT: proof-server promotion pin ══"
 	@./tools/lint/check_proof_server_pin.sh
 
+# Gate — stop a tenth copy of the source-identity JSON parser from growing
+# back. tools/scripts/source_identity_lib.sh is the one canonical reader
+# (anchored on the FIRST "source_id_sha256" occurrence — a greedy copy
+# produced a false "identical identities" report on 2026-07-28); this is a
+# shrink-only ratchet over the tools/dev/ scripts still carrying their own
+# copy, named in tools/lint/identity_parser_baseline.txt.
+check-identity-parser-single:
+	@echo "══ LINT: source-identity JSON parser stays single ══"
+	@./tools/lint/check_identity_parser_single.sh --selftest
+	@./tools/lint/check_identity_parser_single.sh
+
 # Anti-stale forbid gate: no hand-pinned rot-prone facts in the docs. Two
 # classes — a "<N> MB … binary" size claim (HARD; the size has a live source,
 # tools/scripts/binary_size.sh — de-pin to size-agnostic prose) and a live-state
@@ -6535,6 +6547,7 @@ LINT_GATES := \
     check-supervisor-progress-declared \
     check-stopwatch-skip-detector \
     check-proof-server-pin \
+    check-identity-parser-single \
     check-framework-shape \
     check-framework-filename-suffix \
     check-no-raw-clock-outside-platform \
