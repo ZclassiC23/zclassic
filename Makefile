@@ -975,6 +975,7 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
         check-long-functions check-rpc-registrar check-lag-slo-observable \
         check-file-size-ceiling check-framework-filename-suffix \
         check-stopwatch-skip-detector \
+        check-proof-server-pin \
         check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-doc-claims check-no-stale-pinned-facts check-markdown-links check-doc-inline-paths \
         check-api-reference-generated check-describe-budget \
         check-no-new-repair-rung \
@@ -6148,6 +6149,15 @@ check-stopwatch-skip-detector:
 	@echo "══ LINT: stopwatch skip-streak detector selftests ══"
 	@./tools/lint/check_stopwatch_skip_detector.sh
 
+# Gate — the proof-server promotion binding stays self-recording. tools/ship.sh's
+# guard used to tell the operator to "re-tag the candidate" and nothing ever did
+# it; this runs the pin recorder's hermetic self-test and asserts ship.sh still
+# calls `proof_server_pin.sh record` in its promotion path, so the same
+# prose-with-no-code defect cannot silently return.
+check-proof-server-pin:
+	@echo "══ LINT: proof-server promotion pin ══"
+	@./tools/lint/check_proof_server_pin.sh
+
 # Anti-stale forbid gate: no hand-pinned rot-prone facts in the docs. Two
 # classes — a "<N> MB … binary" size claim (HARD; the size has a live source,
 # tools/scripts/binary_size.sh — de-pin to size-agnostic prose) and a live-state
@@ -6524,6 +6534,7 @@ LINT_GATES := \
     check-blocker-handoff-declared \
     check-supervisor-progress-declared \
     check-stopwatch-skip-detector \
+    check-proof-server-pin \
     check-framework-shape \
     check-framework-filename-suffix \
     check-no-raw-clock-outside-platform \

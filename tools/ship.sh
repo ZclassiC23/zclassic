@@ -84,7 +84,11 @@ is_sha256() { case "$1" in [0-9a-f]) return 1 ;; esac; [ "${#1}" -eq 64 ] && \
 #     dropping it there would be worse than failing — they would believe the
 #     proof server had been updated. Refuse outright, non-zero.
 #
-# Promotion is a deliberate act: ZCL_SHIP_ALLOW_PROOF_SERVER=1 and re-tag.
+# Promotion is a deliberate act: ZCL_SHIP_ALLOW_PROOF_SERVER=1. A successful
+# promotion records a proof-server/<timestamp> tag automatically (step 4
+# below, right after the running daemon proves it took the candidate) —
+# `tools/scripts/proof_server_pin.sh check` reports whether the box still
+# runs what was pinned.
 case " $TARGETS " in *" remote "*)
     if [ "${ZCL_SHIP_ALLOW_PROOF_SERVER:-0}" != "1" ]; then
         if [ "$TARGETS_EXPLICIT" -eq 1 ]; then
@@ -93,7 +97,9 @@ case " $TARGETS " in *" remote "*)
        candidate held. Deploying restarts it and resets that record.
        Promoting a new candidate is deliberate:
            ZCL_SHIP_ALLOW_PROOF_SERVER=1 tools/ship.sh --targets=remote
-       and re-tag the candidate afterwards so the tag still names what runs."
+       A successful promotion records a proof-server/<timestamp> tag
+       automatically; run 'tools/scripts/proof_server_pin.sh check' afterwards
+       to confirm the box still runs what was pinned."
         fi
         TARGETS="${TARGETS//remote/}"
         TARGETS="$(printf '%s' "$TARGETS" | tr -s ' ' | sed 's/^ *//; s/ *$//')"
@@ -299,6 +305,13 @@ REMOTE_SCRIPT
         die "remote deploy failed and was rolled back"
     fi
     say "remote ok  running source_id ${running_src:0:16}… and answering status"
+
+    # Record the pin at the one moment this script provably holds the
+    # binding: the running daemon just proved it reports the candidate's
+    # source id. A failure here must not undo or fail an already-successful
+    # deploy — report it loudly and move on.
+    tools/scripts/proof_server_pin.sh record "$HEAD_SHA" "$CAND_SOURCE_ID" "$ARTIFACT_SHA" "$REMOTE_HOST" || \
+        say "WARNING: could not record the proof-server pin for $HEAD_SHA / ${CAND_SOURCE_ID:0:16}… on $REMOTE_HOST — the deploy itself succeeded; re-run by hand: tools/scripts/proof_server_pin.sh record $HEAD_SHA $CAND_SOURCE_ID $ARTIFACT_SHA $REMOTE_HOST"
 }
 
 for target in $TARGETS; do
