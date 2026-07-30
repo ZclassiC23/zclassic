@@ -1,0 +1,337 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Property grant service, COMMIT half — the commit-time re-check, the receipt
+ * chain append, and chain verification. Shares one lock and one store with
+ * property_grant_service.c (property_grant_store.h).
+ *
+ * THE POINT OF THIS FILE: a commit trusts NOTHING from its plan except the
+ * request it described and the property revision it observed. Ownership,
+ * revocation (own and ancestral), budget, rate window, and expiry are all
+ * re-read and re-decided here against current state, because every one of them
+ * can change between plan and commit. See the public header. */
+
+#include "services/property_grant_service.h"
+
+#include "base/log_macros.h"
+#include "property_grant_store.h"
+
+#include <stdio.h>
+#include <string.h>
+
+#define PGC_LOG "metaverse.grant_commit"
+
+/* Lock held. The last receipt in `grant_id`'s chain, or NULL for an empty
+ * chain. Scans backwards because the common case is "the newest one". */
+static const struct metaverse_receipt *last_receipt(const char *grant_id)
+{
+    for (size_t i = g_pg_store.receipt_count; i > 0; i--) {
+        const struct metaverse_receipt *r = &g_pg_store.receipts[i - 1];
+        if (strcmp(r->grant_id, grant_id) == 0) return r;
+    }
+    return NULL;
+}
+
+/* Lock held. The stored receipt for (grant, idempotency_key), or NULL. An
+ * EMPTY key never matches: collapsing every un-keyed commit onto one empty key
+ * would make the first un-keyed action of a grant permanently replay the same
+ * receipt for every later one. */
+static const struct metaverse_receipt *receipt_by_key(const char *grant_id,
+                                                      const char *key)
+{
+    if (!key || key[0] == '\0') return NULL;
+    for (size_t i = 0; i < g_pg_store.receipt_count; i++) {
+        const struct metaverse_receipt *r = &g_pg_store.receipts[i];
+        if (strcmp(r->grant_id, grant_id) != 0) continue;
+        if (strcmp(r->idempotency_key, key) == 0) return r;
+    }
+    return NULL;
+}
+
+/* Lock held. Number of receipts already in this grant's chain. */
+static uint64_t chain_len(const char *grant_id)
+{
+    uint64_t n = 0;
+    for (size_t i = 0; i < g_pg_store.receipt_count; i++) {
+        if (strcmp(g_pg_store.receipts[i].grant_id, grant_id) == 0) n++;
+    }
+    return n;
+}
+
+enum property_grant_reason property_grant_service_commit(
+    const char *plan_id, const char *idempotency_key,
+    struct property_grant_commit_result *out)
+{
+    if (!plan_id || !out) {
+        LOG_ERROR(PGC_LOG, "commit: NULL plan id or output");
+        return PROPERTY_GRANT_BAD_ARGS;
+    }
+    memset(out, 0, sizeof(*out));
+
+    int64_t now = 0, height = 0;
+    pg_now(&now, &height);
+
+    pthread_mutex_lock(&g_pg_store.lock);
+
+    struct property_grant_plan *plan = pg_find_plan_locked(plan_id);
+    if (!plan) {
+        pthread_mutex_unlock(&g_pg_store.lock);
+        LOG_WARN(PGC_LOG, "commit: no plan %s", plan_id);
+        return PROPERTY_GRANT_PLAN_UNKNOWN;
+    }
+
+    /* IDEMPOTENCY FIRST. A retry of an already-committed (grant, key) is a
+     * LOOKUP, not a second execution: it must succeed, return the identical
+     * receipt, and charge nothing. Checking this before the
+     * already-committed/expired guards is what makes a retry after a lost
+     * response work at all. */
+    const struct metaverse_receipt *replay =
+        receipt_by_key(plan->grant_id, idempotency_key);
+    if (replay) {
+        out->receipt = *replay;
+        out->replayed = true;
+        const struct metaverse_grant *g = pg_find_grant(plan->grant_id);
+        out->budget_remaining_zat = g ? metaverse_grant_budget_remaining(g) : 0;
+        pthread_mutex_unlock(&g_pg_store.lock);
+        return PROPERTY_GRANT_OK;
+    }
+
+    if (plan->committed) {
+        pthread_mutex_unlock(&g_pg_store.lock);
+        LOG_WARN(PGC_LOG, "commit: plan %s already committed (seq %llu)",
+                 plan_id, (unsigned long long)plan->receipt_seq);
+        return PROPERTY_GRANT_PLAN_ALREADY_COMMITTED;
+    }
+    if (now >= plan->expires_unix) {
+        pthread_mutex_unlock(&g_pg_store.lock);
+        LOG_WARN(PGC_LOG, "commit: plan %s expired at %lld, now %lld", plan_id,
+                 (long long)plan->expires_unix, (long long)now);
+        return PROPERTY_GRANT_PLAN_EXPIRED;
+    }
+
+    /* ── Re-check 1: the grant record AS IT IS NOW ──────────────────────── */
+    struct metaverse_grant *g = pg_find_grant(plan->grant_id);
+    if (!g) {
+        pthread_mutex_unlock(&g_pg_store.lock);
+        LOG_WARN(PGC_LOG, "commit: grant %s no longer in the store",
+                 plan->grant_id);
+        return PROPERTY_GRANT_GRANT_UNKNOWN;
+    }
+
+    /* ── Re-check 2: current ownership and revision from the catalog ────── */
+    if (!g_pg_store.env.catalog_lookup) {
+        pthread_mutex_unlock(&g_pg_store.lock);
+        LOG_WARN(PGC_LOG,
+                 "commit: no property catalog installed — refusing to commit "
+                 "an action whose current ownership cannot be confirmed");
+        return PROPERTY_GRANT_CATALOG_UNAVAILABLE;
+    }
+    struct metaverse_catalog_view view;
+    memset(&view, 0, sizeof(view));
+    if (!g_pg_store.env.catalog_lookup(&plan->request.property, &view,
+                                       g_pg_store.env.catalog_ctx)) {
+        pthread_mutex_unlock(&g_pg_store.lock);
+        LOG_WARN(PGC_LOG, "commit: property not in the catalog (plan %s)",
+                 plan_id);
+        return PROPERTY_GRANT_PROPERTY_UNKNOWN;
+    }
+    /* The controlling principal must be the one the plan was quoted against.
+     * A property that changed hands between plan and commit is a different
+     * authority situation, and silently committing under the new owner is
+     * exactly the confused-deputy the re-check exists to stop. */
+    if (plan->catalog_seen &&
+        strcmp(view.controller, plan->controller_at_plan) != 0) {
+        pthread_mutex_unlock(&g_pg_store.lock);
+        LOG_WARN(PGC_LOG, "commit: controller changed since plan %s", plan_id);
+        return PROPERTY_GRANT_OWNER_MISMATCH;
+    }
+    /* ── Re-check 3: OPTIMISTIC CONCURRENCY on the property revision ────── */
+    if (!plan->catalog_seen || view.revision != plan->property_revision) {
+        pthread_mutex_unlock(&g_pg_store.lock);
+        LOG_WARN(PGC_LOG,
+                 "commit: stale revision — plan %s saw %lld, catalog now %lld",
+                 plan_id, (long long)plan->property_revision,
+                 (long long)view.revision);
+        return PROPERTY_GRANT_STALE_REVISION;
+    }
+
+    /* ── Re-check 4: the FULL capability check, run fresh ───────────────── */
+    struct metaverse_action_request req = plan->request;
+    req.now_unix = now;
+    req.height = height;
+
+    const struct metaverse_grant *anc[METAVERSE_GRANT_MAX_DEPTH];
+    size_t anc_count = 0;
+    const struct metaverse_grant *const *anc_arg = NULL;
+    if (g->lineage_count > 0) {
+        if (!pg_collect_ancestors(g, anc, &anc_count)) {
+            pthread_mutex_unlock(&g_pg_store.lock);
+            LOG_WARN(PGC_LOG, "commit: grant %s has a missing ancestor",
+                     g->grant_id);
+            return PROPERTY_GRANT_ANCESTOR_REVOKED;
+        }
+        anc_arg = anc;
+    }
+
+    enum metaverse_grant_verdict v =
+        metaverse_grant_check(g, anc_arg, anc_count, &req);
+    if (v != METAVERSE_GRANT_OK) {
+        pthread_mutex_unlock(&g_pg_store.lock);
+        LOG_WARN(PGC_LOG, "commit: grant %s refused at commit time (%s)",
+                 g->grant_id, metaverse_grant_verdict_token(v));
+        return property_grant_reason_from_verdict(v);
+    }
+
+    /* ── Everything passed. Record the effect, then seal a receipt. ─────── */
+    if (g_pg_store.receipt_count >= PROPERTY_GRANT_MAX_RECEIPTS) {
+        pthread_mutex_unlock(&g_pg_store.lock);
+        LOG_ERROR(PGC_LOG, "commit: receipt store full (cap %d)",
+                  PROPERTY_GRANT_MAX_RECEIPTS);
+        return PROPERTY_GRANT_STORE_FULL;
+    }
+    if (!pg_ensure_key()) {
+        pthread_mutex_unlock(&g_pg_store.lock);
+        LOG_ERROR(PGC_LOG, "commit: no receipt signing key available");
+        return PROPERTY_GRANT_SIGNING_KEY_UNAVAILABLE;
+    }
+
+    if (!metaverse_grant_record_commit(g, &req)) {
+        pthread_mutex_unlock(&g_pg_store.lock);
+        LOG_ERROR(PGC_LOG,
+                  "commit: grant %s passed the check but rejected the debit",
+                  g->grant_id);
+        return PROPERTY_GRANT_BUDGET_EXCEEDED;
+    }
+
+    struct metaverse_receipt r;
+    memset(&r, 0, sizeof(r));
+    r.seq = chain_len(g->grant_id) + 1u;
+    snprintf(r.grant_id, sizeof(r.grant_id), "%s", g->grant_id);
+    snprintf(r.actor, sizeof(r.actor), "%s", req.actor);
+    snprintf(r.counterparty, sizeof(r.counterparty), "%s", req.counterparty);
+    if (idempotency_key)
+        snprintf(r.idempotency_key, sizeof(r.idempotency_key), "%s",
+                 idempotency_key);
+    r.property = req.property;
+    r.action = req.action;
+    r.value_zat = req.value_zat;
+    r.property_revision = view.revision;
+    r.height = height;
+    r.unix_time = now;
+    r.grant_spent_after_zat = g->spent_zat;
+
+    const struct metaverse_receipt *prev = last_receipt(g->grant_id);
+    if (!metaverse_receipt_seal(&r, prev ? prev->chain_hash : NULL,
+                                g_pg_store.sk, g_pg_store.pk)) {
+        /* The debit is already recorded, so give it back rather than charge for
+         * an action that produced no evidence. */
+        g->spent_zat -= req.value_zat;
+        if (g->rate_limit > 0 && g->window_used > 0) g->window_used--;
+        pthread_mutex_unlock(&g_pg_store.lock);
+        LOG_ERROR(PGC_LOG, "commit: could not seal receipt for grant %s",
+                  g->grant_id);
+        return PROPERTY_GRANT_RECEIPT_SEAL_FAILED;
+    }
+
+    g_pg_store.receipts[g_pg_store.receipt_count++] = r;
+    plan->committed = true;
+    plan->receipt_seq = r.seq;
+
+    out->receipt = r;
+    out->replayed = false;
+    out->budget_remaining_zat = metaverse_grant_budget_remaining(g);
+    pthread_mutex_unlock(&g_pg_store.lock);
+    return PROPERTY_GRANT_OK;
+}
+
+size_t property_grant_service_receipts(const char *grant_id,
+                                       struct metaverse_receipt *out,
+                                       size_t max)
+{
+    if (!out || max == 0) return 0;
+    bool all = (!grant_id || grant_id[0] == '\0');
+    size_t n = 0;
+    pthread_mutex_lock(&g_pg_store.lock);
+    for (size_t i = 0; i < g_pg_store.receipt_count && n < max; i++) {
+        if (!all && strcmp(g_pg_store.receipts[i].grant_id, grant_id) != 0)
+            continue;
+        out[n++] = g_pg_store.receipts[i];
+    }
+    pthread_mutex_unlock(&g_pg_store.lock);
+    return n;
+}
+
+enum metaverse_receipt_status property_grant_service_verify_chain(
+    const char *grant_id, uint64_t *out_bad_seq)
+{
+    if (out_bad_seq) *out_bad_seq = 0;
+    if (!grant_id || grant_id[0] == '\0') return METAVERSE_RECEIPT_BAD_ARGS;
+
+    /* Walked IN PLACE under the lock. Copying the chain out first would put
+     * ~350 KB on the stack and would verify a snapshot rather than the store. */
+    pthread_mutex_lock(&g_pg_store.lock);
+
+    uint8_t prev[METAVERSE_HASH_LEN];
+    memset(prev, 0, sizeof(prev));
+    uint64_t expect_seq = 1;
+    enum metaverse_receipt_status status = METAVERSE_RECEIPT_OK;
+    uint64_t bad_seq = 0;
+
+    for (size_t i = 0; i < g_pg_store.receipt_count; i++) {
+        const struct metaverse_receipt *r = &g_pg_store.receipts[i];
+        if (strcmp(r->grant_id, grant_id) != 0) continue;
+
+        if (!g_pg_store.key_set) {
+            status = METAVERSE_RECEIPT_SIGNER_UNEXPECTED;
+            bad_seq = r->seq;
+            break;
+        }
+        if (r->seq != expect_seq) {
+            status = METAVERSE_RECEIPT_SEQ_OUT_OF_ORDER;
+            bad_seq = expect_seq;
+            break;
+        }
+        if (memcmp(r->prev_chain_hash, prev, METAVERSE_HASH_LEN) != 0) {
+            status = METAVERSE_RECEIPT_CHAIN_BROKEN;
+            bad_seq = r->seq;
+            break;
+        }
+        status = metaverse_receipt_verify(r, g_pg_store.pk);
+        if (status != METAVERSE_RECEIPT_OK) {
+            bad_seq = r->seq;
+            break;
+        }
+        memcpy(prev, r->chain_hash, METAVERSE_HASH_LEN);
+        expect_seq++;
+    }
+
+    pthread_mutex_unlock(&g_pg_store.lock);
+    if (status != METAVERSE_RECEIPT_OK && out_bad_seq) *out_bad_seq = bad_seq;
+    return status;
+}
+
+bool property_grant_service_test_overwrite_receipt(
+    const char *grant_id, uint64_t seq, const struct metaverse_receipt *edited)
+{
+#ifndef ZCL_TESTING
+    (void)grant_id; (void)seq; (void)edited;
+    LOG_FAIL(PGC_LOG, "receipt overwrite is a test-only hook and this is not a "
+                      "ZCL_TESTING build");
+#else
+    if (!grant_id || !edited || seq == 0)
+        LOG_FAIL(PGC_LOG, "receipt overwrite: bad arguments");
+    bool found = false;
+    pthread_mutex_lock(&g_pg_store.lock);
+    for (size_t i = 0; i < g_pg_store.receipt_count; i++) {
+        struct metaverse_receipt *r = &g_pg_store.receipts[i];
+        if (strcmp(r->grant_id, grant_id) != 0 || r->seq != seq) continue;
+        *r = *edited;
+        found = true;
+        break;
+    }
+    pthread_mutex_unlock(&g_pg_store.lock);
+    if (!found)
+        LOG_FAIL(PGC_LOG, "receipt overwrite: no receipt %s seq %llu", grant_id,
+                 (unsigned long long)seq);
+    return true;
+#endif
+}

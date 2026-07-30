@@ -429,7 +429,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(parity_slo) X(state_auditor) \
     X(recovery_no_worse) X(vault_read) X(vault_dispatch) X(agent_session) \
     X(agent_spend_policy) X(vault_session) \
-    X(epoch) X(zcode_release) \
+    X(epoch) X(zcode_release) X(metaverse_grant) \
     /* The make_lint_gates family. The bare make_lint_gates row above is the
      * exclusive lane (the two checks that plant into the live worktree);
      * these are the pool-eligible ones. --only is a substring match, so
