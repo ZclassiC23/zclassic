@@ -62,6 +62,16 @@ static inline struct wallet_rpc_context *wallet_ctx(void)
 /* ── Handlers (grouped into sibling .c files) ─────────────── */
 
 /* wallet_controller_keys.c — key/address import-export */
+
+/* Mint a receive address that is PERSISTED before it is returned. The one
+ * implementation behind both getnewaddress and wallet_direct_getnewaddress:
+ * an address handed out but not persisted loses every coin paid to it on the
+ * next restart, so no caller may reimplement this. Writes the refusal into
+ * `err_out` (rather than an RPC result) so both callers can share it.
+ * `addr_max` must be >= 80. */
+bool wc_new_durable_address(char *addr_out, size_t addr_max,
+                            char *err_out, size_t err_max);
+
 bool rpc_dumpprivkey(const struct json_value *params, bool help,
                      struct json_value *result);
 bool rpc_importprivkey(const struct json_value *params, bool help,
