@@ -40,12 +40,14 @@
 
 #include "test/test_core.h"
 
+#include "config/boot.h"              /* wallet_at_rest_boot_decision */
 #include "config/boot_wallet_phrase.h"
 #include "models/database.h"
 #include "models/wallet_key.h"
 #include "util/boot_phase.h"
 #include "util/boot_status.h"
 #include "wallet/wallet.h"
+#include "wallet/wallet_keystore.h"   /* wallet_at_rest_creation_policy */
 #include "wallet/wallet_sqlite.h"
 
 #include <fcntl.h>
@@ -53,6 +55,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #define WPL_CHECK(name, expr) do {                                     \
@@ -330,9 +333,9 @@ static int t_direct_print_is_also_refused(const char *dir)
  * to every wallet, so every headless first boot exited 1 — a fresh
  * mint-anchor producer, every declared dev/soak/test/copy/standby lane, and
  * a service with ZCL_WALLET_PASSPHRASE set, which is the recommended secure
- * configuration. Under a unit with Restart= that is a crash loop, and
- * boot_status.json was left at phase=loading / stage=db_open with no reason
- * in it at all.
+ * configuration AND what the shipped canonical unit is run with. Under a unit
+ * with Restart= that is a crash loop, and boot_status.json was left at
+ * phase=loading / stage=db_open with no reason in it at all.
  *
  * The property asserted here is the whole matrix, not one row: the words
  * are unreachable from a non-terminal in EVERY case, and the difference
@@ -347,24 +350,38 @@ static int t_refusal_is_scoped_to_a_spendable_wallet(void)
                                     ZCL_OPERATOR_LANE_CANONICAL, false)
         == BOOT_WALLET_PHRASE_SHOW);
 
-    /* No terminal + a real spendable wallet: refuse. This is the security
-     * property, and it must survive the fix. */
-    WRS_PLAN_CHECK("no terminal + canonical lane + passphrase: REFUSE",
-        boot_wallet_phrase_plan_for(false, WALLET_BOOT_CREATE_ENCRYPTED,
-                                    ZCL_OPERATOR_LANE_CANONICAL, false)
-        == BOOT_WALLET_PHRASE_REFUSE);
-    WRS_PLAN_CHECK("no terminal + UNKNOWN lane (the interactive default): "
-                   "REFUSE",
-        boot_wallet_phrase_plan_for(false, WALLET_BOOT_CREATE_ENCRYPTED,
-                                    ZCL_OPERATOR_LANE_UNKNOWN, false)
-        == BOOT_WALLET_PHRASE_REFUSE);
-    /* -allow-plaintext-wallet is a decision about ENCRYPTION AT REST, not a
-     * declaration that the wallet is disposable. It must not buy a pass. */
+    /* No terminal, and nobody has decided ANYTHING about this wallet: refuse.
+     * This is the security property, and it must survive every fix.
+     * -allow-plaintext-wallet does not buy a pass — a decision about
+     * ENCRYPTION AT REST is not a declaration that the wallet is disposable,
+     * and the plaintext keys it produces are the only copy there is. */
     WRS_PLAN_CHECK("no terminal + -allow-plaintext-wallet on a canonical "
                    "node is STILL a refusal",
         boot_wallet_phrase_plan_for(false, WALLET_BOOT_CREATE_PLAINTEXT,
                                     ZCL_OPERATOR_LANE_CANONICAL, false)
         == BOOT_WALLET_PHRASE_REFUSE);
+    WRS_PLAN_CHECK("no terminal + -allow-plaintext-wallet on an UNKNOWN lane "
+                   "(the interactive default) is STILL a refusal",
+        boot_wallet_phrase_plan_for(false, WALLET_BOOT_CREATE_PLAINTEXT,
+                                    ZCL_OPERATOR_LANE_UNKNOWN, false)
+        == BOOT_WALLET_PHRASE_REFUSE);
+
+    /* ZCL_WALLET_PASSPHRASE set (CREATE_ENCRYPTED) is an at-rest decision the
+     * operator made by hand, and it counts as consent to a wallet whose backup
+     * is not twelve written words. Refusing it is what made a fresh install of
+     * the shipped canonical unit crash-loop: -operator-lane=canonical plus
+     * Restart=always plus exit(1) forever. No phrase is drawn on the SKIP
+     * plan, so nothing can leak. */
+    WRS_PLAN_CHECK("no terminal + canonical lane + a passphrase: create "
+                   "without a phrase (the shipped unit's first boot)",
+        boot_wallet_phrase_plan_for(false, WALLET_BOOT_CREATE_ENCRYPTED,
+                                    ZCL_OPERATOR_LANE_CANONICAL, false)
+        == BOOT_WALLET_PHRASE_SKIP);
+    WRS_PLAN_CHECK("no terminal + UNKNOWN lane + a passphrase: create "
+                   "without a phrase",
+        boot_wallet_phrase_plan_for(false, WALLET_BOOT_CREATE_ENCRYPTED,
+                                    ZCL_OPERATOR_LANE_UNKNOWN, false)
+        == BOOT_WALLET_PHRASE_SKIP);
 
     /* The cases the codebase already declares throwaway: create, with no
      * phrase drawn at all. */
@@ -402,6 +419,83 @@ static int t_refusal_is_scoped_to_a_spendable_wallet(void)
     setenv("ZCL_WALLET_NO_PHRASE_BACKUP", "1", 1);
     WRS_PLAN_CHECK("\"1\" means waived", boot_wallet_phrase_backup_waived());
     unsetenv("ZCL_WALLET_NO_PHRASE_BACKUP");
+    return failures;
+}
+
+/* ── THE OTHER HALF: a real terminal DOES get the words, and the warning ──
+ *
+ * Every assertion above is a negative — nothing printed, nothing leaked. Taken
+ * alone they would all pass over a print that had been deleted. This is the
+ * positive: on a real pty the twelve words appear, and so does the sentence the
+ * owner approved for this surface ("...in ZClassic23 only... will not work in
+ * Electrum..."). That sentence has to be READABLE on both surfaces; the other
+ * surface is core.wallet.recovery.restore's help text, held by
+ * tools/lint/check_describe_budget.sh + the catalog test group.
+ *
+ * The print runs in a forked child so the parent can drain the pty master
+ * continuously — the phrase block is ~1.5 KB and a child writing into an
+ * un-drained pty buffer would be a hung test. The slave is opened BEFORE the
+ * fork so the parent can never see EIO before the child has anything to say. */
+static int t_a_real_terminal_gets_the_words_and_the_warning(void)
+{
+    int failures = 0;
+    char seen[32768];
+    seen[0] = '\0';
+    bool ran = false;
+
+    int master = posix_openpt(O_RDWR | O_NOCTTY);
+    if (master >= 0 && grantpt(master) == 0 && unlockpt(master) == 0) {
+        const char *slave_path = ptsname(master);
+        int slave = slave_path ? open(slave_path, O_RDWR | O_NOCTTY) : -1;
+        if (slave >= 0) {
+            fflush(stdout);
+            fflush(stderr);
+            pid_t pid = fork();
+            if (pid == 0) {
+                /* The child IS the "person watching stdout" case. */
+                if (dup2(slave, STDOUT_FILENO) < 0)
+                    _exit(2);
+                close(slave);
+                close(master);
+                boot_wallet_show_recovery_phrase_once(WPL_PHRASE);
+                fflush(stdout);
+                _exit(0);
+            }
+            close(slave);   /* the child holds the only slave fd now */
+            if (pid > 0) {
+                size_t used = 0;
+                while (used < sizeof(seen) - 1) {
+                    ssize_t r = read(master, seen + used,
+                                     sizeof(seen) - 1 - used);
+                    if (r <= 0)
+                        break;      /* EIO once the child's slave fd closes */
+                    used += (size_t)r;
+                }
+                seen[used] = '\0';
+                int st = 0;
+                ran = waitpid(pid, &st, 0) == pid && WIFEXITED(st) &&
+                      WEXITSTATUS(st) == 0;
+            }
+        }
+    }
+    if (master >= 0)
+        close(master);
+
+    /* Anti-vacuous: without a pty and a clean child exit the assertions below
+     * would pass over an empty capture. */
+    WPL_CHECK("a pty was available and the print ran on it", ran);
+    WPL_CHECK("a real terminal DOES get the twelve words",
+              ran && strstr(seen, WPL_PHRASE) != NULL);
+    WPL_CHECK("and is told they are shown only once",
+              ran && strstr(seen, "ONLY TIME THEY WILL EVER BE SHOWN") != NULL);
+    /* The owner's approved wording, on the creation surface. Matched in
+     * single-line fragments because a pty rewrites the line endings. */
+    WPL_CHECK("and is told the words restore money in ZClassic23 ONLY",
+              ran && strstr(seen,
+                  "These words restore your money in ZClassic23 only.") != NULL);
+    WPL_CHECK("and that they will not work in other wallet software",
+              ran && strstr(seen, "not work in Electrum") != NULL &&
+              strstr(seen, "wallet software") != NULL);
     return failures;
 }
 
@@ -478,6 +572,146 @@ static int t_declared_lane_creates_without_a_phrase(const char *dir)
     return failures;
 }
 
+/* ── THE SHIPPED UNIT'S OWN FIRST BOOT ──────────────────────────────────
+ *
+ * Nothing covered this, and that is why the crash loop shipped twice. The
+ * canonical unit (deploy/zclassic23.service) passes -operator-lane=canonical
+ * and carries Restart=always, and the secure way to run it is with
+ * ZCL_WALLET_PASSPHRASE set. On a brand-new data directory that combination
+ * ran the refusal, exit(1), restart, forever — no wallet, ever.
+ *
+ * This walks the same three links a first boot walks, in order:
+ *   1. the unit really does declare the canonical lane and really does restart
+ *      always (asserted from the file, so this test cannot drift away from the
+ *      thing it claims to cover);
+ *   2. ZCL_WALLET_PASSPHRASE set resolves, on the canonical lane, to
+ *      CREATE_ENCRYPTED — which is NOT WALLET_BOOT_REFUSE, so config/src/boot.c
+ *      calls boot_wallet_create_new rather than booting keyless;
+ *   3. that call, with stdout pointed at a file the way the unit points it at
+ *      node.log, creates a real persisted wallet AND draws no phrase.
+ *
+ * What it does not do is fork the node binary — it drives the boot function
+ * the boot path drives, on a fresh datadir, with the boot path's own inputs. */
+static int t_canonical_service_first_boot_creates_a_wallet(const char *dir)
+{
+    int failures = 0;
+
+    /* 1. The premise, read from the shipped unit. */
+    char unit[65536];
+    long n_unit = wpl_slurp("deploy/zclassic23.service", unit, sizeof(unit));
+    WPL_CHECK("the shipped unit file was readable", n_unit > 0);
+    WPL_CHECK("the shipped unit declares the CANONICAL operator lane",
+              n_unit > 0 && strstr(unit, "-operator-lane=canonical") != NULL);
+    WPL_CHECK("the shipped unit restarts always (so a refusal is a crash "
+              "loop, not a one-off)",
+              n_unit > 0 && strstr(unit, "Restart=always") != NULL);
+    WPL_CHECK("the shipped unit does NOT need -wallet-no-phrase-backup to "
+              "come up",
+              n_unit > 0 && strstr(unit, "wallet-no-phrase-backup") == NULL);
+
+    /* 2. A passphrase, on the canonical lane, must reach a CREATE action —
+     *    boot.c only calls the wallet creator when the decision is not
+     *    WALLET_BOOT_REFUSE. */
+    char *saved_pass = getenv("ZCL_WALLET_PASSPHRASE");
+    char saved_copy[256] = "";
+    bool had_pass = saved_pass != NULL;
+    if (had_pass)
+        snprintf(saved_copy, sizeof(saved_copy), "%s", saved_pass);
+    setenv("ZCL_WALLET_PASSPHRASE", "a-real-operator-passphrase", 1);
+
+    enum wallet_at_rest_policy policy = wallet_at_rest_creation_policy();
+    WPL_CHECK("ZCL_WALLET_PASSPHRASE set means encrypt-at-rest",
+              policy == WALLET_AT_REST_ENCRYPTED);
+    enum wallet_boot_wallet_action act =
+        wallet_at_rest_boot_decision(policy, /*is_mint=*/false,
+                                     ZCL_OPERATOR_LANE_CANONICAL);
+    WPL_CHECK("which on the canonical lane resolves to CREATE_ENCRYPTED",
+              act == WALLET_BOOT_CREATE_ENCRYPTED);
+    WPL_CHECK("and is therefore NOT the keyless no-spend path — boot.c does "
+              "call the wallet creator", act != WALLET_BOOT_REFUSE);
+
+    /* 3. The call itself, on a fresh datadir, stdout redirected to a file. */
+    char sub[1200];
+    snprintf(sub, sizeof(sub), "%s/canonical", dir);
+    mkdir(sub, 0700);
+    char db_path[1400];
+    snprintf(db_path, sizeof(db_path), "%s/node.db", sub);
+
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    bool db_ok = node_db_open(&ndb, db_path) && ndb.open;
+    WPL_CHECK("canonical fixture node.db opened", db_ok);
+    if (!db_ok)
+        goto restore_env;
+
+    struct wallet_sqlite ws;
+    struct zcl_result wr = wallet_sqlite_open_r(&ws, ndb.db);
+    WPL_CHECK("canonical fixture wallet tables opened", wr.ok);
+    if (!wr.ok) { node_db_close(&ndb); goto restore_env; }
+
+    struct wallet *w = calloc(1, sizeof(*w));
+    if (!w) {
+        WPL_CHECK("canonical fixture wallet allocated", false);
+        wallet_sqlite_close(&ws);
+        node_db_close(&ndb);
+        goto restore_env;
+    }
+    wallet_init(w);
+    WPL_CHECK("the fixture datadir starts with no wallet at all",
+              w->keystore.num_keys == 0 && db_wallet_key_count(&ndb) == 0);
+
+    struct wpl_capture cap;
+    bool began = wpl_capture_begin(&cap, dir, "canonical");
+    bool created = false;
+    if (began)
+        created = boot_wallet_create_new(w, &ws, &ndb, act,
+                                         ZCL_OPERATOR_LANE_CANONICAL);
+    wpl_capture_end(&cap);
+    WPL_CHECK("capture harness installed for the canonical first boot",
+              began);
+
+    /* THE REGRESSION. This returned false, and boot turned it into exit(1)
+     * under Restart=always. */
+    WPL_CHECK("a CANONICAL-lane node with a passphrase creates its wallet "
+              "headlessly on a fresh datadir", began && created);
+    WPL_CHECK("and comes up with a full keypool",
+              w->keystore.num_keys == DEFAULT_KEYPOOL_SIZE);
+    WPL_CHECK("which is on disk, not just in RAM",
+              db_wallet_key_count(&ndb) == DEFAULT_KEYPOOL_SIZE);
+
+    char out[16384], err[16384];
+    long n_out = wpl_slurp(cap.path_out, out, sizeof(out));
+    long n_err = wpl_slurp(cap.path_err, err, sizeof(err));
+
+    /* The security property, unchanged: no phrase was drawn, so there is
+     * nothing in the capture and no seed row on disk. */
+    WPL_CHECK("no phrase block reached the redirected stdout",
+              n_out >= 0 && strstr(out, "WRITE THESE 12 WORDS DOWN") == NULL);
+    WPL_CHECK("no recovery phrase was drawn at all (no wallet_seed row)",
+              !wallet_sqlite_read_sapling_seed(&ws, (uint8_t[32]){0}));
+    WPL_CHECK("the operator is told, loudly, that this wallet has no "
+              "written backup",
+              n_err > 0 && strstr(err, "NO RECOVERY PHRASE") != NULL);
+    WPL_CHECK("and is told which decision let it through",
+              n_err > 0 && strstr(err, "ZCL_WALLET_PASSPHRASE") != NULL);
+    WPL_CHECK("and is told how to get a wallet that HAS twelve words",
+              n_err > 0 && strstr(err, "before any coins arrive") != NULL);
+    WPL_CHECK("and the notice itself carries no phrase",
+              n_err >= 0 && strstr(err, WPL_PHRASE) == NULL);
+
+    wallet_free(w);
+    free(w);
+    wallet_sqlite_close(&ws);
+    node_db_close(&ndb);
+
+restore_env:
+    if (had_pass)
+        setenv("ZCL_WALLET_PASSPHRASE", saved_copy, 1);
+    else
+        unsetenv("ZCL_WALLET_PASSPHRASE");
+    return failures;
+}
+
 /* Whatever still refuses must NAME the blocker where a node-free reader
  * finds it. A boot that exits leaving phase=loading / stage=db_open and no
  * reason is the silent halt this project says is unreachable. */
@@ -519,6 +753,13 @@ static int t_the_refusal_names_a_blocker(const char *dir)
     WPL_CHECK("and says, in plain English, what to do about it",
               read_after && strstr(after.blocker_reason, "terminal") != NULL &&
               strstr(after.blocker_reason, "-operator-lane") != NULL);
+    /* And the way out SURVIVED the round trip. blocker_reason is char[256] and
+     * the writer truncates silently, so a reason that outgrows it loses its
+     * tail — which is exactly the half that tells the operator what to do. A
+     * reason that no longer ends in a full stop was cut. */
+    WPL_CHECK("and the reason was not silently truncated on the way to disk",
+              read_after && after.blocker_reason[0] != '\0' &&
+              after.blocker_reason[strlen(after.blocker_reason) - 1] == '.');
 
     boot_status_init(NULL);   /* disarm; leave no writer pointed at a tmpdir */
     return failures;
@@ -543,8 +784,10 @@ int test_wallet_phrase_never_logged(void)
     failures += t_capture_would_catch_a_leak(dir);
     failures += t_creation_refuses_and_leaves_nothing(dir);
     failures += t_direct_print_is_also_refused(dir);
+    failures += t_a_real_terminal_gets_the_words_and_the_warning();
     failures += t_refusal_is_scoped_to_a_spendable_wallet();
     failures += t_declared_lane_creates_without_a_phrase(dir);
+    failures += t_canonical_service_first_boot_creates_a_wallet(dir);
     failures += t_the_refusal_names_a_blocker(dir);
 
     test_rm_rf(dir);

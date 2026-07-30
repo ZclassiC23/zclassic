@@ -53,6 +53,17 @@ boot_wallet_phrase_plan_for(bool stdout_is_terminal,
     if (backup_waived)
         return BOOT_WALLET_PHRASE_SKIP;
 
+    /* ZCL_WALLET_PASSPHRASE is set, so the operator has ALREADY made this
+     * wallet's at-rest decision deliberately and by hand — that is consent to
+     * a wallet whose backup is not twelve written words. Refusing here is what
+     * made a brand-new install of the shipped unit crash-loop: it passes
+     * -operator-lane=canonical and carries Restart=always, so a fresh datadir
+     * exited 1 and restarted forever with no wallet ever created. The security
+     * property survives intact because SKIP draws no phrase at all: there are
+     * no words to leak into node.log on this path. */
+    if (action == WALLET_BOOT_CREATE_ENCRYPTED)
+        return BOOT_WALLET_PHRASE_SKIP;
+
     /* The offline anchor-mint producer: a transient throwaway datadir that
      * folds bodies and exits. It holds no funds and nobody is watching it.
      * REFUSE here is what broke every cure producer. */
@@ -68,8 +79,14 @@ boot_wallet_phrase_plan_for(bool stdout_is_terminal,
     if (app_operator_lane_is_automated_noncanonical(lane))
         return BOOT_WALLET_PHRASE_SKIP;
 
-    /* Canonical or unknown lane, nothing declared, nothing waived: this is
-     * a real spendable wallet and its owner must see its words. */
+    /* Canonical or unknown lane, no passphrase, nothing declared, nothing
+     * waived: this is a real spendable wallet, nobody chose anything about how
+     * it is kept, and its owner must see its words.
+     *
+     * NOTE the ordering above: a canonical node that merely passed
+     * -allow-plaintext-wallet (CREATE_PLAINTEXT) still refuses. "Store my keys
+     * in the clear" is not "I accept having no written backup" — it is the
+     * opposite kind of statement, and the file it produces is the only copy. */
     return BOOT_WALLET_PHRASE_REFUSE;
 }
 
@@ -101,30 +118,53 @@ static void boot_wallet_refuse_non_terminal(void)
         "start the service again as usual. The service will find the\n"
         "wallet and never need to print anything.\n"
         "\n"
-        "If this node is NOT holding anybody's money — a mint-anchor\n"
-        "producer, a dev/soak/test/copy/standby lane, a throwaway datadir —\n"
-        "then say so and it will create a wallet with no written backup:\n"
-        "  -operator-lane=dev        (or soak / test / copy / standby)\n"
-        "  -wallet-no-phrase-backup  (any lane: 'I accept no phrase backup')\n"
-        "Either way the twelve words are never drawn and never printed.\n"
+        "Or say that a wallet with no written backup is what you want, and\n"
+        "it will create one — with the twelve words never drawn at all, so\n"
+        "there is nothing to print anywhere. Any ONE of these does it:\n"
+        "  ZCL_WALLET_PASSPHRASE=...  encrypt the keys at rest (you have\n"
+        "                             then decided how this wallet is kept)\n"
+        "  -wallet-no-phrase-backup   'I accept no phrase backup'\n"
+        "  -operator-lane=dev         (or soak / test / copy / standby — for\n"
+        "                             a node that holds nobody's money)\n"
         "====================================================\n\n";
     fputs(msg, stderr);
     fflush(stderr);
 }
 
-/* The SKIP plan's notice. Loud, on stderr, every single boot that creates
- * one of these: a wallet with no written backup is a real thing to know
- * about, and the whole point of the plan is that nobody was watching. */
+/* The SKIP plan's notice. Loud, on stderr, every single boot that creates one
+ * of these: a wallet with no written backup is a real thing to know about, and
+ * the whole point of the plan is that nobody was watching. Plain English, and
+ * it says how to get a wallet that DOES have twelve words — because "no backup
+ * phrase" with no way out is not an answer an operator can act on. */
 static void boot_wallet_warn_no_phrase_backup(const char *why)
 {
     fprintf(stderr,
-        "\n*** WARNING: creating a NEW wallet with NO RECOVERY PHRASE. This "
-        "output is not a terminal, so the twelve words could only have gone "
-        "into a log file; they were not drawn at all and no command can ever "
-        "produce them. Proceeding because %s. If this datadir ever holds "
-        "coins, its ONLY backup is the wallet backup file "
-        "('core wallet backup now') — lose the disk and that file and the "
-        "money is gone. ***\n\n",
+        "\n"
+        "======== NEW WALLET, NO RECOVERY PHRASE ========\n"
+        "\n"
+        "A new wallet was just created and it does NOT have a twelve-word\n"
+        "backup. There are no recovery words for it.\n"
+        "\n"
+        "Why: this output is not a terminal — it is a file or a pipe, and\n"
+        "under the shipped service that file is node.log. Printing the\n"
+        "words there would hand your money to everything that ever reads\n"
+        "that file, so no words were drawn at all. There are none to\n"
+        "leak, and no command can produce them later.\n"
+        "\n"
+        "Proceeding because %s.\n"
+        "\n"
+        "What this means: if this datadir ever holds coins, its only\n"
+        "backup is the wallet backup FILE:\n"
+        "  zclassic23 core wallet backup now\n"
+        "Lose the disk and that file and the money is gone.\n"
+        "\n"
+        "To get a wallet WITH twelve words instead, create it from a\n"
+        "terminal before any coins arrive: stop this node, move this\n"
+        "datadir aside, run 'zclassic23' once by hand, write the words\n"
+        "on paper when they appear, then start the service again. The\n"
+        "words are only ever shown at creation — an existing wallet\n"
+        "cannot be given a phrase after the fact.\n"
+        "===============================================\n\n",
         why ? why : "this wallet is declared disposable");
     fflush(stderr);
 }
@@ -137,6 +177,9 @@ static const char *boot_wallet_no_phrase_reason(
 {
     if (waived)
         return "-wallet-no-phrase-backup was given";
+    if (action == WALLET_BOOT_CREATE_ENCRYPTED)
+        return "ZCL_WALLET_PASSPHRASE is set, so you already chose how this "
+               "wallet is kept";
     if (action == WALLET_BOOT_CREATE_MINT_EXEMPT)
         return "this is the offline -mint-anchor producer, a throwaway "
                "datadir that holds no funds";
@@ -202,13 +245,16 @@ void boot_wallet_show_recovery_phrase_once(const char *phrase)
     printf("reprint them would turn one read of the wallet database into\n");
     printf("the loss of every coin in it.\n");
     printf("\n");
-    printf("THESE WORDS WORK WITH THIS NODE ONLY. They are ordinary BIP39\n");
-    printf("words, but this node builds its key from the first 32 bytes of\n");
-    printf("the standard 64-byte result and other wallets use all 64. So\n");
-    printf("typing these words into other wallet software finds nothing,\n");
-    printf("and typing another wallet's words in here would silently open\n");
-    printf("a different, empty wallet. Keep them with the note that they\n");
-    printf("belong to zclassic23.\n");
+    /* The owner's approved wording, verbatim. It also appears in the
+     * core.wallet.recovery.restore help text; those are the two surfaces a
+     * person can read it on, and it must be on both. Say it plainly and do not
+     * soften it: someone who assumes these words work in Electrum will find
+     * out otherwise on the worst day. */
+    printf("These words restore your money in ZClassic23 only. They will\n");
+    printf("not work in Electrum, on a hardware wallet, or in any other\n");
+    printf("wallet software. Keep them with a note saying they belong to\n");
+    printf("zclassic23. Typing somebody else's words in here would not\n");
+    printf("fail either — it would quietly open a different, empty wallet.\n");
     printf("\n");
     printf("To get this wallet back on a new machine:\n");
     printf("  zclassic23 core wallet recovery restore \\\n");
@@ -239,12 +285,26 @@ bool boot_wallet_create_new(struct wallet *w, struct wallet_sqlite *ws,
      * they never saw: refuse, and let the caller (config/src/boot.c) name a
      * blocker and exit.
      *
-     * But that refusal must not fire for wallets the codebase already
-     * declares disposable. It used to fire for all of them, and a fresh
-     * headless datadir — mint-anchor producer, dev/soak/test/copy/standby
-     * lane, or just a service with a passphrase set — exited 1 forever
-     * under a unit with Restart=. Those get a wallet with NO phrase drawn
-     * at all and a loud line saying it has no written backup. */
+     * But the refusal must only fire where nobody has decided anything. Four
+     * headless cases HAVE decided, and each takes the SKIP plan instead — a
+     * wallet created with NO phrase drawn at all, plus a loud block on stderr
+     * saying it has no written backup and how to get one:
+     *
+     *   - ZCL_WALLET_PASSPHRASE set (action == CREATE_ENCRYPTED): the operator
+     *     already chose, by hand, how this wallet is kept at rest.
+     *   - the offline -mint-anchor producer.
+     *   - a declared dev/soak/test/copy/standby lane.
+     *   - -wallet-no-phrase-backup, in as many words.
+     *
+     * The refusal used to fire for all four, and the first one is the shipped
+     * canonical unit's own first boot: deploy/zclassic23.service passes
+     * -operator-lane=canonical and carries Restart=always, so a brand-new
+     * install exited 1 and restarted forever without ever creating a wallet.
+     * -allow-plaintext-wallet is deliberately NOT on that list: choosing to
+     * keep keys in the clear is not choosing to have no written backup.
+     *
+     * The decision table itself is boot_wallet_phrase_plan_for(), which is
+     * pure — every case is unit-tested without a boot. */
     const bool waived = boot_wallet_phrase_backup_waived();
     const enum boot_wallet_phrase_plan plan = boot_wallet_phrase_plan_for(
         boot_wallet_phrase_stdout_is_a_terminal(), action, lane, waived);
@@ -325,13 +385,16 @@ bool boot_wallet_create_new(struct wallet *w, struct wallet_sqlite *ws,
 
 void boot_wallet_creation_blocked(void)
 {
+    /* KEEP THIS UNDER 255 BYTES. boot_status_snapshot.blocker_reason is
+     * char[256] and the writer TRUNCATES silently, so a longer reason loses
+     * its tail — which is the part that says what to do. The version before
+     * this one was 307 bytes and the operator's way out was the half that got
+     * cut. The test group asserts the whole thing survived the round trip. */
     static const char *const reason =
-        "refused to create this node's first wallet: stdout is not a "
-        "terminal, so its twelve recovery words could only have been "
-        "written into node.log. Run the node once from a terminal, or "
-        "declare the lane (-operator-lane=dev|soak|test|copy|standby), or "
-        "accept a wallet with no written backup "
-        "(-wallet-no-phrase-backup).";
+        "wallet not created: stdout is not a terminal, so its twelve words "
+        "could only go into node.log. Run the node once from a terminal and "
+        "write them down, or accept no backup: set ZCL_WALLET_PASSPHRASE, or "
+        "pass -wallet-no-phrase-backup or -operator-lane=dev.";
 
     struct blocker_record rec;
     if (blocker_init(&rec, BOOT_WALLET_PHRASE_BLOCKER_ID, "boot.wallet",

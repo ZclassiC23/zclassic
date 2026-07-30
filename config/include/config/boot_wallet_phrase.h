@@ -77,15 +77,21 @@ bool boot_wallet_phrase_backup_waived(void);
  *
  *   SHOW   — a person is watching stdout. Draw the phrase, root the wallet
  *            on it, print it once.
- *   SKIP   — no terminal, but this wallet is DECLARED disposable (an
- *            offline -mint-anchor producer, a dev/soak/test/copy/standby
- *            lane) or the operator explicitly waived the backup. Create it,
- *            draw NO phrase at all, and say loudly that it has no written
- *            backup. The words are never generated, so they cannot leak.
- *   REFUSE — no terminal and this IS somebody's spendable wallet. Creating
- *            it would either print the words into node.log or leave the
- *            owner a wallet whose only backup they were never shown.
- *            Nothing is drawn, minted or flushed.
+ *   SKIP   — no terminal, but the operator HAS decided something about this
+ *            wallet: ZCL_WALLET_PASSPHRASE is set (an at-rest decision made
+ *            by hand, which is consent to a wallet backed by something other
+ *            than written words), or it is the offline -mint-anchor producer,
+ *            or a declared dev/soak/test/copy/standby lane, or the backup was
+ *            explicitly waived. Create it, draw NO phrase at all, and say
+ *            loudly that it has no written backup and how to get one. The
+ *            words are never generated, so they cannot leak.
+ *   REFUSE — no terminal, nothing decided, and this IS somebody's spendable
+ *            wallet. Creating it would either print the words into node.log
+ *            or leave the owner a wallet whose only backup they were never
+ *            shown. Nothing is drawn, minted or flushed.
+ *
+ * -allow-plaintext-wallet is deliberately NOT a SKIP: "keep my keys in the
+ * clear" is not "I accept having no written backup".
  *
  * Pure and total: no globals, no env reads (both opt-ins are passed in), so
  * the whole matrix is unit-testable without a boot. */
@@ -124,8 +130,8 @@ boot_wallet_phrase_plan_for(bool stdout_is_terminal,
  * "wallet_phrase_no_terminal", see boot_wallet_creation_blocked) before it
  * returns, so a caller that exits cannot leave boot_status.json reading
  * phase=loading with no reason in it. The operator's move is to run the
- * node once from a terminal, or to declare the lane, or to waive the
- * backup on purpose. */
+ * node once from a terminal, or to set ZCL_WALLET_PASSPHRASE, or to waive
+ * the backup on purpose, or to declare the lane. */
 bool boot_wallet_create_new(struct wallet *w, struct wallet_sqlite *ws,
                             struct node_db *ndb,
                             enum wallet_boot_wallet_action action,
