@@ -35,9 +35,12 @@
 
 /* ── worker discovery ───────────────────────────────────────────────── */
 
-/* The worker ships beside whatever binary is running (node or test runner).
- * Resolving it from /proc/self/exe — not from PATH — means a PATH entry can
- * never substitute a different program into the only place that compiles. */
+/* The worker ships beside whatever binary is running. Resolving it from
+ * /proc/self/exe — never from PATH — means a PATH entry can never substitute
+ * a different program into the only place that compiles. The one fallback is
+ * the build tree's own build/bin, because the fast-test lane runs its binary
+ * out of a per-epoch subdirectory; it is still a fixed relative path, not a
+ * search. */
 static struct zcl_result pkgl_worker_path(char *out, size_t cap)
 {
     char exe[PKGL_PATH_MAX];
@@ -55,10 +58,18 @@ static struct zcl_result pkgl_worker_path(char *out, size_t cap)
         return ZCL_ERR(-1, "worker path too long");
     bool present = false;
     ZCL_CHECK(pkgl_exists(out, &present));
+    if (present)
+        return ZCL_OK;
+    w = snprintf(out, cap, "build/bin/%s", PKGL_WORKER_NAME);
+    if (w <= 0 || (size_t)w >= cap)
+        return ZCL_ERR(-1, "worker path too long");
+    ZCL_CHECK(pkgl_exists(out, &present));
     if (!present)
         return ZCL_ERR(-1,
-                       "the build worker %s is not next to this binary — "
-                       "build it (make) before installing packages", out);
+                       "the build worker %s is neither next to this binary "
+                       "nor in build/bin — build it (make "
+                       "zclassic23-package-verify) before installing "
+                       "packages", PKGL_WORKER_NAME);
     return ZCL_OK;
 }
 
