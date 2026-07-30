@@ -854,6 +854,7 @@ add/remove a gate.
 - `check-blocker-handoff-declared`
 - `check-supervisor-progress-declared`
 - `check-stopwatch-skip-detector`
+- `check-proof-server-pin`
 - `check-blocker-remedy`
 - `check-vendor-provenance`
 - `check-doc-no-false-deleted`
