@@ -213,6 +213,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(disk_block_io) X(msg_handlers) X(process_headers_adversarial) \
     X(getheaders_serve_fallback) \
     X(getheaders_serve_pow_dedup) \
+    X(getheaders_serve_receipt) \
     X(net_msg_dos) \
     X(net_framing_dos) \
     X(net_handshake_adversarial) \
