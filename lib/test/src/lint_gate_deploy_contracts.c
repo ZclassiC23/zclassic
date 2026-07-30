@@ -689,7 +689,7 @@ int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf,
                       "rebuild-dev|dev-rebuild|fast-rebuild|hot-rebuild")
                != NULL);
-        ASSERT(strstr(buf, "zcl.public_status.v2") != NULL);
+        ASSERT(strstr(buf, "zcl.public_status.v3") != NULL);
         ASSERT(strstr(buf, ".status == \"healthy\"") != NULL);
         ASSERT(strstr(buf, ".healthy == true") != NULL);
         ASSERT(strstr(buf, "((.gap // 0) <= 1)") == NULL);

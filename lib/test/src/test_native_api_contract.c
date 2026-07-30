@@ -583,7 +583,7 @@ static int test_native_app_catalog_uses_strict_builtin_source(void)
  *
  *   - schema-skew tolerance: a PRESENT schema in the known
  *     zcl.public_status.* family that isn't the exact version validated
- *     strictly (an older node's v1, a newer node's v3) degrades to a
+ *     strictly (an older node's v1, a future v4) degrades to a
  *     best-effort brief instead of the old one-size-fits-all "invalid
  *     zcl.public_status.v2" error; an ABSENT schema, or a genuinely
  *     malformed field on a MATCHING v2 document, still fails closed.

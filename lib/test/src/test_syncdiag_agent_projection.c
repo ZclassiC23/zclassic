@@ -30,7 +30,7 @@ int syncdiag_cases_agent_projection(void)
             json_get(&result, "first_call");
         bool ok = executed && result.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
-                          "zcl.public_status.v2") == 0;
+                          "zcl.public_status.v3") == 0;
         ok = ok && json_get_bool(json_get(&result, "partial_result"));
         ok = ok && strstr(json_get_str(json_get(&result, "partial_reason")),
                           "optional_detail_budget_guard:resources") != NULL;

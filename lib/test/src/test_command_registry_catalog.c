@@ -1041,11 +1041,15 @@ static int test_status_brief_composite_fails_closed(void)
         /* RPC error objects (cases 0-1) surface the REAL transport/RPC
          * reason verbatim ("node status unavailable: ..."); a completely
          * unrecognized schema and a genuine field fault (cases 2-3) read as
-         * a v2 schema error. All four still fail closed. */
+         * a schema error. The version named is the one the DOCUMENT declared
+         * when this build strictly reads it (case 3 is a v2 document, so the
+         * error says v2); an out-of-family schema has no version to name, so
+         * case 2 names the contract this build targets. All four still fail
+         * closed. */
         static const char *const expect_msg[] = {
             "node status unavailable: Method not found",
             "node status unavailable: cannot connect to node",
-            "invalid zcl.public_status.v2",
+            "invalid zcl.public_status.v3",
             "invalid zcl.public_status.v2",
         };
         for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
@@ -1067,7 +1071,7 @@ static int test_status_brief_composite_fails_closed(void)
 
 /* wf/status-front-door: a PRESENT schema in the known zcl.public_status.*
  * family that is not the exact version the strict validator checks (an
- * older node's v1, a newer node's v3) used to fall into the SAME hard
+ * older node's v1, a future v4) used to fall into the SAME hard
  * "invalid zcl.public_status.v2: missing/invalid field schema" error as
  * genuine corruption -- indistinguishable from a real bug. It now degrades
  * gracefully: whatever of the flat brief the differently-versioned document
@@ -1120,10 +1124,12 @@ static int test_status_brief_schema_skew_degrades_gracefully(void)
                       "zcl.public_status.v1");
         json_free(&root);
 
-        /* A newer node (v3) whose document this CLI build recognizes
+        /* A newer node (v4) whose document this CLI build recognizes
          * nothing else about still degrades to an all-unknown-but-ok brief
-         * instead of failing. */
-        static const char newer[] = "{\"schema\":\"zcl.public_status.v3\"}";
+         * instead of failing. (v3 and v2 are BOTH validated strictly by this
+         * build, so neither is a skew case — see
+         * status_schema_is_strictly_read().) */
+        static const char newer[] = "{\"schema\":\"zcl.public_status.v4\"}";
         g_status_brief_agent_fixture = newer;
         code = ZCL_COMMAND_EXIT_INTERNAL;
         ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
@@ -1135,7 +1141,7 @@ static int test_status_brief_schema_skew_degrades_gracefully(void)
         ASSERT(json_is_null(json_get(data, "sync_state")));
         ASSERT(!json_get_bool(json_get(data, "serving")));
         ASSERT_STR_EQ(json_get_str(json_get(data, "schema_skew")),
-                      "zcl.public_status.v3");
+                      "zcl.public_status.v4");
         json_free(&root);
 
         /* An ENTIRELY ABSENT schema key is unchanged: still the harder
@@ -1371,10 +1377,13 @@ static int test_status_brief_rejects_contract_contradictions(void)
     return failures;
 }
 
-/* A fully valid zcl.public_status.v2 document (mirrors
- * status_brief_mock_rpc's default fixture) so each case below can drop or
+/* A fully valid zcl.public_status.v2 document. v2 is still validated
+ * STRICTLY (the retained v2 reader — see status_schema_is_strictly_read), so
+ * every fixture in this file that names v2 doubles as coverage that an older
+ * node's document keeps working after the v3 bump. It mirrors
+ * status_brief_mock_rpc's default fixture, so each case below can drop or
  * corrupt exactly one field and prove the resulting error names that field
- * instead of the old one-size-fits-all "invalid zcl.public_status.v2". */
+ * instead of one opaque "invalid public status" message. */
 static const char g_status_brief_valid_doc[] =
     "{\"schema\":\"zcl.public_status.v2\","
     "\"partial_result\":false,"
@@ -1403,7 +1412,7 @@ static const char g_status_brief_valid_doc[] =
         "\"nullifier_backfill_gap\":false}}";
 
 /* E1: the composite validation used to collapse ~30 predicates into one
- * opaque "invalid zcl.public_status.v2" message. Each case here removes (or
+ * opaque "invalid public status" message. Each case here removes (or
  * corrupts) exactly one representative field from an otherwise-valid
  * document and proves the error names that exact field, and correctly
  * classifies an entirely-absent key (an older node binary's `agent` RPC
@@ -1415,7 +1424,7 @@ static int test_status_brief_names_first_failing_field(void)
     const struct zcl_command_registry *reg = zcl_command_catalog();
     const struct zcl_command_spec *s = find_spec(reg, "status");
     char out[ZCL_COMMAND_RESULT_BUDGET + 1];
-    TEST("root status names the first failing zcl.public_status.v2 field") {
+    TEST("root status names the first failing public-status field") {
         ASSERT(s != NULL);
         node_rpc_client_set_test_hook(status_brief_mock_rpc);
 

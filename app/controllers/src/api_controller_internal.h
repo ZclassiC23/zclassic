@@ -8,6 +8,7 @@
 #ifndef ZCL_APP_CONTROLLERS_SRC_API_CONTROLLER_INTERNAL_H
 #define ZCL_APP_CONTROLLERS_SRC_API_CONTROLLER_INTERNAL_H
 
+#include "controllers/agent_operator_contracts.h"
 #include "controllers/api_controller.h"
 #include "models/database.h"
 #include "util/blocker.h"
@@ -75,7 +76,8 @@ extern struct api_rpc_backend g_api_rpc;
 #define API_QUERY_FILTER_SERVICE_OPERATIONS "service_operations"
 #define API_QUERY_FILTER_NAME_SERVICE_DIRECTORY "name_service_directory"
 #define ZCL_PATH_PARAM_CONTRACT_SCHEMA "zcl.path_param_contract.v1"
-#define ZCL_PUBLIC_STATUS_SCHEMA "zcl.public_status.v2"
+/* ZCL_PUBLIC_STATUS_SCHEMA lives in controllers/agent_operator_contracts.h —
+ * one definition shared with the CLI reader that validates it. */
 #define ZCL_MILESTONE_STATUS_SCHEMA "zcl.milestone_status.v2"
 #define ZCL_REFOLD_STATUS_SCHEMA "zcl.refold_status.v2"
 

@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 #include "event_agent_readiness.h"
 
+#include "controllers/agent_operator_contracts.h"
 #include "json/json.h"
 #include "services/node_health_service.h"
 
@@ -12,13 +13,18 @@ struct agent_readiness_view {
     bool agent_work_ready;
 };
 
+bool agent_tip_follow(int gap, int log_head_gap)
+{
+    return gap <= ZCL_NODE_HEALTH_LAG_WARN_BLOCKS &&
+           (log_head_gap < 0 || log_head_gap <= 1);
+}
+
 static bool chain_serving_ready(bool serving, bool has_peers,
                                 bool operator_needed, int gap,
                                 int log_head_gap)
 {
     return serving && has_peers && !operator_needed &&
-           gap <= ZCL_NODE_HEALTH_LAG_WARN_BLOCKS &&
-           (log_head_gap < 0 || log_head_gap <= 1);
+           agent_tip_follow(gap, log_head_gap);
 }
 
 static bool index_projection_ready(bool serving, bool has_peers,
@@ -138,8 +144,11 @@ void agent_push_readiness_contract_json(struct json_value *out,
                                         bool serving, bool has_peers,
                                         bool operator_needed,
                                         bool validation_pack_ok, int gap,
-                                        int index_gap, int log_head_gap)
+                                        int index_gap, int log_head_gap,
+                                        const struct agent_security_posture *posture)
 {
+    struct status_readiness_facts_view facts;
+
     if (!out)
         return;
 
@@ -149,4 +158,9 @@ void agent_push_readiness_contract_json(struct json_value *out,
     agent_push_readiness_json(out, key, serving, has_peers, operator_needed,
                               validation_pack_ok, gap, index_gap,
                               log_head_gap);
+    /* The separately named facts. tip_follow rides the SAME gap numbers the
+     * readiness object above already reports, so the two can never disagree;
+     * archive_complete is deliberately not one of gap's inputs. */
+    status_readiness_facts_collect(gap, log_head_gap, posture, &facts);
+    status_push_readiness_facts_json(out, &facts);
 }

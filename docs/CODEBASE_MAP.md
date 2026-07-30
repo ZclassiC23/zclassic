@@ -132,7 +132,7 @@ page changing with it.
 <!--   app_shape_folders    = directories directly under app/                        -->
 <!-- Fix a mismatch with `tools/scripts/check_doc_counts.sh --fix`, never by hand.  -->
 
-test_groups: 842
+test_groups: 843
 port_interfaces: 13
 persistence_adapters: 14
 condition_registrations: 52
@@ -367,7 +367,7 @@ sapling`); the `--input='{"query":"…"}'` form its schema advertises returns
   `zcl.result.v1` envelope whose data schema is
   `zcl.core_status_brief.v1`; it is owned by the command registry.
   `zclassic23 agent` and `GET /api/v1/agent` expose the separate full
-  `zcl.public_status.v2` document. Its `security_posture` object is owned by
+  `zcl.public_status.v3` document. Its `security_posture` object is owned by
   `app/controllers/src/agent_security_posture.c` and names the borrowed
   snapshot/full-history-validation posture plus Sprout/Sapling anchor and
   nullifier history coverage. Public `serving` and `healthy` fail closed while

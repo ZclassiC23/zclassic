@@ -129,7 +129,7 @@ int api_health_gate_focused_tests(void)
         json_init(&root);
         ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
         ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
-                          "zcl.public_status.v2") == 0;
+                          "zcl.public_status.v3") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "status")),
                           "blocked") == 0;
         ok = ok && !json_get_bool(json_get(&root, "healthy"));

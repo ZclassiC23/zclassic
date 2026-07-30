@@ -813,7 +813,7 @@ activation_probe_default() {
     [[ "$height" =~ ^[0-9]+$ ]] || return 1
     agent="$(timeout "$timeout_s" "$cli" -datadir="$DEV_DATADIR" \
         -rpcport="$DEV_RPCPORT" agent 2>/dev/null)" || return 1
-    printf '%s' "$agent" | grep -q '"schema"[[:space:]]*:[[:space:]]*"zcl.public_status.v2"' || return 1
+    printf '%s' "$agent" | grep -qE '"schema"[[:space:]]*:[[:space:]]*"zcl\.public_status\.v[23]"' || return 1
     observed_source_id="$(json_first_string_field "$agent" source_id_sha256)"
     [ -n "$observed_source_id" ] &&
         [ "$observed_source_id" = "$expected_source_id" ] || return 1

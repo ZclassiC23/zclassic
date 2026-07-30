@@ -8,7 +8,7 @@
  * carries function pointers and parameter behavior; this table owns the
  * repeated method/schema/tool vocabulary used by discovery and probes. */
 
-AGENT_CONTRACT("agent", "full_compatibility_status", "zcl.public_status.v2",
+AGENT_CONTRACT("agent", "full_compatibility_status", "zcl.public_status.v3",
                "zclassic23 agent", "GET /api/v1/agent",
                "first_command",
                "direct", 2, "live_status",

@@ -132,7 +132,7 @@ check uses the C binary first (`build/bin/zclassic23 agent` +
 `build/bin/zclassic23 healthcheck`) against the linger service; override the
 binary with `ZCL_FAST_NODE_BIN=...` or skip the live check with
 `ZCL_FAST_LIVE=0` for isolated/offline work. The shell gate trusts the native
-`zcl.public_status.v2` status/serving/operator-needed contract rather than
+`zcl.public_status.v3` status/serving/operator-needed contract rather than
 re-encoding height-gap policy, and emits compact JSON summaries when a probe
 fails. There is no external shell-wrapper fallback in the agent fast path; if
 the native binary JSON interface is unavailable, rebuild

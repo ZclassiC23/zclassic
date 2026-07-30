@@ -130,7 +130,7 @@ int syncdiag_cases_agent_interface(void)
                    "zcl.agent_liveness.v2") == 0;
         ok = ok && full_compatibility_status &&
             strcmp(json_get_str(json_get(full_compatibility_status, "schema")),
-                   "zcl.public_status.v2") == 0;
+                   "zcl.public_status.v3") == 0;
         ok = ok && runtime_status == NULL;
         ok = ok && runtime_status_alias == NULL;
         ok = ok && mirror_status &&

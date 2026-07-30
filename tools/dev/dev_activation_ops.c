@@ -180,7 +180,10 @@ static int dev_op_activation_probe(void *ctx, const char *gen_id,
     const char *av[] = { cli, ddbuf, portbuf, "agent", NULL };
     if (dev_run_argv(req->repo_root, av, 12000, &res) != 0)
         return -1;
-    if (!strstr(res.output, "zcl.public_status.v2"))
+    /* The node produces zcl.public_status.v3; v2 is still a fully readable
+     * document, so an older binary under probe is not a failure here. */
+    if (!strstr(res.output, "zcl.public_status.v3") &&
+        !strstr(res.output, "zcl.public_status.v2"))
         return -1;
     char observed[65];
     if (!dev_activation_source_id_valid(expected_source_id_sha256) ||

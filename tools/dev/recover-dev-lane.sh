@@ -612,7 +612,7 @@ verify_recovery_default()
             observed_source_id="$(json_first_string_field \
                 "$agent" source_id_sha256)"
             if is_uint "$height" && [ "$height" -ge "$SNAPSHOT_HEIGHT" ] &&
-               printf '%s' "$agent" | grep -q '"schema"[[:space:]]*:[[:space:]]*"zcl.public_status.v2"' &&
+               printf '%s' "$agent" | grep -qE '"schema"[[:space:]]*:[[:space:]]*"zcl\.public_status\.v[23]"' &&
                [ "$observed_source_id" = "$CURRENT_SOURCE_ID" ]; then
                 return 0
             fi
