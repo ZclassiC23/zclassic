@@ -677,6 +677,22 @@
                "ledger name, or empty for every ledger",
                "c3", "netdisrupt",
                "lib/test/src/test_stopwatch_skip_watch.c", false),
+    DIAG_ENTRY("tip_agreement", tip_agreement_dump_state_json,
+               "REPORTER ONLY — the OFF-HOST tip-hash agreement ledger on "
+               "disk (the only parity evidence here that is not 127.0.0.1): "
+               "per last sample, the height compared, OUR tip hash, the modal "
+               "REMOTE tip hash, how many DISTINCT remote hosts backed that "
+               "mode, how many disagreed, and the control in force. "
+               "Independence is answered BEFORE any verdict: too few distinct "
+               "remote hosts reports insufficient_independent_peers, never "
+               "agreement. It grades nothing — "
+               "tools/scripts/tip_agreement_judge.sh is the judge",
+               "chain_or_network", "service",
+               "app/services/src/tip_agreement_watch.c",
+               "filesystem_snapshot", "bounded_lookup",
+               "'last' for the last sample only, or empty for the whole report",
+               "last", "",
+               "lib/test/src/test_tip_agreement_watch.c", false),
     DIAG_SERVICE("bg_validation", bg_validation_dump_state_json,
                  "background historical-proof re-verification: state, "
                  "verified/chain height, sigs+proofs verified, "
