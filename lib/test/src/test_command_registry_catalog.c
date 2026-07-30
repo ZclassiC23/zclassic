@@ -2189,6 +2189,48 @@ static int test_describe_emits_semantics(void)
     return failures;
 }
 
+/* EVERY leaf, not one sample. An over-budget describe document renders as
+ * nothing at all, and `discover describe` is the only surface that shows a
+ * leaf's semantics text — so a leaf that overflows keeps dispatching while its
+ * written contract silently becomes unreadable. That shipped: the money-safety
+ * warning inside core.wallet.recovery.restore could not be read by anybody.
+ * tools/lint/check_describe_budget.sh is the gate that names the offender and
+ * carries the pre-existing baseline; this is the same property inside the test
+ * suite, on the compiled catalog. */
+static int test_every_describe_document_fits(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    char out[ZCL_COMMAND_SPEC_BUDGET + 1];
+    TEST("every leaf's describe document fits its byte budget") {
+        size_t leaves = 0, overflowed = 0;
+        char first_bad[ZCL_COMMAND_MAX_PATH] = "";
+        for (size_t i = 0; i < reg->count; i++) {
+            const struct zcl_command_spec *spec = &reg->commands[i];
+            if (spec->mode == ZCL_COMMAND_MODE_BRANCH)
+                continue;
+            leaves++;
+            if (zcl_command_registry_describe_json(reg, spec->path, out,
+                                                   sizeof(out)) > 0)
+                continue;
+            /* zcode.endpoint.publish is baselined as pre-existing; see
+             * tools/lint/describe_budget_baseline.txt. */
+            if (strcmp(spec->path, "zcode.endpoint.publish") == 0)
+                continue;
+            overflowed++;
+            if (first_bad[0] == '\0')
+                snprintf(first_bad, sizeof(first_bad), "%s", spec->path);
+        }
+        if (overflowed)
+            printf("    over budget: %zu leaf/leaves, first=%s\n", overflowed,
+                   first_bad);
+        ASSERT(leaves > 200);          /* anti-vacuous: the catalog was walked */
+        ASSERT(overflowed == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int g_bad_next_case;
 
 static void contract_bad_next_handler(
@@ -2833,6 +2875,7 @@ int test_command_registry_catalog(void)
     failures += test_semantics_contract_negative();
     failures += test_leaf_semantics_and_budget();
     failures += test_describe_emits_semantics();
+    failures += test_every_describe_document_fits();
     failures += test_latency_budget_mapping();
     failures += test_envelope_carries_latency_contract();
     failures += test_ready_read_leaves_meet_latency_bucket();

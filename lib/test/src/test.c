@@ -1558,6 +1558,10 @@ int main(int argc, char **argv)
       failures += test_offline_datadir_query(); }
     { extern int test_read_leaf_no_datadir_write(void);
       failures += test_read_leaf_no_datadir_write(); }
+    { extern int test_wallet_phrase_never_logged(void);
+      failures += test_wallet_phrase_never_logged(); }
+    { extern int test_wallet_recovery_safety(void);
+      failures += test_wallet_recovery_safety(); }
     { extern int test_hstar_integrity(void);
       failures += test_hstar_integrity(); }
     { extern int test_install_verb_warm(void);

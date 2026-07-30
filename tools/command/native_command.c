@@ -2777,9 +2777,28 @@ static int nc_run_discover(const struct zcl_command_spec *spec,
     }
     if (n == 0) {
         if (strcmp(spec->path, "discover.describe") == 0) {
+            /* "The answer did not fit" is NOT "there is no such command".
+             * describe_json returns 0 for both, and reporting the second for
+             * the first cost core.wallet.recovery.restore its entire written
+             * contract: the leaf dispatched fine, help and search both listed
+             * it, and `discover describe` on it answered UNKNOWN_PATH. Resolve
+             * the path ourselves so the two can be told apart — same shape as
+             * nc_emit_menu's MENU_BUDGET. check-describe-budget keeps every
+             * leaf under the budget; this is what the operator sees if one
+             * ever gets through. */
+            if (zcl_command_registry_find(catalog(), arg, NULL)) {
+                nc_print_error_next_string(
+                    spec->path, "DESCRIBE_BUDGET", "serialize",
+                    "this command's describe document exceeded its byte "
+                    "budget, so it could not be rendered; the command itself "
+                    "is registered and callable",
+                    arg, "discover.schema", "path", arg,
+                    "read this command's input keys instead");
+                return ZCL_COMMAND_EXIT_INTERNAL;
+            }
             nc_print_error(spec->path, "UNKNOWN_PATH", "resolve",
-                           "no such command path or budget exceeded",
-                           arg ? arg : "", "discover.help", "{}",
+                           "no such command path", arg ? arg : "",
+                           "discover.help", "{}",
                            "browse the tree first");
         } else {
             nc_print_error_next_string(

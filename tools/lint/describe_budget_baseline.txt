@@ -1,0 +1,13 @@
+# check-describe-budget baseline — leaves whose `discover describe` document
+# already did NOT fit ZCL_COMMAND_SPEC_BUDGET when the gate was written.
+#
+# Format: <command path><whitespace><reason>.  A line without a reason is
+# rejected.  This file may only SHRINK: a new overflow fails the gate, and a
+# baselined leaf that now fits ALSO fails, so a fix cannot leave a stale
+# exemption behind.
+#
+# Fix an entry by trimming that leaf's `semantics` in config/commands/*.def
+# until the gate reports it fits, then delete its line here.  Never by raising
+# ZCL_COMMAND_SPEC_BUDGET — the budget is what keeps a describe document
+# cheap enough for every transport to carry.
+zcode.endpoint.publish  pre-existing on main before the recovery-phrase lane; already unreadable on main's binary, not introduced or touched here. Left honest rather than fixed, so the lane that broke it owns the trim.

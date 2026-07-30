@@ -28,6 +28,16 @@ static int     g_stage_ordinal = (int)BOOT_STAGE_INIT;
 static int64_t g_height = -1;
 static int64_t g_started_unix;
 static int64_t g_started_mono_ms;
+/* blocker-ok:boot_status_beacon — this is not a blocker recorder, it is the
+ * on-disk beacon a blocker gets COPIED into. The typed registry
+ * (lib/util/blocker.h) lives in RAM and dies with the process, so a boot
+ * that names a blocker and then exits would leave the file reading
+ * phase=loading with no reason in it — indistinguishable from a hang. The
+ * raise site is still a real blocker_set(); these two strings only carry its
+ * id and reason across the exit. Nothing here decides, rate-limits or
+ * escapes anything. */
+static char    g_blocker[64];
+static char    g_blocker_reason[256];
 
 /* ── Phase derivation (pure) ─────────────────────────────────────────── */
 const char *boot_status_phase_for_stage(int stage, bool *rpc_bound,
@@ -94,6 +104,13 @@ size_t boot_status_write_json(const struct boot_status_snapshot *snap,
     (void)json_push_kv_int(&root, "started_unix", snap->started_unix);
     (void)json_push_kv_int(&root, "updated_unix", snap->updated_unix);
     (void)json_push_kv_int(&root, "elapsed_s", snap->elapsed_s);
+    /* Emitted only once a boot has named why it stopped, so an ordinary
+     * beacon keeps exactly the v1 field set and a reader can tell "still
+     * climbing" from "stopped, and here is the reason" by presence. */
+    if (snap->blocker[0]) {
+        (void)json_push_kv_str(&root, "blocker", snap->blocker);
+        (void)json_push_kv_str(&root, "blocker_reason", snap->blocker_reason);
+    }
 
     size_t n = json_write(&root, buf, buflen);
     json_free(&root);
@@ -120,6 +137,9 @@ static void boot_status_snapshot_locked(struct boot_status_snapshot *out)
     out->elapsed_s = out->updated_unix - g_started_unix;
     if (out->elapsed_s < 0)
         out->elapsed_s = 0;
+    snprintf(out->blocker, sizeof(out->blocker), "%s", g_blocker);
+    snprintf(out->blocker_reason, sizeof(out->blocker_reason), "%s",
+             g_blocker_reason);
 }
 
 /* Atomically publish the beacon: write to a tmp sibling then rename over the
@@ -135,7 +155,11 @@ static void boot_status_publish_locked(void)
     struct boot_status_snapshot snap;
     boot_status_snapshot_locked(&snap);
 
-    char json[1024];
+    /* Sized for the base document PLUS a named blocker's id and its
+     * 256-byte reason: a beacon that could not serialize is dropped, and
+     * dropping the one write that explains why the node stopped is the
+     * exact failure this field was added to remove. */
+    char json[2048];
     size_t n = boot_status_write_json(&snap, json, sizeof(json));
     if (n == 0) {
         LOG_WARN("boot_status", "serialize failed (stage=%s)", snap.stage);
@@ -214,6 +238,22 @@ void boot_status_set_height(int64_t height)
     pthread_mutex_unlock(&g_lock);
 }
 
+void boot_status_set_blocker(const char *id, const char *reason)
+{
+    pthread_mutex_lock(&g_lock);
+    if (!id || !id[0]) {
+        g_blocker[0] = '\0';
+        g_blocker_reason[0] = '\0';
+    } else {
+        snprintf(g_blocker, sizeof(g_blocker), "%s", id);
+        snprintf(g_blocker_reason, sizeof(g_blocker_reason), "%s",
+                 reason ? reason : "");
+    }
+    if (g_datadir[0] != '\0')
+        boot_status_publish_locked();
+    pthread_mutex_unlock(&g_lock);
+}
+
 /* ── Reader (node-free) ──────────────────────────────────────────────── */
 bool boot_status_read(const char *datadir, struct boot_status_snapshot *out,
                       char *err, size_t errlen)
@@ -269,6 +309,16 @@ bool boot_status_read(const char *datadir, struct boot_status_snapshot *out,
     out->started_unix = json_get_int(json_get(&doc, "started_unix"));
     out->updated_unix = json_get_int(json_get(&doc, "updated_unix"));
     out->elapsed_s = json_get_int(json_get(&doc, "elapsed_s"));
+    /* Optional: absent on every boot that has not stopped on purpose. Read
+     * through a NULL-guard because json_get_str of a missing key is not a
+     * string and printing it would be the reader's own silent lie. */
+    {
+        const char *b = json_get_str(json_get(&doc, "blocker"));
+        const char *br = json_get_str(json_get(&doc, "blocker_reason"));
+        snprintf(out->blocker, sizeof(out->blocker), "%s", b ? b : "");
+        snprintf(out->blocker_reason, sizeof(out->blocker_reason), "%s",
+                 br ? br : "");
+    }
 
     json_free(&doc);
     return true;

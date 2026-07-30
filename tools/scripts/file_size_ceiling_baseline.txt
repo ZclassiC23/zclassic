@@ -57,7 +57,11 @@ app/views/src/explorer_pages_view.c 823
 # 2026-07-24: merge reconciliation — wf/loader-pprev-hash-only recorded 4361 at
 # its fork point; its +17-line refold body-rebind wiring merged onto main's
 # grown boot.c = 4363. Reviewed, not fresh drift.
-config/src/boot.c 4358
+# 2026-07-29: TIGHTENED 4358 -> 4333. The recovery-phrase boot path (reading
+# the phrase, minting one, printing it once) landed in its own
+# config/src/boot_wallet_phrase.c instead of here, and took 25 lines of
+# existing wiring out of boot.c with it.
+config/src/boot.c 4333
 config/src/boot_bundle_fetch.c 917
 config/src/boot_index.c 853
 config/src/boot_mint_anchor.c 809

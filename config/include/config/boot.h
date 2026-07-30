@@ -391,6 +391,12 @@ bool app_operator_lane_parse(const char *name,
                              enum zcl_operator_lane *out);
 /* Same contract as app_runtime_profile_accepted_csv, for operator lanes. */
 const char *app_operator_lane_accepted_csv(void);
+/* True for the lanes the operator has DECLARED automated and non-canonical
+ * (dev / soak / test / copy / standby): datadirs that boot fresh and
+ * unattended, hold no real funds, and must never wedge on a gate that wants
+ * a person at a keyboard. CANONICAL and UNKNOWN — the real node and the
+ * interactive default — are deliberately NOT in this set. Pure. */
+bool app_operator_lane_is_automated_noncanonical(enum zcl_operator_lane lane);
 
 /* ── First-run wallet creation: boot-site decision ────────────────── *
  *

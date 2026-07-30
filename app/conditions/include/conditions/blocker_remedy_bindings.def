@@ -355,6 +355,17 @@ ZCL_BLOCKER_REMEDY(boot.stage_regression,                       OWNER)
  * zero named signal. Only an operator can diagnose+fix the underlying
  * liveness stall or bad deploy driving the loop. ─────────────────────── */
 ZCL_BLOCKER_REMEDY(boot.restart_loop,                            OWNER)
+
+/* ── OWNER — first-run wallet creation refused (config/src/
+ * boot_wallet_phrase.c). A brand-new wallet's ONLY backup is the twelve
+ * words it is born with, they are shown exactly once on stdout, and under
+ * the shipped systemd unit stdout IS node.log. So when stdout is not a
+ * terminal and the wallet about to be created is a real spendable one, boot
+ * refuses rather than either printing the words into a log file or leaving
+ * an owner a backup they never saw. BLOCKER_PERMANENT, fail-STOP: the
+ * caller exits. No automatic remedy is possible or wanted — every escape is
+ * a statement of intent only a person can make. ────────────────────── */
+ZCL_BLOCKER_REMEDY(wallet_phrase_no_terminal,                    OWNER)
 /* ── OWNER — Sapling commitment tree rebuild (app/controllers/src/
  * sync_controller_sapling_tree.c). `persist_busy` fires when the bounded
  * BEGIN-retry against node_db is exhausted (the reducer held the store

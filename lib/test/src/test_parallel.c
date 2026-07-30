@@ -287,6 +287,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(tip_finalize_stage) X(tip_finalize_post_step) X(reducer_frontier) \
     X(reducer_frontier_self_anchor) X(offline_datadir_query) \
     X(read_leaf_no_datadir_write) \
+    X(wallet_phrase_never_logged) \
+    X(wallet_recovery_safety) \
     X(hstar_integrity) \
     X(install_verb_warm) \
     X(always_sync_chaos) \

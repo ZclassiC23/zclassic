@@ -225,8 +225,8 @@ void wallet_free(struct wallet *w)
     zcl_mutex_destroy(&w->cs);
 }
 
-static bool wallet_generate_hd_key(struct wallet *w, uint32_t change,
-                                   struct pubkey *pk_out)
+bool wallet_mint_next_hd_key(struct wallet *w, uint32_t change,
+                             struct pubkey *pk_out)
 {
     uint32_t *counter = (change == BIP44_INTERNAL)
                         ? &w->hd_internal_counter
@@ -261,7 +261,7 @@ bool wallet_generate_new_key(struct wallet *w, struct pubkey *pk_out)
 {
     /* If HD wallet is initialized, derive from BIP44 external chain */
     if (w->has_master_key)
-        return wallet_generate_hd_key(w, BIP44_EXTERNAL, pk_out);
+        return wallet_mint_next_hd_key(w, BIP44_EXTERNAL, pk_out);
 
     /* Fallback: random key generation (legacy wallet) */
     struct privkey key;
@@ -335,8 +335,8 @@ bool wallet_has_hd(const struct wallet *w)
     return w && w->has_master_key;
 }
 
-static bool wallet_pubkey_to_addr(const struct pubkey *pk, char *addr_out,
-                                  size_t addr_size)
+bool wallet_pubkey_to_addr(const struct pubkey *pk, char *addr_out,
+                           size_t addr_size)
 {
     struct key_id kid = pubkey_get_id(pk);
     struct tx_destination dest;
@@ -360,7 +360,7 @@ bool wallet_get_new_change_address(struct wallet *w, char *addr_out,
     struct pubkey pk;
 
     if (w->has_master_key) {
-        if (!wallet_generate_hd_key(w, BIP44_INTERNAL, &pk))
+        if (!wallet_mint_next_hd_key(w, BIP44_INTERNAL, &pk))
             return false;
     } else {
         /* Legacy: change addresses are just regular addresses */
@@ -378,7 +378,7 @@ bool wallet_get_new_address_with_key_id(struct wallet *w, char *addr_out,
 
     if (w->has_master_key) {
         /* HD wallet: derive directly from BIP44 external chain */
-        if (!wallet_generate_hd_key(w, BIP44_EXTERNAL, &pk))
+        if (!wallet_mint_next_hd_key(w, BIP44_EXTERNAL, &pk))
             return false;
     } else {
         /* Legacy wallet: use key pool */

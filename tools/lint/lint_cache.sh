@@ -138,6 +138,8 @@ lint_cache_never_reason() {
             echo "invokes clang/gcc over ~1174 translation units; skips or fails on the installed clang major version" ;;
         check-api-reference-generated)
             echo "compiles and runs a C generator with cc" ;;
+        check-describe-budget)
+            echo "compiles and links the real command registry with cc, twice (once against a padded catalog for its selftest)" ;;
         check-lib-module-order)
             echo "reads the link graph out of build/obj via nm" ;;
         check-release-no-dev-symbols)

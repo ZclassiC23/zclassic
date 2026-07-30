@@ -69,6 +69,7 @@
 
 #include "models/database.h"
 #include "models/utxo.h"
+#include "models/wallet_key.h"
 #include "models/wallet_tx.h"
 
 #include "wallet/wallet.h"
@@ -77,6 +78,12 @@
 
 #include "services/wallet_backup_service.h"
 #include "services/wallet_restore_service.h"
+#include "services/wallet_recovery_service.h"
+#include "command/native_command.h"   /* the READ leaf's read-only open */
+#include "config/boot_wallet_phrase.h"
+#include "wallet/bip44.h"
+#include "wallet/keystore.h"
+#include "wallet/mnemonic.h"
 
 #include "sapling/sapling.h"
 #include "sapling/sapling_prover.h"
@@ -1444,6 +1451,550 @@ static int act3_shielded(void)
     return failures;
 }
 
+/* ── ACT 4: THE TWELVE WORDS ──────────────────────────────────────
+ *
+ * Acts 1-3 recover from a FILE. This act recovers from nothing but words
+ * on paper — the disaster where the machine and the backup file went into
+ * the same fire.
+ *
+ * Two claims, and neither is a green test for its own sake:
+ *
+ *   (a) SEED AGREEMENT. The 32-byte seed the node persists for a wallet it
+ *       created is byte-for-byte the seed its recovery phrase derives.
+ *       Proven twice over: the seed read back off disk equals
+ *       mnemonic_to_wallet_seed(phrase), and the first receiving address
+ *       computed from each of those two seeds is the same string. If these
+ *       ever diverge, "recovery succeeded" would hand a user an empty
+ *       wallet, which is worse than no feature at all.
+ *
+ *   (b) THE CAPABILITY. Create a wallet, write down its words, ask it for
+ *       a receiving address, then DELETE the datadir — every file,
+ *       asserted gone. Recover into a FRESH datadir from the phrase alone,
+ *       through the shipped service. The same address comes back, and the
+ *       spending key behind it is in the recovered keystore.
+ *
+ * Plus the two refusals that keep the feature from destroying money: a
+ * mistyped phrase is rejected rather than opening an empty wallet, and
+ * recovering over a datadir that already holds a wallet is refused.
+ *
+ * Hermetic: no network, no params, no prover, no node.
+ */
+/* Is the spending key behind `addr` in this wallet's keystore? The whole
+ * question a user is asking when they ask whether their money came back:
+ * an address the wallet cannot sign for is not theirs, however familiar
+ * the string looks. */
+static bool act4_addr_is_mine(const struct wallet *w, const char *addr)
+{
+    const struct chain_params *cp = chain_params_get();
+    size_t pk_len = 0, sc_len = 0;
+    const unsigned char *pk_pfx =
+        chain_params_base58_prefix(cp, B58_PUBKEY_ADDRESS, &pk_len);
+    const unsigned char *sc_pfx =
+        chain_params_base58_prefix(cp, B58_SCRIPT_ADDRESS, &sc_len);
+    struct tx_destination d;
+    if (!decode_destination(addr, pk_pfx, pk_len, sc_pfx, sc_len, &d) ||
+        d.type != DEST_KEY_ID)
+        return false;
+    return keystore_have_key(&w->keystore, &d.id.key);
+}
+
+/* Rewrite `phrase` into `out` with every single space replaced by `sep`,
+ * optionally wrapped in leading/trailing whitespace. The point is that all
+ * of these are the SAME twelve words to a human holding a piece of paper,
+ * and so must be the same wallet. */
+static void act4_respace(const char *phrase, const char *lead,
+                         const char *sep, const char *trail,
+                         char *out, size_t cap)
+{
+    size_t o = 0;
+    for (const char *p = lead; *p && o + 1 < cap; p++) out[o++] = *p;
+    for (const char *p = phrase; *p && o + 1 < cap; p++) {
+        if (*p == ' ') {
+            for (const char *s = sep; *s && o + 1 < cap; s++) out[o++] = *s;
+        } else {
+            out[o++] = *p;
+        }
+    }
+    for (const char *p = trail; *p && o + 1 < cap; p++) out[o++] = *p;
+    out[o] = '\0';
+}
+
+static int act4_recovery_phrase(void)
+{
+    int failures = 0;
+    printf("\n-- ACT 4: destroy the machine, recover from TWELVE WORDS --\n");
+
+    char livedir[256], newdir[256];
+    dr_mkdir(livedir, sizeof(livedir), "act4live");
+
+    char livedb[320];
+    snprintf(livedb, sizeof(livedb), "%s/node.db", livedir);
+
+    /* ── create a wallet exactly the way boot creates one ───────── */
+    struct node_db live_ndb;
+    memset(&live_ndb, 0, sizeof(live_ndb));
+    DR_CHECK("act4: node_db_open", node_db_open(&live_ndb, livedb));
+    struct wallet_sqlite live_ws;
+    DR_CHECK("act4: wallet_sqlite_open",
+             wallet_sqlite_open(&live_ws, live_ndb.db));
+
+    struct wallet *live_w = zcl_malloc(sizeof(*live_w), "act4.live_wallet");
+    DR_CHECK("act4: wallet alloc", live_w != NULL);
+    if (!live_w) return failures + 1;
+    wallet_init(live_w);
+
+    char phrase[BOOT_WALLET_PHRASE_CAP];
+    DR_CHECK("act4: a new wallet is born with a recovery phrase",
+             boot_wallet_mint_recovery_phrase(live_w, phrase, sizeof(phrase)));
+    DR_CHECK("act4: the phrase is 12 words",
+             mnemonic_validate(phrase) && strlen(phrase) > 20);
+    DR_CHECK("act4: the wallet's keys now descend from it",
+             wallet_has_hd(live_w));
+
+    /* boot's order: keypool from the phrase's seed, then flush. */
+    DR_CHECK("act4: mint the keypool from the phrase",
+             wallet_top_up_key_pool(live_w, DEFAULT_KEYPOOL_SIZE));
+    DR_CHECK("act4: flush the wallet",
+             wallet_sqlite_flush_r(&live_ws, live_w).ok);
+
+    /* The address a user would actually be handed and would actually
+     * publish. THIS is the string that has to come back. */
+    char live_addr[128] = "";
+    uint32_t live_addr_index = live_w->hd_external_counter;
+    DR_CHECK("act4: the user asks for a receiving address",
+             wallet_get_new_address(live_w, live_addr, sizeof(live_addr)) &&
+             live_addr[0]);
+    DR_CHECK("act4: flush that address too",
+             wallet_sqlite_flush_r(&live_ws, live_w).ok);
+    printf("    receiving address before destruction: %s (index %u)\n",
+           live_addr, live_addr_index);
+
+    /* PIN THE FACT the recovery has to survive: the keypool consumed
+     * indices 0..99, so the FIRST address a user is ever handed is index
+     * 100 — one PAST a fixed hundred-key rebuild. If this ever stops being
+     * true the gap-limit floor below has to move with it. */
+    DR_CHECK("act4: the first address a wallet hands out is index "
+             "DEFAULT_KEYPOOL_SIZE, not 0",
+             live_addr_index == (uint32_t)DEFAULT_KEYPOOL_SIZE);
+    DR_CHECK("act4: the gap-limit floor covers that index",
+             (uint32_t)WALLET_RECOVERY_MIN_LOOKAHEAD > live_addr_index);
+
+    /* ── (a) SEED AGREEMENT ─────────────────────────────────────── */
+    uint8_t seed_on_disk[32];
+    DR_CHECK("act4: the node persisted a 32-byte seed",
+             wallet_sqlite_read_sapling_seed(&live_ws, seed_on_disk));
+    uint8_t seed_from_words[32];
+    DR_CHECK("act4: the phrase derives a 32-byte seed",
+             mnemonic_to_wallet_seed(phrase, NULL, seed_from_words));
+    DR_CHECK("act4: SEED AGREEMENT — persisted seed == phrase-derived seed, "
+             "byte for byte",
+             memcmp(seed_on_disk, seed_from_words, 32) == 0);
+
+    char addr_from_disk_seed[128] = "";
+    char addr_from_word_seed[128] = "";
+    DR_CHECK("act4: first address from the persisted seed",
+             wallet_seed_address_at(seed_on_disk, 0, BIP44_EXTERNAL, 0,
+                                    addr_from_disk_seed,
+                                    sizeof(addr_from_disk_seed)));
+    DR_CHECK("act4: first address from the phrase-derived seed",
+             wallet_seed_address_at(seed_from_words, 0, BIP44_EXTERNAL, 0,
+                                    addr_from_word_seed,
+                                    sizeof(addr_from_word_seed)));
+    DR_CHECK("act4: the same first address two ways",
+             addr_from_disk_seed[0] &&
+             strcmp(addr_from_disk_seed, addr_from_word_seed) == 0);
+
+    /* ── (a2) HOW THE WORDS WERE WRITTEN DOWN MUST NOT MATTER ─────
+     *
+     * BIP39 derives the seed from the phrase BYTES, so before this was
+     * normalised a phrase pasted out of a text file (trailing newline), a
+     * chat message (doubled spaces) or a spreadsheet (tabs) derived a
+     * DIFFERENT seed — and the sloppy spellings still passed checksum
+     * validation, so the user was handed a valid-looking, empty, wrong
+     * wallet and told it worked. Every spelling below is the same twelve
+     * words to the person holding the paper, so every one must be the same
+     * 32 bytes. Asserted byte-for-byte, not by address string. */
+    {
+        struct { const char *what, *lead, *sep, *trail; } variants[] = {
+            { "a leading space",            " ",      " ",    ""      },
+            { "a trailing newline",         "",       " ",    "\n"    },
+            { "doubled internal spaces",    "",       "  ",   ""      },
+            { "tab separators",             "",       "\t",   ""      },
+            { "CRLF line wrapping",         "",       "\r\n", ""      },
+            { "leading and trailing mess",  "  \n\t", " ",    " \t\n" },
+            { "all of it at once",          "\n ",    " \t ", "\r\n " },
+        };
+        for (size_t i = 0; i < sizeof(variants) / sizeof(variants[0]); i++) {
+            char v[BOOT_WALLET_PHRASE_CAP * 3];
+            act4_respace(phrase, variants[i].lead, variants[i].sep,
+                         variants[i].trail, v, sizeof(v));
+            uint8_t vseed[32];
+            memset(vseed, 0, sizeof(vseed));
+            bool ok = mnemonic_to_wallet_seed(v, NULL, vseed);
+            char msg[160];
+            snprintf(msg, sizeof(msg),
+                     "act4: WHITESPACE — %s derives the SAME 32-byte seed",
+                     variants[i].what);
+            DR_CHECK(msg, ok && memcmp(vseed, seed_from_words, 32) == 0);
+            snprintf(msg, sizeof(msg),
+                     "act4: WHITESPACE — %s still validates as a phrase",
+                     variants[i].what);
+            DR_CHECK(msg, mnemonic_validate(v));
+            memory_cleanse(v, sizeof(v));
+            memory_cleanse(vseed, sizeof(vseed));
+        }
+        /* Anti-vacuous: the comparison above can catch a wrong seed. A
+         * phrase that is genuinely different must NOT normalise to the
+         * same bytes. */
+        char swapped[BOOT_WALLET_PHRASE_CAP];
+        snprintf(swapped, sizeof(swapped), "%s", phrase);
+        char *sp = strchr(swapped, ' ');
+        if (sp) {
+            /* Replace the first word with a different wordlist entry. */
+            char rest[BOOT_WALLET_PHRASE_CAP];
+            snprintf(rest, sizeof(rest), "%s", sp + 1);
+            const char *first = mnemonic_wordlist_get(
+                    strncmp(swapped, "zoo", 3) == 0 ? 0 : 2047);
+            snprintf(swapped, sizeof(swapped), "%s %s", first, rest);
+            uint8_t sseed[32];
+            DR_CHECK("act4: WHITESPACE — a genuinely different phrase does "
+                     "NOT derive the same seed (the check can fail)",
+                     mnemonic_to_wallet_seed(swapped, NULL, sseed) &&
+                     memcmp(sseed, seed_from_words, 32) != 0);
+            memory_cleanse(sseed, sizeof(sseed));
+            memory_cleanse(rest, sizeof(rest));
+        }
+        memory_cleanse(swapped, sizeof(swapped));
+    }
+
+    wallet_sqlite_close(&live_ws);
+    wallet_free(live_w);
+    free(live_w);
+    node_db_close(&live_ndb);
+
+    /* ── DESTROY THE MACHINE ────────────────────────────────────── */
+    dr_destroy_tree(livedir, 2);
+    DR_CHECK("act4: the datadir is GONE — nothing left but the words",
+             dr_is_destroyed(livedir));
+
+    /* ── a mistyped phrase must be refused, never silently opened ─ */
+    dr_mkdir(newdir, sizeof(newdir), "act4new");
+    dr_destroy_tree(newdir, 2);   /* recover into a directory that is absent */
+    {
+        char typo[BOOT_WALLET_PHRASE_CAP];
+        snprintf(typo, sizeof(typo), "%s", phrase);
+        /* Swap the first letter of the first word: still a word-shaped
+         * string, still 12 words, but the BIP39 checksum fails. */
+        typo[0] = (typo[0] == 'z') ? 'a' : (char)(typo[0] + 1);
+        struct wallet_recovery_request bad = {
+            .phrase = typo, .datadir = newdir, .dry_run = true };
+        struct wallet_recovery_report brep;
+        struct zcl_result br = wallet_recovery_run(&bad, &brep);
+        DR_CHECK("act4: a mistyped phrase is REFUSED, not opened empty",
+                 !br.ok && br.code == -60);
+        memory_cleanse(typo, sizeof(typo));
+    }
+
+    /* ── RECOVER FROM THE PHRASE ALONE ──────────────────────────── */
+    struct wallet_recovery_request rr = {
+        .phrase = phrase, .datadir = newdir, .dry_run = true };
+    struct wallet_recovery_report plan;
+    struct zcl_result pr = wallet_recovery_run(&rr, &plan);
+    DR_CHECK("act4: the plan derives the wallet without writing", pr.ok);
+    DR_CHECK("act4: the plan names the right first address",
+             strcmp(plan.first_address, addr_from_disk_seed) == 0);
+    DR_CHECK("act4: the plan wrote nothing", plan.keys_after == 0);
+
+    /* "Nothing has been written yet" is a sentence the plan PRINTS, so it
+     * gets checked on disk and not just in the report. The plan used to
+     * mkdir the datadir and leave an 864 KB node.db in it while saying
+     * that. dr_is_destroyed() looks at the filesystem. */
+    DR_CHECK("act4: the plan created NO datadir and NO database on disk — "
+             "the 'nothing has been written yet' it prints is true",
+             dr_is_destroyed(newdir));
+    DR_CHECK("act4: the plan reports the same rebuild the commit will do",
+             plan.receiving_keys >=
+                 (uint32_t)WALLET_RECOVERY_MIN_LOOKAHEAD &&
+             plan.shielded_children ==
+                 (uint32_t)WALLET_RECOVERY_SHIELDED_LOOKAHEAD);
+
+    /* THE SECRET NEVER LEAVES. The report a caller renders must not
+     * contain the phrase anywhere in its bytes. */
+    {
+        const char *hay = (const char *)&plan;
+        size_t n = sizeof(plan), plen = strlen(phrase);
+        bool found = false;
+        for (size_t i = 0; plen && i + plen <= n; i++)
+            if (memcmp(hay + i, phrase, plen) == 0) { found = true; break; }
+        DR_CHECK("act4: the phrase is NOT anywhere in the report a caller "
+                 "would print", !found);
+    }
+
+    /* Recovering installs the whole wallet the phrase controls — the
+     * spending keys AND the master seed — so it now obeys the same at-rest
+     * rule the node obeys when it creates a wallet: encrypt it, or say in
+     * as many words that this datadir may hold them in the clear. This
+     * drill is a local fixture with no passphrase, so it says so, exactly
+     * as an operator would. Without a decision the recovery is refused and
+     * nothing is written; that refusal is proven in its own group
+     * (wallet_recovery_safety), not here. */
+    setenv("ZCL_ALLOW_PLAINTEXT_WALLET", "1", 1);
+
+    rr.dry_run = false;
+    struct wallet_recovery_report rep;
+    struct zcl_result cr = wallet_recovery_run(&rr, &rep);
+    DR_CHECK("act4: RECOVERED from the phrase alone", cr.ok);
+    if (!cr.ok) {
+        /* Everything below reads the database this was supposed to write.
+         * Say why, once, and stop — a run that keeps going here dereferences
+         * a handle that was never opened and takes the whole group down with
+         * a signal, which hides the one line that explains it. */
+        printf("    recovery refused: code=%d %s\n", cr.code, cr.message);
+        return failures;
+    }
+    DR_CHECK("act4: the recovered wallet has keys", rep.keys_after > 0);
+    DR_CHECK("act4: recovery reports the seed installed", rep.seed_installed);
+    /* Gap-limit floor, on both chains, and the shielded lookahead — not the
+     * fixed hundred that stopped one index short of the first address. */
+    DR_CHECK("act4: the rebuild derived past the first address a wallet "
+             "hands out, on both transparent chains",
+             rep.receiving_keys > live_addr_index &&
+             rep.change_keys >= (uint32_t)WALLET_RECOVERY_MIN_LOOKAHEAD);
+    DR_CHECK("act4: the shielded side is not stopped at child 0",
+             rep.shielded_children ==
+                 (uint32_t)WALLET_RECOVERY_SHIELDED_LOOKAHEAD);
+    DR_CHECK("act4: with no chain in this datadir the report SAYS no chain "
+             "was consulted rather than 'no history found'",
+             !rep.chain_history_consulted);
+    DR_CHECK("act4: an untruncated scan is not reported as truncated",
+             !rep.transparent_scan_truncated);
+    DR_CHECK("act4: the target had no seed row before, and that is reported "
+             "as absent — not as unreadable",
+             rep.seed_state_before == WALLET_SEED_ABSENT &&
+             !rep.seed_present_before);
+
+    /* ── the same address comes back ────────────────────────────── */
+    char newdb[320];
+    snprintf(newdb, sizeof(newdb), "%s/node.db", newdir);
+    struct node_db new_ndb;
+    memset(&new_ndb, 0, sizeof(new_ndb));
+    DR_CHECK("act4: open the recovered datadir", node_db_open(&new_ndb, newdb));
+    struct wallet_sqlite new_ws;
+    DR_CHECK("act4: open its wallet tables",
+             wallet_sqlite_open(&new_ws, new_ndb.db));
+
+    uint8_t restored_seed[32];
+    DR_CHECK("act4: the recovered seed matches the destroyed one",
+             wallet_sqlite_read_sapling_seed(&new_ws, restored_seed) &&
+             memcmp(restored_seed, seed_on_disk, 32) == 0);
+
+    struct wallet *new_w = zcl_malloc(sizeof(*new_w), "act4.new_wallet");
+    DR_CHECK("act4: wallet alloc", new_w != NULL);
+    if (new_w) {
+        wallet_init(new_w);
+        DR_CHECK("act4: load the recovered keys",
+                 wallet_sqlite_read_keys(&new_ws, new_w));
+        /* Exactly what boot does on the next start of this datadir. */
+        DR_CHECK("act4: boot adopts the seed as the HD master",
+                 wallet_hd_adopt_seed(new_w, restored_seed));
+
+        /* ── THE ASSERTION THAT MATTERS ───────────────────────────
+         *
+         * The address the user PUBLISHED, before destruction, is spendable
+         * by the recovered wallet — asked BEFORE any new address is
+         * requested. This is the whole claim: "your money came back".
+         *
+         * It has to be asked in this order. A recovery that rebuilt a
+         * fixed 100 keys (indices 0..99) does not hold index 100, which is
+         * the first address a wallet ever hands out — so it recovered every
+         * address the user never saw and none of the one they gave people,
+         * and then recommended a rescan that structurally could not find
+         * their coins. Asking the recovered wallet for a NEW address first
+         * hides that completely: the counter re-derives index 100 on the
+         * spot and the string matches. So: ismine first, fresh address
+         * after. */
+        DR_CHECK("act4: THE PUBLISHED ADDRESS IS SPENDABLE AFTER RECOVERY "
+                 "— before a single new address is asked for",
+                 act4_addr_is_mine(new_w, live_addr));
+        printf("    published address after recovery:    %s (ismine=%d, "
+               "keys=%zu)\n", live_addr,
+               (int)act4_addr_is_mine(new_w, live_addr),
+               new_w->keystore.num_keys);
+
+        /* The gap-limit floor, proven on the recovered wallet rather than
+         * assumed: the counters land past the index the user was on. */
+        DR_CHECK("act4: the rebuild reached the gap-limit floor on both "
+                 "chains",
+                 new_w->hd_external_counter >=
+                     (uint32_t)WALLET_RECOVERY_MIN_LOOKAHEAD &&
+                 new_w->hd_internal_counter >=
+                     (uint32_t)WALLET_RECOVERY_MIN_LOOKAHEAD);
+
+        /* And the change chain, which a user never sees but every spend
+         * needs: the address the wallet would have used for change at the
+         * same point is spendable too. */
+        {
+            char live_change[128] = "";
+            DR_CHECK("act4: derive the change address the destroyed wallet "
+                     "would have used",
+                     wallet_seed_address_at(seed_on_disk, 0, BIP44_INTERNAL,
+                                            0, live_change,
+                                            sizeof(live_change)));
+            DR_CHECK("act4: that change address is spendable after recovery",
+                     act4_addr_is_mine(new_w, live_change));
+        }
+
+        /* NOW ask for a new one. It must be a FRESH address — reissuing the
+         * one already published would be address reuse — and it must be
+         * spendable too. */
+        char new_addr[128] = "";
+        DR_CHECK("act4: ask the recovered wallet for a receiving address",
+                 wallet_get_new_address(new_w, new_addr, sizeof(new_addr)) &&
+                 new_addr[0]);
+        printf("    next fresh address after recovery:   %s\n", new_addr);
+        DR_CHECK("act4: the next address is FRESH, not a reissue of the one "
+                 "already published",
+                 strcmp(new_addr, live_addr) != 0);
+        DR_CHECK("act4: the spending key behind it is in the wallet too",
+                 act4_addr_is_mine(new_w, new_addr));
+
+        wallet_free(new_w);
+        free(new_w);
+    }
+
+    /* ── recovering over an existing wallet is refused ──────────── */
+    wallet_sqlite_close(&new_ws);
+    node_db_close(&new_ndb);
+    {
+        struct wallet_recovery_request again = {
+            .phrase = phrase, .datadir = newdir, .dry_run = false };
+        struct wallet_recovery_report arep;
+        struct zcl_result ar = wallet_recovery_run(&again, &arep);
+        DR_CHECK("act4: recovering over a wallet that is already there is "
+                 "REFUSED", !ar.ok && ar.code == -62);
+    }
+    /* The at-rest decision an operator makes for a node holds for as long
+     * as the node does; it is not re-made per command. Drop it here, where
+     * the recovery half of the drill ends, so nothing below inherits it. */
+    unsetenv("ZCL_ALLOW_PLAINTEXT_WALLET");
+
+    /* ── status tells the truth about this wallet ───────────────── */
+    {
+        /* The shipped read path: the caller opens node.db READ-ONLY and
+         * hands the handle in. Exercised here exactly as the READ leaf
+         * does it, so the drill would notice the service growing an open
+         * of its own again. */
+        struct wallet_recovery_report srep;
+        struct zcl_result pre =
+            wallet_recovery_status_preflight(newdir, &srep);
+        DR_CHECK("act4: status preflight clears the recovered datadir",
+                 pre.ok);
+        sqlite3 *sdb = NULL;
+        struct node_db sndb;
+        char sndb_path[1200];
+        enum zcl_node_db_ro_status ro = zcl_native_node_db_open_readonly(
+            newdir, &sdb, &sndb, sndb_path, sizeof(sndb_path));
+        DR_CHECK("act4: status opens the recovered node.db read-only",
+                 ro == ZCL_NODE_DB_RO_OK);
+        struct zcl_result sr = wallet_recovery_status(newdir, &sndb, &srep);
+        zcl_native_node_db_close_readonly(&sdb, &sndb);
+        DR_CHECK("act4: status reads the recovered wallet", sr.ok);
+        DR_CHECK("act4: status says it IS recoverable from words",
+                 srep.seed_installed);
+        DR_CHECK("act4: and names the seed it read, not just a bool",
+                 srep.seed_state_before == WALLET_SEED_PLAINTEXT ||
+                 srep.seed_state_before == WALLET_SEED_UNLOCKED);
+    }
+
+    /* ── "LOCKED" IS NOT "THERE IS NO PHRASE" ────────────────────────
+     *
+     * An encrypted wallet whose seed cannot be decrypted here used to come
+     * back exactly like a wallet that never had a seed: one false, one
+     * answer. The owner of a perfectly recoverable wallet was told it
+     * predated recovery phrases and that only a file backup could bring
+     * their money back. Two proofs, on a wallet holding an ENCRYPTED seed
+     * and no keys, so the seed row is the only thing either answer can
+     * turn on:
+     *
+     *   1. status reads it as LOCKED, never ABSENT;
+     *   2. recovery REFUSES to write over it — "I could not read your seed"
+     *      must never be the condition that permits installing another one.
+     */
+    {
+        char lockdir[256];
+        dr_mkdir(lockdir, sizeof(lockdir), "act4locked");
+        char lockdb[320];
+        snprintf(lockdb, sizeof(lockdb), "%s/node.db", lockdir);
+
+        setenv("ZCL_WALLET_PASSPHRASE", "act4-the-right-passphrase", 1);
+        struct node_db lndb;
+        memset(&lndb, 0, sizeof(lndb));
+        DR_CHECK("act4/locked: open the fixture db",
+                 node_db_open(&lndb, lockdb));
+        struct wallet_sqlite lws;
+        DR_CHECK("act4/locked: open its wallet tables",
+                 wallet_sqlite_open(&lws, lndb.db));
+        uint8_t lseed[32];
+        memset(lseed, 0x5A, sizeof(lseed));
+        DR_CHECK("act4/locked: store an ENCRYPTED seed and no keys",
+                 wallet_sqlite_write_sapling_seed(&lws, lseed));
+        DR_CHECK("act4/locked: it reads back while unlocked",
+                 wallet_sqlite_sapling_seed_state(&lws, NULL) ==
+                     WALLET_SEED_UNLOCKED);
+        DR_CHECK("act4/locked: the fixture really has zero keys",
+                 db_wallet_key_count(&lndb) == 0);
+        wallet_sqlite_close(&lws);
+        node_db_close(&lndb);
+
+        /* Walk away with the wrong passphrase, exactly as a user who
+         * mistyped it or lost the environment variable would. */
+        setenv("ZCL_WALLET_PASSPHRASE", "act4-the-WRONG-passphrase", 1);
+
+        struct wallet_recovery_report lrep;
+        struct zcl_result lpre =
+            wallet_recovery_status_preflight(lockdir, &lrep);
+        DR_CHECK("act4/locked: preflight clears the fixture", lpre.ok);
+        sqlite3 *ldb = NULL;
+        struct node_db lrondb;
+        char lpath[1200];
+        enum zcl_node_db_ro_status lro = zcl_native_node_db_open_readonly(
+            lockdir, &ldb, &lrondb, lpath, sizeof(lpath));
+        DR_CHECK("act4/locked: read-only open", lro == ZCL_NODE_DB_RO_OK);
+        struct zcl_result lsr =
+            wallet_recovery_status(lockdir, &lrondb, &lrep);
+        zcl_native_node_db_close_readonly(&ldb, &lrondb);
+        DR_CHECK("act4/locked: status answers", lsr.ok);
+        DR_CHECK("act4/locked: the seed is reported LOCKED — NOT absent, "
+                 "which is what told a recoverable wallet's owner they had "
+                 "no recovery phrase",
+                 lrep.seed_state_before == WALLET_SEED_LOCKED);
+        DR_CHECK("act4/locked: and the seed ROW is reported present",
+                 lrep.seed_present_before);
+        DR_CHECK("act4/locked: it does not claim the keys descend from a "
+                 "seed it could not read",
+                 !lrep.seed_installed);
+
+        struct wallet_recovery_request lrr = {
+            .phrase = phrase, .datadir = lockdir, .dry_run = false };
+        struct wallet_recovery_report lwrep;
+        struct zcl_result lwr = wallet_recovery_run(&lrr, &lwrep);
+        DR_CHECK("act4/locked: recovery REFUSES to write a second seed over "
+                 "a seed it merely could not decrypt",
+                 !lwr.ok && lwr.code == -62);
+
+        unsetenv("ZCL_WALLET_PASSPHRASE");
+        memory_cleanse(lseed, sizeof(lseed));
+        dr_destroy_tree(lockdir, 2);
+    }
+
+    memory_cleanse(phrase, sizeof(phrase));
+    memory_cleanse(seed_on_disk, sizeof(seed_on_disk));
+    memory_cleanse(seed_from_words, sizeof(seed_from_words));
+    memory_cleanse(restored_seed, sizeof(restored_seed));
+    dr_destroy_tree(newdir, 2);
+    return failures;
+}
+
 /* ── the group ────────────────────────────────────────────────── */
 
 int test_wallet_destruction_drill(void);
@@ -1464,6 +2015,7 @@ int test_wallet_destruction_drill(void)
 
     failures += act1_transparent();
     failures += act2_bodyless_restore_must_fail_loud();
+    failures += act4_recovery_phrase();
 
     /* Act 3 needs the proving parameters AND a working production prover
      * (ZCL_WITH_RUST=1). Without both, the shielded half cannot be proven

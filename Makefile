@@ -977,7 +977,7 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
         check-stopwatch-skip-detector \
         check-proof-server-pin \
         check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-doc-claims check-no-stale-pinned-facts check-markdown-links check-doc-inline-paths \
-        check-api-reference-generated \
+        check-api-reference-generated check-describe-budget \
         check-no-new-repair-rung \
         fuzz-ci-leaks \
         soak-smoke soak-7day soak-ci test-crash-bootstrap \
@@ -6233,6 +6233,20 @@ check-api-reference-generated:
 	@echo "══ LINT: docs/API_REFERENCE.md is generated, not hand-edited ══"
 	@./tools/lint/check_api_reference_generated.sh
 
+# Gate — every leaf's `discover describe` document must FIT its byte budget.
+# `discover describe` is the only surface that renders a leaf's long-form
+# `semantics` text at all, and an over-budget document renders as nothing: the
+# leaf keeps dispatching and its written contract is silently unreadable.
+# core.wallet.recovery.restore shipped that way with a money-safety warning
+# inside the invisible text. Renders EVERY leaf through the REAL renderer.
+# Baseline (may only shrink): tools/lint/describe_budget_baseline.txt.
+# Fix a failure by trimming `semantics`, NEVER by raising the budget.
+# Has --selftest (pads a leaf past the budget, proves the gate trips).
+check-describe-budget:
+	@echo "══ LINT: every leaf's describe document fits its budget ══"
+	@./tools/lint/check_describe_budget.sh --selftest
+	@./tools/lint/check_describe_budget.sh
+
 # Regenerate the native command reference from the declarative catalog.
 API_REFERENCE_TOOL = $(BIN_DIR)/gen_api_reference
 
@@ -6547,6 +6561,7 @@ LINT_GATES := \
     check-doc-claims \
     check-error-doc-refs \
     check-api-reference-generated \
+    check-describe-budget \
     check-markdown-links \
     check-doc-inline-paths \
     check-hex-codec-single \

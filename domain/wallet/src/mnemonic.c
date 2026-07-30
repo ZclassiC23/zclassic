@@ -2135,6 +2135,80 @@ size_t domain_wallet_mnemonic_entropy_bytes_for_words(int word_count)
     }
 }
 
+/* ── Canonical form ───────────────────────────────────────────────── */
+
+/* ASCII whitespace, and only ASCII whitespace. Deliberately not isspace():
+ * isspace() is locale-dependent, and a locale that widened it would change
+ * which byte sequences derive which wallet. */
+static inline bool mnemonic_is_ascii_space(unsigned char c)
+{
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r'
+        || c == '\v' || c == '\f';
+}
+
+struct zcl_result domain_wallet_mnemonic_normalize(const char *phrase,
+                                                   char *out,
+                                                   size_t out_size,
+                                                   size_t *written_out)
+{
+    if (written_out)
+        *written_out = 0;
+    if (!phrase)
+        return ZCL_ERR(DOMAIN_WALLET_MNEMONIC_ERR_NULL_PHRASE,
+                       "mnemonic_normalize: null phrase");
+    if (!out || out_size == 0)
+        return ZCL_ERR(DOMAIN_WALLET_MNEMONIC_ERR_NULL_BUF,
+                       "mnemonic_normalize: null or zero-size out");
+
+    size_t o = 0;
+    bool have_word = false;      /* at least one word emitted */
+    bool space_pending = false;  /* whitespace seen after a word */
+
+    for (const char *p = phrase; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c >= 0x80) {
+            out[0] = '\0';
+            /* The byte's position, never the phrase. */
+            return ZCL_ERR(DOMAIN_WALLET_MNEMONIC_ERR_NON_ASCII,
+                           "mnemonic_normalize: non-ASCII byte at offset %zu; "
+                           "this node accepts the BIP39 English wordlist only "
+                           "and does not implement Unicode NFKD",
+                           (size_t)(p - phrase));
+        }
+        if (mnemonic_is_ascii_space(c)) {
+            /* Leading whitespace is dropped outright; anything after a
+             * word becomes at most one separator, emitted lazily so a
+             * trailing run leaves nothing behind. */
+            if (have_word)
+                space_pending = true;
+            continue;
+        }
+        if (space_pending) {
+            if (o + 1 >= out_size) {
+                out[0] = '\0';
+                return ZCL_ERR(DOMAIN_WALLET_MNEMONIC_ERR_BUF_TOO_SMALL,
+                               "mnemonic_normalize: out_size=%zu too small",
+                               out_size);
+            }
+            out[o++] = ' ';
+            space_pending = false;
+        }
+        if (o + 1 >= out_size) {
+            out[0] = '\0';
+            return ZCL_ERR(DOMAIN_WALLET_MNEMONIC_ERR_BUF_TOO_SMALL,
+                           "mnemonic_normalize: out_size=%zu too small",
+                           out_size);
+        }
+        out[o++] = (char)c;
+        have_word = true;
+    }
+
+    out[o] = '\0';
+    if (written_out)
+        *written_out = o;
+    return ZCL_OK;
+}
+
 /* ── Entropy → mnemonic ───────────────────────────────────────────── */
 
 struct zcl_result domain_wallet_mnemonic_from_entropy(
@@ -2248,16 +2322,24 @@ static struct zcl_result mnemonic_decode_core(
 
     struct zcl_result result = ZCL_OK;
 
-    /* Internal mutable copy for strtok_r. Cap at phrase max to avoid
-     * unbounded stacks; matches the legacy wrapper's behaviour. */
-    size_t len = strlen(phrase);
-    if (len >= sizeof(buf)) {
-        result = ZCL_ERR(DOMAIN_WALLET_MNEMONIC_ERR_PHRASE_LEN,
-                         "mnemonic decode: phrase too long: %zu (cap %zu)",
-                         len, sizeof(buf));
-        goto cleanup;
+    /* Internal mutable copy for strtok_r, in the ONE canonical form —
+     * whitespace collapsed — so validation and seed derivation cannot
+     * disagree about what phrase they were handed. Cap at phrase max to
+     * avoid unbounded stacks; matches the legacy wrapper's behaviour. */
+    {
+        struct zcl_result nr =
+            domain_wallet_mnemonic_normalize(phrase, buf, sizeof(buf), NULL);
+        if (!nr.ok) {
+            /* An over-long phrase is reported as over-long, the code
+             * callers already handle, not as an out-buffer problem. */
+            result = (nr.code == DOMAIN_WALLET_MNEMONIC_ERR_BUF_TOO_SMALL)
+                   ? ZCL_ERR(DOMAIN_WALLET_MNEMONIC_ERR_PHRASE_LEN,
+                             "mnemonic decode: phrase too long (cap %zu)",
+                             sizeof(buf))
+                   : nr;
+            goto cleanup;
+        }
     }
-    memcpy(buf, phrase, len + 1);
 
     int indices[DOMAIN_WALLET_BIP39_MAX_WORDS];
     int word_count = 0;
@@ -2273,8 +2355,14 @@ static struct zcl_result mnemonic_decode_core(
         }
         int idx = domain_wallet_mnemonic_wordlist_find(token);
         if (idx < 0) {
+            /* The POSITION, never the word. This message reaches node.log,
+             * and a word out of someone's recovery phrase — even a mistyped
+             * one — narrows a search over the phrase for anyone who reads
+             * the file later. A position is just as useful to the person
+             * fixing their typo and useless to everyone else. */
             result = ZCL_ERR(DOMAIN_WALLET_MNEMONIC_ERR_UNKNOWN_WORD,
-                             "mnemonic decode: unknown word: %s", token);
+                             "mnemonic decode: word %d is not in the "
+                             "wordlist", word_count + 1);
             goto cleanup;
         }
         indices[word_count++] = idx;
@@ -2384,6 +2472,26 @@ struct zcl_result domain_wallet_mnemonic_to_seed(
     if (!passphrase)
         passphrase = "";
 
+    /* THE canonical form, before a single PBKDF2 round. BIP39 derives the
+     * seed from the phrase bytes, so this is the difference between a
+     * pasted phrase restoring the user's wallet and restoring a valid,
+     * empty, wrong one. Same call the decoder makes, so a phrase that
+     * validates and a phrase that derives are byte-identical. */
+    char canon[DOMAIN_WALLET_BIP39_PHRASE_MAX];
+    size_t canon_len = 0;
+    {
+        struct zcl_result nr = domain_wallet_mnemonic_normalize(
+                phrase, canon, sizeof(canon), &canon_len);
+        if (!nr.ok) {
+            memory_cleanse(canon, sizeof(canon));
+            return (nr.code == DOMAIN_WALLET_MNEMONIC_ERR_BUF_TOO_SMALL)
+                 ? ZCL_ERR(DOMAIN_WALLET_MNEMONIC_ERR_PHRASE_LEN,
+                           "mnemonic_to_seed: phrase too long (cap %zu)",
+                           sizeof(canon))
+                 : nr;
+        }
+    }
+
     /* Salt = "mnemonic" || passphrase. Bounded so we never allocate. */
     const char *prefix = "mnemonic";
     size_t prefix_len = 8;
@@ -2391,20 +2499,24 @@ struct zcl_result domain_wallet_mnemonic_to_seed(
     size_t salt_len = prefix_len + pass_len;
 
     uint8_t salt[256];
-    if (salt_len > sizeof(salt))
+    if (salt_len > sizeof(salt)) {
+        memory_cleanse(canon, sizeof(canon));
         return ZCL_ERR(DOMAIN_WALLET_MNEMONIC_ERR_PHRASE_LEN,
                        "mnemonic_to_seed: passphrase too long: %zu (cap %zu)",
                        pass_len, sizeof(salt) - prefix_len);
+    }
     memcpy(salt, prefix, prefix_len);
     memcpy(salt + prefix_len, passphrase, pass_len);
 
-    pbkdf2_hmac_sha512((const uint8_t *)phrase, strlen(phrase),
+    pbkdf2_hmac_sha512((const uint8_t *)canon, canon_len,
                        salt, salt_len,
                        DOMAIN_WALLET_BIP39_PBKDF2_ROUNDS,
                        seed_out, DOMAIN_WALLET_BIP39_SEED_BYTES);
 
-    /* Wipe the salt — it embeds the secret passphrase. PBKDF2 has
-     * already consumed it into seed_out, so it is dead after this. */
+    /* Wipe the salt — it embeds the secret passphrase — and the canonical
+     * phrase, which IS the secret. PBKDF2 has already consumed both into
+     * seed_out, so neither is read after this. */
     memory_cleanse(salt, sizeof(salt));
+    memory_cleanse(canon, sizeof(canon));
     return ZCL_OK;
 }

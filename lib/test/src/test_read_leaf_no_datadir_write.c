@@ -46,6 +46,19 @@
  * "blocked, no node.db here" or to answer with data. The contract under
  * test is that pointing a read leaf at a directory never changes it.
  *
+ * WHO IS UNDER TEST — derived, not remembered. The first version of this
+ * file listed its six subjects as string literals, and the very next read
+ * leaf to take a `datadir` (core.wallet.recovery.status) was added, called
+ * node_db_open(), renamed a user's node.db to node.db.corrupt-<ts> while
+ * answering "ok": true, and this file said nothing. A hand list cannot
+ * catch the leaf nobody remembered to add to it. So case 5 walks the
+ * compiled command registry (zcl_command_catalog()) and requires that
+ * EVERY READY, non-branch, READ-effect leaf whose declared input keys
+ * include `datadir` is either exercised here or named in g_rlw_uncovered
+ * with a reason. Neither list may contain a leaf the registry does not,
+ * the uncovered list is shrink-only, and the derived population is
+ * floor-gated so an unlinked catalog cannot pass by proving nothing.
+ *
  * Sibling: test_offline_datadir_query.c covers the two SCOPE_OFFLINE_COPY
  * leaves' answers; this file covers every read leaf's SIDE EFFECTS. */
 
@@ -54,7 +67,9 @@
 #include "test/test_core.h"
 
 #include "command/native_command.h"
+#include "config/command_catalog.h"
 #include "json/json.h"
+#include "kernel/command_registry.h"
 #include "models/database.h"
 
 #include <dirent.h>
@@ -77,7 +92,17 @@
  * Every one of these is declared with a READ macro in a config/commands
  * .def file and takes a caller-supplied `datadir`. k1/k2 are the other
  * inputs, without which the handler returns before it ever reaches the
- * datadir and the case would prove nothing. */
+ * datadir and the case would prove nothing.
+ *
+ * THIS TABLE IS NOT THE POPULATION. It used to be: six string literals,
+ * hand-maintained, and the SEVENTH read leaf that took a `datadir`
+ * (core.wallet.recovery.status) walked straight past it and shipped
+ * calling node_db_open() — the exact defect this file exists to catch,
+ * missed by this file. The population now comes from the compiled command
+ * registry (t_registry_coverage below): every READY, non-branch,
+ * READ-effect leaf whose declared input keys include `datadir`. Each one
+ * must appear either here or in g_rlw_uncovered with a stated reason, so
+ * a new read leaf can no longer be silently absent. */
 
 typedef void (*rlw_handler_fn)(const struct zcl_command_request *,
                                struct zcl_command_reply *);
@@ -107,9 +132,105 @@ static const struct rlw_leaf g_rlw_leaves[] = {
       "pubkey", RLW_PUBKEY,     NULL, NULL },
     { "zcode.package.resolve",  zcl_native_handle_zcode_package_resolve,
       "name", "ringbuffer",     NULL, NULL },
+    /* The seventh. Declared READ, `datadir` defaults to the operator's LIVE
+     * one, and it opened node.db with node_db_open() — so pointed at a
+     * damaged database it renamed the user's wallet to
+     * node.db.corrupt-<ts>, installed a fresh empty one, and answered
+     * "ok": true. Data destruction reported as success, from a command the
+     * catalog advertises as a read. It now opens through
+     * zcl_native_node_db_open_readonly(). */
+    { "core.wallet.recovery.status",
+      zcl_native_handle_wallet_recovery_status,
+      NULL, NULL,               NULL, NULL },
 };
 
 #define RLW_LEAF_COUNT ((int)(sizeof(g_rlw_leaves) / sizeof(g_rlw_leaves[0])))
+
+/* ── the read leaves this file does NOT exercise, and why ──────────────
+ *
+ * Every entry is a READ leaf that takes a `datadir` and is not in the
+ * table above. Being on this list is a STATED GAP, never an exemption:
+ * t_registry_coverage refuses any derived leaf that is on neither list, so
+ * the only way a new read leaf gets past this file is by someone writing
+ * a line here and saying why. The count is ceilinged (RLW_UNCOVERED_MAX)
+ * and shrink-only — this list can get shorter, never longer.
+ *
+ * Most of these are the pre-existing gap: the hand table only ever named
+ * six leaves, so 36 others were absent and nothing said so. Deriving the
+ * population from the registry is what made them visible; covering them is
+ * follow-on work, one entry deleted per leaf exercised. */
+#define RLW_UNCOVERED_REASON_PREEXISTING                                 \
+    "pre-existing gap: declared READ, takes datadir, never exercised "   \
+    "here. Made visible by the registry-derived coverage check; delete "  \
+    "this line by adding the leaf to g_rlw_leaves"
+
+struct rlw_uncovered {
+    const char *path;
+    const char *why;
+};
+
+static const struct rlw_uncovered g_rlw_uncovered[] = {
+    /* Two OPEN DEFECTS, already carried as shrink-only lines in
+     * tools/lint/read_leaf_boot_ceremony_baseline.txt. They would FAIL the
+     * on-disk cases below today; naming them here records the gap instead
+     * of hiding it, and both lines go when the baseline lines go. */
+    { "app.store.products",
+      "OPEN DEFECT (baselined): sn_open_db -> node_db_open_runtime is "
+      "READWRITE|CREATE and still runs create_schema + node_db_migrate, so "
+      "it can rewrite the schema of the datadir it is pointed at" },
+    { "core.sync.frontier.offline",
+      "OPEN DEFECT (baselined): progress_store_open on consensus.db "
+      "creates, runs a rename migration, and quarantines on a failed "
+      "integrity check — and this file only watches node.db*, so it would "
+      "not even see the damage" },
+
+    { "core.epoch.status",            RLW_UNCOVERED_REASON_PREEXISTING },
+    { "core.epoch.verify",            RLW_UNCOVERED_REASON_PREEXISTING },
+    { "core.storage.query.offline",   RLW_UNCOVERED_REASON_PREEXISTING },
+    { "core.node.bootstatus",         RLW_UNCOVERED_REASON_PREEXISTING },
+    { "core.node.bootwait",           RLW_UNCOVERED_REASON_PREEXISTING },
+    { "core.identity.resolve",        RLW_UNCOVERED_REASON_PREEXISTING },
+    { "core.identity.list",           RLW_UNCOVERED_REASON_PREEXISTING },
+    { "ops.debug.producer",           RLW_UNCOVERED_REASON_PREEXISTING },
+    { "zcode.package.publish.plan",   RLW_UNCOVERED_REASON_PREEXISTING },
+    { "zcode.package.search",         RLW_UNCOVERED_REASON_PREEXISTING },
+    { "zcode.package.show",           RLW_UNCOVERED_REASON_PREEXISTING },
+    { "zcode.package.recipe",         RLW_UNCOVERED_REASON_PREEXISTING },
+    { "zcode.package.verify",         RLW_UNCOVERED_REASON_PREEXISTING },
+    { "zcode.package.peers",          RLW_UNCOVERED_REASON_PREEXISTING },
+    { "zcode.contributor.packages",   RLW_UNCOVERED_REASON_PREEXISTING },
+    { "zcode.contributor.badges",     RLW_UNCOVERED_REASON_PREEXISTING },
+    { "zcode.reward.score",           RLW_UNCOVERED_REASON_PREEXISTING },
+    { "zcode.reward.eligible",        RLW_UNCOVERED_REASON_PREEXISTING },
+    { "zcode.reward.queue",           RLW_UNCOVERED_REASON_PREEXISTING },
+    { "zcode.reward.receipt",         RLW_UNCOVERED_REASON_PREEXISTING },
+    { "zcode.leaderboard.daily",      RLW_UNCOVERED_REASON_PREEXISTING },
+    { "zcode.leaderboard.weekly",     RLW_UNCOVERED_REASON_PREEXISTING },
+    { "zcode.leaderboard.monthly",    RLW_UNCOVERED_REASON_PREEXISTING },
+    { "zcode.leaderboard.all",        RLW_UNCOVERED_REASON_PREEXISTING },
+    { "zcode.badge.eligible",         RLW_UNCOVERED_REASON_PREEXISTING },
+    { "zcode.seed.status",            RLW_UNCOVERED_REASON_PREEXISTING },
+    { "zcode.seed.ratio",             RLW_UNCOVERED_REASON_PREEXISTING },
+    { "zcode.storage.status",         RLW_UNCOVERED_REASON_PREEXISTING },
+    { "zcode.release.verify",         RLW_UNCOVERED_REASON_PREEXISTING },
+    { "zcode.proof.walk",             RLW_UNCOVERED_REASON_PREEXISTING },
+    { "zcode.desc.resolve",           RLW_UNCOVERED_REASON_PREEXISTING },
+    { "zcode.endpoint.verify",        RLW_UNCOVERED_REASON_PREEXISTING },
+    { "zcode.endpoint.resolve",       RLW_UNCOVERED_REASON_PREEXISTING },
+    { "zcode.endpoint.list",          RLW_UNCOVERED_REASON_PREEXISTING },
+};
+
+#define RLW_UNCOVERED_COUNT \
+    ((int)(sizeof(g_rlw_uncovered) / sizeof(g_rlw_uncovered[0])))
+
+/* SHRINK-ONLY ceiling. Raising it is the one edit that would turn this
+ * whole coverage check back into the hand list it replaced. */
+#define RLW_UNCOVERED_MAX 36
+
+/* Anti-vacuous floor on the derived population itself: a coverage check
+ * over an empty registry passes every assertion and proves nothing. Sits
+ * below the live count (43) with headroom for ordinary removals. */
+#define RLW_DERIVED_FLOOR 35
 
 /* ── on-disk observation helpers ───────────────────────────────────── */
 
@@ -530,11 +651,163 @@ static int t_garbage_node_db_is_refused_not_empty(void)
     return failures;
 }
 
+/* ── case 5: the population comes from the registry, not from memory ──
+ *
+ * The defect this case exists to catch is the one that hit this very file:
+ * a seventh read leaf was added, took a `datadir`, opened it with the boot
+ * ceremony, and this test — which enumerated its subjects as six string
+ * literals — never noticed. The list is derived now. */
+
+/* Is `key` one comma-separated token of `csv`? (Substring matching would
+ * accept "datadirs" and "no_datadir".) */
+static bool rlw_csv_has(const char *csv, const char *key)
+{
+    if (!csv || !key || !key[0])
+        return false;
+    size_t klen = strlen(key);
+    for (const char *p = csv; *p;) {
+        while (*p == ' ' || *p == ',')
+            p++;
+        const char *start = p;
+        while (*p && *p != ',')
+            p++;
+        size_t len = (size_t)(p - start);
+        while (len && start[len - 1] == ' ')
+            len--;
+        if (len == klen && strncmp(start, key, klen) == 0)
+            return true;
+    }
+    return false;
+}
+
+/* A leaf this file is responsible for: dispatchable, declared READ, and
+ * pointable at a caller-named datadir. */
+static bool rlw_is_datadir_read_leaf(const struct zcl_command_spec *s)
+{
+    return s && s->path && s->path[0] &&
+           s->availability == ZCL_COMMAND_READY &&
+           s->mode != ZCL_COMMAND_MODE_BRANCH &&
+           s->effect == ZCL_COMMAND_EFFECT_READ &&
+           s->handler != NULL &&
+           rlw_csv_has(s->input_keys, "datadir");
+}
+
+static int t_registry_coverage(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+
+    RLW_CHECK("coverage: the command catalog is readable",
+              reg != NULL && reg->commands != NULL && reg->count > 0);
+    if (!reg || !reg->commands)
+        return failures;   /* RLW_CHECK above already counted this */
+
+    int derived = 0, uncovered_seen = 0;
+    for (size_t i = 0; i < reg->count; i++) {
+        const struct zcl_command_spec *s = &reg->commands[i];
+        if (!rlw_is_datadir_read_leaf(s))
+            continue;
+        derived++;
+
+        const struct rlw_leaf *exercised = NULL;
+        for (int j = 0; j < RLW_LEAF_COUNT && !exercised; j++)
+            if (strcmp(g_rlw_leaves[j].path, s->path) == 0)
+                exercised = &g_rlw_leaves[j];
+
+        const struct rlw_uncovered *listed = NULL;
+        for (int j = 0; j < RLW_UNCOVERED_COUNT && !listed; j++)
+            if (strcmp(g_rlw_uncovered[j].path, s->path) == 0)
+                listed = &g_rlw_uncovered[j];
+
+        char what[224];
+        if (exercised && listed) {
+            snprintf(what, sizeof(what),
+                     "coverage: %s is exercised AND listed uncovered — pick "
+                     "one", s->path);
+            RLW_CHECK(what, false);
+            continue;
+        }
+        if (!exercised && !listed) {
+            printf("    [%s] declared READ, takes `datadir`, and is in "
+                   "neither g_rlw_leaves nor g_rlw_uncovered\n", s->path);
+            snprintf(what, sizeof(what),
+                     "coverage: %s is accounted for (exercised or listed "
+                     "with a reason)", s->path);
+            RLW_CHECK(what, false);
+            continue;
+        }
+        if (listed) {
+            uncovered_seen++;
+            /* An entry with no reason is silent absence with extra steps. */
+            snprintf(what, sizeof(what),
+                     "coverage: %s is listed uncovered WITH a stated reason",
+                     s->path);
+            RLW_CHECK(what, listed->why != NULL && listed->why[0] != '\0');
+            continue;
+        }
+        /* Exercised: the pointer this file calls must be the pointer the
+         * registry dispatches, or the case below proves a different leaf. */
+        snprintf(what, sizeof(what),
+                 "coverage: %s is exercised through the registry's own "
+                 "handler pointer", s->path);
+        RLW_CHECK(what, exercised->fn == s->handler);
+    }
+
+    printf("    derived=%d exercised_table=%d uncovered_table=%d "
+           "uncovered_matched=%d\n",
+           derived, RLW_LEAF_COUNT, RLW_UNCOVERED_COUNT, uncovered_seen);
+
+    /* Anti-vacuous: every assertion above is over the derived set, so an
+     * empty or unlinked catalog would pass them all. */
+    {
+        char what[192];
+        snprintf(what, sizeof(what),
+                 "coverage: %d READ leaves take a datadir (floor %d) — the "
+                 "population is real", derived, RLW_DERIVED_FLOOR);
+        RLW_CHECK(what, derived >= RLW_DERIVED_FLOOR);
+    }
+
+    /* Every table entry must name a leaf that still exists and still is a
+     * datadir READ leaf. A stale line is how a list starts drifting back
+     * into decoration. */
+    for (int j = 0; j < RLW_LEAF_COUNT; j++) {
+        bool found = false;
+        for (size_t i = 0; i < reg->count && !found; i++)
+            found = rlw_is_datadir_read_leaf(&reg->commands[i]) &&
+                    strcmp(reg->commands[i].path, g_rlw_leaves[j].path) == 0;
+        char what[224];
+        snprintf(what, sizeof(what),
+                 "coverage: exercised leaf %s is still a READ leaf taking a "
+                 "datadir", g_rlw_leaves[j].path);
+        RLW_CHECK(what, found);
+    }
+    {
+        char what[192];
+        snprintf(what, sizeof(what),
+                 "coverage: every uncovered line matched a live leaf "
+                 "(%d/%d)", uncovered_seen, RLW_UNCOVERED_COUNT);
+        RLW_CHECK(what, uncovered_seen == RLW_UNCOVERED_COUNT);
+    }
+
+    /* SHRINK-ONLY. Covering a leaf deletes a line; nothing may add one. */
+    {
+        char what[192];
+        snprintf(what, sizeof(what),
+                 "coverage: uncovered list is %d, at or under its "
+                 "shrink-only ceiling of %d",
+                 RLW_UNCOVERED_COUNT, RLW_UNCOVERED_MAX);
+        RLW_CHECK(what, RLW_UNCOVERED_COUNT <= RLW_UNCOVERED_MAX);
+    }
+
+    return failures;
+}
+
 int test_read_leaf_no_datadir_write(void)
 {
     printf("\n=== read leaf writes nothing to the datadir ===\n");
     int failures = 0;
 
+    failures += t_registry_coverage();
     failures += t_absent_node_db_is_not_created();
     failures += t_present_node_db_is_not_mutated();
     failures += t_garbage_node_db_is_not_quarantined();

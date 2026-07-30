@@ -168,6 +168,106 @@ int test_domain_wallet_mnemonic(void)
                   !r.ok && r.code == DOMAIN_WALLET_MNEMONIC_ERR_BUF_TOO_SMALL);
     }
 
+    /* ── normalize: the one canonical form ────────────────────────
+     *
+     * Everything below is a way a user's twelve words arrive after a copy,
+     * a paste or a transcription. They are all the same phrase, so they
+     * must all normalise to the same bytes — that equality is what stops a
+     * pasted phrase from opening a valid-looking, empty, WRONG wallet. */
+    {
+        struct { const char *in, *want; } cases[] = {
+            { "abandon about",        "abandon about" },
+            { " abandon about",       "abandon about" },
+            { "abandon about ",       "abandon about" },
+            { "abandon about\n",      "abandon about" },
+            { "\tabandon\tabout\r\n", "abandon about" },
+            { "abandon   about",      "abandon about" },
+            { "  \n abandon \t\r\n about \n ", "abandon about" },
+            { "",                     ""              },
+            { "   \t\n ",             ""              },
+            { "abandon",              "abandon"       },
+        };
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            char out[64];
+            size_t n = 0;
+            struct zcl_result r = domain_wallet_mnemonic_normalize(
+                    cases[i].in, out, sizeof(out), &n);
+            DWM_CHECK("normalize collapses whitespace to the canonical form",
+                      r.ok && strcmp(out, cases[i].want) == 0 &&
+                      n == strlen(cases[i].want));
+        }
+    }
+    {
+        char out[64];
+        struct zcl_result r =
+            domain_wallet_mnemonic_normalize(NULL, out, sizeof(out), NULL);
+        DWM_CHECK("normalize null phrase -> NULL_PHRASE",
+                  !r.ok && r.code == DOMAIN_WALLET_MNEMONIC_ERR_NULL_PHRASE);
+    }
+    {
+        struct zcl_result r =
+            domain_wallet_mnemonic_normalize("abandon", NULL, 8, NULL);
+        DWM_CHECK("normalize null out -> NULL_BUF",
+                  !r.ok && r.code == DOMAIN_WALLET_MNEMONIC_ERR_NULL_BUF);
+    }
+    {
+        char out[4];
+        struct zcl_result r = domain_wallet_mnemonic_normalize(
+                "abandon about", out, sizeof(out), NULL);
+        DWM_CHECK("normalize tiny out -> BUF_TOO_SMALL",
+                  !r.ok && r.code == DOMAIN_WALLET_MNEMONIC_ERR_BUF_TOO_SMALL);
+    }
+    {
+        /* NFKD is not implemented, so a phrase that might NEED it is
+         * refused rather than derived from un-normalised bytes. */
+        char out[64];
+        struct zcl_result r = domain_wallet_mnemonic_normalize(
+                "abandon ab\xc3\xa1ndon", out, sizeof(out), NULL);
+        DWM_CHECK("normalize non-ASCII -> NON_ASCII (refused, not guessed)",
+                  !r.ok && r.code == DOMAIN_WALLET_MNEMONIC_ERR_NON_ASCII);
+    }
+    {
+        /* And the refusal reaches the two calls that matter, so no caller
+         * can derive a seed from bytes this node cannot normalise. */
+        uint8_t seed[64];
+        struct zcl_result r = domain_wallet_mnemonic_to_seed(
+                "abandon ab\xc3\xa1ndon", "", seed, sizeof(seed));
+        DWM_CHECK("to_seed refuses a non-ASCII phrase",
+                  !r.ok && r.code == DOMAIN_WALLET_MNEMONIC_ERR_NON_ASCII);
+        struct zcl_result v =
+            domain_wallet_mnemonic_validate("abandon ab\xc3\xa1ndon");
+        DWM_CHECK("validate refuses a non-ASCII phrase",
+                  !v.ok && v.code == DOMAIN_WALLET_MNEMONIC_ERR_NON_ASCII);
+    }
+    {
+        /* The seed a sloppy spelling derives IS the canonical one — the
+         * whole point — and the canonical vector still holds, so this is
+         * not a normalisation that quietly changed every wallet. */
+        uint8_t canon[64], messy[64];
+        struct zcl_result a = domain_wallet_mnemonic_to_seed(
+                tv1_mnemonic, "TREZOR", canon, sizeof(canon));
+        char sloppy[512];
+        snprintf(sloppy, sizeof(sloppy), "  %s \n", tv1_mnemonic);
+        for (char *p = sloppy; *p; p++)
+            if (*p == ' ' && p[1] == 'a') *p = '\t';
+        struct zcl_result b = domain_wallet_mnemonic_to_seed(
+                sloppy, "TREZOR", messy, sizeof(messy));
+        DWM_CHECK("a sloppily-pasted phrase derives the canonical BIP39 seed",
+                  a.ok && b.ok && bytes_equal(canon, messy, 64) &&
+                  bytes_equal(canon, tv1_seed_trezor, 64));
+    }
+    {
+        /* The PASSPHRASE is a secret string, not a word list: its
+         * whitespace is deliberate and must NOT be collapsed. */
+        uint8_t with_space[64], without[64];
+        struct zcl_result a = domain_wallet_mnemonic_to_seed(
+                tv1_mnemonic, " TREZOR ", with_space, sizeof(with_space));
+        struct zcl_result b = domain_wallet_mnemonic_to_seed(
+                tv1_mnemonic, "TREZOR", without, sizeof(without));
+        DWM_CHECK("passphrase whitespace is NOT normalised away",
+                  a.ok && b.ok && !bytes_equal(with_space, without, 64));
+    }
+
     /* mnemonic_to_entropy: null phrase / null out / tiny capacity. */
     {
         uint8_t e[32];

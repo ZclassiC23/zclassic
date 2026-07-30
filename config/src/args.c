@@ -89,6 +89,10 @@ void print_usage(const char *prog)
     printf("  -allow-plaintext-wallet  Create a new wallet UNENCRYPTED at rest\n");
     printf("                      (loud opt-in; otherwise set ZCL_WALLET_PASSPHRASE\n");
     printf("                      or first-run wallet creation refuses).\n");
+    printf("  -wallet-no-phrase-backup  Create a first-run wallet with NO recovery\n");
+    printf("                      phrase when stdout is not a terminal (the words\n");
+    printf("                      would only reach node.log). Nothing is printed and\n");
+    printf("                      no phrase is drawn; back it up as a file instead.\n");
     printf("  -backfill-nullifiers  One-shot owner-gated C-3 nullifier history backfill\n");
     printf("  -enforce-sapling-root  Reject ANY hashFinalSaplingRoot mismatch\n");
     printf("                      (default OFF: only all-zeros is rejected).\n");
@@ -457,6 +461,17 @@ int args_parse_node_options(int argc, char **argv, struct app_context *ctx,
              * without ZCL_WALLET_PASSPHRASE, first-run wallet creation
              * refuses rather than silently minting unencrypted keys. */
             setenv("ZCL_ALLOW_PLAINTEXT_WALLET", "1", 1);
+        }
+        else if (strcmp(argv[i], "-wallet-no-phrase-backup") == 0) {
+            /* "I accept a wallet with no written backup." A new wallet's
+             * twelve recovery words are shown once, on stdout, and under a
+             * systemd unit stdout is node.log — so when stdout is not a
+             * terminal the node refuses to create a spendable wallet at
+             * all. This flag is the operator saying that is fine here: the
+             * wallet is created, NO phrase is drawn, and every boot that
+             * creates one says so loudly. Read by
+             * boot_wallet_phrase_backup_waived() (config/boot_wallet_phrase.h). */
+            setenv("ZCL_WALLET_NO_PHRASE_BACKUP", "1", 1);
         }
         else if (strcmp(argv[i], "-rebuildfromlog") == 0) ctx->boot_from_log = true;
         else if (strcmp(argv[i], "-leveldb-no-verify-checksums") == 0) {
