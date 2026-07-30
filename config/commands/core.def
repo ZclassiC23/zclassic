@@ -1034,42 +1034,39 @@ ZCL_COMMAND_READY_READ(
 ZCL_COMMAND_READY_COMMAND(
     "core.wallet.recovery.restore", "core.wallet.recovery", "",
     "Rebuild a wallet from its recovery phrase",
+    /* KEEP THIS UNDER BUDGET. This text is only readable through
+     * `discover describe`, and that renderer caps a leaf's whole document at
+     * ZCL_COMMAND_SPEC_BUDGET; over it, the document does not render at all
+     * and this warning becomes invisible. check-describe-budget holds the
+     * line. Trim here — never raise the budget. */
     "Plan/commit rebuild of a whole wallet from the recovery phrase alone "
     "into an EMPTY datadir — the disaster case where the machine and the "
-    "backup file are both gone and all that is left is the words on paper. "
-    "The plan half derives and shows the first transparent and shielded "
-    "addresses the words open, so the operator can check one against what "
-    "they remember before committing; it creates no directory, no node.db "
-    "and no scratch file, and reads an existing target read-only. The "
-    "commit rebuilds the keys by the BIP44 gap-limit convention — keep "
-    "deriving until 20 consecutive unused addresses, using this datadir's "
-    "own chain to decide what was used, never a fixed count, because the "
-    "first address a wallet hands out is index 100 and a fixed 100 rebuilt "
-    "every index the owner never saw and not the one they published. With "
-    "no chain to consult it derives the standard lookahead and says so; a "
-    "scan that hits its 1000-per-chain ceiling with history still running "
-    "says that too. Saves through the "
-    "wallet's single writer. Needs no running node. datadir is REQUIRED and "
-    "has NO default: this installs spending keys and the master seed, and a "
-    "default would have aimed that at the running node's own datadir. It "
-    "obeys the same at-rest rule the node obeys when it creates a wallet — "
-    "set ZCL_WALLET_PASSPHRASE to encrypt the keys, or "
-    "ZCL_ALLOW_PLAINTEXT_WALLET=1 to say plaintext is what you want, else "
-    "WALLET_AT_REST_UNDECIDED — and leaves node.db mode 0600. An existing "
-    "node.db is read strictly READ-ONLY, so a damaged one is refused with "
-    "NODE_DB_UNREADABLE and is never renamed aside or replaced. REFUSES "
-    "with DATADIR_LOCKED while a node holds the datadir or while another "
-    "recovery is writing it — the write lock is held across the whole "
-    "check-then-write, so two at once cannot both succeed — and with "
-    "WALLET_ALREADY_PRESENT when the datadir already holds a wallet. Pass "
-    "the words as phrase, or set ZCL_RECOVERY_PHRASE to keep them out of "
-    "your shell history; they are never logged and never echoed back. These "
-    "words work with THIS NODE ONLY: it derives its key from the first 32 "
-    "bytes of the standard 64-byte BIP39 result and other wallets use all "
-    "64, so a phrase from elsewhere opens a different EMPTY wallet here "
-    "with no error at all. Keys "
-    "come back, history does not — next_steps names the rescans that "
-    "rebuild it.", ZCL_COMMAND_LIST_BUDGET,
+    "backup file are both gone. These words restore your money in "
+    "ZClassic23 only. They will not work in Electrum, on a hardware wallet, "
+    "or in any other wallet software; a phrase from elsewhere opens a "
+    "different EMPTY wallet here with no error at all. datadir is REQUIRED "
+    "and has NO default: this installs spending keys and the master seed, "
+    "and a default would have aimed that at the running node's own datadir. "
+    "The plan half shows the first transparent and shielded addresses the "
+    "words open, so you can check one against memory before committing; it "
+    "creates nothing and reads an existing target read-only. The commit "
+    "rebuilds the keys by the BIP44 gap-limit convention — derive until 20 "
+    "consecutive unused addresses, asking this datadir's own chain what was "
+    "used, never a fixed count, because the first address a wallet hands "
+    "out is index 100. With no chain to consult it derives the standard "
+    "lookahead and says so, as does a scan that hits its 1000-per-chain "
+    "ceiling. Needs no running node. Same at-rest rule as node wallet "
+    "creation: set ZCL_WALLET_PASSPHRASE to encrypt the keys, or "
+    "ZCL_ALLOW_PLAINTEXT_WALLET=1 to accept plaintext, else "
+    "WALLET_AT_REST_UNDECIDED; node.db is left mode 0600. An existing "
+    "node.db is read strictly READ-ONLY: a damaged one is refused with "
+    "NODE_DB_UNREADABLE, never renamed aside or replaced. REFUSES with "
+    "DATADIR_LOCKED while a node holds the datadir or another recovery is "
+    "writing it, and WALLET_ALREADY_PRESENT if a wallet is already there. "
+    "Pass the words as phrase, or set ZCL_RECOVERY_PHRASE to keep them out "
+    "of shell history; they are never logged or echoed back. Keys come "
+    "back, history does not — next_steps names the rescans that rebuild "
+    "it.", ZCL_COMMAND_LIST_BUDGET,
     "wallet,recovery,phrase,seed,mnemonic,restore",
     "zcl.wallet_recovery_restore.input.v1", "zcl.wallet_recovery_restore.v1",
     "phrase,datadir,confirm", "",
