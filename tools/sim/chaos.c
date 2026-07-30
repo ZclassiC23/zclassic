@@ -27,6 +27,7 @@
 #include "platform/time_compat.h"
 #include "sim/sim_peer.h"
 #include "sim/simnet_cluster.h"
+#include "sim/simnet_trace.h"
 #include "storage/boot_auto_reindex.h"
 #include "util/parse_num.h"
 #include "util/safe_alloc.h"
@@ -122,6 +123,19 @@ struct chaos_ctx {
     bool simnet_monotonic_ok;
     int simnet_honest_permille;  /* 1000 = all honest (the default) */
     uint64_t simnet_byz_rng;     /* byzantine role/class sub-stream state */
+
+    /* Optional full-state trace (sim/simnet_trace.h, docs/CHAOS_HARNESS.md
+     * "Recording a full-state trace"). NULL/unset means no trace is ever
+     * written — every existing scenario and `make chaos` runs exactly as it
+     * did before this field existed. Opt-in via `trace_dir PATH` (this
+     * scenario file only) or `--trace-dir=PATH` (every scenario the process
+     * runs). The writer is opened lazily on the first simnet event that
+     * follows, once a cluster actually exists to snapshot. */
+    bool trace_dir_set;
+    char trace_dir[CHAOS_TMP_PATH];
+    bool trace_writer_open;
+    struct simnet_trace_writer trace_writer;
+    uint64_t trace_seq;
 };
 
 typedef int (*chaos_handler_fn)(struct chaos_ctx *ctx, int argc, char **argv,
@@ -176,6 +190,10 @@ static void chaos_simnet_cleanup(struct chaos_ctx *ctx)
     if (ctx->simnet) {
         simnet_cluster_free(ctx->simnet);
         ctx->simnet = NULL;
+    }
+    if (ctx->trace_writer_open) {
+        simnet_trace_writer_close(&ctx->trace_writer);
+        ctx->trace_writer_open = false;
     }
 }
 
@@ -1023,6 +1041,72 @@ static int handle_auto_reindex_clear_if_covered(struct chaos_ctx *ctx,
     return 0;
 }
 
+/* ── full-state trace: opt-in NDJSON snapshot per simnet event ──────────
+ *
+ * Additive instrumentation ONLY — a scenario that never says `trace_dir`
+ * and a process never given `--trace-dir=` runs exactly as it did before
+ * this existed (trace_dir_set stays false, so every trace_* helper below is
+ * a no-op). See sim/simnet_trace.h for the file format and the
+ * "why not a live diagnostics dumper" rationale, and docs/CHAOS_HARNESS.md
+ * "Recording a full-state trace" for the operator-facing walkthrough.
+ */
+
+static int handle_trace_dir(struct chaos_ctx *ctx, int argc, char **argv,
+                            int line_no)
+{
+    if (argc != 2)
+        return fail_line(line_no, "trace_dir requires one directory path");
+    if (ctx->trace_dir_set)
+        return fail_line(line_no, "trace_dir is already set");
+    if (strlen(argv[1]) >= sizeof(ctx->trace_dir))
+        return fail_line(line_no, "trace_dir path is too long");
+    snprintf(ctx->trace_dir, sizeof(ctx->trace_dir), "%s", argv[1]);
+    ctx->trace_dir_set = true;
+    return 0;
+}
+
+/* Lazily creates the trace directory and opens the writer on the first call
+ * (a no-op on every call after). Only ever invoked from a simnet event
+ * handler, so ctx->simnet already exists by the time this runs. */
+static int chaos_trace_ensure_open(struct chaos_ctx *ctx, int line_no)
+{
+    if (!ctx->trace_dir_set || ctx->trace_writer_open)
+        return 0;
+
+    if (mkdir(ctx->trace_dir, 0777) != 0 && errno != EEXIST)
+        return fail_line(line_no, "trace_dir could not be created");
+
+    char path[sizeof(ctx->trace_dir) + 32];
+    int n = snprintf(path, sizeof(path), "%s/simnet_trace.jsonl",
+                     ctx->trace_dir);
+    if (n < 0 || (size_t)n >= sizeof(path))
+        return fail_line(line_no, "trace_dir path is too long");
+
+    if (!simnet_trace_writer_open(&ctx->trace_writer, path))
+        return fail_line(line_no, "trace writer failed to open");
+    ctx->trace_writer_open = true;
+    return 0;
+}
+
+/* Called after every simnet_mint/simnet_deliver/simnet_partition/simnet_heal
+ * that changed cluster state. A no-op unless `trace_dir` (or --trace-dir=)
+ * was configured for this run. */
+static int chaos_trace_record(struct chaos_ctx *ctx, int line_no,
+                              const char *event)
+{
+    if (!ctx->trace_dir_set)
+        return 0;
+    int rc = chaos_trace_ensure_open(ctx, line_no);
+    if (rc != 0)
+        return rc;
+    ctx->trace_seq++;
+    if (!simnet_trace_write_event(&ctx->trace_writer, ctx->simnet,
+                                  ctx->simnet_node_count, ctx->trace_seq,
+                                  event))
+        return fail_line(line_no, "trace write failed");
+    return 0;
+}
+
 /* ── simnet mode: drive a real simnet_cluster instead of sim_peer ───────
  *
  * `mode simnet` switches a scenario file into this mode. From then on:
@@ -1175,7 +1259,7 @@ static int handle_simnet_mint(struct chaos_ctx *ctx, int argc, char **argv,
         ns->mint_cap = new_cap;
     }
     ns->mints[ns->mint_count++] = hash;
-    return 0;
+    return chaos_trace_record(ctx, line_no, "simnet_mint");
 }
 
 static int handle_simnet_relay(struct chaos_ctx *ctx, int argc, char **argv,
@@ -1240,7 +1324,7 @@ static int handle_simnet_deliver(struct chaos_ctx *ctx, int argc,
     if (!simnet_cluster_deliver_pending(ctx->simnet))
         return fail_line(line_no, "simnet_deliver failed");
     chaos_simnet_track_heights(ctx);
-    return 0;
+    return chaos_trace_record(ctx, line_no, "simnet_deliver");
 }
 
 static int handle_simnet_partition(struct chaos_ctx *ctx, int argc,
@@ -1264,7 +1348,7 @@ static int handle_simnet_partition(struct chaos_ctx *ctx, int argc,
 
     ctx->simnet_partitioned[a * ctx->simnet_node_count + b] = true;
     ctx->simnet_partitioned[b * ctx->simnet_node_count + a] = true;
-    return 0;
+    return chaos_trace_record(ctx, line_no, "simnet_partition");
 }
 
 static int chaos_simnet_resync(struct chaos_ctx *ctx, uint64_t from,
@@ -1314,7 +1398,9 @@ static int handle_simnet_heal(struct chaos_ctx *ctx, int argc, char **argv,
      * minted since the heal. */
     rc = chaos_simnet_resync(ctx, a, b, line_no);
     if (rc != 0) return rc;
-    return chaos_simnet_resync(ctx, b, a, line_no);
+    rc = chaos_simnet_resync(ctx, b, a, line_no);
+    if (rc != 0) return rc;
+    return chaos_trace_record(ctx, line_no, "simnet_heal");
 }
 
 static bool chaos_simnet_converged(const struct chaos_ctx *ctx)
@@ -1369,6 +1455,7 @@ static const struct chaos_command COMMANDS[] = {
     { "simnet_deliver", handle_simnet_deliver },
     { "simnet_partition", handle_simnet_partition },
     { "simnet_heal", handle_simnet_heal },
+    { "trace_dir", handle_trace_dir },
 };
 
 static const struct chaos_command *find_command(const char *name)
@@ -1519,7 +1606,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
 static void usage(const char *argv0)
 {
     fprintf(stderr,
-            "usage: %s --scenario=PATH [--seed=N] [--verbose] [--artifact-dir=PATH]\n",
+            "usage: %s --scenario=PATH [--seed=N] [--verbose] "
+            "[--artifact-dir=PATH] [--trace-dir=PATH]\n",
             argv0);
 }
 
@@ -1541,6 +1629,14 @@ int main(int argc, char **argv)
             ctx.seed_override_set = true;
         } else if (strncmp(argv[i], "--artifact-dir=", 15) == 0) {
             ctx.artifact_dir = argv[i] + 15;
+        } else if (strncmp(argv[i], "--trace-dir=", 12) == 0) {
+            if (strlen(argv[i] + 12) >= sizeof(ctx.trace_dir)) {
+                fprintf(stderr, "chaos: --trace-dir path is too long\n");
+                return 2;
+            }
+            snprintf(ctx.trace_dir, sizeof(ctx.trace_dir), "%s",
+                     argv[i] + 12);
+            ctx.trace_dir_set = true;
         } else if (strcmp(argv[i], "--verbose") == 0) {
             ctx.verbose = true;
         } else {

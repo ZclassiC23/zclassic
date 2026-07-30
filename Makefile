@@ -2715,6 +2715,23 @@ chaos-clean:
 	rm -f $(ZCLASSIC23_CHAOS_BIN)
 	rm -rf build/chaos-output/ chaos-output/
 
+# ── simnet_trace_query: linear-scan filter over a simnet state trace ─────
+# (lib/sim/include/sim/simnet_trace.h; docs/CHAOS_HARNESS.md "Recording a
+# full-state trace"). Standalone build: only lib/json (the trace's own
+# format) plus the safe_alloc/log_level it transitively needs — no DB, no
+# node libs, no Tor, no simulator/consensus code, same discipline as
+# tools/postmortem_to_scenario.c.
+.PHONY: tools/sim/simnet_trace_query
+tools/sim/simnet_trace_query: $(BIN_DIR)/simnet_trace_query
+$(BIN_DIR)/simnet_trace_query: tools/sim/simnet_trace_query.c \
+		lib/json/src/json.c \
+		lib/base/src/safe_alloc.c lib/base/src/log_level.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    -Ilib/json/include -Ilib/base/include -Ilib/util/include \
+	    -D_POSIX_C_SOURCE=200809L \
+	    -o $@ $^ -lpthread -lm
+
 # ── wire_sweep: nightly seed-fuzzing runner for the simnet_wire harness ───
 # (Step F, docs/work/wire-next-wave-specs.md §3). Standalone binary, same
 # BUILD_NODE_TOOL shape as every other tools/*.c entry point — NOT part of
