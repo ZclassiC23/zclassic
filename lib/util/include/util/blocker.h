@@ -78,6 +78,17 @@
 
 #define BLOCKER_ID_MAX        64
 #define BLOCKER_OWNER_MAX     40
+/* 256 is measurably too small for four of this tree's own producers (they need
+ * 280-361 bytes; see the reason-length contract on blocker_init). It is kept at
+ * 256 anyway, and the honest reason is stack cost, not inertia: eleven call
+ * sites declare `struct blocker_snapshot x[BLOCKER_CAP]` as a LOCAL, including
+ * two request handlers on the 2 MiB API worker stack
+ * (app/controllers/src/api_controller.c pthread_attr_setstacksize). That array
+ * is already 77 KiB per frame at 256; 512 makes it 109 KiB (+32 KiB per live
+ * frame, plus +32 KiB in the static registry, which is free). Growing a 109 KiB
+ * frame on a request path is not a trivially safe change, so the prerequisite
+ * is moving those eleven arrays off the stack FIRST. Until then, producers with
+ * a long reason use zcl_text_fit and lose a visibly-marked tail instead. */
 #define BLOCKER_REASON_MAX    256
 #define BLOCKER_ACTION_MAX    64
 #define BLOCKER_CAP           128
@@ -142,14 +153,47 @@ struct blocker_record {
     char     cause_detail[BLOCKER_CAUSE_DETAIL_MAX]; /* small stable detail, or "" */
 };
 
-/* Convenience initializer; zeroes the struct and fills required fields,
+/* ── Reason-length contract ───────────────────────────────────────────
+ *
+ * A reason longer than BLOCKER_REASON_MAX-1 is still truncated and the call
+ * still SUCCEEDS — refusing to name a stall because the sentence ran long
+ * would trade a diagnosis for silence, which is the one thing this primitive
+ * exists to prevent. What is no longer true is that the cut is invisible:
+ * blocker_init routes the reason through zcl_text_fit (base/text_fit.h), which
+ *   - leaves a visible `...[cut <len>/256]` marker at the end of the stored
+ *     text, so `dumpstate blocker` shows the reader the field is partial, and
+ *   - logs one WARN line carrying the FULL untruncated reason, so nothing is
+ *     actually lost.
+ *
+ * WHERE THIS DOES NOT REACH: most producers do not hand blocker_init a long
+ * string. They format into their own `char reason[BLOCKER_REASON_MAX]` local
+ * and pass an already-cut 255-byte fragment, and by then no callee can tell.
+ * A producer whose format can exceed 255 bytes must therefore build into an
+ * oversized scratch buffer and call zcl_text_fit itself; four sites in this
+ * tree measured 280-361 bytes on their live paths and now do exactly that.
+ * A one-line reason with no interpolated path/hash/nested-reason needs nothing.
+ *
+ * blocker_set's own two `snprintf(s->reason, ..., r->reason)` copies need no
+ * guard and deliberately do not have one: `r->reason` is itself a
+ * char[BLOCKER_REASON_MAX], so those are equal-capacity field copies that
+ * cannot cut. A guard there could never fire, and a guard that cannot fire
+ * advertises a protection that does not exist.
+ *
+ * A cut reason also has one non-cosmetic consequence worth knowing: blocker_set
+ * keys fault IDENTITY partly on `reason` (see its comment), so two genuinely
+ * different faults whose reasons agree for the first 255 bytes look like one
+ * live fault and share an escalation clock. Keeping the distinguishing detail
+ * EARLY in the sentence, not in a trailing clause, is what avoids that.
+ *
+ * Convenience initializer; zeroes the struct and fills required fields,
  * then defaults retry_budget (-1 for PERMANENT, else 0).
  * Return contract:
  *   false — `out`, `id`, or `owner` is NULL, or `id`/`owner` would not
  *           fit (>= BLOCKER_ID_MAX / BLOCKER_OWNER_MAX). The offending
  *           case is logged via LOG_FAIL; `out` may be partially written.
- *   true  — fields stored. `reason` is optional (NULL leaves it empty)
- *           and is truncated to fit BLOCKER_REASON_MAX, never rejected. */
+ *   true  — fields stored. `reason` is optional (NULL leaves it empty); an
+ *           over-long reason is truncated-and-reported per the contract
+ *           above, never rejected. */
 bool blocker_init(struct blocker_record *out,
                   const char *id,
                   const char *owner,

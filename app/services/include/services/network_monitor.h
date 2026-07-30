@@ -187,6 +187,10 @@ struct network_partition_view {
 
     int      signals_firing;     /* 0..3 */
     bool     netsplit_suspected; /* the SUSPECTED_NETSPLIT verdict */
+    /* AUDITED for silent truncation: no zcl_text_fit guard needed. All four
+     * writers (network_monitor_netsplit.c) use fixed literals with %.16s-bounded
+     * hashes; the longest, SUSPECTED_NETSPLIT, measures 212 bytes at worst-case
+     * arguments, leaving 44 bytes of margin. Re-measure if a writer grows. */
     char     reason[256];
 };
 

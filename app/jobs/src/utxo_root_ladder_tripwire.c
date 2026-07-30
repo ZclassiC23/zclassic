@@ -4,6 +4,7 @@
 
 #include "utxo_root_ladder_tripwire.h"
 
+#include "base/text_fit.h"
 #include "chain/mmr.h"                        /* MMR_COMMITMENT_INTERVAL */
 #include "event/event.h"                       /* EV_UTXO_DRIFT_DETECTED */
 #include "models/utxo_root_ladder_verify.h"
@@ -72,8 +73,13 @@ utxo_root_ladder_tripwire_report(sqlite3 *db,
      * to the historical evidence-only posture. */
     bool observe_only = getenv("ZCL_UTXO_LADDER_OBSERVE_ONLY") != NULL;
 
-    char reason[BLOCKER_REASON_MAX];
-    snprintf(reason, sizeof(reason),
+    /* The DEFAULT (fail-closed) form is 324 bytes — a 256-byte local cut it at
+     * "...advance holds ", i.e. mid-sentence in the exact clause that tells the
+     * operator H* is capped and what lifts the cap. The observe-only form fits
+     * (251), which made the truncation look like it did not exist. Build whole,
+     * then mark and log the cut. */
+    char full[BLOCKER_REASON_MAX * 2];
+    snprintf(full, sizeof(full),
              "utxo root ladder mismatch: %zu of %zu locked rung(s) diverged, "
              "first at h=%d (this node's own coins_kv boundary root differs from "
              "the locked golden-height ladder — state-wrong-coin class). %s",
@@ -83,6 +89,9 @@ utxo_root_ladder_tripwire_report(sqlite3 *db,
                  : "FAIL-CLOSED: H* capped below the divergent rung; advance "
                    "holds until validated UTXO state is restored (sovereign "
                    "cure, owner-gated).");
+    char reason[BLOCKER_REASON_MAX];
+    (void)zcl_text_fit(reason, sizeof(reason), full, "utxo_root_ladder_tripwire",
+                       "utxo_root_ladder.reason");
 
     struct blocker_record r;
     if (!blocker_init(&r, UTXO_LADDER_BLOCKER_ID, "utxo_root_ladder_tripwire",

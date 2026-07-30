@@ -72,4 +72,4 @@ config/src/consensus_state_install_runtime.c 919
 config/src/consensus_state_producer_receipt.c 805
 config/src/consensus_state_snapshot_install_activate.c 1158
 app/services/src/header_sync_service.c 846
-app/controllers/src/event_agent_summary.c 865
+app/controllers/src/event_agent_summary.c 863

@@ -12,6 +12,7 @@
 // fold over named facts; a zcl_result would be noise (fails closed).
 #include "services/directory_influence_policy.h"
 
+#include "base/text_fit.h"
 #include "net/directory_influence_port.h"
 #include "util/blocker.h"
 #include "util/log_macros.h"
@@ -123,18 +124,26 @@ bool directory_influence_observe(bool netsplit_suspected, int32_t our_height,
 
     /* Name it every pass. blocker_set de-duplicates inside its rate-limit
      * window, so refreshing here keeps the record's reason current without
-     * becoming a stuck horn. The evidence prefix is bounded so the
+     * becoming a stuck horn. The evidence prefix is bounded to 60 bytes so the
      * operator-facing half of the sentence — what is withheld and, just as
-     * importantly, what is NOT — always survives BLOCKER_REASON_MAX rather
-     * than being truncated away. */
-    char text[BLOCKER_REASON_MAX];
-    snprintf(text, sizeof(text),
+     * importantly, what is NOT — survives in the common case.
+     *
+     * It does NOT always survive, which the previous version of this comment
+     * claimed: at the full 60-byte prefix the sentence is 280 bytes and the
+     * closing "explorer and wallet-view unaffected." is cut. So build it whole
+     * and let zcl_text_fit mark and log the cut instead of asserting one cannot
+     * happen. */
+    char full[BLOCKER_REASON_MAX * 2];
+    snprintf(full, sizeof(full),
              "%.60s | DEGRADED: directory influence withheld for entries "
              "final at/after h=%d (earlier entries keep working; discovery "
              "falls back to compiled seeds + addr gossip). Tip-follow, relay, "
              "explorer and wallet-view unaffected.",
              (reason && reason[0]) ? reason : "SUSPECTED_NETSPLIT standing",
              (int)atomic_load(&g_onset_height));
+    char text[BLOCKER_REASON_MAX];
+    (void)zcl_text_fit(text, sizeof(text), full, "network_monitor",
+                       "directory_influence.reason");
 
     struct blocker_record r;
     if (blocker_init(&r, DIRECTORY_INFLUENCE_BLOCKER_ID, "network_monitor",
