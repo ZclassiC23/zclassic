@@ -276,34 +276,84 @@ int write_file(const char *path, const char *contents)
  * has nothing to do with the gate itself. Retry a small, bounded number of
  * times with a short sleep before giving up — a non-transient fork
  * failure (or exhausted retries) still returns -1 exactly as callers
- * already expect. */
-#define ZCL_FORK_RETRY_ATTEMPTS 3
-#define ZCL_FORK_RETRY_BACKOFF_NS (20L * 1000L * 1000L) /* 20 ms */
+ * already expect.
+ *
+ * SIZING (widened 2026-07-30 — see t_fuzz_artifact_ledger_gate flake hunt,
+ * shard 07). The original margin here was 3 attempts * 20 ms fixed = 60 ms
+ * of total backoff. That is thin next to what this SAME host tolerates for
+ * the SAME class of contention one line later: every gate-script runner
+ * below execs a bash script (check_fuzz_artifact_replay.sh among others)
+ * that itself forks git/grep/sed/sort/find under the identical resource
+ * pressure — and bash's own fork()-retry-on-EAGAIN loop (observable via the
+ * "fork: retry: Resource temporarily unavailable" message bash prints while
+ * it retries, confirmed present in the bash 5.2 binary on this host) backs
+ * off across multiple *seconds*, not milliseconds, before giving up. This
+ * harness was giving up roughly two orders of magnitude faster than the
+ * shell forking the next process over, under the exact same contention —
+ * so a burst of resource pressure long enough for bash to shrug off could
+ * still exhaust this retry and turn "the gate is fine" into "harness
+ * failure -1", which is indistinguishable from a real violation in
+ * ASSERT(baseline_rc == 0).
+ *
+ * This was reproduced empirically only via 32-worker `make test-parallel`
+ * runs on a host also running several other worktrees' builds concurrently
+ * (load average 10-14 measured during this investigation); it did not
+ * reproduce in 3 additional isolated full-suite runs taken back to back on
+ * this same busy host, so the window is real but narrow. Deliberately not
+ * fixed by inducing artificial memory/process-table exhaustion to force a
+ * reproduction — that would risk starving the other concurrent worktrees
+ * and the live node sharing this host, which is out of bounds.
+ *
+ * Widened to 8 attempts with exponential backoff (20ms, 40, 80, 160, 320,
+ * 500, 500 — capped, ~1.6s worst-case total): an order of magnitude closer
+ * to what bash itself already tolerates for the same fork() pressure,
+ * while remaining a small fraction of both the 300s per-test-group timeout
+ * and this gate's own ~14s isolated wall time, so a normal (non-contended)
+ * run pays nothing extra — retries only fire when fork() itself is
+ * actually failing. Each retry is now logged (not just final exhaustion),
+ * so if this flake recurs its captured test-tmp/test_parallel_*.log will
+ * show exactly how many attempts fired and which errno, instead of leaving
+ * a bare "FAIL (baseline_rc == 0)" with no way to tell a harness fork
+ * failure from a real gate violation. */
+#define ZCL_FORK_RETRY_ATTEMPTS 8
+#define ZCL_FORK_RETRY_BACKOFF_INITIAL_NS (20L * 1000L * 1000L)  /* 20 ms */
+#define ZCL_FORK_RETRY_BACKOFF_CAP_NS     (500L * 1000L * 1000L) /* 500 ms */
 
 pid_t fork_with_retry(void)
 {
+    long backoff_ns = ZCL_FORK_RETRY_BACKOFF_INITIAL_NS;
     for (int attempt = 1; attempt <= ZCL_FORK_RETRY_ATTEMPTS; attempt++) {
         pid_t pid = fork();
         if (pid >= 0)
             return pid;
         if (errno != EAGAIN && errno != ENOMEM)
             return pid;
+        int fork_errno = errno;
         if (attempt < ZCL_FORK_RETRY_ATTEMPTS) {
+            fprintf(stderr,
+                    "[lint-gate] fork() attempt %d/%d failed (errno=%d %s) "
+                    "— retrying after %ld ms\n",
+                    attempt, ZCL_FORK_RETRY_ATTEMPTS, fork_errno,
+                    strerror(fork_errno), backoff_ns / 1000000L);
             struct timespec backoff = {
-                .tv_sec = 0,
-                .tv_nsec = ZCL_FORK_RETRY_BACKOFF_NS,
+                .tv_sec = backoff_ns / 1000000000L,
+                .tv_nsec = backoff_ns % 1000000000L,
             };
             (void)nanosleep(&backoff, NULL);
+            backoff_ns *= 2;
+            if (backoff_ns > ZCL_FORK_RETRY_BACKOFF_CAP_NS)
+                backoff_ns = ZCL_FORK_RETRY_BACKOFF_CAP_NS;
+            errno = fork_errno;
         }
     }
     /* Retries exhausted: make this distinguishable from an ordinary gate
      * failure (rc != 0) in test output — a bare -1 from run_gate_script()
      * otherwise looks identical to any other harness-level failure. */
     fprintf(stderr,
-            "[lint-gate] fork() failed %d/%d times (errno=%d %s) — "
-            "harness failure under memory pressure, not a gate failure\n",
-            ZCL_FORK_RETRY_ATTEMPTS, ZCL_FORK_RETRY_ATTEMPTS, errno,
-            strerror(errno));
+            "[lint-gate] fork() failed all %d attempts (errno=%d %s) — "
+            "harness failure under sustained resource pressure, not a gate "
+            "failure\n",
+            ZCL_FORK_RETRY_ATTEMPTS, errno, strerror(errno));
     return -1;
 }
 
