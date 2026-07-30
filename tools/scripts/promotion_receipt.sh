@@ -93,6 +93,12 @@ set -uo pipefail
 export LC_ALL=C
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Pipeline-free substring predicates. REQUIRED, not optional: `printf | grep -q`
+# under the `set -o pipefail` above reports a successful match as 141, so a
+# decision written that way can silently invert. See tools/scripts/sh_str.sh.
+# shellcheck source=tools/scripts/sh_str.sh
+. "$SELF_DIR/sh_str.sh" || { echo "promotion_receipt: cannot source sh_str.sh" >&2; exit 2; }
 ROOT="$(cd "$SELF_DIR/../.." && pwd)"
 
 SCHEMA='zcl.promotion_receipt.v1'
@@ -609,7 +615,7 @@ st_expect_clean() {
         st_note "$label: verify should exit 0 (got $rc):
 $out"
     fi
-    printf '%s' "$out" | grep -q 'chain intact' || \
+    str_lacks "$out" 'chain intact' && \
         st_note "$label: verify should report 'chain intact'"
 }
 
@@ -727,21 +733,21 @@ run_self_test() {
     st_expect_clean "absent ledger" "$tmp/does-not-exist.jsonl"
     out="$(ZCL_RECEIPT_LEDGER="$tmp/does-not-exist.jsonl" ZCL_RECEIPT_SIGNERS="$SIGNERS" \
         "$SELF" verify 2>&1)"
-    printf '%s' "$out" | grep -q 'NO PROMOTION RECORDED' || \
+    str_lacks "$out" 'NO PROMOTION RECORDED' && \
         st_note "an absent ledger must report NO PROMOTION RECORDED"
-    printf '%s' "$out" | grep -q '0 record(s), 0 promotion(s)' || \
+    str_lacks "$out" '0 record(s), 0 promotion(s)' && \
         st_note "an absent ledger must report 0 records and 0 promotions"
     : > "$tmp/empty.jsonl"
     st_expect_clean "zero-record ledger" "$tmp/empty.jsonl"
     out="$(ZCL_RECEIPT_LEDGER="$tmp/empty.jsonl" ZCL_RECEIPT_SIGNERS="$SIGNERS" \
         "$SELF" verify 2>&1)"
-    printf '%s' "$out" | grep -q 'NO PROMOTION RECORDED' || \
+    str_lacks "$out" 'NO PROMOTION RECORDED' && \
         st_note "a zero-record ledger must report NO PROMOTION RECORDED"
     rc=0
     out="$(ZCL_RECEIPT_LEDGER="$tmp/empty.jsonl" ZCL_RECEIPT_SIGNERS="$SIGNERS" \
         "$SELF" latest 2>&1 >/dev/null)" || rc=$?
     [ "$rc" = 2 ] || st_note "latest on a zero-record ledger should exit 2 (got $rc)"
-    printf '%s' "$out" | grep -q 'NO PROMOTION RECORDED' || \
+    str_lacks "$out" 'NO PROMOTION RECORDED' && \
         st_note "latest on a zero-record ledger must say NO PROMOTION RECORDED"
 
     # (1) init, then the genesis-only contract: verifies clean AND says no
@@ -752,14 +758,14 @@ run_self_test() {
     [ "$rc" = 0 ] || st_note "init should succeed (got $rc)"
     st_expect_clean "genesis-only" "$L"
     out="$("${run_env[@]}" "$SELF" verify 2>&1)"
-    printf '%s' "$out" | grep -q 'NO PROMOTION RECORDED' || \
+    str_lacks "$out" 'NO PROMOTION RECORDED' && \
         st_note "a genesis-only ledger must report NO PROMOTION RECORDED"
-    printf '%s' "$out" | grep -q '0 promotion(s)' || \
+    str_lacks "$out" '0 promotion(s)' && \
         st_note "a genesis-only ledger must report 0 promotions"
     rc=0
     out="$("${run_env[@]}" "$SELF" latest 2>&1 >/dev/null)" || rc=$?
     [ "$rc" = 2 ] || st_note "latest on a genesis-only ledger should exit 2 (got $rc)"
-    printf '%s' "$out" | grep -q 'NO PROMOTION RECORDED' || \
+    str_lacks "$out" 'NO PROMOTION RECORDED' && \
         st_note "latest on a genesis-only ledger must say NO PROMOTION RECORDED"
 
     rc=0
@@ -794,7 +800,7 @@ run_self_test() {
     st_expect_clean "4-record chain" "$L"
     [ "$(wc -l < "$L")" = "4" ] || st_note "expected 4 ledger lines, got $(wc -l < "$L")"
     out="$("${run_env[@]}" "$SELF" verify 2>&1)"
-    printf '%s' "$out" | grep -q '3 promotion(s)' || st_note "verify should report 3 promotions"
+    str_lacks "$out" '3 promotion(s)' && st_note "verify should report 3 promotions"
     rc=0
     "${run_env[@]}" "$SELF" latest >/dev/null 2>&1 || rc=$?
     [ "$rc" = 0 ] || st_note "latest on a 3-promotion ledger should exit 0 (got $rc)"

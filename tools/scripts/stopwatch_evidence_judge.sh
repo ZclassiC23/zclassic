@@ -115,6 +115,15 @@ if [ -r "$SKIP_CLASS_LIB" ] && . "$SKIP_CLASS_LIB"; then
     SKIP_CLASS_OK=1
 fi
 
+# Pipeline-free substring predicates (str_contains/str_lacks). REQUIRED, not
+# optional: `printf | grep -q` under the `set -o pipefail` above reports a
+# SUCCESSFUL match as 141, so a decision written that way can silently invert —
+# it broke this file's own selftest on hosted CI 2026-07-30 (run 30515927378)
+# and it broke the skip-row detector in the REAL verdict path below. Full
+# analysis, reproduction, and what is deliberately left alone: sh_str.sh.
+# shellcheck source=tools/scripts/sh_str.sh
+. "$_SW_JUDGE_DIR/sh_str.sh" || { echo "stopwatch-judge: cannot source sh_str.sh" >&2; exit 2; }
+
 # fld_num/fld_str <json_line> <key> — first matching "key":value extraction.
 # Deliberately simple (single-line JSON, no nesting) — matches the
 # soak_evidence.sh awk fld() convention, just in sed for a one-line read.
@@ -315,11 +324,11 @@ if [ "${1:-}" = "--selftest" ]; then
         [ "$tok" = "$want_tok" ] || bad="tok='$tok' want='$want_tok'"
         [ "$rc" = "$want_rc" ] || bad="$bad rc=$rc want=$want_rc"
         if [ "$want_present" != "-" ] && \
-           ! printf '%s' "$out" | grep -qF -- "$want_present"; then
+           ! str_contains "$out" "$want_present"; then
             bad="$bad missing='$want_present'"
         fi
         if [ "$want_absent" != "-" ] && \
-           printf '%s' "$out" | grep -qF -- "$want_absent"; then
+           str_contains "$out" "$want_absent"; then
             bad="$bad unexpected='$want_absent'"
         fi
         if [ -z "$bad" ]; then
@@ -358,8 +367,8 @@ if [ "${1:-}" = "--selftest" ]; then
     alarm_only="$(env ZCL_STOPWATCH_JUDGE_NOW="$NOW" \
                   ZCL_STOPWATCH_SLO_LEDGER="$st_tmp/nope.jsonl" \
                   bash "$SELF" "$two_skip" --max-age-secs=1000000 2>&1 >/dev/null)"
-    if printf '%s' "$alarm_only" | grep -q 'ALARM' && \
-       ! printf '%s' "$alarm_only" | grep -q 'VERDICT'; then
+    if str_contains "$alarm_only" "ALARM" && \
+       ! str_contains "$alarm_only" "VERDICT"; then
         echo "  ok: ALARM is stderr-only and carries no VERDICT token"
     else
         echo "  FAIL: ALARM containment -> stderr was: $alarm_only"
@@ -473,7 +482,7 @@ if [ "$SKIP_CLASS_OK" = "1" ]; then
     if [ "$sw_skip_streak" -gt 0 ]; then
         sw_reason="$(fld_str "$last_line" skip_reason)"
         sw_reason_present=0
-        printf '%s' "$last_line" | grep -q '"skip_reason":' && \
+        str_contains "$last_line" '"skip_reason":' && \
             sw_reason_present=1
         sw_has_artifact=0
         [ "$artifact" != "-" ] && [ -n "$artifact" ] && sw_has_artifact=1
