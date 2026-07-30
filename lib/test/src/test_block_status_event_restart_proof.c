@@ -52,8 +52,13 @@
  *       (merkle root, sapling root, solution bytes) byte-identical to the
  *       fixture — proving catch_up_apply_status's read-patch-reserialize
  *       never corrupts what header_admit originally wrote. It also proves
- *       the boundary height (at the cursor, not yet resumed) is NEVER
- *       falsely reported complete (negative-control teeth), and that a
+ *       the boundary height (at the cursor, not yet resumed) — whether or
+ *       not the event log already shows it fully bumped, since the log and
+ *       the stage cursor are two independently durable stores and a crash
+ *       can land between them — never shows CORRUPTED data (negative-
+ *       control teeth on data integrity, not on the log/cursor race, which
+ *       is expected and safe: the fold always resumes at the cursor and
+ *       every field is a deterministic function of height), and that a
  *       FRESH projection replayed from offset 0 matches the live continued
  *       one exactly (the Prime Directive invariant — see
  *       test_projection_replay_invariant.c — now exercised with
@@ -375,9 +380,32 @@ static int rp_one_cycle(const char *log_path, const char *bip_path,
              "(status + mutable fields + immutable header bytes)",
              all_heights_ok);
 
-    /* Negative-control teeth: the boundary height (at the cursor — not yet
-     * durably done) must NEVER be falsely reported complete, whether or not
-     * it exists in the projection yet. */
+    /* Boundary height (at the cursor — the fold does not yet durably
+     * consider it done): the event log and the stage cursor are two
+     * INDEPENDENTLY durable stores. rp_process_one (mirroring the real
+     * body_persist_stage/script_validate_stage call sites) writes both
+     * EV_BLOCK_STATUS bumps to the event log, and only THEN calls
+     * stage_set_named_cursor() to mark the height done — two separate
+     * durability barriers, not one atomic unit. A SIGKILL landing in the
+     * real (if narrow) window between the last status bump reaching the
+     * log and the stage-cursor write reaching progress_store leaves the
+     * projection legitimately AHEAD of the cursor for this one height:
+     * fully bumped in the projection, but the fold does not yet count it
+     * done. That is not corruption — every field rp_process_one writes is
+     * a deterministic function of h, the fold always resumes exactly at
+     * the cursor (rp_child_worker's `for (h = cursor; ...)` and the RESUME
+     * step below), and reprocessing an already-bumped height re-derives
+     * the identical bytes, so this can never regress or diverge fold
+     * state. What must never happen is the boundary showing WRONG data —
+     * an actually torn or cross-height-corrupted record, not a benign
+     * race between two durability domains.
+     *
+     * (An earlier revision of this test asserted the boundary could never
+     * be found fully bumped at all. That did not match the two-store
+     * design above: on a host where the stage-cursor commit lags the
+     * last status-bump write by more than this cycle's randomised kill
+     * delay, the assertion fired even though nothing was actually wrong —
+     * a false negative-control, not a real defect.) */
     bool boundary_ok = true;
     if (cursor < (uint64_t)RP_N_BLOCKS) {
         struct disk_block_index bdbi;
@@ -385,12 +413,20 @@ static int rp_one_cycle(const char *log_path, const char *bip_path,
         bool bfound = block_index_projection_get(
             bip, c->blocks[cursor].hash.data, &bdbi);
         if (bfound) {
-            bool fully_bumped = (bdbi.nStatus & BLOCK_HAVE_DATA) != 0 &&
-                (bdbi.nStatus & BLOCK_VALID_MASK) >= BLOCK_VALID_SCRIPTS;
-            boundary_ok = !fully_bumped;
+            boundary_ok =
+                uint256_cmp(&bdbi.hashMerkleRoot,
+                           &c->blocks[cursor].merkle_root) == 0 &&
+                uint256_cmp(&bdbi.hashFinalSaplingRoot,
+                           &c->blocks[cursor].sapling_root) == 0 &&
+                uint256_cmp(&bdbi.nNonce, &c->blocks[cursor].nonce) == 0 &&
+                bdbi.nSolutionSize == RP_SOLUTION_LEN &&
+                memcmp(bdbi.nSolution, c->blocks[cursor].solution,
+                      RP_SOLUTION_LEN) == 0;
         }
     }
-    RP_CHECK("boundary height (at the cursor) never falsely reported complete",
+    RP_CHECK("boundary height (at the cursor), if present in the "
+             "projection at all, is never corrupted — correct header "
+             "bytes whether or not the fold has durably marked it done",
              boundary_ok);
 
     /* Prime-Directive check: a FRESH projection replayed from offset 0 over
