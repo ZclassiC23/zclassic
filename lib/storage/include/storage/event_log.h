@@ -230,6 +230,27 @@ uint64_t event_log_size(event_log_t *log);
 void event_log_set_deferred_sync(event_log_t *log, bool enabled);
 bool event_log_deferred_sync_enabled(event_log_t *log);
 
+/* ── Which append path did the fold actually take? ────────────────────
+ * The two counters above (event_log_deferred, fsync_flush_count) say what mode
+ * the log is in RIGHT NOW and how many batched flushes happened — neither
+ * answers how many appends paid the per-append two-barrier price anyway,
+ * because deferred mode is armed and disarmed per drain scope and every
+ * non-reducer thread appends through the same handle. Without that split, a
+ * per-call-site timer (e.g. reducer_stage_profile's header_event_emission_us)
+ * shows a large number with no way to tell a slow barrier from a slow buffer
+ * copy, and "the fold is fsync-bound" stays an inference instead of a reading.
+ *
+ * barrier_appends counts appends that took the pwrite+fsync+pwrite+fsync path;
+ * barrier_us_total is the wall time spent inside those two fsync() calls only
+ * (not the pwrites, not the mutex wait), so barrier_us_total/(2*barrier_appends)
+ * is this filesystem's measured per-barrier cost. deferred_appends counts
+ * appends that only copied into the pending buffer. Process-wide across every
+ * handle (the node opens one), monotonic since start: difference two samples to
+ * attribute an interval. Any pointer may be NULL. */
+void event_log_append_stats(uint64_t *barrier_appends,
+                            uint64_t *deferred_appends,
+                            uint64_t *barrier_us_total);
+
 /* fdatasync the log once iff a deferred append is pending, then clear the
  * dirty flag. Returns true on success (or when nothing is pending — cheap to
  * call on every commit), false if the fdatasync failed (the dirty flag is
@@ -246,6 +267,7 @@ bool event_log_crc32c_hw_available(void);
 /* Deferred-mode test hooks (deterministic coverage of the kill-switch and the
  * flush-failure veto path, which are otherwise env-cached / hard to fault). */
 bool event_log_test_dirty(event_log_t *log);        /* current dirty flag */
+void event_log_test_reset_append_stats(void);       /* zero the three counters */
 void event_log_test_set_force_per_append(int v);    /* -1=env, 0=off, 1=forced */
 int  event_log_test_fd(event_log_t *log);           /* raw fd (for fault inject) */
 void event_log_test_set_fd(event_log_t *log, int fd);

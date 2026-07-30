@@ -23,6 +23,7 @@
 #include "storage/event_log.h"
 #include "storage/event_log_pending.h"
 
+#include "platform/time_compat.h"   /* platform_time_monotonic_us */
 #include "util/crc32c.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -127,6 +128,32 @@ struct event_log {
      * the complete span has been written at a batch boundary. */
     struct event_log_pending pending;
 };
+
+/* Append-path attribution (see event_log.h "Which append path did the fold
+ * actually take?"). Process-wide, not per handle: the node opens exactly one
+ * log and the question is about the process's fold, and a per-handle copy would
+ * have to be read under the handle's own lock — which the append path holds
+ * while it fsync()s, so an observer asking "how many barriers so far" would
+ * block behind the very barrier it is measuring. Relaxed adds off the barrier
+ * itself: three atomics next to two ext4 journal commits is noise. */
+static _Atomic uint64_t g_barrier_appends;
+static _Atomic uint64_t g_deferred_appends;
+static _Atomic uint64_t g_barrier_us_total;
+
+void event_log_append_stats(uint64_t *barrier_appends,
+                            uint64_t *deferred_appends,
+                            uint64_t *barrier_us_total)
+{
+    if (barrier_appends)
+        *barrier_appends = atomic_load_explicit(&g_barrier_appends,
+                                                memory_order_relaxed);
+    if (deferred_appends)
+        *deferred_appends = atomic_load_explicit(&g_deferred_appends,
+                                                 memory_order_relaxed);
+    if (barrier_us_total)
+        *barrier_us_total = atomic_load_explicit(&g_barrier_us_total,
+                                                 memory_order_relaxed);
+}
 
 /* Test override for the kill switch: -1 = consult env, 0 = off, 1 = forced.
  * Lets the unit test drive both branches deterministically (the env read is
@@ -328,6 +355,22 @@ void event_log_close(event_log_t *log)
     free(log);
 }
 
+/* One durability barrier, timed. The clock pair is the whole point: this is the
+ * syscall the fold parks in (jbd2_log_wait_commit), and without a number here
+ * the per-call-site totals cannot separate barrier wait from anything else.
+ * Returns fsync()'s own result unchanged — the time is accumulated on the
+ * failure path too, since a barrier that failed still cost its wait. */
+static int event_log_barrier(int fd)
+{
+    int64_t t0 = platform_time_monotonic_us();
+    int rc = fsync(fd);
+    int64_t dt = platform_time_monotonic_us() - t0;
+    atomic_fetch_add_explicit(&g_barrier_us_total,
+                              dt > 0 ? (uint64_t)dt : 0u,
+                              memory_order_relaxed);
+    return rc;
+}
+
 static bool event_log_write_pending_locked(event_log_t *log)
 {
     return log && event_log_pending_write(&log->pending, log->fd,
@@ -380,8 +423,15 @@ uint64_t event_log_append(event_log_t *log,
         log->pending.len += event_len;
         log->dirty = true;
         pthread_mutex_unlock(&log->lock);
+        atomic_fetch_add_explicit(&g_deferred_appends, 1u,
+                                  memory_order_relaxed);
         return start;
     }
+    /* From here the append pays the two-barrier price. Counted BEFORE the
+     * first pwrite so an append that dies inside a barrier still shows up as
+     * one that took this path — an uncounted failure would understate exactly
+     * the cost being attributed. */
+    atomic_fetch_add_explicit(&g_barrier_appends, 1u, memory_order_relaxed);
 
     /* A caller that disabled deferred mode without flushing cannot overtake
      * older buffered records. The immediate fsyncs below cover both spans. */
@@ -411,7 +461,7 @@ uint64_t event_log_append(event_log_t *log,
             return UINT64_MAX;
         }
     }
-    if (fsync(log->fd) < 0) {
+    if (event_log_barrier(log->fd) < 0) {
         pthread_mutex_unlock(&log->lock);
         fprintf(stderr,  // obs-ok:event-log-append-failure
                 "[event_log] fsync(hdr+payload) failed: %s\n",
@@ -428,7 +478,7 @@ uint64_t event_log_append(event_log_t *log,
                 strerror(errno));
         return UINT64_MAX;
     }
-    if (fsync(log->fd) < 0) {
+    if (event_log_barrier(log->fd) < 0) {
         pthread_mutex_unlock(&log->lock);
         fprintf(stderr,  // obs-ok:event-log-append-failure
                 "[event_log] fsync(sentinel) failed: %s\n",
@@ -691,6 +741,13 @@ bool event_log_test_dirty(event_log_t *log)
     bool v = log->dirty;
     pthread_mutex_unlock(&log->lock);
     return v;
+}
+
+void event_log_test_reset_append_stats(void)
+{
+    atomic_store_explicit(&g_barrier_appends, 0u, memory_order_relaxed);
+    atomic_store_explicit(&g_deferred_appends, 0u, memory_order_relaxed);
+    atomic_store_explicit(&g_barrier_us_total, 0u, memory_order_relaxed);
 }
 
 void event_log_test_set_force_per_append(int v)
