@@ -17,6 +17,8 @@
 
 #include "services/stopwatch_skip_watch.h"
 
+#include "services/evidence_ledger_row.h"
+
 #include "json/json.h"
 #include "util/log_macros.h"
 
@@ -47,113 +49,14 @@ static const struct stopwatch_skip_class_row g_class_rows[] = {
 #define STOPWATCH_CLASS_HARNESS_MISUSE "harness_misuse"
 #define STOPWATCH_CLASS_UNCLASSIFIED   "unclassified"
 
-/* ── tiny bounded helpers (no allocation, single-line JSON rows) ────── */
-
-static void copy_bounded(char *dst, size_t cap, const char *src, size_t len)
-{
-    if (!dst || cap == 0)
-        return;
-    if (!src)
-        len = 0;
-    if (len >= cap)
-        len = cap - 1;
-    if (len)
-        memcpy(dst, src, len);
-    dst[len] = '\0';
-}
-
-/* First occurrence of NUL-terminated `needle` inside [hay, hay+len). */
-static const char *find_sub(const char *hay, size_t len, const char *needle)
-{
-    size_t nlen = strlen(needle);
-    if (!hay || nlen == 0 || nlen > len)
-        return NULL;
-    for (size_t i = 0; i + nlen <= len; i++) {
-        if (memcmp(hay + i, needle, nlen) == 0)
-            return hay + i;
-    }
-    return NULL;
-}
-
-/* Locate `"key":` in one row and return the first byte of its value, or NULL.
- * Deliberately simple: these rows are flat, single-line, unnested JSON with
- * no duplicate keys — the same assumption the shell judge's fld_num()/
- * fld_str() already make. */
-static const char *row_value(const char *row, size_t len, const char *key)
-{
-    char needle[64];
-    if (snprintf(needle, sizeof(needle), "\"%s\":", key) >= (int)sizeof(needle))
-        return NULL;
-    const char *at = find_sub(row, len, needle);
-    if (!at)
-        return NULL;
-    at += strlen(needle);
-    const char *end = row + len;
-    while (at < end && (*at == ' ' || *at == '\t'))
-        at++;
-    return at < end ? at : NULL;
-}
-
-/* Copy a string-valued field into dst. Returns true when the FIELD EXISTS as
- * a JSON string (even if empty) — the caller needs "absent" and "present but
- * empty" to read differently. */
-static bool row_str(const char *row, size_t len, const char *key,
-                    char *dst, size_t cap)
-{
-    if (dst && cap)
-        dst[0] = '\0';
-    const char *at = row_value(row, len, key);
-    if (!at || *at != '"')
-        return false;
-    at++;
-    const char *end = row + len;
-    size_t n = 0;
-    while (at < end && *at != '"') {
-        char c = *at;
-        if (c == '\\' && at + 1 < end) {
-            at++;
-            c = *at;
-            if (c == 'n' || c == 't' || c == 'r')
-                c = ' ';
-        }
-        if (dst && cap && n + 1 < cap)
-            dst[n++] = c;
-        at++;
-    }
-    if (dst && cap)
-        dst[n < cap ? n : cap - 1] = '\0';
-    return at < end;
-}
-
-/* Read an integer-valued field. Returns false when absent or non-numeric
- * (JSON null included — the collector records null for anything it could not
- * measure, and null is not a number). */
-static bool row_int(const char *row, size_t len, const char *key, int64_t *out)
-{
-    const char *at = row_value(row, len, key);
-    if (!at)
-        return false;
-    const char *end = row + len;
-    bool neg = false;
-    if (*at == '-') {
-        neg = true;
-        at++;
-    }
-    if (at >= end || *at < '0' || *at > '9')
-        return false;
-    int64_t v = 0;
-    while (at < end && *at >= '0' && *at <= '9') {
-        if (v > (INT64_MAX - (*at - '0')) / 10)
-            return false;
-        v = v * 10 + (*at - '0');
-        at++;
-    }
-    if (out)
-        *out = neg ? -v : v;
-    return true;
-}
-
-/* ── classification ─────────────────────────────────────────────────── */
+/* Row parsing and the bounded tail read live in ONE place —
+ * services/evidence_ledger_row.h — because the subtle parts (drop the
+ * post-seek fragment, consume an overlong row instead of folding its tail as
+ * a second sample, treat an absent ledger as data) fabricate evidence when
+ * they are copied and one copy drifts. This file used to carry its own copy of
+ * all four helpers; it now calls the shared ones.
+ *
+ * ── classification ─────────────────────────────────────────────────── */
 
 static const struct stopwatch_skip_class_row *class_by_name(const char *name)
 {
@@ -179,8 +82,8 @@ bool stopwatch_skip_classify(const char *reason, bool reason_field_present,
             const struct stopwatch_skip_class_row *r = &g_class_rows[i];
             if (!r->match)
                 continue;
-            if (find_sub(reason, rlen, r->match)) {
-                copy_bounded(cls, cls_cap, r->name, strlen(r->name));
+            if (evidence_find_sub(reason, rlen, r->match)) {
+                evidence_copy_bounded(cls, cls_cap, r->name, strlen(r->name));
                 *threshold = r->threshold;
                 return true;
             }
@@ -200,7 +103,7 @@ bool stopwatch_skip_classify(const char *reason, bool reason_field_present,
     if (!row)
         LOG_FAIL("stopwatch", "fallback class '%s' missing from the table",
                  pick);
-    copy_bounded(cls, cls_cap, row->name, strlen(row->name));
+    evidence_copy_bounded(cls, cls_cap, row->name, strlen(row->name));
     *threshold = row->threshold;
     return true;
 }
@@ -231,7 +134,7 @@ static void scan_row(const char *row, size_t rlen,
         return;
 
     char verdict[STOPWATCH_SKIP_VERDICT_MAX];
-    if (!row_str(row, rlen, "verdict", verdict, sizeof(verdict)) ||
+    if (!evidence_row_str(row, rlen, "verdict", verdict, sizeof(verdict)) ||
         verdict[0] == '\0') {
         out->malformed_rows++;
         return;
@@ -240,10 +143,10 @@ static void scan_row(const char *row, size_t rlen,
     out->present = true;
 
     int64_t ts = -1;
-    if (!row_int(row, rlen, "ts", &ts))
+    if (!evidence_row_int(row, rlen, "ts", &ts))
         ts = -1;
     out->last_ts = ts;
-    copy_bounded(out->last_verdict, sizeof(out->last_verdict), verdict,
+    evidence_copy_bounded(out->last_verdict, sizeof(out->last_verdict), verdict,
                  strlen(verdict));
 
     if (strcmp(verdict, "pass") == 0) {
@@ -263,11 +166,11 @@ static void scan_row(const char *row, size_t rlen,
     char reason[STOPWATCH_SKIP_REASON_MAX];
     char artifact[512];
     st->last_reason_present =
-        row_str(row, rlen, "skip_reason", reason, sizeof(reason));
+        evidence_row_str(row, rlen, "skip_reason", reason, sizeof(reason));
     st->last_has_artifact =
-        row_str(row, rlen, "artifact_dir", artifact, sizeof(artifact)) &&
+        evidence_row_str(row, rlen, "artifact_dir", artifact, sizeof(artifact)) &&
         artifact[0] != '\0';
-    copy_bounded(out->skip_reason, sizeof(out->skip_reason),
+    evidence_copy_bounded(out->skip_reason, sizeof(out->skip_reason),
                  st->last_reason_present ? reason : "",
                  st->last_reason_present ? strlen(reason) : 0);
 }
@@ -285,94 +188,50 @@ static bool scan_finish(struct stopwatch_skip_report *out,
     return true;
 }
 
+/* Adapter onto the shared row walker: the fold needs the report AND the
+ * per-row scan_state, so both travel in one ctx. */
+struct sw_scan_ctx {
+    struct stopwatch_skip_report *out;
+    struct scan_state st;
+};
+
+static void sw_row_cb(const char *row, size_t rlen, void *ctx)
+{
+    struct sw_scan_ctx *c = ctx;
+    scan_row(row, rlen, c->out, &c->st);
+}
+
 bool stopwatch_skip_scan(const char *text, size_t len,
                          struct stopwatch_skip_report *out)
 {
     if (!out)
         LOG_FAIL("stopwatch", "report output is NULL");
-    struct scan_state st;
-    scan_init(out, &st);
-    if (!text && len)
-        LOG_FAIL("stopwatch", "ledger text is NULL with len=%zu", len);
-
-    size_t i = 0;
-    while (i < len) {
-        size_t j = i;
-        while (j < len && text[j] != '\n')
-            j++;
-        scan_row(text + i, j - i, out, &st);
-        i = (j < len) ? j + 1 : len;
-    }
-    return scan_finish(out, &st);
+    struct sw_scan_ctx c = { .out = out };
+    scan_init(out, &c.st);
+    if (!evidence_ledger_scan_text(text, len, sw_row_cb, &c))
+        LOG_FAIL("stopwatch", "ledger text scan rejected len=%zu", len);
+    return scan_finish(out, &c.st);
 }
 
 /* ── ledger IO ──────────────────────────────────────────────────────── */
-
-/* One ledger row is a flat JSON object under 1 KiB; 4 KiB is generous. A row
- * longer than this is not a stopwatch row — its tail is consumed and dropped
- * rather than folded as a second, phantom row. */
-#define STOPWATCH_ROW_MAX 4096
 
 bool stopwatch_skip_read_ledger(const char *path,
                                 struct stopwatch_skip_report *out)
 {
     if (!out)
         LOG_FAIL("stopwatch", "report output is NULL");
-    struct scan_state st;
-    scan_init(out, &st);
+    struct sw_scan_ctx c = { .out = out };
+    scan_init(out, &c.st);
     if (!path || !path[0])
         LOG_FAIL("stopwatch", "ledger path is NULL/empty");
 
-    FILE *f = fopen(path, "rb");
-    if (!f)
-        return true;            /* absent ledger: present=false, not an error */
-
-    /* Bounded read: seek to the last STOPWATCH_SKIP_TAIL_BYTES so a rotated
-     * or very long ledger stays a cheap dumper, then stream it a row at a
-     * time so peak memory is one row, not one tail. */
-    bool partial_head = false;
-    if (fseek(f, 0, SEEK_END) == 0) {
-        long size = ftell(f);
-        if (size > (long)STOPWATCH_SKIP_TAIL_BYTES) {
-            if (fseek(f, size - (long)STOPWATCH_SKIP_TAIL_BYTES,
-                      SEEK_SET) == 0)
-                partial_head = true;
-            else
-                rewind(f);
-        } else {
-            rewind(f);
-        }
-    }
-
-    char row[STOPWATCH_ROW_MAX];
-    bool first = true;
-    bool overlong = false;
-    while (fgets(row, sizeof(row), f)) {
-        size_t rlen = strlen(row);
-        bool complete = rlen > 0 && row[rlen - 1] == '\n';
-        if (complete)
-            rlen--;
-        if (overlong) {
-            /* Tail of a row that did not fit — never folded. */
-            overlong = !complete;
-            continue;
-        }
-        if (!complete && rlen == sizeof(row) - 1) {
-            overlong = true;
-            out->malformed_rows++;
-            continue;
-        }
-        if (first) {
-            first = false;
-            /* The first line after a mid-file seek is a fragment; drop it
-             * rather than folding a torn row as evidence. */
-            if (partial_head)
-                continue;
-        }
-        scan_row(row, rlen, out, &st);
-    }
-    fclose(f);
-    return scan_finish(out, &st);
+    /* Bounded tail read, fragment/overlong handling and "absent ledger is
+     * data" all live in evidence_ledger_scan_tail(). An overlong row counts
+     * as malformed here, exactly as it did when this loop was local. */
+    if (!evidence_ledger_scan_tail(path, STOPWATCH_SKIP_TAIL_BYTES, sw_row_cb,
+                                   &c, &out->malformed_rows))
+        LOG_FAIL("stopwatch", "ledger tail read rejected path '%s'", path);
+    return scan_finish(out, &c.st);
 }
 
 bool stopwatch_skip_resolve_ledger(const char *which, char *out, size_t cap)
@@ -400,7 +259,7 @@ bool stopwatch_skip_resolve_ledger(const char *which, char *out, size_t cap)
 
     const char *v = getenv(file_env);
     if (v && v[0]) {
-        copy_bounded(out, cap, v, strlen(v));
+        evidence_copy_bounded(out, cap, v, strlen(v));
         return true;
     }
     v = getenv(dir_env);
@@ -427,7 +286,7 @@ const char *stopwatch_skip_alarm_text(const struct stopwatch_skip_report *r,
     if (!buf || cap == 0)
         return "";
     if (!r) {
-        copy_bounded(buf, cap, "no report", strlen("no report"));
+        evidence_copy_bounded(buf, cap, "no report", strlen("no report"));
         return buf;
     }
     if (!r->present) {
