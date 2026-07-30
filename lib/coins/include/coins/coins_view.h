@@ -30,6 +30,13 @@ struct coins_map {
     struct coins_map_entry *buckets;
     size_t num_buckets;
     size_t size;
+    /* Test-only algorithmic-regression hook — see coins/coins_fault.h for the
+     * bug class it models and the empty-map arming contract. When true every
+     * key hashes to bucket 0, so lookups stay CORRECT but degrade from O(1)
+     * to O(n). Never written by the node; only
+     * coins_fault_arm_map_hash_collapse() flips it, and only on an empty map.
+     * Cleared by coins_map_init(), so every map defaults to the real hash. */
+    bool degraded_hash;
 };
 
 struct incremental_merkle_tree;
@@ -68,6 +75,7 @@ static inline void coins_map_init(struct coins_map *m)
     m->buckets = NULL;
     m->num_buckets = 0;
     m->size = 0;
+    m->degraded_hash = false;
 }
 
 static inline void coins_map_free(struct coins_map *m)

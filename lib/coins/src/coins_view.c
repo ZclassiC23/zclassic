@@ -17,12 +17,32 @@
 
 static void coins_map_rehash(struct coins_map *m, size_t new_num_buckets);
 
+/* The bucket index for every map operation in this file.
+ *
+ * Normally this is coins_map_hash() (the txid's first 8 bytes). When the
+ * test-only regression hook is armed (coins/coins_fault.h) it collapses to a
+ * single constant bucket: every find/insert/erase still returns the CORRECT
+ * entry — linear probing over a consistent hash always does — but the probe
+ * walk degrades from O(1) to O(n), which is what makes the whole UTXO fold
+ * O(n^2). That is the regression tools/sim/simperf.c must be able to catch.
+ *
+ * Unarmed cost is one load of a struct field the caller has already touched
+ * (`m` is in cache on every path below), so the hot path pays no global read,
+ * no atomic, and no call. */
+static inline uint64_t coins_map_bucket_of(const struct coins_map *m,
+                                           const struct uint256 *txid)
+{
+    if (m->degraded_hash)
+        return 0;
+    return coins_map_hash(txid);
+}
+
 struct coins_cache_entry *coins_map_find(struct coins_map *m,
                                           const struct uint256 *txid)
 {
     if (m->num_buckets == 0)
         return NULL;
-    uint64_t h = coins_map_hash(txid);
+    uint64_t h = coins_map_bucket_of(m, txid);
     size_t idx = (size_t)(h % m->num_buckets);
     for (size_t i = 0; i < m->num_buckets; i++) {
         size_t slot = (idx + i) % m->num_buckets;
@@ -51,7 +71,7 @@ struct coins_cache_entry *coins_map_insert(struct coins_map *m,
         coins_map_rehash(m, new_cap);
     }
 
-    uint64_t h = coins_map_hash(txid);
+    uint64_t h = coins_map_bucket_of(m, txid);
     size_t idx = (size_t)(h % m->num_buckets);
     for (size_t i = 0; i < m->num_buckets; i++) {
         size_t slot = (idx + i) % m->num_buckets;
@@ -71,7 +91,7 @@ bool coins_map_erase(struct coins_map *m, const struct uint256 *txid)
 {
     if (m->num_buckets == 0)
         return false;
-    uint64_t h = coins_map_hash(txid);
+    uint64_t h = coins_map_bucket_of(m, txid);
     size_t idx = (size_t)(h % m->num_buckets);
     for (size_t i = 0; i < m->num_buckets; i++) {
         size_t slot = (idx + i) % m->num_buckets;
@@ -88,7 +108,7 @@ bool coins_map_erase(struct coins_map *m, const struct uint256 *txid)
                 m->buckets[next].occupied = false;
                 m->size--;
                 /* Re-insert */
-                uint64_t rh = coins_map_hash(&tmp.txid);
+                uint64_t rh = coins_map_bucket_of(m, &tmp.txid);
                 size_t ri = (size_t)(rh % m->num_buckets);
                 for (size_t j = 0; j < m->num_buckets; j++) {
                     size_t rs = (ri + j) % m->num_buckets;
@@ -127,7 +147,7 @@ static void coins_map_rehash(struct coins_map *m, size_t new_num_buckets)
     if (old) {
         for (size_t i = 0; i < old_num; i++) {
             if (old[i].occupied) {
-                uint64_t h = coins_map_hash(&old[i].txid);
+                uint64_t h = coins_map_bucket_of(m, &old[i].txid);
                 size_t idx = (size_t)(h % new_num_buckets);
                 for (size_t j = 0; j < new_num_buckets; j++) {
                     size_t slot = (idx + j) % new_num_buckets;

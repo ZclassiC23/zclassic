@@ -118,6 +118,7 @@ history: <!-- doc-path-ok: recovered from git history, not present on disk -->
 
 - [`BENCHMARKS_LOG.md`](./BENCHMARKS_LOG.md) — append-only ledger of measured benchmark values (never estimates).
 - [`USER_BENCHMARKS.md`](./USER_BENCHMARKS.md) — the five user-facing numbers every decision is judged against.
+- [`SIMNET_PERF.md`](./SIMNET_PERF.md) — `make sim-perf`: a CI-cheap, machine-independent detector for algorithmic-complexity regressions on the block-connect/UTXO path, with the injected regression that proves it discriminates. Not a wall-clock sync measurement.
 
 ## Specs & validation
 

@@ -2757,6 +2757,44 @@ wire-sweep-clean:
 	rm -f $(BIN_DIR)/wire_sweep
 	rm -rf build/wire-sweep-output/
 
+# ── simperf: algorithmic-cost detector for the block-connect/UTXO path ────
+# Runs one deterministic simnet workload (mint N blocks of M transparent
+# spends, folded by the REAL connect_block) at 1x/2x/4x size and gates on how
+# much per-transaction CPU cost GROWS across that span — a dimensionless
+# ratio, so the same threshold holds on a fast, slow, or loaded box. It is a
+# CI-cheap PROXY for complexity regressions ONLY: no disk, no network, no real
+# PoW, so it neither is nor replaces the wall-clock coldstart-to-tip stopwatch.
+# Full contract: docs/SIMNET_PERF.md. Same standalone BUILD_NODE_TOOL shape as
+# wire_sweep above.
+$(eval $(call BUILD_NODE_TOOL,simperf,tools/sim/simperf.c))
+
+SIMPERF_ARGS ?=
+
+.PHONY: sim-perf sim-perf-teeth sim-perf-clean
+sim-perf: simperf
+	$(BIN_DIR)/simperf $(SIMPERF_ARGS)
+
+# The parent-failing prover for the detector itself: the SAME workload with a
+# real, correctness-preserving O(1)->O(n) regression armed in the UTXO map
+# (coins/coins_fault.h) must FAIL the budget that the clean run passes. A perf
+# gate never shown to fail is not a gate. `make t ONLY=simnet_perf` runs the
+# same both-directions proof in-process on every suite run.
+sim-perf-teeth: simperf
+	@echo "══ sim-perf-teeth: clean run must PASS ══"
+	@$(BIN_DIR)/simperf $(SIMPERF_ARGS)
+	@echo "══ sim-perf-teeth: regression-armed run must FAIL ══"
+	@if $(BIN_DIR)/simperf --inject=coins-hash-collapse $(SIMPERF_ARGS); then \
+	    echo "sim-perf-teeth: FAILED — the injected O(n^2) UTXO regression did"; \
+	    echo "  NOT trip the budget. The detector has no teeth; do not trust a"; \
+	    echo "  passing sim-perf run until this is fixed."; \
+	    exit 1; \
+	else \
+	    echo "sim-perf-teeth: PASSED — budget passes clean, fails armed"; \
+	fi
+
+sim-perf-clean:
+	rm -f $(BIN_DIR)/simperf
+
 # ── simnet-repro / simnet-replay: one-command seed/capsule reproduction ──
 # Both targets reuse wire_sweep as-is (its own --start/--count seed
 # selection, its own capsule-writing convention) — no new harness, no new
