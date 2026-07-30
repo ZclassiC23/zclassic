@@ -608,9 +608,15 @@ const char *zcl_native_command_datadir(void);
  * write that slips past the open flags, and a bounded busy timeout so a
  * locked WAL gives up instead of parking a cursor. Nothing is created,
  * migrated, schema-initialized, quarantined, renamed or deleted on any
- * path. The `struct node_db` filled in is a borrowed-handle shim (db +
- * open + path, no prepared statements); close it with
- * zcl_native_node_db_close_readonly, never node_db_close. */
+ * path — INCLUDING the <db>-wal and <db>-shm that a read-only connection to
+ * a WAL database otherwise materializes and then cannot unlink on close.
+ * Both stores under a datadir are WAL, so that is the ordinary case, not an
+ * edge: the open is chosen per database state to leave the directory's file
+ * set untouched without ever answering from a stale snapshot. The full
+ * reasoning, and the measurement behind it, is the block comment at the top
+ * of tools/command/native_node_db_ro.c. The `struct node_db` filled in is a
+ * borrowed-handle shim (db + open + path, no prepared statements); close it
+ * with zcl_native_node_db_close_readonly, never node_db_close. */
 
 /* Why a read-only open produced no handle.
  *
@@ -625,6 +631,14 @@ enum zcl_node_db_ro_status {
     ZCL_NODE_DB_RO_PATH_TOO_LONG,/* <datadir>/node.db does not fit the buffer */
     ZCL_NODE_DB_RO_ABSENT,       /* nothing exists at <datadir>/node.db */
     ZCL_NODE_DB_RO_UNREADABLE,   /* it exists and is not a readable database */
+    /* It is a WAL database carrying a non-empty <db>-wal with no <db>-shm
+     * beside it. The log holds commits, and the only way to read them is to
+     * create the wal-index — which is a write to a datadir the caller merely
+     * named. Distinct from UNREADABLE for the same reason ABSENT is: "the
+     * file is fine, I would have had to modify your directory to read it" is
+     * a different fact from "it is not a database", and it has a different
+     * fix (copy the -shm too, or let the owning node recover the log). */
+    ZCL_NODE_DB_RO_UNRECOVERED_LOG,
 };
 
 struct node_db;

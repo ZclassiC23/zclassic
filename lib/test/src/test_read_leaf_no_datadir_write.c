@@ -49,6 +49,18 @@
  *   garbage   — a node.db that is not a SQLite file at all. Afterwards it
  *               must still be there, byte-identical, under its own name.
  *               (Catches db_quarantine_files' rename.)
+ *   walset    — both stores in WAL mode, which is what the node actually
+ *               writes. Afterwards the directory's FILE SET must be exactly
+ *               the set that went in. (Catches the WAL sidecars: a read-only
+ *               connection to a WAL database materializes <db>-shm and
+ *               <db>-wal and cannot unlink them on close, so a "read" leaves
+ *               two files behind and voids any copy-proof taken beforehand.
+ *               Invisible to every case above, which hash files that were
+ *               already there and so cannot see one APPEAR.)
+ *   walopen   — the same, with a live writer attached, where the fix must
+ *               NOT be "assume the database is immutable": that read returns
+ *               the database's pre-log past. The set must still be unchanged
+ *               and the writer must still be able to commit.
  *
  * node.db is not the only database a read leaf can be pointed at, so the
  * absent/present/garbage states are asserted for the KERNEL store too —
@@ -326,6 +338,75 @@ static int rlw_count_entries(const char *dir, const char *prefix)
     }
     closedir(d);
     return n;
+}
+
+/* The directory's FILE SET, as a sorted newline-joined list of names. The
+ * per-file hashes above cannot see a file APPEARING, and appearing is the
+ * whole of the WAL-sidecar defect: a read-only connection to a WAL database
+ * materializes <db>-shm and <db>-wal to read consistently and then cannot
+ * unlink them on close, because unlinking needs the write lock it does not
+ * hold. Every byte the reader was asked about is still there and correct, and
+ * the directory is not the one the operator hashed. False on overflow or an
+ * unreadable directory, which callers treat as a failed observation. */
+#define RLW_SET_MAX_ENTRIES 64
+#define RLW_SET_NAME_MAX 256
+
+static bool rlw_dir_set(const char *dir, char *out, size_t out_size)
+{
+    if (!out || !out_size)
+        return false;
+    out[0] = '\0';
+    DIR *d = opendir(dir);
+    if (!d)
+        return false;
+    static char names[RLW_SET_MAX_ENTRIES][RLW_SET_NAME_MAX];
+    int n = 0;
+    bool overflow = false;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0)
+            continue;
+        if (n >= RLW_SET_MAX_ENTRIES ||
+            strlen(e->d_name) >= RLW_SET_NAME_MAX) {
+            overflow = true;
+            break;
+        }
+        /* Insertion sort, so the list is order-independent: readdir order is
+         * not stable and an unordered join would compare unequal for reasons
+         * that have nothing to do with the contract. */
+        int i = n++;
+        while (i > 0 && strcmp(names[i - 1], e->d_name) > 0) {
+            memcpy(names[i], names[i - 1], RLW_SET_NAME_MAX);
+            i--;
+        }
+        snprintf(names[i], RLW_SET_NAME_MAX, "%s", e->d_name);
+    }
+    closedir(d);
+    if (overflow)
+        return false;
+    for (int i = 0; i < n; i++) {
+        size_t used = strlen(out);
+        int wrote = snprintf(out + used, out_size - used, "%s\n", names[i]);
+        if (wrote <= 0 || (size_t)wrote >= out_size - used)
+            return false;
+    }
+    return true;
+}
+
+/* Is the database at `path` in WAL mode? Header byte 18 is the "file format
+ * write version": 2 for WAL. Read straight out of the file rather than by
+ * asking the code under test, so the anti-vacuous check below cannot be
+ * satisfied by the same bug it is guarding. */
+static bool rlw_is_wal(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return false;
+    unsigned char h[20] = { 0 };
+    size_t got = fread(h, 1, sizeof(h), f);
+    fclose(f);
+    return got == sizeof(h) && memcmp(h, "SQLite format 3", 16) == 0 &&
+           h[18] == 2;
 }
 
 /* Print every entry under `dir` — the evidence line for a failed case. */
@@ -887,7 +968,272 @@ static int t_garbage_node_db_is_refused_not_empty(void)
     return failures;
 }
 
-/* ── case 6: the population comes from the registry, not from memory ──
+/* ── case 6: a WAL datadir must come back with the same FILE SET ────────
+ *
+ * THE BUG THIS CASE EXISTS TO CATCH (reproduced against the vendored sqlite
+ * 3.49.0, 2026-07-30): SQLITE_OPEN_READONLY is not enough to leave a WAL
+ * database alone. A read-only connection still has to materialize the
+ * wal-index before it can read consistently, so sqlite CREATES <db>-shm and
+ * <db>-wal beside the database — and it cannot unlink them again on close,
+ * because that needs the write lock a read-only connection does not hold. A
+ * directory holding one 8192-byte node.db came out of the helper's own
+ * sequence (open_v2 READONLY, PRAGMA query_only, PRAGMA schema_version,
+ * close) holding node.db, node.db-shm (32768 bytes) and node.db-wal.
+ *
+ * Both stores under a datadir are WAL — app/models/src/database.c sets
+ * journal_mode=WAL for node.db, lib/storage/src/progress_store.c for
+ * consensus.db — so this was the ORDINARY case, not an edge.
+ *
+ * Every case above was structurally blind to it. They hash the main database
+ * file and count a `.corrupt` prefix; nothing enumerated the directory, and a
+ * file APPEARING changes no hash of a file that was already there. The
+ * `present` case in particular has been running read leaves against a WAL
+ * node.db all along (its fixture goes through node_db_open, which sets
+ * journal_mode=WAL) and stayed green while the sidecars piled up beside it.
+ *
+ * Why the file set and not just "no -wal": the harm is to a copy-proof.
+ * The recovery doctrine is copy the datadir, hash it, ask a read leaf about
+ * the copy, and trust the hash still describes the disk. Two files appearing
+ * voids that silently. And a read running as a different uid than the node —
+ * an operator or a CI job inspecting a copy as root — leaves the sidecars
+ * owned by the wrong user, in the way of the node's own later open. So what
+ * is asserted is the property the proof depends on: the set of names in that
+ * directory is the set that went in. */
+
+/* How many of the leaves must still ANSWER over a healthy WAL datadir. Eight
+ * do today (the rest refuse for their own reasons — no releases seeded, no
+ * such domain, an unanchored key); the floor sits below that with room for
+ * ordinary churn, and is the guard against a "fix" that keeps the directory
+ * clean by refusing to open a WAL database at all. */
+#define RLW_WAL_ANSWER_FLOOR 5
+
+/* A kernel store in WAL mode, matching what progress_store_open() would leave
+ * on disk. rlw_seed_kernel_store above is left on sqlite's default rollback
+ * journal, so the cases that use it cannot see a sidecar; this one is the
+ * production shape, and this case needs it or it would only be testing
+ * node.db. */
+static bool rlw_seed_kernel_store_wal(const char *dir, char *path_out,
+                                      size_t path_size)
+{
+    snprintf(path_out, path_size, "%s/%s", dir, CONSENSUS_DB_FILENAME);
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(path_out, &db,
+                        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL)
+        != SQLITE_OK) {
+        if (db)
+            sqlite3_close(db);
+        return false;
+    }
+    bool ok = sqlite3_exec(db, "PRAGMA journal_mode=WAL", NULL, NULL, NULL)
+                  == SQLITE_OK &&
+              sqlite3_exec(db, "CREATE TABLE rlw_fixture(x INTEGER)", NULL,
+                           NULL, NULL) == SQLITE_OK;
+    /* A clean close checkpoints and unlinks the sidecars, so the fixture
+     * directory holds exactly the two database files — which is what a
+     * cleanly-shut-down node's datadir, and any copy of one, looks like. */
+    sqlite3_close(db);
+    return ok;
+}
+
+static int t_wal_datadir_file_set_is_unchanged(void)
+{
+    int failures = 0;
+    char dir[256];
+    rlw_mkfixture(dir, sizeof(dir), "walset");
+    char db_path[1200];
+    snprintf(db_path, sizeof(db_path), "%s/node.db", dir);
+
+    RLW_CHECK("walset: fixture node.db seeded",
+              rlw_seed_node_db(dir, db_path));
+    char kernel_path[1200];
+    RLW_CHECK("walset: fixture consensus.db seeded",
+              rlw_seed_kernel_store_wal(dir, kernel_path,
+                                        sizeof(kernel_path)));
+
+    /* ANTI-VACUOUS. If either fixture stopped being a WAL database this whole
+     * case would pass while proving nothing about the defect it exists for —
+     * a rollback-journal database needs no wal-index and grows no sidecars. */
+    RLW_CHECK("walset: node.db really is in WAL mode (header byte 18 == 2)",
+              rlw_is_wal(db_path));
+    RLW_CHECK("walset: consensus.db really is in WAL mode",
+              rlw_is_wal(kernel_path));
+
+    /* And the fixture must START clean, or "no sidecars afterwards" would be
+     * measuring a directory that never had a chance to be dirty. */
+    char before[4096];
+    bool got_before = rlw_dir_set(dir, before, sizeof(before));
+    RLW_CHECK("walset: fixture file set observed before the calls", got_before);
+    RLW_CHECK("walset: fixture starts with no node.db-wal/-shm",
+              rlw_count_entries(dir, "node.db-") == 0);
+    RLW_CHECK("walset: fixture starts with no consensus.db-wal/-shm",
+              rlw_count_entries(dir, "consensus.db-") == 0);
+
+    int64_t size_before = -1;
+    uint64_t hash_before = rlw_file_hash(db_path, &size_before);
+    int64_t kernel_size_before = -1;
+    uint64_t kernel_hash_before = rlw_file_hash(kernel_path,
+                                                &kernel_size_before);
+
+    /* ANTI-VACUOUS, and the one that matters most here. "No sidecars were
+     * created" is trivially satisfiable by an open that FAILS: refuse every
+     * leaf and the directory is certainly untouched. So count the leaves that
+     * answered, and require that a healthy WAL datadir still gets read. This
+     * is what stops the fix from being "stop opening WAL databases". */
+    int answered = 0;
+    for (int i = 0; i < RLW_LEAF_COUNT; i++) {
+        char code[64] = { 0 };
+        if (!rlw_invoke_refused(&g_rlw_leaves[i], dir, code, sizeof(code)))
+            answered++;
+    }
+    {
+        char what[192];
+        snprintf(what, sizeof(what),
+                 "walset: %d leaves still READ the WAL datadir (floor %d) — "
+                 "the clean directory is not just a failed open",
+                 answered, RLW_WAL_ANSWER_FLOOR);
+        RLW_CHECK(what, answered >= RLW_WAL_ANSWER_FLOOR);
+    }
+
+    char after[4096];
+    bool got_after = rlw_dir_set(dir, after, sizeof(after));
+    RLW_CHECK("walset: fixture file set observed after the calls", got_after);
+
+    bool same_set = got_before && got_after && strcmp(before, after) == 0;
+    if (!same_set) {
+        printf("    file set BEFORE:\n%s", before);
+        printf("    file set AFTER:\n%s", after);
+        rlw_list_dir("walset", dir);
+    }
+    RLW_CHECK("walset: the datadir's file set is exactly what went in",
+              same_set);
+
+    /* Named separately from the set comparison so a failure says WHICH files
+     * arrived rather than only that the set differs. */
+    int node_sidecars = rlw_count_entries(dir, "node.db-");
+    int kernel_sidecars = rlw_count_entries(dir, "consensus.db-");
+    if (node_sidecars != 0 || kernel_sidecars != 0)
+        rlw_list_dir("walset", dir);
+    RLW_CHECK("walset: no node.db-wal/-shm was created by a read",
+              node_sidecars == 0);
+    RLW_CHECK("walset: no consensus.db-wal/-shm was created by a read",
+              kernel_sidecars == 0);
+
+    /* The old assertions still have to hold on a WAL fixture: not creating
+     * sidecars is worthless if the fix got there by rewriting the database. */
+    int64_t size_after = -1;
+    uint64_t hash_after = rlw_file_hash(db_path, &size_after);
+    int64_t kernel_size_after = -1;
+    uint64_t kernel_hash_after = rlw_file_hash(kernel_path,
+                                               &kernel_size_after);
+    RLW_CHECK("walset: node.db is still byte-identical",
+              size_after == size_before && hash_after == hash_before &&
+              hash_after != 0);
+    RLW_CHECK("walset: consensus.db is still byte-identical",
+              kernel_size_after == kernel_size_before &&
+              kernel_hash_after == kernel_hash_before &&
+              kernel_hash_after != 0);
+    RLW_CHECK("walset: nothing was quarantined",
+              rlw_count_entries(dir, "node.db.corrupt") == 0 &&
+              rlw_count_entries(dir, "consensus.db.corrupt") == 0);
+
+    test_rm_rf(dir);
+    return failures;
+}
+
+/* ── case 7: a WAL datadir a LIVE writer is attached to ─────────────────
+ *
+ * The fix cannot be "always use the immutable open". Measured on the same
+ * sqlite: pointed at a WAL database a writer was attached to, an
+ * immutable=1 read returned 1 row where the truth was 2 — it does not consult
+ * the log. Trading two stray files for silently stale answers would be the
+ * worse bug on a project whose read leaves default to the operator's LIVE
+ * node, so this case pins the other half of the contract.
+ *
+ * With a writer attached the wal-index already exists, so there is nothing
+ * left for a read to create — the file set must STILL come back unchanged,
+ * and the writer must still be able to write afterwards. */
+static int t_wal_datadir_with_live_writer(void)
+{
+    int failures = 0;
+    char dir[256];
+    rlw_mkfixture(dir, sizeof(dir), "walopen");
+    char db_path[1200];
+    snprintf(db_path, sizeof(db_path), "%s/node.db", dir);
+
+    RLW_CHECK("walopen: fixture node.db seeded",
+              rlw_seed_node_db(dir, db_path));
+    char kernel_path[1200];
+    RLW_CHECK("walopen: fixture consensus.db seeded",
+              rlw_seed_kernel_store_wal(dir, kernel_path,
+                                        sizeof(kernel_path)));
+
+    /* The stand-in for the running node: a READWRITE connection that stays
+     * open across every read below, with an uncommitted-to-the-main-file
+     * INSERT sitting in its log. */
+    struct node_db live;
+    memset(&live, 0, sizeof(live));
+    bool live_open = node_db_open(&live, db_path) && live.open;
+    RLW_CHECK("walopen: a live writer holds node.db open", live_open);
+    if (live_open)
+        RLW_CHECK("walopen: the live writer has a row in its log",
+                  sqlite3_exec(live.db,
+                               "INSERT OR REPLACE INTO node_state(key,value)"
+                               " VALUES('rlw_live','1')",
+                               NULL, NULL, NULL) == SQLITE_OK);
+
+    /* Its own sidecars are legitimately there, and are NOT this test's to
+     * object to — what must not change is the set. */
+    RLW_CHECK("walopen: the live writer's wal-index exists",
+              rlw_count_entries(dir, "node.db-") > 0);
+
+    char before[4096];
+    bool got_before = rlw_dir_set(dir, before, sizeof(before));
+    RLW_CHECK("walopen: file set observed before the calls", got_before);
+
+    int answered = 0;
+    for (int i = 0; i < RLW_LEAF_COUNT; i++) {
+        char code[64] = { 0 };
+        if (!rlw_invoke_refused(&g_rlw_leaves[i], dir, code, sizeof(code)))
+            answered++;
+    }
+    {
+        char what[192];
+        snprintf(what, sizeof(what),
+                 "walopen: %d leaves still READ through the live wal-index "
+                 "(floor %d)", answered, RLW_WAL_ANSWER_FLOOR);
+        RLW_CHECK(what, answered >= RLW_WAL_ANSWER_FLOOR);
+    }
+
+    char after[4096];
+    bool got_after = rlw_dir_set(dir, after, sizeof(after));
+    RLW_CHECK("walopen: file set observed after the calls", got_after);
+    bool same_set = got_before && got_after && strcmp(before, after) == 0;
+    if (!same_set) {
+        printf("    file set BEFORE:\n%s", before);
+        printf("    file set AFTER:\n%s", after);
+    }
+    RLW_CHECK("walopen: the file set is unchanged with a writer attached",
+              same_set);
+    RLW_CHECK("walopen: nothing was quarantined",
+              rlw_count_entries(dir, "node.db.corrupt") == 0 &&
+              rlw_count_entries(dir, "consensus.db.corrupt") == 0);
+
+    /* The read must not have wedged the writer — a read leaf that leaves the
+     * live node unable to commit has done damage of a different kind. */
+    if (live_open) {
+        RLW_CHECK("walopen: the live writer can still write afterwards",
+                  sqlite3_exec(live.db,
+                               "INSERT OR REPLACE INTO node_state(key,value)"
+                               " VALUES('rlw_live_after','1')",
+                               NULL, NULL, NULL) == SQLITE_OK);
+        node_db_close(&live);
+    }
+
+    test_rm_rf(dir);
+    return failures;
+}
+
+/* ── case 8: the population comes from the registry, not from memory ──
  *
  * The defect this case exists to catch is the one that hit this very file:
  * a seventh read leaf was added, took a `datadir`, opened it with the boot
@@ -1049,6 +1395,8 @@ int test_read_leaf_no_datadir_write(void)
     failures += t_foreign_node_db_gets_no_schema();
     failures += t_garbage_node_db_is_not_quarantined();
     failures += t_garbage_node_db_is_refused_not_empty();
+    failures += t_wal_datadir_file_set_is_unchanged();
+    failures += t_wal_datadir_with_live_writer();
 
     return failures;
 }
