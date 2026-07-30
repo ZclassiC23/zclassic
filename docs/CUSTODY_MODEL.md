@@ -56,6 +56,51 @@ reveals the key, and returns the WIF in `reply.data.privkey`. Neither path
 logs the key: `rpc_dumpprivkey` logs only the address on every failure branch
 (`app/controllers/src/wallet_controller_keys.c:29-54`).
 
+### 2.1 The sixth place — twelve words on paper, if they exist
+
+A wallet created from a BIP39 recovery phrase has a **sixth** copy of its keys:
+the twelve words, which regenerate row 3 (the HD seed) and therefore rows 1 and
+2 by derivation. It is the only copy outside the machine, and the only one that
+survives the disk. Whether it exists is decided **once, at wallet creation, and
+cannot be added afterwards** — the node stores the seed, never the words, so no
+command can print the phrase of an existing wallet.
+
+The decision is `boot_wallet_phrase_plan_for()`
+(`config/src/boot_wallet_phrase.c`), and the input that matters is whether
+stdout is a terminal:
+
+| stdout | other condition | plan | result |
+|---|---|---|---|
+| a terminal | — | SHOW | words printed once, for paper. **The only way they are ever obtained.** |
+| a file or pipe | `-wallet-no-phrase-backup` / `ZCL_WALLET_NO_PHRASE_BACKUP` | SKIP | wallet created, **no phrase drawn at all** |
+| a file or pipe | `ZCL_WALLET_PASSPHRASE` set (→ `CREATE_ENCRYPTED`) | SKIP | same — the at-rest decision is taken as consent |
+| a file or pipe | offline mint producer, or a non-canonical lane | SKIP | same; these hold nobody's money |
+| a file or pipe | none of the above | REFUSE | **no wallet created**, and no half-made one |
+
+Under the shipped service stdout is `node.log` — rotated, copied into backups,
+and readable with `zclassic23 ops logs` — so the phrase may never be printed
+there. SKIP is not a downgraded SHOW: it draws no phrase, so there are no words
+to leak on that path. The cost is that the wallet's only backup is the wallet
+file plus its passphrase.
+
+REFUSE does not stop the node. Per §2's neighbour
+`wallet_at_rest_boot_decision()` the boot continues in **NO-SPEND mode** (zero
+keys minted, nothing written in the clear) and syncs normally; only sending and
+receiving wait. A refusal is scoped to the asset it protects, never to the boot.
+
+Two typed commands read and use this, both `AUTH_OWNER`:
+
+- `core wallet recovery status` — answers `recoverable_from_phrase` by
+  **attempting the derivation**, not by reading a stored flag. A wallet that
+  predates recovery phrases, or one created by SKIP, answers `false` and is
+  directed to file backup instead. Takes a `datadir` that defaults to the live
+  one and opens it **read-only** (`zcl_native_node_db_open_readonly()`).
+- `core wallet recovery restore` — plan/commit rebuild from the words alone.
+  `datadir` is **required with no default**, deliberately not the running
+  node's; the phrase may be passed as input or kept out of argv via
+  `ZCL_RECOVERY_PHRASE`. Rebuilding installs spending keys, so a rescan over
+  block bodies is needed afterwards to see the notes.
+
 ---
 
 ## 3. What is encrypted, with what
