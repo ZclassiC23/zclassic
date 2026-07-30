@@ -3323,6 +3323,47 @@ stopwatch-judge-selftest:
 	 fi; \
 	 echo "stopwatch-judge-selftest: PASS"'
 
+# stopwatch-symmetry-selftest: hermetic mutation test of the artifact-symmetry
+# comparison (tools/scripts/stopwatch_artifact_symmetry_check.sh --selftest).
+# No node, no network, no nc listener, no datadir — it drives the comparison
+# against synthetic artifact pairs and requires that BREAKING each thing the
+# comparison claims to check turns it red, and that an untouched pair stays
+# green. That control-plus-mutation shape is the point: a comparison that
+# always failed, and one that always passed, would both look fine under a
+# single-direction check.
+#
+# stopwatch-symmetry-prove is the full end-to-end version — it drives the real
+# C3 harness twice against a mock node (forced pass, forced non-pass) and
+# compares the two artifact sets. It is separate because it needs an nc
+# listener on a fixed loopback port, which makes it unsuitable for an
+# unattended aggregate; run it by hand after touching the harness's capture or
+# artifact code.
+.PHONY: stopwatch-symmetry-selftest
+stopwatch-symmetry-selftest:
+	@bash -c 'set -uo pipefail; \
+	 set +e; out=$$(bash tools/scripts/stopwatch_artifact_symmetry_check.sh --selftest 2>&1); rc=$$?; set -e; \
+	 echo "$$out"; \
+	 if [ "$$rc" != "0" ] || ! echo "$$out" | grep -q "^selftest: PASS"; then \
+	     echo "stopwatch-symmetry-selftest: FAIL stopwatch_artifact_symmetry_check.sh (rc=$$rc; no selftest: PASS line)"; \
+	     exit 1; \
+	 fi; \
+	 echo "stopwatch-symmetry-selftest: PASS"'
+
+.PHONY: stopwatch-symmetry-prove
+stopwatch-symmetry-prove:
+	@bash -c 'set -uo pipefail; \
+	 set +e; out=$$(bash tools/scripts/stopwatch_artifact_symmetry_check.sh 2>&1); rc=$$?; set -e; \
+	 echo "$$out"; \
+	 if [ "$$rc" = "2" ]; then \
+	     echo "stopwatch-symmetry-prove: SKIP (no nc to stand up the named loopback fixture peer)"; \
+	     exit 0; \
+	 fi; \
+	 if [ "$$rc" != "0" ] || ! echo "$$out" | grep -q "^symmetry: PASS"; then \
+	     echo "stopwatch-symmetry-prove: FAIL (rc=$$rc; the pass and non-pass runs did NOT record the same evidence set)"; \
+	     exit 1; \
+	 fi; \
+	 echo "stopwatch-symmetry-prove: PASS"'
+
 .PHONY: arch-score
 # Mechanical completion score for the ARCHITECTURE NORTH STAR
 # (docs/ARCHITECTURE_NORTH_STAR.md). Run as you work — the score rises only when
@@ -3674,6 +3715,10 @@ mvp-coldstart-to-tip-stopwatch: zclassic23
 	 echo "══ MVP C3 STOPWATCH (real): wiped datadir -> checkpoint/fold -> peer tip, real wall-clock ══"; \
 	 if ! bash tools/scripts/cold_start_to_tip_stopwatch.sh --selftest >/dev/null 2>&1; then \
 	     echo "mvp-coldstart-to-tip-stopwatch: FAIL harness --selftest (run it directly to see which check broke)"; \
+	     exit 1; \
+	 fi; \
+	 if ! bash tools/scripts/stopwatch_artifact_symmetry_check.sh --selftest >/dev/null 2>&1; then \
+	     echo "mvp-coldstart-to-tip-stopwatch: FAIL artifact-symmetry --selftest (run tools/scripts/stopwatch_artifact_symmetry_check.sh --selftest to see which mutation stopped going red)"; \
 	     exit 1; \
 	 fi; \
 	 bash tools/scripts/cold_start_to_tip_stopwatch.sh \

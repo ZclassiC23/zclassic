@@ -94,6 +94,12 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=tools/scripts/stopwatch_json_lib.sh
 . "$REPO_ROOT/tools/scripts/stopwatch_json_lib.sh"
+# shellcheck source=tools/scripts/source_identity_lib.sh
+# The ONE source-identity reader (zcl_binary_source_id / zcl_json_first_string /
+# zcl_json_first_sha256). Do NOT inline a tenth copy of that parser here —
+# tools/lint/check_identity_parser_single.sh counts them and this file carries
+# no baseline row, so it may carry ZERO.
+. "$REPO_ROOT/tools/scripts/source_identity_lib.sh"
 
 NODE_BIN="${ZCL_CS_NODE_BIN:-$REPO_ROOT/build/bin/zclassic23}"
 # NO DEFAULT PEER, ON PURPOSE. This used to default to 127.0.0.1:8033 — the
@@ -181,9 +187,357 @@ last_ps="-1"
 saw_ps=0
 final_readback_failed="false"
 
+# ── PER-PHASE MEASUREMENT STATE (the baseline instrument) ────────────────────
+# Every one of these is either read from a real source or left at its
+# never-measured sentinel. NOTHING here is ever defaulted to 0 to make a field
+# look populated: -1 means "no honest source produced this", and a reader must
+# be able to tell that apart from a genuine zero.
+#
+# The measurement contract this harness now keeps, on EVERY verdict including
+# PASS (see capture_run_bundle / write_artifact): a run leaves the same
+# per-phase record whether it passed or failed. Before this, the diagnostic
+# bundle was captured only when `verdict != pass`, so a SUCCESSFUL run destroyed
+# the exact per-stage fold-cost evidence needed to make the next run faster —
+# an artifact set that exists only when something went wrong cannot be a
+# baseline, and the owner's rule is no optimization before a baseline.
+SAMPLES_TSV=""            # <artifact>/samples.tsv — the per-tick climb trace
+LOOP_START_UNIX=0         # exact: date +%s at sample-loop entry
+HEADER_IMPORT_START=0     # exact: date +%s before --importblockindex (0 = not run)
+HEADER_IMPORT_MS=-1       # exact: measured import duration, -1 = phase not run
+NODE_BIN_SOURCE_ID=""     # baked source identity of the binary under test
+# Cumulative counters of the FINAL node process, refreshed every sample tick.
+# Cumulative PER PROCESS: a followed self-respawn starts a new PID, so these
+# reset at each boot boundary. samples.tsv carries the boot ordinal on every row
+# precisely so a reader can see where that reset happened instead of reading a
+# reset as negative progress.
+LAST_CPU_SECONDS="-1"
+LAST_RSS_KB="-1"
+LAST_DISK_READ_BYTES="-1"
+LAST_DISK_WRITE_BYTES="-1"
+# getconf values are constants for the life of the process; read once.
+CLK_TCK="$(getconf CLK_TCK 2>/dev/null || echo 100)"
+case "$CLK_TCK" in ''|*[!0-9]*) CLK_TCK=100 ;; esac
+PAGE_KB=$(( $(getconf PAGESIZE 2>/dev/null || echo 4096) / 1024 ))
+[ "$PAGE_KB" -gt 0 ] 2>/dev/null || PAGE_KB=4
+
+# parse_proc_stat_cpu_ticks <contents-of-/proc/PID/stat> — utime+stime in clock
+# ticks, or -1. PURE (no /proc access) so --selftest can exercise it on a canned
+# fixture. Field 2 (comm) is parenthesized and MAY CONTAIN SPACES AND
+# PARENTHESES, so a naive $14/$15 read is wrong; everything is indexed from
+# after the LAST ')' instead, which is what proc(5) itself prescribes. With that
+# split, utime is field 12 and stime field 13.
+parse_proc_stat_cpu_ticks() {
+    printf '%s' "${1:-}" | awk '
+        { i = index($0, ")"); last = 0
+          while (i > 0) { last += i; rest = substr($0, last + 1); i = index(rest, ")") }
+          if (last == 0) { print -1; exit }
+          n = split(substr($0, last + 2), f, /[ \t]+/)
+          if (n < 13) { print -1; exit }
+          if (f[12] !~ /^[0-9]+$/ || f[13] !~ /^[0-9]+$/) { print -1; exit }
+          print f[12] + f[13] }
+        END { if (NR == 0) print -1 }'
+}
+
+# parse_proc_stat_rss_pages <contents-of-/proc/PID/stat> — the rss field in
+# pages, or -1. Same after-the-last-')' indexing as above; rss is field 22
+# there. PURE.
+parse_proc_stat_rss_pages() {
+    printf '%s' "${1:-}" | awk '
+        { i = index($0, ")"); last = 0
+          while (i > 0) { last += i; rest = substr($0, last + 1); i = index(rest, ")") }
+          if (last == 0) { print -1; exit }
+          n = split(substr($0, last + 2), f, /[ \t]+/)
+          if (n < 22 || f[22] !~ /^[0-9]+$/) { print -1; exit }
+          print f[22] }
+        END { if (NR == 0) print -1 }'
+}
+
+# parse_proc_io_field <contents-of-/proc/PID/io> <key> — the integer value of
+# `<key>: N`, or -1 when absent/unreadable. PURE. read_bytes/write_bytes are the
+# BLOCK-LAYER counters (bytes that actually hit the storage device), which is
+# what "disk" means for a fold-cost baseline — rchar/wchar would also count
+# page-cache hits.
+parse_proc_io_field() {
+    printf '%s\n' "${1:-}" | awk -v k="${2:-}" '
+        $1 == k ":" && $2 ~ /^[0-9]+$/ { print $2; found = 1; exit }
+        END { if (!found) print -1 }'
+}
+
+# refresh_process_counters — read the watched PID's cumulative CPU/RSS/disk
+# counters out of /proc into LAST_*. Every field independently degrades to -1;
+# an unreadable /proc entry is a missing measurement, never a zero.
+refresh_process_counters() {
+    LAST_CPU_SECONDS="-1"; LAST_RSS_KB="-1"
+    LAST_DISK_READ_BYTES="-1"; LAST_DISK_WRITE_BYTES="-1"
+    [ -n "${PID:-}" ] || return 0
+    local statline ioblob ticks pages
+    statline="$(cat "/proc/$PID/stat" 2>/dev/null)"
+    if [ -n "$statline" ]; then
+        ticks="$(parse_proc_stat_cpu_ticks "$statline")"
+        if [ "$ticks" != "-1" ]; then
+            # Two decimals of CPU seconds without floating-point shell math.
+            LAST_CPU_SECONDS="$(( ticks * 100 / CLK_TCK ))"
+            LAST_CPU_SECONDS="$(( LAST_CPU_SECONDS / 100 )).$(printf '%02d' "$(( LAST_CPU_SECONDS % 100 ))")"
+        fi
+        pages="$(parse_proc_stat_rss_pages "$statline")"
+        [ "$pages" != "-1" ] && LAST_RSS_KB="$(( pages * PAGE_KB ))"
+    fi
+    ioblob="$(cat "/proc/$PID/io" 2>/dev/null)"
+    if [ -n "$ioblob" ]; then
+        LAST_DISK_READ_BYTES="$(parse_proc_io_field "$ioblob" read_bytes)"
+        LAST_DISK_WRITE_BYTES="$(parse_proc_io_field "$ioblob" write_bytes)"
+    fi
+    return 0
+}
+
+# samples_tsv_init — create the per-tick sink and write its header row. Called
+# once, before the sample loop, so the trace survives even a SIGKILLed harness.
+# The rows were previously printf-to-stdout ONLY and were lost with the
+# terminal: the shape of the climb, not just its endpoint, is what tells you
+# WHICH phase to optimize.
+samples_tsv_init() {
+    [ -n "$SAMPLES_TSV" ] || return 0
+    printf 't_s\tunix_s\tboot\thstar\tprovable\tnetwork_tip\ttip_ok\tfrontier_busy\tblocker_count\tcpu_seconds\trss_kb\tdisk_read_bytes\tdisk_write_bytes\tblocker_ids\n' \
+        >"$SAMPLES_TSV" 2>/dev/null || SAMPLES_TSV=""
+}
+
+# samples_tsv_row <t_s> <hstar> <provable> <net_tip> <tip_ok> <busy> <blocker_ct> <blocker_ids>
+# Append one tick. Every numeric column is either a real reading or -1.
+samples_tsv_row() {
+    [ -n "$SAMPLES_TSV" ] && [ -f "$SAMPLES_TSV" ] || return 0
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$1" "$(date +%s)" "$boots" "$2" "$3" "$4" "$5" "$6" "$7" \
+        "$LAST_CPU_SECONDS" "$LAST_RSS_KB" \
+        "$LAST_DISK_READ_BYTES" "$LAST_DISK_WRITE_BYTES" "$8" \
+        >>"$SAMPLES_TSV" 2>/dev/null || true
+}
+
 # json_escape/json_string/json_number_or_null/is_busy_response/jget: see
 # stopwatch_json_lib.sh (sourced above) — used by rpc_frontier() and the
 # failure-bundle capture below.
+
+# ── phases[]: WHERE THE TIME WENT, AND FROM WHICH SOURCE ────────────────────
+#
+# PROVENANCE RULE FOR THIS WHOLE SECTION: every field emitted names the source
+# that produced it, and a field with no honest source today is OMITTED, never
+# emitted as 0. A zero that a later reader mistakes for a measurement is worse
+# than an absent field, because it silently anchors the next optimization pass
+# to a number nobody measured.
+#
+# Deliberately NOT emitted, because nothing in this tree sources them per phase:
+#   * network bytes — no dumpstate subsystem exposes a peer/socket byte counter
+#     (`network`, `connman`, `peer_lifecycle` carry connection and handshake
+#     counts, not bytes), and /proc has no per-process network accounting. The
+#     download manager's total_bytes_received exists in C
+#     (lib/net/src/download.c) but reaches no diagnostics dumper, so this
+#     harness cannot read it.
+#   * per-phase CPU / disk for the BOOT phases — boot.c's markers carry a
+#     duration and nothing else, and /proc counters are only sampled once the
+#     harness's own loop is running (boot has already finished by the first
+#     tick). CPU/disk are therefore attached ONLY to the harness-bracketed
+#     phase, where the harness genuinely bracketed the window it is reporting.
+#   * an exact wall-clock start per boot phase — boot.c's `[boot]` marker lines
+#     carry NO timestamp of their own, and the top-level marks do not tile the
+#     boot (measured on the one real PASS artifact on disk,
+#     20260728T000207Z-2102851: 15,623ms of named top-level phases against a
+#     51,755ms `total` — ~36s unattributed), so a cumulative-sum "start" would
+#     be fabricated. What IS honest is start_ts_lower_bound: the most recent
+#     TIMESTAMPED node.log line at or before the marker, i.e. a real bound
+#     ("this phase did not start before this"), named as the bound it is.
+
+# boot_timings_median_pairs <boot_timings.json> — emit `stage<TAB>median_ms`
+# rows from a captured `dumpstate boot_timings` doc (the flight recorder's
+# durable per-stage history, config/src/boot_flight_recorder.c: rows are
+# {"stage":..,"last_ms":..,"median_ms":..}, median_ms present only once a stage
+# has >=3 retained samples). Splitting on '}' isolates each row so the shared
+# readers below anchor within one row instead of across the whole doc.
+boot_timings_median_pairs() {
+    [ -s "${1:-}" ] || return 0
+    local chunk st md
+    tr '}' '\n' <"$1" 2>/dev/null | while IFS= read -r chunk; do
+        case "$chunk" in *'"stage"'*) ;; *) continue ;; esac
+        st="$(zcl_json_first_string "$chunk" stage)"
+        md="$(jget "$chunk" median_ms)"
+        [ -n "$st" ] && [ -n "$md" ] && printf '%s\t%s\n' "$st" "$md"
+    done
+    return 0
+}
+
+# phases_json_from_log <node.log> <median-tsv> — emit the boot-phase elements of
+# phases[] (comma-separated JSON objects, NO enclosing brackets) parsed from the
+# node's own `[boot]` markers.
+#
+# The marker format is boot.c's boot_topmark/boot_submark:
+#   "[boot] %-30s %lldms\n"      (top-level phase, ONE space after "[boot]")
+#   "[boot]   %-28s %lldms\n"    (sub-phase,     THREE spaces)
+# so a marker line is EXACTLY two whitespace-separated tokens after the prefix:
+# a [a-z_.0-9] name and an integer followed by "ms". Requiring exactly two is
+# what keeps the many prose "[boot] ..." lines out (there are 74 "[boot]" lines
+# in the real PASS artifact and only 59 are markers) — a looser match pulls in
+# "[boot] block_index: 1 entries, 296 bytes/entry, ..." and invents phases.
+#
+# `boot` is the 1-based boot ordinal within the run: it increments on each
+# top-level "prologue" marker, which boot.c emits as the first topmark of every
+# boot (config/src/boot.c boot_topmark("prologue", t_boot_start)). A run that
+# followed a self-respawn therefore reports each boot's phases separately rather
+# than silently blending two boots' timings into one set of names.
+phases_json_from_log() {
+    local log="${1:-}" med="${2:-}"
+    [ -s "$log" ] || return 0
+    awk -v medfile="$med" '
+        BEGIN {
+            if (medfile != "")
+                while ((getline ln < medfile) > 0)
+                    if (split(ln, mf, "\t") >= 2) med[mf[1]] = mf[2]
+            boot = 0; seq = 0; lastts = ""; first = 1
+        }
+        /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z/ {
+            lastts = substr($0, 1, 20)
+        }
+        {
+            lvl = ""
+            if ($0 ~ /^\[boot\]   [^ ]/)     lvl = "subphase"
+            else if ($0 ~ /^\[boot\] [^ ]/)  lvl = "phase"
+            if (lvl == "") next
+            line = $0
+            sub(/^\[boot\][ ]+/, "", line)
+            if (split(line, g, /[ \t]+/) != 2) next
+            nm = g[1]; msf = g[2]
+            if (nm !~ /^[a-z_.0-9]+$/) next
+            if (msf !~ /^[0-9]+ms$/) next
+            ms = msf; sub(/ms$/, "", ms)
+            if (nm == "prologue" && lvl == "phase") { boot++; seq = 0 }
+            if (boot == 0) boot = 1
+            seq++
+            printf "%s{\"phase\":%c%s%c,\"boot\":%d,\"seq\":%d,\"level\":%c%s%c",
+                   (first ? "" : ","), 34, nm, 34, boot, seq, 34, lvl, 34
+            printf ",\"duration_ms\":%s,\"duration_source\":%cnode_log_boot_marker%c",
+                   ms, 34, 34
+            if (lastts != "")
+                printf ",\"start_ts_lower_bound\":%c%s%c,\"start_source\":%cnearest_preceding_timestamped_node_log_line%c",
+                       34, lastts, 34, 34, 34
+            if (nm in med)
+                printf ",\"median_ms\":%s,\"median_source\":%cdumpstate_boot_timings%c",
+                       med[nm], 34, 34
+            printf "}"
+            first = 0
+        }
+    ' "$log" 2>/dev/null
+    return 0
+}
+
+# harness_phases_json <captured_at_unix> — emit the elements of phases[] the
+# HARNESS itself bracketed, and so can timestamp exactly: it took `date +%s` on
+# both sides of each window. These are the only phases carrying cpu/disk, and
+# they carry them because the harness sampled /proc across that same window.
+harness_phases_json() {
+    local captured_at="${1:-0}" out="" dur
+    if [ "${HEADER_IMPORT_MS:--1}" != "-1" ] && [ "${HEADER_IMPORT_START:-0}" -gt 0 ] 2>/dev/null; then
+        out="{\"phase\":\"harness.header_import\",\"level\":\"harness\""
+        out="$out,\"start_unix\":$HEADER_IMPORT_START"
+        out="$out,\"duration_ms\":$HEADER_IMPORT_MS"
+        out="$out,\"duration_source\":\"harness wall clock around --importblockindex\"}"
+    fi
+    if [ "${LOOP_START_UNIX:-0}" -gt 0 ] 2>/dev/null; then
+        dur=-1
+        [ "$captured_at" -ge "$LOOP_START_UNIX" ] 2>/dev/null &&
+            dur=$(( (captured_at - LOOP_START_UNIX) * 1000 ))
+        [ -n "$out" ] && out="$out,"
+        out="$out{\"phase\":\"harness.observed_sync\",\"level\":\"harness\""
+        out="$out,\"boot\":$(json_number_or_null "$boots")"
+        out="$out,\"start_unix\":$LOOP_START_UNIX"
+        out="$out,\"duration_ms\":$(json_number_or_null "$dur")"
+        out="$out,\"duration_source\":\"harness wall clock from sample-loop entry to artifact capture\""
+        out="$out,\"cpu_seconds\":$LAST_CPU_SECONDS"
+        out="$out,\"rss_kb\":$(json_number_or_null "$LAST_RSS_KB")"
+        out="$out,\"disk_read_bytes\":$(json_number_or_null "$LAST_DISK_READ_BYTES")"
+        out="$out,\"disk_write_bytes\":$(json_number_or_null "$LAST_DISK_WRITE_BYTES")"
+        out="$out,\"counters_source\":\"/proc/<pid>/stat utime+stime over CLK_TCK and rss pages; /proc/<pid>/io read_bytes and write_bytes (block layer)\""
+        out="$out,\"counters_scope\":\"cumulative for the FINAL node process only — a followed self-respawn starts a new pid and resets these; see samples.tsv boot column\"}"
+    fi
+    printf '%s' "$out"
+    return 0
+}
+
+# omitted_fields_json — the elements of omitted_fields[] (comma-separated JSON
+# objects, NO enclosing brackets): every field the owner's measurement brief
+# named that this run did NOT record, BY NAME, with the reason and the nearest
+# honest substitute.
+#
+# WHY THIS IS A FIRST-CLASS ARTIFACT SECTION AND NOT A COMMENT. The brief asks
+# for phase time, bytes, CPU, disk, blocker, final H*, peer tip, and source
+# identity. Some of those have no honest per-phase source in this tree today.
+# A silently absent field reads to the next reader as "measured, and fine" —
+# which is how a baseline acquires a number nobody took. So an unmeasurable
+# field is RECORDED as unmeasured, named exactly as the brief named it, and the
+# reason is stated. The rule this enforces: never fabricate a field, never
+# estimate one and present it as measured, never quietly drop one.
+#
+# Two classes of row:
+#   structural — no source exists in this tree at all, for any run. These are
+#                constant and are the honest to-do list for the instrument.
+#   this_run   — a source EXISTS but this particular run could not read it
+#                (binary unidentifiable, /proc unreadable, node.log absent).
+#                This is the degrade-don't-crash path: the run still reports the
+#                verdict the node earned, and says which readings it lost.
+omitted_fields_json() {
+    local out="" f
+    _of_row() {  # field, scope, reason, substitute
+        [ -n "$out" ] && out="$out,"
+        out="$out{\"field\":$(json_string "$1"),\"scope\":$(json_string "$2")"
+        out="$out,\"reason\":$(json_string "$3")"
+        out="$out,\"nearest_honest_substitute\":$(json_string "$4")}"
+    }
+    # ── structural: nothing in this tree sources these ──────────────────────
+    _of_row "phases[].network_bytes" "structural" \
+        "no diagnostics dumper exposes a peer/socket byte counter (network, connman and peer_lifecycle carry connection and handshake COUNTS, not bytes), and /proc has no per-process network accounting. lib/net/src/download.c does track total_bytes_received in C but it reaches no dumper, so this harness has nothing to read." \
+        "none. Bytes are UNMEASURED this run — do not infer them from wall-clock time."
+    _of_row "phases[].cpu_seconds (boot-level phases)" "structural" \
+        "config/src/boot.c boot_topmark/boot_submark emit a phase NAME and a DURATION and nothing else. The harness's own /proc sampling only starts once its sample loop is running, by which time boot has already finished, so there is no window it genuinely bracketed." \
+        "harness.observed_sync carries cpu_seconds for the window the harness DID bracket; samples.tsv carries the per-tick series."
+    _of_row "phases[].disk_read_bytes / phases[].disk_write_bytes (boot-level phases)" "structural" \
+        "same as cpu_seconds: the boot markers carry only a duration, and the harness was not yet sampling /proc during boot." \
+        "harness.observed_sync + samples.tsv, for the observed-sync window only."
+    _of_row "phases[].start_unix (boot-level phases)" "structural" \
+        "the [boot] marker lines carry no timestamp of their own, and the top-level marks do not tile the boot (on the one real PASS artifact on disk, 20260728T000207Z-2102851, named top-level phases sum to 15,623ms against a 51,755ms total — ~36s unattributed), so a cumulative-sum start would be fabricated." \
+        "start_ts_lower_bound: the nearest PRECEDING timestamped node.log line. It is a bound ('this phase did not start before this'), named as one, never presented as a start."
+    _of_row "phases[].blocker (per boot-level phase)" "structural" \
+        "a named blocker is raised by a REDUCER STAGE (dumpstate blocker / stage-*.json), not by a boot marker; there is no mapping from a boot phase name to a blocker id, and inventing one would attribute a stall to a phase that did not raise it." \
+        "samples.tsv blocker_count/blocker_ids per tick, plus blocker.json and stage-*.json in this artifact dir."
+    _of_row "phases[].hstar / phases[].peer_tip (per boot-level phase)" "structural" \
+        "H* and network_tip are read over RPC, which is not serving during most of boot; a boot phase therefore has no H* of its own." \
+        "samples.tsv hstar/network_tip per tick, and the run-level final_hstar / final_network_tip / measured_identity.peer_advertised_tip in this file."
+    # ── this_run: a source exists, this run could not read it ───────────────
+    if [ -z "${NODE_BIN_SOURCE_ID:-}" ]; then
+        _of_row "measured_identity.node_bin_source_id_sha256" "this_run" \
+            "zcl_binary_source_id (tools/scripts/source_identity_lib.sh) returned no 64-hex source id for this binary — it is absent, not executable, or its agentbuild output carried none. The field is null rather than guessed." \
+            "measured_identity.node_bin (the path that was run). The BUILD behind it is unidentified for this run."
+    fi
+    if [ -z "${SAMPLES_TSV:-}" ] || [ ! -f "${SAMPLES_TSV:-/nonexistent}" ]; then
+        _of_row "samples.tsv" "this_run" \
+            "the per-tick sink could not be created or the run ended before the sample loop was armed (an early skip/fail has no ticks to record)." \
+            "the summary first/max/final fields in this file. The SHAPE of the climb is unrecorded for this run."
+    fi
+    if [ ! -f "$ARTIFACT_DIR/node.log" ]; then
+        _of_row "phases[] boot-level elements" "this_run" \
+            "node.log was not captured into this artifact dir, so the node's own [boot] markers could not be parsed. Boot phase durations are unrecorded for this run." \
+            "the harness.* elements, which the harness bracketed itself and does not need node.log for."
+    fi
+    for f in cpu_seconds rss_kb disk_read_bytes disk_write_bytes; do
+        case "$f" in
+            cpu_seconds)       [ "${LAST_CPU_SECONDS:--1}" = "-1" ] || continue ;;
+            rss_kb)            [ "${LAST_RSS_KB:--1}" = "-1" ] || continue ;;
+            disk_read_bytes)   [ "${LAST_DISK_READ_BYTES:--1}" = "-1" ] || continue ;;
+            disk_write_bytes)  [ "${LAST_DISK_WRITE_BYTES:--1}" = "-1" ] || continue ;;
+        esac
+        _of_row "harness.observed_sync.$f" "this_run" \
+            "/proc/<pid>/stat or /proc/<pid>/io was unreadable at capture (most often: the node process had already exited). Reported as -1, which is the never-measured sentinel and is deliberately distinguishable from a real zero." \
+            "samples.tsv, whose earlier rows may carry a reading from while the process was alive."
+    done
+    unset -f _of_row
+    printf '%s' "$out"
+    return 0
+}
 
 # is_self_respawn_reason — true iff the given boot-exit-reason.v1 `reason` value
 # is a supervised self-respawn request (self_respawn_tip_watchdog /
@@ -420,6 +774,164 @@ if [ "$SELFTEST" = "1" ]; then
     grep -q 'no_peer_configured' "${BASH_SOURCE[0]}"
     st_check "the empty-peer refusal is still wired" 0 $?
 
+    # ── MEASURED-BASELINE GUARDRAILS ────────────────────────────────────────
+    # The defect these three exist to stop from growing back: the diagnostic
+    # bundle was captured only when `verdict != pass`, so a PASSING run left no
+    # per-phase evidence and the one artifact class worth optimizing against
+    # destroyed its own measurements. Same shape as the no-implicit-peer
+    # guardrail above — assert on this file's own source text, with patterns
+    # assembled from concatenated literals so they cannot match their own
+    # source lines.
+    st_pat_pass_guard='verdict" != "pass" \]'' && capture'
+    grep -qE "$st_pat_pass_guard" "${BASH_SOURCE[0]}"
+    st_check "capture is NOT gated behind a non-pass verdict check (the pass/non-pass asymmetry stays deleted)" 1 $?
+    grep -qE '^ {4}capture_run_bundle$' "${BASH_SOURCE[0]}"
+    st_check "capture_run_bundle is called UNCONDITIONALLY in write_artifact" 0 $?
+    # These next two are ANCHORED ON THE CALL SITE, not on the bare name, and
+    # that is the whole point. Both started life as `grep -q 'samples_tsv_row '`
+    # and `grep -q 'dumpstate boot_timings'` — and a mutation run proved both
+    # were hollow: the names also occur in this file's own comments and function
+    # definitions, so prefixing the real call with `:` (neutering it completely)
+    # or repointing the capture at a different dumpstate key left BOTH checks
+    # green. A source-text assertion has to pin the LINE THAT DOES THE WORK: the
+    # call at its loop indentation with its first real argument, and the capture
+    # invocation with the binary that performs it.
+    grep -qE '^ {4}samples_tsv_row "\$elapsed"' "${BASH_SOURCE[0]}"
+    st_check "the per-tick samples.tsv sink is CALLED in the sample loop (not merely mentioned)" 0 $?
+    grep -qE '^ {8}"\$NODE_BIN".*dumpstate boot_timings' "${BASH_SOURCE[0]}"
+    st_check "boot_timings (the median source for phases[]) is actually captured by the bundle" 0 $?
+
+    # /proc parsers. The comm field is parenthesized AND may itself contain
+    # spaces and parentheses, which is exactly what breaks a naive $14/$15 read
+    # — the second fixture is a process literally named ") x (y z" and both
+    # parsers must still land on the right fields.
+    st_stat_plain='4242 (zclassic23) S 1 4242 4242 0 -1 4194560 900 0 3 0 731 219 0 0 20 0 12 0 55 9999 262144 0 0 0 0 0 0 0 0 0 0 0 0 0 17 3'
+    st_stat_nasty='4242 () x (y z) S 1 4242 4242 0 -1 4194560 900 0 3 0 731 219 0 0 20 0 12 0 55 9999 262144 0'
+    st_ps_check "proc stat: cpu ticks are utime+stime (731+219)" 950 "$(parse_proc_stat_cpu_ticks "$st_stat_plain")"
+    st_ps_check "proc stat: a comm containing spaces AND parens does not shift the cpu fields" 950 "$(parse_proc_stat_cpu_ticks "$st_stat_nasty")"
+    st_ps_check "proc stat: rss pages read from the right field" 262144 "$(parse_proc_stat_rss_pages "$st_stat_plain")"
+    st_ps_check "proc stat: rss survives the nasty comm too" 262144 "$(parse_proc_stat_rss_pages "$st_stat_nasty")"
+    st_ps_check "proc stat: a truncated line yields -1, never a fabricated 0" -1 "$(parse_proc_stat_cpu_ticks '4242 (x) S 1 2')"
+    st_ps_check "proc stat: empty input yields -1, never 0" -1 "$(parse_proc_stat_cpu_ticks '')"
+    st_io_blob='rchar: 111
+wchar: 222
+read_bytes: 4096000
+write_bytes: 8192000
+cancelled_write_bytes: 0'
+    st_ps_check "proc io: read_bytes is the block-layer counter, not rchar" 4096000 "$(parse_proc_io_field "$st_io_blob" read_bytes)"
+    st_ps_check "proc io: write_bytes is the block-layer counter, not wchar" 8192000 "$(parse_proc_io_field "$st_io_blob" write_bytes)"
+    st_ps_check "proc io: write_bytes is not confused with cancelled_write_bytes" 8192000 "$(parse_proc_io_field "$st_io_blob" write_bytes)"
+    st_ps_check "proc io: an absent key yields -1, never 0" -1 "$(parse_proc_io_field "$st_io_blob" nonesuch)"
+    st_ps_check "proc io: empty input yields -1, never 0" -1 "$(parse_proc_io_field '' read_bytes)"
+
+    # Boot-marker phase parsing. The real hazard is over-matching: the one real
+    # PASS artifact has 74 "[boot]" lines and only 59 are markers, so a looser
+    # pattern invents phases out of prose ("[boot] block_index: 1 entries, 296
+    # bytes/entry, ..."). This fixture carries one top-level marker, one
+    # sub-phase marker, three prose decoys, and a SECOND boot.
+    st_log="$(mktemp)" ; st_med="$(mktemp)"
+    {
+        printf '2026-07-28T00:02:12Z INFO something happened\n'
+        printf '[boot] prologue                       63ms\n'
+        printf '[boot]   sqlite.quick_check           7ms\n'
+        printf '[boot] block_index: 1 entries, 296 bytes/entry, index=0MB\n'
+        printf '[boot] First boot or marker absent (no WAL)\n'
+        printf '[boot] system_ram=95654MB block_index_estimate=1121MB (3000000 entries)\n'
+        printf '2026-07-28T00:03:00Z INFO later\n'
+        printf '[boot] prologue                       101ms\n'
+        printf '[boot] total                          51755ms\n'
+    } >"$st_log"
+    printf 'prologue\t70\n' >"$st_med"
+    st_phases="$(phases_json_from_log "$st_log" "$st_med")"
+    st_ps_check "boot markers: exactly 4 phases parsed from 9 lines (3 prose + 2 timestamped non-markers rejected)" \
+        4 "$(printf '%s' "$st_phases" | grep -o '"phase":' | wc -l | tr -d ' ')"
+    st_ps_check "boot markers: prose 'block_index:' line did NOT become a phase" \
+        0 "$(printf '%s' "$st_phases" | grep -c 'block_index' | tr -d ' ')"
+    st_ps_check "boot markers: prose 'system_ram=' line did NOT become a phase" \
+        0 "$(printf '%s' "$st_phases" | grep -c 'system_ram' | tr -d ' ')"
+    st_ps_check "boot markers: a top-level marker is level=phase" \
+        1 "$(printf '%s' "$st_phases" | grep -c '"phase":"total","boot":2,"seq":2,"level":"phase"' | tr -d ' ')"
+    st_ps_check "boot markers: an indented marker is level=subphase" \
+        1 "$(printf '%s' "$st_phases" | grep -c '"phase":"sqlite.quick_check","boot":1,"seq":2,"level":"subphase"' | tr -d ' ')"
+    st_ps_check "boot markers: the second prologue starts boot 2 (respawn is not blended into boot 1)" \
+        1 "$(printf '%s' "$st_phases" | grep -c '"phase":"prologue","boot":2,"seq":1' | tr -d ' ')"
+    st_ps_check "boot markers: duration_ms comes off the marker itself" \
+        1 "$(printf '%s' "$st_phases" | grep -c '"duration_ms":51755' | tr -d ' ')"
+    st_ps_check "boot markers: start bound is the nearest PRECEDING timestamped line, and is named a bound" \
+        1 "$(printf '%s' "$st_phases" | grep -c '"phase":"total","boot":2,"seq":2,"level":"phase","duration_ms":51755,"duration_source":"node_log_boot_marker","start_ts_lower_bound":"2026-07-28T00:03:00Z"' | tr -d ' ')"
+    st_ps_check "boot markers: median_ms is joined from boot_timings for the stage that has one" \
+        2 "$(printf '%s' "$st_phases" | grep -o '"median_source":"dumpstate_boot_timings"' | wc -l | tr -d ' ')"
+    st_ps_check "boot markers: a stage with NO median gets no median field (never a fabricated 0)" \
+        0 "$(printf '%s' "$st_phases" | grep -o '"median_ms":0' | wc -l | tr -d ' ')"
+    st_ps_check "boot markers: an absent log yields no phases, not a malformed element" \
+        "" "$(phases_json_from_log "$st_log.nonesuch" "$st_med")"
+    rm -f "$st_log" "$st_med"
+
+    # boot_timings median extraction, via the SHARED readers (no local parser).
+    st_bt="$(mktemp)"
+    printf '{"last_boot_epoch":1,"stages":[{"stage":"prologue","last_ms":63,"median_ms":70},{"stage":"utxo_import","last_ms":5}]}\n' >"$st_bt"
+    st_ps_check "boot_timings: a stage WITH a median yields one pair" \
+        "prologue	70" "$(boot_timings_median_pairs "$st_bt")"
+    st_ps_check "boot_timings: a stage with <3 samples (no median_ms) yields NO pair" \
+        0 "$(boot_timings_median_pairs "$st_bt" | grep -c utxo_import | tr -d ' ')"
+    st_ps_check "boot_timings: an absent doc yields no pairs" "" "$(boot_timings_median_pairs "$st_bt.nonesuch")"
+    rm -f "$st_bt"
+
+    # ── omitted_fields[]: named absence, not silent absence ─────────────────
+    # The defect: a field the measurement brief asked for that this tree cannot
+    # source was simply not emitted, and a silently absent field reads to the
+    # next reader as "measured, and fine". Every structural row must be present
+    # on EVERY run, and a this_run row must appear exactly when the reading was
+    # genuinely lost. These fixtures drive omitted_fields_json() through both.
+    st_of_names() { printf '%s' "$1" | grep -o '"field":"[^"]*"' | sed 's/.*:"//;s/"$//' | sort; }
+    ARTIFACT_DIR="$(mktemp -d)"
+    NODE_BIN_SOURCE_ID="1111111111111111111111111111111111111111111111111111111111111111"
+    SAMPLES_TSV="$ARTIFACT_DIR/samples.tsv"; : >"$SAMPLES_TSV"
+    : >"$ARTIFACT_DIR/node.log"
+    LAST_CPU_SECONDS="9.50"; LAST_RSS_KB="262144"
+    LAST_DISK_READ_BYTES="4096000"; LAST_DISK_WRITE_BYTES="8192000"
+    st_of_best="$(omitted_fields_json)"
+    st_ps_check "omitted_fields: the 6 structural rows are present even when EVERYTHING measurable was measured" \
+        6 "$(printf '%s' "$st_of_best" | grep -o '"scope":"structural"' | wc -l | tr -d ' ')"
+    st_ps_check "omitted_fields: a fully-measured run reports NO this_run rows" \
+        0 "$(printf '%s' "$st_of_best" | grep -o '"scope":"this_run"' | wc -l | tr -d ' ')"
+    st_ps_check "omitted_fields: network bytes are named as omitted, never emitted as 0" \
+        1 "$(printf '%s' "$st_of_best" | grep -c 'phases\[\].network_bytes' | tr -d ' ')"
+    st_ps_check "omitted_fields: every row carries a reason" \
+        6 "$(printf '%s' "$st_of_best" | grep -o '"reason":"' | wc -l | tr -d ' ')"
+    st_ps_check "omitted_fields: every row carries a nearest_honest_substitute" \
+        6 "$(printf '%s' "$st_of_best" | grep -o '"nearest_honest_substitute":"' | wc -l | tr -d ' ')"
+    st_ps_check "omitted_fields: no row claims a substitute of a fabricated zero" \
+        0 "$(printf '%s' "$st_of_best" | grep -c '"nearest_honest_substitute":"0"' | tr -d ' ')"
+    # Now lose every optional reading and confirm each loss is NAMED.
+    NODE_BIN_SOURCE_ID=""
+    SAMPLES_TSV=""
+    rm -f "$ARTIFACT_DIR/node.log"
+    LAST_CPU_SECONDS="-1"; LAST_RSS_KB="-1"
+    LAST_DISK_READ_BYTES="-1"; LAST_DISK_WRITE_BYTES="-1"
+    st_of_worst="$(omitted_fields_json)"
+    st_ps_check "omitted_fields: an unidentifiable binary is NAMED as unmeasured, not silently null" \
+        1 "$(printf '%s' "$st_of_worst" | grep -c 'measured_identity.node_bin_source_id_sha256' | tr -d ' ')"
+    st_ps_check "omitted_fields: a missing samples.tsv is NAMED" \
+        1 "$(printf '%s' "$st_of_worst" | grep -o '"field":"samples.tsv"' | wc -l | tr -d ' ')"
+    st_ps_check "omitted_fields: an absent node.log names the lost boot phases" \
+        1 "$(printf '%s' "$st_of_worst" | grep -c 'phases\[\] boot-level elements' | tr -d ' ')"
+    st_ps_check "omitted_fields: all four unreadable /proc counters are named individually" \
+        4 "$(printf '%s' "$st_of_worst" | grep -o '"field":"harness.observed_sync\.[a-z_]*"' | wc -l | tr -d ' ')"
+    st_ps_check "omitted_fields: the structural rows survive the worst case too" \
+        6 "$(printf '%s' "$st_of_worst" | grep -o '"scope":"structural"' | wc -l | tr -d ' ')"
+    st_ps_check "omitted_fields: the worst case names strictly MORE fields than the best case" \
+        1 "$([ "$(st_of_names "$st_of_worst" | wc -l)" -gt "$(st_of_names "$st_of_best" | wc -l)" ] && echo 1 || echo 0)"
+    st_ps_check "omitted_fields: no field name is reported twice" \
+        "" "$(st_of_names "$st_of_worst" | uniq -d)"
+    rm -rf "$ARTIFACT_DIR"
+    ARTIFACT_DIR=""; NODE_BIN_SOURCE_ID=""; SAMPLES_TSV=""
+
+    # The artifact must NAME its own omitted set — a proof.json that emits
+    # phases[] but no omitted_fields[] is back to silent absence.
+    grep -q '"omitted_fields": \[' "${BASH_SOURCE[0]}"
+    st_check "proof.json emits an omitted_fields[] array" 0 $?
+
     if [ "$st_fail" = 0 ]; then
         echo "cold-start-wipe-stopwatch: --selftest PASS"
         exit 0
@@ -428,9 +940,22 @@ if [ "$SELFTEST" = "1" ]; then
     exit 1
 fi
 
-# capture_failure_bundle — on any non-pass verdict, snapshot the live
-# diagnostic state a human/agent needs to root-cause the run WITHOUT
-# re-running the harness: frontier.json (dumpstate reducer_frontier),
+# capture_run_bundle — on EVERY verdict, PASS INCLUDED, snapshot the live
+# diagnostic state a human/agent needs to root-cause OR re-cost the run WITHOUT
+# re-running the harness.
+#
+# THIS USED TO BE capture_failure_bundle, called only when `verdict != pass`.
+# That asymmetry meant a SUCCESSFUL run left three files (proof.json +
+# node.log + node.tail.log) and no per-phase evidence at all, while a failing
+# run left the full set — so the one artifact class you actually want to
+# optimize against was the one class that threw its measurements away. The one
+# real PASS artifact on disk (build/c3-stopwatch/20260728T000207Z-2102851/) is
+# exactly that: three files, no reducer_stage_profile.json, no stage-*.json.
+# There is no cheaper time to read the node's own per-stage cost than the moment
+# it just finished the run, and a baseline that only exists on failure is not a
+# baseline. Capture is now unconditional; only the LABELS differ by verdict.
+#
+# Captured: frontier.json (dumpstate reducer_frontier),
 # reducer_drive.json (the synchronous drain/lock owner and its last exit),
 # reducer_stage_profile.json (per-stage RPF_* sub-phase timing: disk read,
 # event encode/append, created-index, stage-log cursor — the fold-cost split),
@@ -444,10 +969,11 @@ fi
 # (never dropped just because it's busy), only LABELED, per D6. Safe to call
 # before NODE_BIN/DATADIR/PID are ever set (an early binary-absent/peer-
 # unreachable skip has nothing to capture from).
-capture_failure_bundle() {
+capture_run_bundle() {
     BUNDLE_CAPTURE_FAILED="false"
     FRONTIER_BUSY_AT_CAPTURE="false"
     local got_frontier=0 got_drive=0 got_profile=0 got_stages=0 got_blocker=0 got_logs=0 got_net=0
+    local got_timings=0
     if [ -n "${PID:-}" ] && kill -0 "$PID" 2>/dev/null && [ -x "${NODE_BIN:-}" ] && [ -n "${DATADIR:-}" ]; then
         # Frontier read goes through rpc_frontier (bounded retries + busy
         # handling) so a lock-contention blip during capture doesn't drop the
@@ -463,6 +989,13 @@ capture_failure_bundle() {
             >"$ARTIFACT_DIR/reducer_drive.json" 2>/dev/null && [ -s "$ARTIFACT_DIR/reducer_drive.json" ] && got_drive=1
         "$NODE_BIN" -rpcport="$RPC" -datadir="$DATADIR" dumpstate reducer_stage_profile \
             >"$ARTIFACT_DIR/reducer_stage_profile.json" 2>/dev/null && [ -s "$ARTIFACT_DIR/reducer_stage_profile.json" ] && got_profile=1
+        # boot_timings: the flight recorder's durable per-stage boot history
+        # (config/src/boot_flight_recorder.c). It is the ONLY source of the
+        # median_ms a phases[] row can be compared against, so phases[] would
+        # be un-baselineable without it — one boot's ms with nothing to judge it
+        # by is a number, not a measurement.
+        "$NODE_BIN" -rpcport="$RPC" -datadir="$DATADIR" dumpstate boot_timings \
+            >"$ARTIFACT_DIR/boot_timings.json" 2>/dev/null && [ -s "$ARTIFACT_DIR/boot_timings.json" ] && got_timings=1
         got_stages=1
         for stage_name in header_admit validate_headers body_fetch body_persist \
                           script_validate proof_validate utxo_apply tip_finalize; do
@@ -509,7 +1042,7 @@ capture_failure_bundle() {
     fi
     [ "$got_frontier" = 1 ] && [ "$got_drive" = 1 ] && [ "$got_profile" = 1 ] &&
         [ "$got_stages" = 1 ] && [ "$got_blocker" = 1 ] && [ "$got_logs" = 1 ] &&
-        [ "$got_net" = 1 ] ||
+        [ "$got_net" = 1 ] && [ "$got_timings" = 1 ] ||
         BUNDLE_CAPTURE_FAILED="true"
 }
 
@@ -522,12 +1055,44 @@ write_artifact() {
     BUNDLE_CAPTURE_FAILED="false"
     FRONTIER_BUSY_AT_CAPTURE="false"
     BANLIST_PRESENT="false"
-    [ "$verdict" != "pass" ] && capture_failure_bundle
+    # UNCONDITIONAL — every verdict, PASS INCLUDED. Do NOT re-introduce a
+    # `[ "$verdict" != "pass" ]` guard here: that is the exact asymmetry that
+    # made a successful run destroy its own per-phase evidence. --selftest
+    # asserts on this file's source text that the guard has not grown back.
+    capture_run_bundle
+    # Refresh the process counters one last time so the harness.observed_sync
+    # phase reports the counters as of capture, not as of the last sample tick.
+    refresh_process_counters
     NODE_LOG_CAPTURED="false"
     if [ -n "${DATADIR:-}" ] && [ -f "$DATADIR/node.log" ] &&
        cp -p -- "$DATADIR/node.log" "$ARTIFACT_DIR/node.log" 2>/dev/null; then
         NODE_LOG_CAPTURED="true"
     fi
+
+    # ── phases[] assembly (before the JSON block, so a parse hiccup cannot
+    # truncate proof.json mid-object). Boot phases are parsed from the COPY of
+    # node.log just placed in the artifact dir, so proof.json and the log it was
+    # derived from always agree.
+    SAMPLES_ROWS=""
+    if [ -n "$SAMPLES_TSV" ] && [ -f "$SAMPLES_TSV" ]; then
+        SAMPLES_ROWS="$(awk 'NR > 1 { n++ } END { print n + 0 }' "$SAMPLES_TSV" 2>/dev/null)"
+    fi
+    PHASES_JSON=""
+    _ph_harness="$(harness_phases_json "$captured_at")"
+    _ph_boot=""
+    if [ -f "$ARTIFACT_DIR/node.log" ]; then
+        _ph_med="$ARTIFACT_DIR/.boot-timings-medians.tsv"
+        boot_timings_median_pairs "$ARTIFACT_DIR/boot_timings.json" >"$_ph_med" 2>/dev/null || : >"$_ph_med"
+        _ph_boot="$(phases_json_from_log "$ARTIFACT_DIR/node.log" "$_ph_med")"
+        rm -f "$_ph_med" 2>/dev/null || true
+    fi
+    if [ -n "$_ph_harness" ] && [ -n "$_ph_boot" ]; then
+        PHASES_JSON="$_ph_harness,$_ph_boot"
+    else
+        PHASES_JSON="$_ph_harness$_ph_boot"
+    fi
+    PHASES_PROVENANCE="harness.* elements: this harness bracketed the window itself (date +%s on both sides). Boot elements: parsed from the node's own [boot] boot_topmark/boot_submark markers in node.log, median_ms joined from dumpstate boot_timings. OMITTED for lack of an honest source: network bytes (no diagnostics dumper exposes a byte counter and /proc has no per-process network accounting), per-boot-phase cpu/disk (boot.c markers carry only a duration), exact per-boot-phase wall-clock start (the markers carry no timestamp and the top-level marks do not tile the boot) — start_ts_lower_bound is given instead and is a bound, not a start."
+
     {
         printf '{\n'
         printf '  "schema": "zcl.c3_stopwatch_artifact.v1",\n'
@@ -559,7 +1124,39 @@ write_artifact() {
         printf '  "node_log_captured": %s,\n' "$NODE_LOG_CAPTURED"
         printf '  "bundle_capture_failed": %s,\n' "$BUNDLE_CAPTURE_FAILED"
         printf '  "banlist_present": %s,\n' "${BANLIST_PRESENT:-false}"
-        printf '  "frontier_busy_at_capture": %s\n' "$FRONTIER_BUSY_AT_CAPTURE"
+        printf '  "frontier_busy_at_capture": %s,\n' "$FRONTIER_BUSY_AT_CAPTURE"
+        printf '  "samples_tsv": %s,\n' \
+            "$([ -n "$SAMPLES_TSV" ] && [ -f "$SAMPLES_TSV" ] && printf '"samples.tsv"' || printf 'null')"
+        printf '  "samples_rows": %s,\n' "$(json_number_or_null "$SAMPLES_ROWS")"
+        # WHAT WAS MEASURED. A phase timing with no identity attached is not a
+        # baseline for anything: the next run cannot tell whether it got faster
+        # or just ran a different binary against a different peer.
+        # source_id_sha256 comes from the ONE canonical reader
+        # (tools/scripts/source_identity_lib.sh zcl_binary_source_id — read once
+        # at startup, before the run, so it describes the binary that was
+        # actually timed).
+        printf '  "measured_identity": {\n'
+        printf '    "node_bin": %s,\n' "$(json_string "$NODE_BIN")"
+        printf '    "node_bin_source_id_sha256": %s,\n' \
+            "$([ -n "$NODE_BIN_SOURCE_ID" ] && json_string "$NODE_BIN_SOURCE_ID" || printf 'null')"
+        printf '    "node_bin_source_id_source": "zcl_binary_source_id (tools/scripts/source_identity_lib.sh) over `%s agentbuild`",\n' \
+            "$(json_escape "$(basename -- "$NODE_BIN")")"
+        printf '    "peer": %s,\n' "$(json_string "$PEER")"
+        printf '    "peer_precheck": %s,\n' "$(json_string "$PEER_PRECHECK")"
+        printf '    "peer_advertised_tip": %s,\n' "$(json_number_or_null "$last_network_tip")"
+        printf '    "peer_advertised_tip_source": "dumpstate reducer_frontier network_tip (best height any handshake-complete peer advertised); -1 means no handshake ever completed"\n'
+        printf '  },\n'
+        # phases[] — see the phases_json_from_log / harness_phases_json headers
+        # for the provenance rule. Every element names the source of its
+        # duration; a field with no honest source is absent, never zero.
+        printf '  "phases_provenance": %s,\n' "$(json_string "$PHASES_PROVENANCE")"
+        printf '  "phases": [%s],\n' "$PHASES_JSON"
+        # omitted_fields[] — see omitted_fields_json(). Every field the
+        # measurement brief named that this run did NOT record, BY NAME, with
+        # the reason. A silently absent field reads as "measured and fine";
+        # this section is what makes that impossible here.
+        printf '  "omitted_fields_provenance": "each row is a field the measurement brief asked for that this run did not record. scope=structural means no source exists in this tree for any run; scope=this_run means a source exists but this run could not read it.",\n'
+        printf '  "omitted_fields": [%s]\n' "$(omitted_fields_json)"
         printf '}\n'
     } >"$ARTIFACT_DIR/proof.json"
     if [ -n "${DATADIR:-}" ] && [ -f "$DATADIR/node.log" ]; then
@@ -573,6 +1170,14 @@ skip() { echo "cold-start-wipe-stopwatch: SKIP ($*)"; write_artifact "skip" 2 "$
 die()  { echo "cold-start-wipe-stopwatch: FAIL: $*" >&2; write_artifact "fail" 1 "$*"; exit 1; }
 
 [ -x "$NODE_BIN" ] || skip "node binary absent/not executable: $NODE_BIN"
+
+# Identity of WHAT IS ABOUT TO BE MEASURED, read once, before the run, via the
+# ONE canonical reader (tools/scripts/source_identity_lib.sh). Empty output is a
+# normal answer there ("nothing to report"), never a failure, so this cannot
+# abort a run — an unidentifiable binary yields a null field in proof.json and
+# the run still reports the verdict the node earned.
+NODE_BIN_SOURCE_ID="$(zcl_binary_source_id "$NODE_BIN")"
+echo "cold-start-wipe-stopwatch: node_bin_source_id=${NODE_BIN_SOURCE_ID:-<unavailable>}"
 
 # ── the peer must be STATED (see the PEER assignment above) ──────────────────
 # A proof lane that inherits its serving peer from a default is a proof lane
@@ -659,11 +1264,13 @@ if [ -n "$BUNDLE_PATH" ]; then
 fi
 if [ -n "$HEADER_SOURCE" ]; then
     echo "cold-start-wipe-stopwatch: importing frozen-validated headers from datadir COPY"
+    HEADER_IMPORT_START=$(date +%s)
     if ! env HOME="$ISO_HOME" "$NODE_BIN" --importblockindex \
         "$HEADER_SOURCE" "$DATADIR/node.db" >>"$DATADIR/node.log" 2>&1; then
         die "header import from datadir COPY failed"
     fi
-    echo "cold-start-wipe-stopwatch: header import complete"
+    HEADER_IMPORT_MS=$(( ($(date +%s) - HEADER_IMPORT_START) * 1000 ))
+    echo "cold-start-wipe-stopwatch: header import complete (${HEADER_IMPORT_MS}ms)"
 fi
 node_args=(
     -datadir="$DATADIR" \
@@ -768,6 +1375,19 @@ log_named_park() {
         tail -1 | sed -E "s/.*gate '([^']*)'.*/\1/"
 }
 
+# Arm the per-tick sink BEFORE the first tick. The artifact dir is created here
+# rather than at write_artifact time so samples.tsv accumulates DURING the run:
+# a harness that is SIGKILLed at t=550s of a 600s budget still leaves the whole
+# climb trace on disk, and the shape of the climb is what says which phase to
+# optimize. These rows used to be printf-to-stdout only and died with the
+# terminal.
+mkdir -p "$ARTIFACT_DIR" 2>/dev/null || true
+if [ -d "$ARTIFACT_DIR" ]; then
+    SAMPLES_TSV="$ARTIFACT_DIR/samples.tsv"
+    samples_tsv_init
+fi
+LOOP_START_UNIX=$(date +%s)
+
 printf '%-8s %-10s %-10s %-10s %-8s %s\n' "t(s)" "hstar" "prov" "net_tip" "tip_ok" "blockers"
 printf '%-8s %-10s %-10s %-10s %-8s %s\n' "----" "-----" "----" "-------" "------" "--------"
 
@@ -829,6 +1449,13 @@ while :; do
     fi
 
     printf '%-8s %-10s %-10s %-10s %-8s %s\n' "$elapsed" "$hs" "$ps" "$nt" "${nt_ok:+yes}" "b=$bc:$bids"
+    # ...and the SAME tick, durably, with the node process's own CPU/RSS/disk
+    # counters alongside it. stdout is for the operator watching; samples.tsv is
+    # the record the next optimization pass reads.
+    refresh_process_counters
+    samples_tsv_row "$elapsed" "$hs" "$ps" "$nt" \
+        "$([ -n "$nt_ok" ] && printf yes || printf no)" \
+        "$FRONTIER_LAST_BUSY" "$bc" "$bids"
 
     # Bounded unreadable-streak check: only accumulates when NO usable provable
     # sample was obtained (ps == -1) AND the node kept answering the busy
