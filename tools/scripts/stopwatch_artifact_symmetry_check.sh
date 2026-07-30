@@ -289,6 +289,20 @@ case "$leaf" in
                 exit 0 ;;
             blocker)
                 printf '{"active_count":0,"blockers":[]}\n'; exit 0 ;;
+            sync_monitor)
+                # Serves a MONOTONICALLY GROWING download_bytes_received off its
+                # own counter file, so the harness's window-open and window-close
+                # reads differ and the end-to-end run exercises the MEASURED byte
+                # path rather than only the -1 fail-closed path. The catch-all
+                # below would return a doc with no byte key at all, which every
+                # run would then honestly report as unavailable — green, but
+                # proving nothing about the arithmetic.
+                b=0
+                [ -f "$state.bytes" ] && b="$(cat "$state.bytes" 2>/dev/null)"
+                case "$b" in ''|*[!0-9]*) b=0 ;; esac
+                b=$((b + 1048576)); printf '%s' "$b" >"$state.bytes" 2>/dev/null || true
+                printf '{"last_recovery":"NONE","download_requested":10,"download_bytes_received":%s,"download_mbps_avg":1.0}\n' "$b"
+                exit 0 ;;
             boot_timings)
                 printf '{"last_boot_epoch":7,"stages":[{"stage":"prologue","last_ms":63,"median_ms":70},{"stage":"total","last_ms":420,"median_ms":430}]}\n'
                 exit 0 ;;

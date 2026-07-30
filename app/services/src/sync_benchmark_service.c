@@ -302,8 +302,20 @@ bool sync_benchmark_build_receipt(struct json_value *out, bool complete,
     json_set_object(&res);
     sb_push_int_or_null(&res, &reasons, "peak_rss_bytes",
                         g_sb.peak_rss_bytes, "rss_never_sampled");
+    /* The old reason here was "not_instrumented_on_this_path", which read as
+     * "nobody counts bytes anywhere". Not true, and the vagueness cost real
+     * time: sync_benchmark_note_downloaded() IS wired, but from exactly one
+     * place — the ROM/checkpoint-bundle fetch (rom_fetch_controller.c) — so a
+     * plain P2P block-download sync legitimately leaves this null while the
+     * node's download manager is counting block-body bytes the whole time
+     * (dl_add_bytes_received, surfaced by `dumpstate sync_monitor` as
+     * download_bytes_received). Name the actual scope so a reader looks in the
+     * right place instead of concluding bytes are unmeasurable. */
     sb_push_int_or_null(&res, &reasons, "bytes_downloaded",
-                        g_sb.bytes_downloaded, "not_instrumented_on_this_path");
+                        g_sb.bytes_downloaded,
+                        "only_rom_bundle_fetch_records_this_"
+                        "p2p_block_bytes_are_in_dumpstate_sync_monitor_"
+                        "download_bytes_received");
     sb_push_int_or_null(&res, &reasons, "bytes_reused",
                         g_sb.bytes_reused, "no_resume_journal_reuse_recorded");
     sb_push_int_or_null(&res, &reasons, "bytes_redownloaded",

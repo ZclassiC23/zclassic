@@ -200,16 +200,42 @@ Each artifact dir now carries, on every verdict:
   its duration: `harness.*` elements are windows this harness bracketed itself,
   boot elements come from the node's own `[boot]` markers with `median_ms`
   joined from `dumpstate boot_timings`.
+- `proof.json` → `phases[].block_body_payload_bytes_received` (on
+  `harness.observed_sync` only) — **how many bytes the run actually moved**,
+  measured as the delta of `download_bytes_received` between two reads of
+  `dumpstate sync_monitor` at the two ends of the window the harness brackets.
+  Read the accompanying `_scope` string before using the number: it counts
+  successfully-parsed **block-body message payload** and nothing else — no
+  `headers` messages, no version/verack handshake, no inv/getdata/getheaders, no
+  tx relay, no addr, no compact blocks, not the 24-byte per-message header, and
+  no TCP/IP framing. It is a **lower bound** on wire bytes, which is why it is
+  not called `network_bytes`. The counter is cumulative per process and
+  `dl_init()` resets it to 0, so a delta is emitted only when both ends were
+  read on the same boot; a respawn inside the window yields `-1` plus a
+  `scope=this_run` omitted-field row naming the reset, never a number computed
+  across it.
 - `proof.json` → `measured_identity` — the binary's baked `source_id_sha256`
   (read through `tools/scripts/source_identity_lib.sh`, the one canonical
   reader), the peer dialled, the precheck class, and the peer's advertised tip.
 - `proof.json` → `omitted_fields[]` — every field the measurement brief asked
   for that the run did NOT record, **by name**, with the reason and the nearest
   honest substitute. `scope=structural` means nothing in this tree can source it
-  (per-phase network bytes, per-boot-phase CPU/disk/start/blocker/H*);
-  `scope=this_run` means a source exists but this run lost the reading. Silent
-  absence would read as "measured, and fine", which is how a baseline acquires
-  a number nobody took.
+  (TOTAL wire bytes, bytes per boot-level phase, per-boot-phase
+  CPU/disk/start/blocker/H*); `scope=this_run` means a source exists but this run
+  lost the reading. Silent absence would read as "measured, and fine", which is
+  how a baseline acquires a number nobody took.
+
+  A reason string in this array is held to the same bar as a value. The
+  `phases[].network_bytes` row previously explained itself with "the download
+  manager's `total_bytes_received` reaches no dumper" — which was **false**;
+  `sync_monitor_dump_state_json` had exposed it all along. The error came from
+  checking only the three `net-*` dumpers this harness happened to capture
+  (`connman`, `peer_lifecycle`, `network` — none of which carry bytes) and
+  generalising from those three to every dumper. The row still stands, because
+  total wire bytes really are unsourced, but it is now scoped to that claim and
+  points at the measured block-body subset as its substitute. A wrong reason is
+  the same defect class as a fabricated value, so the harness `--selftest` pins
+  both the corrected scoping and the absence of the old claim.
 - the full diagnostic bundle: `frontier.json`, `reducer_drive.json`,
   `reducer_stage_profile.json`, `boot_timings.json`, `stage-*.json`,
   `blocker.json`, `net-*.json`, `ops.log.tail.txt`, `node.log`.
