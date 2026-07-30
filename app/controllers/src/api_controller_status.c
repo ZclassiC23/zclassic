@@ -13,6 +13,7 @@
 #include "controllers/api_controller.h"
 #include "controllers/download_stats_json.h"
 #include "controllers/node_binary_identity_json.h"
+#include "controllers/operator_needed_policy.h"
 #include "api_controller_internal.h"
 #include "config/runtime.h"
 #include "event_agent_summary.h"
@@ -748,54 +749,51 @@ size_t api_serve_node_summary(uint8_t *response, size_t response_max)
         target = health.peer_best_height;
     int64_t gap = target > height ? target - height : 0;
     int64_t index_gap = indexed_height > height ? indexed_height - height : 0;
-    const char *status = "healthy";
     const char *primary = "none";
     const char *next_endpoint = "/api/v1/agent";
     bool material_gap = gap > ZCL_NODE_HEALTH_LAG_WARN_BLOCKS;
-    const char *summary = "node healthy at served frontier";
-    bool operator_needed = false;
+    /* This chain only picks WHICH reason applies, from what this endpoint's
+     * node_health_snapshot can actually observe. status/summary/operator_needed
+     * all come back from the one policy table
+     * (controllers/operator_needed_policy.def) so this endpoint and the agent
+     * summary cannot answer "does an operator need to act" differently. */
+    enum node_status_reason reason = ZCL_STATUS_REASON_NONE;
     if (authority_blocker) {
-        status = "blocked"; primary = authority_blocker->id;
-        next_endpoint = "/api/v1/health"; summary = "node is held by an authoritative typed blocker";
-        operator_needed = true;
+        reason = ZCL_STATUS_REASON_TYPED_BLOCKER;
+        primary = authority_blocker->id;
+        next_endpoint = "/api/v1/health";
     } else if (posture.review_required) {
-        status = "blocked"; primary = posture.status;
-        next_endpoint = "/api/v1/health"; summary = "consensus-state trust posture requires review";
-        operator_needed = true;
+        reason = ZCL_STATUS_REASON_POSTURE_REVIEW;
+        primary = posture.status;
+        next_endpoint = "/api/v1/health";
     } else if (!health.serving) {
-        status = "blocked";
+        reason = health.blocking_reason[0] ? ZCL_STATUS_REASON_HEALTH_BLOCKER
+                                          : ZCL_STATUS_REASON_NOT_SERVING;
         primary = health.blocking_reason[0] ? health.blocking_reason
                                             : "not_serving";
         next_endpoint = "/api/v1/health";
-        summary = health.blocking_reason[0]
-            ? "node has an active health blocker"
-            : "node is not serving";
-        operator_needed = true;
     } else if (!health.has_peers) {
-        status = "blocked";
+        reason = ZCL_STATUS_REASON_NO_PEERS;
         primary = "no_peers";
         next_endpoint = "/api/v1/peers";
-        summary = "node has no connected peers";
-        operator_needed = true;
     } else if (material_gap &&
                (dl_snap.in_flight > 0 || dl_snap.queued > 0)) {
-        status = "catching_up";
+        reason = ZCL_STATUS_REASON_CHAIN_GAP_DOWNLOADING;
         primary = "chain_gap";
         next_endpoint = "/api/v1/downloadstats";
-        summary = "node is downloading blocks toward the best known tip";
     } else if (material_gap) {
-        status = "degraded";
+        reason = ZCL_STATUS_REASON_DOWNLOAD_QUEUE_IDLE;
         primary = "download_queue_idle";
         next_endpoint = "/api/v1/downloadstats";
-        summary = "node is behind the best known tip without active downloads";
-        operator_needed = true;
     } else if (!health.healthy) {
-        status = "degraded";
+        reason = ZCL_STATUS_REASON_HEALTHCHECK_UNHEALTHY;
         primary = "healthcheck_unhealthy";
         next_endpoint = "/api/v1/health";
-        summary = "node health checks are degraded";
-        operator_needed = health.warning_count > 0;
     }
+    const char *status = node_status_reason_status(reason);
+    const char *summary = node_status_reason_summary(reason);
+    bool operator_needed = node_status_reason_operator_needed(
+        reason, (int64_t)health.warning_count);
     struct json_value body;
     json_init(&body);
     json_set_object(&body);

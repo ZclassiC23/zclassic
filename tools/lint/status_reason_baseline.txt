@@ -1,0 +1,29 @@
+# check_status_reason_single baseline — files still carrying an inline
+# operator-verdict ladder instead of selecting an enum node_status_reason and
+# reading status/summary/operator_needed back from the one policy table
+# (app/controllers/include/controllers/operator_needed_policy.def).
+#
+# Format: <path> <count>.  COUNTS MAY ONLY SHRINK.
+#
+# THE ONE ROW BELOW IS A DETECTOR FALSE POSITIVE, NOT A REAL COPY.
+# agent_diagnose_controller.c's rpc_agent_diagnose() declares
+# `bool partial = false;` and sets it true from four SEPARATE if-chains as
+# each first-call budget check trips. That is a budget-exhaustion flag, not an
+# operator verdict: the function's own `operator_needed` is READ out of the
+# agent summary's JSON (json_get_bool(json_get(&agent, "operator_needed"))),
+# which is the correct consumer relationship, not a second ledger. The
+# structural detector cannot tell four consecutive if-chains from one
+# prioritized ladder, and the function does publish booleans to an
+# operator-facing document, so both halves of the match fire.
+#
+# It is recorded here rather than name-excluded in the gate on purpose: an
+# exclusion is a permanent hole that a real copy could later hide behind,
+# while a baseline row is visible, reviewable, shrink-only. The row goes away
+# if that function is ever restructured so `partial` is set in one place.
+#
+# Adding a row for a NEW file is not a fix — a file with no baseline entry may
+# carry ZERO ladders. Fix a row by selecting an enum node_status_reason
+# instead, then lower (or delete) the number here.
+#
+# Regenerate: ZCL_LINT_MODE=UPDATE tools/lint/check_status_reason_single.sh
+app/controllers/src/agent_diagnose_controller.c 1

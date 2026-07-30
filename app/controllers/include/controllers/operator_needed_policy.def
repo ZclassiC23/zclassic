@@ -1,0 +1,120 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0 */
+
+/* operator_needed_policy.def — THE one table that decides whether a given
+ * node status reason means an operator has to intervene.
+ *
+ * Do not #include this directly; include controllers/operator_needed_policy.h
+ * and read the rows here for the policy. The table is #include-ed twice: once
+ * to build `enum node_status_reason`, once to build the lookup arrays in
+ * operator_needed_policy.c. There is no editable second table anywhere.
+ *
+ * WHY THIS FILE EXISTS: two operator surfaces — the public REST status
+ * endpoint (api_controller_status.c) and the agent first-call summary
+ * (event_agent_summary.c) — each used to carry their OWN inline if/else-if
+ * ladder assigning `operator_needed`, plus their own copies of the `status`
+ * and `summary` strings for each rung. The two had already drifted: the agent
+ * ladder observes four signals the REST ladder does not (peer-telemetry
+ * availability, catch-up stall, download-dispatch stall, projection lag), so
+ * the node could give two different answers to "does an operator need to act".
+ * The ladder ORDER and which signals a surface can observe stay with the
+ * surface (they read different snapshots); the VERDICT for a reason lives
+ * here, once.
+ *
+ * ROW: ZCL_STATUS_REASON(suffix, status_str, summary_str, need)
+ *   suffix      — becomes ZCL_STATUS_REASON_<suffix> in enum node_status_reason.
+ *   status_str  — the coarse operator-facing status word published as "status".
+ *   summary_str — the one-line operator-facing explanation published as
+ *                 "summary".
+ *   need        — the operator_needed policy for this reason:
+ *                   NEED_ALWAYS  operator must act.
+ *                   NEED_NEVER   the node is working through it by itself;
+ *                                telling the operator to intervene would be
+ *                                a false page.
+ *                   NEED_IF_WARNINGS  operator_needed iff warning_count > 0
+ *                                (a degraded healthcheck with no named
+ *                                warning is not actionable).
+ *
+ * ORDER: rows are listed in the ladder priority order the surfaces evaluate
+ * (most authoritative first, healthy last-resort first row). The order here is
+ * documentation — each surface still writes its own if/else-if chain, because
+ * the conditions come from that surface's own snapshot type. Adding a row is
+ * how a new reason gets a verdict; it is never re-decided at a call site.
+ *
+ * A surface simply does not select a reason whose signal it cannot observe.
+ * That is the whole reason this file carries no per-surface flags: a call site
+ * must never pass a literal that switches a rung off, because a shared
+ * function called with a conjunct-disabling literal is still two ledgers.
+ */
+
+/* clang-format off */
+
+/* Nothing is wrong. */
+ZCL_STATUS_REASON(NONE, "healthy",
+                  "node healthy at served frontier",
+                  NEED_NEVER)
+
+/* An authoritative typed blocker (PERMANENT/RESOURCE class) holds the node. */
+ZCL_STATUS_REASON(TYPED_BLOCKER, "blocked",
+                  "node is held by an authoritative typed blocker",
+                  NEED_ALWAYS)
+
+/* Consensus-state trust posture demands a human review before serving. */
+ZCL_STATUS_REASON(POSTURE_REVIEW, "blocked",
+                  "consensus-state trust posture requires review",
+                  NEED_ALWAYS)
+
+/* Health collection named a blocking reason. */
+ZCL_STATUS_REASON(HEALTH_BLOCKER, "blocked",
+                  "node has an active health blocker",
+                  NEED_ALWAYS)
+
+/* Not serving, and health collection could not name why. */
+ZCL_STATUS_REASON(NOT_SERVING, "blocked",
+                  "node is not serving",
+                  NEED_ALWAYS)
+
+/* Peer telemetry was momentarily unavailable, so peer_count/has_peers are
+ * UNKNOWN rather than zero. NEED_NEVER on purpose: this rung exists precisely
+ * so a contended peer snapshot cannot fall through to NO_PEERS and page an
+ * operator about a node whose peers were never actually counted. */
+ZCL_STATUS_REASON(PEER_SNAPSHOT_BUSY, "degraded",
+                  "node peer telemetry is temporarily busy",
+                  NEED_NEVER)
+
+ZCL_STATUS_REASON(NO_PEERS, "blocked",
+                  "node has no connected peers",
+                  NEED_ALWAYS)
+
+/* Behind, downloads are in flight, but the tip has not advanced for a while:
+ * catching up is not working. */
+ZCL_STATUS_REASON(CATCHUP_STALLED, "degraded",
+                  "node is behind and catch-up has not advanced recently",
+                  NEED_ALWAYS)
+
+/* Behind with a non-empty download queue and nothing in flight. */
+ZCL_STATUS_REASON(DOWNLOAD_DISPATCH_IDLE, "degraded",
+                  "node has queued block downloads but no in-flight requests",
+                  NEED_ALWAYS)
+
+/* Behind and actively fetching. The node is doing its job; NEED_NEVER. */
+ZCL_STATUS_REASON(CHAIN_GAP_DOWNLOADING, "catching_up",
+                  "node is downloading blocks toward the best known tip",
+                  NEED_NEVER)
+
+/* Behind with no downloads queued or in flight at all. */
+ZCL_STATUS_REASON(DOWNLOAD_QUEUE_IDLE, "degraded",
+                  "node is behind the best known tip without active downloads",
+                  NEED_ALWAYS)
+
+/* Served frontier is fine; a projection is lagging behind it. Projections
+ * catch up on their own, so NEED_NEVER. */
+ZCL_STATUS_REASON(PROJECTION_LAG, "degraded",
+                  "node block projection is behind the served frontier",
+                  NEED_NEVER)
+
+/* Health checks are degraded for some reason other than the rungs above. */
+ZCL_STATUS_REASON(HEALTHCHECK_UNHEALTHY, "degraded",
+                  "node health checks are degraded",
+                  NEED_IF_WARNINGS)
+
+/* clang-format on */

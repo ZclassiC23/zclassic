@@ -860,6 +860,7 @@ add/remove a gate.
 - `check-promotion-receipt-chain`
 - `check-verification-coverage`
 - `check-identity-parser-single`
+- `check-status-reason-single`
 - `check-blocker-remedy`
 - `check-vendor-provenance`
 - `check-doc-no-false-deleted`
