@@ -45,6 +45,7 @@
 #include "sync/sync_state.h"
 #include "util/alerts.h"
 #include "util/blocker.h"
+#include "storage/body_history.h"
 #include "util/clientversion.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"

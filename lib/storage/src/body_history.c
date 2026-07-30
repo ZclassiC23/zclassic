@@ -49,9 +49,17 @@ static void bh_verdict_reset(struct body_history_verdict *v)
     v->lowest_unmeasured = -1;
 }
 
+bool body_history_status_is_proven(enum body_history_status s)
+{
+    /* The ONE place in the tree that compares this enum against COMPLETE.
+     * Every at-tip gate reaches the answer through here, so no site can
+     * drift into `!= INCOMPLETE` and start accepting UNKNOWN. */
+    return s == BODY_HISTORY_COMPLETE;
+}
+
 bool body_history_verdict_is_proven(const struct body_history_verdict *v)
 {
-    return v && v->status == BODY_HISTORY_COMPLETE;
+    return v && body_history_status_is_proven(v->status);
 }
 
 bool body_history_evaluate(const struct body_coverage_map *held,
@@ -545,6 +553,28 @@ void body_history_reset(void)
     g_bh_verdict_published = false;
     zcl_mutex_unlock(&g_bh_lock);
 }
+
+#ifdef ZCL_TESTING
+bool body_history_test_publish_proven(int64_t height)
+{
+    struct body_history_verdict proven;
+    bh_verdict_reset(&proven);
+    if (height <= 0)
+        return false;
+    proven.status = BODY_HISTORY_COMPLETE;
+    proven.window_lo = 1;
+    proven.window_hi = height;
+    proven.window_heights = height;
+    proven.held_count = height;
+    proven.missing_count = 0;
+    proven.lowest_missing = -1;
+    proven.unmeasured_count = 0;
+    proven.lowest_unmeasured = -1;
+    body_history_reset();
+    body_history_publish(&proven);
+    return body_history_is_proven();
+}
+#endif
 
 /* ── Durable resume ─────────────────────────────────────────────── */
 

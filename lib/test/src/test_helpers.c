@@ -4,6 +4,7 @@
 #include "test/test_core.h"
 #include "consensus/params.h"
 #include "services/chain_evidence_authority_service.h"
+#include "storage/body_history.h"
 #include "storage/nullifier_kv.h"
 #include "storage/progress_store.h"
 #include "validation/chain_linkage_check.h"
@@ -33,6 +34,14 @@ void test_reset_shared_globals(void)
     chain_linkage_reset_for_testing();
     /* pending finalized-tip slot (health drain side-effect). */
     chain_evidence_pending_tip_test_reset();
+    /* the published "can I prove I hold my own block bodies?" verdict. It
+     * gates every at-tip / synced / healthy claim, so a leaked COMPLETE from
+     * an earlier case lets a later one assert a green status it never
+     * established — the accidental green this module exists to prevent.
+     * Resetting returns it to UNKNOWN, which is the fail-closed default a
+     * fresh node has. A case that needs a proven archive must say so with
+     * body_history_test_publish_proven(). */
+    body_history_reset();
     /* fatal-signal disposition: a prior group that installed the node crash
      * handlers leaves SIGABRT/SIGSEGV/SIGBUS/SIGFPE armed, which makes
      * postmortem_install() refuse (it requires SIG_DFL) and breaks the

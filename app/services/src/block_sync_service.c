@@ -200,7 +200,7 @@ void syncsvc_note_valid_block(struct sync_block_acceptance *result,
      * Everything that is NOT a completeness claim still happens: peer state
      * still advances to PEER_ACTIVE below, and the node keeps syncing,
      * relaying and serving. What it loses is the right to say it is done. */
-    bool history_proven = (body_history == BODY_HISTORY_COMPLETE);
+    bool history_proven = body_history_status_is_proven(body_history);
 
     if (history_proven &&
         (headers_caught_up || tip_is_recent) &&
@@ -280,8 +280,9 @@ void syncsvc_plan_periodic_tip_state(
      * coverage is not a proven-complete node, and "I could not look" must
      * never buy the same answer as "I looked and it was fine". Written as an
      * equality against COMPLETE, never as `!= INCOMPLETE`, so a new status
-     * value can never leak through. */
-    bool history_proven = (body_history == BODY_HISTORY_COMPLETE);
+     * value can never leak through. That equality lives in exactly one place
+     * now (body_history_status_is_proven); this is a caller, not a copy. */
+    bool history_proven = body_history_status_is_proven(body_history);
 
     result->should_set_at_tip =
         history_proven &&

@@ -139,6 +139,13 @@ bool body_history_evaluate(const struct body_coverage_map *held,
  * site can accidentally accept UNKNOWN by testing `!= INCOMPLETE`. */
 bool body_history_verdict_is_proven(const struct body_history_verdict *v);
 
+/* The status-level form, for a gate that already holds a status rather than a
+ * whole verdict. This is the SINGLE comparison of this enum against COMPLETE
+ * in the tree: body_history_verdict_is_proven() and every at-tip gate call
+ * through it, so "may I say I am at tip?" has exactly one answer and one
+ * definition. Add a caller here rather than writing `== COMPLETE` again. */
+bool body_history_status_is_proven(enum body_history_status s);
+
 /* ── Bounded, resumable census ──────────────────────────────────── */
 
 /* A per-height probe answer. INDETERMINATE is 0 so a caller that forgets to
@@ -334,6 +341,20 @@ enum body_history_status body_history_status_now(void);
 
 /* Reset to the pristine UNKNOWN state (test + boot use). */
 void body_history_reset(void);
+
+#ifdef ZCL_TESTING
+/* Publish a COMPLETE verdict over [1, height] — "this node has proven it
+ * holds its own history".
+ *
+ * A test that needs a green at-tip health snapshot to test something ELSE on
+ * (memory pressure, RSS, a status label) must state that here. It lives with
+ * body_history rather than being copied into each test file so there is one
+ * definition of what a proven archive looks like, and so a test can never
+ * accidentally assert an at-tip claim the production gate would refuse.
+ * Returns whatever body_history_is_proven() then reports, so a caller can
+ * fold it straight into its own ok-chain. */
+bool body_history_test_publish_proven(int64_t height);
+#endif
 
 /* Durable resume of the descending census CURSOR — a work pointer, nothing
  * else. The verdict and the `measured` evidence map are deliberately not

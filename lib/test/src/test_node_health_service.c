@@ -16,6 +16,7 @@
 #include "services/chain_state_service.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "services/sync_monitor.h"
+#include "storage/body_history.h"
 #include "storage/progress_store.h"
 #include "event/event.h"
 #include "platform/os_proc.h"
@@ -681,6 +682,7 @@ int test_node_health_service(void)
         ok = ok && health_test_init_connman_peer(&cm, &addr, &node,
                                                  "high-rss-peer",
                                                  tip.nHeight);
+        ok = ok && body_history_test_publish_proven(tip.nHeight);
 
         decision.result = BSP_DECISION_USE_SOURCE;
         decision.selected_source = BSP_SOURCE_P2P;
@@ -843,6 +845,7 @@ int test_node_health_service(void)
         ok = ok && health_test_init_connman_peer(&cm, &addr, &node,
                                                  "mem-pressure-peer",
                                                  tip.nHeight);
+        ok = ok && body_history_test_publish_proven(tip.nHeight);
 
         decision.result = BSP_DECISION_USE_SOURCE;
         decision.selected_source = BSP_SOURCE_P2P;
@@ -957,6 +960,7 @@ int test_node_health_service(void)
         ok = ok && health_test_init_connman_peer(&cm, &addr, &node,
                                                  "source-at-tip-peer",
                                                  tip.nHeight);
+        ok = ok && body_history_test_publish_proven(tip.nHeight);
 
         decision.result = BSP_DECISION_USE_SOURCE;
         decision.selected_source = BSP_SOURCE_P2P;
@@ -1454,6 +1458,147 @@ int test_node_health_service(void)
         net_manager_free(&cm.manager);
         db_service_stop(&dbsvc);
         node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* The health snapshot used to answer "am I synced" a SECOND time, from a
+     * block_source_policy decision that only knows heights and source health.
+     * That answer overwrote the sync FSM's, and the FSM is the one that
+     * refuses at-tip while the node cannot prove it holds the block bodies
+     * for its own history. So a node with a 126k-block body hole had its
+     * refusal overturned in the health snapshot and then published
+     * `sync_state:"at_tip", healthy:true` on /api/status, /api/v1/health,
+     * `healthcheck full`, and the starter-bundle mint gate.
+     *
+     * These two cases pin both directions: an unproven archive cannot be
+     * upgraded, and a proven one still can (so the gate is a gate, not a
+     * removal of the feature). */
+    printf("node_health_service: unproven body archive refuses the "
+           "source-policy at-tip upgrade... ");
+    {
+        struct node_health_snapshot health;
+        struct main_state ms;
+        struct connman cm;
+        struct net_address addr;
+        struct p2p_node *node = NULL;
+        struct block_index tip;
+        struct uint256 h_tip;
+        struct bsp_decision decision;
+        bool ok = true;
+        memset(&cm, 0, sizeof(cm));
+        ok = ok && health_test_init_main_tip(&ms, &tip, &h_tip, 130,
+                                             130, 0);
+        ok = ok && health_test_init_connman_peer(&cm, &addr, &node,
+                                                 "unproven-archive-peer",
+                                                 tip.nHeight);
+        /* A decision node_health_chain_advance_synced() accepts: chosen
+         * source healthy, and its target is our own height. */
+        memset(&decision, 0, sizeof(decision));
+        decision.result = BSP_DECISION_USE_SOURCE;
+        decision.selected_source = BSP_SOURCE_P2P;
+        decision.local_height = tip.nHeight;
+        decision.target_height = tip.nHeight;
+        decision.sources[BSP_SOURCE_P2P].source = BSP_SOURCE_P2P;
+        decision.sources[BSP_SOURCE_P2P].available = true;
+        decision.sources[BSP_SOURCE_P2P].healthy = true;
+        decision.sources[BSP_SOURCE_P2P].selectable = true;
+        decision.sources[BSP_SOURCE_P2P].height = tip.nHeight;
+        if (ok) {
+            (void)node;
+            /* UNKNOWN: nothing has established coverage. This is exactly what
+             * the owner's node reports, and it must be refused as hard as a
+             * known hole. */
+            body_history_reset();
+            node_health_test_set_log_head_override(tip.nHeight);
+            node_health_test_set_chain_advance_decision_override(&decision);
+            /* The FSM has correctly NOT reached at-tip. */
+            sync_set_state(SYNC_IDLE, "unproven archive reset");
+            sync_set_state(SYNC_FINDING_PEERS, "test");
+            sync_set_state(SYNC_HEADERS_DOWNLOAD, "test");
+            sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
+            node_health_collect(&health, NULL, &ms);
+
+            /* Before the fix both of these were manufactured here. */
+            ok = !health.synced;
+            ok = ok && health.sync_state != SYNC_AT_TIP;
+            /* The FSM's real answer survives into the snapshot. */
+            ok = ok && health.sync_state == SYNC_BLOCKS_DOWNLOAD;
+        }
+
+        node_health_test_set_chain_advance_decision_override(NULL);
+        node_health_test_set_log_head_override(-2);
+        body_history_reset();
+        main_state_free(&ms);
+        rpc_net_set_connman(NULL);
+        net_manager_free(&cm.manager);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("node_health_service: proven body archive still permits the "
+           "source-policy at-tip upgrade... ");
+    {
+        struct node_health_snapshot health;
+        struct main_state ms;
+        struct connman cm;
+        struct net_address addr;
+        struct p2p_node *node = NULL;
+        struct block_index tip;
+        struct uint256 h_tip;
+        struct bsp_decision decision;
+        bool ok = true;
+        memset(&cm, 0, sizeof(cm));
+        ok = ok && health_test_init_main_tip(&ms, &tip, &h_tip, 131,
+                                             131, 0);
+        ok = ok && health_test_init_connman_peer(&cm, &addr, &node,
+                                                 "proven-archive-peer",
+                                                 tip.nHeight);
+        memset(&decision, 0, sizeof(decision));
+        decision.result = BSP_DECISION_USE_SOURCE;
+        decision.selected_source = BSP_SOURCE_P2P;
+        decision.local_height = tip.nHeight;
+        decision.target_height = tip.nHeight;
+        decision.sources[BSP_SOURCE_P2P].source = BSP_SOURCE_P2P;
+        decision.sources[BSP_SOURCE_P2P].available = true;
+        decision.sources[BSP_SOURCE_P2P].healthy = true;
+        decision.sources[BSP_SOURCE_P2P].selectable = true;
+        decision.sources[BSP_SOURCE_P2P].height = tip.nHeight;
+
+        if (ok) {
+            (void)node;
+            ok = body_history_test_publish_proven(tip.nHeight);
+            node_health_test_set_log_head_override(tip.nHeight);
+            node_health_test_set_chain_advance_decision_override(&decision);
+            sync_set_state(SYNC_IDLE, "proven archive reset");
+            sync_set_state(SYNC_FINDING_PEERS, "test");
+            sync_set_state(SYNC_HEADERS_DOWNLOAD, "test");
+            sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
+            node_health_collect(&health, NULL, &ms);
+
+            ok = ok && health.synced;
+            ok = ok && health.sync_state == SYNC_AT_TIP;
+        }
+
+        node_health_test_set_chain_advance_decision_override(NULL);
+        node_health_test_set_log_head_override(-2);
+        body_history_reset();
+        main_state_free(&ms);
+        rpc_net_set_connman(NULL);
+        net_manager_free(&cm.manager);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* One canonical comparison: every at-tip gate reaches "may I claim
+     * completeness?" through body_history_status_is_proven(), so UNKNOWN can
+     * never leak through a site that wrote `!= INCOMPLETE`. */
+    printf("node_health_service: at-tip completeness predicate is "
+           "fail-closed on every status... ");
+    {
+        bool ok = body_history_status_is_proven(BODY_HISTORY_COMPLETE);
+        ok = ok && !body_history_status_is_proven(BODY_HISTORY_UNKNOWN);
+        ok = ok && !body_history_status_is_proven(BODY_HISTORY_INCOMPLETE);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
