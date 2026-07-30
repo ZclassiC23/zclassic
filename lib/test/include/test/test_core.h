@@ -530,6 +530,7 @@ int test_simnet_byzantine(void);
 int test_simnet_fuzz(void);
 int test_util_signal_handler(void);
 int test_chaos_harness(void);
+int test_simnet_trace(void);
 int test_stage(void);
 int test_stage_anchor(void);
 int test_mailbox(void);

@@ -328,6 +328,66 @@ stack, `zclassic23-chaos` is now built the same whole-program-LTO way as
 `wire_sweep`/`test_parallel` (`$(ALL_SRCS)`), not a hand-picked file list —
 expect a longer first build, same as any other `ALL_SRCS`-linked tool.
 
+## Recording a full-state trace
+
+`mode simnet`'s `expect` metrics (`simnet_converged`, `simnet_tip_monotonic`,
+...) are a small, fixed set of hand-picked counters. When a scenario fails or
+behaves surprisingly, that is often not enough to see what actually
+happened — you cannot ask "what did node 3's chain/coins state look like
+right before it diverged" from the counters alone. A full-state trace closes
+that gap: an opt-in, append-only NDJSON file that snapshots every simulated
+node's chain/coins facts after each `simnet_mint`, `simnet_deliver`,
+`simnet_partition`, and `simnet_heal`.
+
+Enable it with `--trace-dir=PATH` (every scenario the process runs) or the
+`trace_dir PATH` scenario command (this scenario only). Neither is required
+by anything — a scenario that never mentions tracing, and `make chaos`
+by default, write no trace file and behave exactly as before this existed.
+
+```bash
+build/bin/zclassic23-chaos --scenario=tools/sim/scenarios/simnet_partition_heal.scenario \
+    --trace-dir=/tmp/zcl-trace
+```
+
+writes `/tmp/zcl-trace/simnet_trace.jsonl`, one JSON object per line, one
+line per (node, event). Each line carries `seq` (the harness's own
+monotonically increasing event counter — shared by every node's line for the
+same event), `event` (the command name that triggered the snapshot),
+`node_id`, and three nested objects: `chain` (`tip_height`, `tip_hash`),
+`coins` (`commitment_hex`, `utxo_count` — the XOR-accumulator UTXO
+commitment, see `lib/coins/include/coins/utxo_commitment.h`), and `cluster`
+(`delivery_fingerprint`, `byzantine_rejected` — cluster-wide, so identical
+across one event's lines).
+
+Query a trace after a run with `simnet_trace_query` (`tools/sim/
+simnet_trace_query.c`, `make tools/sim/simnet_trace_query`), a standalone
+linear-scan filter that links only `lib/json` — no DB, no node libs, no
+simulator code, same discipline as `tools/postmortem_to_scenario.c`:
+
+```bash
+build/bin/simnet_trace_query --file=/tmp/zcl-trace/simnet_trace.jsonl \
+    --node=2 --event=simnet_partition
+```
+
+Filters (`--node=`, `--event=`, `--seq=`) combine with AND; omitting all of
+them prints every line. A match-count summary always goes to stderr so it
+never pollutes piped stdout.
+
+**Why this isn't "reuse the live diagnostics dumpers":** every
+`<name>_dump_state_json()` registered in `app/controllers/include/
+controllers/diagnostics_dumpers.def` reads ONE live process's global
+singleton state (or a SQLite table on the live node's `node.db`) — none
+take an explicit state instance as a parameter, because a real node has
+exactly one of everything. `simnet_cluster` (`lib/sim/include/sim/
+simnet_cluster.h`) is a pure in-memory, N-instance simulator: each node owns
+its own `struct coins_view_cache` and retained block set and never touches
+the live process's globals, so there is no existing per-instance dumper to
+call. `lib/sim/include/sim/simnet_trace.h` instead reuses, byte-for-byte,
+the public `simnet_cluster` accessors already exposed for exactly this kind
+of inspection (`simnet_cluster_tip_hash`/`_tip_height`/`_coins_digest`/
+`_delivery_fingerprint`/`_byzantine_rejected`) and the same `lib/json`
+library the diagnostics registry itself uses to serialize.
+
 ## Adding Fault Injection
 
 Add the production hook first, defaulting to inactive and cheap on the hot path.
