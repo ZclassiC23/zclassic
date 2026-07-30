@@ -1187,6 +1187,18 @@ void zcl_native_handle_dev_diagnose_show(
     struct zcl_command_reply *reply);
 #endif
 
+/* ── metaverse.agent.* — the confined-agent broker's observation surface
+ * (app/controllers/src/metaverse_controller.c). Both read one broker
+ * DIRECTORY named by the caller and create nothing; the broker itself is a
+ * separate confined process, not node state. Bound by
+ * config/commands/metaverse.def. */
+void zcl_native_handle_metaverse_agent_status(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_metaverse_agent_audit(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 #ifdef __cplusplus
 }
 #endif

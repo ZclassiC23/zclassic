@@ -309,7 +309,7 @@ bundles + `app/controllers/src/*_native_handlers.c`.
 |---|---|
 | the 151 dumpstate subsystems | `zclassic23 ops statecatalog` — the typed leaf: every name in one call, then `--subsystem=<name>` for that descriptor in full (owner file, accepted key forms, owning test) or `--limit`/`--page` for a window. Node-free — the registry is compiled in. The flat `zclassic23 statecatalog` is the same catalog through the legacy shim. **Not** `ops state` with no `--subsystem`: that errors `MISSING_SUBSYSTEM`. |
 | test group names (one per line) | `git grep -hoE 'X\([a-z_0-9]+\)' lib/test/src/test_parallel.c \| tr -d 'X()'` — instant, no build; `-h` matters or every name arrives glued to the filename. `make test_parallel && build/bin/test_parallel --list` gives the same list but costs a second link: `make -j$(nproc)` does **not** publish the `build/bin/test_parallel` alias, and `make test` / `make test-parallel` / `make t-fast` run an epoch candidate under `build/bin/test-strict/epochs/<epoch>/` and leave it absent |
-| registry commands | `zclassic23 discover help` — 8 command roots (`core`, `app`, `dev`, `ops`, `discover`, `code`, `vault`, `zcode`) plus the bare `status` leaf, so 9 top-level names — then `discover help <path>` to descend |
+| registry commands | `zclassic23 discover help` — 9 command roots (`core`, `app`, `dev`, `ops`, `discover`, `code`, `vault`, `zcode`, `metaverse`) plus the bare `status` leaf, so 10 top-level names — then `discover help <path>` to descend |
 | a command's exact input keys | `zclassic23 discover schema <leaf>` |
 | test groups a change touches | `zclassic23 agentimpact <files...>` |
 

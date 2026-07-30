@@ -31,6 +31,7 @@
 #include "util/boot_phase.h"            /* boot_stage_current/boot_stage_name */
 #include "util/util.h"                  /* ParseParameters */
 #include "util/sd_notify.h"             /* -sandbox=steady NOTIFY_SOCKET check */
+#include "session/agent_broker.h"       /* confined metaverse agent + broker modes */
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -162,6 +163,19 @@ int main(int argc, char **argv)
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--importblockindex") == 0)
             return importblockindex_cli_mode(argc, argv, i);
+    }
+
+    /* The confined-agent boundary (session/agent_broker.h). Dispatched before
+     * every mode below it: the confined child must reach its own entry point
+     * without touching node boot, and it runs under a seccomp allow-list that
+     * would kill it for most of what boot does. Scanned across argv, like the
+     * modes above, so flag ordering cannot silently fall through to a node
+     * boot the caller did not ask for. */
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--metaverse-agent-confined") == 0)
+            return agent_confined_mode_main(argc, argv);
+        if (strcmp(argv[i], "--metaverse-broker") == 0)
+            return agent_broker_mode_main(argc, argv);
     }
 
     /* CLI UX contract: bare `zclassic23`, zero arguments. The real node

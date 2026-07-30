@@ -1,0 +1,71 @@
+/* The metaverse root: sovereign digital PROPERTY, and who may act on it.
+ *
+ * The model is PRINCIPAL -> PROPERTY -> RIGHTS -> ACTION -> RECEIPT. This file
+ * declares only the leaves this lane owns — the confined-agent broker's two
+ * observation surfaces. The property catalog, grant engine, and market leaves
+ * are peer lanes and append here; keep one branch row per level and do not
+ * declare a second `metaverse` branch in another .def file.
+ *
+ * Both leaves below are READ-ONLY and node-free: they read a broker directory
+ * that an operator names, and they CREATE NOTHING. A missing directory is an
+ * explicit not-present verdict, never an implicit mkdir — see the read-leaf
+ * contract in docs/NATIVE_COMMAND_INTERFACE.md.
+ *
+ * Consumer defines ZCL_COMMAND_*; see config/src/command_catalog.c. */
+
+ZCL_COMMAND_BRANCH("metaverse", "",
+                   "Sovereign digital property, and who may act on it",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_BRANCH("metaverse.agent", "metaverse",
+                   "Confined agents acting under a scoped grant",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_READ(
+    "metaverse.agent.status", "metaverse.agent", "",
+    "What confinement the agent broker actually achieved",
+    "The confined-agent broker's recorded state for one broker directory: the "
+    "broker and agent pids, the socket, the SO_PEERCRED identity the broker "
+    "accepted, the grant's id and fingerprint (never the grant itself), and the "
+    "counts of requests served, refused, and receipted. The confinement block "
+    "reports what the agent ACHIEVED, not what was requested: `agent_uid_"
+    "posture` is separate_uid only where a real uid switch happened and "
+    "same_uid where the host allowed no such switch, and the Landlock and "
+    "seccomp flags are the broker's and the child's own measurements. A "
+    "directory with no broker.json answers broker_state_present=false with a "
+    "reason; a recorded broker pid that is no longer alive answers "
+    "broker_running=false rather than implying liveness from the file.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "metaverse,agent,broker,confinement,landlock,seccomp,peercred,grant",
+    "zcl.metaverse_agent_status.input.v1", "zcl.metaverse_agent_status.v1",
+    "dir", "dir",
+    "zclassic23 metaverse agent status --dir=/tmp/mv-broker",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_INSTANT, ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_metaverse_agent_status)
+
+ZCL_COMMAND_READY_READ(
+    "metaverse.agent.audit", "metaverse.agent", "",
+    "Every action the confined agent took, and whether the log is intact",
+    "The broker's append-only receipt log for one broker directory, verified "
+    "before it is rendered. Each receipt commits to the previous receipt's id "
+    "and is Ed25519-signed over that id, so the verdict block separates the "
+    "three ways a log can be wrong: `chain_breaks` (a row was edited, "
+    "reordered, or removed), `bad_signatures` (a row was written by something "
+    "other than this broker), and `malformed` (a row does not parse). "
+    "`tamper_evident_ok` is true only when the log has at least one row and all "
+    "three counters are zero — an empty or absent log is never reported as "
+    "verified. The rendered tail is bounded by `limit`; the verdict always "
+    "covers the whole file, not just the tail.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "metaverse,agent,audit,receipt,tamper,chain,signature,evidence",
+    "zcl.metaverse_agent_audit.input.v1", "zcl.metaverse_agent_audit.v1",
+    "dir,limit", "dir",
+    "zclassic23 metaverse agent audit --dir=/tmp/mv-broker",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_metaverse_agent_audit)
