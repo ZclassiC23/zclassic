@@ -67,6 +67,15 @@ void sapling_value_commit_randomness_generator(struct fr *x, struct fr *y);
  * disagree. */
 void sapling_note_commit_randomness_generator(struct fr *x, struct fr *y);
 
+/* The generator the note's tree POSITION is multiplied by when building rho:
+ *   rho = cm + [position] G_pos
+ * as (x, y) field coordinates, so spend section 24's in-circuit g^position uses
+ * the IDENTICAL point sapling_compute_nf() uses out of circuit
+ * (GEN_NULLIFIER_POSITION). Getting a different point here yields a different
+ * rho, hence a different nullifier, and the circuit's nf then disagrees with the
+ * public input section 28 binds it to. */
+void sapling_nullifier_position_generator(struct fr *x, struct fr *y);
+
 /* CRH^ivk(ak, nk) = BLAKE2s("Zcashivk", ak || nk) with top 5 bits dropped */
 void sapling_crh_ivk(const uint8_t ak[32], const uint8_t nk[32], uint8_t ivk[32]);
 

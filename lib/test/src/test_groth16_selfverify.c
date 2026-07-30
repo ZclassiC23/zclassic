@@ -230,7 +230,7 @@ static void native_circuit_baseline(void)
  * spend round-trip. Returns the number of failures (0 == green). */
 static int spend_circuit_shape_gate(void)
 {
-    printf("\n--- H3: Sapling SPEND circuit port shape gate (sections 1-21) ---\n");
+    printf("\n--- H3: Sapling SPEND circuit port shape gate (sections 1-28) ---\n");
     int failures = 0;
 
     /* Fixed witness — reuses the H2 KAT scalars so the nk wire ties to the
@@ -278,24 +278,27 @@ static int spend_circuit_shape_gate(void)
 
     struct sapling_spend_inputs pub;
     memset(&pub, 0, sizeof pub);
-    memcpy(pub.rk, rk_bytes, 32);
-    memcpy(pub.cv, cv_bytes, 32);
+    /* Sections 5, 14, 22 and 28 bind rk, cv, the anchor and the nullifier, so
+     * all four are part of the fixture: a placeholder anchor or nf makes the
+     * R1CS unsatisfiable by construction, not by a fixture quirk. */
+    PROVER_CHECK("derived every public input from the witness",
+                 sapling_spend_derive_public(&wit, &pub));
 
-    struct spend_section_shape sections[22];
+    struct spend_section_shape sections[29];
     size_t nsec = 0;
     struct spend_wire_probe probe;
     struct constraint_system cs;
     cs_init(&cs);
     bool synth_ok = sapling_spend_synthesize_traced(
-        &cs, &wit, &pub, sections, 22, &nsec, &probe);
+        &cs, &wit, &pub, sections, 29, &nsec, &probe);
     PROVER_CHECK("traced spend synthesis succeeded", synth_ok);
 
     /* (1) Per-section cumulative constraint counts vs the reference trace. */
-    static const size_t REF_CUM[21] =
+    static const size_t REF_CUM[28] =
         {20, 272, 1022, 1028, 1030, 1282, 2032, 2808, 3584, 24590,
          24594, 24610, 27862, 29127, 29903, 30679, 31661, 31913, 32663, 32669,
-         76893};
-    static const char *REF_NAME[21] = {
+         76893, 76894, 76895, 76987, 76993, 77769, 98775, 98777};
+    static const char *REF_NAME[28] = {
         "S1 ak witness/on-curve/not-small-order (cum 20)",
         "S2 ar bits (cum 272)",
         "S3 randomization of signing key (cum 1022)",
@@ -317,20 +320,27 @@ static int spend_circuit_shape_gate(void)
         "S19 [rcm] NoteCommitmentRandomness (cum 32663)",
         "S20 randomization of note commitment (cum 32669)",
         "S21 merkle tree hash 0..31 (cum 76893)",
+        "S22 conditionally enforce correct root (cum 76894)",
+        "S23 anchor inputize (cum 76895)",
+        "S24 g^position (cum 76987)",
+        "S25 faerie gold prevention (cum 76993)",
+        "S26 representation of rho (cum 77769)",
+        "S27 nf computation — in-circuit blake2s (cum 98775)",
+        "S28 pack nullifier (cum 98777)",
     };
-    PROVER_CHECK("synthesized all 21 ported sections", nsec == 21);
-    for (size_t i = 0; i < 21 && i < nsec; i++)
+    PROVER_CHECK("synthesized all 28 sections", nsec == 28);
+    for (size_t i = 0; i < 28 && i < nsec; i++)
         PROVER_CHECK(REF_NAME[i], sections[i].num_constraints == REF_CUM[i]);
     PROVER_CHECK("7 public inputs allocated (bellman-faithful low indices)",
                  cs.num_inputs == 7);
-    PROVER_CHECK("ported-prefix constraint count == 76893",
-                 cs.num_constraints == 76893);
+    PROVER_CHECK("full spend constraint count == 98777",
+                 cs.num_constraints == 98777);
     /* Per-section DELTAS, not only cumulative totals — a compensating pair of
      * errors in adjacent sections cancels in the running total but not here.
      * 3252 = 13*251 - 11 is double-and-add over the 251 truncated ivk bits;
      * 1265 = 64 + 191 + 252 + 750 + 6 + 2 is expose_value_commitment;
      * 44224 = 32 * 1382 is the whole Merkle fold. */
-    if (nsec == 21) {
+    if (nsec >= 21) {
         static const size_t REF_DELTA[11] =
             {4, 16, 3252, 1265, 776, 776, 982, 252, 750, 6, 44224};
         static const char *REF_DELTA_NAME[11] = {
@@ -476,7 +486,7 @@ static int spend_circuit_shape_gate(void)
          * otherwise "flip detected" would be vacuous. This is also what proves
          * the cv public input is the real value commitment — section 14 binds
          * it, so a placeholder cv shows up here as an unsatisfiable system. */
-        PROVER_CHECK("honest witness satisfies the 76893-constraint prefix",
+        PROVER_CHECK("honest witness satisfies the full 98777-constraint system",
                      cs_is_satisfied(&cs, &ignored));
 
         for (size_t b = 0; b < 256; b++) {

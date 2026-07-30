@@ -210,6 +210,13 @@ void sapling_note_commit_randomness_generator(struct fr *x, struct fr *y)
     jub_get_y(y, &fixed_generators[GEN_NOTE_COMMITMENT_RANDOMNESS]);
 }
 
+void sapling_nullifier_position_generator(struct fr *x, struct fr *y)
+{
+    ensure_fixed_generators();
+    jub_get_x(x, &fixed_generators[GEN_NULLIFIER_POSITION]);
+    jub_get_y(y, &fixed_generators[GEN_NULLIFIER_POSITION]);
+}
+
 void sapling_crh_ivk(const uint8_t ak[32], const uint8_t nk[32], uint8_t ivk[32])
 {
     struct blake2s_ctx ctx;

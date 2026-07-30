@@ -624,20 +624,40 @@ void gadget_synth_coeffs(size_t window_size, const struct fr *constants,
     }
 }
 
-/* lookup3_xy: 3-bit window table lookup for fixed-base mul.
- * bits = [b0, b1, b2], coords = 8 (x,y) pairs.
- * 3 constraints: 1 AND(b1,b2) + 1 x-enforce + 1 y-enforce. */
-void gadget_lookup3_xy(struct constraint_system *cs,
-                        size_t b0, size_t b1, size_t b2,
-                        const struct fr coords_x[8],
-                        const struct fr coords_y[8],
-                        size_t *rx, size_t *ry)
+/* lookup3_xy with bellman's constant-false PADDING for the two high bits.
+ *
+ * `b1_pad` / `b2_pad` say that bit is `Boolean::constant(false)` rather than a
+ * wire — which is what `fixed_base_multiplication` feeds the last window
+ * whenever the scalar's bit count is not a multiple of 3. A constant-false
+ * `Boolean` contributes NO TERM to any linear combination and makes
+ * `Boolean::and` fold to another constant, so padding does not simplify the
+ * gadget, it DELETES terms and (when b2 is padded) the precomp wire with its
+ * constraint:
+ *
+ *   both padded (1 real bit) -> 2 constraints, 2 aux   (A = xc[001]*ONE)
+ *   b2 padded  (2 real bits) -> 2 constraints, 2 aux   (b1 terms survive)
+ *   none padded              -> 3 constraints, 3 aux
+ *
+ * The earlier code allocated dummy zero-valued wires for the padded bits
+ * instead. That satisfies every A*B==C check on the honest witness and lands on
+ * the same constraint count for the 2-real-bit case, but it inserts aux
+ * variables the reference never allocates and puts a variable where the
+ * reference has an empty linear combination — a different QAP, so it cannot
+ * verify against the Sapling trusted setup. Only spend section 24 (g^position,
+ * 32 bits -> 11 windows) reaches the 2-real-bit shape. */
+static void lookup3_xy_padded(struct constraint_system *cs,
+                              size_t b0, size_t b1, size_t b2,
+                              bool b1_pad, bool b2_pad,
+                              const struct fr coords_x[8],
+                              const struct fr coords_y[8],
+                              size_t *rx, size_t *ry)
 {
     struct fr one_val;
     fr_one(&one_val);
 
-    struct fr b1v = cs->witness[b1];
-    struct fr b2v = cs->witness[b2];
+    struct fr b1v, b2v;
+    if (b1_pad) fr_zero(&b1v); else b1v = cs->witness[b1];
+    if (b2_pad) fr_zero(&b2v); else b2v = cs->witness[b2];
     struct fr b0v = cs->witness[b0];
 
     /* ALLOCATION ORDER IS LOAD-BEARING. sapling-crypto's lookup3_xy allocates
@@ -658,11 +678,17 @@ void gadget_lookup3_xy(struct constraint_system *cs,
     *rx = cs_alloc_aux(cs, &coords_x[idx]);
     *ry = cs_alloc_aux(cs, &coords_y[idx]);
 
-    /* Compute precomp = b1 AND b2 (1 constraint) */
-    struct fr precomp_val;
-    fr_mul(&precomp_val, &b1v, &b2v);
-    size_t precomp = cs_alloc_aux(cs, &precomp_val);
-    gadget_mul(cs, b1, b2, precomp);
+    /* precomp = b1 AND b2. bellman's Boolean::and folds to Constant(false) as
+     * soon as either side is constant-false, so a padded window has no precomp
+     * wire and no AND constraint at all. */
+    const bool have_precomp = !b1_pad && !b2_pad;
+    size_t precomp = SIZE_MAX;
+    if (have_precomp) {
+        struct fr precomp_val;
+        fr_mul(&precomp_val, &b1v, &b2v);
+        precomp = cs_alloc_aux(cs, &precomp_val);
+        gadget_mul(cs, b1, b2, precomp);
+    }
 
     /* Compute synth coefficients */
     struct fr xc[8], yc[8];
@@ -676,9 +702,9 @@ void gadget_lookup3_xy(struct constraint_system *cs,
         struct linear_combination la, lb, lc;
         lc_init(&la);
         lc_add_term(&la, CS_ONE, &xc[0b001]);
-        lc_add_term(&la, b1, &xc[0b011]);
-        lc_add_term(&la, b2, &xc[0b101]);
-        lc_add_term(&la, precomp, &xc[0b111]);
+        if (!b1_pad) lc_add_term(&la, b1, &xc[0b011]);
+        if (!b2_pad) lc_add_term(&la, b2, &xc[0b101]);
+        if (have_precomp) lc_add_term(&la, precomp, &xc[0b111]);
 
         lc_init(&lb);
         lc_add_term(&lb, b0, &one_val);
@@ -687,12 +713,18 @@ void gadget_lookup3_xy(struct constraint_system *cs,
         lc_add_term(&lc, *rx, &one_val);
         struct fr neg_xc0; fr_neg(&neg_xc0, &xc[0b000]);
         lc_add_term(&lc, CS_ONE, &neg_xc0);
-        struct fr neg_xc2; fr_neg(&neg_xc2, &xc[0b010]);
-        lc_add_term(&lc, b1, &neg_xc2);
-        struct fr neg_xc4; fr_neg(&neg_xc4, &xc[0b100]);
-        lc_add_term(&lc, b2, &neg_xc4);
-        struct fr neg_xc6; fr_neg(&neg_xc6, &xc[0b110]);
-        lc_add_term(&lc, precomp, &neg_xc6);
+        if (!b1_pad) {
+            struct fr neg_xc2; fr_neg(&neg_xc2, &xc[0b010]);
+            lc_add_term(&lc, b1, &neg_xc2);
+        }
+        if (!b2_pad) {
+            struct fr neg_xc4; fr_neg(&neg_xc4, &xc[0b100]);
+            lc_add_term(&lc, b2, &neg_xc4);
+        }
+        if (have_precomp) {
+            struct fr neg_xc6; fr_neg(&neg_xc6, &xc[0b110]);
+            lc_add_term(&lc, precomp, &neg_xc6);
+        }
 
         cs_enforce(cs, &la, &lb, &lc);
         lc_free(&la); lc_free(&lb); lc_free(&lc);
@@ -703,9 +735,9 @@ void gadget_lookup3_xy(struct constraint_system *cs,
         struct linear_combination la, lb, lc;
         lc_init(&la);
         lc_add_term(&la, CS_ONE, &yc[0b001]);
-        lc_add_term(&la, b1, &yc[0b011]);
-        lc_add_term(&la, b2, &yc[0b101]);
-        lc_add_term(&la, precomp, &yc[0b111]);
+        if (!b1_pad) lc_add_term(&la, b1, &yc[0b011]);
+        if (!b2_pad) lc_add_term(&la, b2, &yc[0b101]);
+        if (have_precomp) lc_add_term(&la, precomp, &yc[0b111]);
 
         lc_init(&lb);
         lc_add_term(&lb, b0, &one_val);
@@ -714,16 +746,33 @@ void gadget_lookup3_xy(struct constraint_system *cs,
         lc_add_term(&lc, *ry, &one_val);
         struct fr neg_yc0; fr_neg(&neg_yc0, &yc[0b000]);
         lc_add_term(&lc, CS_ONE, &neg_yc0);
-        struct fr neg_yc2; fr_neg(&neg_yc2, &yc[0b010]);
-        lc_add_term(&lc, b1, &neg_yc2);
-        struct fr neg_yc4; fr_neg(&neg_yc4, &yc[0b100]);
-        lc_add_term(&lc, b2, &neg_yc4);
-        struct fr neg_yc6; fr_neg(&neg_yc6, &yc[0b110]);
-        lc_add_term(&lc, precomp, &neg_yc6);
+        if (!b1_pad) {
+            struct fr neg_yc2; fr_neg(&neg_yc2, &yc[0b010]);
+            lc_add_term(&lc, b1, &neg_yc2);
+        }
+        if (!b2_pad) {
+            struct fr neg_yc4; fr_neg(&neg_yc4, &yc[0b100]);
+            lc_add_term(&lc, b2, &neg_yc4);
+        }
+        if (have_precomp) {
+            struct fr neg_yc6; fr_neg(&neg_yc6, &yc[0b110]);
+            lc_add_term(&lc, precomp, &neg_yc6);
+        }
 
         cs_enforce(cs, &la, &lb, &lc);
         lc_free(&la); lc_free(&lb); lc_free(&lc);
     }
+}
+
+/* lookup3_xy: 3-bit window table lookup, all three bits real wires.
+ * 3 constraints: 1 AND(b1,b2) + 1 x-enforce + 1 y-enforce. */
+void gadget_lookup3_xy(struct constraint_system *cs,
+                        size_t b0, size_t b1, size_t b2,
+                        const struct fr coords_x[8],
+                        const struct fr coords_y[8],
+                        size_t *rx, size_t *ry)
+{
+    lookup3_xy_padded(cs, b0, b1, b2, false, false, coords_x, coords_y, rx, ry);
 }
 
 /* ── Fixed-Base Scalar Multiplication (windowed) ───────────────── */
@@ -750,10 +799,11 @@ void gadget_fixed_base_mul(struct constraint_system *cs,
     struct jub_point cur_gen = gen;
 
     for (size_t w = 0; w < n_windows; w++) {
-        /* Get the 3 bit indices (pad with dummy zero-valued boolean if needed) */
-        size_t b0 = (w * 3 + 0 < n_bits) ? scalar_bits[w * 3 + 0] : SIZE_MAX;
-        size_t b1 = (w * 3 + 1 < n_bits) ? scalar_bits[w * 3 + 1] : SIZE_MAX;
-        size_t b2 = (w * 3 + 2 < n_bits) ? scalar_bits[w * 3 + 2] : SIZE_MAX;
+        /* The window's three bit wires. A short final chunk leaves the high
+         * ones unset; lookup3_xy_padded is told so and never reads them. */
+        const size_t b0 = scalar_bits[w * 3 + 0];
+        const size_t b1 = (w * 3 + 1 < n_bits) ? scalar_bits[w * 3 + 1] : 0;
+        const size_t b2 = (w * 3 + 2 < n_bits) ? scalar_bits[w * 3 + 2] : 0;
 
         /* Precompute 8 multiples: 0*G, 1*G, 2*G, ..., 7*G */
         struct fr coords_x[8], coords_y[8];
@@ -772,102 +822,24 @@ void gadget_fixed_base_mul(struct constraint_system *cs,
             }
         }
 
-        /* Handle padding with constant false booleans */
-        bool b0_const = (w * 3 + 0 >= n_bits);
-        bool b1_const = (w * 3 + 1 >= n_bits);
-        bool b2_const = (w * 3 + 2 >= n_bits);
+        /* bellman chunks the bits by 3 and pads a short final chunk with
+         * `Boolean::constant(false)`. b0 is never padded (window w exists only
+         * because bit 3w does), so only the two high bits can be. */
+        const bool b1_pad = (w * 3 + 1 >= n_bits);
+        const bool b2_pad = (w * 3 + 2 >= n_bits);
 
-        if (b0_const || b1_const || b2_const) {
-            /* Some bits are constant false — use simplified lookup */
-            struct fr zero_fr;
-            fr_zero(&zero_fr);
-            if (b0_const) b0 = 0; /* will use constant zero */
-            if (b1_const) b1 = 0;
-            if (b2_const) b2 = 0;
+        size_t wx, wy;
+        lookup3_xy_padded(cs, b0, b1, b2, b1_pad, b2_pad,
+                          coords_x, coords_y, &wx, &wy);
 
-            /* For constant bits, we compute the index directly */
-            bool b0v = !b0_const && !fr_is_zero(&cs->witness[b0]);
-            bool b1v = !b1_const && !fr_is_zero(&cs->witness[b1]);
-            bool b2v = !b2_const && !fr_is_zero(&cs->witness[b2]);
-            int idx = (b0v ? 1 : 0) | (b1v ? 2 : 0) | (b2v ? 4 : 0);
-
-            size_t wx = cs_alloc_aux(cs, &coords_x[idx]);
-            size_t wy = cs_alloc_aux(cs, &coords_y[idx]);
-
-            /* Simplified constraints based on which bits are constant */
-            if (!b0_const && b1_const && b2_const) {
-                /* Only b0 is variable. x = x0 + b0*(x1-x0), y = y0 + b0*(y1-y0).
-                 *
-                 * The reference has no special case at all here: it calls the
-                 * same lookup3_xy with Boolean::constant(false) padding, and the
-                 * constant operands simply contribute nothing to any linear
-                 * combination (and Boolean::and of two constants folds to a
-                 * constant, costing no wire and no constraint). What survives is
-                 *
-                 *     A = xc[001] * ONE          (the synth coefficient, which
-                 *                                 for a 3-bit window is exactly
-                 *                                 x1 - x0)
-                 *     B = b0
-                 *     C = wx - xc[000] * ONE
-                 *
-                 * so the CONSTANT lands in A and the bit in B. Emitting it the
-                 * other way round is algebraically identical — A*B is
-                 * commutative — but writes the two coefficients into the wrong
-                 * QAP matrices, which cannot verify against the Sapling trusted
-                 * setup. Pinned by test_groth16_r1cs_oracle. */
-                struct fr one_val; fr_one(&one_val);
-                struct linear_combination la, lb, lc;
-                struct fr dx; fr_sub(&dx, &coords_x[1], &coords_x[0]);
-                lc_init(&la); lc_add_term(&la, CS_ONE, &dx);
-                lc_init(&lb); lc_add_term(&lb, b0, &one_val);
-                struct fr neg_x0; fr_neg(&neg_x0, &coords_x[0]);
-                lc_init(&lc); lc_add_term(&lc, wx, &one_val); lc_add_term(&lc, CS_ONE, &neg_x0);
-                cs_enforce(cs, &la, &lb, &lc);
-                lc_free(&la); lc_free(&lb); lc_free(&lc);
-
-                struct fr dy; fr_sub(&dy, &coords_y[1], &coords_y[0]);
-                lc_init(&la); lc_add_term(&la, CS_ONE, &dy);
-                lc_init(&lb); lc_add_term(&lb, b0, &one_val);
-                struct fr neg_y0; fr_neg(&neg_y0, &coords_y[0]);
-                lc_init(&lc); lc_add_term(&lc, wy, &one_val); lc_add_term(&lc, CS_ONE, &neg_y0);
-                cs_enforce(cs, &la, &lb, &lc);
-                lc_free(&la); lc_free(&lb); lc_free(&lc);
-            } else {
-                /* Fallback: use full lookup even for partially-constant case */
-                /* This costs 3 constraints but handles all cases */
-                if (b0_const) b0 = cs_alloc_aux(cs, &zero_fr);
-                if (b1_const) b1 = cs_alloc_aux(cs, &zero_fr);
-                if (b2_const) b2 = cs_alloc_aux(cs, &zero_fr);
-                /* Redo the lookup with the allocated variables */
-                size_t tmp_x, tmp_y;
-                gadget_lookup3_xy(cs, b0, b1, b2, coords_x, coords_y, &tmp_x, &tmp_y);
-                wx = tmp_x;
-                wy = tmp_y;
-            }
-
-            if (acc_x == SIZE_MAX) {
-                acc_x = wx;
-                acc_y = wy;
-            } else {
-                size_t new_x, new_y;
-                gadget_edwards_add(cs, acc_x, acc_y, wx, wy, &new_x, &new_y);
-                acc_x = new_x;
-                acc_y = new_y;
-            }
+        if (acc_x == SIZE_MAX) {
+            acc_x = wx;
+            acc_y = wy;
         } else {
-            /* Normal case: all 3 bits are allocated variables */
-            size_t wx, wy;
-            gadget_lookup3_xy(cs, b0, b1, b2, coords_x, coords_y, &wx, &wy);
-
-            if (acc_x == SIZE_MAX) {
-                acc_x = wx;
-                acc_y = wy;
-            } else {
-                size_t new_x, new_y;
-                gadget_edwards_add(cs, acc_x, acc_y, wx, wy, &new_x, &new_y);
-                acc_x = new_x;
-                acc_y = new_y;
-            }
+            size_t new_x, new_y;
+            gadget_edwards_add(cs, acc_x, acc_y, wx, wy, &new_x, &new_y);
+            acc_x = new_x;
+            acc_y = new_y;
         }
 
         /* Advance generator: cur_gen *= 2^3 = 8 */

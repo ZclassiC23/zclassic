@@ -58,6 +58,22 @@ bool sapling_spend_synthesize(struct constraint_system *cs,
                                const struct sapling_spend_witness *wit,
                                const struct sapling_spend_inputs *pub);
 
+/* Derive the four public inputs a witness implies: rk, cv, the anchor its
+ * authentication path folds to, and its nullifier. Writes `pub` in full and
+ * also fills `wit->pk_d` with the DERIVED [ivk] g_d (the circuit computes pk_d
+ * itself, so a caller-supplied one is ignored by synthesis and only a derived
+ * one keeps the note commitment consistent).
+ *
+ * Every one of the four is CONSTRAINED against the circuit: sections 5, 14, 22
+ * and 28 bind them to public-input slots, so a witness paired with public
+ * inputs from anywhere else yields an unsatisfiable R1CS. Callers that build a
+ * spend by hand should go through here rather than assembling `pub` themselves.
+ * Returns false (logged) if the witness cannot produce them — an invalid
+ * diversifier, or an authentication-path element that is not a canonical Fr
+ * element. */
+bool sapling_spend_derive_public(struct sapling_spend_witness *wit,
+                                 struct sapling_spend_inputs *pub);
+
 /* ── Spend-circuit port introspection (H3 lane, test-only surface) ──────────
  *
  * The spend circuit is being ported gadget-by-gadget to match bellman's

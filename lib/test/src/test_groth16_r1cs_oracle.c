@@ -102,13 +102,34 @@
     else { printf("FAIL\n"); failures++; }     \
 } while (0)
 
-/* Number of ported sections and their total constraint count. Both are pinned:
- * the reference prefix that ends with "merkle tree hash 31" is exactly 76893
- * constraints, and section 22 ("conditionally enforce correct root") is the
- * first constraint past the port's current scope. */
-#define R1CS_SECTIONS 21u
+/* Sections 1..21 are the prefix the Rust recording ConstraintSystem was run
+ * against, so their goldens below ARE the reference's own hashes. Sections
+ * 22..28 were ported afterwards, from the pinned reference SOURCE rather than a
+ * recorded transcript, so their goldens are NATIVE-derived regression pins —
+ * they prove the matrices do not drift, they do not by themselves prove
+ * reference parity. What does prove reference parity for the whole circuit is
+ * further down: the constraint total, the auxiliary-variable total taken from
+ * the OFFICIAL trusted-setup proving key, and (in the params-gated groups) a
+ * proof that verifies under the official verifying key. Do not paper over a
+ * 22..28 mismatch by re-baking a golden without understanding it. */
+#define R1CS_REF_SECTIONS 21u
+#define R1CS_SECTIONS 28u
 #define R1CS_PREFIX_CONSTRAINTS 76893u
 #define R1CS_PUBLIC_INPUTS 7u
+
+/* The complete circuit. 98777 is bellman's published Spend constraint count
+ * (also pinned as SPEND_CIRCUIT_TOTAL_CONSTRAINTS in sapling_circuit.h).
+ *
+ * 98638 is not a native number either: it is the `l` query length of the
+ * OFFICIAL sapling-spend.params trusted-setup file, which bellman emits with
+ * exactly one entry per AUXILIARY variable. So it is the reference circuit's aux
+ * count, read out of the trusted setup itself. A port that allocated one wire
+ * too many or too few anywhere in 28 sections cannot hit it, which makes it the
+ * strongest reference check available without a Rust recorder. Re-derived from
+ * the file (not restated) by the params-gated leg in
+ * lib/test/src/test_groth16_selfverify.c. */
+#define R1CS_TOTAL_CONSTRAINTS 98777u
+#define R1CS_TOTAL_AUX         98638u
 
 /* ── Canonical term ────────────────────────────────────────────────────── */
 
@@ -362,7 +383,7 @@ static bool ref_read_lc(FILE *f, struct ctbuf *out)
  * Per-section hashes, so a failure names the section rather than just the
  * whole circuit. Section i covers rows [cum[i-1], cum[i]).
  */
-static const char *GOLDEN_SECTION[R1CS_SECTIONS] = {
+static const char *GOLDEN_SECTION[R1CS_REF_SECTIONS] = {
     "e7b2379615feac81aacb2c0f4e1eb23ce0c520c7994b292911853796ceaa60a5", /* S1  ak witness/on-curve/not-small-order */
     "ab0af592b36c8d8e72296ba5b2c31183efbd0be532a96afa4f035a68c18c3651", /* S2  ar bits */
     "0d083bb22826bd28d162b45acbaf63e3501112155962529255b1165998df460a", /* S3  randomization of signing key */
@@ -388,13 +409,51 @@ static const char *GOLDEN_SECTION[R1CS_SECTIONS] = {
 static const char *GOLDEN_TRANSCRIPT =
     "6f528ff699b0cf7e0e707dfd5d51359c2a62cddaf1129206be0cb899c5ce8039";
 
-/* Reference cumulative constraint counts per section (independently
- * reproduced by the recording ConstraintSystem: these are the boundaries of
- * bellman's top-level namespace runs in Spend::synthesize). */
+/* Sections 22..28. NATIVE-derived pins — see the R1CS_REF_SECTIONS note. */
+static const char *PIN_SECTION[R1CS_SECTIONS - R1CS_REF_SECTIONS] = {
+    "5ffca837ab49079daec2630f91710a57398ec33ffc32d87426835a3e8f85d653",
+        /* S22 conditionally enforce correct root */
+    "f34177286c5a36d31b46d71d026e5e1315c3a9bed86a1a9cdbf7756f4fbbeba3",
+        /* S23 anchor inputize */
+    "1fdc1212b3f08496b0867af06c6560194d5fecaf8e6ce7d94b60d18e460359ae",
+        /* S24 g^position */
+    "079379626eaa0cd724aaa45f12b4d62fe0114d95bbb63f599fe5cdba3e81bea5",
+        /* S25 faerie gold prevention */
+    "dd5f9fea97330a24c5108b1ff63fe51e205bfa7c03154de546c29789f52982ca",
+        /* S26 representation of rho */
+    "0063739f07c39c75903d1eeb3f7f0e67f9c4d1f73907691adcc673c4623dd346",
+        /* S27 nf computation (blake2s) */
+    "79a81ec96d361677ee372cb9bb021a3a5d456e5fca067ed301be7d92bafdfbb0",
+        /* S28 pack nullifier */
+};
+static const char *PIN_TRANSCRIPT =
+    "7b3da862d7bc79861ed28585d600438aba586228ef17e6da4f5e44b76d86e7c7";
+
+/* Cumulative constraint counts per section — the boundaries of bellman's
+ * top-level namespace runs in Spend::synthesize.
+ *
+ * 1..21 were independently reproduced by the recording ConstraintSystem.
+ * 22..28 are derived from the reference source's own gadget costs and are
+ * NOT free parameters: they have to sum to bellman's published 98777, and the
+ * only split that does is
+ *   S22 +1     the single (cur - rt) * value = 0 row
+ *   S23 +1     rt.inputize()
+ *   S24 +92    g^position: 32 position bits -> 11 windows, of which the last
+ *              has a constant-false third bit, so 10*3 + 2 lookups + 10*6
+ *              Edwards additions. (The naive 11*3 + 60 = 93 is what a padded
+ *              window costs when you allocate a dummy wire for the pad — the
+ *              reference folds Boolean::and away instead, and that ONE
+ *              constraint is the whole 98777-vs-98778 discrepancy.)
+ *   S25 +6     one Edwards addition, rho = cm + [position] G_pos
+ *   S26 +776   EdwardsPoint::repr(rho), same body as sections 8/9/15/16
+ *   S27 +21006 blake2s over a 512-bit all-allocated preimage, same body and
+ *              same cost as section 10
+ *   S28 +2     multipack::pack_into_inputs, 256 bits at Fr::CAPACITY = 254 */
 static const size_t REF_CUM[R1CS_SECTIONS] = {
     20, 272, 1022, 1028, 1030, 1282, 2032, 2808, 3584, 24590,
     24594, 24610, 27862, 29127, 29903, 30679, 31661, 31913, 32663, 32669,
     76893,
+    76894, 76895, 76987, 76993, 77769, 98775, 98777,
 };
 
 /* ── Witness fixture (identical to the H3 shape gate's) ────────────────── */
@@ -438,15 +497,11 @@ static bool build_fixture(struct sapling_spend_witness *wit,
     if (!find_diversifier(wit->diversifier))
         return false;
 
+    /* rk, cv, the anchor the path folds to, and the nullifier. Sections 5, 14,
+     * 22 and 28 bind all four, so they are part of the fixture, not decoration:
+     * with a placeholder anchor the R1CS is unsatisfiable by construction. */
     memset(pub, 0, sizeof *pub);
-    uint8_t rk_bytes[32], cv_bytes[32];
-    if (!sapling_compute_rk(ak, wit->ar, rk_bytes))
-        return false;
-    if (!sapling_value_commit(wit->value, wit->rcv, cv_bytes))
-        return false;
-    memcpy(pub->rk, rk_bytes, 32);
-    memcpy(pub->cv, cv_bytes, 32);
-    return true;
+    return sapling_spend_derive_public(wit, pub);
 }
 
 /* ── The anti-vacuous gate ─────────────────────────────────────────────── */
@@ -551,7 +606,7 @@ int test_groth16_r1cs_oracle(void)
 {
     int failures = 0;
     printf("\n=== groth16_r1cs_oracle: canonical R1CS transcript parity "
-           "(SPEND sections 1-21) ===\n");
+           "(SPEND sections 1-28) ===\n");
 
     struct sapling_spend_witness wit;
     struct sapling_spend_inputs pub;
@@ -570,15 +625,32 @@ int test_groth16_r1cs_oracle(void)
         return failures + 1;
     }
 
-    printf("  native: %zu constraints, %zu inputs, %zu vars (%zu sections)\n",
-           cs.num_constraints, cs.num_inputs, cs.num_vars, nsec);
-    R1CS_CHECK("native recorded exactly 21 sections", nsec == R1CS_SECTIONS);
-    R1CS_CHECK("native constraint count == reference prefix (76893)",
-               cs.num_constraints == R1CS_PREFIX_CONSTRAINTS);
+    size_t num_aux = (cs.num_vars > cs.num_inputs + 1)
+                   ? cs.num_vars - cs.num_inputs - 1 : 0;
+    printf("  native: %zu constraints, %zu inputs, %zu vars, %zu aux "
+           "(%zu sections)\n",
+           cs.num_constraints, cs.num_inputs, cs.num_vars, num_aux, nsec);
+    R1CS_CHECK("native recorded exactly 28 sections", nsec == R1CS_SECTIONS);
+    R1CS_CHECK("native constraint count == reference total (98777)",
+               cs.num_constraints == R1CS_TOTAL_CONSTRAINTS);
+    R1CS_CHECK("native aux count == official trusted-setup l_len (98638)",
+               num_aux == R1CS_TOTAL_AUX);
     R1CS_CHECK("native public input count == 7",
                cs.num_inputs == R1CS_PUBLIC_INPUTS);
     R1CS_CHECK("the honest witness satisfies every emitted constraint",
                cs_is_satisfied(&cs, NULL));
+
+    /* Per-section cumulative boundaries. A section that lands on the wrong
+     * count cannot be parity-correct whatever its hash says, and naming the
+     * section is what makes a regression diagnosable. */
+    for (size_t s = 0; s < nsec && s < R1CS_SECTIONS; s++) {
+        if (sections[s].num_constraints == REF_CUM[s])
+            continue;
+        printf("  S%-2zu (%s) cumulative constraints %zu != reference %zu\n",
+               s + 1, sections[s].name ? sections[s].name : "?",
+               sections[s].num_constraints, REF_CUM[s]);
+        failures++;
+    }
 
     /* ── Canonical transcript ─────────────────────────────────────────── */
     size_t n_rows = cs.num_constraints;
@@ -618,8 +690,8 @@ int test_groth16_r1cs_oracle(void)
                 ref_rows = r_rows;
                 printf("  reference: %u rows, %u inputs, %u aux (from %s)\n",
                        r_rows, r_inputs, r_aux, ref_path);
-                R1CS_CHECK("reference row count == native row count",
-                           (size_t)r_rows == n_rows);
+                R1CS_CHECK("reference row count == the 1..21 prefix (76893)",
+                           (size_t)r_rows == R1CS_PREFIX_CONSTRAINTS);
                 R1CS_CHECK("reference input count == native input count",
                            (size_t)r_inputs == cs.num_inputs);
             }
@@ -703,7 +775,7 @@ int test_groth16_r1cs_oracle(void)
     if (ref_rowh) {
         printf("  --- REFERENCE section hashes (bake these as goldens) ---\n");
         size_t rprev = 0;
-        for (size_t s = 0; s < R1CS_SECTIONS; s++) {
+        for (size_t s = 0; s < R1CS_REF_SECTIONS; s++) {
             size_t end = REF_CUM[s];
             uint8_t h[32];
             struct sha3_256_ctx ctx;
@@ -717,7 +789,7 @@ int test_groth16_r1cs_oracle(void)
         }
         uint8_t rall[32];
         char rallhx[65];
-        transcript_hash_of(rall, ref_rowh, n_rows);
+        transcript_hash_of(rall, ref_rowh, R1CS_PREFIX_CONSTRAINTS);
         hex_of(rallhx, rall);
         printf("  REFERENCE transcript SHA3-256 = \"%s\"\n", rallhx);
         free(ref_rowh);
@@ -729,6 +801,8 @@ int test_groth16_r1cs_oracle(void)
     size_t prev = 0;
     for (size_t s = 0; s < R1CS_SECTIONS; s++) {
         size_t end = REF_CUM[s];
+        if (end > n_rows)
+            break;
         uint8_t h[32];
         struct sha3_256_ctx ctx;
         sha3_256_init(&ctx);
@@ -736,21 +810,42 @@ int test_groth16_r1cs_oracle(void)
         sha3_256_finalize(&ctx, h);
         char hx[65];
         hex_of(hx, h);
-        bool match = strcmp(hx, GOLDEN_SECTION[s]) == 0;
+        const bool is_ref = s < R1CS_REF_SECTIONS;
+        const char *want = is_ref ? GOLDEN_SECTION[s]
+                                  : PIN_SECTION[s - R1CS_REF_SECTIONS];
+        bool match = *want && strcmp(hx, want) == 0;
         printf("  S%-2zu rows[%6zu,%6zu)  %s  %s\n", s + 1, prev, end, hx,
-               match ? "== golden" : "!! GOLDEN MISMATCH");
+               match ? (is_ref ? "== golden (reference)" : "== pin (native)")
+                     : (*want ? "!! MISMATCH" : "!! NO GOLDEN BAKED"));
         if (!match)
             failures++;
         prev = end;
+    }
+
+    /* The 1..21 prefix hash is the REFERENCE transcript's, unchanged by the
+     * later sections — keep checking exactly those rows. */
+    if (n_rows >= R1CS_PREFIX_CONSTRAINTS) {
+        uint8_t pre[32];
+        char prehx[65];
+        transcript_hash_of(pre, rows, R1CS_PREFIX_CONSTRAINTS);
+        hex_of(prehx, pre);
+        printf("  prefix   SHA3-256 over %u rows: %s\n",
+               R1CS_PREFIX_CONSTRAINTS, prehx);
+        R1CS_CHECK("prefix hash == golden (reference) transcript hash",
+                   strcmp(prehx, GOLDEN_TRANSCRIPT) == 0);
+    } else {
+        printf("  FAIL: only %zu rows — the 1..21 reference prefix is "
+               "incomplete\n", n_rows);
+        failures++;
     }
 
     uint8_t all[32];
     transcript_hash_of(all, rows, n_rows);
     char allhx[65];
     hex_of(allhx, all);
-    printf("  transcript SHA3-256 over %zu rows: %s\n", n_rows, allhx);
-    R1CS_CHECK("transcript hash == golden (reference) transcript hash",
-               strcmp(allhx, GOLDEN_TRANSCRIPT) == 0);
+    printf("  full     SHA3-256 over %zu rows: %s\n", n_rows, allhx);
+    R1CS_CHECK("full transcript hash == native pin",
+               *PIN_TRANSCRIPT && strcmp(allhx, PIN_TRANSCRIPT) == 0);
 
     /* ── Anti-vacuous injections ──────────────────────────────────────── */
     printf("\n--- anti-vacuous gate: the oracle must catch all 5 ---\n");

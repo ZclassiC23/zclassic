@@ -9,22 +9,22 @@
  * Spend::synthesize (librustzcash 06da3b9ac8f278e5d4ae13088cf0a4c03d2c13f5),
  * 7 public inputs / 98777 constraints when complete.
  *
- * PORT STATUS. Sections 1..21 are ported faithfully in the exact synthesis
- * order (variable-allocation order is load-bearing for QAP alignment against
- * the trusted-setup proving key). For that prefix: the cumulative constraint
- * counts match the reference trace's per-section boundaries, every emitted
- * constraint is satisfied by the honest witness (A*B==C — the coefficient-level
- * check), sections 8/9/15/16 reproduce librustzcash's compressed point
- * encodings bit for bit, section 10's 256 digest bits reproduce CRH^ivk,
- * section 13's pk_d wire equals the out-of-circuit [ivk] g_d, section 20's cm
- * wire equals the out-of-circuit sapling_compute_cm() note commitment, and
- * section 21's anchor wire equals an out-of-circuit fold of the same witnessed
- * path over that same commitment. All of it is gated by the
- * `groth16_selfverify` test group. Sections 22..28 (conditional root
- * enforcement, the anchor inputize, g^position, the twin blake2s for nf and the
- * nullifier packing) remain to be ported, so the circuit below is a faithful
- * PARTIAL prefix (76893/98777 constraints) and does not yet round-trip against
- * the trusted-setup proving key.
+ * PORT STATUS. All 28 sections are ported in the exact synthesis order
+ * (variable-allocation order is load-bearing for QAP alignment against the
+ * trusted-setup proving key): 98777 constraints, 7 public inputs, 98638 aux —
+ * and that aux count is the official sapling-spend.params `l_len`, which is an
+ * external check the circuit cannot fake. Every emitted constraint is satisfied
+ * by the honest witness (A*B==C), sections 8/9/15/16 reproduce librustzcash's
+ * compressed point encodings bit for bit, section 10's 256 digest bits
+ * reproduce CRH^ivk, section 13's pk_d wire equals the out-of-circuit [ivk]
+ * g_d, section 20's cm wire equals sapling_compute_cm(), and section 21's
+ * anchor wire equals an out-of-circuit fold of the same witnessed path.
+ * Sections 1..21 additionally match the reference R1CS transcript's per-section
+ * A/B/C matrix hashes byte for byte (test_groth16_r1cs_oracle); 22..28 carry
+ * native regression pins there, not reference-derived goldens.
+ *
+ * NOT YET PROVEN: a native proof accepted by the official verifying key. The
+ * prover, not the circuit, is the open work — see test_native_spend_proof.
  *
  * Section 21 — the 32-level Merkle authentication path, 44224 constraints and
  * the largest section in the circuit — lives in sapling/circuit_merkle.h. Its
@@ -52,7 +52,7 @@
  * namespace, so this is the QAP-faithful placement — inline inputize() would
  * scatter inputs among aux and permanently misalign the QAP. Wires computed
  * later are bound to their input slot by a copy constraint (see rk and cv);
- * anchor/nf are bound in the not-yet-ported sections. */
+ * the anchor is bound in section 23 and the packed nullifier in section 28. */
 
 #include "sapling/sapling_circuit.h"
 #include "sapling/circuit_bits.h"
@@ -300,7 +300,7 @@ bool sapling_spend_synthesize_traced(struct constraint_system *cs,
      * Nothing reads these slots until section 28 binds nf to them, and
      * cs_is_satisfied() cannot see it either, so the mistake would have
      * surfaced later as an apparent nullifier-PACKING bug — far from its cause.
-     * Each packed scalar is at most BLS12_381_FR_CAPACITY = 253 bits, so it is
+     * Each packed scalar is at most CBIT_FR_CAPACITY = 254 bits, so it is
      * always canonical and fr_from_bytes cannot reject it. */
     uint64_t nf_packed[2][4];
     size_t nf_count = 0;
@@ -323,9 +323,11 @@ bool sapling_spend_synthesize_traced(struct constraint_system *cs,
     size_t in_rk_y = cs_alloc_input(cs, &rk_y);  /* input 2: rk.y */
     size_t in_cv_x = cs_alloc_input(cs, &cv_x);  /* input 3: cv.x */
     size_t in_cv_y = cs_alloc_input(cs, &cv_y);  /* input 4: cv.y */
-    cs_alloc_input(cs, &anchor_fr); /* input 5: anchor (bound in section 23) */
-    cs_alloc_input(cs, &nf0);       /* input 6: nf[0]  (bound in section 28) */
-    cs_alloc_input(cs, &nf1);       /* input 7: nf[1]  (bound in section 28) */
+    /* input 5: anchor (bound in section 23) */
+    size_t in_anchor = cs_alloc_input(cs, &anchor_fr);
+    /* inputs 6, 7: the packed nullifier (bound in section 28) */
+    size_t in_nf0 = cs_alloc_input(cs, &nf0);
+    size_t in_nf1 = cs_alloc_input(cs, &nf1);
 
     /* ════ Section 1: witness ak, on-curve + not-small-order (20) ════ */
     struct fr ak_x, ak_y;
@@ -595,12 +597,153 @@ bool sapling_spend_synthesize_traced(struct constraint_system *cs,
         probe->anchor = anchor_var;
     section_record(cs, sections, max_sections, &nsec,
                    "21:merkle tree hash 0..31");
-    (void)anchor_var;     /* sections 22/23 bind it to public input 5 */
-    (void)position_bits;  /* section 24 multiplies g^position by these */
 
-    /* Sections 22..28 remain to be ported (see the port-status note above).
-     * The prefix synthesized here is deterministic and shape-matched to the
-     * reference for sections 1..21. */
+    /* ════ Section 22: conditionally enforce correct root (1) ════
+     * bellman allocates a SECOND wire for the anchor — the "conditional
+     * anchor" rt — and enforces
+     *
+     *     (cur - rt) * value = 0
+     *
+     * with EMPTY C. A zero-value note is therefore allowed to carry an anchor
+     * unrelated to its fold, which is what makes dummy spend inputs possible;
+     * any non-zero value forces cur == rt.
+     *
+     * `value` here is bellman's `value_num`, a `Num` — a linear combination of
+     * the 64 value bits with coefficients 2^i, accumulated as the bits were
+     * booleanized in section 14 and costing NO constraint of its own. It is a
+     * B-matrix row of 64 terms, not a wire, so there is nothing to allocate.
+     * Writing it as a packed wire instead would satisfy the same identity over
+     * a different QAP. */
+    size_t rt_var = cs_alloc_aux(cs, &anchor_fr);
+    {
+        struct linear_combination la, lb, lcc;
+        struct fr one_val, neg_one, coeff;
+        fr_one(&one_val);
+        fr_neg(&neg_one, &one_val);
+        lc_init(&la);
+        lc_add_term(&la, anchor_var, &one_val);
+        lc_add_term(&la, rt_var, &neg_one);
+        lc_init(&lb);
+        fr_one(&coeff);
+        for (size_t i = 0; i < SPEND_NOTE_VALUE_BITS; i++) {
+            lc_add_term(&lb, note_contents[i], &coeff);
+            fr_add(&coeff, &coeff, &coeff);
+        }
+        lc_init(&lcc);
+        cs_enforce(cs, &la, &lb, &lcc);
+        lc_free(&la); lc_free(&lb); lc_free(&lcc);
+    }
+    section_record(cs, sections, max_sections, &nsec,
+                   "22:conditionally enforce correct root");
+
+    /* ════ Section 23: anchor inputize — bind rt to input slot 5 (1) ════
+     * Note WHICH wire is exposed: the conditional anchor rt, not the folded
+     * root. That is what lets a zero-value dummy input publish an anchor it
+     * cannot prove a path to. */
+    enforce_equal(cs, rt_var, in_anchor);
+    section_record(cs, sections, max_sections, &nsec, "23:anchor inputize");
+
+    /* ════ Section 24: g^position (92) ════
+     * The 32 position bits section 21 collected, least significant first,
+     * against FixedGenerators::NullifierPosition. 32 is not a multiple of 3, so
+     * the last of the 11 windows carries ONE constant-false pad bit; bellman
+     * folds `Boolean::and` away for it, which drops that window's precomp wire
+     * and its constraint. 10*3 + 2 lookups + 10*6 Edwards additions = 92 — the
+     * whole circuit's total is 98777 rather than 98778 because of that one. */
+    struct fr npg_x, npg_y;
+    sapling_nullifier_position_generator(&npg_x, &npg_y);
+    size_t pos_pt_x, pos_pt_y;
+    gadget_fixed_base_mul(cs, position_bits, SAPLING_MERKLE_DEPTH,
+                          &npg_x, &npg_y, &pos_pt_x, &pos_pt_y);
+    if (pos_pt_x >= cs->num_vars || pos_pt_y >= cs->num_vars)
+        LOG_FAIL("circuit_spend",
+                 "spend: section 24 g^position produced no point "
+                 "(x=%zu y=%zu num_vars=%zu)",
+                 pos_pt_x, pos_pt_y, cs->num_vars);
+    section_record(cs, sections, max_sections, &nsec, "24:g^position");
+
+    /* ════ Section 25: faerie gold prevention (6) ════
+     * rho = cm + [position] G_pos. One Edwards addition, and the operand order
+     * is cm.add(position) — self is cm, so cm's coordinates are the ones that
+     * land in the A side of the "U computation" row. Without this the nullifier
+     * would depend only on the note contents, and two notes with identical
+     * contents at different tree positions would share a nullifier: one of them
+     * would be unspendable ("faerie gold"). */
+    size_t rho_x, rho_y;
+    gadget_edwards_add(cs, cm_x_var, cm_y_var, pos_pt_x, pos_pt_y,
+                       &rho_x, &rho_y);
+    if (rho_x >= cs->num_vars || rho_y >= cs->num_vars)
+        LOG_FAIL("circuit_spend",
+                 "spend: section 25 rho wires out of range "
+                 "(x=%zu y=%zu num_vars=%zu)", rho_x, rho_y, cs->num_vars);
+    section_record(cs, sections, max_sections, &nsec,
+                   "25:faerie gold prevention");
+
+    /* ════ Section 26: representation of rho (776) ════
+     * Completes the 512-bit nf preimage: repr(nk) from section 9, then
+     * repr(rho). Same body as sections 8/9/15/16. */
+    size_t nf_pre_bits[512];
+    memcpy(nf_pre_bits, nf_preimage, sizeof(nf_preimage));
+    section_point_repr(cs, rho_x, rho_y, &nf_pre_bits[256], NULL);
+    section_record(cs, sections, max_sections, &nsec,
+                   "26:representation of rho");
+
+    /* ════ Section 27: nf computation (21006) ════
+     * nf = BLAKE2s-256("Zcash_nf", repr(nk) || repr(rho)) — the SAME gadget as
+     * section 10 over a 512-bit all-allocated preimage, so the same 21006.
+     * Only the personalization differs, and it enters as constants in the
+     * initial state vector. */
+    struct cbit nf_pre[512];
+    for (size_t i = 0; i < 512; i++)
+        nf_pre[i] = cbit_from_var(cs, nf_pre_bits[i]);
+
+    static const uint8_t PRF_NF_PERSONALIZATION[8] =
+        { 'Z', 'c', 'a', 's', 'h', '_', 'n', 'f' };
+    struct cbit nf_bits[256];
+    if (!gadget_blake2s(cs, nf_pre, 512, PRF_NF_PERSONALIZATION, nf_bits)) {
+        memory_cleanse(nf_pre, sizeof(nf_pre));
+        LOG_FAIL("circuit_spend",
+                 "spend: in-circuit blake2s(PRF^nf) synthesis failed");
+    }
+    memory_cleanse(nf_pre, sizeof(nf_pre));
+    section_record(cs, sections, max_sections, &nsec, "27:nf computation");
+
+    /* ════ Section 28: pack nullifier (2) ════
+     * multipack::pack_into_inputs — the 256 nf bits little-endian in chunks of
+     * Fr::CAPACITY = 254, one packing constraint per chunk (254 + 2 bits).
+     * Orientation matters for the QAP: A = the packed-bit LC, B = ONE,
+     * C = the public input (the mirror of `inputize`, which puts the input in
+     * A). The two inputs were allocated up front so their INDICES match
+     * bellman's allocation order; only the constraints land here. */
+    {
+        const size_t nf_input[2] = { in_nf0, in_nf1 };
+        struct fr one_val;
+        fr_one(&one_val);
+        for (size_t chunk = 0, bit = 0; bit < 256; chunk++) {
+            if (chunk >= 2)
+                LOG_FAIL("circuit_spend",
+                         "spend: section 28 wants >2 nf chunks (capacity=%u)",
+                         (unsigned)CBIT_FR_CAPACITY);
+            const size_t n = (256 - bit < CBIT_FR_CAPACITY)
+                           ? 256 - bit : CBIT_FR_CAPACITY;
+            struct linear_combination la, lb, lcc;
+            struct fr coeff;
+            lc_init(&la);
+            fr_one(&coeff);
+            for (size_t i = 0; i < n; i++) {
+                cbit_lc_add(&la, nf_bits[bit + i], &coeff);
+                fr_add(&coeff, &coeff, &coeff);
+            }
+            lc_init(&lb);
+            lc_add_term(&lb, CS_ONE, &one_val);
+            lc_init(&lcc);
+            lc_add_term(&lcc, nf_input[chunk], &one_val);
+            cs_enforce(cs, &la, &lb, &lcc);
+            lc_free(&la); lc_free(&lb); lc_free(&lcc);
+            bit += n;
+        }
+    }
+    section_record(cs, sections, max_sections, &nsec, "28:pack nullifier");
 
     if (n_sections_out)
         *n_sections_out = nsec;
@@ -612,6 +755,62 @@ bool sapling_spend_synthesize(struct constraint_system *cs,
                                const struct sapling_spend_inputs *pub)
 {
     return sapling_spend_synthesize_traced(cs, wit, pub, NULL, 0, NULL, NULL);
+}
+
+/* ── Witness -> public inputs ───────────────────────────────────── */
+
+bool sapling_spend_derive_public(struct sapling_spend_witness *wit,
+                                 struct sapling_spend_inputs *pub)
+{
+    if (!wit || !pub)
+        LOG_FAIL("circuit_spend",
+                 "derive_public: NULL argument (wit=%p pub=%p)",
+                 (const void *)wit, (const void *)pub);
+
+    /* pk_d = [CRH^ivk(ak, nk)] g_d — the value section 13 computes in-circuit.
+     * Deriving it here is what keeps cm (and hence the anchor and nf) equal to
+     * the circuit's own section-20 wire. */
+    uint8_t nk[32], ivk[32];
+    sapling_nsk_to_nk(wit->nsk, nk);
+    sapling_crh_ivk(wit->ak, nk, ivk);
+    if (!sapling_ivk_to_pkd(ivk, wit->diversifier, wit->pk_d))
+        LOG_FAIL("circuit_spend",
+                 "derive_public: sapling_ivk_to_pkd failed (invalid "
+                 "diversifier — g_d would be the identity)");
+
+    if (!sapling_compute_rk(wit->ak, wit->ar, pub->rk))
+        LOG_FAIL("circuit_spend", "derive_public: sapling_compute_rk failed");
+    if (!sapling_value_commit(wit->value, wit->rcv, pub->cv))
+        LOG_FAIL("circuit_spend", "derive_public: sapling_value_commit failed");
+
+    uint8_t cm[32];
+    if (!sapling_compute_cm(wit->diversifier, wit->pk_d, wit->value,
+                            wit->rcm, cm))
+        LOG_FAIL("circuit_spend", "derive_public: sapling_compute_cm failed");
+
+    /* Fold the authentication path exactly as section 21 does: at each depth
+     * the position bit decides which side the running value goes on. */
+    uint8_t cur[32];
+    memcpy(cur, cm, 32);
+    uint64_t position = 0;
+    for (size_t d = 0; d < SAPLING_MERKLE_DEPTH; d++) {
+        uint8_t next[32];
+        if (wit->auth_path_bits[d]) {
+            position |= (UINT64_C(1) << d);
+            pedersen_merkle_hash(d, wit->auth_path[d], cur, next);
+        } else {
+            pedersen_merkle_hash(d, cur, wit->auth_path[d], next);
+        }
+        memcpy(cur, next, 32);
+    }
+    memcpy(pub->anchor, cur, 32);
+
+    if (!sapling_compute_nf(wit->diversifier, wit->pk_d, wit->value, wit->rcm,
+                            wit->ak, nk, position, pub->nullifier))
+        LOG_FAIL("circuit_spend", "derive_public: sapling_compute_nf failed");
+
+    memory_cleanse(ivk, sizeof(ivk));
+    return true;
 }
 
 /* ── Port coverage / typed blocker ──────────────────────────────── */
@@ -707,10 +906,11 @@ static bool build_probe_witness(struct sapling_spend_witness *wit,
         LOG_FAIL("circuit_spend",
                  "coverage probe: no valid diversifier in 256 candidates");
 
-    if (!sapling_compute_rk(ak, wit->ar, pub->rk))
-        LOG_FAIL("circuit_spend", "coverage probe: sapling_compute_rk failed");
-    if (!sapling_value_commit(wit->value, wit->rcv, pub->cv))
-        LOG_FAIL("circuit_spend", "coverage probe: sapling_value_commit failed");
+    /* Sections 5, 14, 22 and 28 each bind a public input, so a probe with
+     * placeholder public inputs would synthesize an UNSATISFIABLE system. */
+    if (!sapling_spend_derive_public(wit, pub))
+        LOG_FAIL("circuit_spend",
+                 "coverage probe: sapling_spend_derive_public failed");
     return true;
 }
 

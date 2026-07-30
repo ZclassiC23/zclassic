@@ -113,6 +113,7 @@ int test_activerecord(void);
 int test_sapling_crypto(void);
 int test_groth16_msm_parity(void);
 int test_groth16_r1cs_oracle(void);
+int test_native_spend_proof(void);
 int test_sapling_tree(void);
 int test_sapling_ckpt_persist(void);
 int test_shutdown_marker(void);
