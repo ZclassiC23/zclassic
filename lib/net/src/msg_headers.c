@@ -81,6 +81,25 @@ size_t getheaders_solution_cache_bytes(void)
     return atomic_load(&g_headers_solution_cache_bytes);
 }
 
+/* ── getheaders serve-path accounting ───────────────────────────────
+ *
+ * Serving headers is the one thing an unauthenticated post-handshake peer
+ * can make this node spend real CPU on, and until these counters existed
+ * neither an operator nor a test could measure how much. See the
+ * msg_headers_stats comments in net/msgprocessor.h for the pair's meaning;
+ * g_headers_serve_pow_checks is the cost side — one full Equihash
+ * verification each, 383-390 us at 200,9 — and its contract is at most one
+ * per header put on the wire. */
+static _Atomic uint64_t g_headers_served_total = 0;
+static _Atomic uint64_t g_getheaders_served_requests = 0;
+static _Atomic uint64_t g_headers_serve_pow_checks = 0;
+
+/* See net/msg_internal.h. */
+uint64_t getheaders_serve_pow_checks(void)
+{
+    return atomic_load(&g_headers_serve_pow_checks);
+}
+
 /* ── getheaders continuation-suppression counters ──────────────────
  *
  * push_getheaders_from() has two guards that used to `return;` silently:
@@ -211,12 +230,38 @@ static bool headers_fill_header_from_index(struct msg_processor *mp,
     return true;
 }
 
-static const char *headers_servable_reject_reason(
+/* ── BIND, then VERIFY: the cheap screen ────────────────────────────
+ *
+ * Everything a candidate header can be rejected for WITHOUT spending an
+ * Equihash verification: argument sanity, block version, the solution size
+ * this height declares, and the hash bind itself. Cost is one header hash,
+ * sub-microsecond. Writes the computed hash to `hash_out` on the paths that
+ * reach it (a NULL return always does), so the verify phase below does not
+ * recompute it.
+ *
+ * The bind is also what makes verifying ONCE sufficient. nSolution is part
+ * of the serialized header, so `serialize(hdr) == *iter->phashBlock` says
+ * these bytes ARE the bytes filed under this entry's hash — strictly
+ * stronger than "this solution satisfies Equihash", which says nothing
+ * about WHICH header the bytes belong to. Two different byte strings do not
+ * share a hash, and every store this file falls back to (flat block file,
+ * node.db `blocks` row) is itself required to hash-bind to the same
+ * phashBlock. So once ANY source yields bound bytes, every other source
+ * either yields the identical bytes or yields nothing, and a PoW verdict
+ * over bound bytes is final — re-running it against another store cannot
+ * change the answer. That is the whole license for the resolve-then-verify
+ * loop in getheaders_index_header_servable.
+ *
+ * A non-NULL return here can still be retryable: the ordinary cause is a
+ * hydrated index entry carrying no nSolution, which the flat-file / node.db
+ * fallback repairs. */
+static const char *headers_candidate_bind_reason(
     struct msg_processor *mp,
     const struct block_index *iter,
-    const struct block_header *hdr)
+    const struct block_header *hdr,
+    struct uint256 *hash_out)
 {
-    if (!mp || !iter || !hdr)
+    if (!mp || !iter || !hdr || !hash_out)
         return "invalid-args";
 
     if (hdr->nVersion < MIN_BLOCK_VERSION)
@@ -233,64 +278,76 @@ static const char *headers_servable_reject_reason(
             return "bad-equihash-solution-size";
     }
 
-    /* The header we are about to serve must BE the entry we are serving it
-     * under. nSolution is part of the serialized header, so an equal hash
-     * proves these are byte-for-byte the accepted bytes — a strictly
-     * stronger statement than "this solution satisfies Equihash", which
-     * says nothing about WHICH header the bytes belong to. A mismatch is
-     * retryable (the ordinary cause is a hydrated index entry carrying no
-     * nSolution, which the flat-file / node.db fallback repairs). */
-    struct uint256 hash;
-    block_header_get_hash(hdr, &hash);
-    bool hash_bound = iter->phashBlock && uint256_eq(&hash, iter->phashBlock);
-    if (!hash_bound)
+    block_header_get_hash(hdr, hash_out);
+    if (!iter->phashBlock || !uint256_eq(hash_out, iter->phashBlock))
         return "header-hash-mismatch";
 
-    /* FULL Equihash, on EVERY header this node serves — no status-bit
-     * shortcut. The hash bind above proves these bytes are the bytes filed
-     * under this entry's hash; it does NOT prove anyone ever solved
-     * Equihash over them, because in this codebase BLOCK_VALID_TREE does
-     * not witness an Equihash check. Four persisted-index loaders set it
-     * at sampled or zero PoW strength:
-     *
-     *   app/services/src/block_index_blocks_hydrate.c  — full_check is
-     *     (h % BLOCKS_HYDRATE_POW_STRIDE == 0) || h > rom_checkpoint,
-     *     i.e. one row in 10,000 below the ROM checkpoint;
-     *   app/services/src/block_index_loader.c          — calls
-     *     block_row_verify(..., hdr = NULL), which per block_row_verify.h
-     *     skips BOTH the hash bind and Equihash, leaving only
-     *     CheckProofOfWork on the CLAIMED hash;
-     *   config/src/boot_block_file_scan.c              — assigns
-     *     BLOCK_VALID_TREE unconditionally;
-     *   config/src/boot_header_seed_import.c           — CLAMPS a
-     *     peer-supplied artifact down to BLOCK_VALID_TREE, and says in
-     *     its own comment that bodies are fully re-validated later.
-     *
-     * The full-strength header pass does exist
-     * (app/jobs/src/validate_headers_validator.c, block_row_verify with
-     * check_equihash = true) but it records its verdict in a STAGE CURSOR,
-     * not in nStatus, so nStatus cannot proxy for it.
-     *
-     * Concretely: a hostile block_index.bin / node.db bundle can carry
-     * header rows below the ROM checkpoint at heights not divisible by
-     * 10,000 whose nSolution is garbage but whose serialized bytes still
-     * hash under target — one CheckProofOfWork-passing grind, not a mine.
-     * Those rows hash-bind and carry BLOCK_VALID_TREE. Skipping Equihash
-     * here would make this node re-broadcast them, which is header spam
-     * peers ban for. This check is the last full-PoW gate applied to a
-     * persisted row before it leaves the node, so it runs unconditionally.
-     *
-     * Cost, MEASURED on the dev host rather than estimated: 383-390 us per
-     * header for 200,9 and 36.7-36.9 us for 192,7 (192,7 is ~10x CHEAPER,
-     * the opposite of the earlier guess), so ~320 s of one thread to serve
-     * one peer the whole 3.19M-header chain. That is the cost this node has
-     * always paid here; recovering it needs a gate that actually witnesses
-     * an Equihash check — the validate_headers stage cursor — not a status
-     * bit. See lib/test/src/test_getheaders_serve_fallback.c case 7. */
+    return NULL;
+}
+
+/* ── BIND, then VERIFY: the expensive half, run at most once ─────────
+ *
+ * `hdr` MUST already have passed headers_candidate_bind_reason (so `hash`
+ * is its real hash and equals iter->phashBlock). Exactly one
+ * check_equihash_solution call per invocation, counted so the cost is
+ * measurable.
+ *
+ * FULL Equihash, on EVERY header this node serves — no status-bit
+ * shortcut, and no "we checked this earlier" flag. The hash bind proves
+ * these bytes are the bytes filed under this entry's hash; it does NOT
+ * prove anyone ever solved Equihash over them, because in this codebase
+ * BLOCK_VALID_TREE does not witness an Equihash check. Four persisted-index
+ * loaders set it at sampled or zero PoW strength:
+ *
+ *   app/services/src/block_index_blocks_hydrate.c  — full_check is
+ *     (h % BLOCKS_HYDRATE_POW_STRIDE == 0) || h > rom_checkpoint,
+ *     i.e. one row in 10,000 below the ROM checkpoint;
+ *   app/services/src/block_index_loader.c          — calls
+ *     block_row_verify(..., hdr = NULL), which per block_row_verify.h
+ *     skips BOTH the hash bind and Equihash, leaving only
+ *     CheckProofOfWork on the CLAIMED hash;
+ *   config/src/boot_block_file_scan.c              — assigns
+ *     BLOCK_VALID_TREE unconditionally;
+ *   config/src/boot_header_seed_import.c           — CLAMPS a
+ *     peer-supplied artifact down to BLOCK_VALID_TREE, and says in
+ *     its own comment that bodies are fully re-validated later.
+ *
+ * The full-strength header pass does exist
+ * (app/jobs/src/validate_headers_validator.c, block_row_verify with
+ * check_equihash = true) but it records its verdict in a STAGE CURSOR,
+ * not in nStatus, so nStatus cannot proxy for it.
+ *
+ * Concretely: a hostile block_index.bin / node.db bundle can carry
+ * header rows below the ROM checkpoint at heights not divisible by
+ * 10,000 whose nSolution is garbage but whose serialized bytes still
+ * hash under target — one CheckProofOfWork-passing grind, not a mine.
+ * Those rows hash-bind and carry BLOCK_VALID_TREE. Skipping Equihash
+ * here would make this node re-broadcast them, which is header spam
+ * peers ban for. This check is the last full-PoW gate applied to a
+ * persisted row before it leaves the node, so it runs unconditionally.
+ *
+ * Cost, MEASURED on the dev host rather than estimated: 383-390 us per
+ * header for 200,9 and 36.7-36.9 us for 192,7 (192,7 is ~10x CHEAPER,
+ * the opposite of the earlier guess), so ~320 s of one thread to serve
+ * one peer the whole 3.19M-header chain. What is NOT acceptable is paying
+ * that bill more than once for the same header, which is what the caller's
+ * resolve-then-verify structure exists to prevent. Recovering the cost
+ * itself needs a gate that actually witnesses an Equihash check — the
+ * validate_headers stage cursor — never a status bit. See
+ * lib/test/src/test_getheaders_serve_fallback.c case 7 and
+ * lib/test/src/test_getheaders_serve_pow_dedup.c. */
+static const char *headers_verify_bound_header(struct msg_processor *mp,
+                                               const struct block_header *hdr,
+                                               const struct uint256 *hash)
+{
+    if (!mp || !hdr || !hash)
+        return "invalid-args";
+
+    atomic_fetch_add(&g_headers_serve_pow_checks, 1);
     if (!check_equihash_solution(hdr, mp->params))
         return "invalid-solution";
 
-    if (!CheckProofOfWork(hash, hdr->nBits, &mp->params->consensus))
+    if (!CheckProofOfWork(*hash, hdr->nBits, &mp->params->consensus))
         return "high-hash";
 
     if (block_header_get_time(hdr) > GetAdjustedTime() + 2 * 60 * 60)
@@ -299,13 +356,23 @@ static const char *headers_servable_reject_reason(
     return NULL;
 }
 
-static bool headers_reject_reason_can_retry_store(const char *reason)
+/* Which BIND-phase refusals another store can still fix. Deliberately only
+ * the two: a wrong solution size or a failed hash bind both mean "these are
+ * not this entry's bytes", and a different store may hold the right ones.
+ *
+ * The VERIFY-phase refusals (invalid-solution, high-hash, time-too-new) are
+ * absent on purpose, and dropping them is not a loosening: they are only
+ * ever reached over already-BOUND bytes, bound bytes are unique, and so
+ * every store that can hash-bind holds byte-identical bytes that fail the
+ * same way. Retrying them re-pays a 383-390 us Equihash bill to reach the
+ * identical verdict — which is exactly the amplification a peer used to be
+ * able to drive three-deep for free. version-too-low is likewise absent
+ * (unchanged): a store cannot change a header's version. */
+static bool headers_bind_reason_can_retry_store(const char *reason)
 {
     return reason &&
-        (strcmp(reason, "invalid-solution") == 0 ||
-         strcmp(reason, "bad-equihash-solution-size") == 0 ||
-         strcmp(reason, "header-hash-mismatch") == 0 ||
-         strcmp(reason, "high-hash") == 0);
+        (strcmp(reason, "bad-equihash-solution-size") == 0 ||
+         strcmp(reason, "header-hash-mismatch") == 0);
 }
 
 static void headers_refresh_index_from_header(struct block_index *iter,
@@ -443,33 +510,57 @@ bool getheaders_index_header_servable(struct msg_processor *mp,
     if (!headers_fill_header_from_index(mp, iter, &hdr))
         return false;
 
-    const char *reason = headers_servable_reject_reason(mp, iter, &hdr);
-    if (reason && headers_reject_reason_can_retry_store(reason)) {
+    /* RESOLVE first, then VERIFY exactly once.
+     *
+     * Pre-fix this walked the same three sources — in-memory index, flat
+     * block file, node.db `blocks` row — but handed each candidate to a
+     * screen that ran FULL Equihash *before* the caller knew whether the
+     * bytes were even the right bytes. So one lookup could spend three
+     * Equihash verifications (~1.2 ms of a core at 200,9), and a peer that
+     * drove the fallback path paid nothing to make this node pay 3x. Its
+     * own honesty was the amplifier.
+     *
+     * Now the loop settles WHICH bytes are authoritative using only the
+     * cheap bind screen, and the expensive check runs once, on the winner.
+     * Which headers are servable does not change: bound bytes are unique
+     * (see headers_candidate_bind_reason), so the verdict the old code
+     * reached on its third attempt is the verdict this reaches on its
+     * first. */
+    struct uint256 hash;
+    uint256_set_null(&hash);
+    const char *reason = headers_candidate_bind_reason(mp, iter, &hdr, &hash);
+
+    if (reason && headers_bind_reason_can_retry_store(reason)) {
         struct block_header disk_hdr;
         if (headers_try_disk_header(mp, iter, &disk_hdr)) {
             const char *disk_reason =
-                headers_servable_reject_reason(mp, iter, &disk_hdr);
+                headers_candidate_bind_reason(mp, iter, &disk_hdr, &hash);
             if (!disk_reason) {
-                if (hdr_out)
-                    *hdr_out = disk_hdr;
-                return true;
+                hdr = disk_hdr;
+                reason = NULL;
+            } else {
+                reason = disk_reason;
             }
-            reason = disk_reason;
         }
     }
-    if (reason && headers_reject_reason_can_retry_store(reason)) {
+    if (reason && headers_bind_reason_can_retry_store(reason)) {
         struct block_header ndb_hdr;
         if (headers_try_node_db_header(iter, &ndb_hdr)) {
             const char *ndb_reason =
-                headers_servable_reject_reason(mp, iter, &ndb_hdr);
+                headers_candidate_bind_reason(mp, iter, &ndb_hdr, &hash);
             if (!ndb_reason) {
-                if (hdr_out)
-                    *hdr_out = ndb_hdr;
-                return true;
+                hdr = ndb_hdr;
+                reason = NULL;
+            } else {
+                reason = ndb_reason;
             }
-            reason = ndb_reason;
         }
     }
+
+    /* The one full-PoW pass, over the resolved bytes only. */
+    if (!reason)
+        reason = headers_verify_bound_header(mp, &hdr, &hash);
+
     if (reason) {
         char hex[65] = {0};
         if (iter && iter->phashBlock)
@@ -497,7 +588,8 @@ bool getheaders_index_header_servable(struct msg_processor *mp,
 /* See net/msg_internal.h. */
 struct block_index *getheaders_next_servable_successor(
     struct msg_processor *mp,
-    struct block_index *parent)
+    struct block_index *parent,
+    struct block_header *hdr_out)
 {
     if (!mp || !parent)
         return NULL;
@@ -516,8 +608,17 @@ struct block_index *getheaders_next_servable_successor(
             main_state_best_known_successor(mp->main_state, cursor);
         if (!next)
             return NULL;
-        if (getheaders_index_header_servable(mp, next, NULL))
+        /* Keep the header the check just built. Discarding it (the old
+         * `NULL` here) forced the serve loop to prove the very same entry a
+         * second time, so every header on the wire cost two full Equihash
+         * verifications instead of one. */
+        struct block_header hdr;
+        block_header_init(&hdr);
+        if (getheaders_index_header_servable(mp, next, &hdr)) {
+            if (hdr_out)
+                *hdr_out = hdr;
             return next;
+        }
         cursor = next;
     }
     LOG_WARN("headers",
@@ -589,6 +690,9 @@ void msg_headers_get_stats(struct msg_headers_stats *out)
         atomic_load(&g_push_getheaders_span_alloc_fail);
     out->getheaders_deferred_snapshot_serving =
         atomic_load(&g_getheaders_deferred_snapshot_serving);
+    out->headers_served_total = atomic_load(&g_headers_served_total);
+    out->getheaders_served_requests =
+        atomic_load(&g_getheaders_served_requests);
 }
 
 bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
@@ -648,21 +752,34 @@ bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
     stream_init(&body, 65536);
     int count = 0;
 
-    for (struct block_index *it = iter; it && count < max_headers; ) {
-        struct block_header hdr;
-        if (!getheaders_index_header_servable(mp, it, &hdr)) {
-            struct block_index *parent = it->pprev;
-            it = parent ? getheaders_next_servable_successor(mp, parent)
-                        : NULL;
-            continue;
-        }
+    /* Each header on the wire is verified EXACTLY ONCE.
+     *
+     * The successor walk hands back the header bytes it already proved, so
+     * the loop appends what it was given instead of re-proving it. Pre-fix
+     * the walk proved a candidate and then the loop head proved the same
+     * entry again, doubling the Equihash bill for every header served — on
+     * top of the up-to-3x inside the servability check itself.
+     *
+     * Only the locator-selected first entry can arrive unproven, so that
+     * one case is handled once, ahead of the loop, rather than with a
+     * re-check on every iteration. */
+    struct block_header hdr;
+    block_header_init(&hdr);
+    struct block_index *it = iter;
+    if (it && !getheaders_index_header_servable(mp, it, &hdr)) {
+        struct block_index *parent = it->pprev;
+        it = parent ? getheaders_next_servable_successor(mp, parent, &hdr)
+                    : NULL;
+    }
+
+    while (it && count < max_headers) {
         if (!getheaders_try_append_header(&body, &hdr))
             break;  /* next header would overflow the wire cap */
         count++;
         if (!uint256_is_null(&hash_stop) && it->phashBlock &&
             uint256_eq(it->phashBlock, &hash_stop))
             break;
-        it = getheaders_next_servable_successor(mp, it);
+        it = getheaders_next_servable_successor(mp, it, &hdr);
     }
 
     struct byte_stream headers;
@@ -675,6 +792,12 @@ bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
     p2p_node_write_message_data(node, headers.data, headers.size);
     p2p_node_end_message(node);
     stream_free(&headers);
+
+    /* Serve-side accounting: one answered request, and the headers it
+     * carried (a 0-header reply still counts as a request — that asymmetry
+     * is the point, see net/msgprocessor.h). */
+    atomic_fetch_add(&g_getheaders_served_requests, 1);
+    atomic_fetch_add(&g_headers_served_total, (uint64_t)count);
     return true;
 }
 

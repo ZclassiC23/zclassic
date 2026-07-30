@@ -72,15 +72,22 @@ bool getheaders_try_append_header(struct byte_stream *body,
  * log; it is an availability/serve verdict, never a validity verdict (no
  * status bits are mutated).
  *
+ * It resolves WHICH bytes are authoritative before verifying them, so it
+ * spends at most ONE full Equihash verification per call no matter how many
+ * stores it had to consult. See the resolve/verify note in msg_headers.c.
+ *
  * getheaders_next_servable_successor walks FORWARD from `parent` past any
  * unservable entries (guard-bounded) and returns the first servable
- * successor, or NULL when the chain is exhausted or the guard trips. */
+ * successor, or NULL when the chain is exhausted or the guard trips. It
+ * hands the proved header back through `hdr_out` (nullable) so the serve
+ * loop does not have to re-verify what the walk already verified. */
 bool getheaders_index_header_servable(struct msg_processor *mp,
                                       struct block_index *iter,
                                       struct block_header *hdr_out);
 struct block_index *getheaders_next_servable_successor(
     struct msg_processor *mp,
-    struct block_index *parent);
+    struct block_index *parent,
+    struct block_header *hdr_out);
 
 /* Bytes of Equihash solution the serve path is currently keeping pinned on
  * in-memory block_index entries. The serve path re-reads a missing solution
@@ -91,6 +98,14 @@ struct block_index *getheaders_next_servable_successor(
  * caching stops. Exposed for the offline regression test and for operator
  * diagnostics; nothing branches on it. */
 size_t getheaders_solution_cache_bytes(void);
+
+/* Full Equihash verifications the getheaders SERVE path has performed since
+ * process start. This is the DoS unit for header serving: an unauthenticated
+ * post-handshake peer chooses how many of these this node runs, and each one
+ * costs 383-390 us of a core at 200,9. The contract it pins is at most ONE
+ * per header put on the wire — see test_getheaders_serve_pow_dedup. Exposed
+ * for that test and for operator diagnostics; nothing branches on it. */
+uint64_t getheaders_serve_pow_checks(void);
 
 bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
                         struct byte_stream *s);
