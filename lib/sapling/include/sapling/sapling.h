@@ -45,6 +45,18 @@ bool sapling_compute_rk(const uint8_t ak[32], const uint8_t ar[32],
 void sapling_spend_auth_generator(struct fr *x, struct fr *y);
 void sapling_proof_gen_key_generator(struct fr *x, struct fr *y);
 
+/* The two generators the value commitment cv = [value] G_v + [rcv] G_rcv is
+ * built from, as (x, y) field coordinates, so the in-circuit fixed-base
+ * multiplications of spend section 14 use the IDENTICAL points
+ * sapling_value_commit() uses out of circuit. Also find_group_hash-derived:
+ *   sapling_value_commit_value_generator      -> GEN_VALUE_COMMITMENT_VALUE
+ *   sapling_value_commit_randomness_generator -> GEN_VALUE_COMMITMENT_RANDOMNESS
+ * Taking these from the single-shot group_hash() instead (as the output circuit
+ * does) yields a DIFFERENT point, and the circuit's cv then disagrees with the
+ * public input it is bound to. */
+void sapling_value_commit_value_generator(struct fr *x, struct fr *y);
+void sapling_value_commit_randomness_generator(struct fr *x, struct fr *y);
+
 /* CRH^ivk(ak, nk) = BLAKE2s("Zcashivk", ak || nk) with top 5 bits dropped */
 void sapling_crh_ivk(const uint8_t ak[32], const uint8_t nk[32], uint8_t ivk[32]);
 

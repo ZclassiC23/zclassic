@@ -166,4 +166,35 @@ bool gadget_blake2s(struct constraint_system *cs,
                     const uint8_t personalization[8],
                     struct cbit out[256]);
 
+/* ── Boolean-driven Jubjub scalar multiplication ─────────────────── */
+
+/* bellman ecc::EdwardsPoint::conditionally_select with a `Boolean` condition.
+ * The single reason this lives in the cbit layer rather than next to the other
+ * curve gadgets: a `Boolean` may be a CONSTANT or a NEGATED view, so the
+ * condition can only be handed to a constraint as a linear combination
+ * (cbit_lc_add), never as a wire index. 2 constraints, the same two
+ * gadget_conditionally_select_point emits for a bare wire. */
+void gadget_conditionally_select_point_cbit(struct constraint_system *cs,
+                                            struct cbit cond,
+                                            size_t px, size_t py,
+                                            size_t *rx, size_t *ry);
+
+/* bellman ecc::EdwardsPoint::mul — double-and-add over `n_bits` Boolean bits,
+ * LEAST significant first, against a base that is itself a pair of wires. This
+ * is THE double-and-add body in the tree; gadget_variable_base_mul (bare wires)
+ * is a wrapper over it.
+ *
+ * Cost: 13*n_bits - 11 constraints, and it does not depend on the bits' values
+ * or kinds — bit 0 pays only a select (2), every later bit pays a double (5), a
+ * select (2) and an add (6). Section 13 of the spend circuit multiplies g_d by
+ * the 251 truncated ivk bits, which is exactly 3252 constraints.
+ *
+ * On a malformed request (n_bits == 0) it logs and writes SIZE_MAX to both
+ * outputs rather than returning a plausible-looking point. */
+void gadget_variable_base_mul_cbits(struct constraint_system *cs,
+                                    size_t base_x, size_t base_y,
+                                    const struct cbit *scalar_bits,
+                                    size_t n_bits,
+                                    size_t *out_x, size_t *out_y);
+
 #endif

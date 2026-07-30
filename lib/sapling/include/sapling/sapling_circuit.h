@@ -78,13 +78,22 @@ struct spend_wire_probe {
     size_t ak_x, ak_y;   /* witnessed spend-authority key (section 1) */
     size_t rk_x, rk_y;   /* re-randomized key rk = ak + [ar] G (section 4) */
     size_t nk_x, nk_y;   /* nullifier deriving key [nsk] G_proof (section 7) */
+    size_t gd_x, gd_y;   /* witnessed g_d = GH("Zcash_gd", d) (section 11) */
+    size_t pkd_x, pkd_y; /* pk_d = [ivk] g_d (section 13) */
+    size_t cv_x, cv_y;   /* cv = [value] G_v + [rcv] G_rcv (section 14) */
+    /* The 64 little-endian value bits section 14 booleanizes; they also open
+     * the note in section 17, so a wrong bit order there is a silent divergence
+     * this makes visible. SIZE_MAX-filled when not yet synthesized. */
+    size_t value_bit[64];
     /* EdwardsPoint::repr bit wires — 256 boolean variable indices each, in
      * little-endian order. Because Jubjub's compressed encoding is y with x's
      * low bit in the top bit, these bits ARE the bits of the point's 32-byte
      * compressed encoding; that makes them checkable against ground truth
      * rather than merely counted. SIZE_MAX-filled when not yet synthesized. */
-    size_t ak_repr[256]; /* representation of ak  (section 8) */
-    size_t nk_repr[256]; /* representation of nk  (section 9) */
+    size_t ak_repr[256]; /* representation of ak   (section 8) */
+    size_t nk_repr[256]; /* representation of nk   (section 9) */
+    size_t gd_repr[256]; /* representation of g_d  (section 15) */
+    size_t pkd_repr[256];/* representation of pk_d (section 16) */
 
     /* blake2s(CRH^ivk) output bit wires (section 10), 256 little-endian bits.
      * bellman's blake2s returns `Boolean`s, which may be a NEGATED view of a
