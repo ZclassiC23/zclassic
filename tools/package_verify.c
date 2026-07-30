@@ -84,11 +84,13 @@
 #define _DEFAULT_SOURCE
 
 #include "vcs/package_attest.h"
+#include "vcs/package_build.h"
 #include "vcs/package_manifest.h"
 #include "vcs/package_recipe.h"
 #include "vcs/package_release.h"
 
 #include "base/hex.h"
+#include "crypto/sha3.h"
 #include "platform/clock.h"
 #include "platform/os_sandbox.h"
 #include "support/cleanse.h"
@@ -148,11 +150,42 @@ volatile sig_atomic_t g_shutdown_requested = 0;
 #define PV_CHILD_SECCOMP_FAIL 126
 #define PV_CHILD_EXEC_FAIL 127
 
+/* Emit-mode bounds. The archive/header install carries the same
+ * canonical-path grammar as the manifest, so an emitted path can never
+ * become a filesystem escape. */
+#define PV_EMIT_MAX_DEPS 64u
+
+/* One locked dependency the target builds against: its package root (which
+ * the build receipt commits) and its already-installed directory, whose
+ * include/ is granted READ-ONLY to the compile children and whose static
+ * archives under lib/ are appended to the link line. */
+struct pv_emit_dep {
+    uint8_t root[32];
+    char install_dir[2048];
+    char include_dir[2100];
+};
+
 static void pv_usage(FILE *out)
 {
     fprintf(out,
         "usage: zclassic23-package-verify <package-root-hex> --store=<dir>\n"
         "           --key=<file> [--work=<dir>] [--require-full-isolation]\n"
+        "   or: zclassic23-package-verify <package-root-hex> --store=<dir>\n"
+        "           --emit=<dir> --lock-root=<64hex> [--dep=<64hex>,<dir>]...\n"
+        "           [--work=<dir>] [--require-full-isolation]\n"
+        "\n"
+        "--emit is INSTALL-BUILD mode (the ZCODE add lifecycle): the same\n"
+        "confined build+test runs, but instead of signing an attestation the\n"
+        "run archives the recipe's non-test objects into <dir>/lib/lib<pkg>.a,\n"
+        "copies the recipe's public headers under <dir>/include/, and writes\n"
+        "the canonical build receipt (vcs/package_build.h) to\n"
+        "<dir>/build-report. NOTHING is signed in this mode and --key is\n"
+        "refused: the caller is the node's own lifecycle service, which\n"
+        "independently RE-HASHES every emitted file against the receipt\n"
+        "before installing it. --lock-root pins the dependency lock the\n"
+        "receipt commits; each --dep names a locked dependency root and its\n"
+        "install dir, whose include/ is granted read-only to the compile\n"
+        "children and whose lib/*.a archives join the link line.\n"
         "\n"
         "Builds and tests one ZCODE package under confinement (seccomp +\n"
         "rlimits + Landlock where the kernel offers it) following ONLY the\n"
@@ -321,11 +354,12 @@ struct pv_run {
  * the two harmless /dev nodes. Anything else — wallet, datadir, SSH — is
  * denied by default. */
 static size_t pv_child_grants(const char *src_dir, const char *build_dir,
+                              const struct pv_emit_dep *deps, size_t dep_count,
                               struct os_sandbox_path_rule *rules,
                               size_t cap)
 {
     size_t n = 0;
-    if (cap < 10)
+    if (cap < 10u + dep_count)
         return 0;
     rules[n++] = (struct os_sandbox_path_rule){
         .path = src_dir, .allow_read = true };
@@ -354,6 +388,12 @@ static size_t pv_child_grants(const char *src_dir, const char *build_dir,
         .path = "/dev/null", .allow_read = true, .allow_write = true };
     rules[n++] = (struct os_sandbox_path_rule){
         .path = "/dev/urandom", .allow_read = true };
+    /* Locked dependencies: READ ONLY, and only the install dirs the caller
+     * named (headers to compile against, archives to link). Never write,
+     * never execute — a dependency is data to this build, not a program. */
+    for (size_t i = 0; i < dep_count; i++)
+        rules[n++] = (struct os_sandbox_path_rule){
+            .path = deps[i].install_dir, .allow_read = true };
     return n;
 }
 
@@ -724,8 +764,9 @@ static void pv_san_detail_from_stderr(const char *prefix,
 /* Build the argv for one compile: cc -std=c23 -O1 [san] -I... -D...
  * -c <srcfile> -o <obj>. argv storage must outlive the call. */
 struct pv_compile_args {
-    const char *argv[64];
+    const char *argv[192];
     char inc[8][4200];   /* -I args */
+    char dep[PV_EMIT_MAX_DEPS][2100]; /* -I args for locked dependencies */
     char def[64][80];    /* -D args */
     char san[1][64];
 };
@@ -734,6 +775,7 @@ static size_t pv_compile_argv(struct pv_compile_args *store,
                               const char *cc, bool sanitize,
                               const struct vcs_package_recipe *recipe,
                               const char *src_root,
+                              const struct pv_emit_dep *deps, size_t dep_count,
                               const char *src_file, const char *obj_file)
 {
     size_t n = 0;
@@ -752,6 +794,11 @@ static size_t pv_compile_argv(struct pv_compile_args *store,
                  recipe->include_dirs.items[i]);
         store->argv[n++] = store->inc[i];
     }
+    for (size_t i = 0; i < dep_count && i < PV_EMIT_MAX_DEPS; i++) {
+        snprintf(store->dep[i], sizeof(store->dep[i]), "-I%s",
+                 deps[i].include_dir);
+        store->argv[n++] = store->dep[i];
+    }
     for (size_t i = 0; i < recipe->defines.count &&
                         i < sizeof(store->def) / sizeof(store->def[0]); i++) {
         snprintf(store->def[i], sizeof(store->def[i]), "-D%s",
@@ -766,6 +813,139 @@ static size_t pv_compile_argv(struct pv_compile_args *store,
     return n;
 }
 
+/* ── emit-mode helpers (install-build outputs) ──────────────────────── */
+
+/* Absolute paths of every `lib*.a` in each locked dependency's lib/ dir, in
+ * REVERSE --dep order: --dep arrives in lock BUILD order (dependencies
+ * first), and a static link line wants dependents before their providers. */
+struct pv_dep_archives {
+    char path[PV_EMIT_MAX_DEPS * 4u][2200];
+    size_t count;
+};
+
+static void pv_collect_dep_archives(const struct pv_emit_dep *deps,
+                                    size_t dep_count,
+                                    struct pv_dep_archives *out)
+{
+    out->count = 0;
+    for (size_t k = dep_count; k > 0; k--) {
+        const struct pv_emit_dep *d = &deps[k - 1];
+        char lib_dir[2100];
+        int n = snprintf(lib_dir, sizeof(lib_dir), "%s/lib", d->install_dir);
+        if (n <= 0 || (size_t)n >= sizeof(lib_dir))
+            continue;
+        DIR *dir = opendir(lib_dir);
+        if (!dir)
+            continue;
+        struct dirent *ent;
+        while ((ent = readdir(dir)) != NULL) {
+            size_t nl = strlen(ent->d_name);
+            if (nl < 4u || strncmp(ent->d_name, "lib", 3) != 0 ||
+                strcmp(ent->d_name + nl - 2u, ".a") != 0)
+                continue;
+            if (out->count >= sizeof(out->path) / sizeof(out->path[0]))
+                break;
+            int pn = snprintf(out->path[out->count],
+                              sizeof(out->path[out->count]), "%s/%s", lib_dir,
+                              ent->d_name);
+            if (pn > 0 && (size_t)pn < sizeof(out->path[out->count]))
+                out->count++;
+        }
+        closedir(dir);
+    }
+}
+
+/* SHA3-256 + byte count of one file, streamed in bounded chunks. */
+static bool pv_sha3_file(const char *path, uint8_t out[32], uint64_t *bytes)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return false;
+    struct sha3_256_ctx ctx;
+    sha3_256_init(&ctx);
+    uint8_t buf[65536];
+    uint64_t total = 0;
+    size_t got;
+    while ((got = fread(buf, 1, sizeof(buf), f)) > 0) {
+        sha3_256_write(&ctx, buf, got);
+        total += got;
+    }
+    bool ok = ferror(f) == 0;
+    fclose(f);
+    if (!ok)
+        return false;
+    sha3_256_finalize(&ctx, out);
+    *bytes = total;
+    return true;
+}
+
+static bool pv_copy_file(const char *src, const char *dst, mode_t mode)
+{
+    FILE *in = fopen(src, "rb");
+    if (!in)
+        return false;
+    char parent[4200];
+    (void)snprintf(parent, sizeof(parent), "%s", dst);
+    char *slash = strrchr(parent, '/');
+    if (slash) {
+        *slash = '\0';
+        if (!pv_mkdir_p(parent, 0700)) {
+            fclose(in);
+            return false;
+        }
+    }
+    int fd = open(dst, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, mode);
+    if (fd < 0) {
+        fclose(in);
+        return false;
+    }
+    uint8_t buf[65536];
+    size_t got;
+    bool ok = true;
+    while (ok && (got = fread(buf, 1, sizeof(buf), in)) > 0) {
+        size_t off = 0;
+        while (off < got) {
+            ssize_t w = write(fd, buf + off, got - off);
+            if (w < 0) {
+                if (errno == EINTR)
+                    continue;
+                ok = false;
+                break;
+            }
+            off += (size_t)w;
+        }
+    }
+    if (ferror(in))
+        ok = false;
+    fclose(in);
+    if (fsync(fd) != 0 || close(fd) != 0)
+        ok = false;
+    if (!ok)
+        unlink(dst);
+    return ok;
+}
+
+/* Install-relative header destination: strip the LONGEST recipe include-dir
+ * prefix so `#include <ringbuffer.h>` keeps working after install; a header
+ * under no include dir keeps its full package-relative path. */
+static void pv_header_install_path(const struct vcs_package_recipe *recipe,
+                                   const char *header, char *out,
+                                   size_t out_cap)
+{
+    const char *best = header;
+    size_t best_len = 0;
+    for (size_t i = 0; i < recipe->include_dirs.count; i++) {
+        const char *dir = recipe->include_dirs.items[i];
+        size_t dl = strlen(dir);
+        if (dl > best_len && strncmp(header, dir, dl) == 0 &&
+            header[dl] == '/' && header[dl + 1] != '\0') {
+            best = header + dl + 1u;
+            best_len = dl;
+        }
+    }
+    (void)snprintf(out, out_cap, "include/%s", best);
+}
+
 /* ── main flow ──────────────────────────────────────────────────────── */
 
 int main(int argc, char **argv)
@@ -774,7 +954,12 @@ int main(int argc, char **argv)
     const char *store_dir = NULL;
     const char *key_path = NULL;
     const char *work_parent = NULL;
+    const char *emit_dir = NULL;
+    const char *lock_root_hex = NULL;
     bool require_full_isolation = false;
+    struct pv_emit_dep emit_deps[PV_EMIT_MAX_DEPS];
+    size_t emit_dep_count = 0;
+    memset(emit_deps, 0, sizeof(emit_deps));
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "--store=", 8) == 0)
             store_dir = argv[i] + 8;
@@ -782,7 +967,44 @@ int main(int argc, char **argv)
             key_path = argv[i] + 6;
         else if (strncmp(argv[i], "--work=", 7) == 0)
             work_parent = argv[i] + 7;
-        else if (strcmp(argv[i], "--require-full-isolation") == 0)
+        else if (strncmp(argv[i], "--emit=", 7) == 0)
+            emit_dir = argv[i] + 7;
+        else if (strncmp(argv[i], "--lock-root=", 12) == 0)
+            lock_root_hex = argv[i] + 12;
+        else if (strncmp(argv[i], "--dep=", 6) == 0) {
+            /* <64 hex>,<install dir> — the hex is fixed-width, so the comma
+             * position is unambiguous even if the path contains commas. */
+            const char *spec = argv[i] + 6;
+            if (emit_dep_count >= PV_EMIT_MAX_DEPS) {
+                fprintf(stderr, "%s: more than %u --dep entries\n", PV_LOG,
+                        PV_EMIT_MAX_DEPS);
+                return 2;
+            }
+            struct pv_emit_dep *d = &emit_deps[emit_dep_count];
+            char hex[65];
+            if (strlen(spec) < 66u || spec[64] != ',') {
+                fprintf(stderr, "%s: --dep wants <64hex>,<install-dir>\n",
+                        PV_LOG);
+                return 2;
+            }
+            memcpy(hex, spec, 64);
+            hex[64] = '\0';
+            if (!zcl_hex_decode(hex, d->root, 32)) {
+                fprintf(stderr, "%s: --dep root is not 64 hex chars\n",
+                        PV_LOG);
+                return 2;
+            }
+            int dn = snprintf(d->install_dir, sizeof(d->install_dir), "%s",
+                              spec + 65);
+            int in = snprintf(d->include_dir, sizeof(d->include_dir),
+                              "%s/include", d->install_dir);
+            if (dn <= 0 || (size_t)dn >= sizeof(d->install_dir) || in <= 0 ||
+                (size_t)in >= sizeof(d->include_dir)) {
+                fprintf(stderr, "%s: --dep install dir too long\n", PV_LOG);
+                return 2;
+            }
+            emit_dep_count++;
+        } else if (strcmp(argv[i], "--require-full-isolation") == 0)
             require_full_isolation = true;
         else if (strcmp(argv[i], "--help") == 0 ||
                  strcmp(argv[i], "-h") == 0) {
@@ -795,8 +1017,17 @@ int main(int argc, char **argv)
             return 2;
         }
     }
-    if (!root_hex || !store_dir || !key_path) {
+    /* The two modes are mutually exclusive: an emit run signs nothing, so a
+     * key would only invite the belief that its output was attested. */
+    if (!root_hex || !store_dir || (!key_path && !emit_dir) ||
+        (key_path && emit_dir) || (emit_dir && !lock_root_hex) ||
+        (!emit_dir && (lock_root_hex || emit_dep_count > 0))) {
         pv_usage(stderr);
+        return 2;
+    }
+    uint8_t emit_lock_root[32] = { 0 };
+    if (emit_dir && !zcl_hex_decode(lock_root_hex, emit_lock_root, 32)) {
+        fprintf(stderr, "%s: --lock-root wants 64 hex chars\n", PV_LOG);
         return 2;
     }
     uint8_t package_root[32];
@@ -837,63 +1068,74 @@ int main(int argc, char **argv)
             return 3;
         }
     }
-    int n = snprintf(probe, sizeof(probe), "%s/attestations", store_dir);
-    if (n < 0 || (size_t)n >= sizeof(probe) || !pv_mkdir_p(probe, 0700)) {
-        fprintf(stderr, "%s: cannot create %s/attestations\n", PV_LOG,
-                store_dir);
-        return 3;
+    if (!emit_dir) {
+        int n = snprintf(probe, sizeof(probe), "%s/attestations", store_dir);
+        if (n < 0 || (size_t)n >= sizeof(probe) || !pv_mkdir_p(probe, 0700)) {
+            fprintf(stderr, "%s: cannot create %s/attestations\n", PV_LOG,
+                    store_dir);
+            return 3;
+        }
     }
 
-    /* Verifier key. */
-    struct stat kst;
-    if (stat(key_path, &kst) != 0 || !S_ISREG(kst.st_mode) ||
-        (kst.st_mode & 077) != 0) {
-        fprintf(stderr,
-                "%s: key file %s must be a regular file with no "
-                "group/other permission bits (0600 or 0400)\n",
-                PV_LOG, key_path);
-        return 3;
-    }
-    size_t key_len = 0;
-    uint8_t *key_text = pv_read_file(key_path, 128, &key_len);
-    if (!key_text) {
-        fprintf(stderr, "%s: cannot read key file %s\n", PV_LOG, key_path);
-        return 3;
-    }
-    while (key_len > 0 &&
-           (key_text[key_len - 1] == '\n' || key_text[key_len - 1] == '\r' ||
-            key_text[key_len - 1] == ' ' || key_text[key_len - 1] == '\t'))
-        key_len--;
-    char key_hex[65];
-    if (key_len != 64) {
-        fprintf(stderr, "%s: key file must hold exactly 64 hex chars\n",
-                PV_LOG);
+    /* Verifier key — attestation mode only. An emit run signs nothing, so it
+     * never reads a secret; the caller re-hashes the outputs instead. */
+    secp256k1_context *sign_ctx = NULL;
+    uint8_t secret[32] = { 0 };
+    uint8_t verifier_pubkey[33] = { 0 };
+    if (!emit_dir) {
+        struct stat kst;
+        if (stat(key_path, &kst) != 0 || !S_ISREG(kst.st_mode) ||
+            (kst.st_mode & 077) != 0) {
+            fprintf(stderr,
+                    "%s: key file %s must be a regular file with no "
+                    "group/other permission bits (0600 or 0400)\n",
+                    PV_LOG, key_path);
+            return 3;
+        }
+        size_t key_len = 0;
+        uint8_t *key_text = pv_read_file(key_path, 128, &key_len);
+        if (!key_text) {
+            fprintf(stderr, "%s: cannot read key file %s\n", PV_LOG,
+                    key_path);
+            return 3;
+        }
+        while (key_len > 0 &&
+               (key_text[key_len - 1] == '\n' ||
+                key_text[key_len - 1] == '\r' ||
+                key_text[key_len - 1] == ' ' ||
+                key_text[key_len - 1] == '\t'))
+            key_len--;
+        char key_hex[65];
+        if (key_len != 64) {
+            fprintf(stderr, "%s: key file must hold exactly 64 hex chars\n",
+                    PV_LOG);
+            free(key_text);
+            return 3;
+        }
+        memcpy(key_hex, key_text, 64);
+        key_hex[64] = '\0';
         free(key_text);
-        return 3;
-    }
-    memcpy(key_hex, key_text, 64);
-    key_hex[64] = '\0';
-    free(key_text);
-    uint8_t secret[32];
-    if (!zcl_hex_decode(key_hex, secret, 32)) {
-        fprintf(stderr, "%s: key file is not 64 hex chars\n", PV_LOG);
-        return 3;
-    }
-    secp256k1_context *sign_ctx =
-        secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
-    if (!sign_ctx || !secp256k1_ec_seckey_verify(sign_ctx, secret)) {
-        fprintf(stderr, "%s: key is not a valid secp256k1 secret\n", PV_LOG);
-        return 3;
-    }
-    secp256k1_pubkey vpk;
-    uint8_t verifier_pubkey[33];
-    size_t vpk_len = sizeof(verifier_pubkey);
-    if (!secp256k1_ec_pubkey_create(sign_ctx, &vpk, secret) ||
-        !secp256k1_ec_pubkey_serialize(sign_ctx, verifier_pubkey, &vpk_len,
-                                       &vpk, SECP256K1_EC_COMPRESSED) ||
-        vpk_len != sizeof(verifier_pubkey)) {
-        fprintf(stderr, "%s: cannot derive the verifier pubkey\n", PV_LOG);
-        return 3;
+        if (!zcl_hex_decode(key_hex, secret, 32)) {
+            fprintf(stderr, "%s: key file is not 64 hex chars\n", PV_LOG);
+            return 3;
+        }
+        sign_ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
+        if (!sign_ctx || !secp256k1_ec_seckey_verify(sign_ctx, secret)) {
+            fprintf(stderr, "%s: key is not a valid secp256k1 secret\n",
+                    PV_LOG);
+            return 3;
+        }
+        secp256k1_pubkey vpk;
+        size_t vpk_len = sizeof(verifier_pubkey);
+        if (!secp256k1_ec_pubkey_create(sign_ctx, &vpk, secret) ||
+            !secp256k1_ec_pubkey_serialize(sign_ctx, verifier_pubkey,
+                                           &vpk_len, &vpk,
+                                           SECP256K1_EC_COMPRESSED) ||
+            vpk_len != sizeof(verifier_pubkey)) {
+            fprintf(stderr, "%s: cannot derive the verifier pubkey\n",
+                    PV_LOG);
+            return 3;
+        }
     }
 
     /* Release + manifest + recipe. */
@@ -1119,8 +1361,9 @@ int main(int argc, char **argv)
         return 5;
     }
 
-    struct os_sandbox_path_rule rules[10];
-    size_t n_rules = pv_child_grants(src_root, build_root, rules,
+    struct os_sandbox_path_rule rules[10u + PV_EMIT_MAX_DEPS];
+    size_t n_rules = pv_child_grants(src_root, build_root, emit_deps,
+                                     emit_dep_count, rules,
                                      sizeof(rules) / sizeof(rules[0]));
 
     /* Compiler probes (version strings are recorded in the attestation). */
@@ -1151,6 +1394,10 @@ int main(int argc, char **argv)
                      "unavailable");
         }
     }
+
+    struct pv_dep_archives dep_archives;
+    memset(&dep_archives, 0, sizeof(dep_archives));
+    pv_collect_dep_archives(emit_deps, emit_dep_count, &dep_archives);
 
     /* The build+test matrix. */
     struct vcs_package_attest att;
@@ -1242,7 +1489,8 @@ int main(int argc, char **argv)
                 struct pv_compile_args args;
                 memset(&args, 0, sizeof(args));
                 pv_compile_argv(&args, cc, sanitize, &recipe, src_root,
-                                src_file, obj_file);
+                                emit_deps, emit_dep_count, src_file,
+                                obj_file);
                 struct pv_run pr = pv_run_child(
                     args.argv, build_root, &compile_limits, landlock, rules,
                     n_rules, compile_env, PV_COMPILE_TIMEOUT_MS);
@@ -1292,6 +1540,12 @@ int main(int argc, char **argv)
                 }
                 largv[ln++] = "-o";
                 largv[ln++] = bin_file;
+                /* Locked dependency archives come after the objects that
+                 * reference them (static-link order). */
+                for (size_t da = 0; da < dep_archives.count &&
+                                    ln + 8u < sizeof(largv) / sizeof(largv[0]);
+                     da++)
+                    largv[ln++] = dep_archives.path[da];
                 for (size_t li = 0; li < recipe.library_count; li++) {
                     if (recipe.libraries[li] == VCS_PACKAGE_RECIPE_LIB_LIBM)
                         largv[ln++] = "-lm";
@@ -1531,6 +1785,166 @@ int main(int argc, char **argv)
         vcs_package_recipe_free(&recipe);
         vcs_package_manifest_free(&manifest);
         return 5;
+    }
+
+    /* ── emit mode: archive, install-stage, receipt (nothing is signed) ── */
+    if (emit_dir) {
+        struct vcs_package_build_receipt rec;
+        vcs_package_build_receipt_init(&rec);
+        memcpy(rec.package_root, package_root, 32);
+        memcpy(rec.recipe_root, recipe_root, 32);
+        memcpy(rec.lock_root, emit_lock_root, 32);
+        for (size_t i = 0; i < emit_dep_count; i++) {
+            enum vcs_package_build_error de =
+                vcs_package_build_add_dep(&rec, emit_deps[i].root);
+            if (de != VCS_PACKAGE_BUILD_OK) {
+                fprintf(stderr, "%s: --dep set rejected: %s\n", PV_LOG,
+                        vcs_package_build_error_string(de));
+                pv_rm_rf(work);
+                vcs_package_recipe_free(&recipe);
+                vcs_package_manifest_free(&manifest);
+                return 2;
+            }
+        }
+        /* Deterministic compiler choice: gcc when present, else clang. The
+         * verdict above already required BOTH available compilers to pass. */
+        const size_t pick = compilers[1].available ? 1u : 0u;
+        snprintf(rec.compiler_id, sizeof(rec.compiler_id), "%s",
+                 compilers[pick].id);
+        snprintf(rec.compiler_version, sizeof(rec.compiler_version), "%s",
+                 compilers[pick].version);
+        snprintf(rec.flags, sizeof(rec.flags), "%s",
+                 "-std=c23 -O1 -fno-omit-frame-pointer -c");
+        rec.isolation = landlock
+                            ? (uint8_t)VCS_PACKAGE_BUILD_ISOLATION_FULL
+                            : (uint8_t)VCS_PACKAGE_BUILD_ISOLATION_DEGRADED;
+        rec.test_ran = have_tests && test_ran;
+        rec.test_exit_code = rec.test_ran ? test_exit : 0u;
+        if (!build_ok)
+            rec.result_class = (uint8_t)VCS_PACKAGE_BUILD_RESULT_BUILD_FAIL;
+        else if (have_tests && !test_ok)
+            rec.result_class = (uint8_t)VCS_PACKAGE_BUILD_RESULT_TEST_FAIL;
+        else if (have_tests)
+            rec.result_class = (uint8_t)VCS_PACKAGE_BUILD_RESULT_TEST_PASS;
+        else
+            rec.result_class = (uint8_t)VCS_PACKAGE_BUILD_RESULT_BUILD_PASS;
+        /* A sanitizer finding is not a build/test verdict in emit mode; the
+         * attestation lane owns that diagnostic. The receipt records the
+         * build+test verdict only, so a clean test that trips ASan still
+         * installs — exactly as the attestation quorum, not the installer,
+         * is the place that judges sanitizer cleanliness. */
+
+        bool emitted = true;
+        if (vcs_package_build_installable(&rec)) {
+            /* Archive the recipe's NON-TEST objects. Test objects hold
+             * main() and are never part of an installed library. */
+            char pkg_short[VCS_PACKAGE_RELEASE_NAME_MAX + 1u];
+            const char *slash = strchr(release.name, '/');
+            snprintf(pkg_short, sizeof(pkg_short), "%s",
+                     slash ? slash + 1 : release.name);
+            char archive_name[VCS_PACKAGE_RELEASE_NAME_MAX + 8u];
+            snprintf(archive_name, sizeof(archive_name), "lib%s.a", pkg_short);
+            const char *aargv[8u + 512u];
+            char aobjs[512][96];
+            size_t an = 0;
+            aargv[an++] = "ar";
+            aargv[an++] = "rcs";
+            aargv[an++] = archive_name;
+            for (size_t o = 0; o < recipe.sources.count &&
+                               o < sizeof(aobjs) / sizeof(aobjs[0]);
+                 o++) {
+                snprintf(aobjs[o], sizeof(aobjs[o]), "%s_0_%zu.o",
+                         compilers[pick].id, o);
+                aargv[an++] = aobjs[o];
+            }
+            aargv[an] = NULL;
+            struct pv_run ar = pv_run_child(aargv, build_root, &compile_limits,
+                                            landlock, rules, n_rules,
+                                            compile_env, PV_LINK_TIMEOUT_MS);
+            if (!ar.launched || ar.sandbox_fail || ar.timed_out ||
+                !ar.exited || ar.exit_code != 0) {
+                fprintf(stderr,
+                        "%s: `ar rcs %s` failed (%s) — no artifact emitted\n",
+                        PV_LOG, archive_name,
+                        ar.timed_out ? "timed out" : ar.stderr_buf);
+                emitted = false;
+            }
+            char src_archive[4300];
+            char dst_archive[4400];
+            char rel_archive[VCS_PACKAGE_BUILD_PATH_MAX + 1u];
+            snprintf(src_archive, sizeof(src_archive), "%s/%s", build_root,
+                     archive_name);
+            snprintf(rel_archive, sizeof(rel_archive), "lib/%s", archive_name);
+            snprintf(dst_archive, sizeof(dst_archive), "%s/%s", emit_dir,
+                     rel_archive);
+            uint8_t h[32];
+            uint64_t nbytes = 0;
+            if (emitted &&
+                (!pv_copy_file(src_archive, dst_archive, 0644) ||
+                 !pv_sha3_file(dst_archive, h, &nbytes) ||
+                 vcs_package_build_add_output(&rec, rel_archive, h, nbytes) !=
+                     VCS_PACKAGE_BUILD_OK)) {
+                fprintf(stderr, "%s: cannot emit %s\n", PV_LOG, dst_archive);
+                emitted = false;
+            }
+            for (size_t i = 0;
+                 emitted && i < recipe.public_headers.count; i++) {
+                const char *hdr = recipe.public_headers.items[i];
+                char rel[VCS_PACKAGE_BUILD_PATH_MAX + 1u];
+                pv_header_install_path(&recipe, hdr, rel, sizeof(rel));
+                char src_hdr[4300];
+                char dst_hdr[4400];
+                snprintf(src_hdr, sizeof(src_hdr), "%s/%s", src_root, hdr);
+                snprintf(dst_hdr, sizeof(dst_hdr), "%s/%s", emit_dir, rel);
+                uint8_t hh[32];
+                uint64_t hb = 0;
+                if (!pv_copy_file(src_hdr, dst_hdr, 0644) ||
+                    !pv_sha3_file(dst_hdr, hh, &hb) ||
+                    vcs_package_build_add_output(&rec, rel, hh, hb) !=
+                        VCS_PACKAGE_BUILD_OK) {
+                    fprintf(stderr, "%s: cannot emit %s\n", PV_LOG, dst_hdr);
+                    emitted = false;
+                }
+            }
+            if (!emitted) {
+                /* An emit failure is an INTERNAL failure, never a silent
+                 * "build failed" verdict: the build genuinely passed. */
+                pv_rm_rf(work);
+                vcs_package_recipe_free(&recipe);
+                vcs_package_manifest_free(&manifest);
+                return 5;
+            }
+        }
+
+        uint8_t *rwire2 = NULL;
+        size_t rwire2_len = 0;
+        enum vcs_package_build_error be =
+            vcs_package_build_serialize(&rec, &rwire2, &rwire2_len);
+        char report_path[4400];
+        snprintf(report_path, sizeof(report_path), "%s/build-report", emit_dir);
+        bool wrote = be == VCS_PACKAGE_BUILD_OK && pv_mkdir_p(emit_dir, 0700) &&
+                     pv_atomic_write(report_path, rwire2, rwire2_len);
+        free(rwire2);
+        if (!wrote) {
+            fprintf(stderr, "%s: cannot write %s (%s)\n", PV_LOG, report_path,
+                    vcs_package_build_error_string(be));
+            pv_rm_rf(work);
+            vcs_package_recipe_free(&recipe);
+            vcs_package_manifest_free(&manifest);
+            return 5;
+        }
+        if (!pv_rm_rf(work))
+            fprintf(stderr, "%s: WARNING: temp tree %s not fully removed\n",
+                    PV_LOG, work);
+        printf("emit=%s result=%s outputs=%zu isolation=%s\n", emit_dir,
+               vcs_package_build_result_string(
+                   (enum vcs_package_build_result)rec.result_class),
+               rec.output_count,
+               vcs_package_build_isolation_string(
+                   (enum vcs_package_build_isolation)rec.isolation));
+        vcs_package_recipe_free(&recipe);
+        vcs_package_manifest_free(&manifest);
+        return 0;
     }
 
     /* Sign + persist. */
