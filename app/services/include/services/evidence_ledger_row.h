@@ -23,6 +23,11 @@
  *     reader here takes the last row it was handed as authoritative for the
  *     per-sample fields, so handing over a torn append lets half a row become
  *     "the" current sample;
+ *   - a row's CONTENT cannot decide where the row ends. A torn append can
+ *     leave an embedded NUL in the middle of an otherwise newline-terminated
+ *     line, so row boundaries are counted in bytes and never found with
+ *     strlen(): the corrupt row is dropped, and the intact row after it is
+ *     still parsed;
  *   - a missing or unreadable ledger is DATA (nothing scanned), never an
  *     error a caller branches on — a host that never installed a recorder
  *     looks exactly like that.
@@ -48,8 +53,8 @@
  * excluded. One ledger row is a flat JSON object well under 1 KiB; 4 KiB is
  * generous. A row longer than this is not an evidence row — see the overlong
  * note in evidence_ledger_scan_tail(). A row of exactly this length IS a row:
- * the read buffer carries two spare bytes for the newline and the NUL so the
- * boundary is decided by the data length, never by the buffer filling up. */
+ * the boundary is decided by counting data bytes to the next newline, never by
+ * a read buffer filling up or by where a NUL happens to sit. */
 #define EVIDENCE_ROW_MAX 4096
 
 /* Bounded, NUL-terminating copy of `len` bytes. A NULL/zero-cap dst is a
@@ -99,11 +104,13 @@ bool evidence_ledger_scan_text(const char *text, size_t len,
  * may be NULL; both are INCREMENTED, never assigned:
  *   `out_overlong`   a row longer than EVIDENCE_ROW_MAX data bytes — corrupt
  *                    or foreign content. Callers count it as malformed.
- *   `out_incomplete` a line that ended without a newline: the recorder's
- *                    append was caught mid-write, or the file is truncated.
- *                    NOT malformed (the bytes may be a perfectly good row that
- *                    is not all there yet) and NOT a sample — it is dropped,
- *                    so a torn line can never become the last row scanned.
+ *   `out_incomplete` a write that did not all land: a line that ended without
+ *                    a newline (the recorder's append was caught mid-write, or
+ *                    the file is truncated), or one whose content carries an
+ *                    embedded NUL. NOT malformed (the bytes may be a perfectly
+ *                    good row that is not all there yet) and NOT a sample — it
+ *                    is dropped, so a torn line can never become the last row
+ *                    scanned, and dropping it never costs the row after it.
  * Either way the rest of that physical line is consumed, never folded as a
  * second row.
  *

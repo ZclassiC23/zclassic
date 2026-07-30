@@ -170,72 +170,105 @@ bool evidence_ledger_scan_tail(const char *path, size_t tail_bytes,
         }
     }
 
-    /* ONE BYTE OF HEADROOM PER TERMINATOR, and the count is the whole point.
-     * fgets() stores at most sizeof(row)-1 data bytes, so a buffer of exactly
-     * EVIDENCE_ROW_MAX could hold a row of EVIDENCE_ROW_MAX-1 bytes at most:
-     * a legal row followed by '\n' came back buffer-full with no newline in
-     * sight and was indistinguishable from a genuinely overlong one, so it was
-     * dropped and counted malformed (reproduced at 4095 bytes). +2 leaves room
-     * for the newline AND the NUL, which makes "the newline is missing AND the
-     * data is longer than a row may be" the actual overlong test. */
-    char row[EVIDENCE_ROW_MAX + 2];
-    bool first = true;
-    /* Consuming the remaining bytes of a physical line we have already
-     * dropped — an overlong row, a post-seek fragment, or a torn line. Its
-     * tail is swallowed, never folded as a second phantom row. */
-    bool skipping = false;
-    while (fgets(row, sizeof(row), f)) {
-        size_t rlen = strlen(row);
-        bool complete = rlen > 0 && row[rlen - 1] == '\n';
-        if (complete)
-            rlen--;
+    /* BYTE-COUNTED, NOT NUL-TERMINATED, and that is the whole point.
+     *
+     * This loop used to be fgets() + strlen(). strlen() stops at the first NUL
+     * byte, and a NUL is exactly what a torn append leaves behind — the
+     * filesystem allocated the block and the data never landed, so the row
+     * reads back with a run of zeroes in the middle of otherwise perfect JSON.
+     * fgets() had already consumed that whole physical line INCLUDING its
+     * newline, but strlen() reported only the bytes before the NUL, so the
+     * line looked unterminated: it was counted incomplete (right) and the
+     * reader armed its consume-the-rest-of-the-line state (wrong — there was
+     * no rest). The next fgets() returned the FOLLOWING line, a complete and
+     * perfectly valid row, and it was swallowed as that phantom tail. One NUL
+     * cost two rows, and the second loss was counted nowhere at all
+     * (reproduced: valid / NUL / valid scanned 1 row, incomplete=1, and the
+     * third row vanished silently).
+     *
+     * So row boundaries are decided by counting bytes to the next '\n' and
+     * nothing else. A NUL is just a byte inside one row's content; it
+     * disqualifies THAT row and cannot reach past its own newline. No
+     * consume-the-tail state is needed either: the scan already stops at the
+     * physical newline, so an overlong row or a post-seek fragment simply has
+     * its surplus bytes dropped on the floor as they stream by, never folded
+     * in as a second phantom row.
+     *
+     * The row buffer holds DATA bytes only — no newline, no NUL — because
+     * nothing here needs a terminator: `fn` is handed (pointer, length). */
+    char chunk[8192];
+    char row[EVIDENCE_ROW_MAX];
+    size_t rlen = 0;            /* data bytes of the current line, buffered */
+    bool overlong = false;      /* this line has more than EVIDENCE_ROW_MAX */
+    bool has_nul = false;       /* this line carries an embedded NUL byte */
+    /* The first line after a mid-file seek is a fragment; dropping it is the
+     * difference between describing evidence and inventing a sample. It is not
+     * counted overlong: its true length is unknown, so calling it a malformed
+     * row would invent a defect. It must also not cost the line after it. */
+    bool fragment = partial_head;
+    size_t got;
 
-        if (skipping) {
-            skipping = !complete;
-            continue;
-        }
+    while ((got = fread(chunk, 1, sizeof(chunk), f)) > 0) {
+        size_t i = 0;
+        while (i < got) {
+            const char *nl = memchr(chunk + i, '\n', got - i);
+            size_t seg = nl ? (size_t)(nl - (chunk + i)) : got - i;
 
-        /* `first` is cleared BEFORE any drop decision, unconditionally. When
-         * it was cleared only on the path that reaches the bottom of the loop,
-         * a post-seek fragment long enough to fill the buffer left `first`
-         * true, and the next line — a real, complete row — was dropped in its
-         * place (reproduced). */
-        bool is_fragment = false;
-        if (first) {
-            first = false;
-            /* The first line after a mid-file seek is a fragment; dropping it
-             * is the difference between describing evidence and inventing a
-             * sample. It is not counted overlong: its true length is unknown,
-             * so calling it a malformed row would invent a defect. */
-            is_fragment = partial_head;
-        }
-        if (is_fragment) {
-            skipping = !complete;
-            continue;
-        }
+            if (memchr(chunk + i, '\0', seg) != NULL)
+                has_nul = true;
+            if (rlen + seg > EVIDENCE_ROW_MAX) {
+                overlong = true;
+                if (rlen < EVIDENCE_ROW_MAX)
+                    memcpy(row + rlen, chunk + i, EVIDENCE_ROW_MAX - rlen);
+                rlen = EVIDENCE_ROW_MAX;
+            } else if (seg) {
+                memcpy(row + rlen, chunk + i, seg);
+                rlen += seg;
+            }
+            i += seg;
+            if (!nl)
+                break;          /* the line continues into the next chunk */
+            i++;                /* consume the newline itself */
 
-        if (!complete) {
-            /* No newline. Two very different things, and they must not be
-             * counted as one:
-             *   - longer than a row is allowed to be  -> overlong, malformed;
-             *   - shorter, so the read ended early    -> an INCOMPLETE line
-             *     (a torn append caught mid-write, or an embedded NUL). It is
-             *     not a sample and must never reach `fn`: every reader here
-             *     treats the last row it was handed as authoritative for the
-             *     per-sample fields, so handing over a truncated line lets a
-             *     half-written row become "the" current sample. */
-            skipping = true;
-            if (rlen > EVIDENCE_ROW_MAX) {
+            if (fragment) {
+                fragment = false;
+            } else if (overlong) {
+                /* Longer than a row is allowed to be: corrupt or foreign
+                 * content, counted malformed. */
                 if (out_overlong)
                     (*out_overlong)++;
-            } else if (out_incomplete) {
-                (*out_incomplete)++;
+            } else if (has_nul) {
+                /* Newline-terminated, so its length is known, but a NUL byte
+                 * inside a flat JSON row means the bytes on disk are not what
+                 * the recorder wrote. Counted with the torn appends rather
+                 * than the malformed rows for the same reason: this is a write
+                 * that did not all land, not a foreign row shape. It must
+                 * never reach `fn` — every reader here treats the last row it
+                 * was handed as authoritative for the per-sample fields. */
+                if (out_incomplete)
+                    (*out_incomplete)++;
+            } else if (rlen > 0) {
+                fn(row, rlen, ctx);
             }
-            continue;
+            rlen = 0;
+            overlong = false;
+            has_nul = false;
         }
+    }
 
-        if (rlen > 0)
-            fn(row, rlen, ctx);
+    /* Whatever is left never met a newline: end of file mid-line. */
+    if (rlen > 0 || overlong) {
+        if (fragment) {
+            /* a seek fragment that was also the whole tail: still not a row */
+        } else if (overlong) {
+            if (out_overlong)
+                (*out_overlong)++;
+        } else if (out_incomplete) {
+            /* A torn append caught mid-write, or a truncated file. Not
+             * malformed — the bytes may be a perfectly good row that is not
+             * all there yet — and not a sample. */
+            (*out_incomplete)++;
+        }
     }
     fclose(f);
     return true;
