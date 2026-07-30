@@ -858,6 +858,7 @@ add/remove a gate.
 - `check-stopwatch-skip-detector`
 - `check-proof-server-pin`
 - `check-promotion-receipt-chain`
+- `check-verification-coverage`
 - `check-identity-parser-single`
 - `check-blocker-remedy`
 - `check-vendor-provenance`

@@ -977,6 +977,7 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
         check-stopwatch-skip-detector \
         check-proof-server-pin \
         check-promotion-receipt-chain \
+        check-verification-coverage \
         check-identity-parser-single \
         check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-doc-claims check-no-stale-pinned-facts check-markdown-links check-doc-inline-paths \
         check-api-reference-generated check-describe-budget \
@@ -6171,6 +6172,22 @@ check-promotion-receipt-chain:
 	@echo "══ LINT: promotion receipt chain ══"
 	@./tools/lint/check_promotion_receipt_chain.sh
 
+# Gate — hosted CI's green must not overstate what it checked. build.yml puts
+# five green checks on a commit (gcc, clang, lint, fuzz-replay, a full per-TU
+# compile) and the TEST SUITE IS NOT AMONG THEM, so to a reader on GitHub those
+# checks look like more verification than happened. .github/verification-coverage.txt
+# is the declared coverage and this holds it to the workflow both ways: every
+# item claiming to be hosted must name a job key that exists, every job must be
+# claimed, a not-hosted item must name who does vouch for it, and the required
+# item list lives in the GATE (not the manifest) so the gap cannot be closed by
+# deleting a row. It also names the not-hosted items in its own gate log (run
+# the script directly to see them — run_lint.sh captures passing gate output and
+# may cache-skip the gate; the reader-facing statement is build.yml's own
+# comment, which prong 5 forces to point at the manifest).
+check-verification-coverage:
+	@echo "══ LINT: hosted CI verification coverage ══"
+	@./tools/lint/check_verification_coverage.sh
+
 # Gate — stop a tenth copy of the source-identity JSON parser from growing
 # back. tools/scripts/source_identity_lib.sh is the one canonical reader
 # (anchored on the FIRST "source_id_sha256" occurrence — a greedy copy
@@ -6560,6 +6577,7 @@ LINT_GATES := \
     check-stopwatch-skip-detector \
     check-proof-server-pin \
     check-promotion-receipt-chain \
+    check-verification-coverage \
     check-identity-parser-single \
     check-framework-shape \
     check-framework-filename-suffix \

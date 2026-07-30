@@ -156,17 +156,32 @@ jobs:
   #             neighbours that is a coin flip, not a gate. Coverage is
   #             likewise excluded: it is a second instrumented rebuild for a
   #             number nobody reads on a PR.
-  #   EXCLUDED  the whole-program LTO link (`make zclassic23`) and
-  #             `make test-parallel`. One `cc` over ~1200 files at -O3 with
-  #             -flto=auto is a multi-GB, tens-of-minutes step on a 4-vCPU
-  #             runner, and parts of the test corpus expect a local node
-  #             datadir.
+  #   EXCLUDED  the whole-program LTO link (`make zclassic23`): one `cc` over
+  #             ~1200 files at -O3 with -flto=auto, a multi-GB,
+  #             tens-of-minutes step on a 4-vCPU runner.
+  #   EXCLUDED  `make test-parallel`. READ THIS BEFORE RE-DECIDING IT: the
+  #             reason above no longer applies to the suite. This comment used
+  #             to justify excluding it by calling it that same whole-program
+  #             LTO `cc`, and that stopped being true when test_parallel moved
+  #             to a per-TU, depfile-tracked, NON-LTO object tree — see the
+  #             "Cached STRICT test_parallel" block in Makefile, which drops
+  #             -flto=auto on purpose so each TU is compiled and cached
+  #             independently; the monolith survives only as the separate
+  #             `test_parallel_wpo` target. What is still a real open question
+  #             is hosted runner capacity and how much of the corpus assumes a
+  #             maintainer-host environment. Measure those; do not inherit this
+  #             comment's stale answer.
   #
-  # So, precisely, who gates what:
+  # So, precisely, who gates what — and the MACHINE-CHECKED version of this
+  # paragraph is .github/verification-coverage.txt, held to the job list below
+  # by the lint gate check-verification-coverage. Read that file rather than
+  # counting jobs here: unheld prose in a comment is exactly what rotted above.
   #   HOSTED CI (this file) runs five jobs and nothing else — compile-check
   #             under GCC and under clang, `build` (a full per-TU compile of
   #             every node translation unit), `lint` (`make lint`), and
-  #             `fuzz-replay` over the saved findings.
+  #             `fuzz-replay` over the saved findings. THE TEST SUITE IS NOT
+  #             AMONG THEM: five green checks on a commit do NOT mean that
+  #             commit's tests passed.
   #   LOCALLY   the two excluded steps are gated by the pre-push hook
   #             (`tools/githooks/pre-push`) and by hand at merge. Do not read
   #             the hook as a full-suite gate: it defaults to
