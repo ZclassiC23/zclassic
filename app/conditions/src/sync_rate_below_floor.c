@@ -14,6 +14,7 @@
 #include "conditions/sync_rate_below_floor.h"
 #include "conditions/condition_registry.h"
 
+#include "base/text_fit.h"
 #include "framework/condition.h"
 #include "jobs/tip_finalize_stage.h"
 #include "jobs/utxo_apply_stage.h"
@@ -284,8 +285,13 @@ static enum condition_remedy_result remedy_sync_rate_below_floor(void)
     const char *dom_id = g_dominant_blocker_id_at_detect[0]
                              ? g_dominant_blocker_id_at_detect : "(none)";
 
-    char reason[BLOCKER_REASON_MAX];
-    snprintf(reason, sizeof(reason),
+    /* This sentence does not fit BLOCKER_REASON_MAX: 282 bytes with every
+     * value empty, 330 on a live fire with a real dominant blocker id, 361
+     * with a 63-char id. Formatting straight into a 256-byte local cut the
+     * closing "clears when the rate recovers" clause off with nothing to show
+     * it. Build it whole, then let zcl_text_fit mark and log the cut. */
+    char full[BLOCKER_REASON_MAX * 2];
+    snprintf(full, sizeof(full),
              "fold rate %lld.%03lld bps below floor %lld.%03lld bps for >= "
              "%d consecutive windows while peers connected and pending work "
              "exists (network_tip=%d log_head=%lld); dominant active "
@@ -297,6 +303,9 @@ static enum condition_remedy_result remedy_sync_rate_below_floor(void)
              (long long)(floor / SYNC_RATE_SCALE),
              (long long)(floor % SYNC_RATE_SCALE),
              SYNC_RATE_CONSECUTIVE_TICKS, tip, (long long)head, dom_id);
+    char reason[BLOCKER_REASON_MAX];
+    (void)zcl_text_fit(reason, sizeof(reason), full, "condition",
+                       "sync_rate_below_floor.reason");
 
     struct blocker_record r;
     if (blocker_init(&r, SYNC_RATE_BLOCKER_ID, SYNC_RATE_OWNER,

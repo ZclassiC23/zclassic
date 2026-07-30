@@ -12,6 +12,7 @@
  * add a code/message that is always ZCL_OK. Marker, not a baseline
  * entry, per check_one_result_type.sh's override path. */
 
+#include "base/text_fit.h"
 #include "platform/time_compat.h"
 #include "platform/os_proc.h"
 #include "util/mem_pressure.h"
@@ -195,16 +196,13 @@ static void health_add_warning(struct node_health_snapshot *snapshot,
     if (strstr(snapshot->warning_reasons, reason))
         return;
 
-    size_t used = strlen(snapshot->warning_reasons);
-    size_t cap = sizeof(snapshot->warning_reasons);
-    if (used + 1 < cap) {
-        int n = snprintf(snapshot->warning_reasons + used, cap - used,
-                         "%s%s", used ? "," : "", reason);
-        if (n > 0)
-            snapshot->warning_count++;
-    } else {
-        snapshot->warning_count++;
-    }
+    /* warning_count is every warning OBSERVED, warning_reasons is as many as
+     * fit; the two disagreeing is intended. Disagreeing SILENTLY was not — the
+     * list used to end in half a warning name that read like a whole one. */
+    (void)zcl_text_fit_append(snapshot->warning_reasons,
+                              sizeof(snapshot->warning_reasons), ",", reason,
+                              "health", "node_health.warning_reasons");
+    snapshot->warning_count++;
 }
 
 static void health_finalize_serving_status(struct node_health_snapshot *snapshot)

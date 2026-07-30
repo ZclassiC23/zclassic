@@ -5,6 +5,7 @@
 #include "event_agent_summary.h"
 #include "event_agent_summary_internal.h"
 #include "api_controller_internal.h"
+#include "base/text_fit.h"
 #include "controllers/agent_height_contract.h"
 #include "controllers/agent_controller.h"
 #include "controllers/agent_first_call.h"
@@ -126,16 +127,13 @@ static void agent_fast_add_warning(struct agent_fast_snapshot *s,
         return;
     if (strstr(s->warning_reasons, reason))
         return;
-    size_t used = strlen(s->warning_reasons);
-    size_t cap = sizeof(s->warning_reasons);
-    if (used + 1 < cap) {
-        int n = snprintf(s->warning_reasons + used, cap - used,
-                         "%s%s", used ? "," : "", reason);
-        if (n > 0)
-            s->warning_count++;
-    } else {
-        s->warning_count++;
-    }
+    /* Same contract as health_add_warning in node_health_service.c: the count
+     * is every warning observed, the list is as many as fit, and a cut list
+     * says so in-band instead of ending in half a warning name. */
+    (void)zcl_text_fit_append(s->warning_reasons, sizeof(s->warning_reasons),
+                              ",", reason, "agent",
+                              "agent_fast_snapshot.warning_reasons");
+    s->warning_count++;
 }
 
 /* POINT 3.4: a TRANSIENT/DEPENDENCY blocker never becomes the hard headline

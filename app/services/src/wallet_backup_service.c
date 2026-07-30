@@ -18,6 +18,8 @@
  * one table to seven and this file passed the 800-line shape ceiling.
  */
 
+#include "base/result.h"
+#include "base/text_fit.h"
 #include "platform/time_compat.h"
 #include "services/wallet_backup_internal.h"
 #include "services/wallet_backup_service.h"
@@ -326,8 +328,15 @@ static struct zcl_result wbs_run_one_locked(void)
                     stat(enc_path, &st) == 0 ? (int64_t)st.st_size : -1;
             } else {
                 g_wbs.total_failures++;
-                snprintf(g_wbs.last_error, sizeof(g_wbs.last_error),
-                         "encrypt_failed: %s", er.message);
+                /* "encrypt_failed: " (16) + er.message (up to
+                 * ZCL_RESULT_MSG_MAX-1 = 255) is 271 bytes into a 256-byte
+                 * field. Mark and log the overflow instead of handing the
+                 * operator a wallet-backup failure reason that stops mid-word. */
+                char full[16 + ZCL_RESULT_MSG_MAX];
+                snprintf(full, sizeof(full), "encrypt_failed: %s", er.message);
+                (void)zcl_text_fit(g_wbs.last_error, sizeof(g_wbs.last_error),
+                                   full, "wallet_backup",
+                                   "wallet_backup.last_error");
                 LOG_WARN("wallet_backup",
                          "encrypt failed, keeping plaintext %s: %s",
                          path, er.message);

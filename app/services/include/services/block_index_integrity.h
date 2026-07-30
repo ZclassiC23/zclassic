@@ -116,6 +116,10 @@ struct bii_recovery_status {
     int64_t unix_time;
     bool degraded;
     bool unsafe_override;
+    /* AUDITED for silent truncation: no zcl_text_fit guard needed. Every
+     * bii_record_recovery_status() caller passes either a short literal or the
+     * `char err[256]` that bii_verify() filled, so the store is a copy between
+     * buffers of EQUAL capacity and cannot cut. A guard here could never fire. */
     char reason[256];
 };
 

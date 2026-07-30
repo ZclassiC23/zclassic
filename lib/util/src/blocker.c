@@ -4,7 +4,7 @@
 
 #include "platform/time_compat.h"
 #include "util/blocker.h"
-
+#include "base/text_fit.h"
 #include "util/log_macros.h"
 
 #include <pthread.h>
@@ -117,9 +117,9 @@ bool blocker_init(struct blocker_record *out,
     out->retry_budget = (class == BLOCKER_PERMANENT) ? -1 : 0;
     snprintf(out->id, BLOCKER_ID_MAX, "%s", id);
     snprintf(out->owner_subsystem, BLOCKER_OWNER_MAX, "%s", owner);
-    if (reason) {
-        snprintf(out->reason, BLOCKER_REASON_MAX, "%s", reason);
-    }
+    /* Truncate-and-REPORT, never reject: blocker.h reason-length contract. */
+    if (reason) (void)zcl_text_fit(out->reason, BLOCKER_REASON_MAX, reason,
+                                   "blocker", "blocker_record.reason");
     return true;
 }
 

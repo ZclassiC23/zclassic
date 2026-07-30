@@ -13,6 +13,7 @@
  * reducer's re-derive-lowest-hole discipline); lock-free atomics so the note is
  * safe to record whether or not the caller holds progress_store_tx_lock. */
 
+#include "base/text_fit.h"
 #include "jobs/reducer_frontier.h"
 
 #include "util/blocker.h"
@@ -66,8 +67,11 @@ static void body_read_repair_raise_blocker(
     int height, int nFile, int64_t pos,
     enum reducer_frontier_body_read_reason reason, int count)
 {
-    char reason_s[BLOCKER_REASON_MAX];
-    snprintf(reason_s, sizeof(reason_s),
+    /* 271 bytes with every value empty, 297 on a live fire — over
+     * BLOCKER_REASON_MAX either way, and the clause that got cut was the one
+     * saying what makes H* move again. Build whole, then mark and log the cut. */
+    char full[BLOCKER_REASON_MAX * 2];
+    snprintf(full, sizeof(full),
              "body torn read height=%d nFile=%d pos=%lld reason=%s failed %d "
              "times: on-disk block bytes are torn/corrupt after body_persist "
              "verified them — HAVE_DATA dropped for a peer refetch "
@@ -75,6 +79,9 @@ static void body_read_repair_raise_blocker(
              "re-downloads and the stages revalidate it",
              height, nFile, (long long)pos,
              reducer_frontier_body_read_reason_name(reason), count);
+    char reason_s[BLOCKER_REASON_MAX];
+    (void)zcl_text_fit(reason_s, sizeof(reason_s), full, "stage_repair",
+                       "reducer_frontier.body_read_torn.reason");
     struct blocker_record b;
     if (blocker_init(&b, "reducer_frontier.body_read_torn", "stage_repair",
                      BLOCKER_TRANSIENT, reason_s))
