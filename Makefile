@@ -976,6 +976,7 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
         check-file-size-ceiling check-framework-filename-suffix \
         check-stopwatch-skip-detector \
         check-proof-server-pin \
+        check-promotion-receipt-chain \
         check-identity-parser-single \
         check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-doc-claims check-no-stale-pinned-facts check-markdown-links check-doc-inline-paths \
         check-api-reference-generated check-describe-budget \
@@ -6159,6 +6160,17 @@ check-proof-server-pin:
 	@echo "══ LINT: proof-server promotion pin ══"
 	@./tools/lint/check_proof_server_pin.sh
 
+# Gate — promotion evidence survives this machine and cannot be rewritten. The
+# pin above is a LOCAL, MUTABLE, UNSIGNED tag; deploy/promotion-receipts.jsonl
+# is the authority: tracked (so it replicates on push), hash-chained (so an
+# edited/removed/re-ordered record breaks a link) and ssh-signed (so a third
+# party verifies authorship offline with no private key). This runs the
+# tamper-detection self-test, verifies the in-tree chain, enforces append-only
+# against HEAD, and asserts ship.sh still appends a receipt on promotion.
+check-promotion-receipt-chain:
+	@echo "══ LINT: promotion receipt chain ══"
+	@./tools/lint/check_promotion_receipt_chain.sh
+
 # Gate — stop a tenth copy of the source-identity JSON parser from growing
 # back. tools/scripts/source_identity_lib.sh is the one canonical reader
 # (anchored on the FIRST "source_id_sha256" occurrence — a greedy copy
@@ -6547,6 +6559,7 @@ LINT_GATES := \
     check-supervisor-progress-declared \
     check-stopwatch-skip-detector \
     check-proof-server-pin \
+    check-promotion-receipt-chain \
     check-identity-parser-single \
     check-framework-shape \
     check-framework-filename-suffix \

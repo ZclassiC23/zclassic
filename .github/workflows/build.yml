@@ -160,8 +160,27 @@ jobs:
   #             `make test-parallel`. One `cc` over ~1200 files at -O3 with
   #             -flto=auto is a multi-GB, tens-of-minutes step on a 4-vCPU
   #             runner, and parts of the test corpus expect a local node
-  #             datadir. Both belong on the project's own machines
-  #             (`zcl-remote-verify.sh`), which is where they already run.
+  #             datadir.
+  #
+  # So, precisely, who gates what:
+  #   HOSTED CI (this file) runs five jobs and nothing else — compile-check
+  #             under GCC and under clang, `build` (a full per-TU compile of
+  #             every node translation unit), `lint` (`make lint`), and
+  #             `fuzz-replay` over the saved findings.
+  #   LOCALLY   the two excluded steps are gated by the pre-push hook
+  #             (`tools/githooks/pre-push`) and by hand at merge. Do not read
+  #             the hook as a full-suite gate: it defaults to
+  #             `make pre-push-ci` -> `make fast-ci`, which compiles the
+  #             changed files and runs the FOCUSED tests for them, and it is
+  #             overridable with `ZCL_PREPUSH_CMD`. The whole suite
+  #             (`make test-parallel`) and the LTO link are run deliberately,
+  #             by a person, before a merge — `tools/ship.sh` also runs both
+  #             before it will deploy anything.
+  #
+  # This comment used to point at a `zcl-remote-verify.sh` "which is where they
+  # already run." No such script has ever existed in this repository — it named
+  # a gate nobody could run, which is the same class of defect as prose that
+  # describes a recording nothing performs.
   #   EXCLUDED  `make ci-symbol-floor` — it inspects the LINKED binary, so it
   #             follows the LTO link out of this job.
   build:

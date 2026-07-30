@@ -45,6 +45,18 @@
 #       (this repository's own tags are never touched), and asserts the
 #       refusals actually refuse. Touches no network and no proof server.
 #
+# THE TAG IS NO LONGER THE AUTHORITY. A local annotated tag is exactly as
+# trustworthy as one mutable ref on one disk: it is never pushed (origin holds
+# only main), `git tag -d`/`-f` rewrites it with no trace, and nothing signs or
+# chains it. The authoritative record of a promotion is now the signed,
+# hash-chained, TRACKED ledger deploy/promotion-receipts.jsonl, written by
+# tools/scripts/promotion_receipt.sh (also called from tools/ship.sh's promotion
+# path) and verifiable offline by a third party. That ledger ships with zero
+# records: its genesis is minted once by the owner under a signing key the owner
+# chooses (docs/PROMOTION_RECEIPTS.md, "Owner setup"). The tag below stays as a
+# convenience index — it makes a promotion visible in `git log --decorate` —
+# and it proves nothing on its own.
+#
 # Deliberately NOT done here: nothing re-derives a pin for whatever is
 # running on the proof server right now. Its commit is unknown (the
 # source-identity hash does not resolve), and fabricating a tag for it would

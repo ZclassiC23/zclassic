@@ -42,6 +42,16 @@ you operate that host, and misleading otherwise.
   `check-no-uncited-victory` gate ([`AI_SAFETY_GATES.md`](./AI_SAFETY_GATES.md)).
 - [`work/FORWARD_PLAN.md`](./work/FORWARD_PLAN.md) — THE plan, MVP-anchored.
 - [`RUNBOOK.md`](./RUNBOOK.md) — symptom-driven operator troubleshooting.
+- [`RELEASE_CANDIDATE_PIN.md`](./RELEASE_CANDIDATE_PIN.md) — the candidate triple
+  (commit / source id / artifact bytes) that names the build under proof, and the
+  drift probe that checks the box still agrees.
+- [`PROMOTION_RECEIPTS.md`](./PROMOTION_RECEIPTS.md) — the signed, hash-chained,
+  tracked ledger of proof-server promotions: evidence that replicates off this
+  machine, cannot be rewritten undetected, and verifies offline without a private
+  key. Ships with **zero records and no signing key** — the evidence-signing
+  identity is a one-time owner decision, documented there under "Owner setup".
+  Nothing has been promoted through it, and inventing a receipt would be a
+  fabricated record.
 
 ## Develop here — the fast loop (read before making changes)
 

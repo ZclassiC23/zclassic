@@ -857,6 +857,7 @@ add/remove a gate.
 - `check-supervisor-progress-declared`
 - `check-stopwatch-skip-detector`
 - `check-proof-server-pin`
+- `check-promotion-receipt-chain`
 - `check-identity-parser-single`
 - `check-blocker-remedy`
 - `check-vendor-provenance`
