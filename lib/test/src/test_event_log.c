@@ -839,6 +839,115 @@ static int run_crc32c_dispatch(int *failures)
     return *failures - start_failures;
 }
 
+/* ── Append-path attribution: barrier vs deferred ──────────────────────
+ * The fold's dominant measured cost is the two fsync() barriers per
+ * event_log_append, and the per-call-site timers (reducer_stage_profile's
+ * header_event_emission_us) cannot tell a barrier-paying append from a
+ * buffer copy. event_log_append_stats() is that split. This proves the three
+ * counters attribute each append to the right path and that barrier time is
+ * only ever charged to the barrier path — the property that makes
+ * `dumpstate reducer_drive` -> event_log_barrier_appends a usable
+ * before/after for any change that batches barriers away. */
+static int run_append_path_attribution(int *failures_out)
+{
+    int failures = 0;
+    char dir[256];
+    test_fmt_tmpdir(dir, sizeof(dir), "event_log", "attrib");
+    el_mkdir_p(dir);
+    char path[512];
+    snprintf(path, sizeof(path), "%s/events.log", dir);
+
+    event_log_test_set_force_per_append(0);
+    event_log_test_reset_append_stats();
+
+    uint64_t barrier = 0, deferred = 0, barrier_us = 0;
+    event_log_append_stats(&barrier, &deferred, &barrier_us);
+    EL_CHECK("attrib: reset zeroes all three counters",
+             barrier == 0 && deferred == 0 && barrier_us == 0);
+
+    event_log_t *log = event_log_open(path);
+    EL_CHECK("attrib: open", log != NULL);
+    if (!log) goto done;
+
+    uint8_t buf[32];
+    memset(buf, 0x44, sizeof(buf));
+
+    /* Per-append mode (the at-tip / non-reducer default): each append takes
+     * the two-barrier path and nothing lands on the deferred counter. */
+    const int PER_APPEND = 3;
+    for (int i = 0; i < PER_APPEND; i++)
+        EL_CHECK("attrib: per-append append succeeds",
+                 event_log_append(log, EV_BLOCK_HEADER, buf, sizeof(buf))
+                     != UINT64_MAX);
+    event_log_append_stats(&barrier, &deferred, &barrier_us);
+    EL_CHECK("attrib: per-append appends counted as barrier appends",
+             barrier == (uint64_t)PER_APPEND);
+    EL_CHECK("attrib: per-append appends are not counted as deferred",
+             deferred == 0);
+
+    /* Deferred mode: appends only copy into the pending buffer, so the
+     * barrier counters must not move at all — that non-movement is what makes
+     * a drop in event_log_barrier_appends readable as "barriers were batched
+     * away" rather than "the fold did less work". */
+    uint64_t barrier_at_switch = barrier;
+    uint64_t barrier_us_at_switch = barrier_us;
+    event_log_set_deferred_sync(log, true);
+    const int DEFERRED = 5;
+    for (int i = 0; i < DEFERRED; i++)
+        EL_CHECK("attrib: deferred append succeeds",
+                 event_log_append(log, EV_BLOCK_HEADER, buf, sizeof(buf))
+                     != UINT64_MAX);
+    event_log_append_stats(&barrier, &deferred, &barrier_us);
+    EL_CHECK("attrib: deferred appends counted as deferred",
+             deferred == (uint64_t)DEFERRED);
+    EL_CHECK("attrib: deferred appends add no barrier appends",
+             barrier == barrier_at_switch);
+    EL_CHECK("attrib: deferred appends add no barrier time",
+             barrier_us == barrier_us_at_switch);
+
+    /* event_log_flush() is the batched fdatasync, a different barrier with its
+     * own timer in reducer_body_fsync — it must not be charged here, or the
+     * per-barrier price derived from these counters would be wrong. */
+    EL_CHECK("attrib: flush succeeds", event_log_flush(log));
+    event_log_append_stats(&barrier, &deferred, &barrier_us);
+    EL_CHECK("attrib: batched flush is not charged to the append counters",
+             barrier == barrier_at_switch &&
+             barrier_us == barrier_us_at_switch &&
+             deferred == (uint64_t)DEFERRED);
+
+    /* The kill switch pushes a deferred-flagged handle back onto the barrier
+     * path — the A/B lever, so it must be visible in the attribution. */
+    event_log_test_set_force_per_append(1);
+    EL_CHECK("attrib: forced append succeeds",
+             event_log_append(log, EV_BLOCK_HEADER, buf, sizeof(buf))
+                 != UINT64_MAX);
+    event_log_append_stats(&barrier, &deferred, &barrier_us);
+    EL_CHECK("attrib: kill switch moves the append back to the barrier path",
+             barrier == barrier_at_switch + 1 &&
+             deferred == (uint64_t)DEFERRED);
+    event_log_test_set_force_per_append(0);
+
+    /* Every event is still readable: attribution must not have changed the
+     * bytes on disk. */
+    event_log_close(log);
+    log = event_log_open(path);
+    EL_CHECK("attrib: reopen after mixed-mode appends", log != NULL);
+    if (log) {
+        struct stream_ctx sc = {0};
+        sc.ordered = true;
+        event_log_stream(log, 0, stream_cb, &sc);
+        EL_CHECK("attrib: every append is durable and streamable",
+                 sc.count == PER_APPEND + DEFERRED + 1);
+        event_log_close(log);
+    }
+    test_cleanup_tmpdir(dir);
+done:
+    event_log_test_set_force_per_append(-1);
+    event_log_test_reset_append_stats();
+    *failures_out += failures;
+    return failures;
+}
+
 /* ── Deferred durability mode (S1.1): batched fdatasync ────────────────
  * Covers: no per-append fsync in deferred mode (dirty flag set instead);
  * flush syncs once + clears dirty; all events durable after flush + reopen;
@@ -987,6 +1096,7 @@ int test_event_log(void)
     run_edge_cases(&failures);
     run_persistence(&failures);
     run_deferred_sync(&failures);
+    run_append_path_attribution(&failures);
     run_targeted_recovery(&failures);
     run_kill9_fuzz(&failures);
     run_crc32c_dispatch(&failures);

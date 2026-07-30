@@ -17,6 +17,7 @@
 #include "services/reducer_ingest_service.h"
 #include "services/sticky_escalator.h"
 #include "storage/coins_kv.h"
+#include "storage/event_log.h"    /* event_log_append_stats */
 #include "storage/progress_store.h"
 #include "util/blocker.h"
 #include "util/log_macros.h"
@@ -429,6 +430,23 @@ bool reducer_drive_dump_state_json(struct json_value *out, const char *key)
                                     (int64_t)scope_depth);
         ok = ok && json_push_kv_bool(out, "event_log_deferred",
                                      event_log_deferred);
+        /* event_log_deferred above is the mode RIGHT NOW; these three are the
+         * cumulative split of which append path the fold actually took (see
+         * storage/event_log.h). The batched scope is armed and disarmed per
+         * drain, so "deferred mode exists" does not mean the fold used it:
+         * event_log_barrier_appends / (barrier + deferred) is the fraction of
+         * appends that still paid two ext4 journal commits, and
+         * event_log_barrier_us_total is what that cost in wall time. Divide
+         * barrier_us_total by 2*barrier_appends for this disk's per-barrier
+         * price. */
+        uint64_t el_barrier = 0, el_deferred = 0, el_barrier_us = 0;
+        event_log_append_stats(&el_barrier, &el_deferred, &el_barrier_us);
+        ok = ok && json_push_kv_int(out, "event_log_barrier_appends",
+                                    (int64_t)el_barrier);
+        ok = ok && json_push_kv_int(out, "event_log_deferred_appends",
+                                    (int64_t)el_deferred);
+        ok = ok && json_push_kv_int(out, "event_log_barrier_us_total",
+                                    (int64_t)el_barrier_us);
     }
 
     /* coins_applied_height is the LAGGING measure (the durable coins_kv

@@ -293,6 +293,19 @@ int test_reducer_drive_watchdog(void)
             okt = okt && json_get(&v, "fsync_flush_us_ewma") != NULL;
             RDW_CHECK("dump carries the drain-exit + fsync-timing fields",
                      okt);
+
+            /* Append-path attribution (storage/event_log.h): event_log_deferred
+             * says which mode the log is in right now, which does not answer how
+             * many appends actually paid the two-fsync price during a fold —
+             * that split is the whole point of these three. All three are always
+             * emitted so a before/after diff over a fold is one dump apart. */
+            bool oka = true;
+            oka = oka && json_get(&v, "event_log_deferred") != NULL;
+            oka = oka && json_get(&v, "event_log_barrier_appends") != NULL;
+            oka = oka && json_get(&v, "event_log_deferred_appends") != NULL;
+            oka = oka && json_get(&v, "event_log_barrier_us_total") != NULL;
+            RDW_CHECK("dump carries the event_log append-path attribution",
+                      oka);
             json_free(&v);
         }
 
