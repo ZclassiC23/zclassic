@@ -297,6 +297,44 @@ void dl_peer_body_staleness(struct download_manager *dm, uint32_t peer_id,
  * Call from connman when a peer is disconnected. Returns count re-queued. */
 size_t dl_peer_disconnected(struct download_manager *dm, uint32_t peer_id);
 
+/* Settle ONE named block that a peer answered `notfound`, re-queueing just
+ * that hash (with the usual per-peer avoid deadline so the same peer is not
+ * immediately re-asked for it). Returns 1 if a matching active slot was
+ * settled, 0 if there was none.
+ *
+ * WHY THIS EXISTS AS A SEPARATE ENTRY POINT. `notfound` used to be handled by
+ * calling dl_peer_disconnected() once per missing block, which is a whole-peer
+ * action: it requeues and orphans EVERY in-flight request to that peer and
+ * marks its dl_peer_stats inactive. One block the peer happens not to have
+ * therefore threw away the entire in-flight window — up to
+ * dl_get_max_in_flight_total() requests — and did it again for each item in a
+ * multi-entry notfound. On a single-peer client (`-connect=HOST:PORT`, which
+ * is exactly what the C3 cold-start stopwatch runs) there is no "another peer"
+ * to re-ask, so the requeue bought nothing and the collateral damage was total.
+ *
+ * The stall is worse than the wasted requests, because every re-queued hash is
+ * stamped with dl_peer_avoid_deadline() — a DL_PEER_AVOID_COOLDOWN_SECS (30 s)
+ * "do not ask this peer" mark. Dumping the window therefore told the client to
+ * avoid its ONLY peer for the next 30 s across ~500 blocks at the queue front,
+ * so body arrival flatlined until the cooldown expired, then flatlined again on
+ * the next notfound.
+ *
+ * Measured on the C3 stopwatch 2026-07-30, two independent 600 s runs against
+ * one serving peer (dumpstate sync_monitor + node.log notfound lines):
+ *   run 1: requested=33728 received=4797 timed_out=12032 in_flight=0
+ *          -> 16899 ORPHANED (50.1%) over 35 notfound blocks = 483 each
+ *   run 2: requested=42816 received=8060 timed_out=12544 in_flight=512
+ *          -> 21700 ORPHANED (50.7%) over 57 notfound blocks = 381 each
+ * (orphans derived from the requested-vs-settled identity documented on the
+ * stats fields above). Orphaning was the single largest loss bucket in both
+ * runs, and ~400-500 per notfound is the whole live in-flight window each time.
+ * Observed body arrival over loopback in that state: ~1.5 blocks/s with
+ * multi-minute flatlines, while the reducer's body_fetch stage sat idle with
+ * blocked_count=0 and error_count=0 — nothing downstream of the wire was the
+ * constraint. */
+size_t dl_mark_notfound(struct download_manager *dm, uint32_t peer_id,
+                        const struct uint256 *hash);
+
 /* Block-swarm sibling of dl_peer_disconnected: event-driven requeue of any
  * BitTorrent-style block pieces the disconnecting peer had in flight in the
  * process-global g_block_swarm coordinator (lib/net/src/msgprocessor_snapshot.c).

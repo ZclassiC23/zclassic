@@ -56,6 +56,15 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 
 PEER=""
+# Bundle/file-service peer. Optional, no default, and NAMEABLE on the command
+# line on purpose: without --file-peer this driver could still pick one up by
+# inheriting ZCL_CS_FILE_PEER from the environment, which is an implicit peer —
+# exactly what --peer refuses to allow. Stating it here puts it in the printed
+# header and in every runs.jsonl line, so a ledger row records which lane it
+# measured. With NO file peer the node has no state source: it reports the named
+# blocker bootstrap.no_state_source and does a from-genesis IBD instead of the
+# bundle-then-fold path (measured 2026-07-30: H* pinned at 0 for the whole 600 s).
+FILE_PEER="${ZCL_CS_FILE_PEER:-}"
 PEER_DATADIR="${ZCL_CS_PEER_DATADIR:-$HOME/.zclassic-c23-fixture-serve}"
 PEER_RPCPORT="${ZCL_CS_PEER_RPCPORT:-39071}"
 RUNS=3
@@ -72,6 +81,7 @@ CLIENT_DATADIR_GLOB='/tmp/zcl-c3-stopwatch.*'
 for arg in "$@"; do
     case "$arg" in
         --peer=*)         PEER="${arg#--peer=}" ;;
+        --file-peer=*)    FILE_PEER="${arg#--file-peer=}" ;;
         --peer-datadir=*) PEER_DATADIR="${arg#--peer-datadir=}" ;;
         --peer-rpcport=*) PEER_RPCPORT="${arg#--peer-rpcport=}" ;;
         --runs=*)         RUNS="${arg#--runs=}" ;;
@@ -209,7 +219,7 @@ GIT_DIRTY="$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null | head -1)"
 BIN_SHA256="$(sha256sum "$NODE_BIN" 2>/dev/null | cut -d' ' -f1)"
 BIN_VERSION="$("$NODE_BIN" --version 2>/dev/null | head -1)"
 
-echo "c3-stopwatch-triple: peer=$PEER runs=$RUNS budget=${BUDGET}s"
+echo "c3-stopwatch-triple: peer=$PEER file_peer=${FILE_PEER:-<none>} runs=$RUNS budget=${BUDGET}s"
 echo "c3-stopwatch-triple: bin=$NODE_BIN"
 echo "c3-stopwatch-triple: git=$GIT_COMMIT ($GIT_DIRTY) version=\"$BIN_VERSION\" sha256=$BIN_SHA256"
 echo "c3-stopwatch-triple: out=$OUT_DIR"
@@ -254,7 +264,8 @@ while [ "$run" -le "$RUNS" ]; do
     run_log="$OUT_DIR/run$run.harness.log"
     ZCL_CS_RUN_ID="triple$run-$(date -u +%Y%m%dT%H%M%SZ)-$$" \
     bash "$SCRIPT_DIR/cold_start_to_tip_stopwatch.sh" \
-        --bin="$NODE_BIN" --peer="$PEER" --budget="$BUDGET" >"$run_log" 2>&1
+        --bin="$NODE_BIN" --peer="$PEER" --budget="$BUDGET" \
+        ${FILE_PEER:+--file-peer="$FILE_PEER"} >"$run_log" 2>&1
     rc=$?
     kill "$poller_pid" 2>/dev/null; wait "$poller_pid" 2>/dev/null
 
@@ -291,9 +302,9 @@ while [ "$run" -le "$RUNS" ]; do
     hv_after="$(hash_verdict "$ch" "$chash" "$pa_h" "$pa_hash")"
 
     within="$( [ "$verdict" = "pass" ] && printf yes || printf no )"
-    printf '{"run":%s,"verdict":"%s","exit_code":%s,"within_budget":"%s","wall_clock_seconds":%s,"budget_seconds":%s,"boots":%s,"git_commit":"%s","git_tree":"%s","bin_version":"%s","bin_sha256":"%s","peer":"%s","peer_tip_before_h":%s,"peer_tip_before_hash":"%s","peer_tip_after_h":%s,"peer_tip_after_hash":"%s","final_hstar":%s,"final_network_tip":%s,"client_last_tip_h":%s,"client_last_tip_hash":"%s","hash_verdict_vs_peer_before":"%s","hash_verdict_vs_peer_after":"%s","last_blocker_ids":"%s","artifact":"%s"}\n' \
+    printf '{"run":%s,"verdict":"%s","exit_code":%s,"within_budget":"%s","wall_clock_seconds":%s,"budget_seconds":%s,"boots":%s,"git_commit":"%s","git_tree":"%s","bin_version":"%s","bin_sha256":"%s","peer":"%s","file_peer":"%s","peer_tip_before_h":%s,"peer_tip_before_hash":"%s","peer_tip_after_h":%s,"peer_tip_after_hash":"%s","final_hstar":%s,"final_network_tip":%s,"client_last_tip_h":%s,"client_last_tip_hash":"%s","hash_verdict_vs_peer_before":"%s","hash_verdict_vs_peer_after":"%s","last_blocker_ids":"%s","artifact":"%s"}\n' \
         "$run" "$verdict" "$rc" "$within" "${wall:-null}" "$BUDGET" "${boots:-null}" \
-        "$GIT_COMMIT" "$GIT_DIRTY" "$BIN_VERSION" "$BIN_SHA256" "$PEER" \
+        "$GIT_COMMIT" "$GIT_DIRTY" "$BIN_VERSION" "$BIN_SHA256" "$PEER" "$FILE_PEER" \
         "$pb_h" "$pb_hash" "$pa_h" "$pa_hash" "${fh:--1}" "${fnt:--1}" \
         "$ch" "$chash" "$hv" "$hv_after" "$blockers" "${artifact:-}" >>"$LEDGER"
 
