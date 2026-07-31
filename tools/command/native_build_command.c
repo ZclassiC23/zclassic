@@ -174,6 +174,10 @@ void zcl_native_handle_metaverse_build_plan(
     struct node_db ndb;
     if (result.ok && bf_open_write(request, reply, &ndb)) {
         result = build_fabric_plan(&ndb, &job, &action);
+        if (result.ok &&
+            (!db_build_job_find(&ndb, job.job_id, &job) ||
+             !db_build_action_find(&ndb, action.action_id, &action)))
+            result = ZCL_ERR(-1, "persisted build plan could not be re-read");
         node_db_close(&ndb);
     } else if (result.ok) {
         return;
