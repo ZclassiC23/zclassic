@@ -19,11 +19,11 @@ ZCL_COMMAND_BRANCH("zcode", "",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_BRANCH("zcode.package", "zcode",
-                   "Published packages: releases, manifests, chunks",
+                   "Published packages",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_BRANCH("zcode.package.publish", "zcode.package",
-                   "Publish a signed release into the local store (plan, "
+                   "Publish a signed release into the store (plan, "
                    "then commit)",
                    ZCL_COMMAND_LAYER_APP)
 
@@ -113,7 +113,7 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_READ(
     "zcode.package.show", "zcode.package", "",
-    "Full release record and manifest summary for one package root",
+    "Release record and manifest summary for one package root",
     "The complete persisted release record (publisher, sequence, license, "
     "reward address, lineage, ZNAM pointer) plus the manifest summary "
     "(file/byte/chunk counts, LICENSE presence, executable count) for one "
@@ -138,7 +138,7 @@ ZCL_COMMAND_READY_READ(
  * (zclassic23-package-verify, slice 6). */
 ZCL_COMMAND_READY_READ(
     "zcode.package.recipe", "zcode.package", "",
-    "Decoded declarative build recipe for one package root",
+    "Declarative build recipe for one package root",
     "The declarative C23 build recipe (slice 5) committed by the release "
     "envelope's recipe_root for one 64-hex package `root`, decoded from "
     "the canonical recipe wire in the local store: public_headers, "
@@ -173,7 +173,7 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_READ(
     "zcode.package.verify", "zcode.package", "",
-    "External-verifier attestation quorum for one package root",
+    "Verifier attestation quorum for one package root",
     "Evaluates every attestation in the local store's attestations/ dir "
     "against the approved-verifier allowlist for one 64-hex package "
     "`root`: verified=true exactly when 2+ distinct approved verifier keys "
@@ -800,7 +800,7 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_COMMAND(
     "zcode.package.fetch", "zcode.package", "",
-    "Fetch a package from the authenticated swarm (resumable)",
+    "Fetch a package from the authenticated swarm",
     "Starts (or idempotently resumes) a swarm download of one 64-hex "
     "package `root`: manifest-first, then chunks rarest-first across the "
     "peers advertising the root, every chunk SHA3-verified against the "
@@ -854,7 +854,7 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_COMMAND(
     "zcode.package.pin", "zcode.package", "",
-    "Operator-pin a tracked package (PINS pool, never evicted)",
+    "Pin a tracked package (PINS pool, never evicted)",
     "Pins one tracked 64-hex package `root` into the PINS pool: pinned "
     "packages are never evicted. This is the OPERATOR path — never "
     "tier-gated; the contributor-requested pin allowance "
@@ -1450,3 +1450,118 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zendp_list)
+
+/* ── the install lifecycle (add plan / add commit / rollback) ──────────
+ *
+ * Phase 1: the package must already be in the local content-addressed
+ * store (published here, or fetched by `zcode package fetch`). These
+ * leaves resolve, lock, verify, build, install, and activate it; the
+ * multi-peer fetch inside `add` is a later phase and this surface says so
+ * rather than pretending (a step with missing bytes reports state
+ * `fetching` with rule `package-incomplete`).
+ *
+ * `add plan` is a MUTATING leaf even though it installs nothing: it
+ * persists the plan under <datadir>/zcode/addplans/<plan-id> so that
+ * commit can be checked against exactly what the operator read. */
+
+ZCL_COMMAND_BRANCH("zcode.package.add", "zcode.package",
+                   "Install a package: plan then commit",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.package.add.plan", "zcode.package.add", "",
+    "Resolve, dependency-lock, and report what installing would do",
+    "Resolves `name_or_root` (a 64-hex package root is identity; a "
+    "publisher/package name only SELECTS the highest published semver), "
+    "walks the package's own zcode-package.json declarations into a "
+    "bounded acyclic dependency DAG locked to immutable package roots, and "
+    "reports every step in BUILD ORDER (dependencies first, target last) "
+    "with the lifecycle state it has actually reached: `installed` (this "
+    "exact root is already installed), `verified` (every manifest chunk "
+    "re-hashed from the CAS, envelope and recipe root check out), "
+    "`fetching` (bytes still missing locally — rule `package-incomplete`; "
+    "multi-peer fetch is a later phase and this never pretends to have "
+    "fetched), or `discovered` (present but failing verification). "
+    "`ready:true` means every step can proceed on commit. A dependency "
+    "cycle, a self-dependency, a depth/count overflow, an unresolvable "
+    "root, or a name/semver label that disagrees with the resolved "
+    "release is a named rejection, never a silently broken edge. Persists "
+    "the plan and returns `plan_id`; the id is a SHA3 commitment to every "
+    "field including the expiry, so an edited plan file is simply not "
+    "found. Plans expire in 15 minutes — a proposal, not a standing "
+    "authorization.",
+    0,
+    "zcode,package,add,install,plan,dependency,lock,resolve",
+    "zcl.zcode_add_plan.input.v1", "zcl.zcode_add_plan.v1",
+    "name_or_root,now_unix,datadir", "name_or_root",
+    "zclassic23 zcode package add plan --input='{\"name_or_root\":\"ringbuffer\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_package_add_plan)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.package.add.commit", "zcode.package.add", "",
+    "Execute a plan: verify, build+test confined, install, activate, pin",
+    "Loads the plan named by `plan_id`, refuses it if its bytes do not "
+    "hash to its own id (`plan-tampered`), if it expired "
+    "(`plan-expired`), or if re-deriving the dependency lock from the "
+    "store right now yields a different lock root (`lock-changed`) — so a "
+    "plan can never authorize installing something the store no longer "
+    "holds. Then, for every locked step in build order: re-hash every "
+    "chunk from the CAS against the manifest (a tampered store object "
+    "fails here and never reaches a build), run the declarative recipe's "
+    "build and tests in build/bin/zclassic23-package-verify --emit "
+    "(seccomp + rlimits + Landlock where the kernel offers it; no Make, "
+    "CMake, shell, configure, hooks, or build-time network), "
+    "INDEPENDENTLY re-hash every emitted artifact against the worker's "
+    "build receipt, install only what the receipt commits into "
+    "<datadir>/zcode/installed/<root>/ by atomic rename, activate by "
+    "rename-based symlink swap, append the generation log, and pin the "
+    "package so it can seed to other peers. The result is a static .a "
+    "plus public headers on disk: the node NEVER dlopens or links "
+    "downloaded code into itself. The previous generation is retained, so "
+    "`zcode package rollback` is immediate.",
+    0,
+    "zcode,package,add,commit,install,build,verify,receipt,pin",
+    "zcl.zcode_add_commit.input.v1", "zcl.zcode_add_commit.v1",
+    "plan_id,now_unix,datadir", "plan_id",
+    "zclassic23 zcode package add commit --input='{\"plan_id\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_BACKGROUND, ZCL_COMMAND_COST_HIGH,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_package_add_commit)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.package.rollback", "zcode.package", "",
+    "Re-activate the previous installed generation",
+    "Reads the append-only generation log for `name` "
+    "(publisher/package) and re-activates the newest DISTINCT root older "
+    "than the active one, by the same atomic rename-based symlink swap "
+    "install uses. History is never rewritten: the rollback appends a new "
+    "generation naming the older root, and BOTH installed trees stay on "
+    "disk. `no-previous-generation` means only one generation was ever "
+    "active; `never-installed` means this name has no generation log "
+    "here. Rollback re-points the active symlink only — it never rebuilds "
+    "and never re-runs the worker, so it is instant.",
+    0,
+    "zcode,package,rollback,revert,generation,activate,previous",
+    "zcl.zcode_package_rollback.input.v1", "zcl.zcode_package_rollback.v1",
+    "name,now_unix,datadir", "name",
+    "zclassic23 zcode package rollback --input='{\"name\":\"alice/ringbuffer\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_package_rollback)

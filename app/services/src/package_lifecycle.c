@@ -1,0 +1,540 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * package_lifecycle — THE one ZCODE install lifecycle state machine. See
+ * services/package_lifecycle.h for the contract; the adapters it drives are
+ * package_lifecycle_store.c (read) and package_lifecycle_install.c (write).
+ *
+ * This file decides; it does not do. Every filesystem touch, every spawn,
+ * every hash is behind a pkgl_* adapter call, and no package byte is ever
+ * interpreted as code here. */
+
+#include "package_lifecycle_internal.h"
+
+#include "base/hex.h"
+#include "base/log_macros.h"
+#include "base/result.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* ── the DAG loader ─────────────────────────────────────────────────── */
+
+struct pkgl_source {
+    const struct pkgl_ctx *ctx;
+};
+
+/* Report a root's REAL name/semver (from its release envelope) and its
+ * declared direct dependencies. False = unresolvable, which the resolver
+ * turns into a named ERR_UNRESOLVED rather than a silent skip. */
+static bool pkgl_src_load(void *vctx, const uint8_t root[32],
+                          char name_out[VCS_PACKAGE_RELEASE_NAME_MAX + 1u],
+                          char semver_out[VCS_PACKAGE_RELEASE_SEMVER_MAX + 1u],
+                          struct vcs_package_deps *deps_out)
+{
+    struct pkgl_source *src = vctx;
+    if (!src || !src->ctx)
+        LOG_FAIL(PKGL_LOG, "dependency loader has no context");
+    const struct vcs_package_release *rel =
+        pkgl_release_for_root(src->ctx, root);
+    if (!rel)
+        return false; /* ERR_UNRESOLVED, named by the resolver */
+    (void)snprintf(name_out, VCS_PACKAGE_RELEASE_NAME_MAX + 1u, "%s",
+                   rel->name);
+    (void)snprintf(semver_out, VCS_PACKAGE_RELEASE_SEMVER_MAX + 1u, "%s",
+                   rel->semver);
+    struct zcl_result r = pkgl_load_declared_deps(src->ctx, root, deps_out);
+    if (!r.ok)
+        LOG_FAIL(PKGL_LOG, "%s", r.message);
+    return true;
+}
+
+/* ── small helpers ──────────────────────────────────────────────────── */
+
+static void pkgl_note(char *rule, size_t rule_cap, char *detail,
+                      size_t detail_cap, const char *rule_text,
+                      const char *detail_text)
+{
+    (void)snprintf(rule, rule_cap, "%s", rule_text);
+    (void)snprintf(detail, detail_cap, "%s", detail_text);
+}
+
+/* `name_or_root` is 64 hex (identity) or "publisher/package" (a SELECTION
+ * that resolves to the highest published semver). */
+static struct zcl_result pkgl_resolve_target(const struct pkgl_ctx *ctx,
+                                             const char *name_or_root,
+                                             uint8_t out_root[32])
+{
+    if (!name_or_root || !name_or_root[0])
+        return ZCL_ERR(-1, "name_or_root is required");
+    if (strlen(name_or_root) == 64u &&
+        zcl_hex_decode_lower(name_or_root, out_root, 32)) {
+        if (!pkgl_release_for_root(ctx, out_root))
+            return ZCL_ERR(-1, "no release names package root %s",
+                           name_or_root);
+        return ZCL_OK;
+    }
+    const struct vcs_package_release *rel =
+        pkgl_release_for_name(ctx, name_or_root);
+    if (!rel)
+        return ZCL_ERR(-1, "no package named '%s' is published here",
+                       name_or_root);
+    memcpy(out_root, rel->package_root, 32);
+    return ZCL_OK;
+}
+
+static struct zcl_result pkgl_lock_for(const struct pkgl_ctx *ctx,
+                                       const uint8_t target_root[32],
+                                       struct vcs_package_lock *lock,
+                                       uint8_t lock_root[32])
+{
+    struct pkgl_source src_ctx = { .ctx = ctx };
+    struct vcs_package_deps_source src = { .ctx = &src_ctx,
+                                           .load = pkgl_src_load };
+    char detail[160];
+    detail[0] = '\0';
+    enum vcs_package_deps_error err = vcs_package_lock_resolve(
+        target_root, &src, lock, detail, sizeof(detail));
+    if (err != VCS_PACKAGE_DEPS_OK)
+        return ZCL_ERR(-1, "%s%s%s", vcs_package_deps_error_string(err),
+                       detail[0] ? ": " : "", detail);
+    err = vcs_package_lock_root(lock, lock_root);
+    if (err != VCS_PACKAGE_DEPS_OK)
+        return ZCL_ERR(-1, "cannot hash the dependency lock: %s",
+                       vcs_package_deps_error_string(err));
+    return ZCL_OK;
+}
+
+static struct zcl_result pkgl_plan_path(const struct pkgl_ctx *ctx,
+                                        const uint8_t plan_id[32], char *out,
+                                        size_t cap)
+{
+    char hex[65];
+    zcl_hex_encode(plan_id, 32, hex);
+    char rel[96];
+    (void)snprintf(rel, sizeof(rel), "addplans/%s", hex);
+    return pkgl_join(ctx, rel, out, cap);
+}
+
+/* ── plan ───────────────────────────────────────────────────────────── */
+
+// long-function-ok:one-plan-derivation — resolving the target, locking the
+// DAG, surveying every node and stamping the expiry are one derivation; a
+// caller must never be able to obtain a plan whose steps were surveyed
+// against a different lock than the one it commits to.
+struct zcl_result package_lifecycle_plan(
+    const char *datadir, const char *name_or_root, int64_t now_unix,
+    struct package_lifecycle_plan_report *out)
+{
+    if (!out)
+        return ZCL_ERR(-1, "null plan report");
+    memset(out, 0, sizeof(*out));
+    vcs_package_plan_init(&out->plan);
+
+    struct pkgl_ctx ctx;
+    ZCL_CHECK(pkgl_ctx_open(&ctx, datadir));
+
+    uint8_t target[32];
+    struct zcl_result r = pkgl_resolve_target(&ctx, name_or_root, target);
+    if (!r.ok) {
+        pkgl_note(out->rule, sizeof(out->rule), out->detail,
+                  sizeof(out->detail), "target-unresolved", r.message);
+        pkgl_ctx_close(&ctx);
+        return r;
+    }
+
+    struct vcs_package_lock lock;
+    uint8_t lock_root[32];
+    r = pkgl_lock_for(&ctx, target, &lock, lock_root);
+    if (!r.ok) {
+        pkgl_note(out->rule, sizeof(out->rule), out->detail,
+                  sizeof(out->detail), "dependency-lock", r.message);
+        pkgl_ctx_close(&ctx);
+        return r;
+    }
+
+    memcpy(out->plan.target_root, target, 32);
+    memcpy(out->plan.lock_root, lock_root, 32);
+    out->plan.created_unix = now_unix;
+    out->plan.expires_unix = now_unix + VCS_PACKAGE_PLAN_TTL_SECONDS;
+    out->plan.step_count = lock.count;
+    out->ready = true;
+
+    for (size_t i = 0; i < lock.count; i++) {
+        const struct vcs_package_lock_node *n = &lock.nodes[i];
+        struct vcs_package_plan_step *s = &out->plan.steps[i];
+        memcpy(s->root, n->root, 32);
+        (void)snprintf(s->name, sizeof(s->name), "%s", n->name);
+        (void)snprintf(s->semver, sizeof(s->semver), "%s", n->semver);
+        s->depth = n->depth;
+        const struct vcs_package_release *rel =
+            pkgl_release_for_root(&ctx, n->root);
+        if (rel)
+            (void)snprintf(s->license, sizeof(s->license), "%s", rel->license);
+
+        char installed[PKGL_PATH_MAX];
+        r = pkgl_installed_dir(&ctx, n->root, installed, sizeof(installed));
+        if (r.ok)
+            r = pkgl_exists(installed, &s->installed);
+        if (r.ok)
+            r = pkgl_survey_package(&ctx, n->root, &s->complete,
+                                    &s->total_bytes, &s->total_chunks);
+        if (!r.ok) {
+            pkgl_note(out->rule, sizeof(out->rule), out->detail,
+                      sizeof(out->detail), "survey-failed", r.message);
+            pkgl_ctx_close(&ctx);
+            return r;
+        }
+
+        if (s->installed) {
+            s->state = VCS_PACKAGE_LIFECYCLE_INSTALLED;
+        } else if (!s->complete) {
+            /* Honest phase boundary: this layer does not fetch. */
+            s->state = VCS_PACKAGE_LIFECYCLE_FETCHING;
+            out->ready = false;
+            if (!out->rule[0])
+                pkgl_note(out->rule, sizeof(out->rule), out->detail,
+                          sizeof(out->detail), "package-incomplete", s->name);
+        } else {
+            char vrule[PACKAGE_LIFECYCLE_RULE_MAX + 1u];
+            struct zcl_result vr = pkgl_verify_package(&ctx, n->root, vrule,
+                                                       sizeof(vrule));
+            if (vr.ok) {
+                s->state = VCS_PACKAGE_LIFECYCLE_VERIFIED;
+            } else {
+                s->state = VCS_PACKAGE_LIFECYCLE_DISCOVERED;
+                out->ready = false;
+                if (!out->rule[0])
+                    pkgl_note(out->rule, sizeof(out->rule), out->detail,
+                              sizeof(out->detail),
+                              vrule[0] ? vrule : "verify-failed", vr.message);
+            }
+        }
+    }
+
+    enum vcs_package_install_error perr = vcs_package_plan_validate(&out->plan);
+    if (perr == VCS_PACKAGE_INSTALL_OK)
+        perr = vcs_package_plan_id(&out->plan, out->plan_id);
+    if (perr != VCS_PACKAGE_INSTALL_OK) {
+        pkgl_note(out->rule, sizeof(out->rule), out->detail,
+                  sizeof(out->detail), "plan-invalid",
+                  vcs_package_install_error_string(perr));
+        pkgl_ctx_close(&ctx);
+        return ZCL_ERR(-1, "plan rejected: %s",
+                       vcs_package_install_error_string(perr));
+    }
+
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    perr = vcs_package_plan_serialize(&out->plan, &wire, &wire_len);
+    if (perr != VCS_PACKAGE_INSTALL_OK) {
+        pkgl_note(out->rule, sizeof(out->rule), out->detail,
+                  sizeof(out->detail), "plan-encode",
+                  vcs_package_install_error_string(perr));
+        pkgl_ctx_close(&ctx);
+        return ZCL_ERR(-1, "cannot encode the plan: %s",
+                       vcs_package_install_error_string(perr));
+    }
+    char path[PKGL_PATH_MAX];
+    r = pkgl_plan_path(&ctx, out->plan_id, path, sizeof(path));
+    if (r.ok) {
+        char dir[PKGL_PATH_MAX];
+        r = pkgl_join(&ctx, "addplans", dir, sizeof(dir));
+        if (r.ok)
+            r = pkgl_mkdir_p(dir);
+        if (r.ok)
+            r = pkgl_write_atomic(path, wire, wire_len);
+    }
+    free(wire);
+    pkgl_ctx_close(&ctx);
+    if (!r.ok) {
+        pkgl_note(out->rule, sizeof(out->rule), out->detail,
+                  sizeof(out->detail), "plan-write", r.message);
+        return r;
+    }
+    return ZCL_OK;
+}
+
+/* ── commit ─────────────────────────────────────────────────────────── */
+
+/* Load the plan named by `plan_id`, refusing an edited file (the id is a
+ * commitment to every field, so an edit renames it) and an expired one. */
+static struct zcl_result pkgl_load_plan(const struct pkgl_ctx *ctx,
+                                        const uint8_t plan_id[32],
+                                        int64_t now_unix,
+                                        struct vcs_package_plan *out,
+                                        char *rule, size_t rule_cap)
+{
+    char path[PKGL_PATH_MAX];
+    ZCL_CHECK(pkgl_plan_path(ctx, plan_id, path, sizeof(path)));
+    bool present = false;
+    ZCL_CHECK(pkgl_exists(path, &present));
+    if (!present) {
+        (void)snprintf(rule, rule_cap, "plan-unknown");
+        return ZCL_ERR(-1, "no such plan — run 'zcode package add plan' "
+                           "first, or the plan was already pruned");
+    }
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    ZCL_CHECK(pkgl_read_file(path, VCS_PACKAGE_PLAN_MAX_WIRE_BYTES, &wire,
+                             &wire_len));
+    enum vcs_package_install_error err =
+        vcs_package_plan_parse(wire, wire_len, out);
+    free(wire);
+    if (err != VCS_PACKAGE_INSTALL_OK) {
+        (void)snprintf(rule, rule_cap, "plan-invalid");
+        return ZCL_ERR(-1, "stored plan: %s",
+                       vcs_package_install_error_string(err));
+    }
+    uint8_t recomputed[32];
+    if (vcs_package_plan_id(out, recomputed) != VCS_PACKAGE_INSTALL_OK ||
+        memcmp(recomputed, plan_id, 32) != 0) {
+        (void)snprintf(rule, rule_cap, "plan-tampered");
+        return ZCL_ERR(-1, "the stored plan does not hash to its own id");
+    }
+    if (vcs_package_plan_expired(out, now_unix)) {
+        (void)snprintf(rule, rule_cap, "plan-expired");
+        return ZCL_ERR(-1,
+                       "this plan expired at %lld (now %lld) — a plan is a "
+                       "proposal, not a standing authorization; re-plan",
+                       (long long)out->expires_unix, (long long)now_unix);
+    }
+    return ZCL_OK;
+}
+
+/* Collect the direct dependency roots of one node, all of which the commit
+ * loop has already installed (build order guarantees it). */
+static struct zcl_result pkgl_direct_deps(const struct pkgl_ctx *ctx,
+                                          const uint8_t root[32],
+                                          uint8_t (*out)[32],
+                                          size_t *count_out)
+{
+    struct vcs_package_deps deps;
+    ZCL_CHECK(pkgl_load_declared_deps(ctx, root, &deps));
+    if (deps.count > VCS_PACKAGE_BUILD_MAX_DEPS)
+        return ZCL_ERR(-1, "%zu direct dependencies exceeds the bound",
+                       deps.count);
+    for (size_t i = 0; i < deps.count; i++)
+        memcpy(out[i], deps.items[i].root, 32);
+    *count_out = deps.count;
+    return ZCL_OK;
+}
+
+/* Advance ONE locked step from wherever it is to PINNED. */
+static struct zcl_result pkgl_commit_step(const struct pkgl_ctx *ctx,
+                                          const struct vcs_package_plan *plan,
+                                          size_t index, int64_t now_unix,
+                                          struct package_lifecycle_step *step,
+                                          uint8_t prev_root[32],
+                                          bool *had_previous)
+{
+    const struct vcs_package_plan_step *ps = &plan->steps[index];
+    memcpy(step->root, ps->root, 32);
+    (void)snprintf(step->name, sizeof(step->name), "%s", ps->name);
+    (void)snprintf(step->semver, sizeof(step->semver), "%s", ps->semver);
+    step->depth = ps->depth;
+    step->state = VCS_PACKAGE_LIFECYCLE_DISCOVERED;
+
+    char installed[PKGL_PATH_MAX];
+    ZCL_CHECK(pkgl_installed_dir(ctx, ps->root, installed, sizeof(installed)));
+    ZCL_CHECK(pkgl_exists(installed, &step->already_installed));
+
+    if (!step->already_installed) {
+        char vrule[PACKAGE_LIFECYCLE_RULE_MAX + 1u];
+        struct zcl_result vr =
+            pkgl_verify_package(ctx, ps->root, vrule, sizeof(vrule));
+        if (!vr.ok) {
+            pkgl_note(step->rule, sizeof(step->rule), step->detail,
+                      sizeof(step->detail), vrule[0] ? vrule : "verify-failed",
+                      vr.message);
+            return vr;
+        }
+        step->state = VCS_PACKAGE_LIFECYCLE_VERIFIED;
+
+        const struct vcs_package_release *rel =
+            pkgl_release_for_root(ctx, ps->root);
+        if (!rel) {
+            pkgl_note(step->rule, sizeof(step->rule), step->detail,
+                      sizeof(step->detail), "release-missing", ps->name);
+            return ZCL_ERR(-1, "no release envelope for %s", ps->name);
+        }
+        uint8_t deps[VCS_PACKAGE_BUILD_MAX_DEPS][32];
+        size_t dep_count = 0;
+        struct zcl_result dr =
+            pkgl_direct_deps(ctx, ps->root, deps, &dep_count);
+        if (!dr.ok) {
+            pkgl_note(step->rule, sizeof(step->rule), step->detail,
+                      sizeof(step->detail), "dependency-read", dr.message);
+            return dr;
+        }
+        ZCL_CHECK(pkgl_build_and_install(ctx, ps->root, rel, plan->lock_root,
+                                         (const uint8_t (*)[32])deps,
+                                         dep_count, step));
+    } else {
+        step->state = VCS_PACKAGE_LIFECYCLE_INSTALLED;
+    }
+
+    struct zcl_result ar = pkgl_activate(ctx, ps->name, ps->root, now_unix,
+                                         prev_root, had_previous);
+    if (!ar.ok) {
+        pkgl_note(step->rule, sizeof(step->rule), step->detail,
+                  sizeof(step->detail), "activate-failed", ar.message);
+        return ar;
+    }
+
+    /* Pinning is what makes the package seedable to other peers. A refusal
+     * (a full pins pool, an untracked root) is reported on the step and does
+     * not undo a correct install. */
+    struct zcl_result pr = pkgl_pin(ctx, ps->root);
+    if (!pr.ok)
+        pkgl_note(step->rule, sizeof(step->rule), step->detail,
+                  sizeof(step->detail), "pin-refused", pr.message);
+    else
+        step->state = VCS_PACKAGE_LIFECYCLE_PINNED;
+    return ZCL_OK;
+}
+
+struct zcl_result package_lifecycle_commit(
+    const char *datadir, const uint8_t plan_id[32], int64_t now_unix,
+    struct package_lifecycle_commit_report *out)
+{
+    if (!out || !plan_id)
+        return ZCL_ERR(-1, "null commit report");
+    memset(out, 0, sizeof(*out));
+    memcpy(out->plan_id, plan_id, 32);
+
+    struct pkgl_ctx ctx;
+    ZCL_CHECK(pkgl_ctx_open(&ctx, datadir));
+
+    struct vcs_package_plan plan;
+    struct zcl_result r = pkgl_load_plan(&ctx, plan_id, now_unix, &plan,
+                                         out->rule, sizeof(out->rule));
+    if (!r.ok) {
+        (void)snprintf(out->detail, sizeof(out->detail), "%s", r.message);
+        pkgl_ctx_close(&ctx);
+        return r;
+    }
+
+    /* The plan is a proposal about a store that may have changed under it.
+     * Re-derive the lock now and require it to be the same one. */
+    struct vcs_package_lock lock;
+    uint8_t lock_root[32];
+    r = pkgl_lock_for(&ctx, plan.target_root, &lock, lock_root);
+    if (!r.ok) {
+        pkgl_note(out->rule, sizeof(out->rule), out->detail,
+                  sizeof(out->detail), "dependency-lock", r.message);
+        pkgl_ctx_close(&ctx);
+        return r;
+    }
+    if (memcmp(lock_root, plan.lock_root, 32) != 0 ||
+        lock.count != plan.step_count) {
+        pkgl_note(out->rule, sizeof(out->rule), out->detail,
+                  sizeof(out->detail), "lock-changed",
+                  "the dependency lock changed since this plan was made");
+        pkgl_ctx_close(&ctx);
+        return ZCL_ERR(-1, "the dependency lock changed since this plan was "
+                           "made — re-plan before committing");
+    }
+
+    out->step_count = plan.step_count;
+    for (size_t i = 0; i < plan.step_count; i++) {
+        uint8_t prev[32];
+        bool had_prev = false;
+        r = pkgl_commit_step(&ctx, &plan, i, now_unix, &out->steps[i], prev,
+                             &had_prev);
+        if (!r.ok) {
+            (void)snprintf(out->rule, sizeof(out->rule), "%s",
+                           out->steps[i].rule);
+            (void)snprintf(out->detail, sizeof(out->detail), "%s",
+                           out->steps[i].detail);
+            pkgl_ctx_close(&ctx);
+            return r;
+        }
+        if (i + 1u == plan.step_count) {
+            out->installed = true;
+            memcpy(out->active_root, plan.steps[i].root, 32);
+            out->had_previous = had_prev;
+            if (had_prev)
+                memcpy(out->previous_root, prev, 32);
+        }
+    }
+    pkgl_ctx_close(&ctx);
+    return ZCL_OK;
+}
+
+/* ── rollback + read ────────────────────────────────────────────────── */
+
+struct zcl_result package_lifecycle_rollback(
+    const char *datadir, const char *name, int64_t now_unix,
+    struct package_lifecycle_rollback_report *out)
+{
+    if (!out || !name)
+        return ZCL_ERR(-1, "null rollback report");
+    memset(out, 0, sizeof(*out));
+    (void)snprintf(out->name, sizeof(out->name), "%s", name);
+
+    struct pkgl_ctx ctx;
+    ZCL_CHECK(pkgl_ctx_open(&ctx, datadir));
+
+    struct vcs_package_generations gens;
+    struct zcl_result r = pkgl_generations_load(&ctx, name, &gens);
+    if (!r.ok) {
+        pkgl_note(out->rule, sizeof(out->rule), out->detail,
+                  sizeof(out->detail), "generations-unreadable", r.message);
+        pkgl_ctx_close(&ctx);
+        return r;
+    }
+    out->generation_count = gens.count;
+    if (gens.count == 0) {
+        pkgl_note(out->rule, sizeof(out->rule), out->detail,
+                  sizeof(out->detail), "never-installed", name);
+        pkgl_ctx_close(&ctx);
+        return ZCL_ERR(-1, "'%s' was never installed here", name);
+    }
+    memcpy(out->from_root, gens.items[gens.count - 1].root, 32);
+    if (!vcs_package_generations_previous(&gens, out->to_root)) {
+        pkgl_note(out->rule, sizeof(out->rule), out->detail,
+                  sizeof(out->detail), "no-previous-generation",
+                  "only one generation of this package was ever active");
+        pkgl_ctx_close(&ctx);
+        return ZCL_ERR(-1, "nothing to roll back to for '%s'", name);
+    }
+
+    uint8_t prev[32];
+    bool had_prev = false;
+    r = pkgl_activate(&ctx, name, out->to_root, now_unix, prev, &had_prev);
+    if (!r.ok) {
+        pkgl_note(out->rule, sizeof(out->rule), out->detail,
+                  sizeof(out->detail), "activate-failed", r.message);
+        pkgl_ctx_close(&ctx);
+        return r;
+    }
+    out->generation_count = gens.count + 1u;
+    pkgl_ctx_close(&ctx);
+    return ZCL_OK;
+}
+
+struct zcl_result package_lifecycle_active(
+    const char *datadir, const char *name, uint8_t out_root[32],
+    size_t *generation_count_out, bool *present_out)
+{
+    if (!name || !out_root || !generation_count_out || !present_out)
+        return ZCL_ERR(-1, "null argument reading the active package");
+    memset(out_root, 0, 32);
+    *generation_count_out = 0;
+    *present_out = false;
+
+    struct pkgl_ctx ctx;
+    ZCL_CHECK(pkgl_ctx_open(&ctx, datadir));
+    struct vcs_package_generations gens;
+    struct zcl_result r = pkgl_generations_load(&ctx, name, &gens);
+    pkgl_ctx_close(&ctx);
+    if (!r.ok)
+        return r;
+    *generation_count_out = gens.count;
+    if (gens.count == 0)
+        return ZCL_OK;
+    memcpy(out_root, gens.items[gens.count - 1].root, 32);
+    *present_out = true;
+    return ZCL_OK;
+}

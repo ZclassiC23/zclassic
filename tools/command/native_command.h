@@ -535,6 +535,24 @@ void zcl_native_handle_zcode_package_unpin(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* zcode package add plan / add commit / rollback — the install lifecycle.
+ * plan resolves a name-or-root, locks the dependency DAG to immutable
+ * package roots and reports what each step's state actually is; commit
+ * re-derives that lock, refuses a stale or expired plan, then verifies,
+ * builds+tests in the confined worker, re-hashes every artifact, installs
+ * atomically and pins. rollback re-activates the previous generation.
+ * Nothing installed is ever loaded into this process. Every rejection names
+ * the exact rule. Bound by config/commands/zcode.def. */
+void zcl_native_handle_zcode_package_add_plan(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_package_add_commit(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_package_rollback(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* ops.state — generic subsystem state dump. Dispatches the `dumpstate` RPC
  * method directly. `subsystem` (required) selects the
  * owning module's *_dump_state_json; `key` is subsystem-specific (e.g. a
