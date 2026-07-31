@@ -1544,6 +1544,59 @@ worktree-gc:
 	@CONFIRM='$(CONFIRM)' SCOPE='$(or $(SCOPE),pool)' \
 	 MIN_AGE_HOURS='$(or $(MIN_AGE_HOURS),24)' tools/dev/worktree-gc.sh
 
+# ── Gate receipts: a lane's claims, checkable without re-running them ─────
+# "make lint passed" costs the orchestrator a full re-run to verify, and has
+# been wrong twice here (a test green only because it read the live node's
+# datadir; a lint gate CLEAN because printf|grep -q inverted under pipefail).
+# Wrap the gate instead: the receipt is a byproduct of running it, holding the
+# command, HEAD, dirty state, exit status, wall/child-CPU time, and a SHA3 of
+# the captured output, which is stored alongside. See the forgery model in
+# tools/agent/gate-receipt.sh — this is EVIDENCE, not proof.
+.PHONY: gate-receipt check-claims agent-velocity agent-sha3
+
+AGENT_SHA3_SRCS := tools/agent/agent_sha3.c lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c
+agent-sha3: $(BIN_DIR)/agent_sha3
+$(BIN_DIR)/agent_sha3: $(AGENT_SHA3_SRCS)
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror \
+	    -Ilib/crypto/include -Ilib/support/include -Ilib/base/include \
+	    -o $@ $(AGENT_SHA3_SRCS)
+
+# Run a gate and leave a receipt. The wrapper is transparent — same output,
+# same exit status — so this is a drop-in for the bare command:
+#   make gate-receipt GATE=lint CMD='make lint'
+#   make gate-receipt GATE=t-fast CMD='make t-fast ONLY=boot_phase'
+# Or call it directly, which avoids a second Makefile parse:
+#   tools/agent/gate-receipt.sh --gate lint -- make lint
+gate-receipt:
+	@if [ -z "$(GATE)" ] || [ -z "$(CMD)" ]; then \
+	    echo "usage: make gate-receipt GATE=<slug> CMD='<command>'"; \
+	    echo "  e.g. make gate-receipt GATE=lint CMD='make lint'"; \
+	    exit 2; \
+	fi
+	@RECEIPTS='$(RECEIPTS)'; \
+	 tools/agent/gate-receipt.sh --gate '$(GATE)' \
+	    $${RECEIPTS:+--dir "$$RECEIPTS"} -- $(CMD)
+
+# Verify a lane's gate claims from its receipts. Non-zero if a claimed gate
+# has no receipt, if a receipt does not describe the current HEAD, or if the
+# stored output no longer backs the verdict.
+#   make check-claims CLAIMS="lint t-fast"
+check-claims:
+	@RECEIPTS='$(RECEIPTS)'; \
+	 tools/agent/check-claims.sh $${RECEIPTS:+--dir "$$RECEIPTS"} \
+	    $(if $(CLAIMS),--require '$(CLAIMS)') $(if $(STRICT),--strict)
+
+# What a lane cost and produced, computed rather than remembered. Everything
+# that is not mechanically derivable is printed as a NOT-DERIVABLE line naming
+# what the orchestrator must supply — never silently omitted.
+#   make agent-velocity BASE=b82b40e77
+agent-velocity:
+	@RECEIPTS='$(RECEIPTS)'; \
+	 tools/agent/agent-velocity.sh $(if $(BASE),--base '$(BASE)') \
+	    $(if $(HEAD),--head '$(HEAD)') $(if $(AGAINST),--against '$(AGAINST)') \
+	    $${RECEIPTS:+--receipts "$$RECEIPTS"}
+
 # Run ONE test group, always rebuilding the harness first:
 #   make t ONLY=service_state_driver
 # Checkout-locked — see the `test-parallel` target above for why.
@@ -6770,6 +6823,26 @@ check-no-stray-root-files:
 check-no-retired-agent-protocol:
 	@./tools/lint/check_no_retired_agent_protocol.sh
 
+# Nothing under test, and no command an agent is told to copy, may be aimed at
+# the OPERATOR'S LIVE NODE. Three prongs, all measured on this tree:
+#   A  a test that constructs the exact live datadir path (~/.zclassic,
+#      ~/.zclassic-c23) — shrink-only, 8 sites in 7 files today;
+#   B  a test that resolves GetDataDir()/GetDefaultDataDir() and never calls
+#      SetDataDir() — HARD, zero today. This is the shape that made
+#      test_chain_integrity_failed_condition pass off the LIVE
+#      blocks/blk00000.dat as its fixture, which a passing suite ON THIS HOST
+#      structurally cannot reveal;
+#   C  a doc/script showing an invocation of a leaf that ACCEPTS a `datadir`
+#      input without naming one, so a copied line hits the live node —
+#      shrink-only, 13 sites in 5 files, including the `app service access`
+#      example that ran the boot ceremony on the operator's node.db.
+# The datadir-taking leaf set is derived from argument 10 of the leaf macros in
+# config/commands/*.def, never hand-listed.
+check-live-datadir-isolation:
+	@echo "══ LINT: nothing under test aims at the live datadir ══"
+	@./tools/lint/check_live_datadir_isolation.sh --selftest
+	@./tools/lint/check_live_datadir_isolation.sh
+
 # wf/dx-scanner-immunity regression proof — plants a transient lint-gate
 # fixture mid-scan and proves: (1) a production scan ignores it, (2) a
 # selftest-style direct invocation still detects it (detection unweakened),
@@ -6934,6 +7007,7 @@ LINT_GATES := \
     check-no-trust-state-ordering \
     check-no-warning-suppression \
     check-fuzz-artifact-ledger \
+    check-live-datadir-isolation \
     check-standalone-tools-link
 
 # The driver execs gate scripts directly, so the two gates backed by a built
