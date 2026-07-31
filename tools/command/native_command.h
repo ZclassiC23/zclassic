@@ -1310,6 +1310,19 @@ void zcl_native_handle_telemetry_wallet_summary(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 void zcl_native_handle_telemetry_wallet_security(
+/* ── ops.telemetry.agents.* — the AGENTS telemetry domain
+ * (tools/command/native_telemetry_agents_command.c). Each renders one group
+ * of the typed agents snapshot filled by agents_dump_state_fill()
+ * (app/services/src/agents_telemetry.h); the field names live only in
+ * lib/util/include/util/telemetry/agents_fields.def. Bound by
+ * config/commands/telemetry/agents.def. */
+void zcl_native_handle_ops_telemetry_agents_sessions(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_ops_telemetry_agents_grants(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_ops_telemetry_agents_activity(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
