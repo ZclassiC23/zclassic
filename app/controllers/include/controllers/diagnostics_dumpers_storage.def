@@ -241,6 +241,21 @@
                "app/controllers/src/diagnostics_registry_rom.c",
                "in_process_snapshot", "cheap", NULL, NULL, NULL,
                "lib/test/src/test_rom_dump.c", true),
+    DIAG_ENTRY("storage_telemetry", storage_telemetry_dump_state_json,
+               "the typed `storage` telemetry domain (util/telemetry_render.h) "
+               "rendered from one snapshot: SQLite store handles + the Wave A2 "
+               "split proof, block_index.bin integrity, the transaction "
+               "tracer, disk headroom against the refuse threshold, and the "
+               "maintenance worker. Every leaf carries a presence, a source "
+               "and a derived health verdict, and a value nobody could read "
+               "says so instead of vanishing. Key selects the view: "
+               "summary|normal|full, or a group name (`database`, `disk`) for "
+               "that group at full detail",
+               "storage", "service",
+               "app/services/src/storage_telemetry_fill.c",
+               "in_process_snapshot", "cheap",
+               "summary|normal|full|<group>", "summary", "disk",
+               "lib/test/src/test_telemetry_storage.c", true),
     DIAG_RUNTIME("db_txn_trace", db_txn_trace_dump_state_json,
                  "opt-in (ZCL_DB_TXN_TRACE=1) node.db transaction tracer: per "
                  "registered connection {owner, txn_state, busy_stmts, "
