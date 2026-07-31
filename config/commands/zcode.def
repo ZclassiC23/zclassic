@@ -19,11 +19,11 @@ ZCL_COMMAND_BRANCH("zcode", "",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_BRANCH("zcode.package", "zcode",
-                   "Published packages: releases, manifests, chunks",
+                   "Published packages",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_BRANCH("zcode.package.publish", "zcode.package",
-                   "Publish a signed release into the local store (plan, "
+                   "Publish a signed release into the store (plan, "
                    "then commit)",
                    ZCL_COMMAND_LAYER_APP)
 
@@ -113,7 +113,7 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_READ(
     "zcode.package.show", "zcode.package", "",
-    "Full release record and manifest summary for one package root",
+    "Release record and manifest summary for one package root",
     "The complete persisted release record (publisher, sequence, license, "
     "reward address, lineage, ZNAM pointer) plus the manifest summary "
     "(file/byte/chunk counts, LICENSE presence, executable count) for one "
@@ -138,7 +138,7 @@ ZCL_COMMAND_READY_READ(
  * (zclassic23-package-verify, slice 6). */
 ZCL_COMMAND_READY_READ(
     "zcode.package.recipe", "zcode.package", "",
-    "Decoded declarative build recipe for one package root",
+    "Declarative build recipe for one package root",
     "The declarative C23 build recipe (slice 5) committed by the release "
     "envelope's recipe_root for one 64-hex package `root`, decoded from "
     "the canonical recipe wire in the local store: public_headers, "
@@ -173,7 +173,7 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_READ(
     "zcode.package.verify", "zcode.package", "",
-    "External-verifier attestation quorum for one package root",
+    "Verifier attestation quorum for one package root",
     "Evaluates every attestation in the local store's attestations/ dir "
     "against the approved-verifier allowlist for one 64-hex package "
     "`root`: verified=true exactly when 2+ distinct approved verifier keys "
@@ -800,7 +800,7 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_COMMAND(
     "zcode.package.fetch", "zcode.package", "",
-    "Fetch a package from the authenticated swarm (resumable)",
+    "Fetch a package from the authenticated swarm",
     "Starts (or idempotently resumes) a swarm download of one 64-hex "
     "package `root`: manifest-first, then chunks rarest-first across the "
     "peers advertising the root, every chunk SHA3-verified against the "
@@ -854,7 +854,7 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_COMMAND(
     "zcode.package.pin", "zcode.package", "",
-    "Operator-pin a tracked package (PINS pool, never evicted)",
+    "Pin a tracked package (PINS pool, never evicted)",
     "Pins one tracked 64-hex package `root` into the PINS pool: pinned "
     "packages are never evicted. This is the OPERATOR path — never "
     "tier-gated; the contributor-requested pin allowance "
@@ -1465,7 +1465,7 @@ ZCL_COMMAND_READY_READ(
  * commit can be checked against exactly what the operator read. */
 
 ZCL_COMMAND_BRANCH("zcode.package.add", "zcode.package",
-                   "Install a package: plan what would happen, then commit",
+                   "Install a package: plan then commit",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_COMMAND(
@@ -1542,7 +1542,7 @@ ZCL_COMMAND_READY_COMMAND(
 
 ZCL_COMMAND_READY_COMMAND(
     "zcode.package.rollback", "zcode.package", "",
-    "Re-activate the previous installed generation of one package",
+    "Re-activate the previous installed generation",
     "Reads the append-only generation log for `name` "
     "(publisher/package) and re-activates the newest DISTINCT root older "
     "than the active one, by the same atomic rename-based symlink swap "

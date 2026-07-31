@@ -685,22 +685,22 @@ represented by its children's sections.
 
 ### `zcode` — ZCODE source-package hosting: publish, search, host
 
-#### `zcode.package` — Published packages: releases, manifests, chunks
+#### `zcode.package` — Published packages
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `zcode package search` | ready | read / read / operator · fast/low | `publisher`, `name_prefix`, `license`, `keyword`, `limit`, `datadir` | `zcl.zcode_package_search.v1` | `zclassic23 zcode package search --input='{"keyword":"ring"}'` | Search locally published packages |
-| `zcode package show` | ready | read / read / operator · fast/low | **`root`**, `datadir` | `zcl.zcode_package_show.v1` | `zclassic23 zcode package show --input='{"root":"<64hex>"}'` | Full release record and manifest summary for one package root |
-| `zcode package recipe` | ready | read / read / operator · fast/low | **`root`**, `datadir` | `zcl.zcode_package_recipe.v1` | `zclassic23 zcode package recipe --input='{"root":"<64hex>"}'` | Decoded declarative build recipe for one package root |
-| `zcode package verify` | ready | read / read / operator · fast/low | **`root`**, `datadir` | `zcl.zcode_package_verify.v1` | `zclassic23 zcode package verify --input='{"root":"<64hex>"}'` | External-verifier attestation quorum for one package root |
+| `zcode package show` | ready | read / read / operator · fast/low | **`root`**, `datadir` | `zcl.zcode_package_show.v1` | `zclassic23 zcode package show --input='{"root":"<64hex>"}'` | Release record and manifest summary for one package root |
+| `zcode package recipe` | ready | read / read / operator · fast/low | **`root`**, `datadir` | `zcl.zcode_package_recipe.v1` | `zclassic23 zcode package recipe --input='{"root":"<64hex>"}'` | Declarative build recipe for one package root |
+| `zcode package verify` | ready | read / read / operator · fast/low | **`root`**, `datadir` | `zcl.zcode_package_verify.v1` | `zclassic23 zcode package verify --input='{"root":"<64hex>"}'` | Verifier attestation quorum for one package root |
 | `zcode package resolve` | ready | read / read / operator · fast/low | **`name`**, `datadir` | `zcl.zcode_package_resolve.v1` | `zclassic23 zcode package resolve --input='{"name":"ringbuffer"}'` | Resolve a ZNAM package name to its release |
-| `zcode package fetch` | ready | mutate / app-write / operator · foreground/moderate | **`root`**, `day`, `datadir` | `zcl.zcode_package_fetch.v1` | `zclassic23 zcode package fetch --input='{"root":"<64hex>"}'` | Fetch a package from the authenticated swarm (resumable) |
+| `zcode package fetch` | ready | mutate / app-write / operator · foreground/moderate | **`root`**, `day`, `datadir` | `zcl.zcode_package_fetch.v1` | `zclassic23 zcode package fetch --input='{"root":"<64hex>"}'` | Fetch a package from the authenticated swarm |
 | `zcode package peers` | ready | read / read / operator · fast/low | **`root`**, `datadir` | `zcl.zcode_package_peers.v1` | `zclassic23 zcode package peers --input='{"root":"<64hex>"}'` | Live swarm peers advertising one package root |
-| `zcode package pin` | ready | mutate / app-write / operator · foreground/moderate | **`root`**, `datadir` | `zcl.zcode_package_pin.v1` | `zclassic23 zcode package pin --input='{"root":"<64hex>"}'` | Operator-pin a tracked package (PINS pool, never evicted) |
+| `zcode package pin` | ready | mutate / app-write / operator · foreground/moderate | **`root`**, `datadir` | `zcl.zcode_package_pin.v1` | `zclassic23 zcode package pin --input='{"root":"<64hex>"}'` | Pin a tracked package (PINS pool, never evicted) |
 | `zcode package unpin` | ready | mutate / app-write / operator · foreground/moderate | **`root`**, `datadir` | `zcl.zcode_package_unpin.v1` | `zclassic23 zcode package unpin --input='{"root":"<64hex>"}'` | Release an operator pin |
-| `zcode package rollback` | ready | mutate / app-write / operator · fast/low | **`name`**, `now_unix`, `datadir` | `zcl.zcode_package_rollback.v1` | `zclassic23 zcode package rollback --input='{"name":"alice/ringbuffer"}'` | Re-activate the previous installed generation of one package |
+| `zcode package rollback` | ready | mutate / app-write / operator · fast/low | **`name`**, `now_unix`, `datadir` | `zcl.zcode_package_rollback.v1` | `zclassic23 zcode package rollback --input='{"name":"alice/ringbuffer"}'` | Re-activate the previous installed generation |
 
-#### `zcode.package.publish` — Publish a signed release into the local store (plan, then commit)
+#### `zcode.package.publish` — Publish a signed release into the store (plan, then commit)
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
@@ -796,7 +796,7 @@ represented by its children's sections.
 | `zcode endpoint resolve` | ready | read / read / public · fast/low | **`pubkey`**, `now`, `datadir` | `zcl.zcode_endpoint_resolve.v1` | `zclassic23 zcode endpoint resolve --input='{"pubkey":"<64hex>"}'` | Look up a filed endpoint record by its blinded record key |
 | `zcode endpoint list` | ready | read / read / public · fast/low | `now`, `datadir` | `zcl.zcode_endpoint_list.v1` | `zclassic23 zcode endpoint list` | Show every filed endpoint record and whether the node will use it |
 
-#### `zcode.package.add` — Install a package: plan what would happen, then commit
+#### `zcode.package.add` — Install a package: plan then commit
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|

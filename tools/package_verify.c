@@ -92,6 +92,7 @@
 #include "base/hex.h"
 #include "crypto/sha3.h"
 #include "platform/clock.h"
+#include "platform/os_proc.h"
 #include "platform/os_sandbox.h"
 #include "support/cleanse.h"
 #include "util/safe_alloc.h"
@@ -397,6 +398,21 @@ static size_t pv_child_grants(const char *src_dir, const char *build_dir,
     return n;
 }
 
+/* This process's own current mapped size (RLIMIT_AS's accounting unit).
+ * fork() gives the child the same mapping, so a limit set to the recipe's
+ * raw byte budget alone starves the not-yet-exec'd child of the address
+ * space this verifier binary's own text/data/bss already occupy — the
+ * child dies with SIGSEGV growing its stack during rlimit/Landlock/seccomp
+ * setup, before it ever reaches execve(). Best-effort: an unreadable
+ * VmSize yields 0, same fallback as pv_uid_task_count below. */
+static uint64_t pv_process_vsize_bytes(void)
+{
+    struct os_proc_mem mem;
+    if (!os_proc_mem_read(&mem) || mem.vsize_bytes < 0)
+        return 0;
+    return (uint64_t)mem.vsize_bytes;
+}
+
 /* Current task count of the real uid (RLIMIT_NPROC's accounting unit).
  * Best-effort: a /proc scan; unreadable entries are skipped, so the result
  * can be an undercount — the margin in PV_*_NPROC absorbs that. */
@@ -447,12 +463,19 @@ static struct pv_run pv_run_child(const char *const argv[],
 {
     struct pv_run r;
     memset(&r, 0, sizeof(r));
-    /* Rebase an absolute NPROC cap into "current uid tasks + margin" (see
-     * the PV_COMPILE_NPROC comment): RLIMIT_NPROC is session-wide per uid. */
+    /* Rebase absolute caps into "current usage + the caller's budget": NPROC
+     * is session-wide per uid (see the PV_COMPILE_NPROC comment), and AS is
+     * this very process's own mapping (see pv_process_vsize_bytes) — a fork
+     * child starts from that same mapping, so the recipe's byte budget must
+     * land on top of it, not replace it. */
     struct os_sandbox_rlimits rebased;
-    if (limits && limits->nproc != OS_SANDBOX_RLIMIT_KEEP) {
+    if (limits && (limits->nproc != OS_SANDBOX_RLIMIT_KEEP ||
+                   limits->as_bytes != OS_SANDBOX_RLIMIT_KEEP)) {
         rebased = *limits;
-        rebased.nproc = pv_uid_task_count() + limits->nproc;
+        if (limits->nproc != OS_SANDBOX_RLIMIT_KEEP)
+            rebased.nproc = pv_uid_task_count() + limits->nproc;
+        if (limits->as_bytes != OS_SANDBOX_RLIMIT_KEEP)
+            rebased.as_bytes = pv_process_vsize_bytes() + limits->as_bytes;
         limits = &rebased;
     }
     int out_pipe[2] = { -1, -1 };
@@ -497,15 +520,26 @@ static struct pv_run pv_run_child(const char *const argv[],
                 name[nl] = '\0';
                 (void)setenv(name, eq + 1, 1);
             }
-        if (limits && !zcl_result_is_ok(os_sandbox_set_rlimits(limits)))
-            _exit(PV_CHILD_SANDBOX_FAIL);
+        /* The parent forwards this pipe (see pr.stderr_buf) into the
+         * "failed to launch or arm its sandbox" messages below — without
+         * it, a rlimit/Landlock arm failure is a bare exit code with no way
+         * to tell a resource-budget miss from a bad grant path. */
+        if (limits) {
+            struct zcl_result rr = os_sandbox_set_rlimits(limits);
+            if (!zcl_result_is_ok(rr)) {
+                fprintf(stderr, "rlimits: %s\n", rr.message);
+                _exit(PV_CHILD_SANDBOX_FAIL);
+            }
+        }
         if (!os_sandbox_no_new_privs())
             _exit(PV_CHILD_SANDBOX_FAIL);
         if (landlock) {
             struct zcl_result lr =
                 os_sandbox_landlock_restrict(rules, n_rules);
-            if (!zcl_result_is_ok(lr))
+            if (!zcl_result_is_ok(lr)) {
+                fprintf(stderr, "landlock: %s\n", lr.message);
                 _exit(PV_CHILD_SANDBOX_FAIL);
+            }
         }
         struct zcl_result sr = os_sandbox_seccomp_deny(
             g_pv_child_denied,
@@ -996,10 +1030,27 @@ int main(int argc, char **argv)
             }
             int dn = snprintf(d->install_dir, sizeof(d->install_dir), "%s",
                               spec + 65);
+            if (dn <= 0 || (size_t)dn >= sizeof(d->install_dir)) {
+                fprintf(stderr, "%s: --dep install dir too long\n", PV_LOG);
+                return 2;
+            }
+            /* Canonicalize to an ABSOLUTE path, same reason as --work above:
+             * build children chdir() into build_root before their Landlock
+             * grants (which now include every --dep install dir) are opened,
+             * so a relative --dep path resolves against the wrong cwd and
+             * the grant silently 404s (ENOENT), never against the caller's
+             * actual directory. */
+            char dep_resolved[4096]; /* realpath(3) requires >= PATH_MAX */
+            if (!realpath(d->install_dir, dep_resolved)) {
+                fprintf(stderr, "%s: cannot resolve --dep install dir %s: %s\n",
+                        PV_LOG, d->install_dir, strerror(errno));
+                return 2;
+            }
+            snprintf(d->install_dir, sizeof(d->install_dir), "%s",
+                     dep_resolved);
             int in = snprintf(d->include_dir, sizeof(d->include_dir),
                               "%s/include", d->install_dir);
-            if (dn <= 0 || (size_t)dn >= sizeof(d->install_dir) || in <= 0 ||
-                (size_t)in >= sizeof(d->include_dir)) {
+            if (in <= 0 || (size_t)in >= sizeof(d->include_dir)) {
                 fprintf(stderr, "%s: --dep install dir too long\n", PV_LOG);
                 return 2;
             }
@@ -1497,7 +1548,8 @@ int main(int argc, char **argv)
                 if (!pr.launched || pr.sandbox_fail) {
                     fprintf(stderr,
                             "%s: internal: compile child failed to launch "
-                            "or arm its sandbox\n", PV_LOG);
+                            "or arm its sandbox (%s)\n", PV_LOG,
+                            pr.stderr_buf);
                     pv_rm_rf(work);
                     vcs_package_recipe_free(&recipe);
                     vcs_package_manifest_free(&manifest);
@@ -1560,7 +1612,7 @@ int main(int argc, char **argv)
                 if (!pr.launched || pr.sandbox_fail) {
                     fprintf(stderr,
                             "%s: internal: link child failed to launch or "
-                            "arm its sandbox\n", PV_LOG);
+                            "arm its sandbox (%s)\n", PV_LOG, pr.stderr_buf);
                     pv_rm_rf(work);
                     vcs_package_recipe_free(&recipe);
                     vcs_package_manifest_free(&manifest);
