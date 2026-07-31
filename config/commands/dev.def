@@ -420,7 +420,9 @@ ZCL_COMMAND_READY_READ(
     "dev.test.plan", "dev.test", "", "Map changed files to mandatory proof groups",
     "A deterministic mapping of the given file list to mandatory proof "
     "groups, computed from static path-classification rules; no live "
-    "checkout scan is performed.", 0,
+    "checkout scan is performed. Each selected group carries the dimension "
+    "and the file that pulled it in, and the reply states per dimension "
+    "whether that dimension's answer was complete.", ZCL_COMMAND_LIST_BUDGET,
     "test,plan,impact,groups", "zcl.dev_change_input.v1",
     "zcl.dev_test_plan.v1", "files", "", "zclassic23 dev test plan --input='{\"files\":[]}'",
     ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,

@@ -62,12 +62,32 @@ static int sv_cmp(const void *a, const void *b)
     return strcmp(*(const char *const *)a, *(const char *const *)b);
 }
 
+/* An X-macro registry (`*.def`) is `#include`d exactly like a header and
+ * changes a translation unit's behavior exactly like one, but it holds no C
+ * declarations. It is admitted here as an INCLUDE-GRAPH NODE only: it gets a
+ * files row (so its content is bound into the source-tree stamp, and so a
+ * reverse-include query can name it) and it is never handed to the C scanner,
+ * so it contributes no symbols and no call edges. Before this it was outside
+ * the enumerated universe entirely, which is why editing the file CLAUDE.md
+ * tells every agent to edit — a diagnostics_dumpers_<domain>.def row — moved
+ * neither the index stamp nor any impact answer. */
+static bool ci_is_registry_name(const char *name)
+{
+    size_t n = strlen(name);
+    return n >= 4 && strcmp(name + n - 4, ".def") == 0;
+}
+
+bool ci_path_is_registry(const char *relpath)
+{
+    return relpath && relpath[0] && ci_is_registry_name(relpath);
+}
+
 static bool is_source_name(const char *name)
 {
     size_t n = strlen(name);
     if (n >= 2 && name[n - 2] == '.' && name[n - 1] == 'c') return true;
     if (n >= 2 && name[n - 2] == '.' && name[n - 1] == 'h') return true;
-    return false;
+    return ci_is_registry_name(name);
 }
 
 /* pruned directory names — never descend these */
@@ -215,8 +235,11 @@ static void source_root_init(struct sha3_256_ctx *sha)
 {
     /* v3: bumped alongside CI_SCHEMA_VERSION="cg1" (refs.enclosing) so the
      * content stamp of any pre-call-graph generation misses — the second half
-     * of the dual recompute-never-repair trigger. */
-    static const char domain[] = "zcl.codeindex.source_root.v3";
+     * of the dual recompute-never-repair trigger.
+     * v4: bumped alongside CI_SCHEMA_VERSION="rev1". The enumerated set now
+     * includes `*.def` registries, so the stamp finally moves when one is
+     * edited; a v3 stamp was computed over a strictly smaller file set. */
+    static const char domain[] = "zcl.codeindex.source_root.v4";
     sha3_256_init(sha);
     sha3_256_write(sha, (const unsigned char *)domain, sizeof(domain));
 }
@@ -441,6 +464,24 @@ static void on_sym_cb(const struct ci_symbol *sym, void *user)
     if (!ci_store_put_symbol(b->store, sym)) b->err = true;
 }
 
+/* Discarding sinks for a registry file: ci_scan_file requires both callbacks,
+ * and a registry must contribute neither a symbol nor a call edge. */
+static void ci_ignore_sym_cb(const struct ci_symbol *sym, void *user)
+{
+    (void)sym;
+    (void)user;
+}
+
+static void ci_ignore_ref_cb(const char *callee, const char *ref_file,
+                             int ref_line, const char *enclosing, void *user)
+{
+    (void)callee;
+    (void)ref_file;
+    (void)ref_line;
+    (void)enclosing;
+    (void)user;
+}
+
 static void on_ref_cb(const char *callee, const char *ref_file, int ref_line,
                       const char *enclosing, void *user)
 {
@@ -494,7 +535,14 @@ static bool build_file_cb2(const char *relpath, const struct stat *file_st,
 
     uint8_t sha[32];
     char purpose[160] = "";
-    if (!ci_scan_file(env->root, relpath, on_sym_cb, on_ref_cb, b, sha,
+    /* A registry is hashed and filed, never scanned: its `FOO(a, b)` rows are
+     * macro data, and letting the C scanner read them would mint symbols and
+     * call edges that do not exist. Include-graph node only (see
+     * ci_is_registry_name). */
+    bool registry = ci_path_is_registry(relpath);
+    if (!ci_scan_file(env->root, relpath,
+                      registry ? ci_ignore_sym_cb : on_sym_cb,
+                      registry ? ci_ignore_ref_cb : on_ref_cb, b, sha,
                       purpose)) {
         b->err = true;
         return false;

@@ -51,6 +51,14 @@ enum {
                                 * (list budget; the engine's own cap+truncated
                                 * contract, not a second layer of paging) */
     CODE_IMPACT_INC_CAP = 32,  /* direct_includes fan-out cap */
+    /* include_dependents is a DISPLAY cap over a larger true answer, which is
+     * the opposite of CODE_IMPACT_CAP above and is why the two are separate
+     * constants. The reverse-include query still runs at CODE_IMPACT_CAP, so
+     * `include_dependent_count` and `include_dimension` describe the whole
+     * answer; only the rendered array is abridged, because a hub header has
+     * hundreds of readers and this leaf's declared reply budget is 8 KB. A
+     * consumer that needs the full set asks the store, not the summary. */
+    CODE_IMPACT_INCDEP_LIST_CAP = 20,
     CODE_IMPACT_SYM_CAP = 64,  /* symbols-in-file cap when summing direct_callers */
     CODE_IMPACT_REF_CAP = 256, /* per-symbol callers cap when summing direct_callers */
     CODE_MERKLE_CHILD_CAP = 40, /* direct subtree roots rendered by code.merkle
@@ -431,6 +439,26 @@ void zcl_native_handle_code_file(const struct zcl_command_request *request,
     bool inc_trunc = ni > CODE_INC_CAP;
     if (inc_trunc) ni = CODE_INC_CAP;
 
+    /* D4: `"includes":[]` had exactly one meaning here — "this file includes
+     * nothing" — and it was WRONG for every header in the tree. The edges come
+     * from compiler depfiles keyed on the translation unit, so a header (or a
+     * .def registry) can never appear on the left of one; a file whose entire
+     * body is `#include "base/safe_alloc.h"` rendered include_count 0 with
+     * includes_truncated false, and any proof graph built on that inherited the
+     * lie. There was an honest flag for "the cap fired" and none for "the graph
+     * cannot answer" — so add one, and use the SAME word the impact closure and
+     * the result cache use for an absent graph. */
+    const char *inc_status = "complete";
+    if (inc_trunc) {
+        inc_status = "closure-truncated";
+    } else if (!codeindex_path_is_translation_unit(path)) {
+        inc_status = "not-a-translation-unit";
+    } else {
+        int64_t edges = codeindex_include_edge_count(ci);
+        if (edges == 0)
+            inc_status = "no-include-graph";
+    }
+
     (void)json_push_kv_str(&reply->data, "path", path);
     (void)json_push_kv_str(&reply->data, "group", ffound ? finfo.group : "");
     if (ffound)
@@ -471,10 +499,14 @@ void zcl_native_handle_code_file(const struct zcl_command_request *request,
     (void)json_push_kv_int(&reply->data, "include_count", ni);
     (void)json_push_kv_bool(&reply->data, "symbols_truncated", syms_trunc);
     (void)json_push_kv_bool(&reply->data, "includes_truncated", inc_trunc);
+    (void)json_push_kv_str(&reply->data, "includes_status", inc_status);
+    bool inc_complete = strcmp(inc_status, "complete") == 0;
+    (void)json_push_kv_bool(&reply->data, "includes_complete", inc_complete);
     char summary[176];
     (void)snprintf(summary, sizeof(summary),
                    "%s: %d symbol(s)%s, %d include(s)%s", path, ns,
-                   syms_trunc ? "+" : "", ni, inc_trunc ? "+" : "");
+                   syms_trunc ? "+" : "",
+                   ni, inc_complete ? "" : " (INCOMPLETE)");
     (void)json_push_kv_str(&reply->data, "summary", summary);
 
     /* The routing link: which focused test group a change to THIS file routes
@@ -1253,6 +1285,31 @@ void zcl_native_handle_code_impact(const struct zcl_command_request *request,
     (void)json_push_kv_bool(&reply->data, "truncated", truncated);
     json_free(&arr);
 
+    /* The INCLUDE dimension — the half of the blast radius the walk above
+     * structurally cannot see. `impacted_files` is a CALL-graph answer, so a
+     * macro-only header, an enum, a typedef, or an X-macro registry comes back
+     * with a blast radius of exactly itself even though every translation unit
+     * that reads it recompiles. These are the files the compiler proves read
+     * `path`, taken from its own depfiles. Reported as a separate array on
+     * purpose: unioning them into `impacted_files` would hide which graph
+     * answered, and the two have different completeness conditions. */
+    static char dependents[CODE_IMPACT_CAP][256];
+    enum codeindex_include_dim idim = CODEINDEX_INCLUDE_DIM_UNAVAILABLE;
+    int nd = codeindex_reverse_includes(ci, path, dependents, CODE_IMPACT_CAP,
+                                        &idim);
+    if (nd < 0) nd = 0;
+    int nd_listed = nd < CODE_IMPACT_INCDEP_LIST_CAP
+                        ? nd : CODE_IMPACT_INCDEP_LIST_CAP;
+    struct json_value darr;
+    json_init(&darr); json_set_array(&darr);
+    for (int i = 0; i < nd_listed; i++) code_push_line(&darr, dependents[i]);
+    (void)json_push_kv(&reply->data, "include_dependents", &darr);
+    (void)json_push_kv_int(&reply->data, "include_dependents_listed", nd_listed);
+    (void)json_push_kv_int(&reply->data, "include_dependent_count", nd);
+    (void)json_push_kv_str(&reply->data, "include_dimension",
+                           codeindex_include_dim_label(idim));
+    json_free(&darr);
+
     /* direct_includes: this file's own forward in-tree #include fan-out
      * (codeindex_includes_of_file) — a quick depth-1 number, not the closure. */
     static char incs[CODE_IMPACT_INC_CAP][256];
@@ -1285,9 +1342,12 @@ void zcl_native_handle_code_impact(const struct zcl_command_request *request,
 
     char summary[256];
     (void)snprintf(summary, sizeof(summary),
-                   "%s: %d impacted file(s)%s, %d direct include(s), %d "
-                   "direct caller(s), routes to `%s`%s",
-                   path, n, truncated ? " (capped; more exist)" : "", ninc,
+                   "%s: %d impacted file(s)%s via calls, %d via includes (%s%s), "
+                   "%d direct include(s), %d direct caller(s), routes to "
+                   "`%s`%s",
+                   path, n, truncated ? " (capped; more exist)" : "",
+                   nd, codeindex_include_dim_label(idim),
+                   nd_listed < nd ? "; list abridged" : "", ninc,
                    direct_callers, route,
                    crisk ? " (consensus surface)" : "");
     (void)json_push_kv_str(&reply->data, "summary", summary);
