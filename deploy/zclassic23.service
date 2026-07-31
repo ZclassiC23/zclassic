@@ -149,7 +149,7 @@ MemoryHigh=6G
 # the datadir; nothing else.
 NoNewPrivileges=yes
 ProtectSystem=strict
-ReadWritePaths=%h/.zclassic-c23 %h/zclassic23/vendor/tor/etc
+ReadWritePaths=%h/.zclassic-c23 -%h/zclassic23/vendor/tor/etc
 
 # PrivateTmp=yes gives the unit a unit-private /tmp — safer than
 # sharing /tmp with other services. Tor currently does not use /tmp for

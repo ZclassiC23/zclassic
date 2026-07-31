@@ -84,8 +84,9 @@ static int c_seccomp_exec(void)
     struct zcl_result r = os_sandbox_seccomp_deny(d, n, true);
     if (!r.ok) return 71;
     /* Prove normal glibc work still runs under the filter (default ALLOW). */
-    volatile int sum = 0;
+    volatile uint64_t sum = 0;
     for (int i = 0; i < 100000; i++) sum += i;
+    if (sum == 0) return 73;
     char *p = (char *)malloc(4096);
     if (!p) return 72;
     memset(p, 0x42, 4096);

@@ -257,7 +257,7 @@ static bool ibr_build_fixture(const char *src_dir,
 /* Assert every fixture row (hash/prev_hash/merkle_root/time/bits) landed in
  * the target blocks table unchanged, regardless of header_only mode — those
  * fields are never touched by the header_only branch. */
-static void ibr_check_header_fields(int *failures, struct node_db *ndb,
+static void ibr_check_header_fields(int *failure_count, struct node_db *ndb,
                                     const struct ibr_block_fixture *fx, int n)
 {
     bool all_match = true;
@@ -276,8 +276,15 @@ static void ibr_check_header_fields(int *failures, struct node_db *ndb,
             all_match = false;
         }
     }
-    IBR_CHECK("header fields (hash/prev_hash/merkle_root/time/bits) match "
-              "the source for every height", all_match);
+    printf("importblockindex_roundtrip: header fields "
+           "(hash/prev_hash/merkle_root/time/bits) match the source for every "
+           "height... ");
+    if (all_match)
+        printf("OK\n");
+    else {
+        printf("FAIL\n");
+        (*failure_count)++;
+    }
 }
 
 int test_importblockindex_roundtrip(void)

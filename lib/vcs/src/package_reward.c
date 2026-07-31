@@ -63,7 +63,7 @@ static const uint8_t k_domain_claim[] = "zcl.zcode_reward_claim_facts.v1";
 const uint8_t *vcs_reward_placeholder_token_id(void)
 {
     /* Exactly 32 bytes: "zcode-placeholder-token-v1-sim!!". */
-    static const uint8_t id[32] = VCS_REWARD_PLACEHOLDER_TOKEN_ID_TEXT;
+    static const uint8_t id[33] = VCS_REWARD_PLACEHOLDER_TOKEN_ID_TEXT;
     return id;
 }
 

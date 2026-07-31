@@ -122,7 +122,7 @@ static void expand_cpu_list(const char *list, int *out, int cap, int *count)
 {
     const char *p = list;
     while (p && *p) {
-        char *comma = strchr(p, ',');
+        const char *comma = strchr(p, ',');
         size_t tok_len = comma ? (size_t)(comma - p) : strlen(p);
         char tok[32];
         if (tok_len >= sizeof(tok)) tok_len = sizeof(tok) - 1;

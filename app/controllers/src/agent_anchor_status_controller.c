@@ -302,12 +302,11 @@ static bool anchor_utxo_probe_build(sqlite3 *db,
         out, utxo->cursor_present, proof->cursor_present);
     out->history_diagnosis = anchor_history_diagnosis(out);
     out->previous_row_missing_below_coin_frontier =
-        strcmp(out->history_diagnosis,
-               "utxo_apply_prior_log_missing_below_coin_frontier") == 0;
+        out->previous_row_expected && out->utxo_previous.table_present &&
+        !out->utxo_previous.row_present;
     out->previous_delta_missing_below_coin_frontier =
-        strcmp(out->history_diagnosis,
-               "utxo_apply_prior_delta_missing_below_coin_frontier") == 0 ||
-        (out->delta_previous.table_present && !out->delta_previous.row_present);
+        out->delta_previous.table_present &&
+        !out->delta_previous.row_present;
     out->next_action = anchor_probe_next_action(out, fold_recently_active);
     return true;
 }

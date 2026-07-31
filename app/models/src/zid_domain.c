@@ -416,6 +416,7 @@ bool zid_domain_dump_state_json(struct json_value *out, const char *key)
         json_push_kv_str(out, "domain_name", key);
         if (found) {
             struct json_value obj;
+            json_init(&obj);
             zd_push_domain(&obj, &d);
             json_push_kv_int(&obj, "stored_leaf_rows",
                              zid_domain_leaf_count(ndb, key));
@@ -429,9 +430,11 @@ bool zid_domain_dump_state_json(struct json_value *out, const char *key)
     struct zid_domain rows[16];
     int n = zid_domain_list(ndb, rows, 16);
     struct json_value arr;
+    json_init(&arr);
     json_set_array(&arr);
     for (int i = 0; i < n; i++) {
         struct json_value obj;
+        json_init(&obj);
         zd_push_domain(&obj, &rows[i]);
         json_push_back(&arr, &obj);
         json_free(&obj);
