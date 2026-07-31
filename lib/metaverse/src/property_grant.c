@@ -13,23 +13,9 @@
 
 #define GRANT_LOG "metaverse.grant"
 
-/* Index IS the enum value; reordering the enum breaks this table's meaning,
- * which is exactly why the header forbids reordering. */
-static const char *const k_action_tokens[METAVERSE_ACTION_COUNT] = {
-    "inspect",
-    "host",
-    "publish-revision",
-    "update-pointer",
-    "list",
-    "buy",
-    "sell",
-    "deliver",
-    "lease",
-    "transfer",
-    "accept-payment",
-    "delegate",
-    "revoke",
-};
+/* The action token table that used to live here — thirteen names indexed by a
+ * bit POSITION — was the second half of the duplication this file no longer
+ * carries. Names come from metaverse/property_action.h's one table now. */
 
 static const char *const k_verdict_tokens[METAVERSE_GRANT_VERDICT_COUNT] = {
     "OK",
@@ -52,110 +38,10 @@ static const char *const k_verdict_tokens[METAVERSE_GRANT_VERDICT_COUNT] = {
     "DELEGATION_DEPTH_EXCEEDED",
 };
 
-const char *metaverse_action_token(enum metaverse_action a)
-{
-    if (a < 0 || a >= METAVERSE_ACTION_COUNT) return "unknown";
-    return k_action_tokens[a];
-}
-
 const char *metaverse_grant_verdict_token(enum metaverse_grant_verdict v)
 {
     if (v < 0 || v >= METAVERSE_GRANT_VERDICT_COUNT) return "UNKNOWN_VERDICT";
     return k_verdict_tokens[v];
-}
-
-/* Token comparison that treats '-' and '_' as the same separator, so a JSON
- * key and a CLI token name the same right. */
-static bool action_token_eq(const char *a, const char *b)
-{
-    size_t i = 0;
-    for (;; i++) {
-        char ca = a[i], cb = b[i];
-        if (ca == '_') ca = '-';
-        if (cb == '_') cb = '-';
-        if (ca != cb) return false;
-        if (ca == '\0') return true;
-    }
-}
-
-bool metaverse_action_parse(const char *token, enum metaverse_action *out)
-{
-    if (!token || !out || token[0] == '\0')
-        LOG_FAIL(GRANT_LOG, "action parse: NULL/empty token or output");
-    for (int i = 0; i < METAVERSE_ACTION_COUNT; i++) {
-        if (action_token_eq(token, k_action_tokens[i])) {
-            *out = (enum metaverse_action)i;
-            return true;
-        }
-    }
-    LOG_FAIL(GRANT_LOG, "action parse: unknown action '%.32s'", token);
-}
-
-bool metaverse_action_set_parse(const char *csv, metaverse_action_set *out)
-{
-    if (!out)
-        LOG_FAIL(GRANT_LOG, "action set parse: NULL output");
-    *out = 0u;
-    if (!csv || csv[0] == '\0')
-        return true;  /* the empty set: well-formed, authorizes nothing */
-
-    const char *p = csv;
-    char tok[40];
-    while (*p) {
-        while (*p == ' ' || *p == ',') p++;
-        if (!*p) break;
-        size_t n = 0;
-        while (*p && *p != ',' && *p != ' ') {
-            if (n + 1 >= sizeof(tok))
-                LOG_FAIL(GRANT_LOG, "action set parse: element too long");
-            tok[n++] = *p++;
-        }
-        tok[n] = '\0';
-        enum metaverse_action a;
-        if (!metaverse_action_parse(tok, &a))
-            LOG_FAIL(GRANT_LOG, "action set parse: rejected element '%s'", tok);
-        *out |= metaverse_action_bit(a);
-    }
-    return true;
-}
-
-bool metaverse_action_set_render(metaverse_action_set set,
-                                char *out, size_t out_cap)
-{
-    if (!out || out_cap == 0)
-        LOG_FAIL(GRANT_LOG, "action set render: no output buffer");
-    out[0] = '\0';
-    size_t used = 0;
-    for (int i = 0; i < METAVERSE_ACTION_COUNT; i++) {
-        if (!(set & metaverse_action_bit((enum metaverse_action)i))) continue;
-        const char *t = k_action_tokens[i];
-        size_t tlen = strlen(t);
-        size_t need = tlen + (used ? 1u : 0u) + 1u;
-        if (used + need > out_cap) {
-            out[0] = '\0';
-            LOG_FAIL(GRANT_LOG, "action set render: buffer %zu too small",
-                     out_cap);
-        }
-        if (used) out[used++] = ',';
-        memcpy(out + used, t, tlen);
-        used += tlen;
-        out[used] = '\0';
-    }
-    return true;
-}
-
-bool metaverse_action_moves_value(enum metaverse_action a)
-{
-    switch (a) {
-    case METAVERSE_ACTION_BUY:
-    case METAVERSE_ACTION_SELL:
-    case METAVERSE_ACTION_LEASE:
-    case METAVERSE_ACTION_TRANSFER:
-    case METAVERSE_ACTION_ACCEPT_PAYMENT:
-        return true;
-    default:
-        return false;
-    }
 }
 
 /* ── Well-formedness ────────────────────────────────────────────────────── */
@@ -186,6 +72,12 @@ bool metaverse_grant_well_formed(const struct metaverse_grant *g)
     } else {
         return false;
     }
+
+    /* Neither right set may carry a bit that names nothing. A grant holding
+     * an unnameable bit is not "a grant with a future right"; it is a grant
+     * nobody can audit, and the reserved bit 0x1 (once INSPECT) lands here. */
+    if (!metaverse_action_mask_valid(g->actions)) return false;
+    if (!metaverse_query_mask_valid(g->queries)) return false;
 
     if (g->max_value_zat < 0 || g->spent_zat < 0) return false;
     if (g->spent_zat > g->max_value_zat) return false;
@@ -271,9 +163,15 @@ enum metaverse_grant_verdict metaverse_grant_check(
 {
     if (!g || !req) return METAVERSE_GRANT_BAD_ARGS;
     if (!metaverse_grant_well_formed(g)) return METAVERSE_GRANT_MALFORMED;
-    if (req->action < 0 || req->action >= METAVERSE_ACTION_COUNT)
+    if (!metaverse_action_valid(req->action))
         return METAVERSE_GRANT_BAD_ARGS;
-    if (!metaverse_property_id_valid(&req->property))
+
+    /* An absent property is legal ONLY for an action whose row says so
+     * (REVOKE names a grant, not a property). For every other action a
+     * missing id is a malformed request, never a wildcard. */
+    bool named_property = metaverse_property_id_valid(&req->property);
+    if (!named_property &&
+        !metaverse_action_allows_zero_property_id(req->action))
         return METAVERSE_GRANT_BAD_ARGS;
 
     /* Revocation and expiry first: a dead grant must not leak scope. */
@@ -292,24 +190,75 @@ enum metaverse_grant_verdict metaverse_grant_check(
     if (!(g->actions & metaverse_action_bit(req->action)))
         return METAVERSE_GRANT_ACTION_NOT_GRANTED;
 
-    if (!metaverse_grant_in_scope(g, &req->property)) {
+    if (named_property && !metaverse_grant_in_scope(g, &req->property)) {
         return g->scope_form == METAVERSE_SCOPE_KINDS
                    ? METAVERSE_GRANT_KIND_OUT_OF_SCOPE
                    : METAVERSE_GRANT_PROPERTY_OUT_OF_SCOPE;
     }
 
-    if (!counterparty_allowed(g, req->counterparty))
+    /* Only the actions whose row names a counterparty are held to the
+     * allowlist. Applying it to the rest would make an operator who narrowed
+     * WHO they trade with also unable to HOST their own property. */
+    if (metaverse_action_uses_counterparty(req->action) &&
+        !counterparty_allowed(g, req->counterparty))
         return METAVERSE_GRANT_COUNTERPARTY_NOT_ALLOWED;
 
+    /* Columns 8 and 9 are asked separately. An action may legitimately NAME a
+     * value it does not MOVE (LIST_FOR_SALE quotes an asking price), and
+     * charging that against the cumulative ceiling would bill the operator
+     * for an advertisement. */
     if (req->value_zat < 0) return METAVERSE_GRANT_VALUE_NEGATIVE;
-    if (req->value_zat > 0 && !metaverse_action_moves_value(req->action))
+    if (req->value_zat > 0 && !metaverse_action_accepts_value(req->action))
         return METAVERSE_GRANT_VALUE_ON_FREE_ACTION;
-    if (req->value_zat > metaverse_grant_budget_remaining(g))
+    if (metaverse_action_moves_value(req->action) &&
+        req->value_zat > metaverse_grant_budget_remaining(g))
         return METAVERSE_GRANT_BUDGET_EXCEEDED;
 
     if (metaverse_grant_rate_remaining(g, req->now_unix) == 0)
         return METAVERSE_GRANT_RATE_LIMITED;
 
+    return METAVERSE_GRANT_OK;
+}
+
+enum metaverse_grant_verdict metaverse_grant_query_check(
+    const struct metaverse_grant *g,
+    const struct metaverse_grant *const *ancestors, size_t ancestor_count,
+    const struct metaverse_query_request *req)
+{
+    if (!g || !req) return METAVERSE_GRANT_BAD_ARGS;
+    if (!metaverse_grant_well_formed(g)) return METAVERSE_GRANT_MALFORMED;
+    if (!metaverse_query_valid(req->query))
+        return METAVERSE_GRANT_BAD_ARGS;
+
+    bool named_property = metaverse_property_id_valid(&req->property);
+    if (!named_property &&
+        !metaverse_query_allows_zero_property_id(req->query))
+        return METAVERSE_GRANT_BAD_ARGS;
+
+    enum metaverse_grant_verdict lv =
+        lineage_verdict(g, ancestors, ancestor_count);
+    if (lv != METAVERSE_GRANT_OK) return lv;
+
+    if (g->expires_height > 0 && req->height >= g->expires_height)
+        return METAVERSE_GRANT_EXPIRED_HEIGHT;
+    if (g->expires_unix > 0 && req->now_unix >= g->expires_unix)
+        return METAVERSE_GRANT_EXPIRED_TIME;
+
+    if (req->actor[0] == '\0' || strcmp(req->actor, g->holder) != 0)
+        return METAVERSE_GRANT_WRONG_HOLDER;
+
+    if (!(g->queries & metaverse_query_bit(req->query)))
+        return METAVERSE_GRANT_ACTION_NOT_GRANTED;
+
+    if (named_property && !metaverse_grant_in_scope(g, &req->property)) {
+        return g->scope_form == METAVERSE_SCOPE_KINDS
+                   ? METAVERSE_GRANT_KIND_OUT_OF_SCOPE
+                   : METAVERSE_GRANT_PROPERTY_OUT_OF_SCOPE;
+    }
+
+    /* No value, no counterparty, no rate window. A read consumes none of the
+     * three, and spending an action budget on a look would make an agent's
+     * ability to act depend on how often it checked. */
     return METAVERSE_GRANT_OK;
 }
 
@@ -344,6 +293,11 @@ enum metaverse_grant_verdict metaverse_grant_check_delegation(
 
     /* ATTENUATION. A child may only ever be narrower than its parent. */
     if (child->actions & ~g->actions)
+        return METAVERSE_GRANT_ACTION_NOT_GRANTED;
+    /* Reads attenuate exactly like writes: a child that could look at more
+     * than its parent is a widening, and a widening by delegation is how a
+     * bounded grant becomes an unbounded one. */
+    if (child->queries & ~g->queries)
         return METAVERSE_GRANT_ACTION_NOT_GRANTED;
     if (child->max_value_zat > metaverse_grant_budget_remaining(g))
         return METAVERSE_GRANT_BUDGET_EXCEEDED;
@@ -386,10 +340,16 @@ bool metaverse_grant_record_commit(struct metaverse_grant *g,
 {
     if (!g || !req)
         LOG_FAIL(GRANT_LOG, "record commit: NULL grant or request");
+    if (!metaverse_action_valid(req->action))
+        LOG_FAIL(GRANT_LOG, "record commit: request names no action");
     if (req->value_zat < 0)
         LOG_FAIL(GRANT_LOG, "record commit: negative value %lld",
                  (long long)req->value_zat);
-    if (req->value_zat > metaverse_grant_budget_remaining(g))
+    /* Only a value that actually MOVES is charged. A quoted asking price is
+     * not exposure and must not consume the operator's ceiling. */
+    int64_t charge =
+        metaverse_action_moves_value(req->action) ? req->value_zat : 0;
+    if (charge > metaverse_grant_budget_remaining(g))
         LOG_FAIL(GRANT_LOG,
                  "record commit: value %lld over remaining budget %lld "
                  "(grant %s)",
@@ -407,6 +367,6 @@ bool metaverse_grant_record_commit(struct metaverse_grant *g,
         g->window_used++;
     }
 
-    g->spent_zat += req->value_zat;
+    g->spent_zat += charge;
     return true;
 }

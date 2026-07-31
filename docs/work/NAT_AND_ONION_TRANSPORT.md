@@ -31,7 +31,7 @@ signaling channel that is guaranteed to exist.
 - ZNAM `ZNAM_TYPE_ONION` records — a human name can point at an onion;
   `ZNAM_TYPE_CONTENT` fits package roots. Names are pointers, never trust.
 - Noise XX/NK handshake + v2 encrypted transport
-  (`lib/session/src/noise_handshake.c`, `lib/net/src/v2_transport.c`),
+  (`lib/noise/src/noise_handshake.c`, `lib/net/src/v2_transport.c`),
   armed as initiator, default OFF pending rollout.
 - P2P ping wire type (game framework Type 0) — per-peer RTT measurement in
   microseconds (`core network peers latency`), exactly the signal transport

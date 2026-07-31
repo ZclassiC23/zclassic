@@ -21,8 +21,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "session/noise_handshake.h"
-#include "session/session_transport.h"
+#include "noise/noise_handshake.h"
+#include "noise/session_transport.h"
 #include "util/sync.h"
 
 /* Handshake / lifecycle state of one transport. */

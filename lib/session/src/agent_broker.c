@@ -48,6 +48,8 @@
 
 #include "session/agent_broker.h"
 
+#include "session/agent_broker_vocab.h"
+
 #include "base/hex.h"
 #include "base/log_macros.h"
 #include "crypto/sha3.h"
@@ -251,117 +253,18 @@ bool agent_broker_peer_authorized(const struct agent_peer_cred *c,
     return true;
 }
 
-/* ── the fixture property catalog (Lane 1 reconciliation seam) ──────────── */
+/* ── the real property surface (registered by the composition root) ─────── */
 
-struct fixture_state {
-    uint64_t revision[AGENT_BROKER_FIXTURE_PROPERTIES];
-    bool     listed[AGENT_BROKER_FIXTURE_PROPERTIES];
-    bool     hosted[AGENT_BROKER_FIXTURE_PROPERTIES];
-};
-static struct fixture_state g_fixture;
+static const struct agent_broker_provider *g_provider;
 
-void agent_broker_fixture_property_id(size_t index,
-                                      uint8_t out[MVAP_PROPERTY_ID_LEN])
+void agent_broker_provider_install(const struct agent_broker_provider *p)
 {
-    if (!out)
-        return;
-    struct sha3_256_ctx c;
-    sha3_256_init(&c);
-    sha3_256_write(&c, (const unsigned char *)"zcl.agent_fixture.property", 26);
-    unsigned char i8 = (unsigned char)index;
-    sha3_256_write(&c, &i8, 1);
-    sha3_256_finalize(&c, out);
+    g_provider = p;
 }
 
-static int fixture_index_of(const uint8_t id[MVAP_PROPERTY_ID_LEN])
+const struct agent_broker_provider *agent_broker_provider_get(void)
 {
-    for (size_t i = 0; i < AGENT_BROKER_FIXTURE_PROPERTIES; i++) {
-        uint8_t want[MVAP_PROPERTY_ID_LEN];
-        agent_broker_fixture_property_id(i, want);
-        if (memcmp(want, id, MVAP_PROPERTY_ID_LEN) == 0)
-            return (int)i;
-    }
-    return -1;
-}
-
-static bool fixture_plan(void *ctx, const struct mvap_request *req,
-                         struct agent_plan *out)
-{
-    (void)ctx;
-    if (!req || !out)
-        LOG_FAIL(BROKER_TAG, "null argument in fixture plan");
-    memset(out, 0, sizeof(*out));
-
-    if (req->verb == MVAP_VERB_LIST) {
-        out->found = true;
-        out->kind  = req->kind;
-        snprintf(out->detail, sizeof(out->detail), "catalog=fixture count=%d",
-                 AGENT_BROKER_FIXTURE_PROPERTIES);
-        return true;
-    }
-    int idx = fixture_index_of(req->property_id);
-    if (idx < 0) {
-        snprintf(out->detail, sizeof(out->detail),
-                 "no property with that id in the fixture catalog");
-        return true;                          /* resolved: not found */
-    }
-    out->found         = true;
-    out->kind          = (uint16_t)(idx == 1 ? MVAP_KIND_ZCODE
-                                             : MVAP_KIND_CONTENT);
-    out->revision      = g_fixture.revision[idx];
-    out->owner_matches = true;
-    agent_broker_fixture_property_id((size_t)idx, out->content_root);
-    snprintf(out->detail, sizeof(out->detail), "fixture index=%d revision=%llu",
-             idx, (unsigned long long)out->revision);
-    return true;
-}
-
-static bool fixture_commit(void *ctx, const struct mvap_request *req,
-                           const struct agent_plan *plan, char *body,
-                           size_t body_cap)
-{
-    (void)ctx;
-    if (!req || !plan || !body)
-        LOG_FAIL(BROKER_TAG, "null argument in fixture commit");
-    int idx = fixture_index_of(req->property_id);
-    if (idx < 0)
-        LOG_FAIL(BROKER_TAG, "commit for a property absent from the fixture");
-
-    /* The commit-time recheck the owner's spec requires: if the revision moved
-     * between PLAN and COMMIT the caller planned against a stale view. */
-    if (g_fixture.revision[idx] != plan->revision)
-        LOG_FAIL(BROKER_TAG, "revision moved %llu -> %llu between plan and commit",
-                 (unsigned long long)plan->revision,
-                 (unsigned long long)g_fixture.revision[idx]);
-
-    switch (req->verb) {
-    case MVAP_VERB_HOST:             g_fixture.hosted[idx] = true;  break;
-    case MVAP_VERB_LIST:                                            break;
-    case MVAP_VERB_SELL:             g_fixture.listed[idx] = true;  break;
-    case MVAP_VERB_PUBLISH_REVISION:
-    case MVAP_VERB_UPDATE_POINTER:   g_fixture.revision[idx]++;     break;
-    default:                                                        break;
-    }
-
-    char root[65];
-    zcl_hex_encode(plan->content_root, 32, root);
-
-    int n = snprintf(body, body_cap,
-        "{\"kind\":\"%s\",\"revision\":%llu,\"content_root\":\"%s\","
-        "\"hosted\":%s,\"listed\":%s}",
-        mvap_kind_name(plan->kind),
-        (unsigned long long)g_fixture.revision[idx], root,
-        g_fixture.hosted[idx] ? "true" : "false",
-        g_fixture.listed[idx] ? "true" : "false");
-    if (n < 0 || (size_t)n >= body_cap)
-        LOG_FAIL(BROKER_TAG, "commit body does not fit %zu bytes", body_cap);
-    return true;
-}
-
-struct agent_broker_node_ops agent_broker_fixture_ops(void)
-{
-    return (struct agent_broker_node_ops){
-        .plan = fixture_plan, .commit = fixture_commit, .ctx = NULL };
+    return g_provider;
 }
 
 /* ── the request pipeline ───────────────────────────────────────────────── */
@@ -372,6 +275,8 @@ static void resp_init(struct mvap_response *r, const struct mvap_request *req,
     memset(r, 0, sizeof(*r));
     r->verb       = req ? req->verb : MVAP_VERB_NONE;
     r->request_id = req ? req->request_id : 0;
+    /* Reply in the dialect the peer spoke, not the one this build prefers. */
+    r->version    = req ? req->version : 0;
     r->status     = status;
 }
 
@@ -409,9 +314,15 @@ static void idem_store(struct agent_broker_session *s, uint32_t request_id,
     s->idem[slot].resp       = *resp;
 }
 
+/* One confinement receipt. `action_receipt_id` is the canonical metaverse
+ * action receipt this row COMMITS TO — passed in from the COMMIT outcome, all
+ * zero when the operation minted none (a refusal, or a query, which never
+ * reaches here at all). It is inside the row's digest, so a confinement row
+ * cannot later be pointed at a different action. */
 static void broker_receipt(struct agent_broker_session *s,
                            const struct mvap_request *req,
-                           struct mvap_response *resp, const char *detail)
+                           struct mvap_response *resp, const char *detail,
+                           const uint8_t action_receipt_id[32])
 {
     if (!s->audit || !s->audit->open)
         return;
@@ -421,6 +332,8 @@ static void broker_receipt(struct agent_broker_session *s,
     r.status     = resp->status;
     r.value_zats = req->value_zats;
     memcpy(r.property_id, req->property_id, MVAP_PROPERTY_ID_LEN);
+    if (action_receipt_id)
+        memcpy(r.action_receipt_id, action_receipt_id, 32);
     snprintf(r.principal, sizeof(r.principal), "%s", s->grant.principal);
     snprintf(r.grant_id, sizeof(r.grant_id), "%s", s->grant.grant_id);
     r.peer = s->peer;
@@ -449,25 +362,42 @@ void agent_broker_handle(struct agent_broker_session *s,
     int64_t now = clock_now_wall_ms();
     resp_init(out, req, MVAP_OK);
 
-    /* 1. Grant scope, on what the agent CLAIMED. */
+    /* Queries and actions are two different pipelines from here on. A QUERY
+     * resolves and answers; it can reach neither PLAN/COMMIT nor a receipt,
+     * because those calls are not on its path at all. */
+    const bool is_action = mvap_verb_is_action(req->verb);
+    if (!is_action && !mvap_verb_is_query(req->verb)) {
+        resp_init(out, req, MVAP_ERR_UNKNOWN_VERB);
+        resp_body(out, "{\"denied\":\"UNKNOWN_VERB\"}");
+        s->requests_denied++;
+        idem_store(s, req->request_id, out);
+        return;
+    }
+
+    /* 1. Authorization, on what the agent CLAIMED. The verdict is the
+     *    metaverse's; agent_grant_authorize() translates and narrows. */
     int32_t verdict = agent_grant_authorize(&s->grant, req, now);
     if (verdict != MVAP_OK) {
         resp_init(out, req, verdict);
         resp_body(out, "{\"denied\":\"%s\",\"stage\":\"authorize\"}",
                   mvap_status_name(verdict));
         s->requests_denied++;
-        broker_receipt(s, req, out, "denied at pre-plan authorize");
+        broker_receipt(s, req, out, "denied at pre-plan authorize", NULL);
         idem_store(s, req->request_id, out);
         return;
     }
 
-    /* 2. PLAN — resolve the property through the node seam. */
+    /* 2. Resolve the property through the node seam — `query` for a query,
+     *    `plan` for an action. */
     struct agent_plan plan;
-    if (!s->ops.plan || !s->ops.plan(s->ops.ctx, req, &plan)) {
+    bool (*resolve)(void *, const struct mvap_request *, struct agent_plan *) =
+        is_action ? s->ops.plan
+                  : (s->ops.query ? s->ops.query : s->ops.plan);
+    if (!resolve || !resolve(s->ops.ctx, req, &plan)) {
         resp_init(out, req, MVAP_ERR_PLAN_FAILED);
         resp_body(out, "{\"denied\":\"PLAN_FAILED\"}");
         s->requests_denied++;
-        broker_receipt(s, req, out, "plan refused");
+        broker_receipt(s, req, out, "plan refused", NULL);
         idem_store(s, req->request_id, out);
         return;
     }
@@ -481,8 +411,10 @@ void agent_broker_handle(struct agent_broker_session *s,
     }
 
     /* 3. Re-authorize against the CATALOG's kind, not the agent's claim. A
-     *    request that understated its kind to slip past the mask dies here. */
-    if (req->verb != MVAP_VERB_LIST) {
+     *    request that understated its kind to slip past the mask dies here.
+     *    Skipped only when the request named no property at all, where there
+     *    is no catalog kind to disagree with. */
+    if (!mvap_property_id_is_zero(req->property_id)) {
         struct mvap_request authoritative = *req;
         authoritative.kind = plan.kind;
         verdict = agent_grant_authorize(&s->grant, &authoritative, now);
@@ -492,14 +424,16 @@ void agent_broker_handle(struct agent_broker_session *s,
                            "\"actual_kind\":\"%s\"}",
                       mvap_status_name(verdict), mvap_kind_name(plan.kind));
             s->requests_denied++;
-            broker_receipt(s, req, out, "denied at post-plan kind recheck");
+            broker_receipt(s, req, out, "denied at post-plan kind recheck",
+                           NULL);
             idem_store(s, req->request_id, out);
             return;
         }
     }
 
-    /* 4. Reads answer from the plan; they mutate nothing and mint no receipt. */
-    if (!mvap_verb_is_mutation(req->verb)) {
+    /* 4. A query answers from what it resolved. It mutates nothing, debits
+     *    nothing, and mints no receipt — on either side. */
+    if (!is_action) {
         resp_init(out, req, MVAP_OK);
         resp_body(out,
                   "{\"kind\":\"%s\",\"revision\":%llu,\"owner_matches\":%s,"
@@ -512,30 +446,41 @@ void agent_broker_handle(struct agent_broker_session *s,
     }
 
     /* 5. COMMIT — rechecks ownership and revision inside the seam. */
-    char body[MVAP_BODY_MAX + 1] = { 0 };
+    struct agent_commit_outcome outcome;
+    memset(&outcome, 0, sizeof(outcome));
     if (!plan.owner_matches) {
         resp_init(out, req, MVAP_ERR_DENIED_PROPERTY);
         resp_body(out, "{\"denied\":\"DENIED_PROPERTY\",\"stage\":\"commit\","
                        "\"detail\":\"controller is not the grant principal\"}");
         s->requests_denied++;
-        broker_receipt(s, req, out, "commit refused: owner mismatch");
+        broker_receipt(s, req, out, "commit refused: owner mismatch", NULL);
         idem_store(s, req->request_id, out);
         return;
     }
     if (!s->ops.commit ||
-        !s->ops.commit(s->ops.ctx, req, &plan, body, sizeof(body))) {
+        !s->ops.commit(s->ops.ctx, req, &plan, &outcome)) {
         resp_init(out, req, MVAP_ERR_COMMIT_FAILED);
         resp_body(out, "{\"denied\":\"COMMIT_FAILED\"}");
         s->requests_denied++;
-        broker_receipt(s, req, out, "commit refused by the node seam");
+        broker_receipt(s, req, out, "commit refused by the node seam", NULL);
         idem_store(s, req->request_id, out);
         return;
     }
 
     agent_grant_commit_debit(&s->grant, req, now);
     resp_init(out, req, MVAP_OK);
-    resp_body(out, "%s", body);
-    broker_receipt(s, req, out, plan.detail);
+    resp_body(out, "%s", outcome.body);
+    /* The confinement envelope commits to the canonical action receipt rather
+     * than restating what the action was. */
+    char detail[AGENT_RECEIPT_DETAIL_MAX + 1];
+    char action_hex[65];
+    zcl_hex_encode(outcome.action_receipt_id, 32, action_hex);
+    bool have_action_receipt = false;
+    for (size_t i = 0; i < 32; i++)
+        have_action_receipt |= outcome.action_receipt_id[i] != 0;
+    snprintf(detail, sizeof(detail), "%s action_receipt=%s", plan.detail,
+             have_action_receipt ? action_hex : "none");
+    broker_receipt(s, req, out, detail, outcome.action_receipt_id);
     idem_store(s, req->request_id, out);
 }
 
@@ -601,7 +546,7 @@ int agent_broker_serve_fd(struct agent_broker_session *s, int fd,
         resp_body(&resp, "{\"denied\":\"DENIED_PEER_IDENTITY\",\"why\":\"%s\"}",
                   why);
         s->requests_denied++;
-        broker_receipt(s, &empty, &resp, why);
+        broker_receipt(s, &empty, &resp, why, NULL);
         uint8_t out[MVAP_FRAME_PREFIX + MVAP_MAX_FRAME];
         size_t n = mvap_response_encode(&resp, out, sizeof(out));
         if (n)

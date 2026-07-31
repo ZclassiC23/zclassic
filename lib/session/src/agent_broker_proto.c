@@ -52,10 +52,14 @@ bool mvap_property_id_is_zero(const uint8_t id[MVAP_PROPERTY_ID_LEN])
 
 /* ── names ──────────────────────────────────────────────────────────────── */
 
+/* Indexed by wire value, pasted straight from MVAP_VERB_TABLE so a verb can
+ * never be added to the wire without a name (or named without existing). A
+ * value the table does not define stays NULL and renders as "unknown". */
 static const char *const k_verb_names[MVAP_VERB__COUNT] = {
-    "NONE", "INSPECT", "LIST", "HOST", "PUBLISH_REVISION", "UPDATE_POINTER",
-    "SELL", "BUY", "DELIVER", "LEASE", "TRANSFER", "ACCEPT_PAYMENT",
-    "DELEGATE", "REVOKE",
+    [MVAP_VERB_NONE] = "NONE",
+#define MVAP_VERB_NAME(id_, value_, since_) [value_] = #id_,
+    MVAP_VERB_TABLE(MVAP_VERB_NAME)
+#undef MVAP_VERB_NAME
 };
 
 static const char *const k_kind_names[MVAP_KIND__COUNT] = {
@@ -65,7 +69,7 @@ static const char *const k_kind_names[MVAP_KIND__COUNT] = {
 
 const char *mvap_verb_name(uint32_t verb)
 {
-    if (verb >= MVAP_VERB__COUNT)
+    if (verb >= MVAP_VERB__COUNT || !k_verb_names[verb])
         return "unknown";
     return k_verb_names[verb];
 }
@@ -97,7 +101,7 @@ uint32_t mvap_verb_from_name(const char *name)
     if (!name)
         return MVAP_VERB_NONE;
     for (uint32_t i = 1; i < MVAP_VERB__COUNT; i++)
-        if (ieq(name, k_verb_names[i]))
+        if (k_verb_names[i] && ieq(name, k_verb_names[i]))
             return i;
     return MVAP_VERB_NONE;
 }
@@ -110,6 +114,24 @@ uint16_t mvap_kind_from_name(const char *name)
         if (ieq(name, k_kind_names[i]))
             return i;
     return MVAP_KIND_ANY;
+}
+
+/* Indexed by wire value; 0 means "no such verb". Pasted from the same table as
+ * the enum and the names, so the three cannot disagree. */
+static const uint32_t k_verb_since[MVAP_VERB__COUNT] = {
+#define MVAP_VERB_SINCE(id_, value_, since_) [value_] = (uint32_t)(since_),
+    MVAP_VERB_TABLE(MVAP_VERB_SINCE)
+#undef MVAP_VERB_SINCE
+};
+
+bool mvap_verb_in_version(uint32_t verb, uint32_t version)
+{
+    if (verb == MVAP_VERB_NONE || verb >= MVAP_VERB__COUNT)
+        return false;
+    uint32_t since = k_verb_since[verb];
+    if (since == 0)
+        return false;
+    return version >= since && version <= MVAP_VERSION;
 }
 
 const char *mvap_status_name(int32_t status)
@@ -139,12 +161,6 @@ const char *mvap_status_name(int32_t status)
     }
 }
 
-bool mvap_verb_is_mutation(uint32_t verb)
-{
-    return verb != MVAP_VERB_NONE && verb != MVAP_VERB_INSPECT &&
-           verb != MVAP_VERB_LIST && verb < MVAP_VERB__COUNT;
-}
-
 /* ── framing ────────────────────────────────────────────────────────────── */
 
 uint32_t mvap_frame_length(const uint8_t *in, size_t in_len)
@@ -157,6 +173,35 @@ uint32_t mvap_frame_length(const uint8_t *in, size_t in_len)
     return n;
 }
 
+/* ── protocol version ───────────────────────────────────────────────────── */
+
+/* The version an encode writes. ZERO means "whatever this build speaks", so a
+ * zero-initialized record encodes as MVAP_VERSION without any caller saying so.
+ * Any other value outside [MVAP_VERSION_MIN, MVAP_VERSION] is REFUSED (0),
+ * never quietly rewritten to the nearest supported one: a caller that asked to
+ * speak version 3 to a peer must be told this build cannot, not handed a
+ * version-2 frame it believes is a version-3 frame. Same bound as
+ * accept_version below, applied in the same direction. */
+static uint16_t encode_version(uint32_t requested)
+{
+    if (requested == 0)
+        return (uint16_t)MVAP_VERSION;
+    if (requested >= MVAP_VERSION_MIN && requested <= MVAP_VERSION)
+        return (uint16_t)requested;
+    return 0;
+}
+
+/* Accept a frame's declared version, or 0 for "this build does not speak it".
+ * The BOUND is the whole compatibility story: exactly the closed set
+ * [MVAP_VERSION_MIN, MVAP_VERSION], nothing outside it, and no clamping — an
+ * unsupported version is refused, never rounded to the nearest one we know. */
+static uint32_t accept_version(uint16_t declared)
+{
+    if (declared < MVAP_VERSION_MIN || declared > MVAP_VERSION)
+        return 0;
+    return declared;
+}
+
 /* ── request codec ──────────────────────────────────────────────────────── */
 
 size_t mvap_request_encode(const struct mvap_request *req, uint8_t *out,
@@ -165,6 +210,16 @@ size_t mvap_request_encode(const struct mvap_request *req, uint8_t *out,
     if (!req || !out)
         return 0;
     if (req->verb == MVAP_VERB_NONE || req->verb >= MVAP_VERB__COUNT)
+        return 0;
+    uint16_t version = encode_version(req->version);
+    if (version == 0)
+        return 0;                  /* a version this build does not speak */
+    /* A verb that did not exist in the version being written cannot be
+     * expressed in it. Refusing to encode is the only honest answer: writing
+     * the value anyway would hand a v1 peer a number it will read as
+     * out-of-range, and dropping to a "nearest" verb would silently change
+     * what the agent asked for. */
+    if (!mvap_verb_in_version(req->verb, version))
         return 0;
     if (req->kind >= MVAP_KIND__COUNT)
         return 0;
@@ -179,7 +234,7 @@ size_t mvap_request_encode(const struct mvap_request *req, uint8_t *out,
     uint8_t *p = out + MVAP_FRAME_PREFIX;
     zcl_write_u32_le(out, (uint32_t)rec);
     zcl_write_u32_le(p + 0,  MVAP_MAGIC);
-    zcl_write_u16_le(p + 4,  (uint16_t)MVAP_VERSION);
+    zcl_write_u16_le(p + 4,  version);
     zcl_write_u16_le(p + 6,  (uint16_t)req->verb);
     zcl_write_u32_le(p + 8,  req->request_id);
     zcl_write_u64_le(p + 12, req->value_zats);
@@ -202,12 +257,18 @@ bool mvap_request_decode(const uint8_t *in, size_t in_len,
                  MVAP_REQ_FIXED);
     if (zcl_read_u32_le(in + 0) != MVAP_MAGIC)
         LOG_FAIL(MVAP_TAG, "bad magic 0x%08x", zcl_read_u32_le(in + 0));
-    if (zcl_read_u16_le(in + 4) != (uint16_t)MVAP_VERSION)
-        LOG_FAIL(MVAP_TAG, "unsupported version %u", zcl_read_u16_le(in + 4));
+    uint32_t version = accept_version(zcl_read_u16_le(in + 4));
+    if (version == 0)
+        LOG_FAIL(MVAP_TAG, "unsupported version %u (this build speaks %u..%u)",
+                 zcl_read_u16_le(in + 4), MVAP_VERSION_MIN, MVAP_VERSION);
 
     uint16_t verb = zcl_read_u16_le(in + 6);
-    if (verb == MVAP_VERB_NONE || verb >= MVAP_VERB__COUNT)
-        LOG_FAIL(MVAP_TAG, "verb out of range %u", verb);
+    /* Bounded by the frame's OWN version: a v1 peer cannot reach a verb that
+     * v1 never defined, so an old client is decoded by exactly the v1 rules
+     * rather than by today's wider ones. */
+    if (!mvap_verb_in_version(verb, version))
+        LOG_FAIL(MVAP_TAG, "verb %u is not in protocol version %u", verb,
+                 version);
     uint16_t kind = zcl_read_u16_le(in + 52);
     if (kind >= MVAP_KIND__COUNT)
         LOG_FAIL(MVAP_TAG, "kind out of range %u", kind);
@@ -218,6 +279,7 @@ bool mvap_request_decode(const uint8_t *in, size_t in_len,
 
     struct mvap_request r = { 0 };
     r.verb       = verb;
+    r.version    = version;
     r.request_id = zcl_read_u32_le(in + 8);
     r.value_zats = zcl_read_u64_le(in + 12);
     memcpy(r.property_id, in + 20, MVAP_PROPERTY_ID_LEN);
@@ -240,6 +302,9 @@ size_t mvap_response_encode(const struct mvap_response *resp, uint8_t *out,
 {
     if (!resp || !out)
         return 0;
+    uint16_t version = encode_version(resp->version);
+    if (version == 0)
+        return 0;                  /* a version this build does not speak */
     size_t blen = strnlen(resp->body, MVAP_BODY_MAX);
     size_t rec = MVAP_RESP_FIXED + blen;
     if (rec > MVAP_MAX_FRAME || out_cap < MVAP_FRAME_PREFIX + rec)
@@ -248,7 +313,7 @@ size_t mvap_response_encode(const struct mvap_response *resp, uint8_t *out,
     uint8_t *p = out + MVAP_FRAME_PREFIX;
     zcl_write_u32_le(out, (uint32_t)rec);
     zcl_write_u32_le(p + 0, MVAP_MAGIC);
-    zcl_write_u16_le(p + 4, (uint16_t)MVAP_VERSION);
+    zcl_write_u16_le(p + 4, version);
     zcl_write_u16_le(p + 6, (uint16_t)resp->verb);
     zcl_write_u32_le(p + 8, resp->request_id);
     zcl_write_u32_le(p + 12, (uint32_t)resp->status);
@@ -270,8 +335,10 @@ bool mvap_response_decode(const uint8_t *in, size_t in_len,
                  MVAP_RESP_FIXED);
     if (zcl_read_u32_le(in + 0) != MVAP_MAGIC)
         LOG_FAIL(MVAP_TAG, "bad magic 0x%08x", zcl_read_u32_le(in + 0));
-    if (zcl_read_u16_le(in + 4) != (uint16_t)MVAP_VERSION)
-        LOG_FAIL(MVAP_TAG, "unsupported version %u", zcl_read_u16_le(in + 4));
+    uint32_t version = accept_version(zcl_read_u16_le(in + 4));
+    if (version == 0)
+        LOG_FAIL(MVAP_TAG, "unsupported version %u (this build speaks %u..%u)",
+                 zcl_read_u16_le(in + 4), MVAP_VERSION_MIN, MVAP_VERSION);
 
     uint16_t blen = zcl_read_u16_le(in + 48);
     if (blen > MVAP_BODY_MAX || (size_t)MVAP_RESP_FIXED + blen != in_len)
@@ -280,6 +347,7 @@ bool mvap_response_decode(const uint8_t *in, size_t in_len,
 
     struct mvap_response r = { 0 };
     r.verb       = zcl_read_u16_le(in + 6);
+    r.version    = version;
     r.request_id = zcl_read_u32_le(in + 8);
     r.status     = (int32_t)zcl_read_u32_le(in + 12);
     memcpy(r.receipt_id, in + 16, MVAP_RECEIPT_ID_LEN);

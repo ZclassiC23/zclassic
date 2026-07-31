@@ -6,9 +6,9 @@
  * DecryptAndHash BOTH use the current transcript hash h as AEAD associated
  * data, then MixHash the ciphertext (the transport-design §3 prose transposes
  * the decrypt order — canonical Noise is used here so a future KAT interops).
- * See session/noise_handshake.h. */
+ * See noise/noise_handshake.h. */
 
-#include "session/noise_handshake.h"
+#include "noise/noise_handshake.h"
 
 #include "crypto/sha256.h"
 #include "crypto/hkdf_sha256.h"
