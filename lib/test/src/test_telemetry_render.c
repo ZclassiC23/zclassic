@@ -282,10 +282,68 @@ static int check_unavailable_is_not_unhealthy(void)
     return failures;
 }
 
+/* Mark every leaf of a real domain PRESENT, with a value its own declared rule
+ * calls healthy — the state a correct provider leaves a snapshot in.
+ *
+ * It writes through the descriptor table rather than the TELEMETRY_SET_*
+ * macros because it has to be domain-agnostic: a check that names members
+ * cannot survive a lane appending a row, and every domain here is about to
+ * grow one table at a time. The value comes from the leaf's OWN ontology rule,
+ * so "healthy" is whatever that row says it is rather than a guess this
+ * function makes. */
+static void fill_every_leaf_healthily(const struct telemetry_domain_schema *s,
+                                      void *snap)
+{
+    for (size_t i = 0; i < s->leaf_count; i++) {
+        const struct telemetry_leaf *lf = &s->leaves[i];
+        const struct telemetry_field *f =
+            telemetry_field_lookup(s->domain, lf->path);
+        enum telemetry_rule rule = f ? f->rule : TFR_INFO;
+        int threshold = f ? f->threshold : 0;
+        unsigned char *base = (unsigned char *)snap;
+
+        switch (lf->ctype) {
+        case TLC_I64: {
+            int64_t v = 0;
+            if (rule == TFR_EXPECT_NONZERO)
+                v = 1;
+            else if (rule == TFR_MIN_ABS)
+                v = threshold;
+            /* EXPECT_ZERO, MAX_ABS and both ratio rules are all satisfied by
+             * 0 (a ratio of 0 against a 0 operand is healthy either way). */
+            memcpy(base + lf->value_off, &v, sizeof v);
+            break;
+        }
+        case TLC_BOOL: {
+            bool v = (rule == TFR_EXPECT_TRUE);
+            memcpy(base + lf->value_off, &v, sizeof v);
+            break;
+        }
+        case TLC_TEXT:
+            /* Short enough that no row can report TRUNCATED. */
+            snprintf((char *)(base + lf->value_off), TELEMETRY_TEXT_MAX, "ok");
+            break;
+        }
+
+        struct telemetry_leaf_meta m = {
+            .presence = TELEMETRY_PRESENT,
+            .source = TELEMETRY_SRC_IN_PROCESS,
+            .observed_unix = 1750000000, .age_ms = 0, .reason = "",
+        };
+        memcpy(base + lf->meta_off, &m, sizeof m);
+    }
+}
+
 static int check_present_renders_the_value(void)
 {
     int failures = 0;
+    /* "Fully filled" has to mean EVERY leaf, and the wallet domain no longer
+     * has exactly one. Filling it leaf-by-leaf here would re-pin this check to
+     * a leaf count each domain lane changes as it lands its table, so the fill
+     * walks the descriptor table instead and this check is now proof against
+     * any row any lane appends. */
     struct wallet_snapshot snap = {0};
+    fill_every_leaf_healthily(&g_wallet_schema, &snap);
     TELEMETRY_SET_I64(&snap, collected_unix, 1750000000,
                       TELEMETRY_SRC_IN_PROCESS);
 
@@ -299,7 +357,8 @@ static int check_present_renders_the_value(void)
     TR_CHECK("[render] a fully-filled snapshot is complete and defect-free",
              json_get_bool(dig2(&out, "completeness", "complete")) &&
              !json_get_bool(dig2(&out, "completeness", "provider_defect")) &&
-             json_get_int(dig2(&out, "completeness", "present")) == 1);
+             json_get_int(dig2(&out, "completeness", "present")) ==
+             (int64_t)g_wallet_schema.leaf_count);
     TR_CHECK("[render] a filled descriptive domain is ok",
              json_get_bool(dig2(&out, "_health", "ok")));
     TR_CHECK("[render] FULL reports provenance for a present leaf too",

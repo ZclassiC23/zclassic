@@ -63,9 +63,9 @@ zclassic23 discover schema <path> --side=input|output
 | Top-level roots | 10 |
 | Branches | 92 |
 | Leaves (dispatchable command paths) | 299 |
-| … `ready` (live handler in this build) | 227 |
+| … `ready` (live handler in this build) | 229 |
 | … `compat` (metadata only, names a fallback) | 17 |
-| … `planned` (fail-closed BLOCKED, exit 3) | 55 |
+| … `planned` (fail-closed BLOCKED, exit 3) | 53 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
 | Leaves with `effect=mutate` | 77 |
 | Leaves with `effect=destructive` | 4 |
@@ -689,8 +689,8 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `ops telemetry wallet summary` | planned | read / read / operator · fast/low | none | `zcl.telemetry.wallet.summary.v1` | `zclassic23 ops telemetry wallet summary` | Wallet projection posture — *the typed wallet telemetry snapshot is not built yet* |
-| `ops telemetry wallet security` | planned | read / read / operator · fast/low | none | `zcl.telemetry.wallet.security.v1` | `zclassic23 ops telemetry wallet security` | Key-handling safety posture — *the typed wallet telemetry snapshot is not built yet* |
+| `ops telemetry wallet summary` | ready | read / read / operator · fast/low | none | `zcl.telemetry.wallet.summary.v1` | `zclassic23 ops telemetry wallet summary` | Wallet projection posture |
+| `ops telemetry wallet security` | ready | read / read / operator · fast/low | none | `zcl.telemetry.wallet.security.v1` | `zclassic23 ops telemetry wallet security` | Key-handling safety posture |
 
 #### `ops.telemetry.agents` — Agent sessions, grants and activity
 
