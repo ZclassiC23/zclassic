@@ -437,8 +437,8 @@ ZCL_COMMAND_DEV_READ(
     "dev.test.run", "dev.test", "dev.test.focused",
     "Run one exact prebuilt focused test group",
     "Pass/fail result of a freshly executed prebuilt focused test binary "
-    "(`test_parallel_fast --only=<group>`) run synchronously; requires "
-    "`make test-parallel-fast` to have built it first.", 0,
+    "(`test_parallel_fast --exact=<canonical-group>`) run synchronously; requires "
+    "`make test_parallel_fast` to have built it first.", 0,
     "test,focused,group",
     "zcl.dev_test_run_input.v1", "zcl.dev_focused_test.v1", "group", "group",
     "zclassic23 dev test run hotswap_simnet", ZCL_COMMAND_SCOPE_LOCAL,

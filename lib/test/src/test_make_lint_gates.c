@@ -63,7 +63,7 @@
 #include <string.h>
 
 /* How many pool-eligible shard groups the sandbox lane is spread over. Each
- * one is a registered TEST_LIST row (see LINT_SHARD_LIST below) and builds its
+ * one is a registered catalog row (see LINT_SHARD_LIST below) and builds its
  * own sandbox, so this is also the number of concurrent `cp -al` copies. */
 #define LINT_GATE_SHARD_COUNT 8
 
@@ -651,10 +651,10 @@ static int lint_run_shard(int shard)
 
 /* ── Registered entry points ──────────────────────────────────────────────
  * The shard bodies are macro-generated from ONE list so adding or removing a
- * shard is a single edit here plus the matching X() row in TEST_LIST
- * (test_parallel.c). check-test-registration only treats a FILENAME-matching
+ * shard is a single edit here plus the matching ZCL_TEST_GROUP row in
+ * tools/dev/test_group_catalog.def. check-test-registration only treats a FILENAME-matching
  * `int test_<name>(void)` as an entry point, so these generated definitions
- * are invisible to it while the X() rows still bind name -> symbol. */
+ * are invisible to it while the catalog rows still bind name -> symbol. */
 
 #define LINT_SHARD_LIST(X) \
     X(01, 0) X(02, 1) X(03, 2) X(04, 3) \

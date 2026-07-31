@@ -2,14 +2,17 @@
 
 #define _GNU_SOURCE
 #include "devloop.h"
+#include "test_group_catalog.h"
 
 #include "config/command_catalog.h"
 #include "kernel/command_registry.h"
 
+#include <fcntl.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 bool zcl_devloop_is_method(const char *method)
@@ -70,8 +73,10 @@ static int run_focused(const char *group)
     fprintf(stderr, "[devloop] focused execution requires a dev build\n");
     return 2;
 #else
+    char full_group[ZCL_TEST_GROUP_FULL_MAX];
     if (!group || !group[0] ||
-        strspn(group, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_") != strlen(group)) {
+        strspn(group, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_") != strlen(group) ||
+        !zcl_test_group_resolve_exact(group, full_group)) {
         fprintf(stderr, "[devloop] focused: invalid exact group\n");
         return 2;
     }
@@ -81,20 +86,46 @@ static int run_focused(const char *group)
         return 2;
     }
     snprintf(bin, sizeof(bin), "%s/build/bin/test_parallel_fast", root);
-    snprintf(selector, sizeof(selector), "--only=%s", group);
-    if (access(bin, X_OK) != 0) {
+    snprintf(selector, sizeof(selector), "--exact=%s", full_group);
+    int runner_fd = open(bin, O_RDONLY);
+    struct stat runner_stat;
+    if (runner_fd < 0 || fstat(runner_fd, &runner_stat) != 0 ||
+        !S_ISREG(runner_stat.st_mode) ||
+        !(runner_stat.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH))) {
+        if (runner_fd >= 0)
+            close(runner_fd);
         fprintf(stderr, "[devloop] focused: prebuilt runner unavailable\n");
+        return 2;
+    }
+    struct dev_source_record source = {0};
+    char why[192] = {0};
+    char runner_source_id[65];
+    if (!zcl_dev_source_identity_capture(root, &source, why, sizeof(why)) ||
+        !zcl_dev_executable_source_id(root, runner_fd, bin,
+                                      runner_source_id) ||
+        strcmp(source.source_id, runner_source_id) != 0) {
+        close(runner_fd);
+        fprintf(stderr,
+                "[devloop] focused: stale runner; run make test_parallel_fast\n");
         return 2;
     }
     const char *argv[] = { bin, selector, NULL };
     struct zcl_devloop_process_result result;
-    if (!zcl_devloop_process_run(root, argv, 300000, &result))
+    if (!zcl_devloop_process_run_fd(root, runner_fd, argv, 300000, &result)) {
+        close(runner_fd);
         return 1;
+    }
+    close(runner_fd);
+    if (!zcl_dev_source_identity_verify(root, &source, why, sizeof(why))) {
+        fprintf(stderr, "[devloop] focused: source epoch superseded: %s\n",
+                why);
+        return 1;
+    }
     bool ok = result.exit_code == 0 && !result.timed_out &&
               result.term_signal == 0;
     printf("{\"schema\":\"zcl.dev_focused_test.v1\",\"status\":\"%s\","
            "\"group\":\"%s\",\"elapsed_ms\":%lld,\"exit_code\":%d}\n",
-           ok ? "passed" : "failed", group,
+           ok ? "passed" : "failed", full_group,
            (long long)result.elapsed_ms, result.exit_code);
     if (!ok && result.output_len)
         fprintf(stderr, "%s\n", result.output);

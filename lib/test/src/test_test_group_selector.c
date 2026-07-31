@@ -3,8 +3,11 @@
 #include "test/test_core.h"
 #include "test/test_group_selector.h"
 #include "platform/os_proc.h"
+#include "test_group_catalog.h"
+#include "util/clientversion.h"
 
 #include <stdio.h>
+#include <stdint.h>
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -157,6 +160,61 @@ static int test_registry_exact_resolution(void)
     return failures;
 }
 
+static int test_native_catalog_resolution(void)
+{
+    int failures = 0;
+    TEST("test group selector: C catalog owns exact proof expansion") {
+        ASSERT(zcl_test_group_catalog_count() > 800);
+        ASSERT(zcl_test_group_catalog_contains("test_api"));
+        ASSERT(!zcl_test_group_catalog_contains("api"));
+        ASSERT(zcl_test_group_source_is_semantic_leaf(
+            "lib/test/src/test_stage_repair_coin_backfill.c"));
+        ASSERT(!zcl_test_group_source_is_semantic_leaf(
+            "lib/test/src/test_api.c"));
+
+        char full[ZCL_TEST_GROUP_FULL_MAX];
+        ASSERT(zcl_test_group_resolve_exact("api", full));
+        ASSERT(strcmp(full, "test_api") == 0);
+        ASSERT(zcl_test_group_resolve_exact("test_api", full));
+        ASSERT(strcmp(full, "test_api") == 0);
+        ASSERT(!zcl_test_group_resolve_exact("api_missing", full));
+
+        const char *ids[] = { "api", "stage_repair", "oracle_policy" };
+        char expanded[16][ZCL_TEST_GROUP_FULL_MAX];
+        bool truncated = true;
+        size_t total = zcl_test_group_expand_plan(
+            ids, sizeof(ids) / sizeof(ids[0]), expanded,
+            sizeof(expanded) / sizeof(expanded[0]), &truncated);
+        ASSERT(total == 9);
+        ASSERT(!truncated);
+        bool saw_api = false, saw_native_api = false, saw_stage_coin = false;
+        bool saw_groth = false, saw_zclassicd = false;
+        for (size_t i = 0; i < total; i++) {
+            saw_api |= strcmp(expanded[i], "test_api") == 0;
+            saw_native_api |= strcmp(expanded[i],
+                                     "test_native_api_contract") == 0;
+            saw_stage_coin |= strcmp(expanded[i],
+                                      "test_stage_repair_coin_backfill") == 0;
+            saw_groth |= strcmp(expanded[i],
+                                "test_groth16_r1cs_oracle") == 0;
+            saw_zclassicd |= strcmp(expanded[i],
+                                    "test_zclassicd_oracle") == 0;
+        }
+        ASSERT(saw_api && saw_native_api && saw_stage_coin);
+        ASSERT(saw_groth && saw_zclassicd);
+
+        char one[1][ZCL_TEST_GROUP_FULL_MAX];
+        truncated = false;
+        ASSERT(zcl_test_group_expand_plan(ids, 3, one, 1, &truncated) == 9);
+        ASSERT(truncated);
+        const char *invalid[] = { "api_missing" };
+        ASSERT(zcl_test_group_expand_plan(invalid, 1, one, 1, &truncated) ==
+               SIZE_MAX);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_runner_exact_selection(void)
 {
     int failures = 0;
@@ -176,6 +234,23 @@ static int test_runner_exact_selection(void)
         ASSERT(rc == 0);
         ASSERT(strstr(out, "groups_ran=1") != NULL);
         ASSERT(strstr(out, "groups_failed=0") != NULL);
+
+        n = snprintf(command, sizeof(command), "\"%s\" --source-id 2>&1",
+                     exe);
+        ASSERT(n > 0 && (size_t)n < sizeof(command));
+        rc = capture_command(command, out, sizeof(out));
+        ASSERT(rc == 0);
+        char expected_source[80];
+        ASSERT(snprintf(expected_source, sizeof(expected_source), "%s\n",
+                        zcl_build_source_id_sha256()) == 65);
+        ASSERT(strcmp(out, expected_source) == 0);
+
+        n = snprintf(command, sizeof(command),
+                     "\"%s\" --source-id --list 2>&1", exe);
+        ASSERT(n > 0 && (size_t)n < sizeof(command));
+        rc = capture_command(command, out, sizeof(out));
+        ASSERT(rc == 2);
+        ASSERT(strstr(out, "Usage:") != NULL);
 
         n = snprintf(command, sizeof(command),
                      "\"%s\" --jobs=1 "
@@ -232,6 +307,7 @@ int test_test_group_selector(void)
     int failures = 0;
     failures += test_selector_predicate();
     failures += test_registry_exact_resolution();
+    failures += test_native_catalog_resolution();
     failures += test_runner_exact_selection();
     return failures;
 }

@@ -254,6 +254,18 @@ static int test_ic_group_cap_preserves_groups(void)
         /* Kept, not discarded. */
         ASSERT(ic_planned(&plan, "download"));
 
+        /* Regression: the exact execution list is droppable presentation,
+         * while the closure and completeness verdict are mandatory evidence.
+         * Rendering a high-fanout valid plan must abridge the former instead
+         * of returning an empty document/INVALID_FILE_SET. */
+        char body[ZCL_DEVLOOP_PLAN_WIRE_MAX + 1];
+        size_t body_len = zcl_devloop_plan_json_closure(
+            IC_FIX_GROUP, files, 1, body, sizeof(body));
+        ASSERT(body_len > 0 && body_len <= ZCL_DEVLOOP_PLAN_WIRE_MAX);
+        ASSERT(strstr(body, "\"closure_groups\":[") != NULL);
+        ASSERT(strstr(body, "\"dimensions\":[") != NULL);
+        ASSERT(strstr(body, "\"execution_groups_abridged\":") != NULL);
+
         system("rm -rf " IC_FIX_GROUP);
         PASS();
     } _test_next:;
@@ -441,16 +453,18 @@ static int test_ic_incomplete_dimension_refuses_proof(void)
          * refusal, and again the same word the result cache uses. */
         system("rm -rf " IC_FIX_NODEPS);
         ASSERT(ic_write_call_pair(IC_FIX_NODEPS));
+        const char *header_files[] = { "lib/net/include/net/net.h" };
         struct zcl_devloop_plan bare;
-        ASSERT(zcl_devloop_plan_files(files, 1, &bare));
-        ASSERT(zcl_devloop_plan_add_closure(IC_FIX_NODEPS, files, 1, &bare));
+        ASSERT(zcl_devloop_plan_files(header_files, 1, &bare));
+        ASSERT(zcl_devloop_plan_add_closure(IC_FIX_NODEPS, header_files, 1,
+                                            &bare));
         why = "unset";
         ASSERT(!zcl_devloop_plan_proof_admissible(&bare, &why));
         ASSERT(strcmp(why, "no-include-graph") == 0);
         ASSERT(strcmp(why,
                       testcache_reason_label(TESTCACHE_R_NO_INCLUDE_GRAPH)) == 0);
         /* Still runs the tests the path floor named. */
-        ASSERT(ic_group_in(bare.path_groups, bare.path_groups_len, "tor"));
+        ASSERT(ic_group_in(bare.path_groups, bare.path_groups_len, "net"));
 
         /* (e) a plan that never consulted the graph at all must not read as
          * proof that it did. */
@@ -669,6 +683,63 @@ static int test_ic_union_never_loses_a_rule_group(void)
     return failures;
 }
 
+/* ── T7: query only graph dimensions that can contain an edge ─────────── */
+
+static int test_ic_dimension_applicability_and_exact_execution(void)
+{
+    int failures = 0;
+    TEST("impact composition: test leaves produce an exact admissible plan") {
+        const char *files[] = {
+            "lib/test/src/test_stage_repair_coin_backfill.c",
+            "tools/agent_fast_ci.sh",
+        };
+        struct zcl_devloop_plan plan;
+        ASSERT(zcl_devloop_plan_files(files, 2, &plan));
+        /* No fixture/index exists at this path. Success proves the planner did
+         * not open an irrelevant graph merely to report an empty answer. */
+        ASSERT(zcl_devloop_plan_add_closure("test-tmp/no-such-impact-index",
+                                            files, 2, &plan));
+        ASSERT(plan.dims[ZCL_DEVLOOP_DIM_SEMANTIC].status ==
+               ZCL_DEVLOOP_DIM_NOT_APPLICABLE);
+        ASSERT(plan.dims[ZCL_DEVLOOP_DIM_INCLUDE].status ==
+               ZCL_DEVLOOP_DIM_NOT_APPLICABLE);
+        ASSERT(plan.closure_groups_len == 0);
+        ASSERT(!plan.closure_truncated);
+        const char *why = "unset";
+        ASSERT(zcl_devloop_plan_proof_admissible(&plan, &why));
+        ASSERT(strcmp(why, "") == 0);
+
+        char body[ZCL_DEVLOOP_PLAN_WIRE_MAX + 1];
+        size_t n = zcl_devloop_plan_json_closure(
+            "test-tmp/no-such-impact-index", files, 2, body, sizeof(body));
+        ASSERT(n > 0 && n <= ZCL_DEVLOOP_PLAN_WIRE_MAX);
+        ASSERT(strstr(body, "\"execution_selector\":\"exact\"") != NULL);
+        ASSERT(strstr(body, "\"test_stage_repair\"") != NULL);
+        ASSERT(strstr(body, "\"test_stage_repair_coin_backfill\"") != NULL);
+        ASSERT(strstr(body, "\"execution_set_valid\":true") != NULL);
+        ASSERT(strstr(body, "\"execution_set_sha3\":") != NULL);
+        ASSERT(strstr(body, "\"proof_admissible\":true") != NULL);
+
+        /* An unmapped code edit and a stale catalog token each refuse for the
+         * actionable reason before any graph availability can obscure it. */
+        const char *unmapped[] = { "lib/novel/src/unmapped_agentic.c" };
+        struct zcl_devloop_plan gap;
+        ASSERT(zcl_devloop_plan_files(unmapped, 1, &gap));
+        why = "unset";
+        ASSERT(!zcl_devloop_plan_proof_admissible(&gap, &why));
+        ASSERT(strcmp(why, "unmapped-code-change") == 0);
+
+        struct zcl_devloop_plan stale = plan;
+        snprintf(stale.path_groups[0], sizeof(stale.path_groups[0]),
+                 "missing_catalog_group");
+        why = "unset";
+        ASSERT(!zcl_devloop_plan_proof_admissible(&stale, &why));
+        ASSERT(strcmp(why, "unknown-test-group") == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_impact_composition(void)
 {
     int failures = 0;
@@ -679,5 +750,6 @@ int test_impact_composition(void)
     failures += test_ic_incomplete_dimension_refuses_proof();
     failures += test_ic_every_selection_has_a_reason();
     failures += test_ic_union_never_loses_a_rule_group();
+    failures += test_ic_dimension_applicability_and_exact_execution();
     return failures;
 }

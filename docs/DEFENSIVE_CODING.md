@@ -483,7 +483,7 @@ assert green).
   The gate recomputes the closure and the ISA set from source each run, so a
   NEW accelerator or a new `#include` edge from `core/` that reaches one fails
   HERE; it also fails on a stale row, a missing oracle, an oracle whose group
-  is absent from the `TEST_LIST` in `lib/test/src/test_parallel.c` (compiled
+  is absent from `tools/dev/test_group_catalog.def` (compiled
   but never dispatched proves nothing), and an oracle that references no
   symbol the implementation exports. Each oracle carries the marker
   `ACCEL-ORACLE: <impl path>`. Impl:

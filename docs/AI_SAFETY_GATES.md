@@ -175,7 +175,7 @@ prose with no number in it cannot go stale.
 three test entry points — `test_refold_from_anchor_fatal`,
 `test_refold_auto_arm`, and `test_anchor_selfmint` — lived in dedicated
 `lib/test/src/test_<name>.c` files and were **compiled and linked into the test
-binaries**, yet appeared in neither the `TEST_LIST` X-macro of the parallel
+binaries**, yet appeared in neither the canonical test group catalog of the parallel
 runner nor the legacy serial runner's dispatch. They had been written,
 reviewed, and merged. *"They therefore proved NOTHING — green forever, never
 executed."*
@@ -189,13 +189,14 @@ an unregistered test is a false assurance.
 
 **What it does.** It enumerates every filename-matching entry point (a
 `lib/test/src/test_<name>.c` defining `int test_<name>(void)`) and requires each
-to be dispatched by at least one runner — registered as `X(<name>)` in
-`test_parallel.c`, or called as `test_<name>()` from `test.c`. Anything
+to be dispatched by at least one runner — registered as
+`ZCL_TEST_GROUP(<name>)` in `tools/dev/test_group_catalog.def`, or called as
+`test_<name>()` from `test.c`. Anything
 dispatched by neither is an orphan and fails. Helper and sub-test functions
 whose names don't match their host filename are deliberately not entry points,
 so multi-test files produce no false positives.
 
-It also rejects **duplicate** `X()` registrations, because a duplicate row runs
+It also rejects **duplicate** catalog registrations, because a duplicate row runs
 the same group twice and inflates the advertised group count — hiding the
 absence of a genuinely distinct test behind a healthy-looking total.
 
@@ -207,7 +208,7 @@ write:
   with the offending name — before it is allowed to judge the real registry. A
   detector that has silently stopped detecting is the failure mode a decorative
   check dies of.
-- There is a **fail-loud floor**: if parsing `TEST_LIST` yields fewer than 100
+- There is a **fail-loud floor**: if parsing the catalog yields fewer than 100
   entries, the gate exits `2` (fatal) rather than reporting clean, on the
   grounds that the macro shape must have drifted and a real orphan could slip
   through a near-empty scan. Likewise a missing runner file, or a `grep` that

@@ -11,28 +11,18 @@
 #
 # It has two defects and both were being hit. Dropping -h glues the filename
 # onto every name (CLAUDE.md warns about it, which means everyone trips it).
-# And it drops the registry's PREFIXES: g_groups[] is built by two X-macro
-# expansions, ROW_TEST stamping "test_" onto every TEST_LIST row and ROW_SPEC
-# stamping "spec_" onto every SPEC_LIST row. The incantation prints 28 SPEC
+# And it drops the registry's PREFIXES: g_groups[] is built from the canonical
+# catalog, stamping "test_" onto ZCL_TEST_GROUP rows and "spec_" onto
+# ZCL_SPEC_GROUP rows. The incantation prints 28 SPEC
 # names as if they were "test_<name>", which is not what the runner prints,
 # not what --only matches against, and not what a report can diff against a
 # run artifact. Verified on this tree: naive output vs the runner's own
 # .cache/test-timing/last-run.json disagreed on 32 names, of which 28 were
 # pure prefix error.
 #
-# The parse here mirrors the translation the compiler performs, not a
-# line-shape guess:
-#   * A comment — including a MULTI-LINE one — is replaced by one space
-#     (translation phase 3), so a comment inside TEST_LIST does not need
-#     trailing backslashes and does NOT end the macro. TEST_LIST contains
-#     exactly such a comment before the make_lint_gates shard rows; a parser
-#     that ends the macro at the first line lacking a backslash silently loses
-#     the 12 shard groups.
-#   * Only after comments are removed does a trailing backslash decide
-#     continuation.
-#
-# Output order is REGISTRY ORDER (TEST_LIST rows, then SPEC_LIST rows), which
-# is g_groups[] order — the order the runner reports in.
+# Output order is catalog order, which is g_groups[] order — the order the
+# runner reports in. The C planner and the test binary include the same file;
+# this script only renders that source for compatibility with Make and shell.
 #
 # Modes (all read-only, no build, no network):
 #   (none)             every registered group name, one per line
@@ -62,65 +52,32 @@ cd "$REPO"
 # shellcheck source=tools/scripts/sh_str.sh
 . "$REPO/tools/scripts/sh_str.sh"  # str_contains / str_lacks — see F-note
 
-REGISTRY="${ZCL_TEST_REGISTRY_SRC:-lib/test/src/test_parallel.c}"
+REGISTRY="${ZCL_TEST_REGISTRY_SRC:-tools/dev/test_group_catalog.def}"
+RUNNER="${ZCL_TEST_RUNNER_SRC:-lib/test/src/test_parallel.c}"
+FAMILIES="${ZCL_TEST_PROOF_FAMILIES_SRC:-tools/dev/test_proof_families.def}"
 
-[ -f "$REGISTRY" ] || {
-    echo "test-group-list: FATAL — missing registry source $REGISTRY" >&2
-    exit 2
-}
+for required in "$REGISTRY" "$RUNNER" "$FAMILIES"; do
+    [ -f "$required" ] || {
+        echo "test-group-list: FATAL — missing proof source $required" >&2
+        exit 2
+    }
+done
 
 # ── the registry parse ─────────────────────────────────────────────────────
-# One awk pass. State: whether we are inside a /* */ comment, and which
-# X-macro list (if any) we are inside. Names are emitted with the prefix the
-# matching ROW_* macro stamps on.
+# One row per group; names are emitted with the same prefix the C expansion
+# stamps into the runner and native catalog.
 registered() {
     awk '
-    function strip_comments(line,   out, i, c) {
-        out = ""
-        i = 1
-        while (i <= length(line)) {
-            c = substr(line, i, 2)
-            if (incomment) {
-                if (c == "*/") { incomment = 0; i += 2 } else { i += 1 }
-            } else {
-                if (c == "/*") { incomment = 1; i += 2 }
-                else { out = out substr(line, i, 1); i += 1 }
-            }
-        }
-        return out
+    /^[[:space:]]*ZCL_TEST_GROUP\([A-Za-z_0-9]+\)[[:space:]]*$/ {
+        line = $0
+        sub(/^[^(]*\(/, "", line); sub(/\).*/, "", line)
+        print "test_" line
+        next
     }
-    BEGIN { incomment = 0; prefix = "" }
-    {
-        code = strip_comments($0)
-
-        if (prefix == "") {
-            if (code ~ /^[[:space:]]*#[[:space:]]*define[[:space:]]+TEST_LIST\(X\)/)
-                prefix = "test_"
-            else if (code ~ /^[[:space:]]*#[[:space:]]*define[[:space:]]+SPEC_LIST\(X\)/)
-                prefix = "spec_"
-            else
-                next
-        }
-
-        # Emit every X(name) on this (comment-free) line, in order.
-        rest = code
-        # NOTE the leading char class allows a DIGIT: the registry really does
-        # contain X(100_stories), which becomes the identifier spec_100_stories
-        # only after ## concatenation. An [A-Za-z_] first-char rule silently
-        # loses exactly that one group — 865 instead of 866.
-        while (match(rest, /X\([A-Za-z_0-9][A-Za-z_0-9]*\)/)) {
-            tok = substr(rest, RSTART + 2, RLENGTH - 3)
-            print prefix tok
-            rest = substr(rest, RSTART + RLENGTH)
-        }
-
-        # Continuation: a comment still open at end-of-line spans the newline
-        # (phase 3 makes it one space), so the macro continues. Otherwise the
-        # comment-free text must end in a backslash.
-        if (incomment) next
-        trimmed = code
-        sub(/[[:space:]]+$/, "", trimmed)
-        if (trimmed !~ /\\$/) prefix = ""
+    /^[[:space:]]*ZCL_SPEC_GROUP\([A-Za-z_0-9]+\)[[:space:]]*$/ {
+        line = $0
+        sub(/^[^(]*\(/, "", line); sub(/\).*/, "", line)
+        print "spec_" line
     }
     ' "$REGISTRY"
 }
@@ -144,13 +101,20 @@ params_gated() {
                 rest = substr(rest, RSTART + RLENGTH)
             }
         }
-    ' "$REGISTRY"
+    ' "$RUNNER"
 }
 
 REGISTERED_CACHE=""
+FAMILY_CACHE=""
 
 load_registered_cache() {
     [ -n "$REGISTERED_CACHE" ] || REGISTERED_CACHE="$(registered)"
+}
+
+load_family_cache() {
+    [ -n "$FAMILY_CACHE" ] || FAMILY_CACHE="$(awk -F'"' \
+        '/^[[:space:]]*ZCL_TEST_PROOF_FAMILY\(/ {print $2 "\t" $4}' \
+        "$FAMILIES")"
 }
 
 resolve_exact() {
@@ -179,13 +143,17 @@ ${REGISTERED_CACHE}
 # primary ID, while a registry full name may additionally belong to one of
 # these declared aggregates.
 proof_plan_token_selects_full() {
-    local token="$1" full="$2"
+    local token="$1" full="$2" family glob
     case "$full" in
         *"$token"*) return 0 ;;
     esac
-    case "$token:$full" in
-        oracle_policy:test_*oracle) return 0 ;;
-    esac
+    load_family_cache
+    while IFS=$'\t' read -r family glob; do
+        [ -n "$family" ] && [ -n "$glob" ] || continue
+        if [ "$token" = "$family" ] && [[ "$full" == $glob ]]; then
+            return 0
+        fi
+    done <<<"$FAMILY_CACHE"
     return 1
 }
 

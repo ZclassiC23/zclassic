@@ -112,7 +112,8 @@ for you later in a cloud runner.
 ## Adding a test
 
 Add `lib/test/src/test_<name>.c` and register its group in the
-`TEST_LIST` X-macro in `lib/test/src/test_parallel.c`. Run it with
+canonical `tools/dev/test_group_catalog.def` as
+`ZCL_TEST_GROUP(<name>)`. Run it with
 `make t-fast ONLY=<name>`.
 
 Both halves are required. The `check-test-registration` lint gate fails a test

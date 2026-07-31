@@ -281,8 +281,8 @@ swap that does not restart the process.
 Eleven agents across three workflows. Claims (3 lanes) and the services
 CONTRACT (1 lane) are merged and gated; seven branches are not. All seven
 forked from that session's start and need a reconcile pass — expect conflicts
-in exactly three places every time: `TEST_LIST` in
-`lib/test/src/test_parallel.c`, `LINT_GATES` in the `Makefile`, and the
+in exactly three places every time: the test registry (now isolated in
+`tools/dev/test_group_catalog.def`), `LINT_GATES` in the `Makefile`, and the
 `<!-- DOC-COUNTS -->` block in `docs/CODEBASE_MAP.md`.
 
 | Branch | What it is | Status |

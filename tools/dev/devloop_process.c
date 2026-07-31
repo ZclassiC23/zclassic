@@ -55,9 +55,8 @@ static void drain_output(int fd, struct zcl_devloop_process_result *out)
 }
 #endif
 
-bool zcl_devloop_process_run(const char *cwd,
-                             const char *const argv[],
-                             int timeout_ms,
+static bool process_run_impl(const char *cwd, int exec_fd,
+                             const char *const argv[], int timeout_ms,
                              struct zcl_devloop_process_result *out)
 {
     if (!cwd || !cwd[0] || !argv || !argv[0] || !out || timeout_ms <= 0) {
@@ -68,6 +67,7 @@ bool zcl_devloop_process_run(const char *cwd,
     out->exit_code = -1;
 
 #ifndef ZCL_DEV_BUILD
+    (void)exec_fd;
     fprintf(stderr, "[devloop] process execution is disabled outside a dev build\n");
     return false;
 #else
@@ -98,7 +98,12 @@ bool zcl_devloop_process_run(const char *cwd,
             dup2(fds[1], STDERR_FILENO) < 0)
             _exit(126);
         close(fds[1]);
-        execvp(argv[0], (char *const *)argv);
+        if (exec_fd >= 0) {
+            extern char **environ;
+            fexecve(exec_fd, (char *const *)argv, environ);
+        } else {
+            execvp(argv[0], (char *const *)argv);
+        }
         _exit(127);
     }
 
@@ -155,4 +160,23 @@ bool zcl_devloop_process_run(const char *cwd,
     out->elapsed_ms = (platform_time_monotonic_us() - started_us) / 1000;
     return true;
 #endif
+}
+
+bool zcl_devloop_process_run(const char *cwd,
+                             const char *const argv[],
+                             int timeout_ms,
+                             struct zcl_devloop_process_result *out)
+{
+    return process_run_impl(cwd, -1, argv, timeout_ms, out);
+}
+
+bool zcl_devloop_process_run_fd(const char *cwd, int exec_fd,
+                                const char *const argv[], int timeout_ms,
+                                struct zcl_devloop_process_result *out)
+{
+    if (exec_fd < 0) {
+        fprintf(stderr, "[devloop] process: invalid executable fd\n");
+        return false;
+    }
+    return process_run_impl(cwd, exec_fd, argv, timeout_ms, out);
 }

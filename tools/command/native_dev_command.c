@@ -19,6 +19,7 @@
 #include "dev_activation.h"
 #include "dev_failure_store.h"
 #include "devloop.h"
+#include "test_group_catalog.h"
 #include "kernel/command_registry.h"
 #include "json/json.h"
 #include "platform/time_compat.h"
@@ -1051,39 +1052,96 @@ void zcl_native_handle_dev_test_run(
     const struct json_value *group_v = json_get(request->input, "group");
     const char *group = group_v && group_v->type == JSON_STR
         ? json_get_str(group_v) : NULL;
-    if (!dev_group_valid(group)) {
+    char full_group[ZCL_TEST_GROUP_FULL_MAX];
+    if (!dev_group_valid(group) ||
+        !zcl_test_group_resolve_exact(group, full_group)) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INVALID, "INVALID_TEST_GROUP",
                                "normalize", false, false,
-                               "group must be one exact alphanumeric test group",
+                               "group must resolve to one canonical registered test group",
                                "group");
         return;
     }
     char root[PATH_MAX], bin[PATH_MAX], selector[160];
     if (!realpath(dev_source_root(request), root) ||
         snprintf(bin, sizeof(bin), "%s/build/bin/test_parallel_fast", root) <= 0 ||
-        snprintf(selector, sizeof(selector), "--only=%s", group) <= 0 ||
-        access(bin, X_OK) != 0) {
+        snprintf(selector, sizeof(selector), "--exact=%s", full_group) <= 0) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
                                ZCL_COMMAND_EXIT_BLOCKED, "TEST_RUNNER_MISSING",
                                "precondition", true, false,
                                "prebuilt focused test runner is unavailable",
-                               "run make test-parallel-fast");
+                               "run make test_parallel_fast");
+        return;
+    }
+    int runner_fd = open(bin, O_RDONLY);
+    struct stat runner_stat;
+    if (runner_fd < 0 || fstat(runner_fd, &runner_stat) != 0 ||
+        !S_ISREG(runner_stat.st_mode) ||
+        !(runner_stat.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH))) {
+        if (runner_fd >= 0)
+            close(runner_fd);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
+                               ZCL_COMMAND_EXIT_BLOCKED, "TEST_RUNNER_MISSING",
+                               "precondition", true, false,
+                               "prebuilt focused test runner is unavailable",
+                               "run make test_parallel_fast");
+        return;
+    }
+    struct dev_source_record source = {0};
+    char identity_why[192] = {0};
+    char runner_source_id[65];
+    if (!zcl_dev_source_identity_capture(root, &source, identity_why,
+                                         sizeof(identity_why))) {
+        close(runner_fd);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL,
+                               "SOURCE_IDENTITY_UNAVAILABLE", "precondition",
+                               true, false,
+                               "current source identity could not be captured",
+                               identity_why);
+        return;
+    }
+    if (!zcl_dev_executable_source_id(root, runner_fd, bin,
+                                      runner_source_id) ||
+        strcmp(runner_source_id, source.source_id) != 0) {
+        close(runner_fd);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
+                               ZCL_COMMAND_EXIT_BLOCKED, "TEST_RUNNER_STALE",
+                               "precondition", true, false,
+                               "focused runner was built from a different source epoch",
+                               "run make test_parallel_fast");
         return;
     }
     const char *argv[] = {bin, selector, NULL};
     struct zcl_devloop_process_result result;
-    if (!zcl_devloop_process_run(root, argv, 300000, &result)) {
+    if (!zcl_devloop_process_run_fd(root, runner_fd, argv, 300000, &result)) {
+        close(runner_fd);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INTERNAL, "TEST_EXEC_FAILED",
                                "execute", true, false,
-                               "could not execute focused test runner", group);
+                               "could not execute focused test runner", full_group);
+        return;
+    }
+    close(runner_fd);
+    if (!zcl_dev_source_identity_verify(root, &source, identity_why,
+                                        sizeof(identity_why))) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_FAILED,
+                               "SOURCE_EPOCH_SUPERSEDED", "prove", true,
+                               false,
+                               "source changed while the focused proof ran",
+                               identity_why);
         return;
     }
     bool ok = result.exit_code == 0 && result.term_signal == 0 &&
               !result.timed_out;
     (void)json_push_kv_str(&reply->data, "schema", "zcl.dev_focused_test.v1");
-    (void)json_push_kv_str(&reply->data, "group", group);
+    (void)json_push_kv_str(&reply->data, "group", full_group);
+    (void)json_push_kv_str(&reply->data, "selector", "exact");
+    (void)json_push_kv_str(&reply->data, "source_id_sha256",
+                           source.source_id);
+    (void)json_push_kv_str(&reply->data, "source_mutation_sha256",
+                           source.mutation_id);
     (void)json_push_kv_bool(&reply->data, "passed", ok);
     (void)json_push_kv_int(&reply->data, "elapsed_ms", result.elapsed_ms);
     (void)json_push_kv_int(&reply->data, "exit_code", result.exit_code);
@@ -1096,7 +1154,7 @@ void zcl_native_handle_dev_test_run(
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_FAILED, "FOCUSED_TEST_FAILED",
                                "prove", true, false,
-                               "focused test group failed", group);
+                               "focused test group failed", full_group);
     }
 }
 
