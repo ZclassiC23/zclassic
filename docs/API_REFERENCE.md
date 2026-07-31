@@ -59,11 +59,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 348 |
+| Registry entries (branches + leaves) | 351 |
 | Top-level roots | 10 |
-| Branches | 81 |
-| Leaves (dispatchable command paths) | 267 |
-| … `ready` (live handler in this build) | 225 |
+| Branches | 82 |
+| Leaves (dispatchable command paths) | 269 |
+| … `ready` (live handler in this build) | 227 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 25 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
@@ -85,7 +85,7 @@ Per source file:
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 14 | 3 | 11 |
 | `config/commands/zcode.def` | 63 | 15 | 48 |
-| `config/commands/metaverse.def` | 4 | 2 | 2 |
+| `config/commands/metaverse.def` | 7 | 3 | 4 |
 
 
 ## Column legend
@@ -139,7 +139,7 @@ The root order below is a wire contract, not a presentation choice.
 | `code` | `code` | branch | ready | Hierarchical source-code navigator |
 | `vault` | `vault` | branch | ready | What this node owns, and what may act on it |
 | `zcode` | `zcode` | branch | ready | ZCODE source-package hosting: publish, search, host |
-| `metaverse` | `metaverse` | branch | ready | Sovereign digital property, and who may act on it |
+| `metaverse` | `metaverse` | branch | ready | Sovereign digital property: catalog, rights, receipts |
 
 
 ## The tree, leaf by leaf
@@ -805,7 +805,7 @@ represented by its children's sections.
 | `zcode package add plan` | ready | mutate / app-write / operator · foreground/moderate | **`name_or_root`**, `now_unix`, `datadir` | `zcl.zcode_add_plan.v1` | `zclassic23 zcode package add plan --input='{"name_or_root":"ringbuffer"}'` | Resolve, dependency-lock, and report what installing would do |
 | `zcode package add commit` | ready | mutate / app-write / operator · background/high | **`plan_id`**, `now_unix`, `datadir` | `zcl.zcode_add_commit.v1` | `zclassic23 zcode package add commit --input='{"plan_id":"<64hex>"}'` | Execute a plan: verify, build+test confined, install, activate, pin |
 
-### `metaverse` — Sovereign digital property, and who may act on it
+### `metaverse` — Sovereign digital property: catalog, rights, receipts
 
 #### `metaverse.agent` — Confined agents acting under a scoped grant
 
@@ -813,6 +813,13 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `metaverse agent status` | ready | read / read / operator · instant/tiny | **`dir`** | `zcl.metaverse_agent_status.v1` | `zclassic23 metaverse agent status --dir=/tmp/mv-broker` | What confinement the agent broker actually achieved |
 | `metaverse agent audit` | ready | read / read / operator · fast/low | **`dir`**, `limit` | `zcl.metaverse_agent_audit.v1` | `zclassic23 metaverse agent audit --dir=/tmp/mv-broker` | Every action the confined agent took, and whether the log is intact |
+
+#### `metaverse.property` — What property exists, who controls it, and how we know
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `metaverse property list` | ready | read / read / operator · fast/moderate | **`kind`**, `limit`, `datadir` | `zcl.metaverse_property_list.v1` | `zclassic23 metaverse property list` | Every property this datadir holds, one row per kind scanned |
+| `metaverse property show` | ready | read / read / operator · fast/low | **`property_id`**, `datadir` | `zcl.metaverse_property_show.v1` | `zclassic23 metaverse property show content:<64hex>` | One property: its roots, controller, status, and evidence grade |
 
 
 ## Aliases
