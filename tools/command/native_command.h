@@ -1106,6 +1106,21 @@ void zcl_native_handle_store_collect(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* metaverse.property.* — the sovereign-property CATALOG
+ * (app/controllers/src/metaverse_controller.c). A read-only projection
+ * rebuilt at call time over each property kind's own authoritative model
+ * (services/property_catalog.h -> lib/metaverse adapters); it caches no
+ * owner, revision, or status, so it cannot become a second ownership
+ * truth, and it never opens a handle whose open() rewrites the datadir.
+ * Every view states the evidence grade THIS node earned in THIS call.
+ * Bound by config/commands/metaverse.def. */
+void zcl_native_handle_metaverse_property_list(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_metaverse_property_show(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* ROM-seed policy/ledger surface (app/controllers/src/rom_seed_controller.c)
  * — see config/commands/ops.def `ops.rom_seed.*` and docs/ROM_DELIVERY.md. */
 void zcl_native_handle_rom_seed_status(

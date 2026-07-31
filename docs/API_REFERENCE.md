@@ -59,11 +59,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 340 |
-| Top-level roots | 9 |
-| Branches | 78 |
-| Leaves (dispatchable command paths) | 262 |
-| … `ready` (live handler in this build) | 220 |
+| Registry entries (branches + leaves) | 344 |
+| Top-level roots | 10 |
+| Branches | 80 |
+| Leaves (dispatchable command paths) | 264 |
+| … `ready` (live handler in this build) | 222 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 25 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
@@ -85,6 +85,7 @@ Per source file:
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 14 | 3 | 11 |
 | `config/commands/zcode.def` | 59 | 14 | 45 |
+| `config/commands/metaverse.def` | 4 | 2 | 2 |
 
 
 ## Column legend
@@ -138,6 +139,7 @@ The root order below is a wire contract, not a presentation choice.
 | `code` | `code` | branch | ready | Hierarchical source-code navigator |
 | `vault` | `vault` | branch | ready | What this node owns, and what may act on it |
 | `zcode` | `zcode` | branch | ready | ZCODE source-package hosting: publish, search, host |
+| `metaverse` | `metaverse` | branch | ready | Sovereign digital property: catalog, rights, receipts |
 
 
 ## The tree, leaf by leaf
@@ -794,6 +796,15 @@ represented by its children's sections.
 | `zcode endpoint verify` | ready | read / read / public · fast/low | **`doc`**, `file`, `now`, `datadir` | `zcl.zcode_endpoint_verify.v1` | `zclassic23 zcode endpoint verify --input='{"doc":"<hex>"}'` | Check an endpoint record against the chain without storing it |
 | `zcode endpoint resolve` | ready | read / read / public · fast/low | **`pubkey`**, `now`, `datadir` | `zcl.zcode_endpoint_resolve.v1` | `zclassic23 zcode endpoint resolve --input='{"pubkey":"<64hex>"}'` | Look up a filed endpoint record by its blinded record key |
 | `zcode endpoint list` | ready | read / read / public · fast/low | `now`, `datadir` | `zcl.zcode_endpoint_list.v1` | `zclassic23 zcode endpoint list` | Show every filed endpoint record and whether the node will use it |
+
+### `metaverse` — Sovereign digital property: catalog, rights, receipts
+
+#### `metaverse.property` — What property exists, who controls it, and how we know
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `metaverse property list` | ready | read / read / operator · fast/moderate | **`kind`**, `limit`, `datadir` | `zcl.metaverse_property_list.v1` | `zclassic23 metaverse property list` | Every property this datadir holds, one row per kind scanned |
+| `metaverse property show` | ready | read / read / operator · fast/low | **`property_id`**, `datadir` | `zcl.metaverse_property_show.v1` | `zclassic23 metaverse property show content:<64hex>` | One property: its roots, controller, status, and evidence grade |
 
 
 ## Aliases

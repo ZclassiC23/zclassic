@@ -110,6 +110,21 @@ has no install, execution, wallet, or publication authority.
 <!-- claim: symbol-present p2p_node_begin_message config/src/boot_zcode_swarm.c # the swarm IS socket-wired -->
 <!-- claim: symbol-absent socket lib/vcs/src/package_swarm.c # the codec half stays pure -->
 
+`lib/metaverse/` owns the sovereign-property vocabulary: the `property_id`
+(`<kind>:<64-hex root>`), the closed action bitmask, the view type with its
+evidence grade, and one read-only adapter per property kind. It is a
+**projection, never a truth** — every view is rebuilt from the kind's own
+authoritative model at call time and thrown away, and adapters take a
+*directory*, not a store handle, because `vcs_package_store_open()` runs a
+mutating recovery sweep and `metaverse property list` is a read command. The
+service that walks the adapter registry is
+`app/services/src/property_catalog_service.c`; the leaves are in
+`config/commands/metaverse.def`.
+<!-- claim: file-present lib/metaverse/include/metaverse/property_id.h # the property vocabulary -->
+<!-- claim: symbol-present metaverse_adapter_for lib/metaverse/src/adapter_registry.c # the single dispatch point -->
+<!-- claim: symbol-absent vcs_package_store_open lib/metaverse/src/adapter_content.c # the read path opens no store -->
+<!-- claim: symbol-present vcs_package_cas_present_in lib/metaverse/src/manifest_read.c # CAS presence without a store handle -->
+
 ### Hexagonal seam — `ports/` + `adapters/`
 
 Outbound-only by design: 13 port interfaces in `ports/include/ports/*_port.h`
@@ -132,12 +147,12 @@ page changing with it.
 <!--   app_shape_folders    = directories directly under app/                        -->
 <!-- Fix a mismatch with `tools/scripts/check_doc_counts.sh --fix`, never by hand.  -->
 
-test_groups: 848
+test_groups: 850
 port_interfaces: 13
 persistence_adapters: 14
 condition_registrations: 52
-command_bundles: 11
-command_roots: 8
+command_bundles: 12
+command_roots: 9
 dumpstate_subsystems: 151
 app_shape_folders: 7
 <!-- DOC-COUNTS-END -->
@@ -232,7 +247,7 @@ Use `docs/AGENT_ARCHITECTURE.md` as the full checklist. The short path:
 
 ### Add a native command
 1. Declare the command in the matching `config/commands/*.def` bundle.
-   There are 11 command bundles; `ls config/commands/*.def` is the list — do
+   There are 12 command bundles; `ls config/commands/*.def` is the list — do
    not work from a remembered one (docs said "eight" for months after `vault`
    and `zcode` landed).
    Give it a name, transports (`ZCL_COMMAND_TRANSPORT_NATIVE`), and a handler
@@ -309,7 +324,7 @@ bundles + `app/controllers/src/*_native_handlers.c`.
 |---|---|
 | the 151 dumpstate subsystems | `zclassic23 ops statecatalog` — the typed leaf: every name in one call, then `--subsystem=<name>` for that descriptor in full (owner file, accepted key forms, owning test) or `--limit`/`--page` for a window. Node-free — the registry is compiled in. The flat `zclassic23 statecatalog` is the same catalog through the legacy shim. **Not** `ops state` with no `--subsystem`: that errors `MISSING_SUBSYSTEM`. |
 | test group names (one per line) | `git grep -hoE 'X\([a-z_0-9]+\)' lib/test/src/test_parallel.c \| tr -d 'X()'` — instant, no build; `-h` matters or every name arrives glued to the filename. `make test_parallel && build/bin/test_parallel --list` gives the same list but costs a second link: `make -j$(nproc)` does **not** publish the `build/bin/test_parallel` alias, and `make test` / `make test-parallel` / `make t-fast` run an epoch candidate under `build/bin/test-strict/epochs/<epoch>/` and leave it absent |
-| registry commands | `zclassic23 discover help` — 8 command roots (`core`, `app`, `dev`, `ops`, `discover`, `code`, `vault`, `zcode`) plus the bare `status` leaf, so 9 top-level names — then `discover help <path>` to descend |
+| registry commands | `zclassic23 discover help` — 9 command roots (`core`, `app`, `dev`, `ops`, `discover`, `code`, `vault`, `zcode`, `metaverse`) plus the bare `status` leaf, so 10 top-level names — then `discover help <path>` to descend |
 | a command's exact input keys | `zclassic23 discover schema <leaf>` |
 | test groups a change touches | `zclassic23 agentimpact <files...>` |
 

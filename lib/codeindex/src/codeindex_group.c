@@ -181,6 +181,7 @@ const char *ci_group_purpose(const char *group)
     if (strcmp(group, "lib/zdir") == 0) return "ZCL Directory (ZDIR) on-chain node directory overlay — .onion peer discovery folded from block history";
     if (strcmp(group, "lib/zid") == 0) return "sovereign identity Phase 1: signed identity documents + blinded record keys (ed25519/SHA3, pure codec)";
     if (strcmp(group, "lib/codeindex") == 0) return "the in-binary source-code navigator index: scan, store, query, the `code` CLI";
+    if (strcmp(group, "lib/metaverse") == 0) return "sovereign digital property: property ids, action vocabulary, read-only per-kind catalog adapters";
 
     /* domain/<ctx> — one line per bounded context in k_domain_contexts[] above. */
     if (strcmp(group, "domain/encoding") == 0) return "pure framework-free base58/bech32 address encoding (no clock/RNG/IO)";

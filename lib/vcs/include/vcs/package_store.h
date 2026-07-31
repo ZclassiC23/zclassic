@@ -273,6 +273,16 @@ bool vcs_package_store_package_status(
     struct vcs_package_store *store, const uint8_t package_root[32],
     struct vcs_package_store_status *out);
 
+/* Read-only CAS presence probe, addressed by DIRECTORY rather than by an
+ * open store. vcs_package_store_open() runs the mutating recovery sweep,
+ * so a read-only projection over <datadir>/zcode (the property catalog,
+ * lib/metaverse) cannot use it; this is the getter that lets such a
+ * reader answer "are these bytes here?" without writing anything. True
+ * when <zcode_dir>/cas/sha3/<hh>/<hex> is a non-empty regular file. It
+ * proves PRESENCE only — the bytes are not re-hashed here. */
+bool vcs_package_cas_present_in(const char *zcode_dir,
+                                const uint8_t hash[32]);
+
 /* Current charge of one pool in bytes (diagnostics/tests). */
 uint64_t vcs_package_store_pool_usage(struct vcs_package_store *store,
                                       enum vcs_package_store_pool pool);

@@ -132,6 +132,27 @@ void store_cas_path(const struct vcs_package_store *store,
     snprintf(out, out_size, "%s/cas/sha3/%.2s/%s", store->root, hex, hex);
 }
 
+/* Read-only presence probe by directory. Deliberately does NOT take a
+ * store: vcs_package_store_open() runs the mutating recovery sweep (temp
+ * cleanup, staging commit, orphan GC), so a read-only projection must not
+ * open one. Pure stat over the same frozen layout store_cas_path builds. */
+bool vcs_package_cas_present_in(const char *zcode_dir, const uint8_t hash[32])
+{
+    char hex[65];
+    char path[STORE_PATH_MAX];
+    struct stat st;
+    int n;
+
+    if (!zcode_dir || !hash)
+        return false;
+    zcl_hex_encode(hash, 32, hex);
+    n = snprintf(path, sizeof(path), "%s/cas/sha3/%.2s/%s", zcode_dir, hex,
+                 hex);
+    if (n < 0 || (size_t)n >= sizeof(path))
+        return false;
+    return stat(path, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0;
+}
+
 /* ── CAS presence set (ascending hashes, bsearch) ─────────────────── */
 
 static size_t store_cas_lower_bound(const struct vcs_package_store *store,
