@@ -20,4 +20,220 @@ TL_LEAF(meta, collected_unix, TLC_I64, TFU_UNIX_TIME, TLV_NORMAL,
 
 TL_GROUP_END(meta)
 
-/* ── network groups start here (owned by this domain's lane) ── */
+/* ── network groups start here (owned by this domain's lane) ──
+ *
+ * WHY THERE IS NO PER-PEER LIST HERE. The peer set is unbounded in principle
+ * and a fixed-offset table has nowhere to put a variable-length list, so this
+ * group models the AGGREGATE only — counts by state, the direction split, the
+ * outbound floor, the connection-age extremes and the dial funnel. Per-peer
+ * enumeration stays where it already is: `zclassic23 ops state
+ * --subsystem=connman` and `--subsystem=transport`.
+ *
+ * WHERE THE THRESHOLDS COME FROM. Every judged row below reuses a rule this
+ * repository had already established for the same quantity in
+ * util/telemetry_ontology.def (subsystems `connman` and `peer_lifecycle`) —
+ * outbound.healthy >= 1, healthy_ipv4_group_count >= 2, handshake_complete
+ * nonzero, pre_handshake_disconnects <= 40% of attempted. None is invented
+ * here. Where no established range exists the row is TFR_INFO and its `means`
+ * names what a reader should compare it against instead. */
+
+TL_GROUP(peers, "aggregate connection posture: counts, the outbound floor and "
+                "the dial-to-handshake funnel")
+
+TL_LEAF(peers, connman_wired, TLC_BOOL, TFU_BOOL, TLV_SUMMARY,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "whether the process that filled this snapshot holds a live connection "
+    "manager. A one-shot CLI process does not, which is why the live counts "
+    "beside it report unavailable rather than zero; false here is a statement "
+    "about the reader's process, not about the node",
+    "", "")
+
+TL_LEAF(peers, outbound_healthy, TLC_I64, TFU_GAUGE, TLV_SUMMARY,
+    TFR_MIN_ABS, TL_NONE, 1, TFS_CRITICAL,
+    "outbound peers handshaked and advertising NODE_NETWORK right now — the "
+    "peers this node can actually fetch headers and blocks from",
+    "zero means no usable outbound peer exists, so download cannot start "
+    "whatever any height field reports",
+    "zclassic23 ops state --subsystem=peer_lifecycle --explain")
+
+TL_LEAF(peers, outbound_floor_target, TLC_I64, TFU_GAUGE, TLV_NORMAL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "the healthy-outbound floor this build is compiled with "
+    "(ZCL_PEER_FLOOR_HEALTHY, net/net.h) — the number outbound_healthy is "
+    "compared against by the net.outbound_floor supervisor contract",
+    "", "")
+
+TL_LEAF(peers, outbound_floor_satisfied, TLC_BOOL, TFU_BOOL, TLV_SUMMARY,
+    TFR_EXPECT_TRUE, TL_NONE, 0, TFS_WARN,
+    "outbound_healthy >= outbound_floor_target, computed here so a reader "
+    "need not compare two leaves",
+    "below the floor the node still syncs but has no redundancy: one peer "
+    "leaving can stall it",
+    "zclassic23 ops state --subsystem=connman --explain")
+
+TL_LEAF(peers, outbound_total, TLC_I64, TFU_GAUGE, TLV_NORMAL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "outbound connections held right now at any stage, including ones still "
+    "connecting or mid-handshake; compare against outbound_healthy",
+    "", "")
+
+TL_LEAF(peers, outbound_handshake_incomplete, TLC_I64, TFU_GAUGE, TLV_NORMAL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "outbound connections that are ESTABLISHED but have not finished the "
+    "handshake; a value that stays high while outbound_healthy stays 0 is a "
+    "handshake wall, not a connect problem",
+    "", "")
+
+TL_LEAF(peers, inbound_total, TLC_I64, TFU_GAUGE, TLV_NORMAL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "inbound connections held right now at any stage; 0 is normal behind NAT "
+    "and is never by itself a sync problem",
+    "", "")
+
+TL_LEAF(peers, handshaked_total, TLC_I64, TFU_GAUGE, TLV_SUMMARY,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "peers in either direction past the full VERSION/VERACK exchange right "
+    "now; wider than outbound_healthy, which is the block-serving subset that "
+    "decides whether sync can move",
+    "", "")
+
+TL_LEAF(peers, healthy_group_count, TLC_I64, TFU_GAUGE, TLV_NORMAL,
+    TFR_MIN_ABS, TL_NONE, 2, TFS_WARN,
+    "distinct IPv4 /16 groups among the handshaked outbound peers — the "
+    "diversity that counts, since only those peers serve data",
+    "1 or 0 means every usable peer sits behind one network group, so a "
+    "single operator or route can eclipse this node",
+    "zclassic23 ops state --subsystem=network_census")
+
+TL_LEAF(peers, oldest_connection_age_secs, TLC_I64, TFU_SECONDS, TLV_FULL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "age of the longest-held live connection. Compare with "
+    "newest_connection_age_secs: both small on a node with peers means the "
+    "whole peer set is churning rather than settling",
+    "", "")
+
+TL_LEAF(peers, newest_connection_age_secs, TLC_I64, TFU_SECONDS, TLV_FULL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "age of the most recently accepted or dialed live connection; large while "
+    "outbound_healthy is below the floor means the dialer has stopped trying",
+    "", "")
+
+TL_LEAF(peers, dial_attempts_total, TLC_I64, TFU_COUNT_TOTAL, TLV_FULL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "outbound dial attempts started since boot, over every address tried — "
+    "the denominator for the two funnel ratios below",
+    "", "")
+
+TL_LEAF(peers, handshakes_completed_total, TLC_I64, TFU_COUNT_TOTAL, TLV_NORMAL,
+    TFR_EXPECT_NONZERO, TL_NONE, 0, TFS_CRITICAL,
+    "connections that finished the full VERSION/VERACK exchange since boot",
+    "zero is terminal: no peer was ever usable, so height cannot move and "
+    "every other sync symptom is downstream of this one",
+    "zclassic23 ops state --subsystem=peer_lifecycle --explain")
+
+TL_LEAF(peers, pre_handshake_disconnects_total, TLC_I64, TFU_COUNT_TOTAL,
+    TLV_NORMAL,
+    TFR_MAX_RATIO_OF, TL_REF(peers, dial_attempts_total), 400, TFS_CRITICAL,
+    "connections that reached TCP ESTABLISHED and were closed before the "
+    "handshake finished — the socket opened and no usable protocol bytes were "
+    "exchanged",
+    "a high share of attempts means the far side hangs up at accept: a "
+    "per-IP cap, a ban, or a network-magic mismatch",
+    "zclassic23 ops state --subsystem=peer_lifecycle --key=incidents")
+
+TL_LEAF(peers, dial_timeouts_total, TLC_I64, TFU_COUNT_TOTAL, TLV_FULL,
+    TFR_MAX_RATIO_OF, TL_REF(peers, dial_attempts_total), 800, TFS_WARN,
+    "dial attempts abandoned on a timer with no response at all from the far "
+    "side",
+    "near the attempt count means the address pool is dead or egress is "
+    "blocked — a different failure from being actively hung up on",
+    "zclassic23 ops state --subsystem=addrman --explain")
+
+TL_LEAF(peers, rejected_total, TLC_I64, TFU_COUNT_TOTAL, TLV_FULL,
+    TFR_EXPECT_ZERO, TL_NONE, 0, TFS_WARN,
+    "connections THIS node refused under its own admission policy: banned "
+    "address, misbehaviour score, or a full slot",
+    "nonzero means we are the side saying no, so peer-side theories are the "
+    "wrong branch to chase",
+    "zclassic23 ops state --subsystem=connman --explain")
+
+TL_GROUP_END(peers)
+
+TL_GROUP(tor, "the embedded onion service, and whether this build can have one "
+              "at all")
+
+TL_LEAF(tor, tor_build, TLC_TEXT, TFU_ENUM, TLV_SUMMARY,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "which Tor this binary linked: 'real_tor' (vendor/tor was built) or "
+    "'tor_stub' (the default build, which cannot serve an onion at all). Read "
+    "this FIRST — on a stub build every other leaf in this group is "
+    "not_applicable, and no onion field there means Tor is down",
+    "", "")
+
+TL_LEAF(tor, onion_enabled, TLC_BOOL, TFU_BOOL, TLV_SUMMARY,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "whether embedded Tor was started in this process. Not judged: running "
+    "without an onion is the shipped default, so false is a posture and not a "
+    "fault. Compare against tor_build before reading anything into it",
+    "", "")
+
+TL_LEAF(tor, onion_published, TLC_BOOL, TFU_BOOL, TLV_SUMMARY,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "whether Tor finished bootstrapping and the onion descriptor is live. "
+    "Meaningful only when onion_enabled is true; false with onion_enabled "
+    "true means bootstrap is still in flight",
+    "", "")
+
+TL_LEAF(tor, onion_address, TLC_TEXT, TFU_IDENTITY, TLV_NORMAL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "the .onion hostname this node serves on, empty until the descriptor is "
+    "published; an identity, never judged",
+    "", "")
+
+TL_GROUP_END(tor)
+
+TL_GROUP(transport, "what the wire actually negotiated, not what the code can "
+                    "do")
+
+TL_LEAF(transport, v2_offered_by_default, TLC_BOOL, TFU_BOOL, TLV_SUMMARY,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "whether this node offers the Noise v2 encrypted transport when it dials. "
+    "False is the shipped posture pending rollout, so false is not a finding "
+    "— and it is a capability, never evidence that any byte was encrypted",
+    "", "")
+
+TL_LEAF(transport, peers_encrypted_now, TLC_I64, TFU_GAUGE, TLV_SUMMARY,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "live connections whose Noise v2 handshake COMPLETED — the only leaf here "
+    "that says traffic is encrypted. Expected to be 0 while the default is "
+    "off; compare against peers_plaintext_now for the split",
+    "", "")
+
+TL_LEAF(transport, peers_plaintext_now, TLC_I64, TFU_GAUGE, TLV_SUMMARY,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "live connections carrying no v2 transport at all, so their bytes are on "
+    "the wire in the clear. Not judged: every zclassicd peer is necessarily "
+    "here, so a nonzero value is the network's shape, not a defect",
+    "", "")
+
+TL_LEAF(transport, peers_handshaking_now, TLC_I64, TFU_GAUGE, TLV_NORMAL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "live connections with a v2 transport attached that has not reached "
+    "ESTABLISHED; a value stuck here while peers_encrypted_now stays 0 is a "
+    "v2 handshake wall",
+    "", "")
+
+TL_LEAF(transport, peers_advertising_v2_now, TLC_I64, TFU_GAUGE, TLV_NORMAL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "handshaked peers currently advertising the v2 service bit — how many "
+    "COULD negotiate it. Always read alongside peers_encrypted_now, which is "
+    "how many did",
+    "", "")
+
+TL_LEAF(transport, v2_advertising_high_water, TLC_I64, TFU_GAUGE, TLV_FULL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "the most simultaneous v2-advertising peers seen since boot; the evidence "
+    "a rollout decision would need, and still not proof of any negotiation",
+    "", "")
+
+TL_GROUP_END(transport)
