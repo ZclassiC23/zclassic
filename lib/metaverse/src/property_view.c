@@ -63,6 +63,11 @@ bool metaverse_view_begin(struct metaverse_property_view *out,
     out->kind_name           = metaverse_kind_name(METAVERSE_KIND_UNKNOWN);
     out->authority_source    = metaverse_kind_authority(METAVERSE_KIND_UNKNOWN);
     out->owner_principal_kind = "none";
+    /* Even a failed begin leaves a coherent work block, so a caller that
+     * ignores the return renders "unknown", never an all-zero measurement
+     * that reads as depth 0. */
+    out->settlement = metaverse_kind_settlement(METAVERSE_KIND_UNKNOWN);
+    metaverse_work_none(&out->work, out->settlement);
     if (!metaverse_property_id_valid(id))
         return false;
 
@@ -71,6 +76,10 @@ bool metaverse_view_begin(struct metaverse_property_view *out,
         return false;
     out->kind_name        = metaverse_kind_name(id->kind);
     out->authority_source = metaverse_kind_authority(id->kind);
+    /* From the KIND, not from the adapter: an adapter may report what it
+     * measured, never what class of thing it is measuring. */
+    out->settlement = metaverse_kind_settlement(id->kind);
+    metaverse_work_none(&out->work, out->settlement);
     memcpy(out->immutable_root, id->root, METAVERSE_ROOT_BYTES);
     return true;
 }
@@ -106,6 +115,11 @@ void metaverse_view_undetermined(struct metaverse_property_view *view,
     view->evidence_source = NULL;
     view->actions         = 0;
     view->populated       = true;
+    /* Same reason the action set is cleared: a view that could not
+     * determine the record must not keep a depth or chainwork measured
+     * against it. The settlement CLASS survives — it is a fact about the
+     * kind, not about this read. */
+    metaverse_work_none(&view->work, view->settlement);
 
     if (!fmt) {
         view->reason[0] = '\0';
@@ -133,6 +147,16 @@ bool metaverse_view_to_json(const struct metaverse_property_view *view,
     (void)json_push_kv_str(out, "authority_source",
                            view->authority_source ? view->authority_source
                                                   : "unknown");
+    /* Settlement rides beside authority_source because the two answer
+     * different questions: WHO to ask, and WHAT KIND OF ANSWER they give.
+     * `settlement_means` is emitted in full rather than left to a lookup
+     * table on the consumer's side — a local_declaration property must say
+     * out loud that nothing outside this node has agreed to it, in the same
+     * document that lists it as owned. */
+    (void)json_push_kv_str(out, "settlement",
+                           metaverse_settlement_name(view->settlement));
+    (void)json_push_kv_str(out, "settlement_means",
+                           metaverse_settlement_means(view->settlement));
     (void)json_push_kv_bool(out, "determined", view->determined);
     (void)json_push_kv_str(out, "reason", view->reason);
     (void)json_push_kv_str(out, "status",
@@ -176,6 +200,18 @@ bool metaverse_view_to_json(const struct metaverse_property_view *view,
     (void)json_push_kv_int(out, "freshness_height",
                            view->has_freshness_height ? view->freshness_height
                                                       : -1);
+
+    /* The measurement, in its own object so "no numbers here" is a shape a
+     * consumer can see rather than a set of keys it has to notice are
+     * missing. */
+    {
+        struct json_value work;
+
+        json_init(&work);
+        if (metaverse_work_to_json(&view->work, &work))
+            (void)json_push_kv(out, "work", &work);
+        json_free(&work);
+    }
 
     if (!metaverse_action_mask_format(view->actions, actions, sizeof(actions)))
         actions[0] = '\0';

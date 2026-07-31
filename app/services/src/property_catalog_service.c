@@ -40,9 +40,25 @@ void property_catalog_page_free(struct property_catalog_page *page)
     free(page);
 }
 
-/* Build the adapter context. `chain_height` is -1 because no wired kind is
- * chain-anchored; handing a tip height to a non-chain authority is how a
- * false freshness claim gets minted, so it is not passed speculatively. */
+/* Build the adapter context. The chain anchor (`chain_height`,
+ * `chain_work`) is left UNKNOWN — -1 and NULL — and that is a decision, not
+ * an omission:
+ *
+ *   1. No wired kind is proof-of-work settled. CONTENT and ZCODE_PACKAGE
+ *      are content-addressed; their roots are checkable without any tip,
+ *      and handing them one would only invite a renderer to print it.
+ *   2. This projection is datadir-only and node-free by contract (see
+ *      services/property_catalog.h). The live tip lives in the in-process
+ *      block index, and reading it here would make `metaverse property
+ *      list` depend on a running node — a different command from the one
+ *      documented.
+ *
+ * When a ZNAM or ZSLP adapter lands it needs a real tip, and the honest
+ * shape is for the CALLER that has one to supply both fields together:
+ * `bi->nChainWork` beside `bi->nHeight` from the same block index entry,
+ * never a height with the work left NULL and never work recomputed here.
+ * Until then, unknown is the true value and metaverse_work_measure() turns
+ * it into a stated gap rather than a zero. */
 static bool pc_ctx_init(struct metaverse_adapter_ctx *ctx, const char *datadir,
                         char *zcode_dir, size_t zcode_dir_cap)
 {
@@ -53,6 +69,7 @@ static bool pc_ctx_init(struct metaverse_adapter_ctx *ctx, const char *datadir,
     ctx->datadir      = datadir;
     ctx->zcode_dir    = zcode_dir;
     ctx->chain_height = -1;
+    ctx->chain_work   = NULL;
     return true;
 }
 
@@ -63,6 +80,7 @@ static void pc_row_begin(struct property_catalog_kind_row *row,
     row->kind             = adapter->kind;
     row->kind_name        = metaverse_kind_name(adapter->kind);
     row->authority_source = metaverse_kind_authority(adapter->kind);
+    row->settlement       = metaverse_kind_settlement(adapter->kind);
     row->available        = metaverse_adapter_ready(adapter);
     row->unavailable_reason =
         row->available ? "" : (adapter->unavailable_reason
@@ -262,6 +280,13 @@ struct zcl_result property_catalog_page_to_json(
         (void)json_push_kv_str(&row, "kind", k->kind_name);
         (void)json_push_kv_str(&row, "authority_source",
                                k->authority_source);
+        /* Beside the authority, what kind of answer it gives. A kind whose
+         * reader is not wired still states this — the class is a property
+         * of the mechanism, knowable without reading a single record. */
+        (void)json_push_kv_str(&row, "settlement",
+                               metaverse_settlement_name(k->settlement));
+        (void)json_push_kv_str(&row, "settlement_means",
+                               metaverse_settlement_means(k->settlement));
         (void)json_push_kv_bool(&row, "available", k->available);
         (void)json_push_kv_str(&row, "unavailable_reason",
                                k->unavailable_reason ? k->unavailable_reason

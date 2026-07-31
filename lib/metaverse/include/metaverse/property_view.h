@@ -46,6 +46,20 @@
  * and reporting the node's tip height beside a claim the tip does not
  * commit would be exactly the false "we verified this" this project
  * forbids.
+ *
+ * SETTLEMENT IS A SEPARATE AXIS FROM EVIDENCE, and conflating them is the
+ * thing this view now refuses to do. `evidence` says what THIS NODE
+ * checked during this call. `settlement` (metaverse/property_id.h) says
+ * WHAT KIND OF ANSWER the authority gives at all — a hash anyone can
+ * recheck, an ordering settled by accumulated work, or a bare assertion by
+ * this node. A view can carry a strong evidence grade over a
+ * locally-declared property: we really did read the local record, and the
+ * local record is still the only thing in the world that says so. Both
+ * fields are emitted, always, so that combination reads as what it is.
+ *
+ * `work` quantifies the second class and ONLY the second class. For every
+ * other kind it reports not-applicable with a stated reason, never a zero
+ * depth and never a zero chainwork — see metaverse/property_work.h.
  */
 
 #ifndef ZCL_METAVERSE_PROPERTY_VIEW_H
@@ -53,6 +67,7 @@
 
 #include "metaverse/property_action.h"
 #include "metaverse/property_id.h"
+#include "metaverse/property_work.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -92,6 +107,12 @@ struct metaverse_property_view {
     bool determined;              /* false => `reason` says why not */
     char reason[METAVERSE_VIEW_REASON_MAX];
 
+    /* What KIND of answer this property's authority gives. Derived purely
+     * from the kind and set by metaverse_view_begin, so an adapter cannot
+     * upgrade or soften it — it is a property of the mechanism, not of
+     * this particular read. */
+    enum metaverse_settlement settlement;
+
     enum metaverse_property_status status;
     enum metaverse_evidence evidence;
     /* The exact read primitive that answered, e.g.
@@ -124,6 +145,13 @@ struct metaverse_property_view {
     /* False for every non-chain-anchored authority. See header. */
     bool has_freshness_height;
     int64_t freshness_height;
+
+    /* How much proof of work is under this record. Initialized by
+     * metaverse_view_begin to the honest not-applicable/no-anchor state for
+     * the kind's settlement class; a PROOF_OF_WORK adapter overwrites it
+     * with metaverse_work_measure(). Every other adapter leaves it alone,
+     * and leaving it alone is correct. */
+    struct metaverse_work_proof work;
 
     /* Actions the CURRENT STATE supports. Availability, not authority —
      * intersect with a grant before acting. */

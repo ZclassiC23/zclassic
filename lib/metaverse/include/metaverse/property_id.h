@@ -26,6 +26,37 @@
  * AUTHORITY SOURCE: each kind names the ONE existing model that owns its
  * ownership truth (third column of the kind table). This layer never
  * becomes that authority; it records which one to ask.
+ *
+ * SETTLEMENT CLASS (fourth column): the authority source says WHO to ask.
+ * It does not say WHAT KIND OF ANSWER comes back, and the three kinds of
+ * answer are not comparable guarantees:
+ *
+ *   CONTENT_ADDRESSED  the object IS its hash. Verification needs no
+ *                      authority at all — you hash the bytes and compare.
+ *                      Nobody can revoke it, outvote it, or reorg it away.
+ *   PROOF_OF_WORK      ownership is an ORDERING question ("who registered
+ *                      this name first") and the answer is whichever
+ *                      ordering carries the most accumulated work. The
+ *                      guarantee is measurable and it is a quantity, not a
+ *                      yes/no: see metaverse/property_work.h.
+ *   LOCAL_DECLARATION  no external settlement whatsoever. This node says
+ *                      so. Nothing outside it has agreed or disagreed, and
+ *                      a second node asked the same question may answer
+ *                      differently with equal standing.
+ *
+ * A fourth class exists because one kind honestly does not fit:
+ *
+ *   CHAIN_ANCHORED_INCOMPLETE  the record refers to an on-chain object, but
+ *                      this node cannot measure the work behind it — either
+ *                      the row carries no anchor height at all, or the
+ *                      anchor is on a chain this node does not validate.
+ *                      Filing it under PROOF_OF_WORK would claim a
+ *                      measurement that does not exist.
+ *
+ * Stating the class is what keeps LOCAL_DECLARATION from silently borrowing
+ * the credibility of the other two. There is deliberately no ranking, score,
+ * or trust tier here: the class names a MECHANISM, and property_work.h
+ * reports a MEASUREMENT. Judging them is the reader's job.
  */
 
 #ifndef ZCL_METAVERSE_PROPERTY_ID_H
@@ -35,33 +66,99 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* The property kinds, and for each one the wire name plus the existing
- * subsystem that owns its ownership truth. Adding a kind is one row here
- * plus one adapter row (metaverse/property_adapter.h) — the adapter table
- * is static_assert'd against this count, so a kind can never appear in
- * the vocabulary with no reader behind it.
+/* What kind of answer a property's authority gives. Zero is not a class,
+ * matching this file's discipline that a zeroed struct is never accidentally
+ * valid: a kind whose class was never decided reads as UNKNOWN, not as the
+ * strongest one. See the header comment for what each class means. */
+enum metaverse_settlement {
+    METAVERSE_SETTLEMENT_UNKNOWN = 0,
+    METAVERSE_SETTLEMENT_CONTENT_ADDRESSED,
+    METAVERSE_SETTLEMENT_PROOF_OF_WORK,
+    METAVERSE_SETTLEMENT_LOCAL_DECLARATION,
+    METAVERSE_SETTLEMENT_CHAIN_ANCHORED_INCOMPLETE,
+    METAVERSE_SETTLEMENT_COUNT
+};
+
+/* The property kinds, and for each one the wire name, the existing
+ * subsystem that owns its ownership truth, and the SETTLEMENT CLASS of the
+ * answer that subsystem gives (the METAVERSE_SETTLEMENT_ suffix). Adding a
+ * kind is one row here plus one adapter row
+ * (metaverse/property_adapter.h) — the adapter table is static_assert'd
+ * against this count, so a kind can never appear in the vocabulary with no
+ * reader behind it, and a row with only three columns will not preprocess,
+ * so a kind can never appear with no settlement class either.
+ *
+ * Why each kind sits where it does:
+ *
+ *   content / zcode_package  the id IS the manifest root. A reader hashes
+ *       the bytes it holds and compares; no registry, chain, or peer is
+ *       consulted. The strongest class in the table and the one easiest to
+ *       undersell.
+ *   znam_name / zslp_asset   both are OP_RETURN records whose meaning is
+ *       "who was first". First-ness is an ordering, an ordering is what PoW
+ *       settles, and both models record the ZCL height that fixes it
+ *       (znam_entry.reg_height, zslp_token.genesis_height), so the work
+ *       behind the claim is a real measurable quantity.
+ *   hosted_service / endpoint_onion / storefront_product   nothing outside
+ *       this process has agreed these exist. A hosted service is the live
+ *       diagnostics registry's own list; an onion endpoint is the embedded
+ *       Tor service's runtime state; a storefront product is a row this
+ *       operator inserted. All three are assertions by this node about
+ *       itself, and saying so plainly is what makes the first two classes
+ *       credible.
+ *   contract_swap            chain-anchored but NOT measurable here. The
+ *       row (models/swap_contract.h) carries funding_txid and an absolute
+ *       CLTV locktime but no funding HEIGHT, so there is no anchor to
+ *       measure depth from; and `chain` may be BTC/LTC/DOGE, whose height
+ *       this node explicitly refuses to claim it can observe
+ *       (swap_controller.c, swap_locktime_to_absolute). Redeem/refund are
+ *       wired, funding-confirmation tracking is not. Hence the honest
+ *       fourth class rather than a PROOF_OF_WORK label with permanently
+ *       unknown numbers under it.
  *
  * Room to extend is deliberate: world/object kinds land as further rows,
  * never as a parallel enum. */
 #define METAVERSE_KIND_TABLE(X)                                              \
-    X(CONTENT,            "content",            "vcs.blob_store")            \
-    X(ZCODE_PACKAGE,      "zcode_package",      "vcs.package_store")         \
-    X(ZNAM_NAME,          "znam_name",          "znam.registry")             \
-    X(ZSLP_ASSET,         "zslp_asset",         "zslp.ledger")               \
-    X(HOSTED_SERVICE,     "hosted_service",     "service.registry")          \
-    X(ENDPOINT_ONION,     "endpoint_onion",     "net.onion_service")         \
-    X(STOREFRONT_PRODUCT, "storefront_product", "store.product")             \
-    X(CONTRACT_SWAP,      "contract_swap",      "swap.contract")
+    X(CONTENT,            "content",            "vcs.blob_store",            \
+      CONTENT_ADDRESSED)                                                     \
+    X(ZCODE_PACKAGE,      "zcode_package",      "vcs.package_store",         \
+      CONTENT_ADDRESSED)                                                     \
+    X(ZNAM_NAME,          "znam_name",          "znam.registry",             \
+      PROOF_OF_WORK)                                                         \
+    X(ZSLP_ASSET,         "zslp_asset",         "zslp.ledger",               \
+      PROOF_OF_WORK)                                                         \
+    X(HOSTED_SERVICE,     "hosted_service",     "service.registry",          \
+      LOCAL_DECLARATION)                                                     \
+    X(ENDPOINT_ONION,     "endpoint_onion",     "net.onion_service",         \
+      LOCAL_DECLARATION)                                                     \
+    X(STOREFRONT_PRODUCT, "storefront_product", "store.product",             \
+      LOCAL_DECLARATION)                                                     \
+    X(CONTRACT_SWAP,      "contract_swap",      "swap.contract",             \
+      CHAIN_ANCHORED_INCOMPLETE)
 
 enum metaverse_kind {
     /* Zero is not a kind. A zeroed struct is an explicitly invalid id, so
      * a forgotten initialization can never read as CONTENT. */
     METAVERSE_KIND_UNKNOWN = 0,
-#define METAVERSE_KIND_ENUM(id_, name_, authority_) METAVERSE_KIND_##id_,
+#define METAVERSE_KIND_ENUM(id_, name_, authority_, settle_) \
+    METAVERSE_KIND_##id_,
     METAVERSE_KIND_TABLE(METAVERSE_KIND_ENUM)
 #undef METAVERSE_KIND_ENUM
     METAVERSE_KIND_COUNT
 };
+
+/* Every kind's fourth column must name a real class. This fires at compile
+ * time in every translation unit that includes this header, so a new kind
+ * cannot reach a test run classified as UNKNOWN. */
+#define METAVERSE_KIND_SETTLE_ASSERT(id_, name_, authority_, settle_)        \
+    _Static_assert(METAVERSE_SETTLEMENT_##settle_ >                          \
+                           METAVERSE_SETTLEMENT_UNKNOWN &&                   \
+                       METAVERSE_SETTLEMENT_##settle_ <                      \
+                           METAVERSE_SETTLEMENT_COUNT,                       \
+                   "property kind " name_ " must name a real settlement "    \
+                   "class in METAVERSE_KIND_TABLE");
+METAVERSE_KIND_TABLE(METAVERSE_KIND_SETTLE_ASSERT)
+#undef METAVERSE_KIND_SETTLE_ASSERT
 
 #define METAVERSE_ROOT_BYTES 32u
 
@@ -78,6 +175,29 @@ struct metaverse_property_id {
  * UNKNOWN kind renders as "unknown". */
 const char *metaverse_kind_name(enum metaverse_kind kind);
 const char *metaverse_kind_authority(enum metaverse_kind kind);
+
+/* The kind's settlement class, straight out of the table's fourth column.
+ * METAVERSE_SETTLEMENT_UNKNOWN only for UNKNOWN / out-of-range. Pure: no
+ * I/O, no allocation, no chain access — the same rules as the two above. */
+enum metaverse_settlement metaverse_kind_settlement(enum metaverse_kind kind);
+
+/* Wire name of a settlement class ("content_addressed", "proof_of_work",
+ * "local_declaration", "chain_anchored_incomplete"). Never NULL; an
+ * UNKNOWN or out-of-range class renders as "unknown". */
+const char *metaverse_settlement_name(enum metaverse_settlement settlement);
+
+/* One sentence stating plainly what the class does and does not settle, for
+ * an operator reading a view. Never NULL. The LOCAL_DECLARATION wording is
+ * deliberately blunt: softening it is what would let a locally-asserted
+ * product read like a chain-settled one. */
+const char *metaverse_settlement_means(enum metaverse_settlement settlement);
+
+/* True only for METAVERSE_SETTLEMENT_PROOF_OF_WORK — the one class whose
+ * backing is a QUANTITY this node can measure (anchor height, confirmation
+ * depth, accumulated chainwork). For every other class the honest answer to
+ * "how much work is behind this" is "that question does not apply", which
+ * is not the same as zero. See metaverse/property_work.h. */
+bool metaverse_settlement_work_measurable(enum metaverse_settlement s);
 
 /* Exact wire-name lookup. METAVERSE_KIND_UNKNOWN when nothing matches
  * (including NULL, "", and "unknown" itself). */
