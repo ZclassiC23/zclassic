@@ -36,15 +36,12 @@
 # for uncommitted/untracked content and refuses if a lane drifted between
 # classification and execution. That refusal is the safety net, not a bug.
 #
-# KNOWN GAP — a worktree can be provably dead and still undeletable, because it
-# holds build artifacts this user cannot unlink (root-owned, or a mode that
-# denies removal). Today that shows up only as a `git worktree remove` failure
-# at apply time, which is late and easy to read as a transient error. A second
-# collector written in July 2026 probed for it up front and reported the count
-# as its own bucket; that collector was deleted rather than kept alongside this
-# one (two collectors with different safety flags is how the wrong one gets
-# run), so the probe is worth porting here. Recover it with:
-#   git log --diff-filter=D -p -- tools/dev/worktree-gc.sh
+# A worktree can be provably dead and still undeletable, because test scratch
+# under test-tmp/ contains directories deliberately made read-only, and a
+# directory without u+w cannot have its children unlinked. That turned a SAFE
+# removal into a FAIL, after which the prune unregistered the worktree anyway
+# and left a permanent orphan this script refuses to touch by policy. The apply
+# path now restores write permission on that one worktree's scratch first.
 
 set -euo pipefail
 
@@ -378,7 +375,15 @@ if [ "$n_orphan" -gt 0 ]; then
 fi
 
 # --- apply ------------------------------------------------------------------
+# rc is reserved for things that actually went WRONG. A re-verify that refuses
+# to remove something is the safety net doing its job, not a failure: this
+# script deliberately re-checks merged/clean/protected immediately before each
+# removal, because those conditions can drift between classification and
+# execution. Counting that as a non-zero exit made the systemd unit report
+# `failed` on runs that did exactly the right thing — and a unit that cries
+# failure on success is a unit everyone learns to ignore.
 rc=0
+refused=0
 if [ "$APPLY" = "1" ]; then
     echo
     echo "APPLY: removing SAFE worktrees (git worktree remove, no --force)"
@@ -390,13 +395,25 @@ if [ "$APPLY" = "1" ]; then
         if [ -z "$head_now" ] ||
            ! git -C "$MAIN_ROOT" merge-base --is-ancestor "$head_now" "$MAIN_REF" 2>/dev/null; then
             printf '  SKIP %s — no longer provably merged\n' "$path"
-            rc=1
+            refused=$((refused + 1))
             continue
         fi
         if [ -n "$(git -C "$path" status --porcelain=v1 -uall 2>/dev/null)" ]; then
             printf '  SKIP %s — went dirty since classification\n' "$path"
-            rc=1
+            refused=$((refused + 1))
             continue
+        fi
+        # Restore write permission on this worktree's own scratch before
+        # removing it. Tests under test-tmp/ deliberately create read-only
+        # directories (the generation dirs under lib/gens/ are made immutable
+        # on purpose, to prove the activation path cannot rewrite them), and a
+        # directory without u+w cannot have its children unlinked. That made
+        # `git worktree remove` fail, after which the later prune unregistered
+        # the worktree anyway — turning a SAFE removal into a permanent orphan
+        # that this script then refuses to touch by policy. Bounded to the one
+        # path about to be deleted, and only its scratch.
+        if [ -d "$path/test-tmp" ]; then
+            chmod -R u+w "$path/test-tmp" 2>/dev/null || true
         fi
         if ! git -C "$MAIN_ROOT" worktree remove "$path"; then
             printf '  FAIL git worktree remove %s\n' "$path" >&2
@@ -423,7 +440,7 @@ EOF_SAFE
         fi
         if ! git -C "$MAIN_ROOT" merge-base --is-ancestor "$b" "$MAIN_REF" 2>/dev/null; then
             printf '  SKIP branch %s — no longer provably merged\n' "$b"
-            rc=1
+            refused=$((refused + 1))
             continue
         fi
         if ! git -C "$MAIN_ROOT" branch -D "$b" >/dev/null; then
@@ -439,6 +456,12 @@ EOF_DEL
     if [ "$PRUNE_NEEDED" = "1" ]; then
         echo "APPLY: git worktree prune"
         git -C "$MAIN_ROOT" worktree prune -v
+    fi
+    if [ "$refused" -gt 0 ]; then
+        printf 'APPLY: %d re-verify refusal(s) — conditions drifted between\n' "$refused"
+        printf '       classification and removal, so those were left alone. That is\n'
+        printf '       the safety net working; it is not an error and does not fail\n'
+        printf '       this run. Re-run to pick them up once they settle.\n'
     fi
     echo "APPLY: done"
 else
