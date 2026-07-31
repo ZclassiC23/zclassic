@@ -5,6 +5,9 @@
 
 #include "models/build_fabric.h"
 #include "models/database.h"
+#include "services/build_fabric_service.h"
+#include "base/hex.h"
+#include "crypto/ed25519.h"
 
 #include <sqlite3.h>
 #include <stdio.h>
@@ -184,12 +187,77 @@ static int test_bf_validation(void)
     return failures;
 }
 
+static int test_bf_service(void)
+{
+    int failures = 0;
+    TEST("build_fabric: service gates transitions and verifies signed receipts") {
+        struct node_db ndb;
+        char dir[256], path[320];
+        ASSERT(bf_open(&ndb, dir, sizeof(dir), path, sizeof(path), "service"));
+        struct db_build_job job;
+        struct db_build_action action;
+        bf_job(&job);
+        bf_action(&action);
+        struct db_build_job planned_job = job;
+        struct db_build_action planned_action = action;
+        ASSERT(build_fabric_plan(&ndb, &job, &action).ok);
+        ASSERT(build_fabric_plan(&ndb, &job, &action).ok); /* idempotent */
+        ASSERT(build_fabric_submit(&ndb, id_a, 110).ok);
+        ASSERT(build_fabric_submit(&ndb, id_a, 111).ok); /* idempotent */
+        ASSERT(build_fabric_plan(&ndb, &planned_job, &planned_action).ok);
+        ASSERT(db_build_action_find(&ndb, id_b, &action));
+        ASSERT_STR_EQ(action.state, "QUEUED");
+        ASSERT(db_build_job_find(&ndb, id_a, &job));
+        ASSERT_STR_EQ(job.state, "QUEUED");
+
+        uint8_t seed[32], pubkey[32], secret[32];
+        memset(seed, 7, sizeof(seed));
+        ed25519_keypair(pubkey, secret, seed);
+        struct db_build_worker worker;
+        bf_worker(&worker);
+        zcl_hex_encode(pubkey, sizeof(pubkey), worker.signer_pubkey);
+        ASSERT(build_fabric_worker_approve(&ndb, &worker, 112).ok);
+
+        (void)snprintf(action.state, sizeof(action.state), "VERIFYING");
+        action.updated_at = 113;
+        ASSERT(db_build_action_save(&ndb, &action));
+        struct db_build_receipt receipt;
+        bf_receipt(&receipt);
+        ASSERT(build_fabric_receipt_id(&receipt, receipt.receipt_id).ok);
+        uint8_t receipt_id[32], signature[64];
+        ASSERT(zcl_hex_decode_lower(receipt.receipt_id, receipt_id,
+                                    sizeof(receipt_id)));
+        ed25519_sign(signature, receipt_id, sizeof(receipt_id), secret, pubkey);
+        zcl_hex_encode(signature, sizeof(signature), receipt.signature);
+        ASSERT(build_fabric_receipt_accept(&ndb, &receipt, 114).ok);
+        ASSERT(db_build_action_find(&ndb, id_b, &action));
+        ASSERT_STR_EQ(action.state, "ACCEPTED");
+        ASSERT_STR_EQ(action.output_root_sha3, id_c);
+
+        /* Revocation is durable and makes a newly bound receipt fail before
+         * signature acceptance; old evidence remains queryable. */
+        ASSERT(build_fabric_worker_revoke(&ndb, id_c, 115).ok);
+        ASSERT(build_fabric_worker_revoke(&ndb, id_c, 116).ok);
+        receipt.created_at = 117;
+        ASSERT(build_fabric_receipt_id(&receipt, receipt.receipt_id).ok);
+        ASSERT(!build_fabric_receipt_accept(&ndb, &receipt, 117).ok);
+        struct db_build_receipt rows[2];
+        ASSERT_EQ(db_build_job_receipts(&ndb, id_a, rows, 2), 1);
+        ASSERT(!build_fabric_cancel(&ndb, id_a, 118).ok);
+        node_db_close(&ndb);
+        test_rm_rf(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_build_fabric(void)
 {
     int failures = 0;
     failures += test_bf_migration();
     failures += test_bf_lifecycle();
     failures += test_bf_validation();
+    failures += test_bf_service();
     printf("=== build_fabric: %d failures ===\n", failures);
     return failures;
 }
