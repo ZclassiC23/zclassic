@@ -234,6 +234,10 @@ static int test_runner_exact_selection(void)
         ASSERT(rc == 0);
         ASSERT(strstr(out, "groups_ran=1") != NULL);
         ASSERT(strstr(out, "groups_failed=0") != NULL);
+        ASSERT(strstr(out, "\"schema\":\"zcl.test_phase_receipt.v1\"") !=
+               NULL);
+        ASSERT(strstr(out, "\"startup_ms\":") != NULL);
+        ASSERT(strstr(out, "\"test_body_ms\":") != NULL);
 
         n = snprintf(command, sizeof(command), "\"%s\" --source-id 2>&1",
                      exe);

@@ -66,7 +66,7 @@ binds nanosecond file/directory/index epochs and effective Git exclude policy.
 Edit/revert ABA during the proof, newly appearing compiler inputs, and policy
 changes all refuse. Build and publication boundaries still use the heavier full
 `verify-record`.
-5. **Push flow + its two traps:** `make lint && make build-only`, run the mapped focused tests, then `git push` (hook runs `make pre-push-ci`). **Trap A (impact-rules):** every changed `.c` must map to a focused group in `app/controllers/include/controllers/agent_impact_rules.def` or the push is BLOCKED ("no focused test mapping") — add the mapping. **Trap B (pre-push SIGPIPE):** git may not drain the hook's stdout, so a GREEN `make pre-push-ci` can die with `make[2]: write error: stdout` and spuriously block — confirm green out-of-band (`make pre-push-ci >log 2>&1; echo $?` → 0) then `git push --no-verify` (verified, not skipped).
+5. **Push flow + its two traps:** `make lint && make -j"$(nproc)" build-only`, run the mapped focused tests with parallel Make, then `git push` (hook runs `make pre-push-ci`). **Trap A (impact-rules):** every changed `.c` must map to a focused group in `app/controllers/include/controllers/agent_impact_rules.def` or the push is BLOCKED ("no focused test mapping") — add the mapping. **Trap B (pre-push SIGPIPE):** git may not drain the hook's stdout, so a GREEN `make pre-push-ci` can die with `make[2]: write error: stdout` and spuriously block — confirm green out-of-band (`make pre-push-ci >log 2>&1; echo $?` → 0) then `git push --no-verify` (verified, not skipped).
 6. **ZVCS:** each green cycle may anchor candidate source/artifact evidence. Source revert is available only with generation relinking disabled; relinking remains contained. Sealed-core changes require the owner unseal ritual (`check-core-seal`).
 
 **Phase 3 reopening gate (future, not current authority):** publication may return only as one durable transaction that resolves an immutable source epoch, derives the complete dependency/proof plan, enforces signed seal authority, records proof receipts, validates and behaviorally probes the candidate, compare-and-swaps the expected resident epoch, persists prepared provenance, quiesces and atomically publishes the complete generation, probes through the public registry, and then durably accepts or restores the exact prior generation. Until every step and rollback proof exists, verify-only is the platform contract.
@@ -128,7 +128,7 @@ lint gate" is in `docs/CODEBASE_MAP.md`.
 
 ## Build / test / deploy
 
-- `make build-only` — fast parallel compile-check (inner loop). **It compiles
+- `make -j"$(nproc)" build-only` — fast parallel compile-check (inner loop). **It compiles
   library objects and does not link** — `src/main.c` and the binaries are never
   built, so it cannot catch a broken entry point, a missing symbol, or a link
   gap. Green here is not green.
@@ -141,8 +141,8 @@ lint gate" is in `docs/CODEBASE_MAP.md`.
   that includes per-object CFLAGS override lines, which ride the
   `BUILD_SYSTEM_ID` Makefile fingerprint.
 - `make -j$(nproc)` — full build (`zclassic23`, `test_zcl`, `zclassic-cli`).
-- `make test` / `make test-parallel` — the canonical test runner. **Use this, not `test_zcl`.**
-- `make t-fast ONLY=<substr>` — one focused run. `ONLY=` is a **substring**
+- `make -j"$(nproc)" test` / `make -j"$(nproc)" test-parallel` — the canonical test runner. **Use this, not `test_zcl`.**
+- `make -j"$(nproc)" t-fast ONLY=<substr>` — one focused run. `ONLY=` is a **substring**
   match, not a group name (`ONLY=wallet` runs 36 groups). Exact names:
   `make test_parallel && build/bin/test_parallel --list` — the underscore
   target is the only one that publishes that alias; the run targets execute an
@@ -164,7 +164,7 @@ lint gate" is in `docs/CODEBASE_MAP.md`.
   matches the `(CACHED)` form and green-lights a run that executed **zero**
   groups — that false green already shipped once (see the comment above the
   `SUITE VERDICT` printf in `lib/test/src/test_parallel.c`). Force cold with
-  `make test-parallel TEST_PARALLEL_ARGS=--no-cache`.
+  `make -j"$(nproc)" test-parallel TEST_PARALLEL_ARGS=--no-cache`.
 
 ## The agent surface — native command registry
 

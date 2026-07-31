@@ -30,18 +30,19 @@ push, you just find out about a lint or test failure after the fact.
 ## Build and test
 
 ```bash
-make                     # test_zcl + zclassic23 + zclassic-cli
+make -j"$(nproc)"        # test_zcl + zclassic23 + zclassic-cli
 make vendor              # build missing vendor/lib archives from pinned sources
-make build-only          # compile check, no final link
-make dev-bin             # fast non-LTO local node binary: build/bin/zclassic23-dev
-make t-fast ONLY=<group> # one fast test group, e.g. make t-fast ONLY=service_state_driver
+make -j"$(nproc)" build-only          # compile check, no final link
+make -j"$(nproc)" dev-bin             # fast non-LTO local node binary: build/bin/zclassic23-dev
+make -j"$(nproc)" t-fast ONLY=<group> # one fast test group, e.g. make -j"$(nproc)" t-fast ONLY=service_state_driver
 make fast-ci             # cache-aware lint/build/focused-test agent loop
-make test                # full test suite
+make -j"$(nproc)" test                # full test suite
 make lint                # defensive-coding gates (must be clean)
 make ci                  # local full gate: lint + tests + MVP slices + fuzz where available
 ```
 
-`make dev-bin` is the normal way to get a changed local node/agent executable
+`make build-only` and `make dev-bin` are the compile-check and local-node
+targets; use their parallel forms above. `make dev-bin` is the normal way to get a changed local node/agent executable
 without paying release LTO. `make t-fast ONLY=<group>` is the normal test inner
 loop: it rebuilds the fast harness and runs only the matching group(s). `make
 fast-ci` adds cache-aware lint/build/focused-test selection from changed files.
@@ -125,8 +126,8 @@ three real tests once sat in the tree for weeks, fully merged, proving nothing.
 Before opening a PR:
 
 1. `make lint` — clean, no new gate violations or baseline regressions.
-2. `make t-fast ONLY=<group>` for focused groups you touched.
-3. `make test` for broad shared behavior or before release-sized changes.
+2. `make -j"$(nproc)" t-fast ONLY=<group>` for focused groups you touched.
+3. `make -j"$(nproc)" test` for broad shared behavior or before release-sized changes.
 
 CI runs on the maintainers' own servers (`make ci` — lint + full suite),
 not on GitHub Actions; maintainers run the full gate on every PR before

@@ -268,3 +268,22 @@ Integrity-cache proof: warm run prints cached PASS; after a one-line comment
 edit to `tools/dev/build-epoch-selftest.sh` (or to the cache driver itself —
 now a key input) the next run prints `cache MISS` and re-executes both probes
 for real (~12.7s), then re-caches.
+
+## 2026-07-31 — focused-test phase-zero gate
+
+Host: 32 core / 93 GB, base HEAD `728be4fcd` plus the build-fabric working
+tree, gcc, ccache enabled. The probe was 20 consecutive warm invocations of
+`make -j32 t-fast ONLY=test_hex_codec` after one warm-up. The group body was
+20 ms; every invocation printed a `zcl.test_phase_receipt.v1` row. The outer
+measurement emitted one `zcl.phase_zero_sample.v1` JSON object per invocation,
+including generator/linker observation and exit status.
+
+| samples | p95 | min | max | generator invocations | linker invocations | failures |
+|---:|---:|---:|---:|---:|---:|---:|
+| 20 | 4.540s | 4.445s | 4.583s | 0 | 0 | 0 |
+
+This is the phase-zero acceptance measurement, not an estimate: p95 is below
+the 5-second budget, and the unchanged second-and-later Make invocations do not
+regenerate templates or relink the focused runner. The remaining ~4.5-second
+floor is source identity and Make graph setup; it is the target of the resident
+identity/build-authority phase rather than compilation or linking.

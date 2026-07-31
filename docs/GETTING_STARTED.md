@@ -63,7 +63,7 @@ publishes a real onion address.
 compiles before a full build):
 
 ```bash
-make build-only
+make -j"$(nproc)" build-only
 ```
 
 **Where the binaries land:** `build/bin/zclassic23` (the node),
@@ -79,7 +79,7 @@ build/bin/zclassic23 status        # runs against a running node; see below
 **Run the test suite and lint gates** before relying on a build:
 
 ```bash
-make test-parallel   # the canonical test runner — do not invoke test_zcl directly
+make -j"$(nproc)" test-parallel   # the canonical test runner — do not invoke test_zcl directly
 make lint            # defensive-coding + doc-accuracy gates
 ```
 
@@ -247,10 +247,13 @@ build/bin/zclassic23-dev status   # read the latest cycle verdict
 Faster manual loops when you don't want the watcher running:
 
 ```bash
-make build-only                        # parallel compile-check, no link
-make fast-rebuild                      # changed-file compile + non-LTO local dev binary
-make t-fast ONLY=<group>               # one focused test group, fastest iteration
+make -j"$(nproc)" build-only           # parallel compile-check, no link
+make -j"$(nproc)" fast-rebuild         # changed-file compile + non-LTO local dev binary
+make -j"$(nproc)" t-fast ONLY=<group>  # one focused test group, fastest iteration
 ```
+
+These are the `make fast-rebuild` and `make t-fast ONLY=<group>` targets; the
+parallel invocations above are the documented developer forms.
 
 The dev binary lives at `build/bin/zclassic23-dev` — a fast non-LTO local
 build, for iteration only; never use it for production/release.
@@ -260,7 +263,7 @@ build, for iteration only; never use it for production/release.
 Before committing or pushing, run the canonical gates:
 
 ```bash
-make test-parallel   # the canonical test runner (never invoke test_zcl directly)
+make -j"$(nproc)" test-parallel   # the canonical test runner (never invoke test_zcl directly)
 make lint            # all defensive-coding + doc-accuracy gates
 make ci              # local gate: lint + build + tests
 ```

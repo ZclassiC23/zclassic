@@ -114,7 +114,7 @@ The generated wallet-template and explorer-CSS headers use the same ordering
 rule: an included-Makefile barrier regenerates stale view outputs and restarts
 parsing before the source record is captured.
 
-`make build-only` (compile every `.o`, no link) does not need the archives and
+`make -j"$(nproc)" build-only` (compile every `.o`, no link) does not need the archives and
 is the fastest way to confirm a clean checkout compiles.
 
 ## Fast development binary
@@ -260,10 +260,11 @@ the original monolithic whole-program LTO binary at
 if a test ever behaves differently between the two (it should not). `test_zcl`
 (the serial runner) also remains a whole-program build.
 
-**Fast inner-loop variant.** `make t-fast ONLY=<group>` uses the separate
+**Fast inner-loop variant.** `make -j"$(nproc)" t-fast ONLY=<group>` uses the separate
 exact candidate and object tree (`build/bin/test-fast/epochs/<compile-epoch>/`
 and `build/test-obj/epochs/<compile-epoch>/`, `-O1`, non-`-Werror`) for the
-tightest edit loop; run strict `make t` / `make test` before commit.
+tightest edit loop; run strict `make -j"$(nproc)" t` /
+`make -j"$(nproc)" test` before commit.
 
 ## Sanitizer profiles (opt-in)
 
@@ -511,7 +512,7 @@ build/bin/ldb_verify_c23 /path/to/copy-a /path/to/copy-b
 ordered keyspace comparing every key and value byte for byte, then sweeps
 point reads (present and absent keys) and seek positions. It is the tool to
 re-run against any datadir before trusting the reader on it. The in-suite
-regression is `make t-fast ONLY=ldb_reader`, which builds its own fixture with
+regression is `make -j"$(nproc)" t-fast ONLY=ldb_reader`, which builds its own fixture with
 overwrites, tombstones and unflushed log writes, compares it against
 `libleveldb.a`, and then damages five different ways to confirm each is
 refused by name rather than answered wrongly.
@@ -534,8 +535,8 @@ Two things must still land before `c++` can leave the prerequisite list:
 
 ```bash
 make audit          # tools/dep_audit.sh — versions vs minimum-safe CVE floors
-make build-only     # compile every .o (no link) — should be clean
-make dev-bin        # fast non-LTO local node binary: build/bin/zclassic23-dev
+make -j"$(nproc)" build-only  # compile every .o (no link) — should be clean
+make -j"$(nproc)" dev-bin     # fast non-LTO local node binary: build/bin/zclassic23-dev
 make vendor         # build the vendored archives from source
 make zclassic23     # full link
 ```
@@ -544,9 +545,9 @@ make zclassic23     # full link
 
 ```bash
 make -j"$(nproc)"   # test_zcl + zclassic23 + zclassic-cli
-make dev-bin        # fast local node executable, not for deploy/release
-make test           # full parallel suite via the cached per-TU test_parallel
-make test_parallel_wpo  # whole-program LTO test binary (debug per-TU/LTO divergence)
+make -j"$(nproc)" dev-bin  # fast local node executable, not for deploy/release
+make -j"$(nproc)" test     # full parallel suite via the cached per-TU test_parallel
+make -j"$(nproc)" test_parallel_wpo  # whole-program LTO test binary (debug per-TU/LTO divergence)
 make lint           # every defensive-coding gate; it prints the list it ran
 make ci             # local gate: lint + tests + MVP slices (runs locally, not on GitHub Actions)
 make deploy         # rebuild + restart; verify exact source ID and running executable SHA-256

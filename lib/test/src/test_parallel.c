@@ -381,6 +381,7 @@ struct suite_verdict {
  * closure). Best-effort: a write failure is reported but never fails
  * the run — this is an observability artifact, not a test outcome. */
 static void write_test_timing_json(const struct group_result *results,
+                                   double startup_seconds,
                                    double wall_seconds, int jobs,
                                    size_t group_count, int failed_groups,
                                    size_t skipped_count,
@@ -439,6 +440,10 @@ static void write_test_timing_json(const struct group_result *results,
     fprintf(fp, "{\n");
     fprintf(fp, "  \"schema\":\"zcl.test_timing.v1\",\n");
     fprintf(fp, "  \"generated_at_utc\":\"%s\",\n", ts);
+    fprintf(fp, "  \"startup_ms\":%lld,\n",
+            (long long)(startup_seconds * 1000.0));
+    fprintf(fp, "  \"test_body_ms\":%lld,\n",
+            (long long)(wall_seconds * 1000.0));
     fprintf(fp, "  \"wall_ms\":%lld,\n", (long long)(wall_seconds * 1000.0));
     fprintf(fp, "  \"jobs\":%d,\n", jobs);
     fprintf(fp, "  \"group_count\":%zu,\n", group_count);
@@ -481,6 +486,9 @@ static void write_test_timing_json(const struct group_result *results,
 
 int main(int argc, char **argv)
 {
+    struct timespec process_start;
+    platform_time_monotonic_timespec(&process_start);
+
     /* The confined-agent boundary re-execs THIS binary as the untrusted child
      * (session/agent_broker.h). It is dispatched before any test setup for the
      * same reason main.c dispatches it before node boot: the child arrives
@@ -778,6 +786,9 @@ int main(int argc, char **argv)
 
     struct timespec t_start;
     platform_time_monotonic_timespec(&t_start);
+    double startup_wall =
+        (double)(t_start.tv_sec - process_start.tv_sec) +
+        (double)(t_start.tv_nsec - process_start.tv_nsec) / 1e9;
 
     pid_t parent_pid = getpid();
     /* pre_skipped (‑‑only / params) plus cache HITS are already accounted done. */
@@ -968,8 +979,17 @@ int main(int argc, char **argv)
     };
     testcache_toolkey_digest12(verdict.toolkey);
 
-    write_test_timing_json(results, wall, jobs, g_num_groups, failed_groups,
+    write_test_timing_json(results, startup_wall, wall, jobs, g_num_groups,
+                           failed_groups,
                            pre_skipped, &verdict);
+
+    /* A compact receipt near the end of stdout lets the resident dev service
+     * bind its identity/graph phases to the test runner's own startup/body
+     * measurement without parsing human timing prose. */
+    printf("{\"schema\":\"zcl.test_phase_receipt.v1\","
+           "\"startup_ms\":%lld,\"test_body_ms\":%lld}\n",
+           (long long)(startup_wall * 1000.0),
+           (long long)(wall * 1000.0));
 
     printf("\nSUITE VERDICT mode=%s groups_total=%zu groups_ran=%zu "
            "groups_cached=%zu groups_gated=%zu groups_failed=%d self_skips=%d "

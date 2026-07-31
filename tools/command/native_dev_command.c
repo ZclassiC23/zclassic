@@ -1046,9 +1046,31 @@ static bool dev_group_valid(const char *group)
             strlen(group);
 }
 
+static bool dev_test_phase_receipt_parse(
+    const struct zcl_devloop_process_result *result,
+    int64_t *startup_ms, int64_t *test_body_ms)
+{
+    static const char marker[] =
+        "{\"schema\":\"zcl.test_phase_receipt.v1\",\"startup_ms\":";
+    if (!result || !startup_ms || !test_body_ms)
+        return false;
+    const char *row = strstr(result->output, marker);
+    long long startup = -1, body = -1;
+    if (!row || sscanf(row,
+                       "{\"schema\":\"zcl.test_phase_receipt.v1\","
+                       "\"startup_ms\":%lld,\"test_body_ms\":%lld}",
+                       &startup, &body) != 2 || startup < 0 || body < 0)
+        return false;
+    *startup_ms = startup;
+    *test_body_ms = body;
+    return true;
+}
+
 void zcl_native_handle_dev_test_run(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
+    int64_t handler_started_us = platform_time_monotonic_us();
+    int64_t graph_started_us = handler_started_us;
     const struct json_value *group_v = json_get(request->input, "group");
     const char *group = group_v && group_v->type == JSON_STR
         ? json_get_str(group_v) : NULL;
@@ -1062,6 +1084,7 @@ void zcl_native_handle_dev_test_run(
                                "group");
         return;
     }
+    int64_t graph_load_us = platform_time_monotonic_us() - graph_started_us;
     char root[PATH_MAX], bin[PATH_MAX], selector[160];
     if (!realpath(dev_source_root(request), root) ||
         snprintf(bin, sizeof(bin), "%s/build/bin/test_parallel_fast", root) <= 0 ||
@@ -1089,10 +1112,12 @@ void zcl_native_handle_dev_test_run(
     }
     struct dev_source_record source = {0};
     char identity_why[192] = {0};
+    int64_t identity_started_us = platform_time_monotonic_us();
     enum zcl_dev_source_admission source_admission =
         zcl_dev_executable_source_admit(root, runner_fd, bin, &source,
                                         identity_why,
                                         sizeof(identity_why));
+    int64_t identity_us = platform_time_monotonic_us() - identity_started_us;
     if (source_admission == ZCL_DEV_SOURCE_ADMISSION_ERROR) {
         close(runner_fd);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
@@ -1136,6 +1161,9 @@ void zcl_native_handle_dev_test_run(
     }
     bool ok = result.exit_code == 0 && result.term_signal == 0 &&
               !result.timed_out;
+    int64_t test_startup_ms = 0, test_body_ms = result.elapsed_ms;
+    bool runner_phase_receipt = dev_test_phase_receipt_parse(
+        &result, &test_startup_ms, &test_body_ms);
     (void)json_push_kv_str(&reply->data, "schema", "zcl.dev_focused_test.v1");
     (void)json_push_kv_str(&reply->data, "group", full_group);
     (void)json_push_kv_str(&reply->data, "selector", "exact");
@@ -1149,6 +1177,26 @@ void zcl_native_handle_dev_test_run(
     (void)json_push_kv_int(&reply->data, "elapsed_ms", result.elapsed_ms);
     (void)json_push_kv_int(&reply->data, "exit_code", result.exit_code);
     (void)json_push_kv_bool(&reply->data, "timed_out", result.timed_out);
+    struct json_value phases;
+    json_init(&phases);
+    json_set_object(&phases);
+    (void)json_push_kv_int(&phases, "identity", identity_us);
+    (void)json_push_kv_int(&phases, "graph_load", graph_load_us);
+    /* This command deliberately consumes an immutable prebuilt runner.  Zero
+     * means no compile/link action ran, not an unmeasured duration. */
+    (void)json_push_kv_int(&phases, "compile", 0);
+    (void)json_push_kv_int(&phases, "link", 0);
+    (void)json_push_kv_int(&phases, "test_startup",
+                           test_startup_ms * 1000);
+    (void)json_push_kv_int(&phases, "test_body", test_body_ms * 1000);
+    (void)json_push_kv_int(&phases, "total",
+                           platform_time_monotonic_us() - handler_started_us);
+    (void)json_push_kv(&reply->data, "phases_us", &phases);
+    json_free(&phases);
+    (void)json_push_kv_bool(&reply->data, "runner_phase_receipt",
+                            runner_phase_receipt);
+    (void)json_push_kv_str(&reply->data, "compile_outcome", "PREBUILT_REUSE");
+    (void)json_push_kv_str(&reply->data, "link_outcome", "PREBUILT_REUSE");
     if (!ok) {
         const char *tail = result.output;
         if (result.output_len > 2048)

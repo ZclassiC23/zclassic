@@ -151,11 +151,14 @@ anything missing. What you need: **gcc 14+** (or clang with working
 and only for sending shielded value.
 
 ```bash
-make                # node + CLI + RPC tool -> build/bin/
-make dev-bin        # a fast non-LTO build for iterating -> build/bin/zclassic23-dev
-make test           # all registered parallel groups
+make -j"$(nproc)"   # node + CLI + RPC tool -> build/bin/
+make -j"$(nproc)" dev-bin  # a fast non-LTO build for iterating -> build/bin/zclassic23-dev
+make -j"$(nproc)" test     # all registered parallel groups
 make lint           # the defensive-coding gates
 ```
+
+The `make dev-bin` target is the non-LTO developer build; invoke it with the
+parallel form above so its per-translation-unit work uses the available CPUs.
 
 The first `make` runs `make vendor` once, which downloads pinned third-party
 sources, checks each against a pinned SHA-256, and compiles them locally. After
@@ -238,7 +241,7 @@ contributions are declined
 ([`docs/CONSENSUS_PARITY_DOCTRINE.md`](docs/CONSENSUS_PARITY_DOCTRINE.md)).
 
 ```bash
-make t-fast ONLY=consensus_parity
+make -j"$(nproc)" t-fast ONLY=consensus_parity
 ```
 
 **The process restricts itself before it reports ready.** `-sandbox=steady`
