@@ -285,7 +285,7 @@ static bool rpc_benchmark(const struct json_value *params, bool help,
     json_push_kv_str(result, "primary_benchmark_source",
                      "build/bin/zclassic23 -bench* writes docs/bench-history.csv");
 
-    struct json_value primaries;
+    struct json_value primaries = {0};
     json_set_array(&primaries);
     const char *names[] = {
         "#1 cold-start to operational",
@@ -295,7 +295,7 @@ static bool rpc_benchmark(const struct json_value *params, bool help,
         "#5 kill-9 recovery",
     };
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
-        struct json_value row;
+        struct json_value row = {0};
         json_set_object(&row);
         json_push_kv_str(&row, "benchmark", names[i]);
         json_push_kv_str(&row, "status", "pending");

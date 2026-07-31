@@ -965,7 +965,7 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
         install-replay-canary replay-canary-linger-status \
         coverage coverage-clean ci audit release \
         bench bench-crypto-verify bench-regress \
-	lint check-build-epoch-integrity check-checkout-lock check-malloc check-raw-sqlite check-vcs-no-git check-vcs-no-sha1 check-raw-malloc check-stable-publish-contained check-no-retired-agent-protocol \
+	lint check-build-epoch-integrity check-checkout-lock check-malloc check-raw-sqlite check-vcs-no-git check-vcs-no-sha1 check-raw-malloc check-json-value-init check-stable-publish-contained check-no-retired-agent-protocol \
         check-coins-lookup-nullcheck check-observability-pairing \
         check-silent-errors-services check-silent-errors-controllers \
         check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool \
@@ -2181,6 +2181,7 @@ LINT_FAST_GATES := \
     check-raw-sqlite \
     check-malloc \
     check-raw-malloc \
+    check-json-value-init \
     check-no-raw-sqlite-in-controllers \
     check-model-validation \
     check-model-ar-lifecycle \
@@ -5694,6 +5695,11 @@ check-raw-malloc:
 	@echo "══ LINT: raw malloc/calloc/realloc in production code ══"
 	@tools/scripts/check_raw_malloc.sh
 
+check-json-value-init:
+	@echo "══ LINT: struct json_value initialised before first use ══"
+	@tools/scripts/check_json_value_init.sh --self-test
+	@tools/scripts/check_json_value_init.sh
+
 check-blob-read-bounds:
 	@echo "══ LINT: bounded sqlite blob reads in app models ══"
 	@bash tools/lint/check_blob_read_bounds.sh
@@ -6926,6 +6932,7 @@ LINT_GATES := \
     check-stable-publish-contained \
     check-raw-sqlite \
     check-raw-malloc \
+    check-json-value-init \
     check-blob-read-bounds \
     check-coins-lookup-nullcheck \
     check-observability-pairing \

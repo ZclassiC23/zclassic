@@ -210,6 +210,7 @@ void msgprocessor_test_tx_mark_seen(const struct uint256 *hash) {
 #define MSG_BLOCK_INTAKE_CAP 128
 #define MSG_BLOCK_INTAKE_DRAIN_BATCH 128
 #define MSG_BLOCK_INTAKE_LOG_KEEPALIVE_SECS 15
+#define MSG_BLOCK_INTAKE_DROP_BLOCKER_ID "net.block_intake_body_dropped"
 
 struct msg_block_intake_item {
     struct block block;
@@ -246,6 +247,7 @@ struct msg_block_intake {
 static pthread_mutex_t g_block_intake_create_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct log_throttle g_block_intake_worker_log = LOG_THROTTLE_INIT;
 static struct log_throttle g_block_intake_dispatch_log = LOG_THROTTLE_INIT;
+static struct log_throttle g_block_intake_drop_blocker_log = LOG_THROTTLE_INIT;
 
 /* Supervisor liveness (root child — lib/net cannot include the app-side
  * supervisors/domains.h, see util/thread_liveness.h). Liveness-only: the
@@ -270,6 +272,35 @@ static void msg_block_intake_item_free(struct msg_block_intake_item *item)
         return;
     block_free(&item->block);
     msg_block_intake_item_init(item);
+}
+
+/* Name the destroyed-body loss as a typed blocker. Throttled to one write per
+ * MSG_BLOCK_INTAKE_LOG_KEEPALIVE_SECS so the hot drop path stays cheap; the
+ * cumulative count travels in the reason so a reader sees the real volume,
+ * not just "it happened". TRANSIENT: the caller re-queues the hash at priority
+ * (msg_blocks.c::msg_block_requeue_after_intake_backpressure), so it clears
+ * once intake drains. */
+static void msg_block_intake_name_drop_blocker(uint64_t dropped_total)
+{
+    uint64_t suppressed = 0;
+    int64_t now = (int64_t)platform_time_wall_time_t();
+    if (!log_throttle_should_emit(&g_block_intake_drop_blocker_log, 1, now,
+                                  MSG_BLOCK_INTAKE_LOG_KEEPALIVE_SECS,
+                                  &suppressed))
+        return;
+    char reason[BLOCKER_REASON_MAX];
+    snprintf(reason, sizeof(reason),
+             "block bodies received and DESTROYED because the %d-slot P2P "
+             "intake ring was full: dropped=%llu cumulative. Every drop is a "
+             "body paid for on the wire and thrown away, then re-downloaded. "
+             "The reducer is not draining bodies as fast as peers deliver "
+             "them; if the successor of the tip is among the dropped, the "
+             "chain cannot advance at all.",
+             MSG_BLOCK_INTAKE_CAP, (unsigned long long)dropped_total);
+    struct blocker_record rec;
+    if (blocker_init(&rec, MSG_BLOCK_INTAKE_DROP_BLOCKER_ID, "net.block_intake",
+                     BLOCKER_TRANSIENT, reason))
+        (void)blocker_set(&rec);
 }
 
 static void msg_block_intake_stats_bump_max(struct msg_block_intake *in,
@@ -553,7 +584,15 @@ bool msg_processor_enqueue_p2p_block(struct msg_processor *mp,
     if (in->depth >= MSG_BLOCK_INTAKE_CAP) {
         pthread_mutex_unlock(&in->mu);
         msg_block_intake_item_free(&item);
-        atomic_fetch_add_explicit(&in->dropped, 1, memory_order_relaxed);
+        uint64_t dropped = atomic_fetch_add_explicit(&in->dropped, 1,
+                                                     memory_order_relaxed) + 1;
+        /* A destroyed body is lost work, and losing the tip's successor here
+         * freezes the whole chain, so it must never be silent (CLAUDE.md: a
+         * stall is a named blocker, never a quiet stop). The getdata window is
+         * bounded by the ring's free space
+         * (msg_processor_block_intake_request_room), so reaching here means
+         * bodies arrived that no bound accounted for. */
+        msg_block_intake_name_drop_blocker(dropped);
         validation_state_error(out, "p2p-block-intake-full");
         return true;
     }
@@ -653,12 +692,35 @@ void msg_processor_get_block_intake_stats(
     pthread_mutex_unlock(&g_block_intake_create_lock);
 }
 
-static bool msg_processor_block_intake_saturated(struct msg_processor *mp)
+/* How many MORE block bodies may be outstanding on the wire right now.
+ *
+ * Every body a peer sends during catch-up must land in this fixed ring or be
+ * destroyed (msg_processor_enqueue_p2p_block's "p2p-block-intake-full" arm).
+ * So the honest request ceiling is the ring's free space MINUS what is already
+ * in flight — anything beyond that has been paid for on the wire and will be
+ * thrown away, then re-requested.
+ *
+ * Measured before this bound existed (C3 stopwatch, one loopback fixture peer,
+ * 256-block getdata batches against a 128-slot ring): enqueued=7038
+ * dropped=8867, i.e. 56% of every body received was destroyed. The block the
+ * chain needed next (h=3058182) was destroyed on delivery, re-requested 19
+ * times, and H* never moved again for the remaining 405 s of the run.
+ * `fallback` is returned unchanged when the async ring is not in use (at tip,
+ * or worker not started), where bodies go down the synchronous path and cannot
+ * be dropped. */
+static size_t msg_processor_block_intake_request_room(struct msg_processor *mp,
+                                                     uint64_t in_flight,
+                                                     size_t fallback)
 {
     struct msg_block_intake_stats st;
     msg_processor_get_block_intake_stats(mp, &st);
-    return st.running && !st.stopping && st.capacity > 0 &&
-           st.current_depth >= st.capacity;
+    if (!st.running || st.stopping || st.capacity == 0)
+        return fallback;
+    uint64_t committed = st.current_depth + in_flight;
+    if (committed >= st.capacity)
+        return 0;
+    uint64_t room = st.capacity - committed;
+    return room < fallback ? (size_t)room : fallback;
 }
 
 static void msg_processor_log_block_intake_backpressure(
@@ -2223,12 +2285,19 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
             /* our_height for the behind-peer gate (sibling scope; recompute
              * the same way as the sync block above, msgprocessor.c:1330). */
             int our_height = msg_get_height(mp);
-            if (msg_processor_block_intake_saturated(mp)) {
+            /* Request no more bodies than the intake ring can still absorb:
+             * the surplus is received, destroyed, and re-requested on a 15 s
+             * timeout. dl_inflight is read BEFORE assignment on purpose. */
+            uint64_t inflight_now = 0;
+            dl_get_stats(dm, NULL, NULL, NULL, &inflight_now, NULL);
+            size_t assign_room = msg_processor_block_intake_request_room(
+                mp, inflight_now, DL_WINDOW_SIZE);
+            if (assign_room == 0) {
                 memset(&batch, 0, sizeof(batch));
                 msg_processor_log_block_intake_backpressure(node);
             } else {
                 syncsvc_assign_peer_blocks(&batch, dm, node, assign_hashes,
-                                           DL_WINDOW_SIZE, our_height);
+                                           assign_room, our_height);
             }
             if (batch.assigned > 0) {
                 struct byte_stream getdata_msg;
