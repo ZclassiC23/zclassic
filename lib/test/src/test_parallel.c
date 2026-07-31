@@ -494,6 +494,11 @@ int main(int argc, char **argv)
         printf("%s\n", zcl_build_source_id_sha256());
         return 0;
     }
+    if (argc == 2 && strcmp(argv[1], "--source-record") == 0) {
+        printf("%s 1 %s\n", zcl_build_source_id_sha256(),
+               zcl_build_source_mutation_sha256());
+        return 0;
+    }
 
     int jobs = get_nproc();
     int timeout_secs = 300; /* per-group; generous so slow groups like
@@ -551,7 +556,7 @@ int main(int argc, char **argv)
         } else {
             fprintf(stderr,
                     "Usage: %s [--jobs=N] [--timeout=SECS] [--verbose] "
-                    "[--list|--source-id] "
+                    "[--list|--source-id|--source-record] "
                     "[--only=SUBSTR|--exact=FULL_ID[,FULL...]] "
                     "[--cache|--no-cache] "
                     "[--cold-audit]\n",

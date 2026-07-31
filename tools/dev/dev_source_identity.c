@@ -46,7 +46,7 @@ static bool parse_source_record(const struct zcl_devloop_process_result *result,
     while (len > 0 && (result->output[len - 1] == '\n' ||
                        result->output[len - 1] == '\r'))
         len--;
-    if (len == 0 || len >= 160) {
+    if (len == 0 || len >= 160 || memchr(result->output, '\0', len)) {
         (void)snprintf(why, why_len, "source_identity_output_invalid");
         return false;
     }
@@ -163,25 +163,61 @@ bool zcl_dev_source_mutation_verify(const char *repo_root,
     return true;
 }
 
-bool zcl_dev_executable_source_id(const char *cwd, int executable_fd,
-                                  const char *display_path, char out[65])
+enum zcl_dev_source_admission zcl_dev_executable_source_admit(
+    const char *repo_root, int executable_fd, const char *display_path,
+    struct dev_source_record *out, char *why, size_t why_len)
 {
-    if (!cwd || executable_fd < 0 || !display_path || !out)
-        return false;
+    if (!repo_root || executable_fd < 0 || !display_path || !out || !why ||
+        why_len == 0) {
+        if (why && why_len > 0)
+            (void)snprintf(why, why_len, "source_admission_input_invalid");
+        return ZCL_DEV_SOURCE_ADMISSION_ERROR;
+    }
     struct zcl_devloop_process_result result = {0};
-    const char *argv[] = {display_path, "--source-id", NULL};
-    if (!zcl_devloop_process_run_fd(cwd, executable_fd, argv, 5000,
-                                    &result) ||
-        !process_ok(&result) || result.output_truncated)
-        return false;
-    size_t len = result.output_len;
-    while (len > 0 && (result.output[len - 1] == '\n' ||
-                       result.output[len - 1] == '\r'))
-        len--;
-    if (len != 64)
-        return false;
-    char raw[65];
-    memcpy(raw, result.output, 64);
-    raw[64] = '\0';
-    return lower_hex64(raw, out);
+    const char *argv[] = {display_path, "--source-record", NULL};
+    struct dev_source_record built = {0};
+    if (!zcl_devloop_process_run_fd(repo_root, executable_fd, argv, 5000,
+                                    &result)) {
+        (void)snprintf(why, why_len, "runner_source_record_execution_failed");
+        return ZCL_DEV_SOURCE_ADMISSION_ERROR;
+    }
+    if (!parse_source_record(&result, &built, why, why_len)) {
+        (void)snprintf(why, why_len, "runner_source_record_invalid");
+        return ZCL_DEV_SOURCE_ADMISSION_STALE;
+    }
+
+    if (zcl_dev_source_mutation_verify(repo_root, &built, why, why_len)) {
+        *out = built;
+        return ZCL_DEV_SOURCE_ADMISSION_BUILD_MUTATION;
+    }
+
+    /* A different mutation is not itself stale: edit/revert and copying an
+     * exact checkout legitimately change inode/ctime metadata. Pay the full
+     * byte hash only on this uncommon path, then carry its current mutation
+     * into the post-proof CAS. */
+    struct dev_source_record current = {0};
+    if (!zcl_dev_source_identity_capture(repo_root, &current, why, why_len))
+        return ZCL_DEV_SOURCE_ADMISSION_ERROR;
+    if (strcmp(current.source_id, built.source_id) != 0) {
+        (void)snprintf(why, why_len, "runner_source_identity_mismatch");
+        return ZCL_DEV_SOURCE_ADMISSION_STALE;
+    }
+    *out = current;
+    return ZCL_DEV_SOURCE_ADMISSION_FULL_BYTES;
+}
+
+const char *zcl_dev_source_admission_name(
+    enum zcl_dev_source_admission admission)
+{
+    switch (admission) {
+    case ZCL_DEV_SOURCE_ADMISSION_BUILD_MUTATION:
+        return "build_mutation_receipt";
+    case ZCL_DEV_SOURCE_ADMISSION_FULL_BYTES:
+        return "full_byte_fallback";
+    case ZCL_DEV_SOURCE_ADMISSION_STALE:
+        return "stale";
+    case ZCL_DEV_SOURCE_ADMISSION_ERROR:
+    default:
+        return "error";
+    }
 }

@@ -41,8 +41,16 @@ printf 'int fixture;\n' >"$REPO/fixture.c"
 cat >"$REPO/tools/dev/source-identity.sh" <<'SCRIPT'
 #!/usr/bin/env bash
 set -euo pipefail
+bump_if_present()
+{
+    local path="$1" count
+    [ -f "$path" ] || return 0
+    count="$(cat "$path")"
+    printf '%s\n' "$((count + 1))" > "$path"
+}
 case "${1:-}" in
     capture-record)
+        bump_if_present capture.count
         cat source.record
         ;;
     verify-record)
@@ -50,6 +58,12 @@ case "${1:-}" in
         expected="$2 $3 $4"
         [[ "$actual" == "$expected" ]]
         printf '%s\n' "$actual"
+        ;;
+    verify-mutation)
+        bump_if_present verify.count
+        read -r _source _complete mutation < source.record
+        [[ "$mutation" == "${2:-}" ]]
+        printf '%s\n' "$mutation"
         ;;
     *)
         exit 2
@@ -188,4 +202,103 @@ SHOW="$(native dev diagnose show "$FAILURE_ID" --view=full)"
 
 stop_watcher
 WATCHER_ID=""
+
+# Focused-test admission has two safe paths. The common unchanged path binds
+# the runner's build-time mutation receipt without rehashing every source byte;
+# edit/revert or copied checkouts fall back to exact byte capture instead of
+# forcing an unnecessary rebuild. A stale byte identity still refuses before
+# the runner executes.
+mkdir -p "$REPO/build/bin"
+cat >"$REPO/build/bin/test_parallel_fast" <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+    --source-record)
+        cat runner.record
+        ;;
+    --source-id)
+        read -r source _complete _mutation < runner.record
+        printf '%s\n' "$source"
+        ;;
+    --exact=test_api)
+        count="$(cat runner.count)"
+        printf '%s\n' "$((count + 1))" > runner.count
+        ;;
+    *) exit 2 ;;
+esac
+SCRIPT
+chmod 0700 "$REPO/build/bin/test_parallel_fast"
+printf '0\n' >"$REPO/capture.count"
+printf '0\n' >"$REPO/verify.count"
+printf '0\n' >"$REPO/runner.count"
+printf '%064d 1 %064d\n' 6 7 >"$REPO/runner.record"
+printf '%064d 1 %064d\n' 6 7 >"$REPO/source.record"
+
+FAST_ADMIT="$(native dev test run api)"
+[[ "$FAST_ADMIT" == *'"status":"passed"'* &&
+   "$FAST_ADMIT" == *'"source_admission":"build_mutation_receipt"'* &&
+   "$(cat "$REPO/capture.count")" == 0 &&
+   "$(cat "$REPO/verify.count")" == 2 &&
+   "$(cat "$REPO/runner.count")" == 1 ]] ||
+    fail "unchanged focused runner did not use the receipt-only admission"
+
+printf '0\n' >"$REPO/capture.count"
+printf '0\n' >"$REPO/verify.count"
+printf '0\n' >"$REPO/runner.count"
+printf '%064d 1 %064d\n' 6 8 >"$REPO/source.record"
+FALLBACK_ADMIT="$(native dev test run api)"
+[[ "$FALLBACK_ADMIT" == *'"status":"passed"'* &&
+   "$FALLBACK_ADMIT" == *'"source_admission":"full_byte_fallback"'* &&
+   "$FALLBACK_ADMIT" == *'"source_mutation_sha256":"0000000000000000000000000000000000000000000000000000000000000008"'* &&
+   "$(cat "$REPO/capture.count")" == 1 &&
+   "$(cat "$REPO/verify.count")" == 2 &&
+   "$(cat "$REPO/runner.count")" == 1 ]] ||
+    fail "edit/revert focused runner did not use the exact-byte fallback"
+
+printf '0\n' >"$REPO/capture.count"
+printf '0\n' >"$REPO/verify.count"
+printf '0\n' >"$REPO/runner.count"
+printf '%064d 1 %064d\n' 9 8 >"$REPO/source.record"
+set +e
+STALE_ADMIT="$(native dev test run api 2>&1)"
+STALE_RC=$?
+set -e
+[[ "$STALE_RC" -ne 0 && "$STALE_ADMIT" == *'"code":"TEST_RUNNER_STALE"'* &&
+   "$(cat "$REPO/capture.count")" == 1 &&
+   "$(cat "$REPO/verify.count")" == 1 &&
+   "$(cat "$REPO/runner.count")" == 0 ]] ||
+    fail "stale focused runner was not refused before execution"
+
+printf '0\n' >"$REPO/capture.count"
+printf '0\n' >"$REPO/verify.count"
+printf '0\n' >"$REPO/runner.count"
+printf 'malformed\n' >"$REPO/runner.record"
+set +e
+MALFORMED_ADMIT="$(native dev test run api 2>&1)"
+MALFORMED_RC=$?
+set -e
+[[ "$MALFORMED_RC" -ne 0 &&
+   "$MALFORMED_ADMIT" == *'"code":"TEST_RUNNER_STALE"'* &&
+   "$(cat "$REPO/capture.count")" == 0 &&
+   "$(cat "$REPO/verify.count")" == 0 &&
+   "$(cat "$REPO/runner.count")" == 0 ]] ||
+    fail "malformed focused-runner receipt was not refused fail-closed"
+
+printf '0\n' >"$REPO/capture.count"
+printf '0\n' >"$REPO/verify.count"
+printf '0\n' >"$REPO/runner.count"
+printf '%064d 1 %064d\n' 6 7 >"$REPO/source.record"
+printf '%064d 1 %064d' 6 7 >"$REPO/runner.record"
+printf '\0trailing-garbage\n' >>"$REPO/runner.record"
+set +e
+NUL_ADMIT="$(native dev test run api 2>&1)"
+NUL_RC=$?
+set -e
+[[ "$NUL_RC" -ne 0 &&
+   "$NUL_ADMIT" == *'"code":"TEST_RUNNER_STALE"'* &&
+   "$(cat "$REPO/capture.count")" == 0 &&
+   "$(cat "$REPO/verify.count")" == 0 &&
+   "$(cat "$REPO/runner.count")" == 0 ]] ||
+    fail "NUL-tailed focused-runner receipt was not refused fail-closed"
+
 echo "native-dev-failure-selftest: PASS"

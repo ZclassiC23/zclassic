@@ -227,13 +227,30 @@ bool zcl_dev_source_identity_capture(const char *repo_root,
 bool zcl_dev_source_identity_verify(const char *repo_root,
                                     const struct dev_source_record *expected,
                                     char *why, size_t why_len);
-/* Post-proof CAS: verifies inventory + ABA mutation metadata without a second
- * full byte rehash. Use only after a full capture admitted the operation. */
+/* Post-proof/preflight CAS: verifies inventory + ABA mutation metadata without
+ * a full byte rehash. Admission may compare it with a dev/test executable's
+ * publication-verified build receipt; publication/release authority remains
+ * the full portable byte identity. */
 bool zcl_dev_source_mutation_verify(const char *repo_root,
                                     const struct dev_source_record *expected,
                                     char *why, size_t why_len);
-bool zcl_dev_executable_source_id(const char *cwd, int executable_fd,
-                                  const char *display_path, char out[65]);
+
+enum zcl_dev_source_admission {
+    ZCL_DEV_SOURCE_ADMISSION_ERROR = -1,
+    ZCL_DEV_SOURCE_ADMISSION_STALE = 0,
+    ZCL_DEV_SOURCE_ADMISSION_BUILD_MUTATION = 1,
+    ZCL_DEV_SOURCE_ADMISSION_FULL_BYTES = 2
+};
+
+/* Admit one already-open dev/test executable against the current checkout.
+ * The common path compares its publication-verified source+mutation receipt
+ * with a bounded current mutation CAS. A receipt mismatch falls back to full
+ * byte capture, preserving safe edit/revert and copied-checkout reuse. */
+enum zcl_dev_source_admission zcl_dev_executable_source_admit(
+    const char *repo_root, int executable_fd, const char *display_path,
+    struct dev_source_record *out, char *why, size_t why_len);
+const char *zcl_dev_source_admission_name(
+    enum zcl_dev_source_admission admission);
 
 bool zcl_devloop_is_method(const char *method);
 int zcl_devloop_cli_main(const char **args, int nargs);

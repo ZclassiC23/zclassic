@@ -137,6 +137,42 @@ identity_publications_verified()
         }
 }
 
+mutation_receipt_confined()
+{
+    local makefile="$1" refs line code seen=0 bad=0
+    refs="$(grep -nE 'ZCL_BUILD_SOURCE_MUTATION|DEV_SOURCE_RECEIPT_CPPFLAGS' \
+        "$makefile" || true)"
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        code="${line#*:}"
+        case "$code" in
+            'DEV_SOURCE_RECEIPT_CPPFLAGS = -DZCL_BUILD_SOURCE_MUTATION=\"$(BUILD_MUTATION)\"')
+                seen=$((seen + 1))
+                ;;
+            *'$(eval $(call BUILD_NODE_TOOL,test_zcl,'*'$(DEV_SOURCE_RECEIPT_CPPFLAGS))'*|\
+            *'$(eval $(call BUILD_NODE_TOOL,test_parallel_wpo,'*'$(DEV_SOURCE_RECEIPT_CPPFLAGS))'*|\
+            '$(TEST_FAST_OBJ_DIR)/lib/util/src/clientversion.o: TEST_FAST_OBJECT_CFLAGS += $(BUILD_IDENTITY_CPPFLAGS) $(DEV_SOURCE_RECEIPT_CPPFLAGS)'|\
+            '$(TEST_REL_OBJ_DIR)/lib/util/src/clientversion.o: TEST_REL_OBJECT_CFLAGS += $(BUILD_IDENTITY_CPPFLAGS) $(DEV_SOURCE_RECEIPT_CPPFLAGS)'|\
+            '$(TEST_ASAN_OBJ_DIR)/lib/util/src/clientversion.o: TEST_ASAN_OBJECT_CFLAGS += $(BUILD_IDENTITY_CPPFLAGS) $(DEV_SOURCE_RECEIPT_CPPFLAGS)'|\
+            '$(DEV_ASAN_OBJ_DIR)/lib/util/src/clientversion.o: DEV_ASAN_OBJECT_CFLAGS += $(BUILD_IDENTITY_CPPFLAGS) $(DEV_SOURCE_RECEIPT_CPPFLAGS)'|\
+            '$(TEST_TSAN_OBJ_DIR)/lib/util/src/clientversion.o: TEST_TSAN_OBJECT_CFLAGS += $(BUILD_IDENTITY_CPPFLAGS) $(DEV_SOURCE_RECEIPT_CPPFLAGS)'|\
+            '$(DEV_TSAN_OBJ_DIR)/lib/util/src/clientversion.o: DEV_TSAN_OBJECT_CFLAGS += $(BUILD_IDENTITY_CPPFLAGS) $(DEV_SOURCE_RECEIPT_CPPFLAGS)'|\
+            '$(COV_BUILD_DIR)/lib/util/src/clientversion.o: COV_OBJECT_CFLAGS += $(BUILD_IDENTITY_CPPFLAGS) $(DEV_SOURCE_RECEIPT_CPPFLAGS)'|\
+            '$(DEV_OBJ_DIR)/lib/util/src/clientversion.o: DEV_COMPILE_CFLAGS += $(BUILD_IDENTITY_CPPFLAGS) $(DEV_SOURCE_RECEIPT_CPPFLAGS)')
+                ;;
+            *)
+                printf 'FAIL: host-local mutation receipt escaped dev/test identity TU: %s\n' "$line"
+                bad=1
+                ;;
+        esac
+    done <<< "$refs"
+    [ "$seen" -eq 1 ] || {
+        printf '%s\n' 'FAIL: dev/test mutation receipt definition missing or duplicated'
+        bad=1
+    }
+    [ "$bad" -eq 0 ]
+}
+
 scan_tree()
 {
     local root="$1" hits record_line source_line clean_line mutation_line path
@@ -258,6 +294,7 @@ scan_tree()
     fi
     identity_publications_verified "$makefile" "$publish_tool" \
         "$session_tool" || return 1
+    mutation_receipt_confined "$makefile" || return 1
     if ! grep -q 'tools/dev/source-identity-selftest.sh' "$makefile"; then
         printf '%s\n' 'FAIL: source identity regression suite is not wired into lint'
         return 1
@@ -312,6 +349,8 @@ self_test()
         'BUILD_SOURCE_ID := $(word 1,$(BUILD_SOURCE_RECORD))' \
         'BUILD_CLEAN := $(word 2,$(BUILD_SOURCE_RECORD))' \
         'BUILD_MUTATION := $(word 3,$(BUILD_SOURCE_RECORD))' \
+        'DEV_SOURCE_RECEIPT_CPPFLAGS = -DZCL_BUILD_SOURCE_MUTATION=\"$(BUILD_MUTATION)\"' \
+        '$(DEV_OBJ_DIR)/lib/util/src/clientversion.o: DEV_COMPILE_CFLAGS += $(BUILD_IDENTITY_CPPFLAGS) $(DEV_SOURCE_RECEIPT_CPPFLAGS)' \
         'artifact: $(BUILD_IDENTITY_STAMP)' \
         '	@set -eu; \
 	tmp="$@.tmp"; \
@@ -322,6 +361,12 @@ self_test()
         > "$sandbox/Makefile"
 
     scan_tree "$sandbox" >/dev/null || fatal 'known-good fixture failed'
+    printf '%s\n' 'BUILD_IDENTITY_CPPFLAGS += $(DEV_SOURCE_RECEIPT_CPPFLAGS)' \
+        >> "$sandbox/Makefile"
+    if scan_tree "$sandbox" >/dev/null 2>&1; then
+        fatal 'host-local mutation receipt escaped into release identity flags'
+    fi
+    sed -i '$d' "$sandbox/Makefile"
     mkdir -p "$sandbox/fail-bin"
     printf '%s\n' '#!/usr/bin/env bash' 'exit 2' \
         > "$sandbox/fail-bin/grep"
