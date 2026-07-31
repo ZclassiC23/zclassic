@@ -55,13 +55,17 @@ The platform exists so you **drop in C and let the machine classify, build, and 
 3. **Typed commands over bash — always.** `zclassic23 status` (compact status), `ops state --subsystem=<name>`, `ops logs`, `core storage query`, `discover help|search <q>`, `dev status` — instead of `ss`/`ps`/`tail`/`grep`. **Every reach for bash to inspect the node is a missing typed command — add it.** The registry is the only agent interface.
 4. **Big refactor/test campaigns → workflows of tiered subagents.** Author a `Workflow` (Opus for hard lanes, Sonnet for scoped, to save tokens); each lane runs in an isolated worktree (`isolation:'worktree'`), self-gates (build + focused test + `make lint`), and commits its green work to a `wf/<name>` branch. You then merge the green branches to main and push. Orchestrate + review; the fleet does the volume.
 
-`dev test run` binds a focused proof to one source epoch without paying two
-complete content hashes: it performs the full byte/inventory capture before
-execution, checks the runner's baked source ID, pins that runner inode, then
-uses the source inventory plus nanosecond file/directory/index epochs and the
-effective Git exclude policy as the post-proof CAS. Edit/revert ABA, newly
-appearing compiler inputs, and policy changes all refuse. Build and publication
-boundaries still use the heavier full `verify-record`.
+`dev test run` binds a focused proof to one source epoch without rehashing every
+source byte on the unchanged fast path. Dev/test runners carry the source ID
+plus their publication-verified build mutation receipt (the host-local receipt
+is never baked into the reproducible release binary); the command pins the
+runner inode and admits it with the current inventory/ABA CAS. If metadata moved
+because the checkout was copied or an edit was reverted, it falls back to one
+full byte capture and still reuses an exact-content runner. The post-proof CAS
+binds nanosecond file/directory/index epochs and effective Git exclude policy.
+Edit/revert ABA during the proof, newly appearing compiler inputs, and policy
+changes all refuse. Build and publication boundaries still use the heavier full
+`verify-record`.
 5. **Push flow + its two traps:** `make lint && make build-only`, run the mapped focused tests, then `git push` (hook runs `make pre-push-ci`). **Trap A (impact-rules):** every changed `.c` must map to a focused group in `app/controllers/include/controllers/agent_impact_rules.def` or the push is BLOCKED ("no focused test mapping") — add the mapping. **Trap B (pre-push SIGPIPE):** git may not drain the hook's stdout, so a GREEN `make pre-push-ci` can die with `make[2]: write error: stdout` and spuriously block — confirm green out-of-band (`make pre-push-ci >log 2>&1; echo $?` → 0) then `git push --no-verify` (verified, not skipped).
 6. **ZVCS:** each green cycle may anchor candidate source/artifact evidence. Source revert is available only with generation relinking disabled; relinking remains contained. Sealed-core changes require the owner unseal ritual (`check-core-seal`).
 

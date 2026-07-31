@@ -1089,9 +1089,11 @@ void zcl_native_handle_dev_test_run(
     }
     struct dev_source_record source = {0};
     char identity_why[192] = {0};
-    char runner_source_id[65];
-    if (!zcl_dev_source_identity_capture(root, &source, identity_why,
-                                         sizeof(identity_why))) {
+    enum zcl_dev_source_admission source_admission =
+        zcl_dev_executable_source_admit(root, runner_fd, bin, &source,
+                                        identity_why,
+                                        sizeof(identity_why));
+    if (source_admission == ZCL_DEV_SOURCE_ADMISSION_ERROR) {
         close(runner_fd);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INTERNAL,
@@ -1101,15 +1103,14 @@ void zcl_native_handle_dev_test_run(
                                identity_why);
         return;
     }
-    if (!zcl_dev_executable_source_id(root, runner_fd, bin,
-                                      runner_source_id) ||
-        strcmp(runner_source_id, source.source_id) != 0) {
+    if (source_admission == ZCL_DEV_SOURCE_ADMISSION_STALE) {
         close(runner_fd);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
                                ZCL_COMMAND_EXIT_BLOCKED, "TEST_RUNNER_STALE",
                                "precondition", true, false,
                                "focused runner was built from a different source epoch",
-                               "run make test_parallel_fast");
+                               identity_why[0] ? identity_why
+                                               : "run make test_parallel_fast");
         return;
     }
     const char *argv[] = {bin, selector, NULL};
@@ -1142,6 +1143,8 @@ void zcl_native_handle_dev_test_run(
                            source.source_id);
     (void)json_push_kv_str(&reply->data, "source_mutation_sha256",
                            source.mutation_id);
+    (void)json_push_kv_str(&reply->data, "source_admission",
+                           zcl_dev_source_admission_name(source_admission));
     (void)json_push_kv_bool(&reply->data, "passed", ok);
     (void)json_push_kv_int(&reply->data, "elapsed_ms", result.elapsed_ms);
     (void)json_push_kv_int(&reply->data, "exit_code", result.exit_code);

@@ -99,14 +99,15 @@ static int run_focused(const char *group)
     }
     struct dev_source_record source = {0};
     char why[192] = {0};
-    char runner_source_id[65];
-    if (!zcl_dev_source_identity_capture(root, &source, why, sizeof(why)) ||
-        !zcl_dev_executable_source_id(root, runner_fd, bin,
-                                      runner_source_id) ||
-        strcmp(source.source_id, runner_source_id) != 0) {
+    enum zcl_dev_source_admission source_admission =
+        zcl_dev_executable_source_admit(root, runner_fd, bin, &source,
+                                        why, sizeof(why));
+    if (source_admission <= ZCL_DEV_SOURCE_ADMISSION_STALE) {
         close(runner_fd);
-        fprintf(stderr,
-                "[devloop] focused: stale runner; run make test_parallel_fast\n");
+        fprintf(stderr, "[devloop] focused: %s runner: %s\n",
+                source_admission == ZCL_DEV_SOURCE_ADMISSION_STALE
+                    ? "stale" : "unavailable",
+                why[0] ? why : "run make test_parallel_fast");
         return 2;
     }
     const char *argv[] = { bin, selector, NULL };
@@ -124,8 +125,10 @@ static int run_focused(const char *group)
     bool ok = result.exit_code == 0 && !result.timed_out &&
               result.term_signal == 0;
     printf("{\"schema\":\"zcl.dev_focused_test.v1\",\"status\":\"%s\","
-           "\"group\":\"%s\",\"elapsed_ms\":%lld,\"exit_code\":%d}\n",
+           "\"group\":\"%s\",\"source_admission\":\"%s\","
+           "\"elapsed_ms\":%lld,\"exit_code\":%d}\n",
            ok ? "passed" : "failed", full_group,
+           zcl_dev_source_admission_name(source_admission),
            (long long)result.elapsed_ms, result.exit_code);
     if (!ok && result.output_len)
         fprintf(stderr, "%s\n", result.output);

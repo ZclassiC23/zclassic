@@ -43,6 +43,11 @@ const char *zcl_build_commit_full(void);
  * part of that receipt's digests. */
 const char *zcl_build_source_id_sha256(void);
 
+/* Dev/test-only build-session ABA receipt, or "unknown" in reproducible
+ * sovereign/release and unstamped standalone binaries. This host-local token
+ * must never become consensus, publication, or executable-byte authority. */
+const char *zcl_build_source_mutation_sha256(void);
+
 void FormatVersion(int nVersion, char *out, size_t out_size);
 
 #endif /* WINDRES_PREPROC */

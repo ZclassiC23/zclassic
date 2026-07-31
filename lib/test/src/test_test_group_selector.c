@@ -246,6 +246,17 @@ static int test_runner_exact_selection(void)
         ASSERT(strcmp(out, expected_source) == 0);
 
         n = snprintf(command, sizeof(command),
+                     "\"%s\" --source-record 2>&1", exe);
+        ASSERT(n > 0 && (size_t)n < sizeof(command));
+        rc = capture_command(command, out, sizeof(out));
+        ASSERT(rc == 0);
+        char expected_record[160];
+        ASSERT(snprintf(expected_record, sizeof(expected_record),
+                        "%s 1 %s\n", zcl_build_source_id_sha256(),
+                        zcl_build_source_mutation_sha256()) == 132);
+        ASSERT(strcmp(out, expected_record) == 0);
+
+        n = snprintf(command, sizeof(command),
                      "\"%s\" --source-id --list 2>&1", exe);
         ASSERT(n > 0 && (size_t)n < sizeof(command));
         rc = capture_command(command, out, sizeof(out));
