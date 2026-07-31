@@ -64,16 +64,14 @@ static uint64_t chain_len(const char *grant_id)
     return n;
 }
 
-enum property_grant_reason property_grant_service_commit(
+/* One COMMIT attempt. Returns AUTHORITY_CHANGED when the store moved while the
+ * catalog was being read outside the lock; property_grant_service_commit()
+ * retries exactly once and then gives up rather than committing over a state
+ * it cannot show was coherent. */
+static enum property_grant_reason commit_attempt(
     const char *plan_id, const char *idempotency_key,
     struct property_grant_commit_result *out)
 {
-    if (!plan_id || !out) {
-        LOG_ERROR(PGC_LOG, "commit: NULL plan id or output");
-        return PROPERTY_GRANT_BAD_ARGS;
-    }
-    memset(out, 0, sizeof(*out));
-
     int64_t now = 0, height = 0;
     pg_now(&now, &height);
 
@@ -124,18 +122,53 @@ enum property_grant_reason property_grant_service_commit(
         return PROPERTY_GRANT_GRANT_UNKNOWN;
     }
 
-    /* ── Re-check 2: current ownership and revision from the catalog ────── */
-    if (!g_pg_store.env.catalog_lookup) {
+    /* ── Re-check 2: current ownership and revision from the catalog ──────
+     *
+     * THE LOOKUP RUNS WITH NO LOCK HELD. The real catalog rebuilds every view
+     * from datadir bytes on every call, and doing that inside the store mutex
+     * would stall every other grant decision in the process behind a disk
+     * read. So: copy what the lookup needs, RELEASE, look up, RE-ACQUIRE, and
+     * confirm the store-wide authority generation did not move. Everything
+     * after the re-acquire re-reads the store fresh, exactly as before. */
+    metaverse_catalog_lookup_fn lookup = g_pg_store.env.catalog_lookup;
+    void *lookup_ctx = g_pg_store.env.catalog_ctx;
+    if (!lookup) {
         pthread_mutex_unlock(&g_pg_store.lock);
         LOG_WARN(PGC_LOG,
                  "commit: no property catalog installed — refusing to commit "
                  "an action whose current ownership cannot be confirmed");
         return PROPERTY_GRANT_CATALOG_UNAVAILABLE;
     }
+    struct metaverse_property_id target = plan->request.property;
+    uint64_t seen_generation = g_pg_store.authority_generation;
+    pthread_mutex_unlock(&g_pg_store.lock);
+
     struct metaverse_catalog_view view;
     memset(&view, 0, sizeof(view));
-    if (!g_pg_store.env.catalog_lookup(&plan->request.property, &view,
-                                       g_pg_store.env.catalog_ctx)) {
+    bool found = lookup(&target, &view, lookup_ctx);
+
+    pthread_mutex_lock(&g_pg_store.lock);
+    if (g_pg_store.authority_generation != seen_generation) {
+        pthread_mutex_unlock(&g_pg_store.lock);
+        LOG_WARN(PGC_LOG,
+                 "commit: the store moved while reading the catalog for plan "
+                 "%s — retrying", plan_id);
+        return PROPERTY_GRANT_AUTHORITY_CHANGED;
+    }
+    /* The generation is unchanged, so nothing was minted, delegated, revoked,
+     * debited or reset; plan and grant are the same records. Re-resolve the
+     * pointers anyway — the arrays are addressed by index and a pointer held
+     * across an unlock is a habit worth not having. */
+    plan = pg_find_plan_locked(plan_id);
+    g = plan ? pg_find_grant(plan->grant_id) : NULL;
+    if (!plan || !g) {
+        pthread_mutex_unlock(&g_pg_store.lock);
+        LOG_ERROR(PGC_LOG,
+                  "commit: plan or grant vanished at an unchanged authority "
+                  "generation (plan %s)", plan_id);
+        return PROPERTY_GRANT_AUTHORITY_CHANGED;
+    }
+    if (!found) {
         pthread_mutex_unlock(&g_pg_store.lock);
         LOG_WARN(PGC_LOG, "commit: property not in the catalog (plan %s)",
                  plan_id);
@@ -246,8 +279,30 @@ enum property_grant_reason property_grant_service_commit(
     out->receipt = r;
     out->replayed = false;
     out->budget_remaining_zat = metaverse_grant_budget_remaining(g);
+    /* The budget debit above is a mutation of the authority, so it moves the
+     * store-wide generation: a decision computed over the pre-debit budget is
+     * no longer a decision over current state. */
+    pg_bump_authority();
     pthread_mutex_unlock(&g_pg_store.lock);
     return PROPERTY_GRANT_OK;
+}
+
+enum property_grant_reason property_grant_service_commit(
+    const char *plan_id, const char *idempotency_key,
+    struct property_grant_commit_result *out)
+{
+    if (!plan_id || !out) {
+        LOG_ERROR(PGC_LOG, "commit: NULL plan id or output");
+        return PROPERTY_GRANT_BAD_ARGS;
+    }
+    memset(out, 0, sizeof(*out));
+    enum property_grant_reason r =
+        commit_attempt(plan_id, idempotency_key, out);
+    if (r == PROPERTY_GRANT_AUTHORITY_CHANGED) {
+        memset(out, 0, sizeof(*out));
+        r = commit_attempt(plan_id, idempotency_key, out);  /* ONE retry */
+    }
+    return r;
 }
 
 size_t property_grant_service_receipts(const char *grant_id,

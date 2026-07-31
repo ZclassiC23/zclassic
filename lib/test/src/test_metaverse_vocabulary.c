@@ -644,6 +644,25 @@ static void wide_grant(struct agent_grant *g)
     g->max_delegation_depth = 1;
 }
 
+/* A BROKER SESSION HOLDS NO GRANT, so a check that wants to narrow one right
+ * and watch the refusal cannot assign into the session any more. It installs
+ * the narrowed grant as the provider's LIVE authority and binds a session to
+ * it, which is the same thing the shipped broker does and reaches the same
+ * evaluator (agent_grant_authorize) by the same path.
+ *
+ * The reference is a file static because the session BORROWS it: a stack-local
+ * would dangle the moment the checking function returned. */
+static struct agent_authority_ref g_vc_authority;
+
+static void vc_bind(struct agent_broker_session *s, const struct agent_grant *g)
+{
+    memset(s, 0, sizeof(*s));
+    agent_broker_install_fixture_provider();
+    agent_broker_fixture_set_grant(g);
+    char why[192];
+    (void)agent_broker_session_bind(s, &g_vc_authority, why, sizeof(why));
+}
+
 static void scoped_request(struct mvap_request *r, uint32_t verb,
                            uint64_t value, const char *param)
 {
@@ -678,8 +697,9 @@ static int check_queries_are_read_only(struct agent_audit_log *audit)
 
         /* 1. A query must never reach COMMIT. Counted at the seam. */
         struct agent_broker_session s;
-        memset(&s, 0, sizeof(s));
-        wide_grant(&s.grant);
+        struct agent_grant gr;
+        wide_grant(&gr);
+        vc_bind(&s, &gr);
         s.ops = seam_ops();
         s.audit = audit;
         seam_reset();
@@ -709,14 +729,15 @@ static int check_queries_are_read_only(struct agent_audit_log *audit)
         /* 3. A query cannot carry value. It must be refused BEFORE the seam,
          *    and the refusal must not debit the grant. */
         seam_reset();
-        struct agent_grant before = s.grant;
+        struct agent_grant before;
+        agent_broker_fixture_get_grant(&before);
         struct mvap_request valued;
         scoped_request(&valued, q, 500, "");
         if (q == MVAP_VERB_LIST)
             memset(valued.property_id, 0, sizeof(valued.property_id));
         valued.request_id = 900u + (uint32_t)i;
 
-        int32_t verdict = agent_grant_authorize(&s.grant, &valued,
+        int32_t verdict = agent_grant_authorize(&gr, &valued,
                                                 (int64_t)1);
         VC_CHECK((snprintf(label, sizeof(label),
                            "%s carrying value is refused by the evaluator",
@@ -731,11 +752,15 @@ static int check_queries_are_read_only(struct agent_audit_log *audit)
                            mvap_verb_name(q)), label),
                  vresp.status != MVAP_OK && g_seam.plans == 0 &&
                  g_seam.commits == 0);
+        /* Read the LIVE authority back, which is where a debit would have
+         * landed — the session has no copy that could report otherwise. */
+        struct agent_grant after;
+        agent_broker_fixture_get_grant(&after);
         VC_CHECK((snprintf(label, sizeof(label),
                            "%s carrying value debits nothing",
                            mvap_verb_name(q)), label),
-                 s.grant.spent_zats == before.spent_zats &&
-                 s.grant.window_used == before.window_used);
+                 after.spent_zats == before.spent_zats &&
+                 after.window_used == before.window_used);
     }
 
     /* A query must never be the verb that names a counterparty or a title
@@ -783,8 +808,9 @@ static int check_list_for_sale_is_a_mutation(struct agent_audit_log *audit)
         /* And it behaves like one: through the real broker it reaches
          * COMMIT and mints a receipt. */
         struct agent_broker_session s;
-        memset(&s, 0, sizeof(s));
-        wide_grant(&s.grant);
+        struct agent_grant gr;
+        wide_grant(&gr);
+        vc_bind(&s, &gr);
         s.ops = seam_ops();
         s.audit = audit;
         seam_reset();
@@ -829,8 +855,9 @@ static int check_host_is_local_state(struct agent_audit_log *audit)
      * "unification" that reclassified HOST as a read to match the metaverse
      * external-state mask would silently stop it committing anything. */
     struct agent_broker_session s;
-    memset(&s, 0, sizeof(s));
-    wide_grant(&s.grant);
+    struct agent_grant gr;
+    wide_grant(&gr);
+    vc_bind(&s, &gr);
     s.ops = seam_ops();
     s.audit = audit;
     seam_reset();
@@ -851,7 +878,7 @@ static int check_host_is_local_state(struct agent_audit_log *audit)
     struct mvap_request valued;
     scoped_request(&valued, MVAP_VERB_HOST, 250, "");
     VC_CHECK("HOST carries no value",
-             agent_grant_authorize(&s.grant, &valued, 1) ==
+             agent_grant_authorize(&gr, &valued, 1) ==
                  MVAP_ERR_BAD_REQUEST);
 
     return failures;
@@ -1034,8 +1061,9 @@ static int check_no_bypass_of_the_evaluator(struct agent_audit_log *audit)
 
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         struct agent_broker_session s;
-        memset(&s, 0, sizeof(s));
-        wide_grant(&s.grant);
+        struct agent_grant gr;
+        wide_grant(&gr);
+        vc_bind(&s, &gr);
         s.ops = seam_ops();
         s.audit = audit;
         seam_reset();
@@ -1044,18 +1072,21 @@ static int check_no_bypass_of_the_evaluator(struct agent_audit_log *audit)
         scoped_request(&req, MVAP_VERB_PUBLISH_REVISION, 0, "");
         req.request_id = 4000u + (uint32_t)i;
 
+        /* Each case narrows the LIVE authority, not a session copy — the
+         * session is already bound above and holds no grant to narrow. The
+         * re-install after the switch is what a running session sees. */
         switch (i) {
-        case 0: memset(s.grant.grant_id, 0, sizeof(s.grant.grant_id)); break;
-        case 1: s.grant.revoked = true; break;
-        case 2: s.grant.expires_unix_ms = 10; break;
+        case 0: memset(gr.grant_id, 0, sizeof(gr.grant_id)); break;
+        case 1: gr.revoked = true; break;
+        case 2: gr.expires_unix_ms = 10; break;
         /* actions_mask is the CANONICAL metaverse_action_set, not a wire-keyed
          * one, so the bit to clear is the canonical bit. Shifting by the wire
          * value would clear a different action entirely (wire 4 would land on
          * LIST_FOR_SALE's 0x10) and the verb under test would stay granted. */
-        case 3: s.grant.actions_mask &=
+        case 3: gr.actions_mask &=
                     ~(uint32_t)METAVERSE_ACTION_PUBLISH_REVISION; break;
         case 4: req.property_id[0] ^= 0xFFu; break;
-        case 5: s.grant.kinds_mask = 0;
+        case 5: gr.kinds_mask = 0;
                 req.kind = MVAP_KIND_ZCODE; break;
         /* The PER-ACTION ceiling, isolated. wide_grant() sets both ceilings to
          * 1000, so a 5000 request breaks the cumulative budget too and the
@@ -1065,18 +1096,19 @@ static int check_no_bypass_of_the_evaluator(struct agent_audit_log *audit)
          * violate is max_value_zats, and this case tests the ceiling it
          * names. DENIED_BUDGET has its own case above. */
         case 6: scoped_request(&req, MVAP_VERB_BUY, 5000, "");
-                s.grant.budget_zats = 1000000;
+                gr.budget_zats = 1000000;
                 req.request_id = 4006u; break;
         case 7: scoped_request(&req, MVAP_VERB_BUY, 100, "not-on-the-list");
-                snprintf(s.grant.counterparty_allowlist,
-                         sizeof(s.grant.counterparty_allowlist),
+                snprintf(gr.counterparty_allowlist,
+                         sizeof(gr.counterparty_allowlist),
                          "only-this-buyer");
                 req.request_id = 4007u; break;
         case 8: scoped_request(&req, MVAP_VERB_DELEGATE, 0, "");
-                s.grant.may_delegate = false;
+                gr.may_delegate = false;
                 req.request_id = 4008u; break;
         default: break;
         }
+        agent_broker_fixture_set_grant(&gr);
 
         struct mvap_response resp;
         memset(&resp, 0, sizeof(resp));
@@ -1097,11 +1129,12 @@ static int check_no_bypass_of_the_evaluator(struct agent_audit_log *audit)
      * re-check must catch it and COMMIT must never run. */
     {
         struct agent_broker_session s;
-        memset(&s, 0, sizeof(s));
-        wide_grant(&s.grant);
-        s.grant.kinds_mask = 0;
-        agent_grant_allow_kind(&s.grant, MVAP_KIND_ANY);
-        agent_grant_allow_kind(&s.grant, MVAP_KIND_CONTENT);
+        struct agent_grant gr;
+        wide_grant(&gr);
+        gr.kinds_mask = 0;
+        agent_grant_allow_kind(&gr, MVAP_KIND_ANY);
+        agent_grant_allow_kind(&gr, MVAP_KIND_CONTENT);
+        vc_bind(&s, &gr);
         s.ops = seam_ops();
         s.audit = audit;
         seam_reset();
@@ -1126,8 +1159,9 @@ static int check_no_bypass_of_the_evaluator(struct agent_audit_log *audit)
      * the wire must not have been able to carry it in the first place. */
     {
         struct agent_broker_session s;
-        memset(&s, 0, sizeof(s));
-        wide_grant(&s.grant);
+        struct agent_grant gr;
+        wide_grant(&gr);
+        vc_bind(&s, &gr);
         s.ops = seam_ops();
         s.audit = audit;
         seam_reset();
@@ -1205,8 +1239,9 @@ static int check_receipt_binds_response_to_audit(const char *dir)
     }
 
     struct agent_broker_session s;
-    memset(&s, 0, sizeof(s));
-    wide_grant(&s.grant);
+    struct agent_grant gr;
+    wide_grant(&gr);
+    vc_bind(&s, &gr);
     s.ops = seam_ops();
     s.audit = &audit;
     seam_reset();
@@ -1451,6 +1486,13 @@ int test_metaverse_vocabulary(void)
     test_make_tmpdir(bind_dir, sizeof bind_dir, "metaverse_vocabulary",
                      "receipts");
     failures += check_receipt_binds_response_to_audit(bind_dir);
+
+    /* Un-register the fixture provider the checks above bound their sessions
+     * to. The next check FORKS and runs the shipped broker mode, and a forked
+     * child inherits whatever this process has installed — leaving the fixture
+     * registered would have the child serving a fixture catalog for a reason
+     * that has nothing to do with the shipped code. */
+    agent_broker_provider_install(NULL);
 
     failures += check_production_broker_has_no_fixture();
     failures += check_headers_unified();

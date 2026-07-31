@@ -116,6 +116,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(dev_activation) \
     X(command_registry_catalog) \
     X(metaverse_agent_broker) X(metaverse_vocabulary) \
+    X(metaverse_broker_authority) \
     X(status_readiness_truth) \
     X(native_api_contract) \
     X(principal_authz) X(auth_login) X(command_authority) \

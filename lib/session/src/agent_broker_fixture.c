@@ -184,17 +184,26 @@ struct agent_broker_node_ops agent_broker_fixture_ops(void)
         .commit = fixture_commit, .ctx = NULL };
 }
 
-/* ── the demo grant ─────────────────────────────────────────────────────── */
+/* ── the demo authority ─────────────────────────────────────────────────── */
+
+/* THE FIXTURE'S AUTHORITY LIVES HERE, NOT IN THE SESSION. That is not a
+ * detail of where a variable sits: a session that held its own copy would go
+ * on answering out of it after this one was revoked, which is precisely the
+ * defect the live-authority seam exists to remove. Every authorize below reads
+ * `g_authority` at the instant of the call, so agent_broker_fixture_revoke()
+ * and agent_broker_fixture_advance_clock() land on sessions that are already
+ * running. */
+static struct agent_grant g_authority;
+static bool     g_authority_set;
+static int64_t  g_clock_skew_ms;
+static uint64_t g_authority_generation;
 
 /* INSPECT/LIST as queries plus HOST/PUBLISH_REVISION/SELL as actions, over
  * exactly ONE fixture property. Deliberately narrow — the hostile script's
  * attempts to touch the OTHER property and to TRANSFER are refusals this grant
  * produces by construction, not by a special case in the broker. */
-static bool fixture_grant(void *ctx, struct agent_grant *g)
+static bool build_demo_grant(struct agent_grant *g)
 {
-    (void)ctx;
-    if (!g)
-        LOG_FAIL(FIXTURE_TAG, "null grant out");
     memset(g, 0, sizeof(*g));
     uint8_t r[8];
     if (!rng_fill(r, sizeof(r)))
@@ -225,6 +234,111 @@ static bool fixture_grant(void *ctx, struct agent_grant *g)
     return true;
 }
 
+void agent_broker_fixture_set_grant(const struct agent_grant *g)
+{
+    if (!g)
+        return;
+    g_authority = *g;
+    g_authority_set = true;
+    g_clock_skew_ms = 0;
+    g_authority_generation++;
+}
+
+void agent_broker_fixture_get_grant(struct agent_grant *out)
+{
+    if (!out)
+        return;
+    *out = g_authority;
+}
+
+void agent_broker_fixture_revoke(void)
+{
+    if (!g_authority_set)
+        return;
+    g_authority.revoked = true;
+    g_authority.revocation_generation++;
+    g_authority_generation++;
+}
+
+void agent_broker_fixture_advance_clock(int64_t ms)
+{
+    g_clock_skew_ms += ms;
+    g_authority_generation++;
+}
+
+static bool fixture_bind(void *ctx, struct agent_authority_ref *out, char *why,
+                         size_t why_cap)
+{
+    (void)ctx;
+    if (!out)
+        LOG_FAIL(FIXTURE_TAG, "null authority reference out");
+    if (!g_authority_set && !build_demo_grant(&g_authority)) {
+        if (why && why_cap)
+            snprintf(why, why_cap, "the fixture could not mint a demo grant");
+        return false;
+    }
+    g_authority_set = true;
+    memset(out, 0, sizeof(*out));
+    snprintf(out->canonical_grant_id, sizeof(out->canonical_grant_id), "%s",
+             g_authority.grant_id);
+    snprintf(out->principal, sizeof(out->principal), "%s",
+             g_authority.principal);
+    /* Derived from the grant, never written twice (A6). */
+    agent_broker_scope_from_grant(&g_authority, &out->scope);
+    out->bound = true;
+    return true;
+}
+
+static int32_t fixture_authorize(void *ctx,
+                                 const struct agent_authority_ref *ref,
+                                 const struct mvap_request *req,
+                                 int64_t now_ms)
+{
+    (void)ctx;
+    if (!ref || !req)
+        return MVAP_ERR_INTERNAL;
+    if (!g_authority_set)
+        return MVAP_ERR_DENIED_NO_GRANT;
+    /* Re-read at the instant of the call. The reference names WHICH authority;
+     * the authority itself is read here, so a revoke that landed one
+     * microsecond ago is seen. */
+    return agent_grant_authorize(&g_authority, req, now_ms + g_clock_skew_ms);
+}
+
+static bool fixture_debit(void *ctx, const struct agent_authority_ref *ref,
+                          const struct mvap_request *req, int64_t now_ms)
+{
+    (void)ctx;
+    if (!ref || !req || !g_authority_set)
+        return false;
+    agent_grant_commit_debit(&g_authority, req, now_ms + g_clock_skew_ms);
+    g_authority_generation++;
+    return true;
+}
+
+static bool fixture_status(void *ctx, const struct agent_authority_ref *ref,
+                           struct agent_authority_status *out)
+{
+    (void)ctx;
+    if (!ref || !out)
+        return false;
+    memset(out, 0, sizeof(*out));
+    snprintf(out->authority_source, sizeof(out->authority_source), "%s",
+             "fixture (test build only)");
+    snprintf(out->canonical_grant_id, sizeof(out->canonical_grant_id), "%s",
+             g_authority.grant_id);
+    snprintf(out->principal, sizeof(out->principal), "%s",
+             g_authority.principal);
+    out->live_authority = true;
+    out->ephemeral = true;
+    out->revoked = g_authority.revoked;
+    out->budget_zat = g_authority.budget_zats;
+    out->spent_zat = g_authority.spent_zats;
+    out->authority_generation = g_authority_generation;
+    agent_grant_fingerprint(&g_authority, out->fingerprint);
+    return true;
+}
+
 static struct agent_broker_node_ops fixture_ops_fn(void *ctx)
 {
     (void)ctx;
@@ -233,11 +347,16 @@ static struct agent_broker_node_ops fixture_ops_fn(void *ctx)
 
 void agent_broker_install_fixture_provider(void)
 {
+    /* STATIC LIFETIME, deliberately: agent_broker_provider_install() borrows
+     * this pointer and the session's authority reference borrows it again. */
     static const struct agent_broker_provider p = {
-        .grant = fixture_grant,
-        .ops   = fixture_ops_fn,
-        .ctx   = NULL,
-        .name  = "fixture (test build only)",
+        .bind      = fixture_bind,
+        .authorize = fixture_authorize,
+        .debit     = fixture_debit,
+        .status    = fixture_status,
+        .ops       = fixture_ops_fn,
+        .ctx       = NULL,
+        .name      = "fixture (test build only)",
     };
     agent_broker_provider_install(&p);
 }

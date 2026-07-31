@@ -112,6 +112,12 @@ enum property_grant_reason {
     PROPERTY_GRANT_RECEIPT_SEAL_FAILED,
     PROPERTY_GRANT_SIGNING_KEY_UNAVAILABLE,
 
+    /* The store moved WHILE a decision was being computed over a snapshot of
+     * it, and the one permitted retry saw it move again. Neither a grant nor a
+     * denial: the service declines to return a verdict it cannot show was made
+     * over a coherent state. */
+    PROPERTY_GRANT_AUTHORITY_CHANGED,
+
     PROPERTY_GRANT_REASON_COUNT
 };
 
@@ -141,7 +147,17 @@ struct metaverse_catalog_view {
 };
 
 /* Return false when the property is not in the catalog (→ PROPERTY_UNKNOWN).
- * Must not block: it is called with the service lock held. */
+ *
+ * CALLED WITH NO SERVICE LOCK HELD. It used to run inside the store mutex,
+ * which made binding the real catalog to it a deadlock-and-latency hazard: the
+ * property catalog is a projection that rebuilds every view from authoritative
+ * bytes on every call, so it does filesystem and SQLite work, and doing that
+ * under the mutex would stall every other grant decision in the process behind
+ * a disk read. Both call sites now take a snapshot under the lock, RELEASE it,
+ * call this, and re-acquire to confirm the store did not move
+ * (property_grant_service_recheck below). An implementation may therefore
+ * block and may touch the datadir — but it must NOT call back into this
+ * service, which would re-enter the same mutex it was just released from. */
 typedef bool (*metaverse_catalog_lookup_fn)(
     const struct metaverse_property_id *id,
     struct metaverse_catalog_view *out, void *ctx);
@@ -214,6 +230,83 @@ enum property_grant_reason property_grant_service_revoke(const char *grant_id);
  * Returns the count written (never negative; 0 is a legitimate empty list). */
 size_t property_grant_service_list(const char *holder,
                                    struct metaverse_grant *out, size_t max);
+
+/* ── LIVE AUTHORITY (snapshot → decide → recheck) ────────────────────────────
+ *
+ * THE PROBLEM THIS SOLVES. A caller that wants to decide something about a
+ * grant has three needs that pull against each other: it must read a coherent
+ * grant + ancestor set, it must do EXPENSIVE work outside the store mutex (the
+ * property catalog is a projection over datadir bytes), and it must not return
+ * a verdict computed over state that has since changed. Holding the mutex
+ * across the catalog read satisfies the first and third and violates the
+ * second. Copying the grant and never looking again satisfies the second and
+ * violates the third — and that is the exact shape of a revoke that does not
+ * take effect.
+ *
+ * THE PROTOCOL, and it is not optional:
+ *
+ *   1. property_grant_service_snapshot()  — takes the mutex, copies the grant,
+ *      its ancestors, every relevant revocation generation and the store-wide
+ *      authority generation, RELEASES the mutex.
+ *   2. the caller does its catalog / datadir work and runs the PURE decision
+ *      (metaverse_grant_check / _query_check) against the snapshot. No lock is
+ *      held for any of it.
+ *   3. property_grant_service_recheck()   — re-takes the mutex briefly and
+ *      confirms the authority generation and the grant's own revocation
+ *      generation are exactly what the snapshot recorded. Anything else is
+ *      AUTHORITY_CHANGED and the caller must retry from step 1 ONCE, then give
+ *      up with AUTHORITY_CHANGED rather than answer.
+ *
+ * A decision returned without step 3 is a decision over a state nobody
+ * confirmed still exists. */
+
+struct property_grant_authority_snapshot {
+    struct metaverse_grant grant;
+    struct metaverse_grant ancestors[METAVERSE_GRANT_MAX_DEPTH];
+    size_t ancestor_count;
+    /* Each ancestor's revocation generation AS SNAPSHOTTED, in the same
+     * root-first order. Re-compared by recheck: a parent revoked during the
+     * decision window moves one of these even when the child is untouched. */
+    uint32_t ancestor_generations[METAVERSE_GRANT_MAX_DEPTH];
+    uint32_t grant_generation;
+    uint64_t authority_generation;
+    /* The clock the snapshot was taken against, so the caller's pure decision
+     * measures expiry against the same instant the recheck will. */
+    int64_t now_unix;
+    int64_t height;
+    bool valid;
+};
+
+/* Step 1. GRANT_UNKNOWN when there is no such id, ANCESTOR_REVOKED when an
+ * ancestor is missing from the store (fail closed: "could not check the
+ * parent" and "the parent said no" must have the same effect). */
+enum property_grant_reason property_grant_service_snapshot(
+    const char *grant_id, struct property_grant_authority_snapshot *out);
+
+/* Step 3. OK when nothing moved, AUTHORITY_CHANGED when it did, BAD_ARGS on a
+ * NULL or invalid snapshot, GRANT_UNKNOWN when the grant is simply gone. */
+enum property_grant_reason property_grant_service_recheck(
+    const struct property_grant_authority_snapshot *snap);
+
+/* The current store-wide authority generation. Bumped by every mutation of the
+ * store. Exposed so an operator status surface can publish WHICH state a
+ * decision was made over. */
+uint64_t property_grant_service_authority_generation(void);
+
+/* Ancestor array as the pure evaluator wants it (an array of pointers,
+ * root-first) over a snapshot's own copies. Returns the count and writes the
+ * pointer array; the pointers are into `snap`, so they live exactly as long as
+ * it does. */
+size_t property_grant_snapshot_ancestors(
+    const struct property_grant_authority_snapshot *snap,
+    const struct metaverse_grant **out);
+
+/* TEST-ONLY lock-discipline probe. True when the property-grant-store mutex is
+ * held right now (by this thread or another). It exists so the lane's lock
+ * test can prove from INSIDE a catalog callback that no datadir work runs
+ * under the mutex — an assertion no amount of code reading can make. Always
+ * false outside a ZCL_TESTING build. */
+bool property_grant_service_test_store_lock_busy(void);
 
 /* ── PLAN ───────────────────────────────────────────────────────────────── */
 

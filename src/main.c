@@ -32,6 +32,7 @@
 #include "util/util.h"                  /* ParseParameters */
 #include "util/sd_notify.h"             /* -sandbox=steady NOTIFY_SOCKET check */
 #include "session/agent_broker.h"       /* confined metaverse agent + broker modes */
+#include "services/agent_broker_provider.h" /* the broker's real authority, composed pre-fork */
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -174,8 +175,20 @@ int main(int argc, char **argv)
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--metaverse-agent-confined") == 0)
             return agent_confined_mode_main(argc, argv);
-        if (strcmp(argv[i], "--metaverse-broker") == 0)
+        if (strcmp(argv[i], "--metaverse-broker") == 0) {
+            /* THE COMPOSITION ROOT, and its position is the security property.
+             * This is the last statement before the broker forks the confined
+             * child, and it is deliberately inert: it copies a datadir path and
+             * an operator-named grant source out of argv into static storage
+             * and installs static function pointers. It opens nothing, loads no
+             * grant, mints nothing and draws no key — anything secret created
+             * here would be inherited by the child's copy-on-write image. The
+             * authority is bound after the fork. Composing grants NOTHING: with
+             * no --grant-id= or --grant-spec= the provider refuses to bind and
+             * the broker answers named refusals. */
+            agent_broker_provider_compose(argc, argv);
             return agent_broker_mode_main(argc, argv);
+        }
     }
 
     /* CLI UX contract: bare `zclassic23`, zero arguments. The real node

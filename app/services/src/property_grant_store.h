@@ -23,6 +23,16 @@ struct property_grant_store {
     pthread_mutex_t lock;
     struct property_grant_env env;
 
+    /* STORE-WIDE AUTHORITY GENERATION. Bumped under `lock` by every mutation
+     * of the store: mint, delegate, revoke, a commit's budget/rate debit, and
+     * reset. A per-grant revocation generation says "this grant changed"; this
+     * says "SOMETHING an authority decision could depend on changed", which is
+     * the only counter a reader can use to prove the state it decided over did
+     * not move underneath it. Never decremented, never reset except by
+     * property_grant_service_reset (which bumps it rather than zeroing it, so
+     * a reader across a reset also sees a move). */
+    uint64_t authority_generation;
+
     struct metaverse_grant grants[PROPERTY_GRANT_MAX_GRANTS];
     bool grant_used[PROPERTY_GRANT_MAX_GRANTS];
 
@@ -61,5 +71,10 @@ bool pg_collect_ancestors(const struct metaverse_grant *g,
 /* Lock held. Establishes the receipt signing keypair if none exists yet.
  * Returns false (logged) only on a CSPRNG failure. */
 bool pg_ensure_key(void);
+
+/* Lock held. Record that the store changed. Call it on the LAST statement of
+ * every successful mutation, so a reader that sees an unchanged generation
+ * really did observe an unchanged store. */
+void pg_bump_authority(void);
 
 #endif /* ZCL_SERVICES_PROPERTY_GRANT_STORE_H */

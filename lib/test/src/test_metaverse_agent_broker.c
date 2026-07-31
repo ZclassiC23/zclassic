@@ -196,6 +196,30 @@ static void mb_demo_grant(struct agent_grant *g)
              "buyer-one buyer-two");
 }
 
+/* Bind a session to the demo grant THROUGH THE PROVIDER, which is the only way
+ * a session can acquire authority now: `struct agent_broker_session` holds no
+ * grant to assign one to. The reference is a file static deliberately — the
+ * session borrows it and must not outlive it.
+ *
+ * The authority itself lives in the fixture provider, so the revocation and
+ * clock tests below move the REAL authority a running session reads, not a
+ * copy the session took at bind time. */
+static struct agent_authority_ref mb_authority;
+
+static bool mb_bind_demo(struct agent_broker_session *s)
+{
+    struct agent_grant g;
+    mb_demo_grant(&g);
+    agent_broker_install_fixture_provider();
+    agent_broker_fixture_set_grant(&g);
+    char why[192];
+    if (!agent_broker_session_bind(s, &mb_authority, why, sizeof(why))) {
+        printf("agent_broker: could not bind the demo authority (%s)\n", why);
+        return false;
+    }
+    return true;
+}
+
 static void mb_req(struct mvap_request *r, uint32_t verb, size_t prop_index)
 {
     memset(r, 0, sizeof(*r));
@@ -643,8 +667,8 @@ static int mb_listen_round(const char *sock, int lfd,
     int failures = 0;
     struct agent_broker_session s;
     memset(&s, 0, sizeof(s));
-    mb_demo_grant(&s.grant);
-    s.ops = agent_broker_fixture_ops();
+    if (!mb_bind_demo(&s))
+        return 1;
     s.audit = log;
     s.expect = *expect;
 
@@ -860,8 +884,10 @@ static int mb_run_child(const char *self_exe, const char *leaf,
 
     struct agent_broker_session s;
     memset(&s, 0, sizeof(s));
-    mb_demo_grant(&s.grant);
-    s.ops = agent_broker_fixture_ops();
+    if (!mb_bind_demo(&s)) {
+        (void)close(sres.sock);
+        return 1;
+    }
     s.audit = &log;
     s.expect.require_uid = true; s.expect.uid = getuid();
     s.expect.require_pid = true; s.expect.pid = sres.pid;
@@ -883,7 +909,7 @@ static int mb_run_child(const char *self_exe, const char *leaf,
            "report=%zu bytes\n", script, (int)sres.pid, run->exit_code,
            strlen(run->report));
 
-    agent_broker_write_status(broker_dir, &s, &s.grant, sres.pid, NULL);
+    agent_broker_write_status(broker_dir, &s, sres.pid, NULL);
 
     MB_CHECK("the kernel named the exact process the broker forked",
              s.peer.valid && s.peer.pid == sres.pid && s.peer.uid == getuid());

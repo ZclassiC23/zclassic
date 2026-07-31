@@ -135,6 +135,20 @@ enum mvap_status {
     MVAP_ERR_PLAN_FAILED           = -17,
     MVAP_ERR_COMMIT_FAILED         = -18,
     MVAP_ERR_REVISION_MOVED        = -19,  /* commit-time recheck disagreed  */
+    /* The authority said yes and there is NOTHING THAT EXECUTES the action.
+     * A distinct refusal on purpose: reporting a mutation nobody performed as
+     * COMMIT_FAILED reads like a transient error and invites a retry, and
+     * reporting it as OK would be a receipt for an event that did not
+     * happen. */
+    MVAP_ERR_ACTION_EXECUTOR_UNAVAILABLE = -20,
+    /* The query is in the vocabulary and this seam has no bounded result type
+     * for it. Named rather than answered with a truncated or improvised
+     * body. */
+    MVAP_ERR_QUERY_UNAVAILABLE     = -21,
+    /* The live authority moved WHILE the decision was being computed over it,
+     * and the retry saw it move again. Not a denial and not an approval: the
+     * broker declines to answer from a state it cannot prove was coherent. */
+    MVAP_ERR_AUTHORITY_CHANGED     = -22,
 };
 
 /* One request. `param` is NUL-terminated after decode and always passes

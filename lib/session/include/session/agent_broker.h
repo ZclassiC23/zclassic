@@ -339,6 +339,83 @@ struct agent_broker_node_ops {
     void *ctx;
 };
 
+/* ── the live authority ─────────────────────────────────────────────────── */
+
+/* The narrowing a broker SESSION adds on top of the canonical verdict, and
+ * the only thing about authority the session is allowed to hold by value.
+ *
+ * Every field here can do exactly one thing: REFUSE. There is no field whose
+ * value can turn a canonical NO into a YES, which is why copying it into the
+ * session is safe while copying a grant is not. It is derived MECHANICALLY
+ * from the canonical grant at bind time (agent_broker_scope_from_grant), never
+ * hand-authored beside it, so there is no second policy that can drift away
+ * from the one the operator actually issued. */
+struct agent_broker_scope {
+    uint8_t  properties[AGENT_GRANT_MAX_PROPS][MVAP_PROPERTY_ID_LEN];
+    size_t   n_properties;
+    uint32_t kinds_mask;          /* bit N == enum mvap_kind N               */
+    uint64_t max_value_zats;      /* per-action ceiling under the cumulative */
+};
+
+/* Derive the session narrowing from the grant the session is bound to. */
+void agent_broker_scope_from_grant(const struct agent_grant *g,
+                                   struct agent_broker_scope *out);
+
+/* Apply the narrowing to one request. MVAP_OK or a named refusal. Pure, and
+ * structurally incapable of widening: every branch returns either OK or a
+ * DENIED_*. */
+int32_t agent_broker_scope_check(const struct agent_broker_scope *sc,
+                                 const struct mvap_request *req);
+
+/* WHAT A BROKER SESSION HOLDS INSTEAD OF A GRANT.
+ *
+ * It used to hold `struct agent_grant grant` BY VALUE, and every authorize and
+ * every debit read and wrote that copy. The consequence was not subtle: an
+ * operator revoking the grant, shortening its expiry, or cutting its budget
+ * changed the store and changed NOTHING about a broker session already
+ * running. The session went on answering out of the snapshot it took when it
+ * started, for as long as the agent stayed connected. Revocation was a
+ * property of new sessions only.
+ *
+ * So the session now holds a REFERENCE and no authority at all. There is no
+ * grant in `struct agent_broker_session` to go stale, and no fallback path
+ * that could read one: when the reference is unbound or the provider cannot
+ * answer, the request is REFUSED (MVAP_ERR_DENIED_NO_GRANT). "Could not reach
+ * the authority" and "the authority said no" have the same effect, which is
+ * the only arrangement in which the first cannot be used to obtain the
+ * second.
+ *
+ * LIFETIME: `provider` and `provider_ctx` are BORROWED. The registry borrows
+ * the provider pointer too (agent_broker_provider_install), so both the
+ * provider object and its context must have static lifetime. A stack-local
+ * provider is a dangling pointer, not a style choice. */
+struct agent_authority_ref {
+    const struct agent_broker_provider *provider;  /* borrowed, static      */
+    void *provider_ctx;                            /* borrowed, static      */
+    char  canonical_grant_id[AGENT_GRANT_ID_MAX + 1];
+    char  principal[AGENT_PRINCIPAL_MAX + 1];
+    struct agent_broker_scope scope;
+    bool  bound;                  /* false == UNGRANTED, and it fails closed */
+};
+
+/* Operator-facing status about the authority. EXPLICITLY LABELLED as status:
+ * nothing on a decision path may read this struct, and nothing in it is
+ * consulted by agent_broker_handle(). It exists so `metaverse agent status`
+ * can say WHICH authority is live and how durable it is, without the broker
+ * keeping a second copy of the grant to render. */
+struct agent_authority_status {
+    char     authority_source[64];   /* who issued it, e.g. "grant-id"      */
+    bool     live_authority;         /* every decision re-reads the store   */
+    bool     ephemeral;              /* the store does not survive a restart */
+    char     canonical_grant_id[AGENT_GRANT_ID_MAX + 1];
+    char     principal[AGENT_PRINCIPAL_MAX + 1];
+    bool     revoked;
+    uint64_t budget_zat;
+    uint64_t spent_zat;
+    uint64_t authority_generation;
+    uint8_t  fingerprint[32];
+};
+
 /* Where the broker gets its REAL authority and its REAL property surface.
  *
  * lib/ sits below app/services, so the property catalog and the property grant
@@ -346,11 +423,37 @@ struct agent_broker_node_ops {
  * nothing registered `agent_broker_mode_main()` REFUSES to run. That is the
  * point: a broker that cannot reach the real catalog must not fall back to a
  * fixture, because a fixture grant that authorizes real-looking actions is
- * exactly the failure this seam exists to make impossible. */
+ * exactly the failure this seam exists to make impossible.
+ *
+ * REGISTRATION GRANTS NOTHING. `bind` is a separate call, made AFTER the
+ * confined child has been forked, and a provider that was handed no explicit
+ * operator-selected grant source must refuse it. */
 struct agent_broker_provider {
-    /* Fill `out` with the grant this broker session is to hold. Return false
-     * to refuse the session (no grant, no broker). */
-    bool (*grant)(void *ctx, struct agent_grant *out);
+    /* Bind this session to an EXISTING canonical grant. Fills the immutable
+     * reference — canonical id, principal, and the narrowing derived from
+     * that grant. Returns false to refuse the session; `why` (when non-NULL)
+     * receives the named reason. Called ONCE, after the fork. */
+    bool (*bind)(void *ctx, struct agent_authority_ref *out, char *why,
+                 size_t why_cap);
+
+    /* THE LIVE DECISION. Consults the authority AS IT IS NOW — no cached
+     * verdict, no session copy. MVAP_OK or the named refusal. Called for
+     * every request, twice per action (once on the claimed kind, once on the
+     * catalog's). */
+    int32_t (*authorize)(void *ctx, const struct agent_authority_ref *ref,
+                         const struct mvap_request *req, int64_t now_ms);
+
+    /* Record a committed action against the live authority (budget, rate
+     * window). Returns false when the authority refused the debit, which the
+     * broker logs — it never silently proceeds. */
+    bool (*debit)(void *ctx, const struct agent_authority_ref *ref,
+                  const struct mvap_request *req, int64_t now_ms);
+
+    /* Optional. Fill the labelled status snapshot. Never consulted by a
+     * decision. */
+    bool (*status)(void *ctx, const struct agent_authority_ref *ref,
+                   struct agent_authority_status *out);
+
     /* The property surface the grant acts on. */
     struct agent_broker_node_ops (*ops)(void *ctx);
     void *ctx;
@@ -359,6 +462,20 @@ struct agent_broker_provider {
 
 void agent_broker_provider_install(const struct agent_broker_provider *p);
 const struct agent_broker_provider *agent_broker_provider_get(void);
+
+/* Bind `s` to the REGISTERED provider's authority: fills `ref`, points
+ * `s->authority` at it, and installs the provider's property surface into
+ * `s->ops`. `ref` must OUTLIVE `s` — the session borrows it and never copies
+ * it. Call once, AFTER the confined child has been forked.
+ *
+ * False means UNGRANTED, which is a served state and not a startup failure:
+ * the socket still comes up and every request is refused by name, so an
+ * operator sees the reason per request instead of a process that vanished.
+ * `why` (optional) receives that reason. */
+struct agent_broker_session;
+bool agent_broker_session_bind(struct agent_broker_session *s,
+                               struct agent_authority_ref *ref, char *why,
+                               size_t why_cap);
 
 /* The fixture catalog and demo grant exist ONLY in a build compiled with
  * -DZCL_TESTING; in a production binary the symbols below are not declared and
@@ -378,20 +495,45 @@ void agent_broker_fixture_property_id(size_t index,
 struct agent_broker_node_ops agent_broker_fixture_ops(void);
 
 /* The demo grant + fixture ops as a provider, for the adversarial demo that
- * drives `--metaverse-broker --fixture`. */
+ * drives `--metaverse-broker --fixture`. The fixture's authority lives in the
+ * fixture, not in the session, so the demo's revocation below is a real live
+ * revocation and not a poke at a session copy. */
 void agent_broker_install_fixture_provider(void);
+
+/* Revoke the fixture provider's live authority. A session already running is
+ * affected immediately, because it holds no copy of it. */
+void agent_broker_fixture_revoke(void);
+
+/* Move the fixture provider's authority clock, so a test can walk past an
+ * expiry without sleeping. `ms` is an offset added to the wall clock. */
+void agent_broker_fixture_advance_clock(int64_t ms);
+
+/* Install `g` as the fixture provider's live authority, and bind a session to
+ * it. Returns false when the grant cannot be represented. */
+void agent_broker_fixture_set_grant(const struct agent_grant *g);
+
+/* The fixture provider's authority as it stands right now, for a test that
+ * needs to assert on it. */
+void agent_broker_fixture_get_grant(struct agent_grant *out);
 #endif
 
 /* ── the broker session ─────────────────────────────────────────────────── */
 
 #define AGENT_IDEMPOTENCY_SLOTS 32
 
-/* One served connection. `grant` is BY VALUE here and this struct lives only in
- * the broker process — that is the mechanical reason the child cannot read it.
+/* One served connection.
+ *
+ * THERE IS NO GRANT IN HERE. `authority` is a const pointer to an immutable
+ * reference (see struct agent_authority_ref for why): the session can name its
+ * authority and cannot hold, copy, mutate, or outlive it. Every authorize and
+ * every debit goes through `authority->provider`, so an operator's revoke,
+ * expiry change, or budget change lands on the very next request of a session
+ * that is already running.
+ *
  * The idempotency ring makes a replayed request_id return the FIRST outcome
  * instead of committing twice. */
 struct agent_broker_session {
-    struct agent_grant            grant;
+    const struct agent_authority_ref *authority;
     struct agent_peer_expectation expect;
     struct agent_broker_node_ops  ops;
     struct agent_audit_log       *audit;
@@ -509,11 +651,15 @@ const int *agent_confined_allowed_syscalls(size_t *count_out);
 
 /* Write the achieved-confinement report / broker state to `<dir>/broker.json`
  * for `metaverse agent status` to read. Best-effort; a failure is logged and
- * does not stop the broker. */
+ * does not stop the broker.
+ *
+ * The grant is no longer an argument, because the broker no longer holds one.
+ * The authority section is pulled from the provider's labelled status
+ * snapshot at write time, and a provider that supplies none is reported as
+ * ungranted rather than as an empty grant. */
 void agent_broker_write_status(const char *dir,
                                const struct agent_broker_session *s,
-                               const struct agent_grant *g, pid_t child_pid,
-                               const char *socket_path);
+                               pid_t child_pid, const char *socket_path);
 
 /* Render `<dir>/broker.json` (or a not-running verdict) as JSON text. */
 size_t agent_broker_render_status_json(const char *dir, char *out,

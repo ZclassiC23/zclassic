@@ -267,6 +267,47 @@ const struct agent_broker_provider *agent_broker_provider_get(void)
     return g_provider;
 }
 
+/* THE ONE PLACE A SESSION ACQUIRES AUTHORITY. It exists so that "bind" is not
+ * a recipe each caller retypes: forgetting to record `provider`/`provider_ctx`
+ * on the reference would leave a reference that names a grant and cannot reach
+ * it, which authorize_live() correctly refuses — silently, and for a reason
+ * nobody would guess. Doing it here means no caller can get it half right.
+ *
+ * A refusal is a STATE, not an error to recover from: the session stays
+ * ungranted, `ref->bound` stays false, and every request is refused by name. */
+bool agent_broker_session_bind(struct agent_broker_session *s,
+                               struct agent_authority_ref *ref, char *why,
+                               size_t why_cap)
+{
+    if (why && why_cap)
+        why[0] = '\0';
+    if (!s || !ref)
+        LOG_FAIL(BROKER_TAG, "bind: null session or authority reference");
+    memset(ref, 0, sizeof(*ref));
+    s->authority = ref;
+
+    const struct agent_broker_provider *p = g_provider;
+    if (!p) {
+        if (why && why_cap)
+            snprintf(why, why_cap,
+                     "no property provider is registered: this broker has no "
+                     "authority and no property surface");
+        return false;
+    }
+    if (p->ops)
+        s->ops = p->ops(p->ctx);
+    if (!p->bind || !p->bind(p->ctx, ref, why, why_cap)) {
+        memset(ref, 0, sizeof(*ref));
+        if (why && why_cap && !why[0])
+            snprintf(why, why_cap, "provider '%s' refused to bind",
+                     p->name ? p->name : "(unnamed)");
+        return false;
+    }
+    ref->provider     = p;
+    ref->provider_ctx = p->ctx;
+    return true;
+}
+
 /* ── the request pipeline ───────────────────────────────────────────────── */
 
 static void resp_init(struct mvap_response *r, const struct mvap_request *req,
@@ -314,6 +355,43 @@ static void idem_store(struct agent_broker_session *s, uint32_t request_id,
     s->idem[slot].resp       = *resp;
 }
 
+/* ── the live authority ─────────────────────────────────────────────────── */
+
+/* THE ONE PLACE A REQUEST IS AUTHORIZED, and it reads no session state that
+ * could be stale: the verdict comes from the provider, which consults the
+ * store as it is at this instant, and the session contributes only the
+ * narrowing (agent_broker_scope_check, which can refuse and cannot allow).
+ *
+ * THERE IS NO FALLBACK. An unbound reference, a provider that vanished, or a
+ * provider with no authorize entry point all produce DENIED_NO_GRANT. That is
+ * the whole reason the session stopped holding a grant: with a copy present,
+ * "the authority is unreachable" would silently become "use the copy", which
+ * is exactly how a revoked grant keeps working. */
+static int32_t authorize_live(const struct agent_broker_session *s,
+                              const struct mvap_request *req, int64_t now_ms)
+{
+    const struct agent_authority_ref *a = s->authority;
+    if (!a || !a->bound || !a->provider || !a->provider->authorize)
+        return MVAP_ERR_DENIED_NO_GRANT;
+    int32_t verdict =
+        a->provider->authorize(a->provider_ctx, a, req, now_ms);
+    if (verdict != MVAP_OK)
+        return verdict;
+    return agent_broker_scope_check(&a->scope, req);
+}
+
+static const char *session_principal(const struct agent_broker_session *s)
+{
+    return (s->authority && s->authority->bound) ? s->authority->principal : "";
+}
+
+static const char *session_grant_id(const struct agent_broker_session *s)
+{
+    return (s->authority && s->authority->bound)
+               ? s->authority->canonical_grant_id
+               : "";
+}
+
 /* One confinement receipt. `action_receipt_id` is the canonical metaverse
  * action receipt this row COMMITS TO — passed in from the COMMIT outcome, all
  * zero when the operation minted none (a refusal, or a query, which never
@@ -334,8 +412,8 @@ static void broker_receipt(struct agent_broker_session *s,
     memcpy(r.property_id, req->property_id, MVAP_PROPERTY_ID_LEN);
     if (action_receipt_id)
         memcpy(r.action_receipt_id, action_receipt_id, 32);
-    snprintf(r.principal, sizeof(r.principal), "%s", s->grant.principal);
-    snprintf(r.grant_id, sizeof(r.grant_id), "%s", s->grant.grant_id);
+    snprintf(r.principal, sizeof(r.principal), "%s", session_principal(s));
+    snprintf(r.grant_id, sizeof(r.grant_id), "%s", session_grant_id(s));
     r.peer = s->peer;
     snprintf(r.detail, sizeof(r.detail), "%s", detail ? detail : "");
     if (agent_audit_append(s->audit, &r)) {
@@ -374,9 +452,9 @@ void agent_broker_handle(struct agent_broker_session *s,
         return;
     }
 
-    /* 1. Authorization, on what the agent CLAIMED. The verdict is the
-     *    metaverse's; agent_grant_authorize() translates and narrows. */
-    int32_t verdict = agent_grant_authorize(&s->grant, req, now);
+    /* 1. Authorization, on what the agent CLAIMED. The verdict comes from the
+     *    LIVE authority through the provider; the session narrows it. */
+    int32_t verdict = authorize_live(s, req, now);
     if (verdict != MVAP_OK) {
         resp_init(out, req, verdict);
         resp_body(out, "{\"denied\":\"%s\",\"stage\":\"authorize\"}",
@@ -413,11 +491,15 @@ void agent_broker_handle(struct agent_broker_session *s,
     /* 3. Re-authorize against the CATALOG's kind, not the agent's claim. A
      *    request that understated its kind to slip past the mask dies here.
      *    Skipped only when the request named no property at all, where there
-     *    is no catalog kind to disagree with. */
+     *    is no catalog kind to disagree with.
+     *
+     *    This is a SECOND read of the live authority, not a re-run over the
+     *    first verdict: the resolve above did real datadir work, and a revoke
+     *    that landed during it must be seen here. */
     if (!mvap_property_id_is_zero(req->property_id)) {
         struct mvap_request authoritative = *req;
         authoritative.kind = plan.kind;
-        verdict = agent_grant_authorize(&s->grant, &authoritative, now);
+        verdict = authorize_live(s, &authoritative, now);
         if (verdict != MVAP_OK) {
             resp_init(out, req, verdict);
             resp_body(out, "{\"denied\":\"%s\",\"stage\":\"recheck\","
@@ -467,7 +549,18 @@ void agent_broker_handle(struct agent_broker_session *s,
         return;
     }
 
-    agent_grant_commit_debit(&s->grant, req, now);
+    /* The debit lands on the LIVE authority, so a budget spent here is spent
+     * for every other reader of that grant — not in a session-local copy that
+     * dies with the connection. */
+    if (s->authority && s->authority->provider &&
+        s->authority->provider->debit &&
+        !s->authority->provider->debit(s->authority->provider_ctx,
+                                       s->authority, req, now))
+        LOG_WARN(BROKER_TAG,
+                 "grant %s: the live authority refused a debit that authorize "
+                 "had already allowed (verb=%s value=%llu)",
+                 session_grant_id(s), mvap_verb_name(req->verb),
+                 (unsigned long long)req->value_zats);
     resp_init(out, req, MVAP_OK);
     resp_body(out, "%s", outcome.body);
     /* The confinement envelope commits to the canonical action receipt rather

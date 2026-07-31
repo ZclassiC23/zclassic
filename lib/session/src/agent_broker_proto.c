@@ -157,6 +157,10 @@ const char *mvap_status_name(int32_t status)
     case MVAP_ERR_PLAN_FAILED:          return "PLAN_FAILED";
     case MVAP_ERR_COMMIT_FAILED:        return "COMMIT_FAILED";
     case MVAP_ERR_REVISION_MOVED:       return "REVISION_MOVED";
+    case MVAP_ERR_ACTION_EXECUTOR_UNAVAILABLE:
+                                        return "ACTION_EXECUTOR_UNAVAILABLE";
+    case MVAP_ERR_QUERY_UNAVAILABLE:    return "QUERY_UNAVAILABLE";
+    case MVAP_ERR_AUTHORITY_CHANGED:    return "AUTHORITY_CHANGED";
     default:                            return "unknown";
     }
 }
