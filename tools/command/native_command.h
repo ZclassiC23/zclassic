@@ -1323,6 +1323,15 @@ void zcl_native_handle_ops_telemetry_agents_grants(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 void zcl_native_handle_ops_telemetry_agents_activity(
+/* ── ops.telemetry.zcode.* — the zcode telemetry domain
+ * (tools/command/native_telemetry_zcode_command.c). Picks the typed zcode
+ * snapshot and a view and hands both to telemetry_render(); it names no
+ * field and decides no health. Field names, units and rules live in
+ * util/telemetry/zcode_fields.def; the collector is
+ * app/services/src/zcode_telemetry_fill.c. Bound by
+ * config/commands/telemetry/zcode.def, whose `swarm` and `installs` leaves
+ * stay PLANNED and so have no handler here. */
+void zcl_native_handle_ops_telemetry_zcode_summary(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
