@@ -37,6 +37,7 @@
 #ifndef ZCL_METAVERSE_PROPERTY_GRANT_H
 #define ZCL_METAVERSE_PROPERTY_GRANT_H
 
+#include "metaverse/property_action.h"
 #include "metaverse/property_id.h"
 
 #include <stdbool.h>
@@ -63,63 +64,19 @@
  * can reason about; the bound exists so the check is O(1). */
 #define METAVERSE_GRANT_MAX_DEPTH 4
 
-/* ── Actions ─────────────────────────────────────────────────────────────── */
+/* ── Actions and queries ─────────────────────────────────────────────────── */
 
-/* Ordered; the value IS the bit position, so never reorder — a grant's action
- * set is a persisted bitmask and reordering would silently re-map rights. */
-enum metaverse_action {
-    METAVERSE_ACTION_INSPECT = 0,
-    METAVERSE_ACTION_HOST,
-    METAVERSE_ACTION_PUBLISH_REVISION,
-    METAVERSE_ACTION_UPDATE_POINTER,
-    METAVERSE_ACTION_LIST,
-    METAVERSE_ACTION_BUY,
-    METAVERSE_ACTION_SELL,
-    METAVERSE_ACTION_DELIVER,
-    METAVERSE_ACTION_LEASE,
-    METAVERSE_ACTION_TRANSFER,
-    METAVERSE_ACTION_ACCEPT_PAYMENT,
-    METAVERSE_ACTION_DELEGATE,
-    METAVERSE_ACTION_REVOKE,
-    METAVERSE_ACTION_COUNT
-};
-
-typedef uint32_t metaverse_action_set;
-
-static inline metaverse_action_set metaverse_action_bit(enum metaverse_action a)
-{
-    if (a < 0 || a >= METAVERSE_ACTION_COUNT) return 0u;
-    return (metaverse_action_set)1u << (unsigned)a;
-}
-
-/* Stable lowercase-with-hyphens token per action ("inspect", "host",
- * "publish-revision", …). Contract: tests and the CLI assert these exactly.
- * Out-of-range renders "unknown". */
-const char *metaverse_action_token(enum metaverse_action a);
-
-/* Parse an action token. Returns false for NULL/""/unrecognized. Accepts both
- * '-' and '_' as the word separator so `publish_revision` from a JSON key and
- * `publish-revision` from a CLI flag name the same right. */
-bool metaverse_action_parse(const char *token, enum metaverse_action *out);
-
-/* Parse a comma-separated action list ("inspect,host,list") into a set.
- * An empty/NULL list yields the empty set and returns true — a grant with no
- * actions is well-formed and useless, which is the correct default. Any
- * unrecognized element fails the whole parse (never a partial set: a
- * silently-dropped element would WIDEN nothing but a silently-kept typo
- * narrows a grant the operator believed they had written). */
-bool metaverse_action_set_parse(const char *csv, metaverse_action_set *out);
-
-/* Render a set as a comma-separated token list in enum order. Writes "" for
- * the empty set. Needs 256 bytes to hold every token. */
-bool metaverse_action_set_render(metaverse_action_set set,
-                                char *out, size_t out_cap);
-
-/* True when the action MOVES VALUE and therefore must be charged against the
- * grant's cumulative budget: BUY, SELL, LEASE, TRANSFER, ACCEPT_PAYMENT.
- * A non-value action carrying a non-zero value is a malformed request, not a
- * free pass — metaverse_grant_check rejects it (VALUE_ON_FREE_ACTION). */
-bool metaverse_action_moves_value(enum metaverse_action a);
+/* This file used to declare a SECOND action vocabulary — the same thirteen
+ * identifiers as bit POSITIONS, beside metaverse/property_action.h's bit
+ * VALUES, with a colliding METAVERSE_ACTION_COUNT. No translation unit
+ * included both, and that was the only reason the tree compiled. The
+ * vocabulary now lives in exactly one place, metaverse/property_action.h,
+ * included above: enums, masks, names, wire values, and every predicate come
+ * from its one table. Nothing is restated here.
+ *
+ * The persisted numbers are unchanged. A grant's action set was always the
+ * OR of `1u << position`, which is bit-for-bit the same mask as the OR of the
+ * bit values, so every grant already on disk means exactly what it meant. */
 
 /* ── Scope ───────────────────────────────────────────────────────────────── */
 
@@ -157,6 +114,12 @@ struct metaverse_grant {
     metaverse_kind_set kinds;       /* meaningful only for SCOPE_KINDS */
 
     metaverse_action_set actions;
+
+    /* Read rights, held separately because queries are a separate closed
+     * vocabulary (metaverse/property_action.h). A grant that may INSPECT but
+     * may not SELL is the common shape, and expressing it as an action bit is
+     * what let one identifier mean both "enumerate" and "list for sale". */
+    metaverse_query_set queries;
 
     int64_t max_value_zat;          /* CUMULATIVE ceiling; 0 = no value may move */
     int64_t spent_zat;              /* running total, monotonic */
@@ -229,6 +192,22 @@ struct metaverse_action_request {
     int64_t height;
 };
 
+/* One proposed READ. Same shape minus everything a read cannot have: no
+ * counterparty, no value, no budget. Kept a distinct type so a caller cannot
+ * hand a query to metaverse_grant_check() and have it evaluated against the
+ * action rules — the two vocabularies do not share a request either.
+ *
+ * `property` may be zeroed for a query whose column says so
+ * (ENUMERATE_PROPERTIES names no single property); it is required for
+ * INSPECT_PROPERTY. */
+struct metaverse_query_request {
+    char actor[METAVERSE_PRINCIPAL_MAX + 1];       /* must equal grant->holder */
+    struct metaverse_property_id property;
+    enum metaverse_query query;
+    int64_t now_unix;
+    int64_t height;
+};
+
 /* True when the grant record's own invariants hold: id/holder non-empty,
  * scope form consistent with the populated scope field, lineage_count == depth
  * and <= MAX_DEPTH, non-negative budget, rate window present iff a rate limit
@@ -255,6 +234,25 @@ enum metaverse_grant_verdict metaverse_grant_check(
     const struct metaverse_grant *g,
     const struct metaverse_grant *const *ancestors, size_t ancestor_count,
     const struct metaverse_action_request *req);
+
+/* The same decision for a READ. Runs the identical revocation, expiry, holder
+ * and scope checks, and stops there: a query moves no value, so there is no
+ * budget to debit, and it names no counterparty, so there is no allowlist to
+ * consult. It also does NOT consume the rate window — the window bounds
+ * ACTION count, and letting reads exhaust it would make an agent's ability to
+ * act depend on how often it looked.
+ *
+ * A query the grant does not hold is ACTION_NOT_GRANTED: one taxonomy, so a
+ * caller mapping verdicts to its own reasons needs no second table.
+ *
+ * ENUMERATE_PROPERTIES may arrive with a zeroed property (it names none), and
+ * scope is then not checked — the caller must filter its results through
+ * metaverse_grant_in_scope() instead, because "you may enumerate" is not
+ * "you may see everything". */
+enum metaverse_grant_verdict metaverse_grant_query_check(
+    const struct metaverse_grant *g,
+    const struct metaverse_grant *const *ancestors, size_t ancestor_count,
+    const struct metaverse_query_request *req);
 
 /* Decide whether `g` may mint a child grant at `child_depth` carrying
  * `child_actions` over `child_scope`. Enforces: DELEGATE is in g->actions,

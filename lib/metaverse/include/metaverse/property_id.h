@@ -85,8 +85,9 @@ enum metaverse_settlement {
  * kind is one row here plus one adapter row
  * (metaverse/property_adapter.h) — the adapter table is static_assert'd
  * against this count, so a kind can never appear in the vocabulary with no
- * reader behind it, and a row with only three columns will not preprocess,
- * so a kind can never appear with no settlement class either.
+ * reader behind it, and a row with fewer than five columns will not
+ * preprocess, so a kind can never appear with no settlement class and no
+ * broker wire value either.
  *
  * Why each kind sits where it does:
  *
@@ -117,48 +118,62 @@ enum metaverse_settlement {
  *       unknown numbers under it.
  *
  * Room to extend is deliberate: world/object kinds land as further rows,
- * never as a parallel enum. */
+ * never as a parallel enum.
+ *
+ * Columns, in order: enum suffix, wire name, authority source, settlement
+ * class (the METAVERSE_SETTLEMENT_ suffix), and the BROKER WIRE VALUE the
+ * agent-broker protocol carries for this kind. The broker column exists so
+ * the protocol's kind numbering is declared once, beside the kind it names,
+ * instead of being re-derived by a switch on the far side of a socket. It is
+ * currently the identity mapping, and the per-row assertion below is what
+ * keeps that a checked fact rather than an assumption. */
 #define METAVERSE_KIND_TABLE(X)                                              \
     X(CONTENT,            "content",            "vcs.blob_store",            \
-      CONTENT_ADDRESSED)                                                     \
+      CONTENT_ADDRESSED,         1u)                                         \
     X(ZCODE_PACKAGE,      "zcode_package",      "vcs.package_store",         \
-      CONTENT_ADDRESSED)                                                     \
+      CONTENT_ADDRESSED,         2u)                                         \
     X(ZNAM_NAME,          "znam_name",          "znam.registry",             \
-      PROOF_OF_WORK)                                                         \
+      PROOF_OF_WORK,             3u)                                         \
     X(ZSLP_ASSET,         "zslp_asset",         "zslp.ledger",               \
-      PROOF_OF_WORK)                                                         \
+      PROOF_OF_WORK,             4u)                                         \
     X(HOSTED_SERVICE,     "hosted_service",     "service.registry",          \
-      LOCAL_DECLARATION)                                                     \
+      LOCAL_DECLARATION,         5u)                                         \
     X(ENDPOINT_ONION,     "endpoint_onion",     "net.onion_service",         \
-      LOCAL_DECLARATION)                                                     \
+      LOCAL_DECLARATION,         6u)                                         \
     X(STOREFRONT_PRODUCT, "storefront_product", "store.product",             \
-      LOCAL_DECLARATION)                                                     \
+      LOCAL_DECLARATION,         7u)                                         \
     X(CONTRACT_SWAP,      "contract_swap",      "swap.contract",             \
-      CHAIN_ANCHORED_INCOMPLETE)
+      CHAIN_ANCHORED_INCOMPLETE, 8u)
 
 enum metaverse_kind {
     /* Zero is not a kind. A zeroed struct is an explicitly invalid id, so
      * a forgotten initialization can never read as CONTENT. */
     METAVERSE_KIND_UNKNOWN = 0,
-#define METAVERSE_KIND_ENUM(id_, name_, authority_, settle_) \
+#define METAVERSE_KIND_ENUM(id_, name_, authority_, settle_, wire_) \
     METAVERSE_KIND_##id_,
     METAVERSE_KIND_TABLE(METAVERSE_KIND_ENUM)
 #undef METAVERSE_KIND_ENUM
     METAVERSE_KIND_COUNT
 };
 
-/* Every kind's fourth column must name a real class. This fires at compile
- * time in every translation unit that includes this header, so a new kind
- * cannot reach a test run classified as UNKNOWN. */
-#define METAVERSE_KIND_SETTLE_ASSERT(id_, name_, authority_, settle_)        \
+/* Every kind's fourth column must name a real class, and its fifth must be
+ * the broker value that kind already ships under. Both fire at compile time
+ * in every translation unit that includes this header, so a new kind cannot
+ * reach a test run classified as UNKNOWN or silently renumbered on the
+ * wire. */
+#define METAVERSE_KIND_ROW_ASSERT(id_, name_, authority_, settle_, wire_)    \
     _Static_assert(METAVERSE_SETTLEMENT_##settle_ >                          \
                            METAVERSE_SETTLEMENT_UNKNOWN &&                   \
                        METAVERSE_SETTLEMENT_##settle_ <                      \
                            METAVERSE_SETTLEMENT_COUNT,                       \
                    "property kind " name_ " must name a real settlement "    \
-                   "class in METAVERSE_KIND_TABLE");
-METAVERSE_KIND_TABLE(METAVERSE_KIND_SETTLE_ASSERT)
-#undef METAVERSE_KIND_SETTLE_ASSERT
+                   "class in METAVERSE_KIND_TABLE");                         \
+    _Static_assert((wire_) == (unsigned)METAVERSE_KIND_##id_,                \
+                   "property kind " name_ " must keep the broker wire value "\
+                   "it already ships under; renumbering it would re-map "    \
+                   "every deployed agent's kind scope");
+METAVERSE_KIND_TABLE(METAVERSE_KIND_ROW_ASSERT)
+#undef METAVERSE_KIND_ROW_ASSERT
 
 #define METAVERSE_ROOT_BYTES 32u
 
@@ -202,6 +217,13 @@ bool metaverse_settlement_work_measurable(enum metaverse_settlement s);
 /* Exact wire-name lookup. METAVERSE_KIND_UNKNOWN when nothing matches
  * (including NULL, "", and "unknown" itself). */
 enum metaverse_kind metaverse_kind_from_name(const char *name);
+
+/* The kind's BROKER WIRE VALUE and back, straight out of the table's fifth
+ * column. 0 / METAVERSE_KIND_UNKNOWN for an invalid kind or an unrecognized
+ * wire value — 0 is the protocol's own "any kind" sentinel, so a caller
+ * cannot mistake a refusal for a real kind. */
+uint32_t metaverse_kind_wire(enum metaverse_kind kind);
+enum metaverse_kind metaverse_kind_from_wire(uint32_t wire);
 
 /* True for a real kind (not UNKNOWN, not >= COUNT). */
 bool metaverse_kind_valid(enum metaverse_kind kind);
