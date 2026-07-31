@@ -254,6 +254,17 @@ static const struct rlw_leaf g_rlw_leaves[] = {
       "kind", "content",        NULL, NULL, "zcode/manifests" },
     { "metaverse.property.show", zcl_native_handle_metaverse_property_show,
       "property_id", RLW_PROPERTY_ID, NULL, NULL, "zcode/manifests" },
+    /* Build-ledger reads use the same read-only node.db attachment as the
+     * older application leaves above.  Exercise each one from the day it is
+     * registered so an absent, foreign, or damaged operator database can
+     * never be migrated or quarantined by a command advertised as READ. */
+    { "metaverse.build.status", zcl_native_handle_metaverse_build_status,
+      "job_id", RLW_ZID_PUBKEY, NULL, NULL, NULL },
+    { "metaverse.build.receipt", zcl_native_handle_metaverse_build_receipt,
+      "receipt_id", RLW_ZID_PUBKEY, NULL, NULL, NULL },
+    { "metaverse.build.worker.list",
+      zcl_native_handle_metaverse_build_worker_list,
+      NULL, NULL, NULL, NULL, NULL },
 };
 
 #define RLW_LEAF_COUNT ((int)(sizeof(g_rlw_leaves) / sizeof(g_rlw_leaves[0])))
