@@ -1270,6 +1270,22 @@ void zcl_native_handle_ops_telemetry_runtime_threads(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 void zcl_native_handle_ops_telemetry_runtime_resources(
+/* ── ops.telemetry.network.* — the network telemetry domain
+ * (tools/command/native_telemetry_network_command.c). Four VIEWS of ONE typed
+ * snapshot, not four data sources: each handler fills a
+ * `struct network_snapshot` through network_dump_state_fill() and hands it to
+ * telemetry_render() at its view and group. They touch no node global, decide
+ * no health, and name no field. Bound by config/commands/telemetry/network.def. */
+void zcl_native_handle_telemetry_network_summary(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_telemetry_network_peers(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_telemetry_network_tor(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_telemetry_network_transport(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
