@@ -103,6 +103,7 @@ history: <!-- doc-path-ok: recovered from git history, not present on disk -->
 - [`FRAMEWORK.md`](./FRAMEWORK.md) — canonical architecture: Prime Directive, Ten Laws of Beauty, the eight shapes, and (§9) the architecture debt board (live debt only; NOT the v1 path).
 - [`ARCHITECTURE_DIAGRAMS.md`](./ARCHITECTURE_DIAGRAMS.md) — Mermaid diagrams of the current boot sequence and subsystem topology.
 - [`adr/0001-personal-sovereignty-stack.md`](./adr/0001-personal-sovereignty-stack.md) — ADR for the 2026-05-22 Personal Sovereignty Stack pivot.
+- [`adr/0007-property-settlement-and-trust-roots.md`](./adr/0007-property-settlement-and-trust-roots.md) — ADR for what backs a metaverse property claim: content addressing, proof of work, or local declaration — and the limits of each.
 
 ## Operations
 
