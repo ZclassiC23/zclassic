@@ -312,6 +312,7 @@ static bool sb_scrape_order_id(const char *page, int64_t *out)
 struct zcl_result store_buyer_order(const char *datadir, int64_t product_id,
                                     const char *customer_addr,
                                     const char *output_path,
+                                    bool transparent,
                                     struct store_buyer_order *out)
 {
     struct node_db ndb;
@@ -355,9 +356,9 @@ struct zcl_result store_buyer_order(const char *datadir, int64_t product_id,
 
     (void)snprintf(body, sizeof(body),
                    "product_id=%lld&customer_addr=%s&csrf_token=%s"
-                   "&pow_ts=%s&pow_nonce=%s",
+                   "&pow_ts=%s&pow_nonce=%s&payment_kind=%s",
                    (long long)product_id, customer_addr, csrf, pow_ts,
-                   pow_nonce);
+                   pow_nonce, transparent ? "transparent" : "shielded");
     n = store_handle_request("POST", "/store/orders",
                              (const uint8_t *)body, strlen(body),
                              resp, SB_RESP_MAX, datadir);

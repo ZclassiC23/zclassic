@@ -292,7 +292,7 @@ int test_store_buyer(void)
     {
         const char *step = "order";
         bool ok = store_buyer_order(datadir, product_id, TSB_CUSTOMER,
-                                    out_path, &paid_order).ok;
+                                    out_path, false, &paid_order).ok;
         ok = ok && paid_order.purchase_id > 0 && paid_order.order_id > 0;
         ok = ok && paid_order.payment_addr[0] != '\0';
         if (ok) {
@@ -368,7 +368,7 @@ int test_store_buyer(void)
         char decoy_out[352];
         (void)snprintf(decoy_out, sizeof(decoy_out), "%s/decoy.bin", datadir);
         bool ok = store_buyer_order(datadir, product_id, TSB_CUSTOMER,
-                                   decoy_out, &unpaid).ok;
+                                    decoy_out, false, &unpaid).ok;
         ok = ok && unpaid.purchase_id != paid_order.purchase_id;
         if (ok) {
             /* Full value arrives at THIS order's one-time address, but the
@@ -462,7 +462,7 @@ int test_store_buyer(void)
         char stale_out[352];
         (void)snprintf(stale_out, sizeof(stale_out), "%s/stale.bin", datadir);
         bool ok = store_buyer_order(datadir, product_id, TSB_CUSTOMER,
-                                    stale_out, &stale).ok;
+                                    stale_out, false, &stale).ok;
         if (ok) {
             /* Exactly the right token for exactly the right order, at the
              * right address, for the right amount — padded with 0xF6, which
@@ -506,7 +506,7 @@ int test_store_buyer(void)
         (void)snprintf(swap_part, sizeof(swap_part), "%s.part", swap_out);
 
         bool ok = store_buyer_order(datadir, product_id, TSB_CUSTOMER,
-                                    swap_out, &swapped).ok;
+                                    swap_out, false, &swapped).ok;
         if (ok) {
             step = "pay it";
             ok = tsb_open(datadir, &ndb);
@@ -597,6 +597,7 @@ int test_store_buyer(void)
         struct store_buyer_order o;
         struct store_buyer_state s;
         bool ok = store_buyer_order(datadir, 999999, TSB_CUSTOMER, out_path,
+                                    false,
                                     &o).code == STORE_BUYER_ERR_UNKNOWN_PRODUCT;
         ok = ok && store_buyer_refresh(datadir, 999999, &s).code == STORE_BUYER_ERR_UNKNOWN_PURCHASE;
         ok = ok && strcmp(store_buyer_status_code(

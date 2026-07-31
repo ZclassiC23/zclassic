@@ -197,6 +197,7 @@ void zcl_native_handle_store_order(
     int64_t product_id = json_get_int_or(in, "product_id", 0);
     const char *addr = json_get_str(json_get(in, "customer_address"));
     const char *out_path = json_get_str(json_get(in, "output_path"));
+    const char *pay_kind = json_get_str(json_get(in, "payment_kind"));
 
     if (product_id <= 0) {
         sbn_fail(reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
@@ -217,8 +218,12 @@ void zcl_native_handle_store_order(
     rpc_arg_builder_init(&p);
     rpc_arg_builder_push_int(&p, product_id);
     rpc_arg_builder_push_str(&p, addr);
-    if (out_path && out_path[0])
-        rpc_arg_builder_push_str(&p, out_path);
+    /* Positional RPC: payment_kind sits in slot 4, so an absent output_path
+     * still has to occupy slot 3 when a kind was given. */
+    if ((out_path && out_path[0]) || (pay_kind && pay_kind[0]))
+        rpc_arg_builder_push_str(&p, out_path ? out_path : "");
+    if (pay_kind && pay_kind[0])
+        rpc_arg_builder_push_str(&p, pay_kind);
     char *params = rpc_arg_builder_to_json(&p);
     if (!params) {
         sbn_fail(reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,

@@ -29,78 +29,26 @@ void rpc_wallet_set_coins_tip(struct coins_view_cache *tip)
 }
 
 
+
 static bool rpc_getnewaddress(const struct json_value *params, bool help,
                                struct json_value *result)
 {
-    struct wallet_rpc_context *ctx = wallet_ctx();
     (void)params;
     RPC_HELP(help, result,
         "getnewaddress\n"
         "Returns a new ZClassic address for receiving payments.");
 
     ENSURE_WALLET(result);
-    if (!ctx->wallet_db || !ctx->wallet_db->open) {
-        json_set_str(result,
-            "Error: wallet durability backend unavailable; address not created");
-        LOG_FAIL("wallet",
-                 "getnewaddress: refusing RAM-only receive address");
-    }
-
-    bool direct_generated = wallet_has_hd(ctx->wallet);
-    if (!direct_generated &&
-        wallet_key_pool_persisted_size(ctx->wallet) == 0) {
-        if (!wallet_top_up_key_pool(ctx->wallet, DEFAULT_KEYPOOL_SIZE)) {
-            json_set_str(result, "Error: keypool top-up failed");
-            LOG_FAIL("wallet", "getnewaddress: keypool top-up failed");
-        }
-        int64_t pool_generation =
-            wallet_key_pool_generation_ceiling(ctx->wallet);
-        if (ctx->wallet_db) {
-            struct zcl_result topup_flush = wallet_flush_from_context(ctx);
-            if (!topup_flush.ok) {
-                json_set_str(result,
-                    "Error: wallet persistence failed. No unpersisted "
-                    "keypool address was returned.");
-                LOG_FAIL("wallet",
-                         "getnewaddress: keypool durability failed "
-                         "(code=%d): %s",
-                         topup_flush.code, topup_flush.message);
-            }
-        }
-        wallet_key_pool_mark_persisted_through(
-            ctx->wallet, pool_generation);
-    }
 
     char addr[128];
-    struct key_id generated_kid;
-    if (!wallet_get_new_address_with_key_id(ctx->wallet, addr, sizeof(addr),
-                                   &generated_kid)) {
-        json_set_str(result, "Error: no durable keypool address available");
-        LOG_FAIL("wallet", "getnewaddress: durable keypool ran out");
+    char err[256];
+    if (!wc_new_durable_address(addr, sizeof(addr), err, sizeof(err))) {
+        char msg[300];
+        (void)snprintf(msg, sizeof(msg), "Error: %s",
+                       err[0] ? err : "address not created");
+        json_set_str(result, msg);
+        LOG_FAIL("wallet", "getnewaddress: %s", err[0] ? err : "failed");
     }
-
-    /* Persist the fresh key to wallet_keys BEFORE handing the address
-     * to the user. If the flush fails, roll back the exact returned key ID
-     * so concurrent key generation cannot make us remove a different key.
-     * Never return an address we cannot persist: a
-     * receive to an unsaved key would lose funds on the next restart. */
-    if (ctx->wallet_db && direct_generated) {
-        struct zcl_result fr = wallet_flush_from_context(ctx);
-        if (!fr.ok) {
-            bool removed = wallet_remove_key(ctx->wallet, &generated_kid);
-            json_set_str(result,
-                "Error: wallet persistence failed. New address NOT saved. "
-                "Check getwalletinfo.persistence and node.log.");
-            LOG_FAIL("wallet", "getnewaddress: wallet_sqlite_flush_r failed "
-                                "(exact_key_removed=%d, code=%d): %s",
-                                (int)removed, fr.code, fr.message);
-        }
-
-    }
-
-    /* Success: kick the JSON backup writer so the mirror follows. */
-    if (ctx->wallet_db)
-        wallet_backup_service_on_key_change();
 
     json_set_str(result, addr);
     return true;

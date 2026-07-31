@@ -554,3 +554,28 @@ int64_t db_store_received_payment_for_memo(struct node_db *ndb,
     AR_FINALIZE(s);
     return total;
 }
+
+int64_t db_store_received_payment_taddr(struct node_db *ndb,
+                                        const uint8_t address_hash[20],
+                                        int64_t max_height)
+{
+    sqlite3_stmt *s = NULL;
+
+    if (!ndb || !ndb->open || !address_hash)
+        return 0;
+
+    /* `height > 0` keeps this to value some connected block actually paid.
+     * wallet_utxos is written only from connected blocks (sync_controller_
+     * writers.c, wallet_scan_service.c), so there is no mempool row to
+     * exclude today — but a 0 height would sail past the `<= max_height`
+     * confirmation ceiling if one ever appeared, which is the whole control.
+     * `is_coinbase = 0` because a coinbase crediting the order address is
+     * block subsidy, not a buyer's payment, and excluding it also sidesteps
+     * coinbase maturity entirely. */
+    AR_QUERY_INT64_BOUND(ndb, s,
+        "SELECT COALESCE(SUM(value), 0) FROM wallet_utxos "
+        "WHERE spent_txid IS NULL AND address_hash = ? "
+        "AND is_coinbase = 0 AND height > 0 AND height <= ?",
+        (AR_BIND_BLOB(s, 1, address_hash, 20),
+         AR_BIND_INT(s, 2, max_height)));
+}

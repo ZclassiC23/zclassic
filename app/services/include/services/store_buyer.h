@@ -107,10 +107,17 @@ struct store_buyer_order {
  * and record the buyer's side of it. `customer_addr` is the transparent
  * address the merchant mints access tokens to; `output_path` is where the
  * purchased bytes will be written when they are collected (may be NULL now
- * and supplied at collect time). */
+ * and supplied at collect time).
+ *
+ * `transparent` asks the merchant to mint a one-time t-address for this
+ * order instead of a one-time z-address, which is the only kind of order a
+ * build with no Sapling proving backend can actually pay: a shielded SPEND
+ * needs a proof, a transparent one does not. The order is then bound by that
+ * address rather than by a payment memo. */
 struct zcl_result store_buyer_order(const char *datadir, int64_t product_id,
                                     const char *customer_addr,
                                     const char *output_path,
+                                    bool transparent,
                                     struct store_buyer_order *out);
 
 /* ── pay ────────────────────────────────────────────────────────────── */

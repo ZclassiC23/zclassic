@@ -48,7 +48,7 @@ ZCL_COMMAND_READY_COMMAND(
     "returns the existing purchase rather than a second obligation.", 0,
     "store,order,buy,purchase",
     "zcl.store_order.input.v1", "zcl.store_order.v1",
-    "product_id,customer_address,output_path", "",
+    "product_id,customer_address,output_path,payment_kind", "",
     "zclassic23 app store order --input='{\"product_id\":1,"
     "\"customer_address\":\"t1...\",\"output_path\":\"/tmp/bought.bin\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
