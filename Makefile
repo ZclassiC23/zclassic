@@ -5726,7 +5726,7 @@ check-observability-pairing: tools/check_observability_pairing
 # in-tree FIPS-202 SHA3-256 + memory_cleanse) that reads the file list on stdin
 # (git ls-files -z) and writes/verifies core/MANIFEST.sha3. See tools/core_seal.c
 # and core/UNSEAL.md for the ritual.
-.PHONY: core-seal core-seal-check core-unseal check-core-seal check-core-include-boundary check-accel-oracle-pinned
+.PHONY: core-seal core-seal-check core-unseal check-core-seal check-core-include-boundary check-accel-oracle-pinned check-no-adx-overclaim
 CORE_MANIFEST := core/MANIFEST.sha3
 CORE_UNSEAL_TOKEN := .core-unseal-token
 CORE_SEAL_SRCS := tools/core_seal.c lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/support/src/cleanse.c
@@ -5832,6 +5832,18 @@ check-core-include-boundary:
 check-accel-oracle-pinned:
 	@echo "══ LINT: accelerator differential-oracle pin (below the core seal) ══"
 	@./tools/lint/check_accel_oracle_pinned.sh
+
+# ADX overclaim: a crypto tier may not advertise ADCX/ADOX carry chains its own
+# object code does not contain. The oracle above proves an accelerator computes
+# the RIGHT answer; this one proves its operator-visible label describes the
+# instructions it actually runs. target("bmi2,adx") only makes the compiler
+# WILLING to emit ADCX/ADOX — both intrinsics lower to plain ADC — so the boot
+# banner said "MULX+ADCX+ADOX" over an object with zero of either for months.
+# The gate compiles each claiming file the way the node ships it and reads the
+# disassembly.
+check-no-adx-overclaim:
+	@echo "══ LINT: no ADCX/ADOX carry-chain overclaim ══"
+	@./tools/lint/check_no_adx_overclaim.sh
 
 check-silent-errors-services:
 	@echo "══ LINT: silent error returns in services ══"
@@ -6923,6 +6935,7 @@ LINT_GATES := \
     check-core-include-boundary \
     check-core-seal \
     check-accel-oracle-pinned \
+    check-no-adx-overclaim \
     check-supervisor-registration \
     check-test-registration \
     check-typed-blocker \

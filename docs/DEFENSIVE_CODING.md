@@ -489,6 +489,32 @@ assert green).
   `ACCEL-ORACLE: <impl path>`. Impl:
   `tools/lint/check_accel_oracle_pinned.sh`.
 
+- **`check-no-adx-overclaim`** (HARD) — the companion to the gate above. The
+  accel oracle proves an accelerator computes the RIGHT answer; this one proves
+  its operator-visible label describes the instructions it actually runs. The
+  bug it exists for: `lib/sapling/src/bn254_accel.c` and the BLS12-381 Fr/Fp
+  tier in `lib/sapling/src/fr_avx512.c` both carried
+  `__attribute__((target("bmi2,adx")))` and both reported themselves as
+  `"BMI2+ADX (MULX+ADCX+ADOX)"` into the boot banner — while
+  `bn_fq_mont_mul_bmi2` disassembled to 8 `mulx`, 4 `adc`, 24 `add`, 13 `setb`
+  and **zero** `adcx`, **zero** `adox`. The target attribute only makes the
+  compiler WILLING to emit ADX; `_addcarry_u64` and `_addcarryx_u64` both lower
+  to plain ADC because C cannot express "keep one carry in CF and another in OF
+  simultaneously", which is the entire point of the instruction pair. An
+  operator read that banner to decide a host was on the fast path, and an
+  optimiser read it to decide the work was done. The gate grades object code,
+  not prose: for every `lib/` source that carries the ADX target attribute **or**
+  includes the shared inline-asm core `lib/sapling/src/mont_adx.h`, it compiles
+  the file with the node's own `-std=c23 -O3 -march=x86-64-v3` and counts
+  `adcx`/`adox` in the disassembly. Naming ADCX/ADOX outside a negation with
+  none emitted is a violation. Fail-closed — a compiler or `objdump` it cannot
+  run exits 2 rather than reporting a scan it never performed. Honest
+  downgrades pass: a banner that says the tier is `"BMI2 MULX"`, or a comment
+  that explicitly denies the claim, is the intended alternative to building the
+  chains. Both files are repaired today (inline asm in `mont_adx.h` pins the two
+  chains to the two flags); this gate keeps them that way and grades anything
+  that joins them. Impl: `tools/lint/check_no_adx_overclaim.sh`.
+
 - **Gate #16: `check-supervisor-registration`** (RATCHET) — flags any
   `app/services/src/*_service.c` that spawns work (`pthread_create`,
   `thread_registry_spawn`, `health_register_periodic`) but does NOT call
@@ -806,6 +832,7 @@ add/remove a gate.
 - `check-no-writer-below-sealed-frontier`
 - `check-peer-floor-single-source`
 - `check-proc-self-shim`
+- `check-no-adx-overclaim`
 - `check-no-authoritative-ram-state`
 - `check-no-dev-history-in-contracts`
 - `check-no-new-borrowed-seed`
