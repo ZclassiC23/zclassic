@@ -245,6 +245,11 @@ static void build_corpus_witness(struct parity_witness *pw, unsigned idx)
      * commitment is the only cv an honest witness can carry. */
     if (!sapling_value_commit(w->value, w->rcv, pw->pub.cv))
         return;                         /* pw->ok stays false */
+    /* Sections 22 and 28 bind the anchor and the packed nullifier too, so the
+     * whole public-input vector has to be the honest one or the system is
+     * unsatisfiable by construction. */
+    if (!sapling_spend_derive_public(w, &pw->pub))
+        return;                         /* pw->ok stays false */
     pw->ok = true;
 }
 
@@ -695,10 +700,15 @@ int groth16_spend_parity_oracle(void)
            "%zu/%d constraints proven at parity (%.1f%%)\n",
            max_ported, REF_NUM_SECTIONS, cum, REF_TOTAL_CONSTRAINTS,
            100.0 * (double)cum / (double)REF_TOTAL_CONSTRAINTS);
-    printf("  reference target (full circuit): %d constraints, %d aux, "
-           "%d inputs — remaining sections %zu..%d pending H3 port\n",
-           REF_TOTAL_CONSTRAINTS, REF_TOTAL_AUX, REF_TOTAL_INPUTS,
-           max_ported + 1, REF_NUM_SECTIONS);
+    if (max_ported < (size_t)REF_NUM_SECTIONS)
+        printf("  reference target (full circuit): %d constraints, %d aux, "
+               "%d inputs — remaining sections %zu..%d pending H3 port\n",
+               REF_TOTAL_CONSTRAINTS, REF_TOTAL_AUX, REF_TOTAL_INPUTS,
+               max_ported + 1, REF_NUM_SECTIONS);
+    else
+        printf("  reference target (full circuit): %d constraints, %d aux, "
+               "%d inputs — every section ported\n",
+               REF_TOTAL_CONSTRAINTS, REF_TOTAL_AUX, REF_TOTAL_INPUTS);
     if (max_ported < (size_t)REF_NUM_SECTIONS)
         printf("  next unimplemented section (typed blocker): '%s' "
                "(+%zu constraints to cum %zu) — native spend prover cannot "
