@@ -1,0 +1,35 @@
+/* The `ops.telemetry.wallet` branch. Owned by the wallet telemetry lane.
+ *
+ * Leaves are PLANNED until the typed wallet snapshot and its field table exist;
+ * a leaf whose provider is missing fails closed with exit 3 and names what is
+ * missing, rather than returning an empty object. */
+
+ZCL_COMMAND_BRANCH("ops.telemetry.wallet", "ops.telemetry",
+                   "Wallet projection and key-handling posture",
+                   ZCL_COMMAND_LAYER_OPS)
+
+ZCL_COMMAND_PLANNED_READ(
+    "ops.telemetry.wallet.summary", "ops.telemetry.wallet", "",
+    "Wallet projection posture",
+    "Read live from the running node at call time from the typed wallet snapshot: how far the wallet projection has scanned, and whether it is consistent with the proven chain frontier.", 0,
+    "telemetry,wallet,summary,balance,notes,projection",
+    "zcl.command.empty_input.v1", "zcl.telemetry.wallet.summary.v1", "", "",
+    "zclassic23 ops telemetry wallet summary",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "the typed wallet telemetry snapshot is not built yet")
+
+ZCL_COMMAND_PLANNED_READ(
+    "ops.telemetry.wallet.security", "ops.telemetry.wallet", "",
+    "Key-handling safety posture",
+    "Read live from the running node at call time from the typed wallet snapshot: whether keys are encrypted at rest, whether the vault is locked, and whether any spend path is currently unguarded. Reports posture only; it never emits key material.", 0,
+    "telemetry,wallet,security,keys,vault,locked",
+    "zcl.command.empty_input.v1", "zcl.telemetry.wallet.security.v1", "", "",
+    "zclassic23 ops telemetry wallet security",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "the typed wallet telemetry snapshot is not built yet")

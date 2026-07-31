@@ -1,0 +1,84 @@
+/* The `ops.telemetry` root: the canonical nested telemetry tree.
+ *
+ * Why this is a separate file from ops.def: the `ops` branch is declared in
+ * root.def while its leaves live in ops.def, so cross-file parent/child is
+ * already how this registry works. Keeping the whole telemetry subtree in its
+ * own directory means adding a domain never edits a file another domain owns.
+ *
+ * Every leaf here is PLANNED until its provider exists. A leaf whose data
+ * cannot be produced yet fails closed with exit 3 and says why; it never
+ * returns an empty object dressed up as an answer. */
+
+ZCL_COMMAND_BRANCH("ops.telemetry", "ops",
+                   "Canonical typed telemetry tree",
+                   ZCL_COMMAND_LAYER_OPS)
+
+ZCL_COMMAND_PLANNED_READ(
+    "ops.telemetry.summary", "ops.telemetry", "",
+    "Whole-node telemetry rollup",
+    "Will report every domain's health state and name the one domain that is "
+    "the current bottleneck, with the drill-down command for it; the typed "
+    "domain snapshots it rolls up are not built yet, so the leaf fails closed "
+    "today.", 0,
+    "telemetry,summary,rollup,overview,bottleneck",
+    "zcl.command.empty_input.v1", "zcl.telemetry.summary.v1", "", "",
+    "zclassic23 ops telemetry summary",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "the typed domain snapshots are not built yet")
+
+ZCL_COMMAND_PLANNED_READ(
+    "ops.telemetry.health", "ops.telemetry", "",
+    "Health state per domain",
+    "Will report each telemetry domain's health as an enum "
+    "{ok,unknown,degraded,unhealthy} with the machine-readable unhealthy "
+    "fields behind it; the typed domain snapshots are not built yet, so the "
+    "leaf fails closed today.", 0,
+    "telemetry,health,enum,unhealthy,state",
+    "zcl.command.empty_input.v1", "zcl.telemetry.health.v1", "", "",
+    "zclassic23 ops telemetry health",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "the typed domain snapshots are not built yet")
+
+ZCL_COMMAND_BRANCH("ops.telemetry.alerts", "ops.telemetry",
+                   "Fired telemetry rules",
+                   ZCL_COMMAND_LAYER_OPS)
+
+ZCL_COMMAND_PLANNED_READ(
+    "ops.telemetry.alerts.active", "ops.telemetry.alerts", "",
+    "Currently failing telemetry rules",
+    "Will list every telemetry field whose declared health rule is failing "
+    "right now, each with its severity, what the value implies, and the next "
+    "command to run; the rule evaluation is wired to typed snapshots that are "
+    "not built yet, so the leaf fails closed today.", ZCL_COMMAND_LIST_BUDGET,
+    "telemetry,alerts,active,failing,rules",
+    "zcl.command.empty_input.v1", "zcl.telemetry.alerts.v1", "", "",
+    "zclassic23 ops telemetry alerts active",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "the typed domain snapshots are not built yet")
+
+ZCL_COMMAND_PLANNED_READ(
+    "ops.telemetry.alerts.history", "ops.telemetry.alerts", "",
+    "Previously fired telemetry rules",
+    "Will list telemetry rules that fired earlier with their first and last "
+    "firing times and fire counts, from the durable event log; the alert "
+    "feed that would populate it is not built yet, so the leaf fails closed "
+    "today.", ZCL_COMMAND_LIST_BUDGET,
+    "telemetry,alerts,history,fired,past",
+    "zcl.telemetry.alerts_history.input.v1", "zcl.telemetry.alerts.v1",
+    "limit", "",
+    "zclassic23 ops telemetry alerts history --limit=20",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "the telemetry alert feed is not built yet")
+

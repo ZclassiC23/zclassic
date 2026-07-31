@@ -1,0 +1,48 @@
+/* The `ops.telemetry.agents` branch. Owned by the agents telemetry lane.
+ *
+ * Leaves are PLANNED until the typed agents snapshot and its field table exist;
+ * a leaf whose provider is missing fails closed with exit 3 and names what is
+ * missing, rather than returning an empty object. */
+
+ZCL_COMMAND_BRANCH("ops.telemetry.agents", "ops.telemetry",
+                   "Agent sessions, grants and activity",
+                   ZCL_COMMAND_LAYER_OPS)
+
+ZCL_COMMAND_PLANNED_READ(
+    "ops.telemetry.agents.sessions", "ops.telemetry.agents", "",
+    "Open agent sessions",
+    "Read live from the running node at call time from the typed agents snapshot: each open agent session with its principal, age and authority ceiling.", 0,
+    "telemetry,agents,sessions,agent,active",
+    "zcl.command.empty_input.v1", "zcl.telemetry.agents.sessions.v1", "", "",
+    "zclassic23 ops telemetry agents sessions",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "the typed agents telemetry snapshot is not built yet")
+
+ZCL_COMMAND_PLANNED_READ(
+    "ops.telemetry.agents.grants", "ops.telemetry.agents", "",
+    "Capability grants in force",
+    "Read live from the running node at call time from the typed agents snapshot: every capability currently granted, to which principal, and when it expires.", 0,
+    "telemetry,agents,grants,capability,authority",
+    "zcl.command.empty_input.v1", "zcl.telemetry.agents.grants.v1", "", "",
+    "zclassic23 ops telemetry agents grants",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "the typed agents telemetry snapshot is not built yet")
+
+ZCL_COMMAND_PLANNED_READ(
+    "ops.telemetry.agents.activity", "ops.telemetry.agents", "",
+    "Recent agent activity",
+    "Read live from the running node at call time from the typed agents snapshot: recent command invocations by principal with their outcome and spend, bounded to the retained window.", 0,
+    "telemetry,agents,activity,commands,spend,recent",
+    "zcl.command.empty_input.v1", "zcl.telemetry.agents.activity.v1", "", "",
+    "zclassic23 ops telemetry agents activity",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "the typed agents telemetry snapshot is not built yet")

@@ -1,0 +1,29 @@
+/* Canonical list of telemetry domains. Data only.
+ *
+ * The including translation unit defines TL_DOMAIN. This file is the ONE
+ * place a domain name is enumerated: the snapshot structs, the leaf-id enums,
+ * the descriptor tables, the merged ontology rows and the domain registry are
+ * all driven from it, so a domain cannot be half-registered.
+ *
+ * It is deliberately frozen. Adding a domain is a change to the telemetry
+ * contract that every consumer sees at once; adding a FIELD to an existing
+ * domain touches only that domain's `<domain>_fields.def` and is the ordinary
+ * case.
+ *
+ * Order is the order domains appear in rollups and in `discover help
+ * ops.telemetry`. It runs from the node's own machinery outward to the
+ * applications it hosts, because that is the order an operator diagnoses in.
+ */
+
+#ifndef TL_DOMAIN
+#error "define TL_DOMAIN before including util/telemetry_domains.def"
+#endif
+
+TL_DOMAIN(runtime)
+TL_DOMAIN(sync)
+TL_DOMAIN(network)
+TL_DOMAIN(storage)
+TL_DOMAIN(wallet)
+TL_DOMAIN(agents)
+TL_DOMAIN(zcode)
+TL_DOMAIN(metaverse)

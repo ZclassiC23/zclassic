@@ -1,0 +1,43 @@
+/* Known-bad field table for check-telemetry-ontology's self-test. Data only,
+ * NOT compiled — it lives under tools/lint/fixtures/ and is named by a TABLE
+ * row in telemetry_scan_extra.txt, never by util/telemetry_domains.def.
+ *
+ * It declares itself as the `runtime` domain (so the manifest row's domain and
+ * the table's TL_DOMAIN_META agree, and the row is judged on its LEAVES rather
+ * than rejected as a mismatch), then ships a leaf whose derived ontology path
+ * `values.fixture_group.leaf_that_ships_with_no_meaning` exists in no field
+ * table telemetry_domains.def registers and in no TELEMETRY_FIELD row.
+ *
+ * Pointing the gate at this table must make it FAIL and name that path. That
+ * is the proof the TABLE row kind is not hollow: without it, a table-driven
+ * domain emits everything from one generic renderer, the emission scan
+ * extracts zero fields for it, and the domain reads as covered while nothing
+ * checks it at all.
+ *
+ * The `collected_unix` row below is deliberately GOOD and deliberately present:
+ * it proves the failure is the bogus leaf specifically, not "the gate rejects
+ * every fixture table".
+ */
+
+TL_DOMAIN_META(runtime, "zcl.telemetry.runtime.fixture",
+    "known-bad fixture table for the check-telemetry-ontology self-test")
+
+TL_GROUP(meta, "how and when this snapshot itself was taken")
+
+TL_LEAF(meta, collected_unix, TLC_I64, TFU_UNIX_TIME, TLV_NORMAL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "wall-clock second at which the provider began filling this snapshot; "
+    "every other leaf's observed_unix is at or after this instant",
+    "", "")
+
+TL_GROUP_END(meta)
+
+TL_GROUP(fixture_group, "the known-bad group")
+
+TL_LEAF(fixture_group, leaf_that_ships_with_no_meaning, TLC_I64,
+    TFU_COUNT_TOTAL, TLV_NORMAL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "a leaf that resolves to no ontology row anywhere in the merged set",
+    "", "")
+
+TL_GROUP_END(fixture_group)

@@ -1,0 +1,27 @@
+# Recorded number of `*_fill.c` telemetry providers check-telemetry-ontology
+# discovers and scans for hand-written JSON (rule 4 of the TABLE row kind:
+# a fill collector must fill the typed snapshot and emit nothing).
+#
+# WHY A RECORDED COUNT AND NOT JUST "scan whatever you find". "Scan whatever
+# you find" is a floor of zero, and a floor of zero never bites: rename the
+# providers out of the `<domain>_*_fill.c` discovery shape and the check keeps
+# reporting clean over an empty set. This file makes the discovered population
+# an assertion instead of an observation.
+#
+# The gate fails in BOTH directions, and the fix is one number either way:
+#   discovered < recorded   a provider vanished or stopped being discovered —
+#                           the likely cause is a rename, and the check just
+#                           went hollow for that domain. Find it, or lower this
+#                           deliberately if the provider was really deleted.
+#   discovered > recorded   a NEW provider landed. Raise this to the new count
+#                           in the same commit; that is the acknowledgement
+#                           that the new file is now covered.
+#
+# Discovery shape (tools/lint/check_telemetry_ontology.sh): a file under the
+# scan roots named `*_fill.c` whose basename starts with `<domain>_`, or which
+# defines `<domain>_dump_state_fill(`, for a domain named by a TABLE row.
+#
+# 0 today: the table-driven layer's field tables and renderer have landed, but
+# no domain has shipped its provider yet. The first `<domain>_*_fill.c` to land
+# raises this to 1.
+0

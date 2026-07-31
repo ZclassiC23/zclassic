@@ -508,6 +508,41 @@ int t_privileged_transition_receipt_gate(void)
     return failures;
 }
 
+/* Gate check-dumper-never-blocks: a `*_dump_state_json` OR `*_dump_state_fill`
+ * body must never reach a blocking primitive, because both run on the
+ * native/RPC thread while the reducer fold owns progress_store_tx_lock — take
+ * that lock blocking there and `dumpstate`/`status` go dark exactly when the
+ * node is busiest.
+ *
+ * It lives in THIS group, not lint_gate_operator_contracts.c, on subject
+ * matter: this file's checks EXECUTE gate scripts to prove a runtime-liveness
+ * invariant, while operator_contracts asserts on the TEXT of tools and docs.
+ * "The observability plane keeps answering while the reducer runs" is the same
+ * family of question as "is anything on the liveness tree actually running".
+ *
+ * The matrix itself lives in the script's `--selftest`, which builds a
+ * throwaway scan root and an empty baseline in its own mktemp dir and asserts
+ * every case: a clean sandbox passes; a blocking call inside a
+ * `*_dump_state_fill` trips (the collector blind spot — a table-driven
+ * provider is where the reads moved, and the pre-widening scan could not see
+ * it); the SAME call in a non-dumper function in the same file stays clean, so
+ * the scan is still body-scoped; the original `*_dump_state_json` spelling
+ * still trips; an empty scan root is a loud exit 2, never a hollow pass; and
+ * the real tree is clean. Dispatching the flag beats restating the matrix in C
+ * — the shell already owns the sandbox, and a second copy is a second thing to
+ * keep in step. */
+int t_dumper_never_blocks_gate(void)
+{
+    int failures = 0;
+    TEST("[lint-gate] dumper-never-blocks: json AND fill bodies are scanned, "
+         "non-dumper code is not, empty scan is loud") {
+        ASSERT(run_gate_script(DUMPER_BLOCKING_SCRIPT_REL, NULL) == 0);
+        ASSERT(run_gate_script_selftest(DUMPER_BLOCKING_SCRIPT_REL) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* Gate check-no-trust-state-ordering: the sync_trust_state enumerators are
  * ORTHOGONAL provenance facts, so any </<=/>/>= comparison against a
  * SYNC_TRUST_* value is forbidden (it invites the `state >= X` mis-grant bug).

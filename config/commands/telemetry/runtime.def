@@ -1,0 +1,48 @@
+/* The `ops.telemetry.runtime` branch. Owned by the runtime telemetry lane.
+ *
+ * Leaves are PLANNED until the typed runtime snapshot and its field table exist;
+ * a leaf whose provider is missing fails closed with exit 3 and names what is
+ * missing, rather than returning an empty object. */
+
+ZCL_COMMAND_BRANCH("ops.telemetry.runtime", "ops.telemetry",
+                   "Supervisor tree, services and host resources",
+                   ZCL_COMMAND_LAYER_OPS)
+
+ZCL_COMMAND_PLANNED_READ(
+    "ops.telemetry.runtime.services", "ops.telemetry.runtime", "",
+    "Registered services and their liveness",
+    "Read live from the running node at call time from the typed runtime snapshot: every supervised child with its tick age, progress marker and stall count.", 0,
+    "telemetry,runtime,services,supervisor,lifecycle",
+    "zcl.command.empty_input.v1", "zcl.telemetry.runtime.services.v1", "", "",
+    "zclassic23 ops telemetry runtime services",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "the typed runtime telemetry snapshot is not built yet")
+
+ZCL_COMMAND_PLANNED_READ(
+    "ops.telemetry.runtime.threads", "ops.telemetry.runtime", "",
+    "Threads and their supervision state",
+    "Read live from the running node at call time from the typed runtime snapshot: each long-running thread, whether it is supervised, and its last observed activity.", 0,
+    "telemetry,runtime,threads,pthread,supervision",
+    "zcl.command.empty_input.v1", "zcl.telemetry.runtime.threads.v1", "", "",
+    "zclassic23 ops telemetry runtime threads",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "the typed runtime telemetry snapshot is not built yet")
+
+ZCL_COMMAND_PLANNED_READ(
+    "ops.telemetry.runtime.resources", "ops.telemetry.runtime", "",
+    "Host resources this process holds",
+    "Read live from the running node at call time from the typed runtime snapshot: resident memory, file descriptors and CPU posture, with the configured limits each is judged against.", 0,
+    "telemetry,runtime,resources,memory,cpu,fd",
+    "zcl.command.empty_input.v1", "zcl.telemetry.runtime.resources.v1", "", "",
+    "zclassic23 ops telemetry runtime resources",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "the typed runtime telemetry snapshot is not built yet")

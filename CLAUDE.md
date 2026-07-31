@@ -221,13 +221,17 @@ runtime state, follow the convention:
    for snapshot consistency. Don't allocate (the caller's JSON value
    owns the buffer).
 
-3. Add one descriptor row to
-   `app/controllers/include/controllers/diagnostics_dumpers.def`. `DIAG_ENTRY`
+3. Add one descriptor row to the per-domain descriptor file for your
+   subsystem: `app/controllers/include/controllers/diagnostics_dumpers_<domain>.def`
+   (runtime, sync, network, storage, wallet, agents, zcode, metaverse — pick by
+   what the subsystem is *about*, `_runtime` for a cross-cutting node concern).
+   `diagnostics_dumpers.def` is a **pure aggregator** of those eight includes
+   and holds no rows; a row added there belongs to no domain. `DIAG_ENTRY`
    is the long form (~12 fields); nine row macros exist and most rows use a
    short one — read the `#define DIAG_*` block in
    `app/controllers/src/diagnostics_registry.c` and pick from it.
    **Do not edit that file's table** — it builds `g_dumpers[]` by
-   `#include`-ing the `.def` and has no editable table.
+   `#include`-ing the aggregator and has no editable table.
 
 4. No edit to the state command handler is needed; its subsystem catalog is
    populated at runtime from the diagnostics registry. Update the native

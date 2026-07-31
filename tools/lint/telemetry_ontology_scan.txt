@@ -16,6 +16,7 @@
 #     does not map -> UNMAPPED EMISSION TARGET (the manifest must be extended
 #     before the field can ship)
 #
+# ── row kind 1: FUNC (a hand-written dumper) ─────────────────────────────
 # Columns: <subsystem> <file> <function> <objvar> <prefix>
 #   objvar  the literal first argument of the emission call ("out", "&pf", ...)
 #   prefix  the JSON path prefix that object sits at, or "-" for the dump root
@@ -23,6 +24,24 @@
 #
 # Covered subsystems are the six that answer the live peer/sync questions:
 # peer_lifecycle, connman, addrman, network, fast_sync, sync_rate.
+#
+# ── row kind 2: TABLE (a table-driven domain) ────────────────────────────
+# Columns: TABLE <domain> <path-to-fields.def> <min-rows>
+#
+# A table-driven domain emits every field from ONE generic renderer
+# (lib/util/src/telemetry_render.c), so there is no per-domain function to
+# slice and no per-field json_push_kv_* call to grep: emission-grepping would
+# extract ZERO fields and the domain would read as covered while being
+# completely unchecked. A TABLE row proves coverage structurally instead —
+# every TL_LEAF in the named table must resolve to
+# "<domain>|values.<group>.<member>" in the merged ontology, the table must
+# declare the same domain the row does, the leaf count is floored SHRINK-ONLY
+# at <min-rows>, the domain's `*_fill.c` providers must contain no
+# json_push_kv_* at all, and each TL_LEAF must carry a non-empty `means`
+# (plus `implies`/`next` unless its rule is TFR_INFO).
+#
+# <min-rows> RATCHETS UP, NEVER DOWN. Raise it when a domain gains fields;
+# lowering it to make the gate pass is how a domain silently loses telemetry.
 
 # ── peer_lifecycle (lib/net/src/peer_lifecycle.c) ────────────────────────
 peer_lifecycle lib/net/src/peer_lifecycle.c summary_to_json out summary.
@@ -60,3 +79,16 @@ fast_sync lib/net/src/fast_sync.c fast_sync_dump_state_json &sc snapshot_cache.
 
 # ── sync_rate (app/conditions/src/sync_rate_below_floor.c) ───────────────
 sync_rate app/conditions/src/sync_rate_below_floor.c sync_rate_below_floor_dump_state_json out -
+
+# ── TABLE rows: every domain in util/telemetry_domains.def ───────────────
+# Order matches the registry (node machinery outward to hosted applications).
+# Each table currently carries exactly one leaf — meta.collected_unix — so the
+# floor is 1. Raise each floor as its domain's lane lands real groups.
+TABLE runtime   lib/util/include/util/telemetry/runtime_fields.def   1
+TABLE sync      lib/util/include/util/telemetry/sync_fields.def      1
+TABLE network   lib/util/include/util/telemetry/network_fields.def   1
+TABLE storage   lib/util/include/util/telemetry/storage_fields.def   1
+TABLE wallet    lib/util/include/util/telemetry/wallet_fields.def    1
+TABLE agents    lib/util/include/util/telemetry/agents_fields.def    1
+TABLE zcode     lib/util/include/util/telemetry/zcode_fields.def     1
+TABLE metaverse lib/util/include/util/telemetry/metaverse_fields.def 1

@@ -199,6 +199,12 @@
 #define TELEMETRY_ONTOLOGY_EXTRA_ENV "ZCL_TELEMETRY_SCAN_EXTRA_MANIFEST"
 #define TELEMETRY_ONTOLOGY_EXTRA_REL "tools/lint/fixtures/telemetry_scan_extra.txt"
 #define TELEMETRY_ONTOLOGY_MANIFEST_ENV "ZCL_TELEMETRY_SCAN_MANIFEST"
+/* check-dumper-never-blocks: the script owns its own fixture sandbox behind
+ * `--selftest` (a throwaway scan root + an empty baseline, never a plant into
+ * the real tree), so this side only dispatches the flag and asserts 0. It
+ * covers the collector blind spot — a blocking primitive inside a
+ * `*_dump_state_fill` provider, which the pre-widening scan could not see. */
+#define DUMPER_BLOCKING_SCRIPT_REL "tools/scripts/check_dumper_never_blocks.sh"
 #define E10_SQL_SCRIPT_REL "tools/lint/check_no_raw_sqlite_in_controllers.sh"
 #define E10_SQL_FIXTURE_DST "app/controllers/src/_e10_rawsql_fixture_tmp.c"
 #define E11_SCRIPT_REL   "tools/scripts/check_doc_accuracy.sh"
@@ -351,6 +357,9 @@ int write_file(const char *path, const char *contents);
 pid_t fork_with_retry(void);
 int run_check_raw_malloc_script(void);
 int run_gate_script(const char *script_rel, const char *mode);
+int run_gate_script_arg(const char *script_rel, const char *mode,
+                        const char *arg);
+int run_gate_script_selftest(const char *script_rel);
 int run_gate_script_with_worker_files(const char *script_rel,
                                              const char *mode,
                                              const char *worker_files_rel);
@@ -428,6 +437,7 @@ int t_hotswap_swappable_leaf_contract_gate(void);
 int t_hotswap_static_state_gate(void);
 int t_hotswap_static_state_covers_swappable(void);
 int t_privileged_transition_receipt_gate(void);
+int t_dumper_never_blocks_gate(void);
 int t_no_trust_state_ordering_gate(void);
 int t_blocker_escape_registered_gate(void);
 int t_lint_gates_fail_loud_on_empty_scan(void);

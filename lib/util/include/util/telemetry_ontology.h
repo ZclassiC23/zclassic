@@ -70,6 +70,24 @@ enum telemetry_rule {
 
 enum telemetry_severity { TFS_INFO = 0, TFS_WARN, TFS_CRITICAL };
 
+/* What evaluating one row against one dump body produced.
+ *
+ * These are DELIBERATELY not health levels. "we could not read it" (TV_ABSENT)
+ * and "we read it and it is wrong" (TV_UNHEALTHY) are different facts, and the
+ * mapping from a verdict to a health level depends on the row's severity and
+ * rule — which is the caller's decision, not the evaluator's. Collapsing the
+ * two here is exactly the defect that made an unreadable bool report as a
+ * broken bool. */
+enum telemetry_verdict {
+    TV_HEALTHY = 0,
+    TV_UNHEALTHY,
+    TV_NOT_JUDGED,    /* the row is TFR_INFO: descriptive, carries no verdict */
+    TV_ABSENT,        /* the value is missing, or not of the type the rule needs */
+    TV_NOT_EVALUATED, /* an array-element row, or a ratio with no denominator */
+};
+/* The wire spelling. Stable: it is what dumpstate has always emitted. */
+const char *telemetry_verdict_name(enum telemetry_verdict v);
+
 /* One field's meaning. `path` is the dotted path inside that subsystem's
  * dumpstate body; a "[]" segment marks an array of objects (per-element rows
  * carry meaning but are not auto-evaluated, since the rollup above them is
@@ -138,6 +156,19 @@ void telemetry_field_healthy_range(const struct telemetry_field *f,
  *   key == "<field>"          every row whose path ends in that field name
  * Returns false only on a NULL out. */
 bool telemetry_ontology_json(struct json_value *out, const char *key);
+
+/* Evaluate ONE row against a dumpstate body. This is THE rule evaluator —
+ * telemetry_ontology_annotate() and the render layer both go through it, so a
+ * field cannot be judged one way by `ops debug meaning` and another way by the
+ * dump that carries it.
+ *
+ * `out_value` (required) receives a BORROWED pointer to the resolved value
+ * inside `dump`, or NULL when the path did not resolve. It is valid only for
+ * as long as `dump` is; copy the scalar out, never the pointer. Returns
+ * TV_NOT_EVALUATED for a NULL row or a NULL dump. */
+enum telemetry_verdict telemetry_field_evaluate(
+    const struct telemetry_field *f, const struct json_value *dump,
+    const struct json_value **out_value);
 
 /* Evaluate the rules for `subsystem` against a dumpstate body and write
  * { subsystem, evaluated, healthy, findings:[{path,value,verdict,severity,

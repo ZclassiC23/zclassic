@@ -64,7 +64,11 @@ fi
 #      seccomp allow-sets — a probe from inside a confined process is
 #      SECCOMP_RET_KILL_PROCESS. The witness reads the cached ABI instead.
 WITNESS_SRC="lib/platform/src/os_sandbox_witness.c"
-DUMPERS_DEF="app/controllers/include/controllers/diagnostics_dumpers.def"
+# The descriptor rows live in per-domain files under a pure aggregator, so the
+# row is searched for across the whole resolved set — see tools/lint/dumper_defs.sh
+# for why this is not a hardcoded single path.
+# shellcheck source=tools/lint/dumper_defs.sh
+. tools/lint/dumper_defs.sh
 
 if ! grep -Eq '\bos_sandbox_note_requested[[:space:]]*\(' "$SRC"; then
     echo "check_sandbox_wired: FAIL — boot never calls os_sandbox_note_requested() in $SRC (a failed apply would be indistinguishable from 'never requested')" >&2
@@ -79,11 +83,12 @@ elif grep -Eq '\bos_sandbox_landlock_abi[[:space:]]*\(' "$WITNESS_SRC"; then
     fail=1
 fi
 
-if [[ ! -f "$DUMPERS_DEF" ]]; then
-    echo "check_sandbox_wired: FAIL — missing $DUMPERS_DEF" >&2
+if ! dumper_def_files dumper_defs; then
+    echo "check_sandbox_wired: FAIL — could not resolve the dumpstate descriptor set" >&2
     fail=1
-elif ! grep -Eq '"confinement"[[:space:]]*,[[:space:]]*confinement_dump_state_json' "$DUMPERS_DEF"; then
-    echo "check_sandbox_wired: FAIL — no \"confinement\" dumpstate row in $DUMPERS_DEF (the UNCONFINED verdict would be unreachable via ops state)" >&2
+elif ! grep -Eq '"confinement"[[:space:]]*,[[:space:]]*confinement_dump_state_json' \
+        "${dumper_defs[@]}"; then
+    echo "check_sandbox_wired: FAIL — no \"confinement\" dumpstate row in ${DUMPER_DEF_AGGREGATOR} or the $(( ${#dumper_defs[@]} - 1 )) per-domain files it includes (the UNCONFINED verdict would be unreachable via ops state)" >&2
     fail=1
 fi
 

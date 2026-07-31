@@ -59,13 +59,13 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 351 |
+| Registry entries (branches + leaves) | 391 |
 | Top-level roots | 10 |
-| Branches | 82 |
-| Leaves (dispatchable command paths) | 269 |
+| Branches | 92 |
+| Leaves (dispatchable command paths) | 299 |
 | … `ready` (live handler in this build) | 227 |
 | … `compat` (metadata only, names a fallback) | 17 |
-| … `planned` (fail-closed BLOCKED, exit 3) | 25 |
+| … `planned` (fail-closed BLOCKED, exit 3) | 55 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
 | Leaves with `effect=mutate` | 77 |
 | Leaves with `effect=destructive` | 4 |
@@ -86,6 +86,16 @@ Per source file:
 | `config/commands/vault.def` | 14 | 3 | 11 |
 | `config/commands/zcode.def` | 63 | 15 | 48 |
 | `config/commands/metaverse.def` | 7 | 3 | 4 |
+| `config/commands/telemetry/root.def` | 6 | 2 | 4 |
+| `config/commands/telemetry/watch.def` | 1 | 0 | 1 |
+| `config/commands/telemetry/runtime.def` | 4 | 1 | 3 |
+| `config/commands/telemetry/sync.def` | 4 | 1 | 3 |
+| `config/commands/telemetry/network.def` | 5 | 1 | 4 |
+| `config/commands/telemetry/storage.def` | 5 | 1 | 4 |
+| `config/commands/telemetry/wallet.def` | 3 | 1 | 2 |
+| `config/commands/telemetry/agents.def` | 4 | 1 | 3 |
+| `config/commands/telemetry/zcode.def` | 4 | 1 | 3 |
+| `config/commands/telemetry/metaverse.def` | 4 | 1 | 3 |
 
 
 ## Column legend
@@ -626,6 +636,86 @@ represented by its children's sections.
 | `ops recovery status` | ready | read / read / operator · fast/low | none | `zcl.recovery_status.v1` | `zclassic23 ops recovery status` | Refold and recovery progress |
 | `ops recovery rebuild` | planned | destructive / core-recovery / **owner**, job, plan-commit · background/high | `depth` | `zcl.recovery_rebuild.v1` | `zclassic23 ops recovery rebuild --depth=100` | Rebuild recent chain state — *recovery rebuild plan/commit handshake is a Wave 2.2 deliverable* |
 
+#### `ops.telemetry` — Canonical typed telemetry tree
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `ops telemetry summary` | planned | read / read / operator · fast/low | none | `zcl.telemetry.summary.v1` | `zclassic23 ops telemetry summary` | Whole-node telemetry rollup — *the typed domain snapshots are not built yet* |
+| `ops telemetry health` | planned | read / read / operator · fast/low | none | `zcl.telemetry.health.v1` | `zclassic23 ops telemetry health` | Health state per domain — *the typed domain snapshots are not built yet* |
+| `ops telemetry watch` | planned | read / read / operator · fast/stream | `since`, `path`, `limit` | `zcl.telemetry.change.v1` | `zclassic23 ops telemetry watch --since=41` | Resumable telemetry change feed — *the telemetry change sampler is not built yet* |
+
+#### `ops.telemetry.alerts` — Fired telemetry rules
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `ops telemetry alerts active` | planned | read / read / operator · fast/low | none | `zcl.telemetry.alerts.v1` | `zclassic23 ops telemetry alerts active` | Currently failing telemetry rules — *the typed domain snapshots are not built yet* |
+| `ops telemetry alerts history` | planned | read / read / operator · fast/low | `limit` | `zcl.telemetry.alerts.v1` | `zclassic23 ops telemetry alerts history --limit=20` | Previously fired telemetry rules — *the telemetry alert feed is not built yet* |
+
+#### `ops.telemetry.runtime` — Supervisor tree, services and host resources
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `ops telemetry runtime services` | planned | read / read / operator · fast/low | none | `zcl.telemetry.runtime.services.v1` | `zclassic23 ops telemetry runtime services` | Registered services and their liveness — *the typed runtime telemetry snapshot is not built yet* |
+| `ops telemetry runtime threads` | planned | read / read / operator · fast/low | none | `zcl.telemetry.runtime.threads.v1` | `zclassic23 ops telemetry runtime threads` | Threads and their supervision state — *the typed runtime telemetry snapshot is not built yet* |
+| `ops telemetry runtime resources` | planned | read / read / operator · fast/low | none | `zcl.telemetry.runtime.resources.v1` | `zclassic23 ops telemetry runtime resources` | Host resources this process holds — *the typed runtime telemetry snapshot is not built yet* |
+
+#### `ops.telemetry.sync` — Reducer frontier, stages and catch-up posture
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `ops telemetry sync summary` | planned | read / read / operator · fast/low | none | `zcl.telemetry.sync.summary.v1` | `zclassic23 ops telemetry sync summary` | Sync posture and the current bottleneck — *the typed sync telemetry snapshot is not built yet* |
+| `ops telemetry sync stages` | planned | read / read / operator · fast/low | none | `zcl.telemetry.sync.stages.v1` | `zclassic23 ops telemetry sync stages` | Every reducer stage cursor — *the typed sync telemetry snapshot is not built yet* |
+| `ops telemetry sync stage` | planned | read / read / operator · fast/low | `stage` | `zcl.telemetry.sync.stage.v1` | `zclassic23 ops telemetry sync stage --stage=<v>` | One reducer stage in full detail — *the typed sync telemetry snapshot is not built yet* |
+
+#### `ops.telemetry.network` — Peers, transport, onion and address pool
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `ops telemetry network summary` | planned | read / read / operator · fast/low | none | `zcl.telemetry.network.summary.v1` | `zclassic23 ops telemetry network summary` | Connectivity posture — *the typed network telemetry snapshot is not built yet* |
+| `ops telemetry network peers` | planned | read / read / operator · fast/low | none | `zcl.telemetry.network.peers.v1` | `zclassic23 ops telemetry network peers` | Connected peers — *the typed network telemetry snapshot is not built yet* |
+| `ops telemetry network tor` | planned | read / read / operator · fast/low | none | `zcl.telemetry.network.tor.v1` | `zclassic23 ops telemetry network tor` | Onion service state — *the typed network telemetry snapshot is not built yet* |
+| `ops telemetry network transport` | planned | read / read / operator · fast/low | none | `zcl.telemetry.network.transport.v1` | `zclassic23 ops telemetry network transport` | Wire transport posture — *the typed network telemetry snapshot is not built yet* |
+
+#### `ops.telemetry.storage` — Databases, indexes, cache and disk
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `ops telemetry storage summary` | planned | read / read / operator · fast/low | none | `zcl.telemetry.storage.summary.v1` | `zclassic23 ops telemetry storage summary` | Storage posture — *the typed storage telemetry snapshot is not built yet* |
+| `ops telemetry storage database` | planned | read / read / operator · fast/low | none | `zcl.telemetry.storage.database.v1` | `zclassic23 ops telemetry storage database` | Database connections and WAL state — *the typed storage telemetry snapshot is not built yet* |
+| `ops telemetry storage disk` | planned | read / read / operator · fast/low | none | `zcl.telemetry.storage.disk.v1` | `zclassic23 ops telemetry storage disk` | Disk headroom — *the typed storage telemetry snapshot is not built yet* |
+| `ops telemetry storage cache` | planned | read / read / operator · fast/low | none | `zcl.telemetry.storage.cache.v1` | `zclassic23 ops telemetry storage cache` | Cache occupancy and hit rates — *the typed storage telemetry snapshot is not built yet* |
+
+#### `ops.telemetry.wallet` — Wallet projection and key-handling posture
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `ops telemetry wallet summary` | planned | read / read / operator · fast/low | none | `zcl.telemetry.wallet.summary.v1` | `zclassic23 ops telemetry wallet summary` | Wallet projection posture — *the typed wallet telemetry snapshot is not built yet* |
+| `ops telemetry wallet security` | planned | read / read / operator · fast/low | none | `zcl.telemetry.wallet.security.v1` | `zclassic23 ops telemetry wallet security` | Key-handling safety posture — *the typed wallet telemetry snapshot is not built yet* |
+
+#### `ops.telemetry.agents` — Agent sessions, grants and activity
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `ops telemetry agents sessions` | planned | read / read / operator · fast/low | none | `zcl.telemetry.agents.sessions.v1` | `zclassic23 ops telemetry agents sessions` | Open agent sessions — *the typed agents telemetry snapshot is not built yet* |
+| `ops telemetry agents grants` | planned | read / read / operator · fast/low | none | `zcl.telemetry.agents.grants.v1` | `zclassic23 ops telemetry agents grants` | Capability grants in force — *the typed agents telemetry snapshot is not built yet* |
+| `ops telemetry agents activity` | planned | read / read / operator · fast/low | none | `zcl.telemetry.agents.activity.v1` | `zclassic23 ops telemetry agents activity` | Recent agent activity — *the typed agents telemetry snapshot is not built yet* |
+
+#### `ops.telemetry.zcode` — Package store, swarm and installs
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `ops telemetry zcode summary` | planned | read / read / operator · fast/low | none | `zcl.telemetry.zcode.summary.v1` | `zclassic23 ops telemetry zcode summary` | ZCODE store posture — *the typed zcode telemetry snapshot is not built yet* |
+| `ops telemetry zcode swarm` | planned | read / read / operator · fast/low | none | `zcl.telemetry.zcode.swarm.v1` | `zclassic23 ops telemetry zcode swarm` | Swarm participation — *the typed zcode telemetry snapshot is not built yet* |
+| `ops telemetry zcode installs` | planned | read / read / operator · fast/low | none | `zcl.telemetry.zcode.installs.v1` | `zclassic23 ops telemetry zcode installs` | Install generations — *the typed zcode telemetry snapshot is not built yet* |
+
+#### `ops.telemetry.metaverse` — Property catalog, market and confined services
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `ops telemetry metaverse properties` | planned | read / read / operator · fast/low | none | `zcl.telemetry.metaverse.properties.v1` | `zclassic23 ops telemetry metaverse properties` | Digital property this node holds — *the typed metaverse telemetry snapshot is not built yet* |
+| `ops telemetry metaverse market` | planned | read / read / operator · fast/low | none | `zcl.telemetry.metaverse.market.v1` | `zclassic23 ops telemetry metaverse market` | Property market activity — *no property market subsystem exists in this build* |
+| `ops telemetry metaverse services` | planned | read / read / operator · fast/low | none | `zcl.telemetry.metaverse.services.v1` | `zclassic23 ops telemetry metaverse services` | Confined broker services — *the typed metaverse telemetry snapshot is not built yet* |
+
 ### `discover` — Search and describe the command registry
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
@@ -885,6 +975,7 @@ promise the same document shape.
 | `zcl.account.v1` | `app.account.show`, `app.account.whoami`, `app.account.add`, `app.account.role`, `app.account.suspend`, `app.account.unsuspend` |
 | `zcl.vault_swap_settle.v1` | `vault.swap.redeem`, `vault.swap.refund` |
 | `zcl.zcode_leaderboard.v1` | `zcode.leaderboard.daily`, `zcode.leaderboard.weekly`, `zcode.leaderboard.monthly`, `zcode.leaderboard.all` |
+| `zcl.telemetry.alerts.v1` | `ops.telemetry.alerts.active`, `ops.telemetry.alerts.history` |
 
 
 ## Envelope shapes (quick reference)

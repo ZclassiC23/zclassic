@@ -168,17 +168,32 @@ int t_markdown_links_gate(void)
     return failures;
 }
 
-/* check-telemetry-ontology — a network telemetry field that ships with no
- * meaning row must FAIL the gate and be NAMED. Proven three ways, because a
- * gate that only ever passes proves nothing:
+/* check-telemetry-ontology — a telemetry field that ships with no meaning row
+ * must FAIL the gate and be NAMED. Proven four ways, because a gate that only
+ * ever passes proves nothing:
  *   1. the real tree is clean (exit 0);
- *   2. the checked-in fixture (a dump function emitting
- *      `field_that_ships_with_no_meaning`) trips it (exit 1, not 2 — a real
- *      violation, not a scan error);
+ *   2. the checked-in fixture manifest trips it (exit 1, not 2 — a real
+ *      violation, not a scan error). That manifest now carries ONE ROW PER
+ *      ROW KIND, because the two kinds prove coverage by different mechanisms
+ *      and a fixture for one proves nothing about the other:
+ *        FUNC  telemetry_unannotated_dump.c.fixture — a hand-written dumper
+ *              emitting `field_that_ships_with_no_meaning`;
+ *        TABLE telemetry_table_unannotated_fields.def — a table-driven domain
+ *              whose TL_LEAF resolves to no ontology row. That is the blind
+ *              spot the emission scan structurally cannot see: a table-driven
+ *              domain emits everything from one generic renderer, so the scan
+ *              extracts ZERO fields for it and its EXTRACTED floor still
+ *              clears on the hand-written domains alone;
  *   3. an empty scan manifest is exit 2, so a broken scan can never be
- *      mistaken for a clean tree.
- * The fixture is appended to the real manifest, so the trip runs against the
- * real ontology and the real floors. */
+ *      mistaken for a clean tree;
+ *   4. the script's own `--selftest` runs the full 13-case matrix — including
+ *      the cases that need a bad input built on the fly and so cannot be
+ *      checked-in fixtures: a mis-paired `#define TL_SUB` over a field table,
+ *      a domain registered but never pasted into g_fields[], a leaf count
+ *      below its shrink-only floor, a `*_fill.c` provider that hand-writes
+ *      json_push_kv_*, and both directions of fill-provider count drift.
+ * The fixture manifest is APPENDED to the real one, so the trip runs against
+ * the real ontology and the real floors. */
 int t_telemetry_ontology_gate(void)
 {
     int failures = 0;
@@ -189,12 +204,15 @@ int t_telemetry_ontology_gate(void)
     int hollow_rc = run_gate_script_with_env(TELEMETRY_ONTOLOGY_SCRIPT_REL,
                                              TELEMETRY_ONTOLOGY_MANIFEST_ENV,
                                              "");
+    int matrix_rc = run_gate_script_selftest(TELEMETRY_ONTOLOGY_SCRIPT_REL);
     int recover_rc = run_gate_script(TELEMETRY_ONTOLOGY_SCRIPT_REL, NULL);
-    TEST("[lint-gate] telemetry-ontology: clean, trips an unannotated field, "
-         "exit 2 on a hollow scan, recovers") {
+    TEST("[lint-gate] telemetry-ontology: clean, trips an unannotated FUNC "
+         "field and an unannotated TABLE leaf, exit 2 on a hollow scan, full "
+         "--selftest matrix green, recovers") {
         ASSERT(baseline_rc == 0);
         ASSERT(trip_rc == 1);
         ASSERT(hollow_rc == 2);
+        ASSERT(matrix_rc == 0);
         ASSERT(recover_rc == 0);
         PASS();
     } _test_next:;

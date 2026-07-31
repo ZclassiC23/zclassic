@@ -254,6 +254,16 @@ static const struct zcl_command_spec g_catalog_commands[] = {
 #include "../commands/vault.def"
 #include "../commands/zcode.def"
 #include "../commands/metaverse.def"
+#include "../commands/telemetry/root.def"
+#include "../commands/telemetry/watch.def"
+#include "../commands/telemetry/runtime.def"
+#include "../commands/telemetry/sync.def"
+#include "../commands/telemetry/network.def"
+#include "../commands/telemetry/storage.def"
+#include "../commands/telemetry/wallet.def"
+#include "../commands/telemetry/agents.def"
+#include "../commands/telemetry/zcode.def"
+#include "../commands/telemetry/metaverse.def"
 };
 
 #undef ZCL_COMMAND_BRANCH
@@ -388,6 +398,16 @@ static const struct zcl_command_handler_entry g_handler_index_entries[] = {
 #include "../commands/vault.def"
 #include "../commands/zcode.def"
 #include "../commands/metaverse.def"
+#include "../commands/telemetry/root.def"
+#include "../commands/telemetry/watch.def"
+#include "../commands/telemetry/runtime.def"
+#include "../commands/telemetry/sync.def"
+#include "../commands/telemetry/network.def"
+#include "../commands/telemetry/storage.def"
+#include "../commands/telemetry/wallet.def"
+#include "../commands/telemetry/agents.def"
+#include "../commands/telemetry/zcode.def"
+#include "../commands/telemetry/metaverse.def"
 };
 
 #undef ZCL_COMMAND_BRANCH

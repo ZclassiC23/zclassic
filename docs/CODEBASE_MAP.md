@@ -147,7 +147,7 @@ page changing with it.
 <!--   app_shape_folders    = directories directly under app/                        -->
 <!-- Fix a mismatch with `tools/scripts/check_doc_counts.sh --fix`, never by hand.  -->
 
-test_groups: 853
+test_groups: 854
 port_interfaces: 13
 persistence_adapters: 14
 condition_registrations: 52
@@ -670,18 +670,24 @@ Confirm the target before acting.
    `bool <name>_dump_state_json(struct json_value *out, const char *key);`
 2. Implement in the subsystem `.c` (caller does `json_set_object(out)` first;
    use `atomic_load` for thread-touched fields; don't allocate).
-3. Add **one descriptor row** to
-   `app/controllers/include/controllers/diagnostics_dumpers.def`. `DIAG_ENTRY`
-   is the long form (~12 fields: name, dump fn, description, category,
-   state_class, owner `.c` path, freshness, cost, key form, two example keys,
-   owning test path, bool); nine row macros exist and most rows use a short
-   one. Pick by reading the `#define DIAG_*` block in
+3. Add **one descriptor row** to the per-domain descriptor file your subsystem
+   belongs to — `app/controllers/include/controllers/diagnostics_dumpers_<domain>.def`,
+   where `<domain>` is one of runtime, sync, network, storage, wallet, agents,
+   zcode, metaverse. Choose by what the subsystem is *about*; use `_runtime`
+   for a cross-cutting node concern that fits no narrower domain.
+   `diagnostics_dumpers.def` itself is a **pure aggregator** — it holds nothing
+   but the eight `#include`s, so a row added there is a row in no domain.
+   `DIAG_ENTRY` is the long form (~12 fields: name, dump fn, description,
+   category, state_class, owner `.c` path, freshness, cost, key form, two
+   example keys, owning test path, bool); nine row macros exist and most rows
+   use a short one. Pick by reading the `#define DIAG_*` block in
    `app/controllers/src/diagnostics_registry.c` — it is the whole list, and
    `DIAG_LOCAL` / `DIAG_SERVICE` (not `DIAG_ENTRY`) are the two most common.
    **Do not edit `diagnostics_registry.c`'s table** — it builds `g_dumpers[]`
-   by `#include`-ing that `.def`; there is no editable table in it.
-   <!-- claim: symbol-present DIAG_LOCAL app/controllers/include/controllers/diagnostics_dumpers.def -->
-   <!-- claim: symbol-present DIAG_SERVICE app/controllers/include/controllers/diagnostics_dumpers.def -->
+   by `#include`-ing the aggregator; there is no editable table in it.
+   <!-- claim: symbol-present DIAG_LOCAL app/controllers/include/controllers/diagnostics_dumpers_*.def -->
+   <!-- claim: symbol-present DIAG_SERVICE app/controllers/include/controllers/diagnostics_dumpers_*.def -->
+   <!-- claim: symbol-absent DIAG_LOCAL app/controllers/include/controllers/diagnostics_dumpers.def -->
 
 Then `zclassic23 statecatalog` and `zclassic23 dumpstate <name>` expose it with
 owner file, accepted key forms, safety level, tests, and drill-down commands.

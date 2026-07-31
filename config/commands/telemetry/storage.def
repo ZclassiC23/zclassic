@@ -1,0 +1,61 @@
+/* The `ops.telemetry.storage` branch. Owned by the storage telemetry lane.
+ *
+ * Leaves are PLANNED until the typed storage snapshot and its field table exist;
+ * a leaf whose provider is missing fails closed with exit 3 and names what is
+ * missing, rather than returning an empty object. */
+
+ZCL_COMMAND_BRANCH("ops.telemetry.storage", "ops.telemetry",
+                   "Databases, indexes, cache and disk",
+                   ZCL_COMMAND_LAYER_OPS)
+
+ZCL_COMMAND_PLANNED_READ(
+    "ops.telemetry.storage.summary", "ops.telemetry.storage", "",
+    "Storage posture",
+    "Read live from the running node at call time from the typed storage snapshot: database reachability, index completeness and disk headroom against the refuse threshold.", 0,
+    "telemetry,storage,summary,database,disk",
+    "zcl.command.empty_input.v1", "zcl.telemetry.storage.summary.v1", "", "",
+    "zclassic23 ops telemetry storage summary",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "the typed storage telemetry snapshot is not built yet")
+
+ZCL_COMMAND_PLANNED_READ(
+    "ops.telemetry.storage.database", "ops.telemetry.storage", "",
+    "Database connections and WAL state",
+    "Read live from the running node at call time from the typed storage snapshot: open connections, WAL size and checkpoint posture for each owned database.", 0,
+    "telemetry,storage,database,sqlite,wal,txn",
+    "zcl.command.empty_input.v1", "zcl.telemetry.storage.database.v1", "", "",
+    "zclassic23 ops telemetry storage database",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "the typed storage telemetry snapshot is not built yet")
+
+ZCL_COMMAND_PLANNED_READ(
+    "ops.telemetry.storage.disk", "ops.telemetry.storage", "",
+    "Disk headroom",
+    "Read live from the running node at call time from the typed storage snapshot: free bytes in the datadir with the warn and refuse thresholds it is judged against.", 0,
+    "telemetry,storage,disk,free,space,headroom",
+    "zcl.command.empty_input.v1", "zcl.telemetry.storage.disk.v1", "", "",
+    "zclassic23 ops telemetry storage disk",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "the typed storage telemetry snapshot is not built yet")
+
+ZCL_COMMAND_PLANNED_READ(
+    "ops.telemetry.storage.cache", "ops.telemetry.storage", "",
+    "Cache occupancy and hit rates",
+    "Read live from the running node at call time from the typed storage snapshot: each bounded cache with its occupancy, hit ratio and eviction count.", 0,
+    "telemetry,storage,cache,hit,evict,memory",
+    "zcl.command.empty_input.v1", "zcl.telemetry.storage.cache.v1", "", "",
+    "zclassic23 ops telemetry storage cache",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "the typed storage telemetry snapshot is not built yet")

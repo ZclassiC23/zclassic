@@ -1,0 +1,61 @@
+/* The `ops.telemetry.network` branch. Owned by the network telemetry lane.
+ *
+ * Leaves are PLANNED until the typed network snapshot and its field table exist;
+ * a leaf whose provider is missing fails closed with exit 3 and names what is
+ * missing, rather than returning an empty object. */
+
+ZCL_COMMAND_BRANCH("ops.telemetry.network", "ops.telemetry",
+                   "Peers, transport, onion and address pool",
+                   ZCL_COMMAND_LAYER_OPS)
+
+ZCL_COMMAND_PLANNED_READ(
+    "ops.telemetry.network.summary", "ops.telemetry.network", "",
+    "Connectivity posture",
+    "Read live from the running node at call time from the typed network snapshot: peer counts against the configured floor, handshake funnel health, and overall reachability.", 0,
+    "telemetry,network,summary,peers,reachability",
+    "zcl.command.empty_input.v1", "zcl.telemetry.network.summary.v1", "", "",
+    "zclassic23 ops telemetry network summary",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "the typed network telemetry snapshot is not built yet")
+
+ZCL_COMMAND_PLANNED_READ(
+    "ops.telemetry.network.peers", "ops.telemetry.network", "",
+    "Connected peers",
+    "Read live from the running node at call time from the typed network snapshot: each connected peer with its direction, protocol version and last observed activity.", 0,
+    "telemetry,network,peers,connections,latency",
+    "zcl.command.empty_input.v1", "zcl.telemetry.network.peers.v1", "", "",
+    "zclassic23 ops telemetry network peers",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "the typed network telemetry snapshot is not built yet")
+
+ZCL_COMMAND_PLANNED_READ(
+    "ops.telemetry.network.tor", "ops.telemetry.network", "",
+    "Onion service state",
+    "Read live from the running node at call time from the typed network snapshot: whether the embedded onion is built and published, its address, and the bootstrap phase if it is not.", 0,
+    "telemetry,network,tor,onion,hidden,service",
+    "zcl.command.empty_input.v1", "zcl.telemetry.network.tor.v1", "", "",
+    "zclassic23 ops telemetry network tor",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "the typed network telemetry snapshot is not built yet")
+
+ZCL_COMMAND_PLANNED_READ(
+    "ops.telemetry.network.transport", "ops.telemetry.network", "",
+    "Wire transport posture",
+    "Read live from the running node at call time from the typed network snapshot: how many connections negotiated the encrypted v2 transport versus plaintext, and why any fell back.", 0,
+    "telemetry,network,transport,v2,noise,encryption",
+    "zcl.command.empty_input.v1", "zcl.telemetry.network.transport.v1", "", "",
+    "zclassic23 ops telemetry network transport",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "the typed network telemetry snapshot is not built yet")

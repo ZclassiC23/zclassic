@@ -16,6 +16,7 @@
 
 #include "json/json.h"
 #include "util/log_macros.h"
+#include "util/telemetry_field_table.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -30,8 +31,62 @@
       .next = (next_) },
 #define TELEMETRY_ALIAS(...)
 #define TELEMETRY_QUESTION(...)
+/* ONE table, ONE lookup. The hand-written subsystem rows come first and keep
+ * their order, then every generated domain's field table is pasted as more
+ * rows of the same struct. The render layer's evaluator and `ops debug
+ * meaning` therefore read the same array — there is no second ontology for
+ * typed domains to drift from, and none of the accessors below know or care
+ * which half a row came from.
+ *
+ * `subsystem` for a domain row is the domain name (telemetry_domains.def) and
+ * `path` is TL_PATH(group, member) = "values.<group>.<member>", which is where
+ * telemetry_render places the value in the document it evaluates. Those two
+ * spellings are the whole contract between the two files. */
 static const struct telemetry_field g_fields[] = {
 #include "util/telemetry_ontology.def"
+
+/* TL_SUB is the subsystem string for the table that follows; it is redefined
+ * around each include because the domain name is not available inside a
+ * TL_LEAF expansion. Keep each #define adjacent to its #include. */
+#define TL_DOMAIN_META(d_, id_, desc_)
+#define TL_GROUP(g_, desc_)
+#define TL_GROUP_END(g_)
+#define TL_LEAF(g_, m_, ct_, unit_, tier_, rule_, op_, thr_, sev_, \
+                means_, implies_, next_) \
+    { .subsystem = TL_SUB, .path = TL_PATH(g_, m_), .unit = (unit_), \
+      .rule = (rule_), .operand = (op_), .threshold = (thr_), \
+      .severity = (sev_), .means = (means_), .implies = (implies_), \
+      .next = (next_) },
+
+#define TL_SUB "runtime"
+#include "util/telemetry/runtime_fields.def"
+#undef TL_SUB
+#define TL_SUB "sync"
+#include "util/telemetry/sync_fields.def"
+#undef TL_SUB
+#define TL_SUB "network"
+#include "util/telemetry/network_fields.def"
+#undef TL_SUB
+#define TL_SUB "storage"
+#include "util/telemetry/storage_fields.def"
+#undef TL_SUB
+#define TL_SUB "wallet"
+#include "util/telemetry/wallet_fields.def"
+#undef TL_SUB
+#define TL_SUB "agents"
+#include "util/telemetry/agents_fields.def"
+#undef TL_SUB
+#define TL_SUB "zcode"
+#include "util/telemetry/zcode_fields.def"
+#undef TL_SUB
+#define TL_SUB "metaverse"
+#include "util/telemetry/metaverse_fields.def"
+#undef TL_SUB
+
+#undef TL_LEAF
+#undef TL_GROUP_END
+#undef TL_GROUP
+#undef TL_DOMAIN_META
 };
 #undef TELEMETRY_QUESTION
 #undef TELEMETRY_ALIAS
@@ -397,27 +452,36 @@ static const struct json_value *resolve_path(const struct json_value *dump,
     return cur;
 }
 
-/* verdicts */
-#define V_HEALTHY   "healthy"
-#define V_UNHEALTHY "unhealthy"
-#define V_INFO      "not_judged"
-#define V_ABSENT    "absent"
-#define V_SKIPPED   "not_evaluated"
-
-static const char *evaluate_field(const struct telemetry_field *f,
-                                  const struct json_value *dump,
-                                  const struct json_value **out_value)
+const char *telemetry_verdict_name(enum telemetry_verdict v)
 {
+    switch (v) {
+    case TV_HEALTHY:       return "healthy";
+    case TV_UNHEALTHY:     return "unhealthy";
+    case TV_NOT_JUDGED:    return "not_judged";
+    case TV_ABSENT:        return "absent";
+    case TV_NOT_EVALUATED: return "not_evaluated";
+    }
+    return "unknown";
+}
+
+enum telemetry_verdict telemetry_field_evaluate(
+    const struct telemetry_field *f, const struct json_value *dump,
+    const struct json_value **out_value)
+{
+    if (!out_value)
+        return TV_NOT_EVALUATED;
     *out_value = NULL;
+    if (!f || !dump)
+        return TV_NOT_EVALUATED;
     if (strstr(f->path, "[]"))
-        return V_SKIPPED;
+        return TV_NOT_EVALUATED;
 
     const struct json_value *v = resolve_path(dump, f->path);
     if (!v)
-        return V_ABSENT;
+        return TV_ABSENT;
     *out_value = v;
     if (f->rule == TFR_INFO)
-        return V_INFO;
+        return TV_NOT_JUDGED;
 
     bool is_bool = v->type == JSON_BOOL;
     bool bval = is_bool && json_get_bool(v);
@@ -425,44 +489,52 @@ static const char *evaluate_field(const struct telemetry_field *f,
     bool numeric = v->type == JSON_INT;
 
     switch (f->rule) {
+    /* A non-bool here is "we could not read it", NOT "it is false". The
+     * render layer represents an unavailable leaf as JSON null, so treating a
+     * type mismatch as UNHEALTHY reported every unreadable flag as a broken
+     * flag — and a critical row would have driven the whole domain unhealthy
+     * on nothing but a missed read. Same guard the numeric rules below
+     * already had. */
     case TFR_EXPECT_TRUE:
-        return (is_bool && bval) ? V_HEALTHY : V_UNHEALTHY;
+        if (!is_bool) return TV_ABSENT;
+        return bval ? TV_HEALTHY : TV_UNHEALTHY;
     case TFR_EXPECT_FALSE:
-        return (is_bool && !bval) ? V_HEALTHY : V_UNHEALTHY;
+        if (!is_bool) return TV_ABSENT;
+        return !bval ? TV_HEALTHY : TV_UNHEALTHY;
     case TFR_EXPECT_ZERO:
-        if (!numeric) return V_ABSENT;
-        return n == 0 ? V_HEALTHY : V_UNHEALTHY;
+        if (!numeric) return TV_ABSENT;
+        return n == 0 ? TV_HEALTHY : TV_UNHEALTHY;
     case TFR_EXPECT_NONZERO:
-        if (!numeric) return V_ABSENT;
-        return n != 0 ? V_HEALTHY : V_UNHEALTHY;
+        if (!numeric) return TV_ABSENT;
+        return n != 0 ? TV_HEALTHY : TV_UNHEALTHY;
     case TFR_MIN_ABS:
-        if (!numeric) return V_ABSENT;
-        return n >= f->threshold ? V_HEALTHY : V_UNHEALTHY;
+        if (!numeric) return TV_ABSENT;
+        return n >= f->threshold ? TV_HEALTHY : TV_UNHEALTHY;
     case TFR_MAX_ABS:
-        if (!numeric) return V_ABSENT;
-        return n <= f->threshold ? V_HEALTHY : V_UNHEALTHY;
+        if (!numeric) return TV_ABSENT;
+        return n <= f->threshold ? TV_HEALTHY : TV_UNHEALTHY;
     case TFR_MIN_RATIO_OF:
     case TFR_MAX_RATIO_OF: {
         if (!numeric || !f->operand)
-            return V_ABSENT;
+            return TV_ABSENT;
         const struct json_value *ov = resolve_path(dump, f->operand);
         if (!ov || ov->type != JSON_INT)
-            return V_ABSENT;
+            return TV_ABSENT;
         int64_t base = json_get_int(ov);
         /* A zero or negative denominator carries no ratio information; the
          * operand's own row is where that gets judged, not here. */
         if (base <= 0)
-            return V_SKIPPED;
+            return TV_NOT_EVALUATED;
         int64_t lhs = n * 1000;
         int64_t rhs = base * (int64_t)f->threshold;
         if (f->rule == TFR_MIN_RATIO_OF)
-            return lhs >= rhs ? V_HEALTHY : V_UNHEALTHY;
-        return lhs <= rhs ? V_HEALTHY : V_UNHEALTHY;
+            return lhs >= rhs ? TV_HEALTHY : TV_UNHEALTHY;
+        return lhs <= rhs ? TV_HEALTHY : TV_UNHEALTHY;
     }
     case TFR_INFO:
         break;
     }
-    return V_INFO;
+    return TV_NOT_JUDGED;
 }
 
 bool telemetry_ontology_annotate(const char *subsystem,
@@ -497,13 +569,13 @@ bool telemetry_ontology_annotate(const char *subsystem,
         if (strcmp(f->subsystem, subsystem) != 0)
             continue;
         const struct json_value *value = NULL;
-        const char *verdict = evaluate_field(f, dump, &value);
-        if (strcmp(verdict, V_HEALTHY) == 0 ||
-            strcmp(verdict, V_UNHEALTHY) == 0)
+        enum telemetry_verdict verdict =
+            telemetry_field_evaluate(f, dump, &value);
+        if (verdict == TV_HEALTHY || verdict == TV_UNHEALTHY)
             evaluated++;
-        if (strcmp(verdict, V_ABSENT) == 0)
+        if (verdict == TV_ABSENT)
             absent++;
-        if (strcmp(verdict, V_UNHEALTHY) != 0)
+        if (verdict != TV_UNHEALTHY)
             continue;
         unhealthy++;
         if (f->severity == TFS_CRITICAL)
@@ -518,7 +590,7 @@ bool telemetry_ontology_annotate(const char *subsystem,
             json_push_kv_int(&obj, "value", json_get_int(value));
         else if (value && value->type == JSON_BOOL)
             json_push_kv_bool(&obj, "value", json_get_bool(value));
-        json_push_kv_str(&obj, "verdict", verdict);
+        json_push_kv_str(&obj, "verdict", telemetry_verdict_name(verdict));
         json_push_kv_str(&obj, "severity",
                          telemetry_severity_name(f->severity));
         json_push_kv_str(&obj, "unit", telemetry_unit_name(f->unit));

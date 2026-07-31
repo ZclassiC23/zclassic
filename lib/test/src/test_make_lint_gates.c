@@ -279,6 +279,9 @@ static const struct lint_gate_entry g_lint_gate_entries[] = {
     N_(t_git_hooks_gate_rejects_noop_pre_push),      /* writes only test-tmp/ */
     N_(t_git_hooks_gate_rejects_noop_pre_commit),    /* writes only test-tmp/ */
     S_(t_telemetry_ontology_gate),
+    /* Hermetic: the script's --selftest builds its scan root and baseline in
+     * its own mktemp dir and never mutates a tracked path. */
+    N_(t_dumper_never_blocks_gate),
     S_(t_e10_framework_shape_ratchet),
     S_(t_e10_no_raw_sqlite_ratchet),
     S_(t_gate22_framework_filename_suffix),
@@ -370,6 +373,11 @@ static int lint_entry_weight(lint_gate_fn fn)
     if (fn == t_log_macro_return_type_gate)              return 3728;
     if (fn == t_long_functions_lib_warn_tier)            return 3608;
     if (fn == t_e12_honest_witness)                      return 2202;
+    /* Measured standalone, not under family contention (the dev host's build
+     * lock was held by another lane): one real-tree run at ~1.17s plus the
+     * script's 6-case --selftest at ~1.33s. Re-measure under
+     * ZCL_LINT_GATE_TIMING=1 and correct it if the shards skew. */
+    if (fn == t_dumper_never_blocks_gate)                return 2500;
     if (fn == t_blocker_escape_registered_gate)          return 2198;
     if (fn == t_shape_include_direction)                 return 1874;
     if (fn == t_e14_condition_cooldown_gate)             return 1654;

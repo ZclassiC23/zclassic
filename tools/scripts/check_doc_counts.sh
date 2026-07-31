@@ -65,14 +65,17 @@ ports_glob='ports/include/ports/*.h'
 adapters_glob='adapters/outbound/persistence/src/*.c'
 conditions_glob='app/conditions/src/*.c'
 commands_glob='config/commands/*.def'
-dumpers_def=app/controllers/include/controllers/diagnostics_dumpers.def
+# The DIAG_* rows live in per-domain files under a pure aggregator; resolving
+# the set has exactly one owner. See tools/lint/dumper_defs.sh.
+# shellcheck source=tools/lint/dumper_defs.sh
+. tools/lint/dumper_defs.sh
 
 if [ ! -f "$test_groups_file" ]; then
     echo "FAIL: $test_groups_file not found (run from repo root)" >&2
     exit 1
 fi
-if [ ! -f "$dumpers_def" ]; then
-    echo "FAIL: $dumpers_def not found (run from repo root)" >&2
+if ! dumper_def_files dumper_defs; then
+    echo "FAIL: could not resolve the dumpstate descriptor set (run from repo root)" >&2
     exit 1
 fi
 
@@ -94,10 +97,12 @@ code_command_roots=$(grep -h 'ZCL_COMMAND_BRANCH(' $commands_glob 2>/dev/null \
     | sed 's/.*ZCL_COMMAND_BRANCH(//' \
     | awk -F'"' '$4 == "" { n++ } END { print n + 0 }')
 
-# `dumpstate` subsystems: one DIAG_* row per subsystem in the .def the
+# `dumpstate` subsystems: one DIAG_* row per subsystem across the .def set the
 # diagnostics registry #includes to build g_dumpers[]. There are nine row
-# macros, not the three the docs used to name.
-code_dumpstate=$(grep -cE '^[[:space:]]*DIAG_[A-Z]+\(' "$dumpers_def")
+# macros, not the three the docs used to name. Counted over the whole resolved
+# set — the aggregator itself holds no rows, so counting it alone reports 0.
+code_dumpstate=$(grep -chE '^[[:space:]]*DIAG_[A-Z]+\(' "${dumper_defs[@]}" \
+    | awk '{ n += $1 } END { print n + 0 }')
 
 # Physical app shape folders (the Event shape deliberately has none).
 code_app_shapes=$(find app -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)

@@ -359,10 +359,17 @@ pid_t fork_with_retry(void)
 
 /* Generalized gate-script runner: fork/exec the script at repo-relative
  * path `script_rel`, optionally with ZCL_LINT_MODE set to `mode` (NULL to
- * leave unset). Returns the script's exit status (0 = clean, non-zero =
- * violations), or -1 on harness failure. Mirrors run_check_raw_malloc_script
- * but parameterized so the four E-series gates share one driver. */
-int run_gate_script(const char *script_rel, const char *mode)
+ * leave unset) and optionally with one argv word `arg` (NULL for none).
+ * Returns the script's exit status (0 = clean, non-zero = violations), or -1
+ * on harness failure. Mirrors run_check_raw_malloc_script but parameterized so
+ * the four E-series gates share one driver.
+ *
+ * `arg` exists for gates that own their own trip/recover matrix behind a
+ * `--selftest` flag. Dispatching that flag is strictly better than restating
+ * the matrix in C: the shell already builds and tears down the fixture
+ * sandbox, and two copies of the same matrix are two things to keep in step. */
+int run_gate_script_arg(const char *script_rel, const char *mode,
+                        const char *arg)
 {
     char script[PATH_MAX];
     if (repo_path(script, sizeof(script), script_rel) != 0)
@@ -399,7 +406,10 @@ int run_gate_script(const char *script_rel, const char *mode)
         }
         if (mode)
             (void)setenv("ZCL_LINT_MODE", mode, 1);
-        execl(script, script, (char *)NULL);
+        if (arg)
+            execl(script, script, arg, (char *)NULL);
+        else
+            execl(script, script, (char *)NULL);
         _exit(127);
     }
 
@@ -415,6 +425,19 @@ int run_gate_script(const char *script_rel, const char *mode)
         (void)sigaction(SIGCHLD, &old_chld, NULL);
     if (WIFEXITED(rc)) return WEXITSTATUS(rc);
     return -1;
+}
+
+int run_gate_script(const char *script_rel, const char *mode)
+{
+    return run_gate_script_arg(script_rel, mode, NULL);
+}
+
+/* Run a gate's own `--selftest`: the gate builds its known-bad inputs in a
+ * throwaway directory, asserts every trip and recover case itself, and exits
+ * 0 only if all of them held. 0 = the gate still bites. */
+int run_gate_script_selftest(const char *script_rel)
+{
+    return run_gate_script_arg(script_rel, NULL, "--selftest");
 }
 
 /* Like run_gate_script but ALSO exports ZCL_SUPERVISOR_WORKER_FILES so the

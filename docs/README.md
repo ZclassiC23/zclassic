@@ -113,6 +113,7 @@ history: <!-- doc-path-ok: recovered from git history, not present on disk -->
 - [`work/README.md`](./work/README.md) — parallel-worktree workflow (orchestrator + wt2/wt3 workers).
 - [`work/agent-protocol.md`](./work/agent-protocol.md) — worker startup/completion contract.
 - [`CHAOS_HARNESS.md`](./CHAOS_HARNESS.md) — the two chaos-testing tools and their make targets.
+- [`TELEMETRY_CONTRACT.md`](./TELEMETRY_CONTRACT.md) — the stable shape of the `ops.telemetry` tree: typed snapshots, derived health, and why an unknown value is never silently omitted.
 
 ## Measurement
 

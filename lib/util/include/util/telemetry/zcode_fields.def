@@ -1,0 +1,23 @@
+/* Canonical field table for the `zcode` telemetry domain. Data only.
+ *
+ * Row grammar and what each row generates: util/telemetry_field_table.h.
+ * Every field name in this domain is spelled here and nowhere else.
+ *
+ * Lane ownership: this file belongs to the zcode domain alone. Append groups
+ * below the `meta` group; do not reorder or reword existing rows, and keep
+ * each group's rows contiguous. */
+
+TL_DOMAIN_META(zcode, "zcl.telemetry.zcode.v1",
+    "package store, swarm participation and install generations")
+
+TL_GROUP(meta, "how and when this snapshot itself was taken")
+
+TL_LEAF(meta, collected_unix, TLC_I64, TFU_UNIX_TIME, TLV_NORMAL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "wall-clock second at which the provider began filling this snapshot; "
+    "every other leaf's observed_unix is at or after this instant",
+    "", "")
+
+TL_GROUP_END(meta)
+
+/* ── zcode groups start here (owned by this domain's lane) ── */

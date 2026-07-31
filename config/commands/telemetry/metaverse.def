@@ -1,0 +1,54 @@
+/* The `ops.telemetry.metaverse` branch. Owned by the metaverse telemetry lane.
+ *
+ * Leaves are PLANNED until the typed metaverse snapshot and its field table exist;
+ * a leaf whose provider is missing fails closed with exit 3 and names what is
+ * missing, rather than returning an empty object. */
+
+ZCL_COMMAND_BRANCH("ops.telemetry.metaverse", "ops.telemetry",
+                   "Property catalog, market and confined services",
+                   ZCL_COMMAND_LAYER_OPS)
+
+ZCL_COMMAND_PLANNED_READ(
+    "ops.telemetry.metaverse.properties", "ops.telemetry.metaverse", "",
+    "Digital property this node holds",
+    "Read live from the running node at call time from the typed metaverse snapshot: each property in the local catalog with its adapter kind and whether its manifest verifies.", 0,
+    "telemetry,metaverse,properties,catalog,owned",
+    "zcl.command.empty_input.v1", "zcl.telemetry.metaverse.properties.v1", "", "",
+    "zclassic23 ops telemetry metaverse properties",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "the typed metaverse telemetry snapshot is not built yet")
+
+/* `market` has no backing code anywhere in the tree today — not a provider,
+ * not a service, not a schema. It is declared so the branch is honest about
+ * what it will cover, and it fails closed until something real exists to
+ * report. Do not wire it to an empty object to make the branch look whole. */
+ZCL_COMMAND_PLANNED_READ(
+    "ops.telemetry.metaverse.market", "ops.telemetry.metaverse", "",
+    "Property market activity",
+    "Will report listings, bids and settlements for digital property; no "
+    "market subsystem exists in this build, so the leaf fails closed today "
+    "and reports that rather than an empty result set.", 0,
+    "telemetry,metaverse,market,listings,bids",
+    "zcl.command.empty_input.v1", "zcl.telemetry.metaverse.market.v1", "", "",
+    "zclassic23 ops telemetry metaverse market",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "no property market subsystem exists in this build")
+
+ZCL_COMMAND_PLANNED_READ(
+    "ops.telemetry.metaverse.services", "ops.telemetry.metaverse", "",
+    "Confined broker services",
+    "Read live from the running node at call time from the typed metaverse snapshot: each confined agent-broker service with its confinement posture and recorded grants.", 0,
+    "telemetry,metaverse,services,broker,confined,agent",
+    "zcl.command.empty_input.v1", "zcl.telemetry.metaverse.services.v1", "", "",
+    "zclassic23 ops telemetry metaverse services",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "the typed metaverse telemetry snapshot is not built yet")

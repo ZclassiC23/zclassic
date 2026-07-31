@@ -1,0 +1,29 @@
+/* The `ops.telemetry.watch` leaf. Owned by the sync/watch lane.
+ *
+ * It lives in its own file because the change feed is built by a different
+ * lane than the top-level rollups in root.def, and two lanes editing one file
+ * is how merges go wrong.
+ */
+
+/* watch is the only STREAM-mode leaf in the registry. It is a CURSOR POLL,
+ * not a long-lived connection: one call returns the bounded batch of changes
+ * after `since` and exits, and the agent re-invokes with the last sequence it
+ * saw. A batch that overruns the ring reports the gap explicitly, because an
+ * empty reply and a missed window must never look alike. */
+ZCL_COMMAND_PLANNED_READ(
+    "ops.telemetry.watch", "ops.telemetry", "",
+    "Resumable telemetry change feed",
+    "Will return the bounded NDJSON batch of telemetry changes recorded after "
+    "`since` — sequence, captured_at, canonical_path, changed_fields, health, "
+    "dropped_count — so an agent can resume without rereading state; the "
+    "change sampler is not built yet, so the leaf fails closed today.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "telemetry,watch,stream,changes,since,resume,ndjson",
+    "zcl.telemetry.watch.input.v1", "zcl.telemetry.change.v1",
+    "since,path,limit", "",
+    "zclassic23 ops telemetry watch --since=41",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_STREAM,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "the telemetry change sampler is not built yet")

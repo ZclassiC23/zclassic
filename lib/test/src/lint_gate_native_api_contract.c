@@ -243,6 +243,58 @@ int t_native_agent_api_contract(void)
         ASSERT(read_entire_file(diag_ctrl_path, &diag_ctrl_buf) == 0);
         ASSERT(read_entire_file(diag_reg_path, &diag_reg_buf) == 0);
         ASSERT(read_entire_file(diag_manifest_path, &diag_manifest_buf) == 0);
+        /* The DIAG_* rows moved out of diagnostics_dumpers.def into eight
+         * per-domain files; the .def itself is now a pure aggregator holding
+         * only #includes. The contract asserted below is about the ROW SET,
+         * not about which file a row sits in, so resolve the aggregator's
+         * include list and concatenate — the same set the preprocessor sees.
+         *
+         * The list is PARSED rather than hardcoded because naming the eight
+         * files here would let a ninth domain escape every assertion below
+         * without anyone noticing. The >= 8 floor is the anti-hollowness
+         * guard: without it, an include pattern that stopped matching would
+         * leave diag_manifest_buf holding nothing but comments, and every
+         * strstr() below would fail with a message blaming the wrong thing. */
+        {
+            static const char inc_needle[] =
+                "#include \"controllers/diagnostics_dumpers_";
+            char diag_dir[PATH_MAX];
+            snprintf(diag_dir, sizeof diag_dir, "%s", diag_manifest_path);
+            char *slash = strrchr(diag_dir, '/');
+            ASSERT(slash != NULL);
+            *slash = '\0';
+
+            char *combined = strdup(diag_manifest_buf);
+            ASSERT(combined != NULL);
+            size_t combined_len = strlen(combined);
+            int domain_files = 0;
+
+            for (const char *p = strstr(diag_manifest_buf, inc_needle); p;
+                 p = strstr(p + 1, inc_needle)) {
+                const char *name = p + sizeof(inc_needle) - 1;
+                const char *end = strchr(name, '"');
+                ASSERT(end != NULL);
+                char rel[PATH_MAX];
+                int n = snprintf(rel, sizeof rel,
+                                 "%s/diagnostics_dumpers_%.*s", diag_dir,
+                                 (int)(end - name), name);
+                ASSERT(n > 0 && (size_t)n < sizeof rel);
+
+                char *part = NULL;
+                ASSERT(read_entire_file(rel, &part) == 0);
+                size_t part_len = strlen(part);
+                char *grown = realloc(combined, combined_len + part_len + 1);
+                ASSERT(grown != NULL);
+                combined = grown;
+                memcpy(combined + combined_len, part, part_len + 1);
+                combined_len += part_len;
+                free(part);
+                domain_files++;
+            }
+            ASSERT(domain_files >= 8);
+            free(diag_manifest_buf);
+            diag_manifest_buf = combined;
+        }
         ASSERT(read_entire_file(diag_catalog_path, &diag_catalog_buf) == 0);
         ASSERT(read_entire_file(api_path, &api_buf) == 0);
         ASSERT(read_entire_file(api_status_path, &api_status_buf) == 0);

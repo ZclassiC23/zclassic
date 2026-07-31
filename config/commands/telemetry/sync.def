@@ -1,0 +1,48 @@
+/* The `ops.telemetry.sync` branch. Owned by the sync telemetry lane.
+ *
+ * Leaves are PLANNED until the typed sync snapshot and its field table exist;
+ * a leaf whose provider is missing fails closed with exit 3 and names what is
+ * missing, rather than returning an empty object. */
+
+ZCL_COMMAND_BRANCH("ops.telemetry.sync", "ops.telemetry",
+                   "Reducer frontier, stages and catch-up posture",
+                   ZCL_COMMAND_LAYER_OPS)
+
+ZCL_COMMAND_PLANNED_READ(
+    "ops.telemetry.sync.summary", "ops.telemetry.sync", "",
+    "Sync posture and the current bottleneck",
+    "Read live from the running node at call time from the typed sync snapshot: the proven height, the gap to the network tip, the fold rate, and which stage is the bottleneck right now.", 0,
+    "telemetry,sync,summary,hstar,gap,bottleneck",
+    "zcl.command.empty_input.v1", "zcl.telemetry.sync.summary.v1", "", "",
+    "zclassic23 ops telemetry sync summary",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "the typed sync telemetry snapshot is not built yet")
+
+ZCL_COMMAND_PLANNED_READ(
+    "ops.telemetry.sync.stages", "ops.telemetry.sync", "",
+    "Every reducer stage cursor",
+    "Read live from the running node at call time from the typed sync snapshot: each reducer stage with its cursor, whether it is above the proven frontier, and its declared health rule verdict.", 0,
+    "telemetry,sync,stages,cursor,ladder,reducer",
+    "zcl.command.empty_input.v1", "zcl.telemetry.sync.stages.v1", "", "",
+    "zclassic23 ops telemetry sync stages",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "the typed sync telemetry snapshot is not built yet")
+
+ZCL_COMMAND_PLANNED_READ(
+    "ops.telemetry.sync.stage", "ops.telemetry.sync", "",
+    "One reducer stage in full detail",
+    "Read live from the running node at call time from the typed sync snapshot: one named stage's cursor, trust, last advance and blocker, selected by the stage input key.", 0,
+    "telemetry,sync,stage,cursor,one,detail",
+    "zcl.telemetry.sync_stage.input.v1", "zcl.telemetry.sync.stage.v1", "stage", "",
+    "zclassic23 ops telemetry sync stage --stage=<v>",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "the typed sync telemetry snapshot is not built yet")

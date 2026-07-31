@@ -1,4 +1,14 @@
-# Known-bad extra scan row for check-telemetry-ontology's self-test. Appended
+# Known-bad extra scan rows for check-telemetry-ontology's self-test. Appended
 # to the real manifest via ZCL_TELEMETRY_SCAN_EXTRA_MANIFEST so the trip path
 # runs against the REAL ontology and the REAL floors.
+#
+# One row per row kind, because the two kinds prove coverage by different
+# mechanisms and a fixture for one proves nothing about the other:
+#
+#   FUNC  a hand-written dumper emitting a field with no ontology row.
+#   TABLE a table-driven domain whose TL_LEAF resolves to no ontology row —
+#         the blind spot the emission scan structurally cannot see, since a
+#         table-driven domain emits everything from one generic renderer and
+#         therefore yields ZERO extracted fields.
 peer_lifecycle tools/lint/fixtures/telemetry_unannotated_dump.c.fixture telemetry_fixture_dump_state_json out summary.
+TABLE runtime tools/lint/fixtures/telemetry_table_unannotated_fields.def 1

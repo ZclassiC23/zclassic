@@ -293,6 +293,37 @@ static const struct row g_rows[] = {
 #define ZCL_DEF_FILE "config/commands/metaverse.def"
 #include "../config/commands/metaverse.def"
 #undef ZCL_DEF_FILE
+#define ZCL_DEF_FILE "config/commands/telemetry/root.def"
+#include "../config/commands/telemetry/root.def"
+#undef ZCL_DEF_FILE
+
+#define ZCL_DEF_FILE "config/commands/telemetry/watch.def"
+#include "../config/commands/telemetry/watch.def"
+#undef ZCL_DEF_FILE
+#define ZCL_DEF_FILE "config/commands/telemetry/runtime.def"
+#include "../config/commands/telemetry/runtime.def"
+#undef ZCL_DEF_FILE
+#define ZCL_DEF_FILE "config/commands/telemetry/sync.def"
+#include "../config/commands/telemetry/sync.def"
+#undef ZCL_DEF_FILE
+#define ZCL_DEF_FILE "config/commands/telemetry/network.def"
+#include "../config/commands/telemetry/network.def"
+#undef ZCL_DEF_FILE
+#define ZCL_DEF_FILE "config/commands/telemetry/storage.def"
+#include "../config/commands/telemetry/storage.def"
+#undef ZCL_DEF_FILE
+#define ZCL_DEF_FILE "config/commands/telemetry/wallet.def"
+#include "../config/commands/telemetry/wallet.def"
+#undef ZCL_DEF_FILE
+#define ZCL_DEF_FILE "config/commands/telemetry/agents.def"
+#include "../config/commands/telemetry/agents.def"
+#undef ZCL_DEF_FILE
+#define ZCL_DEF_FILE "config/commands/telemetry/zcode.def"
+#include "../config/commands/telemetry/zcode.def"
+#undef ZCL_DEF_FILE
+#define ZCL_DEF_FILE "config/commands/telemetry/metaverse.def"
+#include "../config/commands/telemetry/metaverse.def"
+#undef ZCL_DEF_FILE
 };
 
 #define ROW_COUNT (sizeof(g_rows) / sizeof(g_rows[0]))

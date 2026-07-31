@@ -1,0 +1,48 @@
+/* The `ops.telemetry.zcode` branch. Owned by the zcode telemetry lane.
+ *
+ * Leaves are PLANNED until the typed zcode snapshot and its field table exist;
+ * a leaf whose provider is missing fails closed with exit 3 and names what is
+ * missing, rather than returning an empty object. */
+
+ZCL_COMMAND_BRANCH("ops.telemetry.zcode", "ops.telemetry",
+                   "Package store, swarm and installs",
+                   ZCL_COMMAND_LAYER_OPS)
+
+ZCL_COMMAND_PLANNED_READ(
+    "ops.telemetry.zcode.summary", "ops.telemetry.zcode", "",
+    "ZCODE store posture",
+    "Read live from the running node at call time from the typed zcode snapshot: packages held, bytes stored, and whether the store is reachable and consistent.", 0,
+    "telemetry,zcode,summary,packages,store",
+    "zcl.command.empty_input.v1", "zcl.telemetry.zcode.summary.v1", "", "",
+    "zclassic23 ops telemetry zcode summary",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "the typed zcode telemetry snapshot is not built yet")
+
+ZCL_COMMAND_PLANNED_READ(
+    "ops.telemetry.zcode.swarm", "ops.telemetry.zcode", "",
+    "Swarm participation",
+    "Read live from the running node at call time from the typed zcode snapshot: how many peers this node is seeding to and fetching from, and the verified-byte throughput of each.", 0,
+    "telemetry,zcode,swarm,seed,fetch,peers",
+    "zcl.command.empty_input.v1", "zcl.telemetry.zcode.swarm.v1", "", "",
+    "zclassic23 ops telemetry zcode swarm",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "the typed zcode telemetry snapshot is not built yet")
+
+ZCL_COMMAND_PLANNED_READ(
+    "ops.telemetry.zcode.installs", "ops.telemetry.zcode", "",
+    "Install generations",
+    "Read live from the running node at call time from the typed zcode snapshot: the active generation per installed package and whether a rollback target is retained.", 0,
+    "telemetry,zcode,installs,generations,lifecycle,rollback",
+    "zcl.command.empty_input.v1", "zcl.telemetry.zcode.installs.v1", "", "",
+    "zclassic23 ops telemetry zcode installs",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "the typed zcode telemetry snapshot is not built yet")
