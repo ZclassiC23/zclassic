@@ -1,0 +1,10 @@
+/* Per-domain dumpstate subsystem descriptors: metaverse property/world state.
+ *
+ * Split from diagnostics_dumpers.def (see that file's aggregator comment for
+ * the shared #include contract). Data-only: no macro definitions or include
+ * guards belong in this file.
+ *
+ * Intentionally empty: no metaverse subsystem currently registers a dumpstate
+ * provider. Add rows here as metaverse (app/controllers - metaverse sources)
+ * gains introspectable runtime state — see CLAUDE.md "Adding state
+ * introspection". */
