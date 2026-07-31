@@ -66,6 +66,7 @@ declare -A EXEMPT=(
     # the gate that is already 93% of the umbrella's wall time. It is in
     # FUZZ_TARGETS like the rest, so make ci already builds it.
     [fuzz_overlay]="built by make ci (fuzz-ci)"
+    [fuzz_ecdsa]="built by make ci (fuzz-ci)"
     [crash_recovery_test]="built by make ci (test-crash)"
     [zcl-rpc]="built by make ci (test-crash)"
     # The node and the test runners: whole-program relinks, and each is

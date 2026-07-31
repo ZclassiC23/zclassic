@@ -36,3 +36,4 @@ lib/crypto/src/sha3_256_x4.c     lib/test/src/test_sha3_256_x4.c            sha3
 lib/crypto/src/sha3_avx512.c     lib/test/src/test_sha3_512_x4.c            sha3_512_x4
 lib/sapling/src/bn254_accel.c    lib/test/src/test_bn254_accel.c            bn254_accel
 lib/sapling/src/fr_avx512.c      lib/test/src/test_fr_mont_parity.c         fr_mont_parity
+lib/crypto/src/simd_dispatch.c   lib/test/src/test_simd_os_support.c        simd_os_support
