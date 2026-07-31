@@ -153,7 +153,7 @@ trailing window, so deploy when the escalator fires anyway, or after
 
 | Claim | Evidence file |
 |---|---|
-| Anchor-refold rebuild applied, revert path kept | `~/.local/state/zclassic23-cure/verdict.jsonl`; backups under `~/.zclassic-c23-PREINSTALL-*` and `~/.zclassic-c23-PREPROMOTE-*` |
+| Anchor-refold rebuild applied; revert path retired 2026-07-31 after a week at tip | `~/.local/state/zclassic23-cure/verdict.jsonl`. The pre-install and pre-promotion datadir copies it used to name are deleted — there is no rollback to a pre-refold state now, by decision, not by accident. |
 | Tip-holding, externally confirmed | `~/.local/state/zclassic23-slo/uptime-ledger.jsonl` (`gap_vs_oracle`, `ts=`) |
 | 72h hold accrual toward `HOLD_PROVEN` | `~/.local/state/zclassic23-slo/hold-ledger.jsonl`; judge: `tools/scripts/slo_hold_judge.sh`; recorder: `zclassic23-hold-certifier.timer` (`make install-hold-certifier`) |
 | Peers, RSS, disk growth, Tor, standing blocker | `~/.local/state/zclassic23-slo/uptime-ledger.jsonl` — the same per-sample line now carries `peer_count`, `rss_kb`, `datadir_bytes`, `nrestarts`, `active_enter_ts`, `unit_active_state`, `onion_enabled`, `onion_address`, `blocker_count`, `blocker_primary` |
