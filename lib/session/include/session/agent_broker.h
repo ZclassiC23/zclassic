@@ -517,9 +517,114 @@ void agent_broker_fixture_set_grant(const struct agent_grant *g);
 void agent_broker_fixture_get_grant(struct agent_grant *out);
 #endif
 
-/* ── the broker session ─────────────────────────────────────────────────── */
+/* ── idempotency: the identity of a request, not just its number ────────── */
 
 #define AGENT_IDEMPOTENCY_SLOTS 32
+
+/* THE CANONICAL REQUEST DIGEST — SHA3-256 over everything that can change what
+ * a request ASKS FOR, plus the authority it is asked under.
+ *
+ * WHY IT EXISTS. The ring used to key a replay on `request_id` alone (with the
+ * verb compared at the call site, and nothing else). So request_id=7 INSPECT
+ * property A followed by request_id=7 INSPECT property B returned property A's
+ * answer to a question about property B — a confused-deputy read, produced by
+ * the broker itself, with no refusal anywhere. Comparing the FULL digest is
+ * what makes "the same request_id" mean "the same request".
+ *
+ * THE PREIMAGE, field by field, in this order — every variable-length field is
+ * length-prefixed, so no two distinct requests can share a preimage:
+ *
+ *   19 bytes  "zcl.mvap.request.v1"  domain-separation tag, no NUL
+ *    u32 le   protocol version       req->version, with 0 normalized to
+ *                                    MVAP_VERSION (0 means "the current one"
+ *                                    everywhere else on this wire, so the two
+ *                                    spellings must digest alike)
+ *    u32 le   verb                   the wire verb value
+ *    u32 le   request_id             the key itself, so a slot cannot be read
+ *                                    as belonging to another id
+ *    u16 le   kind                   the AGENT'S declared kind — the catalog's
+ *                                    kind is discovered later and is not part
+ *                                    of what was asked
+ *    u64 le   value_zats
+ *   32 bytes  property_id            raw, including the all-zero sentinel
+ *    u16 le   param length           strlen, at most MVAP_PARAM_MAX
+ *      n      param bytes            no NUL terminator in the preimage
+ *    u16 le   authority id length    at most AGENT_GRANT_ID_MAX
+ *      n      authority id bytes     the canonical grant id the session is
+ *                                    bound to, "" when ungranted; a request
+ *                                    replayed under a DIFFERENT authority is
+ *                                    a different request
+ *
+ * `authority_id` may be NULL, which digests identically to "". */
+void mvap_request_digest(const struct mvap_request *req,
+                         const char *authority_id, uint8_t out[32]);
+
+/* A SLOT HOLDS A NAME; ONLY A COMMITTED MUTATION ALSO HOLDS AN ANSWER.
+ *
+ * Two different jobs share this ring and must not be confused:
+ *
+ *   CLAIMED — the id is bound to this exact request and NOTHING is cached
+ *   under it. Every dispatched request claims its id: every query (always),
+ *   and every mutation until it commits. An identical repeat is re-executed
+ *   from scratch against the live authority; a repeat that changed any field
+ *   is a conflict. This is the half that catches a reused id, and it caches
+ *   nothing, which is why a revoked grant still stops answering reads.
+ *
+ *   COMMITTED — a mutation completed. Now, and only now, the ring holds the
+ *   response and the receipt, and an identical repeat is a REPLAY.
+ *
+ * The two are separate ENTRY POINTS below, not a flag: agent_broker_idem_claim()
+ * takes no response argument, so a query answer has no way into the ring. */
+enum agent_idem_outcome {
+    AGENT_IDEM_OUTCOME_NONE = 0,
+    AGENT_IDEM_OUTCOME_CLAIMED,
+    AGENT_IDEM_OUTCOME_COMMITTED,
+};
+
+struct agent_idem_slot {
+    bool     used;
+    uint32_t request_id;
+    uint8_t  digest[32];
+    enum agent_idem_outcome outcome;
+    /* Meaningful only when `outcome` is COMMITTED; all-zero while CLAIMED. */
+    struct mvap_response resp;             /* the reply as first sent        */
+    uint8_t  action_receipt_id[32];        /* canonical receipt it commits to */
+};
+
+enum agent_idem_verdict {
+    AGENT_IDEM_FRESH = 0,   /* nothing is remembered under this request_id   */
+    AGENT_IDEM_REPLAY,      /* same id, same digest, and it COMMITTED        */
+    AGENT_IDEM_CLAIMED,     /* same id, same digest, nothing cached          */
+    AGENT_IDEM_CONFLICT,    /* same id, DIFFERENT digest                     */
+};
+
+/* Ask the ring about `request_id` under `digest`. On REPLAY or CLAIMED
+ * `*slot_out` (when non-NULL) receives the remembered slot; otherwise it is set
+ * to NULL. Pure: it records nothing. */
+enum agent_idem_verdict agent_broker_idem_lookup(
+    const struct agent_broker_session *s, uint32_t request_id,
+    const uint8_t digest[32], const struct agent_idem_slot **slot_out);
+
+/* Bind `request_id` to this request and cache NOTHING. Idempotent: claiming an
+ * id already claimed by the same digest changes nothing. */
+void agent_broker_idem_claim(struct agent_broker_session *s,
+                             uint32_t request_id, const uint8_t digest[32]);
+
+/* Upgrade a claim to a committed mutation, with the response an identical
+ * repeat will replay. `action_receipt_id` may be NULL, which stores all-zero —
+ * the honest answer when the seam minted no canonical receipt. */
+void agent_broker_idem_commit(struct agent_broker_session *s,
+                              uint32_t request_id, const uint8_t digest[32],
+                              const struct mvap_response *resp,
+                              const uint8_t action_receipt_id[32]);
+
+/* Label a replayed response IN PLACE: `"replayed":true` becomes the first
+ * member of the returned JSON object, ahead of the original answer verbatim.
+ * An agent that cannot tell a replay from a first execution will count one
+ * event twice, so the label is part of the reply and not a broker-side note. */
+void agent_broker_idem_label_replay(struct mvap_response *resp);
+
+/* ── the broker session ─────────────────────────────────────────────────── */
 
 /* One served connection.
  *
@@ -530,8 +635,20 @@ void agent_broker_fixture_get_grant(struct agent_grant *out);
  * expiry change, or budget change lands on the very next request of a session
  * that is already running.
  *
- * The idempotency ring makes a replayed request_id return the FIRST outcome
- * instead of committing twice. */
+ * THE IDEMPOTENCY RING CACHES MUTATIONS AND NOTHING ELSE. A QUERY is a read of
+ * live authority and live property state, so a cached query answer is stale by
+ * definition: replaying one after a revoke, or after the property moved, would
+ * return an answer the authority would no longer give. A query's ANSWER
+ * therefore never enters the ring and no query is ever served from it — every
+ * query is re-executed, which is the only way a revoked grant stops answering
+ * reads. A query's NAME does enter it, so that an id pointed at a second,
+ * different question is refused rather than answered about the first.
+ *
+ * `requests_served` counts every request; `receipts_written` counts audit rows
+ * for work the broker actually did; `replays_served` counts requests answered
+ * from the ring, which performed no work and therefore mint no receipt (their
+ * audit row is a labelled REPLAY row, not a receipt); `idempotency_conflicts`
+ * counts ids pointed at a second, different request. */
 struct agent_broker_session {
     const struct agent_authority_ref *authority;
     struct agent_peer_expectation expect;
@@ -544,12 +661,10 @@ struct agent_broker_session {
     uint64_t requests_served;
     uint64_t requests_denied;
     uint64_t receipts_written;
+    uint64_t replays_served;
+    uint64_t idempotency_conflicts;
 
-    struct {
-        uint32_t request_id;
-        bool     used;
-        struct mvap_response resp;
-    } idem[AGENT_IDEMPOTENCY_SLOTS];
+    struct agent_idem_slot idem[AGENT_IDEMPOTENCY_SLOTS];
 };
 
 /* Handle exactly ONE request frame already read off the wire. Returns the

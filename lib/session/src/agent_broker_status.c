@@ -103,6 +103,14 @@ void agent_broker_write_status(const char *dir,
                            (int64_t)s->requests_denied);
     (void)json_push_kv_int(&doc, "receipts_written",
                            (int64_t)s->receipts_written);
+    /* Separate from `receipts_written` on purpose: a replay is a request the
+     * broker answered from its idempotency ring, having executed nothing, so
+     * counting it as a receipt would overstate the work done. A conflict is an
+     * id the agent pointed at a second, different request. */
+    (void)json_push_kv_int(&doc, "replays_served",
+                           (int64_t)s->replays_served);
+    (void)json_push_kv_int(&doc, "idempotency_conflicts",
+                           (int64_t)s->idempotency_conflicts);
     (void)json_push_kv_int(&doc, "peer_pid", (int64_t)s->peer.pid);
     (void)json_push_kv_int(&doc, "peer_uid", (int64_t)s->peer.uid);
     (void)json_push_kv_int(&doc, "peer_gid", (int64_t)s->peer.gid);

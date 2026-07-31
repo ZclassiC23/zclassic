@@ -161,6 +161,7 @@ const char *mvap_status_name(int32_t status)
                                         return "ACTION_EXECUTOR_UNAVAILABLE";
     case MVAP_ERR_QUERY_UNAVAILABLE:    return "QUERY_UNAVAILABLE";
     case MVAP_ERR_AUTHORITY_CHANGED:    return "AUTHORITY_CHANGED";
+    case MVAP_ERR_REQUEST_ID_REUSED:    return "REQUEST_ID_REUSED";
     default:                            return "unknown";
     }
 }

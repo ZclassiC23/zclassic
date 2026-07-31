@@ -205,6 +205,7 @@ int test_dev_platform(void);
 int test_command_registry_catalog(void);
 int test_metaverse_agent_broker(void);
 int test_metaverse_broker_authority(void);
+int test_metaverse_broker_idempotency(void);
 int test_status_readiness_truth(void);
 int test_native_api_contract(void);
 int test_metric_alerts(void);

@@ -149,6 +149,14 @@ enum mvap_status {
      * and the retry saw it move again. Not a denial and not an approval: the
      * broker declines to answer from a state it cannot prove was coherent. */
     MVAP_ERR_AUTHORITY_CHANGED     = -22,
+    /* This request_id already names a DIFFERENT request. The idempotency key
+     * is the agent's promise that a repeat is the same ask; a repeat that
+     * changed the property, the kind, the value, the parameter, the verb, the
+     * protocol version, or the authority is a different ask wearing an old
+     * name. Answering it from the ring would hand one property's answer to a
+     * question about another, so it is refused and the first request's record
+     * is left exactly as it was. */
+    MVAP_ERR_REQUEST_ID_REUSED     = -23,
 };
 
 /* One request. `param` is NUL-terminated after decode and always passes
