@@ -296,6 +296,7 @@ static struct zcl_command_spec g_specs[] = {
 #include "commands/accounts.def"
 #include "commands/vault.def"
 #include "commands/zcode.def"
+#include "commands/metaverse.def"
 };
 
 #define SPEC_COUNT (sizeof(g_specs) / sizeof(g_specs[0]))

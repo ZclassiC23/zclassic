@@ -38,6 +38,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "platform/time_compat.h"
+#include "session/agent_broker.h"
 #include "test/test_helpers.h"
 #include "test/testcache.h"
 #include "event/event.h"
@@ -114,6 +115,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(hotswap_module_v2) X(dev_platform) \
     X(dev_activation) \
     X(command_registry_catalog) \
+    X(metaverse_agent_broker) \
     X(status_readiness_truth) \
     X(native_api_contract) \
     X(principal_authz) X(auth_login) X(command_authority) \
@@ -825,6 +827,16 @@ static void write_test_timing_json(const struct group_result *results,
 
 int main(int argc, char **argv)
 {
+    /* The confined-agent boundary re-execs THIS binary as the untrusted child
+     * (session/agent_broker.h). It is dispatched before any test setup for the
+     * same reason main.c dispatches it before node boot: the child arrives
+     * already sandboxed, under a seccomp allow-list that would kill it for
+     * most of what suite setup does. Never reached by an ordinary run. */
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--metaverse-agent-confined") == 0)
+            return agent_confined_mode_main(argc, argv);
+    }
+
     int jobs = get_nproc();
     int timeout_secs = 300; /* per-group; generous so slow groups like
                              * test_merkle_tree (~110s standalone) don't

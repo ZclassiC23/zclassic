@@ -1,0 +1,292 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * The typed agent-broker wire codec. See session/agent_broker_proto.h for the
+ * contract; the only thing worth restating here is why every field is written
+ * through base/serialize_le.h instead of memcpy'ing the struct: the struct has
+ * padding and host endianness, the wire has neither, and a broker that trusts a
+ * peer's struct layout is trusting the peer.
+ */
+
+#include "session/agent_broker_proto.h"
+
+#include "base/log_macros.h"
+#include "base/serialize_le.h"
+
+#include <string.h>
+
+#define MVAP_TAG "agent.proto"
+
+/* ── validation ─────────────────────────────────────────────────────────── */
+
+bool mvap_param_is_safe(const char *s)
+{
+    if (!s)
+        return false;
+    size_t n = strnlen(s, MVAP_PARAM_MAX + 1);
+    if (n > MVAP_PARAM_MAX)
+        return false;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                  (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.';
+        if (!ok)
+            return false;
+        /* ".." can only be a traversal attempt: rejected even though '/' is
+         * already impossible, so the token stays safe if a future consumer
+         * ever joins it onto a directory. */
+        if (c == '.' && i + 1 < n && s[i + 1] == '.')
+            return false;
+    }
+    return true;
+}
+
+bool mvap_property_id_is_zero(const uint8_t id[MVAP_PROPERTY_ID_LEN])
+{
+    if (!id)
+        return true;
+    uint8_t acc = 0;
+    for (size_t i = 0; i < MVAP_PROPERTY_ID_LEN; i++)
+        acc |= id[i];
+    return acc == 0;
+}
+
+/* ── names ──────────────────────────────────────────────────────────────── */
+
+static const char *const k_verb_names[MVAP_VERB__COUNT] = {
+    "NONE", "INSPECT", "LIST", "HOST", "PUBLISH_REVISION", "UPDATE_POINTER",
+    "SELL", "BUY", "DELIVER", "LEASE", "TRANSFER", "ACCEPT_PAYMENT",
+    "DELEGATE", "REVOKE",
+};
+
+static const char *const k_kind_names[MVAP_KIND__COUNT] = {
+    "any", "content", "zcode", "name", "asset", "service", "endpoint",
+    "product", "contract",
+};
+
+const char *mvap_verb_name(uint32_t verb)
+{
+    if (verb >= MVAP_VERB__COUNT)
+        return "unknown";
+    return k_verb_names[verb];
+}
+
+const char *mvap_kind_name(uint16_t kind)
+{
+    if (kind >= MVAP_KIND__COUNT)
+        return "unknown";
+    return k_kind_names[kind];
+}
+
+static bool ieq(const char *a, const char *b)
+{
+    if (!a || !b)
+        return false;
+    for (;; a++, b++) {
+        unsigned char ca = (unsigned char)*a, cb = (unsigned char)*b;
+        if (ca >= 'A' && ca <= 'Z') ca = (unsigned char)(ca - 'A' + 'a');
+        if (cb >= 'A' && cb <= 'Z') cb = (unsigned char)(cb - 'A' + 'a');
+        if (ca != cb)
+            return false;
+        if (ca == 0)
+            return true;
+    }
+}
+
+uint32_t mvap_verb_from_name(const char *name)
+{
+    if (!name)
+        return MVAP_VERB_NONE;
+    for (uint32_t i = 1; i < MVAP_VERB__COUNT; i++)
+        if (ieq(name, k_verb_names[i]))
+            return i;
+    return MVAP_VERB_NONE;
+}
+
+uint16_t mvap_kind_from_name(const char *name)
+{
+    if (!name)
+        return MVAP_KIND_ANY;
+    for (uint16_t i = 1; i < MVAP_KIND__COUNT; i++)
+        if (ieq(name, k_kind_names[i]))
+            return i;
+    return MVAP_KIND_ANY;
+}
+
+const char *mvap_status_name(int32_t status)
+{
+    switch (status) {
+    case MVAP_OK:                       return "ok";
+    case MVAP_ERR_BAD_REQUEST:          return "BAD_REQUEST";
+    case MVAP_ERR_UNKNOWN_VERB:         return "UNKNOWN_VERB";
+    case MVAP_ERR_NOT_FOUND:            return "NOT_FOUND";
+    case MVAP_ERR_INTERNAL:             return "INTERNAL";
+    case MVAP_ERR_DENIED_NO_GRANT:      return "DENIED_NO_GRANT";
+    case MVAP_ERR_DENIED_REVOKED:       return "DENIED_REVOKED";
+    case MVAP_ERR_DENIED_EXPIRED:       return "DENIED_EXPIRED";
+    case MVAP_ERR_DENIED_ACTION:        return "DENIED_ACTION";
+    case MVAP_ERR_DENIED_PROPERTY:      return "DENIED_PROPERTY";
+    case MVAP_ERR_DENIED_KIND:          return "DENIED_KIND";
+    case MVAP_ERR_DENIED_VALUE:         return "DENIED_VALUE";
+    case MVAP_ERR_DENIED_BUDGET:        return "DENIED_BUDGET";
+    case MVAP_ERR_DENIED_RATE:          return "DENIED_RATE";
+    case MVAP_ERR_DENIED_COUNTERPARTY:  return "DENIED_COUNTERPARTY";
+    case MVAP_ERR_DENIED_DELEGATION:    return "DENIED_DELEGATION";
+    case MVAP_ERR_DENIED_PEER_IDENTITY: return "DENIED_PEER_IDENTITY";
+    case MVAP_ERR_PLAN_FAILED:          return "PLAN_FAILED";
+    case MVAP_ERR_COMMIT_FAILED:        return "COMMIT_FAILED";
+    case MVAP_ERR_REVISION_MOVED:       return "REVISION_MOVED";
+    default:                            return "unknown";
+    }
+}
+
+bool mvap_verb_is_mutation(uint32_t verb)
+{
+    return verb != MVAP_VERB_NONE && verb != MVAP_VERB_INSPECT &&
+           verb != MVAP_VERB_LIST && verb < MVAP_VERB__COUNT;
+}
+
+/* ── framing ────────────────────────────────────────────────────────────── */
+
+uint32_t mvap_frame_length(const uint8_t *in, size_t in_len)
+{
+    if (!in || in_len < MVAP_FRAME_PREFIX)
+        return 0;
+    uint32_t n = zcl_read_u32_le(in);
+    if (n == 0 || n > MVAP_MAX_FRAME)
+        return 0;
+    return n;
+}
+
+/* ── request codec ──────────────────────────────────────────────────────── */
+
+size_t mvap_request_encode(const struct mvap_request *req, uint8_t *out,
+                           size_t out_cap)
+{
+    if (!req || !out)
+        return 0;
+    if (req->verb == MVAP_VERB_NONE || req->verb >= MVAP_VERB__COUNT)
+        return 0;
+    if (req->kind >= MVAP_KIND__COUNT)
+        return 0;
+    if (!mvap_param_is_safe(req->param))
+        return 0;
+
+    size_t plen = strnlen(req->param, MVAP_PARAM_MAX);
+    size_t rec = MVAP_REQ_FIXED + plen;
+    if (rec > MVAP_MAX_FRAME || out_cap < MVAP_FRAME_PREFIX + rec)
+        return 0;
+
+    uint8_t *p = out + MVAP_FRAME_PREFIX;
+    zcl_write_u32_le(out, (uint32_t)rec);
+    zcl_write_u32_le(p + 0,  MVAP_MAGIC);
+    zcl_write_u16_le(p + 4,  (uint16_t)MVAP_VERSION);
+    zcl_write_u16_le(p + 6,  (uint16_t)req->verb);
+    zcl_write_u32_le(p + 8,  req->request_id);
+    zcl_write_u64_le(p + 12, req->value_zats);
+    memcpy(p + 20, req->property_id, MVAP_PROPERTY_ID_LEN);
+    zcl_write_u16_le(p + 52, req->kind);
+    zcl_write_u16_le(p + 54, (uint16_t)plen);
+    if (plen)
+        memcpy(p + MVAP_REQ_FIXED, req->param, plen);
+    return MVAP_FRAME_PREFIX + rec;
+}
+
+bool mvap_request_decode(const uint8_t *in, size_t in_len,
+                         struct mvap_request *out)
+{
+    if (!in || !out)
+        LOG_FAIL(MVAP_TAG, "null argument in=%p out=%p", (const void *)in,
+                 (void *)out);
+    if (in_len < MVAP_REQ_FIXED)
+        LOG_FAIL(MVAP_TAG, "short request record len=%zu need>=%d", in_len,
+                 MVAP_REQ_FIXED);
+    if (zcl_read_u32_le(in + 0) != MVAP_MAGIC)
+        LOG_FAIL(MVAP_TAG, "bad magic 0x%08x", zcl_read_u32_le(in + 0));
+    if (zcl_read_u16_le(in + 4) != (uint16_t)MVAP_VERSION)
+        LOG_FAIL(MVAP_TAG, "unsupported version %u", zcl_read_u16_le(in + 4));
+
+    uint16_t verb = zcl_read_u16_le(in + 6);
+    if (verb == MVAP_VERB_NONE || verb >= MVAP_VERB__COUNT)
+        LOG_FAIL(MVAP_TAG, "verb out of range %u", verb);
+    uint16_t kind = zcl_read_u16_le(in + 52);
+    if (kind >= MVAP_KIND__COUNT)
+        LOG_FAIL(MVAP_TAG, "kind out of range %u", kind);
+    uint16_t plen = zcl_read_u16_le(in + 54);
+    if (plen > MVAP_PARAM_MAX || (size_t)MVAP_REQ_FIXED + plen != in_len)
+        LOG_FAIL(MVAP_TAG, "param length %u inconsistent with record %zu",
+                 plen, in_len);
+
+    struct mvap_request r = { 0 };
+    r.verb       = verb;
+    r.request_id = zcl_read_u32_le(in + 8);
+    r.value_zats = zcl_read_u64_le(in + 12);
+    memcpy(r.property_id, in + 20, MVAP_PROPERTY_ID_LEN);
+    r.kind = kind;
+    if (plen)
+        memcpy(r.param, in + MVAP_REQ_FIXED, plen);
+    r.param[plen] = '\0';
+    if (!mvap_param_is_safe(r.param))
+        LOG_FAIL(MVAP_TAG, "param rejected by safe-token rule (verb=%s)",
+                 mvap_verb_name(verb));
+
+    *out = r;
+    return true;
+}
+
+/* ── response codec ─────────────────────────────────────────────────────── */
+
+size_t mvap_response_encode(const struct mvap_response *resp, uint8_t *out,
+                            size_t out_cap)
+{
+    if (!resp || !out)
+        return 0;
+    size_t blen = strnlen(resp->body, MVAP_BODY_MAX);
+    size_t rec = MVAP_RESP_FIXED + blen;
+    if (rec > MVAP_MAX_FRAME || out_cap < MVAP_FRAME_PREFIX + rec)
+        return 0;
+
+    uint8_t *p = out + MVAP_FRAME_PREFIX;
+    zcl_write_u32_le(out, (uint32_t)rec);
+    zcl_write_u32_le(p + 0, MVAP_MAGIC);
+    zcl_write_u16_le(p + 4, (uint16_t)MVAP_VERSION);
+    zcl_write_u16_le(p + 6, (uint16_t)resp->verb);
+    zcl_write_u32_le(p + 8, resp->request_id);
+    zcl_write_u32_le(p + 12, (uint32_t)resp->status);
+    memcpy(p + 16, resp->receipt_id, MVAP_RECEIPT_ID_LEN);
+    zcl_write_u16_le(p + 48, (uint16_t)blen);
+    if (blen)
+        memcpy(p + MVAP_RESP_FIXED, resp->body, blen);
+    return MVAP_FRAME_PREFIX + rec;
+}
+
+bool mvap_response_decode(const uint8_t *in, size_t in_len,
+                          struct mvap_response *out)
+{
+    if (!in || !out)
+        LOG_FAIL(MVAP_TAG, "null argument in=%p out=%p", (const void *)in,
+                 (void *)out);
+    if (in_len < MVAP_RESP_FIXED)
+        LOG_FAIL(MVAP_TAG, "short response record len=%zu need>=%d", in_len,
+                 MVAP_RESP_FIXED);
+    if (zcl_read_u32_le(in + 0) != MVAP_MAGIC)
+        LOG_FAIL(MVAP_TAG, "bad magic 0x%08x", zcl_read_u32_le(in + 0));
+    if (zcl_read_u16_le(in + 4) != (uint16_t)MVAP_VERSION)
+        LOG_FAIL(MVAP_TAG, "unsupported version %u", zcl_read_u16_le(in + 4));
+
+    uint16_t blen = zcl_read_u16_le(in + 48);
+    if (blen > MVAP_BODY_MAX || (size_t)MVAP_RESP_FIXED + blen != in_len)
+        LOG_FAIL(MVAP_TAG, "body length %u inconsistent with record %zu",
+                 blen, in_len);
+
+    struct mvap_response r = { 0 };
+    r.verb       = zcl_read_u16_le(in + 6);
+    r.request_id = zcl_read_u32_le(in + 8);
+    r.status     = (int32_t)zcl_read_u32_le(in + 12);
+    memcpy(r.receipt_id, in + 16, MVAP_RECEIPT_ID_LEN);
+    if (blen)
+        memcpy(r.body, in + MVAP_RESP_FIXED, blen);
+    r.body[blen] = '\0';
+
+    *out = r;
+    return true;
+}
