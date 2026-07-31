@@ -60,11 +60,13 @@ void agent_grant_allow_action(struct agent_grant *g, uint32_t verb)
         return;
     /* A query left the canonical action space, so it cannot occupy a canonical
      * action bit; it gets its own mask keyed by wire value. An action takes the
-     * canonical bit and nothing else — no `1u << verb`. */
-    if (row->verb_class == MVAP_VERB_CLASS_QUERY)
+     * canonical bit and nothing else — no `1u << verb`. The accessor refuses a
+     * query row outright, so the two masks cannot be filled from one another. */
+    enum metaverse_action action;
+    if (mvap_verb_row_action(row, &action))
+        g->actions_mask |= metaverse_action_bit(action);
+    else if (row->verb_class == MVAP_VERB_CLASS_QUERY)
         g->queries_mask |= (uint32_t)1u << verb;
-    else
-        g->actions_mask |= metaverse_action_bit(row->action);
 }
 
 void agent_grant_allow_kind(struct agent_grant *g, uint16_t kind)
@@ -299,8 +301,10 @@ static bool project_grant(const struct agent_grant *g,
         for (uint32_t w = 0; w < 32u; w++) {
             if ((g->queries_mask & ((uint32_t)1u << w)) == 0u)
                 continue;
-            enum metaverse_query q = metaverse_query_from_wire(w);
-            if (q != METAVERSE_QUERY_NONE)
+            /* Through the join, so a wire value that is not a QUERY verb
+             * contributes no read right however the mask came to hold it. */
+            enum metaverse_query q;
+            if (mvap_verb_to_query(w, &q) && q != METAVERSE_QUERY_NONE)
                 mg->queries |= (metaverse_query_set)q;
         }
     } else {
@@ -321,8 +325,14 @@ static bool project_grant(const struct agent_grant *g,
      * HOST would refuse it for naming nobody, which is not what an operator
      * writing "sell only to buyer-one" meant. Whether the action has one is
      * the canonical column, asked once here and once in the request
-     * projection, never decided locally. */
-    if (metaverse_action_uses_counterparty(row->action) &&
+     * projection, never decided locally.
+     *
+     * A QUERY names no counterparty at all, so the accessor refuses and the
+     * question is never asked. It used to be asked with the reserved INSPECT
+     * bit standing in for a query's "action". */
+    enum metaverse_action action;
+    if (mvap_verb_row_action(row, &action) &&
+        metaverse_action_uses_counterparty(action) &&
         !project_counterparties(g->counterparty_allowlist, mg))
         return false;
 
@@ -410,7 +420,9 @@ int32_t agent_grant_authorize(const struct agent_grant *g,
      * metaverse_grant_check_delegation() cannot be reached from here. What the
      * broker can still refuse is a DELEGATE attempted under a grant that
      * forbids delegating at all. */
-    if (row->action == METAVERSE_ACTION_DELEGATE &&
+    enum metaverse_action action;
+    if (mvap_verb_row_action(row, &action) &&
+        action == METAVERSE_ACTION_DELEGATE &&
         (!g->may_delegate || g->max_delegation_depth == 0))
         return MVAP_ERR_DENIED_DELEGATION;
 

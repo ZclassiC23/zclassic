@@ -18,6 +18,8 @@
  * Coverage, in the lane's numbering:
  *   B1  the canonical request digest: every field of the preimage changes it,
  *       and the two spellings of "the current protocol version" do not
+ *   B2  a slot is served only when its stored FIELDS are the same request, so
+ *       a digest collision is refused rather than answered
  *   T7  a request_id reused for another PROPERTY is refused by name
  *   T8  a request_id reused with a changed KIND, VALUE, PARAM, VERB or
  *       protocol version is refused; the byte-identical repeat is not
@@ -252,6 +254,131 @@ static int b1_digest_covers_every_field(void)
     mvap_request_digest(&base, "", dempty);
     BI_CHECK("B1: a null authority digests as the empty one",
              memcmp(dnull, dempty, 32) == 0);
+    return failures;
+}
+
+/* ── B2: a hit is confirmed against the FIELDS, not just the digest ─────────*/
+
+/* THE GUARANTEE THAT WAS BORROWED RATHER THAN ESTABLISHED. The ring used to
+ * decide "this is the same request" by comparing 32 digest bytes and nothing
+ * else, because the slot held nothing else. Finding a second request with the
+ * same SHA3-256 is not a practical attack — but "no two requests collide" was
+ * then a property of SHA3-256, not of this broker, and the cost of making it
+ * the broker's own is one comparison of fields it already had in hand.
+ *
+ * A real collision cannot be exhibited, so the test FORGES the state one would
+ * produce: a slot whose digest is the incoming request's and whose stored
+ * fields are a different request's. That is exactly what the ring would hold
+ * the instant after a collision, and it is the only honest way to reach the
+ * branch. The control case immediately after — same digest, same fields — is
+ * served as a replay, which is what proves the refusal is the field comparison
+ * talking and not the harness failing to reach the ring at all. */
+static int b2_a_collision_is_not_a_replay(void)
+{
+    int failures = 0;
+
+    /* No authority bound: the conflict check runs before authorization, so an
+     * unbound session reaches it, and every OTHER outcome of this pipeline is
+     * DENIED_NO_GRANT — which makes "was the forged answer served" a question
+     * with an unambiguous answer. */
+    struct agent_broker_session s;
+    memset(&s, 0, sizeof(s));
+
+    struct mvap_request a, b;
+    memset(&a, 0, sizeof(a));
+    a.verb       = MVAP_VERB_INSPECT;
+    a.request_id = 77;
+    a.kind       = MVAP_KIND_CONTENT;
+    a.version    = MVAP_VERSION;
+    memset(a.property_id, 0xAA, sizeof(a.property_id));
+    b = a;
+    memset(b.property_id, 0xBB, sizeof(b.property_id));
+
+    struct agent_idem_identity ida, idb;
+    uint8_t da[32], db[32];
+    mvap_request_identity(&a, "", &ida);
+    mvap_request_identity(&b, "", &idb);
+    mvap_identity_digest(&ida, da);
+    mvap_identity_digest(&idb, db);
+
+    BI_CHECK("B2: two different requests have two different identities",
+             !mvap_identity_equal(&ida, &idb) &&
+                 mvap_identity_equal(&ida, &ida));
+    BI_CHECK("B2: two different identities digest differently",
+             memcmp(da, db, 32) != 0);
+
+    /* The digest the wire path would compute for the same request must be the
+     * digest of the stored identity, or the two halves of the check are not
+     * describing one thing. */
+    uint8_t via_request[32];
+    mvap_request_digest(&a, "", via_request);
+    BI_CHECK("B2: mvap_request_digest is identity-then-digest, composed",
+             memcmp(via_request, da, 32) == 0);
+
+    /* FORGE THE COLLISION: request B's digest over request A's fields, in the
+     * slot request B's id would land in, marked COMMITTED with an answer no
+     * legitimate execution here could produce. */
+    struct agent_idem_slot *slot = &s.idem[b.request_id % AGENT_IDEMPOTENCY_SLOTS];
+    memset(slot, 0, sizeof(*slot));
+    slot->used       = true;
+    slot->request_id = b.request_id;
+    slot->identity   = ida;                 /* request A's fields   */
+    memcpy(slot->digest, db, 32);           /* request B's digest   */
+    slot->outcome    = AGENT_IDEM_OUTCOME_COMMITTED;
+    slot->resp.status     = MVAP_OK;
+    slot->resp.verb       = a.verb;
+    slot->resp.request_id = a.request_id;
+    snprintf(slot->resp.body, sizeof(slot->resp.body),
+             "{\"forged\":\"the answer to a DIFFERENT request\"}");
+
+    /* Seeded non-NULL on purpose: "the ring set it to NULL" is a claim, and a
+     * variable that started NULL cannot support it. */
+    const struct agent_idem_slot *hit = &s.idem[0];
+    enum agent_idem_verdict v =
+        agent_broker_idem_lookup(&s, &idb, db, &hit);
+    BI_CHECK("B2: a slot whose digest matches over other fields is a CONFLICT",
+             v == AGENT_IDEM_CONFLICT);
+    BI_CHECK("B2: and the ring hands back no slot to serve from", hit == NULL);
+
+    struct mvap_response resp;
+    memset(&resp, 0, sizeof(resp));
+    agent_broker_handle(&s, &b, &resp);
+    BI_CHECK("B2: end to end, the collision is refused as a reused id",
+             resp.status == MVAP_ERR_REQUEST_ID_REUSED);
+    BI_CHECK("B2: the forged answer never reaches the wire",
+             strstr(resp.body, "forged") == NULL);
+    BI_CHECK("B2: and the broker counts it as an idempotency conflict",
+             s.idempotency_conflicts == 1);
+
+    /* THE CONTROL. Same slot, same digest, but now the stored fields ARE the
+     * incoming request's. This must be served — otherwise the refusal above
+     * would prove only that the harness cannot reach the replay path. */
+    memset(&s, 0, sizeof(s));
+    slot = &s.idem[b.request_id % AGENT_IDEMPOTENCY_SLOTS];
+    slot->used       = true;
+    slot->request_id = b.request_id;
+    slot->identity   = idb;                 /* the SAME request now */
+    memcpy(slot->digest, db, 32);
+    slot->outcome    = AGENT_IDEM_OUTCOME_COMMITTED;
+    slot->resp.status     = MVAP_OK;
+    slot->resp.verb       = b.verb;
+    slot->resp.request_id = b.request_id;
+    snprintf(slot->resp.body, sizeof(slot->resp.body),
+             "{\"legitimate\":\"the answer to THIS request\"}");
+
+    hit = NULL;
+    v = agent_broker_idem_lookup(&s, &idb, db, &hit);
+    BI_CHECK("B2: control — matching fields and digest ARE a replay",
+             v == AGENT_IDEM_REPLAY && hit == slot);
+
+    struct mvap_response cresp;
+    memset(&cresp, 0, sizeof(cresp));
+    agent_broker_handle(&s, &b, &cresp);
+    BI_CHECK("B2: control — the legitimate replay is served and labelled",
+             cresp.status == MVAP_OK &&
+                 strstr(cresp.body, "legitimate") != NULL &&
+                 strstr(cresp.body, "\"replayed\":true") != NULL &&
+                 s.replays_served == 1);
     return failures;
 }
 
@@ -622,6 +749,7 @@ int test_metaverse_broker_idempotency(void)
     printf("=== metaverse_broker_idempotency: one id, one request ===\n");
 
     failures += b1_digest_covers_every_field();
+    failures += b2_a_collision_is_not_a_replay();
     failures += t7_reused_id_for_another_property();
     failures += t8_reused_id_with_any_changed_field();
     failures += t9_query_cannot_outlive_revocation();

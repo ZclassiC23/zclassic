@@ -31,6 +31,8 @@
  *   T11 no datadir or catalog work runs under the grant-store mutex
  *   T12 a mutation refuses by name and mints NO canonical receipt
  *   T13 the authority-generation recheck fires, retries once, then declines
+ *   T15 ENUMERATE_PROPERTIES is never served as INSPECT_PROPERTY, whether or
+ *       not the request names a property
  *
  * (T7-T9, the idempotency ring, belong to the second pass and are not here.
  * T14 is a pin on lib/test/src/test_metaverse_vocabulary.c, which this file
@@ -852,6 +854,168 @@ static int t12_mutation_refuses_and_mints_nothing(void)
     return failures;
 }
 
+/* ── T15 ────────────────────────────────────────────────────────────────────*/
+
+/* ENUMERATION IS NOT INSPECTION, AND THE PROPERTY ID DOES NOT DECIDE WHICH IS
+ * WHICH.
+ *
+ * The two reads used to arrive at the provider as the same value: the join
+ * table gave both query verbs the reserved INSPECT action bit, so by the time
+ * anything downstream looked, INSPECT_PROPERTY and ENUMERATE_PROPERTIES were
+ * indistinguishable. The refusal that was supposed to name enumeration
+ * unavailable therefore keyed on the only thing left — an absent property id —
+ * and an ENUMERATE that named a real property walked past it and was answered
+ * with that property's inspection.
+ *
+ * So the proof is a 2x2 and not one case: {INSPECT, ENUMERATE} x {no id, a
+ * real id}. Three of the four corners were already right; the fourth is the
+ * defect, and a test that only covered the corner that worked is how it
+ * survived. The grant below is KINDS-scoped and carries BOTH reads, so nothing
+ * here can be refused for scope or for a missing right — the only thing left
+ * that can refuse is which query was asked. */
+static int t15_enumeration_is_never_served_as_inspection(void)
+{
+    int failures = 0;
+
+    /* First, the vocabulary itself: the two reads must be two values, and
+     * neither may present an action bit to anyone. A join that answers "what
+     * action is this read" at all is a join that can answer it the same way
+     * twice, which is the whole defect one level down. */
+    enum metaverse_query qi = METAVERSE_QUERY_NONE, ql = METAVERSE_QUERY_NONE;
+    BA_CHECK("T15: INSPECT names the canonical INSPECT_PROPERTY",
+             mvap_verb_to_query(MVAP_VERB_INSPECT, &qi) &&
+                 qi == METAVERSE_QUERY_INSPECT_PROPERTY);
+    BA_CHECK("T15: LIST names the canonical ENUMERATE_PROPERTIES",
+             mvap_verb_to_query(MVAP_VERB_LIST, &ql) &&
+                 ql == METAVERSE_QUERY_ENUMERATE_PROPERTIES);
+    BA_CHECK("T15: the two reads are two different canonical values", qi != ql);
+
+    enum metaverse_action ai, al;
+    BA_CHECK("T15: neither read has an action bit to offer",
+             !mvap_verb_to_action(MVAP_VERB_INSPECT, &ai) &&
+                 !mvap_verb_to_action(MVAP_VERB_LIST, &al));
+    BA_CHECK("T15: the reserved INSPECT bit encodes to no wire verb",
+             mvap_verb_from_action(
+                 (enum metaverse_action)METAVERSE_ACTION_RESERVED_INSPECT) ==
+                 MVAP_VERB_NONE);
+
+    /* And no row anywhere carries the reserved bit as its action, so there is
+     * no verb at all whose dispatch could still depend on it. */
+    bool reserved_bit_is_on_no_row = true;
+    for (uint32_t w = 1; w < (uint32_t)MVAP_VERB__COUNT; w++) {
+        enum metaverse_action a;
+        if (mvap_verb_to_action(w, &a) &&
+            (uint32_t)a == METAVERSE_ACTION_RESERVED_INSPECT)
+            reserved_bit_is_on_no_row = false;
+    }
+    BA_CHECK("T15: no wire verb dispatches on the reserved INSPECT bit",
+             reserved_bit_is_on_no_row);
+
+    /* The decode step keeps them apart too: two verbs in, two canonical
+     * queries out, over identical requests. */
+    struct mvap_request probe_i, probe_l;
+    memset(&probe_i, 0, sizeof(probe_i));
+    probe_i.verb = MVAP_VERB_INSPECT;
+    probe_i.kind = MVAP_KIND_CONTENT;
+    for (size_t i = 0; i < MVAP_PROPERTY_ID_LEN; i++)
+        probe_i.property_id[i] = (uint8_t)(i + 3);
+    probe_l = probe_i;
+    probe_l.verb = MVAP_VERB_LIST;
+    struct metaverse_query_request qri, qrl;
+    BA_CHECK("T15: the query projection carries WHICH query, not one bit",
+             mvap_request_to_query_request(&probe_i, BA_HOLDER, 1, 1, &qri) &&
+                 mvap_request_to_query_request(&probe_l, BA_HOLDER, 1, 1,
+                                               &qrl) &&
+                 qri.query == METAVERSE_QUERY_INSPECT_PROPERTY &&
+                 qrl.query == METAVERSE_QUERY_ENUMERATE_PROPERTIES);
+
+    /* ── the 2x2, end to end through the real provider ── */
+    struct ba_fixture f;
+    if (!ba_make_property(&f, "t15")) {
+        BA_CHECK("T15: the real content fixture was created", false);
+        return failures;
+    }
+
+    struct metaverse_grant g;
+    memset(&g, 0, sizeof(g));
+    snprintf(g.holder, sizeof(g.holder), "%s", BA_HOLDER);
+    snprintf(g.issuer, sizeof(g.issuer), "w1d-operator");
+    g.scope_form = METAVERSE_SCOPE_KINDS;
+    g.kinds = metaverse_kind_bit(METAVERSE_KIND_CONTENT);
+    g.queries = METAVERSE_QUERY_ALL;      /* both reads, so scope cannot refuse */
+    g.max_value_zat = 100000000;
+    g.created_unix = g_now_unix;
+
+    property_grant_service_reset();
+    property_grant_service_configure(&(struct property_grant_env){
+        .clock = ba_clock });
+    BA_CHECK("T15: the both-reads grant mints",
+             property_grant_service_mint(&g) == PROPERTY_GRANT_OK);
+
+    agent_broker_provider_compose_explicit(f.dd, g.grant_id, NULL);
+    struct agent_broker_session s;
+    char why[192];
+    BA_CHECK("T15: the session binds to the both-reads grant",
+             ba_bind(&s, why, sizeof(why)));
+
+    static const struct {
+        const char *what;
+        uint32_t    verb;
+        bool        name_a_property;
+        int32_t     want;
+    } corners[4] = {
+        { "an INSPECT that names a property is SERVED",
+          MVAP_VERB_INSPECT, true,  MVAP_OK },
+        { "an INSPECT that names no property is a PROPERTY refusal",
+          MVAP_VERB_INSPECT, false, MVAP_ERR_DENIED_PROPERTY },
+        { "an ENUMERATE that names no property is refused by name",
+          MVAP_VERB_LIST,    false, MVAP_ERR_QUERY_UNAVAILABLE },
+        { "an ENUMERATE that names a REAL property is refused by the same name",
+          MVAP_VERB_LIST,    true,  MVAP_ERR_QUERY_UNAVAILABLE },
+    };
+
+    for (size_t i = 0; i < 4; i++) {
+        struct mvap_request req;
+        ba_req(&req, corners[i].verb,
+               corners[i].name_a_property ? &f : NULL, (uint32_t)(150 + i));
+        struct mvap_response resp;
+        agent_broker_handle(&s, &req, &resp);
+
+        char label[176];
+        snprintf(label, sizeof(label), "T15: %s", corners[i].what);
+        BA_CHECK(label, resp.status == corners[i].want);
+    }
+
+    /* The corner that was broken, said the other way round: the enumeration
+     * naming a real property must not come back carrying THAT PROPERTY'S
+     * inspection answer. Before the split it came back with exactly that —
+     * MVAP_OK, the catalog's kind, and the blob store's authority line. */
+    struct mvap_request enumerate_named;
+    ba_req(&enumerate_named, MVAP_VERB_LIST, &f, 160);
+    struct mvap_response eresp;
+    agent_broker_handle(&s, &enumerate_named, &eresp);
+    BA_CHECK("T15: the refused enumeration returns no inspection answer",
+             strstr(eresp.body, "authority=vcs.blob_store") == NULL &&
+                 strstr(eresp.body, "\"kind\":\"content\"") == NULL);
+    BA_CHECK("T15: and it names the refusal that actually applies",
+             strstr(eresp.body, "QUERY_UNAVAILABLE") != NULL);
+
+    /* The same session still serves the inspection of that very property, so
+     * the refusals above are about which query was asked and not about the
+     * session, the grant, or the property having become unreachable. */
+    struct mvap_request inspect_named;
+    ba_req(&inspect_named, MVAP_VERB_INSPECT, &f, 161);
+    struct mvap_response iresp;
+    agent_broker_handle(&s, &inspect_named, &iresp);
+    BA_CHECK("T15: the same property is still inspectable in the same session",
+             iresp.status == MVAP_OK &&
+                 strstr(iresp.body, "\"kind\":\"content\"") != NULL);
+
+    property_grant_service_reset();
+    test_rm_rf_recursive(f.dd);
+    return failures;
+}
+
 /* ── entry point ────────────────────────────────────────────────────────────*/
 
 int test_metaverse_broker_authority(void)
@@ -868,6 +1032,7 @@ int test_metaverse_broker_authority(void)
     failures += t11_no_catalog_work_under_the_lock();
     failures += t12_mutation_refuses_and_mints_nothing();
     failures += t13_authority_generation_recheck();
+    failures += t15_enumeration_is_never_served_as_inspection();
 
     property_grant_service_reset();
     property_grant_service_configure(NULL);

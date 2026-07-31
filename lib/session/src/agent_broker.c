@@ -473,15 +473,19 @@ void agent_broker_handle(struct agent_broker_session *s,
         return;
     }
 
-    /* THE REQUEST'S IDENTITY: the digest over every field that can change what
-     * it asks for, plus the authority it is asked under. Everything the ring
-     * does is a comparison of this value, never of the request_id alone. */
+    /* THE REQUEST'S IDENTITY: every field that can change what it asks for,
+     * plus the authority it is asked under — carried as fields, and hashed
+     * into the key the ring indexes by. Everything the ring does is a
+     * comparison of both, never of the request_id alone and never of the
+     * digest alone. */
+    struct agent_idem_identity ident;
+    mvap_request_identity(req, session_grant_id(s), &ident);
     uint8_t digest[32];
-    mvap_request_digest(req, session_grant_id(s), digest);
+    mvap_identity_digest(&ident, digest);
 
     const struct agent_idem_slot *slot = NULL;
     enum agent_idem_verdict remembered =
-        agent_broker_idem_lookup(s, req->request_id, digest, &slot);
+        agent_broker_idem_lookup(s, &ident, digest, &slot);
     if (remembered == AGENT_IDEM_CONFLICT) {
         /* The id already names a different request. The first request's record
          * is left exactly as it was — a second, unrelated ask must not be able
@@ -515,7 +519,7 @@ void agent_broker_handle(struct agent_broker_session *s,
      * The claim is taken HERE, before any authorization or catalog work, so
      * the id is bound to this request no matter which of the outcomes below it
      * reaches. Every refusal from this point simply returns. */
-    agent_broker_idem_claim(s, req->request_id, digest);
+    agent_broker_idem_claim(s, &ident, digest);
 
     int64_t now = clock_now_wall_ms();
     resp_init(out, req, MVAP_OK);
@@ -645,7 +649,7 @@ void agent_broker_handle(struct agent_broker_session *s,
      * committed: an identical repeat now replays this response and this
      * receipt and executes nothing. Stored with the canonical action receipt
      * it commits to, so the replay's audit row can name it too. */
-    agent_broker_idem_commit(s, req->request_id, digest, out,
+    agent_broker_idem_commit(s, &ident, digest, out,
                              outcome.action_receipt_id);
 }
 

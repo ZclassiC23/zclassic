@@ -290,10 +290,22 @@ static int32_t authorize_attempt(const struct broker_provider_ctx *c,
      * delegation check is unreachable from here. What IS checkable is whether
      * the live grant permits delegating at all. Read from the snapshot that
      * the recheck just validated, never from a session copy. */
-    if (row->action == METAVERSE_ACTION_DELEGATE &&
+    enum metaverse_action action;
+    if (mvap_verb_row_action(row, &action) &&
+        action == METAVERSE_ACTION_DELEGATE &&
         (!snap.grant.delegation_allowed ||
          snap.grant.max_delegation_depth == 0))
         return MVAP_ERR_DENIED_DELEGATION;
+
+    /* A verb that does not accept the all-zero "no specific property" id is
+     * refused by name, from the join table's own column. The session's
+     * confinement check (agent_broker_scope_check) says the same thing a step
+     * later; saying it here too means the provider's verdict is complete on its
+     * own, which is what a test that calls authorize() directly is entitled to.
+     * It can only refuse. */
+    if (mvap_property_id_is_zero(req->property_id) &&
+        !row->allows_zero_property_id)
+        return MVAP_ERR_DENIED_PROPERTY;
 
     /* ── CAPABILITY, checked LAST so an unauthorized request still reports the
      *    authorization refusal rather than an availability one.
@@ -311,9 +323,18 @@ static int32_t authorize_attempt(const struct broker_provider_ctx *c,
     /* ENUMERATE_PROPERTIES has no bounded result type on this seam. The wire's
      * only carrier would be agent_plan.detail, a 160-byte human string, and a
      * list truncated into a diagnostic field is a list an agent will act on
-     * wrongly. Named unavailable instead. */
-    if (row->action == METAVERSE_ACTION_INSPECT &&
-        mvap_property_id_is_zero(req->property_id))
+     * wrongly. Named unavailable instead.
+     *
+     * KEYED ON WHICH QUERY WAS ASKED, not on whether the request carried a
+     * property id. Those are different questions, and the second one used to
+     * stand in for the first: both query verbs projected onto the reserved
+     * INSPECT action bit, so this was the only distinguishing fact left, and it
+     * is the WRONG fact — an ENUMERATE naming a real property id sailed past
+     * and was served as though it were an INSPECT of that property. A request
+     * to list is never answered as a request to look. */
+    enum metaverse_query query;
+    if (mvap_verb_row_query(row, &query) &&
+        query == METAVERSE_QUERY_ENUMERATE_PROPERTIES)
         return MVAP_ERR_QUERY_UNAVAILABLE;
 
     return MVAP_OK;

@@ -19,9 +19,11 @@
  *
  * THE RULES NOW, in the order they matter:
  *
- *   - Identity is the DIGEST (mvap_request_digest), not the number. A repeat
- *     with any field changed is REQUEST_ID_REUSED, never another request's
- *     answer.
+ *   - Identity is the REQUEST, not the number: the digest is the key, and the
+ *     preimage FIELDS the slot also stores are what a hit is confirmed
+ *     against. A repeat with any field changed is REQUEST_ID_REUSED, never
+ *     another request's answer — and so is a repeat that merely hashes alike,
+ *     which is why the guarantee is this file's and not SHA3-256's.
  *   - A CLAIM binds an id to a request and caches nothing. Every dispatched
  *     request claims its id — every query, and every mutation until it
  *     commits. An identical repeat is re-executed against the live authority.
@@ -87,14 +89,19 @@ static size_t put_u64(uint8_t *p, uint64_t v)
     (IDEM_TAG_LEN + 4 + 4 + 4 + 2 + 8 + MVAP_PROPERTY_ID_LEN +                \
      2 + MVAP_PARAM_MAX + 2 + AGENT_GRANT_ID_MAX)
 
-void mvap_request_digest(const struct mvap_request *req,
-                         const char *authority_id, uint8_t out[32])
+/* THE ONE PLACE THAT DECIDES WHAT A REQUEST'S IDENTITY IS. Everything else —
+ * the digest, the ring's comparison — reads this struct, so there is no shape
+ * in which the bytes hashed and the fields compared can describe different
+ * things. */
+void mvap_request_identity(const struct mvap_request *req,
+                           const char *authority_id,
+                           struct agent_idem_identity *out)
 {
     if (!out)
         return;
-    memset(out, 0, 32);
+    memset(out, 0, sizeof(*out));
     if (!req) {
-        LOG_WARN(IDEM_TAG, "digest asked for a null request");
+        LOG_WARN(IDEM_TAG, "identity asked for a null request");
         return;
     }
 
@@ -104,25 +111,101 @@ void mvap_request_digest(const struct mvap_request *req,
 
     /* 0 means "the current version" everywhere else on this wire (see
      * `version` in struct mvap_request), so the two spellings of the same
-     * request must digest alike. */
-    uint32_t version = req->version ? req->version : (uint32_t)MVAP_VERSION;
+     * request must digest alike. Normalized HERE, once, so the stored identity
+     * and the digest cannot disagree about which version was asked. */
+    out->version    = req->version ? req->version : (uint32_t)MVAP_VERSION;
+    out->verb       = req->verb;
+    out->request_id = req->request_id;
+    out->kind       = req->kind;
+    out->value_zats = req->value_zats;
+    memcpy(out->property_id, req->property_id, MVAP_PROPERTY_ID_LEN);
+    out->param_len = (uint16_t)param_len;
+    memcpy(out->param, req->param, param_len);
+    out->authority_len = (uint16_t)auth_len;
+    memcpy(out->authority_id, auth, auth_len);
+}
+
+void mvap_identity_digest(const struct agent_idem_identity *id, uint8_t out[32])
+{
+    if (!out)
+        return;
+    memset(out, 0, 32);
+    if (!id) {
+        LOG_WARN(IDEM_TAG, "digest asked for a null identity");
+        return;
+    }
+
+    size_t param_len = id->param_len > MVAP_PARAM_MAX ? (size_t)MVAP_PARAM_MAX
+                                                      : (size_t)id->param_len;
+    size_t auth_len  = id->authority_len > AGENT_GRANT_ID_MAX
+                           ? (size_t)AGENT_GRANT_ID_MAX
+                           : (size_t)id->authority_len;
 
     uint8_t pre[IDEM_PREIMAGE_MAX];
     size_t n = 0;
     memcpy(pre + n, IDEM_TAG_TEXT, IDEM_TAG_LEN);       n += IDEM_TAG_LEN;
-    n += put_u32(pre + n, version);
-    n += put_u32(pre + n, req->verb);
-    n += put_u32(pre + n, req->request_id);
-    n += put_u16(pre + n, req->kind);
-    n += put_u64(pre + n, req->value_zats);
-    memcpy(pre + n, req->property_id, MVAP_PROPERTY_ID_LEN);
+    n += put_u32(pre + n, id->version);
+    n += put_u32(pre + n, id->verb);
+    n += put_u32(pre + n, id->request_id);
+    n += put_u16(pre + n, id->kind);
+    n += put_u64(pre + n, id->value_zats);
+    memcpy(pre + n, id->property_id, MVAP_PROPERTY_ID_LEN);
     n += MVAP_PROPERTY_ID_LEN;
     n += put_u16(pre + n, (uint16_t)param_len);
-    memcpy(pre + n, req->param, param_len);             n += param_len;
+    memcpy(pre + n, id->param, param_len);              n += param_len;
     n += put_u16(pre + n, (uint16_t)auth_len);
-    memcpy(pre + n, auth, auth_len);                    n += auth_len;
+    memcpy(pre + n, id->authority_id, auth_len);        n += auth_len;
 
     sha3_256(pre, n, out);
+}
+
+void mvap_request_digest(const struct mvap_request *req,
+                         const char *authority_id, uint8_t out[32])
+{
+    struct agent_idem_identity id;
+    mvap_request_identity(req, authority_id, &id);
+    mvap_identity_digest(&id, out);
+}
+
+/* Field by field, and the assertion below is what keeps that list complete.
+ * IDEM_IDENTITY_COVERED sums the size of exactly the members
+ * mvap_identity_equal() compares, so a member added to the struct and not to
+ * the comparison grows sizeof without growing the sum, and the build stops.
+ *
+ * HONEST LIMIT: 6 of the struct's 192 bytes are trailing alignment padding, so
+ * a field small enough to fit inside them would not move sizeof and would not
+ * be caught. That is the one case still on the reader; every other is a
+ * compile error rather than a silently uncompared field. */
+#define IDEM_IDENTITY_MEMBER(m_) sizeof(((struct agent_idem_identity *)0)->m_)
+#define IDEM_IDENTITY_COVERED                                                 \
+    (IDEM_IDENTITY_MEMBER(value_zats) + IDEM_IDENTITY_MEMBER(version) +       \
+     IDEM_IDENTITY_MEMBER(verb) + IDEM_IDENTITY_MEMBER(request_id) +          \
+     IDEM_IDENTITY_MEMBER(kind) + IDEM_IDENTITY_MEMBER(param_len) +           \
+     IDEM_IDENTITY_MEMBER(authority_len) +                                    \
+     IDEM_IDENTITY_MEMBER(property_id) + IDEM_IDENTITY_MEMBER(param) +        \
+     IDEM_IDENTITY_MEMBER(authority_id))
+
+_Static_assert(sizeof(struct agent_idem_identity) == IDEM_IDENTITY_COVERED + 6,
+               "agent_idem_identity changed shape: add the new field to "
+               "mvap_request_identity(), to the preimage in "
+               "mvap_identity_digest(), to mvap_identity_equal(), and to "
+               "IDEM_IDENTITY_COVERED above");
+
+bool mvap_identity_equal(const struct agent_idem_identity *a,
+                         const struct agent_idem_identity *b)
+{
+    if (!a || !b)
+        return false;
+    return a->value_zats    == b->value_zats &&
+           a->version       == b->version &&
+           a->verb          == b->verb &&
+           a->request_id    == b->request_id &&
+           a->kind          == b->kind &&
+           a->param_len     == b->param_len &&
+           a->authority_len == b->authority_len &&
+           memcmp(a->property_id, b->property_id, MVAP_PROPERTY_ID_LEN) == 0 &&
+           memcmp(a->param, b->param, MVAP_PARAM_MAX) == 0 &&
+           memcmp(a->authority_id, b->authority_id, AGENT_GRANT_ID_MAX) == 0;
 }
 
 /* ── the ring ───────────────────────────────────────────────────────────── */
@@ -131,20 +214,46 @@ void mvap_request_digest(const struct mvap_request *req,
  * always occupies one slot and can never appear twice. The scan is over the
  * whole array anyway: it costs 32 comparisons and removes any dependence on
  * the store and the lookup agreeing about the index arithmetic. */
+/* A slot is a HIT only when the digest matches AND the stored preimage fields
+ * are the same request. The two together are what make "the same request_id"
+ * mean "the same request" without borrowing the claim from SHA3-256: a digest
+ * that matched over different fields would be a collision, and a collision
+ * gets the same refusal as any other reuse of the id — it is not a replay,
+ * because it is not the same request. */
+static bool slot_is(const struct agent_idem_slot *slot,
+                    const struct agent_idem_identity *id,
+                    const uint8_t digest[32])
+{
+    return memcmp(slot->digest, digest, 32) == 0 &&
+           mvap_identity_equal(&slot->identity, id);
+}
+
+static void slot_bind(struct agent_idem_slot *slot,
+                      const struct agent_idem_identity *id,
+                      const uint8_t digest[32])
+{
+    memset(slot, 0, sizeof(*slot));
+    slot->used       = true;
+    slot->request_id = id->request_id;
+    slot->identity   = *id;
+    memcpy(slot->digest, digest, 32);
+}
+
 enum agent_idem_verdict agent_broker_idem_lookup(
-    const struct agent_broker_session *s, uint32_t request_id,
-    const uint8_t digest[32], const struct agent_idem_slot **slot_out)
+    const struct agent_broker_session *s,
+    const struct agent_idem_identity *id, const uint8_t digest[32],
+    const struct agent_idem_slot **slot_out)
 {
     if (slot_out)
         *slot_out = NULL;
-    if (!s || !digest)
+    if (!s || !id || !digest)
         return AGENT_IDEM_FRESH;
 
     for (size_t i = 0; i < AGENT_IDEMPOTENCY_SLOTS; i++) {
         const struct agent_idem_slot *slot = &s->idem[i];
-        if (!slot->used || slot->request_id != request_id)
+        if (!slot->used || slot->request_id != id->request_id)
             continue;
-        if (memcmp(slot->digest, digest, 32) != 0)
+        if (!slot_is(slot, id, digest))
             return AGENT_IDEM_CONFLICT;
         if (slot_out)
             *slot_out = slot;
@@ -156,38 +265,34 @@ enum agent_idem_verdict agent_broker_idem_lookup(
 }
 
 void agent_broker_idem_claim(struct agent_broker_session *s,
-                             uint32_t request_id, const uint8_t digest[32])
+                             const struct agent_idem_identity *id,
+                             const uint8_t digest[32])
 {
-    if (!s || !digest)
+    if (!s || !id || !digest)
         return;
     struct agent_idem_slot *slot =
-        &s->idem[request_id % AGENT_IDEMPOTENCY_SLOTS];
+        &s->idem[id->request_id % AGENT_IDEMPOTENCY_SLOTS];
     /* Re-claiming what is already committed would DISCARD the answer a replay
      * owes, so a claim never demotes a commit. */
-    if (slot->used && slot->request_id == request_id &&
+    if (slot->used && slot->request_id == id->request_id &&
         slot->outcome == AGENT_IDEM_OUTCOME_COMMITTED &&
-        memcmp(slot->digest, digest, 32) == 0)
+        slot_is(slot, id, digest))
         return;
-    memset(slot, 0, sizeof(*slot));
-    slot->used       = true;
-    slot->request_id = request_id;
-    memcpy(slot->digest, digest, 32);
+    slot_bind(slot, id, digest);
     slot->outcome = AGENT_IDEM_OUTCOME_CLAIMED;
 }
 
 void agent_broker_idem_commit(struct agent_broker_session *s,
-                              uint32_t request_id, const uint8_t digest[32],
+                              const struct agent_idem_identity *id,
+                              const uint8_t digest[32],
                               const struct mvap_response *resp,
                               const uint8_t action_receipt_id[32])
 {
-    if (!s || !digest || !resp)
+    if (!s || !id || !digest || !resp)
         return;
     struct agent_idem_slot *slot =
-        &s->idem[request_id % AGENT_IDEMPOTENCY_SLOTS];
-    memset(slot, 0, sizeof(*slot));
-    slot->used       = true;
-    slot->request_id = request_id;
-    memcpy(slot->digest, digest, 32);
+        &s->idem[id->request_id % AGENT_IDEMPOTENCY_SLOTS];
+    slot_bind(slot, id, digest);
     slot->outcome = AGENT_IDEM_OUTCOME_COMMITTED;
     slot->resp    = *resp;
     if (action_receipt_id)

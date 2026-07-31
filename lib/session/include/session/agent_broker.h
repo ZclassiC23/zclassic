@@ -555,9 +555,64 @@ void agent_broker_fixture_get_grant(struct agent_grant *out);
  *                                    replayed under a DIFFERENT authority is
  *                                    a different request
  *
- * `authority_id` may be NULL, which digests identically to "". */
+ * `authority_id` may be NULL, which digests identically to "".
+ *
+ * THE DIGEST IS A KEY, NOT THE PROOF. Two requests that hash alike must not be
+ * treated as one, so the ring stores the preimage FIELDS as well (struct
+ * agent_idem_identity below) and a hit is confirmed against them. That leaves
+ * the "same id, same request" guarantee resting on a comparison this code
+ * performs, rather than on SHA3-256 having no collisions. */
 void mvap_request_digest(const struct mvap_request *req,
                          const char *authority_id, uint8_t out[32]);
+
+/* THE PREIMAGE, AS FIELDS. Exactly the values listed above and nothing else —
+ * `param` and `authority_id` are stored with explicit lengths and WITHOUT a
+ * terminator, the same shape the preimage uses, so comparing two identities is
+ * comparing two preimages.
+ *
+ * WHY IT IS STORED. The ring used to hold the digest alone, so a hit was
+ * "these 32 bytes matched" and the entry was then served as a legitimate
+ * replay. Finding a second request with the same SHA3-256 is not a practical
+ * attack — but the guarantee was INHERITED from SHA3 rather than established
+ * here, and establishing it costs one comparison of fields the broker already
+ * had in hand. A slot is served only when the digest AND every field match; a
+ * digest that matches over different fields is a CONFLICT, which is the same
+ * refusal any other reuse of the id gets.
+ *
+ * The digest is computed FROM this struct (mvap_identity_digest), so the two
+ * cannot describe different things: there is no second place that decides what
+ * a request's identity is. */
+struct agent_idem_identity {
+    uint64_t value_zats;
+    uint32_t version;                 /* 0 normalized to MVAP_VERSION      */
+    uint32_t verb;
+    uint32_t request_id;
+    uint16_t kind;
+    uint16_t param_len;
+    uint16_t authority_len;
+    uint8_t  property_id[MVAP_PROPERTY_ID_LEN];
+    char     param[MVAP_PARAM_MAX];            /* not NUL-terminated       */
+    char     authority_id[AGENT_GRANT_ID_MAX]; /* not NUL-terminated       */
+};
+
+/* Project a request plus the authority it is asked under into its identity.
+ * `authority_id` may be NULL, which is the ungranted session and reads as "".
+ * Zeroes `*out` first, so the unused tail of each bounded string is fixed. */
+void mvap_request_identity(const struct mvap_request *req,
+                           const char *authority_id,
+                           struct agent_idem_identity *out);
+
+/* SHA3-256 over the preimage this identity IS. mvap_request_digest() is these
+ * two calls composed, which is why the digest can never cover a field the slot
+ * does not store. */
+void mvap_identity_digest(const struct agent_idem_identity *id,
+                          uint8_t out[32]);
+
+/* Field-by-field equality. Not a memcmp: a struct comparison would pass over
+ * padding and would keep passing when a field is added and forgotten. The
+ * sizeof assertion in agent_broker_idem.c makes that omission a build error. */
+bool mvap_identity_equal(const struct agent_idem_identity *a,
+                         const struct agent_idem_identity *b);
 
 /* A SLOT HOLDS A NAME; ONLY A COMMITTED MUTATION ALSO HOLDS AN ANSWER.
  *
@@ -585,6 +640,12 @@ struct agent_idem_slot {
     bool     used;
     uint32_t request_id;
     uint8_t  digest[32];
+    /* WHAT THE DIGEST WAS TAKEN OVER. A hit on `digest` is confirmed against
+     * this before anything is served, so a collision cannot present one
+     * request's answer as another's. `identity.request_id` is the same number
+     * as `request_id` above; the duplicate is deliberate, because the digest
+     * covers the id and the identity must reproduce the preimage exactly. */
+    struct agent_idem_identity identity;
     enum agent_idem_outcome outcome;
     /* Meaningful only when `outcome` is COMMITTED; all-zero while CLAIMED. */
     struct mvap_response resp;             /* the reply as first sent        */
@@ -598,23 +659,28 @@ enum agent_idem_verdict {
     AGENT_IDEM_CONFLICT,    /* same id, DIFFERENT digest                     */
 };
 
-/* Ask the ring about `request_id` under `digest`. On REPLAY or CLAIMED
- * `*slot_out` (when non-NULL) receives the remembered slot; otherwise it is set
- * to NULL. Pure: it records nothing. */
+/* Ask the ring about the request `id` names, under `digest`. A slot is a hit
+ * only when BOTH match; a slot whose digest matches over different fields is a
+ * CONFLICT, never a replay. On REPLAY or CLAIMED `*slot_out` (when non-NULL)
+ * receives the remembered slot; otherwise it is set to NULL. Pure: it records
+ * nothing. */
 enum agent_idem_verdict agent_broker_idem_lookup(
-    const struct agent_broker_session *s, uint32_t request_id,
-    const uint8_t digest[32], const struct agent_idem_slot **slot_out);
+    const struct agent_broker_session *s,
+    const struct agent_idem_identity *id, const uint8_t digest[32],
+    const struct agent_idem_slot **slot_out);
 
-/* Bind `request_id` to this request and cache NOTHING. Idempotent: claiming an
- * id already claimed by the same digest changes nothing. */
+/* Bind the request id to this request and cache NOTHING. Idempotent: claiming
+ * an id already claimed by the same request changes nothing. */
 void agent_broker_idem_claim(struct agent_broker_session *s,
-                             uint32_t request_id, const uint8_t digest[32]);
+                             const struct agent_idem_identity *id,
+                             const uint8_t digest[32]);
 
 /* Upgrade a claim to a committed mutation, with the response an identical
  * repeat will replay. `action_receipt_id` may be NULL, which stores all-zero —
  * the honest answer when the seam minted no canonical receipt. */
 void agent_broker_idem_commit(struct agent_broker_session *s,
-                              uint32_t request_id, const uint8_t digest[32],
+                              const struct agent_idem_identity *id,
+                              const uint8_t digest[32],
                               const struct mvap_response *resp,
                               const uint8_t action_receipt_id[32]);
 
