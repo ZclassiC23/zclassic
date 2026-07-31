@@ -307,6 +307,13 @@ bool metaverse_action_is_mutation(enum metaverse_action a)
 {
     const struct mv_action_row *r = action_row(a);
 
+    return r && r->changes_external_state;
+}
+
+bool metaverse_action_changes_state(enum metaverse_action a)
+{
+    const struct mv_action_row *r = action_row(a);
+
     return r && (r->changes_local_state || r->changes_external_state);
 }
 

@@ -175,7 +175,9 @@ typedef uint32_t metaverse_action_set;
 #define MV_ACT_FOLD_WIRE_OR(id_, bit_, name_, wire_, ...) | (1u << (wire_))
 #define MV_ACT_FOLD_WIRE_SUM(id_, bit_, name_, wire_, ...) + (1u << (wire_))
 #define MV_ACT_FOLD_NAMELEN(id_, bit_, name_, ...) + sizeof(name_)
-#define MV_ACT_FOLD_MUTATING(id_, bit_, name_, wire_, lo_, ex_, ...)         \
+#define MV_ACT_FOLD_EXTERNAL(id_, bit_, name_, wire_, lo_, ex_, ...)         \
+    | ((ex_) ? (bit_) : 0u)
+#define MV_ACT_FOLD_CHANGES(id_, bit_, name_, wire_, lo_, ex_, ...)          \
     | (((lo_) || (ex_)) ? (bit_) : 0u)
 #define MV_ACT_FOLD_ROWS(...) +1
 
@@ -191,9 +193,23 @@ enum {
     /* Number of rows in the table. */
     METAVERSE_ACTION_COUNT = (0 METAVERSE_ACTION_TABLE(MV_ACT_FOLD_ROWS)),
 
-    /* Every action that changes state. Derived, not listed: an action that
-     * changed nothing would not be an action. */
-    METAVERSE_ACTION_MUTATING = (0 METAVERSE_ACTION_TABLE(MV_ACT_FOLD_MUTATING)),
+    /* The subset that mutates something OUTSIDE this node's own state —
+     * column 6, and the same set this mask has always named. HOST is the
+     * action that is deliberately absent: hosting is a local decision this
+     * node makes about its own storage, and nothing outside it changes.
+     *
+     * Note what this mask is NOT: it is not "the actions that need a
+     * receipt". Every action needs one, HOST included, because a change to
+     * local state is still a change an operator has to be able to audit.
+     * Ask column 13 (metaverse_action_requires_receipt) for that question;
+     * conflating the two is how HOST ended up described as harmless. */
+    METAVERSE_ACTION_MUTATING = (0 METAVERSE_ACTION_TABLE(MV_ACT_FOLD_EXTERNAL)),
+
+    /* Every action that changes SOMETHING, local or external. Equal to
+     * METAVERSE_ACTION_ALL by construction, and the assertion below is what
+     * keeps it that way. */
+    METAVERSE_ACTION_CHANGES_STATE =
+        (0 METAVERSE_ACTION_TABLE(MV_ACT_FOLD_CHANGES)),
 };
 
 /* Every action bit is exactly one bit. */
@@ -225,10 +241,11 @@ _Static_assert((METAVERSE_ACTION_ALL & METAVERSE_ACTION_RESERVED) == 0,
                "bit 0x1 is reserved (it was INSPECT); reissuing it would "
                "silently re-grant a right an operator revoked");
 
-/* Every action mutates, and therefore every action runs PLAN -> COMMIT and
- * mints a receipt. Stated as an assertion rather than a comment so that a
- * future row claiming otherwise has to argue with the compiler. */
-_Static_assert(METAVERSE_ACTION_MUTATING == METAVERSE_ACTION_ALL,
+/* Every action changes something, and therefore every action runs
+ * PLAN -> COMMIT and mints a receipt. Stated as an assertion rather than a
+ * comment so that a future row claiming otherwise has to argue with the
+ * compiler. This is the line between the two vocabularies. */
+_Static_assert(METAVERSE_ACTION_CHANGES_STATE == METAVERSE_ACTION_ALL,
                "an action that changes nothing is a query; move it to "
                "METAVERSE_QUERY_TABLE");
 
@@ -256,7 +273,8 @@ _Static_assert((0 METAVERSE_ACTION_TABLE(MV_ACT_FOLD_NAMELEN)) <=
 #undef MV_ACT_FOLD_WIRE_OR
 #undef MV_ACT_FOLD_WIRE_SUM
 #undef MV_ACT_FOLD_NAMELEN
-#undef MV_ACT_FOLD_MUTATING
+#undef MV_ACT_FOLD_EXTERNAL
+#undef MV_ACT_FOLD_CHANGES
 #undef MV_ACT_FOLD_ROWS
 #undef MV_QRY_FOLD_WIRE_OR
 #undef MV_QRY_FOLD_WIRE_SUM
@@ -347,9 +365,15 @@ bool metaverse_action_requires_receipt(enum metaverse_action a);
  * (VALUE_ON_FREE_ACTION). */
 bool metaverse_action_moves_value(enum metaverse_action a);
 
-/* True when the action changes state (column 5 or column 6). Every action
- * does; the predicate exists so a caller can ask rather than assume. */
+/* True when the action is in METAVERSE_ACTION_MUTATING — it changes state
+ * OUTSIDE this node (column 6). HOST is false here and still needs a
+ * receipt; ask metaverse_action_requires_receipt for that. */
 bool metaverse_action_is_mutation(enum metaverse_action a);
+
+/* True when the action changes anything at all, local or external. Every
+ * action does; the predicate exists so a caller can ask rather than assume,
+ * and so the line between actions and queries is askable at runtime. */
+bool metaverse_action_changes_state(enum metaverse_action a);
 
 /* ── Query predicates ────────────────────────────────────────────────────*/
 
