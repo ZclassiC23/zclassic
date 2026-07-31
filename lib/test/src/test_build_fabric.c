@@ -12,6 +12,10 @@
 #include "command/native_command.h"
 #include "controllers/api_controller.h"
 #include "json/json.h"
+#include "vcs/build_action.h"
+#include "vcs/build_artifact_manifest.h"
+#include "vcs/package_store.h"
+#include "crypto/sha3.h"
 
 #include <sqlite3.h>
 #include <stdio.h>
@@ -369,6 +373,80 @@ static int test_bf_runtime_dump(void)
     return failures;
 }
 
+static int test_bf_content_contracts(void)
+{
+    int failures = 0;
+    TEST("build_fabric: capsules, actions, and artifact chunks are content-bound") {
+        struct vcs_toolchain_capsule_v1 capsule = {0};
+        memset(capsule.compiler_driver_sha3, 1, 32);
+        memset(capsule.compiler_backend_sha3, 2, 32);
+        memset(capsule.assembler_sha3, 3, 32);
+        memset(capsule.sysroot_sha3, 4, 32);
+        memset(capsule.target_probes_sha3, 5, 32);
+        memset(capsule.abi_files_sha3, 6, 32);
+        (void)snprintf(capsule.target, sizeof(capsule.target), "%s",
+                       VCS_BUILD_TARGET_V1);
+        uint8_t capsule_a[32], capsule_b[32];
+        ASSERT(vcs_toolchain_capsule_v1_root(&capsule, capsule_a));
+        capsule.compiler_backend_sha3[0] ^= 1;
+        ASSERT(vcs_toolchain_capsule_v1_root(&capsule, capsule_b));
+        ASSERT(memcmp(capsule_a, capsule_b, 32) != 0);
+
+        struct vcs_build_action_v1 action = {0};
+        memset(action.source_sha256, 1, 32);
+        memset(action.source_cas_sha3, 2, 32);
+        memset(action.input_root_sha3, 3, 32);
+        memcpy(action.toolchain_capsule_sha3, capsule_b, 32);
+        memset(action.flags_sha3, 4, 32);
+        memset(action.environment_sha3, 5, 32);
+        (void)snprintf(action.target, sizeof(action.target), "%s",
+                       VCS_BUILD_TARGET_V1);
+        (void)snprintf(action.profile, sizeof(action.profile), "dev");
+        (void)snprintf(action.virtual_workdir,
+                       sizeof(action.virtual_workdir), "%s",
+                       VCS_BUILD_VIRTUAL_ROOT_V1);
+        (void)snprintf(action.declared_outputs,
+                       sizeof(action.declared_outputs), "%s",
+                       VCS_BUILD_OUTPUT_V1);
+        (void)snprintf(action.resource_policy,
+                       sizeof(action.resource_policy), "%s",
+                       VCS_BUILD_RESOURCE_POLICY_V1);
+        uint8_t action_a[32], action_b[32];
+        ASSERT(vcs_build_action_v1_root(&action, action_a));
+        action.environment_sha3[0] ^= 1;
+        ASSERT(vcs_build_action_v1_root(&action, action_b));
+        ASSERT(memcmp(action_a, action_b, 32) != 0);
+
+        const uint8_t chunks[2][3] = {{'a','b','c'}, {'d','e','f'}};
+        struct vcs_build_artifact_manifest_v1 manifest = {0}, parsed = {0};
+        memcpy(manifest.action_sha3, action_b, 32);
+        manifest.total_bytes = 6;
+        manifest.chunk_bytes = 3;
+        manifest.chunk_count = 2;
+        sha3_256(chunks[0], sizeof(chunks[0]), manifest.chunk_sha3[0]);
+        sha3_256(chunks[1], sizeof(chunks[1]), manifest.chunk_sha3[1]);
+        uint8_t root[32], wire[VCS_BUILD_ARTIFACT_WIRE_MAX];
+        size_t wire_len = 0;
+        ASSERT(vcs_build_artifact_manifest_v1_root(&manifest, root));
+        ASSERT(vcs_build_artifact_manifest_v1_serialize(
+            &manifest, wire, sizeof(wire), &wire_len));
+        ASSERT(vcs_build_artifact_manifest_v1_parse(wire, wire_len, &parsed));
+        ASSERT(vcs_build_artifact_manifest_v1_verify_chunk(
+            &parsed, 1, chunks[1], sizeof(chunks[1])));
+        uint8_t corrupt[3] = {'d','e','x'};
+        ASSERT(!vcs_build_artifact_manifest_v1_verify_chunk(
+            &parsed, 1, corrupt, sizeof(corrupt)));
+        manifest.total_bytes = VCS_BUILD_ARTIFACT_MAX_BYTES + 1;
+        ASSERT(!vcs_build_artifact_manifest_v1_valid(&manifest));
+        ASSERT_EQ(VCS_PACKAGE_STORE_MAX_PACKAGE_BYTES,
+                  UINT64_C(64) * 1024u * 1024u);
+        ASSERT(VCS_BUILD_ARTIFACT_MAX_BYTES >
+               VCS_PACKAGE_STORE_MAX_PACKAGE_BYTES);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_build_fabric(void)
 {
     int failures = 0;
@@ -378,6 +456,7 @@ int test_build_fabric(void)
     failures += test_bf_service();
     failures += test_bf_native();
     failures += test_bf_runtime_dump();
+    failures += test_bf_content_contracts();
     printf("=== build_fabric: %d failures ===\n", failures);
     return failures;
 }

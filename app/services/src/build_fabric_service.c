@@ -7,6 +7,7 @@
 #include "crypto/ed25519.h"
 #include "crypto/sha3.h"
 #include "util/log_macros.h"
+#include "vcs/build_action.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -46,24 +47,39 @@ struct zcl_result build_fabric_action_id(
 {
     if (!job || !action || !out_hex)
         return ZCL_ERR(-1, "action id requires a job, action, and output");
-    static const char domain[] = "zcl.build_action.v1";
-    struct sha3_256_ctx sha;
-    sha3_256_init(&sha);
-    sha3_256_write(&sha, (const unsigned char *)domain, sizeof(domain));
-    bf_sha_text(&sha, action->kind);
-    bf_sha_text(&sha, job->source_sha256);
-    bf_sha_text(&sha, job->source_cas_sha3);
-    bf_sha_text(&sha, action->input_root_sha3);
-    bf_sha_text(&sha, job->toolchain_sha3);
-    bf_sha_text(&sha, action->target);
-    bf_sha_text(&sha, job->profile);
-    bf_sha_text(&sha, action->flags_sha3);
-    bf_sha_text(&sha, action->environment_sha3);
-    bf_sha_text(&sha, action->virtual_workdir);
-    bf_sha_text(&sha, action->declared_outputs);
-    bf_sha_text(&sha, action->resource_policy);
-    bf_sha_i64(&sha, action->sequence);
-    bf_sha_finish(&sha, out_hex);
+    if (strcmp(action->kind, VCS_BUILD_ACTION_KIND_V1) != 0)
+        return ZCL_ERR(-1, "V1 supports only %s", VCS_BUILD_ACTION_KIND_V1);
+    struct vcs_build_action_v1 canonical = {0};
+    if (!zcl_hex_decode_lower(job->source_sha256, canonical.source_sha256, 32) ||
+        !zcl_hex_decode_lower(job->source_cas_sha3,
+                              canonical.source_cas_sha3, 32) ||
+        !zcl_hex_decode_lower(action->input_root_sha3,
+                              canonical.input_root_sha3, 32) ||
+        !zcl_hex_decode_lower(job->toolchain_sha3,
+                              canonical.toolchain_capsule_sha3, 32) ||
+        !zcl_hex_decode_lower(action->flags_sha3, canonical.flags_sha3, 32) ||
+        !zcl_hex_decode_lower(action->environment_sha3,
+                              canonical.environment_sha3, 32))
+        return ZCL_ERR(-1, "build action digests must be lowercase 64-hex");
+    (void)snprintf(canonical.target, sizeof(canonical.target), "%s",
+                   action->target);
+    (void)snprintf(canonical.profile, sizeof(canonical.profile), "%s",
+                   job->profile);
+    (void)snprintf(canonical.virtual_workdir,
+                   sizeof(canonical.virtual_workdir), "%s",
+                   action->virtual_workdir);
+    (void)snprintf(canonical.declared_outputs,
+                   sizeof(canonical.declared_outputs), "%s",
+                   action->declared_outputs);
+    (void)snprintf(canonical.resource_policy,
+                   sizeof(canonical.resource_policy), "%s",
+                   action->resource_policy);
+    canonical.sequence = (uint64_t)action->sequence;
+    uint8_t digest[32];
+    if (action->sequence < 0 ||
+        !vcs_build_action_v1_root(&canonical, digest))
+        return ZCL_ERR(-1, "build action violates the fixed V1 execution policy");
+    zcl_hex_encode(digest, sizeof(digest), out_hex);
     return ZCL_OK;
 }
 
