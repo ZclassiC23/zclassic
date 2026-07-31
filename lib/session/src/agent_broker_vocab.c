@@ -184,6 +184,46 @@ static const uint8_t k_catalog_wide_root[METAVERSE_ROOT_BYTES] = {
  * exists because a canonical id has no "unspecified" kind. */
 #define MVAP_PROJECTED_KIND_WHEN_UNSPECIFIED METAVERSE_KIND_CONTENT
 
+bool mvap_request_to_query_request(const struct mvap_request *req,
+                                   const char *actor, int64_t now_unix,
+                                   int64_t height,
+                                   struct metaverse_query_request *out)
+{
+    if (!req || !actor || !out)
+        LOG_FAIL(VOCAB_TAG, "null argument req=%p actor=%p out=%p",
+                 (const void *)req, (const void *)actor, (void *)out);
+
+    const struct mvap_verb_row *row = mvap_verb_row(req->verb);
+    if (!row)
+        LOG_FAIL(VOCAB_TAG, "verb %u names no row in the canonical join",
+                 req->verb);
+    if (row->verb_class != MVAP_VERB_CLASS_QUERY)
+        LOG_FAIL(VOCAB_TAG, "verb %u is not a query", req->verb);
+
+    /* Which query this wire verb IS comes from the canonical query table, not
+     * from a second mapping kept here. */
+    enum metaverse_query q = metaverse_query_from_wire(req->verb);
+    if (q == METAVERSE_QUERY_NONE)
+        LOG_FAIL(VOCAB_TAG, "query verb %u has no canonical query", req->verb);
+
+    memset(out, 0, sizeof(*out));
+    snprintf(out->actor, sizeof(out->actor), "%s", actor);
+    out->query = q;
+
+    enum metaverse_kind kind = mvap_kind_to_metaverse(req->kind);
+    out->property.kind =
+        metaverse_kind_valid(kind) ? kind
+                                   : MVAP_PROJECTED_KIND_WHEN_UNSPECIFIED;
+    if (mvap_property_id_is_zero(req->property_id))
+        memcpy(out->property.root, k_catalog_wide_root, METAVERSE_ROOT_BYTES);
+    else
+        memcpy(out->property.root, req->property_id, METAVERSE_ROOT_BYTES);
+
+    out->now_unix = now_unix;
+    out->height   = height;
+    return true;
+}
+
 bool mvap_request_to_action_request(const struct mvap_request *req,
                                     const char *actor, int64_t now_unix,
                                     int64_t height,
@@ -226,35 +266,6 @@ bool mvap_request_to_action_request(const struct mvap_request *req,
     return true;
 }
 
-/* ═════════════════════════════════════════════════════════════════════════
- *  PENDING LANE A — see the loud note in session/agent_broker_vocab.h.
- *
- *  This is the ONE fact the broker still states because lib/metaverse does not
- *  publish it yet. It is a column of contract §3's canonical action row, it
- *  belongs beside metaverse_action_moves_value() in
- *  metaverse/property_grant.h, and the values below are exactly the ones both
- *  sides already behaved as if they held — they change no outcome, they only
- *  move the statement into one place that is easy to delete.
- *
- *  DELETE THIS BLOCK the moment Lane A lands the canonical row.
- * ═════════════════════════════════════════════════════════════════════════ */
-#ifndef METAVERSE_ACTION_ROW_CANONICAL
-bool metaverse_action_uses_counterparty(enum metaverse_action action)
-{
-    switch (action) {
-    case METAVERSE_ACTION_BUY:
-    case METAVERSE_ACTION_SELL:
-    case METAVERSE_ACTION_DELIVER:
-    case METAVERSE_ACTION_LEASE:
-    case METAVERSE_ACTION_TRANSFER:
-    case METAVERSE_ACTION_ACCEPT_PAYMENT:
-    case METAVERSE_ACTION_DELEGATE:
-        return true;
-    default:
-        /* LIST (list-for-sale) advertises to nobody in particular, HOST /
-         * PUBLISH_REVISION / UPDATE_POINTER / REVOKE act on the operator's own
-         * property, and INSPECT is the reserved query bit. */
-        return false;
-    }
-}
-#endif
+/* The per-action "names a counterparty" fact is a column of the canonical
+ * action row and is answered by metaverse_action_uses_counterparty(). The
+ * broker states no second opinion about it. */

@@ -150,7 +150,7 @@ static bool fixture_commit(void *ctx, const struct mvap_request *req,
         LOG_FAIL(FIXTURE_TAG, "commit for a verb with no canonical action");
     switch (action) {
     case METAVERSE_ACTION_HOST:              g_fixture.hosted[idx] = true; break;
-    case METAVERSE_ACTION_LIST:              g_fixture.listed[idx] = true; break;
+    case METAVERSE_ACTION_LIST_FOR_SALE:     g_fixture.listed[idx] = true; break;
     case METAVERSE_ACTION_PUBLISH_REVISION:
     case METAVERSE_ACTION_UPDATE_POINTER:    g_fixture.revision[idx]++;    break;
     default:                                                               break;

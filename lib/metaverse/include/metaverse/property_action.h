@@ -194,9 +194,12 @@ enum {
     METAVERSE_ACTION_COUNT = (0 METAVERSE_ACTION_TABLE(MV_ACT_FOLD_ROWS)),
 
     /* The subset that mutates something OUTSIDE this node's own state —
-     * column 6, and the same set this mask has always named. HOST is the
-     * action that is deliberately absent: hosting is a local decision this
-     * node makes about its own storage, and nothing outside it changes.
+     * column 6, and the same set this mask has always named. Three actions
+     * are deliberately absent: HOST, DELEGATE and REVOKE. Hosting is a local
+     * decision this node makes about its own storage; delegating and revoking
+     * rewrite this node's own grant records. All three change real state —
+     * they are in METAVERSE_ACTION_CHANGES_STATE — but none reaches past this
+     * node, so ALL & ~MUTATING is HOST|DELEGATE|REVOKE, not HOST alone.
      *
      * Note what this mask is NOT: it is not "the actions that need a
      * receipt". Every action needs one, HOST included, because a change to

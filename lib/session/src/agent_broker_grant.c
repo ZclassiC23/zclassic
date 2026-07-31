@@ -230,16 +230,25 @@ static bool project_grant(const struct agent_grant *g,
     mg->scope_form = METAVERSE_SCOPE_KINDS;
     mg->kinds = all_real_kinds();
 
+    /* Read rights and act rights are two separate closed sets on a canonical
+     * grant, never one word. A query is ruled on by metaverse_grant_query_check
+     * against `queries`; an action by metaverse_grant_check against `actions`.
+     * Projecting a query onto the reserved INSPECT bit would not work even if
+     * it were tempting: that bit is not a member of METAVERSE_ACTION_ALL, so
+     * metaverse_grant_well_formed() rejects the whole record as MALFORMED. */
     if (row->verb_class == MVAP_VERB_CLASS_QUERY) {
-        /* Queries carry the RESERVED INSPECT bit, so the canonical evaluator
-         * rules on a query's liveness (revocation, expiry, holder) by the same
-         * path as everything else. Which query the grant allows is the
-         * queries_mask, keyed by wire value. */
-        mg->actions = (g->queries_mask & ((uint32_t)1u << row->wire))
-                          ? metaverse_action_bit(METAVERSE_ACTION_INSPECT)
-                          : 0u;
+        mg->actions = 0u;
+        mg->queries = 0u;
+        for (uint32_t w = 0; w < 32u; w++) {
+            if ((g->queries_mask & ((uint32_t)1u << w)) == 0u)
+                continue;
+            enum metaverse_query q = metaverse_query_from_wire(w);
+            if (q != METAVERSE_QUERY_NONE)
+                mg->queries |= (metaverse_query_set)q;
+        }
     } else {
         mg->actions = g->actions_mask;
+        mg->queries = 0u;
     }
 
     if (g->budget_zats > (uint64_t)INT64_MAX ||
@@ -294,18 +303,39 @@ int32_t agent_grant_authorize(const struct agent_grant *g,
         return MVAP_ERR_UNKNOWN_VERB;
 
     struct metaverse_grant mg;
-    struct metaverse_action_request mreq;
     if (!project_grant(g, row, &mg))
         return MVAP_ERR_INTERNAL;
-    if (!mvap_request_to_action_request(req, g->principal, now_ms, 0, &mreq))
-        return MVAP_ERR_BAD_REQUEST;
 
-    /* 1. THE CANONICAL VERDICT. Revocation, expiry, holder, whether the action
-     *    is granted, whether the counterparty is allowed, whether this action
+    /* 1. THE CANONICAL VERDICT. Revocation, expiry, holder, whether the
+     *    operation is granted, whether the counterparty is allowed, whether it
      *    may carry value at all, the cumulative budget, and the rate window —
-     *    all of it decided by the metaverse, none of it restated here. */
-    enum metaverse_grant_verdict verdict =
-        metaverse_grant_check(&mg, NULL, 0, &mreq);
+     *    all of it decided by the metaverse, none of it restated here.
+     *
+     *    A QUERY and an ACTION are two different questions and go to two
+     *    different canonical evaluators. Routing a query through the action
+     *    evaluator is not merely untidy: a query names no action, so the
+     *    action evaluator can only answer BAD_ARGS, and every read would be
+     *    refused. */
+    enum metaverse_grant_verdict verdict;
+    if (row->verb_class == MVAP_VERB_CLASS_QUERY) {
+        /* A query has no value column at all, so a canonical query request has
+         * nowhere to carry one and the evaluator can never see it. Refusing
+         * here is reading the canonical class, not inventing a local policy:
+         * silently dropping the amount would let a caller believe it had paid
+         * for a read. */
+        if (req->value_zats != 0)
+            return MVAP_ERR_BAD_REQUEST;
+        struct metaverse_query_request qreq;
+        if (!mvap_request_to_query_request(req, g->principal, now_ms, 0, &qreq))
+            return MVAP_ERR_BAD_REQUEST;
+        verdict = metaverse_grant_query_check(&mg, NULL, 0, &qreq);
+    } else {
+        struct metaverse_action_request mreq;
+        if (!mvap_request_to_action_request(req, g->principal, now_ms, 0,
+                                            &mreq))
+            return MVAP_ERR_BAD_REQUEST;
+        verdict = metaverse_grant_check(&mg, NULL, 0, &mreq);
+    }
     if (verdict != METAVERSE_GRANT_OK)
         return mvap_status_from_grant_verdict(verdict);
 

@@ -71,7 +71,7 @@
     X(ACCEPT_PAYMENT,      ACTION, ACCEPT_PAYMENT,    false)                  \
     X(DELEGATE,            ACTION, DELEGATE,          false)                  \
     X(REVOKE,              ACTION, REVOKE,            true)                   \
-    X(LIST_FOR_SALE,       ACTION, LIST,              false)
+    X(LIST_FOR_SALE,       ACTION, LIST_FOR_SALE,     false)
 
 enum mvap_verb_class {
     MVAP_VERB_CLASS_QUERY = 0,
@@ -136,28 +136,27 @@ int32_t mvap_status_from_grant_verdict(enum metaverse_grant_verdict verdict);
  *
  * Returns false only on a NULL argument, an unknown verb, or a value that
  * cannot be represented as the canonical signed zatoshi amount. */
+/* The QUERY half of the same projection, for a query-class verb. A query
+ * carries no value, names no counterparty and mints no receipt, so the
+ * canonical query request holds none of those fields; everything else — actor,
+ * property, and the caller-supplied facts — projects exactly as above.
+ *
+ * Returns false on a NULL argument, or a verb that is not a query. */
+bool mvap_request_to_query_request(const struct mvap_request *req,
+                                   const char *actor, int64_t now_unix,
+                                   int64_t height,
+                                   struct metaverse_query_request *out);
+
 bool mvap_request_to_action_request(const struct mvap_request *req,
                                     const char *actor, int64_t now_unix,
                                     int64_t height,
                                     struct metaverse_action_request *out);
 
-/* ═════════════════════════════════════════════════════════════════════════
- *  PENDING LANE A — the one canonical column that does not exist yet.
- * ═════════════════════════════════════════════════════════════════════════
- *
- * Contract §3 declares "uses counterparty" as a column of the canonical action
- * row. lib/metaverse does not publish it yet: metaverse_grant_check() applies
- * the grant's counterparty allowlist to EVERY action, so on its own it refuses
- * a HOST with no counterparty under a grant that names one, which is not what
- * either side means.
- *
- * This declaration is the seam, NOT the design. When Lane A lands the
- * canonical row it defines METAVERSE_ACTION_ROW_CANONICAL and supplies this
- * function; the fallback in agent_broker_vocab.c then compiles out and the
- * broker keeps calling the same name. Nothing else in this lane encodes a
- * per-action counterparty opinion. */
-#ifndef METAVERSE_ACTION_ROW_CANONICAL
-bool metaverse_action_uses_counterparty(enum metaverse_action action);
-#endif
+/* The "uses counterparty" question is answered by the canonical action row:
+ * metaverse_action_uses_counterparty(), declared in metaverse/property_action.h
+ * and reached through property_grant.h above. The broker holds no per-action
+ * counterparty opinion of its own, and metaverse_grant_check() already gates
+ * the grant's allowlist on that same predicate, so a HOST naming nobody is not
+ * refused under a grant that names buyers. */
 
 #endif /* ZCL_SESSION_AGENT_BROKER_VOCAB_H */

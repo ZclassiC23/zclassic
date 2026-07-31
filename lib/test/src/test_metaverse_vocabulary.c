@@ -83,6 +83,7 @@
 #include "metaverse/property_id.h"
 #include "session/agent_broker.h"
 #include "session/agent_broker_proto.h"
+#include "session/agent_broker_vocab.h"
 #include "util/util.h"
 
 #include <errno.h>
@@ -584,14 +585,16 @@ static bool seam_plan(void *ctx, const struct mvap_request *req,
 }
 
 static bool seam_commit(void *ctx, const struct mvap_request *req,
-                        const struct agent_plan *plan, char *body,
-                        size_t body_cap)
+                        const struct agent_plan *plan,
+                        struct agent_commit_outcome *out)
 {
     (void)ctx; (void)plan;
-    if (!req || !body) return false;
+    if (!req || !out) return false;
     g_seam.commits++;
-    snprintf(body, body_cap, "{\"committed\":\"%s\"}",
+    snprintf(out->body, sizeof(out->body), "{\"committed\":\"%s\"}",
              mvap_verb_name(req->verb));
+    /* A seam that mints no canonical receipt leaves the id zero rather than
+     * inventing one; the audit row then renders it as "none". */
     return true;
 }
 
@@ -1045,12 +1048,24 @@ static int check_no_bypass_of_the_evaluator(struct agent_audit_log *audit)
         case 0: memset(s.grant.grant_id, 0, sizeof(s.grant.grant_id)); break;
         case 1: s.grant.revoked = true; break;
         case 2: s.grant.expires_unix_ms = 10; break;
+        /* actions_mask is the CANONICAL metaverse_action_set, not a wire-keyed
+         * one, so the bit to clear is the canonical bit. Shifting by the wire
+         * value would clear a different action entirely (wire 4 would land on
+         * LIST_FOR_SALE's 0x10) and the verb under test would stay granted. */
         case 3: s.grant.actions_mask &=
-                    ~((uint32_t)1u << MVAP_VERB_PUBLISH_REVISION); break;
+                    ~(uint32_t)METAVERSE_ACTION_PUBLISH_REVISION; break;
         case 4: req.property_id[0] ^= 0xFFu; break;
         case 5: s.grant.kinds_mask = 0;
                 req.kind = MVAP_KIND_ZCODE; break;
+        /* The PER-ACTION ceiling, isolated. wide_grant() sets both ceilings to
+         * 1000, so a 5000 request breaks the cumulative budget too and the
+         * canonical evaluator — which runs first, by design — answers
+         * DENIED_BUDGET. That is a true answer to a different question. Lift
+         * the cumulative budget clear of the request so the only limit left to
+         * violate is max_value_zats, and this case tests the ceiling it
+         * names. DENIED_BUDGET has its own case above. */
         case 6: scoped_request(&req, MVAP_VERB_BUY, 5000, "");
+                s.grant.budget_zats = 1000000;
                 req.request_id = 4006u; break;
         case 7: scoped_request(&req, MVAP_VERB_BUY, 100, "not-on-the-list");
                 snprintf(s.grant.counterparty_allowlist,
@@ -1132,16 +1147,37 @@ static int check_no_bypass_of_the_evaluator(struct agent_audit_log *audit)
     /* And the mask arithmetic itself: allowing verb N must not allow verb M.
      * A shared or shifted bit here would hand out a right nobody granted. */
     {
+        /* A grant holds TWO sets: actions_mask is the canonical
+         * metaverse_action_set, queries_mask is keyed by wire value. Granting
+         * one wire verb must light exactly one bit in exactly one of them and
+         * nothing in the other — a shared or shifted bit would hand out a
+         * right nobody granted, and folding the two sets into one word would
+         * make "may read" and "may act" the same right. */
         bool one_verb_one_bit = true;
         for (uint32_t v = 1; v < (uint32_t)MVAP_VERB__COUNT; v++) {
             struct agent_grant g;
             memset(&g, 0, sizeof(g));
             snprintf(g.grant_id, sizeof(g.grant_id), "single-verb");
             agent_grant_allow_action(&g, v);
+
+            bool v_is_query = mvap_verb_is_query(v);
             for (uint32_t w = 1; w < (uint32_t)MVAP_VERB__COUNT; w++) {
-                bool allowed = (g.actions_mask & ((uint32_t)1u << w)) != 0;
-                if (allowed != (w == v)) one_verb_one_bit = false;
+                bool want = (w == v);
+                if (mvap_verb_is_query(w)) {
+                    bool allowed =
+                        (g.queries_mask & ((uint32_t)1u << w)) != 0;
+                    if (allowed != want) one_verb_one_bit = false;
+                } else {
+                    enum metaverse_action a;
+                    bool allowed =
+                        mvap_verb_to_action(w, &a) &&
+                        (g.actions_mask & (uint32_t)a) != 0;
+                    if (allowed != want) one_verb_one_bit = false;
+                }
             }
+            /* And the set it does NOT belong in stays completely empty. */
+            if (v_is_query ? (g.actions_mask != 0u) : (g.queries_mask != 0u))
+                one_verb_one_bit = false;
         }
         VC_CHECK("granting one verb grants exactly that verb",
                  one_verb_one_bit);
