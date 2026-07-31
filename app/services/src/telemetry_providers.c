@@ -1,9 +1,10 @@
+// one-result-type-ok:telemetry-fill-provider — see the block comment below.
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * The telemetry provider registry. Contract and rationale:
  * services/telemetry_providers.h.
  *
- * one-result-type-ok:telemetry-fill-provider — the adapters here have the
+ * The adapters here have the
  * frozen collector signature (bool over a typed snapshot) because that is what
  * the registry's function-pointer type is, and the registry exists precisely
  * so that eight collectors can be called through ONE type. A struct zcl_result

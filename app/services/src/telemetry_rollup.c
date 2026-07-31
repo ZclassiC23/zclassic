@@ -1,3 +1,13 @@
+// one-result-type-ok:telemetry-fill-provider — the sole export is a dumpstate
+// dumper, whose `bool <name>_dump_state_json(struct json_value *, const char *)`
+// signature is the diagnostics-registry ABI (CLAUDE.md "Adding state
+// introspection") and is what check_dumper_never_blocks.sh scans for by name; a
+// struct zcl_result return would make this dumper invisible to the very gate
+// that proves it never blocks. There is also nothing for a result to carry: a
+// domain this fold could not collect is reported IN the document as
+// collected:false with a static reason token and judged unknown, which is more
+// information than one per-call message, and the bool is reserved for a NULL
+// output.
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * The whole-node telemetry rollup. Contract and rationale:

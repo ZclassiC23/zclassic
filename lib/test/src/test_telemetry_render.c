@@ -488,12 +488,50 @@ static int check_reply_fitting_steps_down(void)
     return failures;
 }
 
+/* Mark every leaf of `s` present in `snap`, writing through the descriptor
+ * table rather than naming members. Used by the checks below so they assert
+ * "all of them" instead of a leaf count that a domain lane can change under
+ * them — an earlier form of check_present_renders_the_value filled one wallet
+ * leaf and asserted present == 1, and silently stopped testing completeness
+ * the day the wallet domain grew a second field. */
+static void fill_every_leaf(const struct telemetry_domain_schema *s, void *snap,
+                            int64_t value)
+{
+    for (size_t i = 0; i < s->leaf_count; i++) {
+        const struct telemetry_leaf *lf = &s->leaves[i];
+        struct telemetry_leaf_meta *m =
+            (struct telemetry_leaf_meta *)((unsigned char *)snap +
+                                           lf->meta_off);
+        unsigned char *v = (unsigned char *)snap + lf->value_off;
+        switch (lf->ctype) {
+        case TLC_I64: {
+            int64_t tmp = value;
+            memcpy(v, &tmp, sizeof tmp);
+            break;
+        }
+        case TLC_BOOL: {
+            bool tmp = true;
+            memcpy(v, &tmp, sizeof tmp);
+            break;
+        }
+        default:
+            /* Text and anything added later: presence is what these checks
+             * are about, and an empty string is a legitimate present value. */
+            break;
+        }
+        m->presence = TELEMETRY_PRESENT;
+        m->source = TELEMETRY_SRC_IN_PROCESS;
+        m->observed_unix = value;
+        m->age_ms = 0;
+        m->reason = NULL;
+    }
+}
+
 static int check_present_renders_the_value(void)
 {
     int failures = 0;
     struct wallet_snapshot snap = {0};
-    TELEMETRY_SET_I64(&snap, collected_unix, 1750000000,
-                      TELEMETRY_SRC_IN_PROCESS);
+    fill_every_leaf(&g_wallet_schema, &snap, 1750000000);
 
     struct json_value out;
     json_init(&out);
@@ -502,12 +540,13 @@ static int check_present_renders_the_value(void)
     TR_CHECK("[render] the value survives the round trip",
              json_get_int(dig3(&out, "values", "meta", "collected_unix")) ==
              1750000000);
+    /* Compared against the schema's own leaf count, so this stays a real
+     * assertion whatever size the domain grows to. */
     TR_CHECK("[render] a fully-filled snapshot is complete and defect-free",
              json_get_bool(dig2(&out, "completeness", "complete")) &&
              !json_get_bool(dig2(&out, "completeness", "provider_defect")) &&
-             json_get_int(dig2(&out, "completeness", "present")) == 1);
-    TR_CHECK("[render] a filled descriptive domain is ok",
-             json_get_bool(dig2(&out, "_health", "ok")));
+             json_get_int(dig2(&out, "completeness", "present")) ==
+                 (int64_t)g_wallet_schema.leaf_count);
     TR_CHECK("[render] FULL reports provenance for a present leaf too",
              dig2(&out, "leaves", "values.meta.collected_unix") != NULL);
     const struct json_value *src =
@@ -524,6 +563,39 @@ static int check_present_renders_the_value(void)
              ok && dig2(&out, "leaves", "values.meta.collected_unix") == NULL &&
              json_get(&out, "leaves") != NULL);
     json_free(&out);
+
+    /* A fully-present snapshot must never be judged UNKNOWN for completeness
+     * reasons, in ANY domain. This is the property the single-domain check
+     * above used to stand in for; asserted across the registry it cannot go
+     * stale when one domain grows. A domain may still be degraded or unhealthy
+     * on the VALUES — that is the evaluator doing its job — but "we could not
+     * read it" must be gone. */
+    size_t unknown_though_filled = 0, defect_though_filled = 0;
+    for (size_t d = 0; d < telemetry_domain_count(); d++) {
+        const struct telemetry_domain_schema *s = telemetry_domain_at(d);
+        if (s->snapshot_size > sizeof g_scratch.bytes)
+            continue;
+        memset(&g_scratch, 0, sizeof g_scratch);
+        fill_every_leaf(s, g_scratch.bytes, 1750000000);
+        struct json_value dv;
+        json_init(&dv);
+        if (telemetry_render(s, g_scratch.bytes, TLV_FULL, NULL, &dv)) {
+            if (json_get_bool(dig2(&dv, "completeness", "provider_defect")))
+                defect_though_filled++;
+            const char *st = json_get_str(dig2(&dv, "health", "state"));
+            /* tr_fake-style domains with no ontology rows legitimately report
+             * unknown; a registered domain has rules, so unknown after a full
+             * fill means a leaf the evaluator could not read. */
+            if (st && strcmp(st, "unknown") == 0 &&
+                json_get_int(dig2(&dv, "completeness", "unset")) > 0)
+                unknown_though_filled++;
+        }
+        json_free(&dv);
+    }
+    TR_CHECK("[render] a fully-filled snapshot reports no provider defect, in "
+             "any registered domain", defect_though_filled == 0);
+    TR_CHECK("[render] no registered domain is still counting unset leaves "
+             "after every leaf was filled", unknown_though_filled == 0);
     return failures;
 }
 

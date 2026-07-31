@@ -702,7 +702,11 @@ int test_telemetry_agents(void)
     SetDataDir(dir);
     ClearDataDirCache();
 
-    g_now = (int64_t)time(NULL);
+    /* The clock the layer under test uses, not a raw one: the fixture ages
+     * are compared against timestamps the collector stamps with this same
+     * accessor, so drawing them from a different source would make the
+     * freshness assertions depend on which clock ran first. */
+    g_now = telemetry_now_unix();
     node_rpc_client_set_test_hook(ta_hook);
 
     failures += check_every_leaf_has_meaning();

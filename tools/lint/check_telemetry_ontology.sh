@@ -161,8 +161,17 @@ ST_EOF
     st_expect "5 table declares a different domain" 1 "TABLE MISMATCH"
 
     # 6 — shrink-only floor: a domain that lost fields.
-    printf 'TABLE runtime lib/util/include/util/telemetry/runtime_fields.def 5\n' \
-        > "$st_tmp/extra6.txt"
+    #
+    # BOTH ends are pinned: the table is a throwaway with a KNOWN one leaf and
+    # the floor is 2. An earlier form pointed the row at the real
+    # runtime_fields.def with a floor of 5 and so depended on that table having
+    # fewer than 5 leaves; the day the runtime domain shipped its real fields
+    # the floor was satisfied, the case stopped tripping, and a green selftest
+    # stopped proving the shrink-only floor works. Same defect as cases 11/12
+    # below, same fix: a selftest must not depend on the state of the tree it
+    # is guarding.
+    st_table "$st_tmp/one_leaf.def" runtime meta collected_unix
+    printf 'TABLE runtime %s 2\n' "$st_tmp/one_leaf.def" > "$st_tmp/extra6.txt"
     st_run "ZCL_TELEMETRY_SCAN_EXTRA_MANIFEST=$st_tmp/extra6.txt"
     st_expect "6 leaf count below the shrink-only floor" 1 "TABLE FLOOR BREACHED"
 

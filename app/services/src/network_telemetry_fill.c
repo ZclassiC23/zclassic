@@ -1,3 +1,11 @@
+// one-result-type-ok:telemetry-fill-provider — a telemetry provider's failure
+// reason does not travel in its return value, it travels in the SNAPSHOT: each
+// leaf carries its own presence plus a static reason token, which is strictly
+// more information than one struct zcl_result per call could hold. The bool is
+// reserved for the one thing that is not a per-leaf fact — a NULL snapshot —
+// and the signature is fixed by the frozen render contract
+// (util/telemetry_render.h) and by the `*_dump_state_fill` shape
+// check_dumper_never_blocks.sh scans for by name.
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * The `network` telemetry provider. Contract and scope: the header.
@@ -22,7 +30,18 @@
 
 #include "services/network_telemetry.h"
 
-#include "controllers/network_controller.h"
+/* An upward include, deliberately.
+ * rpc_net_get_connman() is the ONLY published way to reach the live connman,
+ * and it is declared in the controllers layer because that is where the setter
+ * that installs it lives. This provider reads it and nothing else from there.
+ * The alternatives are worse: duplicating the accessor would clone the pointer
+ * this whole telemetry effort exists to stop cloning, and adding a second
+ * registration seam for one read would leave two places that can disagree
+ * about which connman is current. Moving the accessor down into models/ or
+ * lib/ is the real fix and belongs with the network layer's own ownership
+ * work, not with a telemetry provider. */
+#include "controllers/network_controller.h" // shape-layer-ok:telemetry-connman-accessor
+
 #include "net/connman.h"
 #include "net/net.h"
 #include "net/peer_lifecycle.h"
