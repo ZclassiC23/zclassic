@@ -3,7 +3,7 @@
  * The `agents` telemetry collector. Contract, data sources and the reason it
  * returns void: services/agents_telemetry.h.
  *
- * one-result-type-ok:telemetry-collector-has-no-fallible-surface — the whole
+ * one-result-type-ok:telemetry-fill-provider — the whole
  * point of this shape is that a read it could not perform becomes a leaf
  * presence (TELEMETRY_UNAVAILABLE + a static reason token) rather than a
  * return value. There is no fallible surface here for a struct zcl_result to

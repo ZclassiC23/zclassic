@@ -25,7 +25,7 @@
  *      was busy" and "the store holds nothing" can never be confused.
  */
 
-// one-result-type-ok:telemetry-collector — a `<domain>_dump_state_fill`
+// one-result-type-ok:telemetry-fill-provider — a `<domain>_dump_state_fill`
 // collector cannot return struct zcl_result. Its shape is fixed in two places
 // this file does not own: util/telemetry_render.h's provider contract, and
 // check_dumper_never_blocks.sh, whose scanner only recognises a definition

@@ -21,8 +21,14 @@
 # scan roots named `*_fill.c` whose basename starts with `<domain>_`, or which
 # defines `<domain>_dump_state_fill(`, for a domain named by a TABLE row.
 #
-# 1 today: the `sync` domain shipped the first provider
-# (app/services/src/sync_telemetry_fill.c, `sync_dump_state_fill`), which is
-# now covered by the no-hand-written-JSON rule. Raised from 0 in the same
-# change that landed it. The next domain's provider raises this to 2.
-1
+# 8 today — one per telemetry domain: agents, metaverse, network, runtime,
+# storage, sync, wallet, zcode. Each is `app/services/src/<domain>_telemetry_
+# fill.c` defining `<domain>_dump_state_fill`, and all eight are covered by the
+# no-hand-written-JSON rule.
+#
+# Recomputed by the orchestrator from the MERGED tree, not taken from any one
+# lane. Eight lanes each landed a provider and each correctly recorded "1" for
+# its own isolated worktree; merging those files would have produced a number
+# that was right nowhere. Ratchet files are recomputed after a merge, never
+# merged. A ninth domain raises this to 9.
+8

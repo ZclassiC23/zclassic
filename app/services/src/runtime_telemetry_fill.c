@@ -1,4 +1,4 @@
-// one-result-type-ok:telemetry-fill-bool — E2 (one way out): the sole public
+// one-result-type-ok:telemetry-fill-provider — E2 (one way out): the sole public
 // function is a telemetry COLLECTOR, the same shape as the `_dump_state_json`
 // dumpers it reads (CLAUDE.md "Adding state introspection"): bool, where false
 // means "could not populate at all". struct zcl_result is the wrong carrier

@@ -1,4 +1,4 @@
-// one-result-type-ok:telemetry-domain-provider — the single exported symbol
+// one-result-type-ok:telemetry-fill-provider — the single exported symbol
 // here is wallet_dump_state_fill(), whose bool signature is fixed by the
 // frozen telemetry contract (util/telemetry_render.h: a provider fills a typed
 // snapshot) and is what tools/scripts/check_dumper_never_blocks.sh scans for by

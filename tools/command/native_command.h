@@ -1270,6 +1270,9 @@ void zcl_native_handle_ops_telemetry_runtime_threads(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 void zcl_native_handle_ops_telemetry_runtime_resources(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* ── ops.telemetry.network.* — the network telemetry domain
  * (tools/command/native_telemetry_network_command.c). Four VIEWS of ONE typed
  * snapshot, not four data sources: each handler fills a
@@ -1286,6 +1289,9 @@ void zcl_native_handle_telemetry_network_tor(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 void zcl_native_handle_telemetry_network_transport(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* ── ops.telemetry.storage.* — the STORAGE telemetry domain
  * (tools/command/native_telemetry_storage_command.c). Each handler picks one
  * view/group token and makes one SELECT-only `dumpstate storage_telemetry`
@@ -1300,6 +1306,9 @@ void zcl_native_handle_telemetry_storage_database(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 void zcl_native_handle_telemetry_storage_disk(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* ── ops.telemetry.wallet.* — the wallet telemetry domain's two views
  * (tools/command/native_telemetry_wallet_command.c). Both pick the typed
  * wallet snapshot filled by services/wallet_telemetry.h and hand it to the
@@ -1310,6 +1319,9 @@ void zcl_native_handle_telemetry_wallet_summary(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 void zcl_native_handle_telemetry_wallet_security(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* ── ops.telemetry.agents.* — the AGENTS telemetry domain
  * (tools/command/native_telemetry_agents_command.c). Each renders one group
  * of the typed agents snapshot filled by agents_dump_state_fill()
@@ -1323,6 +1335,9 @@ void zcl_native_handle_ops_telemetry_agents_grants(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 void zcl_native_handle_ops_telemetry_agents_activity(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* ── ops.telemetry.zcode.* — the zcode telemetry domain
  * (tools/command/native_telemetry_zcode_command.c). Picks the typed zcode
  * snapshot and a view and hands both to telemetry_render(); it names no
@@ -1332,6 +1347,9 @@ void zcl_native_handle_ops_telemetry_agents_activity(
  * config/commands/telemetry/zcode.def, whose `swarm` and `installs` leaves
  * stay PLANNED and so have no handler here. */
 void zcl_native_handle_ops_telemetry_zcode_summary(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* ── ops.telemetry.metaverse.* — the typed metaverse telemetry domain
  * (tools/command/native_telemetry_metaverse_command.c). One READY leaf; it
  * renders the compiled-in property-kind vocabulary and its adapter registry,

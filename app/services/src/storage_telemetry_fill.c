@@ -1,4 +1,4 @@
-// one-result-type-ok:telemetry-fill-bool — E2 (one way out): both public
+// one-result-type-ok:telemetry-fill-provider — E2 (one way out): both public
 // functions have contract-fixed bool signatures that this file does not get to
 // choose. `storage_telemetry_dump_state_json` is the diagnostics-registry
 // dumper ABI (CLAUDE.md "Adding state introspection"), and
