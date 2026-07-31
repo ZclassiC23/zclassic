@@ -43,11 +43,12 @@ saving is **not** in tokens read. It is in:
 
 ## Before — the hand-written preamble (55 lines, 3,302 characters)
 
-Reproduced as written, with **one redaction**: the line that pinned
-`866 registered groups, 128 lint gates` is shown with placeholders. Reproducing
-those two numbers verbatim in a tracked document would trip this repo's own
-`check-doc-counts` and `check-doc-accuracy` gates the moment either count moves —
-which is precisely the argument for deriving them
+Reproduced as written, with **one redaction**: the line that pinned the
+registered-test-group and lint-gate counts is shown with placeholders.
+Reproducing either number verbatim in a tracked document would trip this repo's
+own `check-doc-counts` and `check-doc-accuracy` gates the moment that count moves
+— and it did, the moment this file merged alongside a lane that added a gate.
+That is precisely the argument for deriving them
 ([`LANE_CONTRACT.md`](LANE_CONTRACT.md) §F). The redaction adds 6 characters to
 the 3,308-character block shown here; the 3,302 figure above is the unredacted
 original.
