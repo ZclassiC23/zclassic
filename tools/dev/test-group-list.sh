@@ -41,6 +41,16 @@
 #                      runner's own rule (plain substring of the FULL name,
 #                      lib/test/src/test_parallel.c strstr()). Exit 1, no
 #                      output, when nothing matches.
+#   --resolve-exact ID... resolve proof-plan IDs to canonical FULL names.
+#                      Accepts either the full name or the legacy prefixless
+#                      name, never a substring. Exit 1 when absent/ambiguous.
+#   --resolve-proof ID... validate every legacy plan ID has one canonical
+#                      exact group, then preserve its former substring union
+#                      as canonical full IDs. No substring reaches the runner.
+#   --resolve-exact-set CSV
+#                      canonicalize/validate a comma-separated exact set.
+#   --check-impact-rules [FILE]
+#                      fail when any declared proof-plan ID is not exact.
 #   --suggest SUBSTR   nearest candidates for a SUBSTR that matched nothing
 #   --params-gated     the groups group_is_params_heavy() excludes from a
 #                      default full run
@@ -137,6 +147,183 @@ params_gated() {
     ' "$REGISTRY"
 }
 
+REGISTERED_CACHE=""
+
+load_registered_cache() {
+    [ -n "$REGISTERED_CACHE" ] || REGISTERED_CACHE="$(registered)"
+}
+
+resolve_exact() {
+    local needle="$1" candidate hit="" count=0 haystack
+    case "$needle" in
+        ''|*[!A-Za-z_0-9]*) return 1 ;;
+    esac
+    load_registered_cache
+    haystack="
+${REGISTERED_CACHE}
+"
+    for candidate in "$needle" "test_$needle" "spec_$needle"; do
+        case "$haystack" in
+            *$'\n'"$candidate"$'\n'*)
+                hit="$candidate"
+                count=$((count + 1))
+                ;;
+        esac
+    done
+    [ "$count" = 1 ] || return 1
+    printf '%s\n' "$hit"
+}
+
+# Explicit semantic families that were not expressible by the historical
+# substring selector. Keep this tiny and named: callers still need an exact
+# primary ID, while a registry full name may additionally belong to one of
+# these declared aggregates.
+proof_plan_token_selects_full() {
+    local token="$1" full="$2"
+    case "$full" in
+        *"$token"*) return 0 ;;
+    esac
+    case "$token:$full" in
+        oracle_policy:test_*oracle) return 0 ;;
+    esac
+    return 1
+}
+
+check_impact_rules() {
+    local rules="$1" rule_line patterns plan group test_file pattern source_group selected
+    local bad=0 registered_tests tracked_haystack
+    declare -A matched_plans=()
+    [ -f "$rules" ] || {
+        echo "test-group-list: impact rules missing: $rules" >&2
+        return 2
+    }
+    load_registered_cache
+    registered_tests="$(git ls-files --cached --others --exclude-standard -- \
+        'lib/test/src/test_*.c')"
+    tracked_haystack="
+${registered_tests}
+"
+    while IFS=$'\034' read -r rule_line patterns plan; do
+        case "$patterns" in
+            *[![:space:]]*) ;;
+            *)
+                echo "test-group-list: empty impact pattern at $rules:$rule_line" >&2
+                bad=1
+                continue
+                ;;
+        esac
+        case "$plan" in
+            *[![:space:]]*) ;;
+            *)
+                echo "test-group-list: empty impact proof plan at $rules:$rule_line" >&2
+                bad=1
+                continue
+                ;;
+        esac
+        for group in $plan; do
+            if ! resolve_exact "$group" >/dev/null; then
+                echo "test-group-list: non-exact impact proof id: $group" >&2
+                bad=1
+            fi
+        done
+        IFS='|' read -r -a rule_patterns <<<"$patterns"
+        for pattern in "${rule_patterns[@]}"; do
+            case "$pattern" in
+                lib/test/src/test_*.c) ;;
+                *) continue ;;
+            esac
+            while IFS= read -r test_file; do
+                [ -n "$test_file" ] || continue
+                case "$tracked_haystack" in
+                    *$'\n'"$test_file"$'\n'*) ;;
+                    *) continue ;;
+                esac
+                matched_plans["$test_file"]="${matched_plans[$test_file]:-}$plan "
+            done < <(compgen -G "$pattern" || true)
+        done
+    done < <(awk -F'"' \
+        '/^[[:space:]]*AGENT_IMPACT_RULE\(/ {print NR "\034" $2 "\034" $4}' \
+        "$rules")
+
+    # Rules compose by union, so verify each registered test source against
+    # every plan row that matches it. A token selects the source group iff the
+    # old runner's strstr selector would have selected it; resolve_proof then
+    # transports that same union as full IDs to the exact runner.
+    while IFS= read -r test_file; do
+        [ -n "$test_file" ] || continue
+        plan="${matched_plans[$test_file]:-}"
+        [ -n "$plan" ] || continue
+        source_group="$(basename "$test_file" .c)"
+        case "
+${REGISTERED_CACHE}
+" in
+            *$'\n'"$source_group"$'\n'*) ;;
+            *) continue ;;
+        esac
+        selected=0
+        for group in $plan; do
+            if proof_plan_token_selects_full "$group" "$source_group"; then
+                selected=1
+                break
+            fi
+        done
+        if [ "$selected" = 0 ]; then
+            echo "test-group-list: impact rules match $test_file but their union omits its registered group $source_group (plans: $plan)" >&2
+            bad=1
+        fi
+    done <<<"$registered_tests"
+    [ "$bad" = 0 ]
+}
+
+resolve_proof() {
+    local needle candidate resolved="" exact family_count
+    load_registered_cache
+    for needle in "$@"; do
+        # The exact primary is the fail-closed admission check. Once present,
+        # preserve the old runner's substring family as an explicit set of
+        # full IDs. This migration changes selection transport, not coverage.
+        exact="$(resolve_exact "$needle")" || return 1
+        family_count=0
+        while IFS= read -r candidate; do
+            [ -n "$candidate" ] || continue
+            if proof_plan_token_selects_full "$needle" "$candidate"; then
+                    family_count=$((family_count + 1))
+                    case "
+${resolved}
+" in
+                        *$'\n'"$candidate"$'\n'*) ;;
+                        *) resolved="${resolved}${candidate}
+" ;;
+                    esac
+            fi
+        done <<<"$REGISTERED_CACHE"
+        [ "$family_count" -gt 0 ] || return 1
+    done
+    [ -n "$resolved" ] || return 1
+    printf '%s' "$resolved"
+}
+
+resolve_exact_set() {
+    local csv="$1" token canonical out="" old_ifs="$IFS"
+    case "$csv" in
+        ,*|*,|*,,*) return 1 ;;
+    esac
+    IFS=','
+    read -r -a tokens <<<"$csv"
+    IFS="$old_ifs"
+    [ "${#tokens[@]}" -gt 0 ] || return 1
+    for token in "${tokens[@]}"; do
+        [ -n "$token" ] || return 1
+        canonical="$(resolve_exact "$token")" || return 1
+        case ",$out," in
+            *,"$canonical",*) ;;
+            *) out="${out:+$out,}$canonical" ;;
+        esac
+    done
+    [ -n "$out" ] || return 1
+    printf '%s\n' "$out"
+}
+
 mode="${1:-list}"
 case "$mode" in
     list)
@@ -162,6 +349,35 @@ case "$mode" in
             fi
         done < <(registered)
         [ "$found" = 1 ] || exit 1
+        ;;
+    --resolve-exact)
+        shift
+        [ "$#" -gt 0 ] || {
+            echo "test-group-list: --resolve-exact needs one or more group ids" >&2
+            exit 2
+        }
+        for needle in "$@"; do
+            resolve_exact "$needle" || exit 1
+        done
+        ;;
+    --resolve-proof)
+        shift
+        [ "$#" -gt 0 ] || {
+            echo "test-group-list: --resolve-proof needs one or more plan ids" >&2
+            exit 2
+        }
+        resolve_proof "$@"
+        ;;
+    --resolve-exact-set)
+        needle="${2:-}"
+        [ -n "$needle" ] || {
+            echo "test-group-list: --resolve-exact-set needs CSV ids" >&2
+            exit 2
+        }
+        resolve_exact_set "$needle"
+        ;;
+    --check-impact-rules)
+        check_impact_rules "${2:-app/controllers/include/controllers/agent_impact_rules.def}"
         ;;
     --suggest)
         needle="${2:-}"
@@ -226,7 +442,7 @@ case "$mode" in
         printf '%s\n' "$out"
         ;;
     *)
-        echo "usage: $0 [--count | --match SUBSTR | --suggest SUBSTR | --params-gated]" >&2
+        echo "usage: $0 [--count | --match SUBSTR | --resolve-exact ID... | --resolve-proof ID... | --resolve-exact-set CSV | --check-impact-rules [FILE] | --suggest SUBSTR | --params-gated]" >&2
         exit 2
         ;;
 esac

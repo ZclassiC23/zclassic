@@ -39,6 +39,7 @@
 
 #include "platform/time_compat.h"
 #include "session/agent_broker.h"
+#include "test/test_group_selector.h"
 #include "test/test_helpers.h"
 #include "test/testcache.h"
 #include "event/event.h"
@@ -271,7 +272,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(consensus_db_migrate) \
     X(consensus_db_flip) \
     X(coins_kv) X(coins_ram) X(coin_reader_chain) \
-    X(seal_kv) X(sha3_sidecar_io) X(seal_ratify) X(vcs_core) X(vcs_release) X(vcs_accept) X(zcode_store) X(zcode_publish) X(zcode_recipe) X(zcode_contributor) X(zcode_verify) X(zcode_score) X(zcode_reward) X(zcode_rank) X(zcode_badge) X(zcode_policy) X(zcode_swarm) X(zcode_swarm_net) X(zcode_fetch) X(zcode_site) X(zcode_add) X(vcs_devloop) X(codeindex) X(testcache) X(metaverse_catalog) \
+    X(seal_kv) X(sha3_sidecar_io) X(seal_ratify) X(vcs_core) X(vcs_release) X(vcs_accept) X(zcode_store) X(zcode_publish) X(zcode_recipe) X(zcode_contributor) X(zcode_verify) X(zcode_score) X(zcode_reward) X(zcode_rank) X(zcode_badge) X(zcode_policy) X(zcode_swarm) X(zcode_swarm_net) X(zcode_fetch) X(zcode_site) X(zcode_add) X(vcs_devloop) X(codeindex) X(testcache) X(test_group_selector) X(metaverse_catalog) \
     X(chain_segment) X(segment_sealer) X(segment_corruption) X(rom_dump) \
     X(golden_revert_roundtrip) X(golden_dev_cycle) \
     X(nullifier_kv) X(nullifier_backfill_service) \
@@ -500,7 +501,7 @@ struct group_result {
     double wall_seconds; /* 0 until measured */
     time_t start;
     char out_path[128];  /* owned by the slot; copied here on reap */
-    int skipped;         /* 1 if excluded by --only=SUBSTR (not run) */
+    int skipped;         /* 1 if selector/params gate excluded it (not run) */
     int skip_markers;    /* "SKIP (" sentinel lines in captured output */
     int cached;          /* 1 if returned from the content-addressed cache */
 };
@@ -650,7 +651,7 @@ static bool group_requires_exclusive_repo(const char *name)
  * proving keys from ~/.zcash-params and run REAL proving (seconds of CPU,
  * ~50 MB RAM each) — too slow/heavy for the fast default pool. They are
  * excluded from a default full run and opted in via ZCL_PARAMS_TESTS=1 (runs
- * them alongside everything) or by naming one with --only=<name> (explicit
+ * them alongside everything) or by naming one with --only/--exact (explicit
  * selection). They stay fully registered so the opt-in paths reach them. */
 static bool group_is_params_heavy(const char *name)
 {
@@ -660,6 +661,46 @@ static bool group_is_params_heavy(const char *name)
            strcmp(name, "simnet_zmsg_onchain") == 0 ||
            strcmp(name, "snark_kat") == 0 ||
            strcmp(name, "sapling_prover_rng_determinism") == 0;
+}
+
+/* Fail before dispatch if an exact set names even one absent group. Without
+ * this preflight, "valid,stale" would run the valid member and still report a
+ * green suite — the multi-group version of the substring false-green. */
+static bool exact_selector_set_valid(const char *selectors,
+                                     const char **missing, size_t *missing_len)
+{
+    if (missing) *missing = NULL;
+    if (missing_len) *missing_len = 0;
+    if (!selectors || !selectors[0])
+        return false;
+    size_t selectors_len = strlen(selectors);
+    if (selectors[0] == ',' || selectors[selectors_len - 1] == ',' ||
+        strstr(selectors, ",,") != NULL)
+        return false;
+    const char *p = selectors;
+    while (*p) {
+        const char *end = strchr(p, ',');
+        size_t len = end ? (size_t)(end - p) : strlen(p);
+        bool found = false;
+        if (len > 0) {
+            for (size_t i = 0; i < g_num_groups; i++) {
+                if (strlen(g_groups[i].name) == len &&
+                    memcmp(g_groups[i].name, p, len) == 0) {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if (!found) {
+            if (missing) *missing = p;
+            if (missing_len) *missing_len = len;
+            return false;
+        }
+        if (!end)
+            break;
+        p = end + 1;
+    }
+    return true;
 }
 
 static void run_group_exclusive(size_t idx, pid_t parent_pid,
@@ -711,7 +752,7 @@ struct suite_verdict {
     size_t groups_total;
     size_t groups_ran;         /* actually forked */
     size_t groups_cached;      /* returned from cache, never forked */
-    size_t groups_gated;       /* --only / params-heavy: excluded up front */
+    size_t groups_gated;       /* selector / params-heavy: excluded up front */
     size_t groups_cacheable;   /* probed cacheable this run */
     int    groups_failed;
     int    self_skips;         /* groups printing an in-test SKIP marker */
@@ -847,7 +888,8 @@ int main(int argc, char **argv)
                              * loaded. */
     bool verbose = false;
     bool list_only = false;
-    const char *only = NULL; /* --only=SUBSTR: run just matching groups */
+    const char *only = NULL; /* --only=SUBSTR or --exact=FULL_ID[,FULL...] */
+    bool only_exact = false;
     /* Content-addressed test cache. Default OFF so the canonical push gate
      * stays COLD (a cached SKIP never gates a push). --cache / ZCL_TEST_CACHE=1
      * opt in for the inner dev loop; --no-cache forces off; --cold-audit runs
@@ -872,7 +914,20 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "--list") == 0) {
             list_only = true;
         } else if (strncmp(argv[i], "--only=", 7) == 0) {
+            if (only) {
+                fprintf(stderr,
+                        "test_parallel: pass only one of --only/--exact\n");
+                return 2;
+            }
             only = argv[i] + 7;
+        } else if (strncmp(argv[i], "--exact=", 8) == 0) {
+            if (only) {
+                fprintf(stderr,
+                        "test_parallel: pass only one of --only/--exact\n");
+                return 2;
+            }
+            only = argv[i] + 8;
+            only_exact = true;
         } else if (strcmp(argv[i], "--cache") == 0) {
             cli_cache = true;
         } else if (strcmp(argv[i], "--no-cache") == 0) {
@@ -882,7 +937,8 @@ int main(int argc, char **argv)
         } else {
             fprintf(stderr,
                     "Usage: %s [--jobs=N] [--timeout=SECS] [--verbose] "
-                    "[--list] [--only=SUBSTR] [--cache|--no-cache] "
+                    "[--list] [--only=SUBSTR|--exact=FULL_ID[,FULL...]] "
+                    "[--cache|--no-cache] "
                     "[--cold-audit]\n",
                     argv[0]);
             return 2;
@@ -923,6 +979,17 @@ int main(int argc, char **argv)
         return 0;
     }
 
+    if (only_exact) {
+        const char *missing = NULL;
+        size_t missing_len = 0;
+        if (!exact_selector_set_valid(only, &missing, &missing_len)) {
+            fprintf(stderr,
+                    "test_parallel: --exact contains no registered group: "
+                    "%.*s\n", (int)missing_len, missing ? missing : "");
+            return 2;
+        }
+    }
+
     ensure_tmp_dir();
 
     setbuf(stdout, NULL);
@@ -939,14 +1006,20 @@ int main(int argc, char **argv)
         results[i].status = -1;
     }
 
-    /* --only=SUBSTR: pre-mark non-matching groups as already-reaped so
+    /* --only=SUBSTR / --exact=FULL_ID[,FULL...]: pre-mark non-matching groups so
      * they are neither dispatched nor counted. Lets a dev iterate on one
-     * group in ~seconds instead of waiting on the slowest group (the long
-     * pole is test_merkle_tree, ~110s). */
+     * group in ~seconds instead of waiting on the slowest group. Proof
+     * automation uses --exact: a stale short id must not accidentally select
+     * a differently named group and report green. */
     size_t pre_skipped = 0;
     if (only) {
         for (size_t i = 0; i < g_num_groups; i++) {
-            if (!strstr(g_groups[i].name, only)) {
+            bool selected = only_exact
+                                ? test_group_selector_matches_exact_set(
+                                      g_groups[i].name, only)
+                                : test_group_selector_matches(
+                                      g_groups[i].name, only, false);
+            if (!selected) {
                 results[i].status = 0; /* excludes from dispatch loop */
                 results[i].skipped = 1;
                 pre_skipped++;
@@ -954,7 +1027,8 @@ int main(int argc, char **argv)
         }
         if (pre_skipped == g_num_groups) {
             fprintf(stderr,
-                    "test_parallel: --only=%s matched no groups\n", only);
+                    "test_parallel: --%s=%s matched no groups\n",
+                    only_exact ? "exact" : "only", only);
             free(results);
             return 2;
         }
@@ -962,13 +1036,13 @@ int main(int argc, char **argv)
 
     /* Params-heavy opt-in gate: exclude the Groth16-proving groups from a
      * default full run. They still run when ZCL_PARAMS_TESTS is set, or when
-     * explicitly selected via --only=<name> (which leaves results[i].skipped
+     * explicitly selected via --only/--exact (which leaves results[i].skipped
      * clear for the matching group). Folded into pre_skipped so they are not
      * dispatched and are excluded from the pass/fail denominator. */
     bool params_opt_in = getenv("ZCL_PARAMS_TESTS") != NULL;
     size_t params_gated = 0;
-    /* An explicit --only=<name> is itself the opt-in for a params-heavy group,
-     * so skip the gate entirely when --only is in effect (the matching group
+    /* An explicit selector is itself the opt-in for a params-heavy group,
+     * so skip the gate entirely when a selector is in effect (the matching group
      * is the only one left unskipped above). */
     if (!params_opt_in && !only) {
         for (size_t i = 0; i < g_num_groups; i++) {
@@ -982,7 +1056,7 @@ int main(int argc, char **argv)
     }
     if (params_gated > 0)
         printf("test_parallel: %zu params-heavy group(s) gated out "
-               "(set ZCL_PARAMS_TESTS=1 or --only=<name> to run)\n",
+               "(set ZCL_PARAMS_TESTS=1 or use --only/--exact to run)\n",
                params_gated);
 
     /* ── Content-addressed cache: probe every group's forward input closure,
@@ -1290,7 +1364,9 @@ int main(int argc, char **argv)
                                      ? "ALL TESTS PASSED (CACHED)"
                                      : "ALL TESTS PASSED"),
            failed_groups, g_num_groups - pre_skipped, skip_groups, wall, jobs,
-           only ? " [--only filtered]" : "");
+           only ? (only_exact ? " [--exact filtered]"
+                              : " [--only filtered]")
+                : "");
     if (skip_groups > 0) {
         printf("Skipped coverage (self-skipped groups — most need "
                "ZCL_STRESS_TESTS=1 + an isolated run):\n");

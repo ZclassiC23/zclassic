@@ -74,6 +74,15 @@ fi
 
 cd "$(dirname "$0")/../.."
 
+# Impact plans are part of test registration: every plan token must have an
+# exact primary group, and a rule naming a registered test source must select
+# that source's own group. Keep this in the canonical lint gate so a broken
+# map cannot evade the focused group intended to audit the map itself.
+if ! tools/dev/test-group-list.sh --check-impact-rules; then
+    echo "check_test_registration: FAIL — impact proof registration drift" >&2
+    exit 1
+fi
+
 TEST_DIR="lib/test/src"
 PARALLEL="$TEST_DIR/test_parallel.c"
 SERIAL="$TEST_DIR/test.c"
