@@ -440,3 +440,15 @@
 # reply never got one past the 64th ask, so those items sat stuck until
 # their own stall timeout instead of being retried promptly. Re-baselined in
 # file_size_ceiling_lib_baseline.txt (902); count STAYS 11.
+#
+# 2026-07-31 (telemetry rollups, CLI static-agent buffer fix):
+# src/main_cli_modes.c grew 4104 -> 4128. cli_run_static_agent_method()
+# rendered its reply into a fixed `char out[131072]` stack buffer, so a
+# reply larger than 128 KB was silently cut off at the buffer edge —
+# `statecatalog` crossed that line at 153 registered dumpers and started
+# emitting truncated JSON with no error. The function now measures the
+# reply first (json_write(&result, NULL, 0)), allocates exactly that
+# many bytes via zcl_malloc, and frees on every exit path, so the reply
+# size is bounded by memory rather than by a constant nobody revisits.
+# Re-baselined in file_size_ceiling_lib_baseline.txt (4128) rather than
+# spending a ratchet slot; the recorded count STAYS 11.

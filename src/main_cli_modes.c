@@ -79,6 +79,7 @@
 #include "command/cli_render.h"
 #include "config/command_catalog.h"
 #include "kernel/command_registry.h"
+#include "base/safe_alloc.h"
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -2279,13 +2280,35 @@ static int cli_run_static_agent_method(const char *method,
     json_init(&result);
     bool ok = route->handler(&params, false, &result);
 
-    char out[131072];
-    size_t need = ok ? json_write(&result, out, sizeof(out)) : 0;
+    /* Measure, then allocate. This used to be a fixed 128 KB stack buffer, and
+     * `statecatalog` outgrew it: the catalog is one row per dumpstate
+     * subsystem and each row carries prose, so its size tracks how much of the
+     * node is introspectable — a number that only ever goes up. Failing the
+     * whole command because the node became MORE observable is precisely
+     * backwards, and a bigger constant only moves the wall. json_write with a
+     * NULL destination returns the exact size, so there is no reason to guess
+     * one. */
+    char *out = NULL;
+    size_t need = 0;
     int exit_code = 1;
-    if (ok && need >= sizeof(out)) {
-        fprintf(stderr, "agent contract JSON exceeded CLI buffer\n");
-        ok = false;
-    } else if (ok) {
+    if (ok) {
+        need = json_write(&result, NULL, 0);
+        out = zcl_malloc(need + 1, "cli_static_agent_json");
+        if (!out) {
+            fprintf(stderr,
+                    "agent contract JSON needs %zu bytes and they could not "
+                    "be allocated\n", need + 1);
+            ok = false;
+        } else if (json_write(&result, out, need + 1) > need) {
+            /* The document grew between measuring and writing, which for a
+             * value this function owns cannot happen — so if it ever does,
+             * say so rather than print a truncated contract. */
+            fprintf(stderr, "agent contract JSON changed size while being "
+                            "written\n");
+            ok = false;
+        }
+    }
+    if (ok) {
         /* Terminal lane (docs/work/UX_PLAN.md): on a human terminal the
          * statecatalog renders as a bounded table; every other static
          * agent method — and every pipe — keeps the canonical JSON. */
@@ -2299,10 +2322,11 @@ static int cli_run_static_agent_method(const char *method,
         else
             printf("%s\n", out);
         exit_code = cli_static_agent_result_exit_code(method, &result);
-    } else {
+    } else if (!out) {
         fprintf(stderr, "agent contract generation failed\n");
     }
 
+    free(out);
     json_free(&result);
     json_free(&params);
     return exit_code;

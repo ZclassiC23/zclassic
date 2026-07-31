@@ -222,19 +222,14 @@
                  "lib/platform/src/os_sandbox_witness.c",
                  "lib/test/src/test_os_sandbox_hotswap_interaction.c"),
     DIAG_ENTRY("telemetry_rollup", telemetry_rollup_dump_state_json,
-               "the WHOLE-NODE telemetry fold: collects every domain in the "
-               "telemetry provider registry, judges each with the same "
-               "evaluator that produces the per-domain `health` block, and "
-               "folds the verdicts with max() over {ok,unknown,degraded,"
-               "unhealthy} — so it can never disagree with the leaf it points "
-               "at. A domain whose collector could not read it stays in the "
-               "list as collected:false with a reason and is judged unknown, "
-               "which outranks ok. Carries no per-field prose: one domain's "
-               "findings run to ~4 KB and eight would empty the reply rather "
-               "than truncate it. Key selects the projection: summary (the "
-               "fold + the named bottleneck), health (the enums alone), "
-               "alerts_active (the failing rules, bounded, with the number "
-               "dropped stated)",
+               "the WHOLE-NODE telemetry fold: every domain in the provider "
+               "registry, judged by the same evaluator as the per-domain "
+               "leaves and folded with max() over {ok,unknown,degraded,"
+               "unhealthy}. A domain nobody could collect stays listed as "
+               "collected:false with a reason and counts as unknown, which "
+               "outranks ok. Key selects the projection: summary (fold + "
+               "named bottleneck), health (enums only), alerts_active "
+               "(failing rules, bounded, drops stated)",
                "runtime", "service",
                "app/services/src/telemetry_rollup.c",
                "in_process_snapshot", "cheap",
