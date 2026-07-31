@@ -1123,7 +1123,7 @@ void zcl_native_handle_dev_test_run(
         return;
     }
     close(runner_fd);
-    if (!zcl_dev_source_identity_verify(root, &source, identity_why,
+    if (!zcl_dev_source_mutation_verify(root, &source, identity_why,
                                         sizeof(identity_why))) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_FAILED,

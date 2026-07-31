@@ -116,7 +116,7 @@ static int run_focused(const char *group)
         return 1;
     }
     close(runner_fd);
-    if (!zcl_dev_source_identity_verify(root, &source, why, sizeof(why))) {
+    if (!zcl_dev_source_mutation_verify(root, &source, why, sizeof(why))) {
         fprintf(stderr, "[devloop] focused: source epoch superseded: %s\n",
                 why);
         return 1;

@@ -48,9 +48,15 @@ source_git_commands_allowed()
         # spelling fails closed instead of evading a blacklist.
         case "$code" in
             *'git rev-parse --show-toplevel'*|\
+            *'git rev-parse --git-path index'*|\
             *'git -C "$prefix" rev-parse --show-toplevel'*|\
+            *'git -C "$prefix" rev-parse --git-path index'*|\
+            *'git -C "$repo" config --null --list'*|\
+            *'git -C "$repo" rev-parse --git-path info/exclude'*|\
+            *'git -C "$repo" config --path --null --get core.excludesFile'*|\
             *'git ls-files -v -z'*|\
             *'git ls-files --others --exclude-standard -z --'*|\
+            *'git ls-files --others --ignored --exclude-standard --directory -z --'*|\
             *'git diff --name-only --no-renames -z HEAD --'*|\
             *'git -C "$prefix" ls-files -v -z'*|\
             *'git -C "$prefix" ls-files --others --exclude-standard -z --'*|\
