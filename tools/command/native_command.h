@@ -1232,6 +1232,20 @@ void zcl_native_handle_metaverse_agent_audit(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* ── ops.telemetry.runtime.* — the `runtime` telemetry domain
+ * (tools/command/native_telemetry_runtime_command.c). Each picks one group of
+ * the typed runtime snapshot and hands it to the single render layer; none of
+ * them names a field. Bound by config/commands/telemetry/runtime.def. */
+void zcl_native_handle_ops_telemetry_runtime_services(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_ops_telemetry_runtime_threads(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_ops_telemetry_runtime_resources(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 #ifdef __cplusplus
 }
 #endif

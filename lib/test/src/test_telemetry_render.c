@@ -217,8 +217,13 @@ static int check_unset_is_a_provider_defect(void)
     TR_CHECK("[render] the unset leaf's KEY is present and its value is null "
              "(never omitted, never a plausible 0)",
              v != NULL && v->type == JSON_NULL);
+    /* EVERY leaf, not a hardcoded one: this domain's field table is owned by
+     * its own lane and grows. The property under test is "nothing was written,
+     * so nothing is present and everything is unset", which is a statement
+     * about the schema's size, not about a particular number of rows. */
     TR_CHECK("[render] the unset leaf is counted as unset",
-             json_get_int(dig2(&out, "completeness", "unset")) == 1 &&
+             json_get_int(dig2(&out, "completeness", "unset")) ==
+                 (int64_t)g_runtime_schema.leaf_count &&
              json_get_int(dig2(&out, "completeness", "present")) == 0);
     TR_CHECK("[render] unset raises provider_defect",
              json_get_bool(dig2(&out, "completeness", "provider_defect")));

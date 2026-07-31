@@ -21,7 +21,8 @@
 # scan roots named `*_fill.c` whose basename starts with `<domain>_`, or which
 # defines `<domain>_dump_state_fill(`, for a domain named by a TABLE row.
 #
-# 0 today: the table-driven layer's field tables and renderer have landed, but
-# no domain has shipped its provider yet. The first `<domain>_*_fill.c` to land
-# raises this to 1.
-0
+# 1 in this worktree: the runtime domain's provider
+# (app/services/src/runtime_telemetry_fill.c) has landed. Each further domain
+# lane raises this by one; the orchestrator recomputes the real total when the
+# lanes merge.
+1

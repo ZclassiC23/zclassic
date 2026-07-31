@@ -20,4 +20,241 @@ TL_LEAF(meta, collected_unix, TLC_I64, TFU_UNIX_TIME, TLV_NORMAL,
 
 TL_GROUP_END(meta)
 
-/* ── runtime groups start here (owned by this domain's lane) ── */
+/* ── runtime groups start here (owned by this domain's lane) ──
+ *
+ * Everything below is an AGGREGATE over the supervisor tree, the CPU topology
+ * organ and the memory-pressure organ. There is deliberately no per-child row:
+ * the supervisor registry is variable-length (SUPERVISOR_CAP children) and a
+ * fixed-offset table cannot hold a list. The per-child listing stays where it
+ * already is — `zclassic23 ops state --subsystem=supervisor` — and what lives
+ * here is the set of counts, worsts and margins that answer "is the liveness
+ * tree healthy" without reading 60 rows.
+ *
+ * The distinction this project has been bitten by is preserved exactly:
+ * ticks_run is ACTIVITY, progress_marker is RESULTS, idle_ticks is "ran and
+ * legitimately had nothing to do". A child that ticks forever with a frozen
+ * marker and no idle report is doing nothing and saying nothing, and
+ * `children_no_results` is the count of exactly that shape. */
+
+TL_GROUP(services, "the supervisor tree: registered children and whether they "
+                   "are ticking, achieving anything, or being watched at all")
+
+TL_LEAF(services, child_count, TLC_I64, TFU_GAUGE, TLV_SUMMARY,
+    TFR_MIN_ABS, TL_NONE, 1, TFS_WARN,
+    "liveness contracts registered with the supervisor right now. A fully "
+    "booted node registers dozens; zero means the tree exists but nothing "
+    "joined it",
+    "no subsystem is supervised, so nothing in this node has a deadline and a "
+    "wedged thread would never be named",
+    "zclassic23 ops state --subsystem=supervisor")
+
+TL_LEAF(services, child_headroom, TLC_I64, TFU_GAUGE, TLV_SUMMARY,
+    TFR_MIN_ABS, TL_NONE, 1, TFS_CRITICAL,
+    "free slots left in the fixed supervisor registry (SUPERVISOR_CAP minus "
+    "the registered children). The registry was measured full once already, "
+    "at exactly 64 of 64",
+    "the registry is full: the NEXT subsystem to register gets an invalid id "
+    "and runs entirely unsupervised, silently, because every child-side "
+    "helper then no-ops",
+    "zclassic23 ops state --subsystem=supervisor")
+
+TL_LEAF(services, children_stalled, TLC_I64, TFU_GAUGE, TLV_SUMMARY,
+    TFR_EXPECT_ZERO, TL_NONE, 0, TFS_CRITICAL,
+    "children whose supervisor-owned stall_reason is anything other than "
+    "none — a missed tick deadline, a frozen progress marker, a child-reported "
+    "stall, or a tripped restart-storm breaker",
+    "at least one supervised subsystem has stopped meeting its own liveness "
+    "contract and the supervisor has already said so",
+    "zclassic23 ops state --subsystem=supervisor")
+
+TL_LEAF(services, progress_undeclared_count, TLC_I64, TFU_GAUGE, TLV_NORMAL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "children that have chosen neither armed nor exempt for no-progress "
+    "detection. Detection is OFF for each of them, so nobody would notice if "
+    "they stopped achieving anything. This is shrink-only debt with no healthy "
+    "absolute value: compare it against the floor in "
+    "tools/lint/check_supervisor_progress_declared.sh, which may only go down",
+    "", "")
+
+TL_LEAF(services, children_no_results, TLC_I64, TFU_GAUGE, TLV_NORMAL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "children that have run at least once yet never moved a progress marker "
+    "and never reported themselves idle — ran, produced nothing, said nothing. "
+    "Not judged here because a child registered seconds ago legitimately looks "
+    "like this: read it against child_count and against how long the node has "
+    "been up",
+    "", "")
+
+TL_LEAF(services, ticks_run_total, TLC_I64, TFU_COUNT_TOTAL, TLV_NORMAL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "ticks summed over every registered child since boot. This is ACTIVITY, "
+    "not results: it climbs just as fast on a child achieving nothing. Read it "
+    "only as the denominator for idle_ticks_total",
+    "", "")
+
+TL_LEAF(services, idle_ticks_total, TLC_I64, TFU_COUNT_TOTAL, TLV_NORMAL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "ticks summed over every child on which the child positively established "
+    "there was no work to do. ticks_run_total minus this is the number of runs "
+    "that were supposed to produce something",
+    "", "")
+
+TL_LEAF(services, stall_fires_total, TLC_I64, TFU_COUNT_TOTAL, TLV_NORMAL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "stall edges fired across every child since boot. Cumulative, so a "
+    "nonzero value on a node that recovered is history, not a current fault; "
+    "children_stalled is the live signal",
+    "", "")
+
+TL_LEAF(services, worst_tick_age_us, TLC_I64, TFU_MICROSECONDS, TLV_NORMAL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "the largest time-since-last-heartbeat across all non-completed children. "
+    "Not judged here because the deadline is per-child and this dump carries "
+    "one number: compare it against that child's own deadline_secs",
+    "", "")
+
+TL_LEAF(services, worst_tick_child, TLC_TEXT, TFU_IDENTITY, TLV_FULL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "the name of the child that worst_tick_age_us belongs to, so the number "
+    "points at something. Empty when no child is registered",
+    "", "")
+
+TL_GROUP_END(services)
+
+TL_GROUP(threads, "the supervisor's own threads and the CPU topology they run "
+                  "on: the root of the liveness tree, and the machine under it")
+
+TL_LEAF(threads, supervisor_running, TLC_BOOL, TFU_BOOL, TLV_SUMMARY,
+    TFR_EXPECT_TRUE, TL_NONE, 0, TFS_CRITICAL,
+    "whether the dedicated supervisor sweep thread is started. It is the "
+    "independent clock every child's deadline is measured against",
+    "no deadline is being checked anywhere in the node: a wedged subsystem "
+    "would never raise a stall and the node could fall behind silently",
+    "zclassic23 ops state --subsystem=supervisor")
+
+TL_LEAF(threads, sweep_last_age_us, TLC_I64, TFU_MICROSECONDS, TLV_SUMMARY,
+    TFR_MAX_ABS, TL_NONE, 30000000, TFS_CRITICAL,
+    "time since the sweep thread last entered sweep_once. The bar is the "
+    "independent backstop's own freeze threshold, 30 s "
+    "(SUPERVISOR_BACKSTOP_DEFAULT_FREEZE_US) — at or past it the backstop "
+    "treats the sweep as dead",
+    "the root of the liveness tree is itself frozen, so every child's "
+    "deadline has stopped being evaluated and the backstop is about to act",
+    "zclassic23 ops state --subsystem=supervisor_backstop")
+
+TL_LEAF(threads, tick_runner_running, TLC_BOOL, TFU_BOOL, TLV_NORMAL,
+    TFR_EXPECT_TRUE, TL_NONE, 0, TFS_WARN,
+    "whether the dedicated tick-runner thread is up. It executes children's "
+    "on_tick callbacks so the sweep never does I/O inline",
+    "period-driven children fall back to running inline on the sweep thread, "
+    "where one slow commit can freeze the sweep heartbeat and have the "
+    "backstop kill a healthy node",
+    "zclassic23 ops state --subsystem=supervisor")
+
+TL_LEAF(threads, tick_runner_last_hb_age_us, TLC_I64, TFU_MICROSECONDS,
+    TLV_NORMAL, TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "time since the tick-runner thread last heartbeat. Not judged here: the "
+    "runner's deadline is configured at setup, and the sweep already turns an "
+    "overrun into the named supervisor.tick_runner_wedged blocker. Compare "
+    "against that blocker rather than against a number invented here",
+    "", "")
+
+TL_LEAF(threads, tick_runner_stall_fires, TLC_I64, TFU_COUNT_TOTAL, TLV_NORMAL,
+    TFR_EXPECT_ZERO, TL_NONE, 0, TFS_WARN,
+    "times the tick runner has been declared wedged since boot. Each one means "
+    "some child's on_tick blocked long enough to stop every other child's tick. "
+    "Cumulative, so this LATCHES: unlike stall_fires_total below, which is "
+    "cumulative and left unjudged, one shared thread wedging stops every "
+    "period-driven child at once, so a single occurrence is worth carrying "
+    "until an operator has looked at it",
+    "at least one child's tick callback blocked long enough to wedge the "
+    "shared runner, and every period-driven child behind it in the queue "
+    "missed its cadence for the duration. Whether it is still wedged is "
+    "tick_runner_last_hb_age_us, not this counter",
+    "zclassic23 ops state --subsystem=blocker")
+
+TL_LEAF(threads, logical_cpus, TLC_I64, TFU_GAUGE, TLV_NORMAL,
+    TFR_MIN_ABS, TL_NONE, 1, TFS_WARN,
+    "logical CPUs the topology organ found, from sysfs when readable and from "
+    "sysconf otherwise. Every worker-pool size in the node is derived from it",
+    "the topology probe returned nothing usable, so pool sizing and pinning "
+    "fall back to defaults chosen for an unknown machine",
+    "zclassic23 ops state --subsystem=cpu_topology")
+
+TL_LEAF(threads, topology_source, TLC_TEXT, TFU_ENUM, TLV_FULL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "sysfs when a real /sys topology was parsed, fallback when only a bare "
+    "core count was available. On fallback, physical cores and L3 domains are "
+    "guesses, so do not read a pinning decision as measured",
+    "", "")
+
+TL_GROUP_END(threads)
+
+TL_GROUP(resources, "host memory this process is holding and the ceiling it is "
+                    "measured against")
+
+TL_LEAF(resources, mem_level, TLC_TEXT, TFU_ENUM, TLV_SUMMARY,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "the memory-pressure organ's own ladder as of its last poll: nominal, "
+    "elevated, high or critical. Carried as text because the ladder is a "
+    "closed string set; the judged form of the same fact is mem_current_bytes "
+    "against mem_denominator_bytes",
+    "", "")
+
+TL_LEAF(resources, mem_current_bytes, TLC_I64, TFU_BYTES, TLV_SUMMARY,
+    TFR_MAX_RATIO_OF, TL_REF(resources, mem_denominator_bytes), 900,
+    TFS_CRITICAL,
+    "usage the pressure ladder is computed from — cgroup memory.current when a "
+    "cgroup ceiling was selected, else this process's RSS. The bar is 900 per "
+    "mille of the ceiling, which is the shipped default critical percentage; "
+    "an operator who set ZCL_MEM_PRESSURE_CRITICAL_PCT should read mem_level "
+    "instead",
+    "the process is at or past the level where the memory organ fires every "
+    "registered shrink sink, and the next step above it is an OOM kill",
+    "zclassic23 ops state --subsystem=mem_pressure")
+
+TL_LEAF(resources, mem_denominator_bytes, TLC_I64, TFU_BYTES, TLV_NORMAL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "the ceiling mem_current_bytes is judged against: cgroup memory.high if "
+    "set, else cgroup memory.max, else total system RAM. Unavailable when the "
+    "organ has not polled yet",
+    "", "")
+
+TL_LEAF(resources, mem_denominator_basis, TLC_TEXT, TFU_ENUM, TLV_FULL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "which of those three ceilings was chosen. It changes what a percentage "
+    "means: against memory.high the kernel throttles, against system RAM "
+    "nothing enforces it at all",
+    "", "")
+
+TL_LEAF(resources, rss_bytes, TLC_I64, TFU_BYTES, TLV_NORMAL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "resident set size of this process at the last poll. Deliberately NOT "
+    "judged: RSS climbing during background validation is expected on this "
+    "node and is not a leak. The judged question is mem_current_bytes against "
+    "its ceiling",
+    "", "")
+
+TL_LEAF(resources, mem_polling_active, TLC_BOOL, TFU_BOOL, TLV_NORMAL,
+    TFR_EXPECT_TRUE, TL_NONE, 0, TFS_WARN,
+    "whether the memory organ is registered on the periodic ring. It is the "
+    "half that actually fires the shrink sinks",
+    "nothing recomputes the pressure level and no shrink sink will ever fire, "
+    "so the numbers here are frozen at whatever the last poll saw",
+    "zclassic23 ops state --subsystem=mem_pressure")
+
+TL_LEAF(resources, mem_last_poll_unix, TLC_I64, TFU_UNIX_TIME, TLV_FULL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "wall-clock second of the organ's last poll. Every other leaf in this "
+    "group is as of that instant, not as of this call; the cadence is five "
+    "seconds",
+    "", "")
+
+TL_LEAF(resources, ram_bytes, TLC_I64, TFU_BYTES, TLV_FULL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "total physical RAM the hardware probe measured once at boot. It is the "
+    "input to SQLite cache sizing, verify parallelism and the script batch "
+    "cap, so a wrong value here explains odd tuning downstream",
+    "", "")
+
+TL_GROUP_END(resources)

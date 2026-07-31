@@ -84,7 +84,7 @@ sync_rate app/conditions/src/sync_rate_below_floor.c sync_rate_below_floor_dump_
 # Order matches the registry (node machinery outward to hosted applications).
 # Each table currently carries exactly one leaf — meta.collected_unix — so the
 # floor is 1. Raise each floor as its domain's lane lands real groups.
-TABLE runtime   lib/util/include/util/telemetry/runtime_fields.def   1
+TABLE runtime   lib/util/include/util/telemetry/runtime_fields.def   26
 TABLE sync      lib/util/include/util/telemetry/sync_fields.def      1
 TABLE network   lib/util/include/util/telemetry/network_fields.def   1
 TABLE storage   lib/util/include/util/telemetry/storage_fields.def   1

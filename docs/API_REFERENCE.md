@@ -63,9 +63,9 @@ zclassic23 discover schema <path> --side=input|output
 | Top-level roots | 10 |
 | Branches | 92 |
 | Leaves (dispatchable command paths) | 299 |
-| … `ready` (live handler in this build) | 227 |
+| … `ready` (live handler in this build) | 230 |
 | … `compat` (metadata only, names a fallback) | 17 |
-| … `planned` (fail-closed BLOCKED, exit 3) | 55 |
+| … `planned` (fail-closed BLOCKED, exit 3) | 52 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
 | Leaves with `effect=mutate` | 77 |
 | Leaves with `effect=destructive` | 4 |
@@ -655,9 +655,9 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `ops telemetry runtime services` | planned | read / read / operator · fast/low | none | `zcl.telemetry.runtime.services.v1` | `zclassic23 ops telemetry runtime services` | Registered services and their liveness — *the typed runtime telemetry snapshot is not built yet* |
-| `ops telemetry runtime threads` | planned | read / read / operator · fast/low | none | `zcl.telemetry.runtime.threads.v1` | `zclassic23 ops telemetry runtime threads` | Threads and their supervision state — *the typed runtime telemetry snapshot is not built yet* |
-| `ops telemetry runtime resources` | planned | read / read / operator · fast/low | none | `zcl.telemetry.runtime.resources.v1` | `zclassic23 ops telemetry runtime resources` | Host resources this process holds — *the typed runtime telemetry snapshot is not built yet* |
+| `ops telemetry runtime services` | ready | read / read / operator · fast/low | none | `zcl.telemetry.runtime.services.v1` | `zclassic23 ops telemetry runtime services` | Registered services and their liveness |
+| `ops telemetry runtime threads` | ready | read / read / operator · fast/low | none | `zcl.telemetry.runtime.threads.v1` | `zclassic23 ops telemetry runtime threads` | Threads and their supervision state |
+| `ops telemetry runtime resources` | ready | read / read / operator · fast/low | none | `zcl.telemetry.runtime.resources.v1` | `zclassic23 ops telemetry runtime resources` | Host resources this process holds |
 
 #### `ops.telemetry.sync` — Reducer frontier, stages and catch-up posture
 
