@@ -97,6 +97,10 @@ static const struct api_resource_route k_api_resource_routes[] = {
     API_ROUTE("GET", "/api/wallet", "wallet", "show", api_serve_wallet,
               "zcl.wallet_status.v1", "", "wallet_projection", "", true,
               "core.wallet.status"),
+    API_ROUTE("GET", "/api/builds", "builds", "index", api_serve_builds,
+      "zcl.builds.index.v1", "", "build_ledger", "", true, "metaverse.build.status"),
+    API_ROUTE("GET", "/api/build_workers", "build_workers", "index", api_serve_build_workers,
+      "zcl.build_workers.index.v1", "", "build_ledger", "", true, "metaverse.build.worker.list"),
     API_ROUTE("GET", "/api/files/manifest", "files", "manifest",
               api_serve_files_manifest, "zcl.files_manifest.v1", "",
               "file_manifest", "", false,
@@ -171,6 +175,7 @@ enum api_dynamic_dispatch_kind {
     API_DYN_SERVICE_CATALOG_SHOW,
     API_DYN_SERVICE_OPERATIONS_INDEX,
     API_DYN_SERVICE_OPERATION_SHOW,
+    API_DYN_BUILD_SHOW, API_DYN_BUILD_ACTIONS_INDEX, API_DYN_BUILD_RECEIPT_SHOW,
 };
 
 struct api_dynamic_resource_route {
@@ -250,24 +255,20 @@ static const struct api_dynamic_resource_route k_api_dynamic_resource_routes[] =
     { "GET", "/api/service-operations/{operation_id}", "service_operations",
       "show", ZCL_SERVICE_OPERATION_SCHEMA, "", "static", "", false,
       API_DYN_SERVICE_OPERATION_SHOW },
+    { "GET", "/api/builds/{job_id}/actions", "build_actions", "index",
+      "zcl.build_actions.index.v1", "", "build_ledger", "", true, API_DYN_BUILD_ACTIONS_INDEX },
+    { "GET", "/api/builds/{job_id}", "builds", "show", "zcl.builds.show.v1",
+      "", "build_ledger", "", true, API_DYN_BUILD_SHOW },
+    { "GET", "/api/build_receipts/{receipt_id}", "build_receipts", "show",
+      "zcl.build_receipts.show.v1", "", "build_ledger", "", true, API_DYN_BUILD_RECEIPT_SHOW },
 };
 
-static size_t api_dynamic_resource_route_count_internal(void)
-{
-    return sizeof(k_api_dynamic_resource_routes) /
-           sizeof(k_api_dynamic_resource_routes[0]);
-}
-
-static size_t api_resource_route_count_internal(void)
-{
-    return sizeof(k_api_resource_routes) / sizeof(k_api_resource_routes[0]);
-}
-
-static size_t api_json_resource_route_count_internal(void)
-{
-    return sizeof(k_api_json_resource_routes) /
-           sizeof(k_api_json_resource_routes[0]);
-}
+static size_t api_dynamic_resource_route_count_internal(void) {
+    return sizeof(k_api_dynamic_resource_routes) / sizeof(k_api_dynamic_resource_routes[0]); }
+static size_t api_resource_route_count_internal(void) {
+    return sizeof(k_api_resource_routes) / sizeof(k_api_resource_routes[0]); }
+static size_t api_json_resource_route_count_internal(void) {
+    return sizeof(k_api_json_resource_routes) / sizeof(k_api_json_resource_routes[0]); }
 
 size_t api_route_contract_count(void)
 {
@@ -574,6 +575,9 @@ static size_t api_dynamic_route_dispatch(
         return api_json_error(response, response_max, JSON_404_HEADERS,
                               "Service operation not found");
     }
+    case API_DYN_BUILD_SHOW: return api_serve_build(param, response, response_max);
+    case API_DYN_BUILD_ACTIONS_INDEX: return api_serve_build_actions(param, response, response_max);
+    case API_DYN_BUILD_RECEIPT_SHOW: return api_serve_build_receipt(param, response, response_max);
     }
 
     return api_json_error(response, response_max, JSON_500_HEADERS,

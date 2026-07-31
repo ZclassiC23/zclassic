@@ -17,12 +17,14 @@
 enum {
     BUILD_FABRIC_ID_HEX = 64,
     BUILD_FABRIC_KIND_MAX = 63,
+    BUILD_FABRIC_TARGET_MAX = 63,
     BUILD_FABRIC_PROFILE_MAX = 31,
     BUILD_FABRIC_STATE_MAX = 23,
     BUILD_FABRIC_OUTCOME_MAX = 23,
     BUILD_FABRIC_ERROR_MAX = 255,
     BUILD_FABRIC_CAPS_MAX = 1023,
     BUILD_FABRIC_CONFINEMENT_MAX = 255,
+    BUILD_FABRIC_DESCRIPTOR_MAX = 255,
     BUILD_FABRIC_SIGNATURE_HEX = 128,
 };
 
@@ -47,6 +49,12 @@ struct db_build_action {
     char state[BUILD_FABRIC_STATE_MAX + 1];
     char outcome[BUILD_FABRIC_OUTCOME_MAX + 1];
     char input_root_sha3[BUILD_FABRIC_ID_HEX + 1];
+    char target[BUILD_FABRIC_TARGET_MAX + 1];
+    char flags_sha3[BUILD_FABRIC_ID_HEX + 1];
+    char environment_sha3[BUILD_FABRIC_ID_HEX + 1];
+    char virtual_workdir[BUILD_FABRIC_DESCRIPTOR_MAX + 1];
+    char declared_outputs[BUILD_FABRIC_DESCRIPTOR_MAX + 1];
+    char resource_policy[BUILD_FABRIC_DESCRIPTOR_MAX + 1];
     char output_root_sha3[BUILD_FABRIC_ID_HEX + 1];
     char worker_id[BUILD_FABRIC_ID_HEX + 1];
     char last_error[BUILD_FABRIC_ERROR_MAX + 1];

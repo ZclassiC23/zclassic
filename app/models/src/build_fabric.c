@@ -79,6 +79,10 @@ static bool build_action_before_validate(void *record, void *ctx)
     model_trim_ascii(row->kind);
     model_trim_ascii(row->state);
     model_trim_ascii(row->outcome);
+    model_trim_ascii(row->target);
+    model_trim_ascii(row->virtual_workdir);
+    model_trim_ascii(row->declared_outputs);
+    model_trim_ascii(row->resource_policy);
     model_trim_ascii(row->last_error);
     int64_t now = (int64_t)platform_time_wall_unix();
     if (row->created_at == 0) row->created_at = now;
@@ -162,6 +166,15 @@ bool db_build_action_validate(const struct db_build_action *row,
                      "is not a named build outcome");
     validates_custom(errors, build_hex_id(row->input_root_sha3),
                      "input_root_sha3", "must be a 64-byte hex digest");
+    validates_string_present(errors, row->target, "target");
+    validates_custom(errors, build_hex_id(row->flags_sha3), "flags_sha3",
+                     "must be a 64-byte hex digest");
+    validates_custom(errors, build_hex_id(row->environment_sha3),
+                     "environment_sha3", "must be a 64-byte hex digest");
+    validates_string_present(errors, row->virtual_workdir, "virtual_workdir");
+    validates_string_present(errors, row->declared_outputs,
+                             "declared_outputs");
+    validates_string_present(errors, row->resource_policy, "resource_policy");
     validates_custom(errors,
                      !row->output_root_sha3[0] ||
                          build_hex_id(row->output_root_sha3),
@@ -263,8 +276,10 @@ bool db_build_action_save(struct node_db *ndb,
     AR_ADHOC_SAVE(ndb, st,
         "INSERT INTO build_actions "
         "(action_id,job_id,sequence,kind,state,outcome,input_root_sha3,"
-        "output_root_sha3,worker_id,last_error,created_at,updated_at) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(action_id) DO UPDATE SET "
+        "target,flags_sha3,environment_sha3,virtual_workdir,declared_outputs,"
+        "resource_policy,output_root_sha3,worker_id,last_error,created_at,updated_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(action_id) DO UPDATE SET "
         "state=excluded.state,outcome=excluded.outcome,"
         "output_root_sha3=excluded.output_root_sha3,worker_id=excluded.worker_id,"
         "last_error=excluded.last_error,updated_at=excluded.updated_at",
@@ -277,11 +292,17 @@ bool db_build_action_save(struct node_db *ndb,
         AR_BIND_TEXT(st, 5, row->state);
         AR_BIND_TEXT(st, 6, row->outcome);
         AR_BIND_TEXT(st, 7, row->input_root_sha3);
-        AR_BIND_TEXT(st, 8, row->output_root_sha3);
-        AR_BIND_TEXT(st, 9, row->worker_id);
-        AR_BIND_TEXT(st, 10, row->last_error);
-        AR_BIND_INT(st, 11, row->created_at);
-        AR_BIND_INT(st, 12, row->updated_at));
+        AR_BIND_TEXT(st, 8, row->target);
+        AR_BIND_TEXT(st, 9, row->flags_sha3);
+        AR_BIND_TEXT(st, 10, row->environment_sha3);
+        AR_BIND_TEXT(st, 11, row->virtual_workdir);
+        AR_BIND_TEXT(st, 12, row->declared_outputs);
+        AR_BIND_TEXT(st, 13, row->resource_policy);
+        AR_BIND_TEXT(st, 14, row->output_root_sha3);
+        AR_BIND_TEXT(st, 15, row->worker_id);
+        AR_BIND_TEXT(st, 16, row->last_error);
+        AR_BIND_INT(st, 17, row->created_at);
+        AR_BIND_INT(st, 18, row->updated_at));
 }
 
 bool db_build_worker_save(struct node_db *ndb,
@@ -357,11 +378,17 @@ static void build_action_read(struct db_build_action *out, sqlite3_stmt *st)
     AR_READ_STR(st, 4, out->state, sizeof(out->state));
     AR_READ_STR(st, 5, out->outcome, sizeof(out->outcome));
     AR_READ_STR(st, 6, out->input_root_sha3, sizeof(out->input_root_sha3));
-    AR_READ_STR(st, 7, out->output_root_sha3, sizeof(out->output_root_sha3));
-    AR_READ_STR(st, 8, out->worker_id, sizeof(out->worker_id));
-    AR_READ_STR(st, 9, out->last_error, sizeof(out->last_error));
-    out->created_at = AR_COL_INT(st, 10);
-    out->updated_at = AR_COL_INT(st, 11);
+    AR_READ_STR(st, 7, out->target, sizeof(out->target));
+    AR_READ_STR(st, 8, out->flags_sha3, sizeof(out->flags_sha3));
+    AR_READ_STR(st, 9, out->environment_sha3, sizeof(out->environment_sha3));
+    AR_READ_STR(st, 10, out->virtual_workdir, sizeof(out->virtual_workdir));
+    AR_READ_STR(st, 11, out->declared_outputs, sizeof(out->declared_outputs));
+    AR_READ_STR(st, 12, out->resource_policy, sizeof(out->resource_policy));
+    AR_READ_STR(st, 13, out->output_root_sha3, sizeof(out->output_root_sha3));
+    AR_READ_STR(st, 14, out->worker_id, sizeof(out->worker_id));
+    AR_READ_STR(st, 15, out->last_error, sizeof(out->last_error));
+    out->created_at = AR_COL_INT(st, 16);
+    out->updated_at = AR_COL_INT(st, 17);
 }
 
 static void build_worker_read(struct db_build_worker *out, sqlite3_stmt *st)
@@ -393,7 +420,9 @@ static void build_receipt_read(struct db_build_receipt *out, sqlite3_stmt *st)
 #define BUILD_JOB_COLS "job_id,source_sha256,source_cas_sha3,toolchain_sha3," \
     "profile,state,outcome,cancel_requested,created_at,updated_at"
 #define BUILD_ACTION_COLS "action_id,job_id,sequence,kind,state,outcome," \
-    "input_root_sha3,output_root_sha3,worker_id,last_error,created_at,updated_at"
+    "input_root_sha3,target,flags_sha3,environment_sha3,virtual_workdir," \
+    "declared_outputs,resource_policy,output_root_sha3,worker_id,last_error," \
+    "created_at,updated_at"
 #define BUILD_WORKER_COLS "worker_id,signer_pubkey,capabilities,approved," \
     "revoked,approved_at,expires_at,last_seen_at"
 #define BUILD_RECEIPT_COLS "receipt_id,action_id,job_id,worker_id,action_sha3," \

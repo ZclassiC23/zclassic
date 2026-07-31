@@ -59,15 +59,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 396 |
+| Registry entries (branches + leaves) | 406 |
 | Top-level roots | 10 |
-| Branches | 92 |
-| Leaves (dispatchable command paths) | 304 |
-| … `ready` (live handler in this build) | 256 |
+| Branches | 94 |
+| Leaves (dispatchable command paths) | 312 |
+| … `ready` (live handler in this build) | 264 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
-| Leaves with `effect=mutate` | 80 |
+| Leaves with `effect=mutate` | 85 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 65 |
 
@@ -86,7 +86,7 @@ Per source file:
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 14 | 3 | 11 |
 | `config/commands/zcode.def` | 63 | 15 | 48 |
-| `config/commands/metaverse.def` | 7 | 3 | 4 |
+| `config/commands/metaverse.def` | 17 | 5 | 12 |
 | `config/commands/telemetry/root.def` | 6 | 2 | 4 |
 | `config/commands/telemetry/watch.def` | 1 | 0 | 1 |
 | `config/commands/telemetry/runtime.def` | 4 | 1 | 3 |
@@ -917,6 +917,24 @@ represented by its children's sections.
 | `metaverse property list` | ready | read / read / operator · fast/moderate | **`kind`**, `limit`, `datadir` | `zcl.metaverse_property_list.v1` | `zclassic23 metaverse property list` | Every property this datadir holds, one row per kind scanned |
 | `metaverse property show` | ready | read / read / operator · fast/low | **`property_id`**, `datadir` | `zcl.metaverse_property_show.v1` | `zclassic23 metaverse property show content:<64hex>` | One property: its roots, controller, status, and evidence grade |
 
+#### `metaverse.build` — Content-addressed C23 build jobs, actions, and receipts
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `metaverse build plan` | ready | mutate / app-write / operator · fast/low | **`source_sha256`**, **`source_cas_sha3`**, **`toolchain_sha3`**, **`input_root_sha3`**, **`flags_sha3`**, **`environment_sha3`**, **`profile`**, `datadir` | `zcl.build_plan.v1` | `zclassic23 metaverse build plan --input='{"source_sha256":"<64hex>","source_cas_sha3":"<64hex>","toolchain_sha3":"<64hex>","input_root_sha3":"<64hex>","flags_sha3":"<64hex>","environment_sha3":"<64hex>","profile":"dev"}'` | Persist one immutable preprocessed C23 compile action |
+| `metaverse build submit` | ready | mutate / app-write / operator · fast/low | **`job_id`**, `datadir` | `zcl.build_job.v1` | `zclassic23 metaverse build submit <job_id>` | Queue every action in one planned build |
+| `metaverse build status` | ready | read / read / operator · fast/low | **`job_id`**, `datadir` | `zcl.build_status.v1` | `zclassic23 metaverse build status <job_id>` | Read one durable build and its ordered actions |
+| `metaverse build cancel` | ready | mutate / app-write / operator · fast/low | **`job_id`**, `datadir` | `zcl.build_job.v1` | `zclassic23 metaverse build cancel <job_id>` | Cancel one non-completed build |
+| `metaverse build receipt` | ready | read / read / operator · fast/tiny | **`receipt_id`**, `datadir` | `zcl.build_receipt.v1` | `zclassic23 metaverse build receipt <receipt_id>` | Read one signed worker build receipt |
+
+#### `metaverse.build.worker` — Opt-in compile workers and their approved signing keys
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `metaverse build worker list` | ready | read / read / operator · fast/low | `datadir` | `zcl.build_worker_list.v1` | `zclassic23 metaverse build worker list` | List build workers and current trust state |
+| `metaverse build worker approve` | ready | mutate / app-write / operator · fast/low | **`worker_id`**, **`signer_pubkey`**, `capabilities`, `expires_at`, `datadir` | `zcl.build_worker.v1` | `zclassic23 metaverse build worker approve <worker_id> --signer_pubkey=<64hex>` | Approve one Ed25519 build-receipt signer |
+| `metaverse build worker revoke` | ready | mutate / app-write / operator · fast/low | **`worker_id`**, `datadir` | `zcl.build_worker.v1` | `zclassic23 metaverse build worker revoke <worker_id>` | Revoke one build-receipt signer without deleting evidence |
+
 
 ## Aliases
 
@@ -981,6 +999,8 @@ promise the same document shape.
 | `zcl.account.v1` | `app.account.show`, `app.account.whoami`, `app.account.add`, `app.account.role`, `app.account.suspend`, `app.account.unsuspend` |
 | `zcl.vault_swap_settle.v1` | `vault.swap.redeem`, `vault.swap.refund` |
 | `zcl.zcode_leaderboard.v1` | `zcode.leaderboard.daily`, `zcode.leaderboard.weekly`, `zcode.leaderboard.monthly`, `zcode.leaderboard.all` |
+| `zcl.build_job.v1` | `metaverse.build.submit`, `metaverse.build.cancel` |
+| `zcl.build_worker.v1` | `metaverse.build.worker.approve`, `metaverse.build.worker.revoke` |
 | `zcl.telemetry.alerts.v1` | `ops.telemetry.alerts.active`, `ops.telemetry.alerts.history` |
 | `zcl.telemetry.network.v1` | `ops.telemetry.network.summary`, `ops.telemetry.network.peers`, `ops.telemetry.network.tor`, `ops.telemetry.network.transport` |
 

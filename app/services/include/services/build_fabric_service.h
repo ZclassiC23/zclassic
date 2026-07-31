@@ -9,6 +9,16 @@
 
 #include <stdint.h>
 
+/* Domain-separated immutable identities. The action identity binds every
+ * V1 execution input; the job identity additionally binds the source oracle
+ * and the ordered action. Neither lifecycle state nor wall time participates. */
+struct zcl_result build_fabric_action_id(
+    const struct db_build_job *job, const struct db_build_action *action,
+    char out_hex[BUILD_FABRIC_ID_HEX + 1]);
+struct zcl_result build_fabric_job_id(
+    const struct db_build_job *job, const char *action_id,
+    char out_hex[BUILD_FABRIC_ID_HEX + 1]);
+
 /* Persist one immutable job/action plan atomically. Repeating the exact plan
  * is idempotent; an id collision with different immutable inputs refuses. */
 struct zcl_result build_fabric_plan(struct node_db *ndb,

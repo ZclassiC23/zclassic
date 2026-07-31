@@ -8,6 +8,9 @@
 #include "services/build_fabric_service.h"
 #include "base/hex.h"
 #include "crypto/ed25519.h"
+#include "command/native_command.h"
+#include "controllers/api_controller.h"
+#include "json/json.h"
 
 #include <sqlite3.h>
 #include <stdio.h>
@@ -55,6 +58,16 @@ static void bf_action(struct db_build_action *row)
     (void)snprintf(row->state, sizeof(row->state), "SNAPSHOTTED");
     (void)snprintf(row->input_root_sha3, sizeof(row->input_root_sha3), "%s",
                    id_c);
+    (void)snprintf(row->target, sizeof(row->target), "linux-x86_64-v3");
+    (void)snprintf(row->flags_sha3, sizeof(row->flags_sha3), "%s", id_d);
+    (void)snprintf(row->environment_sha3, sizeof(row->environment_sha3), "%s",
+                   id_a);
+    (void)snprintf(row->virtual_workdir, sizeof(row->virtual_workdir),
+                   "/zbuild/src");
+    (void)snprintf(row->declared_outputs, sizeof(row->declared_outputs),
+                   "unit.o");
+    (void)snprintf(row->resource_policy, sizeof(row->resource_policy),
+                   "cpu=1,memory_mb=2048,timeout_s=120,network=0");
     row->created_at = 101;
     row->updated_at = 101;
 }
@@ -198,6 +211,11 @@ static int test_bf_service(void)
         struct db_build_action action;
         bf_job(&job);
         bf_action(&action);
+        char action_id[65], job_id[65];
+        ASSERT(build_fabric_action_id(&job, &action, action_id).ok);
+        ASSERT(build_fabric_job_id(&job, action_id, job_id).ok);
+        ASSERT(strlen(action_id) == 64 && strlen(job_id) == 64);
+        ASSERT(strcmp(action_id, job_id) != 0);
         struct db_build_job planned_job = job;
         struct db_build_action planned_action = action;
         ASSERT(build_fabric_plan(&ndb, &job, &action).ok);
@@ -251,6 +269,85 @@ static int test_bf_service(void)
     return failures;
 }
 
+static int test_bf_native(void)
+{
+    int failures = 0;
+    TEST("build_fabric: native plan and read-only status share the service") {
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "build_fabric", "native");
+        struct json_value input;
+        json_init(&input); json_set_object(&input);
+        (void)json_push_kv_str(&input, "source_sha256", id_a);
+        (void)json_push_kv_str(&input, "source_cas_sha3", id_b);
+        (void)json_push_kv_str(&input, "toolchain_sha3", id_c);
+        (void)json_push_kv_str(&input, "input_root_sha3", id_d);
+        (void)json_push_kv_str(&input, "flags_sha3", id_a);
+        (void)json_push_kv_str(&input, "environment_sha3", id_b);
+        (void)json_push_kv_str(&input, "profile", "dev");
+        (void)json_push_kv_str(&input, "datadir", dir);
+        struct zcl_command_request request = { .input = &input };
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.build_plan.v1");
+        zcl_native_handle_metaverse_build_plan(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        const struct json_value *job = json_get(&reply.data, "job");
+        const char *returned_id = json_get_str(json_get(job, "job_id"));
+        ASSERT(returned_id && strlen(returned_id) == 64);
+        char job_id[65];
+        (void)snprintf(job_id, sizeof(job_id), "%s", returned_id);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+
+        json_init(&input); json_set_object(&input);
+        (void)json_push_kv_str(&input, "job_id", job_id);
+        (void)json_push_kv_str(&input, "datadir", dir);
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.build_status.v1");
+        zcl_native_handle_metaverse_build_status(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "state")), "PLANNED");
+        ASSERT_EQ(json_get_int(json_get(&reply.data, "action_count")), 1);
+        const struct json_value *actions = json_get(&reply.data, "actions");
+        ASSERT(actions && actions->type == JSON_ARR &&
+               actions->num_children == 1);
+        ASSERT_STR_EQ(json_get_str(json_get(json_at(actions, 0), "kind")),
+                     "c23.compile.preprocessed.v1");
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+
+        char db_path[320];
+        (void)snprintf(db_path, sizeof(db_path), "%s/node.db", dir);
+        struct node_db api_db;
+        memset(&api_db, 0, sizeof(api_db));
+        ASSERT(node_db_open(&api_db, db_path));
+        api_set_state(NULL, NULL, NULL, &api_db, dir);
+        ASSERT(api_route_is_operator_private("/api/v1/builds"));
+        ASSERT(api_route_is_operator_private("/api/v1/builds/abc/actions"));
+        ASSERT(api_route_is_operator_private("/api/v1/build_workers"));
+        ASSERT(api_route_is_operator_private("/api/v1/build_receipts/abc"));
+        uint8_t response[16384];
+        size_t response_len = api_handle_request(
+            "GET", "/api/v1/builds", NULL, 0, response, sizeof(response));
+        ASSERT(response_len > 0 && response_len < sizeof(response));
+        response[response_len] = '\0';
+        ASSERT(strstr((char *)response, "HTTP/1.1 200 OK") != NULL);
+        ASSERT(strstr((char *)response, "zcl.builds.index.v1") != NULL);
+        char member_path[128];
+        (void)snprintf(member_path, sizeof(member_path),
+                       "/api/v1/builds/%s/actions", job_id);
+        response_len = api_handle_request("GET", member_path, NULL, 0,
+                                          response, sizeof(response));
+        ASSERT(response_len > 0 && response_len < sizeof(response));
+        response[response_len] = '\0';
+        ASSERT(strstr((char *)response, "zcl.build_actions.index.v1") != NULL);
+        api_set_state(NULL, NULL, NULL, NULL, NULL);
+        node_db_close(&api_db);
+        test_rm_rf(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_build_fabric(void)
 {
     int failures = 0;
@@ -258,6 +355,7 @@ int test_build_fabric(void)
     failures += test_bf_lifecycle();
     failures += test_bf_validation();
     failures += test_bf_service();
+    failures += test_bf_native();
     printf("=== build_fabric: %d failures ===\n", failures);
     return failures;
 }

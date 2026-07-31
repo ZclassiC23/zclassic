@@ -32,6 +32,61 @@ static void bf_sha_i64(struct sha3_256_ctx *sha, int64_t value)
     sha3_256_write(sha, le, sizeof(le));
 }
 
+static void bf_sha_finish(struct sha3_256_ctx *sha,
+                          char out_hex[BUILD_FABRIC_ID_HEX + 1])
+{
+    uint8_t digest[32];
+    sha3_256_finalize(sha, digest);
+    zcl_hex_encode(digest, sizeof(digest), out_hex);
+}
+
+struct zcl_result build_fabric_action_id(
+    const struct db_build_job *job, const struct db_build_action *action,
+    char out_hex[BUILD_FABRIC_ID_HEX + 1])
+{
+    if (!job || !action || !out_hex)
+        return ZCL_ERR(-1, "action id requires a job, action, and output");
+    static const char domain[] = "zcl.build_action.v1";
+    struct sha3_256_ctx sha;
+    sha3_256_init(&sha);
+    sha3_256_write(&sha, (const unsigned char *)domain, sizeof(domain));
+    bf_sha_text(&sha, action->kind);
+    bf_sha_text(&sha, job->source_sha256);
+    bf_sha_text(&sha, job->source_cas_sha3);
+    bf_sha_text(&sha, action->input_root_sha3);
+    bf_sha_text(&sha, job->toolchain_sha3);
+    bf_sha_text(&sha, action->target);
+    bf_sha_text(&sha, job->profile);
+    bf_sha_text(&sha, action->flags_sha3);
+    bf_sha_text(&sha, action->environment_sha3);
+    bf_sha_text(&sha, action->virtual_workdir);
+    bf_sha_text(&sha, action->declared_outputs);
+    bf_sha_text(&sha, action->resource_policy);
+    bf_sha_i64(&sha, action->sequence);
+    bf_sha_finish(&sha, out_hex);
+    return ZCL_OK;
+}
+
+struct zcl_result build_fabric_job_id(
+    const struct db_build_job *job, const char *action_id,
+    char out_hex[BUILD_FABRIC_ID_HEX + 1])
+{
+    if (!job || !action_id || strlen(action_id) != BUILD_FABRIC_ID_HEX ||
+        !out_hex)
+        return ZCL_ERR(-1, "job id requires immutable job inputs and action id");
+    static const char domain[] = "zcl.build_job.v1";
+    struct sha3_256_ctx sha;
+    sha3_256_init(&sha);
+    sha3_256_write(&sha, (const unsigned char *)domain, sizeof(domain));
+    bf_sha_text(&sha, job->source_sha256);
+    bf_sha_text(&sha, job->source_cas_sha3);
+    bf_sha_text(&sha, job->toolchain_sha3);
+    bf_sha_text(&sha, job->profile);
+    bf_sha_text(&sha, action_id);
+    bf_sha_finish(&sha, out_hex);
+    return ZCL_OK;
+}
+
 struct zcl_result build_fabric_receipt_id(
     const struct db_build_receipt *receipt,
     char out_hex[BUILD_FABRIC_ID_HEX + 1])
@@ -50,9 +105,7 @@ struct zcl_result build_fabric_receipt_id(
     bf_sha_text(&sha, receipt->confinement);
     bf_sha_i64(&sha, receipt->exit_status);
     bf_sha_i64(&sha, receipt->created_at);
-    uint8_t digest[32];
-    sha3_256_finalize(&sha, digest);
-    zcl_hex_encode(digest, sizeof(digest), out_hex);
+    bf_sha_finish(&sha, out_hex);
     return ZCL_OK;
 }
 
@@ -70,7 +123,13 @@ static bool bf_action_same_plan(const struct db_build_action *a,
 {
     return strcmp(a->job_id, b->job_id) == 0 &&
            a->sequence == b->sequence && strcmp(a->kind, b->kind) == 0 &&
-           strcmp(a->input_root_sha3, b->input_root_sha3) == 0;
+           strcmp(a->input_root_sha3, b->input_root_sha3) == 0 &&
+           strcmp(a->target, b->target) == 0 &&
+           strcmp(a->flags_sha3, b->flags_sha3) == 0 &&
+           strcmp(a->environment_sha3, b->environment_sha3) == 0 &&
+           strcmp(a->virtual_workdir, b->virtual_workdir) == 0 &&
+           strcmp(a->declared_outputs, b->declared_outputs) == 0 &&
+           strcmp(a->resource_policy, b->resource_policy) == 0;
 }
 
 struct zcl_result build_fabric_plan(struct node_db *ndb,
