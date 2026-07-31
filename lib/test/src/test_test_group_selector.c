@@ -223,7 +223,7 @@ static int test_runner_exact_selection(void)
         char exe[PATH_MAX];
         ASSERT(os_proc_exe_path(exe, sizeof(exe)));
         ASSERT(exe[0] != '\0');
-        char command[PATH_MAX + 128];
+        char command[PATH_MAX + 320];
         int n = snprintf(command, sizeof(command),
                          "\"%s\" --jobs=1 --exact=test_hex_codec "
                          "--no-cache 2>&1", exe);
@@ -298,18 +298,28 @@ static int test_runner_exact_selection(void)
 
         /* Exercise the Make admission seam without running its recipe (and
          * therefore without recursively acquiring the checkout lock). */
-        rc = capture_command(
-            "make -n t-fast-exact ONLY=api "
-            "TEST_PARALLEL_FAST_CANDIDATE=/bin/true "
-            "TEST_PARALLEL_FAST_ACTIVE=/bin/true 2>&1", out, sizeof(out));
+        n = snprintf(command, sizeof(command),
+                     "make -n t-fast-exact ONLY=api "
+                     "TEST_PARALLEL_FAST_CANDIDATE=/bin/true "
+                     "TEST_PARALLEL_FAST_ACTIVE=/bin/true "
+                     "BUILD_SOURCE_RECORD='%s 1 %s' 2>&1",
+                     zcl_build_source_id_sha256(),
+                     zcl_build_source_mutation_sha256());
+        ASSERT(n > 0 && (size_t)n < sizeof(command));
+        rc = capture_command(command, out, sizeof(out));
         ASSERT(rc == 0);
         ASSERT(strstr(out, "resolves to exact set test_api") != NULL);
         ASSERT(strstr(out, "--exact=test_api") != NULL);
 
-        rc = capture_command(
-            "make -n t-fast-exact ONLY=api_missing "
-            "TEST_PARALLEL_FAST_CANDIDATE=/bin/true "
-            "TEST_PARALLEL_FAST_ACTIVE=/bin/true 2>&1", out, sizeof(out));
+        n = snprintf(command, sizeof(command),
+                     "make -n t-fast-exact ONLY=api_missing "
+                     "TEST_PARALLEL_FAST_CANDIDATE=/bin/true "
+                     "TEST_PARALLEL_FAST_ACTIVE=/bin/true "
+                     "BUILD_SOURCE_RECORD='%s 1 %s' 2>&1",
+                     zcl_build_source_id_sha256(),
+                     zcl_build_source_mutation_sha256());
+        ASSERT(n > 0 && (size_t)n < sizeof(command));
+        rc = capture_command(command, out, sizeof(out));
         ASSERT(rc == 2);
         ASSERT(strstr(out, "ONLY='api_missing' is not a valid exact registered group set") != NULL);
         PASS();
