@@ -110,3 +110,9 @@ LIB_MODULE("mining")
 LIB_MODULE("kernel")
 LIB_MODULE("hotswap")
 LIB_MODULE("codeindex")
+
+/* Metaverse property rights. Pure rules over an explicit grant record plus the
+ * receipt codec; references only base + crypto, so it could sit far lower.
+ * It is last because it is the newest and the top of the property stack, and
+ * the rank rule only forbids referencing HIGHER ranks. */
+LIB_MODULE("metaverse")
