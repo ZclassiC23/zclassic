@@ -6,6 +6,7 @@
 #include "models/build_fabric.h"
 #include "models/database.h"
 #include "services/build_fabric_service.h"
+#include "services/build_fabric_runtime.h"
 #include "base/hex.h"
 #include "crypto/ed25519.h"
 #include "command/native_command.h"
@@ -348,6 +349,26 @@ static int test_bf_native(void)
     return failures;
 }
 
+static int test_bf_runtime_dump(void)
+{
+    int failures = 0;
+    TEST("build_fabric: runtime diagnostics publish ceilings and supervision") {
+        struct json_value state;
+        json_init(&state);
+        ASSERT(build_fabric_dump_state_json(&state, NULL));
+        ASSERT_STR_EQ(json_get_str(json_get(&state, "schema")),
+                      "zcl.build_fabric_state.v1");
+        ASSERT_EQ(json_get_int(json_get(&state, "max_actions_per_job")), 256);
+        ASSERT_EQ(json_get_int(json_get(&state, "worker_cpu_limit")), 1);
+        ASSERT(!json_get_bool(json_get(&state, "worker_network_allowed")));
+        const struct json_value *health = json_get(&state, "_health");
+        ASSERT(health && health->type == JSON_OBJ);
+        json_free(&state);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_build_fabric(void)
 {
     int failures = 0;
@@ -356,6 +377,7 @@ int test_build_fabric(void)
     failures += test_bf_validation();
     failures += test_bf_service();
     failures += test_bf_native();
+    failures += test_bf_runtime_dump();
     printf("=== build_fabric: %d failures ===\n", failures);
     return failures;
 }

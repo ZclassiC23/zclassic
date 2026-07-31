@@ -51,6 +51,7 @@
 #include "services/block_pruning_service.h"
 #include "services/segment_sealer_service.h"
 #include "services/op_return_backfill_service.h"
+#include "services/build_fabric_runtime.h"
 #include "services/service_lifecycle.h"
 #include "services/service_token_gate.h"
 #include "services/zslp_ledger_backfill_service.h"
