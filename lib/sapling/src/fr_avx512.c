@@ -26,6 +26,7 @@
 
 #include "sapling/fr.h"
 #include "sapling/fr_accel.h"
+#include "crypto/simd_dispatch.h"
 #include <string.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -50,31 +51,23 @@ static void detect_cpu_features(void)
 {
     if (cpu_detected) return;
 
-    uint32_t eax, ebx, ecx, edx;
+    /* The probe honours the maximum-supported-leaf reported by CPUID leaf 0.
+     * This used to be a raw `cpuid` with EAX=7, which on a CPU whose maximum
+     * basic leaf is below 7 silently returns the HIGHEST leaf's registers
+     * instead of failing — another leaf's bits read as feature bits. It also
+     * executed XGETBV after checking only AVX512F, never OSXSAVE; XGETBV is
+     * itself #UD when the OS has not enabled XSAVE. */
+    struct simd_cpu_words w;
+    simd_cpu_words_probe(&w);
 
-    /* CPUID leaf 7, subleaf 0: structured extended features */
-    __asm__ volatile("cpuid"
-        : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
-        : "a"(7), "c"(0));
+    /* BMI2 (EBX bit 8) and ADX (EBX bit 19) are general-purpose-register
+     * instructions with no XSAVE state component beyond what 64-bit mode always
+     * enables, so the CPUID bit settles them on its own. */
+    cpu_has_bmi2 = w.leaf7_valid && ((w.leaf7_ebx >> 8) & 1);
+    cpu_has_adx  = w.leaf7_valid && ((w.leaf7_ebx >> 19) & 1);
 
-    cpu_has_bmi2 = (ebx >> 8) & 1;       /* EBX bit 8 */
-    cpu_has_adx = (ebx >> 19) & 1;        /* EBX bit 19 */
-    cpu_has_avx512ifma = (ebx >> 21) & 1; /* EBX bit 21 (AVX512_IFMA) */
-
-    /* Also check that AVX-512 foundation (F) is present */
-    bool has_avx512f = (ebx >> 16) & 1;   /* EBX bit 16 */
-    if (!has_avx512f) cpu_has_avx512ifma = false;
-
-    /* Check OS support for AVX-512 (XGETBV: XCR0 bits 5,6,7 must be set) */
-    if (cpu_has_avx512ifma) {
-        uint32_t xcr0_lo, xcr0_hi;
-        __asm__ volatile("xgetbv"
-            : "=a"(xcr0_lo), "=d"(xcr0_hi)
-            : "c"(0));
-        /* bits 5=opmask, 6=ZMM_hi256, 7=Hi16_ZMM */
-        if ((xcr0_lo & 0xE0) != 0xE0)
-            cpu_has_avx512ifma = false;
-    }
+    /* IFMA is a ZMM tier, so it needs the full OS-state check. */
+    cpu_has_avx512ifma = simd_avx512_ifma_usable(&w);
 
     cpu_detected = true;
 }

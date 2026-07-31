@@ -121,6 +121,7 @@ gate_command() {
         check-core-seal)                   echo '__core_seal__' ;;
         check-accel-oracle-pinned)         echo './tools/lint/check_accel_oracle_pinned.sh' ;;
         check-no-adx-overclaim)            echo './tools/lint/check_no_adx_overclaim.sh' ;;
+        check-simd-os-support)             echo './tools/lint/check_simd_os_support.sh' ;;
         check-supervisor-registration)     echo './tools/scripts/check_supervisor_registration.sh' ;;
         check-test-registration)           echo './tools/scripts/check_test_registration.sh' ;;
         check-typed-blocker)               echo './tools/scripts/check_typed_blocker.sh' ;;

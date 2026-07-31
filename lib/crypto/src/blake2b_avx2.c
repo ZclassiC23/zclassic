@@ -16,10 +16,10 @@
  */
 
 #include "crypto/blake2b.h"
+#include "crypto/simd_dispatch.h"
 #include <string.h>
 #include <stdatomic.h>
 #include <stdbool.h>
-#include <cpuid.h>
 #include <immintrin.h>
 
 /* ── Runtime CPU feature detection ───────────────────────────── */
@@ -50,22 +50,17 @@ static void detect_features(void)
 {
     if (atomic_load_explicit(&g_detected, memory_order_acquire)) return;
 #if defined(__x86_64__) || defined(_M_X64)
-    unsigned int eax, ebx, ecx, edx;
-    bool avx2 = false, avx512f = false;
-    if (__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) {
-        avx2    = (ebx >> 5) & 1;   /* EBX bit 5  */
-        avx512f = (ebx >> 16) & 1;  /* EBX bit 16 */
-    }
-    /* AVX-512 additionally requires the OS to have enabled ZMM state, else the
-     * first vmovdqa64 raises #UD. Every other ZMM entry point in this tree
-     * (sha3_avx512.c, fr_avx512.c) checks XCR0; this one did not. */
-    if (avx512f) {
-        unsigned int xcr0_lo, xcr0_hi;
-        __asm__ volatile("xgetbv" : "=a"(xcr0_lo), "=d"(xcr0_hi) : "c"(0));
-        (void)xcr0_hi;
-        /* bit 5 opmask, bit 6 ZMM_hi256, bit 7 Hi16_ZMM */
-        if ((xcr0_lo & 0xE0) != 0xE0) avx512f = false;
-    }
+    /* Both tiers go through the audited predicate in crypto/simd_dispatch.h:
+     * OSXSAVE first (XGETBV is itself #UD without it), then the CPUID feature
+     * bit, then the XCR0 state components the tier needs. The AVX-512 arm here
+     * used to check the three ZMM bits but not OSXSAVE, and the AVX2 arm
+     * checked no OS state at all — a `noxsave` boot would have taken a SIGILL
+     * on the first 4-way compress, on the Equihash PoW path. */
+    struct simd_cpu_words w;
+    simd_cpu_words_probe(&w);
+    bool avx2 = simd_avx2_usable(&w);
+    bool avx512f = simd_avx512f_usable(&w);
+
     atomic_store_explicit(&g_cap_avx2, avx2, memory_order_relaxed);
     atomic_store_explicit(&g_cap_avx512f, avx512f, memory_order_relaxed);
     atomic_store_explicit(&g_use_avx2, avx2, memory_order_relaxed);

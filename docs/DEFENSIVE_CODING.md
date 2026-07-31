@@ -515,6 +515,35 @@ assert green).
   chains to the two flags); this gate keeps them that way and grades anything
   that joins them. Impl: `tools/lint/check_no_adx_overclaim.sh`.
 
+- **`check-simd-os-support`** (HARD) — CPUID reports what the SILICON can
+  decode. It does not report whether the OS agreed to save the corresponding
+  register state across a context switch. If it did not, the first wide
+  instruction is `#UD` — the process takes a SIGILL even though CPUID said the
+  feature was present. `noxsave`, `clearcpuid=avx512f`, and hypervisors that
+  mask XCR0 all produce exactly that machine. `lib/crypto/src/blake2b_avx2.c`
+  shipped with it: `detect_features()` dispatched its AVX2 tier on CPUID.7.0:EBX
+  bit 5 with no OS-state check at all, and that code path is Equihash PoW
+  verification — the fault would have landed on the consensus path on a host
+  whose boot flags we do not control. The AVX-512 arms in that file,
+  `keccak_x4.c`, and `fr_avx512.c` *did* read XCR0, but executed `XGETBV`
+  without first confirming CPUID.1:ECX[27] OSXSAVE, and `XGETBV` is itself `#UD`
+  when the OS has not enabled XSAVE — checking the state word with an
+  instruction that faults for the same reason the state word would have told you
+  about is not a check. The rule: any file carrying
+  `__attribute__((target("avx…")))` must (1) include `crypto/simd_dispatch.h`,
+  (2) read XCR0 **and** name OSXSAVE locally, or (3) gate on a named delegate
+  predicate, which the gate then holds to (1) or (2) in turn so delegation
+  cannot launder the requirement. `target("sha,…")`, `target("sse…")` and
+  `target("bmi2,adx")` are deliberately out of scope — XMM and
+  general-purpose-register instructions with no XSAVE state component beyond
+  what 64-bit mode always enables, so CPUID alone settles them. Form (1) is
+  preferred because `crypto/simd_dispatch.h` splits the hardware PROBE from a
+  PURE policy over three register words, which lets
+  `lib/test/src/test_simd_os_support.c` hand the policy the exact CPUID/XCR0
+  contents of an AVX-512 host whose OS disabled ZMM state — a machine we do not
+  own — and pin that the answer is "no". Impl:
+  `tools/lint/check_simd_os_support.sh`.
+
 - **Gate #16: `check-supervisor-registration`** (RATCHET) — flags any
   `app/services/src/*_service.c` that spawns work (`pthread_create`,
   `thread_registry_spawn`, `health_register_periodic`) but does NOT call
@@ -833,6 +862,7 @@ add/remove a gate.
 - `check-peer-floor-single-source`
 - `check-proc-self-shim`
 - `check-no-adx-overclaim`
+- `check-simd-os-support`
 - `check-no-authoritative-ram-state`
 - `check-no-dev-history-in-contracts`
 - `check-no-new-borrowed-seed`

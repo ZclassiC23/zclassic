@@ -1555,7 +1555,7 @@ worktree-gc:
 # tools/agent/gate-receipt.sh — this is EVIDENCE, not proof.
 .PHONY: gate-receipt check-claims agent-velocity agent-sha3
 
-AGENT_SHA3_SRCS := tools/agent/agent_sha3.c lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c
+AGENT_SHA3_SRCS := tools/agent/agent_sha3.c lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c
 agent-sha3: $(BIN_DIR)/agent_sha3
 $(BIN_DIR)/agent_sha3: $(AGENT_SHA3_SRCS)
 	@mkdir -p $(dir $@)
@@ -2614,7 +2614,7 @@ $(BIN_DIR)/zcl-portfwd: tools/zcl_portfwd.c
 tools/gen_sha3_windows: $(BIN_DIR)/gen_sha3_windows
 $(BIN_DIR)/gen_sha3_windows: tools/gen_sha3_windows.c \
 		lib/chain/src/sha3_windows.c \
-		lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/encoding/src/utilstrencodings.c \
+		lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c lib/encoding/src/utilstrencodings.c \
 		lib/json/src/json.c lib/platform/src/clock.c \
 		lib/base/src/safe_alloc.c lib/support/src/cleanse.c
 	@mkdir -p $(dir $@)
@@ -2639,7 +2639,7 @@ $(BIN_DIR)/gen_sha3_windows: tools/gen_sha3_windows.c \
 .PHONY: tools/gen_utxo_root_ladder
 tools/gen_utxo_root_ladder: $(BIN_DIR)/gen_utxo_root_ladder
 $(BIN_DIR)/gen_utxo_root_ladder: tools/gen_utxo_root_ladder.c \
-		lib/chain/src/mmb.c lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/support/src/cleanse.c \
+		lib/chain/src/mmb.c lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c lib/support/src/cleanse.c \
 		lib/base/src/log_level.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
@@ -2659,7 +2659,7 @@ $(BIN_DIR)/gen_utxo_root_ladder: tools/gen_utxo_root_ladder.c \
 .PHONY: tools/rom_two_builder_compare
 tools/rom_two_builder_compare: $(BIN_DIR)/rom_two_builder_compare
 $(BIN_DIR)/rom_two_builder_compare: tools/rom_two_builder_compare.c \
-		lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/support/src/cleanse.c
+		lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c lib/support/src/cleanse.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
@@ -2680,7 +2680,7 @@ $(BIN_DIR)/rom_two_builder_compare: tools/rom_two_builder_compare.c \
 tools/checkpoint_rung_export: $(BIN_DIR)/checkpoint_rung_export
 $(BIN_DIR)/checkpoint_rung_export: tools/checkpoint_rung_export.c \
 		lib/storage/src/checkpoint_rung.c lib/base/src/log_level.c \
-		lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/support/src/cleanse.c
+		lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c lib/support/src/cleanse.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
@@ -2697,7 +2697,7 @@ $(BIN_DIR)/checkpoint_rung_export: tools/checkpoint_rung_export.c \
 .PHONY: tools/rom_bundle_sha3
 tools/rom_bundle_sha3: $(BIN_DIR)/rom_bundle_sha3
 $(BIN_DIR)/rom_bundle_sha3: tools/rom_bundle_sha3.c \
-		lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/support/src/cleanse.c
+		lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c lib/support/src/cleanse.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
@@ -4442,7 +4442,7 @@ $(BIN_DIR)/bench_fresh_sync: tools/bench_fresh_sync.c \
 # Exits 2 if any tier diverges — a faster path returning different bytes is a
 # chain split, not a win.
 SIMD_BENCH_SRCS = tools/simd_bench.c \
-	lib/crypto/src/sha256.c lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c \
+	lib/crypto/src/sha256.c lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c \
 	lib/crypto/src/sha3_avx512.c lib/crypto/src/sha3_256_x4.c \
 	lib/crypto/src/blake2b.c lib/crypto/src/blake2b_avx2.c \
 	lib/sapling/src/bn254_accel.c lib/sapling/src/fr_avx512.c \
@@ -5726,10 +5726,10 @@ check-observability-pairing: tools/check_observability_pairing
 # in-tree FIPS-202 SHA3-256 + memory_cleanse) that reads the file list on stdin
 # (git ls-files -z) and writes/verifies core/MANIFEST.sha3. See tools/core_seal.c
 # and core/UNSEAL.md for the ritual.
-.PHONY: core-seal core-seal-check core-unseal check-core-seal check-core-include-boundary check-accel-oracle-pinned check-no-adx-overclaim
+.PHONY: core-seal core-seal-check core-unseal check-core-seal check-core-include-boundary check-accel-oracle-pinned check-no-adx-overclaim check-simd-os-support
 CORE_MANIFEST := core/MANIFEST.sha3
 CORE_UNSEAL_TOKEN := .core-unseal-token
-CORE_SEAL_SRCS := tools/core_seal.c lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/support/src/cleanse.c
+CORE_SEAL_SRCS := tools/core_seal.c lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c lib/support/src/cleanse.c
 
 .PHONY: tools/core_seal
 tools/core_seal: $(BIN_DIR)/core_seal
@@ -5844,6 +5844,18 @@ check-accel-oracle-pinned:
 check-no-adx-overclaim:
 	@echo "══ LINT: no ADCX/ADOX carry-chain overclaim ══"
 	@./tools/lint/check_no_adx_overclaim.sh
+
+# SIMD OS-support: CPUID reports what the silicon decodes, not whether the OS
+# agreed to save the register state. A dispatch predicate that reads only the
+# CPUID bit takes a SIGILL on a host booted `noxsave` / `clearcpuid=…` or under
+# a hypervisor that masks XCR0 — and blake2b_avx2.c, which is Equihash PoW
+# verification, dispatched its AVX2 tier on exactly that. This gate requires
+# every target("avx…") file to reach the audited predicate in
+# crypto/simd_dispatch.h, read XCR0 with an OSXSAVE guard itself, or delegate
+# to a named predicate that does.
+check-simd-os-support:
+	@echo "══ LINT: SIMD dispatch checks OS state, not just CPUID ══"
+	@./tools/lint/check_simd_os_support.sh
 
 check-silent-errors-services:
 	@echo "══ LINT: silent error returns in services ══"
@@ -6936,6 +6948,7 @@ LINT_GATES := \
     check-core-seal \
     check-accel-oracle-pinned \
     check-no-adx-overclaim \
+    check-simd-os-support \
     check-supervisor-registration \
     check-test-registration \
     check-typed-blocker \
