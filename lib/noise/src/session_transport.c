@@ -2,10 +2,10 @@
  *
  * session_transport implementation — length-prefixed ChaCha20-Poly1305 records
  * with per-direction nonce counters, epoch-in-AAD rekey, and the inner channel
- * tag. See session/session_transport.h + docs/work/secure-transport-design.md
+ * tag. See noise/session_transport.h + docs/work/secure-transport-design.md
  * §4/§7. */
 
-#include "session/session_transport.h"
+#include "noise/session_transport.h"
 
 #include "crypto/chacha20poly1305.h"
 #include "support/cleanse.h"

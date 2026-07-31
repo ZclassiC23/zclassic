@@ -49,7 +49,7 @@ static void receipt_digest(const struct agent_receipt *r, uint8_t out[32])
 {
     struct sha3_256_ctx c;
     sha3_256_init(&c);
-    sha3_256_write(&c, (const unsigned char *)"zcl.agent_receipt.v1", 20);
+    sha3_256_write(&c, (const unsigned char *)"zcl.agent_receipt.v2", 20);
     sha3_256_write(&c, r->prev, 32);
 
     uint8_t n[7][8];
@@ -69,6 +69,12 @@ static void receipt_digest(const struct agent_receipt *r, uint8_t out[32])
 
     sha3_256_write(&c, r->property_id, MVAP_PROPERTY_ID_LEN);
 
+    /* The canonical metaverse action receipt this confinement row COMMITS TO.
+     * Inside the digest, so a row cannot later be re-pointed at a different
+     * action; all-zero when the operation minted none, which is itself a
+     * committed statement rather than an absent field. */
+    sha3_256_write(&c, r->action_receipt_id, 32);
+
     const char *strs[3] = { r->principal, r->grant_id, r->detail };
     size_t caps[3] = { AGENT_PRINCIPAL_MAX, AGENT_GRANT_ID_MAX,
                        AGENT_RECEIPT_DETAIL_MAX };
@@ -87,21 +93,23 @@ static void receipt_digest(const struct agent_receipt *r, uint8_t out[32])
 static size_t receipt_render_line(const struct agent_receipt *r, char *out,
                                   size_t cap)
 {
-    char prev[65], id[65], sig[129], prop[65];
+    char prev[65], id[65], sig[129], prop[65], action[65];
     zcl_hex_encode(r->prev, 32, prev);
     zcl_hex_encode(r->id, 32, id);
     zcl_hex_encode(r->sig, 64, sig);
     zcl_hex_encode(r->property_id, MVAP_PROPERTY_ID_LEN, prop);
+    zcl_hex_encode(r->action_receipt_id, 32, action);
 
     int n = snprintf(out, cap,
         "{\"seq\":%llu,\"unix_ms\":%lld,\"prev\":\"%s\",\"id\":\"%s\","
         "\"sig\":\"%s\",\"verb\":\"%s\",\"request_id\":%u,\"status\":\"%s\","
         "\"status_code\":%d,\"value_zats\":%llu,\"property_id\":\"%s\","
+        "\"action_receipt_id\":\"%s\","
         "\"principal\":\"%s\",\"grant_id\":\"%s\",\"peer_pid\":%d,"
         "\"peer_uid\":%u,\"peer_gid\":%u,\"detail\":\"%s\"}\n",
         (unsigned long long)r->seq, (long long)r->unix_ms, prev, id, sig,
         mvap_verb_name(r->verb), r->request_id, mvap_status_name(r->status),
-        r->status, (unsigned long long)r->value_zats, prop,
+        r->status, (unsigned long long)r->value_zats, prop, action,
         r->principal, r->grant_id, (int)r->peer.pid,
         (unsigned)r->peer.uid, (unsigned)r->peer.gid, r->detail);
     if (n < 0 || (size_t)n >= cap)
@@ -147,6 +155,12 @@ static bool receipt_parse_line(const char *line, size_t len,
         ok = false;
     if (!(s = json_get_str(json_get(&v, "property_id"))) ||
         !zcl_hex_decode(s, r.property_id, MVAP_PROPERTY_ID_LEN))
+        ok = false;
+    /* Required, not optional: a row that omits the binding is malformed, so a
+     * verifier cannot be handed a truncated line and told the digest matched
+     * because the missing field defaulted to zero. */
+    if (!(s = json_get_str(json_get(&v, "action_receipt_id"))) ||
+        !zcl_hex_decode(s, r.action_receipt_id, 32))
         ok = false;
 
     if ((s = json_get_str(json_get(&v, "principal"))))

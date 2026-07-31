@@ -13,8 +13,8 @@
 #include "test/test_core.h"
 #include "crypto/x25519_safe.h"
 #include "crypto/curve25519.h"
-#include "session/noise_handshake.h"
-#include "session/session_transport.h"
+#include "noise/noise_handshake.h"
+#include "noise/session_transport.h"
 
 /* Deterministic 32-byte scalar from a seed byte (test key material). */
 static void mk_scalar(uint8_t out[32], uint8_t seed)

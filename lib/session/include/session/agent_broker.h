@@ -61,12 +61,25 @@
 #define AGENT_GRANT_MAX_PROPS   8
 #define AGENT_ALLOWLIST_MAX     192
 
-/* One capability grant. `actions_mask` is a bitmask over enum mvap_verb
- * (bit N == verb N), `kinds_mask` a bitmask over enum mvap_kind. Scope is the
- * INTERSECTION of every field: an action must be in the mask AND the property
- * must be in `properties` (or, when n_properties == 0, its kind must be in
- * kinds_mask) AND the value must fit both ceilings AND the window must have
- * room AND the grant must be unexpired and unrevoked. */
+/* One capability grant.
+ *
+ * `actions_mask` is the CANONICAL metaverse_action_set — the same persisted
+ * bit per action the metaverse grants and receipts carry. It used to be
+ * `1u << verb` over the wire enum, a third incompatible bit layout that meant
+ * a grant minted here and a grant read from the metaverse described different
+ * rights with the same number. Set it only through
+ * agent_grant_allow_action(), which translates the wire verb to its canonical
+ * action.
+ *
+ * `queries_mask` is separate and keyed by WIRE value, because queries
+ * (INSPECT, LIST) are not canonical actions at all and must never occupy a
+ * canonical action bit.
+ *
+ * `kinds_mask` is a bitmask over enum mvap_kind. Scope is the INTERSECTION of
+ * every field: the action must be granted AND the property must be in
+ * `properties` (or, when n_properties == 0, its kind must be in kinds_mask)
+ * AND the value must fit both ceilings AND the window must have room AND the
+ * grant must be unexpired and unrevoked. */
 struct agent_grant {
     char     grant_id[AGENT_GRANT_ID_MAX + 1];
     char     principal[AGENT_PRINCIPAL_MAX + 1];
@@ -74,7 +87,8 @@ struct agent_grant {
     uint8_t  properties[AGENT_GRANT_MAX_PROPS][MVAP_PROPERTY_ID_LEN];
     size_t   n_properties;
     uint32_t kinds_mask;
-    uint32_t actions_mask;
+    uint32_t actions_mask;        /* canonical metaverse_action_set          */
+    uint32_t queries_mask;        /* bit N == wire query verb N              */
 
     uint64_t max_value_zats;      /* per-action ceiling; 0 == no value allowed */
     uint64_t budget_zats;         /* cumulative ceiling                        */
@@ -96,7 +110,10 @@ struct agent_grant {
     bool     revoked;
 };
 
-/* Add/remove a verb or kind from a grant's masks. */
+/* Add a verb or kind to a grant's masks. `verb` is a WIRE value; the verb's
+ * class decides which mask it lands in, so a caller never picks. An
+ * unrecognized verb is ignored — it cannot be granted because it names
+ * nothing. */
 void agent_grant_allow_action(struct agent_grant *g, uint32_t verb);
 void agent_grant_allow_kind(struct agent_grant *g, uint16_t kind);
 bool agent_grant_add_property(struct agent_grant *g,
@@ -172,15 +189,22 @@ bool agent_broker_peer_authorized(const struct agent_peer_cred *c,
 
 #define AGENT_RECEIPT_DETAIL_MAX 160
 
-/* One receipt. `id` = SHA3-256 over the canonical preimage (which includes
- * `prev`, so the log is a hash chain); `sig` = Ed25519 over `id` under the
- * broker's audit key. A verifier needs only the file and the public key.
+/* One CONFINEMENT receipt: `id` = SHA3-256 over the canonical preimage (which
+ * includes `prev`, so the log is a hash chain); `sig` = Ed25519 over `id` under
+ * the broker's audit key. A verifier needs only the file and the public key.
  *
- * Reconciliation note: Lane 2 owns the canonical receipt format. This is the
- * minimal signed + hash-chained + idempotent structure this lane needs to
- * prove the boundary; the field set is deliberately a subset of the owner's
- * spec (principal, property, action, value, result) so folding it into Lane 2's
- * format is an additive rename, not a redesign. */
+ * WHAT THIS IS AND IS NOT. It is evidence about the BOUNDARY — which kernel-
+ * attributed peer asked for what, under which grant, and what the broker did
+ * about it. It is NOT a second account of what the action meant. The metaverse
+ * mints the authoritative action receipt (metaverse/property_receipt.h: a
+ * canonical, hash-chained, signed record), and this envelope COMMITS TO it:
+ * `action_receipt_id` carries that receipt's chain hash and is inside this
+ * row's digest. So a confinement row cannot be pointed at a different action
+ * than the one the metaverse recorded, and the two logs are joined by a hash
+ * instead of by two independent restatements of the same event.
+ *
+ * All-zero `action_receipt_id` means the operation minted no canonical
+ * receipt — a query, or a refusal that never reached COMMIT. */
 struct agent_receipt {
     uint64_t seq;                 /* 1-based; monotonic per log             */
     int64_t  unix_ms;
@@ -193,6 +217,7 @@ struct agent_receipt {
     int32_t  status;
     uint64_t value_zats;
     uint8_t  property_id[MVAP_PROPERTY_ID_LEN];
+    uint8_t  action_receipt_id[32];  /* canonical metaverse receipt chain hash */
 
     char     principal[AGENT_PRINCIPAL_MAX + 1];
     char     grant_id[AGENT_GRANT_ID_MAX + 1];
@@ -281,24 +306,81 @@ struct agent_plan {
     char     detail[AGENT_RECEIPT_DETAIL_MAX + 1];
 };
 
-/* The seam onto the property catalog / action services. Lane 1 supplies the
- * catalog side and Lane 2 the action side; agent_broker_fixture_ops() is a
- * self-contained in-memory implementation so this lane's boundary is provable
- * today without either. */
+/* What a COMMIT produced. `body` is the bounded JSON the agent gets back;
+ * `action_receipt_id` is the canonical metaverse receipt's chain hash, which
+ * the broker's confinement envelope then commits to. A seam that mints no
+ * canonical receipt leaves it all-zero and says so rather than inventing
+ * one. */
+struct agent_commit_outcome {
+    char    body[MVAP_BODY_MAX + 1];
+    uint8_t action_receipt_id[32];
+};
+
+/* The seam onto the property catalog and the property grant service.
+ *
+ * QUERIES AND ACTIONS ARE DIFFERENT ENTRY POINTS, not one entry point with a
+ * flag. `query` resolves a read; `plan` + `commit` are the two halves of an
+ * action. The property that holds structurally is the one that matters: a
+ * QUERY never reaches `commit`, because `commit` is not on its code path at
+ * all — not because something remembered to check a flag first.
+ *
+ * `query` is OPTIONAL. A seam whose resolution is already side-effect-free may
+ * leave it NULL and the broker resolves reads through `plan`, which is pure
+ * resolution by contract; `commit` is the only call permitted to change
+ * anything, and no query ever makes it. */
 struct agent_broker_node_ops {
+    bool (*query)(void *ctx, const struct mvap_request *req,
+                  struct agent_plan *out);
     bool (*plan)(void *ctx, const struct mvap_request *req,
                  struct agent_plan *out);
     bool (*commit)(void *ctx, const struct mvap_request *req,
-                   const struct agent_plan *plan, char *body, size_t body_cap);
+                   const struct agent_plan *plan,
+                   struct agent_commit_outcome *out);
     void *ctx;
 };
 
-/* The fixture catalog: two properties (one content, one zcode) whose ids are
- * returned by agent_broker_fixture_property_id(). Marked for reconciliation. */
-struct agent_broker_node_ops agent_broker_fixture_ops(void);
+/* Where the broker gets its REAL authority and its REAL property surface.
+ *
+ * lib/ sits below app/services, so the property catalog and the property grant
+ * service cannot be named from here; the composition root registers them. With
+ * nothing registered `agent_broker_mode_main()` REFUSES to run. That is the
+ * point: a broker that cannot reach the real catalog must not fall back to a
+ * fixture, because a fixture grant that authorizes real-looking actions is
+ * exactly the failure this seam exists to make impossible. */
+struct agent_broker_provider {
+    /* Fill `out` with the grant this broker session is to hold. Return false
+     * to refuse the session (no grant, no broker). */
+    bool (*grant)(void *ctx, struct agent_grant *out);
+    /* The property surface the grant acts on. */
+    struct agent_broker_node_ops (*ops)(void *ctx);
+    void *ctx;
+    const char *name;             /* named in the refusal and in status      */
+};
+
+void agent_broker_provider_install(const struct agent_broker_provider *p);
+const struct agent_broker_provider *agent_broker_provider_get(void);
+
+/* The fixture catalog and demo grant exist ONLY in a build compiled with
+ * -DZCL_TESTING; in a production binary the symbols below are not declared and
+ * not compiled, so no production path can reach them. Read
+ * `agent_broker_fixtures_compiled_in` to say which build this is. */
+extern const bool agent_broker_fixtures_compiled_in;
+
+/* The deterministic ids of the fixture catalog's properties. Kept outside the
+ * test-only guard because the confined-agent demo scripts name a target with
+ * it: it derives an identifier and confers no authority and no behaviour. */
 void agent_broker_fixture_property_id(size_t index,
                                       uint8_t out[MVAP_PROPERTY_ID_LEN]);
 #define AGENT_BROKER_FIXTURE_PROPERTIES 2
+
+#ifdef ZCL_TESTING
+/* The fixture catalog: two properties (one content, one zcode). */
+struct agent_broker_node_ops agent_broker_fixture_ops(void);
+
+/* The demo grant + fixture ops as a provider, for the adversarial demo that
+ * drives `--metaverse-broker --fixture`. */
+void agent_broker_install_fixture_provider(void);
+#endif
 
 /* ── the broker session ─────────────────────────────────────────────────── */
 
@@ -400,8 +482,12 @@ int agent_confined_mode_main(int argc, char **argv);
 /* `--metaverse-broker` — run a broker: spawn one confined agent, serve it,
  * write receipts, and exit. Accepts -datadir=, --broker-dir=,
  * --script=, --requests=, --listen (use a listening socket instead of the
- * inherited socketpair), and --expect-uid=. This is the operator-side entry
- * the demo and the adversarial test drive. */
+ * inherited socketpair), and --expect-uid=.
+ *
+ * The grant and the property surface come from the registered
+ * agent_broker_provider. With none registered this refuses rather than
+ * serving; a ZCL_TESTING build additionally accepts --fixture to register the
+ * demo provider, which is how the adversarial demo drives it. */
 int agent_broker_mode_main(int argc, char **argv);
 
 /* Apply the confined-agent profile to the CALLING process: rlimits ->

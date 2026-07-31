@@ -104,39 +104,42 @@ static void read_child_report(const char *scratch_dir,
     json_free(&v);
 }
 
-/* The demo grant: INSPECT/LIST/HOST/PUBLISH_REVISION/SELL over exactly ONE
- * fixture property. Deliberately narrow — the hostile script's attempts to
- * touch the OTHER property and to TRANSFER are refusals this grant produces by
- * construction, not by a special case in the broker. */
-static void build_demo_grant(struct agent_grant *g)
+/* WHERE THE AUTHORITY COMES FROM.
+ *
+ * This function used to mint its own grant here and answer out of the test
+ * fixture catalog — in a SHIPPED binary. An operator running
+ * `--metaverse-broker` got a broker that looked entirely functional while
+ * authorizing actions against two properties that do not exist, under a grant
+ * nobody issued. Both are gone. The grant and the property surface now come
+ * from a registered provider (the composition root wires the real property
+ * catalog and property grant service). With none registered the broker holds
+ * NO grant and NO seam, so it refuses every request it is asked — it does not
+ * substitute anything. It still opens its socket, so an operator sees a named
+ * refusal per request rather than a process that silently vanished.
+ *
+ * The fixture provider still exists for the adversarial demo, but only in a
+ * build compiled with -DZCL_TESTING, and only when `--fixture` is passed. In a
+ * production binary the flag is not merely rejected: the symbol it would call
+ * is not compiled and not declared, so there is no code path from here to a
+ * fixture at all. */
+static const struct agent_broker_provider *
+resolve_provider(int argc, char **argv, const char **why)
 {
-    memset(g, 0, sizeof(*g));
-    uint8_t r[8];
-    if (!rng_fill(r, sizeof(r)))
-        memset(r, 0, sizeof(r));
-    char id[17];
-    zcl_hex_encode(r, sizeof(r), id);
-    snprintf(g->grant_id, sizeof(g->grant_id), "%s", id);
-    snprintf(g->principal, sizeof(g->principal), "confined-seller-agent");
-
-    uint8_t prop[MVAP_PROPERTY_ID_LEN];
-    agent_broker_fixture_property_id(0, prop);
-    (void)agent_grant_add_property(g, prop);
-
-    agent_grant_allow_action(g, MVAP_VERB_INSPECT);
-    agent_grant_allow_action(g, MVAP_VERB_LIST);
-    agent_grant_allow_action(g, MVAP_VERB_HOST);
-    agent_grant_allow_action(g, MVAP_VERB_PUBLISH_REVISION);
-    agent_grant_allow_action(g, MVAP_VERB_SELL);
-    agent_grant_allow_kind(g, MVAP_KIND_CONTENT);
-    agent_grant_allow_kind(g, MVAP_KIND_ANY);
-
-    g->max_value_zats       = 100000000;
-    g->budget_zats          = 500000000;
-    g->rate_limit           = 64;
-    g->window_seconds       = 60;
-    g->may_delegate         = false;
-    g->max_delegation_depth = 0;
+    *why = NULL;
+    if (arg_present(argc, argv, "--fixture")) {
+#ifdef ZCL_TESTING
+        agent_broker_install_fixture_provider();
+#else
+        *why = "--fixture names a fixture catalog that is not compiled into "
+               "this binary (it exists only in a -DZCL_TESTING build)";
+        return NULL;
+#endif
+    }
+    const struct agent_broker_provider *p = agent_broker_provider_get();
+    if (!p)
+        *why = "no property provider is registered: this broker has no real "
+               "catalog and no real grant, and will not substitute one";
+    return p;
 }
 
 int agent_broker_mode_main(int argc, char **argv)
@@ -150,11 +153,20 @@ int agent_broker_mode_main(int argc, char **argv)
     const char *revoke_s = arg_value(argc, argv, "--revoke-after=");
     bool listen_mode    = arg_present(argc, argv, "--listen");
 
+    /* The fixture flag is only listed in a build that HAS a fixture catalog,
+     * so the shipped binary's own usage text does not advertise a surface it
+     * cannot reach. */
+    static const char k_usage[] =
+        "usage: zclassic23 --metaverse-broker --broker-dir=DIR "
+        "[--script=NAME] [--canary=PATH] [--requests=N] [--listen] "
+        "[--expect-uid=N] [--agent-uid=N] [--revoke-after=N]"
+#ifdef ZCL_TESTING
+        " [--fixture]"
+#endif
+        "\n";
+
     if (!dir || !dir[0]) {
-        (void)fprintf(stderr,  // obs-ok:argv-mode-cli
-            "usage: zclassic23 --metaverse-broker --broker-dir=DIR "
-            "[--script=NAME] [--canary=PATH] [--requests=N] [--listen] "
-            "[--expect-uid=N] [--agent-uid=N] [--revoke-after=N]\n");
+        (void)fputs(k_usage, stderr);  // obs-ok:argv-mode-cli
         return 2;
     }
     if (!script || !script[0])
@@ -204,13 +216,31 @@ int agent_broker_mode_main(int argc, char **argv)
                       dir);
         return 5;
     }
-    struct agent_grant grant;
-    build_demo_grant(&grant);
-
+    /* The authority, from the provider — never minted here. A broker with no
+     * provider keeps its grant and its seam ZEROED and therefore refuses every
+     * request it is asked; it does not quietly answer out of something else.
+     * The socket still comes up, so an operator gets a named refusal per
+     * request instead of a process that vanished. */
     struct agent_broker_session s;
     memset(&s, 0, sizeof(s));
-    s.grant = grant;
-    s.ops   = agent_broker_fixture_ops();
+    const char *no_provider_why = NULL;
+    const struct agent_broker_provider *provider =
+        resolve_provider(argc, argv, &no_provider_why);
+    if (provider) {
+        if (!provider->grant || !provider->grant(provider->ctx, &s.grant)) {
+            (void)fprintf(stderr,  // obs-ok:argv-mode-cli
+                "broker: provider '%s' issued no grant; every request will be "
+                "refused\n", provider->name ? provider->name : "(unnamed)");
+            memset(&s.grant, 0, sizeof(s.grant));
+        }
+        if (provider->ops)
+            s.ops = provider->ops(provider->ctx);
+        printf("broker: property provider '%s'\n",
+               provider->name ? provider->name : "(unnamed)");
+    } else {
+        (void)fprintf(stderr, "broker: %s\n",  // obs-ok:argv-mode-cli
+                      no_provider_why ? no_provider_why : "no provider");
+    }
     s.audit = &audit;
     s.child.landlock_abi = landlock_abi;
 

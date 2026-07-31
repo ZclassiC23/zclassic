@@ -4,8 +4,8 @@ This is the implementation contract for `docs/work/secure-transport-design.md`'s
 Phase-1 slice. Re-grep the anchor tokens (`send_segment_create(buf, total)`,
 `recv(target_fd`) before editing — lines rot.
 
-Built on `lib/session/noise_handshake.{c,h}` (Noise_XX/_NK driver) and
-`lib/session/session_transport.{c,h}` (record layer: 3-byte-length ChaCha20-
+Built on `lib/noise/noise_handshake.{c,h}` (Noise_XX/_NK driver) and
+`lib/noise/session_transport.{c,h}` (record layer: 3-byte-length ChaCha20-
 Poly1305 frames, per-direction counters, epoch-in-AAD rekey), over
 `lib/crypto/{x25519_safe,hkdf_sha256,chacha20poly1305,curve25519,hmac_sha256}`.
 The transport is implemented and armed as INITIATOR in `lib/net/src/net.c`
@@ -46,8 +46,8 @@ source edit.
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include "session/noise_handshake.h"
-#include "session/session_transport.h"
+#include "noise/noise_handshake.h"
+#include "noise/session_transport.h"
 
 struct p2p_node;
 struct net_manager;

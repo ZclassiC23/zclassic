@@ -77,6 +77,8 @@ lib/net/src/flyclient.c
 lib/net/src/net.c
 lib/net/src/rom_fetch.c
 lib/net/src/rom_seed.c
+lib/noise/src/noise_handshake.c
+lib/noise/src/session_transport.c
 lib/sapling/src/bls12_381.c
 lib/sapling/src/bn254.c
 lib/sapling/src/fast_scan.c
@@ -93,8 +95,6 @@ lib/sapling/src/sprout.c
 lib/sapling/src/zip32.c
 lib/script/include/script/script.h
 lib/script/src/htlc.c
-lib/session/src/noise_handshake.c
-lib/session/src/session_transport.c
 lib/sim/src/seed_tape.c
 lib/sim/src/simnet_byzantine.c
 lib/sim/src/simnet_chain.c
