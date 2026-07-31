@@ -360,6 +360,12 @@ static bool ed25519_S_is_canonical(const uint8_t S[32])
     return lt != 0u;
 }
 
+/* out = [s1]P1 + [s2]P2 — fixed-window Straus, defined with the rest of the
+ * windowed multi-scalar machinery further down this file. Used ONLY by
+ * `ed25519_verify`, whose every input is public. */
+static void point_mul_double(gep out, const gep p1, const uint8_t s1[32],
+                             const gep p2, const uint8_t s2[32]);
+
 bool ed25519_verify(const uint8_t sig[64],
                     const uint8_t *msg, size_t msg_len,
                     const uint8_t pk[32])
@@ -393,7 +399,15 @@ bool ed25519_verify(const uint8_t sig[64],
     sha512_finalize(&hs, h);
     reduce(h);
 
-    /* Compute [S]B + [h](-A) and check == R */
+    /* Compute [S]B + [h](-A) and check == R.
+     *
+     * One interleaved Straus multiplication, NOT two separate ladders: the
+     * 256 doublings are shared between the two terms, which is where the
+     * speed comes from. Every operand here is public (the signature, the
+     * public key, and a hash of them plus the message), so the windowed
+     * path's data-dependent table indexing leaks nothing. Secret scalars —
+     * key derivation and signing — keep the constant-time `scalarmult`
+     * ladder and are deliberately NOT routed through here. */
     gep sb;
     {
         gep bp;
@@ -401,17 +415,8 @@ bool ed25519_verify(const uint8_t sig[64],
             LOG_FAIL("ed25519", "base point decompression failed");
         Z(bp[0], gf0, bp[0]);
         Z(bp[3], gf0, bp[3]);
-        scalarmult(sb, bp, sig + 32);
+        point_mul_double(sb, bp, sig + 32, q, h);
     }
-
-    gep ha;
-    {
-        gep q2;
-        memcpy(q2, q, sizeof(gep));
-        scalarmult(ha, q2, h);
-    }
-
-    point_add(sb, ha);
 
     uint8_t t[32];
     pack_point(t, sb);
@@ -743,6 +748,41 @@ static void point_mul_scalar(gep out, const gep base, const uint8_t s[32])
         unsigned d = mx_digit(s, w);
         if (d != 0u)
             point_add(out, tab[d]);
+    }
+}
+
+/* out = [s1]P1 + [s2]P2, the two-term case of the same Straus interleaving
+ * `mx_accumulate` does for a whole batch: build a small-multiples table per
+ * point, then walk the windows sharing every doubling between the terms.
+ *
+ * This is the single-signature verify equation. Doing it as two independent
+ * scalar multiplications costs 2 x 256 ladder steps; sharing the doublings
+ * costs 256 doublings plus at most two table adds per window, which is why
+ * `ed25519_verify` calls this instead of `scalarmult` twice.
+ *
+ * The two tables are 2 * 16 * sizeof(gep) = 16 KiB of stack — small enough
+ * to keep here, unlike the batch path's workspace, which scales with n and
+ * therefore has to be heap-allocated.
+ *
+ * Callers must pass PUBLIC scalars only (see the note in `point_mul_scalar`
+ * — window indices are branched on). `ed25519_verify` is the only caller. */
+static void point_mul_double(gep out, const gep p1, const uint8_t s1[32],
+                             const gep p2, const uint8_t s2[32])
+{
+    gep t1[1 << MX_W], t2[1 << MX_W];
+    mx_build_table(t1, p1);
+    mx_build_table(t2, p2);
+
+    set_identity(out);
+    for (int w = MX_WINDOWS - 1; w >= 0; w--) {
+        for (int k = 0; k < MX_W; k++)
+            point_add(out, out);
+        unsigned d1 = mx_digit(s1, w);
+        if (d1 != 0u)
+            point_add(out, t1[d1]);
+        unsigned d2 = mx_digit(s2, w);
+        if (d2 != 0u)
+            point_add(out, t2[d2]);
     }
 }
 

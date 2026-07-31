@@ -68,7 +68,7 @@ Rust numbers are **CITED** published reference points (no Rust is linked); see
 | BLS12-381 Fp mul | ~31 | 45 (blst asm) | 0.69 | **BEAT** |
 | groth16 BLS12-381 output verify | ~7.7M | 3.0M (librustzcash) | 2.57 | behind |
 | BLS12-381 Ate pairing | ~1.83M | 0.6M (blst) | 3.05 | behind |
-| ed25519 verify | ~1.49M | 55k (ed25519-dalek) | 27.0 | behind (no windowing) |
+| ed25519 verify | ~0.71M | 55k (ed25519-dalek) | 12.9 | behind (no base-point precompute, 16×16 field) |
 
 \* `sha3-256` is marginally ahead but pinned `behind` so its hard-fail can't
 flake near the boundary; optimise it past a 25% margin to promote it to `beat`.
@@ -76,8 +76,35 @@ flake near the boundary; optimise it past a 25% margin to promote it to `beat`.
 **Where we beat Rust:** Equihash verify, ECDSA verify (vendored libsecp256k1 vs
 RustCrypto), BLAKE2b (AVX2 path), SHA256 (SHA-NI path). **Optimize targets
 (behind):** the pairing / Fp-mul / Groth16 elliptic-curve stack (blst
-hand-asm) and ed25519 (needs wNAF + precompute). Groth16 being behind is
+hand-asm) and ed25519. Groth16 being behind is
 expected today and must NOT red main — the loud line keeps it visible.
+
+### ed25519 verify — where the remaining 13× is
+
+The verify equation `[S]B + [h](−A) == R` used to run as two independent
+256-step cswap ladders. It is now ONE interleaved Straus double-scalar
+multiply over 4-bit fixed windows, sharing the 256 doublings between both
+terms — the same `mx_build_table`/`mx_digit` machinery the batch verifier
+already used, so it is not new arithmetic, just the two-term case of code
+that was already there and already tested. Measured on this host, same
+build, immediately before and after the change: median **1496 µs → 710 µs,
+a 2.11× speedup** (before: 5 runs, 1446–2197 µs; after: 9 runs, 662–813 µs;
+each run is itself the harness's median of 5 × 120 ms samples, and the wide
+tails are the live node competing for the machine).
+
+The secret-scalar paths — key derivation and signing — deliberately did
+**not** move to the windowed code. They keep the constant-time ladder,
+because window indices are branched on and only verify's inputs (signature,
+public key, message hash) are public.
+
+That leaves ~13× against dalek, and it is not hiding in the scalar
+multiplication any more. It is in two places this change did not touch:
+there is no precomputed table for the fixed base point B, and the field is
+still the TweetNaCl 16×16-limb schoolbook rather than 5×51 limbs. The field
+is the larger of the two and it is shared with every other consumer of this
+file, so it is a separate, more invasive change that needs its own
+before/after — **`test_ed25519_differential` is the harness that will hold
+it honest**, exactly as it did here.
 
 ### SHA256 ISA dispatch — runtime only, never compile-time
 
@@ -85,7 +112,7 @@ SHA-256 selects between a portable C transform and an Intel SHA-NI transform at
 **runtime**, via CPUID plus a known-answer test against the portable reference
 (`detect_sha_ni`). The hardware transform is emitted from the baseline
 translation unit by a per-function `__attribute__((target("sha,sse4.1")))` —
-the same shape `blake2b_avx2.c`, `keccak_avx512.c` and `sha3_256_x4.c` use.
+the same shape `blake2b_avx2.c`, `keccak_x4.c` and `sha3_256_x4.c` use.
 
 Two properties depend on that being a runtime decision, and a compile-time
 guard breaks both:
