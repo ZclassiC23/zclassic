@@ -110,9 +110,15 @@ run_probe "$WORK/dev.out" fast-compile
 assert_exact_profiles "$WORK/dev.out" dev
 run_probe "$WORK/build.out" build-only
 assert_exact_profiles "$WORK/build.out" build-only
-run_probe "$WORK/fast.out" t-fast
+# t / t-fast now validate ONLY= at Makefile PARSE time (see the ONLY_REQUIRED_GOALS
+# block in the Makefile), so naming either as a probe goal without one is a
+# parse error before any depfile logic is reached. ONLY= is a command-line
+# VARIABLE, not a goal, so it does not enter MAKECMDGOALS and cannot change
+# which depfile scope is selected — which is the only thing these two probes
+# measure. Any registered group name works; boot_phase is small and stable.
+run_probe "$WORK/fast.out" t-fast ONLY=boot_phase
 assert_exact_profiles "$WORK/fast.out" test-fast
-run_probe "$WORK/strict.out" t
+run_probe "$WORK/strict.out" t ONLY=boot_phase
 assert_exact_profiles "$WORK/strict.out" test-strict
 run_probe "$WORK/failure-id.out" dev-failure-execution-id
 assert_exact_profiles "$WORK/failure-id.out" ""
