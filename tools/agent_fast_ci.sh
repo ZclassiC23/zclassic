@@ -1097,16 +1097,21 @@ compile_affected_gate() {
 }
 
 run_mapped_focused_tests() {
-    local group count=0
+    local exact_groups exact_csv count=0
     [ -z "$UNMAPPED_CODE_CHANGES" ] ||
         fail "unmapped code changes require an impact rule: $UNMAPPED_CODE_CHANGES"
-    for group in $TEST_GROUPS; do
-        log "focused test group=$group"
-        make_fast t-fast "ONLY=$group"
-        FROZEN_SOURCE_RECORD="$(capture_source_identity_record)" ||
-            fail "source identity recapture failed after focused group $group"
-        count=$((count + 1))
-    done
+    if [ -z "$TEST_GROUPS" ]; then
+        log "focused test scope=mapped_groups count=0"
+        return
+    fi
+    exact_groups="$(tools/dev/test-group-list.sh --resolve-proof $TEST_GROUPS)" ||
+        fail "focused proof plan contains a non-exact registered group: $TEST_GROUPS"
+    count="$(printf '%s\n' "$exact_groups" | sed '/^$/d' | wc -l | tr -d ' ')"
+    exact_csv="$(printf '%s\n' "$exact_groups" | sed '/^$/d' | paste -sd, -)"
+    log "focused test exact_groups=$exact_csv count=$count"
+    make_fast t-fast-exact "ONLY=$exact_csv"
+    FROZEN_SOURCE_RECORD="$(capture_source_identity_record)" ||
+        fail "source identity recapture failed after focused proof set"
     log "focused test scope=mapped_groups count=$count"
 }
 

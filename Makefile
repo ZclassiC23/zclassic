@@ -844,7 +844,7 @@ ifneq ($(filter build-only,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := build-only
 else ifneq ($(filter fast-compile dev-build-only dev-bin zclassic23-dev,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := dev
-else ifneq ($(filter t-fast test_parallel_fast test-parallel-fast-active,$(ZCL_DEPFILE_SINGLE_GOAL)),)
+else ifneq ($(filter t-fast t-fast-exact test_parallel_fast test-parallel-fast-active,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := test-fast
 else ifneq ($(filter t test test_parallel test-parallel test-parallel-active,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := test-strict
@@ -1449,7 +1449,7 @@ test-parallel: $(TEST_PARALLEL_REL_CANDIDATE) $(BIN_DIR)/zclassic23-package-veri
 # the default `all`), so running build/bin/test_parallel directly after editing a test
 # can false-green an old binary or report "matched no groups" for a new test.
 # `make t ONLY=<group>` always rebuilds the harness first, closing that trap.
-.PHONY: t t-fast t-asan asan-ci t-tsan tsan-ci t-changed ff verify-change watcher-safety-gates syntax-check build-only fast-compile fast-changed-compile dev-build-only dev-bin dev-asan zclassic23-dev-asan dev-tsan zclassic23-dev-tsan zclassic23-dev fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild lint-fast fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop dev-watch dev-watch-once dev-watch-selftest dev-activation-selftest dev-loop-selftest native-dev-loop-wait-selftest native-dev-failure-selftest agent-index compdb dev-loop-bench dev-loop-bench-selftest hotswap-sim immutable-history-canaries historical-canaries agent-dev-status agent-dev-recover dev-recovery-selftest agent-clear-stale-dev-reindex agent-doctor doctor-build stage-dev-bin agent-stage-dev deploy-dev-fast agent-deploy-fast
+.PHONY: t t-fast t-fast-exact t-asan asan-ci t-tsan tsan-ci t-changed ff verify-change watcher-safety-gates syntax-check build-only fast-compile fast-changed-compile dev-build-only dev-bin dev-asan zclassic23-dev-asan dev-tsan zclassic23-dev-tsan zclassic23-dev fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild lint-fast fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop dev-watch dev-watch-once dev-watch-selftest dev-activation-selftest dev-loop-selftest native-dev-loop-wait-selftest native-dev-failure-selftest agent-index compdb dev-loop-bench dev-loop-bench-selftest hotswap-sim immutable-history-canaries historical-canaries agent-dev-status agent-dev-recover dev-recovery-selftest agent-clear-stale-dev-reindex agent-doctor doctor-build stage-dev-bin agent-stage-dev deploy-dev-fast agent-deploy-fast
 
 # ── ONLY= is validated BEFORE anything compiles ──────────────────────────
 # Every focused target below carried its ONLY= check in the RECIPE. Make builds
@@ -1503,6 +1503,24 @@ ifneq ($(ONLY_ACTIVE_GOALS),)
       Closest candidates: $(ONLY_NEAR))
   endif
   $(info $(ONLY_GOAL): ONLY='$(ONLY)' selects $(words $(ONLY_MATCHED)) group(s): $(ONLY_MATCHED))
+endif
+
+# Proof automation never dispatches a substring selector. Canonicalize every
+# requested ID before any prerequisite is considered, then hand the complete
+# full-ID set to the runner's exact selector.
+EXACT_ONLY_ACTIVE_GOALS := $(filter t-fast-exact,$(MAKECMDGOALS))
+ifneq ($(EXACT_ONLY_ACTIVE_GOALS),)
+  ifeq ($(strip $(ONLY)),)
+    $(error make t-fast-exact: ONLY= is required and must name one or more exact test groups)
+  endif
+  ifneq ($(findstring ',$(ONLY)),)
+    $(error make t-fast-exact: ONLY= must not contain a single quote)
+  endif
+  EXACT_ONLY_MATCHED := $(shell $(T_LIST_TOOL) --resolve-exact-set '$(ONLY)' 2>/dev/null)
+  ifeq ($(strip $(EXACT_ONLY_MATCHED)),)
+    $(error make t-fast-exact: ONLY='$(ONLY)' is not a valid exact registered group set)
+  endif
+  $(info t-fast-exact: ONLY='$(ONLY)' resolves to exact set $(EXACT_ONLY_MATCHED))
 endif
 
 # Print every REGISTERED test group, one per line. No build, no test binary —
@@ -1614,6 +1632,14 @@ t-fast: $(TEST_PARALLEL_FAST_CANDIDATE)
 	@mkdir -p "$(BUILD_DIR)"
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
 	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_FAST_ACTIVE) --only=$(ONLY)'
+
+# Proof-facing sibling of t-fast. The human convenience target above keeps its
+# documented substring behavior; impact plans and durable receipts use this
+# exact-ID path so a stale mapping cannot pass by selecting a sibling group.
+t-fast-exact: $(TEST_PARALLEL_FAST_CANDIDATE)
+	@mkdir -p "$(BUILD_DIR)"
+	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
+	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_FAST_ACTIVE) --exact=$(EXACT_ONLY_MATCHED)'
 
 # Regenerate the pinned Sapling SPEND reference ground-truth vector (H2 lane).
 # Runs the groth16_selfverify group's oracle in emit mode against
