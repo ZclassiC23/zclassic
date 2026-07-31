@@ -452,3 +452,15 @@
 # size is bounded by memory rather than by a constant nobody revisits.
 # Re-baselined in file_size_ceiling_lib_baseline.txt (4128) rather than
 # spending a ratchet slot; the recorded count STAYS 11.
+#
+# 2026-07-31 (impact-planning composition): two codeindex files grew and are
+# BASELINED at their new LOC rather than spending a ratchet slot, so the
+# recorded count STAYS 11. codeindex_build.c 999 -> 1047 admits `.def`
+# registry files into the scanned file set as include-graph nodes (a
+# changed registry row previously reached nothing at all through the call
+# graph) and routes them past the symbol/reference scanner, which has no
+# meaning for them. codeindex_store.c 875 -> 932 adds the reverse
+# include lookup — an index on includes(dep_path) plus the two queries that
+# answer "which translation units read this file" and "is there an include
+# graph at all", the second of which is what lets a caller tell an empty
+# answer apart from a missing one.

@@ -18,9 +18,94 @@ extern "C" {
  * hold the full path floor plus its symbol-closure additions). */
 #define ZCL_DEVLOOP_MAX_PLAN_GROUPS 32
 #define ZCL_DEVLOOP_GROUP_MAX 64
+/* Union across every dimension: the path floor plus the closure additions,
+ * so a full path set and a full closure set both fit without either evicting
+ * the other. Not a raised cap — it is the sum of the two that already exist. */
+#define ZCL_DEVLOOP_MAX_PLAN_SELECTIONS (ZCL_DEVLOOP_MAX_PLAN_GROUPS * 2)
+/* The intermediate file a selection came through. Repo-relative; the longest
+ * tracked path is well under this. */
+#define ZCL_DEVLOOP_VIA_MAX 160
+/* Byte ceiling the composed plan DOCUMENT renders into, independent of how
+ * large a buffer the caller happens to hand us.
+ *
+ * The plan is served by the `dev.test.plan` native leaf, which declares
+ * ZCL_COMMAND_LIST_BUDGET (8192) for the WHOLE zcl.result.v1 envelope, and the
+ * registry hard-fails the reply (RESPONSE_BUDGET_EXCEEDED, empty document)
+ * rather than truncating it. The envelope around `data` measured 340 bytes on
+ * this tree; 512 is the rounded-up reserve. Writing past this number does not
+ * produce a longer reply, it produces NO reply — which is why the renderer
+ * abridges the explanation list against this ceiling instead of against the
+ * caller's 16 KB stack buffer.
+ *
+ * Pinned mechanically: test_impact_composition asserts the leaf's declared
+ * budget still covers this number, so raising one without the other fails. */
+#define ZCL_DEVLOOP_PLAN_WIRE_MAX 7680
 #define ZCL_DEVLOOP_FIRST_ERROR_MAX 512
 #define ZCL_DEVLOOP_CYCLE_JSON_MAX 8192
 #define ZCL_DEVLOOP_WATCH_LOCK_REL ".cache/zcl-dev-watch.lock"
+
+/* ── the three dependency dimensions a plan is the UNION of ─────────────
+ *
+ * They are unioned, never intersected: a group named by any one of them is in
+ * the plan. They exist as separate names for two reasons — so a reader can be
+ * told WHICH one put a given test in the plan, and so incompleteness can be
+ * reported per dimension instead of collapsing into one boolean that means
+ * "something, somewhere, might be missing".
+ *
+ * OPAQUE   the hand-authored mappings in agent_impact_rules.def for artifacts
+ *          NO graph can reach: X-macro registries, lint gates, docs, lint
+ *          baselines, unit files — plus the hardcoded consensus-surface
+ *          prefixes. These are human judgement about which proof covers which
+ *          behaviour and are not derivable from any index; that is exactly why
+ *          they are labelled, so a reader knows no graph could have found them.
+ * SEMANTIC the call-graph blast radius: the changed file's own rule match plus
+ *          the rules matched by every file in its reverse-caller closure.
+ * INCLUDE  the compiler-depfile blast radius: the rules matched by every
+ *          translation unit that reads the changed file. This is the dimension
+ *          that answers a macro-only header or an X-macro table, which have no
+ *          call edges and therefore no SEMANTIC radius at all. */
+enum zcl_devloop_dim {
+    ZCL_DEVLOOP_DIM_OPAQUE = 0,
+    ZCL_DEVLOOP_DIM_SEMANTIC,
+    ZCL_DEVLOOP_DIM_INCLUDE,
+    ZCL_DEVLOOP_DIM__COUNT
+};
+
+/* Per-dimension completeness. The PRESERVE/FAIL-CLOSED split lives here:
+ * whatever a dimension found is always kept (INCOMPLETE never means EMPTY),
+ * and the verdict rides alongside so a caller that needs completeness can
+ * refuse while a caller that just wants tests to run still gets them. */
+enum zcl_devloop_dim_status {
+    ZCL_DEVLOOP_DIM_COMPLETE = 0,   /* ran to completion; the answer is whole */
+    ZCL_DEVLOOP_DIM_INCOMPLETE,     /* a bound fired; partial evidence RETAINED */
+    ZCL_DEVLOOP_DIM_UNAVAILABLE,    /* the dimension's source is absent */
+    ZCL_DEVLOOP_DIM_NOT_APPLICABLE  /* the file is outside this dimension's
+                                     * universe — nothing to find, and that is
+                                     * a complete answer, not a missing one */
+};
+
+struct zcl_devloop_dim_state {
+    enum zcl_devloop_dim_status status;
+    /* Stable label naming WHY, "" when COMPLETE. Deliberately shares wording
+     * with testcache_reason_label() ("closure-truncated", "no-include-graph")
+     * so the plan and the result cache never describe the same incompleteness
+     * with two different words. */
+    const char *reason;
+};
+
+/* One selected proof group and the evidence that selected it. */
+struct zcl_devloop_selection {
+    char group[ZCL_DEVLOOP_GROUP_MAX];
+    /* The file whose rule match named this group: the changed file itself for
+     * OPAQUE and for a direct SEMANTIC match, otherwise the intermediate the
+     * closure walk reached. Never empty. */
+    char via[ZCL_DEVLOOP_VIA_MAX];
+    enum zcl_devloop_dim dim;
+};
+
+/* Stable names for the JSON surface and for report text. */
+const char *zcl_devloop_dim_name(enum zcl_devloop_dim dim);
+const char *zcl_devloop_dim_status_name(enum zcl_devloop_dim_status status);
 
 enum zcl_devloop_state_lookup {
     ZCL_DEVLOOP_STATE_INVALID = -1,
@@ -68,19 +153,54 @@ struct zcl_devloop_plan {
      * changed files themselves (the path-glob FLOOR). Deterministic insertion
      * order; proof_group is normally path_groups[0] (or the consensus override).
      *
-     * closure_groups: groups reached ONLY through the symbol-closure blast
-     * radius — each impacted file (callers of callers) mapped through the SAME
+     * closure_groups: groups reached ONLY through the blast radius — every
+     * file in the changed set's reverse-caller closure (SEMANTIC) and every
+     * translation unit that reads it (INCLUDE), each mapped through the SAME
      * shared impact rules, minus anything already in path_groups. Populated by
-     * zcl_devloop_plan_add_closure(); empty until then, and empty when the
-     * closure was truncated (fall back to the path floor — never a silently
-     * huge test plan) or the index was unavailable. */
+     * zcl_devloop_plan_add_closure(); empty until then.
+     *
+     * A BOUND FIRING NO LONGER EMPTIES THIS SET. A partial walk is real
+     * evidence and every group it found is kept; what a bound changes is the
+     * per-dimension completeness verdict in `dims` below, which is what a
+     * caller needing PROOF must read. The old behaviour discarded the
+     * evidence AND let the caller believe the remainder was sufficient —
+     * fail-closed by design, fail-open in effect. */
     char path_groups[ZCL_DEVLOOP_MAX_PLAN_GROUPS][ZCL_DEVLOOP_GROUP_MAX];
     size_t path_groups_len;
     char closure_groups[ZCL_DEVLOOP_MAX_PLAN_GROUPS][ZCL_DEVLOOP_GROUP_MAX];
     size_t closure_groups_len;
     bool closure_attempted;   /* zcl_devloop_plan_add_closure() ran */
-    bool closure_truncated;   /* closure hit a bound => closure_groups empty */
+    /* Back-compat boolean: true iff the SEMANTIC or INCLUDE dimension is not
+     * COMPLETE. It no longer implies closure_groups is empty — read `dims`. */
+    bool closure_truncated;
+
+    /* ── C5: why every selected group is here ── */
+    struct zcl_devloop_selection selections[ZCL_DEVLOOP_MAX_PLAN_SELECTIONS];
+    size_t selections_len;
+    bool selections_truncated;   /* the selection ledger itself overflowed */
+
+    /* ── C4: per-dimension completeness, indexed by enum zcl_devloop_dim ── */
+    struct zcl_devloop_dim_state dims[ZCL_DEVLOOP_DIM__COUNT];
 };
+
+/* Is this plan admissible as PROOF that a change is covered?
+ *
+ * TRUE only when every dimension is COMPLETE or NOT_APPLICABLE. An INCOMPLETE
+ * or UNAVAILABLE dimension means the union may be missing a group nobody can
+ * name, so any consumer that would treat the plan as sufficient evidence —
+ * proof reuse, test-cache admission, an "is this change proven" gate — must
+ * refuse. This is deliberately the same standard lib/test/src/testcache.c
+ * already applies to its own closure (TESTCACHE_R_TRUNCATED /
+ * TESTCACHE_R_NO_INCLUDE_GRAPH => UNCACHEABLE, and an UNCACHEABLE group always
+ * runs), and *out_reason receives the same label vocabulary so the two never
+ * describe one incompleteness with two different words. They cannot share a
+ * symbol: testcache is a test-binary-only module and is never linked into the
+ * node, so the shared thing is the vocabulary and the test that pins them.
+ *
+ * `out_reason` (may be NULL) receives the first refusing dimension's reason,
+ * or "" when admissible. Never NULL-terminated garbage; always a literal. */
+bool zcl_devloop_plan_proof_admissible(const struct zcl_devloop_plan *plan,
+                                       const char **out_reason);
 
 struct zcl_devloop_process_result {
     int exit_code;
@@ -101,16 +221,23 @@ size_t zcl_devloop_plan_json(const char *const *files, size_t file_count,
                              char *out, size_t out_sz);
 
 /* Augment `plan` (already produced by zcl_devloop_plan_files for the same
- * `files`) with symbol-closure-derived proof groups. Opens the codeindex at
- * `repo_root`, computes the impact closure (file blast radius) of `files`, maps
- * each impacted file through the SAME shared impact rules the path floor uses,
- * and fills plan->closure_groups with the groups that are NOT already in
+ * `files`) with blast-radius-derived proof groups across BOTH graph
+ * dimensions. Opens the codeindex at `repo_root`, computes
+ *   SEMANTIC — codeindex_impact_closure(): the reverse-caller file set, and
+ *   INCLUDE  — codeindex_reverse_includes(): every translation unit whose
+ *              compiler depfile lists a changed file,
+ * maps each reached file through the SAME shared impact rules the path floor
+ * uses, and fills plan->closure_groups with the groups NOT already in
  * plan->path_groups. The primary proof_group route is left untouched.
  *
- * Best-effort and always safe: an unavailable index or a TRUNCATED closure
- * leaves closure_groups empty (fall back to the path floor). Sets
- * closure_attempted=true; sets closure_truncated=true iff the closure hit a
- * bound. Returns true unless an argument is invalid. */
+ * PRESERVE, then FAIL CLOSED. Whatever a dimension found is always kept — a
+ * bound firing marks that dimension INCOMPLETE and never empties the group set.
+ * An index that will not open marks both graph dimensions UNAVAILABLE. Either
+ * way the plan still runs the tests it found; what changes is
+ * zcl_devloop_plan_proof_admissible(), which then refuses.
+ *
+ * Sets closure_attempted=true and fills plan->dims + plan->selections.
+ * Returns true unless an argument is invalid. */
 bool zcl_devloop_plan_add_closure(const char *repo_root,
                                   const char *const *files, size_t file_count,
                                   struct zcl_devloop_plan *plan);

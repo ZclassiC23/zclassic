@@ -124,6 +124,21 @@ int codeindex_includes_of_file(struct codeindex *ci, const char *path,
     return ci_store_includes_of_file(ci->store, path, out, cap);
 }
 
+int64_t codeindex_include_edge_count(struct codeindex *ci)
+{
+    if (!ci || !ci->store)
+        LOG_ERR("codeindex", "bad arg to codeindex_include_edge_count");
+    return ci_store_include_edge_count(ci->store);
+}
+
+bool codeindex_path_is_translation_unit(const char *path)
+{
+    if (!path || !path[0])
+        return false;
+    size_t n = strlen(path);
+    return n >= 2 && path[n - 2] == '.' && path[n - 1] == 'c';
+}
+
 static const char *kind_name(char k)
 {
     switch (k) {

@@ -112,7 +112,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(chain_restore_planner) X(chain_restore_service) \
     X(chain_activation_controller) \
     X(hotswap_loader) X(hotswap_simnet) X(hotswap_module) \
-    X(hotswap_module_v2) X(dev_platform) \
+    X(hotswap_module_v2) X(dev_platform) X(impact_composition) \
     X(dev_activation) \
     X(command_registry_catalog) \
     X(metaverse_agent_broker) X(metaverse_vocabulary) \

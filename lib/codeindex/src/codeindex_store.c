@@ -138,7 +138,12 @@ static bool ensure_schema(sqlite3 *db)
         "CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);"
         "CREATE INDEX IF NOT EXISTS idx_refs_callee ON refs(callee_name);"
         "CREATE INDEX IF NOT EXISTS idx_refs_enclosing ON refs(enclosing);"
-        "CREATE INDEX IF NOT EXISTS idx_files_group ON files(\"group\");";
+        "CREATE INDEX IF NOT EXISTS idx_files_group ON files(\"group\");"
+        /* The REVERSE include lookup ("who reads this header/registry") is a
+         * dep_path equality probe. Without this index it is a full scan of the
+         * whole edge table per query, which is how a reverse walk gets written
+         * off as too expensive and the include dimension goes missing. */
+        "CREATE INDEX IF NOT EXISTS idx_includes_dep ON includes(dep_path);";
     char *err = NULL;
     if (sqlite3_exec(db, ddl, NULL, NULL, &err) != SQLITE_OK) {
         fprintf(stderr, "[codeindex] schema failed: %s\n",  // obs-ok:codeindex-open-failure
@@ -872,4 +877,56 @@ int ci_store_includes_of_file(struct ci_store *s, const char *path,
     sqlite3_finalize(stmt);
     pthread_mutex_unlock(&s->lock);
     return n;
+}
+
+int ci_store_dependents_of_file(struct ci_store *s, const char *dep_path,
+                                char (*out)[256], int cap)
+{
+    if (!s || !dep_path || !out || cap <= 0)
+        LOG_ERR("codeindex", "bad arg to dependents_of_file");
+    pthread_mutex_lock(&s->lock);
+    sqlite3_stmt *stmt = NULL;
+    /* The mirror of ci_store_includes_of_file. Each row of `includes` is a
+     * (translation unit -> prerequisite) pair the COMPILER recorded, and a
+     * depfile's prerequisite list is already transitively flattened, so one
+     * equality probe answers the whole reverse question: every TU whose bytes
+     * the compiler read `dep_path` for, however many headers deep. */
+    if (sqlite3_prepare_v2(s->db,
+        "SELECT DISTINCT f.path FROM includes i JOIN files f ON f.id=i.file_id"
+        " WHERE i.dep_path=? ORDER BY f.path ASC",
+        -1, &stmt, NULL) != SQLITE_OK) {
+        pthread_mutex_unlock(&s->lock);
+        LOG_ERR("codeindex", "prepare dependents_of_file");
+    }
+    sqlite3_bind_text(stmt, 1, dep_path, -1, SQLITE_TRANSIENT);
+    int n = 0;
+    int rc;
+    while (n < cap && (rc = sqlite3_step(stmt)) == SQLITE_ROW) {  // raw-sql-ok:codeindex-derived
+        ci_cpy(out[n], 256, (const char *)sqlite3_column_text(stmt, 0));
+        n++;
+    }
+    sqlite3_finalize(stmt);
+    pthread_mutex_unlock(&s->lock);
+    return n;
+}
+
+int64_t ci_store_include_edge_count(struct ci_store *s)
+{
+    if (!s)
+        LOG_ERR("codeindex", "null store to include_edge_count");
+    pthread_mutex_lock(&s->lock);
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(s->db, "SELECT COUNT(*) FROM includes", -1, &stmt,
+                           NULL) != SQLITE_OK) {
+        pthread_mutex_unlock(&s->lock);
+        LOG_ERR("codeindex", "prepare include_edge_count");
+    }
+    int64_t count = -1;
+    if (sqlite3_step(stmt) == SQLITE_ROW)  // raw-sql-ok:codeindex-derived
+        count = sqlite3_column_int64(stmt, 0);
+    sqlite3_finalize(stmt);
+    pthread_mutex_unlock(&s->lock);
+    if (count < 0)
+        LOG_ERR("codeindex", "read include_edge_count");
+    return count;
 }
