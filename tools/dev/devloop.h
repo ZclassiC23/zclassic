@@ -227,6 +227,11 @@ bool zcl_dev_source_identity_capture(const char *repo_root,
 bool zcl_dev_source_identity_verify(const char *repo_root,
                                     const struct dev_source_record *expected,
                                     char *why, size_t why_len);
+/* Post-proof CAS: verifies inventory + ABA mutation metadata without a second
+ * full byte rehash. Use only after a full capture admitted the operation. */
+bool zcl_dev_source_mutation_verify(const char *repo_root,
+                                    const struct dev_source_record *expected,
+                                    char *why, size_t why_len);
 bool zcl_dev_executable_source_id(const char *cwd, int executable_fd,
                                   const char *display_path, char out[65]);
 

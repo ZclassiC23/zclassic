@@ -13,7 +13,10 @@
 # compiler/toolchain state, environment, and full build configuration remain
 # deferred. Hidden index bits, discovery errors, and unsupported source types
 # fail closed. Linked binaries must also `verify-record` after linking; capture
-# alone is not a filesystem snapshot or publication receipt.
+# alone is not a filesystem snapshot or publication receipt. `verify-mutation`
+# is the bounded post-proof CAS: it re-enumerates the complete inventory and
+# compares ABA-resistant file, directory/index, and Git exclude-policy epochs
+# around that scan, but does not redundantly re-hash proved source contents.
 
 set -euo pipefail
 
@@ -52,6 +55,21 @@ fail()
     echo "source-identity: $*" >&2
     exit 3
 }
+
+GIT_INDEX_PATH=""
+if [ "$MODE" = verify-mutation ]; then
+    GIT_INDEX_PATH="$(git rev-parse --git-path index 2>/dev/null)" ||
+        fail "could not resolve Git index path"
+    case "$GIT_INDEX_PATH" in
+        /*) ;;
+        *) GIT_INDEX_PATH="$ROOT/$GIT_INDEX_PATH" ;;
+    esac
+    [ -f "$GIT_INDEX_PATH" ] || fail "Git index is unavailable"
+    : > "$WORK/epoch-indexes"
+    printf '%s\0' "$GIT_INDEX_PATH" >> "$WORK/epoch-indexes"
+    : > "$WORK/epoch-repos"
+    printf '.\0' >> "$WORK/epoch-repos"
+fi
 
 sha256_stream()
 {
@@ -152,6 +170,10 @@ fi
 : > "$WORK/tracked-source"
 declare -A GITLINK_STATE=()
 GITLINK_SEQ=0
+if [ "$MODE" = verify-mutation ]; then
+    : > "$WORK/source-dirs"
+    printf '.\0' >> "$WORK/source-dirs"
+fi
 
 append_prefixed_nul()
 {
@@ -164,6 +186,7 @@ append_prefixed_nul()
 collect_gitlink()
 {
     local prefix="$1" top physical record meta relative mode stage tag path
+    local gitlink_index
     local seq=$GITLINK_SEQ
     GITLINK_SEQ=$((GITLINK_SEQ + 1))
     printf '%s\0' "$prefix" >> "$WORK/tracked-source"
@@ -191,6 +214,22 @@ collect_gitlink()
     [ "$top" = "$physical" ] ||
         fail "gitlink resolves to a foreign worktree: $prefix"
     GITLINK_STATE["$prefix"]=present
+    if [ "$MODE" = verify-mutation ]; then
+        gitlink_index="$(git -C "$prefix" rev-parse --git-path index \
+            2>/dev/null)" ||
+            fail "could not resolve gitlink index path: $prefix"
+        case "$gitlink_index" in
+            /*) ;;
+            *) gitlink_index="$physical/$gitlink_index" ;;
+        esac
+        [ -f "$gitlink_index" ] ||
+            fail "gitlink index is unavailable: $prefix"
+        printf '%s\0' "$gitlink_index" >> "$WORK/epoch-indexes"
+        printf '%s\0' "$prefix" >> "$WORK/epoch-repos"
+        find "$prefix" -name .git -prune -o -type d -print0 \
+            >> "$WORK/source-dirs" 2>/dev/null ||
+            fail "gitlink directory inventory failed: $prefix"
+    fi
 
     git -C "$prefix" ls-files -v -z > "$WORK/gitlink-tags-$seq" ||
         fail "could not inspect gitlink index flags: $prefix"
@@ -271,6 +310,16 @@ for path in "${BUILD_INPUT_ROOTS[@]}"; do
         existing_build_roots+=("$path")
     fi
 done
+if [ "$MODE" = verify-mutation ]; then
+    for path in vendor vendor/lib vendor/tor \
+                vendor/tor/src/ext/ed25519/donna \
+                vendor/tor/src/ext/ed25519/ref10 \
+                vendor/tor/src/ext/keccak-tiny; do
+        if [ -d "$path" ] && [ ! -L "$path" ]; then
+            printf '%s\0' "$path" >> "$WORK/source-dirs"
+        fi
+    done
+fi
 if [ "${#existing_build_roots[@]}" -gt 0 ]; then
     find "${existing_build_roots[@]}" -name .git -prune -o \
         ! -type d ! -type f -print0 \
@@ -283,6 +332,11 @@ if [ "${#existing_build_roots[@]}" -gt 0 ]; then
     find "${existing_build_roots[@]}" -name .git -prune -o \
         -type f -print0 >> "$WORK/tracked-source" 2>/dev/null ||
         fail "build input inventory failed"
+    if [ "$MODE" = verify-mutation ]; then
+        find "${existing_build_roots[@]}" -name .git -prune -o \
+            -type d -print0 >> "$WORK/source-dirs" 2>/dev/null ||
+            fail "build input directory inventory failed"
+    fi
 fi
 
 # Gitlink discovery appends its own paths after the root diagnostic list was
@@ -322,11 +376,96 @@ if [ -e vendor/include ] || [ -L vendor/include ]; then
     find vendor/include -mindepth 1 -type f -print0 \
         >> "$WORK/tracked-source" 2>/dev/null ||
         fail "vendor include inventory failed"
+    if [ "$MODE" = verify-mutation ]; then
+        printf 'vendor/include\0' >> "$WORK/source-dirs"
+        find vendor/include -mindepth 1 -type d -print0 \
+            >> "$WORK/source-dirs" 2>/dev/null ||
+            fail "vendor include directory inventory failed"
+    fi
 fi
 {
     cat "$WORK/tracked-source"
     cat "$WORK/untracked"
 } | LC_ALL=C sort -zu > "$WORK/source-paths"
+
+if [ "$MODE" = verify-mutation ]; then
+    # Directory epochs close the inventory scanner's traversal race. Derive
+    # every current input's ancestors, and keep every directory beneath the
+    # recursive compiler roots above (including empty/ignored directories).
+    # An input created behind the fresh scan therefore changes a directory at
+    # the final post-scan observation even though neither path set contains it.
+    while IFS= read -r -d '' path; do
+        while [[ "$path" == */* ]]; do
+            path="${path%/*}"
+            printf '%s\0' "$path" >> "$WORK/source-dirs"
+        done
+    done < "$WORK/source-paths"
+
+    # The global nonignored-untracked selector can discover a future file in
+    # an otherwise empty directory outside the recursive compiler roots. Walk
+    # only top-level worktree directories and prune every Git-ignored directory
+    # by exact inode identity, so nested agent worktrees/build/test debris are
+    # never traversed while every directory capable of yielding an authoritative
+    # untracked path gets an epoch record.
+    git ls-files --others --ignored --exclude-standard --directory -z -- \
+        > "$WORK/ignored-inventory" ||
+        fail "ignored directory discovery failed"
+    ignored_dirs=()
+    while IFS= read -r -d '' path; do
+        case "$path" in
+            */)
+                path="${path%/}"
+                if [ -d "$path" ] && [ ! -L "$path" ]; then
+                    ignored_dirs+=("./$path")
+                fi
+                ;;
+        esac
+    done < "$WORK/ignored-inventory"
+    shopt -s nullglob dotglob
+    top_dirs=(*/)
+    shopt -u nullglob dotglob
+    scan_roots=()
+    for path in "${top_dirs[@]}"; do
+        path="${path%/}"
+        [ "$path" = .git ] || scan_roots+=("./$path")
+    done
+    if [ "${#scan_roots[@]}" -gt 0 ]; then
+        find_args=("${scan_roots[@]}")
+        for path in "${ignored_dirs[@]}"; do
+            find_args+=(-samefile "$path" -prune -o)
+        done
+        find_args+=(-type d -print0)
+        find "${find_args[@]}" >> "$WORK/source-dirs" 2>/dev/null ||
+            fail "nonignored source directory inventory failed"
+    fi
+
+    LC_ALL=C sort -zu "$WORK/source-dirs" > "$WORK/source-dirs.sorted" ||
+        fail "could not canonicalize source directory inventory"
+    {
+        cat "$WORK/source-dirs"
+        # Git may compress a directory whose every child is ignored into one
+        # trailing-slash record even when a self-hidden .gitignore inside that
+        # directory supplied the rules. Bind that boundary selector without
+        # recursively traversing or epoch-watching ignored build/test/worktree
+        # debris.
+        for path in "${ignored_dirs[@]}"; do
+            printf '%s\0' "${path#./}"
+        done
+    } | LC_ALL=C sort -zu > "$WORK/selector-dirs.sorted" ||
+        fail "could not canonicalize Git selector directory inventory"
+    LC_ALL=C sort -zu "$WORK/epoch-indexes" > "$WORK/epoch-indexes.sorted" ||
+        fail "could not canonicalize source index inventory"
+    LC_ALL=C sort -zu "$WORK/epoch-repos" > "$WORK/epoch-repos.sorted" ||
+        fail "could not canonicalize source repository inventory"
+    mv -- "$WORK/source-dirs.sorted" "$WORK/source-dirs" ||
+        fail "could not publish source directory inventory"
+    mv -- "$WORK/selector-dirs.sorted" "$WORK/selector-dirs" ||
+        fail "could not publish Git selector directory inventory"
+    mv -- "$WORK/epoch-indexes.sorted" "$WORK/epoch-indexes" ||
+        fail "could not publish source index inventory"
+    mv -- "$WORK/epoch-repos.sorted" "$WORK/epoch-repos" ||
+        fail "could not publish source repository inventory"
+fi
 
 emit_paths()
 {
@@ -580,6 +719,143 @@ inventory_token()
     sha256_file "$WORK/inventory-preimage"
 }
 
+# Files created after an inventory walk has passed their directory are absent
+# from that walk's path set. Bind the complete rescan to the metadata epoch of
+# every recursive compiler directory, every current input ancestor, and the
+# worktree index. This token is local to one verifier call: unlike the file
+# mutation token it is not compared with the pre-operation record, so a test
+# that creates and removes a fixture before verification does not self-refuse.
+inventory_epoch_token()
+{
+    local batch_start=0 batch_size=128 path_i index_i
+    local -a paths=() metadata=() indexes=() index_metadata=() batch=()
+    mapfile -d '' -t paths < "$WORK/source-dirs"
+    : > "$WORK/inventory-epoch-metadata"
+    for ((batch_start = 0; batch_start < ${#paths[@]};
+          batch_start += batch_size)); do
+        batch=("${paths[@]:batch_start:batch_size}")
+        stat --printf='%d:%i:%s:%f:%y:%z\0' -- "${batch[@]}" \
+            >> "$WORK/inventory-epoch-metadata" 2>/dev/null ||
+            fail "source directory changed during inventory verification"
+    done
+    mapfile -d '' -t metadata < "$WORK/inventory-epoch-metadata"
+    [ "${#metadata[@]}" -eq "${#paths[@]}" ] ||
+        fail "source directory metadata batch was incomplete"
+    mapfile -d '' -t indexes < "$WORK/epoch-indexes"
+    : > "$WORK/inventory-index-metadata"
+    if [ "${#indexes[@]}" -gt 0 ]; then
+        stat --printf='%d:%i:%s:%f:%y:%z\0' -- "${indexes[@]}" \
+            > "$WORK/inventory-index-metadata" 2>/dev/null ||
+            fail "Git index changed during inventory verification"
+    fi
+    mapfile -d '' -t index_metadata < "$WORK/inventory-index-metadata"
+    [ "${#index_metadata[@]}" -eq "${#indexes[@]}" ] ||
+        fail "Git index metadata batch was incomplete"
+    {
+        printf 'zcl.dev_source_inventory_epoch.v1\0'
+        for ((index_i = 0; index_i < ${#indexes[@]}; index_i++)); do
+            printf 'I\0%s\0%s\0' "${indexes[$index_i]}" \
+                "${index_metadata[$index_i]}"
+        done
+        for ((path_i = 0; path_i < ${#paths[@]}; path_i++)); do
+            printf 'D\0%s\0%s\0' "${paths[$path_i]}" \
+                "${metadata[$path_i]}"
+        done
+    } > "$WORK/inventory-epoch-preimage"
+    sha256_file "$WORK/inventory-epoch-preimage"
+}
+
+append_selector_file()
+{
+    local label="$1" path="$2" output="$3" digest
+    printf 'F\0%s\0%s\0' "$label" "$path" >> "$output"
+    if [ -f "$path" ]; then
+        digest="$(sha256_file "$path")" ||
+            fail "could not hash Git exclude selector: $path"
+        printf 'P\0%s\0' "$digest" >> "$output"
+    elif [ ! -e "$path" ] && [ ! -L "$path" ]; then
+        printf 'M\0' >> "$output"
+    else
+        fail "unsupported Git exclude selector: $path"
+    fi
+}
+
+# `--exclude-standard` is itself an inventory selector. Bind the effective Git
+# configuration, every traversable directory's .gitignore, and every
+# repo/gitlink's info/exclude and resolved global excludes file; changing
+# policy can reveal pre-existing bytes without touching any worktree directory
+# or index.
+selector_policy_token()
+{
+    local directory repo physical info_exclude global_exclude config_digest
+    local rc seq=0
+    local -a configured=()
+    : > "$WORK/selector-policy-preimage"
+    printf 'zcl.dev_source_selector_policy.v1\0' \
+        >> "$WORK/selector-policy-preimage"
+
+    # An untracked .gitignore may ignore itself as well as another pre-existing
+    # path, so it need not appear in source-paths. selector-dirs is the bounded
+    # superset of directories Git can traverse for the superproject and
+    # initialized gitlinks, plus compressed ignored-directory boundaries; bind
+    # presence and bytes even for a self-hidden selector.
+    while IFS= read -r -d '' directory; do
+        append_selector_file directory-gitignore "$directory/.gitignore" \
+            "$WORK/selector-policy-preimage"
+    done < "$WORK/selector-dirs"
+
+    while IFS= read -r -d '' repo; do
+        physical="$(cd "$repo" && pwd -P)" ||
+            fail "could not canonicalize selector repository: $repo"
+        printf 'R\0%s\0' "$repo" >> "$WORK/selector-policy-preimage"
+        git -C "$repo" config --null --list \
+            > "$WORK/selector-config-$seq" ||
+            fail "could not read effective Git configuration: $repo"
+        config_digest="$(sha256_file "$WORK/selector-config-$seq")" ||
+            fail "could not hash effective Git configuration: $repo"
+        printf 'C\0%s\0' "$config_digest" \
+            >> "$WORK/selector-policy-preimage"
+
+        info_exclude="$(git -C "$repo" rev-parse --git-path info/exclude \
+            2>/dev/null)" ||
+            fail "could not resolve info/exclude: $repo"
+        case "$info_exclude" in
+            /*) ;;
+            *) info_exclude="$physical/$info_exclude" ;;
+        esac
+        append_selector_file info-exclude "$info_exclude" \
+            "$WORK/selector-policy-preimage"
+
+        configured=()
+        if git -C "$repo" config --path --null --get core.excludesFile \
+                > "$WORK/selector-global-$seq" 2>/dev/null; then
+            mapfile -d '' -t configured < "$WORK/selector-global-$seq"
+            [ "${#configured[@]}" -eq 1 ] ||
+                fail "core.excludesFile did not resolve exactly once: $repo"
+            global_exclude="${configured[0]}"
+        else
+            rc=$?
+            [ "$rc" -eq 1 ] ||
+                fail "could not resolve core.excludesFile: $repo"
+            if [ -n "${XDG_CONFIG_HOME:-}" ]; then
+                global_exclude="$XDG_CONFIG_HOME/git/ignore"
+            elif [ -n "${HOME:-}" ]; then
+                global_exclude="$HOME/.config/git/ignore"
+            else
+                fail "HOME/XDG_CONFIG_HOME unavailable for global Git excludes"
+            fi
+        fi
+        case "$global_exclude" in
+            /*) ;;
+            *) global_exclude="$physical/$global_exclude" ;;
+        esac
+        append_selector_file global-excludes "$global_exclude" \
+            "$WORK/selector-policy-preimage"
+        seq=$((seq + 1))
+    done < "$WORK/epoch-repos"
+    sha256_file "$WORK/selector-policy-preimage"
+}
+
 capture_record()
 {
     local identity clean inventory_before inventory_after
@@ -599,6 +875,41 @@ capture_record()
     # legacy object-hash dependency this v2 record removes.
     clean=1
     printf '%s %s %s\n' "$identity" "$clean" "$mutation_after"
+}
+
+# Post-operation source CAS. A caller that already captured the complete byte
+# identity before doing work only needs to prove that exact source epoch did
+# not move while the work ran. The mutation token covers the canonical path set
+# plus device/inode/size/mode and nanosecond mtime+ctime for every extant input;
+# ctime makes edit/revert ABA visible even when bytes and mtime are restored.
+# Re-scan inventory in a fresh process so a newly selected untracked/ignored
+# input cannot hide behind the path set this invocation opened at startup.
+verify_mutation()
+{
+    local expected="$1" inventory_before inventory_after
+    local mutation_before mutation_after epoch_before epoch_after
+    local policy_before policy_after
+    inventory_before="$(inventory_token)" || exit $?
+    mutation_before="$(mutation_token)" || exit $?
+    epoch_before="$(inventory_epoch_token)" || exit $?
+    policy_before="$(selector_policy_token)" || exit $?
+    inventory_after="$(ZCL_SOURCE_IDENTITY_POST_RESCAN=1 \
+        "$SELF" inventory-token)" || exit $?
+    mutation_after="$(mutation_token)" || exit $?
+    epoch_after="$(inventory_epoch_token)" || exit $?
+    policy_after="$(selector_policy_token)" || exit $?
+    [ "$inventory_before" = "$inventory_after" ] ||
+        fail "source inventory changed during post-proof verification"
+    [ "$mutation_before" = "$mutation_after" ] ||
+        fail "source mutated during post-proof verification"
+    [ "$epoch_before" = "$epoch_after" ] ||
+        fail "source directory or index changed during post-proof verification"
+    [ "$policy_before" = "$policy_after" ] ||
+        fail "source exclude policy changed during post-proof verification"
+    if [ "${mutation_after,,}" != "${expected,,}" ]; then
+        fail "source epoch superseded: expected mutation=${expected,,} actual=${mutation_after,,}"
+    fi
+    printf '%s\n' "${mutation_after,,}"
 }
 
 # See ZCL_SOURCE_IDENTITY_SESSION above. Returns the cache file path for a
@@ -706,8 +1017,13 @@ case "$MODE" in
         printf '%s %s %s\n' "${actual,,}" "$actual_clean" \
             "${actual_mutation,,}"
         ;;
+    verify-mutation)
+        [[ "$EXPECTED" =~ ^[0-9a-fA-F]{64}$ ]] ||
+            fail "verify-mutation requires a 64-hex mutation token"
+        verify_mutation "$EXPECTED"
+        ;;
     *)
-        echo "usage: tools/dev/source-identity.sh paths|capture|capture-record|verify EXPECTED|verify-record EXPECTED CLEAN MUTATION" >&2
+        echo "usage: tools/dev/source-identity.sh paths|capture|capture-record|verify EXPECTED|verify-record EXPECTED CLEAN MUTATION|verify-mutation EXPECTED_MUTATION" >&2
         exit 2
         ;;
 esac

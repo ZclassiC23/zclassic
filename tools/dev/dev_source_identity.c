@@ -121,6 +121,48 @@ bool zcl_dev_source_identity_verify(const char *repo_root,
            strcmp(actual.mutation_id, expected->mutation_id) == 0;
 }
 
+bool zcl_dev_source_mutation_verify(const char *repo_root,
+                                    const struct dev_source_record *expected,
+                                    char *why, size_t why_len)
+{
+    if (!expected) {
+        (void)snprintf(why, why_len, "source_identity_expected_missing");
+        return false;
+    }
+    char tool[PATH_MAX];
+    int n = snprintf(tool, sizeof(tool), "%s/tools/dev/source-identity.sh",
+                     repo_root ? repo_root : "");
+    if (n <= 0 || (size_t)n >= sizeof(tool)) {
+        (void)snprintf(why, why_len, "source_identity_tool_path_invalid");
+        return false;
+    }
+    struct zcl_devloop_process_result result = {0};
+    const char *argv[] = {tool, "verify-mutation", expected->mutation_id,
+                          NULL};
+    if (!zcl_devloop_process_run(repo_root, argv, 30000, &result) ||
+        !process_ok(&result) || result.output_truncated) {
+        (void)snprintf(why, why_len, "source_epoch_superseded");
+        return false;
+    }
+    size_t len = result.output_len;
+    while (len > 0 && (result.output[len - 1] == '\n' ||
+                       result.output[len - 1] == '\r'))
+        len--;
+    if (len != 64) {
+        (void)snprintf(why, why_len, "source_mutation_output_invalid");
+        return false;
+    }
+    char raw[65], actual[65];
+    memcpy(raw, result.output, 64);
+    raw[64] = '\0';
+    if (!lower_hex64(raw, actual) ||
+        strcmp(actual, expected->mutation_id) != 0) {
+        (void)snprintf(why, why_len, "source_epoch_superseded");
+        return false;
+    }
+    return true;
+}
+
 bool zcl_dev_executable_source_id(const char *cwd, int executable_fd,
                                   const char *display_path, char out[65])
 {

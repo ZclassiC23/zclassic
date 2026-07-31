@@ -217,6 +217,9 @@ if "$SCRIPT" verify-record "$aba_id" "$aba_clean" "$aba_mutation" \
         > /dev/null 2>&1; then
     fail 'edit/revert ABA verified against its stale mutation token'
 fi
+if "$SCRIPT" verify-mutation "$aba_mutation" > /dev/null 2>&1; then
+    fail 'fast post-proof CAS accepted edit/revert ABA'
+fi
 
 current_record="$($SCRIPT capture-record)" || fail 'current record capture failed'
 read -r current_id current_clean current_mutation <<< "$current_record"
@@ -226,6 +229,168 @@ verified="$($SCRIPT verify "$fast")" || fail 'exact identity did not verify'
 [ "$verified" = "$fast" ] || fail 'verify returned a different identity'
 "$SCRIPT" verify-record "$fast" 1 "$current_mutation" > /dev/null ||
     fail 'verify-record rejected the current identity/completeness record'
+fast_verified="$($SCRIPT verify-mutation "$current_mutation")" ||
+    fail 'fast post-proof CAS rejected the current mutation token'
+[ "$fast_verified" = "$current_mutation" ] ||
+    fail 'fast post-proof CAS returned a different mutation token'
+
+# A newly selected input changes the inventory even though none of the paths
+# in the baseline token changed metadata. It must supersede the fast CAS.
+printf 'late post-proof input\n' > post-proof-new-source.c
+if "$SCRIPT" verify-mutation "$current_mutation" > /dev/null 2>&1; then
+    fail 'fast post-proof CAS omitted a new source input'
+fi
+rm post-proof-new-source.c
+"$SCRIPT" verify-mutation "$current_mutation" > /dev/null ||
+    fail 'fast post-proof CAS did not recover after removing transient input'
+
+# Inject after the child inventory has collected its path set but before that
+# marked post-rescan child returns. Each case must trip its surrounding epoch
+# even though both file lists omit the newly authoritative path.
+real_sha256sum="$(command -v sha256sum)"
+mkdir _module-origin/verify-mutation-race-bin
+printf '%s\n' '#!/usr/bin/env bash' \
+    'if [ "$#" -eq 0 ] && [ "${ZCL_SOURCE_IDENTITY_POST_RESCAN:-0}" = 1 ] &&' \
+    '   [ ! -e "$VERIFY_MUTATION_RACE_FLAG" ]; then' \
+    '  : > "$VERIFY_MUTATION_RACE_FLAG"' \
+    '  case "$VERIFY_MUTATION_RACE_KIND" in' \
+    '    file) printf "late source input\n" > "$VERIFY_MUTATION_RACE_SOURCE" ;;' \
+    '    gitlink-index)' \
+    '      "$REAL_GIT" -C "$VERIFY_MUTATION_GITLINK_ROOT" add -f -- "$VERIFY_MUTATION_GITLINK_FILE" ;;' \
+    '    exclude-policy) sed -i -e "\$d" "$VERIFY_MUTATION_EXCLUDE_FILE" ;;' \
+    '    selector-file)' \
+    '      printf "%s\n" "$VERIFY_MUTATION_EXCLUDE_KEEP" > "$VERIFY_MUTATION_EXCLUDE_FILE" ;;' \
+    '    *) exit 97 ;;' \
+    '  esac' \
+    'fi' \
+    'exec "$REAL_SHA256SUM" "$@"' \
+    > _module-origin/verify-mutation-race-bin/sha256sum
+chmod +x _module-origin/verify-mutation-race-bin/sha256sum
+
+run_verify_mutation_race()
+{
+    local label="$1" expected="${2:-source directory or index changed during post-proof verification}"
+    rm -f _module-origin/verify-mutation-race-fired
+    if PATH="$PWD/_module-origin/verify-mutation-race-bin:$PATH" \
+            REAL_SHA256SUM="$real_sha256sum" REAL_GIT="$REAL_GIT" \
+            VERIFY_MUTATION_RACE_FLAG="$PWD/_module-origin/verify-mutation-race-fired" \
+            VERIFY_MUTATION_RACE_KIND="$race_kind" \
+            VERIFY_MUTATION_RACE_SOURCE="${race_source:-}" \
+            VERIFY_MUTATION_GITLINK_ROOT="${race_gitlink_root:-}" \
+            VERIFY_MUTATION_GITLINK_FILE="${race_gitlink_file:-}" \
+            VERIFY_MUTATION_EXCLUDE_FILE="${race_exclude_file:-}" \
+            VERIFY_MUTATION_EXCLUDE_KEEP="${race_exclude_keep:-}" \
+            "$SCRIPT" verify-mutation "$current_mutation" \
+            > /dev/null 2> _module-origin/verify-mutation-race.err; then
+        fail "$label was accepted behind the inventory scan"
+    fi
+    [ -f _module-origin/verify-mutation-race-fired ] ||
+        fail "$label fixture did not fire in the marked rescan child"
+    grep -q "$expected" \
+        _module-origin/verify-mutation-race.err ||
+        fail "$label did not trip its epoch: $(cat _module-origin/verify-mutation-race.err)"
+}
+
+# Ignored input under a recursive compiler root: directory epoch.
+race_kind=file
+race_source="$PWD/app/controllers/src/ignored-verify-race.c"
+race_gitlink_root= race_gitlink_file= race_exclude_file= race_exclude_keep=
+run_verify_mutation_race 'ignored compiler-input traversal race'
+[ -f "$race_source" ] || fail 'ignored compiler-input race fixture did not fire'
+rm "$race_source"
+
+# Nonignored input under a pre-existing empty directory outside all recursive
+# compiler roots/current-input ancestors: global nonignored directory epoch.
+mkdir empty-untracked-race
+if git check-ignore -q empty-untracked-race; then
+    fail 'empty-directory race fixture is unexpectedly ignored'
+fi
+race_source="$PWD/empty-untracked-race/late.c"
+run_verify_mutation_race 'empty nonignored-directory traversal race'
+[ -f "$race_source" ] || fail 'empty-directory race fixture did not fire'
+rm -rf empty-untracked-race
+
+# A pre-existing ignored gitlink file can become authoritative only by changing
+# that gitlink's own index. Directory and superproject-index epochs stay fixed.
+printf 'late-gitlink-index.c\n' >> .git/modules/vendor/sub/info/exclude
+printf 'pre-existing ignored gitlink input\n' > vendor/sub/late-gitlink-index.c
+git -C vendor/sub check-ignore -q late-gitlink-index.c ||
+    fail 'gitlink index-race fixture is not ignored'
+race_kind=gitlink-index race_source=
+race_gitlink_root="$PWD/vendor/sub"
+race_gitlink_file=late-gitlink-index.c
+run_verify_mutation_race 'gitlink-index traversal race'
+git -C vendor/sub ls-files --error-unmatch -- late-gitlink-index.c \
+    > /dev/null 2>&1 || fail 'gitlink index-race fixture did not fire'
+git -C vendor/sub reset -q -- late-gitlink-index.c
+rm vendor/sub/late-gitlink-index.c
+
+# Exclude policy is an inventory selector too: reveal a pre-existing ignored
+# path after child enumeration without touching any worktree directory/index.
+printf 'late-exclude-policy.c\n' >> .git/info/exclude
+printf 'pre-existing policy-hidden input\n' > late-exclude-policy.c
+git check-ignore -q late-exclude-policy.c ||
+    fail 'exclude-policy race fixture is not ignored'
+race_kind=exclude-policy race_source=
+race_gitlink_root= race_gitlink_file=
+race_exclude_file="$PWD/.git/info/exclude"
+run_verify_mutation_race 'exclude-policy traversal race' \
+    'source exclude policy changed during post-proof verification'
+if git check-ignore -q late-exclude-policy.c; then
+    fail 'exclude-policy race fixture did not reveal its path'
+fi
+rm late-exclude-policy.c
+
+# An untracked per-directory .gitignore can hide itself and another existing
+# path. Mutate its bytes in place after child enumeration so neither the
+# directory epoch nor the currently selected file epoch can rescue this test.
+mkdir directory-policy-race
+printf '%s\n' '.gitignore' 'late-directory-policy.c' \
+    > directory-policy-race/.gitignore
+printf 'pre-existing directory-policy-hidden input\n' \
+    > directory-policy-race/late-directory-policy.c
+git check-ignore -q directory-policy-race/.gitignore &&
+    git check-ignore -q directory-policy-race/late-directory-policy.c ||
+    fail 'directory-policy race fixtures are not ignored'
+race_kind=selector-file race_source=
+race_gitlink_root= race_gitlink_file=
+race_exclude_file="$PWD/directory-policy-race/.gitignore"
+race_exclude_keep=.gitignore
+run_verify_mutation_race 'per-directory exclude-policy traversal race' \
+    'source exclude policy changed during post-proof verification'
+if git check-ignore -q directory-policy-race/late-directory-policy.c; then
+    fail 'directory-policy race fixture did not reveal its path'
+fi
+rm directory-policy-race/.gitignore \
+    directory-policy-race/late-directory-policy.c
+rmdir directory-policy-race
+
+# Git resolves a relative core.excludesFile against the selected repository's
+# worktree. Exercise a gitlink specifically: resolving it against the
+# superproject would hash a missing/wrong path and accept this policy race.
+printf '%s\n' 'relative-global-ignore' 'late-relative-global.c' \
+    > vendor/sub/relative-global-ignore
+printf 'pre-existing relative-global-hidden input\n' \
+    > vendor/sub/late-relative-global.c
+git -C vendor/sub config core.excludesFile relative-global-ignore
+git -C vendor/sub check-ignore -q relative-global-ignore &&
+    git -C vendor/sub check-ignore -q late-relative-global.c ||
+    fail 'relative-global exclude-policy fixtures are not ignored'
+race_kind=selector-file race_source=
+race_gitlink_root= race_gitlink_file=
+race_exclude_file="$PWD/vendor/sub/relative-global-ignore"
+race_exclude_keep=relative-global-ignore
+run_verify_mutation_race 'relative gitlink global-exclude traversal race' \
+    'source exclude policy changed during post-proof verification'
+if git -C vendor/sub check-ignore -q late-relative-global.c; then
+    fail 'relative-global exclude-policy fixture did not reveal its path'
+fi
+git -C vendor/sub config --unset core.excludesFile
+rm vendor/sub/relative-global-ignore vendor/sub/late-relative-global.c
+
+rm -rf _module-origin/verify-mutation-race-bin \
+    _module-origin/verify-mutation-race-fired \
+    _module-origin/verify-mutation-race.err
 
 # The metadata token operates on the enumerated set, so independently refresh
 # that set before accepting a record. Inject a new untracked file during the
@@ -255,6 +420,9 @@ fi
 if "$SCRIPT" verify-record "$fast" 1 "$current_mutation" \
         > /dev/null 2>&1; then
     fail 'superseded identity/clean record verified'
+fi
+if "$SCRIPT" verify-mutation "$current_mutation" > /dev/null 2>&1; then
+    fail 'fast post-proof CAS accepted a superseding source edit'
 fi
 
 # Hidden index bits can suppress dirty discovery and must remain a hard error
