@@ -944,6 +944,8 @@ int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "ZCL_FAST_CHANGED_FILES_FILE") != NULL);
         ASSERT(strstr(buf, "git diff --name-only \"$rsha\" \"$lsha\"")
                != NULL);
+        ASSERT(strstr(buf, "git rev-parse --local-env-vars") != NULL);
+        ASSERT(strstr(buf, "unset \"$name\"") != NULL);
         ASSERT(strstr(buf, "make install-quality-linger") != NULL);
         ASSERT(run_gate_script("tools/dev/build-epoch-selftest.sh", NULL)
                == 0);

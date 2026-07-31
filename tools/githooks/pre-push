@@ -76,6 +76,19 @@ while read -r lsha rsha; do
 done < "$updates"
 sort -u "$changed_files" -o "$changed_files"
 
+# Git exports repository-local environment (GIT_DIR, GIT_WORK_TREE, object
+# directories, and related variables) to hooks.  The CI suite intentionally
+# creates throwaway repositories with `git -C <fixture> init`; forwarding the
+# hook environment would redirect those commands back into this checkout's
+# repository metadata.  Resolve the push while those variables are available,
+# then clear them before any build or test process can inherit them.  Git
+# commands below rediscover this worktree from REPO_ROOT.
+git_local_env="$(git rev-parse --local-env-vars)"
+for name in $git_local_env; do
+    unset "$name"
+done
+unset git_local_env name
+
 CMD="${ZCL_PREPUSH_CMD:-make pre-push-ci}"
 LOG_FILE="$REPO_ROOT/build/pre-push-ci.log"
 mkdir -p "$REPO_ROOT/build" 2>/dev/null || true
