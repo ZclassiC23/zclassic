@@ -3,6 +3,9 @@
 
 #include "devloop.h"
 
+#include "codeindex/codeindex_merkle.h"
+#include "platform/time_compat.h"
+
 #include <ctype.h>
 #include <limits.h>
 #include <stdio.h>
@@ -64,6 +67,32 @@ static bool parse_source_record(const struct zcl_devloop_process_result *result,
     return true;
 }
 
+bool zcl_dev_source_cas_capture(const char *repo_root,
+                                struct dev_source_record *out)
+{
+    if (!repo_root || !repo_root[0] || !out)
+        return false;
+    int64_t started_us = platform_time_monotonic_us();
+    struct ci_merkle_cost cost = {0};
+    struct ci_merkle *tree = ci_merkle_refresh(repo_root, &cost);
+    if (!tree) {
+        out->cas_elapsed_us = platform_time_monotonic_us() - started_us;
+        return false;
+    }
+    struct ci_merkle_node root = {0};
+    bool ok = ci_merkle_root(tree, &root);
+    if (ok) {
+        ci_merkle_hex(&root.digest, out->cas_root_sha3);
+        out->cas_files_total = cost.files_total;
+        out->cas_files_read = cost.files_read;
+        out->cas_nodes_hashed = cost.nodes_hashed;
+        out->cas_present = true;
+    }
+    ci_merkle_free(tree);
+    out->cas_elapsed_us = platform_time_monotonic_us() - started_us;
+    return ok;
+}
+
 bool zcl_dev_source_identity_capture(const char *repo_root,
                                      struct dev_source_record *out,
                                      char *why, size_t why_len)
@@ -81,8 +110,14 @@ bool zcl_dev_source_identity_capture(const char *repo_root,
         (void)snprintf(why, why_len, "source_identity_capture_failed");
         return false;
     }
-    if (parse_source_record(&result, out, why, why_len))
+    if (parse_source_record(&result, out, why, why_len)) {
+        /* Shadow rollout: the shell SHA-256 record remains the exact build and
+         * publication oracle. The native persistent SHA3 tree is attached as
+         * independently observable CAS identity and may be compared/audited
+         * without being allowed to green-light an artifact. */
+        (void)zcl_dev_source_cas_capture(repo_root, out);
         return true;
+    }
     if (result.output_len > 0 && why && why_len > 0) {
         size_t copy = result.output_len < why_len - 1 ? result.output_len
                                                        : why_len - 1;
@@ -187,6 +222,7 @@ enum zcl_dev_source_admission zcl_dev_executable_source_admit(
     }
 
     if (zcl_dev_source_mutation_verify(repo_root, &built, why, why_len)) {
+        (void)zcl_dev_source_cas_capture(repo_root, &built);
         *out = built;
         return ZCL_DEV_SOURCE_ADMISSION_BUILD_MUTATION;
     }

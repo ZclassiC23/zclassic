@@ -1049,7 +1049,8 @@ all: test_zcl zclassic23 zclassic-cli zcl-rpc zclassic23-package-verify
 
 TEST_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(wildcard lib/test/src/*.c))
-TEST_DEV_EXECUTOR_SRCS = tools/dev/devloop_cycle.c tools/dev/dev_failure_store.c
+TEST_DEV_EXECUTOR_SRCS = tools/dev/devloop_cycle.c tools/dev/dev_failure_store.c \
+	tools/dev/dev_source_identity.c tools/dev/devloop_process.c
 SPEC_SRCS = $(wildcard lib/test/spec/*.c)
 CHAOS_SIM_SRCS = tools/sim/sim_peer.c
 

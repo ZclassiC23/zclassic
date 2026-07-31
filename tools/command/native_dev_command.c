@@ -1171,6 +1171,27 @@ void zcl_native_handle_dev_test_run(
                            source.source_id);
     (void)json_push_kv_str(&reply->data, "source_mutation_sha256",
                            source.mutation_id);
+    if (source.cas_present) {
+        (void)json_push_kv_str(&reply->data, "source_cas_sha3",
+                               source.cas_root_sha3);
+        (void)json_push_kv_str(&reply->data, "source_cas_scope",
+                               "public_c23_source_roots.v1");
+        (void)json_push_kv_str(&reply->data, "source_cas_authority",
+                               "shadow");
+        struct json_value cas_work;
+        json_init(&cas_work);
+        json_set_object(&cas_work);
+        (void)json_push_kv_int(&cas_work, "files_total",
+                               source.cas_files_total);
+        (void)json_push_kv_int(&cas_work, "files_read",
+                               source.cas_files_read);
+        (void)json_push_kv_int(&cas_work, "nodes_hashed",
+                               source.cas_nodes_hashed);
+        (void)json_push_kv_int(&cas_work, "elapsed_us",
+                               source.cas_elapsed_us);
+        (void)json_push_kv(&reply->data, "source_cas_work", &cas_work);
+        json_free(&cas_work);
+    }
     (void)json_push_kv_str(&reply->data, "source_admission",
                            zcl_dev_source_admission_name(source_admission));
     (void)json_push_kv_bool(&reply->data, "passed", ok);
@@ -1181,6 +1202,13 @@ void zcl_native_handle_dev_test_run(
     json_init(&phases);
     json_set_object(&phases);
     (void)json_push_kv_int(&phases, "identity", identity_us);
+    int64_t oracle_identity_us = identity_us - source.cas_elapsed_us;
+    if (oracle_identity_us < 0)
+        oracle_identity_us = 0;
+    (void)json_push_kv_int(&phases, "identity_sha256_oracle",
+                           oracle_identity_us);
+    (void)json_push_kv_int(&phases, "identity_cas_sha3",
+                           source.cas_elapsed_us);
     (void)json_push_kv_int(&phases, "graph_load", graph_load_us);
     /* This command deliberately consumes an immutable prebuilt runner.  Zero
      * means no compile/link action ran, not an unmeasured duration. */

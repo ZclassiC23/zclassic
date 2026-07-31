@@ -126,9 +126,11 @@ static int run_focused(const char *group)
               result.term_signal == 0;
     printf("{\"schema\":\"zcl.dev_focused_test.v1\",\"status\":\"%s\","
            "\"group\":\"%s\",\"source_admission\":\"%s\","
+           "\"source_cas_sha3\":\"%s\",\"source_cas_authority\":\"shadow\","
            "\"elapsed_ms\":%lld,\"exit_code\":%d}\n",
            ok ? "passed" : "failed", full_group,
            zcl_dev_source_admission_name(source_admission),
+           source.cas_present ? source.cas_root_sha3 : "",
            (long long)result.elapsed_ms, result.exit_code);
     if (!ok && result.output_len)
         fprintf(stderr, "%s\n", result.output);

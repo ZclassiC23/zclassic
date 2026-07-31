@@ -66,6 +66,13 @@ binds nanosecond file/directory/index epochs and effective Git exclude policy.
 Edit/revert ABA during the proof, newly appearing compiler inputs, and policy
 changes all refuse. Build and publication boundaries still use the heavier full
 `verify-record`.
+
+The resident dev surface also emits `source_cas_sha3` over the public C23
+source roots. This is the persistent native Merkle identity used to measure and
+develop the build fabric: `source_cas_work` reports files read, nodes rehashed,
+and elapsed microseconds. It is deliberately marked `source_cas_authority:
+shadow`; the exact shell-derived SHA-256 source/mutation record remains build
+and publication authority during differential rollout.
 5. **Push flow + its two traps:** `make lint && make -j"$(nproc)" build-only`, run the mapped focused tests with parallel Make, then `git push` (hook runs `make pre-push-ci`). **Trap A (impact-rules):** every changed `.c` must map to a focused group in `app/controllers/include/controllers/agent_impact_rules.def` or the push is BLOCKED ("no focused test mapping") — add the mapping. **Trap B (pre-push SIGPIPE):** git may not drain the hook's stdout, so a GREEN `make pre-push-ci` can die with `make[2]: write error: stdout` and spuriously block — confirm green out-of-band (`make pre-push-ci >log 2>&1; echo $?` → 0) then `git push --no-verify` (verified, not skipped).
 6. **ZVCS:** each green cycle may anchor candidate source/artifact evidence. Source revert is available only with generation relinking disabled; relinking remains contained. Sealed-core changes require the owner unseal ritual (`check-core-seal`).
 

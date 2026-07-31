@@ -3,6 +3,7 @@
 #define _GNU_SOURCE
 #include "devloop.h"
 
+#include "codeindex/codeindex_merkle.h"
 #include "platform/time_compat.h"
 
 #include <dirent.h>
@@ -35,9 +36,17 @@ struct watch_context {
     size_t dir_count;
     char changed[ZCL_DEVLOOP_MAX_FILES][ZCL_DEVLOOP_PATH_MAX];
     size_t changed_count;
+    bool force_full_source_rescan;
+    uint64_t mutation_sequence;
 };
 
 static volatile sig_atomic_t g_watch_stop;
+
+static void mutation_sequence_advance(struct watch_context *ctx)
+{
+    if (ctx && ctx->mutation_sequence < UINT64_MAX)
+        ctx->mutation_sequence++;
+}
 
 static void watch_signal(int sig)
 {
@@ -174,12 +183,22 @@ static bool collect_events(struct watch_context *ctx)
             struct inotify_event *ev = (struct inotify_event *)p;
             p += sizeof(*ev) + ev->len;
             if (ev->mask & IN_Q_OVERFLOW) {
+                mutation_sequence_advance(ctx);
+                ctx->force_full_source_rescan = true;
                 add_changed(ctx, "Makefile");
                 saw = true;
                 continue;
             }
             struct watched_dir *dir = find_watch(ctx, ev->wd);
-            if (!dir || ev->len == 0)
+            if (!dir)
+                continue;
+            if (ev->mask & (IN_IGNORED | IN_DELETE_SELF | IN_MOVE_SELF)) {
+                mutation_sequence_advance(ctx);
+                ctx->force_full_source_rescan = true;
+                add_changed(ctx, "Makefile");
+                saw = true;
+            }
+            if (ev->len == 0)
                 continue;
             char rel[ZCL_DEVLOOP_PATH_MAX];
             int rn = dir->rel[0]
@@ -187,13 +206,22 @@ static bool collect_events(struct watch_context *ctx)
                 : snprintf(rel, sizeof(rel), "%s", ev->name);
             if (rn <= 0 || (size_t)rn >= sizeof(rel))
                 continue;
-            if ((ev->mask & IN_ISDIR) && (ev->mask & (IN_CREATE | IN_MOVED_TO))) {
-                (void)add_watch_recursive(ctx, rel);
+            if (ev->mask & IN_ISDIR) {
+                mutation_sequence_advance(ctx);
+                add_changed(ctx, "Makefile");
+                saw = true;
+                if ((ev->mask & (IN_CREATE | IN_MOVED_TO)) &&
+                    !add_watch_recursive(ctx, rel)) {
+                    ctx->force_full_source_rescan = true;
+                }
+                if (ev->mask & (IN_DELETE | IN_MOVED_FROM))
+                    ctx->force_full_source_rescan = true;
                 continue;
             }
             if (!(ev->mask & IN_ISDIR) &&
                 (ev->mask & (IN_CLOSE_WRITE | IN_MOVED_TO | IN_MOVED_FROM |
                              IN_CREATE | IN_DELETE | IN_ATTRIB))) {
+                mutation_sequence_advance(ctx);
                 size_t before = ctx->changed_count;
                 add_changed(ctx, rel);
                 saw = saw || ctx->changed_count != before;
@@ -268,6 +296,11 @@ int zcl_devloop_watch_mode(const char *repo_root,
         close(lock_fd);
         return 1;
     }
+    /* A restarted resident process cannot inherit certainty from an earlier
+     * process's watch coverage. Keep the snapshot as a cache only after this
+     * generation has forced one complete byte pass. Watchers are already
+     * established, so edits during that pass are queued for the next epoch. */
+    ctx.force_full_source_rescan = true;
 
     g_watch_stop = 0;
     signal(SIGINT, watch_signal);
@@ -315,6 +348,17 @@ int zcl_devloop_watch_mode(const char *repo_root,
         const char *files[ZCL_DEVLOOP_MAX_FILES];
         for (size_t i = 0; i < ctx.changed_count; i++)
             files[i] = ctx.changed[i];
+        bool full_rescan = ctx.force_full_source_rescan;
+        if (ctx.force_full_source_rescan) {
+            (void)ci_merkle_forget(ctx.root);
+            ctx.force_full_source_rescan = false;
+        }
+        printf("{\"schema\":\"zcl.dev_source_epoch.v1\","
+               "\"mutation_sequence\":%llu,\"full_rescan\":%s,"
+               "\"changed_paths\":%zu}\n",
+               (unsigned long long)ctx.mutation_sequence,
+               full_rescan ? "true" : "false", ctx.changed_count);
+        fflush(stdout);
         (void)zcl_devloop_run_cycle_mode(ctx.root, files, ctx.changed_count,
                                          publish_mode);
         ctx.changed_count = 0;

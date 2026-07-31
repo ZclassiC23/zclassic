@@ -287,3 +287,23 @@ the 5-second budget, and the unchanged second-and-later Make invocations do not
 regenerate templates or relink the focused runner. The remaining ~4.5-second
 floor is source identity and Make graph setup; it is the target of the resident
 identity/build-authority phase rather than compilation or linking.
+
+## 2026-07-31 — native source-CAS shadow identity
+
+Host and working tree as above. The existing `code.provenance.merkle` surface
+was measured before wiring the same persistent C23 Merkle engine into the dev
+source record. A cold capture of 3,440 files / 49,696,341 bytes took 127.529 ms
+and published the SHA3 snapshot; the immediately repeated capture took 13.989
+ms, read zero file bytes, and rehashed zero directory nodes. Through
+`dev.test.run`, a later warm capture took 15.661 ms and reported the same zero
+read/zero-rehash proof in `source_cas_work`.
+
+| capture | wall | files read | nodes hashed | budget |
+|---|---:|---:|---:|---:|
+| cold native SHA3 CAS | 127.529 ms | 3,440 / 3,440 | 262 / 262 | <400 ms |
+| warm native SHA3 CAS | 13.989 ms | 0 / 3,440 | 0 / 262 | <25 ms |
+
+The shell SHA-256 inventory remains authoritative. These rows establish the
+native engine's shadow-mode latency and incrementality; they do not claim that
+the narrower public-C23 Merkle inventory is already a replacement for the
+shell oracle's full build-input policy.

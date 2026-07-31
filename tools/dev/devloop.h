@@ -219,7 +219,22 @@ struct zcl_devloop_process_result {
 struct dev_source_record {
     char source_id[65];
     char mutation_id[65];
+    /* Native, content-addressed shadow identity for the public C23 source
+     * roots. SHA-256 above remains publication authority during differential
+     * rollout; this root is the resident Merkle/CAS identity. */
+    char cas_root_sha3[65];
+    uint32_t cas_files_total;
+    uint32_t cas_files_read;
+    uint32_t cas_nodes_hashed;
+    int64_t cas_elapsed_us;
+    bool cas_present;
 };
+
+/* Refresh the persistent native source Merkle tree and attach its SHA3 root
+ * and measured work to `out`. Project/source publication authority is not
+ * changed by this shadow capture. */
+bool zcl_dev_source_cas_capture(const char *repo_root,
+                                struct dev_source_record *out);
 
 bool zcl_dev_source_identity_capture(const char *repo_root,
                                      struct dev_source_record *out,
