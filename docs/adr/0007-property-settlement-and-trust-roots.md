@@ -62,16 +62,17 @@ section below is the other half of the record, and is not optional reading.
 
 ## Decision
 
-**Every metaverse property declares which of exactly three mechanisms settles
+**Every metaverse property declares which of exactly four mechanisms settles
 its ownership, and that declaration is a readable field, not an implicit
 property of its kind.** No kind is settled by a signing quorum.
 
-### 1. The three settlement classes
+### 1. The four settlement classes
 
 | Class | What must be true for the claim to hold | Who must cooperate |
 |---|---|---|
 | `CONTENT_ADDRESSED` | the bytes hash to the root | nobody |
 | `PROOF_OF_WORK` | a chain record exists at sufficient depth | whoever redoes the work |
+| `CHAIN_ANCHORED_INCOMPLETE` | a chain object exists, but this node cannot measure the work above it | whoever redoes the work — unquantified here |
 | `LOCAL_DECLARATION` | this node says so | nobody outside this node agrees or disagrees |
 
 `CONTENT_ADDRESSED` is the strongest class and the one most easily undersold.
@@ -79,6 +80,13 @@ Verification requires no authority whatsoever, no network, no clock and no
 quorum: hash the bytes you hold and compare. It is also the narrowest — it
 proves byte identity and says nothing about authorship or title, which is
 exactly what `METAVERSE_EVIDENCE_LOCAL_CONTENT_HASH` already documents.
+
+`CHAIN_ANCHORED_INCOMPLETE` exists because the honest answer for one kind was
+neither of the other three. It says: there really is a chain object behind this
+record, and this node still cannot tell you how much work sits above it. It is
+weaker than `PROOF_OF_WORK` and stronger than `LOCAL_DECLARATION`, and the
+alternative — a `PROOF_OF_WORK` label with permanently unknown depth and
+chainwork under it — would be a claim the numbers never back. See §3.
 
 `LOCAL_DECLARATION` is not a defect to be engineered away. Some things
 genuinely are local facts — this node runs this service, this node published
@@ -97,7 +105,14 @@ all of them.
 | `hosted_service` | `service.registry` | `LOCAL_DECLARATION` |
 | `endpoint_onion` | `net.onion_service` | `LOCAL_DECLARATION` |
 | `storefront_product` | `store.product` | `LOCAL_DECLARATION` |
-| `contract_swap` | `swap.contract` | `PROOF_OF_WORK` (see §3) |
+| `contract_swap` | `swap.contract` | `CHAIN_ANCHORED_INCOMPLETE` (see §3) |
+
+<!-- claim: symbol-present CHAIN_ANCHORED_INCOMPLETE lib/metaverse -->
+
+The table above is the prose form of `METAVERSE_KIND_TABLE` in
+`lib/metaverse/include/metaverse/property_id.h`, whose fourth column carries
+the settlement class. That table is the authority; if this document and it ever
+disagree, the table is right.
 
 `znam_name` and `zslp_asset` are the clear proof-of-work members: both are
 OP_RETURN records whose meaning is entirely an ordering question — first
@@ -121,10 +136,24 @@ funding outpoint known for this swap"*. The `swap_id` is
 object. An unfunded swap row is therefore a local declaration wearing a
 proof-of-work kind.
 
-The resolution is the reason settlement is a **per-record field** and not a
-per-kind constant: the kind carries the default (`PROOF_OF_WORK`), and a
-record that has not yet bound a confirmed funding outpoint must be reported at
-its actual class and must not be rendered at a chain-bound evidence grade.
+There is a second, independent reason the `PROOF_OF_WORK` label does not fit,
+found while wiring the depth/chainwork machinery §"Open work" item 1 called
+for. Measuring work above a record needs a funding **height** to anchor from,
+and the swap row carries `funding_txid` and an absolute CLTV locktime but no
+height; worse, `chain` may be BTC/LTC/DOGE, whose height this node explicitly
+refuses to claim it can observe (`swap_controller.c`,
+`swap_locktime_to_absolute`). So depth and chainwork for a swap are not merely
+unimplemented — they are unanswerable here. A `PROOF_OF_WORK` label with
+permanently unknown numbers underneath is a claim the evidence never arrives to
+support, which is why the code carries a fourth class and this ADR now names
+it.
+
+The resolution is therefore two-part. Settlement is a **per-record field** and
+not only a per-kind constant: the kind carries the default, and a record that
+has not yet bound a confirmed funding outpoint must be reported at its actual
+class and must not be rendered at a chain-bound evidence grade. And the kind's
+default for `contract_swap` is `CHAIN_ANCHORED_INCOMPLETE`, not
+`PROOF_OF_WORK`.
 This composes with the machinery already in `property_view.h`, where
 `METAVERSE_EVIDENCE_CHAIN_VALIDATED_LOCAL` must be *earned* by this node and
 nothing upgrades a grade.
@@ -208,10 +237,15 @@ being misquoted.
 
 Framed as work, not as promises. None of it is scheduled by this ADR.
 
-1. **Expose depth and chainwork per record.** The view carries a freshness
-   height today; it does not carry the depth below tip or the accumulated work
-   above the record, which are what the third Limit above is actually about.
-   <!-- claim: symbol-absent chainwork lib/metaverse -->
+1. ~~**Expose depth and chainwork per record.**~~ **Done** — the view no
+   longer carries only a freshness height. `metaverse/property_work.h` reports
+   depth below tip and the accumulated work above the record
+   (`tip.nChainWork - anchor.nChainWork`), each beside its own `has_` boolean
+   so that "not measurable" is a stated answer rather than a zero. That last
+   part is what turned §3 from a labelling question into a fourth settlement
+   class: for `contract_swap` the honest value is *unknown*, permanently, and
+   the type had to be able to say so.
+   <!-- claim: symbol-present chainwork lib/metaverse -->
 2. **A per-kind minimum depth for actions.** Availability of a transfer or
    spend action on a `PROOF_OF_WORK` record could require a depth floor scaled
    to the record's value, rather than treating one confirmation as settled.

@@ -63,9 +63,9 @@ zclassic23 discover schema <path> --side=input|output
 | Top-level roots | 10 |
 | Branches | 92 |
 | Leaves (dispatchable command paths) | 304 |
-| … `ready` (live handler in this build) | 236 |
+| … `ready` (live handler in this build) | 256 |
 | … `compat` (metadata only, names a fallback) | 17 |
-| … `planned` (fail-closed BLOCKED, exit 3) | 51 |
+| … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
 | Leaves with `effect=mutate` | 80 |
 | Leaves with `effect=destructive` | 4 |
@@ -646,24 +646,24 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `ops telemetry summary` | planned | read / read / operator · fast/low | none | `zcl.telemetry.summary.v1` | `zclassic23 ops telemetry summary` | Whole-node telemetry rollup — *the typed domain snapshots are not built yet* |
-| `ops telemetry health` | planned | read / read / operator · fast/low | none | `zcl.telemetry.health.v1` | `zclassic23 ops telemetry health` | Health state per domain — *the typed domain snapshots are not built yet* |
+| `ops telemetry summary` | ready | read / read / operator · fast/low | none | `zcl.telemetry.summary.v1` | `zclassic23 ops telemetry summary` | Whole-node telemetry rollup — start here |
+| `ops telemetry health` | ready | read / read / operator · fast/low | none | `zcl.telemetry.health.v1` | `zclassic23 ops telemetry health` | Health state per domain |
 | `ops telemetry watch` | ready | read / read / operator, stream · fast/stream | **`since`**, `since_epoch`, `limit` | `zcl.telemetry.change.v1` | `zclassic23 ops telemetry watch --since=41` | Resumable telemetry change feed |
 
 #### `ops.telemetry.alerts` — Fired telemetry rules
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `ops telemetry alerts active` | planned | read / read / operator · fast/low | none | `zcl.telemetry.alerts.v1` | `zclassic23 ops telemetry alerts active` | Currently failing telemetry rules — *the typed domain snapshots are not built yet* |
+| `ops telemetry alerts active` | ready | read / read / operator · fast/low | none | `zcl.telemetry.alerts.v1` | `zclassic23 ops telemetry alerts active` | Every telemetry rule that is failing right now |
 | `ops telemetry alerts history` | planned | read / read / operator · fast/low | `limit` | `zcl.telemetry.alerts.v1` | `zclassic23 ops telemetry alerts history --limit=20` | Previously fired telemetry rules — *the telemetry alert feed is not built yet* |
 
 #### `ops.telemetry.runtime` — Supervisor tree, services and host resources
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `ops telemetry runtime services` | planned | read / read / operator · fast/low | none | `zcl.telemetry.runtime.services.v1` | `zclassic23 ops telemetry runtime services` | Registered services and their liveness — *the typed runtime telemetry snapshot is not built yet* |
-| `ops telemetry runtime threads` | planned | read / read / operator · fast/low | none | `zcl.telemetry.runtime.threads.v1` | `zclassic23 ops telemetry runtime threads` | Threads and their supervision state — *the typed runtime telemetry snapshot is not built yet* |
-| `ops telemetry runtime resources` | planned | read / read / operator · fast/low | none | `zcl.telemetry.runtime.resources.v1` | `zclassic23 ops telemetry runtime resources` | Host resources this process holds — *the typed runtime telemetry snapshot is not built yet* |
+| `ops telemetry runtime services` | ready | read / read / operator · fast/low | none | `zcl.telemetry.runtime.services.v1` | `zclassic23 ops telemetry runtime services` | Registered services and their liveness |
+| `ops telemetry runtime threads` | ready | read / read / operator · fast/low | none | `zcl.telemetry.runtime.threads.v1` | `zclassic23 ops telemetry runtime threads` | Threads and their supervision state |
+| `ops telemetry runtime resources` | ready | read / read / operator · fast/low | none | `zcl.telemetry.runtime.resources.v1` | `zclassic23 ops telemetry runtime resources` | Host resources this process holds |
 
 #### `ops.telemetry.sync` — Reducer frontier, stages and catch-up posture
 
@@ -677,50 +677,50 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `ops telemetry network summary` | planned | read / read / operator · fast/low | none | `zcl.telemetry.network.summary.v1` | `zclassic23 ops telemetry network summary` | Connectivity posture — *the typed network telemetry snapshot is not built yet* |
-| `ops telemetry network peers` | planned | read / read / operator · fast/low | none | `zcl.telemetry.network.peers.v1` | `zclassic23 ops telemetry network peers` | Connected peers — *the typed network telemetry snapshot is not built yet* |
-| `ops telemetry network tor` | planned | read / read / operator · fast/low | none | `zcl.telemetry.network.tor.v1` | `zclassic23 ops telemetry network tor` | Onion service state — *the typed network telemetry snapshot is not built yet* |
-| `ops telemetry network transport` | planned | read / read / operator · fast/low | none | `zcl.telemetry.network.transport.v1` | `zclassic23 ops telemetry network transport` | Wire transport posture — *the typed network telemetry snapshot is not built yet* |
+| `ops telemetry network summary` | ready | read / read / operator · fast/low | none | `zcl.telemetry.network.v1` | `zclassic23 ops telemetry network summary` | Connectivity posture |
+| `ops telemetry network peers` | ready | read / read / operator · fast/low | none | `zcl.telemetry.network.v1` | `zclassic23 ops telemetry network peers` | Peer aggregate |
+| `ops telemetry network tor` | ready | read / read / operator · fast/low | none | `zcl.telemetry.network.v1` | `zclassic23 ops telemetry network tor` | Onion service state |
+| `ops telemetry network transport` | ready | read / read / operator · fast/low | none | `zcl.telemetry.network.v1` | `zclassic23 ops telemetry network transport` | Wire transport posture |
 
 #### `ops.telemetry.storage` — Databases, indexes, cache and disk
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `ops telemetry storage summary` | planned | read / read / operator · fast/low | none | `zcl.telemetry.storage.summary.v1` | `zclassic23 ops telemetry storage summary` | Storage posture — *the typed storage telemetry snapshot is not built yet* |
-| `ops telemetry storage database` | planned | read / read / operator · fast/low | none | `zcl.telemetry.storage.database.v1` | `zclassic23 ops telemetry storage database` | Database connections and WAL state — *the typed storage telemetry snapshot is not built yet* |
-| `ops telemetry storage disk` | planned | read / read / operator · fast/low | none | `zcl.telemetry.storage.disk.v1` | `zclassic23 ops telemetry storage disk` | Disk headroom — *the typed storage telemetry snapshot is not built yet* |
-| `ops telemetry storage cache` | planned | read / read / operator · fast/low | none | `zcl.telemetry.storage.cache.v1` | `zclassic23 ops telemetry storage cache` | Cache occupancy and hit rates — *the typed storage telemetry snapshot is not built yet* |
+| `ops telemetry storage summary` | ready | read / read / operator · fast/low | none | `zcl.telemetry.storage.summary.v1` | `zclassic23 ops telemetry storage summary` | Storage posture |
+| `ops telemetry storage database` | ready | read / read / operator · fast/low | none | `zcl.telemetry.storage.database.v1` | `zclassic23 ops telemetry storage database` | Database handles and block-index integrity |
+| `ops telemetry storage disk` | ready | read / read / operator · fast/low | none | `zcl.telemetry.storage.disk.v1` | `zclassic23 ops telemetry storage disk` | Disk headroom |
+| `ops telemetry storage cache` | planned | read / read / operator · fast/low | none | `zcl.telemetry.storage.cache.v1` | `zclassic23 ops telemetry storage cache` | Cache occupancy and hit rates — *no storage cache publishes occupancy, hit ratio or eviction counts: coins_ram keeps no hit/miss counters and SQLite's page-cache counters need sqlite3_db_status() on a live handle, which would block the reply behind the reducer's write transaction* |
 
 #### `ops.telemetry.wallet` — Wallet projection and key-handling posture
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `ops telemetry wallet summary` | planned | read / read / operator · fast/low | none | `zcl.telemetry.wallet.summary.v1` | `zclassic23 ops telemetry wallet summary` | Wallet projection posture — *the typed wallet telemetry snapshot is not built yet* |
-| `ops telemetry wallet security` | planned | read / read / operator · fast/low | none | `zcl.telemetry.wallet.security.v1` | `zclassic23 ops telemetry wallet security` | Key-handling safety posture — *the typed wallet telemetry snapshot is not built yet* |
+| `ops telemetry wallet summary` | ready | read / read / operator · fast/low | none | `zcl.telemetry.wallet.summary.v1` | `zclassic23 ops telemetry wallet summary` | Wallet projection posture |
+| `ops telemetry wallet security` | ready | read / read / operator · fast/low | none | `zcl.telemetry.wallet.security.v1` | `zclassic23 ops telemetry wallet security` | Key-handling safety posture |
 
 #### `ops.telemetry.agents` — Agent sessions, grants and activity
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `ops telemetry agents sessions` | planned | read / read / operator · fast/low | none | `zcl.telemetry.agents.sessions.v1` | `zclassic23 ops telemetry agents sessions` | Open agent sessions — *the typed agents telemetry snapshot is not built yet* |
-| `ops telemetry agents grants` | planned | read / read / operator · fast/low | none | `zcl.telemetry.agents.grants.v1` | `zclassic23 ops telemetry agents grants` | Capability grants in force — *the typed agents telemetry snapshot is not built yet* |
-| `ops telemetry agents activity` | planned | read / read / operator · fast/low | none | `zcl.telemetry.agents.activity.v1` | `zclassic23 ops telemetry agents activity` | Recent agent activity — *the typed agents telemetry snapshot is not built yet* |
+| `ops telemetry agents sessions` | ready | read / read / operator · foreground/low | none | `zcl.telemetry.agents.sessions.v1` | `zclassic23 ops telemetry agents sessions` | Agent session population |
+| `ops telemetry agents grants` | ready | read / read / operator · foreground/low | none | `zcl.telemetry.agents.grants.v1` | `zclassic23 ops telemetry agents grants` | What the usable grants permit |
+| `ops telemetry agents activity` | ready | read / read / operator · foreground/low | none | `zcl.telemetry.agents.activity.v1` | `zclassic23 ops telemetry agents activity` | Recorded agent activity |
 
 #### `ops.telemetry.zcode` — Package store, swarm and installs
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `ops telemetry zcode summary` | planned | read / read / operator · fast/low | none | `zcl.telemetry.zcode.summary.v1` | `zclassic23 ops telemetry zcode summary` | ZCODE store posture — *the typed zcode telemetry snapshot is not built yet* |
-| `ops telemetry zcode swarm` | planned | read / read / operator · fast/low | none | `zcl.telemetry.zcode.swarm.v1` | `zclassic23 ops telemetry zcode swarm` | Swarm participation — *the typed zcode telemetry snapshot is not built yet* |
-| `ops telemetry zcode installs` | planned | read / read / operator · fast/low | none | `zcl.telemetry.zcode.installs.v1` | `zclassic23 ops telemetry zcode installs` | Install generations — *the typed zcode telemetry snapshot is not built yet* |
+| `ops telemetry zcode summary` | ready | read / read / operator · fast/low | none | `zcl.telemetry.zcode.summary.v1` | `zclassic23 ops telemetry zcode summary` | ZCODE store posture |
+| `ops telemetry zcode swarm` | planned | read / read / operator · fast/low | none | `zcl.telemetry.zcode.swarm.v1` | `zclassic23 ops telemetry zcode swarm` | Swarm participation — *peer count, advertisements and verified bytes live only inside vcs_swarm_engine and every accessor takes its mutex blocking, which a telemetry collector must not do; needs a trylock or lock-free stats accessor on the engine first. Meanwhile whether the engine is running at all is in ops telemetry zcode summary* |
+| `ops telemetry zcode installs` | planned | read / read / operator · fast/low | none | `zcl.telemetry.zcode.installs.v1` | `zclassic23 ops telemetry zcode installs` | Install generations — *install state is on-disk only: package_lifecycle_active answers for one NAME and there is no enumeration and no in-process index, so listing installs means a directory walk of datadir/zcode/installed plus a generation-log read each, which a telemetry collector must not do; needs an installed-package index first* |
 
 #### `ops.telemetry.metaverse` — Property catalog, market and confined services
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `ops telemetry metaverse properties` | planned | read / read / operator · fast/low | none | `zcl.telemetry.metaverse.properties.v1` | `zclassic23 ops telemetry metaverse properties` | Digital property this node holds — *the typed metaverse telemetry snapshot is not built yet* |
+| `ops telemetry metaverse properties` | ready | read / read / operator · instant/tiny | none | `zcl.telemetry.metaverse.properties.v1` | `zclassic23 ops telemetry metaverse properties` | Which kinds of digital property this build can project, and which it cannot |
 | `ops telemetry metaverse market` | planned | read / read / operator · fast/low | none | `zcl.telemetry.metaverse.market.v1` | `zclassic23 ops telemetry metaverse market` | Property market activity — *no property market subsystem exists in this build* |
-| `ops telemetry metaverse services` | planned | read / read / operator · fast/low | none | `zcl.telemetry.metaverse.services.v1` | `zclassic23 ops telemetry metaverse services` | Confined broker services — *the typed metaverse telemetry snapshot is not built yet* |
+| `ops telemetry metaverse services` | planned | read / read / operator · fast/low | none | `zcl.telemetry.metaverse.services.v1` | `zclassic23 ops telemetry metaverse services` | Confined broker services — *the confined agent broker keeps its state in an operator-named directory, not in this process; use `metaverse agent status --dir=DIR`* |
 
 ### `discover` — Search and describe the command registry
 
@@ -982,6 +982,7 @@ promise the same document shape.
 | `zcl.vault_swap_settle.v1` | `vault.swap.redeem`, `vault.swap.refund` |
 | `zcl.zcode_leaderboard.v1` | `zcode.leaderboard.daily`, `zcode.leaderboard.weekly`, `zcode.leaderboard.monthly`, `zcode.leaderboard.all` |
 | `zcl.telemetry.alerts.v1` | `ops.telemetry.alerts.active`, `ops.telemetry.alerts.history` |
+| `zcl.telemetry.network.v1` | `ops.telemetry.network.summary`, `ops.telemetry.network.peers`, `ops.telemetry.network.tor`, `ops.telemetry.network.transport` |
 
 
 ## Envelope shapes (quick reference)
