@@ -1359,6 +1359,23 @@ void zcl_native_handle_telemetry_metaverse_properties(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* ── the three WHOLE-NODE rollups
+ * (tools/command/native_telemetry_rollup_command.c). They iterate the provider
+ * registry rather than naming domains, and fold verdicts from the one shared
+ * evaluator with max() over the ordered health enum — they compute no health
+ * of their own, so they cannot disagree with the per-domain leaf they point
+ * at. `ops.telemetry.alerts.history` stays PLANNED: there is no durable alert
+ * feed to read. Bound by config/commands/telemetry/root.def. */
+void zcl_native_handle_ops_telemetry_summary(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_ops_telemetry_health(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_ops_telemetry_alerts_active(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 #ifdef __cplusplus
 }
 #endif

@@ -13,57 +13,85 @@ ZCL_COMMAND_BRANCH("ops.telemetry", "ops",
                    "Canonical typed telemetry tree",
                    ZCL_COMMAND_LAYER_OPS)
 
-ZCL_COMMAND_PLANNED_READ(
+ZCL_COMMAND_READY_READ(
     "ops.telemetry.summary", "ops.telemetry", "",
-    "Whole-node telemetry rollup",
-    "Will report every domain's health state and name the one domain that is "
-    "the current bottleneck, with the drill-down command for it; the typed "
-    "domain snapshots it rolls up are not built yet, so the leaf fails closed "
-    "today.", 0,
-    "telemetry,summary,rollup,overview,bottleneck",
+    "Whole-node telemetry rollup — start here",
+    "The entry point to the whole tree. Collects every registered telemetry "
+    "domain at call time, judges each with the SAME evaluator that produces "
+    "the `health` block inside the per-domain leaves, and folds the verdicts "
+    "with max() over the ordered enum {ok,unknown,degraded,unhealthy} — so "
+    "this reply can never disagree with the leaf it points at. `bottleneck` "
+    "names the worst domain and carries `drill_down`, the exact command to "
+    "run next; it is explicitly null when nothing is worse than ok, never "
+    "omitted. `domains[]` holds one compact row per domain: its enum, whether "
+    "it could be collected at all, and the rule/unhealthy/unknown counts "
+    "behind the enum. A domain whose collector could not read it stays in the "
+    "list as `collected:false` with a `reason` token and is judged unknown — "
+    "unknown outranks ok, so a node that cannot be read can never report "
+    "healthy. Carries NO per-field prose on purpose: one domain's findings "
+    "run to ~4 KB, eight would empty the reply rather than truncate it. For "
+    "the failing fields themselves use `ops telemetry alerts active`.", 0,
+    "telemetry,summary,rollup,overview,bottleneck,health,start",
     "zcl.command.empty_input.v1", "zcl.telemetry.summary.v1", "", "",
     "zclassic23 ops telemetry summary",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
-    ZCL_COMMAND_CAP_DEV_STATE_READ,
-    "the typed domain snapshots are not built yet")
+    ZCL_COMMAND_CAP_DEV_STATE_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_ops_telemetry_summary)
 
-ZCL_COMMAND_PLANNED_READ(
+ZCL_COMMAND_READY_READ(
     "ops.telemetry.health", "ops.telemetry", "",
     "Health state per domain",
-    "Will report each telemetry domain's health as an enum "
-    "{ok,unknown,degraded,unhealthy} with the machine-readable unhealthy "
-    "fields behind it; the typed domain snapshots are not built yet, so the "
-    "leaf fails closed today.", 0,
-    "telemetry,health,enum,unhealthy,state",
+    "The same fold as `ops telemetry summary` with the totals and the "
+    "bottleneck block left off: the rolled-up enum, then one row per domain "
+    "carrying its enum {ok,unknown,degraded,unhealthy}, whether it could be "
+    "collected, and the rule/unhealthy/unknown counts behind it. The domain "
+    "set comes from the telemetry domain registry, so a domain cannot be "
+    "missing from this list without failing to link. Verdicts come from the "
+    "one shared evaluator over the per-domain field tables — nothing here "
+    "decides health. Use this when you want the enums alone; use `summary` "
+    "when you want to be told what to do next.", 0,
+    "telemetry,health,enum,unhealthy,state,domains",
     "zcl.command.empty_input.v1", "zcl.telemetry.health.v1", "", "",
     "zclassic23 ops telemetry health",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
-    ZCL_COMMAND_CAP_DEV_STATE_READ,
-    "the typed domain snapshots are not built yet")
+    ZCL_COMMAND_CAP_DEV_STATE_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_ops_telemetry_health)
 
 ZCL_COMMAND_BRANCH("ops.telemetry.alerts", "ops.telemetry",
                    "Fired telemetry rules",
                    ZCL_COMMAND_LAYER_OPS)
 
-ZCL_COMMAND_PLANNED_READ(
+ZCL_COMMAND_READY_READ(
     "ops.telemetry.alerts.active", "ops.telemetry.alerts", "",
-    "Currently failing telemetry rules",
-    "Will list every telemetry field whose declared health rule is failing "
-    "right now, each with its severity, what the value implies, and the next "
-    "command to run; the rule evaluation is wired to typed snapshots that are "
-    "not built yet, so the leaf fails closed today.", ZCL_COMMAND_LIST_BUDGET,
-    "telemetry,alerts,active,failing,rules",
+    "Every telemetry rule that is failing right now",
+    "The failing rules themselves, across every domain: for each one the "
+    "field path, the value, the healthy range it left, what the field means, "
+    "what the value implies, and the command to run about it. Only DEGRADED "
+    "and UNHEALTHY verdicts appear — an unreadable field is a completeness "
+    "fact reported by `ops telemetry summary`, not an alert, and padding this "
+    "list with unknowns is how an alert feed stops being read. This is the "
+    "one rollup that carries per-field prose, so it is bounded: `active_total` "
+    "is how many rules are failing, `listed` how many this page carries, and "
+    "`dropped_for_reply_budget` the difference — dropping is always stated, "
+    "never silent, because an over-budget reply here is EMPTY rather than "
+    "truncated. `domains_with_findings_truncated` separately counts domains "
+    "that hit the evaluator's own per-domain finding cap, which is a different "
+    "limit with a different cause.", ZCL_COMMAND_LIST_BUDGET,
+    "telemetry,alerts,active,failing,rules,unhealthy,degraded",
     "zcl.command.empty_input.v1", "zcl.telemetry.alerts.v1", "", "",
     "zclassic23 ops telemetry alerts active",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
-    ZCL_COMMAND_CAP_DEV_STATE_READ,
-    "the typed domain snapshots are not built yet")
+    ZCL_COMMAND_CAP_DEV_STATE_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_ops_telemetry_alerts_active)
 
 ZCL_COMMAND_PLANNED_READ(
     "ops.telemetry.alerts.history", "ops.telemetry.alerts", "",
