@@ -290,6 +290,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(bn254_accel) X(fr_mont_parity) X(blake2b_batch_parity) \
     X(fr_accel) X(mont_adx_honest) X(simd_os_support) \
     X(secp256k1_differential) X(secp256k1_constant_time) \
+    X(ed25519_differential) \
     X(mint_skip_crypto) X(mint_anchor_preflight) \
     X(utxo_apply_stage) X(utxo_apply_crash_replay) X(commit_invariants) \
     X(tip_finalize_stage) X(tip_finalize_post_step) X(reducer_frontier) \
