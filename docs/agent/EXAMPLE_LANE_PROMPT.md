@@ -2,6 +2,10 @@
 
     VERSION: v1
 
+> **Who this is for.** The maintainer's own multi-agent setup. Not a
+> requirement for contributing; see [`LANE_CONTRACT.md`](LANE_CONTRACT.md) for
+> the full note.
+
 This is the artifact that shows whether
 [`LANE_CONTRACT.md`](LANE_CONTRACT.md) pays for itself. Both prompts below launch
 the **same lane** (the one that produced these files). The first is the doctrine

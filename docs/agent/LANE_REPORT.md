@@ -2,6 +2,12 @@
 
     VERSION: v1
 
+> **Who this is for.** The maintainer's own multi-agent setup — this is the
+> shape one AI executor owes its dispatcher, not the shape of a pull request.
+> Not a requirement for contributing; see
+> [`LANE_CONTRACT.md`](LANE_CONTRACT.md) for the full note. PR expectations are
+> in [`../../.github/CONTRIBUTING.md`](../../.github/CONTRIBUTING.md).
+
 The report **is** the lane's return value: the orchestrator merges, rejects or
 re-dispatches on it alone. Write it as your final message, not to a file — a file
 the orchestrator has to go find is not a report.

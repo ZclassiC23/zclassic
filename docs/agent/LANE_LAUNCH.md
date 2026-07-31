@@ -2,6 +2,13 @@
 
     VERSION: v1
 
+> **Who this is for.** The maintainer's own multi-agent setup — several AI
+> executors running at once, each in its own worktree on one checkout. Not a
+> requirement for contributing; see [`LANE_CONTRACT.md`](LANE_CONTRACT.md) for
+> the full note. A contributor wants
+> [`../GETTING_STARTED.md`](../GETTING_STARTED.md) and
+> [`../DEVELOPING.md`](../DEVELOPING.md) instead.
+
 This is the body of the `zclassic23-lane` skill. It is the **launch** side; the
 executor's side is [`LANE_CONTRACT.md`](LANE_CONTRACT.md) (doctrine) and
 [`LANE_REPORT.md`](LANE_REPORT.md) (the report shape). The per-worker ritual

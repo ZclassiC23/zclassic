@@ -2,6 +2,18 @@
 
     VERSION: v1
 
+> **Who this is for.** Everything in `docs/agent/` describes how *this
+> repository's maintainer* runs several AI executor agents at once, each in its
+> own git worktree on one checkout. **It is not a requirement for contributing
+> and it is not the project's development process.** If you are here to build
+> the node or send a patch, you need none of it — read
+> [`../GETTING_STARTED.md`](../GETTING_STARTED.md), then
+> [`../../.github/CONTRIBUTING.md`](../../.github/CONTRIBUTING.md) and
+> [`../DEVELOPING.md`](../DEVELOPING.md). The rules below exist only because
+> parallel agents sharing one checkout collide over things a single developer
+> never has to think about: one stash stack, one build directory, one branch
+> namespace.
+
 A lane prompt says *"follow LANE_CONTRACT v1 (`docs/agent/LANE_CONTRACT.md`)"*
 and nothing else about doctrine. **Do not paste these rules into a prompt** — a
 pasted copy is a second ledger that drifts, the failure mode

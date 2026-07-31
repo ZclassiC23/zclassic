@@ -144,7 +144,7 @@ commit → repeat to 100. **Never edit the scorer to win.**
 
 **The framework/architecture refactor is OFF the v1 path — do not jump the queue.** [`docs/FRAMEWORK.md`](./docs/FRAMEWORK.md) is the canonical architecture (the Prime Directive, Ten Laws, eight shapes) and §9 is the architecture debt board. It is reference, not the mission. Every `.c` under `app/` lives in exactly one of eight shape folders, lint-enforced.
 
-**Parallel-worktree workflow:** main repo is the orchestrator; `~/github/zclassic23-2` (wt2) and `~/github/zclassic23-3` (wt3) are workers. See [`docs/work/README.md`](./docs/work/README.md) and [`docs/work/agent-protocol.md`](./docs/work/agent-protocol.md). Worker identity = pwd suffix.
+**Parallel-worktree workflow** — *the maintainer's own setup, not a requirement for contributing; a fresh clone has none of these worktrees and needs none of them.* Main repo is the orchestrator; `~/github/zclassic23-2` (wt2) and `~/github/zclassic23-3` (wt3) are workers. See [`docs/work/README.md`](./docs/work/README.md), [`docs/work/agent-protocol.md`](./docs/work/agent-protocol.md), and [`docs/agent/`](./docs/agent/) for the lane contract. Worker identity = pwd suffix.
 
 ### On a fresh session
 

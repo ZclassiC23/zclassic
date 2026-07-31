@@ -52,6 +52,16 @@ you operate that host, and misleading otherwise.
   identity is a one-time owner decision, documented there under "Owner setup".
   Nothing has been promoted through it, and inventing a receipt would be a
   fabricated record.
+- [`agent/`](./agent/) — how the maintainer runs several AI executor agents at
+  once, each in its own worktree on one checkout:
+  [`LANE_CONTRACT.md`](./agent/LANE_CONTRACT.md) (the doctrine an executor
+  follows), [`LANE_LAUNCH.md`](./agent/LANE_LAUNCH.md) (the dispatcher's
+  checklist), [`LANE_REPORT.md`](./agent/LANE_REPORT.md) (what an executor owes
+  back), [`EXAMPLE_LANE_PROMPT.md`](./agent/EXAMPLE_LANE_PROMPT.md) (a worked
+  before/after). **This is one person's orchestration setup, not the project's
+  development process** — contributing requires none of it, and a single
+  developer on a single checkout will find most of its rules meaningless. The
+  contributor path is the three docs at the top of this page.
 
 ## Develop here — the fast loop (read before making changes)
 

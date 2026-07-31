@@ -35,6 +35,16 @@
 # `git worktree remove` is run WITHOUT --force: it independently re-checks
 # for uncommitted/untracked content and refuses if a lane drifted between
 # classification and execution. That refusal is the safety net, not a bug.
+#
+# KNOWN GAP — a worktree can be provably dead and still undeletable, because it
+# holds build artifacts this user cannot unlink (root-owned, or a mode that
+# denies removal). Today that shows up only as a `git worktree remove` failure
+# at apply time, which is late and easy to read as a transient error. A second
+# collector written in July 2026 probed for it up front and reported the count
+# as its own bucket; that collector was deleted rather than kept alongside this
+# one (two collectors with different safety flags is how the wrong one gets
+# run), so the probe is worth porting here. Recover it with:
+#   git log --diff-filter=D -p -- tools/dev/worktree-gc.sh
 
 set -euo pipefail
 

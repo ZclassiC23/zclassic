@@ -1535,14 +1535,15 @@ agent-baseline:
 	 BASELINE_FILES='$(BASELINE_FILES)' tools/dev/agent-baseline.sh
 
 # Classify every git worktree and remove only the provably dead ones.
-# DRY RUN by default — CONFIRM=1 is required before anything is deleted.
-#   make worktree-gc                          dry run, agent worktree pool
-#   make worktree-gc SCOPE=all                dry run, every worktree
-#   make worktree-gc MIN_AGE_HOURS=4          shorten the recency hold
-#   make worktree-gc CONFIRM=1                delete the DEAD ones
+# DRY RUN by default; --apply is required before anything is deleted. This is a
+# convenience wrapper — the collector is tools/scripts/worktree_gc.sh, which is
+# also what the zclassic23-worktree-gc systemd unit runs, and there is exactly
+# one of it on purpose. Two collectors with different safety flags is how the
+# wrong one gets run.
+#   make worktree-gc                          dry run: classify, report bytes
+#   make worktree-gc APPLY=1                  remove the SAFE bucket
 worktree-gc:
-	@CONFIRM='$(CONFIRM)' SCOPE='$(or $(SCOPE),pool)' \
-	 MIN_AGE_HOURS='$(or $(MIN_AGE_HOURS),24)' tools/dev/worktree-gc.sh
+	@tools/scripts/worktree_gc.sh $(if $(APPLY),--apply)
 
 # ── Gate receipts: a lane's claims, checkable without re-running them ─────
 # "make lint passed" costs the orchestrator a full re-run to verify, and has
