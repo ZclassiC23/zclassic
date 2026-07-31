@@ -258,9 +258,13 @@ static int t_action_vocabulary(void)
         }
         MV_CHECK("actions: every table row names itself back", ok);
     }
+    /* Both bits below name a real action on their own, so NULL here can only
+     * be caused by the value having two bits — not by one of them being
+     * unnameable, which is what the old INSPECT|HOST pair could not
+     * distinguish. */
     MV_CHECK("actions: a multi-bit value has no single name",
-             metaverse_action_name(METAVERSE_ACTION_INSPECT |
-                                   METAVERSE_ACTION_HOST) == NULL &&
+             metaverse_action_name(METAVERSE_ACTION_HOST |
+                                   METAVERSE_ACTION_PUBLISH_REVISION) == NULL &&
              metaverse_action_name(0) == NULL);
     MV_CHECK("actions: an undefined bit is not a name and not a valid mask",
              metaverse_action_name(0x80000000u) == NULL &&
@@ -272,15 +276,42 @@ static int t_action_vocabulary(void)
     MV_CHECK("actions: ALL renders every name in table order",
              metaverse_action_mask_format(METAVERSE_ACTION_ALL, buf,
                                           sizeof(buf)) &&
-             strncmp(buf, "inspect,host,publish_revision,", 30) == 0 &&
-             strstr(buf, "revoke") != NULL);
+             strncmp(buf, "host,publish_revision,", 22) == 0 &&
+             strstr(buf, "revoke") != NULL &&
+             /* The reserved name is legible on its own but must never appear
+              * in a rendered ACTION set — that is the whole point of the
+              * split, and a substring search is what catches a reissue. */
+             strstr(buf, "inspect") == NULL);
     MV_CHECK("actions: a buffer too small refuses instead of truncating "
              "(a short list must not read as fewer rights)",
              !metaverse_action_mask_format(METAVERSE_ACTION_ALL, buf, 12) &&
              buf[0] == '\0');
-    MV_CHECK("actions: INSPECT/HOST are the only non-mutating verbs",
+    /* MUTATING is column 6 — state OUTSIDE this node — so the complement is
+     * every action whose effect stays local: HOST (this node's own storage),
+     * DELEGATE and REVOKE (this node's own grant records). Derived from the
+     * table, not from the header comment above it, which says HOST is the one
+     * absent action and is wrong about DELEGATE and REVOKE. */
+    MV_CHECK("actions: HOST/DELEGATE/REVOKE are the only non-external verbs",
              (METAVERSE_ACTION_ALL & ~(uint32_t)METAVERSE_ACTION_MUTATING) ==
-                 (METAVERSE_ACTION_INSPECT | METAVERSE_ACTION_HOST));
+                 (METAVERSE_ACTION_HOST | METAVERSE_ACTION_DELEGATE |
+                  METAVERSE_ACTION_REVOKE));
+    /* "Not external" is not "harmless". Conflating the two is exactly the
+     * design error that made MUTATING equal ALL in review, so the two columns
+     * are asserted apart here: HOST is outside MUTATING AND still audited. */
+    MV_CHECK("actions: a local-only action still mints a receipt",
+             !metaverse_action_is_mutation(METAVERSE_ACTION_HOST) &&
+             metaverse_action_requires_receipt(METAVERSE_ACTION_HOST) &&
+             metaverse_action_requires_plan_commit(METAVERSE_ACTION_HOST) &&
+             metaverse_action_changes_state(METAVERSE_ACTION_HOST));
+    /* Every action changes something, so the two masks must NOT coincide in
+     * the other direction either. */
+    MV_CHECK("actions: CHANGES_STATE is ALL and MUTATING is strictly smaller",
+             (uint32_t)METAVERSE_ACTION_CHANGES_STATE ==
+                 (uint32_t)METAVERSE_ACTION_ALL &&
+             (uint32_t)METAVERSE_ACTION_MUTATING !=
+                 (uint32_t)METAVERSE_ACTION_ALL &&
+             ((uint32_t)METAVERSE_ACTION_MUTATING &
+              ~(uint32_t)METAVERSE_ACTION_ALL) == 0u);
     return failures;
 }
 
@@ -1009,8 +1040,12 @@ static int t_content_adapter(void)
              c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
              strcmp(mv_str(&c.reply.data, "status"), "incomplete") == 0 &&
              json_get_int(json_get(&c.reply.data, "chunks_present")) == 0);
-    MV_CHECK("content: an incomplete property may only be inspected",
-             strcmp(mv_str(&c.reply.data, "actions_csv"), "inspect") == 0);
+    /* Inspection is a QUERY now, so the action set an incomplete property
+     * supports is genuinely empty — the field must render as the empty string
+     * and not fall back to naming the reserved bit, which would read to a
+     * caller as a right it does not have. */
+    MV_CHECK("content: an incomplete property supports no ACTION at all",
+             strcmp(mv_str(&c.reply.data, "actions_csv"), "") == 0);
     MV_CHECK("content: the incomplete view says why",
              strstr(mv_str(&c.reply.data, "reason"), "CAS") != NULL);
     mv_cmd_free(&c);

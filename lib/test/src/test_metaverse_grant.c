@@ -227,17 +227,25 @@ static int t_action_set_codec(void)
     int failures = 0;
     TEST("action sets round-trip and reject a typo whole") {
         metaverse_action_set set = 0;
-        ASSERT(metaverse_action_set_parse("inspect,host,publish_revision",
-                                          &set));
-        ASSERT(set == (ACT(INSPECT) | ACT(HOST) | ACT(PUBLISH_REVISION)));
+        ASSERT(metaverse_action_set_parse("host,publish_revision", &set));
+        ASSERT(set == (ACT(HOST) | ACT(PUBLISH_REVISION)));
         char rendered[256];
         ASSERT(metaverse_action_mask_format(set, rendered, sizeof(rendered)));
-        ASSERT_STR_EQ(rendered, "inspect,host,publish-revision");
+        ASSERT_STR_EQ(rendered, "host,publish_revision");
+
+        /* Both separators name the same right on the way IN, and the
+         * canonical underscore spelling is what comes back OUT. */
+        metaverse_action_set hyphenated = 0;
+        ASSERT(metaverse_action_set_parse("host,publish-revision",
+                                          &hyphenated));
+        ASSERT(hyphenated == set);
 
         /* One bad element fails the whole parse — a silently dropped element
-         * narrows a grant the operator believed they had written. */
+         * narrows a grant the operator believed they had written. The good
+         * element here must be a REAL action, or the parse would fail on it
+         * instead and this would stop testing the typo. */
         metaverse_action_set bad = 0xFFFF;
-        ASSERT(!metaverse_action_set_parse("inspect,hosst", &bad));
+        ASSERT(!metaverse_action_set_parse("host,hosst", &bad));
 
         metaverse_action_set empty = 0xFFFF;
         ASSERT(metaverse_action_set_parse("", &empty));
@@ -256,13 +264,332 @@ static int t_value_actions(void)
         ASSERT(metaverse_action_moves_value(METAVERSE_ACTION_LEASE));
         ASSERT(metaverse_action_moves_value(METAVERSE_ACTION_TRANSFER));
         ASSERT(metaverse_action_moves_value(METAVERSE_ACTION_ACCEPT_PAYMENT));
-        ASSERT(!metaverse_action_moves_value(METAVERSE_ACTION_INSPECT));
         ASSERT(!metaverse_action_moves_value(METAVERSE_ACTION_HOST));
         ASSERT(!metaverse_action_moves_value(METAVERSE_ACTION_DELEGATE));
+
+        /* "May carry a value" and "is charged for it" are two columns, and
+         * LIST_FOR_SALE is the row that separates them: an asking PRICE is a
+         * number the request legitimately carries while moving nothing, so
+         * billing it against the operator's cumulative exposure would charge
+         * them for an advertisement. Asserting only moves_value here would
+         * leave the two columns indistinguishable. */
+        ASSERT(metaverse_action_accepts_value(METAVERSE_ACTION_LIST_FOR_SALE));
+        ASSERT(!metaverse_action_moves_value(METAVERSE_ACTION_LIST_FOR_SALE));
+        ASSERT(!metaverse_action_accepts_value(METAVERSE_ACTION_HOST));
         PASS();
     } _test_next:;
     return failures;
 }
+
+/* ── 1b. the reserved bit ────────────────────────────────────────────────
+ *
+ * The reserved bit used to BE an action. Five tests in this file used it as a
+ * convenient free-action vehicle; they now use HOST, and the claim they used
+ * to carry incidentally — "inspect is not an action" — is asserted here, on
+ * purpose, instead of five times by accident. */
+
+static int t_reserved_inspect_names_no_action(void)
+{
+    int failures = 0;
+    TEST("the reserved inspect bit is legible but names no action") {
+        /* Legible, so an old persisted mask still renders — and invalid, so
+         * rendering it can never be mistaken for holding it. Both halves
+         * matter: drop the first and old records become unreadable, drop the
+         * second and a stale mask silently confers a right. */
+        ASSERT(metaverse_action_name(METAVERSE_ACTION_RESERVED_INSPECT) != NULL);
+        ASSERT_EQ(strcmp(metaverse_action_name(METAVERSE_ACTION_RESERVED_INSPECT),
+                         "inspect"), 0);
+        ASSERT(!metaverse_action_valid(
+            (enum metaverse_action)METAVERSE_ACTION_RESERVED_INSPECT));
+        ASSERT_EQ((int)metaverse_action_bit(
+                      (enum metaverse_action)METAVERSE_ACTION_RESERVED_INSPECT),
+                  0);
+
+        /* Every route by which a name could become an action refuses it. */
+        ASSERT_EQ((int)metaverse_action_from_name("inspect"), 0);
+        enum metaverse_action parsed = METAVERSE_ACTION_HOST;
+        ASSERT(!metaverse_action_parse("inspect", &parsed));
+        metaverse_action_set set = 0xffffffffu;
+        ASSERT(!metaverse_action_set_parse("inspect", &set));
+        ASSERT(!metaverse_action_set_parse("host,inspect", &set));
+        ASSERT(!metaverse_action_mask_valid(METAVERSE_ACTION_RESERVED_INSPECT));
+        ASSERT_EQ((int)(METAVERSE_ACTION_ALL & METAVERSE_ACTION_RESERVED), 0);
+
+        /* An operation nobody can name gets no permissions: every fact column
+         * is false, so no downstream branch can pick it up as a special
+         * case. */
+        enum metaverse_action rb =
+            (enum metaverse_action)METAVERSE_ACTION_RESERVED_INSPECT;
+        ASSERT(!metaverse_action_changes_local_state(rb));
+        ASSERT(!metaverse_action_changes_external_state(rb));
+        ASSERT(!metaverse_action_changes_state(rb));
+        ASSERT(!metaverse_action_changes_title(rb));
+        ASSERT(!metaverse_action_accepts_value(rb));
+        ASSERT(!metaverse_action_moves_value(rb));
+        ASSERT(!metaverse_action_uses_counterparty(rb));
+        ASSERT(!metaverse_action_requires_receipt(rb));
+        ASSERT(!metaverse_action_requires_plan_commit(rb));
+        ASSERT(!metaverse_action_is_mutation(rb));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_reserved_inspect_authorizes_nothing(void)
+{
+    int failures = 0;
+    TEST("a grant carrying the reserved bit authorizes nothing at PLAN") {
+        struct metaverse_property_id prop = make_id(METAVERSE_KIND_CONTENT, 61);
+        fixture_reset(&prop);
+        /* Written raw, not through ACT(): this is exactly the shape a mask
+         * persisted before the split deserializes into. */
+        struct metaverse_grant g = grant_over_id(&prop, 0, 0);
+        g.actions = METAVERSE_ACTION_RESERVED_INSPECT;
+
+        /* It never gets into the store: an unnameable bit makes the whole
+         * record malformed, so the mask is refused at the boundary rather
+         * than carried around and filtered at every later read. */
+        ASSERT(!metaverse_grant_well_formed(&g));
+        ASSERT_EQ((int)property_grant_service_mint(&g),
+                  (int)PROPERTY_GRANT_GRANT_MALFORMED);
+
+        /* Control: the SAME record with a real action mints, so the refusal
+         * above is caused by the reserved bit and by nothing else in it. */
+        struct metaverse_grant ok = g;
+        ok.actions = ACT(HOST);
+        ASSERT(metaverse_grant_well_formed(&ok));
+        ASSERT_EQ((int)property_grant_service_mint(&ok), (int)PROPERTY_GRANT_OK);
+
+        /* And a record that reached memory by some other route — restored
+         * from an old on-disk mask, say — still authorizes nothing. It is
+         * evaluated directly here because the store will not hold it. */
+        snprintf(g.grant_id, sizeof(g.grant_id),
+                 "11111111111111111111111111111111");
+        struct metaverse_action_request req =
+            request_for(&prop, METAVERSE_ACTION_HOST, NULL, 0);
+        req.now_unix = 1700000000;
+        req.height = 900000;
+        ASSERT_EQ((int)metaverse_grant_check(&g, NULL, 0, &req),
+                  (int)METAVERSE_GRANT_MALFORMED);
+
+        /* Asking for the reserved bit ITSELF is a malformed REQUEST. Asked
+         * against the well-formed grant so the verdict cannot come from the
+         * record — and note the grant does not hold that bit, so a check that
+         * merely intersected masks would answer ACTION_NOT_GRANTED and quietly
+         * treat "inspect" as a real right the caller happened to lack. */
+        struct metaverse_action_request bad =
+            request_for(&prop, METAVERSE_ACTION_HOST, NULL, 0);
+        bad.now_unix = 1700000000;
+        bad.height = 900000;
+        ASSERT_EQ((int)metaverse_grant_check(&ok, NULL, 0, &bad),
+                  (int)METAVERSE_GRANT_OK);
+        bad.action = (enum metaverse_action)METAVERSE_ACTION_RESERVED_INSPECT;
+        ASSERT_EQ((int)metaverse_grant_check(&ok, NULL, 0, &bad),
+                  (int)METAVERSE_GRANT_BAD_ARGS);
+
+        /* Nothing was recorded against the one grant that did mint. */
+        struct metaverse_receipt rc[4];
+        ASSERT_EQ((int)property_grant_service_receipts(ok.grant_id, rc, 4), 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* ── 1c. reads are a separate vocabulary ─────────────────────────────────
+ *
+ * The tests that used to reach the read path through METAVERSE_ACTION_INSPECT
+ * reach it here instead, through the grant's own query field. */
+
+static const char k_query_grant_id[] = "cccccccccccccccccccccccccccccccc";
+
+/* A grant that may INSPECT one property and HOST it, and nothing else. */
+static struct metaverse_grant query_grant(
+    const struct metaverse_property_id *prop)
+{
+    struct metaverse_grant g = grant_over_id(prop, ACT(HOST), 0);
+    snprintf(g.grant_id, sizeof(g.grant_id), "%s", k_query_grant_id);
+    g.queries = METAVERSE_QUERY_INSPECT_PROPERTY;
+    return g;
+}
+
+static struct metaverse_query_request query_for(
+    const struct metaverse_property_id *prop, enum metaverse_query q)
+{
+    struct metaverse_query_request r;
+    memset(&r, 0, sizeof(r));
+    snprintf(r.actor, sizeof(r.actor), "%s", k_holder);
+    if (prop)
+        r.property = *prop;
+    r.query = q;
+    r.now_unix = 1700000000;
+    r.height = 900000;
+    return r;
+}
+
+static int t_query_allowed(void)
+{
+    int failures = 0;
+    TEST("a held query over an in-scope property is allowed") {
+        struct metaverse_property_id prop = make_id(METAVERSE_KIND_CONTENT, 62);
+        struct metaverse_grant g = query_grant(&prop);
+        struct metaverse_query_request q =
+            query_for(&prop, METAVERSE_QUERY_INSPECT_PROPERTY);
+        ASSERT_EQ((int)metaverse_grant_query_check(&g, NULL, 0, &q),
+                  (int)METAVERSE_GRANT_OK);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_query_not_granted(void)
+{
+    int failures = 0;
+    TEST("a query the grant does not hold is ACTION_NOT_GRANTED") {
+        struct metaverse_property_id prop = make_id(METAVERSE_KIND_CONTENT, 62);
+        struct metaverse_grant g = query_grant(&prop);
+        /* One taxonomy: a missing READ right reports the same verdict as a
+         * missing action right, so a caller needs no second reason table. */
+        struct metaverse_query_request q =
+            query_for(&prop, METAVERSE_QUERY_ENUMERATE_PROPERTIES);
+        ASSERT_EQ((int)metaverse_grant_query_check(&g, NULL, 0, &q),
+                  (int)METAVERSE_GRANT_ACTION_NOT_GRANTED);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_query_property_out_of_scope(void)
+{
+    int failures = 0;
+    TEST("a query outside the grant's scope is PROPERTY_OUT_OF_SCOPE") {
+        struct metaverse_property_id prop = make_id(METAVERSE_KIND_CONTENT, 62);
+        struct metaverse_property_id other =
+            make_id(METAVERSE_KIND_CONTENT, 63);
+        struct metaverse_grant g = query_grant(&prop);
+        struct metaverse_query_request q =
+            query_for(&other, METAVERSE_QUERY_INSPECT_PROPERTY);
+        ASSERT_EQ((int)metaverse_grant_query_check(&g, NULL, 0, &q),
+                  (int)METAVERSE_GRANT_PROPERTY_OUT_OF_SCOPE);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_query_wrong_holder(void)
+{
+    int failures = 0;
+    TEST("a query by an actor other than the holder is WRONG_HOLDER") {
+        struct metaverse_property_id prop = make_id(METAVERSE_KIND_CONTENT, 62);
+        struct metaverse_grant g = query_grant(&prop);
+        struct metaverse_query_request q =
+            query_for(&prop, METAVERSE_QUERY_INSPECT_PROPERTY);
+        snprintf(q.actor, sizeof(q.actor), "%s", "somebody-else");
+        ASSERT_EQ((int)metaverse_grant_query_check(&g, NULL, 0, &q),
+                  (int)METAVERSE_GRANT_WRONG_HOLDER);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_query_expiry_and_revocation(void)
+{
+    int failures = 0;
+    TEST("an expired or revoked grant refuses READS too") {
+        struct metaverse_property_id prop = make_id(METAVERSE_KIND_CONTENT, 62);
+        struct metaverse_grant g = query_grant(&prop);
+        struct metaverse_query_request q =
+            query_for(&prop, METAVERSE_QUERY_INSPECT_PROPERTY);
+
+        /* Control: with nothing expired this is the OK case, so each verdict
+         * below is caused by the one field that changes. */
+        ASSERT_EQ((int)metaverse_grant_query_check(&g, NULL, 0, &q),
+                  (int)METAVERSE_GRANT_OK);
+
+        g.expires_height = q.height - 1;
+        ASSERT_EQ((int)metaverse_grant_query_check(&g, NULL, 0, &q),
+                  (int)METAVERSE_GRANT_EXPIRED_HEIGHT);
+        g.expires_height = 0;
+
+        g.expires_unix = q.now_unix - 1;
+        ASSERT_EQ((int)metaverse_grant_query_check(&g, NULL, 0, &q),
+                  (int)METAVERSE_GRANT_EXPIRED_TIME);
+        g.expires_unix = 0;
+
+        g.revoked = true;
+        ASSERT_EQ((int)metaverse_grant_query_check(&g, NULL, 0, &q),
+                  (int)METAVERSE_GRANT_REVOKED);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_query_and_action_sets_do_not_leak(void)
+{
+    int failures = 0;
+    TEST("holding every ACTION confers no read right, and the reverse") {
+        struct metaverse_property_id prop = make_id(METAVERSE_KIND_CONTENT, 62);
+
+        /* The whole point of the split: the two sets do not leak into each
+         * other. An implementation that folded them into one word would
+         * answer OK for both halves below. */
+        struct metaverse_grant all_actions =
+            grant_over_id(&prop, METAVERSE_ACTION_ALL, 0);
+        snprintf(all_actions.grant_id, sizeof(all_actions.grant_id),
+                 "dddddddddddddddddddddddddddddddd");
+        all_actions.queries = 0;
+        struct metaverse_query_request q =
+            query_for(&prop, METAVERSE_QUERY_INSPECT_PROPERTY);
+        ASSERT_EQ((int)metaverse_grant_query_check(&all_actions, NULL, 0, &q),
+                  (int)METAVERSE_GRANT_ACTION_NOT_GRANTED);
+
+        struct metaverse_grant reads_only = grant_over_id(&prop, 0, 0);
+        snprintf(reads_only.grant_id, sizeof(reads_only.grant_id),
+                 "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+        reads_only.queries = METAVERSE_QUERY_ALL;
+        struct metaverse_action_request act =
+            request_for(&prop, METAVERSE_ACTION_HOST, NULL, 0);
+        act.now_unix = 1700000000;
+        act.height = 900000;
+        ASSERT_EQ((int)metaverse_grant_check(&reads_only, NULL, 0, &act),
+                  (int)METAVERSE_GRANT_ACTION_NOT_GRANTED);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_query_enumerate_names_no_property(void)
+{
+    int failures = 0;
+    TEST("enumerate may arrive with a zeroed id and still does not widen "
+         "scope") {
+        struct metaverse_property_id prop = make_id(METAVERSE_KIND_CONTENT, 62);
+        struct metaverse_property_id other =
+            make_id(METAVERSE_KIND_CONTENT, 63);
+        ASSERT(metaverse_query_allows_zero_property_id(
+            METAVERSE_QUERY_ENUMERATE_PROPERTIES));
+        ASSERT(!metaverse_query_allows_zero_property_id(
+            METAVERSE_QUERY_INSPECT_PROPERTY));
+
+        struct metaverse_grant e = grant_over_id(&prop, 0, 0);
+        snprintf(e.grant_id, sizeof(e.grant_id),
+                 "ffffffffffffffffffffffffffffffff");
+        e.queries = METAVERSE_QUERY_ENUMERATE_PROPERTIES;
+
+        struct metaverse_query_request eq =
+            query_for(NULL, METAVERSE_QUERY_ENUMERATE_PROPERTIES);
+        ASSERT_EQ((int)metaverse_grant_query_check(&e, NULL, 0, &eq),
+                  (int)METAVERSE_GRANT_OK);
+
+        /* "You may enumerate" is not "you may see everything": the id scope
+         * still decides which rows the caller may be shown, and the
+         * out-of-scope one is not among them. */
+        ASSERT(metaverse_grant_in_scope(&e, &prop));
+        ASSERT(!metaverse_grant_in_scope(&e, &other));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 
 /* ── 2. PLAN fails fast ─────────────────────────────────────────────────── */
 
@@ -273,7 +600,7 @@ static int t_plan_action_not_granted(void)
         struct metaverse_property_id prop = make_id(METAVERSE_KIND_CONTENT, 11);
         fixture_reset(&prop);
         struct metaverse_grant g =
-            grant_over_id(&prop, ACT(INSPECT) | ACT(HOST), 0);
+            grant_over_id(&prop, ACT(HOST) | ACT(PUBLISH_REVISION), 0);
         ASSERT_EQ((int)property_grant_service_mint(&g), (int)PROPERTY_GRANT_OK);
 
         struct metaverse_action_request r =
@@ -295,11 +622,11 @@ static int t_plan_property_out_of_scope(void)
     TEST("a property outside an id-scoped grant is refused at PLAN") {
         struct metaverse_property_id prop = make_id(METAVERSE_KIND_CONTENT, 11);
         fixture_reset(&prop);
-        struct metaverse_grant g = grant_over_id(&prop, ACT(INSPECT), 0);
+        struct metaverse_grant g = grant_over_id(&prop, ACT(HOST), 0);
         ASSERT_EQ((int)property_grant_service_mint(&g), (int)PROPERTY_GRANT_OK);
         struct metaverse_property_id other = make_id(METAVERSE_KIND_CONTENT, 99);
         struct metaverse_action_request r =
-            request_for(&other, METAVERSE_ACTION_INSPECT, NULL, 0);
+            request_for(&other, METAVERSE_ACTION_HOST, NULL, 0);
         struct property_grant_plan plan;
         ASSERT_EQ((int)property_grant_service_plan(g.grant_id, &r, &plan),
                   (int)PROPERTY_GRANT_PROPERTY_OUT_OF_SCOPE);
@@ -320,10 +647,10 @@ static int t_plan_kind_out_of_scope(void)
         snprintf(g.holder, sizeof(g.holder), "%s", k_holder);
         g.scope_form = METAVERSE_SCOPE_KINDS;
         g.kinds = metaverse_kind_bit(METAVERSE_KIND_CONTENT);
-        g.actions = ACT(INSPECT);
+        g.actions = ACT(HOST);
         ASSERT_EQ((int)property_grant_service_mint(&g), (int)PROPERTY_GRANT_OK);
         struct metaverse_action_request r =
-            request_for(&zc, METAVERSE_ACTION_INSPECT, NULL, 0);
+            request_for(&zc, METAVERSE_ACTION_HOST, NULL, 0);
         struct property_grant_plan plan;
         ASSERT_EQ((int)property_grant_service_plan(g.grant_id, &r, &plan),
                   (int)PROPERTY_GRANT_KIND_OUT_OF_SCOPE);
@@ -389,12 +716,17 @@ static int t_plan_value_shape(void)
         struct metaverse_property_id prop = make_id(METAVERSE_KIND_CONTENT, 11);
         fixture_reset(&prop);
         struct metaverse_grant g =
-            grant_over_id(&prop, ACT(INSPECT) | ACT(BUY), 100000);
+            grant_over_id(&prop, ACT(HOST) | ACT(BUY), 100000);
         ASSERT_EQ((int)property_grant_service_mint(&g), (int)PROPERTY_GRANT_OK);
 
+        /* HOST is the free action here: it is granted, it is in scope, and
+         * its own column says it accepts no value — so the ONLY thing left
+         * for the plan to object to is the value, which is what makes the
+         * verdict attributable. */
+        ASSERT(!metaverse_action_accepts_value(METAVERSE_ACTION_HOST));
         struct property_grant_plan plan;
         struct metaverse_action_request free_with_value =
-            request_for(&prop, METAVERSE_ACTION_INSPECT, NULL, 5);
+            request_for(&prop, METAVERSE_ACTION_HOST, NULL, 5);
         ASSERT_EQ((int)property_grant_service_plan(g.grant_id, &free_with_value,
                                                    &plan),
                   (int)PROPERTY_GRANT_VALUE_ON_FREE_ACTION);
@@ -415,10 +747,10 @@ static int t_plan_wrong_holder(void)
     TEST("an actor who is not the grant's holder is refused at PLAN") {
         struct metaverse_property_id prop = make_id(METAVERSE_KIND_CONTENT, 11);
         fixture_reset(&prop);
-        struct metaverse_grant g = grant_over_id(&prop, ACT(INSPECT), 0);
+        struct metaverse_grant g = grant_over_id(&prop, ACT(HOST), 0);
         ASSERT_EQ((int)property_grant_service_mint(&g), (int)PROPERTY_GRANT_OK);
         struct metaverse_action_request imposter =
-            request_for(&prop, METAVERSE_ACTION_INSPECT, NULL, 0);
+            request_for(&prop, METAVERSE_ACTION_HOST, NULL, 0);
         snprintf(imposter.actor, sizeof(imposter.actor), "%s", k_other);
         struct property_grant_plan plan;
         ASSERT_EQ((int)property_grant_service_plan(g.grant_id, &imposter,
@@ -436,17 +768,17 @@ static int t_plan_expiry(void)
         struct metaverse_property_id prop = make_id(METAVERSE_KIND_CONTENT, 11);
         fixture_reset(&prop);
         struct metaverse_action_request r =
-            request_for(&prop, METAVERSE_ACTION_INSPECT, NULL, 0);
+            request_for(&prop, METAVERSE_ACTION_HOST, NULL, 0);
         struct property_grant_plan plan;
 
-        struct metaverse_grant byh = grant_over_id(&prop, ACT(INSPECT), 0);
+        struct metaverse_grant byh = grant_over_id(&prop, ACT(HOST), 0);
         byh.expires_height = g_height;   /* already reached */
         ASSERT_EQ((int)property_grant_service_mint(&byh),
                   (int)PROPERTY_GRANT_OK);
         ASSERT_EQ((int)property_grant_service_plan(byh.grant_id, &r, &plan),
                   (int)PROPERTY_GRANT_GRANT_EXPIRED_HEIGHT);
 
-        struct metaverse_grant byt = grant_over_id(&prop, ACT(INSPECT), 0);
+        struct metaverse_grant byt = grant_over_id(&prop, ACT(HOST), 0);
         byt.expires_unix = g_now - 1;
         ASSERT_EQ((int)property_grant_service_mint(&byt),
                   (int)PROPERTY_GRANT_OK);
@@ -1202,7 +1534,7 @@ static int t_list_and_get(void)
         struct metaverse_property_id prop = make_id(METAVERSE_KIND_CONTENT, 81);
         fixture_reset(&prop);
         struct metaverse_grant a = grant_over_id(&prop, ACT(HOST), 0);
-        struct metaverse_grant b = grant_over_id(&prop, ACT(INSPECT), 0);
+        struct metaverse_grant b = grant_over_id(&prop, ACT(HOST), 0);
         snprintf(b.holder, sizeof(b.holder), "%s", k_other);
         ASSERT_EQ((int)property_grant_service_mint(&a), (int)PROPERTY_GRANT_OK);
         ASSERT_EQ((int)property_grant_service_mint(&b), (int)PROPERTY_GRANT_OK);
@@ -1263,6 +1595,16 @@ int test_metaverse_grant(void)
     failures += t_id_rejects();
     failures += t_action_set_codec();
     failures += t_value_actions();
+    failures += t_reserved_inspect_names_no_action();
+    failures += t_reserved_inspect_authorizes_nothing();
+
+    failures += t_query_allowed();
+    failures += t_query_not_granted();
+    failures += t_query_property_out_of_scope();
+    failures += t_query_wrong_holder();
+    failures += t_query_expiry_and_revocation();
+    failures += t_query_and_action_sets_do_not_leak();
+    failures += t_query_enumerate_names_no_property();
 
     failures += t_plan_action_not_granted();
     failures += t_plan_property_out_of_scope();

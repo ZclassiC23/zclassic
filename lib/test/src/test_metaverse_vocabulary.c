@@ -74,6 +74,11 @@
 
 #include "test/test_core.h"
 
+/* BOTH headers, deliberately and in this order. At the base commit each one
+ * declared its own action enum and including the pair was a redefinition
+ * error; that this file compiles at all is the first half of the unification
+ * proof, and check_headers_unified() is the second. */
+#include "metaverse/property_action.h"
 #include "metaverse/property_grant.h"
 #include "metaverse/property_id.h"
 #include "session/agent_broker.h"
@@ -83,6 +88,7 @@
 #include <errno.h>
 #include <poll.h>
 #include <signal.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1346,8 +1352,23 @@ static int check_headers_unified(void)
     /* Both spellings now resolve in ONE translation unit and agree. */
     VC_CHECK("the two metaverse headers share one action vocabulary",
              (uint32_t)METAVERSE_ACTION_TRANSFER == 0x00000200u);
+    /* 13 was the OLD single-vocabulary count, with INSPECT counted as an
+     * action. The split is 12 actions + 2 queries = 14 operations; the guard
+     * armed and caught this assertion still holding the pre-split number,
+     * which is what it was built to do. */
     VC_CHECK("the action count is one number, not two",
-             (int)METAVERSE_ACTION_COUNT == 13);
+             (int)METAVERSE_ACTION_COUNT == 12);
+    VC_CHECK("queries are a second closed set, counted separately",
+             (int)METAVERSE_QUERY_COUNT == 2);
+    VC_CHECK("the two sets together are the 14 operations of the contract",
+             (int)METAVERSE_ACTION_COUNT + (int)METAVERSE_QUERY_COUNT == 14);
+    /* The grant record carries both, in two fields. One field would make
+     * "may read" and "may act" the same right. */
+    VC_CHECK("a grant carries actions and queries in separate fields",
+             sizeof(((struct metaverse_grant *)0)->actions) == 4u &&
+             sizeof(((struct metaverse_grant *)0)->queries) == 4u &&
+             offsetof(struct metaverse_grant, actions) !=
+                 offsetof(struct metaverse_grant, queries));
 #else
     printf("vocabulary: PENDING — metaverse/property_action.h and "
            "metaverse/property_grant.h still declare separate action "
