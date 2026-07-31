@@ -207,6 +207,16 @@ ST_EOF
 
     # 11/12 — the fill-provider population is an assertion. Both directions of
     # drift must bite, or "0 providers scanned" is a floor that never fires.
+    #
+    # BOTH SIDES ARE PINNED to throwaway inputs: the discovered population (a
+    # scan root of this case's own making) AND the recorded count (a count file
+    # of this case's own making). Overriding only one of them silently couples
+    # the case to however many providers the real tree happens to ship, and
+    # both cases went GREEN — asserting nothing — the moment the first domain
+    # landed its provider and raised the recorded number from 0 to 1.
+    printf '0\n' > "$st_tmp/fill_count_zero.txt"
+    printf '1\n' > "$st_tmp/fill_count_one.txt"
+
     mkdir -p "$st_tmp/cleanfill"
     cat > "$st_tmp/cleanfill/runtime_telemetry_fill.c" <<'ST_EOF'
 bool runtime_dump_state_fill(struct runtime_snapshot *snap)
@@ -216,12 +226,16 @@ bool runtime_dump_state_fill(struct runtime_snapshot *snap)
     return true;
 }
 ST_EOF
-    st_run "ZCL_TELEMETRY_FILL_SCAN_ROOTS=$st_tmp/cleanfill"
+    st_run "ZCL_TELEMETRY_FILL_SCAN_ROOTS=$st_tmp/cleanfill" \
+           "ZCL_TELEMETRY_FILL_PROVIDER_COUNT=$st_tmp/fill_count_zero.txt"
     st_expect "11 a new fill provider must be recorded" 1 \
         "FILL PROVIDER COUNT GREW"
 
-    printf '1\n' > "$st_tmp/fill_count_one.txt"
-    st_run "ZCL_TELEMETRY_FILL_PROVIDER_COUNT=$st_tmp/fill_count_one.txt"
+    # A scan root holding no provider at all, against a count that records one:
+    # the "a provider was renamed out of the discovery shape" direction.
+    mkdir -p "$st_tmp/nofill"
+    st_run "ZCL_TELEMETRY_FILL_SCAN_ROOTS=$st_tmp/nofill" \
+           "ZCL_TELEMETRY_FILL_PROVIDER_COUNT=$st_tmp/fill_count_one.txt"
     st_expect "12 a vanished fill provider is not silently unscanned" 1 \
         "FILL PROVIDER COUNT DROPPED"
 

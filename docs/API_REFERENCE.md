@@ -63,9 +63,9 @@ zclassic23 discover schema <path> --side=input|output
 | Top-level roots | 10 |
 | Branches | 92 |
 | Leaves (dispatchable command paths) | 299 |
-| … `ready` (live handler in this build) | 227 |
+| … `ready` (live handler in this build) | 228 |
 | … `compat` (metadata only, names a fallback) | 17 |
-| … `planned` (fail-closed BLOCKED, exit 3) | 55 |
+| … `planned` (fail-closed BLOCKED, exit 3) | 54 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
 | Leaves with `effect=mutate` | 77 |
 | Leaves with `effect=destructive` | 4 |
@@ -712,9 +712,9 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `ops telemetry metaverse properties` | planned | read / read / operator · fast/low | none | `zcl.telemetry.metaverse.properties.v1` | `zclassic23 ops telemetry metaverse properties` | Digital property this node holds — *the typed metaverse telemetry snapshot is not built yet* |
+| `ops telemetry metaverse properties` | ready | read / read / operator · instant/tiny | none | `zcl.telemetry.metaverse.properties.v1` | `zclassic23 ops telemetry metaverse properties` | Which kinds of digital property this build can project, and which it cannot |
 | `ops telemetry metaverse market` | planned | read / read / operator · fast/low | none | `zcl.telemetry.metaverse.market.v1` | `zclassic23 ops telemetry metaverse market` | Property market activity — *no property market subsystem exists in this build* |
-| `ops telemetry metaverse services` | planned | read / read / operator · fast/low | none | `zcl.telemetry.metaverse.services.v1` | `zclassic23 ops telemetry metaverse services` | Confined broker services — *the typed metaverse telemetry snapshot is not built yet* |
+| `ops telemetry metaverse services` | planned | read / read / operator · fast/low | none | `zcl.telemetry.metaverse.services.v1` | `zclassic23 ops telemetry metaverse services` | Confined broker services — *the confined agent broker keeps its state in an operator-named directory, not in this process; use `metaverse agent status --dir=DIR`* |
 
 ### `discover` — Search and describe the command registry
 

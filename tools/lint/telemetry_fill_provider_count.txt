@@ -21,7 +21,9 @@
 # scan roots named `*_fill.c` whose basename starts with `<domain>_`, or which
 # defines `<domain>_dump_state_fill(`, for a domain named by a TABLE row.
 #
-# 0 today: the table-driven layer's field tables and renderer have landed, but
-# no domain has shipped its provider yet. The first `<domain>_*_fill.c` to land
-# raises this to 1.
-0
+# 1 today, counted in THIS worktree: app/services/src/metaverse_telemetry_fill.c
+# is the metaverse domain's provider. Other domains are shipping their providers
+# in parallel worktrees this lane cannot see, so the integrator must recompute
+# this number after the merge — it is the sum across all landed lanes, not one
+# lane's local count.
+1
