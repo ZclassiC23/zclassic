@@ -1332,6 +1332,12 @@ void zcl_native_handle_ops_telemetry_agents_activity(
  * config/commands/telemetry/zcode.def, whose `swarm` and `installs` leaves
  * stay PLANNED and so have no handler here. */
 void zcl_native_handle_ops_telemetry_zcode_summary(
+/* ── ops.telemetry.metaverse.* — the typed metaverse telemetry domain
+ * (tools/command/native_telemetry_metaverse_command.c). One READY leaf; it
+ * renders the compiled-in property-kind vocabulary and its adapter registry,
+ * so it needs no datadir and no running node. `market` and `services` stay
+ * PLANNED — see config/commands/telemetry/metaverse.def for why. */
+void zcl_native_handle_telemetry_metaverse_properties(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 

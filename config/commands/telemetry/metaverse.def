@@ -1,25 +1,55 @@
 /* The `ops.telemetry.metaverse` branch. Owned by the metaverse telemetry lane.
  *
- * Leaves are PLANNED until the typed metaverse snapshot and its field table exist;
- * a leaf whose provider is missing fails closed with exit 3 and names what is
- * missing, rather than returning an empty object. */
+ * THIS DOMAIN HAS NO AMBIENT NODE STATE, and that shapes every row below.
+ * Sovereign digital property is DIRECTORY-SCOPED: the catalog is a projection
+ * rebuilt at call time over a directory the caller names, and the confined
+ * agent broker is a separate process whose state lives in a broker directory.
+ * A telemetry leaf takes no path, so anything that needs one cannot be
+ * answered here — and a leaf that defaulted a datadir would read (this repo
+ * has been bitten by reads that also WRITE) the operator's live node.
+ *
+ * So exactly one leaf is READY, and it is the node-free half: which property
+ * kinds this build can project at all. That is the answer an operator needs
+ * BEFORE an inventory means anything, because an unwired kind and a kind that
+ * owns nothing produce the same empty page. Inventory itself stays on
+ * `metaverse property list --datadir=<dir>`, where the subject is explicit.
+ *
+ * The other two leaves fail closed with exit 3 and name what is missing.
+ * Neither is a gap to paper over with an empty object. */
 
 ZCL_COMMAND_BRANCH("ops.telemetry.metaverse", "ops.telemetry",
                    "Property catalog, market and confined services",
                    ZCL_COMMAND_LAYER_OPS)
 
-ZCL_COMMAND_PLANNED_READ(
+/* SCOPE_LOCAL, LATENCY_INSTANT, COST_TINY are all literal: the provider reads
+ * static const data compiled into the binary (the adapter registry), takes no
+ * lock, opens no file, and needs no running node. */
+ZCL_COMMAND_READY_READ(
     "ops.telemetry.metaverse.properties", "ops.telemetry.metaverse", "",
-    "Digital property this node holds",
-    "Read live from the running node at call time from the typed metaverse snapshot: each property in the local catalog with its adapter kind and whether its manifest verifies.", 0,
-    "telemetry,metaverse,properties,catalog,owned",
+    "Which kinds of digital property this build can project, and which it cannot",
+    "The typed metaverse telemetry document, read at call time from the "
+    "compiled-in property-kind vocabulary and its adapter registry — not from "
+    "a directory, so it needs neither a datadir nor a running node and cannot "
+    "touch either. `values.catalog.kinds_declared` is the size of the "
+    "vocabulary, `kinds_readable` the kinds with a list+show reader wired, and "
+    "one `reader_<kind>` boolean states each kind individually; "
+    "`registry_complete` is false if any kind fails to resolve to a row keyed "
+    "to itself, which is the only way a kind can vanish from the catalog "
+    "without the catalog saying so. This is NOT an inventory: it reports what "
+    "CAN be projected, never how much property is held — for that, name a "
+    "directory with `metaverse property list --datadir=<dir>`. `completeness` "
+    "states present/unavailable/unset totals and `health` is the derived enum "
+    "{ok,unknown,degraded,unhealthy}; an unreadable leaf renders null with a "
+    "reason token and is judged unknown, never healthy and never broken.", 0,
+    "telemetry,metaverse,properties,catalog,kinds,adapters,readers",
     "zcl.command.empty_input.v1", "zcl.telemetry.metaverse.properties.v1", "", "",
     "zclassic23 ops telemetry metaverse properties",
-    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
-    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_INSTANT, ZCL_COMMAND_COST_TINY,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
-    ZCL_COMMAND_CAP_DEV_STATE_READ,
-    "the typed metaverse telemetry snapshot is not built yet")
+    ZCL_COMMAND_CAP_DEV_STATE_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_telemetry_metaverse_properties)
 
 /* `market` has no backing code anywhere in the tree today — not a provider,
  * not a service, not a schema. It is declared so the branch is honest about
@@ -40,10 +70,28 @@ ZCL_COMMAND_PLANNED_READ(
     ZCL_COMMAND_CAP_DEV_STATE_READ,
     "no property market subsystem exists in this build")
 
+/* `services` stays PLANNED, and the reason is structural rather than a
+ * missing provider. The confined agent broker runs as its OWN process
+ * (`zclassic23 --metaverse-broker --broker-dir=DIR`); everything it records —
+ * pids, the accepted SO_PEERCRED identity, the grant fingerprint, the
+ * achieved confinement posture, the receipt chain — lives in that directory,
+ * not in this process. A telemetry leaf takes no path, and the two honest
+ * alternatives are both worse than saying so: defaulting the datadir would
+ * point a read at the operator's live node, and rendering an object full of
+ * permanently-unavailable leaves would be a PLANNED leaf wearing a READY
+ * costume. The directory-scoped answer already exists and names its subject:
+ * `metaverse agent status --dir=DIR`. Nor is this process's own confinement a
+ * substitute — the `confinement` and `sandbox` subsystem reporters already
+ * publish that, and a second name for one fact is what this effort removes. */
 ZCL_COMMAND_PLANNED_READ(
     "ops.telemetry.metaverse.services", "ops.telemetry.metaverse", "",
     "Confined broker services",
-    "Read live from the running node at call time from the typed metaverse snapshot: each confined agent-broker service with its confinement posture and recorded grants.", 0,
+    "Will report each confined agent-broker service with its achieved "
+    "confinement posture and recorded grants; the broker is a separate "
+    "process whose state lives in an operator-named directory rather than in "
+    "this one, and a telemetry leaf takes no path, so the leaf fails closed "
+    "today instead of guessing at a directory or answering with permanently "
+    "empty fields.", 0,
     "telemetry,metaverse,services,broker,confined,agent",
     "zcl.command.empty_input.v1", "zcl.telemetry.metaverse.services.v1", "", "",
     "zclassic23 ops telemetry metaverse services",
@@ -51,4 +99,5 @@ ZCL_COMMAND_PLANNED_READ(
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_DEV_STATE_READ,
-    "the typed metaverse telemetry snapshot is not built yet")
+    "the confined agent broker keeps its state in an operator-named directory, "
+    "not in this process; use `metaverse agent status --dir=DIR`")
