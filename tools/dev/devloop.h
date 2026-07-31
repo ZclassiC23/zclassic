@@ -170,8 +170,9 @@ struct zcl_devloop_plan {
     char closure_groups[ZCL_DEVLOOP_MAX_PLAN_GROUPS][ZCL_DEVLOOP_GROUP_MAX];
     size_t closure_groups_len;
     bool closure_attempted;   /* zcl_devloop_plan_add_closure() ran */
-    /* Back-compat boolean: true iff the SEMANTIC or INCLUDE dimension is not
-     * COMPLETE. It no longer implies closure_groups is empty — read `dims`. */
+    /* Back-compat boolean: true iff an applicable SEMANTIC or INCLUDE
+     * dimension is INCOMPLETE/UNAVAILABLE. NOT_APPLICABLE is sufficient. It
+     * no longer implies closure_groups is empty — read `dims`. */
     bool closure_truncated;
 
     /* ── C5: why every selected group is here ── */
@@ -212,6 +213,23 @@ struct zcl_devloop_process_result {
     bool output_truncated;
 };
 
+/* Complete current source identity: byte inventory plus the ABA mutation
+ * token. Shared by the watcher/cycle and focused native execution so neither
+ * can admit an artifact built from a superseded checkout. */
+struct dev_source_record {
+    char source_id[65];
+    char mutation_id[65];
+};
+
+bool zcl_dev_source_identity_capture(const char *repo_root,
+                                     struct dev_source_record *out,
+                                     char *why, size_t why_len);
+bool zcl_dev_source_identity_verify(const char *repo_root,
+                                    const struct dev_source_record *expected,
+                                    char *why, size_t why_len);
+bool zcl_dev_executable_source_id(const char *cwd, int executable_fd,
+                                  const char *display_path, char out[65]);
+
 bool zcl_devloop_is_method(const char *method);
 int zcl_devloop_cli_main(const char **args, int nargs);
 
@@ -222,11 +240,14 @@ size_t zcl_devloop_plan_json(const char *const *files, size_t file_count,
 
 /* Augment `plan` (already produced by zcl_devloop_plan_files for the same
  * `files`) with blast-radius-derived proof groups across BOTH graph
- * dimensions. Opens the codeindex at `repo_root`, computes
+ * dimensions. For applicable source shapes, opens the codeindex at
+ * `repo_root` and computes
  *   SEMANTIC — codeindex_impact_closure(): the reverse-caller file set, and
  *   INCLUDE  — codeindex_reverse_includes(): every translation unit whose
  *              compiler depfile lists a changed file,
- * maps each reached file through the SAME shared impact rules the path floor
+ * A dimension structurally unable to contain an edge for the changed shape
+ * is NOT_APPLICABLE and does not open/query the index. Maps each reached file
+ * through the SAME shared impact rules the path floor
  * uses, and fills plan->closure_groups with the groups NOT already in
  * plan->path_groups. The primary proof_group route is left untouched.
  *
@@ -289,6 +310,12 @@ bool zcl_devloop_process_run(const char *cwd,
                              const char *const argv[],
                              int timeout_ms,
                              struct zcl_devloop_process_result *out);
+/* Execute the already-open regular executable at `exec_fd`. The caller owns
+ * and closes the fd after return. This pins one inode across identity query +
+ * execution even when a stable build/bin alias is atomically republished. */
+bool zcl_devloop_process_run_fd(const char *cwd, int exec_fd,
+                                const char *const argv[], int timeout_ms,
+                                struct zcl_devloop_process_result *out);
 #if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
 bool zcl_devloop_deterministic_compile_failure(
     const struct zcl_devloop_process_result *result,

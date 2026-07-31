@@ -1,0 +1,8 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Test translation units whose semantic blast radius is exactly their owning
+ * canonical group. check_test_registration.sh proves each row defines no
+ * externally callable helper and is not called outside runner plumbing.
+ * Include with ZCL_TEST_SEMANTIC_LEAF(name) defined. */
+
+ZCL_TEST_SEMANTIC_LEAF(stage_repair_coin_backfill)

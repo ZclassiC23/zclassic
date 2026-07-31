@@ -71,10 +71,11 @@ does not mean.
   pushed). The enforcement point is `app/jobs/src/utxo_apply_anchors.c`;
   `coins_view_cache_have_joinsplit_requirements()` is now a thin bool wrapper
   over it. Pinned by `lib/test/src/test_parity_lockin_anchor_membership.c`,
-  registered in `TEST_LIST` as `X(parity_lockin_anchor_membership)`.
+  registered in the canonical catalog as
+  `ZCL_TEST_GROUP(parity_lockin_anchor_membership)`.
   <!-- claim: symbol-present coins_view_get_anchor lib/coins/src/coins_view.c # membership really resolves anchors -->
   <!-- claim: symbol-present coins_view_cache_check_shielded_requirements app/jobs/src/utxo_apply_anchors.c # and is really called on the fold path -->
-  <!-- claim: symbol-present parity_lockin_anchor_membership lib/test/src/test_parallel.c # the lock-in test actually runs -->
+  <!-- claim: symbol-present parity_lockin_anchor_membership tools/dev/test_group_catalog.def # the lock-in test actually runs -->
 - **Groth16 spend/output proofs, the binding signature, and the JoinSplit
   Ed25519 signature are checkpoint-gated ONLY in the legacy `connect_block()`
   path** (`lib/validation/src/connect_block.c`), equivalent to Bitcoin Core's

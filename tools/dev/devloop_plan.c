@@ -2,8 +2,11 @@
 
 #include "devloop.h"
 
+#include "base/hex.h"
 #include "codeindex/codeindex.h"
 #include "controllers/agent_impact_rules.h"
+#include "crypto/sha3.h"
+#include "test_group_catalog.h"
 #include "util/safe_alloc.h"
 
 #include <stdarg.h>
@@ -156,6 +159,32 @@ static bool path_is_opaque_class(const char *path)
     return false;
 }
 
+/* Graph dimensions are properties of a source shape, not mandatory rituals.
+ * A .c file cannot be reverse-included; a .def registry has no callable
+ * symbols; opaque assets enter neither compiler graph. Dedicated registered
+ * test translation units are proof leaves: their exact owning group is the
+ * path floor, while the runner's dispatch reference is harness plumbing, not
+ * production blast radius. Only translation units in the mechanically audited
+ * semantic-leaf registry get that exemption; ordinary registered tests still
+ * query the semantic graph. This avoids expensive empty queries and the
+ * historic test_parallel fanout false alarm without hiding helper impacts. */
+static bool path_semantic_applies(const char *path)
+{
+    if (!path || path_is_opaque_class(path) || has_suffix(path, ".def"))
+        return false;
+    if (has_suffix(path, ".h"))
+        return true;
+    if (!has_suffix(path, ".c"))
+        return false;
+    return !zcl_test_group_source_is_semantic_leaf(path);
+}
+
+static bool path_include_applies(const char *path)
+{
+    return path && !path_is_opaque_class(path) &&
+           (has_suffix(path, ".h") || has_suffix(path, ".def"));
+}
+
 /* Severity ordering for combining one dimension's verdict across several
  * changed files. NOT_APPLICABLE is the most benign (there was nothing to find),
  * COMPLETE beats it only in the sense that something WAS found; the two
@@ -211,12 +240,47 @@ static void plan_note_selection(struct zcl_devloop_plan *plan,
     plan->selections_len++;
 }
 
+static bool plan_group_ids_valid(const struct zcl_devloop_plan *plan)
+{
+    if (!plan)
+        return false;
+    char full[ZCL_TEST_GROUP_FULL_MAX];
+    for (size_t i = 0; i < plan->path_groups_len; i++)
+        if (!zcl_test_group_resolve_exact(plan->path_groups[i], full))
+            return false;
+    for (size_t i = 0; i < plan->closure_groups_len; i++)
+        if (!zcl_test_group_resolve_exact(plan->closure_groups[i], full))
+            return false;
+    return true;
+}
+
+static bool plan_selects_full_group(const struct zcl_devloop_plan *plan,
+                                    const char *full_id)
+{
+    for (size_t i = 0; i < plan->path_groups_len; i++)
+        if (zcl_test_group_plan_selects(plan->path_groups[i], full_id))
+            return true;
+    for (size_t i = 0; i < plan->closure_groups_len; i++)
+        if (zcl_test_group_plan_selects(plan->closure_groups[i], full_id))
+            return true;
+    return false;
+}
+
 bool zcl_devloop_plan_proof_admissible(const struct zcl_devloop_plan *plan,
                                        const char **out_reason)
 {
     if (out_reason) *out_reason = "";
     if (!plan) {
         if (out_reason) *out_reason = "no-plan";
+        return false;
+    }
+    if (plan->file_count > 0 && !plan->docs_only &&
+        plan->path_groups_len == 0) {
+        if (out_reason) *out_reason = "unmapped-code-change";
+        return false;
+    }
+    if (!plan_group_ids_valid(plan)) {
+        if (out_reason) *out_reason = "unknown-test-group";
         return false;
     }
     for (int d = 0; d < ZCL_DEVLOOP_DIM__COUNT; d++) {
@@ -307,9 +371,12 @@ bool zcl_devloop_plan_files(const char *const *files, size_t file_count,
          * floor itself is byte-identical to the single-accumulator version. */
         struct agent_impact_acc per_file = {0};
         (void)agent_impact_apply_shared_rules(files[i], &per_file);
-        enum zcl_devloop_dim dim = path_is_opaque_class(files[i])
-                                       ? ZCL_DEVLOOP_DIM_OPAQUE
-                                       : ZCL_DEVLOOP_DIM_SEMANTIC;
+        enum zcl_devloop_dim dim =
+            (path_is_opaque_class(files[i]) ||
+             (!path_semantic_applies(files[i]) &&
+              !path_include_applies(files[i])))
+                ? ZCL_DEVLOOP_DIM_OPAQUE
+                : ZCL_DEVLOOP_DIM_SEMANTIC;
         for (size_t g = 0; g < per_file.groups_len; g++) {
             plan_note_selection(out, per_file.groups[g], dim, files[i]);
             agent_impact_add_group(&impact, per_file.groups[g]);
@@ -448,11 +515,24 @@ bool zcl_devloop_plan_add_closure(const char *repo_root,
     /* This call OWNS the two graph dimensions; reset them and let the walks
      * below escalate. The OPAQUE dimension belongs to the path floor and is
      * left exactly as zcl_devloop_plan_files() decided it. */
-    plan->dims[ZCL_DEVLOOP_DIM_SEMANTIC].status = ZCL_DEVLOOP_DIM_COMPLETE;
+    plan->dims[ZCL_DEVLOOP_DIM_SEMANTIC].status =
+        ZCL_DEVLOOP_DIM_NOT_APPLICABLE;
     plan->dims[ZCL_DEVLOOP_DIM_SEMANTIC].reason = "";
-    plan->dims[ZCL_DEVLOOP_DIM_INCLUDE].status = ZCL_DEVLOOP_DIM_COMPLETE;
+    plan->dims[ZCL_DEVLOOP_DIM_INCLUDE].status =
+        ZCL_DEVLOOP_DIM_NOT_APPLICABLE;
     plan->dims[ZCL_DEVLOOP_DIM_INCLUDE].reason = "";
     if (file_count == 0) {
+        plan->closure_truncated = false;
+        return true;
+    }
+
+    size_t semantic_count = 0;
+    size_t include_count = 0;
+    for (size_t i = 0; i < file_count; i++) {
+        semantic_count += path_semantic_applies(files[i]) ? 1u : 0u;
+        include_count += path_include_applies(files[i]) ? 1u : 0u;
+    }
+    if (semantic_count == 0 && include_count == 0) {
         plan->closure_truncated = false;
         return true;
     }
@@ -463,51 +543,60 @@ bool zcl_devloop_plan_add_closure(const char *repo_root,
         /* No index: the path floor still stands and its tests still run, but
          * neither graph dimension was consulted. Say UNAVAILABLE — the old
          * code returned here silently, which read as "asked, found nothing". */
-        plan_dim_set(plan, ZCL_DEVLOOP_DIM_SEMANTIC,
-                     ZCL_DEVLOOP_DIM_UNAVAILABLE, "no-code-index");
-        plan_dim_set(plan, ZCL_DEVLOOP_DIM_INCLUDE,
-                     ZCL_DEVLOOP_DIM_UNAVAILABLE, "no-code-index");
+        if (semantic_count > 0)
+            plan_dim_set(plan, ZCL_DEVLOOP_DIM_SEMANTIC,
+                         ZCL_DEVLOOP_DIM_UNAVAILABLE, "no-code-index");
+        if (include_count > 0)
+            plan_dim_set(plan, ZCL_DEVLOOP_DIM_INCLUDE,
+                         ZCL_DEVLOOP_DIM_UNAVAILABLE, "no-code-index");
         plan->closure_truncated = true;
         return true;
     }
 
     bool ok = true;
-    char (*changed)[256] = zcl_malloc(sizeof(*changed) * file_count,
-                                      "closure_changed");
+    char (*changed)[256] = semantic_count > 0
+        ? zcl_malloc(sizeof(*changed) * semantic_count, "closure_changed")
+        : NULL;
     char (*impacted)[256] = zcl_malloc(
         sizeof(*impacted) * ZCL_DEVLOOP_CLOSURE_FILE_CAP, "closure_impacted");
-    if (!changed || !impacted) {
+    if ((semantic_count > 0 && !changed) || !impacted) {
         ok = false;
         goto out;
     }
+    size_t semantic_index = 0;
     for (size_t i = 0; i < file_count; i++)
-        snprintf(changed[i], 256, "%s", files[i]);
+        if (path_semantic_applies(files[i]))
+            snprintf(changed[semantic_index++], 256, "%s", files[i]);
 
     /* ── dimension SEMANTIC: the reverse-caller blast radius ── */
-    bool truncated = false;
-    int n = codeindex_impact_closure(ci, changed, (int)file_count, 0,
-                                     impacted, ZCL_DEVLOOP_CLOSURE_FILE_CAP,
-                                     &truncated);
-    if (n < 0) {
+    if (semantic_count > 0) {
         plan_dim_set(plan, ZCL_DEVLOOP_DIM_SEMANTIC,
-                     ZCL_DEVLOOP_DIM_UNAVAILABLE, "closure-query-error");
-        ok = false;
-        goto out;
-    }
-    if (truncated) {
+                     ZCL_DEVLOOP_DIM_COMPLETE, "");
+        bool truncated = false;
+        int n = codeindex_impact_closure(
+            ci, changed, (int)semantic_count, 0, impacted,
+            ZCL_DEVLOOP_CLOSURE_FILE_CAP, &truncated);
+        if (n < 0) {
+            plan_dim_set(plan, ZCL_DEVLOOP_DIM_SEMANTIC,
+                         ZCL_DEVLOOP_DIM_UNAVAILABLE, "closure-query-error");
+            ok = false;
+            goto out;
+        }
+        if (truncated) {
         /* C1: the walk is INCOMPLETE, not empty. Everything it reached below
          * is still folded in — a partial closure is real evidence, and the
          * caller learns it is partial from dims[SEMANTIC], not by receiving
          * an empty array that looks like "nothing to run". */
-        plan_dim_set(plan, ZCL_DEVLOOP_DIM_SEMANTIC,
-                     ZCL_DEVLOOP_DIM_INCOMPLETE, "closure-truncated");
-    }
-    for (int i = 0; i < n; i++) {
-        if (!plan_fold_reached_file(plan, impacted[i],
-                                    ZCL_DEVLOOP_DIM_SEMANTIC)) {
             plan_dim_set(plan, ZCL_DEVLOOP_DIM_SEMANTIC,
-                         ZCL_DEVLOOP_DIM_INCOMPLETE, "plan-group-cap");
-            break;
+                         ZCL_DEVLOOP_DIM_INCOMPLETE, "closure-truncated");
+        }
+        for (int i = 0; i < n; i++) {
+            if (!plan_fold_reached_file(plan, impacted[i],
+                                        ZCL_DEVLOOP_DIM_SEMANTIC)) {
+                plan_dim_set(plan, ZCL_DEVLOOP_DIM_SEMANTIC,
+                             ZCL_DEVLOOP_DIM_INCOMPLETE, "plan-group-cap");
+                break;
+            }
         }
     }
 
@@ -516,7 +605,12 @@ bool zcl_devloop_plan_add_closure(const char *repo_root,
      * an enum, a typedef, and an X-macro registry define no callable symbol,
      * so they have an empty reverse-caller closure while every file that
      * includes them recompiles. */
+    if (include_count > 0)
+        plan_dim_set(plan, ZCL_DEVLOOP_DIM_INCLUDE,
+                     ZCL_DEVLOOP_DIM_COMPLETE, "");
     for (size_t i = 0; i < file_count; i++) {
+        if (!path_include_applies(files[i]))
+            continue;
         enum codeindex_include_dim idim = CODEINDEX_INCLUDE_DIM_UNAVAILABLE;
         int nd = codeindex_reverse_includes(ci, files[i], impacted,
                                             ZCL_DEVLOOP_CLOSURE_FILE_CAP,
@@ -548,11 +642,17 @@ bool zcl_devloop_plan_add_closure(const char *repo_root,
 
 out:
     /* Back-compat: the single boolean older readers still parse. It now means
-     * "at least one graph dimension is not COMPLETE", and it no longer implies
-     * closure_groups is empty. */
+     * "at least one applicable graph dimension is refusing", and it no longer
+     * implies closure_groups is empty. NOT_APPLICABLE is complete evidence. */
+    enum zcl_devloop_dim_status semantic_status =
+        plan->dims[ZCL_DEVLOOP_DIM_SEMANTIC].status;
+    enum zcl_devloop_dim_status include_status =
+        plan->dims[ZCL_DEVLOOP_DIM_INCLUDE].status;
     plan->closure_truncated =
-        plan->dims[ZCL_DEVLOOP_DIM_SEMANTIC].status != ZCL_DEVLOOP_DIM_COMPLETE ||
-        plan->dims[ZCL_DEVLOOP_DIM_INCLUDE].status != ZCL_DEVLOOP_DIM_COMPLETE;
+        semantic_status == ZCL_DEVLOOP_DIM_INCOMPLETE ||
+        semantic_status == ZCL_DEVLOOP_DIM_UNAVAILABLE ||
+        include_status == ZCL_DEVLOOP_DIM_INCOMPLETE ||
+        include_status == ZCL_DEVLOOP_DIM_UNAVAILABLE;
     free(changed);
     free(impacted);
     codeindex_close(ci);
@@ -598,7 +698,7 @@ static bool append_json_string(char *out, size_t out_sz, size_t *pos,
  * per-dimension completeness verdict and the document tail always fit. The
  * verdict is what a proof consumer reads; it must never be the thing that
  * falls off the end. */
-#define PLAN_TAIL_RESERVE 768
+#define PLAN_TAIL_RESERVE 1536
 
 /* Emit `"name":["g0","g1",...]` from a fixed-stride group array. */
 static bool append_group_array(char *out, size_t out_sz, size_t *pos,
@@ -614,6 +714,68 @@ static bool append_group_array(char *out, size_t out_sz, size_t *pos,
             return false;
     }
     return appendf(out, out_sz, pos, "]");
+}
+
+/* Materialize the C-owned proof plan as canonical full IDs. The catalog is
+ * already deterministic and unique, so iterating it gives stable order and
+ * deduplication without a second registry or a large scratch array. The SHA3
+ * commits the COMPLETE set even when the bounded JSON view is abridged. */
+static bool append_execution_set(const struct zcl_devloop_plan *plan,
+                                 char *out, size_t out_sz, size_t *pos)
+{
+    static const unsigned char domain[] = "zcl.dev_execution_set.v1\0";
+    bool valid = plan_group_ids_valid(plan);
+    size_t total = 0;
+    struct sha3_256_ctx ctx;
+    sha3_256_init(&ctx);
+    sha3_256_write(&ctx, domain, sizeof(domain) - 1);
+    if (valid) {
+        for (size_t i = 0; i < zcl_test_group_catalog_count(); i++) {
+            const char *full = zcl_test_group_catalog_at(i);
+            if (!plan_selects_full_group(plan, full))
+                continue;
+            sha3_256_write(&ctx, (const unsigned char *)full, strlen(full));
+            const unsigned char newline = '\n';
+            sha3_256_write(&ctx, &newline, 1);
+            total++;
+        }
+    }
+    unsigned char digest[32];
+    char digest_string[65];
+    sha3_256_finalize(&ctx, digest);
+    zcl_hex_encode(digest, sizeof(digest), digest_string);
+
+    if (!appendf(out, out_sz, pos,
+                 ",\"execution_selector\":\"exact\","
+                 "\"execution_groups\":["))
+        return false;
+    size_t listed = 0;
+    bool abridged = false;
+    if (valid) {
+        for (size_t i = 0; i < zcl_test_group_catalog_count(); i++) {
+            const char *full = zcl_test_group_catalog_at(i);
+            if (!plan_selects_full_group(plan, full))
+                continue;
+            size_t saved = *pos;
+            if (out_sz - *pos < PLAN_TAIL_RESERVE ||
+                (listed > 0 && !appendf(out, out_sz, pos, ",")) ||
+                !append_json_string(out, out_sz, pos, full)) {
+                *pos = saved;
+                out[*pos] = '\0';
+                abridged = true;
+                break;
+            }
+            listed++;
+        }
+    }
+    return appendf(out, out_sz, pos,
+                   "],\"execution_groups_listed\":%zu,"
+                   "\"execution_groups_total\":%zu,"
+                   "\"execution_groups_abridged\":%s,"
+                   "\"execution_set_valid\":%s,"
+                   "\"execution_set_sha3\":\"%s\"",
+                   listed, total, abridged ? "true" : "false",
+                   valid ? "true" : "false", digest_string);
 }
 
 /* Shared serializer for a fully-computed plan. When `include_closure` is set,
@@ -748,6 +910,12 @@ static size_t plan_json_body(const struct zcl_devloop_plan *plan,
             !append_json_string(out, out_sz, &pos, why))
             return 0;
     }
+    /* Render this bounded, abridgable list after all mandatory closure and
+     * completeness fields. Its reserve now protects only the fixed document
+     * tail, so a valid multi-file plan cannot disappear merely because an
+     * earlier optional execution listing consumed space needed by closure. */
+    if (!append_execution_set(plan, out, out_sz, &pos))
+        return 0;
     if (!appendf(out, out_sz, &pos,
                  ",\"agent_next_action\":\"edit code; the native loop owns execution\"}"))
         return 0;

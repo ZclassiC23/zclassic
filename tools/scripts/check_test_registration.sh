@@ -4,8 +4,8 @@
 # THE BUG THIS PREVENTS (lane-3, 2026-06-22): three test entry points
 # (test_refold_from_anchor_fatal, test_refold_auto_arm, test_anchor_selfmint)
 # lived in dedicated lib/test/src/test_<name>.c files, COMPILED and linked
-# into the test binaries, yet were ABSENT from the TEST_LIST X()-macro list in
-# lib/test/src/test_parallel.c (and not dispatched by the legacy serial runner
+# into the test binaries, yet were ABSENT from the canonical test group catalog
+# (and not dispatched by the legacy serial runner
 # lib/test/src/test.c either). They therefore proved NOTHING — green forever,
 # never executed. This gate makes that drift FAIL CI.
 #
@@ -19,17 +19,15 @@
 # deliberately NOT treated as entry points (no false positives on helpers).
 #
 # An entry point is "dispatched" (i.e. actually runs) iff its <name> is either
-#   1. registered in the TEST_LIST X(<name>) macro in test_parallel.c
+#   1. registered in tools/dev/test_group_catalog.def
 #      (the `make test` parallel runner — the doctrine runner of record), OR
 #   2. invoked as `test_<name>()` from the legacy serial runner test.c.
 # Both runners link the same TEST_SRCS_NO_MAIN (Makefile:149), so a function
 # dispatched by EITHER does run somewhere. A filename-matching entry point
 # dispatched by NEITHER is an orphan: compiled but never executed.
 #
-# The X() macro maps to the symbol via (test_parallel.c):
-#     #define DECL_TEST(name) extern int test_##name(void);   // forward decl
-#     #define ROW_TEST(name)  {"test_" #name, test_##name},   // dispatch row
-# i.e. X(foo) <=> the function test_foo().
+# The catalog row ZCL_TEST_GROUP(foo) expands to the test_foo declaration and
+# dispatch row in test_parallel.c and to the same full ID in native tooling.
 #
 # Fail-loud: grep exit >=2 (real error) aborts; an empty entry-point scan
 # (convention drift) aborts — we never report "clean" off a broken scan.
@@ -45,9 +43,9 @@ validate_unique_registrations() {
         return 0
     fi
 
-    echo "FAIL: duplicate TEST_LIST registration(s) in $source_label:" >&2
+    echo "FAIL: duplicate test group registration(s) in $source_label:" >&2
     while IFS= read -r name; do
-        [ -n "$name" ] && echo "    X($name)" >&2
+        [ -n "$name" ] && echo "    $name" >&2
     done <<< "$duplicates"
     echo "  Each parallel test group must have one canonical row." >&2
     return 1
@@ -67,7 +65,7 @@ uniqueness_selftest_out=$(validate_unique_registrations \
 uniqueness_selftest_rc=$?
 set -e
 if [ "$uniqueness_selftest_rc" -ne 1 ] || \
-   ! grep -qF 'X(alpha)' <<< "$uniqueness_selftest_out"; then
+   ! grep -qF 'alpha' <<< "$uniqueness_selftest_out"; then
     echo "check_test_registration: FATAL — uniqueness negative control failed" >&2
     exit 2
 fi
@@ -86,8 +84,10 @@ fi
 TEST_DIR="lib/test/src"
 PARALLEL="$TEST_DIR/test_parallel.c"
 SERIAL="$TEST_DIR/test.c"
+CATALOG="tools/dev/test_group_catalog.def"
+SEMANTIC_LEAVES="tools/dev/test_semantic_leaves.def"
 
-for f in "$PARALLEL" "$SERIAL"; do
+for f in "$PARALLEL" "$SERIAL" "$CATALOG" "$SEMANTIC_LEAVES"; do
     if [ ! -f "$f" ]; then
         echo "check_test_registration: FATAL — expected runner file missing: $f" >&2
         echo "  The test-runner layout drifted; refusing to report 'clean'." >&2
@@ -95,33 +95,138 @@ for f in "$PARALLEL" "$SERIAL"; do
     fi
 done
 
-# ── Registered names (TEST_LIST X(...) in test_parallel.c) ──
-# Scan only the TEST_LIST macro region (from its #define up to SPEC_LIST's).
-set +e
-reg_block=$(awk '/#define[ \t]+TEST_LIST\(/{f=1} f{print} /#define[ \t]+SPEC_LIST\(/{exit}' "$PARALLEL")
-awkrc=$?
-set -e
-if [ "$awkrc" -ne 0 ]; then
-    echo "check_test_registration: FATAL — awk failed slicing TEST_LIST from $PARALLEL" >&2
-    exit 2
-fi
-registered_raw=$(printf '%s\n' "$reg_block" | grep -oE 'X\([a-zA-Z0-9_]+\)' | sed -E 's/^X\((.*)\)$/\1/')
+# ── Registered names (canonical generated-code catalog) ──
+registered_full=$(tools/dev/test-group-list.sh)
+registered_raw=$(printf '%s\n' "$registered_full" | sed -n 's/^test_//p')
 
 # A duplicate row runs the same group twice, inflates the advertised group
 # count, and can hide the absence of a genuinely distinct test behind a green
 # total. Check the raw list before de-duplicating it for membership lookups.
-if ! validate_unique_registrations "$registered_raw" "$PARALLEL"; then
+if ! validate_unique_registrations "$registered_full" "$CATALOG"; then
     exit 1
 fi
 
 registered=$(printf '%s\n' "$registered_raw" | sort -u)
 
-# FAIL-LOUD floor: TEST_LIST must yield a non-trivial set, else the slice or
-# macro shape drifted and a real orphan could slip through a tiny scan.
+# A semantic-leaf row is a deliberately narrow performance assertion: the
+# owning exact group covers the whole TU, so walking the runner dispatch edge
+# would add no behavioral proof. Prove that assertion mechanically before the
+# planner is allowed to skip the graph. A leaf must be registered, define only
+# its owning externally visible symbol, and have no callers outside the two
+# runner surfaces and its public prototype. This is compiler/object evidence,
+# not a source-text parser: one-line and multiline C definitions are covered.
+semantic_leaves=$(awk '
+/^[[:space:]]*ZCL_TEST_SEMANTIC_LEAF\([A-Za-z_0-9]+\)[[:space:]]*$/ {
+    line = $0
+    sub(/^[^(]*\(/, "", line); sub(/\).*/, "", line)
+    print line
+}' "$SEMANTIC_LEAVES")
+if ! validate_unique_registrations "$semantic_leaves" "$SEMANTIC_LEAVES"; then
+    exit 1
+fi
+
+LEAF_CC="${ZCL_TEST_LEAF_CC:-cc}"
+for tool in "$LEAF_CC" nm; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        echo "check_test_registration: FATAL — semantic-leaf audit needs $tool" >&2
+        exit 2
+    fi
+done
+LEAF_WORK=$(mktemp -d "${TMPDIR:-/tmp}/zcl-test-leaf-audit.XXXXXX") || {
+    echo "check_test_registration: FATAL — semantic-leaf mktemp failed" >&2
+    exit 2
+}
+trap 'rm -rf -- "$LEAF_WORK"' EXIT
+
+leaf_symbols() {
+    local source="$1"
+    local object="$2"
+    shift 2
+    if ! "$LEAF_CC" -std=c23 -O0 -fno-lto "$@" -c "$source" -o "$object" \
+            2>"$LEAF_WORK/compiler.err"; then
+        echo "check_test_registration: semantic-leaf compile failed: $source" >&2
+        sed -n '1,20p' "$LEAF_WORK/compiler.err" >&2
+        return 2
+    fi
+    nm -g --defined-only --format=posix "$object" |
+        awk '$2 ~ /^[A-Za-z]$/ { print $1 }' | sort -u
+}
+
+# Born-red control for the exact parser weakness this audit replaces: both a
+# same-line body and a multiline signature must be visible in object symbols.
+cat > "$LEAF_WORK/control.c" <<'EOF'
+int test_owner(void) { return 0; }
+bool exported_helper(void) { return true; }
+int multiline_helper(
+    int value)
+{
+    return value;
+}
+EOF
+control_symbols=$(leaf_symbols "$LEAF_WORK/control.c" \
+    "$LEAF_WORK/control.o" -include stdbool.h) || exit 2
+if [ "$control_symbols" != $'exported_helper\nmultiline_helper\ntest_owner' ]; then
+    echo "check_test_registration: FATAL — object-symbol negative control failed" >&2
+    printf '  observed:\n%s\n' "$control_symbols" >&2
+    exit 2
+fi
+
+LEAF_INCLUDE_FLAGS=()
+for dir in app/*/include config/include lib/*/include core/*/include \
+           domain/*/include application/*/include adapters/*/*/include \
+           ports/include; do
+    [ -d "$dir" ] && LEAF_INCLUDE_FLAGS+=("-I$dir")
+done
+LEAF_INCLUDE_FLAGS+=("-Itools" "-Itools/dev" "-Ivendor/include")
+leaf_drift=""
+for name in $semantic_leaves; do
+    source="$TEST_DIR/test_${name}.c"
+    if [ ! -f "$source" ] || ! grep -qxF "$name" <<< "$registered"; then
+        leaf_drift="${leaf_drift}${name}\tmissing source or canonical group\n"
+        continue
+    fi
+    set +e
+    global_symbols=$(leaf_symbols "$source" "$LEAF_WORK/${name}.o" \
+        -D_POSIX_C_SOURCE=200809L -DZCL_AR_ENFORCE -DZCL_TESTING \
+        "${LEAF_INCLUDE_FLAGS[@]}")
+    symbol_rc=$?
+    set -e
+    if [ "$symbol_rc" -ne 0 ]; then
+        exit "$symbol_rc"
+    fi
+    if [ "$global_symbols" != "test_${name}" ]; then
+        leaf_drift="${leaf_drift}${name}\texports: ${global_symbols//$'\n'/, }\n"
+    fi
+    set +e
+    refs=$(git grep -l -E "test_${name}[[:space:]]*\\(" -- \
+        ':!build' ':!test-tmp')
+    grc=$?
+    set -e
+    if [ "$grc" -ge 2 ]; then
+        echo "check_test_registration: FATAL — reference scan failed for $name" >&2
+        exit 2
+    fi
+    while IFS= read -r ref; do
+        [ -n "$ref" ] || continue
+        case "$ref" in
+            "$source"|"$SERIAL"|lib/test/include/test/test_core.h) ;;
+            *) leaf_drift="${leaf_drift}${name}\tcalled by $ref\n" ;;
+        esac
+    done <<< "$refs"
+done
+if [ -n "$leaf_drift" ]; then
+    echo "FAIL: semantic test leaf claim(s) are no longer isolated:" >&2
+    printf '%b' "$leaf_drift" >&2
+    echo "  Remove the row or restore the one-entry/no-external-caller shape." >&2
+    exit 1
+fi
+
+# FAIL-LOUD floor: the catalog must yield a non-trivial test set, else its
+# parser or row shape drifted and a real orphan could slip through a tiny scan.
 reg_count=$(printf '%s\n' "$registered" | grep -c . || true)
 if [ "$reg_count" -lt 100 ]; then
-    echo "check_test_registration: FATAL — only $reg_count TEST_LIST X() entries parsed" >&2
-    echo "  from $PARALLEL (expected >=100). The macro shape or slice drifted;" >&2
+    echo "check_test_registration: FATAL — only $reg_count test catalog entries parsed" >&2
+    echo "  from $CATALOG (expected >=100). The row shape or parser drifted;" >&2
     echo "  refusing to validate against a near-empty registration set." >&2
     exit 2
 fi
@@ -192,8 +297,8 @@ fi
 # ── PRONG B: canonical-registry drift ────────────────────────────────────
 # Prong A above accepts a test dispatched by EITHER runner. That union is too
 # weak in one direction, and the weak direction is the one that matters:
-# test_parallel.c is the CANONICAL registry and `make test-parallel` is the
-# doctrine runner (and the acceptance gate). test.c is the legacy sequential
+# test_group_catalog.def is the CANONICAL registry and `make test-parallel` is
+# the doctrine runner (and the acceptance gate). test.c is the legacy sequential
 # shape, and `build/bin/test_zcl` is explicitly never run. So a test dispatched
 # ONLY by test.c runs in NO gate — it is dead coverage that reports nothing,
 # exactly the failure prong A was written to prevent, just one runner over.
@@ -204,9 +309,9 @@ fi
 # reached it.
 #
 # A serial-dispatched name is canonical-clean iff EITHER
-#   (1) it is itself in TEST_LIST/SPEC_LIST, OR
+#   (1) it is itself in the canonical catalog, OR
 #   (2) the filename-matching entry point of the FILE that defines it is in
-#       TEST_LIST/SPEC_LIST — i.e. it is a sub-test reached through a
+#       the catalog — i.e. it is a sub-test reached through a
 #       registered parent group (test_simnet_wire.c's per-scenario functions
 #       are dispatched by the registered `simnet_wire` group).
 # Index every entry-point definition ONCE (name -> defining file). Grepping
@@ -271,8 +376,8 @@ fi
 
 if [ -n "$drift" ]; then
     echo "FAIL: test(s) dispatched ONLY by the legacy serial runner (test.c) and"
-    echo "  ABSENT from the canonical TEST_LIST/SPEC_LIST registry in"
-    echo "  test_parallel.c. \`make test-parallel\` is the doctrine runner and the"
+    echo "  ABSENT from the canonical registry in $CATALOG."
+    echo "  \`make test-parallel\` is the doctrine runner and the"
     echo "  acceptance gate; build/bin/test_zcl is never run. These therefore"
     echo "  execute in NO gate and prove NOTHING:"
     echo ""
@@ -280,7 +385,7 @@ if [ -n "$drift" ]; then
         [ -n "$n" ] && echo "    test_$n   ($path)"
     done
     echo ""
-    echo "  Fix: add X(<name>) to TEST_LIST in lib/test/src/test_parallel.c — and"
+    echo "  Fix: add ZCL_TEST_GROUP(<name>) to $CATALOG — and"
     echo "  RUN it (make t-fast ONLY=test_<name>) before assuming it passes."
     echo "  Do NOT delete the test, and do NOT silence this by removing the"
     echo "  test.c dispatch."
@@ -289,22 +394,22 @@ fi
 
 if [ -n "$orphans" ]; then
     echo "FAIL: test entry point(s) DEFINED + COMPILED but dispatched by NEITHER"
-    echo "  the TEST_LIST X() macro (test_parallel.c) nor the serial runner"
+    echo "  the canonical catalog nor the serial runner"
     echo "  (test.c). They prove NOTHING — green forever, never executed:"
     echo ""
     printf '%b' "$orphans" | while IFS=$'\t' read -r n path; do
         [ -n "$n" ] && echo "    test_$n   ($path)"
     done
     echo ""
-    echo "  Fix: register the name in the TEST_LIST X(...) list in"
-    echo "  lib/test/src/test_parallel.c (the doctrine \`make test\` runner), or"
+    echo "  Fix: add ZCL_TEST_GROUP(<name>) to $CATALOG (the doctrine"
+    echo "  \`make test\` runner), or"
     echo "  dispatch it from lib/test/src/test.c. Do NOT delete the test to"
     echo "  silence this gate."
     exit 1
 fi
 
 echo "check_test_registration: clean — all $entry_count test entry points are dispatched"
-echo "  ($reg_count registered in TEST_LIST; the rest covered by the serial runner)"
+echo "  ($reg_count registered in the canonical catalog; the rest covered by the serial runner)"
 echo "  canonical-registry drift: 0 of $serial_checked serial-dispatched name(s)"
 echo "  run only under the legacy test.c runner"
 exit 0

@@ -30,7 +30,7 @@
  * That drift is no longer unpoliced. tools/scripts/check_test_registration.sh
  * has two prongs: (A) every filename-matching entry point is dispatched by at
  * least one runner, and (B) every name dispatched by test.c is either in
- * TEST_LIST/SPEC_LIST here or is a sub-test of a file whose own group IS
+ * the canonical catalog or is a sub-test of a file whose own group IS
  * registered. Prong B is HARD and has no baseline. When it first ran
  * (2026-07-25) it found 5 such names; one of them, test_lcc_write_rules, was
  * not just dead but WRONG — it failed the moment it was finally executed. */
@@ -44,6 +44,7 @@
 #include "test/testcache.h"
 #include "event/event.h"
 #include "util/signal_handler.h"
+#include "util/clientversion.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -62,413 +63,22 @@ volatile sig_atomic_t g_shutdown_requested = 0;
 
 /* ── Test registry ─────────────────────────────────────────────────
  *
- * TEST_LIST and SPEC_LIST are X-macros expanded three times below:
- *   DECL  — produces extern int test_<name>(void);
- *   ENTRY — produces {"<name>", test_<name>} table rows
+ * tools/dev/test_group_catalog.def is expanded twice below:
+ *   DECL  — produces extern int test_<name>(void) / spec_<name>(void);
+ *   ENTRY — produces canonical full-ID dispatch rows
  *
  * Keep in sync with the dispatch list in lib/test/src/test.c.
  */
 
-#define TEST_LIST(X) \
-    X(hex_codec) \
-    X(script_tail_poison) \
-    X(byte_order_codec) \
-    X(game) X(crypto) X(crypto_registry) X(encoding) X(test_str_money_codecs) X(chain) \
-    X(equihash_oom) \
-    X(pprev_walk) X(chain_tip) X(checkpoint) X(anchor_finality) X(keys) X(test_key_io_codec) \
-    X(test_png_writer) X(shared_validators_zcl_address) \
-    X(script) X(net) X(netbase_split_host_port) X(transaction) X(mempool) X(accept_to_mempool) X(rpc) X(sqlite) \
-    X(activerecord) X(validation) X(sapling_lazy_init) X(sapling) X(sapling_crypto) \
-    X(groth16_msm_parity) \
-    X(bn254) X(merkle_tree) X(merkle_malleability) X(slp) X(models) X(core) X(overlay) X(overlay_parse_parity) X(znam) X(znam_site) X(zanc) X(zid) X(zid_identity) X(zid_seniority) X(zid_seniority_binding) X(boot_seniority_epoch_roll) X(zdir) X(zdir_write_path) X(identity_command) X(zdesc) X(zendp) X(zendp_records) X(zendp_revocation) X(zendp_window) X(proof_chain) X(htlc) \
-    X(swap_settlement) \
-    X(file_market) X(strong_params) X(json) X(robustness) X(wallet) \
-    X(primitives) X(bloom) X(coins) X(store) X(store_listing) X(store_buyer) X(store_transparent_pay) X(blog) X(api) \
-    X(explorer) X(explorer_rpc_call) X(explorer_index) X(format_helpers_codec) X(mining) X(utxo_commitment) X(mmr) X(mmb) X(sha3_windows) X(sha3_stream) X(sha3_256_x4) X(sha3_512_x4) X(sha256_isa_parity) \
-    X(keystone_utxo_binding) X(self_folded_anchor) X(utxo_root_ladder) X(utxo_root_ladder_tripwire) \
-    X(golden_staleness_canary) \
-    X(flyclient) X(flyclient_chainwork_floor) X(test_zmsg_memo_codec) X(scan_util) X(tor) \
-    X(onion_bootstrap) X(onion_directory) X(cold_start_sync) X(kill9_recovery) \
-    X(shielded_payment_gate) X(simnet_shielded_wallet_e2e) X(store_e2e_gate) X(store_e2e_shielded) X(soak_harness) \
-    X(event) X(download) X(body_coverage) X(body_history) X(consensus) X(consensus_parity) \
-    X(rom_state_checkpoint) \
-    X(policy) X(wallet_view) X(fast_sync) X(block_scan) \
-    X(node_health_service) X(chain_state_repo) X(recovery_policy) \
-    X(chain_evidence_controller) \
-    X(chain_evidence_live_advance) \
-    X(long_op) \
-    X(agent_copy_prove) \
-    X(agent_test) \
-    X(db_txn) X(sync_service) X(node_db_catchup_service) X(catchup_lifecycle_service) \
-    X(utxo_mirror_sync) X(snapshot_sync_service) X(snapshot_serve_loopback) \
-    X(block_swarm_loopback) \
-    X(file_controller) X(file_ops) X(file_service_pow_gate) X(puzzle) X(rom_seed) \
-    X(rom_fetch) X(rom_bundle_admission) \
-    X(sync_reduce) X(sync_reduce_invariants) X(sync_reduce_fuzz) X(sync_reduce_adapter) \
-    X(sync_shadow) \
-    X(zcl_ids) X(rom_manifest) X(rom_journal_resume) X(sync_trust_policy) X(code_capsule) \
-    X(code_impact) X(code_merkle) X(code_emitter) X(fact_writers) \
-    X(file_tree_ops) X(spawn) X(integrity) X(rolling_anchor_service) \
-    X(protocols) \
-    X(chain_restore_planner) X(chain_restore_service) \
-    X(chain_activation_controller) \
-    X(hotswap_loader) X(hotswap_simnet) X(hotswap_module) \
-    X(hotswap_module_v2) X(dev_platform) X(impact_composition) \
-    X(dev_activation) \
-    X(command_registry_catalog) \
-    X(metaverse_agent_broker) X(metaverse_vocabulary) \
-    X(metaverse_broker_authority) X(metaverse_broker_idempotency) \
-    X(status_readiness_truth) \
-    X(native_api_contract) \
-    X(principal_authz) X(auth_login) X(command_authority) \
-    X(command_handler_snapshot) \
-    X(metric_alerts) \
-    X(db_validators) X(peer_scoring) X(peer_bandwidth) \
-    X(single_peer_ban_recovery) \
-    X(peer_identity_hostkey) \
-    X(secrets_hygiene) X(block_index_integrity) \
-    X(block_map_grow_phashblock) \
-    X(block_successor) \
-    X(key_hostile_wif) \
-    X(keys_hostile_derive) \
-    X(block_locator_bounds) X(block_map_grow_collision) \
-    X(connect_node_locked) X(stream_read_no_overflow) \
-    X(fast_sync_serve_chunk_db_clamps) X(connman_node_count_locked) \
-    X(transaction_deserialize_count_amplification) \
-    X(block_deserialize_txcount_amplification) \
-    X(block_index_node_db_topup) X(lcc_write_rules) X(seal_rewind) \
-    X(fees_oom) X(fees_oom_inject) X(multisig_consensus_branches) \
-    X(parse_script_oversize_hex) X(script_num_minimal_encoding) \
-    X(domain_consensus_pow_seal_matrix)    X(domain_consensus_pow_seal_powlimit_floor) \
-    X(domain_consensus_pow_seal_malformed_paths)    X(domain_consensus_pow_seal_deterministic) \
-    X(checkpoints_progress_boundary_crossover)    X(checkpoints_progress_zero_defenses) \
-    X(checkpoints_progress_sigcheck_factor)    X(checkpoints_progress_regression_seal) \
-    X(regtest_generate)    X(generatetoaddress) \
-    X(equihash_null_guards)    X(equihash_solution_size_demux) \
-    X(equihash_blake2b_state_seal)    X(equihash_serialization_matches_independent_rebuild) \
-    X(equihash_legacy_wrapper_regression_seal)    X(coins_amount_codec_roundtrip) \
-    X(coins_amount_codec_boundary_exponents)    X(coins_amount_codec_digit_preservation) \
-    X(coins_amount_codec_regression_seal) \
-    X(hkdf_sha256_rfc5869) X(x25519_safe) \
-    X(noise_nk_handshake) X(noise_xx_handshake) X(session_transport) \
-    X(v2_transport_parity) \
-    X(hmac_sha512_kat_rfc4231_jefe) \
-    X(hmac_sha512_kat_oversized_key)    X(hmac_sha512_empty_message) \
-    X(hmac_sha512_multiblock_stateful_write)    X(hmac_sha512_key_len_128_boundary) \
-    X(pbkdf2_sha512_rfc_vector)    X(pbkdf2_sha512_multiblock) \
-    X(pbkdf2_sha512_high_iterations)    X(pbkdf2_sha512_empty_inputs) \
-    X(pbkdf2_sha512_one_byte_output) \
-    X(sapling_address_hash_fields)    X(sprout_address_hash_fields) \
-    X(sapling_sprout_hash_idempotence_and_distinct)    X(sprout_spending_key_viewing_key) \
-    X(note_encryption_kdf_domain_separation)    X(note_encryption_prf_ock_known_answer) \
-    X(note_encryption_sapling_kdf_arg_order_distinct)    X(note_encryption_sapling_kdf_avalanche) \
-    X(note_encryption_sapling_kdf_known_answer)    X(note_encryption_sprout_kdf_avalanche) \
-    X(note_encryption_sprout_kdf_known_answer)    X(note_encryption_sprout_kdf_nonce_sweep) \
-    X(zip32_default_diversifier_deterministic)    X(zip32_default_diversifier_is_ff1_of_settled_index) \
-    X(zip32_diversifier_advances_index_in_place)    X(zip32_diversifier_distinct_keys_distinct_output) \
-    X(zip32_diversifier_index_boundaries)    X(zip32_diversifier_skips_invalid_indices) \
-    X(zip32_ff1_radix2_deterministic)    X(script_interp_altstack_conditional) \
-    X(script_interp_op2rot_order)    X(script_interp_oppick_bounds) \
-    X(script_interp_oproll_semantics)    X(script_interp_optuck_insert) \
-    X(script_interp_overflow_boundary) \
-    X(wallet_backup) X(wallet_rescan_coverage) X(wallet_restore) \
-    X(wallet_destruction_drill) \
-    X(wallet_canary) X(wallet_persistence_cycle) X(dbquery_secret_denylist) \
-    X(wallet_flush_rollback) X(log_json) X(http_middleware) \
-    X(rpc_timeout) X(wallet_keystore) X(wallet_sqlite_enc) \
-    X(zcl_result) X(netaddr_classify) X(wallet_sqlite_open_errors) X(watch_only) \
-    X(coin_selection) X(disk_monitor) X(binary_staleness) X(binary_ab_fallback) X(network_monitor) X(netsplit_detector) X(directory_influence_policy) X(network_crawler) X(db_maintenance) \
-    X(mempool_limits) X(addrman_integrity) X(anchor_peers) X(zdir_selection) X(ibd_throttle) \
-    X(consensus_reject_events) X(consensus_reject_index) X(blocker_history) \
-    X(chain_rollback) X(alerts) X(ws_events) X(trace) X(phgr13_fix) \
-    X(sprout_phgr13_kat) \
-    X(rescanwitnesses_diverge_guard) \
-    X(gap_fill_frontier_window) \
-    X(groth16_selfverify) \
-    X(groth16_r1cs_oracle) \
-    X(native_spend_proof) \
-    X(snark_kat) \
-    X(bls12_381_adversarial) \
-    X(verify_bench_selftest) \
-    X(crypto_perf_selftest) \
-    X(sapling_prover_rng_determinism) \
-    X(no_hardcoded_home) X(cookie_rotation) X(cli_auth_robust) X(cli_argv_strict) \
-    X(reorg_safety) X(reorg_parity) \
-    X(stage_reorg_unwind_parity) \
-    X(coins_wipe_rebuild_reorg) \
-    X(coins_applied_frontier) \
-    X(utxo_apply_value_balance) X(utxo_apply_unspendable) \
-    X(utxo_apply_coinbase_maturity) \
-    X(connect_block_self_write) X(connect_block_sapling_root) \
-    X(connect_block_checkdatasig_sigops) X(invalidateblock) X(most_work_selector) \
-    X(key_scrub) X(block_index_loader) X(chain_state_validator) \
-    X(utxo_recovery_service) X(utxo_reimport_flag) \
-    X(self_heal_scan_fallback) \
-    X(rpc_error_envelope) X(tx_property) \
-    X(workpool) X(bip113_bip65) X(block_timestamp_adversarial) \
-    X(mempool_orphan) X(fee_estimation) \
-    X(header_sync) X(header_sync_stall) X(header_range_sched) X(hd_keychain) X(mnemonic) \
-    X(bip44) X(compact_blocks) X(dandelion) X(addrman_rebalance) \
-    X(addrman_eclipse) \
-    X(chain_reorg_uncorroborated) \
-    X(addrman_shutdown_race) \
-    X(block_pruning) X(schema_migration) X(db_migration_idempotent) \
-    X(coins_view_atomicity) X(coins_anchor_reconcile_all) \
-    X(coins_best_derivation) \
-    X(boot_coins_anchor_dual_store_recovery) X(make_lint_gates) X(multisig) \
-    X(rpc_auth_hardening) \
-    X(disk_block_io) X(msg_handlers) X(process_headers_adversarial) \
-    X(getheaders_serve_fallback) \
-    X(getheaders_serve_pow_dedup) \
-    X(getheaders_serve_receipt) \
-    X(net_msg_dos) \
-    X(net_framing_dos) \
-    X(net_handshake_adversarial) \
-    X(net_ban_persistence) \
-    X(net_census) \
-    X(block_source_policy) \
-    X(chain_advance_atomicity) \
-    X(block_source_policy_status_json) \
-    X(lag_slo) X(boot_phase) X(boot_status) X(boot_odelta_scan) X(sysinit) X(path_check) X(parse_num) X(boot_progress) X(supervisor) \
-    X(supervisor_domains) X(supervisor_production_tree) X(supervisor_backstop) X(self_heal_supervisor) \
-    X(supervisor_progress_policy) \
-    X(sd_notify) \
-    X(condition_engine) X(utxo_activation_paused) \
-    X(sync_watchdog_conditions) X(sticky_conditions) X(sticky_escalator) X(mem_pressure) \
-    X(validation_pack_conditions) \
-    X(stall_totality_matrix) \
-    X(blocker_meta_detector) \
-    X(peer_snapshot_conditions) \
-    X(snapshot_receive_stalled_condition) \
-    X(snapshot_negotiation_stalled_condition) X(snapshot_failed_reset_condition) \
-    X(snapshot_complete_resume_condition) X(chain_integrity_failed_condition) \
-    X(orphan_utxo_above_tip) \
-    X(tip_fork_stale) \
-    X(tip_stall_oracle_rebuild_condition) \
-    X(body_fetch_missing_have_data_condition) \
-    X(stale_validate_headers_repair_condition) \
-    X(reducer_drive_watchdog) \
-    X(stage_step_budget_exceeded) \
-    X(sync_rate_below_floor) \
-    X(active_chain_extend) \
-    X(rebuild_recent) \
-    X(torn_index_blocks_tip) \
-    X(have_data_unreadable) \
-    X(chain_tip_watchdog_bounded_restart) X(blocker) X(blocker_handoff) X(blocker_reason_truncation) X(blocker_remedy_dispatch) X(cpu_topology) X(hw_profile) X(hw_bench) X(log_level) X(service_state) \
-    X(service_state_driver) \
-    X(storage_coins_utxo) \
-    X(clock) X(time_authority) X(rng) X(os_proc) X(os_sandbox) X(os_sandbox_hotswap_interaction) X(confine) X(seed_tape) X(postmortem) X(simnet) X(simnet_cluster) X(simnet_cluster_reorg) X(simnet_wire) X(simnet_wire_ibd) X(simnet_byzantine) X(simnet_txkit) X(simnet_contract) X(simnet_doublespend) X(simnet_chained_tx) X(simnet_wallet_reorg) X(simnet_mempool_adv) X(simnet_block_sigops) X(simnet_duplicate_input) X(simnet_value_inflation) X(simnet_fee_range) X(simnet_empty_vin_vout) X(simnet_input_value_range) X(simnet_sapling_activation) X(simnet_sapling_shielded_send) X(simnet_wallet_import_backup) X(simnet_zmsg_onchain) X(coinbase_subsidy_adversarial) X(simnet_fuzz) X(simnet_perf) X(simnet_byzantine_cluster) X(util_signal_handler) X(chaos_harness) X(simnet_trace) X(postmortem_to_scenario) X(stage) X(stage_anchor) X(mailbox) X(mailbox_adoption) \
-    X(projection) X(projection_adoption) X(projection_consumer) X(progress_store) X(event_log) \
-    X(mempool_projection) X(peers_projection) X(topology_store) X(znam_projection) \
-    X(wallet_projection) X(small_projections) \
-    X(coins_view_kv) \
-    X(block_index_projection) X(block_index_rebuild) \
-    X(block_index_topup) \
-    X(projection_replay_invariant) \
-    X(block_status_event_restart_proof) \
-    X(header_admit_stage) X(header_probe_poll) \
-    X(validate_headers_stage) X(body_fetch_stage) \
-    X(body_persist_stage) X(created_outputs_index) X(address_index) \
-    X(txindex_projection) \
-    X(consensus_db_migrate) \
-    X(consensus_db_flip) \
-    X(coins_kv) X(coins_ram) X(coin_reader_chain) \
-    X(seal_kv) X(sha3_sidecar_io) X(seal_ratify) X(vcs_core) X(vcs_release) X(vcs_accept) X(zcode_store) X(zcode_publish) X(zcode_recipe) X(zcode_contributor) X(zcode_verify) X(zcode_score) X(zcode_reward) X(zcode_rank) X(zcode_badge) X(zcode_policy) X(zcode_swarm) X(zcode_swarm_net) X(zcode_fetch) X(zcode_site) X(zcode_add) X(vcs_devloop) X(codeindex) X(testcache) X(test_group_selector) X(metaverse_catalog) \
-    X(chain_segment) X(segment_sealer) X(segment_corruption) X(rom_dump) \
-    X(golden_revert_roundtrip) X(golden_dev_cycle) \
-    X(nullifier_kv) X(nullifier_backfill_service) \
-    X(body_crosscheck) \
-    X(shielded_history_import) \
-    X(shielded_history_promote) \
-    X(shielded_import_cured_tip_anchor) \
-    X(shielded_bind_guard) \
-    X(shielded_gap_remedy) \
-    X(utxo_recovery_shielded_backfill) \
-    X(reducer_drive_guard) \
-    X(sapling_nullifier_adversarial) \
-    X(script_validate_stage) X(script_validate_contextual_gate) \
-    X(proof_validate_stage) X(validate_parallel_determinism) \
-    X(pv_lookahead) \
-    X(bn254_accel) X(fr_mont_parity) X(blake2b_batch_parity) \
-    X(fr_accel) X(mont_adx_honest) X(simd_os_support) \
-    X(secp256k1_differential) X(secp256k1_constant_time) \
-    X(ed25519_differential) \
-    X(mint_skip_crypto) X(mint_anchor_preflight) \
-    X(utxo_apply_stage) X(utxo_apply_crash_replay) X(commit_invariants) \
-    X(tip_finalize_stage) X(tip_finalize_post_step) X(reducer_frontier) \
-    X(reducer_frontier_self_anchor) X(offline_datadir_query) \
-    X(read_leaf_no_datadir_write) \
-    X(wallet_phrase_never_logged) \
-    X(wallet_recovery_safety) \
-    X(hstar_integrity) \
-    X(install_verb_warm) \
-    X(always_sync_chaos) \
-    X(always_sync_lifecycle) \
-    X(waitforheight_provable) \
-    X(refold_progress_floor) X(refold_cadence) X(validate_headers_tuning) \
-    X(catchup_cadence) X(stage_dump_trylock) X(refold_premature_clear) \
-    X(agent_posture_trylock) X(subsystem_snapshot) X(status_frontdoor) \
-    X(operator_needed_policy) \
-    X(rom_compile_status) X(rom_watch_loop) \
-    X(refold_from_anchor_fatal) X(refold_from_anchor_artifact_reachable) \
-    X(refold_auto_arm) X(anchor_selfmint) \
-    X(loader_owns_seed_gate) X(boot_snapshot_failure_memory) X(boot_snapshot_drop_bodiless) \
-    X(boot_datadir_lock) X(boot_shutdown_marker) X(boot_stale_locks) \
-    X(boot_blocktree_cleanup) X(boot_legacy_blocks) X(boot_flyclient) \
-    X(boot_memory_guard) X(boot_flight_recorder) X(boot_self_respawn) \
-    X(boot_refold_window_extend) \
-    X(refold_retro_validate) X(refold_body_span_contiguous) \
-    X(contaminated_coin_above_anchor) X(boot_reindex_terminates) \
-    X(reindex_sparse_bodies) \
-    X(chain_linkage_check) X(invariant_sentinel) \
-    X(seed_integrity_gate) X(mirror_divergence_locator) \
-    X(log_throttle) \
-    X(reducer_frontier_reconcile_light) \
-    X(stage_db_fault) \
-    X(reducer_stage_fuzz) \
-    X(mint_proof_harness) \
-    X(reducer_ingest_e2e) X(stage_reducer_unwedge) X(stage_repair) \
-    X(repair_marker) \
-    X(recovery_coordinator) \
-    X(always_sync_selfheal) \
-    X(stage_repair_coin_backfill) \
-    X(stage_anchor_frontier_cap) X(sapling_anchor_frontier_condition) \
-    X(shielded_sync_strength) \
-    X(stage_repair_script_refill) \
-    X(validate_script_hash_split_repair) \
-    X(stage_repair_tipfin_backfill) X(reorg_residue_tipfin_replace) \
-    X(stage_rederive_range) \
-    X(rewind_driver) \
-    X(utxo_apply_upstream_hole) \
-    X(reducer_reconcile_witness) \
-    X(reducer_step_drain_harness) \
-    X(reducer_ondemand_genesis_seed) \
-    X(mint_fold_livelock) \
-    X(mint_anchor_fresh_datadir) \
-    X(no_state_source) \
-    X(fold_inram_crash_proof) \
-    X(stage_crash_sweep) \
-    X(coins_kv_read_cache) \
-    X(parallel_range_fold) \
-    X(psc_real_range) \
-    X(boot_matrix) \
-    X(reducer_drain_spin_contract) \
-    X(domain_consensus_verify) X(domain_consensus_subsidy) \
-    X(domain_consensus_pow) X(domain_consensus_sigops) \
-    X(domain_consensus_script_standard) \
-    X(domain_consensus_tx_structural) X(domain_consensus_sapling_structural) \
-    X(domain_consensus_sighash) \
-    X(domain_consensus_check_block) X(domain_consensus_equihash) \
-    X(domain_consensus_script_interp) X(domain_consensus_coins_math) \
-    X(domain_consensus_checkpoints) X(domain_consensus_locktime) \
-    X(domain_consensus_upgrades) X(domain_consensus_coinbase) \
-    X(domain_consensus_header_accept) \
-    X(domain_wallet_key_derivation) X(domain_wallet_mnemonic) \
-    X(domain_encoding_base58) X(domain_encoding_bech32) \
-    X(block_log_file) X(block_log_legacy) X(replay_verify) \
-    X(utxo_snapshot_inmem) X(snapshot_apply_coins_kv) \
-    X(consensus_state_snapshot_install) \
-    X(checkpoint_rom_authority) \
-    X(consensus_state_install_runtime) \
-    X(checkpoint_header_solution_repair) \
-    X(boot_bundle_fetch) \
-    X(boot_header_seed_import) \
-    X(bundle_publish_serve) \
-    X(consensus_state_snapshot_export) \
-    X(ratify_mint_anchor) \
-    X(sovereign_promotion) \
-    X(consensus_state_producer_receipt) \
-    X(authority_receipt) \
-    X(consensus_state_chain_binding) \
-    X(consensus_state_publication_cas) \
-    X(hodl_history_port) X(node_health_store_port) \
-    X(db_maintenance_port) X(wallet_backup_port) \
-    X(snapshot_store_port) \
-    X(block_index_sidecar_port) \
-    X(wallet_view_port) \
-    X(bg_hash_verify_store_port) \
-    X(bg_validation_store_port) X(bg_validation_reverify) \
-    X(zslp_store_port) \
-    X(sapling_tree) X(sapling_ckpt_persist) X(shutdown_marker) X(shutdown_stagewatch) X(cold_start_driver) X(heartbeat) X(syncdiag_rpc) X(peer_lifecycle) X(telemetry_ontology) X(telemetry_render) X(telemetry_sync) X(telemetry_sync_compat) X(telemetry_watch) X(telemetry_runtime) X(telemetry_network) X(telemetry_storage) X(telemetry_wallet) X(telemetry_agents) X(telemetry_zcode) X(telemetry_metaverse) X(telemetry_rollup) \
-    X(chainstate_legacy_reader) X(importblockindex_roundtrip) X(importblockindex_cli_dispatch) X(e2e_cold_start) X(chainstate_sapling_anchor) X(utxo_import_pipeline) X(ccoins_decoder_kat) X(coins_record_codec) X(blob_read_bounds) X(ldb_snapshot) X(ldb_reader) \
-    X(utxo_snapshot_loader) \
-    X(snapshot_shielded) \
-    X(load_verify_boot) \
-    X(chain_stall_repro) \
-    X(connect_tip_hot_loop_exit) X(connman_addnode_fallback) \
-    X(peer_eviction) X(net_bootstrap) \
-    X(failed_child_cap) X(header_probe) X(header_probe_p2p_fallback) \
-    X(power_node_contract_spec) X(process_block_revalidate) \
-    X(rpc_safety) X(rpc_service_restart) X(app_context) X(service_kernel) X(service_manifest) \
-    X(service_binding) \
-    X(app_checkpoint_manifest) X(thread_registry) X(thread_qos) X(self_backtrace) X(sync_state_fsm) \
-    X(unclean_shutdown_advance) X(utxo_audit) X(utxo_parity_service) \
-    X(soak_attestation) \
-    X(zclassicd_oracle) X(oracle_policy) \
-    X(script_interp_edge) X(script_interp_edges) X(sighash_edge) X(sighash_malleability) X(sigops_edge) \
-    X(check_tx_edge) X(check_block_edge) X(amount_subsidy_edge) X(clientversion_format) \
-    X(locktime_edge) X(tx_expiry_locktime_adversarial) \
-    X(pow_diffadj_precedence) X(bip34_coinbase_height_parity) \
-    X(difficulty_adjustment_adversarial) \
-    X(reducer_block_ingest_gate) \
-    X(onion_bootstrap_slice) X(shielded_receive_slice) X(shielded_receive_persist) \
-    X(reducer_forward_progress_gate) X(parity_slice) \
-    X(parity_lockin_anchor_membership) X(parity_lockin_contextual_header) \
-    X(coins_kv_reset_for_reseed) X(coins_kv_sovereign_gate) X(reindex_epilogue) \
-    X(ckpt_recheck) \
-    X(sovereignty_guard) \
-    X(snapshot_boot_seed) \
-    X(replay_canary_verdict) \
-    X(canary_sentinel_watch) X(stopwatch_skip_watch) X(tip_agreement_watch) \
-    X(seed_torn_import_gate) \
-    X(shielded_spend_slice) X(atomic_commit_ordering) \
-    X(coldimport_restart_fragility) \
-    X(wallet_funds_safety) \
-    X(bundle_staleness) \
-    X(block_parse_cache) \
-    X(block_prefetch) \
-    X(storage_reclaim) \
-    X(chain_frontier_snapshot_service) \
-    X(health_rollup) X(debug_bundle) X(operator_ux) X(cli_render) \
-    X(command_input_bounds) \
-    X(op_return_index) X(rom_seed_policy) X(rom_seed_ledger) \
-    X(catalog_completeness) X(zslp_ledger) X(catalog_lag_exceeded) X(catalog_coverage) \
-    X(parity_slo) X(state_auditor) \
-    X(recovery_no_worse) X(vault_read) X(vault_dispatch) X(agent_session) \
-    X(agent_spend_policy) X(vault_session) \
-    X(epoch) X(zcode_release) X(metaverse_grant) \
-    /* The make_lint_gates family. The bare make_lint_gates row above is the
-     * exclusive lane (the two checks that plant into the live worktree);
-     * these are the pool-eligible ones. --only is a substring match, so
-     * `--only=make_lint_gates` still selects the whole family. The partition
-     * that assigns every check to exactly one of these lives in
-     * test_make_lint_gates.c and is itself proven by the partition group. */ \
-    X(make_lint_gates_shard_01) X(make_lint_gates_shard_02) \
-    X(make_lint_gates_shard_03) X(make_lint_gates_shard_04) \
-    X(make_lint_gates_shard_05) X(make_lint_gates_shard_06) \
-    X(make_lint_gates_shard_07) X(make_lint_gates_shard_08) \
-    X(make_lint_gates_realroot) X(make_lint_gates_partition) \
-    X(make_lint_gates_heavy_01) X(make_lint_gates_heavy_02)
-
-#define SPEC_LIST(X) \
-    X(wallet_dashboard) X(wallet_send) X(wallet_receive) \
-    X(wallet_shield) X(wallet_node) X(wallet_history) \
-    X(wallet_coins) X(wallet_pulse) X(wallet_tx_detail) \
-    X(wallet_navigation) X(wallet_errors) X(wallet_privacy) \
-    X(wallet_sovereignty) X(wallet_celebration) \
-    X(wallet_empowerment) X(wallet_flow) X(wallet_accessibility) \
-    X(data_hooks) X(event_observers) X(state_machine) \
-    X(ux_sierra) X(html_quality) X(user_journeys) X(e2e_wallet) \
-    X(render_audit) X(smoke) X(100_stories) X(consensus_compat)
+/* The declarations, dispatch rows, native catalog, shell resolver, and lint
+ * gates all consume this one list. Never add a parallel registry. */
 
 /* Forward declarations */
-#define DECL_TEST(name) extern int test_##name(void);
-TEST_LIST(DECL_TEST)
-#undef DECL_TEST
-
-#define DECL_SPEC(name) extern int spec_##name(void);
-SPEC_LIST(DECL_SPEC)
-#undef DECL_SPEC
+#define ZCL_TEST_GROUP(name) extern int test_##name(void);
+#define ZCL_SPEC_GROUP(name) extern int spec_##name(void);
+#include "test_group_catalog.def"
+#undef ZCL_SPEC_GROUP
+#undef ZCL_TEST_GROUP
 
 struct test_group {
     const char *name;
@@ -476,12 +86,11 @@ struct test_group {
 };
 
 static const struct test_group g_groups[] = {
-#define ROW_TEST(name) {"test_" #name, test_##name},
-    TEST_LIST(ROW_TEST)
-#undef ROW_TEST
-#define ROW_SPEC(name) {"spec_" #name, spec_##name},
-    SPEC_LIST(ROW_SPEC)
-#undef ROW_SPEC
+#define ZCL_TEST_GROUP(name) {"test_" #name, test_##name},
+#define ZCL_SPEC_GROUP(name) {"spec_" #name, spec_##name},
+#include "test_group_catalog.def"
+#undef ZCL_SPEC_GROUP
+#undef ZCL_TEST_GROUP
 };
 
 static const size_t g_num_groups =
@@ -881,6 +490,10 @@ int main(int argc, char **argv)
         if (strcmp(argv[i], "--metaverse-agent-confined") == 0)
             return agent_confined_mode_main(argc, argv);
     }
+    if (argc == 2 && strcmp(argv[1], "--source-id") == 0) {
+        printf("%s\n", zcl_build_source_id_sha256());
+        return 0;
+    }
 
     int jobs = get_nproc();
     int timeout_secs = 300; /* per-group; generous so slow groups like
@@ -938,7 +551,8 @@ int main(int argc, char **argv)
         } else {
             fprintf(stderr,
                     "Usage: %s [--jobs=N] [--timeout=SECS] [--verbose] "
-                    "[--list] [--only=SUBSTR|--exact=FULL_ID[,FULL...]] "
+                    "[--list|--source-id] "
+                    "[--only=SUBSTR|--exact=FULL_ID[,FULL...]] "
                     "[--cache|--no-cache] "
                     "[--cold-audit]\n",
                     argv[0]);

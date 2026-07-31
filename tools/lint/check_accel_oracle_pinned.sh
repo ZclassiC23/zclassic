@@ -41,7 +41,7 @@
 #      accelerator therefore has to be a deliberate registry edit.
 #   3. ORACLE PRESENT AND RUNNING. The named oracle file must exist, must
 #      carry `ACCEL-ORACLE: <impl path>`, and its group must be registered in
-#      the TEST_LIST X() macro in lib/test/src/test_parallel.c. A compiled-but-
+#      the canonical test group catalog. A compiled-but-
 #      never-dispatched oracle proves nothing (see check_test_registration.sh).
 #   4. ORACLE STILL WIRED TO THE CODE. The oracle must reference at least one
 #      function the implementation exports, so renaming the accelerated entry
@@ -70,7 +70,7 @@ cd "$ROOT"
 
 GATE="check-accel-oracle-pinned"
 REGISTRY="tools/lint/accel_oracle_registry.txt"
-TEST_LIST="lib/test/src/test_parallel.c"
+TEST_CATALOG="tools/dev/test_group_catalog.def"
 
 # Floors: the tree has had these since the seal landed. A collapse below them
 # means the scan broke, not that the tree got simpler.
@@ -83,7 +83,7 @@ note() { echo "  $*"; }
 bad()  { echo "FAIL: $*" >&2; fail=1; }
 
 [ -f "$REGISTRY" ] || { echo "$GATE: FATAL — missing $REGISTRY" >&2; exit 2; }
-[ -f "$TEST_LIST" ] || { echo "$GATE: FATAL — missing $TEST_LIST" >&2; exit 2; }
+[ -f "$TEST_CATALOG" ] || { echo "$GATE: FATAL — missing $TEST_CATALOG" >&2; exit 2; }
 
 # ── header -> implementation index ────────────────────────────────────────
 # lib/<x>/include/<inc>/<stem>.h  maps to  lib/<x>/src/<stem>*.c, which is how
@@ -224,9 +224,9 @@ for f in "${!REG_ORACLES[@]}"; do
             bad "$oracle does not carry the marker line 'ACCEL-ORACLE: $f'.
       The marker is what makes the pin visible from the test file itself."
         fi
-        if ! gate_grep -qE "X\\($group\\)" "$TEST_LIST"; then
+        if ! gate_grep -qE "ZCL_TEST_GROUP\\($group\\)" "$TEST_CATALOG"; then
             bad "test group '$group' (oracle $oracle) is not registered as
-      X($group) in $TEST_LIST, so it never runs. A compiled-but-undispatched
+      ZCL_TEST_GROUP($group) in $TEST_CATALOG, so it never runs. A compiled-but-undispatched
       oracle proves nothing."
         fi
 

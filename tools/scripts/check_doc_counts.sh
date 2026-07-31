@@ -60,7 +60,7 @@ add_fail() { fail_lines+=("$1"); fail=1; }
 # Measure the real counts from the code. These mirror the commands in the task
 # definition; keep them in sync with how the counts are defined.
 # --------------------------------------------------------------------------
-test_groups_file=lib/test/src/test_parallel.c
+test_groups_file=tools/dev/test_group_catalog.def
 ports_glob='ports/include/ports/*.h'
 adapters_glob='adapters/outbound/persistence/src/*.c'
 conditions_glob='app/conditions/src/*.c'
@@ -83,8 +83,10 @@ if ! dumper_def_files dumper_defs; then
     exit 1
 fi
 
-# Count parallel test groups: one per `X(<name>)` registration macro.
-code_test_groups=$(grep -oE 'X\([a-z_0-9]+\)' "$test_groups_file" | wc -l)
+# Count parallel test groups: one row per canonical test/spec registration.
+code_test_groups=$(grep -Ec \
+    '^[[:space:]]*ZCL_(TEST|SPEC)_GROUP\([a-z_0-9]+\)[[:space:]]*$' \
+    "$test_groups_file")
 code_ports=$(ls $ports_glob 2>/dev/null | wc -l)
 code_adapters=$(ls $adapters_glob 2>/dev/null | wc -l)
 code_conditions=$(grep -RhoE 'condition_register[[:space:]]*\(' \

@@ -364,7 +364,8 @@ DEVLOOP_ALL_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(wildcard tools/dev/*.c))
 DEV_ONLY_SRCS = tools/dev/devloop_cli.c tools/dev/devloop_cycle.c \
 	tools/dev/devloop_watch.c tools/dev/devloop_process.c \
-	tools/dev/devloop_baseline.c tools/dev/dev_failure_store.c
+	tools/dev/devloop_baseline.c tools/dev/dev_failure_store.c \
+	tools/dev/dev_source_identity.c
 DEVLOOP_SRCS = $(filter-out $(DEV_ONLY_SRCS),$(DEVLOOP_ALL_SRCS))
 
 # The stable public Core -> App ABI is lib/framework/include/zclassic23/app.h,
@@ -6053,8 +6054,8 @@ check-supervisor-registration:
 	@./tools/scripts/check_supervisor_registration.sh
 
 # Test-registration drift guard. A test entry point (test_<name>.c defining
-# int test_<name>(void)) that is in NEITHER the TEST_LIST X() macro
-# (test_parallel.c) NOR dispatched by the serial runner (test.c) is COMPILED
+# int test_<name>(void)) that is in NEITHER the canonical test group catalog
+# NOR dispatched by the serial runner (test.c) is COMPILED
 # but never executed — green forever, proving nothing. Caught the lane-3
 # refold orphans (2026-06-22). Fails CI on any such orphan.
 check-test-registration:

@@ -205,11 +205,6 @@ bool zcl_devloop_watch_lock_path(const char *repo_root,
 }
 
 #ifdef ZCL_DEV_BUILD
-struct dev_source_record {
-    char source_id[65];
-    char mutation_id[65];
-};
-
 static void output_capsule(const struct zcl_devloop_process_result *result,
                            char out[1024])
 {
@@ -303,94 +298,6 @@ static bool lower_hex64(const char *input, char out[65])
     }
     out[64] = 0;
     return true;
-}
-
-static bool parse_source_record(const struct zcl_devloop_process_result *r,
-                                struct dev_source_record *out,
-                                char *why, size_t why_len)
-{
-    memset(out, 0, sizeof(*out));
-    if (!r || !result_ok(r) || r->output_truncated) {
-        (void)snprintf(why, why_len, "source_identity_command_failed");
-        return false;
-    }
-    size_t len = r->output_len;
-    while (len > 0 && (r->output[len - 1] == '\n' ||
-                       r->output[len - 1] == '\r'))
-        len--;
-    if (len == 0 || len >= 160) {
-        (void)snprintf(why, why_len, "source_identity_output_invalid");
-        return false;
-    }
-    char body[160], source[65], complete[8], mutation[65], extra[2];
-    memcpy(body, r->output, len);
-    body[len] = 0;
-    int fields = sscanf(body, "%64s %7s %64s %1s",
-                        source, complete, mutation, extra);
-    if (fields != 3 || strcmp(complete, "1") != 0 ||
-        !lower_hex64(source, out->source_id) ||
-        !lower_hex64(mutation, out->mutation_id)) {
-        (void)snprintf(why, why_len, "source_identity_output_invalid");
-        return false;
-    }
-    return true;
-}
-
-/* Capture/verify the complete dirty source epoch through the shared bounded
- * gate used by the shell watcher and the final deploy boundary.  The helper
- * hashes the canonical current source inventory independently of Git history
- * identifiers and refuses hidden index state. */
-static bool source_identity_capture(const char *root,
-                                    struct dev_source_record *out,
-                                    char *why, size_t why_len)
-{
-    char tool[PATH_MAX];
-    int n = snprintf(tool, sizeof(tool), "%s/tools/dev/source-identity.sh",
-                     root);
-    if (n <= 0 || (size_t)n >= sizeof(tool)) {
-        (void)snprintf(why, why_len, "source_identity_tool_path_invalid");
-        return false;
-    }
-    struct zcl_devloop_process_result r = {0};
-    const char *argv[] = { tool, "capture-record", NULL };
-    if (!zcl_devloop_process_run(root, argv, 30000, &r)) {
-        (void)snprintf(why, why_len, "source_identity_capture_failed");
-        return false;
-    }
-    if (!parse_source_record(&r, out, why, why_len)) {
-        if (r.output_len > 0 && why && why_len > 0) {
-            size_t copy = r.output_len < why_len - 1 ? r.output_len
-                                                      : why_len - 1;
-            memcpy(why, r.output, copy);
-            why[copy] = 0;
-        }
-        return false;
-    }
-    return true;
-}
-
-static bool source_identity_verify(const char *root,
-                                   const struct dev_source_record *expected,
-                                   char *why, size_t why_len)
-{
-    char tool[PATH_MAX];
-    int n = snprintf(tool, sizeof(tool), "%s/tools/dev/source-identity.sh",
-                     root);
-    if (n <= 0 || (size_t)n >= sizeof(tool)) {
-        (void)snprintf(why, why_len, "source_identity_tool_path_invalid");
-        return false;
-    }
-    struct zcl_devloop_process_result r = {0};
-    const char *argv[] = { tool, "verify-record", expected->source_id, "1",
-                           expected->mutation_id, NULL };
-    if (!zcl_devloop_process_run(root, argv, 30000, &r) || !result_ok(&r)) {
-        (void)snprintf(why, why_len, "source_epoch_superseded");
-        return false;
-    }
-    struct dev_source_record actual;
-    return parse_source_record(&r, &actual, why, why_len) &&
-           strcmp(actual.source_id, expected->source_id) == 0 &&
-           strcmp(actual.mutation_id, expected->mutation_id) == 0;
 }
 
 static void sha3_hex(const unsigned char digest[32], char out[65])
@@ -1162,7 +1069,7 @@ int zcl_devloop_run_cycle_mode(const char *repo_root,
                             "repository root is not a real Git checkout",
                             NULL, NULL);
     char source_why[512] = {0};
-    if (!source_identity_capture(root, &expected_source,
+    if (!zcl_dev_source_identity_capture(root, &expected_source,
                                  source_why, sizeof(source_why)))
         return finish_cycle(&plan, files, file_count, "rejected",
                             "source_identity", started_us,
@@ -1315,7 +1222,7 @@ int zcl_devloop_run_cycle_mode(const char *repo_root,
         if (!zcl_devloop_publish_mode_applies(publish_mode)) {
             plan.action_name = "verify";
             char source_why[256] = {0};
-            if (!source_identity_verify(root, &expected_source,
+            if (!zcl_dev_source_identity_verify(root, &expected_source,
                                         source_why, sizeof(source_why)))
                 return finish_cycle(
                     &plan, files, file_count, "superseded",
@@ -1332,7 +1239,7 @@ int zcl_devloop_run_cycle_mode(const char *repo_root,
         }
 
         char source_why[256] = {0};
-        if (!source_identity_verify(root, &expected_source,
+        if (!zcl_dev_source_identity_verify(root, &expected_source,
                                     source_why, sizeof(source_why))) {
             return finish_cycle(&plan, files, file_count, "superseded",
                                 "source_epoch_cas", started_us,
@@ -1382,7 +1289,7 @@ int zcl_devloop_run_cycle_mode(const char *repo_root,
                                  execution_why, sizeof(execution_why))) {
             g_cycle_failure.execution_ready = true;
             char source_why[256] = {0};
-            if (!source_identity_verify(root, &expected_source,
+            if (!zcl_dev_source_identity_verify(root, &expected_source,
                                         source_why, sizeof(source_why)))
                 return finish_cycle(
                     &plan, files, file_count, "superseded",
@@ -1398,7 +1305,7 @@ int zcl_devloop_run_cycle_mode(const char *repo_root,
                     expected_source.mutation_id,
                     g_cycle_failure.execution_id, "verify.compile", &prior,
                     failure_why, sizeof(failure_why))) {
-                if (!source_identity_verify(root, &expected_source,
+                if (!zcl_dev_source_identity_verify(root, &expected_source,
                                             source_why,
                                             sizeof(source_why)))
                     return finish_cycle(
@@ -1420,7 +1327,7 @@ int zcl_devloop_run_cycle_mode(const char *repo_root,
                         expected_source.mutation_id,
                         g_cycle_failure.execution_id, "verify.compile",
                         &repeated, failure_why, sizeof(failure_why))) {
-                    if (!source_identity_verify(root, &expected_source,
+                    if (!zcl_dev_source_identity_verify(root, &expected_source,
                                                 source_why,
                                                 sizeof(source_why)))
                         return finish_cycle(
@@ -1489,7 +1396,7 @@ int zcl_devloop_run_cycle_mode(const char *repo_root,
             !result_ok(&result)) {
             output_capsule(&result, capsule);
             char post_source_why[256] = {0};
-            if (!source_identity_verify(root, &expected_source,
+            if (!zcl_dev_source_identity_verify(root, &expected_source,
                                         post_source_why,
                                         sizeof(post_source_why)))
                 return finish_cycle(
@@ -1530,7 +1437,7 @@ int zcl_devloop_run_cycle_mode(const char *repo_root,
                                 root, NULL);
         }
         char source_why[256] = {0};
-        if (!source_identity_verify(root, &expected_source,
+        if (!zcl_dev_source_identity_verify(root, &expected_source,
                                     source_why, sizeof(source_why)))
             return finish_cycle(
                 &plan, files, file_count, "superseded", "source_epoch_cas",
@@ -1572,7 +1479,7 @@ transactional_reload:
          * alter an activation verdict. */
         if (dev_activation_request_from_cycle(root, "", &creq)) {
             char source_why[256] = {0};
-            if (!source_identity_verify(root, &expected_source,
+            if (!zcl_dev_source_identity_verify(root, &expected_source,
                                         source_why, sizeof(source_why))) {
                 return finish_cycle(&plan, files, file_count, "superseded",
                                     "source_epoch_cas", started_us,
@@ -1619,7 +1526,7 @@ transactional_reload:
                             "could not bind source identity to activation",
                             root, NULL);
     char source_verify_why[256] = {0};
-    if (!source_identity_verify(root, &expected_source,
+    if (!zcl_dev_source_identity_verify(root, &expected_source,
                                 source_verify_why,
                                 sizeof(source_verify_why))) {
         return finish_cycle(&plan, files, file_count, "superseded",

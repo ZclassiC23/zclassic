@@ -130,10 +130,10 @@ names as "a second write path," "authoritative chain state in RAM," or a
 - **Gate:** a **FRESH** datadir (no `~/.zclassic`) folds genesis→tip,
   reproduces the SHA3 root + 1,354,769 UTXOs; copy-prove `G-SOV`; *then*
   delete. `test_self_folded_anchor` **exists** —
-  `lib/test/src/test_self_folded_anchor.c`, registered in `TEST_LIST` as
-  `X(self_folded_anchor)`, so it really runs. Extend it rather than writing it.
+  `lib/test/src/test_self_folded_anchor.c`, registered in the canonical catalog
+  as `ZCL_TEST_GROUP(self_folded_anchor)`, so it really runs. Extend it rather than writing it.
   <!-- claim: file-present lib/test/src/test_self_folded_anchor.c # written; do not re-create -->
-  <!-- claim: symbol-present self_folded_anchor lib/test/src/test_parallel.c # registered, so it actually runs -->
+  <!-- claim: symbol-present self_folded_anchor tools/dev/test_group_catalog.def # registered, so it actually runs -->
 - **False-green traps:**
   - *Borrowed-seed no-op:* `-load-verify-boot` no-ops on a stamped
     `coins_kv` (`coins_kv_is_proven_authority()==true`). Defeat: `G-SOV`

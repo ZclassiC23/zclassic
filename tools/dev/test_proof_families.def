@@ -1,0 +1,7 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Declared semantic proof families that cannot be represented by the legacy
+ * substring rule. Include with ZCL_TEST_PROOF_FAMILY(plan_id, full_id_glob).
+ */
+
+ZCL_TEST_PROOF_FAMILY("oracle_policy", "test_*oracle")

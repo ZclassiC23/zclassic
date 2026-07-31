@@ -43,8 +43,8 @@
 ## Disposition
 
 1. **Lock-in tests first (safe, no consensus change)** — pin CURRENT behavior for L1, L2, L3, L4, L5 so each gap is visible and a future fix flips a test deliberately. L6, L7, L8, T-cases already have pins. These freeze the accept/reject set; they are not tightenings.
-2. ~~**L7 (anchor membership) is the highest-priority real loosening**~~ — **DONE; L7 is closed.** Anchor membership is implemented in `coins_view_cache_check_shielded_requirements()` and enforced on the reducer fold path (`app/jobs/src/utxo_apply_anchors.c`), pinned by `X(parity_lockin_anchor_membership)`. As predicted it needed no replay permission, being parity-restoring. **The highest-priority remaining item in this table is now L1/L2/L3 — all replay-gated, so item 3 is the live one.** Do not dispatch an executor against L7.
+2. ~~**L7 (anchor membership) is the highest-priority real loosening**~~ — **DONE; L7 is closed.** Anchor membership is implemented in `coins_view_cache_check_shielded_requirements()` and enforced on the reducer fold path (`app/jobs/src/utxo_apply_anchors.c`), pinned by `ZCL_TEST_GROUP(parity_lockin_anchor_membership)`. As predicted it needed no replay permission, being parity-restoring. **The highest-priority remaining item in this table is now L1/L2/L3 — all replay-gated, so item 3 is the live one.** Do not dispatch an executor against L7.
    <!-- claim: symbol-present coins_view_cache_check_shielded_requirements app/jobs/src/utxo_apply_anchors.c # L7 stays closed -->
-   <!-- claim: symbol-present parity_lockin_anchor_membership lib/test/src/test_parallel.c # and stays pinned by a running test -->
+   <!-- claim: symbol-present parity_lockin_anchor_membership tools/dev/test_group_catalog.def # and stays pinned by a running test -->
 3. **L1/L2/L3/L6 tightenings are replay-gated** — each needs a full real-history replay against the live chain BEFORE the reject is enabled (the h=478544 doctrine). Build the replay substrate first.
 4. **L4 keep** (reproduces live zclassicd behavior). **L5 mempool-policy** (add anytime, no fork risk).
