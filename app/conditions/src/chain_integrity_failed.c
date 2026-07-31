@@ -369,7 +369,11 @@ static void chain_integrity_restore_watchdog_tick(struct liveness_contract *c)
     }
 
     int64_t started = atomic_load(&g_restore_started_us);
-    int64_t age_s = started > 0
+    /* Zero is the unset sentinel.  Test clocks may legitimately backdate a
+     * synthetic start below zero when the host uptime is shorter than the
+     * deadline; treating every negative value as unset made this watchdog's
+     * fresh-boot proof silently exercise the no-op path. */
+    int64_t age_s = started != 0
         ? (platform_time_monotonic_us() - started) / 1000000
         : 0;
     supervisor_progress(id, age_s);

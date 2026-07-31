@@ -5,6 +5,7 @@
 #include "core/arith_uint256.h"
 #include "framework/condition.h"
 #include "json/json.h"
+#include "platform/time_compat.h"
 #include "services/chain_restore_integrity.h"
 #include "util/blocker.h"
 #include "util/supervisor.h"
@@ -347,7 +348,11 @@ int test_chain_integrity_failed_condition(void)
          * (previously a hung worker was invisible: only g_restore_running
          * stayed latched, no blocker, no supervisor signal). */
         int64_t deadline_s = chain_integrity_failed_test_deadline_secs();
+        /* Force the synthetic start below zero, exactly as on a fresh CI VM
+         * whose monotonic uptime is shorter than the 30-minute deadline.
+         * Zero alone is the production unset sentinel. */
         chain_integrity_failed_test_set_started_us_ago(
+            platform_time_monotonic_us() +
             (deadline_s + 60) * 1000000LL);
         chain_integrity_failed_test_watchdog_tick();
         ok = ok && blocker_exists("chain_integrity_restore_stuck");
