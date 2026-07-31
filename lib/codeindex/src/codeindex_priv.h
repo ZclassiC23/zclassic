@@ -32,8 +32,11 @@
  * written to meta as "ci_schema_version" during rebuild and gated in the
  * staleness check: a store whose key is absent or mismatched is stale and gets
  * a full deterministic rebuild on open. "cg1" = the call-graph generation that
- * added refs.enclosing. */
-#define CI_SCHEMA_VERSION "cg1"
+ * added refs.enclosing. "rev1" = the reverse-include generation: it adds the
+ * includes(dep_path) index AND admits `.def` registries into the scanned file
+ * set, so a store built by the previous generation both lacks the index and
+ * cannot report a .def's content hash. */
+#define CI_SCHEMA_VERSION "rev1"
 
 /* ── the public handle (defined here so every TU can reach the store) ── */
 typedef struct sqlite3 sqlite3;
@@ -126,6 +129,13 @@ int  ci_store_symbols_in_file(struct ci_store *s, const char *path,
                               struct ci_symbol *out, int cap);
 int  ci_store_includes_of_file(struct ci_store *s, const char *path,
                                char (*out)[256], int cap);
+/* Reverse of the above: indexed files that list `dep_path` as a compiler
+ * prerequisite, sorted by path. Returns the count (>=0), -1 on error. */
+int  ci_store_dependents_of_file(struct ci_store *s, const char *dep_path,
+                                 char (*out)[256], int cap);
+/* Total include edges in the store. ZERO means the depfile graph was ABSENT
+ * when the index was built — an availability fact, not an empty answer. */
+int64_t ci_store_include_edge_count(struct ci_store *s);
 
 /* Canonical per-symbol row hash used for verify-on-read. Deterministic over
  * all card fields. */
@@ -138,6 +148,9 @@ void ci_symbol_row_hash(const struct ci_symbol *sym, uint8_t out[32]);
 typedef bool (*ci_enum_cb)(const char *relpath, const struct stat *st,
                            void *user);
 bool ci_enumerate_sources(const char *root, ci_enum_cb cb, void *user);
+/* True iff `relpath` names an X-macro registry (`*.def`): an include-graph node
+ * that is hashed and filed but never handed to the C scanner. */
+bool ci_path_is_registry(const char *relpath);
 /* Fast freshness key for an exact source root already sealed in a generation.
  * It binds path + inode + size + mtime + ctime and never reads file bytes. */
 bool ci_source_stat_root_sha3(const char *root, uint8_t out[32]);

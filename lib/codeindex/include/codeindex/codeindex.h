@@ -143,9 +143,29 @@ int codeindex_symbols_in_file(struct codeindex *ci, const char *path,
 
 /* In-tree include dependencies of `path`, ordered by dep path. Each out[i] is a
  * NUL-terminated repo-relative path (up to 255 bytes). Fills up to `cap` rows,
- * returns count (>=0), -1 on error. */
+ * returns count (>=0), -1 on error.
+ *
+ * AVAILABILITY WARNING — a zero here is not always "this file includes
+ * nothing". The edges are compiler depfile rows, and a depfile is keyed on the
+ * TRANSLATION UNIT it compiled: every edge is (that .c file -> a prerequisite).
+ * A header is never the compiled unit, so this query returns zero rows for
+ * EVERY header in the tree, unconditionally, forever — a structural blind spot
+ * that no truncation flag can ever report. Ask
+ * codeindex_path_is_translation_unit() and codeindex_include_edge_count()
+ * BEFORE presenting a zero as a complete answer. */
 int codeindex_includes_of_file(struct codeindex *ci, const char *path,
                                char (*out)[256], int cap);
+
+/* Total include edges the index holds. ZERO means the depfile graph was absent
+ * when the index was built (a fresh clone, or after `make clean`) — every
+ * include question is then UNANSWERED, not answered with zero. Returns the
+ * count (>=0), -1 on error. */
+int64_t codeindex_include_edge_count(struct codeindex *ci);
+
+/* True iff `path` names a compiled translation unit (a `.c`), the only file
+ * class for which codeindex_includes_of_file can return a non-empty forward
+ * answer. Pure: no I/O, no index. */
+bool codeindex_path_is_translation_unit(const char *path);
 
 /* Render a bounded, human-readable card for `name` into `buf` (NUL-terminated,
  * never exceeds `cap`). Returns the number of bytes written (excluding NUL),
@@ -261,5 +281,46 @@ int codeindex_forward_closure(struct codeindex *ci, const char *root_symbol,
  * outputs zeroed. */
 bool codeindex_depfile_graph(const char *root, size_t *out_count,
                              int64_t *out_newest_mtime_ns);
+
+/* ── Reverse INCLUDE closure — the dimension the call graph cannot see ───
+ *
+ * codeindex_impact_closure walks CALL edges. A macro-only header, a typedef,
+ * an enum, a constant, and an X-macro registry (`*.def`) have no call edges at
+ * all, so their blast radius in that walk is empty even though every
+ * translation unit that reads them recompiles and can change behavior. This
+ * query answers the other question: which in-tree files did the compiler read
+ * `path` while building?
+ *
+ * The edges come from the compiler's own depfiles, not from re-parsing
+ * `#include` lines — the build already resolved every search path and macro
+ * guard, and a depfile's prerequisite list is TRANSITIVELY FLATTENED (it names
+ * every byte the translation unit read, however many headers deep). So a single
+ * equality probe over that edge set is already the transitive reverse closure
+ * over translation units; there is no second walk to do and no depth to bound.
+ *
+ * Availability is a first-class outcome, NOT an empty result. Depfiles exist
+ * only after a build, so a fresh clone has no include graph at all — reporting
+ * that as "nothing depends on this header" is the exact failure mode this
+ * query exists to remove. *dim distinguishes the three:
+ *   COMPLETE    — the graph was present and the full dependent set fit `cap`
+ *   TRUNCATED   — the graph was present, `cap` could not hold the answer
+ *   UNAVAILABLE — the index holds no include edges; the question is unanswered
+ * Returns the dependent count (>=0), -1 on hard error. `out` is sorted and
+ * unique. */
+enum codeindex_include_dim {
+    CODEINDEX_INCLUDE_DIM_COMPLETE = 0,
+    CODEINDEX_INCLUDE_DIM_TRUNCATED,
+    CODEINDEX_INCLUDE_DIM_UNAVAILABLE
+};
+
+int codeindex_reverse_includes(struct codeindex *ci, const char *path,
+                               char (*out)[256], int cap,
+                               enum codeindex_include_dim *dim);
+
+/* Stable label for a reverse-include availability verdict. Deliberately shares
+ * its wording with lib/test/include/test/testcache.h's reason labels
+ * ("closure-truncated", "no-include-graph") so a plan and the result cache
+ * never describe the same incompleteness with two different words. */
+const char *codeindex_include_dim_label(enum codeindex_include_dim dim);
 
 #endif /* ZCL_CODEINDEX_H */

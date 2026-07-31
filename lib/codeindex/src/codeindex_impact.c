@@ -340,6 +340,72 @@ done:
     return rc;
 }
 
+/* ── reverse INCLUDE closure ────────────────────────────────────────────
+ *
+ * The dimension the call-graph walk above structurally cannot see. See
+ * codeindex.h for the contract; the short version is that a depfile's
+ * prerequisite list is already transitively flattened, so the reverse edge set
+ * of one path IS its transitive dependent set over translation units — one
+ * indexed equality probe, no traversal, no depth bound.
+ *
+ * The only thing that needs care is telling "nothing depends on this" apart
+ * from "there is no include graph to ask". Those are the same empty array and
+ * opposite facts, and conflating them is defect D4: a fresh clone would
+ * answer every reverse-include question with a confident, complete-looking
+ * zero. */
+const char *codeindex_include_dim_label(enum codeindex_include_dim dim)
+{
+    switch (dim) {
+    case CODEINDEX_INCLUDE_DIM_COMPLETE:    return "complete";
+    case CODEINDEX_INCLUDE_DIM_TRUNCATED:   return "closure-truncated";
+    case CODEINDEX_INCLUDE_DIM_UNAVAILABLE: return "no-include-graph";
+    }
+    return "unknown";
+}
+
+int codeindex_reverse_includes(struct codeindex *ci, const char *path,
+                               char (*out)[256], int cap,
+                               enum codeindex_include_dim *dim)
+{
+    if (dim) *dim = CODEINDEX_INCLUDE_DIM_UNAVAILABLE;
+    if (!ci || !ci->store || !path || !path[0] || !out || cap <= 0 ||
+        cap > CI_CLOSURE_MAX_FILES || !dim)
+        LOG_ERR("codeindex", "bad args to codeindex_reverse_includes");
+
+    int64_t edges = ci_store_include_edge_count(ci->store);
+    if (edges < 0)
+        LOG_ERR("codeindex", "include edge count failed");
+    if (edges == 0) {
+        /* No depfiles were on disk when this index was built. Every reverse
+         * question is UNANSWERED, not answered with zero. */
+        *dim = CODEINDEX_INCLUDE_DIM_UNAVAILABLE;
+        return 0;
+    }
+
+    int n = ci_store_dependents_of_file(ci->store, path, out, cap);
+    if (n < 0)
+        LOG_ERR("codeindex", "dependents_of_file failed for %s", path);
+    /* A result that exactly fills `cap` is ambiguous: complete-and-exact, or
+     * clipped. Re-ask for one row more than the caller can hold; only that
+     * distinguishes the two, and guessing would mint a false COMPLETE. */
+    if (n == cap) {
+        char (*wide)[256] = zcl_malloc(sizeof(*wide) * (size_t)cap + sizeof(*wide),
+                                       "ci_revinc_probe");
+        if (!wide)
+            LOG_ERR("codeindex", "reverse-include probe alloc");
+        int nw = ci_store_dependents_of_file(ci->store, path, wide, cap + 1);
+        free(wide);
+        if (nw < 0)
+            LOG_ERR("codeindex", "reverse-include probe failed for %s", path);
+        if (nw > cap) {
+            *dim = CODEINDEX_INCLUDE_DIM_TRUNCATED;
+            return n;
+        }
+    }
+    *dim = CODEINDEX_INCLUDE_DIM_COMPLETE;
+    return n;
+}
+
 /* ── forward (callee) input closure ─────────────────────────────────────
  *
  * The mirror of the reverse walk above: from a root SYMBOL, collect every
