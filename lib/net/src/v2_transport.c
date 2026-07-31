@@ -10,8 +10,8 @@
 
 #include <string.h>
 
-#include "session/noise_handshake.h"
-#include "session/session_transport.h"
+#include "noise/noise_handshake.h"
+#include "noise/session_transport.h"
 #include "support/cleanse.h"
 #include "core/utiltime.h"
 #include "json/json.h"

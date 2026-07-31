@@ -31,9 +31,17 @@
 #include <stdint.h>
 
 /* "MVA1" — magic + version guard the frame boundary, so a stray write from a
- * non-agent process on the socket is rejected before any field is trusted. */
-#define MVAP_MAGIC       0x3141564Du
-#define MVAP_VERSION     1u
+ * non-agent process on the socket is rejected before any field is trusted.
+ *
+ * VERSION 2 appends one verb (LIST_FOR_SALE) and renumbers nothing. A version-1
+ * frame is still decoded, and it decodes to exactly the operation it always
+ * meant: every value v1 defined kept both its number and its meaning, so the
+ * compatibility rule is a membership test against the closed v1 verb set
+ * (mvap_verb_in_version) and not a translation table. Encoding follows the
+ * version the peer spoke — see `version` in struct mvap_request. */
+#define MVAP_MAGIC          0x3141564Du
+#define MVAP_VERSION        2u
+#define MVAP_VERSION_MIN    1u
 
 #define MVAP_PROPERTY_ID_LEN 32
 #define MVAP_RECEIPT_ID_LEN  32
@@ -45,27 +53,52 @@
 #define MVAP_RESP_FIXED  50
 #define MVAP_MAX_FRAME   (MVAP_RESP_FIXED + MVAP_BODY_MAX)
 
-/* The closed action vocabulary. Values are wire constants — append only. */
+/* The closed wire vocabulary: one row per verb, carrying the wire VALUE and
+ * the protocol version that first defined it. Values are wire constants —
+ * APPEND ONLY, never renumbered, because a grant or a receipt written by an
+ * older build carries them.
+ *
+ * This table is the wire fact and nothing more. Which of these verbs is a
+ * read-only QUERY and which is a canonical metaverse ACTION — and which
+ * canonical action bit each one carries — lives in exactly one other place,
+ * MVAP_VERB_CANON_TABLE in session/agent_broker_vocab.h. Splitting them is
+ * deliberate: this header stays free of any opinion about what a verb MEANS,
+ * so the codec cannot drift from the vocabulary.
+ *
+ * INSPECT and LIST are the two QUERIES. LIST is "enumerate what exists" and
+ * has always been that on this wire; listing a property FOR SALE is
+ * LIST_FOR_SALE, the appended value 14. */
+#define MVAP_VERB_TABLE(X)                                                   \
+    /*  wire id            value  since version */                           \
+    X(INSPECT,             1,     1)                                         \
+    X(LIST,                2,     1)                                         \
+    X(HOST,                3,     1)                                         \
+    X(PUBLISH_REVISION,    4,     1)                                         \
+    X(UPDATE_POINTER,      5,     1)                                         \
+    X(SELL,                6,     1)                                         \
+    X(BUY,                 7,     1)                                         \
+    X(DELIVER,             8,     1)                                         \
+    X(LEASE,               9,     1)                                         \
+    X(TRANSFER,            10,    1)                                         \
+    X(ACCEPT_PAYMENT,      11,    1)                                         \
+    X(DELEGATE,            12,    1)                                         \
+    X(REVOKE,              13,    1)                                         \
+    X(LIST_FOR_SALE,       14,    2)
+
 enum mvap_verb {
-    MVAP_VERB_NONE              = 0,
-    MVAP_VERB_INSPECT           = 1,
-    MVAP_VERB_LIST              = 2,
-    MVAP_VERB_HOST              = 3,
-    MVAP_VERB_PUBLISH_REVISION  = 4,
-    MVAP_VERB_UPDATE_POINTER    = 5,
-    MVAP_VERB_SELL              = 6,
-    MVAP_VERB_BUY               = 7,
-    MVAP_VERB_DELIVER           = 8,
-    MVAP_VERB_LEASE             = 9,
-    MVAP_VERB_TRANSFER          = 10,
-    MVAP_VERB_ACCEPT_PAYMENT    = 11,
-    MVAP_VERB_DELEGATE          = 12,
-    MVAP_VERB_REVOKE            = 13,
-    MVAP_VERB__COUNT            = 14,
+    MVAP_VERB_NONE = 0,
+#define MVAP_VERB_ENUM(id_, value_, since_) MVAP_VERB_##id_ = value_,
+    MVAP_VERB_TABLE(MVAP_VERB_ENUM)
+#undef MVAP_VERB_ENUM
+    MVAP_VERB__COUNT = 15,
 };
 
-/* Property kinds. Lane 1 owns the authoritative list; these are the two
- * adapters the first vertical slice requires plus the declared future rows. */
+/* Property kinds ON THE WIRE. The authoritative list is METAVERSE_KIND_TABLE
+ * in metaverse/property_id.h; these values exist only so the codec has a
+ * fixed-width field to validate, and they are numerically identical to the
+ * canonical kinds row for row. session/agent_broker_vocab.c asserts that
+ * identity per row at compile time, so a kind added on one side and forgotten
+ * on the other does not build. Nothing here decides which kinds exist. */
 enum mvap_kind {
     MVAP_KIND_ANY       = 0,
     MVAP_KIND_CONTENT   = 1,   /* ordinary content / blob                */
@@ -106,22 +139,32 @@ enum mvap_status {
 
 /* One request. `param` is NUL-terminated after decode and always passes
  * mvap_param_is_safe(); `property_id` all-zero means "no specific property"
- * (only LIST and REVOKE accept that). */
+ * and which verbs accept that is the `allows_zero_property_id` column of
+ * MVAP_VERB_CANON_TABLE, not a list kept here.
+ *
+ * `version` is the protocol version this record was decoded from, and the one
+ * an encode will write back. Zero means "use the current version", so a
+ * zero-initialized request encodes as MVAP_VERSION without the caller saying
+ * so; a decoded request carries the peer's version, which is how a reply goes
+ * back in the dialect the peer actually speaks. */
 struct mvap_request {
     uint32_t verb;                                  /* enum mvap_verb   */
     uint32_t request_id;                            /* idempotency key  */
     uint64_t value_zats;
     uint8_t  property_id[MVAP_PROPERTY_ID_LEN];
     uint16_t kind;                                  /* enum mvap_kind   */
+    uint32_t version;                               /* 0 == MVAP_VERSION */
     char     param[MVAP_PARAM_MAX + 1];
 };
 
-/* One response. `receipt_id` is all-zero for a pure read (no mutation, no
- * receipt); `body` is bounded JSON text. */
+/* One response. `receipt_id` is all-zero for a query (no mutation, no
+ * receipt); `body` is bounded JSON text. `version` follows the same rule as
+ * the request's. */
 struct mvap_response {
     uint32_t verb;
     uint32_t request_id;
     int32_t  status;                                /* enum mvap_status */
+    uint32_t version;                               /* 0 == MVAP_VERSION */
     uint8_t  receipt_id[MVAP_RECEIPT_ID_LEN];
     char     body[MVAP_BODY_MAX + 1];
 };
@@ -146,8 +189,25 @@ const char *mvap_status_name(int32_t status);
 uint32_t mvap_verb_from_name(const char *name);
 uint16_t mvap_kind_from_name(const char *name);
 
-/* True iff the verb MUTATES state (so it must run PLAN -> COMMIT and mint a
- * receipt). INSPECT and LIST are the only reads. */
+/* True when `verb` is a verb a peer speaking protocol `version` may send —
+ * that is, when the verb's MVAP_VERB_TABLE row was defined at or before it.
+ * This is the WHOLE version-1 compatibility rule and its whole bound: a v1
+ * frame may carry only the thirteen values v1 defined, and every one of them
+ * decodes to exactly the operation it always meant, because no value has ever
+ * been renumbered or reused. There is no v1-to-v2 translation table to get
+ * wrong, and nothing outside [MVAP_VERSION_MIN, MVAP_VERSION] is accepted. */
+bool mvap_verb_in_version(uint32_t verb, uint32_t version);
+
+/* True when `verb` is an ACTION rather than a QUERY.
+ *
+ * This is NOT the broker's own opinion about what mutates, and it is not the
+ * hand-written switch that used to live in agent_broker_proto.c beside the
+ * codec. It is one read of the canonical join table in
+ * session/agent_broker_vocab.h — the same table that maps the verb to its
+ * metaverse action and is asserted row-for-row against the canonical action
+ * enum at compile time — which is why it is DEFINED in agent_broker_vocab.c
+ * and merely declared here, where every caller already looks for verb facts.
+ * There is no way to answer it differently from the class column. */
 bool mvap_verb_is_mutation(uint32_t verb);
 
 /* Encode `req` into `out` (capacity `out_cap`). Writes the 4-byte little-endian

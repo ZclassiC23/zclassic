@@ -395,7 +395,7 @@ Human-readable names registered on-chain via OP_RETURN. Inspired by ENS (Ethereu
 
 Two-mode messaging: off-chain (instant, free) and on-chain (permanent, shielded).
 
-- **Off-chain**: P2P messages (`zmsg`/`zmsgack`) between connected nodes — Noise-encrypted v2 transport is **implemented** below the message layer (`lib/net/src/v2_transport.c` + `lib/session/src/noise_handshake.c`, armed as INITIATOR in `lib/net/src/net.c` and decrypted/torn down in `lib/net/src/connman.c`) but **default OFF** pending rollout; until a peer negotiates v2, messages ride plaintext on the wire
+- **Off-chain**: P2P messages (`zmsg`/`zmsgack`) between connected nodes — Noise-encrypted v2 transport is **implemented** below the message layer (`lib/net/src/v2_transport.c` + `lib/noise/src/noise_handshake.c`, armed as INITIATOR in `lib/net/src/net.c` and decrypted/torn down in `lib/net/src/connman.c`) but **default OFF** pending rollout; until a peer negotiates v2, messages ride plaintext on the wire
 - **On-chain**: structured data in the Sapling 512-byte encrypted memo field (shielded) — **implemented**: `msg_send_onchain()` (`messaging_controller.c`) composes `z_sendmany` with the 38-byte memo codec (`lib/net/src/zmsg.c`), receive-side ingestion is wired at tip-finalize; sending requires Sapling params loaded + a passing prover self-test
 - Messages stored in SQLite, delivery acknowledgment
 - RPC: `msg_send`, `msg_inbox`, `msg_read`

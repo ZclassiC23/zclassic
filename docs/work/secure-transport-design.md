@@ -1,7 +1,7 @@
 # Secure P2P Transport for zclassic23 — protocol reference
 
 This is the protocol contract for the Noise-encrypted v2 transport
-(`lib/net/src/v2_transport.c`, `lib/session/src/noise_handshake.c`), which is
+(`lib/net/src/v2_transport.c`, `lib/noise/src/noise_handshake.c`), which is
 implemented and armed as INITIATOR in `lib/net/src/net.c` / torn down in
 `lib/net/src/connman.c`, default OFF pending rollout (see [`os/A4-noise-transport-p1.md`](./os/A4-noise-transport-p1.md)
 for rollout status). No consensus code is touched by this transport; the

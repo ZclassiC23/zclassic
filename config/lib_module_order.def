@@ -68,7 +68,7 @@ LIB_MODULE("platform")
 LIB_MODULE("core")
 LIB_MODULE("crypto")
 LIB_MODULE("zid")
-LIB_MODULE("session")
+LIB_MODULE("noise")
 LIB_MODULE("bloom")
 
 /* The foundation hub. Almost everything above it depends on util; util's one
@@ -105,6 +105,20 @@ LIB_MODULE("zanc")
 LIB_MODULE("zdir")
 LIB_MODULE("vcs")
 LIB_MODULE("metaverse")
+/* lib/session is the CONFINED-AGENT boundary (the broker, its wire protocol,
+ * its grant translation and its audit chain), which is why it ranks here,
+ * above lib/metaverse: the broker translates a wire frame into a canonical
+ * metaverse action and asks metaverse_grant_check() to rule on it, rather
+ * than keeping a second opinion about what an action means.
+ *
+ * It used to sit at rank 11, below everything, because it also held the Noise
+ * handshake and the session record layer — which lib/net calls, and lib/net
+ * ranks 25. One module doing both jobs could not be ranked correctly for
+ * either: below net for the transport, above metaverse for the broker. The
+ * Noise half moved to lib/noise (rank 11, where this line used to be) and
+ * lib/net now depends on that, so both halves rank where they belong and no
+ * back edge was created in either direction. */
+LIB_MODULE("session")
 LIB_MODULE("sim")
 LIB_MODULE("policy")
 LIB_MODULE("mining")
