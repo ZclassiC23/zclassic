@@ -20,8 +20,10 @@
 
 #include "session/agent_broker.h"
 
+#include "base/hex.h"
 #include "base/log_macros.h"
 #include "json/json.h"
+#include "platform/os_proc.h"
 #include "platform/os_sandbox.h"
 #include "platform/rng.h"
 
@@ -112,13 +114,8 @@ static void build_demo_grant(struct agent_grant *g)
     uint8_t r[8];
     if (!rng_fill(r, sizeof(r)))
         memset(r, 0, sizeof(r));
-    static const char hexd[] = "0123456789abcdef";
     char id[17];
-    for (size_t i = 0; i < 8; i++) {
-        id[2 * i]     = hexd[(r[i] >> 4) & 0xF];
-        id[2 * i + 1] = hexd[r[i] & 0xF];
-    }
-    id[16] = '\0';
+    zcl_hex_encode(r, sizeof(r), id);
     snprintf(g->grant_id, sizeof(g->grant_id), "%s", id);
     snprintf(g->principal, sizeof(g->principal), "confined-seller-agent");
 
@@ -154,7 +151,7 @@ int agent_broker_mode_main(int argc, char **argv)
     bool listen_mode    = arg_present(argc, argv, "--listen");
 
     if (!dir || !dir[0]) {
-        (void)fprintf(stderr,
+        (void)fprintf(stderr,  // obs-ok:argv-mode-cli
             "usage: zclassic23 --metaverse-broker --broker-dir=DIR "
             "[--script=NAME] [--canary=PATH] [--requests=N] [--listen] "
             "[--expect-uid=N] [--agent-uid=N] [--revoke-after=N]\n");
@@ -170,13 +167,13 @@ int agent_broker_mode_main(int argc, char **argv)
     if (!ensure_dir(dir) || !ensure_dir(scratch))
         return 3;
 
+    /* The broker must exec ITSELF; os_proc_exe_path() is the platform shim for
+     * naming this exact binary. */
     char self[PATH_MAX];
-    ssize_t sl = readlink("/proc/self/exe", self, sizeof(self) - 1);  // platform-ok:the broker must exec ITSELF; there is no other way to name this exact binary
-    if (sl <= 0) {
-        (void)fprintf(stderr, "broker: cannot resolve my own executable\n");
+    if (!os_proc_exe_path(self, sizeof(self))) {
+        (void)fprintf(stderr, "broker: cannot resolve my own executable\n");  // obs-ok:argv-mode-cli
         return 3;
     }
-    self[sl] = '\0';
 
     /* The Landlock ABI is recorded HERE, in the broker, because the confined
      * child cannot probe it without being killed by its own filter. */
@@ -187,6 +184,7 @@ int agent_broker_mode_main(int argc, char **argv)
         .self_exe     = self,
         .scratch_dir  = scratch,
         .script       = script,
+        .canary       = canary,
         .confined_uid = auid_s ? (uid_t)strtoul(auid_s, NULL, 10) : 0,
         .confined_gid = auid_s ? (gid_t)strtoul(auid_s, NULL, 10) : 0,
     };
@@ -195,14 +193,14 @@ int agent_broker_mode_main(int argc, char **argv)
         memset(&spawned, 0, sizeof(spawned));
         spawned.sock = -1;
     } else if (!agent_broker_spawn_confined(&sreq, &spawned)) {
-        (void)fprintf(stderr, "broker: could not spawn the confined agent\n");
+        (void)fprintf(stderr, "broker: could not spawn the confined agent\n");  // obs-ok:argv-mode-cli
         return 4;
     }
 
     /* ── 2. audit log, then 3. the grant — both AFTER the fork ──────────── */
     struct agent_audit_log audit;
     if (!agent_audit_open(&audit, dir)) {
-        (void)fprintf(stderr, "broker: could not open the audit log in %s\n",
+        (void)fprintf(stderr, "broker: could not open the audit log in %s\n",  // obs-ok:argv-mode-cli
                       dir);
         return 5;
     }
@@ -228,7 +226,7 @@ int agent_broker_mode_main(int argc, char **argv)
 
         int lfd = agent_broker_listen(sockpath);
         if (lfd < 0) {
-            (void)fprintf(stderr, "broker: cannot listen on %s\n", sockpath);
+            (void)fprintf(stderr, "broker: cannot listen on %s\n", sockpath);  // obs-ok:argv-mode-cli
             return 6;
         }
         printf("broker: listening on %s expecting uid=%u\n", sockpath,
@@ -250,14 +248,14 @@ int agent_broker_mode_main(int argc, char **argv)
         uint64_t max = reqs ? strtoull(reqs, NULL, 10) : 0;
         uint64_t revoke_after = revoke_s ? strtoull(revoke_s, NULL, 10) : 0;
 
-        if (!agent_broker_peercred(spawned.sock, &s.peer)) {
-            (void)fprintf(stderr, "broker: no peer credentials on the pair\n");
+        if (!agent_broker_identify_peer(spawned.sock, &s.peer)) {
+            (void)fprintf(stderr, "broker: no peer credentials on the pair\n");  // obs-ok:argv-mode-cli
             return 7;
         }
         char why[160];
         if (!agent_broker_peer_authorized(&s.peer, &s.expect, why,
                                           sizeof(why))) {
-            (void)fprintf(stderr, "broker: refusing my own child: %s\n", why);
+            (void)fprintf(stderr, "broker: refusing my own child: %s\n", why);  // obs-ok:argv-mode-cli
             return 8;
         }
         printf("broker: peer verified pid=%d uid=%u gid=%u\n", (int)s.peer.pid,

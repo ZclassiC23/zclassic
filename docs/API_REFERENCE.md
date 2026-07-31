@@ -59,11 +59,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 340 |
-| Top-level roots | 9 |
-| Branches | 78 |
-| Leaves (dispatchable command paths) | 262 |
-| … `ready` (live handler in this build) | 220 |
+| Registry entries (branches + leaves) | 344 |
+| Top-level roots | 10 |
+| Branches | 80 |
+| Leaves (dispatchable command paths) | 264 |
+| … `ready` (live handler in this build) | 222 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 25 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
@@ -85,6 +85,7 @@ Per source file:
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 14 | 3 | 11 |
 | `config/commands/zcode.def` | 59 | 14 | 45 |
+| `config/commands/metaverse.def` | 4 | 2 | 2 |
 
 
 ## Column legend
@@ -138,6 +139,7 @@ The root order below is a wire contract, not a presentation choice.
 | `code` | `code` | branch | ready | Hierarchical source-code navigator |
 | `vault` | `vault` | branch | ready | What this node owns, and what may act on it |
 | `zcode` | `zcode` | branch | ready | ZCODE source-package hosting: publish, search, host |
+| `metaverse` | `metaverse` | branch | ready | Sovereign digital property, and who may act on it |
 
 
 ## The tree, leaf by leaf
@@ -794,6 +796,15 @@ represented by its children's sections.
 | `zcode endpoint verify` | ready | read / read / public · fast/low | **`doc`**, `file`, `now`, `datadir` | `zcl.zcode_endpoint_verify.v1` | `zclassic23 zcode endpoint verify --input='{"doc":"<hex>"}'` | Check an endpoint record against the chain without storing it |
 | `zcode endpoint resolve` | ready | read / read / public · fast/low | **`pubkey`**, `now`, `datadir` | `zcl.zcode_endpoint_resolve.v1` | `zclassic23 zcode endpoint resolve --input='{"pubkey":"<64hex>"}'` | Look up a filed endpoint record by its blinded record key |
 | `zcode endpoint list` | ready | read / read / public · fast/low | `now`, `datadir` | `zcl.zcode_endpoint_list.v1` | `zclassic23 zcode endpoint list` | Show every filed endpoint record and whether the node will use it |
+
+### `metaverse` — Sovereign digital property, and who may act on it
+
+#### `metaverse.agent` — Confined agents acting under a scoped grant
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `metaverse agent status` | ready | read / read / operator · instant/tiny | **`dir`** | `zcl.metaverse_agent_status.v1` | `zclassic23 metaverse agent status --dir=/tmp/mv-broker` | What confinement the agent broker actually achieved |
+| `metaverse agent audit` | ready | read / read / operator · fast/low | **`dir`**, `limit` | `zcl.metaverse_agent_audit.v1` | `zclassic23 metaverse agent audit --dir=/tmp/mv-broker` | Every action the confined agent took, and whether the log is intact |
 
 
 ## Aliases

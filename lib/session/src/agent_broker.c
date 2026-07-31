@@ -2,8 +2,13 @@
  *
  * The broker: the privileged side of the confined-agent boundary.
  *
+ * The privileged side is three files: this one (peer identity, the request
+ * pipeline, and the listening socket), agent_broker_spawn.c (the confined
+ * fork/execve), and agent_broker_status.c (the operator-facing report).
+ *
  * THE ORDERING THAT MAKES THE BOUNDARY REAL — read this before editing
- * agent_broker_spawn_confined() or agent_broker_mode_main():
+ * agent_broker_spawn_confined() (agent_broker_spawn.c) or
+ * agent_broker_mode_main() (agent_broker_modes.c):
  *
  *   1. The child is confined by the PARENT, before execve. rlimits,
  *      no_new_privs, Landlock and the stage-1 seccomp filter are all applied in
@@ -21,39 +26,40 @@
  *      environment, which is why /proc/<child>/environ is empty rather than a
  *      copy of the operator's session.
  *
- *   3. The grant is never an argument to the child. It is not in argv (four
- *      words: mode, script, scratch dir, terminator), not in envp (empty), and
- *      not in any file the child's Landlock domain can open. The child cannot
- *      present, forward, or leak an authority it has no way to name.
+ *   3. The grant is never an argument to the child. It is not in argv (mode,
+ *      script, scratch dir, and at most a canary path), not in envp (empty),
+ *      and not in any file the child's Landlock domain can open. The child
+ *      cannot present, forward, or leak an authority it has no way to name.
  *
- * SO_PEERCRED is consulted once per connection, before any verb is dispatched.
- * It is the kernel's answer about the peer process, so a client that asserts an
- * identity in its own bytes is not merely disbelieved — it is never asked.
+ * The peer is identified once per connection, before any verb is dispatched,
+ * from the kernel's own attribution — so a client that asserts an identity in
+ * its own bytes is not merely disbelieved, it is never asked.
+ *
+ * WHICH kernel attribution is not a detail. SO_PEERCRED names the process that
+ * CREATED the socket: for an accept()ed connection that is the peer, but for a
+ * socketpair(2) it is the BROKER, on both ends, so it cannot tell the broker
+ * apart from the child it handed the other end to. The socketpair posture
+ * therefore identifies the peer from SCM_CREDENTIALS on the message it sent,
+ * which the kernel stamps per message and the sender cannot forge. See
+ * agent_broker_identify_peer().
  */
 
 #define _GNU_SOURCE  /* struct ucred, execvpe — must precede every include */
 
 #include "session/agent_broker.h"
 
+#include "base/hex.h"
 #include "base/log_macros.h"
-#include "base/result.h"
 #include "crypto/sha3.h"
-#include "json/json.h"
 #include "platform/clock.h"
-#include "platform/os_sandbox.h"
 
 #include <errno.h>
-#include <fcntl.h>
-#include <grp.h>
 #include <poll.h>
-#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
-#include <sys/syscall.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -123,6 +129,79 @@ bool agent_broker_peercred(int fd, struct agent_peer_cred *out)
     out->uid   = uc.uid;
     out->gid   = uc.gid;
     out->valid = true;
+    return true;
+}
+
+bool agent_broker_sender_cred(int fd, struct agent_peer_cred *out)
+{
+    if (!out)
+        LOG_FAIL(BROKER_TAG, "null out for fd=%d", fd);
+    memset(out, 0, sizeof(*out));
+    if (fd < 0)
+        LOG_FAIL(BROKER_TAG, "bad fd=%d", fd);
+
+    /* Enabling this on the RECEIVING socket is what makes the kernel attach
+     * credentials to messages; a sender cannot opt out of being named. */
+    int on = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_PASSCRED, &on, sizeof(on)) != 0)
+        LOG_FAIL(BROKER_TAG, "SO_PASSCRED on fd=%d failed: %s", fd,
+                 strerror(errno));
+
+    uint8_t peek;
+    struct iovec iov = { .iov_base = &peek, .iov_len = 1 };
+    union {
+        struct cmsghdr align;
+        char           bytes[CMSG_SPACE(sizeof(struct ucred))];
+    } control;
+    memset(&control, 0, sizeof(control));
+
+    struct msghdr msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.msg_iov        = &iov;
+    msg.msg_iovlen     = 1;
+    msg.msg_control    = control.bytes;
+    msg.msg_controllen = sizeof(control.bytes);
+
+    ssize_t r;
+    do {
+        r = recvmsg(fd, &msg, MSG_PEEK);
+    } while (r < 0 && errno == EINTR);
+    if (r <= 0)
+        LOG_FAIL(BROKER_TAG, "nothing to attribute on fd=%d: %s", fd,
+                 r == 0 ? "peer closed without sending" : strerror(errno));
+
+    for (struct cmsghdr *c = CMSG_FIRSTHDR(&msg); c; c = CMSG_NXTHDR(&msg, c)) {
+        if (c->cmsg_level != SOL_SOCKET || c->cmsg_type != SCM_CREDENTIALS ||
+            c->cmsg_len != CMSG_LEN(sizeof(struct ucred)))
+            continue;
+        struct ucred uc;
+        memcpy(&uc, CMSG_DATA(c), sizeof(uc));
+        out->pid   = uc.pid;
+        out->uid   = uc.uid;
+        out->gid   = uc.gid;
+        out->valid = true;
+        return true;
+    }
+    LOG_FAIL(BROKER_TAG,
+             "the kernel attached no credentials to the message on fd=%d "
+             "(SO_PASSCRED must be set before the peer sends)", fd);
+}
+
+bool agent_broker_identify_peer(int fd, struct agent_peer_cred *out)
+{
+    if (!out)
+        LOG_FAIL(BROKER_TAG, "null out for fd=%d", fd);
+    if (!agent_broker_peercred(fd, out))
+        LOG_FAIL(BROKER_TAG, "no socket credentials on fd=%d", fd);
+
+    /* SO_PEERCRED just named the socket's CREATOR. When that is us, this is a
+     * socketpair we made and both ends carry our pid — an answer about the
+     * broker, not about the peer. Ask who actually sent instead. */
+    if (out->pid == getpid()) {
+        struct agent_peer_cred sender;
+        if (agent_broker_sender_cred(fd, &sender) && sender.valid)
+            *out = sender;
+    }
     return true;
 }
 
@@ -265,12 +344,7 @@ static bool fixture_commit(void *ctx, const struct mvap_request *req,
     }
 
     char root[65];
-    static const char hexd[] = "0123456789abcdef";
-    for (size_t i = 0; i < 32; i++) {
-        root[2 * i]     = hexd[(plan->content_root[i] >> 4) & 0xF];
-        root[2 * i + 1] = hexd[plan->content_root[i] & 0xF];
-    }
-    root[64] = '\0';
+    zcl_hex_encode(plan->content_root, 32, root);
 
     int n = snprintf(body, body_cap,
         "{\"kind\":\"%s\",\"revision\":%llu,\"content_root\":\"%s\","
@@ -516,7 +590,7 @@ int agent_broker_serve_fd(struct agent_broker_session *s, int fd,
 
     /* The credential check happens ONCE, here, before a single verb is
      * dispatched. A peer that fails it never reaches agent_broker_handle. */
-    if (!agent_broker_peercred(fd, &s->peer))
+    if (!agent_broker_identify_peer(fd, &s->peer))
         LOG_ERR(BROKER_TAG, "no peer credentials on fd=%d", fd);
 
     char why[160];
@@ -600,299 +674,3 @@ int agent_broker_accept_once(struct agent_broker_session *s, int listen_fd,
     return served < 0 ? -1 : 1;
 }
 
-/* ── spawning the confined child ────────────────────────────────────────── */
-
-/* Stage-1 seccomp: the confined agent's allow-set PLUS exactly what a fresh
- * program start needs to reach main(). It is wider than stage 2 only in that
- * it permits the ONE execve this path performs and the loader/startup syscalls
- * that follow it — every escape class (sockets, clone, ptrace, mount,
- * namespaces, bpf, keyrings) is absent from both. */
-static const int g_stage1_extra[] = {
-    __NR_execve,
-#ifdef __NR_execveat
-    __NR_execveat,
-#endif
-    __NR_arch_prctl, __NR_set_tid_address, __NR_set_robust_list,
-#ifdef __NR_rseq
-    __NR_rseq,
-#endif
-    __NR_prctl,
-};
-
-/* Landlock stage 1, applied by the PARENT so it is irreversible for the child.
- * The grants are: the child's own scratch directory, its /proc/self, and the
- * read+execute set the dynamic loader needs to start the binary at all. The
- * datadir, the wallet, the RPC cookie, $HOME and /etc are all ABSENT, which is
- * what the adversarial test measures. */
-static size_t spawn_build_grants(const struct agent_spawn_request *req,
-                                 struct os_sandbox_path_rule *rules,
-                                 size_t cap)
-{
-    size_t n = 0;
-    if (n < cap && req->scratch_dir)
-        rules[n++] = (struct os_sandbox_path_rule){
-            .path = req->scratch_dir, .allow_read = true,
-            .allow_write = true, .allow_create = true };
-    if (n < cap)
-        rules[n++] = (struct os_sandbox_path_rule){
-            .path = OS_SANDBOX_PROC_SELF_PATH, .allow_read = true };
-    if (n < cap && req->self_exe)
-        rules[n++] = (struct os_sandbox_path_rule){
-            .path = req->self_exe, .allow_read = true, .allow_execute = true };
-
-    /* The loader set. Each is granted only if it exists, so this stays correct
-     * on a host with a different lib layout. */
-    static const char *const loader_dirs[] = { "/usr/lib", "/lib", "/lib64" };
-    for (size_t i = 0; i < sizeof(loader_dirs) / sizeof(loader_dirs[0]); i++) {
-        struct stat st;
-        if (n < cap && stat(loader_dirs[i], &st) == 0)
-            rules[n++] = (struct os_sandbox_path_rule){
-                .path = loader_dirs[i], .allow_read = true,
-                .allow_execute = true };
-    }
-    struct stat st;
-    if (n < cap && stat("/etc/ld.so.cache", &st) == 0)
-        rules[n++] = (struct os_sandbox_path_rule){
-            .path = "/etc/ld.so.cache", .allow_read = true };
-    return n;
-}
-
-/* Resource caps for the agent: one process (so it cannot fork a helper even if
- * clone were reachable), no core dump (a dump would spill inherited memory to
- * disk), a small address space, and a modest fd ceiling. */
-static struct os_sandbox_rlimits spawn_rlimits(void)
-{
-    return (struct os_sandbox_rlimits){
-        .as_bytes    = (uint64_t)512u * 1024u * 1024u,
-        .cpu_seconds = 30,
-        .nproc       = 1,
-        .fsize_bytes = (uint64_t)16u * 1024u * 1024u,
-        .nofile      = 32,
-        .core_bytes  = 0,
-    };
-}
-
-bool agent_broker_spawn_confined(const struct agent_spawn_request *req,
-                                 struct agent_spawn_result *result)
-{
-    if (!req || !result || !req->self_exe || !req->scratch_dir || !req->script)
-        LOG_FAIL(BROKER_TAG, "null argument to spawn");
-    if (!mvap_param_is_safe(req->script))
-        LOG_FAIL(BROKER_TAG, "script name '%s' is not a safe token",
-                 req->script);
-    memset(result, 0, sizeof(*result));
-
-    int sv[2];
-    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0)
-        LOG_FAIL(BROKER_TAG, "socketpair failed: %s", strerror(errno));
-
-    pid_t pid = fork();
-    if (pid < 0) {
-        (void)close(sv[0]);
-        (void)close(sv[1]);
-        LOG_FAIL(BROKER_TAG, "fork failed: %s", strerror(errno));
-    }
-
-    if (pid == 0) {
-        /* ── the child, still our code, still trusted ─────────────────── */
-        (void)close(sv[0]);
-        if (sv[1] != AGENT_CHILD_SOCKET_FD) {
-            if (dup2(sv[1], AGENT_CHILD_SOCKET_FD) < 0)
-                _exit(90);
-            (void)close(sv[1]);
-        }
-        /* The socket must survive execve; everything else must not. */
-        (void)fcntl(AGENT_CHILD_SOCKET_FD, F_SETFD, 0);
-
-        /* uid drop, when this process has the authority to do one. Groups go
-         * first: dropping the uid before the groups would make setgroups
-         * impossible and silently leave supplementary groups behind. */
-        if (req->confined_uid != 0 && req->confined_uid != geteuid()) {
-            if (setgroups(0, NULL) != 0 && errno != EPERM)
-                _exit(91);
-            if (setgid(req->confined_gid) != 0 && errno != EPERM)
-                _exit(92);
-            (void)setuid(req->confined_uid);   /* EPERM is the expected
-                                                * unprivileged answer */
-        }
-
-        struct os_sandbox_rlimits lim = spawn_rlimits();
-        if (!zcl_result_is_ok(os_sandbox_set_rlimits(&lim)))
-            _exit(93);
-        if (!os_sandbox_no_new_privs())
-            _exit(94);
-
-        struct os_sandbox_path_rule rules[8];
-        size_t n = spawn_build_grants(req, rules, 8);
-        struct zcl_result lr = os_sandbox_landlock_restrict(rules, n);
-        /* A kernel without Landlock degrades loudly rather than pretending:
-         * the child reports landlock_applied=false at handshake and the
-         * operator sees it in `metaverse agent status`. */
-        if (!zcl_result_is_ok(lr) && lr.code != OS_SANDBOX_ERR_LANDLOCK_UNAVAILABLE)
-            _exit(95);
-
-        size_t n_base = 0;
-        const int *base = agent_confined_allowed_syscalls(&n_base);
-        size_t n_extra = sizeof(g_stage1_extra) / sizeof(g_stage1_extra[0]);
-        int stage1[320];
-        if (n_base + n_extra > sizeof(stage1) / sizeof(stage1[0]))
-            _exit(96);
-        memcpy(stage1, base, n_base * sizeof(int));
-        memcpy(stage1 + n_base, g_stage1_extra, n_extra * sizeof(int));
-        struct zcl_result sr = os_sandbox_seccomp_allow(stage1,
-                                                        n_base + n_extra);
-        if (!zcl_result_is_ok(sr) && sr.code != OS_SANDBOX_ERR_SECCOMP_UNAVAILABLE)
-            _exit(97);
-
-        /* argv carries the mode, the script name, and the scratch dir. envp is
-         * EMPTY — that is what makes /proc/<pid>/environ carry nothing of the
-         * operator's session, and no grant material exists in either. */
-        char *const argv[] = {
-            (char *)req->self_exe,
-            (char *)"--metaverse-agent-confined",
-            (char *)req->script,
-            (char *)req->scratch_dir,
-            NULL,
-        };
-        char *const envp[] = { NULL };
-        execve(req->self_exe, argv, envp);
-        _exit(98);
-    }
-
-    (void)close(sv[1]);
-    result->pid  = pid;
-    result->sock = sv[0];
-    return true;
-}
-
-/* ── status document ────────────────────────────────────────────────────── */
-
-void agent_broker_write_status(const char *dir,
-                               const struct agent_broker_session *s,
-                               const struct agent_grant *g, pid_t child_pid,
-                               const char *socket_path)
-{
-    if (!dir || !s || !g)
-        return;
-    uint8_t fp[32];
-    agent_grant_fingerprint(g, fp);
-    char fphex[65];
-    static const char hexd[] = "0123456789abcdef";
-    for (size_t i = 0; i < 32; i++) {
-        fphex[2 * i]     = hexd[(fp[i] >> 4) & 0xF];
-        fphex[2 * i + 1] = hexd[fp[i] & 0xF];
-    }
-    fphex[64] = '\0';
-
-    struct json_value doc;
-    json_init(&doc);
-    json_set_object(&doc);
-    (void)json_push_kv_int(&doc, "broker_pid", (int64_t)getpid());
-    (void)json_push_kv_int(&doc, "agent_pid", (int64_t)child_pid);
-    (void)json_push_kv_str(&doc, "socket", socket_path ? socket_path
-                                                       : "(socketpair)");
-    (void)json_push_kv_str(&doc, "principal", g->principal);
-    (void)json_push_kv_str(&doc, "grant_id", g->grant_id);
-    (void)json_push_kv_str(&doc, "grant_fingerprint", fphex);
-    (void)json_push_kv_bool(&doc, "grant_revoked", g->revoked);
-    (void)json_push_kv_int(&doc, "grant_actions_mask", (int64_t)g->actions_mask);
-    (void)json_push_kv_int(&doc, "grant_properties", (int64_t)g->n_properties);
-    (void)json_push_kv_int(&doc, "budget_zats", (int64_t)g->budget_zats);
-    (void)json_push_kv_int(&doc, "spent_zats", (int64_t)g->spent_zats);
-    (void)json_push_kv_int(&doc, "requests_served",
-                           (int64_t)s->requests_served);
-    (void)json_push_kv_int(&doc, "requests_denied",
-                           (int64_t)s->requests_denied);
-    (void)json_push_kv_int(&doc, "receipts_written",
-                           (int64_t)s->receipts_written);
-    (void)json_push_kv_int(&doc, "peer_pid", (int64_t)s->peer.pid);
-    (void)json_push_kv_int(&doc, "peer_uid", (int64_t)s->peer.uid);
-    (void)json_push_kv_int(&doc, "peer_gid", (int64_t)s->peer.gid);
-
-    /* The ACHIEVED confinement, as the child reported it — never the
-     * requested one. */
-    const char *posture =
-        s->child.uid_posture == AGENT_CONFINE_SEPARATE_UID ? "separate_uid"
-        : s->child.uid_posture == AGENT_CONFINE_SAME_UID   ? "same_uid"
-                                                           : "unknown";
-    (void)json_push_kv_str(&doc, "agent_uid_posture", posture);
-    (void)json_push_kv_int(&doc, "agent_uid", (int64_t)s->child.ran_as_uid);
-    (void)json_push_kv_int(&doc, "agent_landlock_abi",
-                           (int64_t)s->child.landlock_abi);
-    (void)json_push_kv_bool(&doc, "agent_landlock_applied",
-                            s->child.landlock_applied);
-    (void)json_push_kv_bool(&doc, "agent_seccomp_applied",
-                            s->child.seccomp_applied);
-    (void)json_push_kv_bool(&doc, "agent_rlimits_applied",
-                            s->child.rlimits_applied);
-    (void)json_push_kv_int(&doc, "agent_fs_grants",
-                           (int64_t)s->child.fs_grants);
-    (void)json_push_kv_str(&doc, "agent_seccomp_method",
-                           s->child.seccomp_method);
-
-    char buf[4096];
-    size_t n = json_write(&doc, buf, sizeof(buf));
-    json_free(&doc);
-    if (n == 0)
-        return;
-
-    char path[512];
-    snprintf(path, sizeof(path), "%s/broker.json", dir);
-    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-    if (fd < 0) {
-        LOG_WARN(BROKER_TAG, "cannot write %s: %s", path, strerror(errno));
-        return;
-    }
-    if (write(fd, buf, n) != (ssize_t)n)
-        LOG_WARN(BROKER_TAG, "short write of %s", path);
-    (void)close(fd);
-}
-
-size_t agent_broker_render_status_json(const char *dir, char *out,
-                                       size_t out_cap)
-{
-    if (!dir || !out || out_cap == 0)
-        return 0;
-    char path[512];
-    snprintf(path, sizeof(path), "%s/broker.json", dir);
-
-    struct json_value doc;
-    json_init(&doc);
-    json_set_object(&doc);
-    (void)json_push_kv_str(&doc, "dir", dir);
-
-    FILE *f = fopen(path, "re");
-    if (!f) {
-        (void)json_push_kv_bool(&doc, "broker_state_present", false);
-        (void)json_push_kv_str(&doc, "reason",
-                               "no broker.json in this directory — no confined "
-                               "agent broker has run here");
-        size_t n = json_write(&doc, out, out_cap);
-        json_free(&doc);
-        return n;
-    }
-    char buf[4096];
-    size_t got = fread(buf, 1, sizeof(buf) - 1, f);
-    (void)fclose(f);
-    buf[got] = '\0';
-
-    struct json_value state;
-    json_init(&state);
-    bool parsed = got > 0 && json_read(&state, buf, got);
-    (void)json_push_kv_bool(&doc, "broker_state_present", parsed);
-    if (parsed) {
-        /* A recorded broker_pid that is no longer alive is reported as such
-         * rather than implied by its presence. */
-        int64_t bpid = json_get_int(json_get(&state, "broker_pid"));
-        (void)json_push_kv_bool(&doc, "broker_running",
-                                bpid > 0 && kill((pid_t)bpid, 0) == 0);
-        (void)json_push_kv(&doc, "state", &state);
-    } else {
-        (void)json_push_kv_str(&doc, "reason", "broker.json is not valid JSON");
-    }
-    json_free(&state);
-
-    size_t n = json_write(&doc, out, out_cap);
-    json_free(&doc);
-    return n;
-}

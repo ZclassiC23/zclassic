@@ -355,7 +355,7 @@ int agent_confined_mode_main(int argc, char **argv)
 {
     /* argv: <exe> --metaverse-agent-confined <script> <scratch-dir> [canary] */
     if (argc < 4) {
-        (void)fprintf(stderr,
+        (void)fprintf(stderr,  // obs-ok:confined-child-no-event-bus
                       "usage: %s --metaverse-agent-confined <script> "
                       "<scratch-dir> [canary-path]\n",
                       argc > 0 ? argv[0] : "zclassic23");
@@ -366,7 +366,7 @@ int agent_confined_mode_main(int argc, char **argv)
     const char *canary  = argc > 4 ? argv[4] : "";
 
     if (!mvap_param_is_safe(script)) {
-        (void)fprintf(stderr, "confined agent: script '%s' is not a safe token\n",
+        (void)fprintf(stderr, "confined agent: script '%s' is not a safe token\n",  // obs-ok:confined-child-no-event-bus
                       script);
         return 2;
     }
@@ -384,7 +384,7 @@ int agent_confined_mode_main(int argc, char **argv)
         execve("/bin/sh", a, e);
         /* Reached only if execve was neither seccomp-killed nor Landlock
          * refused: that is a HOLE, and the exit code says so. */
-        (void)fprintf(stderr, "confined agent: execve survived, errno=%d (%s)\n",
+        (void)fprintf(stderr, "confined agent: execve survived, errno=%d (%s)\n",  // obs-ok:confined-child-no-event-bus
                       errno, errno_name(errno));
         return errno == EACCES || errno == EPERM ? 40 : 41;
     }

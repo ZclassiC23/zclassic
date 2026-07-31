@@ -1,60 +1,20 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * The typed agent-broker wire codec. See session/agent_broker_proto.h for the
- * contract; the only thing worth restating here is why the encoders write
- * byte-at-a-time instead of memcpy'ing the struct: the struct has padding and
- * host endianness, the wire has neither, and a broker that trusts a peer's
- * struct layout is trusting the peer.
+ * contract; the only thing worth restating here is why every field is written
+ * through base/serialize_le.h instead of memcpy'ing the struct: the struct has
+ * padding and host endianness, the wire has neither, and a broker that trusts a
+ * peer's struct layout is trusting the peer.
  */
 
 #include "session/agent_broker_proto.h"
 
 #include "base/log_macros.h"
+#include "base/serialize_le.h"
 
 #include <string.h>
 
 #define MVAP_TAG "agent.proto"
-
-/* ── little-endian scalar writers/readers ───────────────────────────────── */
-
-static void put_u16(uint8_t *p, uint16_t v)
-{
-    p[0] = (uint8_t)(v & 0xFFu);
-    p[1] = (uint8_t)((v >> 8) & 0xFFu);
-}
-
-static void put_u32(uint8_t *p, uint32_t v)
-{
-    for (int i = 0; i < 4; i++)
-        p[i] = (uint8_t)((v >> (8 * i)) & 0xFFu);
-}
-
-static void put_u64(uint8_t *p, uint64_t v)
-{
-    for (int i = 0; i < 8; i++)
-        p[i] = (uint8_t)((v >> (8 * i)) & 0xFFu);
-}
-
-static uint16_t get_u16(const uint8_t *p)
-{
-    return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
-}
-
-static uint32_t get_u32(const uint8_t *p)
-{
-    uint32_t v = 0;
-    for (int i = 0; i < 4; i++)
-        v |= (uint32_t)p[i] << (8 * i);
-    return v;
-}
-
-static uint64_t get_u64(const uint8_t *p)
-{
-    uint64_t v = 0;
-    for (int i = 0; i < 8; i++)
-        v |= (uint64_t)p[i] << (8 * i);
-    return v;
-}
 
 /* ── validation ─────────────────────────────────────────────────────────── */
 
@@ -191,7 +151,7 @@ uint32_t mvap_frame_length(const uint8_t *in, size_t in_len)
 {
     if (!in || in_len < MVAP_FRAME_PREFIX)
         return 0;
-    uint32_t n = get_u32(in);
+    uint32_t n = zcl_read_u32_le(in);
     if (n == 0 || n > MVAP_MAX_FRAME)
         return 0;
     return n;
@@ -217,15 +177,15 @@ size_t mvap_request_encode(const struct mvap_request *req, uint8_t *out,
         return 0;
 
     uint8_t *p = out + MVAP_FRAME_PREFIX;
-    put_u32(out, (uint32_t)rec);
-    put_u32(p + 0,  MVAP_MAGIC);
-    put_u16(p + 4,  (uint16_t)MVAP_VERSION);
-    put_u16(p + 6,  (uint16_t)req->verb);
-    put_u32(p + 8,  req->request_id);
-    put_u64(p + 12, req->value_zats);
+    zcl_write_u32_le(out, (uint32_t)rec);
+    zcl_write_u32_le(p + 0,  MVAP_MAGIC);
+    zcl_write_u16_le(p + 4,  (uint16_t)MVAP_VERSION);
+    zcl_write_u16_le(p + 6,  (uint16_t)req->verb);
+    zcl_write_u32_le(p + 8,  req->request_id);
+    zcl_write_u64_le(p + 12, req->value_zats);
     memcpy(p + 20, req->property_id, MVAP_PROPERTY_ID_LEN);
-    put_u16(p + 52, req->kind);
-    put_u16(p + 54, (uint16_t)plen);
+    zcl_write_u16_le(p + 52, req->kind);
+    zcl_write_u16_le(p + 54, (uint16_t)plen);
     if (plen)
         memcpy(p + MVAP_REQ_FIXED, req->param, plen);
     return MVAP_FRAME_PREFIX + rec;
@@ -240,26 +200,26 @@ bool mvap_request_decode(const uint8_t *in, size_t in_len,
     if (in_len < MVAP_REQ_FIXED)
         LOG_FAIL(MVAP_TAG, "short request record len=%zu need>=%d", in_len,
                  MVAP_REQ_FIXED);
-    if (get_u32(in + 0) != MVAP_MAGIC)
-        LOG_FAIL(MVAP_TAG, "bad magic 0x%08x", get_u32(in + 0));
-    if (get_u16(in + 4) != (uint16_t)MVAP_VERSION)
-        LOG_FAIL(MVAP_TAG, "unsupported version %u", get_u16(in + 4));
+    if (zcl_read_u32_le(in + 0) != MVAP_MAGIC)
+        LOG_FAIL(MVAP_TAG, "bad magic 0x%08x", zcl_read_u32_le(in + 0));
+    if (zcl_read_u16_le(in + 4) != (uint16_t)MVAP_VERSION)
+        LOG_FAIL(MVAP_TAG, "unsupported version %u", zcl_read_u16_le(in + 4));
 
-    uint16_t verb = get_u16(in + 6);
+    uint16_t verb = zcl_read_u16_le(in + 6);
     if (verb == MVAP_VERB_NONE || verb >= MVAP_VERB__COUNT)
         LOG_FAIL(MVAP_TAG, "verb out of range %u", verb);
-    uint16_t kind = get_u16(in + 52);
+    uint16_t kind = zcl_read_u16_le(in + 52);
     if (kind >= MVAP_KIND__COUNT)
         LOG_FAIL(MVAP_TAG, "kind out of range %u", kind);
-    uint16_t plen = get_u16(in + 54);
+    uint16_t plen = zcl_read_u16_le(in + 54);
     if (plen > MVAP_PARAM_MAX || (size_t)MVAP_REQ_FIXED + plen != in_len)
         LOG_FAIL(MVAP_TAG, "param length %u inconsistent with record %zu",
                  plen, in_len);
 
     struct mvap_request r = { 0 };
     r.verb       = verb;
-    r.request_id = get_u32(in + 8);
-    r.value_zats = get_u64(in + 12);
+    r.request_id = zcl_read_u32_le(in + 8);
+    r.value_zats = zcl_read_u64_le(in + 12);
     memcpy(r.property_id, in + 20, MVAP_PROPERTY_ID_LEN);
     r.kind = kind;
     if (plen)
@@ -286,14 +246,14 @@ size_t mvap_response_encode(const struct mvap_response *resp, uint8_t *out,
         return 0;
 
     uint8_t *p = out + MVAP_FRAME_PREFIX;
-    put_u32(out, (uint32_t)rec);
-    put_u32(p + 0, MVAP_MAGIC);
-    put_u16(p + 4, (uint16_t)MVAP_VERSION);
-    put_u16(p + 6, (uint16_t)resp->verb);
-    put_u32(p + 8, resp->request_id);
-    put_u32(p + 12, (uint32_t)resp->status);
+    zcl_write_u32_le(out, (uint32_t)rec);
+    zcl_write_u32_le(p + 0, MVAP_MAGIC);
+    zcl_write_u16_le(p + 4, (uint16_t)MVAP_VERSION);
+    zcl_write_u16_le(p + 6, (uint16_t)resp->verb);
+    zcl_write_u32_le(p + 8, resp->request_id);
+    zcl_write_u32_le(p + 12, (uint32_t)resp->status);
     memcpy(p + 16, resp->receipt_id, MVAP_RECEIPT_ID_LEN);
-    put_u16(p + 48, (uint16_t)blen);
+    zcl_write_u16_le(p + 48, (uint16_t)blen);
     if (blen)
         memcpy(p + MVAP_RESP_FIXED, resp->body, blen);
     return MVAP_FRAME_PREFIX + rec;
@@ -308,20 +268,20 @@ bool mvap_response_decode(const uint8_t *in, size_t in_len,
     if (in_len < MVAP_RESP_FIXED)
         LOG_FAIL(MVAP_TAG, "short response record len=%zu need>=%d", in_len,
                  MVAP_RESP_FIXED);
-    if (get_u32(in + 0) != MVAP_MAGIC)
-        LOG_FAIL(MVAP_TAG, "bad magic 0x%08x", get_u32(in + 0));
-    if (get_u16(in + 4) != (uint16_t)MVAP_VERSION)
-        LOG_FAIL(MVAP_TAG, "unsupported version %u", get_u16(in + 4));
+    if (zcl_read_u32_le(in + 0) != MVAP_MAGIC)
+        LOG_FAIL(MVAP_TAG, "bad magic 0x%08x", zcl_read_u32_le(in + 0));
+    if (zcl_read_u16_le(in + 4) != (uint16_t)MVAP_VERSION)
+        LOG_FAIL(MVAP_TAG, "unsupported version %u", zcl_read_u16_le(in + 4));
 
-    uint16_t blen = get_u16(in + 48);
+    uint16_t blen = zcl_read_u16_le(in + 48);
     if (blen > MVAP_BODY_MAX || (size_t)MVAP_RESP_FIXED + blen != in_len)
         LOG_FAIL(MVAP_TAG, "body length %u inconsistent with record %zu",
                  blen, in_len);
 
     struct mvap_response r = { 0 };
-    r.verb       = get_u16(in + 6);
-    r.request_id = get_u32(in + 8);
-    r.status     = (int32_t)get_u32(in + 12);
+    r.verb       = zcl_read_u16_le(in + 6);
+    r.request_id = zcl_read_u32_le(in + 8);
+    r.status     = (int32_t)zcl_read_u32_le(in + 12);
     memcpy(r.receipt_id, in + 16, MVAP_RECEIPT_ID_LEN);
     if (blen)
         memcpy(r.body, in + MVAP_RESP_FIXED, blen);

@@ -136,8 +136,31 @@ struct agent_peer_expectation {
 /* Read the peer's credentials from the kernel via getsockopt(SO_PEERCRED).
  * These are the values the KERNEL attributes to the peer process — nothing the
  * peer sends can influence them. Returns false (and leaves out->valid false)
- * when the socket is not AF_UNIX or the option is unavailable. */
+ * when the socket is not AF_UNIX or the option is unavailable.
+ *
+ * THE TRAP THIS OPTION CARRIES: SO_PEERCRED reports the process that CREATED
+ * the socket. On an accept()ed connection that is the connecting peer, which is
+ * the answer we want. On a socketpair(2) it is the process that made the PAIR —
+ * the broker itself, on BOTH ends — so it cannot distinguish the broker from
+ * the child it handed the other end to. Use agent_broker_identify_peer() unless
+ * you specifically want the socket-creation answer. */
 bool agent_broker_peercred(int fd, struct agent_peer_cred *out);
+
+/* Read the credentials of whoever SENT the next pending message, from the
+ * kernel's SCM_CREDENTIALS on that message. The kernel fills these in itself
+ * and refuses a pid/uid the sender does not hold, so they cannot be forged; and
+ * because they are per-message they name the process on the other end of a
+ * socketpair, which SO_PEERCRED cannot. Requires SO_PASSCRED, which this call
+ * enables. The message is PEEKED, not consumed, so the caller still reads it
+ * normally. Blocks until the peer sends or closes. */
+bool agent_broker_sender_cred(int fd, struct agent_peer_cred *out);
+
+/* The broker's canonical "who is actually on the other end of this fd" answer:
+ * SO_PEERCRED when it names some OTHER process (an accept()ed connection), and
+ * the per-message credentials when it names us (a socketpair, where the
+ * socket-creation answer is about the broker and therefore says nothing about
+ * the peer). Every credential check in the broker goes through this. */
+bool agent_broker_identify_peer(int fd, struct agent_peer_cred *out);
 
 /* True iff `c` satisfies `e`. On refusal, writes the exact mismatch into `why`
  * (e.g. "uid mismatch: peer=1000 expected=65534"). */
@@ -343,6 +366,12 @@ struct agent_spawn_request {
     const char *self_exe;      /* path to this binary                        */
     const char *scratch_dir;   /* the ONLY writable Landlock grant the child gets */
     const char *script;        /* safe-token name of the child's built-in script */
+    /* One path the BROKER wants the agent to TRY to open, so the refusal is
+     * recorded as the kernel's errno in the child's report. It is an
+     * instruction, never an authority: naming a path the child may not reach is
+     * how the boundary is measured against a real asset instead of against
+     * /etc/passwd. NULL or "" means "no canary". */
+    const char *canary;
     uid_t       confined_uid;  /* target uid; 0 == "do not attempt a switch"  */
     gid_t       confined_gid;
 };
@@ -353,10 +382,10 @@ struct agent_spawn_result {
 };
 
 /* socketpair() + fork() + exec self in confined-agent mode. The child end of
- * the pair becomes fd 3; argv carries ONLY the mode word, the script name, and
- * the scratch dir; the environment is CLEARED and rebuilt from a 2-entry
- * minimum (PATH-free). No grant material is placed in either, which is what
- * makes the /proc/<pid>/environ and cmdline assertions in the test hold.
+ * the pair becomes fd 3; argv carries ONLY the mode word, the script name, the
+ * scratch dir and (when set) the canary path; the environment is EMPTY. No
+ * grant material is placed in either, which is what makes the
+ * /proc/<pid>/environ and cmdline assertions in the test hold.
  * Returns false and leaves result->pid <= 0 on failure. */
 bool agent_broker_spawn_confined(const struct agent_spawn_request *req,
                                  struct agent_spawn_result *result);

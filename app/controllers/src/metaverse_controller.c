@@ -18,9 +18,8 @@
 #include "kernel/command_registry.h"
 #include "services/metaverse_agent_service.h"
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <stddef.h>
+#include <stdint.h>
 
 #define MV_TAG "native.metaverse"
 
@@ -40,26 +39,30 @@ static void mv_fail(struct zcl_command_reply *reply,
                            false, message, evidence ? evidence : "");
 }
 
-/* Map the service's refusal token onto the command error contract. */
-static void mv_fail_token(struct zcl_command_reply *reply, const char *why,
-                          const char *dir)
+/* Map the service's refusal onto the command error contract. The service's own
+ * message becomes the evidence, so the operator sees which rule was broken and
+ * not just the directory they typed. */
+static void mv_fail_result(struct zcl_command_reply *reply,
+                           const struct zcl_result *r)
 {
-    if (strcmp(why, "NOT_A_DIR") == 0) {
+    switch (r->code) {
+    case MVS_ERR_NOT_A_DIR:
         mv_fail(reply, ZCL_COMMAND_EXIT_FAILED, "NOT_A_DIR",
                 "no such broker directory — run `zclassic23 "
                 "--metaverse-broker --broker-dir=DIR` first, or point --dir at "
                 "the directory a broker already used",
-                dir);
+                r->message);
         return;
-    }
-    if (strcmp(why, "RENDER_FAILED") == 0) {
+    case MVS_ERR_RENDER_FAILED:
         mv_fail(reply, ZCL_COMMAND_EXIT_FAILED, "RENDER_FAILED",
                 "the document did not fit this leaf's output budget; lower "
-                "--limit", dir);
+                "--limit", r->message);
+        return;
+    default:
+        mv_fail(reply, ZCL_COMMAND_EXIT_INVALID, "BAD_ARGS",
+                "dir must be a non-empty absolute path", r->message);
         return;
     }
-    mv_fail(reply, ZCL_COMMAND_EXIT_INVALID, "BAD_ARGS",
-            "dir must be a non-empty absolute path", dir);
 }
 
 /* Read and shape-check the shared `dir` input. Returns NULL after failing the
@@ -105,11 +108,11 @@ void zcl_native_handle_metaverse_agent_status(
         return;
 
     static char doc[MV_DOC_MAX];
-    char why[64];
-    size_t n = metaverse_agent_service_status(dir, doc, sizeof(doc), why,
-                                              sizeof(why));
-    if (n == 0) {
-        mv_fail_token(reply, why, dir);
+    size_t n = 0;
+    struct zcl_result r =
+        metaverse_agent_service_status(dir, doc, sizeof(doc), &n);
+    if (!r.ok) {
+        mv_fail_result(reply, &r);
         return;
     }
     (void)mv_emit(reply, doc, n);
@@ -132,11 +135,11 @@ void zcl_native_handle_metaverse_agent_audit(
     }
 
     static char doc[MV_DOC_MAX];
-    char why[64];
-    size_t n = metaverse_agent_service_audit(dir, (size_t)limit, doc,
-                                             sizeof(doc), why, sizeof(why));
-    if (n == 0) {
-        mv_fail_token(reply, why, dir);
+    size_t n = 0;
+    struct zcl_result r =
+        metaverse_agent_service_audit(dir, (size_t)limit, doc, sizeof(doc), &n);
+    if (!r.ok) {
+        mv_fail_result(reply, &r);
         return;
     }
     (void)mv_emit(reply, doc, n);

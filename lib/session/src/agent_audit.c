@@ -20,7 +20,9 @@
 
 #include "session/agent_broker.h"
 
+#include "base/hex.h"
 #include "base/log_macros.h"
+#include "base/serialize_le.h"
 #include "crypto/ed25519.h"
 #include "crypto/sha3.h"
 #include "json/json.h"
@@ -38,39 +40,6 @@
 /* One receipt line stays well under this; the reader rejects anything longer
  * rather than splitting a row it cannot parse. */
 #define AUDIT_LINE_MAX 2048
-
-/* ── hex ────────────────────────────────────────────────────────────────── */
-
-static void hex_encode(const uint8_t *in, size_t n, char *out)
-{
-    static const char d[] = "0123456789abcdef";
-    for (size_t i = 0; i < n; i++) {
-        out[2 * i]     = d[(in[i] >> 4) & 0xF];
-        out[2 * i + 1] = d[in[i] & 0xF];
-    }
-    out[2 * n] = '\0';
-}
-
-static int hex_nib(char c)
-{
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
-
-static bool hex_decode(const char *in, uint8_t *out, size_t n)
-{
-    if (!in || strnlen(in, 2 * n + 1) != 2 * n)
-        return false;
-    for (size_t i = 0; i < n; i++) {
-        int hi = hex_nib(in[2 * i]), lo = hex_nib(in[2 * i + 1]);
-        if (hi < 0 || lo < 0)
-            return false;
-        out[i] = (uint8_t)((hi << 4) | lo);
-    }
-    return true;
-}
 
 /* ── the canonical receipt preimage ─────────────────────────────────────── */
 
@@ -91,13 +60,11 @@ static void receipt_digest(const struct agent_receipt *r, uint8_t out[32])
         ((uint64_t)(uint32_t)r->peer.pid << 32) | (uint32_t)r->peer.uid,
     };
     for (size_t i = 0; i < 7; i++)
-        for (size_t b = 0; b < 8; b++)
-            n[i][b] = (uint8_t)((vals[i] >> (8 * b)) & 0xFFu);
+        zcl_write_u64_le(n[i], vals[i]);
     sha3_256_write(&c, (const unsigned char *)n, sizeof(n));
 
     uint8_t gid[4];
-    for (size_t b = 0; b < 4; b++)
-        gid[b] = (uint8_t)(((uint32_t)r->peer.gid >> (8 * b)) & 0xFFu);
+    zcl_write_u32_le(gid, (uint32_t)r->peer.gid);
     sha3_256_write(&c, gid, sizeof(gid));
 
     sha3_256_write(&c, r->property_id, MVAP_PROPERTY_ID_LEN);
@@ -107,7 +74,8 @@ static void receipt_digest(const struct agent_receipt *r, uint8_t out[32])
                        AGENT_RECEIPT_DETAIL_MAX };
     for (size_t i = 0; i < 3; i++) {
         size_t len = strnlen(strs[i], caps[i]);
-        uint8_t lb[2] = { (uint8_t)(len & 0xFF), (uint8_t)((len >> 8) & 0xFF) };
+        uint8_t lb[2];
+        zcl_write_u16_le(lb, (uint16_t)len);
         sha3_256_write(&c, lb, 2);
         sha3_256_write(&c, (const unsigned char *)strs[i], len);
     }
@@ -120,10 +88,10 @@ static size_t receipt_render_line(const struct agent_receipt *r, char *out,
                                   size_t cap)
 {
     char prev[65], id[65], sig[129], prop[65];
-    hex_encode(r->prev, 32, prev);
-    hex_encode(r->id, 32, id);
-    hex_encode(r->sig, 64, sig);
-    hex_encode(r->property_id, MVAP_PROPERTY_ID_LEN, prop);
+    zcl_hex_encode(r->prev, 32, prev);
+    zcl_hex_encode(r->id, 32, id);
+    zcl_hex_encode(r->sig, 64, sig);
+    zcl_hex_encode(r->property_id, MVAP_PROPERTY_ID_LEN, prop);
 
     int n = snprintf(out, cap,
         "{\"seq\":%llu,\"unix_ms\":%lld,\"prev\":\"%s\",\"id\":\"%s\","
@@ -171,14 +139,14 @@ static bool receipt_parse_line(const char *line, size_t len,
         ok = false;
 
     const char *s;
-    if (!(s = json_get_str(json_get(&v, "prev"))) || !hex_decode(s, r.prev, 32))
+    if (!(s = json_get_str(json_get(&v, "prev"))) || !zcl_hex_decode(s, r.prev, 32))
         ok = false;
-    if (!(s = json_get_str(json_get(&v, "id"))) || !hex_decode(s, r.id, 32))
+    if (!(s = json_get_str(json_get(&v, "id"))) || !zcl_hex_decode(s, r.id, 32))
         ok = false;
-    if (!(s = json_get_str(json_get(&v, "sig"))) || !hex_decode(s, r.sig, 64))
+    if (!(s = json_get_str(json_get(&v, "sig"))) || !zcl_hex_decode(s, r.sig, 64))
         ok = false;
     if (!(s = json_get_str(json_get(&v, "property_id"))) ||
-        !hex_decode(s, r.property_id, MVAP_PROPERTY_ID_LEN))
+        !zcl_hex_decode(s, r.property_id, MVAP_PROPERTY_ID_LEN))
         ok = false;
 
     if ((s = json_get_str(json_get(&v, "principal"))))
@@ -261,7 +229,7 @@ bool agent_audit_open(struct agent_audit_log *log, const char *dir)
         size_t bl = strnlen(buf, sizeof(buf));
         while (bl && (buf[bl - 1] == '\n' || buf[bl - 1] == '\r'))
             buf[--bl] = '\0';
-        if (!got || !hex_decode(buf, log->pk, 32))
+        if (!got || !zcl_hex_decode(buf, log->pk, 32))
             LOG_FAIL(AUDIT_TAG, "existing %s is not a 32-byte hex key",
                      log->pub_path);
         /* We hold no matching secret: this broker can VERIFY the old rows but
@@ -273,7 +241,7 @@ bool agent_audit_open(struct agent_audit_log *log, const char *dir)
                  log->pub_path);
     }
 
-    hex_encode(log->pk, 32, pub_hex);
+    zcl_hex_encode(log->pk, 32, pub_hex);
     int pfd = open(log->pub_path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
                    0600);
     if (pfd < 0)
@@ -351,7 +319,7 @@ static bool audit_read_pubkey(const char *dir, uint8_t pk[32])
     size_t bl = strnlen(buf, sizeof(buf));
     while (bl && (buf[bl - 1] == '\n' || buf[bl - 1] == '\r'))
         buf[--bl] = '\0';
-    if (!hex_decode(buf, pk, 32))
+    if (!zcl_hex_decode(buf, pk, 32))
         LOG_FAIL(AUDIT_TAG, "%s is not 32-byte hex", path);
     return true;
 }
@@ -432,7 +400,7 @@ size_t agent_audit_render_json(const char *dir, size_t max, char *out,
     (void)json_push_kv_bool(&doc, "readable", verified);
     if (verified) {
         char head[65];
-        hex_encode(v.head, 32, head);
+        zcl_hex_encode(v.head, 32, head);
         (void)json_push_kv_int(&doc, "rows", (int64_t)v.rows);
         (void)json_push_kv_int(&doc, "chain_breaks", (int64_t)v.chain_breaks);
         (void)json_push_kv_int(&doc, "bad_signatures",

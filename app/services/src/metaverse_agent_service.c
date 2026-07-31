@@ -11,72 +11,69 @@
 
 #include "services/metaverse_agent_service.h"
 
-#include "base/log_macros.h"
+#include "base/result.h"
 #include "session/agent_broker.h"
 
 #include <stdbool.h>
-#include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
 
-#define MVS_TAG "metaverse.agent.service"
 #define MVS_DIR_MAX 384
 
-static bool dir_ok(const char *dir, char *why, size_t why_cap)
+/* The one validation both readers share. Every refusal names which of the
+ * three shape rules the caller broke, because "bad dir" alone does not tell an
+ * operator whether to fix the path, the spelling, or the directory. */
+static struct zcl_result dir_ok(const char *dir, char *out, size_t out_cap,
+                                size_t *out_len)
 {
-    if (!dir || !dir[0]) {
-        snprintf(why, why_cap, "BAD_ARGS");
-        LOG_FAIL(MVS_TAG, "dir is required");
-    }
-    if (dir[0] != '/') {
-        snprintf(why, why_cap, "BAD_ARGS");
-        LOG_FAIL(MVS_TAG, "dir must be an absolute path, got '%s'", dir);
-    }
-    if (strnlen(dir, MVS_DIR_MAX + 1) > MVS_DIR_MAX) {
-        snprintf(why, why_cap, "BAD_ARGS");
-        LOG_FAIL(MVS_TAG, "dir longer than %d bytes", MVS_DIR_MAX);
-    }
+    if (!out || out_cap == 0 || !out_len)
+        return ZCL_ERR(MVS_ERR_BAD_ARGS, "out buffer is required");
+    *out_len = 0;
+    if (!dir || !dir[0])
+        return ZCL_ERR(MVS_ERR_BAD_ARGS, "dir is required");
+    if (dir[0] != '/')
+        return ZCL_ERR(MVS_ERR_BAD_ARGS,
+                       "dir must be an absolute path, got '%s'", dir);
+    if (strnlen(dir, MVS_DIR_MAX + 1) > MVS_DIR_MAX)
+        return ZCL_ERR(MVS_ERR_BAD_ARGS, "dir longer than %d bytes",
+                       MVS_DIR_MAX);
     struct stat st;
-    if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
-        snprintf(why, why_cap, "NOT_A_DIR");
-        LOG_FAIL(MVS_TAG, "'%s' is not an existing directory", dir);
-    }
-    return true;
+    if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode))
+        return ZCL_ERR(MVS_ERR_NOT_A_DIR,
+                       "'%s' is not an existing directory", dir);
+    return ZCL_OK;
 }
 
-size_t metaverse_agent_service_status(const char *dir, char *out,
-                                      size_t out_cap, char *why,
-                                      size_t why_cap)
+struct zcl_result metaverse_agent_service_status(const char *dir, char *out,
+                                                 size_t out_cap,
+                                                 size_t *out_len)
 {
-    if (!out || out_cap == 0 || !why || why_cap == 0)
-        return 0;
-    why[0] = '\0';
-    if (!dir_ok(dir, why, why_cap))
-        return 0;
+    struct zcl_result r = dir_ok(dir, out, out_cap, out_len);
+    if (!r.ok)
+        return r;
 
     size_t n = agent_broker_render_status_json(dir, out, out_cap);
-    if (n == 0) {
-        snprintf(why, why_cap, "RENDER_FAILED");
-        LOG_RETURN(0, MVS_TAG, "status document for '%s' did not fit %zu bytes",
-                   dir, out_cap);
-    }
-    return n;
+    if (n == 0)
+        return ZCL_ERR(MVS_ERR_RENDER_FAILED,
+                       "status document for '%s' did not fit %zu bytes", dir,
+                       out_cap);
+    *out_len = n;
+    return ZCL_OK;
 }
 
-size_t metaverse_agent_service_audit(const char *dir, size_t limit, char *out,
-                                     size_t out_cap, char *why, size_t why_cap)
+struct zcl_result metaverse_agent_service_audit(const char *dir, size_t limit,
+                                                char *out, size_t out_cap,
+                                                size_t *out_len)
 {
-    if (!out || out_cap == 0 || !why || why_cap == 0)
-        return 0;
-    why[0] = '\0';
-    if (!dir_ok(dir, why, why_cap))
-        return 0;
+    struct zcl_result r = dir_ok(dir, out, out_cap, out_len);
+    if (!r.ok)
+        return r;
 
     size_t n = agent_audit_render_json(dir, limit, out, out_cap);
-    if (n == 0) {
-        snprintf(why, why_cap, "RENDER_FAILED");
-        LOG_RETURN(0, MVS_TAG, "audit document for '%s' did not fit %zu bytes",
-                   dir, out_cap);
-    }
-    return n;
+    if (n == 0)
+        return ZCL_ERR(MVS_ERR_RENDER_FAILED,
+                       "audit document for '%s' did not fit %zu bytes", dir,
+                       out_cap);
+    *out_len = n;
+    return ZCL_OK;
 }

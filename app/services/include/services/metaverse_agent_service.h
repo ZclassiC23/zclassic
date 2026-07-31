@@ -11,32 +11,37 @@
  * make "no broker has run here" indistinguishable from "a broker ran and left
  * nothing", and would write into whatever datadir a caller named.
  *
- * `dir` is validated by the caller (the controller) before it reaches here.
+ * Both calls return struct zcl_result. The refusal REASON travels with the
+ * refusal: `code` is one of the MVS_ERR_* values below, so the controller can
+ * map it onto a named command error, and `message` carries the detail an
+ * operator needs to fix the call.
  */
 
 #ifndef ZCL_SERVICES_METAVERSE_AGENT_SERVICE_H
 #define ZCL_SERVICES_METAVERSE_AGENT_SERVICE_H
 
+#include "base/result.h"
+
 #include <stddef.h>
 
-/* Refusal tokens written to `why` (the controller maps them onto named
- * command errors; the test asserts them exactly):
- *   BAD_ARGS      — dir is NULL/empty, too long, or not an absolute path
- *   NOT_A_DIR     — dir does not exist or is not a directory
- *   RENDER_FAILED — the document did not fit the caller's buffer          */
+/* Refusal codes carried in struct zcl_result::code. */
+enum {
+    MVS_ERR_BAD_ARGS = -1,      /* dir NULL/empty, too long, or not absolute */
+    MVS_ERR_NOT_A_DIR = -2,     /* dir does not exist, or is not a directory */
+    MVS_ERR_RENDER_FAILED = -3, /* the document did not fit `out_cap`        */
+};
 
-/* Render the broker's recorded state for `dir` into `out`. Returns the byte
- * length written, or 0 with a token in `why`. */
-size_t metaverse_agent_service_status(const char *dir, char *out,
-                                      size_t out_cap, char *why,
-                                      size_t why_cap);
+/* Render the broker's recorded state for `dir` into `out`, writing the byte
+ * length to `*out_len` on success. */
+struct zcl_result metaverse_agent_service_status(const char *dir, char *out,
+                                                 size_t out_cap,
+                                                 size_t *out_len);
 
 /* Render the verified audit trail for `dir` into `out`, tail-bounded by
- * `limit` (0 selects the default). Returns the byte length written, or 0 with
- * a token in `why`. The tamper verdict always covers the whole log even when
- * the rendered tail is shorter. */
-size_t metaverse_agent_service_audit(const char *dir, size_t limit, char *out,
-                                     size_t out_cap, char *why,
-                                     size_t why_cap);
+ * `limit` (0 selects the default). The tamper verdict always covers the whole
+ * log even when the rendered tail is shorter. */
+struct zcl_result metaverse_agent_service_audit(const char *dir, size_t limit,
+                                                char *out, size_t out_cap,
+                                                size_t *out_len);
 
 #endif /* ZCL_SERVICES_METAVERSE_AGENT_SERVICE_H */

@@ -132,12 +132,12 @@ page changing with it.
 <!--   app_shape_folders    = directories directly under app/                        -->
 <!-- Fix a mismatch with `tools/scripts/check_doc_counts.sh --fix`, never by hand.  -->
 
-test_groups: 848
+test_groups: 850
 port_interfaces: 13
 persistence_adapters: 14
 condition_registrations: 52
-command_bundles: 11
-command_roots: 8
+command_bundles: 12
+command_roots: 9
 dumpstate_subsystems: 151
 app_shape_folders: 7
 <!-- DOC-COUNTS-END -->
@@ -232,7 +232,7 @@ Use `docs/AGENT_ARCHITECTURE.md` as the full checklist. The short path:
 
 ### Add a native command
 1. Declare the command in the matching `config/commands/*.def` bundle.
-   There are 11 command bundles; `ls config/commands/*.def` is the list — do
+   There are 12 command bundles; `ls config/commands/*.def` is the list — do
    not work from a remembered one (docs said "eight" for months after `vault`
    and `zcode` landed).
    Give it a name, transports (`ZCL_COMMAND_TRANSPORT_NATIVE`), and a handler

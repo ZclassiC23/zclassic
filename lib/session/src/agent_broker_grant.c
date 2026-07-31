@@ -14,6 +14,7 @@
 #include "session/agent_broker.h"
 
 #include "base/log_macros.h"
+#include "base/serialize_le.h"
 #include "crypto/sha3.h"
 
 #include <string.h>
@@ -78,8 +79,7 @@ void agent_grant_fingerprint(const struct agent_grant *g, uint8_t out[32])
         (uint64_t)g->window_seconds, g->revocation_generation,
     };
     for (size_t i = 0; i < 8; i++)
-        for (size_t b = 0; b < 8; b++)
-            nums[i][b] = (uint8_t)((vals[i] >> (8 * b)) & 0xFFu);
+        zcl_write_u64_le(nums[i], vals[i]);
     sha3_256_write(&c, (const unsigned char *)nums, sizeof(nums));
 
     sha3_256_write(&c, (const unsigned char *)g->counterparty_allowlist,
