@@ -21,7 +21,7 @@
 # scan roots named `*_fill.c` whose basename starts with `<domain>_`, or which
 # defines `<domain>_dump_state_fill(`, for a domain named by a TABLE row.
 #
-# 0 today: the table-driven layer's field tables and renderer have landed, but
-# no domain has shipped its provider yet. The first `<domain>_*_fill.c` to land
-# raises this to 1.
-0
+# 1 today: app/services/src/storage_telemetry_fill.c, the `storage` domain's
+# collector, is the first provider to land. Each further domain that ships one
+# raises this by one in the same commit.
+1

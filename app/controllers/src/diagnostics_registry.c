@@ -67,6 +67,7 @@
 #include "services/consensus_reject_index.h"
 #include "services/blocker_history.h"
 #include "services/block_index_integrity.h"
+#include "services/storage_telemetry.h"
 #include "services/utxo_mirror_sync_service.h"
 #include "services/mirror_divergence_locator.h"
 #include "services/nullifier_backfill_service.h"

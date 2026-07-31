@@ -1232,6 +1232,23 @@ void zcl_native_handle_metaverse_agent_audit(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* ── ops.telemetry.storage.* — the STORAGE telemetry domain
+ * (tools/command/native_telemetry_storage_command.c). Each handler picks one
+ * view/group token and makes one SELECT-only `dumpstate storage_telemetry`
+ * call; the typed snapshot is filled and rendered inside the node by
+ * app/services/src/storage_telemetry_fill.c, because a one-shot CLI process
+ * has no initialized storage subsystems to read. Bound by
+ * config/commands/telemetry/storage.def. */
+void zcl_native_handle_telemetry_storage_summary(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_telemetry_storage_database(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_telemetry_storage_disk(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 #ifdef __cplusplus
 }
 #endif

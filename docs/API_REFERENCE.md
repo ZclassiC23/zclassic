@@ -63,9 +63,9 @@ zclassic23 discover schema <path> --side=input|output
 | Top-level roots | 10 |
 | Branches | 92 |
 | Leaves (dispatchable command paths) | 299 |
-| … `ready` (live handler in this build) | 227 |
+| … `ready` (live handler in this build) | 230 |
 | … `compat` (metadata only, names a fallback) | 17 |
-| … `planned` (fail-closed BLOCKED, exit 3) | 55 |
+| … `planned` (fail-closed BLOCKED, exit 3) | 52 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
 | Leaves with `effect=mutate` | 77 |
 | Leaves with `effect=destructive` | 4 |
@@ -680,10 +680,10 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `ops telemetry storage summary` | planned | read / read / operator · fast/low | none | `zcl.telemetry.storage.summary.v1` | `zclassic23 ops telemetry storage summary` | Storage posture — *the typed storage telemetry snapshot is not built yet* |
-| `ops telemetry storage database` | planned | read / read / operator · fast/low | none | `zcl.telemetry.storage.database.v1` | `zclassic23 ops telemetry storage database` | Database connections and WAL state — *the typed storage telemetry snapshot is not built yet* |
-| `ops telemetry storage disk` | planned | read / read / operator · fast/low | none | `zcl.telemetry.storage.disk.v1` | `zclassic23 ops telemetry storage disk` | Disk headroom — *the typed storage telemetry snapshot is not built yet* |
-| `ops telemetry storage cache` | planned | read / read / operator · fast/low | none | `zcl.telemetry.storage.cache.v1` | `zclassic23 ops telemetry storage cache` | Cache occupancy and hit rates — *the typed storage telemetry snapshot is not built yet* |
+| `ops telemetry storage summary` | ready | read / read / operator · fast/low | none | `zcl.telemetry.storage.summary.v1` | `zclassic23 ops telemetry storage summary` | Storage posture |
+| `ops telemetry storage database` | ready | read / read / operator · fast/low | none | `zcl.telemetry.storage.database.v1` | `zclassic23 ops telemetry storage database` | Database handles and block-index integrity |
+| `ops telemetry storage disk` | ready | read / read / operator · fast/low | none | `zcl.telemetry.storage.disk.v1` | `zclassic23 ops telemetry storage disk` | Disk headroom |
+| `ops telemetry storage cache` | planned | read / read / operator · fast/low | none | `zcl.telemetry.storage.cache.v1` | `zclassic23 ops telemetry storage cache` | Cache occupancy and hit rates — *no storage cache publishes occupancy, hit ratio or eviction counts: coins_ram keeps no hit/miss counters and SQLite's page-cache counters need sqlite3_db_status() on a live handle, which would block the reply behind the reducer's write transaction* |
 
 #### `ops.telemetry.wallet` — Wallet projection and key-handling posture
 

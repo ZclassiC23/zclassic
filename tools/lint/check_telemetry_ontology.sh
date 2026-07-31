@@ -207,6 +207,14 @@ ST_EOF
 
     # 11/12 — the fill-provider population is an assertion. Both directions of
     # drift must bite, or "0 providers scanned" is a floor that never fires.
+    #
+    # BOTH cases pin BOTH ends of the comparison — the scan root AND the count
+    # file — so neither depends on how many providers the real tree happens to
+    # hold today. An earlier form pinned only one end and silently relied on
+    # the real count being 0; the first domain to ship a provider turned case
+    # 11 into 1-vs-1 and case 12 into 1-vs-1, and both stopped firing. A
+    # self-test that only detects drift while the tree is empty is exactly the
+    # hollow floor these two cases exist to forbid.
     mkdir -p "$st_tmp/cleanfill"
     cat > "$st_tmp/cleanfill/runtime_telemetry_fill.c" <<'ST_EOF'
 bool runtime_dump_state_fill(struct runtime_snapshot *snap)
@@ -216,12 +224,18 @@ bool runtime_dump_state_fill(struct runtime_snapshot *snap)
     return true;
 }
 ST_EOF
-    st_run "ZCL_TELEMETRY_FILL_SCAN_ROOTS=$st_tmp/cleanfill"
+    printf '0\n' > "$st_tmp/fill_count_zero.txt"
+    st_run "ZCL_TELEMETRY_FILL_SCAN_ROOTS=$st_tmp/cleanfill" \
+           "ZCL_TELEMETRY_FILL_PROVIDER_COUNT=$st_tmp/fill_count_zero.txt"
     st_expect "11 a new fill provider must be recorded" 1 \
         "FILL PROVIDER COUNT GREW"
 
+    # A scan root with no provider in it at all, against a count that claims
+    # one: the rename/delete direction.
+    mkdir -p "$st_tmp/nofill"
     printf '1\n' > "$st_tmp/fill_count_one.txt"
-    st_run "ZCL_TELEMETRY_FILL_PROVIDER_COUNT=$st_tmp/fill_count_one.txt"
+    st_run "ZCL_TELEMETRY_FILL_SCAN_ROOTS=$st_tmp/nofill" \
+           "ZCL_TELEMETRY_FILL_PROVIDER_COUNT=$st_tmp/fill_count_one.txt"
     st_expect "12 a vanished fill provider is not silently unscanned" 1 \
         "FILL PROVIDER COUNT DROPPED"
 
