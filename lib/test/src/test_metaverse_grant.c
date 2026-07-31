@@ -23,7 +23,10 @@
  *     grant revoked between plan and commit is GRANT_REVOKED; an absent catalog
  *     is CATALOG_UNAVAILABLE. The plan is never trusted.
  *  4. REVOCATION is total across a delegation subtree: revoking a parent makes
- *     every child fail ANCESTOR_REVOKED with no write to the child.
+ *     every child fail ANCESTOR_REVOKED with no write to the child — and the
+ *     two halves of that check (the ancestor's revoked flag and its revocation
+ *     GENERATION) are each proven ALONE against the pure evaluator, because
+ *     through the service they always move together and so mask each other.
  *  5. IDEMPOTENCY: the same key committed twice returns the SAME receipt, does
  *     not debit twice, and does not append a second chain link.
  *  6. The receipt chain is TAMPER-EVIDENT: editing a stored receipt, re-signing
@@ -694,6 +697,96 @@ static int t_revoke_kills_subtree(void)
     return failures;
 }
 
+/* The ancestor check has TWO independent halves — the ancestor's `revoked`
+ * flag and its revocation GENERATION — and the subtree case above cannot tell
+ * them apart. property_grant_service_revoke() sets the flag and bumps the
+ * counter together, so through the service the two facts always move as one:
+ * delete either half and the other still refuses, and the case above still
+ * passes. That makes the mechanism the header actually describes ("revocation
+ * is a generation, not a flag" — the property that lets a child be killed
+ * without being written to, and that a rewritten record with a cleared flag
+ * cannot escape) unproven by any assertion.
+ *
+ * The pure evaluator is where the two facts CAN be varied independently, so
+ * these two cases pin one half each: same grant, same request, one field
+ * changed, and a live control showing the refusal came from that field alone. */
+static void ancestor_pair(struct metaverse_grant *parent,
+                          struct metaverse_grant *child,
+                          const struct metaverse_property_id *prop)
+{
+    *parent = grant_over_id(prop, ACT(HOST) | ACT(DELEGATE), 100000);
+    snprintf(parent->grant_id, sizeof(parent->grant_id),
+             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    parent->delegation_allowed = true;
+    parent->max_delegation_depth = 2;
+
+    *child = grant_over_id(prop, ACT(HOST), 1000);
+    snprintf(child->grant_id, sizeof(child->grant_id),
+             "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    child->depth = 1;
+    child->lineage_count = 1;
+    snprintf(child->lineage[0].grant_id, sizeof(child->lineage[0].grant_id),
+             "%s", parent->grant_id);
+    child->lineage[0].revocation_generation = 0;
+}
+
+static int t_ancestor_generation_alone_kills(void)
+{
+    int failures = 0;
+    TEST("a bumped ancestor GENERATION alone kills the child") {
+        struct metaverse_property_id prop = make_id(METAVERSE_KIND_CONTENT, 43);
+        struct metaverse_grant parent, child;
+        ancestor_pair(&parent, &child, &prop);
+        struct metaverse_action_request r =
+            request_for(&prop, METAVERSE_ACTION_HOST, NULL, 0);
+        r.now_unix = 1700000000;
+        r.height = 900000;
+        const struct metaverse_grant *anc[1] = { &parent };
+
+        /* Control: the generations agree and the child is live, so anything
+         * below is caused by the one field that changes. */
+        ASSERT_EQ((int)metaverse_grant_check(&child, anc, 1, &r),
+                  (int)METAVERSE_GRANT_OK);
+
+        /* The ancestor's counter moved and NOTHING else did — the flag stays
+         * clear, so only the generation comparison can refuse this. */
+        parent.revocation_generation = 1;
+        ASSERT(!parent.revoked);
+        ASSERT_EQ((int)metaverse_grant_check(&child, anc, 1, &r),
+                  (int)METAVERSE_GRANT_ANCESTOR_REVOKED);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_ancestor_revoked_flag_alone_kills(void)
+{
+    int failures = 0;
+    TEST("an ancestor's revoked FLAG alone kills the child") {
+        struct metaverse_property_id prop = make_id(METAVERSE_KIND_CONTENT, 43);
+        struct metaverse_grant parent, child;
+        ancestor_pair(&parent, &child, &prop);
+        struct metaverse_action_request r =
+            request_for(&prop, METAVERSE_ACTION_HOST, NULL, 0);
+        r.now_unix = 1700000000;
+        r.height = 900000;
+        const struct metaverse_grant *anc[1] = { &parent };
+
+        ASSERT_EQ((int)metaverse_grant_check(&child, anc, 1, &r),
+                  (int)METAVERSE_GRANT_OK);
+
+        /* The flag is set and the generation still MATCHES the lineage record,
+         * so only the flag check can refuse this. */
+        parent.revoked = true;
+        ASSERT_EQ((int)parent.revocation_generation,
+                  (int)child.lineage[0].revocation_generation);
+        ASSERT_EQ((int)metaverse_grant_check(&child, anc, 1, &r),
+                  (int)METAVERSE_GRANT_ANCESTOR_REVOKED);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── 5. Idempotency ─────────────────────────────────────────────────────── */
 
 static int t_idempotent_commit(void)
@@ -1189,6 +1282,8 @@ int test_metaverse_grant(void)
 
     failures += t_revoke_kills_grant();
     failures += t_revoke_kills_subtree();
+    failures += t_ancestor_generation_alone_kills();
+    failures += t_ancestor_revoked_flag_alone_kills();
 
     failures += t_idempotent_commit();
     failures += t_unkeyed_commit_not_replayable();
