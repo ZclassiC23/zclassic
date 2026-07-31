@@ -5,6 +5,7 @@
 
 #include "metaverse/property_id.h"
 
+#include "base/hex.h"
 #include "base/log_macros.h"
 
 #include <string.h>
@@ -57,8 +58,6 @@ bool metaverse_property_id_valid(const struct metaverse_property_id *id)
     return id->kind > METAVERSE_KIND_UNKNOWN && id->kind < METAVERSE_KIND_COUNT;
 }
 
-static const char k_hex[] = "0123456789abcdef";
-
 bool metaverse_property_id_render(const struct metaverse_property_id *id,
                                  char *out, size_t out_cap)
 {
@@ -76,21 +75,10 @@ bool metaverse_property_id_render(const struct metaverse_property_id *id,
 
     memcpy(out, token, tlen);
     out[tlen] = ':';
-    char *p = out + tlen + 1;
-    for (size_t i = 0; i < METAVERSE_PROPERTY_ROOT_LEN; i++) {
-        *p++ = k_hex[(id->root[i] >> 4) & 0x0f];
-        *p++ = k_hex[id->root[i] & 0x0f];
-    }
-    *p = '\0';
+    /* base/hex.h is the one hex codec in the tree; it emits lowercase and
+     * NUL-terminates, which is exactly the rendered form this file promises. */
+    zcl_hex_encode(id->root, METAVERSE_PROPERTY_ROOT_LEN, out + tlen + 1);
     return true;
-}
-
-static bool hex_nibble(char c, uint8_t *out)
-{
-    if (c >= '0' && c <= '9') { *out = (uint8_t)(c - '0'); return true; }
-    if (c >= 'a' && c <= 'f') { *out = (uint8_t)(c - 'a' + 10); return true; }
-    if (c >= 'A' && c <= 'F') { *out = (uint8_t)(c - 'A' + 10); return true; }
-    return false;
 }
 
 bool metaverse_property_id_parse(const char *text,
@@ -119,13 +107,12 @@ bool metaverse_property_id_parse(const char *text,
         LOG_FAIL(PROPID_LOG, "parse: root hex length %zu != %d",
                  strlen(hex), METAVERSE_PROPERTY_ROOT_LEN * 2);
 
+    /* Decoded into a local first, so a rejected root leaves *out untouched —
+     * the header promises that. zcl_hex_decode accepts A-F, which is the
+     * documented asymmetry: render only ever emits lowercase. */
     uint8_t root[METAVERSE_PROPERTY_ROOT_LEN];
-    for (size_t i = 0; i < METAVERSE_PROPERTY_ROOT_LEN; i++) {
-        uint8_t hi = 0, lo = 0;
-        if (!hex_nibble(hex[i * 2], &hi) || !hex_nibble(hex[i * 2 + 1], &lo))
-            LOG_FAIL(PROPID_LOG, "parse: non-hex digit at root byte %zu", i);
-        root[i] = (uint8_t)((hi << 4) | lo);
-    }
+    if (!zcl_hex_decode(hex, root, METAVERSE_PROPERTY_ROOT_LEN))
+        LOG_FAIL(PROPID_LOG, "parse: non-hex digit in root '%.64s'", hex);
 
     out->kind = kind;
     memcpy(out->root, root, sizeof(root));

@@ -10,6 +10,13 @@
  * re-read and re-decided here against current state, because every one of them
  * can change between plan and commit. See the public header. */
 
+// one-result-type-ok:grant-decision — the COMMIT half of the same service; see
+// the same marker on property_grant_service.c. COMMIT returns
+// `enum property_grant_reason` and chain verification returns
+// `enum metaverse_receipt_status`; both are closed taxonomies whose tokens the
+// tests assert exactly. The one bool export is the ZCL_TESTING-only tamper hook,
+// which has no operator-facing failure to report.
+
 #include "services/property_grant_service.h"
 
 #include "base/log_macros.h"

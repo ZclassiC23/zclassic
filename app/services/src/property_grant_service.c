@@ -10,8 +10,20 @@
  * file is store, clock, and refusal plumbing. See the public header for why
  * COMMIT re-checks rather than trusting its plan. */
 
+// one-result-type-ok:grant-decision — this service has no bool/errno failure
+// surface to converge: every fallible entry point already returns
+// `enum property_grant_reason`, a closed taxonomy where the refusal IS the
+// answer (GRANT_REVOKED, BUDGET_EXCEEDED, STALE_REVISION, …) and the tokens are
+// contract asserted by test_metaverse_grant. Wrapping that in struct zcl_result
+// would put the reason in a free-text string and lose the exhaustive
+// verdict→reason map. The four remaining bool exports are not that surface:
+// set_signing_seed / signer_pubkey are key-material predicates, and
+// pg_collect_ancestors / pg_ensure_key are private store helpers shared with
+// property_grant_commit.c through property_grant_store.h.
+
 #include "services/property_grant_service.h"
 
+#include "base/hex.h"
 #include "base/log_macros.h"
 #include "crypto/random_secret.h"
 #include "platform/clock.h"
@@ -161,17 +173,12 @@ void property_grant_service_reset(void)
  * is a guessable handle onto someone else's authority. */
 static bool draw_id(char *out, size_t out_cap)
 {
-    static const char hex[] = "0123456789abcdef";
     if (!out || out_cap < 33)
         LOG_FAIL(PG_LOG, "draw id: buffer %zu < 33", out_cap);
     uint8_t raw[16];
     if (!zcl_random_secret_bytes(raw, sizeof(raw), "metaverse_grant_id"))
         LOG_FAIL(PG_LOG, "draw id: CSPRNG failed");
-    for (size_t i = 0; i < sizeof(raw); i++) {
-        out[i * 2] = hex[(raw[i] >> 4) & 0x0f];
-        out[i * 2 + 1] = hex[raw[i] & 0x0f];
-    }
-    out[32] = '\0';
+    zcl_hex_encode(raw, sizeof(raw), out);  /* base/hex.h: the one hex codec */
     return true;
 }
 

@@ -5,7 +5,9 @@
 
 #include "metaverse/property_receipt.h"
 
+#include "base/hex.h"
 #include "base/log_macros.h"
+#include "base/serialize_le.h"
 #include "crypto/ed25519.h"
 #include "crypto/sha3.h"
 
@@ -58,19 +60,20 @@ static void put_str(uint8_t *out, size_t *off, const char *s, size_t width)
     *off += width;
 }
 
+/* Network byte order through the one byte-order codec (base/serialize_le.h),
+ * so the receipt body cannot drift from every other big-endian record in the
+ * tree — a hand-rolled shift ladder here would be a second definition of the
+ * same encoding. */
 static void put_u32be(uint8_t *out, size_t *off, uint32_t v)
 {
-    out[*off + 0] = (uint8_t)(v >> 24);
-    out[*off + 1] = (uint8_t)(v >> 16);
-    out[*off + 2] = (uint8_t)(v >> 8);
-    out[*off + 3] = (uint8_t)v;
+    zcl_write_u32_be(out + *off, v);
     *off += 4;
 }
 
 static void put_u64be(uint8_t *out, size_t *off, uint64_t v)
 {
-    for (int i = 7; i >= 0; i--)
-        out[(*off)++] = (uint8_t)(v >> (i * 8));
+    zcl_write_u64_be(out + *off, v);
+    *off += 8;
 }
 
 /* Two's-complement, big-endian. Negative values are representable so a
@@ -230,13 +233,8 @@ enum metaverse_receipt_status metaverse_receipt_chain_verify(
 bool metaverse_hash_hex(const uint8_t h[METAVERSE_HASH_LEN],
                        char *out, size_t out_cap)
 {
-    static const char hex[] = "0123456789abcdef";
     if (!h || !out || out_cap < (METAVERSE_HASH_LEN * 2 + 1))
         LOG_FAIL(RECEIPT_LOG, "hash hex: NULL arg or buffer too small");
-    for (size_t i = 0; i < METAVERSE_HASH_LEN; i++) {
-        out[i * 2] = hex[(h[i] >> 4) & 0x0f];
-        out[i * 2 + 1] = hex[h[i] & 0x0f];
-    }
-    out[METAVERSE_HASH_LEN * 2] = '\0';
+    zcl_hex_encode(h, METAVERSE_HASH_LEN, out);
     return true;
 }
