@@ -154,7 +154,13 @@ struct metaverse_property_view {
     struct metaverse_work_proof work;
 
     /* Actions the CURRENT STATE supports. Availability, not authority —
-     * intersect with a grant before acting. */
+     * intersect with a grant before acting.
+     *
+     * QUERIES never appear here. Reading a property is not gated on the
+     * object's state — an absent or incomplete object is still a thing you
+     * can ask about, and its honest answer IS the view you are holding. An
+     * empty mask therefore means "nothing may be done to this", not "nothing
+     * may be known about it". */
     uint32_t actions;
 
     /* Bounded size/completeness facts, zero when not applicable. */

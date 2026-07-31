@@ -231,7 +231,7 @@ static int t_action_set_codec(void)
                                           &set));
         ASSERT(set == (ACT(INSPECT) | ACT(HOST) | ACT(PUBLISH_REVISION)));
         char rendered[256];
-        ASSERT(metaverse_action_set_render(set, rendered, sizeof(rendered)));
+        ASSERT(metaverse_action_mask_format(set, rendered, sizeof(rendered)));
         ASSERT_STR_EQ(rendered, "inspect,host,publish-revision");
 
         /* One bad element fails the whole parse — a silently dropped element

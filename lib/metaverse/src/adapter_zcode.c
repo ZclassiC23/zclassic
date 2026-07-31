@@ -44,19 +44,20 @@
  * on-chain title for this node to move. PUBLISH_REVISION is present
  * because the publisher's own sequence is how a successor is named. */
 #define MV_ZCODE_ACTIONS_SIGNED_PRESENT                                      \
-    (METAVERSE_ACTION_INSPECT | METAVERSE_ACTION_HOST |                      \
-     METAVERSE_ACTION_PUBLISH_REVISION | METAVERSE_ACTION_LIST |             \
-     METAVERSE_ACTION_SELL | METAVERSE_ACTION_DELIVER |                      \
-     METAVERSE_ACTION_LEASE | METAVERSE_ACTION_ACCEPT_PAYMENT)
+    (METAVERSE_ACTION_HOST | METAVERSE_ACTION_PUBLISH_REVISION |             \
+     METAVERSE_ACTION_LIST_FOR_SALE | METAVERSE_ACTION_SELL |                \
+     METAVERSE_ACTION_DELIVER | METAVERSE_ACTION_LEASE |                     \
+     METAVERSE_ACTION_ACCEPT_PAYMENT)
 
 /* Complete bytes, but the authorship claim did not verify in this call.
  * Hosting bytes is still meaningful; selling or delivering them under an
  * unverified publisher claim is not. */
-#define MV_ZCODE_ACTIONS_UNSIGNED_PRESENT                                    \
-    (METAVERSE_ACTION_INSPECT | METAVERSE_ACTION_HOST)
+#define MV_ZCODE_ACTIONS_UNSIGNED_PRESENT (METAVERSE_ACTION_HOST)
 
-/* Bytes missing: nothing can be hosted or delivered. */
-#define MV_ZCODE_ACTIONS_INCOMPLETE (METAVERSE_ACTION_INSPECT)
+/* Bytes missing: nothing can be hosted or delivered, so the action set is
+ * empty. Inspecting the package is still possible; that is a QUERY
+ * (metaverse/property_action.h) and queries never appear in this mask. */
+#define MV_ZCODE_ACTIONS_INCOMPLETE (0u)
 
 struct mv_zcode_facts {
     bool have_manifest;
@@ -195,7 +196,7 @@ static bool zcode_show(const struct metaverse_adapter_ctx *ctx,
     e = vcs_package_index_find_root(index, id->root);
     if (!e) {
         out->status  = METAVERSE_STATUS_ABSENT;
-        out->actions = METAVERSE_ACTION_INSPECT;
+        out->actions = 0u;
         snprintf(out->provenance, sizeof(out->provenance),
                  "no persisted release envelope names this package root");
         snprintf(out->reason, sizeof(out->reason),

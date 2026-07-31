@@ -37,16 +37,20 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* One CAS-present blob supports these. Availability, not authority. */
+/* One CAS-present blob supports these. Availability, not authority.
+ * Inspection is absent because it is no longer an action: reading is a
+ * QUERY (metaverse/property_action.h), always available to a principal the
+ * grant lets look, and never gated on the object's state. */
 #define MV_CONTENT_ACTIONS_PRESENT                                           \
-    (METAVERSE_ACTION_INSPECT | METAVERSE_ACTION_HOST |                      \
-     METAVERSE_ACTION_LIST | METAVERSE_ACTION_SELL |                         \
-     METAVERSE_ACTION_DELIVER | METAVERSE_ACTION_LEASE |                     \
-     METAVERSE_ACTION_ACCEPT_PAYMENT)
+    (METAVERSE_ACTION_HOST | METAVERSE_ACTION_LIST_FOR_SALE |                \
+     METAVERSE_ACTION_SELL | METAVERSE_ACTION_DELIVER |                      \
+     METAVERSE_ACTION_LEASE | METAVERSE_ACTION_ACCEPT_PAYMENT)
 
 /* The manifest is known but its byte is not in the CAS. Nothing can be
- * hosted, sold, or delivered from an object whose bytes are absent. */
-#define MV_CONTENT_ACTIONS_INCOMPLETE (METAVERSE_ACTION_INSPECT)
+ * hosted, sold, or delivered from an object whose bytes are absent, and an
+ * empty action set says exactly that. Inspecting it is still possible; that
+ * is a query, and queries do not appear in this mask. */
+#define MV_CONTENT_ACTIONS_INCOMPLETE (0u)
 
 static const char k_content_provenance[] =
     "blob root commits length+SHA3-256 of the bytes only; no publisher, "
@@ -99,10 +103,10 @@ static bool content_show(const struct metaverse_adapter_ctx *ctx,
     zcl_hex_encode(id->root, 32, root_hex);
     if (!mv_manifest_read(ctx->zcode_dir, root_hex, &m)) {
         /* Asked and answered: the authority holds nothing here. ABSENT is
-         * a determined verdict, not a gap — INSPECT stays available so a
-         * caller may re-ask, nothing else does. */
+         * a determined verdict, not a gap. No ACTION is available on an
+         * object the authority does not hold; re-asking is a query. */
         out->status  = METAVERSE_STATUS_ABSENT;
-        out->actions = METAVERSE_ACTION_INSPECT;
+        out->actions = 0u;
         snprintf(out->provenance, sizeof(out->provenance), "%s",
                  k_content_provenance);
         snprintf(out->reason, sizeof(out->reason),

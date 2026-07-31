@@ -113,6 +113,10 @@ bool metaverse_receipt_body_bytes(const struct metaverse_receipt *r,
     put_str(out, &off, r->idempotency_key, METAVERSE_IDEMPOTENCY_KEY_MAX + 1);
     put_u32be(out, &off, (uint32_t)r->property.kind);
     put_bytes(out, &off, r->property.root, METAVERSE_ROOT_BYTES);
+    /* The action's stable BIT, which is what enum metaverse_action now holds
+     * and what a grant persists. There is no second numbering to translate
+     * from, so a receipt and the grant that authorized it name the action
+     * with the same 32-bit value. */
     put_u32be(out, &off, (uint32_t)r->action);
     put_i64be(out, &off, r->value_zat);
     put_i64be(out, &off, r->property_revision);
