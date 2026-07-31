@@ -1196,12 +1196,21 @@ int test_codeindex(void)
 
         /* ── 11: schema-version migration — a store missing ci_schema_version
          * is stale and fully rebuilds on the next open (recompute never repair). */
+        /* The expected tag is READ from the fresh build, never spelled out
+         * here. CI_SCHEMA_VERSION lives in codeindex_priv.h, which this TU
+         * cannot see; a literal copy of it in the test is a second source of
+         * truth that goes stale silently the moment the real one is bumped —
+         * and bumping it is routine, since any derived-schema change is
+         * required to. What is under test is the INVARIANT (a store that
+         * lost the key rebuilds and gets stamped again with whatever the
+         * current generation is), not the spelling of one generation. */
         char meta_val[64];
+        char stamped[64];
         CI_CHECK("fresh index stamps ci_schema_version",
                  published_meta_get(CG_FIX "/.codeindex/index.kv",
-                                    "ci_schema_version", meta_val,
-                                    sizeof(meta_val)) &&
-                 strcmp(meta_val, "cg1") == 0);
+                                    "ci_schema_version", stamped,
+                                    sizeof(stamped)) &&
+                 stamped[0] != '\0');
         CI_CHECK("drop the ci_schema_version key from the published index",
                  delete_meta_key(CG_FIX "/.codeindex/index.kv",
                                  "ci_schema_version"));
@@ -1215,7 +1224,7 @@ int test_codeindex(void)
                  published_meta_get(CG_FIX "/.codeindex/index.kv",
                                     "ci_schema_version", meta_val,
                                     sizeof(meta_val)) &&
-                 strcmp(meta_val, "cg1") == 0);
+                 strcmp(meta_val, stamped) == 0);
         if (migr) {
             struct ci_ref refs[16];
             int ne = codeindex_callees(migr, "cg_main", refs, 16);
