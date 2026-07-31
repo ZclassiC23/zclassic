@@ -1235,11 +1235,18 @@ $(BIN_DIR)/inspect_html: tools/inspect_html.c lib/base/src/safe_alloc.c
 	$(CC) -std=c23 -O2 -Wall -Wextra \
 	    -Ilib/base/include -Ilib/util/include -o $@ $^
 
+# These two run on EVERY make invocation (they are prerequisites of the
+# -include'd view bootstrap, so they are re-checked before any goal), which
+# meant every target in this repo — `make t-list` included — opened with two
+# lines of command echo on STDOUT. That is fine for a human and fatal for a
+# target whose stdout is meant to be a machine-readable list. The echo is
+# suppressed; nothing is lost, because gen_templates itself reports what it
+# did (file counts, byte counts, "unchanged") on stderr either way.
 $(TMPL_GEN): $(TMPL_SRC) $(TMPL_TOOL)
-	$(TMPL_TOOL) app/views/templates $@ app/views/css
+	@$(TMPL_TOOL) app/views/templates $@ app/views/css
 
 $(SITE_CSS_GEN): $(SITE_CSS_SRC) $(TMPL_TOOL)
-	$(TMPL_TOOL) --single-css $< $@ site_css SITE_CSS_H
+	@$(TMPL_TOOL) --single-css $< $@ site_css SITE_CSS_H
 
 # Included near the top of this file. Updating it after its generated-header
 # prerequisites makes GNU Make restart before any ordinary target recipe runs.
@@ -1444,13 +1451,156 @@ test-parallel: $(TEST_PARALLEL_REL_CANDIDATE) $(BIN_DIR)/zclassic23-package-veri
 # `make t ONLY=<group>` always rebuilds the harness first, closing that trap.
 .PHONY: t t-fast t-asan asan-ci t-tsan tsan-ci t-changed ff verify-change watcher-safety-gates syntax-check build-only fast-compile fast-changed-compile dev-build-only dev-bin dev-asan zclassic23-dev-asan dev-tsan zclassic23-dev-tsan zclassic23-dev fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild lint-fast fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop dev-watch dev-watch-once dev-watch-selftest dev-activation-selftest dev-loop-selftest native-dev-loop-wait-selftest native-dev-failure-selftest agent-index compdb dev-loop-bench dev-loop-bench-selftest hotswap-sim immutable-history-canaries historical-canaries agent-dev-status agent-dev-recover dev-recovery-selftest agent-clear-stale-dev-reindex agent-doctor doctor-build stage-dev-bin agent-stage-dev deploy-dev-fast agent-deploy-fast
 
+# ── ONLY= is validated BEFORE anything compiles ──────────────────────────
+# Every focused target below carried its ONLY= check in the RECIPE. Make builds
+# prerequisites before it runs a recipe, so that check could not fire until the
+# whole test binary had already been linked. Two failures followed from it:
+#
+#   make t-fast ONLY=<substring>    (the placeholder typed literally, straight
+#                                    out of CLAUDE.md) paid a full test-binary
+#                                    compile and then died in the shell with
+#                                    `Syntax error: end of file unexpected`,
+#                                    because `<substring>` was pasted unquoted
+#                                    into the recipe's sh -c and read as a
+#                                    redirection.
+#   make t-fast ONLY=typoed_name    paid the same compile to learn the name
+#                                    matched nothing.
+#
+# The validation therefore runs at Makefile PARSE time — before make considers
+# a single prerequisite — and resolves ONLY= against the registered group list
+# using the runner's own substring rule (tools/dev/test-group-list.sh, which
+# reads the X-macro registry directly and needs no build).
+#
+# That resolution is also what makes the recipes' unquoted `--only=$(ONLY)`
+# safe, and the reason is worth stating rather than assuming: a value only gets
+# past the guard if it is a literal substring of a registered group name, and
+# every registered name is [A-Za-z_0-9] only. So by the time a recipe runs,
+# ONLY cannot contain a redirection, a quote, a space, or any other shell
+# metacharacter. `<substring>` never reaches sh at all.
+T_LIST_TOOL := tools/dev/test-group-list.sh
+ONLY_REQUIRED_GOALS := t t-fast t-asan t-tsan
+ONLY_ACTIVE_GOALS := $(filter $(ONLY_REQUIRED_GOALS),$(MAKECMDGOALS))
+ifneq ($(ONLY_ACTIVE_GOALS),)
+  ONLY_GOAL := $(firstword $(ONLY_ACTIVE_GOALS))
+  ifeq ($(strip $(ONLY)),)
+    $(error make $(ONLY_GOAL): ONLY= is required and must name a test group. \
+      usage: make $(ONLY_GOAL) ONLY=<group-substr>   e.g. make $(ONLY_GOAL) ONLY=boot_phase. \
+      List every registered group with: make t-list)
+  endif
+  # A single quote in ONLY= would break the quoting below; reject it rather
+  # than let it reach a shell.
+  ifneq ($(findstring ',$(ONLY)),)
+    $(error make $(ONLY_GOAL): ONLY= must not contain a single quote)
+  endif
+  ONLY_MATCHED := $(shell $(T_LIST_TOOL) --match '$(ONLY)' 2>/dev/null)
+  ifeq ($(strip $(ONLY_MATCHED)),)
+    ONLY_NEAR := $(shell $(T_LIST_TOOL) --suggest '$(ONLY)' 2>/dev/null | tr '\n' ' ')
+    ifeq ($(strip $(ONLY_NEAR)),)
+      ONLY_NEAR := (none — see `make t-list`)
+    endif
+    $(error make $(ONLY_GOAL): ONLY='$(ONLY)' matches NO registered test group — \
+      refusing before the test binary is built. \
+      Closest candidates: $(ONLY_NEAR))
+  endif
+  $(info $(ONLY_GOAL): ONLY='$(ONLY)' selects $(words $(ONLY_MATCHED)) group(s): $(ONLY_MATCHED))
+endif
+
+# Print every REGISTERED test group, one per line. No build, no test binary —
+# it parses the X-macro registry in lib/test/src/test_parallel.c. This is THE
+# documented way to enumerate groups; the old `git grep -hoE 'X\(...\)'`
+# incantation drops the test_/spec_ prefixes and mislabels 28 spec groups.
+.PHONY: t-list
+t-list:
+	@$(T_LIST_TOOL)
+
+# ── Agent-harness reporting targets ──────────────────────────────────────
+# Three read-only targets the orchestrator was doing by hand. None builds,
+# none writes anything, none touches a datadir.
+.PHONY: test-registry-report agent-baseline worktree-gc
+
+# Which registered groups did a run actually EXECUTE, and why not the rest.
+# Reads the runner's own .cache/test-timing/last-run.json as the evidence for
+# EXECUTED; override with ZCL_TEST_TIMING_JSON=<path> to reconcile against a
+# run recorded in another checkout. Exits non-zero on an UNACCOUNTED-FOR group.
+test-registry-report:
+	@tools/dev/test-registry-report.sh
+
+# The lane pin, as key=value. Deterministic, no timestamp — two runs on the
+# same tree are byte-identical, which is the whole point.
+#   make agent-baseline BASELINE_FILES="core/MANIFEST.sha3 Makefile"
+# The lint gate count is passed from $(words $(LINT_GATES)) — the umbrella's
+# own definition — rather than re-counted from a doc that can go stale.
+agent-baseline:
+	@ZCL_BASELINE_LINT_GATES='$(words $(LINT_GATES))' \
+	 BASELINE_FILES='$(BASELINE_FILES)' tools/dev/agent-baseline.sh
+
+# Classify every git worktree and remove only the provably dead ones.
+# DRY RUN by default — CONFIRM=1 is required before anything is deleted.
+#   make worktree-gc                          dry run, agent worktree pool
+#   make worktree-gc SCOPE=all                dry run, every worktree
+#   make worktree-gc MIN_AGE_HOURS=4          shorten the recency hold
+#   make worktree-gc CONFIRM=1                delete the DEAD ones
+worktree-gc:
+	@CONFIRM='$(CONFIRM)' SCOPE='$(or $(SCOPE),pool)' \
+	 MIN_AGE_HOURS='$(or $(MIN_AGE_HOURS),24)' tools/dev/worktree-gc.sh
+
+# ── Gate receipts: a lane's claims, checkable without re-running them ─────
+# "make lint passed" costs the orchestrator a full re-run to verify, and has
+# been wrong twice here (a test green only because it read the live node's
+# datadir; a lint gate CLEAN because printf|grep -q inverted under pipefail).
+# Wrap the gate instead: the receipt is a byproduct of running it, holding the
+# command, HEAD, dirty state, exit status, wall/child-CPU time, and a SHA3 of
+# the captured output, which is stored alongside. See the forgery model in
+# tools/agent/gate-receipt.sh — this is EVIDENCE, not proof.
+.PHONY: gate-receipt check-claims agent-velocity agent-sha3
+
+AGENT_SHA3_SRCS := tools/agent/agent_sha3.c lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c
+agent-sha3: $(BIN_DIR)/agent_sha3
+$(BIN_DIR)/agent_sha3: $(AGENT_SHA3_SRCS)
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror \
+	    -Ilib/crypto/include -Ilib/support/include -Ilib/base/include \
+	    -o $@ $(AGENT_SHA3_SRCS)
+
+# Run a gate and leave a receipt. The wrapper is transparent — same output,
+# same exit status — so this is a drop-in for the bare command:
+#   make gate-receipt GATE=lint CMD='make lint'
+#   make gate-receipt GATE=t-fast CMD='make t-fast ONLY=boot_phase'
+# Or call it directly, which avoids a second Makefile parse:
+#   tools/agent/gate-receipt.sh --gate lint -- make lint
+gate-receipt:
+	@if [ -z "$(GATE)" ] || [ -z "$(CMD)" ]; then \
+	    echo "usage: make gate-receipt GATE=<slug> CMD='<command>'"; \
+	    echo "  e.g. make gate-receipt GATE=lint CMD='make lint'"; \
+	    exit 2; \
+	fi
+	@RECEIPTS='$(RECEIPTS)'; \
+	 tools/agent/gate-receipt.sh --gate '$(GATE)' \
+	    $${RECEIPTS:+--dir "$$RECEIPTS"} -- $(CMD)
+
+# Verify a lane's gate claims from its receipts. Non-zero if a claimed gate
+# has no receipt, if a receipt does not describe the current HEAD, or if the
+# stored output no longer backs the verdict.
+#   make check-claims CLAIMS="lint t-fast"
+check-claims:
+	@RECEIPTS='$(RECEIPTS)'; \
+	 tools/agent/check-claims.sh $${RECEIPTS:+--dir "$$RECEIPTS"} \
+	    $(if $(CLAIMS),--require '$(CLAIMS)') $(if $(STRICT),--strict)
+
+# What a lane cost and produced, computed rather than remembered. Everything
+# that is not mechanically derivable is printed as a NOT-DERIVABLE line naming
+# what the orchestrator must supply — never silently omitted.
+#   make agent-velocity BASE=b82b40e77
+agent-velocity:
+	@RECEIPTS='$(RECEIPTS)'; \
+	 tools/agent/agent-velocity.sh $(if $(BASE),--base '$(BASE)') \
+	    $(if $(HEAD),--head '$(HEAD)') $(if $(AGAINST),--against '$(AGAINST)') \
+	    $${RECEIPTS:+--receipts "$$RECEIPTS"}
+
 # Run ONE test group, always rebuilding the harness first:
 #   make t ONLY=service_state_driver
 # Checkout-locked — see the `test-parallel` target above for why.
 t: $(TEST_PARALLEL_REL_CANDIDATE)
-	@if [ -z "$(ONLY)" ]; then \
-	  echo "usage: make t ONLY=<group-substr>   (e.g. make t ONLY=stage_reducer_unwedge)"; \
-	  exit 2; fi
 	@mkdir -p "$(BUILD_DIR)"
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
 	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_REL_ACTIVE) --only=$(ONLY)'
@@ -1460,9 +1610,6 @@ t: $(TEST_PARALLEL_REL_CANDIDATE)
 # before push/release or when chasing optimizer-dependent behavior.
 # Checkout-locked — see the `test-parallel` target above for why.
 t-fast: $(TEST_PARALLEL_FAST_CANDIDATE)
-	@if [ -z "$(ONLY)" ]; then \
-	  echo "usage: make t-fast ONLY=<group-substr>   (e.g. make t-fast ONLY=node_health_service)"; \
-	  exit 2; fi
 	@mkdir -p "$(BUILD_DIR)"
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
 	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_FAST_ACTIVE) --only=$(ONLY)'
@@ -1505,9 +1652,6 @@ endif
 # the deep-recursion headroom the suite needs.
 # Checkout-locked — see the `test-parallel` target above for why.
 t-asan: $(TEST_ASAN_CANDIDATE)
-	@if [ -z "$(ONLY)" ]; then \
-	  echo "usage: make t-asan ONLY=<group-substr>   (e.g. make t-asan ONLY=test_bloom)"; \
-	  exit 2; fi
 	@mkdir -p "$(BUILD_DIR)"
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
 	  sh -c 'ulimit -s 1048576 && exec $(TEST_ASAN_ACTIVE) --only=$(ONLY)'
@@ -1551,9 +1695,6 @@ asan-ci: $(TEST_ASAN_CANDIDATE)
 # Checkout-locked — see the `test-parallel` target above for why.
 TSAN_SUPP_FILE = $(CURDIR)/tools/tsan.supp
 t-tsan: $(TEST_TSAN_CANDIDATE)
-	@if [ -z "$(ONLY)" ]; then \
-	  echo "usage: make t-tsan ONLY=<group-substr>   (e.g. make t-tsan ONLY=test_supervisor)"; \
-	  exit 2; fi
 	@mkdir -p "$(BUILD_DIR)"
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
 	  sh -c 'ulimit -s 1048576 && \
@@ -6682,6 +6823,26 @@ check-no-stray-root-files:
 check-no-retired-agent-protocol:
 	@./tools/lint/check_no_retired_agent_protocol.sh
 
+# Nothing under test, and no command an agent is told to copy, may be aimed at
+# the OPERATOR'S LIVE NODE. Three prongs, all measured on this tree:
+#   A  a test that constructs the exact live datadir path (~/.zclassic,
+#      ~/.zclassic-c23) — shrink-only, 8 sites in 7 files today;
+#   B  a test that resolves GetDataDir()/GetDefaultDataDir() and never calls
+#      SetDataDir() — HARD, zero today. This is the shape that made
+#      test_chain_integrity_failed_condition pass off the LIVE
+#      blocks/blk00000.dat as its fixture, which a passing suite ON THIS HOST
+#      structurally cannot reveal;
+#   C  a doc/script showing an invocation of a leaf that ACCEPTS a `datadir`
+#      input without naming one, so a copied line hits the live node —
+#      shrink-only, 13 sites in 5 files, including the `app service access`
+#      example that ran the boot ceremony on the operator's node.db.
+# The datadir-taking leaf set is derived from argument 10 of the leaf macros in
+# config/commands/*.def, never hand-listed.
+check-live-datadir-isolation:
+	@echo "══ LINT: nothing under test aims at the live datadir ══"
+	@./tools/lint/check_live_datadir_isolation.sh --selftest
+	@./tools/lint/check_live_datadir_isolation.sh
+
 # wf/dx-scanner-immunity regression proof — plants a transient lint-gate
 # fixture mid-scan and proves: (1) a production scan ignores it, (2) a
 # selftest-style direct invocation still detects it (detection unweakened),
@@ -6846,6 +7007,7 @@ LINT_GATES := \
     check-no-trust-state-ordering \
     check-no-warning-suppression \
     check-fuzz-artifact-ledger \
+    check-live-datadir-isolation \
     check-standalone-tools-link
 
 # The driver execs gate scripts directly, so the two gates backed by a built

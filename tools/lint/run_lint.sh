@@ -141,6 +141,7 @@ gate_command() {
         check-sandbox-wired)               echo './tools/lint/check_sandbox_wired.sh' ;;
         check-no-shellouts)                echo './tools/lint/check_no_shellouts.sh' ;;
         check-standalone-tools-link)       echo './tools/lint/check_standalone_tools_link.sh' ;;
+        check-live-datadir-isolation)      echo './tools/lint/check_live_datadir_isolation.sh --selftest && ./tools/lint/check_live_datadir_isolation.sh' ;;
         check-no-writer-below-sealed-frontier) echo './tools/lint/check_no_writer_below_sealed_frontier.sh' ;;
         check-peer-floor-single-source)    echo './tools/lint/check_peer_floor_single_source.sh' ;;
         check-proc-self-shim)              echo './tools/lint/check_proc_self_shim.sh' ;;

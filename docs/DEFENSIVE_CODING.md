@@ -890,6 +890,7 @@ add/remove a gate.
 - `check-no-trust-state-ordering`
 - `check-no-warning-suppression`
 - `check-fuzz-artifact-ledger`
+- `check-live-datadir-isolation`
 - `check-standalone-tools-link`
 <!-- LINT-GATES-END -->
 
