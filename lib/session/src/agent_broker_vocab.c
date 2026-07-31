@@ -17,12 +17,22 @@
 
 /* ── the joined rows ────────────────────────────────────────────────────── */
 
+/* THE QUERY/ACTION SPLIT, ENFORCED BY THE PREPROCESSOR. The operation column
+ * is pasted onto the prefix its own CLASS column names, and stored in the
+ * matching arm of the row's union. `X(INSPECT, QUERY, HOST, false)` expands to
+ * METAVERSE_QUERY_HOST and `X(HOST, ACTION, ENUMERATE_PROPERTIES, false)` to
+ * METAVERSE_ACTION_ENUMERATE_PROPERTIES — neither identifier exists, so
+ * neither builds. Nothing here has to be remembered or reviewed for. */
+#define MVAP_CANON_QUERY_INIT(op_)   .canon.query  = METAVERSE_QUERY_##op_
+#define MVAP_CANON_ACTION_INIT(op_)  .canon.action = METAVERSE_ACTION_##op_
+#define MVAP_CANON_INIT(class_, op_) MVAP_CANON_##class_##_INIT(op_)
+
 static const struct mvap_verb_row k_rows[] = {
-#define MVAP_VERB_ROW(id_, class_, action_, zero_ok_)                        \
+#define MVAP_VERB_ROW(id_, class_, op_, zero_ok_)                            \
     { .wire = MVAP_VERB_##id_,                                               \
       .verb_class = MVAP_VERB_CLASS_##class_,                                \
-      .action = METAVERSE_ACTION_##action_,                                  \
-      .allows_zero_property_id = (zero_ok_) },
+      .allows_zero_property_id = (zero_ok_),                                 \
+      MVAP_CANON_INIT(class_, op_) },
     MVAP_VERB_CANON_TABLE(MVAP_VERB_ROW)
 #undef MVAP_VERB_ROW
 };
@@ -45,6 +55,22 @@ _Static_assert(MVAP_VERB_TABLE_ROWS == MVAP_VERB_CANON_TABLE_ROWS,
                "to MVAP_VERB_TABLE and MVAP_VERB_CANON_TABLE together");
 _Static_assert(MVAP_VERB_TABLE_ROWS == (int)MVAP_VERB__COUNT - 1,
                "MVAP_VERB__COUNT must be one past the highest wire value");
+
+/* The broker verb each canonical QUERY is spoken as. Two tables name the same
+ * two reads under different spellings — INSPECT_PROPERTY is wire verb INSPECT,
+ * ENUMERATE_PROPERTIES is wire verb LIST — and the numbers must agree, because
+ * mvap_request_to_query_request() below reads the query off the JOIN row while
+ * metaverse_operation_from_wire() reads it off the canonical table. Asserting
+ * per row is what keeps those two reads the same answer; a third query added
+ * to METAVERSE_QUERY_TABLE without a line here does not compile. */
+#define MVAP_VERB_OF_QUERY_INSPECT_PROPERTY     MVAP_VERB_INSPECT
+#define MVAP_VERB_OF_QUERY_ENUMERATE_PROPERTIES MVAP_VERB_LIST
+#define MVAP_QUERY_WIRE_ASSERT(id_, name_, wire_, zero_)                     \
+    _Static_assert((int)MVAP_VERB_OF_QUERY_##id_ == (int)(wire_),            \
+                   "a canonical query's wire value and the broker verb that " \
+                   "carries it must be the same number");
+METAVERSE_QUERY_TABLE(MVAP_QUERY_WIRE_ASSERT)
+#undef MVAP_QUERY_WIRE_ASSERT
 
 /* The wire kind enum and METAVERSE_KIND_TABLE are numerically identical row
  * for row. Asserted here rather than assumed: a kind appended to one and not
@@ -101,20 +127,45 @@ bool mvap_verb_is_mutation(uint32_t wire)
     return mvap_verb_is_action(wire);
 }
 
+/* ── the canonical operation, in the row's OWN vocabulary ───────────────────
+ * The class gate is the whole point. A caller asking an enumeration row for an
+ * action bit is asking a question the row has no answer to, and the old shape
+ * answered it anyway — with the reserved INSPECT bit, the same value the
+ * inspection row gave, which is how a request to enumerate came to be served
+ * as an inspection. Both accessors leave `*out` untouched on a refusal. */
+bool mvap_verb_row_action(const struct mvap_verb_row *r,
+                          enum metaverse_action *out)
+{
+    if (!r || !out || r->verb_class != MVAP_VERB_CLASS_ACTION)
+        return false;
+    *out = r->canon.action;
+    return true;
+}
+
+bool mvap_verb_row_query(const struct mvap_verb_row *r,
+                         enum metaverse_query *out)
+{
+    if (!r || !out || r->verb_class != MVAP_VERB_CLASS_QUERY)
+        return false;
+    *out = r->canon.query;
+    return true;
+}
+
 bool mvap_verb_to_action(uint32_t wire, enum metaverse_action *out)
 {
-    const struct mvap_verb_row *r = mvap_verb_row(wire);
-    if (!r || !out)
-        return false;
-    *out = r->action;
-    return true;
+    return mvap_verb_row_action(mvap_verb_row(wire), out);
+}
+
+bool mvap_verb_to_query(uint32_t wire, enum metaverse_query *out)
+{
+    return mvap_verb_row_query(mvap_verb_row(wire), out);
 }
 
 uint32_t mvap_verb_from_action(enum metaverse_action action)
 {
     for (size_t i = 0; i < sizeof(k_rows) / sizeof(k_rows[0]); i++)
         if (k_rows[i].verb_class == MVAP_VERB_CLASS_ACTION &&
-            k_rows[i].action == action)
+            k_rows[i].canon.action == action)
             return k_rows[i].wire;
     return MVAP_VERB_NONE;
 }
@@ -197,12 +248,15 @@ bool mvap_request_to_query_request(const struct mvap_request *req,
     if (!row)
         LOG_FAIL(VOCAB_TAG, "verb %u names no row in the canonical join",
                  req->verb);
-    if (row->verb_class != MVAP_VERB_CLASS_QUERY)
+    /* WHICH query this is comes off the join row, so INSPECT_PROPERTY and
+     * ENUMERATE_PROPERTIES arrive here as two different canonical values and
+     * stay two different values for every consumer downstream. The row's wire
+     * value and the canonical query's own wire value are asserted equal at
+     * compile time above, so this is the same answer the canonical table
+     * gives — read once, from the join. */
+    enum metaverse_query q;
+    if (!mvap_verb_row_query(row, &q))
         LOG_FAIL(VOCAB_TAG, "verb %u is not a query", req->verb);
-
-    /* Which query this wire verb IS comes from the canonical query table, not
-     * from a second mapping kept here. */
-    enum metaverse_query q = metaverse_query_from_wire(req->verb);
     if (q == METAVERSE_QUERY_NONE)
         LOG_FAIL(VOCAB_TAG, "query verb %u has no canonical query", req->verb);
 
@@ -237,13 +291,19 @@ bool mvap_request_to_action_request(const struct mvap_request *req,
     if (!row)
         LOG_FAIL(VOCAB_TAG, "verb %u names no row in the canonical join",
                  req->verb);
+    /* A QUERY has no action to project, and the refusal is the accessor's, not
+     * a class test restated here. Before the split this function would happily
+     * build an action request for a read, carrying the reserved INSPECT bit. */
+    enum metaverse_action action;
+    if (!mvap_verb_row_action(row, &action))
+        LOG_FAIL(VOCAB_TAG, "verb %u is not an action", req->verb);
     if (req->value_zats > (uint64_t)INT64_MAX)
         LOG_FAIL(VOCAB_TAG, "value %llu cannot be a canonical zatoshi amount",
                  (unsigned long long)req->value_zats);
 
     memset(out, 0, sizeof(*out));
     snprintf(out->actor, sizeof(out->actor), "%s", actor);
-    out->action = row->action;
+    out->action = action;
 
     enum metaverse_kind kind = mvap_kind_to_metaverse(req->kind);
     out->property.kind =
@@ -256,7 +316,7 @@ bool mvap_request_to_action_request(const struct mvap_request *req,
 
     /* Whether `param` IS a counterparty is a canonical fact about the action,
      * never a judgement this file makes about the verb. */
-    if (metaverse_action_uses_counterparty(row->action))
+    if (metaverse_action_uses_counterparty(action))
         snprintf(out->counterparty, sizeof(out->counterparty), "%s",
                  req->param);
 

@@ -339,6 +339,83 @@ struct agent_broker_node_ops {
     void *ctx;
 };
 
+/* ── the live authority ─────────────────────────────────────────────────── */
+
+/* The narrowing a broker SESSION adds on top of the canonical verdict, and
+ * the only thing about authority the session is allowed to hold by value.
+ *
+ * Every field here can do exactly one thing: REFUSE. There is no field whose
+ * value can turn a canonical NO into a YES, which is why copying it into the
+ * session is safe while copying a grant is not. It is derived MECHANICALLY
+ * from the canonical grant at bind time (agent_broker_scope_from_grant), never
+ * hand-authored beside it, so there is no second policy that can drift away
+ * from the one the operator actually issued. */
+struct agent_broker_scope {
+    uint8_t  properties[AGENT_GRANT_MAX_PROPS][MVAP_PROPERTY_ID_LEN];
+    size_t   n_properties;
+    uint32_t kinds_mask;          /* bit N == enum mvap_kind N               */
+    uint64_t max_value_zats;      /* per-action ceiling under the cumulative */
+};
+
+/* Derive the session narrowing from the grant the session is bound to. */
+void agent_broker_scope_from_grant(const struct agent_grant *g,
+                                   struct agent_broker_scope *out);
+
+/* Apply the narrowing to one request. MVAP_OK or a named refusal. Pure, and
+ * structurally incapable of widening: every branch returns either OK or a
+ * DENIED_*. */
+int32_t agent_broker_scope_check(const struct agent_broker_scope *sc,
+                                 const struct mvap_request *req);
+
+/* WHAT A BROKER SESSION HOLDS INSTEAD OF A GRANT.
+ *
+ * It used to hold `struct agent_grant grant` BY VALUE, and every authorize and
+ * every debit read and wrote that copy. The consequence was not subtle: an
+ * operator revoking the grant, shortening its expiry, or cutting its budget
+ * changed the store and changed NOTHING about a broker session already
+ * running. The session went on answering out of the snapshot it took when it
+ * started, for as long as the agent stayed connected. Revocation was a
+ * property of new sessions only.
+ *
+ * So the session now holds a REFERENCE and no authority at all. There is no
+ * grant in `struct agent_broker_session` to go stale, and no fallback path
+ * that could read one: when the reference is unbound or the provider cannot
+ * answer, the request is REFUSED (MVAP_ERR_DENIED_NO_GRANT). "Could not reach
+ * the authority" and "the authority said no" have the same effect, which is
+ * the only arrangement in which the first cannot be used to obtain the
+ * second.
+ *
+ * LIFETIME: `provider` and `provider_ctx` are BORROWED. The registry borrows
+ * the provider pointer too (agent_broker_provider_install), so both the
+ * provider object and its context must have static lifetime. A stack-local
+ * provider is a dangling pointer, not a style choice. */
+struct agent_authority_ref {
+    const struct agent_broker_provider *provider;  /* borrowed, static      */
+    void *provider_ctx;                            /* borrowed, static      */
+    char  canonical_grant_id[AGENT_GRANT_ID_MAX + 1];
+    char  principal[AGENT_PRINCIPAL_MAX + 1];
+    struct agent_broker_scope scope;
+    bool  bound;                  /* false == UNGRANTED, and it fails closed */
+};
+
+/* Operator-facing status about the authority. EXPLICITLY LABELLED as status:
+ * nothing on a decision path may read this struct, and nothing in it is
+ * consulted by agent_broker_handle(). It exists so `metaverse agent status`
+ * can say WHICH authority is live and how durable it is, without the broker
+ * keeping a second copy of the grant to render. */
+struct agent_authority_status {
+    char     authority_source[64];   /* who issued it, e.g. "grant-id"      */
+    bool     live_authority;         /* every decision re-reads the store   */
+    bool     ephemeral;              /* the store does not survive a restart */
+    char     canonical_grant_id[AGENT_GRANT_ID_MAX + 1];
+    char     principal[AGENT_PRINCIPAL_MAX + 1];
+    bool     revoked;
+    uint64_t budget_zat;
+    uint64_t spent_zat;
+    uint64_t authority_generation;
+    uint8_t  fingerprint[32];
+};
+
 /* Where the broker gets its REAL authority and its REAL property surface.
  *
  * lib/ sits below app/services, so the property catalog and the property grant
@@ -346,11 +423,37 @@ struct agent_broker_node_ops {
  * nothing registered `agent_broker_mode_main()` REFUSES to run. That is the
  * point: a broker that cannot reach the real catalog must not fall back to a
  * fixture, because a fixture grant that authorizes real-looking actions is
- * exactly the failure this seam exists to make impossible. */
+ * exactly the failure this seam exists to make impossible.
+ *
+ * REGISTRATION GRANTS NOTHING. `bind` is a separate call, made AFTER the
+ * confined child has been forked, and a provider that was handed no explicit
+ * operator-selected grant source must refuse it. */
 struct agent_broker_provider {
-    /* Fill `out` with the grant this broker session is to hold. Return false
-     * to refuse the session (no grant, no broker). */
-    bool (*grant)(void *ctx, struct agent_grant *out);
+    /* Bind this session to an EXISTING canonical grant. Fills the immutable
+     * reference — canonical id, principal, and the narrowing derived from
+     * that grant. Returns false to refuse the session; `why` (when non-NULL)
+     * receives the named reason. Called ONCE, after the fork. */
+    bool (*bind)(void *ctx, struct agent_authority_ref *out, char *why,
+                 size_t why_cap);
+
+    /* THE LIVE DECISION. Consults the authority AS IT IS NOW — no cached
+     * verdict, no session copy. MVAP_OK or the named refusal. Called for
+     * every request, twice per action (once on the claimed kind, once on the
+     * catalog's). */
+    int32_t (*authorize)(void *ctx, const struct agent_authority_ref *ref,
+                         const struct mvap_request *req, int64_t now_ms);
+
+    /* Record a committed action against the live authority (budget, rate
+     * window). Returns false when the authority refused the debit, which the
+     * broker logs — it never silently proceeds. */
+    bool (*debit)(void *ctx, const struct agent_authority_ref *ref,
+                  const struct mvap_request *req, int64_t now_ms);
+
+    /* Optional. Fill the labelled status snapshot. Never consulted by a
+     * decision. */
+    bool (*status)(void *ctx, const struct agent_authority_ref *ref,
+                   struct agent_authority_status *out);
+
     /* The property surface the grant acts on. */
     struct agent_broker_node_ops (*ops)(void *ctx);
     void *ctx;
@@ -359,6 +462,20 @@ struct agent_broker_provider {
 
 void agent_broker_provider_install(const struct agent_broker_provider *p);
 const struct agent_broker_provider *agent_broker_provider_get(void);
+
+/* Bind `s` to the REGISTERED provider's authority: fills `ref`, points
+ * `s->authority` at it, and installs the provider's property surface into
+ * `s->ops`. `ref` must OUTLIVE `s` — the session borrows it and never copies
+ * it. Call once, AFTER the confined child has been forked.
+ *
+ * False means UNGRANTED, which is a served state and not a startup failure:
+ * the socket still comes up and every request is refused by name, so an
+ * operator sees the reason per request instead of a process that vanished.
+ * `why` (optional) receives that reason. */
+struct agent_broker_session;
+bool agent_broker_session_bind(struct agent_broker_session *s,
+                               struct agent_authority_ref *ref, char *why,
+                               size_t why_cap);
 
 /* The fixture catalog and demo grant exist ONLY in a build compiled with
  * -DZCL_TESTING; in a production binary the symbols below are not declared and
@@ -378,20 +495,228 @@ void agent_broker_fixture_property_id(size_t index,
 struct agent_broker_node_ops agent_broker_fixture_ops(void);
 
 /* The demo grant + fixture ops as a provider, for the adversarial demo that
- * drives `--metaverse-broker --fixture`. */
+ * drives `--metaverse-broker --fixture`. The fixture's authority lives in the
+ * fixture, not in the session, so the demo's revocation below is a real live
+ * revocation and not a poke at a session copy. */
 void agent_broker_install_fixture_provider(void);
+
+/* Revoke the fixture provider's live authority. A session already running is
+ * affected immediately, because it holds no copy of it. */
+void agent_broker_fixture_revoke(void);
+
+/* Move the fixture provider's authority clock, so a test can walk past an
+ * expiry without sleeping. `ms` is an offset added to the wall clock. */
+void agent_broker_fixture_advance_clock(int64_t ms);
+
+/* Install `g` as the fixture provider's live authority, and bind a session to
+ * it. Returns false when the grant cannot be represented. */
+void agent_broker_fixture_set_grant(const struct agent_grant *g);
+
+/* The fixture provider's authority as it stands right now, for a test that
+ * needs to assert on it. */
+void agent_broker_fixture_get_grant(struct agent_grant *out);
 #endif
 
-/* ── the broker session ─────────────────────────────────────────────────── */
+/* ── idempotency: the identity of a request, not just its number ────────── */
 
 #define AGENT_IDEMPOTENCY_SLOTS 32
 
-/* One served connection. `grant` is BY VALUE here and this struct lives only in
- * the broker process — that is the mechanical reason the child cannot read it.
- * The idempotency ring makes a replayed request_id return the FIRST outcome
- * instead of committing twice. */
+/* THE CANONICAL REQUEST DIGEST — SHA3-256 over everything that can change what
+ * a request ASKS FOR, plus the authority it is asked under.
+ *
+ * WHY IT EXISTS. The ring used to key a replay on `request_id` alone (with the
+ * verb compared at the call site, and nothing else). So request_id=7 INSPECT
+ * property A followed by request_id=7 INSPECT property B returned property A's
+ * answer to a question about property B — a confused-deputy read, produced by
+ * the broker itself, with no refusal anywhere. Comparing the FULL digest is
+ * what makes "the same request_id" mean "the same request".
+ *
+ * THE PREIMAGE, field by field, in this order — every variable-length field is
+ * length-prefixed, so no two distinct requests can share a preimage:
+ *
+ *   19 bytes  "zcl.mvap.request.v1"  domain-separation tag, no NUL
+ *    u32 le   protocol version       req->version, with 0 normalized to
+ *                                    MVAP_VERSION (0 means "the current one"
+ *                                    everywhere else on this wire, so the two
+ *                                    spellings must digest alike)
+ *    u32 le   verb                   the wire verb value
+ *    u32 le   request_id             the key itself, so a slot cannot be read
+ *                                    as belonging to another id
+ *    u16 le   kind                   the AGENT'S declared kind — the catalog's
+ *                                    kind is discovered later and is not part
+ *                                    of what was asked
+ *    u64 le   value_zats
+ *   32 bytes  property_id            raw, including the all-zero sentinel
+ *    u16 le   param length           strlen, at most MVAP_PARAM_MAX
+ *      n      param bytes            no NUL terminator in the preimage
+ *    u16 le   authority id length    at most AGENT_GRANT_ID_MAX
+ *      n      authority id bytes     the canonical grant id the session is
+ *                                    bound to, "" when ungranted; a request
+ *                                    replayed under a DIFFERENT authority is
+ *                                    a different request
+ *
+ * `authority_id` may be NULL, which digests identically to "".
+ *
+ * THE DIGEST IS A KEY, NOT THE PROOF. Two requests that hash alike must not be
+ * treated as one, so the ring stores the preimage FIELDS as well (struct
+ * agent_idem_identity below) and a hit is confirmed against them. That leaves
+ * the "same id, same request" guarantee resting on a comparison this code
+ * performs, rather than on SHA3-256 having no collisions. */
+void mvap_request_digest(const struct mvap_request *req,
+                         const char *authority_id, uint8_t out[32]);
+
+/* THE PREIMAGE, AS FIELDS. Exactly the values listed above and nothing else —
+ * `param` and `authority_id` are stored with explicit lengths and WITHOUT a
+ * terminator, the same shape the preimage uses, so comparing two identities is
+ * comparing two preimages.
+ *
+ * WHY IT IS STORED. The ring used to hold the digest alone, so a hit was
+ * "these 32 bytes matched" and the entry was then served as a legitimate
+ * replay. Finding a second request with the same SHA3-256 is not a practical
+ * attack — but the guarantee was INHERITED from SHA3 rather than established
+ * here, and establishing it costs one comparison of fields the broker already
+ * had in hand. A slot is served only when the digest AND every field match; a
+ * digest that matches over different fields is a CONFLICT, which is the same
+ * refusal any other reuse of the id gets.
+ *
+ * The digest is computed FROM this struct (mvap_identity_digest), so the two
+ * cannot describe different things: there is no second place that decides what
+ * a request's identity is. */
+struct agent_idem_identity {
+    uint64_t value_zats;
+    uint32_t version;                 /* 0 normalized to MVAP_VERSION      */
+    uint32_t verb;
+    uint32_t request_id;
+    uint16_t kind;
+    uint16_t param_len;
+    uint16_t authority_len;
+    uint8_t  property_id[MVAP_PROPERTY_ID_LEN];
+    char     param[MVAP_PARAM_MAX];            /* not NUL-terminated       */
+    char     authority_id[AGENT_GRANT_ID_MAX]; /* not NUL-terminated       */
+};
+
+/* Project a request plus the authority it is asked under into its identity.
+ * `authority_id` may be NULL, which is the ungranted session and reads as "".
+ * Zeroes `*out` first, so the unused tail of each bounded string is fixed. */
+void mvap_request_identity(const struct mvap_request *req,
+                           const char *authority_id,
+                           struct agent_idem_identity *out);
+
+/* SHA3-256 over the preimage this identity IS. mvap_request_digest() is these
+ * two calls composed, which is why the digest can never cover a field the slot
+ * does not store. */
+void mvap_identity_digest(const struct agent_idem_identity *id,
+                          uint8_t out[32]);
+
+/* Field-by-field equality. Not a memcmp: a struct comparison would pass over
+ * padding and would keep passing when a field is added and forgotten. The
+ * sizeof assertion in agent_broker_idem.c makes that omission a build error. */
+bool mvap_identity_equal(const struct agent_idem_identity *a,
+                         const struct agent_idem_identity *b);
+
+/* A SLOT HOLDS A NAME; ONLY A COMMITTED MUTATION ALSO HOLDS AN ANSWER.
+ *
+ * Two different jobs share this ring and must not be confused:
+ *
+ *   CLAIMED — the id is bound to this exact request and NOTHING is cached
+ *   under it. Every dispatched request claims its id: every query (always),
+ *   and every mutation until it commits. An identical repeat is re-executed
+ *   from scratch against the live authority; a repeat that changed any field
+ *   is a conflict. This is the half that catches a reused id, and it caches
+ *   nothing, which is why a revoked grant still stops answering reads.
+ *
+ *   COMMITTED — a mutation completed. Now, and only now, the ring holds the
+ *   response and the receipt, and an identical repeat is a REPLAY.
+ *
+ * The two are separate ENTRY POINTS below, not a flag: agent_broker_idem_claim()
+ * takes no response argument, so a query answer has no way into the ring. */
+enum agent_idem_outcome {
+    AGENT_IDEM_OUTCOME_NONE = 0,
+    AGENT_IDEM_OUTCOME_CLAIMED,
+    AGENT_IDEM_OUTCOME_COMMITTED,
+};
+
+struct agent_idem_slot {
+    bool     used;
+    uint32_t request_id;
+    uint8_t  digest[32];
+    /* WHAT THE DIGEST WAS TAKEN OVER. A hit on `digest` is confirmed against
+     * this before anything is served, so a collision cannot present one
+     * request's answer as another's. `identity.request_id` is the same number
+     * as `request_id` above; the duplicate is deliberate, because the digest
+     * covers the id and the identity must reproduce the preimage exactly. */
+    struct agent_idem_identity identity;
+    enum agent_idem_outcome outcome;
+    /* Meaningful only when `outcome` is COMMITTED; all-zero while CLAIMED. */
+    struct mvap_response resp;             /* the reply as first sent        */
+    uint8_t  action_receipt_id[32];        /* canonical receipt it commits to */
+};
+
+enum agent_idem_verdict {
+    AGENT_IDEM_FRESH = 0,   /* nothing is remembered under this request_id   */
+    AGENT_IDEM_REPLAY,      /* same id, same digest, and it COMMITTED        */
+    AGENT_IDEM_CLAIMED,     /* same id, same digest, nothing cached          */
+    AGENT_IDEM_CONFLICT,    /* same id, DIFFERENT digest                     */
+};
+
+/* Ask the ring about the request `id` names, under `digest`. A slot is a hit
+ * only when BOTH match; a slot whose digest matches over different fields is a
+ * CONFLICT, never a replay. On REPLAY or CLAIMED `*slot_out` (when non-NULL)
+ * receives the remembered slot; otherwise it is set to NULL. Pure: it records
+ * nothing. */
+enum agent_idem_verdict agent_broker_idem_lookup(
+    const struct agent_broker_session *s,
+    const struct agent_idem_identity *id, const uint8_t digest[32],
+    const struct agent_idem_slot **slot_out);
+
+/* Bind the request id to this request and cache NOTHING. Idempotent: claiming
+ * an id already claimed by the same request changes nothing. */
+void agent_broker_idem_claim(struct agent_broker_session *s,
+                             const struct agent_idem_identity *id,
+                             const uint8_t digest[32]);
+
+/* Upgrade a claim to a committed mutation, with the response an identical
+ * repeat will replay. `action_receipt_id` may be NULL, which stores all-zero —
+ * the honest answer when the seam minted no canonical receipt. */
+void agent_broker_idem_commit(struct agent_broker_session *s,
+                              const struct agent_idem_identity *id,
+                              const uint8_t digest[32],
+                              const struct mvap_response *resp,
+                              const uint8_t action_receipt_id[32]);
+
+/* Label a replayed response IN PLACE: `"replayed":true` becomes the first
+ * member of the returned JSON object, ahead of the original answer verbatim.
+ * An agent that cannot tell a replay from a first execution will count one
+ * event twice, so the label is part of the reply and not a broker-side note. */
+void agent_broker_idem_label_replay(struct mvap_response *resp);
+
+/* ── the broker session ─────────────────────────────────────────────────── */
+
+/* One served connection.
+ *
+ * THERE IS NO GRANT IN HERE. `authority` is a const pointer to an immutable
+ * reference (see struct agent_authority_ref for why): the session can name its
+ * authority and cannot hold, copy, mutate, or outlive it. Every authorize and
+ * every debit goes through `authority->provider`, so an operator's revoke,
+ * expiry change, or budget change lands on the very next request of a session
+ * that is already running.
+ *
+ * THE IDEMPOTENCY RING CACHES MUTATIONS AND NOTHING ELSE. A QUERY is a read of
+ * live authority and live property state, so a cached query answer is stale by
+ * definition: replaying one after a revoke, or after the property moved, would
+ * return an answer the authority would no longer give. A query's ANSWER
+ * therefore never enters the ring and no query is ever served from it — every
+ * query is re-executed, which is the only way a revoked grant stops answering
+ * reads. A query's NAME does enter it, so that an id pointed at a second,
+ * different question is refused rather than answered about the first.
+ *
+ * `requests_served` counts every request; `receipts_written` counts audit rows
+ * for work the broker actually did; `replays_served` counts requests answered
+ * from the ring, which performed no work and therefore mint no receipt (their
+ * audit row is a labelled REPLAY row, not a receipt); `idempotency_conflicts`
+ * counts ids pointed at a second, different request. */
 struct agent_broker_session {
-    struct agent_grant            grant;
+    const struct agent_authority_ref *authority;
     struct agent_peer_expectation expect;
     struct agent_broker_node_ops  ops;
     struct agent_audit_log       *audit;
@@ -402,12 +727,10 @@ struct agent_broker_session {
     uint64_t requests_served;
     uint64_t requests_denied;
     uint64_t receipts_written;
+    uint64_t replays_served;
+    uint64_t idempotency_conflicts;
 
-    struct {
-        uint32_t request_id;
-        bool     used;
-        struct mvap_response resp;
-    } idem[AGENT_IDEMPOTENCY_SLOTS];
+    struct agent_idem_slot idem[AGENT_IDEMPOTENCY_SLOTS];
 };
 
 /* Handle exactly ONE request frame already read off the wire. Returns the
@@ -509,11 +832,15 @@ const int *agent_confined_allowed_syscalls(size_t *count_out);
 
 /* Write the achieved-confinement report / broker state to `<dir>/broker.json`
  * for `metaverse agent status` to read. Best-effort; a failure is logged and
- * does not stop the broker. */
+ * does not stop the broker.
+ *
+ * The grant is no longer an argument, because the broker no longer holds one.
+ * The authority section is pulled from the provider's labelled status
+ * snapshot at write time, and a provider that supplies none is reported as
+ * ungranted rather than as an empty grant. */
 void agent_broker_write_status(const char *dir,
                                const struct agent_broker_session *s,
-                               const struct agent_grant *g, pid_t child_pid,
-                               const char *socket_path);
+                               pid_t child_pid, const char *socket_path);
 
 /* Render `<dir>/broker.json` (or a not-running verdict) as JSON text. */
 size_t agent_broker_render_status_json(const char *dir, char *out,

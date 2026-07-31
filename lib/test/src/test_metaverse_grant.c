@@ -33,6 +33,11 @@
  *     it with a foreign key, and cutting a link are each detected and located.
  *  7. Delegation attenuates: depth, actions, budget, and scope may only narrow.
  *  8. The cumulative budget and the rate window both bind.
+ *  9. A COMMIT THAT MINTS NO RECEIPT COSTS NOTHING: the grant record comes back
+ *     bit-identical (spend, rate window start and counter, everything), a
+ *     quoted asking price never touches the budget on any path, the authority
+ *     generation moves exactly when the store does, and the whole
+ *     mutate-and-restore window runs under one hold of the store mutex.
  *
  * House idiom note: exactly one TEST block per function. ASSERT jumps to
  * `_test_next`, and a function holding two TEST blocks would jump BACKWARD
@@ -1501,6 +1506,365 @@ static int t_rate_window(void)
     return failures;
 }
 
+/* ── 9. THE FAILED-COMMIT INVERSE ───────────────────────────────────────────
+ *
+ * A commit that produces no receipt must leave the store exactly as it found
+ * it. Between the grant record taking the action's effect and the receipt being
+ * sealed, the store HAS moved and no evidence exists yet; the only honest exit
+ * from that window is an exact restore.
+ *
+ * That window used to be closed by hand-written arithmetic ("give the debit
+ * back"), which was a second copy of a charge rule that lives in
+ * metaverse_grant_record_commit() — and it had drifted from it in two places at
+ * once. It is now a whole-record restore. These four cases are the proof, and
+ * the reason they can exist at all is the service's ZCL_TESTING-only seal hook:
+ * the real sealer cannot fail from inside a commit (it refuses only a NULL
+ * argument or a zero seq), so the failure path had no test and the arithmetic
+ * rotted unobserved. */
+
+struct seal_probe {
+    int calls;
+    int fail_next;        /* fail the seal on this many further calls */
+    int lock_held_calls;  /* how often the store mutex was held while it ran */
+};
+
+static bool seal_probe_hook(void *ctx)
+{
+    struct seal_probe *p = ctx;
+    p->calls++;
+    /* THE MUTATE-AND-RESTORE WINDOW STRADDLES THIS CALL. If a future edit ever
+     * releases the store mutex anywhere between the record's effect and the
+     * restore, this trylock succeeds, the count stays at zero, and
+     * t_failed_commit_window_stays_locked goes red — which is the only way to
+     * assert a lock-scope invariant rather than read it and hope. */
+    if (property_grant_service_test_store_lock_busy()) p->lock_held_calls++;
+    if (p->fail_next > 0) {
+        p->fail_next--;
+        return false;
+    }
+    return true;
+}
+
+/* The whole stored record, zeroed first so that two reads of an unchanged
+ * record compare equal byte-for-byte and a field added later is covered without
+ * anyone remembering to add it here. */
+static bool grant_record(const char *grant_id, struct metaverse_grant *out)
+{
+    memset(out, 0, sizeof(*out));
+    return property_grant_service_get(grant_id, out) == PROPERTY_GRANT_OK;
+}
+
+/* P1 */
+static int t_quoted_value_is_never_charged(void)
+{
+    int failures = 0;
+    TEST("a quoted asking price cannot move spent_zat on ANY path") {
+        struct metaverse_property_id prop = make_id(METAVERSE_KIND_CONTENT, 91);
+        fixture_reset(&prop);
+        struct metaverse_grant g =
+            grant_over_id(&prop, ACT(LIST_FOR_SALE), 2500);
+        ASSERT_EQ((int)property_grant_service_mint(&g), (int)PROPERTY_GRANT_OK);
+
+        /* LIST_FOR_SALE names 5000 — twice the whole ceiling — and is still
+         * allowed, because an advertisement moves nothing. */
+        struct metaverse_action_request r =
+            request_for(&prop, METAVERSE_ACTION_LIST_FOR_SALE, NULL, 5000);
+        struct property_grant_plan plan;
+        ASSERT_EQ((int)property_grant_service_plan(g.grant_id, &r, &plan),
+                  (int)PROPERTY_GRANT_OK);
+        struct property_grant_commit_result res;
+        ASSERT_EQ((int)property_grant_service_commit(plan.plan_id, "quote-ok",
+                                                     &res),
+                  (int)PROPERTY_GRANT_OK);
+        struct metaverse_grant after;
+        ASSERT(grant_record(g.grant_id, &after));
+        ASSERT_EQ((int)after.spent_zat, 0);
+
+        /* The same quote, sealed unsuccessfully. A rollback that credited the
+         * quoted price would drive spent_zat NEGATIVE — the operator's ceiling
+         * would WIDEN because a commit failed. */
+        struct seal_probe probe;
+        memset(&probe, 0, sizeof(probe));
+        probe.fail_next = 1;
+        ASSERT(property_grant_service_test_set_seal_hook(seal_probe_hook,
+                                                         &probe));
+        struct property_grant_plan plan2;
+        ASSERT_EQ((int)property_grant_service_plan(g.grant_id, &r, &plan2),
+                  (int)PROPERTY_GRANT_OK);
+        struct property_grant_commit_result res2;
+        ASSERT_EQ((int)property_grant_service_commit(plan2.plan_id, "quote-bad",
+                                                     &res2),
+                  (int)PROPERTY_GRANT_RECEIPT_SEAL_FAILED);
+        ASSERT_EQ(probe.calls, 1);
+        ASSERT(property_grant_service_test_set_seal_hook(NULL, NULL));
+
+        struct metaverse_grant after2;
+        ASSERT(grant_record(g.grant_id, &after2));
+        ASSERT_EQ((int)after2.spent_zat, 0);
+        ASSERT_EQ((int)metaverse_grant_budget_remaining(&after2), 2500);
+        /* And the grant is still USABLE. A negative spend makes the record
+         * malformed, so a widened ceiling does not even stay usable — it turns
+         * the grant into one nothing can be planned against. */
+        ASSERT(metaverse_grant_well_formed(&after2));
+        ASSERT_EQ((int)property_grant_service_plan(g.grant_id, &r, &plan2),
+                  (int)PROPERTY_GRANT_OK);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* P2 */
+static int t_failed_commit_restores_the_rate_window(void)
+{
+    int failures = 0;
+    TEST("a failed commit restores the whole rate window, start included") {
+        struct metaverse_property_id prop = make_id(METAVERSE_KIND_CONTENT, 92);
+        fixture_reset(&prop);
+        struct metaverse_grant g = grant_over_id(&prop, ACT(BUY), 1000000);
+        g.rate_limit = 2;
+        g.rate_window_seconds = 60;
+        ASSERT_EQ((int)property_grant_service_mint(&g), (int)PROPERTY_GRANT_OK);
+        ASSERT_EQ(commit_n(&g, &prop, 2), 0);      /* the window is now FULL */
+
+        struct metaverse_grant before;
+        ASSERT(grant_record(g.grant_id, &before));
+        ASSERT_EQ((int)before.window_used, 2);
+
+        /* Past the window, so the next commit ROLLS it: window_start_unix moves
+         * forward and the counter resets before it counts. The old rollback
+         * decremented the counter and had no inverse at all for the start. */
+        g_now += 61;
+        struct seal_probe probe;
+        memset(&probe, 0, sizeof(probe));
+        probe.fail_next = 1;
+        ASSERT(property_grant_service_test_set_seal_hook(seal_probe_hook,
+                                                         &probe));
+        struct metaverse_action_request r =
+            request_for(&prop, METAVERSE_ACTION_BUY, NULL, 1000);
+        struct property_grant_plan plan;
+        ASSERT_EQ((int)property_grant_service_plan(g.grant_id, &r, &plan),
+                  (int)PROPERTY_GRANT_OK);
+        struct property_grant_commit_result res;
+        ASSERT_EQ((int)property_grant_service_commit(plan.plan_id, "rolled",
+                                                     &res),
+                  (int)PROPERTY_GRANT_RECEIPT_SEAL_FAILED);
+        ASSERT_EQ(probe.calls, 1);
+        ASSERT(property_grant_service_test_set_seal_hook(NULL, NULL));
+
+        /* BIT-IDENTICAL, not "the two fields we thought of". */
+        struct metaverse_grant after;
+        ASSERT(grant_record(g.grant_id, &after));
+        ASSERT_EQ(memcmp(&before, &after, sizeof(before)), 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* P3 */
+static int t_evidence_and_generation_move_together(void)
+{
+    int failures = 0;
+    TEST("evidence and the authority generation move together, or neither") {
+        struct metaverse_property_id prop = make_id(METAVERSE_KIND_CONTENT, 93);
+        fixture_reset(&prop);
+        struct metaverse_grant g =
+            grant_over_id(&prop, ACT(LIST_FOR_SALE), 2500);
+        ASSERT_EQ((int)property_grant_service_mint(&g), (int)PROPERTY_GRANT_OK);
+        struct metaverse_action_request r =
+            request_for(&prop, METAVERSE_ACTION_LIST_FOR_SALE, NULL, 5000);
+        struct metaverse_receipt seen[4];
+
+        /* (a) A commit that produces NOTHING moves nothing: not the record, not
+         *     the chain, not the plan, and so not the generation either. */
+        struct metaverse_grant before;
+        ASSERT(grant_record(g.grant_id, &before));
+        uint64_t gen_before = property_grant_service_authority_generation();
+
+        struct seal_probe probe;
+        memset(&probe, 0, sizeof(probe));
+        probe.fail_next = 1;
+        ASSERT(property_grant_service_test_set_seal_hook(seal_probe_hook,
+                                                         &probe));
+        struct property_grant_plan plan;
+        ASSERT_EQ((int)property_grant_service_plan(g.grant_id, &r, &plan),
+                  (int)PROPERTY_GRANT_OK);
+        struct property_grant_commit_result res;
+        ASSERT_EQ((int)property_grant_service_commit(plan.plan_id, "none",
+                                                     &res),
+                  (int)PROPERTY_GRANT_RECEIPT_SEAL_FAILED);
+        ASSERT(property_grant_service_test_set_seal_hook(NULL, NULL));
+
+        struct metaverse_grant after;
+        ASSERT(grant_record(g.grant_id, &after));
+        ASSERT_EQ(memcmp(&before, &after, sizeof(before)), 0);
+        ASSERT_EQ((int)property_grant_service_receipts(g.grant_id, seen, 4), 0);
+        struct property_grant_plan replanned;
+        ASSERT_EQ((int)property_grant_service_plan_get(plan.plan_id,
+                                                       &replanned),
+                  (int)PROPERTY_GRANT_OK);
+        ASSERT(!replanned.committed);
+        ASSERT_EQ((int)(property_grant_service_authority_generation() -
+                        gen_before),
+                  0);
+
+        /* (b) A commit that DOES produce evidence moves the generation — and
+         *     note this grant's RECORD is unchanged either way (an asking price
+         *     charges nothing), so the generation is tracking the STORE, not
+         *     one record. */
+        uint64_t gen_mid = property_grant_service_authority_generation();
+        struct property_grant_plan plan2;
+        ASSERT_EQ((int)property_grant_service_plan(g.grant_id, &r, &plan2),
+                  (int)PROPERTY_GRANT_OK);
+        struct property_grant_commit_result res2;
+        ASSERT_EQ((int)property_grant_service_commit(plan2.plan_id, "some",
+                                                     &res2),
+                  (int)PROPERTY_GRANT_OK);
+        ASSERT_EQ((int)property_grant_service_receipts(g.grant_id, seen, 4), 1);
+        ASSERT(property_grant_service_authority_generation() > gen_mid);
+        struct metaverse_grant after2;
+        ASSERT(grant_record(g.grant_id, &after2));
+        ASSERT_EQ(memcmp(&before, &after2, sizeof(before)), 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Read a source file whole. Same idiom as the broker-authority lane's fork-order
+ * case: some invariants are about the SHAPE of a critical section, and a
+ * sampled runtime probe can only ever prove the lock was held at the instants
+ * it sampled. Returns 0 when the file cannot be read (the suite runs from the
+ * repository root). */
+static size_t slurp_source(const char *rel, char *out, size_t cap)
+{
+    FILE *f = fopen(rel, "rb");
+    if (!f) return 0;
+    size_t n = fread(out, 1, cap - 1, f);
+    fclose(f);
+    out[n] = '\0';
+    return n;
+}
+
+/* P4 */
+static int t_failed_commit_window_stays_locked(void)
+{
+    int failures = 0;
+    TEST("the mutate-and-restore window never releases the store mutex") {
+        struct metaverse_property_id prop = make_id(METAVERSE_KIND_CONTENT, 94);
+        fixture_reset(&prop);
+        struct metaverse_grant g = grant_over_id(&prop, ACT(BUY), 100000);
+        g.rate_limit = 4;
+        g.rate_window_seconds = 60;
+        ASSERT_EQ((int)property_grant_service_mint(&g), (int)PROPERTY_GRANT_OK);
+
+        struct seal_probe probe;
+        memset(&probe, 0, sizeof(probe));
+        probe.fail_next = 1;
+        ASSERT(property_grant_service_test_set_seal_hook(seal_probe_hook,
+                                                         &probe));
+        struct metaverse_action_request r =
+            request_for(&prop, METAVERSE_ACTION_BUY, NULL, 1000);
+        struct property_grant_plan plan;
+        ASSERT_EQ((int)property_grant_service_plan(g.grant_id, &r, &plan),
+                  (int)PROPERTY_GRANT_OK);
+        struct property_grant_commit_result res;
+        ASSERT_EQ((int)property_grant_service_commit(plan.plan_id, "locked-bad",
+                                                     &res),
+                  (int)PROPERTY_GRANT_RECEIPT_SEAL_FAILED);
+        ASSERT_EQ(probe.calls, 1);
+        ASSERT_EQ(probe.lock_held_calls, 1);
+
+        /* The same holds when the seal SUCCEEDS: the record is mutated there
+         * too, and the receipt append and the generation bump have to land in
+         * the same critical section or a reader could see the debit without
+         * the evidence. */
+        struct property_grant_plan plan2;
+        ASSERT_EQ((int)property_grant_service_plan(g.grant_id, &r, &plan2),
+                  (int)PROPERTY_GRANT_OK);
+        struct property_grant_commit_result res2;
+        ASSERT_EQ((int)property_grant_service_commit(plan2.plan_id, "locked-ok",
+                                                     &res2),
+                  (int)PROPERTY_GRANT_OK);
+        ASSERT_EQ(probe.calls, 2);
+        ASSERT_EQ(probe.lock_held_calls, 2);
+        ASSERT(property_grant_service_test_set_seal_hook(NULL, NULL));
+
+        /* THE PROBE ABOVE SAMPLES ONE INSTANT; the invariant is about the whole
+         * window. A release anywhere inside it must re-acquire before the code
+         * that follows, because everything after the window needs the lock — so
+         * a re-acquire inside the window is the tell-tale of ANY release, and
+         * that is a property of the source region, not of one instant. Read it
+         * and assert on it. */
+        static char src[131072];
+        size_t n = slurp_source("app/services/src/property_grant_commit.c", src,
+                                sizeof(src));
+        ASSERT(n > 0);          /* the suite runs from the repository root */
+        const char *win = strstr(src,
+                                 "const struct metaverse_grant "
+                                 "grant_before_effect = *g;");
+        ASSERT(win != NULL);
+        const char *win_end = strstr(win,
+                                     "g_pg_store.receipts"
+                                     "[g_pg_store.receipt_count++] = r;");
+        ASSERT(win_end != NULL);
+
+        /* Nothing re-takes the lock inside the window. */
+        const char *relock = strstr(win, "pthread_mutex_lock(");
+        ASSERT(relock == NULL || relock > win_end);
+
+        /* And every exit from the window restores the record BEFORE it
+         * unlocks, so no exit can leave the mutation visible. */
+        const char *cur = win;
+        int unlocks = 0;
+        for (;;) {
+            const char *u = strstr(cur, "pthread_mutex_unlock(");
+            if (!u || u > win_end) break;
+            const char *restore = strstr(cur, "*g = grant_before_effect;");
+            ASSERT(restore != NULL && restore < u);
+            unlocks++;
+            cur = u + 1;
+        }
+        ASSERT(unlocks >= 2);   /* the debit refusal and the seal refusal */
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* The environment is a decision input too */
+static int t_env_swap_invalidates_a_decision(void)
+{
+    int failures = 0;
+    TEST("replacing the clock or the catalog invalidates a decision in flight") {
+        struct metaverse_property_id prop = make_id(METAVERSE_KIND_CONTENT, 95);
+        fixture_reset(&prop);
+        struct metaverse_grant g = grant_over_id(&prop, ACT(BUY), 100000);
+        ASSERT_EQ((int)property_grant_service_mint(&g), (int)PROPERTY_GRANT_OK);
+
+        struct property_grant_authority_snapshot snap;
+        ASSERT_EQ((int)property_grant_service_snapshot(g.grant_id, &snap),
+                  (int)PROPERTY_GRANT_OK);
+        ASSERT_EQ((int)property_grant_service_recheck(&snap),
+                  (int)PROPERTY_GRANT_OK);
+        uint64_t before = property_grant_service_authority_generation();
+
+        /* A CHANGED CLOCK CHANGES EXPIRY VERDICTS. The snapshot carries the
+         * instant it was taken against, so a decision already computed is not
+         * retroactively rewritten — but a decision still in flight would
+         * otherwise recheck CLEAN across a change of which clock, and which
+         * catalog, is authoritative, and answer as though nothing moved. */
+        struct property_grant_env env;
+        memset(&env, 0, sizeof(env));
+        env.catalog_lookup = fake_lookup;
+        env.clock = fake_clock;
+        property_grant_service_configure(&env);
+
+        ASSERT(property_grant_service_authority_generation() > before);
+        ASSERT_EQ((int)property_grant_service_recheck(&snap),
+                  (int)PROPERTY_GRANT_AUTHORITY_CHANGED);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int t_unknown_and_malformed(void)
 {
     int failures = 0;
@@ -1642,6 +2006,13 @@ int test_metaverse_grant(void)
 
     failures += t_budget_is_cumulative();
     failures += t_rate_window();
+
+    failures += t_quoted_value_is_never_charged();
+    failures += t_failed_commit_restores_the_rate_window();
+    failures += t_evidence_and_generation_move_together();
+    failures += t_failed_commit_window_stays_locked();
+    failures += t_env_swap_invalidates_a_decision();
+
     failures += t_unknown_and_malformed();
     failures += t_list_and_get();
     failures += t_reason_tokens_are_contract();

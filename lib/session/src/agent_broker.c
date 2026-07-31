@@ -267,6 +267,47 @@ const struct agent_broker_provider *agent_broker_provider_get(void)
     return g_provider;
 }
 
+/* THE ONE PLACE A SESSION ACQUIRES AUTHORITY. It exists so that "bind" is not
+ * a recipe each caller retypes: forgetting to record `provider`/`provider_ctx`
+ * on the reference would leave a reference that names a grant and cannot reach
+ * it, which authorize_live() correctly refuses — silently, and for a reason
+ * nobody would guess. Doing it here means no caller can get it half right.
+ *
+ * A refusal is a STATE, not an error to recover from: the session stays
+ * ungranted, `ref->bound` stays false, and every request is refused by name. */
+bool agent_broker_session_bind(struct agent_broker_session *s,
+                               struct agent_authority_ref *ref, char *why,
+                               size_t why_cap)
+{
+    if (why && why_cap)
+        why[0] = '\0';
+    if (!s || !ref)
+        LOG_FAIL(BROKER_TAG, "bind: null session or authority reference");
+    memset(ref, 0, sizeof(*ref));
+    s->authority = ref;
+
+    const struct agent_broker_provider *p = g_provider;
+    if (!p) {
+        if (why && why_cap)
+            snprintf(why, why_cap,
+                     "no property provider is registered: this broker has no "
+                     "authority and no property surface");
+        return false;
+    }
+    if (p->ops)
+        s->ops = p->ops(p->ctx);
+    if (!p->bind || !p->bind(p->ctx, ref, why, why_cap)) {
+        memset(ref, 0, sizeof(*ref));
+        if (why && why_cap && !why[0])
+            snprintf(why, why_cap, "provider '%s' refused to bind",
+                     p->name ? p->name : "(unnamed)");
+        return false;
+    }
+    ref->provider     = p;
+    ref->provider_ctx = p->ctx;
+    return true;
+}
+
 /* ── the request pipeline ───────────────────────────────────────────────── */
 
 static void resp_init(struct mvap_response *r, const struct mvap_request *req,
@@ -293,25 +334,47 @@ static void resp_body(struct mvap_response *r, const char *fmt, ...)
         r->body[0] = '\0';
 }
 
-/* Replay protection: a repeated request_id returns the FIRST outcome rather
- * than committing a second time. This is what "receipts are idempotent" buys —
- * a retry after a lost response cannot double-spend the grant's budget. */
-static struct mvap_response *idem_find(struct agent_broker_session *s,
-                                       uint32_t request_id)
+/* Replay protection lives in agent_broker_idem.c — the digest, the ring, and
+ * the replay label. What is left in this file is WHERE it is consulted, and
+ * that is exactly TWO places: a claim before anything is dispatched, and a
+ * commit after a mutation has actually happened. Every refusal in between
+ * simply returns, leaving the id claimed and nothing cached under it. */
+
+/* ── the live authority ─────────────────────────────────────────────────── */
+
+/* THE ONE PLACE A REQUEST IS AUTHORIZED, and it reads no session state that
+ * could be stale: the verdict comes from the provider, which consults the
+ * store as it is at this instant, and the session contributes only the
+ * narrowing (agent_broker_scope_check, which can refuse and cannot allow).
+ *
+ * THERE IS NO FALLBACK. An unbound reference, a provider that vanished, or a
+ * provider with no authorize entry point all produce DENIED_NO_GRANT. That is
+ * the whole reason the session stopped holding a grant: with a copy present,
+ * "the authority is unreachable" would silently become "use the copy", which
+ * is exactly how a revoked grant keeps working. */
+static int32_t authorize_live(const struct agent_broker_session *s,
+                              const struct mvap_request *req, int64_t now_ms)
 {
-    for (size_t i = 0; i < AGENT_IDEMPOTENCY_SLOTS; i++)
-        if (s->idem[i].used && s->idem[i].request_id == request_id)
-            return &s->idem[i].resp;
-    return NULL;
+    const struct agent_authority_ref *a = s->authority;
+    if (!a || !a->bound || !a->provider || !a->provider->authorize)
+        return MVAP_ERR_DENIED_NO_GRANT;
+    int32_t verdict =
+        a->provider->authorize(a->provider_ctx, a, req, now_ms);
+    if (verdict != MVAP_OK)
+        return verdict;
+    return agent_broker_scope_check(&a->scope, req);
 }
 
-static void idem_store(struct agent_broker_session *s, uint32_t request_id,
-                       const struct mvap_response *resp)
+static const char *session_principal(const struct agent_broker_session *s)
 {
-    size_t slot = request_id % AGENT_IDEMPOTENCY_SLOTS;
-    s->idem[slot].used       = true;
-    s->idem[slot].request_id = request_id;
-    s->idem[slot].resp       = *resp;
+    return (s->authority && s->authority->bound) ? s->authority->principal : "";
+}
+
+static const char *session_grant_id(const struct agent_broker_session *s)
+{
+    return (s->authority && s->authority->bound)
+               ? s->authority->canonical_grant_id
+               : "";
 }
 
 /* One confinement receipt. `action_receipt_id` is the canonical metaverse
@@ -334,14 +397,56 @@ static void broker_receipt(struct agent_broker_session *s,
     memcpy(r.property_id, req->property_id, MVAP_PROPERTY_ID_LEN);
     if (action_receipt_id)
         memcpy(r.action_receipt_id, action_receipt_id, 32);
-    snprintf(r.principal, sizeof(r.principal), "%s", s->grant.principal);
-    snprintf(r.grant_id, sizeof(r.grant_id), "%s", s->grant.grant_id);
+    snprintf(r.principal, sizeof(r.principal), "%s", session_principal(s));
+    snprintf(r.grant_id, sizeof(r.grant_id), "%s", session_grant_id(s));
     r.peer = s->peer;
     snprintf(r.detail, sizeof(r.detail), "%s", detail ? detail : "");
     if (agent_audit_append(s->audit, &r)) {
         memcpy(resp->receipt_id, r.id, MVAP_RECEIPT_ID_LEN);
         s->receipts_written++;
     }
+}
+
+/* The audit row a REPLAY writes.
+ *
+ * It is its own row, and deliberately so: the agent asked twice, and a log that
+ * records only the first ask cannot answer "how many times did this agent
+ * present this receipt". It is DISTINGUISHABLE from a first execution on its
+ * face — the detail begins with the word REPLAYED and names the receipt of the
+ * execution it is replaying, which no first execution's detail can do.
+ *
+ * It is NOT counted in `receipts_written`, because that counter answers "how
+ * much work did this broker commit" and a replay commits none; `replays_served`
+ * counts it instead.
+ *
+ * `resp` is const on purpose. A replay returns the ORIGINAL confinement
+ * receipt id, so this row must not stamp its own id over it — otherwise a
+ * retry would hand the agent a second receipt for one action, which is the
+ * double-count the ring exists to prevent. */
+static void broker_replay_receipt(struct agent_broker_session *s,
+                                  const struct mvap_request *req,
+                                  const struct mvap_response *resp,
+                                  const struct agent_idem_slot *slot)
+{
+    if (!s->audit || !s->audit->open || !slot)
+        return;
+    struct agent_receipt r = { 0 };
+    r.verb       = req->verb;
+    r.request_id = req->request_id;
+    r.status     = resp->status;
+    r.value_zats = req->value_zats;
+    memcpy(r.property_id, req->property_id, MVAP_PROPERTY_ID_LEN);
+    memcpy(r.action_receipt_id, slot->action_receipt_id, 32);
+    snprintf(r.principal, sizeof(r.principal), "%s", session_principal(s));
+    snprintf(r.grant_id, sizeof(r.grant_id), "%s", session_grant_id(s));
+    r.peer = s->peer;
+
+    char first[65];
+    zcl_hex_encode(slot->resp.receipt_id, MVAP_RECEIPT_ID_LEN, first);
+    snprintf(r.detail, sizeof(r.detail),
+             "REPLAYED request_id=%u: executed nothing; first_receipt=%s",
+             req->request_id, first);
+    (void)agent_audit_append(s->audit, &r);
 }
 
 void agent_broker_handle(struct agent_broker_session *s,
@@ -353,37 +458,81 @@ void agent_broker_handle(struct agent_broker_session *s,
 
     s->requests_served++;
 
-    struct mvap_response *cached = idem_find(s, req->request_id);
-    if (cached && cached->verb == req->verb) {
-        *out = *cached;
-        return;
-    }
-
-    int64_t now = clock_now_wall_ms();
-    resp_init(out, req, MVAP_OK);
-
     /* Queries and actions are two different pipelines from here on. A QUERY
      * resolves and answers; it can reach neither PLAN/COMMIT nor a receipt,
-     * because those calls are not on its path at all. */
+     * because those calls are not on its path at all.
+     *
+     * The class is decided BEFORE the ring is consulted: an unknown verb names
+     * no operation, so it has no identity worth remembering and never claims
+     * an id. */
     const bool is_action = mvap_verb_is_action(req->verb);
     if (!is_action && !mvap_verb_is_query(req->verb)) {
         resp_init(out, req, MVAP_ERR_UNKNOWN_VERB);
         resp_body(out, "{\"denied\":\"UNKNOWN_VERB\"}");
         s->requests_denied++;
-        idem_store(s, req->request_id, out);
         return;
     }
 
-    /* 1. Authorization, on what the agent CLAIMED. The verdict is the
-     *    metaverse's; agent_grant_authorize() translates and narrows. */
-    int32_t verdict = agent_grant_authorize(&s->grant, req, now);
+    /* THE REQUEST'S IDENTITY: every field that can change what it asks for,
+     * plus the authority it is asked under — carried as fields, and hashed
+     * into the key the ring indexes by. Everything the ring does is a
+     * comparison of both, never of the request_id alone and never of the
+     * digest alone. */
+    struct agent_idem_identity ident;
+    mvap_request_identity(req, session_grant_id(s), &ident);
+    uint8_t digest[32];
+    mvap_identity_digest(&ident, digest);
+
+    const struct agent_idem_slot *slot = NULL;
+    enum agent_idem_verdict remembered =
+        agent_broker_idem_lookup(s, &ident, digest, &slot);
+    if (remembered == AGENT_IDEM_CONFLICT) {
+        /* The id already names a different request. The first request's record
+         * is left exactly as it was — a second, unrelated ask must not be able
+         * to evict or repoint it. */
+        resp_init(out, req, MVAP_ERR_REQUEST_ID_REUSED);
+        resp_body(out, "{\"denied\":\"REQUEST_ID_REUSED\","
+                       "\"stage\":\"idempotency\",\"request_id\":%u,"
+                       "\"detail\":\"this id already names a different "
+                       "request\"}", req->request_id);
+        s->requests_denied++;
+        s->idempotency_conflicts++;
+        broker_receipt(s, req, out,
+                       "refused: request_id already names a different request",
+                       NULL);
+        return;
+    }
+    if (remembered == AGENT_IDEM_REPLAY) {
+        /* A committed mutation, asked for again. Return the ORIGINAL response
+         * and the ORIGINAL receipt, execute nothing, and say so on the wire. */
+        *out = slot->resp;
+        agent_broker_idem_label_replay(out);
+        s->replays_served++;
+        broker_replay_receipt(s, req, out, slot);
+        return;
+    }
+    /* FRESH or CLAIMED both proceed. CLAIMED means this exact request was
+     * dispatched before and cached nothing — a query, or a mutation that was
+     * refused — so there is nothing to return and everything to re-decide
+     * against the authority as it stands NOW.
+     *
+     * The claim is taken HERE, before any authorization or catalog work, so
+     * the id is bound to this request no matter which of the outcomes below it
+     * reaches. Every refusal from this point simply returns. */
+    agent_broker_idem_claim(s, &ident, digest);
+
+    int64_t now = clock_now_wall_ms();
+    resp_init(out, req, MVAP_OK);
+
+    /* 1. Authorization, on what the agent CLAIMED. The verdict comes from the
+     *    LIVE authority through the provider; the session narrows it. */
+    int32_t verdict = authorize_live(s, req, now);
     if (verdict != MVAP_OK) {
         resp_init(out, req, verdict);
         resp_body(out, "{\"denied\":\"%s\",\"stage\":\"authorize\"}",
                   mvap_status_name(verdict));
         s->requests_denied++;
         broker_receipt(s, req, out, "denied at pre-plan authorize", NULL);
-        idem_store(s, req->request_id, out);
         return;
     }
 
@@ -398,7 +547,6 @@ void agent_broker_handle(struct agent_broker_session *s,
         resp_body(out, "{\"denied\":\"PLAN_FAILED\"}");
         s->requests_denied++;
         broker_receipt(s, req, out, "plan refused", NULL);
-        idem_store(s, req->request_id, out);
         return;
     }
     if (!plan.found) {
@@ -406,18 +554,21 @@ void agent_broker_handle(struct agent_broker_session *s,
         resp_body(out, "{\"denied\":\"NOT_FOUND\",\"detail\":\"%s\"}",
                   plan.detail);
         s->requests_denied++;
-        idem_store(s, req->request_id, out);
         return;
     }
 
     /* 3. Re-authorize against the CATALOG's kind, not the agent's claim. A
      *    request that understated its kind to slip past the mask dies here.
      *    Skipped only when the request named no property at all, where there
-     *    is no catalog kind to disagree with. */
+     *    is no catalog kind to disagree with.
+     *
+     *    This is a SECOND read of the live authority, not a re-run over the
+     *    first verdict: the resolve above did real datadir work, and a revoke
+     *    that landed during it must be seen here. */
     if (!mvap_property_id_is_zero(req->property_id)) {
         struct mvap_request authoritative = *req;
         authoritative.kind = plan.kind;
-        verdict = agent_grant_authorize(&s->grant, &authoritative, now);
+        verdict = authorize_live(s, &authoritative, now);
         if (verdict != MVAP_OK) {
             resp_init(out, req, verdict);
             resp_body(out, "{\"denied\":\"%s\",\"stage\":\"recheck\","
@@ -426,13 +577,18 @@ void agent_broker_handle(struct agent_broker_session *s,
             s->requests_denied++;
             broker_receipt(s, req, out, "denied at post-plan kind recheck",
                            NULL);
-            idem_store(s, req->request_id, out);
             return;
         }
     }
 
     /* 4. A query answers from what it resolved. It mutates nothing, debits
-     *    nothing, and mints no receipt — on either side. */
+     *    nothing, and mints no receipt — on either side.
+     *
+     *    AND IT IS NOT REMEMBERED. A query used to be stored here, which meant
+     *    a repeated request_id returned the old OK without consulting the
+     *    authority at all: an agent could hold an answer across a revocation
+     *    simply by retrying. A query is a read of live authority and live
+     *    property state, so the only correct cache lifetime for one is zero. */
     if (!is_action) {
         resp_init(out, req, MVAP_OK);
         resp_body(out,
@@ -441,7 +597,6 @@ void agent_broker_handle(struct agent_broker_session *s,
                   mvap_kind_name(plan.kind),
                   (unsigned long long)plan.revision,
                   plan.owner_matches ? "true" : "false", plan.detail);
-        idem_store(s, req->request_id, out);
         return;
     }
 
@@ -454,7 +609,6 @@ void agent_broker_handle(struct agent_broker_session *s,
                        "\"detail\":\"controller is not the grant principal\"}");
         s->requests_denied++;
         broker_receipt(s, req, out, "commit refused: owner mismatch", NULL);
-        idem_store(s, req->request_id, out);
         return;
     }
     if (!s->ops.commit ||
@@ -463,11 +617,21 @@ void agent_broker_handle(struct agent_broker_session *s,
         resp_body(out, "{\"denied\":\"COMMIT_FAILED\"}");
         s->requests_denied++;
         broker_receipt(s, req, out, "commit refused by the node seam", NULL);
-        idem_store(s, req->request_id, out);
         return;
     }
 
-    agent_grant_commit_debit(&s->grant, req, now);
+    /* The debit lands on the LIVE authority, so a budget spent here is spent
+     * for every other reader of that grant — not in a session-local copy that
+     * dies with the connection. */
+    if (s->authority && s->authority->provider &&
+        s->authority->provider->debit &&
+        !s->authority->provider->debit(s->authority->provider_ctx,
+                                       s->authority, req, now))
+        LOG_WARN(BROKER_TAG,
+                 "grant %s: the live authority refused a debit that authorize "
+                 "had already allowed (verb=%s value=%llu)",
+                 session_grant_id(s), mvap_verb_name(req->verb),
+                 (unsigned long long)req->value_zats);
     resp_init(out, req, MVAP_OK);
     resp_body(out, "%s", outcome.body);
     /* The confinement envelope commits to the canonical action receipt rather
@@ -481,7 +645,12 @@ void agent_broker_handle(struct agent_broker_session *s,
     snprintf(detail, sizeof(detail), "%s action_receipt=%s", plan.detail,
              have_action_receipt ? action_hex : "none");
     broker_receipt(s, req, out, detail, outcome.action_receipt_id);
-    idem_store(s, req->request_id, out);
+    /* THE ONLY THING THAT PUTS AN ANSWER IN THE RING. A mutation that actually
+     * committed: an identical repeat now replays this response and this
+     * receipt and executes nothing. Stored with the canonical action receipt
+     * it commits to, so the replay's audit row can name it too. */
+    agent_broker_idem_commit(s, &ident, digest, out,
+                             outcome.action_receipt_id);
 }
 
 /* ── serving ────────────────────────────────────────────────────────────── */

@@ -27,11 +27,15 @@
  *
  * QUERIES AND THE RESERVED INSPECT BIT. Queries left the canonical action
  * space, so bit 0x1 (canonical METAVERSE_ACTION_INSPECT) is RESERVED: it is
- * still decoded for compatibility and is never reissued to a new action. It is
- * what a projected grant carries when the broker asks the canonical evaluator
- * to rule on a query's liveness (revocation, expiry, holder), so a query is
- * judged by the same evaluator as everything else instead of by a second
- * private path.
+ * still decoded for compatibility, so an old persisted grant or receipt still
+ * renders, and it is never reissued to a new action. NOTHING IN THIS JOIN
+ * DISPATCHES ON IT. It used to: both query rows carried it as their "canonical
+ * action", which meant the two reads were the same value by the time any
+ * consumer saw them, and a consumer asking "is this the enumeration?" had to
+ * guess from something else — the property id — and got it wrong for an
+ * enumeration that named one. A query row now carries its canonical QUERY and
+ * an action row its canonical ACTION, so INSPECT_PROPERTY and
+ * ENUMERATE_PROPERTIES stay two distinct values from decode to dispatch.
  */
 
 #ifndef ZCL_SESSION_AGENT_BROKER_VOCAB_H
@@ -46,32 +50,40 @@
 #include <stdint.h>
 
 /* ── the canonical join table ───────────────────────────────────────────────
- * One row per wire verb: (wire id, class, canonical action, whether the verb
+ * One row per wire verb: (wire id, class, canonical OPERATION, whether the verb
  * accepts the all-zero "no specific property" id).
  *
- * The CLASS column is the query/action split. The ACTION column names the
- * canonical action the verb translates to; for a QUERY row it is the RESERVED
- * INSPECT bit (see the header note), never a fresh action.
+ * The CLASS column is the query/action split. The OPERATION column names the
+ * canonical operation the verb translates to, IN THE VOCABULARY ITS CLASS
+ * NAMES: a QUERY row's operation is a row of METAVERSE_QUERY_TABLE, an ACTION
+ * row's is a row of METAVERSE_ACTION_TABLE (both in metaverse/property_action.h).
+ *
+ * THE SPLIT IS A BUILD ERROR TO BREAK, NOT A CONVENTION. The row builder pastes
+ * the operation onto its own class's prefix — METAVERSE_QUERY_<op> for a QUERY
+ * row, METAVERSE_ACTION_<op> for an ACTION row — and stores it in the matching
+ * arm of a union. A query row naming an action, or an action row naming a
+ * query, therefore expands to an identifier that does not exist and does not
+ * compile. There is no shape in which a query row can express an action bit.
  *
  * MVAP_VERB_TABLE in agent_broker_proto.h owns the wire VALUES and which
  * protocol version first carried them. This table owns nothing but the join,
  * and a _Static_assert in the .c requires the two to have the same rows. */
 #define MVAP_VERB_CANON_TABLE(X)                                              \
-    /*  wire id            class   canonical action   zero id ok */           \
-    X(INSPECT,             QUERY,  INSPECT,           false)                  \
-    X(LIST,                QUERY,  INSPECT,           true)                   \
-    X(HOST,                ACTION, HOST,              false)                  \
-    X(PUBLISH_REVISION,    ACTION, PUBLISH_REVISION,  false)                  \
-    X(UPDATE_POINTER,      ACTION, UPDATE_POINTER,    false)                  \
-    X(SELL,                ACTION, SELL,              false)                  \
-    X(BUY,                 ACTION, BUY,               false)                  \
-    X(DELIVER,             ACTION, DELIVER,           false)                  \
-    X(LEASE,               ACTION, LEASE,             false)                  \
-    X(TRANSFER,            ACTION, TRANSFER,          false)                  \
-    X(ACCEPT_PAYMENT,      ACTION, ACCEPT_PAYMENT,    false)                  \
-    X(DELEGATE,            ACTION, DELEGATE,          false)                  \
-    X(REVOKE,              ACTION, REVOKE,            true)                   \
-    X(LIST_FOR_SALE,       ACTION, LIST_FOR_SALE,     false)
+    /*  wire id            class   canonical operation    zero id ok */       \
+    X(INSPECT,             QUERY,  INSPECT_PROPERTY,      false)              \
+    X(LIST,                QUERY,  ENUMERATE_PROPERTIES,  true)               \
+    X(HOST,                ACTION, HOST,                  false)              \
+    X(PUBLISH_REVISION,    ACTION, PUBLISH_REVISION,      false)              \
+    X(UPDATE_POINTER,      ACTION, UPDATE_POINTER,        false)              \
+    X(SELL,                ACTION, SELL,                  false)              \
+    X(BUY,                 ACTION, BUY,                   false)              \
+    X(DELIVER,             ACTION, DELIVER,               false)              \
+    X(LEASE,               ACTION, LEASE,                 false)              \
+    X(TRANSFER,            ACTION, TRANSFER,              false)              \
+    X(ACCEPT_PAYMENT,      ACTION, ACCEPT_PAYMENT,        false)              \
+    X(DELEGATE,            ACTION, DELEGATE,              false)              \
+    X(REVOKE,              ACTION, REVOKE,                true)               \
+    X(LIST_FOR_SALE,       ACTION, LIST_FOR_SALE,         false)
 
 enum mvap_verb_class {
     MVAP_VERB_CLASS_QUERY = 0,
@@ -81,14 +93,30 @@ enum mvap_verb_class {
 struct mvap_verb_row {
     uint32_t              wire;
     enum mvap_verb_class  verb_class;
-    enum metaverse_action action;
     bool                  allows_zero_property_id;
+    /* PRIVATE — reach it with mvap_verb_row_action() / mvap_verb_row_query(),
+     * which answer only for the matching class and refuse otherwise. One
+     * storage slot on purpose: a verb is one operation in ONE vocabulary, and
+     * a row that could hold both would be a row a consumer has to interpret. */
+    union {
+        enum metaverse_action action;
+        enum metaverse_query  query;
+    } canon;
 };
 
 /* The row for a wire verb, or NULL when the value names no verb. NULL is the
  * ONLY "unknown verb" answer — there is no fallthrough that treats an
  * unrecognized value as harmless. */
 const struct mvap_verb_row *mvap_verb_row(uint32_t wire);
+
+/* The canonical operation a row names, asked in the vocabulary the row's class
+ * uses. Each returns false for a NULL row, a NULL out, or a row of the OTHER
+ * class — so a caller that asks an enumeration for its action bit gets a
+ * refusal rather than a bit that means something else. */
+bool mvap_verb_row_action(const struct mvap_verb_row *r,
+                          enum metaverse_action *out);
+bool mvap_verb_row_query(const struct mvap_verb_row *r,
+                         enum metaverse_query *out);
 
 /* Class predicates. `mints_receipt` is not a third opinion: an ACTION runs
  * PLAN -> COMMIT and is recorded, a QUERY does neither, and that IS the
@@ -97,11 +125,16 @@ bool mvap_verb_is_query(uint32_t wire);
 bool mvap_verb_is_action(uint32_t wire);
 bool mvap_verb_mints_receipt(uint32_t wire);
 
-/* Wire verb <-> canonical action. Both directions are the same table read two
- * ways; a query maps to the RESERVED INSPECT bit and
- * mvap_verb_from_action(METAVERSE_ACTION_INSPECT) is therefore
- * MVAP_VERB_NONE — the reserved bit names no action to encode. */
+/* Wire verb <-> canonical operation, by wire value. Both directions are the
+ * same table read two ways.
+ *
+ * mvap_verb_to_action() answers only for an ACTION verb and
+ * mvap_verb_to_query() only for a QUERY verb; neither has a value to return
+ * for the other class, and returning one anyway is how the two queries used to
+ * become indistinguishable. The RESERVED INSPECT bit is on no row at all, so
+ * mvap_verb_from_action(METAVERSE_ACTION_INSPECT) is MVAP_VERB_NONE. */
 bool mvap_verb_to_action(uint32_t wire, enum metaverse_action *out);
+bool mvap_verb_to_query(uint32_t wire, enum metaverse_query *out);
 uint32_t mvap_verb_from_action(enum metaverse_action action);
 
 /* Wire kind <-> canonical kind. The two enums are numerically identical row

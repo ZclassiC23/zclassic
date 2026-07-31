@@ -60,11 +60,13 @@ void agent_grant_allow_action(struct agent_grant *g, uint32_t verb)
         return;
     /* A query left the canonical action space, so it cannot occupy a canonical
      * action bit; it gets its own mask keyed by wire value. An action takes the
-     * canonical bit and nothing else — no `1u << verb`. */
-    if (row->verb_class == MVAP_VERB_CLASS_QUERY)
+     * canonical bit and nothing else — no `1u << verb`. The accessor refuses a
+     * query row outright, so the two masks cannot be filled from one another. */
+    enum metaverse_action action;
+    if (mvap_verb_row_action(row, &action))
+        g->actions_mask |= metaverse_action_bit(action);
+    else if (row->verb_class == MVAP_VERB_CLASS_QUERY)
         g->queries_mask |= (uint32_t)1u << verb;
-    else
-        g->actions_mask |= metaverse_action_bit(row->action);
 }
 
 void agent_grant_allow_kind(struct agent_grant *g, uint16_t kind)
@@ -86,6 +88,63 @@ bool agent_grant_add_property(struct agent_grant *g,
     memcpy(g->properties[g->n_properties], id, MVAP_PROPERTY_ID_LEN);
     g->n_properties++;
     return true;
+}
+
+/* ── the session narrowing ──────────────────────────────────────────────── */
+
+void agent_broker_scope_from_grant(const struct agent_grant *g,
+                                   struct agent_broker_scope *out)
+{
+    if (!out)
+        return;
+    memset(out, 0, sizeof(*out));
+    if (!g)
+        return;
+    /* Copied, not re-derived. The narrowing a session enforces is exactly the
+     * one the bound grant carries; there is no second place where an operator
+     * could write a different answer and no arithmetic in between. */
+    size_t n = g->n_properties > AGENT_GRANT_MAX_PROPS ? AGENT_GRANT_MAX_PROPS
+                                                       : g->n_properties;
+    for (size_t i = 0; i < n; i++)
+        memcpy(out->properties[i], g->properties[i], MVAP_PROPERTY_ID_LEN);
+    out->n_properties   = n;
+    out->kinds_mask     = g->kinds_mask;
+    out->max_value_zats = g->max_value_zats;
+}
+
+int32_t agent_broker_scope_check(const struct agent_broker_scope *sc,
+                                 const struct mvap_request *req)
+{
+    if (!sc || !req)
+        return MVAP_ERR_INTERNAL;
+    const struct mvap_verb_row *row = mvap_verb_row(req->verb);
+    if (!row)
+        return MVAP_ERR_UNKNOWN_VERB;
+
+    if (mvap_property_id_is_zero(req->property_id)) {
+        if (!row->allows_zero_property_id)
+            return MVAP_ERR_DENIED_PROPERTY;
+    } else if (sc->n_properties > 0) {
+        bool hit = false;
+        for (size_t i = 0; i < sc->n_properties && !hit; i++)
+            hit = memcmp(sc->properties[i], req->property_id,
+                         MVAP_PROPERTY_ID_LEN) == 0;
+        if (!hit)
+            return MVAP_ERR_DENIED_PROPERTY;
+    }
+
+    /* Kind scope. Checked whenever the request names a kind; the broker calls
+     * this a second time with the catalog's authoritative kind so a request
+     * that understated its kind is caught before COMMIT. */
+    if (req->kind != MVAP_KIND_ANY &&
+        (sc->kinds_mask & ((uint32_t)1u << req->kind)) == 0)
+        return MVAP_ERR_DENIED_KIND;
+
+    /* The per-action ceiling beneath the canonical cumulative budget. */
+    if (req->value_zats > 0 && req->value_zats > sc->max_value_zats)
+        return MVAP_ERR_DENIED_VALUE;
+
+    return MVAP_OK;
 }
 
 /* Canonical scope digest. Deliberately EXCLUDES the mutable counters
@@ -242,8 +301,10 @@ static bool project_grant(const struct agent_grant *g,
         for (uint32_t w = 0; w < 32u; w++) {
             if ((g->queries_mask & ((uint32_t)1u << w)) == 0u)
                 continue;
-            enum metaverse_query q = metaverse_query_from_wire(w);
-            if (q != METAVERSE_QUERY_NONE)
+            /* Through the join, so a wire value that is not a QUERY verb
+             * contributes no read right however the mask came to hold it. */
+            enum metaverse_query q;
+            if (mvap_verb_to_query(w, &q) && q != METAVERSE_QUERY_NONE)
                 mg->queries |= (metaverse_query_set)q;
         }
     } else {
@@ -264,8 +325,14 @@ static bool project_grant(const struct agent_grant *g,
      * HOST would refuse it for naming nobody, which is not what an operator
      * writing "sell only to buyer-one" meant. Whether the action has one is
      * the canonical column, asked once here and once in the request
-     * projection, never decided locally. */
-    if (metaverse_action_uses_counterparty(row->action) &&
+     * projection, never decided locally.
+     *
+     * A QUERY names no counterparty at all, so the accessor refuses and the
+     * question is never asked. It used to be asked with the reserved INSPECT
+     * bit standing in for a query's "action". */
+    enum metaverse_action action;
+    if (mvap_verb_row_action(row, &action) &&
+        metaverse_action_uses_counterparty(action) &&
         !project_counterparties(g->counterparty_allowlist, mg))
         return false;
 
@@ -339,37 +406,23 @@ int32_t agent_grant_authorize(const struct agent_grant *g,
     if (verdict != METAVERSE_GRANT_OK)
         return mvap_status_from_grant_verdict(verdict);
 
-    /* 2. CONFINEMENT NARROWING. Everything below can only refuse. */
-
-    bool zero_id = mvap_property_id_is_zero(req->property_id);
-    if (zero_id) {
-        if (!row->allows_zero_property_id)
-            return MVAP_ERR_DENIED_PROPERTY;
-    } else if (g->n_properties > 0) {
-        bool hit = false;
-        for (size_t i = 0; i < g->n_properties && !hit; i++)
-            hit = memcmp(g->properties[i], req->property_id,
-                         MVAP_PROPERTY_ID_LEN) == 0;
-        if (!hit)
-            return MVAP_ERR_DENIED_PROPERTY;
-    }
-
-    /* Kind scope. Checked whenever the request names a kind; the broker calls
-     * this a second time with the catalog's authoritative kind so a request
-     * that understated its kind is caught before COMMIT. */
-    if (req->kind != MVAP_KIND_ANY &&
-        (g->kinds_mask & ((uint32_t)1u << req->kind)) == 0)
-        return MVAP_ERR_DENIED_KIND;
-
-    /* The per-action ceiling beneath the canonical cumulative budget. */
-    if (req->value_zats > 0 && req->value_zats > g->max_value_zats)
-        return MVAP_ERR_DENIED_VALUE;
+    /* 2. CONFINEMENT NARROWING. Everything below can only refuse. It runs
+     *    through agent_broker_scope_check(), the SAME function a broker
+     *    session applies to a live-authority verdict, so the confinement layer
+     *    has one implementation and not two that can disagree. */
+    struct agent_broker_scope sc;
+    agent_broker_scope_from_grant(g, &sc);
+    int32_t narrowed = agent_broker_scope_check(&sc, req);
+    if (narrowed != MVAP_OK)
+        return narrowed;
 
     /* Delegation needs a child grant, which the wire cannot carry, so
      * metaverse_grant_check_delegation() cannot be reached from here. What the
      * broker can still refuse is a DELEGATE attempted under a grant that
      * forbids delegating at all. */
-    if (row->action == METAVERSE_ACTION_DELEGATE &&
+    enum metaverse_action action;
+    if (mvap_verb_row_action(row, &action) &&
+        action == METAVERSE_ACTION_DELEGATE &&
         (!g->may_delegate || g->max_delegation_depth == 0))
         return MVAP_ERR_DENIED_DELEGATION;
 

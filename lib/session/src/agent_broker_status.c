@@ -9,6 +9,14 @@
  * that echoes the request is a surface that cannot tell you it failed. The
  * grant itself is never rendered; only its fingerprint, so an operator can see
  * WHICH authority is live without the document becoming a copy of it.
+ *
+ * The broker no longer HOLDS a grant either (session/agent_broker.h, struct
+ * agent_authority_ref), so this file asks the provider for a labelled status
+ * snapshot when it writes. The four fields that decide whether the document
+ * can be believed are always present: `authority_source` (where the authority
+ * came from), `authority_persistence` (always "ephemeral" — this store dies
+ * with the process), `canonical_grant_id`, and `live_authority` (whether every
+ * decision re-reads the store rather than a copy).
  */
 
 #include "session/agent_broker.h"
@@ -30,15 +38,37 @@
 
 void agent_broker_write_status(const char *dir,
                                const struct agent_broker_session *s,
-                               const struct agent_grant *g, pid_t child_pid,
-                               const char *socket_path)
+                               pid_t child_pid, const char *socket_path)
 {
-    if (!dir || !s || !g)
+    if (!dir || !s)
         return;
-    uint8_t fp[32];
-    agent_grant_fingerprint(g, fp);
+
+    /* THE AUTHORITY SECTION IS PULLED, NOT REMEMBERED. The broker holds no
+     * grant to render, so the four fields an operator needs — where the
+     * authority came from, how durable it is, which canonical grant it is,
+     * and whether decisions consult it live — are asked of the provider at
+     * write time. A session that never bound reports ungranted, which is a
+     * different document from a bound session with an empty grant. */
+    const struct agent_authority_ref *a = s->authority;
+    struct agent_authority_status auth;
+    memset(&auth, 0, sizeof(auth));
+    bool bound = a && a->bound && a->provider;
+    bool have_status = false;
+    if (bound && a->provider->status)
+        have_status = a->provider->status(a->provider_ctx, a, &auth);
+    if (bound && !have_status) {
+        /* The provider named no status surface. Report what the binding
+         * itself proves and nothing more. */
+        snprintf(auth.authority_source, sizeof(auth.authority_source), "%s",
+                 a->provider->name ? a->provider->name : "(unnamed provider)");
+        snprintf(auth.canonical_grant_id, sizeof(auth.canonical_grant_id),
+                 "%s", a->canonical_grant_id);
+        snprintf(auth.principal, sizeof(auth.principal), "%s", a->principal);
+        auth.live_authority = a->provider->authorize != NULL;
+        auth.ephemeral = true;
+    }
     char fphex[65];
-    zcl_hex_encode(fp, 32, fphex);
+    zcl_hex_encode(auth.fingerprint, 32, fphex);
 
     struct json_value doc;
     json_init(&doc);
@@ -47,20 +77,40 @@ void agent_broker_write_status(const char *dir,
     (void)json_push_kv_int(&doc, "agent_pid", (int64_t)child_pid);
     (void)json_push_kv_str(&doc, "socket", socket_path ? socket_path
                                                        : "(socketpair)");
-    (void)json_push_kv_str(&doc, "principal", g->principal);
-    (void)json_push_kv_str(&doc, "grant_id", g->grant_id);
-    (void)json_push_kv_str(&doc, "grant_fingerprint", fphex);
-    (void)json_push_kv_bool(&doc, "grant_revoked", g->revoked);
-    (void)json_push_kv_int(&doc, "grant_actions_mask", (int64_t)g->actions_mask);
-    (void)json_push_kv_int(&doc, "grant_properties", (int64_t)g->n_properties);
-    (void)json_push_kv_int(&doc, "budget_zats", (int64_t)g->budget_zats);
-    (void)json_push_kv_int(&doc, "spent_zats", (int64_t)g->spent_zats);
+    (void)json_push_kv_bool(&doc, "granted", bound);
+    (void)json_push_kv_str(&doc, "authority_source",
+                           bound ? auth.authority_source : "none");
+    /* Stated in every document, including an ungranted one: this store does
+     * not survive a restart, so nothing here implies durable revocation or a
+     * receipt anyone can verify after the process exits. */
+    (void)json_push_kv_str(&doc, "authority_persistence", "ephemeral");
+    (void)json_push_kv_str(&doc, "canonical_grant_id",
+                           bound ? auth.canonical_grant_id : "");
+    (void)json_push_kv_bool(&doc, "live_authority",
+                            bound && auth.live_authority);
+    (void)json_push_kv_str(&doc, "principal", bound ? auth.principal : "");
+    (void)json_push_kv_str(&doc, "grant_fingerprint", bound ? fphex : "");
+    (void)json_push_kv_bool(&doc, "grant_revoked", auth.revoked);
+    (void)json_push_kv_int(&doc, "authority_generation",
+                           (int64_t)auth.authority_generation);
+    (void)json_push_kv_int(&doc, "budget_zats", (int64_t)auth.budget_zat);
+    (void)json_push_kv_int(&doc, "spent_zats", (int64_t)auth.spent_zat);
+    (void)json_push_kv_int(&doc, "grant_properties",
+                           bound ? (int64_t)a->scope.n_properties : 0);
     (void)json_push_kv_int(&doc, "requests_served",
                            (int64_t)s->requests_served);
     (void)json_push_kv_int(&doc, "requests_denied",
                            (int64_t)s->requests_denied);
     (void)json_push_kv_int(&doc, "receipts_written",
                            (int64_t)s->receipts_written);
+    /* Separate from `receipts_written` on purpose: a replay is a request the
+     * broker answered from its idempotency ring, having executed nothing, so
+     * counting it as a receipt would overstate the work done. A conflict is an
+     * id the agent pointed at a second, different request. */
+    (void)json_push_kv_int(&doc, "replays_served",
+                           (int64_t)s->replays_served);
+    (void)json_push_kv_int(&doc, "idempotency_conflicts",
+                           (int64_t)s->idempotency_conflicts);
     (void)json_push_kv_int(&doc, "peer_pid", (int64_t)s->peer.pid);
     (void)json_push_kv_int(&doc, "peer_uid", (int64_t)s->peer.uid);
     (void)json_push_kv_int(&doc, "peer_gid", (int64_t)s->peer.gid);

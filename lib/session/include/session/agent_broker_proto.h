@@ -135,6 +135,28 @@ enum mvap_status {
     MVAP_ERR_PLAN_FAILED           = -17,
     MVAP_ERR_COMMIT_FAILED         = -18,
     MVAP_ERR_REVISION_MOVED        = -19,  /* commit-time recheck disagreed  */
+    /* The authority said yes and there is NOTHING THAT EXECUTES the action.
+     * A distinct refusal on purpose: reporting a mutation nobody performed as
+     * COMMIT_FAILED reads like a transient error and invites a retry, and
+     * reporting it as OK would be a receipt for an event that did not
+     * happen. */
+    MVAP_ERR_ACTION_EXECUTOR_UNAVAILABLE = -20,
+    /* The query is in the vocabulary and this seam has no bounded result type
+     * for it. Named rather than answered with a truncated or improvised
+     * body. */
+    MVAP_ERR_QUERY_UNAVAILABLE     = -21,
+    /* The live authority moved WHILE the decision was being computed over it,
+     * and the retry saw it move again. Not a denial and not an approval: the
+     * broker declines to answer from a state it cannot prove was coherent. */
+    MVAP_ERR_AUTHORITY_CHANGED     = -22,
+    /* This request_id already names a DIFFERENT request. The idempotency key
+     * is the agent's promise that a repeat is the same ask; a repeat that
+     * changed the property, the kind, the value, the parameter, the verb, the
+     * protocol version, or the authority is a different ask wearing an old
+     * name. Answering it from the ring would hand one property's answer to a
+     * question about another, so it is refused and the first request's record
+     * is left exactly as it was. */
+    MVAP_ERR_REQUEST_ID_REUSED     = -23,
 };
 
 /* One request. `param` is NUL-terminated after decode and always passes

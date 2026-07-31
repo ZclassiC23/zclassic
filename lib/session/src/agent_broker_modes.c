@@ -9,11 +9,17 @@
  *
  *   spawn the confined child   <- the child's address space is COW-copied HERE
  *   open the audit log         <- mints the signing key, AFTER the copy
- *   build the grant            <- the authority, AFTER the copy
+ *   bind the authority         <- loads/mints the grant, AFTER the copy
  *
  * Moving either of the last two above the spawn would put a secret into the
  * child's inherited image. execve() then discards that image anyway, but the
  * ordering is what makes the property hold without depending on it.
+ *
+ * The provider is REGISTERED before this function is even entered (the
+ * composition root runs from src/main.c), and registration is deliberately
+ * inert: it installs static callbacks and non-secret configuration and loads
+ * nothing. The authority appears only at `bind`, which is called below, after
+ * the fork.
  */
 
 #define _GNU_SOURCE
@@ -112,10 +118,14 @@ static void read_child_report(const char *scratch_dir,
  * authorizing actions against two properties that do not exist, under a grant
  * nobody issued. Both are gone. The grant and the property surface now come
  * from a registered provider (the composition root wires the real property
- * catalog and property grant service). With none registered the broker holds
- * NO grant and NO seam, so it refuses every request it is asked — it does not
- * substitute anything. It still opens its socket, so an operator sees a named
- * refusal per request rather than a process that silently vanished.
+ * catalog and property grant service). With none registered the broker binds
+ * NO authority and gets NO seam, so it refuses every request it is asked — it
+ * does not substitute anything. It still opens its socket, so an operator sees
+ * a named refusal per request rather than a process that silently vanished.
+ *
+ * REGISTRATION IS NOT PROVISIONING. A registered provider that was handed no
+ * explicit grant source refuses to bind, and the broker is then exactly as
+ * ungranted as one with no provider at all.
  *
  * The fixture provider still exists for the adversarial demo, but only in a
  * build compiled with -DZCL_TESTING, and only when `--fixture` is passed. In a
@@ -150,20 +160,42 @@ int agent_broker_mode_main(int argc, char **argv)
     const char *reqs    = arg_value(argc, argv, "--requests=");
     const char *euid_s  = arg_value(argc, argv, "--expect-uid=");
     const char *auid_s  = arg_value(argc, argv, "--agent-uid=");
-    const char *revoke_s = arg_value(argc, argv, "--revoke-after=");
     bool listen_mode    = arg_present(argc, argv, "--listen");
+#ifdef ZCL_TESTING
+    const char *revoke_s = arg_value(argc, argv, "--revoke-after=");
+#endif
 
     /* The fixture flag is only listed in a build that HAS a fixture catalog,
      * so the shipped binary's own usage text does not advertise a surface it
-     * cannot reach. */
+     * cannot reach.
+     *
+     * --grant-id / --grant-spec are read by the COMPOSITION ROOT
+     * (services/agent_broker_provider.h), not here, because the authority is
+     * the provider's and this mode owns none. They are listed because this is
+     * the usage text an operator reads, and because WITHOUT ONE OF THEM THE
+     * BROKER IS UNGRANTED and refuses every request — registration alone
+     * grants nothing.
+     *
+     * --revoke-after mutates the authority mid-session, which the broker no
+     * longer holds and must not reach around to. It is a demo instrument and
+     * exists only in a -DZCL_TESTING build. */
     static const char k_usage[] =
         "usage: zclassic23 --metaverse-broker --broker-dir=DIR "
         "[--script=NAME] [--canary=PATH] [--requests=N] [--listen] "
-        "[--expect-uid=N] [--agent-uid=N] [--revoke-after=N]"
+        "[--expect-uid=N] [--agent-uid=N]\n"
+        "  authority (one is REQUIRED; without it the broker serves nothing):\n"
+        "    --grant-id=ID          bind to a canonical grant already in the "
+        "property grant store\n"
+        "    --grant-spec=PATH      read a bounded grant specification, mint "
+        "it AFTER the child is spawned, and bind to it\n"
+        "  the store is IN-PROCESS and EPHEMERAL: a restart leaves the broker "
+        "ungranted until it is\n"
+        "  reprovisioned, and nothing here implies a durable revocation or a "
+        "durable receipt.\n"
 #ifdef ZCL_TESTING
-        " [--fixture]"
+        "  test-build only: [--fixture] [--revoke-after=N]\n"
 #endif
-        "\n";
+        ;
 
     if (!dir || !dir[0]) {
         (void)fputs(k_usage, stderr);  // obs-ok:argv-mode-cli
@@ -216,30 +248,38 @@ int agent_broker_mode_main(int argc, char **argv)
                       dir);
         return 5;
     }
-    /* The authority, from the provider — never minted here. A broker with no
-     * provider keeps its grant and its seam ZEROED and therefore refuses every
-     * request it is asked; it does not quietly answer out of something else.
-     * The socket still comes up, so an operator gets a named refusal per
-     * request instead of a process that vanished. */
+    /* The authority, from the provider — never minted here, and never COPIED
+     * into the session. `authority` lives for the whole function and the
+     * session points at it; the session holds no grant of its own, so nothing
+     * it carries can survive a revoke. A broker whose provider refuses to bind
+     * keeps `authority.bound` false and therefore refuses every request with a
+     * named reason. The socket still comes up, so an operator gets that
+     * refusal per request instead of a process that vanished. */
+    struct agent_authority_ref authority;
+    memset(&authority, 0, sizeof(authority));
     struct agent_broker_session s;
     memset(&s, 0, sizeof(s));
+    s.authority = &authority;
     const char *no_provider_why = NULL;
     const struct agent_broker_provider *provider =
         resolve_provider(argc, argv, &no_provider_why);
-    if (provider) {
-        if (!provider->grant || !provider->grant(provider->ctx, &s.grant)) {
-            (void)fprintf(stderr,  // obs-ok:argv-mode-cli
-                "broker: provider '%s' issued no grant; every request will be "
-                "refused\n", provider->name ? provider->name : "(unnamed)");
-            memset(&s.grant, 0, sizeof(s.grant));
-        }
-        if (provider->ops)
-            s.ops = provider->ops(provider->ctx);
-        printf("broker: property provider '%s'\n",
-               provider->name ? provider->name : "(unnamed)");
-    } else {
+    if (!provider) {
         (void)fprintf(stderr, "broker: %s\n",  // obs-ok:argv-mode-cli
                       no_provider_why ? no_provider_why : "no provider");
+    } else {
+        char why[192];
+        if (!agent_broker_session_bind(&s, &authority, why, sizeof(why)))
+            (void)fprintf(stderr,  // obs-ok:argv-mode-cli
+                "broker: provider '%s' bound no authority (%s); every request "
+                "will be refused\n",
+                provider->name ? provider->name : "(unnamed)",
+                why[0] ? why : "no reason given");
+        else
+            printf("broker: authority %s via provider '%s'\n",
+                   authority.canonical_grant_id,
+                   provider->name ? provider->name : "(unnamed)");
+        printf("broker: property provider '%s'\n",
+               provider->name ? provider->name : "(unnamed)");
     }
     s.audit = &audit;
     s.child.landlock_abi = landlock_abi;
@@ -276,7 +316,10 @@ int agent_broker_mode_main(int argc, char **argv)
         s.expect.uid = auid_s ? (uid_t)strtoul(auid_s, NULL, 10) : getuid();
 
         uint64_t max = reqs ? strtoull(reqs, NULL, 10) : 0;
+#ifdef ZCL_TESTING
         uint64_t revoke_after = revoke_s ? strtoull(revoke_s, NULL, 10) : 0;
+        bool revoked_once = false;
+#endif
 
         if (!agent_broker_identify_peer(spawned.sock, &s.peer)) {
             (void)fprintf(stderr, "broker: no peer credentials on the pair\n");  // obs-ok:argv-mode-cli
@@ -293,17 +336,21 @@ int agent_broker_mode_main(int argc, char **argv)
         (void)fflush(stdout);
 
         for (;;) {
+#ifdef ZCL_TESTING
             /* The revocation half of the vertical slice: after N served
-             * requests the grant is revoked in place, and every later action
-             * the agent attempts is refused with DENIED_REVOKED. */
+             * requests the LIVE authority is revoked, and every later action
+             * the agent attempts is refused with DENIED_REVOKED. It is revoked
+             * where it lives — the broker cannot revoke a grant it does not
+             * hold, which is the point. */
             if (revoke_after && (uint64_t)served == revoke_after &&
-                !s.grant.revoked) {
-                s.grant.revoked = true;
-                s.grant.revocation_generation++;
+                !revoked_once) {
+                agent_broker_fixture_revoke();
+                revoked_once = true;
                 printf("broker: grant %s REVOKED after %d request(s)\n",
-                       s.grant.grant_id, served);
+                       authority.canonical_grant_id, served);
                 (void)fflush(stdout);
             }
+#endif
             int r = agent_broker_serve_once(&s, spawned.sock);
             if (r <= 0)
                 break;
@@ -328,7 +375,7 @@ int agent_broker_mode_main(int argc, char **argv)
         }
     }
 
-    agent_broker_write_status(dir, &s, &s.grant, spawned.pid,
+    agent_broker_write_status(dir, &s, spawned.pid,
                               sockpath[0] ? sockpath : NULL);
 
     struct agent_audit_verdict v;

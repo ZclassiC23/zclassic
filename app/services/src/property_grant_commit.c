@@ -14,8 +14,9 @@
 // the same marker on property_grant_service.c. COMMIT returns
 // `enum property_grant_reason` and chain verification returns
 // `enum metaverse_receipt_status`; both are closed taxonomies whose tokens the
-// tests assert exactly. The one bool export is the ZCL_TESTING-only tamper hook,
-// which has no operator-facing failure to report.
+// tests assert exactly. The two bool exports are the ZCL_TESTING-only tamper
+// hook and the ZCL_TESTING-only seal-failure hook, neither of which has an
+// operator-facing failure to report.
 
 #include "services/property_grant_service.h"
 
@@ -64,16 +65,14 @@ static uint64_t chain_len(const char *grant_id)
     return n;
 }
 
-enum property_grant_reason property_grant_service_commit(
+/* One COMMIT attempt. Returns AUTHORITY_CHANGED when the store moved while the
+ * catalog was being read outside the lock; property_grant_service_commit()
+ * retries exactly once and then gives up rather than committing over a state
+ * it cannot show was coherent. */
+static enum property_grant_reason commit_attempt(
     const char *plan_id, const char *idempotency_key,
     struct property_grant_commit_result *out)
 {
-    if (!plan_id || !out) {
-        LOG_ERROR(PGC_LOG, "commit: NULL plan id or output");
-        return PROPERTY_GRANT_BAD_ARGS;
-    }
-    memset(out, 0, sizeof(*out));
-
     int64_t now = 0, height = 0;
     pg_now(&now, &height);
 
@@ -124,18 +123,53 @@ enum property_grant_reason property_grant_service_commit(
         return PROPERTY_GRANT_GRANT_UNKNOWN;
     }
 
-    /* ── Re-check 2: current ownership and revision from the catalog ────── */
-    if (!g_pg_store.env.catalog_lookup) {
+    /* ── Re-check 2: current ownership and revision from the catalog ──────
+     *
+     * THE LOOKUP RUNS WITH NO LOCK HELD. The real catalog rebuilds every view
+     * from datadir bytes on every call, and doing that inside the store mutex
+     * would stall every other grant decision in the process behind a disk
+     * read. So: copy what the lookup needs, RELEASE, look up, RE-ACQUIRE, and
+     * confirm the store-wide authority generation did not move. Everything
+     * after the re-acquire re-reads the store fresh, exactly as before. */
+    metaverse_catalog_lookup_fn lookup = g_pg_store.env.catalog_lookup;
+    void *lookup_ctx = g_pg_store.env.catalog_ctx;
+    if (!lookup) {
         pthread_mutex_unlock(&g_pg_store.lock);
         LOG_WARN(PGC_LOG,
                  "commit: no property catalog installed — refusing to commit "
                  "an action whose current ownership cannot be confirmed");
         return PROPERTY_GRANT_CATALOG_UNAVAILABLE;
     }
+    struct metaverse_property_id target = plan->request.property;
+    uint64_t seen_generation = g_pg_store.authority_generation;
+    pthread_mutex_unlock(&g_pg_store.lock);
+
     struct metaverse_catalog_view view;
     memset(&view, 0, sizeof(view));
-    if (!g_pg_store.env.catalog_lookup(&plan->request.property, &view,
-                                       g_pg_store.env.catalog_ctx)) {
+    bool found = lookup(&target, &view, lookup_ctx);
+
+    pthread_mutex_lock(&g_pg_store.lock);
+    if (g_pg_store.authority_generation != seen_generation) {
+        pthread_mutex_unlock(&g_pg_store.lock);
+        LOG_WARN(PGC_LOG,
+                 "commit: the store moved while reading the catalog for plan "
+                 "%s — retrying", plan_id);
+        return PROPERTY_GRANT_AUTHORITY_CHANGED;
+    }
+    /* The generation is unchanged, so nothing was minted, delegated, revoked,
+     * debited or reset; plan and grant are the same records. Re-resolve the
+     * pointers anyway — the arrays are addressed by index and a pointer held
+     * across an unlock is a habit worth not having. */
+    plan = pg_find_plan_locked(plan_id);
+    g = plan ? pg_find_grant(plan->grant_id) : NULL;
+    if (!plan || !g) {
+        pthread_mutex_unlock(&g_pg_store.lock);
+        LOG_ERROR(PGC_LOG,
+                  "commit: plan or grant vanished at an unchanged authority "
+                  "generation (plan %s)", plan_id);
+        return PROPERTY_GRANT_AUTHORITY_CHANGED;
+    }
+    if (!found) {
         pthread_mutex_unlock(&g_pg_store.lock);
         LOG_WARN(PGC_LOG, "commit: property not in the catalog (plan %s)",
                  plan_id);
@@ -201,7 +235,35 @@ enum property_grant_reason property_grant_service_commit(
         return PROPERTY_GRANT_SIGNING_KEY_UNAVAILABLE;
     }
 
+    /* ── THE WHOLE RECORD, BEFORE THE EFFECT ────────────────────────────────
+     *
+     * Everything from here to the receipt append either produces evidence or
+     * puts this record back exactly as it was. The restore is a whole-record
+     * copy and NOT a hand-written "give the debit back", because the charge
+     * rule does not live here: metaverse_grant_record_commit() bills only a
+     * value that MOVES (a quoted asking price is not exposure) and may roll the
+     * rate window forward before it counts. A compensating action written out
+     * by hand is a second copy of that rule that has to be kept in step with
+     * it, and it was not — it credited value that had never been charged, which
+     * drove spent_zat negative and WIDENED the operator's ceiling on a failed
+     * commit, and it never put back a rolled window_start_unix. A whole-record
+     * restore is the exact inverse of any effect record_commit can have, this
+     * one and every one added later, and cannot drift from the charge rule
+     * because it does not restate it.
+     *
+     * LOCK INVARIANT, and the whole-record restore depends on it: the mutation
+     * and the restore are both inside ONE contiguous hold of g_pg_store.lock —
+     * taken at the catalog re-acquire above and released only by a return path
+     * below. In between the record HAS moved, so a snapshot taken inside that
+     * window and rechecked after the restore would see an unchanged generation
+     * and revalidate over values it never observed. No such snapshot can be
+     * taken: property_grant_service_snapshot() takes the same mutex. */
+    const struct metaverse_grant grant_before_effect = *g;
+
     if (!metaverse_grant_record_commit(g, &req)) {
+        /* It can refuse AFTER having already rolled the rate window, so the
+         * restore is not optional on this path either. */
+        *g = grant_before_effect;
         pthread_mutex_unlock(&g_pg_store.lock);
         LOG_ERROR(PGC_LOG,
                   "commit: grant %s passed the check but rejected the debit",
@@ -227,12 +289,24 @@ enum property_grant_reason property_grant_service_commit(
     r.grant_spent_after_zat = g->spent_zat;
 
     const struct metaverse_receipt *prev = last_receipt(g->grant_id);
-    if (!metaverse_receipt_seal(&r, prev ? prev->chain_hash : NULL,
-                                g_pg_store.sk, g_pg_store.pk)) {
-        /* The debit is already recorded, so give it back rather than charge for
-         * an action that produced no evidence. */
-        g->spent_zat -= req.value_zat;
-        if (g->rate_limit > 0 && g->window_used > 0) g->window_used--;
+    bool sealed = metaverse_receipt_seal(&r, prev ? prev->chain_hash : NULL,
+                                         g_pg_store.sk, g_pg_store.pk);
+#ifdef ZCL_TESTING
+    /* The one point where a test can make the seal fail. See the hook's
+     * declaration: the real sealer cannot fail here, so without this the
+     * restore below has no test and the arithmetic that used to live in it went
+     * two defects deep before anyone looked. */
+    if (sealed && g_pg_store.seal_hook)
+        sealed = g_pg_store.seal_hook(g_pg_store.seal_hook_ctx);
+#endif
+    if (!sealed) {
+        /* No evidence, so no effect. The restore is byte-exact, which is why
+         * this path does NOT bump the authority generation: the record is
+         * genuinely unmutated, the receipt array is untouched, and the plan is
+         * still uncommitted, so there is nothing for a reader to have missed.
+         * A bump here would be the opposite defect — telling every in-flight
+         * decision the world moved when it did not. */
+        *g = grant_before_effect;
         pthread_mutex_unlock(&g_pg_store.lock);
         LOG_ERROR(PGC_LOG, "commit: could not seal receipt for grant %s",
                   g->grant_id);
@@ -246,8 +320,30 @@ enum property_grant_reason property_grant_service_commit(
     out->receipt = r;
     out->replayed = false;
     out->budget_remaining_zat = metaverse_grant_budget_remaining(g);
+    /* The budget debit above is a mutation of the authority, so it moves the
+     * store-wide generation: a decision computed over the pre-debit budget is
+     * no longer a decision over current state. */
+    pg_bump_authority();
     pthread_mutex_unlock(&g_pg_store.lock);
     return PROPERTY_GRANT_OK;
+}
+
+enum property_grant_reason property_grant_service_commit(
+    const char *plan_id, const char *idempotency_key,
+    struct property_grant_commit_result *out)
+{
+    if (!plan_id || !out) {
+        LOG_ERROR(PGC_LOG, "commit: NULL plan id or output");
+        return PROPERTY_GRANT_BAD_ARGS;
+    }
+    memset(out, 0, sizeof(*out));
+    enum property_grant_reason r =
+        commit_attempt(plan_id, idempotency_key, out);
+    if (r == PROPERTY_GRANT_AUTHORITY_CHANGED) {
+        memset(out, 0, sizeof(*out));
+        r = commit_attempt(plan_id, idempotency_key, out);  /* ONE retry */
+    }
+    return r;
 }
 
 size_t property_grant_service_receipts(const char *grant_id,
@@ -316,6 +412,22 @@ enum metaverse_receipt_status property_grant_service_verify_chain(
     return status;
 }
 
+bool property_grant_service_test_set_seal_hook(
+    property_grant_test_seal_hook_fn fn, void *ctx)
+{
+#ifndef ZCL_TESTING
+    (void)fn; (void)ctx;
+    LOG_FAIL(PGC_LOG, "the seal-failure hook is a test-only hook and this is "
+                      "not a ZCL_TESTING build");
+#else
+    pthread_mutex_lock(&g_pg_store.lock);
+    g_pg_store.seal_hook = fn;
+    g_pg_store.seal_hook_ctx = ctx;
+    pthread_mutex_unlock(&g_pg_store.lock);
+    return true;
+#endif
+}
+
 bool property_grant_service_test_overwrite_receipt(
     const char *grant_id, uint64_t seq, const struct metaverse_receipt *edited)
 {
@@ -326,6 +438,9 @@ bool property_grant_service_test_overwrite_receipt(
 #else
     if (!grant_id || !edited || seq == 0)
         LOG_FAIL(PGC_LOG, "receipt overwrite: bad arguments");
+    /* DELIBERATELY NO AUTHORITY BUMP. This hook exists to forge a store that
+     * looks untouched, so announcing the edit would defeat the tamper-evidence
+     * proof: the chain verifier has to catch it from the hashes alone. */
     bool found = false;
     pthread_mutex_lock(&g_pg_store.lock);
     for (size_t i = 0; i < g_pg_store.receipt_count; i++) {
