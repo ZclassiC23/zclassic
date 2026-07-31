@@ -1300,6 +1300,16 @@ void zcl_native_handle_telemetry_storage_database(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 void zcl_native_handle_telemetry_storage_disk(
+/* ── ops.telemetry.wallet.* — the wallet telemetry domain's two views
+ * (tools/command/native_telemetry_wallet_command.c). Both pick the typed
+ * wallet snapshot filled by services/wallet_telemetry.h and hand it to the
+ * one shared renderer; neither names a field, decides health, or builds a
+ * document. Posture only: no key, address or balance can appear in either
+ * reply. Bound by config/commands/telemetry/wallet.def. */
+void zcl_native_handle_telemetry_wallet_summary(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_telemetry_wallet_security(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 

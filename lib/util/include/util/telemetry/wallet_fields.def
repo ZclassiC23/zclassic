@@ -5,7 +5,33 @@
  *
  * Lane ownership: this file belongs to the wallet domain alone. Append groups
  * below the `meta` group; do not reorder or reword existing rows, and keep
- * each group's rows contiguous. */
+ * each group's rows contiguous.
+ *
+ * ── THE RULE THIS TABLE IS WRITTEN UNDER ────────────────────────────────
+ * POSTURE, NEVER ACCOUNT DATA. This domain sits next to spending keys and
+ * balances, and a diagnostic surface is relayed by agents, pasted into
+ * tickets and quoted in logs. No row here may carry — or allow the
+ * reconstruction of — a private key, a seed, a spending key, an address, or a
+ * confirmed balance. "A backup exists and is N seconds old", "the wallet is
+ * encrypted at rest", "this build cannot create a Sapling proof" are all
+ * legitimate telemetry. A number of zatoshi is not: it is account data, and it
+ * does not belong on a surface whose whole purpose is being handed to someone
+ * else. Every row below is a boolean, a counter, a cursor distance, or a
+ * closed-set token. If a future row would let a reader infer what the wallet
+ * holds or who it pays, it belongs in the wallet's own authenticated surface,
+ * not here.
+ *
+ * ── WHY SO MANY ROWS ARE TFR_INFO ───────────────────────────────────────
+ * A health rule fires an alert and sends an operator somewhere. A WRONG rule
+ * sends them to the wrong subsystem, which is worse than sending them
+ * nowhere. Three facts in this domain are unambiguously bad at any value
+ * other than zero — a failed backup, a failed checkpoint write, a failed
+ * mirror pass — and those three carry rules. Everything else here has a
+ * legitimate healthy range that depends on operator configuration this
+ * snapshot cannot read (the backup interval), on the node's sync phase (the
+ * mirror lag), or on a deliberate operator choice (a plaintext wallet, a
+ * locked wallet, a build without a proving backend). Those rows state, in
+ * `means`, exactly what a reader should compare the value against instead. */
 
 TL_DOMAIN_META(wallet, "zcl.telemetry.wallet.v1",
     "wallet projection, vault posture and key-handling safety")
@@ -21,3 +47,190 @@ TL_LEAF(meta, collected_unix, TLC_I64, TFU_UNIX_TIME, TLV_NORMAL,
 TL_GROUP_END(meta)
 
 /* ── wallet groups start here (owned by this domain's lane) ── */
+
+TL_GROUP(projection,
+         "how current the wallet's own read models are - no amounts, only "
+         "whether the views exist and how far behind the folded chain state "
+         "they are")
+
+TL_LEAF(projection, view_projection_open, TLC_BOOL, TFU_BOOL, TLV_SUMMARY,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "whether the wallet view projection is attached in the process serving "
+    "this reply. It is opened by node boot, so false is expected in a "
+    "one-shot CLI process and is a real finding only in the node process; "
+    "compare against `zclassic23 ops state --subsystem=wallet_projection` "
+    "run against the node",
+    "", "")
+
+TL_LEAF(projection, utxo_mirror_wired, TLC_BOOL, TFU_BOOL, TLV_NORMAL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "whether the node.db `utxos` explorer/wallet mirror worker exists in this "
+    "process. False means every other utxo_mirror_* leaf in this reply is "
+    "unavailable rather than zero; it is set by boot, so compare against the "
+    "node process rather than a CLI invocation",
+    "", "")
+
+TL_LEAF(projection, utxo_mirror_state, TLC_TEXT, TFU_ENUM, TLV_SUMMARY,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "the mirror worker's own lifecycle token: idle, running, or stopped. "
+    "stopped after boot has completed means the worker exited and the "
+    "wallet-visible UTXO view will not advance again; compare against "
+    "utxo_mirror_last_pass_unix to tell a stopped worker from a quiet one",
+    "", "")
+
+TL_LEAF(projection, utxo_mirror_lag_blocks, TLC_I64, TFU_BLOCKS, TLV_SUMMARY,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "how many blocks the wallet-visible UTXO mirror is behind the coins_kv "
+    "applied frontier: last_frontier minus last_mirror_height. Zero right "
+    "after a successful pass; it grows by design between ticks and during "
+    "initial sync, so there is no fixed healthy ceiling - compare it against "
+    "the worker's tick interval and against whether it is shrinking across "
+    "two calls",
+    "", "")
+
+TL_LEAF(projection, utxo_mirror_rebuilds_run, TLC_I64, TFU_COUNT_TOTAL,
+    TLV_FULL, TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "cumulative wholesale mirror rebuilds since this process started. Only "
+    "meaningful as a rate: compare two calls, since a counter that never "
+    "moves while utxo_mirror_lag_blocks grows is the worker not working",
+    "", "")
+
+TL_LEAF(projection, utxo_mirror_last_pass_unix, TLC_I64, TFU_UNIX_TIME,
+    TLV_FULL, TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "wall-clock second of the last completed mirror pass, or 0 when no pass "
+    "has completed in this process. Compare against collected_unix and the "
+    "worker's tick interval to tell a wedged worker from an idle one",
+    "", "")
+
+TL_LEAF(projection, utxo_mirror_last_error_unix, TLC_I64, TFU_UNIX_TIME,
+    TLV_NORMAL, TFR_EXPECT_ZERO, TL_NONE, 0, TFS_WARN,
+    "wall-clock second of the last FAILED mirror pass; 0 means no pass has "
+    "ever failed in this process",
+    "a mirror pass failed, so the wallet-visible `utxos` table in node.db is "
+    "stale against the folded coins_kv frontier: wallet UTXO listings and the "
+    "explorer may under-report spendable outputs until a pass succeeds. "
+    "Consensus, the chain and the on-disk coins_kv are unaffected",
+    "zclassic23 ops state --subsystem=utxo_mirror_sync")
+
+TL_GROUP_END(projection)
+
+TL_GROUP(security,
+         "key-handling posture: whether keys are wrapped at rest, whether "
+         "they are currently reachable, and what this build can actually "
+         "sign. Never what the wallet holds")
+
+TL_LEAF(security, encrypted_at_rest, TLC_BOOL, TFU_BOOL, TLV_SUMMARY,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "whether this wallet's private keys, Sapling spending keys and HD seed "
+    "are wrapped in a WKS1 envelope before they reach node.db. False means "
+    "they are stored in the clear, which is a supported operator choice on a "
+    "single-user machine and therefore not judged here; if you intended "
+    "encryption, compare against ZCL_WALLET_PASSPHRASE being set at boot",
+    "", "")
+
+TL_LEAF(security, keys_unlocked, TLC_BOOL, TFU_BOOL, TLV_SUMMARY,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "whether spending keys are reachable right now: a plaintext wallet is "
+    "always reachable, an encrypted one only while a passphrase is loaded. "
+    "Locked is the SAFER state, so neither value is judged; read it together "
+    "with encrypted_at_rest, since true plus encrypted_at_rest false means "
+    "there was never anything to unlock",
+    "", "")
+
+TL_LEAF(security, can_spend_shielded, TLC_BOOL, TFU_BOOL, TLV_SUMMARY,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "whether this binary can CREATE a Sapling proof, which is what sending "
+    "shielded value requires. False is the expected state of a default "
+    "build and is therefore not a fault: consensus verification, mining and "
+    "shielded RECEIVE are all unaffected and remain native. It reports what "
+    "this build can do, never what the code aspires to; read "
+    "shielded_prover_status for the reason",
+    "", "")
+
+TL_LEAF(security, shielded_prover_status, TLC_TEXT, TFU_ENUM, TLV_NORMAL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "the proving backend's own status token behind can_spend_shielded, e.g. "
+    "no_proving_backend_in_build for a default build. Compare against "
+    "can_spend_shielded: a false with a status other than "
+    "no_proving_backend_in_build means the backend is linked but its "
+    "parameters or its self-test are the blocker",
+    "", "")
+
+TL_LEAF(security, sapling_checkpoint_load_result, TLC_TEXT, TFU_ENUM,
+    TLV_NORMAL, TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "how the flat-file Sapling note-commitment tree cache loaded at boot: "
+    "none, absent, loaded_verified, or discarded. absent and discarded both "
+    "mean the node rebuilt the tree by full replay instead of resuming, which "
+    "is correct but slow, and on a fresh datadir absent is the only possible "
+    "answer - so it is reported, not judged",
+    "", "")
+
+TL_LEAF(security, sapling_checkpoint_write_fails, TLC_I64, TFU_COUNT_TOTAL,
+    TLV_NORMAL, TFR_EXPECT_ZERO, TL_NONE, 0, TFS_WARN,
+    "cumulative failed writes of the Sapling checkpoint file in this process; "
+    "0 means every attempted write landed",
+    "the shielded fast-resume cache is not being persisted, so the next "
+    "restart will rebuild the Sapling note-commitment tree by full replay "
+    "instead of resuming from it. Nothing shielded is lost and no consensus "
+    "rule is affected - the cost is restart time and the usual cause is a "
+    "full or unwritable datadir",
+    "zclassic23 ops state --subsystem=sapling_checkpoint")
+
+TL_GROUP_END(security)
+
+TL_GROUP(backup,
+         "whether a recoverable copy of the wallet tables exists and how "
+         "stale it is - existence and age only, never contents")
+
+TL_LEAF(backup, backup_thread_running, TLC_BOOL, TFU_BOOL, TLV_NORMAL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "whether the periodic wallet-table backup thread is alive in this "
+    "process. It is started by boot when a backup directory is configured, so "
+    "false means either no backup directory or a stopped thread; "
+    "backup_runs_total distinguishes the two",
+    "", "")
+
+TL_LEAF(backup, backup_runs_total, TLC_I64, TFU_COUNT_TOTAL, TLV_FULL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "cumulative SUCCESSFUL wallet-table backups in this process. Zero with "
+    "backup_thread_running true means the thread is alive but has not "
+    "completed a first run yet; zero with it false means backups are not "
+    "configured at all",
+    "", "")
+
+TL_LEAF(backup, backup_failures_total, TLC_I64, TFU_COUNT_TOTAL, TLV_SUMMARY,
+    TFR_EXPECT_ZERO, TL_NONE, 0, TFS_WARN,
+    "cumulative FAILED wallet-table backup attempts in this process; 0 means "
+    "no attempt has ever failed",
+    "at least one backup attempt failed, so the newest recoverable copy of "
+    "the wallet tables is older than backup_age_seconds suggests it should "
+    "be, and a restore would lose everything written since the last "
+    "SUCCESSFUL run. The wallet itself is not damaged - this is about the "
+    "copy, not the original",
+    "zclassic23 ops state --subsystem=wallet_backup")
+
+TL_LEAF(backup, backup_age_seconds, TLC_I64, TFU_SECONDS, TLV_SUMMARY,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "seconds between the last SUCCESSFUL wallet-table backup and this "
+    "snapshot. Deliberately unjudged: the healthy ceiling is the operator's "
+    "configured backup interval, which this snapshot cannot read. Compare it "
+    "against that interval - the default is 3600 seconds - and treat more "
+    "than two intervals as a missed cycle. Reported not_applicable when no "
+    "backup has ever succeeded in this process",
+    "", "")
+
+TL_LEAF(backup, backup_tables_verified, TLC_I64, TFU_GAUGE, TLV_FULL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "how many wallet tables had matching row counts in source and backup on "
+    "the last successful run. Compare against backup_wallet_table_count: a "
+    "shortfall names tables the SOURCE did not have, which is recorded rather "
+    "than treated as a failure, so the pair is reported and not judged",
+    "", "")
+
+TL_LEAF(backup, backup_wallet_table_count, TLC_I64, TFU_GAUGE, TLV_FULL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "how many wallet tables the backup service knows about - the denominator "
+    "for backup_tables_verified",
+    "", "")
+
+TL_GROUP_END(backup)
