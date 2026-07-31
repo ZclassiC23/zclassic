@@ -110,6 +110,21 @@ has no install, execution, wallet, or publication authority.
 <!-- claim: symbol-present p2p_node_begin_message config/src/boot_zcode_swarm.c # the swarm IS socket-wired -->
 <!-- claim: symbol-absent socket lib/vcs/src/package_swarm.c # the codec half stays pure -->
 
+`lib/metaverse/` owns the sovereign-property vocabulary: the `property_id`
+(`<kind>:<64-hex root>`), the closed action bitmask, the view type with its
+evidence grade, and one read-only adapter per property kind. It is a
+**projection, never a truth** — every view is rebuilt from the kind's own
+authoritative model at call time and thrown away, and adapters take a
+*directory*, not a store handle, because `vcs_package_store_open()` runs a
+mutating recovery sweep and `metaverse property list` is a read command. The
+service that walks the adapter registry is
+`app/services/src/property_catalog_service.c`; the leaves are in
+`config/commands/metaverse.def`.
+<!-- claim: file-present lib/metaverse/include/metaverse/property_id.h # the property vocabulary -->
+<!-- claim: symbol-present metaverse_adapter_for lib/metaverse/src/adapter_registry.c # the single dispatch point -->
+<!-- claim: symbol-absent vcs_package_store_open lib/metaverse/src/adapter_content.c # the read path opens no store -->
+<!-- claim: symbol-present vcs_package_cas_present_in lib/metaverse/src/manifest_read.c # CAS presence without a store handle -->
+
 ### Hexagonal seam — `ports/` + `adapters/`
 
 Outbound-only by design: 13 port interfaces in `ports/include/ports/*_port.h`

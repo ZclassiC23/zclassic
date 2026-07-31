@@ -89,7 +89,7 @@ static void put_i64be(uint8_t *out, size_t *off, int64_t v)
      + (size_t)(METAVERSE_GRANT_ID_LEN + 1) \
      + (size_t)(METAVERSE_PRINCIPAL_MAX + 1) * 2u \
      + (size_t)(METAVERSE_IDEMPOTENCY_KEY_MAX + 1) \
-     + 4u + METAVERSE_PROPERTY_ROOT_LEN + 4u + 8u * 5u + METAVERSE_HASH_LEN)
+     + 4u + METAVERSE_ROOT_BYTES + 4u + 8u * 5u + METAVERSE_HASH_LEN)
 
 _Static_assert(RECEIPT_BODY_COMPUTED == METAVERSE_RECEIPT_BODY_LEN,
                "METAVERSE_RECEIPT_BODY_LEN must equal the sum of the canonical "
@@ -112,7 +112,7 @@ bool metaverse_receipt_body_bytes(const struct metaverse_receipt *r,
     put_str(out, &off, r->counterparty, METAVERSE_PRINCIPAL_MAX + 1);
     put_str(out, &off, r->idempotency_key, METAVERSE_IDEMPOTENCY_KEY_MAX + 1);
     put_u32be(out, &off, (uint32_t)r->property.kind);
-    put_bytes(out, &off, r->property.root, METAVERSE_PROPERTY_ROOT_LEN);
+    put_bytes(out, &off, r->property.root, METAVERSE_ROOT_BYTES);
     put_u32be(out, &off, (uint32_t)r->action);
     put_i64be(out, &off, r->value_zat);
     put_i64be(out, &off, r->property_revision);

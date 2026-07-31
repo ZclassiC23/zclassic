@@ -142,6 +142,17 @@ struct rlw_leaf {
     rlw_handler_fn fn;
     const char *k1, *v1;
     const char *k2, *v2;
+    /* Where this leaf's payload actually LIVES under the datadir, when it
+     * is not node.db or consensus.db. NULL for the sqlite leaves.
+     *
+     * Case 5 asks every leaf to disclose that it could not read. It does
+     * that by making the payload store unreadable, so it has to know
+     * which store that is: corrupting node.db proves nothing about a leaf
+     * that never opens node.db, and asserting a refusal from one would be
+     * asserting a lie. This names the directory to break instead —
+     * relative to the datadir, made unreadable by putting a plain file
+     * where the directory belongs. */
+    const char *payload_dir;
 };
 
 /* A syntactically valid compressed secp256k1 key; it needs to parse, not to
@@ -154,19 +165,24 @@ struct rlw_leaf {
 #define RLW_ZID_PUBKEY \
     "b4632d08485ff1df2db55b9dafd23347d1c47a457072a1e87be26896549a8737"
 
+/* metaverse.property.show wants "<kind>:<64 lowercase hex>". The root need
+ * only be well-formed and non-zero; nothing at it has to exist, because
+ * "the authority holds nothing here" is the answer being exercised. */
+#define RLW_PROPERTY_ID "content:" RLW_ZID_PUBKEY
+
 static const struct rlw_leaf g_rlw_leaves[] = {
     { "app.service.access",     zcl_native_handle_service_access,
-      "service", "reference",   NULL, NULL },
+      "service", "reference",   NULL, NULL, NULL },
     { "zcode.release.prove",    zcl_native_handle_zcode_release_prove,
-      "name", "demo",           "version", "0.1.0" },
+      "name", "demo",           "version", "0.1.0", NULL },
     { "zcode.domain.list",      zcl_native_handle_zcode_domain_list,
-      NULL, NULL,               NULL, NULL },
+      NULL, NULL,               NULL, NULL, NULL },
     { "zcode.domain.status",    zcl_native_handle_zcode_domain_status,
-      "domain", "zcode",        NULL, NULL },
+      "domain", "zcode",        NULL, NULL, NULL },
     { "zcode.contributor.show", zcl_native_handle_zcode_contributor_show,
-      "pubkey", RLW_PUBKEY,     NULL, NULL },
+      "pubkey", RLW_PUBKEY,     NULL, NULL, NULL },
     { "zcode.package.resolve",  zcl_native_handle_zcode_package_resolve,
-      "name", "ringbuffer",     NULL, NULL },
+      "name", "ringbuffer",     NULL, NULL, NULL },
     /* The seventh. Declared READ, `datadir` defaults to the operator's LIVE
      * one, and it opened node.db with node_db_open() — so pointed at a
      * damaged database it renamed the user's wallet to
@@ -176,7 +192,7 @@ static const struct rlw_leaf g_rlw_leaves[] = {
      * zcl_native_node_db_open_readonly(). */
     { "core.wallet.recovery.status",
       zcl_native_handle_wallet_recovery_status,
-      NULL, NULL,               NULL, NULL },
+      NULL, NULL,               NULL, NULL, NULL },
     /* The two leaves this file used to only NAME as open defects.
      *
      * app.store.products reached node_db_open_runtime — READWRITE|CREATE,
@@ -192,10 +208,10 @@ static const struct rlw_leaf g_rlw_leaves[] = {
      * and the kernel-store observations below watch consensus.db the same
      * way the node.db ones watch node.db. */
     { "app.store.products",     zcl_native_handle_store_products,
-      NULL, NULL,               NULL, NULL },
+      NULL, NULL,               NULL, NULL, NULL },
     { "core.sync.frontier.offline",
       zcl_native_handle_core_sync_frontier_offline,
-      NULL, NULL,               NULL, NULL },
+      NULL, NULL,               NULL, NULL, NULL },
     /* Six of the pre-existing gaps, moved off the uncovered list because
      * they now have an on-disk proof rather than a promise. All six already
      * opened correctly; what was missing was anyone checking. They are
@@ -204,23 +220,40 @@ static const struct rlw_leaf g_rlw_leaves[] = {
      * core.identity.resolve gets a selector and core.storage.query.offline
      * gets a statement it will actually run. */
     { "core.epoch.status",      zcl_native_handle_core_epoch_status,
-      NULL, NULL,               NULL, NULL },
+      NULL, NULL,               NULL, NULL, NULL },
     { "core.epoch.verify",      zcl_native_handle_core_epoch_verify,
-      NULL, NULL,               NULL, NULL },
+      NULL, NULL,               NULL, NULL, NULL },
     { "core.identity.list",     zcl_native_handle_core_identity_list,
-      NULL, NULL,               NULL, NULL },
+      NULL, NULL,               NULL, NULL, NULL },
     { "core.identity.resolve",  zcl_native_handle_core_identity_resolve,
-      "pubkey", RLW_ZID_PUBKEY, NULL, NULL },
+      "pubkey", RLW_ZID_PUBKEY, NULL, NULL, NULL },
     { "core.storage.query.offline",
       zcl_native_handle_core_storage_query_offline,
-      "sql", "SELECT 1",        NULL, NULL },
+      "sql", "SELECT 1",        NULL, NULL, NULL },
     /* Narrower than the five above, and stated so: bootstatus reads
      * <datadir>/boot_status.json and never opens a database at all, so what
      * is proven here is only that it creates nothing and quarantines
      * nothing. That is the whole of its exposure, but do not read its
      * presence in this table as database coverage. */
     { "core.node.bootstatus",   zcl_native_handle_core_node_bootstatus,
-      NULL, NULL,               NULL, NULL },
+      NULL, NULL,               NULL, NULL, NULL },
+    /* The property catalog, covered on the day it landed rather than added
+     * to the stated-gap list. Both leaves reach store bytes BY PATH and
+     * never call vcs_package_store_open(), whose open-time recovery sweep
+     * deletes orphan CAS objects and commits staged packages — a read leaf
+     * routed through it would rewrite the operator's datadir exactly the
+     * way this file's original six did. Exercised with real inputs (a kind
+     * the catalog actually scans, a well-formed property id) so the
+     * handler reaches the datadir instead of refusing ahead of it.
+     *
+     * Their payload is not in either database — it is the frozen
+     * <datadir>/zcode tree — so that is the store case 5 breaks for them.
+     * Breaking node.db instead would have asserted a refusal from a leaf
+     * that had no reason to refuse, which is worse than no coverage. */
+    { "metaverse.property.list", zcl_native_handle_metaverse_property_list,
+      "kind", "content",        NULL, NULL, "zcode/manifests" },
+    { "metaverse.property.show", zcl_native_handle_metaverse_property_show,
+      "property_id", RLW_PROPERTY_ID, NULL, NULL, "zcode/manifests" },
 };
 
 #define RLW_LEAF_COUNT ((int)(sizeof(g_rlw_leaves) / sizeof(g_rlw_leaves[0])))
@@ -935,6 +968,30 @@ static int t_garbage_node_db_is_not_quarantined(void)
  * file it had never read, and each caller's own "no rows" path would then
  * report an empty answer. Absent and unreadable would be the same answer
  * again, which is the entire thing this module exists to prevent. */
+/* Make <dir>/<rel> unreadable AS A DIRECTORY by putting a plain file where
+ * the directory belongs, creating each parent along the way. opendir()
+ * then fails with ENOTDIR: the store is unmistakably PRESENT and
+ * unmistakably not enumerable, which is precisely the state that must not
+ * be reported as an empty inventory. */
+static bool rlw_break_dir(const char *dir, const char *rel)
+{
+    char path[1400];
+    size_t base;
+
+    if (snprintf(path, sizeof(path), "%s/%s", dir, rel) >= (int)sizeof(path))
+        return false;
+    base = strlen(dir) + 1;
+    for (size_t i = base; path[i]; i++) {
+        if (path[i] != '/')
+            continue;
+        path[i] = '\0';
+        if (mkdir(path, 0700) != 0 && access(path, F_OK) != 0)
+            return false;
+        path[i] = '/';
+    }
+    return rlw_write_junk(path);
+}
+
 static int t_garbage_node_db_is_refused_not_empty(void)
 {
     int failures = 0;
@@ -944,6 +1001,20 @@ static int t_garbage_node_db_is_refused_not_empty(void)
     snprintf(db_path, sizeof(db_path), "%s/node.db", dir);
 
     RLW_CHECK("refuse: fixture node.db written", rlw_write_junk(db_path));
+
+    /* Not every leaf's payload is in a database. Break whatever store each
+     * one actually reads, or the assertion below would be demanding a
+     * refusal over a file the leaf never opens. */
+    for (int i = 0; i < RLW_LEAF_COUNT; i++) {
+        char what[256];
+
+        if (!g_rlw_leaves[i].payload_dir)
+            continue;
+        snprintf(what, sizeof(what), "refuse: %s payload store %s made "
+                                     "unreadable",
+                 g_rlw_leaves[i].path, g_rlw_leaves[i].payload_dir);
+        RLW_CHECK(what, rlw_break_dir(dir, g_rlw_leaves[i].payload_dir));
+    }
 
     /* The kernel store is unreadable here too, so a leaf whose payload
      * comes out of consensus.db has the same duty to say so. */
@@ -959,8 +1030,10 @@ static int t_garbage_node_db_is_refused_not_empty(void)
                                           sizeof(code));
         char what[192];
         snprintf(what, sizeof(what),
-                 "refuse: %s answers a refusal over an unreadable node.db "
-                 "(got code=%s)", g_rlw_leaves[i].path, code);
+                 "refuse: %s answers a refusal over an unreadable %s "
+                 "(got code=%s)", g_rlw_leaves[i].path,
+                 g_rlw_leaves[i].payload_dir ? g_rlw_leaves[i].payload_dir
+                                             : "node.db", code);
         RLW_CHECK(what, refused);
     }
 

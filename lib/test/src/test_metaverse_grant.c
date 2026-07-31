@@ -90,13 +90,13 @@ static bool fake_lookup(const struct metaverse_property_id *id,
 
 /* ── Fixture helpers ────────────────────────────────────────────────────── */
 
-static struct metaverse_property_id make_id(enum metaverse_property_kind kind,
+static struct metaverse_property_id make_id(enum metaverse_kind kind,
                                             uint8_t tag)
 {
     struct metaverse_property_id id;
     memset(&id, 0, sizeof(id));
     id.kind = kind;
-    for (size_t i = 0; i < METAVERSE_PROPERTY_ROOT_LEN; i++)
+    for (size_t i = 0; i < METAVERSE_ROOT_BYTES; i++)
         id.root[i] = (uint8_t)(tag + i);
     return id;
 }
@@ -192,9 +192,9 @@ static int t_id_roundtrip(void)
     TEST("property id renders and re-parses to the same value") {
         struct metaverse_property_id id =
             make_id(METAVERSE_KIND_ZCODE_PACKAGE, 3);
-        char text[METAVERSE_PROPERTY_ID_TEXT_MAX + 1];
-        ASSERT(metaverse_property_id_render(&id, text, sizeof(text)));
-        ASSERT(strncmp(text, "zcode-package:", 14) == 0);
+        char text[METAVERSE_ID_TEXT_MAX + 1];
+        ASSERT(metaverse_property_id_format(&id, text, sizeof(text)));
+        ASSERT(strncmp(text, "zcode_package:", 14) == 0);
         struct metaverse_property_id back;
         ASSERT(metaverse_property_id_parse(text, &back));
         ASSERT(metaverse_property_id_equal(&id, &back));
@@ -211,12 +211,12 @@ static int t_id_rejects(void)
         ASSERT(!metaverse_property_id_parse("content", &out));
         ASSERT(!metaverse_property_id_parse("no-such-kind:00", &out));
         ASSERT(!metaverse_property_id_parse("content:beef", &out));
-        ASSERT_EQ((int)metaverse_kind_parse("unknown"),
+        ASSERT_EQ((int)metaverse_kind_from_name("unknown"),
                   (int)METAVERSE_KIND_UNKNOWN);
-        ASSERT_EQ((int)metaverse_kind_parse(NULL),
+        ASSERT_EQ((int)metaverse_kind_from_name(NULL),
                   (int)METAVERSE_KIND_UNKNOWN);
-        ASSERT_STR_EQ(metaverse_kind_token(METAVERSE_KIND_CONTRACT_SWAP),
-                      "contract-swap");
+        ASSERT_STR_EQ(metaverse_kind_name(METAVERSE_KIND_CONTRACT_SWAP),
+                      "contract_swap");
         PASS();
     } _test_next:;
     return failures;

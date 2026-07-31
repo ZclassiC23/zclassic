@@ -1,24 +1,32 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Property identity — the (kind, immutable_root) pair every metaverse
- * property is named by.
+ * property_id — the canonical name of one piece of sovereign digital
+ * property. Pure rules: no I/O, no store, no chain, no allocation. Every
+ * other metaverse layer (catalog, grants, receipts, broker) speaks this
+ * type and nothing coarser.
  *
- * ── SEAM NOTICE ───────────────────────────────────────────────────────────
- * This is the MINIMAL stand-in for the canonical property_id, which the
- * property-catalog lane owns. It exists because the grant/receipt engine
- * cannot be written without a property name, and the two lanes were built in
- * parallel. Reconcile FIELD-FOR-FIELD at merge time; the grant engine depends
- * on exactly three properties of this type and nothing else:
- *   1. `kind` is a small closed enum with a stable token per value,
- *   2. `root` is 32 immutable bytes that never change for the life of the
- *      property (a revision bump changes the property's REVISION, never its
- *      root — that is what makes optimistic-concurrency control possible),
- *   3. equality is bytewise over (kind, root).
- * Anything the catalog adds — authority_source, provenance, descriptor root,
- * evidence grade — is catalog-side and does not belong here.
+ * A property_id is (kind, root) where `root` is the underlying object's
+ * OWN immutable root as the authoritative model already computes it — a
+ * ZCODE package's content.v2 manifest root, a blob's manifest root, a
+ * ZNAM registration hash, a ZSLP genesis txid, a market offer's manifest
+ * root. This layer mints no identifier of its own, because a second
+ * identifier would be a second ownership truth: two names for one object
+ * eventually disagree about who owns it.
  *
- * There is no ownership truth in this file. A property_id NAMES a property;
- * who controls it is answered by the catalog, freshly, at commit time. */
+ * `kind` is not decoration. Two different kinds may legitimately carry
+ * the same 32 bytes (a blob published as a one-file ZCODE package shares
+ * its manifest root), and they are DIFFERENT properties with different
+ * authority sources and different available actions. Equality therefore
+ * compares both fields, and the text form always carries both.
+ *
+ * Text form (the wire/CLI form, stable): "<kind_name>:<64 lowercase hex>",
+ * e.g. "zcode_package:9f2c...". Lowercase hex only on output; parsing
+ * accepts either case. Round-trips exactly.
+ *
+ * AUTHORITY SOURCE: each kind names the ONE existing model that owns its
+ * ownership truth (third column of the kind table). This layer never
+ * becomes that authority; it records which one to ask.
+ */
 
 #ifndef ZCL_METAVERSE_PROPERTY_ID_H
 #define ZCL_METAVERSE_PROPERTY_ID_H
@@ -27,72 +35,94 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* The immutable root is a 32-byte commitment (SHA3-256 sized). */
-#define METAVERSE_PROPERTY_ROOT_LEN 32
+/* The property kinds, and for each one the wire name plus the existing
+ * subsystem that owns its ownership truth. Adding a kind is one row here
+ * plus one adapter row (metaverse/property_adapter.h) — the adapter table
+ * is static_assert'd against this count, so a kind can never appear in
+ * the vocabulary with no reader behind it.
+ *
+ * Room to extend is deliberate: world/object kinds land as further rows,
+ * never as a parallel enum. */
+#define METAVERSE_KIND_TABLE(X)                                              \
+    X(CONTENT,            "content",            "vcs.blob_store")            \
+    X(ZCODE_PACKAGE,      "zcode_package",      "vcs.package_store")         \
+    X(ZNAM_NAME,          "znam_name",          "znam.registry")             \
+    X(ZSLP_ASSET,         "zslp_asset",         "zslp.ledger")               \
+    X(HOSTED_SERVICE,     "hosted_service",     "service.registry")          \
+    X(ENDPOINT_ONION,     "endpoint_onion",     "net.onion_service")         \
+    X(STOREFRONT_PRODUCT, "storefront_product", "store.product")             \
+    X(CONTRACT_SWAP,      "contract_swap",      "swap.contract")
 
-/* Rendered form is "<kind-token>:<64 lowercase hex>". */
-#define METAVERSE_PROPERTY_ID_TEXT_MAX 96
-
-enum metaverse_property_kind {
+enum metaverse_kind {
+    /* Zero is not a kind. A zeroed struct is an explicitly invalid id, so
+     * a forgotten initialization can never read as CONTENT. */
     METAVERSE_KIND_UNKNOWN = 0,
-    METAVERSE_KIND_CONTENT,
-    METAVERSE_KIND_ZCODE_PACKAGE,
-    METAVERSE_KIND_ZNAM_NAME,
-    METAVERSE_KIND_ZSLP_ASSET,
-    METAVERSE_KIND_HOSTED_SERVICE,
-    METAVERSE_KIND_ENDPOINT_ONION,
-    METAVERSE_KIND_STOREFRONT_PRODUCT,
-    METAVERSE_KIND_CONTRACT_SWAP,
+#define METAVERSE_KIND_ENUM(id_, name_, authority_) METAVERSE_KIND_##id_,
+    METAVERSE_KIND_TABLE(METAVERSE_KIND_ENUM)
+#undef METAVERSE_KIND_ENUM
     METAVERSE_KIND_COUNT
 };
 
+#define METAVERSE_ROOT_BYTES 32u
+
+/* "storefront_product" (18) + ':' + 64 hex + NUL = 84; 96 leaves room for
+ * one more long kind name without a wire change. */
+#define METAVERSE_ID_TEXT_MAX 96u
+
 struct metaverse_property_id {
-    enum metaverse_property_kind kind;
-    uint8_t root[METAVERSE_PROPERTY_ROOT_LEN];
+    enum metaverse_kind kind;
+    uint8_t root[METAVERSE_ROOT_BYTES];
 };
 
-/* Stable lowercase token per kind ("content", "zcode-package", …). Tests and
- * the CLI both assert these exactly, so they are contract. UNKNOWN and any
- * out-of-range value render "unknown". */
-const char *metaverse_kind_token(enum metaverse_property_kind kind);
+/* Wire name / authority source for a kind. Never NULL; an out-of-range or
+ * UNKNOWN kind renders as "unknown". */
+const char *metaverse_kind_name(enum metaverse_kind kind);
+const char *metaverse_kind_authority(enum metaverse_kind kind);
 
-/* Parse a kind token. Returns METAVERSE_KIND_UNKNOWN for NULL, "", "unknown",
- * and anything unrecognized — the caller decides whether that is fatal. */
-enum metaverse_property_kind metaverse_kind_parse(const char *token);
+/* Exact wire-name lookup. METAVERSE_KIND_UNKNOWN when nothing matches
+ * (including NULL, "", and "unknown" itself). */
+enum metaverse_kind metaverse_kind_from_name(const char *name);
+
+/* True for a real kind (not UNKNOWN, not >= COUNT). */
+bool metaverse_kind_valid(enum metaverse_kind kind);
+
+/* Build an id. Rejects a NULL out, a NULL root, an invalid kind, and an
+ * all-zero root (no authoritative model mints one, so accepting it would
+ * make "uninitialized" indistinguishable from "a real object"). *out is
+ * zeroed on every rejection. */
+bool metaverse_property_id_make(enum metaverse_kind kind,
+                                const uint8_t root[METAVERSE_ROOT_BYTES],
+                                struct metaverse_property_id *out);
+
+/* Render "<kind_name>:<64 lowercase hex>" into out (cap >=
+ * METAVERSE_ID_TEXT_MAX). False (and out[0] = 0 when cap > 0) on a NULL
+ * out, a short buffer, or an invalid id. */
+bool metaverse_property_id_format(const struct metaverse_property_id *id,
+                                  char *out, size_t cap);
+
+/* Parse the text form. Accepts upper or lower hex; requires exactly one
+ * ':', a known kind name, exactly 64 hex digits, and no trailing bytes.
+ * *out is zeroed on every rejection. */
+bool metaverse_property_id_parse(const char *text,
+                                 struct metaverse_property_id *out);
+
+/* Both kind and root must match. NULL on either side is never equal. */
+bool metaverse_property_id_equal(const struct metaverse_property_id *a,
+                                 const struct metaverse_property_id *b);
+
+/* True when the id is well-formed (valid kind, non-zero root). */
+bool metaverse_property_id_valid(const struct metaverse_property_id *id);
 
 /* A kind-set is one bit per kind, so a grant can be scoped to kinds without
  * enumerating property ids. Bit 0 (UNKNOWN) is never set by
  * metaverse_kind_bit and a set containing it matches nothing. */
 typedef uint32_t metaverse_kind_set;
 
-static inline metaverse_kind_set metaverse_kind_bit(
-    enum metaverse_property_kind kind)
+static inline metaverse_kind_set metaverse_kind_bit(enum metaverse_kind kind)
 {
     if (kind <= METAVERSE_KIND_UNKNOWN || kind >= METAVERSE_KIND_COUNT)
         return 0u;
     return (metaverse_kind_set)1u << (unsigned)kind;
 }
-
-/* True when both ids name the same property: same kind AND same 32-byte root.
- * NULL on either side is false (never "equal because both absent"). */
-bool metaverse_property_id_equal(const struct metaverse_property_id *a,
-                                const struct metaverse_property_id *b);
-
-/* An id is well-formed when its kind is in range and not UNKNOWN. An all-zero
- * root IS well-formed — it is a legitimate commitment value, and rejecting it
- * here would put a consensus-shaped rule in a naming header. */
-bool metaverse_property_id_valid(const struct metaverse_property_id *id);
-
-/* Render "<kind-token>:<hex64>" into `out` (needs
- * METAVERSE_PROPERTY_ID_TEXT_MAX + 1 bytes). Always NUL-terminates when
- * out_cap > 0; returns false on NULL/short buffer having written "". */
-bool metaverse_property_id_render(const struct metaverse_property_id *id,
-                                 char *out, size_t out_cap);
-
-/* Inverse of _render. Returns false (and leaves *out untouched) on any
- * malformed input: missing ':', unknown kind, wrong hex length, non-hex
- * digit. Uppercase hex is accepted on parse; render only ever emits lower. */
-bool metaverse_property_id_parse(const char *text,
-                                struct metaverse_property_id *out);
 
 #endif /* ZCL_METAVERSE_PROPERTY_ID_H */

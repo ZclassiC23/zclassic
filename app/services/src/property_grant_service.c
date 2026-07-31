@@ -500,7 +500,7 @@ enum property_grant_reason property_grant_service_plan(
         pthread_mutex_unlock(&g_pg_store.lock);
         LOG_WARN(PG_LOG, "plan: grant %s refused %s on %s (%s)", grant_id,
                      metaverse_action_token(r.action),
-                     metaverse_kind_token(r.property.kind),
+                     metaverse_kind_name(r.property.kind),
                      metaverse_grant_verdict_token(v));
         return property_grant_reason_from_verdict(v);
     }

@@ -1,20 +1,35 @@
-/* The metaverse root: sovereign digital PROPERTY, and who may act on it.
+/* METAVERSE — sovereign digital property: PRINCIPAL -> PROPERTY -> RIGHTS ->
+ * ACTION -> RECEIPT. This file is jointly owned by the peer lanes that
+ * declare leaves under the `metaverse` root; keep one branch row per level
+ * and do not declare a second `metaverse` branch in another .def file.
  *
- * The model is PRINCIPAL -> PROPERTY -> RIGHTS -> ACTION -> RECEIPT. This file
- * declares only the leaves this lane owns — the confined-agent broker's two
- * observation surfaces. The property catalog, grant engine, and market leaves
- * are peer lanes and append here; keep one branch row per level and do not
- * declare a second `metaverse` branch in another .def file.
- *
- * Both leaves below are READ-ONLY and node-free: they read a broker directory
- * that an operator names, and they CREATE NOTHING. A missing directory is an
+ * `metaverse.agent` — the confined-agent broker's two observation surfaces.
+ * Both leaves are READ-ONLY and node-free: they read a broker directory that
+ * an operator names, and they CREATE NOTHING. A missing directory is an
  * explicit not-present verdict, never an implicit mkdir — see the read-leaf
  * contract in docs/NATIVE_COMMAND_INTERFACE.md.
+ *
+ * `metaverse.property` — the READ half of the property catalog.
+ *
+ * THE INVARIANT OF THIS BRANCH: there is no second ownership truth. The
+ * catalog is a PROJECTION rebuilt at call time over the models that already
+ * own each kind (the package store, the blob store, and — as their readers
+ * are wired — ZNAM, ZSLP, the store, and the swap contracts). It caches no
+ * owner, no revision, and no status, so it cannot disagree with them. Both
+ * leaves here are strictly read-only, including on open: they reach store
+ * bytes by path and never open a handle whose open() rewrites the datadir.
+ *
+ * Every view states its EVIDENCE GRADE — what THIS node checked, in this
+ * call. `local_content_hash` means a root re-derived from bytes held here;
+ * `local_signature` adds a publisher signature verified during the call;
+ * only `chain_validated_local` is chain-bound, and `chain_bound` is emitted
+ * as its own boolean so no consumer has to infer it. There is no grade that
+ * means "verified" in the abstract.
  *
  * Consumer defines ZCL_COMMAND_*; see config/src/command_catalog.c. */
 
 ZCL_COMMAND_BRANCH("metaverse", "",
-                   "Sovereign digital property, and who may act on it",
+                   "Sovereign digital property: catalog, rights, receipts",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_BRANCH("metaverse.agent", "metaverse",
@@ -69,3 +84,63 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_metaverse_agent_audit)
+
+ZCL_COMMAND_BRANCH("metaverse.property", "metaverse",
+                   "What property exists, who controls it, and how we know",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_READ(
+    "metaverse.property.list", "metaverse.property", "",
+    "Every property this datadir holds, one row per kind scanned",
+    "A bounded page of property views projected at call time from each "
+    "kind's own authoritative model — never from a catalog table, because "
+    "there is none. Each item carries property_id, kind, authority_source, "
+    "immutable/content/descriptor roots, owner principal, revision, status, "
+    "provenance, evidence_grade (+ the explicit chain_bound boolean) and the "
+    "actions its CURRENT state supports (availability, not authority — "
+    "intersect with a grant before acting). Every property kind emits a row "
+    "in `kinds[]` even when its reader is not wired, with "
+    "available:false and the exact reason: a kind dropped from the output "
+    "would be indistinguishable from a kind that owns nothing. `total` is "
+    "the real inventory and `items_truncated` says when the page is shorter "
+    "than it. Narrow with `kind`; unscanned kinds are still listed, marked "
+    "not-scanned.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "metaverse,property,catalog,own,inventory,evidence,kind",
+    "zcl.metaverse_property_list.input.v1", "zcl.metaverse_property_list.v1",
+    "kind,limit,datadir", "kind",
+    "zclassic23 metaverse property list",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_metaverse_property_list)
+
+ZCL_COMMAND_READY_READ(
+    "metaverse.property.show", "metaverse.property", "",
+    "One property: its roots, controller, status, and evidence grade",
+    "The full current view of one property named by `property_id` "
+    "('<kind>:<64-hex immutable root>'), re-derived from the authoritative "
+    "model during this call — so an object that changed or disappeared "
+    "since the last read is reflected here, never served from a cache. "
+    "`status` is present|incomplete|absent|unknown; absent is a determined "
+    "verdict (the authority was asked and holds nothing), not a lookup "
+    "failure. `evidence_grade` names what this node checked and "
+    "`evidence_source` names the primitive that answered it; "
+    "`has_freshness_height` is false for every kind whose authority is not "
+    "chain-anchored, because stamping a tip height beside a claim the tip "
+    "does not commit would be a false freshness claim. A kind whose reader "
+    "is not wired is refused by name (KIND_UNAVAILABLE), never answered "
+    "empty.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "metaverse,property,show,detail,evidence,owner,root",
+    "zcl.metaverse_property_show.input.v1", "zcl.metaverse_property_show.v1",
+    "property_id,datadir", "property_id",
+    "zclassic23 metaverse property show content:<64hex>",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_metaverse_property_show)

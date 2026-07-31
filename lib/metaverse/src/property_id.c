@@ -1,120 +1,153 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Property identity — token table, equality, and the text codec.
- * Pure: no clock, no filesystem, no allocation. */
+ * property_id — pure implementation. No I/O, no allocation, no logging
+ * dependency: every failure here is a caller argument error the caller can
+ * see from the return value, and this file is linked into the pure-rule
+ * layer that the confined agent broker also speaks. */
 
 #include "metaverse/property_id.h"
 
 #include "base/hex.h"
-#include "base/log_macros.h"
 
 #include <string.h>
 
-#define PROPID_LOG "metaverse.property_id"
-
-/* Index IS the enum value, so a reordered enum breaks the build rather than
- * silently renaming a kind. */
-static const char *const k_kind_tokens[METAVERSE_KIND_COUNT] = {
-    "unknown",
-    "content",
-    "zcode-package",
-    "znam-name",
-    "zslp-asset",
-    "hosted-service",
-    "endpoint-onion",
-    "storefront-product",
-    "contract-swap",
-};
-
-const char *metaverse_kind_token(enum metaverse_property_kind kind)
+const char *metaverse_kind_name(enum metaverse_kind kind)
 {
-    if (kind < 0 || kind >= METAVERSE_KIND_COUNT)
-        return "unknown";
-    return k_kind_tokens[kind];
+    switch (kind) {
+#define METAVERSE_KIND_NAME_CASE(id_, name_, authority_)                     \
+    case METAVERSE_KIND_##id_: return name_;
+    METAVERSE_KIND_TABLE(METAVERSE_KIND_NAME_CASE)
+#undef METAVERSE_KIND_NAME_CASE
+    case METAVERSE_KIND_UNKNOWN:
+    case METAVERSE_KIND_COUNT:
+        break;
+    }
+    return "unknown";
 }
 
-enum metaverse_property_kind metaverse_kind_parse(const char *token)
+const char *metaverse_kind_authority(enum metaverse_kind kind)
 {
-    if (!token || token[0] == '\0')
-        return METAVERSE_KIND_UNKNOWN;
-    for (int i = 1; i < METAVERSE_KIND_COUNT; i++) {
-        if (strcmp(token, k_kind_tokens[i]) == 0)
-            return (enum metaverse_property_kind)i;
+    switch (kind) {
+#define METAVERSE_KIND_AUTH_CASE(id_, name_, authority_)                     \
+    case METAVERSE_KIND_##id_: return authority_;
+    METAVERSE_KIND_TABLE(METAVERSE_KIND_AUTH_CASE)
+#undef METAVERSE_KIND_AUTH_CASE
+    case METAVERSE_KIND_UNKNOWN:
+    case METAVERSE_KIND_COUNT:
+        break;
     }
+    return "unknown";
+}
+
+enum metaverse_kind metaverse_kind_from_name(const char *name)
+{
+    if (!name || !*name)
+        return METAVERSE_KIND_UNKNOWN;
+#define METAVERSE_KIND_FROM_CASE(id_, name_, authority_)                     \
+    if (strcmp(name, name_) == 0) return METAVERSE_KIND_##id_;
+    METAVERSE_KIND_TABLE(METAVERSE_KIND_FROM_CASE)
+#undef METAVERSE_KIND_FROM_CASE
     return METAVERSE_KIND_UNKNOWN;
 }
 
-bool metaverse_property_id_equal(const struct metaverse_property_id *a,
-                                const struct metaverse_property_id *b)
+bool metaverse_kind_valid(enum metaverse_kind kind)
 {
-    if (!a || !b) return false;
-    if (a->kind != b->kind) return false;
-    return memcmp(a->root, b->root, METAVERSE_PROPERTY_ROOT_LEN) == 0;
+    return kind > METAVERSE_KIND_UNKNOWN && kind < METAVERSE_KIND_COUNT;
+}
+
+static bool root_is_zero(const uint8_t root[METAVERSE_ROOT_BYTES])
+{
+    uint8_t acc = 0;
+
+    for (size_t i = 0; i < METAVERSE_ROOT_BYTES; i++)
+        acc |= root[i];
+    return acc == 0;
+}
+
+bool metaverse_property_id_make(enum metaverse_kind kind,
+                                const uint8_t root[METAVERSE_ROOT_BYTES],
+                                struct metaverse_property_id *out)
+{
+    if (!out)
+        return false;
+    memset(out, 0, sizeof(*out));
+    if (!metaverse_kind_valid(kind) || !root || root_is_zero(root))
+        return false;
+    out->kind = kind;
+    memcpy(out->root, root, METAVERSE_ROOT_BYTES);
+    return true;
 }
 
 bool metaverse_property_id_valid(const struct metaverse_property_id *id)
 {
-    if (!id) return false;
-    return id->kind > METAVERSE_KIND_UNKNOWN && id->kind < METAVERSE_KIND_COUNT;
+    return id && metaverse_kind_valid(id->kind) && !root_is_zero(id->root);
 }
 
-bool metaverse_property_id_render(const struct metaverse_property_id *id,
-                                 char *out, size_t out_cap)
+bool metaverse_property_id_format(const struct metaverse_property_id *id,
+                                  char *out, size_t cap)
 {
-    if (!out || out_cap == 0)
-        LOG_FAIL(PROPID_LOG, "render: no output buffer");
+    const char *kname;
+    size_t klen;
+    size_t need;
+
+    if (!out || cap == 0)
+        return false;
     out[0] = '\0';
     if (!metaverse_property_id_valid(id))
-        LOG_FAIL(PROPID_LOG, "render: id is not well-formed");
+        return false;
 
-    const char *token = metaverse_kind_token(id->kind);
-    size_t tlen = strlen(token);
-    size_t need = tlen + 1 + (METAVERSE_PROPERTY_ROOT_LEN * 2) + 1;
-    if (out_cap < need)
-        LOG_FAIL(PROPID_LOG, "render: buffer %zu < %zu needed", out_cap, need);
+    kname = metaverse_kind_name(id->kind);
+    klen = strlen(kname);
+    need = klen + 1u + 2u * METAVERSE_ROOT_BYTES + 1u;
+    if (cap < need)
+        return false;
 
-    memcpy(out, token, tlen);
-    out[tlen] = ':';
-    /* base/hex.h is the one hex codec in the tree; it emits lowercase and
-     * NUL-terminates, which is exactly the rendered form this file promises. */
-    zcl_hex_encode(id->root, METAVERSE_PROPERTY_ROOT_LEN, out + tlen + 1);
+    memcpy(out, kname, klen);
+    out[klen] = ':';
+    zcl_hex_encode(id->root, METAVERSE_ROOT_BYTES, out + klen + 1u);
+    out[need - 1u] = '\0';
     return true;
 }
 
 bool metaverse_property_id_parse(const char *text,
-                                struct metaverse_property_id *out)
+                                 struct metaverse_property_id *out)
 {
-    if (!text || !out)
-        LOG_FAIL(PROPID_LOG, "parse: NULL text or output");
+    const char *colon;
+    char kind_name[METAVERSE_ID_TEXT_MAX];
+    size_t klen;
+    enum metaverse_kind kind;
+    uint8_t root[METAVERSE_ROOT_BYTES];
 
-    const char *colon = strchr(text, ':');
-    if (!colon)
-        LOG_FAIL(PROPID_LOG, "parse: no kind separator in '%.32s'", text);
+    if (!out)
+        return false;
+    memset(out, 0, sizeof(*out));
+    if (!text)
+        return false;
 
-    char token[32];
-    size_t tlen = (size_t)(colon - text);
-    if (tlen == 0 || tlen >= sizeof(token))
-        LOG_FAIL(PROPID_LOG, "parse: kind token length %zu out of range", tlen);
-    memcpy(token, text, tlen);
-    token[tlen] = '\0';
+    colon = strchr(text, ':');
+    if (!colon || colon == text)
+        return false;
+    klen = (size_t)(colon - text);
+    if (klen >= sizeof(kind_name))
+        return false;
+    memcpy(kind_name, text, klen);
+    kind_name[klen] = '\0';
+    kind = metaverse_kind_from_name(kind_name);
+    if (!metaverse_kind_valid(kind))
+        return false;
 
-    enum metaverse_property_kind kind = metaverse_kind_parse(token);
-    if (kind == METAVERSE_KIND_UNKNOWN)
-        LOG_FAIL(PROPID_LOG, "parse: unknown kind token '%s'", token);
+    /* Exact-length decode: a second ':' or a trailing byte is a different
+     * string and must not silently parse. */
+    if (!zcl_hex_decode(colon + 1, root, METAVERSE_ROOT_BYTES))
+        return false;
+    return metaverse_property_id_make(kind, root, out);
+}
 
-    const char *hex = colon + 1;
-    if (strlen(hex) != METAVERSE_PROPERTY_ROOT_LEN * 2)
-        LOG_FAIL(PROPID_LOG, "parse: root hex length %zu != %d",
-                 strlen(hex), METAVERSE_PROPERTY_ROOT_LEN * 2);
-
-    /* Decoded into a local first, so a rejected root leaves *out untouched —
-     * the header promises that. zcl_hex_decode accepts A-F, which is the
-     * documented asymmetry: render only ever emits lowercase. */
-    uint8_t root[METAVERSE_PROPERTY_ROOT_LEN];
-    if (!zcl_hex_decode(hex, root, METAVERSE_PROPERTY_ROOT_LEN))
-        LOG_FAIL(PROPID_LOG, "parse: non-hex digit in root '%.64s'", hex);
-
-    out->kind = kind;
-    memcpy(out->root, root, sizeof(root));
-    return true;
+bool metaverse_property_id_equal(const struct metaverse_property_id *a,
+                                 const struct metaverse_property_id *b)
+{
+    if (!a || !b)
+        return false;
+    return a->kind == b->kind &&
+           memcmp(a->root, b->root, METAVERSE_ROOT_BYTES) == 0;
 }
