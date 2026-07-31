@@ -48,6 +48,16 @@ struct property_grant_store {
     uint8_t sk[32];
     uint8_t pk[32];
     bool key_set;
+
+#ifdef ZCL_TESTING
+    /* TEST-ONLY. Armed by property_grant_service_test_set_seal_hook() and
+     * called by COMMIT at the one instant between the grant record's effect and
+     * the sealed receipt — the window in which the store has moved and no
+     * evidence exists yet. Compiled out entirely outside a ZCL_TESTING build so
+     * the shipped money path carries no hook. */
+    property_grant_test_seal_hook_fn seal_hook;
+    void *seal_hook_ctx;
+#endif
 };
 
 extern struct property_grant_store g_pg_store;

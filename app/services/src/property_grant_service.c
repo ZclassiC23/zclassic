@@ -139,6 +139,17 @@ void property_grant_service_configure(const struct property_grant_env *env)
         memset(&g_pg_store.env, 0, sizeof(g_pg_store.env));
     }
     if (!g_pg_store.env.clock) g_pg_store.env.clock = default_clock;
+    /* THE ENVIRONMENT IS A DECISION INPUT, so replacing it moves the store-wide
+     * generation like any other mutation. A snapshot carries the instant it was
+     * taken against (snap.now_unix/height) and the pure rules measure expiry
+     * against that instant, so a decision already computed is not retroactively
+     * changed by a clock swap — but a decision still IN FLIGHT would otherwise
+     * be revalidated as coherent across a change of which clock, and which
+     * catalog, is authoritative. This is documented as a boot-time seam ("call
+     * before any plan/commit") and no production path calls it at all, so the
+     * bump costs one increment and buys an unconditional guarantee instead of
+     * one that holds only while nobody reconfigures a running node. */
+    pg_bump_authority();
     pthread_mutex_unlock(&g_pg_store.lock);
 }
 
@@ -193,6 +204,12 @@ void property_grant_service_reset(void)
     memset(g_pg_store.sk, 0, sizeof(g_pg_store.sk));
     memset(g_pg_store.pk, 0, sizeof(g_pg_store.pk));
     g_pg_store.key_set = false;
+#ifdef ZCL_TESTING
+    /* A hook left armed by one test would fire in the next one, which is the
+     * shape of a test that passes for the wrong reason. Reset disarms it. */
+    g_pg_store.seal_hook = NULL;
+    g_pg_store.seal_hook_ctx = NULL;
+#endif
     /* Bumped, never zeroed: a reader holding a snapshot from before the reset
      * must see the state move, and zeroing could hand it back its own value. */
     pg_bump_authority();
@@ -244,6 +261,11 @@ bool pg_collect_ancestors(const struct metaverse_grant *g,
     return true;
 }
 
+/* NO AUTHORITY BUMP, here or in set_signing_seed. The signing key is not a
+ * decision input: no verdict in metaverse_grant_check, and nothing an authority
+ * snapshot copies, depends on it. It decides whether a receipt VERIFIES, which
+ * is evidence rather than permission, and bumping on it would make the first
+ * commit after a restart invalidate every concurrent decision for no reason. */
 bool pg_ensure_key(void)
 {
     if (g_pg_store.key_set) return true;
@@ -690,6 +712,17 @@ static enum property_grant_reason plan_attempt(
                      PROPERTY_GRANT_MAX_PLANS);
         return PROPERTY_GRANT_STORE_FULL;
     }
+    /* NO AUTHORITY BUMP. A plan slot is not part of the authority anyone
+     * decides over: nothing in metaverse_grant_check reads a plan, an authority
+     * snapshot copies grants and generations and never a plan, and a plan
+     * RESERVES nothing — it debits no budget and consumes no rate window, which
+     * is why two plans can be quoted over the same remaining budget and the
+     * second one loses at COMMIT's re-check rather than at PLAN. Evicting an
+     * expired uncommitted slot only turns one refusal (PLAN_EXPIRED) into
+     * another (PLAN_UNKNOWN); no authority widens either way. Bumping here
+     * would be actively wrong: a read-only quote would invalidate every
+     * unrelated decision in flight, and two concurrent plans would spend their
+     * one retry on each other and then both refuse. */
     *slot = p;
     size_t idx = (size_t)(slot - g_pg_store.plans);
     g_pg_store.plan_used[idx] = true;

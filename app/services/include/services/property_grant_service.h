@@ -155,9 +155,25 @@ struct metaverse_catalog_view {
  * under the mutex would stall every other grant decision in the process behind
  * a disk read. Both call sites now take a snapshot under the lock, RELEASE it,
  * call this, and re-acquire to confirm the store did not move
- * (property_grant_service_recheck below). An implementation may therefore
- * block and may touch the datadir — but it must NOT call back into this
- * service, which would re-enter the same mutex it was just released from. */
+ * (property_grant_service_recheck below).
+ *
+ * WHAT AN IMPLEMENTATION MAY DO. It may block and it may touch the datadir —
+ * that is the entire reason the lock is released around it. It may also call
+ * back into this service, including entry points that MUTATE the store: no
+ * lock of this service is held while it runs, so there is nothing to re-enter.
+ * That is not a loophole grudgingly permitted; it is how the lane's own
+ * lock-discipline test PROVES the mutex is released, by mutating the store from
+ * inside this callback and living.
+ *
+ * WHAT THAT COSTS, AND IT IS DEFINED BEHAVIOUR RATHER THAN AN ACCIDENT. A
+ * callback that mutates the store moves the store-wide authority generation,
+ * and the decision currently in flight is exactly the decision that generation
+ * exists to invalidate: the caller re-acquires the lock, sees the move, and
+ * reports AUTHORITY_CHANGED. PLAN and COMMIT each retry from scratch exactly
+ * once and then refuse, rather than answer over a state nobody can show still
+ * exists. So a callback that mutates on EVERY call makes every decision through
+ * it fail with AUTHORITY_CHANGED — a callback is treated exactly as a
+ * concurrent thread would be, because that is what it is. */
 typedef bool (*metaverse_catalog_lookup_fn)(
     const struct metaverse_property_id *id,
     struct metaverse_catalog_view *out, void *ctx);
@@ -398,5 +414,21 @@ enum metaverse_receipt_status property_grant_service_verify_chain(
 bool property_grant_service_test_overwrite_receipt(
     const char *grant_id, uint64_t seq,
     const struct metaverse_receipt *edited);
+
+/* TEST-ONLY seal-failure hook. Runs at the ONE instant in a commit where the
+ * grant record has already taken the action's effect (spend, rate window) and
+ * no receipt exists yet — the window whose only exit is an exact restore.
+ * Returning false makes the seal fail, which is otherwise unreachable: the real
+ * sealer only fails on a NULL argument or a zero seq, neither of which a commit
+ * can produce. Without it the rollback path is untestable, and an untestable
+ * money path is where R2's two arithmetic defects lived unseen.
+ *
+ * The hook runs WITH the store mutex held (that is the invariant it exists to
+ * probe — see property_grant_service_test_store_lock_busy), so it must not call
+ * any entry point of this service that takes the lock. Cleared by
+ * property_grant_service_reset(). Refuses outside a ZCL_TESTING build. */
+typedef bool (*property_grant_test_seal_hook_fn)(void *ctx);
+bool property_grant_service_test_set_seal_hook(
+    property_grant_test_seal_hook_fn fn, void *ctx);
 
 #endif /* ZCL_SERVICES_PROPERTY_GRANT_SERVICE_H */
