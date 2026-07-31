@@ -30,13 +30,14 @@
 
 #include "metaverse/property_id.h"
 #include "metaverse/property_view.h"
+#include "metaverse/property_work.h"
 
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
 /* Everything an adapter is allowed to know about where to read from.
- * Deliberately a directory + a height, never an open store handle: see
+ * Deliberately a directory + a tip, never an open store handle: see
  * "READ MEANS READ" above. */
 struct metaverse_adapter_ctx {
     const char *datadir;   /* datadir root; never NULL */
@@ -47,6 +48,19 @@ struct metaverse_adapter_ctx {
      * height onto a claim the tip does not commit is a false freshness
      * claim. */
     int64_t chain_height;
+
+    /* The tip's ACCUMULATED WORK, straight from the block index
+     * (`bi->nChainWork`), or NULL when unknown. Paired with chain_height
+     * and only meaningful together: a proof-of-work-settled adapter passes
+     * both, along with its record's anchor height and that block's
+     * nChainWork, to metaverse_work_measure(). Nothing here recomputes
+     * work — the block index already tracks it per block, and a second
+     * derivation would be a second truth.
+     *
+     * NULL here is not zero work. metaverse_work_measure() leaves the
+     * chainwork field explicitly unknown rather than reporting 0, for the
+     * same reason chain_height is -1 and not 0. */
+    const struct arith_uint256 *chain_work;
 };
 
 /* Fill `out` for exactly this id. Returns true when a view was written

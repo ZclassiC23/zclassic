@@ -14,7 +14,7 @@
 const char *metaverse_kind_name(enum metaverse_kind kind)
 {
     switch (kind) {
-#define METAVERSE_KIND_NAME_CASE(id_, name_, authority_)                     \
+#define METAVERSE_KIND_NAME_CASE(id_, name_, authority_, settle_)            \
     case METAVERSE_KIND_##id_: return name_;
     METAVERSE_KIND_TABLE(METAVERSE_KIND_NAME_CASE)
 #undef METAVERSE_KIND_NAME_CASE
@@ -28,7 +28,7 @@ const char *metaverse_kind_name(enum metaverse_kind kind)
 const char *metaverse_kind_authority(enum metaverse_kind kind)
 {
     switch (kind) {
-#define METAVERSE_KIND_AUTH_CASE(id_, name_, authority_)                     \
+#define METAVERSE_KIND_AUTH_CASE(id_, name_, authority_, settle_)            \
     case METAVERSE_KIND_##id_: return authority_;
     METAVERSE_KIND_TABLE(METAVERSE_KIND_AUTH_CASE)
 #undef METAVERSE_KIND_AUTH_CASE
@@ -39,11 +39,80 @@ const char *metaverse_kind_authority(enum metaverse_kind kind)
     return "unknown";
 }
 
+/* The switch is exhaustive over enum metaverse_kind and carries NO default.
+ * Two things follow, and both are the point:
+ *   - a kind added to METAVERSE_KIND_TABLE without a fourth column does not
+ *     preprocess (the X macro takes four arguments), and
+ *   - a kind added ANYWHERE ELSE — a hand-written enumerator that skipped
+ *     the table — is a -Wswitch error here rather than a silent UNKNOWN.
+ * The header's per-row _Static_assert covers the third case, a fourth
+ * column that names a class outside the enum. */
+enum metaverse_settlement metaverse_kind_settlement(enum metaverse_kind kind)
+{
+    switch (kind) {
+#define METAVERSE_KIND_SETTLE_CASE(id_, name_, authority_, settle_)          \
+    case METAVERSE_KIND_##id_: return METAVERSE_SETTLEMENT_##settle_;
+    METAVERSE_KIND_TABLE(METAVERSE_KIND_SETTLE_CASE)
+#undef METAVERSE_KIND_SETTLE_CASE
+    case METAVERSE_KIND_UNKNOWN:
+    case METAVERSE_KIND_COUNT:
+        break;
+    }
+    return METAVERSE_SETTLEMENT_UNKNOWN;
+}
+
+const char *metaverse_settlement_name(enum metaverse_settlement settlement)
+{
+    switch (settlement) {
+    case METAVERSE_SETTLEMENT_CONTENT_ADDRESSED:
+        return "content_addressed";
+    case METAVERSE_SETTLEMENT_PROOF_OF_WORK:
+        return "proof_of_work";
+    case METAVERSE_SETTLEMENT_LOCAL_DECLARATION:
+        return "local_declaration";
+    case METAVERSE_SETTLEMENT_CHAIN_ANCHORED_INCOMPLETE:
+        return "chain_anchored_incomplete";
+    case METAVERSE_SETTLEMENT_UNKNOWN:
+    case METAVERSE_SETTLEMENT_COUNT:
+        break;
+    }
+    return "unknown";
+}
+
+const char *metaverse_settlement_means(enum metaverse_settlement settlement)
+{
+    switch (settlement) {
+    case METAVERSE_SETTLEMENT_CONTENT_ADDRESSED:
+        return "the identifier is a hash of the bytes: anyone holding them "
+               "can verify it with no authority, chain, or peer involved";
+    case METAVERSE_SETTLEMENT_PROOF_OF_WORK:
+        return "ownership is an ordering settled by accumulated proof of "
+               "work; the depth and chainwork below say how much";
+    case METAVERSE_SETTLEMENT_LOCAL_DECLARATION:
+        return "this node asserts it; nothing outside this node has agreed "
+               "or disagreed, and no external record settles it";
+    case METAVERSE_SETTLEMENT_CHAIN_ANCHORED_INCOMPLETE:
+        return "the record refers to an on-chain object, but this node "
+               "tracks no anchor height for it, so the work behind it "
+               "cannot be measured here";
+    case METAVERSE_SETTLEMENT_UNKNOWN:
+    case METAVERSE_SETTLEMENT_COUNT:
+        break;
+    }
+    return "no settlement class is declared for this kind, so nothing here "
+           "states how the claim is settled";
+}
+
+bool metaverse_settlement_work_measurable(enum metaverse_settlement s)
+{
+    return s == METAVERSE_SETTLEMENT_PROOF_OF_WORK;
+}
+
 enum metaverse_kind metaverse_kind_from_name(const char *name)
 {
     if (!name || !*name)
         return METAVERSE_KIND_UNKNOWN;
-#define METAVERSE_KIND_FROM_CASE(id_, name_, authority_)                     \
+#define METAVERSE_KIND_FROM_CASE(id_, name_, authority_, settle_)            \
     if (strcmp(name, name_) == 0) return METAVERSE_KIND_##id_;
     METAVERSE_KIND_TABLE(METAVERSE_KIND_FROM_CASE)
 #undef METAVERSE_KIND_FROM_CASE

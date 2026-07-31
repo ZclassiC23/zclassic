@@ -48,6 +48,11 @@ struct property_catalog_kind_row {
     enum metaverse_kind kind;
     const char *kind_name;
     const char *authority_source;
+    /* What KIND of answer this kind's authority gives — a hash anyone can
+     * recheck, an ordering settled by accumulated work, or a bare local
+     * assertion. Emitted per kind so an operator reading the coverage list
+     * alone can see the mix, without opening a single property. */
+    enum metaverse_settlement settlement;
     bool available;              /* false => `unavailable_reason` says why */
     const char *unavailable_reason;
     size_t total;

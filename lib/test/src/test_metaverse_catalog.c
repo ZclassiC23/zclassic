@@ -43,6 +43,7 @@
 
 #include "chain/chainparams.h"
 #include "config/command_catalog.h"
+#include "core/arith_uint256.h"
 #include "core/uint256.h"
 #include "json/json.h"
 #include "kernel/command_registry.h"
@@ -53,6 +54,7 @@
 #include "metaverse/property_adapter.h"
 #include "metaverse/property_id.h"
 #include "metaverse/property_view.h"
+#include "metaverse/property_work.h"
 #include "services/property_catalog.h"
 #include "vcs/blob_store.h"
 #include "vcs/package_accept.h"
@@ -333,6 +335,311 @@ static int t_adapter_registry(void)
     return failures;
 }
 
+/* ── 3b: settlement classes ───────────────────────────────────────── */
+
+/* An independent second opinion on the kind table's fourth column. The
+ * table is the authority; this array is written from the SUBSYSTEM
+ * behaviour (does the model hash bytes, record a chain ordering, or just
+ * assert?) so that silently reclassifying a kind to make something else
+ * pass fails here. */
+struct mv_expected_settlement {
+    enum metaverse_kind kind;
+    enum metaverse_settlement settlement;
+};
+
+static const struct mv_expected_settlement k_expected_settlement[] = {
+    /* The id IS the manifest root; verification hashes bytes. */
+    { METAVERSE_KIND_CONTENT,     METAVERSE_SETTLEMENT_CONTENT_ADDRESSED },
+    { METAVERSE_KIND_ZCODE_PACKAGE, METAVERSE_SETTLEMENT_CONTENT_ADDRESSED },
+    /* OP_RETURN first-come-first-served: an ordering, settled by work, and
+     * both models record the ZCL height that fixes it. */
+    { METAVERSE_KIND_ZNAM_NAME,   METAVERSE_SETTLEMENT_PROOF_OF_WORK },
+    { METAVERSE_KIND_ZSLP_ASSET,  METAVERSE_SETTLEMENT_PROOF_OF_WORK },
+    /* Nothing outside this process has agreed these exist. */
+    { METAVERSE_KIND_HOSTED_SERVICE,
+      METAVERSE_SETTLEMENT_LOCAL_DECLARATION },
+    { METAVERSE_KIND_ENDPOINT_ONION,
+      METAVERSE_SETTLEMENT_LOCAL_DECLARATION },
+    { METAVERSE_KIND_STOREFRONT_PRODUCT,
+      METAVERSE_SETTLEMENT_LOCAL_DECLARATION },
+    /* models/swap_contract.h stores funding_txid but no funding HEIGHT,
+     * and `chain` may be one whose height this node refuses to claim it
+     * can observe. Chain-anchored, not measurable here. */
+    { METAVERSE_KIND_CONTRACT_SWAP,
+      METAVERSE_SETTLEMENT_CHAIN_ANCHORED_INCOMPLETE },
+};
+
+static int t_settlement_classes(void)
+{
+    int failures = 0;
+    size_t expected_n = sizeof(k_expected_settlement) /
+                        sizeof(k_expected_settlement[0]);
+
+    MV_CHECK("settlement: the expectation table covers every kind",
+             expected_n == (size_t)METAVERSE_KIND_COUNT - 1u);
+    {
+        bool classified = true;
+        bool matches = true;
+
+        for (int k = 1; k < METAVERSE_KIND_COUNT; k++) {
+            enum metaverse_kind kk = (enum metaverse_kind)k;
+            enum metaverse_settlement s = metaverse_kind_settlement(kk);
+            bool found = false;
+
+            /* Exactly one class, and never the invalid zero. The compiler
+             * already refuses a table row with no fourth column and a
+             * fourth column outside the enum; this catches the remaining
+             * case, a kind whose class is UNKNOWN or out of range. */
+            if (s <= METAVERSE_SETTLEMENT_UNKNOWN ||
+                s >= METAVERSE_SETTLEMENT_COUNT)
+                classified = false;
+            for (size_t i = 0; i < expected_n; i++) {
+                if (k_expected_settlement[i].kind != kk)
+                    continue;
+                found = true;
+                if (k_expected_settlement[i].settlement != s)
+                    matches = false;
+            }
+            if (!found)
+                matches = false;
+        }
+        MV_CHECK("settlement: every kind has exactly one real class",
+                 classified);
+        MV_CHECK("settlement: each kind's class matches how its subsystem "
+                 "actually settles", matches);
+    }
+    MV_CHECK("settlement: UNKNOWN and out-of-range kinds are UNKNOWN, never "
+             "the strongest class",
+             metaverse_kind_settlement(METAVERSE_KIND_UNKNOWN) ==
+                 METAVERSE_SETTLEMENT_UNKNOWN &&
+             metaverse_kind_settlement(METAVERSE_KIND_COUNT) ==
+                 METAVERSE_SETTLEMENT_UNKNOWN);
+    MV_CHECK("settlement: class names are the wire names",
+             strcmp(metaverse_settlement_name(
+                        METAVERSE_SETTLEMENT_CONTENT_ADDRESSED),
+                    "content_addressed") == 0 &&
+             strcmp(metaverse_settlement_name(
+                        METAVERSE_SETTLEMENT_PROOF_OF_WORK),
+                    "proof_of_work") == 0 &&
+             strcmp(metaverse_settlement_name(
+                        METAVERSE_SETTLEMENT_LOCAL_DECLARATION),
+                    "local_declaration") == 0 &&
+             strcmp(metaverse_settlement_name(
+                        METAVERSE_SETTLEMENT_CHAIN_ANCHORED_INCOMPLETE),
+                    "chain_anchored_incomplete") == 0 &&
+             strcmp(metaverse_settlement_name(METAVERSE_SETTLEMENT_UNKNOWN),
+                    "unknown") == 0 &&
+             strcmp(metaverse_settlement_name(METAVERSE_SETTLEMENT_COUNT),
+                    "unknown") == 0);
+    {
+        bool every_class_explains = true;
+
+        for (int s = 0; s <= METAVERSE_SETTLEMENT_COUNT; s++) {
+            const char *m =
+                metaverse_settlement_means((enum metaverse_settlement)s);
+
+            if (!m || !*m)
+                every_class_explains = false;
+        }
+        MV_CHECK("settlement: every class states plainly what it settles",
+                 every_class_explains);
+    }
+    /* The honesty requirement, asserted as text: a locally-declared
+     * property must say out loud that only this node asserts it. */
+    MV_CHECK("settlement: local_declaration says this node is the only "
+             "thing asserting it",
+             strstr(metaverse_settlement_means(
+                        METAVERSE_SETTLEMENT_LOCAL_DECLARATION),
+                    "this node") != NULL &&
+             strstr(metaverse_settlement_means(
+                        METAVERSE_SETTLEMENT_LOCAL_DECLARATION),
+                    "nothing outside this node") != NULL);
+    MV_CHECK("settlement: proof_of_work is the ONLY measurable class",
+             metaverse_settlement_work_measurable(
+                 METAVERSE_SETTLEMENT_PROOF_OF_WORK) &&
+             !metaverse_settlement_work_measurable(
+                 METAVERSE_SETTLEMENT_CONTENT_ADDRESSED) &&
+             !metaverse_settlement_work_measurable(
+                 METAVERSE_SETTLEMENT_LOCAL_DECLARATION) &&
+             !metaverse_settlement_work_measurable(
+                 METAVERSE_SETTLEMENT_CHAIN_ANCHORED_INCOMPLETE) &&
+             !metaverse_settlement_work_measurable(
+                 METAVERSE_SETTLEMENT_UNKNOWN));
+    /* Settlement is NOT a re-spelling of chain_bound evidence: the two
+     * axes must be able to disagree, or one of them is redundant. */
+    MV_CHECK("settlement: the class is a property of the kind, not of the "
+             "evidence grade",
+             metaverse_kind_settlement(METAVERSE_KIND_CONTENT) !=
+                 metaverse_kind_settlement(METAVERSE_KIND_ZNAM_NAME) &&
+             metaverse_kind_settlement(METAVERSE_KIND_STOREFRONT_PRODUCT) !=
+                 metaverse_kind_settlement(METAVERSE_KIND_CONTRACT_SWAP));
+    return failures;
+}
+
+/* ── 3c: the work measurement ─────────────────────────────────────── */
+
+/* Build the accumulated-work value a block index entry would carry. */
+static void mv_work(struct arith_uint256 *w, uint64_t v)
+{
+    arith_uint256_set_u64(w, v);
+}
+
+static int t_work_measurement(void)
+{
+    int failures = 0;
+    struct metaverse_work_proof p;
+    struct arith_uint256 anchor_work, tip_work;
+
+    mv_work(&anchor_work, 1000);
+    mv_work(&tip_work, 1064);
+
+    /* The whole point: a non-PoW kind gets UNKNOWN, not zero, no matter
+     * what heights the caller passes. */
+    {
+        const enum metaverse_kind non_pow[] = {
+            METAVERSE_KIND_CONTENT, METAVERSE_KIND_ZCODE_PACKAGE,
+            METAVERSE_KIND_HOSTED_SERVICE, METAVERSE_KIND_ENDPOINT_ONION,
+            METAVERSE_KIND_STOREFRONT_PRODUCT, METAVERSE_KIND_CONTRACT_SWAP,
+        };
+        bool refused = true;
+        bool unknown_not_zero = true;
+
+        for (size_t i = 0; i < sizeof(non_pow) / sizeof(non_pow[0]); i++) {
+            if (metaverse_work_measure(non_pow[i], 100, &anchor_work, 900,
+                                       &tip_work, &p))
+                refused = false;
+            if (p.applicable || p.has_anchor_height || p.has_depth ||
+                p.has_chainwork || p.has_tip_height)
+                unknown_not_zero = false;
+            /* Distinguishable from zero, in the struct AND in the render. */
+            if (p.anchor_height != -1 || p.depth != -1 ||
+                p.tip_height != -1 || p.chainwork_hex[0] != '\0')
+                unknown_not_zero = false;
+            if (p.gap != METAVERSE_WORK_GAP_NOT_APPLICABLE)
+                unknown_not_zero = false;
+        }
+        MV_CHECK("work: a non-proof-of-work kind is refused a measurement "
+                 "even when a real tip is offered", refused);
+        MV_CHECK("work: for those kinds every number is UNKNOWN (-1/\"\"), "
+                 "never a plausible zero", unknown_not_zero);
+    }
+
+    /* A chain-anchored fixture: anchor at 500, tip at 564. */
+    MV_CHECK("work: a proof-of-work kind with an anchor and a tip measures",
+             metaverse_work_measure(METAVERSE_KIND_ZNAM_NAME, 500,
+                                    &anchor_work, 564, &tip_work, &p));
+    MV_CHECK("work: the anchor height is the record's, not the tip's",
+             p.has_anchor_height && p.anchor_height == 500 &&
+             p.has_tip_height && p.tip_height == 564);
+    MV_CHECK("work: confirmation depth is tip - anchor",
+             p.has_depth && p.depth == 64 &&
+             p.gap == METAVERSE_WORK_GAP_NONE && p.applicable);
+    {
+        /* 1064 - 1000 = 64 = 0x40, big-endian hex as the rest of the node
+         * renders chainwork. */
+        char expect[65];
+        struct arith_uint256 delta;
+
+        arith_uint256_sub(&delta, &tip_work, &anchor_work);
+        arith_uint256_get_hex(&delta, expect);
+        MV_CHECK("work: chainwork is the block index's own accumulated "
+                 "work, differenced",
+                 p.has_chainwork && strcmp(p.chainwork_hex, expect) == 0 &&
+                 strcmp(p.chainwork_hex,
+                        "00000000000000000000000000000000000000000000000000"
+                        "00000000000040") == 0);
+    }
+
+    /* Depth 0 is a real answer and must not read as unknown. */
+    MV_CHECK("work: an anchor AT the tip is depth 0, not unknown",
+             metaverse_work_measure(METAVERSE_KIND_ZSLP_ASSET, 900,
+                                    &tip_work, 900, &tip_work, &p) &&
+             p.has_depth && p.depth == 0 && p.has_chainwork &&
+             strcmp(p.chainwork_hex,
+                    "000000000000000000000000000000000000000000000000000000"
+                    "0000000000") == 0);
+
+    /* Missing halves each degrade to a NAMED gap, never to a number. */
+    MV_CHECK("work: no anchor height -> no_anchor, nothing measured",
+             !metaverse_work_measure(METAVERSE_KIND_ZNAM_NAME, -1,
+                                     &anchor_work, 564, &tip_work, &p) &&
+             p.applicable && p.gap == METAVERSE_WORK_GAP_NO_ANCHOR &&
+             !p.has_depth && p.depth == -1 && !p.has_chainwork);
+    MV_CHECK("work: no tip -> no_tip, and the anchor still reports",
+             !metaverse_work_measure(METAVERSE_KIND_ZNAM_NAME, 500,
+                                     &anchor_work, -1, NULL, &p) &&
+             p.gap == METAVERSE_WORK_GAP_NO_TIP && p.has_anchor_height &&
+             p.anchor_height == 500 && !p.has_depth && p.depth == -1);
+    MV_CHECK("work: an anchor ABOVE the tip is a contradiction, not a "
+             "negative or clamped depth",
+             !metaverse_work_measure(METAVERSE_KIND_ZNAM_NAME, 600,
+                                     &anchor_work, 500, &tip_work, &p) &&
+             !p.has_depth && p.depth == -1 && !p.has_chainwork &&
+             p.gap == METAVERSE_WORK_GAP_ANCHOR_ABOVE_TIP);
+    MV_CHECK("work: depth stands without chainwork when the block index "
+             "values are unavailable",
+             metaverse_work_measure(METAVERSE_KIND_ZNAM_NAME, 500, NULL, 564,
+                                    NULL, &p) &&
+             p.has_depth && p.depth == 64 && !p.has_chainwork &&
+             p.chainwork_hex[0] == '\0');
+    MV_CHECK("work: work going BACKWARDS is not reported as a magnitude",
+             metaverse_work_measure(METAVERSE_KIND_ZNAM_NAME, 500, &tip_work,
+                                    564, &anchor_work, &p) &&
+             p.has_depth && !p.has_chainwork);
+    MV_CHECK("work: a NULL out is refused",
+             !metaverse_work_measure(METAVERSE_KIND_ZNAM_NAME, 500,
+                                     &anchor_work, 564, &tip_work, NULL));
+    {
+        bool every_gap_explains = true;
+
+        for (int g = METAVERSE_WORK_GAP_NOT_APPLICABLE;
+             g <= METAVERSE_WORK_GAP_ANCHOR_ABOVE_TIP; g++) {
+            const char *r =
+                metaverse_work_gap_reason((enum metaverse_work_gap)g);
+            const char *n =
+                metaverse_work_gap_name((enum metaverse_work_gap)g);
+
+            if (!r || !*r || !n || !*n)
+                every_gap_explains = false;
+        }
+        MV_CHECK("work: every gap names itself and explains itself",
+                 every_gap_explains &&
+                 strcmp(metaverse_work_gap_name(METAVERSE_WORK_GAP_NONE),
+                        "none") == 0);
+    }
+    /* No score, rating, or tier: the render carries mechanism + numbers. */
+    {
+        struct json_value j;
+        char doc[2048];
+        const char *cw, *gap, *why;
+        bool ok;
+
+        (void)metaverse_work_measure(METAVERSE_KIND_CONTENT, 100,
+                                     &anchor_work, 900, &tip_work, &p);
+        json_init(&j);
+        ok = metaverse_work_to_json(&p, &j);
+        cw  = json_get_str(json_get(&j, "chainwork_since_anchor"));
+        gap = json_get_str(json_get(&j, "gap"));
+        why = json_get_str(json_get(&j, "gap_reason"));
+        MV_CHECK("work: a not-applicable proof renders measurable=false, "
+                 "-1 heights and an empty chainwork",
+                 ok && !json_get_bool(json_get(&j, "measurable")) &&
+                 json_get_int(json_get(&j, "anchor_height")) == -1 &&
+                 json_get_int(json_get(&j, "tip_height")) == -1 &&
+                 json_get_int(json_get(&j, "confirmation_depth")) == -1 &&
+                 cw && *cw == '\0' && gap &&
+                 strcmp(gap, "not_applicable") == 0 && why && *why);
+        doc[0] = '\0';
+        (void)json_write(&j, doc, sizeof(doc));
+        MV_CHECK("work: the render invents no score, rating, or trust tier",
+                 doc[0] != '\0' && !strstr(doc, "score") &&
+                 !strstr(doc, "rating") && !strstr(doc, "trust") &&
+                 !strstr(doc, "tier") && !strstr(doc, "level"));
+        json_free(&j);
+    }
+    return failures;
+}
+
 /* ── in-process command runner ────────────────────────────────────── */
 
 struct mv_cmd {
@@ -410,6 +717,153 @@ static const struct json_value *mv_find_item(const struct json_value *data,
     return NULL;
 }
 
+/* ── 3d: settlement + work reach the inspection surfaces ──────────── */
+
+/* Find the kinds[] coverage row for one kind name. */
+static const struct json_value *mv_find_kind(const struct json_value *data,
+                                             const char *kind_name)
+{
+    const struct json_value *arr = json_get(data, "kinds");
+    size_t n = arr ? json_size(arr) : 0;
+
+    for (size_t i = 0; i < n; i++) {
+        const struct json_value *row = json_at(arr, i);
+
+        if (row && strcmp(mv_str(row, "kind"), kind_name) == 0)
+            return row;
+    }
+    return NULL;
+}
+
+/* Render one kind's view straight from view_begin, i.e. the state every
+ * adapter starts from. No fixture needed: the settlement class and the
+ * not-measured work block are derived from the KIND, so they are already
+ * correct before any store is read. */
+static bool mv_render_begin(enum metaverse_kind kind, struct json_value *out)
+{
+    struct metaverse_property_id id;
+    struct metaverse_property_view view;
+    uint8_t root[32];
+
+    for (int i = 0; i < 32; i++)
+        root[i] = (uint8_t)(0x11 + i);
+    if (!metaverse_property_id_make(kind, root, &id))
+        return false;
+    if (!metaverse_view_begin(&view, &id))
+        return false;
+    return metaverse_view_to_json(&view, out);
+}
+
+static int t_settlement_is_surfaced(void)
+{
+    int failures = 0;
+    char dd[256];
+    struct mv_cmd c;
+
+    /* An empty datadir is enough: kinds[] is always fully populated. */
+    test_make_tmpdir(dd, sizeof(dd), "metaverse", "settlement");
+
+    mv_list(&c, dd, NULL);
+    MV_CHECK("surface: list succeeds on an empty datadir",
+             c.reply.status == ZCL_COMMAND_STATUS_PASSED);
+    {
+        const struct json_value *arr = json_get(&c.reply.data, "kinds");
+        size_t n = arr ? json_size(arr) : 0;
+        bool every_row_states_it = n == (size_t)METAVERSE_KIND_COUNT - 1u;
+
+        for (size_t i = 0; i < n; i++) {
+            const struct json_value *row = json_at(arr, i);
+            const char *s = row ? mv_str(row, "settlement") : "";
+            const char *m = row ? mv_str(row, "settlement_means") : "";
+
+            if (!*s || strcmp(s, "unknown") == 0 || !*m)
+                every_row_states_it = false;
+        }
+        MV_CHECK("surface: every kind row in the catalog states its "
+                 "settlement class and what it means", every_row_states_it);
+    }
+    {
+        const struct json_value *store =
+            mv_find_kind(&c.reply.data, "storefront_product");
+        const struct json_value *name =
+            mv_find_kind(&c.reply.data, "znam_name");
+        const struct json_value *swap =
+            mv_find_kind(&c.reply.data, "contract_swap");
+        const struct json_value *blob =
+            mv_find_kind(&c.reply.data, "content");
+
+        MV_CHECK("surface: a storefront product is labelled a LOCAL "
+                 "declaration, in plain words, in the catalog",
+                 store && strcmp(mv_str(store, "settlement"),
+                                 "local_declaration") == 0 &&
+                 strstr(mv_str(store, "settlement_means"),
+                        "nothing outside this node") != NULL);
+        MV_CHECK("surface: a ZNAM name is labelled proof-of-work settled",
+                 name && strcmp(mv_str(name, "settlement"),
+                                "proof_of_work") == 0);
+        MV_CHECK("surface: a swap contract is labelled chain-anchored but "
+                 "not measurable here",
+                 swap && strcmp(mv_str(swap, "settlement"),
+                                "chain_anchored_incomplete") == 0);
+        MV_CHECK("surface: content is labelled content-addressed",
+                 blob && strcmp(mv_str(blob, "settlement"),
+                                "content_addressed") == 0);
+    }
+    mv_cmd_free(&c);
+
+    /* The per-property view, which is what `metaverse property show`
+     * renders. */
+    {
+        struct json_value j;
+        const struct json_value *w;
+
+        json_init(&j);
+        MV_CHECK("surface: a content view renders its settlement class",
+                 mv_render_begin(METAVERSE_KIND_CONTENT, &j) &&
+                 strcmp(mv_str(&j, "settlement"), "content_addressed") == 0 &&
+                 *mv_str(&j, "settlement_means") != '\0');
+        w = json_get(&j, "work");
+        MV_CHECK("surface: its work block is present, not-applicable, and "
+                 "carries -1 rather than 0",
+                 w && !json_get_bool(json_get(w, "measurable")) &&
+                 json_get_int(json_get(w, "confirmation_depth")) == -1 &&
+                 json_get_int(json_get(w, "anchor_height")) == -1 &&
+                 strcmp(mv_str(w, "gap"), "not_applicable") == 0);
+        json_free(&j);
+
+        json_init(&j);
+        MV_CHECK("surface: a proof-of-work kind's view says the question "
+                 "applies but is unanswered, not that the depth is 0",
+                 mv_render_begin(METAVERSE_KIND_ZNAM_NAME, &j) &&
+                 strcmp(mv_str(&j, "settlement"), "proof_of_work") == 0);
+        w = json_get(&j, "work");
+        MV_CHECK("surface: measurable=true with a no_anchor gap and -1 "
+                 "numbers",
+                 w && json_get_bool(json_get(w, "measurable")) &&
+                 strcmp(mv_str(w, "gap"), "no_anchor") == 0 &&
+                 json_get_int(json_get(w, "confirmation_depth")) == -1 &&
+                 !json_get_bool(json_get(w, "has_chainwork")) &&
+                 strcmp(mv_str(w, "chainwork_since_anchor"), "") == 0);
+        json_free(&j);
+
+        /* Settlement and evidence are separate axes: a locally-declared
+         * property still gets a full view, and the view says both. */
+        json_init(&j);
+        MV_CHECK("surface: a locally-declared kind renders the blunt "
+                 "wording alongside its evidence fields",
+                 mv_render_begin(METAVERSE_KIND_STOREFRONT_PRODUCT, &j) &&
+                 strcmp(mv_str(&j, "settlement"), "local_declaration") == 0 &&
+                 strstr(mv_str(&j, "settlement_means"),
+                        "nothing outside this node") != NULL &&
+                 json_get(&j, "evidence_grade") != NULL &&
+                 json_get(&j, "chain_bound") != NULL);
+        json_free(&j);
+    }
+
+    test_rm_rf_recursive(dd);
+    return failures;
+}
+
 /* ── 4: CONTENT adapter against a real blob ───────────────────────── */
 
 static int t_content_adapter(void)
@@ -471,6 +925,18 @@ static int t_content_adapter(void)
              !json_get_bool(json_get(&c.reply.data,
                                      "has_freshness_height")) &&
              json_get_int(json_get(&c.reply.data, "freshness_height")) == -1);
+    /* And the same on a REAL adapter-filled view, not just view_begin: the
+     * content adapter must not have overwritten the class or minted a
+     * measurement out of the tip. */
+    MV_CHECK("content: a really-read blob still reports content_addressed "
+             "with no work measurement",
+             strcmp(mv_str(&c.reply.data, "settlement"),
+                    "content_addressed") == 0 &&
+             json_get(&c.reply.data, "work") &&
+             !json_get_bool(json_get(json_get(&c.reply.data, "work"),
+                                     "measurable")) &&
+             json_get_int(json_get(json_get(&c.reply.data, "work"),
+                                   "confirmation_depth")) == -1);
     MV_CHECK("content: no owner is recorded, and it says so by name",
              strcmp(mv_str(&c.reply.data, "owner_principal"), "") == 0 &&
              strcmp(mv_str(&c.reply.data, "owner_principal_kind"),
@@ -1311,6 +1777,9 @@ int test_metaverse_catalog(void)
     failures += t_property_id_rules();
     failures += t_action_vocabulary();
     failures += t_adapter_registry();
+    failures += t_settlement_classes();
+    failures += t_work_measurement();
+    failures += t_settlement_is_surfaced();
     failures += t_content_adapter();
     failures += t_zcode_adapter();
     failures += t_readonly_contract();

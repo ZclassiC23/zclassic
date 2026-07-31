@@ -26,6 +26,21 @@
  * as its own boolean so no consumer has to infer it. There is no grade that
  * means "verified" in the abstract.
  *
+ * Every view ALSO states its SETTLEMENT CLASS, which is a different
+ * question: the evidence grade says what this node checked, the settlement
+ * class says what kind of answer the authority gives at all.
+ * `content_addressed` — the id is a hash; anyone can recheck it with no
+ * authority. `proof_of_work` — ownership is an ordering settled by
+ * accumulated work, and the `work` block reports the anchor height,
+ * confirmation depth, and chainwork since the anchor. `local_declaration`
+ * — this node asserts it and nothing outside this node has agreed.
+ * `chain_anchored_incomplete` — the record points at an on-chain object
+ * this node tracks no anchor height for. The `work` block appears on every
+ * view: for anything but a proof-of-work kind it reports measurable=false
+ * with a named gap and -1 in every number, because "does not apply" and
+ * "zero confirmations" are different facts. No field ranks, scores, or
+ * rates a property; the surface reports the mechanism and the measurement.
+ *
  * Consumer defines ZCL_COMMAND_*; see config/src/command_catalog.c. */
 
 ZCL_COMMAND_BRANCH("metaverse", "",
@@ -95,13 +110,17 @@ ZCL_COMMAND_READY_READ(
     "A bounded page of property views projected at call time from each "
     "kind's own authoritative model — never from a catalog table, because "
     "there is none. Each item carries property_id, kind, authority_source, "
-    "immutable/content/descriptor roots, owner principal, revision, status, "
-    "provenance, evidence_grade (+ the explicit chain_bound boolean) and the "
+    "settlement (+ settlement_means), immutable/content/descriptor roots, "
+    "owner principal, revision, status, provenance, evidence_grade (+ the "
+    "explicit chain_bound boolean), a `work` block, and the "
     "actions its CURRENT state supports (availability, not authority — "
     "intersect with a grant before acting). Every property kind emits a row "
     "in `kinds[]` even when its reader is not wired, with "
     "available:false and the exact reason: a kind dropped from the output "
-    "would be indistinguishable from a kind that owns nothing. `total` is "
+    "would be indistinguishable from a kind that owns nothing. Each of "
+    "those rows also states its settlement class, so the mix of "
+    "hash-verifiable, work-settled, and merely locally-asserted kinds is "
+    "visible without opening a single property. `total` is "
     "the real inventory and `items_truncated` says when the page is shorter "
     "than it. Narrow with `kind`; unscanned kinds are still listed, marked "
     "not-scanned.",
@@ -130,7 +149,15 @@ ZCL_COMMAND_READY_READ(
     "`evidence_source` names the primitive that answered it; "
     "`has_freshness_height` is false for every kind whose authority is not "
     "chain-anchored, because stamping a tip height beside a claim the tip "
-    "does not commit would be a false freshness claim. A kind whose reader "
+    "does not commit would be a false freshness claim. `settlement` names "
+    "what kind of answer the authority gives — a hash anyone can recheck, "
+    "an ordering settled by accumulated work, a bare assertion by this "
+    "node, or a chain reference with no anchor height tracked — and "
+    "`settlement_means` spells it out. The `work` block quantifies only the "
+    "work-settled case (anchor_height, confirmation_depth, "
+    "chainwork_since_anchor); for every other kind it reports "
+    "measurable:false with a named gap and -1 in each number, never a zero "
+    "that could be read as a measurement. A kind whose reader "
     "is not wired is refused by name (KIND_UNAVAILABLE), never answered "
     "empty.",
     ZCL_COMMAND_LIST_BUDGET,
