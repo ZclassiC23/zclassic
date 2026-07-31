@@ -1084,3 +1084,49 @@ bool vcs_package_store_dump_state_json(struct json_value *out,
     pthread_mutex_unlock(&store->lock);
     return true;
 }
+
+/* The non-blocking totals read. Contract, cost bound and the reason BUSY is
+ * not CLOSED are all in vcs/package_store.h; the rules here are:
+ *
+ *   - trylock only, both levels, and give up on the FIRST refusal rather
+ *     than spinning: a collector that retries has just reinvented blocking;
+ *   - the same acquire order the dumper uses (global, then store, then
+ *     release the global) so this can never invert against it;
+ *   - nothing under the store lock but plain loads and one integer sum, so
+ *     the window this holds it for is independent of how much is stored. */
+enum vcs_package_store_totals_result vcs_package_store_try_totals(
+    struct vcs_package_store_totals *out)
+{
+    if (!out)
+        LOG_RETURN(VCS_PACKAGE_STORE_TOTALS_NULL, STORE_LOG,
+                   "try_totals: null out");
+    memset(out, 0, sizeof(*out));
+    out->last_release_accept = "none";
+
+    if (pthread_mutex_trylock(&g_global_lock) != 0)
+        return VCS_PACKAGE_STORE_TOTALS_BUSY;
+    struct vcs_package_store *store = g_global_store;
+    if (!store) {
+        pthread_mutex_unlock(&g_global_lock);
+        return VCS_PACKAGE_STORE_TOTALS_CLOSED;
+    }
+    if (pthread_mutex_trylock(&store->lock) != 0) {
+        pthread_mutex_unlock(&g_global_lock);
+        return VCS_PACKAGE_STORE_TOTALS_BUSY;
+    }
+    pthread_mutex_unlock(&g_global_lock);
+
+    out->quota_bytes = store->quota;
+    out->tracked_packages = (uint64_t)store->pkg_count;
+    out->cas_chunks = (uint64_t)store->cas_count;
+    for (size_t i = 0; i < store->pkg_count; i++)
+        out->manifest_bytes_total += store->pkgs[i].total_bytes;
+    out->evictions_total = store->evictions_total;
+    out->gc_orphans_total = store->gc_orphans_total;
+    out->quota_rejects_total = store->quota_rejects_total;
+    if (store->last_accept_set)
+        out->last_release_accept =
+            vcs_package_accept_result_string(store->last_accept);
+    pthread_mutex_unlock(&store->lock);
+    return VCS_PACKAGE_STORE_TOTALS_OK;
+}

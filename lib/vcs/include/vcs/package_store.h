@@ -295,4 +295,54 @@ struct json_value;
 bool vcs_package_store_dump_state_json(struct json_value *out,
                                        const char *key);
 
+/* ── the NON-BLOCKING totals read (telemetry collector plane) ─────────
+ *
+ * WHY THIS EXISTS AND WHY IT IS NOT THE DUMPER ABOVE. The dumper takes the
+ * global lock and then the store lock BLOCKING, and both are held across
+ * real work: the global lock spans the whole crash-recovery open, and the
+ * store lock spans CAS file writes. A telemetry collector runs on the same
+ * native/RPC thread that serves `status`, so blocking behind either one
+ * makes this node go dark exactly while it is busiest. This is the same
+ * trylock-or-say-so shape progress_store_tx_trylock() gives the reducer
+ * frontier dumper.
+ *
+ * Cost, so the never-blocks contract can be checked by reading it: every
+ * field is an O(1) load off the store struct except manifest_bytes_total,
+ * which is one integer sum over at most VCS_PACKAGE_STORE_MAX_TRACKED
+ * entries. No filesystem access, no hashing, no allocation. In particular
+ * it does NOT count persisted releases or compute pool usage — both walk
+ * per-package chunk sets or the releases directory.
+ *
+ * BUSY and CLOSED are different answers and the caller must keep them
+ * different: CLOSED is a fact about this node ("no store is open"), BUSY is
+ * a fact about this call ("someone else held the lock"). Collapsing BUSY
+ * into zeros publishes a plausible empty store that never existed. */
+enum vcs_package_store_totals_result {
+    VCS_PACKAGE_STORE_TOTALS_OK = 0,
+    VCS_PACKAGE_STORE_TOTALS_CLOSED, /* no node-global store is open */
+    VCS_PACKAGE_STORE_TOTALS_BUSY,   /* a lock was held; nothing was read */
+    VCS_PACKAGE_STORE_TOTALS_NULL,   /* caller passed no output */
+};
+
+struct vcs_package_store_totals {
+    uint64_t quota_bytes;
+    uint64_t tracked_packages;
+    uint64_t cas_chunks;
+    uint64_t manifest_bytes_total; /* sum of DECLARED manifest totals */
+    uint64_t evictions_total;
+    uint64_t gc_orphans_total;
+    uint64_t quota_rejects_total;
+    /* Static string with program lifetime; "none" until a release has been
+     * offered. Never a pointer into store memory. */
+    const char *last_release_accept;
+};
+
+/* Fill *out from the node-global store without ever blocking. *out is
+ * zeroed (and last_release_accept set to "none") on every path, so a caller
+ * that ignores the result still cannot read indeterminate memory — but a
+ * caller that ignores it publishes zeros for BUSY, which is the one thing
+ * this enum exists to prevent. */
+enum vcs_package_store_totals_result vcs_package_store_try_totals(
+    struct vcs_package_store_totals *out);
+
 #endif /* ZCL_VCS_PACKAGE_STORE_H */

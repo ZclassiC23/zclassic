@@ -63,9 +63,9 @@ zclassic23 discover schema <path> --side=input|output
 | Top-level roots | 10 |
 | Branches | 92 |
 | Leaves (dispatchable command paths) | 299 |
-| … `ready` (live handler in this build) | 227 |
+| … `ready` (live handler in this build) | 228 |
 | … `compat` (metadata only, names a fallback) | 17 |
-| … `planned` (fail-closed BLOCKED, exit 3) | 55 |
+| … `planned` (fail-closed BLOCKED, exit 3) | 54 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
 | Leaves with `effect=mutate` | 77 |
 | Leaves with `effect=destructive` | 4 |
@@ -704,9 +704,9 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `ops telemetry zcode summary` | planned | read / read / operator · fast/low | none | `zcl.telemetry.zcode.summary.v1` | `zclassic23 ops telemetry zcode summary` | ZCODE store posture — *the typed zcode telemetry snapshot is not built yet* |
-| `ops telemetry zcode swarm` | planned | read / read / operator · fast/low | none | `zcl.telemetry.zcode.swarm.v1` | `zclassic23 ops telemetry zcode swarm` | Swarm participation — *the typed zcode telemetry snapshot is not built yet* |
-| `ops telemetry zcode installs` | planned | read / read / operator · fast/low | none | `zcl.telemetry.zcode.installs.v1` | `zclassic23 ops telemetry zcode installs` | Install generations — *the typed zcode telemetry snapshot is not built yet* |
+| `ops telemetry zcode summary` | ready | read / read / operator · fast/low | none | `zcl.telemetry.zcode.summary.v1` | `zclassic23 ops telemetry zcode summary` | ZCODE store posture |
+| `ops telemetry zcode swarm` | planned | read / read / operator · fast/low | none | `zcl.telemetry.zcode.swarm.v1` | `zclassic23 ops telemetry zcode swarm` | Swarm participation — *peer count, advertisements and verified bytes live only inside vcs_swarm_engine and every accessor takes its mutex blocking, which a telemetry collector must not do; needs a trylock or lock-free stats accessor on the engine first. Meanwhile whether the engine is running at all is in ops telemetry zcode summary* |
+| `ops telemetry zcode installs` | planned | read / read / operator · fast/low | none | `zcl.telemetry.zcode.installs.v1` | `zclassic23 ops telemetry zcode installs` | Install generations — *install state is on-disk only: package_lifecycle_active answers for one NAME and there is no enumeration and no in-process index, so listing installs means a directory walk of datadir/zcode/installed plus a generation-log read each, which a telemetry collector must not do; needs an installed-package index first* |
 
 #### `ops.telemetry.metaverse` — Property catalog, market and confined services
 

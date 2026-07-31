@@ -5,7 +5,22 @@
  *
  * Lane ownership: this file belongs to the zcode domain alone. Append groups
  * below the `meta` group; do not reorder or reword existing rows, and keep
- * each group's rows contiguous. */
+ * each group's rows contiguous.
+ *
+ * WHY THERE ARE ONLY TWO JUDGED ROWS HERE. Every other leaf is TFR_INFO on
+ * purpose. A quota'd content store EVICTS in normal operation, and crash
+ * recovery legitimately reclaims orphaned CAS chunks, so an EXPECT_ZERO on
+ * either counter would fire on a perfectly healthy node and teach an operator
+ * to ignore this domain. The two rows that ARE judged both name a bound the
+ * store itself enforces in code — the 4096 tracked-package admission bound
+ * (VCS_PACKAGE_STORE_MAX_TRACKED, written here as the literal 4095 because a
+ * field table may not include a header) and the quota-rejection counter, which
+ * is only ever bumped on an admission the store actually refused.
+ *
+ * WHY THERE IS NO TIER ABOVE NORMAL. `ops.telemetry.zcode.summary` is this
+ * domain's only rendering surface and it takes no view argument, so a
+ * TLV_FULL row would be unreachable. If a view selector ever lands, the
+ * cold counters below are the rows to demote. */
 
 TL_DOMAIN_META(zcode, "zcl.telemetry.zcode.v1",
     "package store, swarm participation and install generations")
@@ -21,3 +36,109 @@ TL_LEAF(meta, collected_unix, TLC_I64, TFU_UNIX_TIME, TLV_NORMAL,
 TL_GROUP_END(meta)
 
 /* ── zcode groups start here (owned by this domain's lane) ── */
+
+TL_GROUP(store, "the local content-addressed ZCODE package store")
+
+TL_LEAF(store, hosting_enabled, TLC_BOOL, TFU_BOOL, TLV_SUMMARY,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "whether -packagehost is set on this node's command line; false is the "
+    "default and a legitimate configuration, so this is stated and never "
+    "judged. With it off the store is never opened and this node neither "
+    "admits nor serves package bytes",
+    "", "")
+
+TL_LEAF(store, store_open, TLC_BOOL, TFU_BOOL, TLV_SUMMARY,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "whether a node-global package store is open right now. Read together "
+    "with hosting_enabled: false while hosting is off is the expected pair, "
+    "and false while hosting is on means either the store has not opened yet "
+    "or this is a one-shot CLI process that never boots one. That ambiguity "
+    "is exactly why this row is not judged",
+    "", "")
+
+TL_LEAF(store, quota_bytes, TLC_I64, TFU_BYTES, TLV_NORMAL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "the total byte quota the open store was created with, from "
+    "-packagequota (default 10 GiB). It is split into four fixed pool "
+    "fractions: pins 2/10, hot 4/10, rare 3/10, staging 1/10",
+    "", "")
+
+TL_LEAF(store, tracked_packages, TLC_I64, TFU_GAUGE, TLV_SUMMARY,
+    TFR_MAX_ABS, TL_NONE, 4095, TFS_WARN,
+    "packages the open store currently tracks, staged and committed alike. "
+    "The store refuses a new manifest with tracked-package-limit once this "
+    "reaches its hard bound of 4096, so 4095 is the last admitting value",
+    "the store is at or one below its tracked-package admission bound: the "
+    "next publish or fetch of a package the store does not already hold will "
+    "be refused with tracked-package-limit, and no amount of free quota will "
+    "change that",
+    "zclassic23 ops state --subsystem=zcode_store to see which packages are "
+    "tracked, then unpin and let eviction reclaim, or raise the bound")
+
+TL_LEAF(store, cas_chunks, TLC_I64, TFU_GAUGE, TLV_NORMAL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "distinct chunk hashes present in the store's content-addressed set. "
+    "Chunks are deduplicated across packages, so this is below the sum of "
+    "the tracked packages' chunk counts whenever two packages share bytes",
+    "", "")
+
+TL_LEAF(store, manifest_bytes_total, TLC_I64, TFU_BYTES, TLV_SUMMARY,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "sum of the DECLARED total_bytes of every tracked package's manifest. "
+    "This is what the tracked set would occupy if complete, not what is on "
+    "disk now: a staged package counts in full before a single chunk has "
+    "arrived, and shared chunks are counted once per package",
+    "", "")
+
+TL_LEAF(store, evictions_total, TLC_I64, TFU_COUNT_TOTAL, TLV_NORMAL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "packages evicted since this store was opened to make room in a pool. "
+    "Eviction is how a quota'd store makes progress, so a rising count is "
+    "normal operation and is deliberately not judged here",
+    "", "")
+
+TL_LEAF(store, gc_orphans_total, TLC_I64, TFU_COUNT_TOTAL, TLV_NORMAL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "CAS chunks reclaimed since this store was opened because no tracked "
+    "package referenced them. The open-time recovery sweep produces these "
+    "after an unclean shutdown, which is the expected case, so this is "
+    "reported and not judged",
+    "", "")
+
+TL_LEAF(store, quota_rejects_total, TLC_I64, TFU_COUNT_TOTAL, TLV_SUMMARY,
+    TFR_EXPECT_ZERO, TL_NONE, 0, TFS_WARN,
+    "admissions the store REFUSED since it opened because the target pool "
+    "was full and eviction could find no victim. The store only bumps this "
+    "on a refusal it actually returned, so any nonzero value is a package "
+    "byte that did not get stored",
+    "this node is dropping package bytes it was asked to hold: a publish, a "
+    "swarm fetch or a pin into that pool cannot complete, and the packages "
+    "already held are pinned or too hot to evict",
+    "zclassic23 ops state --subsystem=zcode_store and compare each pool's "
+    "usage_bytes against its budget_bytes, then unpin a package or restart "
+    "with a larger -packagequota")
+
+TL_LEAF(store, last_release_accept, TLC_TEXT, TFU_ENUM, TLV_NORMAL,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "the acceptance outcome of the most recent release envelope this store "
+    "was offered, or none when it has been offered none since opening. A "
+    "rejection here is one release's verdict and not a store fault, which is "
+    "why the value is reported rather than judged",
+    "", "")
+
+TL_GROUP_END(store)
+
+TL_GROUP(swarm, "participation in the ZCODE package swarm")
+
+TL_LEAF(swarm, engine_running, TLC_BOOL, TFU_BOOL, TLV_SUMMARY,
+    TFR_INFO, TL_NONE, 0, TFS_INFO,
+    "whether a package swarm engine is registered as this process's global "
+    "engine. It is created lazily on the first swarm frame and only when "
+    "hosting is on and the store is open, so false on a hosting node that "
+    "has simply not been contacted yet is correct and not a fault. Peer, "
+    "announcement and in-flight-request counts are NOT reported: reading "
+    "them requires the engine mutex, which a telemetry collector must not "
+    "take, and the engine publishes no lock-free counters",
+    "", "")
+
+TL_GROUP_END(swarm)

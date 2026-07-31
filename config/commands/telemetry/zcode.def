@@ -1,30 +1,45 @@
 /* The `ops.telemetry.zcode` branch. Owned by the zcode telemetry lane.
  *
- * Leaves are PLANNED until the typed zcode snapshot and its field table exist;
- * a leaf whose provider is missing fails closed with exit 3 and names what is
- * missing, rather than returning an empty object. */
+ * `summary` is READY: the typed zcode snapshot and its field table exist and
+ * the collector fills them without ever blocking.
+ *
+ * `swarm` and `installs` stay PLANNED, and the reasons below are the literal
+ * truth rather than a placeholder. Both would need data this build does not
+ * publish anywhere a telemetry collector may read it, and the honest refusal
+ * is worth more than a leaf that returns a shape with nothing in it. Each
+ * names what would have to land first. */
 
 ZCL_COMMAND_BRANCH("ops.telemetry.zcode", "ops.telemetry",
                    "Package store, swarm and installs",
                    ZCL_COMMAND_LAYER_OPS)
 
-ZCL_COMMAND_PLANNED_READ(
+ZCL_COMMAND_READY_READ(
     "ops.telemetry.zcode.summary", "ops.telemetry.zcode", "",
     "ZCODE store posture",
-    "Read live from the running node at call time from the typed zcode snapshot: packages held, bytes stored, and whether the store is reachable and consistent.", 0,
+    "Read live from the running node at call time from the typed zcode snapshot, at the normal view: whether package hosting is configured on, whether a store is open, its quota, the tracked-package and CAS-chunk counts, the declared manifest bytes of the tracked set, the eviction / orphan-reclaim / quota-rejection counters, the last release acceptance outcome, and whether the swarm engine is up. The store is read under a trylock: a lost race renders those leaves null with reason package_store_busy rather than zero, and a store that is not open renders them not_applicable — check completeness.complete before comparing two calls.",
+    /* LIST rather than the RESULT default. This is a per-leaf table, not a
+     * scalar: it carries a value plane, per-leaf provenance for every leaf
+     * that is not plainly present, and a finding — with its full means,
+     * implies and next — for every rule that could not be judged. The
+     * store-busy state is the largest, and it measured within ~130 bytes of
+     * the 4096 RESULT default, where the failure mode is an EMPTY reply
+     * rather than a short one. test_telemetry_zcode renders that worst case
+     * and asserts it against this number. */
+    ZCL_COMMAND_LIST_BUDGET,
     "telemetry,zcode,summary,packages,store",
     "zcl.command.empty_input.v1", "zcl.telemetry.zcode.summary.v1", "", "",
     "zclassic23 ops telemetry zcode summary",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
-    ZCL_COMMAND_CAP_DEV_STATE_READ,
-    "the typed zcode telemetry snapshot is not built yet")
+    ZCL_COMMAND_CAP_DEV_STATE_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_ops_telemetry_zcode_summary)
 
 ZCL_COMMAND_PLANNED_READ(
     "ops.telemetry.zcode.swarm", "ops.telemetry.zcode", "",
     "Swarm participation",
-    "Read live from the running node at call time from the typed zcode snapshot: how many peers this node is seeding to and fetching from, and the verified-byte throughput of each.", 0,
+    "Will report how many peers this node is seeding to and fetching from and the verified-byte throughput of each; the swarm engine keeps those counts behind its own mutex and publishes none of them lock-free, so the leaf fails closed today.", 0,
     "telemetry,zcode,swarm,seed,fetch,peers",
     "zcl.command.empty_input.v1", "zcl.telemetry.zcode.swarm.v1", "", "",
     "zclassic23 ops telemetry zcode swarm",
@@ -32,12 +47,16 @@ ZCL_COMMAND_PLANNED_READ(
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_DEV_STATE_READ,
-    "the typed zcode telemetry snapshot is not built yet")
+    "peer count, advertisements and verified bytes live only inside "
+    "vcs_swarm_engine and every accessor takes its mutex blocking, which a "
+    "telemetry collector must not do; needs a trylock or lock-free stats "
+    "accessor on the engine first. Meanwhile whether the engine is running "
+    "at all is in ops telemetry zcode summary")
 
 ZCL_COMMAND_PLANNED_READ(
     "ops.telemetry.zcode.installs", "ops.telemetry.zcode", "",
     "Install generations",
-    "Read live from the running node at call time from the typed zcode snapshot: the active generation per installed package and whether a rollback target is retained.", 0,
+    "Will report the active generation per installed package and whether a rollback target is retained; nothing in this build enumerates installed packages, so the leaf fails closed today.", 0,
     "telemetry,zcode,installs,generations,lifecycle,rollback",
     "zcl.command.empty_input.v1", "zcl.telemetry.zcode.installs.v1", "", "",
     "zclassic23 ops telemetry zcode installs",
@@ -45,4 +64,8 @@ ZCL_COMMAND_PLANNED_READ(
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_DEV_STATE_READ,
-    "the typed zcode telemetry snapshot is not built yet")
+    "install state is on-disk only: package_lifecycle_active answers for one "
+    "NAME and there is no enumeration and no in-process index, so listing "
+    "installs means a directory walk of datadir/zcode/installed plus a "
+    "generation-log read each, which a telemetry collector must not do; "
+    "needs an installed-package index first")

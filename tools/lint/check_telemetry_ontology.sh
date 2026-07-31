@@ -207,7 +207,16 @@ ST_EOF
 
     # 11/12 — the fill-provider population is an assertion. Both directions of
     # drift must bite, or "0 providers scanned" is a floor that never fires.
-    mkdir -p "$st_tmp/cleanfill"
+    #
+    # BOTH inputs are pinned in both cases, deliberately. An earlier version
+    # pinned only one side and let the other fall through to the real tree,
+    # which silently assumed the recorded count was still 0; the first domain
+    # lane to ship a provider turned case 11 into a pass (discovered ==
+    # recorded) and case 12 into a pass (nothing had shrunk), so a green
+    # selftest would have stopped proving anything on the exact commit that
+    # first made the check load-bearing. A selftest must not depend on the
+    # state of the tree it is guarding.
+    mkdir -p "$st_tmp/cleanfill" "$st_tmp/nofill"
     cat > "$st_tmp/cleanfill/runtime_telemetry_fill.c" <<'ST_EOF'
 bool runtime_dump_state_fill(struct runtime_snapshot *snap)
 {
@@ -216,12 +225,19 @@ bool runtime_dump_state_fill(struct runtime_snapshot *snap)
     return true;
 }
 ST_EOF
-    st_run "ZCL_TELEMETRY_FILL_SCAN_ROOTS=$st_tmp/cleanfill"
+    printf '0\n' > "$st_tmp/fill_count_zero.txt"
+    printf '1\n' > "$st_tmp/fill_count_one.txt"
+
+    # one provider discovered, none recorded -> GREW.
+    st_run "ZCL_TELEMETRY_FILL_SCAN_ROOTS=$st_tmp/cleanfill" \
+           "ZCL_TELEMETRY_FILL_PROVIDER_COUNT=$st_tmp/fill_count_zero.txt"
     st_expect "11 a new fill provider must be recorded" 1 \
         "FILL PROVIDER COUNT GREW"
 
-    printf '1\n' > "$st_tmp/fill_count_one.txt"
-    st_run "ZCL_TELEMETRY_FILL_PROVIDER_COUNT=$st_tmp/fill_count_one.txt"
+    # none discovered, one recorded -> DROPPED (a provider renamed out of the
+    # discovery shape, which is how this check goes hollow in practice).
+    st_run "ZCL_TELEMETRY_FILL_SCAN_ROOTS=$st_tmp/nofill" \
+           "ZCL_TELEMETRY_FILL_PROVIDER_COUNT=$st_tmp/fill_count_one.txt"
     st_expect "12 a vanished fill provider is not silently unscanned" 1 \
         "FILL PROVIDER COUNT DROPPED"
 
