@@ -64,7 +64,11 @@ test_groups_file=lib/test/src/test_parallel.c
 ports_glob='ports/include/ports/*.h'
 adapters_glob='adapters/outbound/persistence/src/*.c'
 conditions_glob='app/conditions/src/*.c'
-commands_glob='config/commands/*.def'
+# Both the flat bundles and the nested ones. A bare config/commands/*.def
+# stopped being the whole catalog when the telemetry bundles moved into
+# config/commands/telemetry/, and this measurement went on reporting the flat
+# count as if it were the total.
+commands_glob='config/commands/*.def config/commands/*/*.def'
 # The DIAG_* rows live in per-domain files under a pure aggregator; resolving
 # the set has exactly one owner. See tools/lint/dumper_defs.sh.
 # shellcheck source=tools/lint/dumper_defs.sh

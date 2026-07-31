@@ -35,8 +35,29 @@ DEF_DIR="config/commands"
 
 # Floors: the generator's scan set is the .def catalog. If those files vanish
 # or move, refuse to report clean off an empty catalog.
-DEF_FLOOR=8
+#
+# DEF_FLOOR covers the whole catalog including the nested bundles. It was 8
+# when every .def sat directly in config/commands/; the nested
+# config/commands/telemetry/ bundles pushed the real set past 20, and a floor
+# left at 8 would have gone on passing with all ten of them deleted.
+DEF_FLOOR=20
 ENTRY_FLOOR=200
+
+# The generator's scan set is exactly what it #includes — derive the list from
+# the generator itself rather than globbing $DEF_DIR.
+#
+# A glob of "$DEF_DIR"/*.def is wrong twice over: it misses the nested bundles
+# under config/commands/telemetry/ (which is how the selftest sandbox came to
+# be built without them, so the sandbox compile failed for a reason that had
+# nothing to do with the edit it was planting), and it counts .def files the
+# generator does not include at all. config/commands/store.def was exactly
+# that — present, compiled into the real catalog, absent from this generator,
+# and therefore missing from the published reference while a flat glob happily
+# counted it as covered.
+def_rel_list() {
+    sed -nE 's|^[[:space:]]*#include[[:space:]]+"\.\./(config/commands/[A-Za-z0-9_/]+\.def)".*|\1|p' \
+        "$GEN_SRC" | sort -u
+}
 
 run_selftest() {
     local tmp sandbox out rc
@@ -52,7 +73,13 @@ run_selftest() {
     cp "$SCRIPT_DIR/check_api_reference_generated.sh" "$sandbox/tools/lint/"
     cp "$SCRIPT_DIR/gate_lib.sh" "$sandbox/tools/lint/"
     cp "$TEMPLATE" "$DOC" "$sandbox/docs/"
-    cp "$DEF_DIR"/*.def "$sandbox/$DEF_DIR/"
+    # Every .def the generator includes, at its own relative path so the
+    # nested bundles resolve. Copying a flat glob here silently produced a
+    # sandbox the generator could not compile in.
+    while IFS= read -r rel; do
+        mkdir -p "$sandbox/$(dirname "$rel")"
+        cp "$rel" "$sandbox/$rel"
+    done < <(def_rel_list)
     cp lib/kernel/include/kernel/command_registry.h \
        "$sandbox/lib/kernel/include/kernel/"
     cp lib/json/include/json/json.h "$sandbox/lib/json/include/json/"
@@ -105,13 +132,43 @@ for required in "$GEN_SRC" "$TEMPLATE" "$DOC"; do
     fi
 done
 
-def_count=0
-for f in "$DEF_DIR"/*.def; do
-    [ -f "$f" ] || continue
-    def_count=$((def_count + 1))
-done
+# wc -l, not `grep -c .`: under `set -o pipefail` a grep that matches nothing
+# exits 1 and takes the whole command substitution down, turning "the catalog
+# is empty" into an unexplained gate crash instead of the floor message below.
+def_count=$(def_rel_list | wc -l)
+missing=0
+while IFS= read -r rel; do
+    if [ ! -f "$rel" ]; then
+        echo "check_api_reference_generated: FATAL — $GEN_SRC includes $rel," \
+             "which does not exist" >&2
+        missing=1
+    fi
+done < <(def_rel_list)
+[ "$missing" -eq 0 ] || exit 2
+
 gate_require_scanned "$def_count" "$DEF_FLOOR" check_api_reference_generated \
-    "no .def catalogs under $DEF_DIR — the command catalog moved?"
+    "no .def catalogs included by $GEN_SRC — the command catalog moved?"
+
+# The generator must include every .def the real catalog does, or a whole
+# bundle of live commands goes unpublished with nothing to notice: this gate
+# diffs the generator's output against a page the same generator wrote, so a
+# bundle absent from both sides matches perfectly. app.store.{catalog,order,
+# pay,purchases,collect} shipped ready-and-undocumented that way.
+CATALOG_SRC="config/src/command_catalog.c"
+if [ -f "$CATALOG_SRC" ]; then
+    unpublished=$(comm -23 \
+        <(sed -nE 's|^[[:space:]]*#include[[:space:]]+"\.\./(commands/[A-Za-z0-9_/]+\.def)".*|config/\1|p' \
+              "$CATALOG_SRC" | sort -u) \
+        <(def_rel_list) || true)
+    if [ -n "$unpublished" ]; then
+        echo "check_api_reference_generated: FAIL — $CATALOG_SRC compiles these" \
+             ".def bundles into the binary but $GEN_SRC does not include them," >&2
+        echo "  so every command they declare is missing from $DOC:" >&2
+        echo "$unpublished" | sed 's/^/    /' >&2
+        echo "  Add a matching ZCL_DEF_FILE block to $GEN_SRC." >&2
+        exit 1
+    fi
+fi
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcl-apiref.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM

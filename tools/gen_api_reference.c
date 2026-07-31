@@ -272,6 +272,9 @@ static const struct row g_rows[] = {
 #define ZCL_DEF_FILE "config/commands/app_features.def"
 #include "../config/commands/app_features.def"
 #undef ZCL_DEF_FILE
+#define ZCL_DEF_FILE "config/commands/store.def"
+#include "../config/commands/store.def"
+#undef ZCL_DEF_FILE
 #define ZCL_DEF_FILE "config/commands/ops.def"
 #include "../config/commands/ops.def"
 #undef ZCL_DEF_FILE

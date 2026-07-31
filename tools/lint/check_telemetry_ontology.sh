@@ -207,23 +207,49 @@ ST_EOF
 
     # 11/12 — the fill-provider population is an assertion. Both directions of
     # drift must bite, or "0 providers scanned" is a floor that never fires.
-    mkdir -p "$st_tmp/cleanfill"
-    cat > "$st_tmp/cleanfill/runtime_telemetry_fill.c" <<'ST_EOF'
-bool runtime_dump_state_fill(struct runtime_snapshot *snap)
+    #
+    # BOTH ends are pinned in each case. Pinning only one and letting the other
+    # come from the real tree makes the case silently self-cancelling the
+    # moment the real count happens to equal the planted one: these two cases
+    # planted 1 against a tree that had 0 providers, and stopped detecting
+    # anything at all the day the first real fill provider landed and made the
+    # comparison 1 == 1. A selftest that passes because both sides moved
+    # together is worse than no selftest.
+    mkdir -p "$st_tmp/onefill" "$st_tmp/twofill"
+    st_make_fill() { # st_make_fill <dir> <domain>
+        cat > "$1/$2_telemetry_fill.c" <<ST_EOF
+bool $2_dump_state_fill(struct $2_snapshot *snap)
 {
     TELEMETRY_SET_I64(snap, collected_unix, telemetry_now_unix(),
                       TELEMETRY_SRC_IN_PROCESS);
     return true;
 }
 ST_EOF
-    st_run "ZCL_TELEMETRY_FILL_SCAN_ROOTS=$st_tmp/cleanfill"
+    }
+    st_make_fill "$st_tmp/onefill" runtime
+    st_make_fill "$st_tmp/twofill" runtime
+    st_make_fill "$st_tmp/twofill" network
+
+    printf '1\n' > "$st_tmp/fill_count_one.txt"
+    printf '2\n' > "$st_tmp/fill_count_two.txt"
+
+    # scanned 2 > recorded 1
+    st_run "ZCL_TELEMETRY_FILL_SCAN_ROOTS=$st_tmp/twofill" \
+           "ZCL_TELEMETRY_FILL_PROVIDER_COUNT=$st_tmp/fill_count_one.txt"
     st_expect "11 a new fill provider must be recorded" 1 \
         "FILL PROVIDER COUNT GREW"
 
-    printf '1\n' > "$st_tmp/fill_count_one.txt"
-    st_run "ZCL_TELEMETRY_FILL_PROVIDER_COUNT=$st_tmp/fill_count_one.txt"
+    # scanned 1 < recorded 2
+    st_run "ZCL_TELEMETRY_FILL_SCAN_ROOTS=$st_tmp/onefill" \
+           "ZCL_TELEMETRY_FILL_PROVIDER_COUNT=$st_tmp/fill_count_two.txt"
     st_expect "12 a vanished fill provider is not silently unscanned" 1 \
         "FILL PROVIDER COUNT DROPPED"
+
+    # and the pinned pair agreeing is a PASS, so 11/12 are proved to be
+    # detecting the mismatch rather than something incidental to the sandbox.
+    st_run "ZCL_TELEMETRY_FILL_SCAN_ROOTS=$st_tmp/onefill" \
+           "ZCL_TELEMETRY_FILL_PROVIDER_COUNT=$st_tmp/fill_count_one.txt"
+    st_expect "12b a matching pinned pair passes" 0 "PASS"
 
     st_run ZCL_NOOP=1; st_expect "13 real tree recovers" 0 "PASS"
 

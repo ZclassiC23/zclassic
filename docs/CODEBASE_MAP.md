@@ -141,17 +141,17 @@ page changing with it.
 <!--   port_interfaces      = ports/include/ports/*.h                                -->
 <!--   persistence_adapters = adapters/outbound/persistence/src/*.c                  -->
 <!--   condition_registrations = condition_register() calls in app/conditions/src    -->
-<!--   command_bundles      = config/commands/*.def                                  -->
+<!--   command_bundles      = config/commands/*.def + config/commands/*/*.def       -->
 <!--   command_roots        = ZCL_COMMAND_BRANCH rows with an empty parent           -->
 <!--   dumpstate_subsystems = DIAG_* rows in diagnostics_dumpers.def                 -->
 <!--   app_shape_folders    = directories directly under app/                        -->
 <!-- Fix a mismatch with `tools/scripts/check_doc_counts.sh --fix`, never by hand.  -->
 
-test_groups: 854
+test_groups: 857
 port_interfaces: 13
 persistence_adapters: 14
 condition_registrations: 52
-command_bundles: 12
+command_bundles: 22
 command_roots: 9
 dumpstate_subsystems: 151
 app_shape_folders: 7
@@ -247,9 +247,18 @@ Use `docs/AGENT_ARCHITECTURE.md` as the full checklist. The short path:
 
 ### Add a native command
 1. Declare the command in the matching `config/commands/*.def` bundle.
-   There are 12 command bundles; `ls config/commands/*.def` is the list — do
-   not work from a remembered one (docs said "eight" for months after `vault`
-   and `zcode` landed).
+   There are 22 command bundles; `ls config/commands/*.def
+   config/commands/*/*.def` is the list — do not work from a remembered one,
+   and do not drop the nested half of that glob. Docs said "eight" for months
+   after `vault` and `zcode` landed, and the flat glob alone silently stopped
+   being the whole catalog once the telemetry bundles moved into
+   `config/commands/telemetry/`.
+
+   Adding a bundle means adding it in **three** places — twice in
+   `config/src/command_catalog.c` (the spec table and the handler table) and
+   once in `tools/gen_api_reference.c`. Miss the third and the commands work
+   but never appear in `docs/API_REFERENCE.md`; `check-api-reference-generated`
+   now fails on that mismatch by name.
    Give it a name, transports (`ZCL_COMMAND_TRANSPORT_NATIVE`), and a handler
    symbol.
 2. Implement the handler in the matching

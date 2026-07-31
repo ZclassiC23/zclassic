@@ -1054,6 +1054,18 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
         } else if (strcmp(key, "since_secs") == 0) {
             type_ok = value->type == JSON_INT && json_get_int(value) >= 0 &&
                       json_get_int(value) <= 31536000;
+        } else if (strcmp(key, "since") == 0 ||
+                   strcmp(key, "since_epoch") == 0) {
+            /* ops.telemetry.watch's resume cursor and the feed epoch it was
+             * minted under. Both are opaque non-negative counters the leaf
+             * itself issued in a previous reply, so the only rule here is the
+             * type: 0 is legal and meaningful (`since=0` is "I have nothing",
+             * `since_epoch=0` is "I did not record one"). Without this rule
+             * the default branch demands a STRING and the CLI's `--since=41`
+             * — which types as an integer — is refused as INVALID_INPUT
+             * before the handler ever runs, making the leaf uninvokable from
+             * the shell exactly as zcode.package.publish.plan once was. */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 0;
         } else if (strcmp(key, "limit") == 0 || strcmp(key, "depth") == 0) {
             type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
                       json_get_int(value) <= 1000000;

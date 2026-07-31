@@ -1220,6 +1220,33 @@ void zcl_native_handle_dev_diagnose_show(
     struct zcl_command_reply *reply);
 #endif
 
+/* ── ops.telemetry.sync.* — the typed sync-domain telemetry leaves
+ * (tools/command/native_telemetry_sync_command.c). Pure control: each fills
+ * ONE struct sync_snapshot through services/sync_telemetry.h and renders it
+ * with telemetry_render() — the single renderer — then, for `stages`/`stage`,
+ * projects that already-rendered document into one row per ladder rung. No
+ * telemetry field name is spelled here, no health is decided here, and no
+ * database or node is contacted. Bound by config/commands/telemetry/sync.def. */
+void zcl_native_handle_telemetry_sync_summary(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_telemetry_sync_stages(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_telemetry_sync_stage(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
+/* ── ops.telemetry.watch — the resumable change feed
+ * (tools/command/native_telemetry_watch_command.c). A CURSOR POLL: it returns
+ * the bounded batch of changes recorded after `since` and exits. Declared
+ * MODE_STREAM because that is what it is; there is no long-lived dispatch path
+ * and this handler does not add one. Bound by
+ * config/commands/telemetry/watch.def. */
+void zcl_native_handle_telemetry_watch(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* ── metaverse.agent.* — the confined-agent broker's observation surface
  * (app/controllers/src/metaverse_controller.c). Both read one broker
  * DIRECTORY named by the caller and create nothing; the broker itself is a

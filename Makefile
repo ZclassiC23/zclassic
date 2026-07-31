@@ -6486,7 +6486,8 @@ API_REFERENCE_TOOL = $(BIN_DIR)/gen_api_reference
 
 $(API_REFERENCE_TOOL): tools/gen_api_reference.c \
                        lib/kernel/include/kernel/command_registry.h \
-                       $(wildcard config/commands/*.def)
+                       $(wildcard config/commands/*.def) \
+                       $(wildcard config/commands/*/*.def)
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Ilib/kernel/include -Ilib/json/include \
 	    -o $@ tools/gen_api_reference.c

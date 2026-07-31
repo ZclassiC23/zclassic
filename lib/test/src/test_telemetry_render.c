@@ -31,6 +31,7 @@
 #include "json/json.h"
 #include "util/telemetry_ontology.h"
 #include "util/telemetry_render.h"
+#include "util/telemetry_reply.h"
 #include "util/telemetry_snapshots.h"
 
 #include <stddef.h>
@@ -201,24 +202,79 @@ static int check_every_domain_renders(void)
     return failures;
 }
 
+/* ── a synthetic domain: tiers, and a refused table ──────────────────── */
+
+/* This domain is declared here, above its first use, because the presence
+ * tests below need a domain whose LEAF COUNT IS FIXED BY THIS FILE.
+ *
+ * Asserting an exact `completeness` count against a real domain looks fine
+ * and rots on contact: these tests were written when `sync` had one leaf and
+ * pinned `unset == 0`, and the moment a provider grew the domain to 44 the
+ * assertions failed without anything being wrong. A fixture that must be
+ * re-edited every time a provider gains a field is a fixture that will
+ * eventually be re-edited to whatever makes it pass. So exact counts are
+ * asserted here, and the real domains are asserted only on facts that hold at
+ * any size.
+ */
+struct tr_fake_snapshot {
+    int64_t a;
+    struct telemetry_leaf_meta a_meta;
+    int64_t b;
+    struct telemetry_leaf_meta b_meta;
+    int64_t c;
+    struct telemetry_leaf_meta c_meta;
+};
+
+static const struct telemetry_group k_fake_groups[] = {
+    { .name = "g", .desc = "one group, three tiers" },
+};
+
+static const struct telemetry_leaf k_fake_leaves[] = {
+    { .group = "g", .key = "a", .path = "values.g.a",
+      .value_off = offsetof(struct tr_fake_snapshot, a),
+      .meta_off = offsetof(struct tr_fake_snapshot, a_meta),
+      .ctype = TLC_I64, .unit = TFU_GAUGE, .tier = TLV_SUMMARY },
+    { .group = "g", .key = "b", .path = "values.g.b",
+      .value_off = offsetof(struct tr_fake_snapshot, b),
+      .meta_off = offsetof(struct tr_fake_snapshot, b_meta),
+      .ctype = TLC_I64, .unit = TFU_GAUGE, .tier = TLV_NORMAL },
+    { .group = "g", .key = "c", .path = "values.g.c",
+      .value_off = offsetof(struct tr_fake_snapshot, c),
+      .meta_off = offsetof(struct tr_fake_snapshot, c_meta),
+      .ctype = TLC_I64, .unit = TFU_GAUGE, .tier = TLV_FULL },
+};
+
+/* Deliberately NOT an ontology subsystem: every leaf therefore reports
+ * unknown, which is precisely the contract stated on telemetry_domain_schema
+ * and makes the per-view unknown_count a clean constant to compare. */
+static const struct telemetry_domain_schema k_fake_schema = {
+    .domain = "tr_fake_domain", .schema_id = "zcl.telemetry.tr_fake.v1",
+    .desc = "synthetic three-tier domain used only by this test",
+    .snapshot_size = sizeof(struct tr_fake_snapshot),
+    .groups = k_fake_groups, .group_count = 1,
+    .leaves = k_fake_leaves, .leaf_count = 3,
+};
+
 /* ── presence: unset, unavailable, present ───────────────────────────── */
 
 static int check_unset_is_a_provider_defect(void)
 {
     int failures = 0;
-    /* Zero-initialized and never written: the state every provider starts in. */
-    struct runtime_snapshot snap = {0};
+    /* Zero-initialized and never written: the state every provider starts in.
+     * Asserted on the fixed-size synthetic domain so the exact counts and the
+     * exact worst-path string stay meaningful as the real domains grow. */
+    struct tr_fake_snapshot snap = {0};
     struct json_value out;
     json_init(&out);
-    bool ok = telemetry_render(&g_runtime_schema, &snap, TLV_FULL, NULL, &out);
+    bool ok = telemetry_render(&k_fake_schema, &snap, TLV_FULL, NULL, &out);
     TR_CHECK("[render] an unfilled snapshot still renders", ok);
 
-    const struct json_value *v = dig3(&out, "values", "meta", "collected_unix");
+    const struct json_value *v = dig3(&out, "values", "g", "a");
     TR_CHECK("[render] the unset leaf's KEY is present and its value is null "
              "(never omitted, never a plausible 0)",
              v != NULL && v->type == JSON_NULL);
-    TR_CHECK("[render] the unset leaf is counted as unset",
-             json_get_int(dig2(&out, "completeness", "unset")) == 1 &&
+    TR_CHECK("[render] every unset leaf is counted as unset",
+             json_get_int(dig2(&out, "completeness", "unset")) == 3 &&
              json_get_int(dig2(&out, "completeness", "present")) == 0);
     TR_CHECK("[render] unset raises provider_defect",
              json_get_bool(dig2(&out, "completeness", "provider_defect")));
@@ -235,14 +291,44 @@ static int check_unset_is_a_provider_defect(void)
     TR_CHECK("[render] _health.reason is the mechanical triple "
              "<domain>:<state>:<worst_path>",
              reason != NULL &&
-             strcmp(reason, "runtime:unknown:values.meta.collected_unix") == 0);
+             strcmp(reason, "tr_fake_domain:unknown:values.g.a") == 0);
     json_free(&out);
+
+    /* The same contract on a real domain, at whatever size it currently is:
+     * no exact counts, so this keeps testing the thing rather than the size. */
+    struct runtime_snapshot real = {0};
+    struct json_value rout;
+    json_init(&rout);
+    bool rok = telemetry_render(&g_runtime_schema, &real, TLV_FULL, NULL, &rout);
+    TR_CHECK("[render] a real domain's unfilled snapshot renders too", rok);
+    TR_CHECK("[render] a real provider that wrote nothing is a provider defect",
+             json_get_bool(dig2(&rout, "completeness", "provider_defect")) &&
+             json_get_int(dig2(&rout, "completeness", "present")) == 0 &&
+             !json_get_bool(dig2(&rout, "completeness", "complete")));
+    const char *rstate = json_get_str(dig2(&rout, "health", "state"));
+    TR_CHECK("[render] and it reads unknown, never ok",
+             rstate && strcmp(rstate, "unknown") == 0);
+    json_free(&rout);
     return failures;
 }
 
 static int check_unavailable_is_not_unhealthy(void)
 {
     int failures = 0;
+
+    /* Baseline the domain at its current size rather than hardcoding it, then
+     * assert the DIFFERENCE. Marking one leaf unavailable must move it out of
+     * the unset bucket, not add a second count of it. */
+    struct sync_snapshot base = {0};
+    struct json_value b;
+    json_init(&b);
+    bool bok = telemetry_render(&g_sync_schema, &base, TLV_FULL, NULL, &b);
+    TR_CHECK("[render] the all-unset baseline renders", bok);
+    int64_t unset_all = json_get_int(dig2(&b, "completeness", "unset"));
+    json_free(&b);
+    TR_CHECK("[render] the baseline has an unset leaf available to move",
+             unset_all >= 1);
+
     struct sync_snapshot snap = {0};
     TELEMETRY_UNAVAILABLE_LEAF(&snap, collected_unix, "progress_store_busy");
 
@@ -254,11 +340,10 @@ static int check_unavailable_is_not_unhealthy(void)
     const struct json_value *v = dig3(&out, "values", "meta", "collected_unix");
     TR_CHECK("[render] an unavailable leaf renders its key as null",
              v != NULL && v->type == JSON_NULL);
-    TR_CHECK("[render] it is counted as unavailable, not as unset",
+    TR_CHECK("[render] it is counted as unavailable, and leaves the unset "
+             "bucket rather than being counted twice",
              json_get_int(dig2(&out, "completeness", "unavailable")) == 1 &&
-             json_get_int(dig2(&out, "completeness", "unset")) == 0);
-    TR_CHECK("[render] a real 'could not read it' is NOT a provider defect",
-             !json_get_bool(dig2(&out, "completeness", "provider_defect")));
+             json_get_int(dig2(&out, "completeness", "unset")) == unset_all - 1);
 
     const struct json_value *lm =
         dig2(&out, "leaves", "values.meta.collected_unix");
@@ -279,6 +364,127 @@ static int check_unavailable_is_not_unhealthy(void)
              state && strcmp(state, "unhealthy") != 0 &&
              json_get_int(dig2(&out, "health", "unhealthy_count")) == 0);
     json_free(&out);
+    return failures;
+}
+
+/* `provider_defect` must answer "did a provider forget a leaf", not merely
+ * "is this snapshot incomplete". Telling those apart needs every leaf in the
+ * domain accounted for — which is only cheap on the synthetic domain, since a
+ * real one would mean filling dozens of fields by hand. */
+static int check_unavailable_alone_is_not_a_provider_defect(void)
+{
+    int failures = 0;
+    struct tr_fake_snapshot snap = {0};
+    TELEMETRY_SET_I64(&snap, a, 1, TELEMETRY_SRC_IN_PROCESS);
+    TELEMETRY_SET_I64(&snap, b, 2, TELEMETRY_SRC_IN_PROCESS);
+    TELEMETRY_UNAVAILABLE_LEAF(&snap, c, "deliberately_unreadable");
+
+    struct json_value out;
+    json_init(&out);
+    bool ok = telemetry_render(&k_fake_schema, &snap, TLV_FULL, NULL, &out);
+    TR_CHECK("[render] a fully accounted-for snapshot renders", ok);
+    TR_CHECK("[render] every leaf is accounted for: nothing left unset",
+             json_get_int(dig2(&out, "completeness", "unset")) == 0 &&
+             json_get_int(dig2(&out, "completeness", "present")) == 2 &&
+             json_get_int(dig2(&out, "completeness", "unavailable")) == 1);
+    TR_CHECK("[render] a real 'could not read it' is NOT a provider defect",
+             !json_get_bool(dig2(&out, "completeness", "provider_defect")));
+    /* Still not complete — the reader is owed the distinction between "all
+     * present" and "all accounted for". */
+    TR_CHECK("[render] but it is still not 'complete'",
+             !json_get_bool(dig2(&out, "completeness", "complete")));
+    json_free(&out);
+    return failures;
+}
+
+/* ── fitting a document to a reply frame ─────────────────────────────── */
+
+/* Measured, not guessed: how big the synthetic domain actually renders at a
+ * given view right now. Hardcoding these would reintroduce exactly the
+ * size-coupling this file just removed. */
+static size_t tr_size_at(enum telemetry_view v, int *failed)
+{
+    struct tr_fake_snapshot snap = {0};
+    TELEMETRY_SET_I64(&snap, a, 1, TELEMETRY_SRC_IN_PROCESS);
+    TELEMETRY_SET_I64(&snap, b, 2, TELEMETRY_SRC_IN_PROCESS);
+    TELEMETRY_SET_I64(&snap, c, 3, TELEMETRY_SRC_IN_PROCESS);
+    struct json_value out;
+    json_init(&out);
+    if (!telemetry_render(&k_fake_schema, &snap, v, NULL, &out)) {
+        (*failed)++;
+        json_free(&out);
+        return 0;
+    }
+    size_t n = json_write(&out, NULL, 0);
+    json_free(&out);
+    return n;
+}
+
+static int check_reply_fitting_steps_down(void)
+{
+    int failures = 0;
+    int failed = 0;
+    size_t full_sz = tr_size_at(TLV_FULL, &failed);
+    size_t summary_sz = tr_size_at(TLV_SUMMARY, &failed);
+    TR_CHECK("[reply] the probe rendered both tiers", failed == 0);
+    TR_CHECK("[reply] full is larger than summary, so there is a step to take",
+             full_sz > summary_sz);
+
+    struct tr_fake_snapshot snap = {0};
+    TELEMETRY_SET_I64(&snap, a, 1, TELEMETRY_SRC_IN_PROCESS);
+    TELEMETRY_SET_I64(&snap, b, 2, TELEMETRY_SRC_IN_PROCESS);
+    TELEMETRY_SET_I64(&snap, c, 3, TELEMETRY_SRC_IN_PROCESS);
+
+    /* Roomy frame: no downgrade, and it does not render twice to find out. */
+    struct json_value d1;
+    json_init(&d1);
+    struct telemetry_reply_fit f1;
+    bool r1 = telemetry_reply_render_fitting(&k_fake_schema, &snap, TLV_FULL,
+                                             full_sz + 1024, &d1, &f1);
+    TR_CHECK("[reply] a document that fits is shipped at the view asked for",
+             r1 && f1.rendered && f1.fits && f1.view == TLV_FULL &&
+             f1.attempts == 1 && f1.bytes == full_sz);
+    json_free(&d1);
+
+    /* Frame between the two tiers: it must step down rather than overflow. */
+    struct json_value d2;
+    json_init(&d2);
+    struct telemetry_reply_fit f2;
+    bool r2 = telemetry_reply_render_fitting(&k_fake_schema, &snap, TLV_FULL,
+                                             summary_sz, &d2, &f2);
+    TR_CHECK("[reply] a document that does not fit steps down to one that does",
+             r2 && f2.rendered && f2.fits && f2.view == TLV_SUMMARY &&
+             f2.bytes <= summary_sz && f2.attempts > 1);
+    json_free(&d2);
+
+    /* The case the per-controller copies got wrong: nothing fits at all. The
+     * old code returned the summary view and reported success, so the caller
+     * shipped an oversized document and the registry turned it into an EMPTY
+     * reply — indistinguishable from "the subsystem had nothing to say". */
+    struct json_value d3;
+    json_init(&d3);
+    struct telemetry_reply_fit f3;
+    bool r3 = telemetry_reply_render_fitting(&k_fake_schema, &snap, TLV_FULL,
+                                             0, &d3, &f3);
+    TR_CHECK("[reply] when even the smallest view overflows, the measurement "
+             "succeeds and says so rather than claiming a fit",
+             r3 && f3.rendered && !f3.fits);
+    TR_CHECK("[reply] and it reports the real size, which is the only thing "
+             "that makes the failure actionable",
+             f3.bytes > 0 && f3.bytes == summary_sz);
+    TR_CHECK("[reply] having tried every tier on the way down",
+             f3.attempts == 3 && f3.view == TLV_SUMMARY);
+    json_free(&d3);
+
+    /* Starting at summary must not climb back up to full. */
+    struct json_value d4;
+    json_init(&d4);
+    struct telemetry_reply_fit f4;
+    (void)telemetry_reply_render_fitting(&k_fake_schema, &snap, TLV_SUMMARY, 0,
+                                         &d4, &f4);
+    TR_CHECK("[reply] a requested summary starts at summary, never above it",
+             f4.attempts == 1 && f4.view == TLV_SUMMARY);
+    json_free(&d4);
     return failures;
 }
 
@@ -385,47 +591,6 @@ static int check_bool_rule_type_mismatch(void)
                     "not_evaluated") == 0);
     return failures;
 }
-
-/* ── a synthetic domain: tiers, and a refused table ──────────────────── */
-
-struct tr_fake_snapshot {
-    int64_t a;
-    struct telemetry_leaf_meta a_meta;
-    int64_t b;
-    struct telemetry_leaf_meta b_meta;
-    int64_t c;
-    struct telemetry_leaf_meta c_meta;
-};
-
-static const struct telemetry_group k_fake_groups[] = {
-    { .name = "g", .desc = "one group, three tiers" },
-};
-
-static const struct telemetry_leaf k_fake_leaves[] = {
-    { .group = "g", .key = "a", .path = "values.g.a",
-      .value_off = offsetof(struct tr_fake_snapshot, a),
-      .meta_off = offsetof(struct tr_fake_snapshot, a_meta),
-      .ctype = TLC_I64, .unit = TFU_GAUGE, .tier = TLV_SUMMARY },
-    { .group = "g", .key = "b", .path = "values.g.b",
-      .value_off = offsetof(struct tr_fake_snapshot, b),
-      .meta_off = offsetof(struct tr_fake_snapshot, b_meta),
-      .ctype = TLC_I64, .unit = TFU_GAUGE, .tier = TLV_NORMAL },
-    { .group = "g", .key = "c", .path = "values.g.c",
-      .value_off = offsetof(struct tr_fake_snapshot, c),
-      .meta_off = offsetof(struct tr_fake_snapshot, c_meta),
-      .ctype = TLC_I64, .unit = TFU_GAUGE, .tier = TLV_FULL },
-};
-
-/* Deliberately NOT an ontology subsystem: every leaf therefore reports
- * unknown, which is precisely the contract stated on telemetry_domain_schema
- * and makes the per-view unknown_count a clean constant to compare. */
-static const struct telemetry_domain_schema k_fake_schema = {
-    .domain = "tr_fake_domain", .schema_id = "zcl.telemetry.tr_fake.v1",
-    .desc = "synthetic three-tier domain used only by this test",
-    .snapshot_size = sizeof(struct tr_fake_snapshot),
-    .groups = k_fake_groups, .group_count = 1,
-    .leaves = k_fake_leaves, .leaf_count = 3,
-};
 
 static size_t rendered_at(const struct telemetry_domain_schema *s,
                           const void *snap, enum telemetry_view view,
@@ -785,6 +950,8 @@ int test_telemetry_render(void)
     failures += check_every_domain_renders();
     failures += check_unset_is_a_provider_defect();
     failures += check_unavailable_is_not_unhealthy();
+    failures += check_unavailable_alone_is_not_a_provider_defect();
+    failures += check_reply_fitting_steps_down();
     failures += check_present_renders_the_value();
     failures += check_bool_rule_type_mismatch();
     failures += check_view_prunes_output_not_judgement();

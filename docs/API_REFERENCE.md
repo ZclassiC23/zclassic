@@ -59,17 +59,17 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 391 |
+| Registry entries (branches + leaves) | 396 |
 | Top-level roots | 10 |
 | Branches | 92 |
-| Leaves (dispatchable command paths) | 299 |
-| … `ready` (live handler in this build) | 227 |
+| Leaves (dispatchable command paths) | 304 |
+| … `ready` (live handler in this build) | 236 |
 | … `compat` (metadata only, names a fallback) | 17 |
-| … `planned` (fail-closed BLOCKED, exit 3) | 55 |
+| … `planned` (fail-closed BLOCKED, exit 3) | 51 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
-| Leaves with `effect=mutate` | 77 |
+| Leaves with `effect=mutate` | 80 |
 | Leaves with `effect=destructive` | 4 |
-| Leaves requiring **owner** authority | 62 |
+| Leaves requiring **owner** authority | 65 |
 
 Per source file:
 
@@ -79,6 +79,7 @@ Per source file:
 | `config/commands/core.def` | 103 | 25 | 78 |
 | `config/commands/apps.def` | 9 | 2 | 7 |
 | `config/commands/app_features.def` | 29 | 6 | 23 |
+| `config/commands/store.def` | 5 | 0 | 5 |
 | `config/commands/ops.def` | 44 | 8 | 36 |
 | `config/commands/dev.def` | 45 | 11 | 34 |
 | `config/commands/code.def` | 16 | 2 | 14 |
@@ -432,6 +433,11 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `app store list-product` | ready | mutate / app-write / **owner** · fast/low | `datadir`, `name`, `description`, `price_zcl`, `price_zatoshi`, `token_id`, `tokens_per_purchase`, `content_path`, `content_type`, `content_filename` | `zcl.app_store_product.v1` | `zclassic23 app store list-product --input='{"name":"Field guide","token_id":"GUIDE","price_zcl":0.25,"content_path":"/srv/guide.pdf"}'` | List a product for sale in the store |
 | `app store products` | ready | read / read / operator · fast/low | `datadir` | `zcl.app_store_products.v1` | `zclassic23 app store products` | List the store's active products |
+| `app store catalog` | ready | read / read / operator · fast/low | none | `zcl.store_catalog.v1` | `zclassic23 app store catalog` | List what the store sells |
+| `app store order` | ready | mutate / app-write / **owner** · foreground/moderate | `product_id`, `customer_address`, `output_path` | `zcl.store_order.v1` | `zclassic23 app store order --input='{"product_id":1,"customer_address":"t1...","output_path":"/tmp/bought.bin"}'` | Place an order for a product |
+| `app store pay` | ready | mutate / wallet / **owner**, plan-commit · foreground/high | `purchase_id`, `from_address`, `confirm` | `zcl.store_pay.v1` | `zclassic23 app store pay --input='{"purchase_id":1,"from_address":"t1...","confirm":true}'` | Pay a placed order |
+| `app store purchases` | ready | read / read / operator · fast/low | **`purchase_id`** | `zcl.store_purchases.v1` | `zclassic23 app store purchases` | Show purchases and what is still owed |
+| `app store collect` | ready | mutate / app-write / **owner** · foreground/moderate | **`purchase_id`**, `output_path` | `zcl.store_collect.v1` | `zclassic23 app store collect --input='{"purchase_id":1,"output_path":"/tmp/bought.bin"}'` | Download a purchase you paid for |
 
 #### `app.swap` — Swaps
 
@@ -642,7 +648,7 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `ops telemetry summary` | planned | read / read / operator · fast/low | none | `zcl.telemetry.summary.v1` | `zclassic23 ops telemetry summary` | Whole-node telemetry rollup — *the typed domain snapshots are not built yet* |
 | `ops telemetry health` | planned | read / read / operator · fast/low | none | `zcl.telemetry.health.v1` | `zclassic23 ops telemetry health` | Health state per domain — *the typed domain snapshots are not built yet* |
-| `ops telemetry watch` | planned | read / read / operator · fast/stream | `since`, `path`, `limit` | `zcl.telemetry.change.v1` | `zclassic23 ops telemetry watch --since=41` | Resumable telemetry change feed — *the telemetry change sampler is not built yet* |
+| `ops telemetry watch` | ready | read / read / operator, stream · fast/stream | **`since`**, `since_epoch`, `limit` | `zcl.telemetry.change.v1` | `zclassic23 ops telemetry watch --since=41` | Resumable telemetry change feed |
 
 #### `ops.telemetry.alerts` — Fired telemetry rules
 
@@ -663,9 +669,9 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `ops telemetry sync summary` | planned | read / read / operator · fast/low | none | `zcl.telemetry.sync.summary.v1` | `zclassic23 ops telemetry sync summary` | Sync posture and the current bottleneck — *the typed sync telemetry snapshot is not built yet* |
-| `ops telemetry sync stages` | planned | read / read / operator · fast/low | none | `zcl.telemetry.sync.stages.v1` | `zclassic23 ops telemetry sync stages` | Every reducer stage cursor — *the typed sync telemetry snapshot is not built yet* |
-| `ops telemetry sync stage` | planned | read / read / operator · fast/low | `stage` | `zcl.telemetry.sync.stage.v1` | `zclassic23 ops telemetry sync stage --stage=<v>` | One reducer stage in full detail — *the typed sync telemetry snapshot is not built yet* |
+| `ops telemetry sync summary` | ready | read / read / operator · fast/low | none | `zcl.telemetry.sync.summary.v1` | `zclassic23 ops telemetry sync summary` | Sync posture and the current bottleneck |
+| `ops telemetry sync stages` | ready | read / read / operator · fast/low | none | `zcl.telemetry.sync.stages.v1` | `zclassic23 ops telemetry sync stages` | Every reducer stage cursor |
+| `ops telemetry sync stage` | ready | read / read / operator · fast/low | **`stage`** | `zcl.telemetry.sync.stage.v1` | `zclassic23 ops telemetry sync stage --stage=body_persist` | One reducer stage in full detail |
 
 #### `ops.telemetry.network` — Peers, transport, onion and address pool
 

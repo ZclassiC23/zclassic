@@ -21,7 +21,8 @@
 # scan roots named `*_fill.c` whose basename starts with `<domain>_`, or which
 # defines `<domain>_dump_state_fill(`, for a domain named by a TABLE row.
 #
-# 0 today: the table-driven layer's field tables and renderer have landed, but
-# no domain has shipped its provider yet. The first `<domain>_*_fill.c` to land
-# raises this to 1.
-0
+# 1 today: the `sync` domain shipped the first provider
+# (app/services/src/sync_telemetry_fill.c, `sync_dump_state_fill`), which is
+# now covered by the no-hand-written-JSON rule. Raised from 0 in the same
+# change that landed it. The next domain's provider raises this to 2.
+1
