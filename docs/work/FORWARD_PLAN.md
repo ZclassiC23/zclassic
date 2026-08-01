@@ -100,6 +100,20 @@
       while the fold is behind. Repro: `zcl-stopwatch-peer` unit journal
       2026-08-01 21:55-22:00 UTC; datadir archive
       `~/.zclassic-c23-fixture-serve.broken-aug01`.
+   11. ~~Anchor replay-canary degraded to a genesis-scale bg-validation
+      walk~~ **FIXED 2026-08-01** (this commit): `make replay-canary-anchor`
+      FAILed `budget_exceeded` at the 5400 s hard budget — bg-validation
+      always started its fresh walk at genesis, and the Equihash-serial
+      per-block walk (~47 blocks/s) needs ~19 h for 3.2M blocks. The
+      canary's 45-min band only fits anchor→tip (~145k). Root cause: the
+      walk never consulted the durable trusted base
+      (`REDUCER_TRUSTED_BASE_HEIGHT_KEY`, written raise-only by
+      `tip_finalize_anchor`) that the seed had already declared at boot.
+      Fix: a fresh walk (no saved cursor) now starts at trusted_base+1
+      when declared — the seeded extent is checkpoint-certified and has
+      no undo data to script-verify against — and at genesis otherwise,
+      so the `--from=genesis` exact tier still walks full history.
+      Verify: next anchor-canary run should COMPLETE inside the band.
 
 **Standing method (never skip):** copy-prove on a fixture before live; NEVER
 delete `tip_finalize_log` rows; NEVER lower the public tip below `coins_best`;

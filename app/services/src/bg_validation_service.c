@@ -11,7 +11,7 @@
  *
  * Background Full Validation Service
  * -----------------------------------
- * After fast sync via FlyClient + SHA3, walks every block from genesis
+ * After fast sync via FlyClient + SHA3, walks every locally-derived block
  * and verifies all cryptographic proofs:
  *   - Equihash PoW solutions
  *   - ECDSA script signatures (every input of every transaction)
@@ -19,6 +19,13 @@
  *   - Sapling Groth16 spend/output proofs + binding signatures
  *   - Sprout Groth16 JoinSplit proofs
  *   - Merkle root integrity
+ *
+ * Walk extent: a fresh walk starts at the durable trusted base + 1
+ * (REDUCER_TRUSTED_BASE_HEIGHT_KEY) when one is declared — the seeded extent
+ * at/below it is certified by the sealed compiled checkpoint + the
+ * SHA3-verified snapshot seed and has no undo data to script-verify against
+ * — and at genesis otherwise (a from-genesis datadir declares no base; that
+ * full-history walk is the replay-canary --from=genesis exact tier).
  *
  * Uses a thread pool for parallel script verification within each block.
  * Saves progress to SQLite every 1000 blocks for crash-resume.
@@ -63,6 +70,8 @@
 #include "models/database.h"
 #include "adapters/outbound/persistence/bg_validation_store_sqlite.h"
 #include "ports/bg_validation_store_port.h"
+#include "jobs/reducer_frontier.h"           /* reducer_frontier_trusted_base_height_read */
+#include "storage/progress_store.h"          /* progress_store_db */
 #include "event/event.h"
 #include "platform/rng.h"
 #include "util/blocker.h"
@@ -314,19 +323,44 @@ static void *bg_validation_thread(void *arg)
     int num_workers = svc->num_workers;
 
     /* Genuinely-background bulk walker (full proof/script re-verification
-     * from genesis) — never the reducer/net/RPC/tip-follow path. Apply OS
-     * QoS armor before any work so the kernel schedules it behind the
-     * node's liveness threads (lane/os-armor). */
+     * of the locally-derived extent) — never the reducer/net/RPC/tip-follow
+     * path. Apply OS QoS armor before any work so the kernel schedules it
+     * behind the node's liveness threads (lane/os-armor). */
     zcl_thread_qos_background();
 
     bg_validation_supervisor_heartbeat(svc);
 
     /* Load resume point */
     int start_height = load_progress(&svc->progress_store);
-    if (start_height < 0)
+    if (start_height < 0) {
         start_height = 0;
-    else
+        /* Fresh walk on a seeded/finalized node: the extent at/below the
+         * durable trusted base (REDUCER_TRUSTED_BASE_HEIGHT_KEY) was not
+         * connected by THIS node — it is certified by the sealed compiled
+         * checkpoint plus the SHA3-verified snapshot seed, and its undo
+         * data is absent, so script verification there is impossible
+         * anyway (every block would land in script_verif_skipped_no_undo
+         * at full Equihash cost: ~47 blocks/s single-walk, i.e. ~19 h for
+         * the full extent — the from-genesis-scale degrade the anchor
+         * replay-canary's 90-min budget exists to fail loud on). Start
+         * above the base. A from-genesis datadir has NO declaration, so
+         * the full-history walk there is unchanged — that walk is the
+         * replay-canary --from=genesis exact tier. */
+        int32_t trusted_base = 0;
+        bool trusted_base_found = false;
+        if (reducer_frontier_trusted_base_height_read(progress_store_db(),
+                                                      &trusted_base,
+                                                      &trusted_base_found) &&
+            trusted_base_found && trusted_base > 0) {
+            start_height = trusted_base + 1;
+            printf("[bg-valid] trusted base at height %d — starting above "
+                   "the checkpoint-certified seeded extent\n", trusted_base);
+            event_emitf(EV_SYNC_STATE_CHANGE, 0,
+                        "bg_validation trusted_base from=%d", trusted_base);
+        }
+    } else {
         start_height++; /* Resume from next unverified block */
+    }
 
     int chain_height = active_chain_height(&ms->chain_active);
     atomic_store(&svc->progress.chain_height, chain_height);

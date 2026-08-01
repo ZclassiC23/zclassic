@@ -7,9 +7,13 @@
  * Background Full Validation Service
  * -----------------------------------
  * After fast sync (FlyClient + SHA3 snapshot), the node is operational at tip
- * within ~44 seconds. This background service then walks every block from
- * genesis and fully validates every signature, script, zk-SNARK proof, and
- * Equihash solution in the entire blockchain history.
+ * within ~44 seconds. This background service then walks every locally-derived
+ * block and fully validates every signature, script, zk-SNARK proof, and
+ * Equihash solution in it. A fresh walk starts above the durable trusted base
+ * (REDUCER_TRUSTED_BASE_HEIGHT_KEY — the checkpoint-certified seeded extent,
+ * which carries no undo data to script-verify against); a from-genesis
+ * datadir declares no base and is walked from genesis — that full-history
+ * walk is the replay-canary --from=genesis exact tier.
  *
  * Design:
  *   - Runs in a dedicated background thread, low priority
