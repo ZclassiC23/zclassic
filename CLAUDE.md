@@ -423,7 +423,11 @@ HTLC contract scaffolding: swap initiation and participation with redeem script 
 
 ### Background Validation
 
-Optional (`-nobgvalidation` to disable). Walks every block from genesis verifying:
+Optional (`-nobgvalidation` to disable). Walks every locally-derived block verifying
+(a fresh walk starts above the durable trusted base on seeded boots — the
+checkpoint-certified extent has no undo data to script-verify against; a
+from-genesis datadir declares no base and is walked from genesis, and that
+full-history walk is the replay-canary `--from=genesis` exact tier):
 - Equihash PoW solutions
 - ECDSA script signatures (every input)
 - Ed25519 JoinSplit signatures
