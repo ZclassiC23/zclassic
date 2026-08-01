@@ -86,6 +86,20 @@
       hit (`git grep 'cac_\|chain_advance_coordinator'`) is a legitimate
       compatibility name (e.g. a stable `dumpstate` subsystem key) before
       treating the `block_source_policy` rename as fully closed.
+   10. Bundle-seeded node: full-history block swarm starves the tip fold.
+      Observed 2026-08-01 on the stopwatch-fixture rebuild (fresh datadir,
+      bundle installed at 3056758, H* pinned there): the swarm plans
+      50030 pieces from h=1, low-height pieces saturate the block-intake
+      queue ("waiting for timeout retry after local payload intake
+      backpressure"), and the reducer's needed range (3056759+) never
+      enters the queue — H* frozen while 256 pieces stay inflight with
+      zero completions. This contradicts `gap_fill`'s design comment
+      ("deliberately rate-limited so it cannot starve live sync"). Fix
+      direction: intake/scheduling priority for the reducer's next-needed
+      range over census backfill, or cap below-floor backfill inflight
+      while the fold is behind. Repro: `zcl-stopwatch-peer` unit journal
+      2026-08-01 21:55-22:00 UTC; datadir archive
+      `~/.zclassic-c23-fixture-serve.broken-aug01`.
 
 **Standing method (never skip):** copy-prove on a fixture before live; NEVER
 delete `tip_finalize_log` rows; NEVER lower the public tip below `coins_best`;
