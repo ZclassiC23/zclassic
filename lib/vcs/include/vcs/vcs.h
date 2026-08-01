@@ -76,6 +76,13 @@ int vcs_tree_capture(struct vcs_repo *r, uint8_t out_tree_hash[32]);
  * the commit log, and therefore cannot create or advance history. */
 int vcs_tree_capture_path(const char *repo_root, uint8_t out_tree_hash[32]);
 
+/* Capture scan_root while publishing its immutable manifest and blobs into
+ * object_store_root's existing ZVCS CAS.  This is the candidate-workspace
+ * import primitive: source bytes may be prepared elsewhere, but all authority
+ * enters through the requester's store and the same stable double scan. */
+int vcs_tree_capture_into(const char *scan_root, const char *object_store_root,
+                          uint8_t out_tree_hash[32]);
+
 /* Load one captured manifest by tree hash and rederive its structural address
  * before returning it. Caller owns *out and releases it with
  * vcs_manifest_free(). */

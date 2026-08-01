@@ -160,7 +160,7 @@ bool vcs_zcode_write_scope_contains(
     const struct vcs_zcode_write_scope_v1 *scope, const char *path)
 {
     if (vcs_zcode_write_scope_validate(scope) != VCS_ZCODE_WRITE_SCOPE_OK ||
-        !scope_path_valid(path))
+        !vcs_package_path_valid(path))
         return false;
     for (size_t i = 0; i < scope->count; i++) {
         size_t len = strlen(scope->paths[i]);

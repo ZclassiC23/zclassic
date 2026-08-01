@@ -17,6 +17,7 @@
 #include "vcs/build_artifact_manifest.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_dev.h"
+#include "vcs/zcode_patch.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -368,6 +369,11 @@ static struct zcl_result bfw_load_zcode_context(
         vcs_zcode_candidate_validate_for_task(task, candidate, now) !=
             VCS_ZCODE_DEV_OK)
         return ZCL_ERR(-1, "zcode-candidate-stale");
+    enum vcs_zcode_patch_result patch_verified = vcs_zcode_patch_verify_cas(
+        workspace, task, candidate);
+    if (patch_verified != VCS_ZCODE_PATCH_OK)
+        return ZCL_ERR(-1, "zcode-patch-refused: %s",
+                       vcs_zcode_patch_result_string(patch_verified));
     if (vcs_object_load_raw(workspace, policy_root, &wire, &wire_len) != 0 ||
         vcs_zcode_proof_policy_parse(wire, wire_len, policy) !=
             VCS_ZCODE_DEV_OK) {

@@ -68,6 +68,7 @@ The domains are:
 - `zcl.zcode.lane_receipt.v1\0`
 - `zcl.zcode.agent_context.v1\0`
 - `zcl.zcode.write_scope.v1\0`
+- `zcl.zcode.patch.v1\0`
 
 The trailing NUL is part of each SHA3 preimage, matching the existing package
 manifest, recipe, lock, release, and attestation convention.
@@ -126,6 +127,18 @@ A candidate binds the task, exact base source, patch object, complete candidate
 source tree, user-selected adapter/model policy, author public key, sequence,
 and creation time. Its author label establishes provenance only. Acceptance is
 driven by proofs and an explicit user action, never by model brand.
+
+Explicit admission does not trust candidate or patch roots supplied by the
+adapter. `candidate_workspace` must resolve to a separate, non-overlapping
+directory. ZVCS double-scans it, imports its path-sorted manifest and tagged
+blobs into the requester’s existing CAS, then derives `patch.v1` by
+merge-joining it with the task’s exact base manifest. Each change binds kind,
+path, old mode/size/blob, and new mode/size/blob. Added and modified candidate
+bytes count against `max_patch_bytes`; all changes count against
+`max_changed_files` and must belong to `write_scope.v1`. Empty candidates,
+out-of-scope paths, changed base workspaces, false root claims, malformed
+wires, and CAS readback mismatches are refused before a ZBuild row exists. The
+local worker repeats manifest-to-patch derivation before executing the action.
 
 ### `review.v1`
 
@@ -216,7 +229,9 @@ ZBuild action. It never accepts a caller-supplied path or command.
 <!-- claim: file-present lib/vcs/include/vcs/zcode_agent_context.h # bounded canonical agent context wire -->
 <!-- claim: symbol-present zcode_agent_context_capture app/services/src/zcode_agent_context_service.c # source-stable context publication into existing CAS -->
 <!-- claim: symbol-present vcs_tree_capture_path lib/vcs/src/vcs.c # verified task source snapshot in existing CAS -->
+<!-- claim: symbol-present vcs_tree_capture_into lib/vcs/src/vcs.c # separate candidate workspace import into requester CAS -->
 <!-- claim: symbol-present vcs_zcode_write_scope_contains lib/vcs/src/zcode_write_scope.c # component-bounded candidate write authority -->
+<!-- claim: symbol-present vcs_zcode_patch_derive lib/vcs/src/zcode_patch.c # manifest-derived scoped patch authority -->
 
 ## Ordered delivery
 
@@ -298,13 +313,13 @@ launch a model, create a build database, or grant tools. The operator can give
 those roots to Codex, Claude, Kimi, a local model, or a future P2P harness under
 their own policy.
 
-`zcode improve mode=admit` (the backward-compatible default) admits the
-resulting canonical candidate and exact fixed-action input, captures the GCC
+`zcode improve mode=admit` derives the candidate tree and patch from
+`candidate_workspace`, admits the exact fixed-action input, captures the GCC
 capsule, and queues a candidate-bound compile, test, or deterministic fuzz
-action. An explicit admit must carry `planned_task_root` and
-`planned_context_root`; both are recomputed and compared before candidate or
-ZBuild admission. Omitting `mode` retains the legacy one-shot form. Plan and
-admit rederive the same task and context roots. Reusing `candidate_created_unix` with
+action. An explicit admit must carry `planned_task_root`,
+`planned_context_root`, and the same `write_scope_csv`; source, task, context,
+scope, candidate, and patch are recomputed before ZBuild admission. Omitting
+`mode` retains the legacy one-shot form. Reusing `candidate_created_unix` with
 the same immutable inputs schedules additional proof actions for the exact same
 candidate. Before submission it creates or re-verifies the exact candidate's
 signed FRONTIER receipt; evidence aggregation follows task/candidate/policy roots across

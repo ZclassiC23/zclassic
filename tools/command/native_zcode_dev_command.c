@@ -5,6 +5,7 @@
 
 #include "base/hex.h"
 #include "base/serialize_le.h"
+#include "crypto/sha256.h"
 #include "crypto/sha3.h"
 #include "json/json.h"
 #include "models/database.h"
@@ -24,6 +25,7 @@
 #include "vcs/zcode_work_context.h"
 #include "vcs/zcode_work_node.h"
 #include "vcs/zcode_write_scope.h"
+#include "vcs/zcode_patch.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -173,6 +175,141 @@ static bool zdev_capture_write_scope(
     if (!verified) {
         zdev_fail(reply, "WRITE_SCOPE_CAS_FAILED",
                   "write scope CAS readback verification failed");
+        return false;
+    }
+    return true;
+}
+
+static bool zdev_paths_overlap(const char *a, const char *b)
+{
+    size_t alen = strlen(a), blen = strlen(b);
+    bool a_contains_b = blen >= alen && memcmp(a, b, alen) == 0 &&
+        (blen == alen || b[alen] == '/');
+    bool b_contains_a = alen >= blen && memcmp(b, a, blen) == 0 &&
+        (alen == blen || a[blen] == '/');
+    return a_contains_b || b_contains_a;
+}
+
+static bool zdev_load_write_scope(
+    const char *workspace, const uint8_t root[32],
+    struct vcs_zcode_write_scope_v1 *out)
+{
+    uint8_t *wire = NULL; size_t wire_len = 0;
+    bool ok = vcs_object_load_raw(workspace, root, &wire, &wire_len) == 0 &&
+        vcs_zcode_write_scope_parse(wire, wire_len, out) ==
+            VCS_ZCODE_WRITE_SCOPE_OK;
+    if (ok) {
+        uint8_t checked[32];
+        ok = vcs_zcode_write_scope_root(out, checked) ==
+                VCS_ZCODE_WRITE_SCOPE_OK && memcmp(checked, root, 32) == 0;
+    }
+    free(wire);
+    return ok;
+}
+
+static bool zdev_capture_candidate(
+    const char *workspace, const char *candidate_arg,
+    const struct vcs_zcode_task_v1 *task, uint8_t candidate_root[32],
+    uint8_t patch_root[32], uint8_t source_sha256[32],
+    uint32_t *changed_files, uint64_t *patch_bytes,
+    struct zcl_command_reply *reply)
+{
+    char candidate_workspace[ZDEV_PATH_MAX]; struct stat st;
+    if (!candidate_arg || !realpath(candidate_arg, candidate_workspace) ||
+        stat(candidate_workspace, &st) != 0 || !S_ISDIR(st.st_mode) ||
+        zdev_paths_overlap(workspace, candidate_workspace)) {
+        zdev_fail(reply, "BAD_CANDIDATE_WORKSPACE",
+                  "candidate_workspace must be an existing non-overlapping directory");
+        return false;
+    }
+    if (vcs_tree_capture_into(candidate_workspace, workspace,
+                              candidate_root) != VCS_OK) {
+        zdev_fail(reply, "CANDIDATE_CAPTURE_FAILED",
+                  "candidate workspace could not enter the requester's CAS");
+        return false;
+    }
+    struct vcs_manifest base, candidate;
+    if (!vcs_tree_load(workspace, task->source_root, &base)) {
+        zdev_fail(reply, "BASE_SOURCE_STALE",
+                  "planned source manifest is absent or corrupt");
+        return false;
+    }
+    if (!vcs_tree_load(workspace, candidate_root, &candidate)) {
+        vcs_manifest_free(&base);
+        zdev_fail(reply, "CANDIDATE_SOURCE_CORRUPT",
+                  "captured candidate manifest failed CAS verification");
+        return false;
+    }
+    struct vcs_zcode_write_scope_v1 scope;
+    if (!zdev_load_write_scope(workspace, task->write_scope_root, &scope)) {
+        vcs_manifest_free(&candidate); vcs_manifest_free(&base);
+        zdev_fail(reply, "WRITE_SCOPE_STALE",
+                  "planned write scope is absent or corrupt");
+        return false;
+    }
+    struct vcs_zcode_patch_v1 patch;
+    enum vcs_zcode_patch_result derived = vcs_zcode_patch_derive(
+        &base, task->source_root, &candidate, candidate_root, &scope,
+        task->max_changed_files, task->max_patch_bytes, &patch);
+    if (derived != VCS_ZCODE_PATCH_OK) {
+        vcs_manifest_free(&candidate); vcs_manifest_free(&base);
+        zdev_fail(reply,
+                  derived == VCS_ZCODE_PATCH_SCOPE ? "PATCH_OUTSIDE_SCOPE" :
+                  derived == VCS_ZCODE_PATCH_LIMIT ? "PATCH_LIMIT_EXCEEDED" :
+                  "PATCH_DERIVATION_FAILED",
+                  vcs_zcode_patch_result_string(derived));
+        return false;
+    }
+    *changed_files = (uint32_t)patch.count;
+    *patch_bytes = patch.content_bytes;
+    uint8_t *wire = NULL; size_t wire_len = 0;
+    bool stored = vcs_zcode_patch_serialize(&patch, &wire, &wire_len) ==
+            VCS_ZCODE_PATCH_OK &&
+        vcs_zcode_patch_root(&patch, patch_root) == VCS_ZCODE_PATCH_OK &&
+        vcs_object_put_addressed(workspace, patch_root, wire, wire_len);
+    if (stored) {
+        uint8_t *checked_wire = NULL; size_t checked_len = 0;
+        struct vcs_zcode_patch_v1 checked;
+        uint8_t checked_root[32];
+        bool parsed = false;
+        stored = vcs_object_load_raw(workspace, patch_root, &checked_wire,
+                                     &checked_len) == 0 &&
+            checked_len == wire_len &&
+            memcmp(checked_wire, wire, wire_len) == 0;
+        if (stored) {
+            parsed = vcs_zcode_patch_parse(checked_wire, checked_len,
+                                           &checked) == VCS_ZCODE_PATCH_OK;
+            stored = parsed && vcs_zcode_patch_root(&checked, checked_root) ==
+                VCS_ZCODE_PATCH_OK && memcmp(checked_root, patch_root, 32) == 0;
+        }
+        if (parsed) vcs_zcode_patch_free(&checked);
+        free(checked_wire);
+    }
+    uint8_t *manifest_wire = NULL; size_t manifest_len = 0;
+    if (stored)
+        stored = vcs_manifest_serialize(&candidate, &manifest_wire,
+                                        &manifest_len);
+    if (stored) {
+        static const char domain[] = "zcl.zcode.source_manifest_sha256.v1";
+        struct sha256_ctx sha;
+        sha256_init(&sha);
+        sha256_write(&sha, (const uint8_t *)domain, sizeof(domain));
+        sha256_write(&sha, manifest_wire, manifest_len);
+        sha256_finalize(&sha, source_sha256);
+    }
+    free(manifest_wire); free(wire);
+    vcs_zcode_patch_free(&patch);
+    vcs_manifest_free(&candidate); vcs_manifest_free(&base);
+    if (!stored) {
+        zdev_fail(reply, "PATCH_CAS_FAILED",
+                  "canonical patch CAS readback verification failed");
+        return false;
+    }
+    uint8_t current_base[32];
+    if (vcs_tree_capture_path(workspace, current_base) != VCS_OK ||
+        memcmp(current_base, task->source_root, 32) != 0) {
+        zdev_fail(reply, "BASE_SOURCE_STALE",
+                  "base workspace changed during candidate admission");
         return false;
     }
     return true;
@@ -464,6 +601,8 @@ void zcl_native_handle_zcode_improve(
     const char *fixed_input = zdev_str(request->input, "fixed_input_path");
     if (!fixed_input)
         fixed_input = zdev_str(request->input, "preprocessed_path");
+    const char *candidate_workspace =
+        zdev_str(request->input, "candidate_workspace");
     if (!workspace_arg || !datadir || !goal || !goal[0] ||
         strlen(goal) > 4096 || !policy_hex ||
         (plan_only && (!context_symbol || !context_symbol[0])) ||
@@ -473,11 +612,13 @@ void zcl_native_handle_zcode_improve(
           !planned_context_root[0])) ||
         ((plan_only || explicit_admit) &&
          (!write_scope_csv || !write_scope_csv[0])) ||
+        (explicit_admit &&
+         (!candidate_workspace || !candidate_workspace[0])) ||
         (!plan_only && !fixed_input)) {
         zdev_fail(reply, "MISSING_INPUT",
                   plan_only
                     ? "plan requires workspace, goal, proof policy, and context_symbol"
-                    : "explicit admit requires the planned task/context roots, context symbol, and fixed input path");
+                    : "explicit admit requires planned roots, candidate_workspace, context symbol, and fixed input path");
         return;
     }
     char workspace[ZDEV_PATH_MAX];
@@ -664,10 +805,50 @@ void zcl_native_handle_zcode_improve(
     };
     memcpy(candidate.task_root, task_root, 32);
     memcpy(candidate.base_source_root, task.source_root, 32);
-    if (!zdev_root(request->input, "patch_root", candidate.patch_root, reply) ||
-        !zdev_root(request->input, "candidate_source_root",
-                   candidate.candidate_source_root, reply) ||
-        !zdev_root(request->input, "adapter_policy_root",
+    uint8_t source_sha_check[32]; char source_sha_hex[65];
+    uint32_t changed_files = 0; uint64_t patch_bytes = 0;
+    if (explicit_admit) {
+        if (!zdev_capture_candidate(
+                workspace, candidate_workspace, &task,
+                candidate.candidate_source_root, candidate.patch_root,
+                source_sha_check, &changed_files, &patch_bytes, reply)) {
+            free(input);
+            return;
+        }
+        const char *claimed_patch = zdev_str(request->input, "patch_root");
+        const char *claimed_source =
+            zdev_str(request->input, "candidate_source_root");
+        uint8_t claim[32];
+        if ((claimed_patch && claimed_patch[0] &&
+             (!zcl_hex_decode_lower(claimed_patch, claim, 32) ||
+              memcmp(claim, candidate.patch_root, 32) != 0)) ||
+            (claimed_source && claimed_source[0] &&
+             (!zcl_hex_decode_lower(claimed_source, claim, 32) ||
+              memcmp(claim, candidate.candidate_source_root, 32) != 0))) {
+            free(input);
+            zdev_fail(reply, "CANDIDATE_ROOT_MISMATCH",
+                      "claimed candidate roots do not match the captured workspace");
+            return;
+        }
+        zcl_hex_encode(source_sha_check, 32, source_sha_hex);
+        const char *claimed_sha =
+            zdev_str(request->input, "candidate_source_sha256");
+        if (claimed_sha && claimed_sha[0] &&
+            (!zcl_hex_decode_lower(claimed_sha, claim, 32) ||
+             memcmp(claim, source_sha_check, 32) != 0)) {
+            free(input);
+            zdev_fail(reply, "CANDIDATE_SHA256_MISMATCH",
+                      "candidate_source_sha256 does not match the canonical candidate manifest");
+            return;
+        }
+    } else if (!zdev_root(request->input, "patch_root", candidate.patch_root,
+                          reply) ||
+               !zdev_root(request->input, "candidate_source_root",
+                          candidate.candidate_source_root, reply)) {
+        free(input);
+        return;
+    }
+    if (!zdev_root(request->input, "adapter_policy_root",
                    candidate.adapter_policy_root, reply) ||
         !zdev_root(request->input, "author_pubkey", candidate.author_pubkey,
                    reply)) {
@@ -691,11 +872,10 @@ void zcl_native_handle_zcode_improve(
     }
     free(input);
 
-    const char *source_sha256 =
+    const char *source_sha256 = explicit_admit ? source_sha_hex :
         zdev_str(request->input, "candidate_source_sha256");
-    uint8_t source_sha_check[32];
-    if (!source_sha256 ||
-        !zcl_hex_decode_lower(source_sha256, source_sha_check, 32)) {
+    if (!explicit_admit && (!source_sha256 ||
+        !zcl_hex_decode_lower(source_sha256, source_sha_check, 32))) {
         zdev_fail(reply, "BAD_SOURCE_SHA256",
                   "candidate_source_sha256 must be 64 lowercase hex");
         return;
@@ -834,6 +1014,9 @@ void zcl_native_handle_zcode_improve(
     }
     zdev_push_root(&reply->data, "task_root", task_root);
     zdev_push_root(&reply->data, "candidate_root", candidate_root);
+    zdev_push_root(&reply->data, "candidate_source_root",
+                   candidate.candidate_source_root);
+    zdev_push_root(&reply->data, "patch_root", candidate.patch_root);
     zdev_push_root(&reply->data, "proof_policy_root", policy_root);
     zdev_push_root(&reply->data, "toolchain_capsule_root",
                    task.toolchain_capsule_root);
@@ -843,6 +1026,18 @@ void zcl_native_handle_zcode_improve(
     (void)json_push_kv_str(&reply->data, "action_kind", action_kind);
     (void)json_push_kv_int(&reply->data, "candidate_created_unix",
                            candidate.created_unix);
+    (void)json_push_kv_str(&reply->data, "candidate_source_sha256",
+                           source_sha256);
+    (void)json_push_kv_str(&reply->data, "source_sha256_schema",
+                           explicit_admit
+                             ? "zcl.zcode.source_manifest_sha256.v1"
+                             : "caller-provided-legacy");
+    if (explicit_admit) {
+        (void)json_push_kv_int(&reply->data, "changed_files",
+                               changed_files);
+        (void)json_push_kv_int(&reply->data, "patch_content_bytes",
+                               (int64_t)patch_bytes);
+    }
     (void)json_push_kv_str(&reply->data, "state", "QUEUED");
     (void)json_push_kv_str(&reply->data, "lane", frontier_status.lane_name);
     (void)json_push_kv_str(&reply->data, "lane_receipt_root",

@@ -196,18 +196,20 @@ const char *vcs_repo_root(struct vcs_repo *r) { return r ? r->root : NULL; }
 
 /* ── snapshot ────────────────────────────────────────────────────── */
 
-/* Ensure every blob referenced by the manifest is in the object store. */
-static bool put_dirty_blobs(struct vcs_repo *r, const struct vcs_manifest *m)
+/* Ensure every blob referenced by the manifest is in the selected object
+ * store, reading bytes only from the scanned source root. */
+static bool put_manifest_blobs(const char *scan_root, const char *store_root,
+                               const struct vcs_manifest *m)
 {
     for (size_t i = 0; i < m->count; i++) {
-        if (vcs_object_has(r->root, m->entries[i].blob))
+        if (vcs_object_has(store_root, m->entries[i].blob))
             continue;
         uint8_t *content = NULL;
         size_t clen = 0;
-        if (read_whole_file(r->root, m->entries[i].path, &content, &clen) != 0)
+        if (read_whole_file(scan_root, m->entries[i].path, &content, &clen) != 0)
             LOG_FAIL("vcs", "read blob %s", m->entries[i].path);
         uint8_t got[32];
-        bool ok = vcs_object_put(r->root, content, clen, VCS_TAG_BLOB, got);
+        bool ok = vcs_object_put(store_root, content, clen, VCS_TAG_BLOB, got);
         free(content);
         if (!ok)
             LOG_FAIL("vcs", "put blob %s", m->entries[i].path);
@@ -227,53 +229,65 @@ static void fill_fixed(char *dst, size_t cap, const char *src)
     }
 }
 
-int vcs_tree_capture(struct vcs_repo *r, uint8_t out_tree_hash[32])
+static int tree_capture_from(const char *scan_root, struct vcs_index *idx,
+                             const char *store_root,
+                             uint8_t out_tree_hash[32])
 {
-    if (!r || !out_tree_hash)
+    if (!scan_root || !idx || !store_root || !out_tree_hash)
         LOG_ERR("vcs", "null arg to tree_capture");
     struct vcs_manifest first, second, checked;
-    if (!vcs_manifest_build(r->root, r->idx, &first))
+    if (!vcs_manifest_build(scan_root, idx, &first))
         LOG_ERR("vcs", "build source manifest");
-    if (!put_dirty_blobs(r, &first)) {
+    if (!put_manifest_blobs(scan_root, store_root, &first)) {
         vcs_manifest_free(&first);
         LOG_ERR("vcs", "store source blobs");
     }
     uint8_t first_root[32], second_root[32];
-    if (!manifest_store(r->root, &first, first_root)) {
+    if (!manifest_store(store_root, &first, first_root)) {
         vcs_manifest_free(&first);
         LOG_ERR("vcs", "store source manifest");
     }
     vcs_manifest_free(&first);
-    if (!vcs_manifest_build(r->root, r->idx, &second))
+    if (!vcs_manifest_build(scan_root, idx, &second))
         LOG_ERR("vcs", "rebuild source manifest");
     bool stable = vcs_manifest_tree_hash(&second, second_root) &&
                   memcmp(first_root, second_root, 32) == 0;
     vcs_manifest_free(&second);
     if (!stable)
         LOG_ERR("vcs", "source changed during tree capture");
-    if (!manifest_load(r->root, first_root, &checked))
+    if (!manifest_load(store_root, first_root, &checked))
         LOG_ERR("vcs", "source manifest readback failed");
     vcs_manifest_free(&checked);
     memcpy(out_tree_hash, first_root, 32);
     return VCS_OK;
 }
 
+int vcs_tree_capture(struct vcs_repo *r, uint8_t out_tree_hash[32])
+{
+    if (!r || !out_tree_hash)
+        LOG_ERR("vcs", "null arg to tree_capture");
+    return tree_capture_from(r->root, r->idx, r->root, out_tree_hash);
+}
+
 int vcs_tree_capture_path(const char *repo_root, uint8_t out_tree_hash[32])
 {
-    if (!repo_root || !repo_root[0] || !out_tree_hash)
-        LOG_ERR("vcs", "null arg to tree_capture_path");
-    if (!vcs_object_store_init(repo_root))
+    return vcs_tree_capture_into(repo_root, repo_root, out_tree_hash);
+}
+
+int vcs_tree_capture_into(const char *scan_root, const char *object_store_root,
+                          uint8_t out_tree_hash[32])
+{
+    if (!scan_root || !scan_root[0] || !object_store_root ||
+        !object_store_root[0] || !out_tree_hash)
+        LOG_ERR("vcs", "null arg to tree_capture_into");
+    if (!vcs_object_store_init(scan_root) ||
+        !vcs_object_store_init(object_store_root))
         LOG_ERR("vcs", "source object store init failed");
-    struct vcs_index *idx = vcs_index_open(repo_root);
+    struct vcs_index *idx = vcs_index_open(scan_root);
     if (!idx)
         LOG_ERR("vcs", "source index open failed");
-    struct vcs_repo repo = { .idx = idx };
-    int n = snprintf(repo.root, sizeof(repo.root), "%s", repo_root);
-    if (n <= 0 || (size_t)n >= sizeof(repo.root)) {
-        vcs_index_close(idx);
-        LOG_ERR("vcs", "source root path too long");
-    }
-    int result = vcs_tree_capture(&repo, out_tree_hash);
+    int result = tree_capture_from(scan_root, idx, object_store_root,
+                                   out_tree_hash);
     vcs_index_close(idx);
     return result;
 }
@@ -288,7 +302,10 @@ int vcs_snapshot(struct vcs_repo *r, const struct vcs_snapshot_meta *meta,
     if (!vcs_manifest_build(r->root, r->idx, &m))
         LOG_ERR("vcs", "build manifest");
 
-    if (!put_dirty_blobs(r, &m)) { vcs_manifest_free(&m); LOG_ERR("vcs", "put blobs"); }
+    if (!put_manifest_blobs(r->root, r->root, &m)) {
+        vcs_manifest_free(&m);
+        LOG_ERR("vcs", "put blobs");
+    }
 
     uint8_t tree_hash[32];
     if (!manifest_store(r->root, &m, tree_hash)) { vcs_manifest_free(&m); LOG_ERR("vcs", "store manifest"); }

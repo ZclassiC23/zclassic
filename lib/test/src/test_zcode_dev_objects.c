@@ -28,6 +28,7 @@
 #include "vcs/zcode_work_node.h"
 #include "vcs/zcode_work_swarm.h"
 #include "vcs/zcode_write_scope.h"
+#include "vcs/zcode_patch.h"
 #include "vcs/vcs.h"
 
 #include <stdio.h>
@@ -242,6 +243,87 @@ static int test_zd_write_scope(void)
                       trailed, wire_len + 1u, &parsed),
                   VCS_ZCODE_WRITE_SCOPE_SHAPE);
         free(trailed); free(wire);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_zd_patch(void)
+{
+    int failures = 0;
+    TEST("zcode_dev: patch is derived from manifests and planned scope") {
+        struct vcs_manifest base, candidate, outside;
+        vcs_manifest_init(&base); vcs_manifest_init(&candidate);
+        vcs_manifest_init(&outside);
+        uint8_t a_blob[32], b_blob[32], c_blob[32], d_blob[32];
+        zd_root(a_blob, 101); zd_root(b_blob, 102);
+        zd_root(c_blob, 103); zd_root(d_blob, 104);
+        ASSERT(vcs_manifest_add(&base, "include/api.h", 0100644, 2, b_blob));
+        ASSERT(vcs_manifest_add(&base, "src/a.c", 0100644, 3, a_blob));
+        ASSERT(vcs_manifest_add(&candidate, "include/api.h", 0100644, 2,
+                                b_blob));
+        ASSERT(vcs_manifest_add(&candidate, "src/a.c", 0100644, 4, c_blob));
+        ASSERT(vcs_manifest_add(&candidate, "src/new.c", 0100644, 5,
+                                d_blob));
+        uint8_t base_root[32], candidate_root[32];
+        ASSERT(vcs_manifest_tree_hash(&base, base_root));
+        ASSERT(vcs_manifest_tree_hash(&candidate, candidate_root));
+        struct vcs_zcode_write_scope_v1 scope;
+        vcs_zcode_write_scope_init(&scope);
+        ASSERT_EQ(vcs_zcode_write_scope_add(&scope, "src"),
+                  VCS_ZCODE_WRITE_SCOPE_OK);
+        struct vcs_zcode_patch_v1 patch, parsed;
+        ASSERT_EQ(vcs_zcode_patch_derive(
+                      &base, base_root, &candidate, candidate_root, &scope,
+                      4, 9, &patch), VCS_ZCODE_PATCH_OK);
+        ASSERT_EQ(patch.count, 2); ASSERT_EQ(patch.content_bytes, 9);
+        ASSERT_STR_EQ(patch.changes[0].path, "src/a.c");
+        ASSERT_EQ(patch.changes[0].kind, VCS_DIFF_MODIFIED);
+        ASSERT_STR_EQ(patch.changes[1].path, "src/new.c");
+        ASSERT_EQ(patch.changes[1].kind, VCS_DIFF_ADDED);
+        uint8_t root[32]; char root_hex[65];
+        ASSERT_EQ(vcs_zcode_patch_root(&patch, root), VCS_ZCODE_PATCH_OK);
+        zcl_hex_encode(root, 32, root_hex);
+        ASSERT_STR_EQ(root_hex,
+            "c1e813f265783c205ae98a8b27da5698905c32a74d1faf2a5f87a176c11493da");
+        uint8_t *wire = NULL; size_t wire_len = 0;
+        ASSERT_EQ(vcs_zcode_patch_serialize(&patch, &wire, &wire_len),
+                  VCS_ZCODE_PATCH_OK);
+        ASSERT_EQ(vcs_zcode_patch_parse(wire, wire_len, &parsed),
+                  VCS_ZCODE_PATCH_OK);
+        uint8_t parsed_root[32];
+        ASSERT_EQ(vcs_zcode_patch_root(&parsed, parsed_root),
+                  VCS_ZCODE_PATCH_OK);
+        ASSERT(memcmp(root, parsed_root, 32) == 0);
+        vcs_zcode_patch_free(&parsed);
+        wire[89] = 1;
+        ASSERT_EQ(vcs_zcode_patch_parse(wire, wire_len, &parsed),
+                  VCS_ZCODE_PATCH_SHAPE);
+        free(wire);
+        ASSERT_EQ(vcs_zcode_patch_derive(
+                      &base, base_root, &candidate, candidate_root, &scope,
+                      1, 9, &parsed), VCS_ZCODE_PATCH_LIMIT);
+        ASSERT_EQ(vcs_zcode_patch_derive(
+                      &base, base_root, &candidate, candidate_root, &scope,
+                      4, 8, &parsed), VCS_ZCODE_PATCH_LIMIT);
+        uint8_t wrong_root[32]; zd_root(wrong_root, 77);
+        ASSERT_EQ(vcs_zcode_patch_derive(
+                      &base, wrong_root, &candidate, candidate_root, &scope,
+                      4, 9, &parsed), VCS_ZCODE_PATCH_MANIFEST_MISMATCH);
+        ASSERT(vcs_manifest_add(&outside, "include/api.h", 0100644, 2,
+                                b_blob));
+        ASSERT(vcs_manifest_add(&outside, "src/a.c", 0100644, 4, c_blob));
+        ASSERT(vcs_manifest_add(&outside, "src/new.c", 0100644, 5, d_blob));
+        ASSERT(vcs_manifest_add(&outside, "wallet/key.c", 0100600, 1,
+                                a_blob));
+        uint8_t outside_root[32];
+        ASSERT(vcs_manifest_tree_hash(&outside, outside_root));
+        ASSERT_EQ(vcs_zcode_patch_derive(
+                      &base, base_root, &outside, outside_root, &scope,
+                      4, 10, &parsed), VCS_ZCODE_PATCH_SCOPE);
+        vcs_zcode_patch_free(&patch);
+        vcs_manifest_free(&outside); vcs_manifest_free(&candidate);
+        vcs_manifest_free(&base);
         PASS();
     } _test_next:;
     return failures;
@@ -1057,8 +1139,8 @@ static int test_zd_improve_command(void)
 {
     int failures = 0;
     TEST("zcode_dev: improve stores canonical task and queues existing ZBuild") {
-        char dir[256], preprocessed[320], source_dir[320], source_path[384];
-        char workspace[4096];
+        char dir[256], candidate_dir[256], preprocessed[320], source_dir[320];
+        char source_path[384], workspace[4096], candidate_workspace[4096];
         test_make_tmpdir(dir, sizeof(dir), "zcode_dev", "improve");
         ASSERT(realpath(dir, workspace) != NULL);
         (void)snprintf(source_dir, sizeof(source_dir), "%s/src", workspace);
@@ -1077,6 +1159,30 @@ static int test_zd_improve_command(void)
         FILE *f = fopen(preprocessed, "wb");
         ASSERT(f != NULL);
         static const char source[] = "int zcode_improve_fixture(void){return 1;}\n";
+        ASSERT(fwrite(source, 1, sizeof(source) - 1u, f) ==
+               sizeof(source) - 1u);
+        ASSERT(fclose(f) == 0);
+        test_make_tmpdir(candidate_dir, sizeof(candidate_dir), "zcode_dev",
+                         "candidate");
+        ASSERT(realpath(candidate_dir, candidate_workspace) != NULL);
+        char candidate_source_dir[4352], candidate_source_path[4608];
+        char candidate_input_path[4352];
+        (void)snprintf(candidate_source_dir, sizeof(candidate_source_dir),
+                       "%s/src", candidate_workspace);
+        ASSERT(mkdir(candidate_source_dir, 0700) == 0);
+        (void)snprintf(candidate_source_path, sizeof(candidate_source_path),
+                       "%s/widget.c", candidate_source_dir);
+        source_file = fopen(candidate_source_path, "wb");
+        ASSERT(source_file != NULL);
+        static const char candidate_source[] =
+            "int context_widget(int x) { return x + 2; }\n";
+        ASSERT(fwrite(candidate_source, 1, sizeof(candidate_source) - 1u,
+                      source_file) == sizeof(candidate_source) - 1u);
+        ASSERT(fclose(source_file) == 0);
+        (void)snprintf(candidate_input_path, sizeof(candidate_input_path),
+                       "%s/unit.i", candidate_workspace);
+        f = fopen(candidate_input_path, "wb");
+        ASSERT(f != NULL);
         ASSERT(fwrite(source, 1, sizeof(source) - 1u, f) ==
                sizeof(source) - 1u);
         ASSERT(fclose(f) == 0);
@@ -1183,15 +1289,14 @@ static int test_zd_improve_command(void)
         (void)json_push_kv_str(&input, "write_scope_csv", "src");
         (void)json_push_kv_str(&input, "workspace", workspace);
         (void)json_push_kv_str(&input, "datadir", workspace);
-        (void)json_push_kv_str(&input, "candidate_source_sha256", roots[9]);
+        (void)json_push_kv_str(&input, "candidate_workspace",
+                               candidate_workspace);
         (void)json_push_kv_str(&input, "source_root", roots[0]);
         (void)json_push_kv_str(&input, "dependency_lock_root", roots[1]);
         (void)json_push_kv_str(&input, "write_scope_root",
                                planned_scope_saved);
         (void)json_push_kv_str(&input, "acceptance_tests_root", roots[3]);
         (void)json_push_kv_str(&input, "model_policy_root", roots[4]);
-        (void)json_push_kv_str(&input, "patch_root", roots[5]);
-        (void)json_push_kv_str(&input, "candidate_source_root", roots[6]);
         (void)json_push_kv_str(&input, "adapter_policy_root", roots[7]);
         (void)json_push_kv_str(&input, "author_pubkey", roots[8]);
         (void)json_push_kv_int(&input, "remote_peer", 99);
@@ -1213,7 +1318,30 @@ static int test_zd_improve_command(void)
         const char *action_id = json_get_str(json_get(&reply.data, "action_id"));
         const char *agent_context_hex = json_get_str(json_get(
             &reply.data, "agent_context_root"));
-        ASSERT(task_hex && candidate_hex && action_id && agent_context_hex);
+        const char *candidate_source_hex = json_get_str(json_get(
+            &reply.data, "candidate_source_root"));
+        const char *patch_hex = json_get_str(json_get(
+            &reply.data, "patch_root"));
+        const char *candidate_sha256 = json_get_str(json_get(
+            &reply.data, "candidate_source_sha256"));
+        ASSERT(task_hex && candidate_hex && action_id && agent_context_hex &&
+               candidate_source_hex && patch_hex && candidate_sha256);
+        ASSERT(strlen(candidate_source_hex) == 64 && strlen(patch_hex) == 64 &&
+               strlen(candidate_sha256) == 64);
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &reply.data, "source_sha256_schema")),
+                      "zcl.zcode.source_manifest_sha256.v1");
+        ASSERT_EQ(json_get_int(json_get(&reply.data, "changed_files")), 1);
+        ASSERT_EQ(json_get_int(json_get(
+                      &reply.data, "patch_content_bytes")),
+                  (int64_t)(sizeof(candidate_source) - 1u));
+        char candidate_source_saved[65], patch_saved[65], sha256_saved[65];
+        (void)snprintf(candidate_source_saved,
+                       sizeof(candidate_source_saved), "%s",
+                       candidate_source_hex);
+        (void)snprintf(patch_saved, sizeof(patch_saved), "%s", patch_hex);
+        (void)snprintf(sha256_saved, sizeof(sha256_saved), "%s",
+                       candidate_sha256);
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "mode")), "admit");
         ASSERT_STR_EQ(task_hex, planned_task);
         ASSERT_STR_EQ(agent_context_hex, planned_context);
@@ -1241,6 +1369,26 @@ static int test_zd_improve_command(void)
         ASSERT(vcs_zcode_write_scope_contains(&stored_scope,
                                                "src/widget.c"));
         ASSERT(!vcs_zcode_write_scope_contains(&stored_scope, "unit.i"));
+        uint8_t patch_root[32], *patch_wire = NULL;
+        size_t patch_wire_len = 0;
+        ASSERT(zcl_hex_decode_lower(patch_saved, patch_root, 32));
+        ASSERT_EQ(vcs_object_load_raw(workspace, patch_root, &patch_wire,
+                                      &patch_wire_len), 0);
+        struct vcs_zcode_patch_v1 stored_patch;
+        ASSERT_EQ(vcs_zcode_patch_parse(patch_wire, patch_wire_len,
+                                        &stored_patch), VCS_ZCODE_PATCH_OK);
+        free(patch_wire);
+        ASSERT_EQ(stored_patch.count, 1);
+        ASSERT_STR_EQ(stored_patch.changes[0].path, "src/widget.c");
+        ASSERT_EQ(stored_patch.changes[0].kind, VCS_DIFF_MODIFIED);
+        ASSERT(memcmp(stored_patch.base_source_root, captured_source_root,
+                      32) == 0);
+        vcs_zcode_patch_free(&stored_patch);
+        (void)json_push_kv_str(&input, "patch_root", patch_saved);
+        (void)json_push_kv_str(&input, "candidate_source_root",
+                               candidate_source_saved);
+        (void)json_push_kv_str(&input, "candidate_source_sha256",
+                               sha256_saved);
         json_set_str((struct json_value *)json_get(&input, "mode"), "");
         struct zcl_command_reply legacy_reply;
         zcl_command_reply_init(&legacy_reply, "zcl.zcode_improve.v1");
@@ -1252,6 +1400,41 @@ static int test_zd_improve_command(void)
                       action_id);
         zcl_command_reply_free(&legacy_reply);
         json_set_str((struct json_value *)json_get(&input, "mode"), "admit");
+        char outside_path[4352];
+        (void)snprintf(outside_path, sizeof(outside_path), "%s/outside.c",
+                       candidate_workspace);
+        FILE *outside_file = fopen(outside_path, "wb");
+        ASSERT(outside_file != NULL);
+        ASSERT(fwrite("int outside;\n", 1, 13, outside_file) == 13);
+        ASSERT(fclose(outside_file) == 0);
+        json_set_str((struct json_value *)json_get(&input, "patch_root"), "");
+        json_set_str((struct json_value *)json_get(
+                         &input, "candidate_source_root"), "");
+        json_set_str((struct json_value *)json_get(
+                         &input, "candidate_source_sha256"), "");
+        struct zcl_command_reply outside_reply;
+        zcl_command_reply_init(&outside_reply, "zcl.zcode_improve.v1");
+        zcl_native_handle_zcode_improve(&request, &outside_reply);
+        ASSERT_EQ(outside_reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(outside_reply.error.code, "PATCH_OUTSIDE_SCOPE");
+        zcl_command_reply_free(&outside_reply);
+        ASSERT(unlink(outside_path) == 0);
+        json_set_str((struct json_value *)json_get(&input, "patch_root"),
+                     roots[5]);
+        struct zcl_command_reply false_claim_reply;
+        zcl_command_reply_init(&false_claim_reply, "zcl.zcode_improve.v1");
+        zcl_native_handle_zcode_improve(&request, &false_claim_reply);
+        ASSERT_EQ(false_claim_reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(false_claim_reply.error.code,
+                      "CANDIDATE_ROOT_MISMATCH");
+        zcl_command_reply_free(&false_claim_reply);
+        json_set_str((struct json_value *)json_get(&input, "patch_root"),
+                     patch_saved);
+        json_set_str((struct json_value *)json_get(
+                         &input, "candidate_source_root"),
+                     candidate_source_saved);
+        json_set_str((struct json_value *)json_get(
+                         &input, "candidate_source_sha256"), sha256_saved);
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "state")), "QUEUED");
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "lane")), "FRONTIER");
         const char *frontier_receipt = json_get_str(json_get(
@@ -1382,7 +1565,7 @@ static int test_zd_improve_command(void)
         struct node_db ndb = {0};
         ASSERT(node_db_open(&ndb, db_path));
         struct zcode_lane_status frontier_status;
-        ASSERT(zcode_lane_find(&ndb, workspace, roots[6],
+        ASSERT(zcode_lane_find(&ndb, workspace, candidate_source_saved,
                                &frontier_status).ok);
         ASSERT_EQ(frontier_status.lane, VCS_ZCODE_LANE_FRONTIER);
         ASSERT_STR_EQ(frontier_status.receipt_root_sha3, frontier_receipt);
@@ -1402,6 +1585,13 @@ static int test_zd_improve_command(void)
         ASSERT_EQ(vcs_zcode_candidate_parse(candidate_wire,
                   candidate_wire_len, &candidate), VCS_ZCODE_DEV_OK);
         free(candidate_wire);
+        ASSERT_EQ(vcs_zcode_patch_verify_cas(workspace, &task, &candidate),
+                  VCS_ZCODE_PATCH_OK);
+        struct vcs_zcode_candidate_v1 missing_patch = candidate;
+        zd_root(missing_patch.patch_root, 201);
+        ASSERT_EQ(vcs_zcode_patch_verify_cas(
+                      workspace, &task, &missing_patch),
+                  VCS_ZCODE_PATCH_CAS);
         struct db_build_worker worker;
         uint8_t worker_secret[32], worker_key[32];
         ASSERT(build_fabric_worker_identity_load(
@@ -1785,7 +1975,8 @@ static int test_zd_improve_command(void)
         json_init(&lane_input); json_set_object(&lane_input);
         (void)json_push_kv_str(&lane_input, "workspace", workspace);
         (void)json_push_kv_str(&lane_input, "datadir", workspace);
-        (void)json_push_kv_str(&lane_input, "source_root", roots[6]);
+        (void)json_push_kv_str(&lane_input, "source_root",
+                               candidate_source_saved);
         struct zcl_command_request lane_request = { .input = &lane_input };
         struct zcl_command_reply lane_reply;
         zcl_command_reply_init(&lane_reply, "zcl.zcode_lane.v1");
@@ -1853,6 +2044,7 @@ int test_zcode_dev_objects(void)
 {
     int failures = 0;
     failures += test_zd_write_scope();
+    failures += test_zd_patch();
     failures += test_zd_agent_context();
     failures += test_zd_policy_and_task();
     failures += test_zd_candidate_review();
