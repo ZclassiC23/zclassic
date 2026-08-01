@@ -40,7 +40,8 @@ citation, `git log --follow -- docs/work/<name>.md` recovers older intent.
 | [`self-verified-tip-plan.md`](./self-verified-tip-plan.md) | PLAN | the `G-SOV` sovereignty-gate design + open hardening items; `G-SOV` is the active gate in `sovereignty_controller.c` |
 | [`SOVEREIGN-NETWORK-ROADMAP.md`](./SOVEREIGN-NETWORK-ROADMAP.md) | PLAN | durable Phase 0–6 hierarchy and promotion gates; ordering authority when other plans differ |
 | [`sovereign-cutover-runbook.md`](./sovereign-cutover-runbook.md) | PLAN/LIVE | owner-gated live cutover + revert procedure for the bundle install path |
-| [`ZCODE_PLAN.md`](./ZCODE_PLAN.md) | PLAN | owner's 15-slice build order for ZCODE (decentralized C23 source-package hosting) on top of `../P2P_SOURCE_HOSTING.md`; `lib/vcs/include/vcs/package_reward.h` cites its "ZCL fuel economics" section by name |
+| [`ZCODE_DEVELOPMENT_NETWORK.md`](./ZCODE_DEVELOPMENT_NETWORK.md) | PLAN | active agentic C23 development-network contract: canonical task/evidence objects, real ZBuild worker, requester-led P2P work, typed create/use/improve, and durability lanes |
+| [`ZCODE_PLAN.md`](./ZCODE_PLAN.md) | FOUNDATION | original 15-slice ZCODE package-hosting order; slices 1–13 remain live foundations, while payout slices 14–15 are deferred behind the development network; `lib/vcs/include/vcs/package_reward.h` cites its "ZCL fuel economics" section by name |
 | [`MARKETPLACE_PLAN.md`](./MARKETPLACE_PLAN.md) | PLAN | owner directive: on-chain P2P ZSLP/ZCL marketplace (same-chain single-tx swap + cross-chain HTLC) over the existing ZSWP/ZSLP primitives; application protocol only, no consensus surface |
 | [`shielded-history-importer.md`](./shielded-history-importer.md) | LIVE | reference for the shipped `-import-complete-shielded` operational cure; operational-vs-sovereign trust-mode split |
 | [`CONSENSUS-STATE-BUNDLE.md`](./CONSENSUS-STATE-BUNDLE.md) | LIVE | naming/ownership authority for `zcl.consensus_state_bundle.v1` |

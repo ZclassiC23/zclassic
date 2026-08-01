@@ -169,10 +169,13 @@ review and tests.
   mistake one for the other.)
 - [ ] Optional proof-of-burn parser/indexer and reorg-aware credit projection.
   *Genuinely absent — no burn parser exists in `lib/vcs` or the ZCODE catalog.*
-- [ ] Explicit inspect/build/test/install transaction; downloads never execute.
-  *Genuinely absent — there is no `zcode.install` / `zcode.build` /
-  `zcode.inspect` branch in `config/commands/zcode.def`.*
-<!-- claim: symbol-absent zcode.install config/commands/zcode.def # no install surface yet -->
+- [x] Explicit build/test/install transaction; downloads never execute.
+  `zcode package add plan|commit` is the one lifecycle. It resolves the
+  root-pinned dependency DAG, re-derives an expiring plan at commit, invokes
+  only `zclassic23-package-verify --emit` under confinement, rehashes emitted
+  artifacts, installs atomically, and pins the generation. There is no generic
+  downloaded `zcode.install`/shell-script surface, by design.
+<!-- claim: symbol-present zcode.package.add.commit config/commands/zcode.def # the explicit lifecycle exists -->
 - [ ] End-to-end simulator. *Substantially done, with named gaps.*
   `lib/test/src/test_zcode_swarm_net.c` runs real `zpkgswm` frames between
   independent engines behind real msg_processors (only socket syscalls elided)
@@ -182,7 +185,9 @@ review and tests.
 <!-- claim: file-present lib/test/src/test_zcode_swarm_net.c # the real-wire swarm harness exists -->
 
 The foundations this section once gated on — signed release envelope, staging
-CAS, and runtime gossip — have all shipped. The next code slices are the two
-genuinely-absent rows above: the explicit inspect/build/install transaction
-(nothing downloaded may ever execute without it) and dual-signed verified-byte
-receipts. Proof-of-burn stays last and stays optional.
+CAS, runtime gossip, and explicit build/test/install — have shipped. The
+remaining hosting-specific gap above is dual-signed verified-byte receipts.
+The active program is now the agentic development network in
+[`work/ZCODE_DEVELOPMENT_NETWORK.md`](./work/ZCODE_DEVELOPMENT_NETWORK.md):
+canonical task/evidence objects, a real ZBuild executor, and requester-led P2P
+work. Proof-of-burn stays last and stays optional.

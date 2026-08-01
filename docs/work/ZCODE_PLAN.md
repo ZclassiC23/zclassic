@@ -1,8 +1,18 @@
-# ZCODE — decentralized C23 source-package hosting (owner spec, 2026-07-27)
+# ZCODE — decentralized C23 source-package hosting (foundation, 2026-07-27)
 
-Working plan for the ZCODE program. The authority on existing foundations is
+> **Execution order superseded on 2026-08-01.** Slices 1–13 below are the
+> shipped package-hosting foundation. The unchecked payout slices 14–15 are
+> deliberately not next. Active work is the free P2P agentic C23 development
+> network in [`ZCODE_DEVELOPMENT_NETWORK.md`](./ZCODE_DEVELOPMENT_NETWORK.md):
+> canonical tasks/candidates/policies/reviews/work receipts, a real local
+> ZBuild worker, requester-coordinated P2P work, typed `zcode create|use|improve`,
+> and FRONTIER/CANDIDATE/PROVEN durability. Trustworthy useful-work receipts
+> precede token payout and decentralized custody.
+
+Foundation record for the ZCODE program. The authority on existing foundations is
 [`../P2P_SOURCE_HOSTING.md`](../P2P_SOURCE_HOSTING.md); this file carries the
-owner's 15-slice build order, naming, and boundaries on top of it. Consensus
+owner's original 15-slice build order, naming, and boundaries on top of it.
+That order is retained as history, not as the current queue. Consensus
 parity is untouched: ZCODE is an application protocol over ZClassic23.
 
 Core description: publish, test, maintain and share permissive C23 code
@@ -228,7 +238,8 @@ the tree today:
   (`app/controllers/src/zcode_site_controller.c` + `app/views/src/zcode_view*.c`,
   shared `site.css`/layout, same projections as the commands).
 
-Remaining (both owner-gated by design — they move real value):
+Former numbered tail (both owner-gated and now explicitly deferred — they
+move real value but do not make decentralized development useful):
 
 - **Slice 14** — owner-reviewed real ZCODE transfers: wire auto-enqueue of
   eligible releases into the reward queue, admit owner-approved claims,
@@ -252,9 +263,15 @@ Known honest gaps (named by the slice agents, none blocking):
   `zcode reward plan/commit --input='{"day":...}'`).
 - The reward ledger/service book start empty on pre-ZCODE datadirs
   (fail-open history, by design).
+- The agentic-development object wires now exist in
+  `lib/vcs/include/vcs/zcode_dev.h`; their CAS/task-index and typed command
+  adapters are not yet live. The existing ZBuild worker supervisor does not
+  yet claim or execute actions. See
+  [`ZCODE_DEVELOPMENT_NETWORK.md`](./ZCODE_DEVELOPMENT_NETWORK.md) for the
+  truthful active queue.
 
-## Process per slice
+## Process per landing unit
 
 Smallest complete feature → focused adversarial tests → `make build-only` +
 `make t-fast ONLY=<group>` + `make lint` green in an isolated worktree →
-commit → merge to main → push → update this checklist.
+commit → merge to main → push → update the active development-network plan.
