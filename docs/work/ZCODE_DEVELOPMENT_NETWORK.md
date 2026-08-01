@@ -67,6 +67,7 @@ The domains are:
 - `zcl.zcode.work_receipt.v1\0`
 - `zcl.zcode.lane_receipt.v1\0`
 - `zcl.zcode.agent_context.v1\0`
+- `zcl.zcode.write_scope.v1\0`
 
 The trailing NUL is part of each SHA3 preimage, matching the existing package
 manifest, recipe, lock, release, and attestation convention.
@@ -93,7 +94,7 @@ A task binds exactly:
   existing ZVCS manifest/blobs, and verifying manifest readback;
 - existing `vcs_package_lock` root;
 - existing `vcs_toolchain_capsule_v1` root;
-- immutable write-scope manifest root;
+- immutable canonical `write_scope.v1` root;
 - immutable acceptance-test manifest root;
 - `proof_policy.v1` root;
 - user-selected model-policy root;
@@ -106,6 +107,18 @@ A task binds exactly:
 Wallet access, canonical-node mutation, arbitrary process execution, arbitrary
 shell, package-provided capability escalation, and worker network access are
 not values in the v1 capability vocabulary.
+
+### `write_scope.v1`
+
+The write scope is a closed variable-length wire containing 1–64 sorted,
+unique canonical path prefixes. A prefix grants one exact path or descendants
+at a component boundary: scope “src” admits “src/net.c”, but not
+“src-old/net.c”.
+Traversal, absolute paths, empty segments, duplicate entries, trailing bytes,
+and oversized paths are refused. Its root is stored in the existing workspace
+CAS and bound by `task.v1`; an explicit admit must rederive the same root from
+the same `write_scope_csv`. The object grants candidate-tree writes only. It
+cannot name wallet, node, process, or network authority.
 
 ### `candidate.v1`
 
@@ -203,6 +216,7 @@ ZBuild action. It never accepts a caller-supplied path or command.
 <!-- claim: file-present lib/vcs/include/vcs/zcode_agent_context.h # bounded canonical agent context wire -->
 <!-- claim: symbol-present zcode_agent_context_capture app/services/src/zcode_agent_context_service.c # source-stable context publication into existing CAS -->
 <!-- claim: symbol-present vcs_tree_capture_path lib/vcs/src/vcs.c # verified task source snapshot in existing CAS -->
+<!-- claim: symbol-present vcs_zcode_write_scope_contains lib/vcs/src/zcode_write_scope.c # component-bounded candidate write authority -->
 
 ## Ordered delivery
 
@@ -276,7 +290,8 @@ bash-only authority:
 
 `zcode improve mode=plan` now admits canonical task/policy/goal objects in the
 existing workspace CAS after deriving the source root from a stable,
-readback-verified ZVCS tree capture, and publishes a bounded exact-symbol
+readback-verified ZVCS tree capture, derives and stores canonical
+`write_scope.v1`, and publishes a bounded exact-symbol
 `agent_context.v1`. It returns only immutable task, context, model-policy,
 proof-policy, and toolchain roots with state `AWAITING_CANDIDATE`; it does not
 launch a model, create a build database, or grant tools. The operator can give

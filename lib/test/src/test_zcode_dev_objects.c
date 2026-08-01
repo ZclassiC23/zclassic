@@ -27,6 +27,7 @@
 #include "vcs/zcode_work_context.h"
 #include "vcs/zcode_work_node.h"
 #include "vcs/zcode_work_swarm.h"
+#include "vcs/zcode_write_scope.h"
 #include "vcs/vcs.h"
 
 #include <stdio.h>
@@ -188,6 +189,59 @@ static int test_zd_agent_context(void)
         ASSERT_EQ(vcs_zcode_agent_context_validate(&context, 4096),
                   VCS_ZCODE_AGENT_CONTEXT_SHAPE);
         vcs_zcode_agent_context_free(&context);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_zd_write_scope(void)
+{
+    int failures = 0;
+    TEST("zcode_dev: write scope is canonical component-bounded authority") {
+        struct vcs_zcode_write_scope_v1 scope, parsed;
+        vcs_zcode_write_scope_init(&scope);
+        ASSERT_EQ(vcs_zcode_write_scope_add(&scope, "src"),
+                  VCS_ZCODE_WRITE_SCOPE_OK);
+        ASSERT_EQ(vcs_zcode_write_scope_add(&scope, "include"),
+                  VCS_ZCODE_WRITE_SCOPE_OK);
+        ASSERT_STR_EQ(scope.paths[0], "include");
+        ASSERT_STR_EQ(scope.paths[1], "src");
+        ASSERT_EQ(vcs_zcode_write_scope_add(&scope, "src"),
+                  VCS_ZCODE_WRITE_SCOPE_SHAPE);
+        ASSERT_EQ(vcs_zcode_write_scope_add(&scope, "../wallet"),
+                  VCS_ZCODE_WRITE_SCOPE_SHAPE);
+        ASSERT(vcs_zcode_write_scope_contains(&scope, "src/widget.c"));
+        ASSERT(vcs_zcode_write_scope_contains(&scope, "include"));
+        ASSERT(!vcs_zcode_write_scope_contains(&scope, "src-old/widget.c"));
+        ASSERT(!vcs_zcode_write_scope_contains(&scope, "wallet/key.c"));
+        uint8_t root[32]; char root_hex[65];
+        ASSERT_EQ(vcs_zcode_write_scope_root(&scope, root),
+                  VCS_ZCODE_WRITE_SCOPE_OK);
+        zcl_hex_encode(root, 32, root_hex);
+        ASSERT_STR_EQ(root_hex,
+            "a3e7d3ed2af5c6efe7385b9a95ea4971200cee292853da5a0a43db48b9ea504d");
+        uint8_t *wire = NULL; size_t wire_len = 0;
+        ASSERT_EQ(vcs_zcode_write_scope_serialize(&scope, &wire, &wire_len),
+                  VCS_ZCODE_WRITE_SCOPE_OK);
+        ASSERT_EQ(wire_len, 30);
+        ASSERT_EQ(vcs_zcode_write_scope_parse(wire, wire_len, &parsed),
+                  VCS_ZCODE_WRITE_SCOPE_OK);
+        uint8_t parsed_root[32];
+        ASSERT_EQ(vcs_zcode_write_scope_root(&parsed, parsed_root),
+                  VCS_ZCODE_WRITE_SCOPE_OK);
+        ASSERT(memcmp(root, parsed_root, 32) == 0);
+        wire[wire_len - 1u] = '/';
+        ASSERT_EQ(vcs_zcode_write_scope_parse(wire, wire_len, &parsed),
+                  VCS_ZCODE_WRITE_SCOPE_SHAPE);
+        wire[wire_len - 1u] = 'c';
+        uint8_t *trailed = zcl_malloc(wire_len + 1u,
+                                      "test.write_scope.trailing");
+        ASSERT(trailed != NULL);
+        memcpy(trailed, wire, wire_len); trailed[wire_len] = 0;
+        ASSERT_EQ(vcs_zcode_write_scope_parse(
+                      trailed, wire_len + 1u, &parsed),
+                  VCS_ZCODE_WRITE_SCOPE_SHAPE);
+        free(trailed); free(wire);
         PASS();
     } _test_next:;
     return failures;
@@ -1074,7 +1128,7 @@ static int test_zd_improve_command(void)
         (void)json_push_kv_str(&plan_input, "workspace", workspace);
         (void)json_push_kv_str(&plan_input, "datadir", workspace);
         (void)json_push_kv_str(&plan_input, "dependency_lock_root", roots[1]);
-        (void)json_push_kv_str(&plan_input, "write_scope_root", roots[2]);
+        (void)json_push_kv_str(&plan_input, "write_scope_csv", "src");
         (void)json_push_kv_str(&plan_input, "acceptance_tests_root", roots[3]);
         (void)json_push_kv_str(&plan_input, "model_policy_root", roots[4]);
         (void)json_push_kv_str(&plan_input, "goal",
@@ -1093,20 +1147,26 @@ static int test_zd_improve_command(void)
         ASSERT_STR_EQ(json_get_str(json_get(&plan_reply.data, "state")),
                       "AWAITING_CANDIDATE");
         ASSERT_STR_EQ(json_get_str(json_get(&plan_reply.data, "authority")),
-                      "TASK_AND_CONTEXT_ROOTS");
+                      "TASK_CONTEXT_AND_SCOPE_ROOTS");
         const char *planned_task = json_get_str(json_get(
             &plan_reply.data, "task_root"));
         const char *planned_context = json_get_str(json_get(
             &plan_reply.data, "agent_context_root"));
+        const char *planned_scope = json_get_str(json_get(
+            &plan_reply.data, "write_scope_root"));
         ASSERT(planned_task && strlen(planned_task) == 64);
         ASSERT(planned_context && strlen(planned_context) == 64);
+        ASSERT(planned_scope && strlen(planned_scope) == 64);
         ASSERT_STR_EQ(json_get_str(json_get(&plan_reply.data, "source_root")),
                       roots[0]);
         char planned_task_saved[65], planned_context_saved[65];
+        char planned_scope_saved[65];
         (void)snprintf(planned_task_saved, sizeof(planned_task_saved), "%s",
                        planned_task);
         (void)snprintf(planned_context_saved,
                        sizeof(planned_context_saved), "%s", planned_context);
+        (void)snprintf(planned_scope_saved, sizeof(planned_scope_saved), "%s",
+                       planned_scope);
         ASSERT(json_get(&plan_reply.data, "candidate_root") == NULL);
         ASSERT(json_get(&plan_reply.data, "action_id") == NULL);
         char plan_db[320];
@@ -1120,12 +1180,14 @@ static int test_zd_improve_command(void)
                                planned_task_saved);
         (void)json_push_kv_str(&input, "planned_context_root",
                                planned_context_saved);
+        (void)json_push_kv_str(&input, "write_scope_csv", "src");
         (void)json_push_kv_str(&input, "workspace", workspace);
         (void)json_push_kv_str(&input, "datadir", workspace);
         (void)json_push_kv_str(&input, "candidate_source_sha256", roots[9]);
         (void)json_push_kv_str(&input, "source_root", roots[0]);
         (void)json_push_kv_str(&input, "dependency_lock_root", roots[1]);
-        (void)json_push_kv_str(&input, "write_scope_root", roots[2]);
+        (void)json_push_kv_str(&input, "write_scope_root",
+                               planned_scope_saved);
         (void)json_push_kv_str(&input, "acceptance_tests_root", roots[3]);
         (void)json_push_kv_str(&input, "model_policy_root", roots[4]);
         (void)json_push_kv_str(&input, "patch_root", roots[5]);
@@ -1166,6 +1228,19 @@ static int test_zd_improve_command(void)
                       "context_widget");
         ASSERT(json_get_int(json_get(
                    &reply.data, "agent_context_files")) >= 1);
+        uint8_t scope_root[32], *scope_wire = NULL;
+        size_t scope_wire_len = 0;
+        ASSERT(zcl_hex_decode_lower(planned_scope_saved, scope_root, 32));
+        ASSERT_EQ(vcs_object_load_raw(workspace, scope_root, &scope_wire,
+                                      &scope_wire_len), 0);
+        struct vcs_zcode_write_scope_v1 stored_scope;
+        ASSERT_EQ(vcs_zcode_write_scope_parse(
+                      scope_wire, scope_wire_len, &stored_scope),
+                  VCS_ZCODE_WRITE_SCOPE_OK);
+        free(scope_wire);
+        ASSERT(vcs_zcode_write_scope_contains(&stored_scope,
+                                               "src/widget.c"));
+        ASSERT(!vcs_zcode_write_scope_contains(&stored_scope, "unit.i"));
         json_set_str((struct json_value *)json_get(&input, "mode"), "");
         struct zcl_command_reply legacy_reply;
         zcl_command_reply_init(&legacy_reply, "zcl.zcode_improve.v1");
@@ -1254,6 +1329,22 @@ static int test_zd_improve_command(void)
         ASSERT(fclose(drift_file) == 0);
         json_set_str((struct json_value *)json_get(&input, "source_root"),
                      roots[0]);
+        json_set_str((struct json_value *)json_get(&input, "write_scope_csv"),
+                     "include");
+        json_set_str((struct json_value *)json_get(&input, "write_scope_root"),
+                     "");
+        struct zcl_command_reply scope_mismatch_reply;
+        zcl_command_reply_init(&scope_mismatch_reply,
+                               "zcl.zcode_improve.v1");
+        zcl_native_handle_zcode_improve(&request, &scope_mismatch_reply);
+        ASSERT_EQ(scope_mismatch_reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(scope_mismatch_reply.error.code,
+                      "PLANNED_TASK_MISMATCH");
+        zcl_command_reply_free(&scope_mismatch_reply);
+        json_set_str((struct json_value *)json_get(&input, "write_scope_csv"),
+                     "src");
+        json_set_str((struct json_value *)json_get(&input, "write_scope_root"),
+                     planned_scope_saved);
         json_set_str((struct json_value *)json_get(
                          &input, "planned_context_root"), roots[1]);
         struct zcl_command_reply context_mismatch_reply;
@@ -1761,6 +1852,7 @@ static int test_zd_improve_command(void)
 int test_zcode_dev_objects(void)
 {
     int failures = 0;
+    failures += test_zd_write_scope();
     failures += test_zd_agent_context();
     failures += test_zd_policy_and_task();
     failures += test_zd_candidate_review();

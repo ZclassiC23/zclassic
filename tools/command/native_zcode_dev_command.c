@@ -23,6 +23,7 @@
 #include "vcs/package_store.h"
 #include "vcs/zcode_work_context.h"
 #include "vcs/zcode_work_node.h"
+#include "vcs/zcode_write_scope.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -117,6 +118,61 @@ static bool zdev_capture_source_root(
     if (captured != VCS_OK) {
         zdev_fail(reply, "SOURCE_CAPTURE_FAILED",
                   "workspace changed or its source tree could not enter CAS");
+        return false;
+    }
+    return true;
+}
+
+static bool zdev_capture_write_scope(
+    const char *workspace, const char *csv, uint8_t out[32],
+    struct zcl_command_reply *reply)
+{
+    size_t csv_len = csv ? strlen(csv) : 0;
+    if (csv_len == 0 || csv_len > 4096u || csv[0] == ',' ||
+        csv[csv_len - 1u] == ',' || strstr(csv, ",,") != NULL) {
+        zdev_fail(reply, "BAD_WRITE_SCOPE",
+                  "write_scope_csv must be a nonempty comma-separated path-prefix list");
+        return false;
+    }
+    char copy[4097]; memcpy(copy, csv, csv_len + 1u);
+    struct vcs_zcode_write_scope_v1 scope;
+    vcs_zcode_write_scope_init(&scope);
+    char *save = NULL;
+    for (char *path = strtok_r(copy, ",", &save); path;
+         path = strtok_r(NULL, ",", &save)) {
+        if (vcs_zcode_write_scope_add(&scope, path) !=
+            VCS_ZCODE_WRITE_SCOPE_OK) {
+            zdev_fail(reply, "BAD_WRITE_SCOPE",
+                      "write scope paths must be canonical, unique, and bounded");
+            return false;
+        }
+    }
+    uint8_t *wire = NULL; size_t wire_len = 0;
+    if (vcs_zcode_write_scope_serialize(&scope, &wire, &wire_len) !=
+            VCS_ZCODE_WRITE_SCOPE_OK ||
+        vcs_zcode_write_scope_root(&scope, out) !=
+            VCS_ZCODE_WRITE_SCOPE_OK ||
+        !vcs_object_store_init(workspace) ||
+        !vcs_object_put_addressed(workspace, out, wire, wire_len)) {
+        free(wire);
+        zdev_fail(reply, "WRITE_SCOPE_CAS_FAILED",
+                  "canonical write scope could not enter workspace CAS");
+        return false;
+    }
+    uint8_t *checked_wire = NULL; size_t checked_len = 0;
+    uint8_t checked_root[32];
+    struct vcs_zcode_write_scope_v1 checked;
+    bool verified = vcs_object_load_raw(
+            workspace, out, &checked_wire, &checked_len) == 0 &&
+        checked_len == wire_len && memcmp(checked_wire, wire, wire_len) == 0 &&
+        vcs_zcode_write_scope_parse(checked_wire, checked_len, &checked) ==
+            VCS_ZCODE_WRITE_SCOPE_OK &&
+        vcs_zcode_write_scope_root(&checked, checked_root) ==
+            VCS_ZCODE_WRITE_SCOPE_OK && memcmp(checked_root, out, 32) == 0;
+    free(checked_wire); free(wire);
+    if (!verified) {
+        zdev_fail(reply, "WRITE_SCOPE_CAS_FAILED",
+                  "write scope CAS readback verification failed");
         return false;
     }
     return true;
@@ -392,6 +448,8 @@ void zcl_native_handle_zcode_improve(
         zdev_str(request->input, "planned_task_root");
     const char *planned_context_root =
         zdev_str(request->input, "planned_context_root");
+    const char *write_scope_csv =
+        zdev_str(request->input, "write_scope_csv");
     const char *action_kind = zdev_str(request->input, "action_kind");
     if (!action_kind || !action_kind[0])
         action_kind = VCS_BUILD_ACTION_KIND_V1;
@@ -413,6 +471,8 @@ void zcl_native_handle_zcode_improve(
          (!context_symbol || !context_symbol[0] || !planned_task_root ||
           !planned_task_root[0] || !planned_context_root ||
           !planned_context_root[0])) ||
+        ((plan_only || explicit_admit) &&
+         (!write_scope_csv || !write_scope_csv[0])) ||
         (!plan_only && !fixed_input)) {
         zdev_fail(reply, "MISSING_INPUT",
                   plan_only
@@ -466,13 +526,30 @@ void zcl_native_handle_zcode_improve(
     }
     if (!zdev_root(request->input, "dependency_lock_root",
                    task.dependency_lock_root, reply) ||
-        !zdev_root(request->input, "write_scope_root", task.write_scope_root,
-                   reply) ||
         !zdev_root(request->input, "acceptance_tests_root",
                    task.acceptance_tests_root, reply) ||
         !zdev_root(request->input, "model_policy_root",
                    task.model_policy_root, reply))
         return;
+    if (plan_only || explicit_admit) {
+        if (!zdev_capture_write_scope(
+                workspace, write_scope_csv, task.write_scope_root, reply))
+            return;
+        const char *claimed_scope =
+            zdev_str(request->input, "write_scope_root");
+        if (claimed_scope && claimed_scope[0]) {
+            uint8_t claimed_root[32];
+            if (!zcl_hex_decode_lower(claimed_scope, claimed_root, 32) ||
+                memcmp(claimed_root, task.write_scope_root, 32) != 0) {
+                zdev_fail(reply, "WRITE_SCOPE_ROOT_MISMATCH",
+                          "write_scope_root does not match write_scope_csv");
+                return;
+            }
+        }
+    } else if (!zdev_root(request->input, "write_scope_root",
+                          task.write_scope_root, reply)) {
+        return;
+    }
     memcpy(task.proof_policy_root, policy_root, 32);
     sha3_256((const uint8_t *)goal, strlen(goal), task.goal_root);
     struct vcs_toolchain_capsule_v1 capsule;
@@ -557,15 +634,17 @@ void zcl_native_handle_zcode_improve(
         zdev_push_root(&reply->data, "model_policy_root",
                        task.model_policy_root);
         zdev_push_root(&reply->data, "source_root", task.source_root);
+        zdev_push_root(&reply->data, "write_scope_root",
+                       task.write_scope_root);
         zdev_push_agent_context(&reply->data, &agent_context);
         (void)json_push_kv_str(&reply->data, "mode", "plan");
         (void)json_push_kv_str(&reply->data, "state",
                                "AWAITING_CANDIDATE");
         (void)json_push_kv_str(&reply->data, "authority",
-                               "TASK_AND_CONTEXT_ROOTS");
+                               "TASK_CONTEXT_AND_SCOPE_ROOTS");
         (void)json_push_kv_str(
             &reply->data, "next",
-            "give the immutable task and agent_context roots to the user-selected adapter, then call mode=admit with its candidate roots; no model or tool authority is implied");
+            "give the immutable task, agent_context, and write_scope roots to the user-selected adapter, then call mode=admit with its candidate roots; no model or tool authority is implied");
         return;
     }
     size_t input_len = 0;

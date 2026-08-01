@@ -67,27 +67,25 @@ ZCL_COMMAND_READY_COMMAND(
 ZCL_COMMAND_READY_COMMAND(
     "zcode.package.dev.improve", "zcode.package.dev", "zcode.improve",
     "Improve code candidate",
-    "mode=plan captures the current tracked workspace into the existing ZVCS "
-    "manifest/blob CAS, stores canonical policy and task objects, resolves "
-    "context_symbol through the exact code index, and returns immutable task "
-    "and agent_context.v1 roots for any user-selected model adapter. It does "
-    "not launch a model or grant tools. Explicit mode=admit must name the "
-    "planned task/context roots and rederive both before it stores the "
-    "candidate or queues the existing ZBuild action. Omitting mode retains "
-    "the legacy one-shot admission form. The task "
-    "binds source, dependency lock, write scope, "
+    "mode=plan captures the tracked workspace into the existing ZVCS CAS, "
+    "stores canonical policy/task objects, resolves context_symbol, and "
+    "returns immutable task, agent_context.v1, and write_scope.v1 roots. It "
+    "does not launch a model or grant tools. mode=admit must name the planned "
+    "task/context roots and same write_scope_csv, then rederive them before "
+    "storing a candidate or queuing ZBuild. Omitting mode retains legacy "
+    "one-shot admission. The task binds source, dependency lock, write scope, "
     "acceptance tests, model policy, goal, limits, and expiry. action_kind "
     "selects only fixed compile, test, or deterministic fuzz; "
     "fixed_input_path supplies its exact "
-    "CAS input. No wallet/node/network authority is granted. Model-neutral "
+    "CAS input. No wallet/node/network authority is granted. Adapter "
     "provenance never grants acceptance. remote_peer sends the exact "
     "content.v2 context to that advertised peer; missing/stale capability "
     "reports LOCAL_FALLBACK and preserves the local queued action.", 0,
     "zcode,improve,task,agent,zbuild,proof,compile,test,fuzz",
     "zcl.zcode_improve.input.v1", "zcl.zcode_improve.v1",
-    "workspace,datadir,mode,planned_task_root,planned_context_root,candidate_source_sha256,source_root,dependency_lock_root,write_scope_root,acceptance_tests_root,model_policy_root,goal,proof_policy_hex,action_kind,fixed_input_path,preprocessed_path,patch_root,candidate_source_root,adapter_policy_root,author_pubkey,candidate_sequence,candidate_created_unix,profile,expires_unix,max_changed_files,max_patch_bytes,max_context_bytes,max_cpu_seconds,max_memory_bytes,max_output_bytes,context_symbol,remote_peer",
-    "workspace,dependency_lock_root,write_scope_root,acceptance_tests_root,model_policy_root,goal,proof_policy_hex,expires_unix",
-    "zclassic23 zcode improve --input='{\"mode\":\"plan\",\"workspace\":\"/src/project\",\"dependency_lock_root\":\"<64hex>\",\"write_scope_root\":\"<64hex>\",\"acceptance_tests_root\":\"<64hex>\",\"model_policy_root\":\"<64hex>\",\"goal\":\"fix seeded bug\",\"proof_policy_hex\":\"<wire hex>\",\"context_symbol\":\"buggy_function\",\"expires_unix\":123}'",
+    "workspace,datadir,mode,planned_task_root,planned_context_root,candidate_source_sha256,source_root,dependency_lock_root,write_scope_root,write_scope_csv,acceptance_tests_root,model_policy_root,goal,proof_policy_hex,action_kind,fixed_input_path,preprocessed_path,patch_root,candidate_source_root,adapter_policy_root,author_pubkey,candidate_sequence,candidate_created_unix,profile,expires_unix,max_changed_files,max_patch_bytes,max_context_bytes,max_cpu_seconds,max_memory_bytes,max_output_bytes,context_symbol,remote_peer",
+    "workspace,dependency_lock_root,write_scope_csv,acceptance_tests_root,model_policy_root,goal,proof_policy_hex,expires_unix",
+    "zclassic23 zcode improve --input='{\"mode\":\"plan\",\"workspace\":\"/src/project\",\"dependency_lock_root\":\"<64hex>\",\"write_scope_csv\":\"src,include\",\"acceptance_tests_root\":\"<64hex>\",\"model_policy_root\":\"<64hex>\",\"goal\":\"fix seeded bug\",\"proof_policy_hex\":\"<wire hex>\",\"context_symbol\":\"buggy_function\",\"expires_unix\":123}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
