@@ -257,7 +257,7 @@
 # cohesive scoring module mirroring package_store.c's one-file shape).
 # Freshly baselined at its starting size (845) so future growth on it
 # becomes visible; count unchanged.
-11
+14
 #
 # 2026-07-27 (os_sandbox dynamic Landlock handled-set): os_sandbox_linux.c
 # grew 1415 -> 1422 — the slice-6 unconditional handled-set addition of
@@ -464,3 +464,22 @@
 # answer "which translation units read this file" and "is there an include
 # graph at all", the second of which is what lets a caller tell an empty
 # answer apart from a missing one.
+#
+# 2026-07-31 (four-lane integration): raised 11 -> 14. One new file is
+# BASELINED rather than counted: circuit_spend.c at 959, the native Sapling
+# spend circuit now carrying all 28 sections of the reference synthesizer
+# instead of stopping at 21. Splitting it would cut a single synthesize
+# routine mid-section, which costs more than it buys.
+#
+# The three that spend a ratchet slot, each reviewed against the change that
+# grew it:
+#   msgprocessor.c   2472 -> 2541  the node now sizes its body request to
+#                                  the room it actually has, and names a
+#                                  dropped body instead of discarding it
+#                                  silently (56% of a sync's downloads).
+#   groth16_prover.c 1057 -> 1199  witness generation for the seven new
+#                                  spend-circuit sections.
+#   sapling.c        1214 -> 1220  the six lines wiring them in.
+#
+# circuit_gadgets.c also tightened from 1646 -> 1064. Tightening does not
+# move this count; it only removes obsolete growth headroom.

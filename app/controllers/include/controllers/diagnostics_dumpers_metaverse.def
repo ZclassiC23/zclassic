@@ -4,7 +4,9 @@
  * the shared #include contract). Data-only: no macro definitions or include
  * guards belong in this file.
  *
- * Intentionally empty: no metaverse subsystem currently registers a dumpstate
- * provider. Add rows here as metaverse (app/controllers - metaverse sources)
- * gains introspectable runtime state — see CLAUDE.md "Adding state
- * introspection". */
+ * Build-fabric runtime owns the first metaverse diagnostics provider. */
+
+DIAG_SERVICE("build_fabric", build_fabric_dump_state_json,
+             "Build coordinator/worker supervision, progress, and ceilings",
+             "app/services/src/build_fabric_runtime.c",
+             "lib/test/src/test_build_fabric.c")

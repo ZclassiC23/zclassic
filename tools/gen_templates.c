@@ -14,6 +14,7 @@
 #include <stdbool.h>
 #include <dirent.h>
 #include <ctype.h>
+#include <utime.h>
 
 #include "util/safe_alloc.h"
 
@@ -215,7 +216,18 @@ static int commit_staged(FILE *out, const char *tmp_path, const char *out_path,
     free(new_buf);
     free(old_buf);
 
-    if (same) { remove(tmp_path); return 0; }
+    if (same) {
+        remove(tmp_path);
+        /* The target can remain older than a freshly compiled generator even
+         * though its bytes are already canonical.  Leaving that timestamp in
+         * place makes every later Make parse regenerate both headers and then
+         * conservatively relink their dependants.  Advance only freshness;
+         * source identity remains content-addressed and the next invocation
+         * becomes a true no-op. */
+        if (utime(out_path, NULL) != 0)
+            return 1;
+        return 0;
+    }
     if (rename(tmp_path, out_path) != 0) { remove(tmp_path); return 1; }
     *out_changed = true;
     return 0;

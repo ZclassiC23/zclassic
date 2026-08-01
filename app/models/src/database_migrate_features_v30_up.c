@@ -416,6 +416,105 @@ int node_db_migrate_features_v30_up(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 41) {
+        /* v41: ZBuild Fabric coordinator ledger. Build jobs own ordered
+         * actions; approved workers may sign receipts binding an action to an
+         * output. This is local operator/development state, never consensus. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS build_jobs ("
+            "job_id TEXT PRIMARY KEY CHECK(length(job_id)=64),"
+            "source_sha256 TEXT NOT NULL CHECK(length(source_sha256)=64),"
+            "source_cas_sha3 TEXT NOT NULL CHECK(length(source_cas_sha3)=64),"
+            "toolchain_sha3 TEXT NOT NULL CHECK(length(toolchain_sha3)=64),"
+            "profile TEXT NOT NULL CHECK(length(profile) BETWEEN 1 AND 31),"
+            "state TEXT NOT NULL CHECK(state IN ('PLANNED','SNAPSHOTTED',"
+            "'QUEUED','CLAIMED','RUNNING','VERIFYING','ACCEPTED','CACHE_HIT',"
+            "'LOCAL_FALLBACK','DISPUTED','CANCELLED','FAILED')),"
+            "outcome TEXT NOT NULL DEFAULT '',"
+            "cancel_requested INTEGER NOT NULL DEFAULT 0 "
+            "  CHECK(cancel_requested IN (0,1)),"
+            "created_at INTEGER NOT NULL CHECK(created_at>=0),"
+            "updated_at INTEGER NOT NULL CHECK(updated_at>=0)) WITHOUT ROWID");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_build_jobs_state_created "
+            "ON build_jobs(state,created_at DESC)");
+
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS build_actions ("
+            "action_id TEXT PRIMARY KEY CHECK(length(action_id)=64),"
+            "job_id TEXT NOT NULL REFERENCES build_jobs(job_id) ON DELETE CASCADE,"
+            "sequence INTEGER NOT NULL CHECK(sequence>=0),"
+            "kind TEXT NOT NULL CHECK(length(kind) BETWEEN 1 AND 63),"
+            "state TEXT NOT NULL CHECK(state IN ('PLANNED','SNAPSHOTTED',"
+            "'QUEUED','CLAIMED','RUNNING','VERIFYING','ACCEPTED','CACHE_HIT',"
+            "'LOCAL_FALLBACK','DISPUTED','CANCELLED','FAILED')),"
+            "outcome TEXT NOT NULL DEFAULT '',"
+            "input_root_sha3 TEXT NOT NULL CHECK(length(input_root_sha3)=64),"
+            "target TEXT NOT NULL CHECK(length(target) BETWEEN 1 AND 63),"
+            "flags_sha3 TEXT NOT NULL CHECK(length(flags_sha3)=64),"
+            "environment_sha3 TEXT NOT NULL CHECK(length(environment_sha3)=64),"
+            "virtual_workdir TEXT NOT NULL "
+            "  CHECK(length(virtual_workdir) BETWEEN 1 AND 255),"
+            "declared_outputs TEXT NOT NULL "
+            "  CHECK(length(declared_outputs) BETWEEN 1 AND 255),"
+            "resource_policy TEXT NOT NULL "
+            "  CHECK(length(resource_policy) BETWEEN 1 AND 255),"
+            "output_root_sha3 TEXT NOT NULL DEFAULT '' "
+            "  CHECK(length(output_root_sha3) IN (0,64)),"
+            "worker_id TEXT NOT NULL DEFAULT '' CHECK(length(worker_id) IN (0,64)),"
+            "last_error TEXT NOT NULL DEFAULT '' CHECK(length(last_error)<=255),"
+            "created_at INTEGER NOT NULL CHECK(created_at>=0),"
+            "updated_at INTEGER NOT NULL CHECK(updated_at>=0),"
+            "UNIQUE(job_id,sequence)) WITHOUT ROWID");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_build_actions_job_sequence "
+            "ON build_actions(job_id,sequence)");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_build_actions_state_updated "
+            "ON build_actions(state,updated_at)");
+
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS build_workers ("
+            "worker_id TEXT PRIMARY KEY CHECK(length(worker_id)=64),"
+            "signer_pubkey TEXT NOT NULL UNIQUE CHECK(length(signer_pubkey)=64),"
+            "capabilities TEXT NOT NULL DEFAULT '' CHECK(length(capabilities)<=1023),"
+            "approved INTEGER NOT NULL DEFAULT 0 CHECK(approved IN (0,1)),"
+            "revoked INTEGER NOT NULL DEFAULT 0 CHECK(revoked IN (0,1)),"
+            "approved_at INTEGER NOT NULL DEFAULT 0 CHECK(approved_at>=0),"
+            "expires_at INTEGER NOT NULL DEFAULT 0 CHECK(expires_at>=0),"
+            "last_seen_at INTEGER NOT NULL DEFAULT 0 CHECK(last_seen_at>=0)) "
+            "WITHOUT ROWID");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_build_workers_approval "
+            "ON build_workers(approved,revoked,expires_at)");
+
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS build_receipts ("
+            "receipt_id TEXT PRIMARY KEY CHECK(length(receipt_id)=64),"
+            "action_id TEXT NOT NULL REFERENCES build_actions(action_id) "
+            "  ON DELETE CASCADE,"
+            "job_id TEXT NOT NULL REFERENCES build_jobs(job_id) ON DELETE CASCADE,"
+            "worker_id TEXT NOT NULL REFERENCES build_workers(worker_id),"
+            "action_sha3 TEXT NOT NULL CHECK(length(action_sha3)=64),"
+            "output_sha3 TEXT NOT NULL CHECK(length(output_sha3)=64),"
+            "signature TEXT NOT NULL CHECK(length(signature)=128),"
+            "confinement TEXT NOT NULL CHECK(length(confinement) BETWEEN 1 AND 255),"
+            "exit_status INTEGER NOT NULL CHECK(exit_status BETWEEN 0 AND 255),"
+            "created_at INTEGER NOT NULL CHECK(created_at>=0)) WITHOUT ROWID");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_build_receipts_job_created "
+            "ON build_receipts(job_id,created_at)");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_build_receipts_action "
+            "ON build_receipts(action_id)");
+
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('041')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 41);
+        current_ver = 41;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }

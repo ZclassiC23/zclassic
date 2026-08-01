@@ -1783,11 +1783,49 @@ static int test_distill_first_error(void)
     return failures;
 }
 
+static int test_native_source_cas_shadow(void)
+{
+    int failures = 0;
+    TEST("dev platform: native source CAS is incremental and remains shadow authority") {
+        static const char fixture[] = "test-tmp/dev_source_cas_shadow";
+        ASSERT(system("rm -rf test-tmp/dev_source_cas_shadow") == 0);
+        ASSERT(dp_mk_write(fixture, "lib/net/src/source_cas_a.c",
+                           "int source_cas_a(void) { return 1; }\n"));
+        ASSERT(dp_mk_write(fixture, "lib/net/include/net/source_cas_a.h",
+                           "int source_cas_a(void);\n"));
+
+        struct dev_source_record first = {0}, warm = {0}, edited = {0};
+        ASSERT(zcl_dev_source_cas_capture(fixture, &first));
+        ASSERT(first.cas_present);
+        ASSERT(strlen(first.cas_root_sha3) == 64);
+        ASSERT(first.cas_files_total == 2);
+        ASSERT(first.cas_files_read == 2);
+
+        ASSERT(zcl_dev_source_cas_capture(fixture, &warm));
+        ASSERT(warm.cas_present);
+        ASSERT(strcmp(first.cas_root_sha3, warm.cas_root_sha3) == 0);
+        ASSERT(warm.cas_files_total == 2);
+        ASSERT(warm.cas_files_read == 0);
+        ASSERT(warm.cas_nodes_hashed == 0);
+
+        ASSERT(dp_mk_write(fixture, "lib/net/src/source_cas_a.c",
+                           "int source_cas_a(void) { return 2; }\n"));
+        ASSERT(zcl_dev_source_cas_capture(fixture, &edited));
+        ASSERT(edited.cas_present);
+        ASSERT(edited.cas_files_read == 1);
+        ASSERT(strcmp(first.cas_root_sha3, edited.cas_root_sha3) != 0);
+        ASSERT(system("rm -rf test-tmp/dev_source_cas_shadow") == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_dev_platform(void)
 {
     int failures = 0;
     failures += test_failure_store();
     failures += test_distill_first_error();
+    failures += test_native_source_cas_shadow();
     failures += test_menu_and_search();
     failures += test_change_classification();
     failures += test_change_plan_closure();

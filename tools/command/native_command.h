@@ -1359,6 +1359,24 @@ void zcl_native_handle_telemetry_metaverse_properties(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* metaverse.build.* — durable content-addressed build coordinator ledger. */
+void zcl_native_handle_metaverse_build_plan(
+    const struct zcl_command_request *, struct zcl_command_reply *);
+void zcl_native_handle_metaverse_build_submit(
+    const struct zcl_command_request *, struct zcl_command_reply *);
+void zcl_native_handle_metaverse_build_status(
+    const struct zcl_command_request *, struct zcl_command_reply *);
+void zcl_native_handle_metaverse_build_cancel(
+    const struct zcl_command_request *, struct zcl_command_reply *);
+void zcl_native_handle_metaverse_build_receipt(
+    const struct zcl_command_request *, struct zcl_command_reply *);
+void zcl_native_handle_metaverse_build_worker_list(
+    const struct zcl_command_request *, struct zcl_command_reply *);
+void zcl_native_handle_metaverse_build_worker_approve(
+    const struct zcl_command_request *, struct zcl_command_reply *);
+void zcl_native_handle_metaverse_build_worker_revoke(
+    const struct zcl_command_request *, struct zcl_command_reply *);
+
 /* ── the three WHOLE-NODE rollups
  * (tools/command/native_telemetry_rollup_command.c). They iterate the provider
  * registry rather than naming domains, and fold verdicts from the one shared

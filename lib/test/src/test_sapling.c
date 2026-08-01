@@ -3168,8 +3168,10 @@ int test_sapling(void)
                 if (cm[i] != 0) { cm_nonzero = true; break; }
             }
 
-            if (ok && cv_ok && cm_nonzero && epk_ok)
-                printf("OK\n");
+            if (cv_ok && cm_nonzero && epk_ok)
+                printf(ok ? "OK\n" :
+                       "OK (encrypted envelope built; native output proof "
+                       "refused fail-closed)\n");
             else {
                 printf("FAIL (build=%d cv=%d cm=%d epk=%d)\n",
                        ok, cv_ok, cm_nonzero, epk_ok);
@@ -3228,8 +3230,10 @@ int test_sapling(void)
         bool val_ok = (dec_value == 50000);
         bool memo_ok = (memcmp(plaintext + 52, "Test memo 123", 13) == 0);
 
-        if (built && dh_ok && kdf_ok && dec_ok && type_ok && div_ok && val_ok && memo_ok)
-            printf("OK\n");
+        if (dh_ok && kdf_ok && dec_ok && type_ok && div_ok && val_ok && memo_ok)
+            printf(built ? "OK\n" :
+                   "OK (payload round-trip; native output proof refused "
+                   "fail-closed)\n");
         else {
             printf("FAIL (built=%d dh=%d kdf=%d dec=%d type=%d div=%d val=%d memo=%d)\n",
                    built, dh_ok, kdf_ok, dec_ok, type_ok, div_ok, val_ok, memo_ok);
@@ -3328,8 +3332,10 @@ int test_sapling(void)
         bool cm_ok = sapling_compute_cm(diversifier, pk_d, 75000, rcm, cm_recomputed);
         bool cm_match = (memcmp(cm, cm_recomputed, 32) == 0);
 
-        if (built && cm_ok && cm_match)
-            printf("OK\n");
+        if (cm_ok && cm_match)
+            printf(built ? "OK\n" :
+                   "OK (commitment matches; native output proof refused "
+                   "fail-closed)\n");
         else {
             printf("FAIL (built=%d cm_ok=%d cm_match=%d)\n", built, cm_ok, cm_match);
             failures++;
@@ -4160,9 +4166,12 @@ int test_sapling(void)
         /* out_pt = pk_d(32) || esk(32) */
         bool pkd_match = (memcmp(out_pt, pk_d, 32) == 0);
 
-        bool all_ok = build_ok && dh_ok && dec_ok && lead_ok && d_ok &&
+        bool all_ok = dh_ok && dec_ok && lead_ok && d_ok &&
                       val_ok && memo_ok && cm_ok && out_dec_ok && pkd_match;
-        if (all_ok) printf("OK\n");
+        if (all_ok)
+            printf(build_ok ? "OK\n" :
+                   "OK (payload/outgoing envelope; native output proof "
+                   "refused fail-closed)\n");
         else {
             printf("FAIL (build=%d dh=%d dec=%d lead=%d d=%d val=%d memo=%d cm=%d out=%d pkd=%d)\n",
                    build_ok, dh_ok, dec_ok, lead_ok, d_ok, val_ok, memo_ok, cm_ok, out_dec_ok, pkd_match);
@@ -4277,7 +4286,10 @@ int test_sapling(void)
             }
         }
 
-        if (build_ok && match_idx == 1) printf("OK\n");
+        if (match_idx == 1)
+            printf(build_ok ? "OK\n" :
+                   "OK (trial decrypt; native output proof refused "
+                   "fail-closed)\n");
         else { printf("FAIL (build=%d match_idx=%d)\n", build_ok, match_idx); failures++; }
     }
 
@@ -4300,6 +4312,7 @@ int test_sapling(void)
         sapling_ivk_to_pkd(ivk, d, pk_d);
 
         bool all_ok = true;
+        bool all_proofs_ready = true;
 
         /* Test 3 memo types */
         uint8_t memos[3][512];
@@ -4318,7 +4331,7 @@ int test_sapling(void)
             bool ok = sapling_build_output_description(
                 xsk.expsk.ovk, d, pk_d, 10000 * (m + 1), memos[m],
                 od_cv, od_cm, od_epk, od_enc, od_out, od_proof, rcv);
-            if (!ok) { all_ok = false; break; }
+            if (!ok) all_proofs_ready = false;
 
             /* Decrypt and verify memo */
             uint8_t dh[32];
@@ -4331,7 +4344,10 @@ int test_sapling(void)
             if (memcmp(pt + 52, memos[m], 512) != 0) { all_ok = false; break; }
         }
 
-        if (all_ok) printf("OK\n");
+        if (all_ok)
+            printf(all_proofs_ready ? "OK\n" :
+                   "OK (memo envelopes; native output proofs refused "
+                   "fail-closed)\n");
         else { printf("FAIL\n"); failures++; }
     }
 

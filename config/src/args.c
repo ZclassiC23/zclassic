@@ -86,6 +86,8 @@ void print_usage(const char *prog)
     printf("  -hotswap-activate   Arm Tier-1 live hot-swap ACTIVATION (dev only;\n");
     printf("                      also needs ZCL_HOTSWAP_ACTIVATE=1 and the exact\n");
     printf("                      ~/.zclassic-c23-dev datadir; canonical refused).\n");
+    printf("  -buildworker        Opt in to confined metaverse C23 compile work\n");
+    printf("                      (public preprocessed inputs only; no network).\n");
     printf("  -allow-plaintext-wallet  Create a new wallet UNENCRYPTED at rest\n");
     printf("                      (loud opt-in; otherwise set ZCL_WALLET_PASSPHRASE\n");
     printf("                      or first-run wallet creation refuses).\n");
@@ -426,6 +428,7 @@ int args_parse_node_options(int argc, char **argv, struct app_context *ctx,
             atomic_store(&g_enforce_checkdatasig_sigops, true);
         }
         else if (strcmp(argv[i], "-nobgvalidation") == 0) ctx->no_bg_validation = true;
+        else if (strcmp(argv[i], "-buildworker") == 0) ctx->build_worker = true;
         /* K3 throughput levers, default OFF (see boot.h / hw_profile.h). The
          * derive gate is set here (pre-boot) so the reducer activation fold sees
          * the derived cadence. */

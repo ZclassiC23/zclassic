@@ -12,7 +12,7 @@
 2. `make -j"$(nproc)"` — build `build/bin/zclassic23`. One whole-program LTO `cc` per binary, so this is minutes even warm.
 3. `build/bin/zclassic23 discover help` — the top of the command tree, not a flat list: it prints the 9 command roots plus the bare `status` leaf. Descend with `discover help <path>`, narrow with `discover search <query>` (query is **positional**), and get exact input keys with `discover schema <leaf>`. The whole catalog is `docs/API_REFERENCE.md`, generated from `config/commands/*.def`.
 4. `build/bin/zclassic23 code map` — the source tree's floor plan, from the navigator built into the binary. First call builds the index (~1.4 s, and it reports `budget_exceeded`); later calls are ~12 ms.
-5. `make t-fast ONLY=<substring>` — run the test groups whose names contain `<substring>`, e.g. `make t-fast ONLY=boot_phase`. `ONLY=` is mandatory and is resolved against the registered group list at Makefile parse time, so a missing, typoed, or literally-pasted `<substring>` fails in under a second with the near-miss candidates — before anything compiles. All test groups by name, no build: `make t-list`. `make test-parallel` runs the whole suite.
+5. `make -j"$(nproc)" t-fast ONLY=<substring>` — run the test groups whose names contain `<substring>`, e.g. `make -j"$(nproc)" t-fast ONLY=boot_phase`. `ONLY=` is mandatory and is resolved against the registered group list at Makefile parse time, so a missing, typoed, or literally-pasted `<substring>` fails in under a second with the near-miss candidates — before anything compiles. All test groups by name, no build: `make t-list`. `make -j"$(nproc)" test-parallel` runs the whole suite.
 
 <!-- claim: symbol-present t-fast Makefile # step 5's target -->
 <!-- claim: symbol-present test-parallel Makefile # step 5's whole-suite target -->
@@ -437,9 +437,9 @@ Progress via: `zclassic23 core sync validation`
 ## Development
 
 Build/test/deploy commands, the fast inner loop, and the push traps are in
-the **`zclassic23-dev` skill** — the short version: `make build-only`
-(compile-check), `make -j$(nproc)` (full build), `make test` /
-`make test-parallel` (the canonical runner — never `test_zcl` directly),
+the **`zclassic23-dev` skill** — the short version: `make -j"$(nproc)" build-only`
+(compile-check), `make -j"$(nproc)"` (full build), `make -j"$(nproc)" test` /
+`make -j"$(nproc)" test-parallel` (the canonical runner — never `test_zcl` directly),
 `make lint`, and `make deploy` (owner-gated canonical only). Public
 `make deploy-dev*`, `make agent-deploy-fast`, and recovery apply entry points
 are contained and refuse; use build, verify, plan, and probe surfaces during
@@ -448,7 +448,7 @@ Phase 0.
 Note on `-j`: each binary is ONE whole-program `cc` over ~660–1400 `.c` files
 (LTO), so `-j$(nproc)` only overlaps the 2–3 separate binaries + the LTO link,
 NOT the per-binary front-end compile. For a fast compile-check inner loop use
-`make build-only` (664 `cc -c` genuinely parallel under `-j`); header edits are
+`make -j"$(nproc)" build-only` (664 `cc -c` genuinely parallel under `-j`); header edits are
 now tracked via depfiles, so it no longer false-greens on a header change.
 Default build targets `-march=x86-64-v3` (portable: AVX2/FMA/BMI2); pass
 `ZCL_NATIVE=1` to build for the host CPU only.

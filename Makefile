@@ -149,6 +149,45 @@ BUILD_INVOCATION_PID := $(if $(BUILD_EPOCH_CLEAN_ONLY),0,$(strip $(shell printf 
 BUILD_INVOCATION_START := $(if $(BUILD_EPOCH_CLEAN_ONLY),0,$(strip $(shell awk '{print $$22}' /proc/$(BUILD_INVOCATION_PID)/stat 2>/dev/null)))
 BUILD_INVOCATION_ID := $(if $(BUILD_EPOCH_CLEAN_ONLY),clean,$(strip $(shell printf '%s\0%s' '$(BUILD_INVOCATION_PID)' '$(BUILD_INVOCATION_START)' | sha256sum | awk '{print $$1}')))
 ZCL_SOURCE_IDENTITY_SESSION := $(BUILD_INVOCATION_PID):$(BUILD_INVOCATION_START)
+
+# Deriving one compile epoch fingerprints the compiler, sysroot, flags, and
+# build-system inputs.  Doing that for every profile on every parse made a
+# warm one-group test pay for build-only, dev, strict, coverage, and sanitizer
+# profiles it could never consume.  Exact known goals select only the profile
+# they execute; mixed/default/unknown goals retain the conservative all-profile
+# fallback so a newly-added goal cannot silently lose freshness authority.
+ZCL_EPOCH_ALL_PROFILES := build-only dev dev-asan dev-tsan test-fast \
+	test-strict test-asan test-tsan coverage
+ZCL_EPOCH_PROFILES := $(ZCL_EPOCH_ALL_PROFILES)
+ifeq ($(BUILD_EPOCH_CLEAN_ONLY),1)
+ZCL_EPOCH_PROFILES :=
+else ifeq ($(ZCL_WORKTREE_PRIME_ONLY),1)
+ZCL_EPOCH_PROFILES :=
+else ifeq ($(words $(MAKECMDGOALS)),1)
+ZCL_EPOCH_SINGLE_GOAL := $(firstword $(MAKECMDGOALS))
+ifneq ($(filter build-only,$(ZCL_EPOCH_SINGLE_GOAL)),)
+ZCL_EPOCH_PROFILES := build-only
+else ifneq ($(filter fast-compile dev-build-only dev-bin zclassic23-dev,$(ZCL_EPOCH_SINGLE_GOAL)),)
+ZCL_EPOCH_PROFILES := dev
+else ifneq ($(filter t-fast t-fast-exact test_parallel_fast test-parallel-fast-active,$(ZCL_EPOCH_SINGLE_GOAL)),)
+ZCL_EPOCH_PROFILES := test-fast
+else ifneq ($(filter t test test_parallel test-parallel test-parallel-active,$(ZCL_EPOCH_SINGLE_GOAL)),)
+ZCL_EPOCH_PROFILES := test-strict
+else ifneq ($(filter t-asan test-asan asan-ci,$(ZCL_EPOCH_SINGLE_GOAL)),)
+ZCL_EPOCH_PROFILES := test-asan
+else ifneq ($(filter dev-asan zclassic23-dev-asan,$(ZCL_EPOCH_SINGLE_GOAL)),)
+ZCL_EPOCH_PROFILES := dev-asan
+else ifneq ($(filter t-tsan test-tsan tsan-ci,$(ZCL_EPOCH_SINGLE_GOAL)),)
+ZCL_EPOCH_PROFILES := test-tsan
+else ifneq ($(filter dev-tsan zclassic23-dev-tsan,$(ZCL_EPOCH_SINGLE_GOAL)),)
+ZCL_EPOCH_PROFILES := dev-tsan
+else ifneq ($(filter coverage coverage-locked,$(ZCL_EPOCH_SINGLE_GOAL)),)
+ZCL_EPOCH_PROFILES := coverage
+else ifneq ($(filter lint lint-fast watcher-safety-gates dev-failure-execution-id ff t-changed fast-changed-compile fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop t-list templates site-css explorer-css,$(ZCL_EPOCH_SINGLE_GOAL)),)
+ZCL_EPOCH_PROFILES :=
+endif
+endif
+
 ifneq ($(origin BUILD_SOURCE_RECORD),command line)
 ifeq ($(ZCL_STANDALONE_CLEAN),1)
 BUILD_SOURCE_RECORD := $(ZCL_ZERO_SHA256) 1 $(ZCL_ZERO_SHA256)
@@ -692,7 +731,7 @@ CHECKOUT_LOCK_TOOL = tools/dev/checkout-lock.sh
 CHECKOUT_LOCK = $(BUILD_DIR)/.checkout.lock
 CHECKOUT_LOCK_MODE = $(if $(filter 1,$(ZCL_DEV_WATCH_LANE)),watcher,foreground)
 BUILD_EPOCH_OBJECT_FORCE = $(if $(ZCL_COMPDB_FORCE),FORCE,)
-ifeq ($(BUILD_EPOCH_CLEAN_ONLY),1)
+ifeq ($(strip $(ZCL_EPOCH_PROFILES)),)
 BUILD_COMPILER_ID := $(ZCL_ZERO_SHA256)
 BUILD_SYSTEM_ID := $(ZCL_ZERO_SHA256)
 else
@@ -725,16 +764,23 @@ BUILD_ONLY_EPOCH_LINK_FLAGS := no-link
 DEV_EPOCH_COMPILE_FLAGS := $(strip normal=$(DEV_CFLAGS) hot=$(DEV_HOT_CFLAGS) deps=-MD,-MP)
 DEV_EPOCH_LINK_FLAGS := $(strip $(DEV_LDFLAGS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) cxx=$(CXX))
 
-ifeq ($(BUILD_EPOCH_CLEAN_ONLY),1)
-BUILD_ONLY_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
-DEV_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
-else
+ifneq ($(filter build-only,$(ZCL_EPOCH_PROFILES)),)
 BUILD_ONLY_COMPILE_EPOCH := $(call zcl_compile_epoch,build-only-v2,BUILD_ONLY_EPOCH_COMPILE_FLAGS,BUILD_ONLY_EPOCH_LINK_FLAGS)
-DEV_COMPILE_EPOCH := $(call zcl_compile_epoch,dev-v2,DEV_EPOCH_COMPILE_FLAGS,DEV_EPOCH_LINK_FLAGS)
-BUILD_CORE_EPOCHS_VALID := $(shell printf '%s\n' '$(BUILD_ONLY_COMPILE_EPOCH)' '$(DEV_COMPILE_EPOCH)' | awk 'BEGIN { ok=1; n=0 } { n++; if ($$0 !~ /^[0-9a-f]{64}$$/) ok=0 } END { if (ok && n == 2) print "yes" }')
-ifneq ($(BUILD_CORE_EPOCHS_VALID),yes)
-$(error build-only/dev compile-epoch derivation failed)
+BUILD_ONLY_COMPILE_EPOCH_VALID := $(shell printf '%s\n' '$(BUILD_ONLY_COMPILE_EPOCH)' | awk '$$0 ~ /^[0-9a-f]{64}$$/ { print "yes" }')
+ifneq ($(BUILD_ONLY_COMPILE_EPOCH_VALID),yes)
+$(error build-only compile-epoch derivation failed)
 endif
+else
+BUILD_ONLY_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
+endif
+ifneq ($(filter dev,$(ZCL_EPOCH_PROFILES)),)
+DEV_COMPILE_EPOCH := $(call zcl_compile_epoch,dev-v2,DEV_EPOCH_COMPILE_FLAGS,DEV_EPOCH_LINK_FLAGS)
+DEV_COMPILE_EPOCH_VALID := $(shell printf '%s\n' '$(DEV_COMPILE_EPOCH)' | awk '$$0 ~ /^[0-9a-f]{64}$$/ { print "yes" }')
+ifneq ($(DEV_COMPILE_EPOCH_VALID),yes)
+$(error dev compile-epoch derivation failed)
+endif
+else
+DEV_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
 endif
 
 DEV_CANDIDATE_BIN = $(BIN_DIR)/dev/epochs/$(DEV_COMPILE_EPOCH)/zclassic23-dev
@@ -746,14 +792,14 @@ DEV_ACTIVE_BIN = $(DEV_CANDIDATE_BIN)
 # asserts above stay untouched.
 DEV_ASAN_EPOCH_COMPILE_FLAGS := $(strip $(DEV_ASAN_CFLAGS) deps=-MD,-MP)
 DEV_ASAN_EPOCH_LINK_FLAGS := $(strip $(DEV_ASAN_LDFLAGS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) cxx=$(CXX))
-ifeq ($(BUILD_EPOCH_CLEAN_ONLY),1)
-DEV_ASAN_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
-else
+ifneq ($(filter dev-asan,$(ZCL_EPOCH_PROFILES)),)
 DEV_ASAN_COMPILE_EPOCH := $(call zcl_compile_epoch,dev-asan-v2,DEV_ASAN_EPOCH_COMPILE_FLAGS,DEV_ASAN_EPOCH_LINK_FLAGS)
 DEV_ASAN_COMPILE_EPOCH_VALID := $(shell printf '%s\n' '$(DEV_ASAN_COMPILE_EPOCH)' | awk '$$0 ~ /^[0-9a-f]{64}$$/ { print "yes" }')
 ifneq ($(DEV_ASAN_COMPILE_EPOCH_VALID),yes)
 $(error dev-asan compile-epoch derivation failed)
 endif
+else
+DEV_ASAN_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
 endif
 DEV_ASAN_OBJ_ROOT = $(BUILD_DIR)/dev-asan-obj
 DEV_ASAN_OBJ_DIR = $(DEV_ASAN_OBJ_ROOT)/epochs/$(DEV_ASAN_COMPILE_EPOCH)
@@ -770,14 +816,14 @@ DEV_ASAN_LEASE = $(DEV_ASAN_OBJ_DIR)/.leases/$(BUILD_INVOCATION_ID)
 # dev-asan derivation; the shared *_EPOCHS_VALID asserts above stay untouched.
 DEV_TSAN_EPOCH_COMPILE_FLAGS := $(strip $(DEV_TSAN_CFLAGS) deps=-MD,-MP)
 DEV_TSAN_EPOCH_LINK_FLAGS := $(strip $(DEV_TSAN_LDFLAGS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) cxx=$(CXX))
-ifeq ($(BUILD_EPOCH_CLEAN_ONLY),1)
-DEV_TSAN_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
-else
+ifneq ($(filter dev-tsan,$(ZCL_EPOCH_PROFILES)),)
 DEV_TSAN_COMPILE_EPOCH := $(call zcl_compile_epoch,dev-tsan-v2,DEV_TSAN_EPOCH_COMPILE_FLAGS,DEV_TSAN_EPOCH_LINK_FLAGS)
 DEV_TSAN_COMPILE_EPOCH_VALID := $(shell printf '%s\n' '$(DEV_TSAN_COMPILE_EPOCH)' | awk '$$0 ~ /^[0-9a-f]{64}$$/ { print "yes" }')
 ifneq ($(DEV_TSAN_COMPILE_EPOCH_VALID),yes)
 $(error dev-tsan compile-epoch derivation failed)
 endif
+else
+DEV_TSAN_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
 endif
 DEV_TSAN_OBJ_ROOT = $(BUILD_DIR)/dev-tsan-obj
 DEV_TSAN_OBJ_DIR = $(DEV_TSAN_OBJ_ROOT)/epochs/$(DEV_TSAN_COMPILE_EPOCH)
@@ -1003,7 +1049,8 @@ all: test_zcl zclassic23 zclassic-cli zcl-rpc zclassic23-package-verify
 
 TEST_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(wildcard lib/test/src/*.c))
-TEST_DEV_EXECUTOR_SRCS = tools/dev/devloop_cycle.c tools/dev/dev_failure_store.c
+TEST_DEV_EXECUTOR_SRCS = tools/dev/devloop_cycle.c tools/dev/dev_failure_store.c \
+	tools/dev/dev_source_identity.c tools/dev/devloop_process.c
 SPEC_SRCS = $(wildcard lib/test/spec/*.c)
 CHAOS_SIM_SRCS = tools/sim/sim_peer.c
 
@@ -1019,10 +1066,14 @@ TEST_FAST_CFLAGS = $(filter-out -O3 -flto=auto -Werror,$(CACHED_CFLAGS)) -O1 -g 
 TEST_FAST_LDFLAGS = $(filter-out -flto=auto,$(LDFLAGS)) $(ZCL_DEV_LINKER)
 TEST_FAST_EPOCH_COMPILE_FLAGS := $(strip $(TEST_FAST_CFLAGS) deps=-MD,-MP)
 TEST_FAST_EPOCH_LINK_FLAGS := $(strip $(TEST_FAST_LDFLAGS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) cxx=$(CXX))
-ifeq ($(BUILD_EPOCH_CLEAN_ONLY),1)
-TEST_FAST_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
-else
+ifneq ($(filter test-fast,$(ZCL_EPOCH_PROFILES)),)
 TEST_FAST_COMPILE_EPOCH := $(call zcl_compile_epoch,test-fast-v2,TEST_FAST_EPOCH_COMPILE_FLAGS,TEST_FAST_EPOCH_LINK_FLAGS)
+TEST_FAST_COMPILE_EPOCH_VALID := $(shell printf '%s\n' '$(TEST_FAST_COMPILE_EPOCH)' | awk '$$0 ~ /^[0-9a-f]{64}$$/ { print "yes" }')
+ifneq ($(TEST_FAST_COMPILE_EPOCH_VALID),yes)
+$(error test-fast compile-epoch derivation failed)
+endif
+else
+TEST_FAST_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
 endif
 TEST_FAST_OBJ_DIR = $(TEST_FAST_OBJ_ROOT)/epochs/$(TEST_FAST_COMPILE_EPOCH)
 TEST_PARALLEL_FAST_OBJS = $(patsubst %.c,$(TEST_FAST_OBJ_DIR)/%.o,$(TEST_PARALLEL_FAST_SRCS))
@@ -1075,10 +1126,14 @@ TEST_REL_CFLAGS = $(filter-out -flto=auto,$(CACHED_CFLAGS)) -DZCL_TESTING \
 TEST_REL_LDFLAGS = $(filter-out -flto=auto,$(LDFLAGS))
 TEST_REL_EPOCH_COMPILE_FLAGS := $(strip $(TEST_REL_CFLAGS) deps=-MD,-MP)
 TEST_REL_EPOCH_LINK_FLAGS := $(strip $(TEST_REL_LDFLAGS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) cxx=$(CXX))
-ifeq ($(BUILD_EPOCH_CLEAN_ONLY),1)
-TEST_REL_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
-else
+ifneq ($(filter test-strict,$(ZCL_EPOCH_PROFILES)),)
 TEST_REL_COMPILE_EPOCH := $(call zcl_compile_epoch,test-strict-v2,TEST_REL_EPOCH_COMPILE_FLAGS,TEST_REL_EPOCH_LINK_FLAGS)
+TEST_REL_COMPILE_EPOCH_VALID := $(shell printf '%s\n' '$(TEST_REL_COMPILE_EPOCH)' | awk '$$0 ~ /^[0-9a-f]{64}$$/ { print "yes" }')
+ifneq ($(TEST_REL_COMPILE_EPOCH_VALID),yes)
+$(error test-strict compile-epoch derivation failed)
+endif
+else
+TEST_REL_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
 endif
 TEST_REL_OBJ_DIR = $(TEST_REL_OBJ_ROOT)/epochs/$(TEST_REL_COMPILE_EPOCH)
 TEST_PARALLEL_REL_SRCS = $(TEST_SRCS_NO_MAIN) lib/test/src/test_parallel.c $(SPEC_SRCS) $(CHAOS_SIM_SRCS) $(ALL_SRCS)
@@ -1109,13 +1164,6 @@ $(TEST_REL_LEASE): FORCE
 	  "$(TEST_REL_EPOCH_COMPILE_FLAGS)" "$(TEST_REL_EPOCH_LINK_FLAGS)" \
 	  "$(CC)" "$(CXX)" "$$PPID"
 
-ifneq ($(BUILD_EPOCH_CLEAN_ONLY),1)
-BUILD_TEST_EPOCHS_VALID := $(shell printf '%s\n' '$(TEST_FAST_COMPILE_EPOCH)' '$(TEST_REL_COMPILE_EPOCH)' | awk 'BEGIN { ok=1; n=0 } { n++; if ($$0 !~ /^[0-9a-f]{64}$$/) ok=0 } END { if (ok && n == 2) print "yes" }')
-ifneq ($(BUILD_TEST_EPOCHS_VALID),yes)
-$(error test compile-epoch derivation failed)
-endif
-endif
-
 ifneq ($(filter test-strict,$(ZCL_DEPFILE_PROFILES)),)
 -include $(TEST_PARALLEL_REL_OBJS:.o=.d)
 endif
@@ -1138,14 +1186,14 @@ TEST_ASAN_CFLAGS = $(filter-out -O3 -flto=auto -Werror,$(CACHED_CFLAGS)) -O1 -g 
 TEST_ASAN_LDFLAGS = $(filter-out -flto=auto,$(LDFLAGS)) $(ASAN_COMMON_SAN_FLAGS)
 TEST_ASAN_EPOCH_COMPILE_FLAGS := $(strip $(TEST_ASAN_CFLAGS) deps=-MD,-MP)
 TEST_ASAN_EPOCH_LINK_FLAGS := $(strip $(TEST_ASAN_LDFLAGS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) cxx=$(CXX))
-ifeq ($(BUILD_EPOCH_CLEAN_ONLY),1)
-TEST_ASAN_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
-else
+ifneq ($(filter test-asan,$(ZCL_EPOCH_PROFILES)),)
 TEST_ASAN_COMPILE_EPOCH := $(call zcl_compile_epoch,test-asan-v2,TEST_ASAN_EPOCH_COMPILE_FLAGS,TEST_ASAN_EPOCH_LINK_FLAGS)
 TEST_ASAN_COMPILE_EPOCH_VALID := $(shell printf '%s\n' '$(TEST_ASAN_COMPILE_EPOCH)' | awk '$$0 ~ /^[0-9a-f]{64}$$/ { print "yes" }')
 ifneq ($(TEST_ASAN_COMPILE_EPOCH_VALID),yes)
 $(error test-asan compile-epoch derivation failed)
 endif
+else
+TEST_ASAN_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
 endif
 TEST_ASAN_OBJ_DIR = $(TEST_ASAN_OBJ_ROOT)/epochs/$(TEST_ASAN_COMPILE_EPOCH)
 TEST_ASAN_OBJS = $(patsubst %.c,$(TEST_ASAN_OBJ_DIR)/%.o,$(TEST_ASAN_SRCS))
@@ -1190,14 +1238,14 @@ TEST_TSAN_CFLAGS = $(filter-out -O3 -flto=auto -Werror,$(CACHED_CFLAGS)) -O1 -g 
 TEST_TSAN_LDFLAGS = $(filter-out -flto=auto,$(LDFLAGS)) $(TSAN_COMMON_SAN_FLAGS)
 TEST_TSAN_EPOCH_COMPILE_FLAGS := $(strip $(TEST_TSAN_CFLAGS) deps=-MD,-MP)
 TEST_TSAN_EPOCH_LINK_FLAGS := $(strip $(TEST_TSAN_LDFLAGS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) cxx=$(CXX))
-ifeq ($(BUILD_EPOCH_CLEAN_ONLY),1)
-TEST_TSAN_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
-else
+ifneq ($(filter test-tsan,$(ZCL_EPOCH_PROFILES)),)
 TEST_TSAN_COMPILE_EPOCH := $(call zcl_compile_epoch,test-tsan-v2,TEST_TSAN_EPOCH_COMPILE_FLAGS,TEST_TSAN_EPOCH_LINK_FLAGS)
 TEST_TSAN_COMPILE_EPOCH_VALID := $(shell printf '%s\n' '$(TEST_TSAN_COMPILE_EPOCH)' | awk '$$0 ~ /^[0-9a-f]{64}$$/ { print "yes" }')
 ifneq ($(TEST_TSAN_COMPILE_EPOCH_VALID),yes)
 $(error test-tsan compile-epoch derivation failed)
 endif
+else
+TEST_TSAN_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
 endif
 TEST_TSAN_OBJ_DIR = $(TEST_TSAN_OBJ_ROOT)/epochs/$(TEST_TSAN_COMPILE_EPOCH)
 TEST_TSAN_OBJS = $(patsubst %.c,$(TEST_TSAN_OBJ_DIR)/%.o,$(TEST_TSAN_SRCS))
@@ -5459,14 +5507,14 @@ COV_LDFLAGS = $(filter-out -flto -flto=%,$(LDFLAGS)) --coverage
 COV_TEST_BIN = $(BIN_DIR)/test_zcl_cov
 COV_EPOCH_COMPILE_FLAGS := $(strip $(COV_CFLAGS) -Wno-deprecated-declarations deps=-MD,-MP coverage-staging=v1)
 COV_EPOCH_LINK_FLAGS := $(strip $(COV_LDFLAGS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) cxx=$(CXX))
-ifeq ($(BUILD_EPOCH_CLEAN_ONLY),1)
-COV_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
-else
+ifneq ($(filter coverage,$(ZCL_EPOCH_PROFILES)),)
 COV_COMPILE_EPOCH := $(call zcl_compile_epoch,coverage-v2,COV_EPOCH_COMPILE_FLAGS,COV_EPOCH_LINK_FLAGS)
 COV_COMPILE_EPOCH_VALID := $(shell printf '%s\n' '$(COV_COMPILE_EPOCH)' | awk '$$0 ~ /^[0-9a-f]{64}$$/ { print "yes" }')
 ifneq ($(COV_COMPILE_EPOCH_VALID),yes)
 $(error coverage compile-epoch derivation failed)
 endif
+else
+COV_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
 endif
 COV_BUILD_DIR = $(COV_BUILD_ROOT)/epochs/$(COV_COMPILE_EPOCH)
 COV_TEST_CANDIDATE = $(BIN_DIR)/coverage/epochs/$(COV_COMPILE_EPOCH)/test_zcl_cov

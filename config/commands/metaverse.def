@@ -171,3 +171,152 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE,
     zcl_native_handle_metaverse_property_show)
+
+ZCL_COMMAND_BRANCH("metaverse.build", "metaverse",
+                   "Content-addressed C23 build jobs, actions, and receipts",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_COMMAND(
+    "metaverse.build.plan", "metaverse.build", "",
+    "Persist one immutable preprocessed C23 compile action",
+    "Computes domain-separated build_action.v1 and build_job.v1 identities "
+    "from pre-hashed source, toolchain, flags, environment, and preprocessed "
+    "TU inputs, then atomically records a SNAPSHOTTED "
+    "c23.compile.preprocessed.v1 action. V1 fixes target linux-x86_64-v3, "
+    "virtual root /zbuild/src, output unit.o, no network, and bounded CPU, "
+    "memory, and time. Repeating identical inputs is idempotent; an identity "
+    "collision with different immutable inputs refuses.",
+    0, "metaverse,build,plan,c23,compile,sha3,immutable",
+    "zcl.build_plan.input.v1", "zcl.build_plan.v1",
+    "source_sha256,source_cas_sha3,toolchain_sha3,input_root_sha3,flags_sha3,environment_sha3,profile,datadir",
+    "source_sha256,source_cas_sha3,toolchain_sha3,input_root_sha3,flags_sha3,environment_sha3,profile",
+    "zclassic23 metaverse build plan --input='{\"source_sha256\":\"<64hex>\",\"source_cas_sha3\":\"<64hex>\",\"toolchain_sha3\":\"<64hex>\",\"input_root_sha3\":\"<64hex>\",\"flags_sha3\":\"<64hex>\",\"environment_sha3\":\"<64hex>\",\"profile\":\"dev\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW, ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_metaverse_build_plan)
+
+ZCL_COMMAND_READY_COMMAND(
+    "metaverse.build.submit", "metaverse.build", "",
+    "Queue every action in one planned build",
+    "Atomically advances a planned build and each nonterminal action to "
+    "QUEUED. It records coordinator intent only; worker loss or timeout is "
+    "resolved by the coordinator as a named LOCAL_FALLBACK, never by this "
+    "command waiting on a peer. Re-submission of an already queued job is "
+    "idempotent.",
+    0, "metaverse,build,submit,queue,idempotent",
+    "zcl.build_submit.input.v1", "zcl.build_job.v1",
+    "job_id,datadir", "job_id",
+    "zclassic23 metaverse build submit <job_id>",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW, ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_metaverse_build_submit)
+
+ZCL_COMMAND_READY_READ(
+    "metaverse.build.status", "metaverse.build", "",
+    "Read one durable build and its ordered actions",
+    "Opens node.db strictly read-only and returns the job lifecycle plus its "
+    "bounded, sequence-ordered immutable actions, named outcomes, worker "
+    "bindings, output roots, and last errors.",
+    ZCL_COMMAND_LIST_BUDGET, "metaverse,build,status,actions,lifecycle",
+    "zcl.build_status.input.v1", "zcl.build_status.v1",
+    "job_id,datadir", "job_id", "zclassic23 metaverse build status <job_id>",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_metaverse_build_status)
+
+ZCL_COMMAND_READY_COMMAND(
+    "metaverse.build.cancel", "metaverse.build", "",
+    "Cancel one non-completed build",
+    "Atomically marks the job and all nonterminal actions CANCELLED. Accepted "
+    "or cache-hit jobs refuse cancellation; repeating cancellation is safe.",
+    0, "metaverse,build,cancel,lifecycle,idempotent",
+    "zcl.build_cancel.input.v1", "zcl.build_job.v1",
+    "job_id,datadir", "job_id", "zclassic23 metaverse build cancel <job_id>",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW, ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_metaverse_build_cancel)
+
+ZCL_COMMAND_READY_READ(
+    "metaverse.build.receipt", "metaverse.build", "",
+    "Read one signed worker build receipt",
+    "Returns the exact persisted build_receipt.v1 evidence: action/job/worker "
+    "binding, output root, achieved confinement facts, exit status, canonical "
+    "receipt id, signature, and creation time. The read is strictly read-only.",
+    ZCL_COMMAND_RESULT_BUDGET, "metaverse,build,receipt,signature,confinement",
+    "zcl.build_receipt.input.v1", "zcl.build_receipt.v1",
+    "receipt_id,datadir", "receipt_id",
+    "zclassic23 metaverse build receipt <receipt_id>",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_metaverse_build_receipt)
+
+ZCL_COMMAND_BRANCH("metaverse.build.worker", "metaverse.build",
+                   "Opt-in compile workers and their approved signing keys",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_READ(
+    "metaverse.build.worker.list", "metaverse.build.worker", "",
+    "List build workers and current trust state",
+    "Returns a bounded read-only view of worker ids, signer keys, declared "
+    "capabilities, approval/revocation, expiry, and last-seen time.",
+    ZCL_COMMAND_LIST_BUDGET, "metaverse,build,worker,list,trust",
+    "zcl.build_worker_list.input.v1", "zcl.build_worker_list.v1",
+    "datadir", "", "zclassic23 metaverse build worker list",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_metaverse_build_worker_list)
+
+ZCL_COMMAND_READY_COMMAND(
+    "metaverse.build.worker.approve", "metaverse.build.worker", "",
+    "Approve one Ed25519 build-receipt signer",
+    "Creates or updates the operator-owned trust row for a worker id and "
+    "Ed25519 public key. Approval never executes worker-supplied commands; V1 "
+    "workers remain confined to the fixed preprocessed-TU compile action.",
+    0, "metaverse,build,worker,approve,ed25519,trust",
+    "zcl.build_worker_approve.input.v1", "zcl.build_worker.v1",
+    "worker_id,signer_pubkey,capabilities,expires_at,datadir",
+    "worker_id,signer_pubkey",
+    "zclassic23 metaverse build worker approve <worker_id> --signer_pubkey=<64hex>",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW, ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_metaverse_build_worker_approve)
+
+ZCL_COMMAND_READY_COMMAND(
+    "metaverse.build.worker.revoke", "metaverse.build.worker", "",
+    "Revoke one build-receipt signer without deleting evidence",
+    "Durably revokes the worker. Existing receipts remain queryable, while "
+    "all later receipt acceptance fails before signature trust. Repeated "
+    "revocation is idempotent.",
+    0, "metaverse,build,worker,revoke,trust,receipt",
+    "zcl.build_worker_revoke.input.v1", "zcl.build_worker.v1",
+    "worker_id,datadir", "worker_id",
+    "zclassic23 metaverse build worker revoke <worker_id>",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW, ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_metaverse_build_worker_revoke)

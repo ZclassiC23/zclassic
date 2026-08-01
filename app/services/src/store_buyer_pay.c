@@ -20,6 +20,7 @@
 #include "models/store.h"
 #include "sapling/sapling_prover.h"
 #include "util/safe_alloc.h"
+#include "wallet/sapling_keys.h"
 #include "wallet/wallet.h"
 
 #include <errno.h>
@@ -64,6 +65,21 @@ static bool sb_status_is_terminal(int why)
     }
 }
 
+/* A purchase records the address under the chain that minted the order. Test
+ * and recovery callers can inspect that durable row after selecting another
+ * chain, so the active-HRP router alone is not enough for preflight: it would
+ * mistake a real mainnet Sapling address for transparent on regtest and skip
+ * the proving-backend refusal. Decoding validates the Bech32 payload while
+ * deliberately ignoring HRP; here that is the wanted, read-only historical
+ * classification. The actual send still uses wallet_addr_is_sapling() against
+ * the active chain and therefore cannot route a cross-chain address to spend. */
+static bool sb_purchase_addr_is_sapling(const char *addr)
+{
+    uint8_t diversifier[11], pk_d[32];
+    return wallet_addr_is_sapling(addr) ||
+           sapling_decode_payment_address(addr, diversifier, pk_d);
+}
+
 /* ── pay ────────────────────────────────────────────────────────────── */
 
 struct zcl_result store_buyer_prepare_payment(const char *datadir,
@@ -106,7 +122,7 @@ struct zcl_result store_buyer_prepare_payment(const char *datadir,
      * demanding a prover for one would refuse a payment this build can
      * actually make. The order's address type is the merchant's choice, not
      * the buyer's, so this asks the address rather than a flag. */
-    if (wallet_addr_is_sapling(purchase.payment_addr) &&
+    if (sb_purchase_addr_is_sapling(purchase.payment_addr) &&
         !zclassic_sapling_prover_is_ready()) {
         LOG_WARN(SB_TAG, "pay: refusing purchase %lld — no Sapling proving "
                  "backend (backend=%s status=%s); build with ZCL_WITH_RUST=1 "

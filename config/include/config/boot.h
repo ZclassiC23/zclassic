@@ -234,6 +234,8 @@ struct app_context {
                                  * explicit -fileservice=PEER is always honored
                                  * (the operator chose that peer). */
     bool no_bg_validation;     /* -nobgvalidation : skip background proof verification */
+    bool build_worker;         /* -buildworker : opt in to confined C23
+                                 * compile-worker scheduling/diagnostics */
     bool sandbox_steady;       /* -sandbox=steady : enter the os_sandbox node
                                  * steady-state profile (no_new_privs + Landlock
                                  * datadir grant + node deny-list) at the late

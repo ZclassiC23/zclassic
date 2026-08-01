@@ -393,6 +393,14 @@ size_t api_route_supply(uint8_t *response, size_t response_max);
 size_t api_route_supply_legacy(uint8_t *response, size_t response_max);
 size_t api_route_hodl(uint8_t *response, size_t response_max);
 size_t api_route_factoids(uint8_t *response, size_t response_max);
+size_t api_serve_builds(uint8_t *response, size_t response_max);
+size_t api_serve_build_workers(uint8_t *response, size_t response_max);
+size_t api_serve_build(const char *job_id, uint8_t *response,
+                       size_t response_max);
+size_t api_serve_build_actions(const char *job_id, uint8_t *response,
+                               size_t response_max);
+size_t api_serve_build_receipt(const char *receipt_id, uint8_t *response,
+                               size_t response_max);
 
 /* ── Compute handlers (defined in api_controller_compute.c) ── */
 
