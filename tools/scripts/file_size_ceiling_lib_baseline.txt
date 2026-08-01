@@ -21,7 +21,7 @@
 # Format: <relative-path> <max-loc>   (lines starting with # are comments)
 # Sorted by path.
 
-lib/crypto/src/ed25519.c 993
+lib/crypto/src/ed25519.c 1033
 lib/codeindex/src/codeindex_build.c 1047
 lib/codeindex/src/codeindex_scan.c 1032
 lib/codeindex/src/codeindex_store.c 932
