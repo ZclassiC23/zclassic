@@ -71,12 +71,13 @@ ZCL_COMMAND_READY_COMMAND(
     "existing workspace CAS, content-captures GCC, and queues the existing "
     "ZBuild action. The task binds source, dependency lock, write scope, "
     "acceptance tests, model policy, goal, limits, and expiry. action_kind "
-    "selects only fixed compile or test; fixed_input_path supplies its exact "
+    "selects only fixed compile, test, or deterministic fuzz; "
+    "fixed_input_path supplies its exact "
     "CAS input. No wallet/node/network authority is granted. Model-neutral "
     "provenance never grants acceptance. remote_peer sends the exact "
     "content.v2 context to that advertised peer; missing/stale capability "
     "reports LOCAL_FALLBACK and preserves the local queued action.", 0,
-    "zcode,improve,task,agent,zbuild,proof,compile",
+    "zcode,improve,task,agent,zbuild,proof,compile,test,fuzz",
     "zcl.zcode_improve.input.v1", "zcl.zcode_improve.v1",
     "workspace,datadir,candidate_source_sha256,source_root,dependency_lock_root,write_scope_root,acceptance_tests_root,model_policy_root,goal,proof_policy_hex,action_kind,fixed_input_path,preprocessed_path,patch_root,candidate_source_root,adapter_policy_root,author_pubkey,candidate_sequence,candidate_created_unix,profile,expires_unix,max_changed_files,max_patch_bytes,max_context_bytes,max_cpu_seconds,max_memory_bytes,max_output_bytes,remote_peer",
     "workspace,candidate_source_sha256,source_root,dependency_lock_root,write_scope_root,acceptance_tests_root,model_policy_root,goal,proof_policy_hex,fixed_input_path,patch_root,candidate_source_root,adapter_policy_root,author_pubkey,expires_unix",

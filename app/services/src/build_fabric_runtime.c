@@ -165,7 +165,8 @@ static void *bf_worker_loop(void *arg)
         bool claimed = false;
         struct zcl_result claim = build_fabric_claim(
             ndb, g_local_worker.worker_id, lease_id,
-            (int64_t)platform_time_wall_unix(), 300, &action, &claimed);
+            (int64_t)platform_time_wall_unix(),
+            BUILD_FABRIC_LEASE_SECONDS_MAX, &action, &claimed);
         if (!claim.ok) {
             atomic_fetch_add(&g_worker_failures, 1);
             supervisor_tick(id);
@@ -245,9 +246,9 @@ struct zcl_result build_fabric_runtime_register(bool worker_enabled,
             LOG_WARN("build_fabric", "worker supervisor registration failed");
         else if (worker_enabled) {
             atomic_store(&g_worker_contract.period_secs, 0);
-            atomic_store(&g_worker_contract.deadline_secs, 150);
+            atomic_store(&g_worker_contract.deadline_secs, 600);
             supervisor_set_progress_max_quiet(
-                id, (int64_t)180 * 1000 * 1000);
+                id, (int64_t)610 * 1000 * 1000);
         }
         else
             supervisor_set_progress_exempt(id, "-buildworker not enabled");

@@ -89,6 +89,7 @@
 #include "vcs/package_build.h"
 #include "vcs/package_manifest.h"
 #include "vcs/package_recipe.h"
+#include "vcs/zcode_dev.h"
 #include "vcs/package_release.h"
 
 #include "base/hex.h"
@@ -156,6 +157,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
 
 #define PV_ZBUILD_TEST_EVIDENCE_BYTES 84u
 #define PV_ZBUILD_TEST_TIMEOUT_MS 120000
+#define PV_ZBUILD_FUZZ_EVIDENCE_BYTES 96u
 
 /* Emit-mode bounds. The archive/header install carries the same
  * canonical-path grammar as the manifest, so an emitted path can never
@@ -184,6 +186,13 @@ static void pv_usage(FILE *out)
         "           --zbuild-output=<abs>/unit.o --require-full-isolation\n"
         "   or: zclassic23-package-verify --zbuild-test-input=<abs>/test.bin\n"
         "           --zbuild-test-output=<abs>/test.evidence.v1\n"
+        "           --require-full-isolation\n"
+        "   or: zclassic23-package-verify --zbuild-fuzz-input=<abs>/fuzz.bin\n"
+        "           --zbuild-fuzz-output=<abs>/fuzz.evidence.v1\n"
+        "           --zbuild-fuzz-seeds=<1..4096>\n"
+        "           --zbuild-fuzz-cpu-seconds=<1..600>\n"
+        "           --zbuild-fuzz-memory-bytes=<1..2147483648>\n"
+        "           --zbuild-fuzz-output-bytes=<1..67108864>\n"
         "           --require-full-isolation\n"
         "\n"
         "--emit is INSTALL-BUILD mode (the ZCODE add lifecycle): the same\n"
@@ -1261,10 +1270,189 @@ static int pv_zbuild_test_mode(int argc, char **argv)
     return 0;
 }
 
+/* Fixed deterministic fuzz ABI: execute one exact ELF for seeds [0,N), with
+ * the sole argv "--seed=<u32>" and matching ZCODE_FUZZ_SEED. The environment
+ * is otherwise scrubbed by pv_run_child. A target failure is evidence; a
+ * confinement/launch failure is not. */
+static int pv_zbuild_fuzz_mode(int argc, char **argv)
+{
+    const char *input_arg = NULL, *output_arg = NULL, *seeds_arg = NULL;
+    const char *cpu_arg = NULL, *memory_arg = NULL, *output_limit_arg = NULL;
+    bool require_full = false;
+    for (int i = 1; i < argc; i++) {
+        static const char in_prefix[] = "--zbuild-fuzz-input=";
+        static const char out_prefix[] = "--zbuild-fuzz-output=";
+        static const char seeds_prefix[] = "--zbuild-fuzz-seeds=";
+        static const char cpu_prefix[] = "--zbuild-fuzz-cpu-seconds=";
+        static const char memory_prefix[] = "--zbuild-fuzz-memory-bytes=";
+        static const char output_limit_prefix[] =
+            "--zbuild-fuzz-output-bytes=";
+        if (strncmp(argv[i], in_prefix, sizeof(in_prefix) - 1u) == 0)
+            input_arg = argv[i] + sizeof(in_prefix) - 1u;
+        else if (strncmp(argv[i], out_prefix, sizeof(out_prefix) - 1u) == 0)
+            output_arg = argv[i] + sizeof(out_prefix) - 1u;
+        else if (strncmp(argv[i], seeds_prefix,
+                         sizeof(seeds_prefix) - 1u) == 0)
+            seeds_arg = argv[i] + sizeof(seeds_prefix) - 1u;
+        else if (strncmp(argv[i], cpu_prefix,
+                         sizeof(cpu_prefix) - 1u) == 0)
+            cpu_arg = argv[i] + sizeof(cpu_prefix) - 1u;
+        else if (strncmp(argv[i], memory_prefix,
+                         sizeof(memory_prefix) - 1u) == 0)
+            memory_arg = argv[i] + sizeof(memory_prefix) - 1u;
+        else if (strncmp(argv[i], output_limit_prefix,
+                         sizeof(output_limit_prefix) - 1u) == 0)
+            output_limit_arg = argv[i] + sizeof(output_limit_prefix) - 1u;
+        else if (strcmp(argv[i], "--require-full-isolation") == 0)
+            require_full = true;
+        else
+            return 2;
+    }
+    char *end = NULL;
+    unsigned long seeds_ul = seeds_arg ? strtoul(seeds_arg, &end, 10) : 0;
+    if (!input_arg || !output_arg || !require_full || !seeds_arg ||
+        !end || *end != '\0' || seeds_ul == 0 ||
+        seeds_ul > VCS_ZCODE_FUZZ_SEEDS_MAX || input_arg[0] != '/' ||
+        output_arg[0] != '/')
+        return 2;
+    char *cpu_end = NULL, *memory_end = NULL, *output_limit_end = NULL;
+    unsigned long cpu_ul = cpu_arg ? strtoul(cpu_arg, &cpu_end, 10) : 0;
+    unsigned long long memory_ull = memory_arg
+        ? strtoull(memory_arg, &memory_end, 10) : 0;
+    unsigned long long output_limit_ull = output_limit_arg
+        ? strtoull(output_limit_arg, &output_limit_end, 10) : 0;
+    if (!cpu_arg || !cpu_end || *cpu_end != '\0' || cpu_ul == 0 ||
+        cpu_ul > 600u || !memory_arg || !memory_end || *memory_end != '\0' ||
+        memory_ull == 0 || memory_ull > UINT64_C(2048) * 1024u * 1024u ||
+        !output_limit_arg || !output_limit_end || *output_limit_end != '\0' ||
+        output_limit_ull == 0 ||
+        output_limit_ull > UINT64_C(64) * 1024u * 1024u)
+        return 2;
+    uint32_t seeds = (uint32_t)seeds_ul;
+    const char *input_base = strrchr(input_arg, '/');
+    const char *output_base = strrchr(output_arg, '/');
+    if (!input_base || strcmp(input_base + 1, "fuzz.bin") != 0 ||
+        !output_base || strcmp(output_base + 1, VCS_BUILD_FUZZ_OUTPUT_V1) != 0)
+        return 2;
+    char input[4096];
+    if (!realpath(input_arg, input) || !pv_zbuild_test_elf(input)) return 3;
+    char build_arg[4096];
+    size_t build_len = (size_t)(output_base - output_arg);
+    if (build_len == 0 || build_len >= sizeof(build_arg)) return 2;
+    memcpy(build_arg, output_arg, build_len); build_arg[build_len] = '\0';
+    char build_dir[4096];
+    if (!realpath(build_arg, build_dir)) return 3;
+    char output[4200];
+    int on = snprintf(output, sizeof(output), "%s/%s", build_dir,
+                      VCS_BUILD_FUZZ_OUTPUT_V1);
+    if (on <= 0 || (size_t)on >= sizeof(output) || access(output, F_OK) == 0)
+        return 3;
+    char input_dir[4096];
+    (void)snprintf(input_dir, sizeof(input_dir), "%s", input);
+    char *slash = strrchr(input_dir, '/');
+    if (!slash || slash == input_dir) return 3;
+    *slash = '\0';
+    if (strcmp(input_dir, build_dir) != 0 || os_sandbox_landlock_abi() < 1)
+        return 4;
+    struct os_sandbox_path_rule rules[10];
+    size_t n_rules = pv_child_grants(build_dir, build_dir, NULL, 0, rules,
+                                     sizeof(rules) / sizeof(rules[0]));
+    if (n_rules == 0) return 5;
+    uint64_t per_seed_cpu = (cpu_ul + seeds - 1u) / seeds;
+    if (per_seed_cpu == 0) per_seed_cpu = 1;
+    const struct os_sandbox_rlimits limits = {
+        .as_bytes = (uint64_t)memory_ull,
+        .cpu_seconds = per_seed_cpu,
+        .nproc = PV_TEST_NPROC,
+        .fsize_bytes = (uint64_t)output_limit_ull,
+        .nofile = PV_TEST_NOFILE,
+        .core_bytes = 0,
+    };
+    int total_timeout_ms = (int)cpu_ul * 1000;
+    int per_seed_timeout = total_timeout_ms / (int)seeds;
+    if (per_seed_timeout < 100) per_seed_timeout = 100;
+    struct sha3_256_ctx stdout_sha, stderr_sha;
+    sha3_256_init(&stdout_sha); sha3_256_init(&stderr_sha);
+    static const char stdout_domain[] = "zcl.zcode.fuzz.stdout.v1";
+    static const char stderr_domain[] = "zcl.zcode.fuzz.stderr.v1";
+    sha3_256_write(&stdout_sha, (const uint8_t *)stdout_domain,
+                   sizeof(stdout_domain));
+    sha3_256_write(&stderr_sha, (const uint8_t *)stderr_domain,
+                   sizeof(stderr_domain));
+    uint8_t status = 1, flags = 0;
+    uint32_t completed = 0, failing_seed = UINT32_MAX;
+    uint32_t exit_code = 0, signal_code = 0;
+    for (uint32_t seed = 0; seed < seeds; seed++) {
+        char seed_argv[48], seed_env[64], env_tmpdir[4200];
+        (void)snprintf(seed_argv, sizeof(seed_argv), "--seed=%u", seed);
+        (void)snprintf(seed_env, sizeof(seed_env),
+                       "ZCODE_FUZZ_SEED=%u", seed);
+        (void)snprintf(env_tmpdir, sizeof(env_tmpdir), "TMPDIR=%s", build_dir);
+        const char *const env[] = { env_tmpdir, seed_env, NULL };
+        const char *const fuzz_argv[] = { input, seed_argv, NULL };
+        struct pv_run run = pv_run_child(
+            fuzz_argv, build_dir, &limits, true, rules, n_rules, env,
+            per_seed_timeout);
+        if (!run.launched || run.sandbox_fail) return 5;
+        uint8_t meta[8];
+        zcl_write_u32_le(meta, seed);
+        zcl_write_u32_le(meta + 4, (uint32_t)run.stdout_len);
+        sha3_256_write(&stdout_sha, meta, sizeof(meta));
+        sha3_256_write(&stdout_sha, (const uint8_t *)run.stdout_buf,
+                       run.stdout_len);
+        zcl_write_u32_le(meta + 4, (uint32_t)run.stderr_len);
+        sha3_256_write(&stderr_sha, meta, sizeof(meta));
+        sha3_256_write(&stderr_sha, (const uint8_t *)run.stderr_buf,
+                       run.stderr_len);
+        completed = seed + 1u;
+        flags |= (run.timed_out ? 1u : 0u) |
+                 (run.stdout_truncated ? 2u : 0u) |
+                 (run.stderr_truncated ? 4u : 0u);
+        if (!run.exited || run.exit_code != 0 || run.term_signal != 0 ||
+            run.timed_out) {
+            status = 2; failing_seed = seed;
+            exit_code = run.exited ? (uint32_t)run.exit_code : UINT32_MAX;
+            signal_code = run.term_signal > 0
+                ? (uint32_t)run.term_signal : 0;
+            break;
+        }
+    }
+    uint8_t wire[PV_ZBUILD_FUZZ_EVIDENCE_BYTES] = {0};
+    memcpy(wire, "ZCFUZZ\r\n", 8); wire[8] = 1; wire[10] = status;
+    wire[11] = flags;
+    zcl_write_u32_le(wire + 12, seeds);
+    zcl_write_u32_le(wire + 16, completed);
+    zcl_write_u32_le(wire + 20, failing_seed);
+    zcl_write_u32_le(wire + 24, exit_code);
+    zcl_write_u32_le(wire + 28, signal_code);
+    sha3_256_finalize(&stdout_sha, wire + 32);
+    sha3_256_finalize(&stderr_sha, wire + 64);
+    int fd = open(output, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0400);
+    if (fd < 0) return 5;
+    size_t off = 0;
+    while (off < sizeof(wire)) {
+        ssize_t wrote = write(fd, wire + off, sizeof(wire) - off);
+        if (wrote < 0 && errno == EINTR) continue;
+        if (wrote <= 0) break;
+        off += (size_t)wrote;
+    }
+    bool synced = off == sizeof(wire) && fsync(fd) == 0;
+    bool wrote = close(fd) == 0 && synced;
+    if (!wrote) { (void)unlink(output); return 5; }
+    fprintf(stdout,
+            "zbuild-fuzz-ok=1 verdict=%s seeds=%u completed=%u "
+            "landlock=1 seccomp=1 rlimits=1 network=0\n",
+            status == 1 ? "pass" : "fail", seeds, completed);
+    return 0;
+}
+
 /* ── main flow ──────────────────────────────────────────────────────── */
 
 int main(int argc, char **argv)
 {
+    for (int i = 1; i < argc; i++)
+        if (strncmp(argv[i], "--zbuild-fuzz-input=", 20) == 0)
+            return pv_zbuild_fuzz_mode(argc, argv);
     for (int i = 1; i < argc; i++)
         if (strncmp(argv[i], "--zbuild-test-input=", 20) == 0)
             return pv_zbuild_test_mode(argc, argv);

@@ -87,6 +87,14 @@ struct zcl_result build_fabric_receipt_observe_remote(
     const struct vcs_zcode_work_result_v1 *result, int64_t now,
     char receipt_id[BUILD_FABRIC_ID_HEX + 1]);
 
+/* Parse only the closed evidence wires emitted by the fixed confined
+ * executors. Target failures are valid evidence and return WORK_FAIL. */
+struct zcl_result build_fabric_test_evidence_parse(
+    const uint8_t *bytes, size_t len, uint8_t *status, int *exit_status);
+struct zcl_result build_fabric_fuzz_evidence_parse(
+    const uint8_t *bytes, size_t len, uint32_t expected_seeds,
+    uint8_t *status, int *exit_status);
+
 struct build_fabric_proof_evaluation {
     size_t valid_receipts;
     size_t approved_distinct_signers;

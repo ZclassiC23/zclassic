@@ -137,6 +137,10 @@ static int test_zd_policy_and_task(void)
         task2.capabilities |= 1u << 31;
         ASSERT_EQ(vcs_zcode_task_validate(&task2),
                   VCS_ZCODE_DEV_ERR_CAPABILITY);
+        policy2.deterministic_fuzz_seeds = VCS_ZCODE_FUZZ_SEEDS_MAX + 1u;
+        ASSERT_EQ(vcs_zcode_proof_policy_validate(&policy2),
+                  VCS_ZCODE_DEV_ERR_POLICY);
+        policy2 = policy;
         policy2.required_proofs &= ~VCS_ZCODE_PROOF_FUZZ;
         ASSERT_EQ(vcs_zcode_proof_policy_validate(&policy2),
                   VCS_ZCODE_DEV_ERR_POLICY);
@@ -1055,6 +1059,9 @@ static int test_zd_improve_command(void)
         const char *test_action_id = json_get_str(json_get(
             &test_reply.data, "action_id"));
         ASSERT(test_action_id && strcmp(test_action_id, action_id) != 0);
+        char test_action_id_saved[65];
+        (void)snprintf(test_action_id_saved, sizeof(test_action_id_saved),
+                       "%s", test_action_id);
         struct db_build_action local_test_action;
         ASSERT(db_build_action_find(&ndb, test_action_id,
                                     &local_test_action));
@@ -1082,6 +1089,102 @@ static int test_zd_improve_command(void)
         ASSERT_EQ(work_receipt.work_kind, VCS_ZCODE_WORK_TEST);
         ASSERT_EQ(work_receipt.status, VCS_ZCODE_WORK_PASS);
         zcl_command_reply_free(&test_reply);
+
+        /* The same immutable candidate also executes the policy's exact
+         * deterministic seed range in the fixed fuzz sandbox. */
+        json_set_str((struct json_value *)json_get(&input, "action_kind"),
+                     VCS_BUILD_ACTION_KIND_FUZZ_V1);
+        struct zcl_command_reply fuzz_reply;
+        zcl_command_reply_init(&fuzz_reply, "zcl.zcode_improve.v1");
+        zcl_native_handle_zcode_improve(&request, &fuzz_reply);
+        ASSERT_EQ(fuzz_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&fuzz_reply.data, "task_root")),
+                      task_hex);
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &fuzz_reply.data, "candidate_root")), candidate_hex);
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &fuzz_reply.data, "action_kind")),
+                      VCS_BUILD_ACTION_KIND_FUZZ_V1);
+        const char *local_fuzz_action_id = json_get_str(json_get(
+            &fuzz_reply.data, "action_id"));
+        ASSERT(local_fuzz_action_id &&
+               strcmp(local_fuzz_action_id, action_id) != 0 &&
+               strcmp(local_fuzz_action_id, test_action_id_saved) != 0);
+        char local_fuzz_action_id_saved[65];
+        (void)snprintf(local_fuzz_action_id_saved,
+                       sizeof(local_fuzz_action_id_saved), "%s",
+                       local_fuzz_action_id);
+        struct db_build_action local_fuzz_action;
+        ASSERT(db_build_action_find(&ndb, local_fuzz_action_id,
+                                    &local_fuzz_action));
+        uint8_t fuzz_lease_root[32]; char fuzz_lease_hex[65];
+        zd_root(fuzz_lease_root, 62);
+        zcl_hex_encode(fuzz_lease_root, 32, fuzz_lease_hex);
+        claimed = false;
+        ASSERT(build_fabric_claim(&ndb, worker.worker_id, fuzz_lease_hex,
+                                  now, 300, &local_fuzz_action, &claimed).ok);
+        ASSERT(claimed);
+        struct db_build_receipt local_fuzz_receipt;
+        ASSERT(build_fabric_worker_execute(
+            &ndb, workspace, local_fuzz_action_id, fuzz_lease_hex,
+            worker_secret, worker_key, &local_fuzz_receipt).ok);
+        uint8_t local_fuzz_receipt_root[32];
+        ASSERT(zcl_hex_decode_lower(local_fuzz_receipt.work_receipt_sha3,
+                                    local_fuzz_receipt_root, 32));
+        ASSERT_EQ(vcs_object_load_raw(
+            workspace, local_fuzz_receipt_root, &receipt_wire,
+            &receipt_wire_len), 0);
+        ASSERT_EQ(vcs_zcode_work_receipt_parse(
+            receipt_wire, receipt_wire_len, &work_receipt),
+            VCS_ZCODE_DEV_OK);
+        free(receipt_wire); receipt_wire = NULL;
+        ASSERT_EQ(work_receipt.work_kind, VCS_ZCODE_WORK_FUZZ);
+        ASSERT_EQ(work_receipt.status, VCS_ZCODE_WORK_PASS);
+        zcl_command_reply_free(&fuzz_reply);
+
+        /* A target-found defect is durable FAIL evidence, not a sandbox
+         * transport error and never a false passing proof. */
+        json_set_str((struct json_value *)json_get(
+                         &input, "fixed_input_path"), "/usr/bin/false");
+        struct zcl_command_reply fuzz_fail_reply;
+        zcl_command_reply_init(&fuzz_fail_reply, "zcl.zcode_improve.v1");
+        zcl_native_handle_zcode_improve(&request, &fuzz_fail_reply);
+        ASSERT_EQ(fuzz_fail_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        const char *fuzz_fail_action_id = json_get_str(json_get(
+            &fuzz_fail_reply.data, "action_id"));
+        ASSERT(fuzz_fail_action_id &&
+               strcmp(fuzz_fail_action_id,
+                      local_fuzz_action_id_saved) != 0);
+        struct db_build_action fuzz_fail_action;
+        ASSERT(db_build_action_find(&ndb, fuzz_fail_action_id,
+                                    &fuzz_fail_action));
+        uint8_t fail_lease_root[32]; char fail_lease_hex[65];
+        zd_root(fail_lease_root, 63);
+        zcl_hex_encode(fail_lease_root, 32, fail_lease_hex);
+        claimed = false;
+        ASSERT(build_fabric_claim(&ndb, worker.worker_id, fail_lease_hex,
+                                  now, 300, &fuzz_fail_action, &claimed).ok);
+        ASSERT(claimed);
+        struct db_build_receipt fuzz_fail_receipt;
+        ASSERT(build_fabric_worker_execute(
+            &ndb, workspace, fuzz_fail_action_id, fail_lease_hex,
+            worker_secret, worker_key, &fuzz_fail_receipt).ok);
+        ASSERT_EQ(fuzz_fail_receipt.exit_status, 1);
+        ASSERT(db_build_action_find(&ndb, fuzz_fail_action_id,
+                                    &fuzz_fail_action));
+        ASSERT_STR_EQ(fuzz_fail_action.state, "FAILED");
+        ASSERT(zcl_hex_decode_lower(fuzz_fail_receipt.work_receipt_sha3,
+                                    local_fuzz_receipt_root, 32));
+        ASSERT_EQ(vcs_object_load_raw(
+            workspace, local_fuzz_receipt_root, &receipt_wire,
+            &receipt_wire_len), 0);
+        ASSERT_EQ(vcs_zcode_work_receipt_parse(
+            receipt_wire, receipt_wire_len, &work_receipt),
+            VCS_ZCODE_DEV_OK);
+        free(receipt_wire); receipt_wire = NULL;
+        ASSERT_EQ(work_receipt.work_kind, VCS_ZCODE_WORK_FUZZ);
+        ASSERT_EQ(work_receipt.status, VCS_ZCODE_WORK_FAIL);
+        zcl_command_reply_free(&fuzz_fail_reply);
 
         struct vcs_zcode_work_request_v1 remote_request = {
             .request_id = 991,
@@ -1245,7 +1348,7 @@ static int test_zd_improve_command(void)
             &ndb, workspace, action_id, evaluation_now, &complete).ok);
         ASSERT_EQ(complete.compile_receipts, 3);
         ASSERT_EQ(complete.test_receipts, 3);
-        ASSERT_EQ(complete.fuzz_receipts, 1);
+        ASSERT_EQ(complete.fuzz_receipts, 2);
         ASSERT_EQ(complete.review_receipts, 1);
         ASSERT(complete.compile_satisfied);
         ASSERT(complete.test_satisfied);
@@ -1318,7 +1421,7 @@ static int test_zd_improve_command(void)
         ASSERT_EQ(json_get_int(json_get(&evidence_reply.data,
                                         "test_receipts")), 3);
         ASSERT_EQ(json_get_int(json_get(&evidence_reply.data,
-                                        "fuzz_receipts")), 1);
+                                        "fuzz_receipts")), 2);
         ASSERT_EQ(json_get_int(json_get(&evidence_reply.data,
                                         "review_receipts")), 1);
         ASSERT(json_get_bool(json_get(&evidence_reply.data,

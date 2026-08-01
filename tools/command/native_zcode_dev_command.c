@@ -350,9 +350,10 @@ void zcl_native_handle_zcode_improve(
         action_kind = VCS_BUILD_ACTION_KIND_V1;
     uint8_t work_kind = vcs_build_action_v1_work_kind(action_kind);
     if (work_kind != VCS_ZCODE_WORK_BUILD &&
-        work_kind != VCS_ZCODE_WORK_TEST) {
+        work_kind != VCS_ZCODE_WORK_TEST &&
+        work_kind != VCS_ZCODE_WORK_FUZZ) {
         zdev_fail(reply, "BAD_ACTION_KIND",
-                  "action_kind must name the fixed compile or test executor");
+                  "action_kind must name the fixed compile, test, or fuzz executor");
         return;
     }
     const char *fixed_input = zdev_str(request->input, "fixed_input_path");
@@ -377,7 +378,9 @@ void zcl_native_handle_zcode_improve(
                                      &policy) != VCS_ZCODE_DEV_OK ||
         !(policy.required_proofs & VCS_ZCODE_PROOF_COMPILE) ||
         (work_kind == VCS_ZCODE_WORK_TEST &&
-         !(policy.required_proofs & VCS_ZCODE_PROOF_TEST))) {
+         !(policy.required_proofs & VCS_ZCODE_PROOF_TEST)) ||
+        (work_kind == VCS_ZCODE_WORK_FUZZ &&
+         !(policy.required_proofs & VCS_ZCODE_PROOF_FUZZ))) {
         zdev_fail(reply, "BAD_PROOF_POLICY",
                   "proof_policy_hex must require compile and the requested proof kind");
         return;

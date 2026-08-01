@@ -88,6 +88,8 @@ static const char *boot_zcode_work_action_kind(uint8_t work_kind)
         return VCS_BUILD_ACTION_KIND_V1;
     if (work_kind == VCS_ZCODE_WORK_TEST)
         return VCS_BUILD_ACTION_KIND_TEST_V1;
+    if (work_kind == VCS_ZCODE_WORK_FUZZ)
+        return VCS_BUILD_ACTION_KIND_FUZZ_V1;
     return NULL;
 }
 
@@ -396,13 +398,14 @@ static bool boot_zcode_work_refresh(struct boot_svc_ctx *svc, int64_t wall)
             &capsule, capability.toolchain_capsule_root))
         LOG_FAIL("net.zcode_swarm", "work toolchain capture failed");
     capability.work_kinds = (UINT32_C(1) << VCS_ZCODE_WORK_BUILD) |
-                            (UINT32_C(1) << VCS_ZCODE_WORK_TEST);
+                            (UINT32_C(1) << VCS_ZCODE_WORK_TEST) |
+                            (UINT32_C(1) << VCS_ZCODE_WORK_FUZZ);
     capability.target = VCS_ZCODE_WORK_TARGET_LINUX_X86_64_V3;
     capability.confinement = VCS_ZCODE_WORK_CONFINEMENT_V1_MASK;
-    capability.max_cpu_seconds = 120;
+    capability.max_cpu_seconds = 580;
     capability.max_memory_bytes = UINT64_C(2) * 1024u * 1024u * 1024u;
     capability.max_output_bytes = VCS_BUILD_ARTIFACT_MAX_BYTES;
-    capability.max_lease_seconds = 180;
+    capability.max_lease_seconds = 600;
     capability.slots = 1;
     capability.queue_headroom = 1;
     capability.expires_unix = wall + 600;

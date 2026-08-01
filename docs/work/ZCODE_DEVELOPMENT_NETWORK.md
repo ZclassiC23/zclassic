@@ -35,20 +35,20 @@ ledger, worker trust list, or P2P transport.
 | Declarative C23 graph | `vcs_package_recipe` | Live for one library/test package; workspace executables and multi-package targets still need an extension |
 | Source snapshot identity | resident dev source CAS plus content.v2 for portable package trees | Live locally; not yet one network task surface |
 | Code context | `lib/codeindex/` plus immutable source chunks | Live index; bounded context-capsule publication is not yet wired |
-| Fixed build action | `vcs_build_action_v1` | Live closed registry and identity for preprocessed-TU compile, exact-package test, declarative fuzz, and review. Local execution is live for compile and test |
+| Fixed build action | `vcs_build_action_v1` | Live closed registry and identity for preprocessed-TU compile, exact-executable test, deterministic exact-executable fuzz, and review. Local execution is live for compile, test, and fuzz |
 | Build coordinator ledger | `build_jobs`, `build_actions`, `build_workers`, `build_receipts`, `zcode_lane_receipts` | Live schema v45. Work receipt rows distinguish local acceptance, untrusted remote observation, local reproduction, and approved-signer quorum; lane rows are lookup projections of signed CAS receipts |
 | Local package confinement | `zclassic23-package-verify` | Live: declarative recipe, Landlock/seccomp/rlimits, no network |
-| ZBuild worker execution | existing build-fabric runtime | Live locally for fixed preprocessed-TU GCC and exact test-executable actions when `-buildworker` is enabled: durable identity, bounded leases, full confinement, CAS evidence, signed pass/fail receipts, and local fallback |
+| ZBuild worker execution | existing build-fabric runtime | Live locally for fixed preprocessed-TU GCC, exact test-executable, and deterministic seeded fuzz actions when `-buildworker` is enabled: durable identity, bounded leases, full confinement, CAS evidence, signed pass/fail receipts, and local fallback |
 | Package P2P | `package_swarm_node` and `zpkgswm` | Live for immutable package bytes |
-| Work P2P | signed work frames over package swarm/CAS | Live `ZCWS` multiplex on existing `zpkgswm` sessions: canonical compile/test context fetch, ZBuild admission, cancellation, signed pass/fail result return, durable untrusted observation, local reproduction, and per-proof-class approved distinct-signer quorum |
+| Work P2P | signed work frames over package swarm/CAS | Live `ZCWS` multiplex on existing `zpkgswm` sessions: canonical compile/test/fuzz context fetch, ZBuild admission, cancellation, signed pass/fail result return, durable untrusted observation, local reproduction, and per-proof-class approved distinct-signer quorum |
 | Agent authority | metaverse grants and signed receipt chain | Live for scoped property operations; task work must never inherit wallet or canonical-node authority |
 | Durability lanes | signed `lane_receipt.v1` over source/proof roots | Live local chain and typed promotion. Distributed long-duration actions and projection reconstruction tooling remain |
 
 The control-plane distinction is load-bearing: a READY command or database row
 does not prove an executor exists. `build.worker` now has an actual supervised
-thread and fixed compile/test actions. Fuzz/review actions have canonical,
-kind-bound identities and proof evaluation, but their worker executors and
-remote agent candidate generation remain missing.
+thread and fixed compile/test/fuzz actions. Review has a canonical, kind-bound
+identity and proof evaluation, but review authorship/execution and remote agent
+candidate generation remain missing.
 
 ## Canonical development objects
 
@@ -164,7 +164,9 @@ existing `task.v1`, `candidate.v1`, and `proof_policy.v1` wires, the candidate
 source SHA-256 oracle, build profile, and exact fixed-action input (a
 preprocessed TU or test executable). Its total size
 remains under the package store's existing 64 MiB anti-abuse cap and the task's
-smaller context ceiling.
+smaller context ceiling. The fixed input is a preprocessed TU, exact test
+executable, or exact deterministic fuzz executable according to the action
+kind.
 
 The receiving peer re-derives the task, candidate, policy, input, toolchain,
 and `build_action.v1` roots and compares every one to the signed request before
@@ -202,12 +204,16 @@ ZBuild action. It never accepts a caller-supplied path or command.
 - [x] Execute only registered fixed action kinds. Compile uses local
   preprocessing followed by fixed `cc -x cpp-output -c`. Test executes one
   exact CAS-addressed Linux x86-64 executable with no arguments and emits a
-  closed 84-byte verdict wire. Both use the existing package verifier's
+  closed 84-byte verdict wire. Fuzz executes one exact executable for the
+  policy's canonical seed range `[0,N)`, supplies only `--seed=N` plus the
+  matching scrubbed environment value, stops on the first failure, and emits a
+  closed 96-byte evidence wire. All three use the existing package verifier's
   Landlock/seccomp/rlimit/no-network confinement.
-- [x] Establish Landlock, seccomp, rlimits, an empty environment allowlist, fixed
-  virtual paths, no network, bounded stdout/stderr, cancellation, and a hard
-  deadline before untrusted bytes run. Cancellation currently prevents stale
-  publication; prompt child termination is still pending.
+- [x] Establish Landlock, seccomp, rlimits, a scrubbed fixed environment
+  allowlist, fixed virtual paths, no network, bounded stdout/stderr,
+  cancellation publication checks, and a hard deadline before untrusted bytes
+  run. Prompt termination of an already-running child on cancellation is still
+  pending.
 - [x] Fetch inputs only by immutable CAS root. Recheck task, candidate, policy,
   action input, source, toolchain, fixed flags/environment, signer, and lease
   before execution and again before receipt publication. The dependency-lock
@@ -217,9 +223,9 @@ ZBuild action. It never accepts a caller-supplied path or command.
   then sign `work_receipt.v1` and the existing ZBuild receipt projection. The
   database projection binds the canonical receipt root; the wire remains CAS
   authority.
-- [ ] On timeout, crash, cancellation, malformed output, stale state, or sandbox
-  failure: publish a named outcome and use the existing local fallback policy;
-  never wait forever.
+- [x] On timeout, crash, cancellation, malformed output, stale state, or sandbox
+  failure: record a named outcome and use the existing local fallback policy;
+  bounded action deadlines prevent an indefinite wait.
 
 ### C. Typed local path
 
@@ -242,13 +248,13 @@ bash-only authority:
 
 `zcode improve` now admits canonical task/policy/goal/input/candidate objects in
 the existing workspace CAS, captures the GCC capsule, and queues a
-candidate-bound compile or test action. Reusing `candidate_created_unix` with
+candidate-bound compile, test, or deterministic fuzz action. Reusing `candidate_created_unix` with
 the same immutable inputs schedules additional proof actions for the exact same
 candidate. Before submission it creates or re-verifies the exact candidate's
 signed FRONTIER receipt; evidence aggregation follows task/candidate/policy roots across
 their distinct durable jobs. A local worker emits the canonical signed work
 receipt. With `remote_peer`, it builds the action-neutral canonical context
-package itself and signs and queues the exact compile/test request for that
+package itself and signs and queues the exact compile/test/fuzz request for that
 user-selected advertised peer; an unavailable package store, peer, or
 capability reports `LOCAL_FALLBACK` and preserves the local action. Adapter
 invocation, fixed review execution, and publication are still separate missing
@@ -289,8 +295,8 @@ release-byte identity from a translation-unit object.
   proof-set root is stored for later `review.v1` binding.
 - [x] Advertise bounded action kinds, toolchain capsule, target, confinement
   facts, resource ceilings, queue headroom, and expiry. The live worker
-  advertises compile and exact-test execution; fuzz and review remain
-  unadvertised until their fixed executors exist.
+  advertises compile, exact-test, and deterministic-fuzz execution. Review
+  remains unadvertised until an executor can actually author a review.
 - The requester owns job selection, leases, cancellation, quorum, and local
   fallback. There is no global scheduler.
 - Reuse package swarm/CAS transfer for immutable task inputs and artifact

@@ -129,6 +129,7 @@ enum vcs_zcode_dev_error vcs_zcode_proof_policy_validate(
         policy->minimum_matching_receipts > 64 ||
         policy->audit_basis_points > 10000 ||
         policy->maximum_proof_age_seconds == 0 ||
+        policy->deterministic_fuzz_seeds > VCS_ZCODE_FUZZ_SEEDS_MAX ||
         ((policy->required_proofs & VCS_ZCODE_PROOF_FUZZ) != 0) !=
             (policy->deterministic_fuzz_seeds > 0))
         return VCS_ZCODE_DEV_ERR_POLICY;

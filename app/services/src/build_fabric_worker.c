@@ -29,7 +29,8 @@
 #define BFW_PATH_MAX 4096
 #define BFW_CAPTURE_MAX 4096
 #define BFW_EXEC_TIMEOUT_MS 125000
-#define BFW_TEST_EVIDENCE_BYTES 84u
+#define BFW_FUZZ_CPU_CEILING_SECONDS 580u
+#define BFW_FUZZ_TIMEOUT_CEILING_MS 585000
 
 struct zcl_result build_fabric_worker_identity_load(
     const char *datadir, struct db_build_worker *worker,
@@ -99,8 +100,9 @@ struct zcl_result build_fabric_worker_identity_load(
     zcl_hex_encode(worker_id, sizeof(worker_id), worker->worker_id);
     zcl_hex_encode(signer_pubkey, 32, worker->signer_pubkey);
     (void)snprintf(worker->capabilities, sizeof(worker->capabilities),
-                   "linux,x86-64-v3,gcc,%s,%s", VCS_BUILD_ACTION_KIND_V1,
-                   VCS_BUILD_ACTION_KIND_TEST_V1);
+                   "linux,x86-64-v3,gcc,%s,%s,%s",
+                   VCS_BUILD_ACTION_KIND_V1, VCS_BUILD_ACTION_KIND_TEST_V1,
+                   VCS_BUILD_ACTION_KIND_FUZZ_V1);
     return ZCL_OK;
 }
 
@@ -182,6 +184,10 @@ static struct zcl_result bfw_paths_init(const char *workspace,
         (void)snprintf(p->input, sizeof(p->input), "%s/test.bin", p->build);
         (void)snprintf(p->output, sizeof(p->output), "%s/%s", p->build,
                        VCS_BUILD_TEST_OUTPUT_V1);
+    } else if (strcmp(kind, VCS_BUILD_ACTION_KIND_FUZZ_V1) == 0) {
+        (void)snprintf(p->input, sizeof(p->input), "%s/fuzz.bin", p->build);
+        (void)snprintf(p->output, sizeof(p->output), "%s/%s", p->build,
+                       VCS_BUILD_FUZZ_OUTPUT_V1);
     } else {
         return ZCL_ERR(-1, "worker action kind has no fixed executor");
     }
@@ -246,7 +252,6 @@ static uint8_t *bfw_read_output(const char *path, size_t *len_out)
     *len_out = len;
     return bytes;
 }
-
 static bool bfw_elf_relocatable_x86_64(const uint8_t *bytes, size_t len)
 {
     return bytes && len >= 64 && bytes[0] == 0x7f && bytes[1] == 'E' &&
@@ -254,31 +259,6 @@ static bool bfw_elf_relocatable_x86_64(const uint8_t *bytes, size_t len)
            bytes[5] == 1 && bytes[6] == 1 && bytes[16] == 1 &&
            bytes[17] == 0 && bytes[18] == 62 && bytes[19] == 0;
 }
-
-static bool bfw_test_evidence(const uint8_t *bytes, size_t len,
-                              uint8_t *status, int *exit_status)
-{
-    if (!bytes || len != BFW_TEST_EVIDENCE_BYTES ||
-        memcmp(bytes, "ZCTEST\r\n", 8) != 0 || bytes[8] != 1 ||
-        bytes[9] != 0 || (bytes[10] != 1 && bytes[10] != 2) ||
-        (bytes[11] & ~UINT8_C(7)) != 0 || !status || !exit_status)
-        return false;
-    uint32_t code = zcl_read_u32_le(bytes + 12);
-    uint32_t signal = zcl_read_u32_le(bytes + 16);
-    if (bytes[10] == 1 &&
-        (code != 0 || signal != 0 || (bytes[11] & UINT8_C(1)) != 0))
-        return false;
-    *status = bytes[10] == 1 ? VCS_ZCODE_WORK_PASS : VCS_ZCODE_WORK_FAIL;
-    if (*status == VCS_ZCODE_WORK_PASS) {
-        *exit_status = 0;
-    } else if (code > 0 && code <= 255) {
-        *exit_status = (int)code;
-    } else {
-        *exit_status = 255;
-    }
-    return true;
-}
-
 static bool bfw_input_root_current(const char *workspace,
                                    const char *root_hex)
 {
@@ -331,7 +311,8 @@ static struct zcl_result bfw_load_zcode_context(
     const char *workspace, const struct db_build_job *job,
     const struct db_build_action *action, int64_t now,
     struct vcs_zcode_task_v1 *task,
-    struct vcs_zcode_candidate_v1 *candidate, bool *present)
+    struct vcs_zcode_candidate_v1 *candidate,
+    struct vcs_zcode_proof_policy_v1 *policy, bool *present)
 {
     *present = false;
     if (!action->task_root_sha3[0]) return ZCL_OK;
@@ -367,15 +348,14 @@ static struct zcl_result bfw_load_zcode_context(
         vcs_zcode_candidate_validate_for_task(task, candidate, now) !=
             VCS_ZCODE_DEV_OK)
         return ZCL_ERR(-1, "zcode-candidate-stale");
-    struct vcs_zcode_proof_policy_v1 policy;
     if (vcs_object_load_raw(workspace, policy_root, &wire, &wire_len) != 0 ||
-        vcs_zcode_proof_policy_parse(wire, wire_len, &policy) !=
+        vcs_zcode_proof_policy_parse(wire, wire_len, policy) !=
             VCS_ZCODE_DEV_OK) {
         free(wire);
         return ZCL_ERR(-1, "zcode-proof-policy-cas-miss-or-corrupt");
     }
     free(wire);
-    if (vcs_zcode_proof_policy_root(&policy, checked) != VCS_ZCODE_DEV_OK ||
+    if (vcs_zcode_proof_policy_root(policy, checked) != VCS_ZCODE_DEV_OK ||
         memcmp(checked, policy_root, 32) != 0 ||
         memcmp(task->proof_policy_root, policy_root, 32) != 0)
         return ZCL_ERR(-1, "zcode-proof-policy-stale");
@@ -519,7 +499,8 @@ struct zcl_result build_fabric_worker_execute(
         return bfw_fail(ndb, action_id, lease_id, "worker-signer-mismatch");
     uint8_t work_kind = vcs_build_action_v1_work_kind(action.kind);
     if ((work_kind != VCS_ZCODE_WORK_BUILD &&
-         work_kind != VCS_ZCODE_WORK_TEST) ||
+         work_kind != VCS_ZCODE_WORK_TEST &&
+         work_kind != VCS_ZCODE_WORK_FUZZ) ||
         !bfw_capability_has(worker.capabilities, action.kind))
         return bfw_fail(ndb, action_id, lease_id,
                         "fixed-action-executor-unavailable");
@@ -546,14 +527,18 @@ struct zcl_result build_fabric_worker_execute(
         strcmp(fixed_environment_hex, action.environment_sha3) != 0)
         return bfw_fail(ndb, action_id, lease_id,
                         "fixed-flags-or-environment-stale");
-    struct vcs_zcode_task_v1 zcode_task;
-    struct vcs_zcode_candidate_v1 zcode_candidate;
+    struct vcs_zcode_task_v1 zcode_task = {0};
+    struct vcs_zcode_candidate_v1 zcode_candidate = {0};
+    struct vcs_zcode_proof_policy_v1 zcode_policy = {0};
     bool zcode_context = false;
     struct zcl_result context = bfw_load_zcode_context(
         workspace, &job, &action, (int64_t)platform_time_wall_unix(),
-        &zcode_task, &zcode_candidate, &zcode_context);
+        &zcode_task, &zcode_candidate, &zcode_policy, &zcode_context);
     if (!context.ok)
         return bfw_fail(ndb, action_id, lease_id, context.message);
+    if (work_kind == VCS_ZCODE_WORK_FUZZ && !zcode_context)
+        return bfw_fail(ndb, action_id, lease_id,
+                        "fuzz-action-requires-zcode-policy");
     uint8_t input_root[32];
     uint8_t *input = NULL;
     size_t input_len = 0;
@@ -576,30 +561,68 @@ struct zcl_result build_fabric_worker_execute(
     struct bfw_paths paths = {0};
     struct zcl_result paths_result = bfw_paths_init(
         workspace, lease_id, action.kind, &paths);
-    bool test_action = work_kind == VCS_ZCODE_WORK_TEST;
+    bool test_action = work_kind == VCS_ZCODE_WORK_TEST,
+         fuzz_action = work_kind == VCS_ZCODE_WORK_FUZZ;
     if (!paths_result.ok ||
-        !bfw_write_input(paths.input, input, input_len, test_action)) {
+        !bfw_write_input(paths.input, input, input_len,
+                         test_action || fuzz_action)) {
         free(input); bfw_paths_cleanup(&paths);
         return bfw_fail(ndb, action_id, lease_id, "input-materialize-failed");
     }
     free(input);
-    char input_arg[BFW_PATH_MAX + 32];
-    char output_arg[BFW_PATH_MAX + 32];
+    char input_arg[BFW_PATH_MAX + 32], output_arg[BFW_PATH_MAX + 32];
+    char seeds_arg[64], cpu_arg[64], memory_arg[96], output_limit_arg[96];
     (void)snprintf(input_arg, sizeof(input_arg),
-                   test_action ? "--zbuild-test-input=%s"
-                               : "--zbuild-input=%s",
+                   fuzz_action ? "--zbuild-fuzz-input=%s"
+                   : test_action ? "--zbuild-test-input=%s"
+                                 : "--zbuild-input=%s",
                    paths.input);
     (void)snprintf(output_arg, sizeof(output_arg),
-                   test_action ? "--zbuild-test-output=%s"
-                               : "--zbuild-output=%s",
+                   fuzz_action ? "--zbuild-fuzz-output=%s"
+                   : test_action ? "--zbuild-test-output=%s"
+                                 : "--zbuild-output=%s",
                    paths.output);
-    const char *const argv[] = { paths.worker, input_arg, output_arg,
-                                "--require-full-isolation", NULL };
+    (void)snprintf(seeds_arg, sizeof(seeds_arg), "--zbuild-fuzz-seeds=%u",
+                   zcode_policy.deterministic_fuzz_seeds);
+    uint32_t fuzz_cpu_seconds = zcode_task.max_cpu_seconds <
+            BFW_FUZZ_CPU_CEILING_SECONDS
+        ? zcode_task.max_cpu_seconds : BFW_FUZZ_CPU_CEILING_SECONDS;
+    uint64_t fuzz_memory_bytes = zcode_task.max_memory_bytes <
+            UINT64_C(2048) * 1024u * 1024u
+        ? zcode_task.max_memory_bytes : UINT64_C(2048) * 1024u * 1024u;
+    uint64_t fuzz_output_bytes = zcode_task.max_output_bytes <
+            UINT64_C(64) * 1024u * 1024u
+        ? zcode_task.max_output_bytes : UINT64_C(64) * 1024u * 1024u;
+    (void)snprintf(cpu_arg, sizeof(cpu_arg), "--zbuild-fuzz-cpu-seconds=%u",
+                   fuzz_cpu_seconds);
+    (void)snprintf(memory_arg, sizeof(memory_arg),
+                   "--zbuild-fuzz-memory-bytes=%llu",
+                   (unsigned long long)fuzz_memory_bytes);
+    (void)snprintf(output_limit_arg, sizeof(output_limit_arg),
+                   "--zbuild-fuzz-output-bytes=%llu",
+                   (unsigned long long)fuzz_output_bytes);
+    const char *const argv[] = {
+        paths.worker, input_arg, output_arg,
+        fuzz_action ? seeds_arg : "--require-full-isolation",
+        fuzz_action ? cpu_arg : NULL,
+        fuzz_action ? memory_arg : NULL,
+        fuzz_action ? output_limit_arg : NULL,
+        fuzz_action ? "--require-full-isolation" : NULL, NULL
+    };
     char capture[BFW_CAPTURE_MAX];
+    int execute_timeout = BFW_EXEC_TIMEOUT_MS;
+    if (fuzz_action) {
+        uint64_t bounded = (uint64_t)fuzz_cpu_seconds * 1000u +
+                           UINT64_C(5000);
+        if (bounded > BFW_FUZZ_TIMEOUT_CEILING_MS)
+            bounded = BFW_FUZZ_TIMEOUT_CEILING_MS;
+        execute_timeout = (int)bounded;
+    }
     int rc = zcl_spawn_capture(argv, capture, sizeof(capture),
-                               BFW_EXEC_TIMEOUT_MS);
-    const char *success_marker = test_action ? "zbuild-test-ok=1"
-                                             : "zbuild-ok=1";
+                               execute_timeout);
+    const char *success_marker = fuzz_action ? "zbuild-fuzz-ok=1"
+                                 : test_action ? "zbuild-test-ok=1"
+                                               : "zbuild-ok=1";
     if (rc != 0 || strstr(capture, success_marker) == NULL) {
         for (size_t i = 0; capture[i]; i++)
             if ((unsigned char)capture[i] < 0x20 ||
@@ -623,15 +646,22 @@ struct zcl_result build_fabric_worker_execute(
     uint8_t *output = bfw_read_output(paths.output, &output_len);
     uint8_t work_status = VCS_ZCODE_WORK_PASS;
     int work_exit_status = 0;
-    bool output_valid = test_action
-        ? bfw_test_evidence(output, output_len, &work_status,
-                            &work_exit_status)
-        : bfw_elf_relocatable_x86_64(output, output_len);
+    bool output_valid;
+    if (fuzz_action)
+        output_valid = build_fabric_fuzz_evidence_parse(
+            output, output_len, zcode_policy.deterministic_fuzz_seeds,
+            &work_status, &work_exit_status).ok;
+    else if (test_action)
+        output_valid = build_fabric_test_evidence_parse(
+            output, output_len, &work_status, &work_exit_status).ok;
+    else
+        output_valid = bfw_elf_relocatable_x86_64(output, output_len);
     if (!output || !output_valid) {
         free(output); bfw_paths_cleanup(&paths);
         return bfw_fail(ndb, action_id, lease_id,
-                        test_action ? "test-evidence-invalid"
-                                    : "output-elf-invalid");
+                        fuzz_action ? "fuzz-evidence-invalid"
+                        : test_action ? "test-evidence-invalid"
+                                      : "output-elf-invalid");
     }
     uint8_t output_root[32];
     struct zcl_result stored = bfw_store_artifact(
@@ -650,16 +680,18 @@ struct zcl_result build_fabric_worker_execute(
     if (zcode_context) {
         struct vcs_zcode_task_v1 checked_task;
         struct vcs_zcode_candidate_v1 checked_candidate;
+        struct vcs_zcode_proof_policy_v1 checked_policy;
         bool checked_present = false;
         context = bfw_load_zcode_context(
             workspace, &job, &action, work_finished, &checked_task,
-            &checked_candidate, &checked_present);
+            &checked_candidate, &checked_policy, &checked_present);
         if (!context.ok || !checked_present)
             return bfw_fail(ndb, action_id, lease_id,
                             context.ok ? "zcode-context-disappeared"
                                        : context.message);
         zcode_task = checked_task;
         zcode_candidate = checked_candidate;
+        zcode_policy = checked_policy;
     }
     struct db_build_receipt receipt = {0};
     (void)snprintf(receipt.action_id, sizeof(receipt.action_id), "%s",
@@ -671,9 +703,20 @@ struct zcl_result build_fabric_worker_execute(
     (void)snprintf(receipt.action_sha3, sizeof(receipt.action_sha3), "%s",
                    action.action_id);
     zcl_hex_encode(output_root, 32, receipt.output_sha3);
+    char confinement_buffer[160];
     const char *confinement = test_action
         ? "landlock=1,seccomp=1,rlimits=1,network=0,test=fixed"
         : "landlock=1,seccomp=1,rlimits=1,network=0,gcc=fixed";
+    if (fuzz_action) {
+        (void)snprintf(confinement_buffer, sizeof(confinement_buffer),
+                       "landlock=1,seccomp=1,rlimits=1,network=0,"
+                       "fuzz=fixed,seeds=%u,cpu_s=%u,memory=%llu,output=%llu",
+                       zcode_policy.deterministic_fuzz_seeds,
+                       fuzz_cpu_seconds,
+                       (unsigned long long)fuzz_memory_bytes,
+                       (unsigned long long)fuzz_output_bytes);
+        confinement = confinement_buffer;
+    }
     (void)snprintf(receipt.confinement, sizeof(receipt.confinement),
                    "%s", confinement);
     (void)snprintf(receipt.trust_state, sizeof(receipt.trust_state),
