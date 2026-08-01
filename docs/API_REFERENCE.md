@@ -59,9 +59,9 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 409 |
+| Registry entries (branches + leaves) | 410 |
 | Top-level roots | 10 |
-| Branches | 94 |
+| Branches | 95 |
 | Leaves (dispatchable command paths) | 315 |
 | … `ready` (live handler in this build) | 267 |
 | … `compat` (metadata only, names a fallback) | 17 |
@@ -85,7 +85,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 14 | 3 | 11 |
-| `config/commands/zcode.def` | 66 | 15 | 51 |
+| `config/commands/zcode.def` | 67 | 16 | 51 |
 | `config/commands/metaverse.def` | 17 | 5 | 12 |
 | `config/commands/telemetry/root.def` | 6 | 2 | 4 |
 | `config/commands/telemetry/watch.def` | 1 | 0 | 1 |
@@ -783,11 +783,13 @@ represented by its children's sections.
 
 ### `zcode` — ZCODE source-package hosting: publish, search, host
 
+#### `zcode.package.dev` — Agentic development
+
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `zcode create` | ready | mutate / app-write / operator · foreground/moderate | **`mode`**, `release_hex`, `manifest_hex`, `recipe_hex`, `dir`, `day`, `datadir` | `zcl.zcode_create.v1` | `zclassic23 zcode create --input='{"mode":"plan","release_hex":"..","manifest_hex":"..","recipe_hex":"..","dir":"/tmp/pkg"}'` | Create a package through the existing publish lifecycle |
-| `zcode use` | ready | mutate / app-write / operator · foreground/moderate | `name_or_root`, `plan_id`, `now_unix`, `datadir` | `zcl.zcode_use.v1` | `zclassic23 zcode use --input='{"name_or_root":"<64hex>"}'` | Use a package through the existing dependency-add lifecycle |
-| `zcode improve` | ready | mutate / app-write / operator · foreground/moderate | **`workspace`**, `datadir`, **`candidate_source_sha256`**, **`source_root`**, **`dependency_lock_root`**, **`write_scope_root`**, **`acceptance_tests_root`**, **`model_policy_root`**, **`goal`**, **`proof_policy_hex`**, **`preprocessed_path`**, **`patch_root`**, **`candidate_source_root`**, **`adapter_policy_root`**, **`author_pubkey`**, `candidate_sequence`, `profile`, **`expires_unix`**, `max_changed_files`, `max_patch_bytes`, `max_context_bytes`, `max_cpu_seconds`, `max_memory_bytes`, `max_output_bytes`, `remote_peer`, `context_root` | `zcl.zcode_improve.v1` | `zclassic23 zcode improve --input='{"workspace":"/src/project","candidate_source_sha256":"<64hex>","source_root":"<64hex>","dependency_lock_root":"<64hex>","write_scope_root":"<64hex>","acceptance_tests_root":"<64hex>","model_policy_root":"<64hex>","goal":"fix seeded bug","proof_policy_hex":"<wire hex>","preprocessed_path":"/tmp/unit.i","patch_root":"<64hex>","candidate_source_root":"<64hex>","adapter_policy_root":"<64hex>","author_pubkey":"<64hex>","expires_unix":123}'` | Admit a candidate for an immutable task and queue its compile proof |
+| `zcode package dev create` (aliases: `zcode.create`) | ready | mutate / app-write / operator · foreground/moderate | **`mode`**, `release_hex`, `manifest_hex`, `recipe_hex`, `dir`, `day`, `datadir` | `zcl.zcode_create.v1` | `zclassic23 zcode create --input='{"mode":"plan","release_hex":"..","manifest_hex":"..","recipe_hex":"..","dir":"/tmp/pkg"}'` | Create package |
+| `zcode package dev use` (aliases: `zcode.use`) | ready | mutate / app-write / operator · foreground/moderate | `name_or_root`, `plan_id`, `now_unix`, `datadir` | `zcl.zcode_use.v1` | `zclassic23 zcode use --input='{"name_or_root":"<64hex>"}'` | Use dependency |
+| `zcode package dev improve` (aliases: `zcode.improve`) | ready | mutate / app-write / operator · foreground/moderate | **`workspace`**, `datadir`, **`candidate_source_sha256`**, **`source_root`**, **`dependency_lock_root`**, **`write_scope_root`**, **`acceptance_tests_root`**, **`model_policy_root`**, **`goal`**, **`proof_policy_hex`**, **`preprocessed_path`**, **`patch_root`**, **`candidate_source_root`**, **`adapter_policy_root`**, **`author_pubkey`**, `candidate_sequence`, `profile`, **`expires_unix`**, `max_changed_files`, `max_patch_bytes`, `max_context_bytes`, `max_cpu_seconds`, `max_memory_bytes`, `max_output_bytes`, `remote_peer`, `context_root` | `zcl.zcode_improve.v1` | `zclassic23 zcode improve --input='{"workspace":"/src/project","candidate_source_sha256":"<64hex>","source_root":"<64hex>","dependency_lock_root":"<64hex>","write_scope_root":"<64hex>","acceptance_tests_root":"<64hex>","model_policy_root":"<64hex>","goal":"fix seeded bug","proof_policy_hex":"<wire hex>","preprocessed_path":"/tmp/unit.i","patch_root":"<64hex>","candidate_source_root":"<64hex>","adapter_policy_root":"<64hex>","author_pubkey":"<64hex>","expires_unix":123}'` | Improve code candidate |
 
 #### `zcode.package` — Published packages
 
@@ -976,6 +978,9 @@ Every alias resolves through the same grammar as its canonical path
 | `dev.loop.watch` | `dev.loop.ensure` |
 | `dev.loop.heartbeat` | `dev.loop.status` |
 | `dev.test.focused` | `dev.test.run` |
+| `zcode.create` | `zcode.package.dev.create` |
+| `zcode.use` | `zcode.package.dev.use` |
+| `zcode.improve` | `zcode.package.dev.improve` |
 
 
 ## Shared output schemas

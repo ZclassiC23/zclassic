@@ -31,10 +31,9 @@ extern "C" {
  * branch's size grows one summary per leaf. The `code` navigator branch reached
  * 9 leaves (group/map/tests/room/file/sym/capsule/refs/find) rendering to 1643
  * bytes — legitimate growth with already-minimal per-child summaries, not
- * bloat. 2048 clears the largest branch (code=1643, next core=1596) with ~400
- * bytes of headroom (≈2-3 more leaves) so a normal leaf addition no longer tips
- * a near-ceiling branch over a brittle hard 1600. */
-#define ZCL_COMMAND_BRANCH_BUDGET 2048U
+ * bloat. 3072 leaves bounded headroom for the larger typed ZCODE development
+ * catalog while keeping accidental branch-document growth fail-closed. */
+#define ZCL_COMMAND_BRANCH_BUDGET 3072U
 /* Raised from 2400 to absorb the per-leaf `semantics` contract and effective
  * `budget_bytes` the describe document now emits. */
 #define ZCL_COMMAND_SPEC_BUDGET 2816U

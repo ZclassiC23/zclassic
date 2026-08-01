@@ -18,9 +18,13 @@ ZCL_COMMAND_BRANCH("zcode", "",
                    "ZCODE source-package hosting: publish, search, host",
                    ZCL_COMMAND_LAYER_APP)
 
+ZCL_COMMAND_BRANCH("zcode.package.dev", "zcode.package",
+                   "Agentic development",
+                   ZCL_COMMAND_LAYER_APP)
+
 ZCL_COMMAND_READY_COMMAND(
-    "zcode.create", "zcode", "",
-    "Create a package through the existing publish lifecycle",
+    "zcode.package.dev.create", "zcode.package.dev", "zcode.create",
+    "Create package",
     "Typed convenience adapter over zcode.package.publish.plan/commit. "
     "mode=plan validates release_hex, manifest_hex, recipe_hex and optional "
     "source dir without writes; mode=commit re-validates and publishes them "
@@ -40,8 +44,8 @@ ZCL_COMMAND_READY_COMMAND(
     zcl_native_handle_zcode_create)
 
 ZCL_COMMAND_READY_COMMAND(
-    "zcode.use", "zcode", "",
-    "Use a package through the existing dependency-add lifecycle",
+    "zcode.package.dev.use", "zcode.package.dev", "zcode.use",
+    "Use dependency",
     "Typed convenience adapter over zcode.package.add plan/commit. Give "
     "name_or_root to produce the exact root-pinned dependency plan, or give "
     "plan_id to re-derive, confined-build, atomically install, and activate "
@@ -61,8 +65,8 @@ ZCL_COMMAND_READY_COMMAND(
     zcl_native_handle_zcode_use)
 
 ZCL_COMMAND_READY_COMMAND(
-    "zcode.improve", "zcode", "",
-    "Admit a candidate for an immutable task and queue its compile proof",
+    "zcode.package.dev.improve", "zcode.package.dev", "zcode.improve",
+    "Improve code candidate",
     "Builds canonical proof_policy.v1 and task.v1 objects in the existing "
     "workspace ZVCS CAS, captures the installed GCC toolchain by content, "
     "stores one named preprocessed TU and candidate.v1 by SHA3, and plans/"
