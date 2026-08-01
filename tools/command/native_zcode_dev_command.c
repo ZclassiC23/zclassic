@@ -213,7 +213,36 @@ void zcl_native_handle_zcode_improve(
     sha3_256(input, input_len, input_root);
     uint8_t task_wire[VCS_ZCODE_TASK_WIRE_BYTES], task_root[32];
     if (vcs_zcode_task_serialize(&task, task_wire) != VCS_ZCODE_DEV_OK ||
-        vcs_zcode_task_root(&task, task_root) != VCS_ZCODE_DEV_OK ||
+        vcs_zcode_task_root(&task, task_root) != VCS_ZCODE_DEV_OK) {
+        free(input);
+        zdev_fail(reply, "TASK_INVALID", "canonical task serialization failed");
+        return;
+    }
+    struct vcs_zcode_candidate_v1 candidate = {
+        .schema_version = VCS_ZCODE_DEV_VERSION,
+        .sequence = (uint64_t)zdev_int(request->input, "candidate_sequence", 1),
+        .created_unix = now,
+    };
+    memcpy(candidate.task_root, task_root, 32);
+    memcpy(candidate.base_source_root, task.source_root, 32);
+    if (!zdev_root(request->input, "patch_root", candidate.patch_root, reply) ||
+        !zdev_root(request->input, "candidate_source_root",
+                   candidate.candidate_source_root, reply) ||
+        !zdev_root(request->input, "adapter_policy_root",
+                   candidate.adapter_policy_root, reply) ||
+        !zdev_root(request->input, "author_pubkey", candidate.author_pubkey,
+                   reply)) {
+        free(input);
+        return;
+    }
+    uint8_t candidate_wire[VCS_ZCODE_CANDIDATE_WIRE_BYTES];
+    uint8_t candidate_root[32];
+    if (vcs_zcode_candidate_validate_for_task(&task, &candidate, now) !=
+            VCS_ZCODE_DEV_OK ||
+        vcs_zcode_candidate_serialize(&candidate, candidate_wire) !=
+            VCS_ZCODE_DEV_OK ||
+        vcs_zcode_candidate_root(&candidate, candidate_root) !=
+            VCS_ZCODE_DEV_OK ||
         !vcs_object_store_init(workspace) ||
         !vcs_object_put_addressed(workspace, policy_root, policy_wire,
                                   sizeof(policy_wire)) ||
@@ -221,25 +250,29 @@ void zcl_native_handle_zcode_improve(
                                   (const uint8_t *)goal, strlen(goal)) ||
         !vcs_object_put_addressed(workspace, input_root, input, input_len) ||
         !vcs_object_put_addressed(workspace, task_root, task_wire,
-                                  sizeof(task_wire))) {
+                                  sizeof(task_wire)) ||
+        !vcs_object_put_addressed(workspace, candidate_root, candidate_wire,
+                                  sizeof(candidate_wire))) {
         free(input);
         zdev_fail(reply, "CAS_WRITE_FAILED", "canonical task inputs could not be stored atomically");
         return;
     }
     free(input);
 
-    const char *source_sha256 = zdev_str(request->input, "source_sha256");
+    const char *source_sha256 =
+        zdev_str(request->input, "candidate_source_sha256");
     uint8_t source_sha_check[32];
     if (!source_sha256 ||
         !zcl_hex_decode_lower(source_sha256, source_sha_check, 32)) {
-        zdev_fail(reply, "BAD_SOURCE_SHA256", "source_sha256 must be 64 lowercase hex");
+        zdev_fail(reply, "BAD_SOURCE_SHA256",
+                  "candidate_source_sha256 must be 64 lowercase hex");
         return;
     }
     struct db_build_job job = {0};
     struct db_build_action action = {0};
     (void)snprintf(job.source_sha256, sizeof(job.source_sha256), "%s",
                    source_sha256);
-    zcl_hex_encode(task.source_root, 32, job.source_cas_sha3);
+    zcl_hex_encode(candidate.candidate_source_root, 32, job.source_cas_sha3);
     zcl_hex_encode(task.toolchain_capsule_root, 32, job.toolchain_sha3);
     const char *profile = zdev_str(request->input, "profile");
     (void)snprintf(job.profile, sizeof(job.profile), "%s",
@@ -251,6 +284,9 @@ void zcl_native_handle_zcode_improve(
                    VCS_BUILD_ACTION_KIND_V1);
     (void)snprintf(action.state, sizeof(action.state), "SNAPSHOTTED");
     zcl_hex_encode(input_root, 32, action.input_root_sha3);
+    zcl_hex_encode(task_root, 32, action.task_root_sha3);
+    zcl_hex_encode(candidate_root, 32, action.candidate_root_sha3);
+    zcl_hex_encode(policy_root, 32, action.proof_policy_root_sha3);
     (void)snprintf(action.target, sizeof(action.target), "%s",
                    VCS_BUILD_TARGET_V1);
     uint8_t fixed_flags[32], fixed_environment[32];
@@ -289,6 +325,7 @@ void zcl_native_handle_zcode_improve(
         return;
     }
     zdev_push_root(&reply->data, "task_root", task_root);
+    zdev_push_root(&reply->data, "candidate_root", candidate_root);
     zdev_push_root(&reply->data, "proof_policy_root", policy_root);
     zdev_push_root(&reply->data, "toolchain_capsule_root",
                    task.toolchain_capsule_root);
@@ -299,5 +336,5 @@ void zcl_native_handle_zcode_improve(
     (void)json_push_kv_str(&reply->data, "lane", "FRONTIER");
     (void)json_push_kv_str(
         &reply->data, "next",
-        "an enabled local or P2P worker may produce the compile receipt; an agent candidate, review, explicit acceptance, and publication are separate required steps");
+        "an enabled local or P2P worker may produce the candidate-bound compile receipt; review, explicit acceptance, and publication remain required");
 }

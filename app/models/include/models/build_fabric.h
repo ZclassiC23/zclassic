@@ -49,6 +49,10 @@ struct db_build_action {
     char state[BUILD_FABRIC_STATE_MAX + 1];
     char outcome[BUILD_FABRIC_OUTCOME_MAX + 1];
     char input_root_sha3[BUILD_FABRIC_ID_HEX + 1];
+    char task_root_sha3[BUILD_FABRIC_ID_HEX + 1];
+    char candidate_root_sha3[BUILD_FABRIC_ID_HEX + 1];
+    char proof_policy_root_sha3[BUILD_FABRIC_ID_HEX + 1];
+    char context_root_sha3[BUILD_FABRIC_ID_HEX + 1];
     char target[BUILD_FABRIC_TARGET_MAX + 1];
     char flags_sha3[BUILD_FABRIC_ID_HEX + 1];
     char environment_sha3[BUILD_FABRIC_ID_HEX + 1];
@@ -88,6 +92,7 @@ struct db_build_receipt {
     char lease_id[BUILD_FABRIC_ID_HEX + 1];
     char action_sha3[BUILD_FABRIC_ID_HEX + 1];
     char output_sha3[BUILD_FABRIC_ID_HEX + 1];
+    char work_receipt_sha3[BUILD_FABRIC_ID_HEX + 1];
     char signature[BUILD_FABRIC_SIGNATURE_HEX + 1];
     char confinement[BUILD_FABRIC_CONFINEMENT_MAX + 1];
     int exit_status;

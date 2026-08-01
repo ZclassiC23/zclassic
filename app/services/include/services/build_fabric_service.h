@@ -73,7 +73,7 @@ struct zcl_result build_fabric_worker_revoke(
 struct zcl_result build_fabric_receipt_accept(
     struct node_db *ndb, const struct db_build_receipt *receipt, int64_t now);
 
-/* Canonical build_receipt.v1 id (signature excluded). */
+/* Canonical build_receipt.v2 projection id (signature excluded). */
 struct zcl_result build_fabric_receipt_id(
     const struct db_build_receipt *receipt,
     char out_hex[BUILD_FABRIC_ID_HEX + 1]);

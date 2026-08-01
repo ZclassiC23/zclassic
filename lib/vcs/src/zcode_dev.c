@@ -710,13 +710,15 @@ enum vcs_zcode_dev_error vcs_zcode_work_receipt_validate_for_candidate(
     if (receipt->finished_unix >= task->expires_unix ||
         receipt->finished_unix > now)
         return VCS_ZCODE_DEV_ERR_EXPIRY;
-    const uint8_t *expected_input =
-        receipt->work_kind == VCS_ZCODE_WORK_PROPOSE
-            ? task->source_root
-            : candidate->candidate_source_root;
-    if (receipt->work_kind == VCS_ZCODE_WORK_REVIEW)
-        expected_input = candidate_root;
-    if (memcmp(receipt->input_root, expected_input, 32) != 0)
+    /* Build/test/fuzz/reproduce inputs are fixed-action artifacts (for V1,
+     * the preprocessed TU), so their exact root is action-bound and cannot be
+     * inferred from the candidate tree root here. Proposals and reviews have
+     * canonical object inputs that can be checked without the action. */
+    if (receipt->work_kind == VCS_ZCODE_WORK_PROPOSE &&
+        memcmp(receipt->input_root, task->source_root, 32) != 0)
+        return VCS_ZCODE_DEV_ERR_SOURCE_STALE;
+    if (receipt->work_kind == VCS_ZCODE_WORK_REVIEW &&
+        memcmp(receipt->input_root, candidate_root, 32) != 0)
         return VCS_ZCODE_DEV_ERR_SOURCE_STALE;
     if (receipt->work_kind == VCS_ZCODE_WORK_PROPOSE &&
         memcmp(receipt->output_root, candidate_root, 32) != 0)

@@ -62,19 +62,20 @@ ZCL_COMMAND_READY_COMMAND(
 
 ZCL_COMMAND_READY_COMMAND(
     "zcode.improve", "zcode", "",
-    "Create an immutable development task and queue its fixed compile proof",
+    "Admit a candidate for an immutable task and queue its compile proof",
     "Builds canonical proof_policy.v1 and task.v1 objects in the existing "
     "workspace ZVCS CAS, captures the installed GCC toolchain by content, "
-    "stores one named preprocessed TU by SHA3, and plans/submits the existing "
-    "ZBuild action. The task binds source_sha256, source_root, dependency "
+    "stores one named preprocessed TU and candidate.v1 by SHA3, and plans/"
+    "submits the existing ZBuild action. The task binds source_root, dependency "
     "lock, write scope, acceptance tests, user-selected model policy, goal, "
     "limits, and expiry. This command does not grant wallet/node/network "
-    "authority and does not pretend an agent candidate exists yet.", 0,
+    "authority. Candidate provenance is model-neutral and its author key is "
+    "provenance, not acceptance authority.", 0,
     "zcode,improve,task,agent,zbuild,proof,compile",
     "zcl.zcode_improve.input.v1", "zcl.zcode_improve.v1",
-    "workspace,datadir,source_sha256,source_root,dependency_lock_root,write_scope_root,acceptance_tests_root,model_policy_root,goal,proof_policy_hex,preprocessed_path,profile,expires_unix,max_changed_files,max_patch_bytes,max_context_bytes,max_cpu_seconds,max_memory_bytes,max_output_bytes",
-    "workspace,source_sha256,source_root,dependency_lock_root,write_scope_root,acceptance_tests_root,model_policy_root,goal,proof_policy_hex,preprocessed_path,expires_unix",
-    "zclassic23 zcode improve --input='{\"workspace\":\"/src/project\",\"source_sha256\":\"<64hex>\",\"source_root\":\"<64hex>\",\"dependency_lock_root\":\"<64hex>\",\"write_scope_root\":\"<64hex>\",\"acceptance_tests_root\":\"<64hex>\",\"model_policy_root\":\"<64hex>\",\"goal\":\"fix seeded bug\",\"proof_policy_hex\":\"<wire hex>\",\"preprocessed_path\":\"/tmp/unit.i\",\"expires_unix\":123}'",
+    "workspace,datadir,candidate_source_sha256,source_root,dependency_lock_root,write_scope_root,acceptance_tests_root,model_policy_root,goal,proof_policy_hex,preprocessed_path,patch_root,candidate_source_root,adapter_policy_root,author_pubkey,candidate_sequence,profile,expires_unix,max_changed_files,max_patch_bytes,max_context_bytes,max_cpu_seconds,max_memory_bytes,max_output_bytes",
+    "workspace,candidate_source_sha256,source_root,dependency_lock_root,write_scope_root,acceptance_tests_root,model_policy_root,goal,proof_policy_hex,preprocessed_path,patch_root,candidate_source_root,adapter_policy_root,author_pubkey,expires_unix",
+    "zclassic23 zcode improve --input='{\"workspace\":\"/src/project\",\"candidate_source_sha256\":\"<64hex>\",\"source_root\":\"<64hex>\",\"dependency_lock_root\":\"<64hex>\",\"write_scope_root\":\"<64hex>\",\"acceptance_tests_root\":\"<64hex>\",\"model_policy_root\":\"<64hex>\",\"goal\":\"fix seeded bug\",\"proof_policy_hex\":\"<wire hex>\",\"preprocessed_path\":\"/tmp/unit.i\",\"patch_root\":\"<64hex>\",\"candidate_source_root\":\"<64hex>\",\"adapter_policy_root\":\"<64hex>\",\"author_pubkey\":\"<64hex>\",\"expires_unix\":123}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,

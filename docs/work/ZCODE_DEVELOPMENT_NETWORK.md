@@ -40,7 +40,7 @@ ledger, worker trust list, or P2P transport.
 | Local package confinement | `zclassic23-package-verify` | Live: declarative recipe, Landlock/seccomp/rlimits, no network |
 | ZBuild worker execution | existing build-fabric runtime | Live locally for the fixed preprocessed-TU GCC action when `-buildworker` is enabled: durable identity, bounded leases, full confinement, CAS artifact, signed receipt, and local fallback |
 | Package P2P | `package_swarm_node` and `zpkgswm` | Live for immutable package bytes |
-| Work P2P | adapter over package swarm/CAS | Not live |
+| Work P2P | signed work frames over package swarm/CAS | Canonical codec and quorum verifier live; transport dispatch pending |
 | Agent authority | metaverse grants and signed receipt chain | Live for scoped property operations; task work must never inherit wallet or canonical-node authority |
 | Durability lanes | ZCODE promotion records over source roots | Not live |
 
@@ -145,6 +145,8 @@ cannot authorize a moved task.
 - [x] Add byte KATs, round trips, malformed-wire checks, and stale-root checks.
 - [ ] Store these wires through the existing ZCODE CAS and project a local task
   index from CAS objects rather than creating task tables as a second truth.
+  CAS storage and the ZBuild projection are live; local search/index projection
+  remains.
 - [ ] Publish a bounded code-index context capsule whose members resolve to
   the task's immutable source root.
 
@@ -162,15 +164,15 @@ cannot authorize a moved task.
   virtual paths, no network, bounded stdout/stderr, cancellation, and a hard
   deadline before untrusted bytes run. Cancellation currently prevents stale
   publication; prompt child termination is still pending.
-- [ ] Fetch inputs only by immutable CAS root. Recheck task/source/lock/toolchain/
-  policy/lease immediately before execution and immediately before receipt
-  publication. The local worker now rechecks input, action, source, toolchain,
-  fixed flags/environment, signer, and lease; task/lock/policy projection into
-  the action ledger remains.
-- [ ] Store output chunks and a build-artifact manifest in the existing CAS, then
-  sign `work_receipt.v1` and the existing ZBuild receipt projection.
-  Output chunks, artifact manifest, and the lease-bound ZBuild receipt are live;
-  projecting the canonical ZCODE work receipt is still pending.
+- [x] Fetch inputs only by immutable CAS root. Recheck task, candidate, policy,
+  action input, source, toolchain, fixed flags/environment, signer, and lease
+  before execution and again before receipt publication. The dependency-lock
+  root is task-bound; portable lock-byte admission remains part of the context
+  package work.
+- [x] Store output chunks and a build-artifact manifest in the existing CAS,
+  then sign `work_receipt.v1` and the existing ZBuild receipt projection. The
+  database projection binds the canonical receipt root; the wire remains CAS
+  authority.
 - [ ] On timeout, crash, cancellation, malformed output, stale state, or sandbox
   failure: publish a named outcome and use the existing local fallback policy;
   never wait forever.
@@ -188,14 +190,21 @@ bash-only authority:
   adapter, admit candidate trees, schedule proofs/reviews, reproduce, explicitly
   accept, and publish.
 
-`zcode improve` is READY only for its truthful first stage: it stores canonical
-task/policy/goal/input objects in the existing workspace CAS, captures the GCC
-capsule, and queues the fixed compile action in ZBuild. It explicitly reports
-that candidate generation, review, acceptance, and publication remain next;
-those stages are not yet claimed by command discovery.
+`zcode improve` now admits canonical task/policy/goal/input/candidate objects in
+the existing workspace CAS, captures the GCC capsule, and queues a
+candidate-bound compile action. A local worker emits the canonical signed work
+receipt. Adapter invocation, review, explicit acceptance, and publication are
+still separate missing stages and are not claimed by command discovery.
 
 ### D. Requester-coordinated P2P work
 
+- [x] Freeze signed capability/request/result/cancel frames. Requests bind the
+  semantic object roots plus one content.v2 context-package root; advertisements
+  bind target, capsule, confinement, ceilings, slots, headroom, and expiry.
+- [x] Verify exact result bindings and count only approved, distinct signers
+  returning one matching output root toward quorum.
+- [ ] Dispatch those frames over the existing `zpkgswm` peer sessions and feed
+  accepted requests/results into the existing ZBuild ledger.
 - Extend peer advertisements with bounded action kinds, toolchain capsule,
   target, confinement facts, resource ceilings, queue headroom, and expiry.
 - The requester owns job selection, leases, cancellation, quorum, and local

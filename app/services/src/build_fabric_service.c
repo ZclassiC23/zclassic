@@ -109,7 +109,7 @@ struct zcl_result build_fabric_receipt_id(
 {
     if (!receipt || !out_hex)
         return ZCL_ERR(-1, "receipt id requires a receipt and output buffer");
-    static const char domain[] = "zcl.build_receipt.v1";
+    static const char domain[] = "zcl.build_receipt.v2";
     struct sha3_256_ctx sha;
     sha3_256_init(&sha);
     sha3_256_write(&sha, (const unsigned char *)domain, sizeof(domain));
@@ -119,6 +119,7 @@ struct zcl_result build_fabric_receipt_id(
     bf_sha_text(&sha, receipt->lease_id);
     bf_sha_text(&sha, receipt->action_sha3);
     bf_sha_text(&sha, receipt->output_sha3);
+    bf_sha_text(&sha, receipt->work_receipt_sha3);
     bf_sha_text(&sha, receipt->confinement);
     bf_sha_i64(&sha, receipt->exit_status);
     bf_sha_i64(&sha, receipt->created_at);
@@ -141,6 +142,11 @@ static bool bf_action_same_plan(const struct db_build_action *a,
     return strcmp(a->job_id, b->job_id) == 0 &&
            a->sequence == b->sequence && strcmp(a->kind, b->kind) == 0 &&
            strcmp(a->input_root_sha3, b->input_root_sha3) == 0 &&
+           strcmp(a->task_root_sha3, b->task_root_sha3) == 0 &&
+           strcmp(a->candidate_root_sha3, b->candidate_root_sha3) == 0 &&
+           strcmp(a->proof_policy_root_sha3,
+                  b->proof_policy_root_sha3) == 0 &&
+           strcmp(a->context_root_sha3, b->context_root_sha3) == 0 &&
            strcmp(a->target, b->target) == 0 &&
            strcmp(a->flags_sha3, b->flags_sha3) == 0 &&
            strcmp(a->environment_sha3, b->environment_sha3) == 0 &&

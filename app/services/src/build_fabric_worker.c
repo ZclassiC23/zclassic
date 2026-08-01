@@ -15,6 +15,7 @@
 #include "vcs/build_action.h"
 #include "vcs/build_artifact_manifest.h"
 #include "vcs/vcs_object.h"
+#include "vcs/zcode_dev.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -220,6 +221,124 @@ static bool bfw_elf_relocatable_x86_64(const uint8_t *bytes, size_t len)
            bytes[17] == 0 && bytes[18] == 62 && bytes[19] == 0;
 }
 
+static struct zcl_result bfw_load_zcode_context(
+    const char *workspace, const struct db_build_job *job,
+    const struct db_build_action *action, int64_t now,
+    struct vcs_zcode_task_v1 *task,
+    struct vcs_zcode_candidate_v1 *candidate, bool *present)
+{
+    *present = false;
+    if (!action->task_root_sha3[0]) return ZCL_OK;
+    uint8_t task_root[32], candidate_root[32], policy_root[32];
+    if (!zcl_hex_decode_lower(action->task_root_sha3, task_root, 32) ||
+        !zcl_hex_decode_lower(action->candidate_root_sha3,
+                              candidate_root, 32) ||
+        !zcl_hex_decode_lower(action->proof_policy_root_sha3,
+                              policy_root, 32))
+        return ZCL_ERR(-1, "zcode-context-roots-invalid");
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    if (vcs_object_load_raw(workspace, task_root, &wire, &wire_len) != 0 ||
+        vcs_zcode_task_parse(wire, wire_len, task) != VCS_ZCODE_DEV_OK) {
+        free(wire);
+        return ZCL_ERR(-1, "zcode-task-cas-miss-or-corrupt");
+    }
+    free(wire); wire = NULL; wire_len = 0;
+    uint8_t checked[32];
+    if (vcs_zcode_task_root(task, checked) != VCS_ZCODE_DEV_OK ||
+        memcmp(checked, task_root, 32) != 0 ||
+        vcs_zcode_task_validate_at(task, now) != VCS_ZCODE_DEV_OK)
+        return ZCL_ERR(-1, "zcode-task-stale-or-expired");
+    if (vcs_object_load_raw(workspace, candidate_root, &wire, &wire_len) != 0 ||
+        vcs_zcode_candidate_parse(wire, wire_len, candidate) !=
+            VCS_ZCODE_DEV_OK) {
+        free(wire);
+        return ZCL_ERR(-1, "zcode-candidate-cas-miss-or-corrupt");
+    }
+    free(wire); wire = NULL; wire_len = 0;
+    if (vcs_zcode_candidate_root(candidate, checked) != VCS_ZCODE_DEV_OK ||
+        memcmp(checked, candidate_root, 32) != 0 ||
+        vcs_zcode_candidate_validate_for_task(task, candidate, now) !=
+            VCS_ZCODE_DEV_OK)
+        return ZCL_ERR(-1, "zcode-candidate-stale");
+    struct vcs_zcode_proof_policy_v1 policy;
+    if (vcs_object_load_raw(workspace, policy_root, &wire, &wire_len) != 0 ||
+        vcs_zcode_proof_policy_parse(wire, wire_len, &policy) !=
+            VCS_ZCODE_DEV_OK) {
+        free(wire);
+        return ZCL_ERR(-1, "zcode-proof-policy-cas-miss-or-corrupt");
+    }
+    free(wire);
+    if (vcs_zcode_proof_policy_root(&policy, checked) != VCS_ZCODE_DEV_OK ||
+        memcmp(checked, policy_root, 32) != 0 ||
+        memcmp(task->proof_policy_root, policy_root, 32) != 0)
+        return ZCL_ERR(-1, "zcode-proof-policy-stale");
+    char root_hex[65];
+    zcl_hex_encode(task->toolchain_capsule_root, 32, root_hex);
+    if (strcmp(root_hex, job->toolchain_sha3) != 0) {
+        return ZCL_ERR(-1, "zcode-toolchain-stale");
+    }
+    zcl_hex_encode(candidate->candidate_source_root, 32, root_hex);
+    if (strcmp(root_hex, job->source_cas_sha3) != 0)
+        return ZCL_ERR(-1, "zcode-candidate-source-stale");
+    *present = true;
+    return ZCL_OK;
+}
+
+static struct zcl_result bfw_canonical_receipt(
+    const char *workspace, const struct db_build_action *action,
+    const struct vcs_zcode_task_v1 *task,
+    const struct vcs_zcode_candidate_v1 *candidate,
+    const uint8_t output_root[32], int64_t started, int64_t finished,
+    const uint8_t signer_secret[32], const uint8_t signer_pubkey[32],
+    char out_hex[65])
+{
+    static const char confinement[] =
+        "landlock=1,seccomp=1,rlimits=1,network=0,gcc=fixed";
+    uint8_t confinement_root[32];
+    sha3_256((const uint8_t *)confinement, sizeof(confinement) - 1u,
+             confinement_root);
+    if (!vcs_object_put_addressed(workspace, confinement_root,
+                                  (const uint8_t *)confinement,
+                                  sizeof(confinement) - 1u))
+        return ZCL_ERR(-1, "confinement-evidence-cas-store-failed");
+    struct vcs_zcode_work_receipt_v1 receipt = {
+        .schema_version = VCS_ZCODE_DEV_VERSION,
+        .work_kind = VCS_ZCODE_WORK_BUILD,
+        .status = VCS_ZCODE_WORK_PASS,
+        .exit_status = 0,
+        .started_unix = started,
+        .finished_unix = finished,
+    };
+    if (!zcl_hex_decode_lower(action->task_root_sha3, receipt.task_root, 32) ||
+        !zcl_hex_decode_lower(action->candidate_root_sha3,
+                              receipt.candidate_root, 32) ||
+        !zcl_hex_decode_lower(action->action_id, receipt.action_root, 32) ||
+        !zcl_hex_decode_lower(action->input_root_sha3, receipt.input_root, 32) ||
+        !zcl_hex_decode_lower(action->proof_policy_root_sha3,
+                              receipt.proof_policy_root, 32) ||
+        !zcl_hex_decode_lower(action->lease_id, receipt.lease_id, 32))
+        return ZCL_ERR(-1, "canonical-receipt-roots-invalid");
+    memcpy(receipt.output_root, output_root, 32);
+    memcpy(receipt.toolchain_capsule_root, task->toolchain_capsule_root, 32);
+    memcpy(receipt.evidence_root, output_root, 32);
+    memcpy(receipt.confinement_root, confinement_root, 32);
+    if (vcs_zcode_work_receipt_seal(&receipt, signer_secret, signer_pubkey) !=
+            VCS_ZCODE_DEV_OK ||
+        vcs_zcode_work_receipt_validate_for_candidate(
+            task, candidate, &receipt, finished) != VCS_ZCODE_DEV_OK ||
+        vcs_zcode_work_receipt_verify(&receipt, signer_pubkey) !=
+            VCS_ZCODE_DEV_OK)
+        return ZCL_ERR(-1, "canonical-work-receipt-refused");
+    uint8_t wire[VCS_ZCODE_WORK_RECEIPT_WIRE_BYTES], root[32];
+    if (vcs_zcode_work_receipt_serialize(&receipt, wire) != VCS_ZCODE_DEV_OK ||
+        vcs_zcode_work_receipt_id(&receipt, root) != VCS_ZCODE_DEV_OK ||
+        !vcs_object_put_addressed(workspace, root, wire, sizeof(wire)))
+        return ZCL_ERR(-1, "canonical-work-receipt-cas-store-failed");
+    zcl_hex_encode(root, 32, out_hex);
+    return ZCL_OK;
+}
+
 static struct zcl_result bfw_store_artifact(
     const char *workspace, const char *action_id, const uint8_t *bytes,
     size_t len, uint8_t manifest_root[32])
@@ -311,6 +430,14 @@ struct zcl_result build_fabric_worker_execute(
         strcmp(fixed_environment_hex, action.environment_sha3) != 0)
         return bfw_fail(ndb, action_id, lease_id,
                         "fixed-flags-or-environment-stale");
+    struct vcs_zcode_task_v1 zcode_task;
+    struct vcs_zcode_candidate_v1 zcode_candidate;
+    bool zcode_context = false;
+    struct zcl_result context = bfw_load_zcode_context(
+        workspace, &job, &action, (int64_t)platform_time_wall_unix(),
+        &zcode_task, &zcode_candidate, &zcode_context);
+    if (!context.ok)
+        return bfw_fail(ndb, action_id, lease_id, context.message);
     uint8_t input_root[32];
     uint8_t *input = NULL;
     size_t input_len = 0;
@@ -326,8 +453,9 @@ struct zcl_result build_fabric_worker_execute(
         free(input);
         return bfw_fail(ndb, action_id, lease_id, "input-cas-corrupt");
     }
+    int64_t work_started = (int64_t)platform_time_wall_unix();
     struct zcl_result start = build_fabric_start(
-        ndb, action_id, lease_id, (int64_t)platform_time_wall_unix());
+        ndb, action_id, lease_id, work_started);
     if (!start.ok) { free(input); return start; }
     struct bfw_paths paths = {0};
     struct zcl_result paths_result = bfw_paths_init(workspace, lease_id, &paths);
@@ -374,6 +502,21 @@ struct zcl_result build_fabric_worker_execute(
     bfw_paths_cleanup(&paths);
     if (!stored.ok)
         return bfw_fail(ndb, action_id, lease_id, "output-cas-store-failed");
+    int64_t work_finished = (int64_t)platform_time_wall_unix();
+    if (zcode_context) {
+        struct vcs_zcode_task_v1 checked_task;
+        struct vcs_zcode_candidate_v1 checked_candidate;
+        bool checked_present = false;
+        context = bfw_load_zcode_context(
+            workspace, &job, &action, work_finished, &checked_task,
+            &checked_candidate, &checked_present);
+        if (!context.ok || !checked_present)
+            return bfw_fail(ndb, action_id, lease_id,
+                            context.ok ? "zcode-context-disappeared"
+                                       : context.message);
+        zcode_task = checked_task;
+        zcode_candidate = checked_candidate;
+    }
     struct db_build_receipt receipt = {0};
     (void)snprintf(receipt.action_id, sizeof(receipt.action_id), "%s",
                    action.action_id);
@@ -387,7 +530,15 @@ struct zcl_result build_fabric_worker_execute(
     (void)snprintf(receipt.confinement, sizeof(receipt.confinement),
                    "landlock=1,seccomp=1,rlimits=1,network=0,gcc=fixed");
     receipt.exit_status = 0;
-    receipt.created_at = (int64_t)platform_time_wall_unix();
+    receipt.created_at = work_finished;
+    if (zcode_context) {
+        struct zcl_result canonical = bfw_canonical_receipt(
+            workspace, &action, &zcode_task, &zcode_candidate, output_root,
+            work_started, work_finished, signer_secret, signer_pubkey,
+            receipt.work_receipt_sha3);
+        if (!canonical.ok)
+            return bfw_fail(ndb, action_id, lease_id, canonical.message);
+    }
     if (!build_fabric_receipt_id(&receipt, receipt.receipt_id).ok)
         return bfw_fail(ndb, action_id, lease_id, "receipt-id-failed");
     uint8_t receipt_id[32], signature[64];

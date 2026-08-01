@@ -554,6 +554,35 @@ int node_db_migrate_features_v30_up(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 43) {
+        /* v43: canonical ZCODE task/candidate context and the work-receipt
+         * projection. Empty roots retain project-neutral legacy actions;
+         * ZCODE actions require all semantic roots in model validation. */
+        node_db_exec(ndb,
+            "ALTER TABLE build_actions ADD COLUMN task_root_sha3 TEXT NOT NULL "
+            "DEFAULT '' CHECK(length(task_root_sha3) IN (0,64))");
+        node_db_exec(ndb,
+            "ALTER TABLE build_actions ADD COLUMN candidate_root_sha3 TEXT NOT NULL "
+            "DEFAULT '' CHECK(length(candidate_root_sha3) IN (0,64))");
+        node_db_exec(ndb,
+            "ALTER TABLE build_actions ADD COLUMN proof_policy_root_sha3 TEXT NOT NULL "
+            "DEFAULT '' CHECK(length(proof_policy_root_sha3) IN (0,64))");
+        node_db_exec(ndb,
+            "ALTER TABLE build_actions ADD COLUMN context_root_sha3 TEXT NOT NULL "
+            "DEFAULT '' CHECK(length(context_root_sha3) IN (0,64))");
+        node_db_exec(ndb,
+            "ALTER TABLE build_receipts ADD COLUMN work_receipt_sha3 TEXT NOT NULL "
+            "DEFAULT '' CHECK(length(work_receipt_sha3) IN (0,64))");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_build_actions_zcode_task "
+            "ON build_actions(task_root_sha3,candidate_root_sha3,state)");
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('043')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 43);
+        current_ver = 43;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }

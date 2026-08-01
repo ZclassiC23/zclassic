@@ -166,6 +166,18 @@ bool db_build_action_validate(const struct db_build_action *row,
                      "is not a named build outcome");
     validates_custom(errors, build_hex_id(row->input_root_sha3),
                      "input_root_sha3", "must be a 64-byte hex digest");
+    bool no_zcode = !row->task_root_sha3[0] &&
+                    !row->candidate_root_sha3[0] &&
+                    !row->proof_policy_root_sha3[0];
+    bool full_zcode = build_hex_id(row->task_root_sha3) &&
+                      build_hex_id(row->candidate_root_sha3) &&
+                      build_hex_id(row->proof_policy_root_sha3);
+    validates_custom(errors, no_zcode || full_zcode, "zcode_roots",
+                     "must be all empty or canonical task/candidate/policy roots");
+    validates_custom(errors,
+                     !row->context_root_sha3[0] ||
+                         build_hex_id(row->context_root_sha3),
+                     "context_root_sha3", "must be empty or a hex digest");
     validates_string_present(errors, row->target, "target");
     validates_custom(errors, build_hex_id(row->flags_sha3), "flags_sha3",
                      "must be a 64-byte hex digest");
@@ -241,6 +253,10 @@ bool db_build_receipt_validate(const struct db_build_receipt *row,
     validates_custom(errors, build_hex_id(row->output_sha3), "output_sha3",
                      "must be a 64-byte hex digest");
     validates_custom(errors,
+                     !row->work_receipt_sha3[0] ||
+                         build_hex_id(row->work_receipt_sha3),
+                     "work_receipt_sha3", "must be empty or a hex digest");
+    validates_custom(errors,
                      build_lower_hex(row->signature,
                                      BUILD_FABRIC_SIGNATURE_HEX),
                      "signature", "must be a 64-byte signature in hex");
@@ -290,8 +306,9 @@ bool db_build_action_save(struct node_db *ndb,
         "target,flags_sha3,environment_sha3,virtual_workdir,declared_outputs,"
         "resource_policy,output_root_sha3,worker_id,lease_id,last_error,"
         "lease_expires_at,lease_heartbeat_at,attempt_count,claimed_at,"
-        "started_at,finished_at,created_at,updated_at) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+        "started_at,finished_at,created_at,updated_at,task_root_sha3,"
+        "candidate_root_sha3,proof_policy_root_sha3,context_root_sha3) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
         "ON CONFLICT(action_id) DO UPDATE SET "
         "state=excluded.state,outcome=excluded.outcome,"
         "output_root_sha3=excluded.output_root_sha3,worker_id=excluded.worker_id,"
@@ -327,7 +344,11 @@ bool db_build_action_save(struct node_db *ndb,
         AR_BIND_INT(st, 22, row->started_at);
         AR_BIND_INT(st, 23, row->finished_at);
         AR_BIND_INT(st, 24, row->created_at);
-        AR_BIND_INT(st, 25, row->updated_at));
+        AR_BIND_INT(st, 25, row->updated_at);
+        AR_BIND_TEXT(st, 26, row->task_root_sha3);
+        AR_BIND_TEXT(st, 27, row->candidate_root_sha3);
+        AR_BIND_TEXT(st, 28, row->proof_policy_root_sha3);
+        AR_BIND_TEXT(st, 29, row->context_root_sha3));
 }
 
 bool db_build_worker_save(struct node_db *ndb,
@@ -365,8 +386,8 @@ bool db_build_receipt_save(struct node_db *ndb,
     AR_ADHOC_SAVE(ndb, st,
         "INSERT OR REPLACE INTO build_receipts "
         "(receipt_id,action_id,job_id,worker_id,lease_id,action_sha3,output_sha3,"
-        "signature,confinement,exit_status,created_at) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        "signature,confinement,exit_status,created_at,work_receipt_sha3) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
         build_receipt_callbacks_ready(), "build_receipt", row,
         db_build_receipt_validate,
         AR_BIND_TEXT(st, 1, row->receipt_id);
@@ -379,7 +400,8 @@ bool db_build_receipt_save(struct node_db *ndb,
         AR_BIND_TEXT(st, 8, row->signature);
         AR_BIND_TEXT(st, 9, row->confinement);
         AR_BIND_INT(st, 10, row->exit_status);
-        AR_BIND_INT(st, 11, row->created_at));
+        AR_BIND_INT(st, 11, row->created_at);
+        AR_BIND_TEXT(st, 12, row->work_receipt_sha3));
 }
 
 static void build_job_read(struct db_build_job *out, sqlite3_stmt *st)
@@ -423,6 +445,13 @@ static void build_action_read(struct db_build_action *out, sqlite3_stmt *st)
     out->finished_at = AR_COL_INT(st, 22);
     out->created_at = AR_COL_INT(st, 23);
     out->updated_at = AR_COL_INT(st, 24);
+    AR_READ_STR(st, 25, out->task_root_sha3, sizeof(out->task_root_sha3));
+    AR_READ_STR(st, 26, out->candidate_root_sha3,
+                sizeof(out->candidate_root_sha3));
+    AR_READ_STR(st, 27, out->proof_policy_root_sha3,
+                sizeof(out->proof_policy_root_sha3));
+    AR_READ_STR(st, 28, out->context_root_sha3,
+                sizeof(out->context_root_sha3));
 }
 
 static void build_worker_read(struct db_build_worker *out, sqlite3_stmt *st)
@@ -450,6 +479,8 @@ static void build_receipt_read(struct db_build_receipt *out, sqlite3_stmt *st)
     AR_READ_STR(st, 8, out->confinement, sizeof(out->confinement));
     out->exit_status = (int)AR_COL_INT(st, 9);
     out->created_at = AR_COL_INT(st, 10);
+    AR_READ_STR(st, 11, out->work_receipt_sha3,
+                sizeof(out->work_receipt_sha3));
 }
 
 #define BUILD_JOB_COLS "job_id,source_sha256,source_cas_sha3,toolchain_sha3," \
@@ -458,11 +489,13 @@ static void build_receipt_read(struct db_build_receipt *out, sqlite3_stmt *st)
     "input_root_sha3,target,flags_sha3,environment_sha3,virtual_workdir," \
     "declared_outputs,resource_policy,output_root_sha3,worker_id,lease_id," \
     "last_error,lease_expires_at,lease_heartbeat_at,attempt_count,claimed_at," \
-    "started_at,finished_at,created_at,updated_at"
+    "started_at,finished_at,created_at,updated_at,task_root_sha3," \
+    "candidate_root_sha3,proof_policy_root_sha3,context_root_sha3"
 #define BUILD_WORKER_COLS "worker_id,signer_pubkey,capabilities,approved," \
     "revoked,approved_at,expires_at,last_seen_at"
 #define BUILD_RECEIPT_COLS "receipt_id,action_id,job_id,worker_id,lease_id," \
-    "action_sha3,output_sha3,signature,confinement,exit_status,created_at"
+    "action_sha3,output_sha3,signature,confinement,exit_status,created_at," \
+    "work_receipt_sha3"
 
 bool db_build_job_find(struct node_db *ndb, const char *job_id,
                        struct db_build_job *out)
