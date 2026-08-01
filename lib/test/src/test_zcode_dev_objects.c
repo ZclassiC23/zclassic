@@ -4,10 +4,17 @@
 #include "test/test_core.h"
 
 #include "base/hex.h"
+#include "command/native_command.h"
 #include "crypto/ed25519.h"
+#include "json/json.h"
+#include "models/build_fabric.h"
+#include "models/database.h"
+#include "platform/time_compat.h"
+#include "vcs/vcs_object.h"
 #include "vcs/zcode_dev.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static void zd_root(uint8_t out[32], uint8_t value)
@@ -287,12 +294,93 @@ static int test_zd_receipt(void)
     return failures;
 }
 
+static int test_zd_improve_command(void)
+{
+    int failures = 0;
+    TEST("zcode_dev: improve stores canonical task and queues existing ZBuild") {
+        char dir[256], preprocessed[320], workspace[4096];
+        test_make_tmpdir(dir, sizeof(dir), "zcode_dev", "improve");
+        ASSERT(realpath(dir, workspace) != NULL);
+        (void)snprintf(preprocessed, sizeof(preprocessed), "%s/unit.i",
+                       workspace);
+        FILE *f = fopen(preprocessed, "wb");
+        ASSERT(f != NULL);
+        static const char source[] = "int zcode_improve_fixture(void){return 1;}\n";
+        ASSERT(fwrite(source, 1, sizeof(source) - 1u, f) ==
+               sizeof(source) - 1u);
+        ASSERT(fclose(f) == 0);
+
+        struct vcs_zcode_proof_policy_v1 policy;
+        zd_policy(&policy);
+        uint8_t policy_wire[VCS_ZCODE_PROOF_POLICY_WIRE_BYTES];
+        char policy_hex[VCS_ZCODE_PROOF_POLICY_WIRE_BYTES * 2u + 1u];
+        ASSERT_EQ(vcs_zcode_proof_policy_serialize(&policy, policy_wire),
+                  VCS_ZCODE_DEV_OK);
+        zcl_hex_encode(policy_wire, sizeof(policy_wire), policy_hex);
+        char roots[5][65];
+        for (size_t i = 0; i < 5; i++) {
+            uint8_t root[32];
+            zd_root(root, (uint8_t)(i + 1));
+            zcl_hex_encode(root, 32, roots[i]);
+        }
+        struct json_value input;
+        json_init(&input); json_set_object(&input);
+        (void)json_push_kv_str(&input, "workspace", workspace);
+        (void)json_push_kv_str(&input, "datadir", workspace);
+        (void)json_push_kv_str(&input, "source_sha256", roots[0]);
+        (void)json_push_kv_str(&input, "source_root", roots[0]);
+        (void)json_push_kv_str(&input, "dependency_lock_root", roots[1]);
+        (void)json_push_kv_str(&input, "write_scope_root", roots[2]);
+        (void)json_push_kv_str(&input, "acceptance_tests_root", roots[3]);
+        (void)json_push_kv_str(&input, "model_policy_root", roots[4]);
+        (void)json_push_kv_str(&input, "goal", "fix deterministic fixture");
+        (void)json_push_kv_str(&input, "proof_policy_hex", policy_hex);
+        (void)json_push_kv_str(&input, "preprocessed_path", preprocessed);
+        int64_t expires = (int64_t)platform_time_wall_unix() + 3600;
+        (void)json_push_kv_int(&input, "expires_unix", expires);
+        struct zcl_command_request request = { .input = &input };
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.zcode_improve.v1");
+        zcl_native_handle_zcode_improve(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        const char *task_hex = json_get_str(json_get(&reply.data, "task_root"));
+        const char *action_id = json_get_str(json_get(&reply.data, "action_id"));
+        ASSERT(task_hex && action_id);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "state")), "QUEUED");
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "lane")), "FRONTIER");
+        uint8_t task_root[32], *task_wire = NULL;
+        size_t task_wire_len = 0;
+        ASSERT(zcl_hex_decode_lower(task_hex, task_root, 32));
+        ASSERT_EQ(vcs_object_load_raw(workspace, task_root, &task_wire,
+                                      &task_wire_len), 0);
+        struct vcs_zcode_task_v1 task;
+        ASSERT_EQ(vcs_zcode_task_parse(task_wire, task_wire_len, &task),
+                  VCS_ZCODE_DEV_OK);
+        free(task_wire);
+        ASSERT_EQ(task.expires_unix, expires);
+        char db_path[320];
+        (void)snprintf(db_path, sizeof(db_path), "%s/node.db", workspace);
+        struct node_db ndb = {0};
+        ASSERT(node_db_open(&ndb, db_path));
+        struct db_build_action action;
+        ASSERT(db_build_action_find(&ndb, action_id, &action));
+        ASSERT_STR_EQ(action.state, "QUEUED");
+        node_db_close(&ndb);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        test_rm_rf(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_zcode_dev_objects(void)
 {
     int failures = 0;
     failures += test_zd_policy_and_task();
     failures += test_zd_candidate_review();
     failures += test_zd_receipt();
+    failures += test_zd_improve_command();
     printf("=== zcode_dev_objects: %d failures ===\n", failures);
     return failures;
 }

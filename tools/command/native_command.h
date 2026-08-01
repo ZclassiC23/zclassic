@@ -318,6 +318,15 @@ void zcl_native_handle_zcode_package_publish_commit(
 void zcl_native_handle_zcode_package_search(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_create(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_use(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_improve(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 
 /* ── zcode.release.* — Sovereign Registry v1: sign/verify zid release
  * records (tools/command/native_zcode_release_command.c). Signing is

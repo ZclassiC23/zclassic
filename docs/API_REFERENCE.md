@@ -59,15 +59,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 406 |
+| Registry entries (branches + leaves) | 409 |
 | Top-level roots | 10 |
 | Branches | 94 |
-| Leaves (dispatchable command paths) | 312 |
-| … `ready` (live handler in this build) | 264 |
+| Leaves (dispatchable command paths) | 315 |
+| … `ready` (live handler in this build) | 267 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
-| Leaves with `effect=mutate` | 85 |
+| Leaves with `effect=mutate` | 88 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 65 |
 
@@ -85,7 +85,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 14 | 3 | 11 |
-| `config/commands/zcode.def` | 63 | 15 | 48 |
+| `config/commands/zcode.def` | 66 | 15 | 51 |
 | `config/commands/metaverse.def` | 17 | 5 | 12 |
 | `config/commands/telemetry/root.def` | 6 | 2 | 4 |
 | `config/commands/telemetry/watch.def` | 1 | 0 | 1 |
@@ -782,6 +782,12 @@ represented by its children's sections.
 | `vault swap refund` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | `swap_id`, `funding_txid`, `vout`, `confirm` | `zcl.vault_swap_settle.v1` | `zclassic23 vault swap refund --input='{"swap_id":".."}'` | Reclaim an expired swap HTLC by dispatching the node's swap_refund |
 
 ### `zcode` — ZCODE source-package hosting: publish, search, host
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode create` | ready | mutate / app-write / operator · foreground/moderate | **`mode`**, `release_hex`, `manifest_hex`, `recipe_hex`, `dir`, `day`, `datadir` | `zcl.zcode_create.v1` | `zclassic23 zcode create --input='{"mode":"plan","release_hex":"..","manifest_hex":"..","recipe_hex":"..","dir":"/tmp/pkg"}'` | Create a package through the existing publish lifecycle |
+| `zcode use` | ready | mutate / app-write / operator · foreground/moderate | `name_or_root`, `plan_id`, `now_unix`, `datadir` | `zcl.zcode_use.v1` | `zclassic23 zcode use --input='{"name_or_root":"<64hex>"}'` | Use a package through the existing dependency-add lifecycle |
+| `zcode improve` | ready | mutate / app-write / operator · foreground/moderate | **`workspace`**, `datadir`, **`source_sha256`**, **`source_root`**, **`dependency_lock_root`**, **`write_scope_root`**, **`acceptance_tests_root`**, **`model_policy_root`**, **`goal`**, **`proof_policy_hex`**, **`preprocessed_path`**, `profile`, **`expires_unix`**, `max_changed_files`, `max_patch_bytes`, `max_context_bytes`, `max_cpu_seconds`, `max_memory_bytes`, `max_output_bytes` | `zcl.zcode_improve.v1` | `zclassic23 zcode improve --input='{"workspace":"/src/project","source_sha256":"<64hex>","source_root":"<64hex>","dependency_lock_root":"<64hex>","write_scope_root":"<64hex>","acceptance_tests_root":"<64hex>","model_policy_root":"<64hex>","goal":"fix seeded bug","proof_policy_hex":"<wire hex>","preprocessed_path":"/tmp/unit.i","expires_unix":123}'` | Create an immutable development task and queue its fixed compile proof |
 
 #### `zcode.package` — Published packages
 

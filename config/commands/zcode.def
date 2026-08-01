@@ -18,6 +18,72 @@ ZCL_COMMAND_BRANCH("zcode", "",
                    "ZCODE source-package hosting: publish, search, host",
                    ZCL_COMMAND_LAYER_APP)
 
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.create", "zcode", "",
+    "Create a package through the existing publish lifecycle",
+    "Typed convenience adapter over zcode.package.publish.plan/commit. "
+    "mode=plan validates release_hex, manifest_hex, recipe_hex and optional "
+    "source dir without writes; mode=commit re-validates and publishes them "
+    "through the same package CAS lifecycle. No second package format or "
+    "store is created.", 0,
+    "zcode,create,package,publish,plan,commit",
+    "zcl.zcode_create.input.v1", "zcl.zcode_create.v1",
+    "mode,release_hex,manifest_hex,recipe_hex,dir,day,datadir", "mode",
+    "zclassic23 zcode create --input='{\"mode\":\"plan\",\"release_hex\":\"..\",\"manifest_hex\":\"..\",\"recipe_hex\":\"..\",\"dir\":\"/tmp/pkg\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_create)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.use", "zcode", "",
+    "Use a package through the existing dependency-add lifecycle",
+    "Typed convenience adapter over zcode.package.add plan/commit. Give "
+    "name_or_root to produce the exact root-pinned dependency plan, or give "
+    "plan_id to re-derive, confined-build, atomically install, and activate "
+    "that plan. Hashes remain authoritative; ZNAM is only an optional input "
+    "resolver.", 0,
+    "zcode,use,package,dependency,lock,install",
+    "zcl.zcode_use.input.v1", "zcl.zcode_use.v1",
+    "name_or_root,plan_id,now_unix,datadir", "",
+    "zclassic23 zcode use --input='{\"name_or_root\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_use)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.improve", "zcode", "",
+    "Create an immutable development task and queue its fixed compile proof",
+    "Builds canonical proof_policy.v1 and task.v1 objects in the existing "
+    "workspace ZVCS CAS, captures the installed GCC toolchain by content, "
+    "stores one named preprocessed TU by SHA3, and plans/submits the existing "
+    "ZBuild action. The task binds source_sha256, source_root, dependency "
+    "lock, write scope, acceptance tests, user-selected model policy, goal, "
+    "limits, and expiry. This command does not grant wallet/node/network "
+    "authority and does not pretend an agent candidate exists yet.", 0,
+    "zcode,improve,task,agent,zbuild,proof,compile",
+    "zcl.zcode_improve.input.v1", "zcl.zcode_improve.v1",
+    "workspace,datadir,source_sha256,source_root,dependency_lock_root,write_scope_root,acceptance_tests_root,model_policy_root,goal,proof_policy_hex,preprocessed_path,profile,expires_unix,max_changed_files,max_patch_bytes,max_context_bytes,max_cpu_seconds,max_memory_bytes,max_output_bytes",
+    "workspace,source_sha256,source_root,dependency_lock_root,write_scope_root,acceptance_tests_root,model_policy_root,goal,proof_policy_hex,preprocessed_path,expires_unix",
+    "zclassic23 zcode improve --input='{\"workspace\":\"/src/project\",\"source_sha256\":\"<64hex>\",\"source_root\":\"<64hex>\",\"dependency_lock_root\":\"<64hex>\",\"write_scope_root\":\"<64hex>\",\"acceptance_tests_root\":\"<64hex>\",\"model_policy_root\":\"<64hex>\",\"goal\":\"fix seeded bug\",\"proof_policy_hex\":\"<wire hex>\",\"preprocessed_path\":\"/tmp/unit.i\",\"expires_unix\":123}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_improve)
+
 ZCL_COMMAND_BRANCH("zcode.package", "zcode",
                    "Published packages",
                    ZCL_COMMAND_LAYER_APP)

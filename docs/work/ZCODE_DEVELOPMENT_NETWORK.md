@@ -177,19 +177,22 @@ cannot authorize a moved task.
 
 ### C. Typed local path
 
-Add one `zcode` development branch; no bash-only authority:
+The first typed adapters now exist on the existing `zcode` branch; no
+bash-only authority:
 
-- `zcode create` — make or publish a declarative C23 package/workspace from an
-  immutable source tree and recipe.
-- `zcode use` — resolve/fetch/plan/commit an exact root-pinned dependency into
-  a workspace lock, reusing `zcode package add`.
-- `zcode improve` — plan a task, build a bounded context, invoke a selected
+- [x] `zcode create` — plan or commit a declarative C23 package through the
+  existing signed package publication lifecycle.
+- [x] `zcode use` — resolve/fetch/plan/commit an exact root-pinned dependency,
+  reusing `zcode package add` and its lock/install receipts.
+- [ ] `zcode improve` — plan a task, build a bounded context, invoke a selected
   adapter, admit candidate trees, schedule proofs/reviews, reproduce, explicitly
   accept, and publish.
 
-`create`, `use`, and `improve` are planned until their handlers execute the
-full lifecycle. Documentation and command discovery must never mark them READY
-early.
+`zcode improve` is READY only for its truthful first stage: it stores canonical
+task/policy/goal/input objects in the existing workspace CAS, captures the GCC
+capsule, and queues the fixed compile action in ZBuild. It explicitly reports
+that candidate generation, review, acceptance, and publication remain next;
+those stages are not yet claimed by command discovery.
 
 ### D. Requester-coordinated P2P work
 
