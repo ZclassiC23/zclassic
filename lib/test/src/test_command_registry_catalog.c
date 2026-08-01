@@ -2397,9 +2397,20 @@ static int test_ready_read_leaves_meet_latency_bucket(void)
             /* Dispatch with an empty object; leaves needing a required
              * positional fail input validation FAST (before any I/O) — still a
              * valid latency measurement, ok=false is expected and not asserted
-             * here. */
-            ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
-            ASSERT(strstr(out, "\"budget_exceeded\":false") != NULL);
+             * here. A single wall-clock sample can include an involuntary
+             * scheduler pause, so take up to three samples while keeping the
+             * exact same latency threshold. A persistently slow leaf still
+             * fails all three. */
+            bool met_budget = false;
+            for (int attempt = 0; attempt < 3 && !met_budget; attempt++) {
+                ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+                met_budget = strstr(out,
+                                    "\"budget_exceeded\":false") != NULL;
+            }
+            if (!met_budget)
+                fprintf(stderr, "latency budget repeatedly exceeded: %s: %s\n",
+                        s->path, out);
+            ASSERT(met_budget);
         }
         PASS();
     } _test_next:;

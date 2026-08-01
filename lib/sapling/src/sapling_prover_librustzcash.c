@@ -3,12 +3,13 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php.
  *
- * Wallet-side Sapling PROVING backed by the pinned librustzcash archive.
+ * Historical/reference Sapling proving facade for the pinned librustzcash
+ * archive.
  *
- * Compiled only when the build opts in with `make ZCL_WITH_RUST=1`; the
- * default build compiles sapling_prover_unavailable.c instead and links no
- * Rust. Consensus verification never reaches this file — it lives in
- * sapling.c behind the facade in sapling_prover_c23.c.
+ * Normal and release builds always compile sapling_prover_native.c. The
+ * Makefile excludes this translation unit even when ZCL_WITH_RUST=1; that flag
+ * exists only for developer differential-oracle symbols in tests. Consensus
+ * verification also remains native C23.
  *
  * The backend is not made available to callers until a real Spend + Output +
  * binding-signature bundle produced here is accepted by the C23 consensus

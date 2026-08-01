@@ -29,6 +29,7 @@
 #include "json/json.h"
 #include "models/database.h"
 #include "models/zslp_ledger.h"
+#include "models/zslp_validity.h"
 #include "supervisors/domains.h"
 #include "util/log_macros.h"
 #include "util/supervisor.h"
@@ -168,10 +169,18 @@ bool zslp_ledger_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int(out, "provable_tip", hstar);
     json_push_kv_int(out, "blocks_remaining",
         (have_cursor && hstar > cursor) ? (int64_t)(hstar - cursor) : 0);
+    json_push_kv_bool(out, "strict_validity_caught_up",
+        have_cursor && hstar >= 0 && cursor >= hstar);
 
     if (db_open) {
         json_push_kv_int(out, "total_rows", zslp_ledger_count(ndb));
         json_push_kv_int(out, "unspent_rows", zslp_ledger_unspent_count(ndb));
+        json_push_kv_int(out, "valid_transactions",
+            zslp_validity_count(ndb, ZSLP_VALIDITY_VALID));
+        json_push_kv_int(out, "invalid_transactions",
+            zslp_validity_count(ndb, ZSLP_VALIDITY_INVALID));
+        json_push_kv_int(out, "unknown_transactions",
+            zslp_validity_count(ndb, ZSLP_VALIDITY_UNKNOWN));
     }
     return true;
 }

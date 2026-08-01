@@ -17,6 +17,7 @@
 #include "models/activerecord.h"
 #include "models/op_return_index.h"
 #include "models/zslp_ledger.h"
+#include "models/zslp_validity.h"
 #include "primitives/transaction.h"
 #include "primitives/block.h"
 #include "chain/chain.h"
@@ -428,6 +429,7 @@ static void index_tx_projections(struct node_db *ndb,
             LOG_WARN("explorer", "tx_input save failed h=%d vin=%zu",
                      height, vi);
     }
+    zslp_validity_mark_live_spends(ndb, tx, height);
 
     /* Sapling spends. */
     for (size_t s = 0; s < tx->num_shielded_spend; s++)

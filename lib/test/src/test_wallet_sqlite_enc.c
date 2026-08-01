@@ -3,8 +3,8 @@
  * Integration tests for wallet_sqlite encryption — wave 8 live wallet
  * encryption integration.
  *
- * Exercises the wallet_sqlite read/write paths with and without
- * ZCL_WALLET_PASSPHRASE to verify:
+ * Exercises the wallet_sqlite read/write paths with explicit runtime unlock
+ * and lock transitions to verify:
  *   (1) plaintext round-trip still works (backward compat)
  *   (2) encrypted round-trip works when passphrase is set
  *   (3) encrypted blobs are unreadable without passphrase
@@ -24,6 +24,7 @@
 #include "models/database.h"       /* node_db (scrub reader assertions) */
 #include "models/wallet_key.h"     /* db_wallet_key_each / count */
 #include "support/cleanse.h"
+#include "util/result.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -61,13 +62,14 @@ static sqlite3 *open_mem_db(void)
     return db;
 }
 
-/* Set or unset ZCL_WALLET_PASSPHRASE. NULL → unsetenv. */
+/* Set or clear the explicit test unlock register. Environment variables must
+ * never auto-unlock an encrypted live wallet. */
 static void set_passphrase(const char *pass)
 {
+    wallet_lock_reset_for_test();
     if (pass)
-        setenv("ZCL_WALLET_PASSPHRASE", pass, 1);
-    else
-        unsetenv("ZCL_WALLET_PASSPHRASE");
+        ZCL_IGNORE_RESULT(wallet_lock_unlock(NULL, NULL, pass),
+                          "fixed test passphrases satisfy unlock policy");
 }
 
 /* Make a deterministic private key for testing. */
@@ -806,8 +808,7 @@ int test_wallet_sqlite_enc(void)
 {
     int failures = 0;
 
-    /* Start from a clean lock state so the env-var-driven tests below see
-     * ZCL_WALLET_PASSPHRASE as their effective passphrase source. */
+    /* Start from a clean lock state; tests opt in through explicit unlock. */
     wallet_lock_reset_for_test();
 
     failures += test_plaintext_roundtrip();
@@ -823,7 +824,7 @@ int test_wallet_sqlite_enc(void)
     failures += test_scrub_upgrades_plaintext_rows();
     failures += test_scrub_noop_without_passphrase();
 
-    /* Cleanup: ensure passphrase env is unset and the lock register is clean. */
+    /* Cleanup: scrub the test unlock register. */
     set_passphrase(NULL);
     wallet_lock_reset_for_test();
     return failures;

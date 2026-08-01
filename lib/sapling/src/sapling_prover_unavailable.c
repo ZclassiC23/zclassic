@@ -1,23 +1,18 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Wallet-side Sapling proving backend for the DEFAULT, Rust-free build.
+ * Retained fail-closed Sapling proving-backend fallback.
  *
- * This is the translation unit the Makefile selects when ZCL_WITH_RUST is
- * empty, which is the default: `make` on a host with no cargo/rustc produces a
- * full node that validates the chain, serves the explorer, mines, and receives
- * shielded funds — all of that is native C23 and lives elsewhere. The single
- * capability this file stands in for is CREATING Sapling proofs, i.e. sending
- * shielded value (t->z, z->z and z->t alike, because an output description
- * needs its own Groth16 proof just as a spend description does).
+ * Normal builds select sapling_prover_native.c and can create and verify
+ * Sapling proofs entirely in C23. This translation unit is deliberately
+ * excluded by the Makefile; it remains as a typed refusal implementation for
+ * constrained downstream builds that intentionally remove the native prover.
  *
  * Every entry point here refuses in one shape: a typed, logged failure that
- * names the exact rebuild flag. No entry point can crash, silently succeed, or
+ * names the missing capability. No entry point can crash, silently succeed, or
  * return an unproven value — the capability is reported absent by
  * zclassic_sapling_prover_is_ready(), which every caller already consults.
  *
- * Opt back in with `make ZCL_WITH_RUST=1` (needs cargo + rustc once, to build
- * vendor/lib/librustzcash.a); sapling_prover_librustzcash.c is compiled in
- * this file's place.
+ * Rust is not a runtime or release remedy for a missing native capability.
  */
 
 #include "sapling/sapling_prover.h"
@@ -30,8 +25,8 @@
 /* The one sentence every refusal carries. Kept as one definition so the
  * wallet error body, the log line and `ops state` cannot drift apart. */
 #define PROVER_ABSENT_HINT \
-    "no Sapling proving backend in this build; rebuild with " \
-    "'make ZCL_WITH_RUST=1' to link librustzcash-06da3b9ac8f2"
+    "native C23 Sapling prover is not yet consensus-ready; shielded send " \
+    "remains disabled until its Spend, Output, and binding self-test passes"
 
 bool zclassic_sapling_prover_is_ready(void)
 {

@@ -167,6 +167,102 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
     zcl_native_handle_vault_send_token)
 
+ZCL_COMMAND_BRANCH("vault.intent", "vault",
+                   "Exact, expiring, durably idempotent transaction intents",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_COMMAND(
+    "vault.intent.issue", "vault.intent", "",
+    "Create a fresh transparent ZCL payment request",
+    "Persists a fresh receive key before returning a simple zclassic: URI. "
+    "The current request is explicitly anonymous; identity/ZSLP commerce uses "
+    "the separately authenticated ZPAY envelope and is not misrepresented as "
+    "a URI asset extension.", 0,
+    "vault,intent,invoice,request,uri,address",
+    "zcl.vault_intent_issue.input.v1", "zcl.vault_intent_issue.v1",
+    "asset,amount", "amount",
+    "zclassic23 vault intent issue --input='{\"asset\":\"ZCL\",\"amount\":\"0.01\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER,
+    ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_FOREGROUND,
+    ZCL_COMMAND_COST_MODERATE, ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_vault_intent_issue)
+
+ZCL_COMMAND_READY_COMMAND(
+    "vault.intent.plan", "vault.intent", "",
+    "Persist an exact encrypted transaction plan",
+    "Accepts 1..50 effects with strict decimal-string ZCL amounts. Route "
+    "defaults to private and fails closed because this integration currently "
+    "commits only explicit transparent plans; it never silently crosses pools. "
+    "Returns a ten-minute plan_id, digest, exact effects and fee, selected-input "
+    "anchor, confirmation policy, and an explicit public-linkage warning. "
+    "Recipient details are encrypted under the wallet metadata DEK at rest; "
+    "the sensitive effects body is accepted only with --input=-. Planning "
+    "fails closed unless custody is encrypted/unlocked, persistence and "
+    "sovereign-chain checks pass, and a fully verified encrypted wallet "
+    "backup is under 24 hours old.", 0,
+    "vault,intent,plan,effects,fee,privacy,idempotent",
+    "zcl.vault_intent_plan.input.v1", "zcl.vault_intent_plan.v1",
+    "route,effects", "effects",
+    "printf '%s' '{\"route\":\"transparent\",\"effects\":[{\"asset\":\"ZCL\",\"to\":\"t1...\",\"amount\":\"0.01\"}]}' | zclassic23 vault intent plan --input=-",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER,
+    ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_FOREGROUND,
+    ZCL_COMMAND_COST_MODERATE, ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_vault_intent_plan)
+
+ZCL_COMMAND_READY_COMMAND(
+    "vault.intent.commit", "vault.intent", "",
+    "Commit one exact durable plan without double-paying",
+    "Requires plan_id and confirm:true. Atomically claims the plan, revalidates "
+    "its active-chain anchor, exact confirmed inputs, recipients and fee, "
+    "persists the signed transaction before relay, and stores its txid. Repeated "
+    "calls return the original txid; no operation_id is exposed.", 0,
+    "vault,intent,commit,idempotent,txid,relay",
+    "zcl.vault_intent_commit.input.v1", "zcl.vault_intent_commit.v1",
+    "plan_id,confirm", "plan_id,confirm",
+    "zclassic23 vault intent commit --input='{\"plan_id\":\"<64hex>\",\"confirm\":true}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER,
+    ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_FOREGROUND,
+    ZCL_COMMAND_COST_HIGH, ZCL_COMMAND_CONFIRM_IDEMPOTENCY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_vault_intent_commit)
+
+ZCL_COMMAND_READY_READ(
+    "vault.intent.status", "vault.intent", "",
+    "Read one transaction intent's chain-aware state",
+    "Returns planned, proving, mempool_accepted, confirmed, finalized, reorged, "
+    "conflicted, expired or failed plus txid when one exists; never substitutes "
+    "an asynchronous operation id.", ZCL_COMMAND_LIST_BUDGET,
+    "vault,intent,status,txid,reorg", "zcl.vault_intent_status.input.v1",
+    "zcl.vault_intent_status.v1", "plan_id", "plan_id",
+    "zclassic23 vault intent status --input='{\"plan_id\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_vault_intent_status)
+
+ZCL_COMMAND_READY_READ(
+    "vault.intent.list", "vault.intent", "",
+    "List the newest durable transaction intents",
+    "Returns at most 100 state rows without decrypting recipients, memo bodies "
+    "or invoice contents.", ZCL_COMMAND_LIST_BUDGET,
+    "vault,intent,list,history,txid", "zcl.vault_intent_list.input.v1",
+    "zcl.vault_intent_list.v1", "", "",
+    "zclassic23 vault intent list",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_vault_intent_list)
+
 /* ── agent session grants — mint/list/revoke, not custody ──────────────────
  * Scoped, revocable spend-authority grants for agents
  * (docs/work/agent-spend-policy-design.md, "Minting + presentation"). These

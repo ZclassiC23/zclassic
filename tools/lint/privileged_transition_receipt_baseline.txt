@@ -63,6 +63,7 @@ app.names.set-text         exempt: signs+broadcasts an OP_RETURN tx, no privileg
 app.messaging.send         exempt: peer-socket write (p2p) or shielded send (onchain), no artifact install
 app.messaging.send-named   exempt: PLANNED fail-closed, no artifact install (no outbound delivery path exists)
 app.messaging.read         exempt: flips one message's read bit, rebuildable projection
+app.tokens.burn            exempt: signs+broadcasts a ZSLP burn transaction, no privileged datadir install
 app.market.offer           exempt: PLANNED fail-closed, no artifact install (no origin announce path exists)
 app.market.buy             exempt: PLANNED fail-closed, no artifact install (no payment leg exists)
 app.store.list-product     exempt: app-local AR write (one products row + one content-addressed store_blobs row) into node.db; the payload is merchant-supplied storefront content the store re-hashes on every read, never an artifact the node executes or trusts
@@ -80,6 +81,9 @@ ops.debug.rom_seed.publish exempt: idempotent re-scan registering already-on-dis
 # this line must become a receipt:.
 vault.send                 exempt: pure route to core.wallet.transaction.send, which owns the disposition
 vault.send-shielded        exempt: pure route to core.wallet.shielded.send, which owns the disposition
+vault.intent.issue         exempt: persists a wallet receive key, no artifact install
+vault.intent.plan          exempt: encrypted wallet-local plan row, no artifact install
+vault.intent.commit        exempt: signs+broadcasts the exact planned transaction, no artifact install
 vault.swap.redeem          exempt: pure route to the swap_redeem RPC, which owns build/sign/broadcast
 vault.swap.refund          exempt: pure route to the swap_refund RPC, which owns build/sign/broadcast
 
@@ -91,6 +95,12 @@ vault.swap.refund          exempt: pure route to the swap_refund RPC, which owns
 # from the principal's role).
 vault.session.create       exempt: AR insert of an agent_sessions grant row; no artifact install
 vault.session.revoke       exempt: AR update marking an agent_sessions row revoked; no artifact install
+
+# Wallet runtime custody transitions change key residency or wrap wallet-local
+# secret rows; they install no executable or consensus artifact.
+core.wallet.security.encrypt exempt: wallet-local WKS1 wrapping plus runtime lock, no artifact install
+core.wallet.security.unlock  exempt: bounded in-memory key residency, no artifact install
+core.wallet.security.lock    exempt: scrubs in-memory keys, no artifact install
 
 # Wallet key-disclosure and wallet-recovery leaves (config/commands/core.def).
 # None installs a privileged artifact over the datadir or the running binary.

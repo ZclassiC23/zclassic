@@ -1237,7 +1237,7 @@ static int test_app_write_native_e2e(void)
             &token_plan, "token_id",
             "2222222222222222222222222222222222222222222222222222222222222222");
         (void)json_push_kv_str(&token_plan, "to", "t1stub");
-        (void)json_push_kv_int(&token_plan, "units", 25);
+        (void)json_push_kv_str(&token_plan, "units", "25");
         struct zcl_command_request token_plan_req = {
             .spec = token_spec, .input = &token_plan, .view = "normal",
         };

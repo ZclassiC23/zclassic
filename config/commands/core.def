@@ -22,6 +22,69 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_CAP_CHAIN_READ,
     ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+ZCL_COMMAND_BRANCH("core.wallet.security", "core.wallet",
+                   "Encryption-at-rest and runtime key custody",
+                   ZCL_COMMAND_LAYER_CORE)
+ZCL_COMMAND_READY_READ(
+    "core.wallet.security.status", "core.wallet.security", "",
+    "Report wallet encryption and lock state",
+    "The running wallet's current encrypted-at-rest, locked, and unlocked "
+    "posture; no secret material is returned.", 0,
+    "wallet,security,encryption,lock,status",
+    "zcl.command.empty_input.v1", "zcl.wallet_security.v1", "", "",
+    "zclassic23 core wallet security status",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_wallet_security_status)
+ZCL_COMMAND_READY_COMMAND(
+    "core.wallet.security.encrypt", "core.wallet.security", "",
+    "Encrypt every wallet secret at rest, then lock",
+    "Atomically wraps plaintext transparent keys, Sapling spending keys, and "
+    "the wallet seed in WKS1 envelopes, then scrubs resident keys. The "
+    "passphrase is accepted only through --input=- and is never echoed.", 0,
+    "wallet,security,encrypt,passphrase",
+    "zcl.wallet_security_encrypt.input.v1", "zcl.wallet_security.v1",
+    "passphrase", "", "zclassic23 core wallet security encrypt --input=-",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_wallet_security_encrypt)
+ZCL_COMMAND_READY_COMMAND(
+    "core.wallet.security.unlock", "core.wallet.security", "",
+    "Unlock wallet keys for a bounded interval",
+    "Loads encrypted keys for timeout_seconds (default 300, maximum 3600), "
+    "then automatically scrubs the passphrase and private keys. Passphrase "
+    "input is stdin-only and never echoed.", 0,
+    "wallet,security,unlock,timeout,passphrase",
+    "zcl.wallet_security_unlock.input.v1", "zcl.wallet_security.v1",
+    "passphrase,timeout_seconds", "",
+    "zclassic23 core wallet security unlock --input=-",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_wallet_security_unlock)
+ZCL_COMMAND_READY_COMMAND(
+    "core.wallet.security.lock", "core.wallet.security", "",
+    "Lock the wallet and scrub resident keys",
+    "Immediately scrubs the cached passphrase and every resident private key; "
+    "idempotent and never changes encrypted bytes on disk.", 0,
+    "wallet,security,lock,scrub", "zcl.command.empty_input.v1",
+    "zcl.wallet_security.v1", "", "",
+    "zclassic23 core wallet security lock",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW, ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_wallet_security_lock)
 
 ZCL_COMMAND_READY_READ(
     "core.status.brief", "core", "",

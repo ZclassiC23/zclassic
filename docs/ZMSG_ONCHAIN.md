@@ -84,10 +84,10 @@ The on-chain path (`msg_send_onchain` in
 4. On success it stores the outbound message (`channel=onchain`) with the
    broadcast txid.
 
-> **Live caveat (2026-07):** the in-binary Groth16 prover currently emits
-> Sapling proofs the consensus verifier rejects, so a real on-chain send is not
-> yet accepted by the network. The send path is complete and fails closed; it
-> auto-works the day the prover lands. See `docs/HANDOFF.md`.
+> **Prover gate:** shielded send is native C23 and becomes available only after
+> the SHA-512-pinned parameters load and an in-process Spend + Output + binding
+> bundle is accepted by the independent consensus verifier. Failure remains a
+> typed refusal; no Rust toolchain or runtime is involved.
 
 ## Receive path
 

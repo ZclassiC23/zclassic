@@ -40,6 +40,9 @@ struct zcl_result zslp_command_build_token_send_tx(
     struct wallet *wallet, const uint8_t token_id[32], const char *to_addr,
     uint64_t amount, struct wallet_tx *wtx, int64_t *fee_paid,
     const char **tx_error);
+struct zcl_result zslp_command_build_token_burn_tx(
+    struct wallet *wallet, const uint8_t token_id[32], uint64_t amount,
+    struct wallet_tx *wtx, int64_t *fee_paid, const char **tx_error);
 struct zcl_result zslp_command_build_token_genesis_tx(
     struct wallet *wallet, const char *ticker, const char *name,
     uint8_t decimals, uint64_t initial_supply, struct wallet_tx *wtx,

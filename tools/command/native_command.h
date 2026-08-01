@@ -34,6 +34,12 @@ int zcl_native_command_main(const char *root_word,
  * without driving the whole argv path. */
 const char *zcl_native_agent_session_env(void);
 
+/* True only while the current one-shot native invocation is executing an
+ * input object read through `--input=-`. Secret-bearing handlers use this to
+ * refuse argv/environment transport, whose bytes are visible to process
+ * inspection and shell history. False for direct in-process/test dispatch. */
+bool zcl_native_input_was_stdin(void);
+
 /* Ensure the one-shot JSON-RPC client (datadir cookie + port) is initialized
  * from the CLI-resolved -datadir/-rpcport. Handlers that call node_rpc_call()
  * or node_rpc_client_datadir() WITHOUT going through the bridge dispatch
@@ -284,6 +290,16 @@ void zcl_native_handle_vault_send_shielded(
 void zcl_native_handle_vault_send_token(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_vault_intent_issue(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_vault_intent_plan(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_vault_intent_commit(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_vault_intent_status(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_vault_intent_list(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
 void zcl_native_handle_vault_swap_redeem(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
@@ -1025,6 +1041,18 @@ void zcl_native_handle_wallet_raw_broadcast(
 void zcl_native_handle_wallet_shielded_send(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_wallet_security_status(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_wallet_security_encrypt(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_wallet_security_unlock(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_wallet_security_lock(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_wallet_rescan(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
@@ -1100,6 +1128,9 @@ void zcl_native_handle_token_send(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 void zcl_native_handle_token_mint(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_token_burn(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 void zcl_native_handle_name_register(

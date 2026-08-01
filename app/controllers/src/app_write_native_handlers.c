@@ -2,21 +2,9 @@
  *
  * Registry handlers for the MUTATING app.* feature leaves.
  *
- * Each leaf here proxies one already-complete node RPC over the loopback
- * client — ZSLP create/send/mint, the ZNAM name writes,
- * msg_send/msg_read (ZMSG), and swap_initiate/swap_participate (ZSWP). The
- * backing handlers build, sign, admit and relay their own transactions
- * (app/controllers/src/{name,messaging,swap}_controller.c); nothing is
- * re-implemented here. This file owns exactly three things the RPC layer does
- * not: the declared CONFIRM_PLAN_COMMIT handshake, the typed reply envelope,
- * and the honest refusal when the RPC reports a DEGRADED success.
- *
- * The degraded case is real and specific: every ZNAM write answers
- * status="ready" (an OP_RETURN hex for manual inclusion) instead of
- * status="broadcast" when the node has no wallet/mempool wired. That is a
- * true RPC success that did NOT do the job the leaf's summary promises, so
- * awn_run turns it into a BLOCKED reply with mutated=false rather than a
- * PASSED reply that claims a broadcast never happened.
+ * Each leaf proxies one existing node RPC. The backing controllers remain the
+ * only transaction builders; this file owns the CONFIRM_PLAN_COMMIT handshake,
+ * typed reply, and fail-closed handling of RPCs that report degraded success.
  *
  * Bound in config/commands/app_features.def. */
 
@@ -41,7 +29,7 @@ enum { AWN_MAX_ARGS = 6 };
 /* How one leaf input key is carried into the backing RPC's positional
  * params. The registry input validator has already enforced the JSON type
  * (lib/kernel/src/command_registry.c), so this only picks the encoding. */
-enum awn_kind { AWN_STR, AWN_INT, AWN_REAL };
+enum awn_kind { AWN_STR, AWN_INT, AWN_REAL, AWN_U64_STR };
 
 struct awn_arg {
     const char *key;
@@ -101,6 +89,24 @@ static bool awn_real(const struct json_value *v, double *out)
         return true;
     }
     return false;
+}
+
+static bool awn_u64_string(const struct json_value *v, const char **out)
+{
+    if (!v || v->type != JSON_STR)
+        return false;
+    const char *s = json_get_str(v);
+    if (!s || !s[0]) return false;
+    uint64_t n = 0;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        if (*p < '0' || *p > '9') return false;
+        unsigned digit = (unsigned)(*p - '0');
+        if (n > (UINT64_MAX - digit) / 10) return false;
+        n = n * 10 + digit;
+    }
+    if (n == 0) return false;
+    *out = s;
+    return true;
 }
 
 /* Deterministic, non-secret plan token binding a plan preview to its exact
@@ -295,6 +301,22 @@ static void awn_run(const struct zcl_command_request *request,
             rpc_arg_builder_push_real(&p, d);
             break;
         }
+        case AWN_U64_STR: {
+            const char *s = NULL;
+            if (!awn_u64_string(v, &s)) {
+                rpc_arg_builder_free(&p);
+                char msg[160];
+                (void)snprintf(msg, sizeof(msg),
+                    "%s must be an unsigned decimal string",
+                    leaf->args[i].key);
+                awn_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                         ZCL_COMMAND_EXIT_INVALID, "INVALID_INPUT",
+                         "normalize", msg, path);
+                return;
+            }
+            rpc_arg_builder_push_str(&p, s);
+            break;
+        }
         case AWN_STR:
         default: {
             const char *s = v ? json_get_str(v) : NULL;
@@ -394,7 +416,7 @@ void zcl_native_handle_token_create(
         .degraded_message = "the ZSLP genesis transaction was not broadcast",
         .args = {
             { "ticker", AWN_STR, true }, { "name", AWN_STR, true },
-            { "decimals", AWN_INT, true }, { "supply", AWN_INT, true },
+            { "decimals", AWN_INT, true }, { "supply", AWN_U64_STR, true },
             { NULL, AWN_STR, false },
         },
     };
@@ -411,7 +433,7 @@ void zcl_native_handle_token_send(
         .degraded_message = "the ZSLP send transaction was not broadcast",
         .args = {
             { "token_id", AWN_STR, true }, { "to", AWN_STR, true },
-            { "units", AWN_INT, true }, { NULL, AWN_STR, false },
+            { "units", AWN_U64_STR, true }, { NULL, AWN_STR, false },
         },
     };
     awn_run(request, reply, &leaf);
@@ -427,7 +449,24 @@ void zcl_native_handle_token_mint(
         .degraded_message = "the ZSLP mint transaction was not broadcast",
         .args = {
             { "token_id", AWN_STR, true }, { "to", AWN_STR, true },
-            { "units", AWN_INT, true }, { NULL, AWN_STR, false },
+            { "units", AWN_U64_STR, true }, { NULL, AWN_STR, false },
+        },
+    };
+    awn_run(request, reply, &leaf);
+}
+
+void zcl_native_handle_token_burn(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    static const struct awn_leaf leaf = {
+        .action = "token-burn", .method = "zslp_burn_tx",
+        .plan_commit = true, .require_status = "broadcast",
+        .degraded_code = "TOKEN_NOT_BROADCAST",
+        .degraded_message = "the ZSLP burn transaction was not broadcast",
+        .args = {
+            { "token_id", AWN_STR, true },
+            { "units", AWN_U64_STR, true },
+            { NULL, AWN_STR, false },
         },
     };
     awn_run(request, reply, &leaf);

@@ -1363,6 +1363,31 @@ int test_sapling_crypto(void)
 
     /* ── fr_fft fr_fft_parallel non-pow-2 silent no-op ───── */
 
+    printf("fr_fft uses the published BLS12-381 QAP root of unity... ");
+    {
+        /* Forward FFT of polynomial x over a four-element domain is
+         * [1, omega, omega^2, omega^3]. This omega encoding is independently
+         * pinned from pairing::bls12_381::Fr::ROOT_OF_UNITY. An arbitrary
+         * primitive root still passes inverse/round-trip tests but generates
+         * proofs for a different QAP, so this value gate is load-bearing. */
+        static const uint8_t OMEGA4_LE[32] = {
+            0x00,0x00,0x00,0x00,0x00,0x00,0x01,0x00,
+            0x00,0x00,0x03,0x76,0x02,0x00,0x03,0xec,
+            0xd0,0x04,0x03,0x76,0xce,0xcc,0x51,0x8d,
+            0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+        };
+        struct fr coeffs[4];
+        fr_zero(&coeffs[0]);
+        fr_one(&coeffs[1]);
+        fr_zero(&coeffs[2]);
+        fr_zero(&coeffs[3]);
+        uint8_t got[32];
+        bool ok = fr_fft(coeffs, 4, false);
+        fr_to_bytes(got, &coeffs[1]);
+        ok = ok && memcmp(got, OMEGA4_LE, sizeof(got)) == 0;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
     printf("fr_fft returns false on non-pow-2 n... ");
     {
         /* Bug pattern: fr_fft's `if ((size_t)1 << log_n != n) return;`

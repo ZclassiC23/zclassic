@@ -3,12 +3,11 @@
  * W1-d — full shielded wallet E2E through the PRODUCTION prover.
  *
  * Sibling of test_simnet_sapling_shielded_send.c (Lane C). Lane C pins the
- * pure-C23 native Groth16 prover, whose proofs the consensus verifier still
- * REJECTS, so it can only assert verifier-verdict == direct-probe agreement.
- * This file closes that gap: with ~/.zcash-params present AND the librustzcash
- * prover self-test passing (zclassic_sapling_prover_is_ready), it builds real
+ * pure-C23 native Groth16 prover and its deterministic transaction plumbing.
+ * This file exercises the wallet facade: with ~/.zcash-params present AND the
+ * native prover self-test passing (zclassic_sapling_prover_is_ready), it builds real
  * Sapling bundles with the PRODUCTION backend (sapling_build_output_with_ctx /
- * sapling_build_spend_with_ctx over a librustzcash proving ctx) and asserts the
+ * sapling_build_spend_with_ctx over a native C23 proving ctx) and asserts the
  * REAL C23 verifier (contextual_check_transaction) *ACCEPTS* them.
  *
  *   PART A — consensus ACCEPT E2E over the deterministic simnet:
@@ -239,7 +238,7 @@ static int part_a_consensus_accept(void)
         memcpy(memo, msg, strlen(msg));
 
         void *pctx = zclassic_sapling_proving_ctx_init();
-        WE_CHECK("t->z: acquire librustzcash proving ctx", pctx != NULL);
+        WE_CHECK("t->z: acquire native C23 proving ctx", pctx != NULL);
 
         struct transaction tz;
         transaction_init(&tz);

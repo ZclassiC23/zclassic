@@ -59,32 +59,32 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 421 |
+| Registry entries (branches + leaves) | 433 |
 | Top-level roots | 10 |
-| Branches | 96 |
-| Leaves (dispatchable command paths) | 325 |
-| … `ready` (live handler in this build) | 277 |
+| Branches | 98 |
+| Leaves (dispatchable command paths) | 335 |
+| … `ready` (live handler in this build) | 287 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
-| Leaves with `effect=mutate` | 97 |
+| Leaves with `effect=mutate` | 104 |
 | Leaves with `effect=destructive` | 4 |
-| Leaves requiring **owner** authority | 72 |
+| Leaves requiring **owner** authority | 79 |
 
 Per source file:
 
 | `.def` file | Entries | Branches | Leaves |
 |---|---|---|---|
 | `config/commands/root.def` | 10 | 5 | 5 |
-| `config/commands/core.def` | 107 | 26 | 81 |
+| `config/commands/core.def` | 112 | 27 | 85 |
 | `config/commands/apps.def` | 9 | 2 | 7 |
-| `config/commands/app_features.def` | 32 | 6 | 26 |
+| `config/commands/app_features.def` | 33 | 6 | 27 |
 | `config/commands/store.def` | 5 | 0 | 5 |
 | `config/commands/ops.def` | 44 | 8 | 36 |
 | `config/commands/dev.def` | 45 | 11 | 34 |
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
-| `config/commands/vault.def` | 15 | 3 | 12 |
+| `config/commands/vault.def` | 21 | 4 | 17 |
 | `config/commands/zcode.def` | 70 | 16 | 54 |
 | `config/commands/metaverse.def` | 17 | 5 | 12 |
 | `config/commands/telemetry/root.def` | 6 | 2 | 4 |
@@ -171,6 +171,15 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `core status` | ready | read / read / public · fast/low | none | `zcl.core_status.v2` | `zclassic23 core status` | Consensus node status: height, sync, health |
 | `core status brief` | ready | read / read / public · fast/low | none | `zcl.core_status_brief.v1` | `zclassic23 core status brief` | Flat lean status: hstar, gap, blocker, conditions, peers, rss (full field list: docs/NATIVE_COMMAND_INTERFACE.md CLI UX contract) |
+
+#### `core.wallet.security` — Encryption-at-rest and runtime key custody
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `core wallet security status` | ready | read / read / operator · fast/low | none | `zcl.wallet_security.v1` | `zclassic23 core wallet security status` | Report wallet encryption and lock state |
+| `core wallet security encrypt` | ready | mutate / wallet / **owner** · foreground/moderate | `passphrase` | `zcl.wallet_security.v1` | `zclassic23 core wallet security encrypt --input=-` | Encrypt every wallet secret at rest, then lock |
+| `core wallet security unlock` | ready | mutate / wallet / **owner** · foreground/moderate | `passphrase`, `timeout_seconds` | `zcl.wallet_security.v1` | `zclassic23 core wallet security unlock --input=-` | Unlock wallet keys for a bounded interval |
+| `core wallet security lock` | ready | mutate / wallet / **owner** · fast/low | none | `zcl.wallet_security.v1` | `zclassic23 core wallet security lock` | Lock the wallet and scrub resident keys |
 
 #### `core.chain` — Blocks, transactions, and mempool
 
@@ -416,9 +425,10 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `app tokens list` | ready | read / read / public · fast/low | none | `zcl.app_token_index.v1` | `zclassic23 app tokens list` | List ZSLP tokens on the network |
-| `app tokens create` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`ticker`**, `name`, `decimals`, `supply`, `confirm` | `zcl.app_token_txresult.v1` | `zclassic23 app tokens create --input='{"ticker":"DEMO","name":"Demo Token","decimals":0,"supply":1000}'` | Create a ZSLP token |
-| `app tokens send` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`token_id`**, `to`, `units`, `confirm` | `zcl.app_token_txresult.v1` | `zclassic23 app tokens send --input='{"token_id":"<64-hex>","to":"t1...","units":25}'` | Send ZSLP token units |
-| `app tokens mint` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`token_id`**, `to`, `units`, `confirm` | `zcl.app_token_txresult.v1` | `zclassic23 app tokens mint --input='{"token_id":"<64-hex>","to":"t1...","units":100}'` | Mint ZSLP token units |
+| `app tokens create` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`ticker`**, `name`, `decimals`, `supply`, `confirm` | `zcl.app_token_txresult.v1` | `zclassic23 app tokens create --input='{"ticker":"DEMO","name":"Demo Token","decimals":0,"supply":"1000"}'` | Create a ZSLP token |
+| `app tokens send` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`token_id`**, `to`, `units`, `confirm` | `zcl.app_token_txresult.v1` | `zclassic23 app tokens send --input='{"token_id":"<64-hex>","to":"t1...","units":"25"}'` | Send ZSLP token units |
+| `app tokens mint` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`token_id`**, `to`, `units`, `confirm` | `zcl.app_token_txresult.v1` | `zclassic23 app tokens mint --input='{"token_id":"<64-hex>","to":"t1...","units":"100"}'` | Mint ZSLP token units |
+| `app tokens burn` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`token_id`**, `units`, `confirm` | `zcl.app_token_txresult.v1` | `zclassic23 app tokens burn --input='{"token_id":"<64-hex>","units":"10"}'` | Burn ZSLP token units |
 
 #### `app.messaging` — Messaging
 
@@ -778,6 +788,16 @@ represented by its children's sections.
 | `vault send-shielded` | ready | mutate / wallet / **owner**, job, plan-commit · background/high | `from`, `to`, `amount`, `idempotency_key`, `confirm` | `zcl.shielded_send.v1` | `zclassic23 vault send-shielded --input='{"from":"zs1..","to":"zs1..","amount":1}'` | Spend shielded ZCL by dispatching to the wallet's own shielded send |
 | `vault send-token` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`token_id`**, `to`, `units`, `confirm` | `zcl.app_token_txresult.v1` | `zclassic23 vault send-token --input='{"token_id":"<64-hex>","to":"t1...","units":25}'` | Send ZSLP units through the token command that owns the transaction |
 
+#### `vault.intent` — Exact, expiring, durably idempotent transaction intents
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `vault intent issue` | ready | mutate / wallet / **owner** · foreground/moderate | `asset`, **`amount`** | `zcl.vault_intent_issue.v1` | `zclassic23 vault intent issue --input='{"asset":"ZCL","amount":"0.01"}'` | Create a fresh transparent ZCL payment request |
+| `vault intent plan` | ready | mutate / wallet / **owner** · foreground/moderate | `route`, **`effects`** | `zcl.vault_intent_plan.v1` | `printf '%s' '{"route":"transparent","effects":[{"asset":"ZCL","to":"t1...","amount":"0.01"}]}' \| zclassic23 vault intent plan --input=-` | Persist an exact encrypted transaction plan |
+| `vault intent commit` | ready | mutate / wallet / **owner**, idempotency · foreground/high | **`plan_id`**, **`confirm`** | `zcl.vault_intent_commit.v1` | `zclassic23 vault intent commit --input='{"plan_id":"<64hex>","confirm":true}'` | Commit one exact durable plan without double-paying |
+| `vault intent status` | ready | read / read / operator · fast/low | **`plan_id`** | `zcl.vault_intent_status.v1` | `zclassic23 vault intent status --input='{"plan_id":"<64hex>"}'` | Read one transaction intent's chain-aware state |
+| `vault intent list` | ready | read / read / operator · fast/low | none | `zcl.vault_intent_list.v1` | `zclassic23 vault intent list` | List the newest durable transaction intents |
+
 #### `vault.session` — Scoped, revocable spend-authority grants for agents
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
@@ -1009,6 +1029,7 @@ promise the same document shape.
 | Output schema | Leaves |
 |---|---|
 | `zcl.core_status_brief.v1` | `status`, `core.status.brief` |
+| `zcl.wallet_security.v1` | `core.wallet.security.status`, `core.wallet.security.encrypt`, `core.wallet.security.unlock`, `core.wallet.security.lock` |
 | `zcl.wait_result.v1` | `core.chain.wait.height`, `core.chain.wait.blocker`, `core.chain.wait.halt` |
 | `zcl.block_mutation.v1` | `core.consensus.block.invalidate`, `core.consensus.block.reconsider` |
 | `zcl.wallet_address.v1` | `core.wallet.address.new`, `core.wallet.address.import` |
@@ -1019,7 +1040,7 @@ promise the same document shape.
 | `zcl.core_identity_anchor.v1` | `core.identity.anchor`, `core.identity.rotate`, `core.identity.revoke` |
 | `zcl.core_zdir_register.v1` | `core.zdir.register`, `core.zdir.deregister` |
 | `zcl.app_name_txresult.v1` | `app.names.register`, `app.names.update`, `app.names.transfer`, `app.names.renew`, `app.names.set-record`, `app.names.set-text` |
-| `zcl.app_token_txresult.v1` | `app.tokens.create`, `app.tokens.send`, `app.tokens.mint`, `vault.send-token` |
+| `zcl.app_token_txresult.v1` | `app.tokens.create`, `app.tokens.send`, `app.tokens.mint`, `app.tokens.burn`, `vault.send-token` |
 | `zcl.app_message_send_result.v1` | `app.messaging.send`, `app.messaging.send-named` |
 | `zcl.app_swap_contract.v1` | `app.swap.initiate`, `app.swap.participate` |
 | `zcl.rom_seed_status.v1` | `ops.debug.rom_seed.status`, `ops.debug.rom_seed.enable`, `ops.debug.rom_seed.disable` |

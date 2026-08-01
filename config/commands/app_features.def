@@ -207,7 +207,7 @@ ZCL_COMMAND_READY_COMMAND(
     "durably saved before peer relay, and returns token_id/txid/fee.", 0,
     "tokens,zslp,create,genesis", "zcl.app_token_create.input.v1",
     "zcl.app_token_txresult.v1", "ticker,name,decimals,supply,confirm", "ticker",
-    "zclassic23 app tokens create --input='{\"ticker\":\"DEMO\",\"name\":\"Demo Token\",\"decimals\":0,\"supply\":1000}'",
+    "zclassic23 app tokens create --input='{\"ticker\":\"DEMO\",\"name\":\"Demo Token\",\"decimals\":0,\"supply\":\"1000\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
     ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
     ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
@@ -223,7 +223,7 @@ ZCL_COMMAND_READY_COMMAND(
     "persists the wallet, relays to peers, and returns the txid.", 0,
     "tokens,zslp,send", "zcl.app_token_send.input.v1",
     "zcl.app_token_txresult.v1", "token_id,to,units,confirm", "token_id",
-    "zclassic23 app tokens send --input='{\"token_id\":\"<64-hex>\",\"to\":\"t1...\",\"units\":25}'",
+    "zclassic23 app tokens send --input='{\"token_id\":\"<64-hex>\",\"to\":\"t1...\",\"units\":\"25\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
     ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
     ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
@@ -239,7 +239,7 @@ ZCL_COMMAND_READY_COMMAND(
     "relays to peers, and returns the txid.", 0,
     "tokens,zslp,mint", "zcl.app_token_send.input.v1",
     "zcl.app_token_txresult.v1", "token_id,to,units,confirm", "token_id",
-    "zclassic23 app tokens mint --input='{\"token_id\":\"<64-hex>\",\"to\":\"t1...\",\"units\":100}'",
+    "zclassic23 app tokens mint --input='{\"token_id\":\"<64-hex>\",\"to\":\"t1...\",\"units\":\"100\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
     ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
     ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
@@ -247,6 +247,22 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
     zcl_native_handle_token_mint)
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.tokens.burn", "app.tokens", "", "Burn ZSLP token units",
+    "Plan/commit an explicit burn: spends only confirmed VALID token outputs, "
+    "returns any remainder as token change, and reports the provisional txid. "
+    "Supply changes only when strict validity confirms the transaction.", 0,
+    "tokens,zslp,burn,supply", "zcl.app_token_burn.input.v1",
+    "zcl.app_token_txresult.v1", "token_id,units,confirm", "token_id",
+    "zclassic23 app tokens burn --input='{\"token_id\":\"<64-hex>\",\"units\":\"10\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_token_burn)
 
 /* ── Messaging (ZMSG) ──────────────────────────────────────────────── */
 

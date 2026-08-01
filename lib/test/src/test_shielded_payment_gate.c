@@ -36,8 +36,12 @@
 #include "sapling/sapling_prover.h"
 #include "validation/accept_to_mempool.h"
 #include "validation/contextual_check_tx.h"
+#include "storage/coins_kv.h"
+#include "storage/progress_store.h"
+#include "jobs/reducer_frontier.h"
 
 #include <errno.h>
+#include <sqlite3.h>
 #include <stdatomic.h>
 
 static bool p11_4_params_available(char *params_dir, size_t params_dir_size)
@@ -74,6 +78,34 @@ static bool p11_4_make_tmpdir(char *tmpdir, size_t tmpdir_size)
     if (mkdir(tmpdir, 0700) != 0 && errno != EEXIST)
         return false;
     return true;
+}
+
+/* The production wallet commit path is sovereignty-gated. Populate the same
+ * minimal self-derived progress projection a running node has; otherwise this
+ * wallet test exits before reaching Sapling transaction construction. */
+static bool p11_4_open_trust_fixture(const char *dir)
+{
+    if (!progress_store_open(dir))
+        return false;
+    sqlite3 *db = progress_store_db();
+    if (!db || !coins_kv_ensure_schema(db))
+        return false;
+    reducer_frontier_provable_tip_set(50);
+    struct uint256 txid;
+    uint256_set_null(&txid);
+    txid.data[0] = 0x51;
+    txid.data[31] = 0x77;
+    const unsigned char script[4] = {0xE0, 0xE0, 0xE0, 0xE0};
+    if (!coins_kv_add(db, txid.data, 0, 1234, 50, true,
+                      script, sizeof(script)))
+        return false;
+    char *err = NULL;
+    bool ok = sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) == SQLITE_OK
+           && coins_kv_set_applied_height_in_tx(db, 51)
+           && sqlite3_exec(db, "COMMIT", NULL, NULL, &err) == SQLITE_OK;
+    if (err)
+        sqlite3_free(err);
+    return ok;
 }
 
 static bool p11_4_build_funding_utxo(struct node_db *ndb,
@@ -266,6 +298,11 @@ int test_shielded_payment_gate(void)
         printf("FAIL (tmpdir)\n");
         return 1;
     }
+    if (!p11_4_open_trust_fixture(tmpdir)) {
+        printf("FAIL (sovereignty trust fixture)\n");
+        test_cleanup_tmpdir(tmpdir);
+        return 1;
+    }
     snprintf(dbpath, sizeof(dbpath), "%s/node.db", tmpdir);
 
     wallet = zcl_calloc(1, sizeof(*wallet), "p11_4_wallet");
@@ -432,6 +469,8 @@ int test_shielded_payment_gate(void)
     rpc_wallet_set_node_db(NULL);
     rpc_wallet_set_coins_tip(NULL);
     rpc_wallet_set_state(NULL, NULL, NULL, NULL, NULL, NULL);
+    reducer_frontier_provable_tip_reset();
+    progress_store_close();
 
     transaction_free(&sent_tx);
     coins_view_cache_free(&coins_tip);

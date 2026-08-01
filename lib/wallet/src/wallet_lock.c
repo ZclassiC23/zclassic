@@ -9,11 +9,14 @@
 
 #include "support/cleanse.h"
 #include "util/log_macros.h"
+#include "util/safe_alloc.h"
+#include "util/thread_registry.h"
 #include "json/json.h"
 
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /* Bound the cached passphrase so it lives in a fixed, cleansable buffer
  * (no heap copy of the secret to chase). 512 bytes is far past any real
@@ -27,6 +30,13 @@ static char  g_runtime_pass[WLK_MAX_PASS + 1];
 static bool  g_have_runtime_pass;   /* an unlock cached a passphrase */
 static bool  g_force_locked;        /* an explicit lock — wins over env */
 static bool  g_encrypted_at_rest;   /* the wallet uses WKS1 at-rest wrapping */
+static uint64_t g_timeout_generation;
+
+struct wallet_lock_timer {
+    struct wallet *wallet;
+    uint32_t timeout_seconds;
+    uint64_t generation;
+};
 
 /* Resolve the effective passphrase under g_mu already held. Returns a
  * pointer into g_runtime_pass, the env value, or NULL. */
@@ -36,8 +46,40 @@ static const char *effective_pass_locked(void)
         return NULL;
     if (g_have_runtime_pass)
         return g_runtime_pass;
-    const char *env = getenv("ZCL_WALLET_PASSPHRASE");
-    return (env && *env) ? env : NULL;
+    return NULL;
+}
+
+static void wallet_lock_apply_locked(struct wallet *w)
+{
+    memory_cleanse(g_runtime_pass, sizeof(g_runtime_pass));
+    g_have_runtime_pass = false;
+    g_force_locked = true;
+    g_timeout_generation++;
+    if (w)
+        keystore_wipe_private_keys(&w->keystore);
+}
+
+static void *wallet_lock_timer_main(void *opaque)
+{
+    struct wallet_lock_timer *timer = opaque;
+    uint32_t remaining = timer->timeout_seconds;
+    while (remaining > 0 && !thread_registry_shutdown_requested()) {
+        struct timespec req = { .tv_sec = 1, .tv_nsec = 0 };
+        while (nanosleep(&req, &req) != 0) { /* retry interrupted sleep */ }
+        remaining--;
+        pthread_mutex_lock(&g_mu);
+        bool current = timer->generation == g_timeout_generation;
+        pthread_mutex_unlock(&g_mu);
+        if (!current)
+            break;
+    }
+    pthread_mutex_lock(&g_mu);
+    if (!thread_registry_shutdown_requested() && remaining == 0 &&
+        timer->generation == g_timeout_generation)
+        wallet_lock_apply_locked(timer->wallet);
+    pthread_mutex_unlock(&g_mu);
+    free(timer);
+    return NULL;
 }
 
 const char *wallet_lock_effective_passphrase(void)
@@ -46,6 +88,22 @@ const char *wallet_lock_effective_passphrase(void)
     const char *p = effective_pass_locked();
     pthread_mutex_unlock(&g_mu);
     return p;
+}
+
+bool wallet_lock_copy_passphrase(char *out, size_t out_size)
+{
+    if (!out || out_size == 0)
+        return false; // raw-return-ok:copy predicate rejects absent output
+    pthread_mutex_lock(&g_mu);
+    const char *p = effective_pass_locked();
+    size_t n = p ? strlen(p) : 0;
+    bool ok = p && n + 1 <= out_size;
+    if (ok)
+        memcpy(out, p, n + 1);
+    else
+        out[0] = '\0';
+    pthread_mutex_unlock(&g_mu);
+    return ok;
 }
 
 void wallet_lock_note_encrypted_at_rest(void)
@@ -147,18 +205,39 @@ struct zcl_result wallet_lock_unlock(struct wallet *w, struct wallet_sqlite *ws,
     return ZCL_OK;
 }
 
+struct zcl_result wallet_lock_arm_timeout(struct wallet *w,
+                                          uint32_t timeout_seconds)
+{
+    if (timeout_seconds < 1 || timeout_seconds > 3600)
+        return ZCL_ERR(WLK_TIMEOUT_RANGE,
+                       "unlock timeout must be between 1 and 3600 seconds");
+    struct wallet_lock_timer *timer =
+        zcl_malloc(sizeof(*timer), "wallet_lock_timer");
+    if (!timer)
+        return ZCL_ERR(WLK_TIMER_FAIL, "unlock timer allocation failed");
+
+    pthread_mutex_lock(&g_mu);
+    timer->wallet = w;
+    timer->timeout_seconds = timeout_seconds;
+    timer->generation = ++g_timeout_generation;
+    pthread_mutex_unlock(&g_mu);
+
+    // thread-supervision-ok:bounded-one-shot autolock timer exits after its finite deadline
+    if (thread_registry_spawn("zcl_wallet_lock", wallet_lock_timer_main,
+                              timer, NULL) != 0) {
+        free(timer);
+        wallet_lock_lock(w);
+        return ZCL_ERR(WLK_TIMER_FAIL,
+                       "unlock timer could not start; wallet re-locked");
+    }
+    return ZCL_OK;
+}
+
 void wallet_lock_lock(struct wallet *w)
 {
     pthread_mutex_lock(&g_mu);
-    memory_cleanse(g_runtime_pass, sizeof(g_runtime_pass));
-    g_have_runtime_pass = false;
-    g_force_locked = true;
+    wallet_lock_apply_locked(w);
     pthread_mutex_unlock(&g_mu);
-
-    /* Make decrypted spend keys non-resident so even a code path that
-     * bypasses the spend guard cannot sign. */
-    if (w)
-        keystore_wipe_private_keys(&w->keystore);
 }
 
 void wallet_lock_status_json(struct json_value *out)
@@ -171,7 +250,6 @@ void wallet_lock_status_json(struct json_value *out)
     if (!encrypted)                 source = "plaintext";
     else if (g_force_locked)        source = "locked";
     else if (g_have_runtime_pass)   source = "runtime";
-    else if (effective_pass_locked()) source = "env";
     else                            source = "locked";
     pthread_mutex_unlock(&g_mu);
 
@@ -188,5 +266,6 @@ void wallet_lock_reset_for_test(void)
     g_have_runtime_pass = false;
     g_force_locked = false;
     g_encrypted_at_rest = false;
+    g_timeout_generation++;
     pthread_mutex_unlock(&g_mu);
 }

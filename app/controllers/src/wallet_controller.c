@@ -9,6 +9,7 @@
 #include "controllers/wallet_rescan_controller.h"
 #include "controllers/sovereignty_controller.h"
 #include "controllers/agent_session_controller.h"
+#include "controllers/vault_intent_controller.h"
 #include "wallet/wallet_lock.h"
 void rpc_wallet_set_state(struct wallet *w, struct main_state *ms,
                           const char *datadir, struct wallet_sqlite *wdb,
@@ -207,8 +208,9 @@ static bool rpc_walletunlock(const struct json_value *params, bool help,
 
     struct rpc_params p;
     rpc_params_init(&p, params);
-    rpc_params_expect(&p, 1, 1);
+    rpc_params_expect(&p, 1, 2);
     const char *pass = rpc_require_str(&p, 0, "passphrase");
+    int64_t timeout = rpc_permit_int(&p, 1, "timeout_seconds", 300);
     if (rpc_params_invalid(&p)) {
         rpc_params_error(&p, result);
         /* Never echo the passphrase — the error body names only the arg. */
@@ -221,8 +223,59 @@ static bool rpc_walletunlock(const struct json_value *params, bool help,
                              "(wrong passphrase or no encrypted keys)");
         LOG_FAIL("wallet", "walletunlock: code=%d", r.code);
     }
+    struct zcl_result armed =
+        wallet_lock_arm_timeout(ctx->wallet, (uint32_t)timeout);
+    if (!armed.ok) {
+        json_set_str(result, "Error: wallet unlock timeout invalid");
+        LOG_FAIL("wallet", "walletunlock: timer code=%d", armed.code);
+    }
     json_set_object(result);
     wallet_lock_status_json(result);
+    json_push_kv_int(result, "auto_lock_seconds", timeout);
+    return true;
+}
+
+static bool rpc_walletencrypt(const struct json_value *params, bool help,
+                              struct json_value *result)
+{
+    struct wallet_rpc_context *ctx = wallet_ctx();
+    RPC_HELP(help, result, "walletencrypt \"passphrase\"\n"
+        "Wrap every plaintext wallet secret under the passphrase, then lock.");
+    ENSURE_WALLET(result);
+    if (!ctx->wallet_db || !ctx->wallet_db->open) {
+        json_set_str(result, "Error: wallet persistence unavailable");
+        LOG_FAIL("wallet", "walletencrypt: wallet db unavailable");
+    }
+    if (wallet_lock_encrypted_at_rest()) {
+        json_set_str(result, "Error: wallet is already encrypted at rest");
+        LOG_FAIL("wallet", "walletencrypt: already encrypted");
+    }
+    struct rpc_params p;
+    rpc_params_init(&p, params);
+    rpc_params_expect(&p, 1, 1);
+    const char *pass = rpc_require_str(&p, 0, "passphrase");
+    if (rpc_params_invalid(&p)) {
+        rpc_params_error(&p, result);
+        LOG_FAIL("wallet", "walletencrypt: invalid passphrase argument");
+    }
+    struct zcl_result unlocked =
+        wallet_lock_unlock(ctx->wallet, ctx->wallet_db, pass);
+    if (!unlocked.ok) {
+        json_set_str(result, "Error: wallet encryption setup failed");
+        LOG_FAIL("wallet", "walletencrypt: unlock code=%d", unlocked.code);
+    }
+    struct zcl_result scrubbed =
+        wallet_sqlite_scrub_plaintext_r(ctx->wallet_db);
+    if (!scrubbed.ok) {
+        wallet_lock_lock(ctx->wallet);
+        json_set_str(result, "Error: wallet encryption transaction failed");
+        LOG_FAIL("wallet", "walletencrypt: scrub code=%d", scrubbed.code);
+    }
+    wallet_lock_note_encrypted_at_rest();
+    wallet_lock_lock(ctx->wallet);
+    json_set_object(result);
+    wallet_lock_status_json(result);
+    json_push_kv_bool(result, "encrypted", true);
     return true;
 }
 
@@ -707,6 +760,7 @@ void register_wallet_rpc_commands(struct rpc_table *t)
         { "wallet", "addmultisigaddress",   rpc_addmultisigaddress,   false },
         { "wallet", "walletlock",           rpc_walletlock,           false },
         { "wallet", "walletunlock",         rpc_walletunlock,         false },
+        { "wallet", "walletencrypt",        rpc_walletencrypt,        false },
         { "wallet", "walletlockstatus",     rpc_walletlockstatus,     false },
     };
 
@@ -717,6 +771,7 @@ void register_wallet_rpc_commands(struct rpc_table *t)
     register_wallet_shielded_rpc_commands(t);
     register_wallet_diagnostic_rpc_commands(t);
     register_wallet_rescan_rpc_commands(t);
+    register_vault_intent_rpc_commands(t);
     /* Agent spend grants ride the wallet family because that is what they
      * bound. The node is the SINGLE writer of agent_sessions and this method
      * is how the CLI's policy gates reach it — they run in a process with no

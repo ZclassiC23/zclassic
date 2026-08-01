@@ -371,6 +371,12 @@ static bool bridge_has_exact_binding(const char *path)
 static char g_bridge_datadir[512];
 static int g_bridge_rpc_port;
 static bool g_bridge_rpc_ready;
+static bool g_native_input_from_stdin;
+
+bool zcl_native_input_was_stdin(void)
+{
+    return g_native_input_from_stdin;
+}
 
 const char *zcl_native_command_datadir(void)
 {
@@ -3425,8 +3431,10 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
      * MAX_ARG_STRLEN (128 KiB), so a multi-megabyte document must arrive on
      * `--input=-` (stdin) — the argv form fails in execve long before here. */
     const size_t input_budget = zcl_command_registry_input_budget_bytes(spec);
+    g_native_input_from_stdin = false;
     if (input_flag) {
         if (strcmp(input_flag, "-") == 0) {
+            g_native_input_from_stdin = true;
             bool oversize = false;
             char *raw = nc_read_stdin(input_budget, &oversize);
             bool ok = raw && json_read(&input, raw, strlen(raw)) &&
@@ -3631,6 +3639,7 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
     size_t n = zcl_command_registry_execute_json(
         reg, spec, &ctx, &input, was_alias, invoked, view, budget, max_items,
         cursor, out, sizeof(out), &exit_code);
+    g_native_input_from_stdin = false;
     json_free(&input);
     if (n == 0) {
         nc_print_error(spec->path, "EXECUTE_FAILED", "serialize",

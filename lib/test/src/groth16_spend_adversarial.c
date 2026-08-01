@@ -12,8 +12,8 @@
  * groth16_spend_parity.c) prove the native C23 spend circuit's PORTED PREFIX
  * (sections 1..7) matches the reference bit-for-bit. None of them exercise the
  * production PROVING PATH end to end, and none of them try to break it. This
- * lane does both, against the ACTIVE production proving path — the reference
- * oracle (librustzcash) generating the spend proof, the independent native C23
+ * lane does both, against the ACTIVE production proving path — the native C23
+ * prover generating the spend proof, the independent native C23
  * verifier (sapling_check_spend) accepting or rejecting it — using real
  * ~/.zcash-params proving/verifying keys. It SKIPs (prints and returns 0
  * failures) when params are absent, exactly like the self-test block in
@@ -22,7 +22,7 @@
  * ACCEPTANCE BAR PER CHECK CATEGORY (also documented in
  * docs/work/GROTH16-SPEND-PARITY.md):
  *
- *   (1) Self-test end-to-end.        prove(reference oracle) -> sapling_check_spend
+ *   (1) Self-test end-to-end.        prove(native C23) -> sapling_check_spend
  *                                     MUST accept. This is today's real
  *                                     acceptance bar for the production
  *                                     `msg_send_onchain` proving gate.
@@ -116,13 +116,13 @@ static bool adv_find_diversifier(uint8_t d[11], unsigned int start)
 }
 
 /* One fully-constructed Sapling spend statement (public + private material)
- * proven via the ACTIVE production path: the reference-oracle prover
- * (librustzcash) generating the spend proof, checked by the independent
+ * proven via the ACTIVE production path: the native C23 prover generating the
+ * spend proof, checked by the independent
  * native C23 verifier. Every field is filled deterministically from `seed` —
  * no RNG anywhere in witness construction, so calling this twice with the
  * same seed reproduces the IDENTICAL witness (deliberately, for the
  * determinism/non-determinism checks below). Only the proof itself draws on
- * the reference oracle's internal OsRng blinding. */
+ * the native prover's internal CSPRNG blinding. */
 struct adv_spend_bundle {
     uint8_t ask[32];
     uint8_t ak[32], nsk[32], nk[32], ar[32];
@@ -343,7 +343,7 @@ int groth16_spend_adversarial_gate(void)
         return failures + 1;
     }
 
-    ADV_CHECK("(1) self-test end-to-end: prove(reference oracle) -> "
+    ADV_CHECK("(1) self-test end-to-end: prove(native C23) -> "
              "sapling_check_spend ACCEPTS", bundle_accepts(&good));
 
     {

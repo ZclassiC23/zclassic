@@ -111,11 +111,9 @@ static void wallet_sqlite_reset_all_statements(struct wallet_sqlite *ws)
 
 /* ── Wallet-at-rest encryption helpers ────────────────────────── */
 
-/* Returns the effective wallet passphrase, or NULL when the wallet is
- * locked / no passphrase is set.  Resolution (force-lock, runtime unlock,
- * then ZCL_WALLET_PASSPHRASE env) lives in the wallet_lock subsystem so the
- * runtime lock/unlock surface and this persistence layer agree on exactly
- * one source of truth.  An empty env value is treated as "no encryption". */
+/* Returns the effective wallet passphrase, or NULL when the wallet is locked
+ * or plaintext. Runtime unlock is the only secret source: environment
+ * variables never auto-unlock a live wallet. */
 static const char *wallet_passphrase(void)
 {
     return wallet_lock_effective_passphrase();

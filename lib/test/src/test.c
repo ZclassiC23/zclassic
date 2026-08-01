@@ -1133,6 +1133,12 @@ int main(int argc, char **argv)
       failures += test_flyclient_chainwork_floor(); }
     { extern int test_test_zmsg_memo_codec(void);
       failures += test_test_zmsg_memo_codec(); }
+    { extern int test_zpay(void);
+      failures += test_zpay(); }
+    { extern int test_wallet_metadata_encryption(void);
+      failures += test_wallet_metadata_encryption(); }
+    { extern int test_transaction_intent(void);
+      failures += test_transaction_intent(); }
     failures += test_scan_util();
     failures += test_tor();
     { extern int test_onion_bootstrap(void);

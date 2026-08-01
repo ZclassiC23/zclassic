@@ -46,19 +46,10 @@ ZCL_HOTSWAP_DEPFILE_LEAN_ONLY := $(if $(strip $(MAKECMDGOALS)),$(if $(strip $(fi
 # exemption shape as ZCL_HOTSWAP_LOOP_ONLY above.
 ZCL_WORKTREE_PRIME_ONLY := $(if $(strip $(MAKECMDGOALS)),$(if $(strip $(filter-out worktree-prime,$(MAKECMDGOALS))),,1),)
 
-# ── Optional Rust proving backend ─────────────────────────────────────────
-# librustzcash.a is the ONE vendored archive that needs a Rust toolchain
-# (cargo + rustc), and it buys exactly ONE capability: creating Sapling proofs,
-# i.e. SENDING shielded value. Consensus verification, shielded receive, the
-# explorer, mining, the wallet's transparent side and every other subsystem are
-# native C23 and never call it.
-#
-# So it is OFF by default: `make` on a host with no Rust toolchain builds a
-# working full node, and shielded send returns a typed refusal naming this
-# flag (lib/sapling/src/sapling_prover_unavailable.c). Opt in with
-#     make ZCL_WITH_RUST=1
-# which adds the archive to the vendor bootstrap, links -lrustzcash, and
-# compiles lib/sapling/src/sapling_prover_librustzcash.c in its place.
+# ── Optional reference-only Rust proving backend ──────────────────────────
+# The production/default wallet prover is native C23. ZCL_WITH_RUST remains a
+# developer differential-oracle configuration for the pinned historical
+# backend; no release or shielded-send capability depends on it.
 #
 # This must be decided BEFORE VENDOR_ARCHIVES below: a Rust-free clone would
 # otherwise enter the vendor parse-restart trying to build an archive it does
@@ -239,16 +230,10 @@ $(BUILD_MUTATION_STAMP): tools/dev/source-identity.sh
 	mv -f -- "$$tmp" "$@"; \
 	trap - EXIT HUP INT TERM
 
-# The Sapling proving backend (ZCL_WITH_RUST, declared at the top of this file)
-# selects a different translation unit AND a different link line, but it does
-# not change one byte of source — so without it in this key, flipping the flag
-# would leave the previous configuration's binary sitting at the same path,
-# newer than every prerequisite, and `make` would report nothing to do. Keying
-# the identity stamp on it makes every link rule (node, tools, test candidates,
-# dev profiles — they all take this stamp as a prerequisite) relink on a flip.
-# Object roots are already separated by the compile epoch, which hashes $(LIBS)
-# and $(CFLAGS); this is the binary-level counterpart.
-BUILD_PROVER_BACKEND := $(if $(ZCL_WITH_RUST),librustzcash,none)
+# The wallet prover is always native C23. ZCL_WITH_RUST only links a developer
+# differential-oracle archive, so key it separately without misreporting the
+# production backend.
+BUILD_PROVER_BACKEND := native-c23$(if $(ZCL_WITH_RUST),-reference-oracle,)
 BUILD_IDENTITY_STAMP := $(BUILD_DIR)/identity/$(BUILD_SOURCE_ID).$(BUILD_CLEAN).$(BUILD_MUTATION).prover-$(BUILD_PROVER_BACKEND).stamp
 $(BUILD_IDENTITY_STAMP): $(BUILD_MUTATION_STAMP) tools/dev/source-identity.sh
 	@set -eu; \
@@ -324,14 +309,12 @@ build nothing rather than fail. Check the file exists and its LIB_MODULE rows \
 are intact)
 endif
 LIB_INCLUDES = $(foreach m,$(LIB_MODULES),-Ilib/$(m)/include)
-# Wallet-side Sapling proving backend: exactly ONE of these two translation
-# units is compiled, chosen by ZCL_WITH_RUST (declared at the top of this
-# file). The unselected one is filtered out of the wildcard below, the same
-# shape DEV_ONLY_SRCS uses. Consensus verification is in neither — it lives in
-# sapling.c behind sapling_prover_c23.c, which is always compiled.
-SAPLING_PROVER_BACKEND_UNUSED = $(if $(ZCL_WITH_RUST),\
-	lib/sapling/src/sapling_prover_unavailable.c,\
-	lib/sapling/src/sapling_prover_librustzcash.c)
+# Wallet-side Sapling proving backend: native C23 by default. The unavailable
+# facade is retained only as historical fail-closed documentation and is never
+# selected. Consensus verification lives independently in sapling.c.
+SAPLING_PROVER_BACKEND_UNUSED = \
+	lib/sapling/src/sapling_prover_unavailable.c \
+	lib/sapling/src/sapling_prover_librustzcash.c
 LIB_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(filter-out $(SAPLING_PROVER_BACKEND_UNUSED),\
 	$(foreach m,$(LIB_MODULES),$(wildcard lib/$(m)/src/*.c))))
@@ -680,9 +663,9 @@ TOR_LIBS = $(if $(TOR_FULL),$(TOR_FULL),-Lvendor/lib -ltor_stub)
 # All dependencies bundled in vendor/lib as static archives.
 # Zero system library requirements beyond libc.
 # OpenSSL 3.0 (Apache 2.0), libevent and zlib — all vendored and statically
-# linked. The Zcash Sapling prover (librustzcash, MIT/Apache 2.0) is linked
-# only under ZCL_WITH_RUST=1 and is used only for wallet-side proving;
-# consensus verification remains in C23 in every build.
+# linked. Under ZCL_WITH_RUST=1, librustzcash (MIT/Apache 2.0) is linked only
+# into developer differential-oracle builds. Wallet proving and consensus
+# verification remain C23 in every configuration.
 # LevelDB is a C++ archive behind a C API. Link with cc for release LTO
 # consistency, but add the C++ driver's stdlib search directory so hosts whose
 # cc/c++ packages are split still find libstdc++.

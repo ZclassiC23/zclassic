@@ -428,10 +428,9 @@ int groth16_spend_parity_oracle(void)
         uint8_t nk_native[32];
         sapling_nsk_to_nk(pw.wit.nsk, nk_native);
         if (!have_nk_ref) {
-            printf("  corpus[%u]: SKIP (nk reference differential) — built "
-                   "without ZCL_WITH_RUST=1 and this witness is not the baked "
-                   "KAT witness; rebuild with `make ZCL_WITH_RUST=1` for full "
-                   "corpus coverage\n", c);
+            printf("  corpus[%u]: external nk reference unavailable for this "
+                   "non-KAT witness; native circuit/value/satisfaction gates "
+                   "still run\n", c);
         } else {
             snprintf(label, sizeof(label),
                      "corpus[%u]: native nsk_to_nk == librustzcash reference", c);
@@ -636,9 +635,9 @@ int groth16_spend_parity_oracle(void)
          * the circuit. Section 8's repr(ak) needs no reference — ak comes
          * from the witness — so it stays unconditional. */
         if (!have_nk_ref) {
-            printf("  corpus[%u]: SKIP (repr(nk) section 9 differential) — "
-                   "no reference nk in this build; rebuild with "
-                   "`make ZCL_WITH_RUST=1`\n", c);
+            printf("  corpus[%u]: external repr(nk) reference unavailable for "
+                   "this non-KAT witness; native representation gates still "
+                   "run\n", c);
         } else {
             snprintf(label, sizeof(label),
                      "corpus[%u]: repr(nk) 256 bits == librustzcash compressed "
