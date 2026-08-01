@@ -730,6 +730,17 @@ static bool activate_apply_in_tx(
         return activate_fail(result, CONSENSUS_INSTALL_STORE_ERROR,
                              "clearing stale trusted-base declaration failed");
 
+    /* 6b. External-seed floor: a bundle install is a genuine external-seed
+     * path — the extent at/below m->height was not connected by THIS node,
+     * so bg-validation's fresh walk starts above it (no undo data below).
+     * Absent-guarded: keep the first declaration — an earlier, lower floor
+     * is the conservative start (longer walk, never skips self-derived
+     * extent). Advisory: the install must not fail over the marker. */
+    if (!reducer_seed_floor_declare_if_absent(progress_db, m->height))
+        LOG_WARN(ACTIVATE_SUBSYS,
+                 "seed-floor declare failed h=%d (bg-validation will walk "
+                 "from genesis — slow, correct)", m->height);
+
     result->utxo_count = coins;
     result->anchor_count = sprout + sapling;
     result->nullifier_count = nfs;

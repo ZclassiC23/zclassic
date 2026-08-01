@@ -20,12 +20,18 @@
  *   - Sprout Groth16 JoinSplit proofs
  *   - Merkle root integrity
  *
- * Walk extent: a fresh walk starts at the durable trusted base + 1
- * (REDUCER_TRUSTED_BASE_HEIGHT_KEY) when one is declared — the seeded extent
- * at/below it is certified by the sealed compiled checkpoint + the
- * SHA3-verified snapshot seed and has no undo data to script-verify against
- * — and at genesis otherwise (a from-genesis datadir declares no base; that
+ * Walk extent: a fresh walk starts at the external-seed floor + 1
+ * (REDUCER_SEED_FLOOR_HEIGHT_KEY) when one is declared — the floor is
+ * written ONCE, only by a genuine external-seed path (cold-import wedge
+ * heal, consensus-state bundle install); the extent at/below it is
+ * certified by the sealed compiled checkpoint + the SHA3-verified snapshot
+ * seed and has no undo data to script-verify against — and at genesis
+ * otherwise (a from-genesis or reindexed datadir declares no floor; that
  * full-history walk is the replay-canary --from=genesis exact tier).
+ * The advancing trusted base (REDUCER_TRUSTED_BASE_HEIGHT_KEY) is NOT the
+ * floor: tip_finalize keeps raising it toward tip as anchors finalize, so
+ * by bg-validation start it can sit at ~tip and zero the walk out (the
+ * 306-second anchor-canary FAIL that proved this).
  *
  * Uses a thread pool for parallel script verification within each block.
  * Saves progress to SQLite every 1000 blocks for crash-resume.
@@ -70,7 +76,7 @@
 #include "models/database.h"
 #include "adapters/outbound/persistence/bg_validation_store_sqlite.h"
 #include "ports/bg_validation_store_port.h"
-#include "jobs/reducer_frontier.h"           /* reducer_frontier_trusted_base_height_read */
+#include "jobs/reducer_frontier.h"           /* reducer_seed_floor_height_read */
 #include "storage/progress_store.h"          /* progress_store_db */
 #include "event/event.h"
 #include "platform/rng.h"
@@ -335,28 +341,35 @@ static void *bg_validation_thread(void *arg)
     if (start_height < 0) {
         start_height = 0;
         /* Fresh walk on a seeded/finalized node: the extent at/below the
-         * durable trusted base (REDUCER_TRUSTED_BASE_HEIGHT_KEY) was not
-         * connected by THIS node — it is certified by the sealed compiled
-         * checkpoint plus the SHA3-verified snapshot seed, and its undo
-         * data is absent, so script verification there is impossible
-         * anyway (every block would land in script_verif_skipped_no_undo
-         * at full Equihash cost: ~47 blocks/s single-walk, i.e. ~19 h for
-         * the full extent — the from-genesis-scale degrade the anchor
-         * replay-canary's 90-min budget exists to fail loud on). Start
-         * above the base. A from-genesis datadir has NO declaration, so
-         * the full-history walk there is unchanged — that walk is the
-         * replay-canary --from=genesis exact tier. */
-        int32_t trusted_base = 0;
-        bool trusted_base_found = false;
-        if (reducer_frontier_trusted_base_height_read(progress_store_db(),
-                                                      &trusted_base,
-                                                      &trusted_base_found) &&
-            trusted_base_found && trusted_base > 0) {
-            start_height = trusted_base + 1;
-            printf("[bg-valid] trusted base at height %d — starting above "
-                   "the checkpoint-certified seeded extent\n", trusted_base);
+         * external-seed floor (REDUCER_SEED_FLOOR_HEIGHT_KEY) was not
+         * connected by THIS node — it arrived via a genuine external-seed
+         * path (cold-import wedge heal / consensus-state bundle install),
+         * certified by the sealed compiled checkpoint plus the
+         * SHA3-verified snapshot seed, and its undo data is absent, so
+         * script verification there is impossible anyway (every block
+         * would land in script_verif_skipped_no_undo at full Equihash
+         * cost: ~47 blocks/s single-walk, i.e. ~19 h for the full extent —
+         * the from-genesis-scale degrade the anchor replay-canary's 90-min
+         * budget exists to fail loud on). Start above the floor. The floor
+         * is written ONCE at seed time and never advances — deliberately
+         * NOT the trusted base (REDUCER_TRUSTED_BASE_HEIGHT_KEY), which
+         * tip_finalize keeps raising toward tip as anchors finalize and
+         * had reached ~tip by bg start in the 306 s anchor-canary FAIL,
+         * zeroing the walk out. A from-genesis or reindexed datadir has
+         * NO floor declaration, so the full-history walk there is
+         * unchanged — that walk is the replay-canary --from=genesis exact
+         * tier. */
+        int32_t seed_floor = 0;
+        bool seed_floor_found = false;
+        if (reducer_seed_floor_height_read(progress_store_db(),
+                                           &seed_floor,
+                                           &seed_floor_found) &&
+            seed_floor_found && seed_floor > 0) {
+            start_height = seed_floor + 1;
+            printf("[bg-valid] seed floor at height %d — starting above "
+                   "the checkpoint-certified seeded extent\n", seed_floor);
             event_emitf(EV_SYNC_STATE_CHANGE, 0,
-                        "bg_validation trusted_base from=%d", trusted_base);
+                        "bg_validation seed_floor from=%d", seed_floor);
         }
     } else {
         start_height++; /* Resume from next unverified block */

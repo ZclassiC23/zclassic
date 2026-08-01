@@ -597,13 +597,28 @@ run_live() {
         # NORMAL boot with legacy auto-import ON (NO -nolegacyimport, NO
         # -snapshot). Boot auto-links the read-only ~/.zclassic, seeds the
         # anchor UTXO set, reconciles, and serves; bg-validation walks the
-        # connected extent (omit -nobgvalidation). Dead -connect sink keeps
-        # peer_count 0. The -snapshot=$SRC + -nolegacyimport combo the spec
-        # proposed FATALs at HEAD (torn-anchor: utxos present, coins_best
-        # unset, heal refused) — do NOT use it. NOTE: legacy auto-import is
-        # hardcoded to read ~/.zclassic, so for the anchor variant the
-        # source IS ~/.zclassic regardless of --src-datadir (the default).
-        iso_spawn_mainnet_node "-connect=127.0.0.1:$ISO_CONNECT_SINK"
+        # connected extent (omit -nobgvalidation). The -snapshot=$SRC +
+        # -nolegacyimport combo the spec proposed FATALs at HEAD
+        # (torn-anchor: utxos present, coins_best unset, heal refused) — do
+        # NOT use it. NOTE: legacy auto-import is hardcoded to read
+        # ~/.zclassic, so for the anchor variant the source IS ~/.zclassic
+        # regardless of --src-datadir (the default).
+        #
+        # 2026-08-01 fix: this used to dial the DEAD -connect sink
+        # (127.0.0.1:$ISO_CONNECT_SINK) to keep peer_count 0 — but that
+        # freezes the node at boot-tip while the co-located zclassicd keeps
+        # mining, so the crossnode_height gate (node tip == zd tip, exact
+        # equality) structurally FAILed (~22-block skew on the 2026-08-01
+        # run) and the byte-exact --legacy-utxo-commitment tier could never
+        # see matching heights. Dial the read-only co-located zclassicd
+        # (127.0.0.1:8034) instead — the same peer the from=genesis track
+        # already sanctions as "the ONE place a real peer is dialed": the
+        # trust posture is unchanged (zd is already the sole body source
+        # via the disk link; P2P here only supplies post-link tip blocks),
+        # and -connect= still enforces the no-public-peer contract. The
+        # node now tracks tip to verdict, making both the crossnode
+        # equality gate and the exact byte-tier achievable.
+        iso_spawn_mainnet_node "-connect=127.0.0.1:8034"
     else
         # from=genesis: -nolegacyimport so boot does NOT seed to the anchor;
         # dial the co-located zclassicd for bodies. This is the ONE place a

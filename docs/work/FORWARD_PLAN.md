@@ -101,19 +101,33 @@
       2026-08-01 21:55-22:00 UTC; datadir archive
       `~/.zclassic-c23-fixture-serve.broken-aug01`.
    11. ~~Anchor replay-canary degraded to a genesis-scale bg-validation
-      walk~~ **FIXED 2026-08-01** (this commit): `make replay-canary-anchor`
+      walk~~ **FIXED 2026-08-01** (two commits): `make replay-canary-anchor`
       FAILed `budget_exceeded` at the 5400 s hard budget — bg-validation
       always started its fresh walk at genesis, and the Equihash-serial
       per-block walk (~47 blocks/s) needs ~19 h for 3.2M blocks. The
-      canary's 45-min band only fits anchor→tip (~145k). Root cause: the
-      walk never consulted the durable trusted base
-      (`REDUCER_TRUSTED_BASE_HEIGHT_KEY`, written raise-only by
-      `tip_finalize_anchor`) that the seed had already declared at boot.
-      Fix: a fresh walk (no saved cursor) now starts at trusted_base+1
-      when declared — the seeded extent is checkpoint-certified and has
-      no undo data to script-verify against — and at genesis otherwise,
-      so the `--from=genesis` exact tier still walks full history.
-      Verify: next anchor-canary run should COMPLETE inside the band.
+      canary's 45-min band only fits anchor→tip (~145k). First fix
+      (4c8f4a208) started the fresh walk at the durable trusted base — but
+      the rerun FAILed `crossnode_height` in 306 s: `tip_finalize_anchor`
+      keeps RAISING the trusted base toward tip as anchors finalize, so by
+      bg start it sat at ~tip and the walk completed instantly (just over
+      the 300 s too-fast floor), and the anchor variant's dead
+      `-connect=127.0.0.1:39999` sink froze the node at boot-tip while
+      zclassicd kept mining (~22-block skew at verdict), so the
+      crossnode equality gate and the byte-exact
+      `--legacy-utxo-commitment` tier were structurally unreachable.
+      Second fix (this commit): new `REDUCER_SEED_FLOOR_HEIGHT_KEY`
+      (progress_meta, 8-byte LE), written ONCE (absent-guarded) only by a
+      genuine external-seed path — cold-import wedge heal
+      (`block_index_loader_rebuild.c`) and bundle install
+      (`consensus_state_snapshot_install_activate.c`) — never advanced;
+      bg-validation's fresh walk starts at seed_floor+1 when declared and
+      at genesis otherwise (from-genesis/reindexed datadirs declare no
+      floor, so the `--from=genesis` exact tier still walks full history).
+      The anchor variant now dials `-connect=127.0.0.1:8034` (the
+      read-only co-located zclassicd the genesis track already sanctions)
+      so the node tracks tip to verdict.
+      Verify: next anchor-canary run should COMPLETE inside the band with
+      crossnode_height green.
 
 **Standing method (never skip):** copy-prove on a fixture before live; NEVER
 delete `tip_finalize_log` rows; NEVER lower the public tip below `coins_best`;

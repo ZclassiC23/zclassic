@@ -18,10 +18,10 @@
 # Format: <relative-path> <max-loc>   (lines starting with # are comments)
 # Sorted by path.
 
-app/conditions/src/reducer_frontier_reconcile_light.c 924
-app/controllers/src/agent_anchor_status_controller.c 848
+app/conditions/src/reducer_frontier_reconcile_light.c 923
+app/controllers/src/agent_anchor_status_controller.c 847
 app/controllers/src/agent_controller.c 842
-app/controllers/src/api_controller_status.c 896
+app/controllers/src/api_controller_status.c 894
 app/controllers/src/name_controller.c 1017
 app/controllers/src/swap_controller.c 1027
 app/jobs/src/reducer_frontier.c 801
@@ -32,7 +32,7 @@ app/jobs/src/utxo_apply_stage.c 941
 app/jobs/src/validate_headers_stage.c 1071
 app/models/src/block.c 853
 app/services/src/block_index_loader.c 857
-app/services/src/block_index_loader_rebuild.c 840
+app/services/src/block_index_loader_rebuild.c 853 # ADR-0008 (seed-floor declaration)
 # 2026-07-27 (work/db-lock-fixes): node_db_catchup_service.c shed the
 # try-decrypt helper to node_db_catchup_decrypt.c (-111) and gained the
 # lock-contention seatbelts (commit cadence, BEGIN IMMEDIATE, BUSY_SNAPSHOT
@@ -62,7 +62,7 @@ app/views/src/explorer_pages_view.c 823
 # config/src/boot_wallet_phrase.c instead of here, and took 25 lines of
 # existing wiring out of boot.c with it.
 config/src/boot.c 4333
-config/src/boot_bundle_fetch.c 917
+config/src/boot_bundle_fetch.c 905
 config/src/boot_index.c 853
 config/src/boot_mint_anchor.c 809
 config/src/boot_refold_staged.c 2077
@@ -70,6 +70,6 @@ config/src/boot_services.c 1477
 config/src/bundle_exporter.c 925
 config/src/consensus_state_install_runtime.c 919
 config/src/consensus_state_producer_receipt.c 805
-config/src/consensus_state_snapshot_install_activate.c 1158
+config/src/consensus_state_snapshot_install_activate.c 1169 # ADR-0008 (seed-floor declaration)
 app/services/src/header_sync_service.c 846
-app/controllers/src/event_agent_summary.c 863
+app/controllers/src/event_agent_summary.c 853

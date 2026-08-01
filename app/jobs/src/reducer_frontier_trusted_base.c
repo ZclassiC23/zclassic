@@ -82,3 +82,52 @@ bool reducer_frontier_trusted_base_matches(sqlite3 *db, int32_t height,
     return found && stored_height == height &&
            memcmp(stored_hash, hash, sizeof(stored_hash)) == 0;
 }
+
+bool reducer_seed_floor_height_read(sqlite3 *db, int32_t *out, bool *found)
+{
+    if (!db || !out || !found)
+        LOG_FAIL("reducer", "seed-floor height read requires outputs");
+    *found = false;
+    uint8_t blob[8] = {0};
+    size_t n = 0;
+    bool present = false;
+    if (!progress_meta_get_blob_exact(db, REDUCER_SEED_FLOOR_HEIGHT_KEY,
+                                      blob, sizeof(blob), &n, &present))
+        LOG_FAIL("reducer", "seed-floor height read failed");
+    if (!present)
+        return true;
+    if (n != sizeof(blob))
+        LOG_FAIL("reducer", "seed-floor height malformed len=%zu", n);
+
+    uint64_t value = 0;
+    for (int i = 7; i >= 0; i--)
+        value = (value << 8) | blob[i];
+    if (value > INT32_MAX)
+        LOG_FAIL("reducer", "seed-floor height out of range=%llu",
+                 (unsigned long long)value);
+    *out = (int32_t)value;
+    *found = true;
+    return true;
+}
+
+bool reducer_seed_floor_declare_if_absent(sqlite3 *db, int32_t height)
+{
+    if (!db || height < 0)
+        LOG_FAIL("reducer", "seed-floor declare requires db and height >= 0");
+    int32_t existing = 0;
+    bool found = false;
+    if (!reducer_seed_floor_height_read(db, &existing, &found))
+        return false; /* raw-return-ok:callee logged the read failure */
+    if (found)
+        return true; /* the FIRST seed defines the seeded extent */
+    uint8_t blob[8] = {0};
+    uint64_t v = (uint64_t)height;
+    for (int i = 0; i < 8; i++) {
+        blob[i] = (uint8_t)(v & 0xff);
+        v >>= 8;
+    }
+    if (!progress_meta_set_in_tx(db, REDUCER_SEED_FLOOR_HEIGHT_KEY,
+                                 blob, sizeof(blob)))
+        LOG_FAIL("reducer", "seed-floor declare write failed h=%d", height);
+    return true;
+}

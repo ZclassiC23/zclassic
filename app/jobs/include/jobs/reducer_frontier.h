@@ -147,6 +147,22 @@ void reducer_frontier_provable_tip_reset(void);
 #define REDUCER_TRUSTED_BASE_HEIGHT_KEY "reducer_trusted_base_height"
 #define REDUCER_TRUSTED_BASE_HASH_KEY   "reducer_trusted_base_hash"
 
+/* Durable EXTERNAL-SEED floor (progress_meta, 8-byte LE height blob — the
+ * same storage convention). Written ONCE (absent-guarded) by the paths where
+ * the node's state genuinely arrived from an externally-verified seed rather
+ * than local connection: the cold-import wedge heal
+ * (block_index_loader_rebuild.c) and the consensus-state bundle install
+ * (consensus_state_snapshot_install_activate.c). Deliberately NOT written by
+ * reindex_epilogue (a from-genesis full replay through connect_block — locally
+ * derived, despite trusted_seed=true there meaning "strongest trust root")
+ * nor by runtime re-seeds, and NOT advanced by anchor finalization — unlike
+ * REDUCER_TRUSTED_BASE_HEIGHT_KEY, which tip_finalize keeps raising toward
+ * tip and which is therefore useless as a "where did the seeded extent end"
+ * marker. Consumer: bg_validation starts a fresh walk at floor+1 — the
+ * extent at/below the floor is certified by the sealed compiled checkpoint +
+ * the SHA3-verified seed and carries no undo data to script-verify against. */
+#define REDUCER_SEED_FLOOR_HEIGHT_KEY "reducer_seed_floor_height"
+
 /* Canonical SELECT-only readers for the durable trusted-base declaration.
  * An absent declaration is a successful read with found=false; malformed or
  * partially-present metadata fails closed. */
@@ -156,6 +172,17 @@ bool reducer_frontier_trusted_base_read(sqlite3 *db, int32_t *height,
                                         uint8_t hash[32], bool *found);
 bool reducer_frontier_trusted_base_matches(sqlite3 *db, int32_t height,
                                            const uint8_t hash[32]);
+
+/* Canonical SELECT-only reader for the external-seed floor. An absent
+ * declaration is a successful read with found=false (a from-genesis or
+ * locally-reindexed node has no seeded extent); malformed fails closed. */
+bool reducer_seed_floor_height_read(sqlite3 *db, int32_t *height, bool *found);
+
+/* Write-once declaration of the external-seed floor: no-op success when the
+ * key is already present (the FIRST seed defines the seeded extent; later
+ * seeds/boots never move it backward or forward), fails closed on a
+ * malformed stored value. Runs in the caller's ambient transaction. */
+bool reducer_seed_floor_declare_if_absent(sqlite3 *db, int32_t height);
 
 /* Compute H* (deepest provably-consistent height) and served_floor from
  * durable state.
