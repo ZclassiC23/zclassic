@@ -604,3 +604,56 @@ WORK_DRAIN(vcs_zcode_work_node_next_cancel, cancel,
            struct vcs_zcode_work_cancel_v1, VCS_ZCODE_WORK_NODE_MAX_REQUESTS)
 WORK_DRAIN(vcs_zcode_work_node_next_result, result,
            struct vcs_zcode_work_result_v1, VCS_ZCODE_WORK_NODE_MAX_RESULTS)
+
+bool vcs_zcode_work_node_peek_request(
+    struct vcs_zcode_work_node *node, uint64_t *peer_out,
+    struct vcs_zcode_work_request_v1 *out)
+{
+    if (!node || !peer_out || !out) return false;
+    pthread_mutex_lock(&node->lock);
+    bool present = node->request_count > 0;
+    if (present) {
+        *peer_out = node->requests[node->request_pos].peer;
+        *out = node->requests[node->request_pos].request;
+    }
+    pthread_mutex_unlock(&node->lock);
+    return present;
+}
+
+size_t vcs_zcode_work_node_inbound_requests(
+    struct vcs_zcode_work_node *node, uint64_t *peers,
+    struct vcs_zcode_work_request_v1 *requests, size_t max)
+{
+    if (!node || !peers || !requests || max == 0) return 0;
+    pthread_mutex_lock(&node->lock);
+    size_t count = 0;
+    for (size_t i = 0;
+         i < sizeof(node->tracks) / sizeof(node->tracks[0]) && count < max;
+         i++) {
+        const struct work_track *track = &node->tracks[i];
+        if (!track->used || !track->inbound || track->finished ||
+            track->cancelled)
+            continue;
+        peers[count] = track->peer;
+        requests[count] = track->request;
+        count++;
+    }
+    pthread_mutex_unlock(&node->lock);
+    return count;
+}
+
+bool vcs_zcode_work_node_inbound_request(
+    struct vcs_zcode_work_node *node, uint64_t peer, uint64_t request_id,
+    struct vcs_zcode_work_request_v1 *out, bool *cancelled)
+{
+    if (!node || !out || peer == 0 || request_id == 0) return false;
+    pthread_mutex_lock(&node->lock);
+    struct work_track *track = work_find_track(node, peer, request_id, true);
+    bool present = track != NULL;
+    if (present) {
+        *out = track->request;
+        if (cancelled) *cancelled = track->cancelled;
+    }
+    pthread_mutex_unlock(&node->lock);
+    return present;
+}

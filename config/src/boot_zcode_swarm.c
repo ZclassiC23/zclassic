@@ -8,7 +8,9 @@
 #include "config/boot_zcode_swarm.h"
 
 #include "config/boot_internal.h"
+#include "config/runtime.h"
 
+#include "base/hex.h"
 #include "vcs/package_reward.h"
 #include "vcs/package_service.h"
 #include "vcs/package_store.h"
@@ -16,6 +18,8 @@
 #include "vcs/build_action.h"
 #include "vcs/build_artifact_manifest.h"
 #include "vcs/zcode_work_node.h"
+#include "vcs/zcode_work_context.h"
+#include "vcs/vcs_object.h"
 
 #include "crypto/sha3.h"
 #include "event/event.h"
@@ -28,11 +32,13 @@
 #include "util/sync.h"
 #include "util/util.h"
 #include "services/build_fabric_worker.h"
+#include "services/build_fabric_service.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* Session pseudo-key domain (0x02 || SHA3-256(domain || host)). The host
  * identity comes from zcl_peer_host_key (onion hostname or IP), so the
@@ -58,6 +64,261 @@ static int64_t s_last_tick;
 static uint8_t s_work_secret[32];
 static uint8_t s_work_pubkey[32];
 static bool s_work_key_ready;
+static char s_work_workspace[4096];
+
+static bool boot_zcode_work_workspace(void)
+{
+    if (s_work_workspace[0]) return true;
+    return getcwd(s_work_workspace, sizeof(s_work_workspace)) != NULL;
+}
+
+static bool boot_zcode_work_active_state(const char *state)
+{
+    return state && (strcmp(state, "QUEUED") == 0 ||
+                     strcmp(state, "CLAIMED") == 0 ||
+                     strcmp(state, "RUNNING") == 0 ||
+                     strcmp(state, "VERIFYING") == 0 ||
+                     strcmp(state, "ACCEPTED") == 0 ||
+                     strcmp(state, "CACHE_HIT") == 0);
+}
+
+/* Rebuild the exact fixed action from the fetched content.v2 context. The
+ * context bytes become ordinary objects in the existing workspace CAS; only
+ * the existing ZBuild ledger receives mutable lifecycle state. */
+static struct zcl_result boot_zcode_work_admit(
+    const struct vcs_zcode_work_request_v1 *request, int64_t now)
+{
+    struct vcs_package_store *store = vcs_package_store_global();
+    struct node_db *ndb = app_runtime_node_db();
+    if (!request || !store || !ndb || !ndb->open ||
+        !boot_zcode_work_workspace())
+        return ZCL_ERR(-1, "work admission owners unavailable");
+    struct vcs_zcode_work_context_v1 context;
+    enum vcs_zcode_work_context_result loaded =
+        vcs_zcode_work_context_get(store, request->context_root, now,
+                                   &context);
+    if (loaded != VCS_ZCODE_WORK_CONTEXT_OK)
+        return ZCL_ERR(-1, "context: %s",
+                       vcs_zcode_work_context_result_string(loaded));
+    uint8_t action_root[32], input_root[32], task_root[32];
+    uint8_t candidate_root[32], policy_root[32];
+    loaded = vcs_zcode_work_context_action_root(
+        &context, now, action_root, input_root);
+    bool bound = loaded == VCS_ZCODE_WORK_CONTEXT_OK &&
+        vcs_zcode_task_root(&context.task, task_root) == VCS_ZCODE_DEV_OK &&
+        vcs_zcode_candidate_root(&context.candidate, candidate_root) ==
+            VCS_ZCODE_DEV_OK &&
+        vcs_zcode_proof_policy_root(&context.proof_policy, policy_root) ==
+            VCS_ZCODE_DEV_OK &&
+        memcmp(action_root, request->action_root, 32) == 0 &&
+        memcmp(input_root, request->input_root, 32) == 0 &&
+        memcmp(task_root, request->task_root, 32) == 0 &&
+        memcmp(candidate_root, request->candidate_root, 32) == 0 &&
+        memcmp(policy_root, request->proof_policy_root, 32) == 0 &&
+        memcmp(context.task.toolchain_capsule_root,
+               request->toolchain_capsule_root, 32) == 0 &&
+        request->work_kind == VCS_ZCODE_WORK_BUILD &&
+        request->max_cpu_seconds <= context.task.max_cpu_seconds &&
+        request->max_memory_bytes <= context.task.max_memory_bytes &&
+        request->max_output_bytes <= context.task.max_output_bytes;
+    if (!bound) {
+        vcs_zcode_work_context_free(&context);
+        return ZCL_ERR(-1, "context does not reconstruct the signed request");
+    }
+    uint8_t task_wire[VCS_ZCODE_TASK_WIRE_BYTES];
+    uint8_t candidate_wire[VCS_ZCODE_CANDIDATE_WIRE_BYTES];
+    uint8_t policy_wire[VCS_ZCODE_PROOF_POLICY_WIRE_BYTES];
+    bool stored = vcs_zcode_task_serialize(&context.task, task_wire) ==
+                      VCS_ZCODE_DEV_OK &&
+        vcs_zcode_candidate_serialize(&context.candidate, candidate_wire) ==
+                      VCS_ZCODE_DEV_OK &&
+        vcs_zcode_proof_policy_serialize(
+            &context.proof_policy, policy_wire) == VCS_ZCODE_DEV_OK &&
+        vcs_object_store_init(s_work_workspace) &&
+        vcs_object_put_addressed(s_work_workspace, task_root, task_wire,
+                                 sizeof(task_wire)) &&
+        vcs_object_put_addressed(s_work_workspace, candidate_root,
+                                 candidate_wire, sizeof(candidate_wire)) &&
+        vcs_object_put_addressed(s_work_workspace, policy_root, policy_wire,
+                                 sizeof(policy_wire)) &&
+        vcs_object_put_addressed(s_work_workspace, input_root,
+                                 context.preprocessed,
+                                 context.preprocessed_len);
+    if (!stored) {
+        vcs_zcode_work_context_free(&context);
+        return ZCL_ERR(-1, "context objects could not enter workspace CAS");
+    }
+    struct db_build_job job = {0};
+    struct db_build_action action = {0};
+    zcl_hex_encode(context.source_sha256, 32, job.source_sha256);
+    zcl_hex_encode(context.candidate.candidate_source_root, 32,
+                   job.source_cas_sha3);
+    zcl_hex_encode(context.task.toolchain_capsule_root, 32,
+                   job.toolchain_sha3);
+    (void)snprintf(job.profile, sizeof(job.profile), "%s", context.profile);
+    (void)snprintf(job.state, sizeof(job.state), "PLANNED");
+    job.created_at = job.updated_at = now;
+    action.sequence = 0;
+    (void)snprintf(action.kind, sizeof(action.kind), "%s",
+                   VCS_BUILD_ACTION_KIND_V1);
+    (void)snprintf(action.state, sizeof(action.state), "SNAPSHOTTED");
+    zcl_hex_encode(input_root, 32, action.input_root_sha3);
+    zcl_hex_encode(task_root, 32, action.task_root_sha3);
+    zcl_hex_encode(candidate_root, 32, action.candidate_root_sha3);
+    zcl_hex_encode(policy_root, 32, action.proof_policy_root_sha3);
+    zcl_hex_encode(request->context_root, 32, action.context_root_sha3);
+    (void)snprintf(action.target, sizeof(action.target), "%s",
+                   VCS_BUILD_TARGET_V1);
+    uint8_t fixed_flags[32], fixed_environment[32];
+    vcs_build_action_v1_fixed_flags_root(fixed_flags);
+    vcs_build_action_v1_fixed_environment_root(fixed_environment);
+    zcl_hex_encode(fixed_flags, 32, action.flags_sha3);
+    zcl_hex_encode(fixed_environment, 32, action.environment_sha3);
+    (void)snprintf(action.virtual_workdir, sizeof(action.virtual_workdir),
+                   "%s", VCS_BUILD_VIRTUAL_ROOT_V1);
+    (void)snprintf(action.declared_outputs, sizeof(action.declared_outputs),
+                   "%s", VCS_BUILD_OUTPUT_V1);
+    (void)snprintf(action.resource_policy, sizeof(action.resource_policy),
+                   "%s", VCS_BUILD_RESOURCE_POLICY_V1);
+    action.created_at = action.updated_at = now;
+    struct zcl_result ids = build_fabric_action_id(
+        &job, &action, action.action_id);
+    if (ids.ok && strcmp(action.action_id, "") != 0) {
+        uint8_t checked[32];
+        ids.ok = zcl_hex_decode_lower(action.action_id, checked, 32) &&
+                 memcmp(checked, request->action_root, 32) == 0;
+    }
+    if (ids.ok)
+        ids = build_fabric_job_id(&job, action.action_id, job.job_id);
+    if (ids.ok)
+        (void)snprintf(action.job_id, sizeof(action.job_id), "%s",
+                       job.job_id);
+    vcs_zcode_work_context_free(&context);
+    if (!ids.ok) return ZCL_ERR(-1, "context action identity mismatch");
+    ZCL_CHECK(build_fabric_plan(ndb, &job, &action));
+    struct db_build_action current;
+    if (!db_build_action_find(ndb, action.action_id, &current))
+        return ZCL_ERR(-1, "planned remote action disappeared");
+    if (strcmp(current.state, "SNAPSHOTTED") == 0)
+        return build_fabric_submit(ndb, job.job_id, now);
+    if (!boot_zcode_work_active_state(current.state))
+        return ZCL_ERR(-1, "remote action is terminal: %s", current.state);
+    return ZCL_OK;
+}
+
+static void boot_zcode_work_drain_admissions(int64_t now)
+{
+    if (!s_work || !GetBoolArg("-buildworker", false)) return;
+    for (;;) {
+        uint64_t peer = 0;
+        struct vcs_zcode_work_request_v1 request;
+        if (!vcs_zcode_work_node_peek_request(s_work, &peer, &request))
+            break;
+        struct vcs_package_store_status status;
+        struct vcs_package_store *store = vcs_package_store_global();
+        if (!store || !vcs_package_store_package_status(
+                store, request.context_root, &status) || !status.complete)
+            break;
+        struct zcl_result admitted = boot_zcode_work_admit(&request, now);
+        uint64_t drained_peer = 0;
+        struct vcs_zcode_work_request_v1 drained;
+        if (!vcs_zcode_work_node_next_request(
+                s_work, &drained_peer, &drained) || drained_peer != peer ||
+            drained.request_id != request.request_id) {
+            LOG_ERROR("net.zcode_swarm", "work admission FIFO changed");
+            break;
+        }
+        if (!admitted.ok)
+            LOG_WARN("net.zcode_swarm", "request %llu refused: %s",
+                     (unsigned long long)request.request_id,
+                     admitted.message);
+    }
+}
+
+static void boot_zcode_work_drain_cancels(int64_t now)
+{
+    struct node_db *ndb = app_runtime_node_db();
+    if (!s_work || !ndb || !ndb->open) return;
+    uint64_t peer = 0;
+    struct vcs_zcode_work_cancel_v1 cancel;
+    while (vcs_zcode_work_node_next_cancel(s_work, &peer, &cancel)) {
+        struct vcs_zcode_work_request_v1 request;
+        bool cancelled = false;
+        if (!vcs_zcode_work_node_inbound_request(
+                s_work, peer, cancel.request_id, &request, &cancelled) ||
+            !cancelled)
+            continue;
+        char action_id[65];
+        zcl_hex_encode(request.action_root, 32, action_id);
+        struct db_build_action action;
+        if (db_build_action_find(ndb, action_id, &action)) {
+            struct zcl_result result = build_fabric_cancel(
+                ndb, action.job_id, now);
+            if (!result.ok)
+                LOG_WARN("net.zcode_swarm", "cancel %llu: %s",
+                         (unsigned long long)cancel.request_id,
+                         result.message);
+        }
+    }
+}
+
+static void boot_zcode_work_publish_results(int64_t now)
+{
+    (void)now;
+    struct node_db *ndb = app_runtime_node_db();
+    if (!s_work || !ndb || !ndb->open || !s_work_key_ready ||
+        !boot_zcode_work_workspace())
+        return;
+    uint64_t peers[VCS_ZCODE_WORK_NODE_MAX_REQUESTS];
+    struct vcs_zcode_work_request_v1 requests[
+        VCS_ZCODE_WORK_NODE_MAX_REQUESTS];
+    size_t count = vcs_zcode_work_node_inbound_requests(
+        s_work, peers, requests, VCS_ZCODE_WORK_NODE_MAX_REQUESTS);
+    for (size_t i = 0; i < count; i++) {
+        char action_id[65];
+        zcl_hex_encode(requests[i].action_root, 32, action_id);
+        struct db_build_action action;
+        if (!db_build_action_find(ndb, action_id, &action) ||
+            (strcmp(action.state, "ACCEPTED") != 0 &&
+             strcmp(action.state, "CACHE_HIT") != 0))
+            continue;
+        struct db_build_receipt receipts[8];
+        int receipt_count = db_build_job_receipts(
+            ndb, action.job_id, receipts, 8);
+        for (int j = 0; j < receipt_count; j++) {
+            if (strcmp(receipts[j].action_id, action_id) != 0) continue;
+            uint8_t receipt_root[32]; uint8_t *wire = NULL;
+            size_t wire_len = 0;
+            if (!zcl_hex_decode_lower(receipts[j].work_receipt_sha3,
+                                      receipt_root, 32) ||
+                vcs_object_load_raw(s_work_workspace, receipt_root, &wire,
+                                    &wire_len) != 0)
+                continue;
+            struct vcs_zcode_work_result_v1 result = {
+                .request_id = requests[i].request_id,
+            };
+            memcpy(result.task_root, requests[i].task_root, 32);
+            memcpy(result.candidate_root, requests[i].candidate_root, 32);
+            memcpy(result.action_root, requests[i].action_root, 32);
+            bool parsed = vcs_zcode_work_receipt_parse(
+                wire, wire_len, &result.receipt) == VCS_ZCODE_DEV_OK;
+            free(wire);
+            if (!parsed) continue;
+            memcpy(result.output_root, result.receipt.output_root, 32);
+            if (!vcs_zcode_work_result_verify(
+                    &requests[i], &result, s_work_pubkey))
+                continue;
+            enum vcs_zcode_work_node_result published =
+                vcs_zcode_work_node_publish_result(
+                    s_work, peers[i], &result);
+            if (published != VCS_ZCODE_WORK_NODE_OK)
+                LOG_WARN("net.zcode_swarm", "result %llu: %s",
+                         (unsigned long long)requests[i].request_id,
+                         vcs_zcode_work_node_result_string(published));
+            break;
+        }
+    }
+}
 
 static bool boot_zcode_work_refresh(struct boot_svc_ctx *svc, int64_t wall)
 {
@@ -396,6 +657,9 @@ void boot_zcode_swarm_tick(struct msg_processor *mp, struct p2p_node *node,
         s_last_tick = wall;
         vcs_swarm_engine_tick(engine, wall / 86400, (uint64_t)wall);
         vcs_zcode_work_node_tick(s_work, wall);
+        boot_zcode_work_drain_admissions(wall);
+        boot_zcode_work_drain_cancels(wall);
+        boot_zcode_work_publish_results(wall);
         if (GetBoolArg("-buildworker", false) && wall % 300 == 0)
             (void)boot_zcode_work_refresh((struct boot_svc_ctx *)ctx, wall);
     }
@@ -463,5 +727,6 @@ void boot_zcode_swarm_shutdown(void)
     memset(s_work_secret, 0, sizeof(s_work_secret));
     memset(s_work_pubkey, 0, sizeof(s_work_pubkey));
     s_work_key_ready = false;
+    memset(s_work_workspace, 0, sizeof(s_work_workspace));
     zcl_mutex_unlock(&s_lock);
 }

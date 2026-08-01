@@ -1,0 +1,70 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ * purpose: Canonical content.v2 carrier for one fixed ZCODE build action. */
+
+#ifndef ZCL_VCS_ZCODE_WORK_CONTEXT_H
+#define ZCL_VCS_ZCODE_WORK_CONTEXT_H
+
+#include "vcs/zcode_dev.h"
+
+#include <stddef.h>
+#include <stdint.h>
+
+#define VCS_ZCODE_WORK_CONTEXT_VERSION 1u
+#define VCS_ZCODE_WORK_CONTEXT_PATH "zcode-work-context.v1"
+#define VCS_ZCODE_WORK_CONTEXT_FIXED_BYTES 628u
+#define VCS_ZCODE_WORK_CONTEXT_PROFILE_MAX 31u
+
+struct vcs_package_store;
+
+enum vcs_zcode_work_context_result {
+    VCS_ZCODE_WORK_CONTEXT_OK = 0,
+    VCS_ZCODE_WORK_CONTEXT_NULL,
+    VCS_ZCODE_WORK_CONTEXT_SHAPE,
+    VCS_ZCODE_WORK_CONTEXT_LIMIT,
+    VCS_ZCODE_WORK_CONTEXT_STALE,
+    VCS_ZCODE_WORK_CONTEXT_ACTION,
+    VCS_ZCODE_WORK_CONTEXT_STORE,
+    VCS_ZCODE_WORK_CONTEXT_ABSENT,
+    VCS_ZCODE_WORK_CONTEXT_CORRUPT,
+    VCS_ZCODE_WORK_CONTEXT_ALLOC,
+};
+
+struct vcs_zcode_work_context_v1 {
+    uint8_t source_sha256[32];
+    char profile[VCS_ZCODE_WORK_CONTEXT_PROFILE_MAX + 1u];
+    struct vcs_zcode_task_v1 task;
+    struct vcs_zcode_candidate_v1 candidate;
+    struct vcs_zcode_proof_policy_v1 proof_policy;
+    uint8_t *preprocessed;
+    size_t preprocessed_len;
+};
+
+const char *vcs_zcode_work_context_result_string(
+    enum vcs_zcode_work_context_result result);
+void vcs_zcode_work_context_init(struct vcs_zcode_work_context_v1 *context);
+void vcs_zcode_work_context_free(struct vcs_zcode_work_context_v1 *context);
+
+/* The context wire is canonical but its network address is the enclosing
+ * one-file content.v2 package root. This keeps transfer, resume, quotas, and
+ * anti-abuse limits owned by the existing package store and swarm. */
+enum vcs_zcode_work_context_result vcs_zcode_work_context_serialize(
+    const struct vcs_zcode_work_context_v1 *context, int64_t now_unix,
+    uint8_t **out, size_t *out_len);
+enum vcs_zcode_work_context_result vcs_zcode_work_context_parse(
+    const uint8_t *wire, size_t wire_len, int64_t now_unix,
+    struct vcs_zcode_work_context_v1 *out);
+
+/* Reconstruct the already-frozen build_action.v1 identity. */
+enum vcs_zcode_work_context_result vcs_zcode_work_context_action_root(
+    const struct vcs_zcode_work_context_v1 *context, int64_t now_unix,
+    uint8_t action_root[32], uint8_t input_root[32]);
+
+enum vcs_zcode_work_context_result vcs_zcode_work_context_put(
+    struct vcs_package_store *store,
+    const struct vcs_zcode_work_context_v1 *context, int64_t now_unix,
+    uint8_t package_root[32], uint8_t action_root[32]);
+enum vcs_zcode_work_context_result vcs_zcode_work_context_get(
+    struct vcs_package_store *store, const uint8_t package_root[32],
+    int64_t now_unix, struct vcs_zcode_work_context_v1 *out);
+
+#endif /* ZCL_VCS_ZCODE_WORK_CONTEXT_H */

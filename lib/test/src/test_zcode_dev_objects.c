@@ -12,8 +12,11 @@
 #include "platform/time_compat.h"
 #include "services/build_fabric_service.h"
 #include "services/build_fabric_worker.h"
+#include "vcs/package_manifest.h"
+#include "vcs/package_store.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_dev.h"
+#include "vcs/zcode_work_context.h"
 #include "vcs/zcode_work_node.h"
 #include "vcs/zcode_work_swarm.h"
 
@@ -298,6 +301,79 @@ static int test_zd_receipt(void)
     return failures;
 }
 
+static int test_zd_work_context(void)
+{
+    int failures = 0;
+    TEST("zcode_dev: content.v2 context reconstructs the exact action") {
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "zcode_dev", "context");
+        struct vcs_package_store *store = vcs_package_store_open(
+            dir, UINT64_C(256) * 1024u * 1024u);
+        ASSERT(store != NULL);
+        struct vcs_zcode_work_context_v1 context;
+        vcs_zcode_work_context_init(&context);
+        zd_policy(&context.proof_policy);
+        uint8_t policy_root[32], task_root[32];
+        ASSERT_EQ(vcs_zcode_proof_policy_root(&context.proof_policy,
+                                              policy_root),
+                  VCS_ZCODE_DEV_OK);
+        zd_task(&context.task, policy_root);
+        ASSERT_EQ(vcs_zcode_task_root(&context.task, task_root),
+                  VCS_ZCODE_DEV_OK);
+        zd_candidate(&context.candidate, &context.task, task_root);
+        zd_root(context.source_sha256, 90);
+        (void)snprintf(context.profile, sizeof(context.profile), "dev");
+        context.preprocessed_len = VCS_PACKAGE_CHUNK_BYTES + 73u;
+        context.preprocessed = malloc(context.preprocessed_len);
+        ASSERT(context.preprocessed != NULL);
+        for (size_t i = 0; i < context.preprocessed_len; i++)
+            context.preprocessed[i] = (uint8_t)(i * 31u + 7u);
+        uint8_t package_root[32], action_root[32], direct_action[32];
+        uint8_t input_root[32];
+        ASSERT_EQ(vcs_zcode_work_context_action_root(
+                      &context, 1500, direct_action, input_root),
+                  VCS_ZCODE_WORK_CONTEXT_OK);
+        ASSERT_EQ(vcs_zcode_work_context_put(
+                      store, &context, 1500, package_root, action_root),
+                  VCS_ZCODE_WORK_CONTEXT_OK);
+        ASSERT(memcmp(action_root, direct_action, 32) == 0);
+        struct vcs_package_store_status status;
+        ASSERT(vcs_package_store_package_status(store, package_root,
+                                                 &status));
+        ASSERT(status.complete);
+        ASSERT_EQ(status.total_chunks, 2);
+        struct vcs_zcode_work_context_v1 loaded;
+        ASSERT_EQ(vcs_zcode_work_context_get(store, package_root, 1500,
+                                              &loaded),
+                  VCS_ZCODE_WORK_CONTEXT_OK);
+        uint8_t loaded_action[32], loaded_input[32];
+        ASSERT_EQ(vcs_zcode_work_context_action_root(
+                      &loaded, 1500, loaded_action, loaded_input),
+                  VCS_ZCODE_WORK_CONTEXT_OK);
+        ASSERT(memcmp(loaded_action, action_root, 32) == 0);
+        ASSERT(memcmp(loaded_input, input_root, 32) == 0);
+        ASSERT_EQ(loaded.preprocessed_len, context.preprocessed_len);
+        ASSERT(memcmp(loaded.preprocessed, context.preprocessed,
+                      context.preprocessed_len) == 0);
+        uint8_t *wire = NULL; size_t wire_len = 0;
+        ASSERT_EQ(vcs_zcode_work_context_serialize(
+                      &context, 1500, &wire, &wire_len),
+                  VCS_ZCODE_WORK_CONTEXT_OK);
+        wire[12] = 1;
+        struct vcs_zcode_work_context_v1 rejected;
+        ASSERT_EQ(vcs_zcode_work_context_parse(wire, wire_len, 1500,
+                                                &rejected),
+                  VCS_ZCODE_WORK_CONTEXT_SHAPE);
+        free(wire);
+        vcs_zcode_work_context_free(&loaded);
+        vcs_zcode_work_context_free(&context);
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static void zd_swarm_result(
     struct vcs_zcode_work_result_v1 *result,
     const struct vcs_zcode_work_request_v1 *request,
@@ -500,6 +576,13 @@ static int test_zd_work_node(void)
         ASSERT_EQ(vcs_zcode_work_node_handle_frame(
             worker, 22, frame, frame_len, 1000), VCS_ZCODE_WORK_NODE_OK);
         struct vcs_zcode_work_request_v1 received;
+        ASSERT(vcs_zcode_work_node_peek_request(
+            worker, &peer_out, &received));
+        ASSERT_EQ(received.request_id, 700);
+        uint64_t inbound_peers[2];
+        struct vcs_zcode_work_request_v1 inbound_requests[2];
+        ASSERT_EQ(vcs_zcode_work_node_inbound_requests(
+            worker, inbound_peers, inbound_requests, 2), 1);
         ASSERT(vcs_zcode_work_node_next_request(worker, &peer_out, &received));
         ASSERT_EQ(received.request_id, 700);
         struct vcs_zcode_work_result_v1 result;
@@ -541,6 +624,10 @@ static int test_zd_work_node(void)
         ASSERT(vcs_zcode_work_node_next_cancel(
             worker, &peer_out, &received_cancel));
         ASSERT_EQ(received_cancel.request_id, 701);
+        bool was_cancelled = false;
+        ASSERT(vcs_zcode_work_node_inbound_request(
+            worker, 22, 701, &received, &was_cancelled));
+        ASSERT(was_cancelled);
         request.request_id = 702;
         ASSERT(vcs_zcode_work_request_seal(
             &request, requester_secret, requester_key));
@@ -605,7 +692,6 @@ static int test_zd_improve_command(void)
         (void)json_push_kv_str(&input, "adapter_policy_root", roots[7]);
         (void)json_push_kv_str(&input, "author_pubkey", roots[8]);
         (void)json_push_kv_int(&input, "remote_peer", 99);
-        (void)json_push_kv_str(&input, "context_root", roots[5]);
         (void)json_push_kv_str(&input, "goal", "fix deterministic fixture");
         (void)json_push_kv_str(&input, "proof_policy_hex", policy_hex);
         (void)json_push_kv_str(&input, "preprocessed_path", preprocessed);
@@ -644,7 +730,7 @@ static int test_zd_improve_command(void)
         ASSERT_STR_EQ(action.state, "QUEUED");
         ASSERT_STR_EQ(action.task_root_sha3, task_hex);
         ASSERT_STR_EQ(action.candidate_root_sha3, candidate_hex);
-        ASSERT_STR_EQ(action.context_root_sha3, roots[5]);
+        ASSERT_STR_EQ(action.context_root_sha3, "");
         uint8_t candidate_root[32], *candidate_wire = NULL;
         size_t candidate_wire_len = 0;
         ASSERT(zcl_hex_decode_lower(candidate_hex, candidate_root, 32));
@@ -702,6 +788,7 @@ int test_zcode_dev_objects(void)
     failures += test_zd_policy_and_task();
     failures += test_zd_candidate_review();
     failures += test_zd_receipt();
+    failures += test_zd_work_context();
     failures += test_zd_work_swarm();
     failures += test_zd_work_node();
     failures += test_zd_improve_command();

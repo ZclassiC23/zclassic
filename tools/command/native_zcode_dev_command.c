@@ -17,6 +17,7 @@
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_dev.h"
 #include "vcs/package_store.h"
+#include "vcs/zcode_work_context.h"
 #include "vcs/zcode_work_node.h"
 
 #include <errno.h>
@@ -276,10 +277,10 @@ void zcl_native_handle_zcode_improve(
     struct db_build_action action = {0};
     int64_t remote_peer = zdev_int(request->input, "remote_peer", 0);
     uint8_t context_root[32] = {0};
+    uint8_t context_action_root[32] = {0};
     bool remote_requested = remote_peer > 0;
-    if (remote_requested &&
-        !zdev_root(request->input, "context_root", context_root, reply))
-        return;
+    bool context_ready = false;
+    const char *context_reason = "package store unavailable";
     (void)snprintf(job.source_sha256, sizeof(job.source_sha256), "%s",
                    source_sha256);
     zcl_hex_encode(candidate.candidate_source_root, 32, job.source_cas_sha3);
@@ -297,8 +298,6 @@ void zcl_native_handle_zcode_improve(
     zcl_hex_encode(task_root, 32, action.task_root_sha3);
     zcl_hex_encode(candidate_root, 32, action.candidate_root_sha3);
     zcl_hex_encode(policy_root, 32, action.proof_policy_root_sha3);
-    if (remote_requested)
-        zcl_hex_encode(context_root, 32, action.context_root_sha3);
     (void)snprintf(action.target, sizeof(action.target), "%s",
                    VCS_BUILD_TARGET_V1);
     uint8_t fixed_flags[32], fixed_environment[32];
@@ -313,10 +312,54 @@ void zcl_native_handle_zcode_improve(
     (void)snprintf(action.resource_policy, sizeof(action.resource_policy),
                    "%s", VCS_BUILD_RESOURCE_POLICY_V1);
     action.created_at = action.updated_at = now;
+    if (remote_requested) {
+        struct vcs_package_store *context_store = vcs_package_store_global();
+        uint8_t *context_input = NULL;
+        size_t context_input_len = 0;
+        if (context_store &&
+            vcs_object_load_raw(workspace, input_root, &context_input,
+                                &context_input_len) == 0) {
+            struct vcs_zcode_work_context_v1 context;
+            vcs_zcode_work_context_init(&context);
+            memcpy(context.source_sha256, source_sha_check, 32);
+            (void)snprintf(context.profile, sizeof(context.profile), "%s",
+                           job.profile);
+            context.task = task;
+            context.candidate = candidate;
+            context.proof_policy = policy;
+            context.preprocessed = context_input;
+            context.preprocessed_len = context_input_len;
+            enum vcs_zcode_work_context_result packed =
+                vcs_zcode_work_context_put(
+                    context_store, &context, now, context_root,
+                    context_action_root);
+            context.preprocessed = NULL;
+            vcs_zcode_work_context_free(&context);
+            free(context_input);
+            if (packed == VCS_ZCODE_WORK_CONTEXT_OK) {
+                context_ready = true;
+                zcl_hex_encode(context_root, 32,
+                               action.context_root_sha3);
+            } else {
+                context_reason = vcs_zcode_work_context_result_string(packed);
+            }
+        } else if (context_store) {
+            free(context_input);
+            context_reason = "local input CAS could not be read";
+        }
+    }
     if (!build_fabric_action_id(&job, &action, action.action_id).ok ||
         !build_fabric_job_id(&job, action.action_id, job.job_id).ok) {
         zdev_fail(reply, "ACTION_ID_FAILED", "fixed build action identity refused");
         return;
+    }
+    uint8_t planned_action_root[32];
+    if (context_ready &&
+        (!zcl_hex_decode_lower(action.action_id, planned_action_root, 32) ||
+         memcmp(planned_action_root, context_action_root, 32) != 0)) {
+        context_ready = false;
+        context_reason = "context action identity mismatch";
+        action.context_root_sha3[0] = '\0';
     }
     (void)snprintf(action.job_id, sizeof(action.job_id), "%s", job.job_id);
     char db_path[ZDEV_PATH_MAX];
@@ -352,7 +395,7 @@ void zcl_native_handle_zcode_improve(
         struct vcs_package_store *store = vcs_package_store_global();
         struct vcs_package_store_status package_status;
         struct vcs_zcode_work_capability_v1 capability;
-        if (work && store &&
+        if (context_ready && work && store &&
             vcs_package_store_package_status(store, context_root,
                                               &package_status) &&
             package_status.complete &&
@@ -416,9 +459,10 @@ void zcl_native_handle_zcode_improve(
         }
         (void)json_push_kv_str(&reply->data, "remote_outcome", remote_outcome);
         if (strcmp(remote_outcome, "LOCAL_FALLBACK") == 0)
-            (void)json_push_kv_str(
-                &reply->data, "remote_reason",
-                "peer/capability/context unavailable; local queued action remains authoritative");
+            (void)json_push_kv_str(&reply->data, "remote_reason",
+                context_ready
+                    ? "peer/capability unavailable; local queued action remains authoritative"
+                    : context_reason);
     }
     (void)json_push_kv_str(
         &reply->data, "next",

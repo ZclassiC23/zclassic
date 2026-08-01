@@ -82,6 +82,19 @@ bool vcs_zcode_work_node_next_outbound(
 bool vcs_zcode_work_node_next_request(
     struct vcs_zcode_work_node *node, uint64_t *peer_out,
     struct vcs_zcode_work_request_v1 *out);
+/* Inspect the FIFO head without consuming it, so the transport glue can wait
+ * for its content.v2 context to become complete. */
+bool vcs_zcode_work_node_peek_request(
+    struct vcs_zcode_work_node *node, uint64_t *peer_out,
+    struct vcs_zcode_work_request_v1 *out);
+/* Snapshot unfinished inbound tracks. The request remains tracked after its
+ * admission event is drained, allowing a durable ZBuild result to be returned. */
+size_t vcs_zcode_work_node_inbound_requests(
+    struct vcs_zcode_work_node *node, uint64_t *peers,
+    struct vcs_zcode_work_request_v1 *requests, size_t max);
+bool vcs_zcode_work_node_inbound_request(
+    struct vcs_zcode_work_node *node, uint64_t peer, uint64_t request_id,
+    struct vcs_zcode_work_request_v1 *out, bool *cancelled);
 bool vcs_zcode_work_node_next_cancel(
     struct vcs_zcode_work_node *node, uint64_t *peer_out,
     struct vcs_zcode_work_cancel_v1 *out);

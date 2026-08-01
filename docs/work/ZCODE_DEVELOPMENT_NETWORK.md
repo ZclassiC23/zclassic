@@ -36,11 +36,11 @@ ledger, worker trust list, or P2P transport.
 | Source snapshot identity | resident dev source CAS plus content.v2 for portable package trees | Live locally; not yet one network task surface |
 | Code context | `lib/codeindex/` plus immutable source chunks | Live index; bounded context-capsule publication is not yet wired |
 | Fixed build action | `vcs_build_action_v1` | Live codec; V1 is preprocessed-TU compile only |
-| Build coordinator ledger | `build_jobs`, `build_actions`, `build_workers`, `build_receipts` | Live schema v42, models, native/REST reads, plan/submit/cancel/trust/lease-bound receipt checks |
+| Build coordinator ledger | `build_jobs`, `build_actions`, `build_workers`, `build_receipts` | Live schema v43, models, native/REST reads, plan/submit/cancel/trust/lease-bound receipt checks |
 | Local package confinement | `zclassic23-package-verify` | Live: declarative recipe, Landlock/seccomp/rlimits, no network |
 | ZBuild worker execution | existing build-fabric runtime | Live locally for the fixed preprocessed-TU GCC action when `-buildworker` is enabled: durable identity, bounded leases, full confinement, CAS artifact, signed receipt, and local fallback |
 | Package P2P | `package_swarm_node` and `zpkgswm` | Live for immutable package bytes |
-| Work P2P | signed work frames over package swarm/CAS | Live `ZCWS` multiplex on existing `zpkgswm` sessions; context fetch is live, ledger drain/response bridge pending |
+| Work P2P | signed work frames over package swarm/CAS | Live `ZCWS` multiplex on existing `zpkgswm` sessions; canonical context fetch, ZBuild admission, cancellation, and signed result return are live. Requester-side durable result indexing and quorum orchestration remain pending |
 | Agent authority | metaverse grants and signed receipt chain | Live for scoped property operations; task work must never inherit wallet or canonical-node authority |
 | Durability lanes | ZCODE promotion records over source roots | Not live |
 
@@ -130,6 +130,21 @@ Cross-object validation refuses stale source, task, candidate, policy,
 toolchain, output, or expiry state. A structurally valid old receipt therefore
 cannot authorize a moved task.
 
+### `zcode-work-context.v1`
+
+Remote execution adds no source store or transfer protocol. One fixed context
+wire is carried as a normal one-file, multi-chunk `content.v2` package at the
+canonical path `zcode-work-context.v1`. Its closed binary grammar binds the
+existing `task.v1`, `candidate.v1`, and `proof_policy.v1` wires, the candidate
+source SHA-256 oracle, build profile, and exact preprocessed TU. Its total size
+remains under the package store's existing 64 MiB anti-abuse cap and the task's
+smaller context ceiling.
+
+The receiving peer re-derives the task, candidate, policy, input, toolchain,
+and `build_action.v1` roots and compares every one to the signed request before
+writing the objects to the existing workspace CAS or planning the existing
+ZBuild action. It never accepts a caller-supplied path or command.
+
 <!-- claim: file-present lib/vcs/include/vcs/zcode_dev.h # the canonical object contract -->
 <!-- claim: symbol-present vcs_zcode_work_receipt_verify lib/vcs/src/zcode_dev.c # signed receipt verification -->
 <!-- claim: symbol-present vcs_zcode_work_receipt_validate_for_candidate lib/vcs/src/zcode_dev.c # cross-object staleness gate -->
@@ -193,12 +208,12 @@ bash-only authority:
 `zcode improve` now admits canonical task/policy/goal/input/candidate objects in
 the existing workspace CAS, captures the GCC capsule, and queues a
 candidate-bound compile action. A local worker emits the canonical signed work
-receipt. With `remote_peer` and a locally complete content.v2 `context_root`, it
-also signs and queues the exact request for that user-selected advertised peer;
-an unavailable peer/capability/context reports `LOCAL_FALLBACK` and preserves
-the local action. Adapter invocation, review, explicit acceptance, and
-publication are still separate missing stages and are not claimed by command
-discovery.
+receipt. With `remote_peer`, it builds the canonical context package itself and
+signs and queues the exact request for that user-selected advertised peer; an
+unavailable package store, peer, or capability reports `LOCAL_FALLBACK` and
+preserves the local action. Adapter invocation, review, explicit acceptance,
+and publication are still separate missing stages and are not claimed by
+command discovery.
 
 ### D. Requester-coordinated P2P work
 
@@ -211,9 +226,12 @@ discovery.
   bounded adapter authenticates capabilities, rejects replay/unrequested/
   altered frames, preserves requester-selected peers, and schedules the exact
   content.v2 context root through the existing package fetcher.
-- [ ] Drain fetched inbound requests into the existing ZBuild ledger and return
-  its canonical receipt/result; ingest verified requester results into the same
-  ledger for local reproduction/quorum decisions.
+- [x] Drain a complete, canonical fetched context into the existing ZBuild
+  ledger, propagate signed cancellation, and return the accepted action's
+  canonical receipt/result. A requester retry after worker restart reattaches
+  to the idempotent durable action; no in-memory request queue is authority.
+- [ ] Persist verified requester results as untrusted CAS projections and drive
+  the selected local-reproduction or distinct-matching-signer quorum decision.
 - Extend peer advertisements with bounded action kinds, toolchain capsule,
   target, confinement facts, resource ceilings, queue headroom, and expiry.
 - The requester owns job selection, leases, cancellation, quorum, and local
