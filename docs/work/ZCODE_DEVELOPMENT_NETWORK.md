@@ -33,7 +33,7 @@ ledger, worker trust list, or P2P transport.
 | Published release | `lib/vcs/package_release.*` and package-add lifecycle | Live |
 | Dependency lock | `vcs_package_lock` in `lib/vcs/package_deps.*` | Live, root-pinned DAG |
 | Declarative C23 graph | `vcs_package_recipe` | Live for one library/test package; workspace executables and multi-package targets still need an extension |
-| Source snapshot identity | resident dev source CAS plus content.v2 for portable package trees | Live locally; not yet one network task surface |
+| Source snapshot identity | existing path-sorted ZVCS manifest and domain-tagged blob CAS | Live local capture and task binding; content.v2 remains the P2P carrier |
 | Code context | `lib/codeindex/` plus the existing ZCODE CAS | Live bounded `agent_context.v1` capture for an exact symbol or stable symbol ID; goal-to-symbol selection and adapter invocation remain |
 | Fixed build action | `vcs_build_action_v1` | Live closed registry and identity for preprocessed-TU compile, exact-executable test, deterministic exact-executable fuzz, and review. Local execution is live for compile, test, and fuzz |
 | Build coordinator ledger | `build_jobs`, `build_actions`, `build_workers`, `build_receipts`, `zcode_lane_receipts` | Live schema v45. Work receipt rows distinguish local acceptance, untrusted remote observation, local reproduction, and approved-signer quorum; lane rows are lookup projections of signed CAS receipts |
@@ -89,7 +89,8 @@ adapter from inventing implied defaults.
 
 A task binds exactly:
 
-- source root;
+- source root, derived by scanning the tracked workspace twice, storing its
+  existing ZVCS manifest/blobs, and verifying manifest readback;
 - existing `vcs_package_lock` root;
 - existing `vcs_toolchain_capsule_v1` root;
 - immutable write-scope manifest root;
@@ -167,7 +168,8 @@ path, starting line, full-file size, exact bytes, and SHA3 root. Each excerpt
 is capped at 64 KiB and the complete wire is capped by the task's context-byte
 limit.
 
-Capture uses no downloaded scripts and grants no agent authority. It opens
+Capture uses no downloaded scripts and grants no agent authority. It first
+rederives the task's full ZVCS source snapshot, then opens
 selected files without following symlinks, recomputes the source Merkle root
 before and after capture, and rereads every selected byte range. A stale task,
 rename, edit during capture, changed byte range, malformed wire, duplicate or
@@ -200,6 +202,7 @@ ZBuild action. It never accepts a caller-supplied path or command.
 <!-- claim: symbol-present vcs_zcode_proof_set_root lib/vcs/src/zcode_proof_set.c # immutable evaluated evidence set -->
 <!-- claim: file-present lib/vcs/include/vcs/zcode_agent_context.h # bounded canonical agent context wire -->
 <!-- claim: symbol-present zcode_agent_context_capture app/services/src/zcode_agent_context_service.c # source-stable context publication into existing CAS -->
+<!-- claim: symbol-present vcs_tree_capture_path lib/vcs/src/vcs.c # verified task source snapshot in existing CAS -->
 
 ## Ordered delivery
 
@@ -272,7 +275,8 @@ bash-only authority:
   accept, and publish.
 
 `zcode improve mode=plan` now admits canonical task/policy/goal objects in the
-existing workspace CAS and publishes a bounded exact-symbol
+existing workspace CAS after deriving the source root from a stable,
+readback-verified ZVCS tree capture, and publishes a bounded exact-symbol
 `agent_context.v1`. It returns only immutable task, context, model-policy,
 proof-policy, and toolchain roots with state `AWAITING_CANDIDATE`; it does not
 launch a model, create a build database, or grant tools. The operator can give

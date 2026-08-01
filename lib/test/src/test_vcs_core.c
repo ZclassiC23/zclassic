@@ -542,10 +542,12 @@ static int t_generated_paths_ignored(const char *dir)
     vc_write(dir, ".claude/worktrees/copy/src/main.c", "ignored\n");
     vc_write(dir, ".claude/tmp/scratch.c", "ignored\n");
     vc_write(dir, ".cache/compiler/result", "ignored\n");
+    vc_write(dir, ".codeindex/index.kv", "ignored\n");
     vc_write(dir, ".zcl_test_render/page.html", "ignored\n");
     vc_write(dir, "examples/bin/example", "ignored\n");
     vc_write(dir, "vendor/tor/generated.c", "ignored\n");
     vc_write(dir, "vendor/zclassic-ref/source.cc", "ignored\n");
+    vc_write(dir, "zcode/build-worker.ed25519", "ignored\n");
 
     struct vcs_manifest manifest;
     VC_CHECK("ignore: manifest build",

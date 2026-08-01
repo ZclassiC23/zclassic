@@ -27,6 +27,7 @@
 #include "vcs/zcode_work_context.h"
 #include "vcs/zcode_work_node.h"
 #include "vcs/zcode_work_swarm.h"
+#include "vcs/vcs.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -1041,10 +1042,27 @@ static int test_zd_improve_command(void)
         }
         struct ci_merkle *source_tree = ci_merkle_build_cold(workspace, NULL);
         struct ci_merkle_node source_tree_root;
+        char indexed_source_root[65];
         ASSERT(source_tree != NULL);
         ASSERT(ci_merkle_root(source_tree, &source_tree_root));
-        ci_merkle_hex(&source_tree_root.digest, roots[0]);
+        ci_merkle_hex(&source_tree_root.digest, indexed_source_root);
         ci_merkle_free(source_tree);
+        uint8_t captured_source_root[32];
+        ASSERT_EQ(vcs_tree_capture_path(workspace, captured_source_root),
+                  VCS_OK);
+        uint8_t captured_source_root_again[32];
+        ASSERT_EQ(vcs_tree_capture_path(workspace, captured_source_root_again),
+                  VCS_OK);
+        ASSERT(memcmp(captured_source_root, captured_source_root_again, 32) ==
+               0);
+        struct vcs_manifest captured_manifest;
+        ASSERT(vcs_tree_load(workspace, captured_source_root,
+                             &captured_manifest));
+        ASSERT_EQ(captured_manifest.count, 2);
+        ASSERT_STR_EQ(captured_manifest.entries[0].path, "src/widget.c");
+        ASSERT_STR_EQ(captured_manifest.entries[1].path, "unit.i");
+        vcs_manifest_free(&captured_manifest);
+        zcl_hex_encode(captured_source_root, 32, roots[0]);
         int64_t expires = (int64_t)platform_time_wall_unix() + 3600;
         int64_t candidate_created = expires - 3600;
 
@@ -1055,7 +1073,6 @@ static int test_zd_improve_command(void)
         (void)json_push_kv_str(&plan_input, "mode", "plan");
         (void)json_push_kv_str(&plan_input, "workspace", workspace);
         (void)json_push_kv_str(&plan_input, "datadir", workspace);
-        (void)json_push_kv_str(&plan_input, "source_root", roots[0]);
         (void)json_push_kv_str(&plan_input, "dependency_lock_root", roots[1]);
         (void)json_push_kv_str(&plan_input, "write_scope_root", roots[2]);
         (void)json_push_kv_str(&plan_input, "acceptance_tests_root", roots[3]);
@@ -1083,6 +1100,8 @@ static int test_zd_improve_command(void)
             &plan_reply.data, "agent_context_root"));
         ASSERT(planned_task && strlen(planned_task) == 64);
         ASSERT(planned_context && strlen(planned_context) == 64);
+        ASSERT_STR_EQ(json_get_str(json_get(&plan_reply.data, "source_root")),
+                      roots[0]);
         char planned_task_saved[65], planned_context_saved[65];
         (void)snprintf(planned_task_saved, sizeof(planned_task_saved), "%s",
                        planned_task);
@@ -1141,7 +1160,7 @@ static int test_zd_improve_command(void)
         ASSERT(strlen(agent_context_hex) == 64);
         ASSERT_STR_EQ(json_get_str(json_get(
                           &reply.data, "agent_context_source_tree_root")),
-                      roots[0]);
+                      indexed_source_root);
         ASSERT_STR_EQ(json_get_str(json_get(
                           &reply.data, "agent_context_symbol")),
                       "context_widget");
@@ -1211,8 +1230,28 @@ static int test_zd_improve_command(void)
         zcl_command_reply_init(&stale_reply, "zcl.zcode_improve.v1");
         zcl_native_handle_zcode_improve(&request, &stale_reply);
         ASSERT_EQ(stale_reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
-        ASSERT_STR_EQ(stale_reply.error.code, "PLANNED_TASK_MISMATCH");
+        ASSERT_STR_EQ(stale_reply.error.code, "SOURCE_ROOT_MISMATCH");
         zcl_command_reply_free(&stale_reply);
+        json_set_str((struct json_value *)json_get(&input, "source_root"),
+                     roots[0]);
+        FILE *drift_file = fopen(source_path, "ab");
+        ASSERT(drift_file != NULL);
+        static const char drift[] = "/* drift */\n";
+        ASSERT(fwrite(drift, 1, sizeof(drift) - 1u, drift_file) ==
+               sizeof(drift) - 1u);
+        ASSERT(fclose(drift_file) == 0);
+        json_set_str((struct json_value *)json_get(&input, "source_root"), "");
+        struct zcl_command_reply drift_reply;
+        zcl_command_reply_init(&drift_reply, "zcl.zcode_improve.v1");
+        zcl_native_handle_zcode_improve(&request, &drift_reply);
+        ASSERT_EQ(drift_reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(drift_reply.error.code, "PLANNED_TASK_MISMATCH");
+        zcl_command_reply_free(&drift_reply);
+        drift_file = fopen(source_path, "wb");
+        ASSERT(drift_file != NULL);
+        ASSERT(fwrite(indexed_source, 1, sizeof(indexed_source) - 1u,
+                      drift_file) == sizeof(indexed_source) - 1u);
+        ASSERT(fclose(drift_file) == 0);
         json_set_str((struct json_value *)json_get(&input, "source_root"),
                      roots[0]);
         json_set_str((struct json_value *)json_get(

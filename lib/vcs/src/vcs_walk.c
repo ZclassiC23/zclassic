@@ -73,6 +73,7 @@ bool vcs_path_ignored(const char *relpath)
         ".cache",
         ".claude/tmp",
         ".claude/worktrees",
+        ".codeindex",
         ".zcl_test_render",
         "chaos-output",
         "examples/bin",
@@ -83,6 +84,7 @@ bool vcs_path_ignored(const char *relpath)
         "vendor/lib",
         "vendor/tor",
         "vendor/zclassic-ref",
+        "zcode",
         NULL,
     };
     for (size_t i = 0; ignored_roots[i]; i++)

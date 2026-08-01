@@ -16,6 +16,7 @@
 #include "util/safe_alloc.h"
 #include "vcs/build_action.h"
 #include "vcs/build_artifact_manifest.h"
+#include "vcs/vcs.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_dev.h"
 #include "vcs/zcode_lane.h"
@@ -107,6 +108,18 @@ static bool zdev_open_db(const char *datadir, struct node_db *ndb)
         ? snprintf(db_path, sizeof(db_path), "%s/node.db", datadir) : -1;
     return n > 0 && (size_t)n < sizeof(db_path) &&
            node_db_open(ndb, db_path);
+}
+
+static bool zdev_capture_source_root(
+    const char *workspace, uint8_t out[32], struct zcl_command_reply *reply)
+{
+    int captured = vcs_tree_capture_path(workspace, out);
+    if (captured != VCS_OK) {
+        zdev_fail(reply, "SOURCE_CAPTURE_FAILED",
+                  "workspace changed or its source tree could not enter CAS");
+        return false;
+    }
+    return true;
 }
 
 static void zdev_push_lane(struct json_value *out,
@@ -434,8 +447,24 @@ void zcl_native_handle_zcode_improve(
         return;
     }
     struct vcs_zcode_task_v1 task = { .schema_version = VCS_ZCODE_DEV_VERSION };
-    if (!zdev_root(request->input, "source_root", task.source_root, reply) ||
-        !zdev_root(request->input, "dependency_lock_root",
+    if (plan_only || explicit_admit) {
+        if (!zdev_capture_source_root(workspace, task.source_root, reply))
+            return;
+        const char *claimed_source = zdev_str(request->input, "source_root");
+        if (claimed_source && claimed_source[0]) {
+            uint8_t claimed_root[32];
+            if (!zcl_hex_decode_lower(claimed_source, claimed_root, 32) ||
+                memcmp(claimed_root, task.source_root, 32) != 0) {
+                zdev_fail(reply, "SOURCE_ROOT_MISMATCH",
+                          "source_root does not match the captured workspace tree");
+                return;
+            }
+        }
+    } else if (!zdev_root(request->input, "source_root",
+                          task.source_root, reply)) {
+        return;
+    }
+    if (!zdev_root(request->input, "dependency_lock_root",
                    task.dependency_lock_root, reply) ||
         !zdev_root(request->input, "write_scope_root", task.write_scope_root,
                    reply) ||
@@ -527,6 +556,7 @@ void zcl_native_handle_zcode_improve(
                        task.toolchain_capsule_root);
         zdev_push_root(&reply->data, "model_policy_root",
                        task.model_policy_root);
+        zdev_push_root(&reply->data, "source_root", task.source_root);
         zdev_push_agent_context(&reply->data, &agent_context);
         (void)json_push_kv_str(&reply->data, "mode", "plan");
         (void)json_push_kv_str(&reply->data, "state",

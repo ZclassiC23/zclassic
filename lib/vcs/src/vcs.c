@@ -131,6 +131,14 @@ static bool manifest_load(const char *repo, const uint8_t tree_hash[32],
     return true;
 }
 
+bool vcs_tree_load(const char *repo_root, const uint8_t tree_hash[32],
+                   struct vcs_manifest *out)
+{
+    if (!repo_root || !tree_hash || !out)
+        LOG_FAIL("vcs", "null arg to tree_load");
+    return manifest_load(repo_root, tree_hash, out);
+}
+
 static bool load_commit_by_id(const char *repo, const uint8_t commit_id[32],
                               struct vcs_commit *out)
 {
@@ -217,6 +225,57 @@ static void fill_fixed(char *dst, size_t cap, const char *src)
         if (l >= cap) l = cap - 1;
         memcpy(dst, src, l);
     }
+}
+
+int vcs_tree_capture(struct vcs_repo *r, uint8_t out_tree_hash[32])
+{
+    if (!r || !out_tree_hash)
+        LOG_ERR("vcs", "null arg to tree_capture");
+    struct vcs_manifest first, second, checked;
+    if (!vcs_manifest_build(r->root, r->idx, &first))
+        LOG_ERR("vcs", "build source manifest");
+    if (!put_dirty_blobs(r, &first)) {
+        vcs_manifest_free(&first);
+        LOG_ERR("vcs", "store source blobs");
+    }
+    uint8_t first_root[32], second_root[32];
+    if (!manifest_store(r->root, &first, first_root)) {
+        vcs_manifest_free(&first);
+        LOG_ERR("vcs", "store source manifest");
+    }
+    vcs_manifest_free(&first);
+    if (!vcs_manifest_build(r->root, r->idx, &second))
+        LOG_ERR("vcs", "rebuild source manifest");
+    bool stable = vcs_manifest_tree_hash(&second, second_root) &&
+                  memcmp(first_root, second_root, 32) == 0;
+    vcs_manifest_free(&second);
+    if (!stable)
+        LOG_ERR("vcs", "source changed during tree capture");
+    if (!manifest_load(r->root, first_root, &checked))
+        LOG_ERR("vcs", "source manifest readback failed");
+    vcs_manifest_free(&checked);
+    memcpy(out_tree_hash, first_root, 32);
+    return VCS_OK;
+}
+
+int vcs_tree_capture_path(const char *repo_root, uint8_t out_tree_hash[32])
+{
+    if (!repo_root || !repo_root[0] || !out_tree_hash)
+        LOG_ERR("vcs", "null arg to tree_capture_path");
+    if (!vcs_object_store_init(repo_root))
+        LOG_ERR("vcs", "source object store init failed");
+    struct vcs_index *idx = vcs_index_open(repo_root);
+    if (!idx)
+        LOG_ERR("vcs", "source index open failed");
+    struct vcs_repo repo = { .idx = idx };
+    int n = snprintf(repo.root, sizeof(repo.root), "%s", repo_root);
+    if (n <= 0 || (size_t)n >= sizeof(repo.root)) {
+        vcs_index_close(idx);
+        LOG_ERR("vcs", "source root path too long");
+    }
+    int result = vcs_tree_capture(&repo, out_tree_hash);
+    vcs_index_close(idx);
+    return result;
 }
 
 int vcs_snapshot(struct vcs_repo *r, const struct vcs_snapshot_meta *meta,

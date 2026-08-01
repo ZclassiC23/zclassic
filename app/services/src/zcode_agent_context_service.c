@@ -9,6 +9,7 @@
 #include "crypto/sha3.h"
 #include "util/safe_alloc.h"
 #include "vcs/package_manifest.h"
+#include "vcs/vcs.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_agent_context.h"
 
@@ -27,6 +28,11 @@ struct zac_path {
     uint32_t line;
     off_t byte_offset;
 };
+
+static bool zac_source_root(const char *workspace, uint8_t out[32])
+{
+    return vcs_tree_capture_path(workspace, out) == VCS_OK;
+}
 
 static int zac_path_cmp(const void *a, const void *b)
 {
@@ -197,6 +203,11 @@ struct zcl_result zcode_agent_context_capture(
         strlen(query) > VCS_ZCODE_AGENT_CONTEXT_QUERY_MAX)
         return ZCL_ERR(-1, "agent context requires workspace, task, and bounded symbol");
     memset(out, 0, sizeof(*out));
+    uint8_t source_root_before[32];
+    if (!zac_source_root(workspace, source_root_before))
+        return ZCL_ERR(-1, "source snapshot could not be captured");
+    if (memcmp(source_root_before, task->source_root, 32) != 0)
+        return ZCL_ERR(-1, "task source root is not the current source snapshot");
     struct codeindex *ci = codeindex_open(workspace);
     if (!ci) return ZCL_ERR(-1, "code index could not open for agent context");
     struct ci_symbol sym = {0}; bool found = false;
@@ -214,10 +225,6 @@ struct zcl_result zcode_agent_context_capture(
     if (!before || !ci_merkle_root(before, &before_root)) {
         ci_merkle_free(before); codeindex_close(ci);
         return ZCL_ERR(-1, "source tree identity could not be captured");
-    }
-    if (memcmp(before_root.digest.bytes, task->source_root, 32) != 0) {
-        ci_merkle_free(before); codeindex_close(ci);
-        return ZCL_ERR(-1, "task source root is not the current indexed source tree");
     }
     struct zac_path paths[VCS_ZCODE_AGENT_CONTEXT_MAX_FILES] = {0};
     size_t path_count = 0; bool truncated = false;
@@ -262,6 +269,9 @@ struct zcl_result zcode_agent_context_capture(
         stable = zac_reread_matches(root_fd, &paths[i], &context.files[i]);
     close(root_fd); ci_merkle_free(after); ci_merkle_free(before);
     codeindex_close(ci);
+    uint8_t source_root_after[32];
+    stable = stable && zac_source_root(workspace, source_root_after) &&
+        memcmp(source_root_before, source_root_after, 32) == 0;
     if (!stable) {
         vcs_zcode_agent_context_free(&context);
         return ZCL_ERR(-1, "source changed during agent context capture");

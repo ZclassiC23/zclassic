@@ -66,6 +66,22 @@ void vcs_close(struct vcs_repo *r);
 struct vcs_index *vcs_repo_index(struct vcs_repo *r);
 const char       *vcs_repo_root(struct vcs_repo *r);
 
+/* Capture the current tracked worktree as the existing path-sorted ZVCS
+ * manifest plus domain-tagged blob objects, without creating a commit or
+ * moving HEAD. The tree is scanned again before publication; any drift is a
+ * refusal. This is the portable immutable source authority for ZCODE tasks. */
+int vcs_tree_capture(struct vcs_repo *r, uint8_t out_tree_hash[32]);
+
+/* Convenience form for task planning: opens only the object/index stores, not
+ * the commit log, and therefore cannot create or advance history. */
+int vcs_tree_capture_path(const char *repo_root, uint8_t out_tree_hash[32]);
+
+/* Load one captured manifest by tree hash and rederive its structural address
+ * before returning it. Caller owns *out and releases it with
+ * vcs_manifest_free(). */
+bool vcs_tree_load(const char *repo_root, const uint8_t tree_hash[32],
+                   struct vcs_manifest *out);
+
 /* Take a snapshot: build the worktree manifest, store dirty blobs + the
  * manifest, check the seal, append a commit, and advance HEAD/anchor/seal_pin.
  * On success writes the 32-byte commit id to out_commit_id. Returns VCS_OK,
