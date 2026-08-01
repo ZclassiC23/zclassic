@@ -151,9 +151,11 @@ struct zcl_result zcl_spawn_detached(const char *const argv[],
 
 /* ── zcl_spawn_capture ───────────────────────────────────────────────── */
 
-int zcl_spawn_capture(const char *const argv[], char *buf, size_t cap,
-                       int timeout_ms)
+int zcl_spawn_capture_cancelable(
+    const char *const argv[], char *buf, size_t cap, int timeout_ms,
+    zcl_spawn_cancel_fn should_cancel, void *cancel_ctx, bool *cancelled)
 {
+    if (cancelled) *cancelled = false;
     if (!argv || !argv[0] || !buf || cap == 0)
         LOG_ERR("spawn", "bad args (argv=%p buf=%p cap=%zu)",
                 (const void *)argv, (void *)buf, cap);
@@ -171,6 +173,7 @@ int zcl_spawn_capture(const char *const argv[], char *buf, size_t cap,
 
     if (pid == 0) {
         /* Child: only async-signal-safe calls until exec/_exit. */
+        setpgid(0, 0);
         close(outpipe[0]);
         dup2(outpipe[1], STDOUT_FILENO);
         if (outpipe[1] != STDOUT_FILENO) close(outpipe[1]);
@@ -192,14 +195,20 @@ int zcl_spawn_capture(const char *const argv[], char *buf, size_t cap,
 
     /* Parent. */
     close(outpipe[1]);
+    (void)setpgid(pid, pid); /* child also does this; either side may win */
 
     size_t used = 0;
     char discard[4096];
     int64_t deadline_ms = (timeout_ms > 0)
                           ? platform_time_monotonic_ms() + timeout_ms : 0;
     bool timed_out = false;
+    bool was_cancelled = false;
 
     for (;;) {
+        if (should_cancel && should_cancel(cancel_ctx)) {
+            was_cancelled = true;
+            break;
+        }
         struct pollfd pfd = { .fd = outpipe[0], .events = POLLIN };
         int poll_timeout = -1;
         if (timeout_ms > 0) {
@@ -207,13 +216,19 @@ int zcl_spawn_capture(const char *const argv[], char *buf, size_t cap,
             if (remain <= 0) { timed_out = true; break; }
             poll_timeout = (remain > INT_MAX) ? INT_MAX : (int)remain;
         }
+        if (should_cancel && (poll_timeout < 0 || poll_timeout > 100))
+            poll_timeout = 100;
         int pr = poll(&pfd, 1, poll_timeout);
         if (pr < 0) {
             if (errno == EINTR) continue;
             LOG_WARN("spawn", "poll() failed: %s", strerror(errno));
             break;
         }
-        if (pr == 0) { timed_out = true; break; }   /* only when timeout_ms > 0 */
+        if (pr == 0) {
+            if (should_cancel) continue; /* periodic durable-state poll */
+            timed_out = true;
+            break;
+        }
 
         char *dst = (used < cap - 1) ? buf + used : discard;
         size_t dst_cap = (used < cap - 1) ? (cap - 1 - used) : sizeof(discard);
@@ -229,8 +244,11 @@ int zcl_spawn_capture(const char *const argv[], char *buf, size_t cap,
     buf[used] = '\0';
     close(outpipe[0]);
 
-    if (timed_out)
-        kill(pid, SIGKILL);
+    if (timed_out || was_cancelled) {
+        if (kill(-pid, SIGKILL) != 0)
+            (void)kill(pid, SIGKILL);
+    }
+    if (cancelled) *cancelled = was_cancelled;
 
     int status = 0;
     if (!spawn_reap(pid, &status)) {
@@ -242,6 +260,13 @@ int zcl_spawn_capture(const char *const argv[], char *buf, size_t cap,
     if (WIFEXITED(status)) return WEXITSTATUS(status);
     if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
     return 0;
+}
+
+int zcl_spawn_capture(const char *const argv[], char *buf, size_t cap,
+                       int timeout_ms)
+{
+    return zcl_spawn_capture_cancelable(
+        argv, buf, cap, timeout_ms, NULL, NULL, NULL);
 }
 
 /* ── zcl_argv_split ──────────────────────────────────────────────────── */

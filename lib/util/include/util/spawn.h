@@ -96,6 +96,17 @@ struct zcl_result zcl_spawn_detached(const char *const argv[],
 int zcl_spawn_capture(const char *const argv[], char *buf, size_t cap,
                        int timeout_ms);
 
+/* Cancellable capture for long fixed actions. The parent polls
+ * `should_cancel` at most every 100 ms and, when it returns true, kills the
+ * child's whole process group so compiler/test/fuzz descendants cannot
+ * outlive the cancelled lease. `cancelled` is always initialized when
+ * non-NULL. The callback runs only in the parent and may inspect durable
+ * lifecycle state. All other semantics match zcl_spawn_capture(). */
+typedef bool (*zcl_spawn_cancel_fn)(void *ctx);
+int zcl_spawn_capture_cancelable(
+    const char *const argv[], char *buf, size_t cap, int timeout_ms,
+    zcl_spawn_cancel_fn should_cancel, void *cancel_ctx, bool *cancelled);
+
 /* Split `str` in place into whitespace-separated tokens (space/tab/CR/LF),
  * writing a pointer to each into argv[0..n-1] and argv[n] = NULL. `str` is
  * modified (strtok_r). At most `max`-1 tokens are stored (argv must hold

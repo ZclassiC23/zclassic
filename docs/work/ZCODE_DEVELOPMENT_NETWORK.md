@@ -212,8 +212,9 @@ ZBuild action. It never accepts a caller-supplied path or command.
 - [x] Establish Landlock, seccomp, rlimits, a scrubbed fixed environment
   allowlist, fixed virtual paths, no network, bounded stdout/stderr,
   cancellation publication checks, and a hard deadline before untrusted bytes
-  run. Prompt termination of an already-running child on cancellation is still
-  pending.
+  run. The worker polls the durable cancel state at most every 100 ms and
+  SIGKILLs the verifier's whole process group, so compiler/test/fuzz
+  descendants cannot outlive a cancelled lease.
 - [x] Fetch inputs only by immutable CAS root. Recheck task, candidate, policy,
   action input, source, toolchain, fixed flags/environment, signer, and lease
   before execution and again before receipt publication. The dependency-lock

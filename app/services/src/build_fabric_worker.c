@@ -303,8 +303,28 @@ static bool bfw_binding_current(
                expected_action->candidate_root_sha3) == 0 &&
         strcmp(action.proof_policy_root_sha3,
                expected_action->proof_policy_root_sha3) == 0 &&
-        strcmp(action.context_root_sha3,
+           strcmp(action.context_root_sha3,
                expected_action->context_root_sha3) == 0;
+}
+
+struct bfw_cancel_context {
+    struct node_db *ndb;
+    const char *action_id;
+    bool named_cancel;
+};
+
+static bool bfw_cancel_requested(void *opaque)
+{
+    struct bfw_cancel_context *ctx = opaque;
+    struct db_build_action action;
+    struct db_build_job job;
+    if (!ctx || !db_build_action_find(ctx->ndb, ctx->action_id, &action) ||
+        !db_build_job_find(ctx->ndb, action.job_id, &job))
+        return false;
+    ctx->named_cancel = strcmp(action.state, "CANCELLED") == 0 ||
+                        strcmp(job.state, "CANCELLED") == 0 ||
+                        job.cancel_requested;
+    return ctx->named_cancel;
 }
 
 static struct zcl_result bfw_load_zcode_context(
@@ -618,8 +638,21 @@ struct zcl_result build_fabric_worker_execute(
             bounded = BFW_FUZZ_TIMEOUT_CEILING_MS;
         execute_timeout = (int)bounded;
     }
-    int rc = zcl_spawn_capture(argv, capture, sizeof(capture),
-                               execute_timeout);
+    struct bfw_cancel_context cancel_context = {
+        .ndb = ndb,
+        .action_id = action_id,
+    };
+    bool spawn_cancelled = false;
+    int rc = zcl_spawn_capture_cancelable(
+        argv, capture, sizeof(capture), execute_timeout,
+        bfw_cancel_requested, &cancel_context, &spawn_cancelled);
+    if (spawn_cancelled) {
+        bfw_paths_cleanup(&paths);
+        return ZCL_ERR(-1, "%s",
+                       cancel_context.named_cancel
+                           ? "fixed action cancelled; named outcome CANCELLED"
+                           : "fixed action execution interrupted");
+    }
     const char *success_marker = fuzz_action ? "zbuild-fuzz-ok=1"
                                  : test_action ? "zbuild-test-ok=1"
                                                : "zbuild-ok=1";

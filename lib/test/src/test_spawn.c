@@ -20,6 +20,13 @@ static bool spawn_contains(const char *hay, const char *needle)
     return hay && needle && strstr(hay, needle) != NULL;
 }
 
+static bool spawn_cancel_after_poll(void *opaque)
+{
+    unsigned *polls = opaque;
+    (*polls)++;
+    return *polls >= 2;
+}
+
 /* Case 1: detached run execs a real binary that writes to a log file, the
  * log ends up containing the expected output, and NO zombie child of this
  * process is left behind (the grandchild is reparented to init/subreaper;
@@ -93,6 +100,28 @@ static int test_spawn_capture_timeout_kills(void)
         int64_t elapsed = platform_time_monotonic_ms() - t0;
         ASSERT(elapsed < 1500);          /* generous over the 200ms budget */
         ASSERT(rc == 128 + SIGKILL);     /* killed, not a clean exit */
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_spawn_capture_cancel_kills(void)
+{
+    int failures = 0;
+    TEST("spawn: durable callback promptly cancels a process group") {
+        const char *argv[] = { "/bin/sleep", "5", NULL };
+        char buf[64] = {0};
+        unsigned polls = 0;
+        bool cancelled = false;
+        int64_t t0 = platform_time_monotonic_ms();
+        int rc = zcl_spawn_capture_cancelable(
+            argv, buf, sizeof(buf), 5000, spawn_cancel_after_poll, &polls,
+            &cancelled);
+        int64_t elapsed = platform_time_monotonic_ms() - t0;
+        ASSERT(cancelled);
+        ASSERT(polls >= 2);
+        ASSERT(elapsed < 1500);
+        ASSERT(rc == 128 + SIGKILL);
         PASS();
     } _test_next:;
     return failures;
@@ -210,6 +239,7 @@ int test_spawn(void)
     failures += test_spawn_detached_writes_log_no_zombie();
     failures += test_spawn_capture_echo();
     failures += test_spawn_capture_timeout_kills();
+    failures += test_spawn_capture_cancel_kills();
     failures += test_spawn_capture_echild_tolerant();
     failures += test_spawn_capture_truncates_oversized();
     failures += test_spawn_capture_real_exit_code();
