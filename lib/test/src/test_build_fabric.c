@@ -18,10 +18,13 @@
 #include "vcs/build_artifact_manifest.h"
 #include "vcs/package_store.h"
 #include "vcs/vcs_object.h"
+#include "vcs/zcode_dev.h"
 #include "crypto/sha3.h"
+#include "util/safe_alloc.h"
 
 #include <sqlite3.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -87,7 +90,8 @@ static void bf_worker(struct db_build_worker *row)
     (void)snprintf(row->worker_id, sizeof(row->worker_id), "%s", id_c);
     (void)snprintf(row->signer_pubkey, sizeof(row->signer_pubkey), "%s", id_d);
     (void)snprintf(row->capabilities, sizeof(row->capabilities),
-                   "linux,x86-64-v3,gcc,c23.compile.preprocessed.v1");
+                   "linux,x86-64-v3,gcc,%s,%s", VCS_BUILD_ACTION_KIND_V1,
+                   VCS_BUILD_ACTION_KIND_TEST_V1);
     row->approved = 1;
     row->approved_at = 102;
     row->last_seen_at = 102;
@@ -126,6 +130,25 @@ static bool bf_canonicalize(struct db_build_job *job,
     (void)snprintf(job->job_id, sizeof(job->job_id), "%s", job_id);
     (void)snprintf(action->job_id, sizeof(action->job_id), "%s", job_id);
     return true;
+}
+
+static uint8_t *bf_read_fixture(const char *path, size_t *len_out)
+{
+    *len_out = 0;
+    struct stat st;
+    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 ||
+        st.st_size > 1024 * 1024)
+        return NULL;
+    uint8_t *bytes = zcl_malloc((size_t)st.st_size, "test.build_fixture");
+    if (!bytes) return NULL;
+    FILE *f = fopen(path, "rb");
+    if (!f) { free(bytes); return NULL; }
+    size_t got = fread(bytes, 1, (size_t)st.st_size, f);
+    bool read_ok = got == (size_t)st.st_size && ferror(f) == 0;
+    bool ok = fclose(f) == 0 && read_ok;
+    if (!ok) { free(bytes); return NULL; }
+    *len_out = got;
+    return bytes;
 }
 
 static int test_bf_migration(void)
@@ -320,16 +343,65 @@ static int test_bf_service(void)
         ASSERT_STR_EQ(action.output_root_sha3, id_c);
         ASSERT_EQ(action.finished_at, 116);
 
+        /* A fixed action's nonzero result is still authentic evidence. It is
+         * stored atomically while the action and job finish FAILED. */
+        struct db_build_job fail_job = planned_job;
+        struct db_build_action fail_action = planned_action;
+        (void)snprintf(fail_action.input_root_sha3,
+                       sizeof(fail_action.input_root_sha3), "%s", id_a);
+        fail_job.created_at = fail_job.updated_at = 117;
+        fail_action.created_at = fail_action.updated_at = 117;
+        ASSERT(bf_canonicalize(&fail_job, &fail_action));
+        ASSERT(build_fabric_plan(&ndb, &fail_job, &fail_action).ok);
+        ASSERT(build_fabric_submit(&ndb, fail_job.job_id, 117).ok);
+        claimed = false;
+        ASSERT(build_fabric_claim(&ndb, worker.worker_id, id_b, 118, 10,
+                                  &fail_action, &claimed).ok);
+        ASSERT(claimed);
+        ASSERT(build_fabric_start(
+            &ndb, fail_action.action_id, id_b, 119).ok);
+        ASSERT(build_fabric_begin_verify(
+            &ndb, fail_action.action_id, id_b, 120).ok);
+        struct db_build_receipt failed_receipt;
+        bf_receipt(&failed_receipt);
+        (void)snprintf(failed_receipt.action_id,
+                       sizeof(failed_receipt.action_id), "%s",
+                       fail_action.action_id);
+        (void)snprintf(failed_receipt.action_sha3,
+                       sizeof(failed_receipt.action_sha3), "%s",
+                       fail_action.action_id);
+        (void)snprintf(failed_receipt.job_id,
+                       sizeof(failed_receipt.job_id), "%s",
+                       fail_action.job_id);
+        (void)snprintf(failed_receipt.lease_id,
+                       sizeof(failed_receipt.lease_id), "%s", id_b);
+        failed_receipt.exit_status = 23;
+        failed_receipt.created_at = 121;
+        ASSERT(build_fabric_receipt_id(
+            &failed_receipt, failed_receipt.receipt_id).ok);
+        ASSERT(zcl_hex_decode_lower(failed_receipt.receipt_id, receipt_id,
+                                    sizeof(receipt_id)));
+        ed25519_sign(signature, receipt_id, sizeof(receipt_id), secret, pubkey);
+        zcl_hex_encode(signature, sizeof(signature), failed_receipt.signature);
+        ASSERT(build_fabric_receipt_accept(&ndb, &failed_receipt, 121).ok);
+        ASSERT(db_build_action_find(
+            &ndb, fail_action.action_id, &fail_action));
+        ASSERT_STR_EQ(fail_action.state, "FAILED");
+        ASSERT_STR_EQ(fail_action.last_error,
+                      "fixed-action-reported-failure");
+        ASSERT(db_build_receipt_find(
+            &ndb, failed_receipt.receipt_id, &failed_receipt));
+
         /* Revocation is durable and makes a newly bound receipt fail before
          * signature acceptance; old evidence remains queryable. */
-        ASSERT(build_fabric_worker_revoke(&ndb, id_c, 117).ok);
-        ASSERT(build_fabric_worker_revoke(&ndb, id_c, 118).ok);
-        receipt.created_at = 119;
+        ASSERT(build_fabric_worker_revoke(&ndb, id_c, 122).ok);
+        ASSERT(build_fabric_worker_revoke(&ndb, id_c, 123).ok);
+        receipt.created_at = 124;
         ASSERT(build_fabric_receipt_id(&receipt, receipt.receipt_id).ok);
-        ASSERT(!build_fabric_receipt_accept(&ndb, &receipt, 119).ok);
+        ASSERT(!build_fabric_receipt_accept(&ndb, &receipt, 124).ok);
         struct db_build_receipt rows[2];
         ASSERT_EQ(db_build_job_receipts(&ndb, planned_job.job_id, rows, 2), 1);
-        ASSERT(!build_fabric_cancel(&ndb, planned_job.job_id, 120).ok);
+        ASSERT(!build_fabric_cancel(&ndb, planned_job.job_id, 125).ok);
         node_db_close(&ndb);
         test_rm_rf(dir);
         PASS();
@@ -509,6 +581,103 @@ static int test_bf_confined_worker(void)
     return failures;
 }
 
+static int test_bf_confined_test_worker(void)
+{
+    int failures = 0;
+    TEST("build_fabric: fixed test action executes one exact binary and signs evidence") {
+        struct node_db ndb;
+        char dir[256], path[320];
+        ASSERT(bf_open(&ndb, dir, sizeof(dir), path, sizeof(path),
+                       "test-worker"));
+        ASSERT(vcs_object_store_init(dir));
+        size_t input_len = 0;
+        uint8_t *input = bf_read_fixture("/usr/bin/true", &input_len);
+        ASSERT(input && input_len > 20);
+        uint8_t input_root[32];
+        sha3_256(input, input_len, input_root);
+        ASSERT(vcs_object_put_addressed(dir, input_root, input, input_len));
+        free(input);
+
+        struct vcs_toolchain_capsule_v1 capsule;
+        uint8_t capsule_root[32];
+        ASSERT(vcs_toolchain_capsule_v1_capture_gcc(&capsule));
+        ASSERT(vcs_toolchain_capsule_v1_root(&capsule, capsule_root));
+        struct db_build_job job;
+        struct db_build_action action;
+        bf_job(&job);
+        bf_action(&action);
+        (void)snprintf(action.kind, sizeof(action.kind), "%s",
+                       VCS_BUILD_ACTION_KIND_TEST_V1);
+        zcl_hex_encode(capsule_root, 32, job.toolchain_sha3);
+        zcl_hex_encode(input_root, 32, action.input_root_sha3);
+        uint8_t fixed_flags[32], fixed_environment[32];
+        ASSERT(vcs_build_action_v1_fixed_flags_root_for_kind(
+            action.kind, fixed_flags));
+        ASSERT(vcs_build_action_v1_fixed_environment_root_for_kind(
+            action.kind, fixed_environment));
+        zcl_hex_encode(fixed_flags, 32, action.flags_sha3);
+        zcl_hex_encode(fixed_environment, 32, action.environment_sha3);
+        (void)snprintf(action.virtual_workdir,
+                       sizeof(action.virtual_workdir), "%s",
+                       VCS_BUILD_PACKAGE_VIRTUAL_ROOT_V1);
+        (void)snprintf(action.declared_outputs,
+                       sizeof(action.declared_outputs), "%s",
+                       VCS_BUILD_TEST_OUTPUT_V1);
+        (void)snprintf(action.resource_policy,
+                       sizeof(action.resource_policy), "%s",
+                       VCS_BUILD_TEST_RESOURCE_POLICY_V1);
+        ASSERT(bf_canonicalize(&job, &action));
+        char action_id[65];
+        (void)snprintf(action_id, sizeof(action_id), "%s", action.action_id);
+        ASSERT(build_fabric_plan(&ndb, &job, &action).ok);
+        int64_t now = (int64_t)platform_time_wall_unix();
+        ASSERT(build_fabric_submit(&ndb, job.job_id, now).ok);
+
+        uint8_t seed[32], pubkey[32], secret[32];
+        memset(seed, 31, sizeof(seed));
+        ed25519_keypair(pubkey, secret, seed);
+        struct db_build_worker worker;
+        bf_worker(&worker);
+        zcl_hex_encode(pubkey, 32, worker.signer_pubkey);
+        ASSERT(build_fabric_worker_approve(&ndb, &worker, now).ok);
+        bool claimed = false;
+        ASSERT(build_fabric_claim(&ndb, worker.worker_id, id_d, now, 300,
+                                  &action, &claimed).ok);
+        ASSERT(claimed);
+        struct db_build_receipt receipt;
+        struct zcl_result executed = build_fabric_worker_execute(
+            &ndb, dir, action_id, id_d, secret, pubkey, &receipt);
+        if (!executed.ok) printf("test worker detail: %s\n", executed.message);
+        ASSERT(executed.ok);
+        ASSERT_EQ(receipt.exit_status, 0);
+        ASSERT(receipt.work_receipt_sha3[0] == '\0');
+        ASSERT(db_build_action_find(&ndb, action_id, &action));
+        ASSERT_STR_EQ(action.state, "ACCEPTED");
+
+        uint8_t manifest_root[32];
+        ASSERT(zcl_hex_decode_lower(receipt.output_sha3, manifest_root, 32));
+        uint8_t *wire = NULL;
+        size_t wire_len = 0;
+        ASSERT_EQ(vcs_object_load_raw(dir, manifest_root, &wire, &wire_len), 0);
+        struct vcs_build_artifact_manifest_v1 manifest;
+        ASSERT(vcs_build_artifact_manifest_v1_parse(wire, wire_len, &manifest));
+        free(wire);
+        ASSERT_EQ(manifest.chunk_count, 1);
+        uint8_t *evidence = NULL;
+        size_t evidence_len = 0;
+        ASSERT_EQ(vcs_object_load_raw(dir, manifest.chunk_sha3[0], &evidence,
+                                      &evidence_len), 0);
+        ASSERT_EQ(evidence_len, 84);
+        ASSERT(memcmp(evidence, "ZCTEST\r\n", 8) == 0 &&
+               evidence[8] == 1 && evidence[10] == 1);
+        free(evidence);
+        node_db_close(&ndb);
+        test_rm_rf(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_bf_native(void)
 {
     int failures = 0;
@@ -651,6 +820,39 @@ static int test_bf_content_contracts(void)
         action.environment_sha3[0] ^= 1;
         ASSERT(vcs_build_action_v1_root(&action, action_b));
         ASSERT(memcmp(action_a, action_b, 32) != 0);
+        ASSERT_EQ(vcs_build_action_v1_work_kind(VCS_BUILD_ACTION_KIND_V1),
+                  VCS_ZCODE_WORK_BUILD);
+        ASSERT_EQ(vcs_build_action_v1_work_kind(
+                      VCS_BUILD_ACTION_KIND_TEST_V1),
+                  VCS_ZCODE_WORK_TEST);
+        ASSERT_EQ(vcs_build_action_v1_work_kind(
+                      VCS_BUILD_ACTION_KIND_FUZZ_V1),
+                  VCS_ZCODE_WORK_FUZZ);
+        ASSERT_EQ(vcs_build_action_v1_work_kind(
+                      VCS_BUILD_ACTION_KIND_REVIEW_V1),
+                  VCS_ZCODE_WORK_REVIEW);
+        ASSERT_EQ(vcs_build_action_v1_work_kind("c23.shell.v1"), 0);
+        uint8_t test_flags[32], test_env[32], test_action[32];
+        ASSERT(vcs_build_action_v1_fixed_flags_root_for_kind(
+            VCS_BUILD_ACTION_KIND_TEST_V1, test_flags));
+        ASSERT(vcs_build_action_v1_fixed_environment_root_for_kind(
+            VCS_BUILD_ACTION_KIND_TEST_V1, test_env));
+        memcpy(action.flags_sha3, test_flags, 32);
+        memcpy(action.environment_sha3, test_env, 32);
+        (void)snprintf(action.virtual_workdir,
+                       sizeof(action.virtual_workdir), "%s",
+                       VCS_BUILD_PACKAGE_VIRTUAL_ROOT_V1);
+        (void)snprintf(action.declared_outputs,
+                       sizeof(action.declared_outputs), "%s",
+                       VCS_BUILD_TEST_OUTPUT_V1);
+        (void)snprintf(action.resource_policy,
+                       sizeof(action.resource_policy), "%s",
+                       VCS_BUILD_TEST_RESOURCE_POLICY_V1);
+        ASSERT(vcs_build_action_v1_root_for_kind(
+            VCS_BUILD_ACTION_KIND_TEST_V1, &action, test_action));
+        ASSERT(memcmp(action_b, test_action, 32) != 0);
+        ASSERT(!vcs_build_action_v1_root_for_kind(
+            "c23.shell.v1", &action, test_action));
 
         const uint8_t chunks[2][3] = {{'a','b','c'}, {'d','e','f'}};
         struct vcs_build_artifact_manifest_v1 manifest = {0}, parsed = {0};
@@ -691,6 +893,7 @@ int test_build_fabric(void)
     failures += test_bf_service();
     failures += test_bf_leases();
     failures += test_bf_confined_worker();
+    failures += test_bf_confined_test_worker();
     failures += test_bf_native();
     failures += test_bf_runtime_dump();
     failures += test_bf_content_contracts();

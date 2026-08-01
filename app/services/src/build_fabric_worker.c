@@ -4,6 +4,7 @@
 #include "services/build_fabric_worker.h"
 
 #include "base/hex.h"
+#include "base/serialize_le.h"
 #include "crypto/ed25519.h"
 #include "crypto/random_secret.h"
 #include "crypto/sha3.h"
@@ -28,6 +29,7 @@
 #define BFW_PATH_MAX 4096
 #define BFW_CAPTURE_MAX 4096
 #define BFW_EXEC_TIMEOUT_MS 125000
+#define BFW_TEST_EVIDENCE_BYTES 84u
 
 struct zcl_result build_fabric_worker_identity_load(
     const char *datadir, struct db_build_worker *worker,
@@ -55,8 +57,8 @@ struct zcl_result build_fabric_worker_identity_load(
         if (fd < 0)
             return ZCL_ERR(-1, "create worker key: %s", strerror(errno));
         ssize_t wrote = write(fd, seed, sizeof(seed));
-        bool ok = wrote == (ssize_t)sizeof(seed) && fsync(fd) == 0 &&
-                  close(fd) == 0;
+        bool synced = wrote == (ssize_t)sizeof(seed) && fsync(fd) == 0;
+        bool ok = close(fd) == 0 && synced;
         if (!ok) {
             (void)unlink(path);
             memset(seed, 0, sizeof(seed));
@@ -97,7 +99,8 @@ struct zcl_result build_fabric_worker_identity_load(
     zcl_hex_encode(worker_id, sizeof(worker_id), worker->worker_id);
     zcl_hex_encode(signer_pubkey, 32, worker->signer_pubkey);
     (void)snprintf(worker->capabilities, sizeof(worker->capabilities),
-                   "linux,x86-64-v3,gcc,%s", VCS_BUILD_ACTION_KIND_V1);
+                   "linux,x86-64-v3,gcc,%s,%s", VCS_BUILD_ACTION_KIND_V1,
+                   VCS_BUILD_ACTION_KIND_TEST_V1);
     return ZCL_OK;
 }
 
@@ -109,6 +112,22 @@ struct bfw_paths {
     char input[BFW_PATH_MAX];
     char output[BFW_PATH_MAX];
 };
+
+static bool bfw_capability_has(const char *capabilities, const char *wanted)
+{
+    if (!capabilities || !wanted || !wanted[0]) return false;
+    size_t wanted_len = strlen(wanted);
+    const char *at = capabilities;
+    while (*at) {
+        const char *end = strchr(at, ',');
+        size_t len = end ? (size_t)(end - at) : strlen(at);
+        if (len == wanted_len && memcmp(at, wanted, len) == 0)
+            return true;
+        if (!end) break;
+        at = end + 1;
+    }
+    return false;
+}
 
 static struct zcl_result bfw_worker_path(const char *workspace,
                                          char *out, size_t cap)
@@ -136,6 +155,7 @@ static struct zcl_result bfw_worker_path(const char *workspace,
 
 static struct zcl_result bfw_paths_init(const char *workspace,
                                         const char *lease_id,
+                                        const char *kind,
                                         struct bfw_paths *p)
 {
     if (!workspace || !workspace[0] || !lease_id || !p)
@@ -154,9 +174,17 @@ static struct zcl_result bfw_paths_init(const char *workspace,
     (void)snprintf(p->build, sizeof(p->build), "%s/build", p->work);
     if (mkdir(p->src, 0700) != 0 || mkdir(p->build, 0700) != 0)
         return ZCL_ERR(-1, "cannot create isolated source/output directories");
-    (void)snprintf(p->input, sizeof(p->input), "%s/unit.i", p->src);
-    (void)snprintf(p->output, sizeof(p->output), "%s/%s", p->build,
-                   VCS_BUILD_OUTPUT_V1);
+    if (strcmp(kind, VCS_BUILD_ACTION_KIND_V1) == 0) {
+        (void)snprintf(p->input, sizeof(p->input), "%s/unit.i", p->src);
+        (void)snprintf(p->output, sizeof(p->output), "%s/%s", p->build,
+                       VCS_BUILD_OUTPUT_V1);
+    } else if (strcmp(kind, VCS_BUILD_ACTION_KIND_TEST_V1) == 0) {
+        (void)snprintf(p->input, sizeof(p->input), "%s/test.bin", p->build);
+        (void)snprintf(p->output, sizeof(p->output), "%s/%s", p->build,
+                       VCS_BUILD_TEST_OUTPUT_V1);
+    } else {
+        return ZCL_ERR(-1, "worker action kind has no fixed executor");
+    }
     return ZCL_OK;
 }
 
@@ -170,9 +198,11 @@ static void bfw_paths_cleanup(const struct bfw_paths *p)
     (void)rmdir(p->work);
 }
 
-static bool bfw_write_input(const char *path, const uint8_t *bytes, size_t len)
+static bool bfw_write_input(const char *path, const uint8_t *bytes, size_t len,
+                            bool executable)
 {
-    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0400);
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
+                  executable ? 0500 : 0400);
     if (fd < 0) return false;
     size_t off = 0;
     while (off < len) {
@@ -181,9 +211,13 @@ static bool bfw_write_input(const char *path, const uint8_t *bytes, size_t len)
             if (errno == EINTR) continue;
             close(fd); (void)unlink(path); return false;
         }
+        if (wrote == 0) {
+            close(fd); (void)unlink(path); return false;
+        }
         off += (size_t)wrote;
     }
-    bool ok = fsync(fd) == 0 && close(fd) == 0;
+    bool synced = fsync(fd) == 0;
+    bool ok = close(fd) == 0 && synced;
     if (!ok) (void)unlink(path);
     return ok;
 }
@@ -219,6 +253,78 @@ static bool bfw_elf_relocatable_x86_64(const uint8_t *bytes, size_t len)
            bytes[2] == 'L' && bytes[3] == 'F' && bytes[4] == 2 &&
            bytes[5] == 1 && bytes[6] == 1 && bytes[16] == 1 &&
            bytes[17] == 0 && bytes[18] == 62 && bytes[19] == 0;
+}
+
+static bool bfw_test_evidence(const uint8_t *bytes, size_t len,
+                              uint8_t *status, int *exit_status)
+{
+    if (!bytes || len != BFW_TEST_EVIDENCE_BYTES ||
+        memcmp(bytes, "ZCTEST\r\n", 8) != 0 || bytes[8] != 1 ||
+        bytes[9] != 0 || (bytes[10] != 1 && bytes[10] != 2) ||
+        (bytes[11] & ~UINT8_C(7)) != 0 || !status || !exit_status)
+        return false;
+    uint32_t code = zcl_read_u32_le(bytes + 12);
+    uint32_t signal = zcl_read_u32_le(bytes + 16);
+    if (bytes[10] == 1 &&
+        (code != 0 || signal != 0 || (bytes[11] & UINT8_C(1)) != 0))
+        return false;
+    *status = bytes[10] == 1 ? VCS_ZCODE_WORK_PASS : VCS_ZCODE_WORK_FAIL;
+    if (*status == VCS_ZCODE_WORK_PASS) {
+        *exit_status = 0;
+    } else if (code > 0 && code <= 255) {
+        *exit_status = (int)code;
+    } else {
+        *exit_status = 255;
+    }
+    return true;
+}
+
+static bool bfw_input_root_current(const char *workspace,
+                                   const char *root_hex)
+{
+    uint8_t root[32], checked[32], *bytes = NULL;
+    size_t len = 0;
+    bool loaded = zcl_hex_decode_lower(root_hex, root, 32) &&
+        vcs_object_load_raw(workspace, root, &bytes, &len) == 0;
+    if (loaded) sha3_256(bytes, len, checked);
+    free(bytes);
+    return loaded && memcmp(root, checked, 32) == 0;
+}
+
+static bool bfw_toolchain_current(const struct db_build_job *job)
+{
+    struct vcs_toolchain_capsule_v1 capsule;
+    uint8_t root[32]; char root_hex[65];
+    if (!vcs_toolchain_capsule_v1_capture_gcc(&capsule) ||
+        !vcs_toolchain_capsule_v1_root(&capsule, root))
+        return false;
+    zcl_hex_encode(root, 32, root_hex);
+    return strcmp(root_hex, job->toolchain_sha3) == 0;
+}
+
+static bool bfw_binding_current(
+    struct node_db *ndb, const struct db_build_job *expected_job,
+    const struct db_build_action *expected_action, const char *lease_id)
+{
+    struct db_build_job job;
+    struct db_build_action action;
+    char action_id[65], job_id[65];
+    return db_build_action_find(ndb, expected_action->action_id, &action) &&
+        db_build_job_find(ndb, expected_job->job_id, &job) &&
+        strcmp(action.state, "VERIFYING") == 0 &&
+        strcmp(action.lease_id, lease_id) == 0 &&
+        build_fabric_action_id(&job, &action, action_id).ok &&
+        strcmp(action_id, expected_action->action_id) == 0 &&
+        build_fabric_job_id(&job, action_id, job_id).ok &&
+        strcmp(job_id, expected_job->job_id) == 0 &&
+        strcmp(action.task_root_sha3,
+               expected_action->task_root_sha3) == 0 &&
+        strcmp(action.candidate_root_sha3,
+               expected_action->candidate_root_sha3) == 0 &&
+        strcmp(action.proof_policy_root_sha3,
+               expected_action->proof_policy_root_sha3) == 0 &&
+        strcmp(action.context_root_sha3,
+               expected_action->context_root_sha3) == 0;
 }
 
 static struct zcl_result bfw_load_zcode_context(
@@ -290,23 +396,23 @@ static struct zcl_result bfw_canonical_receipt(
     const struct vcs_zcode_task_v1 *task,
     const struct vcs_zcode_candidate_v1 *candidate,
     const uint8_t output_root[32], int64_t started, int64_t finished,
+    uint8_t work_kind, uint8_t status, int exit_status,
+    const char *confinement,
     const uint8_t signer_secret[32], const uint8_t signer_pubkey[32],
     char out_hex[65])
 {
-    static const char confinement[] =
-        "landlock=1,seccomp=1,rlimits=1,network=0,gcc=fixed";
     uint8_t confinement_root[32];
-    sha3_256((const uint8_t *)confinement, sizeof(confinement) - 1u,
+    sha3_256((const uint8_t *)confinement, strlen(confinement),
              confinement_root);
     if (!vcs_object_put_addressed(workspace, confinement_root,
                                   (const uint8_t *)confinement,
-                                  sizeof(confinement) - 1u))
+                                  strlen(confinement)))
         return ZCL_ERR(-1, "confinement-evidence-cas-store-failed");
     struct vcs_zcode_work_receipt_v1 receipt = {
         .schema_version = VCS_ZCODE_DEV_VERSION,
-        .work_kind = VCS_ZCODE_WORK_BUILD,
-        .status = VCS_ZCODE_WORK_PASS,
-        .exit_status = 0,
+        .work_kind = work_kind,
+        .status = status,
+        .exit_status = (uint32_t)exit_status,
         .started_unix = started,
         .finished_unix = finished,
     };
@@ -411,6 +517,12 @@ struct zcl_result build_fabric_worker_execute(
     zcl_hex_encode(signer_pubkey, 32, signer_hex);
     if (strcmp(signer_hex, worker.signer_pubkey) != 0)
         return bfw_fail(ndb, action_id, lease_id, "worker-signer-mismatch");
+    uint8_t work_kind = vcs_build_action_v1_work_kind(action.kind);
+    if ((work_kind != VCS_ZCODE_WORK_BUILD &&
+         work_kind != VCS_ZCODE_WORK_TEST) ||
+        !bfw_capability_has(worker.capabilities, action.kind))
+        return bfw_fail(ndb, action_id, lease_id,
+                        "fixed-action-executor-unavailable");
     struct vcs_toolchain_capsule_v1 capsule;
     uint8_t capsule_root[32];
     char capsule_hex[65];
@@ -422,8 +534,12 @@ struct zcl_result build_fabric_worker_execute(
         return bfw_fail(ndb, action_id, lease_id, "toolchain-capsule-stale");
     uint8_t fixed_flags[32], fixed_environment[32];
     char fixed_flags_hex[65], fixed_environment_hex[65];
-    vcs_build_action_v1_fixed_flags_root(fixed_flags);
-    vcs_build_action_v1_fixed_environment_root(fixed_environment);
+    if (!vcs_build_action_v1_fixed_flags_root_for_kind(
+            action.kind, fixed_flags) ||
+        !vcs_build_action_v1_fixed_environment_root_for_kind(
+            action.kind, fixed_environment))
+        return bfw_fail(ndb, action_id, lease_id,
+                        "fixed-action-descriptor-missing");
     zcl_hex_encode(fixed_flags, 32, fixed_flags_hex);
     zcl_hex_encode(fixed_environment, 32, fixed_environment_hex);
     if (strcmp(fixed_flags_hex, action.flags_sha3) != 0 ||
@@ -458,24 +574,33 @@ struct zcl_result build_fabric_worker_execute(
         ndb, action_id, lease_id, work_started);
     if (!start.ok) { free(input); return start; }
     struct bfw_paths paths = {0};
-    struct zcl_result paths_result = bfw_paths_init(workspace, lease_id, &paths);
-    if (!paths_result.ok || !bfw_write_input(paths.input, input, input_len)) {
+    struct zcl_result paths_result = bfw_paths_init(
+        workspace, lease_id, action.kind, &paths);
+    bool test_action = work_kind == VCS_ZCODE_WORK_TEST;
+    if (!paths_result.ok ||
+        !bfw_write_input(paths.input, input, input_len, test_action)) {
         free(input); bfw_paths_cleanup(&paths);
         return bfw_fail(ndb, action_id, lease_id, "input-materialize-failed");
     }
     free(input);
     char input_arg[BFW_PATH_MAX + 32];
     char output_arg[BFW_PATH_MAX + 32];
-    (void)snprintf(input_arg, sizeof(input_arg), "--zbuild-input=%s",
+    (void)snprintf(input_arg, sizeof(input_arg),
+                   test_action ? "--zbuild-test-input=%s"
+                               : "--zbuild-input=%s",
                    paths.input);
-    (void)snprintf(output_arg, sizeof(output_arg), "--zbuild-output=%s",
+    (void)snprintf(output_arg, sizeof(output_arg),
+                   test_action ? "--zbuild-test-output=%s"
+                               : "--zbuild-output=%s",
                    paths.output);
     const char *const argv[] = { paths.worker, input_arg, output_arg,
                                 "--require-full-isolation", NULL };
     char capture[BFW_CAPTURE_MAX];
     int rc = zcl_spawn_capture(argv, capture, sizeof(capture),
                                BFW_EXEC_TIMEOUT_MS);
-    if (rc != 0 || strstr(capture, "zbuild-ok=1") == NULL) {
+    const char *success_marker = test_action ? "zbuild-test-ok=1"
+                                             : "zbuild-ok=1";
+    if (rc != 0 || strstr(capture, success_marker) == NULL) {
         for (size_t i = 0; capture[i]; i++)
             if ((unsigned char)capture[i] < 0x20 ||
                 (unsigned char)capture[i] > 0x7e)
@@ -489,11 +614,24 @@ struct zcl_result build_fabric_worker_execute(
     struct zcl_result verify = build_fabric_begin_verify(
         ndb, action_id, lease_id, (int64_t)platform_time_wall_unix());
     if (!verify.ok) { bfw_paths_cleanup(&paths); return verify; }
+    if (!bfw_binding_current(ndb, &job, &action, lease_id)) {
+        bfw_paths_cleanup(&paths);
+        return bfw_fail(ndb, action_id, lease_id,
+                        "action-binding-changed-during-execution");
+    }
     size_t output_len = 0;
     uint8_t *output = bfw_read_output(paths.output, &output_len);
-    if (!output || !bfw_elf_relocatable_x86_64(output, output_len)) {
+    uint8_t work_status = VCS_ZCODE_WORK_PASS;
+    int work_exit_status = 0;
+    bool output_valid = test_action
+        ? bfw_test_evidence(output, output_len, &work_status,
+                            &work_exit_status)
+        : bfw_elf_relocatable_x86_64(output, output_len);
+    if (!output || !output_valid) {
         free(output); bfw_paths_cleanup(&paths);
-        return bfw_fail(ndb, action_id, lease_id, "output-elf-invalid");
+        return bfw_fail(ndb, action_id, lease_id,
+                        test_action ? "test-evidence-invalid"
+                                    : "output-elf-invalid");
     }
     uint8_t output_root[32];
     struct zcl_result stored = bfw_store_artifact(
@@ -503,6 +641,12 @@ struct zcl_result build_fabric_worker_execute(
     if (!stored.ok)
         return bfw_fail(ndb, action_id, lease_id, "output-cas-store-failed");
     int64_t work_finished = (int64_t)platform_time_wall_unix();
+    if (!bfw_input_root_current(workspace, action.input_root_sha3))
+        return bfw_fail(ndb, action_id, lease_id,
+                        "input-cas-changed-during-execution");
+    if (!bfw_toolchain_current(&job))
+        return bfw_fail(ndb, action_id, lease_id,
+                        "toolchain-changed-during-execution");
     if (zcode_context) {
         struct vcs_zcode_task_v1 checked_task;
         struct vcs_zcode_candidate_v1 checked_candidate;
@@ -527,16 +671,20 @@ struct zcl_result build_fabric_worker_execute(
     (void)snprintf(receipt.action_sha3, sizeof(receipt.action_sha3), "%s",
                    action.action_id);
     zcl_hex_encode(output_root, 32, receipt.output_sha3);
+    const char *confinement = test_action
+        ? "landlock=1,seccomp=1,rlimits=1,network=0,test=fixed"
+        : "landlock=1,seccomp=1,rlimits=1,network=0,gcc=fixed";
     (void)snprintf(receipt.confinement, sizeof(receipt.confinement),
-                   "landlock=1,seccomp=1,rlimits=1,network=0,gcc=fixed");
+                   "%s", confinement);
     (void)snprintf(receipt.trust_state, sizeof(receipt.trust_state),
                    "LOCAL_ACCEPTED");
-    receipt.exit_status = 0;
+    receipt.exit_status = work_exit_status;
     receipt.created_at = work_finished;
     if (zcode_context) {
         struct zcl_result canonical = bfw_canonical_receipt(
             workspace, &action, &zcode_task, &zcode_candidate, output_root,
-            work_started, work_finished, signer_secret, signer_pubkey,
+            work_started, work_finished, work_kind, work_status,
+            work_exit_status, confinement, signer_secret, signer_pubkey,
             receipt.work_receipt_sha3);
         if (!canonical.ok)
             return bfw_fail(ndb, action_id, lease_id, canonical.message);

@@ -45,7 +45,7 @@ void vcs_zcode_work_context_init(struct vcs_zcode_work_context_v1 *context)
 void vcs_zcode_work_context_free(struct vcs_zcode_work_context_v1 *context)
 {
     if (!context) return;
-    free(context->preprocessed);
+    free(context->fixed_input);
     vcs_zcode_work_context_init(context);
 }
 
@@ -59,15 +59,15 @@ static bool context_nonzero(const uint8_t *bytes, size_t len)
 static enum vcs_zcode_work_context_result context_validate(
     const struct vcs_zcode_work_context_v1 *context, int64_t now_unix)
 {
-    if (!context || !context->preprocessed)
+    if (!context || !context->fixed_input)
         return VCS_ZCODE_WORK_CONTEXT_NULL;
     size_t profile_len = strnlen(context->profile, sizeof(context->profile));
     if (!context_nonzero(context->source_sha256, 32) || profile_len == 0 ||
         profile_len > VCS_ZCODE_WORK_CONTEXT_PROFILE_MAX)
         return VCS_ZCODE_WORK_CONTEXT_SHAPE;
-    if (context->preprocessed_len == 0 ||
-        context->preprocessed_len > context->task.max_context_bytes ||
-        context->preprocessed_len >
+    if (context->fixed_input_len == 0 ||
+        context->fixed_input_len > context->task.max_context_bytes ||
+        context->fixed_input_len >
             VCS_PACKAGE_STORE_MAX_PACKAGE_BYTES -
                 VCS_ZCODE_WORK_CONTEXT_FIXED_BYTES - profile_len)
         return VCS_ZCODE_WORK_CONTEXT_LIMIT;
@@ -87,9 +87,9 @@ static enum vcs_zcode_work_context_result context_validate(
     return VCS_ZCODE_WORK_CONTEXT_OK;
 }
 
-enum vcs_zcode_work_context_result vcs_zcode_work_context_action_root(
-    const struct vcs_zcode_work_context_v1 *context, int64_t now_unix,
-    uint8_t action_root[32], uint8_t input_root[32])
+enum vcs_zcode_work_context_result vcs_zcode_work_context_action_root_for_kind(
+    const struct vcs_zcode_work_context_v1 *context, const char *kind,
+    int64_t now_unix, uint8_t action_root[32], uint8_t input_root[32])
 {
     if (!action_root || !input_root)
         return VCS_ZCODE_WORK_CONTEXT_NULL;
@@ -100,25 +100,40 @@ enum vcs_zcode_work_context_result vcs_zcode_work_context_action_root(
     memcpy(action.source_sha256, context->source_sha256, 32);
     memcpy(action.source_cas_sha3, context->candidate.candidate_source_root,
            32);
-    sha3_256(context->preprocessed, context->preprocessed_len, input_root);
+    sha3_256(context->fixed_input, context->fixed_input_len, input_root);
     memcpy(action.input_root_sha3, input_root, 32);
     memcpy(action.toolchain_capsule_sha3,
            context->task.toolchain_capsule_root, 32);
-    vcs_build_action_v1_fixed_flags_root(action.flags_sha3);
-    vcs_build_action_v1_fixed_environment_root(action.environment_sha3);
+    const char *workdir = NULL, *output = NULL, *resource = NULL;
+    if (!vcs_build_action_v1_descriptors(
+            kind, &workdir, &output, &resource) ||
+        !vcs_build_action_v1_fixed_flags_root_for_kind(
+            kind, action.flags_sha3) ||
+        !vcs_build_action_v1_fixed_environment_root_for_kind(
+            kind, action.environment_sha3))
+        return VCS_ZCODE_WORK_CONTEXT_ACTION;
     (void)snprintf(action.target, sizeof(action.target), "%s",
                    VCS_BUILD_TARGET_V1);
     (void)snprintf(action.profile, sizeof(action.profile), "%s",
                    context->profile);
     (void)snprintf(action.virtual_workdir, sizeof(action.virtual_workdir),
-                   "%s", VCS_BUILD_VIRTUAL_ROOT_V1);
+                   "%s", workdir);
     (void)snprintf(action.declared_outputs, sizeof(action.declared_outputs),
-                   "%s", VCS_BUILD_OUTPUT_V1);
+                   "%s", output);
     (void)snprintf(action.resource_policy, sizeof(action.resource_policy),
-                   "%s", VCS_BUILD_RESOURCE_POLICY_V1);
-    if (!vcs_build_action_v1_root(&action, action_root))
+                   "%s", resource);
+    if (!vcs_build_action_v1_root_for_kind(kind, &action, action_root))
         return VCS_ZCODE_WORK_CONTEXT_ACTION;
     return VCS_ZCODE_WORK_CONTEXT_OK;
+}
+
+enum vcs_zcode_work_context_result vcs_zcode_work_context_action_root(
+    const struct vcs_zcode_work_context_v1 *context, int64_t now_unix,
+    uint8_t action_root[32], uint8_t input_root[32])
+{
+    return vcs_zcode_work_context_action_root_for_kind(
+        context, VCS_BUILD_ACTION_KIND_V1, now_unix, action_root,
+        input_root);
 }
 
 enum vcs_zcode_work_context_result vcs_zcode_work_context_serialize(
@@ -132,7 +147,7 @@ enum vcs_zcode_work_context_result vcs_zcode_work_context_serialize(
     if (valid != VCS_ZCODE_WORK_CONTEXT_OK) return valid;
     size_t profile_len = strlen(context->profile);
     size_t total = VCS_ZCODE_WORK_CONTEXT_FIXED_BYTES + profile_len +
-                   context->preprocessed_len;
+                   context->fixed_input_len;
     uint8_t *wire = zcl_malloc(total, "zcode.work_context");
     if (!wire) return VCS_ZCODE_WORK_CONTEXT_ALLOC;
     size_t off = 0;
@@ -140,7 +155,7 @@ enum vcs_zcode_work_context_result vcs_zcode_work_context_serialize(
     vcs_wr_u16le(wire + off, VCS_ZCODE_WORK_CONTEXT_VERSION); off += 2;
     vcs_wr_u16le(wire + off, (uint16_t)profile_len); off += 2;
     vcs_wr_u32le(wire + off, 0); off += 4;
-    vcs_wr_u64le(wire + off, (uint64_t)context->preprocessed_len); off += 8;
+    vcs_wr_u64le(wire + off, (uint64_t)context->fixed_input_len); off += 8;
     memcpy(wire + off, context->source_sha256, 32); off += 32;
     if (vcs_zcode_task_serialize(&context->task, wire + off) !=
             VCS_ZCODE_DEV_OK) goto reject;
@@ -153,8 +168,8 @@ enum vcs_zcode_work_context_result vcs_zcode_work_context_serialize(
         goto reject;
     off += VCS_ZCODE_PROOF_POLICY_WIRE_BYTES;
     memcpy(wire + off, context->profile, profile_len); off += profile_len;
-    memcpy(wire + off, context->preprocessed,
-           context->preprocessed_len); off += context->preprocessed_len;
+    memcpy(wire + off, context->fixed_input,
+           context->fixed_input_len); off += context->fixed_input_len;
     if (off != total) goto reject;
     *out = wire; *out_len = total;
     return VCS_ZCODE_WORK_CONTEXT_OK;
@@ -198,14 +213,14 @@ enum vcs_zcode_work_context_result vcs_zcode_work_context_parse(
     off += VCS_ZCODE_PROOF_POLICY_WIRE_BYTES;
     memcpy(out->profile, wire + off, profile_len); off += profile_len;
     out->profile[profile_len] = '\0';
-    out->preprocessed_len = (size_t)input_len64;
-    out->preprocessed = zcl_malloc(out->preprocessed_len,
+    out->fixed_input_len = (size_t)input_len64;
+    out->fixed_input = zcl_malloc(out->fixed_input_len,
                                    "zcode.work_context.input");
-    if (!out->preprocessed) {
+    if (!out->fixed_input) {
         vcs_zcode_work_context_free(out);
         return VCS_ZCODE_WORK_CONTEXT_ALLOC;
     }
-    memcpy(out->preprocessed, wire + off, out->preprocessed_len);
+    memcpy(out->fixed_input, wire + off, out->fixed_input_len);
     enum vcs_zcode_work_context_result valid =
         context_validate(out, now_unix);
     if (valid != VCS_ZCODE_WORK_CONTEXT_OK) {
@@ -218,17 +233,17 @@ reject:
     return VCS_ZCODE_WORK_CONTEXT_SHAPE;
 }
 
-enum vcs_zcode_work_context_result vcs_zcode_work_context_put(
+enum vcs_zcode_work_context_result vcs_zcode_work_context_put_for_kind(
     struct vcs_package_store *store,
-    const struct vcs_zcode_work_context_v1 *context, int64_t now_unix,
-    uint8_t package_root[32], uint8_t action_root[32])
+    const struct vcs_zcode_work_context_v1 *context, const char *kind,
+    int64_t now_unix, uint8_t package_root[32], uint8_t action_root[32])
 {
     if (!store || !package_root || !action_root)
         return VCS_ZCODE_WORK_CONTEXT_NULL;
     uint8_t input_root[32];
     enum vcs_zcode_work_context_result result =
-        vcs_zcode_work_context_action_root(context, now_unix, action_root,
-                                           input_root);
+        vcs_zcode_work_context_action_root_for_kind(
+            context, kind, now_unix, action_root, input_root);
     if (result != VCS_ZCODE_WORK_CONTEXT_OK) return result;
     uint8_t *wire = NULL; size_t wire_len = 0;
     result = vcs_zcode_work_context_serialize(context, now_unix, &wire,
@@ -283,6 +298,16 @@ enum vcs_zcode_work_context_result vcs_zcode_work_context_put(
     }
     free(wire);
     return VCS_ZCODE_WORK_CONTEXT_OK;
+}
+
+enum vcs_zcode_work_context_result vcs_zcode_work_context_put(
+    struct vcs_package_store *store,
+    const struct vcs_zcode_work_context_v1 *context, int64_t now_unix,
+    uint8_t package_root[32], uint8_t action_root[32])
+{
+    return vcs_zcode_work_context_put_for_kind(
+        store, context, VCS_BUILD_ACTION_KIND_V1, now_unix, package_root,
+        action_root);
 }
 
 enum vcs_zcode_work_context_result vcs_zcode_work_context_get(

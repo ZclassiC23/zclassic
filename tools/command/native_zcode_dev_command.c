@@ -80,7 +80,7 @@ static uint8_t *zdev_read_file(const char *path, size_t *len_out)
         (uint64_t)st.st_size > VCS_BUILD_ARTIFACT_MAX_BYTES)
         return NULL;
     size_t len = (size_t)st.st_size;
-    uint8_t *bytes = zcl_malloc(len, "zcode.improve.preprocessed");
+    uint8_t *bytes = zcl_malloc(len, "zcode.improve.fixed_input");
     if (!bytes) return NULL;
     int fd = open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0) { free(bytes); return NULL; }
@@ -174,12 +174,28 @@ void zcl_native_handle_zcode_evidence(
                            (int64_t)evaluation.approved_distinct_signers);
     (void)json_push_kv_int(&reply->data, "matching_receipts",
                            (int64_t)evaluation.matching_receipts);
+    (void)json_push_kv_int(&reply->data, "compile_receipts",
+                           (int64_t)evaluation.compile_receipts);
+    (void)json_push_kv_int(&reply->data, "test_receipts",
+                           (int64_t)evaluation.test_receipts);
+    (void)json_push_kv_int(&reply->data, "fuzz_receipts",
+                           (int64_t)evaluation.fuzz_receipts);
+    (void)json_push_kv_int(&reply->data, "review_receipts",
+                           (int64_t)evaluation.review_receipts);
     (void)json_push_kv_bool(&reply->data, "local_reproduced",
                             evaluation.local_reproduced);
     (void)json_push_kv_bool(&reply->data, "quorum_satisfied",
                             evaluation.quorum_satisfied);
     (void)json_push_kv_bool(&reply->data, "compile_satisfied",
                             evaluation.compile_satisfied);
+    (void)json_push_kv_bool(&reply->data, "test_satisfied",
+                            evaluation.test_satisfied);
+    (void)json_push_kv_bool(&reply->data, "fuzz_satisfied",
+                            evaluation.fuzz_satisfied);
+    (void)json_push_kv_bool(&reply->data, "review_satisfied",
+                            evaluation.review_satisfied);
+    (void)json_push_kv_bool(&reply->data, "release_identity_satisfied",
+                            evaluation.release_identity_satisfied);
     (void)json_push_kv_bool(&reply->data, "policy_satisfied",
                             evaluation.policy_satisfied);
     (void)json_push_kv_str(&reply->data, "output_root",
@@ -204,11 +220,23 @@ void zcl_native_handle_zcode_improve(
     if (!datadir || !datadir[0]) datadir = zcl_native_command_datadir();
     const char *goal = zdev_str(request->input, "goal");
     const char *policy_hex = zdev_str(request->input, "proof_policy_hex");
-    const char *preprocessed = zdev_str(request->input, "preprocessed_path");
+    const char *action_kind = zdev_str(request->input, "action_kind");
+    if (!action_kind || !action_kind[0])
+        action_kind = VCS_BUILD_ACTION_KIND_V1;
+    uint8_t work_kind = vcs_build_action_v1_work_kind(action_kind);
+    if (work_kind != VCS_ZCODE_WORK_BUILD &&
+        work_kind != VCS_ZCODE_WORK_TEST) {
+        zdev_fail(reply, "BAD_ACTION_KIND",
+                  "action_kind must name the fixed compile or test executor");
+        return;
+    }
+    const char *fixed_input = zdev_str(request->input, "fixed_input_path");
+    if (!fixed_input)
+        fixed_input = zdev_str(request->input, "preprocessed_path");
     if (!workspace_arg || !datadir || !goal || !goal[0] ||
-        strlen(goal) > 4096 || !policy_hex || !preprocessed) {
+        strlen(goal) > 4096 || !policy_hex || !fixed_input) {
         zdev_fail(reply, "MISSING_INPUT",
-                  "workspace, datadir, goal, proof policy, and preprocessed path are required");
+                  "workspace, datadir, goal, proof policy, and fixed input path are required");
         return;
     }
     char workspace[ZDEV_PATH_MAX];
@@ -222,9 +250,11 @@ void zcl_native_handle_zcode_improve(
         !zcl_hex_decode_lower(policy_hex, policy_wire, sizeof(policy_wire)) ||
         vcs_zcode_proof_policy_parse(policy_wire, sizeof(policy_wire),
                                      &policy) != VCS_ZCODE_DEV_OK ||
-        !(policy.required_proofs & VCS_ZCODE_PROOF_COMPILE)) {
+        !(policy.required_proofs & VCS_ZCODE_PROOF_COMPILE) ||
+        (work_kind == VCS_ZCODE_WORK_TEST &&
+         !(policy.required_proofs & VCS_ZCODE_PROOF_TEST))) {
         zdev_fail(reply, "BAD_PROOF_POLICY",
-                  "proof_policy_hex must be canonical proof_policy.v1 requiring compile");
+                  "proof_policy_hex must require compile and the requested proof kind");
         return;
     }
     uint8_t policy_root[32];
@@ -274,10 +304,10 @@ void zcl_native_handle_zcode_improve(
         return;
     }
     size_t input_len = 0;
-    uint8_t *input = zdev_read_file(preprocessed, &input_len);
+    uint8_t *input = zdev_read_file(fixed_input, &input_len);
     if (!input) {
-        zdev_fail(reply, "BAD_PREPROCESSED_INPUT",
-                  "preprocessed_path must be an absolute bounded regular file");
+        zdev_fail(reply, "BAD_FIXED_INPUT",
+                  "fixed_input_path must be an absolute bounded regular file");
         return;
     }
     uint8_t input_root[32];
@@ -292,7 +322,8 @@ void zcl_native_handle_zcode_improve(
     struct vcs_zcode_candidate_v1 candidate = {
         .schema_version = VCS_ZCODE_DEV_VERSION,
         .sequence = (uint64_t)zdev_int(request->input, "candidate_sequence", 1),
-        .created_unix = now,
+        .created_unix = zdev_int(
+            request->input, "candidate_created_unix", now),
     };
     memcpy(candidate.task_root, task_root, 32);
     memcpy(candidate.base_source_root, task.source_root, 32);
@@ -358,7 +389,7 @@ void zcl_native_handle_zcode_improve(
     job.created_at = job.updated_at = now;
     action.sequence = 0;
     (void)snprintf(action.kind, sizeof(action.kind), "%s",
-                   VCS_BUILD_ACTION_KIND_V1);
+                   action_kind);
     (void)snprintf(action.state, sizeof(action.state), "SNAPSHOTTED");
     zcl_hex_encode(input_root, 32, action.input_root_sha3);
     zcl_hex_encode(task_root, 32, action.task_root_sha3);
@@ -367,16 +398,25 @@ void zcl_native_handle_zcode_improve(
     (void)snprintf(action.target, sizeof(action.target), "%s",
                    VCS_BUILD_TARGET_V1);
     uint8_t fixed_flags[32], fixed_environment[32];
-    vcs_build_action_v1_fixed_flags_root(fixed_flags);
-    vcs_build_action_v1_fixed_environment_root(fixed_environment);
+    const char *workdir = NULL, *output = NULL, *resource = NULL;
+    if (!vcs_build_action_v1_descriptors(
+            action_kind, &workdir, &output, &resource) ||
+        !vcs_build_action_v1_fixed_flags_root_for_kind(
+            action_kind, fixed_flags) ||
+        !vcs_build_action_v1_fixed_environment_root_for_kind(
+            action_kind, fixed_environment)) {
+        zdev_fail(reply, "ACTION_DESCRIPTOR_FAILED",
+                  "fixed action descriptor is unavailable");
+        return;
+    }
     zcl_hex_encode(fixed_flags, 32, action.flags_sha3);
     zcl_hex_encode(fixed_environment, 32, action.environment_sha3);
     (void)snprintf(action.virtual_workdir, sizeof(action.virtual_workdir),
-                   "%s", VCS_BUILD_VIRTUAL_ROOT_V1);
+                   "%s", workdir);
     (void)snprintf(action.declared_outputs, sizeof(action.declared_outputs),
-                   "%s", VCS_BUILD_OUTPUT_V1);
+                   "%s", output);
     (void)snprintf(action.resource_policy, sizeof(action.resource_policy),
-                   "%s", VCS_BUILD_RESOURCE_POLICY_V1);
+                   "%s", resource);
     action.created_at = action.updated_at = now;
     if (remote_requested) {
         struct vcs_package_store *context_store = vcs_package_store_global();
@@ -393,13 +433,13 @@ void zcl_native_handle_zcode_improve(
             context.task = task;
             context.candidate = candidate;
             context.proof_policy = policy;
-            context.preprocessed = context_input;
-            context.preprocessed_len = context_input_len;
+            context.fixed_input = context_input;
+            context.fixed_input_len = context_input_len;
             enum vcs_zcode_work_context_result packed =
-                vcs_zcode_work_context_put(
-                    context_store, &context, now, context_root,
-                    context_action_root);
-            context.preprocessed = NULL;
+                vcs_zcode_work_context_put_for_kind(
+                    context_store, &context, action_kind, now,
+                    context_root, context_action_root);
+            context.fixed_input = NULL;
             vcs_zcode_work_context_free(&context);
             free(context_input);
             if (packed == VCS_ZCODE_WORK_CONTEXT_OK) {
@@ -453,6 +493,9 @@ void zcl_native_handle_zcode_improve(
     zdev_push_root(&reply->data, "input_root", input_root);
     (void)json_push_kv_str(&reply->data, "job_id", job.job_id);
     (void)json_push_kv_str(&reply->data, "action_id", action.action_id);
+    (void)json_push_kv_str(&reply->data, "action_kind", action_kind);
+    (void)json_push_kv_int(&reply->data, "candidate_created_unix",
+                           candidate.created_unix);
     (void)json_push_kv_str(&reply->data, "state", "QUEUED");
     (void)json_push_kv_str(&reply->data, "lane", "FRONTIER");
     if (remote_requested) {
@@ -469,7 +512,7 @@ void zcl_native_handle_zcode_improve(
                 work, (uint64_t)remote_peer, now, &capability)) {
             struct vcs_zcode_work_request_v1 remote = {
                 .target = VCS_ZCODE_WORK_TARGET_LINUX_X86_64_V3,
-                .work_kind = VCS_ZCODE_WORK_BUILD,
+                .work_kind = work_kind,
             };
             memcpy(remote.task_root, task_root, 32);
             memcpy(remote.candidate_root, candidate_root, 32);
@@ -532,5 +575,5 @@ void zcl_native_handle_zcode_improve(
     }
     (void)json_push_kv_str(
         &reply->data, "next",
-        "an enabled local or P2P worker may produce the candidate-bound compile receipt; review, explicit acceptance, and publication remain required");
+        "an enabled local or P2P worker may produce the candidate-bound fixed-action receipt; evidence evaluation, explicit acceptance, and publication remain required");
 }

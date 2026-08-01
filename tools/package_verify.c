@@ -92,6 +92,7 @@
 #include "vcs/package_release.h"
 
 #include "base/hex.h"
+#include "base/serialize_le.h"
 #include "crypto/sha3.h"
 #include "platform/clock.h"
 #include "platform/os_proc.h"
@@ -153,6 +154,9 @@ volatile sig_atomic_t g_shutdown_requested = 0;
 #define PV_CHILD_SECCOMP_FAIL 126
 #define PV_CHILD_EXEC_FAIL 127
 
+#define PV_ZBUILD_TEST_EVIDENCE_BYTES 84u
+#define PV_ZBUILD_TEST_TIMEOUT_MS 120000
+
 /* Emit-mode bounds. The archive/header install carries the same
  * canonical-path grammar as the manifest, so an emitted path can never
  * become a filesystem escape. */
@@ -178,6 +182,9 @@ static void pv_usage(FILE *out)
         "           [--work=<dir>] [--require-full-isolation]\n"
         "   or: zclassic23-package-verify --zbuild-input=<abs>/unit.i\n"
         "           --zbuild-output=<abs>/unit.o --require-full-isolation\n"
+        "   or: zclassic23-package-verify --zbuild-test-input=<abs>/test.bin\n"
+        "           --zbuild-test-output=<abs>/test.evidence.v1\n"
+        "           --require-full-isolation\n"
         "\n"
         "--emit is INSTALL-BUILD mode (the ZCODE add lifecycle): the same\n"
         "confined build+test runs, but instead of signing an attestation the\n"
@@ -350,6 +357,10 @@ struct pv_run {
     int term_signal;
     bool timed_out;
     bool sandbox_fail; /* the child could not arm its own confinement */
+    bool stdout_truncated;
+    bool stderr_truncated;
+    size_t stdout_len;
+    size_t stderr_len;
     char stdout_buf[PV_STDOUT_CAP];
     char stderr_buf[PV_STDERR_CAP];
 };
@@ -575,25 +586,21 @@ static struct pv_run pv_run_child(const char *const argv[],
         /* Drain whatever the child has written so far (bounded). */
         uint8_t chunk[512];
         ssize_t got;
-        if (out_len + 1 < sizeof(r.stdout_buf)) {
-            got = read(out_pipe[0], chunk,
-                       sizeof(chunk) < sizeof(r.stdout_buf) - 1 - out_len
-                           ? sizeof(chunk)
-                           : sizeof(r.stdout_buf) - 1 - out_len);
-            if (got > 0) {
-                memcpy(r.stdout_buf + out_len, chunk, (size_t)got);
-                out_len += (size_t)got;
-            }
+        got = read(out_pipe[0], chunk, sizeof(chunk));
+        if (got > 0) {
+            size_t room = sizeof(r.stdout_buf) - 1 - out_len;
+            size_t take = (size_t)got < room ? (size_t)got : room;
+            if (take) memcpy(r.stdout_buf + out_len, chunk, take);
+            out_len += take;
+            if (take < (size_t)got) r.stdout_truncated = true;
         }
-        if (err_len + 1 < sizeof(r.stderr_buf)) {
-            got = read(err_pipe[0], chunk,
-                       sizeof(chunk) < sizeof(r.stderr_buf) - 1 - err_len
-                           ? sizeof(chunk)
-                           : sizeof(r.stderr_buf) - 1 - err_len);
-            if (got > 0) {
-                memcpy(r.stderr_buf + err_len, chunk, (size_t)got);
-                err_len += (size_t)got;
-            }
+        got = read(err_pipe[0], chunk, sizeof(chunk));
+        if (got > 0) {
+            size_t room = sizeof(r.stderr_buf) - 1 - err_len;
+            size_t take = (size_t)got < room ? (size_t)got : room;
+            if (take) memcpy(r.stderr_buf + err_len, chunk, take);
+            err_len += take;
+            if (take < (size_t)got) r.stderr_truncated = true;
         }
         if (clock_now_monotonic_ns() >= deadline) {
             kill(pid, SIGKILL);
@@ -616,6 +623,9 @@ static struct pv_run pv_run_child(const char *const argv[],
             size_t take = (size_t)got < room ? (size_t)got : room;
             memcpy(r.stdout_buf + out_len, chunk, take);
             out_len += take;
+            if (take < (size_t)got) r.stdout_truncated = true;
+        } else {
+            r.stdout_truncated = true;
         }
     }
     for (;;) {
@@ -628,12 +638,17 @@ static struct pv_run pv_run_child(const char *const argv[],
             size_t take = (size_t)got < room ? (size_t)got : room;
             memcpy(r.stderr_buf + err_len, chunk, take);
             err_len += take;
+            if (take < (size_t)got) r.stderr_truncated = true;
+        } else {
+            r.stderr_truncated = true;
         }
     }
     close(out_pipe[0]);
     close(err_pipe[0]);
     r.stdout_buf[out_len] = '\0';
     r.stderr_buf[err_len] = '\0';
+    r.stdout_len = out_len;
+    r.stderr_len = err_len;
     (void)reaped;
     if (!r.timed_out) {
         if (WIFEXITED(status)) {
@@ -1110,10 +1125,149 @@ static int pv_zbuild_compile_mode(int argc, char **argv)
     return 0;
 }
 
+static bool pv_zbuild_test_elf(const char *path)
+{
+    uint8_t header[20];
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    size_t got = fread(header, 1, sizeof(header), f);
+    bool close_ok = fclose(f) == 0;
+    bool ok = got == sizeof(header) && close_ok &&
+        header[0] == 0x7f && header[1] == 'E' &&
+        header[2] == 'L' && header[3] == 'F' && header[4] == 2 &&
+        header[5] == 1 && header[6] == 1 &&
+        (header[16] == 2 || header[16] == 3) && header[17] == 0 &&
+        header[18] == 62 && header[19] == 0;
+    return ok;
+}
+
+static bool pv_zbuild_test_write_evidence(
+    const char *path, const struct pv_run *run)
+{
+    uint8_t wire[PV_ZBUILD_TEST_EVIDENCE_BYTES] = {0};
+    memcpy(wire, "ZCTEST\r\n", 8);
+    wire[8] = 1;
+    wire[10] = run->exited && run->exit_code == 0 && !run->timed_out &&
+                       run->term_signal == 0
+        ? 1 : 2;
+    wire[11] = (run->timed_out ? 1u : 0u) |
+               (run->stdout_truncated ? 2u : 0u) |
+               (run->stderr_truncated ? 4u : 0u);
+    uint32_t exit_code = run->exited ? (uint32_t)run->exit_code : UINT32_MAX;
+    uint32_t signal = run->term_signal > 0
+        ? (uint32_t)run->term_signal : 0;
+    zcl_write_u32_le(wire + 12, exit_code);
+    zcl_write_u32_le(wire + 16, signal);
+    sha3_256((const uint8_t *)run->stdout_buf, run->stdout_len,
+             wire + 20);
+    sha3_256((const uint8_t *)run->stderr_buf, run->stderr_len,
+             wire + 52);
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0400);
+    if (fd < 0) return false;
+    size_t off = 0;
+    while (off < sizeof(wire)) {
+        ssize_t wrote = write(fd, wire + off, sizeof(wire) - off);
+        if (wrote < 0 && errno == EINTR) continue;
+        if (wrote <= 0) break;
+        off += (size_t)wrote;
+    }
+    bool synced = off == sizeof(wire) && fsync(fd) == 0;
+    bool ok = close(fd) == 0 && synced;
+    if (!ok) (void)unlink(path);
+    return ok;
+}
+
+/* One exact executable, no argv, no shell, no network. The parent worker
+ * supplied and hashed the bytes; this process only confines execution and
+ * emits the closed verdict wire. Test failures/timeouts are evidence and
+ * therefore return zero after a report is written. Sandbox failures do not. */
+static int pv_zbuild_test_mode(int argc, char **argv)
+{
+    const char *input_arg = NULL, *output_arg = NULL;
+    bool require_full = false;
+    for (int i = 1; i < argc; i++) {
+        if (strncmp(argv[i], "--zbuild-test-input=", 20) == 0)
+            input_arg = argv[i] + 20;
+        else if (strncmp(argv[i], "--zbuild-test-output=", 21) == 0)
+            output_arg = argv[i] + 21;
+        else if (strcmp(argv[i], "--require-full-isolation") == 0)
+            require_full = true;
+        else {
+            fprintf(stdout, "zbuild-test-error=unexpected-argument\n");
+            return 2;
+        }
+    }
+    if (!input_arg || !output_arg || !require_full || input_arg[0] != '/' ||
+        output_arg[0] != '/')
+        return 2;
+    const char *input_base = strrchr(input_arg, '/');
+    const char *output_base = strrchr(output_arg, '/');
+    if (!input_base || strcmp(input_base + 1, "test.bin") != 0 ||
+        !output_base || strcmp(output_base + 1, "test.evidence.v1") != 0)
+        return 2;
+    char input[4096];
+    if (!realpath(input_arg, input) || !pv_zbuild_test_elf(input))
+        return 3;
+    char build_arg[4096];
+    size_t build_len = (size_t)(output_base - output_arg);
+    if (build_len == 0 || build_len >= sizeof(build_arg)) return 2;
+    memcpy(build_arg, output_arg, build_len);
+    build_arg[build_len] = '\0';
+    char build_dir[4096];
+    if (!realpath(build_arg, build_dir)) return 3;
+    char output[4200];
+    int n = snprintf(output, sizeof(output), "%s/test.evidence.v1",
+                     build_dir);
+    if (n <= 0 || (size_t)n >= sizeof(output) || access(output, F_OK) == 0)
+        return 3;
+    char input_dir[4096];
+    (void)snprintf(input_dir, sizeof(input_dir), "%s", input);
+    char *input_slash = strrchr(input_dir, '/');
+    if (!input_slash || input_slash == input_dir) return 3;
+    *input_slash = '\0';
+    if (strcmp(input_dir, build_dir) != 0) return 3;
+    if (os_sandbox_landlock_abi() < 1) return 4;
+    struct os_sandbox_path_rule rules[10];
+    size_t n_rules = pv_child_grants(build_dir, build_dir, NULL, 0, rules,
+                                     sizeof(rules) / sizeof(rules[0]));
+    if (n_rules == 0) return 5;
+    const struct os_sandbox_rlimits limits = {
+        .as_bytes = UINT64_C(2048) * 1024u * 1024u,
+        .cpu_seconds = 600,
+        .nproc = PV_TEST_NPROC,
+        .fsize_bytes = PV_TEST_FSIZE_BYTES,
+        .nofile = PV_TEST_NOFILE,
+        .core_bytes = 0,
+    };
+    char env_tmpdir[4200];
+    (void)snprintf(env_tmpdir, sizeof(env_tmpdir), "TMPDIR=%s", build_dir);
+    const char *const env[] = { env_tmpdir, NULL };
+    const char *const test_argv[] = { input, NULL };
+    struct pv_run run = pv_run_child(
+        test_argv, build_dir, &limits, true, rules, n_rules, env,
+        PV_ZBUILD_TEST_TIMEOUT_MS);
+    if (!run.launched || run.sandbox_fail ||
+        !pv_zbuild_test_write_evidence(output, &run)) {
+        (void)unlink(output);
+        return 5;
+    }
+    fprintf(stdout,
+            "zbuild-test-ok=1 verdict=%s exit=%d signal=%d timeout=%d "
+            "landlock=1 seccomp=1 rlimits=1 network=0\n",
+            run.exited && run.exit_code == 0 && !run.timed_out &&
+                    run.term_signal == 0
+                ? "pass" : "fail",
+            run.exit_code, run.term_signal, run.timed_out ? 1 : 0);
+    return 0;
+}
+
 /* ── main flow ──────────────────────────────────────────────────────── */
 
 int main(int argc, char **argv)
 {
+    for (int i = 1; i < argc; i++)
+        if (strncmp(argv[i], "--zbuild-test-input=", 20) == 0)
+            return pv_zbuild_test_mode(argc, argv);
     for (int i = 1; i < argc; i++)
         if (strncmp(argv[i], "--zbuild-input=", 15) == 0)
             return pv_zbuild_compile_mode(argc, argv);

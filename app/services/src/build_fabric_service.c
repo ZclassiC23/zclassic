@@ -47,8 +47,6 @@ struct zcl_result build_fabric_action_id(
 {
     if (!job || !action || !out_hex)
         return ZCL_ERR(-1, "action id requires a job, action, and output");
-    if (strcmp(action->kind, VCS_BUILD_ACTION_KIND_V1) != 0)
-        return ZCL_ERR(-1, "V1 supports only %s", VCS_BUILD_ACTION_KIND_V1);
     struct vcs_build_action_v1 canonical = {0};
     if (!zcl_hex_decode_lower(job->source_sha256, canonical.source_sha256, 32) ||
         !zcl_hex_decode_lower(job->source_cas_sha3,
@@ -77,7 +75,8 @@ struct zcl_result build_fabric_action_id(
     canonical.sequence = (uint64_t)action->sequence;
     uint8_t digest[32];
     if (action->sequence < 0 ||
-        !vcs_build_action_v1_root(&canonical, digest))
+        !vcs_build_action_v1_root_for_kind(
+            action->kind, &canonical, digest))
         return ZCL_ERR(-1, "build action violates the fixed V1 execution policy");
     zcl_hex_encode(digest, sizeof(digest), out_hex);
     return ZCL_OK;
@@ -302,14 +301,11 @@ struct zcl_result build_fabric_claim(
     if (!db_build_worker_find(ndb, worker_id, &worker) || !worker.approved ||
         worker.revoked || (worker.expires_at && now >= worker.expires_at))
         return ZCL_ERR(-1, "worker is unapproved, expired, or revoked");
-    if (!bf_capability_has(worker.capabilities, VCS_BUILD_ACTION_KIND_V1))
-        return ZCL_ERR(-1, "worker lacks the fixed C23 action capability");
-
     struct db_build_action queued[BUILD_FABRIC_ACTION_LIMIT];
     int count = db_build_actions_queued(ndb, queued,
                                         BUILD_FABRIC_ACTION_LIMIT);
     for (int i = 0; i < count; i++) {
-        if (strcmp(queued[i].kind, VCS_BUILD_ACTION_KIND_V1) != 0)
+        if (!bf_capability_has(worker.capabilities, queued[i].kind))
             continue;
         struct db_build_job job;
         if (!db_build_job_find(ndb, queued[i].job_id, &job) ||
@@ -619,7 +615,8 @@ struct zcl_result build_fabric_receipt_accept(
         strcmp(receipt->worker_id, action.worker_id) != 0 ||
         strcmp(receipt->lease_id, action.lease_id) != 0)
         return ZCL_ERR(-1, "receipt is not bound to the named action and job");
-    if (strcmp(action.state, "ACCEPTED") == 0) {
+    if (strcmp(action.state, "ACCEPTED") == 0 ||
+        strcmp(action.state, "FAILED") == 0) {
         struct db_build_receipt prior;
         if (db_build_receipt_find(ndb, receipt->receipt_id, &prior))
             return ZCL_OK;
@@ -639,8 +636,14 @@ struct zcl_result build_fabric_receipt_accept(
         !zcl_hex_decode_lower(worker.signer_pubkey, pubkey, sizeof(pubkey)) ||
         !ed25519_verify(sig, id, sizeof(id), pubkey))
         return ZCL_ERR(-1, "receipt Ed25519 signature is invalid");
-    (void)snprintf(action.state, sizeof(action.state), "ACCEPTED");
-    (void)snprintf(action.outcome, sizeof(action.outcome), "ACCEPTED");
+    const bool passed = receipt->exit_status == 0;
+    (void)snprintf(action.state, sizeof(action.state), "%s",
+                   passed ? "ACCEPTED" : "FAILED");
+    (void)snprintf(action.outcome, sizeof(action.outcome), "%s",
+                   passed ? "ACCEPTED" : "FAILED");
+    if (!passed)
+        (void)snprintf(action.last_error, sizeof(action.last_error),
+                       "fixed-action-reported-failure");
     (void)snprintf(action.output_root_sha3, sizeof(action.output_root_sha3),
                    "%s", receipt->output_sha3);
     (void)snprintf(action.worker_id, sizeof(action.worker_id), "%s",
@@ -655,7 +658,7 @@ struct zcl_result build_fabric_receipt_accept(
     struct db_build_action actions[BUILD_FABRIC_ACTION_LIMIT];
     int count = ok ? db_build_job_actions(ndb, receipt->job_id, actions,
                                            BUILD_FABRIC_ACTION_LIMIT) : 0;
-    bool all_accepted = count > 0;
+    bool all_accepted = passed && count > 0;
     for (int i = 0; i < count; i++)
         if (strcmp(actions[i].state, "ACCEPTED") != 0 &&
             strcmp(actions[i].state, "CACHE_HIT") != 0)
@@ -666,6 +669,15 @@ struct zcl_result build_fabric_receipt_accept(
         if (ok) {
             (void)snprintf(job.state, sizeof(job.state), "ACCEPTED");
             (void)snprintf(job.outcome, sizeof(job.outcome), "ACCEPTED");
+            job.updated_at = now;
+            ok = db_build_job_save(ndb, &job);
+        }
+    } else if (ok && !passed) {
+        struct db_build_job job;
+        ok = db_build_job_find(ndb, receipt->job_id, &job);
+        if (ok) {
+            (void)snprintf(job.state, sizeof(job.state), "FAILED");
+            (void)snprintf(job.outcome, sizeof(job.outcome), "FAILED");
             job.updated_at = now;
             ok = db_build_job_save(ndb, &job);
         }

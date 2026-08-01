@@ -10,10 +10,24 @@
 
 #define VCS_BUILD_TARGET_V1 "linux-x86_64-v3"
 #define VCS_BUILD_ACTION_KIND_V1 "c23.compile.preprocessed.v1"
+#define VCS_BUILD_ACTION_KIND_TEST_V1 "c23.package.test.v1"
+#define VCS_BUILD_ACTION_KIND_FUZZ_V1 "c23.package.fuzz.v1"
+#define VCS_BUILD_ACTION_KIND_REVIEW_V1 "c23.review.v1"
 #define VCS_BUILD_VIRTUAL_ROOT_V1 "/zbuild/src"
 #define VCS_BUILD_OUTPUT_V1 "unit.o"
 #define VCS_BUILD_RESOURCE_POLICY_V1 \
     "cpu=1,memory_mb=2048,timeout_s=120,network=0"
+#define VCS_BUILD_PACKAGE_VIRTUAL_ROOT_V1 "/zbuild/package"
+#define VCS_BUILD_TEST_OUTPUT_V1 "test.evidence.v1"
+#define VCS_BUILD_FUZZ_OUTPUT_V1 "fuzz.evidence.v1"
+#define VCS_BUILD_REVIEW_VIRTUAL_ROOT_V1 "/zbuild/review"
+#define VCS_BUILD_REVIEW_OUTPUT_V1 "review.v1"
+#define VCS_BUILD_TEST_RESOURCE_POLICY_V1 \
+    "cpu=1,memory_mb=2048,timeout_s=120,network=0"
+#define VCS_BUILD_FUZZ_RESOURCE_POLICY_V1 \
+    "cpu=1,memory_mb=2048,timeout_s=600,network=0"
+#define VCS_BUILD_REVIEW_RESOURCE_POLICY_V1 \
+    "cpu=1,memory_mb=1024,timeout_s=300,network=0"
 
 struct vcs_toolchain_capsule_v1 {
     uint8_t compiler_driver_sha3[32];
@@ -49,6 +63,19 @@ bool vcs_toolchain_capsule_v1_capture_gcc(
     struct vcs_toolchain_capsule_v1 *out);
 void vcs_build_action_v1_fixed_flags_root(uint8_t out[32]);
 void vcs_build_action_v1_fixed_environment_root(uint8_t out[32]);
+/* Closed fixed-action registry. The returned work kind uses the canonical
+ * vcs_zcode_work_kind wire ids; zero means the kind is not registered. */
+uint8_t vcs_build_action_v1_work_kind(const char *kind);
+bool vcs_build_action_v1_descriptors(
+    const char *kind, const char **workdir, const char **output,
+    const char **resource_policy);
+bool vcs_build_action_v1_fixed_flags_root_for_kind(
+    const char *kind, uint8_t out[32]);
+bool vcs_build_action_v1_fixed_environment_root_for_kind(
+    const char *kind, uint8_t out[32]);
+bool vcs_build_action_v1_root_for_kind(
+    const char *kind, const struct vcs_build_action_v1 *action,
+    uint8_t out[32]);
 bool vcs_build_action_v1_root(const struct vcs_build_action_v1 *action,
                               uint8_t out[32]);
 

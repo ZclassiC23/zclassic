@@ -72,7 +72,9 @@ struct zcl_result build_fabric_worker_revoke(
     struct node_db *ndb, const char *worker_id, int64_t now);
 
 /* Verify action binding, canonical receipt id, signer approval/expiry and the
- * Ed25519 signature over receipt_id before accepting the output receipt. */
+ * Ed25519 signature over receipt_id before accepting the evidence. A zero
+ * exit advances the action; an authentic nonzero fixed-action result stores
+ * the receipt and atomically finishes the action/job as FAILED. */
 struct zcl_result build_fabric_receipt_accept(
     struct node_db *ndb, const struct db_build_receipt *receipt, int64_t now);
 
@@ -89,9 +91,17 @@ struct build_fabric_proof_evaluation {
     size_t valid_receipts;
     size_t approved_distinct_signers;
     size_t matching_receipts;
+    size_t compile_receipts;
+    size_t test_receipts;
+    size_t fuzz_receipts;
+    size_t review_receipts;
     bool local_reproduced;
     bool quorum_satisfied;
     bool compile_satisfied;
+    bool test_satisfied;
+    bool fuzz_satisfied;
+    bool review_satisfied;
+    bool release_identity_satisfied;
     bool policy_satisfied;
     char output_root_sha3[BUILD_FABRIC_ID_HEX + 1];
     char proof_set_root_sha3[BUILD_FABRIC_ID_HEX + 1];

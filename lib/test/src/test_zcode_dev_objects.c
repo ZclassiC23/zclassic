@@ -6,6 +6,7 @@
 #include "base/hex.h"
 #include "command/native_command.h"
 #include "crypto/ed25519.h"
+#include "crypto/sha3.h"
 #include "json/json.h"
 #include "models/build_fabric.h"
 #include "models/database.h"
@@ -14,6 +15,7 @@
 #include "services/build_fabric_worker.h"
 #include "vcs/package_manifest.h"
 #include "vcs/package_store.h"
+#include "vcs/build_action.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_dev.h"
 #include "vcs/zcode_work_context.h"
@@ -344,11 +346,11 @@ static int test_zd_work_context(void)
         zd_candidate(&context.candidate, &context.task, task_root);
         zd_root(context.source_sha256, 90);
         (void)snprintf(context.profile, sizeof(context.profile), "dev");
-        context.preprocessed_len = VCS_PACKAGE_CHUNK_BYTES + 73u;
-        context.preprocessed = malloc(context.preprocessed_len);
-        ASSERT(context.preprocessed != NULL);
-        for (size_t i = 0; i < context.preprocessed_len; i++)
-            context.preprocessed[i] = (uint8_t)(i * 31u + 7u);
+        context.fixed_input_len = VCS_PACKAGE_CHUNK_BYTES + 73u;
+        context.fixed_input = malloc(context.fixed_input_len);
+        ASSERT(context.fixed_input != NULL);
+        for (size_t i = 0; i < context.fixed_input_len; i++)
+            context.fixed_input[i] = (uint8_t)(i * 31u + 7u);
         uint8_t package_root[32], action_root[32], direct_action[32];
         uint8_t input_root[32];
         ASSERT_EQ(vcs_zcode_work_context_action_root(
@@ -373,9 +375,20 @@ static int test_zd_work_context(void)
                   VCS_ZCODE_WORK_CONTEXT_OK);
         ASSERT(memcmp(loaded_action, action_root, 32) == 0);
         ASSERT(memcmp(loaded_input, input_root, 32) == 0);
-        ASSERT_EQ(loaded.preprocessed_len, context.preprocessed_len);
-        ASSERT(memcmp(loaded.preprocessed, context.preprocessed,
-                      context.preprocessed_len) == 0);
+        ASSERT_EQ(loaded.fixed_input_len, context.fixed_input_len);
+        ASSERT(memcmp(loaded.fixed_input, context.fixed_input,
+                      context.fixed_input_len) == 0);
+        uint8_t test_action[32], test_input[32];
+        ASSERT_EQ(vcs_zcode_work_context_action_root_for_kind(
+                      &loaded, VCS_BUILD_ACTION_KIND_TEST_V1, 1500,
+                      test_action, test_input),
+                  VCS_ZCODE_WORK_CONTEXT_OK);
+        ASSERT(memcmp(test_action, loaded_action, 32) != 0);
+        ASSERT(memcmp(test_input, loaded_input, 32) == 0);
+        ASSERT_EQ(vcs_zcode_work_context_action_root_for_kind(
+                      &loaded, "c23.shell.v1", 1500,
+                      test_action, test_input),
+                  VCS_ZCODE_WORK_CONTEXT_ACTION);
         uint8_t *wire = NULL; size_t wire_len = 0;
         ASSERT_EQ(vcs_zcode_work_context_serialize(
                       &context, 1500, &wire, &wire_len),
@@ -427,6 +440,133 @@ static void zd_swarm_result(
     zd_root(seed, signer_value);
     ed25519_keypair(public_key, secret, seed);
     (void)vcs_zcode_work_receipt_seal(receipt, secret, public_key);
+}
+
+static bool zd_kind_action(
+    struct node_db *ndb, const struct db_build_job *job,
+    const struct db_build_action *base, const char *kind, int64_t sequence,
+    const uint8_t input_root[32], struct db_build_action *out)
+{
+    memset(out, 0, sizeof(*out));
+    out->sequence = sequence;
+    (void)snprintf(out->kind, sizeof(out->kind), "%s", kind);
+    (void)snprintf(out->state, sizeof(out->state), "SNAPSHOTTED");
+    zcl_hex_encode(input_root, 32, out->input_root_sha3);
+    (void)snprintf(out->task_root_sha3, sizeof(out->task_root_sha3), "%s",
+                   base->task_root_sha3);
+    (void)snprintf(out->candidate_root_sha3,
+                   sizeof(out->candidate_root_sha3), "%s",
+                   base->candidate_root_sha3);
+    (void)snprintf(out->proof_policy_root_sha3,
+                   sizeof(out->proof_policy_root_sha3), "%s",
+                   base->proof_policy_root_sha3);
+    (void)snprintf(out->target, sizeof(out->target), "%s",
+                   VCS_BUILD_TARGET_V1);
+    uint8_t flags[32], environment[32];
+    if (!vcs_build_action_v1_fixed_flags_root_for_kind(kind, flags) ||
+        !vcs_build_action_v1_fixed_environment_root_for_kind(
+            kind, environment))
+        return false;
+    zcl_hex_encode(flags, 32, out->flags_sha3);
+    zcl_hex_encode(environment, 32, out->environment_sha3);
+    if (strcmp(kind, VCS_BUILD_ACTION_KIND_TEST_V1) == 0) {
+        (void)snprintf(out->virtual_workdir, sizeof(out->virtual_workdir),
+                       "%s", VCS_BUILD_PACKAGE_VIRTUAL_ROOT_V1);
+        (void)snprintf(out->declared_outputs,
+                       sizeof(out->declared_outputs), "%s",
+                       VCS_BUILD_TEST_OUTPUT_V1);
+        (void)snprintf(out->resource_policy,
+                       sizeof(out->resource_policy), "%s",
+                       VCS_BUILD_TEST_RESOURCE_POLICY_V1);
+    } else if (strcmp(kind, VCS_BUILD_ACTION_KIND_FUZZ_V1) == 0) {
+        (void)snprintf(out->virtual_workdir, sizeof(out->virtual_workdir),
+                       "%s", VCS_BUILD_PACKAGE_VIRTUAL_ROOT_V1);
+        (void)snprintf(out->declared_outputs,
+                       sizeof(out->declared_outputs), "%s",
+                       VCS_BUILD_FUZZ_OUTPUT_V1);
+        (void)snprintf(out->resource_policy,
+                       sizeof(out->resource_policy), "%s",
+                       VCS_BUILD_FUZZ_RESOURCE_POLICY_V1);
+    } else if (strcmp(kind, VCS_BUILD_ACTION_KIND_REVIEW_V1) == 0) {
+        (void)snprintf(out->virtual_workdir, sizeof(out->virtual_workdir),
+                       "%s", VCS_BUILD_REVIEW_VIRTUAL_ROOT_V1);
+        (void)snprintf(out->declared_outputs,
+                       sizeof(out->declared_outputs), "%s",
+                       VCS_BUILD_REVIEW_OUTPUT_V1);
+        (void)snprintf(out->resource_policy,
+                       sizeof(out->resource_policy), "%s",
+                       VCS_BUILD_REVIEW_RESOURCE_POLICY_V1);
+    } else {
+        return false;
+    }
+    out->created_at = out->updated_at = base->created_at;
+    struct db_build_job kind_job = *job;
+    kind_job.job_id[0] = '\0';
+    (void)snprintf(kind_job.state, sizeof(kind_job.state), "PLANNED");
+    kind_job.outcome[0] = '\0';
+    if (!build_fabric_action_id(&kind_job, out, out->action_id).ok ||
+        !build_fabric_job_id(
+            &kind_job, out->action_id, kind_job.job_id).ok)
+        return false;
+    (void)snprintf(out->job_id, sizeof(out->job_id), "%s", kind_job.job_id);
+    return db_build_job_save(ndb, &kind_job) && db_build_action_save(ndb, out);
+}
+
+static bool zd_observe_kind(
+    struct node_db *ndb, const char *workspace,
+    const struct vcs_zcode_task_v1 *task,
+    const struct db_build_action *action, uint8_t work_kind,
+    const uint8_t output_root[32], uint8_t signer_value, int64_t now,
+    char observed_id[65])
+{
+    struct vcs_zcode_work_request_v1 request = {
+        .request_id = UINT64_C(10000) + signer_value,
+        .work_kind = work_kind,
+        .target = VCS_ZCODE_WORK_TARGET_LINUX_X86_64_V3,
+        .max_cpu_seconds = 60,
+        .max_memory_bytes = UINT64_C(512) * 1024u * 1024u,
+        .max_output_bytes = UINT64_C(64) * 1024u * 1024u,
+        .deadline_unix = task->expires_unix - 1,
+    };
+    if (!zcl_hex_decode_lower(action->task_root_sha3,
+                              request.task_root, 32) ||
+        !zcl_hex_decode_lower(action->candidate_root_sha3,
+                              request.candidate_root, 32) ||
+        !zcl_hex_decode_lower(action->action_id,
+                              request.action_root, 32) ||
+        !zcl_hex_decode_lower(action->input_root_sha3,
+                              request.input_root, 32) ||
+        !zcl_hex_decode_lower(action->proof_policy_root_sha3,
+                              request.proof_policy_root, 32))
+        return false;
+    zd_root(request.context_root, (uint8_t)(signer_value + 1u));
+    memcpy(request.toolchain_capsule_root,
+           task->toolchain_capsule_root, 32);
+    uint8_t requester_seed[32], requester_secret[32], requester_key[32];
+    zd_root(requester_seed, (uint8_t)(signer_value + 2u));
+    ed25519_keypair(requester_key, requester_secret, requester_seed);
+    if (!vcs_zcode_work_request_seal(
+            &request, requester_secret, requester_key))
+        return false;
+    struct vcs_zcode_work_result_v1 result;
+    zd_swarm_result(&result, &request, 1, signer_value);
+    memcpy(result.output_root, output_root, 32);
+    memcpy(result.receipt.output_root, output_root, 32);
+    result.receipt.started_unix = now > 0 ? now - 1 : 0;
+    result.receipt.finished_unix = now;
+    uint8_t seed[32], secret[32], public_key[32];
+    zd_root(seed, signer_value);
+    ed25519_keypair(public_key, secret, seed);
+    if (vcs_zcode_work_receipt_seal(
+            &result.receipt, secret, public_key) != VCS_ZCODE_DEV_OK ||
+        !build_fabric_receipt_observe_remote(
+            ndb, workspace, &request, &result, now, observed_id).ok)
+        return false;
+    struct db_build_receipt observed;
+    struct db_build_worker worker;
+    return db_build_receipt_find(ndb, observed_id, &observed) &&
+           db_build_worker_find(ndb, observed.worker_id, &worker) &&
+           build_fabric_worker_approve(ndb, &worker, now).ok;
 }
 
 static int test_zd_work_swarm(void)
@@ -715,7 +855,7 @@ static int test_zd_improve_command(void)
         (void)json_push_kv_int(&input, "remote_peer", 99);
         (void)json_push_kv_str(&input, "goal", "fix deterministic fixture");
         (void)json_push_kv_str(&input, "proof_policy_hex", policy_hex);
-        (void)json_push_kv_str(&input, "preprocessed_path", preprocessed);
+        (void)json_push_kv_str(&input, "fixed_input_path", preprocessed);
         int64_t expires = (int64_t)platform_time_wall_unix() + 3600;
         (void)json_push_kv_int(&input, "expires_unix", expires);
         struct zcl_command_request request = { .input = &input };
@@ -794,6 +934,61 @@ static int test_zd_improve_command(void)
         ASSERT_EQ(vcs_zcode_work_receipt_validate_for_candidate(
             &task, &candidate, &work_receipt,
             (int64_t)platform_time_wall_unix()), VCS_ZCODE_DEV_OK);
+        uint8_t compile_output_root[32];
+        memcpy(compile_output_root, work_receipt.output_root, 32);
+
+        /* Reuse the exact candidate timestamp to queue a second fixed proof
+         * action in a distinct job. Evidence aggregation is candidate-bound,
+         * not accidentally job-bound. */
+        int64_t candidate_created = json_get_int(json_get(
+            &reply.data, "candidate_created_unix"));
+        json_set_str((struct json_value *)json_get(
+                         &input, "fixed_input_path"), "/usr/bin/true");
+        (void)json_push_kv_str(&input, "action_kind",
+                               VCS_BUILD_ACTION_KIND_TEST_V1);
+        (void)json_push_kv_int(&input, "candidate_created_unix",
+                               candidate_created);
+        struct zcl_command_reply test_reply;
+        zcl_command_reply_init(&test_reply, "zcl.zcode_improve.v1");
+        zcl_native_handle_zcode_improve(&request, &test_reply);
+        ASSERT_EQ(test_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&test_reply.data, "task_root")),
+                      task_hex);
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &test_reply.data, "candidate_root")), candidate_hex);
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &test_reply.data, "action_kind")),
+                      VCS_BUILD_ACTION_KIND_TEST_V1);
+        const char *test_action_id = json_get_str(json_get(
+            &test_reply.data, "action_id"));
+        ASSERT(test_action_id && strcmp(test_action_id, action_id) != 0);
+        struct db_build_action local_test_action;
+        ASSERT(db_build_action_find(&ndb, test_action_id,
+                                    &local_test_action));
+        uint8_t test_lease_root[32]; char test_lease_hex[65];
+        zd_root(test_lease_root, 61);
+        zcl_hex_encode(test_lease_root, 32, test_lease_hex);
+        claimed = false;
+        ASSERT(build_fabric_claim(&ndb, worker.worker_id, test_lease_hex,
+                                  now, 300, &local_test_action, &claimed).ok);
+        ASSERT(claimed);
+        struct db_build_receipt local_test_receipt;
+        ASSERT(build_fabric_worker_execute(
+            &ndb, workspace, test_action_id, test_lease_hex, worker_secret,
+            worker_key, &local_test_receipt).ok);
+        uint8_t local_test_receipt_root[32];
+        ASSERT(zcl_hex_decode_lower(local_test_receipt.work_receipt_sha3,
+                                    local_test_receipt_root, 32));
+        ASSERT_EQ(vcs_object_load_raw(
+            workspace, local_test_receipt_root, &receipt_wire,
+            &receipt_wire_len), 0);
+        ASSERT_EQ(vcs_zcode_work_receipt_parse(
+            receipt_wire, receipt_wire_len, &work_receipt),
+            VCS_ZCODE_DEV_OK);
+        free(receipt_wire); receipt_wire = NULL;
+        ASSERT_EQ(work_receipt.work_kind, VCS_ZCODE_WORK_TEST);
+        ASSERT_EQ(work_receipt.status, VCS_ZCODE_WORK_PASS);
+        zcl_command_reply_free(&test_reply);
 
         struct vcs_zcode_work_request_v1 remote_request = {
             .request_id = 991,
@@ -822,8 +1017,8 @@ static int test_zd_improve_command(void)
             &remote_request, requester_secret, requester_key));
         struct vcs_zcode_work_result_v1 remote_result;
         zd_swarm_result(&remote_result, &remote_request, 94, 95);
-        memcpy(remote_result.output_root, work_receipt.output_root, 32);
-        memcpy(remote_result.receipt.output_root, work_receipt.output_root, 32);
+        memcpy(remote_result.output_root, compile_output_root, 32);
+        memcpy(remote_result.receipt.output_root, compile_output_root, 32);
         remote_result.receipt.started_unix = now > 0 ? now - 1 : 0;
         remote_result.receipt.finished_unix = now;
         uint8_t remote_seed[32], remote_secret[32], remote_key[32];
@@ -832,6 +1027,16 @@ static int test_zd_improve_command(void)
         ASSERT_EQ(vcs_zcode_work_receipt_seal(
             &remote_result.receipt, remote_secret, remote_key),
             VCS_ZCODE_DEV_OK);
+        struct vcs_zcode_work_request_v1 wrong_kind_request = remote_request;
+        wrong_kind_request.work_kind = VCS_ZCODE_WORK_TEST;
+        ASSERT(vcs_zcode_work_request_seal(
+            &wrong_kind_request, requester_secret, requester_key));
+        struct vcs_zcode_work_result_v1 wrong_kind_result;
+        zd_swarm_result(&wrong_kind_result, &wrong_kind_request, 97, 98);
+        char refused_id[65];
+        ASSERT(!build_fabric_receipt_observe_remote(
+            &ndb, workspace, &wrong_kind_request, &wrong_kind_result, now,
+            refused_id).ok);
         char observed_id[65];
         ASSERT(build_fabric_receipt_observe_remote(
             &ndb, workspace, &remote_request, &remote_result, now,
@@ -876,6 +1081,85 @@ static int test_zd_improve_command(void)
         ASSERT(strlen(evaluation.proof_set_root_sha3) == 64);
         ASSERT(db_build_receipt_find(&ndb, observed_id, &observed));
         ASSERT_STR_EQ(observed.trust_state, "LOCAL_REPRODUCED");
+
+        struct db_build_job job;
+        ASSERT(db_build_job_find(&ndb, action.job_id, &job));
+        struct db_build_action test_action, fuzz_action, review_action;
+        ASSERT(zd_kind_action(
+            &ndb, &job, &action, VCS_BUILD_ACTION_KIND_TEST_V1, 1,
+            task.acceptance_tests_root, &test_action));
+        uint8_t test_output[32]; zd_root(test_output, 120);
+        char test_receipt_a[65], test_receipt_b[65];
+        ASSERT(zd_observe_kind(
+            &ndb, workspace, &task, &test_action, VCS_ZCODE_WORK_TEST,
+            test_output, 121, now, test_receipt_a));
+        ASSERT(zd_observe_kind(
+            &ndb, workspace, &task, &test_action, VCS_ZCODE_WORK_TEST,
+            test_output, 122, now, test_receipt_b));
+        ASSERT(zd_kind_action(
+            &ndb, &job, &action, VCS_BUILD_ACTION_KIND_FUZZ_V1, 2,
+            task.acceptance_tests_root, &fuzz_action));
+        uint8_t fuzz_output[32]; zd_root(fuzz_output, 123);
+        char fuzz_receipt[65];
+        ASSERT(zd_observe_kind(
+            &ndb, workspace, &task, &fuzz_action, VCS_ZCODE_WORK_FUZZ,
+            fuzz_output, 124, now, fuzz_receipt));
+        struct build_fabric_proof_evaluation before_review;
+        ASSERT(build_fabric_proof_evaluate(
+            &ndb, workspace, action_id, evaluation_now,
+            &before_review).ok);
+        ASSERT(before_review.test_satisfied);
+        ASSERT(before_review.fuzz_satisfied);
+        ASSERT(!before_review.review_satisfied);
+        ASSERT(!before_review.policy_satisfied);
+        uint8_t review_seed[32], review_secret[32], review_key[32];
+        zd_root(review_seed, 125);
+        ed25519_keypair(review_key, review_secret, review_seed);
+        struct vcs_zcode_review_v1 review = {
+            .schema_version = VCS_ZCODE_DEV_VERSION,
+            .verdict = VCS_ZCODE_REVIEW_APPROVE,
+            .sequence = 1,
+            .created_unix = now,
+        };
+        ASSERT(zcl_hex_decode_lower(task_hex, review.task_root, 32));
+        ASSERT(zcl_hex_decode_lower(candidate_hex,
+                                    review.candidate_root, 32));
+        memcpy(review.proof_policy_root, task.proof_policy_root, 32);
+        ASSERT(zcl_hex_decode_lower(before_review.proof_set_root_sha3,
+                                    review.proof_set_root, 32));
+        static const uint8_t findings[] = "reviewed: no findings";
+        sha3_256(findings, sizeof(findings) - 1u, review.findings_root);
+        ASSERT(vcs_object_put_addressed(
+            workspace, review.findings_root, findings,
+            sizeof(findings) - 1u));
+        memcpy(review.reviewer_pubkey, review_key, 32);
+        uint8_t review_wire[VCS_ZCODE_REVIEW_WIRE_BYTES], review_root[32];
+        ASSERT_EQ(vcs_zcode_review_serialize(&review, review_wire),
+                  VCS_ZCODE_DEV_OK);
+        ASSERT_EQ(vcs_zcode_review_root(&review, review_root),
+                  VCS_ZCODE_DEV_OK);
+        ASSERT(vcs_object_put_addressed(
+            workspace, review_root, review_wire, sizeof(review_wire)));
+        ASSERT(zd_kind_action(
+            &ndb, &job, &action, VCS_BUILD_ACTION_KIND_REVIEW_V1, 3,
+            candidate_root, &review_action));
+        char review_receipt[65];
+        ASSERT(zd_observe_kind(
+            &ndb, workspace, &task, &review_action, VCS_ZCODE_WORK_REVIEW,
+            review_root, 125, now, review_receipt));
+        struct build_fabric_proof_evaluation complete;
+        ASSERT(build_fabric_proof_evaluate(
+            &ndb, workspace, action_id, evaluation_now, &complete).ok);
+        ASSERT_EQ(complete.compile_receipts, 3);
+        ASSERT_EQ(complete.test_receipts, 3);
+        ASSERT_EQ(complete.fuzz_receipts, 1);
+        ASSERT_EQ(complete.review_receipts, 1);
+        ASSERT(complete.compile_satisfied);
+        ASSERT(complete.test_satisfied);
+        ASSERT(complete.fuzz_satisfied);
+        ASSERT(complete.review_satisfied);
+        ASSERT(!complete.release_identity_satisfied);
+        ASSERT(!complete.policy_satisfied);
         node_db_close(&ndb);
 
         struct json_value evidence_input;
@@ -892,6 +1176,22 @@ static int test_zd_improve_command(void)
         ASSERT_EQ(evidence_reply.exit_code, ZCL_COMMAND_EXIT_OK);
         ASSERT_STR_EQ(json_get_str(json_get(&evidence_reply.data, "authority")),
                       "LOCAL_REPRODUCTION");
+        ASSERT_EQ(json_get_int(json_get(&evidence_reply.data,
+                                        "test_receipts")), 3);
+        ASSERT_EQ(json_get_int(json_get(&evidence_reply.data,
+                                        "fuzz_receipts")), 1);
+        ASSERT_EQ(json_get_int(json_get(&evidence_reply.data,
+                                        "review_receipts")), 1);
+        ASSERT(json_get_bool(json_get(&evidence_reply.data,
+                                      "test_satisfied")));
+        ASSERT(json_get_bool(json_get(&evidence_reply.data,
+                                      "fuzz_satisfied")));
+        ASSERT(json_get_bool(json_get(&evidence_reply.data,
+                                      "review_satisfied")));
+        ASSERT(!json_get_bool(json_get(&evidence_reply.data,
+                                       "release_identity_satisfied")));
+        ASSERT(!json_get_bool(json_get(&evidence_reply.data,
+                                       "policy_satisfied")));
         zcl_command_reply_free(&evidence_reply);
         json_free(&evidence_input);
         zcl_command_reply_free(&reply);

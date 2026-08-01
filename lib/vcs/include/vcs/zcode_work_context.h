@@ -35,8 +35,8 @@ struct vcs_zcode_work_context_v1 {
     struct vcs_zcode_task_v1 task;
     struct vcs_zcode_candidate_v1 candidate;
     struct vcs_zcode_proof_policy_v1 proof_policy;
-    uint8_t *preprocessed;
-    size_t preprocessed_len;
+    uint8_t *fixed_input;
+    size_t fixed_input_len;
 };
 
 const char *vcs_zcode_work_context_result_string(
@@ -54,7 +54,12 @@ enum vcs_zcode_work_context_result vcs_zcode_work_context_parse(
     const uint8_t *wire, size_t wire_len, int64_t now_unix,
     struct vcs_zcode_work_context_v1 *out);
 
-/* Reconstruct the already-frozen build_action.v1 identity. */
+/* Reconstruct the already-frozen fixed-action identity. The v1 carrier is
+ * action-neutral: the signed request supplies the registered kind while the
+ * context supplies the exact immutable input bytes. */
+enum vcs_zcode_work_context_result vcs_zcode_work_context_action_root_for_kind(
+    const struct vcs_zcode_work_context_v1 *context, const char *kind,
+    int64_t now_unix, uint8_t action_root[32], uint8_t input_root[32]);
 enum vcs_zcode_work_context_result vcs_zcode_work_context_action_root(
     const struct vcs_zcode_work_context_v1 *context, int64_t now_unix,
     uint8_t action_root[32], uint8_t input_root[32]);
@@ -63,6 +68,10 @@ enum vcs_zcode_work_context_result vcs_zcode_work_context_put(
     struct vcs_package_store *store,
     const struct vcs_zcode_work_context_v1 *context, int64_t now_unix,
     uint8_t package_root[32], uint8_t action_root[32]);
+enum vcs_zcode_work_context_result vcs_zcode_work_context_put_for_kind(
+    struct vcs_package_store *store,
+    const struct vcs_zcode_work_context_v1 *context, const char *kind,
+    int64_t now_unix, uint8_t package_root[32], uint8_t action_root[32]);
 enum vcs_zcode_work_context_result vcs_zcode_work_context_get(
     struct vcs_package_store *store, const uint8_t package_root[32],
     int64_t now_unix, struct vcs_zcode_work_context_v1 *out);

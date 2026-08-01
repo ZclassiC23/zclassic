@@ -82,6 +82,15 @@ static bool boot_zcode_work_active_state(const char *state)
                      strcmp(state, "CACHE_HIT") == 0);
 }
 
+static const char *boot_zcode_work_action_kind(uint8_t work_kind)
+{
+    if (work_kind == VCS_ZCODE_WORK_BUILD)
+        return VCS_BUILD_ACTION_KIND_V1;
+    if (work_kind == VCS_ZCODE_WORK_TEST)
+        return VCS_BUILD_ACTION_KIND_TEST_V1;
+    return NULL;
+}
+
 /* Rebuild the exact fixed action from the fetched content.v2 context. The
  * context bytes become ordinary objects in the existing workspace CAS; only
  * the existing ZBuild ledger receives mutable lifecycle state. */
@@ -100,10 +109,13 @@ static struct zcl_result boot_zcode_work_admit(
     if (loaded != VCS_ZCODE_WORK_CONTEXT_OK)
         return ZCL_ERR(-1, "context: %s",
                        vcs_zcode_work_context_result_string(loaded));
+    const char *action_kind = boot_zcode_work_action_kind(request->work_kind);
     uint8_t action_root[32], input_root[32], task_root[32];
     uint8_t candidate_root[32], policy_root[32];
-    loaded = vcs_zcode_work_context_action_root(
-        &context, now, action_root, input_root);
+    loaded = action_kind
+        ? vcs_zcode_work_context_action_root_for_kind(
+              &context, action_kind, now, action_root, input_root)
+        : VCS_ZCODE_WORK_CONTEXT_ACTION;
     bool bound = loaded == VCS_ZCODE_WORK_CONTEXT_OK &&
         vcs_zcode_task_root(&context.task, task_root) == VCS_ZCODE_DEV_OK &&
         vcs_zcode_candidate_root(&context.candidate, candidate_root) ==
@@ -117,7 +129,7 @@ static struct zcl_result boot_zcode_work_admit(
         memcmp(policy_root, request->proof_policy_root, 32) == 0 &&
         memcmp(context.task.toolchain_capsule_root,
                request->toolchain_capsule_root, 32) == 0 &&
-        request->work_kind == VCS_ZCODE_WORK_BUILD &&
+        action_kind != NULL &&
         request->max_cpu_seconds <= context.task.max_cpu_seconds &&
         request->max_memory_bytes <= context.task.max_memory_bytes &&
         request->max_output_bytes <= context.task.max_output_bytes;
@@ -142,8 +154,8 @@ static struct zcl_result boot_zcode_work_admit(
         vcs_object_put_addressed(s_work_workspace, policy_root, policy_wire,
                                  sizeof(policy_wire)) &&
         vcs_object_put_addressed(s_work_workspace, input_root,
-                                 context.preprocessed,
-                                 context.preprocessed_len);
+                                 context.fixed_input,
+                                 context.fixed_input_len);
     if (!stored) {
         vcs_zcode_work_context_free(&context);
         return ZCL_ERR(-1, "context objects could not enter workspace CAS");
@@ -160,7 +172,7 @@ static struct zcl_result boot_zcode_work_admit(
     job.created_at = job.updated_at = now;
     action.sequence = 0;
     (void)snprintf(action.kind, sizeof(action.kind), "%s",
-                   VCS_BUILD_ACTION_KIND_V1);
+                   action_kind);
     (void)snprintf(action.state, sizeof(action.state), "SNAPSHOTTED");
     zcl_hex_encode(input_root, 32, action.input_root_sha3);
     zcl_hex_encode(task_root, 32, action.task_root_sha3);
@@ -170,16 +182,24 @@ static struct zcl_result boot_zcode_work_admit(
     (void)snprintf(action.target, sizeof(action.target), "%s",
                    VCS_BUILD_TARGET_V1);
     uint8_t fixed_flags[32], fixed_environment[32];
-    vcs_build_action_v1_fixed_flags_root(fixed_flags);
-    vcs_build_action_v1_fixed_environment_root(fixed_environment);
+    const char *workdir = NULL, *output = NULL, *resource = NULL;
+    if (!vcs_build_action_v1_descriptors(
+            action_kind, &workdir, &output, &resource) ||
+        !vcs_build_action_v1_fixed_flags_root_for_kind(
+            action_kind, fixed_flags) ||
+        !vcs_build_action_v1_fixed_environment_root_for_kind(
+            action_kind, fixed_environment)) {
+        vcs_zcode_work_context_free(&context);
+        return ZCL_ERR(-1, "fixed action descriptor disappeared");
+    }
     zcl_hex_encode(fixed_flags, 32, action.flags_sha3);
     zcl_hex_encode(fixed_environment, 32, action.environment_sha3);
     (void)snprintf(action.virtual_workdir, sizeof(action.virtual_workdir),
-                   "%s", VCS_BUILD_VIRTUAL_ROOT_V1);
+                   "%s", workdir);
     (void)snprintf(action.declared_outputs, sizeof(action.declared_outputs),
-                   "%s", VCS_BUILD_OUTPUT_V1);
+                   "%s", output);
     (void)snprintf(action.resource_policy, sizeof(action.resource_policy),
-                   "%s", VCS_BUILD_RESOURCE_POLICY_V1);
+                   "%s", resource);
     action.created_at = action.updated_at = now;
     struct zcl_result ids = build_fabric_action_id(
         &job, &action, action.action_id);
@@ -280,7 +300,8 @@ static void boot_zcode_work_publish_results(int64_t now)
         struct db_build_action action;
         if (!db_build_action_find(ndb, action_id, &action) ||
             (strcmp(action.state, "ACCEPTED") != 0 &&
-             strcmp(action.state, "CACHE_HIT") != 0))
+             strcmp(action.state, "CACHE_HIT") != 0 &&
+             strcmp(action.state, "FAILED") != 0))
             continue;
         struct db_build_receipt receipts[8];
         int receipt_count = db_build_job_receipts(
@@ -374,13 +395,14 @@ static bool boot_zcode_work_refresh(struct boot_svc_ctx *svc, int64_t wall)
         !vcs_toolchain_capsule_v1_root(
             &capsule, capability.toolchain_capsule_root))
         LOG_FAIL("net.zcode_swarm", "work toolchain capture failed");
-    capability.work_kinds = UINT32_C(1) << VCS_ZCODE_WORK_BUILD;
+    capability.work_kinds = (UINT32_C(1) << VCS_ZCODE_WORK_BUILD) |
+                            (UINT32_C(1) << VCS_ZCODE_WORK_TEST);
     capability.target = VCS_ZCODE_WORK_TARGET_LINUX_X86_64_V3;
     capability.confinement = VCS_ZCODE_WORK_CONFINEMENT_V1_MASK;
     capability.max_cpu_seconds = 120;
     capability.max_memory_bytes = UINT64_C(2) * 1024u * 1024u * 1024u;
     capability.max_output_bytes = VCS_BUILD_ARTIFACT_MAX_BYTES;
-    capability.max_lease_seconds = 120;
+    capability.max_lease_seconds = 180;
     capability.slots = 1;
     capability.queue_headroom = 1;
     capability.expires_unix = wall + 600;
