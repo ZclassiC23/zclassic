@@ -282,7 +282,10 @@ their own policy.
 `zcode improve mode=admit` (the backward-compatible default) admits the
 resulting canonical candidate and exact fixed-action input, captures the GCC
 capsule, and queues a candidate-bound compile, test, or deterministic fuzz
-action. Plan and admit rederive the same task and context roots. Reusing `candidate_created_unix` with
+action. An explicit admit must carry `planned_task_root` and
+`planned_context_root`; both are recomputed and compared before candidate or
+ZBuild admission. Omitting `mode` retains the legacy one-shot form. Plan and
+admit rederive the same task and context roots. Reusing `candidate_created_unix` with
 the same immutable inputs schedules additional proof actions for the exact same
 candidate. Before submission it creates or re-verifies the exact candidate's
 signed FRONTIER receipt; evidence aggregation follows task/candidate/policy roots across

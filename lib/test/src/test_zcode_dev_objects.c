@@ -1046,6 +1046,7 @@ static int test_zd_improve_command(void)
         ci_merkle_hex(&source_tree_root.digest, roots[0]);
         ci_merkle_free(source_tree);
         int64_t expires = (int64_t)platform_time_wall_unix() + 3600;
+        int64_t candidate_created = expires - 3600;
 
         /* Planning is a model-neutral handoff. It needs no candidate, patch,
          * fixed executable, agent process, or ZBuild database mutation. */
@@ -1082,6 +1083,11 @@ static int test_zd_improve_command(void)
             &plan_reply.data, "agent_context_root"));
         ASSERT(planned_task && strlen(planned_task) == 64);
         ASSERT(planned_context && strlen(planned_context) == 64);
+        char planned_task_saved[65], planned_context_saved[65];
+        (void)snprintf(planned_task_saved, sizeof(planned_task_saved), "%s",
+                       planned_task);
+        (void)snprintf(planned_context_saved,
+                       sizeof(planned_context_saved), "%s", planned_context);
         ASSERT(json_get(&plan_reply.data, "candidate_root") == NULL);
         ASSERT(json_get(&plan_reply.data, "action_id") == NULL);
         char plan_db[320];
@@ -1091,6 +1097,10 @@ static int test_zd_improve_command(void)
         struct json_value input;
         json_init(&input); json_set_object(&input);
         (void)json_push_kv_str(&input, "mode", "admit");
+        (void)json_push_kv_str(&input, "planned_task_root",
+                               planned_task_saved);
+        (void)json_push_kv_str(&input, "planned_context_root",
+                               planned_context_saved);
         (void)json_push_kv_str(&input, "workspace", workspace);
         (void)json_push_kv_str(&input, "datadir", workspace);
         (void)json_push_kv_str(&input, "candidate_source_sha256", roots[9]);
@@ -1108,6 +1118,8 @@ static int test_zd_improve_command(void)
         (void)json_push_kv_str(&input, "proof_policy_hex", policy_hex);
         (void)json_push_kv_str(&input, "fixed_input_path", preprocessed);
         (void)json_push_kv_str(&input, "context_symbol", "context_widget");
+        (void)json_push_kv_int(&input, "candidate_created_unix",
+                               candidate_created);
         (void)json_push_kv_int(&input, "expires_unix", expires);
         struct zcl_command_request request = { .input = &input };
         struct zcl_command_reply reply;
@@ -1135,6 +1147,17 @@ static int test_zd_improve_command(void)
                       "context_widget");
         ASSERT(json_get_int(json_get(
                    &reply.data, "agent_context_files")) >= 1);
+        json_set_str((struct json_value *)json_get(&input, "mode"), "");
+        struct zcl_command_reply legacy_reply;
+        zcl_command_reply_init(&legacy_reply, "zcl.zcode_improve.v1");
+        zcl_native_handle_zcode_improve(&request, &legacy_reply);
+        ASSERT_EQ(legacy_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&legacy_reply.data, "task_root")),
+                      task_hex);
+        ASSERT_STR_EQ(json_get_str(json_get(&legacy_reply.data, "action_id")),
+                      action_id);
+        zcl_command_reply_free(&legacy_reply);
+        json_set_str((struct json_value *)json_get(&input, "mode"), "admit");
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "state")), "QUEUED");
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "lane")), "FRONTIER");
         const char *frontier_receipt = json_get_str(json_get(
@@ -1188,10 +1211,34 @@ static int test_zd_improve_command(void)
         zcl_command_reply_init(&stale_reply, "zcl.zcode_improve.v1");
         zcl_native_handle_zcode_improve(&request, &stale_reply);
         ASSERT_EQ(stale_reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
-        ASSERT_STR_EQ(stale_reply.error.code, "AGENT_CONTEXT_FAILED");
+        ASSERT_STR_EQ(stale_reply.error.code, "PLANNED_TASK_MISMATCH");
         zcl_command_reply_free(&stale_reply);
         json_set_str((struct json_value *)json_get(&input, "source_root"),
                      roots[0]);
+        json_set_str((struct json_value *)json_get(
+                         &input, "planned_context_root"), roots[1]);
+        struct zcl_command_reply context_mismatch_reply;
+        zcl_command_reply_init(&context_mismatch_reply,
+                               "zcl.zcode_improve.v1");
+        zcl_native_handle_zcode_improve(&request, &context_mismatch_reply);
+        ASSERT_EQ(context_mismatch_reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(context_mismatch_reply.error.code,
+                      "PLANNED_CONTEXT_MISMATCH");
+        zcl_command_reply_free(&context_mismatch_reply);
+        json_set_str((struct json_value *)json_get(
+                         &input, "planned_context_root"),
+                     planned_context_saved);
+        json_set_str((struct json_value *)json_get(
+                         &input, "planned_task_root"), "");
+        struct zcl_command_reply missing_binding_reply;
+        zcl_command_reply_init(&missing_binding_reply,
+                               "zcl.zcode_improve.v1");
+        zcl_native_handle_zcode_improve(&request, &missing_binding_reply);
+        ASSERT_EQ(missing_binding_reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(missing_binding_reply.error.code, "MISSING_INPUT");
+        zcl_command_reply_free(&missing_binding_reply);
+        json_set_str((struct json_value *)json_get(
+                         &input, "planned_task_root"), planned_task_saved);
         json_set_str((struct json_value *)json_get(&input, "mode"), "invalid");
         struct zcl_command_reply mode_reply;
         zcl_command_reply_init(&mode_reply, "zcl.zcode_improve.v1");
@@ -1263,14 +1310,13 @@ static int test_zd_improve_command(void)
         /* Reuse the exact candidate timestamp to queue a second fixed proof
          * action in a distinct job. Evidence aggregation is candidate-bound,
          * not accidentally job-bound. */
-        int64_t candidate_created = json_get_int(json_get(
-            &reply.data, "candidate_created_unix"));
+        ASSERT_EQ(json_get_int(json_get(
+                      &reply.data, "candidate_created_unix")),
+                  candidate_created);
         json_set_str((struct json_value *)json_get(
                          &input, "fixed_input_path"), "/usr/bin/true");
         (void)json_push_kv_str(&input, "action_kind",
                                VCS_BUILD_ACTION_KIND_TEST_V1);
-        (void)json_push_kv_int(&input, "candidate_created_unix",
-                               candidate_created);
         struct zcl_command_reply test_reply;
         zcl_command_reply_init(&test_reply, "zcl.zcode_improve.v1");
         zcl_native_handle_zcode_improve(&request, &test_reply);

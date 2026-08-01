@@ -70,9 +70,10 @@ ZCL_COMMAND_READY_COMMAND(
     "mode=plan stores canonical policy and task objects, resolves "
     "context_symbol through the exact code index, and returns immutable task "
     "and agent_context.v1 roots for any user-selected model adapter. It does "
-    "not launch a model or grant tools. mode=admit (the default) stores the "
-    "candidate and fixed input, content-captures GCC, and queues the existing "
-    "ZBuild action. The task "
+    "not launch a model or grant tools. Explicit mode=admit must name the "
+    "planned task/context roots and rederive both before it stores the "
+    "candidate or queues the existing ZBuild action. Omitting mode retains "
+    "the legacy one-shot admission form. The task "
     "binds source, dependency lock, write scope, "
     "acceptance tests, model policy, goal, limits, and expiry. action_kind "
     "selects only fixed compile, test, or deterministic fuzz; "
@@ -83,7 +84,7 @@ ZCL_COMMAND_READY_COMMAND(
     "reports LOCAL_FALLBACK and preserves the local queued action.", 0,
     "zcode,improve,task,agent,zbuild,proof,compile,test,fuzz",
     "zcl.zcode_improve.input.v1", "zcl.zcode_improve.v1",
-    "workspace,datadir,mode,candidate_source_sha256,source_root,dependency_lock_root,write_scope_root,acceptance_tests_root,model_policy_root,goal,proof_policy_hex,action_kind,fixed_input_path,preprocessed_path,patch_root,candidate_source_root,adapter_policy_root,author_pubkey,candidate_sequence,candidate_created_unix,profile,expires_unix,max_changed_files,max_patch_bytes,max_context_bytes,max_cpu_seconds,max_memory_bytes,max_output_bytes,context_symbol,remote_peer",
+    "workspace,datadir,mode,planned_task_root,planned_context_root,candidate_source_sha256,source_root,dependency_lock_root,write_scope_root,acceptance_tests_root,model_policy_root,goal,proof_policy_hex,action_kind,fixed_input_path,preprocessed_path,patch_root,candidate_source_root,adapter_policy_root,author_pubkey,candidate_sequence,candidate_created_unix,profile,expires_unix,max_changed_files,max_patch_bytes,max_context_bytes,max_cpu_seconds,max_memory_bytes,max_output_bytes,context_symbol,remote_peer",
     "workspace,source_root,dependency_lock_root,write_scope_root,acceptance_tests_root,model_policy_root,goal,proof_policy_hex,expires_unix",
     "zclassic23 zcode improve --input='{\"mode\":\"plan\",\"workspace\":\"/src/project\",\"source_root\":\"<64hex>\",\"dependency_lock_root\":\"<64hex>\",\"write_scope_root\":\"<64hex>\",\"acceptance_tests_root\":\"<64hex>\",\"model_policy_root\":\"<64hex>\",\"goal\":\"fix seeded bug\",\"proof_policy_hex\":\"<wire hex>\",\"context_symbol\":\"buggy_function\",\"expires_unix\":123}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,

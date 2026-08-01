@@ -365,14 +365,20 @@ void zcl_native_handle_zcode_improve(
     if (!datadir || !datadir[0]) datadir = zcl_native_command_datadir();
     const char *goal = zdev_str(request->input, "goal");
     const char *policy_hex = zdev_str(request->input, "proof_policy_hex");
-    const char *mode = zdev_str(request->input, "mode");
+    const char *mode_arg = zdev_str(request->input, "mode");
+    const char *mode = mode_arg;
     if (!mode || !mode[0]) mode = "admit";
     bool plan_only = strcmp(mode, "plan") == 0;
+    bool explicit_admit = mode_arg && strcmp(mode_arg, "admit") == 0;
     if (!plan_only && strcmp(mode, "admit") != 0) {
         zdev_fail(reply, "BAD_MODE", "mode must be plan or admit");
         return;
     }
     const char *context_symbol = zdev_str(request->input, "context_symbol");
+    const char *planned_task_root =
+        zdev_str(request->input, "planned_task_root");
+    const char *planned_context_root =
+        zdev_str(request->input, "planned_context_root");
     const char *action_kind = zdev_str(request->input, "action_kind");
     if (!action_kind || !action_kind[0])
         action_kind = VCS_BUILD_ACTION_KIND_V1;
@@ -390,11 +396,15 @@ void zcl_native_handle_zcode_improve(
     if (!workspace_arg || !datadir || !goal || !goal[0] ||
         strlen(goal) > 4096 || !policy_hex ||
         (plan_only && (!context_symbol || !context_symbol[0])) ||
+        (explicit_admit &&
+         (!context_symbol || !context_symbol[0] || !planned_task_root ||
+          !planned_task_root[0] || !planned_context_root ||
+          !planned_context_root[0])) ||
         (!plan_only && !fixed_input)) {
         zdev_fail(reply, "MISSING_INPUT",
                   plan_only
                     ? "plan requires workspace, goal, proof policy, and context_symbol"
-                    : "admit requires workspace, goal, proof policy, and fixed input path");
+                    : "explicit admit requires the planned task/context roots, context symbol, and fixed input path");
         return;
     }
     char workspace[ZDEV_PATH_MAX];
@@ -465,8 +475,19 @@ void zcl_native_handle_zcode_improve(
     }
     uint8_t task_wire[VCS_ZCODE_TASK_WIRE_BYTES], task_root[32];
     if (vcs_zcode_task_serialize(&task, task_wire) != VCS_ZCODE_DEV_OK ||
-        vcs_zcode_task_root(&task, task_root) != VCS_ZCODE_DEV_OK ||
-        !vcs_object_store_init(workspace) ||
+        vcs_zcode_task_root(&task, task_root) != VCS_ZCODE_DEV_OK) {
+        zdev_fail(reply, "TASK_INVALID", "canonical task serialization failed");
+        return;
+    }
+    uint8_t expected_task_root[32];
+    if (explicit_admit &&
+        (!zcl_hex_decode_lower(planned_task_root, expected_task_root, 32) ||
+         memcmp(expected_task_root, task_root, 32) != 0)) {
+        zdev_fail(reply, "PLANNED_TASK_MISMATCH",
+                  "admit parameters do not rederive planned_task_root");
+        return;
+    }
+    if (!vcs_object_store_init(workspace) ||
         !vcs_object_put_addressed(workspace, policy_root, policy_wire,
                                   sizeof(policy_wire)) ||
         !vcs_object_put_addressed(workspace, task.goal_root,
@@ -477,21 +498,36 @@ void zcl_native_handle_zcode_improve(
                   "canonical task handoff could not be stored atomically");
         return;
     }
-    if (plan_only) {
-        struct zcode_agent_context_status planned_context = {0};
+    struct zcode_agent_context_status agent_context = {0};
+    bool agent_context_ready = false;
+    if (context_symbol && context_symbol[0]) {
         struct zcl_result captured = zcode_agent_context_capture(
-            workspace, &task, task_root, context_symbol, &planned_context);
+            workspace, &task, task_root, context_symbol, &agent_context);
         if (!captured.ok) {
             zdev_fail(reply, "AGENT_CONTEXT_FAILED", captured.message);
             return;
         }
+        agent_context_ready = true;
+    }
+    uint8_t expected_context_root[32], actual_context_root[32];
+    if (explicit_admit &&
+        (!zcl_hex_decode_lower(planned_context_root,
+                               expected_context_root, 32) ||
+         !zcl_hex_decode_lower(agent_context.context_root_sha3,
+                               actual_context_root, 32) ||
+         memcmp(expected_context_root, actual_context_root, 32) != 0)) {
+        zdev_fail(reply, "PLANNED_CONTEXT_MISMATCH",
+                  "current source context does not match planned_context_root");
+        return;
+    }
+    if (plan_only) {
         zdev_push_root(&reply->data, "task_root", task_root);
         zdev_push_root(&reply->data, "proof_policy_root", policy_root);
         zdev_push_root(&reply->data, "toolchain_capsule_root",
                        task.toolchain_capsule_root);
         zdev_push_root(&reply->data, "model_policy_root",
                        task.model_policy_root);
-        zdev_push_agent_context(&reply->data, &planned_context);
+        zdev_push_agent_context(&reply->data, &agent_context);
         (void)json_push_kv_str(&reply->data, "mode", "plan");
         (void)json_push_kv_str(&reply->data, "state",
                                "AWAITING_CANDIDATE");
@@ -545,18 +581,6 @@ void zcl_native_handle_zcode_improve(
         return;
     }
     free(input);
-
-    struct zcode_agent_context_status agent_context = {0};
-    bool agent_context_ready = false;
-    if (context_symbol && context_symbol[0]) {
-        struct zcl_result captured = zcode_agent_context_capture(
-            workspace, &task, task_root, context_symbol, &agent_context);
-        if (!captured.ok) {
-            zdev_fail(reply, "AGENT_CONTEXT_FAILED", captured.message);
-            return;
-        }
-        agent_context_ready = true;
-    }
 
     const char *source_sha256 =
         zdev_str(request->input, "candidate_source_sha256");
