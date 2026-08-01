@@ -7,8 +7,10 @@
 # module may re-point in a single all-or-nothing batch. This gate enforces both
 # halves of the line:
 #
-#   SHAPE  Every source_tu must be a shape-LEAF translation unit: a controller,
-#          view, or condition. It may NEVER resolve under a reducer stage,
+#   SHAPE  Every authority-owning source_tu must be a shape-LEAF translation
+#          unit: a controller, view, or condition. Stateless island members may
+#          additionally be pure services/metaverse/codecs. Neither may EVER
+#          resolve under a reducer stage,
 #          consensus validation, the storage engine, a supervisor, or any state
 #          root — a dlopen'd module of any of those could silently diverge the
 #          node's consensus state or the reducer fold.
@@ -45,12 +47,17 @@ cd "$ROOT"
 
 MANIFEST="${ZCL_HOTSWAP_SWAPPABLE_MANIFEST:-config/hotswap_swappable.def}"
 DEFDIR="${ZCL_HOTSWAP_COMMAND_DEF_DIR:-config/commands}"
+ISLANDS="${ZCL_HOTSWAP_ISLAND_MANIFEST:-config/hotswap_islands.def}"
 
 echo "══ LINT: hot-swap swappable allowlist (shape leaf + READY read-only) ══"
 
 if [ ! -r "$MANIFEST" ]; then
     echo "check_hotswap_swappable_shape: FATAL — manifest '$MANIFEST' missing/unreadable." >&2
     echo "  Refusing to report 'clean' with no manifest to scan." >&2
+    exit 2
+fi
+if [ ! -r "$ISLANDS" ]; then
+    echo "check_hotswap_swappable_shape: FATAL — island manifest '$ISLANDS' missing/unreadable." >&2
     exit 2
 fi
 
@@ -126,6 +133,7 @@ fi
 
 # A shape LEAF the module ABI may re-point.
 ALLOWED='^(app/controllers|app/views|app/conditions)/'
+ISLAND_ALLOWED='^(app/(controllers|views|conditions|services)|lib/(metaverse|encoding))/.+\.c$'
 # Belt-and-suspenders: never under any of these, even if mislabeled a shape.
 FORBIDDEN='^(core|lib/consensus|lib/validation|lib/storage|lib/net|lib/coins|lib/chain|lib/mining|app/jobs|lib/kernel|lib/supervisor|app/supervisors|domain/consensus)/'
 
@@ -161,11 +169,11 @@ for row in "${ROWS[@]}"; do
     fi
     seen_sources[$s]=1
 
-    if printf '%s\n' "$s" | grep -qE "$FORBIDDEN"; then
+    if [[ "$s" =~ $FORBIDDEN ]]; then
         violations="${violations}  $s (under a forbidden consensus/state/supervisor root)"$'\n'
         continue
     fi
-    if ! printf '%s\n' "$s" | grep -qE "$ALLOWED"; then
+    if [[ ! "$s" =~ $ALLOWED ]]; then
         violations="${violations}  $s (not under an allowed shape-leaf folder: app/controllers, app/views, app/conditions)"$'\n'
         continue
     fi
@@ -210,6 +218,40 @@ if [ -n "${violations//[[:space:]]/}" ]; then
     exit 1
 fi
 
-echo "  OK: ${#ROWS[@]} swappable file(s), $leaf_total READY read-only shape leaf/leaves"
+# Island members widen code, never authority. Owners must already be admitted
+# above; members must be stateless implementation leaves under the explicitly
+# allowed app/metaverse/codec roots and globally unique.
+mapfile -t ISLAND_ROWS < <(awk -v TOK='HOTSWAP_ISLAND(' -v ARGN=2 "$MACRO_AWK" "$ISLANDS")
+gate_require_scanned "${#ISLAND_ROWS[@]}" 1 check_hotswap_swappable_shape \
+    "no HOTSWAP_ISLAND owner/member rows parsed from $ISLANDS"
+declare -A island_member_owner=()
+for row in "${ISLAND_ROWS[@]}"; do
+    owner="${row%%$'\t'*}"
+    members="${row#*$'\t'}"
+    if [ -z "${seen_sources[$owner]:-}" ]; then
+        violations="${violations}  $owner (island owner is not a swappable module owner)"$'\n'
+        continue
+    fi
+    for member in $members; do
+        if [[ ! "$member" =~ $ISLAND_ALLOWED ]]; then
+            violations="${violations}  $owner -> $member (outside stateless island roots)"$'\n'
+        elif [[ "$member" =~ $FORBIDDEN ]]; then
+            violations="${violations}  $owner -> $member (under forbidden state/consensus root)"$'\n'
+        elif [ ! -f "$member" ]; then
+            violations="${violations}  $owner -> $member (nonexistent island member)"$'\n'
+        elif [ -n "${island_member_owner[$member]:-}" ]; then
+            violations="${violations}  $member (claimed by two island owners)"$'\n'
+        fi
+        island_member_owner[$member]="$owner"
+    done
+done
+
+if [ -n "${violations//[[:space:]]/}" ]; then
+    printf '%s' "$violations"
+    echo "FAIL: reloadable-island membership violates the hard line."
+    exit 1
+fi
+
+echo "  OK: ${#ROWS[@]} swappable file(s), $leaf_total READY read-only leaf/leaves, ${#island_member_owner[@]} stateless island member(s)"
 echo "      (cross-checked against $ready_count ZCL_COMMAND_READY_READ leaves in $def_count catalog file(s))"
 exit 0

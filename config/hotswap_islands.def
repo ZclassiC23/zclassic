@@ -1,0 +1,16 @@
+/* Reloadable-island membership beyond the owning command controller.
+ *
+ * Consumer defines HOTSWAP_ISLAND(owner_tu, members). `members` is a
+ * space-separated set of stateless implementation TUs compiled into the same
+ * -Bsymbolic module as owner_tu. Every member is subject to the mutable-static
+ * lint gate. A member may belong to exactly one owner. State roots, reducers,
+ * networking ownership, storage, wallet state, consensus, and release builds
+ * are forbidden here.
+ */
+
+HOTSWAP_ISLAND("app/controllers/src/status_native_handlers.c",
+               "app/controllers/src/status_native_helpers.c")
+HOTSWAP_ISLAND("app/controllers/src/wallet_native_handlers.c",
+               "app/controllers/src/wallet_native_read_bodies.c")
+HOTSWAP_ISLAND("app/controllers/src/metaverse_controller.c",
+               "app/services/src/property_catalog_service.c lib/metaverse/src/property_id.c lib/metaverse/src/property_view.c lib/metaverse/src/property_work.c lib/metaverse/src/property_action.c lib/metaverse/src/adapter_registry.c lib/metaverse/src/adapter_content.c lib/metaverse/src/adapter_zcode.c")

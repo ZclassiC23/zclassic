@@ -609,6 +609,12 @@ void zcl_native_handle_network_graph(
  * accessor for handlers that open a datadir-relative store directly. */
 const char *zcl_native_command_datadir(void);
 
+/* Bind the native controller bridge to an explicit node RPC context.  The
+ * resident dev host uses this at boot so a hot-loaded controller cannot
+ * accidentally replace the live context with the empty one-shot CLI
+ * defaults on its first probe. */
+void zcl_native_bridge_bind_rpc(const char *datadir, int rpc_port);
+
 /* ── the one read-only <datadir>/node.db open (native_node_db_ro.c) ───
  *
  * A leaf declared READY_READ must NEVER reach node_db_open(): that is the

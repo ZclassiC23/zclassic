@@ -263,13 +263,6 @@ int zcl_devloop_watch_mode(const char *repo_root,
         fprintf(stderr, "[devloop] watch: invalid publication mode\n");
         return 2;
     }
-    if (zcl_devloop_publish_mode_applies(publish_mode)) {
-        fprintf(stderr,
-                "[devloop] watch: runtime publication is contained; use "
-                "verify mode until immutable epochs and proof receipts are "
-                "transactional\n");
-        return 3;
-    }
     if (!realpath(root, ctx.root)) {
         fprintf(stderr, "[devloop] watch: cannot resolve repository root: %s\n",
                 strerror(errno));
@@ -331,7 +324,7 @@ int zcl_devloop_watch_mode(const char *repo_root,
 
         /* Coalesce editor temp-file renames and multi-file saves into one
          * source epoch. Each newly observed event extends the quiet window. */
-        int64_t quiet_until = platform_time_monotonic_us() + 150000;
+        int64_t quiet_until = platform_time_monotonic_us() + 15000;
         while (!g_watch_stop) {
             int64_t remain_us = quiet_until - platform_time_monotonic_us();
             if (remain_us <= 0)
@@ -340,7 +333,7 @@ int zcl_devloop_watch_mode(const char *repo_root,
             struct pollfd debounce = { .fd = ctx.fd, .events = POLLIN };
             int drc = poll(&debounce, 1, wait_ms);
             if (drc > 0 && collect_events(&ctx))
-                quiet_until = platform_time_monotonic_us() + 150000;
+                quiet_until = platform_time_monotonic_us() + 15000;
             else if (drc < 0 && errno != EINTR)
                 break;
         }
@@ -359,8 +352,17 @@ int zcl_devloop_watch_mode(const char *repo_root,
                (unsigned long long)ctx.mutation_sequence,
                full_rescan ? "true" : "false", ctx.changed_count);
         fflush(stdout);
-        (void)zcl_devloop_run_cycle_mode(ctx.root, files, ctx.changed_count,
-                                         publish_mode);
+        int fast = ctx.changed_count == 1
+            ? zcl_devloop_hotswap_event(ctx.root, files[0], publish_mode) : 0;
+        if (fast == 0) {
+            /* APPLY authority is intentionally narrower than the generic
+             * cycle: only one compiled-allowlist island may publish live.
+             * Storage/reducers/network/consensus and ordinary reload edits
+             * remain on the verify-only contained path. */
+            (void)zcl_devloop_run_cycle_mode(
+                ctx.root, files, ctx.changed_count,
+                ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY);
+        }
         ctx.changed_count = 0;
     }
 

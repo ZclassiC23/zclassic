@@ -130,7 +130,7 @@ void zcl_native_handle_metaverse_agent_status(
     if (!dir)
         return;
 
-    static char doc[MV_DOC_MAX];
+    char doc[MV_DOC_MAX];
     size_t n = 0;
     struct zcl_result r =
         metaverse_agent_service_status(dir, doc, sizeof(doc), &n);
@@ -157,7 +157,7 @@ void zcl_native_handle_metaverse_agent_audit(
         return;
     }
 
-    static char doc[MV_DOC_MAX];
+    char doc[MV_DOC_MAX];
     size_t n = 0;
     struct zcl_result r =
         metaverse_agent_service_audit(dir, (size_t)limit, doc, sizeof(doc), &n);
@@ -326,3 +326,33 @@ void zcl_native_handle_metaverse_property_show(
     }
     (void)json_push_kv_str(&reply->data, "datadir", datadir);
 }
+
+/* Both generation formats bind the property catalog's read-only command
+ * leaves directly. Their service, view, codec, and adapter implementations
+ * are members of the same reloadable island (config/hotswap_islands.def). */
+#ifdef ZCL_HOTSWAP_GEN
+#include "hotswap/hotswap.h"
+static const struct zcl_hotswap_leaf_replacement k_metaverse_leaves[] = {
+    { "metaverse.property.list", zcl_native_handle_metaverse_property_list },
+    { "metaverse.property.show", zcl_native_handle_metaverse_property_show },
+};
+ZCL_HOTSWAP_EXPORT_LEAVES(
+    k_metaverse_leaves,
+    sizeof(k_metaverse_leaves) / sizeof(k_metaverse_leaves[0]))
+#endif
+
+#ifdef ZCL_HOTSWAP_MODULE_GEN
+#include "hotswap/hotswap_module.h"
+static const struct zcl_hotswap_leaf k_metaverse_module_leaves[] = {
+    { "metaverse.property.list", zcl_native_handle_metaverse_property_list },
+    { "metaverse.property.show", zcl_native_handle_metaverse_property_show },
+};
+static bool metaverse_module_selftest(char *error, size_t error_cap)
+{
+    (void)error;
+    (void)error_cap;
+    return true;
+}
+ZCL_HOTSWAP_MODULE_LEAVES(k_metaverse_module_leaves,
+                          metaverse_module_selftest)
+#endif

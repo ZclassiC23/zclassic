@@ -23,6 +23,44 @@ bool zcl_app_manifest_v1_validate(const struct zcl_app_manifest_v1 *manifest,
 
 const char *zcl_app_capability_name(uint64_t one_capability);
 
+/* Host-owned live-generation transaction. The runtime copies the host table
+ * and owns only routing metadata + the opaque state handle; module code never
+ * owns Core state. The manifest/module mapping must outlive its active slot.
+ * This surface deliberately has no loader, storage, wallet-key, socket,
+ * consensus, or release-publication authority. */
+struct zcl_app_runtime_v1;
+
+struct zcl_app_activation_receipt_v1 {
+    uint32_t struct_size;
+    bool ok;
+    bool rolled_back;
+    bool migration_prepared;
+    bool migration_committed;
+    uint64_t generation;
+    uint32_t from_schema;
+    uint32_t to_schema;
+    char phase[32];
+    char error[ZCL_APP_ERROR_MAX + 1];
+};
+
+struct zcl_app_runtime_v1 *zcl_app_runtime_v1_create(
+    const struct zcl_app_host_v1 *host, uint64_t allowed_capabilities,
+    const char *build_identity, char *why, size_t why_sz);
+void zcl_app_runtime_v1_destroy(struct zcl_app_runtime_v1 *runtime);
+
+/* Validate -> candidate self-test -> migration prepare -> old-generation
+ * quiesce -> migration commit -> atomic slot replacement. Any failure leaves
+ * the exact prior manifest/generation authoritative and calls abort after a
+ * successful prepare. Schema removal or rollback is refused. */
+bool zcl_app_runtime_v1_activate(
+    struct zcl_app_runtime_v1 *runtime,
+    const struct zcl_app_manifest_v1 *candidate,
+    struct zcl_app_activation_receipt_v1 *receipt);
+
+const struct zcl_app_manifest_v1 *zcl_app_runtime_v1_active(
+    struct zcl_app_runtime_v1 *runtime, uint64_t *generation_out,
+    uint32_t *schema_out);
+
 /* Core-owned, non-consensus signed event contract. The payload is borrowed;
  * callers keep it alive for hashing, signing, and verification. Private keys
  * never enter the public App ABI: only Core may call the signer below. */

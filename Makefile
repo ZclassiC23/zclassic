@@ -403,6 +403,7 @@ DEVLOOP_ALL_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(wildcard tools/dev/*.c))
 DEV_ONLY_SRCS = tools/dev/devloop_cli.c tools/dev/devloop_cycle.c \
 	tools/dev/devloop_watch.c tools/dev/devloop_process.c \
+	tools/dev/devloop_hotswap_build.c \
 	tools/dev/devloop_baseline.c tools/dev/dev_failure_store.c \
 	tools/dev/dev_source_identity.c
 DEVLOOP_SRCS = $(filter-out $(DEV_ONLY_SRCS),$(DEVLOOP_ALL_SRCS))
@@ -1050,7 +1051,8 @@ all: test_zcl zclassic23 zclassic-cli zcl-rpc zclassic23-package-verify
 TEST_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(wildcard lib/test/src/*.c))
 TEST_DEV_EXECUTOR_SRCS = tools/dev/devloop_cycle.c tools/dev/dev_failure_store.c \
-	tools/dev/dev_source_identity.c tools/dev/devloop_process.c
+	tools/dev/dev_source_identity.c tools/dev/devloop_process.c \
+	tools/dev/devloop_hotswap_build.c
 SPEC_SRCS = $(wildcard lib/test/spec/*.c)
 CHAOS_SIM_SRCS = tools/sim/sim_peer.c
 
@@ -2146,6 +2148,22 @@ hotswap-module-so: $(VIEW_GEN_HEADERS)
 	[ -f "$$src" ] || { echo "hotswap-module-so: source does not exist: $$src" >&2; exit 2; }; \
 	mkdir -p "$(HOTSWAP_OBJ_DIR)" "$(HOTSWAP_SO_DIR)" "$(HOTSWAP_SO_DIR)/fast"; \
 	safe="$$(printf '%s' "$$src" | tr -c 'A-Za-z0-9_.-' '_')"; \
+	compile_src="$$src"; \
+	island_rows="$$(tr '\n' ' ' < config/hotswap_islands.def \
+	  | grep -oE 'HOTSWAP_ISLAND\("[^"]*"[[:space:]]*,[[:space:]]*"[^"]*"\)' || true)"; \
+	members="$$(printf '%s\n' "$$island_rows" | awk -v owner="$$src" -F '"' '$$2 == owner { print $$4; exit }')"; \
+	if [ -n "$$members" ]; then \
+	  unity="$(HOTSWAP_SO_DIR)/fast/$$safe.island.c"; \
+	  tmp_unity="$$(mktemp "$(HOTSWAP_SO_DIR)/fast/.island.XXXXXX.c")"; \
+	  for member in $$members; do \
+	    [ -f "$$member" ] || { echo "hotswap-module-so: missing island member $$member" >&2; exit 2; }; \
+	    printf '#include "%s/%s"\n' '$(CURDIR)' "$$member" >> "$$tmp_unity"; \
+	  done; \
+	  printf '#include "%s/%s"\n' '$(CURDIR)' "$$src" >> "$$tmp_unity"; \
+	  if [ -f "$$unity" ] && cmp -s "$$tmp_unity" "$$unity"; then rm -f "$$tmp_unity"; \
+	  else mv -f "$$tmp_unity" "$$unity"; fi; \
+	  compile_src="$$unity"; \
+	fi; \
 	o="$(HOTSWAP_OBJ_DIR)/mod-$$safe-$(BUILD_SOURCE_ID).o"; \
 	so="$(HOTSWAP_SO_DIR)/$$safe-$(BUILD_SOURCE_ID).so"; \
 	tmp_o="$$(mktemp "$(HOTSWAP_OBJ_DIR)/.module.XXXXXX.o")"; \
@@ -2161,7 +2179,7 @@ hotswap-module-so: $(VIEW_GEN_HEADERS)
 	}; \
 	$(CC) $(DEV_CFLAGS) -fPIC -DZCL_HOTSWAP_MODULE_GEN \
 	  -DZCL_HOTSWAP_MODULE_SOURCE_TU=\"$$src\" \
-	  -MD -MF "$$tmp_d" -c -o "$$tmp_o" "$$src" >&2; \
+	  -MD -MF "$$tmp_d" -c -o "$$tmp_o" "$$compile_src" >&2; \
 	$(CC) $(HOTSWAP_MODULE_LDFLAGS) -o "$$tmp_so" "$$tmp_o" >&2; \
 	tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
 	publish_exact "$$tmp_o" "$$o" || { \

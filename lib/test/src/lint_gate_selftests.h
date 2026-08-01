@@ -94,6 +94,10 @@
     "lib/test/fixtures/hotswap_swappable_dup_leaf.def"
 #define HOTSWAP_SWAPPABLE_BAD_STATIC_REL \
     "lib/test/fixtures/hotswap_swappable_bad_static.def"
+#define HOTSWAP_ISLAND_BAD_SCOPE_REL \
+    "lib/test/fixtures/hotswap_islands_bad_scope.def"
+#define HOTSWAP_ISLAND_BAD_STATIC_REL \
+    "lib/test/fixtures/hotswap_islands_bad_static.def"
 #define GIT_HOOKS_SCRIPT_REL "tools/scripts/check_git_hooks_installed.sh"
 #define PRIV_RECEIPT_SCRIPT_REL \
     "tools/lint/check_privileged_transition_receipt.sh"

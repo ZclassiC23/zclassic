@@ -601,6 +601,68 @@ static char *status_body_mock_rpc(const char *method, const char *params_json)
     return strdup("null");
 }
 
+static char *status_frontdoor_mock_rpc(const char *method,
+                                       const char *params_json)
+{
+    (void)params_json;
+    if (strcmp(method, "dumpstate") == 0 && g_status_body_rpc_fixture)
+        return strdup(g_status_body_rpc_fixture);
+    return strdup("null");
+}
+
+static int test_native_bridge_resident_binding(void)
+{
+    int failures = 0;
+    TEST("native bridge: resident RPC binding survives the lazy ensure seam") {
+        zcl_native_bridge_bind_rpc("/tmp/zcl-resident-dev", 18252);
+        zcl_native_bridge_ensure_rpc();
+        ASSERT_STR_EQ(node_rpc_client_datadir(), "/tmp/zcl-resident-dev");
+        zcl_native_bridge_bind_rpc("", 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_status_frontdoor_preserves_rpc_error(void)
+{
+    int failures = 0;
+    TEST("zcl_native_status_body: JSON-RPC failures keep the transport/auth "
+         "diagnosis instead of masquerading as a candidate schema failure") {
+        node_rpc_client_set_test_hook(status_frontdoor_mock_rpc);
+        static const char cookie_error[] =
+            "{\"error\":{\"code\":-32603,\"message\":"
+            "\"cannot read RPC auth cookie at /tmp/dev/.cookie\"}}";
+        g_status_body_rpc_fixture = cookie_error;
+        struct zcl_native_body_err err = {0};
+        char *body = zcl_native_status_body(NULL, &err);
+        ASSERT(body == NULL);
+        ASSERT_EQ((int)err.status, (int)ZCL_NATIVE_BODY_UNAVAILABLE);
+        ASSERT(strstr(err.message, "RPC failed") != NULL);
+        ASSERT(strstr(err.message, "cannot read RPC auth cookie") != NULL);
+        ASSERT(strstr(err.message, "missing state object") == NULL);
+
+        static const char healthy[] =
+            "{\"state\":{\"schema\":\"zcl.status_frontdoor.v1\","
+            "\"serving\":true}}";
+        g_status_body_rpc_fixture = healthy;
+        err = (struct zcl_native_body_err){0};
+        body = zcl_native_status_body(NULL, &err);
+        ASSERT(body != NULL);
+        struct json_value data;
+        json_init(&data);
+        ASSERT(json_read(&data, body, strlen(body)) && data.type == JSON_OBJ);
+        ASSERT(json_get_bool(json_get(&data, "serving")));
+        ASSERT_STR_EQ(json_get_str(json_get(&data, "status_source")),
+                      "status_frontdoor");
+        json_free(&data);
+        free(body);
+        PASS();
+    } _test_next:;
+    g_status_body_rpc_fixture = NULL;
+    node_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
 static int test_status_brief_body_schema_skew_tolerance(void)
 {
     int failures = 0;
@@ -1287,6 +1349,8 @@ int test_native_api_contract(void)
     failures += test_native_app_catalog_uses_strict_builtin_source();
     failures += test_wallet_mutating_native_e2e();
     failures += test_app_write_native_e2e();
+    failures += test_native_bridge_resident_binding();
+    failures += test_status_frontdoor_preserves_rpc_error();
     failures += test_status_brief_body_schema_skew_tolerance();
     failures += test_status_brief_body_front_door_deadline();
     failures += test_partial_rpc_reply_names_the_timeout();

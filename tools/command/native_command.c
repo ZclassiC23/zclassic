@@ -377,6 +377,15 @@ const char *zcl_native_command_datadir(void)
     return g_bridge_datadir;
 }
 
+void zcl_native_bridge_bind_rpc(const char *datadir, int rpc_port)
+{
+    (void)snprintf(g_bridge_datadir, sizeof(g_bridge_datadir), "%s",
+                   datadir ? datadir : "");
+    g_bridge_rpc_port = rpc_port;
+    node_rpc_client_init(g_bridge_datadir, g_bridge_rpc_port);
+    g_bridge_rpc_ready = true;
+}
+
 static void bridge_ensure_rpc_client(void)
 {
     if (g_bridge_rpc_ready)
@@ -3153,9 +3162,7 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
 {
     if (!root_word || !root_word[0])
         return ZCL_COMMAND_EXIT_INVALID;
-    (void)snprintf(g_bridge_datadir, sizeof(g_bridge_datadir), "%s",
-                   datadir ? datadir : "");
-    g_bridge_rpc_port = rpc_port;
+    zcl_native_bridge_bind_rpc(datadir, rpc_port);
 
     const struct zcl_command_registry *reg = catalog();
     char why[128];

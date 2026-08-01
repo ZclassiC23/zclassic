@@ -39,10 +39,11 @@ cd "$ROOT"
 
 MANIFEST="${ZCL_HOTSWAP_MANIFEST:-config/hotswap_eligible.def}"
 SWAPPABLE="${ZCL_HOTSWAP_SWAPPABLE_MANIFEST:-config/hotswap_swappable.def}"
+ISLANDS="${ZCL_HOTSWAP_ISLAND_MANIFEST:-config/hotswap_islands.def}"
 
 echo "══ LINT: hot-swap recompiled TUs hold no mutable file-scope statics ══"
 
-for m in "$MANIFEST" "$SWAPPABLE"; do
+for m in "$MANIFEST" "$SWAPPABLE" "$ISLANDS"; do
     if [ ! -r "$m" ]; then
         echo "check_hotswap_static_state: FATAL — manifest '$m' missing/unreadable." >&2
         echo "  Refusing to report 'clean' with a manifest missing from the scan set." >&2
@@ -83,15 +84,25 @@ END {
 mapfile -t ELIGIBLE_PATHS < <(awk -v TOK='HOTSWAP_ELIGIBLE(' "$FIRST_ARG_AWK" "$MANIFEST")
 mapfile -t SWAPPABLE_PATHS < <(awk -v TOK='HOTSWAP_SWAPPABLE(' "$FIRST_ARG_AWK" "$SWAPPABLE")
 
+# The second string contains the space-separated implementation members.
+SECOND_ARG_AWK="${FIRST_ARG_AWK/if (match(spec, \/\"[^\"]*\"\/)) print substr(spec, RSTART + 1, RLENGTH - 2)/if (match(spec, \/\"[^\"]*\"\/)) { spec = substr(spec, RSTART + RLENGTH); if (match(spec, \/\"[^\"]*\"\/)) print substr(spec, RSTART + 1, RLENGTH - 2) }}"
+mapfile -t ISLAND_MEMBER_LISTS < <(awk -v TOK='HOTSWAP_ISLAND(' "$SECOND_ARG_AWK" "$ISLANDS")
+ISLAND_PATHS=()
+for members in "${ISLAND_MEMBER_LISTS[@]}"; do
+    for p in $members; do ISLAND_PATHS+=("$p"); done
+done
+
 gate_require_scanned "${#ELIGIBLE_PATHS[@]}" 1 check_hotswap_static_state \
     "no HOTSWAP_ELIGIBLE(\"...\") entries parsed from $MANIFEST"
 gate_require_scanned "${#SWAPPABLE_PATHS[@]}" 1 check_hotswap_static_state \
     "no HOTSWAP_SWAPPABLE(\"...\") entries parsed from $SWAPPABLE"
+gate_require_scanned "${#ISLAND_PATHS[@]}" 1 check_hotswap_static_state \
+    "no HOTSWAP_ISLAND implementation members parsed from $ISLANDS"
 
 # Union, de-duplicated, deterministic order.
 declare -A seen=()
 PATHS=()
-for p in "${ELIGIBLE_PATHS[@]}" "${SWAPPABLE_PATHS[@]}"; do
+for p in "${ELIGIBLE_PATHS[@]}" "${SWAPPABLE_PATHS[@]}" "${ISLAND_PATHS[@]}"; do
     [ -n "$p" ] || continue
     [ -n "${seen[$p]:-}" ] && continue
     seen[$p]=1
@@ -142,5 +153,5 @@ if [ -n "${violations//[[:space:]]/}" ]; then
 fi
 
 echo "  OK: $scanned hot-swap TU(s) free of mutable file-scope statics"
-echo "      (${#ELIGIBLE_PATHS[@]} eligible + ${#SWAPPABLE_PATHS[@]} swappable, de-duplicated)"
+echo "      (${#ELIGIBLE_PATHS[@]} eligible + ${#SWAPPABLE_PATHS[@]} swappable + ${#ISLAND_PATHS[@]} island members, de-duplicated)"
 exit 0

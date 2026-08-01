@@ -291,17 +291,42 @@ static char *status_frontdoor_body(struct zcl_native_body_err *err)
     char *raw = node_rpc_call("dumpstate", "[\"status_frontdoor\"]");
     struct json_value env;
     json_init(&env);
-    if (!raw || !json_read(&env, raw, strlen(raw))) {
+    if (!raw) {
+        err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
+        snprintf(err->message, sizeof(err->message),
+                 "status front door dumpstate returned null");
+        LOG_NULL("native.ops", "status front door dumpstate returned null");
+    }
+    if (!json_read(&env, raw, strlen(raw))) {
         json_free(&env);
         free(raw);
         err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
         snprintf(err->message, sizeof(err->message),
-                 "status front door dumpstate returned %s",
-                 raw ? "invalid JSON" : "null");
-        LOG_NULL("native.ops", "status front door dumpstate returned %s",
-                 raw ? "invalid JSON" : "null");
+                 "status front door dumpstate returned invalid JSON");
+        LOG_NULL("native.ops",
+                 "status front door dumpstate returned invalid JSON");
     }
     free(raw);
+
+    /* node_rpc_call deliberately returns transport/authentication failures as
+     * valid JSON-RPC error envelopes. Preserve that precise diagnosis. A
+     * hot-swap probe commonly reaches this path while the isolated dev node is
+     * still starting; calling it a candidate `state` schema failure sends the
+     * operator toward the wrong subsystem. */
+    const struct json_value *rpc_error = json_get(&env, "error");
+    if (rpc_error && rpc_error->type == JSON_OBJ) {
+        const struct json_value *message_v = json_get(rpc_error, "message");
+        const char *message = message_v && message_v->type == JSON_STR
+            ? json_get_str(message_v) : "unnamed JSON-RPC error";
+        char message_copy[181];
+        snprintf(message_copy, sizeof(message_copy), "%.180s", message);
+        err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
+        snprintf(err->message, sizeof(err->message),
+                 "status front door dumpstate RPC failed: %s", message_copy);
+        json_free(&env);
+        LOG_NULL("native.ops", "status front door dumpstate RPC failed: %s",
+                 message_copy);
+    }
 
     const struct json_value *state = json_get(&env, "state");
     if (!state || state->type != JSON_OBJ) {
@@ -740,6 +765,12 @@ ZCL_HOTSWAP_EXPORT_LEAVES(k_leaves, sizeof(k_leaves) / sizeof(k_leaves[0]))
 #include "hotswap/hotswap_module.h"
 #include "kernel/command_registry.h"
 #include "command/native_command.h"
+
+/* Deliberately retained in the module artifact.  The resident latency gate
+ * rewrites only the fixed-width suffix, forcing twenty distinct native
+ * compiles/artifacts while leaving command semantics unchanged. */
+static const char zcl_hotswap_bench_marker[] __attribute__((used)) =
+    "ZCL_HOTSWAP_BENCH:00000000";
 
 static void module_tramp_status(const struct zcl_command_request *request,
                                  struct zcl_command_reply *reply)

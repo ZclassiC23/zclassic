@@ -79,6 +79,7 @@ case "$FILE" in
 esac
 
 DEF=config/hotswap_swappable.def
+ISLAND_DEF=config/hotswap_islands.def
 # Rows are per-FILE and span lines: flatten, then match only complete
 # HOTSWAP_SWAPPABLE("<src>", "<leaves>") invocations (the header comment spells
 # the signature without quotes, so it can never match).
@@ -108,7 +109,7 @@ safe="$(printf '%s' "$src" | tr -c 'A-Za-z0-9_.-' '_')"
 # invalidate it: the Makefile (flag definitions), the allowlist (handler ->
 # TU mapping), and this script (fast-path semantics).
 [ -f "$FLAGS_ENV" ] || fallback "no cached flags.env (run make hotswap-module-so once)"
-for ref in Makefile "$DEF" "$SELF_DIR/$(basename "${BASH_SOURCE[0]}")"; do
+for ref in Makefile "$DEF" "$ISLAND_DEF" "$SELF_DIR/$(basename "${BASH_SOURCE[0]}")"; do
     [ "$ref" -nt "$FLAGS_ENV" ] && fallback "$ref newer than cached flags.env"
 done
 

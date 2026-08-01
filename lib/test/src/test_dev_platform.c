@@ -7,6 +7,7 @@
 #include "devloop.h"
 #include "framework/app_definition.h"
 #include "framework/app_platform.h"
+#include "hotswap/hotswap_module.h"
 #include "json/json.h"
 #include "keys/key.h"
 #include "sim/social_app_sim.h"
@@ -83,6 +84,71 @@ static struct zcl_app_manifest_v1 valid_manifest(void)
         .self_test = app_self_test,
         .quiesce = app_quiesce,
     };
+}
+
+static int g_app_prepare_calls;
+static int g_app_commit_calls;
+static int g_app_abort_calls;
+static bool g_app_commit_fail;
+
+static int app_state_open(void *ctx, const char *app_id, uint32_t schema,
+                          zcl_app_state_handle *out,
+                          struct zcl_app_error *error)
+{
+    (void)ctx;
+    (void)schema;
+    (void)error;
+    if (!app_id || strcmp(app_id, "social") != 0 || !out)
+        return -1;
+    *out = 77;
+    return 0;
+}
+
+static int app_state_read(void *ctx, zcl_app_state_handle state,
+                          struct zcl_app_bytes key,
+                          struct zcl_app_mut_bytes *value,
+                          struct zcl_app_error *error)
+{
+    (void)ctx; (void)state; (void)key; (void)value; (void)error;
+    return 0;
+}
+
+static int app_state_write(void *ctx, zcl_app_state_handle state,
+                           struct zcl_app_bytes key,
+                           struct zcl_app_bytes value,
+                           struct zcl_app_error *error)
+{
+    (void)ctx; (void)state; (void)key; (void)value; (void)error;
+    return 0;
+}
+
+static int app_migration_prepare(const struct zcl_app_host_v1 *host,
+                                 zcl_app_state_handle state,
+                                 struct zcl_app_error *error)
+{
+    (void)host; (void)error;
+    if (state != 77) return -1;
+    g_app_prepare_calls++;
+    return 0;
+}
+
+static int app_migration_commit(const struct zcl_app_host_v1 *host,
+                                zcl_app_state_handle state,
+                                struct zcl_app_error *error)
+{
+    (void)host; (void)state;
+    g_app_commit_calls++;
+    if (!g_app_commit_fail) return 0;
+    (void)snprintf(error->message, sizeof(error->message), "%s",
+                   "injected commit refusal");
+    return -1;
+}
+
+static void app_migration_abort(const struct zcl_app_host_v1 *host,
+                                zcl_app_state_handle state)
+{
+    (void)host; (void)state;
+    g_app_abort_calls++;
 }
 
 static const uint8_t g_test_social_chain_id[ZCL_APP_EVENT_CHAIN_ID_SIZE] = {
@@ -347,7 +413,7 @@ static int test_core_classification(void)
 static int test_watcher_publication_containment(void)
 {
     int failures = 0;
-    TEST("dev platform: watchers verify by default and apply is contained") {
+    TEST("dev platform: watchers verify by default and auto is island-only") {
         ASSERT(zcl_devloop_default_watch_publish_mode() ==
                ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY);
         ASSERT(!zcl_devloop_publish_mode_applies(
@@ -373,9 +439,9 @@ static int test_watcher_publication_containment(void)
         ASSERT(!zcl_devloop_watch_lock_path(NULL, lock_path,
                                             sizeof(lock_path)));
 
-        /* The containment decision is independent of classification. These
-         * cover hot-swap, ordinary reload, consensus reload, and sealed-core
-         * reload without granting any of them watcher publication authority. */
+        /* APPLY is meaningful only to the separate resident island fast path.
+         * The generic cycle remains contained for ordinary reload, consensus,
+         * and sealed-core edits. */
         const char *hot[] = { "app/controllers/src/status_native_handlers.c" };
         const char *reload[] = { "app/services/src/node_health_service.c" };
         const char *consensus[] = { "lib/validation/src/sighash.c" };
@@ -383,6 +449,8 @@ static int test_watcher_publication_containment(void)
         struct zcl_devloop_plan plan;
         ASSERT(zcl_devloop_plan_files(hot, 1, &plan));
         ASSERT(plan.action == ZCL_DEVLOOP_HOTSWAP);
+        ASSERT(hotswap_source_is_swappable(hot[0]));
+        ASSERT(!hotswap_source_is_swappable(reload[0]));
         ASSERT(!zcl_devloop_publish_mode_applies(
             zcl_devloop_default_watch_publish_mode()));
         ASSERT(zcl_devloop_plan_files(reload, 1, &plan));
@@ -562,6 +630,85 @@ static int test_public_app_abi(void)
         ASSERT(!zcl_app_manifest_v1_validate(
             &manifest, ZCL_APP_CAP_WEB_ROUTES, "build", why, sizeof(why)));
         ASSERT(strstr(why, "duplicate app topic") != NULL);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_app_runtime_transaction(void)
+{
+    int failures = 0;
+    TEST("dev platform: host-owned app generation and migration commit atomically") {
+        struct zcl_app_host_v1 host = {
+            .struct_size = sizeof(host),
+            .abi_version = ZCL_APP_HOST_ABI_V1,
+            .capabilities = ZCL_APP_CAP_WEB_ROUTES |
+                            ZCL_APP_CAP_RESIDENT_STATE,
+            .state_open = app_state_open,
+            .state_read = app_state_read,
+            .state_write = app_state_write,
+        };
+        char why[192];
+        struct zcl_app_runtime_v1 *runtime = zcl_app_runtime_v1_create(
+            &host, host.capabilities, "build", why, sizeof(why));
+        ASSERT(runtime != NULL);
+
+        struct zcl_app_manifest_v1 stateless = valid_manifest();
+        struct zcl_app_activation_receipt_v1 receipt;
+        ASSERT(zcl_app_runtime_v1_activate(runtime, &stateless, &receipt));
+        ASSERT(receipt.ok && !receipt.rolled_back);
+        ASSERT_EQ(receipt.generation, (uint64_t)1);
+
+        static const struct zcl_app_migration_v1 to_v1 = {
+            .struct_size = sizeof(struct zcl_app_migration_v1),
+            .from_schema = 0,
+            .to_schema = 1,
+            .prepare = app_migration_prepare,
+            .commit = app_migration_commit,
+            .abort = app_migration_abort,
+        };
+        struct zcl_app_manifest_v1 stateful_v1 = valid_manifest();
+        stateful_v1.state_schema_version = 1;
+        stateful_v1.required_capabilities |= ZCL_APP_CAP_RESIDENT_STATE;
+        stateful_v1.migration = &to_v1;
+        g_app_prepare_calls = g_app_commit_calls = g_app_abort_calls = 0;
+        g_app_commit_fail = false;
+        ASSERT(zcl_app_runtime_v1_activate(runtime, &stateful_v1, &receipt));
+        ASSERT(receipt.migration_prepared && receipt.migration_committed);
+        ASSERT_EQ(receipt.generation, (uint64_t)2);
+        ASSERT_EQ(g_app_prepare_calls, 1);
+        ASSERT_EQ(g_app_commit_calls, 1);
+        ASSERT_EQ(g_app_abort_calls, 0);
+
+        static const struct zcl_app_migration_v1 to_v2 = {
+            .struct_size = sizeof(struct zcl_app_migration_v1),
+            .from_schema = 1,
+            .to_schema = 2,
+            .prepare = app_migration_prepare,
+            .commit = app_migration_commit,
+            .abort = app_migration_abort,
+        };
+        struct zcl_app_manifest_v1 rejected_v2 = valid_manifest();
+        rejected_v2.state_schema_version = 2;
+        rejected_v2.required_capabilities |= ZCL_APP_CAP_RESIDENT_STATE;
+        rejected_v2.migration = &to_v2;
+        g_app_commit_fail = true;
+        ASSERT(!zcl_app_runtime_v1_activate(runtime, &rejected_v2, &receipt));
+        ASSERT(receipt.rolled_back && !receipt.ok);
+        ASSERT_STR_EQ(receipt.phase, "migration_commit");
+        ASSERT_EQ(g_app_abort_calls, 1);
+        uint64_t generation = 0;
+        uint32_t schema = 0;
+        ASSERT(zcl_app_runtime_v1_active(runtime, &generation, &schema) ==
+               &stateful_v1);
+        ASSERT_EQ(generation, (uint64_t)2);
+        ASSERT_EQ(schema, (uint32_t)1);
+
+        ASSERT(!zcl_app_runtime_v1_activate(runtime, &stateless, &receipt));
+        ASSERT_STR_EQ(receipt.phase, "migration");
+        ASSERT(zcl_app_runtime_v1_active(runtime, &generation, &schema) ==
+               &stateful_v1);
+        zcl_app_runtime_v1_destroy(runtime);
         PASS();
     } _test_next:;
     return failures;
@@ -1836,6 +1983,7 @@ int test_dev_platform(void)
     failures += test_core_refusal_cycle();
     failures += test_core_refusal_token();
     failures += test_public_app_abi();
+    failures += test_app_runtime_transaction();
     failures += test_app_definition_compiler();
     failures += test_strict_dev_app_producers();
     failures += test_app_definition_hostile_fixtures();

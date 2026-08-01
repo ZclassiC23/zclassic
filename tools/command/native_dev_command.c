@@ -781,7 +781,27 @@ static void dev_emit_loop_status(const char *repo_root,
     }
     (void)json_push_kv_int(&reply->data, "epoch", epoch);
     if (lookup == ZCL_DEVLOOP_STATE_FOUND) {
-        (void)json_push_kv(&reply->data, "latest_verdict", &cycle);
+        /* Loop ownership/status has a deliberately small response budget.
+         * Activation receipts may contain a full behavioral probe (several
+         * KiB), so nesting the durable cycle verbatim made `ensure` start the
+         * watcher and then fail serialization. Keep the decision fields here;
+         * `dev.status` / `dev.loop.wait` remain the full receipt surfaces. */
+        static const char *const summary_fields[] = {
+            "schema", "producer", "status", "action", "reason", "phase",
+            "runtime_published", "elapsed_us", "elapsed_ms", "source_tu",
+            "failure_capsule", "agent_next_action",
+        };
+        struct json_value summary;
+        json_init(&summary);
+        json_set_object(&summary);
+        for (size_t i = 0;
+             i < sizeof(summary_fields) / sizeof(summary_fields[0]); i++) {
+            const struct json_value *value = json_get(&cycle, summary_fields[i]);
+            if (value)
+                (void)json_push_kv(&summary, summary_fields[i], value);
+        }
+        (void)json_push_kv(&reply->data, "latest_verdict", &summary);
+        json_free(&summary);
         json_free(&cycle);
     } else
         json_free(&cycle);
@@ -817,17 +837,8 @@ void zcl_native_handle_dev_loop_ensure(
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INVALID, "INVALID_WATCH_MODE",
                                "normalize", false, false,
-                               "mode must be verify",
+                               "mode must be verify or auto",
                                "mode");
-        return;
-    }
-    if (zcl_devloop_publish_mode_applies(requested_mode)) {
-        zcl_command_reply_fail(
-            reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_BLOCKED,
-            "RUNTIME_PUBLICATION_CONTAINED", "authority", false, false,
-            "apply/auto watchers are contained until immutable source epochs, "
-            "complete proof receipts, resident CAS, and rollback are one durable transaction",
-            "start the watcher with mode=verify");
         return;
     }
     const struct json_value *root_v = json_get(request->input, "root");

@@ -334,11 +334,12 @@ ZCL_COMMAND_DEV_READ(
 
 ZCL_COMMAND_DEV_COMMAND(
     "dev.loop.ensure", "dev.loop", "dev.loop.watch",
-    "Ensure one verify-only watcher; publication modes are contained",
-    "Confirmation that one verify-only watcher process now owns the "
-    "checkout's singleton lock, plus its live status snapshot; apply/auto "
-    "publication modes are refused today.", 0,
-    "loop,ensure,watcher,inotify,verify,containment",
+    "Ensure one resident watcher; auto publishes only stateless islands",
+    "Confirmation that one watcher process owns the checkout's singleton "
+    "lock. Verify is the default. Auto may publish exactly one allowlisted "
+    "stateless hot-swap island; every other edit is forced onto the contained "
+    "verify-only path.", 0,
+    "loop,ensure,watcher,inotify,verify,auto,hotswap,island",
     "zcl.dev_loop_ensure_input.v1", "zcl.dev_loop_status.v1",
     "root,mode", "", "zclassic23 dev loop ensure --input='{\"root\":\".\",\"mode\":\"verify\"}'",
     ZCL_COMMAND_EFFECT_MUTATE,
@@ -350,7 +351,7 @@ ZCL_COMMAND_DEV_COMMAND(
     ZCL_COMMAND_TRAIT_DEV_ONLY | ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_dev_loop_ensure,
     "watcher ownership requires the dev-only executor",
-    "zclassic23-dev dev loop ensure --input='{\"mode\":\"verify\"}'")
+    "zclassic23-dev dev loop ensure --input='{\"mode\":\"auto\"}'")
 
 ZCL_COMMAND_DEV_READ(
     "dev.loop.status", "dev.loop", "dev.loop.heartbeat",

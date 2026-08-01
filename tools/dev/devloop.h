@@ -213,6 +213,41 @@ struct zcl_devloop_process_result {
     bool output_truncated;
 };
 
+/* One resident-authority module build. The authority is the long-lived
+ * zclassic23-dev watcher; only the compiler and linker are child processes.
+ * Make, a shell, and a throwaway CLI are absent from the edit path. */
+struct zcl_devloop_hotswap_build_receipt {
+    char source_tu[256];
+    char artifact_path[4096];
+    char artifact_sha256[65];
+    int64_t plan_load_us;
+    int64_t compile_us;
+    int64_t link_us;
+    int64_t publish_us;
+    int64_t total_us;
+    bool plan_cache_hit;
+    uint32_t dependency_count;
+};
+
+/* Build exactly one compiled-allowlist source TU under the cached action plan
+ * written by the authoritative Make configuration. Inputs are snapshotted
+ * from the previous compiler depfile and re-stat'd after compilation; a new,
+ * missing, or changed dependency refuses publication while refreshing the
+ * baseline for the next edit. No shell or Make process is launched. */
+bool zcl_devloop_hotswap_build(
+    const char *repo_root, const char *source_tu,
+    struct zcl_devloop_hotswap_build_receipt *receipt,
+    struct zcl_devloop_process_result *process,
+    char *why, size_t why_len);
+
+/* Try the resident fast lane for one watcher epoch. Returns 0 when the file
+ * is not a hot-swap island (caller must use the conservative path), 1 when a
+ * machine-readable pass/refusal receipt was emitted and persisted, and -1 on
+ * an internal receipt-publication failure. APPLY is honored only here; the
+ * caller must downgrade every non-island edit to VERIFY_ONLY. */
+int zcl_devloop_hotswap_event(const char *repo_root, const char *source_tu,
+                              enum zcl_devloop_publish_mode publish_mode);
+
 /* Complete current source identity: byte inventory plus the ABA mutation
  * token. Shared by the watcher/cycle and focused native execution so neither
  * can admit an artifact built from a superseded checkout. */

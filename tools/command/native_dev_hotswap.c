@@ -23,6 +23,8 @@
 #include "command/native_dev_hotswap.h"
 #include "command/native_command.h"
 
+#include "base/hex.h"
+#include "crypto/sha256.h"
 #include "hotswap/hotswap.h"
 #include "hotswap/hotswap_module.h"
 #include "config/command_catalog.h"
@@ -45,6 +47,65 @@
  * RPC exists for. Registration already refuses any non-dev datadir, so this
  * stash is always the exact dev datadir (or empty before boot). */
 static char g_resident_datadir[512];
+
+/* The probe executes on the activating RPC worker. Keep its rendered command
+ * data in host-owned thread-local memory long enough to include it in the
+ * activation receipt; modules never own or retain this state. */
+static _Thread_local char *g_probe_rendered;
+
+static void probe_rendered_clear(void)
+{
+    free(g_probe_rendered);
+    g_probe_rendered = NULL;
+}
+
+static void probe_rendered_append(struct json_value *out)
+{
+    if (!out || !g_probe_rendered)
+        return;
+    size_t rendered_len = strlen(g_probe_rendered);
+    struct sha256_ctx hash_ctx;
+    unsigned char digest[SHA256_OUTPUT_SIZE];
+    char digest_hex[SHA256_OUTPUT_SIZE * 2 + 1];
+    sha256_init(&hash_ctx);
+    sha256_write(&hash_ctx, (const unsigned char *)g_probe_rendered,
+                 rendered_len);
+    sha256_finalize(&hash_ctx, digest);
+    zcl_hex_encode(digest, sizeof(digest), digest_hex);
+    (void)json_push_kv_int(out, "probe_data_bytes", (int64_t)rendered_len);
+    (void)json_push_kv_str(out, "probe_data_sha256", digest_hex);
+
+    struct json_value data;
+    json_init(&data);
+    if (json_read(&data, g_probe_rendered, rendered_len)) {
+        if (rendered_len <= 1536) {
+            (void)json_push_kv(out, "probe_data", &data);
+        } else {
+            /* The probed leaf's own response budget can be much larger than
+             * the dev activation command's. Preserve a content binding plus
+             * the useful scalar behavior fields instead of overflowing the
+             * outer receipt after a successful resident commit. */
+            static const char *const summary_fields[] = {
+                "schema", "height", "provable_tip", "peers", "sync_gap",
+                "count", "total", "kind_count", "available",
+            };
+            struct json_value summary;
+            json_init(&summary);
+            json_set_object(&summary);
+            for (size_t i = 0;
+                 i < sizeof(summary_fields) / sizeof(summary_fields[0]); i++) {
+                const struct json_value *value =
+                    json_get(&data, summary_fields[i]);
+                if (value)
+                    (void)json_push_kv(&summary, summary_fields[i], value);
+            }
+            (void)json_push_kv(out, "probe_data", &summary);
+            (void)json_push_kv_bool(out, "probe_data_truncated", true);
+            json_free(&summary);
+        }
+    }
+    json_free(&data);
+}
 
 /* Publish a module's ENTIRE leaf set into the live command registry as ONE
  * all-or-nothing batch. zcl_command_registry_replace_batch pre-validates every
@@ -187,6 +248,11 @@ static bool registry_probe_cb(void *ctx, const char *leaf,
                          "reply data does not render inside the declared "
                          "%zu-byte budget", budget);
             }
+            if (ok) {
+                probe_rendered_clear();
+                g_probe_rendered = rendered;
+                rendered = NULL;
+            }
             free(rendered);
         }
     }
@@ -240,6 +306,7 @@ static void report_to_reply(struct zcl_command_reply *reply,
     json_push_kv_str(&reply->data, "stage", report->stage);
     if (report->error[0])
         json_push_kv_str(&reply->data, "error", report->error);
+    probe_rendered_append(&reply->data);
 
     if (report->ok) {
         reply->status = ZCL_COMMAND_STATUS_PASSED;
@@ -296,6 +363,7 @@ static bool rpc_dev_hotswap_native(const struct json_value *params, bool help,
     struct hotswap_publish_hooks hooks;
     zcl_native_hotswap_publish_hooks(&hooks, /*with_quiesce=*/true);
     struct hotswap_activate_report report;
+    probe_rendered_clear();
     hotswap_activate(so_path, g_resident_datadir, activate, &hooks, &report);
 
     /* Return the full report either way; the CLI renders ok/verify_only/error. */
@@ -316,6 +384,8 @@ static bool rpc_dev_hotswap_native(const struct json_value *params, bool help,
     json_push_kv_str(result, "stage", report.stage);
     if (report.error[0])
         json_push_kv_str(result, "error", report.error);
+    probe_rendered_append(result);
+    probe_rendered_clear();
     return report.ok;
 }
 
@@ -412,9 +482,11 @@ void zcl_native_handle_dev_hotswap_probe(
     struct hotswap_publish_hooks hooks;
     zcl_native_hotswap_publish_hooks(&hooks, /*with_quiesce=*/false);
     struct hotswap_activate_report report;
+    probe_rendered_clear();
     hotswap_activate(so_path, node_rpc_client_datadir(),
                      /*request_activate=*/false, &hooks, &report);
     report_to_reply(reply, &report);
+    probe_rendered_clear();
 }
 
 bool register_dev_native_hotswap_rpc(struct rpc_table *table,
@@ -430,6 +502,11 @@ bool register_dev_native_hotswap_rpc(struct rpc_table *table,
         return true;
     (void)snprintf(g_resident_datadir, sizeof(g_resident_datadir), "%s",
                    datadir);
+    /* Candidate bridge handlers execute inside this resident process and use
+     * the ordinary native controller seam. Bind both the RPC client and the
+     * bridge's lazy-init guard: initializing only node_rpc_client here let the
+     * first handler overwrite it with the empty one-shot CLI defaults. */
+    zcl_native_bridge_bind_rpc(datadir, rpc_port);
     /* The override commit (zcl_command_registry_replace_batch) requires an
      * active registry in THIS process. The node never dispatches native
      * leaves, so bind the catalog here: replace_batch validates the override

@@ -290,6 +290,17 @@ bool hotswap_handler_is_swappable(const char *leaf);
  * which is what makes a duplicate leaf across two modules unrepresentable. */
 const char *hotswap_swappable_source_for_leaf(const char *leaf);
 
+/* True iff source_tu is an exact row in config/hotswap_swappable.def. This is
+ * the resident build authority's source-side confinement check; it avoids
+ * reparsing the manifest from disk on every edit. */
+bool hotswap_source_is_swappable(const char *source_tu);
+
+/* Resolve either an owning swappable TU or one of its stateless island-member
+ * TUs to the owning module source. Members come from
+ * config/hotswap_islands.def and are compiled into the same -Bsymbolic .so. */
+const char *hotswap_island_owner_for_path(const char *path);
+const char *hotswap_island_members_for_source(const char *source_tu);
+
 /* The probe leaf config/hotswap_eligible.def declares for `source_tu`, or NULL
  * when that file declares none. The module does NOT choose its own probe. */
 const char *hotswap_module_probe_leaf(const char *source_tu);

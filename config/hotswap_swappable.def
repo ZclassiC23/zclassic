@@ -63,3 +63,7 @@ HOTSWAP_SWAPPABLE("app/controllers/src/chain_native_handlers.c",
 /* Read-only ZNAM name-index projection (controller leaf). */
 HOTSWAP_SWAPPABLE("app/controllers/src/app_native_handlers.c",
                   "app.names.list")
+/* Project-neutral App/Metaverse property projection. The owner has no state;
+ * its pure service/view/codec/adapter closure is one reloadable island. */
+HOTSWAP_SWAPPABLE("app/controllers/src/metaverse_controller.c",
+                  "metaverse.property.list metaverse.property.show")

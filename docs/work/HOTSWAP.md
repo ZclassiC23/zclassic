@@ -1,20 +1,22 @@
 # Tier-1 in-process hot-swap (DEV-ONLY)
 
-ZClassic23 has two native development mechanisms:
+ZClassic23 has three development layers:
 
-1. The activatable MULTI-LEAF module ABI. It is ARMED on the dev lane
+1. A persistent native build authority inside the `zclassic23-dev` watcher.
+   In `mode=auto`, one edit to an allowlisted stateless island goes directly
+   through compile, link, resident probe, and atomic registry publication. The
+   edit path starts stock GCC/Clang and the linker as bounded children, but no
+   Make process, shell, source-identity script, or throwaway native CLI.
+2. The activatable MULTI-LEAF module ABI. It is ARMED on the dev lane
    (`zcl23-dev.service` passes `-hotswap-activate` and
    `ZCL_HOTSWAP_ACTIVATE=1`; the loader still refuses the canonical datadir).
    Verify-only probing (`dev.hotswap.probe`) skips the two arming gates but
    still requires the dev datadir, path confinement, and the admit gauntlet.
-   The observable dev loop is `make hotswap-try HANDLER=<leaf> ARGS="<command>"`
-   (or `ZCL_HOTSWAP_PRELOAD=<module.so>` on any one-shot CLI call): the freshly
-   compiled body runs in the CLI process, seconds per edit.
-2. The native-leaf manifest/staging mechanism. Its build, simulation, loader
+3. The older native-leaf manifest/staging mechanism. Its build, simulation, loader
    tests, and state inspection remain available, but every public publication
    entry point is contained before loading or registry replacement.
 
-Neither mechanism is publication authority for the canonical node.
+None is publication authority for the canonical node or a release build.
 
 ## Real module ABI (activatable, gated)
 
@@ -32,11 +34,15 @@ to the superseded generation, the loader may unmap its module.
 | Admit → probe → ONE batch commit | `hotswap_module_publish()` (same file) |
 | Epoch/refcount drain + 64-entry batch replace | `lib/kernel/src/command_registry.c` |
 | Swappable allowlist (ONE row per file) | `config/hotswap_swappable.def` |
+| Stateless multi-TU island membership | `config/hotswap_islands.def` |
 | Probe leaf per file | `config/hotswap_eligible.def` |
 | Shape + READY-read-only lint, self-tested | `tools/lint/check_hotswap_swappable_shape.sh`, `lib/test/src/test_make_lint_gates.c` |
 | Static-state lint over BOTH manifests | `tools/lint/check_hotswap_static_state.sh` |
 | Per-file build | `make hotswap-module-so FILE=<tu.c>` (or `HANDLER=<leaf>`) |
+| Resident no-Make compiler/linker authority | `tools/dev/devloop_hotswap_build.c` |
+| 20-edit latency gate | `tools/dev/hotswap-resident-bench.sh` |
 | Native verify/apply commands + publish hooks | `tools/command/native_dev_hotswap.c` |
+| Stable host/App ABI + transactional state runtime | `lib/framework/include/zclassic23/app.h`, `lib/framework/src/app_runtime.c` |
 | Activation flag | `src/main.c` |
 | Tests | `lib/test/src/test_hotswap_module.c`, `lib/test/src/test_hotswap_module_v2.c` |
 
@@ -113,7 +119,7 @@ be proved, the module remains mapped. The no-override fast path stays zero-RMW.
 
 ### The hard line
 
-`config/hotswap_swappable.def` is the allowlist, ONE row per source file:
+`config/hotswap_swappable.def` is the authority allowlist, ONE row per owner:
 `HOTSWAP_SWAPPABLE("<source_tu>", "<space-separated leaves>")`. The
 `check-hotswap-swappable-shape` lint gate enforces BOTH halves of the line:
 
@@ -130,6 +136,15 @@ be proved, the module remains mapped. The no-override fast path stays zero-RMW.
   leaf claimed by two files fails too, which is what makes a duplicate leaf
   across two modules unrepresentable.
 
+`config/hotswap_islands.def` widens code coverage, never command authority. An
+island row binds additional stateless implementation TUs to one already-admitted
+owner. Members may live only under controllers, views, conditions, pure
+services, metaverse, or encoding roots; they gain no leaves of their own and
+are compiled into the same `-Bsymbolic` unity module. Every member is included
+in the mutable-static lint scan and may belong to only one owner. Storage,
+wallet state, reducers, network ownership, consensus, supervisors, and release
+builds remain outside the boundary.
+
 Before the def grew a leaf column the gate checked shape FOLDERS only, and the
 READY/read-only property was asserted nowhere but at runtime. Likewise
 `check-hotswap-static-state` read only `config/hotswap_eligible.def`; it now
@@ -140,8 +155,11 @@ wrong answers. Both holes were invisible only because the two lists happened to
 name the same six files. Both gates are proven to trip by seeded-violation
 fixtures in `lib/test/src/test_make_lint_gates.c`.
 
-The current allowlist (all read-only `app/controllers/` leaves, each with its
-emitter in the owning TU):
+The current owners are read-only `app/controllers/` leaves, each with its
+emitter in the owning TU. Status and wallet carry their read helpers. The
+Metaverse property owner carries its pure property-catalog service plus the
+property ID codec, view, work/action rules, and adapters declared in
+`config/hotswap_islands.def`:
 
 | Owning TU (`app/controllers/src/`) | Swappable leaves | Probe leaf |
 |---|---|---|
@@ -151,6 +169,7 @@ emitter in the owning TU):
 | `wallet_native_handlers.c` | `core.wallet.address.list` | `core.wallet.address.list` |
 | `chain_native_handlers.c` | `core.consensus.utxo.audit` | `core.consensus.utxo.audit` |
 | `app_native_handlers.c` | `app.names.list` | `app.names.list` |
+| `metaverse_controller.c` | `metaverse.property.list`, `metaverse.property.show` | `metaverse.property.list` |
 
 Adding a leaf to an existing file is: append it to that row's leaf list AND add
 its trampoline to the TU's `#ifdef ZCL_HOTSWAP_MODULE_GEN` leaf table. Adding a
@@ -188,35 +207,60 @@ build/bin/zclassic23-dev -datadir="$HOME/.zclassic-c23-dev" -rpcport=18252 \
 The state object reports the flag, environment gate, containment, counters,
 active slots, and the last activation or rejection.
 
-### The observable loop: process-local preload
+### The observable loop: resident compile and activation
 
-A resident activation is recorded in the node's slot telemetry, but the node
-never dispatches native leaves in-process — only the one-shot CLI does
-(`zcl_command_registry_execute_json`). The loop that lets you SEE an edit is
-therefore process-local:
+Start the isolated dev node normally, then arm its persistent watcher once:
 
 ```sh
-make hotswap-try HANDLER=core.status ARGS="core status"
-# or directly:
-ZCL_HOTSWAP_PRELOAD=/abs/module.so \
-  build/bin/zclassic23-dev -datadir="$HOME/.zclassic-c23-dev" -rpcport=18252 \
-  core status
+build/bin/zclassic23-dev -datadir="$HOME/.zclassic-c23-dev" -rpcport=18252 \
+  dev loop ensure --input='{"mode":"auto"}'
 ```
 
-`ZCL_HOTSWAP_PRELOAD` (dev builds only) installs the module's ENTIRE leaf set in
-the CLI's own registry via `hotswap_activate_local()` — one batch — and
-dispatches normally: the freshly compiled bodies fetch live data from the dev
-lane and render it. Authority is probe-class (same as `dev.hotswap.probe`): the
-throwaway CLI is the operator's own process and the overrides die with it, so
-the resident activation gate does not apply. Path confinement, the dev-datadir
-check, the admit gauntlet, probe-before-publish, and the registry's READY +
-EFFECT_READ re-check all still apply. The full edit→see cycle is one single-TU
-compile plus one CLI call.
+For a single changed owner or island member, inotify waits for a 15 ms quiet
+window and calls the resident action executor directly. The action plan is
+loaded from `build/hotswap/fast/flags.env` and invalidated by the Makefile,
+owner manifest, or island manifest. The executor snapshots the existing
+depfile closure, compiles the observed input, rejects dependency mutation or
+expansion, links a content-addressed read-only `.so`, calls the resident
+`dev_hotswap_native` RPC directly, and persists both
+`zcl.hotswap_build_receipt.v1` and `zcl.dev_cycle.v1`. The mandatory candidate
+probe's rendered data (or a bounded scalar summary plus its exact SHA-256 when
+the leaf has a larger response budget) is included in the activation receipt,
+so publication is itself proof of visible behavior; no second status process
+is needed.
+
+If an event is multi-file or outside the compiled allowlist, auto mode discards
+its publication authority and invokes the ordinary cycle in verify-only mode.
+The generic reload path remains contained. Manual `make hotswap-try`,
+`ZCL_HOTSWAP_PRELOAD`, `dev.hotswap.probe`, and `dev.hotswap.apply` remain
+diagnostic and one-shot fallback surfaces, not the fast default.
 
 The commit and probe hooks are ONE shared implementation
 (`zcl_native_hotswap_publish_hooks()` in `tools/command/native_dev_hotswap.c`),
 used by the resident RPC, `dev hotswap probe`, and the preload path alike — so
 "how a candidate is validated and published" has exactly one definition.
+
+### Measured floor and the physical limit
+
+`tools/dev/hotswap-resident-bench.sh` rewrites a retained fixed-width module
+marker with a fresh nonce twenty times, requiring twenty uncached object files
+and distinct artifact hashes, then restores the source. On this host the
+2026-08-01 warm run recorded 227.280 ms p50 and 232.141 ms p95 edit-to-visible
+against a 250 ms gate. Typical work was 153–166 ms compile, 13–16 ms link,
+1–2 ms resident activation, plus
+the debounce and receipt observation. The machine-readable result is
+`build/hotswap/resident-benchmark.json` (`zcl.hotswap_edit_bench.v1`).
+
+That is close to the practical floor for persistent **stock GCC C** without
+keeping compiler internals in-process: preprocessing and native code generation
+still have to run, and an ELF shared object still has to link and relocate. A
+true interpreter can make parse-to-execute latency milliseconds but gives up
+the exact production compiler model. An in-process incremental compiler/JIT
+can remove the remaining compiler and linker process boundaries, but introduces
+a second compiler authority, more retained memory, and a much larger correctness
+surface. The next justified move is broader stateless islands and persistent
+compiler experiments in shadow mode—not replacing pinned GCC while it already
+meets the sub-250 ms human-feedback target.
 
 ### Module link rule: `-Wl,-Bsymbolic` is mandatory
 
@@ -231,11 +275,10 @@ and `make hotswap-so` link with it.
 The module self-test proves structure only. The behavioral precommit probe that
 dispatches the candidate's declared probe leaf with a bounded empty request and
 validates the reply against its declared output schema is now wired and
-mandatory for any publish (see "All-or-nothing, and probe before publish"). It
-is also one of the twelve steps required before runtime publication could ever
-be uncontained; the remaining steps (immutable source epoch, signed seal
-authority, proof receipts, expected-resident-epoch compare-and-swap, durable
-prepared provenance, and exact-prior-generation restore) are not built.
+mandatory for any island publish (see "All-or-nothing, and probe before
+publish"). This narrow read-only dev authority does not reopen executable
+relinking, canonical-node publication, or releases; those still require the
+full durable proof and exact-prior-generation rollback transaction.
 
 ## Native-leaf manifest and staging
 
@@ -419,6 +462,7 @@ translation unit must:
 | `app/controllers/src/net_native_handlers.c` | `core.network.peers.incidents` |
 | `app/controllers/src/meta_native_handlers.c` | `ops.metrics` |
 | `app/controllers/src/chain_native_handlers.c` | `core.consensus.utxo.audit` |
+| `app/controllers/src/metaverse_controller.c` | `metaverse.property.list` |
 
 `app/controllers/src/diagnostics_native_handlers.c` is not listed. Its current
 leaves require non-empty input (`sql` or `pattern`), so an empty-request
@@ -439,16 +483,23 @@ support from the command name.
 - `make t ONLY=command_handler_snapshot` rejects branch-path replacement with
   nothing installed.
 
-### Remaining work
+### Stable host/App ABI and stateful islands
 
-Before staging publication may be enabled,
-`hotswap_commit_native_leaves()` must look up the declared probe leaf and invoke
-the candidate against a bounded empty request before publish, then validate the
-expected output schema. Current protection is the generation self-test plus
-the registry's ready/read-only/non-branch/non-duplicate validation.
+`lib/framework/include/zclassic23/app.h` is the project-neutral C ABI: opaque
+host-owned state handles, bounded route/topic tables, an explicit capability
+ceiling, self-test/quiesce hooks, and prepare/commit/abort migrations. The host
+copies its function table and never lends modules raw SQLite handles, sockets,
+wallet private keys, consensus mutators, or release publication authority.
 
-The CLI also needs to carry its resolved datadir and RPC port through the
-request context instead of relying on the development lane's fixed defaults.
+`zcl_app_runtime_v1_activate()` validates the candidate, runs its self-test,
+prepares an exact schema transition, quiesces the old generation, commits the
+migration, and atomically advances the active manifest/generation. Failed
+validation, prepare, quiesce, or commit retains the exact prior active pointer
+and records a rollback receipt; schema removal and rollback are refused. This
+is direct-tested but is not yet a public dynamic loader. Selected stateful App
+modules can move onto it only after their state is behind the opaque host API.
+Storage, reducers, wallet state, network ownership, consensus, and releases do
+not cross this boundary.
 
 ## ZVCS auto-anchor
 
@@ -496,7 +547,7 @@ The retained selection seam exists for hermetic tests, not as publication
 authority. The activation engine is covered by `test_dev_activation`; shared
 request construction and result mapping are covered by `test_dev_platform`.
 
-Before any activation entry point is enabled, require immutable source epochs,
+Before any full-reload activation entry point is enabled, require immutable source epochs,
 proof receipts, signed authority, resident expected-epoch compare-and-swap,
 durable prepared/accepted records, exact post-publication probes, deterministic
 rollback, and an isolated copy proof.

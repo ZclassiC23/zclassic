@@ -33,6 +33,7 @@
  * leaf in config/hotswap_eligible.def is core.status. */
 #define V2_TU_STATUS "app/controllers/src/status_native_handlers.c"
 #define V2_TU_META   "app/controllers/src/meta_native_handlers.c"
+#define V2_TU_METAVERSE "app/controllers/src/metaverse_controller.c"
 
 static void v2_handler(const struct zcl_command_request *request,
                        struct zcl_command_reply *reply)
@@ -444,6 +445,30 @@ static int t_allowlist_is_per_file(void)
                          V2_TU_META), 0);
         ASSERT(hotswap_swappable_source_for_leaf("core.consensus.pow.verify")
                == NULL);
+
+        ASSERT(hotswap_source_is_swappable(V2_TU_STATUS));
+        ASSERT(!hotswap_source_is_swappable(
+            "app/controllers/src/status_native_helpers.c"));
+        ASSERT_STR_EQ(hotswap_island_owner_for_path(V2_TU_STATUS),
+                      V2_TU_STATUS);
+        ASSERT_STR_EQ(hotswap_island_owner_for_path(
+                          "app/controllers/src/status_native_helpers.c"),
+                      V2_TU_STATUS);
+        ASSERT_STR_EQ(hotswap_island_owner_for_path(
+                          "app/controllers/src/wallet_native_read_bodies.c"),
+                      "app/controllers/src/wallet_native_handlers.c");
+        ASSERT_STR_EQ(hotswap_island_owner_for_path(
+                          "app/services/src/property_catalog_service.c"),
+                      V2_TU_METAVERSE);
+        ASSERT_STR_EQ(hotswap_island_owner_for_path(
+                          "lib/metaverse/src/property_view.c"),
+                      V2_TU_METAVERSE);
+        ASSERT(hotswap_source_is_swappable(V2_TU_METAVERSE));
+        ASSERT(hotswap_handler_is_swappable("metaverse.property.list"));
+        ASSERT(hotswap_island_owner_for_path("lib/storage/src/storage.c") ==
+               NULL);
+        ASSERT(strstr(hotswap_island_members_for_source(V2_TU_STATUS),
+                      "status_native_helpers.c") != NULL);
 
         /* The probe leaf comes from config/hotswap_eligible.def, keyed by the
          * source file — a module never chooses its own probe. */

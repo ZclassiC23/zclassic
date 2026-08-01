@@ -167,6 +167,9 @@ struct zcl_app_manifest_v1 {
     const struct zcl_app_migration_v1 *migration;
     int (*self_test)(const struct zcl_app_host_v1 *host,
                      struct zcl_app_error *error);
+    /* Drain barrier, not an irreversible stop: after returning, the old
+     * generation must remain re-enterable if migration commit or publication
+     * fails. Host-owned state is unchanged until the transaction commits. */
     int (*quiesce)(const struct zcl_app_host_v1 *host,
                    uint32_t timeout_ms,
                    struct zcl_app_error *error);

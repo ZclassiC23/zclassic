@@ -392,6 +392,16 @@ int t_hotswap_swappable_shape_gate(void)
         /* A seeded allowlist that points a row at a lib/consensus TU trips
          * the gate (exit 1) — proof the shape half is not hollow. */
         ASSERT(run_hotswap_swappable_gate(HOTSWAP_SWAPPABLE_BAD_MANIFEST_REL) == 1);
+        char manifest_abs[PATH_MAX], islands_abs[PATH_MAX];
+        ASSERT(repo_path(manifest_abs, sizeof(manifest_abs),
+                         HOTSWAP_SWAPPABLE_MANIFEST_REL) == 0);
+        ASSERT(repo_path(islands_abs, sizeof(islands_abs),
+                         HOTSWAP_ISLAND_BAD_SCOPE_REL) == 0);
+        /* A valid owner cannot smuggle storage ownership into its island. */
+        ASSERT(run_gate_script_with_env2(
+                   HOTSWAP_SWAPPABLE_SCRIPT_REL,
+                   "ZCL_HOTSWAP_SWAPPABLE_MANIFEST", manifest_abs,
+                   "ZCL_HOTSWAP_ISLAND_MANIFEST", islands_abs) == 1);
         /* Recovery: back on the real allowlist the gate passes again. */
         ASSERT(run_hotswap_swappable_gate(HOTSWAP_SWAPPABLE_MANIFEST_REL) == 0);
         PASS();
@@ -452,11 +462,13 @@ int t_hotswap_static_state_covers_swappable(void)
 {
     int failures = 0;
     TEST("hotswap static-state gate scans the swappable manifest too (union)") {
-        char real_abs[PATH_MAX], bad_abs[PATH_MAX];
+        char real_abs[PATH_MAX], bad_abs[PATH_MAX], bad_islands_abs[PATH_MAX];
         ASSERT(repo_path(real_abs, sizeof(real_abs),
                          HOTSWAP_SWAPPABLE_MANIFEST_REL) == 0);
         ASSERT(repo_path(bad_abs, sizeof(bad_abs),
                          HOTSWAP_SWAPPABLE_BAD_STATIC_REL) == 0);
+        ASSERT(repo_path(bad_islands_abs, sizeof(bad_islands_abs),
+                         HOTSWAP_ISLAND_BAD_STATIC_REL) == 0);
         /* Real pair → clean. */
         ASSERT(run_gate_script_with_env(HOTSWAP_STATIC_SCRIPT_REL,
                                         "ZCL_HOTSWAP_SWAPPABLE_MANIFEST",
@@ -467,6 +479,10 @@ int t_hotswap_static_state_covers_swappable(void)
         ASSERT(run_gate_script_with_env(HOTSWAP_STATIC_SCRIPT_REL,
                                         "ZCL_HOTSWAP_SWAPPABLE_MANIFEST",
                                         bad_abs) == 1);
+        /* Island-only members are part of the same mutable-static union. */
+        ASSERT(run_gate_script_with_env(HOTSWAP_STATIC_SCRIPT_REL,
+                                        "ZCL_HOTSWAP_ISLAND_MANIFEST",
+                                        bad_islands_abs) == 1);
         /* Recovery. */
         ASSERT(run_hotswap_gate_with_manifest(HOTSWAP_STATIC_SCRIPT_REL,
                                               HOTSWAP_MANIFEST_REL) == 0);
