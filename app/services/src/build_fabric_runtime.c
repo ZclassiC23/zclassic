@@ -3,9 +3,12 @@
 
 #include "services/build_fabric_runtime.h"
 
+#include "services/build_fabric_service.h"
+
 #include "config/runtime.h"
 #include "json/json.h"
 #include "models/build_fabric.h"
+#include "platform/time_compat.h"
 #include "supervisors/domains.h"
 #include "util/log_macros.h"
 #include "util/supervisor.h"
@@ -28,6 +31,8 @@ static _Atomic uint64_t g_jobs_active;
 static _Atomic uint64_t g_actions_active;
 static _Atomic uint64_t g_jobs_terminal;
 static _Atomic uint64_t g_accepted_or_cache;
+static _Atomic uint64_t g_leases_recovered;
+static _Atomic uint64_t g_recovery_failures;
 
 static bool bf_runtime_state_active(const char *state)
 {
@@ -77,6 +82,19 @@ static void bf_runtime_snapshot(uint64_t *active_jobs,
 static void bf_coordinator_tick(struct liveness_contract *contract)
 {
     (void)contract;
+    struct node_db *ndb = app_runtime_node_db();
+    if (ndb && ndb->open) {
+        size_t recovered = 0;
+        struct zcl_result recovery = build_fabric_recover_expired(
+            ndb, (int64_t)platform_time_wall_unix(), &recovered);
+        if (recovery.ok)
+            atomic_fetch_add(&g_leases_recovered, recovered);
+        else {
+            atomic_fetch_add(&g_recovery_failures, 1);
+            LOG_WARN("build_fabric", "expired lease recovery failed: %s",
+                     recovery.message);
+        }
+    }
     uint64_t active_jobs, active_actions, terminal_jobs, accepted;
     bf_runtime_snapshot(&active_jobs, &active_actions, &terminal_jobs, &accepted);
     supervisor_child_id id = atomic_load(&g_coordinator_id);
@@ -154,6 +172,8 @@ bool build_fabric_dump_state_json(struct json_value *out, const char *key)
     (void)json_push_kv_int(out, "actions_active", (int64_t)atomic_load(&g_actions_active));
     (void)json_push_kv_int(out, "jobs_terminal", (int64_t)atomic_load(&g_jobs_terminal));
     (void)json_push_kv_int(out, "accepted_or_cache", (int64_t)atomic_load(&g_accepted_or_cache));
+    (void)json_push_kv_int(out, "leases_recovered", (int64_t)atomic_load(&g_leases_recovered));
+    (void)json_push_kv_int(out, "recovery_failures", (int64_t)atomic_load(&g_recovery_failures));
     (void)json_push_kv_int(out, "coordinator_deadline_s", 10);
     (void)json_push_kv_int(out, "worker_deadline_s", 10);
     (void)json_push_kv_int(out, "max_quiet_s", 120);

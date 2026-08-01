@@ -182,6 +182,15 @@ bool db_build_action_validate(const struct db_build_action *row,
     validates_custom(errors,
                      !row->worker_id[0] || build_hex_id(row->worker_id),
                      "worker_id", "must be empty or a hex id");
+    validates_custom(errors,
+                     !row->lease_id[0] || build_hex_id(row->lease_id),
+                     "lease_id", "must be empty or a hex id");
+    validates_non_negative(errors, row, lease_expires_at);
+    validates_non_negative(errors, row, lease_heartbeat_at);
+    validates_non_negative(errors, row, attempt_count);
+    validates_non_negative(errors, row, claimed_at);
+    validates_non_negative(errors, row, started_at);
+    validates_non_negative(errors, row, finished_at);
     validates_non_negative(errors, row, created_at);
     validates_non_negative(errors, row, updated_at);
     return !ar_errors_any(errors);
@@ -224,6 +233,8 @@ bool db_build_receipt_validate(const struct db_build_receipt *row,
     validates_custom(errors, build_hex_id(row->job_id), "job_id",
                      "must be a 64-byte hex digest");
     validates_custom(errors, build_hex_id(row->worker_id), "worker_id",
+                     "must be a 64-byte hex id");
+    validates_custom(errors, build_hex_id(row->lease_id), "lease_id",
                      "must be a 64-byte hex id");
     validates_custom(errors, build_hex_id(row->action_sha3), "action_sha3",
                      "must be a 64-byte hex digest");
@@ -277,12 +288,19 @@ bool db_build_action_save(struct node_db *ndb,
         "INSERT INTO build_actions "
         "(action_id,job_id,sequence,kind,state,outcome,input_root_sha3,"
         "target,flags_sha3,environment_sha3,virtual_workdir,declared_outputs,"
-        "resource_policy,output_root_sha3,worker_id,last_error,created_at,updated_at) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+        "resource_policy,output_root_sha3,worker_id,lease_id,last_error,"
+        "lease_expires_at,lease_heartbeat_at,attempt_count,claimed_at,"
+        "started_at,finished_at,created_at,updated_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
         "ON CONFLICT(action_id) DO UPDATE SET "
         "state=excluded.state,outcome=excluded.outcome,"
         "output_root_sha3=excluded.output_root_sha3,worker_id=excluded.worker_id,"
-        "last_error=excluded.last_error,updated_at=excluded.updated_at",
+        "lease_id=excluded.lease_id,last_error=excluded.last_error,"
+        "lease_expires_at=excluded.lease_expires_at,"
+        "lease_heartbeat_at=excluded.lease_heartbeat_at,"
+        "attempt_count=excluded.attempt_count,claimed_at=excluded.claimed_at,"
+        "started_at=excluded.started_at,finished_at=excluded.finished_at,"
+        "updated_at=excluded.updated_at",
         build_action_callbacks_ready(), "build_action", row,
         db_build_action_validate,
         AR_BIND_TEXT(st, 1, row->action_id);
@@ -300,9 +318,16 @@ bool db_build_action_save(struct node_db *ndb,
         AR_BIND_TEXT(st, 13, row->resource_policy);
         AR_BIND_TEXT(st, 14, row->output_root_sha3);
         AR_BIND_TEXT(st, 15, row->worker_id);
-        AR_BIND_TEXT(st, 16, row->last_error);
-        AR_BIND_INT(st, 17, row->created_at);
-        AR_BIND_INT(st, 18, row->updated_at));
+        AR_BIND_TEXT(st, 16, row->lease_id);
+        AR_BIND_TEXT(st, 17, row->last_error);
+        AR_BIND_INT(st, 18, row->lease_expires_at);
+        AR_BIND_INT(st, 19, row->lease_heartbeat_at);
+        AR_BIND_INT(st, 20, row->attempt_count);
+        AR_BIND_INT(st, 21, row->claimed_at);
+        AR_BIND_INT(st, 22, row->started_at);
+        AR_BIND_INT(st, 23, row->finished_at);
+        AR_BIND_INT(st, 24, row->created_at);
+        AR_BIND_INT(st, 25, row->updated_at));
 }
 
 bool db_build_worker_save(struct node_db *ndb,
@@ -339,20 +364,22 @@ bool db_build_receipt_save(struct node_db *ndb,
         LOG_FAIL("model", "db_build_receipt_save: bad args");
     AR_ADHOC_SAVE(ndb, st,
         "INSERT OR REPLACE INTO build_receipts "
-        "(receipt_id,action_id,job_id,worker_id,action_sha3,output_sha3,"
-        "signature,confinement,exit_status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        "(receipt_id,action_id,job_id,worker_id,lease_id,action_sha3,output_sha3,"
+        "signature,confinement,exit_status,created_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
         build_receipt_callbacks_ready(), "build_receipt", row,
         db_build_receipt_validate,
         AR_BIND_TEXT(st, 1, row->receipt_id);
         AR_BIND_TEXT(st, 2, row->action_id);
         AR_BIND_TEXT(st, 3, row->job_id);
         AR_BIND_TEXT(st, 4, row->worker_id);
-        AR_BIND_TEXT(st, 5, row->action_sha3);
-        AR_BIND_TEXT(st, 6, row->output_sha3);
-        AR_BIND_TEXT(st, 7, row->signature);
-        AR_BIND_TEXT(st, 8, row->confinement);
-        AR_BIND_INT(st, 9, row->exit_status);
-        AR_BIND_INT(st, 10, row->created_at));
+        AR_BIND_TEXT(st, 5, row->lease_id);
+        AR_BIND_TEXT(st, 6, row->action_sha3);
+        AR_BIND_TEXT(st, 7, row->output_sha3);
+        AR_BIND_TEXT(st, 8, row->signature);
+        AR_BIND_TEXT(st, 9, row->confinement);
+        AR_BIND_INT(st, 10, row->exit_status);
+        AR_BIND_INT(st, 11, row->created_at));
 }
 
 static void build_job_read(struct db_build_job *out, sqlite3_stmt *st)
@@ -386,9 +413,16 @@ static void build_action_read(struct db_build_action *out, sqlite3_stmt *st)
     AR_READ_STR(st, 12, out->resource_policy, sizeof(out->resource_policy));
     AR_READ_STR(st, 13, out->output_root_sha3, sizeof(out->output_root_sha3));
     AR_READ_STR(st, 14, out->worker_id, sizeof(out->worker_id));
-    AR_READ_STR(st, 15, out->last_error, sizeof(out->last_error));
-    out->created_at = AR_COL_INT(st, 16);
-    out->updated_at = AR_COL_INT(st, 17);
+    AR_READ_STR(st, 15, out->lease_id, sizeof(out->lease_id));
+    AR_READ_STR(st, 16, out->last_error, sizeof(out->last_error));
+    out->lease_expires_at = AR_COL_INT(st, 17);
+    out->lease_heartbeat_at = AR_COL_INT(st, 18);
+    out->attempt_count = AR_COL_INT(st, 19);
+    out->claimed_at = AR_COL_INT(st, 20);
+    out->started_at = AR_COL_INT(st, 21);
+    out->finished_at = AR_COL_INT(st, 22);
+    out->created_at = AR_COL_INT(st, 23);
+    out->updated_at = AR_COL_INT(st, 24);
 }
 
 static void build_worker_read(struct db_build_worker *out, sqlite3_stmt *st)
@@ -409,24 +443,26 @@ static void build_receipt_read(struct db_build_receipt *out, sqlite3_stmt *st)
     AR_READ_STR(st, 1, out->action_id, sizeof(out->action_id));
     AR_READ_STR(st, 2, out->job_id, sizeof(out->job_id));
     AR_READ_STR(st, 3, out->worker_id, sizeof(out->worker_id));
-    AR_READ_STR(st, 4, out->action_sha3, sizeof(out->action_sha3));
-    AR_READ_STR(st, 5, out->output_sha3, sizeof(out->output_sha3));
-    AR_READ_STR(st, 6, out->signature, sizeof(out->signature));
-    AR_READ_STR(st, 7, out->confinement, sizeof(out->confinement));
-    out->exit_status = (int)AR_COL_INT(st, 8);
-    out->created_at = AR_COL_INT(st, 9);
+    AR_READ_STR(st, 4, out->lease_id, sizeof(out->lease_id));
+    AR_READ_STR(st, 5, out->action_sha3, sizeof(out->action_sha3));
+    AR_READ_STR(st, 6, out->output_sha3, sizeof(out->output_sha3));
+    AR_READ_STR(st, 7, out->signature, sizeof(out->signature));
+    AR_READ_STR(st, 8, out->confinement, sizeof(out->confinement));
+    out->exit_status = (int)AR_COL_INT(st, 9);
+    out->created_at = AR_COL_INT(st, 10);
 }
 
 #define BUILD_JOB_COLS "job_id,source_sha256,source_cas_sha3,toolchain_sha3," \
     "profile,state,outcome,cancel_requested,created_at,updated_at"
 #define BUILD_ACTION_COLS "action_id,job_id,sequence,kind,state,outcome," \
     "input_root_sha3,target,flags_sha3,environment_sha3,virtual_workdir," \
-    "declared_outputs,resource_policy,output_root_sha3,worker_id,last_error," \
-    "created_at,updated_at"
+    "declared_outputs,resource_policy,output_root_sha3,worker_id,lease_id," \
+    "last_error,lease_expires_at,lease_heartbeat_at,attempt_count,claimed_at," \
+    "started_at,finished_at,created_at,updated_at"
 #define BUILD_WORKER_COLS "worker_id,signer_pubkey,capabilities,approved," \
     "revoked,approved_at,expires_at,last_seen_at"
-#define BUILD_RECEIPT_COLS "receipt_id,action_id,job_id,worker_id,action_sha3," \
-    "output_sha3,signature,confinement,exit_status,created_at"
+#define BUILD_RECEIPT_COLS "receipt_id,action_id,job_id,worker_id,lease_id," \
+    "action_sha3,output_sha3,signature,confinement,exit_status,created_at"
 
 bool db_build_job_find(struct node_db *ndb, const char *job_id,
                        struct db_build_job *out)
@@ -520,4 +556,110 @@ int db_build_job_receipts(struct node_db *ndb, const char *job_id,
         "ORDER BY created_at,receipt_id LIMIT ?", out, max,
         AR_BIND_TEXT(st, 1, job_id); AR_BIND_INT(st, 2, (int64_t)max),
         build_receipt_read(&out[count], st));
+}
+
+int db_build_actions_queued(struct node_db *ndb,
+                            struct db_build_action *out, size_t max)
+{
+    sqlite3_stmt *st = NULL;
+    if (!ndb || !ndb->open || !out || max == 0)
+        return 0;
+    AR_QUERY_LIST(ndb, st,
+        "SELECT " BUILD_ACTION_COLS " FROM build_actions "
+        "WHERE state='QUEUED' AND lease_id='' "
+        "ORDER BY updated_at,job_id,sequence LIMIT ?", out, max,
+        AR_BIND_INT(st, 1, (int64_t)max),
+        build_action_read(&out[count], st));
+}
+
+int db_build_actions_expired(struct node_db *ndb, int64_t now,
+                             struct db_build_action *out, size_t max)
+{
+    sqlite3_stmt *st = NULL;
+    if (!ndb || !ndb->open || now < 0 || !out || max == 0)
+        return 0;
+    AR_QUERY_LIST(ndb, st,
+        "SELECT " BUILD_ACTION_COLS " FROM build_actions "
+        "WHERE state IN ('CLAIMED','RUNNING','VERIFYING') "
+        "AND lease_id<>'' AND lease_expires_at>0 AND lease_expires_at<=? "
+        "ORDER BY lease_expires_at,updated_at,action_id LIMIT ?", out, max,
+        AR_BIND_INT(st, 1, now); AR_BIND_INT(st, 2, (int64_t)max),
+        build_action_read(&out[count], st));
+}
+
+bool db_build_action_claim_queued(struct node_db *ndb,
+                                  const struct db_build_action *next)
+{
+    sqlite3_stmt *st = NULL;
+    if (!ndb || !ndb->open || !next)
+        LOG_FAIL("model", "db_build_action_claim_queued: bad args");
+    AR_BEGIN_SAVE(build_action_callbacks_ready(), "build_action", next,
+                  db_build_action_validate);
+    AR_PREPARE_BOOL(ndb, st,
+        "UPDATE build_actions SET state=?,outcome=?,output_root_sha3=?,"
+        "worker_id=?,lease_id=?,last_error=?,lease_expires_at=?,"
+        "lease_heartbeat_at=?,attempt_count=?,claimed_at=?,started_at=?,"
+        "finished_at=?,updated_at=? WHERE action_id=? AND state='QUEUED' "
+        "AND lease_id='' AND EXISTS (SELECT 1 FROM build_jobs j "
+        "WHERE j.job_id=build_actions.job_id AND j.cancel_requested=0 "
+        "AND j.state='QUEUED')");
+    AR_BIND_TEXT(st, 1, next->state);
+    AR_BIND_TEXT(st, 2, next->outcome);
+    AR_BIND_TEXT(st, 3, next->output_root_sha3);
+    AR_BIND_TEXT(st, 4, next->worker_id);
+    AR_BIND_TEXT(st, 5, next->lease_id);
+    AR_BIND_TEXT(st, 6, next->last_error);
+    AR_BIND_INT(st, 7, next->lease_expires_at);
+    AR_BIND_INT(st, 8, next->lease_heartbeat_at);
+    AR_BIND_INT(st, 9, next->attempt_count);
+    AR_BIND_INT(st, 10, next->claimed_at);
+    AR_BIND_INT(st, 11, next->started_at);
+    AR_BIND_INT(st, 12, next->finished_at);
+    AR_BIND_INT(st, 13, next->updated_at);
+    AR_BIND_TEXT(st, 14, next->action_id);
+    bool ok = false;
+    AR_FINALIZE_STEP_DONE(st, ok);
+    ok = ok && sqlite3_changes(ndb->db) == 1;
+    AR_FINISH_SAVE(build_action_callbacks_ready(), next, ok);
+}
+
+bool db_build_action_save_leased(struct node_db *ndb,
+                                 const struct db_build_action *next,
+                                 const char *expected_state,
+                                 const char *expected_lease_id)
+{
+    sqlite3_stmt *st = NULL;
+    if (!ndb || !ndb->open || !next || !expected_state ||
+        !expected_lease_id)
+        LOG_FAIL("model", "db_build_action_save_leased: bad args");
+    AR_BEGIN_SAVE(build_action_callbacks_ready(), "build_action", next,
+                  db_build_action_validate);
+    AR_PREPARE_BOOL(ndb, st,
+        "UPDATE build_actions SET state=?,outcome=?,output_root_sha3=?,"
+        "worker_id=?,lease_id=?,last_error=?,lease_expires_at=?,"
+        "lease_heartbeat_at=?,attempt_count=?,claimed_at=?,started_at=?,"
+        "finished_at=?,updated_at=? WHERE action_id=? AND state=? "
+        "AND lease_id=? AND EXISTS (SELECT 1 FROM build_jobs j "
+        "WHERE j.job_id=build_actions.job_id AND j.cancel_requested=0 "
+        "AND j.state<>'CANCELLED')");
+    AR_BIND_TEXT(st, 1, next->state);
+    AR_BIND_TEXT(st, 2, next->outcome);
+    AR_BIND_TEXT(st, 3, next->output_root_sha3);
+    AR_BIND_TEXT(st, 4, next->worker_id);
+    AR_BIND_TEXT(st, 5, next->lease_id);
+    AR_BIND_TEXT(st, 6, next->last_error);
+    AR_BIND_INT(st, 7, next->lease_expires_at);
+    AR_BIND_INT(st, 8, next->lease_heartbeat_at);
+    AR_BIND_INT(st, 9, next->attempt_count);
+    AR_BIND_INT(st, 10, next->claimed_at);
+    AR_BIND_INT(st, 11, next->started_at);
+    AR_BIND_INT(st, 12, next->finished_at);
+    AR_BIND_INT(st, 13, next->updated_at);
+    AR_BIND_TEXT(st, 14, next->action_id);
+    AR_BIND_TEXT(st, 15, expected_state);
+    AR_BIND_TEXT(st, 16, expected_lease_id);
+    bool ok = false;
+    AR_FINALIZE_STEP_DONE(st, ok);
+    ok = ok && sqlite3_changes(ndb->db) == 1;
+    AR_FINISH_SAVE(build_action_callbacks_ready(), next, ok);
 }

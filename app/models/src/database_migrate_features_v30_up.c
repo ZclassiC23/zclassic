@@ -515,6 +515,45 @@ int node_db_migrate_features_v30_up(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 42) {
+        /* v42: durable ZBuild leases. Claims are compare-and-swap writes;
+         * their expiry and heartbeat make worker death recoverable after a
+         * process or host restart without allowing two owners to publish. */
+        node_db_exec(ndb,
+            "ALTER TABLE build_actions ADD COLUMN lease_id TEXT NOT NULL "
+            "DEFAULT '' CHECK(length(lease_id) IN (0,64))");
+        node_db_exec(ndb,
+            "ALTER TABLE build_actions ADD COLUMN lease_expires_at INTEGER "
+            "NOT NULL DEFAULT 0 CHECK(lease_expires_at>=0)");
+        node_db_exec(ndb,
+            "ALTER TABLE build_actions ADD COLUMN lease_heartbeat_at INTEGER "
+            "NOT NULL DEFAULT 0 CHECK(lease_heartbeat_at>=0)");
+        node_db_exec(ndb,
+            "ALTER TABLE build_actions ADD COLUMN attempt_count INTEGER "
+            "NOT NULL DEFAULT 0 CHECK(attempt_count>=0)");
+        node_db_exec(ndb,
+            "ALTER TABLE build_actions ADD COLUMN claimed_at INTEGER "
+            "NOT NULL DEFAULT 0 CHECK(claimed_at>=0)");
+        node_db_exec(ndb,
+            "ALTER TABLE build_actions ADD COLUMN started_at INTEGER "
+            "NOT NULL DEFAULT 0 CHECK(started_at>=0)");
+        node_db_exec(ndb,
+            "ALTER TABLE build_actions ADD COLUMN finished_at INTEGER "
+            "NOT NULL DEFAULT 0 CHECK(finished_at>=0)");
+        node_db_exec(ndb,
+            "ALTER TABLE build_receipts ADD COLUMN lease_id TEXT NOT NULL "
+            "DEFAULT '' CHECK(length(lease_id) IN (0,64))");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_build_actions_lease_recovery "
+            "ON build_actions(state,lease_expires_at,updated_at)");
+
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('042')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 42);
+        current_ver = 42;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }

@@ -176,6 +176,7 @@ size_t api_serve_build_receipt(const char *receipt_id, uint8_t *response,
     (void)json_push_kv_str(&body, "action_id", row.action_id);
     (void)json_push_kv_str(&body, "job_id", row.job_id);
     (void)json_push_kv_str(&body, "worker_id", row.worker_id);
+    (void)json_push_kv_str(&body, "lease_id", row.lease_id);
     (void)json_push_kv_str(&body, "action_sha3", row.action_sha3);
     (void)json_push_kv_str(&body, "output_sha3", row.output_sha3);
     (void)json_push_kv_str(&body, "signature", row.signature);

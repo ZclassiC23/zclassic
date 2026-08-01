@@ -116,6 +116,7 @@ struct zcl_result build_fabric_receipt_id(
     bf_sha_text(&sha, receipt->action_id);
     bf_sha_text(&sha, receipt->job_id);
     bf_sha_text(&sha, receipt->worker_id);
+    bf_sha_text(&sha, receipt->lease_id);
     bf_sha_text(&sha, receipt->action_sha3);
     bf_sha_text(&sha, receipt->output_sha3);
     bf_sha_text(&sha, receipt->confinement);
@@ -148,6 +149,45 @@ static bool bf_action_same_plan(const struct db_build_action *a,
            strcmp(a->resource_policy, b->resource_policy) == 0;
 }
 
+static bool bf_lower_hex_id(const char *value)
+{
+    if (!value || strlen(value) != BUILD_FABRIC_ID_HEX)
+        return false;
+    for (size_t i = 0; i < BUILD_FABRIC_ID_HEX; i++)
+        if (!((value[i] >= '0' && value[i] <= '9') ||
+              (value[i] >= 'a' && value[i] <= 'f')))
+            return false;
+    return true;
+}
+
+static bool bf_capability_has(const char *capabilities, const char *wanted)
+{
+    if (!capabilities || !wanted || !wanted[0])
+        return false;
+    size_t wanted_len = strlen(wanted);
+    const char *at = capabilities;
+    while (*at) {
+        while (*at == ',' || *at == ' ' || *at == '\t') at++;
+        const char *end = at;
+        while (*end && *end != ',') end++;
+        const char *trim = end;
+        while (trim > at && (trim[-1] == ' ' || trim[-1] == '\t')) trim--;
+        if ((size_t)(trim - at) == wanted_len &&
+            memcmp(at, wanted, wanted_len) == 0)
+            return true;
+        at = *end ? end + 1 : end;
+    }
+    return false;
+}
+
+static bool bf_action_identity_current(const struct db_build_job *job,
+                                       const struct db_build_action *action)
+{
+    char expected[BUILD_FABRIC_ID_HEX + 1];
+    return build_fabric_action_id(job, action, expected).ok &&
+           strcmp(expected, action->action_id) == 0;
+}
+
 struct zcl_result build_fabric_plan(struct node_db *ndb,
                                     const struct db_build_job *job,
                                     const struct db_build_action *action)
@@ -158,6 +198,13 @@ struct zcl_result build_fabric_plan(struct node_db *ndb,
         strcmp(action->state, "SNAPSHOTTED") != 0 ||
         strcmp(job->job_id, action->job_id) != 0)
         return ZCL_ERR(-1, "build plan lifecycle or ownership is invalid");
+    char expected_action[BUILD_FABRIC_ID_HEX + 1];
+    char expected_job[BUILD_FABRIC_ID_HEX + 1];
+    if (!build_fabric_action_id(job, action, expected_action).ok ||
+        strcmp(expected_action, action->action_id) != 0 ||
+        !build_fabric_job_id(job, action->action_id, expected_job).ok ||
+        strcmp(expected_job, job->job_id) != 0)
+        return ZCL_ERR(-1, "build plan ids do not match immutable inputs");
     struct db_build_job prior_job;
     bool have_job = db_build_job_find(ndb, job->job_id, &prior_job);
     if (have_job && !bf_job_same_plan(&prior_job, job))
@@ -228,6 +275,205 @@ struct zcl_result build_fabric_submit(struct node_db *ndb,
         if (!node_db_rollback(ndb))
             LOG_ERROR("build_fabric", "submit and rollback both failed");
         return ZCL_ERR(-1, "cannot queue build job atomically");
+    }
+    return ZCL_OK;
+}
+
+struct zcl_result build_fabric_claim(
+    struct node_db *ndb, const char *worker_id, const char *lease_id,
+    int64_t now, int64_t lease_seconds, struct db_build_action *out,
+    bool *claimed)
+{
+    if (claimed) *claimed = false;
+    if (!ndb || !ndb->open || !bf_lower_hex_id(worker_id) ||
+        !bf_lower_hex_id(lease_id) || now < 0 ||
+        lease_seconds < BUILD_FABRIC_LEASE_SECONDS_MIN ||
+        lease_seconds > BUILD_FABRIC_LEASE_SECONDS_MAX || !out || !claimed)
+        return ZCL_ERR(-1, "claim requires valid worker, lease, time, and bounds");
+    struct db_build_worker worker;
+    if (!db_build_worker_find(ndb, worker_id, &worker) || !worker.approved ||
+        worker.revoked || (worker.expires_at && now >= worker.expires_at))
+        return ZCL_ERR(-1, "worker is unapproved, expired, or revoked");
+    if (!bf_capability_has(worker.capabilities, VCS_BUILD_ACTION_KIND_V1))
+        return ZCL_ERR(-1, "worker lacks the fixed C23 action capability");
+
+    struct db_build_action queued[BUILD_FABRIC_ACTION_LIMIT];
+    int count = db_build_actions_queued(ndb, queued,
+                                        BUILD_FABRIC_ACTION_LIMIT);
+    for (int i = 0; i < count; i++) {
+        if (strcmp(queued[i].kind, VCS_BUILD_ACTION_KIND_V1) != 0)
+            continue;
+        struct db_build_job job;
+        if (!db_build_job_find(ndb, queued[i].job_id, &job) ||
+            job.cancel_requested || strcmp(job.state, "QUEUED") != 0 ||
+            !bf_action_identity_current(&job, &queued[i]))
+            continue;
+        struct db_build_action next = queued[i];
+        (void)snprintf(next.state, sizeof(next.state), "CLAIMED");
+        (void)snprintf(next.worker_id, sizeof(next.worker_id), "%s", worker_id);
+        (void)snprintf(next.lease_id, sizeof(next.lease_id), "%s", lease_id);
+        next.lease_expires_at = now + lease_seconds;
+        next.lease_heartbeat_at = now;
+        next.attempt_count++;
+        next.claimed_at = now;
+        next.started_at = 0;
+        next.finished_at = 0;
+        next.updated_at = now;
+        if (!node_db_begin(ndb))
+            return ZCL_ERR(-1, "cannot begin build claim transaction");
+        bool ok = db_build_action_claim_queued(ndb, &next);
+        if (ok) {
+            (void)snprintf(job.state, sizeof(job.state), "CLAIMED");
+            job.updated_at = now;
+            ok = db_build_job_save(ndb, &job) && node_db_commit(ndb);
+        }
+        if (!ok) {
+            if (!node_db_rollback(ndb))
+                LOG_ERROR("build_fabric", "claim and rollback both failed");
+            continue; /* another owner won this candidate */
+        }
+        *out = next;
+        *claimed = true;
+        return ZCL_OK;
+    }
+    return ZCL_OK;
+}
+
+static struct zcl_result bf_leased_transition(
+    struct node_db *ndb, const char *action_id, const char *lease_id,
+    const char *expected_state, const char *next_state, int64_t now)
+{
+    if (!ndb || !ndb->open || !bf_lower_hex_id(action_id) ||
+        !bf_lower_hex_id(lease_id) || now < 0)
+        return ZCL_ERR(-1, "leased transition requires valid ids and time");
+    struct db_build_action action;
+    struct db_build_job job;
+    if (!db_build_action_find(ndb, action_id, &action) ||
+        !db_build_job_find(ndb, action.job_id, &job))
+        return ZCL_ERR(-1, "leased action or job not found");
+    if (strcmp(action.state, expected_state) != 0 ||
+        strcmp(action.lease_id, lease_id) != 0)
+        return ZCL_ERR(-1, "lease or expected action state is stale");
+    if (job.cancel_requested || strcmp(job.state, "CANCELLED") == 0)
+        return ZCL_ERR(-1, "build job is cancelled");
+    if (action.lease_expires_at == 0 || now >= action.lease_expires_at)
+        return ZCL_ERR(-1, "build action lease has expired");
+    if (!bf_action_identity_current(&job, &action))
+        return ZCL_ERR(-1, "build action immutable identity is stale");
+    struct db_build_action next = action;
+    (void)snprintf(next.state, sizeof(next.state), "%s", next_state);
+    if (strcmp(next_state, "RUNNING") == 0 && next.started_at == 0)
+        next.started_at = now;
+    next.lease_heartbeat_at = now;
+    next.updated_at = now;
+    if (!node_db_begin(ndb))
+        return ZCL_ERR(-1, "cannot begin leased transition");
+    bool ok = db_build_action_save_leased(ndb, &next, expected_state,
+                                          lease_id);
+    if (ok) {
+        (void)snprintf(job.state, sizeof(job.state), "%s", next_state);
+        job.updated_at = now;
+        ok = db_build_job_save(ndb, &job) && node_db_commit(ndb);
+    }
+    if (!ok) {
+        if (!node_db_rollback(ndb))
+            LOG_ERROR("build_fabric", "leased transition rollback failed");
+        return ZCL_ERR(-1, "leased transition lost ownership");
+    }
+    return ZCL_OK;
+}
+
+struct zcl_result build_fabric_start(
+    struct node_db *ndb, const char *action_id, const char *lease_id,
+    int64_t now)
+{
+    return bf_leased_transition(ndb, action_id, lease_id, "CLAIMED",
+                                "RUNNING", now);
+}
+
+struct zcl_result build_fabric_begin_verify(
+    struct node_db *ndb, const char *action_id, const char *lease_id,
+    int64_t now)
+{
+    return bf_leased_transition(ndb, action_id, lease_id, "RUNNING",
+                                "VERIFYING", now);
+}
+
+struct zcl_result build_fabric_heartbeat(
+    struct node_db *ndb, const char *action_id, const char *lease_id,
+    int64_t now, int64_t lease_seconds)
+{
+    if (!ndb || !ndb->open || !bf_lower_hex_id(action_id) ||
+        !bf_lower_hex_id(lease_id) || now < 0 ||
+        lease_seconds < BUILD_FABRIC_LEASE_SECONDS_MIN ||
+        lease_seconds > BUILD_FABRIC_LEASE_SECONDS_MAX)
+        return ZCL_ERR(-1, "heartbeat requires valid ids, time, and bounds");
+    struct db_build_action action;
+    struct db_build_job job;
+    if (!db_build_action_find(ndb, action_id, &action) ||
+        !db_build_job_find(ndb, action.job_id, &job))
+        return ZCL_ERR(-1, "heartbeat action or job not found");
+    if ((strcmp(action.state, "CLAIMED") != 0 &&
+         strcmp(action.state, "RUNNING") != 0 &&
+         strcmp(action.state, "VERIFYING") != 0) ||
+        strcmp(action.lease_id, lease_id) != 0 || job.cancel_requested ||
+        action.lease_expires_at == 0 || now >= action.lease_expires_at ||
+        !bf_action_identity_current(&job, &action))
+        return ZCL_ERR(-1, "heartbeat lease, authority, or identity is stale");
+    char prior[BUILD_FABRIC_STATE_MAX + 1];
+    (void)snprintf(prior, sizeof(prior), "%s", action.state);
+    action.lease_heartbeat_at = now;
+    action.lease_expires_at = now + lease_seconds;
+    action.updated_at = now;
+    if (!db_build_action_save_leased(ndb, &action, prior, lease_id))
+        return ZCL_ERR(-1, "heartbeat lost lease ownership");
+    return ZCL_OK;
+}
+
+struct zcl_result build_fabric_recover_expired(
+    struct node_db *ndb, int64_t now, size_t *requeued)
+{
+    if (requeued) *requeued = 0;
+    if (!ndb || !ndb->open || now < 0 || !requeued)
+        return ZCL_ERR(-1, "lease recovery requires an open db and time");
+    struct db_build_action expired[BUILD_FABRIC_ACTION_LIMIT];
+    int count = db_build_actions_expired(ndb, now, expired,
+                                         BUILD_FABRIC_ACTION_LIMIT);
+    for (int i = 0; i < count; i++) {
+        struct db_build_job job;
+        if (!db_build_job_find(ndb, expired[i].job_id, &job))
+            continue;
+        char prior_state[BUILD_FABRIC_STATE_MAX + 1];
+        char prior_lease[BUILD_FABRIC_ID_HEX + 1];
+        (void)snprintf(prior_state, sizeof(prior_state), "%s",
+                       expired[i].state);
+        (void)snprintf(prior_lease, sizeof(prior_lease), "%s",
+                       expired[i].lease_id);
+        struct db_build_action next = expired[i];
+        (void)snprintf(next.state, sizeof(next.state), "QUEUED");
+        next.outcome[0] = '\0';
+        next.worker_id[0] = '\0';
+        next.lease_id[0] = '\0';
+        next.lease_expires_at = 0;
+        next.lease_heartbeat_at = 0;
+        (void)snprintf(next.last_error, sizeof(next.last_error),
+                       "lease-expired-requeued");
+        next.updated_at = now;
+        if (!node_db_begin(ndb))
+            return ZCL_ERR(-1, "cannot begin expired-lease recovery");
+        bool ok = db_build_action_save_leased(ndb, &next, prior_state,
+                                              prior_lease);
+        if (ok) {
+            (void)snprintf(job.state, sizeof(job.state), "QUEUED");
+            job.updated_at = now;
+            ok = db_build_job_save(ndb, &job) && node_db_commit(ndb);
+        }
+        if (!ok) {
+            if (!node_db_rollback(ndb))
+                LOG_ERROR("build_fabric", "recovery rollback failed");
+            continue;
+        }
+        (*requeued)++;
     }
     return ZCL_OK;
 }
@@ -314,13 +560,20 @@ struct zcl_result build_fabric_receipt_accept(
     struct db_build_action action;
     if (!db_build_action_find(ndb, receipt->action_id, &action) ||
         strcmp(action.job_id, receipt->job_id) != 0 ||
-        strcmp(receipt->action_sha3, action.action_id) != 0)
+        strcmp(receipt->action_sha3, action.action_id) != 0 ||
+        strcmp(receipt->worker_id, action.worker_id) != 0 ||
+        strcmp(receipt->lease_id, action.lease_id) != 0)
         return ZCL_ERR(-1, "receipt is not bound to the named action and job");
-    if (strcmp(action.state, "RUNNING") != 0 &&
-        strcmp(action.state, "VERIFYING") != 0 &&
-        strcmp(action.state, "ACCEPTED") != 0)
+    if (strcmp(action.state, "ACCEPTED") == 0) {
+        struct db_build_receipt prior;
+        if (db_build_receipt_find(ndb, receipt->receipt_id, &prior))
+            return ZCL_OK;
+    }
+    if (strcmp(action.state, "VERIFYING") != 0)
         return ZCL_ERR(-1, "action state %s cannot accept a receipt",
                        action.state);
+    if (action.lease_expires_at == 0 || now >= action.lease_expires_at)
+        return ZCL_ERR(-1, "receipt action lease is expired");
     char expected_id[65];
     if (!build_fabric_receipt_id(receipt, expected_id).ok ||
         strcmp(expected_id, receipt->receipt_id) != 0)
@@ -337,11 +590,13 @@ struct zcl_result build_fabric_receipt_accept(
                    "%s", receipt->output_sha3);
     (void)snprintf(action.worker_id, sizeof(action.worker_id), "%s",
                    receipt->worker_id);
+    action.finished_at = now;
     action.updated_at = now;
     if (!node_db_begin(ndb))
         return ZCL_ERR(-1, "cannot begin receipt acceptance transaction");
     bool ok = db_build_receipt_save(ndb, receipt) &&
-              db_build_action_save(ndb, &action);
+              db_build_action_save_leased(ndb, &action, "VERIFYING",
+                                           receipt->lease_id);
     struct db_build_action actions[BUILD_FABRIC_ACTION_LIMIT];
     int count = ok ? db_build_job_actions(ndb, receipt->job_id, actions,
                                            BUILD_FABRIC_ACTION_LIMIT) : 0;

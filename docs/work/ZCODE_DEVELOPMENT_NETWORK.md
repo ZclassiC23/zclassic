@@ -36,17 +36,18 @@ ledger, worker trust list, or P2P transport.
 | Source snapshot identity | resident dev source CAS plus content.v2 for portable package trees | Live locally; not yet one network task surface |
 | Code context | `lib/codeindex/` plus immutable source chunks | Live index; bounded context-capsule publication is not yet wired |
 | Fixed build action | `vcs_build_action_v1` | Live codec; V1 is preprocessed-TU compile only |
-| Build coordinator ledger | `build_jobs`, `build_actions`, `build_workers`, `build_receipts` | Live schema, models, native/REST reads, plan/submit/cancel/trust/receipt checks |
+| Build coordinator ledger | `build_jobs`, `build_actions`, `build_workers`, `build_receipts` | Live schema v42, models, native/REST reads, plan/submit/cancel/trust/lease-bound receipt checks |
 | Local package confinement | `zclassic23-package-verify` | Live: declarative recipe, Landlock/seccomp/rlimits, no network |
-| ZBuild worker execution | existing build-fabric runtime | Not live: today it supervises counters but does not claim or execute jobs |
+| ZBuild worker execution | existing build-fabric runtime | Partial: atomic bounded leases, heartbeats, cancellation gates, and restart recovery are live; confined action execution is not yet live |
 | Package P2P | `package_swarm_node` and `zpkgswm` | Live for immutable package bytes |
 | Work P2P | adapter over package swarm/CAS | Not live |
 | Agent authority | metaverse grants and signed receipt chain | Live for scoped property operations; task work must never inherit wallet or canonical-node authority |
 | Durability lanes | ZCODE promotion records over source roots | Not live |
 
 The control-plane distinction is load-bearing: a READY command or database row
-does not prove an executor exists. `build.worker` currently ticks and reports
-headroom; it performs no `QUEUED -> CLAIMED -> RUNNING` transition.
+does not prove an executor exists. `build.worker` is supervised and the
+coordinator now recovers expired leases; the fixed compiler action itself is
+still the missing executor.
 
 ## Canonical development objects
 
@@ -149,23 +150,23 @@ cannot authorize a moved task.
 
 ### B. Complete the existing local ZBuild worker
 
-- Add lease owner, lease token, lease expiry, attempt count, heartbeat, and
+- [x] Add lease owner, lease token, lease expiry, attempt count, heartbeat, and
   cancellation observation to the existing build action ledger through an
   idempotent migration and model-owned writes.
-- Claim `QUEUED` actions atomically. A restart requeues an expired lease; a
+- [x] Claim `QUEUED` actions atomically. A restart requeues an expired lease; a
   live lease cannot be stolen.
-- Execute only registered fixed action kinds. V1 continues to use local
+- [ ] Execute only registered fixed action kinds. V1 continues to use local
   preprocessing followed by fixed `cc -x cpp-output -c`; package recipe
   build/test/fuzz uses the existing package verifier confinement.
-- Establish Landlock, seccomp, rlimits, an empty environment allowlist, fixed
+- [ ] Establish Landlock, seccomp, rlimits, an empty environment allowlist, fixed
   virtual paths, no network, bounded stdout/stderr, cancellation, and a hard
   deadline before untrusted bytes run.
-- Fetch inputs only by immutable CAS root. Recheck task/source/lock/toolchain/
+- [ ] Fetch inputs only by immutable CAS root. Recheck task/source/lock/toolchain/
   policy/lease immediately before execution and immediately before receipt
   publication.
-- Store output chunks and a build-artifact manifest in the existing CAS, then
+- [ ] Store output chunks and a build-artifact manifest in the existing CAS, then
   sign `work_receipt.v1` and the existing ZBuild receipt projection.
-- On timeout, crash, cancellation, malformed output, stale state, or sandbox
+- [ ] On timeout, crash, cancellation, malformed output, stale state, or sandbox
   failure: publish a named outcome and use the existing local fallback policy;
   never wait forever.
 

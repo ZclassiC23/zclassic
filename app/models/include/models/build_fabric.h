@@ -57,7 +57,14 @@ struct db_build_action {
     char resource_policy[BUILD_FABRIC_DESCRIPTOR_MAX + 1];
     char output_root_sha3[BUILD_FABRIC_ID_HEX + 1];
     char worker_id[BUILD_FABRIC_ID_HEX + 1];
+    char lease_id[BUILD_FABRIC_ID_HEX + 1];
     char last_error[BUILD_FABRIC_ERROR_MAX + 1];
+    int64_t lease_expires_at;
+    int64_t lease_heartbeat_at;
+    int64_t attempt_count;
+    int64_t claimed_at;
+    int64_t started_at;
+    int64_t finished_at;
     int64_t created_at;
     int64_t updated_at;
 };
@@ -78,6 +85,7 @@ struct db_build_receipt {
     char action_id[BUILD_FABRIC_ID_HEX + 1];
     char job_id[BUILD_FABRIC_ID_HEX + 1];
     char worker_id[BUILD_FABRIC_ID_HEX + 1];
+    char lease_id[BUILD_FABRIC_ID_HEX + 1];
     char action_sha3[BUILD_FABRIC_ID_HEX + 1];
     char output_sha3[BUILD_FABRIC_ID_HEX + 1];
     char signature[BUILD_FABRIC_SIGNATURE_HEX + 1];
@@ -125,5 +133,19 @@ int db_build_workers_list(struct node_db *ndb, struct db_build_worker *out,
                           size_t max);
 int db_build_job_receipts(struct node_db *ndb, const char *job_id,
                           struct db_build_receipt *out, size_t max);
+
+/* Lease writes are compare-and-swap operations. A queued action can be
+ * claimed once; every later mutation must present the exact lease id and
+ * expected state. Expired reads are bounded and ordered for crash recovery. */
+int db_build_actions_queued(struct node_db *ndb,
+                            struct db_build_action *out, size_t max);
+int db_build_actions_expired(struct node_db *ndb, int64_t now,
+                             struct db_build_action *out, size_t max);
+bool db_build_action_claim_queued(struct node_db *ndb,
+                                  const struct db_build_action *next);
+bool db_build_action_save_leased(struct node_db *ndb,
+                                 const struct db_build_action *next,
+                                 const char *expected_state,
+                                 const char *expected_lease_id);
 
 #endif /* ZCL_DB_MODEL_BUILD_FABRIC_H */

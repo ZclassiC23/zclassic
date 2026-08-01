@@ -1,5 +1,5 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * purpose: Prove the build-fabric v41 schema, AR writes, and relationships. */
+ * purpose: Prove the build-fabric v42 schema, leases, and relationships. */
 
 #include "test/test_core.h"
 
@@ -96,6 +96,7 @@ static void bf_receipt(struct db_build_receipt *row)
     (void)snprintf(row->action_id, sizeof(row->action_id), "%s", id_b);
     (void)snprintf(row->job_id, sizeof(row->job_id), "%s", id_a);
     (void)snprintf(row->worker_id, sizeof(row->worker_id), "%s", id_c);
+    (void)snprintf(row->lease_id, sizeof(row->lease_id), "%s", id_d);
     (void)snprintf(row->action_sha3, sizeof(row->action_sha3), "%s", id_b);
     (void)snprintf(row->output_sha3, sizeof(row->output_sha3), "%s", id_c);
     memset(row->signature, 'e', BUILD_FABRIC_SIGNATURE_HEX);
@@ -106,10 +107,25 @@ static void bf_receipt(struct db_build_receipt *row)
     row->created_at = 103;
 }
 
+static bool bf_canonicalize(struct db_build_job *job,
+                            struct db_build_action *action)
+{
+    char action_id[BUILD_FABRIC_ID_HEX + 1];
+    char job_id[BUILD_FABRIC_ID_HEX + 1];
+    if (!build_fabric_action_id(job, action, action_id).ok ||
+        !build_fabric_job_id(job, action_id, job_id).ok)
+        return false;
+    (void)snprintf(action->action_id, sizeof(action->action_id), "%s",
+                   action_id);
+    (void)snprintf(job->job_id, sizeof(job->job_id), "%s", job_id);
+    (void)snprintf(action->job_id, sizeof(action->job_id), "%s", job_id);
+    return true;
+}
+
 static int test_bf_migration(void)
 {
     int failures = 0;
-    TEST("build_fabric: v41 migration creates every indexed resource") {
+    TEST("build_fabric: v42 migration creates leases and indexed resources") {
         struct node_db ndb;
         char dir[256], path[320];
         ASSERT(bf_open(&ndb, dir, sizeof(dir), path, sizeof(path), "migration"));
@@ -121,6 +137,20 @@ static int test_bf_migration(void)
             -1, &st, NULL) == SQLITE_OK);
         ASSERT(sqlite3_step(st) == SQLITE_ROW); /* raw-sql-ok:test-readonly-count */
         ASSERT_EQ(sqlite3_column_int(st, 0), 4);
+        sqlite3_finalize(st);
+        ASSERT(sqlite3_prepare_v2(ndb.db,
+            "SELECT count(*) FROM pragma_table_info('build_actions') WHERE "
+            "name IN ('lease_id','lease_expires_at','lease_heartbeat_at',"
+            "'attempt_count','claimed_at','started_at','finished_at')",
+            -1, &st, NULL) == SQLITE_OK);
+        ASSERT(sqlite3_step(st) == SQLITE_ROW); /* raw-sql-ok:test-readonly-count */
+        ASSERT_EQ(sqlite3_column_int(st, 0), 7);
+        sqlite3_finalize(st);
+        ASSERT(sqlite3_prepare_v2(ndb.db,
+            "SELECT count(*) FROM pragma_table_info('build_receipts') "
+            "WHERE name='lease_id'", -1, &st, NULL) == SQLITE_OK);
+        ASSERT(sqlite3_step(st) == SQLITE_ROW); /* raw-sql-ok:test-readonly-count */
+        ASSERT_EQ(sqlite3_column_int(st, 0), 1);
         sqlite3_finalize(st);
         node_db_close(&ndb);
         test_rm_rf(dir);
@@ -171,10 +201,21 @@ static int test_bf_lifecycle(void)
         (void)snprintf(action.outcome, sizeof(action.outcome), "ACCEPTED");
         (void)snprintf(action.output_root_sha3,
                        sizeof(action.output_root_sha3), "%s", id_d);
+        (void)snprintf(action.worker_id, sizeof(action.worker_id), "%s", id_c);
+        (void)snprintf(action.lease_id, sizeof(action.lease_id), "%s", id_b);
+        action.lease_expires_at = 500;
+        action.lease_heartbeat_at = 450;
+        action.attempt_count = 2;
+        action.claimed_at = 400;
+        action.started_at = 410;
+        action.finished_at = 490;
         action.updated_at = 105;
         ASSERT(db_build_action_save(&ndb, &action));
         ASSERT(db_build_action_find(&ndb, id_b, &action));
         ASSERT_STR_EQ(action.state, "ACCEPTED");
+        ASSERT_STR_EQ(action.lease_id, id_b);
+        ASSERT_EQ(action.attempt_count, 2);
+        ASSERT_EQ(action.finished_at, 490);
         ASSERT_EQ(db_build_job_receipts(&ndb, id_a, receipts, 4), 1);
         node_db_close(&ndb);
         test_rm_rf(dir);
@@ -216,6 +257,7 @@ static int test_bf_service(void)
         struct db_build_action action;
         bf_job(&job);
         bf_action(&action);
+        ASSERT(bf_canonicalize(&job, &action));
         char action_id[65], job_id[65];
         ASSERT(build_fabric_action_id(&job, &action, action_id).ok);
         ASSERT(build_fabric_job_id(&job, action_id, job_id).ok);
@@ -225,12 +267,12 @@ static int test_bf_service(void)
         struct db_build_action planned_action = action;
         ASSERT(build_fabric_plan(&ndb, &job, &action).ok);
         ASSERT(build_fabric_plan(&ndb, &job, &action).ok); /* idempotent */
-        ASSERT(build_fabric_submit(&ndb, id_a, 110).ok);
-        ASSERT(build_fabric_submit(&ndb, id_a, 111).ok); /* idempotent */
+        ASSERT(build_fabric_submit(&ndb, job.job_id, 110).ok);
+        ASSERT(build_fabric_submit(&ndb, job.job_id, 111).ok); /* idempotent */
         ASSERT(build_fabric_plan(&ndb, &planned_job, &planned_action).ok);
-        ASSERT(db_build_action_find(&ndb, id_b, &action));
+        ASSERT(db_build_action_find(&ndb, planned_action.action_id, &action));
         ASSERT_STR_EQ(action.state, "QUEUED");
-        ASSERT(db_build_job_find(&ndb, id_a, &job));
+        ASSERT(db_build_job_find(&ndb, planned_job.job_id, &job));
         ASSERT_STR_EQ(job.state, "QUEUED");
 
         uint8_t seed[32], pubkey[32], secret[32];
@@ -240,33 +282,116 @@ static int test_bf_service(void)
         bf_worker(&worker);
         zcl_hex_encode(pubkey, sizeof(pubkey), worker.signer_pubkey);
         ASSERT(build_fabric_worker_approve(&ndb, &worker, 112).ok);
-
-        (void)snprintf(action.state, sizeof(action.state), "VERIFYING");
-        action.updated_at = 113;
-        ASSERT(db_build_action_save(&ndb, &action));
+        bool claimed = false;
+        ASSERT(build_fabric_claim(&ndb, worker.worker_id, id_d, 113, 10,
+                                  &action, &claimed).ok);
+        ASSERT(claimed);
+        ASSERT(build_fabric_start(&ndb, action.action_id, id_d, 114).ok);
+        ASSERT(build_fabric_begin_verify(&ndb, action.action_id, id_d, 115).ok);
         struct db_build_receipt receipt;
         bf_receipt(&receipt);
+        (void)snprintf(receipt.action_id, sizeof(receipt.action_id), "%s",
+                       action.action_id);
+        (void)snprintf(receipt.action_sha3, sizeof(receipt.action_sha3), "%s",
+                       action.action_id);
+        (void)snprintf(receipt.job_id, sizeof(receipt.job_id), "%s",
+                       action.job_id);
         ASSERT(build_fabric_receipt_id(&receipt, receipt.receipt_id).ok);
         uint8_t receipt_id[32], signature[64];
         ASSERT(zcl_hex_decode_lower(receipt.receipt_id, receipt_id,
                                     sizeof(receipt_id)));
         ed25519_sign(signature, receipt_id, sizeof(receipt_id), secret, pubkey);
         zcl_hex_encode(signature, sizeof(signature), receipt.signature);
-        ASSERT(build_fabric_receipt_accept(&ndb, &receipt, 114).ok);
-        ASSERT(db_build_action_find(&ndb, id_b, &action));
+        ASSERT(build_fabric_receipt_accept(&ndb, &receipt, 116).ok);
+        ASSERT(db_build_action_find(&ndb, planned_action.action_id, &action));
         ASSERT_STR_EQ(action.state, "ACCEPTED");
         ASSERT_STR_EQ(action.output_root_sha3, id_c);
+        ASSERT_EQ(action.finished_at, 116);
 
         /* Revocation is durable and makes a newly bound receipt fail before
          * signature acceptance; old evidence remains queryable. */
-        ASSERT(build_fabric_worker_revoke(&ndb, id_c, 115).ok);
-        ASSERT(build_fabric_worker_revoke(&ndb, id_c, 116).ok);
-        receipt.created_at = 117;
+        ASSERT(build_fabric_worker_revoke(&ndb, id_c, 117).ok);
+        ASSERT(build_fabric_worker_revoke(&ndb, id_c, 118).ok);
+        receipt.created_at = 119;
         ASSERT(build_fabric_receipt_id(&receipt, receipt.receipt_id).ok);
-        ASSERT(!build_fabric_receipt_accept(&ndb, &receipt, 117).ok);
+        ASSERT(!build_fabric_receipt_accept(&ndb, &receipt, 119).ok);
         struct db_build_receipt rows[2];
-        ASSERT_EQ(db_build_job_receipts(&ndb, id_a, rows, 2), 1);
-        ASSERT(!build_fabric_cancel(&ndb, id_a, 118).ok);
+        ASSERT_EQ(db_build_job_receipts(&ndb, planned_job.job_id, rows, 2), 1);
+        ASSERT(!build_fabric_cancel(&ndb, planned_job.job_id, 120).ok);
+        node_db_close(&ndb);
+        test_rm_rf(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_bf_leases(void)
+{
+    int failures = 0;
+    TEST("build_fabric: leases claim once, recover restart, and refuse stale owners") {
+        struct node_db ndb;
+        char dir[256], path[320];
+        ASSERT(bf_open(&ndb, dir, sizeof(dir), path, sizeof(path), "leases"));
+        struct db_build_job job;
+        struct db_build_action action;
+        struct db_build_worker worker;
+        bf_job(&job);
+        bf_action(&action);
+        bf_worker(&worker);
+        ASSERT(bf_canonicalize(&job, &action));
+        char job_id[BUILD_FABRIC_ID_HEX + 1];
+        char action_id[BUILD_FABRIC_ID_HEX + 1];
+        (void)snprintf(job_id, sizeof(job_id), "%s", job.job_id);
+        (void)snprintf(action_id, sizeof(action_id), "%s", action.action_id);
+        ASSERT(build_fabric_plan(&ndb, &job, &action).ok);
+        ASSERT(build_fabric_submit(&ndb, job_id, 110).ok);
+        ASSERT(build_fabric_worker_approve(&ndb, &worker, 111).ok);
+
+        struct db_build_action claimed_action;
+        bool claimed = false;
+        ASSERT(build_fabric_claim(&ndb, worker.worker_id, id_d, 120, 10,
+                                  &claimed_action, &claimed).ok);
+        ASSERT(claimed);
+        ASSERT_STR_EQ(claimed_action.action_id, action_id);
+        ASSERT_STR_EQ(claimed_action.state, "CLAIMED");
+        ASSERT_EQ(claimed_action.attempt_count, 1);
+        ASSERT_EQ(claimed_action.lease_expires_at, 130);
+
+        struct db_build_action no_action;
+        claimed = true;
+        ASSERT(build_fabric_claim(&ndb, worker.worker_id, id_b, 121, 10,
+                                  &no_action, &claimed).ok);
+        ASSERT(!claimed); /* the first compare-and-swap owns it */
+        ASSERT(!build_fabric_start(&ndb, action_id, id_b, 121).ok);
+        ASSERT(build_fabric_start(&ndb, action_id, id_d, 121).ok);
+        ASSERT(build_fabric_heartbeat(&ndb, action_id, id_d, 125, 10).ok);
+        ASSERT(build_fabric_begin_verify(&ndb, action_id, id_d, 126).ok);
+        ASSERT(db_build_action_find(&ndb, action_id, &claimed_action));
+        ASSERT_STR_EQ(claimed_action.state, "VERIFYING");
+        ASSERT_EQ(claimed_action.lease_expires_at, 135);
+
+        /* A new process sees the same expired lease and requeues it. */
+        node_db_close(&ndb);
+        memset(&ndb, 0, sizeof(ndb));
+        ASSERT(node_db_open(&ndb, path));
+        size_t requeued = 99;
+        ASSERT(build_fabric_recover_expired(&ndb, 136, &requeued).ok);
+        ASSERT_EQ(requeued, 1);
+        ASSERT(db_build_action_find(&ndb, action_id, &claimed_action));
+        ASSERT_STR_EQ(claimed_action.state, "QUEUED");
+        ASSERT_STR_EQ(claimed_action.last_error, "lease-expired-requeued");
+        ASSERT(claimed_action.lease_id[0] == '\0');
+        ASSERT_EQ(claimed_action.attempt_count, 1);
+        ASSERT(!build_fabric_begin_verify(&ndb, action_id, id_d, 137).ok);
+
+        ASSERT(build_fabric_claim(&ndb, worker.worker_id, id_b, 137, 10,
+                                  &claimed_action, &claimed).ok);
+        ASSERT(claimed && claimed_action.attempt_count == 2);
+        ASSERT(build_fabric_start(&ndb, action_id, id_b, 138).ok);
+        ASSERT(build_fabric_cancel(&ndb, job_id, 139).ok);
+        ASSERT(!build_fabric_heartbeat(&ndb, action_id, id_b, 140, 10).ok);
+        ASSERT(db_build_action_find(&ndb, action_id, &claimed_action));
+        ASSERT_STR_EQ(claimed_action.state, "CANCELLED");
         node_db_close(&ndb);
         test_rm_rf(dir);
         PASS();
@@ -454,6 +579,7 @@ int test_build_fabric(void)
     failures += test_bf_lifecycle();
     failures += test_bf_validation();
     failures += test_bf_service();
+    failures += test_bf_leases();
     failures += test_bf_native();
     failures += test_bf_runtime_dump();
     failures += test_bf_content_contracts();
