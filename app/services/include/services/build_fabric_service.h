@@ -53,6 +53,9 @@ struct zcl_result build_fabric_begin_verify(
     int64_t now);
 struct zcl_result build_fabric_recover_expired(
     struct node_db *ndb, int64_t now, size_t *requeued);
+struct zcl_result build_fabric_finish_leased(
+    struct node_db *ndb, const char *action_id, const char *lease_id,
+    const char *outcome, const char *detail, int64_t now);
 
 /* Idempotently cancel every nonterminal action and the owning job. */
 struct zcl_result build_fabric_cancel(struct node_db *ndb,

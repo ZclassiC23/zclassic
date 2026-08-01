@@ -84,6 +84,8 @@
 #define _DEFAULT_SOURCE
 
 #include "vcs/package_attest.h"
+#include "vcs/build_action.h"
+#include "vcs/build_artifact_manifest.h"
 #include "vcs/package_build.h"
 #include "vcs/package_manifest.h"
 #include "vcs/package_recipe.h"
@@ -174,6 +176,8 @@ static void pv_usage(FILE *out)
         "   or: zclassic23-package-verify <package-root-hex> --store=<dir>\n"
         "           --emit=<dir> --lock-root=<64hex> [--dep=<64hex>,<dir>]...\n"
         "           [--work=<dir>] [--require-full-isolation]\n"
+        "   or: zclassic23-package-verify --zbuild-input=<abs>/unit.i\n"
+        "           --zbuild-output=<abs>/unit.o --require-full-isolation\n"
         "\n"
         "--emit is INSTALL-BUILD mode (the ZCODE add lifecycle): the same\n"
         "confined build+test runs, but instead of signing an attestation the\n"
@@ -980,10 +984,139 @@ static void pv_header_install_path(const struct vcs_package_recipe *recipe,
     (void)snprintf(out, out_cap, "include/%s", best);
 }
 
+/* The ZBuild V1 action is deliberately narrower than package verification:
+ * one already-preprocessed public C23 translation unit enters, one ELF
+ * relocatable object leaves. No recipe, shell, response file, plugin,
+ * network, arbitrary compiler, or arbitrary output name is representable. */
+static int pv_zbuild_compile_mode(int argc, char **argv)
+{
+    const char *input_arg = NULL;
+    const char *output_arg = NULL;
+    bool require_full = false;
+    for (int i = 1; i < argc; i++) {
+        if (strncmp(argv[i], "--zbuild-input=", 15) == 0)
+            input_arg = argv[i] + 15;
+        else if (strncmp(argv[i], "--zbuild-output=", 16) == 0)
+            output_arg = argv[i] + 16;
+        else if (strcmp(argv[i], "--require-full-isolation") == 0)
+            require_full = true;
+        else {
+            fprintf(stdout, "zbuild-error=unexpected-argument\n");
+            return 2;
+        }
+    }
+    if (!input_arg || !output_arg || !require_full || input_arg[0] != '/' ||
+        output_arg[0] != '/') {
+        fprintf(stdout, "zbuild-error=fixed-mode-requires-absolute-paths-and-full-isolation\n");
+        return 2;
+    }
+    const char *input_base = strrchr(input_arg, '/');
+    const char *output_base = strrchr(output_arg, '/');
+    if (!input_base || strcmp(input_base + 1, "unit.i") != 0 ||
+        !output_base || strcmp(output_base + 1, VCS_BUILD_OUTPUT_V1) != 0) {
+        fprintf(stdout, "zbuild-error=fixed-path-policy\n");
+        return 2;
+    }
+    char input[4096];
+    if (!realpath(input_arg, input)) {
+        fprintf(stdout, "zbuild-error=input-unavailable\n");
+        return 3;
+    }
+    struct stat input_st;
+    if (stat(input, &input_st) != 0 || !S_ISREG(input_st.st_mode) ||
+        input_st.st_size <= 0 ||
+        (uint64_t)input_st.st_size > VCS_BUILD_ARTIFACT_MAX_BYTES) {
+        fprintf(stdout, "zbuild-error=input-invalid-or-oversize\n");
+        return 3;
+    }
+    char src_dir[4096];
+    (void)snprintf(src_dir, sizeof(src_dir), "%s", input);
+    char *src_slash = strrchr(src_dir, '/');
+    if (!src_slash) return 2;
+    *src_slash = '\0';
+
+    char output_parent_arg[4096];
+    size_t parent_len = (size_t)(output_base - output_arg);
+    if (parent_len == 0 || parent_len >= sizeof(output_parent_arg))
+        return 2;
+    memcpy(output_parent_arg, output_arg, parent_len);
+    output_parent_arg[parent_len] = '\0';
+    char build_dir[4096];
+    if (!realpath(output_parent_arg, build_dir) ||
+        strcmp(src_dir, build_dir) == 0) {
+        fprintf(stdout, "zbuild-error=separate-source-and-output-dirs-required\n");
+        return 3;
+    }
+    char output[4200];
+    int on = snprintf(output, sizeof(output), "%s/%s", build_dir,
+                      VCS_BUILD_OUTPUT_V1);
+    if (on <= 0 || (size_t)on >= sizeof(output) || access(output, F_OK) == 0) {
+        fprintf(stdout, "zbuild-error=output-must-not-exist\n");
+        return 3;
+    }
+    if (os_sandbox_landlock_abi() < 1) {
+        fprintf(stdout, "zbuild-error=landlock-unavailable\n");
+        return 4;
+    }
+
+    struct os_sandbox_path_rule rules[10];
+    size_t n_rules = pv_child_grants(src_dir, build_dir, NULL, 0, rules,
+                                     sizeof(rules) / sizeof(rules[0]));
+    if (n_rules == 0) {
+        fprintf(stdout, "zbuild-error=grant-construction-failed\n");
+        return 5;
+    }
+    const struct os_sandbox_rlimits limits = {
+        .as_bytes = UINT64_C(2048) * 1024u * 1024u,
+        .cpu_seconds = 120,
+        .nproc = PV_COMPILE_NPROC,
+        .fsize_bytes = PV_COMPILE_FSIZE_BYTES,
+        .nofile = PV_COMPILE_NOFILE,
+        .core_bytes = 0,
+    };
+    char env_tmpdir[4200];
+    (void)snprintf(env_tmpdir, sizeof(env_tmpdir), "TMPDIR=%s", build_dir);
+    const char *const env[] = { env_tmpdir, NULL };
+    const char *const cc_argv[] = {
+        "/usr/bin/gcc", "-x", "cpp-output", "-std=c23", "-O2",
+        "-march=x86-64-v3", "-fno-ident", "-c", input, "-o", output,
+        NULL,
+    };
+    struct pv_run run = pv_run_child(cc_argv, build_dir, &limits, true,
+                                     rules, n_rules, env,
+                                     PV_COMPILE_TIMEOUT_MS);
+    if (!run.launched || run.timed_out || run.sandbox_fail || !run.exited ||
+        run.exit_code != 0) {
+        fprintf(stdout, "zbuild-error=%s exit=%d signal=%d diagnostics=%.512s\n",
+                run.timed_out ? "timeout" :
+                run.sandbox_fail ? "sandbox" : "compile",
+                run.exit_code, run.term_signal, run.stderr_buf);
+        (void)unlink(output);
+        return 5;
+    }
+    struct stat output_st;
+    if (stat(output, &output_st) != 0 || !S_ISREG(output_st.st_mode) ||
+        output_st.st_size <= 0 ||
+        (uint64_t)output_st.st_size > VCS_BUILD_ARTIFACT_MAX_BYTES ||
+        chmod(output, 0400) != 0) {
+        fprintf(stdout, "zbuild-error=output-invalid-or-oversize\n");
+        (void)unlink(output);
+        return 5;
+    }
+    fprintf(stdout,
+            "zbuild-ok=1 landlock=1 seccomp=1 rlimits=1 network=0 "
+            "compiler=/usr/bin/gcc bytes=%lld\n",
+            (long long)output_st.st_size);
+    return 0;
+}
+
 /* ── main flow ──────────────────────────────────────────────────────── */
 
 int main(int argc, char **argv)
 {
+    for (int i = 1; i < argc; i++)
+        if (strncmp(argv[i], "--zbuild-input=", 15) == 0)
+            return pv_zbuild_compile_mode(argc, argv);
     const char *root_hex = NULL;
     const char *store_dir = NULL;
     const char *key_path = NULL;

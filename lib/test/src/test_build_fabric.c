@@ -7,19 +7,23 @@
 #include "models/database.h"
 #include "services/build_fabric_service.h"
 #include "services/build_fabric_runtime.h"
+#include "services/build_fabric_worker.h"
 #include "base/hex.h"
 #include "crypto/ed25519.h"
+#include "platform/time_compat.h"
 #include "command/native_command.h"
 #include "controllers/api_controller.h"
 #include "json/json.h"
 #include "vcs/build_action.h"
 #include "vcs/build_artifact_manifest.h"
 #include "vcs/package_store.h"
+#include "vcs/vcs_object.h"
 #include "crypto/sha3.h"
 
 #include <sqlite3.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 
 static const char id_a[] =
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -399,6 +403,104 @@ static int test_bf_leases(void)
     return failures;
 }
 
+static int test_bf_confined_worker(void)
+{
+    int failures = 0;
+    TEST("build_fabric: fixed worker confines, CAS-stores, signs, and accepts one TU") {
+        struct node_db ndb;
+        char dir[256], path[320];
+        ASSERT(bf_open(&ndb, dir, sizeof(dir), path, sizeof(path), "worker"));
+        ASSERT(vcs_object_store_init(dir));
+        struct db_build_worker persistent_a, persistent_b;
+        uint8_t persistent_sk_a[32], persistent_pk_a[32];
+        uint8_t persistent_sk_b[32], persistent_pk_b[32];
+        ASSERT(build_fabric_worker_identity_load(
+            dir, &persistent_a, persistent_sk_a, persistent_pk_a).ok);
+        ASSERT(build_fabric_worker_identity_load(
+            dir, &persistent_b, persistent_sk_b, persistent_pk_b).ok);
+        ASSERT_STR_EQ(persistent_a.worker_id, persistent_b.worker_id);
+        ASSERT(memcmp(persistent_pk_a, persistent_pk_b, 32) == 0);
+        char key_path[320];
+        (void)snprintf(key_path, sizeof(key_path),
+                       "%s/zcode/build-worker.ed25519", dir);
+        ASSERT(chmod(key_path, 0644) == 0);
+        ASSERT(!build_fabric_worker_identity_load(
+            dir, &persistent_b, persistent_sk_b, persistent_pk_b).ok);
+        ASSERT(chmod(key_path, 0600) == 0);
+        static const uint8_t input[] =
+            "int zbuild_fixture(void) { return 23; }\n";
+        uint8_t input_root[32];
+        sha3_256(input, sizeof(input) - 1u, input_root);
+        ASSERT(vcs_object_put_addressed(dir, input_root, input,
+                                        sizeof(input) - 1u));
+        struct vcs_toolchain_capsule_v1 capsule;
+        uint8_t capsule_root[32];
+        ASSERT(vcs_toolchain_capsule_v1_capture_gcc(&capsule));
+        ASSERT(vcs_toolchain_capsule_v1_root(&capsule, capsule_root));
+
+        struct db_build_job job;
+        struct db_build_action action;
+        bf_job(&job);
+        bf_action(&action);
+        zcl_hex_encode(capsule_root, sizeof(capsule_root), job.toolchain_sha3);
+        zcl_hex_encode(input_root, sizeof(input_root), action.input_root_sha3);
+        uint8_t fixed_flags[32], fixed_environment[32];
+        vcs_build_action_v1_fixed_flags_root(fixed_flags);
+        vcs_build_action_v1_fixed_environment_root(fixed_environment);
+        zcl_hex_encode(fixed_flags, 32, action.flags_sha3);
+        zcl_hex_encode(fixed_environment, 32, action.environment_sha3);
+        ASSERT(bf_canonicalize(&job, &action));
+        char action_id[65];
+        (void)snprintf(action_id, sizeof(action_id), "%s", action.action_id);
+        ASSERT(build_fabric_plan(&ndb, &job, &action).ok);
+        int64_t now = (int64_t)platform_time_wall_unix();
+        ASSERT(build_fabric_submit(&ndb, job.job_id, now).ok);
+
+        uint8_t seed[32], pubkey[32], secret[32];
+        memset(seed, 29, sizeof(seed));
+        ed25519_keypair(pubkey, secret, seed);
+        struct db_build_worker worker;
+        bf_worker(&worker);
+        zcl_hex_encode(pubkey, sizeof(pubkey), worker.signer_pubkey);
+        ASSERT(build_fabric_worker_approve(&ndb, &worker, now).ok);
+        bool claimed = false;
+        ASSERT(build_fabric_claim(&ndb, worker.worker_id, id_d, now, 300,
+                                  &action, &claimed).ok);
+        ASSERT(claimed);
+        struct db_build_receipt receipt;
+        struct zcl_result executed = build_fabric_worker_execute(
+            &ndb, dir, action_id, id_d, secret, pubkey, &receipt);
+        if (!executed.ok)
+            printf("worker detail: %s\n", executed.message);
+        ASSERT(executed.ok);
+        ASSERT(db_build_action_find(&ndb, action_id, &action));
+        ASSERT_STR_EQ(action.state, "ACCEPTED");
+        ASSERT_STR_EQ(action.output_root_sha3, receipt.output_sha3);
+        uint8_t manifest_root[32];
+        ASSERT(zcl_hex_decode_lower(receipt.output_sha3, manifest_root, 32));
+        uint8_t *wire = NULL;
+        size_t wire_len = 0;
+        ASSERT_EQ(vcs_object_load_raw(dir, manifest_root, &wire, &wire_len), 0);
+        struct vcs_build_artifact_manifest_v1 manifest;
+        ASSERT(vcs_build_artifact_manifest_v1_parse(wire, wire_len, &manifest));
+        free(wire);
+        ASSERT_EQ(manifest.chunk_count, 1);
+        uint8_t *object = NULL;
+        size_t object_len = 0;
+        ASSERT_EQ(vcs_object_load_raw(dir, manifest.chunk_sha3[0], &object,
+                                      &object_len), 0);
+        ASSERT(vcs_build_artifact_manifest_v1_verify_chunk(
+            &manifest, 0, object, object_len));
+        ASSERT(object_len >= 20 && object[0] == 0x7f && object[1] == 'E' &&
+               object[16] == 1 && object[18] == 62);
+        free(object);
+        node_db_close(&ndb);
+        test_rm_rf(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_bf_native(void)
 {
     int failures = 0;
@@ -580,6 +682,7 @@ int test_build_fabric(void)
     failures += test_bf_validation();
     failures += test_bf_service();
     failures += test_bf_leases();
+    failures += test_bf_confined_worker();
     failures += test_bf_native();
     failures += test_bf_runtime_dump();
     failures += test_bf_content_contracts();

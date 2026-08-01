@@ -38,16 +38,16 @@ ledger, worker trust list, or P2P transport.
 | Fixed build action | `vcs_build_action_v1` | Live codec; V1 is preprocessed-TU compile only |
 | Build coordinator ledger | `build_jobs`, `build_actions`, `build_workers`, `build_receipts` | Live schema v42, models, native/REST reads, plan/submit/cancel/trust/lease-bound receipt checks |
 | Local package confinement | `zclassic23-package-verify` | Live: declarative recipe, Landlock/seccomp/rlimits, no network |
-| ZBuild worker execution | existing build-fabric runtime | Partial: atomic bounded leases, heartbeats, cancellation gates, and restart recovery are live; confined action execution is not yet live |
+| ZBuild worker execution | existing build-fabric runtime | Live locally for the fixed preprocessed-TU GCC action when `-buildworker` is enabled: durable identity, bounded leases, full confinement, CAS artifact, signed receipt, and local fallback |
 | Package P2P | `package_swarm_node` and `zpkgswm` | Live for immutable package bytes |
 | Work P2P | adapter over package swarm/CAS | Not live |
 | Agent authority | metaverse grants and signed receipt chain | Live for scoped property operations; task work must never inherit wallet or canonical-node authority |
 | Durability lanes | ZCODE promotion records over source roots | Not live |
 
 The control-plane distinction is load-bearing: a READY command or database row
-does not prove an executor exists. `build.worker` is supervised and the
-coordinator now recovers expired leases; the fixed compiler action itself is
-still the missing executor.
+does not prove an executor exists. `build.worker` now has an actual supervised
+thread and fixed compiler action; broader recipe test/fuzz actions and remote
+dispatch remain missing.
 
 ## Canonical development objects
 
@@ -155,17 +155,22 @@ cannot authorize a moved task.
   idempotent migration and model-owned writes.
 - [x] Claim `QUEUED` actions atomically. A restart requeues an expired lease; a
   live lease cannot be stolen.
-- [ ] Execute only registered fixed action kinds. V1 continues to use local
+- [x] Execute only registered fixed action kinds. V1 continues to use local
   preprocessing followed by fixed `cc -x cpp-output -c`; package recipe
   build/test/fuzz uses the existing package verifier confinement.
-- [ ] Establish Landlock, seccomp, rlimits, an empty environment allowlist, fixed
+- [x] Establish Landlock, seccomp, rlimits, an empty environment allowlist, fixed
   virtual paths, no network, bounded stdout/stderr, cancellation, and a hard
-  deadline before untrusted bytes run.
+  deadline before untrusted bytes run. Cancellation currently prevents stale
+  publication; prompt child termination is still pending.
 - [ ] Fetch inputs only by immutable CAS root. Recheck task/source/lock/toolchain/
   policy/lease immediately before execution and immediately before receipt
-  publication.
+  publication. The local worker now rechecks input, action, source, toolchain,
+  fixed flags/environment, signer, and lease; task/lock/policy projection into
+  the action ledger remains.
 - [ ] Store output chunks and a build-artifact manifest in the existing CAS, then
   sign `work_receipt.v1` and the existing ZBuild receipt projection.
+  Output chunks, artifact manifest, and the lease-bound ZBuild receipt are live;
+  projecting the canonical ZCODE work receipt is still pending.
 - [ ] On timeout, crash, cancellation, malformed output, stale state, or sandbox
   failure: publish a named outcome and use the existing local fallback policy;
   never wait forever.

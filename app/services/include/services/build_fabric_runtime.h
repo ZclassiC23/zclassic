@@ -8,7 +8,8 @@
 
 #include <stdbool.h>
 
-struct zcl_result build_fabric_runtime_register(bool worker_enabled);
+struct zcl_result build_fabric_runtime_register(bool worker_enabled,
+                                                const char *datadir);
 
 struct json_value;
 bool build_fabric_dump_state_json(struct json_value *out, const char *key);

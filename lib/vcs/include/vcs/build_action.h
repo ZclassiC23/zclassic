@@ -42,6 +42,13 @@ struct vcs_build_action_v1 {
 
 bool vcs_toolchain_capsule_v1_root(
     const struct vcs_toolchain_capsule_v1 *capsule, uint8_t out[32]);
+/* Capture the fixed Linux V1 GCC capsule by content: driver, cc1 backend,
+ * assembler, startup/sysroot objects, target probe output, and ABI libraries.
+ * No mtime participates. */
+bool vcs_toolchain_capsule_v1_capture_gcc(
+    struct vcs_toolchain_capsule_v1 *out);
+void vcs_build_action_v1_fixed_flags_root(uint8_t out[32]);
+void vcs_build_action_v1_fixed_environment_root(uint8_t out[32]);
 bool vcs_build_action_v1_root(const struct vcs_build_action_v1 *action,
                               uint8_t out[32]);
 

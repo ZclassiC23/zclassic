@@ -478,6 +478,51 @@ struct zcl_result build_fabric_recover_expired(
     return ZCL_OK;
 }
 
+struct zcl_result build_fabric_finish_leased(
+    struct node_db *ndb, const char *action_id, const char *lease_id,
+    const char *outcome, const char *detail, int64_t now)
+{
+    if (!ndb || !ndb->open || !bf_lower_hex_id(action_id) ||
+        !bf_lower_hex_id(lease_id) || !outcome || !detail || now < 0 ||
+        (strcmp(outcome, "FAILED") != 0 &&
+         strcmp(outcome, "LOCAL_FALLBACK") != 0 &&
+         strcmp(outcome, "CANCELLED") != 0))
+        return ZCL_ERR(-1, "leased finish requires a named terminal outcome");
+    struct db_build_action action;
+    struct db_build_job job;
+    if (!db_build_action_find(ndb, action_id, &action) ||
+        !db_build_job_find(ndb, action.job_id, &job))
+        return ZCL_ERR(-1, "leased finish action or job not found");
+    if ((strcmp(action.state, "CLAIMED") != 0 &&
+         strcmp(action.state, "RUNNING") != 0 &&
+         strcmp(action.state, "VERIFYING") != 0) ||
+        strcmp(action.lease_id, lease_id) != 0)
+        return ZCL_ERR(-1, "leased finish owner or state is stale");
+    char prior[BUILD_FABRIC_STATE_MAX + 1];
+    (void)snprintf(prior, sizeof(prior), "%s", action.state);
+    (void)snprintf(action.state, sizeof(action.state), "%s", outcome);
+    (void)snprintf(action.outcome, sizeof(action.outcome), "%s", outcome);
+    (void)snprintf(action.last_error, sizeof(action.last_error), "%s", detail);
+    action.finished_at = now;
+    action.updated_at = now;
+    if (!node_db_begin(ndb))
+        return ZCL_ERR(-1, "cannot begin leased terminal transition");
+    bool ok = db_build_action_save_leased(ndb, &action, prior, lease_id);
+    if (ok) {
+        (void)snprintf(job.state, sizeof(job.state), "%s", outcome);
+        (void)snprintf(job.outcome, sizeof(job.outcome), "%s", outcome);
+        if (strcmp(outcome, "CANCELLED") == 0) job.cancel_requested = 1;
+        job.updated_at = now;
+        ok = db_build_job_save(ndb, &job) && node_db_commit(ndb);
+    }
+    if (!ok) {
+        if (!node_db_rollback(ndb))
+            LOG_ERROR("build_fabric", "leased finish rollback failed");
+        return ZCL_ERR(-1, "leased terminal transition lost ownership");
+    }
+    return ZCL_OK;
+}
+
 struct zcl_result build_fabric_cancel(struct node_db *ndb,
                                       const char *job_id, int64_t now)
 {
