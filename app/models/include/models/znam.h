@@ -66,6 +66,14 @@ bool db_znam_addr_validate(const struct znam_addr_record *rec,
 bool db_znam_save(struct node_db *ndb, const struct znam_entry *entry);
 bool db_znam_find(struct node_db *ndb, const char *name,
                   struct znam_entry *out);
+/* Property-catalog reads keyed by the registration transaction, which is
+ * ZNAM's immutable metaverse root.  -1 is a query/integrity error, 0 is a
+ * determined miss, 1 is found. */
+int db_znam_find_by_reg_txid(struct node_db *ndb, const uint8_t reg_txid[32],
+                            struct znam_entry *out);
+/* Exact table cardinality.  False is a read failure, distinct from an empty
+ * registry. */
+bool db_znam_count(struct node_db *ndb, size_t *count_out);
 int db_znam_list(struct node_db *ndb, struct znam_entry *out, size_t max);
 int db_znam_list_by_owner(struct node_db *ndb, const char *owner,
                           struct znam_entry *out, size_t max);

@@ -96,5 +96,6 @@ bool mv_release_read_verified(const char *zcode_dir,
 struct metaverse_adapter;
 const struct metaverse_adapter *metaverse_adapter_content(void);
 const struct metaverse_adapter *metaverse_adapter_zcode_package(void);
+const struct metaverse_adapter *metaverse_adapter_znam(void);
 
 #endif /* ZCL_METAVERSE_PRIV_H */

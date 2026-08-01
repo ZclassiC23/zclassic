@@ -14,6 +14,8 @@
 #include <stddef.h>
 
 struct json_value;
+struct node_db;
+struct arith_uint256;
 
 /* The property catalog — one surface that states what sovereign digital
  * property this node's datadir holds, across every property kind, by asking
@@ -55,6 +57,9 @@ struct property_catalog_kind_row {
     enum metaverse_settlement settlement;
     bool available;              /* false => `unavailable_reason` says why */
     const char *unavailable_reason;
+    /* Owned storage for a runtime readiness failure.  Static registry/filter
+     * reasons keep using unavailable_reason directly. */
+    char unavailable_reason_buf[192];
     size_t total;
     size_t written;
     bool truncated;
@@ -90,6 +95,17 @@ struct property_catalog_query {
     size_t limit;
 };
 
+/* Optional authoritative sources already opened by the caller under its
+ * own safety policy.  This keeps the projection reusable by the live node
+ * and by strict read-only native commands without teaching the library how
+ * to open databases. */
+struct property_catalog_sources {
+    struct node_db *node_db;
+    int64_t chain_height;
+    const struct arith_uint256 *chain_work;
+    const char *node_db_unavailable_reason;
+};
+
 struct property_catalog_page *property_catalog_page_new(void);
 void property_catalog_page_free(struct property_catalog_page *page);
 
@@ -100,6 +116,10 @@ void property_catalog_page_free(struct property_catalog_page *page);
 struct zcl_result property_catalog_list(const char *datadir,
                                         const struct property_catalog_query *q,
                                         struct property_catalog_page *out);
+struct zcl_result property_catalog_list_with_sources(
+    const char *datadir, const struct property_catalog_query *q,
+    const struct property_catalog_sources *sources,
+    struct property_catalog_page *out);
 
 /* Project exactly one property. Non-ok for a NULL/empty datadir, a NULL
  * out, an invalid id, or a kind whose reader is not wired (the reason is in
@@ -108,6 +128,10 @@ struct zcl_result property_catalog_list(const char *datadir,
 struct zcl_result property_catalog_show(const char *datadir,
                                         const struct metaverse_property_id *id,
                                         struct metaverse_property_view *out);
+struct zcl_result property_catalog_show_with_sources(
+    const char *datadir, const struct metaverse_property_id *id,
+    const struct property_catalog_sources *sources,
+    struct metaverse_property_view *out);
 
 /* Render a page (items + the per-kind coverage rows) into `out`, set to an
  * object by this call. */

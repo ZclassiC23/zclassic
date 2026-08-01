@@ -19,6 +19,7 @@
 #include "platform/clock.h"
 #include "script/standard.h"
 #include "storage/znam_projection.h"
+#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -279,6 +280,60 @@ bool db_znam_find(struct node_db *ndb, const char *name,
         " FROM znam_names WHERE name=?",
         AR_BIND_TEXT(s, 1, name),
         if (!row_to_znam(s, out)) { AR_FINALIZE(s); return false; });
+}
+
+int db_znam_find_by_reg_txid(struct node_db *ndb, const uint8_t reg_txid[32],
+                            struct znam_entry *out)
+{
+    sqlite3_stmt *s = NULL;
+    int rc;
+
+    if (!ndb || !ndb->open || !reg_txid || !out)
+        LOG_RETURN(-1, "znam", "db_znam_find_by_reg_txid: invalid input");
+    if (sqlite3_prepare_v2(
+            ndb->db,
+            "SELECT name,owner_address,target_type,target_value,"
+            "reg_txid,reg_height,last_update_txid,expiry_height"
+            " FROM znam_names WHERE reg_txid=? LIMIT 1",
+            -1, &s, NULL) != SQLITE_OK || !s)
+        LOG_RETURN(-1, "znam", "db_znam_find_by_reg_txid: prepare failed: %s",
+                   sqlite3_errmsg(ndb->db));
+    AR_BIND_BLOB(s, 1, reg_txid, 32);
+    rc = AR_STEP_ROW_READONLY(s);
+    if (rc == SQLITE_ROW) {
+        bool ok = row_to_znam(s, out);
+        AR_FINALIZE(s);
+        return ok ? 1 : -1;
+    }
+    AR_FINALIZE(s);
+    if (rc == SQLITE_DONE)
+        return 0;
+    LOG_RETURN(-1, "znam", "db_znam_find_by_reg_txid: step failed: %s",
+               sqlite3_errmsg(ndb->db));
+}
+
+bool db_znam_count(struct node_db *ndb, size_t *count_out)
+{
+    sqlite3_stmt *s = NULL;
+    int rc;
+
+    if (count_out)
+        *count_out = 0;
+    if (!ndb || !ndb->open || !count_out)
+        LOG_FAIL("znam", "db_znam_count: invalid input");
+    if (sqlite3_prepare_v2(ndb->db, "SELECT COUNT(*) FROM znam_names", -1,
+                           &s, NULL) != SQLITE_OK || !s)
+        LOG_FAIL("znam", "db_znam_count: prepare failed: %s",
+                 sqlite3_errmsg(ndb->db));
+    rc = AR_STEP_ROW_READONLY(s);
+    if (rc != SQLITE_ROW || sqlite3_column_int64(s, 0) < 0) {
+        AR_FINALIZE(s);
+        LOG_FAIL("znam", "db_znam_count: step failed: %s",
+                 sqlite3_errmsg(ndb->db));
+    }
+    *count_out = (size_t)sqlite3_column_int64(s, 0);
+    AR_FINALIZE(s);
+    return true;
 }
 
 int db_znam_list(struct node_db *ndb, struct znam_entry *out, size_t max)

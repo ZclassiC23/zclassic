@@ -55,6 +55,8 @@
 #include "metaverse/property_id.h"
 #include "metaverse/property_view.h"
 #include "metaverse/property_work.h"
+#include "models/database.h"
+#include "models/znam.h"
 #include "services/property_catalog.h"
 #include "vcs/blob_store.h"
 #include "vcs/package_accept.h"
@@ -344,11 +346,14 @@ static int t_adapter_registry(void)
              every_kind_has_a_row);
     MV_CHECK("registry: a kind without a reader still states why",
              every_unwired_says_why);
-    MV_CHECK("registry: content and zcode_package are wired", ready == 2 &&
+    MV_CHECK("registry: content, zcode_package, and znam_name are wired",
+             ready == 3 &&
              metaverse_adapter_ready(
                  metaverse_adapter_for(METAVERSE_KIND_CONTENT)) &&
              metaverse_adapter_ready(
-                 metaverse_adapter_for(METAVERSE_KIND_ZCODE_PACKAGE)));
+                 metaverse_adapter_for(METAVERSE_KIND_ZCODE_PACKAGE)) &&
+             metaverse_adapter_ready(
+                 metaverse_adapter_for(METAVERSE_KIND_ZNAM_NAME)));
     MV_CHECK("registry: an invalid kind has no row",
              metaverse_adapter_for(METAVERSE_KIND_UNKNOWN) == NULL &&
              metaverse_adapter_for(METAVERSE_KIND_COUNT) == NULL &&
@@ -1488,6 +1493,121 @@ static size_t mv_count_files(const char *dir)
     return n;
 }
 
+/* ZNAM through the canonical model and the strict read-only native open. */
+static int t_znam_adapter(void)
+{
+    int failures = 0;
+    char dd[256];
+    char db_path[512];
+    char root_hex[65];
+    char update_hex[65];
+    char id_text[METAVERSE_ID_TEXT_MAX];
+    struct node_db ndb;
+    struct znam_entry entry;
+    struct mv_cmd c;
+    size_t files_before;
+    size_t files_after;
+
+    test_make_tmpdir(dd, sizeof(dd), "metaverse", "znam");
+    snprintf(db_path, sizeof(db_path), "%s/node.db", dd);
+    memset(&ndb, 0, sizeof(ndb));
+    memset(&entry, 0, sizeof(entry));
+    MV_CHECK("znam: canonical node database opens for fixture setup",
+             node_db_open(&ndb, db_path));
+    snprintf(entry.name, sizeof(entry.name), "alice");
+    snprintf(entry.owner_address, sizeof(entry.owner_address),
+             "t1AlicePropertyOwner11111111111111111");
+    entry.target_type = ZNAM_TYPE_CONTENT;
+    snprintf(entry.target_value, sizeof(entry.target_value), "sha3:alice");
+    memset(entry.reg_txid, 0x71, sizeof(entry.reg_txid));
+    memset(entry.last_update_txid, 0x72, sizeof(entry.last_update_txid));
+    entry.reg_height = 777;
+    entry.expiry_height = 1777;
+    MV_CHECK("znam: fixture is saved through the canonical model",
+             ndb.open && db_znam_save(&ndb, &entry));
+    node_db_close(&ndb);
+
+    mv_hex32(entry.reg_txid, root_hex);
+    mv_hex32(entry.last_update_txid, update_hex);
+    snprintf(id_text, sizeof(id_text), "znam_name:%s", root_hex);
+    files_before = mv_count_files(dd);
+
+    mv_list(&c, dd, "znam_name");
+    {
+        const struct json_value *item = mv_find_item(&c.reply.data, id_text);
+        const struct json_value *kind =
+            mv_find_kind(&c.reply.data, "znam_name");
+
+        MV_CHECK("znam: list reads the canonical registration by its stable "
+                 "transaction root",
+                 c.reply.status == ZCL_COMMAND_STATUS_PASSED && item &&
+                 kind && json_get_bool(json_get(kind, "available")) &&
+                 json_get_int(json_get(kind, "total")) == 1);
+        MV_CHECK("znam: list projects owner and indexed-chain evidence",
+                 item && strcmp(mv_str(item, "display_name"), "alice") == 0 &&
+                 strcmp(mv_str(item, "owner_principal"),
+                                entry.owner_address) == 0 &&
+                 strcmp(mv_str(item, "owner_principal_kind"),
+                        "zcl_address") == 0 &&
+                 strcmp(mv_str(item, "evidence_grade"),
+                        "chain_indexed_unvalidated") == 0 &&
+                 !json_get_bool(json_get(item, "chain_bound")));
+    }
+    mv_cmd_free(&c);
+
+    mv_show(&c, dd, id_text);
+    {
+        const struct json_value *work = json_get(&c.reply.data, "work");
+
+        MV_CHECK("znam: show reports the registration height without "
+                 "inventing a live tip",
+                 c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
+                 strcmp(mv_str(&c.reply.data, "status"), "present") == 0 &&
+                 json_get_bool(json_get(&c.reply.data,
+                                        "has_freshness_height")) &&
+                 json_get_int(json_get(&c.reply.data,
+                                       "freshness_height")) == 777 &&
+                 work && strcmp(mv_str(work, "gap"), "no_tip") == 0 &&
+                 json_get_int(json_get(work, "confirmation_depth")) == -1);
+        MV_CHECK("znam: latest transaction is a descriptor, not a "
+                 "fabricated revision counter",
+                 strcmp(mv_str(&c.reply.data, "descriptor_root"),
+                        update_hex) == 0 &&
+                 !json_get_bool(json_get(&c.reply.data, "has_revision")) &&
+                 strstr(mv_str(&c.reply.data, "actions_csv"),
+                        "update_pointer") != NULL &&
+                 strstr(mv_str(&c.reply.data, "actions_csv"),
+                        "transfer") != NULL);
+    }
+    mv_cmd_free(&c);
+
+    files_after = mv_count_files(dd);
+    MV_CHECK("znam: list/show create no WAL or SHM sidecars and change no "
+             "datadir files", files_after == files_before);
+
+    /* No catalog ownership cache: the immutable registration root stays
+     * stable while the authoritative owner changes. */
+    memset(&ndb, 0, sizeof(ndb));
+    MV_CHECK("znam: fixture reopens for an ownership transition",
+             node_db_open(&ndb, db_path));
+    snprintf(entry.owner_address, sizeof(entry.owner_address),
+             "t1BobPropertyOwner222222222222222222");
+    memset(entry.last_update_txid, 0x73, sizeof(entry.last_update_txid));
+    MV_CHECK("znam: ownership transition saves through the model",
+             ndb.open && db_znam_save(&ndb, &entry));
+    node_db_close(&ndb);
+    mv_show(&c, dd, id_text);
+    MV_CHECK("znam: same property id immediately projects the new owner",
+             c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
+             strcmp(mv_str(&c.reply.data, "property_id"), id_text) == 0 &&
+             strcmp(mv_str(&c.reply.data, "owner_principal"),
+                    entry.owner_address) == 0);
+    mv_cmd_free(&c);
+
+    test_rm_rf_recursive(dd);
+    return failures;
+}
+
 static int t_readonly_contract(void)
 {
     int failures = 0;
@@ -1661,7 +1781,7 @@ static int t_registry_path(void)
     (void)json_push_kv_str(&c.input, "datadir", dd);
     (void)json_push_kv_str(
         &c.input, "property_id",
-        "znam_name:a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbb"
+        "zslp_asset:a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbb"
         "cbdbebf");
     zcl_native_handle_metaverse_property_show(&c.request, &c.reply);
     MV_CHECK("cli: an unwired kind is refused with KIND_UNAVAILABLE",
@@ -1787,17 +1907,23 @@ static int t_unreadable_store_is_disclosed(void)
              c.reply.error.code[0] != '\0');
     mv_cmd_free(&c);
 
-    /* And the control: with the store simply ABSENT, an empty answer is
-     * the true one and must NOT be dressed up as a failure. */
+    /* And the control: with the ZCODE store simply ABSENT, its own content
+     * row remains readable.  The top-level aggregate may still be false
+     * because this deliberately never-booted fixture has no node.db from
+     * which the independent ZNAM authority could be read. */
     (void)unlink(mpath);
     mv_cmd_init(&c);
     (void)json_push_kv_str(&c.input, "datadir", dd);
     zcl_native_handle_metaverse_property_list(&c.request, &c.reply);
-    store = json_get(&c.reply.data, "store");
-    MV_CHECK("unreadable: an absent store still reads as read = true",
-             c.reply.status == ZCL_COMMAND_STATUS_PASSED && store &&
-             json_get(store, "read") &&
-             json_get_bool(json_get(store, "read")));
+    {
+        const struct json_value *content =
+            mv_find_kind(&c.reply.data, "content");
+        MV_CHECK("unreadable: an absent ZCODE store is a readable empty "
+                 "content authority",
+                 c.reply.status == ZCL_COMMAND_STATUS_PASSED && content &&
+                 json_get_bool(json_get(content, "available")) &&
+                 json_get_int(json_get(content, "total")) == 0);
+    }
     mv_cmd_free(&c);
 
     test_rm_rf_recursive(dd);
@@ -1817,6 +1943,7 @@ int test_metaverse_catalog(void)
     failures += t_settlement_is_surfaced();
     failures += t_content_adapter();
     failures += t_zcode_adapter();
+    failures += t_znam_adapter();
     failures += t_readonly_contract();
     failures += t_registry_path();
     failures += t_unreadable_store_is_disclosed();

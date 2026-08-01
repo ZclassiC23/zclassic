@@ -17,6 +17,7 @@
 #include "base/log_macros.h"
 #include "base/safe_alloc.h"
 #include "json/json.h"
+#include "models/znam.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,27 +41,92 @@ void property_catalog_page_free(struct property_catalog_page *page)
     free(page);
 }
 
-/* Build the adapter context. The chain anchor (`chain_height`,
- * `chain_work`) is left UNKNOWN — -1 and NULL — and that is a decision, not
- * an omission:
- *
- *   1. No wired kind is proof-of-work settled. CONTENT and ZCODE_PACKAGE
- *      are content-addressed; their roots are checkable without any tip,
- *      and handing them one would only invite a renderer to print it.
- *   2. This projection is datadir-only and node-free by contract (see
- *      services/property_catalog.h). The live tip lives in the in-process
- *      block index, and reading it here would make `metaverse property
- *      list` depend on a running node — a different command from the one
- *      documented.
- *
- * When a ZNAM or ZSLP adapter lands it needs a real tip, and the honest
- * shape is for the CALLER that has one to supply both fields together:
- * `bi->nChainWork` beside `bi->nHeight` from the same block index entry,
- * never a height with the work left NULL and never work recomputed here.
- * Until then, unknown is the true value and metaverse_work_measure() turns
- * it into a stated gap rather than a zero. */
+/* Build the adapter context.  Offline native commands supply a guarded
+ * read-only node.db handle, while a live in-process caller may additionally
+ * supply its tip height/work.  This service never discovers either on its
+ * own: when the tip is absent ZNAM still projects the registration height,
+ * and metaverse_work_measure() states `no_tip` rather than manufacturing a
+ * confirmation count. */
+static enum metaverse_source_lookup pc_znam_find(void *opaque,
+    const uint8_t registration_root[METAVERSE_ROOT_BYTES],
+    struct metaverse_znam_record *out)
+{
+    struct znam_entry entry;
+    int found;
+
+    if (!opaque || !registration_root || !out)
+        return METAVERSE_SOURCE_ERROR;
+    memset(&entry, 0, sizeof(entry));
+    found = db_znam_find_by_reg_txid(opaque, registration_root, &entry);
+    if (found < 0)
+        return METAVERSE_SOURCE_ERROR;
+    if (found == 0)
+        return METAVERSE_SOURCE_ABSENT;
+    memset(out, 0, sizeof(*out));
+    snprintf(out->name, sizeof(out->name), "%s", entry.name);
+    snprintf(out->owner, sizeof(out->owner), "%s", entry.owner_address);
+    memcpy(out->registration_root, entry.reg_txid,
+           sizeof(out->registration_root));
+    memcpy(out->last_update_root, entry.last_update_txid,
+           sizeof(out->last_update_root));
+    out->registration_height = entry.reg_height;
+    out->expiry_height = entry.expiry_height;
+    return METAVERSE_SOURCE_FOUND;
+}
+
+static bool pc_znam_list(void *opaque, struct metaverse_znam_record *out,
+                         size_t out_cap, size_t *written_out,
+                         size_t *total_out, bool *truncated_out)
+{
+    struct node_db *ndb = opaque;
+    struct znam_entry entries[PROPERTY_CATALOG_PAGE_MAX];
+    size_t total = 0;
+    size_t want;
+    int got;
+
+    if (written_out)
+        *written_out = 0;
+    if (total_out)
+        *total_out = 0;
+    if (truncated_out)
+        *truncated_out = false;
+    if (!ndb || !written_out || !total_out || !truncated_out ||
+        (!out && out_cap > 0) || out_cap > PROPERTY_CATALOG_PAGE_MAX)
+        LOG_FAIL(PC_LOG, "ZNAM list source received invalid bounds/outputs");
+    if (!db_znam_count(ndb, &total))
+        LOG_FAIL(PC_LOG, "canonical ZNAM registry count failed");
+    *total_out = total;
+    if (out_cap == 0) {
+        *truncated_out = total > 0;
+        return true;
+    }
+    want = total < out_cap ? total : out_cap;
+    got = db_znam_list(ndb, entries, want);
+    if (got < 0 || (size_t)got != want) {
+        *truncated_out = true;
+        return false;
+    }
+    for (size_t i = 0; i < (size_t)got; i++) {
+        memset(&out[i], 0, sizeof(out[i]));
+        snprintf(out[i].name, sizeof(out[i].name), "%s", entries[i].name);
+        snprintf(out[i].owner, sizeof(out[i].owner), "%s",
+                 entries[i].owner_address);
+        memcpy(out[i].registration_root, entries[i].reg_txid,
+               sizeof(out[i].registration_root));
+        memcpy(out[i].last_update_root, entries[i].last_update_txid,
+               sizeof(out[i].last_update_root));
+        out[i].registration_height = entries[i].reg_height;
+        out[i].expiry_height = entries[i].expiry_height;
+    }
+    *written_out = (size_t)got;
+    *truncated_out = (size_t)got < total;
+    return true;
+}
+
 static bool pc_ctx_init(struct metaverse_adapter_ctx *ctx, const char *datadir,
-                        char *zcode_dir, size_t zcode_dir_cap)
+                        char *zcode_dir, size_t zcode_dir_cap,
+                        const struct property_catalog_sources *sources,
+                        struct metaverse_znam_source *znam_source)
 {
     int n = snprintf(zcode_dir, zcode_dir_cap, "%s/zcode", datadir);
 
@@ -68,8 +134,20 @@ static bool pc_ctx_init(struct metaverse_adapter_ctx *ctx, const char *datadir,
         return false;
     ctx->datadir      = datadir;
     ctx->zcode_dir    = zcode_dir;
-    ctx->chain_height = -1;
-    ctx->chain_work   = NULL;
+    ctx->chain_height = sources ? sources->chain_height : -1;
+    ctx->chain_work   = sources ? sources->chain_work : NULL;
+    memset(znam_source, 0, sizeof(*znam_source));
+    if (sources && sources->node_db) {
+        znam_source->opaque = sources->node_db;
+        znam_source->find_registration = pc_znam_find;
+        znam_source->list = pc_znam_list;
+    } else {
+        znam_source->unavailable_reason =
+            sources && sources->node_db_unavailable_reason
+                ? sources->node_db_unavailable_reason
+                : "no safe read-only node.db handle was supplied for ZNAM";
+    }
+    ctx->znam = znam_source;
     return true;
 }
 
@@ -88,11 +166,13 @@ static void pc_row_begin(struct property_catalog_kind_row *row,
                                    : "adapter row has no reader and no reason");
 }
 
-struct zcl_result property_catalog_list(const char *datadir,
-                                        const struct property_catalog_query *q,
-                                        struct property_catalog_page *out)
+struct zcl_result property_catalog_list_with_sources(
+    const char *datadir, const struct property_catalog_query *q,
+    const struct property_catalog_sources *sources,
+    struct property_catalog_page *out)
 {
     struct metaverse_adapter_ctx ctx;
+    struct metaverse_znam_source znam_source;
     char zcode_dir[PC_ZCODE_DIR_MAX];
     enum metaverse_kind filter = METAVERSE_KIND_UNKNOWN;
     size_t limit = PROPERTY_CATALOG_PAGE_MAX;
@@ -114,7 +194,8 @@ struct zcl_result property_catalog_list(const char *datadir,
         if (q->limit && q->limit < limit)
             limit = q->limit;
     }
-    if (!pc_ctx_init(&ctx, datadir, zcode_dir, sizeof(zcode_dir)))
+    if (!pc_ctx_init(&ctx, datadir, zcode_dir, sizeof(zcode_dir), sources,
+                     &znam_source))
         return ZCL_ERR(-4, "property_catalog_list: datadir path too long "
                            "(%zu bytes)", strlen(datadir));
 
@@ -152,13 +233,25 @@ struct zcl_result property_catalog_list(const char *datadir,
          * holds. A store that is present and unopenable must not come
          * back through the counting path, because every count there is
          * zero and zero is the same number an empty node reports. */
-        if (adapter->store_ready &&
-            !adapter->store_ready(&ctx, out->store_reason,
-                                  sizeof(out->store_reason))) {
-            out->store_read         = false;
-            row->available          = false;
-            row->unavailable_reason = out->store_reason;
-            continue;
+        if (adapter->store_ready) {
+            char ready_reason[sizeof(row->unavailable_reason_buf)];
+
+            if (!adapter->store_ready(&ctx, ready_reason,
+                                      sizeof(ready_reason))) {
+                snprintf(row->unavailable_reason_buf,
+                         sizeof(row->unavailable_reason_buf), "%s",
+                         ready_reason);
+                row->available = false;
+                row->unavailable_reason = row->unavailable_reason_buf;
+                /* The top-level disclosure is necessarily a summary when
+                 * several independent authorities fail.  Preserve the first
+                 * precise failure; each kind row always keeps its own. */
+                if (out->store_read)
+                    snprintf(out->store_reason, sizeof(out->store_reason),
+                             "%s", ready_reason);
+                out->store_read = false;
+                continue;
+            }
         }
 
         room = limit > out->count ? limit - out->count : 0;
@@ -194,11 +287,20 @@ struct zcl_result property_catalog_list(const char *datadir,
     return ZCL_OK;
 }
 
-struct zcl_result property_catalog_show(const char *datadir,
-                                        const struct metaverse_property_id *id,
-                                        struct metaverse_property_view *out)
+struct zcl_result property_catalog_list(const char *datadir,
+                                        const struct property_catalog_query *q,
+                                        struct property_catalog_page *out)
+{
+    return property_catalog_list_with_sources(datadir, q, NULL, out);
+}
+
+struct zcl_result property_catalog_show_with_sources(
+    const char *datadir, const struct metaverse_property_id *id,
+    const struct property_catalog_sources *sources,
+    struct metaverse_property_view *out)
 {
     struct metaverse_adapter_ctx ctx;
+    struct metaverse_znam_source znam_source;
     char zcode_dir[PC_ZCODE_DIR_MAX];
     const struct metaverse_adapter *adapter;
 
@@ -221,7 +323,8 @@ struct zcl_result property_catalog_show(const char *datadir,
                        adapter->unavailable_reason
                            ? adapter->unavailable_reason
                            : "no reader wired");
-    if (!pc_ctx_init(&ctx, datadir, zcode_dir, sizeof(zcode_dir)))
+    if (!pc_ctx_init(&ctx, datadir, zcode_dir, sizeof(zcode_dir), sources,
+                     &znam_source))
         return ZCL_ERR(-6, "property_catalog_show: datadir path too long "
                            "(%zu bytes)", strlen(datadir));
 
@@ -244,6 +347,13 @@ struct zcl_result property_catalog_show(const char *datadir,
         return ZCL_ERR(-8, "property_catalog_show: the '%s' adapter wrote no "
                            "view", metaverse_kind_name(id->kind));
     return ZCL_OK;
+}
+
+struct zcl_result property_catalog_show(const char *datadir,
+                                        const struct metaverse_property_id *id,
+                                        struct metaverse_property_view *out)
+{
+    return property_catalog_show_with_sources(datadir, id, NULL, out);
 }
 
 struct zcl_result property_catalog_page_to_json(

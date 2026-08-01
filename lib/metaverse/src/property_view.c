@@ -187,6 +187,7 @@ bool metaverse_view_to_json(const struct metaverse_property_view *view,
         (void)json_push_kv_str(out, "descriptor_root", "");
     }
 
+    (void)json_push_kv_str(out, "display_name", view->display_name);
     (void)json_push_kv_str(out, "owner_principal", view->owner_principal);
     (void)json_push_kv_str(out, "owner_principal_kind",
                            view->owner_principal_kind

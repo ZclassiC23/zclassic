@@ -36,6 +36,42 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Database-neutral ZNAM facts.  The application layer fills these through
+ * the canonical db_znam_* model; lib/metaverse never sees sqlite or a
+ * node_db handle.  The registration transaction is the name's immutable
+ * root (property_id.h), while last_update_txid identifies its current
+ * descriptor without inventing a numeric revision. */
+#define METAVERSE_ZNAM_NAME_MAX 64u
+#define METAVERSE_ZNAM_OWNER_MAX 128u
+struct metaverse_znam_record {
+    char name[METAVERSE_ZNAM_NAME_MAX];
+    char owner[METAVERSE_ZNAM_OWNER_MAX];
+    uint8_t registration_root[METAVERSE_ROOT_BYTES];
+    uint8_t last_update_root[METAVERSE_ROOT_BYTES];
+    int64_t registration_height;
+    int64_t expiry_height;
+};
+
+enum metaverse_source_lookup {
+    METAVERSE_SOURCE_ERROR = -1,
+    METAVERSE_SOURCE_ABSENT = 0,
+    METAVERSE_SOURCE_FOUND = 1,
+};
+
+/* A read source supplied by the application layer.  `list` is an atomic
+ * answer in the logical sense: true means written/total/truncated are all
+ * trustworthy; false means the adapter must emit an honest gap. */
+struct metaverse_znam_source {
+    void *opaque;
+    enum metaverse_source_lookup (*find_registration)(
+        void *opaque, const uint8_t registration_root[METAVERSE_ROOT_BYTES],
+        struct metaverse_znam_record *out);
+    bool (*list)(void *opaque, struct metaverse_znam_record *out,
+                 size_t out_cap, size_t *written_out, size_t *total_out,
+                 bool *truncated_out);
+    const char *unavailable_reason;
+};
+
 /* Everything an adapter is allowed to know about where to read from.
  * Deliberately a directory + a tip, never an open store handle: see
  * "READ MEANS READ" above. */
@@ -61,6 +97,11 @@ struct metaverse_adapter_ctx {
      * chainwork field explicitly unknown rather than reporting 0, for the
      * same reason chain_height is -1 and not 0. */
     const struct arith_uint256 *chain_work;
+
+    /* Optional canonical-model readers.  NULL means the caller has no safe
+     * read path for that authority right now; store_ready reports that as a
+     * named unavailability, never as an empty inventory. */
+    const struct metaverse_znam_source *znam;
 };
 
 /* Fill `out` for exactly this id. Returns true when a view was written

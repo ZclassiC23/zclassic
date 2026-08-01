@@ -76,6 +76,7 @@ static void zcode_fill(const struct metaverse_adapter_ctx *ctx,
     uint8_t release_id[VCS_PACKAGE_RELEASE_ID_BYTES];
 
     memset(&f, 0, sizeof(f));
+    snprintf(out->display_name, sizeof(out->display_name), "%s", e->name);
     f.have_manifest = mv_manifest_read(ctx->zcode_dir, e->package_root_hex,
                                        &f.m);
     f.signature_verified = mv_release_read_verified(ctx->zcode_dir,

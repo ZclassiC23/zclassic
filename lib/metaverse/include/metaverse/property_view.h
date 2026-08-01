@@ -128,6 +128,11 @@ struct metaverse_property_view {
     bool has_descriptor_root;     /* root over the signed descriptor */
     uint8_t descriptor_root[METAVERSE_ROOT_BYTES];
 
+    /* Optional human-facing name copied from the same authority as the
+     * rest of the view (e.g. "alice" for ZNAM or publisher/package for
+     * ZCODE). Empty when the authority defines no name. */
+    char display_name[METAVERSE_VIEW_TEXT_MAX];
+
     /* Owner/controller principal as the authority records it, or "" when
      * the authority records NONE. An empty principal is a fact about the
      * model (content proves bytes, never authorship), not a lookup miss —

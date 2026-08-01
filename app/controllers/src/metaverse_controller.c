@@ -35,6 +35,7 @@
 #include "kernel/command_registry.h"
 #include "metaverse/property_id.h"
 #include "metaverse/property_view.h"
+#include "models/database.h"
 #include "services/metaverse_agent_service.h"
 #include "services/property_catalog.h"
 
@@ -172,6 +173,49 @@ void zcl_native_handle_metaverse_agent_audit(
 
 #define MV_CMD_ITEM_CAP_DEFAULT 16u
 
+static void mv_catalog_sources_open(
+    const char *datadir, struct property_catalog_sources *sources,
+    struct sqlite3 **sql_out, struct node_db *ndb,
+    char *reason, size_t reason_cap)
+{
+    enum zcl_node_db_ro_status st;
+    char path[1200];
+
+    memset(sources, 0, sizeof(*sources));
+    sources->chain_height = -1;
+    reason[0] = '\0';
+    st = zcl_native_node_db_open_readonly(datadir, sql_out, ndb, path,
+                                           sizeof(path));
+    if (st == ZCL_NODE_DB_RO_OK) {
+        sources->node_db = ndb;
+        return;
+    }
+    switch (st) {
+    case ZCL_NODE_DB_RO_ABSENT:
+        snprintf(reason, reason_cap,
+                 "no node.db at %s; the ZNAM registry has not been folded "
+                 "and cannot be reported as empty", path);
+        break;
+    case ZCL_NODE_DB_RO_UNRECOVERED_LOG:
+        snprintf(reason, reason_cap,
+                 "node.db has an unrecovered WAL and cannot be read without "
+                 "creating a wal-index");
+        break;
+    case ZCL_NODE_DB_RO_PATH_TOO_LONG:
+        snprintf(reason, reason_cap, "node.db path is too long");
+        break;
+    case ZCL_NODE_DB_RO_UNREADABLE:
+        snprintf(reason, reason_cap,
+                 "node.db exists but is not readable as a SQLite database");
+        break;
+    case ZCL_NODE_DB_RO_NO_DATADIR:
+    default:
+        snprintf(reason, reason_cap, "no datadir resolved for node.db");
+        break;
+    }
+    sources->node_db_unavailable_reason = reason;
+}
+
 static const char *mv_input_str(const struct json_value *input,
                                 const char *key)
 {
@@ -216,6 +260,10 @@ void zcl_native_handle_metaverse_property_list(
     struct property_catalog_page *page;
     struct zcl_result r;
     const struct json_value *limit_v;
+    struct property_catalog_sources sources;
+    struct sqlite3 *sql = NULL;
+    struct node_db ndb;
+    char source_reason[192];
 
     if (!request || !reply)
         return;
@@ -255,7 +303,15 @@ void zcl_native_handle_metaverse_property_list(
                                "metaverse.property.list");
         return;
     }
-    r = property_catalog_list(datadir, &q, page);
+    memset(&sources, 0, sizeof(sources));
+    memset(&ndb, 0, sizeof(ndb));
+    sources.chain_height = -1;
+    if (q.kind == METAVERSE_KIND_UNKNOWN ||
+        q.kind == METAVERSE_KIND_ZNAM_NAME)
+        mv_catalog_sources_open(datadir, &sources, &sql, &ndb,
+                                source_reason, sizeof(source_reason));
+    r = property_catalog_list_with_sources(datadir, &q, &sources, page);
+    zcl_native_node_db_close_readonly(&sql, &ndb);
     if (!r.ok) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INTERNAL, "CATALOG_FAILED",
@@ -287,6 +343,9 @@ void zcl_native_handle_metaverse_property_show(
     struct metaverse_property_id id;
     struct metaverse_property_view view;
     struct zcl_result r;
+    struct property_catalog_sources sources;
+    struct sqlite3 *sql = NULL;
+    struct node_db ndb;
 
     if (!request || !reply)
         return;
@@ -304,7 +363,20 @@ void zcl_native_handle_metaverse_property_show(
                                id_text ? id_text : "");
         return;
     }
-    r = property_catalog_show(datadir, &id, &view);
+    memset(&sources, 0, sizeof(sources));
+    sources.chain_height = -1;
+    if (id.kind == METAVERSE_KIND_ZNAM_NAME) {
+        if (!zcl_native_node_db_require_readonly(
+                datadir, reply, "the ZNAM property registry", &sql, &ndb))
+            return;
+        sources.node_db = &ndb;
+        r = property_catalog_show_with_sources(datadir, &id, &sources,
+                                               &view);
+        zcl_native_node_db_close_readonly(&sql, &ndb);
+    } else {
+        r = property_catalog_show_with_sources(datadir, &id, &sources,
+                                               &view);
+    }
     if (!r.ok) {
         /* A kind with no reader wired is a distinct, named refusal — never
          * an empty result that reads as "this node owns nothing". */

@@ -13,4 +13,4 @@ HOTSWAP_ISLAND("app/controllers/src/status_native_handlers.c",
 HOTSWAP_ISLAND("app/controllers/src/wallet_native_handlers.c",
                "app/controllers/src/wallet_native_read_bodies.c")
 HOTSWAP_ISLAND("app/controllers/src/metaverse_controller.c",
-               "app/services/src/property_catalog_service.c lib/metaverse/src/property_id.c lib/metaverse/src/property_view.c lib/metaverse/src/property_work.c lib/metaverse/src/property_action.c lib/metaverse/src/adapter_registry.c lib/metaverse/src/adapter_content.c lib/metaverse/src/adapter_zcode.c")
+               "app/services/src/property_catalog_service.c lib/metaverse/src/property_id.c lib/metaverse/src/property_view.c lib/metaverse/src/property_work.c lib/metaverse/src/property_action.c lib/metaverse/src/adapter_registry.c lib/metaverse/src/adapter_content.c lib/metaverse/src/adapter_zcode.c lib/metaverse/src/adapter_znam.c")

@@ -169,11 +169,11 @@ static int check_fill_leaves_nothing_unset(void)
     TM_CHECK("[metaverse] the content kind's reader flag agrees with the "
              "registry",
              json_get_bool(dig3(&out, "values", "catalog", "reader_content")));
-    TM_CHECK("[metaverse] a kind with no reader reports false, not a missing "
-             "key — an unwired kind must be visible",
+    TM_CHECK("[metaverse] the ZNAM reader flag tracks its newly wired "
+             "canonical-model adapter",
              dig3(&out, "values", "catalog", "reader_znam_name") != NULL &&
-                 !json_get_bool(dig3(&out, "values", "catalog",
-                                     "reader_znam_name")));
+                 json_get_bool(dig3(&out, "values", "catalog",
+                                    "reader_znam_name")));
     TM_CHECK("[metaverse] a domain whose leaves all read cleanly is ok",
              json_get_str(dig2(&out, "health", "state")) &&
                  strcmp(json_get_str(dig2(&out, "health", "state")), "ok") == 0);
