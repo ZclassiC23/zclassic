@@ -139,7 +139,7 @@ static struct zcl_result boot_zcode_work_admit(
         return ZCL_ERR(-1, "context does not reconstruct the signed request");
     }
     struct zcl_result authority = boot_zcode_work_authority_import(
-        s_work_workspace, &context);
+        store, request->context_root, s_work_workspace, &context);
     if (!authority.ok) {
         vcs_zcode_work_context_free(&context);
         return authority;

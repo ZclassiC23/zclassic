@@ -32,6 +32,7 @@
 #include "vcs/zcode_write_scope.h"
 #include "vcs/zcode_patch.h"
 #include "vcs/zcode_candidate_bundle.h"
+#include "vcs/zcode_candidate_tree.h"
 #include "vcs/zcode_action_input.h"
 #include "vcs/zcode_task_authority.h"
 #include "vcs/zcode_task_authority_bundle.h"
@@ -1850,12 +1851,34 @@ static int test_zd_improve_command(void)
                       workspace, &task, &transfer.task_authority,
                       &transfer.task_authority_len),
                   VCS_ZCODE_TASK_AUTHORITY_OK);
+        struct vcs_package_manifest bounded_tree_manifest;
+        vcs_package_manifest_init(&bounded_tree_manifest);
+        uint64_t bounded_tree_bytes = 0;
+        ASSERT_EQ(vcs_zcode_candidate_tree_add_manifest(
+                      workspace, &task, &candidate, 1,
+                      &bounded_tree_manifest, &bounded_tree_bytes),
+                  VCS_ZCODE_CANDIDATE_TREE_LIMIT);
+        vcs_package_manifest_free(&bounded_tree_manifest);
         uint8_t transfer_root[32], transfer_action[32];
         int64_t transfer_now = (int64_t)platform_time_wall_unix();
-        ASSERT_EQ(vcs_zcode_work_context_put(
-                      transfer_store, &transfer, transfer_now,
-                      transfer_root, transfer_action),
+        ASSERT_EQ(vcs_zcode_work_context_put_for_kind_with_candidate(
+                      transfer_store, &transfer, VCS_BUILD_ACTION_KIND_V1,
+                      transfer_now, workspace, transfer_root,
+                      transfer_action),
                   VCS_ZCODE_WORK_CONTEXT_OK);
+        uint8_t *transfer_manifest_wire = NULL;
+        size_t transfer_manifest_len = 0;
+        ASSERT_EQ(vcs_package_store_get_manifest_wire(
+                      transfer_store, transfer_root,
+                      &transfer_manifest_wire, &transfer_manifest_len),
+                  VCS_PACKAGE_STORE_OK);
+        struct vcs_package_manifest transfer_manifest;
+        ASSERT(vcs_package_manifest_parse(
+            transfer_manifest_wire, transfer_manifest_len,
+            &transfer_manifest));
+        ASSERT_EQ(transfer_manifest.count, 7);
+        vcs_package_manifest_free(&transfer_manifest);
+        free(transfer_manifest_wire);
         struct vcs_zcode_work_context_v1 received_transfer;
         ASSERT_EQ(vcs_zcode_work_context_get(
                       transfer_store, transfer_root, transfer_now,
@@ -1876,6 +1899,23 @@ static int test_zd_improve_command(void)
                       received_transfer.candidate_authority,
                       received_transfer.candidate_authority_len),
                   VCS_ZCODE_CANDIDATE_BUNDLE_OK);
+        struct vcs_manifest remote_candidate_manifest;
+        ASSERT(vcs_tree_load(receiver, candidate.candidate_source_root,
+                             &remote_candidate_manifest));
+        const struct vcs_entry *unchanged_input = NULL;
+        for (size_t i = 0; i < remote_candidate_manifest.count; i++)
+            if (strcmp(remote_candidate_manifest.entries[i].path,
+                       "unit.i") == 0)
+                unchanged_input = &remote_candidate_manifest.entries[i];
+        ASSERT(unchanged_input != NULL);
+        uint8_t unchanged_blob[32];
+        memcpy(unchanged_blob, unchanged_input->blob, 32);
+        ASSERT(!vcs_object_has(receiver, unchanged_blob));
+        vcs_manifest_free(&remote_candidate_manifest);
+        ASSERT_EQ(vcs_zcode_candidate_tree_import(
+                      transfer_store, transfer_root, receiver, &task,
+                      &candidate), VCS_ZCODE_CANDIDATE_TREE_OK);
+        ASSERT(vcs_object_has(receiver, unchanged_blob));
         ASSERT_EQ(vcs_zcode_patch_verify_cas(receiver, &task, &candidate),
                   VCS_ZCODE_PATCH_OK);
         ASSERT_EQ(vcs_zcode_task_authority_validate_for_candidate(

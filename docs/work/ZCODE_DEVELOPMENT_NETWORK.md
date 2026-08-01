@@ -261,10 +261,21 @@ root-mismatched bundle refuses remote admission. The companion
 acceptance-recipe wires. A receiving peer derives both roots and validates both
 wires before it imports candidate authority or creates a ZBuild row.
 
-The combined files remain under the package store's existing 64 MiB anti-abuse
-cap and the task's smaller context ceiling. The action envelope's payload is a
-candidate-manifest preprocessed TU, exact test executable, or exact
-deterministic fuzz executable according to the action kind.
+The same content.v2 manifest also carries every regular file in the exact
+candidate ZVCS manifest under `candidate/`. These are ordinary existing
+content.v2 chunks, not a new archive. On receipt, the peer requires a one-to-one
+path/mode/size match, reassembles and rehashes every chunk, and rederives every
+tagged ZVCS blob hash against the candidate manifest before admitting any tree
+blob. This includes unchanged base files that are intentionally absent from
+the patch-only authority bundle, so a fresh peer can reproduce the complete
+candidate without a shared checkout.
+
+The combined metadata and candidate tree remain under the package store's
+existing 64 MiB anti-abuse cap and the task's smaller context ceiling. The
+action envelope still selects a candidate-manifest preprocessed TU, exact test
+executable, or exact deterministic fuzz executable according to the action
+kind. Recipe-derived whole-package actions are the next executor boundary;
+the complete tree transport does not claim that milestone by itself.
 
 The receiving peer re-derives the task, candidate, policy, input, toolchain,
 and `build_action.v1` roots and compares every one to the signed request before
@@ -284,6 +295,7 @@ ZBuild action. It never accepts a caller-supplied path or command.
 <!-- claim: symbol-present vcs_zcode_candidate_bundle_import lib/vcs/src/zcode_candidate_bundle.c # validate-before-write P2P candidate authority import -->
 <!-- claim: symbol-present vcs_zcode_action_input_validate_for_candidate lib/vcs/src/zcode_action_input.c # fixed actions consume candidate-manifest bytes -->
 <!-- claim: symbol-present vcs_zcode_task_authority_validate_for_candidate lib/vcs/src/zcode_task_authority.c # lock and recipe roots resolve against base and candidate trees -->
+<!-- claim: symbol-present vcs_zcode_candidate_tree_import lib/vcs/src/zcode_candidate_tree.c # content.v2 reconstructs every candidate blob on a fresh peer -->
 
 ## Ordered delivery
 
@@ -328,7 +340,9 @@ ZBuild action. It never accepts a caller-supplied path or command.
   action input, source, toolchain, fixed flags/environment, signer, and lease
   before execution and again before receipt publication. Canonical dependency
   lock and acceptance-recipe bytes travel in the same bounded content.v2
-  context and are root/readback/membership verified on both peers.
+  context and are root/readback/membership verified on both peers. Every
+  candidate file travels as an ordinary content.v2 member and must reconstruct
+  the exact candidate ZVCS manifest before remote ZBuild admission.
 - [x] Store output chunks and a build-artifact manifest in the existing CAS,
   then sign `work_receipt.v1` and the existing ZBuild receipt projection. The
   database projection binds the canonical receipt root; the wire remains CAS
@@ -361,16 +375,18 @@ existing workspace CAS after deriving the source root from a stable,
 readback-verified ZVCS tree capture, derives and stores canonical
 `write_scope.v1`, parses/stores/readback-verifies the existing canonical
 dependency lock and declarative acceptance recipe, and publishes a bounded
-exact-symbol `agent_context.v1`. It returns only immutable task, context, model-policy,
-proof-policy, and toolchain roots with state `AWAITING_CANDIDATE`; it does not
+exact-symbol `agent_context.v1`. It returns only immutable task, context,
+model-policy, proof-policy, and toolchain roots with state
+`AWAITING_CANDIDATE`; it does not
 launch a model, create a build database, or grant tools. The operator can give
 those roots to Codex, Claude, Kimi, a local model, or a future P2P harness under
 their own policy.
 
 `zcode improve mode=admit` derives the candidate tree and patch from
-`candidate_workspace`, admits the exact candidate-bound action input, captures the GCC
-capsule, and queues a candidate-bound compile, test, or deterministic fuzz
-action. An explicit admit must carry `planned_task_root`,
+`candidate_workspace`, admits the exact candidate-bound action input, captures
+the GCC capsule, and queues a candidate-bound compile, test, or deterministic
+fuzz action. A remote request additionally packages the complete tree in its
+bounded content.v2 context. An explicit admit must carry `planned_task_root`,
 `planned_context_root`, and the same `write_scope_csv`; source, task, context,
 scope, candidate, and patch are recomputed before ZBuild admission. Omitting
 `mode` retains the legacy one-shot form. Reusing `candidate_created_unix` with

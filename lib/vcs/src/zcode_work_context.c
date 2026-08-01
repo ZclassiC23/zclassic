@@ -12,6 +12,7 @@
 #include "vcs/package_store.h"
 #include "vcs/zcode_action_input.h"
 #include "vcs/zcode_candidate_bundle.h"
+#include "vcs/zcode_candidate_tree.h"
 #include "vcs/zcode_task_authority_bundle.h"
 
 #include <stdio.h>
@@ -332,10 +333,11 @@ static enum vcs_zcode_work_context_result context_put_chunks(
     return VCS_ZCODE_WORK_CONTEXT_OK;
 }
 
-enum vcs_zcode_work_context_result vcs_zcode_work_context_put_for_kind(
+static enum vcs_zcode_work_context_result context_put_for_kind(
     struct vcs_package_store *store,
     const struct vcs_zcode_work_context_v1 *context, const char *kind,
-    int64_t now_unix, uint8_t package_root[32], uint8_t action_root[32])
+    int64_t now_unix, const char *repo_root, uint8_t package_root[32],
+    uint8_t action_root[32])
 {
     if (!store || !package_root || !action_root)
         return VCS_ZCODE_WORK_CONTEXT_NULL;
@@ -360,6 +362,23 @@ enum vcs_zcode_work_context_result vcs_zcode_work_context_put_for_kind(
         built = context_manifest_add_bytes(
             &manifest, VCS_ZCODE_TASK_AUTHORITY_BUNDLE_PATH,
             context->task_authority, context->task_authority_len);
+    enum vcs_zcode_candidate_tree_result tree_result =
+        VCS_ZCODE_CANDIDATE_TREE_OK;
+    if (built && repo_root) {
+        uint64_t metadata_bytes = context->fixed_input_len +
+            context->candidate_authority_len + context->task_authority_len;
+        uint64_t remaining = context->task.max_context_bytes - metadata_bytes;
+        uint64_t overhead = VCS_ZCODE_WORK_CONTEXT_FIXED_BYTES +
+                            strlen(context->profile);
+        uint64_t store_remaining = VCS_PACKAGE_STORE_MAX_PACKAGE_BYTES -
+                                   overhead - metadata_bytes;
+        if (remaining > store_remaining) remaining = store_remaining;
+        uint64_t tree_bytes = 0;
+        tree_result = vcs_zcode_candidate_tree_add_manifest(
+            repo_root, &context->task, &context->candidate, remaining,
+            &manifest, &tree_bytes);
+        built = tree_result == VCS_ZCODE_CANDIDATE_TREE_OK;
+    }
     uint8_t *manifest_wire = NULL; size_t manifest_len = 0;
     built = built && vcs_package_manifest_root(&manifest, package_root) &&
             vcs_package_manifest_serialize(&manifest, &manifest_wire,
@@ -367,7 +386,8 @@ enum vcs_zcode_work_context_result vcs_zcode_work_context_put_for_kind(
     vcs_package_manifest_free(&manifest);
     if (!built) {
         free(manifest_wire); free(wire);
-        return VCS_ZCODE_WORK_CONTEXT_SHAPE;
+        return tree_result == VCS_ZCODE_CANDIDATE_TREE_LIMIT
+            ? VCS_ZCODE_WORK_CONTEXT_LIMIT : VCS_ZCODE_WORK_CONTEXT_SHAPE;
     }
     uint8_t admitted[32];
     enum vcs_package_store_result stored = vcs_package_store_put_manifest(
@@ -389,8 +409,34 @@ enum vcs_zcode_work_context_result vcs_zcode_work_context_put_for_kind(
         result = context_put_chunks(
             store, package_root, VCS_ZCODE_TASK_AUTHORITY_BUNDLE_PATH,
             context->task_authority, context->task_authority_len);
+    if (result == VCS_ZCODE_WORK_CONTEXT_OK && repo_root &&
+        vcs_zcode_candidate_tree_put_chunks(
+            store, package_root, repo_root, &context->candidate) !=
+                VCS_ZCODE_CANDIDATE_TREE_OK)
+        result = VCS_ZCODE_WORK_CONTEXT_STORE;
     free(wire);
     return result;
+}
+
+enum vcs_zcode_work_context_result vcs_zcode_work_context_put_for_kind(
+    struct vcs_package_store *store,
+    const struct vcs_zcode_work_context_v1 *context, const char *kind,
+    int64_t now_unix, uint8_t package_root[32], uint8_t action_root[32])
+{
+    return context_put_for_kind(store, context, kind, now_unix, NULL,
+                                package_root, action_root);
+}
+
+enum vcs_zcode_work_context_result
+vcs_zcode_work_context_put_for_kind_with_candidate(
+    struct vcs_package_store *store,
+    const struct vcs_zcode_work_context_v1 *context, const char *kind,
+    int64_t now_unix, const char *repo_root, uint8_t package_root[32],
+    uint8_t action_root[32])
+{
+    if (!repo_root) return VCS_ZCODE_WORK_CONTEXT_NULL;
+    return context_put_for_kind(store, context, kind, now_unix, repo_root,
+                                package_root, action_root);
 }
 
 enum vcs_zcode_work_context_result vcs_zcode_work_context_put(
@@ -409,6 +455,19 @@ static int context_manifest_file_index(
     for (size_t i = 0; i < manifest->count; i++)
         if (strcmp(manifest->files[i].path, path) == 0) return (int)i;
     return -1;
+}
+
+static size_t context_manifest_candidate_files(
+    const struct vcs_package_manifest *manifest)
+{
+    const size_t prefix = sizeof(VCS_ZCODE_CANDIDATE_TREE_PREFIX) - 1u;
+    size_t count = 0;
+    for (size_t i = 0; i < manifest->count; i++)
+        if (strncmp(manifest->files[i].path,
+                    VCS_ZCODE_CANDIDATE_TREE_PREFIX, prefix) == 0 &&
+            manifest->files[i].path[prefix] != '\0')
+            count++;
+    return count;
 }
 
 static enum vcs_zcode_work_context_result context_get_file(
@@ -450,6 +509,7 @@ enum vcs_zcode_work_context_result vcs_zcode_work_context_get(
 {
     if (!store || !package_root || !out)
         return VCS_ZCODE_WORK_CONTEXT_NULL;
+    vcs_zcode_work_context_init(out);
     struct vcs_package_store_status status;
     if (!vcs_package_store_package_status(store, package_root, &status) ||
         !status.complete)
@@ -471,8 +531,9 @@ enum vcs_zcode_work_context_result vcs_zcode_work_context_get(
     int task_authority_index = parsed ? context_manifest_file_index(
         &manifest, VCS_ZCODE_TASK_AUTHORITY_BUNDLE_PATH) : -1;
     size_t known_files = 1u + (authority_index >= 0 ? 1u : 0u) +
-                         (task_authority_index >= 0 ? 1u : 0u);
-    if (!parsed || manifest.count < 1 || manifest.count > 3 ||
+        (task_authority_index >= 0 ? 1u : 0u) +
+        (parsed ? context_manifest_candidate_files(&manifest) : 0u);
+    if (!parsed || manifest.count < 1 ||
         context_index < 0 || manifest.count != known_files ||
         manifest.files[context_index].size <
             VCS_ZCODE_WORK_CONTEXT_FIXED_BYTES ||
@@ -497,6 +558,13 @@ enum vcs_zcode_work_context_result vcs_zcode_work_context_get(
     vcs_package_manifest_free(&manifest);
     if (result == VCS_ZCODE_WORK_CONTEXT_OK)
         result = vcs_zcode_work_context_parse(wire, wire_len, now_unix, out);
+    if (result == VCS_ZCODE_WORK_CONTEXT_OK) {
+        uint64_t overhead = VCS_ZCODE_WORK_CONTEXT_FIXED_BYTES +
+                            strlen(out->profile);
+        if (status.total_bytes < overhead ||
+            status.total_bytes - overhead > out->task.max_context_bytes)
+            result = VCS_ZCODE_WORK_CONTEXT_LIMIT;
+    }
     free(wire);
     if (result == VCS_ZCODE_WORK_CONTEXT_OK) {
         out->candidate_authority = authority;
@@ -510,5 +578,7 @@ enum vcs_zcode_work_context_result vcs_zcode_work_context_get(
             vcs_zcode_work_context_free(out);
     }
     free(task_authority); free(authority);
+    if (result != VCS_ZCODE_WORK_CONTEXT_OK)
+        vcs_zcode_work_context_free(out);
     return result;
 }
