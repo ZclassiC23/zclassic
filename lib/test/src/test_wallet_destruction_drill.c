@@ -1682,10 +1682,11 @@ static int act4_recovery_phrase(void)
     dr_destroy_tree(newdir, 2);   /* recover into a directory that is absent */
     {
         char typo[BOOT_WALLET_PHRASE_CAP];
-        snprintf(typo, sizeof(typo), "%s", phrase);
-        /* Swap the first letter of the first word: still a word-shaped
-         * string, still 12 words, but the BIP39 checksum fails. */
-        typo[0] = (typo[0] == 'z') ? 'a' : (char)(typo[0] + 1);
+        const char *rest = strchr(phrase, ' ');
+        /* Use a word-shaped token that is absent from the BIP39 wordlist.
+         * Mutating one letter can accidentally produce another valid word
+         * and, with a 12-word phrase, a valid checksum one time in sixteen. */
+        snprintf(typo, sizeof(typo), "zzzz%s", rest ? rest : "");
         struct wallet_recovery_request bad = {
             .phrase = typo, .datadir = newdir, .dry_run = true };
         struct wallet_recovery_report brep;
