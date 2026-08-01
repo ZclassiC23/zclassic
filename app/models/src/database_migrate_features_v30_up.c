@@ -603,6 +603,33 @@ int node_db_migrate_features_v30_up(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 45) {
+        /* v45: rebuildable lookup projection for signed lane_receipt.v1 CAS
+         * objects. Rows are append-only roots; canonical receipt bytes and
+         * signatures remain the authority in the existing workspace CAS. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS zcode_lane_receipts ("
+            "receipt_id TEXT PRIMARY KEY CHECK(length(receipt_id)=64),"
+            "source_root_sha3 TEXT NOT NULL CHECK(length(source_root_sha3)=64),"
+            "task_root_sha3 TEXT NOT NULL CHECK(length(task_root_sha3)=64),"
+            "candidate_root_sha3 TEXT NOT NULL CHECK(length(candidate_root_sha3)=64),"
+            "proof_policy_root_sha3 TEXT NOT NULL CHECK(length(proof_policy_root_sha3)=64),"
+            "proof_set_root_sha3 TEXT NOT NULL CHECK(length(proof_set_root_sha3) IN (0,64)),"
+            "prior_receipt_root_sha3 TEXT NOT NULL CHECK(length(prior_receipt_root_sha3) IN (0,64)),"
+            "signer_pubkey TEXT NOT NULL CHECK(length(signer_pubkey)=64),"
+            "lane INTEGER NOT NULL CHECK(lane BETWEEN 1 AND 3),"
+            "created_at INTEGER NOT NULL CHECK(created_at>0),"
+            "UNIQUE(source_root_sha3,lane))");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_zcode_lane_source "
+            "ON zcode_lane_receipts(source_root_sha3,lane,created_at)");
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('045')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 45);
+        current_ver = 45;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }

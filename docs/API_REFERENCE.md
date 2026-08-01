@@ -59,15 +59,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 419 |
+| Registry entries (branches + leaves) | 421 |
 | Top-level roots | 10 |
 | Branches | 96 |
-| Leaves (dispatchable command paths) | 323 |
-| … `ready` (live handler in this build) | 275 |
+| Leaves (dispatchable command paths) | 325 |
+| … `ready` (live handler in this build) | 277 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
-| Leaves with `effect=mutate` | 96 |
+| Leaves with `effect=mutate` | 97 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 72 |
 
@@ -85,7 +85,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 15 | 3 | 12 |
-| `config/commands/zcode.def` | 68 | 16 | 52 |
+| `config/commands/zcode.def` | 70 | 16 | 54 |
 | `config/commands/metaverse.def` | 17 | 5 | 12 |
 | `config/commands/telemetry/root.def` | 6 | 2 | 4 |
 | `config/commands/telemetry/watch.def` | 1 | 0 | 1 |
@@ -803,6 +803,8 @@ represented by its children's sections.
 | `zcode package dev use` (aliases: `zcode.use`) | ready | mutate / app-write / operator · foreground/moderate | `name_or_root`, `plan_id`, `now_unix`, `datadir` | `zcl.zcode_use.v1` | `zclassic23 zcode use --input='{"name_or_root":"<64hex>"}'` | Use dependency |
 | `zcode package dev improve` (aliases: `zcode.improve`) | ready | mutate / app-write / operator · foreground/moderate | **`workspace`**, `datadir`, **`candidate_source_sha256`**, **`source_root`**, **`dependency_lock_root`**, **`write_scope_root`**, **`acceptance_tests_root`**, **`model_policy_root`**, **`goal`**, **`proof_policy_hex`**, `action_kind`, **`fixed_input_path`**, `preprocessed_path`, **`patch_root`**, **`candidate_source_root`**, **`adapter_policy_root`**, **`author_pubkey`**, `candidate_sequence`, `candidate_created_unix`, `profile`, **`expires_unix`**, `max_changed_files`, `max_patch_bytes`, `max_context_bytes`, `max_cpu_seconds`, `max_memory_bytes`, `max_output_bytes`, `remote_peer` | `zcl.zcode_improve.v1` | `zclassic23 zcode improve --input='{"workspace":"/src/project","candidate_source_sha256":"<64hex>","source_root":"<64hex>","dependency_lock_root":"<64hex>","write_scope_root":"<64hex>","acceptance_tests_root":"<64hex>","model_policy_root":"<64hex>","goal":"fix seeded bug","proof_policy_hex":"<wire hex>","fixed_input_path":"/tmp/unit.i","patch_root":"<64hex>","candidate_source_root":"<64hex>","adapter_policy_root":"<64hex>","author_pubkey":"<64hex>","expires_unix":123}'` | Improve code candidate |
 | `zcode package dev evidence` (aliases: `zcode.evidence`) | ready | mutate / app-write / operator · foreground/moderate | **`workspace`**, `datadir`, **`action_id`** | `zcl.zcode_evidence.v1` | `zclassic23 zcode evidence --input='{"workspace":"/src/project","action_id":"<64hex>"}'` | Evaluate candidate evidence |
+| `zcode package dev accept` (aliases: `zcode.accept`) | ready | mutate / app-write / operator · foreground/moderate | **`workspace`**, **`action_id`**, **`lane`**, `datadir` | `zcl.zcode_accept.v1` | `zclassic23 zcode accept --input='{"workspace":"/src/project","action_id":"<64hex>","lane":"CANDIDATE"}'` | Accept candidate lane |
+| `zcode package dev lane` (aliases: `zcode.lane`) | ready | read / read / operator · foreground/low | **`workspace`**, **`source_root`**, `datadir` | `zcl.zcode_lane.v1` | `zclassic23 zcode lane --input='{"workspace":"/src/project","source_root":"<64hex>"}'` | Inspect source lane |
 
 #### `zcode.package` — Published packages
 
@@ -995,6 +997,8 @@ Every alias resolves through the same grammar as its canonical path
 | `zcode.use` | `zcode.package.dev.use` |
 | `zcode.improve` | `zcode.package.dev.improve` |
 | `zcode.evidence` | `zcode.package.dev.evidence` |
+| `zcode.accept` | `zcode.package.dev.accept` |
+| `zcode.lane` | `zcode.package.dev.lane` |
 
 
 ## Shared output schemas

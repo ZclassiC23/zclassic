@@ -10,14 +10,17 @@
 #include "json/json.h"
 #include "models/build_fabric.h"
 #include "models/database.h"
+#include "models/zcode_lane.h"
 #include "platform/time_compat.h"
 #include "services/build_fabric_service.h"
 #include "services/build_fabric_worker.h"
+#include "services/zcode_lane_service.h"
 #include "vcs/package_manifest.h"
 #include "vcs/package_store.h"
 #include "vcs/build_action.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_dev.h"
+#include "vcs/zcode_lane.h"
 #include "vcs/zcode_work_context.h"
 #include "vcs/zcode_work_node.h"
 #include "vcs/zcode_work_swarm.h"
@@ -235,6 +238,88 @@ static int test_zd_candidate_review(void)
         ASSERT_EQ(vcs_zcode_review_validate_for_candidate(
                       &task, &candidate, &review2, 1500),
                   VCS_ZCODE_DEV_ERR_OUTPUT_MISMATCH);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_zd_lane_receipt(void)
+{
+    int failures = 0;
+    TEST("zcode_dev: signed lane receipts are canonical chained CAS objects") {
+        struct vcs_zcode_proof_policy_v1 policy;
+        struct vcs_zcode_task_v1 task;
+        struct vcs_zcode_candidate_v1 candidate;
+        uint8_t policy_root[32], task_root[32], candidate_root[32];
+        zd_policy(&policy);
+        ASSERT_EQ(vcs_zcode_proof_policy_root(&policy, policy_root),
+                  VCS_ZCODE_DEV_OK);
+        zd_task(&task, policy_root);
+        ASSERT_EQ(vcs_zcode_task_root(&task, task_root), VCS_ZCODE_DEV_OK);
+        zd_candidate(&candidate, &task, task_root);
+        ASSERT_EQ(vcs_zcode_candidate_root(&candidate, candidate_root),
+                  VCS_ZCODE_DEV_OK);
+        uint8_t seed[32], signer_secret[32], signer_pubkey[32];
+        zd_root(seed, 0x42);
+        ed25519_keypair(signer_pubkey, signer_secret, seed);
+        struct vcs_zcode_lane_receipt_v1 frontier = {
+            .schema_version = VCS_ZCODE_DEV_VERSION,
+            .lane = VCS_ZCODE_LANE_FRONTIER,
+            .created_unix = 1500,
+        };
+        memcpy(frontier.source_root, candidate.candidate_source_root, 32);
+        memcpy(frontier.task_root, task_root, 32);
+        memcpy(frontier.candidate_root, candidate_root, 32);
+        memcpy(frontier.proof_policy_root, policy_root, 32);
+        ASSERT_EQ(vcs_zcode_lane_receipt_seal(
+                      &frontier, signer_secret, signer_pubkey),
+                  VCS_ZCODE_DEV_OK);
+        ASSERT_EQ(vcs_zcode_lane_receipt_verify(&frontier, signer_pubkey),
+                  VCS_ZCODE_DEV_OK);
+        ASSERT_EQ(vcs_zcode_lane_receipt_validate_for_candidate(
+                      &frontier, &task, &candidate, &policy),
+                  VCS_ZCODE_DEV_OK);
+        uint8_t wire[VCS_ZCODE_LANE_WIRE_BYTES], frontier_root[32];
+        struct vcs_zcode_lane_receipt_v1 parsed;
+        ASSERT_EQ(vcs_zcode_lane_receipt_serialize(&frontier, wire),
+                  VCS_ZCODE_DEV_OK);
+        ASSERT(memcmp(wire, "ZCLANE\r\n", 8) == 0);
+        ASSERT_EQ(vcs_zcode_lane_receipt_parse(wire, sizeof(wire), &parsed),
+                  VCS_ZCODE_DEV_OK);
+        ASSERT_EQ(vcs_zcode_lane_receipt_id(&frontier, frontier_root),
+                  VCS_ZCODE_DEV_OK);
+        char frontier_hex[65];
+        zcl_hex_encode(frontier_root, 32, frontier_hex);
+        ASSERT_STR_EQ(frontier_hex,
+            "f2b5a2d11457039dbda6a82c756b38ae80b60e84ba82aaf4e35bbe6fa181e4c2");
+        uint8_t parsed_root[32];
+        ASSERT_EQ(vcs_zcode_lane_receipt_id(&parsed, parsed_root),
+                  VCS_ZCODE_DEV_OK);
+        ASSERT(memcmp(frontier_root, parsed_root, 32) == 0);
+
+        struct vcs_zcode_lane_receipt_v1 promoted = frontier;
+        promoted.lane = VCS_ZCODE_LANE_CANDIDATE;
+        promoted.created_unix = 1600;
+        zd_root(promoted.proof_set_root, 0x16);
+        memcpy(promoted.prior_receipt_root, frontier_root, 32);
+        memset(promoted.signature, 0, sizeof(promoted.signature));
+        ASSERT_EQ(vcs_zcode_lane_receipt_seal(
+                      &promoted, signer_secret, signer_pubkey),
+                  VCS_ZCODE_DEV_OK);
+        ASSERT_EQ(vcs_zcode_lane_receipt_validate_for_candidate(
+                      &promoted, &task, &candidate, &policy),
+                  VCS_ZCODE_DEV_OK);
+        promoted.prior_receipt_root[0] ^= 1;
+        ASSERT_EQ(vcs_zcode_lane_receipt_verify(&promoted, signer_pubkey),
+                  VCS_ZCODE_DEV_ERR_SIGNATURE);
+        promoted.prior_receipt_root[0] ^= 1;
+        wire[11] = 1;
+        ASSERT_EQ(vcs_zcode_lane_receipt_parse(wire, sizeof(wire), &parsed),
+                  VCS_ZCODE_DEV_ERR_WIRE_MAGIC);
+        ASSERT_EQ(vcs_zcode_lane_receipt_parse(wire, sizeof(wire) - 1,
+                                               &parsed),
+                  VCS_ZCODE_DEV_ERR_WIRE_SIZE);
+        memset(signer_secret, 0, sizeof(signer_secret));
         PASS();
     } _test_next:;
     return failures;
@@ -870,6 +955,9 @@ static int test_zd_improve_command(void)
         ASSERT(task_hex && candidate_hex && action_id);
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "state")), "QUEUED");
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "lane")), "FRONTIER");
+        const char *frontier_receipt = json_get_str(json_get(
+            &reply.data, "lane_receipt_root"));
+        ASSERT(frontier_receipt && strlen(frontier_receipt) == 64);
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "remote_outcome")),
                       "LOCAL_FALLBACK");
         uint8_t task_root[32], *task_wire = NULL;
@@ -886,6 +974,11 @@ static int test_zd_improve_command(void)
         (void)snprintf(db_path, sizeof(db_path), "%s/node.db", workspace);
         struct node_db ndb = {0};
         ASSERT(node_db_open(&ndb, db_path));
+        struct zcode_lane_status frontier_status;
+        ASSERT(zcode_lane_find(&ndb, workspace, roots[6],
+                               &frontier_status).ok);
+        ASSERT_EQ(frontier_status.lane, VCS_ZCODE_LANE_FRONTIER);
+        ASSERT_STR_EQ(frontier_status.receipt_root_sha3, frontier_receipt);
         struct db_build_action action;
         ASSERT(db_build_action_find(&ndb, action_id, &action));
         ASSERT_STR_EQ(action.state, "QUEUED");
@@ -1162,6 +1255,52 @@ static int test_zd_improve_command(void)
         ASSERT(!complete.policy_satisfied);
         node_db_close(&ndb);
 
+        struct json_value accept_input;
+        json_init(&accept_input); json_set_object(&accept_input);
+        (void)json_push_kv_str(&accept_input, "workspace", workspace);
+        (void)json_push_kv_str(&accept_input, "datadir", workspace);
+        (void)json_push_kv_str(&accept_input, "action_id", action_id);
+        (void)json_push_kv_str(&accept_input, "lane", "CANDIDATE");
+        struct zcl_command_request accept_request = { .input = &accept_input };
+        struct zcl_command_reply accept_reply;
+        zcl_command_reply_init(&accept_reply, "zcl.zcode_accept.v1");
+        zcl_native_handle_zcode_accept(&accept_request, &accept_reply);
+        ASSERT_EQ(accept_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&accept_reply.data, "lane")),
+                      "CANDIDATE");
+        ASSERT(strlen(json_get_str(json_get(
+            &accept_reply.data, "lane_receipt_root"))) == 64);
+        ASSERT(strlen(json_get_str(json_get(
+            &accept_reply.data, "proof_set_root"))) == 64);
+
+        struct json_value lane_input;
+        json_init(&lane_input); json_set_object(&lane_input);
+        (void)json_push_kv_str(&lane_input, "workspace", workspace);
+        (void)json_push_kv_str(&lane_input, "datadir", workspace);
+        (void)json_push_kv_str(&lane_input, "source_root", roots[6]);
+        struct zcl_command_request lane_request = { .input = &lane_input };
+        struct zcl_command_reply lane_reply;
+        zcl_command_reply_init(&lane_reply, "zcl.zcode_lane.v1");
+        zcl_native_handle_zcode_lane(&lane_request, &lane_reply);
+        ASSERT_EQ(lane_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&lane_reply.data, "lane")),
+                      "CANDIDATE");
+        ASSERT_STR_EQ(json_get_str(json_get(&lane_reply.data, "authority")),
+                      "SIGNED_CAS_RECEIPT");
+
+        json_set_str((struct json_value *)json_get(&accept_input, "lane"),
+                     "PROVEN");
+        struct zcl_command_reply proven_reply;
+        zcl_command_reply_init(&proven_reply, "zcl.zcode_accept.v1");
+        zcl_native_handle_zcode_accept(&accept_request, &proven_reply);
+        ASSERT_EQ(proven_reply.exit_code, ZCL_COMMAND_EXIT_FAILED);
+        ASSERT_STR_EQ(proven_reply.error.code, "LANE_PROMOTION_REFUSED");
+        zcl_command_reply_free(&proven_reply);
+        zcl_command_reply_free(&lane_reply);
+        json_free(&lane_input);
+        zcl_command_reply_free(&accept_reply);
+        json_free(&accept_input);
+
         struct json_value evidence_input;
         json_init(&evidence_input); json_set_object(&evidence_input);
         (void)json_push_kv_str(&evidence_input, "workspace", workspace);
@@ -1207,6 +1346,7 @@ int test_zcode_dev_objects(void)
     int failures = 0;
     failures += test_zd_policy_and_task();
     failures += test_zd_candidate_review();
+    failures += test_zd_lane_receipt();
     failures += test_zd_receipt();
     failures += test_zd_work_context();
     failures += test_zd_work_swarm();

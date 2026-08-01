@@ -11,11 +11,13 @@
 #include "platform/time_compat.h"
 #include "services/build_fabric_service.h"
 #include "services/build_fabric_worker.h"
+#include "services/zcode_lane_service.h"
 #include "util/safe_alloc.h"
 #include "vcs/build_action.h"
 #include "vcs/build_artifact_manifest.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_dev.h"
+#include "vcs/zcode_lane.h"
 #include "vcs/package_store.h"
 #include "vcs/zcode_work_context.h"
 #include "vcs/zcode_work_node.h"
@@ -95,6 +97,34 @@ static uint8_t *zdev_read_file(const char *path, size_t *len_out)
     if (off != len) { free(bytes); return NULL; }
     *len_out = len;
     return bytes;
+}
+
+static bool zdev_open_db(const char *datadir, struct node_db *ndb)
+{
+    char db_path[ZDEV_PATH_MAX];
+    int n = datadir
+        ? snprintf(db_path, sizeof(db_path), "%s/node.db", datadir) : -1;
+    return n > 0 && (size_t)n < sizeof(db_path) &&
+           node_db_open(ndb, db_path);
+}
+
+static void zdev_push_lane(struct json_value *out,
+                           const struct zcode_lane_status *status)
+{
+    (void)json_push_kv_str(out, "lane", status->lane_name);
+    (void)json_push_kv_str(out, "source_root", status->source_root_sha3);
+    (void)json_push_kv_str(out, "task_root", status->task_root_sha3);
+    (void)json_push_kv_str(out, "candidate_root", status->candidate_root_sha3);
+    (void)json_push_kv_str(out, "proof_policy_root",
+                           status->proof_policy_root_sha3);
+    (void)json_push_kv_str(out, "proof_set_root",
+                           status->proof_set_root_sha3);
+    (void)json_push_kv_str(out, "lane_receipt_root",
+                           status->receipt_root_sha3);
+    (void)json_push_kv_str(out, "prior_lane_receipt_root",
+                           status->prior_receipt_root_sha3);
+    (void)json_push_kv_str(out, "signer_pubkey", status->signer_pubkey);
+    (void)json_push_kv_int(out, "created_unix", status->created_at);
 }
 
 void zcl_native_handle_zcode_create(
@@ -206,6 +236,101 @@ void zcl_native_handle_zcode_evidence(
         evaluation.local_reproduced ? "LOCAL_REPRODUCTION" :
         evaluation.quorum_satisfied ? "APPROVED_SIGNER_QUORUM" :
         "UNTRUSTED");
+}
+
+void zcl_native_handle_zcode_accept(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (!request || !reply) return;
+    const char *workspace_arg = zdev_str(request->input, "workspace");
+    const char *action_id = zdev_str(request->input, "action_id");
+    const char *lane = zdev_str(request->input, "lane");
+    const char *datadir = zdev_str(request->input, "datadir");
+    if (!datadir || !datadir[0]) datadir = zcl_native_command_datadir();
+    int target = lane && strcmp(lane, "CANDIDATE") == 0
+        ? VCS_ZCODE_LANE_CANDIDATE
+        : lane && strcmp(lane, "PROVEN") == 0
+            ? VCS_ZCODE_LANE_PROVEN : 0;
+    char workspace[ZDEV_PATH_MAX];
+    uint8_t action_root[32];
+    if (!workspace_arg || !realpath(workspace_arg, workspace) ||
+        !action_id || !zcl_hex_decode_lower(action_id, action_root, 32) ||
+        !target) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+            "BAD_ACCEPT_INPUT", "validate", false, false,
+            "workspace and action_id are required; lane must be CANDIDATE or PROVEN",
+            "zcode.accept");
+        return;
+    }
+    struct node_db ndb = {0};
+    if (!zdev_open_db(datadir, &ndb)) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_FAILED,
+            "DATABASE_OPEN_FAILED", "accept", true, false,
+            "the ZBuild ledger could not be opened", "zcode.accept");
+        return;
+    }
+    struct db_build_worker signer;
+    uint8_t secret[32], pubkey[32];
+    struct zcl_result identity = build_fabric_worker_identity_load(
+        datadir, &signer, secret, pubkey);
+    struct zcode_lane_status status;
+    struct zcl_result accepted = identity.ok
+        ? zcode_lane_advance(&ndb, workspace, action_id, target,
+              (int64_t)platform_time_wall_unix(), secret, pubkey, &status)
+        : identity;
+    memset(secret, 0, sizeof(secret));
+    node_db_close(&ndb);
+    if (!accepted.ok) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_FAILED,
+            "LANE_PROMOTION_REFUSED", "accept", false, false,
+            accepted.message, "zcode.accept");
+        return;
+    }
+    zdev_push_lane(&reply->data, &status);
+    (void)json_push_kv_str(&reply->data, "authority",
+                           "OPERATOR_SIGNED_PROOF_POLICY");
+}
+
+void zcl_native_handle_zcode_lane(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (!request || !reply) return;
+    const char *workspace_arg = zdev_str(request->input, "workspace");
+    const char *source_root = zdev_str(request->input, "source_root");
+    const char *datadir = zdev_str(request->input, "datadir");
+    if (!datadir || !datadir[0]) datadir = zcl_native_command_datadir();
+    char workspace[ZDEV_PATH_MAX];
+    uint8_t root[32];
+    if (!workspace_arg || !realpath(workspace_arg, workspace) ||
+        !source_root || !zcl_hex_decode_lower(source_root, root, 32)) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+            "BAD_LANE_INPUT", "validate", false, false,
+            "workspace and a 64-hex source_root are required", "zcode.lane");
+        return;
+    }
+    sqlite3 *db = NULL;
+    struct node_db ndb = {0};
+    if (!zcl_native_node_db_require_readonly(
+            datadir, reply, "the ZCODE lane ledger", &db, &ndb))
+        return;
+    struct zcode_lane_status status;
+    struct zcl_result found = zcode_lane_find(
+        &ndb, workspace, source_root, &status);
+    zcl_native_node_db_close_readonly(&db, &ndb);
+    if (!found.ok) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_FAILED,
+            "LANE_NOT_FOUND", "lookup", false, false,
+            found.message, "zcode.lane");
+        return;
+    }
+    zdev_push_lane(&reply->data, &status);
+    (void)json_push_kv_str(&reply->data, "authority",
+                           "SIGNED_CAS_RECEIPT");
 }
 
 // long-function-ok:one-task-admission — canonical objects, CAS writes, and
@@ -477,12 +602,29 @@ void zcl_native_handle_zcode_improve(
         return;
     }
     struct zcl_result planned = build_fabric_plan(&ndb, &job, &action);
-    struct zcl_result submitted = planned.ok
-        ? build_fabric_submit(&ndb, job.job_id, now) : planned;
+    struct zcode_lane_status frontier_status = {0};
+    struct db_build_worker frontier_signer;
+    uint8_t frontier_secret[32] = {0}, frontier_pubkey[32] = {0};
+    struct zcl_result admitted = planned;
+    if (planned.ok) {
+        admitted = build_fabric_worker_identity_load(
+            datadir, &frontier_signer, frontier_secret, frontier_pubkey);
+        if (admitted.ok)
+            admitted = zcode_lane_advance(
+                &ndb, workspace, action.action_id, VCS_ZCODE_LANE_FRONTIER,
+                now, frontier_secret, frontier_pubkey, &frontier_status);
+    }
+    memset(frontier_secret, 0, sizeof(frontier_secret));
+    struct zcl_result submitted = admitted.ok
+        ? build_fabric_submit(&ndb, job.job_id, now) : admitted;
     node_db_close(&ndb);
-    if (!planned.ok || !submitted.ok) {
-        zdev_fail(reply, "ZBUILD_PLAN_FAILED",
-                  planned.ok ? submitted.message : planned.message);
+    if (!planned.ok || !admitted.ok || !submitted.ok) {
+        const char *code = !planned.ok ? "ZBUILD_PLAN_FAILED" :
+            !admitted.ok ? "FRONTIER_ADMISSION_FAILED" :
+            "ZBUILD_SUBMIT_FAILED";
+        zdev_fail(reply, code,
+                  !planned.ok ? planned.message :
+                  !admitted.ok ? admitted.message : submitted.message);
         return;
     }
     zdev_push_root(&reply->data, "task_root", task_root);
@@ -497,7 +639,9 @@ void zcl_native_handle_zcode_improve(
     (void)json_push_kv_int(&reply->data, "candidate_created_unix",
                            candidate.created_unix);
     (void)json_push_kv_str(&reply->data, "state", "QUEUED");
-    (void)json_push_kv_str(&reply->data, "lane", "FRONTIER");
+    (void)json_push_kv_str(&reply->data, "lane", frontier_status.lane_name);
+    (void)json_push_kv_str(&reply->data, "lane_receipt_root",
+                           frontier_status.receipt_root_sha3);
     if (remote_requested) {
         const char *remote_outcome = "LOCAL_FALLBACK";
         struct vcs_zcode_work_node *work = vcs_zcode_work_node_global();

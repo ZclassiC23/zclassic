@@ -115,6 +115,45 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_zcode_evidence)
 
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.package.dev.accept", "zcode.package.dev", "zcode.accept",
+    "Accept candidate lane",
+    "Explicitly advances the exact candidate source through the signed "
+    "FRONTIER -> CANDIDATE -> PROVEN chain. CANDIDATE requires compile and "
+    "task-required tests; PROVEN requires the complete proof_policy.v1. "
+    "Transitions are sequential, immutable, CAS-addressed, operator-signed, "
+    "and refuse stale or changed task, candidate, toolchain, or proof state.",
+    0, "zcode,accept,candidate,proven,lane,promotion",
+    "zcl.zcode_accept.input.v1", "zcl.zcode_accept.v1",
+    "workspace,action_id,lane,datadir", "workspace,action_id,lane",
+    "zclassic23 zcode accept --input='{\"workspace\":\"/src/project\",\"action_id\":\"<64hex>\",\"lane\":\"CANDIDATE\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_accept)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.package.dev.lane", "zcode.package.dev", "zcode.lane",
+    "Inspect source lane",
+    "Loads the latest signed lane receipt from the existing workspace CAS "
+    "and verifies every field against its rebuildable database projection. "
+    "The source hash is authoritative; no name lookup is required.",
+    0, "zcode,lane,frontier,candidate,proven,receipt",
+    "zcl.zcode_lane.input.v1", "zcl.zcode_lane.v1",
+    "workspace,source_root,datadir", "workspace,source_root",
+    "zclassic23 zcode lane --input='{\"workspace\":\"/src/project\",\"source_root\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_lane)
+
 ZCL_COMMAND_BRANCH("zcode.package", "zcode",
                    "Published packages",
                    ZCL_COMMAND_LAYER_APP)

@@ -183,6 +183,8 @@ static const struct rlw_leaf g_rlw_leaves[] = {
       "pubkey", RLW_PUBKEY,     NULL, NULL, NULL },
     { "zcode.package.resolve",  zcl_native_handle_zcode_package_resolve,
       "name", "ringbuffer",     NULL, NULL, NULL },
+    { "zcode.package.dev.lane", zcl_native_handle_zcode_lane,
+      "workspace", ".",         "source_root", RLW_ZID_PUBKEY, NULL },
     /* The seventh. Declared READ, `datadir` defaults to the operator's LIVE
      * one, and it opened node.db with node_db_open() — so pointed at a
      * damaged database it renamed the user's wallet to

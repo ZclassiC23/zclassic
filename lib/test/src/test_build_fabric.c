@@ -154,7 +154,7 @@ static uint8_t *bf_read_fixture(const char *path, size_t *len_out)
 static int test_bf_migration(void)
 {
     int failures = 0;
-    TEST("build_fabric: v44 migration creates leases and trust state") {
+    TEST("build_fabric: v45 migration creates worker trust and lane index") {
         struct node_db ndb;
         char dir[256], path[320];
         ASSERT(bf_open(&ndb, dir, sizeof(dir), path, sizeof(path), "migration"));
@@ -178,6 +178,18 @@ static int test_bf_migration(void)
         ASSERT(sqlite3_prepare_v2(ndb.db,
             "SELECT count(*) FROM pragma_table_info('build_receipts') "
             "WHERE name='lease_id'", -1, &st, NULL) == SQLITE_OK);
+        ASSERT(sqlite3_step(st) == SQLITE_ROW); /* raw-sql-ok:test-readonly-count */
+        ASSERT_EQ(sqlite3_column_int(st, 0), 1);
+        sqlite3_finalize(st);
+        ASSERT(sqlite3_prepare_v2(ndb.db,
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND "
+            "name='zcode_lane_receipts'", -1, &st, NULL) == SQLITE_OK);
+        ASSERT(sqlite3_step(st) == SQLITE_ROW); /* raw-sql-ok:test-readonly-count */
+        ASSERT_EQ(sqlite3_column_int(st, 0), 1);
+        sqlite3_finalize(st);
+        ASSERT(sqlite3_prepare_v2(ndb.db,
+            "SELECT count(*) FROM sqlite_master WHERE type='index' AND "
+            "name='idx_zcode_lane_source'", -1, &st, NULL) == SQLITE_OK);
         ASSERT(sqlite3_step(st) == SQLITE_ROW); /* raw-sql-ok:test-readonly-count */
         ASSERT_EQ(sqlite3_column_int(st, 0), 1);
         sqlite3_finalize(st);

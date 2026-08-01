@@ -1,0 +1,202 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ * purpose: Canonical signed ZCODE durability-lane receipts. */
+
+#include "vcs/zcode_lane.h"
+
+#include "base/serialize_le.h"
+#include "crypto/ed25519.h"
+#include "crypto/sha3.h"
+
+#include <string.h>
+
+static const uint8_t lane_magic[8] = {
+    'Z', 'C', 'L', 'A', 'N', 'E', '\r', '\n'
+};
+
+static bool lane_nonzero(const uint8_t root[32])
+{
+    uint8_t any = 0;
+    for (size_t i = 0; i < 32; i++) any |= root[i];
+    return any != 0;
+}
+
+const char *vcs_zcode_lane_name(uint8_t lane)
+{
+    if (lane == VCS_ZCODE_LANE_FRONTIER) return "FRONTIER";
+    if (lane == VCS_ZCODE_LANE_CANDIDATE) return "CANDIDATE";
+    if (lane == VCS_ZCODE_LANE_PROVEN) return "PROVEN";
+    return "UNKNOWN";
+}
+
+static enum vcs_zcode_dev_error lane_fields(
+    const struct vcs_zcode_lane_receipt_v1 *receipt, bool signature)
+{
+    if (!receipt) return VCS_ZCODE_DEV_ERR_NULL;
+    if (receipt->schema_version != VCS_ZCODE_DEV_VERSION)
+        return VCS_ZCODE_DEV_ERR_VERSION;
+    if (receipt->lane < VCS_ZCODE_LANE_FRONTIER ||
+        receipt->lane > VCS_ZCODE_LANE_PROVEN)
+        return VCS_ZCODE_DEV_ERR_VERDICT;
+    if (!lane_nonzero(receipt->source_root) ||
+        !lane_nonzero(receipt->task_root) ||
+        !lane_nonzero(receipt->candidate_root) ||
+        !lane_nonzero(receipt->proof_policy_root) ||
+        !lane_nonzero(receipt->signer_pubkey))
+        return VCS_ZCODE_DEV_ERR_ROOT_ZERO;
+    bool proof = lane_nonzero(receipt->proof_set_root);
+    bool prior = lane_nonzero(receipt->prior_receipt_root);
+    if ((receipt->lane == VCS_ZCODE_LANE_FRONTIER && (proof || prior)) ||
+        (receipt->lane != VCS_ZCODE_LANE_FRONTIER && (!proof || !prior)))
+        return VCS_ZCODE_DEV_ERR_POLICY;
+    if (receipt->created_unix <= 0)
+        return VCS_ZCODE_DEV_ERR_TIME_ORDER;
+    if (signature) {
+        uint8_t any = 0;
+        for (size_t i = 0; i < sizeof(receipt->signature); i++)
+            any |= receipt->signature[i];
+        if (!any) return VCS_ZCODE_DEV_ERR_SIGNATURE;
+    }
+    return VCS_ZCODE_DEV_OK;
+}
+
+enum vcs_zcode_dev_error vcs_zcode_lane_receipt_validate(
+    const struct vcs_zcode_lane_receipt_v1 *receipt)
+{
+    return lane_fields(receipt, true);
+}
+
+enum vcs_zcode_dev_error vcs_zcode_lane_receipt_validate_for_candidate(
+    const struct vcs_zcode_lane_receipt_v1 *receipt,
+    const struct vcs_zcode_task_v1 *task,
+    const struct vcs_zcode_candidate_v1 *candidate,
+    const struct vcs_zcode_proof_policy_v1 *policy)
+{
+    if (!receipt || !task || !candidate || !policy)
+        return VCS_ZCODE_DEV_ERR_NULL;
+    enum vcs_zcode_dev_error err = lane_fields(receipt, true);
+    if (err != VCS_ZCODE_DEV_OK) return err;
+    uint8_t task_root[32], candidate_root[32], policy_root[32];
+    if (vcs_zcode_task_root(task, task_root) != VCS_ZCODE_DEV_OK ||
+        memcmp(task_root, receipt->task_root, 32) != 0)
+        return VCS_ZCODE_DEV_ERR_TASK_MISMATCH;
+    if (vcs_zcode_candidate_root(candidate, candidate_root) !=
+            VCS_ZCODE_DEV_OK ||
+        memcmp(candidate_root, receipt->candidate_root, 32) != 0 ||
+        memcmp(candidate->candidate_source_root,
+               receipt->source_root, 32) != 0)
+        return VCS_ZCODE_DEV_ERR_SOURCE_STALE;
+    if (vcs_zcode_proof_policy_root(policy, policy_root) !=
+            VCS_ZCODE_DEV_OK ||
+        memcmp(policy_root, receipt->proof_policy_root, 32) != 0 ||
+        memcmp(task->proof_policy_root, policy_root, 32) != 0)
+        return VCS_ZCODE_DEV_ERR_POLICY_MISMATCH;
+    return VCS_ZCODE_DEV_OK;
+}
+
+static enum vcs_zcode_dev_error lane_body(
+    const struct vcs_zcode_lane_receipt_v1 *receipt,
+    uint8_t out[VCS_ZCODE_LANE_BODY_BYTES])
+{
+    enum vcs_zcode_dev_error err = lane_fields(receipt, false);
+    if (err != VCS_ZCODE_DEV_OK) return err;
+    memset(out, 0, VCS_ZCODE_LANE_BODY_BYTES);
+    memcpy(out, lane_magic, 8);
+    zcl_write_u16_le(out + 8, receipt->schema_version);
+    out[10] = receipt->lane;
+    size_t off = 16;
+    memcpy(out + off, receipt->source_root, 32); off += 32;
+    memcpy(out + off, receipt->task_root, 32); off += 32;
+    memcpy(out + off, receipt->candidate_root, 32); off += 32;
+    memcpy(out + off, receipt->proof_policy_root, 32); off += 32;
+    memcpy(out + off, receipt->proof_set_root, 32); off += 32;
+    memcpy(out + off, receipt->prior_receipt_root, 32); off += 32;
+    zcl_write_i64_le(out + off, receipt->created_unix); off += 8;
+    memcpy(out + off, receipt->signer_pubkey, 32); off += 32;
+    return off == VCS_ZCODE_LANE_BODY_BYTES
+        ? VCS_ZCODE_DEV_OK : VCS_ZCODE_DEV_ERR_WIRE_SIZE;
+}
+
+enum vcs_zcode_dev_error vcs_zcode_lane_receipt_serialize(
+    const struct vcs_zcode_lane_receipt_v1 *receipt,
+    uint8_t out[VCS_ZCODE_LANE_WIRE_BYTES])
+{
+    if (!out) return VCS_ZCODE_DEV_ERR_NULL;
+    enum vcs_zcode_dev_error err = lane_body(receipt, out);
+    if (err != VCS_ZCODE_DEV_OK) return err;
+    if (lane_fields(receipt, true) != VCS_ZCODE_DEV_OK)
+        return VCS_ZCODE_DEV_ERR_SIGNATURE;
+    memcpy(out + VCS_ZCODE_LANE_BODY_BYTES, receipt->signature, 64);
+    return VCS_ZCODE_DEV_OK;
+}
+
+enum vcs_zcode_dev_error vcs_zcode_lane_receipt_parse(
+    const uint8_t *wire, size_t wire_len,
+    struct vcs_zcode_lane_receipt_v1 *out)
+{
+    if (!wire || !out) return VCS_ZCODE_DEV_ERR_NULL;
+    if (wire_len != VCS_ZCODE_LANE_WIRE_BYTES)
+        return VCS_ZCODE_DEV_ERR_WIRE_SIZE;
+    if (memcmp(wire, lane_magic, 8) != 0)
+        return VCS_ZCODE_DEV_ERR_WIRE_MAGIC;
+    for (size_t i = 11; i < 16; i++)
+        if (wire[i] != 0) return VCS_ZCODE_DEV_ERR_WIRE_MAGIC;
+    memset(out, 0, sizeof(*out));
+    out->schema_version = zcl_read_u16_le(wire + 8);
+    out->lane = wire[10];
+    size_t off = 16;
+    memcpy(out->source_root, wire + off, 32); off += 32;
+    memcpy(out->task_root, wire + off, 32); off += 32;
+    memcpy(out->candidate_root, wire + off, 32); off += 32;
+    memcpy(out->proof_policy_root, wire + off, 32); off += 32;
+    memcpy(out->proof_set_root, wire + off, 32); off += 32;
+    memcpy(out->prior_receipt_root, wire + off, 32); off += 32;
+    out->created_unix = zcl_read_i64_le(wire + off); off += 8;
+    memcpy(out->signer_pubkey, wire + off, 32); off += 32;
+    memcpy(out->signature, wire + off, 64);
+    return vcs_zcode_lane_receipt_validate(out);
+}
+
+enum vcs_zcode_dev_error vcs_zcode_lane_receipt_id(
+    const struct vcs_zcode_lane_receipt_v1 *receipt, uint8_t out[32])
+{
+    if (!out) return VCS_ZCODE_DEV_ERR_NULL;
+    uint8_t body[VCS_ZCODE_LANE_BODY_BYTES];
+    enum vcs_zcode_dev_error err = lane_body(receipt, body);
+    if (err != VCS_ZCODE_DEV_OK) return err;
+    struct sha3_256_ctx sha;
+    sha3_256_init(&sha);
+    static const char domain[] = VCS_ZCODE_LANE_DOMAIN;
+    sha3_256_write(&sha, (const uint8_t *)domain, sizeof(domain));
+    sha3_256_write(&sha, body, sizeof(body));
+    sha3_256_finalize(&sha, out);
+    return VCS_ZCODE_DEV_OK;
+}
+
+enum vcs_zcode_dev_error vcs_zcode_lane_receipt_seal(
+    struct vcs_zcode_lane_receipt_v1 *receipt,
+    const uint8_t secret[32], const uint8_t pubkey[32])
+{
+    if (!receipt || !secret || !pubkey) return VCS_ZCODE_DEV_ERR_NULL;
+    memcpy(receipt->signer_pubkey, pubkey, 32);
+    uint8_t id[32];
+    enum vcs_zcode_dev_error err = vcs_zcode_lane_receipt_id(receipt, id);
+    if (err != VCS_ZCODE_DEV_OK) return err;
+    ed25519_sign(receipt->signature, id, sizeof(id), secret, pubkey);
+    return VCS_ZCODE_DEV_OK;
+}
+
+enum vcs_zcode_dev_error vcs_zcode_lane_receipt_verify(
+    const struct vcs_zcode_lane_receipt_v1 *receipt,
+    const uint8_t expected_signer[32])
+{
+    enum vcs_zcode_dev_error err = vcs_zcode_lane_receipt_validate(receipt);
+    if (err != VCS_ZCODE_DEV_OK) return err;
+    if (!expected_signer ||
+        memcmp(receipt->signer_pubkey, expected_signer, 32) != 0)
+        return VCS_ZCODE_DEV_ERR_SIGNATURE;
+    uint8_t id[32];
+    err = vcs_zcode_lane_receipt_id(receipt, id);
+    if (err != VCS_ZCODE_DEV_OK) return err;
+    return ed25519_verify(receipt->signature, id, sizeof(id), expected_signer)
+        ? VCS_ZCODE_DEV_OK : VCS_ZCODE_DEV_ERR_SIGNATURE;
+}

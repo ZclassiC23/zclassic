@@ -36,13 +36,13 @@ ledger, worker trust list, or P2P transport.
 | Source snapshot identity | resident dev source CAS plus content.v2 for portable package trees | Live locally; not yet one network task surface |
 | Code context | `lib/codeindex/` plus immutable source chunks | Live index; bounded context-capsule publication is not yet wired |
 | Fixed build action | `vcs_build_action_v1` | Live closed registry and identity for preprocessed-TU compile, exact-package test, declarative fuzz, and review. Local execution is live for compile and test |
-| Build coordinator ledger | `build_jobs`, `build_actions`, `build_workers`, `build_receipts` | Live schema v44. Receipt rows explicitly distinguish local acceptance, untrusted remote observation, local reproduction, and approved-signer quorum |
+| Build coordinator ledger | `build_jobs`, `build_actions`, `build_workers`, `build_receipts`, `zcode_lane_receipts` | Live schema v45. Work receipt rows distinguish local acceptance, untrusted remote observation, local reproduction, and approved-signer quorum; lane rows are lookup projections of signed CAS receipts |
 | Local package confinement | `zclassic23-package-verify` | Live: declarative recipe, Landlock/seccomp/rlimits, no network |
 | ZBuild worker execution | existing build-fabric runtime | Live locally for fixed preprocessed-TU GCC and exact test-executable actions when `-buildworker` is enabled: durable identity, bounded leases, full confinement, CAS evidence, signed pass/fail receipts, and local fallback |
 | Package P2P | `package_swarm_node` and `zpkgswm` | Live for immutable package bytes |
 | Work P2P | signed work frames over package swarm/CAS | Live `ZCWS` multiplex on existing `zpkgswm` sessions: canonical compile/test context fetch, ZBuild admission, cancellation, signed pass/fail result return, durable untrusted observation, local reproduction, and per-proof-class approved distinct-signer quorum |
 | Agent authority | metaverse grants and signed receipt chain | Live for scoped property operations; task work must never inherit wallet or canonical-node authority |
-| Durability lanes | ZCODE promotion records over source roots | Not live |
+| Durability lanes | signed `lane_receipt.v1` over source/proof roots | Live local chain and typed promotion. Distributed long-duration actions and projection reconstruction tooling remain |
 
 The control-plane distinction is load-bearing: a READY command or database row
 does not prove an executor exists. `build.worker` now has an actual supervised
@@ -65,6 +65,7 @@ The domains are:
 - `zcl.zcode.proof_policy.v1\0`
 - `zcl.zcode.review.v1\0`
 - `zcl.zcode.work_receipt.v1\0`
+- `zcl.zcode.lane_receipt.v1\0`
 
 The trailing NUL is part of each SHA3 preimage, matching the existing package
 manifest, recipe, lock, release, and attestation convention.
@@ -137,6 +138,22 @@ Reviews bind one immutable proof-set root. The canonical variable-length wire
 contains 1–64 strictly ascending, unique `work_receipt.v1` roots and is
 domain-separated as `zcl.zcode.proof_set.v1\0`. Receipt order, duplicates, or
 display formatting therefore cannot change which evidence was evaluated.
+
+### `lane_receipt.v1`
+
+Every admitted candidate source gets an operator-signed FRONTIER receipt in
+the existing workspace CAS before its ZBuild job is submitted. A receipt binds
+the exact source, task, candidate, proof policy, evaluated proof set, previous
+lane receipt, lane, creation time, and signer. FRONTIER has no prior or proof
+root; CANDIDATE and PROVEN require both. The receipt ID is the authority. The
+`zcode_lane_receipts` table is a model-owned lookup projection and is verified
+field-for-field against the CAS object and Ed25519 signature on every read.
+
+Transitions are sequential and signer-stable. CANDIDATE requires the proof
+evaluator's compile bar plus any task-required test bar. PROVEN requires the
+entire `proof_policy.v1`, including fuzz, review, local reproduction/quorum,
+proof age, and release-byte identity when selected. A changed or expired task,
+candidate, policy, source, proof set, signer, or prior receipt is a refusal.
 
 ### `zcode-work-context.v1`
 
@@ -213,6 +230,12 @@ bash-only authority:
   existing signed package publication lifecycle.
 - [x] `zcode use` — resolve/fetch/plan/commit an exact root-pinned dependency,
   reusing `zcode package add` and its lock/install receipts.
+- [x] `zcode evidence` — reconstruct and evaluate the candidate-wide immutable
+  proof set from canonical receipts.
+- [x] `zcode accept` — explicitly sign sequential CANDIDATE or PROVEN promotion
+  after the corresponding task-owned proof bar passes.
+- [x] `zcode lane` — verify and inspect the latest signed CAS lane receipt by
+  authoritative source root.
 - [ ] `zcode improve` — plan a task, build a bounded context, invoke a selected
   adapter, admit candidate trees, schedule proofs/reviews, reproduce, explicitly
   accept, and publish.
@@ -221,14 +244,16 @@ bash-only authority:
 the existing workspace CAS, captures the GCC capsule, and queues a
 candidate-bound compile or test action. Reusing `candidate_created_unix` with
 the same immutable inputs schedules additional proof actions for the exact same
-candidate; evidence aggregation follows task/candidate/policy roots across
+candidate. Before submission it creates or re-verifies the exact candidate's
+signed FRONTIER receipt; evidence aggregation follows task/candidate/policy roots across
 their distinct durable jobs. A local worker emits the canonical signed work
 receipt. With `remote_peer`, it builds the action-neutral canonical context
 package itself and signs and queues the exact compile/test request for that
 user-selected advertised peer; an unavailable package store, peer, or
 capability reports `LOCAL_FALLBACK` and preserves the local action. Adapter
-invocation, review execution, explicit acceptance, and publication are still
-separate missing stages and are not claimed by command discovery.
+invocation, fixed review execution, and publication are still separate missing
+stages and are not claimed by command discovery. Explicit lane acceptance is
+live through `zcode accept`, but does not itself publish a release.
 
 `zcode evidence` re-reads every canonical receipt from CAS, rechecks task,
 candidate, fixed action kind, input, policy, toolchain, signature, expiry,
@@ -295,6 +320,16 @@ FRONTIER  ->  CANDIDATE  ->  PROVEN
 Promotion is a signed projection over immutable source and proof-set roots,
 not a mutable branch name. Publication may name lanes for discovery, but names
 never replace roots.
+
+The local transition chain is live: `zcode improve` admits FRONTIER,
+`zcode accept --lane=CANDIDATE` applies the fast compile/test bar, and
+`zcode accept --lane=PROVEN` applies the full policy. The missing portion is
+the fixed multi-node restart/disruption/chaos action set and automatic
+failure-to-task conversion; no current command claims that evidence exists.
+
+<!-- claim: file-present lib/vcs/include/vcs/zcode_lane.h # canonical signed lane receipt -->
+<!-- claim: symbol-present zcode_lane_advance app/services/src/zcode_lane_service.c # sequential proof-gated promotion -->
+<!-- claim: symbol-present zcl_native_handle_zcode_accept tools/command/native_zcode_dev_command.c # explicit operator acceptance -->
 
 ## Acceptance demonstrations
 

@@ -333,6 +333,12 @@ void zcl_native_handle_zcode_improve(
 void zcl_native_handle_zcode_evidence(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_accept(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_lane(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 
 /* ── zcode.release.* — Sovereign Registry v1: sign/verify zid release
  * records (tools/command/native_zcode_release_command.c). Signing is
