@@ -158,6 +158,28 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE,
     zcl_native_handle_zcode_lane)
 
+ZCL_COMMAND_READY_READ(
+    "zcode.package.dev.tasks", "zcode.package.dev", "zcode.tasks",
+    "List local dev tasks",
+    "Rebuilds the local dev-task index from the workspace CAS on every call. "
+    "Persisted task.v1 and candidate.v1 wires are the only task truth; each "
+    "projected wire must parse, validate, and rederive the root that names "
+    "its CAS object, and no task table exists. Projects task root, source "
+    "root, expiry, derived state (AWAITING_CANDIDATE, CANDIDATE_ADMITTED, "
+    "EXPIRED), and candidate authors. Filters accept task_root, source_root, "
+    "and author hex prefixes plus an exact state.",
+    0, "zcode,tasks,task,index,search,candidate,projection",
+    "zcl.zcode_tasks.input.v1", "zcl.zcode_tasks.v1",
+    "workspace,task_root,source_root,author,state,limit", "workspace",
+    "zclassic23 zcode tasks --input='{\"workspace\":\"/src/project\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_tasks)
+
 ZCL_COMMAND_BRANCH("zcode.package", "zcode",
                    "Published packages",
                    ZCL_COMMAND_LAYER_APP)

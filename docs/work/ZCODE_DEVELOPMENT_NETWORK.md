@@ -306,10 +306,16 @@ ZBuild action. It never accepts a caller-supplied path or command.
   proof policy, and expiry.
 - [x] Sign and verify work receipts with pinned Ed25519 signers.
 - [x] Add byte KATs, round trips, malformed-wire checks, and stale-root checks.
-- [ ] Store these wires through the existing ZCODE CAS and project a local task
+- [x] Store these wires through the existing ZCODE CAS and project a local task
   index from CAS objects rather than creating task tables as a second truth.
-  CAS storage and the ZBuild projection are live; local search/index projection
-  remains.
+  CAS storage and the ZBuild projection were already live; the local
+  search/index projection is now live too: `vcs_zcode_task_index` is rebuilt
+  from the persisted task/candidate wires on every call and the typed
+  `zcode tasks` surface lists it.
+
+<!-- claim: file-present lib/vcs/include/vcs/zcode_task_index.h # rebuildable dev-task index projection over the workspace CAS -->
+<!-- claim: symbol-present vcs_zcode_task_index_build lib/vcs/src/zcode_task_index.c # projection rebuilt from CAS wires on every call -->
+<!-- claim: symbol-present zcl_native_handle_zcode_tasks tools/command/native_zcode_dev_command.c # typed task list/search surface -->
 - [x] Publish a bounded code-index context capsule whose members resolve to
   the task's immutable source root. V1 uses an exact symbol/stable ID; semantic
   goal selection remains adapter policy rather than context authority.
