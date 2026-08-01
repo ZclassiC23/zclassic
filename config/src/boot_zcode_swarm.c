@@ -395,6 +395,7 @@ void boot_zcode_swarm_tick(struct msg_processor *mp, struct p2p_node *node,
     if (wall - s_last_tick >= ZCODE_SWARM_TICK_PERIOD_SEC) {
         s_last_tick = wall;
         vcs_swarm_engine_tick(engine, wall / 86400, (uint64_t)wall);
+        vcs_zcode_work_node_tick(s_work, wall);
         if (GetBoolArg("-buildworker", false) && wall % 300 == 0)
             (void)boot_zcode_work_refresh((struct boot_svc_ctx *)ctx, wall);
     }

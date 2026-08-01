@@ -541,6 +541,19 @@ static int test_zd_work_node(void)
         ASSERT(vcs_zcode_work_node_next_cancel(
             worker, &peer_out, &received_cancel));
         ASSERT_EQ(received_cancel.request_id, 701);
+        request.request_id = 702;
+        ASSERT(vcs_zcode_work_request_seal(
+            &request, requester_secret, requester_key));
+        ASSERT_EQ(vcs_zcode_work_node_submit(requester, 11, &request, 1000),
+                  VCS_ZCODE_WORK_NODE_OK);
+        vcs_zcode_work_node_tick(requester, 1100);
+        ASSERT(!vcs_zcode_work_node_next_outbound(
+            requester, 11, &peer_out, frame, &frame_len));
+        request.deadline_unix = 1150;
+        ASSERT(vcs_zcode_work_request_seal(
+            &request, requester_secret, requester_key));
+        ASSERT_EQ(vcs_zcode_work_node_submit(requester, 11, &request, 1100),
+                  VCS_ZCODE_WORK_NODE_OK);
         vcs_zcode_work_node_free(requester);
         vcs_zcode_work_node_free(worker);
         PASS();

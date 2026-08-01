@@ -191,6 +191,60 @@ void vcs_zcode_work_node_peer_drop(struct vcs_zcode_work_node *node,
     pthread_mutex_unlock(&node->lock);
 }
 
+void vcs_zcode_work_node_tick(struct vcs_zcode_work_node *node, int64_t now)
+{
+    if (!node || now < 0) return;
+    pthread_mutex_lock(&node->lock);
+    for (size_t i = 0; i < sizeof(node->tracks) / sizeof(node->tracks[0]); i++) {
+        struct work_track *track = &node->tracks[i];
+        if (!track->used || track->finished || track->cancelled ||
+            now < track->request.deadline_unix)
+            continue;
+        if (track->inbound) {
+            if (node->has_local_capability &&
+                node->local_capability.queue_headroom <
+                    node->local_capability.slots)
+                node->local_capability.queue_headroom++;
+        } else {
+            int peer_at = work_peer_slot(node, track->peer);
+            if (peer_at >= 0 && node->peers[peer_at].has_capability &&
+                node->peers[peer_at].capability.queue_headroom <
+                    node->peers[peer_at].capability.slots)
+                node->peers[peer_at].capability.queue_headroom++;
+        }
+        memset(track, 0, sizeof(*track));
+    }
+    size_t kept = 0;
+    for (size_t i = 0; i < node->request_count; i++) {
+        size_t src = (node->request_pos + i) %
+                     VCS_ZCODE_WORK_NODE_MAX_REQUESTS;
+        if (node->requests[src].request.deadline_unix <= now) continue;
+        size_t dst = (node->request_pos + kept) %
+                     VCS_ZCODE_WORK_NODE_MAX_REQUESTS;
+        if (dst != src) node->requests[dst] = node->requests[src];
+        kept++;
+    }
+    node->request_count = kept;
+    kept = 0;
+    for (size_t i = 0; i < node->outbound_count; i++) {
+        size_t src = (node->outbound_pos + i) %
+                     VCS_ZCODE_WORK_NODE_MAX_OUTBOUND;
+        struct vcs_zcode_work_swarm_message message;
+        bool expired = vcs_zcode_work_swarm_parse(
+                node->outbound[src].bytes, node->outbound[src].len,
+                &message) &&
+            message.type == VCS_ZCODE_WORK_SWARM_REQUEST &&
+            message.body.request.deadline_unix <= now;
+        if (expired) continue;
+        size_t dst = (node->outbound_pos + kept) %
+                     VCS_ZCODE_WORK_NODE_MAX_OUTBOUND;
+        if (dst != src) node->outbound[dst] = node->outbound[src];
+        kept++;
+    }
+    node->outbound_count = kept;
+    pthread_mutex_unlock(&node->lock);
+}
+
 bool vcs_zcode_work_node_set_local_capability(
     struct vcs_zcode_work_node *node,
     const struct vcs_zcode_work_capability_v1 *capability)

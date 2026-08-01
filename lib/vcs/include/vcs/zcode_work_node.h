@@ -42,6 +42,8 @@ bool vcs_zcode_work_node_peer_add(struct vcs_zcode_work_node *node,
                                   uint64_t peer);
 void vcs_zcode_work_node_peer_drop(struct vcs_zcode_work_node *node,
                                    uint64_t peer);
+/* Expire unfinished signed requests and release their bounded headroom. */
+void vcs_zcode_work_node_tick(struct vcs_zcode_work_node *node, int64_t now);
 
 /* The caller seals this capability before installation. Setting it queues an
  * advertisement to every current peer; peer_add queues it for the new peer. */
