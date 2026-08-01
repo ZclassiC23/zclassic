@@ -591,6 +591,8 @@ static int test_zd_improve_command(void)
         (void)json_push_kv_str(&input, "candidate_source_root", roots[6]);
         (void)json_push_kv_str(&input, "adapter_policy_root", roots[7]);
         (void)json_push_kv_str(&input, "author_pubkey", roots[8]);
+        (void)json_push_kv_int(&input, "remote_peer", 99);
+        (void)json_push_kv_str(&input, "context_root", roots[5]);
         (void)json_push_kv_str(&input, "goal", "fix deterministic fixture");
         (void)json_push_kv_str(&input, "proof_policy_hex", policy_hex);
         (void)json_push_kv_str(&input, "preprocessed_path", preprocessed);
@@ -608,6 +610,8 @@ static int test_zd_improve_command(void)
         ASSERT(task_hex && candidate_hex && action_id);
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "state")), "QUEUED");
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "lane")), "FRONTIER");
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "remote_outcome")),
+                      "LOCAL_FALLBACK");
         uint8_t task_root[32], *task_wire = NULL;
         size_t task_wire_len = 0;
         ASSERT(zcl_hex_decode_lower(task_hex, task_root, 32));
@@ -627,6 +631,7 @@ static int test_zd_improve_command(void)
         ASSERT_STR_EQ(action.state, "QUEUED");
         ASSERT_STR_EQ(action.task_root_sha3, task_hex);
         ASSERT_STR_EQ(action.candidate_root_sha3, candidate_hex);
+        ASSERT_STR_EQ(action.context_root_sha3, roots[5]);
         uint8_t candidate_root[32], *candidate_wire = NULL;
         size_t candidate_wire_len = 0;
         ASSERT(zcl_hex_decode_lower(candidate_hex, candidate_root, 32));

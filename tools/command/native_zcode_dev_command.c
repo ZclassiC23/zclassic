@@ -4,16 +4,20 @@
 #include "command/native_command.h"
 
 #include "base/hex.h"
+#include "base/serialize_le.h"
 #include "crypto/sha3.h"
 #include "json/json.h"
 #include "models/database.h"
 #include "platform/time_compat.h"
 #include "services/build_fabric_service.h"
+#include "services/build_fabric_worker.h"
 #include "util/safe_alloc.h"
 #include "vcs/build_action.h"
 #include "vcs/build_artifact_manifest.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_dev.h"
+#include "vcs/package_store.h"
+#include "vcs/zcode_work_node.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -270,6 +274,12 @@ void zcl_native_handle_zcode_improve(
     }
     struct db_build_job job = {0};
     struct db_build_action action = {0};
+    int64_t remote_peer = zdev_int(request->input, "remote_peer", 0);
+    uint8_t context_root[32] = {0};
+    bool remote_requested = remote_peer > 0;
+    if (remote_requested &&
+        !zdev_root(request->input, "context_root", context_root, reply))
+        return;
     (void)snprintf(job.source_sha256, sizeof(job.source_sha256), "%s",
                    source_sha256);
     zcl_hex_encode(candidate.candidate_source_root, 32, job.source_cas_sha3);
@@ -287,6 +297,8 @@ void zcl_native_handle_zcode_improve(
     zcl_hex_encode(task_root, 32, action.task_root_sha3);
     zcl_hex_encode(candidate_root, 32, action.candidate_root_sha3);
     zcl_hex_encode(policy_root, 32, action.proof_policy_root_sha3);
+    if (remote_requested)
+        zcl_hex_encode(context_root, 32, action.context_root_sha3);
     (void)snprintf(action.target, sizeof(action.target), "%s",
                    VCS_BUILD_TARGET_V1);
     uint8_t fixed_flags[32], fixed_environment[32];
@@ -334,6 +346,80 @@ void zcl_native_handle_zcode_improve(
     (void)json_push_kv_str(&reply->data, "action_id", action.action_id);
     (void)json_push_kv_str(&reply->data, "state", "QUEUED");
     (void)json_push_kv_str(&reply->data, "lane", "FRONTIER");
+    if (remote_requested) {
+        const char *remote_outcome = "LOCAL_FALLBACK";
+        struct vcs_zcode_work_node *work = vcs_zcode_work_node_global();
+        struct vcs_package_store *store = vcs_package_store_global();
+        struct vcs_package_store_status package_status;
+        struct vcs_zcode_work_capability_v1 capability;
+        if (work && store &&
+            vcs_package_store_package_status(store, context_root,
+                                              &package_status) &&
+            package_status.complete &&
+            vcs_zcode_work_node_peer_capability(
+                work, (uint64_t)remote_peer, now, &capability)) {
+            struct vcs_zcode_work_request_v1 remote = {
+                .target = VCS_ZCODE_WORK_TARGET_LINUX_X86_64_V3,
+                .work_kind = VCS_ZCODE_WORK_BUILD,
+            };
+            memcpy(remote.task_root, task_root, 32);
+            memcpy(remote.candidate_root, candidate_root, 32);
+            (void)zcl_hex_decode_lower(action.action_id,
+                                       remote.action_root, 32);
+            memcpy(remote.input_root, input_root, 32);
+            memcpy(remote.context_root, context_root, 32);
+            memcpy(remote.proof_policy_root, policy_root, 32);
+            memcpy(remote.toolchain_capsule_root,
+                   task.toolchain_capsule_root, 32);
+            remote.max_cpu_seconds = task.max_cpu_seconds <
+                    capability.max_cpu_seconds
+                ? task.max_cpu_seconds : capability.max_cpu_seconds;
+            remote.max_memory_bytes = task.max_memory_bytes <
+                    capability.max_memory_bytes
+                ? task.max_memory_bytes : capability.max_memory_bytes;
+            remote.max_output_bytes = task.max_output_bytes <
+                    capability.max_output_bytes
+                ? task.max_output_bytes : capability.max_output_bytes;
+            int64_t lease_end = now + capability.max_lease_seconds;
+            remote.deadline_unix = lease_end < task.expires_unix
+                ? lease_end : task.expires_unix - 1;
+            struct sha3_256_ctx request_sha;
+            uint8_t request_digest[32];
+            sha3_256_init(&request_sha);
+            static const char request_domain[] =
+                "zcl.zcode.local_request_id.v1";
+            sha3_256_write(&request_sha, (const uint8_t *)request_domain,
+                           sizeof(request_domain));
+            sha3_256_write(&request_sha, remote.action_root, 32);
+            sha3_256_write(&request_sha, remote.task_root, 32);
+            uint8_t now_le[8];
+            zcl_write_i64_le(now_le, now);
+            sha3_256_write(&request_sha, now_le, sizeof(now_le));
+            sha3_256_finalize(&request_sha, request_digest);
+            remote.request_id = zcl_read_u64_le(request_digest);
+            if (remote.request_id == 0) remote.request_id = 1;
+            struct db_build_worker requester_identity;
+            uint8_t requester_secret[32], requester_key[32];
+            if (build_fabric_worker_identity_load(
+                    datadir, &requester_identity, requester_secret,
+                    requester_key).ok &&
+                vcs_zcode_work_request_seal(
+                    &remote, requester_secret, requester_key) &&
+                vcs_zcode_work_node_submit(
+                    work, (uint64_t)remote_peer, &remote, now) ==
+                    VCS_ZCODE_WORK_NODE_OK) {
+                remote_outcome = "QUEUED_REMOTE";
+                (void)json_push_kv_int(&reply->data, "remote_request_id",
+                                       (int64_t)remote.request_id);
+            }
+            memset(requester_secret, 0, sizeof(requester_secret));
+        }
+        (void)json_push_kv_str(&reply->data, "remote_outcome", remote_outcome);
+        if (strcmp(remote_outcome, "LOCAL_FALLBACK") == 0)
+            (void)json_push_kv_str(
+                &reply->data, "remote_reason",
+                "peer/capability/context unavailable; local queued action remains authoritative");
+    }
     (void)json_push_kv_str(
         &reply->data, "next",
         "an enabled local or P2P worker may produce the candidate-bound compile receipt; review, explicit acceptance, and publication remain required");

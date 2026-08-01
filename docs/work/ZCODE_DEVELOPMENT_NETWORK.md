@@ -193,8 +193,12 @@ bash-only authority:
 `zcode improve` now admits canonical task/policy/goal/input/candidate objects in
 the existing workspace CAS, captures the GCC capsule, and queues a
 candidate-bound compile action. A local worker emits the canonical signed work
-receipt. Adapter invocation, review, explicit acceptance, and publication are
-still separate missing stages and are not claimed by command discovery.
+receipt. With `remote_peer` and a locally complete content.v2 `context_root`, it
+also signs and queues the exact request for that user-selected advertised peer;
+an unavailable peer/capability/context reports `LOCAL_FALLBACK` and preserves
+the local action. Adapter invocation, review, explicit acceptance, and
+publication are still separate missing stages and are not claimed by command
+discovery.
 
 ### D. Requester-coordinated P2P work
 
