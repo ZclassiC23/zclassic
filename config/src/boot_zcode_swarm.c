@@ -9,6 +9,7 @@
 
 #include "config/boot_internal.h"
 #include "config/runtime.h"
+#include "config/boot_zcode_work_authority.h"
 
 #include "base/hex.h"
 #include "vcs/package_reward.h"
@@ -137,12 +138,11 @@ static struct zcl_result boot_zcode_work_admit(
         vcs_zcode_work_context_free(&context);
         return ZCL_ERR(-1, "context does not reconstruct the signed request");
     }
-    enum vcs_zcode_candidate_bundle_result authority =
-        vcs_zcode_work_context_import_authority(s_work_workspace, &context);
-    if (authority != VCS_ZCODE_CANDIDATE_BUNDLE_OK) {
+    struct zcl_result authority = boot_zcode_work_authority_import(
+        s_work_workspace, &context);
+    if (!authority.ok) {
         vcs_zcode_work_context_free(&context);
-        return ZCL_ERR(-1, "candidate authority: %s",
-            vcs_zcode_candidate_bundle_result_string(authority));
+        return authority;
     }
     uint8_t task_wire[VCS_ZCODE_TASK_WIRE_BYTES];
     uint8_t candidate_wire[VCS_ZCODE_CANDIDATE_WIRE_BYTES];

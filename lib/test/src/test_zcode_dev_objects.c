@@ -18,6 +18,8 @@
 #include "services/zcode_lane_service.h"
 #include "util/safe_alloc.h"
 #include "vcs/package_manifest.h"
+#include "vcs/package_deps.h"
+#include "vcs/package_recipe.h"
 #include "vcs/package_store.h"
 #include "vcs/build_action.h"
 #include "vcs/vcs_object.h"
@@ -31,6 +33,8 @@
 #include "vcs/zcode_patch.h"
 #include "vcs/zcode_candidate_bundle.h"
 #include "vcs/zcode_action_input.h"
+#include "vcs/zcode_task_authority.h"
+#include "vcs/zcode_task_authority_bundle.h"
 #include "vcs/vcs.h"
 
 #include <stdio.h>
@@ -1274,6 +1278,47 @@ static int test_zd_improve_command(void)
         ASSERT_STR_EQ(captured_manifest.entries[3].path, "unit.i");
         vcs_manifest_free(&captured_manifest);
         zcl_hex_encode(captured_source_root, 32, roots[0]);
+        struct vcs_package_lock task_lock;
+        vcs_package_lock_init(&task_lock);
+        task_lock.count = 1;
+        memcpy(task_lock.nodes[0].root, captured_source_root, 32);
+        (void)snprintf(task_lock.nodes[0].name,
+                       sizeof(task_lock.nodes[0].name), "fixture");
+        (void)snprintf(task_lock.nodes[0].semver,
+                       sizeof(task_lock.nodes[0].semver), "1.0.0");
+        uint8_t *task_lock_wire = NULL; size_t task_lock_wire_len = 0;
+        uint8_t task_lock_root[32];
+        ASSERT_EQ(vcs_package_lock_serialize(
+                      &task_lock, &task_lock_wire, &task_lock_wire_len),
+                  VCS_PACKAGE_DEPS_OK);
+        ASSERT_EQ(vcs_package_lock_root(&task_lock, task_lock_root),
+                  VCS_PACKAGE_DEPS_OK);
+        zcl_hex_encode(task_lock_root, 32, roots[1]);
+        char *task_lock_hex = zcl_malloc(
+            task_lock_wire_len * 2u + 1u, "test.task_lock_hex");
+        ASSERT(task_lock_hex != NULL);
+        zcl_hex_encode(task_lock_wire, task_lock_wire_len, task_lock_hex);
+        struct vcs_package_recipe task_recipe;
+        vcs_package_recipe_init(&task_recipe);
+        enum vcs_package_recipe_error recipe_error;
+        ASSERT(vcs_package_recipe_add_source(
+            &task_recipe, "src/widget.c", &recipe_error));
+        vcs_package_recipe_set_test_limits(
+            &task_recipe, 0, 30, UINT64_C(64) * 1024u * 1024u);
+        uint8_t *task_recipe_wire = NULL; size_t task_recipe_wire_len = 0;
+        uint8_t task_recipe_root[32];
+        ASSERT_EQ(vcs_package_recipe_serialize(
+                      &task_recipe, &task_recipe_wire,
+                      &task_recipe_wire_len), VCS_PACKAGE_RECIPE_OK);
+        ASSERT_EQ(vcs_package_recipe_root(&task_recipe, task_recipe_root),
+                  VCS_PACKAGE_RECIPE_OK);
+        zcl_hex_encode(task_recipe_root, 32, roots[3]);
+        char *task_recipe_hex = zcl_malloc(
+            task_recipe_wire_len * 2u + 1u, "test.task_recipe_hex");
+        ASSERT(task_recipe_hex != NULL);
+        zcl_hex_encode(task_recipe_wire, task_recipe_wire_len,
+                       task_recipe_hex);
+        vcs_package_recipe_free(&task_recipe);
         int64_t expires = (int64_t)platform_time_wall_unix() + 3600;
         int64_t candidate_created = expires - 3600;
 
@@ -1285,8 +1330,12 @@ static int test_zd_improve_command(void)
         (void)json_push_kv_str(&plan_input, "workspace", workspace);
         (void)json_push_kv_str(&plan_input, "datadir", workspace);
         (void)json_push_kv_str(&plan_input, "dependency_lock_root", roots[1]);
+        (void)json_push_kv_str(&plan_input, "dependency_lock_hex",
+                               task_lock_hex);
         (void)json_push_kv_str(&plan_input, "write_scope_csv", "src");
         (void)json_push_kv_str(&plan_input, "acceptance_tests_root", roots[3]);
+        (void)json_push_kv_str(&plan_input, "acceptance_recipe_hex",
+                               task_recipe_hex);
         (void)json_push_kv_str(&plan_input, "model_policy_root", roots[4]);
         (void)json_push_kv_str(&plan_input, "goal",
                                "fix deterministic fixture");
@@ -1326,6 +1375,38 @@ static int test_zd_improve_command(void)
                        planned_scope);
         ASSERT(json_get(&plan_reply.data, "candidate_root") == NULL);
         ASSERT(json_get(&plan_reply.data, "action_id") == NULL);
+        char recipe_magic = task_recipe_hex[0];
+        task_recipe_hex[0] = recipe_magic == '0' ? '1' : '0';
+        json_set_str((struct json_value *)json_get(
+                         &plan_input, "acceptance_recipe_hex"),
+                     task_recipe_hex);
+        struct zcl_command_reply corrupt_recipe_reply;
+        zcl_command_reply_init(&corrupt_recipe_reply,
+                               "zcl.zcode_improve.v1");
+        zcl_native_handle_zcode_improve(&plan_request,
+                                        &corrupt_recipe_reply);
+        ASSERT_EQ(corrupt_recipe_reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(corrupt_recipe_reply.error.code,
+                      "TASK_AUTHORITY_REFUSED");
+        zcl_command_reply_free(&corrupt_recipe_reply);
+        task_recipe_hex[0] = recipe_magic;
+        json_set_str((struct json_value *)json_get(
+                         &plan_input, "acceptance_recipe_hex"),
+                     task_recipe_hex);
+        json_set_str((struct json_value *)json_get(
+                         &plan_input, "acceptance_tests_root"), roots[5]);
+        struct zcl_command_reply false_recipe_root_reply;
+        zcl_command_reply_init(&false_recipe_root_reply,
+                               "zcl.zcode_improve.v1");
+        zcl_native_handle_zcode_improve(&plan_request,
+                                        &false_recipe_root_reply);
+        ASSERT_EQ(false_recipe_root_reply.exit_code,
+                  ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(false_recipe_root_reply.error.code,
+                      "TASK_AUTHORITY_ROOT_MISMATCH");
+        zcl_command_reply_free(&false_recipe_root_reply);
+        json_set_str((struct json_value *)json_get(
+                         &plan_input, "acceptance_tests_root"), roots[3]);
         char plan_db[320];
         (void)snprintf(plan_db, sizeof(plan_db), "%s/node.db", workspace);
         ASSERT(access(plan_db, F_OK) != 0);
@@ -1344,9 +1425,12 @@ static int test_zd_improve_command(void)
                                candidate_workspace);
         (void)json_push_kv_str(&input, "source_root", roots[0]);
         (void)json_push_kv_str(&input, "dependency_lock_root", roots[1]);
+        (void)json_push_kv_str(&input, "dependency_lock_hex", task_lock_hex);
         (void)json_push_kv_str(&input, "write_scope_root",
                                planned_scope_saved);
         (void)json_push_kv_str(&input, "acceptance_tests_root", roots[3]);
+        (void)json_push_kv_str(&input, "acceptance_recipe_hex",
+                               task_recipe_hex);
         (void)json_push_kv_str(&input, "model_policy_root", roots[4]);
         (void)json_push_kv_str(&input, "adapter_policy_root", roots[7]);
         (void)json_push_kv_str(&input, "author_pubkey", roots[8]);
@@ -1468,6 +1552,27 @@ static int test_zd_improve_command(void)
         zcl_command_reply_free(&detached_input_reply);
         json_set_str((struct json_value *)json_get(
                          &input, "fixed_input_path"), candidate_input_path);
+        json_set_str((struct json_value *)json_get(&input, "patch_root"), "");
+        json_set_str((struct json_value *)json_get(
+                         &input, "candidate_source_root"), "");
+        json_set_str((struct json_value *)json_get(
+                         &input, "candidate_source_sha256"), "");
+        ASSERT(unlink(candidate_source_path) == 0);
+        struct zcl_command_reply missing_recipe_path_reply;
+        zcl_command_reply_init(&missing_recipe_path_reply,
+                               "zcl.zcode_improve.v1");
+        zcl_native_handle_zcode_improve(&request,
+                                        &missing_recipe_path_reply);
+        ASSERT_EQ(missing_recipe_path_reply.exit_code,
+                  ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(missing_recipe_path_reply.error.code,
+                      "CANDIDATE_RECIPE_REFUSED");
+        zcl_command_reply_free(&missing_recipe_path_reply);
+        source_file = fopen(candidate_source_path, "wb");
+        ASSERT(source_file != NULL);
+        ASSERT(fwrite(candidate_source, 1, sizeof(candidate_source) - 1u,
+                      source_file) == sizeof(candidate_source) - 1u);
+        ASSERT(fclose(source_file) == 0);
         char outside_path[4352];
         (void)snprintf(outside_path, sizeof(outside_path), "%s/outside.c",
                        candidate_workspace);
@@ -1475,11 +1580,6 @@ static int test_zd_improve_command(void)
         ASSERT(outside_file != NULL);
         ASSERT(fwrite("int outside;\n", 1, 13, outside_file) == 13);
         ASSERT(fclose(outside_file) == 0);
-        json_set_str((struct json_value *)json_get(&input, "patch_root"), "");
-        json_set_str((struct json_value *)json_get(
-                         &input, "candidate_source_root"), "");
-        json_set_str((struct json_value *)json_get(
-                         &input, "candidate_source_sha256"), "");
         struct zcl_command_reply outside_reply;
         zcl_command_reply_init(&outside_reply, "zcl.zcode_improve.v1");
         zcl_native_handle_zcode_improve(&request, &outside_reply);
@@ -1723,6 +1823,7 @@ static int test_zd_improve_command(void)
                       authority_bundle_len) == 0);
         free(authority_bundle_again);
         char transfer_dir[256], receiver[256], corrupt_receiver[256];
+        char task_corrupt_receiver[256], task_mismatch_receiver[256];
         test_make_tmpdir(transfer_dir, sizeof(transfer_dir), "zcode_dev",
                          "authority_transfer");
         struct vcs_package_store *transfer_store = vcs_package_store_open(
@@ -1745,6 +1846,10 @@ static int test_zd_improve_command(void)
         ASSERT(transfer.candidate_authority != NULL);
         memcpy(transfer.candidate_authority, authority_bundle,
                authority_bundle_len);
+        ASSERT_EQ(vcs_zcode_task_authority_bundle_export(
+                      workspace, &task, &transfer.task_authority,
+                      &transfer.task_authority_len),
+                  VCS_ZCODE_TASK_AUTHORITY_OK);
         uint8_t transfer_root[32], transfer_action[32];
         int64_t transfer_now = (int64_t)platform_time_wall_unix();
         ASSERT_EQ(vcs_zcode_work_context_put(
@@ -1757,8 +1862,14 @@ static int test_zd_improve_command(void)
                       &received_transfer), VCS_ZCODE_WORK_CONTEXT_OK);
         ASSERT_EQ(received_transfer.candidate_authority_len,
                   authority_bundle_len);
+        ASSERT(received_transfer.task_authority_len > 0);
         test_make_tmpdir(receiver, sizeof(receiver), "zcode_dev",
                          "authority_receiver");
+        ASSERT_EQ(vcs_zcode_task_authority_bundle_import(
+                      receiver, &received_transfer.task,
+                      received_transfer.task_authority,
+                      received_transfer.task_authority_len),
+                  VCS_ZCODE_TASK_AUTHORITY_OK);
         ASSERT_EQ(vcs_zcode_candidate_bundle_import(
                       receiver, &received_transfer.task,
                       &received_transfer.candidate,
@@ -1767,6 +1878,35 @@ static int test_zd_improve_command(void)
                   VCS_ZCODE_CANDIDATE_BUNDLE_OK);
         ASSERT_EQ(vcs_zcode_patch_verify_cas(receiver, &task, &candidate),
                   VCS_ZCODE_PATCH_OK);
+        ASSERT_EQ(vcs_zcode_task_authority_validate_for_candidate(
+                      receiver, &task, &candidate),
+                  VCS_ZCODE_TASK_AUTHORITY_OK);
+        struct vcs_zcode_task_v1 mismatched_task = received_transfer.task;
+        mismatched_task.acceptance_tests_root[0] ^= 1u;
+        test_make_tmpdir(task_mismatch_receiver,
+                         sizeof(task_mismatch_receiver), "zcode_dev",
+                         "task_authority_mismatch");
+        ASSERT_EQ(vcs_zcode_task_authority_bundle_import(
+                      task_mismatch_receiver, &mismatched_task,
+                      received_transfer.task_authority,
+                      received_transfer.task_authority_len),
+                  VCS_ZCODE_TASK_AUTHORITY_CAS);
+        ASSERT(!vcs_object_has(task_mismatch_receiver,
+                               task.dependency_lock_root));
+        received_transfer.task_authority[
+            received_transfer.task_authority_len - 1u] ^= 1u;
+        test_make_tmpdir(task_corrupt_receiver,
+                         sizeof(task_corrupt_receiver), "zcode_dev",
+                         "task_authority_corrupt");
+        ASSERT(vcs_zcode_task_authority_bundle_import(
+                   task_corrupt_receiver, &received_transfer.task,
+                   received_transfer.task_authority,
+                   received_transfer.task_authority_len) !=
+               VCS_ZCODE_TASK_AUTHORITY_OK);
+        ASSERT(!vcs_object_has(task_corrupt_receiver,
+                               task.dependency_lock_root));
+        received_transfer.task_authority[
+            received_transfer.task_authority_len - 1u] ^= 1u;
         vcs_zcode_work_context_free(&received_transfer);
         vcs_zcode_work_context_free(&transfer);
         vcs_package_store_close(transfer_store);
@@ -1780,7 +1920,9 @@ static int test_zd_improve_command(void)
                   VCS_ZCODE_CANDIDATE_BUNDLE_AUTHORITY);
         ASSERT(!vcs_object_has(corrupt_receiver, candidate.patch_root));
         free(authority_bundle);
-        test_rm_rf(corrupt_receiver); test_rm_rf(receiver);
+        test_rm_rf(task_mismatch_receiver); test_rm_rf(task_corrupt_receiver);
+        test_rm_rf(corrupt_receiver);
+        test_rm_rf(receiver);
         struct db_build_worker worker;
         uint8_t worker_secret[32], worker_key[32];
         ASSERT(build_fabric_worker_identity_load(
@@ -2221,6 +2363,8 @@ static int test_zd_improve_command(void)
                                        "policy_satisfied")));
         zcl_command_reply_free(&evidence_reply);
         json_free(&evidence_input);
+        free(task_recipe_hex); free(task_recipe_wire);
+        free(task_lock_hex); free(task_lock_wire);
         zcl_command_reply_free(&reply);
         json_free(&input);
         test_rm_rf(dir);

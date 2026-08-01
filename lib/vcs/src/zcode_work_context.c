@@ -12,6 +12,7 @@
 #include "vcs/package_store.h"
 #include "vcs/zcode_action_input.h"
 #include "vcs/zcode_candidate_bundle.h"
+#include "vcs/zcode_task_authority_bundle.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,6 +50,7 @@ void vcs_zcode_work_context_free(struct vcs_zcode_work_context_v1 *context)
     if (!context) return;
     free(context->fixed_input);
     free(context->candidate_authority);
+    free(context->task_authority);
     vcs_zcode_work_context_init(context);
 }
 
@@ -78,7 +80,9 @@ static enum vcs_zcode_work_context_result context_validate(
 {
     if (!context || !context->fixed_input ||
         ((context->candidate_authority == NULL) !=
-         (context->candidate_authority_len == 0)))
+         (context->candidate_authority_len == 0)) ||
+        ((context->task_authority == NULL) !=
+         (context->task_authority_len == 0)))
         return VCS_ZCODE_WORK_CONTEXT_NULL;
     size_t profile_len = strnlen(context->profile, sizeof(context->profile));
     if (!context_nonzero(context->source_sha256, 32) || profile_len == 0 ||
@@ -87,9 +91,14 @@ static enum vcs_zcode_work_context_result context_validate(
     if (context->fixed_input_len == 0 ||
         SIZE_MAX - context->fixed_input_len <
             context->candidate_authority_len ||
-        context->fixed_input_len + context->candidate_authority_len >
+        SIZE_MAX - context->fixed_input_len -
+                context->candidate_authority_len <
+            context->task_authority_len ||
+        context->fixed_input_len + context->candidate_authority_len +
+                context->task_authority_len >
             context->task.max_context_bytes ||
-        context->fixed_input_len + context->candidate_authority_len >
+        context->fixed_input_len + context->candidate_authority_len +
+                context->task_authority_len >
             VCS_PACKAGE_STORE_MAX_PACKAGE_BYTES -
                 VCS_ZCODE_WORK_CONTEXT_FIXED_BYTES - profile_len)
         return VCS_ZCODE_WORK_CONTEXT_LIMIT;
@@ -347,6 +356,10 @@ enum vcs_zcode_work_context_result vcs_zcode_work_context_put_for_kind(
         built = context_manifest_add_bytes(
             &manifest, VCS_ZCODE_CANDIDATE_BUNDLE_PATH,
             context->candidate_authority, context->candidate_authority_len);
+    if (built && context->task_authority_len > 0)
+        built = context_manifest_add_bytes(
+            &manifest, VCS_ZCODE_TASK_AUTHORITY_BUNDLE_PATH,
+            context->task_authority, context->task_authority_len);
     uint8_t *manifest_wire = NULL; size_t manifest_len = 0;
     built = built && vcs_package_manifest_root(&manifest, package_root) &&
             vcs_package_manifest_serialize(&manifest, &manifest_wire,
@@ -371,6 +384,11 @@ enum vcs_zcode_work_context_result vcs_zcode_work_context_put_for_kind(
         result = context_put_chunks(
             store, package_root, VCS_ZCODE_CANDIDATE_BUNDLE_PATH,
             context->candidate_authority, context->candidate_authority_len);
+    if (result == VCS_ZCODE_WORK_CONTEXT_OK &&
+        context->task_authority_len > 0)
+        result = context_put_chunks(
+            store, package_root, VCS_ZCODE_TASK_AUTHORITY_BUNDLE_PATH,
+            context->task_authority, context->task_authority_len);
     free(wire);
     return result;
 }
@@ -450,9 +468,12 @@ enum vcs_zcode_work_context_result vcs_zcode_work_context_get(
         &manifest, VCS_ZCODE_WORK_CONTEXT_PATH) : -1;
     int authority_index = parsed ? context_manifest_file_index(
         &manifest, VCS_ZCODE_CANDIDATE_BUNDLE_PATH) : -1;
-    if (!parsed || (manifest.count != 1 && manifest.count != 2) ||
-        context_index < 0 ||
-        (manifest.count == 2 && authority_index < 0) ||
+    int task_authority_index = parsed ? context_manifest_file_index(
+        &manifest, VCS_ZCODE_TASK_AUTHORITY_BUNDLE_PATH) : -1;
+    size_t known_files = 1u + (authority_index >= 0 ? 1u : 0u) +
+                         (task_authority_index >= 0 ? 1u : 0u);
+    if (!parsed || manifest.count < 1 || manifest.count > 3 ||
+        context_index < 0 || manifest.count != known_files ||
         manifest.files[context_index].size <
             VCS_ZCODE_WORK_CONTEXT_FIXED_BYTES ||
         !vcs_package_manifest_root(&manifest, derived) ||
@@ -460,8 +481,8 @@ enum vcs_zcode_work_context_result vcs_zcode_work_context_get(
         if (parsed) vcs_package_manifest_free(&manifest);
         return VCS_ZCODE_WORK_CONTEXT_CORRUPT;
     }
-    uint8_t *wire = NULL, *authority = NULL;
-    size_t wire_len = 0, authority_len = 0;
+    uint8_t *wire = NULL, *authority = NULL, *task_authority = NULL;
+    size_t wire_len = 0, authority_len = 0, task_authority_len = 0;
     enum vcs_zcode_work_context_result result = context_get_file(
         store, package_root, &manifest, (size_t)context_index,
         &wire, &wire_len);
@@ -469,6 +490,10 @@ enum vcs_zcode_work_context_result vcs_zcode_work_context_get(
         result = context_get_file(
             store, package_root, &manifest, (size_t)authority_index,
             &authority, &authority_len);
+    if (result == VCS_ZCODE_WORK_CONTEXT_OK && task_authority_index >= 0)
+        result = context_get_file(
+            store, package_root, &manifest, (size_t)task_authority_index,
+            &task_authority, &task_authority_len);
     vcs_package_manifest_free(&manifest);
     if (result == VCS_ZCODE_WORK_CONTEXT_OK)
         result = vcs_zcode_work_context_parse(wire, wire_len, now_unix, out);
@@ -477,10 +502,13 @@ enum vcs_zcode_work_context_result vcs_zcode_work_context_get(
         out->candidate_authority = authority;
         out->candidate_authority_len = authority_len;
         authority = NULL;
+        out->task_authority = task_authority;
+        out->task_authority_len = task_authority_len;
+        task_authority = NULL;
         result = context_validate(out, now_unix);
         if (result != VCS_ZCODE_WORK_CONTEXT_OK)
             vcs_zcode_work_context_free(out);
     }
-    free(authority);
+    free(task_authority); free(authority);
     return result;
 }

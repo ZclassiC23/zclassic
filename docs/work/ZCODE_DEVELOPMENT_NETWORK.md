@@ -97,7 +97,7 @@ A task binds exactly:
 - existing `vcs_package_lock` root;
 - existing `vcs_toolchain_capsule_v1` root;
 - immutable canonical `write_scope.v1` root;
-- immutable acceptance-test manifest root;
+- immutable `vcs_package_recipe` root as the declarative acceptance graph;
 - `proof_policy.v1` root;
 - user-selected model-policy root;
 - immutable goal root;
@@ -109,6 +109,17 @@ A task binds exactly:
 Wallet access, canonical-node mutation, arbitrary process execution, arbitrary
 shell, package-provided capability escalation, and worker network access are
 not values in the v1 capability vocabulary.
+
+Plan and explicit admission do not accept the dependency-lock and acceptance
+roots as unsupported assertions. The caller supplies `dependency_lock_hex`
+and `acceptance_recipe_hex`; ZCODE parses the existing canonical
+`vcs_package_lock` and `vcs_package_recipe` wires, derives their
+domain-separated roots, stores them in the existing workspace CAS, reads them
+back, and rejects any optional claimed root that differs. A lock must contain
+at least its target node. Every recipe source, test source, public header, and
+include directory must resolve in both the task's exact base ZVCS manifest and
+the admitted candidate manifest. Missing, altered, trailing, root-mismatched,
+or phantom recipe/lock authority is refused before ZBuild planning.
 
 ### `write_scope.v1`
 
@@ -237,15 +248,18 @@ path `zcode-work-context.v1`. Its closed binary grammar binds the
 existing `task.v1`, `candidate.v1`, and `proof_policy.v1` wires, the candidate
 source SHA-256 oracle, build profile, and exact `action_input.v1` wire.
 
-Requester-to-worker packages add a second canonical file,
-`zcode-candidate-authority.v1`. It contains the exact scope and patch wires,
+Requester-to-worker packages add two canonical authority files.
+`zcode-candidate-authority.v1` contains the exact scope and patch wires,
 base and candidate ZVCS manifests, and a hash-sorted, duplicate-free set of
 every added or modified blob. The receiver validates the complete bundle,
 rederives both manifest roots and the patch under task scope/limits, and checks
 every tagged blob hash before writing anything. It then imports those objects
 into the existing workspace CAS and repeats the same CAS verification used by
 the local worker. A missing, truncated, reordered, altered, oversized, or
-root-mismatched bundle refuses remote admission.
+root-mismatched bundle refuses remote admission. The companion
+`zcode-task-authority.v1` carries the exact canonical dependency-lock and
+acceptance-recipe wires. A receiving peer derives both roots and validates both
+wires before it imports candidate authority or creates a ZBuild row.
 
 The combined files remain under the package store's existing 64 MiB anti-abuse
 cap and the task's smaller context ceiling. The action envelope's payload is a
@@ -269,6 +283,7 @@ ZBuild action. It never accepts a caller-supplied path or command.
 <!-- claim: symbol-present vcs_zcode_patch_derive lib/vcs/src/zcode_patch.c # manifest-derived scoped patch authority -->
 <!-- claim: symbol-present vcs_zcode_candidate_bundle_import lib/vcs/src/zcode_candidate_bundle.c # validate-before-write P2P candidate authority import -->
 <!-- claim: symbol-present vcs_zcode_action_input_validate_for_candidate lib/vcs/src/zcode_action_input.c # fixed actions consume candidate-manifest bytes -->
+<!-- claim: symbol-present vcs_zcode_task_authority_validate_for_candidate lib/vcs/src/zcode_task_authority.c # lock and recipe roots resolve against base and candidate trees -->
 
 ## Ordered delivery
 
@@ -311,9 +326,9 @@ ZBuild action. It never accepts a caller-supplied path or command.
   descendants cannot outlive a cancelled lease.
 - [x] Fetch inputs only by immutable CAS root. Recheck task, candidate, policy,
   action input, source, toolchain, fixed flags/environment, signer, and lease
-  before execution and again before receipt publication. The dependency-lock
-  root is task-bound; portable lock-byte admission remains part of the context
-  package work.
+  before execution and again before receipt publication. Canonical dependency
+  lock and acceptance-recipe bytes travel in the same bounded content.v2
+  context and are root/readback/membership verified on both peers.
 - [x] Store output chunks and a build-artifact manifest in the existing CAS,
   then sign `work_receipt.v1` and the existing ZBuild receipt projection. The
   database projection binds the canonical receipt root; the wire remains CAS
@@ -344,8 +359,9 @@ bash-only authority:
 `zcode improve mode=plan` now admits canonical task/policy/goal objects in the
 existing workspace CAS after deriving the source root from a stable,
 readback-verified ZVCS tree capture, derives and stores canonical
-`write_scope.v1`, and publishes a bounded exact-symbol
-`agent_context.v1`. It returns only immutable task, context, model-policy,
+`write_scope.v1`, parses/stores/readback-verifies the existing canonical
+dependency lock and declarative acceptance recipe, and publishes a bounded
+exact-symbol `agent_context.v1`. It returns only immutable task, context, model-policy,
 proof-policy, and toolchain roots with state `AWAITING_CANDIDATE`; it does not
 launch a model, create a build database, or grant tools. The operator can give
 those roots to Codex, Claude, Kimi, a local model, or a future P2P harness under

@@ -22,6 +22,8 @@
 #include "vcs/zcode_dev.h"
 #include "vcs/zcode_lane.h"
 #include "vcs/package_manifest.h"
+#include "vcs/package_deps.h"
+#include "vcs/package_recipe.h"
 #include "vcs/package_store.h"
 #include "vcs/zcode_work_context.h"
 #include "vcs/zcode_work_node.h"
@@ -29,6 +31,8 @@
 #include "vcs/zcode_write_scope.h"
 #include "vcs/zcode_patch.h"
 #include "vcs/zcode_candidate_bundle.h"
+#include "vcs/zcode_task_authority.h"
+#include "vcs/zcode_task_authority_bundle.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -77,6 +81,24 @@ static void zdev_push_root(struct json_value *out, const char *key,
     char hex[65];
     zcl_hex_encode(root, 32, hex);
     (void)json_push_kv_str(out, key, hex);
+}
+
+static uint8_t *zdev_hex_wire(const struct json_value *input, const char *key,
+                              size_t max_bytes, size_t *len_out)
+{
+    *len_out = 0;
+    const char *hex = zdev_str(input, key);
+    size_t hex_len = hex ? strlen(hex) : 0;
+    if (hex_len == 0 || (hex_len & 1u) != 0 ||
+        hex_len > max_bytes * 2u)
+        return NULL;
+    size_t len = hex_len / 2u;
+    uint8_t *wire = zcl_malloc(len, "zcode.improve.authority_wire");
+    if (!wire || !zcl_hex_decode_lower(hex, wire, len)) {
+        free(wire); return NULL;
+    }
+    *len_out = len;
+    return wire;
 }
 
 static bool zdev_open_db(const char *datadir, struct node_db *ndb)
@@ -584,6 +606,8 @@ void zcl_native_handle_zcode_improve(
     if (!datadir || !datadir[0]) datadir = zcl_native_command_datadir();
     const char *goal = zdev_str(request->input, "goal");
     const char *policy_hex = zdev_str(request->input, "proof_policy_hex");
+    const char *lock_hex = zdev_str(request->input, "dependency_lock_hex");
+    const char *recipe_hex = zdev_str(request->input, "acceptance_recipe_hex");
     const char *mode_arg = zdev_str(request->input, "mode");
     const char *mode = mode_arg;
     if (!mode || !mode[0]) mode = "admit";
@@ -626,13 +650,14 @@ void zcl_native_handle_zcode_improve(
           !planned_task_root[0] || !planned_context_root ||
           !planned_context_root[0])) ||
         ((plan_only || explicit_admit) &&
-         (!write_scope_csv || !write_scope_csv[0])) ||
+         (!write_scope_csv || !write_scope_csv[0] ||
+          !lock_hex || !lock_hex[0] || !recipe_hex || !recipe_hex[0])) ||
         (explicit_admit &&
          (!candidate_workspace || !candidate_workspace[0])) ||
         (!plan_only && !fixed_input && !fixed_input_relpath)) {
         zdev_fail(reply, "MISSING_INPUT",
                   plan_only
-                    ? "plan requires workspace, goal, proof policy, and context_symbol"
+                    ? "plan requires workspace, goal, proof policy, lock/recipe wires, and context_symbol"
                     : "explicit admit requires planned roots, candidate_workspace, context symbol, and a candidate-relative fixed input");
         return;
     }
@@ -680,11 +705,48 @@ void zcl_native_handle_zcode_improve(
                           task.source_root, reply)) {
         return;
     }
-    if (!zdev_root(request->input, "dependency_lock_root",
-                   task.dependency_lock_root, reply) ||
-        !zdev_root(request->input, "acceptance_tests_root",
-                   task.acceptance_tests_root, reply) ||
-        !zdev_root(request->input, "model_policy_root",
+    if (plan_only || explicit_admit) {
+        size_t lock_len = 0, recipe_len = 0;
+        uint8_t *lock_wire = zdev_hex_wire(
+            request->input, "dependency_lock_hex",
+            VCS_PACKAGE_LOCK_MAX_WIRE_BYTES, &lock_len);
+        uint8_t *recipe_wire = zdev_hex_wire(
+            request->input, "acceptance_recipe_hex",
+            VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES, &recipe_len);
+        enum vcs_zcode_task_authority_result authority =
+            lock_wire && recipe_wire
+                ? vcs_zcode_task_authority_store(
+                      workspace, lock_wire, lock_len, recipe_wire, recipe_len,
+                      task.dependency_lock_root, task.acceptance_tests_root)
+                : VCS_ZCODE_TASK_AUTHORITY_NULL;
+        free(recipe_wire); free(lock_wire);
+        if (authority != VCS_ZCODE_TASK_AUTHORITY_OK) {
+            zdev_fail(reply, "TASK_AUTHORITY_REFUSED",
+                vcs_zcode_task_authority_result_string(authority));
+            return;
+        }
+        const char *claimed_lock =
+            zdev_str(request->input, "dependency_lock_root");
+        const char *claimed_recipe =
+            zdev_str(request->input, "acceptance_tests_root");
+        uint8_t claimed[32];
+        if ((claimed_lock && claimed_lock[0] &&
+             (!zcl_hex_decode_lower(claimed_lock, claimed, 32) ||
+              memcmp(claimed, task.dependency_lock_root, 32) != 0)) ||
+            (claimed_recipe && claimed_recipe[0] &&
+             (!zcl_hex_decode_lower(claimed_recipe, claimed, 32) ||
+              memcmp(claimed, task.acceptance_tests_root, 32) != 0))) {
+            zdev_fail(reply, "TASK_AUTHORITY_ROOT_MISMATCH",
+                      "claimed lock/acceptance roots do not match their wires");
+            return;
+        }
+    } else if (!zdev_root(request->input, "dependency_lock_root",
+                          task.dependency_lock_root, reply) ||
+               !zdev_root(request->input, "acceptance_tests_root",
+                          task.acceptance_tests_root, reply)) {
+        return;
+    }
+    if (!zdev_root(request->input, "model_policy_root",
                    task.model_policy_root, reply))
         return;
     if (plan_only || explicit_admit) {
@@ -733,6 +795,13 @@ void zcl_native_handle_zcode_improve(
     int64_t now = (int64_t)platform_time_wall_unix();
     if (vcs_zcode_task_validate_at(&task, now) != VCS_ZCODE_DEV_OK) {
         zdev_fail(reply, "TASK_INVALID", "task limits, capabilities, roots, or expiry are invalid");
+        return;
+    }
+    enum vcs_zcode_task_authority_result task_authority =
+        vcs_zcode_task_authority_validate(workspace, &task);
+    if (task_authority != VCS_ZCODE_TASK_AUTHORITY_OK) {
+        zdev_fail(reply, "TASK_AUTHORITY_STALE",
+            vcs_zcode_task_authority_result_string(task_authority));
         return;
     }
     uint8_t task_wire[VCS_ZCODE_TASK_WIRE_BYTES], task_root[32];
@@ -789,6 +858,10 @@ void zcl_native_handle_zcode_improve(
                        task.toolchain_capsule_root);
         zdev_push_root(&reply->data, "model_policy_root",
                        task.model_policy_root);
+        zdev_push_root(&reply->data, "dependency_lock_root",
+                       task.dependency_lock_root);
+        zdev_push_root(&reply->data, "acceptance_tests_root",
+                       task.acceptance_tests_root);
         zdev_push_root(&reply->data, "source_root", task.source_root);
         zdev_push_root(&reply->data, "write_scope_root",
                        task.write_scope_root);
@@ -866,6 +939,13 @@ void zcl_native_handle_zcode_improve(
             VCS_ZCODE_DEV_OK) {
         zdev_fail(reply, "CANDIDATE_INVALID",
                   "canonical candidate serialization failed");
+        return;
+    }
+    task_authority = vcs_zcode_task_authority_validate_for_candidate(
+        workspace, &task, &candidate);
+    if (task_authority != VCS_ZCODE_TASK_AUTHORITY_OK) {
+        zdev_fail(reply, "CANDIDATE_RECIPE_REFUSED",
+            vcs_zcode_task_authority_result_string(task_authority));
         return;
     }
     char input_path[VCS_PATH_MAX + 1u];
@@ -991,8 +1071,15 @@ void zcl_native_handle_zcode_improve(
                     workspace, &task, &candidate,
                     &context.candidate_authority,
                     &context.candidate_authority_len);
-            enum vcs_zcode_work_context_result packed =
+            enum vcs_zcode_task_authority_result task_bundled =
                 bundled == VCS_ZCODE_CANDIDATE_BUNDLE_OK
+                    ? vcs_zcode_task_authority_bundle_export(
+                          workspace, &task, &context.task_authority,
+                          &context.task_authority_len)
+                    : VCS_ZCODE_TASK_AUTHORITY_CAS;
+            enum vcs_zcode_work_context_result packed =
+                bundled == VCS_ZCODE_CANDIDATE_BUNDLE_OK &&
+                task_bundled == VCS_ZCODE_TASK_AUTHORITY_OK
                     ? vcs_zcode_work_context_put_for_kind(
                           context_store, &context, action_kind, now,
                           context_root, context_action_root)
@@ -1007,6 +1094,8 @@ void zcl_native_handle_zcode_improve(
             } else {
                 context_reason = bundled != VCS_ZCODE_CANDIDATE_BUNDLE_OK
                     ? vcs_zcode_candidate_bundle_result_string(bundled)
+                    : task_bundled != VCS_ZCODE_TASK_AUTHORITY_OK
+                    ? vcs_zcode_task_authority_result_string(task_bundled)
                     : vcs_zcode_work_context_result_string(packed);
             }
         } else if (context_store) {

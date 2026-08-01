@@ -42,6 +42,8 @@ struct vcs_zcode_work_context_v1 {
      * requester-to-worker contexts require the canonical candidate bundle. */
     uint8_t *candidate_authority;
     size_t candidate_authority_len;
+    uint8_t *task_authority;
+    size_t task_authority_len;
 };
 
 const char *vcs_zcode_work_context_result_string(

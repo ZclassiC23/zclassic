@@ -196,4 +196,12 @@ bool vcs_package_recipe_files_in_manifest(
     const struct vcs_package_manifest *manifest, char *detail_out,
     size_t detail_cap);
 
+/* Development-workspace equivalent over the existing path-sorted ZVCS
+ * manifest. It applies the same file/include-dir membership rules. */
+struct vcs_manifest;
+bool vcs_package_recipe_files_in_vcs_manifest(
+    const struct vcs_package_recipe *recipe,
+    const struct vcs_manifest *manifest, char *detail_out,
+    size_t detail_cap);
+
 #endif /* ZCL_VCS_PACKAGE_RECIPE_H */

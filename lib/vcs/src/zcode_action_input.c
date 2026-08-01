@@ -11,6 +11,7 @@
 #include "vcs/package_manifest.h"
 #include "vcs/vcs.h"
 #include "vcs/vcs_object.h"
+#include "vcs/zcode_task_authority.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -294,6 +295,9 @@ vcs_zcode_action_input_validate_for_candidate(
         memcmp(input->acceptance_tests_root,
                task->acceptance_tests_root, 32) != 0)
         return VCS_ZCODE_ACTION_INPUT_BINDING;
+    if (vcs_zcode_task_authority_validate_for_candidate(
+            repo_root, task, candidate) != VCS_ZCODE_TASK_AUTHORITY_OK)
+        return VCS_ZCODE_ACTION_INPUT_CAS;
     struct vcs_manifest manifest;
     if (!vcs_tree_load(repo_root, candidate->candidate_source_root,
                        &manifest))
