@@ -13,6 +13,9 @@
 #include "vcs/package_service.h"
 #include "vcs/package_store.h"
 #include "vcs/package_swarm_node.h"
+#include "vcs/build_action.h"
+#include "vcs/build_artifact_manifest.h"
+#include "vcs/zcode_work_node.h"
 
 #include "crypto/sha3.h"
 #include "event/event.h"
@@ -24,6 +27,7 @@
 #include "util/log_macros.h"
 #include "util/sync.h"
 #include "util/util.h"
+#include "services/build_fabric_worker.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -45,11 +49,49 @@
 static zcl_mutex_t s_lock;
 static bool s_lock_init;
 static struct vcs_swarm_engine *s_engine;   /* owned here */
+static struct vcs_zcode_work_node *s_work;  /* owned work adapter */
 static struct vcs_service_book *s_book;     /* owned here */
 static struct vcs_reward_ledger *s_ledger;  /* owned here; may be NULL */
 static char s_zcode_dir[4400];
 static int64_t s_last_sync;                 /* wall seconds */
 static int64_t s_last_tick;
+static uint8_t s_work_secret[32];
+static uint8_t s_work_pubkey[32];
+static bool s_work_key_ready;
+
+static bool boot_zcode_work_refresh(struct boot_svc_ctx *svc, int64_t wall)
+{
+    if (!s_work || !GetBoolArg("-buildworker", false)) return true;
+    if (!s_work_key_ready) {
+        struct db_build_worker worker;
+        struct zcl_result loaded = build_fabric_worker_identity_load(
+            svc->datadir, &worker, s_work_secret, s_work_pubkey);
+        if (!loaded.ok)
+            LOG_FAIL("net.zcode_swarm", "work identity: %s", loaded.message);
+        s_work_key_ready = true;
+    }
+    struct vcs_toolchain_capsule_v1 capsule;
+    struct vcs_zcode_work_capability_v1 capability = {0};
+    if (!vcs_toolchain_capsule_v1_capture_gcc(&capsule) ||
+        !vcs_toolchain_capsule_v1_root(
+            &capsule, capability.toolchain_capsule_root))
+        LOG_FAIL("net.zcode_swarm", "work toolchain capture failed");
+    capability.work_kinds = UINT32_C(1) << VCS_ZCODE_WORK_BUILD;
+    capability.target = VCS_ZCODE_WORK_TARGET_LINUX_X86_64_V3;
+    capability.confinement = VCS_ZCODE_WORK_CONFINEMENT_V1_MASK;
+    capability.max_cpu_seconds = 120;
+    capability.max_memory_bytes = UINT64_C(2) * 1024u * 1024u * 1024u;
+    capability.max_output_bytes = VCS_BUILD_ARTIFACT_MAX_BYTES;
+    capability.max_lease_seconds = 120;
+    capability.slots = 1;
+    capability.queue_headroom = 1;
+    capability.expires_unix = wall + 600;
+    if (!vcs_zcode_work_capability_seal(
+            &capability, s_work_secret, s_work_pubkey) ||
+        !vcs_zcode_work_node_set_local_capability(s_work, &capability))
+        LOG_FAIL("net.zcode_swarm", "work capability signing failed");
+    return true;
+}
 
 static void boot_zcode_swarm_lock(void)
 {
@@ -138,6 +180,25 @@ static struct vcs_swarm_engine *boot_zcode_swarm_ensure(
         LOG_NULL("net.zcode_swarm", "engine create failed; swarm off");
     }
     vcs_swarm_engine_set_global(s_engine);
+    s_work = vcs_zcode_work_node_create();
+    if (!s_work) {
+        vcs_swarm_engine_set_global(NULL);
+        vcs_swarm_engine_free(s_engine); s_engine = NULL;
+        vcs_reward_ledger_free(s_ledger); s_ledger = NULL;
+        vcs_service_book_free(s_book); s_book = NULL;
+        LOG_NULL("net.zcode_swarm", "work adapter create failed; swarm off");
+    }
+    vcs_zcode_work_node_set_global(s_work);
+    if (!boot_zcode_work_refresh(svc,
+            (int64_t)platform_time_wall_time_t())) {
+        vcs_zcode_work_node_set_global(NULL);
+        vcs_zcode_work_node_free(s_work); s_work = NULL;
+        vcs_swarm_engine_set_global(NULL);
+        vcs_swarm_engine_free(s_engine); s_engine = NULL;
+        vcs_reward_ledger_free(s_ledger); s_ledger = NULL;
+        vcs_service_book_free(s_book); s_book = NULL;
+        LOG_NULL("net.zcode_swarm", "work capability failed; swarm off");
+    }
     return s_engine;
 }
 
@@ -215,6 +276,33 @@ bool boot_zcode_swarm_frame(struct msg_processor *mp, struct p2p_node *node,
                                     key);
     int64_t day = (int64_t)platform_time_wall_time_t() / 86400;
     uint64_t now = (uint64_t)platform_time_wall_time_t();
+    uint64_t peer_id = boot_zcode_swarm_peer_id(node);
+    (void)vcs_zcode_work_node_peer_add(s_work, peer_id);
+    if (payload_len >= 4 && memcmp(payload, "ZCWS", 4) == 0) {
+        enum vcs_zcode_work_node_result wr =
+            vcs_zcode_work_node_handle_frame(s_work, peer_id, payload,
+                                              payload_len, (int64_t)now);
+        if (wr == VCS_ZCODE_WORK_NODE_OK) {
+            struct vcs_zcode_work_swarm_message message;
+            if (vcs_zcode_work_swarm_parse(payload, payload_len, &message) &&
+                message.type == VCS_ZCODE_WORK_SWARM_REQUEST)
+                (void)vcs_swarm_engine_fetch(
+                    engine, message.body.request.context_root, day, now);
+        }
+        zcl_mutex_unlock(&s_lock);
+        if (wr == VCS_ZCODE_WORK_NODE_MALFORMED ||
+            wr == VCS_ZCODE_WORK_NODE_REPLAY ||
+            wr == VCS_ZCODE_WORK_NODE_UNREQUESTED ||
+            wr == VCS_ZCODE_WORK_NODE_BINDING) {
+            char context[96];
+            (void)snprintf(context, sizeof(context), "zcode work: %s",
+                           vcs_zcode_work_node_result_string(wr));
+            if (mp->net_mgr)
+                peer_scoring_record(mp->net_mgr, node,
+                                    PEER_OFFENCE_INVALID_PAYLOAD, context);
+        }
+        return true;
+    }
     struct vcs_swarm_frame_result ev = vcs_swarm_engine_handle_frame(
         engine, boot_zcode_swarm_peer_id(node), payload, payload_len, day,
         now);
@@ -263,6 +351,8 @@ static void boot_zcode_swarm_sync_membership(struct msg_processor *mp,
             !known)
             (void)vcs_swarm_engine_announce_to(
                 engine, boot_zcode_swarm_peer_id(node));
+        (void)vcs_zcode_work_node_peer_add(
+            s_work, boot_zcode_swarm_peer_id(node));
     }
     uint64_t ids[VCS_SWARM_MAX_PEERS];
     size_t count = vcs_swarm_engine_peer_ids(engine, ids,
@@ -279,6 +369,8 @@ static void boot_zcode_swarm_sync_membership(struct msg_processor *mp,
         }
         if (!live)
             vcs_swarm_engine_peer_drop(engine, ids[i]);
+        if (!live)
+            vcs_zcode_work_node_peer_drop(s_work, ids[i]);
     }
     zcl_mutex_unlock(&nm->cs_nodes);
 }
@@ -303,6 +395,8 @@ void boot_zcode_swarm_tick(struct msg_processor *mp, struct p2p_node *node,
     if (wall - s_last_tick >= ZCODE_SWARM_TICK_PERIOD_SEC) {
         s_last_tick = wall;
         vcs_swarm_engine_tick(engine, wall / 86400, (uint64_t)wall);
+        if (GetBoolArg("-buildworker", false) && wall % 300 == 0)
+            (void)boot_zcode_work_refresh((struct boot_svc_ctx *)ctx, wall);
     }
     /* Drain queued frames for THIS node (bounded by the engine's
      * outbound queue; WANT/CANCEL/ANNOUNCE frames only — DATA replies
@@ -320,6 +414,16 @@ void boot_zcode_swarm_tick(struct msg_processor *mp, struct p2p_node *node,
             if (peer_out != peer_id || frame_len == 0)
                 break; /* defensive: filter contract violated */
             boot_zcode_swarm_send(mp, node, frame, frame_len);
+        }
+        uint8_t work_frame[VCS_ZCODE_WORK_SWARM_MAX_WIRE_BYTES];
+        for (;;) {
+            uint64_t peer_out = 0; size_t frame_len = 0;
+            uint64_t peer_id = boot_zcode_swarm_peer_id(node);
+            if (!vcs_zcode_work_node_next_outbound(
+                    s_work, peer_id, &peer_out, work_frame, &frame_len))
+                break;
+            if (peer_out != peer_id || frame_len == 0) break;
+            boot_zcode_swarm_send(mp, node, work_frame, frame_len);
         }
     }
     zcl_mutex_unlock(&s_lock);
@@ -340,6 +444,10 @@ void boot_zcode_swarm_shutdown(void)
 {
     boot_zcode_swarm_lock();
     vcs_swarm_engine_set_global(NULL);
+    vcs_zcode_work_node_set_global(NULL);
+    if (s_work)
+        vcs_zcode_work_node_free(s_work);
+    s_work = NULL;
     if (s_engine)
         vcs_swarm_engine_free(s_engine);
     s_engine = NULL;
@@ -351,5 +459,8 @@ void boot_zcode_swarm_shutdown(void)
     s_ledger = NULL;
     s_last_sync = 0;
     s_last_tick = 0;
+    memset(s_work_secret, 0, sizeof(s_work_secret));
+    memset(s_work_pubkey, 0, sizeof(s_work_pubkey));
+    s_work_key_ready = false;
     zcl_mutex_unlock(&s_lock);
 }

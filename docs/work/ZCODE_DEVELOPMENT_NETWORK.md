@@ -40,7 +40,7 @@ ledger, worker trust list, or P2P transport.
 | Local package confinement | `zclassic23-package-verify` | Live: declarative recipe, Landlock/seccomp/rlimits, no network |
 | ZBuild worker execution | existing build-fabric runtime | Live locally for the fixed preprocessed-TU GCC action when `-buildworker` is enabled: durable identity, bounded leases, full confinement, CAS artifact, signed receipt, and local fallback |
 | Package P2P | `package_swarm_node` and `zpkgswm` | Live for immutable package bytes |
-| Work P2P | signed work frames over package swarm/CAS | Canonical codec and quorum verifier live; transport dispatch pending |
+| Work P2P | signed work frames over package swarm/CAS | Live `ZCWS` multiplex on existing `zpkgswm` sessions; context fetch is live, ledger drain/response bridge pending |
 | Agent authority | metaverse grants and signed receipt chain | Live for scoped property operations; task work must never inherit wallet or canonical-node authority |
 | Durability lanes | ZCODE promotion records over source roots | Not live |
 
@@ -203,8 +203,13 @@ still separate missing stages and are not claimed by command discovery.
   bind target, capsule, confinement, ceilings, slots, headroom, and expiry.
 - [x] Verify exact result bindings and count only approved, distinct signers
   returning one matching output root toward quorum.
-- [ ] Dispatch those frames over the existing `zpkgswm` peer sessions and feed
-  accepted requests/results into the existing ZBuild ledger.
+- [x] Dispatch those frames over the existing `zpkgswm` peer sessions. The
+  bounded adapter authenticates capabilities, rejects replay/unrequested/
+  altered frames, preserves requester-selected peers, and schedules the exact
+  content.v2 context root through the existing package fetcher.
+- [ ] Drain fetched inbound requests into the existing ZBuild ledger and return
+  its canonical receipt/result; ingest verified requester results into the same
+  ledger for local reproduction/quorum decisions.
 - Extend peer advertisements with bounded action kinds, toolchain capsule,
   target, confinement facts, resource ceilings, queue headroom, and expiry.
 - The requester owns job selection, leases, cancellation, quorum, and local

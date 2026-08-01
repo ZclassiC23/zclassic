@@ -1,8 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * boot_zcode_swarm — the config-layer glue between lib/net (below, owns
- * sockets + the "zpkgswm" dispatch row) and the ZCODE package swarm
- * engine in lib/vcs (above, pure scheduler + accounting). lib/net may
+ * sockets + the "zpkgswm" dispatch row) and the ZCODE package/work swarm
+ * engines in lib/vcs (above, pure schedulers + accounting). lib/net may
  * NOT include vcs headers (module rank net < vcs), so net speaks to the
  * swarm only through the msg_zcode_swarm_* hooks on struct msg_processor;
  * this unit implements those hooks.
@@ -14,6 +14,9 @@
  *   - derive each peer's LOCAL session pseudo-key (0x02 ||
  *     SHA3-256("zcl.zcode_swarm_peer.v1" || host identity)) — a transport
  *     session scope for the service book, NOT a contributor identity;
+ *   - multiplex signed `ZCWS` work frames without adding another P2P command;
+ *   - fetch each accepted work request's content.v2 context root through the
+ *     existing package scheduler before any worker can consume it;
  *   - map engine penalties onto typed peer offences (peer_scoring_record);
  *   - sync engine peer membership from the live node set (handshake
  *     complete + NODE_ZCL23 + not disconnecting), announce tracked
