@@ -21,15 +21,15 @@
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_dev.h"
 #include "vcs/zcode_lane.h"
+#include "vcs/package_manifest.h"
 #include "vcs/package_store.h"
 #include "vcs/zcode_work_context.h"
 #include "vcs/zcode_work_node.h"
+#include "vcs/zcode_action_input.h"
 #include "vcs/zcode_write_scope.h"
 #include "vcs/zcode_patch.h"
 #include "vcs/zcode_candidate_bundle.h"
 
-#include <errno.h>
-#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -77,32 +77,6 @@ static void zdev_push_root(struct json_value *out, const char *key,
     char hex[65];
     zcl_hex_encode(root, 32, hex);
     (void)json_push_kv_str(out, key, hex);
-}
-
-static uint8_t *zdev_read_file(const char *path, size_t *len_out)
-{
-    *len_out = 0;
-    struct stat st;
-    if (!path || path[0] != '/' || stat(path, &st) != 0 ||
-        !S_ISREG(st.st_mode) || st.st_size <= 0 ||
-        (uint64_t)st.st_size > VCS_BUILD_ARTIFACT_MAX_BYTES)
-        return NULL;
-    size_t len = (size_t)st.st_size;
-    uint8_t *bytes = zcl_malloc(len, "zcode.improve.fixed_input");
-    if (!bytes) return NULL;
-    int fd = open(path, O_RDONLY | O_CLOEXEC);
-    if (fd < 0) { free(bytes); return NULL; }
-    size_t off = 0;
-    while (off < len) {
-        ssize_t got = read(fd, bytes + off, len - off);
-        if (got < 0 && errno == EINTR) continue;
-        if (got <= 0) break;
-        off += (size_t)got;
-    }
-    close(fd);
-    if (off != len) { free(bytes); return NULL; }
-    *len_out = len;
-    return bytes;
 }
 
 static bool zdev_open_db(const char *datadir, struct node_db *ndb)
@@ -189,6 +163,44 @@ static bool zdev_paths_overlap(const char *a, const char *b)
     bool b_contains_a = alen >= blen && memcmp(b, a, blen) == 0 &&
         (alen == blen || a[blen] == '/');
     return a_contains_b || b_contains_a;
+}
+
+static bool zdev_candidate_input_path(
+    const char *candidate_arg, const char *fixed_path, const char *claimed,
+    char out[VCS_PATH_MAX + 1u], struct zcl_command_reply *reply)
+{
+    const char *selected = claimed;
+    char candidate[ZDEV_PATH_MAX], fixed[ZDEV_PATH_MAX];
+    if (fixed_path) {
+        if (!candidate_arg || !realpath(candidate_arg, candidate) ||
+            !realpath(fixed_path, fixed)) {
+            zdev_fail(reply, "BAD_FIXED_INPUT",
+                      "fixed input must resolve inside candidate_workspace");
+            return false;
+        }
+        size_t candidate_len = strlen(candidate);
+        if (strncmp(candidate, fixed, candidate_len) != 0 ||
+            fixed[candidate_len] != '/' || fixed[candidate_len + 1u] == '\0') {
+            zdev_fail(reply, "FIXED_INPUT_OUTSIDE_CANDIDATE",
+                      "fixed input authority is limited to candidate_workspace");
+            return false;
+        }
+        const char *derived = fixed + candidate_len + 1u;
+        if (claimed && strcmp(claimed, derived) != 0) {
+            zdev_fail(reply, "FIXED_INPUT_PATH_MISMATCH",
+                      "fixed_input_relpath does not match fixed_input_path");
+            return false;
+        }
+        selected = derived;
+    }
+    if (!selected || !vcs_package_path_valid(selected) ||
+        strlen(selected) > VCS_PATH_MAX) {
+        zdev_fail(reply, "BAD_FIXED_INPUT_PATH",
+                  "fixed_input_relpath must be a canonical candidate path");
+        return false;
+    }
+    (void)snprintf(out, VCS_PATH_MAX + 1u, "%s", selected);
+    return true;
 }
 
 static bool zdev_load_write_scope(
@@ -602,6 +614,8 @@ void zcl_native_handle_zcode_improve(
     const char *fixed_input = zdev_str(request->input, "fixed_input_path");
     if (!fixed_input)
         fixed_input = zdev_str(request->input, "preprocessed_path");
+    const char *fixed_input_relpath =
+        zdev_str(request->input, "fixed_input_relpath");
     const char *candidate_workspace =
         zdev_str(request->input, "candidate_workspace");
     if (!workspace_arg || !datadir || !goal || !goal[0] ||
@@ -615,11 +629,11 @@ void zcl_native_handle_zcode_improve(
          (!write_scope_csv || !write_scope_csv[0])) ||
         (explicit_admit &&
          (!candidate_workspace || !candidate_workspace[0])) ||
-        (!plan_only && !fixed_input)) {
+        (!plan_only && !fixed_input && !fixed_input_relpath)) {
         zdev_fail(reply, "MISSING_INPUT",
                   plan_only
                     ? "plan requires workspace, goal, proof policy, and context_symbol"
-                    : "explicit admit requires planned roots, candidate_workspace, context symbol, and fixed input path");
+                    : "explicit admit requires planned roots, candidate_workspace, context symbol, and a candidate-relative fixed input");
         return;
     }
     char workspace[ZDEV_PATH_MAX];
@@ -789,15 +803,6 @@ void zcl_native_handle_zcode_improve(
             "give the immutable task, agent_context, and write_scope roots to the user-selected adapter, then call mode=admit with its candidate roots; no model or tool authority is implied");
         return;
     }
-    size_t input_len = 0;
-    uint8_t *input = zdev_read_file(fixed_input, &input_len);
-    if (!input) {
-        zdev_fail(reply, "BAD_FIXED_INPUT",
-                  "fixed_input_path must be an absolute bounded regular file");
-        return;
-    }
-    uint8_t input_root[32];
-    sha3_256(input, input_len, input_root);
     struct vcs_zcode_candidate_v1 candidate = {
         .schema_version = VCS_ZCODE_DEV_VERSION,
         .sequence = (uint64_t)zdev_int(request->input, "candidate_sequence", 1),
@@ -813,7 +818,6 @@ void zcl_native_handle_zcode_improve(
                 workspace, candidate_workspace, &task,
                 candidate.candidate_source_root, candidate.patch_root,
                 source_sha_check, &changed_files, &patch_bytes, reply)) {
-            free(input);
             return;
         }
         const char *claimed_patch = zdev_str(request->input, "patch_root");
@@ -826,7 +830,6 @@ void zcl_native_handle_zcode_improve(
             (claimed_source && claimed_source[0] &&
              (!zcl_hex_decode_lower(claimed_source, claim, 32) ||
               memcmp(claim, candidate.candidate_source_root, 32) != 0))) {
-            free(input);
             zdev_fail(reply, "CANDIDATE_ROOT_MISMATCH",
                       "claimed candidate roots do not match the captured workspace");
             return;
@@ -837,7 +840,6 @@ void zcl_native_handle_zcode_improve(
         if (claimed_sha && claimed_sha[0] &&
             (!zcl_hex_decode_lower(claimed_sha, claim, 32) ||
              memcmp(claim, source_sha_check, 32) != 0)) {
-            free(input);
             zdev_fail(reply, "CANDIDATE_SHA256_MISMATCH",
                       "candidate_source_sha256 does not match the canonical candidate manifest");
             return;
@@ -846,14 +848,12 @@ void zcl_native_handle_zcode_improve(
                           reply) ||
                !zdev_root(request->input, "candidate_source_root",
                           candidate.candidate_source_root, reply)) {
-        free(input);
         return;
     }
     if (!zdev_root(request->input, "adapter_policy_root",
                    candidate.adapter_policy_root, reply) ||
         !zdev_root(request->input, "author_pubkey", candidate.author_pubkey,
                    reply)) {
-        free(input);
         return;
     }
     uint8_t candidate_wire[VCS_ZCODE_CANDIDATE_WIRE_BYTES];
@@ -863,15 +863,55 @@ void zcl_native_handle_zcode_improve(
         vcs_zcode_candidate_serialize(&candidate, candidate_wire) !=
             VCS_ZCODE_DEV_OK ||
         vcs_zcode_candidate_root(&candidate, candidate_root) !=
-            VCS_ZCODE_DEV_OK ||
-        !vcs_object_put_addressed(workspace, input_root, input, input_len) ||
+            VCS_ZCODE_DEV_OK) {
+        zdev_fail(reply, "CANDIDATE_INVALID",
+                  "canonical candidate serialization failed");
+        return;
+    }
+    char input_path[VCS_PATH_MAX + 1u];
+    if (!zdev_candidate_input_path(
+            candidate_workspace, fixed_input, fixed_input_relpath,
+            input_path, reply))
+        return;
+    struct vcs_zcode_action_input_v1 bound_input;
+    enum vcs_zcode_action_input_result input_result =
+        vcs_zcode_action_input_derive_cas(
+            workspace, task_root, candidate_root, &task, &candidate,
+            work_kind, input_path, &bound_input);
+    uint8_t *input_wire = NULL; size_t input_len = 0; uint8_t input_root[32];
+    if (input_result == VCS_ZCODE_ACTION_INPUT_OK)
+        input_result = vcs_zcode_action_input_serialize(
+            &bound_input, &input_wire, &input_len);
+    if (input_result == VCS_ZCODE_ACTION_INPUT_OK &&
+        input_len > task.max_context_bytes)
+        input_result = VCS_ZCODE_ACTION_INPUT_LIMIT;
+    if (input_result == VCS_ZCODE_ACTION_INPUT_OK)
+        input_result = vcs_zcode_action_input_root(&bound_input, input_root);
+    vcs_zcode_action_input_free(&bound_input);
+    uint8_t candidate_current[32];
+    bool candidate_stable = !explicit_admit ||
+        (vcs_tree_capture_into(candidate_workspace, workspace,
+                               candidate_current) == VCS_OK &&
+         memcmp(candidate_current, candidate.candidate_source_root, 32) == 0);
+    if (input_result != VCS_ZCODE_ACTION_INPUT_OK || !candidate_stable) {
+        free(input_wire);
+        zdev_fail(reply,
+                  candidate_stable ? "CANDIDATE_INPUT_REFUSED" :
+                                     "CANDIDATE_SOURCE_STALE",
+                  candidate_stable
+                    ? vcs_zcode_action_input_result_string(input_result)
+                    : "candidate workspace changed during action input capture");
+        return;
+    }
+    if (!vcs_object_put_addressed(workspace, input_root, input_wire,
+                                  input_len) ||
         !vcs_object_put_addressed(workspace, candidate_root, candidate_wire,
                                   sizeof(candidate_wire))) {
-        free(input);
+        free(input_wire);
         zdev_fail(reply, "CAS_WRITE_FAILED", "canonical task inputs could not be stored atomically");
         return;
     }
-    free(input);
+    free(input_wire);
 
     const char *source_sha256 = explicit_admit ? source_sha_hex :
         zdev_str(request->input, "candidate_source_sha256");
@@ -1031,6 +1071,9 @@ void zcl_native_handle_zcode_improve(
     zdev_push_root(&reply->data, "toolchain_capsule_root",
                    task.toolchain_capsule_root);
     zdev_push_root(&reply->data, "input_root", input_root);
+    (void)json_push_kv_str(&reply->data, "fixed_input_relpath", input_path);
+    (void)json_push_kv_str(&reply->data, "input_schema",
+                           "zcl.zcode.action_input.v1");
     (void)json_push_kv_str(&reply->data, "job_id", job.job_id);
     (void)json_push_kv_str(&reply->data, "action_id", action.action_id);
     (void)json_push_kv_str(&reply->data, "action_kind", action_kind);

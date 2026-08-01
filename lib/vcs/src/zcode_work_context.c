@@ -10,6 +10,7 @@
 #include "vcs/build_action.h"
 #include "vcs/package_manifest.h"
 #include "vcs/package_store.h"
+#include "vcs/zcode_action_input.h"
 #include "vcs/zcode_candidate_bundle.h"
 
 #include <stdio.h>
@@ -121,7 +122,35 @@ enum vcs_zcode_work_context_result vcs_zcode_work_context_action_root_for_kind(
     memcpy(action.source_sha256, context->source_sha256, 32);
     memcpy(action.source_cas_sha3, context->candidate.candidate_source_root,
            32);
-    sha3_256(context->fixed_input, context->fixed_input_len, input_root);
+    struct vcs_zcode_action_input_v1 bound_input;
+    enum vcs_zcode_action_input_result parsed = vcs_zcode_action_input_parse(
+        context->fixed_input, context->fixed_input_len, &bound_input);
+    if (parsed == VCS_ZCODE_ACTION_INPUT_OK) {
+        uint8_t task_root[32], candidate_root[32];
+        uint8_t expected_kind = vcs_build_action_v1_work_kind(kind);
+        bool binding = expected_kind != 0 &&
+            bound_input.work_kind == expected_kind &&
+            vcs_zcode_task_root(&context->task, task_root) ==
+                VCS_ZCODE_DEV_OK &&
+            vcs_zcode_candidate_root(&context->candidate, candidate_root) ==
+                VCS_ZCODE_DEV_OK &&
+            memcmp(bound_input.task_root, task_root, 32) == 0 &&
+            memcmp(bound_input.candidate_root, candidate_root, 32) == 0 &&
+            memcmp(bound_input.candidate_source_root,
+                   context->candidate.candidate_source_root, 32) == 0 &&
+            memcmp(bound_input.dependency_lock_root,
+                   context->task.dependency_lock_root, 32) == 0 &&
+            memcmp(bound_input.acceptance_tests_root,
+                   context->task.acceptance_tests_root, 32) == 0 &&
+            vcs_zcode_action_input_root(&bound_input, input_root) ==
+                VCS_ZCODE_ACTION_INPUT_OK;
+        vcs_zcode_action_input_free(&bound_input);
+        if (!binding) return VCS_ZCODE_WORK_CONTEXT_ACTION;
+    } else {
+        /* Legacy local contexts remain readable; the ZCODE worker refuses
+         * their unbound bytes before execution. */
+        sha3_256(context->fixed_input, context->fixed_input_len, input_root);
+    }
     memcpy(action.input_root_sha3, input_root, 32);
     memcpy(action.toolchain_capsule_sha3,
            context->task.toolchain_capsule_root, 32);

@@ -30,6 +30,7 @@
 #include "vcs/zcode_write_scope.h"
 #include "vcs/zcode_patch.h"
 #include "vcs/zcode_candidate_bundle.h"
+#include "vcs/zcode_action_input.h"
 #include "vcs/vcs.h"
 
 #include <stdio.h>
@@ -41,6 +42,28 @@
 static void zd_root(uint8_t out[32], uint8_t value)
 {
     memset(out, value, 32);
+}
+
+static bool zd_copy_executable(const char *source, const char *destination)
+{
+    FILE *in = fopen(source, "rb");
+    FILE *out = in ? fopen(destination, "wb") : NULL;
+    if (!in || !out) {
+        if (out) fclose(out);
+        if (in) fclose(in);
+        return false;
+    }
+    uint8_t buffer[16384]; bool ok = true;
+    for (;;) {
+        size_t got = fread(buffer, 1, sizeof(buffer), in);
+        if (got > 0 && fwrite(buffer, 1, got, out) != got) ok = false;
+        if (got < sizeof(buffer)) {
+            if (ferror(in)) ok = false;
+            break;
+        }
+    }
+    ok = fclose(out) == 0 && fclose(in) == 0 && ok;
+    return ok && chmod(destination, 0500) == 0;
 }
 
 static void zd_policy(struct vcs_zcode_proof_policy_v1 *p)
@@ -1153,6 +1176,7 @@ static int test_zd_improve_command(void)
     TEST("zcode_dev: improve stores canonical task and queues existing ZBuild") {
         char dir[256], candidate_dir[256], preprocessed[320], source_dir[320];
         char source_path[384], workspace[4096], candidate_workspace[4096];
+        char base_true[4352], base_false[4352];
         test_make_tmpdir(dir, sizeof(dir), "zcode_dev", "improve");
         ASSERT(realpath(dir, workspace) != NULL);
         (void)snprintf(source_dir, sizeof(source_dir), "%s/src", workspace);
@@ -1174,11 +1198,18 @@ static int test_zd_improve_command(void)
         ASSERT(fwrite(source, 1, sizeof(source) - 1u, f) ==
                sizeof(source) - 1u);
         ASSERT(fclose(f) == 0);
+        (void)snprintf(base_true, sizeof(base_true), "%s/test.true",
+                       workspace);
+        (void)snprintf(base_false, sizeof(base_false), "%s/test.false",
+                       workspace);
+        ASSERT(zd_copy_executable("/usr/bin/true", base_true));
+        ASSERT(zd_copy_executable("/usr/bin/false", base_false));
         test_make_tmpdir(candidate_dir, sizeof(candidate_dir), "zcode_dev",
                          "candidate");
         ASSERT(realpath(candidate_dir, candidate_workspace) != NULL);
         char candidate_source_dir[4352], candidate_source_path[4608];
         char candidate_input_path[4352];
+        char candidate_true[4352], candidate_false[4352];
         (void)snprintf(candidate_source_dir, sizeof(candidate_source_dir),
                        "%s/src", candidate_workspace);
         ASSERT(mkdir(candidate_source_dir, 0700) == 0);
@@ -1198,6 +1229,12 @@ static int test_zd_improve_command(void)
         ASSERT(fwrite(source, 1, sizeof(source) - 1u, f) ==
                sizeof(source) - 1u);
         ASSERT(fclose(f) == 0);
+        (void)snprintf(candidate_true, sizeof(candidate_true),
+                       "%s/test.true", candidate_workspace);
+        (void)snprintf(candidate_false, sizeof(candidate_false),
+                       "%s/test.false", candidate_workspace);
+        ASSERT(zd_copy_executable("/usr/bin/true", candidate_true));
+        ASSERT(zd_copy_executable("/usr/bin/false", candidate_false));
 
         struct vcs_zcode_proof_policy_v1 policy;
         zd_policy(&policy);
@@ -1230,9 +1267,11 @@ static int test_zd_improve_command(void)
         struct vcs_manifest captured_manifest;
         ASSERT(vcs_tree_load(workspace, captured_source_root,
                              &captured_manifest));
-        ASSERT_EQ(captured_manifest.count, 2);
+        ASSERT_EQ(captured_manifest.count, 4);
         ASSERT_STR_EQ(captured_manifest.entries[0].path, "src/widget.c");
-        ASSERT_STR_EQ(captured_manifest.entries[1].path, "unit.i");
+        ASSERT_STR_EQ(captured_manifest.entries[1].path, "test.false");
+        ASSERT_STR_EQ(captured_manifest.entries[2].path, "test.true");
+        ASSERT_STR_EQ(captured_manifest.entries[3].path, "unit.i");
         vcs_manifest_free(&captured_manifest);
         zcl_hex_encode(captured_source_root, 32, roots[0]);
         int64_t expires = (int64_t)platform_time_wall_unix() + 3600;
@@ -1314,7 +1353,8 @@ static int test_zd_improve_command(void)
         (void)json_push_kv_int(&input, "remote_peer", 99);
         (void)json_push_kv_str(&input, "goal", "fix deterministic fixture");
         (void)json_push_kv_str(&input, "proof_policy_hex", policy_hex);
-        (void)json_push_kv_str(&input, "fixed_input_path", preprocessed);
+        (void)json_push_kv_str(&input, "fixed_input_path",
+                               candidate_input_path);
         (void)json_push_kv_str(&input, "context_symbol", "context_widget");
         (void)json_push_kv_int(&input, "candidate_created_unix",
                                candidate_created);
@@ -1343,6 +1383,10 @@ static int test_zd_improve_command(void)
         ASSERT_STR_EQ(json_get_str(json_get(
                           &reply.data, "source_sha256_schema")),
                       "zcl.zcode.source_manifest_sha256.v1");
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "input_schema")),
+                      "zcl.zcode.action_input.v1");
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &reply.data, "fixed_input_relpath")), "unit.i");
         ASSERT_EQ(json_get_int(json_get(&reply.data, "changed_files")), 1);
         ASSERT_EQ(json_get_int(json_get(
                       &reply.data, "patch_content_bytes")),
@@ -1412,6 +1456,18 @@ static int test_zd_improve_command(void)
                       action_id);
         zcl_command_reply_free(&legacy_reply);
         json_set_str((struct json_value *)json_get(&input, "mode"), "admit");
+        json_set_str((struct json_value *)json_get(
+                         &input, "fixed_input_path"), "/usr/bin/true");
+        struct zcl_command_reply detached_input_reply;
+        zcl_command_reply_init(&detached_input_reply,
+                               "zcl.zcode_improve.v1");
+        zcl_native_handle_zcode_improve(&request, &detached_input_reply);
+        ASSERT_EQ(detached_input_reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(detached_input_reply.error.code,
+                      "FIXED_INPUT_OUTSIDE_CANDIDATE");
+        zcl_command_reply_free(&detached_input_reply);
+        json_set_str((struct json_value *)json_get(
+                         &input, "fixed_input_path"), candidate_input_path);
         char outside_path[4352];
         (void)snprintf(outside_path, sizeof(outside_path), "%s/outside.c",
                        candidate_workspace);
@@ -1597,6 +1653,54 @@ static int test_zd_improve_command(void)
         ASSERT_EQ(vcs_zcode_candidate_parse(candidate_wire,
                   candidate_wire_len, &candidate), VCS_ZCODE_DEV_OK);
         free(candidate_wire);
+        uint8_t action_input_root[32], *action_input_wire = NULL;
+        size_t action_input_wire_len = 0;
+        ASSERT(zcl_hex_decode_lower(action.input_root_sha3,
+                                    action_input_root, 32));
+        ASSERT_EQ(vcs_object_load_raw(
+                      workspace, action_input_root, &action_input_wire,
+                      &action_input_wire_len), 0);
+        struct vcs_zcode_action_input_v1 action_input;
+        ASSERT_EQ(vcs_zcode_action_input_parse(
+                      action_input_wire, action_input_wire_len,
+                      &action_input), VCS_ZCODE_ACTION_INPUT_OK);
+        uint8_t *corrupt_action_input = zcl_malloc(
+            action_input_wire_len + 1u, "test.action_input.corrupt");
+        ASSERT(corrupt_action_input != NULL);
+        memcpy(corrupt_action_input, action_input_wire,
+               action_input_wire_len);
+        corrupt_action_input[action_input_wire_len - 1u] ^= 1u;
+        struct vcs_zcode_action_input_v1 refused_action_input;
+        ASSERT_EQ(vcs_zcode_action_input_parse(
+                      corrupt_action_input, action_input_wire_len,
+                      &refused_action_input),
+                  VCS_ZCODE_ACTION_INPUT_BINDING);
+        memcpy(corrupt_action_input, action_input_wire,
+               action_input_wire_len);
+        corrupt_action_input[action_input_wire_len] = 0;
+        ASSERT_EQ(vcs_zcode_action_input_parse(
+                      corrupt_action_input, action_input_wire_len + 1u,
+                      &refused_action_input),
+                  VCS_ZCODE_ACTION_INPUT_SHAPE);
+        free(corrupt_action_input);
+        free(action_input_wire);
+        ASSERT_STR_EQ(action_input.path, "unit.i");
+        uint8_t action_input_check[32];
+        ASSERT_EQ(vcs_zcode_action_input_root(
+                      &action_input, action_input_check),
+                  VCS_ZCODE_ACTION_INPUT_OK);
+        ASSERT(memcmp(action_input_check, action_input_root, 32) == 0);
+        ASSERT_EQ(vcs_zcode_action_input_validate_for_candidate(
+                      workspace, &task, &candidate, &action_input,
+                      task_root, candidate_root, VCS_ZCODE_WORK_BUILD),
+                  VCS_ZCODE_ACTION_INPUT_OK);
+        action_input.payload[0] ^= 1u;
+        ASSERT_EQ(vcs_zcode_action_input_validate_for_candidate(
+                      workspace, &task, &candidate, &action_input,
+                      task_root, candidate_root, VCS_ZCODE_WORK_BUILD),
+                  VCS_ZCODE_ACTION_INPUT_BINDING);
+        action_input.payload[0] ^= 1u;
+        vcs_zcode_action_input_free(&action_input);
         ASSERT_EQ(vcs_zcode_patch_verify_cas(workspace, &task, &candidate),
                   VCS_ZCODE_PATCH_OK);
         struct vcs_zcode_candidate_v1 missing_patch = candidate;
@@ -1719,7 +1823,7 @@ static int test_zd_improve_command(void)
                       &reply.data, "candidate_created_unix")),
                   candidate_created);
         json_set_str((struct json_value *)json_get(
-                         &input, "fixed_input_path"), "/usr/bin/true");
+                         &input, "fixed_input_path"), candidate_true);
         (void)json_push_kv_str(&input, "action_kind",
                                VCS_BUILD_ACTION_KIND_TEST_V1);
         struct zcl_command_reply test_reply;
@@ -1825,7 +1929,7 @@ static int test_zd_improve_command(void)
         /* A target-found defect is durable FAIL evidence, not a sandbox
          * transport error and never a false passing proof. */
         json_set_str((struct json_value *)json_get(
-                         &input, "fixed_input_path"), "/usr/bin/false");
+                         &input, "fixed_input_path"), candidate_false);
         struct zcl_command_reply fuzz_fail_reply;
         zcl_command_reply_init(&fuzz_fail_reply, "zcl.zcode_improve.v1");
         zcl_native_handle_zcode_improve(&request, &fuzz_fail_reply);

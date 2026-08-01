@@ -69,6 +69,7 @@ The domains are:
 - `zcl.zcode.agent_context.v1\0`
 - `zcl.zcode.write_scope.v1\0`
 - `zcl.zcode.patch.v1\0`
+- `zcl.zcode.action_input.v1\0`
 
 The trailing NUL is part of each SHA3 preimage, matching the existing package
 manifest, recipe, lock, release, and attestation convention.
@@ -160,6 +161,30 @@ Cross-object validation refuses stale source, task, candidate, policy,
 toolchain, output, or expiry state. A structurally valid old receipt therefore
 cannot authorize a moved task.
 
+### `action_input.v1`
+
+Every agentic fixed action now consumes a canonical candidate-bound envelope,
+not bytes selected from an unrelated host path. The envelope binds the task,
+candidate, candidate source manifest, dependency lock, acceptance-test root,
+work kind, canonical candidate-relative path, tagged ZVCS blob root, and exact
+payload. Its domain-separated root is the ZBuild action's `input_root`.
+
+`zcode improve mode=admit` treats `fixed_input_path` only as a selector and
+requires it to resolve beneath `candidate_workspace`; it then reloads the
+payload from the already-captured candidate CAS. Compile inputs must be `.i`
+manifest members. Test and fuzz inputs must be executable manifest members.
+The worker parses the envelope, rederives task/candidate roots, reloads the
+candidate manifest, verifies the path/mode/size/tagged blob, and extracts the
+payload only after every binding matches. It repeats that check before receipt
+publication. An outside executable, altered payload, changed path, wrong work
+kind, moved lock/test root, or stale candidate is a named local fallback.
+
+This proves exactly which candidate-addressed bytes were compiled or run. It
+does not yet prove that an executable manifest member was produced from the
+candidate's declarative recipe. Replacing executable inputs with recipe-derived
+compile/link artifacts is the next build-graph slice; current receipts must not
+be described as source-derived executable proofs.
+
 ### `proof_set.v1`
 
 Reviews bind one immutable proof-set root. The canonical variable-length wire
@@ -210,8 +235,7 @@ Remote execution adds no source store or transfer protocol. One fixed context
 wire is carried as a normal multi-chunk `content.v2` package at the canonical
 path `zcode-work-context.v1`. Its closed binary grammar binds the
 existing `task.v1`, `candidate.v1`, and `proof_policy.v1` wires, the candidate
-source SHA-256 oracle, build profile, and exact fixed-action input (a
-preprocessed TU or test executable).
+source SHA-256 oracle, build profile, and exact `action_input.v1` wire.
 
 Requester-to-worker packages add a second canonical file,
 `zcode-candidate-authority.v1`. It contains the exact scope and patch wires,
@@ -224,9 +248,9 @@ the local worker. A missing, truncated, reordered, altered, oversized, or
 root-mismatched bundle refuses remote admission.
 
 The combined files remain under the package store's existing 64 MiB anti-abuse
-cap and the task's smaller context ceiling. The fixed input is a preprocessed TU, exact test
-executable, or exact deterministic fuzz executable according to the action
-kind.
+cap and the task's smaller context ceiling. The action envelope's payload is a
+candidate-manifest preprocessed TU, exact test executable, or exact
+deterministic fuzz executable according to the action kind.
 
 The receiving peer re-derives the task, candidate, policy, input, toolchain,
 and `build_action.v1` roots and compares every one to the signed request before
@@ -244,6 +268,7 @@ ZBuild action. It never accepts a caller-supplied path or command.
 <!-- claim: symbol-present vcs_zcode_write_scope_contains lib/vcs/src/zcode_write_scope.c # component-bounded candidate write authority -->
 <!-- claim: symbol-present vcs_zcode_patch_derive lib/vcs/src/zcode_patch.c # manifest-derived scoped patch authority -->
 <!-- claim: symbol-present vcs_zcode_candidate_bundle_import lib/vcs/src/zcode_candidate_bundle.c # validate-before-write P2P candidate authority import -->
+<!-- claim: symbol-present vcs_zcode_action_input_validate_for_candidate lib/vcs/src/zcode_action_input.c # fixed actions consume candidate-manifest bytes -->
 
 ## Ordered delivery
 
@@ -269,9 +294,10 @@ ZBuild action. It never accepts a caller-supplied path or command.
   idempotent migration and model-owned writes.
 - [x] Claim `QUEUED` actions atomically. A restart requeues an expired lease; a
   live lease cannot be stolen.
-- [x] Execute only registered fixed action kinds. Compile uses local
-  preprocessing followed by fixed `cc -x cpp-output -c`. Test executes one
-  exact CAS-addressed Linux x86-64 executable with no arguments and emits a
+- [x] Execute only registered fixed action kinds. Compile consumes one exact
+  candidate-manifest preprocessed TU followed by fixed `cc -x cpp-output -c`.
+  Test executes one exact candidate-manifest Linux x86-64 executable with no
+  arguments and emits a
   closed 84-byte verdict wire. Fuzz executes one exact executable for the
   policy's canonical seed range `[0,N)`, supplies only `--seed=N` plus the
   matching scrubbed environment value, stops on the first failure, and emits a
@@ -326,7 +352,7 @@ those roots to Codex, Claude, Kimi, a local model, or a future P2P harness under
 their own policy.
 
 `zcode improve mode=admit` derives the candidate tree and patch from
-`candidate_workspace`, admits the exact fixed-action input, captures the GCC
+`candidate_workspace`, admits the exact candidate-bound action input, captures the GCC
 capsule, and queues a candidate-bound compile, test, or deterministic fuzz
 action. An explicit admit must carry `planned_task_root`,
 `planned_context_root`, and the same `write_scope_csv`; source, task, context,

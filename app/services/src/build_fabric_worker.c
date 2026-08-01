@@ -16,6 +16,7 @@
 #include "vcs/build_action.h"
 #include "vcs/build_artifact_manifest.h"
 #include "vcs/vcs_object.h"
+#include "vcs/zcode_action_input.h"
 #include "vcs/zcode_dev.h"
 #include "vcs/zcode_patch.h"
 
@@ -204,7 +205,6 @@ static void bfw_paths_cleanup(const struct bfw_paths *p)
     (void)rmdir(p->src);
     (void)rmdir(p->work);
 }
-
 static bool bfw_write_input(const char *path, const uint8_t *bytes, size_t len,
                             bool executable)
 {
@@ -228,7 +228,6 @@ static bool bfw_write_input(const char *path, const uint8_t *bytes, size_t len,
     if (!ok) (void)unlink(path);
     return ok;
 }
-
 static uint8_t *bfw_read_output(const char *path, size_t *len_out)
 {
     *len_out = 0;
@@ -565,20 +564,30 @@ struct zcl_result build_fabric_worker_execute(
     if (work_kind == VCS_ZCODE_WORK_FUZZ && !zcode_context)
         return bfw_fail(ndb, action_id, lease_id,
                         "fuzz-action-requires-zcode-policy");
-    uint8_t input_root[32];
-    uint8_t *input = NULL;
-    size_t input_len = 0;
-    if (!zcl_hex_decode_lower(action.input_root_sha3, input_root, 32) ||
-        vcs_object_load_raw(workspace, input_root, &input, &input_len) != 0 ||
-        input_len == 0 || input_len > VCS_BUILD_ARTIFACT_MAX_BYTES) {
-        free(input);
-        return bfw_fail(ndb, action_id, lease_id, "input-cas-miss");
-    }
-    uint8_t checked_input[32];
-    sha3_256(input, input_len, checked_input);
-    if (memcmp(checked_input, input_root, 32) != 0) {
-        free(input);
-        return bfw_fail(ndb, action_id, lease_id, "input-cas-corrupt");
+    uint8_t input_root[32], *input = NULL; size_t input_len = 0;
+    if (!zcl_hex_decode_lower(action.input_root_sha3, input_root, 32))
+        return bfw_fail(ndb, action_id, lease_id, "input-root-invalid");
+    if (zcode_context) {
+        enum vcs_zcode_action_input_result input_result =
+            vcs_zcode_action_input_load_payload_cas(
+                workspace, input_root, &zcode_task, &zcode_candidate, work_kind,
+                &input, &input_len);
+        if (input_result != VCS_ZCODE_ACTION_INPUT_OK)
+            return bfw_fail(ndb, action_id, lease_id,
+                vcs_zcode_action_input_result_string(input_result));
+    } else {
+        if (vcs_object_load_raw(
+                workspace, input_root, &input, &input_len) != 0 ||
+            input_len == 0 || input_len > VCS_BUILD_ARTIFACT_MAX_BYTES) {
+            free(input); return bfw_fail(
+                ndb, action_id, lease_id, "input-cas-miss");
+        }
+        uint8_t checked_input[32];
+        sha3_256(input, input_len, checked_input);
+        if (memcmp(checked_input, input_root, 32) != 0) {
+            free(input); return bfw_fail(
+                ndb, action_id, lease_id, "input-cas-corrupt");
+        }
     }
     int64_t work_started = (int64_t)platform_time_wall_unix();
     struct zcl_result start = build_fabric_start(
@@ -710,7 +719,11 @@ struct zcl_result build_fabric_worker_execute(
     if (!stored.ok)
         return bfw_fail(ndb, action_id, lease_id, "output-cas-store-failed");
     int64_t work_finished = (int64_t)platform_time_wall_unix();
-    if (!bfw_input_root_current(workspace, action.input_root_sha3))
+    if (!(zcode_context
+            ? vcs_zcode_action_input_verify_cas(
+                  workspace, input_root, &zcode_task, &zcode_candidate,
+                  work_kind) == VCS_ZCODE_ACTION_INPUT_OK
+            : bfw_input_root_current(workspace, action.input_root_sha3)))
         return bfw_fail(ndb, action_id, lease_id,
                         "input-cas-changed-during-execution");
     if (!bfw_toolchain_current(&job))

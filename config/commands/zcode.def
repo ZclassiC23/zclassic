@@ -75,14 +75,15 @@ ZCL_COMMAND_READY_COMMAND(
     "task binds source, dependency lock, write scope, "
     "acceptance tests, model policy, goal, limits, and expiry. action_kind "
     "selects only fixed compile, test, or deterministic fuzz; "
-    "fixed_input_path supplies its exact "
-    "CAS input. No wallet/node/network authority is granted. Adapter "
+    "fixed_input_path selects one captured candidate-relative .i or "
+    "executable; action_input.v1 binds its manifest blob and semantic roots. "
+    "No wallet/node/network authority is granted. Adapter "
     "provenance never grants acceptance. remote_peer sends the exact "
     "content.v2 context to that advertised peer; missing/stale capability "
     "reports LOCAL_FALLBACK and preserves the local queued action.", 0,
     "zcode,improve,task,agent,zbuild,proof,compile,test,fuzz",
     "zcl.zcode_improve.input.v1", "zcl.zcode_improve.v1",
-    "workspace,candidate_workspace,datadir,mode,planned_task_root,planned_context_root,candidate_source_sha256,source_root,dependency_lock_root,write_scope_root,write_scope_csv,acceptance_tests_root,model_policy_root,goal,proof_policy_hex,action_kind,fixed_input_path,preprocessed_path,patch_root,candidate_source_root,adapter_policy_root,author_pubkey,candidate_sequence,candidate_created_unix,profile,expires_unix,max_changed_files,max_patch_bytes,max_context_bytes,max_cpu_seconds,max_memory_bytes,max_output_bytes,context_symbol,remote_peer",
+    "workspace,candidate_workspace,datadir,mode,planned_task_root,planned_context_root,candidate_source_sha256,source_root,dependency_lock_root,write_scope_root,write_scope_csv,acceptance_tests_root,model_policy_root,goal,proof_policy_hex,action_kind,fixed_input_path,fixed_input_relpath,preprocessed_path,patch_root,candidate_source_root,adapter_policy_root,author_pubkey,candidate_sequence,candidate_created_unix,profile,expires_unix,max_changed_files,max_patch_bytes,max_context_bytes,max_cpu_seconds,max_memory_bytes,max_output_bytes,context_symbol,remote_peer",
     "workspace,dependency_lock_root,write_scope_csv,acceptance_tests_root,model_policy_root,goal,proof_policy_hex,expires_unix",
     "zclassic23 zcode improve --input='{\"mode\":\"plan\",\"workspace\":\"/src/project\",\"dependency_lock_root\":\"<64hex>\",\"write_scope_csv\":\"src,include\",\"acceptance_tests_root\":\"<64hex>\",\"model_policy_root\":\"<64hex>\",\"goal\":\"fix seeded bug\",\"proof_policy_hex\":\"<wire hex>\",\"context_symbol\":\"buggy_function\",\"expires_unix\":123}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
