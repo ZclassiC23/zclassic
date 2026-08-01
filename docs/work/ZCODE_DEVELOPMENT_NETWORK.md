@@ -271,10 +271,18 @@ bash-only authority:
   adapter, admit candidate trees, schedule proofs/reviews, reproduce, explicitly
   accept, and publish.
 
-`zcode improve` now admits canonical task/policy/goal/input/candidate objects in
-the existing workspace CAS, optionally publishes a bounded exact-symbol
-`agent_context.v1`, captures the GCC capsule, and queues a
-candidate-bound compile, test, or deterministic fuzz action. Reusing `candidate_created_unix` with
+`zcode improve mode=plan` now admits canonical task/policy/goal objects in the
+existing workspace CAS and publishes a bounded exact-symbol
+`agent_context.v1`. It returns only immutable task, context, model-policy,
+proof-policy, and toolchain roots with state `AWAITING_CANDIDATE`; it does not
+launch a model, create a build database, or grant tools. The operator can give
+those roots to Codex, Claude, Kimi, a local model, or a future P2P harness under
+their own policy.
+
+`zcode improve mode=admit` (the backward-compatible default) admits the
+resulting canonical candidate and exact fixed-action input, captures the GCC
+capsule, and queues a candidate-bound compile, test, or deterministic fuzz
+action. Plan and admit rederive the same task and context roots. Reusing `candidate_created_unix` with
 the same immutable inputs schedules additional proof actions for the exact same
 candidate. Before submission it creates or re-verifies the exact candidate's
 signed FRONTIER receipt; evidence aggregation follows task/candidate/policy roots across

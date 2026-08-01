@@ -32,6 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 static void zd_root(uint8_t out[32], uint8_t value)
 {
@@ -1044,8 +1045,52 @@ static int test_zd_improve_command(void)
         ASSERT(ci_merkle_root(source_tree, &source_tree_root));
         ci_merkle_hex(&source_tree_root.digest, roots[0]);
         ci_merkle_free(source_tree);
+        int64_t expires = (int64_t)platform_time_wall_unix() + 3600;
+
+        /* Planning is a model-neutral handoff. It needs no candidate, patch,
+         * fixed executable, agent process, or ZBuild database mutation. */
+        struct json_value plan_input;
+        json_init(&plan_input); json_set_object(&plan_input);
+        (void)json_push_kv_str(&plan_input, "mode", "plan");
+        (void)json_push_kv_str(&plan_input, "workspace", workspace);
+        (void)json_push_kv_str(&plan_input, "datadir", workspace);
+        (void)json_push_kv_str(&plan_input, "source_root", roots[0]);
+        (void)json_push_kv_str(&plan_input, "dependency_lock_root", roots[1]);
+        (void)json_push_kv_str(&plan_input, "write_scope_root", roots[2]);
+        (void)json_push_kv_str(&plan_input, "acceptance_tests_root", roots[3]);
+        (void)json_push_kv_str(&plan_input, "model_policy_root", roots[4]);
+        (void)json_push_kv_str(&plan_input, "goal",
+                               "fix deterministic fixture");
+        (void)json_push_kv_str(&plan_input, "proof_policy_hex", policy_hex);
+        (void)json_push_kv_str(&plan_input, "context_symbol",
+                               "context_widget");
+        (void)json_push_kv_int(&plan_input, "expires_unix", expires);
+        struct zcl_command_request plan_request = { .input = &plan_input };
+        struct zcl_command_reply plan_reply;
+        zcl_command_reply_init(&plan_reply, "zcl.zcode_improve.v1");
+        zcl_native_handle_zcode_improve(&plan_request, &plan_reply);
+        ASSERT_EQ(plan_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&plan_reply.data, "mode")),
+                      "plan");
+        ASSERT_STR_EQ(json_get_str(json_get(&plan_reply.data, "state")),
+                      "AWAITING_CANDIDATE");
+        ASSERT_STR_EQ(json_get_str(json_get(&plan_reply.data, "authority")),
+                      "TASK_AND_CONTEXT_ROOTS");
+        const char *planned_task = json_get_str(json_get(
+            &plan_reply.data, "task_root"));
+        const char *planned_context = json_get_str(json_get(
+            &plan_reply.data, "agent_context_root"));
+        ASSERT(planned_task && strlen(planned_task) == 64);
+        ASSERT(planned_context && strlen(planned_context) == 64);
+        ASSERT(json_get(&plan_reply.data, "candidate_root") == NULL);
+        ASSERT(json_get(&plan_reply.data, "action_id") == NULL);
+        char plan_db[320];
+        (void)snprintf(plan_db, sizeof(plan_db), "%s/node.db", workspace);
+        ASSERT(access(plan_db, F_OK) != 0);
+
         struct json_value input;
         json_init(&input); json_set_object(&input);
+        (void)json_push_kv_str(&input, "mode", "admit");
         (void)json_push_kv_str(&input, "workspace", workspace);
         (void)json_push_kv_str(&input, "datadir", workspace);
         (void)json_push_kv_str(&input, "candidate_source_sha256", roots[9]);
@@ -1063,7 +1108,6 @@ static int test_zd_improve_command(void)
         (void)json_push_kv_str(&input, "proof_policy_hex", policy_hex);
         (void)json_push_kv_str(&input, "fixed_input_path", preprocessed);
         (void)json_push_kv_str(&input, "context_symbol", "context_widget");
-        int64_t expires = (int64_t)platform_time_wall_unix() + 3600;
         (void)json_push_kv_int(&input, "expires_unix", expires);
         struct zcl_command_request request = { .input = &input };
         struct zcl_command_reply reply;
@@ -1077,6 +1121,11 @@ static int test_zd_improve_command(void)
         const char *agent_context_hex = json_get_str(json_get(
             &reply.data, "agent_context_root"));
         ASSERT(task_hex && candidate_hex && action_id && agent_context_hex);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "mode")), "admit");
+        ASSERT_STR_EQ(task_hex, planned_task);
+        ASSERT_STR_EQ(agent_context_hex, planned_context);
+        zcl_command_reply_free(&plan_reply);
+        json_free(&plan_input);
         ASSERT(strlen(agent_context_hex) == 64);
         ASSERT_STR_EQ(json_get_str(json_get(
                           &reply.data, "agent_context_source_tree_root")),
@@ -1143,6 +1192,14 @@ static int test_zd_improve_command(void)
         zcl_command_reply_free(&stale_reply);
         json_set_str((struct json_value *)json_get(&input, "source_root"),
                      roots[0]);
+        json_set_str((struct json_value *)json_get(&input, "mode"), "invalid");
+        struct zcl_command_reply mode_reply;
+        zcl_command_reply_init(&mode_reply, "zcl.zcode_improve.v1");
+        zcl_native_handle_zcode_improve(&request, &mode_reply);
+        ASSERT_EQ(mode_reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(mode_reply.error.code, "BAD_MODE");
+        zcl_command_reply_free(&mode_reply);
+        json_set_str((struct json_value *)json_get(&input, "mode"), "admit");
         char db_path[320];
         (void)snprintf(db_path, sizeof(db_path), "%s/node.db", workspace);
         struct node_db ndb = {0};

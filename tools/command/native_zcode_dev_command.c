@@ -128,6 +128,25 @@ static void zdev_push_lane(struct json_value *out,
     (void)json_push_kv_int(out, "created_unix", status->created_at);
 }
 
+static void zdev_push_agent_context(
+    struct json_value *out, const struct zcode_agent_context_status *context)
+{
+    (void)json_push_kv_str(out, "agent_context_root",
+                           context->context_root_sha3);
+    (void)json_push_kv_str(out, "agent_context_source_tree_root",
+                           context->source_tree_root_sha3);
+    (void)json_push_kv_str(out, "agent_context_symbol",
+                           context->resolved_symbol);
+    (void)json_push_kv_int(out, "agent_context_files",
+                           (int64_t)context->file_count);
+    (void)json_push_kv_int(out, "agent_context_excerpt_bytes",
+                           (int64_t)context->excerpt_bytes);
+    (void)json_push_kv_int(out, "agent_context_wire_bytes",
+                           (int64_t)context->wire_bytes);
+    (void)json_push_kv_bool(out, "agent_context_truncated",
+                            context->truncated);
+}
+
 void zcl_native_handle_zcode_create(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
@@ -346,6 +365,14 @@ void zcl_native_handle_zcode_improve(
     if (!datadir || !datadir[0]) datadir = zcl_native_command_datadir();
     const char *goal = zdev_str(request->input, "goal");
     const char *policy_hex = zdev_str(request->input, "proof_policy_hex");
+    const char *mode = zdev_str(request->input, "mode");
+    if (!mode || !mode[0]) mode = "admit";
+    bool plan_only = strcmp(mode, "plan") == 0;
+    if (!plan_only && strcmp(mode, "admit") != 0) {
+        zdev_fail(reply, "BAD_MODE", "mode must be plan or admit");
+        return;
+    }
+    const char *context_symbol = zdev_str(request->input, "context_symbol");
     const char *action_kind = zdev_str(request->input, "action_kind");
     if (!action_kind || !action_kind[0])
         action_kind = VCS_BUILD_ACTION_KIND_V1;
@@ -361,9 +388,13 @@ void zcl_native_handle_zcode_improve(
     if (!fixed_input)
         fixed_input = zdev_str(request->input, "preprocessed_path");
     if (!workspace_arg || !datadir || !goal || !goal[0] ||
-        strlen(goal) > 4096 || !policy_hex || !fixed_input) {
+        strlen(goal) > 4096 || !policy_hex ||
+        (plan_only && (!context_symbol || !context_symbol[0])) ||
+        (!plan_only && !fixed_input)) {
         zdev_fail(reply, "MISSING_INPUT",
-                  "workspace, datadir, goal, proof policy, and fixed input path are required");
+                  plan_only
+                    ? "plan requires workspace, goal, proof policy, and context_symbol"
+                    : "admit requires workspace, goal, proof policy, and fixed input path");
         return;
     }
     char workspace[ZDEV_PATH_MAX];
@@ -432,6 +463,45 @@ void zcl_native_handle_zcode_improve(
         zdev_fail(reply, "TASK_INVALID", "task limits, capabilities, roots, or expiry are invalid");
         return;
     }
+    uint8_t task_wire[VCS_ZCODE_TASK_WIRE_BYTES], task_root[32];
+    if (vcs_zcode_task_serialize(&task, task_wire) != VCS_ZCODE_DEV_OK ||
+        vcs_zcode_task_root(&task, task_root) != VCS_ZCODE_DEV_OK ||
+        !vcs_object_store_init(workspace) ||
+        !vcs_object_put_addressed(workspace, policy_root, policy_wire,
+                                  sizeof(policy_wire)) ||
+        !vcs_object_put_addressed(workspace, task.goal_root,
+                                  (const uint8_t *)goal, strlen(goal)) ||
+        !vcs_object_put_addressed(workspace, task_root, task_wire,
+                                  sizeof(task_wire))) {
+        zdev_fail(reply, "CAS_WRITE_FAILED",
+                  "canonical task handoff could not be stored atomically");
+        return;
+    }
+    if (plan_only) {
+        struct zcode_agent_context_status planned_context = {0};
+        struct zcl_result captured = zcode_agent_context_capture(
+            workspace, &task, task_root, context_symbol, &planned_context);
+        if (!captured.ok) {
+            zdev_fail(reply, "AGENT_CONTEXT_FAILED", captured.message);
+            return;
+        }
+        zdev_push_root(&reply->data, "task_root", task_root);
+        zdev_push_root(&reply->data, "proof_policy_root", policy_root);
+        zdev_push_root(&reply->data, "toolchain_capsule_root",
+                       task.toolchain_capsule_root);
+        zdev_push_root(&reply->data, "model_policy_root",
+                       task.model_policy_root);
+        zdev_push_agent_context(&reply->data, &planned_context);
+        (void)json_push_kv_str(&reply->data, "mode", "plan");
+        (void)json_push_kv_str(&reply->data, "state",
+                               "AWAITING_CANDIDATE");
+        (void)json_push_kv_str(&reply->data, "authority",
+                               "TASK_AND_CONTEXT_ROOTS");
+        (void)json_push_kv_str(
+            &reply->data, "next",
+            "give the immutable task and agent_context roots to the user-selected adapter, then call mode=admit with its candidate roots; no model or tool authority is implied");
+        return;
+    }
     size_t input_len = 0;
     uint8_t *input = zdev_read_file(fixed_input, &input_len);
     if (!input) {
@@ -441,13 +511,6 @@ void zcl_native_handle_zcode_improve(
     }
     uint8_t input_root[32];
     sha3_256(input, input_len, input_root);
-    uint8_t task_wire[VCS_ZCODE_TASK_WIRE_BYTES], task_root[32];
-    if (vcs_zcode_task_serialize(&task, task_wire) != VCS_ZCODE_DEV_OK ||
-        vcs_zcode_task_root(&task, task_root) != VCS_ZCODE_DEV_OK) {
-        free(input);
-        zdev_fail(reply, "TASK_INVALID", "canonical task serialization failed");
-        return;
-    }
     struct vcs_zcode_candidate_v1 candidate = {
         .schema_version = VCS_ZCODE_DEV_VERSION,
         .sequence = (uint64_t)zdev_int(request->input, "candidate_sequence", 1),
@@ -474,14 +537,7 @@ void zcl_native_handle_zcode_improve(
             VCS_ZCODE_DEV_OK ||
         vcs_zcode_candidate_root(&candidate, candidate_root) !=
             VCS_ZCODE_DEV_OK ||
-        !vcs_object_store_init(workspace) ||
-        !vcs_object_put_addressed(workspace, policy_root, policy_wire,
-                                  sizeof(policy_wire)) ||
-        !vcs_object_put_addressed(workspace, task.goal_root,
-                                  (const uint8_t *)goal, strlen(goal)) ||
         !vcs_object_put_addressed(workspace, input_root, input, input_len) ||
-        !vcs_object_put_addressed(workspace, task_root, task_wire,
-                                  sizeof(task_wire)) ||
         !vcs_object_put_addressed(workspace, candidate_root, candidate_wire,
                                   sizeof(candidate_wire))) {
         free(input);
@@ -490,7 +546,6 @@ void zcl_native_handle_zcode_improve(
     }
     free(input);
 
-    const char *context_symbol = zdev_str(request->input, "context_symbol");
     struct zcode_agent_context_status agent_context = {0};
     bool agent_context_ready = false;
     if (context_symbol && context_symbol[0]) {
@@ -659,22 +714,9 @@ void zcl_native_handle_zcode_improve(
     (void)json_push_kv_str(&reply->data, "lane", frontier_status.lane_name);
     (void)json_push_kv_str(&reply->data, "lane_receipt_root",
                            frontier_status.receipt_root_sha3);
-    if (agent_context_ready) {
-        (void)json_push_kv_str(&reply->data, "agent_context_root",
-                               agent_context.context_root_sha3);
-        (void)json_push_kv_str(&reply->data, "agent_context_source_tree_root",
-                               agent_context.source_tree_root_sha3);
-        (void)json_push_kv_str(&reply->data, "agent_context_symbol",
-                               agent_context.resolved_symbol);
-        (void)json_push_kv_int(&reply->data, "agent_context_files",
-                               (int64_t)agent_context.file_count);
-        (void)json_push_kv_int(&reply->data, "agent_context_excerpt_bytes",
-                               (int64_t)agent_context.excerpt_bytes);
-        (void)json_push_kv_int(&reply->data, "agent_context_wire_bytes",
-                               (int64_t)agent_context.wire_bytes);
-        (void)json_push_kv_bool(&reply->data, "agent_context_truncated",
-                                agent_context.truncated);
-    }
+    if (agent_context_ready)
+        zdev_push_agent_context(&reply->data, &agent_context);
+    (void)json_push_kv_str(&reply->data, "mode", "admit");
     if (remote_requested) {
         const char *remote_outcome = "LOCAL_FALLBACK";
         struct vcs_zcode_work_node *work = vcs_zcode_work_node_global();
