@@ -207,13 +207,24 @@ define its identity.
 ### `zcode-work-context.v1`
 
 Remote execution adds no source store or transfer protocol. One fixed context
-wire is carried as a normal one-file, multi-chunk `content.v2` package at the
-canonical path `zcode-work-context.v1`. Its closed binary grammar binds the
+wire is carried as a normal multi-chunk `content.v2` package at the canonical
+path `zcode-work-context.v1`. Its closed binary grammar binds the
 existing `task.v1`, `candidate.v1`, and `proof_policy.v1` wires, the candidate
 source SHA-256 oracle, build profile, and exact fixed-action input (a
-preprocessed TU or test executable). Its total size
-remains under the package store's existing 64 MiB anti-abuse cap and the task's
-smaller context ceiling. The fixed input is a preprocessed TU, exact test
+preprocessed TU or test executable).
+
+Requester-to-worker packages add a second canonical file,
+`zcode-candidate-authority.v1`. It contains the exact scope and patch wires,
+base and candidate ZVCS manifests, and a hash-sorted, duplicate-free set of
+every added or modified blob. The receiver validates the complete bundle,
+rederives both manifest roots and the patch under task scope/limits, and checks
+every tagged blob hash before writing anything. It then imports those objects
+into the existing workspace CAS and repeats the same CAS verification used by
+the local worker. A missing, truncated, reordered, altered, oversized, or
+root-mismatched bundle refuses remote admission.
+
+The combined files remain under the package store's existing 64 MiB anti-abuse
+cap and the task's smaller context ceiling. The fixed input is a preprocessed TU, exact test
 executable, or exact deterministic fuzz executable according to the action
 kind.
 
@@ -232,6 +243,7 @@ ZBuild action. It never accepts a caller-supplied path or command.
 <!-- claim: symbol-present vcs_tree_capture_into lib/vcs/src/vcs.c # separate candidate workspace import into requester CAS -->
 <!-- claim: symbol-present vcs_zcode_write_scope_contains lib/vcs/src/zcode_write_scope.c # component-bounded candidate write authority -->
 <!-- claim: symbol-present vcs_zcode_patch_derive lib/vcs/src/zcode_patch.c # manifest-derived scoped patch authority -->
+<!-- claim: symbol-present vcs_zcode_candidate_bundle_import lib/vcs/src/zcode_candidate_bundle.c # validate-before-write P2P candidate authority import -->
 
 ## Ordered delivery
 

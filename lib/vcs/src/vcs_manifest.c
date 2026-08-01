@@ -222,6 +222,12 @@ bool vcs_manifest_parse(const uint8_t *in, size_t len, struct vcs_manifest *out)
         }
         memcpy(path, in + off, plen);
         path[plen] = '\0';
+        if (memchr(path, '\0', plen) != NULL ||
+            (out->count > 0 &&
+             strcmp(out->entries[out->count - 1u].path, path) >= 0)) {
+            free(path);
+            goto badpath;
+        }
         off += plen;
         uint32_t mode = vcs_rd_u32le(in + off);
         off += 4;
@@ -235,6 +241,10 @@ bool vcs_manifest_parse(const uint8_t *in, size_t len, struct vcs_manifest *out)
             vcs_manifest_free(out);
             LOG_FAIL("vcs", "manifest_add failed in parse");
         }
+    }
+    if (off != len) {
+        vcs_manifest_free(out);
+        LOG_FAIL("vcs", "trailing manifest bytes: off=%zu len=%zu", off, len);
     }
     return true;
 

@@ -4,6 +4,7 @@
 #ifndef ZCL_VCS_ZCODE_WORK_CONTEXT_H
 #define ZCL_VCS_ZCODE_WORK_CONTEXT_H
 
+#include "vcs/zcode_candidate_bundle.h"
 #include "vcs/zcode_dev.h"
 
 #include <stddef.h>
@@ -37,12 +38,22 @@ struct vcs_zcode_work_context_v1 {
     struct vcs_zcode_proof_policy_v1 proof_policy;
     uint8_t *fixed_input;
     size_t fixed_input_len;
+    /* Optional second content.v2 file. Local-only contexts may omit it;
+     * requester-to-worker contexts require the canonical candidate bundle. */
+    uint8_t *candidate_authority;
+    size_t candidate_authority_len;
 };
 
 const char *vcs_zcode_work_context_result_string(
     enum vcs_zcode_work_context_result result);
 void vcs_zcode_work_context_init(struct vcs_zcode_work_context_v1 *context);
 void vcs_zcode_work_context_free(struct vcs_zcode_work_context_v1 *context);
+
+/* Import the mandatory remote candidate authority carried beside this
+ * context. A local-only context may omit it; remote admission may not. */
+enum vcs_zcode_candidate_bundle_result
+vcs_zcode_work_context_import_authority(
+    const char *repo_root, const struct vcs_zcode_work_context_v1 *context);
 
 /* The context wire is canonical but its network address is the enclosing
  * one-file content.v2 package root. This keeps transfer, resume, quotas, and

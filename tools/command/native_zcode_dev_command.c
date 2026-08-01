@@ -26,6 +26,7 @@
 #include "vcs/zcode_work_node.h"
 #include "vcs/zcode_write_scope.h"
 #include "vcs/zcode_patch.h"
+#include "vcs/zcode_candidate_bundle.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -945,10 +946,17 @@ void zcl_native_handle_zcode_improve(
             context.proof_policy = policy;
             context.fixed_input = context_input;
             context.fixed_input_len = context_input_len;
+            enum vcs_zcode_candidate_bundle_result bundled =
+                vcs_zcode_candidate_bundle_export(
+                    workspace, &task, &candidate,
+                    &context.candidate_authority,
+                    &context.candidate_authority_len);
             enum vcs_zcode_work_context_result packed =
-                vcs_zcode_work_context_put_for_kind(
-                    context_store, &context, action_kind, now,
-                    context_root, context_action_root);
+                bundled == VCS_ZCODE_CANDIDATE_BUNDLE_OK
+                    ? vcs_zcode_work_context_put_for_kind(
+                          context_store, &context, action_kind, now,
+                          context_root, context_action_root)
+                    : VCS_ZCODE_WORK_CONTEXT_STALE;
             context.fixed_input = NULL;
             vcs_zcode_work_context_free(&context);
             free(context_input);
@@ -957,7 +965,9 @@ void zcl_native_handle_zcode_improve(
                 zcl_hex_encode(context_root, 32,
                                action.context_root_sha3);
             } else {
-                context_reason = vcs_zcode_work_context_result_string(packed);
+                context_reason = bundled != VCS_ZCODE_CANDIDATE_BUNDLE_OK
+                    ? vcs_zcode_candidate_bundle_result_string(bundled)
+                    : vcs_zcode_work_context_result_string(packed);
             }
         } else if (context_store) {
             free(context_input);

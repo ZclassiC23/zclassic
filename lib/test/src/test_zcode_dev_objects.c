@@ -29,6 +29,7 @@
 #include "vcs/zcode_work_swarm.h"
 #include "vcs/zcode_write_scope.h"
 #include "vcs/zcode_patch.h"
+#include "vcs/zcode_candidate_bundle.h"
 #include "vcs/vcs.h"
 
 #include <stdio.h>
@@ -677,6 +678,12 @@ static int test_zd_work_context(void)
         ASSERT(context.fixed_input != NULL);
         for (size_t i = 0; i < context.fixed_input_len; i++)
             context.fixed_input[i] = (uint8_t)(i * 31u + 7u);
+        context.candidate_authority_len = 73;
+        context.candidate_authority = zcl_malloc(
+            context.candidate_authority_len, "test.context.authority");
+        ASSERT(context.candidate_authority != NULL);
+        for (size_t i = 0; i < context.candidate_authority_len; i++)
+            context.candidate_authority[i] = (uint8_t)(i * 17u + 3u);
         uint8_t package_root[32], action_root[32], direct_action[32];
         uint8_t input_root[32];
         ASSERT_EQ(vcs_zcode_work_context_action_root(
@@ -690,7 +697,7 @@ static int test_zd_work_context(void)
         ASSERT(vcs_package_store_package_status(store, package_root,
                                                  &status));
         ASSERT(status.complete);
-        ASSERT_EQ(status.total_chunks, 2);
+        ASSERT_EQ(status.total_chunks, 3);
         struct vcs_zcode_work_context_v1 loaded;
         ASSERT_EQ(vcs_zcode_work_context_get(store, package_root, 1500,
                                               &loaded),
@@ -704,6 +711,11 @@ static int test_zd_work_context(void)
         ASSERT_EQ(loaded.fixed_input_len, context.fixed_input_len);
         ASSERT(memcmp(loaded.fixed_input, context.fixed_input,
                       context.fixed_input_len) == 0);
+        ASSERT_EQ(loaded.candidate_authority_len,
+                  context.candidate_authority_len);
+        ASSERT(memcmp(loaded.candidate_authority,
+                      context.candidate_authority,
+                      context.candidate_authority_len) == 0);
         uint8_t test_action[32], test_input[32];
         ASSERT_EQ(vcs_zcode_work_context_action_root_for_kind(
                       &loaded, VCS_BUILD_ACTION_KIND_TEST_V1, 1500,
@@ -1592,6 +1604,79 @@ static int test_zd_improve_command(void)
         ASSERT_EQ(vcs_zcode_patch_verify_cas(
                       workspace, &task, &missing_patch),
                   VCS_ZCODE_PATCH_CAS);
+        uint8_t *authority_bundle = NULL, *authority_bundle_again = NULL;
+        size_t authority_bundle_len = 0, authority_bundle_again_len = 0;
+        ASSERT_EQ(vcs_zcode_candidate_bundle_export(
+                      workspace, &task, &candidate, &authority_bundle,
+                      &authority_bundle_len),
+                  VCS_ZCODE_CANDIDATE_BUNDLE_OK);
+        ASSERT_EQ(vcs_zcode_candidate_bundle_export(
+                      workspace, &task, &candidate, &authority_bundle_again,
+                      &authority_bundle_again_len),
+                  VCS_ZCODE_CANDIDATE_BUNDLE_OK);
+        ASSERT_EQ(authority_bundle_len, authority_bundle_again_len);
+        ASSERT(memcmp(authority_bundle, authority_bundle_again,
+                      authority_bundle_len) == 0);
+        free(authority_bundle_again);
+        char transfer_dir[256], receiver[256], corrupt_receiver[256];
+        test_make_tmpdir(transfer_dir, sizeof(transfer_dir), "zcode_dev",
+                         "authority_transfer");
+        struct vcs_package_store *transfer_store = vcs_package_store_open(
+            transfer_dir, UINT64_C(256) * 1024u * 1024u);
+        ASSERT(transfer_store != NULL);
+        struct vcs_zcode_work_context_v1 transfer;
+        vcs_zcode_work_context_init(&transfer);
+        transfer.task = task; transfer.candidate = candidate;
+        transfer.proof_policy = policy;
+        ASSERT(zcl_hex_decode_lower(sha256_saved, transfer.source_sha256, 32));
+        (void)snprintf(transfer.profile, sizeof(transfer.profile), "dev");
+        transfer.fixed_input_len = sizeof(source) - 1u;
+        transfer.fixed_input = zcl_malloc(transfer.fixed_input_len,
+                                          "test.transfer.input");
+        ASSERT(transfer.fixed_input != NULL);
+        memcpy(transfer.fixed_input, source, transfer.fixed_input_len);
+        transfer.candidate_authority_len = authority_bundle_len;
+        transfer.candidate_authority = zcl_malloc(
+            authority_bundle_len, "test.transfer.authority");
+        ASSERT(transfer.candidate_authority != NULL);
+        memcpy(transfer.candidate_authority, authority_bundle,
+               authority_bundle_len);
+        uint8_t transfer_root[32], transfer_action[32];
+        int64_t transfer_now = (int64_t)platform_time_wall_unix();
+        ASSERT_EQ(vcs_zcode_work_context_put(
+                      transfer_store, &transfer, transfer_now,
+                      transfer_root, transfer_action),
+                  VCS_ZCODE_WORK_CONTEXT_OK);
+        struct vcs_zcode_work_context_v1 received_transfer;
+        ASSERT_EQ(vcs_zcode_work_context_get(
+                      transfer_store, transfer_root, transfer_now,
+                      &received_transfer), VCS_ZCODE_WORK_CONTEXT_OK);
+        ASSERT_EQ(received_transfer.candidate_authority_len,
+                  authority_bundle_len);
+        test_make_tmpdir(receiver, sizeof(receiver), "zcode_dev",
+                         "authority_receiver");
+        ASSERT_EQ(vcs_zcode_candidate_bundle_import(
+                      receiver, &received_transfer.task,
+                      &received_transfer.candidate,
+                      received_transfer.candidate_authority,
+                      received_transfer.candidate_authority_len),
+                  VCS_ZCODE_CANDIDATE_BUNDLE_OK);
+        ASSERT_EQ(vcs_zcode_patch_verify_cas(receiver, &task, &candidate),
+                  VCS_ZCODE_PATCH_OK);
+        vcs_zcode_work_context_free(&received_transfer);
+        vcs_zcode_work_context_free(&transfer);
+        vcs_package_store_close(transfer_store);
+        test_rm_rf(transfer_dir);
+        authority_bundle[authority_bundle_len - 1u] ^= 1u;
+        test_make_tmpdir(corrupt_receiver, sizeof(corrupt_receiver),
+                         "zcode_dev", "authority_corrupt");
+        ASSERT_EQ(vcs_zcode_candidate_bundle_import(
+                      corrupt_receiver, &task, &candidate, authority_bundle,
+                      authority_bundle_len),
+                  VCS_ZCODE_CANDIDATE_BUNDLE_AUTHORITY);
+        ASSERT(!vcs_object_has(corrupt_receiver, candidate.patch_root));
+        free(authority_bundle);
+        test_rm_rf(corrupt_receiver); test_rm_rf(receiver);
         struct db_build_worker worker;
         uint8_t worker_secret[32], worker_key[32];
         ASSERT(build_fabric_worker_identity_load(

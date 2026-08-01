@@ -93,9 +93,7 @@ static const char *boot_zcode_work_action_kind(uint8_t work_kind)
     return NULL;
 }
 
-/* Rebuild the exact fixed action from the fetched content.v2 context. The
- * context bytes become ordinary objects in the existing workspace CAS; only
- * the existing ZBuild ledger receives mutable lifecycle state. */
+/* Rebuild content.v2 into the fixed action; only ZBuild state is mutable. */
 static struct zcl_result boot_zcode_work_admit(
     const struct vcs_zcode_work_request_v1 *request, int64_t now)
 {
@@ -138,6 +136,13 @@ static struct zcl_result boot_zcode_work_admit(
     if (!bound) {
         vcs_zcode_work_context_free(&context);
         return ZCL_ERR(-1, "context does not reconstruct the signed request");
+    }
+    enum vcs_zcode_candidate_bundle_result authority =
+        vcs_zcode_work_context_import_authority(s_work_workspace, &context);
+    if (authority != VCS_ZCODE_CANDIDATE_BUNDLE_OK) {
+        vcs_zcode_work_context_free(&context);
+        return ZCL_ERR(-1, "candidate authority: %s",
+            vcs_zcode_candidate_bundle_result_string(authority));
     }
     uint8_t task_wire[VCS_ZCODE_TASK_WIRE_BYTES];
     uint8_t candidate_wire[VCS_ZCODE_CANDIDATE_WIRE_BYTES];
