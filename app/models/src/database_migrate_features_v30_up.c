@@ -583,6 +583,26 @@ int node_db_migrate_features_v30_up(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 44) {
+        /* v44: one receipt ledger, explicit trust semantics. Existing rows
+         * were admitted only through the approved local receipt path. Remote
+         * canonical receipts enter as observations and cannot inherit that
+         * authority merely by occupying the same indexed relationship. */
+        node_db_exec(ndb,
+            "ALTER TABLE build_receipts ADD COLUMN trust_state TEXT NOT NULL "
+            "DEFAULT 'LOCAL_ACCEPTED' CHECK(trust_state IN "
+            "('LOCAL_ACCEPTED','REMOTE_OBSERVED','LOCAL_REPRODUCED',"
+            "'QUORUM_MATCHED','REJECTED'))");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_build_receipts_action_trust "
+            "ON build_receipts(action_id,trust_state,created_at)");
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('044')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 44);
+        current_ver = 44;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }

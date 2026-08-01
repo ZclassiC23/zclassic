@@ -25,6 +25,7 @@
 #define VCS_ZCODE_PROOF_POLICY_DOMAIN "zcl.zcode.proof_policy.v1"
 #define VCS_ZCODE_REVIEW_DOMAIN "zcl.zcode.review.v1"
 #define VCS_ZCODE_WORK_RECEIPT_DOMAIN "zcl.zcode.work_receipt.v1"
+#define VCS_ZCODE_PROOF_SET_DOMAIN "zcl.zcode.proof_set.v1"
 
 #define VCS_ZCODE_TASK_WIRE_BYTES 318u
 #define VCS_ZCODE_CANDIDATE_WIRE_BYTES 218u
@@ -32,6 +33,10 @@
 #define VCS_ZCODE_REVIEW_WIRE_BYTES 219u
 #define VCS_ZCODE_WORK_RECEIPT_BODY_BYTES 384u
 #define VCS_ZCODE_WORK_RECEIPT_WIRE_BYTES 448u
+#define VCS_ZCODE_PROOF_SET_HEADER_BYTES 12u
+#define VCS_ZCODE_PROOF_SET_MAX_RECEIPTS 64u
+#define VCS_ZCODE_PROOF_SET_WIRE_MAX \
+    (VCS_ZCODE_PROOF_SET_HEADER_BYTES + VCS_ZCODE_PROOF_SET_MAX_RECEIPTS * 32u)
 
 #define VCS_ZCODE_TASK_MAX_PATCH_BYTES (UINT64_C(64) * 1024u * 1024u)
 #define VCS_ZCODE_TASK_MAX_CONTEXT_BYTES (UINT64_C(64) * 1024u * 1024u)
@@ -253,6 +258,17 @@ enum vcs_zcode_dev_error vcs_zcode_work_receipt_parse(
     struct vcs_zcode_work_receipt_v1 *out);
 enum vcs_zcode_dev_error vcs_zcode_work_receipt_id(
     const struct vcs_zcode_work_receipt_v1 *receipt, uint8_t out[32]);
+
+/* Canonical proof-set wires contain strictly ascending, unique canonical
+ * work-receipt roots. They are the immutable evidence root reviews bind. */
+enum vcs_zcode_dev_error vcs_zcode_proof_set_serialize(
+    const uint8_t (*receipt_roots)[32], size_t count, uint8_t *out,
+    size_t out_cap, size_t *out_len);
+enum vcs_zcode_dev_error vcs_zcode_proof_set_parse(
+    const uint8_t *wire, size_t wire_len, uint8_t (*receipt_roots)[32],
+    size_t roots_cap, size_t *count);
+enum vcs_zcode_dev_error vcs_zcode_proof_set_root(
+    const uint8_t (*receipt_roots)[32], size_t count, uint8_t out[32]);
 enum vcs_zcode_dev_error vcs_zcode_work_receipt_seal(
     struct vcs_zcode_work_receipt_v1 *receipt, const uint8_t secret[32],
     const uint8_t pubkey[32]);

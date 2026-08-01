@@ -126,6 +126,72 @@ void zcl_native_handle_zcode_use(
         zcl_native_handle_zcode_package_add_plan(request, reply);
 }
 
+void zcl_native_handle_zcode_evidence(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (!request || !reply) return;
+    const char *workspace_arg = zdev_str(request->input, "workspace");
+    const char *action_id = zdev_str(request->input, "action_id");
+    const char *datadir = zdev_str(request->input, "datadir");
+    if (!datadir || !datadir[0]) datadir = zcl_native_command_datadir();
+    char workspace[ZDEV_PATH_MAX];
+    uint8_t action_check[32];
+    if (!workspace_arg || !realpath(workspace_arg, workspace) || !datadir ||
+        !action_id || !zcl_hex_decode_lower(action_id, action_check, 32)) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+            "BAD_EVIDENCE_INPUT", "validate", false, false,
+            "workspace must resolve and action_id must be 64 lowercase hex",
+            "zcode.evidence");
+        return;
+    }
+    char db_path[ZDEV_PATH_MAX];
+    int n = snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
+    struct node_db ndb = {0};
+    if (n <= 0 || (size_t)n >= sizeof(db_path) ||
+        !node_db_open(&ndb, db_path)) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_FAILED,
+            "DATABASE_OPEN_FAILED", "evaluate", true, false,
+            "the ZBuild ledger could not be opened", "zcode.evidence");
+        return;
+    }
+    struct build_fabric_proof_evaluation evaluation;
+    struct zcl_result result = build_fabric_proof_evaluate(
+        &ndb, workspace, action_id,
+        (int64_t)platform_time_wall_unix(), &evaluation);
+    node_db_close(&ndb);
+    if (!result.ok) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+            ZCL_COMMAND_EXIT_FAILED, "EVIDENCE_EVALUATION_FAILED",
+            "evaluate", true, false, result.message, "zcode.evidence");
+        return;
+    }
+    (void)json_push_kv_str(&reply->data, "action_id", action_id);
+    (void)json_push_kv_int(&reply->data, "valid_receipts",
+                           (int64_t)evaluation.valid_receipts);
+    (void)json_push_kv_int(&reply->data, "approved_distinct_signers",
+                           (int64_t)evaluation.approved_distinct_signers);
+    (void)json_push_kv_int(&reply->data, "matching_receipts",
+                           (int64_t)evaluation.matching_receipts);
+    (void)json_push_kv_bool(&reply->data, "local_reproduced",
+                            evaluation.local_reproduced);
+    (void)json_push_kv_bool(&reply->data, "quorum_satisfied",
+                            evaluation.quorum_satisfied);
+    (void)json_push_kv_bool(&reply->data, "compile_satisfied",
+                            evaluation.compile_satisfied);
+    (void)json_push_kv_bool(&reply->data, "policy_satisfied",
+                            evaluation.policy_satisfied);
+    (void)json_push_kv_str(&reply->data, "output_root",
+                           evaluation.output_root_sha3);
+    (void)json_push_kv_str(&reply->data, "proof_set_root",
+                           evaluation.proof_set_root_sha3);
+    (void)json_push_kv_str(&reply->data, "authority",
+        evaluation.local_reproduced ? "LOCAL_REPRODUCTION" :
+        evaluation.quorum_satisfied ? "APPROVED_SIGNER_QUORUM" :
+        "UNTRUSTED");
+}
+
 // long-function-ok:one-task-admission — canonical objects, CAS writes, and
 // the ZBuild ledger commit form one fail-closed local admission transaction;
 // no candidate or proof is claimed by this planning command.

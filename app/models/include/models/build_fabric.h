@@ -26,6 +26,7 @@ enum {
     BUILD_FABRIC_CONFINEMENT_MAX = 255,
     BUILD_FABRIC_DESCRIPTOR_MAX = 255,
     BUILD_FABRIC_SIGNATURE_HEX = 128,
+    BUILD_FABRIC_TRUST_STATE_MAX = 23,
 };
 
 struct db_build_job {
@@ -95,6 +96,7 @@ struct db_build_receipt {
     char work_receipt_sha3[BUILD_FABRIC_ID_HEX + 1];
     char signature[BUILD_FABRIC_SIGNATURE_HEX + 1];
     char confinement[BUILD_FABRIC_CONFINEMENT_MAX + 1];
+    char trust_state[BUILD_FABRIC_TRUST_STATE_MAX + 1];
     int exit_status;
     int64_t created_at;
 };

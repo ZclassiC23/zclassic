@@ -261,6 +261,13 @@ bool db_build_receipt_validate(const struct db_build_receipt *row,
                                      BUILD_FABRIC_SIGNATURE_HEX),
                      "signature", "must be a 64-byte signature in hex");
     validates_string_present(errors, row->confinement, "confinement");
+    validates_custom(errors,
+                     strcmp(row->trust_state, "LOCAL_ACCEPTED") == 0 ||
+                         strcmp(row->trust_state, "REMOTE_OBSERVED") == 0 ||
+                         strcmp(row->trust_state, "LOCAL_REPRODUCED") == 0 ||
+                         strcmp(row->trust_state, "QUORUM_MATCHED") == 0 ||
+                         strcmp(row->trust_state, "REJECTED") == 0,
+                     "trust_state", "must name a receipt trust state");
     validates_custom(errors, row->exit_status >= 0 && row->exit_status <= 255,
                      "exit_status", "must be between 0 and 255");
     validates_non_negative(errors, row, created_at);
@@ -386,8 +393,8 @@ bool db_build_receipt_save(struct node_db *ndb,
     AR_ADHOC_SAVE(ndb, st,
         "INSERT OR REPLACE INTO build_receipts "
         "(receipt_id,action_id,job_id,worker_id,lease_id,action_sha3,output_sha3,"
-        "signature,confinement,exit_status,created_at,work_receipt_sha3) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+        "signature,confinement,exit_status,created_at,work_receipt_sha3,"
+        "trust_state) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
         build_receipt_callbacks_ready(), "build_receipt", row,
         db_build_receipt_validate,
         AR_BIND_TEXT(st, 1, row->receipt_id);
@@ -401,7 +408,8 @@ bool db_build_receipt_save(struct node_db *ndb,
         AR_BIND_TEXT(st, 9, row->confinement);
         AR_BIND_INT(st, 10, row->exit_status);
         AR_BIND_INT(st, 11, row->created_at);
-        AR_BIND_TEXT(st, 12, row->work_receipt_sha3));
+        AR_BIND_TEXT(st, 12, row->work_receipt_sha3);
+        AR_BIND_TEXT(st, 13, row->trust_state));
 }
 
 static void build_job_read(struct db_build_job *out, sqlite3_stmt *st)
@@ -481,6 +489,7 @@ static void build_receipt_read(struct db_build_receipt *out, sqlite3_stmt *st)
     out->created_at = AR_COL_INT(st, 10);
     AR_READ_STR(st, 11, out->work_receipt_sha3,
                 sizeof(out->work_receipt_sha3));
+    AR_READ_STR(st, 12, out->trust_state, sizeof(out->trust_state));
 }
 
 #define BUILD_JOB_COLS "job_id,source_sha256,source_cas_sha3,toolchain_sha3," \
@@ -495,7 +504,7 @@ static void build_receipt_read(struct db_build_receipt *out, sqlite3_stmt *st)
     "revoked,approved_at,expires_at,last_seen_at"
 #define BUILD_RECEIPT_COLS "receipt_id,action_id,job_id,worker_id,lease_id," \
     "action_sha3,output_sha3,signature,confinement,exit_status,created_at," \
-    "work_receipt_sha3"
+    "work_receipt_sha3,trust_state"
 
 bool db_build_job_find(struct node_db *ndb, const char *job_id,
                        struct db_build_job *out)

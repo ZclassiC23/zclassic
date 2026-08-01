@@ -278,8 +278,11 @@ void zcl_native_handle_metaverse_build_receipt(
     (void)json_push_kv_str(&reply->data, "worker_id", row.worker_id);
     (void)json_push_kv_str(&reply->data, "action_sha3", row.action_sha3);
     (void)json_push_kv_str(&reply->data, "output_sha3", row.output_sha3);
+    (void)json_push_kv_str(&reply->data, "work_receipt_sha3",
+                           row.work_receipt_sha3);
     (void)json_push_kv_str(&reply->data, "signature", row.signature);
     (void)json_push_kv_str(&reply->data, "confinement", row.confinement);
+    (void)json_push_kv_str(&reply->data, "trust_state", row.trust_state);
     (void)json_push_kv_int(&reply->data, "exit_status", row.exit_status);
     (void)json_push_kv_int(&reply->data, "created_at", row.created_at);
 }

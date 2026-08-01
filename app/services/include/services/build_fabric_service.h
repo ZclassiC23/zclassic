@@ -9,6 +9,9 @@
 
 #include <stdint.h>
 
+struct vcs_zcode_work_request_v1;
+struct vcs_zcode_work_result_v1;
+
 enum {
     BUILD_FABRIC_LEASE_SECONDS_MIN = 5,
     BUILD_FABRIC_LEASE_SECONDS_MAX = 600,
@@ -72,6 +75,34 @@ struct zcl_result build_fabric_worker_revoke(
  * Ed25519 signature over receipt_id before accepting the output receipt. */
 struct zcl_result build_fabric_receipt_accept(
     struct node_db *ndb, const struct db_build_receipt *receipt, int64_t now);
+
+/* Persist a self-authenticating remote work_receipt.v1 as explicitly
+ * untrusted evidence. It never advances the action lifecycle and never makes
+ * the signer approved; local reproduction or policy quorum is a later step. */
+struct zcl_result build_fabric_receipt_observe_remote(
+    struct node_db *ndb, const char *workspace,
+    const struct vcs_zcode_work_request_v1 *request,
+    const struct vcs_zcode_work_result_v1 *result, int64_t now,
+    char receipt_id[BUILD_FABRIC_ID_HEX + 1]);
+
+struct build_fabric_proof_evaluation {
+    size_t valid_receipts;
+    size_t approved_distinct_signers;
+    size_t matching_receipts;
+    bool local_reproduced;
+    bool quorum_satisfied;
+    bool compile_satisfied;
+    bool policy_satisfied;
+    char output_root_sha3[BUILD_FABRIC_ID_HEX + 1];
+    char proof_set_root_sha3[BUILD_FABRIC_ID_HEX + 1];
+};
+
+/* Re-verify canonical receipt bytes from CAS, apply the task's exact proof
+ * policy, and promote observations only through local reproduction or a
+ * distinct approved-signer quorum. */
+struct zcl_result build_fabric_proof_evaluate(
+    struct node_db *ndb, const char *workspace, const char *action_id,
+    int64_t now, struct build_fabric_proof_evaluation *out);
 
 /* Canonical build_receipt.v2 projection id (signature excluded). */
 struct zcl_result build_fabric_receipt_id(

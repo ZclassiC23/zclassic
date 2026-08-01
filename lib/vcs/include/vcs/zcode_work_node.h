@@ -95,10 +95,16 @@ size_t vcs_zcode_work_node_inbound_requests(
 bool vcs_zcode_work_node_inbound_request(
     struct vcs_zcode_work_node *node, uint64_t peer, uint64_t request_id,
     struct vcs_zcode_work_request_v1 *out, bool *cancelled);
+bool vcs_zcode_work_node_outbound_request(
+    struct vcs_zcode_work_node *node, uint64_t peer, uint64_t request_id,
+    struct vcs_zcode_work_request_v1 *out);
 bool vcs_zcode_work_node_next_cancel(
     struct vcs_zcode_work_node *node, uint64_t *peer_out,
     struct vcs_zcode_work_cancel_v1 *out);
 bool vcs_zcode_work_node_next_result(
+    struct vcs_zcode_work_node *node, uint64_t *peer_out,
+    struct vcs_zcode_work_result_v1 *out);
+bool vcs_zcode_work_node_peek_result(
     struct vcs_zcode_work_node *node, uint64_t *peer_out,
     struct vcs_zcode_work_result_v1 *out);
 

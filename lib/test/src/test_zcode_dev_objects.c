@@ -142,6 +142,27 @@ static int test_zd_policy_and_task(void)
         ASSERT_EQ(vcs_zcode_task_parse(task_wire, sizeof(task_wire) - 1,
                                        &task2),
                   VCS_ZCODE_DEV_ERR_WIRE_SIZE);
+        uint8_t proof_roots[2][32], parsed_roots[2][32], proof_set_root[32];
+        zd_root(proof_roots[0], 21); zd_root(proof_roots[1], 22);
+        uint8_t proof_set_wire[VCS_ZCODE_PROOF_SET_WIRE_MAX];
+        size_t proof_set_len = 0, parsed_count = 0;
+        ASSERT_EQ(vcs_zcode_proof_set_serialize(
+            (const uint8_t (*)[32])proof_roots, 2, proof_set_wire,
+            sizeof(proof_set_wire), &proof_set_len), VCS_ZCODE_DEV_OK);
+        ASSERT_EQ(vcs_zcode_proof_set_parse(
+            proof_set_wire, proof_set_len, parsed_roots, 2, &parsed_count),
+            VCS_ZCODE_DEV_OK);
+        ASSERT_EQ(parsed_count, 2);
+        ASSERT_EQ(vcs_zcode_proof_set_root(
+            (const uint8_t (*)[32])proof_roots, 2, proof_set_root),
+            VCS_ZCODE_DEV_OK);
+        uint8_t swap[32]; memcpy(swap, proof_roots[0], 32);
+        memcpy(proof_roots[0], proof_roots[1], 32);
+        memcpy(proof_roots[1], swap, 32);
+        ASSERT_EQ(vcs_zcode_proof_set_serialize(
+            (const uint8_t (*)[32])proof_roots, 2, proof_set_wire,
+            sizeof(proof_set_wire), &proof_set_len),
+            VCS_ZCODE_DEV_ERR_POLICY);
         PASS();
     } _test_next:;
     return failures;
@@ -773,7 +794,106 @@ static int test_zd_improve_command(void)
         ASSERT_EQ(vcs_zcode_work_receipt_validate_for_candidate(
             &task, &candidate, &work_receipt,
             (int64_t)platform_time_wall_unix()), VCS_ZCODE_DEV_OK);
+
+        struct vcs_zcode_work_request_v1 remote_request = {
+            .request_id = 991,
+            .work_kind = VCS_ZCODE_WORK_BUILD,
+            .target = VCS_ZCODE_WORK_TARGET_LINUX_X86_64_V3,
+            .max_cpu_seconds = 60,
+            .max_memory_bytes = UINT64_C(512) * 1024u * 1024u,
+            .max_output_bytes = UINT64_C(64) * 1024u * 1024u,
+            .deadline_unix = expires - 1,
+        };
+        ASSERT(zcl_hex_decode_lower(task_hex, remote_request.task_root, 32));
+        ASSERT(zcl_hex_decode_lower(candidate_hex,
+                                    remote_request.candidate_root, 32));
+        ASSERT(zcl_hex_decode_lower(action_id,
+                                    remote_request.action_root, 32));
+        ASSERT(zcl_hex_decode_lower(action.input_root_sha3,
+                                    remote_request.input_root, 32));
+        zd_root(remote_request.context_root, 92);
+        memcpy(remote_request.proof_policy_root, task.proof_policy_root, 32);
+        memcpy(remote_request.toolchain_capsule_root,
+               task.toolchain_capsule_root, 32);
+        uint8_t requester_seed[32], requester_secret[32], requester_key[32];
+        zd_root(requester_seed, 93);
+        ed25519_keypair(requester_key, requester_secret, requester_seed);
+        ASSERT(vcs_zcode_work_request_seal(
+            &remote_request, requester_secret, requester_key));
+        struct vcs_zcode_work_result_v1 remote_result;
+        zd_swarm_result(&remote_result, &remote_request, 94, 95);
+        memcpy(remote_result.output_root, work_receipt.output_root, 32);
+        memcpy(remote_result.receipt.output_root, work_receipt.output_root, 32);
+        remote_result.receipt.started_unix = now > 0 ? now - 1 : 0;
+        remote_result.receipt.finished_unix = now;
+        uint8_t remote_seed[32], remote_secret[32], remote_key[32];
+        zd_root(remote_seed, 95);
+        ed25519_keypair(remote_key, remote_secret, remote_seed);
+        ASSERT_EQ(vcs_zcode_work_receipt_seal(
+            &remote_result.receipt, remote_secret, remote_key),
+            VCS_ZCODE_DEV_OK);
+        char observed_id[65];
+        ASSERT(build_fabric_receipt_observe_remote(
+            &ndb, workspace, &remote_request, &remote_result, now,
+            observed_id).ok);
+        struct db_build_receipt observed;
+        ASSERT(db_build_receipt_find(&ndb, observed_id, &observed));
+        ASSERT_STR_EQ(observed.trust_state, "REMOTE_OBSERVED");
+        ASSERT_STR_EQ(observed.work_receipt_sha3, observed_id);
+        ASSERT(!build_fabric_receipt_accept(&ndb, &observed, now).ok);
+        struct db_build_worker remote_worker;
+        ASSERT(db_build_worker_find(&ndb, observed.worker_id,
+                                    &remote_worker));
+        ASSERT(!remote_worker.approved);
+        ASSERT(build_fabric_worker_approve(&ndb, &remote_worker, now).ok);
+        struct vcs_zcode_work_result_v1 second_remote = remote_result;
+        uint8_t second_seed[32], second_secret[32], second_key[32];
+        zd_root(second_seed, 96);
+        ed25519_keypair(second_key, second_secret, second_seed);
+        ASSERT_EQ(vcs_zcode_work_receipt_seal(
+            &second_remote.receipt, second_secret, second_key),
+            VCS_ZCODE_DEV_OK);
+        char second_observed_id[65];
+        ASSERT(build_fabric_receipt_observe_remote(
+            &ndb, workspace, &remote_request, &second_remote, now,
+            second_observed_id).ok);
+        struct db_build_receipt second_observed;
+        ASSERT(db_build_receipt_find(&ndb, second_observed_id,
+                                     &second_observed));
+        struct db_build_worker second_worker;
+        ASSERT(db_build_worker_find(&ndb, second_observed.worker_id,
+                                    &second_worker));
+        ASSERT(build_fabric_worker_approve(&ndb, &second_worker, now).ok);
+        struct build_fabric_proof_evaluation evaluation;
+        int64_t evaluation_now = (int64_t)platform_time_wall_unix();
+        ASSERT(build_fabric_proof_evaluate(
+            &ndb, workspace, action_id, evaluation_now, &evaluation).ok);
+        ASSERT(evaluation.local_reproduced);
+        ASSERT(evaluation.quorum_satisfied);
+        ASSERT(evaluation.approved_distinct_signers >= 2);
+        ASSERT(evaluation.compile_satisfied);
+        ASSERT(!evaluation.policy_satisfied);
+        ASSERT(strlen(evaluation.proof_set_root_sha3) == 64);
+        ASSERT(db_build_receipt_find(&ndb, observed_id, &observed));
+        ASSERT_STR_EQ(observed.trust_state, "LOCAL_REPRODUCED");
         node_db_close(&ndb);
+
+        struct json_value evidence_input;
+        json_init(&evidence_input); json_set_object(&evidence_input);
+        (void)json_push_kv_str(&evidence_input, "workspace", workspace);
+        (void)json_push_kv_str(&evidence_input, "datadir", workspace);
+        (void)json_push_kv_str(&evidence_input, "action_id", action_id);
+        struct zcl_command_request evidence_request = {
+            .input = &evidence_input,
+        };
+        struct zcl_command_reply evidence_reply;
+        zcl_command_reply_init(&evidence_reply, "zcl.zcode_evidence.v1");
+        zcl_native_handle_zcode_evidence(&evidence_request, &evidence_reply);
+        ASSERT_EQ(evidence_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&evidence_reply.data, "authority")),
+                      "LOCAL_REPRODUCTION");
+        zcl_command_reply_free(&evidence_reply);
+        json_free(&evidence_input);
         zcl_command_reply_free(&reply);
         json_free(&input);
         test_rm_rf(dir);

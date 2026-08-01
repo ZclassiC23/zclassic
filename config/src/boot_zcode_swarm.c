@@ -320,6 +320,43 @@ static void boot_zcode_work_publish_results(int64_t now)
     }
 }
 
+static void boot_zcode_work_observe_results(int64_t now)
+{
+    struct node_db *ndb = app_runtime_node_db();
+    if (!s_work || !ndb || !ndb->open || !boot_zcode_work_workspace())
+        return;
+    for (;;) {
+        uint64_t peer = 0;
+        struct vcs_zcode_work_result_v1 result;
+        if (!vcs_zcode_work_node_peek_result(s_work, &peer, &result)) break;
+        struct vcs_zcode_work_request_v1 request;
+        if (!vcs_zcode_work_node_outbound_request(
+                s_work, peer, result.request_id, &request)) {
+            LOG_ERROR("net.zcode_swarm", "verified result lost its request");
+            break;
+        }
+        char receipt_id[65];
+        struct zcl_result observed = build_fabric_receipt_observe_remote(
+            ndb, s_work_workspace, &request, &result, now, receipt_id);
+        if (!observed.ok) {
+            LOG_WARN("net.zcode_swarm", "result %llu not durable: %s",
+                     (unsigned long long)result.request_id,
+                     observed.message);
+            break;
+        }
+        uint64_t drained_peer = 0;
+        struct vcs_zcode_work_result_v1 drained;
+        if (!vcs_zcode_work_node_next_result(
+                s_work, &drained_peer, &drained) || drained_peer != peer ||
+            drained.request_id != result.request_id) {
+            LOG_ERROR("net.zcode_swarm", "work result FIFO changed");
+            break;
+        }
+        LOG_INFO("net.zcode_swarm", "remote receipt %s observed untrusted",
+                 receipt_id);
+    }
+}
+
 static bool boot_zcode_work_refresh(struct boot_svc_ctx *svc, int64_t wall)
 {
     if (!s_work || !GetBoolArg("-buildworker", false)) return true;
@@ -660,6 +697,7 @@ void boot_zcode_swarm_tick(struct msg_processor *mp, struct p2p_node *node,
         boot_zcode_work_drain_admissions(wall);
         boot_zcode_work_drain_cancels(wall);
         boot_zcode_work_publish_results(wall);
+        boot_zcode_work_observe_results(wall);
         if (GetBoolArg("-buildworker", false) && wall % 300 == 0)
             (void)boot_zcode_work_refresh((struct boot_svc_ctx *)ctx, wall);
     }

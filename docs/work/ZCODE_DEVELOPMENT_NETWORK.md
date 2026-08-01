@@ -36,18 +36,18 @@ ledger, worker trust list, or P2P transport.
 | Source snapshot identity | resident dev source CAS plus content.v2 for portable package trees | Live locally; not yet one network task surface |
 | Code context | `lib/codeindex/` plus immutable source chunks | Live index; bounded context-capsule publication is not yet wired |
 | Fixed build action | `vcs_build_action_v1` | Live codec; V1 is preprocessed-TU compile only |
-| Build coordinator ledger | `build_jobs`, `build_actions`, `build_workers`, `build_receipts` | Live schema v43, models, native/REST reads, plan/submit/cancel/trust/lease-bound receipt checks |
+| Build coordinator ledger | `build_jobs`, `build_actions`, `build_workers`, `build_receipts` | Live schema v44. Receipt rows explicitly distinguish local acceptance, untrusted remote observation, local reproduction, and approved-signer quorum |
 | Local package confinement | `zclassic23-package-verify` | Live: declarative recipe, Landlock/seccomp/rlimits, no network |
 | ZBuild worker execution | existing build-fabric runtime | Live locally for the fixed preprocessed-TU GCC action when `-buildworker` is enabled: durable identity, bounded leases, full confinement, CAS artifact, signed receipt, and local fallback |
 | Package P2P | `package_swarm_node` and `zpkgswm` | Live for immutable package bytes |
-| Work P2P | signed work frames over package swarm/CAS | Live `ZCWS` multiplex on existing `zpkgswm` sessions; canonical context fetch, ZBuild admission, cancellation, and signed result return are live. Requester-side durable result indexing and quorum orchestration remain pending |
+| Work P2P | signed work frames over package swarm/CAS | Live `ZCWS` multiplex on existing `zpkgswm` sessions: canonical context fetch, ZBuild admission, cancellation, signed result return, durable untrusted observation, local reproduction, and approved distinct-signer compile quorum |
 | Agent authority | metaverse grants and signed receipt chain | Live for scoped property operations; task work must never inherit wallet or canonical-node authority |
 | Durability lanes | ZCODE promotion records over source roots | Not live |
 
 The control-plane distinction is load-bearing: a READY command or database row
 does not prove an executor exists. `build.worker` now has an actual supervised
 thread and fixed compiler action; broader recipe test/fuzz actions and remote
-dispatch remain missing.
+agent candidate generation remain missing.
 
 ## Canonical development objects
 
@@ -130,6 +130,13 @@ Cross-object validation refuses stale source, task, candidate, policy,
 toolchain, output, or expiry state. A structurally valid old receipt therefore
 cannot authorize a moved task.
 
+### `proof_set.v1`
+
+Reviews bind one immutable proof-set root. The canonical variable-length wire
+contains 1–64 strictly ascending, unique `work_receipt.v1` roots and is
+domain-separated as `zcl.zcode.proof_set.v1\0`. Receipt order, duplicates, or
+display formatting therefore cannot change which evidence was evaluated.
+
 ### `zcode-work-context.v1`
 
 Remote execution adds no source store or transfer protocol. One fixed context
@@ -148,6 +155,7 @@ ZBuild action. It never accepts a caller-supplied path or command.
 <!-- claim: file-present lib/vcs/include/vcs/zcode_dev.h # the canonical object contract -->
 <!-- claim: symbol-present vcs_zcode_work_receipt_verify lib/vcs/src/zcode_dev.c # signed receipt verification -->
 <!-- claim: symbol-present vcs_zcode_work_receipt_validate_for_candidate lib/vcs/src/zcode_dev.c # cross-object staleness gate -->
+<!-- claim: symbol-present vcs_zcode_proof_set_root lib/vcs/src/zcode_proof_set.c # immutable evaluated evidence set -->
 
 ## Ordered delivery
 
@@ -215,6 +223,15 @@ preserves the local action. Adapter invocation, review, explicit acceptance,
 and publication are still separate missing stages and are not claimed by
 command discovery.
 
+`zcode evidence` re-reads every canonical receipt from CAS, rechecks task,
+candidate, action, input, policy, toolchain, signature, expiry, proof age, and
+worker approval, then emits the exact `proof_set.v1` root. A remote receipt is
+stored as `REMOTE_OBSERVED`; it advances only to `LOCAL_REPRODUCED` when a local
+accepted build has the same output, or to `QUORUM_MATCHED` when the task's
+minimum is met by distinct operator-approved, non-revoked signers. Compile
+evidence never claims the full policy when test, fuzz, or review classes remain
+unsatisfied.
+
 ### D. Requester-coordinated P2P work
 
 - [x] Freeze signed capability/request/result/cancel frames. Requests bind the
@@ -230,8 +247,10 @@ command discovery.
   ledger, propagate signed cancellation, and return the accepted action's
   canonical receipt/result. A requester retry after worker restart reattaches
   to the idempotent durable action; no in-memory request queue is authority.
-- [ ] Persist verified requester results as untrusted CAS projections and drive
-  the selected local-reproduction or distinct-matching-signer quorum decision.
+- [x] Persist verified requester results in the same build-receipt ledger and
+  workspace CAS as explicitly `REMOTE_OBSERVED`, then drive local reproduction
+  or the task-selected distinct approved-signer compile quorum. The canonical
+  proof-set root is stored for later `review.v1` binding.
 - Extend peer advertisements with bounded action kinds, toolchain capsule,
   target, confinement facts, resource ceilings, queue headroom, and expiry.
 - The requester owns job selection, leases, cancellation, quorum, and local

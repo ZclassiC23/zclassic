@@ -179,8 +179,11 @@ size_t api_serve_build_receipt(const char *receipt_id, uint8_t *response,
     (void)json_push_kv_str(&body, "lease_id", row.lease_id);
     (void)json_push_kv_str(&body, "action_sha3", row.action_sha3);
     (void)json_push_kv_str(&body, "output_sha3", row.output_sha3);
+    (void)json_push_kv_str(&body, "work_receipt_sha3",
+                           row.work_receipt_sha3);
     (void)json_push_kv_str(&body, "signature", row.signature);
     (void)json_push_kv_str(&body, "confinement", row.confinement);
+    (void)json_push_kv_str(&body, "trust_state", row.trust_state);
     (void)json_push_kv_int(&body, "exit_status", row.exit_status);
     (void)json_push_kv_int(&body, "created_at", row.created_at);
     return build_rest_reply(&body, response, response_max);

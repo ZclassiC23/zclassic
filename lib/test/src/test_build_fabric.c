@@ -107,6 +107,8 @@ static void bf_receipt(struct db_build_receipt *row)
     row->signature[BUILD_FABRIC_SIGNATURE_HEX] = '\0';
     (void)snprintf(row->confinement, sizeof(row->confinement),
                    "landlock=1,seccomp=1,network=0");
+    (void)snprintf(row->trust_state, sizeof(row->trust_state),
+                   "LOCAL_ACCEPTED");
     row->exit_status = 0;
     row->created_at = 103;
 }
@@ -129,7 +131,7 @@ static bool bf_canonicalize(struct db_build_job *job,
 static int test_bf_migration(void)
 {
     int failures = 0;
-    TEST("build_fabric: v42 migration creates leases and indexed resources") {
+    TEST("build_fabric: v44 migration creates leases and trust state") {
         struct node_db ndb;
         char dir[256], path[320];
         ASSERT(bf_open(&ndb, dir, sizeof(dir), path, sizeof(path), "migration"));
@@ -153,6 +155,12 @@ static int test_bf_migration(void)
         ASSERT(sqlite3_prepare_v2(ndb.db,
             "SELECT count(*) FROM pragma_table_info('build_receipts') "
             "WHERE name='lease_id'", -1, &st, NULL) == SQLITE_OK);
+        ASSERT(sqlite3_step(st) == SQLITE_ROW); /* raw-sql-ok:test-readonly-count */
+        ASSERT_EQ(sqlite3_column_int(st, 0), 1);
+        sqlite3_finalize(st);
+        ASSERT(sqlite3_prepare_v2(ndb.db,
+            "SELECT count(*) FROM pragma_table_info('build_receipts') "
+            "WHERE name='trust_state'", -1, &st, NULL) == SQLITE_OK);
         ASSERT(sqlite3_step(st) == SQLITE_ROW); /* raw-sql-ok:test-readonly-count */
         ASSERT_EQ(sqlite3_column_int(st, 0), 1);
         sqlite3_finalize(st);

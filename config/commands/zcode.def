@@ -92,6 +92,27 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_zcode_improve)
 
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.package.dev.evidence", "zcode.package.dev", "zcode.evidence",
+    "Evaluate candidate evidence",
+    "Re-verifies canonical work receipts from the existing workspace CAS, "
+    "applies the task-bound proof_policy.v1, and reports whether the selected "
+    "output has local reproduction or the user's approved distinct-signer "
+    "quorum. Remote observations remain untrusted until one of those gates "
+    "passes. Emits and stores the canonical proof-set root used by review.v1.",
+    0, "zcode,evidence,receipt,quorum,reproduce,proof",
+    "zcl.zcode_evidence.input.v1", "zcl.zcode_evidence.v1",
+    "workspace,datadir,action_id", "workspace,action_id",
+    "zclassic23 zcode evidence --input='{\"workspace\":\"/src/project\",\"action_id\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_evidence)
+
 ZCL_COMMAND_BRANCH("zcode.package", "zcode",
                    "Published packages",
                    ZCL_COMMAND_LAYER_APP)

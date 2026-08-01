@@ -529,6 +529,8 @@ struct zcl_result build_fabric_worker_execute(
     zcl_hex_encode(output_root, 32, receipt.output_sha3);
     (void)snprintf(receipt.confinement, sizeof(receipt.confinement),
                    "landlock=1,seccomp=1,rlimits=1,network=0,gcc=fixed");
+    (void)snprintf(receipt.trust_state, sizeof(receipt.trust_state),
+                   "LOCAL_ACCEPTED");
     receipt.exit_status = 0;
     receipt.created_at = work_finished;
     if (zcode_context) {

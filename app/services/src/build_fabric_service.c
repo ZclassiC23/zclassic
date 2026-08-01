@@ -605,6 +605,8 @@ struct zcl_result build_fabric_receipt_accept(
 {
     if (!ndb || !ndb->open || !receipt)
         return ZCL_ERR(-1, "receipt acceptance requires an open db and receipt");
+    if (strcmp(receipt->trust_state, "LOCAL_ACCEPTED") != 0)
+        return ZCL_ERR(-1, "only a local accepted receipt may advance an action");
     struct db_build_worker worker;
     if (!db_build_worker_find(ndb, receipt->worker_id, &worker) ||
         !worker.approved || worker.revoked ||

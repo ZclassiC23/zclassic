@@ -657,3 +657,31 @@ bool vcs_zcode_work_node_inbound_request(
     pthread_mutex_unlock(&node->lock);
     return present;
 }
+
+bool vcs_zcode_work_node_outbound_request(
+    struct vcs_zcode_work_node *node, uint64_t peer, uint64_t request_id,
+    struct vcs_zcode_work_request_v1 *out)
+{
+    if (!node || !out || peer == 0 || request_id == 0) return false;
+    pthread_mutex_lock(&node->lock);
+    struct work_track *track = work_find_track(node, peer, request_id, false);
+    bool present = track != NULL;
+    if (present) *out = track->request;
+    pthread_mutex_unlock(&node->lock);
+    return present;
+}
+
+bool vcs_zcode_work_node_peek_result(
+    struct vcs_zcode_work_node *node, uint64_t *peer_out,
+    struct vcs_zcode_work_result_v1 *out)
+{
+    if (!node || !peer_out || !out) return false;
+    pthread_mutex_lock(&node->lock);
+    bool present = node->result_count > 0;
+    if (present) {
+        *peer_out = node->results[node->result_pos].peer;
+        *out = node->results[node->result_pos].result;
+    }
+    pthread_mutex_unlock(&node->lock);
+    return present;
+}
