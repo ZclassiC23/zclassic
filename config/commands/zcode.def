@@ -348,9 +348,17 @@ ZCL_COMMAND_READY_READ(
     "signer-not-approved, self-verification, duplicate-signer). "
     "NO_APPROVED_VERIFIERS names a missing/invalid allowlist file "
     "(<datadir>/zcode/approved_verifiers); UNKNOWN_PACKAGE names a root "
-    "no persisted release claims.",
+    "no persisted release claims. The headline signal is the "
+    "`reproduction` object: BIT-IDENTICAL THIRD-PARTY REPRODUCTION — two "
+    "or more DISTINCT build receipts filed under <datadir>/zcode/receipts "
+    "committing byte-identical output sets for this package+recipe "
+    "(reproduced=true), with a per-receipt rows[] naming the first "
+    "diverging rule on any mismatch. The signer quorum is the latency "
+    "fast path over reproduction, never a substitute for it; any third "
+    "party can run the check with zclassic23-package-verify --emit=<dir> "
+    "--lock-root=<hex> --reproduce-against=<build-report>.",
     ZCL_COMMAND_LIST_BUDGET,
-    "zcode,package,verify,attestation,quorum,verifier,approved",
+    "zcode,package,verify,attestation,quorum,verifier,approved,reproduction",
     "zcl.zcode_package_verify.input.v1", "zcl.zcode_package_verify.v1",
     "root,datadir", "root",
     "zclassic23 zcode package verify --input='{\"root\":\"<64hex>\"}'",

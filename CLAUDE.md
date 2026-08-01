@@ -52,8 +52,11 @@ mechanism) + the `test_consensus_parity` test group (the golden values).
 This is also the bar for reviewing outside PRs (thank + attribute + decline
 consensus-breakers, mine the idea, build it better ourselves).
 
-**Every consensus predicate lives under `core/` and `core/` is byte-sealed.**
-`core/{consensus,chainparams,params,math}` is pinned by `core/MANIFEST.sha3`;
+**Every consensus predicate lives under `core/` and the consensus core is byte-sealed.**
+`core/{consensus,chainparams,params,math}` is pinned by `core/MANIFEST.sha3`,
+along with the block-connection ordering layer named in the Makefile's
+`CORE_SEAL_PATHS` (`lib/validation/src/connect_block.c`, `chainstate.c` +
+their headers — an ordering bug forks exactly as hard as a predicate bug);
 the `check-core-seal` gate fails `make lint` on any drift — *after* you have
 already written the edit. Unlock with `make core-unseal REASON="…"` (owner
 ritual: appends to [`core/UNSEAL.md`](./core/UNSEAL.md), mints a one-commit

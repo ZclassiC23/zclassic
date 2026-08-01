@@ -5820,6 +5820,16 @@ check-observability-pairing: tools/check_observability_pairing
 .PHONY: core-seal core-seal-check core-unseal check-core-seal check-core-include-boundary check-accel-oracle-pinned check-no-adx-overclaim check-simd-os-support
 CORE_MANIFEST := core/MANIFEST.sha3
 CORE_UNSEAL_TOKEN := .core-unseal-token
+# The sealed set: every tracked file under core/ (consensus predicates +
+# parameter tables) PLUS the block-connection ordering layer below. An
+# ordering bug in connect_block/chainstate forks the node exactly as hard as
+# a bug in a sealed check_block predicate (2026-08-01 review), so those files
+# carry the same ritual: editing them requires `make core-unseal REASON=…`.
+CORE_SEAL_PATHS := core/ \
+    lib/validation/src/connect_block.c \
+    lib/validation/src/chainstate.c \
+    lib/validation/include/validation/connect_block.h \
+    lib/validation/include/validation/chainstate.h
 CORE_SEAL_SRCS := tools/core_seal.c lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c lib/support/src/cleanse.c
 
 .PHONY: tools/core_seal
@@ -5831,23 +5841,23 @@ $(BIN_DIR)/core_seal: $(CORE_SEAL_SRCS)
 	    -o $@ $(CORE_SEAL_SRCS)
 
 # Freeze the seal: recompute and (re)write core/MANIFEST.sha3 over every tracked
-# file under core/ (excluding the manifest itself), and consume any active
+# file in CORE_SEAL_PATHS (excluding the manifest itself), and consume any active
 # unseal token (the ritual is complete once the seal is re-frozen).
 core-seal: tools/core_seal
 	@echo "══ core: sealing consensus core → $(CORE_MANIFEST) ══"
-	@git ls-files -z core/ | $(BIN_DIR)/core_seal seal $(CORE_MANIFEST)
+	@git ls-files -z $(CORE_SEAL_PATHS) | $(BIN_DIR)/core_seal seal $(CORE_MANIFEST)
 	@rm -f $(CORE_UNSEAL_TOKEN)
 
-# Verify the seal: fail LOUD if core/ drifts from core/MANIFEST.sha3. Honors an
-# active .core-unseal-token (owner-run unseal ritual) for exactly one commit.
+# Verify the seal: fail LOUD if any sealed path drifts from core/MANIFEST.sha3.
+# Honors an active .core-unseal-token (owner-run unseal ritual) for exactly one commit.
 core-seal-check: tools/core_seal
 	@echo "══ core: verifying consensus-core seal ══"
 	@if [ -f "$(CORE_UNSEAL_TOKEN)" ]; then \
 	    echo "core-seal-check: unseal token present — seal check LIFTED for this commit"; \
 	    echo "  (token: $$(cat $(CORE_UNSEAL_TOKEN) 2>/dev/null | head -1)); re-run 'make core-seal' to refreeze."; \
-	    git ls-files -z core/ | $(BIN_DIR)/core_seal check $(CORE_MANIFEST) || true; \
+	    git ls-files -z $(CORE_SEAL_PATHS) | $(BIN_DIR)/core_seal check $(CORE_MANIFEST) || true; \
 	else \
-	    git ls-files -z core/ | $(BIN_DIR)/core_seal check $(CORE_MANIFEST); \
+	    git ls-files -z $(CORE_SEAL_PATHS) | $(BIN_DIR)/core_seal check $(CORE_MANIFEST); \
 	fi
 
 # Owner-run unseal ritual: record the reason + current ROOT hash in the
@@ -5903,9 +5913,9 @@ check-core-seal: tools/core_seal
 	@if [ -f "$(CORE_UNSEAL_TOKEN)" ]; then \
 	    echo "check-core-seal: unseal token present — seal check lifted for this commit"; \
 	    echo "  (owner unseal ritual active; re-run 'make core-seal' to refreeze before commit.)"; \
-	    git ls-files -z core/ | $(BIN_DIR)/core_seal check $(CORE_MANIFEST) || true; \
+	    git ls-files -z $(CORE_SEAL_PATHS) | $(BIN_DIR)/core_seal check $(CORE_MANIFEST) || true; \
 	else \
-	    git ls-files -z core/ | $(BIN_DIR)/core_seal check $(CORE_MANIFEST); \
+	    git ls-files -z $(CORE_SEAL_PATHS) | $(BIN_DIR)/core_seal check $(CORE_MANIFEST); \
 	fi
 
 # Sealed-core include boundary: core/ may not depend upward/sideways (esp. not

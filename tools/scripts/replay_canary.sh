@@ -11,7 +11,12 @@
 #       compiled checkpoint at anchor 3,056,758 without an integrity
 #       FATAL (the boot gate refuses otherwise),
 #   (c) coarse UTXO stats (bestblock/txouts/total_amount) at the node's
-#       tip == co-located zclassicd `gettxoutsetinfo` (read-only, 8232).
+#       tip == co-located zclassicd `gettxoutsetinfo` (read-only, 8232),
+#   (d) BYTE-EXACT: the node's served SHA3-256 UTXO commitment ==
+#       `--legacy-utxo-commitment`'s SHA3 over zclassicd's OWN chainstate
+#       serialization (skipped only on mid-run height skew, never silently;
+#       coarse agreement is NOT set equality — two nodes can share height,
+#       count, and supply while holding different UTXO sets).
 #
 # The AUTHORITATIVE verdict is a sentinel FILE written atomically
 # (tmp + fsync + rename) ONLY after every assertion passes. The shell
@@ -208,6 +213,8 @@ write_verdict() {
             "${R_TIP:-0}" "${R_VERIFIED:-0}" "${R_BGSTATE:-unknown}"
         printf '"consensus_rejects":%s,"local_sha3":"%s","expected_sha3":"%s",' \
             "${R_REJECTS:-0}" "${R_LOCAL_SHA3:-}" "$EXPECTED_SHA3"
+        printf '"legacy_sha3":"%s","exact_tier":"%s",' \
+            "${R_LEGACY_SHA3:-}" "${R_EXACT_TIER:-not_run}"
         printf '"txouts":%s,"zd_txouts":%s,"supply":"%s","zd_supply":"%s",' \
             "${R_TXOUTS:-0}" "${R_ZD_TXOUTS:-0}" "${R_SUPPLY:-}" "${R_ZD_SUPPLY:-}"
         printf '"reason":"%s","elapsed_sec":%s}\n' \
@@ -335,6 +342,7 @@ json_amount() {  # $1=json $2=key
 # helpers) so reset_verdict and the elapsed band share the same run-start.
 R_TIP=0; R_VERIFIED=0; R_BGSTATE="unknown"; R_REJECTS=0
 R_LOCAL_SHA3=""; R_TXOUTS=0; R_ZD_TXOUTS=0; R_SUPPLY=""; R_ZD_SUPPLY=""
+R_LEGACY_SHA3=""; R_EXACT_TIER="not_run"
 
 # ── Raw RPC blobs consumed by evaluate_verdict ─────────────────────
 # Defaulted to "" here (not left to first-assignment in run_live/run_self_test)
@@ -351,7 +359,12 @@ R_LOCAL_SHA3=""; R_TXOUTS=0; R_ZD_TXOUTS=0; R_SUPPLY=""; R_ZD_SUPPLY=""
 # unbound reference defeats that check before it can run. This default is
 # the general fix; the timeout branch also now populates UC explicitly (see
 # run_live) for defense in depth.
-SD=""; DIAG=""; UC=""; TX=""; ZD=""
+# LEG: stdout of `--legacy-utxo-commitment` (the byte-exact tier — SHA3 over
+# zclassicd's OWN chainstate serialization). Empty means "tier did not run";
+# evaluate_verdict treats that as a hard FAIL in live mode (the gate must
+# never silently degrade to the coarse height/stats tier) and as skip in
+# self-test fixtures that predate the tier.
+SD=""; DIAG=""; UC=""; TX=""; ZD=""; LEG=""
 
 # ── Verdict logic: evaluate already-collected RPC blobs ────────────
 # Inputs (set by run_live or run_self_test): SD (getsyncdetail),
@@ -438,6 +451,39 @@ evaluate_verdict() {
     [ "${R_TXOUTS:-0}" = "${R_ZD_TXOUTS:-0}" ] || fail "crossnode_txouts"
     [ -n "$R_SUPPLY" ] && [ "$R_SUPPLY" = "$R_ZD_SUPPLY" ] || fail "crossnode_supply"
 
+    # (d) BYTE-EXACT tier (2026-08-01 review): heights/counts/supply agreeing
+    #     is NOT UTXO-set equality — two nodes can agree on every coarse stat
+    #     while holding different sets. `--legacy-utxo-commitment` hashes
+    #     zclassicd's OWN chainstate serialization through the canonical
+    #     SHA3-256 fold the node serves via getutxocommitment, so this is a
+    #     true byte-level set comparison. Height skew (the oracle advanced
+    #     mid-run) is reported as exact_tier=skew and skipped — never read
+    #     as drift and never as proof; only best_block equality unlocks the
+    #     comparison. In LIVE mode an empty LEG is a hard FAIL: the gate
+    #     must never silently degrade to the coarse tier. In SELF-TEST mode
+    #     a missing legacy_utxo_commitment.json fixture skips the tier for
+    #     backward compatibility with pre-tier fixtures.
+    if [ -n "${LEG}" ]; then
+        local leg_sha3 leg_best
+        leg_sha3="$(json_str "$LEG" legacy_utxo_sha3)"
+        leg_best="$(json_str "$LEG" best_block)"
+        R_LEGACY_SHA3="$leg_sha3"
+        if [ -z "$leg_sha3" ]; then
+            R_EXACT_TIER="unreadable"; fail "exact_reference_unreadable"
+        fi
+        if [ "$leg_best" != "$tx_best" ]; then
+            R_EXACT_TIER="skew"
+            echo "replay-canary: exact tier SKIPPED — legacy best_block ${leg_best:-?} != node tip ${tx_best:-?} (oracle advanced mid-run); coarse tier already passed"
+        elif [ "$leg_sha3" != "$R_LOCAL_SHA3" ]; then
+            R_EXACT_TIER="mismatch"; fail "crossnode_utxo_sha3"
+        else
+            R_EXACT_TIER="match"
+            echo "replay-canary: exact tier MATCH — UTXO SHA3 ${leg_sha3} identical over zclassicd chainstate and c23 coins at ${tx_best}"
+        fi
+    elif [ -z "${SELFTEST}" ] && [ "${ZCL_CANARY_NO_EXACT:-0}" != "1" ]; then
+        R_EXACT_TIER="unusable"; fail "exact_reference_unusable"
+    fi
+
     pass
 }
 
@@ -471,6 +517,8 @@ run_self_test() {
     UC="$(read_fixture getutxocommitment)"
     TX="$(read_fixture gettxoutsetinfo)"
     ZD="$(read_fixture zd_gettxoutsetinfo)"
+    # Byte-exact tier fixture; absent => tier skipped (pre-tier fixtures).
+    LEG="$(read_fixture legacy_utxo_commitment)"
     # Optional elapsed.json (a bare integer) drives the elapsed band
     # hermetically. Absent => default to an in-band value for the active
     # --from so the baseline pass fixtures stay green without one.
@@ -644,6 +692,11 @@ run_live() {
     TX="$(iso_rpc gettxoutsetinfo)"
     # zclassicd is read-only: gettxoutsetinfo only, never stop/generate.
     ZD="$(ZCL_DATADIR="$SRC_DATADIR" ZCL_RPCPORT="$ZD_RPC" "$ISO_RPC_BIN" gettxoutsetinfo 2>/dev/null || true)"
+    # Byte-exact tier: hash the oracle's OWN chainstate through the frozen
+    # binary's canonical SHA3 fold (read-only ldb snapshot; the daemon keeps
+    # running). stderr is preserved for post-mortem, stdout is the JSON blob.
+    LEG="$("$ISO_NODE_BIN" --legacy-utxo-commitment "$SRC_DATADIR" \
+        2>"$ISO_DD/legacy_utxo_commitment.stderr" || true)"
 
     evaluate_verdict
 }

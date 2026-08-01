@@ -74,6 +74,7 @@
 #include "vcs/package_policy.h"
 #include "vcs/package_publish.h"
 #include "vcs/package_rank.h"
+#include "vcs/package_reproduce.h"
 #include "vcs/package_reward.h"
 #include "vcs/package_service.h"
 #include "vcs/package_store.h"
@@ -1165,6 +1166,16 @@ void zcl_native_handle_zcode_package_verify(
                         &policy, &quorum);
     free(candidates);
 
+    /* The headline signal: bit-identical reproduction among the build
+     * receipts filed under <zcode>/receipts (the install lifecycle files
+     * one receipt per build event; two DISTINCT receipt ids with
+     * byte-identical output sets is a recorded third-party reproduction).
+     * The signer quorum above is the latency fast path over this. */
+    snprintf(path, sizeof(path), "%s/receipts", zcode_dir);
+    struct vcs_reproduce_report repro;
+    bool repro_scanned =
+        vcs_package_reproduce_scan(path, root, release.recipe_root, &repro);
+
     (void)json_push_kv_str(&reply->data, "name", name);
     (void)json_push_kv_str(&reply->data, "semver", semver);
     (void)json_push_kv_str(&reply->data, "package_root", root_hex);
@@ -1226,12 +1237,52 @@ void zcl_native_handle_zcode_package_verify(
     json_free(&rows);
     (void)json_push_kv_bool(&reply->data, "rows_truncated",
                             quorum.rows_truncated);
+
+    struct json_value rj;
+    json_init(&rj);
+    json_set_object(&rj);
+    (void)json_push_kv_bool(&rj, "scanned_ok", repro_scanned);
+    (void)json_push_kv_int(&rj, "receipts_scanned",
+                           (int64_t)repro.scanned);
+    (void)json_push_kv_int(&rj, "matching_receipts",
+                           (int64_t)repro.matching);
+    (void)json_push_kv_bool(&rj, "reproduced", repro.reproduced);
+    struct json_value rrows;
+    json_init(&rrows);
+    json_set_array(&rrows);
+    for (size_t i = 0; i < repro.row_count; i++) {
+        const struct vcs_reproduce_row *row = &repro.rows[i];
+        struct json_value r;
+        json_init(&r);
+        json_set_object(&r);
+        char rid_hex[65];
+        zcl_hex_encode(row->receipt_id, 32, rid_hex);
+        (void)json_push_kv_str(&r, "receipt_id", rid_hex);
+        (void)json_push_kv_bool(&r, "reference", row->reference);
+        (void)json_push_kv_str(
+            &r, "rule",
+            vcs_reproduce_rule_string((enum vcs_reproduce_rule)row->rule));
+        (void)json_push_kv_str(&r, "detail", row->detail);
+        (void)json_push_back(&rrows, &r);
+        json_free(&r);
+    }
+    (void)json_push_kv(&rj, "rows", &rrows);
+    json_free(&rrows);
+    (void)json_push_kv_bool(&rj, "rows_truncated", repro.rows_truncated);
+    (void)json_push_kv(&reply->data, "reproduction", &rj);
+    json_free(&rj);
     (void)json_push_kv_str(
         &reply->data, "verification_note",
-        "quorum = 2+ approved independent verifier keys signing matching "
-        "attestations; attestations are produced by the external "
-        "zclassic23-package-verify program — the node never compiles or "
-        "executes downloaded code");
+        "headline signal: bit-identical third-party reproduction — two or "
+        "more DISTINCT build receipts (any verifier's --emit build-report, "
+        "filed under <datadir>/zcode/receipts) committing byte-identical "
+        "output sets for this package+recipe; reproduce it yourself with "
+        "zclassic23-package-verify --emit=... --reproduce-against=<report>. "
+        "The signer quorum (2+ approved independent verifier keys signing "
+        "matching attestations) is the latency fast path over "
+        "reproduction, never a substitute for it; attestations are "
+        "produced by the external zclassic23-package-verify program — the "
+        "node never compiles or executes downloaded code");
 }
 
 /* ── zcode package search ───────────────────────────────────────────── */

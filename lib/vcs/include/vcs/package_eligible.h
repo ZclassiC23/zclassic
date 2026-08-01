@@ -3,11 +3,12 @@
  * package_eligible — the ZCODE reward eligibility gate list (slice 7).
  * A release earns NOTHING until EVERY gate passes; this layer assembles
  * the frozen gate list from facts the caller gathered (manifest/CAS
- * verification, envelope signature, license, parent lineage, and the
- * slice-6 attestation quorum) and reports eligible=true/false with every
- * failed gate named. Pure evaluation over caller-supplied facts: no
- * filesystem, network, wallet, build, execution, or node-state
- * authority. Deterministic: same facts, same report.
+ * verification, envelope signature, license, parent lineage, the slice-6
+ * attestation quorum, and any recorded bit-identical reproduction) and
+ * reports eligible=true/false with every failed gate named. Pure
+ * evaluation over caller-supplied facts: no filesystem, network, wallet,
+ * build, execution, or node-state authority. Deterministic: same facts,
+ * same report.
  *
  * The eight gates (frozen order — the report walks them in enum order):
  *   1. package-root-verifies   the manifest parses, its root equals the
@@ -28,10 +29,19 @@
  *   7. tests-pass              the quorum class is test-pass
  *   8. verifier-quorum         >= 2 approved independent verifier keys
  *                              signed matching attestations (slice 6)
- * Gates 5-7 are read from the SAME counted quorum attestations that gate
- * 8 evaluates; without a verified quorum they fail with "no verified
- * quorum" — a release never earns from a single verifier or from
- * self-verification. */
+ *
+ * TRUST MODEL: the headline acceptance signal is BIT-IDENTICAL
+ * REPRODUCTION (lib/vcs/package_reproduce.*) — an independent rebuild of
+ * the same package/recipe/lock emitting byte-for-byte the committed
+ * artifacts, provable by ANY third party. The approved-signer quorum is
+ * the LATENCY OPTIMIZATION over it: it lets a release earn before a local
+ * reproduction exists. When the caller supplies reproduction_verified,
+ * gates 5-8 pass on that stronger fact (a reproduced installable receipt
+ * subsumes the per-compiler/test verdict claims: the verified artifact IS
+ * the build-and-test evidence) and every such row says so. Without a
+ * recorded reproduction, gates 5-7 are read from the SAME counted quorum
+ * attestations that gate 8 evaluates; with neither, they fail — a release
+ * never earns from a single verifier or from self-verification. */
 
 #ifndef ZCL_VCS_PACKAGE_ELIGIBLE_H
 #define ZCL_VCS_PACKAGE_ELIGIBLE_H
@@ -80,6 +90,11 @@ struct vcs_reward_eligibility_input {
     bool gcc_pass;
     bool clang_pass;
     bool tests_pass;
+    /* The headline signal (gates 5-8): a bit-identical third-party
+     * reproduction of the release's artifacts is recorded
+     * (vcs/package_reproduce.h). When true it passes gates 5-8 outright;
+     * the quorum facts above are the latency fast path over it. */
+    bool reproduction_verified;
 };
 
 struct vcs_reward_gate_row {
@@ -92,6 +107,10 @@ struct vcs_reward_eligibility {
     bool eligible;
     struct vcs_reward_gate_row gates[VCS_REWARD_GATE_COUNT];
     size_t failed_count;
+    /* Echo of the input fact that heads the trust model: gates 5-8 passed
+     * on a recorded bit-identical reproduction (true) or on the signer
+     * quorum fast path / not at all (false). */
+    bool reproduction_verified;
 };
 
 /* Evaluate the gate list. Gates are walked in enum order; every gate is

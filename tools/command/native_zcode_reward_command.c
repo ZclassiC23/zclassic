@@ -35,6 +35,7 @@
 #include "vcs/package_manifest.h"
 #include "vcs/package_publish.h" /* VCS_PACKAGE_PUBLISH_LICENSE_PATH */
 #include "vcs/package_release.h"
+#include "vcs/package_reproduce.h"
 #include "vcs/package_score.h"
 #include "vcs/package_verify_policy.h"
 
@@ -804,6 +805,21 @@ void zcl_native_handle_zcode_reward_eligible(
     }
     free(candidates);
 
+    /* The headline signal (gates 5-8): a recorded bit-identical
+     * reproduction among the filed build receipts outranks the signer
+     * quorum, which is the latency fast path over it. */
+    {
+        uint8_t root[32];
+        size_t root_len = 0;
+        struct vcs_reproduce_report repro;
+        snprintf(path, sizeof(path), "%s/receipts", t.zcode_dir);
+        if (zcl_hex_decode_n(t.root_hex, root, 32, &root_len) &&
+            root_len == 32 &&
+            vcs_package_reproduce_scan(path, root, t.release.recipe_root,
+                                       &repro))
+            in.reproduction_verified = repro.reproduced;
+    }
+
     struct vcs_reward_eligibility elig;
     vcs_reward_eligibility_evaluate(&in, &elig);
 
@@ -815,6 +831,8 @@ void zcl_native_handle_zcode_reward_eligible(
     (void)json_push_kv_str(&reply->data, "package_root", t.root_hex);
     (void)json_push_kv_str(&reply->data, "publisher", pub_hex);
     (void)json_push_kv_bool(&reply->data, "eligible", elig.eligible);
+    (void)json_push_kv_bool(&reply->data, "reproduction_verified",
+                            elig.reproduction_verified);
     (void)json_push_kv_int(&reply->data, "failed_count",
                            (int64_t)elig.failed_count);
     struct json_value gates;

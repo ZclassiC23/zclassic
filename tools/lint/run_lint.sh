@@ -226,12 +226,19 @@ run_gate_body() {
     if [ "$cmd" = '__core_seal__' ]; then
         # Mirror the check-core-seal recipe: an unseal token lifts the HARD
         # seal failure for exactly that commit (owner unseal ritual).
+        # CORE_SEAL_PATHS mirror — MUST match the Makefile variable of the
+        # same name (core/ + the sealed block-connection ordering layer).
+        local seal_paths="core/
+lib/validation/src/connect_block.c
+lib/validation/src/chainstate.c
+lib/validation/include/validation/connect_block.h
+lib/validation/include/validation/chainstate.h"
         if [ -f .core-unseal-token ]; then
             echo "check-core-seal: unseal token present — seal check lifted for this commit"
             echo "  (owner unseal ritual active; re-run 'make core-seal' to refreeze before commit.)"
-            git ls-files -z core/ | "$ZCL_LINT_BIN_DIR/core_seal" check core/MANIFEST.sha3 || true
+            git ls-files -z $seal_paths | "$ZCL_LINT_BIN_DIR/core_seal" check core/MANIFEST.sha3 || true
         else
-            git ls-files -z core/ | "$ZCL_LINT_BIN_DIR/core_seal" check core/MANIFEST.sha3
+            git ls-files -z $seal_paths | "$ZCL_LINT_BIN_DIR/core_seal" check core/MANIFEST.sha3
         fi
         return
     fi

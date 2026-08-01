@@ -105,7 +105,10 @@ void vcs_reward_eligibility_evaluate(
                                 : (in->lineage_valid ? "lineage valid"
                                                      : "lineage invalid"));
 
-    /* 5-7. build/test gates read from the counted quorum attestations. */
+    /* 5-7. build/test gates: the headline signal is a recorded
+     * bit-identical reproduction (an installable reproduced receipt IS
+     * the build-and-test evidence); the counted quorum attestations are
+     * the latency fast path read otherwise. */
     {
         const struct {
             enum vcs_reward_gate gate;
@@ -117,6 +120,14 @@ void vcs_reward_eligibility_evaluate(
         };
         for (size_t i = 0; i < sizeof(build_gates) / sizeof(build_gates[0]);
              i++) {
+            if (in->reproduction_verified) {
+                gate_row(out, &failed, build_gates[i].gate, true,
+                         "subsumed by the recorded bit-identical "
+                         "reproduction (the reproduced installable "
+                         "receipt is the build evidence; quorum is the "
+                         "fast path)");
+                continue;
+            }
             bool passed = in->quorum_verified && build_gates[i].pass;
             if (!in->quorum_verified)
                 snprintf(detail, sizeof(detail), "no verified quorum");
@@ -130,22 +141,37 @@ void vcs_reward_eligibility_evaluate(
                          "attestations", build_gates[i].name);
             gate_row(out, &failed, build_gates[i].gate, passed, detail);
         }
-        bool tests = in->quorum_verified && in->tests_pass;
-        gate_row(out, &failed, VCS_REWARD_GATE_TESTS_PASS, tests,
-                 !in->quorum_verified
-                     ? "no verified quorum"
-                     : tests ? "quorum class is test-pass"
-                             : "quorum class is not test-pass");
+        if (in->reproduction_verified) {
+            gate_row(out, &failed, VCS_REWARD_GATE_TESTS_PASS, true,
+                     "subsumed by the recorded bit-identical reproduction "
+                     "of an installable receipt (build+test pass is what "
+                     "makes a receipt installable)");
+        } else {
+            bool tests = in->quorum_verified && in->tests_pass;
+            gate_row(out, &failed, VCS_REWARD_GATE_TESTS_PASS, tests,
+                     !in->quorum_verified
+                         ? "no verified quorum"
+                         : tests ? "quorum class is test-pass"
+                                 : "quorum class is not test-pass");
+        }
     }
 
-    /* 8. verifier-quorum. */
+    /* 8. verifier-quorum: satisfied outright by the headline signal; the
+     * 2-of-N approved-signer quorum is the latency optimization over it. */
     gate_row(out, &failed, VCS_REWARD_GATE_VERIFIER_QUORUM,
-             in->quorum_verified,
-             in->quorum_verified
-                 ? "2+ approved independent verifiers signed matching "
-                   "pass attestations"
-                 : "no 2-of-N approved independent matching pass quorum");
+             in->reproduction_verified || in->quorum_verified,
+             in->reproduction_verified
+                 ? "bit-identical third-party reproduction recorded — the "
+                   "signer quorum is the latency fast path over it and "
+                   "was not required"
+                 : in->quorum_verified
+                     ? "2+ approved independent verifiers signed matching "
+                       "pass attestations (fast path: no reproduction "
+                       "recorded)"
+                     : "no 2-of-N approved independent matching pass "
+                       "quorum and no recorded reproduction");
 
     out->failed_count = failed;
     out->eligible = failed == 0;
+    out->reproduction_verified = in->reproduction_verified;
 }

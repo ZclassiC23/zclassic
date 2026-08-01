@@ -209,13 +209,25 @@ int main(int argc, char **argv)
         return cli_main(3, synthetic);
     }
 
-    /* CLI mode: zclassic23 getblockcount */
-    if (argc > 1 && is_cli_mode(argc, argv))
-        return cli_main(argc, argv);
-
+    /* --gen-utxo-snapshot / --legacy-utxo-commitment: dispatched BEFORE
+     * is_cli_mode() below. Both take a bare datadir path argument, and
+     * is_cli_mode() treats ANY bare non-dash token as a command word — so
+     * behind it, `zclassic23 --legacy-utxo-commitment /path` was mis-routed
+     * to cli_main and refused as UNKNOWN_COMMAND (same footgun shape the
+     * --importblockindex anywhere-scan above fixed). Exact argv[1] match
+     * only: these verbs are always invoked first. */
     /* --gen-utxo-snapshot: build sidecar UTXO file from legacy datadir */
     if (argc >= 2 && strcmp(argv[1], "--gen-utxo-snapshot") == 0)
         return gen_utxo_snapshot_mode(argc, argv);
+
+    /* --legacy-utxo-commitment: hash-only SHA3 over the legacy chainstate
+     * UTXO set (byte-exact C8 parity reference) */
+    if (argc >= 2 && strcmp(argv[1], "--legacy-utxo-commitment") == 0)
+        return legacy_utxo_commitment_mode(argc, argv);
+
+    /* CLI mode: zclassic23 getblockcount */
+    if (argc > 1 && is_cli_mode(argc, argv))
+        return cli_main(argc, argv);
 
     /* -import-complete-shielded=<zclassicd-datadir>: owner-gated, copy-prove-
      * gated complete historical anchor+nullifier import into a TARGET-COPY

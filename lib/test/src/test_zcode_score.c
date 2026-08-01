@@ -784,6 +784,24 @@ static int t_eligibility_lib(void)
     vcs_reward_eligibility_evaluate(&bad, &e);
     ZS_CHECK("elig: simultaneous failures all named",
              !e.eligible && e.failed_count == 5);
+
+    /* The headline signal: a recorded bit-identical reproduction passes
+     * gates 5-8 with NO quorum facts at all — the signer quorum is the
+     * latency fast path over reproduction, never the other way round. */
+    bad = in;
+    bad.quorum_verified = false;
+    bad.gcc_pass = bad.clang_pass = bad.tests_pass = false;
+    bad.reproduction_verified = true;
+    vcs_reward_eligibility_evaluate(&bad, &e);
+    ZS_CHECK("elig: reproduction outranks the signer quorum",
+             e.eligible && e.failed_count == 0 &&
+             e.reproduction_verified &&
+             e.gates[VCS_REWARD_GATE_GCC_BUILD].passed &&
+             e.gates[VCS_REWARD_GATE_CLANG_BUILD].passed &&
+             e.gates[VCS_REWARD_GATE_TESTS_PASS].passed &&
+             e.gates[VCS_REWARD_GATE_VERIFIER_QUORUM].passed &&
+             strstr(e.gates[VCS_REWARD_GATE_VERIFIER_QUORUM].detail,
+                    "reproduction") != NULL);
     return failures;
 }
 

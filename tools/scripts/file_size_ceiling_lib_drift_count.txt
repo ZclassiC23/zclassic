@@ -483,3 +483,12 @@
 #
 # circuit_gadgets.c also tightened from 1646 -> 1064. Tightening does not
 # move this count; it only removes obsolete growth headroom.
+#
+# 2026-08-01 (C8 byte-exact parity tier): src/main_cli_modes.c grew
+# 4128 -> 4180 adding --legacy-utxo-commitment (the hash-only sibling of
+# --gen-utxo-snapshot: streams zclassicd's chainstate through the existing
+# ldb snapshot + legacy reader + canonical SHA3 fold and prints the
+# byte-exact UTXO commitment as JSON — the C8 reference gettxoutsetinfo
+# cannot be). The growth is one new CLI mode reusing the file's existing
+# gen_snap machinery; the replay-canary exact tier (d) consumes it.
+# Re-baselined in file_size_ceiling_lib_baseline.txt (4180); count STAYS 14.

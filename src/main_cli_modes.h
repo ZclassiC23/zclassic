@@ -19,6 +19,10 @@ bool is_cli_mode(int argc, char **argv);
 
 /* --gen-utxo-snapshot: build a UTXO sidecar from a legacy chainstate. */
 int gen_utxo_snapshot_mode(int argc, char **argv);
+/* --legacy-utxo-commitment: hash-only — print the canonical SHA3-256 over
+ * the legacy chainstate UTXO set as one JSON line (byte-exact C8 parity
+ * reference; no sidecar, no checkpoint assert). */
+int legacy_utxo_commitment_mode(int argc, char **argv);
 
 /* -import-complete-shielded=<zclassicd-datadir>: owner-gated shielded-state
  * import into a target-copy datadir. */

@@ -2837,7 +2837,9 @@ static void gen_snap_le64(uint8_t b[8], uint64_t v)
 
 static bool gen_snap_write(struct gen_snap_ctx *g, const void *p, size_t n)
 {
-    if (fwrite(p, 1, n, g->out) != n) {
+    /* g->out == NULL selects the hash-only mode (--legacy-utxo-commitment):
+     * the bytes feed only the SHA3 fold, no sidecar file is written. */
+    if (g->out && fwrite(p, 1, n, g->out) != n) {
         fprintf(stderr, "gen_utxo_snapshot: fwrite failed\n");
         g->fatal = true;
         return false;
@@ -2878,17 +2880,18 @@ static bool gen_snap_cb(const struct uint256 *txid,
     return true;
 }
 
-int gen_utxo_snapshot_mode(int argc, char **argv)
+/* Shared body for --gen-utxo-snapshot (sidecar writer, out_path != NULL)
+ * and --legacy-utxo-commitment (hash-only, out_path == NULL). Hash-only
+ * exists to give the C8 consensus-parity gate a BYTE-EXACT reference: the
+ * SHA3-256 over zclassicd's own chainstate UTXO serialization, in the same
+ * canonical per-record layout getutxocommitment serves (see the encoding
+ * note above) — zclassicd cannot compute this itself, but its chainstate
+ * carries every field. No sidecar is written and the anchor-checkpoint
+ * assert is skipped (a live oracle's tip is never h=3,056,758). The
+ * comparison is only meaningful when the legacy best block equals the c23
+ * applied-coins tip — the parity doctrine is compare-at-live-height. */
+static int legacy_utxo_run(const char *legacy, const char *out_path)
 {
-    if (argc < 4) {
-        fprintf(stderr,
-                "usage: %s --gen-utxo-snapshot <legacy_datadir> "
-                "<out_sidecar_path>\n", argv[0]);
-        return 2;
-    }
-    const char *legacy = argv[2];
-    const char *out_path = argv[3];
-
     char chainstate_path[1024];
     snprintf(chainstate_path, sizeof(chainstate_path),
              "%s/chainstate", legacy);
@@ -2934,17 +2937,20 @@ int gen_utxo_snapshot_mode(int argc, char **argv)
     uint256_get_hex(&best, hex);
     fprintf(stderr, "[gen_utxo] chainstate best block: %s\n", hex);
 
-    FILE *out = fopen(out_path, "wb");
-    if (!out) {
-        fprintf(stderr, "fopen(%s) failed\n", out_path);
-        chainstate_legacy_close(h);
-        ldb_snapshot_destroy(snap_path);
-        return 1;
-    }
+    FILE *out = NULL;
     uint8_t header[104] = {0};
-    if (fwrite(header, 1, sizeof(header), out) != sizeof(header)) {
-        fclose(out); chainstate_legacy_close(h);
-        ldb_snapshot_destroy(snap_path); return 1;
+    if (out_path) {
+        out = fopen(out_path, "wb");
+        if (!out) {
+            fprintf(stderr, "fopen(%s) failed\n", out_path);
+            chainstate_legacy_close(h);
+            ldb_snapshot_destroy(snap_path);
+            return 1;
+        }
+        if (fwrite(header, 1, sizeof(header), out) != sizeof(header)) {
+            fclose(out); chainstate_legacy_close(h);
+            ldb_snapshot_destroy(snap_path); return 1;
+        }
     }
 
     struct gen_snap_ctx g = { .out = out };
@@ -2955,7 +2961,8 @@ int gen_utxo_snapshot_mode(int argc, char **argv)
     if (n < 0 || g.fatal) {
         fprintf(stderr, "iter failed (n=%lld fatal=%d)\n",
                 (long long)n, g.fatal);
-        fclose(out); chainstate_legacy_close(h);
+        if (out) fclose(out);
+        chainstate_legacy_close(h);
         ldb_snapshot_destroy(snap_path); return 1;
     }
 
@@ -2972,6 +2979,24 @@ int gen_utxo_snapshot_mode(int argc, char **argv)
             (unsigned long long)g.vouts,
             (double)g.total_supply / 1e8,
             g.min_height, g.max_height, shex);
+
+    if (!out_path) {
+        /* Hash-only mode: emit the machine-readable commitment on stdout
+         * and exit — no sidecar, no checkpoint assert. best_block lets the
+         * caller bind the hash to a height (via its own header index). */
+        chainstate_legacy_close(h);
+        ldb_snapshot_destroy(snap_path);
+        printf("{\"legacy_utxo_sha3\":\"%s\",\"records\":%llu,"
+               "\"vouts\":%llu,\"total_supply_satoshi\":%lld,"
+               "\"min_height\":%d,\"max_height\":%d,"
+               "\"best_block\":\"%s\"}\n",
+               shex,
+               (unsigned long long)g.records,
+               (unsigned long long)g.vouts,
+               (long long)g.total_supply,
+               g.min_height, g.max_height, hex);
+        return 0;
+    }
 
     memcpy(header, "ZCLUTXO\x00", 8);
     gen_snap_le32(header + 8, 1);
@@ -3036,6 +3061,33 @@ int gen_utxo_snapshot_mode(int argc, char **argv)
                 cp->height, (unsigned long long)cp->utxo_count);
     }
     return 0;
+}
+
+int gen_utxo_snapshot_mode(int argc, char **argv)
+{
+    if (argc < 4) {
+        fprintf(stderr,
+                "usage: %s --gen-utxo-snapshot <legacy_datadir> "
+                "<out_sidecar_path>\n", argv[0]);
+        return 2;
+    }
+    return legacy_utxo_run(argv[2], argv[3]);
+}
+
+/* --legacy-utxo-commitment: hash-only sibling of --gen-utxo-snapshot.
+ * Streams zclassicd's chainstate (via a point-in-time ldb snapshot, daemon
+ * stays running) and prints the canonical SHA3-256 UTXO commitment as one
+ * JSON line on stdout — the byte-exact C8 reference the coarse
+ * gettxoutsetinfo probe cannot be. See legacy_utxo_run. */
+int legacy_utxo_commitment_mode(int argc, char **argv)
+{
+    if (argc < 3) {
+        fprintf(stderr,
+                "usage: %s --legacy-utxo-commitment <legacy_datadir>\n",
+                argv[0]);
+        return 2;
+    }
+    return legacy_utxo_run(argv[2], NULL);
 }
 
 /* ── -import-complete-shielded=<zclassicd-datadir> mode ─────────────────
