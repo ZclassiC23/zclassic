@@ -12,6 +12,12 @@
 #include <stdint.h>
 #include <stddef.h>
 
+struct zslp_tx_receipt {
+    char txid[65];
+    int64_t fee_paid;
+    bool broadcast;
+};
+
 /* Create a new ZSLP token (GENESIS).
  * Returns the token_id (hex) or NULL on failure. */
 const char *zslp_create_token(const char *datadir,
@@ -32,6 +38,18 @@ bool zslp_send(const char *datadir,
                 const char *token_id_hex,
                 const char *to_addr,
                 uint64_t amount);
+
+/* Receipt-bearing variants used by typed native plan/commit commands. */
+const char *zslp_create_token_with_receipt(
+    const char *datadir, const char *ticker, const char *name,
+    uint8_t decimals, uint64_t initial_supply,
+    struct zslp_tx_receipt *receipt);
+bool zslp_mint_with_receipt(const char *datadir, const char *token_id_hex,
+                            const char *recipient_addr, uint64_t amount,
+                            struct zslp_tx_receipt *receipt);
+bool zslp_send_with_receipt(const char *datadir, const char *token_id_hex,
+                            const char *to_addr, uint64_t amount,
+                            struct zslp_tx_receipt *receipt);
 
 /* Get token balance for an address (scans OP_RETURN outputs). */
 uint64_t zslp_balance(const char *datadir,
@@ -54,5 +72,6 @@ void zslp_rpc_set_datadir(const char *datadir);
 /* Register ZSLP RPC commands */
 struct rpc_table;
 void register_zslp_rpc_commands(struct rpc_table *t);
+void register_zslp_transaction_rpc_commands(struct rpc_table *t);
 
 #endif

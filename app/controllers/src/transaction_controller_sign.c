@@ -7,10 +7,70 @@
 
 #include "controllers/transaction_controller_internal.h"
 
+struct rawtx_sign_overlay {
+    struct privkey *keys;
+    size_t num_keys;
+    struct script *scripts;
+    size_t num_scripts;
+};
+
+static void rawtx_sign_overlay_free(struct rawtx_sign_overlay *overlay)
+{
+    if (!overlay) return;
+    if (overlay->keys) {
+        memory_cleanse(overlay->keys,
+                       overlay->num_keys * sizeof(*overlay->keys));
+        free(overlay->keys);
+    }
+    free(overlay->scripts);
+    memset(overlay, 0, sizeof(*overlay));
+}
+
+static bool rawtx_sign_get_key(const struct basic_keystore *wallet_ks,
+                               const struct rawtx_sign_overlay *overlay,
+                               const struct key_id *wanted,
+                               struct privkey *key_out)
+{
+    if (overlay) {
+        for (size_t i = 0; i < overlay->num_keys; i++) {
+            struct pubkey pk;
+            if (privkey_get_pubkey(&overlay->keys[i], &pk)) {
+                struct key_id have = pubkey_get_id(&pk);
+                if (memcmp(have.id.data, wanted->id.data,
+                           sizeof(have.id.data)) == 0) {
+                    *key_out = overlay->keys[i];
+                    return true;
+                }
+            }
+        }
+    }
+    return wallet_ks && keystore_get_key(wallet_ks, wanted, key_out);
+}
+
+static bool rawtx_sign_get_script(const struct basic_keystore *wallet_ks,
+                                  const struct rawtx_sign_overlay *overlay,
+                                  const struct uint160 *wanted,
+                                  struct script *script_out)
+{
+    if (overlay) {
+        for (size_t i = 0; i < overlay->num_scripts; i++) {
+            struct script_id sid;
+            script_id_from_script(&sid, &overlay->scripts[i]);
+            if (memcmp(sid.hash.data, wanted->data,
+                       sizeof(sid.hash.data)) == 0) {
+                *script_out = overlay->scripts[i];
+                return true;
+            }
+        }
+    }
+    return wallet_ks && keystore_get_cscript(wallet_ks, wanted, script_out);
+}
+
 static bool sign_one_input(struct transaction *tx, unsigned int idx,
                            const struct script *script_pub_key,
                            int64_t amount, uint32_t branch_id,
-                           struct basic_keystore *ks)
+                           struct basic_keystore *wallet_ks,
+                           const struct rawtx_sign_overlay *overlay)
 {
     enum txnouttype type;
     unsigned char solutions[20][65];
@@ -28,7 +88,7 @@ static bool sign_one_input(struct transaction *tx, unsigned int idx,
     if (type == TX_SCRIPTHASH) {
         struct uint160 script_hash;
         memcpy(script_hash.data, solutions[0], 20);
-        if (!keystore_get_cscript(ks, &script_hash, &redeem))
+        if (!rawtx_sign_get_script(wallet_ks, overlay, &script_hash, &redeem))
             LOG_FAIL("tx", "sign_one_input: P2SH redeem script not found for input %u", idx);
         is_p2sh = true;
         signing_script = &redeem;
@@ -54,7 +114,7 @@ static bool sign_one_input(struct transaction *tx, unsigned int idx,
         struct key_id kid;
         memcpy(kid.id.data, solutions[0], 20);
         struct privkey skey;
-        if (!keystore_get_key(ks, &kid, &skey))
+        if (!rawtx_sign_get_key(wallet_ks, overlay, &kid, &skey))
             LOG_FAIL("tx", "sign_one_input: private key not found for P2PKH input %u", idx);
         struct pubkey spk;
         privkey_get_pubkey(&skey, &spk);
@@ -86,7 +146,7 @@ static bool sign_one_input(struct transaction *tx, unsigned int idx,
             pubkey_set(&pk, solutions[k + 1], solution_sizes[k + 1]);
             struct key_id kid = pubkey_get_id(&pk);
             struct privkey skey;
-            if (!keystore_get_key(ks, &kid, &skey))
+            if (!rawtx_sign_get_key(wallet_ks, overlay, &kid, &skey))
                 continue;
 
             unsigned char sig[SIGNATURE_SIZE + 1];
@@ -111,7 +171,7 @@ static bool sign_one_input(struct transaction *tx, unsigned int idx,
         pubkey_set(&pk, solutions[0], solution_sizes[0]);
         struct key_id kid = pubkey_get_id(&pk);
         struct privkey skey;
-        if (!keystore_get_key(ks, &kid, &skey))
+        if (!rawtx_sign_get_key(wallet_ks, overlay, &kid, &skey))
             LOG_FAIL("tx", "sign_one_input: private key not found for P2PK input %u", idx);
 
         unsigned char sig[SIGNATURE_SIZE + 1];
@@ -178,23 +238,34 @@ bool rpc_signrawtransaction(const struct json_value *params, bool help,
         return false;
     }
 
-    /* Use wallet keystore directly — no copy needed.
-     * Extra keys from param 3 are added to the wallet keystore. */
-    struct basic_keystore *sign_ks = ctx->keystore;
+    /* Supplemental keys/scripts are request-local. Never insert caller-
+     * supplied material into the live wallet keystore: signrawtransaction is
+     * a composition operation, not an import-key/import-script mutation. */
+    struct rawtx_sign_overlay overlay = {0};
 
     if (json_size(params) >= 3) {
         const struct json_value *privkeys = json_at(params, 2);
-        if (privkeys && privkeys->type == JSON_ARR && sign_ks) {
+        if (privkeys && privkeys->type == JSON_ARR) {
+            size_t key_cap = json_size(privkeys);
+            if (key_cap > 256) key_cap = 256;
+            overlay.keys = zcl_calloc(key_cap ? key_cap : 1,
+                                      sizeof(*overlay.keys),
+                                      "rawtx_sign_keys");
+            if (!overlay.keys) {
+                transaction_free(&tx);
+                json_set_str(result, "Out of memory");
+                LOG_FAIL("tx", "signrawtransaction: key overlay allocation failed");
+            }
             const struct chain_params *cp = chain_params_get();
             size_t sec_pfx_len;
             const unsigned char *sec_pfx = chain_params_base58_prefix(
                 cp, B58_SECRET_KEY, &sec_pfx_len);
-            for (size_t i = 0; i < json_size(privkeys); i++) {
+            for (size_t i = 0; i < key_cap; i++) {
                 const struct json_value *kv = json_at(privkeys, i);
                 if (!kv || kv->type != JSON_STR) continue;
-                struct privkey pk;
+                struct privkey pk = {0};
                 if (decode_secret(json_get_str(kv), sec_pfx, sec_pfx_len, &pk))
-                    keystore_add_key(sign_ks, &pk);
+                    overlay.keys[overlay.num_keys++] = pk;
                 memory_cleanse(pk.vch, 32);
             }
         }
@@ -240,17 +311,30 @@ bool rpc_signrawtransaction(const struct json_value *params, bool help,
                     (int64_t)(json_get_real(amt) * (double)ZATOSHI_PER_ZCL + 0.5) : 0;
                 prevouts[num_prevouts].valid = true;
 
-                /* If prevout has redeemScript, add it to keystore */
+                /* Keep caller-supplied redeem scripts request-local too. */
                 const struct json_value *rs = json_get(po, "redeemScript");
                 if (rs && rs->type == JSON_STR) {
-                    struct script redeem;
+                    if (!overlay.scripts) {
+                        size_t script_cap = json_size(prev_arr);
+                        if (script_cap > 256) script_cap = 256;
+                        overlay.scripts = zcl_calloc(
+                            script_cap ? script_cap : 1,
+                            sizeof(*overlay.scripts), "rawtx_sign_scripts");
+                        if (!overlay.scripts) {
+                            rawtx_sign_overlay_free(&overlay);
+                            transaction_free(&tx);
+                            json_set_str(result, "Out of memory");
+                            LOG_FAIL("tx", "signrawtransaction: script overlay allocation failed");
+                        }
+                    }
+                    struct script redeem = {0};
                     const char *rs_hex = json_get_str(rs);
                     if (!rs_hex) continue;
                     size_t rs_len = strlen(rs_hex) / 2;
                     if (rs_len > MAX_SCRIPT_SIZE) rs_len = MAX_SCRIPT_SIZE;
                     ParseHex(rs_hex, redeem.data, rs_len);
                     redeem.size = rs_len;
-                    keystore_add_cscript(sign_ks, &redeem);
+                    overlay.scripts[overlay.num_scripts++] = redeem;
                 }
 
                 num_prevouts++;
@@ -305,8 +389,12 @@ bool rpc_signrawtransaction(const struct json_value *params, bool help,
         /* Fall back to coins DB (LevelDB) */
         if (!prev_script && ctx->coins_tip) {
             if (!rpc_require_chainstate_lookup_ready(ctx->main_state, result,
-                    "signrawtransaction", "Chainstate lookup"))
+                    "signrawtransaction", "Chainstate lookup")) {
+                json_free(&errors);
+                rawtx_sign_overlay_free(&overlay);
+                transaction_free(&tx);
                 return false;
+            }
             struct coins entry;
             coins_init(&entry);
             if (coins_view_cache_get_coins(ctx->coins_tip,
@@ -343,7 +431,7 @@ bool rpc_signrawtransaction(const struct json_value *params, bool help,
 
 
         if (!sign_one_input(&tx, i, prev_script, prev_amount,
-                            branch_id, sign_ks)) {
+                            branch_id, ctx->keystore, &overlay)) {
             struct json_value err = {0};
             json_set_object(&err);
             json_push_kv_int(&err, "vout", (int64_t)i);
@@ -369,6 +457,7 @@ bool rpc_signrawtransaction(const struct json_value *params, bool help,
         json_push_kv(result, "errors", &errors);
 
     json_free(&errors);
+    rawtx_sign_overlay_free(&overlay);
     transaction_free(&tx);
     return true;
 }

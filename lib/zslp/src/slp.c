@@ -11,6 +11,7 @@
 
 #include "zslp/slp.h"
 #include "overlay/overlay_codec.h"
+#include "primitives/transaction.h"
 #include "util/log_macros.h"
 #include <string.h>
 
@@ -40,6 +41,63 @@ static void u64_to_be(uint8_t *out, uint64_t val)
     for (int i = 7; i >= 0; i--) {
         out[i] = (uint8_t)(val & 0xff);
         val >>= 8;
+    }
+}
+
+static void slp_token_id_to_internal(const uint8_t wire[32], uint8_t out[32])
+{
+    for (int i = 0; i < 32; i++)
+        out[i] = wire[31 - i];
+}
+
+bool slp_classify_tx_output(const struct transaction *tx, uint32_t vout,
+                            struct slp_output_metadata *out)
+{
+    if (out)
+        memset(out, 0, sizeof(*out));
+    if (!tx || !out || tx->num_vout == 0 || vout == 0 ||
+        vout >= tx->num_vout)
+        return false;
+
+    struct slp_message msg;
+    const struct script *opret = &tx->vout[0].script_pub_key;
+    if (!slp_parse(opret->data, opret->size, &msg))
+        return false;
+
+    switch (msg.type) {
+    case SLP_TX_GENESIS:
+        memcpy(out->token_id, tx->hash.data, 32);
+        if (vout == 1) {
+            out->role = SLP_OUTPUT_TOKEN;
+            out->amount = msg.initial_quantity;
+            return true;
+        }
+        if (msg.mint_baton_vout != 0 && vout == msg.mint_baton_vout) {
+            out->role = SLP_OUTPUT_MINT_BATON;
+            return true;
+        }
+        return false;
+    case SLP_TX_MINT:
+        slp_token_id_to_internal(msg.token_id.data, out->token_id);
+        if (vout == 1) {
+            out->role = SLP_OUTPUT_TOKEN;
+            out->amount = msg.additional_quantity;
+            return true;
+        }
+        if (msg.mint_baton_vout != 0 && vout == msg.mint_baton_vout) {
+            out->role = SLP_OUTPUT_MINT_BATON;
+            return true;
+        }
+        return false;
+    case SLP_TX_SEND:
+        if (vout > (uint32_t)msg.num_outputs)
+            return false;
+        slp_token_id_to_internal(msg.token_id.data, out->token_id);
+        out->role = SLP_OUTPUT_TOKEN;
+        out->amount = msg.output_quantities[vout - 1];
+        return true;
+    default:
+        return false;
     }
 }
 

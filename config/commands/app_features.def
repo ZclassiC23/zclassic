@@ -200,6 +200,54 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
 
+ZCL_COMMAND_READY_COMMAND(
+    "app.tokens.create", "app.tokens", "", "Create a ZSLP token",
+    "Plan/commit a custody-correct ZSLP GENESIS. The committed transaction "
+    "creates the initial token output and a wallet-controlled mint baton, is "
+    "durably saved before peer relay, and returns token_id/txid/fee.", 0,
+    "tokens,zslp,create,genesis", "zcl.app_token_create.input.v1",
+    "zcl.app_token_txresult.v1", "ticker,name,decimals,supply,confirm", "ticker",
+    "zclassic23 app tokens create --input='{\"ticker\":\"DEMO\",\"name\":\"Demo Token\",\"decimals\":0,\"supply\":1000}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_token_create)
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.tokens.send", "app.tokens", "", "Send ZSLP token units",
+    "Plan/commit a token transfer that explicitly spends confirmed token "
+    "outputs, returns token change, funds fees only from non-token coins, "
+    "persists the wallet, relays to peers, and returns the txid.", 0,
+    "tokens,zslp,send", "zcl.app_token_send.input.v1",
+    "zcl.app_token_txresult.v1", "token_id,to,units,confirm", "token_id",
+    "zclassic23 app tokens send --input='{\"token_id\":\"<64-hex>\",\"to\":\"t1...\",\"units\":25}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_token_send)
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.tokens.mint", "app.tokens", "", "Mint ZSLP token units",
+    "Plan/commit an authorized MINT that explicitly consumes the confirmed "
+    "wallet-owned mint baton, recreates the baton, persists the wallet, "
+    "relays to peers, and returns the txid.", 0,
+    "tokens,zslp,mint", "zcl.app_token_send.input.v1",
+    "zcl.app_token_txresult.v1", "token_id,to,units,confirm", "token_id",
+    "zclassic23 app tokens mint --input='{\"token_id\":\"<64-hex>\",\"to\":\"t1...\",\"units\":100}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_token_mint)
+
 /* ── Messaging (ZMSG) ──────────────────────────────────────────────── */
 
 ZCL_COMMAND_READY_READ(

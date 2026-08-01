@@ -115,6 +115,15 @@ struct coin_entry {
     bool solvable;
 };
 
+typedef bool (*wallet_coin_reservation_probe)(
+    const struct transaction *tx, uint32_t vout, void *ctx);
+
+/* Higher-layer asset protocols register a conservative reservation probe at
+ * startup. The wallet owns the selection policy but never depends upward on a
+ * protocol parser. */
+void wallet_set_coin_reservation_probe(wallet_coin_reservation_probe probe,
+                                       void *ctx);
+
 struct wallet {
     zcl_mutex_t cs;
     struct basic_keystore keystore;
@@ -196,6 +205,15 @@ void wallet_available_coins(const struct wallet *w,
                              size_t *num_coins, size_t max_coins,
                              bool only_confirmed, bool include_zero_value);
 
+/* Extended inventory for asset-aware builders. The ordinary wrapper above
+ * always excludes ZSLP token and mint-baton outputs so a plain ZCL send cannot
+ * silently burn them. Only a token builder should pass include_slp_reserved. */
+void wallet_available_coins_ex(const struct wallet *w,
+                               struct coin_entry *coins_out,
+                               size_t *num_coins, size_t max_coins,
+                               bool only_confirmed, bool include_zero_value,
+                               bool include_slp_reserved);
+
 bool wallet_select_coins(const struct wallet *w,
                           const struct coin_entry *available, size_t num_available,
                           int64_t target_value,
@@ -216,6 +234,28 @@ bool wallet_create_transaction_multi(struct wallet *w,
                                       struct wallet_tx *wtx_out,
                                       int64_t *fee_out,
                                       const char **error);
+
+/* Build/sign from an explicit set of wallet coins and raw outputs. This is
+ * the custody primitive overlay protocols need: their authoritative token or
+ * baton inputs cannot be replaced by generic coin selection. A normal ZCL
+ * change output is appended when needed. */
+bool wallet_create_transaction_selected(struct wallet *w,
+                                        const struct coin_entry *selected,
+                                        size_t num_selected,
+                                        const struct tx_out *outputs,
+                                        size_t num_outputs,
+                                        struct wallet_tx *wtx_out,
+                                        int64_t *fee_out,
+                                        const char **error);
+
+int64_t wallet_default_fee(const struct wallet *w);
+
+/* Internal composition seam used by wallet_coin_selection.c. */
+bool wallet_sign_selected_inputs(struct wallet *w,
+                                 struct wallet_tx *wtx_out,
+                                 const struct coin_entry *selected,
+                                 size_t num_selected, int height,
+                                 const char **error);
 
 /* Validate -> admit to mempool -> record in wallet -> mark inputs spent.
  * On any validation/admission failure the wallet is left unchanged. If the

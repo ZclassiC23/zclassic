@@ -122,9 +122,11 @@ static const struct vault_route k_vault_routes[] = {
       "app/controllers/src/wallet_native_handlers.c -> z_sendmany",
       "vault.send-shielded",
       "requires Sapling parameters loaded and a passing prover self-test" },
-    { "tokens", "record", "none", "", "", "",
-      "no ZSLP transfer path exists in this binary; app.tokens.list is "
-      "read-only, so the vault exposes no token verb" },
+    { "tokens", "record", "native_command", "app.tokens.send",
+      "app/services/src/zslp_command_service.c",
+      "vault.send-token",
+      "the ZSLP owner explicitly spends token outputs and returns token "
+      "change; ordinary wallet selection reserves every token/baton output" },
     { "names", "record", "node_rpc",
       "name_register,name_update,name_transfer,name_renew",
       "app/controllers/src/name_controller.c", "",
@@ -966,6 +968,23 @@ void zcl_native_handle_vault_send_shielded(
     json_free(&forwarded);
     if (ran && !json_get_bool_or(request->input, "confirm", false))
         vault_attach_preflight(reply, "shielded");
+}
+
+void zcl_native_handle_vault_send_token(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (!request || !reply)
+        return;
+    static const char *const keys[] = { "token_id", "to", "units",
+                                        "confirm" };
+    struct json_value forwarded;
+    json_init(&forwarded);
+    vault_forward_keys(request->input, &forwarded,
+                       keys, sizeof(keys) / sizeof(keys[0]));
+    bool ran = vault_dispatch(request, "app.tokens.send", &forwarded, reply);
+    json_free(&forwarded);
+    if (ran && !json_get_bool_or(request->input, "confirm", false))
+        vault_attach_preflight(reply, "tokens");
 }
 
 /* ── swap settlement: the same routing, one layer lower ────────────────────

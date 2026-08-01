@@ -70,7 +70,9 @@ KillMode=control-group
 # Soak must never degrade the dev box or the main node: low scheduling
 # weight, hard memory cap well under the box's 93G.
 MemoryHigh=24G
-MemoryMax=32G
+# 31G leaves one additional GiB for the always-on dev node's measured
+# restart/sync headroom while preserving the soak lane's 24G soft target.
+MemoryMax=31G
 MemorySwapMax=512M
 CPUQuota=150%
 CPUWeight=30

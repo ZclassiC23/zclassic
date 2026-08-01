@@ -877,6 +877,10 @@ size_t zcl_command_registry_input_str_max(const char *key)
     /* Hex of a declarative build recipe (zcode.package.recipe wire). */
     if (strcmp(key, "recipe_hex") == 0)
         return 2u * (size_t)VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES;
+    /* transaction_controller.c uses a 2,000,000-byte canonical transaction
+     * buffer for create/sign. Hex doubles the wire size. */
+    if (strcmp(key, "raw_hex") == 0)
+        return 4000000u;
     return ZCL_COMMAND_INPUT_STR_MAX;
 }
 
@@ -889,6 +893,10 @@ static size_t input_member_budget(const char *key, size_t key_len)
     if (key_len == 5 && memcmp(key, "files", 5) == 0)
         value_max = 2u + ZCL_COMMAND_INPUT_FILES_MAX_ITEMS *
                              (ZCL_COMMAND_INPUT_FILES_PATH_MAX + 3u);
+    else if ((key_len == 6 && memcmp(key, "inputs", 6) == 0) ||
+             (key_len == 7 && memcmp(key, "outputs", 7) == 0) ||
+             (key_len == 7 && memcmp(key, "prevtxs", 7) == 0))
+        value_max = ZCL_COMMAND_MAX_INPUT;
     else
         value_max = 2u + zcl_command_registry_input_str_max(key);
     return key_len + 4u + value_max;
@@ -958,8 +966,16 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
             }
         } else if (strcmp(key, "verbose") == 0 ||
                    strcmp(key, "confirm") == 0 ||
-                   strcmp(key, "relink_generation") == 0) {
+                   strcmp(key, "relink_generation") == 0 ||
+                   strcmp(key, "allow_high_fees") == 0) {
             type_ok = value->type == JSON_BOOL;
+        } else if (strcmp(key, "inputs") == 0 ||
+                   strcmp(key, "prevtxs") == 0) {
+            type_ok = value->type == JSON_ARR &&
+                      value->num_children <= 256u;
+        } else if (strcmp(key, "outputs") == 0) {
+            type_ok = value->type == JSON_OBJ &&
+                      value->num_children <= 256u;
         } else if (strcmp(key, "seed") == 0) {
             type_ok = (value->type == JSON_INT && json_get_int(value) > 0) ||
                       (value->type == JSON_STR && json_get_str(value) &&
@@ -968,6 +984,15 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
             type_ok = value->type == JSON_INT || value->type == JSON_REAL ||
                       (value->type == JSON_STR && json_get_str(value) &&
                        json_get_str(value)[0] && strlen(json_get_str(value)) <= 64);
+        } else if (strcmp(key, "units") == 0 ||
+                   strcmp(key, "supply") == 0) {
+            /* ZSLP amounts are indivisible base units at the wire boundary;
+             * accepting a JSON real here would lose integer precision before
+             * the SLP uint64 encoder sees it. RPC JSON is signed-int bounded. */
+            type_ok = value->type == JSON_INT && json_get_int(value) > 0;
+        } else if (strcmp(key, "decimals") == 0) {
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 0 &&
+                      json_get_int(value) <= 8;
         } else if (strcmp(key, "cursor") == 0) {
             type_ok = (value->type == JSON_INT && json_get_int(value) >= 0) ||
                       (value->type == JSON_STR && json_get_str(value) &&

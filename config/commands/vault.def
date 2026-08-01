@@ -149,6 +149,24 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
     zcl_native_handle_vault_send_shielded)
 
+ZCL_COMMAND_READY_COMMAND(
+    "vault.send-token", "vault", "",
+    "Send ZSLP units through the token command that owns the transaction",
+    "A pass-through of app.tokens.send. The owning command explicitly selects "
+    "confirmed token outputs, returns token change, adds only non-token fee "
+    "coins, signs, durably persists, and relays. The vault contributes the "
+    "tokens-class advisory preflight and no transaction logic.", 0,
+    "vault,send,token,zslp,route", "zcl.vault_send_token.input.v1",
+    "zcl.app_token_txresult.v1", "token_id,to,units,confirm", "token_id",
+    "zclassic23 vault send-token --input='{\"token_id\":\"<64-hex>\",\"to\":\"t1...\",\"units\":25}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER,
+    ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_FOREGROUND,
+    ZCL_COMMAND_COST_MODERATE, ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_vault_send_token)
+
 /* ── agent session grants — mint/list/revoke, not custody ──────────────────
  * Scoped, revocable spend-authority grants for agents
  * (docs/work/agent-spend-policy-design.md, "Minting + presentation"). These

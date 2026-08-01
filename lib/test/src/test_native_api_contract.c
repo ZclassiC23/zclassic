@@ -813,6 +813,7 @@ static int test_status_brief_body_front_door_deadline(void)
  * through their plan/commit contract with NO live node: address.new persists
  * an address, and transaction.send only broadcasts on the confirmed call. */
 static int g_wallet_send_calls;
+static int g_wallet_raw_broadcast_calls;
 
 static char *wallet_stub_rpc(const char *method, const char *params_json)
 {
@@ -825,6 +826,17 @@ static char *wallet_stub_rpc(const char *method, const char *params_json)
             "\"aa11bb22cc33dd44ee55ff66aa77bb88"
             "cc99dd00ee11ff22aa33bb44cc55dd66\"");
     }
+    if (method && strcmp(method, "createrawtransaction") == 0)
+        return strdup("\"0400008085202f89000000000000000000000000\"");
+    if (method && strcmp(method, "signrawtransaction") == 0)
+        return strdup("{\"hex\":\"0400008085202f89000000000000000000000000\","
+                      "\"complete\":true}");
+    if (method && strcmp(method, "sendrawtransaction") == 0) {
+        g_wallet_raw_broadcast_calls++;
+        return strdup(
+            "\"bb11bb22cc33dd44ee55ff66aa77bb88"
+            "cc99dd00ee11ff22aa33bb44cc55dd77\"");
+    }
     return strdup("null");
 }
 
@@ -835,6 +847,7 @@ static int test_wallet_mutating_native_e2e(void)
 
     TEST("core.wallet mutating leaves execute plan/commit over a stubbed RPC") {
         g_wallet_send_calls = 0;
+        g_wallet_raw_broadcast_calls = 0;
         node_rpc_client_set_test_hook(wallet_stub_rpc);
 
         /* 1. address.new persists and returns a fresh transparent address. */
@@ -949,7 +962,63 @@ static int test_wallet_mutating_native_e2e(void)
         zcl_command_reply_free(&reply);
         json_free(&commit_in);
 
-        /* 4. export-key without confirm must NOT reveal a key. */
+        /* 4. raw create/sign do not broadcast; raw broadcast itself obeys
+         *    the plan/commit boundary. */
+        const struct zcl_command_spec *raw_create =
+            find_spec(reg, "core.wallet.transaction.raw.create");
+        const struct zcl_command_spec *raw_sign =
+            find_spec(reg, "core.wallet.transaction.raw.sign");
+        const struct zcl_command_spec *raw_broadcast =
+            find_spec(reg, "core.wallet.transaction.raw.broadcast");
+        ASSERT(raw_create && raw_sign && raw_broadcast);
+        struct json_value raw_in, inputs, outputs;
+        json_init(&raw_in); json_set_object(&raw_in);
+        json_init(&inputs); json_set_array(&inputs);
+        json_init(&outputs); json_set_object(&outputs);
+        (void)json_push_kv(&raw_in, "inputs", &inputs);
+        (void)json_push_kv(&raw_in, "outputs", &outputs);
+        json_free(&inputs); json_free(&outputs);
+        struct zcl_command_request raw_req = {
+            .spec = raw_create, .input = &raw_in, .view = "normal",
+        };
+        zcl_command_reply_init(&reply, raw_create->output_schema);
+        zcl_native_handle_wallet_raw_create(&raw_req, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        const char *raw_hex = json_get_str(json_get(&reply.data, "raw_hex"));
+        ASSERT(raw_hex && raw_hex[0]);
+        char raw_copy[128];
+        (void)snprintf(raw_copy, sizeof(raw_copy), "%s", raw_hex);
+        zcl_command_reply_free(&reply);
+        json_free(&raw_in);
+
+        json_init(&raw_in); json_set_object(&raw_in);
+        (void)json_push_kv_str(&raw_in, "raw_hex", raw_copy);
+        raw_req.spec = raw_sign; raw_req.input = &raw_in;
+        zcl_command_reply_init(&reply, raw_sign->output_schema);
+        zcl_native_handle_wallet_raw_sign(&raw_req, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&reply.data, "complete")));
+        ASSERT_EQ(g_wallet_raw_broadcast_calls, 0);
+        zcl_command_reply_free(&reply);
+
+        raw_req.spec = raw_broadcast;
+        zcl_command_reply_init(&reply, raw_broadcast->output_schema);
+        zcl_native_handle_wallet_raw_broadcast(&raw_req, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")), "plan");
+        ASSERT_EQ(g_wallet_raw_broadcast_calls, 0);
+        zcl_command_reply_free(&reply);
+        (void)json_push_kv_bool(&raw_in, "confirm", true);
+        zcl_command_reply_init(&reply, raw_broadcast->output_schema);
+        zcl_native_handle_wallet_raw_broadcast(&raw_req, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")),
+                      "committed");
+        ASSERT_EQ(g_wallet_raw_broadcast_calls, 1);
+        zcl_command_reply_free(&reply);
+        json_free(&raw_in);
+
+        /* 5. export-key without confirm must NOT reveal a key. */
         const struct zcl_command_spec *xk_spec =
             find_spec(reg, "core.wallet.address.export-key");
         ASSERT(xk_spec != NULL);
@@ -970,7 +1039,7 @@ static int test_wallet_mutating_native_e2e(void)
         zcl_command_reply_free(&reply);
         json_free(&xk_in);
 
-        /* 5. a missing required key fails closed with a typed error body. */
+        /* 6. a missing required key fails closed with a typed error body. */
         struct json_value bad_in;
         json_init(&bad_in);
         json_set_object(&bad_in);
@@ -996,7 +1065,7 @@ static int test_wallet_mutating_native_e2e(void)
 }
 
 /* ── mutating app.* feature leaves: E2E over a stubbed app RPC ─────────────
- * The ten promoted write leaves (config/commands/app_features.def) are
+ * The promoted write leaves (config/commands/app_features.def) are
  * dedicated handlers in app/controllers/src/app_write_native_handlers.c. Driven
  * here with no live node through the ZCL_TESTING RPC hook, proving three things
  * the catalog test cannot: the plan leg never reaches the RPC, the confirmed
@@ -1005,6 +1074,7 @@ static int test_wallet_mutating_native_e2e(void)
  * is reported BLOCKED with mutated=false rather than PASSED. */
 static int g_app_name_register_calls;
 static int g_app_msg_send_calls;
+static int g_app_token_send_calls;
 static bool g_app_name_degraded;
 
 static char *app_write_stub_rpc(const char *method, const char *params_json)
@@ -1026,6 +1096,15 @@ static char *app_write_stub_rpc(const char *method, const char *params_json)
                       "00112233445566778899aabbccddeeff\","
                       "\"peer_id\":7,\"status\":\"sent\"}");
     }
+    if (method && strcmp(method, "zslp_send_tx") == 0) {
+        g_app_token_send_calls++;
+        return strdup("{\"status\":\"broadcast\","
+                      "\"txid\":\"11111111111111111111111111111111"
+                      "11111111111111111111111111111111\","
+                      "\"token_id\":\"22222222222222222222222222222222"
+                      "22222222222222222222222222222222\","
+                      "\"to\":\"t1stub\",\"amount\":25,\"fee\":10000}");
+    }
     if (method && strcmp(method, "swap_initiate") == 0)
         return strdup("{\"swap_id\":\"stub\",\"role\":\"initiator\","
                       "\"state\":\"pending\",\"p2sh_address\":\"t3Stub\"}");
@@ -1040,6 +1119,7 @@ static int test_app_write_native_e2e(void)
     TEST("app.* write leaves execute plan/commit over a stubbed RPC") {
         g_app_name_register_calls = 0;
         g_app_msg_send_calls = 0;
+        g_app_token_send_calls = 0;
         g_app_name_degraded = false;
         node_rpc_client_set_test_hook(app_write_stub_rpc);
 
@@ -1144,7 +1224,41 @@ static int test_app_write_native_e2e(void)
         zcl_command_reply_free(&reply);
         json_free(&bad_in);
 
-        /* 5. messaging.send picks the recipient key its channel names: the p2p
+        /* 5. token.send has the same two-leg transaction contract: plan is
+         * non-mutating; commit calls the receipt-bearing RPC exactly once. */
+        const struct zcl_command_spec *token_spec =
+            find_spec(reg, "app.tokens.send");
+        ASSERT(token_spec != NULL);
+        ASSERT(token_spec->availability == ZCL_COMMAND_READY);
+        struct json_value token_plan;
+        json_init(&token_plan);
+        json_set_object(&token_plan);
+        (void)json_push_kv_str(
+            &token_plan, "token_id",
+            "2222222222222222222222222222222222222222222222222222222222222222");
+        (void)json_push_kv_str(&token_plan, "to", "t1stub");
+        (void)json_push_kv_int(&token_plan, "units", 25);
+        struct zcl_command_request token_plan_req = {
+            .spec = token_spec, .input = &token_plan, .view = "normal",
+        };
+        zcl_command_reply_init(&reply, token_spec->output_schema);
+        zcl_native_handle_token_send(&token_plan_req, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")), "plan");
+        ASSERT(!reply.error.mutated);
+        ASSERT_EQ(g_app_token_send_calls, 0);
+        zcl_command_reply_free(&reply);
+        (void)json_push_kv_bool(&token_plan, "confirm", true);
+        zcl_command_reply_init(&reply, token_spec->output_schema);
+        zcl_native_handle_token_send(&token_plan_req, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(reply.error.mutated);
+        ASSERT_EQ(g_app_token_send_calls, 1);
+        ASSERT(json_get_str(json_get(&reply.data, "txid")) != NULL);
+        zcl_command_reply_free(&reply);
+        json_free(&token_plan);
+
+        /* 6. messaging.send picks the recipient key its channel names: the p2p
          *    channel demands peer_id and refuses before touching the node. */
         const struct zcl_command_spec *send_spec =
             find_spec(reg, "app.messaging.send");

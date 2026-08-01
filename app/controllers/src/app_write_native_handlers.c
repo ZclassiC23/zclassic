@@ -3,8 +3,8 @@
  * Registry handlers for the MUTATING app.* feature leaves.
  *
  * Each leaf here proxies one already-complete node RPC over the loopback
- * client — name_register/update/transfer/renew/set_record/set_text (ZNAM),
- * msg_send/msg_read (ZMSG), swap_initiate/swap_participate (ZSWP). The
+ * client — ZSLP create/send/mint, the ZNAM name writes,
+ * msg_send/msg_read (ZMSG), and swap_initiate/swap_participate (ZSWP). The
  * backing handlers build, sign, admit and relay their own transactions
  * (app/controllers/src/{name,messaging,swap}_controller.c); nothing is
  * re-implemented here. This file owns exactly three things the RPC layer does
@@ -380,6 +380,57 @@ static void awn_run(const struct zcl_command_request *request,
     (void)json_push_kv_bool(&reply->data, "committed", true);
     (void)json_push_kv_str(&reply->data, "plan_token", token);
     reply->error.mutated = true;
+}
+
+/* ── ZSLP tokens ─────────────────────────────────────────────────────── */
+
+void zcl_native_handle_token_create(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    static const struct awn_leaf leaf = {
+        .action = "token-create", .method = "zslp_createtoken_tx",
+        .plan_commit = true, .require_status = "broadcast",
+        .degraded_code = "TOKEN_NOT_BROADCAST",
+        .degraded_message = "the ZSLP genesis transaction was not broadcast",
+        .args = {
+            { "ticker", AWN_STR, true }, { "name", AWN_STR, true },
+            { "decimals", AWN_INT, true }, { "supply", AWN_INT, true },
+            { NULL, AWN_STR, false },
+        },
+    };
+    awn_run(request, reply, &leaf);
+}
+
+void zcl_native_handle_token_send(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    static const struct awn_leaf leaf = {
+        .action = "token-send", .method = "zslp_send_tx",
+        .plan_commit = true, .require_status = "broadcast",
+        .degraded_code = "TOKEN_NOT_BROADCAST",
+        .degraded_message = "the ZSLP send transaction was not broadcast",
+        .args = {
+            { "token_id", AWN_STR, true }, { "to", AWN_STR, true },
+            { "units", AWN_INT, true }, { NULL, AWN_STR, false },
+        },
+    };
+    awn_run(request, reply, &leaf);
+}
+
+void zcl_native_handle_token_mint(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    static const struct awn_leaf leaf = {
+        .action = "token-mint", .method = "zslp_mint_tx",
+        .plan_commit = true, .require_status = "broadcast",
+        .degraded_code = "TOKEN_NOT_BROADCAST",
+        .degraded_message = "the ZSLP mint transaction was not broadcast",
+        .args = {
+            { "token_id", AWN_STR, true }, { "to", AWN_STR, true },
+            { "units", AWN_INT, true }, { NULL, AWN_STR, false },
+        },
+    };
+    awn_run(request, reply, &leaf);
 }
 
 /* ── ZCL Names (ZNAM) ───────────────────────────────────────────────── */

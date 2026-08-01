@@ -57,6 +57,30 @@ struct slp_message {
     int num_outputs;
 };
 
+struct transaction;
+
+/* Classify an output using the SLP declaration in tx.vout[0]. token_id is
+ * returned in the node's internal txid byte order (the same order as
+ * transaction.hash and node.db); callers never need to guess wire endian.
+ * This is deliberately metadata classification, not recursive SLP validity.
+ * Wallet coin selection uses it conservatively: every declared token/baton
+ * output is reserved from ordinary ZCL spends, including a malformed lineage,
+ * because accidentally burning an asset is worse than leaving dust untouched. */
+enum slp_output_role {
+    SLP_OUTPUT_NONE = 0,
+    SLP_OUTPUT_TOKEN,
+    SLP_OUTPUT_MINT_BATON,
+};
+
+struct slp_output_metadata {
+    enum slp_output_role role;
+    uint8_t token_id[32];
+    uint64_t amount; /* token base units; zero for a mint baton */
+};
+
+bool slp_classify_tx_output(const struct transaction *tx, uint32_t vout,
+                            struct slp_output_metadata *out);
+
 /* Parse an OP_RETURN script into an SLP message.
  * Returns true if the script is a valid SLP message. */
 bool slp_parse(const uint8_t *script, size_t script_len,

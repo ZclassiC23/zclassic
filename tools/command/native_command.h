@@ -281,6 +281,9 @@ void zcl_native_handle_vault_send(
 void zcl_native_handle_vault_send_shielded(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_vault_send_token(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_vault_swap_redeem(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
@@ -1001,6 +1004,15 @@ void zcl_native_handle_wallet_address_export_key(
 void zcl_native_handle_wallet_transaction_send(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_wallet_raw_create(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_wallet_raw_sign(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_wallet_raw_broadcast(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_wallet_shielded_send(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
@@ -1060,8 +1072,9 @@ void zcl_native_handle_wallet_address_by_label(
 
 /* Mutating app.* feature leaves
  * (app/controllers/src/app_write_native_handlers.c). Each proxies one
- * already-complete node RPC over the loopback client — the ZNAM writes
- * (name_register/update/transfer/renew/set_record/set_text), the ZMSG writes
+ * already-complete node RPC over the loopback client — the ZSLP token writes,
+ * the ZNAM writes (name_register/update/transfer/renew/set_record/set_text),
+ * the ZMSG writes
  * (msg_send/msg_read) and the ZSWP contract mints
  * (swap_initiate/swap_participate) — and renders one bounded JSON document.
  * Every leaf that can move value honours the declared CONFIRM_PLAN_COMMIT
@@ -1071,6 +1084,15 @@ void zcl_native_handle_wallet_address_by_label(
  * that answers status="ready" because the node carries no wallet) is reported
  * BLOCKED with mutated=false, never PASSED. Bound in
  * config/commands/app_features.def. */
+void zcl_native_handle_token_create(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_token_send(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_token_mint(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_name_register(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

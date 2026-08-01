@@ -710,92 +710,13 @@ int64_t wallet_get_immature_balance(const struct wallet *w)
     return balance;
 }
 
-void wallet_available_coins(const struct wallet *w,
-                             struct coin_entry *coins_out,
-                             size_t *num_coins, size_t max_coins,
-                             bool only_confirmed, bool include_zero_value)
-{
-    *num_coins = 0;
-    zcl_mutex_lock((zcl_mutex_t *)&w->cs);
-
-    for (size_t i = 0; i < MAX_WALLET_TX && *num_coins < max_coins; i++) {
-        if (!w->map_wallet[i].used)
-            continue;
-        const struct wallet_tx *wtx = &w->map_wallet[i];
-
-        if (only_confirmed && wtx->confirms < 1)
-            continue;
-
-        if (transaction_is_coinbase(&wtx->tx) &&
-            wallet_tx_get_blocks_to_maturity(wtx) > 0)
-            continue;
-
-        for (size_t j = 0; j < wtx->tx.num_vout && *num_coins < max_coins; j++) {
-            const struct tx_out *out = &wtx->tx.vout[j];
-            if (!include_zero_value && out->value == 0)
-                continue;
-            if (!wallet_is_mine(w, out))
-                continue;
-
-            if (wallet_is_outpoint_spent(w, &wtx->tx.hash, (uint32_t)j))
-                continue;
-
-            /* Check actual key availability for spending */
-            bool can_spend = false;
-            struct tx_destination coin_dest;
-            if (script_extract_destination(&out->script_pub_key, &coin_dest)) {
-                if (coin_dest.type == DEST_KEY_ID) {
-                    struct privkey test_key;
-                    can_spend = keystore_get_key(&w->keystore,
-                        &coin_dest.id.key, &test_key);
-                    if (can_spend)
-                        memory_cleanse(test_key.vch, 32);
-                }
-                /* P2SH: spendable only if we have the redeem script
-                 * AND the underlying keys — for now, skip P2SH */
-            }
-
-            coins_out[*num_coins].wtx = wtx;
-            coins_out[*num_coins].i = (unsigned int)j;
-            coins_out[*num_coins].depth = wtx->confirms;
-            coins_out[*num_coins].spendable = can_spend;
-            coins_out[*num_coins].solvable = can_spend;
-            (*num_coins)++;
-        }
-    }
-    zcl_mutex_unlock((zcl_mutex_t *)&w->cs);
-}
-
-bool wallet_select_coins(const struct wallet *w,
-                          const struct coin_entry *available, size_t num_available,
-                          int64_t target_value,
-                          struct coin_entry *selected, size_t *num_selected,
-                          size_t max_selected, int64_t *value_out)
-{
-    (void)w;
-    *num_selected = 0;
-    *value_out = 0;
-
-    for (size_t i = 0; i < num_available && *num_selected < max_selected; i++) {
-        if (!available[i].spendable)
-            continue;
-        int64_t coin_value = available[i].wtx->tx.vout[available[i].i].value;
-        selected[*num_selected] = available[i];
-        (*num_selected)++;
-        *value_out += coin_value;
-        if (*value_out >= target_value)
-            return true;
-    }
-    return *value_out >= target_value;
-}
-
 /* Sign every input of wtx_out from the selected coins. On any failure this
  * unlocks w->cs, frees wtx_out->tx, sets *error and returns false; on success
  * it returns true with w->cs released. The caller computes the tx hash. */
-static bool wallet_sign_inputs(struct wallet *w, struct wallet_tx *wtx_out,
-                               const struct coin_entry *selected,
-                               size_t num_selected, int height,
-                               const char **error)
+bool wallet_sign_selected_inputs(struct wallet *w, struct wallet_tx *wtx_out,
+                                 const struct coin_entry *selected,
+                                 size_t num_selected, int height,
+                                 const char **error)
 {
     const struct chain_params *cp = chain_params_get();
 
@@ -958,7 +879,8 @@ bool wallet_create_transaction(struct wallet *w,
         wtx_out->tx.vin[i].sequence = UINT32_MAX - 1;
     }
 
-    if (!wallet_sign_inputs(w, wtx_out, selected, num_selected, height, error))
+    if (!wallet_sign_selected_inputs(w, wtx_out, selected, num_selected,
+                                     height, error))
         return false;
 
     transaction_compute_hash(&wtx_out->tx);
@@ -1078,7 +1000,8 @@ bool wallet_create_transaction_multi(struct wallet *w,
         wtx_out->tx.vin[i].sequence = UINT32_MAX - 1;
     }
 
-    if (!wallet_sign_inputs(w, wtx_out, selected, num_selected, height, error))
+    if (!wallet_sign_selected_inputs(w, wtx_out, selected, num_selected,
+                                     height, error))
         return false;
 
     transaction_compute_hash(&wtx_out->tx);

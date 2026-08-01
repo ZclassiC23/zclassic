@@ -3,22 +3,14 @@
  * ZSLP token controller — token operations + shielded payments. */
 
 #include "controllers/zslp_controller.h"
-#include "zslp/slp.h"
+#include "controllers/wallet_helpers.h"
+#include "controllers/sync_controller.h"
 #include "core/uint256.h"
 #include "wallet/wallet.h"
-#include "wallet/keystore.h"
-#include "keys/key.h"
-#include "keys/pubkey.h"
-#include "keys/key_io.h"
-#include "chain/chainparams.h"
-#include "script/standard.h"
-#include "validation/sighash.h"
-#include "consensus/upgrades.h"
-#include "support/cleanse.h"
-#include "validation/txmempool.h"
 #include "primitives/transaction.h"
 #include "config/runtime.h"
 #include "models/zslp.h"
+#include "models/database.h"
 #include "services/zslp_command_service.h"
 #include "services/zslp_service.h"
 #include "rpc/server.h"
@@ -31,6 +23,7 @@
 #include <sqlite3.h>
 #include "util/log_macros.h"
 #include "controllers/sovereignty_controller.h"
+#include "net/connman.h"
 
 /* Sovereign guard for the three write verbs (createtoken/send/mint all spend
  * wallet UTXOs and mutate asset state): refuse while the tip is
@@ -71,21 +64,6 @@ static struct tx_mempool *zslp_mempool(void)
     return app_runtime_mempool();
 }
 
-static bool zslp_wallet_admission(struct wallet_tx_admission *out)
-{
-    if (!out)
-        LOG_FAIL("zslp", "wallet_admission: NULL output");
-    *out = (struct wallet_tx_admission) {
-        .mempool = app_runtime_mempool(),
-        .coins_tip = app_runtime_coins_tip(),
-        .main_state = app_runtime_main_state(),
-        .params = chain_params_get(),
-    };
-    if (!out->mempool || !out->coins_tip || !out->main_state)
-        LOG_FAIL("zslp", "wallet_admission: runtime validation context incomplete");
-    return true;
-}
-
 static const char *zslp_effective_datadir(const char *datadir)
 {
     return datadir ? datadir : zslp_ctx()->datadir;
@@ -120,14 +98,59 @@ static bool zslp_require_address(const char *addr, bool strict_chain_addr,
     return false;
 }
 
+/* Same durability/relay contract as sendtoaddress: persist any freshly
+ * generated keys before admission, durably persist the admitted wallet row,
+ * mirror it into node.db, then announce it to peers. The old ZSLP path stopped
+ * after local mempool admission while printing "broadcast". */
+static bool zslp_publish_wallet_tx(struct wallet_tx *wtx, char txid_out[65],
+                                   char *error_out, size_t error_size)
+{
+    struct wallet_rpc_context *ctx = wallet_rpc_context_current();
+    if (!ctx || !ctx->wallet || !ctx->mempool || !ctx->coins_tip ||
+        !ctx->main_state || !wtx) {
+        snprintf(error_out, error_size,
+                 "wallet validation/relay context is incomplete");
+        LOG_FAIL("zslp", "publish: %s", error_out);
+    }
+
+    if (ctx->wallet_db) {
+        struct zcl_result flushed = wallet_flush_from_context(ctx);
+        if (!flushed.ok) {
+            snprintf(error_out, error_size,
+                     "cannot persist token keys before broadcast: %s",
+                     flushed.message);
+            LOG_FAIL("zslp", "publish: %s", error_out);
+        }
+    }
+
+    struct zcl_result commit = wallet_commit_from_context(ctx, wtx);
+    if (!commit.ok) {
+        snprintf(error_out, error_size, "%s", commit.message);
+        LOG_FAIL("zslp", "publish: commit failed code=%d: %s", commit.code,
+                 commit.message);
+    }
+    struct zcl_result persisted = wallet_persist_commit_before_relay(ctx, wtx);
+    if (!persisted.ok) {
+        snprintf(error_out, error_size, "%s", persisted.message);
+        LOG_FAIL("zslp", "publish: persistence failed code=%d: %s",
+                 persisted.code, persisted.message);
+    }
+    if (wallet_ctx_db_ready(ctx))
+        node_db_sync_wallet_tx(ctx->node_db, &wtx->tx, ctx->wallet, 0);
+    if (ctx->connman)
+        connman_relay_transaction(ctx->connman, &wtx->tx.hash);
+    uint256_get_hex(&wtx->tx.hash, txid_out);
+    return true;
+}
+
 /* ── Token creation (GENESIS) ────────────────────────────── */
 
-const char *zslp_create_token(const char *datadir,
-                               const char *ticker,
-                               const char *name,
-                               uint8_t decimals,
-                               uint64_t initial_supply)
+const char *zslp_create_token_with_receipt(
+    const char *datadir, const char *ticker, const char *name,
+    uint8_t decimals, uint64_t initial_supply, struct zslp_tx_receipt *receipt)
 {
+    if (receipt)
+        memset(receipt, 0, sizeof(*receipt));
     const char *effective_datadir = zslp_effective_datadir(datadir);
     struct zslp_token_create_request req = {
         .ticker = ticker,
@@ -143,19 +166,6 @@ const char *zslp_create_token(const char *datadir,
     validation_error = zslp_service_validate_create_request(&req);
     if (validation_error)
         LOG_NULL("zslp", "create_token: %s", validation_error);
-
-    /* Build the GENESIS OP_RETURN script */
-    uint8_t script[256];
-    size_t slen = slp_build_genesis(script, sizeof(script),
-        ticker, name, "", NULL, decimals, 2, /* mint baton at vout 2 */
-        initial_supply);
-
-    if (slen == 0)
-        LOG_NULL("zslp", "create_token: failed to build GENESIS script");
-
-    printf("ZSLP GENESIS: ticker=%s name=%s decimals=%d supply=%llu "
-           "script=%zu bytes\n",
-           ticker, name, decimals, (unsigned long long)initial_supply, slen);
 
     /* Build transaction:
      *   vout[0]: OP_RETURN with GENESIS script (value=0)
@@ -175,24 +185,28 @@ const char *zslp_create_token(const char *datadir,
     struct wallet_tx wtx;
     int64_t fee_paid = 0;
     const char *tx_error = NULL;
-    if (!zslp_command_build_genesis_base_tx(wallet, &wtx,
-                                            &fee_paid, &tx_error).ok)
+    struct zcl_result built = zslp_command_build_token_genesis_tx(
+        wallet, ticker, name, decimals, initial_supply, &wtx, &fee_paid,
+        &tx_error);
+    if (!built.ok)
         LOG_NULL("zslp", "create_token: tx build failed: %s",
-                 tx_error ? tx_error : "unknown");
+                 tx_error ? tx_error : built.message);
 
-    struct wallet_tx_admission admission;
-    if (!zslp_wallet_admission(&admission) ||
-        !zslp_command_commit_with_op_return(wallet, &wtx, &admission,
-                                            script, slen).ok) {
-        LOG_WARN("zslp", "zslp: commit failed");
+    static char bc_txid[65];
+    char publish_error[256] = {0};
+    if (!zslp_publish_wallet_tx(&wtx, bc_txid, publish_error,
+                                sizeof(publish_error))) {
         transaction_free(&wtx.tx);
         return NULL;
     }
-
-    static char bc_txid[128];
-    uint256_get_hex(&wtx.tx.hash, bc_txid);
     broadcast_txid = bc_txid;
+    if (receipt) {
+        snprintf(receipt->txid, sizeof(receipt->txid), "%s", bc_txid);
+        receipt->fee_paid = fee_paid;
+        receipt->broadcast = true;
+    }
     printf("ZSLP GENESIS broadcast: token_id=%s\n", broadcast_txid);
+    transaction_free(&wtx.tx);
 
 store_sqlite:
     ;
@@ -201,6 +215,14 @@ store_sqlite:
                                        result).ok)
         LOG_NULL("zslp", "finalize_genesis failed for ticker=%s", ticker);
     return result;
+}
+
+const char *zslp_create_token(const char *datadir, const char *ticker,
+                              const char *name, uint8_t decimals,
+                              uint64_t initial_supply)
+{
+    return zslp_create_token_with_receipt(datadir, ticker, name, decimals,
+                                          initial_supply, NULL);
 }
 
 /* ── Token balance ───────────────────────────────────────── */
@@ -252,11 +274,12 @@ int64_t zslp_check_payment(const char *datadir,
 
 /* ── Token mint ──────────────────────────────────────────── */
 
-bool zslp_mint(const char *datadir,
-                const char *token_id_hex,
-                const char *recipient_addr,
-                uint64_t amount)
+bool zslp_mint_with_receipt(const char *datadir, const char *token_id_hex,
+                            const char *recipient_addr, uint64_t amount,
+                            struct zslp_tx_receipt *receipt)
 {
+    if (receipt)
+        memset(receipt, 0, sizeof(*receipt));
     bool strict_chain_addr = (zslp_wallet() != NULL && zslp_mempool() != NULL);
     struct zslp_token_transfer_request req = {
         .token_id = token_id_hex,
@@ -275,15 +298,17 @@ bool zslp_mint(const char *datadir,
     validation_error = zslp_service_validate_transfer_request(&req);
     if (validation_error)
         LOG_FAIL("zslp", "mint: %s", validation_error);
-    if (!zslp_command_credit_transfer(zslp_effective_datadir(datadir), &req).ok)
-        LOG_FAIL("zslp", "mint: balance update failed for token=%s",
-                 token_id_hex ? token_id_hex : "?");
 
     /* Build and broadcast ZSLP MINT transaction on-chain */
     struct wallet *wallet = zslp_wallet();
     struct tx_mempool *mempool = zslp_mempool();
     if (!wallet || !mempool) {
-        /* No wallet (test mode) — balances already updated above */
+        /* Credit-only merchant-store fixture mode. Production balances are
+         * chain-derived and never change before a transaction confirms. */
+        if (!zslp_command_credit_transfer(zslp_effective_datadir(datadir),
+                                          &req).ok)
+            LOG_FAIL("zslp", "mint: fixture balance update failed token=%s",
+                     token_id_hex ? token_id_hex : "?");
         return true;
     }
 
@@ -293,43 +318,49 @@ bool zslp_mint(const char *datadir,
         LOG_FAIL("zslp", "mint: invalid token_id for broadcast: %s",
                  token_id_hex ? token_id_hex : "(null)");
 
-    uint8_t op_script[256];
-    size_t slen = slp_build_mint(op_script, sizeof(op_script),
-        &token_id, 0, amount);
-    if (slen == 0)
-        LOG_FAIL("zslp", "mint: failed to build MINT script");
-
     struct wallet_tx wtx;
     int64_t fee_paid = 0;
     const char *tx_error = NULL;
-    if (!zslp_command_build_send_base_tx(wallet, recipient_addr, &wtx,
-                                         &fee_paid, &tx_error).ok)
+    struct zcl_result built = zslp_command_build_token_mint_tx(
+        wallet, token_id.data, recipient_addr, amount, &wtx, &fee_paid,
+        &tx_error);
+    if (!built.ok)
         LOG_FAIL("zslp", "mint: tx build failed: %s",
-                 tx_error ? tx_error : "unknown");
+                 tx_error ? tx_error : built.message);
 
-    struct wallet_tx_admission admission;
-    if (!zslp_wallet_admission(&admission) ||
-        !zslp_command_commit_with_op_return(wallet, &wtx, &admission,
-                                            op_script, slen).ok) {
-        LOG_WARN("zslp", "zslp: mint commit failed");
+    char txid[65];
+    char publish_error[256] = {0};
+    if (!zslp_publish_wallet_tx(&wtx, txid, publish_error,
+                                sizeof(publish_error))) {
         transaction_free(&wtx.tx);
         return false;
     }
-
-    char txid[65];
-    uint256_get_hex(&wtx.tx.hash, txid);
     printf("ZSLP MINT broadcast: token=%s amount=%llu to=%s txid=%s\n",
            token_id_hex, (unsigned long long)amount, recipient_addr, txid);
+    if (receipt) {
+        snprintf(receipt->txid, sizeof(receipt->txid), "%s", txid);
+        receipt->fee_paid = fee_paid;
+        receipt->broadcast = true;
+    }
+    transaction_free(&wtx.tx);
     return true;
+}
+
+bool zslp_mint(const char *datadir, const char *token_id_hex,
+               const char *recipient_addr, uint64_t amount)
+{
+    return zslp_mint_with_receipt(datadir, token_id_hex, recipient_addr,
+                                  amount, NULL);
 }
 
 /* ── Token send ──────────────────────────────────────────── */
 
-bool zslp_send(const char *datadir,
-                const char *token_id_hex,
-                const char *to_addr,
-                uint64_t amount)
+bool zslp_send_with_receipt(const char *datadir, const char *token_id_hex,
+                            const char *to_addr, uint64_t amount,
+                            struct zslp_tx_receipt *receipt)
 {
+    if (receipt)
+        memset(receipt, 0, sizeof(*receipt));
     struct wallet *wallet = zslp_wallet();
     struct tx_mempool *mempool = zslp_mempool();
     struct zslp_token_transfer_request req = {
@@ -358,47 +389,44 @@ bool zslp_send(const char *datadir,
         return true;
     }
 
-    /* Build SEND OP_RETURN script */
     struct uint256 token_id;
     uint256_set_hex(&token_id, token_id_hex);
     if (uint256_is_null(&token_id))
         LOG_FAIL("zslp", "send: invalid token_id: %s",
                  token_id_hex ? token_id_hex : "(null)");
 
-    uint64_t quantities[1] = { amount };
-    uint8_t op_script[256];
-    size_t slen = slp_build_send(op_script, sizeof(op_script),
-        &token_id, quantities, 1);
-    if (slen == 0)
-        LOG_FAIL("zslp", "send: failed to build SEND script");
-
     struct wallet_tx wtx;
     int64_t fee_paid = 0;
     const char *tx_error = NULL;
-    if (!zslp_command_build_send_base_tx(wallet, to_addr, &wtx,
-                                         &fee_paid, &tx_error).ok)
+    struct zcl_result built = zslp_command_build_token_send_tx(
+        wallet, token_id.data, to_addr, amount, &wtx, &fee_paid, &tx_error);
+    if (!built.ok)
         LOG_FAIL("zslp", "send: tx build failed: %s",
-                 tx_error ? tx_error : "unknown");
+                 tx_error ? tx_error : built.message);
 
-    struct wallet_tx_admission admission;
-    if (!zslp_wallet_admission(&admission) ||
-        !zslp_command_commit_with_op_return(wallet, &wtx, &admission,
-                                            op_script, slen).ok) {
-        LOG_WARN("zslp", "zslp: commit failed");
+    char txid[65];
+    char publish_error[256] = {0};
+    if (!zslp_publish_wallet_tx(&wtx, txid, publish_error,
+                                sizeof(publish_error))) {
         transaction_free(&wtx.tx);
         return false;
     }
-
-    /* Update balances in SQLite */
-    if (!zslp_command_credit_transfer(zslp_effective_datadir(datadir), &req).ok)
-        LOG_FAIL("zslp", "send: balance update failed for token=%s",
-                 token_id_hex ? token_id_hex : "?");
-
-    char txid[65];
-    uint256_get_hex(&wtx.tx.hash, txid);
     printf("ZSLP SEND broadcast: token=%s amount=%llu to=%s txid=%s\n",
            token_id_hex, (unsigned long long)amount, to_addr, txid);
+    if (receipt) {
+        snprintf(receipt->txid, sizeof(receipt->txid), "%s", txid);
+        receipt->fee_paid = fee_paid;
+        receipt->broadcast = true;
+    }
+    transaction_free(&wtx.tx);
     return true;
+}
+
+bool zslp_send(const char *datadir, const char *token_id_hex,
+               const char *to_addr, uint64_t amount)
+{
+    return zslp_send_with_receipt(datadir, token_id_hex, to_addr, amount,
+                                  NULL);
 }
 
 /* ── RPC handlers ────────────────────────────────────────── */
@@ -761,4 +789,5 @@ void register_zslp_rpc_commands(struct rpc_table *t)
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
         rpc_table_must_append(t, &cmds[i]);
+    register_zslp_transaction_rpc_commands(t);
 }

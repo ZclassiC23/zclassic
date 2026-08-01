@@ -15,14 +15,17 @@
 #include "controllers/wallet_diagnostic_controller.h"
 #include "controllers/wallet_helpers.h"
 #include "controllers/wallet_rescan_controller.h"
+#include "core/core_io.h"
 #include "jobs/reducer_frontier.h"
 #include "json/json.h"
+#include "keys/key_io.h"
 #include "models/block.h"
 #include "models/database.h"
 #include "net/connman.h"
 #include "rpc/server.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
+#include "support/cleanse.h"
 #include "validation/main_state.h"
 #include "wallet/wallet.h"
 #include <stdbool.h>
@@ -761,6 +764,83 @@ int test_rpc_safety(void)
         free(wallet_rescan_tbl);
         free(repair_tbl);
 
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
+    printf("rpc_safety: raw-sign supplemental secrets stay request-local... ");
+    {
+        struct basic_keystore *ks = calloc(1, sizeof(*ks));
+        struct rpc_table *tbl = calloc(1, sizeof(*tbl));
+        bool ok = ks && tbl;
+        if (ok) {
+            keystore_init(ks);
+            rpc_table_init(tbl);
+            rpc_rawtx_set_state(NULL, NULL, NULL, "/tmp");
+            rpc_rawtx_set_keystore(ks);
+            register_rawtransaction_rpc_commands(tbl);
+
+            struct transaction tx;
+            transaction_init(&tx);
+            tx.overwintered = true;
+            tx.version = SAPLING_TX_VERSION;
+            tx.version_group_id = SAPLING_VERSION_GROUP_ID;
+            char tx_hex[1024];
+            size_t tx_hex_len = encode_hex_tx(&tx, tx_hex, sizeof(tx_hex));
+            ok = tx_hex_len > 0 && tx_hex_len < sizeof(tx_hex);
+            tx_hex[tx_hex_len] = 0;
+            transaction_free(&tx);
+
+            struct privkey extra = {0};
+            struct pubkey extra_pub;
+            char wif[128];
+            size_t secret_len = 0;
+            const unsigned char *secret = chain_params_base58_prefix(
+                chain_params_get(), B58_SECRET_KEY, &secret_len);
+            privkey_make_new(&extra, true);
+            ok = ok && privkey_get_pubkey(&extra, &extra_pub) &&
+                 encode_secret(&extra, secret, secret_len, wif, sizeof(wif));
+            struct key_id extra_id = pubkey_get_id(&extra_pub);
+
+            struct script redeem = {0};
+            redeem.data[0] = OP_1;
+            redeem.size = 1;
+            struct script_id redeem_id;
+            script_id_from_script(&redeem_id, &redeem);
+
+            struct json_value params, prevs, prev, keys, value, result;
+            json_init(&params); json_set_array(&params);
+            json_init(&value); json_set_str(&value, tx_hex);
+            json_push_back(&params, &value); json_free(&value);
+            json_init(&prevs); json_set_array(&prevs);
+            json_init(&prev); json_set_object(&prev);
+            json_push_kv_str(&prev, "txid",
+                "0000000000000000000000000000000000000000000000000000000000000000");
+            json_push_kv_int(&prev, "vout", 0);
+            json_push_kv_str(&prev, "scriptPubKey", "51");
+            json_push_kv_real(&prev, "amount", 0.0);
+            json_push_kv_str(&prev, "redeemScript", "51");
+            json_push_back(&prevs, &prev); json_free(&prev);
+            json_push_back(&params, &prevs); json_free(&prevs);
+            json_init(&keys); json_set_array(&keys);
+            json_init(&value); json_set_str(&value, wif);
+            json_push_back(&keys, &value); json_free(&value);
+            json_push_back(&params, &keys); json_free(&keys);
+            json_init(&result);
+
+            ok = ok && rpc_table_execute(tbl, "signrawtransaction", &params,
+                                         &result);
+            ok = ok && !keystore_have_key(ks, &extra_id) &&
+                 !keystore_have_cscript(ks, &redeem_id.hash);
+
+            json_free(&params);
+            json_free(&result);
+            memory_cleanse(extra.vch, sizeof(extra.vch));
+            rpc_rawtx_set_keystore(NULL);
+            keystore_free(ks);
+        }
+        free(ks);
+        free(tbl);
         if (ok) printf("OK\n");
         else    { printf("FAIL\n"); failures++; }
     }

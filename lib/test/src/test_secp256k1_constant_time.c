@@ -150,6 +150,17 @@ static void work_sign(const void *secret, void *scratch)
 
 static volatile uint64_t g_ct_sink;
 
+/* Keep the deliberately conditional work observably separate under LTO.
+ * Modern compilers can if-convert the inline multiply below into an
+ * unconditional multiply plus cmov, making both secrets execute identical
+ * work and turning the checker's calibration control into a false failure.
+ * A noinline call with a volatile observation cannot be if-converted away. */
+static __attribute__((noinline)) uint64_t work_leaky_add(uint64_t acc)
+{
+    g_ct_sink ^= acc;
+    return acc * 2862933555777941757ULL + 3037000493ULL;
+}
+
 static void work_leaky(const void *secret, void *scratch)
 {
     /* Textbook double-and-add with the add SKIPPED on a zero bit — the exact
@@ -171,7 +182,7 @@ static void work_leaky(const void *secret, void *scratch)
              * mild: the point is to show the checker resolves a modest leak,
              * not that it can spot a 20x one. */
             if ((d[byte] >> bit) & 1)
-                acc = acc * 2862933555777941757ULL + 3037000493ULL;
+                acc = work_leaky_add(acc);
         }
     }
     g_ct_sink = acc;

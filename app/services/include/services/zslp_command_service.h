@@ -30,6 +30,25 @@ struct zcl_result zslp_command_build_send_base_tx(struct wallet *wallet,
                                      int64_t *fee_paid,
                                      const char **tx_error);
 
+/* Custody-correct ZSLP builders. SEND consumes confirmed wallet-owned token
+ * outputs and returns token change; MINT consumes the wallet-owned mint baton
+ * and recreates it. Both add ordinary, non-SLP wallet coins only when the
+ * asset dust inputs do not cover dust outputs + fee. The OP_RETURN is present
+ * before the one signing pass, so no signature is silently skipped. token_id
+ * is in the node's internal txid byte order. */
+struct zcl_result zslp_command_build_token_send_tx(
+    struct wallet *wallet, const uint8_t token_id[32], const char *to_addr,
+    uint64_t amount, struct wallet_tx *wtx, int64_t *fee_paid,
+    const char **tx_error);
+struct zcl_result zslp_command_build_token_genesis_tx(
+    struct wallet *wallet, const char *ticker, const char *name,
+    uint8_t decimals, uint64_t initial_supply, struct wallet_tx *wtx,
+    int64_t *fee_paid, const char **tx_error);
+struct zcl_result zslp_command_build_token_mint_tx(
+    struct wallet *wallet, const uint8_t token_id[32], const char *to_addr,
+    uint64_t amount, struct wallet_tx *wtx, int64_t *fee_paid,
+    const char **tx_error);
+
 /* Build a base tx whose SOLE input is a coin the wallet controls that pays
  * owner_address (P2PKH only). Used by mutation commands (UPDATE, TRANSFER,
  * RENEW, SET_RECORD, SET_TEXT) so the resulting tx's first input — the

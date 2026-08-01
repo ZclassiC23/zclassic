@@ -1,0 +1,227 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ * Asset-safe wallet coin inventory and explicit-input transaction builder. */
+
+#include "wallet/wallet.h"
+#include "chain/chainparams.h"
+#include "consensus/upgrades.h"
+#include "core/utiltime.h"
+#include "keys/key_io.h"
+#include "script/standard.h"
+#include "support/cleanse.h"
+#include "wallet/keystore.h"
+
+#include <stdint.h>
+#include <string.h>
+
+static wallet_coin_reservation_probe g_reservation_probe;
+static void *g_reservation_ctx;
+
+void wallet_set_coin_reservation_probe(wallet_coin_reservation_probe probe,
+                                       void *ctx)
+{
+    /* Startup composition only: boot installs this before command/RPC worker
+     * threads start selecting coins. The probe is pure and remains installed
+     * for the process lifetime. */
+    g_reservation_probe = probe;
+    g_reservation_ctx = ctx;
+}
+
+void wallet_available_coins_ex(const struct wallet *w,
+                               struct coin_entry *coins_out,
+                               size_t *num_coins, size_t max_coins,
+                               bool only_confirmed, bool include_zero_value,
+                               bool include_slp_reserved)
+{
+    *num_coins = 0;
+    zcl_mutex_lock((zcl_mutex_t *)&w->cs);
+    for (size_t i = 0; i < MAX_WALLET_TX && *num_coins < max_coins; i++) {
+        if (!w->map_wallet[i].used)
+            continue;
+        const struct wallet_tx *wtx = &w->map_wallet[i];
+        if (only_confirmed && wtx->confirms < 1)
+            continue;
+        if (transaction_is_coinbase(&wtx->tx) &&
+            wallet_tx_get_blocks_to_maturity(wtx) > 0)
+            continue;
+        for (size_t j = 0; j < wtx->tx.num_vout && *num_coins < max_coins; j++) {
+            const struct tx_out *out = &wtx->tx.vout[j];
+            if ((!include_zero_value && out->value == 0) ||
+                (!include_slp_reserved && g_reservation_probe &&
+                 g_reservation_probe(&wtx->tx, (uint32_t)j,
+                                     g_reservation_ctx)) ||
+                !wallet_is_mine(w, out) ||
+                wallet_is_outpoint_spent(w, &wtx->tx.hash, (uint32_t)j))
+                continue;
+
+            bool can_spend = false;
+            struct tx_destination coin_dest;
+            if (script_extract_destination(&out->script_pub_key, &coin_dest) &&
+                coin_dest.type == DEST_KEY_ID) {
+                struct privkey test_key;
+                can_spend = keystore_get_key(&w->keystore, &coin_dest.id.key,
+                                             &test_key);
+                if (can_spend)
+                    memory_cleanse(test_key.vch, 32);
+            }
+            coins_out[*num_coins] = (struct coin_entry) {
+                .wtx = wtx, .i = (unsigned int)j, .depth = wtx->confirms,
+                .spendable = can_spend, .solvable = can_spend,
+            };
+            (*num_coins)++;
+        }
+    }
+    zcl_mutex_unlock((zcl_mutex_t *)&w->cs);
+}
+
+void wallet_available_coins(const struct wallet *w,
+                             struct coin_entry *coins_out,
+                             size_t *num_coins, size_t max_coins,
+                             bool only_confirmed, bool include_zero_value)
+{
+    wallet_available_coins_ex(w, coins_out, num_coins, max_coins,
+                              only_confirmed, include_zero_value, false);
+}
+
+int64_t wallet_default_fee(const struct wallet *w)
+{
+    if (!w)
+        return 0;
+    zcl_mutex_lock((zcl_mutex_t *)&w->cs);
+    int64_t fee = w->default_fee;
+    zcl_mutex_unlock((zcl_mutex_t *)&w->cs);
+    return fee;
+}
+
+bool wallet_select_coins(const struct wallet *w,
+                         const struct coin_entry *available,
+                         size_t num_available, int64_t target_value,
+                         struct coin_entry *selected, size_t *num_selected,
+                         size_t max_selected, int64_t *value_out)
+{
+    (void)w;
+    *num_selected = 0;
+    *value_out = 0;
+    for (size_t i = 0; i < num_available && *num_selected < max_selected; i++) {
+        if (!available[i].spendable)
+            continue;
+        int64_t value = available[i].wtx->tx.vout[available[i].i].value;
+        selected[(*num_selected)++] = available[i];
+        *value_out += value;
+        if (*value_out >= target_value)
+            return true;
+    }
+    return *value_out >= target_value;
+}
+
+bool wallet_create_transaction_selected(struct wallet *w,
+                                        const struct coin_entry *selected,
+                                        size_t num_selected,
+                                        const struct tx_out *outputs,
+                                        size_t num_outputs,
+                                        struct wallet_tx *wtx_out,
+                                        int64_t *fee_out,
+                                        const char **error)
+{
+    if (!w || !selected || !outputs || !wtx_out || !error) {
+        if (error) *error = "Invalid transaction arguments";
+        return false;
+    }
+    if (num_selected == 0 || num_selected > 4096 || num_outputs == 0 ||
+        num_outputs > 256) {
+        *error = "Invalid number of inputs or outputs";
+        return false;
+    }
+
+    int64_t input_value = 0, output_value = 0;
+    for (size_t i = 0; i < num_selected; i++) {
+        if (!selected[i].wtx || !selected[i].spendable ||
+            selected[i].i >= selected[i].wtx->tx.num_vout) {
+            *error = "Explicit input is not spendable";
+            return false;
+        }
+        int64_t value = selected[i].wtx->tx.vout[selected[i].i].value;
+        if (value < 0 || input_value > INT64_MAX - value) {
+            *error = "Explicit input value overflow";
+            return false;
+        }
+        input_value += value;
+        for (size_t j = 0; j < i; j++) {
+            if (selected[j].i == selected[i].i &&
+                uint256_eq(&selected[j].wtx->tx.hash,
+                           &selected[i].wtx->tx.hash)) {
+                *error = "Duplicate explicit input";
+                return false;
+            }
+        }
+    }
+    for (size_t i = 0; i < num_outputs; i++) {
+        int64_t value = outputs[i].value;
+        if (value < 0 || output_value > INT64_MAX - value) {
+            *error = "Explicit output value overflow";
+            return false;
+        }
+        output_value += value;
+    }
+    int64_t fee = wallet_default_fee(w);
+    if (fee < 0 || output_value > INT64_MAX - fee ||
+        input_value < output_value + fee) {
+        *error = "Explicit inputs do not cover outputs and fee";
+        return false;
+    }
+
+    const struct chain_params *cp = chain_params_get();
+    zcl_mutex_lock(&w->cs);
+    int height = w->best_block_height;
+    zcl_mutex_unlock(&w->cs);
+    memset(wtx_out, 0, sizeof(*wtx_out));
+    transaction_init(&wtx_out->tx);
+    int epoch = consensus_current_epoch(height, &cp->consensus);
+    if (epoch >= UPGRADE_SAPLING) {
+        wtx_out->tx.overwintered = true;
+        wtx_out->tx.version = SAPLING_TX_VERSION;
+        wtx_out->tx.version_group_id = SAPLING_VERSION_GROUP_ID;
+        wtx_out->tx.expiry_height = (uint32_t)(height + 20);
+    } else if (epoch >= UPGRADE_OVERWINTER) {
+        wtx_out->tx.overwintered = true;
+        wtx_out->tx.version = OVERWINTER_TX_VERSION;
+        wtx_out->tx.version_group_id = OVERWINTER_VERSION_GROUP_ID;
+        wtx_out->tx.expiry_height = (uint32_t)(height + 20);
+    }
+
+    bool need_change = input_value > output_value + fee;
+    if (!transaction_alloc(&wtx_out->tx, num_selected,
+                           num_outputs + (need_change ? 1 : 0))) {
+        *error = "Transaction allocation failed";
+        return false;
+    }
+    for (size_t i = 0; i < num_outputs; i++)
+        wtx_out->tx.vout[i] = outputs[i];
+    if (need_change) {
+        struct pubkey change_pk;
+        if (!wallet_get_key_from_pool(w, &change_pk)) {
+            transaction_free(&wtx_out->tx);
+            *error = "Cannot get change address";
+            return false;
+        }
+        struct tx_destination change_dest = {
+            .type = DEST_KEY_ID, .id.key = pubkey_get_id(&change_pk),
+        };
+        wtx_out->tx.vout[num_outputs].value = input_value - output_value - fee;
+        script_for_destination(&wtx_out->tx.vout[num_outputs].script_pub_key,
+                               &change_dest);
+    }
+    for (size_t i = 0; i < num_selected; i++) {
+        wtx_out->tx.vin[i].prevout.hash = selected[i].wtx->tx.hash;
+        wtx_out->tx.vin[i].prevout.n = selected[i].i;
+        wtx_out->tx.vin[i].sequence = UINT32_MAX - 1;
+    }
+    if (!wallet_sign_selected_inputs(w, wtx_out, selected, num_selected,
+                                     height, error))
+        return false;
+    transaction_compute_hash(&wtx_out->tx);
+    wtx_out->time_received = GetTime();
+    wtx_out->from_me = true;
+    wtx_out->used = true;
+    if (fee_out) *fee_out = fee;
+    return true;
+}

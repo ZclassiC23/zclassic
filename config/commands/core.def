@@ -826,6 +826,60 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
     zcl_native_handle_wallet_transaction_send)
+ZCL_COMMAND_BRANCH("core.wallet.transaction.raw", "core.wallet.transaction",
+                   "Raw transparent transaction composition",
+                   ZCL_COMMAND_LAYER_CORE)
+ZCL_COMMAND_READY_COMMAND(
+    "core.wallet.transaction.raw.create", "core.wallet.transaction.raw", "",
+    "Create an unsigned raw transaction",
+    "Builds canonical unsigned transaction hex from explicit outpoints and "
+    "address-to-amount outputs through createrawtransaction. It never selects "
+    "coins, signs, broadcasts, or mutates wallet state.", 0,
+    "wallet,transaction,raw,create,compose",
+    "zcl.core_wallet_raw_create.input.v1", "zcl.wallet_raw_create.v1",
+    "inputs,outputs", "inputs,outputs",
+    "zclassic23 core wallet transaction raw create --input='<obj>'",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW, ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_wallet_raw_create)
+ZCL_COMMAND_READY_COMMAND(
+    "core.wallet.transaction.raw.sign", "core.wallet.transaction.raw", "",
+    "Sign a raw transaction with wallet keys",
+    "Signs every input the running wallet can satisfy, using optional explicit "
+    "previous-output metadata for offline or multisig composition. Returns "
+    "signed hex plus complete=false and per-input errors when signatures are "
+    "still missing; it neither imports keys nor broadcasts.", 0,
+    "wallet,transaction,raw,sign,multisig",
+    "zcl.core_wallet_raw_sign.input.v1", "zcl.wallet_raw_sign.v1",
+    "raw_hex,prevtxs", "raw_hex",
+    "zclassic23 core wallet transaction raw sign --input='<obj>'",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_wallet_raw_sign)
+ZCL_COMMAND_READY_COMMAND(
+    "core.wallet.transaction.raw.broadcast", "core.wallet.transaction.raw", "",
+    "Validate and broadcast a signed raw transaction",
+    "Plan/commit relay: without confirm, returns a non-mutating plan binding "
+    "the exact transaction bytes; with confirm:true, admits the transaction "
+    "through the shared full mempool gate and relays it only after acceptance.",
+    0, "wallet,transaction,raw,broadcast,relay",
+    "zcl.core_wallet_raw_broadcast.input.v1", "zcl.wallet_raw_broadcast.v1",
+    "raw_hex,allow_high_fees,confirm", "raw_hex",
+    "zclassic23 core wallet transaction raw broadcast --input='<obj>'",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_wallet_raw_broadcast)
 ZCL_COMMAND_BRANCH("core.wallet.shielded", "core.wallet",
                    "Sapling shielded addresses and notes",
                    ZCL_COMMAND_LAYER_CORE)

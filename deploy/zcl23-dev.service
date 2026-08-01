@@ -81,9 +81,11 @@ TimeoutStopSec=300
 KillMode=control-group
 
 # The dev lane must never degrade the box, the live node, or the soak lane:
-# low scheduling weight, hard memory cap well under the box's 93G.
-MemoryHigh=18G
-MemoryMax=24G
+# low scheduling weight. The node sits near 2.9G in steady-state; 3G applies
+# pressure before a 4G hard cap, leaving restart/sync headroom. The soak
+# example contributes the matching 1G reduction to the aggregate host budget.
+MemoryHigh=3G
+MemoryMax=4G
 MemorySwapMax=512M
 CPUQuota=150%
 CPUWeight=20
