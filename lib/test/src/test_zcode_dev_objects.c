@@ -36,6 +36,7 @@
 #include "vcs/zcode_action_input.h"
 #include "vcs/zcode_task_authority.h"
 #include "vcs/zcode_task_authority_bundle.h"
+#include "vcs/zcode_task_index.h"
 #include "vcs/vcs.h"
 
 #include <stdio.h>
@@ -2413,6 +2414,266 @@ static int test_zd_improve_command(void)
     return failures;
 }
 
+static bool zd_index_store_task(const char *workspace,
+                                struct vcs_zcode_task_v1 *task,
+                                uint8_t out_root[32])
+{
+    uint8_t wire[VCS_ZCODE_TASK_WIRE_BYTES];
+    return vcs_zcode_task_serialize(task, wire) == VCS_ZCODE_DEV_OK &&
+        vcs_zcode_task_root(task, out_root) == VCS_ZCODE_DEV_OK &&
+        vcs_object_put_addressed(workspace, out_root, wire, sizeof(wire));
+}
+
+static bool zd_index_store_candidate(const char *workspace,
+                                     struct vcs_zcode_candidate_v1 *candidate,
+                                     uint8_t out_root[32])
+{
+    uint8_t wire[VCS_ZCODE_CANDIDATE_WIRE_BYTES];
+    return vcs_zcode_candidate_serialize(candidate, wire) == VCS_ZCODE_DEV_OK &&
+        vcs_zcode_candidate_root(candidate, out_root) == VCS_ZCODE_DEV_OK &&
+        vcs_object_put_addressed(workspace, out_root, wire, sizeof(wire));
+}
+
+static bool zd_index_drop_object(const char *workspace, const uint8_t root[32])
+{
+    char hex[65], path[4608];
+    zcl_hex_encode(root, 32, hex);
+    int n = snprintf(path, sizeof(path), "%s/.zvcs/objects/%c%c/%s",
+                     workspace, hex[0], hex[1], hex + 2);
+    return n > 0 && (size_t)n < sizeof(path) && unlink(path) == 0;
+}
+
+static int test_zd_task_index(void)
+{
+    int failures = 0;
+    TEST("zcode_dev: task index is a rebuildable projection over CAS wires") {
+        char dir[256], workspace[4096];
+        test_make_tmpdir(dir, sizeof(dir), "zcode_dev", "task_index");
+        ASSERT(realpath(dir, workspace) != NULL);
+        ASSERT(vcs_object_store_init(workspace));
+        struct vcs_zcode_proof_policy_v1 policy;
+        zd_policy(&policy);
+        uint8_t policy_root[32];
+        ASSERT_EQ(vcs_zcode_proof_policy_root(&policy, policy_root),
+                  VCS_ZCODE_DEV_OK);
+
+        /* Two live tasks and one expired task, each a distinct CAS wire. */
+        struct vcs_zcode_task_v1 task_a, task_b, task_expired;
+        zd_task(&task_a, policy_root);
+        zd_task(&task_b, policy_root);
+        zd_root(task_b.model_policy_root, 0x17);
+        zd_root(task_b.goal_root, 0x18);
+        zd_task(&task_expired, policy_root);
+        zd_root(task_expired.model_policy_root, 0x27);
+        zd_root(task_expired.goal_root, 0x28);
+        task_expired.expires_unix = 1000;
+        uint8_t root_a[32], root_b[32], root_expired[32];
+        ASSERT(zd_index_store_task(workspace, &task_a, root_a));
+        ASSERT(zd_index_store_task(workspace, &task_b, root_b));
+        ASSERT(zd_index_store_task(workspace, &task_expired, root_expired));
+
+        /* Decoys: a same-size blob without task magic, and a valid task
+         * wire stored under a false address. Neither may be projected. */
+        uint8_t blob[VCS_ZCODE_TASK_WIRE_BYTES];
+        memset(blob, 0x5a, sizeof(blob));
+        uint8_t blob_hash[32];
+        ASSERT(vcs_object_put(workspace, blob, sizeof(blob), VCS_TAG_BLOB,
+                              blob_hash));
+        uint8_t task_wire[VCS_ZCODE_TASK_WIRE_BYTES];
+        ASSERT_EQ(vcs_zcode_task_serialize(&task_b, task_wire),
+                  VCS_ZCODE_DEV_OK);
+        uint8_t false_address[32];
+        zd_root(false_address, 0x66);
+        ASSERT(vcs_object_put_addressed(workspace, false_address, task_wire,
+                                        sizeof(task_wire)));
+
+        const int64_t now = 1500;
+        struct vcs_zcode_task_index *index =
+            vcs_zcode_task_index_build(workspace, now);
+        ASSERT(index != NULL);
+        ASSERT_EQ(vcs_zcode_task_index_task_count(index), 3);
+        ASSERT_EQ(vcs_zcode_task_index_candidate_count(index), 0);
+        char root_a_hex[65], root_b_hex[65], root_expired_hex[65];
+        zcl_hex_encode(root_a, 32, root_a_hex);
+        zcl_hex_encode(root_b, 32, root_b_hex);
+        zcl_hex_encode(root_expired, 32, root_expired_hex);
+        for (size_t i = 1; i < vcs_zcode_task_index_task_count(index); i++)
+            ASSERT(strcmp(
+                vcs_zcode_task_index_task_at(index, i - 1u)->task_root_hex,
+                vcs_zcode_task_index_task_at(index, i)->task_root_hex) < 0);
+        const struct vcs_zcode_task_index_entry *entry_a =
+            vcs_zcode_task_index_find(index, root_a);
+        ASSERT(entry_a != NULL);
+        ASSERT_STR_EQ(entry_a->state, "AWAITING_CANDIDATE");
+        ASSERT(!entry_a->expired);
+        ASSERT_EQ(entry_a->expires_unix, 2000);
+        const struct vcs_zcode_task_index_entry *entry_expired =
+            vcs_zcode_task_index_find(index, root_expired);
+        ASSERT(entry_expired != NULL);
+        ASSERT(entry_expired->expired);
+        ASSERT_STR_EQ(entry_expired->state, "EXPIRED");
+
+        /* A fresh build is the restart proof: nothing is cached, so the
+         * projection agrees field-for-field with the previous one. */
+        struct vcs_zcode_task_index *restarted =
+            vcs_zcode_task_index_build(workspace, now);
+        ASSERT(restarted != NULL);
+        ASSERT_EQ(vcs_zcode_task_index_task_count(restarted),
+                  vcs_zcode_task_index_task_count(index));
+        for (size_t i = 0; i < vcs_zcode_task_index_task_count(index); i++) {
+            const struct vcs_zcode_task_index_entry *before =
+                vcs_zcode_task_index_task_at(index, i);
+            const struct vcs_zcode_task_index_entry *after =
+                vcs_zcode_task_index_task_at(restarted, i);
+            ASSERT_STR_EQ(before->task_root_hex, after->task_root_hex);
+            ASSERT_STR_EQ(before->source_root_hex, after->source_root_hex);
+            ASSERT_STR_EQ(before->state, after->state);
+        }
+        vcs_zcode_task_index_free(restarted);
+
+        /* A persisted candidate moves its task to CANDIDATE_ADMITTED. */
+        struct vcs_zcode_candidate_v1 candidate;
+        zd_candidate(&candidate, &task_a, root_a);
+        uint8_t candidate_root[32];
+        ASSERT(zd_index_store_candidate(workspace, &candidate, candidate_root));
+        vcs_zcode_task_index_free(index);
+        index = vcs_zcode_task_index_build(workspace, now);
+        ASSERT(index != NULL);
+        ASSERT_EQ(vcs_zcode_task_index_candidate_count(index), 1);
+        entry_a = vcs_zcode_task_index_find(index, root_a);
+        ASSERT(entry_a != NULL);
+        ASSERT_EQ(entry_a->candidate_count, 1u);
+        ASSERT_STR_EQ(entry_a->state, "CANDIDATE_ADMITTED");
+        const struct vcs_zcode_task_candidate_entry *candidate_entry =
+            vcs_zcode_task_index_candidate_at(index, 0);
+        ASSERT_STR_EQ(candidate_entry->task_root_hex, root_a_hex);
+        uint8_t author[32];
+        zd_root(author, 12);
+        char author_hex[65];
+        zcl_hex_encode(author, 32, author_hex);
+        ASSERT_STR_EQ(candidate_entry->author_pubkey_hex, author_hex);
+
+        /* Search filters compose and report totals. */
+        struct vcs_zcode_task_search search = {0};
+        const struct vcs_zcode_task_index_entry *rows[8];
+        ASSERT_EQ(vcs_zcode_task_index_search(index, &search, rows, 8), 3);
+        search.state = "AWAITING_CANDIDATE";
+        ASSERT_EQ(vcs_zcode_task_index_search(index, &search, rows, 8), 1);
+        ASSERT_STR_EQ(rows[0]->task_root_hex, root_b_hex);
+        search.state = NULL;
+        search.author = author_hex;
+        ASSERT_EQ(vcs_zcode_task_index_search(index, &search, rows, 8), 1);
+        ASSERT_STR_EQ(rows[0]->task_root_hex, root_a_hex);
+        search.author = NULL;
+        char task_prefix[9];
+        memcpy(task_prefix, root_b_hex, 8);
+        task_prefix[8] = '\0';
+        search.task_root = task_prefix;
+        ASSERT_EQ(vcs_zcode_task_index_search(index, &search, rows, 8), 1);
+        search.task_root = NULL;
+        search.state = "EXPIRED";
+        ASSERT_EQ(vcs_zcode_task_index_search(index, &search, rows, 8), 1);
+        ASSERT_STR_EQ(rows[0]->task_root_hex, root_expired_hex);
+        search.state = NULL;
+
+        /* The CAS object is the only truth: deleting the candidate wire
+         * drops it from the projection; deleting a task wire drops the
+         * task. */
+        ASSERT(zd_index_drop_object(workspace, candidate_root));
+        vcs_zcode_task_index_free(index);
+        index = vcs_zcode_task_index_build(workspace, now);
+        ASSERT(index != NULL);
+        ASSERT_EQ(vcs_zcode_task_index_candidate_count(index), 0);
+        entry_a = vcs_zcode_task_index_find(index, root_a);
+        ASSERT(entry_a != NULL);
+        ASSERT_STR_EQ(entry_a->state, "AWAITING_CANDIDATE");
+        ASSERT(zd_index_drop_object(workspace, root_b));
+        vcs_zcode_task_index_free(index);
+        index = vcs_zcode_task_index_build(workspace, now);
+        ASSERT(index != NULL);
+        ASSERT_EQ(vcs_zcode_task_index_task_count(index), 2);
+        ASSERT(vcs_zcode_task_index_find(index, root_b) == NULL);
+        vcs_zcode_task_index_free(index);
+
+        /* The typed surface lists the same projection. It judges expiry at
+         * the real wall clock, so add one task that is still live. */
+        struct vcs_zcode_task_v1 task_live;
+        zd_task(&task_live, policy_root);
+        zd_root(task_live.model_policy_root, 0x37);
+        zd_root(task_live.goal_root, 0x38);
+        task_live.expires_unix = (int64_t)platform_time_wall_unix() + 3600;
+        uint8_t root_live[32];
+        ASSERT(zd_index_store_task(workspace, &task_live, root_live));
+        char root_live_hex[65];
+        zcl_hex_encode(root_live, 32, root_live_hex);
+        struct json_value tasks_input;
+        json_init(&tasks_input);
+        json_set_object(&tasks_input);
+        (void)json_push_kv_str(&tasks_input, "workspace", workspace);
+        struct zcl_command_request tasks_request = { .input = &tasks_input };
+        struct zcl_command_reply tasks_reply;
+        zcl_command_reply_init(&tasks_reply, "zcl.zcode_tasks.v1");
+        zcl_native_handle_zcode_tasks(&tasks_request, &tasks_reply);
+        ASSERT_EQ(tasks_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_EQ(json_get_int(json_get(&tasks_reply.data, "tasks_scanned")),
+                  3);
+        ASSERT_STR_EQ(json_get_str(json_get(&tasks_reply.data, "authority")),
+                      "CAS_TASK_AND_CANDIDATE_WIRES");
+        const struct json_value *tasks = json_get(&tasks_reply.data, "tasks");
+        ASSERT(tasks != NULL);
+        ASSERT_EQ(json_size(tasks), 3u);
+        bool saw_awaiting = false, saw_expired = false;
+        for (size_t i = 0; i < 3; i++) {
+            const char *state =
+                json_get_str(json_get(json_at(tasks, i), "state"));
+            saw_awaiting = saw_awaiting ||
+                (state && strcmp(state, "AWAITING_CANDIDATE") == 0);
+            saw_expired = saw_expired ||
+                (state && strcmp(state, "EXPIRED") == 0);
+        }
+        ASSERT(saw_awaiting && saw_expired);
+        zcl_command_reply_free(&tasks_reply);
+        (void)json_push_kv_str(&tasks_input, "state", "AWAITING_CANDIDATE");
+        struct zcl_command_reply live_reply;
+        zcl_command_reply_init(&live_reply, "zcl.zcode_tasks.v1");
+        zcl_native_handle_zcode_tasks(&tasks_request, &live_reply);
+        ASSERT_EQ(live_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_EQ(json_get_int(json_get(&live_reply.data,
+                                        "total_matches")), 1);
+        const struct json_value *live_tasks =
+            json_get(&live_reply.data, "tasks");
+        ASSERT(live_tasks != NULL);
+        ASSERT_STR_EQ(
+            json_get_str(json_get(json_at(live_tasks, 0), "task_root")),
+            root_live_hex);
+        zcl_command_reply_free(&live_reply);
+        json_set_str((struct json_value *)json_get(&tasks_input, "state"),
+                     "EXPIRED");
+        struct zcl_command_reply expired_reply;
+        zcl_command_reply_init(&expired_reply, "zcl.zcode_tasks.v1");
+        zcl_native_handle_zcode_tasks(&tasks_request, &expired_reply);
+        ASSERT_EQ(expired_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_EQ(json_get_int(json_get(&expired_reply.data,
+                                        "total_matches")), 2);
+        const struct json_value *expired_tasks =
+            json_get(&expired_reply.data, "tasks");
+        ASSERT(expired_tasks != NULL);
+        bool saw_expired_root = false;
+        for (size_t i = 0; i < 2; i++) {
+            const char *root =
+                json_get_str(json_get(json_at(expired_tasks, i), "task_root"));
+            saw_expired_root = saw_expired_root ||
+                (root && strcmp(root, root_expired_hex) == 0);
+        }
+        ASSERT(saw_expired_root);
+        zcl_command_reply_free(&expired_reply);
+        json_free(&tasks_input);
+        test_rm_rf(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_zcode_dev_objects(void)
 {
     int failures = 0;
@@ -2427,6 +2688,7 @@ int test_zcode_dev_objects(void)
     failures += test_zd_work_swarm();
     failures += test_zd_work_node();
     failures += test_zd_improve_command();
+    failures += test_zd_task_index();
     printf("=== zcode_dev_objects: %d failures ===\n", failures);
     return failures;
 }

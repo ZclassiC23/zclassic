@@ -59,11 +59,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 421 |
+| Registry entries (branches + leaves) | 422 |
 | Top-level roots | 10 |
 | Branches | 96 |
-| Leaves (dispatchable command paths) | 325 |
-| … `ready` (live handler in this build) | 277 |
+| Leaves (dispatchable command paths) | 326 |
+| … `ready` (live handler in this build) | 278 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
@@ -85,7 +85,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 15 | 3 | 12 |
-| `config/commands/zcode.def` | 70 | 16 | 54 |
+| `config/commands/zcode.def` | 71 | 16 | 55 |
 | `config/commands/metaverse.def` | 17 | 5 | 12 |
 | `config/commands/telemetry/root.def` | 6 | 2 | 4 |
 | `config/commands/telemetry/watch.def` | 1 | 0 | 1 |
@@ -805,6 +805,7 @@ represented by its children's sections.
 | `zcode package dev evidence` (aliases: `zcode.evidence`) | ready | mutate / app-write / operator · foreground/moderate | **`workspace`**, `datadir`, **`action_id`** | `zcl.zcode_evidence.v1` | `zclassic23 zcode evidence --input='{"workspace":"/src/project","action_id":"<64hex>"}'` | Evaluate candidate evidence |
 | `zcode package dev accept` (aliases: `zcode.accept`) | ready | mutate / app-write / operator · foreground/moderate | **`workspace`**, **`action_id`**, **`lane`**, `datadir` | `zcl.zcode_accept.v1` | `zclassic23 zcode accept --input='{"workspace":"/src/project","action_id":"<64hex>","lane":"CANDIDATE"}'` | Accept candidate lane |
 | `zcode package dev lane` (aliases: `zcode.lane`) | ready | read / read / operator · foreground/low | **`workspace`**, **`source_root`**, `datadir` | `zcl.zcode_lane.v1` | `zclassic23 zcode lane --input='{"workspace":"/src/project","source_root":"<64hex>"}'` | Inspect source lane |
+| `zcode package dev tasks` (aliases: `zcode.tasks`) | ready | read / read / operator · foreground/low | **`workspace`**, `task_root`, `source_root`, `author`, `state`, `limit` | `zcl.zcode_tasks.v1` | `zclassic23 zcode tasks --input='{"workspace":"/src/project"}'` | List local dev tasks |
 
 #### `zcode.package` — Published packages
 
@@ -999,6 +1000,7 @@ Every alias resolves through the same grammar as its canonical path
 | `zcode.evidence` | `zcode.package.dev.evidence` |
 | `zcode.accept` | `zcode.package.dev.accept` |
 | `zcode.lane` | `zcode.package.dev.lane` |
+| `zcode.tasks` | `zcode.package.dev.tasks` |
 
 
 ## Shared output schemas
