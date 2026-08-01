@@ -4,6 +4,7 @@
 #include "test/test_core.h"
 
 #include "base/hex.h"
+#include "codeindex/codeindex_merkle.h"
 #include "command/native_command.h"
 #include "crypto/ed25519.h"
 #include "crypto/sha3.h"
@@ -15,11 +16,13 @@
 #include "services/build_fabric_service.h"
 #include "services/build_fabric_worker.h"
 #include "services/zcode_lane_service.h"
+#include "util/safe_alloc.h"
 #include "vcs/package_manifest.h"
 #include "vcs/package_store.h"
 #include "vcs/build_action.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_dev.h"
+#include "vcs/zcode_agent_context.h"
 #include "vcs/zcode_lane.h"
 #include "vcs/zcode_work_context.h"
 #include "vcs/zcode_work_node.h"
@@ -28,6 +31,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 static void zd_root(uint8_t out[32], uint8_t value)
 {
@@ -90,6 +94,101 @@ static void zd_candidate(struct vcs_zcode_candidate_v1 *c,
     zd_root(c->author_pubkey, 12);
     c->sequence = 1;
     c->created_unix = 1000;
+}
+
+static int test_zd_agent_context(void)
+{
+    int failures = 0;
+    TEST("zcode_dev: agent context is canonical bounded source evidence") {
+        static const char header[] = "int widget(int);\n";
+        static const char source[] =
+            "int widget(int x) { return x + 1; }\n";
+        struct vcs_zcode_agent_context_v1 context;
+        vcs_zcode_agent_context_init(&context);
+        zd_root(context.task_root, 1);
+        zd_root(context.source_root, 2);
+        zd_root(context.goal_root, 3);
+        zd_root(context.source_tree_root, 4);
+        (void)snprintf(context.query, sizeof(context.query), "widget");
+        context.file_count = 2;
+        (void)snprintf(context.files[0].path,
+                       sizeof(context.files[0].path), "include/widget.h");
+        context.files[0].start_line = 1;
+        context.files[0].full_file_bytes = sizeof(header) - 1u;
+        context.files[0].content_len = sizeof(header) - 1u;
+        context.files[0].content = zcl_malloc(
+            context.files[0].content_len, "test.agent_context.header");
+        ASSERT(context.files[0].content != NULL);
+        memcpy(context.files[0].content, header,
+               context.files[0].content_len);
+        sha3_256(context.files[0].content, context.files[0].content_len,
+                 context.files[0].content_root);
+        (void)snprintf(context.files[1].path,
+                       sizeof(context.files[1].path), "src/widget.c");
+        context.files[1].start_line = 7;
+        context.files[1].full_file_bytes = sizeof(source) - 1u;
+        context.files[1].content_len = sizeof(source) - 1u;
+        context.files[1].content = zcl_malloc(
+            context.files[1].content_len, "test.agent_context.source");
+        ASSERT(context.files[1].content != NULL);
+        memcpy(context.files[1].content, source,
+               context.files[1].content_len);
+        sha3_256(context.files[1].content, context.files[1].content_len,
+                 context.files[1].content_root);
+
+        uint8_t root[32]; char root_hex[65];
+        ASSERT_EQ(vcs_zcode_agent_context_validate(&context, 4096),
+                  VCS_ZCODE_AGENT_CONTEXT_OK);
+        ASSERT_EQ(vcs_zcode_agent_context_validate(&context, 374),
+                  VCS_ZCODE_AGENT_CONTEXT_LIMIT);
+        ASSERT_EQ(vcs_zcode_agent_context_root(&context, 4096, root),
+                  VCS_ZCODE_AGENT_CONTEXT_OK);
+        zcl_hex_encode(root, 32, root_hex);
+        ASSERT_STR_EQ(root_hex,
+            "261759f65d9bc99924d7f45375f73b598d8f695a740e28f7b7b9135623e0c1ed");
+        uint8_t *wire = NULL; size_t wire_len = 0;
+        ASSERT_EQ(vcs_zcode_agent_context_serialize(
+                      &context, 4096, &wire, &wire_len),
+                  VCS_ZCODE_AGENT_CONTEXT_OK);
+        ASSERT_EQ(wire_len, 375);
+        struct vcs_zcode_agent_context_v1 parsed;
+        ASSERT_EQ(vcs_zcode_agent_context_parse(
+                      wire, wire_len, 4096, &parsed),
+                  VCS_ZCODE_AGENT_CONTEXT_OK);
+        uint8_t parsed_root[32];
+        ASSERT_EQ(vcs_zcode_agent_context_root(&parsed, 4096, parsed_root),
+                  VCS_ZCODE_AGENT_CONTEXT_OK);
+        ASSERT(memcmp(root, parsed_root, 32) == 0);
+        ASSERT_STR_EQ(parsed.files[0].path, "include/widget.h");
+        ASSERT_STR_EQ(parsed.files[1].path, "src/widget.c");
+        vcs_zcode_agent_context_free(&parsed);
+
+        wire[152] ^= 1u;
+        ASSERT_EQ(vcs_zcode_agent_context_parse(
+                      wire, wire_len, 4096, &parsed),
+                  VCS_ZCODE_AGENT_CONTEXT_ROOT);
+        wire[152] ^= 1u;
+        wire[wire_len - 1u] ^= 1u;
+        ASSERT_EQ(vcs_zcode_agent_context_parse(
+                      wire, wire_len, 4096, &parsed),
+                  VCS_ZCODE_AGENT_CONTEXT_ROOT);
+        wire[wire_len - 1u] ^= 1u;
+        uint8_t *trailed = zcl_malloc(wire_len + 1u,
+                                      "test.agent_context.trailing");
+        ASSERT(trailed != NULL);
+        memcpy(trailed, wire, wire_len); trailed[wire_len] = 0;
+        ASSERT_EQ(vcs_zcode_agent_context_parse(
+                      trailed, wire_len + 1u, 4096, &parsed),
+                  VCS_ZCODE_AGENT_CONTEXT_SHAPE);
+        free(trailed); free(wire);
+        (void)snprintf(context.files[0].path,
+                       sizeof(context.files[0].path), "z/widget.h");
+        ASSERT_EQ(vcs_zcode_agent_context_validate(&context, 4096),
+                  VCS_ZCODE_AGENT_CONTEXT_SHAPE);
+        vcs_zcode_agent_context_free(&context);
+        PASS();
+    } _test_next:;
+    return failures;
 }
 
 static int test_zd_policy_and_task(void)
@@ -902,9 +1001,21 @@ static int test_zd_improve_command(void)
 {
     int failures = 0;
     TEST("zcode_dev: improve stores canonical task and queues existing ZBuild") {
-        char dir[256], preprocessed[320], workspace[4096];
+        char dir[256], preprocessed[320], source_dir[320], source_path[384];
+        char workspace[4096];
         test_make_tmpdir(dir, sizeof(dir), "zcode_dev", "improve");
         ASSERT(realpath(dir, workspace) != NULL);
+        (void)snprintf(source_dir, sizeof(source_dir), "%s/src", workspace);
+        ASSERT(mkdir(source_dir, 0700) == 0);
+        (void)snprintf(source_path, sizeof(source_path), "%s/widget.c",
+                       source_dir);
+        FILE *source_file = fopen(source_path, "wb");
+        ASSERT(source_file != NULL);
+        static const char indexed_source[] =
+            "int context_widget(int x) { return x + 1; }\n";
+        ASSERT(fwrite(indexed_source, 1, sizeof(indexed_source) - 1u,
+                      source_file) == sizeof(indexed_source) - 1u);
+        ASSERT(fclose(source_file) == 0);
         (void)snprintf(preprocessed, sizeof(preprocessed), "%s/unit.i",
                        workspace);
         FILE *f = fopen(preprocessed, "wb");
@@ -927,6 +1038,12 @@ static int test_zd_improve_command(void)
             zd_root(root, (uint8_t)(i + 1));
             zcl_hex_encode(root, 32, roots[i]);
         }
+        struct ci_merkle *source_tree = ci_merkle_build_cold(workspace, NULL);
+        struct ci_merkle_node source_tree_root;
+        ASSERT(source_tree != NULL);
+        ASSERT(ci_merkle_root(source_tree, &source_tree_root));
+        ci_merkle_hex(&source_tree_root.digest, roots[0]);
+        ci_merkle_free(source_tree);
         struct json_value input;
         json_init(&input); json_set_object(&input);
         (void)json_push_kv_str(&input, "workspace", workspace);
@@ -945,6 +1062,7 @@ static int test_zd_improve_command(void)
         (void)json_push_kv_str(&input, "goal", "fix deterministic fixture");
         (void)json_push_kv_str(&input, "proof_policy_hex", policy_hex);
         (void)json_push_kv_str(&input, "fixed_input_path", preprocessed);
+        (void)json_push_kv_str(&input, "context_symbol", "context_widget");
         int64_t expires = (int64_t)platform_time_wall_unix() + 3600;
         (void)json_push_kv_int(&input, "expires_unix", expires);
         struct zcl_command_request request = { .input = &input };
@@ -956,7 +1074,18 @@ static int test_zd_improve_command(void)
         const char *candidate_hex =
             json_get_str(json_get(&reply.data, "candidate_root"));
         const char *action_id = json_get_str(json_get(&reply.data, "action_id"));
-        ASSERT(task_hex && candidate_hex && action_id);
+        const char *agent_context_hex = json_get_str(json_get(
+            &reply.data, "agent_context_root"));
+        ASSERT(task_hex && candidate_hex && action_id && agent_context_hex);
+        ASSERT(strlen(agent_context_hex) == 64);
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &reply.data, "agent_context_source_tree_root")),
+                      roots[0]);
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &reply.data, "agent_context_symbol")),
+                      "context_widget");
+        ASSERT(json_get_int(json_get(
+                   &reply.data, "agent_context_files")) >= 1);
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "state")), "QUEUED");
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "lane")), "FRONTIER");
         const char *frontier_receipt = json_get_str(json_get(
@@ -974,6 +1103,46 @@ static int test_zd_improve_command(void)
                   VCS_ZCODE_DEV_OK);
         free(task_wire);
         ASSERT_EQ(task.expires_unix, expires);
+        uint8_t agent_context_root[32], *agent_context_wire = NULL;
+        size_t agent_context_wire_len = 0;
+        ASSERT(zcl_hex_decode_lower(agent_context_hex,
+                                    agent_context_root, 32));
+        ASSERT_EQ(vcs_object_load_raw(
+                      workspace, agent_context_root, &agent_context_wire,
+                      &agent_context_wire_len), 0);
+        struct vcs_zcode_agent_context_v1 agent_context;
+        ASSERT_EQ(vcs_zcode_agent_context_parse(
+                      agent_context_wire, agent_context_wire_len,
+                      (size_t)task.max_context_bytes, &agent_context),
+                  VCS_ZCODE_AGENT_CONTEXT_OK);
+        free(agent_context_wire);
+        ASSERT(memcmp(agent_context.task_root, task_root, 32) == 0);
+        ASSERT(memcmp(agent_context.source_root, task.source_root, 32) == 0);
+        ASSERT_STR_EQ(agent_context.query, "context_widget");
+        ASSERT_STR_EQ(agent_context.files[0].path, "src/widget.c");
+        ASSERT_EQ(agent_context.files[0].content_len,
+                  sizeof(indexed_source) - 1u);
+        ASSERT(memcmp(agent_context.files[0].content, indexed_source,
+                      sizeof(indexed_source) - 1u) == 0);
+        uint8_t agent_context_check[32];
+        ASSERT_EQ(vcs_zcode_agent_context_root(
+                      &agent_context, (size_t)task.max_context_bytes,
+                      agent_context_check), VCS_ZCODE_AGENT_CONTEXT_OK);
+        ASSERT(memcmp(agent_context_root, agent_context_check, 32) == 0);
+        vcs_zcode_agent_context_free(&agent_context);
+
+        /* Context capture is source-authoritative and refuses a task whose
+         * claimed source identity is stale before creating a ZBuild job. */
+        json_set_str((struct json_value *)json_get(&input, "source_root"),
+                     roots[1]);
+        struct zcl_command_reply stale_reply;
+        zcl_command_reply_init(&stale_reply, "zcl.zcode_improve.v1");
+        zcl_native_handle_zcode_improve(&request, &stale_reply);
+        ASSERT_EQ(stale_reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(stale_reply.error.code, "AGENT_CONTEXT_FAILED");
+        zcl_command_reply_free(&stale_reply);
+        json_set_str((struct json_value *)json_get(&input, "source_root"),
+                     roots[0]);
         char db_path[320];
         (void)snprintf(db_path, sizeof(db_path), "%s/node.db", workspace);
         struct node_db ndb = {0};
@@ -1051,6 +1220,9 @@ static int test_zd_improve_command(void)
         ASSERT_EQ(test_reply.exit_code, ZCL_COMMAND_EXIT_OK);
         ASSERT_STR_EQ(json_get_str(json_get(&test_reply.data, "task_root")),
                       task_hex);
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &test_reply.data, "agent_context_root")),
+                      agent_context_hex);
         ASSERT_STR_EQ(json_get_str(json_get(
                           &test_reply.data, "candidate_root")), candidate_hex);
         ASSERT_STR_EQ(json_get_str(json_get(
@@ -1447,6 +1619,7 @@ static int test_zd_improve_command(void)
 int test_zcode_dev_objects(void)
 {
     int failures = 0;
+    failures += test_zd_agent_context();
     failures += test_zd_policy_and_task();
     failures += test_zd_candidate_review();
     failures += test_zd_lane_receipt();

@@ -11,6 +11,7 @@
 #include "platform/time_compat.h"
 #include "services/build_fabric_service.h"
 #include "services/build_fabric_worker.h"
+#include "services/zcode_agent_context_service.h"
 #include "services/zcode_lane_service.h"
 #include "util/safe_alloc.h"
 #include "vcs/build_action.h"
@@ -489,6 +490,19 @@ void zcl_native_handle_zcode_improve(
     }
     free(input);
 
+    const char *context_symbol = zdev_str(request->input, "context_symbol");
+    struct zcode_agent_context_status agent_context = {0};
+    bool agent_context_ready = false;
+    if (context_symbol && context_symbol[0]) {
+        struct zcl_result captured = zcode_agent_context_capture(
+            workspace, &task, task_root, context_symbol, &agent_context);
+        if (!captured.ok) {
+            zdev_fail(reply, "AGENT_CONTEXT_FAILED", captured.message);
+            return;
+        }
+        agent_context_ready = true;
+    }
+
     const char *source_sha256 =
         zdev_str(request->input, "candidate_source_sha256");
     uint8_t source_sha_check[32];
@@ -645,6 +659,22 @@ void zcl_native_handle_zcode_improve(
     (void)json_push_kv_str(&reply->data, "lane", frontier_status.lane_name);
     (void)json_push_kv_str(&reply->data, "lane_receipt_root",
                            frontier_status.receipt_root_sha3);
+    if (agent_context_ready) {
+        (void)json_push_kv_str(&reply->data, "agent_context_root",
+                               agent_context.context_root_sha3);
+        (void)json_push_kv_str(&reply->data, "agent_context_source_tree_root",
+                               agent_context.source_tree_root_sha3);
+        (void)json_push_kv_str(&reply->data, "agent_context_symbol",
+                               agent_context.resolved_symbol);
+        (void)json_push_kv_int(&reply->data, "agent_context_files",
+                               (int64_t)agent_context.file_count);
+        (void)json_push_kv_int(&reply->data, "agent_context_excerpt_bytes",
+                               (int64_t)agent_context.excerpt_bytes);
+        (void)json_push_kv_int(&reply->data, "agent_context_wire_bytes",
+                               (int64_t)agent_context.wire_bytes);
+        (void)json_push_kv_bool(&reply->data, "agent_context_truncated",
+                                agent_context.truncated);
+    }
     if (remote_requested) {
         const char *remote_outcome = "LOCAL_FALLBACK";
         struct vcs_zcode_work_node *work = vcs_zcode_work_node_global();

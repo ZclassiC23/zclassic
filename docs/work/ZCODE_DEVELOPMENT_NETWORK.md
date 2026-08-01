@@ -34,7 +34,7 @@ ledger, worker trust list, or P2P transport.
 | Dependency lock | `vcs_package_lock` in `lib/vcs/package_deps.*` | Live, root-pinned DAG |
 | Declarative C23 graph | `vcs_package_recipe` | Live for one library/test package; workspace executables and multi-package targets still need an extension |
 | Source snapshot identity | resident dev source CAS plus content.v2 for portable package trees | Live locally; not yet one network task surface |
-| Code context | `lib/codeindex/` plus immutable source chunks | Live index; bounded context-capsule publication is not yet wired |
+| Code context | `lib/codeindex/` plus the existing ZCODE CAS | Live bounded `agent_context.v1` capture for an exact symbol or stable symbol ID; goal-to-symbol selection and adapter invocation remain |
 | Fixed build action | `vcs_build_action_v1` | Live closed registry and identity for preprocessed-TU compile, exact-executable test, deterministic exact-executable fuzz, and review. Local execution is live for compile, test, and fuzz |
 | Build coordinator ledger | `build_jobs`, `build_actions`, `build_workers`, `build_receipts`, `zcode_lane_receipts` | Live schema v45. Work receipt rows distinguish local acceptance, untrusted remote observation, local reproduction, and approved-signer quorum; lane rows are lookup projections of signed CAS receipts |
 | Local package confinement | `zclassic23-package-verify` | Live: declarative recipe, Landlock/seccomp/rlimits, no network |
@@ -66,6 +66,7 @@ The domains are:
 - `zcl.zcode.review.v1\0`
 - `zcl.zcode.work_receipt.v1\0`
 - `zcl.zcode.lane_receipt.v1\0`
+- `zcl.zcode.agent_context.v1\0`
 
 The trailing NUL is part of each SHA3 preimage, matching the existing package
 manifest, recipe, lock, release, and attestation convention.
@@ -155,6 +156,26 @@ entire `proof_policy.v1`, including fuzz, review, local reproduction/quorum,
 proof age, and release-byte identity when selected. A changed or expired task,
 candidate, policy, source, proof set, signer, or prior receipt is a refusal.
 
+### `agent_context.v1`
+
+`zcode improve` can resolve one exact code-index symbol name or stable symbol
+ID and capture its definition/declaration, bounded callers, and known include
+edges. The canonical variable-length wire binds the task, authoritative source
+root, goal, an independently recomputed source-tree Merkle root, query, and up
+to 16 sorted source excerpts. Every excerpt carries its canonical relative
+path, starting line, full-file size, exact bytes, and SHA3 root. Each excerpt
+is capped at 64 KiB and the complete wire is capped by the task's context-byte
+limit.
+
+Capture uses no downloaded scripts and grants no agent authority. It opens
+selected files without following symlinks, recomputes the source Merkle root
+before and after capture, and rereads every selected byte range. A stale task,
+rename, edit during capture, changed byte range, malformed wire, duplicate or
+unsorted path, excess size, trailing byte, or CAS readback mismatch is a named
+refusal. The exact wire is stored at its domain-separated root in the existing
+workspace CAS. Model adapters consume that immutable object later; they do not
+define its identity.
+
 ### `zcode-work-context.v1`
 
 Remote execution adds no source store or transfer protocol. One fixed context
@@ -177,6 +198,8 @@ ZBuild action. It never accepts a caller-supplied path or command.
 <!-- claim: symbol-present vcs_zcode_work_receipt_verify lib/vcs/src/zcode_dev.c # signed receipt verification -->
 <!-- claim: symbol-present vcs_zcode_work_receipt_validate_for_candidate lib/vcs/src/zcode_dev.c # cross-object staleness gate -->
 <!-- claim: symbol-present vcs_zcode_proof_set_root lib/vcs/src/zcode_proof_set.c # immutable evaluated evidence set -->
+<!-- claim: file-present lib/vcs/include/vcs/zcode_agent_context.h # bounded canonical agent context wire -->
+<!-- claim: symbol-present zcode_agent_context_capture app/services/src/zcode_agent_context_service.c # source-stable context publication into existing CAS -->
 
 ## Ordered delivery
 
@@ -191,8 +214,9 @@ ZBuild action. It never accepts a caller-supplied path or command.
   index from CAS objects rather than creating task tables as a second truth.
   CAS storage and the ZBuild projection are live; local search/index projection
   remains.
-- [ ] Publish a bounded code-index context capsule whose members resolve to
-  the task's immutable source root.
+- [x] Publish a bounded code-index context capsule whose members resolve to
+  the task's immutable source root. V1 uses an exact symbol/stable ID; semantic
+  goal selection remains adapter policy rather than context authority.
 
 ### B. Complete the existing local ZBuild worker
 
@@ -248,7 +272,8 @@ bash-only authority:
   accept, and publish.
 
 `zcode improve` now admits canonical task/policy/goal/input/candidate objects in
-the existing workspace CAS, captures the GCC capsule, and queues a
+the existing workspace CAS, optionally publishes a bounded exact-symbol
+`agent_context.v1`, captures the GCC capsule, and queues a
 candidate-bound compile, test, or deterministic fuzz action. Reusing `candidate_created_unix` with
 the same immutable inputs schedules additional proof actions for the exact same
 candidate. Before submission it creates or re-verifies the exact candidate's
