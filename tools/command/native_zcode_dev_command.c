@@ -1080,9 +1080,9 @@ void zcl_native_handle_zcode_improve(
             enum vcs_zcode_work_context_result packed =
                 bundled == VCS_ZCODE_CANDIDATE_BUNDLE_OK &&
                 task_bundled == VCS_ZCODE_TASK_AUTHORITY_OK
-                    ? vcs_zcode_work_context_put_for_kind(
+                    ? vcs_zcode_work_context_put_for_kind_with_candidate(
                           context_store, &context, action_kind, now,
-                          context_root, context_action_root)
+                          workspace, context_root, context_action_root)
                     : VCS_ZCODE_WORK_CONTEXT_STALE;
             context.fixed_input = NULL;
             vcs_zcode_work_context_free(&context);

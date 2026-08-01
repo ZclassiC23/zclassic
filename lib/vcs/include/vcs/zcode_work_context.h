@@ -85,6 +85,14 @@ enum vcs_zcode_work_context_result vcs_zcode_work_context_put_for_kind(
     struct vcs_package_store *store,
     const struct vcs_zcode_work_context_v1 *context, const char *kind,
     int64_t now_unix, uint8_t package_root[32], uint8_t action_root[32]);
+/* Remote carrier: the same metadata plus every candidate-tree file as normal
+ * content.v2 chunks under candidate/. */
+enum vcs_zcode_work_context_result
+vcs_zcode_work_context_put_for_kind_with_candidate(
+    struct vcs_package_store *store,
+    const struct vcs_zcode_work_context_v1 *context, const char *kind,
+    int64_t now_unix, const char *repo_root, uint8_t package_root[32],
+    uint8_t action_root[32]);
 enum vcs_zcode_work_context_result vcs_zcode_work_context_get(
     struct vcs_package_store *store, const uint8_t package_root[32],
     int64_t now_unix, struct vcs_zcode_work_context_v1 *out);
