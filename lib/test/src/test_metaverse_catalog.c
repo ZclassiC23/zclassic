@@ -56,6 +56,7 @@
 #include "metaverse/property_view.h"
 #include "metaverse/property_work.h"
 #include "models/database.h"
+#include "models/zslp.h"
 #include "models/znam.h"
 #include "services/property_catalog.h"
 #include "vcs/blob_store.h"
@@ -346,14 +347,17 @@ static int t_adapter_registry(void)
              every_kind_has_a_row);
     MV_CHECK("registry: a kind without a reader still states why",
              every_unwired_says_why);
-    MV_CHECK("registry: content, zcode_package, and znam_name are wired",
-             ready == 3 &&
+    MV_CHECK("registry: content, zcode_package, znam_name, and zslp_asset "
+             "are wired",
+             ready == 4 &&
              metaverse_adapter_ready(
                  metaverse_adapter_for(METAVERSE_KIND_CONTENT)) &&
              metaverse_adapter_ready(
                  metaverse_adapter_for(METAVERSE_KIND_ZCODE_PACKAGE)) &&
              metaverse_adapter_ready(
-                 metaverse_adapter_for(METAVERSE_KIND_ZNAM_NAME)));
+                 metaverse_adapter_for(METAVERSE_KIND_ZNAM_NAME)) &&
+             metaverse_adapter_ready(
+                 metaverse_adapter_for(METAVERSE_KIND_ZSLP_ASSET)));
     MV_CHECK("registry: an invalid kind has no row",
              metaverse_adapter_for(METAVERSE_KIND_UNKNOWN) == NULL &&
              metaverse_adapter_for(METAVERSE_KIND_COUNT) == NULL &&
@@ -1608,6 +1612,146 @@ static int t_znam_adapter(void)
     return failures;
 }
 
+/* ZSLP through the canonical chain-derived token model and the same strict
+ * read-only node.db open. */
+static int t_zslp_adapter(void)
+{
+    int failures = 0;
+    char dd[256];
+    char db_path[512];
+    char root_hex[65];
+    char id_text[METAVERSE_ID_TEXT_MAX];
+    uint8_t token_id[32];
+    struct node_db ndb;
+    struct db_zslp_token_info token_probe;
+    struct mv_cmd c;
+    size_t asset_count = 0;
+    size_t files_before;
+    size_t files_after;
+
+    test_make_tmpdir(dd, sizeof(dd), "metaverse", "zslp");
+    snprintf(db_path, sizeof(db_path), "%s/node.db", dd);
+    memset(token_id, 0x81, sizeof(token_id));
+    memset(&ndb, 0, sizeof(ndb));
+    MV_CHECK("zslp: canonical node database opens for fixture setup",
+             node_db_open(&ndb, db_path));
+    MV_CHECK("zslp: chain-derived GENESIS saves through the canonical model",
+             ndb.open && db_zslp_token_save(&ndb, token_id, "META",
+                 "Metaverse Asset", 8, "https://example.invalid/meta",
+                 888, 21000000));
+    MV_CHECK("zslp: application-local token key also saves for exclusion "
+             "proof",
+             ndb.open && db_zslp_token_save_key(&ndb, "ZCL23ACCESS",
+                 "ACCESS", "Store Access", 0, "", 0, 1));
+    memset(&token_probe, 0, sizeof(token_probe));
+    MV_CHECK("zslp: model-owned count excludes application-local keys",
+             ndb.open && db_zslp_asset_count(&ndb, &asset_count) &&
+             asset_count == 1);
+    MV_CHECK("zslp: model-owned lookup distinguishes the real GENESIS",
+             ndb.open &&
+             db_zslp_asset_lookup(&ndb, token_id, &token_probe) == 1 &&
+             strcmp(token_probe.ticker, "META") == 0);
+    node_db_close(&ndb);
+
+    mv_hex32(token_id, root_hex);
+    snprintf(id_text, sizeof(id_text), "zslp_asset:%s", root_hex);
+    files_before = mv_count_files(dd);
+
+    mv_list(&c, dd, "zslp_asset");
+    {
+        const struct json_value *item = mv_find_item(&c.reply.data, id_text);
+        const struct json_value *kind =
+            mv_find_kind(&c.reply.data, "zslp_asset");
+
+        if (!item || !kind ||
+            c.reply.status != ZCL_COMMAND_STATUS_PASSED) {
+            char doc[4096];
+            (void)json_write(&c.reply.data, doc, sizeof(doc));
+            printf("  metaverse_catalog: zslp list diagnostic: %s\n", doc);
+        }
+
+        MV_CHECK("zslp: list exposes exactly the real GENESIS and excludes "
+                 "the application-local token key",
+                 c.reply.status == ZCL_COMMAND_STATUS_PASSED && item &&
+                 kind && json_get_bool(json_get(kind, "available")) &&
+                 json_get_int(json_get(kind, "total")) == 1);
+        MV_CHECK("zslp: asset name and indexed-chain evidence come from the "
+                 "canonical model",
+                 item && strcmp(mv_str(item, "display_name"),
+                                "META (Metaverse Asset)") == 0 &&
+                 strcmp(mv_str(item, "evidence_grade"),
+                        "chain_indexed_unvalidated") == 0 &&
+                 strcmp(mv_str(item, "evidence_source"),
+                        "db_zslp_asset_lookup") == 0);
+    }
+    mv_cmd_free(&c);
+
+    mv_show(&c, dd, id_text);
+    {
+        const struct json_value *work = json_get(&c.reply.data, "work");
+
+        if (c.reply.status != ZCL_COMMAND_STATUS_PASSED) {
+            char doc[4096];
+            (void)json_write(&c.reply.data, doc, sizeof(doc));
+            printf("  metaverse_catalog: zslp show diagnostic: %s\n", doc);
+        }
+
+        MV_CHECK("zslp: show reports GENESIS height without manufacturing a "
+                 "tip or confirmation depth",
+                 c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
+                 strcmp(mv_str(&c.reply.data, "status"), "present") == 0 &&
+                 json_get_bool(json_get(&c.reply.data,
+                                        "has_freshness_height")) &&
+                 json_get_int(json_get(&c.reply.data,
+                                       "freshness_height")) == 888 &&
+                 work && strcmp(mv_str(work, "gap"), "no_tip") == 0 &&
+                 json_get_int(json_get(work, "confirmation_depth")) == -1);
+        MV_CHECK("zslp: fungible definition fabricates neither a single "
+                 "owner nor mutating authority",
+                 strcmp(mv_str(&c.reply.data, "owner_principal"), "") == 0 &&
+                 strcmp(mv_str(&c.reply.data, "owner_principal_kind"),
+                        "none") == 0 &&
+                 strcmp(mv_str(&c.reply.data, "actions_csv"), "") == 0 &&
+                 strstr(mv_str(&c.reply.data, "provenance"),
+                        "no mint-baton controller") != NULL);
+    }
+    mv_cmd_free(&c);
+
+    files_after = mv_count_files(dd);
+    MV_CHECK("zslp: list/show create no WAL or SHM sidecars and change no "
+             "datadir files", files_after == files_before);
+
+    /* No catalog cache: removal from the authority is visible immediately. */
+    memset(&ndb, 0, sizeof(ndb));
+    MV_CHECK("zslp: fixture reopens for authoritative projection removal",
+             node_db_open(&ndb, db_path));
+    if (ndb.open)
+        db_zslp_clear_all(&ndb);
+    asset_count = SIZE_MAX;
+    MV_CHECK("zslp: authoritative removal leaves zero chain assets",
+             ndb.open && db_zslp_asset_count(&ndb, &asset_count) &&
+             asset_count == 0);
+    node_db_close(&ndb);
+    mv_show(&c, dd, id_text);
+    if (c.reply.status != ZCL_COMMAND_STATUS_PASSED ||
+        strcmp(mv_str(&c.reply.data, "status"), "absent") != 0) {
+        char doc[4096];
+        (void)json_write(&c.reply.data, doc, sizeof(doc));
+        printf("  metaverse_catalog: zslp absent diagnostic: status=%d "
+               "error=%s data=%s\n", (int)c.reply.status,
+               c.reply.error.code, doc);
+    }
+    MV_CHECK("zslp: the same property id immediately reads absent after the "
+             "authoritative rows are removed",
+             c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
+             strcmp(mv_str(&c.reply.data, "status"), "absent") == 0 &&
+             json_get_bool(json_get(&c.reply.data, "determined")));
+    mv_cmd_free(&c);
+
+    test_rm_rf_recursive(dd);
+    return failures;
+}
+
 static int t_readonly_contract(void)
 {
     int failures = 0;
@@ -1781,7 +1925,7 @@ static int t_registry_path(void)
     (void)json_push_kv_str(&c.input, "datadir", dd);
     (void)json_push_kv_str(
         &c.input, "property_id",
-        "zslp_asset:a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbb"
+        "hosted_service:a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbb"
         "cbdbebf");
     zcl_native_handle_metaverse_property_show(&c.request, &c.reply);
     MV_CHECK("cli: an unwired kind is refused with KIND_UNAVAILABLE",
@@ -1944,6 +2088,7 @@ int test_metaverse_catalog(void)
     failures += t_content_adapter();
     failures += t_zcode_adapter();
     failures += t_znam_adapter();
+    failures += t_zslp_adapter();
     failures += t_readonly_contract();
     failures += t_registry_path();
     failures += t_unreadable_store_is_disclosed();

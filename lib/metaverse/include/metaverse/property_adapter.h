@@ -72,6 +72,33 @@ struct metaverse_znam_source {
     const char *unavailable_reason;
 };
 
+/* Database-neutral ZSLP GENESIS facts.  Fungible asset definitions do not
+ * have one owner: the current model does not index the mint baton and token
+ * holders own quantities, not the definition itself.  No owner field is
+ * present here so the adapter cannot accidentally promote the genesis
+ * recipient into a perpetual controller. */
+#define METAVERSE_ZSLP_TICKER_MAX 33u
+#define METAVERSE_ZSLP_NAME_MAX 65u
+struct metaverse_zslp_record {
+    uint8_t genesis_root[METAVERSE_ROOT_BYTES];
+    char ticker[METAVERSE_ZSLP_TICKER_MAX];
+    char name[METAVERSE_ZSLP_NAME_MAX];
+    int64_t genesis_height;
+    int decimals;
+    int64_t total_minted;
+};
+
+struct metaverse_zslp_source {
+    void *opaque;
+    enum metaverse_source_lookup (*find_genesis)(
+        void *opaque, const uint8_t genesis_root[METAVERSE_ROOT_BYTES],
+        struct metaverse_zslp_record *out);
+    bool (*list)(void *opaque, struct metaverse_zslp_record *out,
+                 size_t out_cap, size_t *written_out, size_t *total_out,
+                 bool *truncated_out);
+    const char *unavailable_reason;
+};
+
 /* Everything an adapter is allowed to know about where to read from.
  * Deliberately a directory + a tip, never an open store handle: see
  * "READ MEANS READ" above. */
@@ -102,6 +129,7 @@ struct metaverse_adapter_ctx {
      * read path for that authority right now; store_ready reports that as a
      * named unavailability, never as an empty inventory. */
     const struct metaverse_znam_source *znam;
+    const struct metaverse_zslp_source *zslp;
 };
 
 /* Fill `out` for exactly this id. Returns true when a view was written

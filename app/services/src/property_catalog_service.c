@@ -14,9 +14,11 @@
 
 #include "services/property_catalog.h"
 
+#include "base/hex.h"
 #include "base/log_macros.h"
 #include "base/safe_alloc.h"
 #include "json/json.h"
+#include "models/zslp.h"
 #include "models/znam.h"
 
 #include <stdio.h>
@@ -123,15 +125,96 @@ static bool pc_znam_list(void *opaque, struct metaverse_znam_record *out,
     return true;
 }
 
+static bool pc_zslp_copy(const struct db_zslp_token_info *token,
+                         struct metaverse_zslp_record *out)
+{
+    if (!token || !out ||
+        !zcl_hex_decode(token->token_id, out->genesis_root,
+                        sizeof(out->genesis_root)))
+        return false;
+    snprintf(out->ticker, sizeof(out->ticker), "%s", token->ticker);
+    snprintf(out->name, sizeof(out->name), "%s", token->name);
+    out->genesis_height = token->genesis_height;
+    out->decimals = token->decimals;
+    out->total_minted = token->total_minted;
+    return true;
+}
+
+static enum metaverse_source_lookup pc_zslp_find(
+    void *opaque, const uint8_t genesis_root[METAVERSE_ROOT_BYTES],
+    struct metaverse_zslp_record *out)
+{
+    struct db_zslp_token_info token;
+    int found;
+
+    if (!opaque || !genesis_root || !out)
+        return METAVERSE_SOURCE_ERROR;
+    memset(&token, 0, sizeof(token));
+    memset(out, 0, sizeof(*out));
+    found = db_zslp_asset_lookup(opaque, genesis_root, &token);
+    if (found < 0)
+        return METAVERSE_SOURCE_ERROR;
+    if (found == 0)
+        return METAVERSE_SOURCE_ABSENT;
+    return pc_zslp_copy(&token, out) ? METAVERSE_SOURCE_FOUND
+                                     : METAVERSE_SOURCE_ERROR;
+}
+
+static bool pc_zslp_list(void *opaque, struct metaverse_zslp_record *out,
+                         size_t out_cap, size_t *written_out,
+                         size_t *total_out, bool *truncated_out)
+{
+    struct node_db *ndb = opaque;
+    struct db_zslp_token_info tokens[PROPERTY_CATALOG_PAGE_MAX];
+    size_t total = 0;
+    size_t want;
+    int got;
+
+    if (written_out)
+        *written_out = 0;
+    if (total_out)
+        *total_out = 0;
+    if (truncated_out)
+        *truncated_out = false;
+    if (!ndb || !written_out || !total_out || !truncated_out ||
+        (!out && out_cap > 0) || out_cap > PROPERTY_CATALOG_PAGE_MAX)
+        LOG_FAIL(PC_LOG, "ZSLP list source received invalid bounds/outputs");
+    if (!db_zslp_asset_count(ndb, &total))
+        LOG_FAIL(PC_LOG, "canonical ZSLP asset count failed");
+    *total_out = total;
+    if (out_cap == 0) {
+        *truncated_out = total > 0;
+        return true;
+    }
+    want = total < out_cap ? total : out_cap;
+    got = db_zslp_asset_list(ndb, tokens, want);
+    if (got < 0 || (size_t)got != want) {
+        *truncated_out = true;
+        return false;
+    }
+    for (size_t i = 0; i < (size_t)got; i++) {
+        memset(&out[i], 0, sizeof(out[i]));
+        if (!pc_zslp_copy(&tokens[i], &out[i])) {
+            *truncated_out = true;
+            return false;
+        }
+    }
+    *written_out = (size_t)got;
+    *truncated_out = (size_t)got < total;
+    return true;
+}
+
 static bool pc_ctx_init(struct metaverse_adapter_ctx *ctx, const char *datadir,
                         char *zcode_dir, size_t zcode_dir_cap,
                         const struct property_catalog_sources *sources,
-                        struct metaverse_znam_source *znam_source)
+                        struct metaverse_znam_source *znam_source,
+                        struct metaverse_zslp_source *zslp_source)
 {
     int n = snprintf(zcode_dir, zcode_dir_cap, "%s/zcode", datadir);
 
     if (n < 0 || (size_t)n >= zcode_dir_cap)
         return false;
+    memset(ctx, 0, sizeof(*ctx));
     ctx->datadir      = datadir;
     ctx->zcode_dir    = zcode_dir;
     ctx->chain_height = sources ? sources->chain_height : -1;
@@ -148,6 +231,18 @@ static bool pc_ctx_init(struct metaverse_adapter_ctx *ctx, const char *datadir,
                 : "no safe read-only node.db handle was supplied for ZNAM";
     }
     ctx->znam = znam_source;
+    memset(zslp_source, 0, sizeof(*zslp_source));
+    if (sources && sources->node_db) {
+        zslp_source->opaque = sources->node_db;
+        zslp_source->find_genesis = pc_zslp_find;
+        zslp_source->list = pc_zslp_list;
+    } else {
+        zslp_source->unavailable_reason =
+            sources && sources->node_db_unavailable_reason
+                ? sources->node_db_unavailable_reason
+                : "no safe read-only node.db handle was supplied for ZSLP";
+    }
+    ctx->zslp = zslp_source;
     return true;
 }
 
@@ -173,6 +268,7 @@ struct zcl_result property_catalog_list_with_sources(
 {
     struct metaverse_adapter_ctx ctx;
     struct metaverse_znam_source znam_source;
+    struct metaverse_zslp_source zslp_source;
     char zcode_dir[PC_ZCODE_DIR_MAX];
     enum metaverse_kind filter = METAVERSE_KIND_UNKNOWN;
     size_t limit = PROPERTY_CATALOG_PAGE_MAX;
@@ -195,7 +291,7 @@ struct zcl_result property_catalog_list_with_sources(
             limit = q->limit;
     }
     if (!pc_ctx_init(&ctx, datadir, zcode_dir, sizeof(zcode_dir), sources,
-                     &znam_source))
+                     &znam_source, &zslp_source))
         return ZCL_ERR(-4, "property_catalog_list: datadir path too long "
                            "(%zu bytes)", strlen(datadir));
 
@@ -301,6 +397,7 @@ struct zcl_result property_catalog_show_with_sources(
 {
     struct metaverse_adapter_ctx ctx;
     struct metaverse_znam_source znam_source;
+    struct metaverse_zslp_source zslp_source;
     char zcode_dir[PC_ZCODE_DIR_MAX];
     const struct metaverse_adapter *adapter;
 
@@ -324,7 +421,7 @@ struct zcl_result property_catalog_show_with_sources(
                            ? adapter->unavailable_reason
                            : "no reader wired");
     if (!pc_ctx_init(&ctx, datadir, zcode_dir, sizeof(zcode_dir), sources,
-                     &znam_source))
+                     &znam_source, &zslp_source))
         return ZCL_ERR(-6, "property_catalog_show: datadir path too long "
                            "(%zu bytes)", strlen(datadir));
 

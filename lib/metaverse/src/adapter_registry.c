@@ -36,10 +36,7 @@
 #define MV_ADAPTER_ZCODE_PACKAGE MV_WIRED(metaverse_adapter_zcode_package)
 
 #define MV_ADAPTER_ZNAM_NAME     MV_WIRED(metaverse_adapter_znam)
-#define MV_ADAPTER_ZSLP_ASSET                                                \
-    MV_UNAVAILABLE("no read-only ZSLP genesis projection is wired: the "     \
-                   "ledger lives behind db_zslp_ledger_* (node.db), which "  \
-                   "this read path may not open")
+#define MV_ADAPTER_ZSLP_ASSET    MV_WIRED(metaverse_adapter_zslp)
 #define MV_ADAPTER_HOSTED_SERVICE                                            \
     MV_UNAVAILABLE("hosted services are enumerated by the live diagnostics " \
                    "registry, which requires a running node; no "            \

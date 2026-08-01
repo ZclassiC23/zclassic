@@ -97,5 +97,6 @@ struct metaverse_adapter;
 const struct metaverse_adapter *metaverse_adapter_content(void);
 const struct metaverse_adapter *metaverse_adapter_zcode_package(void);
 const struct metaverse_adapter *metaverse_adapter_znam(void);
+const struct metaverse_adapter *metaverse_adapter_zslp(void);
 
 #endif /* ZCL_METAVERSE_PRIV_H */

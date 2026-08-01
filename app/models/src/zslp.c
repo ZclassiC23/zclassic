@@ -17,6 +17,7 @@
 #include "models/zslp.h"
 #include "models/activerecord.h"
 #include "models/model_text.h"
+#include "base/hex.h"
 #include "event/event.h"
 #include <limits.h>
 #include <string.h>
@@ -446,6 +447,109 @@ int db_zslp_token_list(struct node_db *ndb,
     AR_FINALIZE(s);
     return count;
 }
+
+/* The property catalog must not mistake the store's application-local token
+ * keys (for example ZCL23ACCESS) for chain assets.  These three reads keep
+ * the filter model-owned and return only identities that can be represented
+ * by the immutable 32-byte ZSLP GENESIS root. */
+#define ZSLP_CHAIN_ASSET_WHERE                                             \
+    "((typeof(token_id)='blob' AND length(token_id)=32) "                  \
+    "OR (typeof(token_id)!='blob' AND length(CAST(token_id AS TEXT))=64))"
+
+int db_zslp_asset_lookup(struct node_db *ndb, const uint8_t token_id[32],
+                         struct db_zslp_token_info *out)
+{
+    sqlite3_stmt *s = NULL;
+    char key[65];
+
+    if (!ndb || !ndb->open || !token_id || !out)
+        return -1;
+    zcl_hex_encode(token_id, 32, key);
+    model_ascii_upcase(key);
+    if (sqlite3_prepare_v2(ndb->db,
+            "SELECT CASE WHEN typeof(token_id)='blob' THEN hex(token_id) "
+            "            ELSE upper(CAST(token_id AS TEXT)) END,"
+            "       ticker,name,decimals,genesis_height,total_minted "
+            "FROM zslp_tokens WHERE " ZSLP_CHAIN_ASSET_WHERE " AND "
+            "((typeof(token_id)='blob' AND hex(token_id)=?) OR "
+            " (typeof(token_id)!='blob' AND "
+            "  upper(CAST(token_id AS TEXT))=?)) LIMIT 1",
+            -1, &s, NULL) != SQLITE_OK || !s)
+        return -1;
+    AR_BIND_TEXT(s, 1, key);
+    AR_BIND_TEXT(s, 2, key);
+    if (!AR_STEP_ROW(s)) {
+        int rc = sqlite3_errcode(ndb->db);
+        AR_FINALIZE(s);
+        return rc == SQLITE_OK || rc == SQLITE_DONE ? 0 : -1;
+    }
+    memset(out, 0, sizeof(*out));
+    AR_READ_STR(s, 0, out->token_id, sizeof(out->token_id));
+    AR_READ_STR(s, 1, out->ticker, sizeof(out->ticker));
+    AR_READ_STR(s, 2, out->name, sizeof(out->name));
+    out->decimals = (int)AR_COL_INT(s, 3);
+    out->genesis_height = (int)AR_COL_INT(s, 4);
+    out->total_minted = AR_COL_INT(s, 5);
+    AR_FINALIZE(s);
+    return 1;
+}
+
+bool db_zslp_asset_count(struct node_db *ndb, size_t *out)
+{
+    sqlite3_stmt *s = NULL;
+    int64_t count;
+
+    if (out)
+        *out = 0;
+    if (!ndb || !ndb->open || !out ||
+        sqlite3_prepare_v2(ndb->db,
+            "SELECT COUNT(*) FROM zslp_tokens WHERE "
+            ZSLP_CHAIN_ASSET_WHERE, -1, &s, NULL) != SQLITE_OK || !s)
+        return false;
+    if (!AR_STEP_ROW(s)) {
+        AR_FINALIZE(s);
+        return false;
+    }
+    count = AR_COL_INT(s, 0);
+    AR_FINALIZE(s);
+    if (count < 0 || (uint64_t)count > (uint64_t)SIZE_MAX)
+        return false;
+    *out = (size_t)count;
+    return true;
+}
+
+int db_zslp_asset_list(struct node_db *ndb,
+                       struct db_zslp_token_info *out, size_t max_out)
+{
+    sqlite3_stmt *s = NULL;
+    int count = 0;
+
+    if (!ndb || !ndb->open || !out || max_out == 0)
+        return 0;
+    if (sqlite3_prepare_v2(ndb->db,
+            "SELECT CASE WHEN typeof(token_id)='blob' THEN hex(token_id) "
+            "            ELSE upper(CAST(token_id AS TEXT)) END,"
+            "       ticker,name,decimals,genesis_height,total_minted "
+            "FROM zslp_tokens WHERE " ZSLP_CHAIN_ASSET_WHERE " "
+            "ORDER BY ticker ASC, genesis_height DESC LIMIT ?",
+            -1, &s, NULL) != SQLITE_OK || !s)
+        return 0;
+    AR_BIND_INT(s, 1, (int64_t)max_out);
+    while ((size_t)count < max_out && AR_STEP_ROW(s)) {
+        memset(&out[count], 0, sizeof(out[count]));
+        AR_READ_STR(s, 0, out[count].token_id, sizeof(out[count].token_id));
+        AR_READ_STR(s, 1, out[count].ticker, sizeof(out[count].ticker));
+        AR_READ_STR(s, 2, out[count].name, sizeof(out[count].name));
+        out[count].decimals = (int)AR_COL_INT(s, 3);
+        out[count].genesis_height = (int)AR_COL_INT(s, 4);
+        out[count].total_minted = AR_COL_INT(s, 5);
+        count++;
+    }
+    AR_FINALIZE(s);
+    return count;
+}
+
+#undef ZSLP_CHAIN_ASSET_WHERE
 
 int db_zslp_transfer_list_by_token(struct node_db *ndb, const char *token_key,
                                    struct db_zslp_transfer_info *out,

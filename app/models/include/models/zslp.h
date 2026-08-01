@@ -68,6 +68,17 @@ bool db_zslp_token_find(struct node_db *ndb, const char *token_key,
                         struct db_zslp_token_info *out);
 int db_zslp_token_list(struct node_db *ndb,
                        struct db_zslp_token_info *out, size_t max_out);
+
+/* Chain-derived asset-definition reads.  Unlike the generic token helpers
+ * above, these exclude application-local alphanumeric token keys and expose
+ * only real 32-byte/64-hex GENESIS transaction ids.  lookup returns 1 when
+ * found, 0 when absent, and -1 on a database/read error so a read-only
+ * projection never reports an I/O failure as an empty asset catalog. */
+int db_zslp_asset_lookup(struct node_db *ndb, const uint8_t token_id[32],
+                         struct db_zslp_token_info *out);
+bool db_zslp_asset_count(struct node_db *ndb, size_t *out);
+int db_zslp_asset_list(struct node_db *ndb,
+                       struct db_zslp_token_info *out, size_t max_out);
 int db_zslp_transfer_list_by_token(struct node_db *ndb, const char *token_key,
                                    struct db_zslp_transfer_info *out,
                                    size_t max_out);

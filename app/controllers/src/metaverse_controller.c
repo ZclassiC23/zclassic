@@ -193,8 +193,8 @@ static void mv_catalog_sources_open(
     switch (st) {
     case ZCL_NODE_DB_RO_ABSENT:
         snprintf(reason, reason_cap,
-                 "no node.db at %s; the ZNAM registry has not been folded "
-                 "and cannot be reported as empty", path);
+                 "no node.db at %s; chain-derived property registries have "
+                 "not been folded and cannot be reported as empty", path);
         break;
     case ZCL_NODE_DB_RO_UNRECOVERED_LOG:
         snprintf(reason, reason_cap,
@@ -307,7 +307,8 @@ void zcl_native_handle_metaverse_property_list(
     memset(&ndb, 0, sizeof(ndb));
     sources.chain_height = -1;
     if (q.kind == METAVERSE_KIND_UNKNOWN ||
-        q.kind == METAVERSE_KIND_ZNAM_NAME)
+        q.kind == METAVERSE_KIND_ZNAM_NAME ||
+        q.kind == METAVERSE_KIND_ZSLP_ASSET)
         mv_catalog_sources_open(datadir, &sources, &sql, &ndb,
                                 source_reason, sizeof(source_reason));
     r = property_catalog_list_with_sources(datadir, &q, &sources, page);
@@ -364,10 +365,16 @@ void zcl_native_handle_metaverse_property_show(
         return;
     }
     memset(&sources, 0, sizeof(sources));
+    memset(&ndb, 0, sizeof(ndb));
     sources.chain_height = -1;
-    if (id.kind == METAVERSE_KIND_ZNAM_NAME) {
+    if (id.kind == METAVERSE_KIND_ZNAM_NAME ||
+        id.kind == METAVERSE_KIND_ZSLP_ASSET) {
+        const char *registry = id.kind == METAVERSE_KIND_ZNAM_NAME
+                                   ? "the ZNAM property registry"
+                                   : "the ZSLP asset registry";
+
         if (!zcl_native_node_db_require_readonly(
-                datadir, reply, "the ZNAM property registry", &sql, &ndb))
+                datadir, reply, registry, &sql, &ndb))
             return;
         sources.node_db = &ndb;
         r = property_catalog_show_with_sources(datadir, &id, &sources,

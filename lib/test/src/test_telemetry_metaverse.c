@@ -174,6 +174,11 @@ static int check_fill_leaves_nothing_unset(void)
              dig3(&out, "values", "catalog", "reader_znam_name") != NULL &&
                  json_get_bool(dig3(&out, "values", "catalog",
                                     "reader_znam_name")));
+    TM_CHECK("[metaverse] the ZSLP reader flag tracks its canonical-model "
+             "adapter",
+             dig3(&out, "values", "catalog", "reader_zslp_asset") != NULL &&
+                 json_get_bool(dig3(&out, "values", "catalog",
+                                    "reader_zslp_asset")));
     TM_CHECK("[metaverse] a domain whose leaves all read cleanly is ok",
              json_get_str(dig2(&out, "health", "state")) &&
                  strcmp(json_get_str(dig2(&out, "health", "state")), "ok") == 0);
