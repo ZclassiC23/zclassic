@@ -123,6 +123,23 @@ operation. The exact body root is signed by both keys. Verification pins the
 expected network and ZID and checks both signatures. Rotation points to the
 prior binding; revocation cannot create a replacement key implicitly.
 
+Implementation status (S2, remote coder, 2026-08-02): landed in
+`lib/vcs/include/vcs/zcode_contributor_binding.h` +
+`lib/vcs/src/zcode_contributor_binding.c` with focused tests appended to the
+existing `zcode_contributor` group. The 184-byte body / 312-byte full wire is
+domain-separated (`zcl.zcode.contributor_binding.v1` for the dual-signed body
+root; `zcl.zcode.contributor_binding.root.v1` for the full-wire root a
+successor's predecessor commits). The secp256k1 signature is 64-byte r||s
+normalized to low-S, so sealing is byte-deterministic; the ZCL address hash
+is validated as `hash160(zcl_pubkey)` at the codec layer. REVOKE carries the
+key it retires (staying standalone dual-verifiable) and is terminal:
+`vcs_zcode_contributor_binding_validate_successor()` rejects any successor of
+a revoked binding, replay/skip sequencing, cross-network/cross-ZID links,
+same-key rotations, new-key revocations, and tampered predecessors. S3/S6
+consume only `root()` + `verify()`/`validate_successor()`; no
+wallet/database/command surfaces were touched. Golden vectors are pinned in
+`lib/test/src/test_zcode_contributor.c` (`ZCB_KAT_*`).
+
 ## Fixed scientific actions
 
 Extend the closed `vcs_build_action_v1` registry with:
@@ -336,7 +353,7 @@ projection rebuild checks where applicable, and no deployment.
 |---|---|---|---|
 | S0 | Freeze this specification and coordination boundaries | existing ZCODE foundation | in progress, primary |
 | S1 | Canonical science codecs, roots, cross-object validation, fixed benchmark/reproduction action identities | S0 | implemented 2026-08-02, primary; full gates pending |
-| S2 | Dual-signed `contributor_binding.v1`, rotation/revocation/network replay gates | S0 | parallel-safe, remote coder may claim |
+| S2 | Dual-signed `contributor_binding.v1`, rotation/revocation/network replay gates | S0 | implemented 2026-08-02, remote coder; focused tests green, full gates pending |
 | S3 | CAS storage, rebuildable science projection, study/work/review/vote plan-commit services and commands | S1, S2 | unclaimed |
 | S4 | Closed benchmark/reproduction executors and environment/raw-sample receipts | S1, recipe-derived build graph | unclaimed |
 | S5 | Deterministic discovery PageRank and golden graphs | S1, S3 | unclaimed |
