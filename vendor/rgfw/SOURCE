@@ -1,0 +1,7 @@
+component=RGFW
+version=1.8.1
+upstream=https://github.com/ColleagueRiley/RGFW
+revision=d96684e6877d3ef11c731b122b8949942ed071c9
+license=Zlib
+files=RGFW.h,XDL.h,LICENSE
+integration=private software-window backend behind lib/presentation

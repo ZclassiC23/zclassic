@@ -162,6 +162,7 @@ const char *ci_group_purpose(const char *group)
     if (strcmp(group, "lib/noise") == 0) return "secure-session transport: Noise handshake (NK/XX) + post-handshake AEAD record layer";
     if (strcmp(group, "lib/platform") == 0) return "thin OS-portability wrappers: monotonic clock, RNG, time_t/timespec conversions";
     if (strcmp(group, "lib/policy") == 0) return "mempool/relay fee policy (min relay fee, fee estimation)";
+    if (strcmp(group, "lib/presentation") == 0) return "bounded cross-platform native bitmap windows for QR, charts, Metaverse, and reviewed App output";
     if (strcmp(group, "lib/primitives") == 0) return "consensus wire primitives: CBlock/CBlockHeader, CTransaction";
     if (strcmp(group, "lib/rpc") == 0) return "JSON-RPC client/server plumbing: HTTP server, RPC dispatch, legacy zclassicd oracle client";
     if (strcmp(group, "lib/script") == 0) return "Bitcoin Script interpreter, sig cache/encoding, HTLC + standard script templates";

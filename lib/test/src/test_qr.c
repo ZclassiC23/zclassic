@@ -1,6 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "encoding/qr.h"
+#include "presentation/presentation.h"
+#include "presentation/zclassic_brand.h"
+#include "views/ui_present.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -86,6 +89,67 @@ int test_qr(void)
              !qr_matrix_encode("", &rejected, why, sizeof(why)));
     QR_CHECK("oversized payload is rejected",
              !qr_matrix_encode(oversized, &rejected, why, sizeof(why)));
+
+    struct ui_present_qr_request request;
+    static const char wire[] =
+        "{\"payload\":\"zclassic:t1stdin?amount=0.01\","
+        "\"title\":\"Deposit\"}";
+    QR_CHECK("presentation stdin request parses",
+             ui_present_qr_request_parse(wire, sizeof(wire) - 1u, &request,
+                                         why, sizeof(why)));
+    QR_CHECK("presentation payload survives JSON framing",
+             strcmp(request.payload,
+                    "zclassic:t1stdin?amount=0.01") == 0);
+    QR_CHECK("presentation title survives JSON framing",
+             strcmp(request.title, "Deposit") == 0);
+    QR_CHECK("malformed presentation request is rejected",
+             !ui_present_qr_request_parse("not-json", 8u, &request,
+                                          why, sizeof(why)));
+    QR_CHECK("empty presentation request is rejected",
+             !ui_present_qr_request_parse("", 0, &request,
+                                          why, sizeof(why)));
+
+    uint8_t icon[ZCL_PRESENT_ZCLASSIC_ICON_RGBA_BYTES];
+    QR_CHECK("canonical ZClassic window icon expands",
+             zcl_present_zclassic_icon_rgba(icon, sizeof(icon)));
+    bool saw_orange = false;
+    bool saw_transparent = false;
+    for (size_t i = 0; i < sizeof(icon); i += 4u) {
+        if (icon[i] == 0xc8 && icon[i + 1u] == 0x70 &&
+            icon[i + 2u] == 0x35 && icon[i + 3u] == 0xff)
+            saw_orange = true;
+        if (icon[i + 3u] == 0) saw_transparent = true;
+    }
+    QR_CHECK("canonical icon preserves brand color and transparency",
+             saw_orange && saw_transparent);
+
+    static const uint8_t tiny_rgb[] = {
+        0xff, 0xff, 0xff, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0xff, 0xff, 0xff,
+    };
+    struct zcl_present_window_v1 present = {
+        .struct_size = sizeof(present),
+        .abi_version = ZCL_PRESENT_ABI_V1,
+        .title = "Presentation validation fixture",
+        .pixels = tiny_rgb,
+        .width = 2,
+        .height = 2,
+        .pixel_format = ZCL_PRESENT_RGB8,
+        .icon_rgba = icon,
+        .icon_width = ZCL_PRESENT_ZCLASSIC_ICON_WIDTH,
+        .icon_height = ZCL_PRESENT_ZCLASSIC_ICON_HEIGHT,
+        .copy_text = "fixture",
+    };
+    QR_CHECK("portable presentation request validates",
+             zcl_present_window_validate_v1(&present, why, sizeof(why)));
+    present.abi_version++;
+    QR_CHECK("presentation ABI mismatch fails closed",
+             !zcl_present_window_validate_v1(&present, why, sizeof(why)));
+    QR_CHECK("presentation backend is the pinned software backend",
+             strcmp(zcl_present_backend_name(), "rgfw-1.8.1-software") == 0);
+    QR_CHECK("presentation uses stable desktop application identity",
+             strcmp(ZCL_PRESENT_APPLICATION_ID,
+                    "org.zclassic.ZClassic23") == 0);
 
     qr_matrix_free(&second);
     qr_matrix_free(&first);

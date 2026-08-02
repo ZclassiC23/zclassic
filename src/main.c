@@ -25,6 +25,7 @@
 #include "main_cli_modes.h"             /* bench/cli/import/gen run-and-exit modes */
 #include "net/file_service.h"           /* -filesync fast path (fs_client_sync) */
 #include "controllers/agent_controller.h" /* rpc_agent_set_boot_context */
+#include "views/ui_present.h"           /* detached reviewed UI child */
 #include "views/wallet_gui.h"           /* -gui launch */
 #include "config/boot_self_respawn.h"   /* #8/Pillar 7: off-systemd self-respawn */
 #include "util/thread_registry.h"
@@ -145,6 +146,13 @@ static void report_app_init_failed(const struct app_context *ctx)
 
 int main(int argc, char **argv)
 {
+    /* Private same-binary presentation boundary. Exact argv shape only: the
+     * payload arrives later on stdin, never in process-visible argv. Dispatch
+     * before argument parsing and node initialization so the child owns only
+     * its reviewed UI backend and exits when its window closes. */
+    if (argc == 2 && strcmp(argv[1], "--ui-present-child=qr") == 0)
+        return ui_present_child_main("qr");
+
     ParseParameters(argc, (const char *const *)argv);
     apply_argv_loglevel();
 

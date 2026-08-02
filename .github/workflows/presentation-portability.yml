@@ -1,0 +1,66 @@
+# Cross-platform proof for the reusable libzclpresentation source package.
+# It intentionally builds no node code and uses no secrets or write token.
+
+name: Presentation portability
+
+on:
+  pull_request:
+    paths:
+      - 'lib/presentation/**'
+      - 'lib/encoding/src/qr.c'
+      - 'lib/encoding/src/qrcodegen_backend.c'
+      - 'vendor/rgfw/**'
+      - 'vendor/qrcodegen/**'
+      - '.github/workflows/presentation-portability.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'lib/presentation/**'
+      - 'lib/encoding/src/qr.c'
+      - 'lib/encoding/src/qrcodegen_backend.c'
+      - 'vendor/rgfw/**'
+      - 'vendor/qrcodegen/**'
+      - '.github/workflows/presentation-portability.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  link:
+    name: libzclpresentation (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-latest
+            libs: -ldl -lm
+          - name: Windows
+            os: windows-latest
+            libs: -luser32 -lgdi32 -lshell32 -lole32
+          - name: macOS
+            os: macos-latest
+            libs: -framework Cocoa -framework CoreGraphics -framework QuartzCore
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Strict C compile and native link
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/presentation-ci
+          clang -std=c2x -O2 -Wall -Wextra -Werror -pedantic \
+            -Ilib/presentation/include \
+            lib/presentation/src/presentation.c \
+            lib/presentation/src/zclassic_brand.c \
+            lib/presentation/examples/bitmap_demo.c \
+            ${{ matrix.libs }} \
+            -o build/presentation-ci/bitmap-demo
+          clang -std=c2x -O2 -Wall -Wextra -Werror -pedantic \
+            -c vendor/qrcodegen/qrcodegen.c \
+            -o build/presentation-ci/qrcodegen.o

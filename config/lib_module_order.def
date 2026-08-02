@@ -63,6 +63,9 @@ LIB_MODULE("primitives")
 LIB_MODULE("support")
 LIB_MODULE("json")
 LIB_MODULE("encoding")
+/* Bounded native bitmap windows. The public API is platform-neutral; the
+ * vendored RGFW implementation is private to lib/presentation. */
+LIB_MODULE("presentation")
 LIB_MODULE("overlay")
 LIB_MODULE("platform")
 LIB_MODULE("core")

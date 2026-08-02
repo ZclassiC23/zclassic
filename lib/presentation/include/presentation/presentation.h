@@ -1,0 +1,65 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ * Purpose: bounded cross-platform native bitmap presentation capability. */
+
+#ifndef ZCL_PRESENTATION_PRESENTATION_H
+#define ZCL_PRESENTATION_PRESENTATION_H
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define ZCL_PRESENT_ABI_V1 1u
+#define ZCL_PRESENT_APPLICATION_ID "org.zclassic.ZClassic23"
+#define ZCL_PRESENT_TITLE_MAX 127u
+#define ZCL_PRESENT_COPY_TEXT_MAX 4096u
+#define ZCL_PRESENT_DIMENSION_MAX 2048u
+
+enum zcl_present_pixel_format {
+    ZCL_PRESENT_RGB8 = 3,
+    ZCL_PRESENT_RGBA8 = 4,
+};
+
+/* Pointer-only inputs are borrowed for the duration of the blocking call.
+ * Pixels must be tightly packed, row-major, and exactly width*height*channels
+ * bytes. The reviewed host decides whether an untrusted App/ZCode request may
+ * receive this local-human-output capability; this API grants no process,
+ * network, wallet, or filesystem authority. */
+struct zcl_present_window_v1 {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    const char *title;
+    const uint8_t *pixels;
+    uint32_t width;
+    uint32_t height;
+    enum zcl_present_pixel_format pixel_format;
+    const uint8_t *icon_rgba;
+    uint32_t icon_width;
+    uint32_t icon_height;
+    const char *copy_text;
+};
+
+/* Pure validation, suitable for package hosts before they cross the native UI
+ * boundary. `error` is always a bounded human-readable explanation on false. */
+bool zcl_present_window_validate_v1(
+    const struct zcl_present_window_v1 *request,
+    char *error, size_t error_cap);
+
+/* Open one native, non-resizable software-rendered window and block until the
+ * user closes it. Escape/Q close; C copies copy_text when it is present. */
+bool zcl_present_window_run_v1(
+    const struct zcl_present_window_v1 *request,
+    char *error, size_t error_cap);
+
+/* Stable diagnostic labels; neither string implies graphics acceleration. */
+const char *zcl_present_backend_name(void);
+const char *zcl_present_platform_name(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* ZCL_PRESENTATION_PRESENTATION_H */

@@ -8,9 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef HAVE_QRENCODE
-#include <qrencode.h>
-#endif
+#include "../../../vendor/qrcodegen/qrcodegen.h"
 
 static void qr_error(char *error, size_t cap, const char *message)
 {
@@ -20,11 +18,7 @@ static void qr_error(char *error, size_t cap, const char *message)
 
 bool qr_matrix_backend_available(void)
 {
-#ifdef HAVE_QRENCODE
     return true;
-#else
-    return false;
-#endif
 }
 
 bool qr_matrix_encode(const char *payload, struct qr_matrix *out,
@@ -46,35 +40,35 @@ bool qr_matrix_encode(const char *payload, struct qr_matrix *out,
         return false;
     }
 
-#ifdef HAVE_QRENCODE
-    QRcode *encoded = QRcode_encodeData((int)payload_len,
-        (const unsigned char *)payload, 0, QR_ECLEVEL_M);
-    if (!encoded || encoded->width <= 0 || !encoded->data) {
-        if (encoded) QRcode_free(encoded);
+    uint8_t work[qrcodegen_BUFFER_LEN_MAX];
+    uint8_t encoded[qrcodegen_BUFFER_LEN_MAX];
+    memcpy(work, payload, payload_len);
+    if (!qrcodegen_encodeBinary(work, payload_len, encoded,
+                                qrcodegen_Ecc_MEDIUM,
+                                qrcodegen_VERSION_MIN,
+                                qrcodegen_VERSION_MAX,
+                                qrcodegen_Mask_AUTO, false)) {
         qr_error(error, error_cap, "QR encoder rejected the payload");
         return false;
     }
-    uint32_t width = (uint32_t)encoded->width;
+    int encoded_width = qrcodegen_getSize(encoded);
+    uint32_t width = encoded_width > 0 ? (uint32_t)encoded_width : 0;
     if (width > 177u || (size_t)width > SIZE_MAX / (size_t)width) {
-        QRcode_free(encoded);
         qr_error(error, error_cap, "QR encoder returned an invalid matrix");
         return false;
     }
     size_t count = (size_t)width * (size_t)width;
     uint8_t *modules = zcl_malloc(count, "qr.matrix.modules");
-    for (size_t i = 0; i < count; i++)
-        modules[i] = encoded->data[i] & 1u;
-    QRcode_free(encoded);
+    for (uint32_t y = 0; y < width; y++) {
+        for (uint32_t x = 0; x < width; x++) {
+            modules[(size_t)y * width + x] =
+                qrcodegen_getModule(encoded, (int)x, (int)y) ? 1u : 0u;
+        }
+    }
     out->modules = modules;
     out->width = width;
     if (error && error_cap > 0) error[0] = '\0';
     return true;
-#else
-    (void)payload_len;
-    qr_error(error, error_cap,
-             "QR support is unavailable in this build (libqrencode missing)");
-    return false;
-#endif
 }
 
 void qr_matrix_free(struct qr_matrix *matrix)

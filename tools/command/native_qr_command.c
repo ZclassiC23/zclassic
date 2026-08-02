@@ -4,8 +4,9 @@
 #include "command/native_command.h"
 #include "encoding/qr.h"
 #include "json/json.h"
+#include "presentation/presentation.h"
 #include "util/log_macros.h"
-#include "views/qr_popup.h"
+#include "views/ui_present.h"
 
 #include <string.h>
 
@@ -38,15 +39,17 @@ void zcl_native_handle_qr_show(const struct zcl_command_request *request,
         nqr_fail(reply, "TITLE_TOO_LARGE", "title exceeds 80 bytes");
         return;
     }
-    char why[192];
-    if (!qr_popup_show(payload, title, why, sizeof(why))) {
-        nqr_fail(reply, "QR_DISPLAY_FAILED", why);
+    struct zcl_result launched = ui_present_qr_launch(payload, title);
+    if (!launched.ok) {
+        nqr_fail(reply, "QR_LAUNCH_FAILED", launched.message);
         return;
     }
-    (void)json_push_kv_bool(&reply->data, "shown", true);
-    (void)json_push_kv_bool(&reply->data, "closed", true);
+    (void)json_push_kv_bool(&reply->data, "launched", true);
+    (void)json_push_kv_str(&reply->data, "presentation_kind", "qr");
     (void)json_push_kv_int(&reply->data, "payload_bytes",
                            (int64_t)payload_len);
     (void)json_push_kv_str(&reply->data, "backend",
-                           "gtk3-cairo-libqrencode");
+                           zcl_present_backend_name());
+    (void)json_push_kv_str(&reply->data, "platform",
+                           zcl_present_platform_name());
 }

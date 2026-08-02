@@ -473,7 +473,7 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `app qr show` | ready | mutate / app-write / operator · foreground/low | **`payload`**, `title` | `zcl.app_qr_show.v1` | `zclassic23 app qr show 'zclassic:t1...?amount=0.01'` | Show a payload as a native QR window |
+| `app qr show` | ready | mutate / app-write / operator · fast/low | **`payload`**, `title` | `zcl.app_qr_show.v1` | `zclassic23 app qr show 'zclassic:t1...?amount=0.01'` | Show a payload as a native QR window |
 
 #### `app.auth` — Public-key challenge/response login
 

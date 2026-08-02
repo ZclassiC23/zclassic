@@ -24,8 +24,12 @@ ZCL_ZERO_SHA256 = 00000000000000000000000000000000000000000000000000000000000000
 # object depfile graphs — skipping them takes the observable loop from ~13 s
 # to ~2 s. The set is exact: any other goal (including hotswap-module-so
 # itself, which stamps artifacts with the real identity) forces the full
-# authoritative parse.
-ZCL_HOTSWAP_LOOP_GOALS := hotswap-try hotswap-apply
+# authoritative parse. The standalone presentation package has the same
+# property: its explicit, tiny dependency graph neither consumes nor stamps a
+# whole-node source identity, so visual relaunches share this lean parse path.
+ZCL_HOTSWAP_LOOP_GOALS := hotswap-try hotswap-apply \
+	presentation-lib presentation-demo presentation-relaunch \
+	presentation-desktop-install presentation-portability
 ZCL_HOTSWAP_LOOP_ONLY := $(if $(strip $(MAKECMDGOALS)),$(if $(strip $(filter-out $(ZCL_HOTSWAP_LOOP_GOALS),$(MAKECMDGOALS))),,1),)
 
 # hotswap-module-so compiles exactly one TU via a direct $(CC) shell command in
@@ -418,9 +422,6 @@ ifeq ($(ZCL_HOTSWAP_LOOP_ONLY),1)
 GTK_CFLAGS :=
 GTK_LIBS   :=
 GTK_DEF    :=
-QRENCODE_CFLAGS :=
-QRENCODE_LIBS   :=
-QRENCODE_DEF    :=
 WEBKIT_CFLAGS :=
 WEBKIT_LIBS   :=
 WEBKIT_DEF    :=
@@ -428,9 +429,6 @@ else
 GTK_CFLAGS := $(shell pkg-config --cflags gtk+-3.0 2>/dev/null)
 GTK_LIBS   := $(shell pkg-config --libs gtk+-3.0 2>/dev/null)
 GTK_DEF    := $(if $(GTK_CFLAGS),-DHAVE_GTK,)
-QRENCODE_CFLAGS := $(shell pkg-config --cflags libqrencode 2>/dev/null)
-QRENCODE_LIBS   := $(shell pkg-config --libs libqrencode 2>/dev/null)
-QRENCODE_DEF    := $(if $(QRENCODE_LIBS),-DHAVE_QRENCODE,)
 WEBKIT_CFLAGS := $(shell pkg-config --cflags webkit2gtk-4.1 2>/dev/null)
 WEBKIT_LIBS   := $(shell pkg-config --libs webkit2gtk-4.1 2>/dev/null)
 WEBKIT_DEF    := $(if $(WEBKIT_CFLAGS),-DHAVE_WEBKIT,)
@@ -606,7 +604,7 @@ CFLAGS = -std=c23 -g -O3 $(if $(ZCL_NATIVE),-march=native,-march=x86-64-v3) -flt
 	$(ZCL_WARN_STRINGOP_OVERFLOW) $(ZCL_WARN_UNUSED_RESULT) \
 	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(CORE_INCLUDES) $(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) $(ADAPTERS_INCLUDES) $(TOOLS_INCLUDES) $(DEVLOOP_INCLUDES) \
 	-Ilib/test/include \
-	-D_POSIX_C_SOURCE=200809L -DZCL_AR_ENFORCE $(BUILD_IDENTITY_CPPFLAGS) -Ivendor/include $(GTK_DEF) $(GTK_CFLAGS) $(QRENCODE_DEF) $(QRENCODE_CFLAGS) \
+	-D_POSIX_C_SOURCE=200809L -DZCL_AR_ENFORCE $(BUILD_IDENTITY_CPPFLAGS) -Ivendor/include $(GTK_DEF) $(GTK_CFLAGS) \
 	$(WEBKIT_DEF) $(WEBKIT_CFLAGS) $(if $(ZCL_WITH_RUST),-DZCL_WITH_RUST=1)
 LDFLAGS = -pthread -flto=auto -rdynamic $(HARDEN_LDFLAGS)
 CACHED_CFLAGS = $(filter-out -DZCL_BUILD_SOURCE_ID=% -DZCL_BUILD_CLEAN=%,$(CFLAGS))
@@ -685,7 +683,7 @@ CXX_STDLIB_LDFLAGS := $(if $(CXX_STDLIB_DIR),-L$(CXX_STDLIB_DIR),)
 LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
 	$(CXX_STDLIB_LDFLAGS) -lstdc++ -lsqlite3 \
 	-levent -levent_openssl -levent_pthreads \
-	-lssl -lcrypto -lz $(if $(ZCL_WITH_RUST),-lrustzcash) $(QRENCODE_LIBS) -ldl -lpthread -lm
+	-lssl -lcrypto -lz $(if $(ZCL_WITH_RUST),-lrustzcash) -ldl -lpthread -lm
 
 # ── Host-local compile epochs ─────────────────────────────────────────────
 # Source bytes remain the portable authority, but they no longer select the
@@ -958,6 +956,130 @@ $(VENDOR_BOOTSTRAP_MK): vendor-ready
 	trap - EXIT HUP INT TERM
 check-vendor-provenance:
 	@tools/scripts/test_vendor_provenance.sh
+	@sha256sum --check vendor/rgfw/SHA256SUMS
+	@sha256sum --check vendor/qrcodegen/SHA256SUMS
+
+# Reusable native presentation package. This deliberately has a tiny source
+# closure: two project TUs plus pinned RGFW headers, with no node/app objects.
+PRESENTATION_BUILD_DIR := build/presentation
+PRESENTATION_PACKAGE_CFLAGS := -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	-Ilib/presentation/include
+PRESENTATION_PACKAGE_SRCS := \
+	lib/presentation/src/presentation.c \
+	lib/presentation/src/zclassic_brand.c
+PRESENTATION_PACKAGE_OBJS := \
+	$(PRESENTATION_BUILD_DIR)/presentation.o \
+	$(PRESENTATION_BUILD_DIR)/zclassic_brand.o
+PRESENTATION_PACKAGE_ARCHIVE := build/lib/libzclpresentation.a
+PRESENTATION_DEMO_BIN := $(PRESENTATION_BUILD_DIR)/bitmap-demo
+PRESENTATION_PROVENANCE_STAMP := \
+	$(PRESENTATION_BUILD_DIR)/.vendor-provenance.ok
+PRESENTATION_VENDOR_INPUTS := \
+	vendor/rgfw/RGFW.h vendor/rgfw/XDL.h vendor/rgfw/LICENSE \
+	vendor/rgfw/SOURCE vendor/rgfw/SHA256SUMS \
+	vendor/qrcodegen/qrcodegen.c vendor/qrcodegen/qrcodegen.h \
+	vendor/qrcodegen/LICENSE vendor/qrcodegen/SOURCE \
+	vendor/qrcodegen/SHA256SUMS tools/scripts/test_vendor_provenance.sh
+PRESENTATION_HOST_OS := $(shell uname -s 2>/dev/null)
+ifeq ($(PRESENTATION_HOST_OS),Darwin)
+PRESENTATION_HOST_LIBS := -framework Cocoa -framework CoreGraphics \
+	-framework QuartzCore
+else ifneq ($(filter MINGW% MSYS% CYGWIN%,$(PRESENTATION_HOST_OS)),)
+PRESENTATION_HOST_LIBS := -luser32 -lgdi32 -lshell32 -lole32
+else
+PRESENTATION_HOST_LIBS := -ldl -lm
+endif
+
+.PHONY: presentation-lib presentation-demo presentation-relaunch \
+	presentation-desktop-install \
+	presentation-portability
+presentation-lib: $(PRESENTATION_PACKAGE_ARCHIVE)
+
+$(PRESENTATION_PROVENANCE_STAMP): $(PRESENTATION_VENDOR_INPUTS)
+	@mkdir -p $(PRESENTATION_BUILD_DIR)
+	@tools/scripts/test_vendor_provenance.sh
+	@sha256sum --check vendor/rgfw/SHA256SUMS
+	@sha256sum --check vendor/qrcodegen/SHA256SUMS
+	@touch $@
+
+$(PRESENTATION_BUILD_DIR)/presentation.o: \
+	lib/presentation/src/presentation.c \
+	lib/presentation/include/presentation/presentation.h \
+	vendor/rgfw/RGFW.h vendor/rgfw/XDL.h \
+	$(PRESENTATION_PROVENANCE_STAMP)
+	@mkdir -p $(PRESENTATION_BUILD_DIR)
+	$(CC) $(PRESENTATION_PACKAGE_CFLAGS) -c \
+		lib/presentation/src/presentation.c \
+		-o $(PRESENTATION_BUILD_DIR)/presentation.o
+
+$(PRESENTATION_BUILD_DIR)/zclassic_brand.o: \
+	lib/presentation/src/zclassic_brand.c \
+	lib/presentation/src/zclassic_icon_mask.inc \
+	lib/presentation/include/presentation/zclassic_brand.h
+	@mkdir -p $(PRESENTATION_BUILD_DIR)
+	$(CC) $(PRESENTATION_PACKAGE_CFLAGS) -c \
+		lib/presentation/src/zclassic_brand.c \
+		-o $(PRESENTATION_BUILD_DIR)/zclassic_brand.o
+
+$(PRESENTATION_PACKAGE_ARCHIVE): $(PRESENTATION_PACKAGE_OBJS) \
+	$(PRESENTATION_PROVENANCE_STAMP)
+	@mkdir -p build/lib
+	$(AR) rcs $@ $(PRESENTATION_PACKAGE_OBJS)
+
+presentation-demo: $(PRESENTATION_DEMO_BIN)
+
+$(PRESENTATION_DEMO_BIN): lib/presentation/examples/bitmap_demo.c \
+	$(PRESENTATION_PACKAGE_ARCHIVE)
+	@mkdir -p $(PRESENTATION_BUILD_DIR)
+	$(CC) $(PRESENTATION_PACKAGE_CFLAGS) \
+		lib/presentation/examples/bitmap_demo.c \
+		$(PRESENTATION_PACKAGE_ARCHIVE) $(PRESENTATION_HOST_LIBS) \
+		-o $@
+
+# Host-side visual iteration: rebuild only stale package objects, replace the
+# previous demo process, and return immediately. Release LTO is not in this
+# path; strict release/full-suite proof remains an end-of-cycle gate.
+presentation-relaunch: presentation-demo
+	@pkill -x bitmap-demo 2>/dev/null || true
+	@nohup $(PRESENTATION_DEMO_BIN) \
+		>$(PRESENTATION_BUILD_DIR)/bitmap-demo.log 2>&1 </dev/null &
+	@printf '%s\n' 'presentation-relaunch: window launched'
+
+# Explicit per-user Linux packaging. The presentation library itself retains
+# no filesystem authority; installation is a developer/operator action.
+presentation-desktop-install:
+	@install -d "$(HOME)/.local/share/applications" \
+		"$(HOME)/.local/share/icons/hicolor/scalable/apps"
+	@install -m 0644 packaging/linux/org.zclassic.ZClassic23.desktop \
+		"$(HOME)/.local/share/applications/org.zclassic.ZClassic23.desktop"
+	@install -m 0644 packaging/linux/org.zclassic.ZClassic23.svg \
+		"$(HOME)/.local/share/icons/hicolor/scalable/apps/org.zclassic.ZClassic23.svg"
+	@if command -v update-desktop-database >/dev/null 2>&1; then \
+		update-desktop-database "$(HOME)/.local/share/applications"; \
+	fi
+	@if command -v kbuildsycoca6 >/dev/null 2>&1; then \
+		kbuildsycoca6 >/dev/null; \
+	elif command -v kbuildsycoca5 >/dev/null 2>&1; then \
+		kbuildsycoca5 >/dev/null; \
+	fi
+	@printf '%s\n' 'presentation-desktop-install: ZClassic23 identity installed'
+
+# Current maintainer host carries MinGW, so this is a real Windows compile+link
+# proof, not a preprocessor simulation. macOS is linked by the hosted matrix.
+presentation-portability: presentation-demo
+	@if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then \
+		mkdir -p $(PRESENTATION_BUILD_DIR)/windows; \
+		x86_64-w64-mingw32-gcc -std=c2x -O2 -Wall -Wextra -Werror \
+			-pedantic -Ilib/presentation/include \
+			lib/presentation/src/presentation.c \
+			lib/presentation/src/zclassic_brand.c \
+			lib/presentation/examples/bitmap_demo.c \
+			-luser32 -lgdi32 -lshell32 -lole32 \
+			-o $(PRESENTATION_BUILD_DIR)/windows/bitmap-demo.exe; \
+		printf '%s\n' 'presentation-portability: Windows cross-link OK'; \
+	else \
+		printf '%s\n' 'presentation-portability: MinGW unavailable (Windows cross-link skipped)'; \
+	fi
 
 .PHONY: worktree-prime
 # Formalizes the "cp -a vendor/lib before a fresh worktree can link" tribal
