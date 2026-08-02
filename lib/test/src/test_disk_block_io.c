@@ -5,6 +5,10 @@
 #include "storage/disk_block_io.h"
 #include "primitives/block.h"
 #include "core/serialize.h"
+#include "config/boot_internal.h"
+#include "validation/chainstate.h"
+#include "validation/main_state.h"
+#include <fcntl.h>
 #include <pthread.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -28,24 +32,30 @@ static void cleanup_test_dir(const char *dir)
     (void)system(cmd);
 }
 
+static const unsigned char TEST_MSG_START[4] = {0x24, 0xe9, 0x27, 0x64};
+
+/* Build a minimal block with a distinguishing nTime value (caller frees). */
+static void build_test_block(struct block *b, uint32_t ntime)
+{
+    block_init(b);
+    b->header.nVersion = 4;
+    b->header.nTime = ntime;
+    b->header.nBits = 0x2000ffff;
+    b->num_vtx = 1;
+    b->vtx = calloc(1, sizeof(struct transaction)); // raw-alloc-ok:test-fixture
+    transaction_init(&b->vtx[0]);
+    transaction_alloc(&b->vtx[0], 1, 1);
+    b->vtx[0].vin[0].sequence = 0xffffffff;
+    b->vtx[0].vout[0].value = 10 * COIN;
+}
+
 /* Write a minimal block with a distinguishing nTime value. */
 static bool write_test_block(const char *datadir, struct disk_block_pos *pos,
                              uint32_t ntime)
 {
     struct block b;
-    block_init(&b);
-    b.header.nVersion = 4;
-    b.header.nTime = ntime;
-    b.header.nBits = 0x2000ffff;
-    b.num_vtx = 1;
-    b.vtx = calloc(1, sizeof(struct transaction)); // raw-alloc-ok:test-fixture
-    transaction_init(&b.vtx[0]);
-    transaction_alloc(&b.vtx[0], 1, 1);
-    b.vtx[0].vin[0].sequence = 0xffffffff;
-    b.vtx[0].vout[0].value = 10 * COIN;
-
-    unsigned char msg_start[4] = {0x24, 0xe9, 0x27, 0x64};
-    bool ok = write_block_to_disk(&b, pos, datadir, msg_start);
+    build_test_block(&b, ntime);
+    bool ok = write_block_to_disk(&b, pos, datadir, TEST_MSG_START);
     block_free(&b);
     return ok;
 }
@@ -626,6 +636,154 @@ static int test_scoped_read_fd_cache(void)
     return failures;
 }
 
+/* ── Duplicate-scan policy + position self-heal ─────────────
+ * Regression coverage for the 2026-08 producer-fold wedge: blk*.dat files
+ * hardlinked into a live zclassicd datadir get their tail rewritten by the
+ * foreign appender, so (1) the boot scan must index the EARLIEST copy of a
+ * duplicated block (most durable offset), and (2) a position that dangles
+ * anyway must be repairable from the surviving local copy. */
+
+/* A blk file holding TWO verbatim copies of the same block must index the
+ * earliest one; after the tail copy is destroyed, the indexed copy must
+ * still read back and hash-match. */
+static int test_scan_duplicate_keeps_earliest_copy(void)
+{
+    int failures = 0;
+    char tmpdir[256];
+    make_test_dir(tmpdir, sizeof(tmpdir));
+
+    TEST("blk scan duplicate policy: earliest copy wins") {
+        struct block b, c;
+        build_test_block(&b, 333333);
+        build_test_block(&c, 444444);
+        struct disk_block_pos pb1, pb2, pc;
+        disk_block_pos_init(&pb1);
+        disk_block_pos_init(&pb2);
+        disk_block_pos_init(&pc);
+        bool ok = write_block_to_disk(&b, &pb1, tmpdir, TEST_MSG_START) &&
+                  write_block_to_disk(&b, &pb2, tmpdir, TEST_MSG_START) &&
+                  write_block_to_disk(&c, &pc, tmpdir, TEST_MSG_START);
+        struct uint256 hash_b, hash_c;
+        block_get_hash(&b, &hash_b);
+        block_get_hash(&c, &hash_c);
+        block_free(&b);
+        block_free(&c);
+        ASSERT(ok);
+
+        struct main_state ms;
+        main_state_init(&ms);
+        struct block_index *bi_b = chainstate_insert_block_index(
+            (struct chainstate *)&ms, &hash_b);
+        struct block_index *bi_c = chainstate_insert_block_index(
+            (struct chainstate *)&ms, &hash_c);
+        ASSERT(bi_b != NULL && bi_c != NULL);
+
+        ASSERT(scan_block_files_mark_data(&ms, tmpdir, NULL) > 0);
+        ASSERT(bi_b->nStatus & BLOCK_HAVE_DATA);
+        ASSERT(bi_b->nFile == pb1.nFile && bi_b->nDataPos == pb1.nPos);
+        ASSERT(bi_c->nStatus & BLOCK_HAVE_DATA && bi_c->nDataPos == pc.nPos);
+
+        /* Simulate the foreign writer: destroy the SECOND copy's record. */
+        char blkpath[512];
+        snprintf(blkpath, sizeof(blkpath), "%s/blocks/blk%05d.dat",
+                 tmpdir, pb1.nFile);
+        int fd = open(blkpath, O_WRONLY);
+        ASSERT(fd >= 0);
+        char junk[4096];
+        memset(junk, 0xA5, sizeof(junk));
+        size_t rec2_len = (size_t)(pc.nPos - pb2.nPos);
+        ssize_t wr = pwrite(fd, junk,
+                            rec2_len < sizeof(junk) ? rec2_len : sizeof(junk),
+                            (off_t)(pb2.nPos - 8));
+        close(fd);
+        ASSERT(wr > 0);
+
+        /* The indexed (first) copy must still read and hash-match. */
+        struct block r;
+        block_init(&r);
+        ok = read_block_from_disk_index_pread(&r, bi_b, tmpdir) &&
+             r.header.nTime == 333333;
+        block_free(&r);
+        ASSERT(ok);
+        printf("OK\n");
+    }
+_test_next:
+    cleanup_test_dir(tmpdir);
+    return failures;
+}
+
+/* block_index_repair_pos_from_disk: a stale/torn (nFile,nDataPos) is healed
+ * by a hash-targeted blk-file scan + verified re-store; a hash with NO copy
+ * on disk returns false and leaves the entry untouched, so the caller's
+ * clear-and-hold fallback still applies. */
+static int test_position_repair_from_local_copy(void)
+{
+    int failures = 0;
+    char tmpdir[256];
+    make_test_dir(tmpdir, sizeof(tmpdir));
+
+    TEST("repair_pos_from_disk: stale position healed, no-copy arm falls through") {
+        struct block a, b;
+        build_test_block(&a, 555555);
+        build_test_block(&b, 666666);
+        struct disk_block_pos pa, pb;
+        disk_block_pos_init(&pa);
+        disk_block_pos_init(&pb);
+        bool ok = write_block_to_disk(&a, &pa, tmpdir, TEST_MSG_START) &&
+                  write_block_to_disk(&b, &pb, tmpdir, TEST_MSG_START);
+        struct uint256 hash_a;
+        block_get_hash(&a, &hash_a);
+        block_free(&a);
+        block_free(&b);
+        ASSERT(ok);
+
+        struct block_index bi;
+        block_index_init(&bi);
+        bi.nHeight = 42;
+        bi.hashBlock = hash_a;
+        bi.phashBlock = &bi.hashBlock;
+        /* Bogus position: mid-record garbage inside block B's record, with
+         * HAVE_DATA set (the real wedge shape — read paths only fire on
+         * flagged entries, and the position snapshot requires the flag). */
+        block_index_disk_pos_store(&bi, pb.nFile, pb.nPos + 20);
+        block_index_status_fetch_or(&bi, BLOCK_HAVE_DATA);
+
+        ASSERT(block_index_repair_pos_from_disk(&bi, tmpdir, true));
+        struct disk_block_pos fixed;
+        disk_block_pos_init(&fixed);
+        ASSERT(block_index_disk_pos_snapshot(&bi, &fixed, NULL));
+        ASSERT(fixed.nFile == pa.nFile && fixed.nPos == pa.nPos);
+        ASSERT(block_index_status_load(&bi) & BLOCK_HAVE_DATA);
+
+        struct block r;
+        block_init(&r);
+        ok = read_block_from_disk_index_pread(&r, &bi, tmpdir) &&
+             r.header.nTime == 555555;
+        block_free(&r);
+        ASSERT(ok);
+
+        /* Second arm: hash with no copy on disk — false, entry untouched
+         * (and it must NOT steal the other block's valid position). */
+        struct block_index bi2;
+        block_index_init(&bi2);
+        bi2.nHeight = 43;
+        memset(bi2.hashBlock.data, 0x77, sizeof(bi2.hashBlock.data));
+        bi2.phashBlock = &bi2.hashBlock;
+        block_index_disk_pos_store(&bi2, pa.nFile, pa.nPos);
+        unsigned int st_before = block_index_status_load(&bi2);
+        ASSERT(!block_index_repair_pos_from_disk(&bi2, tmpdir, true));
+        /* bi2 never gained HAVE_DATA, so the snapshot API refuses it by
+         * design; assert the raw position fields directly instead. */
+        ASSERT(block_index_file_load(&bi2) == pa.nFile &&
+               block_index_data_pos_load(&bi2) == pa.nPos);
+        ASSERT(block_index_status_load(&bi2) == st_before);
+        printf("OK\n");
+    }
+_test_next:
+    cleanup_test_dir(tmpdir);
+    return failures;
+}
+
 /* ── Entry point ─────────────────────────────────────────── */
 
 int test_disk_block_io(void)
@@ -642,5 +800,7 @@ int test_disk_block_io(void)
     failures += test_write_allocates_append_position();
     failures += test_deferred_sync_byte_identical();
     failures += test_scoped_read_fd_cache();
+    failures += test_scan_duplicate_keeps_earliest_copy();
+    failures += test_position_repair_from_local_copy();
     return failures;
 }

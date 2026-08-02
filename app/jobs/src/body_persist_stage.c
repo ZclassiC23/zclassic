@@ -216,7 +216,11 @@ static bool verify_merkle_root(const struct block *blk)
  * header (wrong/corrupt/torn block on disk). A re-fetched body can change
  * every one of these verdicts, so never persist them as permanent ok=0
  * rows — those statuses sit outside every repair's status set and would
- * pin H*, utxo_apply and tip_finalize forever. Clear BLOCK_HAVE_DATA and
+ * pin H*, utxo_apply and tip_finalize forever. But BEFORE clearing, attempt
+ * a local position repair (block_index_repair_pos_from_disk): a stale
+ * (nFile,nDataPos) with the block still on disk elsewhere is healed by a
+ * verified re-store, no re-fetch needed. Only a genuine no-copy-anywhere
+ * proceeds: clear BLOCK_HAVE_DATA and
  * re-emit a status event (the projection persists the cleared bit across
  * restarts, same discipline as the success path, but as the lightweight
  * status-only record — see jobs/block_header_emit.h), hold the cursor, and
@@ -229,6 +233,23 @@ static job_result_t requeue_body_for_refetch(struct block_index *bi,
                                              int height, const char *what,
                                              _Atomic uint64_t *counter)
 {
+    /* Local self-heal first: the stored (nFile,nDataPos) can be stale rather
+     * than bodiless — a foreign writer on a hardlinked blk file (e.g. a live
+     * zclassicd sharing the inode, whose append pointer lags physical EOF)
+     * overwrites indexed records while a DUPLICATE copy of the block still
+     * exists on disk (2026-08 producer-fold wedge: 314 such positions, every
+     * one repairable locally). A hash-targeted rescan re-stores through
+     * block_index_set_have_data_verified() and the stage retries the same
+     * height next step — no clear, no re-fetch. Only a genuine
+     * no-copy-anywhere falls through to clear-and-hold below. */
+    if (block_index_repair_pos_from_disk(bi, g_datadir, true)) {
+        LOG_WARN(STAGE_NAME,
+                 "[body_persist] %s height=%d: repaired (nFile,nDataPos) from "
+                 "a local blk-file copy — retrying, HAVE_DATA kept",
+                 what, height);
+        return JOB_IDLE;
+    }
+
     block_index_status_clear_bits(bi, BLOCK_HAVE_DATA);
     block_index_emit_status_event(bi, STAGE_NAME, &g_header_event_emit_total,
                                   &g_header_event_emit_fail_total);

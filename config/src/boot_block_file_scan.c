@@ -425,10 +425,22 @@ static struct boot_scan_apply_counts scan_apply_one_file(
                 bi->nTx = meta->nTx;
             counts.marked++;
         } else {
+            /* Duplicate record: keep the EARLIEST copy. Append/rewrite
+             * frontiers advance upward through a blk file (a foreign writer
+             * on a hardlinked file — e.g. a live zclassicd sharing the inode
+             * — or our own appends), so the lowest-offset copy is the most
+             * durable; last-copy-wins picked exactly the copy most likely to
+             * be overwritten later (2026-08 producer-fold wedge: 314 stale
+             * tail positions). A torn entry (nFile < 0) always takes the
+             * fresh record. */
             if (bi->nFile != r->file_idx ||
                 bi->nDataPos != meta->nDataPos) {
-                bi->nFile = r->file_idx;
-                bi->nDataPos = meta->nDataPos;
+                if (bi->nFile < 0 || r->file_idx < bi->nFile ||
+                    (r->file_idx == bi->nFile &&
+                     meta->nDataPos < bi->nDataPos)) {
+                    bi->nFile = r->file_idx;
+                    bi->nDataPos = meta->nDataPos;
+                }
             }
             if (bi->nTx == 0)
                 bi->nTx = meta->nTx;
@@ -481,6 +493,16 @@ int scan_block_files_mark_data(struct main_state *ms, const char *datadir,
             continue;
         }
         consecutive_misses = 0;
+
+        /* Hardlink tripwire: st_nlink > 1 means another path shares this
+         * inode — potentially a live foreign writer (e.g. a zclassicd
+         * oracle datadir hardlinked into this one) whose own append pointer
+         * can overwrite records this scan is about to index. Positions in
+         * the last blk file are provisional on such a layout. */
+        if (st.st_nlink > 1)
+            fprintf(stderr, "scan: %s has %lu hard links — shared blk file; "
+                    "a foreign writer may invalidate indexed positions\n",
+                    path, (unsigned long)st.st_nlink);
 
         struct boot_scan_file_result *r = &files[nfiles++];
         snprintf(r->path, sizeof(r->path), "%s", path);

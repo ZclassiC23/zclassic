@@ -140,6 +140,30 @@ static enum condition_remedy_result remedy_have_data_unreadable(void)
         return COND_REMEDY_SKIP;
 
     atomic_fetch_add(&g_remedy_calls, 1);
+
+    /* Local self-heal first (2026-08 producer-fold wedge): a torn position
+     * can be stale rather than bodiless — the block still exists elsewhere
+     * in the blk files (a duplicate copy, or the indexed record was
+     * overwritten by a foreign writer on a hardlinked blk file). Repair the
+     * position through the verified store instead of clearing real data.
+     * Gated on a plausible current position and bounded to a same-file scan:
+     * the torn-synthetic-flag class this Condition owns (nFile=-1/nPos=0,
+     * body never on disk) would only buy an expensive full-blk-set walk per
+     * attempt; only a genuine stale position with a surviving same-file
+     * copy is repaired here. Anything else falls through to the clear. */
+    if (block_index_file_load(p) >= 0 && block_index_data_pos_load(p) != 0) {
+        char repair_dir[2048];
+        GetDataDir(true, repair_dir, sizeof(repair_dir));
+        if (block_index_repair_pos_from_disk(p, repair_dir, false)) {
+            LOG_WARN("condition",
+                     "[condition:have_data_unreadable] repaired h=%d position "
+                     "from a local blk-file copy (was file=%d pos=%u)",
+                     target, atomic_load(&g_file_at_detect),
+                     atomic_load(&g_pos_at_detect));
+            return COND_REMEDY_OK;
+        }
+    }
+
     LOG_WARN("condition", "[condition:have_data_unreadable] clearing h=%d file=%d pos=%u", target, p->nFile, p->nDataPos);
     event_emitf(EV_BLOCK_REJECTED, 0,
                 "HAVE_DATA_UNREADABLE h=%d file=%d pos=%u",
