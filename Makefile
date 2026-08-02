@@ -5062,8 +5062,8 @@ deploy: vendor-ready lint zclassic-cli tools/wal_checkpoint
 	command -v timeout >/dev/null 2>&1 || { \
 	    echo "deploy: timeout is required for candidate preflight" >&2; exit 1; }; \
 	candidate="$$(mktemp "$(dir $(ZCLASSIC23_BIN)).zclassic23.deploy.XXXXXX")"; \
-	dropin_tmp=""; \
-	trap 'rm -f "$$candidate" "$$dropin_tmp"' EXIT HUP INT TERM; \
+	dropin_tmp=""; service_tmp=""; \
+	trap 'rm -f "$$candidate" "$$dropin_tmp" "$$service_tmp"' EXIT HUP INT TERM; \
 	install -m 755 "$(ZCLASSIC23_BIN)" "$$candidate"; \
 	artifact_sha256="$$(sha256sum < "$$candidate" | awk '{print $$1}')"; \
 	[ "$${#artifact_sha256}" -eq 64 ] || { \
@@ -5091,8 +5091,11 @@ deploy: vendor-ready lint zclassic-cli tools/wal_checkpoint
 	        echo "WAL checkpoint failed" >&2; exit 1; }; \
 	fi; \
 	install -d "$(HOME)/.config/systemd/user"; \
-	install -m 644 deploy/zclassic23.service \
+	service_tmp="$$(mktemp "$(HOME)/.config/systemd/user/zclassic23.service.tmp.XXXXXX")"; \
+	sed 's|%h/zclassic23|$(CURDIR)|g' deploy/zclassic23.service > "$$service_tmp"; \
+	install -m 644 "$$service_tmp" \
 	    "$(HOME)/.config/systemd/user/zclassic23.service"; \
+	rm -f "$$service_tmp"; service_tmp=""; \
 	install -d "$(HOME)/.config/systemd/user/zclassic23.service.d"; \
 	dropin="$(HOME)/.config/systemd/user/zclassic23.service.d/90-build-identity.conf"; \
 	dropin_tmp="$$(mktemp "$$dropin.tmp.XXXXXX")"; \
@@ -5105,15 +5108,12 @@ deploy: vendor-ready lint zclassic-cli tools/wal_checkpoint
 	install -m 644 "$$dropin_tmp" "$$dropin"; \
 	rm -f "$$dropin_tmp"; dropin_tmp=""; \
 	systemctl --user daemon-reload; \
-	service_paths="$$(systemctl --user show zclassic23 -p ExecStart --value 2>/dev/null | \
-	    tr ' ' '\n' | sed -n 's/^path=//p')"; \
-	service_path_count="$$(printf '%s\n' "$$service_paths" | \
-	    awk 'NF { count++ } END { print count + 0 }')"; \
-	[ "$$service_path_count" -eq 1 ] || { \
-	    echo "deploy: canonical service ExecStart path is missing or ambiguous" >&2; exit 1; }; \
-	SERVICE_BIN="$$(printf '%s\n' "$$service_paths" | awk 'NF { print; exit }')"; \
-	case "$$SERVICE_BIN" in /*) ;; *) \
-	    echo "deploy: canonical service ExecStart path is not absolute" >&2; exit 1;; esac; \
+	service_exec="$$(systemctl --user show zclassic23 -p ExecStart --value 2>/dev/null)"; \
+	case "$$service_exec" in *"path=$(CURDIR)/deploy/zclassic23-launch.sh"*) ;; *) \
+	    echo "deploy: canonical service launcher does not resolve to this checkout" >&2; exit 1;; esac; \
+	case "$$service_exec" in *" $(CURDIR)/build/bin/zclassic23 "*) ;; *) \
+	    echo "deploy: canonical service node binary does not resolve to this checkout" >&2; exit 1;; esac; \
+	SERVICE_BIN="$(CURDIR)/build/bin/zclassic23"; \
 	tools/dev/source-identity.sh verify-record \
 	    "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
 	install -m 755 "$$candidate" "$$SERVICE_BIN"; \
