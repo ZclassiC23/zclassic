@@ -48,8 +48,9 @@ bool zcl_present_window_validate_v1(
     const struct zcl_present_window_v1 *request,
     char *error, size_t error_cap);
 
-/* Open one native, non-resizable software-rendered window and block until the
- * user closes it. Escape/Q close; C copies copy_text when it is present. */
+/* Open one native, resizable software-rendered window and block until the user
+ * closes it. Resizing preserves aspect ratio; Escape/Q close and C copies
+ * copy_text when it is present. */
 bool zcl_present_window_run_v1(
     const struct zcl_present_window_v1 *request,
     char *error, size_t error_cap);

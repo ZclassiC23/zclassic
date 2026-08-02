@@ -958,17 +958,20 @@ check-vendor-provenance:
 	@tools/scripts/test_vendor_provenance.sh
 	@sha256sum --check vendor/rgfw/SHA256SUMS
 	@sha256sum --check vendor/qrcodegen/SHA256SUMS
+	@sha256sum --check vendor/typography/SHA256SUMS
 
 # Reusable native presentation package. This deliberately has a tiny source
-# closure: two project TUs plus pinned RGFW headers, with no node/app objects.
+# closure: three project TUs plus pinned RGFW headers, with no node/app objects.
 PRESENTATION_BUILD_DIR := build/presentation
 PRESENTATION_PACKAGE_CFLAGS := -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	-Ilib/presentation/include
 PRESENTATION_PACKAGE_SRCS := \
 	lib/presentation/src/presentation.c \
+	lib/presentation/src/canvas.c \
 	lib/presentation/src/zclassic_brand.c
 PRESENTATION_PACKAGE_OBJS := \
 	$(PRESENTATION_BUILD_DIR)/presentation.o \
+	$(PRESENTATION_BUILD_DIR)/canvas.o \
 	$(PRESENTATION_BUILD_DIR)/zclassic_brand.o
 PRESENTATION_PACKAGE_ARCHIVE := build/lib/libzclpresentation.a
 PRESENTATION_DEMO_BIN := $(PRESENTATION_BUILD_DIR)/bitmap-demo
@@ -979,7 +982,12 @@ PRESENTATION_VENDOR_INPUTS := \
 	vendor/rgfw/SOURCE vendor/rgfw/SHA256SUMS \
 	vendor/qrcodegen/qrcodegen.c vendor/qrcodegen/qrcodegen.h \
 	vendor/qrcodegen/LICENSE vendor/qrcodegen/SOURCE \
-	vendor/qrcodegen/SHA256SUMS tools/scripts/test_vendor_provenance.sh
+	vendor/qrcodegen/SHA256SUMS \
+	vendor/typography/stb_truetype.h \
+	vendor/typography/noto_sans_ascii.inc \
+	vendor/typography/LICENSE.stb vendor/typography/LICENSE.noto \
+	vendor/typography/SOURCE vendor/typography/SHA256SUMS \
+	tools/scripts/test_vendor_provenance.sh
 PRESENTATION_HOST_OS := $(shell uname -s 2>/dev/null)
 ifeq ($(PRESENTATION_HOST_OS),Darwin)
 PRESENTATION_HOST_LIBS := -framework Cocoa -framework CoreGraphics \
@@ -1000,6 +1008,7 @@ $(PRESENTATION_PROVENANCE_STAMP): $(PRESENTATION_VENDOR_INPUTS)
 	@tools/scripts/test_vendor_provenance.sh
 	@sha256sum --check vendor/rgfw/SHA256SUMS
 	@sha256sum --check vendor/qrcodegen/SHA256SUMS
+	@sha256sum --check vendor/typography/SHA256SUMS
 	@touch $@
 
 $(PRESENTATION_BUILD_DIR)/presentation.o: \
@@ -1020,6 +1029,17 @@ $(PRESENTATION_BUILD_DIR)/zclassic_brand.o: \
 	$(CC) $(PRESENTATION_PACKAGE_CFLAGS) -c \
 		lib/presentation/src/zclassic_brand.c \
 		-o $(PRESENTATION_BUILD_DIR)/zclassic_brand.o
+
+$(PRESENTATION_BUILD_DIR)/canvas.o: \
+	lib/presentation/src/canvas.c \
+	lib/presentation/include/presentation/canvas.h \
+	vendor/typography/stb_truetype.h \
+	vendor/typography/noto_sans_ascii.inc \
+	$(PRESENTATION_PROVENANCE_STAMP)
+	@mkdir -p $(PRESENTATION_BUILD_DIR)
+	$(CC) $(PRESENTATION_PACKAGE_CFLAGS) -c \
+		lib/presentation/src/canvas.c \
+		-o $(PRESENTATION_BUILD_DIR)/canvas.o
 
 $(PRESENTATION_PACKAGE_ARCHIVE): $(PRESENTATION_PACKAGE_OBJS) \
 	$(PRESENTATION_PROVENANCE_STAMP)
@@ -1072,6 +1092,7 @@ presentation-portability: presentation-demo
 		x86_64-w64-mingw32-gcc -std=c2x -O2 -Wall -Wextra -Werror \
 			-pedantic -Ilib/presentation/include \
 			lib/presentation/src/presentation.c \
+			lib/presentation/src/canvas.c \
 			lib/presentation/src/zclassic_brand.c \
 			lib/presentation/examples/bitmap_demo.c \
 			-luser32 -lgdi32 -lshell32 -lole32 \

@@ -1,8 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "encoding/qr.h"
+#include "presentation/canvas.h"
 #include "presentation/presentation.h"
 #include "presentation/zclassic_brand.h"
+#include "views/qr_popup.h"
 #include "views/ui_present.h"
 
 #include <stdio.h>
@@ -122,6 +124,72 @@ int test_qr(void)
     }
     QR_CHECK("canonical icon preserves brand color and transparency",
              saw_orange && saw_transparent);
+
+    uint8_t canvas_pixels[32u * 32u * 3u];
+    struct zcl_present_canvas canvas;
+    QR_CHECK("reusable RGB canvas initializes",
+             zcl_present_canvas_init(&canvas, canvas_pixels,
+                                     sizeof(canvas_pixels), 32u, 32u));
+    const struct zcl_present_color canvas_white = {0xff, 0xff, 0xff};
+    const struct zcl_present_color canvas_orange = {0xc8, 0x70, 0x35};
+    zcl_present_canvas_clear(&canvas, canvas_white);
+    zcl_present_canvas_fill_rect(&canvas, -4, -4, 8u, 8u, canvas_orange);
+    QR_CHECK("canvas primitives clip safely at the upper-left edge",
+             canvas_pixels[0] == 0xc8 && canvas_pixels[1] == 0x70 &&
+             canvas_pixels[2] == 0x35 &&
+             canvas_pixels[((size_t)5u * 32u + 5u) * 3u] == 0xff);
+    zcl_present_canvas_text(&canvas, 8, 8, "Aa", 2u, 16u, canvas_orange);
+    bool saw_antialias = false;
+    for (size_t i = 0; i < sizeof(canvas_pixels); i++) {
+        if (canvas_pixels[i] != 0xff && canvas_pixels[i] != 0xc8 &&
+            canvas_pixels[i] != 0x70 && canvas_pixels[i] != 0x35) {
+            saw_antialias = true;
+            break;
+        }
+    }
+    QR_CHECK("embedded Basic Latin text is antialiased", saw_antialias);
+    uint32_t balance_width =
+        zcl_present_canvas_text_width("balance", 7u, 16u);
+    QR_CHECK("proportional canvas text metrics are deterministic",
+             balance_width > 40u && balance_width < 80u &&
+             balance_width ==
+                 zcl_present_canvas_text_width("balance", 7u, 16u));
+
+    struct qr_popup_card deposit_card;
+    QR_CHECK("ZCL URI composes as a branded deposit card",
+             qr_popup_card_render(
+                 "zclassic:t1QRNativeC23?label=phone&amount=0.01000000",
+                 "ignored fixture title", &deposit_card,
+                 why, sizeof(why)));
+    QR_CHECK("deposit card identifies exact address and amount",
+             deposit_card.is_deposit &&
+             strcmp(deposit_card.address, "t1QRNativeC23") == 0 &&
+             strcmp(deposit_card.amount, "0.01000000") == 0);
+    QR_CHECK("deposit card has stable presentation dimensions",
+             deposit_card.pixels &&
+             deposit_card.width == ZCL_QR_POPUP_CARD_WIDTH &&
+             deposit_card.height == ZCL_QR_POPUP_CARD_HEIGHT);
+    bool card_has_orange = false;
+    for (size_t i = 0; deposit_card.pixels &&
+         i < ZCL_QR_POPUP_CARD_BYTES; i += 3u) {
+        if (deposit_card.pixels[i] == 0xc8 &&
+            deposit_card.pixels[i + 1u] == 0x70 &&
+            deposit_card.pixels[i + 2u] == 0x35) {
+            card_has_orange = true;
+            break;
+        }
+    }
+    QR_CHECK("deposit card carries ZClassic orange branding in pixels",
+             card_has_orange);
+    qr_popup_card_free(&deposit_card);
+
+    struct qr_popup_card generic_card;
+    QR_CHECK("non-payment text stays explicitly generic",
+             qr_popup_card_render("generic metadata", "Metadata",
+                                  &generic_card, why, sizeof(why)) &&
+             !generic_card.is_deposit &&
+             strcmp(generic_card.address, "generic metadata") == 0);
+    qr_popup_card_free(&generic_card);
 
     static const uint8_t tiny_rgb[] = {
         0xff, 0xff, 0xff, 0x00, 0x00, 0x00,

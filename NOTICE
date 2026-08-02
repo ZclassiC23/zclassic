@@ -106,6 +106,28 @@ Vendored:   vendor/qrcodegen/
 
 --------------------------------------------------------------------------------
 
+stb_truetype — MIT License or Public Domain
+Copyright (c) 2017 Sean Barrett
+
+  Private antialiased font rasterizer behind libzclpresentation.
+
+Upstream:   https://github.com/nothings/stb
+Revision:   2c980bb59875b0d32144a71867fbdebb2f77cd20
+Vendored:   vendor/typography/
+
+--------------------------------------------------------------------------------
+
+Noto Sans Basic Latin subset — SIL Open Font License 1.1
+Copyright 2018 The Noto Project Authors
+
+  Embedded font bytes for libzclpresentation's software canvas.
+
+Upstream:   https://github.com/notofonts/noto-fonts
+Revision:   ffebf8c1ee449e544955a7e813c54f9b73848eac
+Vendored:   vendor/typography/
+
+--------------------------------------------------------------------------------
+
 secp256k1 — MIT License
 Copyright (c) Pieter Wuille and contributors
 

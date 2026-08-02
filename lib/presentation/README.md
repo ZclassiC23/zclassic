@@ -7,12 +7,20 @@ consumer; charts, Metaverse property views, and reviewed ZCode/App output can
 render into the same pixel contract without acquiring wallet, network,
 filesystem, or process-launch authority.
 
-The stable public surface is
-`include/presentation/presentation.h`. RGFW is a private implementation detail,
+The stable window surface is `include/presentation/presentation.h`. The
+companion `include/presentation/canvas.h` is a bounded caller-owned RGB canvas
+with clipped rectangles, lines, alpha logo blits, and embedded Basic Latin
+text. It is the reusable layer for deposit cards, current balances, metadata,
+and small software-rendered graphs. RGFW is a private implementation detail,
 pinned under `vendor/rgfw`; callers never include its header. The backend uses
 Win32 on Windows, Cocoa on macOS, and dynamically loaded X11 on Linux. Those are
 OS/desktop APIs, not application dependencies. Rendering is software-only and
 does not require OpenGL, GTK, Qt, libqrencode, Python, or a browser.
+
+The canvas embeds a Basic-Latin-only Noto Sans subset (SIL OFL 1.1) and uses a
+pinned stb_truetype snapshot (MIT/public domain) for antialiased software text.
+Both are source-controlled under `vendor/typography`; neither adds a runtime or
+system dependency.
 
 The library and example build with:
 

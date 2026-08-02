@@ -41,6 +41,7 @@ vendor/**    linguist-vendored
 # upstream bytes merely to satisfy this repository's house formatting.
 vendor/rgfw/**      -whitespace
 vendor/qrcodegen/** -whitespace
+vendor/typography/stb_truetype.h -whitespace
 
 # Non-C assets (view templates, styles, config, fixtures, data).
 *.chtml      linguist-generated

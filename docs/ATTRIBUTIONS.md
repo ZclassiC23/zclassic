@@ -116,6 +116,24 @@ The dependency-free QR Model 2 encoder behind `lib/encoding/qr`.
 `lib/presentation/src/zclassic_icon_mask.inc` is a 64px one-bit rasterization
 of the official mark. The shape and canonical `#C87035` color are unchanged.
 
+## stb_truetype — MIT or Public Domain
+
+**Repository:** https://github.com/nothings/stb
+**Pinned revision:** `2c980bb59875b0d32144a71867fbdebb2f77cd20`
+**Attribution:** Copyright © 2017 Sean Barrett
+
+The private antialiased font rasterizer behind the presentation canvas.
+
+## Noto Sans Basic Latin subset — SIL OFL 1.1
+
+**Repository:** https://github.com/notofonts/noto-fonts
+**Pinned revision:** `ffebf8c1ee449e544955a7e813c54f9b73848eac`
+**Attribution:** Copyright 2018 The Noto Project Authors
+
+The embedded Basic Latin font bytes behind dependency-free presentation text.
+The full upstream font is subset during vendoring; the exact recipe and both
+source/subset hashes are recorded in `vendor/typography/SOURCE`.
+
 ## AGENTS.md portable-standard (community convention) — no license
 
 **Reference:** https://www.augmentcode.com/guides/how-to-build-agents-md,

@@ -141,6 +141,58 @@ static void present_set_linux_desktop_identity(RGFW_window *window)
 }
 #endif
 
+static bool present_scale_bitmap(const struct zcl_present_window_v1 *request,
+                                 i32 target_width, i32 target_height,
+                                 uint8_t **out)
+{
+    *out = NULL;
+    if (target_width <= 0 || target_height <= 0 ||
+        target_width > 4096 || target_height > 4096)
+        return false;
+    uint32_t channels = (uint32_t)request->pixel_format;
+    uint64_t bytes = (uint64_t)(uint32_t)target_width *
+                     (uint32_t)target_height * channels;
+    if (bytes == 0 || bytes > SIZE_MAX) return false;
+    uint8_t *pixels = malloc((size_t)bytes); // raw-alloc-ok:standalone-presentation-package
+    if (!pixels) return false;
+    for (uint64_t i = 0; i < bytes; i += channels) {
+        pixels[i] = 0x20;
+        pixels[i + 1u] = 0x20;
+        pixels[i + 2u] = 0x22;
+        if (channels == 4u) pixels[i + 3u] = 0xff;
+    }
+
+    uint32_t draw_width = (uint32_t)target_width;
+    uint32_t draw_height = (uint32_t)((uint64_t)draw_width *
+                                      request->height / request->width);
+    if (draw_height > (uint32_t)target_height) {
+        draw_height = (uint32_t)target_height;
+        draw_width = (uint32_t)((uint64_t)draw_height *
+                                request->width / request->height);
+    }
+    if (draw_width == 0 || draw_height == 0) {
+        free(pixels);
+        return false;
+    }
+    uint32_t x0 = ((uint32_t)target_width - draw_width) / 2u;
+    uint32_t y0 = ((uint32_t)target_height - draw_height) / 2u;
+    for (uint32_t y = 0; y < draw_height; y++) {
+        uint32_t source_y = (uint32_t)((uint64_t)y * request->height /
+                                       draw_height);
+        for (uint32_t x = 0; x < draw_width; x++) {
+            uint32_t source_x = (uint32_t)((uint64_t)x * request->width /
+                                           draw_width);
+            size_t source = ((size_t)source_y * request->width + source_x) *
+                            channels;
+            size_t target = ((size_t)(y0 + y) * (uint32_t)target_width +
+                             x0 + x) * channels;
+            memcpy(pixels + target, request->pixels + source, channels);
+        }
+    }
+    *out = pixels;
+    return true;
+}
+
 bool zcl_present_window_run_v1(
     const struct zcl_present_window_v1 *request,
     char *error, size_t error_cap)
@@ -165,12 +217,13 @@ bool zcl_present_window_run_v1(
     RGFW_setClassName(ZCL_PRESENT_APPLICATION_ID);
     RGFW_setXInstName(ZCL_PRESENT_APPLICATION_ID);
     RGFW_windowFlags flags = (RGFW_windowFlags)(
-        RGFW_windowNoResize | RGFW_windowCenter | RGFW_windowFocusOnShow);
+        RGFW_windowCenter | RGFW_windowFocusOnShow);
     RGFW_window *window = RGFW_createWindow(
         title, 0, 0, (i32)request->width, (i32)request->height, flags);
     if (!window)
         return present_error(error, error_cap,
                              "native window creation failed");
+    RGFW_window_setMinSize(window, 260, 300);
 
 #if defined(__linux__)
     present_set_linux_desktop_identity(window);
@@ -195,13 +248,39 @@ bool zcl_present_window_run_v1(
 
     RGFW_window_setExitKey(window, RGFW_escape);
     RGFW_window_blitSurface(window, surface);
+    uint8_t *scaled_pixels = NULL;
     while (!RGFW_window_shouldClose(window)) {
         RGFW_event event;
         bool saw_event = false;
         while (RGFW_window_checkEvent(window, &event)) {
             saw_event = true;
-            if (event.type == RGFW_windowRefresh)
+            if (event.type == RGFW_windowResized) {
+                i32 resized_width = 0;
+                i32 resized_height = 0;
+                (void)RGFW_window_getSize(window, &resized_width,
+                                          &resized_height);
+                uint8_t *replacement_pixels = NULL;
+                if (present_scale_bitmap(request, resized_width,
+                                         resized_height,
+                                         &replacement_pixels)) {
+                    RGFW_surface *replacement = RGFW_window_createSurface(
+                        window, replacement_pixels, resized_width,
+                        resized_height,
+                        request->pixel_format == ZCL_PRESENT_RGB8
+                            ? RGFW_formatRGB8 : RGFW_formatRGBA8);
+                    if (replacement) {
+                        RGFW_surface_free(surface);
+                        free(scaled_pixels);
+                        scaled_pixels = replacement_pixels;
+                        surface = replacement;
+                    } else {
+                        free(replacement_pixels);
+                    }
+                }
                 RGFW_window_blitSurface(window, surface);
+            } else if (event.type == RGFW_windowRefresh) {
+                RGFW_window_blitSurface(window, surface);
+            }
             if (event.type != RGFW_keyPressed) continue;
             if (event.key.value == RGFW_q)
                 RGFW_window_setShouldClose(window, RGFW_TRUE);
@@ -213,6 +292,7 @@ bool zcl_present_window_run_v1(
         if (!saw_event) RGFW_waitForEvent(100);
     }
     RGFW_surface_free(surface);
+    free(scaled_pixels);
     RGFW_window_close(window);
     if (error && error_cap > 0) error[0] = '\0';
     return true;
