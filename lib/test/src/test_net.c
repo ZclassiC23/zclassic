@@ -4975,31 +4975,44 @@ skip_parallel_tests:
     printf("snap_pow: a solve for time bucket N-1 still verifies at "
            "bucket N (grace epoch)... ");
     {
-        msgprocessor_test_snap_pow_reset();
-        msg_snapshot_pow_set_armed(true);
-        uint8_t ip[16] = {0}; ip[15] = 5;
         int64_t t0 = 8000000;
-        int bits = msgprocessor_test_snap_pow_bits_at(t0);
-
-        uint64_t nonce = 0;
-        bool solved = msgprocessor_test_snap_pow_solve(ip, t0, bits, &nonce);
-        /* Same wall-clock second (same load window) but one bucket later —
-         * the request-rate window (10s) is independent of the puzzle
-         * bucket (60s), so this stays at the same difficulty. */
         int64_t t1 = t0 + SNAP_POW_BUCKET_SECS;
-        bool accept_in_grace =
-            solved && msgprocessor_test_snap_pow_admit_at(ip, t1, &nonce);
-        /* Two buckets later the solve for t0 is no longer valid. */
         int64_t t2 = t0 + 2 * SNAP_POW_BUCKET_SECS;
-        bool reject_after_grace =
-            !msgprocessor_test_snap_pow_admit_at(ip, t2, &nonce);
+        bool solved = false;
+        bool accept_in_grace = false;
+        bool reject_after_grace = false;
+        int attempts = 0;
+
+        /* A nonce solved for bucket N can, with probability about 2/4096,
+         * also satisfy either unrelated challenge checked at N+2.  That is
+         * an ordinary hash collision, not an extension of the grace epoch.
+         * Try distinct peer-bound challenges so the test proves the window
+         * rule without treating a valid low-difficulty collision as a bug. */
+        for (attempts = 1; attempts <= 16 && !reject_after_grace; attempts++) {
+            msgprocessor_test_snap_pow_reset();
+            msg_snapshot_pow_set_armed(true);
+            uint8_t ip[16] = {0};
+            ip[14] = 5;
+            ip[15] = (uint8_t)attempts;
+            int bits = msgprocessor_test_snap_pow_bits_at(t0);
+            uint64_t nonce = 0;
+
+            solved = msgprocessor_test_snap_pow_solve(ip, t0, bits, &nonce);
+            /* The rate window is independent of the puzzle bucket, so each
+             * admission remains at the same idle-floor difficulty. */
+            accept_in_grace = solved &&
+                msgprocessor_test_snap_pow_admit_at(ip, t1, &nonce);
+            reject_after_grace = accept_in_grace &&
+                !msgprocessor_test_snap_pow_admit_at(ip, t2, &nonce);
+        }
 
         msg_snapshot_pow_set_armed(false);
         bool ok = solved && accept_in_grace && reject_after_grace;
-        if (ok) printf("OK\n");
+        if (ok) printf("OK (attempts=%d)\n", attempts - 1);
         else { printf("FAIL (solved=%d accept_in_grace=%d "
-                      "reject_after_grace=%d)\n",
-                      solved, accept_in_grace, reject_after_grace);
+                      "reject_after_grace=%d attempts=%d)\n",
+                      solved, accept_in_grace, reject_after_grace,
+                      attempts - 1);
                failures++; }
     }
 
