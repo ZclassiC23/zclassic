@@ -68,6 +68,20 @@ own opinion of itself — `~/.local/state/zclassic23-slo/uptime-ledger.jsonl`,
 `reachable:false` with a long unreachable streak — that lane is simply not
 running, and is not evidence of anything about the canonical node.)
 
+C8 byte-exact UTXO parity (2026-08-02): the producer full-fold lane
+(`~/.zclassic-c23-producer-fold`, from-genesis fold at h=3192878, then live
+sync) holds a UTXO set byte-identical to the live zd chainstate at
+height 3203194 — sha3 `9a8a4ba72ccb030ccba2daaf426fa3faeb496c3decee0372f12729c09cea4919`,
+txouts 1345675, supply 10412541.81045529, both sides equal:
+`VERDICT=PASS exact_tier=match from=genesis-producer-full-fold height=3203194`.
+The instrument is committed as `tools/scripts/byte_exact_utxo_check.sh`
+(compare `getutxocommitment` on the c23 producer vs
+`--legacy-utxo-commitment` over the read-only zd chainstate at one agreed
+height; zd replies are JSON-RPC envelopes, c23 replies are flat — the
+script parses each correctly). This is the byte-level C8 evidence the
+height-only live parity service cannot provide; rerun on the linger
+cadence and keep the transcript.
+
 **Check this before diagnosing anything live:**
 
 ```bash
