@@ -40,6 +40,48 @@
  *   cannot create a replacement key implicitly, and no successor may
  *   reference a revoked binding. Both rules are enforced by
  *   vcs_zcode_contributor_binding_validate_successor().
+ *
+ * ── contributor_binding.v2 (three-signature rotation + delayed recovery) ──
+ *
+ * v2 strengthens rotation and runs ALONGSIDE v1: the v1 codec, semantics,
+ * and KAT vectors above are frozen for compatibility and never altered.
+ *
+ * Wire v2 (exact, fixed width, little-endian integers):
+ *   body (192 bytes): the v1 body fields with schema_version == 2, magic
+ *     {'Z','C','B','N','D','2','\r','\n'}, and one appended field:
+ *       activation_unix             8   0 for all ops except RECOVER
+ *   zid_signature                  64   Ed25519 over body_root_v2
+ *   zcl_current_signature          64   secp256k1 r||s low-S over body_root_v2
+ *   zcl_new_signature              64   secp256k1 r||s low-S over body_root_v2
+ * Total wire: 384 bytes. Domains:
+ *   body_root = SHA3-256("zcl.zcode.contributor_binding.v2" || NUL || body)
+ *   root      = SHA3-256("zcl.zcode.contributor_binding.root.v2" || NUL ||
+ *               wire)
+ * All three signatures sign the same body_root statement.
+ *
+ * Per-operation signature slots:
+ *   ACTIVE:  BOTH zcl slots signed by the initial zcl key.
+ *   ROTATE:  current slot signed by the OLD key (the prior link's
+ *            zcl_pubkey), new slot by the NEW key (this link's zcl_pubkey) —
+ *            a normal rotation proves control of three keys: ZID + old ZCL +
+ *            new ZCL.
+ *   REVOKE:  keeps the retiring key in zcl_pubkey; current slot signed by
+ *            it; new slot MUST be 64 zero bytes. Terminal as in v1.
+ *   RECOVER: the lost-key path. The old key is presumed lost, so the current
+ *            slot MUST be 64 zero bytes; the new slot is signed by the new
+ *            zcl_pubkey. activation_unix must be at least
+ *            VCS_ZCODE_BINDING_RECOVERY_DELAY_SECS after issued_unix, and
+ *            the link is not effective until now >= activation_unix
+ *            (ERR_RECOVERY_PENDING). This delay is the window in which the
+ *            legitimate owner can still revoke with the old key.
+ * A slot that must be signed carries a non-zero signature; a slot that must
+ * be zero carries 64 zero bytes — any other shape is ERR_SIG_SLOT.
+ *
+ * Retired-key reuse ban (vcs_zcode_contributor_binding_validate_chain_v2):
+ * every zcl_pubkey retired by a ROTATE, revoked by a REVOKE, or abandoned
+ * by a RECOVER is permanently banned from reappearing as the zcl_pubkey of
+ * any later link (ERR_RETIRED_KEY_REUSE) — a retired key must never quietly
+ * return to control the chain.
  */
 
 #ifndef ZCL_VCS_ZCODE_CONTRIBUTOR_BINDING_H
@@ -57,10 +99,25 @@
 #define VCS_ZCODE_CONTRIBUTOR_BINDING_BODY_BYTES 184u
 #define VCS_ZCODE_CONTRIBUTOR_BINDING_WIRE_BYTES 312u
 
+#define VCS_ZCODE_CONTRIBUTOR_BINDING_V2_VERSION 2u
+#define VCS_ZCODE_CONTRIBUTOR_BINDING_V2_DOMAIN \
+    "zcl.zcode.contributor_binding.v2"
+#define VCS_ZCODE_CONTRIBUTOR_BINDING_V2_ROOT_DOMAIN \
+    "zcl.zcode.contributor_binding.root.v2"
+
+#define VCS_ZCODE_CONTRIBUTOR_BINDING_V2_BODY_BYTES 192u
+#define VCS_ZCODE_CONTRIBUTOR_BINDING_V2_WIRE_BYTES 384u
+
+/* Minimum wall-clock delay between a RECOVER link's issued_unix and its
+ * activation_unix: 7 days. The legitimate owner can still revoke with the
+ * old key inside this window. */
+#define VCS_ZCODE_BINDING_RECOVERY_DELAY_SECS (7LL * 86400LL)
+
 enum vcs_zcode_binding_operation {
     VCS_ZCODE_BINDING_ACTIVE = 1,
     VCS_ZCODE_BINDING_ROTATE = 2,
     VCS_ZCODE_BINDING_REVOKE = 3,
+    VCS_ZCODE_BINDING_RECOVER = 4, /* v2 only; v1 validation rejects it */
 };
 
 enum vcs_zcode_binding_error {
@@ -85,6 +142,11 @@ enum vcs_zcode_binding_error {
     VCS_ZCODE_BINDING_ERR_REVOKED,
     VCS_ZCODE_BINDING_ERR_LINKAGE,
     VCS_ZCODE_BINDING_ERR_NOT_YET_VALID,
+    /* v2 additions — append-only, never renumber. */
+    VCS_ZCODE_BINDING_ERR_RECOVERY_DELAY,
+    VCS_ZCODE_BINDING_ERR_RECOVERY_PENDING,
+    VCS_ZCODE_BINDING_ERR_RETIRED_KEY_REUSE,
+    VCS_ZCODE_BINDING_ERR_SIG_SLOT,
 };
 
 const char *vcs_zcode_binding_error_string(enum vcs_zcode_binding_error error);
@@ -162,5 +224,111 @@ enum vcs_zcode_binding_error vcs_zcode_contributor_binding_verify(
 enum vcs_zcode_binding_error vcs_zcode_contributor_binding_validate_successor(
     const struct vcs_zcode_contributor_binding_v1 *prior,
     const struct vcs_zcode_contributor_binding_v1 *next, int64_t now_unix);
+
+/* ── contributor_binding.v2 ───────────────────────────────────────────── */
+
+struct vcs_zcode_contributor_binding_v2 {
+    uint16_t schema_version;
+    uint8_t network_genesis_root[32];
+    uint8_t zid_pubkey[32];
+    uint8_t zcl_pubkey[33];
+    uint8_t zcl_key_id[20];
+    uint8_t predecessor_root[32];
+    uint64_t sequence;
+    int64_t issued_unix;
+    int64_t expires_unix;
+    uint8_t operation;
+    int64_t activation_unix; /* 0 for all ops except RECOVER */
+    uint8_t zid_signature[64];
+    uint8_t zcl_current_signature[64];
+    uint8_t zcl_new_signature[64];
+};
+
+/* Structural validation, v2 signature-slot shape included: every slot that
+ * must be signed must be non-zero, every slot that must be zero must be 64
+ * zero bytes (ERR_SIG_SLOT otherwise), and a RECOVER activation must be at
+ * least VCS_ZCODE_BINDING_RECOVERY_DELAY_SECS after issued_unix
+ * (ERR_RECOVERY_DELAY). validate_at() additionally rejects use before
+ * issued_unix (NOT_YET_VALID) or at/after expires_unix (EXPIRED). Neither
+ * checks the signatures cryptographically — that is verify()'s job. */
+enum vcs_zcode_binding_error vcs_zcode_contributor_binding_validate_v2(
+    const struct vcs_zcode_contributor_binding_v2 *binding);
+enum vcs_zcode_binding_error vcs_zcode_contributor_binding_validate_at_v2(
+    const struct vcs_zcode_contributor_binding_v2 *binding, int64_t now_unix);
+
+enum vcs_zcode_binding_error vcs_zcode_contributor_binding_serialize_v2(
+    const struct vcs_zcode_contributor_binding_v2 *binding,
+    uint8_t out[VCS_ZCODE_CONTRIBUTOR_BINDING_V2_WIRE_BYTES]);
+/* Exact-size only: a short or trailing wire is WIRE_SIZE, a wrong leading
+ * magic is WIRE_MAGIC, an unsupported schema_version is VERSION. On any
+ * error *out is zeroed. */
+enum vcs_zcode_binding_error vcs_zcode_contributor_binding_parse_v2(
+    const uint8_t *wire, size_t wire_len,
+    struct vcs_zcode_contributor_binding_v2 *out);
+
+/* The 32-byte statement all three signatures sign (body only). */
+enum vcs_zcode_binding_error vcs_zcode_contributor_binding_body_root_v2(
+    const struct vcs_zcode_contributor_binding_v2 *binding, uint8_t out[32]);
+/* The binding's own id: commits the full signed wire. A successor's
+ * predecessor_root must equal this value for its predecessor. */
+enum vcs_zcode_binding_error vcs_zcode_contributor_binding_root_v2(
+    const struct vcs_zcode_contributor_binding_v2 *binding, uint8_t out[32]);
+
+/* Sign the v2 body root with the ZID key plus the operation's zcl slots.
+ * The ZID public key is re-derived from zid_secret and must equal both
+ * zid_pubkey and binding->zid_pubkey (KEY_MISMATCH otherwise). Per
+ * operation:
+ *   ACTIVE:  both secrets required, both must derive binding->zcl_pubkey.
+ *   ROTATE:  both secrets required; new_zcl_secret must derive
+ *            binding->zcl_pubkey (current_zcl_secret is the old key, pinned
+ *            by the chain gate against the predecessor, not here).
+ *   REVOKE:  current_zcl_secret required and must derive the embedded
+ *            (retiring) key; new_zcl_secret is ignored and the new slot is
+ *            zeroed.
+ *   RECOVER: current_zcl_secret MUST be NULL (the old key is presumed lost)
+ *            and the current slot is zeroed; new_zcl_secret must derive
+ *            binding->zcl_pubkey.
+ * The secp256k1 signatures are normalized to low-S before serialization,
+ * so sealing is byte deterministic. */
+enum vcs_zcode_binding_error vcs_zcode_contributor_binding_seal_v2(
+    struct vcs_zcode_contributor_binding_v2 *binding,
+    const uint8_t zid_secret[32], const uint8_t zid_pubkey[32],
+    const uint8_t current_zcl_secret[32], const uint8_t new_zcl_secret[32]);
+
+/* Full standalone verification: structural validity at now_unix, the
+ * expected network genesis root and ZID master key are pinned, and the
+ * signatures verify over the body root. The ZID signature verifies under
+ * the embedded zid_pubkey; the new slot verifies under the embedded
+ * zcl_pubkey where it must be signed; the current slot verifies under the
+ * embedded key for ACTIVE/REVOKE. A standalone ROTATE's current slot signs
+ * under the PREDECESSOR's key, which is not in the binding — only the
+ * chain gate (validate_successor_v2) checks that slot. */
+enum vcs_zcode_binding_error vcs_zcode_contributor_binding_verify_v2(
+    const struct vcs_zcode_contributor_binding_v2 *binding,
+    const uint8_t expected_network_genesis[32],
+    const uint8_t expected_zid_pubkey[32], int64_t now_unix);
+
+/* Chain gate, v2: every v1 successor rule carried forward (same network
+ * and ZID; prior not revoked; next not ACTIVE; predecessor_root ==
+ * root_v2(prior); exact +1 sequence; strictly increasing issued_unix;
+ * ROTATE must change the zcl key; REVOKE must keep it) plus the v2 rules:
+ * RECOVER must also change the key, a RECOVER successor requires now >=
+ * next->activation_unix (ERR_RECOVERY_PENDING), and the per-operation
+ * signature slots verify — a ROTATE's current slot under the PRIOR link's
+ * zcl_pubkey, its new slot under the new key; a REVOKE's current slot
+ * under the retiring key; a RECOVER's new slot under the new key. */
+enum vcs_zcode_binding_error
+vcs_zcode_contributor_binding_validate_successor_v2(
+    const struct vcs_zcode_contributor_binding_v2 *prior,
+    const struct vcs_zcode_contributor_binding_v2 *next, int64_t now_unix);
+
+/* Whole-chain gate: links[0] must be ACTIVE (ERR_OPERATION otherwise),
+ * every adjacent pair must pass validate_successor_v2, and the retired-key
+ * reuse ban holds: any zcl_pubkey retired by a ROTATE, revoked by a
+ * REVOKE, or abandoned by a RECOVER must never reappear as the zcl_pubkey
+ * of a later link (ERR_RETIRED_KEY_REUSE). */
+enum vcs_zcode_binding_error vcs_zcode_contributor_binding_validate_chain_v2(
+    const struct vcs_zcode_contributor_binding_v2 *links, size_t count,
+    int64_t now_unix);
 
 #endif /* ZCL_VCS_ZCODE_CONTRIBUTOR_BINDING_H */

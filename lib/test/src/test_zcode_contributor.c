@@ -1392,6 +1392,438 @@ static int t_binding_root_commitment(void)
     return failures;
 }
 
+/* ── contributor_binding.v2 ─────────────────────────────────────────────
+ * Three-signature rotation, delayed RECOVER, retired-key reuse ban, and
+ * byte-exact KATs. Same fixture style as the v1 tests above. */
+
+/* Pinned golden vectors for the ACTIVE v2 fixture below (net[i]=0xA0+i,
+ * ZID seed 0x11, ZCL seed 0x22 signing BOTH slots, seq 1,
+ * ZCB_ISSUED/ZCB_EXPIRES, activation 0). Filled from the first real run
+ * after the computed values proved byte-identical across three runs
+ * (deterministic RFC6979 + Ed25519). */
+#define ZCB2_KAT_BODY_HEX "5a43424e44320d0a0200a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfd04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c977873702466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27531260aa2a199e228c537dfa42c82bea2c7c1f4d0000000000000000000000000000000000000000000000000000000000000000010000000000000080ea8b68000000008077b36800000000010000000000000000"
+#define ZCB2_KAT_WIRE_HEX "5a43424e44320d0a0200a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfd04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c977873702466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27531260aa2a199e228c537dfa42c82bea2c7c1f4d0000000000000000000000000000000000000000000000000000000000000000010000000000000080ea8b68000000008077b368000000000100000000000000008c0d6cc94e4d382ecd6ebdd7033e751cd5c64f61729a5bb2bcde12a204dd26efcaf856f7c557b9edb0974f3d915a23971dbd15e1dd4c89a51ee92dd8d00d6d0d9d0ee17b5880e0f5f78ccadab954a0a0015ccc3447ea72c8eb2309bb4e6694a5317d9b8e8c65e51a59b6435af5f61693d6597f705a8e202aff35912edf67d7589d0ee17b5880e0f5f78ccadab954a0a0015ccc3447ea72c8eb2309bb4e6694a5317d9b8e8c65e51a59b6435af5f61693d6597f705a8e202aff35912edf67d758"
+#define ZCB2_KAT_BODY_ROOT_HEX "ebdbd8953d96472c19fc949f3f8e7e9077d12ba7a9b6c92cc49e43f94a81293e"
+#define ZCB2_KAT_FULL_ROOT_HEX "6fe433f34dae5767bdf51322c929f7cdfba5e138b41671941a90486d54f88343"
+
+/* An unsigned ACTIVE v2 binding with the canonical fixture fields. */
+static bool zcb2_active(struct vcs_zcode_contributor_binding_v2 *b,
+                        const uint8_t net[32], const uint8_t zid_pk[32],
+                        uint8_t zcl_seed)
+{
+    memset(b, 0, sizeof(*b));
+    b->schema_version = VCS_ZCODE_CONTRIBUTOR_BINDING_V2_VERSION;
+    memcpy(b->network_genesis_root, net, 32);
+    memcpy(b->zid_pubkey, zid_pk, 32);
+    if (!zcb_fill_key(zcl_seed, b->zcl_pubkey, b->zcl_key_id)) return false;
+    b->sequence = 1;
+    b->issued_unix = ZCB_ISSUED;
+    b->expires_unix = ZCB_EXPIRES;
+    b->operation = VCS_ZCODE_BINDING_ACTIVE;
+    b->activation_unix = 0;
+    return true;
+}
+
+/* Seed 0 means "no secret" (NULL) — RECOVER has no current secret, REVOKE
+ * has no new secret. */
+static bool zcb2_seal(struct vcs_zcode_contributor_binding_v2 *b,
+                      const uint8_t zid_sk[32], const uint8_t zid_pk[32],
+                      uint8_t current_seed, uint8_t new_seed)
+{
+    uint8_t current_sk[32], new_sk[32];
+    memset(current_sk, current_seed, sizeof(current_sk));
+    memset(new_sk, new_seed, sizeof(new_sk));
+    return vcs_zcode_contributor_binding_seal_v2(
+               b, zid_sk, zid_pk, current_seed ? current_sk : NULL,
+               new_seed ? new_sk : NULL) == VCS_ZCODE_BINDING_OK;
+}
+
+/* A sealed v2 successor of prior. ROTATE/RECOVER install the key derived
+ * from new_zcl_seed; REVOKE keeps prior's. current_seed is the OLD zcl
+ * seed for ROTATE, the retiring seed for REVOKE, 0 for RECOVER.
+ * activation is only meaningful for RECOVER. */
+static bool zcb2_successor(struct vcs_zcode_contributor_binding_v2 *next,
+                           const struct vcs_zcode_contributor_binding_v2 *prior,
+                           uint8_t op, uint8_t current_seed,
+                           uint8_t new_zcl_seed, const uint8_t zid_sk[32],
+                           int64_t issued, int64_t activation)
+{
+    *next = *prior;
+    memset(next->zid_signature, 0, sizeof(next->zid_signature));
+    memset(next->zcl_current_signature, 0,
+           sizeof(next->zcl_current_signature));
+    memset(next->zcl_new_signature, 0, sizeof(next->zcl_new_signature));
+    next->operation = op;
+    next->sequence = prior->sequence + 1;
+    next->issued_unix = issued;
+    next->expires_unix = issued + 30LL * 86400LL;
+    next->activation_unix = activation;
+    if (vcs_zcode_contributor_binding_root_v2(prior,
+                                              next->predecessor_root) !=
+        VCS_ZCODE_BINDING_OK)
+        return false;
+    if ((op == VCS_ZCODE_BINDING_ROTATE || op == VCS_ZCODE_BINDING_RECOVER) &&
+        !zcb_fill_key(new_zcl_seed, next->zcl_pubkey, next->zcl_key_id))
+        return false;
+    return zcb2_seal(next, zid_sk, prior->zid_pubkey, current_seed,
+                     new_zcl_seed);
+}
+
+static int t_binding_v2_kat(void)
+{
+    int failures = 0;
+    uint8_t net[32], zid_pk[32], zid_sk[32];
+    zcb_fixture_net(net);
+    zcb_fixture_zid(zid_pk, zid_sk);
+    struct vcs_zcode_contributor_binding_v2 b;
+    ZC4_CHECK("kat2: fixture seals", zcb2_active(&b, net, zid_pk, 0x22) &&
+              zcb2_seal(&b, zid_sk, zid_pk, 0x22, 0x22));
+
+    uint8_t wire[VCS_ZCODE_CONTRIBUTOR_BINDING_V2_WIRE_BYTES];
+    uint8_t body[VCS_ZCODE_CONTRIBUTOR_BINDING_V2_BODY_BYTES];
+    uint8_t body_root[32], full_root[32];
+    char hex[2 * VCS_ZCODE_CONTRIBUTOR_BINDING_V2_WIRE_BYTES + 1];
+    bool ok = vcs_zcode_contributor_binding_serialize_v2(&b, wire) ==
+              VCS_ZCODE_BINDING_OK;
+    ok = ok && vcs_zcode_contributor_binding_body_root_v2(&b, body_root) ==
+                   VCS_ZCODE_BINDING_OK;
+    ok = ok && vcs_zcode_contributor_binding_root_v2(&b, full_root) ==
+                   VCS_ZCODE_BINDING_OK;
+    ZC4_CHECK("kat2: serialize + roots", ok);
+    memcpy(body, wire, VCS_ZCODE_CONTRIBUTOR_BINDING_V2_BODY_BYTES);
+
+    zcb_hex(body, sizeof(body), hex);
+    ZC4_CHECK("kat2: body wire golden",
+              zcb_kat_pin("v2-body", ZCB2_KAT_BODY_HEX, hex));
+    zcb_hex(wire, sizeof(wire), hex);
+    ZC4_CHECK("kat2: full wire golden",
+              zcb_kat_pin("v2-wire", ZCB2_KAT_WIRE_HEX, hex));
+    zcb_hex(body_root, sizeof(body_root), hex);
+    ZC4_CHECK("kat2: body root golden",
+              zcb_kat_pin("v2-body_root", ZCB2_KAT_BODY_ROOT_HEX, hex));
+    zcb_hex(full_root, sizeof(full_root), hex);
+    ZC4_CHECK("kat2: full root golden",
+              zcb_kat_pin("v2-full_root", ZCB2_KAT_FULL_ROOT_HEX, hex));
+    return failures;
+}
+
+static int t_binding_v2_roundtrip(void)
+{
+    int failures = 0;
+    uint8_t net[32], zid_pk[32], zid_sk[32];
+    zcb_fixture_net(net);
+    zcb_fixture_zid(zid_pk, zid_sk);
+    struct vcs_zcode_contributor_binding_v2 b;
+    ZC4_CHECK("roundtrip2: fixture seals",
+              zcb2_active(&b, net, zid_pk, 0x22) &&
+              zcb2_seal(&b, zid_sk, zid_pk, 0x22, 0x22));
+    uint8_t wire[VCS_ZCODE_CONTRIBUTOR_BINDING_V2_WIRE_BYTES];
+    ZC4_CHECK("roundtrip2: serialize",
+              vcs_zcode_contributor_binding_serialize_v2(&b, wire) ==
+                  VCS_ZCODE_BINDING_OK);
+
+    struct vcs_zcode_contributor_binding_v2 back;
+    ZC4_CHECK("roundtrip2: parse == struct",
+              vcs_zcode_contributor_binding_parse_v2(wire, sizeof(wire),
+                                                     &back) ==
+                  VCS_ZCODE_BINDING_OK &&
+              memcmp(&b, &back, sizeof(b)) == 0);
+    uint8_t wire2[VCS_ZCODE_CONTRIBUTOR_BINDING_V2_WIRE_BYTES];
+    ZC4_CHECK("roundtrip2: reserialize == wire",
+              vcs_zcode_contributor_binding_serialize_v2(&back, wire2) ==
+                  VCS_ZCODE_BINDING_OK &&
+              memcmp(wire, wire2, sizeof(wire)) == 0);
+
+    /* Exact-size only: 384 bytes, no shorter, no longer. */
+    static const size_t bad_lens[] = {0u, 191u, 192u, 383u};
+    bool all_bad = true;
+    for (size_t i = 0; i < sizeof(bad_lens) / sizeof(bad_lens[0]); i++)
+        all_bad = all_bad &&
+            vcs_zcode_contributor_binding_parse_v2(wire, bad_lens[i],
+                                                   &back) ==
+                VCS_ZCODE_BINDING_ERR_WIRE_SIZE;
+    ZC4_CHECK("roundtrip2: short wires rejected", all_bad);
+    uint8_t long_wire[VCS_ZCODE_CONTRIBUTOR_BINDING_V2_WIRE_BYTES + 1];
+    memcpy(long_wire, wire, sizeof(wire));
+    long_wire[sizeof(wire)] = 0x00;
+    ZC4_CHECK("roundtrip2: trailing byte rejected (385)",
+              vcs_zcode_contributor_binding_parse_v2(long_wire,
+                                                     sizeof(long_wire),
+                                                     &back) ==
+                  VCS_ZCODE_BINDING_ERR_WIRE_SIZE);
+
+    uint8_t bad[VCS_ZCODE_CONTRIBUTOR_BINDING_V2_WIRE_BYTES];
+    memcpy(bad, wire, sizeof(bad));
+    bad[0] ^= 0x01;
+    ZC4_CHECK("roundtrip2: wrong magic",
+              vcs_zcode_contributor_binding_parse_v2(bad, sizeof(bad),
+                                                     &back) ==
+                  VCS_ZCODE_BINDING_ERR_WIRE_MAGIC);
+    memcpy(bad, wire, sizeof(bad));
+    bad[8] = 0x01; /* schema_version 1 in a v2 wire */
+    ZC4_CHECK("roundtrip2: wrong version",
+              vcs_zcode_contributor_binding_parse_v2(bad, sizeof(bad),
+                                                     &back) ==
+                  VCS_ZCODE_BINDING_ERR_VERSION);
+    ZC4_CHECK("roundtrip2: null arguments",
+              vcs_zcode_contributor_binding_parse_v2(NULL, sizeof(wire),
+                                                     &back) ==
+                  VCS_ZCODE_BINDING_ERR_NULL &&
+              vcs_zcode_contributor_binding_parse_v2(wire, sizeof(wire),
+                                                     NULL) ==
+                  VCS_ZCODE_BINDING_ERR_NULL);
+    return failures;
+}
+
+static int t_binding_v2_active(void)
+{
+    int failures = 0;
+    uint8_t net[32], zid_pk[32], zid_sk[32];
+    zcb_fixture_net(net);
+    zcb_fixture_zid(zid_pk, zid_sk);
+    struct vcs_zcode_contributor_binding_v2 b;
+    ZC4_CHECK("active2: fixture seals", zcb2_active(&b, net, zid_pk, 0x22) &&
+              zcb2_seal(&b, zid_sk, zid_pk, 0x22, 0x22));
+    /* Both slots signed by the initial key, both verify standalone. */
+    ZC4_CHECK("active2: verify ok",
+              vcs_zcode_contributor_binding_verify_v2(&b, net, zid_pk,
+                                                      ZCB_ISSUED + 1) ==
+                  VCS_ZCODE_BINDING_OK);
+
+    struct vcs_zcode_contributor_binding_v2 x = b;
+    memset(x.zcl_current_signature, 0, sizeof(x.zcl_current_signature));
+    ZC4_CHECK("active2: zeroed current slot rejected",
+              vcs_zcode_contributor_binding_validate_v2(&x) ==
+                  VCS_ZCODE_BINDING_ERR_SIG_SLOT);
+    x = b;
+    memset(x.zcl_new_signature, 0, sizeof(x.zcl_new_signature));
+    ZC4_CHECK("active2: zeroed new slot rejected",
+              vcs_zcode_contributor_binding_validate_v2(&x) ==
+                  VCS_ZCODE_BINDING_ERR_SIG_SLOT);
+    x = b;
+    x.activation_unix = ZCB_ISSUED + 1; /* only RECOVER carries one */
+    ZC4_CHECK("active2: nonzero activation rejected",
+              vcs_zcode_contributor_binding_validate_v2(&x) ==
+                  VCS_ZCODE_BINDING_ERR_OPERATION);
+    x = b;
+    x.zcl_new_signature[0] ^= 0x01;
+    ZC4_CHECK("active2: tampered new slot rejected",
+              vcs_zcode_contributor_binding_verify_v2(&x, net, zid_pk,
+                                                      ZCB_ISSUED + 1) ==
+                  VCS_ZCODE_BINDING_ERR_SIGNATURE);
+    return failures;
+}
+
+static int t_binding_v2_rotate(void)
+{
+    int failures = 0;
+    uint8_t net[32], zid_pk[32], zid_sk[32];
+    zcb_fixture_net(net);
+    zcb_fixture_zid(zid_pk, zid_sk);
+    const int64_t now = ZCB_ISSUED + 100;
+    struct vcs_zcode_contributor_binding_v2 active, rotate;
+    ZC4_CHECK("rotate2: active seals",
+              zcb2_active(&active, net, zid_pk, 0x22) &&
+              zcb2_seal(&active, zid_sk, zid_pk, 0x22, 0x22));
+    /* Normal rotation: current slot by the OLD key (0x22), new slot by the
+     * NEW key (0x33), ZID over both. */
+    ZC4_CHECK("rotate2: rotate seals",
+              zcb2_successor(&rotate, &active, VCS_ZCODE_BINDING_ROTATE,
+                             0x22, 0x33, zid_sk, ZCB_ISSUED + 50, 0));
+    ZC4_CHECK("rotate2: valid rotation",
+              vcs_zcode_contributor_binding_validate_successor_v2(
+                  &active, &rotate, now) == VCS_ZCODE_BINDING_OK);
+    ZC4_CHECK("rotate2: new key verifies standalone",
+              vcs_zcode_contributor_binding_verify_v2(&rotate, net, zid_pk,
+                                                      now) ==
+                  VCS_ZCODE_BINDING_OK);
+
+    /* Both slots sign the same body_root, so a slot swap plants each
+     * signature in the wrong slot: the "old-key slot" now verifies under
+     * the NEW key only, and vice versa. */
+    struct vcs_zcode_contributor_binding_v2 x = rotate;
+    memcpy(x.zcl_current_signature, rotate.zcl_new_signature, 64);
+    ZC4_CHECK("rotate2: old-key slot signed by NEW key rejected",
+              vcs_zcode_contributor_binding_validate_successor_v2(
+                  &active, &x, now) == VCS_ZCODE_BINDING_ERR_SIGNATURE);
+    x = rotate;
+    memcpy(x.zcl_new_signature, rotate.zcl_current_signature, 64);
+    ZC4_CHECK("rotate2: new slot signed by OLD key rejected",
+              vcs_zcode_contributor_binding_validate_successor_v2(
+                  &active, &x, now) == VCS_ZCODE_BINDING_ERR_SIGNATURE);
+    x = rotate;
+    memset(x.zcl_current_signature, 0, sizeof(x.zcl_current_signature));
+    ZC4_CHECK("rotate2: zeroed current slot rejected",
+              vcs_zcode_contributor_binding_validate_v2(&x) ==
+                  VCS_ZCODE_BINDING_ERR_SIG_SLOT);
+    return failures;
+}
+
+static int t_binding_v2_recover(void)
+{
+    int failures = 0;
+    uint8_t net[32], zid_pk[32], zid_sk[32];
+    zcb_fixture_net(net);
+    zcb_fixture_zid(zid_pk, zid_sk);
+    struct vcs_zcode_contributor_binding_v2 active, recover;
+    ZC4_CHECK("recover2: active seals",
+              zcb2_active(&active, net, zid_pk, 0x22) &&
+              zcb2_seal(&active, zid_sk, zid_pk, 0x22, 0x22));
+    /* Lost key 0x22: no current secret, new key 0x33, activation a full
+     * recovery delay after issue. */
+    const int64_t rec_issued = ZCB_ISSUED + 50;
+    const int64_t rec_activation =
+        rec_issued + VCS_ZCODE_BINDING_RECOVERY_DELAY_SECS;
+    ZC4_CHECK("recover2: recover seals",
+              zcb2_successor(&recover, &active, VCS_ZCODE_BINDING_RECOVER,
+                             0, 0x33, zid_sk, rec_issued, rec_activation));
+    ZC4_CHECK("recover2: structurally valid",
+              vcs_zcode_contributor_binding_validate_v2(&recover) ==
+                  VCS_ZCODE_BINDING_OK);
+
+    /* Activation too close to issue: the owner needs the full window. */
+    struct vcs_zcode_contributor_binding_v2 x = recover;
+    x.activation_unix =
+        rec_issued + VCS_ZCODE_BINDING_RECOVERY_DELAY_SECS - 1;
+    ZC4_CHECK("recover2: short delay rejected",
+              vcs_zcode_contributor_binding_validate_v2(&x) ==
+                  VCS_ZCODE_BINDING_ERR_RECOVERY_DELAY);
+
+    /* A valid RECOVER is not effective before its activation time. */
+    ZC4_CHECK("recover2: pending before activation",
+              vcs_zcode_contributor_binding_validate_successor_v2(
+                  &active, &recover, rec_activation - 1) ==
+                  VCS_ZCODE_BINDING_ERR_RECOVERY_PENDING);
+    ZC4_CHECK("recover2: effective at activation",
+              vcs_zcode_contributor_binding_validate_successor_v2(
+                  &active, &recover, rec_activation) ==
+                  VCS_ZCODE_BINDING_OK);
+    ZC4_CHECK("recover2: effective after activation",
+              vcs_zcode_contributor_binding_validate_successor_v2(
+                  &active, &recover, rec_activation + 1000) ==
+                  VCS_ZCODE_BINDING_OK);
+
+    /* The current slot must stay zero — the old key is presumed lost, so
+     * nothing may be presented on its behalf. */
+    x = recover;
+    x.zcl_current_signature[0] = 0x01;
+    ZC4_CHECK("recover2: non-zero current slot rejected",
+              vcs_zcode_contributor_binding_validate_v2(&x) ==
+                  VCS_ZCODE_BINDING_ERR_SIG_SLOT);
+
+    /* Recovering to the same key is not a recovery. */
+    struct vcs_zcode_contributor_binding_v2 same;
+    bool seal_ok = zcb2_successor(&same, &active, VCS_ZCODE_BINDING_RECOVER,
+                                  0, 0x22, zid_sk, rec_issued,
+                                  rec_activation);
+    ZC4_CHECK("recover2: same-key recover seals", seal_ok);
+    ZC4_CHECK("recover2: same-key recover rejected",
+              vcs_zcode_contributor_binding_validate_successor_v2(
+                  &active, &same, rec_activation) ==
+                  VCS_ZCODE_BINDING_ERR_LINKAGE);
+    return failures;
+}
+
+static int t_binding_v2_time_order(void)
+{
+    int failures = 0;
+    uint8_t net[32], zid_pk[32], zid_sk[32];
+    zcb_fixture_net(net);
+    zcb_fixture_zid(zid_pk, zid_sk);
+    const int64_t now = ZCB_ISSUED + 100;
+    struct vcs_zcode_contributor_binding_v2 active, rotate;
+    ZC4_CHECK("time2: chain seals",
+              zcb2_active(&active, net, zid_pk, 0x22) &&
+              zcb2_seal(&active, zid_sk, zid_pk, 0x22, 0x22) &&
+              zcb2_successor(&rotate, &active, VCS_ZCODE_BINDING_ROTATE,
+                             0x22, 0x33, zid_sk, ZCB_ISSUED + 50, 0));
+    /* Issue time must strictly increase: equal and regressed are both
+     * reorderings, not rotations. */
+    struct vcs_zcode_contributor_binding_v2 x = rotate;
+    x.issued_unix = active.issued_unix;
+    ZC4_CHECK("time2: equal issued_unix rejected",
+              vcs_zcode_contributor_binding_validate_successor_v2(
+                  &active, &x, now) == VCS_ZCODE_BINDING_ERR_TIME_ORDER);
+    x = rotate;
+    x.issued_unix = active.issued_unix - 5;
+    ZC4_CHECK("time2: regressed issued_unix rejected",
+              vcs_zcode_contributor_binding_validate_successor_v2(
+                  &active, &x, now) == VCS_ZCODE_BINDING_ERR_TIME_ORDER);
+    return failures;
+}
+
+static int t_binding_v2_chain(void)
+{
+    int failures = 0;
+    uint8_t net[32], zid_pk[32], zid_sk[32];
+    zcb_fixture_net(net);
+    zcb_fixture_zid(zid_pk, zid_sk);
+    const int64_t now = ZCB_ISSUED + 100;
+    struct vcs_zcode_contributor_binding_v2 a, rot_b, rot_c;
+    ZC4_CHECK("chain2: A seals",
+              zcb2_active(&a, net, zid_pk, 0x22) &&
+              zcb2_seal(&a, zid_sk, zid_pk, 0x22, 0x22));
+    ZC4_CHECK("chain2: A->ROT(B) seals",
+              zcb2_successor(&rot_b, &a, VCS_ZCODE_BINDING_ROTATE, 0x22,
+                             0x33, zid_sk, ZCB_ISSUED + 50, 0));
+    ZC4_CHECK("chain2: B->ROT(C) seals",
+              zcb2_successor(&rot_c, &rot_b, VCS_ZCODE_BINDING_ROTATE, 0x33,
+                             0x44, zid_sk, ZCB_ISSUED + 60, 0));
+    {
+        const struct vcs_zcode_contributor_binding_v2 chain[] = {a, rot_b,
+                                                                 rot_c};
+        ZC4_CHECK("chain2: A->ROT(B)->ROT(C) valid",
+                  vcs_zcode_contributor_binding_validate_chain_v2(
+                      chain, 3, now) == VCS_ZCODE_BINDING_OK);
+    }
+
+    /* The retired A key must never come back. */
+    struct vcs_zcode_contributor_binding_v2 rot_a_again;
+    ZC4_CHECK("chain2: B->ROT(A-key) seals",
+              zcb2_successor(&rot_a_again, &rot_b, VCS_ZCODE_BINDING_ROTATE,
+                             0x33, 0x22, zid_sk, ZCB_ISSUED + 60, 0));
+    {
+        const struct vcs_zcode_contributor_binding_v2 chain[] = {a, rot_b,
+                                                                 rot_a_again};
+        ZC4_CHECK("chain2: retired-key reuse banned",
+                  vcs_zcode_contributor_binding_validate_chain_v2(
+                      chain, 3, now) ==
+                      VCS_ZCODE_BINDING_ERR_RETIRED_KEY_REUSE);
+    }
+
+    /* Revocation is terminal: nothing may follow, not even an honest
+     * rotation sealed against the revoked link. */
+    struct vcs_zcode_contributor_binding_v2 revoke, after;
+    bool seal_ok = zcb2_successor(&revoke, &a, VCS_ZCODE_BINDING_REVOKE,
+                                  0x22, 0, zid_sk, ZCB_ISSUED + 50, 0) &&
+                   zcb2_successor(&after, &revoke, VCS_ZCODE_BINDING_ROTATE,
+                                  0x22, 0x33, zid_sk, ZCB_ISSUED + 60, 0);
+    ZC4_CHECK("chain2: A->REVOKE(A)->ROT(B) seals", seal_ok);
+    {
+        const struct vcs_zcode_contributor_binding_v2 chain[] = {a, revoke,
+                                                                 after};
+        ZC4_CHECK("chain2: rotation after revoke terminal",
+                  vcs_zcode_contributor_binding_validate_chain_v2(
+                      chain, 3, now) == VCS_ZCODE_BINDING_ERR_REVOKED);
+    }
+
+    /* A chain must open with ACTIVE. */
+    {
+        const struct vcs_zcode_contributor_binding_v2 chain[] = {rot_b,
+                                                                 rot_c};
+        ZC4_CHECK("chain2: chain not starting with ACTIVE rejected",
+                  vcs_zcode_contributor_binding_validate_chain_v2(
+                      chain, 2, now) == VCS_ZCODE_BINDING_ERR_OPERATION);
+    }
+    ZC4_CHECK("chain2: null and empty chains rejected",
+              vcs_zcode_contributor_binding_validate_chain_v2(NULL, 1,
+                                                              now) ==
+                  VCS_ZCODE_BINDING_ERR_NULL &&
+              vcs_zcode_contributor_binding_validate_chain_v2(&a, 0, now) ==
+                  VCS_ZCODE_BINDING_ERR_NULL);
+    return failures;
+}
+
 int test_zcode_contributor(void)
 {
     printf("\n=== zcode_contributor: identity + ZNAM pointers ===\n");
@@ -1409,6 +1841,13 @@ int test_zcode_contributor(void)
     failures += t_binding_expiry();
     failures += t_binding_chain();
     failures += t_binding_root_commitment();
+    failures += t_binding_v2_kat();
+    failures += t_binding_v2_roundtrip();
+    failures += t_binding_v2_active();
+    failures += t_binding_v2_rotate();
+    failures += t_binding_v2_recover();
+    failures += t_binding_v2_time_order();
+    failures += t_binding_v2_chain();
     printf("=== zcode_contributor complete: %d failure(s) ===\n", failures);
     return failures;
 }
