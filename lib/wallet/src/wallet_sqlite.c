@@ -42,20 +42,35 @@
  * probes never pass. */
 #define WSQL_CANARY_KEY "wallet_sqlite_canary"
 
-/* Bounded BEGIN IMMEDIATE retries for wallet_sqlite_flush_r under WAL
+/* Time-budgeted BEGIN IMMEDIATE retries for wallet_sqlite_flush_r under WAL
  * write-lock contention. Each attempt already blocks up to the connection
  * busy_timeout via the SQLite busy handler; between attempts we also sleep a
  * short backoff (releasing the shared connection mutex so other node.db
- * users make progress) and re-reset the cached statements. This bounds total
- * wait to ~attempts × busy_timeout — enough to outlast a bulk catch-up /
- * WAL-checkpoint window that momentarily holds the single WAL write lock,
- * without hanging a key persist indefinitely. Key persistence is rare and not
- * latency-critical, so a slower success beats stranding a keypool key in RAM
- * (which makes getnewaddress refuse to hand out an unsaved address). */
-#define WALLET_FLUSH_BEGIN_MAX_ATTEMPTS 8
+ * users make progress) and re-reset the cached statements. The budget is a
+ * WALL-CLOCK window, not an attempt count: an 8-attempt cap exhausted in ~1s
+ * against a sustained db-service job stream (each same-connection job makes
+ * BEGIN fail fast with SQLITE_ERROR "cannot start a transaction within a
+ * transaction", no busy-handler wait), which stranded the pre-broadcast
+ * change-key persist (the C5 PAY-stage race). 30 s mirrors the coins_view
+ * flush posture (coins_view_sqlite.c sqlite3_busy_timeout 30000) and gives
+ * the flush ~100+ chances to slip into a gap between jobs. Key persistence
+ * is rare and not latency-critical, so a slower success beats stranding a
+ * keypool key in RAM (which makes getnewaddress refuse to hand out an
+ * unsaved address). */
+#define WALLET_FLUSH_BEGIN_BUDGET_MS 30000
 
 /* Per-attempt backoff ceiling (ms) between BEGIN IMMEDIATE retries. */
 #define WALLET_FLUSH_BEGIN_BACKOFF_MAX_MS 250
+
+/* The live budget; tests override it via
+ * wallet_sqlite_flush_set_begin_budget_ms. Never read concurrently with a
+ * test override — production leaves it at the default. */
+static int64_t g_flush_begin_budget_ms = WALLET_FLUSH_BEGIN_BUDGET_MS;
+
+void wallet_sqlite_flush_set_begin_budget_ms(int64_t ms)
+{
+    g_flush_begin_budget_ms = (ms > 0) ? ms : WALLET_FLUSH_BEGIN_BUDGET_MS;
+}
 
 /* Counts rows dropped by read_keys_r because decode/decrypt failed.
  * Surfaced via wallet_sqlite_read_keys_corrupt_count() and, by
@@ -1297,7 +1312,8 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
      * the flush boundary release every cached VM before taking the write txn. */
     wallet_sqlite_reset_all_statements(ws);
 
-    /* Acquire the write transaction with BEGIN IMMEDIATE + a bounded retry.
+    /* Acquire the write transaction with BEGIN IMMEDIATE + a time-budgeted
+     * retry.
      *
      * The wallet shares the node.db file with the reducer/coins and projection
      * writers (separate WAL connections). During bulk catch-up a coins/reducer
@@ -1306,15 +1322,19 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
      * SQLITE_BUSY and strands keypool keys in RAM (getnewaddress then refuses,
      * correctly, to hand out an unsaved address). BEGIN IMMEDIATE takes the
      * write lock atomically at begin (each sqlite3_exec already blocks up to
-     * the connection busy_timeout via the busy handler); retrying the begin a
-     * few times waits out even a long commit window. Key persistence is rare
-     * and not latency-critical, so a slower success beats losing the key.
+     * the connection busy_timeout via the busy handler); retrying the begin
+     * until the wall-clock budget expires (WALLET_FLUSH_BEGIN_BUDGET_MS)
+     * waits out even a sustained stream of same-connection db-service jobs.
+     * Key persistence is rare and not latency-critical, so a slower success
+     * beats losing the key.
      *
      * The retry runs BEFORE taking w->cs, so a contended flush never blocks
      * other wallet operations on the wallet mutex, and this path is only ever
      * reached from RPC handlers — never the reducer drive — so waiting here
      * cannot violate the reducer lock-order invariant. */
     int rc = SQLITE_OK;
+    const int64_t begin_deadline =
+        platform_time_monotonic_ms() + g_flush_begin_budget_ms;
     for (int begin_attempt = 0; ; begin_attempt++) {
         char *begin_err = NULL;
         rc = sqlite3_exec(ws->db, "BEGIN IMMEDIATE", NULL, NULL, &begin_err);
@@ -1331,15 +1351,18 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
          * transaction within a transaction": same-connection contention,
          * reported outside the BUSY family. It is transient exactly like
          * BUSY (the competing COMMIT restores autocommit), so retry it on
-         * the same bounded schedule. A tx leaked by THIS thread would spin
-         * the full attempt budget and still fail — the same verdict as
-         * without this clause, only slower, and a leak is a bug either way. */
+         * the same time budget. A tx leaked by THIS thread would spin the
+         * full budget and still fail — the same verdict as without this
+         * clause, only slower, and a leak is a bug either way. */
         if (!busy && rc == SQLITE_ERROR && !sqlite3_get_autocommit(ws->db))
             busy = true;
-        if (busy && begin_attempt + 1 < WALLET_FLUSH_BEGIN_MAX_ATTEMPTS) {
-            LOG_WARN("wallet_sqlite",
-                     "flush: BEGIN IMMEDIATE busy (rc=%d), retry %d/%d",
-                     rc, begin_attempt + 1, WALLET_FLUSH_BEGIN_MAX_ATTEMPTS);
+        if (busy && platform_time_monotonic_ms() < begin_deadline) {
+            if (begin_attempt == 0 || (begin_attempt & 0x3F) == 0x3F)
+                LOG_WARN("wallet_sqlite",
+                         "flush: BEGIN IMMEDIATE busy (rc=%d), retrying "
+                         "(attempt %d, budget %lld ms)",
+                         rc, begin_attempt + 1,
+                         (long long)g_flush_begin_budget_ms);
             if (begin_err) sqlite3_free(begin_err);
             /* Backoff OUTSIDE the sqlite call so the shared connection mutex
              * is released between attempts (other node.db threads — the
@@ -1357,8 +1380,11 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
             continue;
         }
         struct zcl_result r = ZCL_ERR(WSQL_TXN_BEGIN_FAIL,
-            "flush: BEGIN IMMEDIATE failed after %d attempt(s): %s",
-            begin_attempt + 1, begin_err ? begin_err : "(unknown)");
+            "flush: BEGIN IMMEDIATE failed after %d attempt(s) over %lld ms: %s",
+            begin_attempt + 1,
+            (long long)(platform_time_monotonic_ms() -
+                        (begin_deadline - g_flush_begin_budget_ms)),
+            begin_err ? begin_err : "(unknown)");
         if (begin_err) sqlite3_free(begin_err);
         return wsql_fail(ws, r);
     }

@@ -600,8 +600,14 @@ size_t store_handle_request(const char *method, const char *path,
         }
 
     } else if (strncmp(path, "/store/access", 13) == 0) {
-        /* Token-gated content: /store/access?addr=t1...&token=ZCL23ACCESS */
-        char addr[128] = "", token[64] = "";
+        /* Token-gated content: /store/access?addr=t1...&token=ZCL23ACCESS
+         * The token buffer must hold the canonical 64-hex-char txid form
+         * PLUS the NUL — store_parse_query_field caps a field at
+         * out_max-1 chars, so token[64] silently truncates a full txid to
+         * 63 chars, the validator then rejects it as a truncated-txid look-
+         * alike, and the gate 400s every real token holder (the C5 collect
+         * wedge's second half). */
+        char addr[128] = "", token[65] = "";
         if (!store_parse_access_query(path, addr, sizeof(addr),
                                       token, sizeof(token))) {
             const char *err_body = "<h1>Invalid access request</h1>"

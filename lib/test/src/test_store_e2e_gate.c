@@ -454,6 +454,27 @@ int test_store_e2e_gate(void)
             }
         }
 
+        /* Regression (C5 collect wedge, second half): the canonical token
+         * key is a 64-hex-char txid. A token[64] route buffer truncated it
+         * to 63 chars (store_parse_query_field caps at out_max-1), the
+         * validator rejected the prefix as a truncated-txid look-alike, and
+         * the gate answered 400 to EVERY full-txid request — only the
+         * 11-char ticker form below ever worked. Assert a full-txid request
+         * now REACHES the gate: honest 403 balance denial, never the 400
+         * "Invalid access request" parse failure. */
+        if (ok) {
+            fail_step = "full-txid token reaches the gate";
+            n = store_handle_request("GET",
+                "/store/access?addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn"
+                "&token=44A568A771FE2BE73B7181483387EC331501DBCE329615139"
+                "AA1254FFECC7135",
+                NULL, 0, resp, sizeof(resp), datadir);
+            ok = n > 0;
+            ok = ok && strstr((char *)resp, "Invalid access request") == NULL;
+            ok = ok && strstr((char *)resp, "403 Forbidden") != NULL;
+            ok = ok && strstr((char *)resp, "Access Denied") != NULL;
+        }
+
         if (ok) {
             printf("OK (order=%lld payment=%s balance=10)\n",
                    (long long)summaries[0].id, order.payment_addr);

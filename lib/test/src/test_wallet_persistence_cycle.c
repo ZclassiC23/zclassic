@@ -351,10 +351,21 @@ static int test_flush_retries_under_same_connection_tx(void)
                == SQLITE_OK);
         ASSERT(sqlite3_get_autocommit(db) == 0);
 
-        /* Flush contends: it must fail cleanly after the bounded retries,
-         * never crash and never write partial state. */
+        /* Flush contends: it must fail cleanly after the time-budgeted
+         * retries, never crash and never write partial state. Shrink the
+         * production 30 s budget to 2500 ms so the test runs fast, and
+         * assert the wait actually TRACKS the budget — the pre-budget
+         * 8-attempt cap exhausted in ~810 ms of backoff here, which is
+         * exactly the C5 PAY-stage race (a sustained db-service job stream
+         * outlasted the cap and stranded the pre-broadcast change key). */
+        wallet_sqlite_flush_set_begin_budget_ms(2500);
+        int64_t t0 = platform_time_monotonic_ms();
         struct zcl_result busy = wallet_sqlite_flush_r(&ws, w);
+        int64_t waited_ms = platform_time_monotonic_ms() - t0;
+        wallet_sqlite_flush_set_begin_budget_ms(0); /* restore production */
         ASSERT(!busy.ok);
+        ASSERT(waited_ms >= 2000); /* budget governs, not the old 8-cap */
+        ASSERT(waited_ms < 6000);  /* and it still bounds the wait */
 
         /* Competing writer commits; the next flush must win and persist. */
         ASSERT(sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) == SQLITE_OK);
