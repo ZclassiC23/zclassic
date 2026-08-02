@@ -1689,6 +1689,7 @@ int main(int argc, char **argv)
     failures += test_bg_hash_verify_store_port();
     failures += test_bg_validation_store_port();
     failures += test_zslp_store_port();
+    { extern int test_zswap_quote(void); failures += test_zswap_quote(); }
     failures += test_make_lint_gates_family();
     failures += test_multisig();
     failures += test_rpc_auth_hardening();

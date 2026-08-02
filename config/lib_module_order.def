@@ -103,6 +103,7 @@ LIB_MODULE("framework")
 
 /* On-chain overlays and the top of the stack. */
 LIB_MODULE("zslp")
+LIB_MODULE("zswap")
 LIB_MODULE("znam")
 LIB_MODULE("zanc")
 LIB_MODULE("zdir")
