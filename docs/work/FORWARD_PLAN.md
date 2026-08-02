@@ -84,6 +84,26 @@
    compiled checkpoint) and (ii) fold-throughput headroom on slower hosts.
    A long-budget rerun (ZCL_CS_BUDGET_SECS=1500) records the honest
    weld-to-tip wall clock (~16-18 min expected at the observed rate).
+   (e) weld stopwatch #5 (same config as (d), ZCL_CS_BUDGET_SECS=1500):
+   **PASS at the long budget — H\* reached network_tip in 1040 s wall across
+   1 boot** (~17.5 min: 157 s weld + 145k-block fold at ~180 blk/s).
+   Artifact: build/c3-stopwatch/20260802T060932Z-*. The pipeline needs no
+   further mechanism work for the 600 s bar — only a SMALLER delta, i.e. a
+   fresh bundle near tip.
+   (f) the arbitrary-height export gap is CLOSED in code (62645e2b8):
+   `-full-fold` now runs the tip-bound producer-END sequence at completion
+   (boot_full_fold_conclude: receipt finalize at (tip, tip_hash) + earned
+   sovereign markers + the height-generic consensus_state_snapshot_export),
+   so one `-full-fold` run emits consensus-state-bundle-<tip>.sqlite — the
+   install side already welds any above-checkpoint height (assisted tier,
+   default ON). Producer lane in flight on a pinned binary (fresh datadir,
+   headers 3,192,879 from a read-only zd import, FULL-validation fold at
+   ~260 blk/s observed, ~3.5 h): at completion the tip bundle lands in the
+   producer datadir, and stopwatch #6 (fresh tip bundle + zd full-history
+   source, default 600 s budget) is the C3 PASS attempt. NOTE the receipt's
+   running-binary + epoch binding: the fold and the export must be ONE
+   binary in ONE session — never rebuild mid-lane; a code fix means a
+   fresh fold.
 2. **Canonical lane diagnosis/recovery** — read-only diagnosis is autonomous;
    restart, deploy, or datadir repair is owner-gated. Never use the canonical
    lane to test a Q1 change. A previously at-tip observation does not override
