@@ -233,6 +233,17 @@ Personalized PageRank is deterministic and discovery-only:
 - Never rank people. Never use rank, votes, balances, or service volume for
   proof acceptance, committee authority, or rewards.
 
+The pure S5 core is implemented in
+`lib/vcs/include/vcs/zcode_discovery_rank.h`. It accepts
+only full property roots, canonical citation edges, locally aggregated seed
+weights, and a filter-policy root. It normalizes all input order, rejects
+duplicate or missing graph members, conserves exactly `10^12` integer mass,
+and emits a canonical result ordered by mass then full root. The result binds
+the graph, seed set, algorithm version, filter policy, returned coverage mass,
+and truncation. Projection and the `zcode.science.rank` adapter remain
+S3-dependent; this core has no person, proof-acceptance, wallet, reward,
+database, network, or command input.
+
 ## Proof of contribution
 
 ### Bootstrap credential
@@ -351,12 +362,12 @@ projection rebuild checks where applicable, and no deployment.
 
 | ID | Landing unit | Dependency | State / owner |
 |---|---|---|---|
-| S0 | Freeze this specification and coordination boundaries | existing ZCODE foundation | in progress, primary |
-| S1 | Canonical science codecs, roots, cross-object validation, fixed benchmark/reproduction action identities | S0 | implemented 2026-08-02, primary; full gates pending |
-| S2 | Dual-signed `contributor_binding.v1`, rotation/revocation/network replay gates | S0 | implemented 2026-08-02, remote coder; focused tests green, full gates pending |
+| S0 | Freeze this specification and coordination boundaries | existing ZCODE foundation | complete 2026-08-02, primary |
+| S1 | Canonical science codecs, roots, cross-object validation, fixed benchmark/reproduction action identities | S0 | implemented and gate-verified 2026-08-02, primary |
+| S2 | Dual-signed `contributor_binding.v1`, rotation/revocation/network replay gates | S0 | implemented 2026-08-02, remote coder; integration hardening pending |
 | S3 | CAS storage, rebuildable science projection, study/work/review/vote plan-commit services and commands | S1, S2 | unclaimed |
 | S4 | Closed benchmark/reproduction executors and environment/raw-sample receipts | S1, recipe-derived build graph | unclaimed |
-| S5 | Deterministic discovery PageRank and golden graphs | S1, S3 | unclaimed |
+| S5 | Deterministic discovery PageRank and golden graphs | S1, S3 | pure core implemented 2026-08-02, primary; projection/command waits S3 |
 | S6 | Read-only Noise-bound DHT, persisted contacts, diagnostic dumper | S2 | unclaimed |
 | S7 | Provider STORE, signed acknowledgements, replication/publish/fetch adapters and REST views | S6 | unclaimed |
 | S8 | Evidence checkpoints and ZANC anchors | S2, S7 | unclaimed |
@@ -383,6 +394,14 @@ app/controllers/include/controllers/agent_impact_rules.def
 docs/work/ZCODE_SCIENTIFIC_METAVERSE.md
 docs/work/ZCODE_DEVELOPMENT_NETWORK.md
 docs/work/README.md
+```
+
+Primary lane additionally owns the S5 pure-core files:
+
+```text
+lib/vcs/include/vcs/zcode_discovery_rank.h
+lib/vcs/src/zcode_discovery_rank.c
+lib/test/src/test_zcode_discovery_rank.c
 ```
 
 The remote coder may claim S2 without touching those files:

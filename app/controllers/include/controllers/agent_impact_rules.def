@@ -821,6 +821,12 @@ AGENT_IMPACT_RULE("lib/vcs/include/vcs/zcode_dev.h|lib/vcs/src/zcode_dev.c|lib/v
 /* Scientific study/evidence wires and closed benchmark action identities
  * compose with, but do not mutate, the byte-stable development objects. */
 AGENT_IMPACT_RULE("lib/vcs/include/vcs/zcode_science.h|lib/vcs/src/zcode_science.c|lib/test/src/test_zcode_science.c|lib/vcs/include/vcs/build_action.h|lib/vcs/src/build_action.c", "zcode_science zcode_dev_objects build_fabric make_lint_gates")
+/* Dual-signed ZID/ZCL contributor bindings extend the existing contributor
+ * identity suite; rotation and revocation are part of the same test owner. */
+AGENT_IMPACT_RULE("lib/vcs/include/vcs/zcode_contributor_binding.h|lib/vcs/src/zcode_contributor_binding.c|lib/test/src/test_zcode_contributor.c", "zcode_contributor make_lint_gates")
+/* Personalized PageRank ranks property roots for local discovery only. Its
+ * graph/seed/result roots and integer arithmetic are one deterministic API. */
+AGENT_IMPACT_RULE("lib/vcs/include/vcs/zcode_discovery_rank.h|lib/vcs/src/zcode_discovery_rank.c|lib/test/src/test_zcode_discovery_rank.c", "zcode_discovery_rank make_lint_gates")
 /* Boot wiring for the ZCODE swarm and canonical work authority is exercised
  * by the swarm network suite. */
 AGENT_IMPACT_RULE("config/src/boot_zcode_swarm.c|config/src/boot_zcode_work_authority.c|config/include/config/boot_zcode_work_authority.h", "zcode_swarm_net zcode_dev_objects make_lint_gates")
