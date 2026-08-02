@@ -60,6 +60,30 @@
    above a FRESH tip-height seed is what fits the 600 s budget, so mint
    a fresh v2 seed (`tools/mint_v2_snapshot.c`) on a datadir copy at the
    captured peer tip as the second step.
+   (c) weld stopwatch #3 (zd header import + consensus-state-bundle-3056758
+   + live serving peer 127.0.0.1:8033): the weld LANDED — H*=3,056,758 at <!-- stale-ok: dated 2026-08-02 stopwatch measurement narrative, not a present-tense tip claim -->
+   t=157 s (90 s read-only zd header import + ~67 s bundle install), and the
+   body swarm completed 727/727 pieces h=3,155,843..3,202,352 from the live
+   peer (its manifest starts at its own seed floor). The fold then could not
+   advance: bodies 3,056,759..3,155,842 (98k) sit BELOW the live peer's
+   serving floor, so no connected peer had them — named, not silent. Lesson:
+   a seeded live peer cannot serve the sub-seed-floor span; the weld-to-seed
+   delta needs a full-history body source.
+   (d) weld stopwatch #4 (same weld + zd oracle 127.0.0.1:8034 as the
+   full-history body source): the full pipeline works end to end — weld at
+   3,056,758, no shielded hold (the bundle carries coins 1,354,769 +
+   anchors 631,645 + nullifiers 1,495,126, so the anchor_backfill_gap of
+   probe (b) does not exist on this path), provable tip climbed
+   3,057,142 -> 3,135,959 across 1 boot in 619 s, accelerating to
+   ~180 blk/s late — exit 3 SEAM (over budget, never stalled). Artifact:
+   build/c3-stopwatch/20260802T054826Z-*. Arithmetic for the PASS: a FRESH
+   tip-height bundle (delta ~0-20k) + ~67 s install + ~90 s header import +
+   fold at the observed ~180 blk/s lands ~4.5 min — inside 600 s. The
+   remaining C3 gap is therefore (i) an arbitrary-height checkpoint-bundle
+   export (today's `-export-consensus-bundle` only exports frozen H\* at the
+   compiled checkpoint) and (ii) fold-throughput headroom on slower hosts.
+   A long-budget rerun (ZCL_CS_BUDGET_SECS=1500) records the honest
+   weld-to-tip wall clock (~16-18 min expected at the observed rate).
 2. **Canonical lane diagnosis/recovery** — read-only diagnosis is autonomous;
    restart, deploy, or datadir repair is owner-gated. Never use the canonical
    lane to test a Q1 change. A previously at-tip observation does not override
