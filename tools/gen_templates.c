@@ -14,7 +14,6 @@
 #include <stdbool.h>
 #include <dirent.h>
 #include <ctype.h>
-#include <utime.h>
 
 #include "util/safe_alloc.h"
 
@@ -218,14 +217,14 @@ static int commit_staged(FILE *out, const char *tmp_path, const char *out_path,
 
     if (same) {
         remove(tmp_path);
-        /* The target can remain older than a freshly compiled generator even
-         * though its bytes are already canonical.  Leaving that timestamp in
-         * place makes every later Make parse regenerate both headers and then
-         * conservatively relink their dependants.  Advance only freshness;
-         * source identity remains content-addressed and the next invocation
-         * becomes a true no-op. */
-        if (utime(out_path, NULL) != 0)
-            return 1;
+        /* Bytes are canonical: leave the file ENTIRELY alone. An
+         * mtime/ctime-only freshness touch (the old utime() here) flips the
+         * stat-keyed source-identity mutation token between the parse-time
+         * capture and the post-link verify-record, failing clean-room and
+         * cold-wipe builds with "source build superseded". The Makefile now
+         * reaches this rule only when real source bytes changed (order-only
+         * dependency on this binary), so a no-op regeneration costs nothing:
+         * make simply re-runs the generator next time and compares again. */
         return 0;
     }
     if (rename(tmp_path, out_path) != 0) { remove(tmp_path); return 1; }

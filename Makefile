@@ -1543,10 +1543,21 @@ $(BIN_DIR)/inspect_html: tools/inspect_html.c lib/base/src/safe_alloc.c
 # target whose stdout is meant to be a machine-readable list. The echo is
 # suppressed; nothing is lost, because gen_templates itself reports what it
 # did (file counts, byte counts, "unchanged") on stderr either way.
-$(TMPL_GEN): $(TMPL_SRC) $(TMPL_TOOL)
+# The generator binary is an ORDER-ONLY prerequisite: a freshly compiled
+# gen_templates (every fresh BUILD_DIR — ci-reproducible, clean-room and
+# cold-wipe builds) must NOT retrigger regeneration of these two TRACKED
+# headers. The headers are canonical content already; regenerating them on
+# binary freshness only ever produces identical bytes, and the old
+# utime-on-unchanged freshness touch then moved their mtime/ctime AFTER the
+# parse-time source-identity capture, flipping the stat-keyed mutation token
+# and failing the post-link verify-record with "source build superseded"
+# (ci-reproducible Build A, build-bench link_cold). The rule now runs only
+# when the real .css/.chtml source bytes move — exactly the case where the
+# token is supposed to flip.
+$(TMPL_GEN): $(TMPL_SRC) | $(TMPL_TOOL)
 	@$(TMPL_TOOL) app/views/templates $@ app/views/css
 
-$(SITE_CSS_GEN): $(SITE_CSS_SRC) $(TMPL_TOOL)
+$(SITE_CSS_GEN): $(SITE_CSS_SRC) | $(TMPL_TOOL)
 	@$(TMPL_TOOL) --single-css $< $@ site_css SITE_CSS_H
 
 # Included near the top of this file. Updating it after its generated-header
