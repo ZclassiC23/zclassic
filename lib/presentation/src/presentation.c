@@ -14,9 +14,15 @@
 #define RGFW_IMPLEMENTATION
 #define RGFW_NO_API
 #define RGFW_NO_IOKIT
-#ifndef _MSC_VER
+#if defined(__APPLE__) && defined(__clang__)
+/* RGFW has two legacy numeric `_MSC_VER` probes. Do not define that macro on
+ * Apple: current SDK headers use its presence to select actual MSVC syntax. */
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wundef"
+#elif !defined(_MSC_VER)
 /* RGFW probes the MSVC version numerically instead of with defined(). */
 #define _MSC_VER 0
+#define ZCL_PRESENT_UNDEF_MSC_VER
 #endif
 #if defined(__linux__)
 #define RGFW_USE_XDL
@@ -24,6 +30,12 @@
 #define XDL_NO_GLX
 #endif
 #include "../../../vendor/rgfw/RGFW.h"
+#if defined(__APPLE__) && defined(__clang__)
+#pragma clang diagnostic pop
+#elif defined(ZCL_PRESENT_UNDEF_MSC_VER)
+#undef _MSC_VER
+#undef ZCL_PRESENT_UNDEF_MSC_VER
+#endif
 
 static bool present_error(char *error, size_t cap, const char *message)
 {

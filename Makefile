@@ -983,7 +983,7 @@ PRESENTATION_VENDOR_INPUTS := \
 PRESENTATION_HOST_OS := $(shell uname -s 2>/dev/null)
 ifeq ($(PRESENTATION_HOST_OS),Darwin)
 PRESENTATION_HOST_LIBS := -framework Cocoa -framework CoreGraphics \
-	-framework QuartzCore
+	-framework QuartzCore -framework CoreVideo
 else ifneq ($(filter MINGW% MSYS% CYGWIN%,$(PRESENTATION_HOST_OS)),)
 PRESENTATION_HOST_LIBS := -luser32 -lgdi32 -lshell32 -lole32
 else

@@ -43,11 +43,17 @@ jobs:
             libs: -luser32 -lgdi32 -lshell32 -lole32
           - name: macOS
             os: macos-latest
-            libs: -framework Cocoa -framework CoreGraphics -framework QuartzCore
+            libs: -framework Cocoa -framework CoreGraphics -framework QuartzCore -framework CoreVideo
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
+
+      - name: Install Linux native API headers
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxext-dev libxi-dev libxrandr-dev
 
       - name: Strict C compile and native link
         shell: bash
