@@ -101,11 +101,12 @@ sequence, and time. The closed verdict is `replicated`, `contradicted`, or
 
 ### `science_findings.v1`
 
-Fixed structured findings bound to an existing review: study, review,
-evaluated result, proof set, methods, limitations, conflicts, retraction
-target, flags, severity, sequence, and time. It does not introduce a second
-review signature system; the existing signed review receipt authors the
-review whose root this object binds.
+Fixed structured findings binding study, task, candidate, evaluated result,
+proof set, methods, limitations, conflicts, optional retraction target, flags,
+severity, sequence, and time. The object is formed first; the existing
+`review.v1` then binds its root. This avoids a findings-root/review-root hash
+cycle and does not introduce a second review signature system. The existing
+signed review receipt authors the review.
 
 ### `curation_vote.v1`
 
@@ -334,7 +335,7 @@ projection rebuild checks where applicable, and no deployment.
 | ID | Landing unit | Dependency | State / owner |
 |---|---|---|---|
 | S0 | Freeze this specification and coordination boundaries | existing ZCODE foundation | in progress, primary |
-| S1 | Canonical science codecs, roots, cross-object validation, fixed benchmark/reproduction action identities | S0 | claimed, primary |
+| S1 | Canonical science codecs, roots, cross-object validation, fixed benchmark/reproduction action identities | S0 | implemented 2026-08-02, primary; full gates pending |
 | S2 | Dual-signed `contributor_binding.v1`, rotation/revocation/network replay gates | S0 | parallel-safe, remote coder may claim |
 | S3 | CAS storage, rebuildable science projection, study/work/review/vote plan-commit services and commands | S1, S2 | unclaimed |
 | S4 | Closed benchmark/reproduction executors and environment/raw-sample receipts | S1, recipe-derived build graph | unclaimed |
@@ -361,6 +362,7 @@ lib/vcs/src/build_action.c
 lib/test/src/test_zcode_science.c
 lib/test/src/test.c
 tools/dev/test_group_catalog.def
+app/controllers/include/controllers/agent_impact_rules.def
 docs/work/ZCODE_SCIENTIFIC_METAVERSE.md
 docs/work/ZCODE_DEVELOPMENT_NETWORK.md
 docs/work/README.md
