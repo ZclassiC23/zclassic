@@ -5,6 +5,12 @@ the payout-first tail of [`ZCODE_PLAN.md`](./ZCODE_PLAN.md). The package-hosting
 work remains the foundation; its old slice numbers are no longer the execution
 order.
 
+The owner-directed scientific-evidence, discovery-network, contribution,
+committee, and custody extension is specified separately in
+[`ZCODE_SCIENTIFIC_METAVERSE.md`](./ZCODE_SCIENTIFIC_METAVERSE.md). It composes
+with the byte-stable objects in this document and may not duplicate their CAS,
+worker, identity, transport, or authority owners.
+
 ## Mission
 
 ZCODE is a free, requester-coordinated P2P C23 development network: immutable
