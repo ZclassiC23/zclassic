@@ -90,6 +90,10 @@ int t_canonical_deploy_proof_binding_contract(void)
         ASSERT(read_entire_file(path, &verify_buf) == 0);
         ASSERT(strstr(verify_buf, "SERVICE_MAIN_PID") != NULL);
         ASSERT(strstr(verify_buf, "/proc/$SERVICE_MAIN_PID/cmdline") != NULL);
+        ASSERT(strstr(verify_buf, "exec_argv_values_from_text") != NULL);
+        ASSERT(strstr(verify_buf, "SERVICE_NODE_ARG") != NULL);
+        ASSERT(strstr(verify_buf,
+                      "SERVICE_NODE_EXE\" = \"$SERVICE_EXE") != NULL);
         ASSERT(strstr(verify_buf, "SERVICE_START_TICKS") != NULL);
         ASSERT(strstr(verify_buf, "service_pid_is_stable") != NULL);
         ASSERT(strstr(verify_buf, "mainpid_owns_rpc_listener") != NULL);
