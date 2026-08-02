@@ -492,3 +492,38 @@
 # cannot be). The growth is one new CLI mode reusing the file's existing
 # gen_snap machinery; the replay-canary exact tier (d) consumes it.
 # Re-baselined in file_size_ceiling_lib_baseline.txt (4180); count STAYS 14.
+#
+# 2026-08-02 (replay-canary shielded importer, C8 anchor lane): two files
+# grew, both BASELINED at their new LOC rather than spending a ratchet
+# slot; the recorded count STAYS 14.
+#   src/main_cli_modes.c   4180 -> 4223 — the -import-complete-shielded
+#       verb's stable WAL-inclusive chainstate copy + target-derived tip
+#       bind (reuse of the existing utxo_recovery stable-copy helper plus
+#       the seed-floor/coins-best tip read; one mode's growth, no new file
+#       because it composes the file's existing import-mode machinery).
+#   lib/vcs/src/package_store.c 1070 -> 1132 — restored committed drift,
+#       not fresh: 06a1ea06b (wf_f107ec68-02b-1 integration) added
+#       vcs_package_store_try_totals() (the non-blocking totals read) and
+#       the lane was merged without re-baselining. Re-baselined at 1132.
+#
+# 2026-08-02 (replay-canary FAIL#6/#7, tip-bind root source): two files
+# grew, both BASELINED at their new LOC; the recorded count STAYS 14.
+#   src/main_cli_modes.c   4223 -> 4231 — the -import-complete-shielded
+#       verb's expected tip root now comes from the block_index flat
+#       point read (block_index_flat_sapling_root_at) instead of the
+#       blocks projection (FAIL#6: header-only heights have no blocks
+#       row) or the event-log projection (FAIL#7: empty after a bulk P2P
+#       header sync). Includes the graceful-shutdown requirement note.
+#   app/services/src/block_index_loader.c 857 -> 965 (app-side baseline
+#       file) — the new mmap + embedded-integrity-verify + binary-search
+#       point reader, declared in block_index_loader.h.
+#
+# 2026-08-02 (replay-canary FAIL#9c, LEG verb stable copy):
+# src/main_cli_modes.c 4231 -> 4244 — legacy_utxo_run (shared by
+# --legacy-utxo-commitment and --gen-utxo-snapshot) now snapshots the
+# oracle chainstate through the WAL-inclusive stable copy
+# (utxo_recovery_copy_chainstate_stable) instead of the WAL-dropping
+# ldb_snapshot_make: the SST-only snapshot sat ~19k blocks behind the
+# live tip, so the byte-exact C8 tier could never bind and SKIPped every
+# run. Reuse of the file's existing import-mode helper pattern; no new
+# file. Baselined at 4244; count STAYS 14.

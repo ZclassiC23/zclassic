@@ -37,10 +37,17 @@
 #   --from=anchor  : the PROVEN cold recipe — --importblockindex (headers,
 #                    read-only) then a NORMAL boot with legacy auto-import ON
 #                    (auto-links read-only ~/.zclassic, seeds the anchor
-#                    3,056,758 UTXO set), then bg-validation walks the
-#                    connected extent toward tip (~45 min). Dead -connect
-#                    sink, no real peer. (The -snapshot=+-nolegacyimport
-#                    combo FATALs at HEAD — see iso_spawn_mainnet_node.)
+#                    3,056,758 UTXO set), a shielded-history interlude
+#                    (wait staged-seed floor → stop node →
+#                    -import-complete-shielded from the read-only zd →
+#                    respawn, so post-seed SPEND blocks pass the
+#                    fail-closed preflight), then bg-validation walks the
+#                    connected extent toward tip (~45 min + import). Dials
+#                    the co-located zclassicd P2P (8034) via -connect for
+#                    post-seed tip blocks (2026-08-01 fix — the dead-sink
+#                    variant could never satisfy crossnode tip equality).
+#                    (The -snapshot=+-nolegacyimport combo FATALs at HEAD —
+#                    see iso_spawn_mainnet_node.)
 #   --from=genesis : -nolegacyimport (no anchor seed); replay genesis->tip
 #                    with bg-validation ON (~6 h). Dials the co-located
 #                    zclassicd P2P (8034) via -connect (NOT -addnode — see
@@ -96,13 +103,32 @@ EXPECTED_SHA3="5817f0ec66738db6989cf881cf37b2148d07b978fd69e5a334855b4991ac5f85"
 # blows the CEILING. The anchor band is centred on ~45 min, NOT ~6 h; the
 # genesis band is the ~6 h replay. Bounds in seconds:
 #   anchor : floor 300 (5 min — a real anchor replay can never be near-
-#            instant), ceiling 5400 (90 min == the hard budget; a 6 h
+#            instant), ceiling 7200 (120 min == the hard budget; a 6 h
 #            from-anchor degrade blows this long before genesis scale).
+#            The ceiling grew 5400 -> 7200 on 2026-08-02 when the
+#            shielded-history import interlude (stop → import → respawn)
+#            joined the anchor track: the ~45-min replay plus the import
+#            and a second boot still sit far under 2 h.
 #   genesis: floor 3600 (1 h), ceiling 28800 (8 h == the hard budget).
 ANCHOR_ELAPSED_MIN=300
-ANCHOR_ELAPSED_MAX=5400
+ANCHOR_ELAPSED_MAX=7200
 GENESIS_ELAPSED_MIN=3600
 GENESIS_ELAPSED_MAX=28800
+
+# The verdict probes call heavyweight read-only audit RPCs whose cost scales
+# with the UTXO set, not with the walk: getutxocommitment recomputes the
+# SHA3-256 fold over ~1.35M UTXOs on EVERY call (~10.5 s on the 2026-08-01
+# anchor run, while the node was simultaneously folding post-seed tip blocks
+# from the 8034 oracle and running the bg-validation walk). The RPC server's
+# per-request watchdog (ZCL_RPC_TIMEOUT_MS, default 10000 ms — see
+# lib/rpc/include/rpc/rpc_timeout.h) shutdown()s the socket at the deadline:
+# the client then reads an EMPTY reply while the worker keeps computing and
+# logs its span OK ~0.5 s later — surfacing here as the false
+# rpc_unreachable_getutxocommitment FAIL (observed 2026-08-01, elapsed=383 s,
+# UC span duration_us=10538872 status=OK). Raise the deadline for canary
+# nodes only; the production default is untouched. 120 s covers the UC
+# recompute plus gettxoutsetinfo on a loaded box with 10x headroom.
+export ZCL_RPC_TIMEOUT_MS="${ZCL_RPC_TIMEOUT_MS:-120000}"
 
 # REPO_ROOT: the harness knows where it lives (like soak_assert.sh).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -555,12 +581,13 @@ run_live() {
         ELAPSED=0; blocked "binary_missing_zcl_rpc"
     fi
 
-    # Default budgets: anchor 5400 s (90 min, 2x the ~45-min expectation);
-    # genesis 28800 s (8 h, ~1.3x the ~6-h expectation).
+    # Default budgets: anchor 7200 s (120 min — ~45-min replay + the
+    # shielded-import interlude + a second boot, 1.6x headroom); genesis
+    # 28800 s (8 h, ~1.3x the ~6-h expectation).
     local budget
     if [ -n "$BUDGET_SEC" ]; then budget="$BUDGET_SEC"
     elif [ "$FROM" = "genesis" ]; then budget=28800
-    else budget=5400; fi
+    else budget=7200; fi
 
     # Distinct port bases so a nightly + a (rare) overlapping weekly cannot
     # collide. anchor=39050, genesis=39060. crash-soak (item 7) reserves 39070.
@@ -648,6 +675,122 @@ run_live() {
         ELAPSED=$(( $(date +%s) - START_TS )); fail "rpc_never_ready"
     fi
 
+    # ── from=anchor shielded-history import interlude ─────────────────
+    # The cold-import staged seed borrows the anchor-tier shielded frontier
+    # but the shielded ACTIVATION cursors stay >0, and the shielded
+    # preflight (app/jobs/src/utxo_apply_nullifiers.c) fail-closed-HOLDs any
+    # post-seed block carrying a shielded SPEND (canary FAIL#5, 2026-08-02:
+    # fold resumed after the memo-clear fix, then pinned at seed+25 on the
+    # first spend block — no auto-remedy can cure it BY DESIGN; the cursors
+    # are the node's own "my shielded history below the seed is unproven"
+    # marker). The -import-complete-shielded verb fills exactly that gap:
+    # it streams the co-located zclassicd's chainstate through a
+    # WAL-inclusive stable copy, verifies the tip anchor BY ROOT against
+    # the target's own header-derived sapling root, and folds the verified
+    # anchors/nullifiers in, zeroing the cursors. It needs the node STOPPED
+    # (it opens the target datadir's node.db itself) and the seed floor
+    # landed (the tip bind keys off it). Sequence: wait seed floor → wait
+    # header coverage past it → settle → stop → import → respawn → the
+    # shared bg-wait/convergence/probe flow below. from=genesis needs none
+    # of this — its fold is from genesis, so the cursors flip to 0 on their
+    # own.
+    if [ "$FROM" = "anchor" ]; then
+        # (1) Wait for the staged seed. It lands AFTER rpc-ready (the
+        # reducer seeds on its first ticks); node.log carries
+        # "cold-import staged-sync seed ... H*=<height>". Cap 600 s.
+        local seed_h="" seed_deadline=$(( $(date +%s) + 600 ))
+        while [ "$(date +%s)" -lt "$seed_deadline" ]; do
+            if [ -n "${ISO_NODE_PID:-}" ] && ! kill -0 "$ISO_NODE_PID" 2>/dev/null; then
+                ELAPSED=$(( $(date +%s) - START_TS )); R_BGSTATE="exited"; fail "node_exited_unexpectedly"
+            fi
+            seed_h="$(grep -aoE 'H\*=[0-9]+' "$ISO_DD/node.log" 2>/dev/null | head -1 | grep -oE '[0-9]+' || true)"
+            [ -n "$seed_h" ] && break
+            sleep 5
+        done
+        if [ -z "$seed_h" ]; then
+            ELAPSED=$(( $(date +%s) - START_TS )); fail "seed_never_landed"
+        fi
+        echo "replay-canary: staged seed landed at H*=$seed_h — waiting for header coverage"
+
+        # (2) The import's tip bind keys off the target's OWN seed floor /
+        # coins_best, and its by-root verify reads the target's header at
+        # that height. The --importblockindex copy ends well below the seed
+        # floor (the disk copy lags the live zd tip), so wait until P2P
+        # header sync from zd covers H* before stopping. Then a 20 s
+        # projection settle so node.db writers are quiescent before the
+        # importer opens the datadir.
+        local h_now="" cov_deadline=$(( $(date +%s) + 600 ))
+        while [ "$(date +%s)" -lt "$cov_deadline" ]; do
+            if [ -n "${ISO_NODE_PID:-}" ] && ! kill -0 "$ISO_NODE_PID" 2>/dev/null; then
+                ELAPSED=$(( $(date +%s) - START_TS )); R_BGSTATE="exited"; fail "node_exited_unexpectedly"
+            fi
+            h_now="$(json_num "$(iso_rpc getblockcount)" result)"
+            if [ -n "$h_now" ] && [ "$h_now" -ge "$seed_h" ]; then break; fi
+            sleep 5
+        done
+        if [ -z "$h_now" ] || [ "$h_now" -lt "$seed_h" ]; then
+            ELAPSED=$(( $(date +%s) - START_TS )); fail "header_coverage_timeout_seed_$seed_h"
+        fi
+        echo "replay-canary: header coverage $h_now >= seed $seed_h — settling 20 s, then stopping for import"
+        sleep 20
+
+        # (3) Stop the node (the importer opens the target datadir's
+        # node.db itself). TERM the process group, wait, KILL stragglers —
+        # iso_cleanup's discipline, minus the datadir removal. The wait is
+        # 120 s, NOT iso_cleanup's 10 s: the graceful shutdown's
+        # persist-fast-restart-state step rewrites block_index.bin (the
+        # ~550 MB flat + its embedded SHA3), and the importer's tip-bind
+        # root read REQUIRES that save — a SIGKILL preempting it leaves the
+        # flat at its boot-time state, below the P2P header tip, and the
+        # verb refuses "no row at height" (canary FAIL#7 ran exactly this
+        # stop at 10 s).
+        kill -TERM "-$ISO_PGID" 2>/dev/null || true
+        local i
+        for i in $(seq 1 600); do
+            kill -0 "-$ISO_PGID" 2>/dev/null || break
+            sleep 0.2
+        done
+        kill -KILL "-$ISO_PGID" 2>/dev/null || true
+        ISO_NODE_PID=""; ISO_PGID=""
+        # node.log is TRUNCATED on respawn, so keep boot1's (seed-floor +
+        # shutdown evidence) for the post-mortem trail. The copy must run
+        # AFTER the stop — the shutdown's own prints land in node.log only
+        # once the TERM is delivered (FAIL#8: copying BEFORE the TERM and
+        # then grepping the copy for the shutdown lines false-FAILed a
+        # node that had shut down perfectly).
+        cp "$ISO_DD/node.log" "$ISO_DD/node.boot1.log"
+        # Belt-and-suspenders: the flat save announces itself on stdout.
+        # Its absence after a graceful stop means the shutdown sequence
+        # never reached persist-fast-restart-state — the import below
+        # would refuse on a stale flat, so name it now instead.
+        if ! grep -aq 'fast restart state persisted' "$ISO_DD/node.boot1.log"; then
+            ELAPSED=$(( $(date +%s) - START_TS )); fail "shutdown_flat_save_missing"
+        fi
+
+        # (4) Run the importer against the read-only zd source; its output
+        # goes to node.import.log (the respawn truncates node.log). One
+        # retry after 60 s covers a lagging projection write; a second
+        # failure is a real refusal (bind mismatch, missing boundaries) —
+        # FAIL named, never silently skip the interlude.
+        echo "replay-canary: importing complete shielded history from $SRC_DATADIR (read-only)"
+        if ! "$ISO_NODE_BIN" -datadir="$ISO_DD" -import-complete-shielded="$SRC_DATADIR" >"$ISO_DD/node.import.log" 2>&1; then
+            echo "replay-canary: shielded import failed once — retrying in 60 s (projection-lag insurance)" >&2
+            sleep 60
+            if ! "$ISO_NODE_BIN" -datadir="$ISO_DD" -import-complete-shielded="$SRC_DATADIR" >>"$ISO_DD/node.import.log" 2>&1; then
+                ELAPSED=$(( $(date +%s) - START_TS )); fail "shielded_import_failed"
+            fi
+        fi
+        grep -a 'IMPORT COMPLETE' "$ISO_DD/node.import.log" | tail -1 || true
+        echo "replay-canary: shielded history import complete — respawning node"
+
+        # (5) Respawn with the same flags; boot2 folds post-seed bodies
+        # with activation cursors now 0, so spend blocks pass preflight.
+        iso_spawn_mainnet_node "-connect=127.0.0.1:8034"
+        if ! iso_wait_rpc_ready 600; then
+            ELAPSED=$(( $(date +%s) - START_TS )); fail "rpc_never_ready_after_import"
+        fi
+    fi
+
     # Poll until bg_validation reaches a terminal state or the budget blows.
     local deadline=$(( START_TS + budget ))
     while :; do
@@ -697,21 +840,107 @@ run_live() {
         sleep 30
     done
 
+    # Tip-convergence wait (live tracks): bg COMPLETE only proves the
+    # re-verification walk finished over the locally-derived extent — with a
+    # live oracle peer dialed, the node can still be folding post-seed
+    # bodies when the walk ends (2026-08-01 anchor run: bg started at the
+    # seed floor 3202072 while the oracle tip was ~3204600; the walk
+    # completed over a ~2-block extent and the verdict would have FAILed
+    # crossnode_height had the UC-probe watchdog not fired first). The
+    # crossnode gate demands EXACT tip equality, so wait until the node has
+    # caught the oracle's tip before probing. node_tip >= zd_tip (not ==):
+    # the oracle keeps mining and the node chases via P2P within seconds,
+    # so "caught up at sample time" is the achievable condition. Same hard
+    # budget as the bg wait; a node that never converges pages
+    # budget_exceeded, never a silent pass.
+    #
+    # BOTH sides are sampled via gettxoutsetinfo height, NOT getblockcount:
+    # the node's public tip is finalize-lagged — it reports exactly one
+    # block below its coins tip PERSISTENTLY (a block is only exposed after
+    # the next block's finalize), so getblockcount(node) >=
+    # getblockcount(zd) is structurally impossible against a still-mining
+    # oracle (2026-08-02 anchor run: node getblockcount=3202299 vs
+    # zd=3202300 held for 60+s while gettxoutsetinfo on BOTH reported
+    # height=3202300 with identical bestblock — the node WAS at tip, the
+    # probe was lying). gettxoutsetinfo height is the coins tip (==
+    # reducer_frontier hstar) and the commitment is cached: ~1 s per call
+    # on both sides, cheap enough to poll.
+    while :; do
+        if [ -n "${ISO_NODE_PID:-}" ] && ! kill -0 "$ISO_NODE_PID" 2>/dev/null; then
+            ELAPSED=$(( $(date +%s) - START_TS ))
+            R_BGSTATE="exited"; fail "node_exited_unexpectedly"
+        fi
+        local n_tip z_raw z_tip
+        n_tip="$(json_num "$(iso_rpc gettxoutsetinfo)" height)"
+        z_raw="$(ZCL_DATADIR="$SRC_DATADIR" ZCL_RPCPORT="$ZD_RPC" "$ISO_RPC_BIN" gettxoutsetinfo 2>/dev/null || true)"
+        # Both RPCs return the gettxoutsetinfo object; "height" is unique
+        # enough to grep flat in both.
+        z_tip="$(json_num "$z_raw" height)"
+        if [ -n "$n_tip" ] && [ -n "$z_tip" ] && [ "$n_tip" -ge "$z_tip" ]; then
+            break
+        fi
+        if [ "$(date +%s)" -ge "$deadline" ]; then
+            R_BGSTATE="timeout"
+            SD="{\"bg_validation\":{\"state\":\"timeout\"}}"
+            DIAG="$(iso_rpc getsyncdiag)"; UC="$(iso_rpc getutxocommitment)"
+            TX="$(iso_rpc gettxoutsetinfo)"
+            ZD_DATADIR="$SRC_DATADIR" ZD="$(ZCL_DATADIR="$SRC_DATADIR" ZCL_RPCPORT="$ZD_RPC" "$ISO_RPC_BIN" gettxoutsetinfo 2>/dev/null || true)"
+            evaluate_verdict
+        fi
+        sleep 15
+    done
+
     # Terminal state reached — collect every probe blob, then evaluate.
+    # Probe binding: the verdict's crossnode tier compares TX (node
+    # gettxoutsetinfo) against ZD (oracle gettxoutsetinfo) and the exact
+    # tier compares UC (node commitment) against LEG (oracle chainstate
+    # hashed through this binary's frozen fold) — so TX, ZD and UC must be
+    # sampled at the SAME tip. The old fixed order (SD,DIAG,UC,TX,ZD,LEG)
+    # spread them ~5+ s apart; with a live oracle mining 36-137 s blocks a
+    # fresh block could land between UC and TX/ZD and false-FAIL the
+    # height binds. Sample TX→ZD→UC→LEG back-to-back (~1 s each,
+    # commitment-cached) in a retry loop until the three heights agree —
+    # that window fits inside any single block gap. LEG skew (its best
+    # block lags the live tip between compactions) remains a SKIP of the
+    # exact tier by design, not a FAIL. SD/DIAG are diagnostic-only and
+    # unbound — taken once, after the loop.
+    while :; do
+        if [ -n "${ISO_NODE_PID:-}" ] && ! kill -0 "$ISO_NODE_PID" 2>/dev/null; then
+            ELAPSED=$(( $(date +%s) - START_TS ))
+            R_BGSTATE="exited"; fail "node_exited_unexpectedly"
+        fi
+        TX="$(iso_rpc gettxoutsetinfo)"
+        # zclassicd is read-only: gettxoutsetinfo only, never stop/generate.
+        ZD="$(ZCL_DATADIR="$SRC_DATADIR" ZCL_RPCPORT="$ZD_RPC" "$ISO_RPC_BIN" gettxoutsetinfo 2>/dev/null || true)"
+        UC="$(iso_rpc getutxocommitment)"
+        # Byte-exact tier: hash the oracle's OWN chainstate through the
+        # frozen binary's canonical SHA3 fold (read-only WAL-inclusive
+        # stable copy; the daemon keeps running). stderr is preserved for
+        # post-mortem, stdout is the JSON blob.
+        LEG="$("$ISO_NODE_BIN" --legacy-utxo-commitment "$SRC_DATADIR" \
+            2>"$ISO_DD/legacy_utxo_commitment.stderr" || true)"
+        local tx_h zd_h uc_h
+        tx_h="$(json_num "$TX" height)"
+        zd_h="$(json_num "$ZD" height)"
+        uc_h="$(json_num "$UC" height)"
+        if [ -n "$tx_h" ] && [ "$tx_h" = "$zd_h" ] && [ "$tx_h" = "$uc_h" ]; then
+            break
+        fi
+        if [ "$(date +%s)" -ge "$deadline" ]; then
+            # Same synthetic-timeout shape as the wait loops above:
+            # evaluate_verdict pages budget_exceeded, never a silent pass.
+            R_BGSTATE="timeout"
+            SD="{\"bg_validation\":{\"state\":\"timeout\"}}"
+            DIAG="$(iso_rpc getsyncdiag)"
+            evaluate_verdict
+        fi
+        sleep 10
+    done
     # The bg_validation section is nested in getsyncdetail under
     # "bg_validation"; evaluate_verdict reads state/verified_height/
     # script_verif_skipped_no_undo which are unique enough to grep flat.
     SD="$(iso_rpc getsyncdetail)"
     DIAG="$(iso_rpc getsyncdiag)"
-    UC="$(iso_rpc getutxocommitment)"
-    TX="$(iso_rpc gettxoutsetinfo)"
-    # zclassicd is read-only: gettxoutsetinfo only, never stop/generate.
-    ZD="$(ZCL_DATADIR="$SRC_DATADIR" ZCL_RPCPORT="$ZD_RPC" "$ISO_RPC_BIN" gettxoutsetinfo 2>/dev/null || true)"
-    # Byte-exact tier: hash the oracle's OWN chainstate through the frozen
-    # binary's canonical SHA3 fold (read-only ldb snapshot; the daemon keeps
-    # running). stderr is preserved for post-mortem, stdout is the JSON blob.
-    LEG="$("$ISO_NODE_BIN" --legacy-utxo-commitment "$SRC_DATADIR" \
-        2>"$ISO_DD/legacy_utxo_commitment.stderr" || true)"
 
     evaluate_verdict
 }

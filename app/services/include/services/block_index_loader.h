@@ -53,6 +53,25 @@ void save_block_index_flat(const char *datadir, struct main_state *ms);
  * distinct negative code; the previous bare-bool true/false maps to .ok. */
 struct zcl_result load_block_index_flat(const char *datadir, struct main_state *ms);
 
+/* Point-read one entry's sapling root straight from block_index.bin WITHOUT
+ * the full multi-million-entry arena load: mmap, embedded-integrity verify
+ * (a legacy sidecar-only file is REFUSED — a bind this load-bearing does not
+ * read unverified bytes), binary search the height-sorted flat rows. This is
+ * the ONLY store that carries hashFinalSaplingRoot for header-only heights:
+ * the blocks projection writes rows on body fold / lean sync / block import
+ * only (replay-canary FAIL#6), and the event-log block_index projection is
+ * empty for a bulk P2P header sync (FAIL#7 — no EV_BLOCK_HEADER events).
+ * The -import-complete-shielded verb derives its tip bind here. Returns
+ * .ok=true with out_root filled on an exact-height hit; .ok=false with a
+ * self-describing message on any integrity/format failure or a missing row
+ * (the message carries the flat tip so "save predates the header" is
+ * distinguishable from corruption). Siblings at one height return an
+ * arbitrary row — a caller binding a frontier against a foreign root fails
+ * CLOSED downstream, never a silent misbind. */
+struct zcl_result block_index_flat_sapling_root_at(const char *datadir,
+                                                   int32_t height,
+                                                   uint8_t out_root[32]);
+
 /* load_block_index_flat ALWAYS re-derives the pointer-graph-derived fields
  * (nChainWork, nChainTx, skip links, cached branch id) through the canonical
  * forward pass — measured ~861ms on a 3.19M-entry index. The former Tier-2 P2

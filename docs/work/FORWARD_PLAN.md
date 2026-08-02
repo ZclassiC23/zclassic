@@ -126,8 +126,194 @@
       The anchor variant now dials `-connect=127.0.0.1:8034` (the
       read-only co-located zclassicd the genesis track already sanctions)
       so the node tracks tip to verdict.
-      Verify: next anchor-canary run should COMPLETE inside the band with
-      crossnode_height green.
+      Third rerun FAILed `rpc_unreachable_getutxocommitment` at 383 s —
+      a false unreachable: the seed-floor fix worked (`[bg-valid] seed
+      floor at height 3202072` fired; the floor is the UTXO-snapshot
+      height, NOT the 3056758 checkpoint — the walk extent above a
+      cold-import seed is genuinely small), but `getutxocommitment`
+      recomputes the SHA3 fold over ~1.35M UTXOs per call (~10.5 s under
+      fold+walk load) and the RPC server's per-request watchdog
+      (`ZCL_RPC_TIMEOUT_MS`, default 10000 ms) shutdown()s the socket at
+      the deadline, so the client read an empty reply while the worker
+      logged its span OK 0.5 s later. Third fix: canary nodes run with
+      `ZCL_RPC_TIMEOUT_MS=120000` (production default untouched), and
+      run_live gained a budget-bounded tip-convergence wait after the
+      bg-COMPLETE loop — with a live oracle dialed, bg COMPLETE can
+      arrive while the node is still folding post-seed bodies, and the
+      crossnode gate demands exact tip equality.
+      Fourth and fifth reruns surfaced a REAL seed-boot wedge (not a
+      harness defect): the node healed via the seed, folded to the first
+      post-seed block carrying a Sapling output, and stalled permanently
+      below the oracle tip (fail-closed is consensus-correct). Three
+      defects compounded. (1) ROUTING: the cold-import heal leaves BOTH
+      utxo_apply.anchor_backfill_gap and utxo_apply.nullifier_backfill_gap
+      set, and the sapling_anchor_frontier_unavailable remedy dispatched
+      to the named-remedy ladder whenever the nullifier blocker was
+      present, so the tier1 checkpoint-verified seed — the only real cure
+      for the EMPTY_TABLE class — never ran (the ladder's Rung A anchor
+      path only arms a refold respawn the escalator's permanent-blocker
+      hold parks); detect already recorded these dual episodes as
+      birth-defect, so the routing contradicted its own episode kind.
+      (2) LATCH: the remedy's 5 attempts exhausted in ~4 min while the
+      deferred sapling-tree rebuild that makes the flat-file checkpoint
+      root-verified takes ~10 min, and with cooldown_secs=0 the engine
+      latched at max_attempts forever — the checkpoint became valid
+      (root == hashFinalSaplingRoot) minutes AFTER operator_needed.
+      (3) HOLD MEMO: with (1) fixed, tier1b borrowed a header-verified
+      frontier at H*=3202121 (root == PoW-committed hashFinalSaplingRoot) <!-- stale-ok: dated 2026-08-02 incident narrative (FAIL log), not a present-tense tip claim -->
+      25 minutes before the kill, yet the fold never resumed: the first
+      GATE_HOLD records an in-memory history-hold memo
+      (utxo_apply_history_hold_record) that parks every later utxo_apply
+      step while the anchor gap BLOCKER exists, the blocker legitimately
+      outlives the seed (activation cursor stays >0), and only a process
+      restart dropped the memo. node.logs archived at
+      ~/.local/state/zclassic23-canary/lastfail_anchor_node_{wedge_20260801,holdmemo_20260802}.log.
+      Fourth fix (this commit): remedy attempts tier1/tier1b FIRST
+      whenever classify is EMPTY_TABLE; cooldown_secs=300 re-arms the
+      remedy instead of latching (runs are idempotent — tier1 fail-closed,
+      tier1b capped per-process, Rung C a no-op log); and a successful
+      tier1/tier1b seed calls utxo_apply_history_hold_clear() so the
+      parked fold re-runs the shielded gate (still fail-closed if the
+      frontier were absent). Regression test: dual-gap engine case in
+      test_sapling_anchor_frontier_condition.c (tier1 attempted before the
+      ladder, birth-defect episode kind kept, no fake resolve, refused
+      seed writes nothing, hold memo survives a refused seed).
+      Fifth rerun (2026-08-02): the FAIL#4 fixes are PROVEN live —
+      tier1b borrowed the header-verified frontier at H*=3202121 and the <!-- stale-ok: dated 2026-08-02 incident narrative (FAIL log), not a present-tense tip claim -->
+      fold resumed IN-PROCESS (batch_commit 3202122..3202145, rows=24) —
+      then the fold held permanently at 3202146, the first post-seed
+      block carrying a shielded SPEND. Root cause: the shielded preflight
+      (app/jobs/src/utxo_apply_nullifiers.c shielded_history_preflight)
+      fail-closed-HOLDs any spend block while the shielded ACTIVATION
+      cursors are >0, and the cold-import seed never flips them — only
+      `-import-complete-shielded` or a from-genesis fold does. No
+      auto-remedy can cure this BY DESIGN: the cursors are the node's own
+      "my shielded history below the seed is unproven" marker, and
+      holding (not forging a remedy) is the consensus-correct behavior.
+      node.log archived at
+      ~/.local/state/zclassic23-canary/lastfail_anchor_node_spendhold_20260802.log.
+      A dry-run of the importer against the live zd then showed the
+      shipped verb COULD NOT have cured it: (1) a fresh datadir refuses
+      at shi_read_boundaries ("cursor(s) absent") — the import needs one
+      boot first; (2) ldb_snapshot_make copies only .ldb SSTs + metadata
+      and DROPS the .log WAL, so the 'B'/'z' pointers read the last
+      compacted state (empirically: SST 'B'=3183455 vs coin records at
+      3202110 vs zd live tip ~3202160 — every on-disk artifact lags <!-- stale-ok: dated 2026-08-02 incident narrative (FAIL log), not a present-tense tip claim -->
+      differently), while utxo_recovery_copy_chainstate_stable (the full
+      cp -a + dir-signature point-in-time proof the UTXO import and
+      tier1b already trust) sees the fresh WAL state. Fifth fix (three
+      parts): (a) the verb snapshots through
+      utxo_recovery_copy_chainstate_stable and derives the tip bind
+      TARGET-side — reducer seed floor when declared, else coins_best,
+      with the sapling root taken from the target's own header at that
+      height — refusing "boot it once first" when neither exists; (b) the
+      service's tip verify is now BY-ROOT
+      (chainstate_legacy_get_sapling_anchor at the expected tip root must
+      return FOUND, plus an explicit incremental_tree_root Pedersen
+      re-verify), so a stale 'z' pointer no longer refuses a good import
+      while a forged tree still fails closed; (c) the bind guard anchors
+      at the seed floor when declared, else coins_best, and documents the
+      partially-folded-target rule (import owes history <= floor; the
+      fold's own rows cover above; the preflight guarantees the folded
+      span consumed no spends). Tests: scenario G (stale 'z' pointer
+      re-pointed at an older root — import SUCCEEDS via the by-root
+      bind), scenario F comment refresh (the refusal now fires at the
+      up-front by-root verify); scenarios A-F stay green. The canary's
+      anchor track gained the import interlude: wait for the staged-seed
+      floor in node.log, wait for header coverage past H*, settle, stop
+      the node, run -import-complete-shielded (one retry), respawn — and
+      the anchor budget/elapsed ceiling grew 5400 -> 7200 s (a 6 h
+      silent degrade still blows the band).
+      Sixth rerun (2026-08-02): FAILed `shielded_import_failed` at 396 s —
+      the import interlude ran exactly as scripted (seed H*=3202110 landed, <!-- stale-ok: dated 2026-08-02 incident narrative (FAIL log), not a present-tense tip claim -->
+      header coverage 3202121, clean stop, import attempted twice), but the
+      verb refused "tip bind SOURCE is all-zero" BOTH times: the first
+      cut's root source was node.db `blocks.sapling_root`, and blocks rows
+      are only written on body fold / lean sync / block import — a seeded
+      boot's fold-resume anchor is a header-only height, so there was no
+      usable row at 3202110 (not projection lag; the 60 s retry was
+      identical). Sixth fix: the expected root now comes from the
+      block_index projection (`block_index_projection_get_by_height`),
+      which materializes `hashFinalSaplingRoot` for EVERY persisted header
+      (`accept_block_header` copies the wire field into the index entry at
+      lib/validation/src/accept_block_header.c:163; `block_index_db`
+      serializes it), including header-only heights. A stale-branch
+      sibling at the same height fails CLOSED at the service's by-root
+      source lookup (a sibling never connected has no anchor record in the
+      source chainstate), never a misbind.
+      Seventh rerun (2026-08-02): FAILed `shielded_import_failed` again —
+      the event-log block_index projection opened with `events_total=0`:
+      a bulk P2P header sync emits no EV_BLOCK_HEADER events, so the
+      projection is EMPTY on a fresh cold-import datadir (the live node's
+      46k projection rows come from the tip-emitting path only). Seventh
+      fix (two parts): (a) new `block_index_flat_sapling_root_at()`
+      (app/services/src/block_index_loader.c) — the block_index.bin flat
+      IS the store that carries `hashFinalSaplingRoot` for every header
+      including header-only heights; the point reader mmaps it, verifies
+      the embedded BIIE SHA3 (legacy sidecar-only files refused — no
+      unverified bytes), and binary-searches the height-sorted 172-byte
+      rows (format math proven byte-exact vs the zd oracle — hash AND
+      finalsaplingroot at h=3202041); (b) the interlude's stop now waits
+      120 s for TERM (was 10 s — the SIGKILL preempted the graceful
+      shutdown's ~550 MB flat rewrite, which is what freshens the flat
+      past the header-sync tip) and FAILs named
+      `shutdown_flat_save_missing` when the save never landed.
+      Eighth rerun (2026-08-02): FAILed `shutdown_flat_save_missing` at
+      340 s — a HARNESS bug, not a node defect: the interlude copied
+      node.log to node.boot1.log BEFORE delivering the TERM, so the
+      shutdown lines never landed in the copy the new gate greps. The
+      preserved lastfail log showed the node shutting down perfectly
+      ("Saving block index flat file (3204761 entries)... 525MB (5s)",
+      "fast restart state persisted", clean exit 0) — the flat including
+      the P2P topup past the seed floor, which also proves the FAIL#7
+      flat read has its data when the stop is graceful. Fix: the copy
+      now runs AFTER the stop completes.
+      Ninth rerun (2026-08-02): the canary reached a fully healthy end
+      state — IMPORT COMPLETE, fold at live tip, bg COMPLETE — then could
+      never prove it. Three probe-layer defects, all in how the harness
+      SAMPLES truth, none in the node:
+
+      (a) Convergence was structurally impossible. The tip-convergence wait
+      compared `getblockcount` on both sides, but the c23 public tip is
+      finalize-lagged — it reports exactly one block below the coins tip
+      persistently (a block is only exposed after the next block's finalize).
+      Against a still-mining oracle, node_getblockcount >= zd_getblockcount can
+      never hold. Live evidence: node getblockcount=3202299 vs zd=3202300 for
+      60+s while gettxoutsetinfo on BOTH reported height=3202300 with identical
+      bestblock — the node WAS at tip; the probe was lying. Fix: both sides now
+      sample `gettxoutsetinfo` height (the coins tip, == reducer_frontier H*),
+      which is commitment-cached at ~1 s/call, so polling is cheap.
+
+      (b) Probe binding. The verdict's crossnode/exact tiers compare TX (node
+      gettxoutsetinfo), ZD (oracle), and UC (node commitment), but the old probe
+      order (SD,DIAG,UC,TX,ZD,LEG) spread them seconds apart — a fresh 36-137 s
+      oracle block could land between UC and TX/ZD and false-FAIL the height
+      binds. Fix: TX→ZD→UC→LEG are sampled back-to-back in a retry loop until
+      all three heights agree (the ~3 s window fits inside any single block
+      gap); SD/DIAG are diagnostic-only and taken after.
+
+      (c) The LEG verb was stale by design. `--legacy-utxo-commitment` snapshotted
+      the oracle chainstate with ldb_snapshot_make, which copies only compacted
+      .ldb SSTs and drops the WAL — measured live: snapshot max_height=3183455 /
+      vouts=1345257 vs the daemon's own gettxoutsetinfo height=3202300 /
+      txouts=1345637. leg_best could never equal tx_best, so the byte-exact tier
+      SKIPped every run — the exact byte-diff only ever ran against the
+      in-process fixture, which is precisely reviewer criticism #1. Fix: the verb
+      now uses the same WAL-inclusive signature-proven stable copy as the
+      shielded importer (utxo_recovery_copy_chainstate_stable), shared by
+      --gen-utxo-snapshot too since both stream a live zd.
+      Tenth rerun (2026-08-02): **VERDICT=PASS from=anchor tip=3202314
+      verified=3202314 elapsed=378s** — and the byte-exact tier ran
+      against the LIVE oracle for the first time: exact_tier=match, UTXO
+      SHA3 34fddecce7aa…8850590a identical over the zclassicd chainstate
+      and the c23 coins set at best block
+      00000bb67bc2ad55df785fe1542478136cd983fee3c3fc4772b71993fd9c7a90,
+      txouts=1345651 and supply=10412321.61252558 identical on both
+      sides, consensus_rejects=0, bg_state=complete. Sentinel:
+      ~/.local/state/zclassic23-canary/replay_canary_anchor.json. The C8
+      gate is now the accumulating byte-exact replay the reviewer asked
+      for — the `--from=genesis` track extends the same exact tier over
+      full history.
 
 **Standing method (never skip):** copy-prove on a fixture before live; NEVER
 delete `tip_finalize_log` rows; NEVER lower the public tip below `coins_best`;

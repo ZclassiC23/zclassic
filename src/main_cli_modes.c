@@ -41,9 +41,11 @@
 #include "controllers/snapshot_controller.h"
 #include "storage/coins_db.h"
 #include "storage/chainstate_legacy_reader.h"
-#include "storage/ldb_snapshot.h"
 #include "storage/progress_store.h"
 #include "services/shielded_history_import_service.h"
+#include "services/utxo_recovery_service.h" /* utxo_recovery_copy_chainstate_stable */
+#include "jobs/reducer_frontier.h"          /* reducer_frontier_derive_coins_best */
+#include "services/block_index_loader.h"    /* block_index_flat_sapling_root_at */
 #include "jobs/proof_validate_null_hash_rearm.h"
 #include "chain/chain.h"                  /* BLOCK_VALID_TRANSACTIONS: connected floor */
 #include "chain/chainparams.h"
@@ -2901,27 +2903,41 @@ static int legacy_utxo_run(const char *legacy, const char *out_path)
         return 2;
     }
 
+    /* Point-in-time snapshot of the source chainstate (never read the live
+     * LevelDB directly). MUST be the full WAL-inclusive stable copy — NOT
+     * ldb_snapshot_make, which copies only the compacted .ldb SSTs + metadata
+     * and silently drops the .log WAL: on a live daemon the snapshot's 'B'
+     * best-block pointer then reads the last COMPACTED state while every
+     * recent record (the entire tip region the parity gate compares at) sits
+     * only in the WAL — observed live 2026-08-02: SST-only snapshot reported
+     * max_height=3183455/vouts=1345257 while the daemon's own gettxoutsetinfo
+     * said height=3202300/txouts=1345637, so the byte-exact tier could never
+     * bind and always SKIPped. This is the same signature-proven
+     * point-in-time helper the shielded-history importer and the legacy UTXO
+     * import already use (rm -rf + cp -a + dir-signature equality, retried). */
     char snap_path[1200];
     snprintf(snap_path, sizeof(snap_path),
              "%s.snap_for_utxo_gen", chainstate_path);
-    char snap_err[256] = {0};
-    bool snap_ok = false;
-    for (int t = 0; t < 3 && !snap_ok; t++) {
-        snap_ok = ldb_snapshot_make(chainstate_path, snap_path,
-                                    snap_err, sizeof(snap_err));
-        if (!snap_ok && strcmp(snap_err, "manifest_changed") != 0) break;
+    {
+        struct zcl_result cpres =
+            utxo_recovery_copy_chainstate_stable(chainstate_path, snap_path);
+        if (!cpres.ok) {
+            fprintf(stderr, "chainstate snapshot failed: %s\n", cpres.message);
+            return 1;
+        }
     }
-    if (!snap_ok) {
-        fprintf(stderr, "ldb_snapshot_make(%s) failed: %s\n",
-                chainstate_path, snap_err);
-        return 1;
+    /* Remove the copied LOCK so the reader can open the snapshot. */
+    {
+        char tmp_lock[1300];
+        snprintf(tmp_lock, sizeof(tmp_lock), "%s/LOCK", snap_path);
+        unlink(tmp_lock);
     }
     fprintf(stderr, "[gen_utxo] snapshot built at %s\n", snap_path);
 
     void *h = NULL;
     if (!chainstate_legacy_open(snap_path, &h) || !h) {
         fprintf(stderr, "chainstate_legacy_open failed\n");
-        ldb_snapshot_destroy(snap_path);
+        (void)zcl_tree_remove(snap_path);
         return 1;
     }
 
@@ -2930,7 +2946,7 @@ static int legacy_utxo_run(const char *legacy, const char *out_path)
     if (!chainstate_legacy_get_best_block(h, &best)) {
         fprintf(stderr, "no best block\n");
         chainstate_legacy_close(h);
-        ldb_snapshot_destroy(snap_path);
+        (void)zcl_tree_remove(snap_path);
         return 1;
     }
     char hex[65];
@@ -2944,12 +2960,12 @@ static int legacy_utxo_run(const char *legacy, const char *out_path)
         if (!out) {
             fprintf(stderr, "fopen(%s) failed\n", out_path);
             chainstate_legacy_close(h);
-            ldb_snapshot_destroy(snap_path);
+            (void)zcl_tree_remove(snap_path);
             return 1;
         }
         if (fwrite(header, 1, sizeof(header), out) != sizeof(header)) {
             fclose(out); chainstate_legacy_close(h);
-            ldb_snapshot_destroy(snap_path); return 1;
+            (void)zcl_tree_remove(snap_path); return 1;
         }
     }
 
@@ -2963,7 +2979,7 @@ static int legacy_utxo_run(const char *legacy, const char *out_path)
                 (long long)n, g.fatal);
         if (out) fclose(out);
         chainstate_legacy_close(h);
-        ldb_snapshot_destroy(snap_path); return 1;
+        (void)zcl_tree_remove(snap_path); return 1;
     }
 
     uint8_t body_sha3[32];
@@ -2985,7 +3001,7 @@ static int legacy_utxo_run(const char *legacy, const char *out_path)
          * and exit — no sidecar, no checkpoint assert. best_block lets the
          * caller bind the hash to a height (via its own header index). */
         chainstate_legacy_close(h);
-        ldb_snapshot_destroy(snap_path);
+        (void)zcl_tree_remove(snap_path);
         printf("{\"legacy_utxo_sha3\":\"%s\",\"records\":%llu,"
                "\"vouts\":%llu,\"total_supply_satoshi\":%lld,"
                "\"min_height\":%d,\"max_height\":%d,"
@@ -3010,11 +3026,11 @@ static int legacy_utxo_run(const char *legacy, const char *out_path)
         fwrite(header, 1, sizeof(header), out) != sizeof(header)) {
         fprintf(stderr, "header rewrite failed\n");
         fclose(out); chainstate_legacy_close(h);
-        ldb_snapshot_destroy(snap_path); return 1;
+        (void)zcl_tree_remove(snap_path); return 1;
     }
     fclose(out);
     chainstate_legacy_close(h);
-    ldb_snapshot_destroy(snap_path);
+    (void)zcl_tree_remove(snap_path);
 
     fprintf(stderr, "[gen_utxo] wrote %s (%llu records, %llu vouts)\n",
             out_path, (unsigned long long)g.records,
@@ -3075,10 +3091,10 @@ int gen_utxo_snapshot_mode(int argc, char **argv)
 }
 
 /* --legacy-utxo-commitment: hash-only sibling of --gen-utxo-snapshot.
- * Streams zclassicd's chainstate (via a point-in-time ldb snapshot, daemon
- * stays running) and prints the canonical SHA3-256 UTXO commitment as one
- * JSON line on stdout — the byte-exact C8 reference the coarse
- * gettxoutsetinfo probe cannot be. See legacy_utxo_run. */
+ * Streams zclassicd's chainstate (via a point-in-time WAL-inclusive stable
+ * copy, daemon stays running) and prints the canonical SHA3-256 UTXO
+ * commitment as one JSON line on stdout — the byte-exact C8 reference the
+ * coarse gettxoutsetinfo probe cannot be. See legacy_utxo_run. */
 int legacy_utxo_commitment_mode(int argc, char **argv)
 {
     if (argc < 3) {
@@ -3101,7 +3117,12 @@ int legacy_utxo_commitment_mode(int argc, char **argv)
  * NOT auto-run on any live datadir: this REFUSES the operator's live canonical
  * (~/.zclassic-c23) and mint (~/.zclassic-c23-mint) datadirs by construction;
  * point it at a -datadir=<COPY> (the copy-prove harness flow, §6). The source
- * chainstate is read through a point-in-time ldb_snapshot (never the live one).
+ * chainstate is read through the signature-proven point-in-time stable copy
+ * (utxo_recovery_copy_chainstate_stable — WAL-inclusive, never the live one);
+ * the tip frontier binds at the TARGET's own fold-resume anchor (coins island
+ * root) via the target's header chain, not the source's self-reported
+ * best-block pointer. The target must have booted once first (the UTXO seed
+ * lands the coins authority and initializes the shielded cursors).
  *
  * Usage: zclassic23 -datadir=<TARGET-COPY>
  *        -import-complete-shielded=<zclassicd-datadir> */
@@ -3187,7 +3208,16 @@ int import_complete_shielded_mode(int argc, char **argv)
     }
 
     /* Point-in-time snapshot of the source chainstate (never read the live
-     * LevelDB directly — mirrors --gen-utxo-snapshot). */
+     * LevelDB directly). MUST be the full WAL-inclusive stable copy — NOT
+     * ldb_snapshot_make, which copies only the compacted .ldb SSTs + metadata
+     * and silently drops the .log WAL: on a live daemon the snapshot's 'B'
+     * best-block / 'z' best-anchor pointers then read the last COMPACTED
+     * state while every recent record (including the frontier the target's
+     * own UTXO seed came from) sits only in the WAL — observed live
+     * 2026-08-02: SST 'B' at h=3183455 vs coin records at h=3202110, so every
+     * pointer-derived bind refused. This is the same signature-proven
+     * point-in-time helper the legacy UTXO import and the tier1b frontier
+     * borrow already use. */
     char cs_src[700], snap_path[900];
     int csn = snprintf(cs_src, sizeof(cs_src), "%s/chainstate", src);
     if (csn < 0 || (size_t)csn >= sizeof(cs_src)) {
@@ -3210,124 +3240,158 @@ int import_complete_shielded_mode(int argc, char **argv)
                 "refusing (no silent truncation)\n", sizeof(snap_path));
         return 1;
     }
-    char snap_err[256] = {0};
-    bool snap_ok = false;
-    for (int t = 0; t < 4 && !snap_ok; t++) {
-        snap_ok = ldb_snapshot_make(cs_src, snap_path, snap_err,
-                                    sizeof(snap_err));
-        if (!snap_ok && strcmp(snap_err, "manifest_changed") != 0) break;
+    {
+        struct zcl_result cpres =
+            utxo_recovery_copy_chainstate_stable(cs_src, snap_path);
+        if (!cpres.ok) {
+            fprintf(stderr, "chainstate snapshot failed: %s\n", cpres.message);
+            return 1;
+        }
     }
-    if (!snap_ok) {
-        fprintf(stderr, "ldb_snapshot_make(%s) failed: %s\n", cs_src, snap_err);
-        return 1;
+    /* Remove the copied LOCK so the reader can open the snapshot. */
+    {
+        char tmp_lock[1300];
+        snprintf(tmp_lock, sizeof(tmp_lock), "%s/LOCK", snap_path);
+        unlink(tmp_lock);
     }
     printf("Chainstate snapshot: %s\n", snap_path);
 
-    /* Read the chainstate best block, then bind it to OUR header chain: the
-     * block's hashFinalSaplingRoot (blocks.sapling_root) is the chain-committed
-     * tip Sapling root the importer verifies the frontier against. */
-    struct uint256 best_block;
-    uint256_set_null(&best_block);
-    {
-        void *rh = NULL;
-        if (!chainstate_legacy_open(snap_path, &rh) || !rh ||
-            !chainstate_legacy_get_best_block(rh, &best_block)) {
-            if (rh) chainstate_legacy_close(rh);
-            ldb_snapshot_destroy(snap_path);
-            fprintf(stderr, "cannot read chainstate best block\n");
-            return 1;
-        }
-        chainstate_legacy_close(rh);
-    }
-
-    int64_t tip_height = -1;
-    struct uint256 tip_sapling_root;
-    uint256_set_null(&tip_sapling_root);
-    bool root_populated = false;
-    {
-        char db_path[600];
-        snprintf(db_path, sizeof(db_path), "%s/node.db", target);
-        struct node_db ndb;
-        if (!node_db_open(&ndb, db_path)) {
-            ldb_snapshot_destroy(snap_path);
-            fprintf(stderr, "cannot open %s (import --importblockindex the "
-                            "header chain first)\n", db_path);
-            return 1;
-        }
-        /* The header-committed hashFinalSaplingRoot lives in the block index
-         * projection (blocks.sapling_root), populated from the block HEADER by
-         * --importblockindex — NOT a value that requires the block body / full
-         * connection. Read it via the model so the bind source is exactly the
-         * column the header import writes. */
-        struct db_block blk;
-        if (db_block_find_by_hash(&ndb, best_block.data, &blk) &&
-            blk.status >= BLOCK_VALID_TRANSACTIONS) {
-            tip_height = blk.height;
-            memcpy(tip_sapling_root.data, blk.sapling_root, 32);
-            root_populated = !uint256_is_null(&tip_sapling_root);
-        }
-        node_db_close(&ndb);
-    }
-    if (tip_height < 0) {
-        ldb_snapshot_destroy(snap_path);
-        fprintf(stderr,
-                "chainstate best block not found in the target header chain — "
-                "cannot bind the tip Sapling root. Run --importblockindex "
-                "against the same zclassicd datadir first.\n");
-        return 1;
-    }
-    if (!root_populated) {
-        ldb_snapshot_destroy(snap_path);
-        fprintf(stderr,
-                "tip bind SOURCE is all-zero: blocks.sapling_root at the "
-                "chainstate best block (height=%lld) is null. This header "
-                "chain was imported by a build that did not persist the block "
-                "header's hashFinalSaplingRoot. Re-run `zclassic23 "
-                "--importblockindex <zclassicd-datadir>` with the current "
-                "build (which writes sapling_root from the header), then retry "
-                "-import-complete-shielded. Refusing rather than binding the "
-                "tip frontier against zeros.\n", (long long)tip_height);
-        return 1;
-    }
-    char root_hex[65];
-    uint256_get_hex(&tip_sapling_root, root_hex);
-    printf("Tip bind: height=%lld hashFinalSaplingRoot=%s\n",
-           (long long)tip_height, root_hex);
-
+    /* The bind the fold actually needs is at the TARGET's own bind anchor,
+     * derived from the target's progress.kv — never from the source's
+     * self-reported 'B' best-block, which only reflects the source's last
+     * flush and can race past the resume point on a live daemon. The anchor
+     * is the durable seed floor when one is declared (a node that folded
+     * PAST its seed already carries the roots above the floor in its own
+     * anchor table — the import only owes history AT AND BELOW the floor),
+     * else the live coins island root (a node wedged AT its seed — the
+     * copy-prove case). This requires the target to have booted once and
+     * landed its UTXO seed (the same first boot initializes the shielded
+     * cursors shi_read_boundaries requires), so refuse clearly on a fresh
+     * datadir. */
     if (!progress_store_open(target)) {
-        ldb_snapshot_destroy(snap_path);
+        (void)zcl_tree_remove(snap_path);
         fprintf(stderr, "cannot open progress.kv in %s\n", target);
         return 1;
     }
+    int32_t seed_floor = -1;
+    bool floor_found = false;
+    if (!reducer_seed_floor_height_read(progress_store_db(), &seed_floor,
+                                        &floor_found)) {
+        progress_store_close();
+        (void)zcl_tree_remove(snap_path);
+        fprintf(stderr, "cannot read the target's seed floor from "
+                        "progress.kv (read error)\n");
+        return 1;
+    }
+    int32_t coins_best = -1;
+    uint8_t cb_hash[32];
+    bool cb_hash_found = false, cb_found = false;
+    if (!reducer_frontier_derive_coins_best(progress_store_db(), &coins_best,
+                                            cb_hash, &cb_hash_found,
+                                            &cb_found)) {
+        progress_store_close();
+        (void)zcl_tree_remove(snap_path);
+        fprintf(stderr, "cannot derive the target's fold-resume anchor from "
+                        "progress.kv (read error)\n");
+        return 1;
+    }
+    if (!floor_found && (!cb_found || coins_best < 0)) {
+        progress_store_close();
+        (void)zcl_tree_remove(snap_path);
+        fprintf(stderr,
+                "target datadir has no coins authority yet — boot it once, "
+                "let the UTXO seed land, then re-run this import (the "
+                "shielded history cursors are also only initialized by that "
+                "first boot). Nothing committed.\n");
+        return 1;
+    }
+    int64_t tip_height =
+        floor_found ? (int64_t)seed_floor : (int64_t)coins_best;
+    /* The chain-committed hashFinalSaplingRoot at the resume anchor comes
+     * from the target's own HEADER INDEX flat file (block_index.bin):
+     * accept_block_header copies the wire hashFinalSaplingRoot into every
+     * persisted index entry (lib/validation/src/accept_block_header.c) and
+     * the height-sorted flat persists it for EVERY header — including the
+     * header-only heights a seeded boot's fold-resume anchor sits at. The
+     * node.db blocks.sapling_root column is NOT a valid source (blocks rows
+     * are only written on body fold / lean sync / block import — canary
+     * FAIL#6), and neither is the event-log block_index projection (a bulk
+     * P2P header sync emits no EV_BLOCK_HEADER events — the projection is
+     * EMPTY on a fresh cold-import datadir, canary FAIL#7). The reader
+     * mmaps the flat, verifies the embedded integrity commitment, and
+     * binary-searches the height-sorted rows; a stale-branch sibling at the
+     * same height fails CLOSED at the service's by-root source lookup,
+     * never a misbind. The flat is freshened by the node's graceful
+     * shutdown save, so this read REQUIRES the clean stop the canary /
+     * operator flow performs before invoking the verb. */
+    struct uint256 tip_sapling_root;
+    uint256_set_null(&tip_sapling_root);
+    {
+        struct zcl_result fr = block_index_flat_sapling_root_at(
+            target, (int32_t)tip_height, tip_sapling_root.data);
+        if (!fr.ok) {
+            fprintf(stderr, "tip bind root read: %s\n", fr.message);
+        }
+    }
+    if (uint256_is_null(&tip_sapling_root)) {
+        progress_store_close();
+        (void)zcl_tree_remove(snap_path);
+        fprintf(stderr,
+                "tip bind SOURCE is all-zero: the header index has no "
+                "hashFinalSaplingRoot for the fold-resume anchor "
+                "(height=%lld) — the node must be stopped GRACEFULLY first "
+                "(the shutdown flat save is what freshens block_index.bin "
+                "past the header-sync tip), or this header chain was "
+                "persisted by a build that did not carry the header's "
+                "hashFinalSaplingRoot. Refusing rather than binding the "
+                "tip frontier against zeros.\n",
+                (long long)tip_height);
+        return 1;
+    }
+    /* Provenance only: the source's own best-block pointer. Informational —
+     * the bind above no longer depends on it. */
+    {
+        struct uint256 src_best;
+        uint256_set_null(&src_best);
+        void *rh = NULL;
+        if (chainstate_legacy_open(snap_path, &rh) && rh) {
+            if (chainstate_legacy_get_best_block(rh, &src_best)) {
+                char bb_hex[65];
+                uint256_get_hex(&src_best, bb_hex);
+                printf("Source best block: %s\n", bb_hex);
+            }
+            chainstate_legacy_close(rh);
+        }
+    }
+    char root_hex[65];
+    uint256_get_hex(&tip_sapling_root, root_hex);
+    printf("Tip bind: height=%lld hashFinalSaplingRoot=%s "
+           "(target fold-resume anchor)\n", (long long)tip_height, root_hex);
 
     /* Bind-height guard, surfaced on the TERMINAL (the service re-enforces the
      * same predicate internally before its transaction): refuse to manufacture
-     * a height-mismatched datadir. A zclassicd whose on-disk chainstate lags
-     * its live tip resolves to a tip_height BELOW the target's fold-resume
-     * anchor (coins island root); binding there wedges the fold at the first
-     * Sapling-commitment block above the island — a silent consensus-time
-     * livelock this guard turns into a loud build-time refusal. Nothing is
-     * committed on this path (the import transaction never begins). */
+     * a height-mismatched datadir. tip_height above IS the target's fold-
+     * resume anchor by construction, so this probe is defense-in-depth — it
+     * catches a caller that bypasses the verb with a foreign height, and any
+     * drift of the target's coins authority between the two derives. Nothing
+     * is committed on this path (the import transaction never begins). */
     int32_t bind_coins_best = -1;
     if (!shielded_history_import_bind_guard_probe(progress_store_db(),
                                                   tip_height,
                                                   &bind_coins_best)) {
         progress_store_close();
-        ldb_snapshot_destroy(snap_path);
+        (void)zcl_tree_remove(snap_path);
         if (bind_coins_best >= 0) {
             fprintf(stderr,
-                    "IMPORT REFUSED — bind height mismatch: the source "
-                    "chainstate best block resolves to h=%lld but the target "
-                    "datadir's fold-resume anchor (coins island root) is "
-                    "h=%lld. Binding the shielded frontier there manufactures "
-                    "a datadir whose fold wedges deterministically at the "
-                    "first Sapling-commitment block above the island "
-                    "(hashFinalSaplingRoot mismatch, H* pinned). Remedy: "
-                    "re-run against a consistent source whose chainstate best "
-                    "block == the island root (h=%lld). Nothing committed; "
-                    "the wedge is intact.\n",
-                    (long long)tip_height, (long long)bind_coins_best,
-                    (long long)bind_coins_best);
+                    "IMPORT REFUSED — bind height mismatch: the requested "
+                    "bind h=%lld does not match the target datadir's "
+                    "fold-resume anchor (coins island root) h=%lld. Binding "
+                    "the shielded frontier there manufactures a datadir "
+                    "whose fold wedges deterministically at the first "
+                    "Sapling-commitment block above the island "
+                    "(hashFinalSaplingRoot mismatch, H* pinned). Nothing "
+                    "committed; the wedge is intact.\n",
+                    (long long)tip_height, (long long)bind_coins_best);
         } else {
             fprintf(stderr,
                     "IMPORT REFUSED — cannot derive the target datadir's "
@@ -3399,7 +3463,7 @@ int import_complete_shielded_mode(int argc, char **argv)
     }
 
     progress_store_close();
-    ldb_snapshot_destroy(snap_path);
+    (void)zcl_tree_remove(snap_path);
 
     if (!ok) {
         fprintf(stderr,
