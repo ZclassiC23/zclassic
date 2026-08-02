@@ -96,6 +96,11 @@ void sapling_anchor_frontier_test_reset(void);
  * sapling_anchor_frontier_test_reset(). */
 int sapling_anchor_frontier_test_remedy_calls(void);
 
+/* Number of times the remedy reached the EMPTY_TABLE-first tier1 seed attempt
+ * since the last reset — proves the routing order (tier1 before the
+ * named-remedy ladder) in dual anchor+nullifier episodes. */
+int sapling_anchor_frontier_test_tier1_attempts(void);
+
 /* Force a NAMED_REMEDY episode and reset the .progressing baseline, so the
  * progressing hook can be exercised in isolation (without a full detect/remedy
  * round wiring up an app_runtime db). */
