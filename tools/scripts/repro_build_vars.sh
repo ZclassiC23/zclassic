@@ -34,7 +34,12 @@
 # wholesale, so we hand back the RESOLVED value (which already contains every
 # -I include path) and rewrite only the reproducibility-hostile tokens.
 _repro_make_var() {
-    make -pn 2>/dev/null | grep -E "^$1 = " | head -1 | cut -d= -f2- | sed 's/^ //'
+    # make -n can exit non-zero while still printing the full database (a
+    # recipe-time `$(file >...)` rsp expansion with a not-yet-created epoch
+    # dir does exactly that under the default goal). Trust the printed
+    # content, not the -n exit code: if make fails AND prints nothing, grep's
+    # own rc=1 still fails the pipeline under pipefail.
+    { make -pn 2>/dev/null || :; } | grep -E "^$1 = " | head -1 | cut -d= -f2- | sed 's/^ //'
 }
 
 # SOURCE_DATE_EPOCH: pin from the HEAD commit time. Allow a caller to override
