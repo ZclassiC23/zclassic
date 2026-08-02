@@ -101,6 +101,22 @@ bool boot_full_fold_is_armed(int32_t *out_target);
 bool boot_full_fold_finish(struct sqlite3 *pdb, int32_t through, int64_t count,
                            int32_t target, int stall_limit);
 
+/* One-shot tip-height consensus-state bundle export at the end of a REACHED
+ * -full-fold run (boot_full_fold.c): the checkpoint mint's producer-END
+ * sequence — source receipt finalize, earned sovereign markers, bundle export —
+ * bound to the header TIP the fold reached instead of cp->height. Callable only
+ * by the binary that ran the fold (the receipt's running-binary binding);
+ * refuses (false, fail-loud) on any gate so main.c surfaces a non-zero exit. */
+bool boot_full_fold_export_bundle(struct sqlite3 *pdb, const char *datadir,
+                                  int32_t target);
+
+/* The whole -full-fold terminal path (verdict + conditional tip bundle
+ * export), called by boot_mint_anchor_run in place of the checkpoint
+ * ceremony. Returns the REACHED verdict; an export refusal turns it false. */
+bool boot_full_fold_conclude(struct sqlite3 *pdb, const char *datadir,
+                             int32_t through, int64_t count, int32_t target,
+                             int stall_limit);
+
 /* Seed a verified Sapling frontier after snapshot/refold reset. */
 void boot_seed_sapling_anchor_frontier_after_reset(struct main_state *state);
 
