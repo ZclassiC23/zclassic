@@ -2139,7 +2139,7 @@ static int stbtt__run_charstring(const stbtt_fontinfo *info, int glyph_index, st
                subrs = stbtt__cid_get_glyph_subrs(info, glyph_index);
             has_subrs = 1;
          }
-         // FALLTHROUGH
+         [[fallthrough]]; /* C23 — was "// FALLTHROUGH" (GCC-only); clang -Wimplicit-fallthrough rejects the comment form */
       case 0x1D: // callgsubr
          if (sp < 1) return STBTT__CSERR("call(g|)subr stack");
          v = (int) s[--sp];
