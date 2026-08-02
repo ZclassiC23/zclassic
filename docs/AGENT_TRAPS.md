@@ -87,6 +87,15 @@ historical fixture passes, then deploy/restart intentionally.
   (`make hotswap-try` / `make hotswap-apply` do this for you). A bare
   `build/bin/zclassic23-dev <cmd>` falls back to the canonical default
   datadir/ports and talks to the live node, not the dev lane.
+- **`--importblockindex` ignores even an explicit `-datadir=` — it writes the
+  DEFAULT datadir's `node.db` unless given the target as a positional.** The
+  safe form for a side datadir is
+  `build/bin/zclassic23 --importblockindex <zclassicd-datadir> <side-datadir>/node.db`
+  (exactly what the `-full-fold` FATAL prints). Proven 2026-08-02: a
+  `-datadir=<producer> --importblockindex $HOME/.zclassic` invocation bulk-wrote
+  3,192,879 headers into the CANONICAL `~/.zclassic-c23/node.db` while the live
+  node was running (survived — the rows were additive duplicates the live node
+  already had — but that is the live lane and the write was unintentional).
 - **Do not hand-maintain `compile_commands.json`.** Run `make agent-index`.
   It derives commands from the real `DEV_OBJS` recipes, including generated
   headers and the target-specific `-Og`/hot-bucket `-O2` split, then records
