@@ -275,6 +275,21 @@
 # 8-attempt schedule, plus its regression test). Re-baselined at 1668;
 # count STAYS 14.
 #
+# 2026-08-02 (science-object + contributor-binding hardening wave): two
+# lib/vcs files crossed the 800 ceiling and are freshly BASELINED at their
+# current LOC rather than spending ratchet slots; the recorded count STAYS
+# 14.
+#   lib/vcs/src/zcode_science.c 864 — submit-vs-verify expiry split
+#       (vcs_zcode_study_spec_accepts_submission_at), findings/review
+#       time-order fix, canonical-action binding, and the strengthened
+#       reproduction/findings cross-checks (owner directive H1-H3).
+#   lib/vcs/src/zcode_contributor_binding.c 983 — contributor_binding.v2
+#       alongside the frozen v1: three-signature ROTATE (ZID + old ZCL +
+#       new ZCL), delayed RECOVER path, chain-level retired-key reuse ban
+#       (owner directive H4).
+# Both are canonical wire/validation modules mirroring package_store.c's
+# one-file shape; baselining keeps future growth on them visible.
+#
 14
 #
 # 2026-07-27 (os_sandbox dynamic Landlock handled-set): os_sandbox_linux.c

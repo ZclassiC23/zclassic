@@ -140,6 +140,39 @@ consume only `root()` + `verify()`/`validate_successor()`; no
 wallet/database/command surfaces were touched. Golden vectors are pinned in
 `lib/test/src/test_zcode_contributor.c` (`ZCB_KAT_*`).
 
+Integration hardening (2026-08-02, same lane): `validate_at()` rejects use
+before `issued_unix` (`ERR_NOT_YET_VALID`); `seal()` re-derives the Ed25519
+public key from the supplied ZID secret and rejects a mismatch;
+`validate_successor()` rejects non-increasing `issued_unix`
+(`ERR_TIME_ORDER`). Golden v1 KATs unchanged.
+
+### `contributor_binding.v2`
+
+Three-signature rotation and delayed recovery (2026-08-02): 384-byte wire =
+192-byte body (v1 fields + `activation_unix`) + ZID + current-ZCL + new-ZCL
+signature slots under `zcl.zcode.contributor_binding.v2` /
+`.root.v2` domains. ACTIVE signs both ZCL slots with the initial key; ROTATE
+requires ZID + OLD ZCL + NEW ZCL; REVOKE keeps and signs with the retiring
+key and zeroes the new slot; RECOVER (op 4) zeroes the current slot (old key
+presumed lost), signs the new slot, and activates only at
+`activation_unix >= issued_unix + 604800` — a separate delayed path, never a
+fast rotation. `vcs_zcode_contributor_binding_validate_chain_v2()` adds the
+retired-key reuse ban across the whole chain. v1 wire/KATs are frozen; v2
+KATs (`ZCB2_KAT_*`) pinned deterministic across three runs.
+
+Science-object hardening (S1 files, owner directive 2026-08-02):
+findings/review time order corrected to match this spec (findings formed
+first; `review->created_unix` may be LATER than the findings' creation —
+rejected only when earlier); "may submit now"
+(`vcs_zcode_study_spec_accepts_submission_at()`) is split from "evidence was
+valid when created" — cross-object validators no longer consult the study
+expiry against `now_unix`, so valid history re-verifies forever while
+post-window submissions and future evidence (`ERR_EVIDENCE_FUTURE`) are
+rejected; benchmark results must bind a canonical fixed-action root
+(`ERR_ACTION_MISMATCH`); reproductions must compare the same
+study/task/candidate/action across both results; findings must bind the
+evaluated result's task and candidate roots.
+
 ## Fixed scientific actions
 
 Extend the closed `vcs_build_action_v1` registry with:
