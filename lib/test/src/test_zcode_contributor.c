@@ -1106,6 +1106,15 @@ static int t_binding_fields(void)
               vcs_zcode_contributor_binding_seal(&x, other_sk, other_pk,
                                                  zcl_sk) ==
                   VCS_ZCODE_BINDING_ERR_KEY_MISMATCH);
+    /* A ZID secret that does not derive the claimed pubkey is rejected
+     * BEFORE anything is signed — the body field agrees with the pubkey
+     * arg here, so only the secret/pubkey derivation can fire. */
+    x = b; memcpy(x.zid_pubkey, other_pk, 32);
+    ZC4_CHECK("fields: seal zid secret/pubkey mismatch",
+              vcs_zcode_contributor_binding_seal(&x, zid_sk, other_pk,
+                                                 zcl_sk) ==
+                  VCS_ZCODE_BINDING_ERR_KEY_MISMATCH);
+    x = b;
     uint8_t wrong_zcl[32];
     memset(wrong_zcl, 0x23, sizeof(wrong_zcl));
     ZC4_CHECK("fields: seal wrong zcl secret",
@@ -1188,6 +1197,12 @@ static int t_binding_expiry(void)
     ZC4_CHECK("expiry: live binding accepted",
               vcs_zcode_contributor_binding_validate_at(&b, ZCB_EXPIRES - 1) ==
                   VCS_ZCODE_BINDING_OK);
+    ZC4_CHECK("notyet: before issue rejected",
+              vcs_zcode_contributor_binding_validate_at(&b, ZCB_ISSUED - 1) ==
+                  VCS_ZCODE_BINDING_ERR_NOT_YET_VALID);
+    ZC4_CHECK("notyet: at issue accepted",
+              vcs_zcode_contributor_binding_validate_at(&b, ZCB_ISSUED) ==
+                  VCS_ZCODE_BINDING_OK);
     ZC4_CHECK("expiry: expired at boundary",
               vcs_zcode_contributor_binding_validate_at(&b, ZCB_EXPIRES) ==
                   VCS_ZCODE_BINDING_ERR_EXPIRED);
@@ -1195,9 +1210,13 @@ static int t_binding_expiry(void)
               vcs_zcode_contributor_binding_validate_at(&b,
                                                         ZCB_EXPIRES + 1000) ==
                   VCS_ZCODE_BINDING_ERR_EXPIRED);
-    ZC4_CHECK("expiry: nonpositive now",
+    ZC4_CHECK("notyet: nonpositive now",
               vcs_zcode_contributor_binding_validate_at(&b, 0) ==
-                  VCS_ZCODE_BINDING_ERR_EXPIRED);
+                  VCS_ZCODE_BINDING_ERR_NOT_YET_VALID);
+    ZC4_CHECK("notyet: verify gates early use",
+              vcs_zcode_contributor_binding_verify(&b, net, zid_pk,
+                                                   ZCB_ISSUED - 1) ==
+                  VCS_ZCODE_BINDING_ERR_NOT_YET_VALID);
     ZC4_CHECK("expiry: verify gates expiry",
               vcs_zcode_contributor_binding_verify(&b, net, zid_pk,
                                                    ZCB_EXPIRES) ==
@@ -1249,6 +1268,17 @@ static int t_binding_chain(void)
               vcs_zcode_contributor_binding_validate_successor(&active, &x,
                                                                now) ==
                   VCS_ZCODE_BINDING_ERR_PREDECESSOR);
+    /* Issue time must strictly increase along the chain. */
+    x = rotate; x.issued_unix = active.issued_unix;
+    ZC4_CHECK("chain: equal issued_unix rejected",
+              vcs_zcode_contributor_binding_validate_successor(&active, &x,
+                                                               now) ==
+                  VCS_ZCODE_BINDING_ERR_TIME_ORDER);
+    x = rotate; x.issued_unix = active.issued_unix - 5;
+    ZC4_CHECK("chain: regressed issued_unix rejected",
+              vcs_zcode_contributor_binding_validate_successor(&active, &x,
+                                                               now) ==
+                  VCS_ZCODE_BINDING_ERR_TIME_ORDER);
     /* A structurally valid second ACTIVE cannot succeed a link: the chain
      * gate rejects re-genesis before any linkage check. */
     struct vcs_zcode_contributor_binding_v1 fresh;

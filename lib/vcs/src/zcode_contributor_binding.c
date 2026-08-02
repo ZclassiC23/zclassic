@@ -144,6 +144,7 @@ const char *vcs_zcode_binding_error_string(enum vcs_zcode_binding_error error)
     case VCS_ZCODE_BINDING_ERR_EXPIRED: return "object-expired";
     case VCS_ZCODE_BINDING_ERR_REVOKED: return "binding-revoked-terminal";
     case VCS_ZCODE_BINDING_ERR_LINKAGE: return "successor-linkage-invalid";
+    case VCS_ZCODE_BINDING_ERR_NOT_YET_VALID: return "not-yet-valid";
     }
     return "unknown";
 }
@@ -211,7 +212,11 @@ enum vcs_zcode_binding_error vcs_zcode_contributor_binding_validate_at(
     enum vcs_zcode_binding_error error =
         vcs_zcode_contributor_binding_validate(binding);
     if (error != VCS_ZCODE_BINDING_OK) return error;
-    if (now_unix <= 0 || now_unix >= binding->expires_unix)
+    /* A binding is usable only inside [issued_unix, expires_unix): early use
+     * is NOT_YET_VALID, use at or after expiry is EXPIRED. */
+    if (now_unix < binding->issued_unix)
+        return VCS_ZCODE_BINDING_ERR_NOT_YET_VALID;
+    if (now_unix >= binding->expires_unix)
         return VCS_ZCODE_BINDING_ERR_EXPIRED;
     return VCS_ZCODE_BINDING_OK;
 }
@@ -318,6 +323,13 @@ enum vcs_zcode_binding_error vcs_zcode_contributor_binding_seal(
     if (!binding || !zid_secret || !zid_pubkey || !zcl_secret)
         return VCS_ZCODE_BINDING_ERR_NULL;
     if (!root_nonzero(zid_pubkey)) return VCS_ZCODE_BINDING_ERR_PUBKEY_ZERO;
+    /* The ZID public key is re-derived from the supplied secret: a secret
+     * that does not produce the claimed pubkey must never seal — the
+     * resulting signature would be unverifiable garbage under either key. */
+    uint8_t zid_derived_pk[32], zid_derived_sk[32];
+    ed25519_keypair(zid_derived_pk, zid_derived_sk, zid_secret);
+    if (memcmp(zid_derived_pk, zid_pubkey, 32) != 0)
+        return VCS_ZCODE_BINDING_ERR_KEY_MISMATCH;
     if (memcmp(binding->zid_pubkey, zid_pubkey, 32) != 0)
         return VCS_ZCODE_BINDING_ERR_KEY_MISMATCH;
 
@@ -438,6 +450,10 @@ enum vcs_zcode_binding_error vcs_zcode_contributor_binding_validate_successor(
     /* Exact +1 sequencing rejects both replay (same sequence) and skips. */
     if (next->sequence != prior->sequence + 1)
         return VCS_ZCODE_BINDING_ERR_SEQUENCE;
+    /* Time must move forward along the chain: a successor issued at or
+     * before its predecessor is a reordering, not a rotation. */
+    if (next->issued_unix <= prior->issued_unix)
+        return VCS_ZCODE_BINDING_ERR_TIME_ORDER;
 
     if (next->operation == VCS_ZCODE_BINDING_ROTATE) {
         if (memcmp(prior->zcl_pubkey, next->zcl_pubkey, 33) == 0)

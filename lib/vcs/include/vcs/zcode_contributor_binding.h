@@ -84,6 +84,7 @@ enum vcs_zcode_binding_error {
     VCS_ZCODE_BINDING_ERR_EXPIRED,
     VCS_ZCODE_BINDING_ERR_REVOKED,
     VCS_ZCODE_BINDING_ERR_LINKAGE,
+    VCS_ZCODE_BINDING_ERR_NOT_YET_VALID,
 };
 
 const char *vcs_zcode_binding_error_string(enum vcs_zcode_binding_error error);
@@ -104,9 +105,9 @@ struct vcs_zcode_contributor_binding_v1 {
 };
 
 /* Structural validation. validate() requires both signatures to be
- * non-zero; validate_at() additionally rejects a binding whose expiry has
- * passed at now_unix. Neither checks the signatures cryptographically —
- * that is verify()'s job. */
+ * non-zero; validate_at() additionally rejects use before issued_unix
+ * (NOT_YET_VALID) or at/after expires_unix (EXPIRED). Neither checks the
+ * signatures cryptographically — that is verify()'s job. */
 enum vcs_zcode_binding_error vcs_zcode_contributor_binding_validate(
     const struct vcs_zcode_contributor_binding_v1 *binding);
 enum vcs_zcode_binding_error vcs_zcode_contributor_binding_validate_at(
@@ -130,9 +131,10 @@ enum vcs_zcode_binding_error vcs_zcode_contributor_binding_body_root(
 enum vcs_zcode_binding_error vcs_zcode_contributor_binding_root(
     const struct vcs_zcode_contributor_binding_v1 *binding, uint8_t out[32]);
 
-/* Sign the body root with both keys. binding->zid_pubkey must already equal
- * zid_pubkey and, for ACTIVE/ROTATE, binding->zcl_pubkey must be the key
- * derived from zcl_secret (KEY_MISMATCH otherwise). The secp256k1 signature
+/* Sign the body root with both keys. The ZID public key is re-derived from
+ * zid_secret and must equal both zid_pubkey and binding->zid_pubkey; for
+ * ACTIVE/ROTATE, binding->zcl_pubkey must be the key derived from
+ * zcl_secret (any mismatch is KEY_MISMATCH). The secp256k1 signature
  * is normalized to low-S before serialization, so sealing is byte
  * deterministic. */
 enum vcs_zcode_binding_error vcs_zcode_contributor_binding_seal(
@@ -153,6 +155,7 @@ enum vcs_zcode_binding_error vcs_zcode_contributor_binding_verify(
  * on the same network and ZID; prior not revoked (revocation is terminal);
  * next not ACTIVE; next->predecessor_root == root(prior);
  * next->sequence == prior->sequence + 1 (replay and skips rejected);
+ * next->issued_unix > prior->issued_unix (reorderings rejected);
  * ROTATE must change the zcl key; REVOKE must keep it (no implicit
  * replacement); both bindings' signatures verify (prior structurally,
  * next at now_unix). */
