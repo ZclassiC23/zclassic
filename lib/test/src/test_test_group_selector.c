@@ -297,11 +297,22 @@ static int test_runner_exact_selection(void)
                NULL);
 
         /* Exercise the Make admission seam without running its recipe (and
-         * therefore without recursively acquiring the checkout lock). */
+         * therefore without recursively acquiring the checkout lock).
+         * `-o /bin/true` + ZCL_DEPFILE_PROFILES= keep the probe's output
+         * bounded and epoch-temperature independent: the candidate override
+         * retargets the real candidate RULE onto /bin/true, so without
+         * --old-file a cold epoch (e.g. the bench's cold suite, or mutation
+         * drift since this binary was baked) makes `make -n` plan the full
+         * per-TU epoch rebuild — megabytes of output that truncate the
+         * capture buffer, followed by a fatal $(file >link-inputs.rsp)
+         * expansion against the not-yet-created epoch dir (rc=2). The
+         * admission seam under test is parse-time text; skipping the stale
+         * prerequisite graph loses none of the proof. */
         n = snprintf(command, sizeof(command),
-                     "make -n t-fast-exact ONLY=api "
+                     "make -o /bin/true -n t-fast-exact ONLY=api "
                      "TEST_PARALLEL_FAST_CANDIDATE=/bin/true "
                      "TEST_PARALLEL_FAST_ACTIVE=/bin/true "
+                     "ZCL_DEPFILE_PROFILES= "
                      "BUILD_SOURCE_RECORD='%s 1 %s' 2>&1",
                      zcl_build_source_id_sha256(),
                      zcl_build_source_mutation_sha256());
@@ -312,9 +323,10 @@ static int test_runner_exact_selection(void)
         ASSERT(strstr(out, "--exact=test_api") != NULL);
 
         n = snprintf(command, sizeof(command),
-                     "make -n t-fast-exact ONLY=api_missing "
+                     "make -o /bin/true -n t-fast-exact ONLY=api_missing "
                      "TEST_PARALLEL_FAST_CANDIDATE=/bin/true "
                      "TEST_PARALLEL_FAST_ACTIVE=/bin/true "
+                     "ZCL_DEPFILE_PROFILES= "
                      "BUILD_SOURCE_RECORD='%s 1 %s' 2>&1",
                      zcl_build_source_id_sha256(),
                      zcl_build_source_mutation_sha256());
