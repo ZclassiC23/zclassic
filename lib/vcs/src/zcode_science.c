@@ -6,8 +6,13 @@
 #include "base/serialize_le.h"
 #include "crypto/ed25519.h"
 #include "crypto/sha3.h"
+#include "util/hw_profile.h"
 
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/utsname.h>
+#include <unistd.h>
 
 static const uint8_t study_magic[8] = {'Z','C','S','T','U','D','\r','\n'};
 static const uint8_t result_magic[8] = {'Z','C','B','E','N','C','\r','\n'};
@@ -15,6 +20,9 @@ static const uint8_t reproduction_magic[8] =
     {'Z','C','R','E','P','R','\r','\n'};
 static const uint8_t findings_magic[8] = {'Z','C','F','I','N','D','\r','\n'};
 static const uint8_t vote_magic[8] = {'Z','C','V','O','T','E','\r','\n'};
+static const uint8_t hw_profile_magic[8] = {'Z','C','H','W','P','F','\r','\n'};
+static const uint8_t method_magic[8] = {'Z','C','B','M','T','H','\r','\n'};
+static const uint8_t result_v2_magic[8] = {'Z','C','B','E','N','2','\r','\n'};
 
 static bool bytes_nonzero(const uint8_t *bytes, size_t len)
 {
@@ -41,6 +49,12 @@ static void put_u16(uint8_t *wire, size_t *off, uint16_t value)
     *off += 2;
 }
 
+static void put_u32(uint8_t *wire, size_t *off, uint32_t value)
+{
+    zcl_write_u32_le(wire + *off, value);
+    *off += 4;
+}
+
 static void put_u64(uint8_t *wire, size_t *off, uint64_t value)
 {
     zcl_write_u64_le(wire + *off, value);
@@ -57,6 +71,13 @@ static uint16_t get_u16(const uint8_t *wire, size_t *off)
 {
     uint16_t value = zcl_read_u16_le(wire + *off);
     *off += 2;
+    return value;
+}
+
+static uint32_t get_u32(const uint8_t *wire, size_t *off)
+{
+    uint32_t value = zcl_read_u32_le(wire + *off);
+    *off += 4;
     return value;
 }
 
@@ -110,6 +131,13 @@ const char *vcs_zcode_science_error_string(enum vcs_zcode_science_error error)
     case VCS_ZCODE_SCIENCE_ERR_EXPIRED: return "object-expired";
     case VCS_ZCODE_SCIENCE_ERR_EVIDENCE_FUTURE: return "evidence-from-future";
     case VCS_ZCODE_SCIENCE_ERR_ACTION_MISMATCH: return "action-root-mismatch";
+    case VCS_ZCODE_SCIENCE_ERR_PADDING: return "string-padding-invalid";
+    case VCS_ZCODE_SCIENCE_ERR_ISA: return "isa-bits-invalid";
+    case VCS_ZCODE_SCIENCE_ERR_DISTRIBUTION:
+        return "sample-distribution-invalid";
+    case VCS_ZCODE_SCIENCE_ERR_METHOD_MISMATCH: return "method-root-mismatch";
+    case VCS_ZCODE_SCIENCE_ERR_HARDWARE_MISMATCH:
+        return "hardware-profile-root-mismatch";
     }
     return "unknown";
 }
@@ -860,5 +888,500 @@ enum vcs_zcode_science_error vcs_zcode_science_findings_validate_for_review(
         return VCS_ZCODE_SCIENCE_ERR_EXPIRED;
     if (findings->created_unix > now_unix)
         return VCS_ZCODE_SCIENCE_ERR_EVIDENCE_FUTURE;
+    return VCS_ZCODE_SCIENCE_OK;
+}
+
+/* ── hardware_profile.v1 ────────────────────────────────────────────── */
+
+/* Fixed-width string fields are NUL-padded: content bytes, one NUL, then
+ * zeros to the field width. A field with no NUL at all, or content after
+ * the first NUL, is a padding violation. All-zero ("undisclosed") is
+ * always sane. */
+static bool padded_field_sane(const uint8_t *field, size_t len)
+{
+    size_t i = 0;
+    while (i < len && field[i] != 0) i++;
+    if (i == len) return false;
+    for (; i < len; i++)
+        if (field[i] != 0) return false;
+    return true;
+}
+
+enum vcs_zcode_science_error vcs_zcode_hardware_profile_validate(
+    const struct vcs_zcode_hardware_profile_v1 *profile)
+{
+    if (!profile) return VCS_ZCODE_SCIENCE_ERR_NULL;
+    if (profile->schema_version != VCS_ZCODE_HARDWARE_PROFILE_VERSION)
+        return VCS_ZCODE_SCIENCE_ERR_VERSION;
+    if (!padded_field_sane(profile->cpu_vendor,
+                           sizeof(profile->cpu_vendor)) ||
+        !padded_field_sane(profile->cpu_brand,
+                           sizeof(profile->cpu_brand)) ||
+        !padded_field_sane(profile->os_sysname,
+                           sizeof(profile->os_sysname)) ||
+        !padded_field_sane(profile->os_machine,
+                           sizeof(profile->os_machine)) ||
+        !padded_field_sane(profile->os_release,
+                           sizeof(profile->os_release)) ||
+        !padded_field_sane(profile->timer_source,
+                           sizeof(profile->timer_source)))
+        return VCS_ZCODE_SCIENCE_ERR_PADDING;
+    if (profile->physical_cores == 0 || profile->logical_cores == 0)
+        return VCS_ZCODE_SCIENCE_ERR_LIMIT;
+    if ((profile->isa_bits & ~VCS_ZCODE_HW_ISA_KNOWN_MASK) != 0)
+        return VCS_ZCODE_SCIENCE_ERR_ISA;
+    if (profile->captured_unix <= 0)
+        return VCS_ZCODE_SCIENCE_ERR_TIME_ORDER;
+    return VCS_ZCODE_SCIENCE_OK;
+}
+
+enum vcs_zcode_science_error vcs_zcode_hardware_profile_serialize(
+    const struct vcs_zcode_hardware_profile_v1 *profile,
+    uint8_t out[VCS_ZCODE_HARDWARE_PROFILE_WIRE_BYTES])
+{
+    enum vcs_zcode_science_error error =
+        vcs_zcode_hardware_profile_validate(profile);
+    if (error != VCS_ZCODE_SCIENCE_OK || !out)
+        return out ? error : VCS_ZCODE_SCIENCE_ERR_NULL;
+    size_t off = 0;
+    put_bytes(out, &off, hw_profile_magic, sizeof(hw_profile_magic));
+    put_u16(out, &off, profile->schema_version);
+    put_bytes(out, &off, profile->cpu_vendor, sizeof(profile->cpu_vendor));
+    put_bytes(out, &off, profile->cpu_brand, sizeof(profile->cpu_brand));
+    put_u16(out, &off, profile->physical_cores);
+    put_u16(out, &off, profile->logical_cores);
+    put_u64(out, &off, profile->ram_mib);
+    put_u64(out, &off, profile->isa_bits);
+    put_bytes(out, &off, profile->os_sysname, sizeof(profile->os_sysname));
+    put_bytes(out, &off, profile->os_machine, sizeof(profile->os_machine));
+    put_bytes(out, &off, profile->os_release, sizeof(profile->os_release));
+    put_bytes(out, &off, profile->device_facts_root,
+              sizeof(profile->device_facts_root));
+    put_u64(out, &off, profile->tsc_freq_hz);
+    put_bytes(out, &off, profile->timer_source,
+              sizeof(profile->timer_source));
+    put_u64(out, &off, (uint64_t)profile->captured_unix);
+    return off == VCS_ZCODE_HARDWARE_PROFILE_WIRE_BYTES
+               ? VCS_ZCODE_SCIENCE_OK : VCS_ZCODE_SCIENCE_ERR_WIRE_SIZE;
+}
+
+enum vcs_zcode_science_error vcs_zcode_hardware_profile_parse(
+    const uint8_t *wire, size_t len,
+    struct vcs_zcode_hardware_profile_v1 *out)
+{
+    if (!wire || !out) return VCS_ZCODE_SCIENCE_ERR_NULL;
+    memset(out, 0, sizeof(*out));
+    if (len != VCS_ZCODE_HARDWARE_PROFILE_WIRE_BYTES)
+        return VCS_ZCODE_SCIENCE_ERR_WIRE_SIZE;
+    if (memcmp(wire, hw_profile_magic, sizeof(hw_profile_magic)) != 0)
+        return VCS_ZCODE_SCIENCE_ERR_WIRE_MAGIC;
+    size_t off = sizeof(hw_profile_magic);
+    out->schema_version = get_u16(wire, &off);
+    get_bytes(wire, &off, out->cpu_vendor, sizeof(out->cpu_vendor));
+    get_bytes(wire, &off, out->cpu_brand, sizeof(out->cpu_brand));
+    out->physical_cores = get_u16(wire, &off);
+    out->logical_cores = get_u16(wire, &off);
+    out->ram_mib = get_u64(wire, &off);
+    out->isa_bits = get_u64(wire, &off);
+    get_bytes(wire, &off, out->os_sysname, sizeof(out->os_sysname));
+    get_bytes(wire, &off, out->os_machine, sizeof(out->os_machine));
+    get_bytes(wire, &off, out->os_release, sizeof(out->os_release));
+    get_bytes(wire, &off, out->device_facts_root,
+              sizeof(out->device_facts_root));
+    out->tsc_freq_hz = get_u64(wire, &off);
+    get_bytes(wire, &off, out->timer_source, sizeof(out->timer_source));
+    out->captured_unix = (int64_t)get_u64(wire, &off);
+    enum vcs_zcode_science_error error =
+        vcs_zcode_hardware_profile_validate(out);
+    if (error != VCS_ZCODE_SCIENCE_OK) memset(out, 0, sizeof(*out));
+    return error;
+}
+
+enum vcs_zcode_science_error vcs_zcode_hardware_profile_root(
+    const struct vcs_zcode_hardware_profile_v1 *profile, uint8_t out[32])
+{
+    uint8_t wire[VCS_ZCODE_HARDWARE_PROFILE_WIRE_BYTES];
+    enum vcs_zcode_science_error error =
+        vcs_zcode_hardware_profile_serialize(profile, wire);
+    if (error != VCS_ZCODE_SCIENCE_OK || !out)
+        return out ? error : VCS_ZCODE_SCIENCE_ERR_NULL;
+    static const char domain[] = VCS_ZCODE_HARDWARE_PROFILE_DOMAIN;
+    science_root(domain, sizeof(domain), wire, sizeof(wire), out);
+    return VCS_ZCODE_SCIENCE_OK;
+}
+
+/* Copy a NUL-terminated string into a pre-zeroed fixed field, truncating to
+ * keep at least one NUL byte of padding. */
+static void capture_str(uint8_t *field, size_t len, const char *value)
+{
+    size_t n = strlen(value);
+    if (n >= len) n = len - 1;
+    memcpy(field, value, n);
+}
+
+/* Extract the value of "key\t...: value" from one /proc/cpuinfo line into a
+ * NUL-terminated buffer. Returns false when the line is not that key. */
+static bool cpuinfo_field(const char *line, const char *key, char *out,
+                          size_t cap)
+{
+    size_t key_len = strlen(key);
+    if (strncmp(line, key, key_len) != 0) return false;
+    const char *colon = strchr(line, ':');
+    if (!colon) return false;
+    const char *value = colon + 1;
+    while (*value == ' ' || *value == '\t') value++;
+    size_t n = strcspn(value, "\r\n");
+    if (n == 0 || cap == 0) return false;
+    if (n >= cap) n = cap - 1;
+    memcpy(out, value, n);
+    out[n] = '\0';
+    return true;
+}
+
+/* Best-effort /proc/cpuinfo scan: cpu_vendor (vendor_id), cpu_brand (model
+ * name), tsc_freq_hz (cpu MHz). Missing file or keys leave the fields at
+ * their zeroed "unknown" state. */
+static void capture_cpuinfo(struct vcs_zcode_hardware_profile_v1 *out)
+{
+    FILE *f = fopen("/proc/cpuinfo", "r");
+    if (!f) return;
+    char line[256], value[128];
+    bool have_vendor = false, have_brand = false, have_mhz = false;
+    while (fgets(line, sizeof(line), f) &&
+           !(have_vendor && have_brand && have_mhz)) {
+        if (!have_vendor &&
+            cpuinfo_field(line, "vendor_id", value, sizeof(value))) {
+            capture_str(out->cpu_vendor, sizeof(out->cpu_vendor), value);
+            have_vendor = true;
+        } else if (!have_brand &&
+                   cpuinfo_field(line, "model name", value, sizeof(value))) {
+            capture_str(out->cpu_brand, sizeof(out->cpu_brand), value);
+            have_brand = true;
+        } else if (!have_mhz &&
+                   cpuinfo_field(line, "cpu MHz", value, sizeof(value))) {
+            double mhz = strtod(value, NULL);
+            if (mhz > 0.0)
+                out->tsc_freq_hz = (uint64_t)(mhz * 1000000.0 + 0.5);
+            have_mhz = true;
+        }
+    }
+    fclose(f);
+}
+
+static void capture_timer_source(struct vcs_zcode_hardware_profile_v1 *out)
+{
+    static const char path[] =
+        "/sys/devices/system/clocksource/clocksource0/current_clocksource";
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    char buf[64];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = '\0';
+    buf[strcspn(buf, "\r\n")] = '\0';
+    if (buf[0] != '\0')
+        capture_str(out->timer_source, sizeof(out->timer_source), buf);
+}
+
+bool vcs_zcode_hardware_profile_capture(
+    struct vcs_zcode_hardware_profile_v1 *out, int64_t now_unix)
+{
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    out->schema_version = VCS_ZCODE_HARDWARE_PROFILE_VERSION;
+    out->captured_unix = now_unix > 0 ? now_unix : 1;
+    (void)hw_profile_init(NULL);
+    int physical = hw_profile_physical_cores();
+    int logical = hw_profile_online_cores();
+    if (logical <= 0) logical = (int)sysconf(_SC_NPROCESSORS_ONLN);
+    if (physical <= 0) physical = logical;
+    /* The capture itself is executing, so at least one core exists: clamp
+     * the unknown case to 1 rather than emit an unvalidatable object. */
+    out->physical_cores = (uint16_t)(physical > 0 ? physical : 1);
+    out->logical_cores = (uint16_t)(logical > 0 ? logical : 1);
+    int64_t ram_bytes = hw_profile_ram_bytes();
+    if (ram_bytes > 0)
+        out->ram_mib = (uint64_t)ram_bytes / (UINT64_C(1024) * 1024u);
+    const struct hw_profile_isa *isa = hw_profile_isa();
+    if (isa) {
+        if (isa->avx2) out->isa_bits |= VCS_ZCODE_HW_ISA_AVX2;
+        if (isa->avx512f) out->isa_bits |= VCS_ZCODE_HW_ISA_AVX512F;
+        if (isa->avx512vl) out->isa_bits |= VCS_ZCODE_HW_ISA_AVX512VL;
+        if (isa->avx512bw) out->isa_bits |= VCS_ZCODE_HW_ISA_AVX512BW;
+        if (isa->avx512dq) out->isa_bits |= VCS_ZCODE_HW_ISA_AVX512DQ;
+        if (isa->vpclmulqdq) out->isa_bits |= VCS_ZCODE_HW_ISA_VPCLMULQDQ;
+        if (isa->vaes) out->isa_bits |= VCS_ZCODE_HW_ISA_VAES;
+        if (isa->gfni) out->isa_bits |= VCS_ZCODE_HW_ISA_GFNI;
+        if (isa->sha_ni) out->isa_bits |= VCS_ZCODE_HW_ISA_SHA_NI;
+    }
+#if defined(__x86_64__) || defined(__i386__)
+    /* Baseline extensions hw_profile does not probe; same builtin idiom as
+     * lib/util/src/hw_profile.c. */
+    if (__builtin_cpu_supports("sse4.2"))
+        out->isa_bits |= VCS_ZCODE_HW_ISA_SSE4_2;
+    if (__builtin_cpu_supports("bmi2")) out->isa_bits |= VCS_ZCODE_HW_ISA_BMI2;
+    if (__builtin_cpu_supports("fma")) out->isa_bits |= VCS_ZCODE_HW_ISA_FMA;
+    if (__builtin_cpu_supports("aes"))
+        out->isa_bits |= VCS_ZCODE_HW_ISA_AES_NI;
+#endif
+    struct utsname uts;
+    if (uname(&uts) == 0) {
+        capture_str(out->os_sysname, sizeof(out->os_sysname), uts.sysname);
+        capture_str(out->os_machine, sizeof(out->os_machine), uts.machine);
+        capture_str(out->os_release, sizeof(out->os_release), uts.release);
+    }
+    capture_cpuinfo(out);
+    capture_timer_source(out);
+    /* device_facts_root stays all-zero: the canonical extended-facts bundle
+     * (DMI/firmware) is the documented extension point and no producer fills
+     * it yet. */
+    return vcs_zcode_hardware_profile_validate(out) == VCS_ZCODE_SCIENCE_OK;
+}
+
+/* ── benchmark_method.v1 ────────────────────────────────────────────── */
+
+const char *vcs_zcode_benchmark_method_distribution_name(
+    uint8_t sample_distribution)
+{
+    switch (sample_distribution) {
+    case VCS_ZCODE_SAMPLE_DIST_RAW_ALL: return "raw_all";
+    case VCS_ZCODE_SAMPLE_DIST_MINIMUM: return "minimum";
+    case VCS_ZCODE_SAMPLE_DIST_MEDIAN_QUARTILES: return "median_quartiles";
+    case VCS_ZCODE_SAMPLE_DIST_TRIMMED_MEAN: return "trimmed_mean";
+    }
+    return "unknown";
+}
+
+enum vcs_zcode_science_error vcs_zcode_benchmark_method_validate(
+    const struct vcs_zcode_benchmark_method_v1 *method)
+{
+    if (!method) return VCS_ZCODE_SCIENCE_ERR_NULL;
+    if (method->schema_version != VCS_ZCODE_BENCHMARK_METHOD_VERSION)
+        return VCS_ZCODE_SCIENCE_ERR_VERSION;
+    const uint8_t *roots[] = {
+        method->workload_root, method->timer_root, method->estimator_root,
+    };
+    for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++)
+        if (!root_nonzero(roots[i])) return VCS_ZCODE_SCIENCE_ERR_ROOT_ZERO;
+    if (method->measured_samples == 0 ||
+        method->measured_samples >
+            VCS_ZCODE_BENCHMARK_METHOD_MAX_MEASURED_SAMPLES)
+        return VCS_ZCODE_SCIENCE_ERR_LIMIT;
+    if (method->sample_distribution < VCS_ZCODE_SAMPLE_DIST_RAW_ALL ||
+        method->sample_distribution > VCS_ZCODE_SAMPLE_DIST_TRIMMED_MEAN ||
+        method->trim_percent > VCS_ZCODE_BENCHMARK_METHOD_MAX_TRIM_PERCENT ||
+        (method->trim_percent != 0 &&
+         method->sample_distribution != VCS_ZCODE_SAMPLE_DIST_TRIMMED_MEAN))
+        return VCS_ZCODE_SCIENCE_ERR_DISTRIBUTION;
+    if (method->reserved != 0) return VCS_ZCODE_SCIENCE_ERR_FLAGS;
+    return VCS_ZCODE_SCIENCE_OK;
+}
+
+enum vcs_zcode_science_error vcs_zcode_benchmark_method_serialize(
+    const struct vcs_zcode_benchmark_method_v1 *method,
+    uint8_t out[VCS_ZCODE_BENCHMARK_METHOD_WIRE_BYTES])
+{
+    enum vcs_zcode_science_error error =
+        vcs_zcode_benchmark_method_validate(method);
+    if (error != VCS_ZCODE_SCIENCE_OK || !out)
+        return out ? error : VCS_ZCODE_SCIENCE_ERR_NULL;
+    size_t off = 0;
+    put_bytes(out, &off, method_magic, sizeof(method_magic));
+    put_u16(out, &off, method->schema_version);
+    put_bytes(out, &off, method->workload_root, 32);
+    put_bytes(out, &off, method->timer_root, 32);
+    put_bytes(out, &off, method->estimator_root, 32);
+    put_u32(out, &off, method->tolerance_ppm);
+    put_u32(out, &off, method->warmup_samples);
+    put_u32(out, &off, method->measured_samples);
+    out[off++] = method->sample_distribution;
+    out[off++] = method->trim_percent;
+    out[off++] = method->reserved;
+    return off == VCS_ZCODE_BENCHMARK_METHOD_WIRE_BYTES
+               ? VCS_ZCODE_SCIENCE_OK : VCS_ZCODE_SCIENCE_ERR_WIRE_SIZE;
+}
+
+enum vcs_zcode_science_error vcs_zcode_benchmark_method_parse(
+    const uint8_t *wire, size_t len,
+    struct vcs_zcode_benchmark_method_v1 *out)
+{
+    if (!wire || !out) return VCS_ZCODE_SCIENCE_ERR_NULL;
+    memset(out, 0, sizeof(*out));
+    if (len != VCS_ZCODE_BENCHMARK_METHOD_WIRE_BYTES)
+        return VCS_ZCODE_SCIENCE_ERR_WIRE_SIZE;
+    if (memcmp(wire, method_magic, sizeof(method_magic)) != 0)
+        return VCS_ZCODE_SCIENCE_ERR_WIRE_MAGIC;
+    size_t off = sizeof(method_magic);
+    out->schema_version = get_u16(wire, &off);
+    get_bytes(wire, &off, out->workload_root, 32);
+    get_bytes(wire, &off, out->timer_root, 32);
+    get_bytes(wire, &off, out->estimator_root, 32);
+    out->tolerance_ppm = get_u32(wire, &off);
+    out->warmup_samples = get_u32(wire, &off);
+    out->measured_samples = get_u32(wire, &off);
+    out->sample_distribution = wire[off++];
+    out->trim_percent = wire[off++];
+    out->reserved = wire[off++];
+    enum vcs_zcode_science_error error =
+        vcs_zcode_benchmark_method_validate(out);
+    if (error != VCS_ZCODE_SCIENCE_OK) memset(out, 0, sizeof(*out));
+    return error;
+}
+
+enum vcs_zcode_science_error vcs_zcode_benchmark_method_root(
+    const struct vcs_zcode_benchmark_method_v1 *method, uint8_t out[32])
+{
+    uint8_t wire[VCS_ZCODE_BENCHMARK_METHOD_WIRE_BYTES];
+    enum vcs_zcode_science_error error =
+        vcs_zcode_benchmark_method_serialize(method, wire);
+    if (error != VCS_ZCODE_SCIENCE_OK || !out)
+        return out ? error : VCS_ZCODE_SCIENCE_ERR_NULL;
+    static const char domain[] = VCS_ZCODE_BENCHMARK_METHOD_DOMAIN;
+    science_root(domain, sizeof(domain), wire, sizeof(wire), out);
+    return VCS_ZCODE_SCIENCE_OK;
+}
+
+/* ── benchmark_result.v2 ────────────────────────────────────────────── */
+
+/* The v2 struct's prefix through finished_unix is layout-identical to the
+ * v1 struct; v2 rules are the v1 rules plus the two appended roots. Copying
+ * the prefix into a v1 view (with the v1 version) reuses the frozen v1
+ * codec semantics instead of restating them. */
+static void result_v2_prefix_as_v1(
+    const struct vcs_zcode_benchmark_result_v2 *result,
+    struct vcs_zcode_benchmark_result_v1 *out)
+{
+    memset(out, 0, sizeof(*out));
+    memcpy(out, result,
+           offsetof(struct vcs_zcode_benchmark_result_v2, method_root));
+    out->schema_version = VCS_ZCODE_SCIENCE_VERSION;
+}
+
+enum vcs_zcode_science_error vcs_zcode_benchmark_result_v2_validate(
+    const struct vcs_zcode_benchmark_result_v2 *result)
+{
+    if (!result) return VCS_ZCODE_SCIENCE_ERR_NULL;
+    if (result->schema_version != VCS_ZCODE_BENCHMARK_RESULT_V2_VERSION)
+        return VCS_ZCODE_SCIENCE_ERR_VERSION;
+    struct vcs_zcode_benchmark_result_v1 v1;
+    result_v2_prefix_as_v1(result, &v1);
+    enum vcs_zcode_science_error error =
+        vcs_zcode_benchmark_result_validate(&v1);
+    if (error != VCS_ZCODE_SCIENCE_OK) return error;
+    if (!root_nonzero(result->method_root) ||
+        !root_nonzero(result->hardware_profile_root))
+        return VCS_ZCODE_SCIENCE_ERR_ROOT_ZERO;
+    return VCS_ZCODE_SCIENCE_OK;
+}
+
+enum vcs_zcode_science_error vcs_zcode_benchmark_result_v2_serialize(
+    const struct vcs_zcode_benchmark_result_v2 *result,
+    uint8_t out[VCS_ZCODE_BENCHMARK_RESULT_V2_WIRE_BYTES])
+{
+    enum vcs_zcode_science_error error =
+        vcs_zcode_benchmark_result_v2_validate(result);
+    if (error != VCS_ZCODE_SCIENCE_OK || !out)
+        return out ? error : VCS_ZCODE_SCIENCE_ERR_NULL;
+    size_t off = 0;
+    put_bytes(out, &off, result_v2_magic, sizeof(result_v2_magic));
+    put_u16(out, &off, result->schema_version);
+    const uint8_t *roots[] = {
+        result->study_root, result->task_root, result->candidate_root,
+        result->action_root, result->achieved_environment_root,
+        result->raw_sample_root, result->evidence_root,
+    };
+    for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++)
+        put_bytes(out, &off, roots[i], 32);
+    out[off++] = result->status;
+    put_u64(out, &off, result->challenge_block_height);
+    put_bytes(out, &off, result->challenge_block_hash, 32);
+    put_u64(out, &off, result->sequence);
+    put_u64(out, &off, (uint64_t)result->started_unix);
+    put_u64(out, &off, (uint64_t)result->finished_unix);
+    put_bytes(out, &off, result->method_root, 32);
+    put_bytes(out, &off, result->hardware_profile_root, 32);
+    return off == VCS_ZCODE_BENCHMARK_RESULT_V2_WIRE_BYTES
+               ? VCS_ZCODE_SCIENCE_OK : VCS_ZCODE_SCIENCE_ERR_WIRE_SIZE;
+}
+
+enum vcs_zcode_science_error vcs_zcode_benchmark_result_v2_parse(
+    const uint8_t *wire, size_t len,
+    struct vcs_zcode_benchmark_result_v2 *out)
+{
+    if (!wire || !out) return VCS_ZCODE_SCIENCE_ERR_NULL;
+    memset(out, 0, sizeof(*out));
+    if (len != VCS_ZCODE_BENCHMARK_RESULT_V2_WIRE_BYTES)
+        return VCS_ZCODE_SCIENCE_ERR_WIRE_SIZE;
+    if (memcmp(wire, result_v2_magic, sizeof(result_v2_magic)) != 0)
+        return VCS_ZCODE_SCIENCE_ERR_WIRE_MAGIC;
+    size_t off = sizeof(result_v2_magic);
+    out->schema_version = get_u16(wire, &off);
+    uint8_t *roots[] = {
+        out->study_root, out->task_root, out->candidate_root,
+        out->action_root, out->achieved_environment_root,
+        out->raw_sample_root, out->evidence_root,
+    };
+    for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++)
+        get_bytes(wire, &off, roots[i], 32);
+    out->status = wire[off++];
+    out->challenge_block_height = get_u64(wire, &off);
+    get_bytes(wire, &off, out->challenge_block_hash, 32);
+    out->sequence = get_u64(wire, &off);
+    out->started_unix = (int64_t)get_u64(wire, &off);
+    out->finished_unix = (int64_t)get_u64(wire, &off);
+    get_bytes(wire, &off, out->method_root, 32);
+    get_bytes(wire, &off, out->hardware_profile_root, 32);
+    enum vcs_zcode_science_error error =
+        vcs_zcode_benchmark_result_v2_validate(out);
+    if (error != VCS_ZCODE_SCIENCE_OK) memset(out, 0, sizeof(*out));
+    return error;
+}
+
+enum vcs_zcode_science_error vcs_zcode_benchmark_result_v2_root(
+    const struct vcs_zcode_benchmark_result_v2 *result, uint8_t out[32])
+{
+    uint8_t wire[VCS_ZCODE_BENCHMARK_RESULT_V2_WIRE_BYTES];
+    enum vcs_zcode_science_error error =
+        vcs_zcode_benchmark_result_v2_serialize(result, wire);
+    if (error != VCS_ZCODE_SCIENCE_OK || !out)
+        return out ? error : VCS_ZCODE_SCIENCE_ERR_NULL;
+    static const char domain[] = VCS_ZCODE_BENCHMARK_RESULT_V2_DOMAIN;
+    science_root(domain, sizeof(domain), wire, sizeof(wire), out);
+    return VCS_ZCODE_SCIENCE_OK;
+}
+
+enum vcs_zcode_science_error vcs_zcode_benchmark_result_v2_validate_for_study(
+    const struct vcs_zcode_study_spec_v1 *study,
+    const struct vcs_zcode_task_v1 *task,
+    const struct vcs_zcode_candidate_v1 *candidate,
+    const struct vcs_build_action_v1 *action,
+    const struct vcs_zcode_benchmark_method_v1 *method,
+    const struct vcs_zcode_hardware_profile_v1 *profile,
+    const struct vcs_zcode_benchmark_result_v2 *result, int64_t now_unix)
+{
+    enum vcs_zcode_science_error error =
+        vcs_zcode_benchmark_result_v2_validate(result);
+    if (error != VCS_ZCODE_SCIENCE_OK) return error;
+    error = vcs_zcode_benchmark_method_validate(method);
+    if (error != VCS_ZCODE_SCIENCE_OK) return error;
+    error = vcs_zcode_hardware_profile_validate(profile);
+    if (error != VCS_ZCODE_SCIENCE_OK) return error;
+    /* The H1-H3-hardened v1 cross-validator applies unchanged to the shared
+     * prefix: structural study validate, study/task/candidate root pins,
+     * canonical fixed-action binding, and the evidence-window checks. */
+    struct vcs_zcode_benchmark_result_v1 v1;
+    result_v2_prefix_as_v1(result, &v1);
+    error = vcs_zcode_benchmark_result_validate_for_study(
+        study, task, candidate, action, &v1, now_unix);
+    if (error != VCS_ZCODE_SCIENCE_OK) return error;
+    uint8_t method_root[32], profile_root[32];
+    if (vcs_zcode_benchmark_method_root(method, method_root) !=
+            VCS_ZCODE_SCIENCE_OK ||
+        memcmp(result->method_root, method_root, 32) != 0)
+        return VCS_ZCODE_SCIENCE_ERR_METHOD_MISMATCH;
+    if (vcs_zcode_hardware_profile_root(profile, profile_root) !=
+            VCS_ZCODE_SCIENCE_OK ||
+        memcmp(result->hardware_profile_root, profile_root, 32) != 0)
+        return VCS_ZCODE_SCIENCE_ERR_HARDWARE_MISMATCH;
     return VCS_ZCODE_SCIENCE_OK;
 }

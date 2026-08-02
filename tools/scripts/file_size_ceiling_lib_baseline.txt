@@ -83,4 +83,4 @@ lib/vcs/src/package_badge_eligible.c 817
 lib/vcs/src/package_swarm_node.c 1801
 lib/vcs/src/package_service.c 1040
 lib/vcs/src/zcode_contributor_binding.c 983
-lib/vcs/src/zcode_science.c 864
+lib/vcs/src/zcode_science.c 1387

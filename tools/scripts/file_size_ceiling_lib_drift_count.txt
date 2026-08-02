@@ -290,6 +290,13 @@
 # Both are canonical wire/validation modules mirroring package_store.c's
 # one-file shape; baselining keeps future growth on them visible.
 #
+# 2026-08-02 (science evidence objects, same wave): zcode_science.c grew
+# 864 -> 1387 adding hardware_profile.v1 (222-byte wire + never-fatal
+# Linux capture over util/hw_profile), benchmark_method.v1 (121-byte
+# workload/timer/distribution/estimator wire), and benchmark_result.v2
+# (363-byte wire binding method + hardware-profile roots; v1 frozen).
+# Re-baselined at 1387; count STAYS 14.
+#
 14
 #
 # 2026-07-27 (os_sandbox dynamic Landlock handled-set): os_sandbox_linux.c

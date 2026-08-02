@@ -12,11 +12,17 @@
 #include "vcs/zcode_dev.h"
 
 #define VCS_ZCODE_SCIENCE_VERSION 1u
+#define VCS_ZCODE_HARDWARE_PROFILE_VERSION 1u
+#define VCS_ZCODE_BENCHMARK_METHOD_VERSION 1u
+#define VCS_ZCODE_BENCHMARK_RESULT_V2_VERSION 2u
 #define VCS_ZCODE_STUDY_SPEC_DOMAIN "zcl.zcode.study_spec.v1"
 #define VCS_ZCODE_BENCHMARK_RESULT_DOMAIN "zcl.zcode.benchmark_result.v1"
 #define VCS_ZCODE_REPRODUCTION_DOMAIN "zcl.zcode.reproduction.v1"
 #define VCS_ZCODE_SCIENCE_FINDINGS_DOMAIN "zcl.zcode.science_findings.v1"
 #define VCS_ZCODE_CURATION_VOTE_DOMAIN "zcl.zcode.curation_vote.v1"
+#define VCS_ZCODE_HARDWARE_PROFILE_DOMAIN "zcl.zcode.hardware_profile.v1"
+#define VCS_ZCODE_BENCHMARK_METHOD_DOMAIN "zcl.zcode.benchmark_method.v1"
+#define VCS_ZCODE_BENCHMARK_RESULT_V2_DOMAIN "zcl.zcode.benchmark_result.v2"
 
 #define VCS_ZCODE_STUDY_SPEC_WIRE_BYTES 422u
 #define VCS_ZCODE_BENCHMARK_RESULT_WIRE_BYTES 299u
@@ -24,8 +30,21 @@
 #define VCS_ZCODE_SCIENCE_FINDINGS_WIRE_BYTES 317u
 #define VCS_ZCODE_CURATION_VOTE_BODY_BYTES 155u
 #define VCS_ZCODE_CURATION_VOTE_WIRE_BYTES 219u
+/* hardware_profile.v1: magic 8 + version 2 + cpu_vendor 16 + cpu_brand 48 +
+ * cores 2+2 + ram_mib 8 + isa_bits 8 + os_sysname 16 + os_machine 16 +
+ * os_release 32 + device_facts_root 32 + tsc_freq_hz 8 + timer_source 16 +
+ * captured_unix 8. */
+#define VCS_ZCODE_HARDWARE_PROFILE_WIRE_BYTES 222u
+/* benchmark_method.v1: magic 8 + version 2 + three roots 96 + tolerance 4 +
+ * warmup 4 + measured 4 + distribution 1 + trim 1 + reserved 1. */
+#define VCS_ZCODE_BENCHMARK_METHOD_WIRE_BYTES 121u
+/* benchmark_result.v2: the frozen 299-byte v1 body (magic "ZCBEN2\r\n",
+ * version 2) + method_root 32 + hardware_profile_root 32. */
+#define VCS_ZCODE_BENCHMARK_RESULT_V2_WIRE_BYTES 363u
 
 #define VCS_ZCODE_STUDY_REQUIRED_MAX 64u
+#define VCS_ZCODE_BENCHMARK_METHOD_MAX_MEASURED_SAMPLES (1u << 20)
+#define VCS_ZCODE_BENCHMARK_METHOD_MAX_TRIM_PERCENT 49u
 
 enum vcs_zcode_benchmark_status {
     VCS_ZCODE_BENCHMARK_OBSERVED = 1,
@@ -65,6 +84,43 @@ enum vcs_zcode_curation_signal {
     VCS_ZCODE_CURATION_FLAG = 3,
 };
 
+/* x86 ISA bitmap for hardware_profile.v1. Bits 4-12 mirror the
+ * lib/util/src/hw_profile.c probes (avx2, avx512f/vl/bw/dq, vpclmulqdq,
+ * vaes, gfni, sha_ni); bits 0-3 are the additional baseline extensions
+ * (sse4_2, bmi2, fma, aes_ni). Bits 13-63 are reserved and must be zero
+ * (validate rejects them). */
+enum vcs_zcode_hw_isa_bit {
+    VCS_ZCODE_HW_ISA_SSE4_2 = UINT64_C(1) << 0,
+    VCS_ZCODE_HW_ISA_BMI2 = UINT64_C(1) << 1,
+    VCS_ZCODE_HW_ISA_FMA = UINT64_C(1) << 2,
+    VCS_ZCODE_HW_ISA_AES_NI = UINT64_C(1) << 3,
+    VCS_ZCODE_HW_ISA_AVX2 = UINT64_C(1) << 4,
+    VCS_ZCODE_HW_ISA_AVX512F = UINT64_C(1) << 5,
+    VCS_ZCODE_HW_ISA_AVX512VL = UINT64_C(1) << 6,
+    VCS_ZCODE_HW_ISA_AVX512BW = UINT64_C(1) << 7,
+    VCS_ZCODE_HW_ISA_AVX512DQ = UINT64_C(1) << 8,
+    VCS_ZCODE_HW_ISA_VPCLMULQDQ = UINT64_C(1) << 9,
+    VCS_ZCODE_HW_ISA_VAES = UINT64_C(1) << 10,
+    VCS_ZCODE_HW_ISA_GFNI = UINT64_C(1) << 11,
+    VCS_ZCODE_HW_ISA_SHA_NI = UINT64_C(1) << 12,
+};
+
+#define VCS_ZCODE_HW_ISA_KNOWN_MASK                                     \
+    (VCS_ZCODE_HW_ISA_SSE4_2 | VCS_ZCODE_HW_ISA_BMI2 |                  \
+     VCS_ZCODE_HW_ISA_FMA | VCS_ZCODE_HW_ISA_AES_NI |                   \
+     VCS_ZCODE_HW_ISA_AVX2 | VCS_ZCODE_HW_ISA_AVX512F |                 \
+     VCS_ZCODE_HW_ISA_AVX512VL | VCS_ZCODE_HW_ISA_AVX512BW |            \
+     VCS_ZCODE_HW_ISA_AVX512DQ | VCS_ZCODE_HW_ISA_VPCLMULQDQ |          \
+     VCS_ZCODE_HW_ISA_VAES | VCS_ZCODE_HW_ISA_GFNI |                    \
+     VCS_ZCODE_HW_ISA_SHA_NI)
+
+enum vcs_zcode_sample_distribution {
+    VCS_ZCODE_SAMPLE_DIST_RAW_ALL = 1,
+    VCS_ZCODE_SAMPLE_DIST_MINIMUM = 2,
+    VCS_ZCODE_SAMPLE_DIST_MEDIAN_QUARTILES = 3,
+    VCS_ZCODE_SAMPLE_DIST_TRIMMED_MEAN = 4,
+};
+
 enum vcs_zcode_science_error {
     VCS_ZCODE_SCIENCE_OK = 0,
     VCS_ZCODE_SCIENCE_ERR_NULL,
@@ -92,6 +148,11 @@ enum vcs_zcode_science_error {
     /* New codes append at the END only; the codes above are frozen. */
     VCS_ZCODE_SCIENCE_ERR_EVIDENCE_FUTURE,
     VCS_ZCODE_SCIENCE_ERR_ACTION_MISMATCH,
+    VCS_ZCODE_SCIENCE_ERR_PADDING,
+    VCS_ZCODE_SCIENCE_ERR_ISA,
+    VCS_ZCODE_SCIENCE_ERR_DISTRIBUTION,
+    VCS_ZCODE_SCIENCE_ERR_METHOD_MISMATCH,
+    VCS_ZCODE_SCIENCE_ERR_HARDWARE_MISMATCH,
 };
 
 const char *vcs_zcode_science_error_string(
@@ -176,6 +237,69 @@ struct vcs_zcode_curation_vote_v1 {
     int64_t expires_unix;
     uint8_t signer_pubkey[32];
     uint8_t signature[64];
+};
+
+/* hardware_profile.v1 — an OBSERVED host description, never a claim of
+ * truth. Fixed-width strings are NUL-padded: content bytes, one NUL, then
+ * zeros to the field width; an all-zero field means undisclosed/unavailable.
+ * ram_mib == 0 and tsc_freq_hz == 0 are the documented "unknown" values.
+ * device_facts_root pins a canonical bundle of extended host facts
+ * (DMI/firmware); all-zero when undisclosed/unavailable — it is the
+ * extension point for richer host attestation and no producer fills it
+ * yet. */
+struct vcs_zcode_hardware_profile_v1 {
+    uint16_t schema_version;
+    uint8_t cpu_vendor[16];
+    uint8_t cpu_brand[48];
+    uint16_t physical_cores;
+    uint16_t logical_cores;
+    uint64_t ram_mib;
+    uint64_t isa_bits;
+    uint8_t os_sysname[16];
+    uint8_t os_machine[16];
+    uint8_t os_release[32];
+    uint8_t device_facts_root[32];
+    uint64_t tsc_freq_hz;
+    uint8_t timer_source[16];
+    int64_t captured_unix;
+};
+
+/* benchmark_method.v1 — pins the exact workload payload, the timer method,
+ * and the statistical estimator, plus the sampling discipline the observer
+ * used. A benchmark is an observation, never truth. */
+struct vcs_zcode_benchmark_method_v1 {
+    uint16_t schema_version;
+    uint8_t workload_root[32];
+    uint8_t timer_root[32];
+    uint8_t estimator_root[32];
+    uint32_t tolerance_ppm;
+    uint32_t warmup_samples;
+    uint32_t measured_samples;
+    uint8_t sample_distribution;
+    uint8_t trim_percent;
+    uint8_t reserved;
+};
+
+/* benchmark_result.v2 — the frozen v1 observation extended with the method
+ * and hardware-profile roots. The v1 struct prefix is layout-identical, so
+ * v2 validators reuse the v1 codec on the shared prefix. */
+struct vcs_zcode_benchmark_result_v2 {
+    uint16_t schema_version;
+    uint8_t study_root[32];
+    uint8_t task_root[32];
+    uint8_t candidate_root[32];
+    uint8_t action_root[32];
+    uint8_t achieved_environment_root[32];
+    uint8_t raw_sample_root[32];
+    uint8_t evidence_root[32];
+    uint8_t status;
+    uint64_t challenge_block_height;
+    uint8_t challenge_block_hash[32];
+    uint64_t sequence;
+    int64_t started_unix;
+    int64_t finished_unix;
+    uint8_t method_root[32];
+    uint8_t hardware_profile_root[32];
 };
 
 enum vcs_zcode_science_error vcs_zcode_study_spec_validate(
@@ -281,5 +405,64 @@ enum vcs_zcode_science_error vcs_zcode_science_findings_validate_for_review(
     const struct vcs_zcode_review_v1 *review,
     const struct vcs_zcode_benchmark_result_v1 *result,
     const struct vcs_zcode_science_findings_v1 *findings, int64_t now_unix);
+
+enum vcs_zcode_science_error vcs_zcode_hardware_profile_validate(
+    const struct vcs_zcode_hardware_profile_v1 *profile);
+enum vcs_zcode_science_error vcs_zcode_hardware_profile_serialize(
+    const struct vcs_zcode_hardware_profile_v1 *profile,
+    uint8_t out[VCS_ZCODE_HARDWARE_PROFILE_WIRE_BYTES]);
+enum vcs_zcode_science_error vcs_zcode_hardware_profile_parse(
+    const uint8_t *wire, size_t wire_len,
+    struct vcs_zcode_hardware_profile_v1 *out);
+enum vcs_zcode_science_error vcs_zcode_hardware_profile_root(
+    const struct vcs_zcode_hardware_profile_v1 *profile, uint8_t out[32]);
+/* Best-effort Linux capture: reuses the lib/util hw_profile probes (cores,
+ * RAM, ISA), uname(2) for os_*, /proc/cpuinfo for cpu_vendor/cpu_brand/tsc,
+ * and the clocksource sysfs node for timer_source. NEVER fails hard: every
+ * missing fact stays zero (the documented "unknown"), cores fall back to 1
+ * (the capture itself proves at least one core exists), and
+ * device_facts_root stays all-zero (extension point). Returns false only on
+ * a NULL out; the produced object always passes validate(). */
+bool vcs_zcode_hardware_profile_capture(
+    struct vcs_zcode_hardware_profile_v1 *out, int64_t now_unix);
+
+enum vcs_zcode_science_error vcs_zcode_benchmark_method_validate(
+    const struct vcs_zcode_benchmark_method_v1 *method);
+enum vcs_zcode_science_error vcs_zcode_benchmark_method_serialize(
+    const struct vcs_zcode_benchmark_method_v1 *method,
+    uint8_t out[VCS_ZCODE_BENCHMARK_METHOD_WIRE_BYTES]);
+enum vcs_zcode_science_error vcs_zcode_benchmark_method_parse(
+    const uint8_t *wire, size_t wire_len,
+    struct vcs_zcode_benchmark_method_v1 *out);
+enum vcs_zcode_science_error vcs_zcode_benchmark_method_root(
+    const struct vcs_zcode_benchmark_method_v1 *method, uint8_t out[32]);
+const char *vcs_zcode_benchmark_method_distribution_name(
+    uint8_t sample_distribution);
+
+enum vcs_zcode_science_error vcs_zcode_benchmark_result_v2_validate(
+    const struct vcs_zcode_benchmark_result_v2 *result);
+enum vcs_zcode_science_error vcs_zcode_benchmark_result_v2_serialize(
+    const struct vcs_zcode_benchmark_result_v2 *result,
+    uint8_t out[VCS_ZCODE_BENCHMARK_RESULT_V2_WIRE_BYTES]);
+enum vcs_zcode_science_error vcs_zcode_benchmark_result_v2_parse(
+    const uint8_t *wire, size_t wire_len,
+    struct vcs_zcode_benchmark_result_v2 *out);
+enum vcs_zcode_science_error vcs_zcode_benchmark_result_v2_root(
+    const struct vcs_zcode_benchmark_result_v2 *result, uint8_t out[32]);
+/* v2 cross-validator: identical rules to the H1-H3-hardened v1
+ * validate_for_study on the shared v1 prefix (structural study validate,
+ * evidence window vs [created,expires), ERR_EVIDENCE_FUTURE, canonical
+ * fixed-action binding, study/task/candidate root pins) PLUS the method and
+ * hardware-profile bindings: both objects must pass their own validate()
+ * and result->method_root / result->hardware_profile_root must equal their
+ * canonical roots. */
+enum vcs_zcode_science_error vcs_zcode_benchmark_result_v2_validate_for_study(
+    const struct vcs_zcode_study_spec_v1 *study,
+    const struct vcs_zcode_task_v1 *task,
+    const struct vcs_zcode_candidate_v1 *candidate,
+    const struct vcs_build_action_v1 *action,
+    const struct vcs_zcode_benchmark_method_v1 *method,
+    const struct vcs_zcode_hardware_profile_v1 *profile,
+    const struct vcs_zcode_benchmark_result_v2 *result, int64_t now_unix);
 
 #endif /* ZCL_VCS_ZCODE_SCIENCE_H */

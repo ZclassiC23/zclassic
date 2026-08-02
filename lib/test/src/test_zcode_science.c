@@ -9,6 +9,7 @@
 #include "vcs/zcode_science.h"
 
 #include <stdio.h>
+#include <stddef.h>
 #include <string.h>
 
 static void zs_root(uint8_t out[32], uint8_t value)
@@ -135,6 +136,62 @@ static void zs_result(
     result->sequence = 1;
     result->started_unix = 1200;
     result->finished_unix = 1300;
+}
+
+/* Deterministic hardware-profile fixture (fixed bytes, NOT a capture) —
+ * the golden KAT below pins this exact object. */
+static void zs_hardware_profile(struct vcs_zcode_hardware_profile_v1 *profile)
+{
+    memset(profile, 0, sizeof(*profile));
+    profile->schema_version = VCS_ZCODE_HARDWARE_PROFILE_VERSION;
+    memcpy(profile->cpu_vendor, "GenuineIntel", 12);
+    memcpy(profile->cpu_brand, "ZClassic23 Test CPU", 19);
+    profile->physical_cores = 8;
+    profile->logical_cores = 16;
+    profile->ram_mib = 32768;
+    profile->isa_bits = VCS_ZCODE_HW_ISA_SSE4_2 | VCS_ZCODE_HW_ISA_BMI2 |
+                        VCS_ZCODE_HW_ISA_FMA | VCS_ZCODE_HW_ISA_AES_NI |
+                        VCS_ZCODE_HW_ISA_AVX2;
+    memcpy(profile->os_sysname, "Linux", 5);
+    memcpy(profile->os_machine, "x86_64", 6);
+    memcpy(profile->os_release, "6.9.0-test", 10);
+    profile->tsc_freq_hz = UINT64_C(3000000000);
+    memcpy(profile->timer_source, "tsc", 3);
+    profile->captured_unix = 1000;
+}
+
+static void zs_method(struct vcs_zcode_benchmark_method_v1 *method)
+{
+    memset(method, 0, sizeof(*method));
+    method->schema_version = VCS_ZCODE_BENCHMARK_METHOD_VERSION;
+    zs_root(method->workload_root, 0x41);
+    zs_root(method->timer_root, 0x42);
+    zs_root(method->estimator_root, 0x43);
+    method->tolerance_ppm = 5000;
+    method->warmup_samples = 10;
+    method->measured_samples = 1000;
+    method->sample_distribution = VCS_ZCODE_SAMPLE_DIST_TRIMMED_MEAN;
+    method->trim_percent = 10;
+}
+
+/* v2 result bound to the study/task/candidate/action plus the given method
+ * and hardware profile. */
+static void zs_result_v2(
+    const struct vcs_zcode_study_spec_v1 *study,
+    const uint8_t task_root[32], const uint8_t candidate_root[32],
+    const struct vcs_zcode_benchmark_method_v1 *method,
+    const struct vcs_zcode_hardware_profile_v1 *profile,
+    struct vcs_zcode_benchmark_result_v2 *result)
+{
+    struct vcs_zcode_benchmark_result_v1 v1;
+    zs_result(study, task_root, candidate_root, &v1);
+    memset(result, 0, sizeof(*result));
+    memcpy(result, &v1,
+           offsetof(struct vcs_zcode_benchmark_result_v2, method_root));
+    result->schema_version = VCS_ZCODE_BENCHMARK_RESULT_V2_VERSION;
+    (void)vcs_zcode_benchmark_method_root(method, result->method_root);
+    (void)vcs_zcode_hardware_profile_root(
+        profile, result->hardware_profile_root);
 }
 
 static int test_zs_study_codec(void)
@@ -599,6 +656,262 @@ static int test_zs_fixed_actions(void)
     return failures;
 }
 
+static int test_zs_hardware_profile(void)
+{
+    int failures = 0;
+    TEST("zcode_science: hardware profile is a canonical observed host description") {
+        struct vcs_zcode_hardware_profile_v1 profile, parsed;
+        zs_hardware_profile(&profile);
+        uint8_t wire[VCS_ZCODE_HARDWARE_PROFILE_WIRE_BYTES + 1];
+        uint8_t root[32], root_again[32];
+        char wire_hex[2 * VCS_ZCODE_HARDWARE_PROFILE_WIRE_BYTES + 1];
+        char root_hex[65];
+        ASSERT_EQ(vcs_zcode_hardware_profile_validate(&profile),
+                  VCS_ZCODE_SCIENCE_OK);
+        ASSERT_EQ(vcs_zcode_hardware_profile_serialize(&profile, wire),
+                  VCS_ZCODE_SCIENCE_OK);
+        ASSERT(memcmp(wire, "ZCHWPF\r\n", 8) == 0);
+        zcl_hex_encode(wire, VCS_ZCODE_HARDWARE_PROFILE_WIRE_BYTES,
+                       wire_hex);
+        ASSERT_STR_EQ(wire_hex,
+            "5a43485750460d0a010047656e75696e65496e74656c000000005a436c617373"
+            "6963323320546573742043505500000000000000000000000000000000000000"
+            "000000000000000000000800100000800000000000001f000000000000004c69"
+            "6e757800000000000000000000007838365f363400000000000000000000362e"
+            "392e302d74657374000000000000000000000000000000000000000000000000"
+            "000000000000000000000000000000000000000000000000000000000000005e"
+            "d0b20000000074736300000000000000000000000000e803000000000000");
+        ASSERT_EQ(vcs_zcode_hardware_profile_root(&profile, root),
+                  VCS_ZCODE_SCIENCE_OK);
+        ASSERT_EQ(vcs_zcode_hardware_profile_root(&profile, root_again),
+                  VCS_ZCODE_SCIENCE_OK);
+        ASSERT(memcmp(root, root_again, 32) == 0);
+        zcl_hex_encode(root, 32, root_hex);
+        ASSERT_STR_EQ(root_hex,
+            "8679e5bf0c083a1b6bfa964ee8be695dc2d15fbe714b9aa31bfc199672ba275d");
+        ASSERT_EQ(vcs_zcode_hardware_profile_parse(
+                      wire, VCS_ZCODE_HARDWARE_PROFILE_WIRE_BYTES, &parsed),
+                  VCS_ZCODE_SCIENCE_OK);
+        ASSERT(memcmp(&profile, &parsed, sizeof(profile)) == 0);
+        ASSERT_EQ(vcs_zcode_hardware_profile_parse(
+                      wire, VCS_ZCODE_HARDWARE_PROFILE_WIRE_BYTES + 1,
+                      &parsed), VCS_ZCODE_SCIENCE_ERR_WIRE_SIZE);
+        wire[0] ^= 1;
+        ASSERT_EQ(vcs_zcode_hardware_profile_parse(
+                      wire, VCS_ZCODE_HARDWARE_PROFILE_WIRE_BYTES, &parsed),
+                  VCS_ZCODE_SCIENCE_ERR_WIRE_MAGIC);
+        ASSERT(parsed.schema_version == 0);
+
+        /* NUL-padding violations: content after the first NUL, and a full
+         * field with no NUL at all. */
+        struct vcs_zcode_hardware_profile_v1 bad = profile;
+        bad.cpu_brand[47] = '!';
+        ASSERT_EQ(vcs_zcode_hardware_profile_validate(&bad),
+                  VCS_ZCODE_SCIENCE_ERR_PADDING);
+        bad = profile;
+        memset(bad.cpu_vendor, 'A', sizeof(bad.cpu_vendor));
+        ASSERT_EQ(vcs_zcode_hardware_profile_validate(&bad),
+                  VCS_ZCODE_SCIENCE_ERR_PADDING);
+        /* Reserved ISA bits are rejected. */
+        bad = profile;
+        bad.isa_bits |= UINT64_C(1) << 13;
+        ASSERT_EQ(vcs_zcode_hardware_profile_validate(&bad),
+                  VCS_ZCODE_SCIENCE_ERR_ISA);
+        bad = profile;
+        bad.physical_cores = 0;
+        ASSERT_EQ(vcs_zcode_hardware_profile_validate(&bad),
+                  VCS_ZCODE_SCIENCE_ERR_LIMIT);
+
+        /* Live capture on this host always yields a valid object. */
+        struct vcs_zcode_hardware_profile_v1 captured, captured_parsed;
+        ASSERT(vcs_zcode_hardware_profile_capture(&captured, 2000));
+        ASSERT_EQ(vcs_zcode_hardware_profile_validate(&captured),
+                  VCS_ZCODE_SCIENCE_OK);
+        uint8_t captured_wire[VCS_ZCODE_HARDWARE_PROFILE_WIRE_BYTES];
+        ASSERT_EQ(vcs_zcode_hardware_profile_serialize(
+                      &captured, captured_wire), VCS_ZCODE_SCIENCE_OK);
+        ASSERT_EQ(vcs_zcode_hardware_profile_parse(
+                      captured_wire, sizeof(captured_wire), &captured_parsed),
+                  VCS_ZCODE_SCIENCE_OK);
+        ASSERT(memcmp(&captured, &captured_parsed, sizeof(captured)) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_zs_benchmark_method(void)
+{
+    int failures = 0;
+    TEST("zcode_science: benchmark method pins workload, timer, estimator, and sampling") {
+        struct vcs_zcode_benchmark_method_v1 method, parsed;
+        zs_method(&method);
+        uint8_t wire[VCS_ZCODE_BENCHMARK_METHOD_WIRE_BYTES + 1];
+        uint8_t root[32];
+        char wire_hex[2 * VCS_ZCODE_BENCHMARK_METHOD_WIRE_BYTES + 1];
+        char root_hex[65];
+        ASSERT_EQ(vcs_zcode_benchmark_method_validate(&method),
+                  VCS_ZCODE_SCIENCE_OK);
+        ASSERT_EQ(vcs_zcode_benchmark_method_serialize(&method, wire),
+                  VCS_ZCODE_SCIENCE_OK);
+        ASSERT(memcmp(wire, "ZCBMTH\r\n", 8) == 0);
+        zcl_hex_encode(wire, VCS_ZCODE_BENCHMARK_METHOD_WIRE_BYTES,
+                       wire_hex);
+        ASSERT_STR_EQ(wire_hex,
+            "5a43424d54480d0a010041414141414141414141414141414141414141414141"
+            "4141414141414141414142424242424242424242424242424242424242424242"
+            "4242424242424242424243434343434343434343434343434343434343434343"
+            "43434343434343434343881300000a000000e8030000040a00");
+        ASSERT_EQ(vcs_zcode_benchmark_method_root(&method, root),
+                  VCS_ZCODE_SCIENCE_OK);
+        zcl_hex_encode(root, 32, root_hex);
+        ASSERT_STR_EQ(root_hex,
+            "dba5920e4b47fd67434e7cdafb51856519656ecaee8694645370905f85ead121");
+        ASSERT_EQ(vcs_zcode_benchmark_method_parse(
+                      wire, VCS_ZCODE_BENCHMARK_METHOD_WIRE_BYTES, &parsed),
+                  VCS_ZCODE_SCIENCE_OK);
+        ASSERT(memcmp(&method, &parsed, sizeof(method)) == 0);
+        ASSERT_EQ(vcs_zcode_benchmark_method_parse(
+                      wire, VCS_ZCODE_BENCHMARK_METHOD_WIRE_BYTES + 1,
+                      &parsed), VCS_ZCODE_SCIENCE_ERR_WIRE_SIZE);
+        wire[0] ^= 1;
+        ASSERT_EQ(vcs_zcode_benchmark_method_parse(
+                      wire, VCS_ZCODE_BENCHMARK_METHOD_WIRE_BYTES, &parsed),
+                  VCS_ZCODE_SCIENCE_ERR_WIRE_MAGIC);
+
+        /* trim_percent is meaningful only for a trimmed mean. */
+        struct vcs_zcode_benchmark_method_v1 bad = method;
+        bad.sample_distribution = VCS_ZCODE_SAMPLE_DIST_MINIMUM;
+        ASSERT_EQ(vcs_zcode_benchmark_method_validate(&bad),
+                  VCS_ZCODE_SCIENCE_ERR_DISTRIBUTION);
+        bad.sample_distribution = VCS_ZCODE_SAMPLE_DIST_TRIMMED_MEAN;
+        bad.trim_percent = 50;
+        ASSERT_EQ(vcs_zcode_benchmark_method_validate(&bad),
+                  VCS_ZCODE_SCIENCE_ERR_DISTRIBUTION);
+        bad = method;
+        bad.sample_distribution = 0;
+        ASSERT_EQ(vcs_zcode_benchmark_method_validate(&bad),
+                  VCS_ZCODE_SCIENCE_ERR_DISTRIBUTION);
+        bad = method;
+        bad.measured_samples = 0;
+        ASSERT_EQ(vcs_zcode_benchmark_method_validate(&bad),
+                  VCS_ZCODE_SCIENCE_ERR_LIMIT);
+        bad.measured_samples =
+            VCS_ZCODE_BENCHMARK_METHOD_MAX_MEASURED_SAMPLES + 1;
+        ASSERT_EQ(vcs_zcode_benchmark_method_validate(&bad),
+                  VCS_ZCODE_SCIENCE_ERR_LIMIT);
+        bad = method;
+        bad.reserved = 1;
+        ASSERT_EQ(vcs_zcode_benchmark_method_validate(&bad),
+                  VCS_ZCODE_SCIENCE_ERR_FLAGS);
+
+        ASSERT_STR_EQ(vcs_zcode_benchmark_method_distribution_name(
+                          VCS_ZCODE_SAMPLE_DIST_RAW_ALL), "raw_all");
+        ASSERT_STR_EQ(vcs_zcode_benchmark_method_distribution_name(
+                          VCS_ZCODE_SAMPLE_DIST_MINIMUM), "minimum");
+        ASSERT_STR_EQ(vcs_zcode_benchmark_method_distribution_name(
+                          VCS_ZCODE_SAMPLE_DIST_MEDIAN_QUARTILES),
+                      "median_quartiles");
+        ASSERT_STR_EQ(vcs_zcode_benchmark_method_distribution_name(
+                          VCS_ZCODE_SAMPLE_DIST_TRIMMED_MEAN),
+                      "trimmed_mean");
+        ASSERT_STR_EQ(vcs_zcode_benchmark_method_distribution_name(0),
+                      "unknown");
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_zs_result_v2(void)
+{
+    int failures = 0;
+    TEST("zcode_science: result v2 binds the method and hardware profile, still an observation") {
+        struct vcs_zcode_study_spec_v1 study;
+        struct vcs_zcode_task_v1 task;
+        struct vcs_zcode_candidate_v1 candidate;
+        struct vcs_zcode_benchmark_method_v1 method;
+        struct vcs_zcode_hardware_profile_v1 profile;
+        struct vcs_zcode_benchmark_result_v2 result, parsed;
+        struct vcs_build_action_v1 action;
+        uint8_t task_root[32], candidate_root[32];
+        zs_study(&study);
+        zs_task_candidate(&study, &task, &candidate,
+                          task_root, candidate_root);
+        zs_method(&method);
+        ASSERT(vcs_zcode_hardware_profile_capture(&profile, 1250));
+        zs_benchmark_action(&action);
+        zs_result_v2(&study, task_root, candidate_root, &method, &profile,
+                     &result);
+
+        /* Happy path: structural + cross-validation with real method and
+         * captured profile objects. */
+        ASSERT_EQ(vcs_zcode_benchmark_result_v2_validate(&result),
+                  VCS_ZCODE_SCIENCE_OK);
+        ASSERT_EQ(vcs_zcode_benchmark_result_v2_validate_for_study(
+                      &study, &task, &candidate, &action, &method, &profile,
+                      &result, 2000), VCS_ZCODE_SCIENCE_OK);
+
+        uint8_t wire[VCS_ZCODE_BENCHMARK_RESULT_V2_WIRE_BYTES + 1];
+        uint8_t root[32], root_again[32];
+        ASSERT_EQ(vcs_zcode_benchmark_result_v2_serialize(&result, wire),
+                  VCS_ZCODE_SCIENCE_OK);
+        ASSERT(memcmp(wire, "ZCBEN2\r\n", 8) == 0);
+        ASSERT_EQ(vcs_zcode_benchmark_result_v2_root(&result, root),
+                  VCS_ZCODE_SCIENCE_OK);
+        ASSERT_EQ(vcs_zcode_benchmark_result_v2_root(&result, root_again),
+                  VCS_ZCODE_SCIENCE_OK);
+        ASSERT(memcmp(root, root_again, 32) == 0);
+        ASSERT_EQ(vcs_zcode_benchmark_result_v2_parse(
+                      wire, VCS_ZCODE_BENCHMARK_RESULT_V2_WIRE_BYTES,
+                      &parsed), VCS_ZCODE_SCIENCE_OK);
+        ASSERT(memcmp(&result, &parsed, sizeof(result)) == 0);
+        ASSERT_EQ(vcs_zcode_benchmark_result_v2_parse(
+                      wire, VCS_ZCODE_BENCHMARK_RESULT_V2_WIRE_BYTES + 1,
+                      &parsed), VCS_ZCODE_SCIENCE_ERR_WIRE_SIZE);
+        /* The frozen 299-byte v1 wire is not a v2 wire. */
+        ASSERT_EQ(vcs_zcode_benchmark_result_v2_parse(
+                      wire, VCS_ZCODE_BENCHMARK_RESULT_WIRE_BYTES, &parsed),
+                  VCS_ZCODE_SCIENCE_ERR_WIRE_SIZE);
+
+        /* Tampered bindings reject. */
+        struct vcs_zcode_benchmark_result_v2 tampered = result;
+        tampered.method_root[0] ^= 1;
+        ASSERT_EQ(vcs_zcode_benchmark_result_v2_validate_for_study(
+                      &study, &task, &candidate, &action, &method, &profile,
+                      &tampered, 2000),
+                  VCS_ZCODE_SCIENCE_ERR_METHOD_MISMATCH);
+        tampered = result;
+        tampered.hardware_profile_root[0] ^= 1;
+        ASSERT_EQ(vcs_zcode_benchmark_result_v2_validate_for_study(
+                      &study, &task, &candidate, &action, &method, &profile,
+                      &tampered, 2000),
+                  VCS_ZCODE_SCIENCE_ERR_HARDWARE_MISMATCH);
+        tampered = result;
+        memset(tampered.method_root, 0, 32);
+        ASSERT_EQ(vcs_zcode_benchmark_result_v2_validate(&tampered),
+                  VCS_ZCODE_SCIENCE_ERR_ROOT_ZERO);
+
+        /* Inherited H2 behaviors: post-expiry revalidation passes; future
+         * evidence is its own failure class. */
+        ASSERT_EQ(vcs_zcode_benchmark_result_v2_validate_for_study(
+                      &study, &task, &candidate, &action, &method, &profile,
+                      &result, 6000), VCS_ZCODE_SCIENCE_OK);
+        struct vcs_zcode_benchmark_result_v2 future = result;
+        future.finished_unix = 2100;
+        ASSERT_EQ(vcs_zcode_benchmark_result_v2_validate_for_study(
+                      &study, &task, &candidate, &action, &method, &profile,
+                      &future, 2000),
+                  VCS_ZCODE_SCIENCE_ERR_EVIDENCE_FUTURE);
+        struct vcs_zcode_benchmark_result_v2 late = result;
+        late.started_unix = 4900;
+        late.finished_unix = 5000;
+        ASSERT_EQ(vcs_zcode_benchmark_result_v2_validate_for_study(
+                      &study, &task, &candidate, &action, &method, &profile,
+                      &late, 5200), VCS_ZCODE_SCIENCE_ERR_EXPIRED);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_zcode_science(void)
 {
     int failures = 0;
@@ -608,6 +921,9 @@ int test_zcode_science(void)
     failures += test_zs_submission_window();
     failures += test_zs_curation_vote();
     failures += test_zs_fixed_actions();
+    failures += test_zs_hardware_profile();
+    failures += test_zs_benchmark_method();
+    failures += test_zs_result_v2();
     printf("=== zcode_science: %d failures ===\n", failures);
     return failures;
 }
