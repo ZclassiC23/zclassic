@@ -78,7 +78,8 @@ static void hardlink_warn_once(int file_idx, const char *path,
     if (g_hardlink_warned[file_idx >> 3] & mask)
         return; /* benign race: a duplicate warning is harmless */
     g_hardlink_warned[file_idx >> 3] |= mask;
-    fprintf(stderr, "[disk_block_io] %s has %lu hard links — shared blk "
+    fprintf(stderr,  // obs-ok:hardlink-tripwire-boot-time-foreign-writer-warning
+            "[disk_block_io] %s has %lu hard links — shared blk "
             "file; foreign appends can invalidate indexed positions\n",
             path, nlink);
 }

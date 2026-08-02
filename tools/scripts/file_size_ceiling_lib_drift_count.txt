@@ -257,6 +257,24 @@
 # cohesive scoring module mirroring package_store.c's one-file shape).
 # Freshly baselined at its starting size (845) so future growth on it
 # becomes visible; count unchanged.
+#
+# 2026-08-02 (fold position-repair, 8769fb1ce): disk_block_io.c is a NEW
+# 978-line oversized file (was 769) — the hash-keyed
+# block_index_repair_pos_from_disk self-heal (mmap one blk file, walk
+# records resyncing to the next frame on garbage, compare the full-header
+# hash incl. compactsize+Equihash solution, re-store via
+# block_index_set_have_data_verified) plus the st_nlink>1 hardlink
+# tripwire. Real defensive growth that converts the 2026-08-02 producer-fold
+# permanent stall (314 overwritten tail copies) into transparent same-file
+# repairs. Freshly baselined at 978 in file_size_ceiling_lib_baseline.txt
+# (then 979 after the obs-ok marker on the tripwire line) so future growth
+# on it stays visible; the recorded count STAYS 14.
+# Same commit family: wallet_sqlite.c 1655 -> 1668 (nested-BEGIN retry in
+# wallet_sqlite_flush_r — "cannot start a transaction within a transaction"
+# on the shared FULLMUTEX connection is retryable busy on the bounded
+# 8-attempt schedule, plus its regression test). Re-baselined at 1668;
+# count STAYS 14.
+#
 14
 #
 # 2026-07-27 (os_sandbox dynamic Landlock handled-set): os_sandbox_linux.c

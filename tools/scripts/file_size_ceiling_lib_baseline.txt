@@ -59,6 +59,7 @@ lib/sim/src/simnet_wire.c 1491
 lib/storage/src/census_read.c 868
 lib/storage/src/coins_kv.c 1028
 lib/storage/src/consensus_db.c 883
+lib/storage/src/disk_block_io.c 979
 lib/storage/src/peers_projection.c 1304
 lib/storage/src/progress_store.c 881
 lib/storage/src/coins_ram.c 1406
@@ -66,7 +67,7 @@ lib/storage/src/coins_view_sqlite.c 1247
 lib/validation/src/chainstate.c 936
 lib/validation/src/connect_block.c 896
 lib/wallet/src/wallet.c 1582
-lib/wallet/src/wallet_sqlite.c 1655
+lib/wallet/src/wallet_sqlite.c 1668
 lib/sim/src/simnet_chaos_faults.c 2684
 lib/util/src/blocker.c 836
 lib/util/src/supervisor.c 801

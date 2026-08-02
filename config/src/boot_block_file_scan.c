@@ -500,7 +500,8 @@ int scan_block_files_mark_data(struct main_state *ms, const char *datadir,
          * can overwrite records this scan is about to index. Positions in
          * the last blk file are provisional on such a layout. */
         if (st.st_nlink > 1)
-            fprintf(stderr, "scan: %s has %lu hard links — shared blk file; "
+            fprintf(stderr,  // obs-ok:hardlink-tripwire-boot-scan-foreign-writer-warning
+                    "scan: %s has %lu hard links — shared blk file; "
                     "a foreign writer may invalidate indexed positions\n",
                     path, (unsigned long)st.st_nlink);
 
