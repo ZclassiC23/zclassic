@@ -170,6 +170,15 @@ static void seed_fixture(struct node_db *ndb)
 
 /* ── (1)+(2)+(3) backfill: genesis, send, spend, balance, cursor ──── */
 
+/* The run_once gate folds only up to the node_db catchup projection tip
+ * (sync_projection_tip_height — the literal mirrors the private
+ * SYNC_PROJECTION_TIP_HEIGHT_KEY in sync_controller_writers.c), so the
+ * fixture must declare its seeded projections as committed. */
+static void fixture_set_projection_tip(struct node_db *ndb, int64_t h)
+{
+    (void)node_db_state_set_int(ndb, "sync_projection_tip_height", h);
+}
+
 static int test_backfill_ledger(void)
 {
     int failures = 0;
@@ -194,6 +203,7 @@ static int test_backfill_ledger(void)
     /* Fold only through h=1 first, so we can observe the GENESIS row BEFORE
      * the SEND spends it. */
     reducer_frontier_provable_tip_set(1);
+    fixture_set_projection_tip(&ndb, 1);
 
     printf("zslp_ledger: backfill folds heights up to H*=1... ");
     { int folded = zslp_ledger_backfill_run_once();
@@ -212,6 +222,7 @@ static int test_backfill_ledger(void)
 
     /* Now advance to H*=2: the SEND spends GENESIS and mints two outputs. */
     reducer_frontier_provable_tip_set(2);
+    fixture_set_projection_tip(&ndb, 2);
 
     printf("zslp_ledger: backfill folds h=2 (SEND)... ");
     { int folded = zslp_ledger_backfill_run_once();
@@ -291,6 +302,7 @@ static int test_digest_and_rebuild(void)
     g_zslp_ledger_backfill_test_ndb = &ndb;
     zslp_ledger_backfill_reset_for_test();
     reducer_frontier_provable_tip_set(2);
+    fixture_set_projection_tip(&ndb, 2);
 
     printf("zslp_ledger: full fold reaches cursor=2... ");
     { (void)zslp_ledger_backfill_run_once();
@@ -452,6 +464,7 @@ static int test_wallet_wide_sweep(void)
     g_zslp_ledger_backfill_test_ndb = &ndb;
     zslp_ledger_backfill_reset_for_test();
     reducer_frontier_provable_tip_set(2);
+    fixture_set_projection_tip(&ndb, 2);
     (void)zslp_ledger_backfill_run_once();
 
     struct zslp_wallet_token held[8];

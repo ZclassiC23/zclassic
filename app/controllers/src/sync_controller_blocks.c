@@ -12,6 +12,7 @@
 #include "services/recovery_policy.h"
 #include "models/block.h"
 #include "models/db_txn.h"
+#include "models/explorer_index.h"
 #include "models/wallet_key.h"
 #include "models/wallet_tx.h"
 #include "primitives/block.h"
@@ -495,6 +496,34 @@ static bool node_db_sync_copy_block(struct block *dst, const struct block *src)
     return true;
 }
 
+/* Read the view_integrity receipt recorded for height h (the block just
+ * below the one being folded). Mirrors catchup_read_prev_receipt in
+ * node_db_catchup_service.c: fills `out` and returns true, or leaves it
+ * untouched and returns false when no row exists (genesis start → caller
+ * uses zeros). */
+static bool connect_block_read_prev_receipt(struct node_db *ndb, int h,
+                                            uint8_t out[32])
+{
+    if (!ndb || !ndb->open || h < 0)
+        return false;
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(ndb->db, // raw-controller-sql-ok:view-integrity-prev-receipt-readonly-mirrors-catchup
+            "SELECT sha3_hash FROM view_integrity WHERE height=?",
+            -1, &s, NULL) != SQLITE_OK || !s)
+        return false;
+    sqlite3_bind_int64(s, 1, h);
+    bool found = false;
+    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
+        const void *blob = sqlite3_column_blob(s, 0);
+        if (blob && sqlite3_column_bytes(s, 0) >= 32) {
+            memcpy(out, blob, 32);
+            found = true;
+        }
+    }
+    sqlite3_finalize(s);
+    return found;
+}
+
 static bool node_db_sync_connect_block_async_write(struct node_db *ndb,
                                                    void *ctx)
 {
@@ -504,6 +533,40 @@ static bool node_db_sync_connect_block_async_write(struct node_db *ndb,
         LOG_FAIL("sync", "connect_block_async_write: invalid ctx");
     bool ok = node_db_sync_connect_block_local(ndb, &async->blk,
                                                &async->pindex);
+    /* Fold the explorer projections (op_returns / tx_outputs / tx_inputs /
+     * zslp overlays / the chained view_integrity receipt) into the SAME
+     * job. Load-bearing, not redundant with catchup: connect_block_local
+     * bumps sync_projection_tip_height, so the node_db catchup pass — the
+     * only other explorer_index_block caller — early-returns on these
+     * heights forever (db_tip >= chain_tip). On regtest, where this feed is
+     * the ONLY connect path, a block folded here without its projections
+     * can never be projected at all (the 2026-08-02 C5 COLLECT wedge: the
+     * access-token mint confirmed at h=116 yet no op_returns/zslp_transfers
+     * row ever existed, so the chain-derived store token gate correctly
+     * answered 0). Mainnet never calls the async family (the consensus path
+     * defers projections to catchup by design), so this costs nothing on
+     * the live hot path. The hook is fail-soft and row-idempotent; db
+     * service serializes these jobs in enqueue (= chain) order, so h-1's
+     * receipt exists when h folds — a fail-soft miss at h-1 yields a
+     * zeros-prev receipt at h, a LOUD chain break on a derived, rebuildable
+     * projection, never silent corruption. */
+    if (ok) {
+        uint8_t prev_receipt[32] = {0};
+        if (async->pindex.nHeight > 0)
+            (void)connect_block_read_prev_receipt(ndb,
+                                                  async->pindex.nHeight - 1,
+                                                  prev_receipt);
+        int64_t sprout_val = 0, sapling_val = 0;
+        if (!explorer_index_block(ndb, &async->blk, &async->pindex,
+                                  prev_receipt, NULL,
+                                  &sprout_val, &sapling_val)) {
+            LOG_WARN("sync",
+                     "async projection: explorer_index_block failed at "
+                     "height %d (degraded explorer row, repairable)",
+                     async->pindex.nHeight);
+            ok = false;
+        }
+    }
     /* Fold the per-tx wallet projection into the SAME job (the regtest
      * tip-finalize feed): it must run after the block write above — its
      * time_received lookup reads the blocks row — and inside the same

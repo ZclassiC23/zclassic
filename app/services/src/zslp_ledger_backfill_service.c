@@ -37,6 +37,11 @@
 #include <stdatomic.h>
 #include <string.h>
 
+/* services -> controllers is an upward include the shape-direction gate
+ * rejects for new entries; declare the one accessor locally instead, the
+ * same seam catalog_completeness.c uses. */
+extern int node_db_sync_get_tip_height(struct node_db *ndb);
+
 static _Atomic uint64_t g_backfill_ticks         = 0;
 static _Atomic uint64_t g_backfill_blocks_folded = 0;
 static _Atomic int64_t  g_backfill_last_height   = -1;
@@ -68,8 +73,24 @@ int zslp_ledger_backfill_run_once(void)
 
     int32_t hstar = reducer_frontier_provable_tip_cached();
     if (hstar < 0) hstar = 0;
+    /* Projection-readiness gate (2026-08-02 C5 collect wedge): the rows
+     * this backfill reads (zslp_transfers / tx_outputs / tx_inputs) are
+     * written ONLY by explorer_index_block — inside the node_db catchup
+     * pass, or inline in the regtest tip feed's async connect job. Folding
+     * to bare H* raced ahead of the projection writer and folded "empty"
+     * heights whose projections did not exist yet, permanently advancing
+     * the cursor past a real mint block (its ledger row never existed and
+     * the store token gate correctly answered 0 forever). Fold only up to
+     * the catchup projection tip (SYNC_PROJECTION_TIP_HEIGHT_KEY via
+     * node_db_sync_get_tip_height, -1 before the first catchup commit →
+     * nothing to fold yet); the next tick closes the rest once the
+     * projection writer commits. */
+    {
+        int32_t proj_tip = node_db_sync_get_tip_height(ndb);
+        if (proj_tip < hstar) hstar = proj_tip;
+    }
     if (cursor >= hstar)
-        return 0; /* fully caught up to the provable frontier */
+        return 0; /* fully caught up to the (projection-backed) frontier */
 
     int32_t target = cursor + ZSLP_LEDGER_BACKFILL_BATCH_BLOCKS;
     if (target > hstar) target = hstar;
@@ -167,6 +188,8 @@ bool zslp_ledger_dump_state_json(struct json_value *out, const char *key)
 
     int32_t hstar = reducer_frontier_provable_tip_cached();
     json_push_kv_int(out, "provable_tip", hstar);
+    json_push_kv_int(out, "projection_tip",
+        db_open ? node_db_sync_get_tip_height(ndb) : -1);
     json_push_kv_int(out, "blocks_remaining",
         (have_cursor && hstar > cursor) ? (int64_t)(hstar - cursor) : 0);
     json_push_kv_bool(out, "strict_validity_caught_up",
