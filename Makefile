@@ -5292,7 +5292,10 @@ quality-linger-status:
 .PHONY: install-slo-probe install-slo-pager slo-probe-status
 install-slo-probe:
 	@install -d "$(HOME)/.config/systemd/user"
-	@install -m 644 deploy/zclassic23-slo-probe.service "$(HOME)/.config/systemd/user/zclassic23-slo-probe.service"
+	@set -eu; tmp="$$(mktemp "$(HOME)/.config/systemd/user/zclassic23-slo-probe.service.tmp.XXXXXX")"; \
+		trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+		sed 's|%h/github/zclassic23|$(CURDIR)|g' deploy/zclassic23-slo-probe.service > "$$tmp"; \
+		install -m 644 "$$tmp" "$(HOME)/.config/systemd/user/zclassic23-slo-probe.service"
 	@install -m 644 deploy/zclassic23-slo-probe.timer "$(HOME)/.config/systemd/user/zclassic23-slo-probe.timer"
 	@systemctl --user daemon-reload
 	@systemctl --user enable --now zclassic23-slo-probe.timer
@@ -5377,7 +5380,10 @@ slo-probe-selftest:
 # tools/scripts/tip_agreement_judge.sh (windowed, fails closed).
 install-tip-agreement:
 	@install -d "$(HOME)/.config/systemd/user"
-	@install -m 644 deploy/zclassic23-tip-agreement.service "$(HOME)/.config/systemd/user/zclassic23-tip-agreement.service"
+	@set -eu; tmp="$$(mktemp "$(HOME)/.config/systemd/user/zclassic23-tip-agreement.service.tmp.XXXXXX")"; \
+		trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+		sed 's|%h/github/zclassic23|$(CURDIR)|g' deploy/zclassic23-tip-agreement.service > "$$tmp"; \
+		install -m 644 "$$tmp" "$(HOME)/.config/systemd/user/zclassic23-tip-agreement.service"
 	@install -m 644 deploy/zclassic23-tip-agreement.timer "$(HOME)/.config/systemd/user/zclassic23-tip-agreement.timer"
 	@systemctl --user daemon-reload
 	@systemctl --user enable --now zclassic23-tip-agreement.timer

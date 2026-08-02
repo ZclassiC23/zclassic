@@ -222,6 +222,9 @@
 #   ZCL_PARITY_HASH_CMD          override the getblockhash read; the height
 #                                is exported as ZCL_PARITY_HEIGHT
 #   ZCL_PARITY_NODE_BIN / ZCL_PARITY_RPC_BIN   binaries to use
+#   ZCL_PARITY_CANON_DATADIR / ZCL_PARITY_CANON_RPCPORT
+#                                explicit canonical binding; when absent,
+#                                resolve zclassic23.service ExecStart
 #
 # This script exits non-zero ONLY if it could not append to its own ledger.
 # A node that would not answer is DATA, not a script failure — same doctrine
@@ -304,8 +307,20 @@ fi
 # unreachable row can never train a reader to ignore could-not-ask. Only
 # zclassic23.service (canonical, 18232) runs here; adding a lane is one
 # line.
+CANON_DATADIR="${ZCL_PARITY_CANON_DATADIR:-}"
+CANON_RPCPORT="${ZCL_PARITY_CANON_RPCPORT:-}"
+if [ "${1:-collect}" = "collect" ] &&
+   { [ -z "$CANON_DATADIR" ] || [ -z "$CANON_RPCPORT" ]; }; then
+    canonical_exec="$(evidence_systemd_show zclassic23.service ExecStart)"
+    [ -n "$CANON_DATADIR" ] ||
+        CANON_DATADIR="$(evidence_unit_exec_arg "$canonical_exec" datadir)"
+    [ -n "$CANON_RPCPORT" ] ||
+        CANON_RPCPORT="$(evidence_unit_exec_arg "$canonical_exec" rpcport)"
+fi
+[ -n "$CANON_DATADIR" ] || CANON_DATADIR="${HOME:-/root}/.zclassic-c23"
+[ -n "$CANON_RPCPORT" ] || CANON_RPCPORT=18232
 INSTANCES=(
-    "canonical|18232|${HOME:-/root}/.zclassic-c23"
+    "canonical|$CANON_RPCPORT|$CANON_DATADIR"
 )
 
 resolve_bin() {

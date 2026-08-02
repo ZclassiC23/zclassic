@@ -140,6 +140,9 @@
 #                           reported BLIND rather than merely unreachable
 #                           (default 10 polls = 10 minutes at the standing
 #                           60 s cadence)
+#   ZCL_SLO_CANON_DATADIR / ZCL_SLO_CANON_RPCPORT
+#                           explicit canonical binding; when absent, resolve
+#                           the effective zclassic23.service ExecStart
 #   ZCL_SLO_CANON_CMD / ZCL_SLO_DEV_CMD / ZCL_SLO_ORACLE_CMD
 #                           override the exact command run per instance
 #                           (selftest injection seam — same pattern as
@@ -202,6 +205,23 @@ STATE_TIMEOUT_SEC="${ZCL_SLO_STATE_TIMEOUT_SEC:-5}"
 # wedged host cannot turn a 60 s collector into an overlapping one.
 export ZCL_EVIDENCE_TIMEOUT_SEC="${ZCL_SLO_HOST_TIMEOUT_SEC:-5}"
 
+# The canonical lane's datadir is an operator binding, not a repository
+# default.  Read it from the effective unit so an A/B launcher or an
+# isolated recovery lane is measured where it actually runs.  Selftests
+# inject both values and therefore never inspect the host's live unit.
+CANON_DATADIR="${ZCL_SLO_CANON_DATADIR:-}"
+CANON_RPCPORT="${ZCL_SLO_CANON_RPCPORT:-}"
+if [ "${1:-collect}" = "collect" ] &&
+   { [ -z "$CANON_DATADIR" ] || [ -z "$CANON_RPCPORT" ]; }; then
+    canonical_exec="$(evidence_systemd_show zclassic23.service ExecStart)"
+    [ -n "$CANON_DATADIR" ] ||
+        CANON_DATADIR="$(evidence_unit_exec_arg "$canonical_exec" datadir)"
+    [ -n "$CANON_RPCPORT" ] ||
+        CANON_RPCPORT="$(evidence_unit_exec_arg "$canonical_exec" rpcport)"
+fi
+[ -n "$CANON_DATADIR" ] || CANON_DATADIR="${HOME:-/root}/.zclassic-c23"
+[ -n "$CANON_RPCPORT" ] || CANON_RPCPORT=18232
+
 # ── instance table ────────────────────────────────────────────────────
 # ONE list, probed in order. Row format:
 #     name|rpcport|datadir|command-override-env-var|systemd-unit
@@ -216,7 +236,7 @@ export ZCL_EVIDENCE_TIMEOUT_SEC="${ZCL_SLO_HOST_TIMEOUT_SEC:-5}"
 # one. Everything downstream — the ledger schema, the summary reader, the
 # pager — is driven off whatever rows are here.
 INSTANCES=(
-    "canonical|18232|${HOME:-/root}/.zclassic-c23|ZCL_SLO_CANON_CMD|zclassic23.service"
+    "canonical|$CANON_RPCPORT|$CANON_DATADIR|ZCL_SLO_CANON_CMD|zclassic23.service"
     "dev|18252|${HOME:-/root}/.zclassic-c23-dev|ZCL_SLO_DEV_CMD|zcl23-dev.service"
 )
 ORACLE_DATADIR="${HOME:-/root}/.zclassic"
@@ -605,6 +625,19 @@ cmd_selftest() {
     export ZCL_SLO_RSS_CMD='true'
     export ZCL_SLO_DU_CMD='true'
     export ZCL_SLO_NODE_BIN=''
+    export ZCL_SLO_CANON_DATADIR='/fixture/canonical'
+    export ZCL_SLO_CANON_RPCPORT=18232
+
+    local bind_fixture bind_duplicate
+    bind_fixture='ExecStart={ path=/fixture/launch ; argv[]=/fixture/launch /fixture/node -datadir=/fixture/live -rpcport=19001 ; ignore_errors=no ; }'
+    [ "$(evidence_unit_exec_arg "$bind_fixture" datadir)" = "/fixture/live" ] ||
+        st_fail "case=service-binding datadir was not parsed from argv[]"
+    [ "$(evidence_unit_exec_arg "$bind_fixture" rpcport)" = "19001" ] ||
+        st_fail "case=service-binding rpcport was not parsed from argv[]"
+    bind_duplicate='ExecStart={ path=/fixture/node ; argv[]=/fixture/node -rpcport=1 -rpcport=2 ; }'
+    [ -z "$(evidence_unit_exec_arg "$bind_duplicate" rpcport)" ] ||
+        st_fail "case=service-binding duplicate rpcport must fail closed"
+    echo "selftest: ok case=service-binding"
 
     # A) every instance + the oracle reachable, dev lagging.
     (
