@@ -2412,6 +2412,43 @@ int cli_main(int argc, char **argv)
         }
     }
 
+    /* ZCL_DATADIR / ZCL_RPCPORT env naming (the convention tools/zcl-rpc.c,
+     * the soak harness, and the crash-recovery tests already pin): an
+     * env-named target is an OPERATOR-named target — it sets the same
+     * datadir_set/rpcport_set bits the flags set, so the E4 port
+     * autodiscovery, the systemctl-default-service fallbacks, and the
+     * bare-status sibling listing below ALL skip (an operator who named a
+     * target never gets the default lane's answer). Flags win over env:
+     * the argv loop above already set the bits when a flag was given.
+     * Without this the native CLI (status / dumpstate / every registry
+     * command) silently answered from the LIVE node even when the caller
+     * had pinned env to an isolated instance. */
+    if (!datadir_set) {
+        const char *env_dd = getenv("ZCL_DATADIR");
+        if (env_dd && env_dd[0]) {
+            int n = snprintf(datadir, sizeof(datadir), "%s", env_dd);
+            if (n < 0 || (size_t)n >= sizeof(datadir)) {
+                fprintf(stderr,
+                        "ZCL_DATADIR exceeds the %zu-byte path buffer — "
+                        "refusing (no silent truncation)\n", sizeof(datadir));
+                return 2;
+            }
+            datadir_set = true;
+        }
+    }
+    if (!rpcport_set) {
+        const char *env_rp = getenv("ZCL_RPCPORT");
+        if (env_rp && env_rp[0]) {
+            int port = atoi(env_rp);
+            if (port > 0 && port < 65536) {
+                cli_port = port;
+                rpcport_set = true;
+            } else {
+                fprintf(stderr, "Ignoring invalid ZCL_RPCPORT=%s\n", env_rp);
+            }
+        }
+    }
+
     if (!method) {
         print_usage(argv[0]);
         return 1;
@@ -2766,7 +2803,8 @@ static int cli_refuse_malformed_target_flag(const char *arg,
     fprintf(stderr,
            "error=UNRECOGNIZED_FLAG detail=flag '%s' is not recognized in "
            "CLI-client mode (%s); did you mean %s? try=fix the flag — "
-           "CLI-RPC mode also requires -datadir=DIR to target a specific "
+           "CLI-RPC mode also requires -datadir=DIR (or the ZCL_DATADIR / "
+           "ZCL_RPCPORT env) to target a specific "
            "node (bare `status` with no flags at all still targets the "
            "default local node) valid_flags=%s\n",
            arg, why, suggest, cli_flag_client_whitelist_csv());

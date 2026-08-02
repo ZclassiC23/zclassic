@@ -527,3 +527,11 @@
 # live tip, so the byte-exact C8 tier could never bind and SKIPped every
 # run. Reuse of the file's existing import-mode helper pattern; no new
 # file. Baselined at 4244; count STAYS 14.
+#
+# 2026-08-02 (CLI env target naming): src/main_cli_modes.c 4244 -> 4282 —
+# cli_main now honors the ZCL_DATADIR/ZCL_RPCPORT env convention
+# (tools/zcl-rpc.c, soak, crash-recovery tests already pin it) as an
+# operator-named target setting the same datadir_set/rpcport_set bits the
+# flags set, so the native CLI stops silently answering from the LIVE
+# node when the caller pinned an isolated one. Baselined at 4282; count
+# STAYS 14.
