@@ -28,6 +28,38 @@
    is not enough. The ledger must PASS within 600 seconds with final H\* equal
    to the captured true peer tip. Then confirm `make arch-score` rises and run
    the full lint/test gates.
+   **2026-08-02 measurements (both SEAM, both named, zero silent stalls):**
+   (a) wiped stopwatch (`ZCL_CS_PEER=127.0.0.1:8034`, the read-only zd
+   oracle): provable tip climbed 0 -> 31,387 in 616 s (~51 blk/s while
+   sharing the host with the genesis replay-canary), 1 boot, blockers all
+   named — exit 3 SEAM. The wiped path folds from genesis today; the
+   native checkpoint weld (boot auto-activates the compiled 3,056,758
+   authority + pulls the peer-served UTXO/shielded state against the
+   baked SHA3, no flags) is the C3 code gap, exactly as the stopwatch
+   header anticipates. Artifact: build/c3-stopwatch/20260802T045247Z-*.
+   (b) bundle probe (`make mvp-coldstart-to-tip-local`,
+   utxo-seed-3155842.snapshot + live serving peer 127.0.0.1:8033): seed
+   RE-SEEDED digest-verified in ~20 s (count=1,344,903, body SHA3 OK),
+   H\* climbed 3,155,842 -> 3,155,873 on peer-served above-seed bodies
+   (the backlog-#10 starvation is cured — the fold reached its NEXT
+   blocker class), then HELD on `utxo_apply.anchor_backfill_gap` — the
+   v2 seed carries UTXOs + Sapling frontier but not the anchor/nullifier
+   history, and the probe datadir had no `utxo-anchor.snapshot`
+   companion (boot_anchor_snapshot_reachability: absent). Auto-remedies
+   exhausted: rebuild_recent refused (46,504 > 10,000 cap), Rung C named
+   the importer. The many `notfound` replies from the live peer were
+   below-seed census-backfill requests for bodies the seeded live node
+   legitimately does not have (h=2,959,325 spot-checked — header-only)
+   — correct behavior, not a serving defect. Exit 3 SEAM; artifact
+   build/c3-probe/20260802T050837Z-*. **Next concrete moves, in order:**
+   stage the checkpoint-bound `utxo-anchor.snapshot` (the compiled-
+   checkpoint-coherent artifact from `produce_anchor_snapshot.sh` /
+   `seed_anchor_snapshot.sh`) into the probe bundle and re-run; if the
+   fold then climbs past the first post-seed shielded block, the
+   remaining gap is pure fold throughput (~50 blk/s today) — the delta
+   above a FRESH tip-height seed is what fits the 600 s budget, so mint
+   a fresh v2 seed (`tools/mint_v2_snapshot.c`) on a datadir copy at the
+   captured peer tip as the second step.
 2. **Canonical lane diagnosis/recovery** — read-only diagnosis is autonomous;
    restart, deploy, or datadir repair is owner-gated. Never use the canonical
    lane to test a Q1 change. A previously at-tip observation does not override
