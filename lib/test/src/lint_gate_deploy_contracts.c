@@ -48,17 +48,17 @@ int t_canonical_deploy_proof_binding_contract(void)
         const char *record_verify = source_compare
             ? strstr(source_compare, "tools/dev/source-identity.sh verify-record")
             : NULL;
-        const char *service_render = record_verify
+        const char *service_preserve = record_verify
             ? strstr(record_verify,
-                     "sed 's|%h/zclassic23|$(CURDIR)|g' deploy/zclassic23.service")
+                     "deploy: preserving existing canonical service unit")
             : NULL;
-        const char *launcher_guard = service_render
-            ? strstr(service_render,
+        const char *launcher_guard = service_preserve
+            ? strstr(service_preserve,
                      "path=$(CURDIR)/deploy/zclassic23-launch.sh")
             : NULL;
         const char *binary_target = launcher_guard
             ? strstr(launcher_guard,
-                     "SERVICE_BIN=\"$(CURDIR)/build/bin/zclassic23\"")
+                     "n == 2")
             : NULL;
         const char *candidate_install = record_verify
             ? strstr(record_verify,
@@ -74,9 +74,12 @@ int t_canonical_deploy_proof_binding_contract(void)
         ASSERT(agentbuild != NULL && agentbuild < seed_target);
         ASSERT(source_compare != NULL && source_compare < seed_target);
         ASSERT(record_verify != NULL && record_verify < seed_target);
-        ASSERT(service_render != NULL && service_render < seed_target);
+        ASSERT(service_preserve != NULL && service_preserve < seed_target);
         ASSERT(launcher_guard != NULL && launcher_guard < seed_target);
         ASSERT(binary_target != NULL && binary_target < seed_target);
+        ASSERT(strstr(binary_target,
+                      "[ \"$$SERVICE_BIN\" = \"$(CURDIR)/build/bin/zclassic23\" ]")
+               != NULL);
         ASSERT(candidate_install != NULL && candidate_install < seed_target);
         ASSERT(restart != NULL && restart < seed_target);
         ASSERT(proof != NULL && proof < seed_target);
