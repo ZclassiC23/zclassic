@@ -35,6 +35,7 @@
 #include "supervisors/domains.h"
 #include "util/log_macros.h"
 #include "util/supervisor.h"
+#include "util/util.h"  /* GetDataDir */
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 
@@ -151,7 +152,12 @@ static const char *auditor_datadir(void)
 #ifdef ZCL_TESTING
     if (g_state_auditor_test_datadir) return g_state_auditor_test_datadir;
 #endif
-    return g_sa_datadir;
+    /* Bodies are written under the NET-SPECIFIC datadir (GetDataDir(true);
+     * see reducer_ingest_service.c) — resolve the same directory for reads.
+     * Byte-identical to g_sa_datadir on mainnet (base==net-specific). */
+    static char net_dir[2048];
+    GetDataDir(true, net_dir, sizeof(net_dir));
+    return net_dir[0] ? net_dir : g_sa_datadir;
 }
 
 void state_auditor_set_datadir(const char *datadir)

@@ -38,6 +38,7 @@
 #include "supervisors/domains.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "util/util.h"  /* GetDataDir */
 #include "util/supervisor.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
@@ -97,7 +98,14 @@ static const char *backfill_datadir(void)
 #ifdef ZCL_TESTING
     if (g_op_return_backfill_test_datadir) return g_op_return_backfill_test_datadir;
 #endif
-    return g_backfill_datadir;
+    /* The body writer persists under the NET-SPECIFIC datadir
+     * (GetDataDir(true) — <base>/regtest on regtest/testnet; see
+     * reducer_ingest_service.c), so reads must resolve the same directory.
+     * On mainnet GetDataDir(true)==base and this is byte-identical to the
+     * wired base datadir. */
+    static char net_dir[2048];
+    GetDataDir(true, net_dir, sizeof(net_dir));
+    return net_dir[0] ? net_dir : g_backfill_datadir;
 }
 
 /* The snapshot-seed floor, or false when this datadir has none (from-genesis)

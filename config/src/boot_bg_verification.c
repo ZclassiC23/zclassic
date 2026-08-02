@@ -16,6 +16,7 @@
  * in boot_services.c, so the four prototypes live in config/boot_internal.h. */
 
 #include "config/boot_internal.h"
+#include "util/util.h"  /* GetDataDir */
 #include <stdio.h>
 
 /* Start background full proof/script validation (runtime service kernel). */
@@ -24,8 +25,13 @@ bool boot_bg_validation_start(void *ctx)
     struct boot_svc_ctx *svc = ctx;
     if (!svc || !svc->app_ctx)
         return false;
+    /* svc->datadir is the BASE datadir, but bodies are persisted under the
+     * NET-SPECIFIC datadir (GetDataDir(true); reducer_ingest_service.c) —
+     * the walker's pread must look there. Byte-identical on mainnet. */
+    char net_dir[2048];
+    GetDataDir(true, net_dir, sizeof(net_dir));
     bg_validation_init(&svc->bg_validation, svc->state, svc->node_db,
-                       svc->datadir, svc->params);
+                       net_dir[0] ? net_dir : svc->datadir, svc->params);
     g_bg_validation = &svc->bg_validation;
     if (svc->app_ctx->no_bg_validation) {
         printf("[bg-valid] Disabled via -nobgvalidation\n");
