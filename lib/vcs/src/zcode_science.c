@@ -108,6 +108,8 @@ const char *vcs_zcode_science_error_string(enum vcs_zcode_science_error error)
     case VCS_ZCODE_SCIENCE_ERR_IDENTITY_MISMATCH:
         return "identity-root-mismatch";
     case VCS_ZCODE_SCIENCE_ERR_EXPIRED: return "object-expired";
+    case VCS_ZCODE_SCIENCE_ERR_EVIDENCE_FUTURE: return "evidence-from-future";
+    case VCS_ZCODE_SCIENCE_ERR_ACTION_MISMATCH: return "action-root-mismatch";
     }
     return "unknown";
 }
@@ -151,6 +153,13 @@ enum vcs_zcode_science_error vcs_zcode_study_spec_validate_at(
         now_unix >= study->expires_unix)
         return VCS_ZCODE_SCIENCE_ERR_EXPIRED;
     return VCS_ZCODE_SCIENCE_OK;
+}
+
+bool vcs_zcode_study_spec_accepts_submission_at(
+    const struct vcs_zcode_study_spec_v1 *study, int64_t now_unix)
+{
+    return vcs_zcode_study_spec_validate(study) == VCS_ZCODE_SCIENCE_OK &&
+           now_unix >= study->created_unix && now_unix < study->expires_unix;
 }
 
 enum vcs_zcode_science_error vcs_zcode_study_spec_serialize(
@@ -679,20 +688,50 @@ static enum vcs_zcode_science_error map_task_error(
     return VCS_ZCODE_SCIENCE_ERR_CANDIDATE_MISMATCH;
 }
 
+/* The benchmark result carries only action_root (no action-kind field), so
+ * the action instance is canonicalized under every registered fixed kind and
+ * must match under exactly the kind its descriptor fields select. */
+static bool action_root_is_canonical_fixed(
+    const struct vcs_build_action_v1 *action, const uint8_t action_root[32])
+{
+    static const char *const fixed_kinds[] = {
+        VCS_BUILD_ACTION_KIND_V1,
+        VCS_BUILD_ACTION_KIND_TEST_V1,
+        VCS_BUILD_ACTION_KIND_FUZZ_V1,
+        VCS_BUILD_ACTION_KIND_BENCHMARK_V1,
+        VCS_BUILD_ACTION_KIND_BENCHMARK_REPRODUCE_V1,
+        VCS_BUILD_ACTION_KIND_REVIEW_V1,
+    };
+    if (!action || !action_root) return false;
+    for (size_t i = 0; i < sizeof(fixed_kinds) / sizeof(fixed_kinds[0]); i++) {
+        uint8_t canonical[32];
+        if (vcs_build_action_v1_root_for_kind(fixed_kinds[i], action,
+                                              canonical) &&
+            memcmp(canonical, action_root, 32) == 0)
+            return true;
+    }
+    return false;
+}
+
 enum vcs_zcode_science_error vcs_zcode_benchmark_result_validate_for_study(
     const struct vcs_zcode_study_spec_v1 *study,
     const struct vcs_zcode_task_v1 *task,
     const struct vcs_zcode_candidate_v1 *candidate,
+    const struct vcs_build_action_v1 *action,
     const struct vcs_zcode_benchmark_result_v1 *result, int64_t now_unix)
 {
-    enum vcs_zcode_science_error error =
-        vcs_zcode_study_spec_validate_at(study, now_unix);
+    /* Verify, not submit: the study is structural-validated only; the window
+     * checks below bind the EVIDENCE timestamps, never now_unix. See
+     * vcs_zcode_study_spec_accepts_submission_at for the submission gate. */
+    enum vcs_zcode_science_error error = vcs_zcode_study_spec_validate(study);
     if (error != VCS_ZCODE_SCIENCE_OK) return error;
-    error = map_task_error(
-        vcs_zcode_candidate_validate_for_task(task, candidate, now_unix));
+    error = map_task_error(vcs_zcode_task_validate(task));
+    if (error != VCS_ZCODE_SCIENCE_OK) return error;
+    error = map_task_error(vcs_zcode_candidate_validate(candidate));
     if (error != VCS_ZCODE_SCIENCE_OK) return error;
     error = vcs_zcode_benchmark_result_validate(result);
     if (error != VCS_ZCODE_SCIENCE_OK) return error;
+    if (!action) return VCS_ZCODE_SCIENCE_ERR_NULL;
     uint8_t study_root[32], task_root[32], candidate_root[32];
     if (vcs_zcode_study_spec_root(study, study_root) !=
             VCS_ZCODE_SCIENCE_OK ||
@@ -700,21 +739,28 @@ enum vcs_zcode_science_error vcs_zcode_benchmark_result_validate_for_study(
         memcmp(task->goal_root, study_root, 32) != 0)
         return VCS_ZCODE_SCIENCE_ERR_STUDY_MISMATCH;
     if (vcs_zcode_task_root(task, task_root) != VCS_ZCODE_DEV_OK ||
-        memcmp(result->task_root, task_root, 32) != 0)
+        memcmp(result->task_root, task_root, 32) != 0 ||
+        memcmp(candidate->task_root, task_root, 32) != 0)
         return VCS_ZCODE_SCIENCE_ERR_TASK_MISMATCH;
     if (vcs_zcode_candidate_root(candidate, candidate_root) !=
             VCS_ZCODE_DEV_OK ||
-        memcmp(result->candidate_root, candidate_root, 32) != 0)
+        memcmp(result->candidate_root, candidate_root, 32) != 0 ||
+        memcmp(candidate->base_source_root, task->source_root, 32) != 0)
         return VCS_ZCODE_SCIENCE_ERR_CANDIDATE_MISMATCH;
     if (memcmp(study->source_root, task->source_root, 32) != 0 ||
         memcmp(study->dependency_lock_root, task->dependency_lock_root, 32) != 0 ||
         memcmp(study->toolchain_capsule_root,
                task->toolchain_capsule_root, 32) != 0)
         return VCS_ZCODE_SCIENCE_ERR_TASK_MISMATCH;
-    if (result->started_unix < study->created_unix ||
-        result->finished_unix >= study->expires_unix ||
-        result->finished_unix > now_unix)
+    if (!action_root_is_canonical_fixed(action, result->action_root))
+        return VCS_ZCODE_SCIENCE_ERR_ACTION_MISMATCH;
+    if (candidate->created_unix >= task->expires_unix ||
+        result->started_unix < study->created_unix ||
+        result->finished_unix >= study->expires_unix)
         return VCS_ZCODE_SCIENCE_ERR_EXPIRED;
+    if (candidate->created_unix > now_unix ||
+        result->finished_unix > now_unix)
+        return VCS_ZCODE_SCIENCE_ERR_EVIDENCE_FUTURE;
     return VCS_ZCODE_SCIENCE_OK;
 }
 
@@ -724,8 +770,9 @@ enum vcs_zcode_science_error vcs_zcode_reproduction_validate_for_results(
     const struct vcs_zcode_benchmark_result_v1 *reproduced,
     const struct vcs_zcode_reproduction_v1 *reproduction, int64_t now_unix)
 {
-    enum vcs_zcode_science_error error =
-        vcs_zcode_study_spec_validate_at(study, now_unix);
+    /* Verify, not submit: the study is structural-validated only, so
+     * historical reproductions keep re-verifying after the window closes. */
+    enum vcs_zcode_science_error error = vcs_zcode_study_spec_validate(study);
     if (error != VCS_ZCODE_SCIENCE_OK) return error;
     error = vcs_zcode_benchmark_result_validate(original);
     if (error != VCS_ZCODE_SCIENCE_OK) return error;
@@ -739,6 +786,15 @@ enum vcs_zcode_science_error vcs_zcode_reproduction_validate_for_results(
         memcmp(reproduced->study_root, study_root, 32) != 0 ||
         memcmp(reproduction->study_root, study_root, 32) != 0)
         return VCS_ZCODE_SCIENCE_ERR_STUDY_MISMATCH;
+    /* A reproduction reruns the SAME task, candidate, and method (fixed
+     * action) under the same study; only the environment, samples, and
+     * verdict may differ. */
+    if (memcmp(original->task_root, reproduced->task_root, 32) != 0)
+        return VCS_ZCODE_SCIENCE_ERR_TASK_MISMATCH;
+    if (memcmp(original->candidate_root, reproduced->candidate_root, 32) != 0)
+        return VCS_ZCODE_SCIENCE_ERR_CANDIDATE_MISMATCH;
+    if (memcmp(original->action_root, reproduced->action_root, 32) != 0)
+        return VCS_ZCODE_SCIENCE_ERR_ACTION_MISMATCH;
     (void)vcs_zcode_benchmark_result_root(original, original_root);
     (void)vcs_zcode_benchmark_result_root(reproduced, reproduced_root);
     if (memcmp(reproduction->original_result_root, original_root, 32) != 0 ||
@@ -751,9 +807,10 @@ enum vcs_zcode_science_error vcs_zcode_reproduction_validate_for_results(
         return VCS_ZCODE_SCIENCE_ERR_ENVIRONMENT_MISMATCH;
     if (reproduction->created_unix < original->finished_unix ||
         reproduction->created_unix < reproduced->finished_unix ||
-        reproduction->created_unix > now_unix ||
         reproduction->created_unix >= study->expires_unix)
         return VCS_ZCODE_SCIENCE_ERR_EXPIRED;
+    if (reproduction->created_unix > now_unix)
+        return VCS_ZCODE_SCIENCE_ERR_EVIDENCE_FUTURE;
     return VCS_ZCODE_SCIENCE_OK;
 }
 
@@ -763,8 +820,9 @@ enum vcs_zcode_science_error vcs_zcode_science_findings_validate_for_review(
     const struct vcs_zcode_benchmark_result_v1 *result,
     const struct vcs_zcode_science_findings_v1 *findings, int64_t now_unix)
 {
-    enum vcs_zcode_science_error error =
-        vcs_zcode_study_spec_validate_at(study, now_unix);
+    /* Verify, not submit: the study is structural-validated only, so
+     * historical findings keep re-verifying after the window closes. */
+    enum vcs_zcode_science_error error = vcs_zcode_study_spec_validate(study);
     if (error != VCS_ZCODE_SCIENCE_OK) return error;
     if (vcs_zcode_review_validate(review) != VCS_ZCODE_DEV_OK)
         return VCS_ZCODE_SCIENCE_ERR_REVIEW_MISMATCH;
@@ -780,6 +838,12 @@ enum vcs_zcode_science_error vcs_zcode_science_findings_validate_for_review(
     (void)vcs_zcode_benchmark_result_root(result, result_root);
     if (memcmp(findings->result_root, result_root, 32) != 0)
         return VCS_ZCODE_SCIENCE_ERR_RESULT_MISMATCH;
+    /* The findings must discuss the exact result they pin: same task and
+     * candidate roots as the evaluated result, not just the same study. */
+    if (memcmp(findings->task_root, result->task_root, 32) != 0)
+        return VCS_ZCODE_SCIENCE_ERR_TASK_MISMATCH;
+    if (memcmp(findings->candidate_root, result->candidate_root, 32) != 0)
+        return VCS_ZCODE_SCIENCE_ERR_CANDIDATE_MISMATCH;
     if (memcmp(findings->task_root, review->task_root, 32) != 0 ||
         memcmp(findings->candidate_root, review->candidate_root, 32) != 0 ||
         memcmp(findings->proof_set_root, review->proof_set_root, 32) != 0)
@@ -787,10 +851,14 @@ enum vcs_zcode_science_error vcs_zcode_science_findings_validate_for_review(
     (void)vcs_zcode_science_findings_root(findings, findings_root);
     if (memcmp(review->findings_root, findings_root, 32) != 0)
         return VCS_ZCODE_SCIENCE_ERR_REVIEW_MISMATCH;
+    /* The findings are formed first and the review binds their root
+     * afterward, so the review timestamp may be LATER than the findings',
+     * never earlier. */
     if (findings->created_unix < result->finished_unix ||
-        findings->created_unix < review->created_unix ||
-        findings->created_unix > now_unix ||
+        review->created_unix < findings->created_unix ||
         findings->created_unix >= study->expires_unix)
         return VCS_ZCODE_SCIENCE_ERR_EXPIRED;
+    if (findings->created_unix > now_unix)
+        return VCS_ZCODE_SCIENCE_ERR_EVIDENCE_FUTURE;
     return VCS_ZCODE_SCIENCE_OK;
 }

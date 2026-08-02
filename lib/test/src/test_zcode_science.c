@@ -80,17 +80,52 @@ static void zs_task_candidate(
     (void)vcs_zcode_candidate_root(candidate, candidate_root);
 }
 
+static void zs_action(struct vcs_build_action_v1 *action, const char *kind,
+                      uint64_t sequence)
+{
+    const char *workdir = NULL, *output = NULL, *resource = NULL;
+    memset(action, 0, sizeof(*action));
+    zs_root(action->source_sha256, 60);
+    zs_root(action->source_cas_sha3, 61);
+    zs_root(action->input_root_sha3, 62);
+    zs_root(action->toolchain_capsule_sha3, 63);
+    (void)vcs_build_action_v1_fixed_flags_root_for_kind(
+        kind, action->flags_sha3);
+    (void)vcs_build_action_v1_fixed_environment_root_for_kind(
+        kind, action->environment_sha3);
+    (void)snprintf(action->target, sizeof(action->target), "%s",
+                   VCS_BUILD_TARGET_V1);
+    (void)snprintf(action->profile, sizeof(action->profile), "science");
+    (void)vcs_build_action_v1_descriptors(
+        kind, &workdir, &output, &resource);
+    (void)snprintf(action->virtual_workdir,
+                   sizeof(action->virtual_workdir), "%s", workdir);
+    (void)snprintf(action->declared_outputs,
+                   sizeof(action->declared_outputs), "%s", output);
+    (void)snprintf(action->resource_policy,
+                   sizeof(action->resource_policy), "%s", resource);
+    action->sequence = sequence;
+}
+
+static void zs_benchmark_action(struct vcs_build_action_v1 *action)
+{
+    zs_action(action, VCS_BUILD_ACTION_KIND_BENCHMARK_V1, 1);
+}
+
 static void zs_result(
     const struct vcs_zcode_study_spec_v1 *study,
     const uint8_t task_root[32], const uint8_t candidate_root[32],
     struct vcs_zcode_benchmark_result_v1 *result)
 {
+    struct vcs_build_action_v1 action;
     memset(result, 0, sizeof(*result));
     result->schema_version = VCS_ZCODE_SCIENCE_VERSION;
     (void)vcs_zcode_study_spec_root(study, result->study_root);
     memcpy(result->task_root, task_root, 32);
     memcpy(result->candidate_root, candidate_root, 32);
-    zs_root(result->action_root, 30);
+    zs_benchmark_action(&action);
+    (void)vcs_build_action_v1_root_for_kind(
+        VCS_BUILD_ACTION_KIND_BENCHMARK_V1, &action, result->action_root);
     zs_root(result->achieved_environment_root, 31);
     zs_root(result->raw_sample_root, 32);
     zs_root(result->evidence_root, 33);
@@ -151,14 +186,21 @@ static int test_zs_result_and_reproduction(void)
         struct vcs_zcode_candidate_v1 candidate;
         struct vcs_zcode_benchmark_result_v1 original, reproduced, parsed;
         struct vcs_zcode_reproduction_v1 reproduction, reproduction_parsed;
+        struct vcs_build_action_v1 action;
         uint8_t task_root[32], candidate_root[32];
         zs_study(&study);
         zs_task_candidate(&study, &task, &candidate,
                           task_root, candidate_root);
         zs_result(&study, task_root, candidate_root, &original);
+        zs_benchmark_action(&action);
         ASSERT_EQ(vcs_zcode_benchmark_result_validate_for_study(
-                      &study, &task, &candidate, &original, 2000),
+                      &study, &task, &candidate, &action, &original, 2000),
                   VCS_ZCODE_SCIENCE_OK);
+        struct vcs_zcode_benchmark_result_v1 tampered = original;
+        tampered.action_root[0] ^= 1;
+        ASSERT_EQ(vcs_zcode_benchmark_result_validate_for_study(
+                      &study, &task, &candidate, &action, &tampered, 2000),
+                  VCS_ZCODE_SCIENCE_ERR_ACTION_MISMATCH);
         uint8_t result_wire[VCS_ZCODE_BENCHMARK_RESULT_WIRE_BYTES + 1];
         uint8_t original_root[32], reproduced_root[32];
         char result_hex[65];
@@ -172,14 +214,13 @@ static int test_zs_result_and_reproduction(void)
                   VCS_ZCODE_SCIENCE_OK);
         zcl_hex_encode(original_root, 32, result_hex);
         ASSERT_STR_EQ(result_hex,
-            "6edccd045383dadffa1ce094c54ab542c6dc7e703385b70e89f893610d6c0d97");
+            "342df9de90e8f61d5ef5b69ab980e940b4dde347087fd71fb5a652e47c4f6afe");
         ASSERT_EQ(vcs_zcode_benchmark_result_parse(
                       result_wire,
                       VCS_ZCODE_BENCHMARK_RESULT_WIRE_BYTES + 1, &parsed),
                   VCS_ZCODE_SCIENCE_ERR_WIRE_SIZE);
 
         reproduced = original;
-        zs_root(reproduced.action_root, 35);
         zs_root(reproduced.achieved_environment_root, 36);
         zs_root(reproduced.raw_sample_root, 37);
         zs_root(reproduced.evidence_root, 38);
@@ -223,13 +264,28 @@ static int test_zs_result_and_reproduction(void)
                   VCS_ZCODE_SCIENCE_OK);
         zcl_hex_encode(reproduction_root, 32, reproduction_hex);
         ASSERT_STR_EQ(reproduction_hex,
-            "b516b52e7e4e576d9b240c6ce5716dc98eafbae7d62945ca9b16f9ac11523d26");
+            "d19c4242ea42a290f3982b4765b4624b7680022b3a8aa629dff4e48d41dfa10f");
 
         reproduction_parsed.reproduced_environment_root[0] ^= 1;
         ASSERT_EQ(vcs_zcode_reproduction_validate_for_results(
                       &study, &original, &reproduced,
                       &reproduction_parsed, 2000),
                   VCS_ZCODE_SCIENCE_ERR_ENVIRONMENT_MISMATCH);
+        struct vcs_zcode_benchmark_result_v1 off_task = reproduced;
+        off_task.task_root[0] ^= 1;
+        ASSERT_EQ(vcs_zcode_reproduction_validate_for_results(
+                      &study, &original, &off_task, &reproduction, 2000),
+                  VCS_ZCODE_SCIENCE_ERR_TASK_MISMATCH);
+        struct vcs_zcode_benchmark_result_v1 off_candidate = reproduced;
+        off_candidate.candidate_root[0] ^= 1;
+        ASSERT_EQ(vcs_zcode_reproduction_validate_for_results(
+                      &study, &original, &off_candidate, &reproduction, 2000),
+                  VCS_ZCODE_SCIENCE_ERR_CANDIDATE_MISMATCH);
+        struct vcs_zcode_benchmark_result_v1 off_action = reproduced;
+        off_action.action_root[0] ^= 1;
+        ASSERT_EQ(vcs_zcode_reproduction_validate_for_results(
+                      &study, &original, &off_action, &reproduction, 2000),
+                  VCS_ZCODE_SCIENCE_ERR_ACTION_MISMATCH);
         original.status = 0;
         ASSERT_EQ(vcs_zcode_benchmark_result_validate(&original),
                   VCS_ZCODE_SCIENCE_ERR_STATUS);
@@ -274,7 +330,7 @@ static int test_zs_findings(void)
                   VCS_ZCODE_SCIENCE_OK);
         zcl_hex_encode(findings_root, 32, findings_hex);
         ASSERT_STR_EQ(findings_hex,
-            "1875514a5aa0326e2f5758315a756ff6d0220bcee60b9e3bfef03f0a88cf7129");
+            "c311fd29f538c65bdd635feec84649b540d8eada42c8d7f02c1c9cc6c2118816");
 
         memset(&review, 0, sizeof(review));
         review.schema_version = VCS_ZCODE_DEV_VERSION;
@@ -286,10 +342,25 @@ static int test_zs_findings(void)
         zs_root(review.reviewer_pubkey, 45);
         review.verdict = VCS_ZCODE_REVIEW_APPROVE;
         review.sequence = 1;
-        review.created_unix = 1500;
+        review.created_unix = 1600;
         ASSERT_EQ(vcs_zcode_science_findings_validate_for_review(
                       &study, &review, &result, &findings, 2000),
                   VCS_ZCODE_SCIENCE_OK);
+        struct vcs_zcode_review_v1 early_review = review;
+        early_review.created_unix = findings.created_unix - 1;
+        ASSERT_EQ(vcs_zcode_science_findings_validate_for_review(
+                      &study, &early_review, &result, &findings, 2000),
+                  VCS_ZCODE_SCIENCE_ERR_EXPIRED);
+        struct vcs_zcode_science_findings_v1 off_task = findings;
+        off_task.task_root[0] ^= 1;
+        ASSERT_EQ(vcs_zcode_science_findings_validate_for_review(
+                      &study, &review, &result, &off_task, 2000),
+                  VCS_ZCODE_SCIENCE_ERR_TASK_MISMATCH);
+        struct vcs_zcode_science_findings_v1 off_candidate = findings;
+        off_candidate.candidate_root[0] ^= 1;
+        ASSERT_EQ(vcs_zcode_science_findings_validate_for_review(
+                      &study, &review, &result, &off_candidate, 2000),
+                  VCS_ZCODE_SCIENCE_ERR_CANDIDATE_MISMATCH);
         uint8_t wire[VCS_ZCODE_SCIENCE_FINDINGS_WIRE_BYTES];
         ASSERT_EQ(vcs_zcode_science_findings_serialize(&findings, wire),
                   VCS_ZCODE_SCIENCE_OK);
@@ -307,6 +378,136 @@ static int test_zs_findings(void)
         zs_root(findings.retraction_target_root, 46);
         ASSERT_EQ(vcs_zcode_science_findings_validate(&findings),
                   VCS_ZCODE_SCIENCE_OK);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_zs_submission_window(void)
+{
+    int failures = 0;
+    TEST("zcode_science: expiry gates new submissions, never historical re-verification") {
+        struct vcs_zcode_study_spec_v1 study;
+        struct vcs_zcode_task_v1 task;
+        struct vcs_zcode_candidate_v1 candidate;
+        struct vcs_zcode_benchmark_result_v1 original, reproduced;
+        struct vcs_zcode_reproduction_v1 reproduction;
+        struct vcs_zcode_science_findings_v1 findings;
+        struct vcs_zcode_review_v1 review;
+        struct vcs_build_action_v1 action;
+        uint8_t task_root[32], candidate_root[32];
+        uint8_t original_root[32], reproduced_root[32], findings_root[32];
+        zs_study(&study);
+        zs_task_candidate(&study, &task, &candidate,
+                          task_root, candidate_root);
+        zs_result(&study, task_root, candidate_root, &original);
+        zs_benchmark_action(&action);
+        (void)vcs_zcode_benchmark_result_root(&original, original_root);
+
+        ASSERT(vcs_zcode_study_spec_accepts_submission_at(&study, 1000));
+        ASSERT(vcs_zcode_study_spec_accepts_submission_at(&study, 4999));
+        ASSERT(!vcs_zcode_study_spec_accepts_submission_at(&study, 999));
+        ASSERT(!vcs_zcode_study_spec_accepts_submission_at(&study, 5000));
+
+        reproduced = original;
+        zs_root(reproduced.achieved_environment_root, 36);
+        zs_root(reproduced.raw_sample_root, 37);
+        zs_root(reproduced.evidence_root, 38);
+        reproduced.status = VCS_ZCODE_BENCHMARK_NEGATIVE_RESULT;
+        reproduced.sequence = 2;
+        reproduced.started_unix = 1400;
+        reproduced.finished_unix = 1500;
+        (void)vcs_zcode_benchmark_result_root(&reproduced, reproduced_root);
+        memset(&reproduction, 0, sizeof(reproduction));
+        reproduction.schema_version = VCS_ZCODE_SCIENCE_VERSION;
+        memcpy(reproduction.study_root, original.study_root, 32);
+        memcpy(reproduction.original_result_root, original_root, 32);
+        memcpy(reproduction.reproduced_result_root, reproduced_root, 32);
+        zs_root(reproduction.comparison_policy_root, 39);
+        memcpy(reproduction.original_environment_root,
+               original.achieved_environment_root, 32);
+        memcpy(reproduction.reproduced_environment_root,
+               reproduced.achieved_environment_root, 32);
+        zs_root(reproduction.reproducer_pubkey, 40);
+        reproduction.verdict = VCS_ZCODE_REPRODUCTION_CONTRADICTED;
+        reproduction.sequence = 1;
+        reproduction.created_unix = 1600;
+
+        memset(&findings, 0, sizeof(findings));
+        findings.schema_version = VCS_ZCODE_SCIENCE_VERSION;
+        memcpy(findings.study_root, original.study_root, 32);
+        memcpy(findings.task_root, task_root, 32);
+        memcpy(findings.candidate_root, candidate_root, 32);
+        memcpy(findings.result_root, original_root, 32);
+        zs_root(findings.proof_set_root, 41);
+        zs_root(findings.methods_root, 42);
+        zs_root(findings.limitations_root, 43);
+        zs_root(findings.conflicts_root, 44);
+        findings.flags = VCS_ZCODE_FINDING_NULL;
+        findings.severity = VCS_ZCODE_FINDING_MATERIAL;
+        findings.sequence = 1;
+        findings.created_unix = 1700;
+        (void)vcs_zcode_science_findings_root(&findings, findings_root);
+
+        memset(&review, 0, sizeof(review));
+        review.schema_version = VCS_ZCODE_DEV_VERSION;
+        memcpy(review.task_root, task_root, 32);
+        memcpy(review.candidate_root, candidate_root, 32);
+        memcpy(review.proof_policy_root, task.proof_policy_root, 32);
+        memcpy(review.proof_set_root, findings.proof_set_root, 32);
+        memcpy(review.findings_root, findings_root, 32);
+        zs_root(review.reviewer_pubkey, 45);
+        review.verdict = VCS_ZCODE_REVIEW_APPROVE;
+        review.sequence = 1;
+        review.created_unix = 1800;
+
+        /* History is preserved: every layer re-verifies after the window. */
+        ASSERT_EQ(vcs_zcode_benchmark_result_validate_for_study(
+                      &study, &task, &candidate, &action, &original, 6000),
+                  VCS_ZCODE_SCIENCE_OK);
+        ASSERT_EQ(vcs_zcode_reproduction_validate_for_results(
+                      &study, &original, &reproduced, &reproduction, 6000),
+                  VCS_ZCODE_SCIENCE_OK);
+        ASSERT_EQ(vcs_zcode_science_findings_validate_for_review(
+                      &study, &review, &original, &findings, 6000),
+                  VCS_ZCODE_SCIENCE_OK);
+
+        /* Evidence created after the window closed is still rejected. */
+        struct vcs_zcode_benchmark_result_v1 late = original;
+        late.started_unix = 4900;
+        late.finished_unix = 5000;
+        ASSERT_EQ(vcs_zcode_benchmark_result_validate_for_study(
+                      &study, &task, &candidate, &action, &late, 5200),
+                  VCS_ZCODE_SCIENCE_ERR_EXPIRED);
+        struct vcs_zcode_reproduction_v1 late_reproduction = reproduction;
+        late_reproduction.created_unix = 5000;
+        ASSERT_EQ(vcs_zcode_reproduction_validate_for_results(
+                      &study, &original, &reproduced,
+                      &late_reproduction, 5200),
+                  VCS_ZCODE_SCIENCE_ERR_EXPIRED);
+
+        /* Evidence from the future is a distinct failure class. */
+        struct vcs_zcode_benchmark_result_v1 future = original;
+        future.finished_unix = 2100;
+        ASSERT_EQ(vcs_zcode_benchmark_result_validate_for_study(
+                      &study, &task, &candidate, &action, &future, 2000),
+                  VCS_ZCODE_SCIENCE_ERR_EVIDENCE_FUTURE);
+        struct vcs_zcode_reproduction_v1 future_reproduction = reproduction;
+        future_reproduction.created_unix = 2100;
+        ASSERT_EQ(vcs_zcode_reproduction_validate_for_results(
+                      &study, &original, &reproduced,
+                      &future_reproduction, 2000),
+                  VCS_ZCODE_SCIENCE_ERR_EVIDENCE_FUTURE);
+        struct vcs_zcode_science_findings_v1 future_findings = findings;
+        future_findings.created_unix = 2100;
+        struct vcs_zcode_review_v1 future_review = review;
+        future_review.created_unix = 2200;
+        (void)vcs_zcode_science_findings_root(&future_findings,
+                                              future_review.findings_root);
+        ASSERT_EQ(vcs_zcode_science_findings_validate_for_review(
+                      &study, &future_review, &original,
+                      &future_findings, 2000),
+                  VCS_ZCODE_SCIENCE_ERR_EVIDENCE_FUTURE);
         PASS();
     } _test_next:;
     return failures;
@@ -364,33 +565,6 @@ static int test_zs_curation_vote(void)
     return failures;
 }
 
-static void zs_action(struct vcs_build_action_v1 *action, const char *kind,
-                      uint64_t sequence)
-{
-    const char *workdir = NULL, *output = NULL, *resource = NULL;
-    memset(action, 0, sizeof(*action));
-    zs_root(action->source_sha256, 60);
-    zs_root(action->source_cas_sha3, 61);
-    zs_root(action->input_root_sha3, 62);
-    zs_root(action->toolchain_capsule_sha3, 63);
-    (void)vcs_build_action_v1_fixed_flags_root_for_kind(
-        kind, action->flags_sha3);
-    (void)vcs_build_action_v1_fixed_environment_root_for_kind(
-        kind, action->environment_sha3);
-    (void)snprintf(action->target, sizeof(action->target), "%s",
-                   VCS_BUILD_TARGET_V1);
-    (void)snprintf(action->profile, sizeof(action->profile), "science");
-    (void)vcs_build_action_v1_descriptors(
-        kind, &workdir, &output, &resource);
-    (void)snprintf(action->virtual_workdir,
-                   sizeof(action->virtual_workdir), "%s", workdir);
-    (void)snprintf(action->declared_outputs,
-                   sizeof(action->declared_outputs), "%s", output);
-    (void)snprintf(action->resource_policy,
-                   sizeof(action->resource_policy), "%s", resource);
-    action->sequence = sequence;
-}
-
 static int test_zs_fixed_actions(void)
 {
     int failures = 0;
@@ -431,6 +605,7 @@ int test_zcode_science(void)
     failures += test_zs_study_codec();
     failures += test_zs_result_and_reproduction();
     failures += test_zs_findings();
+    failures += test_zs_submission_window();
     failures += test_zs_curation_vote();
     failures += test_zs_fixed_actions();
     printf("=== zcode_science: %d failures ===\n", failures);

@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "vcs/build_action.h"
 #include "vcs/zcode_dev.h"
 
 #define VCS_ZCODE_SCIENCE_VERSION 1u
@@ -88,6 +89,9 @@ enum vcs_zcode_science_error {
     VCS_ZCODE_SCIENCE_ERR_NETWORK_MISMATCH,
     VCS_ZCODE_SCIENCE_ERR_IDENTITY_MISMATCH,
     VCS_ZCODE_SCIENCE_ERR_EXPIRED,
+    /* New codes append at the END only; the codes above are frozen. */
+    VCS_ZCODE_SCIENCE_ERR_EVIDENCE_FUTURE,
+    VCS_ZCODE_SCIENCE_ERR_ACTION_MISMATCH,
 };
 
 const char *vcs_zcode_science_error_string(
@@ -178,6 +182,14 @@ enum vcs_zcode_science_error vcs_zcode_study_spec_validate(
     const struct vcs_zcode_study_spec_v1 *study);
 enum vcs_zcode_science_error vcs_zcode_study_spec_validate_at(
     const struct vcs_zcode_study_spec_v1 *study, int64_t now_unix);
+/* Submit-vs-verify split: expiry gates NEW submissions only. A study accepts
+ * a submission at now_unix iff the spec is structurally valid and now_unix is
+ * inside [created_unix, expires_unix). Historical evidence created inside the
+ * window must keep re-verifying after the window closes, so the cross-object
+ * validators below never call this gate (or validate_at) on the study — they
+ * check the evidence object's own timestamps against the window instead. */
+bool vcs_zcode_study_spec_accepts_submission_at(
+    const struct vcs_zcode_study_spec_v1 *study, int64_t now_unix);
 enum vcs_zcode_science_error vcs_zcode_study_spec_serialize(
     const struct vcs_zcode_study_spec_v1 *study,
     uint8_t out[VCS_ZCODE_STUDY_SPEC_WIRE_BYTES]);
@@ -222,6 +234,9 @@ enum vcs_zcode_science_error vcs_zcode_science_findings_root(
 
 enum vcs_zcode_science_error vcs_zcode_curation_vote_validate(
     const struct vcs_zcode_curation_vote_v1 *vote);
+/* Curation votes are LIVE signals, not historical evidence: unlike the
+ * evidence objects above, a vote's expiry keeps gating it at verify time and
+ * an expired vote is simply no longer counted. */
 enum vcs_zcode_science_error vcs_zcode_curation_vote_validate_at(
     const struct vcs_zcode_curation_vote_v1 *vote, int64_t now_unix);
 enum vcs_zcode_science_error vcs_zcode_curation_vote_serialize(
@@ -241,10 +256,20 @@ enum vcs_zcode_science_error vcs_zcode_curation_vote_verify(
     const uint8_t expected_voter_zid[32],
     const uint8_t expected_signer[32], int64_t now_unix);
 
+/* Cross-object evidence validators. These VERIFY evidence whenever it is
+ * read, including long after the study window closed; they reject evidence
+ * whose own timestamps fall outside [study.created_unix, study.expires_unix),
+ * and report evidence timestamped after now_unix as
+ * VCS_ZCODE_SCIENCE_ERR_EVIDENCE_FUTURE so callers can distinguish a clock
+ * problem from a window violation. The benchmark result must also bind the
+ * canonical root of a registered fixed action (build_action.h): `action` is
+ * the executed action instance and result->action_root must equal its
+ * canonical root under one of the fixed kinds. */
 enum vcs_zcode_science_error vcs_zcode_benchmark_result_validate_for_study(
     const struct vcs_zcode_study_spec_v1 *study,
     const struct vcs_zcode_task_v1 *task,
     const struct vcs_zcode_candidate_v1 *candidate,
+    const struct vcs_build_action_v1 *action,
     const struct vcs_zcode_benchmark_result_v1 *result, int64_t now_unix);
 enum vcs_zcode_science_error vcs_zcode_reproduction_validate_for_results(
     const struct vcs_zcode_study_spec_v1 *study,
