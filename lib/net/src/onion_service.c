@@ -168,6 +168,7 @@ static const char ONION_PAGE_CSS[] =
     "<a href='/names'>Names</a>" \
     "<a href='/store'>Store</a>" \
     "<a href='/blog'>Blog</a>" \
+    "<a href='/yardsale'>Yardsale</a>" \
     "<a href='/directory'>Directory</a>" \
     "</nav></header>"
 
@@ -296,6 +297,8 @@ static size_t serve_landing_page(uint8_t *response, size_t max)
         "<div class='desc'>Commerce and token purchase flows hosted directly on the node.</div></div>"
         "<div class='app'><a href='/blog'>Blog</a>"
         "<div class='desc'>Static site hosting from your datadir over the onion service.</div></div>"
+        "<div class='app'><a href='/yardsale'>Yardsale</a>"
+        "<div class='desc'>Signed for-sale-by-owner token signs; buyers settle directly with sellers.</div></div>"
         "<div class='app'><a href='/directory'>Directory</a>"
         "<div class='desc'>On-chain discovered peer/app directory for the Tor-only network.</div></div>"
         "<div class='app'><a href='/status'>Status API</a>"
@@ -1101,6 +1104,27 @@ size_t onion_service_handle_request(const char *method,
             "Cache-Control: no-store\r\n"
             "Connection: close\r\n\r\n"
             "Blog storage is unavailable.\n");
+    }
+
+    /* Yardsale MVC App — the for-sale-by-owner swap signs + the bilateral
+     * ceremony endpoints. The same path handler is wired into the HTTPS
+     * dispatch chain, so onion and HTTPS read the same zswap_ads
+     * projection. */
+    if (strncmp(path, "/yardsale", 9) == 0 &&
+        (path[9] == 0 || path[9] == '/' || path[9] == '?')) {
+        extern size_t yardsale_site_handle_request(const char *,
+            const char *, const uint8_t *, size_t, uint8_t *, size_t);
+        size_t n = yardsale_site_handle_request(method, path, body,
+                                                body_len, response,
+                                                response_max);
+        if (n > 0)
+            return n;
+        return (size_t)snprintf((char *)response, response_max,
+            "HTTP/1.1 503 Service Unavailable\r\n"
+            "Content-Type: text/plain; charset=utf-8\r\n"
+            "Cache-Control: no-store\r\n"
+            "Connection: close\r\n\r\n"
+            "Yardsale storage is unavailable.\n");
     }
 
     /* 404 */

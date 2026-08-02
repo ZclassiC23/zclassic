@@ -20,6 +20,7 @@
 #include "services/network_monitor.h"
 #include "services/sync_monitor.h"
 #include "controllers/sync_controller.h"
+#include "controllers/yardsale_controller.h"
 #include "models/peer.h"
 #include "models/zmsg.h"
 #include "models/file_offer.h"
@@ -414,6 +415,53 @@ void boot_wire_zswap_yardsale(struct msg_processor *mp,
 {
     msg_processor_set_zswap_ad_ingest(mp, boot_zswap_ad_ingest, svc);
     msg_processor_set_zswap_ad_save(mp, boot_save_zswap_ad, svc);
+    /* The ceremony ports ride the same one-call wiring so boot_services.c
+     * stays flat against its file-size baseline. */
+    boot_wire_zswap_ceremony(mp, svc);
+}
+
+/* The msgprocessor ceremony ports take a trailing void *ctx the yardsale
+ * controller does not need (its state is its own statics); these two
+ * adapters drop it, exactly like boot_zswap_ad_ingest above. */
+static int boot_zswap_accept_ingest(const uint8_t *wire, size_t wire_len,
+                                    int64_t peer_id, int64_t now_unix,
+                                    uint8_t *respond, size_t respond_cap,
+                                    size_t *respond_len, void *ctx)
+{
+    (void)ctx;
+    return yardsale_ceremony_accept_ingest(wire, wire_len, peer_id,
+                                           now_unix, respond, respond_cap,
+                                           respond_len);
+}
+
+static int boot_zswap_partial_ingest(const uint8_t *wire, size_t wire_len,
+                                     int64_t peer_id, int64_t now_unix,
+                                     void *ctx)
+{
+    (void)ctx;
+    return yardsale_ceremony_partial_ingest(wire, wire_len, peer_id,
+                                            now_unix);
+}
+
+/* The buyer's outbound gossip port, adapted onto the msg_processor's
+ * flood (ctx is the msg_processor itself). */
+static void boot_zswap_ceremony_flood(const char *command,
+                                      const uint8_t *wire, size_t wire_len,
+                                      void *ctx)
+{
+    msg_processor_flood_message((struct msg_processor *)ctx, command,
+                                wire, wire_len);
+}
+
+void boot_wire_zswap_ceremony(struct msg_processor *mp,
+                              struct boot_svc_ctx *svc)
+{
+    (void)svc;
+    msg_processor_set_zswap_accept_ingest(mp, boot_zswap_accept_ingest,
+                                          NULL);
+    msg_processor_set_zswap_partial_ingest(mp, boot_zswap_partial_ingest,
+                                           NULL);
+    yardsale_ceremony_set_flood(boot_zswap_ceremony_flood, mp);
 }
 
 bool boot_save_file_service(const uint8_t ip[16],

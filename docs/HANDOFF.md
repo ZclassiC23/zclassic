@@ -82,6 +82,21 @@ script parses each correctly). This is the byte-level C8 evidence the
 height-only live parity service cannot provide; rerun on the linger
 cadence and keep the transcript.
 
+Operational lesson (2026-08-02): do NOT run producer-lane heavy jobs
+(full-fold sync, `--legacy-utxo-commitment` SHA3 passes, byte-exact checks)
+alongside the canonical node. The 10-min systemd watchdog is ENABLED
+(journal: `Watchdog timeout (limit 10min)!` → SIGABRT, status=134); the
+contention starved the canonical node's watchdog pings twice in 25 min
+(NRestarts 33→35, soak window broken). The node self-recovered in 126 s
+once the producer lane was stopped — but C6 soak accrual restarted from
+zero. Restart #36 the same evening came from an unrelated tenant's
+parallel LLVM build pushing load-average past 10 during boot — same
+sensitivity, different source: the watchdog pets are hostage to ANY
+heavy host load in the boot window, not just our own lanes. Run
+producer lanes when the canonical node is operator-paused, nice/ionice
+them below watchdog sensitivity, and expect external build storms to
+cost a restart each.
+
 **Check this before diagnosing anything live:**
 
 ```bash

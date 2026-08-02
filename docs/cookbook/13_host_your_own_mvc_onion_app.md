@@ -1,0 +1,117 @@
+# 13 — host your own MVC onion app
+
+## What it demonstrates
+
+Every zclassic23 node is a .onion web server, and an "app" is not a
+plugin system or a VM — it is one declarative manifest, one controller,
+and one mount, all plain C, all reviewed like every other file in the
+tree. This recipe walks the whole loop using the two apps that ship in
+the repo as the worked examples:
+
+- `apps/blog/app.def` — the reference MVC/ActiveRecord application
+  (signed posts, a publication projection, read-only public pages).
+- `apps/yardsale/app.def` — the for-sale-by-owner swap app: sellers pin
+  signed, expiring ads into the gossip yardsale, and a buyer settles
+  directly with the seller through the two-message ceremony. Never a
+  matching engine — the app remembers signs and carries ceremony wires.
+
+The shape, end to end:
+
+1. **Write the manifest** — `apps/<id>/app.def`. This is data, not
+   authority: it names the app, the capabilities it ASKS for
+   (`ZCL_APP_CAPABILITY(...)`), its resources, its P2P topic, its web
+   mount, and whether it binds the onion and a ZNAM name. The strict
+   compiler (`lib/framework/src/app_definition.c`) rejects anything else.
+   Copy the yardsale's:
+
+   ```
+   ZCL_APP("yardsale", "ZClassic Yardsale", "0.1.0")
+   ZCL_APP_CAPABILITY(CHAIN_READ)
+   ...
+   ZCL_APP_RESOURCE("ads")
+   ZCL_APP_TOPIC("yardsale.ads.v1", 1, 4096)
+   ZCL_APP_WEB_MOUNT("/yardsale")
+   ZCL_APP_ONION(true)
+   ZCL_APP_ZNAM("yardsale")
+   ZCL_APP_STATE_SCHEMA(1)
+   ```
+
+2. **Register the app id** — add it to `g_builtin_app_ids[]` in
+   `lib/framework/src/app_catalog.c`, and extend the catalog asserts in
+   `lib/test/src/test_dev_platform.c` (the strict-compiler test pins the
+   builtin list; it will fail until you teach it your app exists).
+
+3. **Write the controller** — `app/controllers/src/<id>_controller.c`
+   (plus its header under `app/controllers/include/controllers/`). One
+   function is the whole web contract, the same shape the blog uses:
+
+   ```c
+   size_t <id>_site_handle_request(const char *method, const char *path,
+                                   const uint8_t *body, size_t body_len,
+                                   uint8_t *response, size_t response_max);
+   ```
+
+   Parse the path, call your model layer, render into `response`, return
+   the length. Read-only pages take the db from `app_runtime_node_db()`
+   and fail closed (return 0 — the dispatcher serves 503) when the
+   projection is absent. Look at
+   `app/controllers/src/yardsale_site_controller.c` for the bounded
+   version: security headers, urlencoded form parsing, named error pages,
+   and the 800-line file-size ceiling in mind from the first keystroke.
+
+4. **Mount it** — one dispatch branch in `lib/net/src/onion_service.c`
+   and one in `lib/net/src/https_server.c`, both calling your
+   `<id>_site_handle_request` by `extern` declaration (the
+   `/blog` and `/yardsale` branches are the pattern; the onion serves
+   POSTs, the public listener is GET/HEAD-only, so mutating forms are
+   onion-only). Re-baseline both files in
+   `tools/scripts/file_size_ceiling_lib_baseline.txt` — the ceiling gate
+   expects exactly that move (the ZCODE slice-13 note in
+   `tools/scripts/file_size_ceiling_lib_drift_count.txt` is the
+   precedent).
+
+5. **Prove it** — a new `lib/test/src/test_<id>_app.c` with
+   `int test_<id>_app(void)`, registered in BOTH places the
+   check-test-registration gate cross-checks: a
+   `ZCL_TEST_GROUP(<id>_app)` row in `tools/dev/test_group_catalog.def`
+   and an extern call in `lib/test/src/test.c`. Add an
+   `AGENT_IMPACT_RULE` row mapping your files to your group in
+   `app/controllers/include/controllers/agent_impact_rules.def`. Then:
+
+   ```bash
+   make -j"$(nproc)"
+   make -j"$(nproc)" t-fast ONLY=<id>_app
+   make lint
+   ```
+
+If your app carries P2P messages of its own, do it the yardsale way: a
+dispatch row in `lib/net/src/msgprocessor.c`'s table plus an injected
+port (lib/net never names your lib's symbols — the composition root in
+`config/src/boot_msg_callbacks.c` wires it), and the ceremony/app logic
+in your controller where tests can drive it in-process.
+
+## Build / run
+
+Nothing to compile separately — the apps build into the one binary:
+
+```bash
+make -j"$(nproc)" && build/bin/zclassic23 -tor
+# then browse http://<your-node>.onion/yardsale
+```
+
+## Expected output sketch
+
+```
+$ build/bin/zclassic23 dev app list
+blog       ZClassic Blog       0.1.0
+social     ZClassic Social     0.1.0
+yardsale   ZClassic Yardsale   0.1.0
+
+$ make -j"$(nproc)" t-fast ONLY=yardsale_app
+  yardsale_app: manifest: yardsale app.def compiles... OK
+  yardsale_app: ceremony: accept wire is the Stage-3 golden vector... OK
+  yardsale_app: ceremony: partial wire is the Stage-3 golden vector... OK
+  yardsale_app: ceremony: broadcast tx is the Stage-3 golden final tx... OK
+  ...
+=== yardsale_app complete: 0 failure(s) ===
+```

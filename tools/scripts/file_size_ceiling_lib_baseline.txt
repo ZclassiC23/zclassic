@@ -34,7 +34,7 @@ lib/net/src/connman.c 2951
 lib/net/src/download.c 1385
 lib/net/src/fast_sync.c 1909
 lib/net/src/file_service.c 2255
-lib/net/src/https_server.c 982
+lib/net/src/https_server.c 1016
 lib/net/src/msg_blocks.c 902
 lib/net/src/msg_headers.c 1148
 lib/net/src/msgprocessor.c 2472
@@ -42,7 +42,7 @@ lib/net/src/msgprocessor_snapshot.c 2005
 lib/net/src/msgprocessor_snapshot_serve.c 1114
 lib/net/src/net.c 1666
 lib/net/src/onion_directory.c 865
-lib/net/src/onion_service.c 1185
+lib/net/src/onion_service.c 1209
 lib/net/src/peer_lifecycle.c 1779
 lib/net/src/rom_fetch.c 1709
 lib/net/src/rom_seed.c 1043

@@ -50,6 +50,27 @@
 #define ZSWAP_ACCEPT_VERSION 1u
 #define ZSWAP_PARTIAL_VERSION 1u
 
+/* P2P message commands (max 12 bytes), the ceremony companions of
+ * ZSWAP_MSG_QUOTE (zswap/zswap_yardsale.h). One zswapaccept message carries
+ * exactly one zswap_accept.v1 wire; one zswappartial message carries exactly
+ * one zswap_partial.v1 wire. Both ride the same gossip idiom as the ads:
+ * dedup-on-content bounds loops, and settlement stays bilateral — an
+ * intermediary only ever relays bytes it cannot read into or alter
+ * profitably (SIGHASH_ALL binds every signature to the whole transaction). */
+#define ZSWAP_MSG_ACCEPT "zswapaccept"
+#define ZSWAP_MSG_PARTIAL "zswappartial"
+
+/* The ingress verdict a ceremony-wire handler returns through its injected
+ * port (the int-carry convention mirrors enum zswap_yardsale_ingest over the
+ * zswapquote port seam): DROP consumes or refuses the wire, RELAY forwards
+ * it once to the remaining peers, RESPOND floods out_wire back — used by the
+ * seller to answer an accept with his partial. */
+enum zswap_ceremony_wire_result {
+    ZSWAP_CEREMONY_WIRE_DROP = 0,
+    ZSWAP_CEREMONY_WIRE_RELAY,
+    ZSWAP_CEREMONY_WIRE_RESPOND,
+};
+
 /* Upper bounds for buffer sizing; exact sizes are computed per message by
  * zswap_accept_wire_size / zswap_partial_wire_size. */
 #define ZSWAP_ACCEPT_WIRE_MAX_BYTES 2955u

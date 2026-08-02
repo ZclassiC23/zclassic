@@ -70,6 +70,10 @@ int boot_zswap_ad_ingest(const uint8_t *wire, size_t wire_len,
  * boot_services.c flat against its file-size baseline). */
 void boot_wire_zswap_yardsale(struct msg_processor *mp,
                               struct boot_svc_ctx *svc);
+/* One-call wiring of the yardsale swap-ceremony ports (zswapaccept /
+ * zswappartial ingress plus the buyer's outbound flood port). */
+void boot_wire_zswap_ceremony(struct msg_processor *mp,
+                              struct boot_svc_ctx *svc);
 bool boot_save_file_service(const uint8_t ip[16],
                             uint16_t port,
                             uint16_t p2p_port,

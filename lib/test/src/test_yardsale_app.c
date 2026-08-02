@@ -1,0 +1,705 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * test_yardsale_app — the yardsale MVC app (apps/yardsale/app.def): the
+ * manifest registration, and the swap ceremony driven end-to-end THROUGH
+ * the controller functions (app/controllers/src/yardsale_controller.c)
+ * with the Stage-3 KAT fixture — the same (ad, buyer, seller) tuple as
+ * test_zswap_ceremony.c, so the controller must reproduce the exact
+ * golden zswap_accept.v1 / zswap_partial.v1 / final-transaction bytes,
+ * proving the app layer does not alter the wire semantics.
+ *
+ * Covers the P2P-port ingress shapes (yardsale_ceremony_accept_ingest /
+ * yardsale_ceremony_partial_ingest: RESPOND/RELAY/DROP, dedup, the
+ * per-peer clamp) and the seller web endpoint (POST /yardsale/accept)
+ * in-process. No datadir, no chain state — address decoding reads the
+ * process chain params the runner selects (CHAIN_MAIN). */
+
+#include "test/test_core.h"
+
+#include "base/hex.h"
+#include "chain/chainparams.h"
+#include "controllers/yardsale_controller.h"
+#include "controllers/yardsale_site_controller.h"
+#include "crypto/ed25519.h"
+#include "framework/app_definition.h"
+#include "keys/key.h"
+#include "keys/key_io.h"
+#include "keys/pubkey.h"
+#include "platform/time_compat.h"
+#include "script/standard.h"
+#include "zswap/zswap_assembly.h"
+#include "zswap/zswap_ceremony.h"
+#include "zswap/zswap_quote.h"
+#include "zswap/zswap_yardsale.h"
+
+#include <stdio.h>
+#include <string.h>
+
+#define YSA_CHECK(name, expr) do {                                     \
+    if (expr) { printf("  yardsale_app: %s... OK\n", (name)); }        \
+    else { printf("  yardsale_app: %s... FAIL\n", (name));             \
+        failures++; }                                                  \
+} while (0)
+
+/* ── The Stage-3 KAT fixture (byte-identical to test_zswap_ceremony.c) ── */
+
+#define YSA_ISSUED 1754000000LL
+#define YSA_EXPIRES (YSA_ISSUED + 45LL)
+#define YSA_NOW (YSA_ISSUED + 10LL)
+#define YSA_NONCE 0x0102030405060708ULL
+#define YSA_TOKEN_AMOUNT 500000ULL
+#define YSA_ZCL_AMOUNT 125000000ULL
+#define YSA_FEE_SATS 10000ULL
+#define YSA_BRANCH_ID 0x76b809bbU
+#define YSA_SELLER_INPUT_VALUE 10000LL
+#define YSA_BUYER_IN_A_VALUE 150000000LL
+#define YSA_BUYER_IN_B_VALUE 50000000LL
+
+/* Golden vectors from test_zswap_ceremony.c — the controller must produce
+ * byte-identical wires through its own code paths. */
+#define YSA_KAT_ACCEPT_WIRE_HEX "5a53574143500d0a0100e104ed1f04da7980152906ccd88775cf615ba0e3ebccf89f4acb41da7b7dacd802505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f0100000080d1f008000000001976a91414db4138d56a2ecfb10881a9be394d9f321985b288ac606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f0000000080f0fa02000000001976a91414db4138d56a2ecfb10881a9be394d9f321985b288ac74314b6d744247357976707a6f6534383745776e73736d52396e683935586a66336439000000000000000000000000000000000000000000000000000000000074314e587546786f4366674a714277326d4c5177544173386576424d59324d796f684800000000000000000000000000000000000000000000000000000000001027000000000000adea8b6800000000"
+#define YSA_KAT_PARTIAL_WIRE_HEX "5a535750544c0d0a0100e104ed1f04da7980152906ccd88775cf615ba0e3ebccf89f4acb41da7b7dacd8d62ba75743e52fcdd2c4b42c6f3a66deb18cf034d33394d6a8c1342a0e565c6b303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f0200000010270000000000001976a9148320611ff032223c1f4bb1fbbd2291fd2b3f43d988ac74315670774b45315064587534424237315976595a77634b4d66444a375169483846540000000000000000000000000000000000000000000000000000000000743165516231535239657a457a33414578543469774375544b42784e3436754a5470630000000000000000000000000000000000000000000000000000000000adea8b6800000000036930f46dd0b16d866d59d1054aa63298b357499cd1862ef16f3f55f1cafceb82483045022100e2d3b9df2e11aa0797f245d3cba97ccf4b982458314202ee9c2beb1c36ec4f7c02200f7609eebb7a75d3b3e75d28d1455660bbdd64b712ca401b130c597059254d100100"
+#define YSA_KAT_FINAL_TX_HEX "0400008085202f8903303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f020000006b483045022100e2d3b9df2e11aa0797f245d3cba97ccf4b982458314202ee9c2beb1c36ec4f7c02200f7609eebb7a75d3b3e75d28d1455660bbdd64b712ca401b130c597059254d100121036930f46dd0b16d866d59d1054aa63298b357499cd1862ef16f3f55f1cafceb82ffffffff505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f010000006a47304402203d7c3f4fa57e910c348778c3471bd688d358e16f0ff4bb28b83a0c0261d53d650220499e7cf0ff505de24f42a3b5def8fd71321740c21972712b146482076e22a16401210324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1cffffffff606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f000000006a4730440220336b6435e33ac4f03c5044537a14e7438d5ef423bd2083ba67d52cbcd87c5ced02207a69ee4508ee53086bd48e52e7c192b70238cbb4301e23840e2f9751cb35543401210324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1cffffffff050000000000000000376a04534c500001010453454e44205f5e5d5c5b5a595857565554535251504f4e4d4c4b4a4948474645444342414008000000000007a12022020000000000001976a91414db4138d56a2ecfb10881a9be394d9f321985b288ac40597307000000001976a9148320611ff032223c1f4bb1fbbd2291fd2b3f43d988acee240000000000001976a914e13e93c4d1c15865bfa3cd3295a5e45b2a075e8e88acb0417804000000001976a914331eb609f3aacffe680f86309d6b7470e7215b0c88ac00000000000000000000000000000000000000"
+
+#define YSA_TX_BUF_BYTES 4096u
+
+static void ysa_hex(const uint8_t *bytes, size_t len, char *out)
+{
+    static const char hexd[] = "0123456789abcdef";
+    for (size_t i = 0; i < len; i++) {
+        out[2 * i]     = hexd[(bytes[i] >> 4) & 0xf];
+        out[2 * i + 1] = hexd[bytes[i] & 0xf];
+    }
+    out[2 * len] = '\0';
+}
+
+static void ysa_key(struct privkey *key, uint8_t fill)
+{
+    memset(key->vch, fill, 32);
+    key->fValid = true;
+    key->fCompressed = true;
+}
+
+static void ysa_pattern32(uint8_t out[32], uint8_t base)
+{
+    for (size_t i = 0; i < 32; i++) out[i] = (uint8_t)(base + i);
+}
+
+static size_t ysa_p2pkh_script(const struct privkey *key, uint8_t out[25])
+{
+    struct pubkey pk;
+    if (!privkey_get_pubkey(key, &pk)) return 0;
+    struct key_id kid = pubkey_get_id(&pk);
+    out[0] = 0x76;
+    out[1] = 0xa9;
+    out[2] = 0x14;
+    memcpy(out + 3, kid.id.data, 20);
+    out[23] = 0x88;
+    out[24] = 0xac;
+    return 25;
+}
+
+static bool ysa_address(const struct privkey *key,
+                        char out[ZSWAP_ADDRESS_FIELD_BYTES])
+{
+    struct pubkey pk;
+    if (!privkey_get_pubkey(key, &pk)) return false;
+    struct tx_destination dest;
+    dest.type = DEST_KEY_ID;
+    dest.id.key = pubkey_get_id(&pk);
+    const struct chain_params *cp = chain_params_get();
+    size_t pk_len, sc_len;
+    const unsigned char *pk_pfx =
+        chain_params_base58_prefix(cp, B58_PUBKEY_ADDRESS, &pk_len);
+    const unsigned char *sc_pfx =
+        chain_params_base58_prefix(cp, B58_SCRIPT_ADDRESS, &sc_len);
+    return encode_destination(&dest, pk_pfx, pk_len, sc_pfx, sc_len,
+                              out, ZSWAP_ADDRESS_FIELD_BYTES);
+}
+
+static bool ysa_ad_at(struct zswap_quote_v1 *q, int64_t issued,
+                      int64_t expires)
+{
+    memset(q, 0, sizeof(*q));
+    q->schema_version = ZSWAP_QUOTE_VERSION;
+    ysa_pattern32(q->network_genesis_root, 0xa0);
+    uint8_t seed[32];
+    memset(seed, 0x11, sizeof(seed));
+    uint8_t sk[32];
+    ed25519_keypair(q->seller_pubkey, sk, seed);
+    q->nonce = YSA_NONCE;
+    ysa_pattern32(q->token_id, 0x40);
+    q->token_amount = YSA_TOKEN_AMOUNT;
+    q->zcl_amount = YSA_ZCL_AMOUNT;
+    q->issued_unix = issued;
+    q->expires_unix = expires;
+    return zswap_quote_seal(q, seed) == ZSWAP_QUOTE_OK;
+}
+
+static bool ysa_ad(struct zswap_quote_v1 *q)
+{
+    return ysa_ad_at(q, YSA_ISSUED, YSA_EXPIRES);
+}
+
+static void ysa_fill_input(struct zswap_swap_input *in, uint8_t txid_base,
+                           uint32_t vout, int64_t value,
+                           const uint8_t *script, uint16_t script_len)
+{
+    memset(in, 0, sizeof(*in));
+    ysa_pattern32(in->txid, txid_base);
+    in->vout = vout;
+    in->value_sats = value;
+    in->script_len = script_len;
+    memcpy(in->script_pub_key, script, script_len);
+}
+
+/* The buyer accept; input B (txid 0x60..) is listed FIRST so the canonical
+ * sort is exercised, exactly like the Stage-3 fixture. */
+static bool ysa_buyer_dl(struct zswap_buyer_accept *buyer, int64_t deadline)
+{
+    memset(buyer, 0, sizeof(*buyer));
+    uint8_t script[25];
+    struct privkey buyer_key;
+    ysa_key(&buyer_key, 0x42);
+    if (ysa_p2pkh_script(&buyer_key, script) != 25) return false;
+    buyer->num_inputs = 2;
+    ysa_fill_input(&buyer->inputs[0], 0x60, 0, YSA_BUYER_IN_B_VALUE,
+                   script, 25);
+    ysa_fill_input(&buyer->inputs[1], 0x50, 1, YSA_BUYER_IN_A_VALUE,
+                   script, 25);
+    struct privkey recv_key, change_key;
+    ysa_key(&recv_key, 0x42);
+    ysa_key(&change_key, 0x43);
+    if (!ysa_address(&recv_key, buyer->token_recv_address) ||
+        !ysa_address(&change_key, buyer->change_address))
+        return false;
+    buyer->fee_sats = YSA_FEE_SATS;
+    buyer->deadline_unix = deadline;
+    return true;
+}
+
+static bool ysa_buyer(struct zswap_buyer_accept *buyer)
+{
+    return ysa_buyer_dl(buyer, YSA_EXPIRES);
+}
+
+static bool ysa_seller_dl(struct zswap_seller_accept *seller,
+                          int64_t deadline)
+{
+    memset(seller, 0, sizeof(*seller));
+    uint8_t script[25];
+    struct privkey seller_key;
+    ysa_key(&seller_key, 0x31);
+    if (ysa_p2pkh_script(&seller_key, script) != 25) return false;
+    ysa_fill_input(&seller->token_input, 0x30, 2, YSA_SELLER_INPUT_VALUE,
+                   script, 25);
+    struct privkey change_key;
+    ysa_key(&change_key, 0x32);
+    if (!ysa_address(&seller_key, seller->zcl_recv_address) ||
+        !ysa_address(&change_key, seller->change_address))
+        return false;
+    seller->deadline_unix = deadline;
+    return true;
+}
+
+static bool ysa_seller(struct zswap_seller_accept *seller)
+{
+    return ysa_seller_dl(seller, YSA_EXPIRES);
+}
+
+/* ── Injected ports ──────────────────────────────────────────────── */
+
+static uint32_t ysa_branch_id(void *ctx)
+{
+    (void)ctx;
+    return YSA_BRANCH_ID;
+}
+
+struct ysa_flood_capture {
+    int count;
+    char last_command[16];
+    uint8_t last_wire[ZSWAP_ACCEPT_WIRE_MAX_BYTES];
+    size_t last_len;
+};
+
+static void ysa_flood_capture_fn(const char *command, const uint8_t *wire,
+                                 size_t wire_len, void *ctx)
+{
+    struct ysa_flood_capture *cap = ctx;
+    cap->count++;
+    snprintf(cap->last_command, sizeof(cap->last_command), "%s", command);
+    if (wire_len <= sizeof(cap->last_wire)) {
+        memcpy(cap->last_wire, wire, wire_len);
+        cap->last_len = wire_len;
+    }
+}
+
+struct ysa_broadcast_capture {
+    int count;
+    uint8_t tx_bytes[YSA_TX_BUF_BYTES];
+    size_t tx_len;
+};
+
+static bool ysa_broadcast_capture_fn(const struct transaction *tx, void *ctx)
+{
+    struct ysa_broadcast_capture *cap = ctx;
+    cap->count++;
+    return zswap_assembly_tx_serialize(tx, cap->tx_bytes,
+                                       sizeof(cap->tx_bytes), &cap->tx_len);
+}
+
+/* Shared fixture setup: reset every piece of yardsale state and pin the
+ * fixture branch. The yardsale cache is the REAL one — the ceremony
+ * ingress paths must answer out of the same cache the gossip layer fills. */
+static void ysa_reset_all(void)
+{
+    zswap_yardsale_reset();
+    yardsale_ceremony_reset();
+    yardsale_seller_profile_clear();
+    yardsale_ceremony_set_flood(NULL, NULL);
+    yardsale_ceremony_set_broadcast(NULL, NULL);
+    yardsale_ceremony_set_branch_id_source(ysa_branch_id, NULL);
+}
+
+/* Ingest an already-built ad into the real yardsale cache at `now`. */
+static bool ysa_ingest_ad(const struct zswap_quote_v1 *ad, int64_t now,
+                          uint8_t quote_root[32])
+{
+    uint8_t ad_wire[ZSWAP_QUOTE_WIRE_BYTES];
+    if (zswap_quote_encode(ad, ad_wire) != ZSWAP_QUOTE_OK) return false;
+    uint8_t net[32];
+    ysa_pattern32(net, 0xa0);
+    struct zswap_yardsale_ad entry;
+    if (zswap_yardsale_ingest_wire(ad_wire, sizeof(ad_wire), net, 1,
+                                   now, &entry) !=
+        ZSWAP_YARDSALE_INGEST_NEW)
+        return false;
+    return zswap_quote_root(ad, quote_root) == ZSWAP_QUOTE_OK;
+}
+
+/* Ingest the KAT ad into the real yardsale cache. */
+static bool ysa_ingest_kat_ad(struct zswap_quote_v1 *ad,
+                              uint8_t quote_root[32])
+{
+    if (!ysa_ad(ad)) return false;
+    return ysa_ingest_ad(ad, YSA_NOW, quote_root);
+}
+
+/* ── Manifest ────────────────────────────────────────────────────── */
+
+static int t_manifest(void)
+{
+    int failures = 0;
+    struct zcl_app_definition_v1 def;
+    YSA_CHECK("manifest: yardsale app.def compiles",
+              zcl_app_definition_load_v1(".", "yardsale", &def).ok);
+    YSA_CHECK("manifest: app id",
+              strcmp(def.app_id, "yardsale") == 0);
+    YSA_CHECK("manifest: one resource, the signs",
+              def.resource_count == 1 &&
+              strcmp(def.resources[0].name, "ads") == 0);
+    YSA_CHECK("manifest: yardsale topic",
+              def.topic_count == 1 &&
+              strcmp(def.topics[0].name, "yardsale.ads.v1") == 0);
+    YSA_CHECK("manifest: web mount + onion + znam",
+              def.mount_count == 1 &&
+              strcmp(def.mounts[0].path, "/yardsale") == 0 &&
+              def.onion_declared && def.onion_enabled &&
+              def.znam_declared && strcmp(def.znam, "yardsale") == 0);
+    YSA_CHECK("manifest: registered as a builtin app",
+              zcl_app_definition_builtin_v1("yardsale"));
+
+    struct zcl_app_definition_catalog_v1 catalog;
+    YSA_CHECK("manifest: builtin catalog compiles with yardsale",
+              zcl_app_definition_builtin_catalog_compile_v1(".",
+                                                            &catalog).ok &&
+              catalog.app_count == 3 &&
+              strcmp(catalog.apps[2].app_id, "yardsale") == 0);
+    return failures;
+}
+
+/* ── The ceremony round-trip through the controller ──────────────── */
+
+static int t_ceremony_roundtrip(void)
+{
+    int failures = 0;
+    ysa_reset_all();
+
+    struct zswap_quote_v1 ad;
+    uint8_t quote_root[32];
+    YSA_CHECK("ceremony: KAT ad ingested into the yardsale",
+              ysa_ingest_kat_ad(&ad, quote_root));
+
+    /* SELLER: the operator configures his standing terms + key. */
+    struct zswap_seller_accept seller;
+    struct privkey seller_key;
+    YSA_CHECK("ceremony: seller terms fixture", ysa_seller(&seller));
+    ysa_key(&seller_key, 0x31);
+    yardsale_seller_profile_configure(&seller, &seller_key);
+    YSA_CHECK("ceremony: profile configured",
+              yardsale_seller_profile_configured());
+
+    /* BUYER: begin the buy — the accept wire must be byte-identical to
+     * the Stage-3 golden vector and must go out on the gossip port. */
+    struct zswap_buyer_accept buyer;
+    YSA_CHECK("ceremony: buyer terms fixture", ysa_buyer(&buyer));
+    struct privkey buyer_keys[2];
+    ysa_key(&buyer_keys[0], 0x42);
+    ysa_key(&buyer_keys[1], 0x42);
+
+    struct ysa_flood_capture flood = {0};
+    yardsale_ceremony_set_flood(ysa_flood_capture_fn, &flood);
+
+    uint8_t accept_wire[ZSWAP_ACCEPT_WIRE_MAX_BYTES];
+    size_t accept_len = 0;
+    YSA_CHECK("ceremony: buyer_begin accepts",
+              yardsale_buyer_begin(&ad, &buyer, buyer_keys, 2, YSA_NOW,
+                                   accept_wire, sizeof(accept_wire),
+                                   &accept_len) == YARDSALE_OK);
+    YSA_CHECK("ceremony: accept was flooded once on zswapaccept",
+              flood.count == 1 &&
+              strcmp(flood.last_command, ZSWAP_MSG_ACCEPT) == 0 &&
+              flood.last_len == accept_len);
+    char hex[2 * YSA_TX_BUF_BYTES + 1];
+    ysa_hex(accept_wire, accept_len, hex);
+    YSA_CHECK("ceremony: accept wire is the Stage-3 golden vector",
+              strcmp(hex, YSA_KAT_ACCEPT_WIRE_HEX) == 0);
+    YSA_CHECK("ceremony: one pending buy registered",
+              yardsale_pending_count(YSA_NOW) == 1);
+
+    /* SELLER: the accept arrives over the P2P ingress port — a node with
+     * the sign remembered and a profile configured answers. */
+    uint8_t partial_wire[ZSWAP_PARTIAL_WIRE_MAX_BYTES];
+    size_t partial_len = 0;
+    int verdict = yardsale_ceremony_accept_ingest(
+        accept_wire, accept_len, 7, YSA_NOW,
+        partial_wire, sizeof(partial_wire), &partial_len);
+    YSA_CHECK("ceremony: accept ingress verdict is RESPOND",
+              verdict == ZSWAP_CEREMONY_WIRE_RESPOND);
+    ysa_hex(partial_wire, partial_len, hex);
+    YSA_CHECK("ceremony: partial wire is the Stage-3 golden vector",
+              strcmp(hex, YSA_KAT_PARTIAL_WIRE_HEX) == 0);
+
+    /* A byte-identical re-delivery of the accept dedups to DROP. Keep the
+     * golden partial length — the ingress zeroes *respond_len on entry. */
+    size_t saved_len = partial_len;
+    verdict = yardsale_ceremony_accept_ingest(
+        accept_wire, accept_len, 8, YSA_NOW,
+        partial_wire, sizeof(partial_wire), &partial_len);
+    YSA_CHECK("ceremony: re-delivered accept dedups (DROP)",
+              verdict == ZSWAP_CEREMONY_WIRE_DROP);
+
+    /* BUYER: the partial arrives — the pending buy completes, signs, and
+     * hands the fully-signed swap to the broadcast port. */
+    struct ysa_broadcast_capture broadcast = {0};
+    yardsale_ceremony_set_broadcast(ysa_broadcast_capture_fn, &broadcast);
+    verdict = yardsale_ceremony_partial_ingest(partial_wire, saved_len,
+                                               7, YSA_NOW);
+    YSA_CHECK("ceremony: partial ingress consumes the pending buy",
+              verdict == ZSWAP_CEREMONY_WIRE_DROP);
+    YSA_CHECK("ceremony: completed swap reached the broadcast port",
+              broadcast.count == 1);
+    ysa_hex(broadcast.tx_bytes, broadcast.tx_len, hex);
+    YSA_CHECK("ceremony: broadcast tx is the Stage-3 golden final tx",
+              strcmp(hex, YSA_KAT_FINAL_TX_HEX) == 0);
+    YSA_CHECK("ceremony: pending table drained",
+              yardsale_pending_count(YSA_NOW) == 0);
+
+    ysa_reset_all();
+    return failures;
+}
+
+/* ── Ingress policy negatives ────────────────────────────────────── */
+
+static int t_ingress_negatives(void)
+{
+    int failures = 0;
+    ysa_reset_all();
+
+    struct zswap_quote_v1 ad;
+    uint8_t quote_root[32];
+    YSA_CHECK("neg: KAT ad ingested", ysa_ingest_kat_ad(&ad, quote_root));
+
+    struct zswap_buyer_accept buyer;
+    YSA_CHECK("neg: buyer terms fixture", ysa_buyer(&buyer));
+    struct privkey keys[2];
+    ysa_key(&keys[0], 0x42);
+    ysa_key(&keys[1], 0x42);
+    struct ysa_flood_capture flood = {0};
+    yardsale_ceremony_set_flood(ysa_flood_capture_fn, &flood);
+    uint8_t accept_wire[ZSWAP_ACCEPT_WIRE_MAX_BYTES];
+    size_t accept_len = 0;
+    YSA_CHECK("neg: accept built",
+              yardsale_buyer_begin(&ad, &buyer, keys, 2, YSA_NOW,
+                                   accept_wire, sizeof(accept_wire),
+                                   &accept_len) == YARDSALE_OK);
+
+    uint8_t respond[ZSWAP_PARTIAL_WIRE_MAX_BYTES];
+    size_t respond_len = 0;
+
+    /* A magic-tampered wire never decodes: DROP, never relayed. */
+    uint8_t tampered[ZSWAP_ACCEPT_WIRE_MAX_BYTES];
+    memcpy(tampered, accept_wire, accept_len);
+    tampered[0] ^= 0xff;
+    YSA_CHECK("neg: magic-tampered accept drops",
+              yardsale_ceremony_accept_ingest(
+                  tampered, accept_len, 3, YSA_NOW,
+                  respond, sizeof(respond), &respond_len) ==
+                  ZSWAP_CEREMONY_WIRE_DROP);
+
+    /* A stranger's sign (unknown root): the accept relays onward — that
+     * is how it reaches the seller. */
+    struct zswap_quote_v1 stranger;
+    YSA_CHECK("neg: stranger ad seals", ysa_ad(&stranger));
+    stranger.nonce = 0x0badc0deULL;
+    {
+        uint8_t seed[32];
+        memset(seed, 0x77, sizeof(seed));
+        uint8_t sk[32], pk[32];
+        ed25519_keypair(pk, sk, seed);
+        memcpy(stranger.seller_pubkey, pk, 32);
+        zswap_quote_seal(&stranger, seed);
+    }
+    uint8_t stranger_root[32];
+    zswap_quote_root(&stranger, stranger_root);
+    struct zswap_accept_v1 stray_accept;
+    memset(&stray_accept, 0, sizeof(stray_accept));
+    stray_accept.schema_version = ZSWAP_ACCEPT_VERSION;
+    memcpy(stray_accept.quote_root, stranger_root, 32);
+    stray_accept.buyer = buyer;
+    uint8_t stray_wire[ZSWAP_ACCEPT_WIRE_MAX_BYTES];
+    size_t stray_len = 0;
+    YSA_CHECK("neg: stranger accept encodes",
+              zswap_accept_encode(&stray_accept, stray_wire,
+                                  sizeof(stray_wire), &stray_len) ==
+                  ZSWAP_CEREMONY_OK);
+    YSA_CHECK("neg: accept for unknown sign relays",
+              yardsale_ceremony_accept_ingest(
+                  stray_wire, stray_len, 3, YSA_NOW,
+                  respond, sizeof(respond), &respond_len) ==
+                  ZSWAP_CEREMONY_WIRE_RELAY);
+
+    /* A partial with no pending buy behind it: someone else's ceremony —
+     * relay. Drop the pending buy registered above WITHOUT touching the
+     * yardsale cache (the sign stays remembered). */
+    struct zswap_seller_accept seller;
+    struct privkey seller_key;
+    ysa_seller(&seller);
+    ysa_key(&seller_key, 0x31);
+    yardsale_seller_profile_configure(&seller, &seller_key);
+    size_t partial_len = 0;
+    YSA_CHECK("neg: seller answers the real accept (handler path)",
+              yardsale_seller_handle_accept_wire(
+                  accept_wire, accept_len, YSA_NOW,
+                  respond, sizeof(respond), &partial_len) == YARDSALE_OK);
+    yardsale_ceremony_reset();
+    YSA_CHECK("neg: partial with no pending buy relays",
+              yardsale_ceremony_partial_ingest(respond, partial_len,
+                                               3, YSA_NOW) ==
+                  ZSWAP_CEREMONY_WIRE_RELAY);
+
+    /* A seller with no profile configured never signs: the accept for a
+     * REMEMBERED sign relays instead of being answered. */
+    yardsale_seller_profile_clear();
+    YSA_CHECK("neg: no-profile node relays an accept for a known sign",
+              yardsale_ceremony_accept_ingest(
+                  accept_wire, accept_len, 4, YSA_NOW,
+                  respond, sizeof(respond), &respond_len) ==
+                  ZSWAP_CEREMONY_WIRE_RELAY);
+
+    /* An expired sign refuses at the seller handler with the named
+     * ceremony error, not a crash or a signature. */
+    yardsale_seller_profile_configure(&seller, &seller_key);
+    YSA_CHECK("neg: expired sign named EXPIRED",
+              yardsale_seller_handle_accept_wire(
+                  accept_wire, accept_len, YSA_EXPIRES + 1,
+                  respond, sizeof(respond), &partial_len) ==
+                  (enum yardsale_error)(YARDSALE_ERR_CEREMONY_BASE +
+                                        ZSWAP_CEREMONY_ERR_EXPIRED));
+
+    /* Buyer begin without a flood port refuses loudly and keeps no
+     * pending state. */
+    yardsale_ceremony_reset();
+    yardsale_ceremony_set_flood(NULL, NULL);
+    YSA_CHECK("neg: buyer begin with unwired flood refuses",
+              yardsale_buyer_begin(&ad, &buyer, keys, 2, YSA_NOW,
+                                   accept_wire, sizeof(accept_wire),
+                                   &accept_len) ==
+                  YARDSALE_ERR_NOT_CONFIGURED);
+    YSA_CHECK("neg: refused begin leaves no pending buy",
+              yardsale_pending_count(YSA_NOW) == 0);
+
+    ysa_reset_all();
+    return failures;
+}
+
+/* ── The per-peer gossip clamp ───────────────────────────────────── */
+
+static int t_peer_clamp(void)
+{
+    int failures = 0;
+    ysa_reset_all();
+
+    struct zswap_buyer_accept buyer;
+    YSA_CHECK("clamp: buyer terms fixture", ysa_buyer(&buyer));
+    struct zswap_quote_v1 ad;
+    uint8_t quote_root[32];
+    YSA_CHECK("clamp: KAT ad built", ysa_ad(&ad));
+    YSA_CHECK("clamp: root computes",
+              zswap_quote_root(&ad, quote_root) == ZSWAP_QUOTE_OK);
+
+    /* One decodable accept wire naming an unknown sign; bump a buyer
+     * input value byte per variant so each is a distinct wire (distinct
+     * dedup hash) that still decodes. */
+    struct zswap_accept_v1 accept;
+    memset(&accept, 0, sizeof(accept));
+    accept.schema_version = ZSWAP_ACCEPT_VERSION;
+    memcpy(accept.quote_root, quote_root, 32);
+    accept.buyer = buyer;
+
+    uint8_t wire[ZSWAP_ACCEPT_WIRE_MAX_BYTES];
+    size_t wire_len = 0;
+    YSA_CHECK("clamp: base accept encodes",
+              zswap_accept_encode(&accept, wire, sizeof(wire),
+                                  &wire_len) == ZSWAP_CEREMONY_OK);
+
+    uint8_t respond[ZSWAP_PARTIAL_WIRE_MAX_BYTES];
+    size_t respond_len = 0;
+    int relayed = 0, dropped = 0;
+    /* Offset 42+1+32+4 = the least-significant byte of the first sorted
+     * input's value_sats: flipping it yields a distinct wire (distinct
+     * dedup hash) that still decodes — value stays positive, ordering is
+     * by outpoint. */
+    for (int i = 0; i < 9; i++) {
+        wire[79] ^= (uint8_t)(1u << (i % 8));
+        struct zswap_accept_v1 check;
+        bool decodable =
+            zswap_accept_decode(wire, wire_len, &check) == ZSWAP_CEREMONY_OK;
+        int v = yardsale_ceremony_accept_ingest(wire, wire_len, 42,
+                                                YSA_NOW, respond,
+                                                sizeof(respond),
+                                                &respond_len);
+        if (decodable && v == ZSWAP_CEREMONY_WIRE_RELAY) relayed++;
+        if (v == ZSWAP_CEREMONY_WIRE_DROP) dropped++;
+    }
+    YSA_CHECK("clamp: first 8 fresh wires from one peer relay",
+              relayed == 8);
+    YSA_CHECK("clamp: the 9th fresh wire in the window drops",
+              dropped == 1);
+
+    ysa_reset_all();
+    return failures;
+}
+
+/* ── The seller web endpoint ─────────────────────────────────────── */
+
+static int t_seller_web_endpoint(void)
+{
+    int failures = 0;
+    ysa_reset_all();
+
+    /* The seller endpoint answers against the wall clock (production
+     * posture — the mount has no injected clock), so this fixture is a
+     * LIVE ad around real now: the KAT window is long expired at any real
+     * wall time and would draw the named EXPIRED refusal. Golden-byte
+     * equality of the partial wire is already proven in
+     * t_ceremony_roundtrip; here the mount owes the route, the
+     * status/content-type, and a decodable partial naming the same
+     * sign. */
+    int64_t now = (int64_t)platform_time_wall_time_t();
+    int64_t issued = now - 10;
+    int64_t expires = now + 45;
+
+    struct zswap_quote_v1 ad;
+    uint8_t quote_root[32];
+    YSA_CHECK("web: live ad built", ysa_ad_at(&ad, issued, expires));
+    YSA_CHECK("web: live ad ingested", ysa_ingest_ad(&ad, now, quote_root));
+
+    struct zswap_seller_accept seller;
+    struct privkey seller_key;
+    YSA_CHECK("web: seller terms fixture", ysa_seller_dl(&seller, expires));
+    ysa_key(&seller_key, 0x31);
+    yardsale_seller_profile_configure(&seller, &seller_key);
+
+    struct zswap_buyer_accept buyer;
+    YSA_CHECK("web: buyer terms fixture", ysa_buyer_dl(&buyer, expires));
+    struct zswap_accept_v1 accept;
+    memset(&accept, 0, sizeof(accept));
+    accept.schema_version = ZSWAP_ACCEPT_VERSION;
+    memcpy(accept.quote_root, quote_root, 32);
+    accept.buyer = buyer;
+    uint8_t accept_wire[ZSWAP_ACCEPT_WIRE_MAX_BYTES];
+    size_t accept_len = 0;
+    YSA_CHECK("web: accept encodes",
+              zswap_accept_encode(&accept, accept_wire,
+                                  sizeof(accept_wire), &accept_len) ==
+                  ZSWAP_CEREMONY_OK);
+
+    /* POST the raw wire to /yardsale/accept: 200 octet-stream whose body
+     * decodes as the seller's partial naming the same sign. */
+    uint8_t response[8192];
+    size_t n = yardsale_site_handle_request("POST", "/yardsale/accept",
+                                            accept_wire, accept_len,
+                                            response, sizeof(response));
+    bool terminated = n > 0 && n < sizeof(response);
+    if (terminated)
+        response[n] = '\0';
+    YSA_CHECK("web: accept POST answered", terminated);
+    YSA_CHECK("web: accept POST is 200 octet-stream",
+              terminated &&
+              strstr((const char *)response, "200 OK") != NULL &&
+              strstr((const char *)response,
+                     "application/octet-stream") != NULL);
+    struct zswap_partial_v1 partial;
+    memset(&partial, 0, sizeof(partial));
+    bool body_partial = false;
+    if (terminated) {
+        const char *body_start = strstr((const char *)response, "\r\n\r\n");
+        if (body_start) {
+            body_start += 4;
+            size_t body_len =
+                n - (size_t)(body_start - (const char *)response);
+            body_partial =
+                zswap_partial_decode((const uint8_t *)body_start, body_len,
+                                     &partial) == ZSWAP_CEREMONY_OK &&
+                memcmp(partial.quote_root, quote_root, 32) == 0;
+        }
+    }
+    YSA_CHECK("web: response body is the partial for this sign",
+              body_partial);
+
+    /* A refused accept is a named 422, never a signature over bad terms. */
+    uint8_t tampered[ZSWAP_ACCEPT_WIRE_MAX_BYTES];
+    memcpy(tampered, accept_wire, accept_len);
+    tampered[0] ^= 0xff;
+    n = yardsale_site_handle_request("POST", "/yardsale/accept",
+                                     tampered, accept_len,
+                                     response, sizeof(response));
+    terminated = n > 0 && n < sizeof(response);
+    if (terminated)
+        response[n] = '\0';
+    YSA_CHECK("web: tampered accept is a named refusal",
+              terminated && strstr((const char *)response, "422") != NULL);
+
+    /* The GET pages fail closed when node.db is absent (test process has
+     * no runtime db): the mount returns 0 and the dispatcher 503s. */
+    n = yardsale_site_handle_request("GET", "/yardsale", NULL, 0,
+                                     response, sizeof(response));
+    YSA_CHECK("web: index fails closed without the projection", n == 0);
+
+    ysa_reset_all();
+    return failures;
+}
+
+int test_yardsale_app(void)
+{
+    printf("\n=== yardsale_app: manifest + ceremony through the controller ===\n");
+    int failures = 0;
+    failures += t_manifest();
+    failures += t_ceremony_roundtrip();
+    failures += t_ingress_negatives();
+    failures += t_peer_clamp();
+    failures += t_seller_web_endpoint();
+    printf("=== yardsale_app complete: %d failure(s) ===\n", failures);
+    return failures;
+}

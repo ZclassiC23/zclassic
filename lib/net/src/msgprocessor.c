@@ -37,6 +37,7 @@
 #include "net/peer_scoring.h"
 #include "net/tip_watchdog.h"
 #include "net/zmsg.h"
+#include "zswap/zswap_ceremony.h"
 #include "zswap/zswap_yardsale.h"
 #include "primitives/block.h"
 #include "sync/sync_planner.h"
@@ -1138,6 +1139,10 @@ static bool handle_zfileaddr(struct msg_processor *mp, struct p2p_node *node,
 
 /* ── ZCL Market: zswap yardsale (atomic ZSLP/ZCL swap ads) ──────── */
 
+static void mp_flood_wire(struct msg_processor *mp, const char *command,
+                          const uint8_t *wire, size_t wire_len,
+                          int64_t exclude_peer_id);
+
 static bool handle_zswapquote(struct msg_processor *mp, struct p2p_node *node,
                               struct byte_stream *s)
 {
@@ -1192,20 +1197,119 @@ static bool handle_zswapquote(struct msg_processor *mp, struct p2p_node *node,
      * signed bytes — so propagation is bounded by dedup-on-root instead;
      * every node forwards a given quote root at most once). */
     if (result == ZSWAP_YARDSALE_INGEST_NEW && mp->net_mgr) {
-        zcl_mutex_lock(&mp->net_mgr->cs_nodes);
-        for (size_t pi = 0; pi < mp->net_mgr->num_nodes; pi++) {
-            struct p2p_node *peer = mp->net_mgr->nodes[pi];
-            if (peer->id != node->id &&
-                peer->state >= PEER_HANDSHAKE_COMPLETE &&
-                !peer->disconnect &&
-                peer_supports_fast_sync(peer->services)) {
-                p2p_node_begin_message(peer, ZSWAP_MSG_QUOTE,
-                                       mp->params->pchMessageStart);
-                p2p_node_write_message_data(peer, wire, sizeof(wire));
-                p2p_node_end_message(peer);
-            }
+        mp_flood_wire(mp, ZSWAP_MSG_QUOTE, wire, sizeof(wire),
+                      (int64_t)node->id);
+    }
+    return true;
+}
+
+/* ── ZCL Market: the yardsale swap ceremony wires ───────────────── */
+
+/* One flood loop for every zswap gossip wire: forward to every fast-sync
+ * peer except exclude_peer_id (-1 excludes nobody). The yardsale's
+ * dedup-on-content ring bounds loops — a wire is offered to the flood at
+ * most once per node, so this never amplifies. */
+static void mp_flood_wire(struct msg_processor *mp, const char *command,
+                          const uint8_t *wire, size_t wire_len,
+                          int64_t exclude_peer_id)
+{
+    if (!mp->net_mgr || !mp->params)
+        return;
+    zcl_mutex_lock(&mp->net_mgr->cs_nodes);
+    for (size_t pi = 0; pi < mp->net_mgr->num_nodes; pi++) {
+        struct p2p_node *peer = mp->net_mgr->nodes[pi];
+        if ((int64_t)peer->id != exclude_peer_id &&
+            peer->state >= PEER_HANDSHAKE_COMPLETE &&
+            !peer->disconnect &&
+            peer_supports_fast_sync(peer->services)) {
+            p2p_node_begin_message(peer, command,
+                                   mp->params->pchMessageStart);
+            p2p_node_write_message_data(peer, wire, wire_len);
+            p2p_node_end_message(peer);
         }
-        zcl_mutex_unlock(&mp->net_mgr->cs_nodes);
+    }
+    zcl_mutex_unlock(&mp->net_mgr->cs_nodes);
+}
+
+void msg_processor_flood_message(struct msg_processor *mp,
+                                 const char *command,
+                                 const uint8_t *wire, size_t wire_len)
+{
+    if (!mp || !command || !wire || wire_len == 0)
+        return;
+    mp_flood_wire(mp, command, wire, wire_len, -1);
+}
+
+static bool handle_zswapaccept(struct msg_processor *mp,
+                               struct p2p_node *node,
+                               struct byte_stream *s)
+{
+    /* One message carries exactly one zswap_accept.v1 wire (bounded,
+     * variable width by buyer input count). Same drop-and-ignore parity
+     * as zswapquote: never disconnect over an application-gossip payload. */
+    size_t plen = s->size - s->read_pos;
+    if (plen == 0 || plen > ZSWAP_ACCEPT_WIRE_MAX_BYTES)
+        return true;
+
+    uint8_t wire[ZSWAP_ACCEPT_WIRE_MAX_BYTES];
+    if (!stream_read(s, wire, plen))
+        return true;
+
+    if (!mp->zswap_accept_ingest) {
+        LOG_WARN("zswap",
+                 "zswapaccept from peer %s dropped: ingress port unwired",
+                 node->addr_name);
+        return true;
+    }
+
+    uint8_t respond[ZSWAP_PARTIAL_WIRE_MAX_BYTES];
+    size_t respond_len = 0;
+    int64_t now = (int64_t)platform_time_wall_time_t();
+    int result = mp->zswap_accept_ingest(wire, plen, (int64_t)node->id, now,
+                                         respond, sizeof(respond),
+                                         &respond_len,
+                                         mp->zswap_accept_ingest_ctx);
+
+    if (result == ZSWAP_CEREMONY_WIRE_RESPOND && respond_len > 0) {
+        /* We are the seller: answer with our partial. */
+        mp_flood_wire(mp, ZSWAP_MSG_PARTIAL, respond, respond_len,
+                      (int64_t)node->id);
+    } else if (result == ZSWAP_CEREMONY_WIRE_RELAY) {
+        /* Intermediary: forward the accept once, byte-identically. */
+        mp_flood_wire(mp, ZSWAP_MSG_ACCEPT, wire, plen,
+                      (int64_t)node->id);
+    }
+    return true;
+}
+
+static bool handle_zswappartial(struct msg_processor *mp,
+                                struct p2p_node *node,
+                                struct byte_stream *s)
+{
+    /* One message carries exactly one zswap_partial.v1 wire. */
+    size_t plen = s->size - s->read_pos;
+    if (plen == 0 || plen > ZSWAP_PARTIAL_WIRE_MAX_BYTES)
+        return true;
+
+    uint8_t wire[ZSWAP_PARTIAL_WIRE_MAX_BYTES];
+    if (!stream_read(s, wire, plen))
+        return true;
+
+    if (!mp->zswap_partial_ingest) {
+        LOG_WARN("zswap",
+                 "zswappartial from peer %s dropped: ingress port unwired",
+                 node->addr_name);
+        return true;
+    }
+
+    int64_t now = (int64_t)platform_time_wall_time_t();
+    int result = mp->zswap_partial_ingest(wire, plen, (int64_t)node->id,
+                                          now,
+                                          mp->zswap_partial_ingest_ctx);
+    if (result == ZSWAP_CEREMONY_WIRE_RELAY) {
+        /* Someone else's ceremony: forward the partial once. */
+        mp_flood_wire(mp, ZSWAP_MSG_PARTIAL, wire, plen,
+                      (int64_t)node->id);
     }
     return true;
 }
@@ -1328,6 +1432,8 @@ static const struct msg_dispatch_entry g_msg_dispatch[] = {
     { "zfileproof",   handle_zfileproof,     true,  true,  "market" },
     { "zfilepay",     handle_zfilepay,       true,  true,  "market" },
     { "zswapquote",   handle_zswapquote,     true,  true,  "market" },
+    { "zswapaccept",  handle_zswapaccept,    true,  true,  "market" },
+    { "zswappartial", handle_zswappartial,   true,  true,  "market" },
     /* ── ZCL23 Game ── */
     { "zgame",        handle_game_msg,       true,  true,  "game" },
     /* ── ZCODE package swarm (slice 12; engine above net via hooks) ── */
@@ -1556,6 +1662,28 @@ void msg_processor_set_zswap_ad_ingest(struct msg_processor *mp,
         return;
     mp->zswap_ad_ingest = ingest;
     mp->zswap_ad_ingest_ctx = ctx;
+}
+
+void msg_processor_set_zswap_accept_ingest(
+    struct msg_processor *mp,
+    msg_zswap_accept_ingest_fn ingest,
+    void *ctx)
+{
+    if (!mp)
+        return;
+    mp->zswap_accept_ingest = ingest;
+    mp->zswap_accept_ingest_ctx = ctx;
+}
+
+void msg_processor_set_zswap_partial_ingest(
+    struct msg_processor *mp,
+    msg_zswap_partial_ingest_fn ingest,
+    void *ctx)
+{
+    if (!mp)
+        return;
+    mp->zswap_partial_ingest = ingest;
+    mp->zswap_partial_ingest_ctx = ctx;
 }
 
 void msg_processor_set_snapshot_active(struct msg_processor *mp,

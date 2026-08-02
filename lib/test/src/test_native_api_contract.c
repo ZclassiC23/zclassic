@@ -538,10 +538,11 @@ static int test_native_app_catalog_uses_strict_builtin_source(void)
         zcl_command_reply_init(&reply, "zcl.app_index.v1");
         zcl_native_handle_app_list(&request, &reply);
         const struct json_value *apps = json_get(&reply.data, "apps");
-        ASSERT(apps && apps->type == JSON_ARR && apps->num_children == 2);
+        ASSERT(apps && apps->type == JSON_ARR && apps->num_children == 3);
         ASSERT_STR_EQ(json_get_str(&apps->children[0]), "blog");
         ASSERT_STR_EQ(json_get_str(&apps->children[1]), "social");
-        ASSERT_EQ(json_get_int(json_get(&reply.data, "count")), 2);
+        ASSERT_STR_EQ(json_get_str(&apps->children[2]), "yardsale");
+        ASSERT_EQ(json_get_int(json_get(&reply.data, "count")), 3);
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "catalog")),
                       "built-in-strict-v1");
         zcl_command_reply_free(&reply);

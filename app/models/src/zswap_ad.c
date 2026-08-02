@@ -212,3 +212,35 @@ int db_zswap_ad_best_for_token(struct node_db *ndb,
     memcpy(out, match, n * sizeof(match[0]));
     return (int)n;
 }
+
+int db_zswap_ad_list_live(struct node_db *ndb,
+                          int64_t now_unix,
+                          struct zswap_yardsale_ad *out, size_t max)
+{
+    if (!ndb || !ndb->open) return 0;
+    if (!out && max > 0)
+        LOG_RETURN(0, "zswap", "db_zswap_ad_list_live: NULL out");
+
+    /* Same filtering/ordering contract as db_zswap_ad_best_for_token,
+     * minus the token filter — the whole yard on one page. */
+    struct zswap_yardsale_ad match[ZSWAP_YARDSALE_QUERY_CAP];
+    sqlite3_stmt *s = NULL;
+    AR_PREPARE_RET(ndb, s,
+        "SELECT quote_root,wire,first_seen_unix,last_seen_unix,seen_count"
+        " FROM zswap_ads WHERE expires_unix>?"
+        " ORDER BY last_seen_unix DESC LIMIT ?",
+        0);
+    AR_BIND_INT(s, 1, now_unix);
+    AR_BIND_INT(s, 2, (int)ZSWAP_YARDSALE_QUERY_CAP);
+    size_t n = 0;
+    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW &&
+           n < ZSWAP_YARDSALE_QUERY_CAP) {
+        if (row_to_zswap_ad(s, &match[n])) n++;
+    }
+    AR_FINALIZE(s);
+
+    qsort(match, n, sizeof(match[0]), ad_price_qsort_cmp);
+    if (n > max) n = max;
+    memcpy(out, match, n * sizeof(match[0]));
+    return (int)n;
+}

@@ -53,4 +53,11 @@ int db_zswap_ad_best_for_token(struct node_db *ndb,
                                int64_t now_unix,
                                struct zswap_yardsale_ad *out, size_t max);
 
+/* Browse-everything sibling of db_zswap_ad_best_for_token: every live sign
+ * (all tokens) still valid at now_unix, same integer-only unit-price
+ * ordering, bounded to max results. Backs the /yardsale index page. */
+int db_zswap_ad_list_live(struct node_db *ndb,
+                          int64_t now_unix,
+                          struct zswap_yardsale_ad *out, size_t max);
+
 #endif
