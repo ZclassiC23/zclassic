@@ -1691,6 +1691,7 @@ int main(int argc, char **argv)
     failures += test_zslp_store_port();
     { extern int test_zswap_quote(void); failures += test_zswap_quote(); }
     { extern int test_zswap_yardsale(void); failures += test_zswap_yardsale(); }
+    { extern int test_zswap_ceremony(void); failures += test_zswap_ceremony(); }
     failures += test_make_lint_gates_family();
     failures += test_multisig();
     failures += test_rpc_auth_hardening();
