@@ -104,6 +104,21 @@
    running-binary + epoch binding: the fold and the export must be ONE
    binary in ONE session — never rebuild mid-lane; a code fix means a
    fresh fold.
+   OPERATIONAL RULE (2026-08-02, hard-won): never fold against blk files
+   hardlinked into the live zd datadir (`~/.zclassic/blocks`). zd keeps
+   appending at its believed EOF and overwrote 314 blocks' tails through the
+   links once already. The producer restart script must pre-seed
+   `$DD/blocks` with frozen byte copies (`cp --reflink=never`, taken AFTER
+   the header import so the copy covers every indexed block), then verify
+   zero `-links +1` files before folding; `boot_legacy_link_if_missing`
+   only links MISSING files, so the pre-seeded copies survive the boot.
+   The live script is /tmp/restart-producer-fold.sh (volatile — rederive
+   from this paragraph if lost). Related shipped fix: wallet_sqlite's
+   flush BEGIN retry is now time-budgeted
+   (`WALLET_FLUSH_BEGIN_BUDGET_MS`, default 30000) instead of a bare
+   8-attempt cap that exhausted in ~1 s against the db-service job stream
+   (commit c4399ac6d); follow-up if PAY-race flakes recur is to surface the
+   budget via typed status, not to widen it silently.
 2. **Canonical lane diagnosis/recovery** — read-only diagnosis is autonomous;
    restart, deploy, or datadir repair is owner-gated. Never use the canonical
    lane to test a Q1 change. A previously at-tip observation does not override
